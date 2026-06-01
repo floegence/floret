@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"sync"
 
 	"github.com/floegence/floret/provider"
@@ -77,6 +79,9 @@ func (r *Registry) Definitions() []provider.ToolDefinition {
 	for _, tool := range r.tools {
 		defs = append(defs, provider.ToolDefinition{Name: tool.Name, Description: tool.Description})
 	}
+	slices.SortFunc(defs, func(a, b provider.ToolDefinition) int {
+		return strings.Compare(a.Name, b.Name)
+	})
 	return defs
 }
 

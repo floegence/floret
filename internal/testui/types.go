@@ -7,6 +7,7 @@ import (
 	"github.com/floegence/floret/eval"
 	"github.com/floegence/floret/event"
 	"github.com/floegence/floret/modelcatalog"
+	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
 )
 
@@ -133,11 +134,37 @@ type AgentObservation struct {
 }
 
 type ObservedProviderRequest struct {
-	Step     int                       `json:"step"`
-	Provider string                    `json:"provider"`
-	Model    string                    `json:"model"`
-	Messages []ObservedSessionMessage  `json:"messages"`
-	Tools    []provider.ToolDefinition `json:"tools"`
+	Step         int                       `json:"step"`
+	Provider     string                    `json:"provider"`
+	Model        string                    `json:"model"`
+	Messages     []ObservedSessionMessage  `json:"messages"`
+	Tools        []provider.ToolDefinition `json:"tools"`
+	RawSegments  []ObservedRawSegment      `json:"raw_segments,omitempty"`
+	CacheSummary ObservedCacheSummary      `json:"cache_summary,omitempty"`
+}
+
+type ObservedRawSegment struct {
+	ID         string                  `json:"id"`
+	Kind       promptcache.SegmentKind `json:"kind"`
+	Role       string                  `json:"role,omitempty"`
+	SHA256     string                  `json:"sha256"`
+	ByteLength int                     `json:"byte_length"`
+	Epoch      int                     `json:"epoch,omitempty"`
+	Reused     bool                    `json:"reused"`
+	RawPreview string                  `json:"raw_preview,omitempty"`
+}
+
+type ObservedCacheSummary struct {
+	Namespace        string `json:"namespace,omitempty"`
+	Retention        string `json:"retention,omitempty"`
+	PrefixHash       string `json:"prefix_hash,omitempty"`
+	PayloadHash      string `json:"payload_hash,omitempty"`
+	ToolsetID        string `json:"toolset_id,omitempty"`
+	ToolsetEpoch     int    `json:"toolset_epoch,omitempty"`
+	ReusedSegments   int    `json:"reused_segments,omitempty"`
+	NewSegments      int    `json:"new_segments,omitempty"`
+	CacheReadTokens  int64  `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int64  `json:"cache_write_tokens,omitempty"`
 }
 
 type ObservedProviderEvent struct {

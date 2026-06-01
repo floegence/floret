@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/session"
 )
@@ -19,14 +20,46 @@ func newObservingProvider(inner provider.Provider) *observingProvider {
 	return &observingProvider{inner: inner}
 }
 
+func (p *observingProvider) NormalizeCachePolicy(policy promptcache.CachePolicy) (promptcache.CachePolicy, error) {
+	if normalizer, ok := p.inner.(provider.CachePolicyNormalizer); ok {
+		return normalizer.NormalizeCachePolicy(policy)
+	}
+	return policy, nil
+}
+
+func (p *observingProvider) DefaultCacheRetention() promptcache.Retention {
+	if defaults, ok := p.inner.(provider.CacheRetentionDefault); ok {
+		return defaults.DefaultCacheRetention()
+	}
+	return promptcache.RetentionInMemory
+}
+
+func (p *observingProvider) PayloadHash(req provider.Request) (string, error) {
+	if hasher, ok := p.inner.(provider.PayloadHasher); ok {
+		return hasher.PayloadHash(req)
+	}
+	return req.RawPlan.PayloadHash, nil
+}
+
 func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
 	p.mu.Lock()
 	p.reqs = append(p.reqs, ObservedProviderRequest{
-		Step:     req.Step,
-		Provider: req.Provider,
-		Model:    req.Model,
-		Messages: observeMessages(req.Messages),
-		Tools:    append([]provider.ToolDefinition(nil), req.Tools...),
+		Step:        req.Step,
+		Provider:    req.Provider,
+		Model:       req.Model,
+		Messages:    observeMessages(req.Messages),
+		Tools:       append([]provider.ToolDefinition(nil), req.Tools...),
+		RawSegments: observeRawSegments(req.RawPlan),
+		CacheSummary: ObservedCacheSummary{
+			Namespace:      req.Cache.Namespace,
+			Retention:      string(req.Cache.Retention),
+			PrefixHash:     req.RawPlan.PrefixHash,
+			PayloadHash:    req.RawPlan.PayloadHash,
+			ToolsetID:      req.RawPlan.ToolsetID,
+			ToolsetEpoch:   req.RawPlan.ToolsetEpoch,
+			ReusedSegments: req.RawPlan.ReusedSegments,
+			NewSegments:    req.RawPlan.NewSegments,
+		},
 	})
 	p.mu.Unlock()
 
@@ -61,6 +94,15 @@ func (p *observingProvider) Snapshot() AgentObservation {
 func (p *observingProvider) recordEvent(step int, ev provider.StreamEvent) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if ev.Type == provider.UsageEvent {
+		for i := len(p.reqs) - 1; i >= 0; i-- {
+			if p.reqs[i].Step == step {
+				p.reqs[i].CacheSummary.CacheReadTokens += ev.Usage.CacheReadTokens
+				p.reqs[i].CacheSummary.CacheWriteTokens += ev.Usage.CacheWriteTokens
+				break
+			}
+		}
+	}
 	p.evs = append(p.evs, ObservedProviderEvent{
 		Step:      step,
 		Type:      ev.Type,
@@ -69,6 +111,34 @@ func (p *observingProvider) recordEvent(step int, ev provider.StreamEvent) {
 		Reason:    ev.Reason,
 		Usage:     ev.Usage,
 	})
+}
+
+func observeRawSegments(plan promptcache.RawPlan) []ObservedRawSegment {
+	out := make([]ObservedRawSegment, 0, len(plan.Segments))
+	for i, seg := range plan.Segments {
+		reused := false
+		if i < len(plan.SegmentStates) {
+			reused = plan.SegmentStates[i] == "reused"
+		}
+		out = append(out, ObservedRawSegment{
+			ID:         seg.ID,
+			Kind:       seg.Kind,
+			Role:       seg.Role,
+			SHA256:     seg.SHA256,
+			ByteLength: seg.ByteLength,
+			Epoch:      seg.Epoch,
+			Reused:     reused,
+			RawPreview: preview(seg.Raw, 240),
+		})
+	}
+	return out
+}
+
+func preview(value string, max int) string {
+	if len(value) <= max {
+		return value
+	}
+	return value[:max] + "..."
 }
 
 func observeMessages(messages []session.Message) []ObservedSessionMessage {

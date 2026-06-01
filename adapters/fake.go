@@ -3,6 +3,7 @@ package adapters
 import (
 	"context"
 
+	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
 )
 
@@ -21,4 +22,16 @@ func (p FakeProvider) Stream(context.Context, provider.Request) (<-chan provider
 	ch <- provider.StreamEvent{Type: provider.Done}
 	close(ch)
 	return ch, nil
+}
+
+func (p FakeProvider) NormalizeCachePolicy(policy promptcache.CachePolicy) (promptcache.CachePolicy, error) {
+	return policy, nil
+}
+
+func (p FakeProvider) DefaultCacheRetention() promptcache.Retention {
+	return promptcache.RetentionInMemory
+}
+
+func (p FakeProvider) PayloadHash(req provider.Request) (string, error) {
+	return req.RawPlan.PrefixHash, nil
 }

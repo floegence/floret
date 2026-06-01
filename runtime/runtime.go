@@ -5,17 +5,22 @@ import (
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/memory"
+	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/session"
 	"github.com/floegence/floret/tools"
 )
 
 func NewEngine(cfg config.Config, store session.Store, registry *tools.Registry) (*engine.Engine, error) {
+	resolved, err := config.Resolve(cfg, nil)
+	if err != nil {
+		return nil, err
+	}
 	p, err := adapters.NewProvider(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return NewEngineWithProvider(cfg, p, store, registry), nil
+	return NewEngineWithProvider(resolved, p, store, registry), nil
 }
 
 func NewEngineWithProvider(cfg config.Config, p provider.Provider, store session.Store, registry *tools.Registry) *engine.Engine {
@@ -25,9 +30,14 @@ func NewEngineWithProvider(cfg config.Config, p provider.Provider, store session
 	if registry == nil {
 		registry = tools.NewRegistry()
 	}
+	promptStore := promptcache.Store(promptcache.NewMemoryStore())
+	if cfg.PromptCacheDir != "" {
+		promptStore = promptcache.NewFileStore(cfg.PromptCacheDir)
+	}
 	return &engine.Engine{
 		Provider: p,
 		Store:    store,
+		Prompt:   promptStore,
 		Memory: &memory.Manager{
 			SystemPrompt: cfg.SystemPrompt,
 			MaxMessages:  cfg.MaxContextMessages,
@@ -39,6 +49,7 @@ func NewEngineWithProvider(cfg config.Config, p provider.Provider, store session
 			TraceID:                 cfg.RunID,
 			ProviderName:            cfg.Provider,
 			Model:                   cfg.Model,
+			CacheRetention:          config.PromptCacheRetention(cfg),
 			MaxSteps:                cfg.MaxSteps,
 			HardMaxSteps:            cfg.HardMaxSteps,
 			MaxEmptyProviderRetries: cfg.MaxEmptyProviderRetries,

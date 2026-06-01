@@ -59,3 +59,15 @@ func TestAssembleProviderVisibleShapePreservesSystemAndToolPair(t *testing.T) {
 		t.Fatalf("provider-visible tool pair broken: %#v", got)
 	}
 }
+
+func TestAssemblePreservesCompactionSummaryOutsideTail(t *testing.T) {
+	m := &Manager{MaxMessages: 1}
+	got := m.Assemble([]session.Message{
+		{Role: session.System, Content: "Previous conversation was compacted."},
+		{Role: session.User, Content: "old"},
+		{Role: session.User, Content: "new"},
+	})
+	if len(got) != 2 || got[0].Role != session.System || got[1].Content != "new" {
+		t.Fatalf("compaction summary was not preserved with bounded tail: %#v", got)
+	}
+}

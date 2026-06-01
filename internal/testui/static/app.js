@@ -382,17 +382,21 @@ function renderSteps(result) {
     const events = providerEvents.filter((event) => event.step === request.step);
     const card = document.createElement("article");
     card.className = "step-card";
+    const segments = request.raw_segments || [];
+    const cache = request.cache_summary || {};
     card.innerHTML = `
       <header>
         <span class="step-badge">Step ${request.step}</span>
         <strong>${escapeHTML(request.provider)} / ${escapeHTML(request.model)}</strong>
-        <small>${request.messages.length} messages · ${request.tools.length} tools · ${events.length} stream events</small>
+        <small>${request.messages.length} messages · ${request.tools.length} tools · ${segments.length} raw segments · ${events.length} stream events</small>
       </header>
+      ${renderCacheSummary(cache)}
       <div class="step-columns">
         <div>
           <h4>Provider Request</h4>
           ${request.messages.map(renderMessageMini).join("")}
           <div class="tool-list">${request.tools.map((tool) => `<code>${escapeHTML(tool.name || tool.Name)}</code>`).join("")}</div>
+          ${renderRawSegments(segments)}
         </div>
         <div>
           <h4>Provider Stream</h4>
@@ -402,6 +406,39 @@ function renderSteps(result) {
     `;
     el.stepInspector.appendChild(card);
   });
+}
+
+function renderCacheSummary(cache) {
+  const items = [
+    cache.namespace ? `namespace ${cache.namespace}` : "",
+    cache.retention ? `retention ${cache.retention}` : "",
+    cache.prefix_hash ? `prefix ${shortHash(cache.prefix_hash)}` : "",
+    cache.payload_hash ? `payload ${shortHash(cache.payload_hash)}` : "",
+    cache.toolset_id ? `toolset ${cache.toolset_id}${cache.toolset_epoch ? `@${cache.toolset_epoch}` : ""}` : "",
+    cache.reused_segments || cache.new_segments ? `${cache.reused_segments || 0} reused / ${cache.new_segments || 0} new` : "",
+    cache.cache_read_tokens || cache.cache_write_tokens ? `cache ${cache.cache_read_tokens || 0} read / ${cache.cache_write_tokens || 0} write` : "",
+  ].filter(Boolean);
+  if (!items.length) return "";
+  return `<div class="cache-summary">${items.map((item) => `<span>${escapeHTML(item)}</span>`).join("")}</div>`;
+}
+
+function renderRawSegments(segments) {
+  if (!segments.length) return "";
+  return `
+    <div class="raw-segments">
+      <h4>Raw Segments</h4>
+      ${segments.map((segment) => `
+        <details class="raw-segment">
+          <summary>
+            <code>${escapeHTML(segment.kind || "")}</code>
+            <span>${escapeHTML(segment.role || segment.id || "")}</span>
+            <small>${escapeHTML(shortHash(segment.sha256 || ""))} · ${segment.byte_length || 0} bytes · ${segment.reused ? "reused" : "new"}</small>
+          </summary>
+          <pre>${escapeHTML(segment.raw_preview || "")}</pre>
+        </details>
+      `).join("")}
+    </div>
+  `;
 }
 
 function renderSessionMessages(messages) {
@@ -548,6 +585,11 @@ function slug(value) {
 function totalTokens(usage) {
   usage = usage || {};
   return usage.total_tokens || usage.TotalTokens || ["input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens"].reduce((sum, key) => sum + (usage[key] || 0), 0) || ["InputTokens", "OutputTokens", "ReasoningTokens", "CacheReadTokens", "CacheWriteTokens"].reduce((sum, key) => sum + (usage[key] || 0), 0);
+}
+
+function shortHash(value) {
+  value = String(value || "");
+  return value.length > 12 ? value.slice(0, 12) : value;
 }
 
 function transitionClass(status) {

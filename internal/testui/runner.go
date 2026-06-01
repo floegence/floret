@@ -21,6 +21,7 @@ import (
 	"github.com/floegence/floret/harness"
 	"github.com/floegence/floret/memory"
 	"github.com/floegence/floret/modelcatalog"
+	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/session"
 	"github.com/floegence/floret/tools"
@@ -138,6 +139,7 @@ func (r Runner) RunAgent(ctx context.Context, req AgentRunRequest) AgentRunRespo
 	observed := newObservingProvider(p)
 	rec := &event.Recorder{}
 	store := session.NewMemoryStore()
+	promptStore := promptcache.NewFileStore(filepath.Join(r.Root, ".floret-test-ui", "prompt-cache"))
 	registry := tools.NewRegistry()
 	if err := registerSignalTools(registry); err != nil {
 		return r.failAgentRun(resp, err)
@@ -145,6 +147,7 @@ func (r Runner) RunAgent(ctx context.Context, req AgentRunRequest) AgentRunRespo
 	eng := &engine.Engine{
 		Provider: observed,
 		Store:    store,
+		Prompt:   promptStore,
 		Memory: &memory.Manager{
 			SystemPrompt: cfg.SystemPrompt,
 			MaxMessages:  cfg.MaxContextMessages,
@@ -157,6 +160,7 @@ func (r Runner) RunAgent(ctx context.Context, req AgentRunRequest) AgentRunRespo
 			TraceID:                 cfg.RunID,
 			ProviderName:            cfg.Provider,
 			Model:                   cfg.Model,
+			CacheRetention:          config.PromptCacheRetention(cfg),
 			MaxSteps:                cfg.MaxSteps,
 			HardMaxSteps:            cfg.HardMaxSteps,
 			MaxEmptyProviderRetries: cfg.MaxEmptyProviderRetries,
@@ -413,12 +417,14 @@ func (r Runner) runProviderSmoke(ctx context.Context, resp RunResponse) RunRespo
 	}
 	rec := &event.Recorder{}
 	registry := tools.NewRegistry()
+	promptStore := promptcache.NewFileStore(filepath.Join(r.Root, ".floret-test-ui", "prompt-cache"))
 	if err := registerSignalTools(registry); err != nil {
 		return r.failAgent(resp, err)
 	}
 	eng := &engine.Engine{
 		Provider: p,
 		Store:    session.NewMemoryStore(),
+		Prompt:   promptStore,
 		Memory: &memory.Manager{
 			SystemPrompt: "You are Floret's smoke-test assistant. Complete the request using task_complete with a short success message. Do not call normal tools.",
 			MaxMessages:  cfg.MaxContextMessages,
@@ -431,6 +437,7 @@ func (r Runner) runProviderSmoke(ctx context.Context, resp RunResponse) RunRespo
 			TraceID:                 cfg.RunID,
 			ProviderName:            cfg.Provider,
 			Model:                   cfg.Model,
+			CacheRetention:          config.PromptCacheRetention(cfg),
 			MaxSteps:                cfg.MaxSteps,
 			HardMaxSteps:            cfg.HardMaxSteps,
 			MaxEmptyProviderRetries: cfg.MaxEmptyProviderRetries,

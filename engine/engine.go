@@ -8,6 +8,7 @@ import (
 
 	"github.com/floegence/floret/event"
 	"github.com/floegence/floret/memory"
+	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/session"
 	"github.com/floegence/floret/tools"
@@ -35,6 +36,8 @@ type Options struct {
 	TraceID                 string
 	ProviderName            string
 	Model                   string
+	CacheNamespace          string
+	CacheRetention          promptcache.Retention
 	MaxSteps                int
 	HardMaxSteps            int
 	MaxEmptyProviderRetries int
@@ -57,6 +60,7 @@ type Engine struct {
 	Provider provider.Provider
 	Tools    *tools.Registry
 	Store    session.Store
+	Prompt   promptcache.Store
 	Memory   *memory.Manager
 	Sink     event.Sink
 	Approver tools.Approver
@@ -69,6 +73,9 @@ func (e *Engine) Run(ctx context.Context, userText string) Result {
 	}
 	if e.Store == nil {
 		e.Store = session.NewMemoryStore()
+	}
+	if e.Prompt == nil {
+		e.Prompt = promptcache.NewMemoryStore()
 	}
 	if e.Memory == nil {
 		e.Memory = &memory.Manager{}
@@ -107,9 +114,12 @@ func (e *Engine) Run(ctx context.Context, userText string) Result {
 		if err != nil {
 			return e.end(opts, step, Failed, output, err, metrics, started)
 		}
-		req := provider.Request{RunID: opts.RunID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Messages: e.Memory.Assemble(history), Tools: e.Tools.Definitions()}
+		req, err := e.providerRequest(ctx, opts, step, history)
+		if err != nil {
+			return e.end(opts, step, Failed, output, err, metrics, started)
+		}
 		metrics.LLMRequests++
-		e.emit(event.Event{Type: event.ProviderRequest, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: fmt.Sprintf("%d messages", len(req.Messages))})
+		e.emit(event.Event{Type: event.ProviderRequest, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: fmt.Sprintf("%d messages, %d raw segments, prefix %s", len(req.Messages), len(req.RawPlan.Segments), shortHash(req.RawPlan.PrefixHash))})
 		providerStarted := time.Now()
 		stream, err := e.Provider.Stream(ctx, req)
 		if errors.Is(err, provider.ErrContextOverflow) {
@@ -122,12 +132,20 @@ func (e *Engine) Run(ctx context.Context, userText string) Result {
 		if err != nil {
 			return e.end(opts, step, Failed, output, err, metrics, started)
 		}
-		stepText, calls, usage, retry, truncated, err := e.consume(ctx, opts, step, stream)
+		stepText, calls, usage, responseID, retry, truncated, err := e.consume(ctx, opts, step, stream)
 		providerLatency := time.Since(providerStarted).Milliseconds()
 		if err != nil {
 			return e.end(opts, step, Failed, output, err, metrics, started)
 		}
 		metrics.AddUsage(usage)
+		_ = e.Prompt.AppendProviderResponse(ctx, promptcache.ProviderResponseRecord{
+			RequestID:          fmt.Sprintf("%s:req:%d", opts.RunID, step),
+			RunID:              opts.RunID,
+			ProviderResponseID: responseID,
+			CacheReadTokens:    usage.CacheReadTokens,
+			CacheWriteTokens:   usage.CacheWriteTokens,
+			CreatedAt:          time.Now(),
+		})
 		if budgetErr := e.checkBudget(opts, metrics, step); budgetErr != nil {
 			return e.end(opts, step, Failed, output, budgetErr, metrics, started)
 		}
@@ -167,6 +185,11 @@ func (e *Engine) Run(ctx context.Context, userText string) Result {
 		if err := validateToolCalls(calls); err != nil {
 			return e.end(opts, step, Failed, output, err, metrics, started)
 		}
+		for _, call := range calls {
+			if err := e.Store.Append(opts.RunID, session.Message{Role: session.Assistant, Content: "tool_call", ToolCallID: call.ID, ToolName: call.Name, ToolArgs: call.Args}); err != nil {
+				return e.end(opts, step, Failed, output, err, metrics, started)
+			}
+		}
 		sig := toolSignature(calls)
 		if sig == lastToolSig {
 			duplicateCount++
@@ -189,11 +212,6 @@ func (e *Engine) Run(ctx context.Context, userText string) Result {
 		}
 		for _, call := range calls {
 			e.emit(event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, Args: call.Args})
-		}
-		for _, call := range calls {
-			if err := e.Store.Append(opts.RunID, session.Message{Role: session.Assistant, Content: "tool_call", ToolCallID: call.ID, ToolName: call.Name, ToolArgs: call.Args}); err != nil {
-				return e.end(opts, step, Failed, output, err, metrics, started)
-			}
 		}
 		toolStarted := time.Now()
 		results := e.Tools.RunBatch(ctx, calls, e.Approver)
@@ -225,6 +243,9 @@ func normalizeOptions(o Options) Options {
 	if o.TraceID == "" {
 		o.TraceID = o.RunID
 	}
+	if o.CacheNamespace == "" {
+		o.CacheNamespace = promptcache.DefaultNamespace(o.SessionID, o.ProviderName, o.Model)
+	}
 	if o.MaxSteps <= 0 {
 		o.MaxSteps = 16
 	}
@@ -243,20 +264,95 @@ func normalizeOptions(o Options) Options {
 	return o
 }
 
-func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-chan provider.StreamEvent) (string, []provider.ToolCall, provider.Usage, bool, bool, error) {
+func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, history []session.Message) (provider.Request, error) {
+	toolDefs := e.Tools.Definitions()
+	toolset, _, err := promptcache.EnsureToolset(ctx, e.Prompt, opts.RunID, opts.SessionID, opts.ProviderName, opts.Model, convertToolDefinitions(toolDefs), time.Now())
+	if err != nil {
+		return provider.Request{}, err
+	}
+	plan, messages, err := promptcache.BuildPlan(ctx, e.Prompt, promptcache.BuildInput{
+		RunID:          opts.RunID,
+		SessionID:      opts.SessionID,
+		Provider:       opts.ProviderName,
+		Model:          opts.Model,
+		AdapterVersion: promptcache.Version,
+		CacheNamespace: opts.CacheNamespace,
+		SystemPrompt:   e.Memory.SystemPrompt,
+		History:        boundedHistory(e.Memory, history),
+		Toolset:        toolset,
+		Renderer:       rendererForProvider(e.Provider),
+		Now:            time.Now(),
+	})
+	if err != nil {
+		return provider.Request{}, err
+	}
+	activeTools := providerToolDefinitions(toolset.Tools)
+	cache := promptcache.CachePolicy{
+		Enabled:            true,
+		Namespace:          opts.CacheNamespace,
+		Retention:          opts.CacheRetention,
+		PreferContinuation: true,
+	}
+	if cache.Retention == "" {
+		if defaults, ok := e.Provider.(provider.CacheRetentionDefault); ok {
+			cache.Retention = defaults.DefaultCacheRetention()
+		} else {
+			cache.Retention = promptcache.RetentionInMemory
+		}
+	}
+	cache.Enabled = cache.Retention != promptcache.RetentionNone
+	if normalizer, ok := e.Provider.(provider.CachePolicyNormalizer); ok {
+		cache, err = normalizer.NormalizeCachePolicy(cache)
+		if err != nil {
+			return provider.Request{}, err
+		}
+	}
+	req := provider.Request{
+		RunID:    opts.RunID,
+		Step:     step,
+		Provider: opts.ProviderName,
+		Model:    opts.Model,
+		Messages: messages,
+		Tools:    activeTools,
+		RawPlan:  plan,
+		Cache:    cache,
+	}
+	if hasher, ok := e.Provider.(provider.PayloadHasher); ok {
+		payloadHash, err := hasher.PayloadHash(req)
+		if err != nil {
+			return provider.Request{}, err
+		}
+		req.RawPlan.PayloadHash = payloadHash
+	}
+	if _, err := promptcache.RecordRequest(ctx, e.Prompt, opts.RunID, opts.SessionID, step, opts.ProviderName, opts.Model, cache, req.RawPlan); err != nil {
+		return provider.Request{}, err
+	}
+	return req, nil
+}
+
+func rendererForProvider(p provider.Provider) promptcache.Renderer {
+	renderer, _ := p.(promptcache.Renderer)
+	return renderer
+}
+
+func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-chan provider.StreamEvent) (string, []provider.ToolCall, provider.Usage, string, bool, bool, error) {
 	var text string
 	var calls []provider.ToolCall
 	var usage provider.Usage
+	var responseID string
 	for {
 		select {
 		case <-ctx.Done():
-			return text, calls, usage, false, false, ctx.Err()
+			return text, calls, usage, responseID, false, false, ctx.Err()
 		case ev, ok := <-stream:
 			if !ok {
 				if text == "" && len(calls) == 0 {
-					return "", nil, usage, true, false, nil
+					return "", nil, usage, responseID, true, false, nil
 				}
-				return text, calls, usage, false, false, nil
+				return text, calls, usage, responseID, false, false, nil
+			}
+			if ev.ResponseID != "" {
+				responseID = ev.ResponseID
 			}
 			switch ev.Type {
 			case provider.Delta:
@@ -268,11 +364,11 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 				usage = usage.Add(ev.Usage)
 				e.emit(event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: ev.Usage.Normalized()})
 			case provider.Empty:
-				return "", nil, usage, true, false, nil
+				return "", nil, usage, responseID, true, false, nil
 			case provider.Truncated:
-				return text, calls, usage, false, true, nil
+				return text, calls, usage, responseID, false, true, nil
 			case provider.Done:
-				return text, calls, usage, false, false, nil
+				return text, calls, usage, responseID, false, false, nil
 			}
 		}
 	}
@@ -285,6 +381,40 @@ func (e *Engine) compact(opts Options, step int) error {
 	}
 	e.emit(event.Event{Type: event.ContextCompact, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model})
 	return e.Store.Replace(opts.RunID, e.Memory.Compact(history))
+}
+
+func boundedHistory(m *memory.Manager, history []session.Message) []session.Message {
+	if m == nil || m.MaxMessages <= 0 || len(history) <= m.MaxMessages {
+		return append([]session.Message(nil), history...)
+	}
+	messages := m.Assemble(history)
+	if len(messages) > 0 && messages[0].Role == session.System && messages[0].Content == m.SystemPrompt {
+		return append([]session.Message(nil), messages[1:]...)
+	}
+	return append([]session.Message(nil), messages...)
+}
+
+func convertToolDefinitions(defs []provider.ToolDefinition) []promptcache.ToolDefinition {
+	out := make([]promptcache.ToolDefinition, 0, len(defs))
+	for _, def := range defs {
+		out = append(out, promptcache.ToolDefinition{Name: def.Name, Description: def.Description})
+	}
+	return out
+}
+
+func providerToolDefinitions(defs []promptcache.ToolDefinition) []provider.ToolDefinition {
+	out := make([]provider.ToolDefinition, 0, len(defs))
+	for _, def := range defs {
+		out = append(out, provider.ToolDefinition{Name: def.Name, Description: def.Description})
+	}
+	return out
+}
+
+func shortHash(hash string) string {
+	if len(hash) <= 12 {
+		return hash
+	}
+	return hash[:12]
 }
 
 func (e *Engine) end(opts Options, step int, status Status, output string, err error, metrics RunMetrics, started time.Time) Result {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/session"
 )
 
@@ -16,6 +17,8 @@ type Request struct {
 	Model    string
 	Messages []session.Message
 	Tools    []ToolDefinition
+	RawPlan  promptcache.RawPlan
+	Cache    promptcache.CachePolicy
 }
 
 type ToolDefinition struct {
@@ -42,15 +45,28 @@ type ToolCall struct {
 }
 
 type StreamEvent struct {
-	Type      EventType
-	Text      string
-	ToolCalls []ToolCall
-	Reason    string
-	Usage     Usage
+	Type       EventType
+	Text       string
+	ToolCalls  []ToolCall
+	Reason     string
+	Usage      Usage
+	ResponseID string
 }
 
 type Provider interface {
 	Stream(context.Context, Request) (<-chan StreamEvent, error)
+}
+
+type CachePolicyNormalizer interface {
+	NormalizeCachePolicy(promptcache.CachePolicy) (promptcache.CachePolicy, error)
+}
+
+type CacheRetentionDefault interface {
+	DefaultCacheRetention() promptcache.Retention
+}
+
+type PayloadHasher interface {
+	PayloadHash(Request) (string, error)
 }
 
 type UsageSource string

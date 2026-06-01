@@ -1,4 +1,5 @@
 .env.local
+.floret/
 .floret-test-ui/
 *.test
 coverage.out

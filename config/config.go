@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/modelcatalog"
+	"github.com/floegence/floret/promptcache"
 )
 
 const (
@@ -27,6 +28,8 @@ type Config struct {
 	FakeResponse string
 
 	RunID                   string
+	PromptCacheDir          string
+	PromptCacheRetention    string
 	SystemPrompt            string
 	MaxContextMessages      int
 	MaxSteps                int
@@ -90,6 +93,8 @@ func fromValues(values map[string]string) (Config, error) {
 		APIKey:                  firstConfiguredAPIKey(values, providerName),
 		FakeResponse:            get(values, "FLORET_FAKE_RESPONSE", "ok"),
 		RunID:                   get(values, "FLORET_RUN_ID", "default"),
+		PromptCacheDir:          get(values, "FLORET_PROMPT_CACHE_DIR", ".floret/sessions"),
+		PromptCacheRetention:    get(values, "FLORET_PROMPT_CACHE_RETENTION", defaultPromptCacheRetention(providerName)),
 		SystemPrompt:            get(values, "FLORET_SYSTEM_PROMPT", "You are Floret."),
 		MaxContextMessages:      32,
 		MaxSteps:                16,
@@ -147,7 +152,17 @@ func Resolve(cfg Config, environ map[string]string) (Config, error) {
 	if cfg.FakeResponse == "" {
 		cfg.FakeResponse = "ok"
 	}
+	if cfg.PromptCacheRetention == "" {
+		cfg.PromptCacheRetention = defaultPromptCacheRetention(cfg.Provider)
+	}
 	return validate(cfg)
+}
+
+func defaultPromptCacheRetention(providerName string) string {
+	if modelcatalog.NormalizeProvider(providerName) == modelcatalog.ProviderAnthropic {
+		return string(promptcache.RetentionShort)
+	}
+	return string(promptcache.RetentionInMemory)
 }
 
 func validate(cfg Config) (Config, error) {
@@ -164,7 +179,31 @@ func validate(cfg Config) (Config, error) {
 		keys := append([]string{"FLORET_API_KEY"}, modelcatalog.EnvKeys(cfg.Provider)...)
 		return Config{}, fmt.Errorf("FLORET_API_KEY or one of %s is required for provider %q", strings.Join(unique(keys), ", "), cfg.Provider)
 	}
+	if _, err := normalizePromptCacheRetention(cfg.PromptCacheRetention); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+func PromptCacheRetention(cfg Config) promptcache.Retention {
+	retention, err := normalizePromptCacheRetention(cfg.PromptCacheRetention)
+	if err != nil {
+		return promptcache.RetentionInMemory
+	}
+	return retention
+}
+
+func normalizePromptCacheRetention(value string) (promptcache.Retention, error) {
+	retention := promptcache.Retention(strings.TrimSpace(value))
+	if retention == "" {
+		return promptcache.RetentionInMemory, nil
+	}
+	switch retention {
+	case promptcache.RetentionNone, promptcache.RetentionInMemory, promptcache.RetentionShort, promptcache.RetentionLong, promptcache.RetentionDay:
+		return retention, nil
+	default:
+		return "", fmt.Errorf("unsupported FLORET_PROMPT_CACHE_RETENTION %q", value)
+	}
 }
 
 func firstConfiguredAPIKey(values map[string]string, providerName string) string {

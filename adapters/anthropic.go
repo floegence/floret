@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/floegence/floret/modelcatalog"
+	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/session"
 )
@@ -19,13 +20,14 @@ type AnthropicProvider struct {
 	Model      string
 	MaxTokens  int64
 	CostModel  modelcatalog.Model
+	Cache      modelcatalog.CacheCapability
 	HTTPClient *http.Client
 }
 
 type anthropicRequest struct {
 	Model     string             `json:"model"`
 	MaxTokens int64              `json:"max_tokens"`
-	System    string             `json:"system,omitempty"`
+	System    any                `json:"system,omitempty"`
 	Messages  []anthropicMessage `json:"messages"`
 	Tools     []anthropicTool    `json:"tools,omitempty"`
 }
@@ -36,19 +38,26 @@ type anthropicMessage struct {
 }
 
 type anthropicTool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	InputSchema map[string]any `json:"input_schema"`
+	Name         string                 `json:"name"`
+	Description  string                 `json:"description,omitempty"`
+	InputSchema  map[string]any         `json:"input_schema"`
+	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
 }
 
 type anthropicContentBlock struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text,omitempty"`
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   string          `json:"content,omitempty"`
+	Type         string                 `json:"type"`
+	Text         string                 `json:"text,omitempty"`
+	ID           string                 `json:"id,omitempty"`
+	Name         string                 `json:"name,omitempty"`
+	Input        json.RawMessage        `json:"input,omitempty"`
+	ToolUseID    string                 `json:"tool_use_id,omitempty"`
+	Content      string                 `json:"content,omitempty"`
+	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
+}
+
+type anthropicCacheControl struct {
+	Type string `json:"type"`
+	TTL  string `json:"ttl,omitempty"`
 }
 
 type anthropicUsage struct {
@@ -78,17 +87,16 @@ func (p AnthropicProvider) Stream(ctx context.Context, req provider.Request) (<-
 	if p.Model == "" {
 		return nil, fmt.Errorf("anthropic model is required")
 	}
+	normalizedCache, err := p.NormalizeCachePolicy(req.Cache)
+	if err != nil {
+		return nil, err
+	}
+	req.Cache = normalizedCache
 	maxTokens := p.MaxTokens
 	if maxTokens <= 0 {
 		maxTokens = 4096
 	}
-	body, err := json.Marshal(anthropicRequest{
-		Model:     p.Model,
-		MaxTokens: maxTokens,
-		System:    anthropicSystem(req.Messages),
-		Messages:  renderAnthropicMessages(req.Messages),
-		Tools:     renderAnthropicTools(req.Tools),
-	})
+	body, err := json.Marshal(p.buildAnthropicRequest(req, maxTokens))
 	if err != nil {
 		return nil, err
 	}
@@ -157,16 +165,153 @@ func (p AnthropicProvider) Stream(ctx context.Context, req provider.Request) (<-
 	return ch, nil
 }
 
-func anthropicSystem(messages []session.Message) string {
-	for _, msg := range messages {
-		if msg.Role == session.System {
-			return msg.Content
-		}
+func (p AnthropicProvider) buildAnthropicRequest(req provider.Request, maxTokens int64) anthropicRequest {
+	messages := req.Messages
+	if len(req.RawPlan.Segments) > 0 {
+		messages = nil
 	}
-	return ""
+	cacheControl := anthropicCacheControlFor(req, p.Cache)
+	system := renderAnthropicSystem(messages, cacheControl)
+	renderedMessages := renderAnthropicMessages(messages, cacheControl)
+	renderedTools := renderAnthropicTools(req.Tools, cacheControl)
+	if len(req.RawPlan.Segments) > 0 {
+		system = renderAnthropicSystemFromRawPlan(req.RawPlan, cacheControl, system)
+		renderedMessages = renderAnthropicMessagesFromRawPlan(req.RawPlan, renderedMessages)
+		renderedTools = renderAnthropicToolsFromRawPlan(req.RawPlan, cacheControl, renderedTools)
+	}
+	return anthropicRequest{
+		Model:     p.Model,
+		MaxTokens: maxTokens,
+		System:    system,
+		Messages:  renderedMessages,
+		Tools:     renderedTools,
+	}
 }
 
-func renderAnthropicMessages(messages []session.Message) []anthropicMessage {
+func (p AnthropicProvider) NormalizeCachePolicy(policy promptcache.CachePolicy) (promptcache.CachePolicy, error) {
+	if !policy.Enabled || policy.Retention == promptcache.RetentionNone {
+		policy.Enabled = false
+		policy.Retention = promptcache.RetentionNone
+		return policy, nil
+	}
+	if policy.Retention == "" {
+		policy.Retention = promptcache.RetentionShort
+	}
+	switch policy.Retention {
+	case promptcache.RetentionShort, promptcache.RetentionLong:
+		return policy, nil
+	case promptcache.RetentionInMemory:
+		return promptcache.CachePolicy{}, fmt.Errorf("anthropic prompt cache retention %q is unsupported; use %q or %q", policy.Retention, promptcache.RetentionShort, promptcache.RetentionLong)
+	case promptcache.RetentionDay:
+		return promptcache.CachePolicy{}, fmt.Errorf("anthropic prompt cache retention %q is unsupported; use %q or %q", policy.Retention, promptcache.RetentionShort, promptcache.RetentionLong)
+	default:
+		return promptcache.CachePolicy{}, fmt.Errorf("unsupported prompt cache retention %q", policy.Retention)
+	}
+}
+
+func (p AnthropicProvider) DefaultCacheRetention() promptcache.Retention {
+	return promptcache.RetentionShort
+}
+
+func (p AnthropicProvider) PayloadHash(req provider.Request) (string, error) {
+	policy, err := p.NormalizeCachePolicy(req.Cache)
+	if err != nil {
+		return "", err
+	}
+	req.Cache = policy
+	maxTokens := p.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 4096
+	}
+	body, err := json.Marshal(p.buildAnthropicRequest(req, maxTokens))
+	if err != nil {
+		return "", err
+	}
+	return promptcache.StableHash(string(body)), nil
+}
+
+func (p AnthropicProvider) MessageRaw(kind promptcache.SegmentKind, msg session.Message) (string, string, error) {
+	if msg.Role == session.System {
+		block := anthropicContentBlock{Type: "text", Text: msg.Content}
+		raw, err := promptcache.CanonicalJSON(block)
+		return raw, promptcache.FragmentAnthropicSystem, err
+	}
+	rendered := renderAnthropicMessages([]session.Message{msg}, nil)
+	if len(rendered) == 0 {
+		return "", "", nil
+	}
+	raw, err := promptcache.CanonicalJSON(rendered[0])
+	if err != nil {
+		return "", "", err
+	}
+	_ = kind
+	return raw, promptcache.FragmentAnthropicMessage, nil
+}
+
+func (p AnthropicProvider) ToolRaw(def promptcache.ToolDefinition) (string, string, error) {
+	rendered := renderAnthropicTools([]provider.ToolDefinition{{Name: def.Name, Description: def.Description}}, nil)
+	if len(rendered) == 0 {
+		return "", "", nil
+	}
+	raw, err := promptcache.CanonicalJSON(rendered[0])
+	if err != nil {
+		return "", "", err
+	}
+	return raw, promptcache.FragmentAnthropicTool, nil
+}
+
+func anthropicSystemBlocks(messages []session.Message, cacheControl *anthropicCacheControl) []anthropicContentBlock {
+	var blocks []anthropicContentBlock
+	for _, msg := range messages {
+		if msg.Role == session.System {
+			blocks = append(blocks, anthropicContentBlock{Type: "text", Text: msg.Content})
+		}
+	}
+	if cacheControl != nil && len(blocks) > 0 {
+		blocks[len(blocks)-1].CacheControl = cacheControl
+	}
+	return blocks
+}
+
+func renderAnthropicSystem(messages []session.Message, cacheControl *anthropicCacheControl) any {
+	blocks := anthropicSystemBlocks(messages, cacheControl)
+	if len(blocks) == 0 {
+		return nil
+	}
+	if cacheControl == nil {
+		if len(blocks) == 1 {
+			return blocks[0].Text
+		}
+		return blocks
+	}
+	return blocks
+}
+
+func renderAnthropicSystemFromRawPlan(plan promptcache.RawPlan, cacheControl *anthropicCacheControl, fallback any) any {
+	var blocks []anthropicContentBlock
+	for _, segment := range plan.Segments {
+		if segment.FragmentType != promptcache.FragmentAnthropicSystem {
+			continue
+		}
+		var block anthropicContentBlock
+		if err := json.Unmarshal([]byte(segment.Raw), &block); err == nil {
+			blocks = append(blocks, block)
+		}
+	}
+	if len(blocks) == 0 {
+		return fallback
+	}
+	if cacheControl != nil {
+		blocks[len(blocks)-1].CacheControl = cacheControl
+		return blocks
+	}
+	if len(blocks) == 1 {
+		return blocks[0].Text
+	}
+	return blocks
+}
+
+func renderAnthropicMessages(messages []session.Message, _ *anthropicCacheControl) []anthropicMessage {
 	out := make([]anthropicMessage, 0, len(messages))
 	for _, msg := range messages {
 		switch msg.Role {
@@ -200,11 +345,32 @@ func renderAnthropicMessages(messages []session.Message) []anthropicMessage {
 	return out
 }
 
-func renderAnthropicTools(defs []provider.ToolDefinition) []anthropicTool {
+func renderAnthropicMessagesFromRawPlan(plan promptcache.RawPlan, fallback []anthropicMessage) []anthropicMessage {
+	var out []anthropicMessage
+	for _, segment := range plan.Segments {
+		if segment.FragmentType != promptcache.FragmentAnthropicMessage {
+			continue
+		}
+		var msg anthropicMessage
+		if err := json.Unmarshal([]byte(segment.Raw), &msg); err == nil {
+			out = append(out, msg)
+		}
+	}
+	if len(out) == 0 {
+		return fallback
+	}
+	return out
+}
+
+func renderAnthropicTools(defs []provider.ToolDefinition, cacheControl *anthropicCacheControl) []anthropicTool {
 	tools := make([]anthropicTool, 0, len(defs))
-	for _, def := range defs {
+	for i, def := range defs {
 		if def.Name == "" {
 			continue
+		}
+		toolCacheControl := (*anthropicCacheControl)(nil)
+		if cacheControl != nil && i == len(defs)-1 {
+			toolCacheControl = cacheControl
 		}
 		tools = append(tools, anthropicTool{
 			Name:        def.Name,
@@ -213,9 +379,41 @@ func renderAnthropicTools(defs []provider.ToolDefinition) []anthropicTool {
 				"type":                 "object",
 				"additionalProperties": true,
 			},
+			CacheControl: toolCacheControl,
 		})
 	}
 	return tools
+}
+
+func renderAnthropicToolsFromRawPlan(plan promptcache.RawPlan, cacheControl *anthropicCacheControl, fallback []anthropicTool) []anthropicTool {
+	var out []anthropicTool
+	for _, segment := range plan.Segments {
+		if segment.FragmentType != promptcache.FragmentAnthropicTool {
+			continue
+		}
+		var tool anthropicTool
+		if err := json.Unmarshal([]byte(segment.Raw), &tool); err == nil {
+			out = append(out, tool)
+		}
+	}
+	if len(out) == 0 {
+		return fallback
+	}
+	if cacheControl != nil {
+		out[len(out)-1].CacheControl = cacheControl
+	}
+	return out
+}
+
+func anthropicCacheControlFor(req provider.Request, capability modelcatalog.CacheCapability) *anthropicCacheControl {
+	if !req.Cache.Enabled || !capability.AnthropicCacheControl {
+		return nil
+	}
+	control := &anthropicCacheControl{Type: "ephemeral"}
+	if req.Cache.Retention == "1h" {
+		control.TTL = "1h"
+	}
+	return control
 }
 
 func normalizeAnthropicUsage(payload anthropicUsage, model modelcatalog.Model) provider.Usage {

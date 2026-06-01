@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/floegence/floret/modelcatalog"
+	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/session"
 )
@@ -20,16 +21,19 @@ type OpenAICompatibleProvider struct {
 	APIKey          string
 	Model           string
 	CostModel       modelcatalog.Model
+	Cache           modelcatalog.CacheCapability
 	HTTPClient      *http.Client
 	StreamResponses bool
 }
 
 type chatRequest struct {
-	Model      string        `json:"model"`
-	Messages   []chatMessage `json:"messages"`
-	Stream     bool          `json:"stream"`
-	Tools      []chatTool    `json:"tools,omitempty"`
-	ToolChoice string        `json:"tool_choice,omitempty"`
+	Model                string        `json:"model"`
+	Messages             []chatMessage `json:"messages"`
+	Stream               bool          `json:"stream"`
+	Tools                []chatTool    `json:"tools,omitempty"`
+	ToolChoice           string        `json:"tool_choice,omitempty"`
+	PromptCacheKey       string        `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention string        `json:"prompt_cache_retention,omitempty"`
 }
 
 type usagePayload struct {
@@ -129,14 +133,16 @@ func (p OpenAICompatibleProvider) Stream(ctx context.Context, req provider.Reque
 	if p.Model == "" {
 		return nil, fmt.Errorf("openai-compatible model is required")
 	}
+	normalizedCache, err := p.NormalizeCachePolicy(req.Cache)
+	if err != nil {
+		return nil, err
+	}
+	req.Cache = normalizedCache
 	client := p.HTTPClient
 	if client == nil {
 		client = http.DefaultClient
 	}
-	chatReq := chatRequest{Model: p.Model, Messages: renderMessages(req.Messages), Stream: p.StreamResponses, Tools: renderTools(req.Tools)}
-	if len(chatReq.Tools) > 0 {
-		chatReq.ToolChoice = "auto"
-	}
+	chatReq := p.buildChatRequest(req)
 	body, err := json.Marshal(chatReq)
 	if err != nil {
 		return nil, err
@@ -203,6 +209,96 @@ func (p OpenAICompatibleProvider) Stream(ctx context.Context, req provider.Reque
 	}
 	close(ch)
 	return ch, nil
+}
+
+func (p OpenAICompatibleProvider) NormalizeCachePolicy(policy promptcache.CachePolicy) (promptcache.CachePolicy, error) {
+	if !policy.Enabled || policy.Retention == promptcache.RetentionNone {
+		policy.Enabled = false
+		policy.Retention = promptcache.RetentionNone
+		return policy, nil
+	}
+	if policy.Retention == "" {
+		policy.Retention = promptcache.RetentionInMemory
+	}
+	switch policy.Retention {
+	case promptcache.RetentionInMemory:
+		return policy, nil
+	case promptcache.RetentionDay:
+		if !p.Cache.PromptCacheRetention {
+			return promptcache.CachePolicy{}, fmt.Errorf("openai-compatible model does not support 24h prompt cache retention")
+		}
+		return policy, nil
+	case promptcache.RetentionShort, promptcache.RetentionLong:
+		return promptcache.CachePolicy{}, fmt.Errorf("openai-compatible prompt cache retention %q is unsupported; use %q or %q", policy.Retention, promptcache.RetentionInMemory, promptcache.RetentionDay)
+	default:
+		return promptcache.CachePolicy{}, fmt.Errorf("unsupported prompt cache retention %q", policy.Retention)
+	}
+}
+
+func (p OpenAICompatibleProvider) DefaultCacheRetention() promptcache.Retention {
+	return promptcache.RetentionInMemory
+}
+
+func (p OpenAICompatibleProvider) PayloadHash(req provider.Request) (string, error) {
+	policy, err := p.NormalizeCachePolicy(req.Cache)
+	if err != nil {
+		return "", err
+	}
+	req.Cache = policy
+	body, err := json.Marshal(p.buildChatRequest(req))
+	if err != nil {
+		return "", err
+	}
+	return promptcache.StableHash(string(body)), nil
+}
+
+func (p OpenAICompatibleProvider) buildChatRequest(req provider.Request) chatRequest {
+	messages := req.Messages
+	if len(req.RawPlan.Segments) > 0 {
+		messages = nil
+	}
+	renderedMessages := renderMessages(messages)
+	renderedTools := renderTools(req.Tools)
+	if len(req.RawPlan.Segments) > 0 {
+		renderedMessages = renderMessagesFromRawPlan(req.RawPlan, renderedMessages)
+		renderedTools = renderToolsFromRawPlan(req.RawPlan, renderedTools)
+	}
+	chatReq := chatRequest{Model: p.Model, Messages: renderedMessages, Stream: p.StreamResponses, Tools: renderedTools}
+	if len(chatReq.Tools) > 0 {
+		chatReq.ToolChoice = "auto"
+	}
+	if req.Cache.Enabled && p.Cache.PromptCacheKey {
+		chatReq.PromptCacheKey = req.Cache.Namespace
+	}
+	if req.Cache.Enabled && p.Cache.PromptCacheRetention {
+		chatReq.PromptCacheRetention = string(req.Cache.Retention)
+	}
+	return chatReq
+}
+
+func (p OpenAICompatibleProvider) MessageRaw(kind promptcache.SegmentKind, msg session.Message) (string, string, error) {
+	rendered := renderMessages([]session.Message{msg})
+	if len(rendered) == 0 {
+		return "", "", nil
+	}
+	raw, err := promptcache.CanonicalJSON(rendered[0])
+	if err != nil {
+		return "", "", err
+	}
+	_ = kind
+	return raw, promptcache.FragmentOpenAIMessage, nil
+}
+
+func (p OpenAICompatibleProvider) ToolRaw(def promptcache.ToolDefinition) (string, string, error) {
+	rendered := renderTools([]provider.ToolDefinition{{Name: def.Name, Description: def.Description}})
+	if len(rendered) == 0 {
+		return "", "", nil
+	}
+	raw, err := promptcache.CanonicalJSON(rendered[0])
+	if err != nil {
+		return "", "", err
+	}
+	return raw, promptcache.FragmentOpenAITool, nil
 }
 
 func (p OpenAICompatibleProvider) streamResponse(httpResp *http.Response) (<-chan provider.StreamEvent, error) {
@@ -321,6 +417,23 @@ func renderMessages(messages []session.Message) []chatMessage {
 	return out
 }
 
+func renderMessagesFromRawPlan(plan promptcache.RawPlan, fallback []chatMessage) []chatMessage {
+	var out []chatMessage
+	for _, segment := range plan.Segments {
+		if segment.FragmentType != promptcache.FragmentOpenAIMessage {
+			continue
+		}
+		var msg chatMessage
+		if err := json.Unmarshal([]byte(segment.Raw), &msg); err == nil {
+			out = append(out, msg)
+		}
+	}
+	if len(out) == 0 {
+		return fallback
+	}
+	return out
+}
+
 func renderTools(defs []provider.ToolDefinition) []chatTool {
 	tools := make([]chatTool, 0, len(defs))
 	for _, def := range defs {
@@ -338,6 +451,23 @@ func renderTools(defs []provider.ToolDefinition) []chatTool {
 		tools = append(tools, tool)
 	}
 	return tools
+}
+
+func renderToolsFromRawPlan(plan promptcache.RawPlan, fallback []chatTool) []chatTool {
+	var out []chatTool
+	for _, segment := range plan.Segments {
+		if segment.FragmentType != promptcache.FragmentOpenAITool {
+			continue
+		}
+		var tool chatTool
+		if err := json.Unmarshal([]byte(segment.Raw), &tool); err == nil {
+			out = append(out, tool)
+		}
+	}
+	if len(out) == 0 {
+		return fallback
+	}
+	return out
 }
 
 func looksLikeContextOverflow(body []byte) bool {

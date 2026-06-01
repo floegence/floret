@@ -229,6 +229,15 @@ func TestRunnerRunAgentReturnsInteractionObservation(t *testing.T) {
 	}) {
 		t.Fatalf("task_complete tool definition missing: %#v", result.Observation.ProviderRequests[0].Tools)
 	}
+	summary := result.Observation.ProviderRequests[0].CacheSummary
+	if len(result.Observation.ProviderRequests[0].RawSegments) == 0 || summary.PrefixHash == "" || summary.PayloadHash == "" || summary.ToolsetID == "" || summary.ToolsetEpoch == 0 {
+		t.Fatalf("prompt cache observation missing: %#v", result.Observation.ProviderRequests[0])
+	}
+	if !slices.ContainsFunc(result.Observation.ProviderRequests[0].RawSegments, func(segment ObservedRawSegment) bool {
+		return segment.Kind == "system" && !segment.Reused
+	}) {
+		t.Fatalf("raw segment state not exposed: %#v", result.Observation.ProviderRequests[0].RawSegments)
+	}
 }
 
 func fixedClock() func() time.Time {

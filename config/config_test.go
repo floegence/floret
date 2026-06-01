@@ -36,6 +36,53 @@ func TestLoadReadsEnvLocalAndAllowsEnvironmentOverride(t *testing.T) {
 	}
 }
 
+func TestLoadReadsPromptCacheConfiguration(t *testing.T) {
+	cfg, err := Load(WithPath(""), WithEnviron(map[string]string{
+		"FLORET_PROVIDER":               "fake",
+		"FLORET_PROMPT_CACHE_DIR":       "/tmp/floret-cache",
+		"FLORET_PROMPT_CACHE_RETENTION": "24h",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PromptCacheDir != "/tmp/floret-cache" || cfg.PromptCacheRetention != "24h" {
+		t.Fatalf("cfg = %#v", cfg)
+	}
+}
+
+func TestLoadUsesProviderSpecificPromptCacheDefault(t *testing.T) {
+	cfg, err := Load(WithPath(""), WithEnviron(map[string]string{
+		"FLORET_PROVIDER":   "anthropic",
+		"ANTHROPIC_API_KEY": "secret",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PromptCacheRetention != "5m" {
+		t.Fatalf("anthropic default retention = %q, want 5m", cfg.PromptCacheRetention)
+	}
+	cfg, err = Load(WithPath(""), WithEnviron(map[string]string{
+		"FLORET_PROVIDER": "openai",
+		"OPENAI_API_KEY":  "secret",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PromptCacheRetention != "in_memory" {
+		t.Fatalf("openai default retention = %q, want in_memory", cfg.PromptCacheRetention)
+	}
+}
+
+func TestLoadRejectsUnknownPromptCacheRetention(t *testing.T) {
+	_, err := Load(WithPath(""), WithEnviron(map[string]string{
+		"FLORET_PROVIDER":               "fake",
+		"FLORET_PROMPT_CACHE_RETENTION": "forever",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "FLORET_PROMPT_CACHE_RETENTION") {
+		t.Fatalf("err = %v, want prompt cache retention error", err)
+	}
+}
+
 func TestLoadValidatesOpenAICompatibleProvider(t *testing.T) {
 	_, err := Load(WithPath(""), WithEnviron(map[string]string{
 		"FLORET_PROVIDER": ProviderOpenAICompatible,

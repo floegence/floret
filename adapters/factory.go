@@ -29,6 +29,7 @@ func NewProvider(cfg config.Config) (provider.Provider, error) {
 			APIKey:    resolved.APIKey,
 			Model:     modelID,
 			CostModel: model,
+			Cache:     modelcatalog.Cache(resolved.Provider, resolved.Model),
 
 			HTTPClient: http.DefaultClient,
 		}, nil
@@ -43,6 +44,7 @@ func NewProvider(cfg config.Config) (provider.Provider, error) {
 			Model:      modelID,
 			MaxTokens:  model.MaxTokens,
 			CostModel:  model,
+			Cache:      modelcatalog.Cache(resolved.Provider, resolved.Model),
 			HTTPClient: http.DefaultClient,
 		}, nil
 	default:

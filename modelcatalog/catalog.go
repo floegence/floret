@@ -41,30 +41,38 @@ type Cost struct {
 	CacheWritePerMTok float64 `json:"cache_write_per_mtok,omitempty"`
 }
 
+type CacheCapability struct {
+	PromptCacheKey        bool `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention  bool `json:"prompt_cache_retention,omitempty"`
+	AnthropicCacheControl bool `json:"anthropic_cache_control,omitempty"`
+}
+
 type Model struct {
-	ID             string   `json:"id"`
-	Name           string   `json:"name"`
-	Provider       string   `json:"provider"`
-	API            string   `json:"api"`
-	ContextWindow  int64    `json:"context_window,omitempty"`
-	MaxTokens      int64    `json:"max_tokens,omitempty"`
-	Input          []string `json:"input"`
-	Reasoning      bool     `json:"reasoning"`
-	Cost           Cost     `json:"cost,omitempty"`
-	Default        bool     `json:"default,omitempty"`
-	OpenAIModelID  string   `json:"openai_model_id,omitempty"`
-	AnthropicModel string   `json:"anthropic_model,omitempty"`
+	ID             string          `json:"id"`
+	Name           string          `json:"name"`
+	Provider       string          `json:"provider"`
+	API            string          `json:"api"`
+	ContextWindow  int64           `json:"context_window,omitempty"`
+	MaxTokens      int64           `json:"max_tokens,omitempty"`
+	Input          []string        `json:"input"`
+	Reasoning      bool            `json:"reasoning"`
+	Cost           Cost            `json:"cost,omitempty"`
+	Cache          CacheCapability `json:"cache,omitempty"`
+	Default        bool            `json:"default,omitempty"`
+	OpenAIModelID  string          `json:"openai_model_id,omitempty"`
+	AnthropicModel string          `json:"anthropic_model,omitempty"`
 }
 
 type Provider struct {
-	ID             string   `json:"id"`
-	Name           string   `json:"name"`
-	API            string   `json:"api"`
-	DefaultBaseURL string   `json:"default_base_url,omitempty"`
-	DefaultModel   string   `json:"default_model,omitempty"`
-	EnvKeys        []string `json:"env_keys,omitempty"`
-	Custom         bool     `json:"custom,omitempty"`
-	Models         []Model  `json:"models"`
+	ID             string          `json:"id"`
+	Name           string          `json:"name"`
+	API            string          `json:"api"`
+	DefaultBaseURL string          `json:"default_base_url,omitempty"`
+	DefaultModel   string          `json:"default_model,omitempty"`
+	EnvKeys        []string        `json:"env_keys,omitempty"`
+	Custom         bool            `json:"custom,omitempty"`
+	Cache          CacheCapability `json:"cache,omitempty"`
+	Models         []Model         `json:"models"`
 }
 
 func Providers() []Provider {
@@ -167,6 +175,18 @@ func EnvKeys(providerID string) []string {
 	out := make([]string, len(p.EnvKeys))
 	copy(out, p.EnvKeys)
 	return out
+}
+
+func Cache(providerID, modelID string) CacheCapability {
+	if model, ok := FindModel(providerID, modelID); ok {
+		if model.Cache != (CacheCapability{}) {
+			return model.Cache
+		}
+	}
+	if provider, ok := FindProvider(providerID); ok {
+		return provider.Cache
+	}
+	return CacheCapability{}
 }
 
 func SupportsProvider(id string) bool {

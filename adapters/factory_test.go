@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,8 @@ import (
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/memory"
+	"github.com/floegence/floret/modelcatalog"
+	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/session"
 	"github.com/floegence/floret/tools"
@@ -149,8 +152,8 @@ func TestAnthropicProviderSendsMessagesRequestAndReceivesToolUse(t *testing.T) {
 	var seenVersion string
 	var seenPath string
 	var seenBody struct {
-		Model    string `json:"model"`
-		System   string `json:"system"`
+		Model    string          `json:"model"`
+		System   json.RawMessage `json:"system"`
 		Messages []struct {
 			Role string `json:"role"`
 		} `json:"messages"`
@@ -170,7 +173,7 @@ func TestAnthropicProviderSendsMessagesRequestAndReceivesToolUse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p, err := NewProvider(config.Config{Provider: "anthropic", Model: "claude-sonnet-4-6", BaseURL: server.URL, APIKey: "secret"})
+	p, err := NewProvider(config.Config{Provider: "anthropic", Model: "claude-sonnet-4-6", BaseURL: server.URL, APIKey: "secret", PromptCacheRetention: "5m"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,12 +197,378 @@ func TestAnthropicProviderSendsMessagesRequestAndReceivesToolUse(t *testing.T) {
 	if result.Status != engine.Completed || result.Output != `{"summary":"anthropic ok"}` {
 		t.Fatalf("result = %#v", result)
 	}
-	if seenPath != "/messages" || seenKey != "secret" || seenVersion == "" || seenBody.Model != "claude-sonnet-4-6" || seenBody.System != "anthropic system" {
+	if seenPath != "/messages" || seenKey != "secret" || seenVersion == "" || seenBody.Model != "claude-sonnet-4-6" || !strings.Contains(string(seenBody.System), "anthropic system") {
 		t.Fatalf("bad anthropic request path/key/version/body = %q/%q/%q/%#v", seenPath, seenKey, seenVersion, seenBody)
 	}
 	if len(seenBody.Messages) == 0 || seenBody.Messages[0].Role != "user" || len(seenBody.Tools) == 0 || seenBody.Tools[0].Name != "task_complete" {
 		t.Fatalf("bad anthropic messages/tools = %#v", seenBody)
 	}
+}
+
+func TestOpenAICompatibleProviderSendsPromptCacheKeyWhenSupported(t *testing.T) {
+	tests := []struct {
+		name          string
+		capability    modelcatalog.CacheCapability
+		policy        promptcache.CachePolicy
+		wantKey       string
+		wantRetention string
+		wantErr       string
+	}{
+		{
+			name:          "supported day retention",
+			capability:    modelcatalog.CacheCapability{PromptCacheKey: true, PromptCacheRetention: true},
+			policy:        promptcache.CachePolicy{Enabled: true, Namespace: "cache-ns", Retention: promptcache.RetentionDay},
+			wantKey:       "cache-ns",
+			wantRetention: "24h",
+		},
+		{
+			name:          "supported in memory retention",
+			capability:    modelcatalog.CacheCapability{PromptCacheKey: true, PromptCacheRetention: true},
+			policy:        promptcache.CachePolicy{Enabled: true, Namespace: "cache-ns", Retention: promptcache.RetentionInMemory},
+			wantKey:       "cache-ns",
+			wantRetention: "in_memory",
+		},
+		{
+			name:       "disabled",
+			capability: modelcatalog.CacheCapability{PromptCacheKey: true, PromptCacheRetention: true},
+			policy:     promptcache.CachePolicy{Enabled: false, Namespace: "cache-ns", Retention: promptcache.RetentionDay},
+		},
+		{
+			name:   "unsupported capability keeps cache policy internal",
+			policy: promptcache.CachePolicy{Enabled: true, Namespace: "cache-ns", Retention: promptcache.RetentionInMemory},
+		},
+		{
+			name:       "unsupported day retention errors",
+			capability: modelcatalog.CacheCapability{PromptCacheKey: true},
+			policy:     promptcache.CachePolicy{Enabled: true, Namespace: "cache-ns", Retention: promptcache.RetentionDay},
+			wantErr:    "24h",
+		},
+		{
+			name:       "unsupported long retention errors",
+			capability: modelcatalog.CacheCapability{PromptCacheKey: true, PromptCacheRetention: true},
+			policy:     promptcache.CachePolicy{Enabled: true, Namespace: "cache-ns", Retention: promptcache.RetentionLong},
+			wantErr:    "1h",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body struct {
+				PromptCacheKey       string `json:"prompt_cache_key"`
+				PromptCacheRetention string `json:"prompt_cache_retention"`
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+			}))
+			defer server.Close()
+			p := OpenAICompatibleProvider{
+				Endpoint:   server.URL,
+				APIKey:     "secret",
+				Model:      "remote-model",
+				HTTPClient: server.Client(),
+				Cache:      tt.capability,
+			}
+			if _, err := p.Stream(context.Background(), provider.Request{RunID: "r", Cache: tt.policy}); err != nil {
+				if tt.wantErr != "" && strings.Contains(err.Error(), tt.wantErr) {
+					return
+				}
+				t.Fatal(err)
+			}
+			if tt.wantErr != "" {
+				t.Fatalf("expected error containing %q", tt.wantErr)
+			}
+			if body.PromptCacheKey != tt.wantKey || body.PromptCacheRetention != tt.wantRetention {
+				t.Fatalf("cache params = %#v, want key %q retention %q", body, tt.wantKey, tt.wantRetention)
+			}
+		})
+	}
+}
+
+func TestOpenAICompatibleProviderBuildsPayloadFromRawPlanFragments(t *testing.T) {
+	var body struct {
+		Messages []chatMessage `json:"messages"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
+	raw, err := promptcache.CanonicalJSON(chatMessage{Role: "user", Content: "from raw"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Stream(context.Background(), provider.Request{
+		RunID:    "r",
+		Messages: []session.Message{{Role: session.User, Content: "from fallback"}},
+		RawPlan: promptcache.RawPlan{Segments: []promptcache.Segment{{
+			Kind:         promptcache.SegmentUserMessage,
+			FragmentType: promptcache.FragmentOpenAIMessage,
+			Raw:          raw,
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Messages) != 1 || body.Messages[0].Content != "from raw" {
+		t.Fatalf("provider payload was not built from raw plan fragment: %#v", body.Messages)
+	}
+}
+
+func TestOpenAICompatibleProviderPayloadHashMatchesActualBody(t *testing.T) {
+	var actualBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		actualBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+	p := OpenAICompatibleProvider{
+		Endpoint:   server.URL,
+		APIKey:     "secret",
+		Model:      "remote-model",
+		HTTPClient: server.Client(),
+		Cache:      modelcatalog.CacheCapability{PromptCacheKey: true, PromptCacheRetention: true},
+	}
+	req := provider.Request{
+		RunID:    "r",
+		Messages: []session.Message{{Role: session.System, Content: "system"}, {Role: session.User, Content: "hello"}},
+		Cache:    promptcache.CachePolicy{Enabled: true, Namespace: "ns", Retention: promptcache.RetentionDay},
+	}
+	wantHash, err := p.PayloadHash(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Stream(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if got := promptcache.StableHash(string(actualBody)); got != wantHash {
+		t.Fatalf("payload hash = %q, actual body hash = %q, body = %s", wantHash, got, actualBody)
+	}
+}
+
+func TestAnthropicProviderAddsCacheControlBreakpoints(t *testing.T) {
+	var body struct {
+		System []anthropicContentBlock `json:"system"`
+		Tools  []anthropicTool         `json:"tools"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":2,"cache_creation_input_tokens":3}}`))
+	}))
+	defer server.Close()
+	p := AnthropicProvider{
+		Endpoint:   server.URL,
+		APIKey:     "secret",
+		Model:      "claude",
+		HTTPClient: server.Client(),
+		Cache:      modelcatalog.CacheCapability{AnthropicCacheControl: true},
+	}
+	ch, err := p.Stream(context.Background(), provider.Request{
+		RunID: "r",
+		Messages: []session.Message{
+			{Role: session.System, Content: "system"},
+			{Role: session.User, Content: "hello"},
+		},
+		Tools: []provider.ToolDefinition{{Name: "task_complete"}},
+		Cache: promptcache.CachePolicy{Enabled: true, Retention: promptcache.RetentionLong},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var usage provider.Usage
+	for ev := range ch {
+		if ev.Type == provider.UsageEvent {
+			usage = ev.Usage
+		}
+	}
+	if len(body.System) != 1 || body.System[0].CacheControl == nil || body.System[0].CacheControl.TTL != "1h" {
+		t.Fatalf("system cache_control missing from payload: %#v", body.System)
+	}
+	if len(body.Tools) != 1 || body.Tools[0].CacheControl == nil || body.Tools[0].CacheControl.TTL != "1h" {
+		t.Fatalf("tool cache_control missing from payload: %#v", body.Tools)
+	}
+	if usage.CacheReadTokens != 2 || usage.CacheWriteTokens != 3 {
+		t.Fatalf("usage = %#v", usage)
+	}
+}
+
+func TestAnthropicProviderBuildsPayloadFromRawPlanFragments(t *testing.T) {
+	var body struct {
+		System   json.RawMessage    `json:"system"`
+		Messages []anthropicMessage `json:"messages"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+	p := AnthropicProvider{Endpoint: server.URL, APIKey: "secret", Model: "claude", HTTPClient: server.Client()}
+	systemRaw, err := promptcache.CanonicalJSON(anthropicContentBlock{Type: "text", Text: "raw system"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	messageRaw, err := promptcache.CanonicalJSON(anthropicMessage{Role: "user", Content: "raw user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Stream(context.Background(), provider.Request{
+		RunID:    "r",
+		Messages: []session.Message{{Role: session.System, Content: "fallback system"}, {Role: session.User, Content: "fallback user"}},
+		Cache:    promptcache.CachePolicy{Enabled: true, Retention: promptcache.RetentionShort},
+		RawPlan: promptcache.RawPlan{Segments: []promptcache.Segment{
+			{Kind: promptcache.SegmentSystem, FragmentType: promptcache.FragmentAnthropicSystem, Raw: systemRaw},
+			{Kind: promptcache.SegmentUserMessage, FragmentType: promptcache.FragmentAnthropicMessage, Raw: messageRaw},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body.System), "raw system") {
+		t.Fatalf("system was not built from raw fragment: %s", body.System)
+	}
+	if len(body.Messages) != 1 || body.Messages[0].Content != "raw user" {
+		t.Fatalf("messages were not built from raw fragment: %#v", body.Messages)
+	}
+}
+
+func TestAnthropicProviderPayloadHashMatchesActualBody(t *testing.T) {
+	var actualBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		actualBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+	p := AnthropicProvider{
+		Endpoint:   server.URL,
+		APIKey:     "secret",
+		Model:      "claude",
+		HTTPClient: server.Client(),
+		Cache:      modelcatalog.CacheCapability{AnthropicCacheControl: true},
+	}
+	req := provider.Request{
+		RunID:    "r",
+		Messages: []session.Message{{Role: session.System, Content: "system"}, {Role: session.User, Content: "hello"}},
+		Cache:    promptcache.CachePolicy{Enabled: true, Retention: promptcache.RetentionLong},
+	}
+	wantHash, err := p.PayloadHash(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Stream(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if got := promptcache.StableHash(string(actualBody)); got != wantHash {
+		t.Fatalf("payload hash = %q, actual body hash = %q, body = %s", wantHash, got, actualBody)
+	}
+}
+
+func TestAnthropicProviderRendersAllSystemBlocksIncludingCompaction(t *testing.T) {
+	var body struct {
+		System   []anthropicContentBlock `json:"system"`
+		Messages []anthropicMessage      `json:"messages"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+	p := AnthropicProvider{
+		Endpoint:   server.URL,
+		APIKey:     "secret",
+		Model:      "claude",
+		HTTPClient: server.Client(),
+		Cache:      modelcatalog.CacheCapability{AnthropicCacheControl: true},
+	}
+	if _, err := p.Stream(context.Background(), provider.Request{
+		RunID: "r",
+		Messages: []session.Message{
+			{Role: session.System, Content: "base system"},
+			{Role: session.System, Content: "Previous conversation was compacted. Keep constraints."},
+			{Role: session.User, Content: "continue"},
+		},
+		Cache: promptcache.CachePolicy{Enabled: true, Retention: promptcache.RetentionShort},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.System) != 2 || body.System[0].Text != "base system" || body.System[1].Text != "Previous conversation was compacted. Keep constraints." {
+		t.Fatalf("system blocks = %#v", body.System)
+	}
+	if body.System[0].CacheControl != nil || body.System[1].CacheControl == nil || body.System[1].CacheControl.TTL != "" {
+		t.Fatalf("cache breakpoint should be on final stable system block: %#v", body.System)
+	}
+	if len(body.Messages) != 1 || body.Messages[0].Role != "user" {
+		t.Fatalf("system blocks leaked into messages: %#v", body.Messages)
+	}
+}
+
+func TestAnthropicProviderCacheControlCapabilityAndRetentionValidation(t *testing.T) {
+	t.Run("disabled by capability", func(t *testing.T) {
+		var body map[string]any
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+		}))
+		defer server.Close()
+		p := AnthropicProvider{Endpoint: server.URL, APIKey: "secret", Model: "claude", HTTPClient: server.Client()}
+		if _, err := p.Stream(context.Background(), provider.Request{
+			RunID:    "r",
+			Messages: []session.Message{{Role: session.System, Content: "system"}, {Role: session.User, Content: "hello"}},
+			Cache:    promptcache.CachePolicy{Enabled: true, Retention: promptcache.RetentionLong},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		payload, _ := json.Marshal(body)
+		if strings.Contains(string(payload), "cache_control") {
+			t.Fatalf("cache_control should be capability-gated: %s", payload)
+		}
+	})
+	t.Run("rejects unsupported day retention", func(t *testing.T) {
+		p := AnthropicProvider{
+			Endpoint:   "https://example.test/messages",
+			APIKey:     "secret",
+			Model:      "claude",
+			HTTPClient: http.DefaultClient,
+			Cache:      modelcatalog.CacheCapability{AnthropicCacheControl: true},
+		}
+		_, err := p.Stream(context.Background(), provider.Request{
+			RunID: "r",
+			Cache: promptcache.CachePolicy{
+				Enabled:   true,
+				Retention: promptcache.RetentionDay,
+			},
+		})
+		if err == nil || !strings.Contains(err.Error(), "24h") {
+			t.Fatalf("err = %v, want unsupported 24h retention", err)
+		}
+	})
 }
 
 func TestOpenAICompatibleProviderStreamsPartialToolArguments(t *testing.T) {

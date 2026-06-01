@@ -16,7 +16,7 @@ func (m *Manager) Assemble(history []session.Message) []session.Message {
 	if m.MaxMessages <= 0 || len(history) <= m.MaxMessages {
 		return append(out, history...)
 	}
-	return append(out, preserveTailPairs(history, m.MaxMessages)...)
+	return append(out, preserveStableSystemMessages(history, preserveTailPairs(history, m.MaxMessages))...)
 }
 
 func (m *Manager) Compact(history []session.Message) []session.Message {
@@ -45,4 +45,21 @@ func preserveTailPairs(history []session.Message, max int) []session.Message {
 		start--
 	}
 	return append([]session.Message(nil), history[start:]...)
+}
+
+func preserveStableSystemMessages(history, tail []session.Message) []session.Message {
+	if len(history) == 0 || len(tail) == 0 {
+		return tail
+	}
+	out := make([]session.Message, 0, len(tail)+1)
+	tailStart := len(history) - len(tail)
+	for i, msg := range history {
+		if i >= tailStart {
+			break
+		}
+		if msg.Role == session.System {
+			out = append(out, msg)
+		}
+	}
+	return append(out, tail...)
 }

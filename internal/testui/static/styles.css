@@ -504,6 +504,23 @@ textarea:focus {
   letter-spacing: 0.08em;
 }
 
+.cache-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+
+.cache-summary span {
+  padding: 5px 7px;
+  border: 1px solid rgba(36, 106, 143, 0.22);
+  border-radius: 6px;
+  background: #eef6f7;
+  color: #24566f;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .mini-message,
 .stream-event,
 .message-row {
@@ -553,6 +570,48 @@ textarea:focus {
   border-radius: 6px;
   background: var(--soft);
   font-size: 12px;
+}
+
+.raw-segments {
+  margin-top: 12px;
+}
+
+.raw-segment {
+  margin-bottom: 7px;
+  border: 1px solid rgba(217, 214, 204, 0.9);
+  border-radius: 7px;
+  background: #fff;
+}
+
+.raw-segment summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  cursor: pointer;
+}
+
+.raw-segment summary span,
+.raw-segment summary small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.raw-segment pre {
+  max-height: 160px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+  background: #101820;
+  color: #dfeef2;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .message-row {
