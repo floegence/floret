@@ -67,6 +67,11 @@ func TestRunToolLoopFeedsResultIntoNextProviderRequest(t *testing.T) {
 	}
 	second := p.Requests[1].Messages
 	if !slices.ContainsFunc(second, func(m session.Message) bool {
+		return m.Role == session.Assistant && m.ToolCallID == "read-1" && m.ToolName == "read"
+	}) {
+		t.Fatalf("second provider request did not include assistant tool call message: %#v", second)
+	}
+	if !slices.ContainsFunc(second, func(m session.Message) bool {
 		return m.Role == session.Tool && m.ToolCallID == "read-1" && m.Content == "file contents"
 	}) {
 		t.Fatalf("second provider request did not include bound tool result: %#v", second)
@@ -91,6 +96,39 @@ func TestAskUserSignalReturnsWaitingWithoutExecutingTool(t *testing.T) {
 	}
 	if hasEvent(rec.Events, event.ToolCall) {
 		t.Fatalf("ask_user should be an interrupt signal, not a normal tool call")
+	}
+}
+
+func TestWaitingCanResumeByAppendingUserAnswerToSameRun(t *testing.T) {
+	store := session.NewMemoryStore()
+	p1 := harness.NewScriptedProvider(harness.Step(harness.Tool("ask", "ask_user", "Which file?")))
+	e1 := newTestEngine(p1, &event.Recorder{})
+	e1.Store = store
+	got := e1.Run(context.Background(), "continue")
+	if got.Status != engine.Waiting {
+		t.Fatalf("first result = %#v", got)
+	}
+	p2 := harness.NewScriptedProvider(harness.Step(harness.Tool("done", "task_complete", "resumed")))
+	e2 := newTestEngine(p2, &event.Recorder{})
+	e2.Store = store
+	got = e2.Run(context.Background(), "main.go")
+	if got.Status != engine.Completed || got.Output != "resumed" {
+		t.Fatalf("second result = %#v", got)
+	}
+	if len(p2.Requests) != 1 {
+		t.Fatalf("requests = %d", len(p2.Requests))
+	}
+	var sawOriginal, sawAnswer bool
+	for _, msg := range p2.Requests[0].Messages {
+		if msg.Role == session.User && msg.Content == "continue" {
+			sawOriginal = true
+		}
+		if msg.Role == session.User && msg.Content == "main.go" {
+			sawAnswer = true
+		}
+	}
+	if !sawOriginal || !sawAnswer {
+		t.Fatalf("resume request missing context: %#v", p2.Requests[0].Messages)
 	}
 }
 
@@ -184,6 +222,108 @@ func TestProviderEmptyOutputRetriesThenCompletes(t *testing.T) {
 	if !hasEvent(rec.Events, event.ProviderRetry) {
 		t.Fatalf("empty provider output did not produce retry event")
 	}
+}
+
+func TestRunAggregatesUsageMetricsAndEmitsProviderUsage(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(
+		harness.Step(
+			harness.Usage(provider.Usage{InputTokens: 100, OutputTokens: 20, CostUSD: 0.12, Source: provider.UsageNative}),
+			harness.Tool("done", "task_complete", "ok"),
+			harness.Done(),
+		),
+	)
+	e := newTestEngine(p, rec)
+	e.Options.ProviderName = "fake"
+	e.Options.Model = "fake-model"
+
+	got := e.Run(context.Background(), "work")
+
+	if got.Status != engine.Completed {
+		t.Fatalf("result = %#v", got)
+	}
+	if got.Metrics.LLMRequests != 1 || got.Metrics.Usage.InputTokens != 100 || got.Metrics.Usage.OutputTokens != 20 || got.Metrics.Usage.CostUSD != 0.12 {
+		t.Fatalf("metrics = %#v", got.Metrics)
+	}
+	if !hasEvent(rec.Snapshot(), event.ProviderUsage) {
+		t.Fatalf("provider usage event missing: %#v", rec.Snapshot())
+	}
+	runEnd := rec.Snapshot()[len(rec.Snapshot())-1]
+	runMetrics, ok := runEnd.Metrics.(engine.RunMetrics)
+	if !ok || runMetrics.Usage.InputTokens != 100 || runMetrics.LLMRequests != 1 {
+		t.Fatalf("run end metrics missing: %#v", runEnd.Metrics)
+	}
+}
+
+func TestRunAggregatesUsageAcrossMultipleSteps(t *testing.T) {
+	p := harness.NewScriptedProvider(
+		harness.Step(
+			harness.Usage(provider.Usage{InputTokens: 10, OutputTokens: 1, Source: provider.UsageNative}),
+			harness.Tool("missing-1", "missing", "{}"),
+		),
+		harness.Step(
+			harness.Usage(provider.Usage{InputTokens: 20, OutputTokens: 2, Source: provider.UsageEstimated}),
+			harness.Tool("done", "task_complete", "ok"),
+		),
+	)
+	e := newTestEngine(p, &event.Recorder{})
+	got := e.Run(context.Background(), "work")
+	if got.Status != engine.Completed {
+		t.Fatalf("result = %#v", got)
+	}
+	if got.Metrics.Usage.InputTokens != 30 || got.Metrics.Usage.OutputTokens != 3 || got.Metrics.Usage.TotalTokens != 33 || got.Metrics.Usage.Source != provider.UsageMixed {
+		t.Fatalf("usage = %#v", got.Metrics.Usage)
+	}
+	if got.Metrics.LLMRequests != 2 || got.Metrics.ToolCalls != 1 {
+		t.Fatalf("metrics = %#v", got.Metrics)
+	}
+}
+
+func TestRunStopsOnTokenCostAndToolBudgets(t *testing.T) {
+	t.Run("token budget", func(t *testing.T) {
+		rec := &event.Recorder{}
+		p := harness.NewScriptedProvider(harness.Step(harness.Usage(provider.Usage{InputTokens: 101}), harness.Tool("done", "task_complete", "ok")))
+		e := newTestEngine(p, rec)
+		e.Options.MaxTotalTokens = 100
+		got := e.Run(context.Background(), "work")
+		if got.Status != engine.Failed || got.Err == nil || got.Err.Error() != "token budget exceeded" {
+			t.Fatalf("result = %#v", got)
+		}
+		if !hasEvent(rec.Snapshot(), event.BudgetExceeded) {
+			t.Fatalf("budget event missing")
+		}
+		for _, ev := range rec.Snapshot() {
+			if ev.Type == event.BudgetExceeded {
+				budget, ok := ev.Metrics.(engine.BudgetMetrics)
+				if !ok || budget.Type != "tokens" || budget.Used != 101 || budget.Limit != 100 {
+					t.Fatalf("budget payload = %#v", ev.Metrics)
+				}
+			}
+		}
+	})
+	t.Run("cost budget", func(t *testing.T) {
+		p := harness.NewScriptedProvider(harness.Step(harness.Usage(provider.Usage{CostUSD: 2, TotalTokens: 1}), harness.Tool("done", "task_complete", "ok")))
+		e := newTestEngine(p, &event.Recorder{})
+		e.Options.MaxCostUSD = 1
+		got := e.Run(context.Background(), "work")
+		if got.Status != engine.Failed || got.Err == nil || got.Err.Error() != "cost budget exceeded" {
+			t.Fatalf("result = %#v", got)
+		}
+	})
+	t.Run("tool budget", func(t *testing.T) {
+		p := harness.NewScriptedProvider(harness.Step(
+			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
+				{ID: "a", Name: "missing", Args: "a"},
+				{ID: "b", Name: "missing", Args: "b"},
+			}},
+		))
+		e := newTestEngine(p, &event.Recorder{})
+		e.Options.MaxToolCalls = 1
+		got := e.Run(context.Background(), "work")
+		if got.Status != engine.Failed || got.Err == nil || got.Err.Error() != "tool call budget exceeded" {
+			t.Fatalf("result = %#v", got)
+		}
+	})
 }
 
 func TestProviderContextOverflowCompactsAndRetries(t *testing.T) {

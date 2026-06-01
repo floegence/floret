@@ -11,25 +11,34 @@ const (
 	StepStart       Type = "step_start"
 	ProviderRequest Type = "provider_request"
 	ProviderDelta   Type = "provider_delta"
+	ProviderUsage   Type = "provider_usage"
 	ProviderRetry   Type = "provider_retry"
 	ToolCall        Type = "tool_call"
 	ToolResult      Type = "tool_result"
 	ContextCompact  Type = "context_compact"
+	BudgetExceeded  Type = "budget_exceeded"
 	StepEnd         Type = "step_end"
 	RunEnd          Type = "run_end"
 )
 
 type Event struct {
-	Type      Type
-	RunID     string
-	Step      int
-	Message   string
-	ToolID    string
-	ToolName  string
-	Args      string
-	Result    string
-	Err       string
-	Timestamp time.Time
+	Type      Type      `json:"type"`
+	TraceID   string    `json:"trace_id,omitempty"`
+	RunID     string    `json:"run_id"`
+	SessionID string    `json:"session_id,omitempty"`
+	Step      int       `json:"step,omitempty"`
+	Provider  string    `json:"provider,omitempty"`
+	Model     string    `json:"model,omitempty"`
+	Message   string    `json:"message,omitempty"`
+	ToolID    string    `json:"tool_id,omitempty"`
+	ToolName  string    `json:"tool_name,omitempty"`
+	Args      string    `json:"args,omitempty"`
+	ArgsHash  string    `json:"args_hash,omitempty"`
+	Result    string    `json:"result,omitempty"`
+	Err       string    `json:"err,omitempty"`
+	Duration  int64     `json:"duration_ms,omitempty"`
+	Metrics   any       `json:"metrics,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 type Sink interface {

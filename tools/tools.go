@@ -63,6 +63,23 @@ func (r *Registry) Register(t Tool) error {
 	return nil
 }
 
+func (r *Registry) IsReadOnly(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	t, ok := r.tools[name]
+	return ok && t.ReadOnly
+}
+
+func (r *Registry) Definitions() []provider.ToolDefinition {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	defs := make([]provider.ToolDefinition, 0, len(r.tools))
+	for _, tool := range r.tools {
+		defs = append(defs, provider.ToolDefinition{Name: tool.Name, Description: tool.Description})
+	}
+	return defs
+}
+
 func (r *Registry) Run(ctx context.Context, call provider.ToolCall, approver Approver) Result {
 	return r.run(ctx, call, approver)
 }
@@ -99,7 +116,7 @@ func (r *Registry) RunBatch(ctx context.Context, calls []provider.ToolCall, appr
 	results := make([]Result, len(calls))
 	for i := 0; i < len(calls); {
 		j := i
-		for j < len(calls) && calls[j].ReadOnly {
+		for j < len(calls) && r.IsReadOnly(calls[j].Name) {
 			j++
 		}
 		if j > i {

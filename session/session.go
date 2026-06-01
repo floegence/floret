@@ -16,6 +16,7 @@ type Message struct {
 	Content    string
 	ToolCallID string
 	ToolName   string
+	ToolArgs   string
 }
 
 type Store interface {

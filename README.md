@@ -18,6 +18,7 @@ approval decisions, and presentation surfaces through small contracts.
 - `config`: `.env.local` and environment variable loading.
 - `adapters`: provider adapters, including fake and OpenAI-compatible chat completions.
 - `runtime`: configuration-to-engine assembly helpers for hosts.
+- `eval`: lightweight task-eval runner with oracle checks and artifacts.
 
 ## Runtime Shape
 
@@ -74,3 +75,7 @@ Run:
 go test ./...
 go test -race ./...
 ```
+
+The test suite covers deterministic agent loop behavior, provider usage aggregation,
+trace redaction, OpenAI-compatible streaming tool arguments, registry-owned tool
+scheduling, context/tool-result pairing, and a minimal oracle-based eval runner.

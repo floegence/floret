@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/floegence/floret/provider"
 )
@@ -18,6 +19,38 @@ func NewScriptedProvider(steps ...[]provider.StreamEvent) *ScriptedProvider {
 	return &ScriptedProvider{Steps: steps, Errs: map[int]error{}}
 }
 
+func Step(events ...provider.StreamEvent) []provider.StreamEvent {
+	return events
+}
+
+func Text(text string) provider.StreamEvent {
+	return provider.StreamEvent{Type: provider.Delta, Text: text}
+}
+
+func Tool(id, name, args string) provider.StreamEvent {
+	return provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: id, Name: name, Args: args}}}
+}
+
+func Usage(usage provider.Usage) provider.StreamEvent {
+	return provider.StreamEvent{Type: provider.UsageEvent, Usage: usage}
+}
+
+func Truncated(reason string) provider.StreamEvent {
+	return provider.StreamEvent{Type: provider.Truncated, Reason: reason}
+}
+
+func Empty() provider.StreamEvent {
+	return provider.StreamEvent{Type: provider.Empty}
+}
+
+func Done() provider.StreamEvent {
+	return provider.StreamEvent{Type: provider.Done}
+}
+
+func Hang() provider.StreamEvent {
+	return provider.StreamEvent{Type: "hang"}
+}
+
 func (p *ScriptedProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
 	p.mu.Lock()
 	p.Requests = append(p.Requests, req)
@@ -31,9 +64,24 @@ func (p *ScriptedProvider) Stream(ctx context.Context, req provider.Request) (<-
 		return nil, err
 	}
 	ch := make(chan provider.StreamEvent, len(events))
-	for _, ev := range events {
-		ch <- ev
-	}
-	close(ch)
+	go func() {
+		defer close(ch)
+		for _, ev := range events {
+			if ev.Type == "hang" {
+				<-ctx.Done()
+				return
+			}
+			if ev.Reason != "" && ev.Type == provider.Delta {
+				if d, err := time.ParseDuration(ev.Reason); err == nil {
+					time.Sleep(d)
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case ch <- ev:
+			}
+		}
+	}()
 	return ch, nil
 }

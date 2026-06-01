@@ -35,6 +35,10 @@ func NewEngineWithProvider(cfg config.Config, p provider.Provider, store session
 		Tools: registry,
 		Options: engine.Options{
 			RunID:                   cfg.RunID,
+			SessionID:               cfg.RunID,
+			TraceID:                 cfg.RunID,
+			ProviderName:            cfg.Provider,
+			Model:                   cfg.Model,
 			MaxSteps:                cfg.MaxSteps,
 			HardMaxSteps:            cfg.HardMaxSteps,
 			MaxEmptyProviderRetries: cfg.MaxEmptyProviderRetries,
