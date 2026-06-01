@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Floret Agent Console</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="mark">F</span>
+          <div>
+            <h1>Floret Agent Console</h1>
+            <p id="envStatus">Loading .env.local...</p>
+          </div>
+        </div>
+
+        <section class="block">
+          <div class="block-head">
+            <h2>Model Configuration</h2>
+            <button id="addProfile" class="icon-button" type="button" title="Add configuration">+</button>
+          </div>
+          <label class="field">
+            <span>Saved configuration</span>
+            <select id="profileSelect"></select>
+          </label>
+          <input id="profileName" class="hidden" autocomplete="off" />
+          <label class="field">
+            <span>Provider</span>
+            <select id="providerType">
+              <option value="fake">fake</option>
+              <option value="openai-compatible">openai-compatible</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Model</span>
+            <input id="modelName" class="hidden" autocomplete="off" placeholder="model name" />
+            <select id="modelSelect"></select>
+          </label>
+          <div id="modelDetails" class="model-details">Select a provider to see model capabilities.</div>
+          <label class="field provider-only">
+            <span>Base URL</span>
+            <input id="baseURL" autocomplete="off" placeholder="https://api.example.com/v1" />
+          </label>
+          <label class="field provider-only">
+            <span>API key</span>
+            <input id="apiKey" type="password" autocomplete="off" placeholder="leave empty to keep saved key" />
+          </label>
+          <label class="field fake-only">
+            <span>Fake response</span>
+            <input id="fakeResponse" autocomplete="off" placeholder="floret local provider ok" />
+          </label>
+          <div class="actions">
+            <button id="saveConfig" class="primary small" type="button">Save .env.local</button>
+            <button id="duplicateProfile" class="secondary small" type="button">Duplicate</button>
+          </div>
+        </section>
+
+        <section class="block compact">
+          <div class="block-head">
+            <h2>Quality Checks</h2>
+          </div>
+          <div class="check-grid">
+            <button class="check-button" data-target="unit" type="button">go test</button>
+            <button class="check-button" data-target="race" type="button">race</button>
+            <button class="check-button" data-target="eval-demo" type="button">eval demo</button>
+          </div>
+          <p id="checkStatus" class="microcopy">No check has run in this session.</p>
+        </section>
+      </aside>
+
+      <section class="studio">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Interactive Agent Run</p>
+            <h2 id="runTitle">Inspect one Floret turn</h2>
+          </div>
+          <div id="runStatus" class="status idle">idle</div>
+        </header>
+
+        <section class="composer">
+          <label class="field system-field">
+            <span>System prompt</span>
+            <textarea id="systemPrompt" rows="3">You are Floret. Use task_complete when the user's request is complete, or ask_user if you need missing information.</textarea>
+          </label>
+          <label class="field message-field">
+            <span>First user message</span>
+            <textarea id="userMessage" rows="5">Say hello from Floret and complete the task.</textarea>
+          </label>
+          <div class="run-controls">
+            <label class="field mini">
+              <span>Max steps</span>
+              <input id="maxSteps" type="number" min="1" max="32" value="8" />
+            </label>
+            <label class="field mini">
+              <span>Context messages</span>
+              <input id="maxContextMessages" type="number" min="1" max="256" value="32" />
+            </label>
+            <button id="runAgent" class="primary" type="button">Run Agent</button>
+          </div>
+        </section>
+
+        <section class="metrics" aria-label="Agent run metrics">
+          <div class="metric"><span>Status</span><strong id="metricStatus">-</strong></div>
+          <div class="metric"><span>Steps</span><strong id="metricSteps">-</strong></div>
+          <div class="metric"><span>Provider Requests</span><strong id="metricRequests">-</strong></div>
+          <div class="metric"><span>Tool Calls</span><strong id="metricTools">-</strong></div>
+          <div class="metric"><span>Tokens</span><strong id="metricTokens">-</strong></div>
+          <div class="metric"><span>Duration</span><strong id="metricDuration">-</strong></div>
+        </section>
+
+        <div class="summary" id="summaryText">Run an agent turn to inspect state transitions and provider interaction.</div>
+
+        <section class="inspector-grid">
+          <div class="panel state-panel">
+            <div class="panel-head">
+              <h3>State Transitions</h3>
+              <span id="transitionCount">0</span>
+            </div>
+            <div id="transitions" class="scroll empty">No transitions yet.</div>
+          </div>
+          <div class="panel output-panel">
+            <div class="panel-head">
+              <h3>Final Output</h3>
+              <span id="outputMeta">waiting</span>
+            </div>
+            <pre id="finalOutput" class="output">The agent output will appear here.</pre>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h3>Step Inspector</h3>
+            <span id="stepCount">0 steps</span>
+          </div>
+          <div id="stepInspector" class="steps empty">No provider steps yet.</div>
+        </section>
+
+        <section class="inspector-grid deep">
+          <div class="panel">
+            <div class="panel-head">
+              <h3>Session Messages</h3>
+              <span id="messageCount">0</span>
+            </div>
+            <div id="sessionMessages" class="scroll empty">No session messages yet.</div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <h3>Raw Trace JSON</h3>
+              <button id="copyRaw" class="secondary tiny" type="button">Copy</button>
+            </div>
+            <pre id="rawJson" class="raw">{}</pre>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

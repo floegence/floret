@@ -55,7 +55,29 @@ FLORET_HARD_MAX_STEPS=16
 FLORET_WALL_TIME=30s
 ```
 
-For OpenAI-compatible providers:
+Floret includes a built-in provider/model catalog inspired by the Flower settings catalog
+and mature coding-agent registries. `FLORET_PROVIDER` may be one of:
+
+```text
+fake, openai, anthropic, google, moonshot, chatglm, deepseek, qwen,
+openrouter, xai, groq, cerebras, mistral, together, fireworks,
+vercel-ai-gateway, ollama, openai-compatible
+```
+
+When `FLORET_MODEL` is omitted, Floret uses the catalog default for that provider. When
+`FLORET_BASE_URL` is omitted, Floret uses the provider default endpoint. `FLORET_API_KEY`
+always works, and provider-specific environment variables such as `OPENAI_API_KEY`,
+`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, `DASHSCOPE_API_KEY`,
+`MOONSHOT_API_KEY`, and `OPENROUTER_API_KEY` are also recognized.
+
+Example:
+
+```bash
+FLORET_PROVIDER=openai
+OPENAI_API_KEY=your-api-key
+```
+
+For a custom OpenAI-compatible gateway:
 
 ```bash
 FLORET_PROVIDER=openai-compatible
@@ -79,3 +101,24 @@ go test -race ./...
 The test suite covers deterministic agent loop behavior, provider usage aggregation,
 trace redaction, OpenAI-compatible streaming tool arguments, registry-owned tool
 scheduling, context/tool-result pairing, and a minimal oracle-based eval runner.
+
+## Local Agent Console
+
+Start the visual agent console:
+
+```bash
+go run ./cmd/floret-test-ui
+```
+
+Then open `http://127.0.0.1:8765`.
+
+The console is an interactive runtime inspector. It can manage one or more local
+provider profiles, save the active profile to `.env.local`, run a single agent turn
+from a first user message, and show the engine state transitions, provider requests,
+provider stream events, session messages, final output, and token/tool metrics.
+
+The sidebar also exposes quick local checks for `go test`, `go test -race`, and the
+deterministic eval demo. Live provider runs use the selected profile and can make
+real model calls when the active provider is not `fake`.
+
+Console eval artifacts are written under `.floret-test-ui/`, which is ignored by git.

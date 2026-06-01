@@ -106,6 +106,102 @@ func TestOpenAICompatibleProviderNormalizesUsage(t *testing.T) {
 	}
 }
 
+func TestNewProviderUsesBuiltInOpenAIProviderPreset(t *testing.T) {
+	var seenPath string
+	var seenAuth string
+	var seenModel string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		seenAuth = r.Header.Get("Authorization")
+		var req struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		seenModel = req.Model
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"tool_calls":[{"id":"done","type":"function","function":{"name":"task_complete","arguments":"ok"}}]},"finish_reason":"tool_calls"}]}`))
+	}))
+	defer server.Close()
+
+	p, err := NewProvider(config.Config{Provider: "openai", Model: "gpt-5.4", BaseURL: server.URL, APIKey: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := (&engine.Engine{
+		Provider: p,
+		Store:    session.NewMemoryStore(),
+		Memory:   &memory.Manager{SystemPrompt: "test"},
+		Tools:    tools.NewRegistry(),
+		Options:  engine.Options{RunID: "run", MaxSteps: 2},
+	}).Run(context.Background(), "hello")
+	if result.Status != engine.Completed {
+		t.Fatalf("result = %#v", result)
+	}
+	if seenPath != "/chat/completions" || seenAuth != "Bearer secret" || seenModel != "gpt-5.4" {
+		t.Fatalf("path/auth/model = %q/%q/%q", seenPath, seenAuth, seenModel)
+	}
+}
+
+func TestAnthropicProviderSendsMessagesRequestAndReceivesToolUse(t *testing.T) {
+	var seenKey string
+	var seenVersion string
+	var seenPath string
+	var seenBody struct {
+		Model    string `json:"model"`
+		System   string `json:"system"`
+		Messages []struct {
+			Role string `json:"role"`
+		} `json:"messages"`
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenKey = r.Header.Get("x-api-key")
+		seenVersion = r.Header.Get("anthropic-version")
+		seenPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&seenBody); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"tool_use","id":"done","name":"task_complete","input":{"summary":"anthropic ok"}}],"stop_reason":"tool_use","usage":{"input_tokens":12,"output_tokens":3}}`))
+	}))
+	defer server.Close()
+
+	p, err := NewProvider(config.Config{Provider: "anthropic", Model: "claude-sonnet-4-6", BaseURL: server.URL, APIKey: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := tools.NewRegistry()
+	if err := registry.Register(tools.Tool{
+		Name:        "task_complete",
+		Description: "Complete the task.",
+		Handler: func(context.Context, string) (string, error) {
+			return "", nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := (&engine.Engine{
+		Provider: p,
+		Store:    session.NewMemoryStore(),
+		Memory:   &memory.Manager{SystemPrompt: "anthropic system"},
+		Tools:    registry,
+		Options:  engine.Options{RunID: "run", MaxSteps: 2},
+	}).Run(context.Background(), "hello")
+	if result.Status != engine.Completed || result.Output != `{"summary":"anthropic ok"}` {
+		t.Fatalf("result = %#v", result)
+	}
+	if seenPath != "/messages" || seenKey != "secret" || seenVersion == "" || seenBody.Model != "claude-sonnet-4-6" || seenBody.System != "anthropic system" {
+		t.Fatalf("bad anthropic request path/key/version/body = %q/%q/%q/%#v", seenPath, seenKey, seenVersion, seenBody)
+	}
+	if len(seenBody.Messages) == 0 || seenBody.Messages[0].Role != "user" || len(seenBody.Tools) == 0 || seenBody.Tools[0].Name != "task_complete" {
+		t.Fatalf("bad anthropic messages/tools = %#v", seenBody)
+	}
+}
+
 func TestOpenAICompatibleProviderStreamsPartialToolArguments(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -226,5 +322,34 @@ func TestOpenAICompatibleProviderMapsToolCompletion(t *testing.T) {
 	}).Run(context.Background(), "hello")
 	if result.Status != engine.Completed || result.Output != "remote done" {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestNewProviderUsesProviderSpecificEnvKey(t *testing.T) {
+	var seenAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"tool_calls":[{"id":"done","type":"function","function":{"name":"task_complete","arguments":"ok"}}]},"finish_reason":"tool_calls"}]}`))
+	}))
+	defer server.Close()
+
+	t.Setenv("DEEPSEEK_API_KEY", "deepseek-secret")
+	p, err := NewProvider(config.Config{Provider: "deepseek", Model: "deepseek-chat", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := (&engine.Engine{
+		Provider: p,
+		Store:    session.NewMemoryStore(),
+		Memory:   &memory.Manager{SystemPrompt: "test"},
+		Tools:    tools.NewRegistry(),
+		Options:  engine.Options{RunID: "run", MaxSteps: 2},
+	}).Run(context.Background(), "hello")
+	if result.Status != engine.Completed {
+		t.Fatalf("result = %#v", result)
+	}
+	if seenAuth != "Bearer deepseek-secret" {
+		t.Fatalf("auth = %q", seenAuth)
 	}
 }

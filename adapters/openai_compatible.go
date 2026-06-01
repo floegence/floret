@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/floegence/floret/modelcatalog"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/session"
 )
@@ -18,6 +19,7 @@ type OpenAICompatibleProvider struct {
 	Endpoint        string
 	APIKey          string
 	Model           string
+	CostModel       modelcatalog.Model
 	HTTPClient      *http.Client
 	StreamResponses bool
 }
@@ -180,7 +182,7 @@ func (p OpenAICompatibleProvider) Stream(ctx context.Context, req provider.Reque
 	if choice.Message.Content != "" {
 		ch <- provider.StreamEvent{Type: provider.Delta, Text: choice.Message.Content}
 	}
-	if usage := normalizeUsage(parsed.Usage); usage.TotalTokens > 0 || usage.CostUSD > 0 {
+	if usage := normalizeUsage(parsed.Usage, p.CostModel); usage.TotalTokens > 0 || usage.CostUSD > 0 {
 		ch <- provider.StreamEvent{Type: provider.UsageEvent, Usage: usage}
 	}
 	if len(choice.Message.ToolCalls) > 0 {
@@ -243,7 +245,7 @@ func (p OpenAICompatibleProvider) streamResponse(httpResp *http.Response) (<-cha
 				ch <- provider.StreamEvent{Type: provider.Empty, Reason: parsed.Error.Message}
 				return
 			}
-			if usage := normalizeUsage(parsed.Usage); usage.TotalTokens > 0 || usage.CostUSD > 0 {
+			if usage := normalizeUsage(parsed.Usage, p.CostModel); usage.TotalTokens > 0 || usage.CostUSD > 0 {
 				ch <- provider.StreamEvent{Type: provider.UsageEvent, Usage: usage}
 			}
 			for _, choice := range parsed.Choices {
@@ -343,7 +345,7 @@ func looksLikeContextOverflow(body []byte) bool {
 	return strings.Contains(text, "context") && (strings.Contains(text, "length") || strings.Contains(text, "window") || strings.Contains(text, "token"))
 }
 
-func normalizeUsage(payload usagePayload) provider.Usage {
+func normalizeUsage(payload usagePayload, model modelcatalog.Model) provider.Usage {
 	cacheRead := payload.PromptTokensDetails.CachedTokens + payload.PromptTokensDetails.CacheReadTokens
 	cacheWrite := payload.PromptTokensDetails.CacheWriteTokens
 	reasoning := payload.ReasoningTokens + payload.CompletionTokensDetails.ReasoningTokens
@@ -351,7 +353,7 @@ func normalizeUsage(payload usagePayload) provider.Usage {
 	if input >= cacheRead {
 		input -= cacheRead
 	}
-	return provider.Usage{
+	usage := provider.Usage{
 		InputTokens:      input,
 		OutputTokens:     payload.CompletionTokens,
 		ReasoningTokens:  reasoning,
@@ -360,4 +362,8 @@ func normalizeUsage(payload usagePayload) provider.Usage {
 		TotalTokens:      payload.TotalTokens,
 		Source:           provider.UsageNative,
 	}.Normalized()
+	if model.ID != "" {
+		usage.CostUSD = modelcatalog.CostForUsage(model, usage)
+	}
+	return usage
 }

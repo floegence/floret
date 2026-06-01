@@ -7,13 +7,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/floegence/floret/modelcatalog"
 )
 
 const (
 	DefaultEnvFile = ".env.local"
 
-	ProviderFake             = "fake"
-	ProviderOpenAICompatible = "openai-compatible"
+	ProviderFake             = modelcatalog.ProviderFake
+	ProviderOpenAICompatible = modelcatalog.ProviderOpenAICompatible
 )
 
 type Config struct {
@@ -76,11 +78,16 @@ func Load(opts ...Option) (Config, error) {
 }
 
 func fromValues(values map[string]string) (Config, error) {
+	providerName := modelcatalog.NormalizeProvider(get(values, "FLORET_PROVIDER", ProviderFake))
+	defaultModel := "fake-model"
+	if model, ok := modelcatalog.DefaultModel(providerName); ok {
+		defaultModel = model.ID
+	}
 	cfg := Config{
-		Provider:                get(values, "FLORET_PROVIDER", ProviderFake),
-		Model:                   get(values, "FLORET_MODEL", "fake-model"),
-		BaseURL:                 get(values, "FLORET_BASE_URL", ""),
-		APIKey:                  get(values, "FLORET_API_KEY", ""),
+		Provider:                providerName,
+		Model:                   get(values, "FLORET_MODEL", defaultModel),
+		BaseURL:                 get(values, "FLORET_BASE_URL", modelcatalog.DefaultBaseURL(providerName)),
+		APIKey:                  firstConfiguredAPIKey(values, providerName),
 		FakeResponse:            get(values, "FLORET_FAKE_RESPONSE", "ok"),
 		RunID:                   get(values, "FLORET_RUN_ID", "default"),
 		SystemPrompt:            get(values, "FLORET_SYSTEM_PROMPT", "You are Floret."),
@@ -113,15 +120,92 @@ func fromValues(values map[string]string) (Config, error) {
 	if cfg.WallTime, err = getDuration(values, "FLORET_WALL_TIME", 0); err != nil {
 		return Config{}, err
 	}
-	if cfg.Provider == ProviderOpenAICompatible {
-		if cfg.BaseURL == "" {
-			return Config{}, fmt.Errorf("FLORET_BASE_URL is required for provider %q", cfg.Provider)
-		}
-		if cfg.APIKey == "" {
-			return Config{}, fmt.Errorf("FLORET_API_KEY is required for provider %q", cfg.Provider)
+	return validate(cfg)
+}
+
+func Resolve(cfg Config, environ map[string]string) (Config, error) {
+	if environ == nil {
+		environ = processEnviron()
+	}
+	cfg.Provider = modelcatalog.NormalizeProvider(cfg.Provider)
+	if cfg.Provider == "" {
+		cfg.Provider = ProviderFake
+	}
+	if cfg.Model == "" {
+		if model, ok := modelcatalog.DefaultModel(cfg.Provider); ok {
+			cfg.Model = model.ID
+		} else {
+			cfg.Model = "fake-model"
 		}
 	}
+	if cfg.BaseURL == "" {
+		cfg.BaseURL = modelcatalog.DefaultBaseURL(cfg.Provider)
+	}
+	if cfg.APIKey == "" {
+		cfg.APIKey = firstConfiguredAPIKey(environ, cfg.Provider)
+	}
+	if cfg.FakeResponse == "" {
+		cfg.FakeResponse = "ok"
+	}
+	return validate(cfg)
+}
+
+func validate(cfg Config) (Config, error) {
+	if !modelcatalog.SupportsProvider(cfg.Provider) {
+		return Config{}, fmt.Errorf("unsupported provider %q", cfg.Provider)
+	}
+	if cfg.Model == "" {
+		return Config{}, fmt.Errorf("FLORET_MODEL is required for provider %q", cfg.Provider)
+	}
+	if requiresBaseURL(cfg.Provider) && cfg.BaseURL == "" {
+		return Config{}, fmt.Errorf("FLORET_BASE_URL is required for provider %q", cfg.Provider)
+	}
+	if requiresAPIKey(cfg.Provider) && cfg.APIKey == "" {
+		keys := append([]string{"FLORET_API_KEY"}, modelcatalog.EnvKeys(cfg.Provider)...)
+		return Config{}, fmt.Errorf("FLORET_API_KEY or one of %s is required for provider %q", strings.Join(unique(keys), ", "), cfg.Provider)
+	}
 	return cfg, nil
+}
+
+func firstConfiguredAPIKey(values map[string]string, providerName string) string {
+	keys := append([]string{"FLORET_API_KEY"}, modelcatalog.EnvKeys(providerName)...)
+	for _, key := range unique(keys) {
+		if value := strings.TrimSpace(values[key]); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func requiresBaseURL(providerName string) bool {
+	api := modelcatalog.APIKind(providerName)
+	return api == modelcatalog.APIOpenAIChat || api == modelcatalog.APIAnthropicMessages
+}
+
+func requiresAPIKey(providerName string) bool {
+	switch providerName {
+	case modelcatalog.ProviderFake, modelcatalog.ProviderOllama:
+		return false
+	default:
+		return requiresBaseURL(providerName)
+	}
+}
+
+func unique(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func readEnvFile(path string) (map[string]string, error) {

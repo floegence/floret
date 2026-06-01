@@ -6,21 +6,46 @@ import (
 	"strings"
 
 	"github.com/floegence/floret/config"
+	"github.com/floegence/floret/modelcatalog"
 	"github.com/floegence/floret/provider"
 )
 
 func NewProvider(cfg config.Config) (provider.Provider, error) {
-	switch strings.ToLower(cfg.Provider) {
-	case "", config.ProviderFake:
+	resolved, err := config.Resolve(cfg, nil)
+	if err != nil {
+		return nil, err
+	}
+	model, _ := modelcatalog.FindModel(resolved.Provider, resolved.Model)
+	switch modelcatalog.APIKind(resolved.Provider) {
+	case modelcatalog.APIFake:
 		return FakeProvider{Response: cfg.FakeResponse}, nil
-	case config.ProviderOpenAICompatible:
+	case modelcatalog.APIOpenAIChat:
+		modelID := resolved.Model
+		if model.OpenAIModelID != "" {
+			modelID = model.OpenAIModelID
+		}
 		return OpenAICompatibleProvider{
-			Endpoint:   strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions",
-			APIKey:     cfg.APIKey,
-			Model:      cfg.Model,
+			Endpoint:  strings.TrimRight(resolved.BaseURL, "/") + "/chat/completions",
+			APIKey:    resolved.APIKey,
+			Model:     modelID,
+			CostModel: model,
+
+			HTTPClient: http.DefaultClient,
+		}, nil
+	case modelcatalog.APIAnthropicMessages:
+		modelID := resolved.Model
+		if model.AnthropicModel != "" {
+			modelID = model.AnthropicModel
+		}
+		return AnthropicProvider{
+			Endpoint:   strings.TrimRight(resolved.BaseURL, "/") + "/messages",
+			APIKey:     resolved.APIKey,
+			Model:      modelID,
+			MaxTokens:  model.MaxTokens,
+			CostModel:  model,
 			HTTPClient: http.DefaultClient,
 		}, nil
 	default:
-		return nil, fmt.Errorf("unsupported provider %q", cfg.Provider)
+		return nil, fmt.Errorf("unsupported provider %q", resolved.Provider)
 	}
 }
