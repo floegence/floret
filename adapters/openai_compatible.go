@@ -205,7 +205,7 @@ func (p OpenAICompatibleProvider) Stream(ctx context.Context, req provider.Reque
 	if choice.FinishReason == "length" {
 		ch <- provider.StreamEvent{Type: provider.Truncated, Reason: "length"}
 	} else {
-		ch <- provider.StreamEvent{Type: provider.Done}
+		ch <- provider.StreamEvent{Type: provider.Done, Reason: choice.FinishReason}
 	}
 	close(ch)
 	return ch, nil
@@ -370,16 +370,16 @@ func (p OpenAICompatibleProvider) streamResponse(httpResp *http.Response) (<-cha
 						calls = append(calls, provider.ToolCall{ID: item.id, Name: item.name, Args: item.args})
 					}
 					ch <- provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: calls}
-					ch <- provider.StreamEvent{Type: provider.Done}
+					ch <- provider.StreamEvent{Type: provider.Done, Reason: choice.FinishReason}
 					return
 				case "length":
 					ch <- provider.StreamEvent{Type: provider.Truncated, Reason: "length"}
 					return
 				case "stop":
-					ch <- provider.StreamEvent{Type: provider.Done}
+					ch <- provider.StreamEvent{Type: provider.Done, Reason: choice.FinishReason}
 					return
 				case "content_filter":
-					ch <- provider.StreamEvent{Type: provider.Empty, Reason: "content_filter"}
+					ch <- provider.StreamEvent{Type: provider.Done, Reason: "content_filter"}
 					return
 				}
 			}

@@ -1179,8 +1179,9 @@ function verifyStepFlow(request, providerEvents, engineEvents, result) {
   if (normalCalls.length > 0 && toolResultEvents.length < normalCalls.length) {
     diagnostics.push({ severity: "bad", step, title: "Missing tool_result event", detail: `Expected ${normalCalls.length} tool_result event(s), captured ${toolResultEvents.length}.` });
   }
-  if (signalCalls.length > 0 && toolResultEvents.length > 0) {
-    diagnostics.push({ severity: "warn", step, title: "Signal produced tool_result", detail: "task_complete and ask_user should terminate or interrupt without normal tool execution." });
+  const interruptCalls = signalCalls.filter((call) => isInterruptToolCall(call));
+  if (interruptCalls.length > 0 && toolResultEvents.length > 0) {
+    diagnostics.push({ severity: "warn", step, title: "Interrupt produced tool_result", detail: "ask_user should interrupt without normal tool execution." });
   }
   if (normalCalls.length > 0 && stepEndEvents.length === 0 && step !== lastStepNumber(result)) {
     diagnostics.push({ severity: "bad", step, title: "Missing step_end", detail: "A non-terminal step with normal tool execution should emit step_end before the next provider request." });
@@ -1335,7 +1336,12 @@ function eventKind(event) {
 
 function isSignalToolCall(call) {
   const name = call.name || call.Name || "";
-  return name === "task_complete" || name === "ask_user";
+  return name === "ask_user";
+}
+
+function isInterruptToolCall(call) {
+  const name = call.name || call.Name || "";
+  return name === "ask_user";
 }
 
 function timeOrder(value, fallback) {

@@ -23,39 +23,165 @@ import (
 	"github.com/floegence/floret/tools"
 )
 
-func TestRunDirectAnswerCompletesThroughExplicitSignal(t *testing.T) {
+func TestRunDirectAnswerCompletesThroughNaturalStop(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
-		[]provider.StreamEvent{
-			{Type: provider.Delta, Text: "I checked it. "},
-			{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "done", Name: "task_complete", Args: "done"}}},
-			{Type: provider.Done},
-		},
+		harness.Step(harness.Text("I checked it."), harness.Done()),
 	)
 	e := newTestEngine(p, rec)
 
 	got := e.Run(context.Background(), "do the thing")
 
-	if got.Status != engine.Completed {
+	if got.Status != engine.Completed || got.Output != "I checked it." {
 		t.Fatalf("status = %s, want completed: %v", got.Status, got.Err)
 	}
-	if got.Output != "done" {
-		t.Fatalf("output = %q, want explicit completion payload", got.Output)
+	if got.CompletionReason != engine.CompletionReasonNaturalStop || got.FinishReason != provider.FinishStop {
+		t.Fatalf("completion metadata = %#v", got)
 	}
 	messages, err := e.Store.Messages("run")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !slices.ContainsFunc(messages, func(msg session.Message) bool {
-		return msg.Role == session.Assistant && msg.ToolCallID == "done" && msg.ToolName == "task_complete"
+		return msg.Role == session.Assistant && msg.Content == "I checked it."
 	}) {
-		t.Fatalf("task_complete tool call was not persisted before completion: %#v", messages)
+		t.Fatalf("assistant final text was not persisted: %#v", messages)
 	}
-	assertEventOrder(t, rec.Events, event.StepStart, event.ProviderRequest, event.ProviderDelta, event.RunEnd)
+	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
+		return ev.Type == event.ProviderFinish && ev.FinishReason == string(provider.FinishStop) && ev.RawFinishReason == "stop"
+	}) {
+		t.Fatalf("provider finish event missing: %#v", rec.Events)
+	}
+	assertEventOrder(t, rec.Events, event.StepStart, event.ProviderRequest, event.ProviderDelta, event.ProviderFinish, event.StepEnd, event.RunEnd)
+}
+
+func TestNaturalStopHookCanRequestAuditableContinuation(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Text("draft "), harness.Done()),
+		harness.Step(harness.Text("final"), harness.Done()),
+	)
+	e := newTestEngine(p, rec)
+	hookCalls := 0
+	e.StopHook = func(_ context.Context, ctx engine.StopHookContext) (engine.StopHookResult, error) {
+		hookCalls++
+		if hookCalls == 1 {
+			if ctx.LastAssistant.Content != "draft " || ctx.FinishReason != provider.FinishStop {
+				t.Fatalf("hook context = %#v", ctx)
+			}
+			return engine.StopHookResult{Continue: true, Prompt: "Verify the remaining work.", Reason: "verify"}, nil
+		}
+		return engine.StopHookResult{}, nil
+	}
+
+	got := e.Run(context.Background(), "do the thing")
+
+	if got.Status != engine.Completed || got.Output != "draft final" || got.CompletionReason != engine.CompletionReasonNaturalStop {
+		t.Fatalf("result = %#v", got)
+	}
+	if hookCalls != 2 {
+		t.Fatalf("hook calls = %d, want 2", hookCalls)
+	}
+	if len(p.Requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(p.Requests))
+	}
+	if !slices.ContainsFunc(p.Requests[1].Messages, func(msg session.Message) bool {
+		return msg.Role == session.User && msg.Content == "Verify the remaining work."
+	}) {
+		t.Fatalf("continuation prompt missing from second provider request: %#v", p.Requests[1].Messages)
+	}
+	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
+		return ev.Type == event.StepEnd && ev.ContinuationReason == string(engine.ContinueHook) && ev.Message == "verify"
+	}) {
+		t.Fatalf("hook continuation decision missing: %#v", rec.Events)
+	}
+}
+
+func TestNaturalStopHookContinuationLimitPreventsLoops(t *testing.T) {
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Text("again "), harness.Done()),
+		harness.Step(harness.Text("again"), harness.Done()),
+	)
+	e := newTestEngine(p, &event.Recorder{})
+	e.Options.MaxStopHookContinuations = 1
+	e.StopHook = func(context.Context, engine.StopHookContext) (engine.StopHookResult, error) {
+		return engine.StopHookResult{Continue: true, Prompt: "continue"}, nil
+	}
+
+	got := e.Run(context.Background(), "loop")
+
+	if got.Status != engine.Failed || !errors.Is(got.Err, engine.ErrStopHookLoop) {
+		t.Fatalf("result = %#v, want stop hook loop failure", got)
+	}
+}
+
+func TestProviderErrorFinishFailsWithFinishMetadata(t *testing.T) {
+	p := harness.NewScriptedProvider(harness.Step(harness.Text("bad"), harness.DoneReason("error")))
+	e := newTestEngine(p, &event.Recorder{})
+
+	got := e.Run(context.Background(), "work")
+
+	if got.Status != engine.Failed || !errors.Is(got.Err, engine.ErrProviderFinishError) || got.FinishReason != provider.FinishError || got.Output != "" {
+		t.Fatalf("result = %#v, want provider finish error before committing text", got)
+	}
+}
+
+func TestProviderCancelledFinishReturnsCancelled(t *testing.T) {
+	p := harness.NewScriptedProvider(harness.Step(harness.DoneReason("cancelled")))
+	e := newTestEngine(p, &event.Recorder{})
+
+	got := e.Run(context.Background(), "work")
+
+	if got.Status != engine.Cancelled || !errors.Is(got.Err, context.Canceled) || got.FinishReason != provider.FinishCancelled {
+		t.Fatalf("result = %#v, want cancelled finish", got)
+	}
+}
+
+func TestEmptyDoneRetriesThenCompletes(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.DoneReason("unknown")),
+		harness.Step(harness.Text("ok"), harness.Done()),
+	)
+	e := newTestEngine(p, rec)
+
+	got := e.Run(context.Background(), "work")
+
+	if got.Status != engine.Completed || got.Output != "ok" {
+		t.Fatalf("result = %#v", got)
+	}
+	if !hasEvent(rec.Events, event.ProviderRetry) {
+		t.Fatalf("empty done did not trigger provider retry: %#v", rec.Events)
+	}
+}
+
+func TestTaskCompleteOnlyCompletesWhenExplicitSignalPolicyIsEnabled(t *testing.T) {
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("done", "task_complete", "done"), harness.DoneReason("tool_calls")),
+	)
+	e := newTestEngine(p, &event.Recorder{})
+	e.Options.CompletionPolicy = engine.CompletionExplicitSignal
+
+	got := e.Run(context.Background(), "do the thing")
+
+	if got.Status != engine.Completed || got.Output != "done" || got.CompletionReason != engine.CompletionReasonToolSignal {
+		t.Fatalf("result = %#v, want legacy tool-signal completion", got)
+	}
+}
+
+func TestTaskCompleteIsNormalToolUnderNaturalStopPolicy(t *testing.T) {
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("done", "task_complete", "done"), harness.DoneReason("tool_calls")),
+	)
+	e := newTestEngine(p, &event.Recorder{})
+	got := e.Run(context.Background(), "do the thing")
+	if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), "provider returned empty output") {
+		t.Fatalf("result = %#v, want ordinary unknown-tool path to fail without explicit-signal policy", got)
+	}
 }
 
 func TestRunTurnUsesCallerSuppliedHistoryWithoutAppendingUserText(t *testing.T) {
-	p := harness.NewScriptedProvider(harness.Step(harness.Tool("done", "task_complete", "ok")))
+	p := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
 	e := newTestEngine(p, &event.Recorder{})
 	originalStore := session.NewMemoryStore()
 	if err := originalStore.Append("run", session.Message{Role: session.User, Content: "existing"}); err != nil {
@@ -100,18 +226,19 @@ func TestRunTurnUsesCallerSuppliedHistoryWithoutAppendingUserText(t *testing.T) 
 	}
 }
 
-func TestTaskCompleteSignalIsProviderSafeWhenRunContinues(t *testing.T) {
+func TestLegacyTaskCompleteSignalIsProviderSafeWhenRunContinues(t *testing.T) {
 	store := session.NewMemoryStore()
 	promptStore := promptcache.NewMemoryStore()
-	p1 := harness.NewScriptedProvider(harness.Step(harness.Tool("done", "task_complete", "first done")))
+	p1 := harness.NewScriptedProvider(harness.Step(harness.Tool("done", "task_complete", "first done"), harness.DoneReason("tool_calls")))
 	e1 := newTestEngine(p1, &event.Recorder{})
 	e1.Store = store
 	e1.Prompt = promptStore
+	e1.Options.CompletionPolicy = engine.CompletionExplicitSignal
 	got := e1.Run(context.Background(), "finish")
 	if got.Status != engine.Completed {
 		t.Fatalf("first result = %#v", got)
 	}
-	p2 := harness.NewScriptedProvider(harness.Step(harness.Tool("done-2", "task_complete", "second done")))
+	p2 := harness.NewScriptedProvider(harness.Step(harness.Text("second done"), harness.Done()))
 	e2 := newTestEngine(p2, &event.Recorder{})
 	e2.Store = store
 	e2.Prompt = promptStore
@@ -148,8 +275,8 @@ func TestRunToolLoopFeedsResultIntoNextProviderRequest(t *testing.T) {
 			{Type: provider.Done},
 		},
 		[]provider.StreamEvent{
-			{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "done", Name: "task_complete", Args: "saw file"}}},
-			{Type: provider.Done},
+			{Type: provider.Delta, Text: "saw file"},
+			{Type: provider.Done, Reason: "stop"},
 		},
 	)
 	reg := tools.NewRegistry()
@@ -161,7 +288,7 @@ func TestRunToolLoopFeedsResultIntoNextProviderRequest(t *testing.T) {
 
 	got := e.Run(context.Background(), "inspect")
 
-	if got.Status != engine.Completed || got.Output != "saw file" {
+	if got.Status != engine.Completed || got.Output != "saw file" || got.CompletionReason != engine.CompletionReasonNaturalStop {
 		t.Fatalf("result = %#v", got)
 	}
 	if len(p.Requests) != 2 {
@@ -187,7 +314,7 @@ func TestRunToolLoopFeedsResultIntoNextProviderRequest(t *testing.T) {
 func TestPromptCacheFreezesToolsetWhenRegistryChanges(t *testing.T) {
 	p := harness.NewScriptedProvider(
 		harness.Step(harness.Tool("read-1", "read", "{}")),
-		harness.Step(harness.Tool("done", "task_complete", "ok")),
+		harness.Step(harness.Text("ok"), harness.Done()),
 	)
 	reg := tools.NewRegistry()
 	mustRegister(t, reg, tools.Tool{Name: "read", Description: "Read original", Handler: func(context.Context, string) (string, error) {
@@ -226,7 +353,7 @@ func TestPromptCacheActivatesNewToolsetOnNextTurnWhenRegistryChanges(t *testing.
 	mustRegister(t, reg, tools.Tool{Name: "read", Description: "Read", Handler: func(context.Context, string) (string, error) {
 		return "content", nil
 	}})
-	firstProvider := harness.NewScriptedProvider(harness.Step(harness.Tool("done", "task_complete", "first")))
+	firstProvider := harness.NewScriptedProvider(harness.Step(harness.Text("first"), harness.Done()))
 	first := newTestEngine(firstProvider, &event.Recorder{})
 	first.Store = store
 	first.Prompt = promptStore
@@ -239,7 +366,7 @@ func TestPromptCacheActivatesNewToolsetOnNextTurnWhenRegistryChanges(t *testing.
 	mustRegister(t, reg, tools.Tool{Name: "write", Description: "Write", Handler: func(context.Context, string) (string, error) {
 		return "written", nil
 	}})
-	secondProvider := harness.NewScriptedProvider(harness.Step(harness.Tool("done-2", "task_complete", "second")))
+	secondProvider := harness.NewScriptedProvider(harness.Step(harness.Text("second"), harness.Done()))
 	second := newTestEngine(secondProvider, &event.Recorder{})
 	second.Store = store
 	second.Prompt = promptStore
@@ -255,7 +382,7 @@ func TestPromptCacheActivatesNewToolsetOnNextTurnWhenRegistryChanges(t *testing.
 	if len(secondProvider.Requests[0].Tools) != 2 {
 		t.Fatalf("second turn should expose updated tools: %#v", secondProvider.Requests[0].Tools)
 	}
-	thirdProvider := harness.NewScriptedProvider(harness.Step(harness.Tool("done-3", "task_complete", "third")))
+	thirdProvider := harness.NewScriptedProvider(harness.Step(harness.Text("third"), harness.Done()))
 	third := newTestEngine(thirdProvider, &event.Recorder{})
 	third.Store = store
 	third.Prompt = promptStore
@@ -285,7 +412,7 @@ func TestPromptCacheFileStoreKeepsPrefixStableAcrossEngineRestart(t *testing.T) 
 	firstHash := firstProvider.Requests[0].RawPlan.PrefixHash
 	firstSegmentIDs := append([]string(nil), firstProvider.Requests[0].RawPlan.SegmentIDs...)
 	firstSegmentRaws := segmentRawsForTest(firstProvider.Requests[0].RawPlan.Segments)
-	secondProvider := harness.NewScriptedProvider(harness.Step(harness.Tool("done", "task_complete", "ok")))
+	secondProvider := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
 	second := newTestEngine(secondProvider, &event.Recorder{})
 	second.Store = store
 	second.Prompt = promptcache.NewFileStore(root)
@@ -320,7 +447,7 @@ func TestPromptCacheFileStoreKeepsPrefixStableAcrossEngineRestart(t *testing.T) 
 }
 
 func TestProviderRequestRecordsActualPayloadHashWhenProviderExposesIt(t *testing.T) {
-	p := &hashingProvider{ScriptedProvider: harness.NewScriptedProvider(harness.Step(harness.Tool("done", "task_complete", "ok")))}
+	p := &hashingProvider{ScriptedProvider: harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))}
 	p.hash = "provider-payload-hash"
 	p.cache = promptcache.CachePolicy{Enabled: true, Namespace: "provider-ns", Retention: promptcache.RetentionLong}
 	promptStore := promptcache.NewMemoryStore()
@@ -356,7 +483,7 @@ func TestProviderRequestRecordsActualPayloadHashWhenProviderExposesIt(t *testing
 func TestProviderRequestAndResponseRecordsCarryThreadAndTurnIDs(t *testing.T) {
 	p := harness.NewScriptedProvider(harness.Step(
 		provider.StreamEvent{Type: provider.UsageEvent, Usage: provider.Usage{CacheReadTokens: 10, CacheWriteTokens: 5}},
-		provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "done", Name: "task_complete", Args: "ok"}}},
+		provider.StreamEvent{Type: provider.Delta, Text: "ok"},
 		provider.StreamEvent{Type: provider.Done, ResponseID: "resp-1"},
 	))
 	promptStore := promptcache.NewMemoryStore()
@@ -424,7 +551,7 @@ func TestWaitingCanResumeByAppendingUserAnswerToSameRun(t *testing.T) {
 	if got.Status != engine.Waiting {
 		t.Fatalf("first result = %#v", got)
 	}
-	p2 := harness.NewScriptedProvider(harness.Step(harness.Tool("done", "task_complete", "resumed")))
+	p2 := harness.NewScriptedProvider(harness.Step(harness.Text("resumed"), harness.Done()))
 	e2 := newTestEngine(p2, &event.Recorder{})
 	e2.Store = store
 	got = e2.Run(context.Background(), "main.go")
@@ -466,8 +593,8 @@ func TestApprovalDeniedReturnsToolErrorAndAllowsModelRecovery(t *testing.T) {
 			{Type: provider.Done},
 		},
 		[]provider.StreamEvent{
-			{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "done", Name: "task_complete", Args: "not changed"}}},
-			{Type: provider.Done},
+			{Type: provider.Delta, Text: "not changed"},
+			{Type: provider.Done, Reason: "stop"},
 		},
 	)
 	reg := tools.NewRegistry()
@@ -533,10 +660,7 @@ func TestProviderEmptyOutputRetriesThenCompletes(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
 		[]provider.StreamEvent{{Type: provider.Empty}},
-		[]provider.StreamEvent{
-			{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "done", Name: "task_complete", Args: "ok"}}},
-			{Type: provider.Done},
-		},
+		harness.Step(harness.Text("ok"), harness.Done()),
 	)
 	e := newTestEngine(p, rec)
 
@@ -555,7 +679,7 @@ func TestRunAggregatesUsageMetricsAndEmitsProviderUsage(t *testing.T) {
 	p := harness.NewScriptedProvider(
 		harness.Step(
 			harness.Usage(provider.Usage{InputTokens: 100, OutputTokens: 20, CostUSD: 0.12, Source: provider.UsageNative}),
-			harness.Tool("done", "task_complete", "ok"),
+			harness.Text("ok"),
 			harness.Done(),
 		),
 	)
@@ -589,7 +713,8 @@ func TestRunAggregatesUsageAcrossMultipleSteps(t *testing.T) {
 		),
 		harness.Step(
 			harness.Usage(provider.Usage{InputTokens: 20, OutputTokens: 2, Source: provider.UsageEstimated}),
-			harness.Tool("done", "task_complete", "ok"),
+			harness.Text("ok"),
+			harness.Done(),
 		),
 	)
 	e := newTestEngine(p, &event.Recorder{})
@@ -608,7 +733,7 @@ func TestRunAggregatesUsageAcrossMultipleSteps(t *testing.T) {
 func TestRunStopsOnTokenCostAndToolBudgets(t *testing.T) {
 	t.Run("token budget", func(t *testing.T) {
 		rec := &event.Recorder{}
-		p := harness.NewScriptedProvider(harness.Step(harness.Usage(provider.Usage{InputTokens: 101}), harness.Tool("done", "task_complete", "ok")))
+		p := harness.NewScriptedProvider(harness.Step(harness.Usage(provider.Usage{InputTokens: 101}), harness.Text("ok"), harness.Done()))
 		e := newTestEngine(p, rec)
 		e.Options.MaxTotalTokens = 100
 		got := e.Run(context.Background(), "work")
@@ -628,7 +753,7 @@ func TestRunStopsOnTokenCostAndToolBudgets(t *testing.T) {
 		}
 	})
 	t.Run("cost budget", func(t *testing.T) {
-		p := harness.NewScriptedProvider(harness.Step(harness.Usage(provider.Usage{CostUSD: 2, TotalTokens: 1}), harness.Tool("done", "task_complete", "ok")))
+		p := harness.NewScriptedProvider(harness.Step(harness.Usage(provider.Usage{CostUSD: 2, TotalTokens: 1}), harness.Text("ok"), harness.Done()))
 		e := newTestEngine(p, &event.Recorder{})
 		e.Options.MaxCostUSD = 1
 		got := e.Run(context.Background(), "work")
@@ -657,8 +782,8 @@ func TestProviderContextOverflowCompactsAndRetries(t *testing.T) {
 	p := harness.NewScriptedProvider(
 		nil,
 		[]provider.StreamEvent{
-			{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "done", Name: "task_complete", Args: "after compact"}}},
-			{Type: provider.Done},
+			{Type: provider.Delta, Text: "after compact"},
+			{Type: provider.Done, Reason: "stop"},
 		},
 	)
 	p.Errs[1] = provider.ErrContextOverflow
@@ -710,8 +835,8 @@ func TestTruncatedProviderOutputCompactsAndRetries(t *testing.T) {
 	p := harness.NewScriptedProvider(
 		[]provider.StreamEvent{{Type: provider.Truncated}},
 		[]provider.StreamEvent{
-			{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "done", Name: "task_complete", Args: "retried"}}},
-			{Type: provider.Done},
+			{Type: provider.Delta, Text: "retried"},
+			{Type: provider.Done, Reason: "stop"},
 		},
 	)
 	e := newTestEngine(p, rec)
@@ -723,6 +848,49 @@ func TestTruncatedProviderOutputCompactsAndRetries(t *testing.T) {
 	}
 	if !hasEvent(rec.Events, event.ContextCompact) {
 		t.Fatalf("truncation did not compact")
+	}
+}
+
+func TestTruncatedProviderOutputFailsAfterContinuationLimit(t *testing.T) {
+	p := harness.NewScriptedProvider(
+		[]provider.StreamEvent{{Type: provider.Truncated, Reason: "length"}},
+		[]provider.StreamEvent{{Type: provider.Truncated, Reason: "length"}},
+	)
+	e := newTestEngine(p, &event.Recorder{})
+	e.Options.MaxLengthContinuations = 1
+
+	got := e.Run(context.Background(), "work")
+
+	if got.Status != engine.Failed || !errors.Is(got.Err, engine.ErrProviderTruncated) || got.FinishReason != provider.FinishLength {
+		t.Fatalf("result = %#v, want truncation failure", got)
+	}
+}
+
+func TestContentFilterFinishFailsWithoutNaturalCompletion(t *testing.T) {
+	p := harness.NewScriptedProvider(harness.Step(harness.Text("blocked"), harness.DoneReason("content_filter")))
+	e := newTestEngine(p, &event.Recorder{})
+
+	got := e.Run(context.Background(), "work")
+
+	if got.Status != engine.Failed || !errors.Is(got.Err, engine.ErrContentFiltered) || got.Output != "" {
+		t.Fatalf("result = %#v, want content-filter failure before assistant text is committed", got)
+	}
+}
+
+func TestUnknownFinishWithTextIsInferredNaturalStop(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(harness.Step(harness.Text("final"), harness.DoneReason("strange-provider-value")))
+	e := newTestEngine(p, rec)
+
+	got := e.Run(context.Background(), "work")
+
+	if got.Status != engine.Completed || got.Output != "final" || got.FinishReason != provider.FinishStop || !got.FinishInferred {
+		t.Fatalf("result = %#v, want inferred natural stop", got)
+	}
+	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
+		return ev.Type == event.StepEnd && ev.CompletionReason == string(engine.CompletionReasonNaturalStop) && ev.FinishInferred
+	}) {
+		t.Fatalf("step end inference metadata missing: %#v", rec.Events)
 	}
 }
 
@@ -783,8 +951,20 @@ func TestWallTimeCancelsSlowStream(t *testing.T) {
 
 	got := e.Run(context.Background(), "slow")
 
-	if got.Status != engine.Failed || !errors.Is(got.Err, context.DeadlineExceeded) {
+	if got.Status != engine.Cancelled || !errors.Is(got.Err, context.DeadlineExceeded) {
 		t.Fatalf("result = %#v, want deadline failure", got)
+	}
+}
+
+func TestContextCancelDuringProviderStreamReturnsCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &cancelAfterFirstDeltaProvider{cancel: cancel}
+	e := newTestEngine(p, &event.Recorder{})
+
+	got := e.Run(ctx, "slow")
+
+	if got.Status != engine.Cancelled || !errors.Is(got.Err, context.Canceled) {
+		t.Fatalf("result = %#v, want stream cancellation", got)
 	}
 }
 
@@ -792,6 +972,17 @@ type blockingProvider struct{}
 
 func (blockingProvider) Stream(context.Context, provider.Request) (<-chan provider.StreamEvent, error) {
 	return make(chan provider.StreamEvent), nil
+}
+
+type cancelAfterFirstDeltaProvider struct {
+	cancel context.CancelFunc
+}
+
+func (p *cancelAfterFirstDeltaProvider) Stream(context.Context, provider.Request) (<-chan provider.StreamEvent, error) {
+	ch := make(chan provider.StreamEvent, 1)
+	ch <- provider.StreamEvent{Type: provider.Delta, Text: "partial"}
+	p.cancel()
+	return ch, nil
 }
 
 type hashingProvider struct {

@@ -16,10 +16,9 @@ func (p FakeProvider) Stream(context.Context, provider.Request) (<-chan provider
 	if response == "" {
 		response = "ok"
 	}
-	ch := make(chan provider.StreamEvent, 3)
+	ch := make(chan provider.StreamEvent, 2)
 	ch <- provider.StreamEvent{Type: provider.Delta, Text: response}
-	ch <- provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "task-complete", Name: "task_complete", Args: response}}}
-	ch <- provider.StreamEvent{Type: provider.Done}
+	ch <- provider.StreamEvent{Type: provider.Done, Reason: "stop"}
 	close(ch)
 	return ch, nil
 }

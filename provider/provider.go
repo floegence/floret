@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/session"
@@ -36,6 +37,55 @@ const (
 	Truncated  EventType = "truncated"
 	UsageEvent EventType = "usage"
 )
+
+type FinishReason string
+
+const (
+	FinishUnknown       FinishReason = "unknown"
+	FinishStop          FinishReason = "stop"
+	FinishToolCalls     FinishReason = "tool_calls"
+	FinishLength        FinishReason = "length"
+	FinishContentFilter FinishReason = "content_filter"
+	FinishError         FinishReason = "error"
+	FinishCancelled     FinishReason = "cancelled"
+)
+
+func NormalizeFinishReason(raw string, hasToolCalls bool, truncated bool, hasText bool) (FinishReason, bool) {
+	if hasToolCalls {
+		return FinishToolCalls, raw == ""
+	}
+	if truncated {
+		return FinishLength, raw == ""
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "unknown":
+		if hasText {
+			return FinishStop, true
+		}
+		return FinishUnknown, true
+	case "stop", "end_turn", "stop_sequence", "stop-sequence":
+		return FinishStop, false
+	case "tool_calls", "tool-calls", "tool_use", "tool-use", "function_call", "function-calls", "function_calls":
+		return FinishToolCalls, false
+	case "length", "max_tokens", "max-tokens", "max_output_tokens", "max-output-tokens":
+		return FinishLength, false
+	case "content_filter", "content-filter", "safety", "blocked":
+		return FinishContentFilter, false
+	case "error":
+		return FinishError, false
+	case "cancelled", "canceled", "abort", "aborted":
+		return FinishCancelled, false
+	default:
+		if hasText {
+			return FinishStop, true
+		}
+		return FinishUnknown, true
+	}
+}
+
+func IsTerminalNaturalFinish(reason FinishReason) bool {
+	return reason == FinishStop
+}
 
 type ToolCall struct {
 	ID       string

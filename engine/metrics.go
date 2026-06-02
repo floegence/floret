@@ -3,14 +3,19 @@ package engine
 import "github.com/floegence/floret/provider"
 
 type StepMetrics struct {
-	Step              int            `json:"step"`
-	Provider          string         `json:"provider,omitempty"`
-	Model             string         `json:"model,omitempty"`
-	Usage             provider.Usage `json:"usage"`
-	ProviderLatencyMS int64          `json:"provider_latency_ms,omitempty"`
-	ToolLatencyMS     int64          `json:"tool_latency_ms,omitempty"`
-	ToolCalls         int            `json:"tool_calls,omitempty"`
-	Retries           int            `json:"retries,omitempty"`
+	Step               int            `json:"step"`
+	Provider           string         `json:"provider,omitempty"`
+	Model              string         `json:"model,omitempty"`
+	Usage              provider.Usage `json:"usage"`
+	ProviderLatencyMS  int64          `json:"provider_latency_ms,omitempty"`
+	ToolLatencyMS      int64          `json:"tool_latency_ms,omitempty"`
+	ToolCalls          int            `json:"tool_calls,omitempty"`
+	Retries            int            `json:"retries,omitempty"`
+	FinishReason       string         `json:"finish_reason,omitempty"`
+	RawFinishReason    string         `json:"raw_finish_reason,omitempty"`
+	FinishInferred     bool           `json:"finish_inferred,omitempty"`
+	CompletionReason   string         `json:"completion_reason,omitempty"`
+	ContinuationReason string         `json:"continuation_reason,omitempty"`
 }
 
 type RunMetrics struct {

@@ -109,7 +109,7 @@ func (r Runner) RunAgent(ctx context.Context, req AgentRunRequest) AgentRunRespo
 		WallTime:                60 * time.Second,
 	}
 	if cfg.SystemPrompt == "" {
-		cfg.SystemPrompt = "You are Floret. Use task_complete when the user's request is complete, or ask_user if you need missing information."
+		cfg.SystemPrompt = "You are Floret. Answer naturally when the user's request is complete, or call ask_user if you need missing information."
 	}
 	if cfg.MaxContextMessages <= 0 {
 		cfg.MaxContextMessages = 32
@@ -141,7 +141,7 @@ func (r Runner) RunAgent(ctx context.Context, req AgentRunRequest) AgentRunRespo
 	store := session.NewMemoryStore()
 	promptStore := promptcache.NewFileStore(filepath.Join(r.Root, ".floret-test-ui", "prompt-cache"))
 	registry := tools.NewRegistry()
-	if err := registerSignalTools(registry); err != nil {
+	if err := registerInterruptTools(registry); err != nil {
 		return r.failAgentRun(resp, err)
 	}
 	eng := &engine.Engine{
@@ -321,7 +321,7 @@ func (r Runner) runEvalDemo(ctx context.Context, resp RunResponse) RunResponse {
 	}
 	rec := &event.Recorder{}
 	registry := tools.NewRegistry()
-	if err := registerSignalTools(registry); err != nil {
+	if err := registerInterruptTools(registry); err != nil {
 		return r.failAgent(resp, err)
 	}
 	if err := registry.Register(tools.Tool{
@@ -355,7 +355,7 @@ func (r Runner) runEvalDemo(ctx context.Context, resp RunResponse) RunResponse {
 		),
 		harness.Step(
 			harness.Usage(provider.Usage{InputTokens: 18, OutputTokens: 5, Source: provider.UsageEstimated}),
-			harness.Tool("done", "task_complete", "Created RESULT.txt and verified the eval oracle."),
+			harness.Text("Created RESULT.txt and verified the eval oracle."),
 			harness.Done(),
 		),
 	)
@@ -441,7 +441,7 @@ func (r Runner) runProviderSmoke(ctx context.Context, resp RunResponse) RunRespo
 	rec := &event.Recorder{}
 	registry := tools.NewRegistry()
 	promptStore := promptcache.NewFileStore(filepath.Join(r.Root, ".floret-test-ui", "prompt-cache"))
-	if err := registerSignalTools(registry); err != nil {
+	if err := registerInterruptTools(registry); err != nil {
 		return r.failAgent(resp, err)
 	}
 	eng := &engine.Engine{
@@ -449,7 +449,7 @@ func (r Runner) runProviderSmoke(ctx context.Context, resp RunResponse) RunRespo
 		Store:    session.NewMemoryStore(),
 		Prompt:   promptStore,
 		Memory: &memory.Manager{
-			SystemPrompt: "You are Floret's smoke-test assistant. Complete the request using task_complete with a short success message. Do not call normal tools.",
+			SystemPrompt: "You are Floret's smoke-test assistant. Reply with a short success message. Do not call normal tools unless you need to ask the user for missing information.",
 			MaxMessages:  cfg.MaxContextMessages,
 		},
 		Tools: registry,
@@ -502,16 +502,7 @@ func (r Runner) newRunWorkspace(prefix string) (string, error) {
 	return os.MkdirTemp(root, prefix+"-*")
 }
 
-func registerSignalTools(registry *tools.Registry) error {
-	if err := registry.Register(tools.Tool{
-		Name:        "task_complete",
-		Description: "Signal that the task is complete. The argument is the final answer.",
-		Handler: func(context.Context, string) (string, error) {
-			return "", nil
-		},
-	}); err != nil {
-		return err
-	}
+func registerInterruptTools(registry *tools.Registry) error {
 	if err := registry.Register(tools.Tool{
 		Name:        "ask_user",
 		Description: "Ask the user for missing information. The argument is the question to show.",

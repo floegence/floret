@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/event"
@@ -20,7 +21,7 @@ import (
 
 func TestThreadRunPersistsTurnEntriesAndContext(t *testing.T) {
 	ctx := context.Background()
-	p := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done text"), scriptharness.Tool("done", "task_complete", "ok")))
+	p := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done text"), scriptharness.Done()))
 	h := newTestHarness(p, sessiontree.NewMemoryRepo(), promptcache.NewMemoryStore())
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
@@ -30,7 +31,7 @@ func TestThreadRunPersistsTurnEntriesAndContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != engine.Completed || result.Output != "ok" {
+	if result.Status != engine.Completed || result.Output != "done text" {
 		t.Fatalf("result = %#v", result)
 	}
 	snap, err := thread.Read(ctx)
@@ -41,16 +42,145 @@ func TestThreadRunPersistsTurnEntriesAndContext(t *testing.T) {
 		!hasEntry(snap.Entries, sessiontree.EntryTurnMarker, sessiontree.TurnCompleted) {
 		t.Fatalf("turn markers missing: %#v", snap.Entries)
 	}
+	completed := firstTurnMarker(snap.Entries, sessiontree.TurnCompleted)
+	if completed.Metadata["completion_reason"] != string(engine.CompletionReasonNaturalStop) ||
+		completed.Metadata["finish_reason"] != string(provider.FinishStop) ||
+		completed.Metadata["raw_finish_reason"] != "stop" ||
+		completed.Metadata["finish_inferred"] != "false" {
+		t.Fatalf("completed marker metadata = %#v", completed.Metadata)
+	}
 	if countEntries(snap.Entries, sessiontree.EntryUserMessage) != 1 {
 		t.Fatalf("user message should be stored exactly once: %#v", snap.Entries)
 	}
-	if !slices.ContainsFunc(snap.Entries, func(entry sessiontree.Entry) bool {
-		return entry.Type == sessiontree.EntryToolCall && entry.Message.ToolName == "task_complete"
-	}) {
-		t.Fatalf("task_complete signal should be projected into session tree: %#v", snap.Entries)
-	}
-	if len(snap.Context) != 3 || snap.Context[0].Content != "do it" || snap.Context[1].Content != "done text" || snap.Context[2].Content != "Agent completed the task: ok" || snap.Context[2].ToolName != "" {
+	if len(snap.Context) != 2 || snap.Context[0].Content != "do it" || snap.Context[1].Content != "done text" || snap.Context[1].ToolName != "" {
 		t.Fatalf("provider-visible context = %#v", snap.Context)
+	}
+}
+
+func TestThreadRunStopHookContinuationIsPersistedAndMetadataStaysOutOfPrompt(t *testing.T) {
+	ctx := context.Background()
+	repo := sessiontree.NewMemoryRepo()
+	promptStore := promptcache.NewMemoryStore()
+	p := scriptharness.NewScriptedProvider(
+		scriptharness.Step(scriptharness.Text("draft"), scriptharness.Done()),
+		scriptharness.Step(scriptharness.Text("final"), scriptharness.Done()),
+	)
+	h := newTestHarness(p, repo, promptStore)
+	h.options.StopHook = func(_ context.Context, hook engine.StopHookContext) (engine.StopHookResult, error) {
+		if hook.Step == 1 {
+			return engine.StopHookResult{Continue: true, Prompt: "Please verify before finalizing.", Reason: "verify"}, nil
+		}
+		return engine.StopHookResult{}, nil
+	}
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := thread.Run(ctx, "do it", RunOptions{TurnID: "turn-hook"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Status != engine.Completed || result.Output != "draftfinal" {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(p.Requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(p.Requests))
+	}
+	if !slices.ContainsFunc(p.Requests[1].Messages, func(msg session.Message) bool {
+		return msg.Role == session.User && msg.Content == "Please verify before finalizing."
+	}) {
+		t.Fatalf("hook continuation prompt missing from provider context: %#v", p.Requests[1].Messages)
+	}
+	snap, err := thread.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if countUserMessagesInSnapshot(snap, "Please verify before finalizing.") != 1 {
+		t.Fatalf("hook continuation prompt should be persisted once: %#v", snap.Entries)
+	}
+	completed := firstTurnMarker(snap.Entries, sessiontree.TurnCompleted)
+	if completed.Metadata["completion_reason"] != string(engine.CompletionReasonNaturalStop) ||
+		completed.Metadata["finish_reason"] != string(provider.FinishStop) {
+		t.Fatalf("completed marker metadata = %#v", completed.Metadata)
+	}
+	for _, req := range p.Requests {
+		for _, segment := range req.RawPlan.Segments {
+			if strings.Contains(segment.Raw, "completion_reason") || strings.Contains(segment.Raw, "finish_reason") {
+				t.Fatalf("marker metadata leaked into provider raw prompt: %#v", segment)
+			}
+		}
+	}
+}
+
+func TestThreadRunStopHookContinuationBeforeToolCallKeepsSessionTreeOrder(t *testing.T) {
+	ctx := context.Background()
+	repo := sessiontree.NewMemoryRepo()
+	promptStore := promptcache.NewMemoryStore()
+	p := scriptharness.NewScriptedProvider(
+		scriptharness.Step(scriptharness.Text("draft"), scriptharness.Done()),
+		scriptharness.Step(scriptharness.Tool("read-1", "read", "{}"), scriptharness.DoneReason("tool_calls")),
+		scriptharness.Step(scriptharness.Text("final"), scriptharness.Done()),
+	)
+	h := newTestHarness(p, repo, promptStore)
+	mustRegister(h.options.Tools, tools.Tool{Name: "read", Handler: func(context.Context, string) (string, error) {
+		return "read result", nil
+	}})
+	h.options.StopHook = func(_ context.Context, hook engine.StopHookContext) (engine.StopHookResult, error) {
+		if hook.Step == 1 {
+			return engine.StopHookResult{Continue: true, Prompt: "Please inspect with a tool.", Reason: "tool-check"}, nil
+		}
+		return engine.StopHookResult{}, nil
+	}
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := thread.Run(ctx, "do it", RunOptions{TurnID: "turn-hook-tool"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Status != engine.Completed || result.Output != "draftfinal" {
+		t.Fatalf("result = %#v", result)
+	}
+	snap, err := thread.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []session.Message{
+		{Role: session.User, Content: "do it"},
+		{Role: session.Assistant, Content: "draft"},
+		{Role: session.User, Content: "Please inspect with a tool."},
+		{Role: session.Assistant, Content: "tool_call", ToolCallID: "read-1", ToolName: "read", ToolArgs: "{}"},
+		{Role: session.Tool, Content: "read result", ToolCallID: "read-1", ToolName: "read"},
+		{Role: session.Assistant, Content: "final"},
+	}
+	if !messagePrefixEqual(snap.Context, want) || len(snap.Context) != len(want) {
+		t.Fatalf("session context order = %#v", snap.Context)
+	}
+	if countUserMessagesInSnapshot(snap, "Please inspect with a tool.") != 1 ||
+		countEntriesWithContent(snap.Entries, sessiontree.EntryAssistantMessage, "draft") != 1 ||
+		countEntriesWithContent(snap.Entries, sessiontree.EntryAssistantMessage, "final") != 1 ||
+		countEntries(snap.Entries, sessiontree.EntryToolCall) != 1 ||
+		countEntries(snap.Entries, sessiontree.EntryToolResult) != 1 {
+		t.Fatalf("session entries should not duplicate hook/tool suffix: %#v", snap.Entries)
+	}
+	if !slices.ContainsFunc(snap.Entries, func(entry sessiontree.Entry) bool {
+		return entry.Type == sessiontree.EntryTurnMarker &&
+			entry.TurnStatus == sessiontree.TurnSavePoint &&
+			entry.Metadata["reason"] == "context_continue" &&
+			entry.Metadata["continuation_reason"] == string(engine.ContinueHook) &&
+			entry.Metadata["hook_reason"] == "tool-check"
+	}) {
+		t.Fatalf("hook continuation save point missing: %#v", snap.Entries)
+	}
+	if len(p.Requests) != 3 || !slices.ContainsFunc(p.Requests[1].Messages, func(msg session.Message) bool {
+		return msg.Role == session.User && msg.Content == "Please inspect with a tool."
+	}) {
+		t.Fatalf("hook continuation missing from tool step request: %#v", p.Requests)
 	}
 }
 
@@ -86,7 +216,7 @@ func TestRetryDoesNotDuplicateUserMessageAndKeepsPrefixStable(t *testing.T) {
 	}) {
 		t.Fatalf("failed branch should retain partial assistant output: %#v", failedSnap.Entries)
 	}
-	retryProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Tool("done", "task_complete", "ok")))
+	retryProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("ok"), scriptharness.Done()))
 	h.options.Provider = retryProvider
 	result, err = thread.Retry(ctx, RetryOptions{Reason: "provider recovered"})
 	if err != nil {
@@ -145,7 +275,6 @@ func TestRetryAfterInterruptedTurnUsesRealtimeToolSavePoint(t *testing.T) {
 	)
 	registry := tools.NewRegistry()
 	readCalls := 0
-	mustRegister(registry, tools.Tool{Name: "task_complete", Handler: func(context.Context, string) (string, error) { return "", nil }})
 	mustRegister(registry, tools.Tool{Name: "ask_user", Handler: func(context.Context, string) (string, error) { return "", nil }})
 	mustRegister(registry, tools.Tool{Name: "read", Handler: func(context.Context, string) (string, error) {
 		readCalls++
@@ -171,12 +300,18 @@ func TestRetryAfterInterruptedTurnUsesRealtimeToolSavePoint(t *testing.T) {
 		_, err := thread.Run(runCtx, "read then wait", RunOptions{TurnID: "turn-interrupted"})
 		done <- err
 	}()
-	for i := 0; i < 1000; i++ {
+	deadline := time.After(2 * time.Second)
+	for {
 		snap, _ := thread.Read(ctx)
 		if slices.ContainsFunc(snap.Entries, func(entry sessiontree.Entry) bool {
 			return entry.Type == sessiontree.EntryToolResult && entry.Message.Content == "read result"
 		}) {
 			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for realtime tool save point")
+		case <-time.After(5 * time.Millisecond):
 		}
 	}
 	cancel()
@@ -186,7 +321,7 @@ func TestRetryAfterInterruptedTurnUsesRealtimeToolSavePoint(t *testing.T) {
 	if readCalls != 1 {
 		t.Fatalf("read calls before retry = %d", readCalls)
 	}
-	retryProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Tool("done", "task_complete", "ok")))
+	retryProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("ok"), scriptharness.Done()))
 	h.options.Provider = retryProvider
 	result, err := thread.Retry(ctx, RetryOptions{Reason: "after interruption"})
 	if err != nil {
@@ -209,7 +344,7 @@ func TestForkContinuesWithoutPollutingSourceThread(t *testing.T) {
 	ctx := context.Background()
 	repo := sessiontree.NewMemoryRepo()
 	promptStore := promptcache.NewMemoryStore()
-	sourceProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Tool("done", "task_complete", "source done")))
+	sourceProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("source done"), scriptharness.Done()))
 	h := newTestHarness(sourceProvider, repo, promptStore)
 	source, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "source"})
 	if err != nil {
@@ -224,7 +359,7 @@ func TestForkContinuesWithoutPollutingSourceThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	forkProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Tool("done", "task_complete", "fork done")))
+	forkProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("fork done"), scriptharness.Done()))
 	h.options.Provider = forkProvider
 	if _, err := fork.Run(ctx, "second", RunOptions{TurnID: "turn-fork"}); err != nil {
 		t.Fatal(err)
@@ -238,7 +373,7 @@ func TestForkContinuesWithoutPollutingSourceThread(t *testing.T) {
 		t.Fatalf("fork should contain copied source user and new user: %#v", forkAfter.Entries)
 	}
 	if slices.ContainsFunc(forkProvider.Requests[0].Messages, func(msg session.Message) bool {
-		return msg.ToolName == "task_complete" || msg.Content == "source done"
+		return msg.Content == "source done"
 	}) {
 		t.Fatalf("fork from user entry should not include source assistant/tool suffix: %#v", forkProvider.Requests[0].Messages)
 	}
@@ -281,7 +416,7 @@ func TestMoveToBranchSummaryEntersActiveContext(t *testing.T) {
 func TestEngineCompactionIsProjectedAsSessionTreeCompactionEntry(t *testing.T) {
 	ctx := context.Background()
 	repo := sessiontree.NewMemoryRepo()
-	p := scriptharness.NewScriptedProvider(nil, scriptharness.Step(scriptharness.Tool("done", "task_complete", "ok")))
+	p := scriptharness.NewScriptedProvider(nil, scriptharness.Step(scriptharness.Text("ok"), scriptharness.Done()))
 	p.Errs[1] = provider.ErrContextOverflow
 	h := newTestHarness(p, repo, promptcache.NewMemoryStore())
 	h.options.MaxContextMessages = 2
@@ -338,7 +473,7 @@ func TestFileRepoResumeContinuesThreadAndReusesRawSegments(t *testing.T) {
 	}
 	firstRequestSegments := append([]string(nil), firstProvider.Requests[0].RawPlan.SegmentIDs...)
 	firstRequestRaws := segmentRaws(firstProvider.Requests[0].RawPlan.Segments)
-	secondProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Tool("done", "task_complete", "ok")))
+	secondProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("ok"), scriptharness.Done()))
 	resumedHarness := newTestHarness(secondProvider, sessiontree.NewFileRepo(root), promptcache.NewFileStore(promptRoot))
 	resumed, err := resumedHarness.ResumeThread(ctx, "thread", ResumeOptions{})
 	if err != nil {
@@ -435,7 +570,6 @@ func TestActiveTurnBusyGuard(t *testing.T) {
 func newTestHarness(p provider.Provider, repo sessiontree.Repo, promptStore promptcache.Store) *AgentHarness {
 	rec := &event.Recorder{}
 	registry := tools.NewRegistry()
-	mustRegister(registry, tools.Tool{Name: "task_complete", Handler: func(context.Context, string) (string, error) { return "", nil }})
 	mustRegister(registry, tools.Tool{Name: "ask_user", Handler: func(context.Context, string) (string, error) { return "", nil }})
 	return New(Options{
 		Provider:     p,
@@ -468,10 +602,29 @@ func hasEntry(entries []sessiontree.Entry, entryType sessiontree.EntryType, stat
 	})
 }
 
+func firstTurnMarker(entries []sessiontree.Entry, status sessiontree.TurnMarkerStatus) sessiontree.Entry {
+	for _, entry := range entries {
+		if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == status {
+			return entry
+		}
+	}
+	return sessiontree.Entry{}
+}
+
 func countEntries(entries []sessiontree.Entry, entryType sessiontree.EntryType) int {
 	count := 0
 	for _, entry := range entries {
 		if entry.Type == entryType {
+			count++
+		}
+	}
+	return count
+}
+
+func countEntriesWithContent(entries []sessiontree.Entry, entryType sessiontree.EntryType, content string) int {
+	count := 0
+	for _, entry := range entries {
+		if entry.Type == entryType && entry.Message.Content == content {
 			count++
 		}
 	}
@@ -486,6 +639,16 @@ func userContents(messages []session.Message) []string {
 		}
 	}
 	return out
+}
+
+func countUserMessagesInSnapshot(snap ThreadSnapshot, content string) int {
+	count := 0
+	for _, entry := range snap.Entries {
+		if entry.Type == sessiontree.EntryUserMessage && entry.Message.Content == content {
+			count++
+		}
+	}
+	return count
 }
 
 func segmentRaws(segments []promptcache.Segment) []string {

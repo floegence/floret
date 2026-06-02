@@ -70,8 +70,8 @@ func TestOpenAICompatibleProviderSendsConfiguredModelAndReceivesAnswer(t *testin
 		Tools:    tools.NewRegistry(),
 		Options:  engine.Options{RunID: "run", MaxSteps: 2},
 	}).Run(context.Background(), "hello")
-	if result.Status != engine.Failed {
-		t.Fatalf("status = %s, want failed until explicit task_complete", result.Status)
+	if result.Status != engine.Completed || result.Output != "remote ok" || result.CompletionReason != engine.CompletionReasonNaturalStop {
+		t.Fatalf("result = %#v, want natural completion from remote text", result)
 	}
 	if seenModel != "remote-model" {
 		t.Fatalf("model = %q, want configured model", seenModel)
@@ -85,7 +85,7 @@ func TestOpenAICompatibleProviderNormalizesUsage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
-			"choices":[{"message":{"tool_calls":[{"id":"done","type":"function","function":{"name":"task_complete","arguments":"ok"}}]},"finish_reason":"tool_calls"}],
+			"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],
 			"usage":{"prompt_tokens":120,"completion_tokens":30,"total_tokens":160,"prompt_tokens_details":{"cached_tokens":20,"cache_write_tokens":5},"completion_tokens_details":{"reasoning_tokens":10}}
 		}`))
 	}))
@@ -124,7 +124,7 @@ func TestNewProviderUsesBuiltInOpenAIProviderPreset(t *testing.T) {
 		}
 		seenModel = req.Model
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"tool_calls":[{"id":"done","type":"function","function":{"name":"task_complete","arguments":"ok"}}]},"finish_reason":"tool_calls"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 
@@ -147,7 +147,7 @@ func TestNewProviderUsesBuiltInOpenAIProviderPreset(t *testing.T) {
 	}
 }
 
-func TestAnthropicProviderSendsMessagesRequestAndReceivesToolUse(t *testing.T) {
+func TestAnthropicProviderSendsMessagesRequestAndReceivesNaturalAnswer(t *testing.T) {
 	var seenKey string
 	var seenVersion string
 	var seenPath string
@@ -169,7 +169,7 @@ func TestAnthropicProviderSendsMessagesRequestAndReceivesToolUse(t *testing.T) {
 			t.Fatal(err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"content":[{"type":"tool_use","id":"done","name":"task_complete","input":{"summary":"anthropic ok"}}],"stop_reason":"tool_use","usage":{"input_tokens":12,"output_tokens":3}}`))
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"anthropic ok"}],"stop_reason":"end_turn","usage":{"input_tokens":12,"output_tokens":3}}`))
 	}))
 	defer server.Close()
 
@@ -177,30 +177,20 @@ func TestAnthropicProviderSendsMessagesRequestAndReceivesToolUse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry := tools.NewRegistry()
-	if err := registry.Register(tools.Tool{
-		Name:        "task_complete",
-		Description: "Complete the task.",
-		Handler: func(context.Context, string) (string, error) {
-			return "", nil
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
 	result := (&engine.Engine{
 		Provider: p,
 		Store:    session.NewMemoryStore(),
 		Memory:   &memory.Manager{SystemPrompt: "anthropic system"},
-		Tools:    registry,
+		Tools:    tools.NewRegistry(),
 		Options:  engine.Options{RunID: "run", MaxSteps: 2},
 	}).Run(context.Background(), "hello")
-	if result.Status != engine.Completed || result.Output != `{"summary":"anthropic ok"}` {
+	if result.Status != engine.Completed || result.Output != "anthropic ok" {
 		t.Fatalf("result = %#v", result)
 	}
 	if seenPath != "/messages" || seenKey != "secret" || seenVersion == "" || seenBody.Model != "claude-sonnet-4-6" || !strings.Contains(string(seenBody.System), "anthropic system") {
 		t.Fatalf("bad anthropic request path/key/version/body = %q/%q/%q/%#v", seenPath, seenKey, seenVersion, seenBody)
 	}
-	if len(seenBody.Messages) == 0 || seenBody.Messages[0].Role != "user" || len(seenBody.Tools) == 0 || seenBody.Tools[0].Name != "task_complete" {
+	if len(seenBody.Messages) == 0 || seenBody.Messages[0].Role != "user" || len(seenBody.Tools) != 0 {
 		t.Fatalf("bad anthropic messages/tools = %#v", seenBody)
 	}
 }
@@ -619,18 +609,61 @@ func TestOpenAICompatibleProviderStreamsPartialToolArguments(t *testing.T) {
 	}))
 	defer server.Close()
 	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", StreamResponses: true, HTTPClient: server.Client()}
-	result := (&engine.Engine{
-		Provider: p,
-		Store:    session.NewMemoryStore(),
-		Memory:   &memory.Manager{SystemPrompt: "test"},
-		Tools:    tools.NewRegistry(),
-		Options:  engine.Options{RunID: "run", MaxSteps: 2},
-	}).Run(context.Background(), "hello")
-	if result.Status != engine.Completed || result.Output != `{"summary":"streamed"}` {
-		t.Fatalf("result = %#v", result)
+	stream, err := p.Stream(context.Background(), provider.Request{RunID: "run", Messages: []session.Message{{Role: session.User, Content: "hello"}}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if result.Metrics.Usage.TotalTokens != 15 {
-		t.Fatalf("usage = %#v", result.Metrics.Usage)
+	var calls []provider.ToolCall
+	var usage provider.Usage
+	var doneReason string
+	for ev := range stream {
+		if ev.Type == provider.ToolCalls {
+			calls = append(calls, ev.ToolCalls...)
+		}
+		if ev.Type == provider.UsageEvent {
+			usage = ev.Usage
+		}
+		if ev.Type == provider.Done {
+			doneReason = ev.Reason
+		}
+	}
+	if len(calls) != 1 || calls[0].Name != "task_complete" || calls[0].Args != `{"summary":"streamed"}` {
+		t.Fatalf("streamed tool calls = %#v", calls)
+	}
+	if usage.TotalTokens != 15 || doneReason != "tool_calls" {
+		t.Fatalf("usage/reason = %#v/%q", usage, doneReason)
+	}
+}
+
+func TestOpenAICompatibleProviderStreamsContentFilterFinishReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"blocked\"},\"finish_reason\":\"content_filter\"}]}\n\n"))
+	}))
+	defer server.Close()
+	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", StreamResponses: true, HTTPClient: server.Client()}
+
+	stream, err := p.Stream(context.Background(), provider.Request{RunID: "run", Messages: []session.Message{{Role: session.User, Content: "hello"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var sawText bool
+	var doneReason string
+	var emptyReason string
+	for ev := range stream {
+		if ev.Type == provider.Delta && ev.Text == "blocked" {
+			sawText = true
+		}
+		if ev.Type == provider.Done {
+			doneReason = ev.Reason
+		}
+		if ev.Type == provider.Empty {
+			emptyReason = ev.Reason
+		}
+	}
+	if !sawText || doneReason != "content_filter" || emptyReason != "" {
+		t.Fatalf("stream content filter events: sawText=%v done=%q empty=%q", sawText, doneReason, emptyReason)
 	}
 }
 
@@ -706,10 +739,10 @@ func TestOpenAICompatibleProviderRendersToolResultRequestShape(t *testing.T) {
 	}
 }
 
-func TestOpenAICompatibleProviderMapsToolCompletion(t *testing.T) {
+func TestOpenAICompatibleProviderMapsNaturalCompletion(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"tool_calls":[{"id":"done","type":"function","function":{"name":"task_complete","arguments":"remote done"}}]},"finish_reason":"tool_calls"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"remote done"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 
@@ -729,7 +762,7 @@ func TestOpenAICompatibleProviderMapsToolCompletion(t *testing.T) {
 		Tools:    tools.NewRegistry(),
 		Options:  engine.Options{RunID: "run", MaxSteps: 2},
 	}).Run(context.Background(), "hello")
-	if result.Status != engine.Completed || result.Output != "remote done" {
+	if result.Status != engine.Completed || result.Output != "remote done" || result.FinishReason != provider.FinishStop {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -739,7 +772,7 @@ func TestNewProviderUsesProviderSpecificEnvKey(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenAuth = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"tool_calls":[{"id":"done","type":"function","function":{"name":"task_complete","arguments":"ok"}}]},"finish_reason":"tool_calls"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 

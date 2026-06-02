@@ -21,3 +21,31 @@ func TestUsageAddPreservesMixedSource(t *testing.T) {
 		t.Fatalf("source = %q, want mixed", got.Source)
 	}
 }
+
+func TestNormalizeFinishReason(t *testing.T) {
+	tests := []struct {
+		name      string
+		raw       string
+		hasTools  bool
+		truncated bool
+		hasText   bool
+		want      FinishReason
+		inferred  bool
+	}{
+		{name: "openai stop", raw: "stop", hasText: true, want: FinishStop},
+		{name: "anthropic end turn", raw: "end_turn", hasText: true, want: FinishStop},
+		{name: "tool calls win", raw: "stop", hasTools: true, want: FinishToolCalls},
+		{name: "length", raw: "max_tokens", truncated: true, hasText: true, want: FinishLength},
+		{name: "content filter", raw: "content_filter", want: FinishContentFilter},
+		{name: "unknown with text infers stop", raw: "weird", hasText: true, want: FinishStop, inferred: true},
+		{name: "unknown empty stays unknown", raw: "weird", want: FinishUnknown, inferred: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, inferred := NormalizeFinishReason(tt.raw, tt.hasTools, tt.truncated, tt.hasText)
+			if got != tt.want || inferred != tt.inferred {
+				t.Fatalf("NormalizeFinishReason = %q/%v, want %q/%v", got, inferred, tt.want, tt.inferred)
+			}
+		})
+	}
+}

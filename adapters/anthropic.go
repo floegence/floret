@@ -159,7 +159,7 @@ func (p AnthropicProvider) Stream(ctx context.Context, req provider.Request) (<-
 	if parsed.StopReason == "max_tokens" {
 		ch <- provider.StreamEvent{Type: provider.Truncated, Reason: "max_tokens"}
 	} else {
-		ch <- provider.StreamEvent{Type: provider.Done}
+		ch <- provider.StreamEvent{Type: provider.Done, Reason: parsed.StopReason}
 	}
 	close(ch)
 	return ch, nil

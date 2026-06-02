@@ -44,7 +44,11 @@ func Empty() provider.StreamEvent {
 }
 
 func Done() provider.StreamEvent {
-	return provider.StreamEvent{Type: provider.Done}
+	return DoneReason("stop")
+}
+
+func DoneReason(reason string) provider.StreamEvent {
+	return provider.StreamEvent{Type: provider.Done, Reason: reason}
 }
 
 func Hang() provider.StreamEvent {

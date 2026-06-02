@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +67,7 @@ type Options struct {
 	Sink               event.Sink
 	HarnessSink        HarnessSink
 	Approver           tools.Approver
+	StopHook           engine.StopHook
 	MaxContextMessages int
 	EngineOptions      engine.Options
 	NewID              func(string) string
@@ -113,11 +115,16 @@ type ThreadSnapshot struct {
 }
 
 type TurnResult struct {
-	ID      string
-	Status  engine.Status
-	Output  string
-	Err     error
-	Metrics engine.RunMetrics
+	ID                 string
+	Status             engine.Status
+	Output             string
+	Err                error
+	Metrics            engine.RunMetrics
+	CompletionReason   engine.CompletionReason
+	ContinuationReason engine.ContinuationReason
+	FinishReason       provider.FinishReason
+	RawFinishReason    string
+	FinishInferred     bool
 }
 
 type Thread struct {
@@ -372,6 +379,7 @@ func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retryUs
 		},
 		Sink:     nil,
 		Approver: t.harness.options.Approver,
+		StopHook: t.harness.options.StopHook,
 		Options:  engineOptions,
 	}
 	projection := &turnProjection{thread: t, ctx: ctx, turnID: turnID, downstream: t.harness.options.Sink}
@@ -392,8 +400,9 @@ func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retryUs
 		return TurnResult{}, err
 	}
 	status := markerForStatus(result.Status)
-	metadata := map[string]string{"run_id": runID}
-	if _, err := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, sessiontree.TurnSavePoint, metadata); err != nil {
+	savePointMetadata := markerMetadata(runID, result)
+	savePointMetadata["reason"] = "run_result"
+	if _, err := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, sessiontree.TurnSavePoint, savePointMetadata); err != nil {
 		return TurnResult{}, err
 	}
 	if result.Err != nil {
@@ -401,7 +410,14 @@ func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retryUs
 			return TurnResult{}, err
 		}
 	}
-	if _, err := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, status, metadata); err != nil {
+	terminalMetadata := markerMetadata(runID, result)
+	if result.Err != nil {
+		terminalMetadata["failure_reason"] = result.Err.Error()
+	}
+	if result.Status == engine.Waiting {
+		terminalMetadata["interrupt_reason"] = "ask_user"
+	}
+	if _, err := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, status, terminalMetadata); err != nil {
 		return TurnResult{}, err
 	}
 	eventType := EventTurnCompleted
@@ -412,7 +428,18 @@ func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retryUs
 		eventType = EventTurnAborted
 	}
 	t.harness.emit(HarnessEvent{Type: eventType, ThreadID: t.id, TurnID: turnID, Status: string(result.Status), Message: result.Output})
-	return TurnResult{ID: turnID, Status: result.Status, Output: result.Output, Err: result.Err, Metrics: result.Metrics}, result.Err
+	return TurnResult{
+		ID:                 turnID,
+		Status:             result.Status,
+		Output:             result.Output,
+		Err:                result.Err,
+		Metrics:            result.Metrics,
+		CompletionReason:   result.CompletionReason,
+		ContinuationReason: result.ContinuationReason,
+		FinishReason:       result.FinishReason,
+		RawFinishReason:    result.RawFinishReason,
+		FinishInferred:     result.FinishInferred,
+	}, result.Err
 }
 
 func (t *Thread) enterTurn() error {
@@ -534,6 +561,24 @@ func markerForStatus(status engine.Status) sessiontree.TurnMarkerStatus {
 	}
 }
 
+func markerMetadata(runID string, result engine.Result) map[string]string {
+	metadata := map[string]string{"run_id": runID}
+	if result.CompletionReason != "" {
+		metadata["completion_reason"] = string(result.CompletionReason)
+	}
+	if result.ContinuationReason != "" {
+		metadata["continuation_reason"] = string(result.ContinuationReason)
+	}
+	if result.FinishReason != "" {
+		metadata["finish_reason"] = string(result.FinishReason)
+		metadata["finish_inferred"] = strconv.FormatBool(result.FinishInferred)
+	}
+	if result.RawFinishReason != "" {
+		metadata["raw_finish_reason"] = result.RawFinishReason
+	}
+	return metadata
+}
+
 type retryTargetResult struct {
 	Entry  sessiontree.Entry
 	Source string
@@ -626,5 +671,22 @@ func (p *turnProjection) Emit(ev event.Event) {
 			return
 		}
 		_, p.err = sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, sessiontree.TurnSavePoint, map[string]string{"reason": "tool_result"})
+	case event.ContextContinue:
+		if p.text != "" {
+			p.err = p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Assistant, Content: p.text})
+			p.text = ""
+			if p.err != nil {
+				return
+			}
+		}
+		p.err = p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.User, Content: ev.Message})
+		if p.err != nil {
+			return
+		}
+		metadata := map[string]string{"reason": "context_continue", "continuation_reason": ev.ContinuationReason}
+		if ev.Result != "" {
+			metadata["hook_reason"] = ev.Result
+		}
+		_, p.err = sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, sessiontree.TurnSavePoint, metadata)
 	}
 }

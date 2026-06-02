@@ -42,7 +42,7 @@ func TestRunnerPassesOnlyWhenEngineCompletesAndOraclePasses(t *testing.T) {
 					harness.Usage(provider.Usage{InputTokens: 10, OutputTokens: 2}),
 					harness.Tool("write-1", "write", "done"),
 				),
-				harness.Step(harness.Tool("done", "task_complete", "ok")),
+				harness.Step(harness.Text("ok"), harness.Done()),
 			),
 			Store:   session.NewMemoryStore(),
 			Memory:  &memory.Manager{SystemPrompt: "test"},
@@ -74,12 +74,13 @@ func TestRunnerPassesOnlyWhenEngineCompletesAndOraclePasses(t *testing.T) {
 	}
 }
 
-func TestRunnerFailsWhenOracleFailsDespiteTaskComplete(t *testing.T) {
+func TestRunnerFailsWhenOracleFailsDespiteNaturalCompletion(t *testing.T) {
 	workspace := t.TempDir()
 	runner := Runner{
 		Workspace: workspace,
 		Engine: newEvalEngine(harness.NewScriptedProvider(harness.Step(
-			harness.Tool("done", "task_complete", "ok"),
+			harness.Text("ok"),
+			harness.Done(),
 		))),
 	}
 	result, err := runner.Run(context.Background(), Case{
@@ -172,7 +173,8 @@ func TestRunnerAppliesBudgetsAndRejectsUnsafeOraclePaths(t *testing.T) {
 		Workspace: workspace,
 		Engine: newEvalEngine(harness.NewScriptedProvider(harness.Step(
 			harness.Usage(provider.Usage{InputTokens: 101}),
-			harness.Tool("done", "task_complete", "ok"),
+			harness.Text("ok"),
+			harness.Done(),
 		))),
 	}
 	result, err := runner.Run(context.Background(), Case{
@@ -188,7 +190,7 @@ func TestRunnerAppliesBudgetsAndRejectsUnsafeOraclePaths(t *testing.T) {
 		t.Fatalf("result = %#v", result)
 	}
 
-	runner.Engine = newEvalEngine(harness.NewScriptedProvider(harness.Step(harness.Tool("done", "task_complete", "ok"))))
+	runner.Engine = newEvalEngine(harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done())))
 	result, err = runner.Run(context.Background(), Case{
 		ID:     "unsafe-path",
 		Prompt: "finish",
@@ -218,7 +220,7 @@ func TestRunnerCapturesGitDiffArtifact(t *testing.T) {
 	runner := Runner{
 		Workspace:    workspace,
 		ArtifactsDir: artifacts,
-		Engine:       newEvalEngine(harness.NewScriptedProvider(harness.Step(harness.Tool("done", "task_complete", "ok")))),
+		Engine:       newEvalEngine(harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))),
 	}
 	result, err := runner.Run(context.Background(), Case{
 		ID:     "diff",

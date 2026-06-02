@@ -28,10 +28,10 @@ The engine is intentionally small and explicit:
 2. Assemble bounded provider context.
 3. Stream provider output.
 4. Recover from empty, truncated, or context-overflow responses.
-5. Treat `task_complete` as the explicit completion signal.
+5. Treat a terminal provider response with assistant text and no pending tools as natural completion.
 6. Treat `ask_user` as the explicit user-interrupt signal.
 7. Execute normal tools through the registry and feed results back into the next step.
-8. Stop through loop guards for max steps, cancellation, no progress, repeated tools, and duplicate tool call IDs.
+8. Stop through loop guards for max steps, cancellation, no progress, repeated tools, truncation, and duplicate tool call IDs.
 
 Events are presentation-neutral so a terminal UI, desktop app, test harness, or automation
 surface can render the same runtime facts without parsing human text.

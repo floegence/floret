@@ -226,10 +226,15 @@ func TestRunnerRunAgentReturnsInteractionObservation(t *testing.T) {
 	if len(result.Observation.Transitions) == 0 {
 		t.Fatalf("transitions missing")
 	}
-	if !slices.ContainsFunc(result.Observation.ProviderRequests[0].Tools, func(tool provider.ToolDefinition) bool {
+	if slices.ContainsFunc(result.Observation.ProviderRequests[0].Tools, func(tool provider.ToolDefinition) bool {
 		return tool.Name == "task_complete"
 	}) {
-		t.Fatalf("task_complete tool definition missing: %#v", result.Observation.ProviderRequests[0].Tools)
+		t.Fatalf("task_complete should not be a default test UI tool: %#v", result.Observation.ProviderRequests[0].Tools)
+	}
+	if !slices.ContainsFunc(result.Observation.ProviderRequests[0].Tools, func(tool provider.ToolDefinition) bool {
+		return tool.Name == "ask_user"
+	}) {
+		t.Fatalf("ask_user interrupt tool definition missing: %#v", result.Observation.ProviderRequests[0].Tools)
 	}
 	summary := result.Observation.ProviderRequests[0].CacheSummary
 	if len(result.Observation.ProviderRequests[0].RawSegments) == 0 || summary.PrefixHash == "" || summary.PayloadHash == "" || summary.ToolsetID == "" || summary.ToolsetEpoch == 0 {
