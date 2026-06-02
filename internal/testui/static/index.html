@@ -74,8 +74,8 @@
       <section class="studio">
         <header class="topbar">
           <div>
-            <p class="eyebrow">Interactive Agent Run</p>
-            <h2 id="runTitle">Inspect one Floret turn</h2>
+            <p class="eyebrow">Interactive Agent Session</p>
+            <h2 id="runTitle">Inspect a Floret session</h2>
           </div>
           <div id="runStatus" class="status idle" aria-live="polite">idle</div>
         </header>
@@ -86,7 +86,7 @@
             <textarea id="systemPrompt" rows="3">You are Floret. Answer naturally when the user's request is complete, or call ask_user if you need missing information.</textarea>
           </label>
           <label class="field message-field">
-            <span>First user message</span>
+            <span>User message</span>
             <textarea id="userMessage" rows="5">Say hello from Floret and complete the task.</textarea>
           </label>
           <div class="run-controls">
@@ -102,7 +102,15 @@
               <span>Recent tail</span>
               <input id="recentTailTokens" type="number" min="256" step="256" value="4096" />
             </label>
-            <button id="runAgent" class="primary" type="button">Run Agent</button>
+            <button id="runAgent" class="primary" type="button">New Session</button>
+            <button id="appendMessage" class="secondary" type="button" disabled>Send Message</button>
+          </div>
+          <div class="session-controls">
+            <label class="field session-field">
+              <span>Active session</span>
+              <select id="sessionSelect"></select>
+            </label>
+            <button id="refreshSessions" class="secondary small" type="button">Refresh</button>
           </div>
         </section>
 
@@ -115,7 +123,10 @@
           <div class="metric"><span>Duration</span><strong id="metricDuration">-</strong></div>
         </section>
 
-        <div class="summary" id="summaryText">Run an agent turn to inspect state transitions and provider interaction.</div>
+        <div class="summary">
+          <p id="summaryText">Run an agent turn to inspect state transitions and provider interaction.</p>
+          <p id="sessionMeta" class="microcopy">No active session.</p>
+        </div>
 
         <section class="outcome-grid">
           <div class="panel output-panel">
@@ -139,6 +150,13 @@
             <div class="panel-head">
               <h3>Run Flow</h3>
               <span id="transitionCount">0 transitions</span>
+            </div>
+            <div class="flow-section">
+              <div class="section-label split">
+                <span>Turns</span>
+                <span id="turnCount">0 turns</span>
+              </div>
+              <div id="turnList" class="turn-list empty">No turns yet.</div>
             </div>
             <div class="flow-section">
               <div class="section-label">State flow</div>
@@ -172,10 +190,24 @@
         <section class="debug-stack">
           <details class="debug-section" open>
             <summary>
-              <span>Session Messages</span>
+              <span>Active Context</span>
+              <span id="activeContextCount">0</span>
+            </summary>
+            <div id="activeContextMessages" class="message-list empty">No active context yet.</div>
+          </details>
+          <details class="debug-section" open>
+            <summary>
+              <span>Full Session Messages</span>
               <span id="messageCount">0</span>
             </summary>
             <div id="sessionMessages" class="message-list empty">No session messages yet.</div>
+          </details>
+          <details class="debug-section">
+            <summary>
+              <span>Session Tree Path</span>
+              <span id="pathEntryCount">0</span>
+            </summary>
+            <div id="pathEntries" class="entry-list empty">No session tree entries yet.</div>
           </details>
           <details class="debug-section">
             <summary>

@@ -4,6 +4,8 @@ const state = {
   activeProfileId: "",
   running: false,
   lastResult: null,
+  activeSessionId: "",
+  sessions: [],
   selectedStep: null,
   activeTab: "overview",
   detailFocus: null,
@@ -33,6 +35,10 @@ const el = {
   maxOutputTokens: $("maxOutputTokens"),
   recentTailTokens: $("recentTailTokens"),
   runAgent: $("runAgent"),
+  appendMessage: $("appendMessage"),
+  sessionSelect: $("sessionSelect"),
+  refreshSessions: $("refreshSessions"),
+  sessionMeta: $("sessionMeta"),
   runStatus: $("runStatus"),
   runTitle: $("runTitle"),
   summaryText: $("summaryText"),
@@ -54,6 +60,12 @@ const el = {
   detailMeta: $("detailMeta"),
   stepDetail: $("stepDetail"),
   tabs: Array.from(document.querySelectorAll(".tab")),
+  turnList: $("turnList"),
+  turnCount: $("turnCount"),
+  activeContextMessages: $("activeContextMessages"),
+  activeContextCount: $("activeContextCount"),
+  pathEntries: $("pathEntries"),
+  pathEntryCount: $("pathEntryCount"),
   sessionMessages: $("sessionMessages"),
   messageCount: $("messageCount"),
   rawJson: $("rawJson"),
@@ -89,7 +101,10 @@ el.modelSelect.addEventListener("change", () => {
 el.addProfile.addEventListener("click", addProfile);
 el.duplicateProfile.addEventListener("click", duplicateProfile);
 el.saveConfig.addEventListener("click", saveConfig);
-el.runAgent.addEventListener("click", runAgent);
+el.runAgent.addEventListener("click", createSession);
+el.appendMessage.addEventListener("click", appendMessage);
+el.sessionSelect.addEventListener("change", () => selectSession(el.sessionSelect.value));
+el.refreshSessions.addEventListener("click", () => loadSessions({ selectActive: true }));
 el.copyRaw.addEventListener("click", copyRaw);
 el.traceSearch.addEventListener("input", () => {
   state.traceFilter = el.traceSearch.value.trim();
@@ -162,6 +177,7 @@ async function loadConfig() {
     state.activeProfileId = state.config.profiles[0].id;
   }
   renderConfig();
+  await loadSessions({ selectActive: true });
 }
 
 function renderConfig() {
@@ -348,17 +364,18 @@ async function saveConfig() {
   }
 }
 
-async function runAgent() {
+async function createSession() {
   syncCurrentProfileFromForm();
   const message = el.userMessage.value.trim();
   if (!message) {
-    renderError("First user message is required.");
+    renderError("User message is required.");
     return;
   }
+  state.activeSessionId = "";
   setRunning(true);
   resetRunView("running");
   try {
-    const response = await fetch("/api/agent/run", {
+    const response = await fetch("/api/agent/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -383,12 +400,143 @@ async function runAgent() {
       throw new Error(result.error || "agent run failed");
     }
     state.lastResult = result;
+    state.activeSessionId = result.session_id || "";
     renderAgentResult(result);
+    await loadSessions({ selectActive: true });
   } catch (error) {
     renderError(error.message);
   } finally {
     setRunning(false);
   }
+}
+
+async function appendMessage() {
+  const sessionID = state.activeSessionId || state.lastResult?.session_id || "";
+  if (!sessionID) {
+    renderError("Create a session before appending a message.");
+    return;
+  }
+  const message = el.userMessage.value.trim();
+  if (!message) {
+    renderError("User message is required.");
+    return;
+  }
+  setRunning(true);
+  setStatus("running");
+  el.summaryText.textContent = "Appending a new user turn to the active session.";
+  try {
+    const response = await fetch(`/api/agent/sessions/${encodeURIComponent(sessionID)}/turns`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      if (result && (result.id || result.status || result.observation)) {
+        state.lastResult = result;
+        renderAgentResult(result);
+        return;
+      }
+      throw new Error(result.error || "agent turn failed");
+    }
+    state.lastResult = result;
+    state.activeSessionId = result.session_id || sessionID;
+    renderAgentResult(result);
+    await loadSessions({ selectActive: true });
+  } catch (error) {
+    renderError(error.message);
+  } finally {
+    setRunning(false);
+  }
+}
+
+async function loadSessions(options = {}) {
+  try {
+    const response = await fetch("/api/agent/sessions");
+    if (!response.ok) throw new Error("session list failed");
+    state.sessions = await response.json();
+    renderSessionOptions();
+    if (options.selectActive && state.activeSessionId) {
+      el.sessionSelect.value = state.activeSessionId;
+    }
+    if (!state.activeSessionId && state.sessions.length) {
+      await selectSession(state.sessions[state.sessions.length - 1].id);
+    }
+  } catch (error) {
+    state.sessions = [];
+    renderSessionOptions();
+    el.sessionMeta.textContent = `Session list unavailable: ${error.message}`;
+  }
+}
+
+async function selectSession(sessionID) {
+  if (!sessionID) {
+    resetRunView("idle");
+    return;
+  }
+  state.activeSessionId = sessionID;
+  el.sessionSelect.value = sessionID;
+  setStatus("loading");
+  try {
+    const response = await fetch(`/api/agent/sessions/${encodeURIComponent(sessionID)}`);
+    const snapshot = await response.json();
+    if (!response.ok) throw new Error(snapshot.error || "session load failed");
+    renderSessionSnapshot(snapshot);
+  } catch (error) {
+    renderError(error.message);
+  }
+}
+
+function renderSessionOptions() {
+  const current = state.activeSessionId;
+  el.sessionSelect.innerHTML = "";
+  const empty = document.createElement("option");
+  empty.value = "";
+  empty.textContent = state.sessions.length ? "Select a session" : "No sessions in this process";
+  el.sessionSelect.appendChild(empty);
+  state.sessions.forEach((session) => {
+    const option = document.createElement("option");
+    option.value = session.id;
+    option.textContent = sessionOptionLabel(session);
+    el.sessionSelect.appendChild(option);
+  });
+  el.sessionSelect.value = current;
+}
+
+function renderSessionSnapshot(session) {
+  const latest = latestTurn(session);
+  const result = {
+    id: latest?.id || session.latest_turn_id || session.id,
+    session_id: session.id,
+    turn_id: latest?.id || session.latest_turn_id || "",
+    status: session.status || "idle",
+    summary: session.status === "waiting" ? "The session is waiting for another user message." : "Loaded session snapshot.",
+    output: latest?.output || session.waiting_prompt || "",
+    error: latest?.error || "",
+    profile: session.profile || {},
+    metrics: latest?.metrics || {},
+    duration_ms: turnDuration(latest),
+    events: [],
+    completion_reason: latest?.completion_reason || "",
+    continuation_reason: latest?.continuation_reason || "",
+    finish_reason: latest?.finish_reason || "",
+    raw_finish_reason: latest?.raw_finish_reason || "",
+    finish_inferred: Boolean(latest?.finish_inferred),
+    snapshot_only: true,
+    can_append_message: Boolean(session.can_append_message),
+    waiting_prompt: session.waiting_prompt || "",
+    session,
+    observation: {
+      provider_requests: [],
+      provider_events: [],
+      session_messages: sessionMessagesFromSnapshot(session),
+      active_context: session.active_context || [],
+      path_entries: session.path_entries || [],
+      transitions: [],
+    },
+  };
+  state.lastResult = result;
+  renderAgentResult(result);
 }
 
 async function runCheck(target) {
@@ -407,8 +555,9 @@ async function runCheck(target) {
 }
 
 function renderAgentResult(result) {
+  state.activeSessionId = result.session_id || state.activeSessionId || "";
   setStatus(result.status);
-  el.runTitle.textContent = profileLabel(result.profile);
+  el.runTitle.textContent = result.session_id ? `Session ${shortID(result.session_id)}` : profileLabel(result.profile);
   el.summaryText.textContent = result.summary || "";
   el.metricStatus.textContent = result.status;
   el.metricSteps.textContent = String(result.metrics?.steps || 0);
@@ -416,8 +565,9 @@ function renderAgentResult(result) {
   el.metricTools.textContent = String(result.metrics?.tool_calls || 0);
   el.metricTokens.textContent = String(totalTokens(result.metrics?.usage));
   el.metricDuration.textContent = formatDuration(result.duration_ms);
+  el.sessionMeta.textContent = sessionSummary(result);
   el.finalOutput.textContent = result.output || result.error || "(empty output)";
-  el.outputMeta.textContent = result.error ? "error" : "captured";
+  el.outputMeta.textContent = result.waiting_prompt ? "waiting prompt" : result.error ? "error" : "latest turn";
   el.eventCount.textContent = `${eventTotal(result)} events`;
 
   const steps = stepModels(result);
@@ -427,7 +577,11 @@ function renderAgentResult(result) {
   state.streamFilter = "all";
   renderRunInspector();
   renderSessionMessages(result.observation?.session_messages || []);
+  renderActiveContext(result.session?.active_context || result.observation?.active_context || []);
+  renderPathEntries(result.session?.path_entries || result.observation?.path_entries || []);
+  renderTurnList(result.session?.turns || []);
   renderRawTrace();
+  renderActionState(result);
 }
 
 function renderRunInspector() {
@@ -868,6 +1022,79 @@ function renderSessionMessages(messages) {
   });
 }
 
+function renderActiveContext(messages) {
+  el.activeContextCount.textContent = String(messages.length);
+  el.activeContextMessages.classList.toggle("empty", messages.length === 0);
+  el.activeContextMessages.innerHTML = "";
+  if (messages.length === 0) {
+    el.activeContextMessages.textContent = "No active context yet.";
+    return;
+  }
+  messages.forEach((message, index) => {
+    const row = document.createElement("div");
+    row.className = `message-row role-${escapeAttr(message.role)} ${message.kind ? `kind-${escapeAttr(message.kind)}` : ""}`;
+    row.innerHTML = renderMessageInner(message, index, "Active context");
+    el.activeContextMessages.appendChild(row);
+  });
+}
+
+function renderPathEntries(entries) {
+  el.pathEntryCount.textContent = String(entries.length);
+  el.pathEntries.classList.toggle("empty", entries.length === 0);
+  el.pathEntries.innerHTML = "";
+  if (entries.length === 0) {
+    el.pathEntries.textContent = "No session tree entries yet.";
+    return;
+  }
+  entries.forEach((entry, index) => {
+    const row = document.createElement("details");
+    row.className = `entry-row entry-${escapeAttr(entry.type || "")}`;
+    const summary = entrySummary(entry);
+    row.innerHTML = `
+      <summary>
+        <span class="state-badge ${entryBadge(entry)}">${escapeHTML(entry.type || "-")}</span>
+        <strong>#${index + 1}</strong>
+        <span>${escapeHTML(summary)}</span>
+        <small>${escapeHTML(entry.turn_id || "")}</small>
+      </summary>
+      <pre class="raw raw-block">${escapeHTML(JSON.stringify(entry, null, 2))}</pre>
+    `;
+    el.pathEntries.appendChild(row);
+  });
+}
+
+function renderTurnList(turns) {
+  el.turnCount.textContent = `${turns.length} turns`;
+  el.turnList.classList.toggle("empty", turns.length === 0);
+  el.turnList.innerHTML = "";
+  if (turns.length === 0) {
+    el.turnList.textContent = "No turns yet.";
+    return;
+  }
+  turns.forEach((turn, index) => {
+    const active = turn.id === state.lastResult?.turn_id;
+    const row = document.createElement("div");
+    row.className = `turn-row ${active ? "selected" : ""} ${turn.status || ""}`;
+    row.innerHTML = `
+      <span class="turn-main">
+        <strong>Turn ${index + 1} · ${escapeHTML(turn.status || "-")}</strong>
+        <small>${escapeHTML(turn.id || "")}</small>
+      </span>
+      <span class="turn-pills">
+        <span>${turn.metrics?.steps || 0} steps</span>
+        <span>${turn.metrics?.llm_requests || 0} requests</span>
+        <span>${totalTokens(turn.metrics?.usage)} tokens</span>
+        ${turn.completion_reason ? `<span>done ${escapeHTML(turn.completion_reason)}</span>` : ""}
+        ${turn.continuation_reason ? `<span>continue ${escapeHTML(turn.continuation_reason)}</span>` : ""}
+        ${turn.finish_reason ? `<span>finish ${escapeHTML(turn.finish_reason)}</span>` : ""}
+      </span>
+      ${turn.output ? `<p>${escapeHTML(previewText(turn.output, 220))}</p>` : ""}
+      ${turn.error ? `<p class="turn-error">${escapeHTML(turn.error)}</p>` : ""}
+    `;
+    el.turnList.appendChild(row);
+  });
+}
+
 function renderRawTrace() {
   if (!state.lastResult) {
     el.rawJson.textContent = "{}";
@@ -1169,30 +1396,43 @@ function usageItem(label, value) {
 
 function resetRunView(status) {
   state.lastResult = null;
+  state.activeSessionId = "";
   state.selectedStep = null;
   state.activeTab = "overview";
   state.streamFilter = "all";
   state.traceFilter = "";
   el.traceSearch.value = "";
   setStatus(status);
-  el.runTitle.textContent = status === "running" ? "Running agent..." : "Inspect one Floret turn";
+  el.runTitle.textContent = status === "running" ? "Running agent..." : "Inspect a Floret session";
   el.summaryText.textContent = status === "running" ? "Waiting for engine events and provider stream." : "Run an agent turn to inspect state transitions and provider interaction.";
   ["metricStatus", "metricSteps", "metricRequests", "metricTools", "metricTokens", "metricDuration"].forEach((key) => {
     el[key].textContent = "-";
   });
   el.eventCount.textContent = "0 events";
+  el.sessionMeta.textContent = "No active session.";
   el.transitions.textContent = "No transitions yet.";
   el.transitions.className = "flow-list empty";
   el.stepList.textContent = "No provider steps yet.";
   el.stepList.className = "step-list empty";
+  el.turnList.textContent = "No turns yet.";
+  el.turnList.className = "turn-list empty";
+  el.turnCount.textContent = "0 turns";
+  el.activeContextMessages.textContent = "No active context yet.";
+  el.activeContextMessages.className = "message-list empty";
+  el.activeContextCount.textContent = "0";
+  el.pathEntries.textContent = "No session tree entries yet.";
+  el.pathEntries.className = "entry-list empty";
+  el.pathEntryCount.textContent = "0";
   el.sessionMessages.textContent = "No session messages yet.";
   el.sessionMessages.className = "message-list empty";
   el.finalOutput.textContent = "The agent output will appear here.";
   el.outputMeta.textContent = "waiting";
   el.rawJson.textContent = "{}";
+  renderSessionOptions();
   renderFlowHealth(null);
   renderTabs();
   renderStepDetail();
+  renderActionState(null);
 }
 
 function renderError(message) {
@@ -1204,10 +1444,10 @@ function renderError(message) {
 
 function stepModels(result) {
   if (!result) return [];
-  const requests = result.observation?.provider_requests || [];
-  const providerEvents = result.observation?.provider_events || [];
-  const engineEvents = result.events || [];
-  const transitions = result.observation?.transitions || [];
+  const requests = currentTurnProviderRequests(result);
+  const providerEvents = currentTurnProviderEvents(result);
+  const engineEvents = currentTurnEngineEvents(result);
+  const transitions = currentTurnTransitions(result);
   return requests.map((request) => {
     const step = request.step || request.Step || 0;
     request = {
@@ -1258,24 +1498,34 @@ function stepSequence(step) {
 
 function runDiagnostics(result) {
   const diagnostics = [];
-  const requests = result.observation?.provider_requests || [];
-  const providerEvents = result.observation?.provider_events || [];
-  const engineEvents = result.events || [];
-  if (result.status && result.status !== "completed") {
+  const requests = currentTurnProviderRequests(result);
+  const providerEvents = currentTurnProviderEvents(result);
+  const engineEvents = currentTurnEngineEvents(result);
+  if (result.status === "waiting") {
     diagnostics.push({
-      severity: result.status === "waiting" ? "warn" : "bad",
+      severity: "info",
+      title: "Waiting for user input",
+      detail: result.waiting_prompt || result.summary || "The session is paused until another user message is appended.",
+    });
+  } else if (result.status && result.status !== "completed") {
+    diagnostics.push({
+      severity: "bad",
       title: `Run ended as ${result.status}`,
       detail: result.error || result.summary || "The terminal state needs review.",
     });
   }
   if (requests.length === 0) {
-    diagnostics.push({ severity: "bad", title: "No provider request captured", detail: "The agent loop did not reach a model call." });
+    diagnostics.push({
+      severity: result.snapshot_only ? "info" : "bad",
+      title: "No provider request captured",
+      detail: result.snapshot_only ? "This is a loaded session snapshot; provider stream details are available on fresh turn responses." : "The agent loop did not reach a model call.",
+    });
   }
   providerEvents.forEach((event) => {
     const type = eventType(event);
     const reason = event.reason || event.Reason || "";
     if (type === "empty") diagnostics.push({ severity: "warn", step: event.step, title: "Provider returned empty output", detail: event.reason || "" });
-    if (type === "truncated") diagnostics.push({ severity: "bad", step: event.step, title: "Provider output was truncated", detail: event.reason || "" });
+    if (type === "truncated") diagnostics.push({ severity: result.status === "completed" ? "warn" : "bad", step: event.step, title: "Provider output was truncated", detail: event.reason || "" });
     if (type === "done" && ["content_filter", "error", "cancelled", "canceled"].includes(reason)) {
       diagnostics.push({ severity: "bad", step: event.step, title: `Provider finish ${reason}`, detail: "The provider terminal reason requires engine recovery or failure handling." });
     }
@@ -1427,7 +1677,7 @@ function stepDiagnostics(request, providerEvents, engineEvents, transitions, res
     const type = eventType(event);
     const reason = event.reason || event.Reason || "";
     if (type === "empty") diagnostics.push({ severity: "warn", step, title: "Empty provider event", detail: event.reason || "" });
-    if (type === "truncated") diagnostics.push({ severity: "bad", step, title: "Truncated provider event", detail: event.reason || "" });
+    if (type === "truncated") diagnostics.push({ severity: result.status === "completed" ? "warn" : "bad", step, title: "Truncated provider event", detail: event.reason || "" });
     if (type === "done" && ["content_filter", "error", "cancelled", "canceled"].includes(reason)) {
       diagnostics.push({ severity: "bad", step, title: `Terminal provider reason ${reason}`, detail: "Engine should surface this finish reason explicitly." });
     }
@@ -1435,7 +1685,7 @@ function stepDiagnostics(request, providerEvents, engineEvents, transitions, res
   if ((request.raw_segments || []).length === 0) {
     diagnostics.push({ severity: "info", step, title: "No raw prompt segments", detail: "Prompt cache ledger data was not present on this request." });
   }
-  if (result.status !== "completed" && step === lastStepNumber(result)) {
+  if (result.status !== "completed" && result.status !== "waiting" && step === lastStepNumber(result)) {
     diagnostics.push({ severity: "bad", step, title: `Terminal state ${result.status}`, detail: result.error || result.summary || "" });
   }
   if (transitions.length === 0) {
@@ -1531,6 +1781,14 @@ function runDecisionSummary(result) {
   const steps = stepModels(result);
   const last = steps[steps.length - 1];
   if (!last) {
+    if (result.snapshot_only) {
+      return {
+        title: result.status || "snapshot",
+        detail: result.summary || "Loaded session snapshot.",
+        severity: result.status === "waiting" ? "warn" : result.status === "failed" || result.status === "error" ? "bad" : "ok",
+        terminal: result.error || result.summary || "",
+      };
+    }
     return { title: result.status || "-", detail: "No provider step was captured.", severity: result.status === "completed" ? "ok" : "bad", terminal: result.error || "" };
   }
   if (result.status === "completed") {
@@ -1583,7 +1841,7 @@ function finishSeverity(reason) {
 
 function aggregateCache(result) {
   const out = { reusedSegments: 0, newSegments: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
-  (result?.observation?.provider_requests || []).forEach((request) => {
+  currentTurnProviderRequests(result).forEach((request) => {
     const cache = request.cache_summary || {};
     out.reusedSegments += cache.reused_segments || 0;
     out.newSegments += cache.new_segments || 0;
@@ -1593,9 +1851,126 @@ function aggregateCache(result) {
   return out;
 }
 
+function sessionSummary(result) {
+  const session = result?.session || {};
+  if (!result?.session_id) return "No active session.";
+  const aggregate = session.aggregate_metrics || {};
+  return [
+    `session ${shortID(result.session_id)}`,
+    result.turn_id ? `turn ${shortID(result.turn_id)}` : "",
+    `${session.turns?.length || 0} turn(s)`,
+    `${session.compactions || aggregate.compactions || 0} compaction(s)`,
+    `${totalTokens(aggregate.usage)} session tokens`,
+    result.waiting_prompt ? "waiting for input" : "",
+  ].filter(Boolean).join(" · ");
+}
+
+function latestTurn(session) {
+  const turns = session?.turns || [];
+  if (!turns.length) return null;
+  const latestID = session.latest_turn_id || "";
+  return turns.find((turn) => turn.id === latestID) || turns[turns.length - 1];
+}
+
+function turnDuration(turn) {
+  if (!turn?.started_at || !turn?.finished_at) return 0;
+  const start = new Date(turn.started_at).getTime();
+  const finish = new Date(turn.finished_at).getTime();
+  if (Number.isNaN(start) || Number.isNaN(finish) || finish < start) return 0;
+  return finish - start;
+}
+
+function sessionMessagesFromSnapshot(session) {
+  return (session?.path_entries || []).flatMap((entry) => {
+    if (entry.type === "compaction" && entry.summary) {
+      return [{
+        role: "assistant",
+        content: entry.summary,
+        kind: "compaction_summary",
+        entry_id: entry.id,
+        parent_entry_id: entry.parent_id,
+        compaction_id: entry.compaction_id,
+        compaction_generation: entry.compaction_generation,
+        compaction_window_id: entry.compaction_window_id,
+      }];
+    }
+    const message = entry.message || {};
+    return message.role ? [message] : [];
+  });
+}
+
+function sessionOptionLabel(session) {
+  const turns = session.turns?.length || 0;
+  const status = session.status || "idle";
+  const model = session.profile?.model || "model";
+  return `${shortID(session.id)} · ${status} · ${turns} turn(s) · ${model}`;
+}
+
+function renderActionState(result) {
+  const hasSession = Boolean(state.activeSessionId || result?.session_id);
+  const canAppend = Boolean(result?.can_append_message || result?.status === "waiting" || result?.status === "completed");
+  el.appendMessage.disabled = state.running || !hasSession || !canAppend;
+  el.runAgent.disabled = state.running;
+  if (!hasSession) {
+    el.appendMessage.title = "Create a session first";
+  } else if (!canAppend) {
+    el.appendMessage.title = "The current session is not ready for another message";
+  } else {
+    el.appendMessage.title = "Append this message to the active session";
+  }
+}
+
+function entrySummary(entry) {
+  if (entry.summary) return previewText(entry.summary, 180);
+  if (entry.error) return entry.error;
+  if (entry.turn_status) return `turn ${entry.turn_status}`;
+  const message = entry.message || {};
+  return previewText(message.content || message.tool_args || message.tool_name || entry.raw_hash || "", 180) || "(empty)";
+}
+
+function entryBadge(entry) {
+  if (entry.type === "compaction") return "info";
+  if (entry.type === "turn_marker") {
+    if (entry.turn_status === "completed") return "ok";
+    if (entry.turn_status === "waiting") return "warn";
+    if (entry.turn_status === "failed" || entry.turn_status === "aborted") return "bad";
+  }
+  if (entry.type === "run_failure") return "bad";
+  return "info";
+}
+
 function lastStepNumber(result) {
-  const steps = (result.observation?.provider_requests || []).map((request) => request.step || request.Step || 0);
+  const steps = currentTurnProviderRequests(result).map((request) => request.step || request.Step || 0);
   return steps.length ? Math.max(...steps) : 0;
+}
+
+function currentRunID(result) {
+  return result?.turn_id || result?.id || "";
+}
+
+function belongsToCurrentRun(item, runID) {
+  if (!runID) return true;
+  const itemRunID = item?.run_id || item?.RunID || "";
+  return itemRunID === runID;
+}
+
+function currentTurnProviderRequests(result) {
+  const runID = currentRunID(result);
+  return (result?.observation?.provider_requests || []).filter((request) => belongsToCurrentRun(request, runID));
+}
+
+function currentTurnProviderEvents(result) {
+  const runID = currentRunID(result);
+  return (result?.observation?.provider_events || []).filter((event) => belongsToCurrentRun(event, runID));
+}
+
+function currentTurnEngineEvents(result) {
+  const runID = currentRunID(result);
+  return (result?.events || []).filter((event) => belongsToCurrentRun(event, runID));
+}
+
+function currentTurnTransitions(result) {
+  return result?.observation?.transitions || [];
 }
 
 function sumUsage(events) {
@@ -1657,7 +2032,7 @@ function providerEventSummary(event, index) {
 
 function eventSeverity(type, event = {}) {
   const reason = event.reason || event.Reason || "";
-  if (type === "truncated") return "bad";
+  if (type === "truncated") return "warn";
   if (type === "empty") return "warn";
   if (type === "done" && ["content_filter", "error", "cancelled", "canceled", "length"].includes(reason)) return "bad";
   if (type === "usage" || type === "done") return "ok";
@@ -1734,6 +2109,12 @@ function profileLabel(profile) {
   const providerName = provider?.name || profile?.provider || "Provider";
   const model = profile?.model || provider?.default_model || "model";
   return `${providerName} / ${model}`;
+}
+
+function shortID(value) {
+  value = String(value || "");
+  if (value.length <= 18) return value || "-";
+  return `${value.slice(0, 10)}...${value.slice(-6)}`;
 }
 
 function providerCatalog() {
@@ -1825,7 +2206,10 @@ function formatTime(value) {
 function setRunning(value) {
   state.running = value;
   el.runAgent.disabled = value;
-  el.runAgent.textContent = value ? "Running..." : "Run Agent";
+  el.appendMessage.disabled = value || el.appendMessage.disabled;
+  el.runAgent.textContent = value ? "Running..." : "New Session";
+  el.appendMessage.textContent = value ? "Waiting..." : "Send Message";
+  if (!value) renderActionState(state.lastResult);
 }
 
 function setStatus(status) {

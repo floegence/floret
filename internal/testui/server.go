@@ -38,6 +38,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/catalog", s.handleCatalog)
 	mux.HandleFunc("PUT /api/config", s.handleSaveConfig)
 	mux.HandleFunc("POST /api/agent/run", s.handleAgentRun)
+	mux.HandleFunc("GET /api/agent/sessions", s.handleAgentSessions)
+	mux.HandleFunc("POST /api/agent/sessions", s.handleAgentSessionCreate)
+	mux.HandleFunc("GET /api/agent/sessions/", s.handleAgentSessionRoute)
+	mux.HandleFunc("POST /api/agent/sessions/", s.handleAgentSessionRoute)
 	mux.HandleFunc("POST /api/run", s.handleRun)
 	mux.HandleFunc("GET /", s.handleStatic)
 	return mux
@@ -85,11 +89,69 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 	}
 	resp := s.Runner.RunAgent(ctx, req)
-	status := http.StatusOK
-	if resp.Status == "error" {
-		status = http.StatusInternalServerError
+	writeJSON(w, agentHTTPStatus(resp), resp)
+}
+
+func (s *Server) handleAgentSessions(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.Runner.AgentSessions(r.Context()))
+}
+
+func (s *Server) handleAgentSessionCreate(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	var req AgentRunRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON request"})
+		return
 	}
-	writeJSON(w, status, resp)
+	ctx := r.Context()
+	var cancel context.CancelFunc
+	if s.Timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, s.Timeout)
+		defer cancel()
+	}
+	resp := s.Runner.CreateAgentSession(ctx, req)
+	writeJSON(w, agentHTTPStatus(resp), resp)
+}
+
+func (s *Server) handleAgentSessionRoute(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/agent/sessions/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	sessionID := parts[0]
+	if r.Method == http.MethodGet && len(parts) == 1 {
+		snapshot, err := s.Runner.AgentSession(r.Context(), sessionID)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, snapshot)
+		return
+	}
+	if r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "turns" {
+		s.handleAgentSessionTurn(w, r, sessionID)
+		return
+	}
+	http.NotFound(w, r)
+}
+
+func (s *Server) handleAgentSessionTurn(w http.ResponseWriter, r *http.Request, sessionID string) {
+	defer r.Body.Close()
+	var req AgentTurnRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON request"})
+		return
+	}
+	ctx := r.Context()
+	var cancel context.CancelFunc
+	if s.Timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, s.Timeout)
+		defer cancel()
+	}
+	resp := s.Runner.RunAgentTurn(ctx, sessionID, req)
+	writeJSON(w, agentHTTPStatus(resp), resp)
 }
 
 func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
@@ -127,4 +189,14 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil && !errors.Is(err, http.ErrHandlerTimeout) {
 		return
 	}
+}
+
+func agentHTTPStatus(resp AgentRunResponse) int {
+	if resp.Status != "error" {
+		return http.StatusOK
+	}
+	if resp.StatusCode != 0 {
+		return resp.StatusCode
+	}
+	return http.StatusInternalServerError
 }

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/floegence/floret/config"
+	"github.com/floegence/floret/contextpolicy"
+	"github.com/floegence/floret/harness"
 	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/session"
@@ -256,6 +258,232 @@ func TestRunnerRunAgentReturnsInteractionObservation(t *testing.T) {
 	}
 }
 
+func TestRunnerAgentSessionWaitsAndResumesWithAppendMessage(t *testing.T) {
+	root := t.TempDir()
+	scripted := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("ask", "ask_user", "Which file?"), harness.Done()),
+		harness.Step(harness.Text("resumed"), harness.Done()),
+	)
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+	if _, err := runner.SaveConfigState(SaveConfigRequest{
+		ActiveProfileID: "fake",
+		Profiles: []ProviderProfile{{
+			ID:           "fake",
+			Name:         "Fake",
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "unused",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	first := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		ProfileID:    "fake",
+		Message:      "start",
+		SystemPrompt: "test",
+	})
+	if first.Status != "waiting" || first.WaitingPrompt != "Which file?" || !first.CanAppendMessage {
+		t.Fatalf("first = %#v", first)
+	}
+	if first.SessionID == "" || first.TurnID == "" {
+		t.Fatalf("missing session/turn ids: %#v", first)
+	}
+	if !slices.ContainsFunc(first.Observation.SessionMessages, func(msg ObservedSessionMessage) bool {
+		return msg.ToolName == "ask_user" && msg.ToolArgs == "Which file?"
+	}) {
+		t.Fatalf("ask_user call not exposed in session messages: %#v", first.Observation.SessionMessages)
+	}
+
+	second := runner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "main.go"})
+	if second.Status != "completed" || second.Output != "resumed" {
+		t.Fatalf("second = %#v", second)
+	}
+	if second.SessionID != first.SessionID || second.TurnID == first.TurnID {
+		t.Fatalf("turn/session ids not advanced: first=%s/%s second=%s/%s", first.SessionID, first.TurnID, second.SessionID, second.TurnID)
+	}
+	if len(second.Session.Turns) != 2 {
+		t.Fatalf("turns = %#v", second.Session.Turns)
+	}
+	if second.Session.AggregateMetrics.LLMRequests != 2 {
+		t.Fatalf("aggregate metrics = %#v", second.Session.AggregateMetrics)
+	}
+	if !slices.ContainsFunc(second.Observation.ActiveContext, func(msg ObservedSessionMessage) bool {
+		return msg.Role == "assistant" && msg.Kind == "control_signal" && strings.Contains(msg.Content, "Which file?")
+	}) {
+		t.Fatalf("active context missing provider-safe ask_user signal: %#v", second.Observation.ActiveContext)
+	}
+	if !slices.ContainsFunc(second.Observation.ActiveContext, func(msg ObservedSessionMessage) bool {
+		return msg.Role == "user" && msg.Content == "main.go"
+	}) {
+		t.Fatalf("active context missing appended user answer: %#v", second.Observation.ActiveContext)
+	}
+	if !slices.ContainsFunc(second.Observation.PathEntries, func(entry ObservedSessionEntry) bool {
+		return entry.Type == "turn_marker" && entry.TurnStatus == "waiting" && entry.TurnID == first.TurnID
+	}) {
+		t.Fatalf("path entries missing waiting marker: %#v", second.Observation.PathEntries)
+	}
+	if len(second.Observation.ProviderRequests) != 2 || second.Observation.ProviderRequests[0].RunID == second.Observation.ProviderRequests[1].RunID {
+		t.Fatalf("provider requests missing per-turn run ids: %#v", second.Observation.ProviderRequests)
+	}
+	if !slices.ContainsFunc(second.Observation.Transitions, func(transition StateTransition) bool {
+		return transition.Reason == "provider_request"
+	}) {
+		t.Fatalf("second turn transitions missing provider request: %#v", second.Observation.Transitions)
+	}
+	if slices.ContainsFunc(second.Observation.Transitions, func(transition StateTransition) bool {
+		return strings.Contains(transition.Details, "Which file?")
+	}) {
+		t.Fatalf("second turn transitions leaked first turn events: %#v", second.Observation.Transitions)
+	}
+}
+
+func TestRunnerAgentSessionRegistryIsStableForLiteralRunner(t *testing.T) {
+	root := t.TempDir()
+	scripted := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("ask", "ask_user", "Need value?"), harness.Done()),
+		harness.Step(harness.Text("literal resumed"), harness.Done()),
+	)
+	runner := Runner{
+		Root:    root,
+		EnvFile: filepath.Join(root, config.DefaultEnvFile),
+		Now:     fixedClock(),
+		Exec:    execCommand,
+		ProviderFactory: func(config.Config) (provider.Provider, error) {
+			return scripted, nil
+		},
+	}
+
+	first := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:      ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:      "start",
+		SystemPrompt: "test",
+	})
+	if first.Status != "waiting" || first.SessionID == "" {
+		t.Fatalf("first = %#v", first)
+	}
+
+	second := runner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "value"})
+	if second.Status != "completed" || second.Output != "literal resumed" {
+		t.Fatalf("second = %#v", second)
+	}
+	if sessions := runner.AgentSessions(context.Background()); len(sessions) != 1 || sessions[0].ID != first.SessionID {
+		t.Fatalf("sessions = %#v", sessions)
+	}
+}
+
+func TestRunnerRejectsAppendWhenSessionCannotAcceptMessage(t *testing.T) {
+	scripted := harness.NewScriptedProvider(
+		harness.Step(harness.Text("failed soon"), harness.Done()),
+	)
+	scripted.Errs[1] = context.Canceled
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+
+	first := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:      ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:      "fail",
+		SystemPrompt: "test",
+	})
+	if first.Status != "failed" {
+		t.Fatalf("first = %#v", first)
+	}
+
+	second := runner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "should reject"})
+	if second.Status != "error" || second.StatusCode != 409 || !strings.Contains(second.Error, "cannot accept") {
+		t.Fatalf("second = %#v", second)
+	}
+}
+
+func TestRunnerRejectsAppendWhileSessionIsBusy(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+
+	first := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:      ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done"},
+		Message:      "start",
+		SystemPrompt: "test",
+	})
+	if first.Status != "completed" || first.SessionID == "" {
+		t.Fatalf("first = %#v", first)
+	}
+	sess, ok := runner.Sessions.get(first.SessionID)
+	if !ok {
+		t.Fatalf("session not registered")
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+
+	busy := runner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "again"})
+	if busy.Status != "error" || busy.StatusCode != 409 || !strings.Contains(busy.Error, "already running") {
+		t.Fatalf("busy = %#v", busy)
+	}
+}
+
+func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *testing.T) {
+	root := t.TempDir()
+	scripted := harness.NewScriptedProvider(
+		harness.Step(harness.Text("compact summary"), harness.Done()),
+		harness.Step(harness.Text("after compact"), harness.Done()),
+	)
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+	long := strings.Repeat("history ", 220)
+
+	result := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile: ProviderProfile{
+			ID:           "fake",
+			Name:         "Fake",
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "unused",
+		},
+		Message:       long,
+		SystemPrompt:  "test",
+		ContextPolicy: contextPolicyForTest(260),
+	})
+
+	if result.Status != "completed" || result.Output != "after compact" {
+		t.Fatalf("result = %#v", result)
+	}
+	if result.Metrics.Compactions != 1 || result.Session.Compactions != 1 {
+		t.Fatalf("compaction metrics result=%#v session=%#v", result.Metrics, result.Session)
+	}
+	if !slices.ContainsFunc(result.Observation.ActiveContext, func(msg ObservedSessionMessage) bool {
+		return msg.Kind == "compaction_summary" && msg.CompactionID != ""
+	}) {
+		t.Fatalf("active context missing structured compaction summary: %#v", result.Observation.ActiveContext)
+	}
+	if !slices.ContainsFunc(result.Observation.PathEntries, func(entry ObservedSessionEntry) bool {
+		return entry.Type == "compaction" && entry.CompactionID != "" && entry.CompactionGeneration > 0
+	}) {
+		t.Fatalf("path entries missing compaction metadata: %#v", result.Observation.PathEntries)
+	}
+	if !slices.ContainsFunc(result.Observation.ProviderRequests, func(request ObservedProviderRequest) bool {
+		return slices.ContainsFunc(request.RawSegments, func(segment ObservedRawSegment) bool {
+			return segment.Kind == "compaction" &&
+				segment.RunID != "" &&
+				segment.SessionID == result.SessionID &&
+				segment.TurnID == result.TurnID &&
+				segment.EntryID != "" &&
+				segment.CompactionGeneration > 0 &&
+				segment.CompactionWindowID != ""
+		})
+	}) {
+		t.Fatalf("provider request missing compaction segment: %#v", result.Observation.ProviderRequests)
+	}
+}
+
 func TestRunnerRunAgentUsesUnsavedProfileSnapshot(t *testing.T) {
 	root := t.TempDir()
 	runner := NewRunner(root)
@@ -357,5 +585,15 @@ func fixedClock() func() time.Time {
 	return func() time.Time {
 		now = now.Add(250 * time.Millisecond)
 		return now
+	}
+}
+
+func contextPolicyForTest(window int64) contextpolicy.Policy {
+	return contextpolicy.Policy{
+		ContextWindowTokens:   window,
+		MaxOutputTokens:       32,
+		ReservedOutputTokens:  32,
+		ReservedSummaryTokens: 32,
+		RecentTailTokens:      32,
 	}
 }

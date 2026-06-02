@@ -7,14 +7,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/floegence/floret/adapters"
+	"github.com/floegence/floret/agentharness"
 	"github.com/floegence/floret/config"
+	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/eval"
 	"github.com/floegence/floret/event"
@@ -24,6 +28,7 @@ import (
 	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/sessiontree"
 	"github.com/floegence/floret/tools"
 )
 
@@ -36,19 +41,68 @@ const (
 )
 
 type Runner struct {
-	Root    string
-	EnvFile string
-	Now     func() time.Time
-	Exec    func(context.Context, string, []string, string, []string) ([]byte, int)
+	Root            string
+	EnvFile         string
+	Now             func() time.Time
+	Exec            func(context.Context, string, []string, string, []string) ([]byte, int)
+	ProviderFactory func(config.Config) (provider.Provider, error)
+	Sessions        *agentSessionRegistry
 }
 
 func NewRunner(root string) Runner {
 	return Runner{
-		Root:    root,
-		EnvFile: filepath.Join(root, config.DefaultEnvFile),
-		Now:     time.Now,
-		Exec:    execCommand,
+		Root:            root,
+		EnvFile:         filepath.Join(root, config.DefaultEnvFile),
+		Now:             time.Now,
+		Exec:            execCommand,
+		ProviderFactory: adapters.NewProvider,
+		Sessions:        newAgentSessionRegistry(),
 	}
+}
+
+type agentSessionRegistry struct {
+	mu       sync.Mutex
+	order    []string
+	sessions map[string]*agentSession
+}
+
+type agentSession struct {
+	mu              sync.Mutex
+	id              string
+	profile         ProviderProfile
+	systemPrompt    string
+	contextPolicy   contextpolicy.Policy
+	cfg             config.Config
+	provider        *observingProvider
+	recorder        *event.Recorder
+	harnessRecorder *agentharness.HarnessRecorder
+	repo            sessiontree.Repo
+	promptStore     promptcache.Store
+	registry        *tools.Registry
+	harness         *agentharness.AgentHarness
+	thread          *agentharness.Thread
+	turns           []AgentTurnSummary
+	createdAt       time.Time
+	updatedAt       time.Time
+}
+
+func newAgentSessionRegistry() *agentSessionRegistry {
+	return &agentSessionRegistry{sessions: map[string]*agentSession{}}
+}
+
+func (r *Runner) sessionRegistry() *agentSessionRegistry {
+	if r.Sessions != nil {
+		return r.Sessions
+	}
+	r.Sessions = newAgentSessionRegistry()
+	return r.Sessions
+}
+
+func (r *Runner) providerFactory() func(config.Config) (provider.Provider, error) {
+	if r.ProviderFactory != nil {
+		return r.ProviderFactory
+	}
+	return adapters.NewProvider
 }
 
 func (r Runner) ConfigInfo() ConfigInfo {
@@ -73,7 +127,11 @@ func (r Runner) Catalog() []CatalogProvider {
 	return modelcatalog.Providers()
 }
 
-func (r Runner) RunAgent(ctx context.Context, req AgentRunRequest) AgentRunResponse {
+func (r *Runner) RunAgent(ctx context.Context, req AgentRunRequest) AgentRunResponse {
+	return r.CreateAgentSession(ctx, req)
+}
+
+func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) AgentRunResponse {
 	started := r.now()
 	resp := AgentRunResponse{
 		ID:        fmt.Sprintf("%d", started.UnixNano()),
@@ -81,6 +139,7 @@ func (r Runner) RunAgent(ctx context.Context, req AgentRunRequest) AgentRunRespo
 	}
 	if strings.TrimSpace(req.Message) == "" {
 		resp.Status = "error"
+		resp.StatusCode = http.StatusBadRequest
 		resp.Error = "message is required"
 		resp.Summary = resp.Error
 		resp.FinishedAt = r.now()
@@ -113,7 +172,7 @@ func (r Runner) RunAgent(ctx context.Context, req AgentRunRequest) AgentRunRespo
 	if err != nil {
 		return r.failAgentRun(resp, err)
 	}
-	resp.Profile = stripProfileSecret(ProviderProfile{
+	resolvedProfile := stripProfileSecret(ProviderProfile{
 		ID:           profile.ID,
 		Name:         profile.Name,
 		Provider:     cfg.Provider,
@@ -123,69 +182,438 @@ func (r Runner) RunAgent(ctx context.Context, req AgentRunRequest) AgentRunRespo
 		APIKeySet:    cfg.APIKey != "" || profile.APIKeySet,
 		FakeResponse: cfg.FakeResponse,
 	})
-	p, err := adapters.NewProvider(cfg)
+	resp.Profile = resolvedProfile
+	p, err := r.providerFactory()(cfg)
 	if err != nil {
 		return r.failAgentRun(resp, err)
 	}
 	observed := newObservingProvider(p)
 	rec := &event.Recorder{}
-	store := session.NewMemoryStore()
+	harnessRec := &agentharness.HarnessRecorder{}
+	repo := sessiontree.NewMemoryRepo()
 	promptStore := promptcache.NewFileStore(filepath.Join(r.Root, ".floret-test-ui", "prompt-cache"))
 	registry := tools.NewRegistry()
 	if err := registerInterruptTools(registry); err != nil {
 		return r.failAgentRun(resp, err)
 	}
-	eng := &engine.Engine{
-		Provider: observed,
-		Store:    store,
-		Prompt:   promptStore,
-		Memory: &memory.Manager{
-			SystemPrompt: cfg.SystemPrompt,
-		},
-		Tools: registry,
-		Sink:  rec,
-		Options: engine.Options{
-			RunID:                   cfg.RunID,
-			SessionID:               cfg.RunID,
-			TraceID:                 cfg.RunID,
-			ProviderName:            cfg.Provider,
-			Model:                   cfg.Model,
+	sessionID := "testui-session-" + resp.ID
+	cfg.RunID = sessionID
+	h := agentharness.New(agentharness.Options{
+		Provider:      observed,
+		ProviderName:  cfg.Provider,
+		Model:         cfg.Model,
+		SystemPrompt:  cfg.SystemPrompt,
+		Tools:         registry,
+		PromptStore:   promptStore,
+		Repo:          repo,
+		Sink:          rec,
+		HarnessSink:   harnessRec,
+		ContextPolicy: cfg.ContextPolicy,
+		EngineOptions: engine.Options{
 			CacheRetention:          config.PromptCacheRetention(cfg),
 			ContextPolicy:           cfg.ContextPolicy,
 			MaxEmptyProviderRetries: cfg.MaxEmptyProviderRetries,
 			NoProgressLimit:         cfg.NoProgressLimit,
 			DuplicateToolLimit:      cfg.DuplicateToolLimit,
 			WallTime:                cfg.WallTime,
-			MaxTotalTokens:          8000,
 			MaxCostUSD:              1.00,
 		},
+		Now: r.now,
+	})
+	thread, err := h.StartThread(ctx, agentharness.StartThreadOptions{ThreadID: sessionID})
+	if err != nil {
+		return r.failAgentRun(resp, err)
 	}
-	result := eng.Run(ctx, req.Message)
-	messages, _ := store.Messages(cfg.RunID)
-	observation := observed.Snapshot()
-	observation.SessionMessages = observeMessages(messages)
-	observation.Transitions = buildTransitions(rec.Snapshot(), result)
-	resp.Status = string(result.Status)
-	resp.Output = result.Output
-	resp.Metrics = result.Metrics
-	resp.Events = rec.Snapshot()
-	resp.Observation = observation
-	if result.Err != nil {
-		resp.Error = result.Err.Error()
+	sess := &agentSession{
+		id:              sessionID,
+		profile:         resolvedProfile,
+		systemPrompt:    cfg.SystemPrompt,
+		contextPolicy:   cfg.ContextPolicy,
+		cfg:             cfg,
+		provider:        observed,
+		recorder:        rec,
+		harnessRecorder: harnessRec,
+		repo:            repo,
+		promptStore:     promptStore,
+		registry:        registry,
+		harness:         h,
+		thread:          thread,
+		createdAt:       started,
+		updatedAt:       started,
 	}
+	r.sessionRegistry().put(sess)
+	return r.runAgentTurn(ctx, sess, resp, req.Message)
+}
+
+func (r *Runner) RunAgentTurn(ctx context.Context, sessionID string, req AgentTurnRequest) AgentRunResponse {
+	started := r.now()
+	resp := AgentRunResponse{ID: fmt.Sprintf("%d", started.UnixNano()), SessionID: sessionID, StartedAt: started}
+	if strings.TrimSpace(req.Message) == "" {
+		resp.Status = "error"
+		resp.StatusCode = http.StatusBadRequest
+		resp.Error = "message is required"
+		resp.Summary = resp.Error
+		resp.FinishedAt = r.now()
+		resp.DurationMS = resp.FinishedAt.Sub(resp.StartedAt).Milliseconds()
+		return resp
+	}
+	sess, ok := r.sessionRegistry().get(sessionID)
+	if !ok {
+		return r.failAgentRunWithStatus(resp, http.StatusNotFound, fmt.Errorf("agent session %q not found", sessionID))
+	}
+	resp.Profile = sess.profile
+	if !sess.mu.TryLock() {
+		return r.failAgentRunWithStatus(resp, http.StatusConflict, fmt.Errorf("agent session %q is already running", sessionID))
+	}
+	defer sess.mu.Unlock()
+	snapshot, err := r.sessionSnapshotLocked(ctx, sess)
+	if err != nil {
+		return r.failAgentRun(resp, err)
+	}
+	if !snapshot.CanAppendMessage {
+		return r.failAgentRunWithStatus(resp, http.StatusConflict, fmt.Errorf("agent session %q is %s and cannot accept a new message", sessionID, snapshot.Status))
+	}
+	return r.runAgentTurnLocked(ctx, sess, resp, req.Message)
+}
+
+func (r *Runner) AgentSession(ctx context.Context, sessionID string) (AgentSessionSnapshot, error) {
+	sess, ok := r.sessionRegistry().get(sessionID)
+	if !ok {
+		return AgentSessionSnapshot{}, fmt.Errorf("agent session %q not found", sessionID)
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return r.sessionSnapshotLocked(ctx, sess)
+}
+
+func (r *Runner) AgentSessions(ctx context.Context) []AgentSessionSnapshot {
+	sessions := r.sessionRegistry().list()
+	out := make([]AgentSessionSnapshot, 0, len(sessions))
+	for _, sess := range sessions {
+		sess.mu.Lock()
+		snap, err := r.sessionSnapshotLocked(ctx, sess)
+		sess.mu.Unlock()
+		if err == nil {
+			out = append(out, snap)
+		}
+	}
+	return out
+}
+
+func (r *Runner) runAgentTurn(ctx context.Context, sess *agentSession, resp AgentRunResponse, message string) AgentRunResponse {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return r.runAgentTurnLocked(ctx, sess, resp, message)
+}
+
+func (r *Runner) runAgentTurnLocked(ctx context.Context, sess *agentSession, resp AgentRunResponse, message string) AgentRunResponse {
+	turn, err := sess.thread.Run(ctx, message, agentharness.RunOptions{})
+	if err != nil && turn.Status == "" {
+		return r.failAgentRun(resp, err)
+	}
+	finished := r.now()
+	sess.updatedAt = finished
+	resp.SessionID = sess.id
+	resp.TurnID = turn.ID
+	resp.ID = turn.ID
+	resp.Status = string(turn.Status)
+	resp.Output = turn.Output
+	resp.Metrics = turn.Metrics
+	resp.Events = sess.recorder.Snapshot()
+	resp.HarnessEvents = sess.harnessRecorder.Snapshot()
+	resp.Profile = sess.profile
+	resp.CompletionReason = string(turn.CompletionReason)
+	resp.ContinuationReason = string(turn.ContinuationReason)
+	resp.FinishReason = string(turn.FinishReason)
+	resp.RawFinishReason = turn.RawFinishReason
+	resp.FinishInferred = turn.FinishInferred
+	resp.CanAppendMessage = turn.Status == engine.Waiting || turn.Status == engine.Completed
+	if turn.Status == engine.Waiting {
+		resp.WaitingPrompt = turn.Output
+	}
+	if turn.Err != nil {
+		resp.Error = turn.Err.Error()
+	}
+	result := engine.Result{
+		Status:             turn.Status,
+		Output:             turn.Output,
+		Err:                turn.Err,
+		Metrics:            turn.Metrics,
+		CompletionReason:   turn.CompletionReason,
+		ContinuationReason: turn.ContinuationReason,
+		FinishReason:       turn.FinishReason,
+		RawFinishReason:    turn.RawFinishReason,
+		FinishInferred:     turn.FinishInferred,
+	}
+	summary := AgentTurnSummary{
+		ID:                 turn.ID,
+		Status:             string(turn.Status),
+		Output:             turn.Output,
+		Error:              resp.Error,
+		StartedAt:          resp.StartedAt,
+		FinishedAt:         finished,
+		Metrics:            turn.Metrics,
+		CompletionReason:   string(turn.CompletionReason),
+		ContinuationReason: string(turn.ContinuationReason),
+		FinishReason:       string(turn.FinishReason),
+		RawFinishReason:    turn.RawFinishReason,
+		FinishInferred:     turn.FinishInferred,
+	}
+	sess.turns = append(sess.turns, summary)
+	snapshot, snapErr := r.sessionSnapshotLocked(ctx, sess)
+	if snapErr != nil {
+		return r.failAgentRun(resp, snapErr)
+	}
+	resp.Session = snapshot
+	resp.CanAppendMessage = snapshot.CanAppendMessage
+	resp.WaitingPrompt = snapshot.WaitingPrompt
+	resp.Observation = r.agentObservationLocked(sess, snapshot, result, turn.ID)
 	resp.Summary = agentSummary(result)
-	resp.FinishedAt = r.now()
+	resp.FinishedAt = finished
 	resp.DurationMS = resp.FinishedAt.Sub(resp.StartedAt).Milliseconds()
 	return resp
 }
 
-func (r Runner) failAgentRun(resp AgentRunResponse, err error) AgentRunResponse {
+func (r *Runner) failAgentRun(resp AgentRunResponse, err error) AgentRunResponse {
+	return r.failAgentRunWithStatus(resp, 0, err)
+}
+
+func (r *Runner) failAgentRunWithStatus(resp AgentRunResponse, statusCode int, err error) AgentRunResponse {
 	resp.Status = "error"
+	resp.StatusCode = statusCode
 	resp.Error = err.Error()
 	resp.Summary = err.Error()
 	resp.FinishedAt = r.now()
 	resp.DurationMS = resp.FinishedAt.Sub(resp.StartedAt).Milliseconds()
 	return resp
+}
+
+func (r *agentSessionRegistry) put(sess *agentSession) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.sessions[sess.id]; !ok {
+		r.order = append(r.order, sess.id)
+	}
+	r.sessions[sess.id] = sess
+}
+
+func (r *agentSessionRegistry) get(id string) (*agentSession, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	sess, ok := r.sessions[id]
+	return sess, ok
+}
+
+func (r *agentSessionRegistry) list() []*agentSession {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*agentSession, 0, len(r.order))
+	for _, id := range r.order {
+		if sess, ok := r.sessions[id]; ok {
+			out = append(out, sess)
+		}
+	}
+	return out
+}
+
+func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) (AgentSessionSnapshot, error) {
+	snap, err := sess.thread.Read(ctx)
+	if err != nil {
+		return AgentSessionSnapshot{}, err
+	}
+	status, latestTurnID, waitingPrompt := latestSessionStatus(snap.Path)
+	turns := append([]AgentTurnSummary(nil), sess.turns...)
+	active := observeMessages(snap.Context)
+	pathEntries := observeEntries(snap.Path)
+	allEntries := observeEntries(snap.Entries)
+	return AgentSessionSnapshot{
+		ID:               sess.id,
+		Status:           status,
+		Phase:            snap.Phase,
+		LeafID:           snap.Meta.LeafID,
+		CreatedAt:        sess.createdAt,
+		UpdatedAt:        sess.updatedAt,
+		Profile:          sess.profile,
+		SystemPrompt:     sess.systemPrompt,
+		ContextPolicy:    sess.contextPolicy,
+		LatestTurnID:     latestTurnID,
+		WaitingPrompt:    waitingPrompt,
+		CanAppendMessage: status == string(engine.Waiting) || status == string(engine.Completed) || status == "idle",
+		Turns:            turns,
+		ActiveContext:    active,
+		PathEntries:      pathEntries,
+		AllEntries:       allEntries,
+		AggregateMetrics: aggregateTurnMetrics(turns),
+		Compactions:      countCompactions(snap.Path),
+	}, nil
+}
+
+func (r *Runner) agentObservationLocked(sess *agentSession, snapshot AgentSessionSnapshot, result engine.Result, turnID string) AgentObservation {
+	observation := sess.provider.Snapshot()
+	observation.SessionMessages = sessionMessagesFromEntries(snapshot.PathEntries)
+	observation.ActiveContext = snapshot.ActiveContext
+	observation.PathEntries = snapshot.PathEntries
+	observation.Transitions = buildTransitions(eventsForRun(sess.recorder.Snapshot(), turnID), result)
+	return observation
+}
+
+func eventsForRun(events []event.Event, runID string) []event.Event {
+	if runID == "" {
+		return append([]event.Event(nil), events...)
+	}
+	out := make([]event.Event, 0, len(events))
+	for _, ev := range events {
+		if ev.RunID == runID {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+func latestSessionStatus(path []sessiontree.Entry) (string, string, string) {
+	status := "idle"
+	latestTurnID := ""
+	waitingPrompt := ""
+	for _, entry := range path {
+		if entry.Type != sessiontree.EntryTurnMarker || entry.TurnStatus == "" {
+			continue
+		}
+		if entry.TurnID != "" {
+			latestTurnID = entry.TurnID
+		}
+		switch entry.TurnStatus {
+		case sessiontree.TurnStarted:
+			status = "running"
+		case sessiontree.TurnCompleted:
+			status = string(engine.Completed)
+			waitingPrompt = ""
+		case sessiontree.TurnWaiting:
+			status = string(engine.Waiting)
+			waitingPrompt = waitingPromptForTurn(path, entry.TurnID)
+		case sessiontree.TurnFailed:
+			status = string(engine.Failed)
+			waitingPrompt = ""
+		case sessiontree.TurnAborted:
+			status = string(engine.Cancelled)
+			waitingPrompt = ""
+		}
+	}
+	return status, latestTurnID, waitingPrompt
+}
+
+func waitingPromptForTurn(path []sessiontree.Entry, turnID string) string {
+	for i := len(path) - 1; i >= 0; i-- {
+		entry := path[i]
+		if entry.TurnID != turnID || entry.Type != sessiontree.EntryToolCall {
+			continue
+		}
+		if entry.Message.ToolName == "ask_user" {
+			return entry.Message.ToolArgs
+		}
+	}
+	return ""
+}
+
+func aggregateTurnMetrics(turns []AgentTurnSummary) engine.RunMetrics {
+	var out engine.RunMetrics
+	for _, turn := range turns {
+		out.AddUsage(turn.Metrics.Usage)
+		out.Steps += turn.Metrics.Steps
+		out.LLMRequests += turn.Metrics.LLMRequests
+		out.ToolCalls += turn.Metrics.ToolCalls
+		out.Compactions += turn.Metrics.Compactions
+		out.Retries += turn.Metrics.Retries
+		out.WallTimeMS += turn.Metrics.WallTimeMS
+	}
+	return out
+}
+
+func countCompactions(entries []sessiontree.Entry) int {
+	count := 0
+	for _, entry := range entries {
+		if entry.Type == sessiontree.EntryCompaction {
+			count++
+		}
+	}
+	return count
+}
+
+func sessionMessagesFromEntries(entries []ObservedSessionEntry) []ObservedSessionMessage {
+	out := []ObservedSessionMessage{}
+	for _, entry := range entries {
+		switch entry.Type {
+		case sessiontree.EntryUserMessage, sessiontree.EntryAssistantMessage, sessiontree.EntryToolCall, sessiontree.EntryToolResult:
+			if entry.Message.Role != "" {
+				out = append(out, entry.Message)
+			}
+		case sessiontree.EntryCompaction:
+			out = append(out, ObservedSessionMessage{
+				Role:                 string(session.Assistant),
+				Content:              entry.Summary,
+				Kind:                 string(session.MessageKindCompactionSummary),
+				EntryID:              entry.ID,
+				ParentEntryID:        entry.ParentID,
+				CompactionID:         entry.CompactionID,
+				CompactionGeneration: entry.CompactionGeneration,
+				CompactionWindowID:   entry.CompactionWindowID,
+			})
+		}
+	}
+	return out
+}
+
+func observeEntries(entries []sessiontree.Entry) []ObservedSessionEntry {
+	out := make([]ObservedSessionEntry, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, ObservedSessionEntry{
+			ID:                      entry.ID,
+			ParentID:                entry.ParentID,
+			ThreadID:                entry.ThreadID,
+			TurnID:                  entry.TurnID,
+			Type:                    entry.Type,
+			CreatedAt:               entry.CreatedAt,
+			Message:                 observeEntryMessage(entry.Message),
+			TurnStatus:              entry.TurnStatus,
+			CompactionID:            entry.CompactionID,
+			PreviousCompactionID:    entry.PreviousCompactionID,
+			CompactedThroughEntryID: entry.CompactedThroughEntryID,
+			SummarySchemaVersion:    entry.SummarySchemaVersion,
+			CompactionGeneration:    entry.CompactionGeneration,
+			CompactionWindowID:      entry.CompactionWindowID,
+			FirstKeptEntryID:        entry.FirstKeptEntryID,
+			Summary:                 entry.Summary,
+			CompactionTrigger:       entry.CompactionTrigger,
+			CompactionReason:        entry.CompactionReason,
+			CompactionPhase:         entry.CompactionPhase,
+			TokensBefore:            entry.TokensBefore,
+			TokensAfterEstimate:     entry.TokensAfterEstimate,
+			ContextUsageBefore:      entry.ContextUsageBefore,
+			ContextUsageAfter:       entry.ContextUsageAfter,
+			Error:                   entry.Error,
+			Metadata:                cloneStringMap(entry.Metadata),
+			RawHash:                 entry.RawHash,
+		})
+	}
+	return out
+}
+
+func observeEntryMessage(msg session.Message) ObservedSessionMessage {
+	items := observeMessages([]session.Message{msg})
+	if len(items) == 0 {
+		return ObservedSessionMessage{}
+	}
+	return items[0]
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func (r Runner) profileForRun(req AgentRunRequest) (ProviderProfile, error) {
@@ -546,7 +974,11 @@ func buildTransitions(events []event.Event, result engine.Result) []StateTransit
 		case event.StepEnd:
 			add(ev.Timestamp, ev.Step, "step_finished", "step_end", decisionDetails(ev))
 		case event.RunEnd:
-			add(ev.Timestamp, ev.Step, string(result.Status), "run_end", eventDetails(ev))
+			status := strings.TrimSpace(ev.Message)
+			if status == "" {
+				status = string(result.Status)
+			}
+			add(ev.Timestamp, ev.Step, status, "run_end", eventDetails(ev))
 		}
 	}
 	if len(transitions) == 0 {

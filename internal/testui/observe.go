@@ -60,14 +60,22 @@ func (p *observingProvider) ToolRaw(def promptcache.ToolDefinition) (string, str
 
 func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
 	p.mu.Lock()
+	sessionID := observedSessionID(req)
+	threadID := observedThreadID(req)
+	turnID := observedTurnID(req)
 	p.reqs = append(p.reqs, ObservedProviderRequest{
-		Step:        req.Step,
-		Provider:    req.Provider,
-		Model:       req.Model,
-		ObservedAt:  time.Now(),
-		Messages:    observeMessages(req.Messages),
-		Tools:       append([]provider.ToolDefinition(nil), req.Tools...),
-		RawSegments: observeRawSegments(req.RawPlan),
+		RunID:        req.RunID,
+		SessionID:    sessionID,
+		ThreadID:     threadID,
+		TurnID:       turnID,
+		Step:         req.Step,
+		Provider:     req.Provider,
+		Model:        req.Model,
+		ObservedAt:   time.Now(),
+		Messages:     observeMessages(req.Messages),
+		Tools:        append([]provider.ToolDefinition(nil), req.Tools...),
+		ContextUsage: req.ContextUsage,
+		RawSegments:  observeRawSegments(req.RawPlan),
 		CacheSummary: ObservedCacheSummary{
 			Namespace:            req.Cache.Namespace,
 			Retention:            string(req.Cache.Retention),
@@ -92,7 +100,7 @@ func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<
 	go func() {
 		defer close(out)
 		for ev := range stream {
-			p.recordEvent(req.Step, ev)
+			p.recordEvent(req.RunID, sessionID, req.Step, ev)
 			select {
 			case <-ctx.Done():
 				return
@@ -112,12 +120,12 @@ func (p *observingProvider) Snapshot() AgentObservation {
 	}
 }
 
-func (p *observingProvider) recordEvent(step int, ev provider.StreamEvent) {
+func (p *observingProvider) recordEvent(runID string, sessionID string, step int, ev provider.StreamEvent) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if ev.Type == provider.UsageEvent {
 		for i := len(p.reqs) - 1; i >= 0; i-- {
-			if p.reqs[i].Step == step {
+			if p.reqs[i].RunID == runID && p.reqs[i].Step == step {
 				p.reqs[i].CacheSummary.CacheReadTokens += ev.Usage.CacheReadTokens
 				p.reqs[i].CacheSummary.CacheWriteTokens += ev.Usage.CacheWriteTokens
 				break
@@ -125,6 +133,8 @@ func (p *observingProvider) recordEvent(step int, ev provider.StreamEvent) {
 		}
 	}
 	p.evs = append(p.evs, ObservedProviderEvent{
+		RunID:      runID,
+		SessionID:  sessionID,
 		Step:       step,
 		Type:       ev.Type,
 		ObservedAt: time.Now(),
@@ -136,6 +146,33 @@ func (p *observingProvider) recordEvent(step int, ev provider.StreamEvent) {
 	})
 }
 
+func observedSessionID(req provider.Request) string {
+	for _, seg := range req.RawPlan.Segments {
+		if seg.SessionID != "" {
+			return seg.SessionID
+		}
+	}
+	return ""
+}
+
+func observedThreadID(req provider.Request) string {
+	for _, seg := range req.RawPlan.Segments {
+		if seg.ThreadID != "" {
+			return seg.ThreadID
+		}
+	}
+	return observedSessionID(req)
+}
+
+func observedTurnID(req provider.Request) string {
+	for _, seg := range req.RawPlan.Segments {
+		if seg.TurnID != "" {
+			return seg.TurnID
+		}
+	}
+	return req.RunID
+}
+
 func observeRawSegments(plan promptcache.RawPlan) []ObservedRawSegment {
 	out := make([]ObservedRawSegment, 0, len(plan.Segments))
 	for i, seg := range plan.Segments {
@@ -145,22 +182,31 @@ func observeRawSegments(plan promptcache.RawPlan) []ObservedRawSegment {
 		}
 		raw, truncated := boundedRaw(seg.Raw, maxObservedRawSegmentBytes)
 		out = append(out, ObservedRawSegment{
-			ID:              seg.ID,
-			Kind:            seg.Kind,
-			Role:            seg.Role,
-			SHA256:          seg.SHA256,
-			ByteLength:      seg.ByteLength,
-			Epoch:           seg.Epoch,
-			Sequence:        seg.Sequence,
-			Reused:          reused,
-			FragmentType:    seg.FragmentType,
-			StructuredRefID: seg.StructuredRefID,
-			Fingerprint:     seg.Fingerprint,
-			SchemaVersion:   seg.SchemaVersion,
-			AdapterVersion:  seg.AdapterVersion,
-			Raw:             raw,
-			RawTruncated:    truncated,
-			RawPreview:      preview(seg.Raw, 240),
+			ID:                   seg.ID,
+			RunID:                seg.RunID,
+			SessionID:            seg.SessionID,
+			ThreadID:             seg.ThreadID,
+			TurnID:               seg.TurnID,
+			EntryID:              seg.EntryID,
+			ParentEntryID:        seg.ParentEntryID,
+			Kind:                 seg.Kind,
+			Role:                 seg.Role,
+			SHA256:               seg.SHA256,
+			ByteLength:           seg.ByteLength,
+			Epoch:                seg.Epoch,
+			Sequence:             seg.Sequence,
+			Reused:               reused,
+			FragmentType:         seg.FragmentType,
+			StructuredRefID:      seg.StructuredRefID,
+			CompactionGeneration: seg.CompactionGeneration,
+			CompactionWindowID:   seg.CompactionWindowID,
+			CompactionEntryID:    seg.CompactionEntryID,
+			Fingerprint:          seg.Fingerprint,
+			SchemaVersion:        seg.SchemaVersion,
+			AdapterVersion:       seg.AdapterVersion,
+			Raw:                  raw,
+			RawTruncated:         truncated,
+			RawPreview:           preview(seg.Raw, 240),
 		})
 	}
 	return out
@@ -184,11 +230,17 @@ func observeMessages(messages []session.Message) []ObservedSessionMessage {
 	out := make([]ObservedSessionMessage, 0, len(messages))
 	for _, msg := range messages {
 		out = append(out, ObservedSessionMessage{
-			Role:       string(msg.Role),
-			Content:    msg.Content,
-			ToolCallID: msg.ToolCallID,
-			ToolName:   msg.ToolName,
-			ToolArgs:   msg.ToolArgs,
+			Role:                 string(msg.Role),
+			Content:              msg.Content,
+			ToolCallID:           msg.ToolCallID,
+			ToolName:             msg.ToolName,
+			ToolArgs:             msg.ToolArgs,
+			Kind:                 string(msg.Kind),
+			EntryID:              msg.EntryID,
+			ParentEntryID:        msg.ParentEntryID,
+			CompactionID:         msg.CompactionID,
+			CompactionGeneration: msg.CompactionGeneration,
+			CompactionWindowID:   msg.CompactionWindowID,
 		})
 	}
 	return out

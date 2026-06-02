@@ -3,6 +3,7 @@ package testui
 import (
 	"time"
 
+	"github.com/floegence/floret/agentharness"
 	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/eval"
@@ -10,6 +11,7 @@ import (
 	"github.com/floegence/floret/modelcatalog"
 	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
+	"github.com/floegence/floret/sessiontree"
 )
 
 type ConfigInfo struct {
@@ -112,56 +114,88 @@ type AgentRunRequest struct {
 	ContextPolicy contextpolicy.Policy `json:"context_policy,omitempty"`
 }
 
+type AgentTurnRequest struct {
+	Message string `json:"message"`
+}
+
 type AgentRunResponse struct {
-	ID          string            `json:"id"`
-	Status      string            `json:"status"`
-	StartedAt   time.Time         `json:"started_at"`
-	FinishedAt  time.Time         `json:"finished_at"`
-	DurationMS  int64             `json:"duration_ms"`
-	Summary     string            `json:"summary"`
-	Output      string            `json:"output"`
-	Error       string            `json:"error,omitempty"`
-	Profile     ProviderProfile   `json:"profile"`
-	Metrics     engine.RunMetrics `json:"metrics"`
-	Events      []event.Event     `json:"events"`
-	Observation AgentObservation  `json:"observation"`
+	StatusCode         int                         `json:"-"`
+	ID                 string                      `json:"id"`
+	SessionID          string                      `json:"session_id"`
+	TurnID             string                      `json:"turn_id"`
+	Status             string                      `json:"status"`
+	StartedAt          time.Time                   `json:"started_at"`
+	FinishedAt         time.Time                   `json:"finished_at"`
+	DurationMS         int64                       `json:"duration_ms"`
+	Summary            string                      `json:"summary"`
+	Output             string                      `json:"output"`
+	Error              string                      `json:"error,omitempty"`
+	Profile            ProviderProfile             `json:"profile"`
+	Metrics            engine.RunMetrics           `json:"metrics"`
+	Events             []event.Event               `json:"events"`
+	HarnessEvents      []agentharness.HarnessEvent `json:"harness_events,omitempty"`
+	CompletionReason   string                      `json:"completion_reason,omitempty"`
+	ContinuationReason string                      `json:"continuation_reason,omitempty"`
+	FinishReason       string                      `json:"finish_reason,omitempty"`
+	RawFinishReason    string                      `json:"raw_finish_reason,omitempty"`
+	FinishInferred     bool                        `json:"finish_inferred,omitempty"`
+	CanAppendMessage   bool                        `json:"can_append_message"`
+	WaitingPrompt      string                      `json:"waiting_prompt,omitempty"`
+	Session            AgentSessionSnapshot        `json:"session"`
+	Observation        AgentObservation            `json:"observation"`
 }
 
 type AgentObservation struct {
 	ProviderRequests []ObservedProviderRequest `json:"provider_requests"`
 	ProviderEvents   []ObservedProviderEvent   `json:"provider_events"`
 	SessionMessages  []ObservedSessionMessage  `json:"session_messages"`
+	ActiveContext    []ObservedSessionMessage  `json:"active_context"`
+	PathEntries      []ObservedSessionEntry    `json:"path_entries"`
 	Transitions      []StateTransition         `json:"transitions"`
 }
 
 type ObservedProviderRequest struct {
+	RunID        string                    `json:"run_id,omitempty"`
+	SessionID    string                    `json:"session_id,omitempty"`
+	ThreadID     string                    `json:"thread_id,omitempty"`
+	TurnID       string                    `json:"turn_id,omitempty"`
 	Step         int                       `json:"step"`
 	Provider     string                    `json:"provider"`
 	Model        string                    `json:"model"`
 	ObservedAt   time.Time                 `json:"observed_at"`
 	Messages     []ObservedSessionMessage  `json:"messages"`
 	Tools        []provider.ToolDefinition `json:"tools"`
+	ContextUsage contextpolicy.Usage       `json:"context_usage,omitempty"`
 	RawSegments  []ObservedRawSegment      `json:"raw_segments,omitempty"`
 	CacheSummary ObservedCacheSummary      `json:"cache_summary,omitempty"`
 }
 
 type ObservedRawSegment struct {
-	ID              string                  `json:"id"`
-	Kind            promptcache.SegmentKind `json:"kind"`
-	Role            string                  `json:"role,omitempty"`
-	SHA256          string                  `json:"sha256"`
-	ByteLength      int                     `json:"byte_length"`
-	Epoch           int                     `json:"epoch,omitempty"`
-	Sequence        int64                   `json:"sequence,omitempty"`
-	Reused          bool                    `json:"reused"`
-	FragmentType    string                  `json:"fragment_type,omitempty"`
-	StructuredRefID string                  `json:"structured_ref_id,omitempty"`
-	Fingerprint     string                  `json:"fingerprint,omitempty"`
-	SchemaVersion   string                  `json:"schema_version,omitempty"`
-	AdapterVersion  string                  `json:"adapter_version,omitempty"`
-	Raw             string                  `json:"raw,omitempty"`
-	RawTruncated    bool                    `json:"raw_truncated,omitempty"`
-	RawPreview      string                  `json:"raw_preview,omitempty"`
+	ID                   string                  `json:"id"`
+	RunID                string                  `json:"run_id,omitempty"`
+	SessionID            string                  `json:"session_id,omitempty"`
+	ThreadID             string                  `json:"thread_id,omitempty"`
+	TurnID               string                  `json:"turn_id,omitempty"`
+	EntryID              string                  `json:"entry_id,omitempty"`
+	ParentEntryID        string                  `json:"parent_entry_id,omitempty"`
+	Kind                 promptcache.SegmentKind `json:"kind"`
+	Role                 string                  `json:"role,omitempty"`
+	SHA256               string                  `json:"sha256"`
+	ByteLength           int                     `json:"byte_length"`
+	Epoch                int                     `json:"epoch,omitempty"`
+	Sequence             int64                   `json:"sequence,omitempty"`
+	Reused               bool                    `json:"reused"`
+	FragmentType         string                  `json:"fragment_type,omitempty"`
+	StructuredRefID      string                  `json:"structured_ref_id,omitempty"`
+	CompactionGeneration int                     `json:"compaction_generation,omitempty"`
+	CompactionWindowID   string                  `json:"compaction_window_id,omitempty"`
+	CompactionEntryID    string                  `json:"compaction_entry_id,omitempty"`
+	Fingerprint          string                  `json:"fingerprint,omitempty"`
+	SchemaVersion        string                  `json:"schema_version,omitempty"`
+	AdapterVersion       string                  `json:"adapter_version,omitempty"`
+	Raw                  string                  `json:"raw,omitempty"`
+	RawTruncated         bool                    `json:"raw_truncated,omitempty"`
+	RawPreview           string                  `json:"raw_preview,omitempty"`
 }
 
 type ObservedCacheSummary struct {
@@ -181,6 +215,8 @@ type ObservedCacheSummary struct {
 }
 
 type ObservedProviderEvent struct {
+	RunID      string              `json:"run_id,omitempty"`
+	SessionID  string              `json:"session_id,omitempty"`
 	Step       int                 `json:"step"`
 	Type       provider.EventType  `json:"type"`
 	ObservedAt time.Time           `json:"observed_at"`
@@ -192,11 +228,82 @@ type ObservedProviderEvent struct {
 }
 
 type ObservedSessionMessage struct {
-	Role       string `json:"role"`
-	Content    string `json:"content,omitempty"`
-	ToolCallID string `json:"tool_call_id,omitempty"`
-	ToolName   string `json:"tool_name,omitempty"`
-	ToolArgs   string `json:"tool_args,omitempty"`
+	Role                 string `json:"role"`
+	Content              string `json:"content,omitempty"`
+	ToolCallID           string `json:"tool_call_id,omitempty"`
+	ToolName             string `json:"tool_name,omitempty"`
+	ToolArgs             string `json:"tool_args,omitempty"`
+	Kind                 string `json:"kind,omitempty"`
+	EntryID              string `json:"entry_id,omitempty"`
+	ParentEntryID        string `json:"parent_entry_id,omitempty"`
+	CompactionID         string `json:"compaction_id,omitempty"`
+	CompactionGeneration int    `json:"compaction_generation,omitempty"`
+	CompactionWindowID   string `json:"compaction_window_id,omitempty"`
+}
+
+type ObservedSessionEntry struct {
+	ID                      string                       `json:"id"`
+	ParentID                string                       `json:"parent_id,omitempty"`
+	ThreadID                string                       `json:"thread_id,omitempty"`
+	TurnID                  string                       `json:"turn_id,omitempty"`
+	Type                    sessiontree.EntryType        `json:"type"`
+	CreatedAt               time.Time                    `json:"created_at"`
+	Message                 ObservedSessionMessage       `json:"message,omitempty"`
+	TurnStatus              sessiontree.TurnMarkerStatus `json:"turn_status,omitempty"`
+	CompactionID            string                       `json:"compaction_id,omitempty"`
+	PreviousCompactionID    string                       `json:"previous_compaction_id,omitempty"`
+	CompactedThroughEntryID string                       `json:"compacted_through_entry_id,omitempty"`
+	SummarySchemaVersion    string                       `json:"summary_schema_version,omitempty"`
+	CompactionGeneration    int                          `json:"compaction_generation,omitempty"`
+	CompactionWindowID      string                       `json:"compaction_window_id,omitempty"`
+	FirstKeptEntryID        string                       `json:"first_kept_entry_id,omitempty"`
+	Summary                 string                       `json:"summary,omitempty"`
+	CompactionTrigger       string                       `json:"compaction_trigger,omitempty"`
+	CompactionReason        string                       `json:"compaction_reason,omitempty"`
+	CompactionPhase         string                       `json:"compaction_phase,omitempty"`
+	TokensBefore            int64                        `json:"tokens_before,omitempty"`
+	TokensAfterEstimate     int64                        `json:"tokens_after_estimate,omitempty"`
+	ContextUsageBefore      contextpolicy.Usage          `json:"context_usage_before,omitempty"`
+	ContextUsageAfter       contextpolicy.Usage          `json:"context_usage_after,omitempty"`
+	Error                   string                       `json:"error,omitempty"`
+	Metadata                map[string]string            `json:"metadata,omitempty"`
+	RawHash                 string                       `json:"raw_hash,omitempty"`
+}
+
+type AgentSessionSnapshot struct {
+	ID               string                   `json:"id"`
+	Status           string                   `json:"status"`
+	Phase            string                   `json:"phase"`
+	LeafID           string                   `json:"leaf_id,omitempty"`
+	CreatedAt        time.Time                `json:"created_at"`
+	UpdatedAt        time.Time                `json:"updated_at"`
+	Profile          ProviderProfile          `json:"profile"`
+	SystemPrompt     string                   `json:"system_prompt"`
+	ContextPolicy    contextpolicy.Policy     `json:"context_policy"`
+	LatestTurnID     string                   `json:"latest_turn_id,omitempty"`
+	WaitingPrompt    string                   `json:"waiting_prompt,omitempty"`
+	CanAppendMessage bool                     `json:"can_append_message"`
+	Turns            []AgentTurnSummary       `json:"turns"`
+	ActiveContext    []ObservedSessionMessage `json:"active_context"`
+	PathEntries      []ObservedSessionEntry   `json:"path_entries"`
+	AllEntries       []ObservedSessionEntry   `json:"all_entries"`
+	AggregateMetrics engine.RunMetrics        `json:"aggregate_metrics"`
+	Compactions      int                      `json:"compactions"`
+}
+
+type AgentTurnSummary struct {
+	ID                 string            `json:"id"`
+	Status             string            `json:"status"`
+	Output             string            `json:"output,omitempty"`
+	Error              string            `json:"error,omitempty"`
+	StartedAt          time.Time         `json:"started_at,omitempty"`
+	FinishedAt         time.Time         `json:"finished_at,omitempty"`
+	Metrics            engine.RunMetrics `json:"metrics,omitempty"`
+	CompletionReason   string            `json:"completion_reason,omitempty"`
+	ContinuationReason string            `json:"continuation_reason,omitempty"`
+	FinishReason       string            `json:"finish_reason,omitempty"`
+	RawFinishReason    string            `json:"raw_finish_reason,omitempty"`
+	FinishInferred     bool              `json:"finish_inferred,omitempty"`
 }
 
 type StateTransition struct {
