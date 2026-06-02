@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/floret/compaction"
+	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/event"
 	"github.com/floegence/floret/harness"
@@ -542,6 +544,36 @@ func TestAskUserSignalReturnsWaitingWithoutExecutingTool(t *testing.T) {
 	}
 }
 
+func TestMixedControlAndOrdinaryToolsFailBeforePersistingOrphans(t *testing.T) {
+	p := harness.NewScriptedProvider(
+		[]provider.StreamEvent{
+			{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
+				{ID: "ask", Name: "ask_user", Args: "Which file?"},
+				{ID: "read", Name: "read", Args: "{}"},
+			}},
+		},
+	)
+	reg := tools.NewRegistry()
+	mustRegister(t, reg, tools.Tool{Name: "read", Handler: func(context.Context, string) (string, error) { return "ok", nil }})
+	e := newTestEngine(p, &event.Recorder{})
+	e.Tools = reg
+
+	got := e.Run(context.Background(), "continue")
+
+	if got.Status != engine.Failed || !errors.Is(got.Err, engine.ErrMixedControlTools) {
+		t.Fatalf("result = %#v", got)
+	}
+	messages, err := e.Store.Messages("run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(messages, func(msg session.Message) bool {
+		return msg.ToolName == "read" || msg.ToolName == "ask_user"
+	}) {
+		t.Fatalf("mixed control tools should not persist orphan calls: %#v", messages)
+	}
+}
+
 func TestWaitingCanResumeByAppendingUserAnswerToSameRun(t *testing.T) {
 	store := session.NewMemoryStore()
 	p1 := harness.NewScriptedProvider(harness.Step(harness.Tool("ask", "ask_user", "Which file?")))
@@ -793,7 +825,7 @@ func TestProviderContextOverflowCompactsAndRetries(t *testing.T) {
 	}
 	e := newTestEngine(p, rec)
 	e.Store = store
-	e.Memory = &memory.Manager{MaxMessages: 1}
+	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
 	if _, err := buildProviderRequestForTest(context.Background(), e, 0, []session.Message{
 		{Role: session.User, Content: "older"},
 		{Role: session.User, Content: "newer"},
@@ -809,8 +841,8 @@ func TestProviderContextOverflowCompactsAndRetries(t *testing.T) {
 	if !hasEvent(rec.Events, event.ContextCompact) {
 		t.Fatalf("context overflow did not compact")
 	}
-	if e.Memory.Compactions != 1 {
-		t.Fatalf("compactions = %d, want 1", e.Memory.Compactions)
+	if got.Metrics.Compactions != 1 {
+		t.Fatalf("compactions = %d, want 1", got.Metrics.Compactions)
 	}
 	segments, err := e.Prompt.Segments(context.Background(), "run", "", "")
 	if err != nil {
@@ -830,24 +862,86 @@ func TestProviderContextOverflowCompactsAndRetries(t *testing.T) {
 	}
 }
 
-func TestTruncatedProviderOutputCompactsAndRetries(t *testing.T) {
+func TestPreRequestThresholdCompactsWithoutReplacingStore(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
+	store := &replaceCountingStore{inner: session.NewMemoryStore()}
+	if err := store.Append("run",
+		session.Message{Role: session.User, Content: strings.Repeat("old ", 1200)},
+		session.Message{Role: session.User, Content: "new"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	e := newTestEngine(p, rec)
+	e.Store = store
+	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 900, ReservedOutputTokens: 80, ReservedSummaryTokens: 80, RecentTailTokens: 20}
+
+	got := e.Run(context.Background(), "")
+
+	if got.Status != engine.Completed {
+		t.Fatalf("result = %#v", got)
+	}
+	if store.replaceCalls != 0 {
+		t.Fatalf("engine compaction must not install with Store.Replace, calls=%d", store.replaceCalls)
+	}
+	if got.Metrics.Compactions != 1 || len(p.Requests) != 1 {
+		t.Fatalf("pre-request compaction not reflected in metrics/request count: result=%#v requests=%d", got, len(p.Requests))
+	}
+	if !slices.ContainsFunc(p.Requests[0].Messages, func(message session.Message) bool {
+		return message.Kind == session.MessageKindCompactionSummary
+	}) {
+		t.Fatalf("provider request did not use compacted active projection: %#v", p.Requests[0].Messages)
+	}
+}
+
+type replaceCountingStore struct {
+	inner        *session.MemoryStore
+	replaceCalls int
+}
+
+func (s *replaceCountingStore) Append(runID string, messages ...session.Message) error {
+	return s.inner.Append(runID, messages...)
+}
+
+func (s *replaceCountingStore) Messages(runID string) ([]session.Message, error) {
+	return s.inner.Messages(runID)
+}
+
+func (s *replaceCountingStore) Replace(runID string, messages []session.Message) error {
+	s.replaceCalls++
+	return s.inner.Replace(runID, messages)
+}
+
+func TestTruncatedProviderOutputContinuesWithoutFullCompactWhenInputPressureIsLow(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
-		[]provider.StreamEvent{{Type: provider.Truncated}},
+		[]provider.StreamEvent{harness.Text("partial "), {Type: provider.Truncated}},
 		[]provider.StreamEvent{
 			{Type: provider.Delta, Text: "retried"},
 			{Type: provider.Done, Reason: "stop"},
 		},
 	)
 	e := newTestEngine(p, rec)
+	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 8000, ReservedOutputTokens: 8, ReservedSummaryTokens: 8, RecentTailTokens: 8}
 
 	got := e.Run(context.Background(), "work")
 
-	if got.Status != engine.Completed || got.Output != "retried" {
+	if got.Status != engine.Completed || got.Output != "partial retried" {
 		t.Fatalf("result = %#v", got)
 	}
-	if !hasEvent(rec.Events, event.ContextCompact) {
-		t.Fatalf("truncation did not compact")
+	if hasEvent(rec.Events, event.ContextCompact) {
+		t.Fatalf("low-pressure truncation should not full compact: %#v", rec.Events)
+	}
+	messages, err := e.Store.Messages("run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(messages, func(msg session.Message) bool {
+		return msg.Role == session.Assistant && msg.Content == "partial "
+	}) {
+		t.Fatalf("partial assistant text was not persisted before continuation: %#v", messages)
 	}
 }
 
@@ -894,19 +988,7 @@ func TestUnknownFinishWithTextIsInferredNaturalStop(t *testing.T) {
 	}
 }
 
-func TestLoopGuardsMaxStepsDuplicateToolsAndCancellation(t *testing.T) {
-	t.Run("max steps", func(t *testing.T) {
-		p := harness.NewScriptedProvider(
-			[]provider.StreamEvent{{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "x1", Name: "missing", Args: "1"}}}},
-			[]provider.StreamEvent{{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "x2", Name: "missing", Args: "2"}}}},
-		)
-		e := newTestEngine(p, &event.Recorder{})
-		e.Options.MaxSteps = 1
-		got := e.Run(context.Background(), "loop")
-		if !errors.Is(got.Err, engine.ErrMaxSteps) {
-			t.Fatalf("err = %v, want max steps", got.Err)
-		}
-	})
+func TestLoopGuardsDuplicateToolsAndCancellation(t *testing.T) {
 	t.Run("duplicate tools", func(t *testing.T) {
 		p := harness.NewScriptedProvider(
 			[]provider.StreamEvent{{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "x1", Name: "missing", Args: "same"}}}},
@@ -1008,12 +1090,11 @@ func newTestEngine(p provider.Provider, rec *event.Recorder) *engine.Engine {
 	return &engine.Engine{
 		Provider: p,
 		Store:    session.NewMemoryStore(),
-		Memory:   &memory.Manager{SystemPrompt: "You are Floret.", MaxMessages: 8},
+		Memory:   &memory.Manager{SystemPrompt: "You are Floret."},
 		Tools:    tools.NewRegistry(),
 		Sink:     rec,
 		Options: engine.Options{
 			RunID:                   "run",
-			MaxSteps:                8,
 			MaxEmptyProviderRetries: 1,
 			NoProgressLimit:         2,
 			DuplicateToolLimit:      3,

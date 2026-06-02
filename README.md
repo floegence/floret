@@ -11,7 +11,8 @@ approval decisions, and presentation surfaces through small contracts.
 - `engine`: explicit turn loop, status outcomes, loop guards, provider recovery, tool execution, and event emission.
 - `provider`: normalized streaming provider request and event contracts.
 - `tools`: tool registry, approval checks, read-only parallel scheduling, mutation serialization, and panic recovery.
-- `memory`: context assembly and compaction with tool-result pair preservation.
+- `memory`: system prompt assembly.
+- `contextpolicy` and `compaction`: token-aware active context policy and compact-and-continue contracts.
 - `session`: append/replace message storage with an in-memory implementation.
 - `event`: presentation-neutral lifecycle events and a thread-safe recorder for tests.
 - `harness`: deterministic scripted provider for engine and host tests.
@@ -25,13 +26,13 @@ approval decisions, and presentation surfaces through small contracts.
 The engine is intentionally small and explicit:
 
 1. Append the user message.
-2. Assemble bounded provider context.
+2. Assemble provider context from the current active projection.
 3. Stream provider output.
-4. Recover from empty, truncated, or context-overflow responses.
+4. Compact token-heavy context before requests, after follow-up pressure, or after context-overflow responses.
 5. Treat a terminal provider response with assistant text and no pending tools as natural completion.
 6. Treat `ask_user` as the explicit user-interrupt signal.
 7. Execute normal tools through the registry and feed results back into the next step.
-8. Stop through loop guards for max steps, cancellation, no progress, repeated tools, truncation, and duplicate tool call IDs.
+8. Stop through resource and loop guards for cancellation, no progress, repeated tools, truncation, and duplicate tool call IDs.
 
 Events are presentation-neutral so a terminal UI, desktop app, test harness, or automation
 surface can render the same runtime facts without parsing human text.
@@ -49,9 +50,11 @@ FLORET_MODEL=fake-model
 FLORET_FAKE_RESPONSE=floret local provider ok
 FLORET_RUN_ID=local
 FLORET_SYSTEM_PROMPT=You are Floret.
-FLORET_MAX_CONTEXT_MESSAGES=32
-FLORET_MAX_STEPS=16
-FLORET_HARD_MAX_STEPS=16
+FLORET_CONTEXT_WINDOW_TOKENS=128000
+FLORET_MAX_OUTPUT_TOKENS=4096
+FLORET_RESERVED_OUTPUT_TOKENS=4096
+FLORET_RESERVED_SUMMARY_TOKENS=2048
+FLORET_RECENT_TAIL_TOKENS=12000
 FLORET_WALL_TIME=30s
 ```
 

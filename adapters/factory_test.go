@@ -30,7 +30,7 @@ func TestNewProviderCreatesFakeProviderThatRunsEngine(t *testing.T) {
 		Store:    session.NewMemoryStore(),
 		Memory:   &memory.Manager{SystemPrompt: "test"},
 		Tools:    tools.NewRegistry(),
-		Options:  engine.Options{RunID: "run", MaxSteps: 2},
+		Options:  engine.Options{RunID: "run"},
 	}).Run(context.Background(), "hello")
 	if result.Status != engine.Completed || result.Output != "fake ok" {
 		t.Fatalf("result = %#v", result)
@@ -68,7 +68,7 @@ func TestOpenAICompatibleProviderSendsConfiguredModelAndReceivesAnswer(t *testin
 		Store:    session.NewMemoryStore(),
 		Memory:   &memory.Manager{SystemPrompt: "test"},
 		Tools:    tools.NewRegistry(),
-		Options:  engine.Options{RunID: "run", MaxSteps: 2},
+		Options:  engine.Options{RunID: "run"},
 	}).Run(context.Background(), "hello")
 	if result.Status != engine.Completed || result.Output != "remote ok" || result.CompletionReason != engine.CompletionReasonNaturalStop {
 		t.Fatalf("result = %#v, want natural completion from remote text", result)
@@ -99,7 +99,7 @@ func TestOpenAICompatibleProviderNormalizesUsage(t *testing.T) {
 		Store:    session.NewMemoryStore(),
 		Memory:   &memory.Manager{SystemPrompt: "test"},
 		Tools:    tools.NewRegistry(),
-		Options:  engine.Options{RunID: "run", MaxSteps: 2},
+		Options:  engine.Options{RunID: "run"},
 	}).Run(context.Background(), "hello")
 	if result.Status != engine.Completed {
 		t.Fatalf("result = %#v", result)
@@ -137,7 +137,7 @@ func TestNewProviderUsesBuiltInOpenAIProviderPreset(t *testing.T) {
 		Store:    session.NewMemoryStore(),
 		Memory:   &memory.Manager{SystemPrompt: "test"},
 		Tools:    tools.NewRegistry(),
-		Options:  engine.Options{RunID: "run", MaxSteps: 2},
+		Options:  engine.Options{RunID: "run"},
 	}).Run(context.Background(), "hello")
 	if result.Status != engine.Completed {
 		t.Fatalf("result = %#v", result)
@@ -182,7 +182,7 @@ func TestAnthropicProviderSendsMessagesRequestAndReceivesNaturalAnswer(t *testin
 		Store:    session.NewMemoryStore(),
 		Memory:   &memory.Manager{SystemPrompt: "anthropic system"},
 		Tools:    tools.NewRegistry(),
-		Options:  engine.Options{RunID: "run", MaxSteps: 2},
+		Options:  engine.Options{RunID: "run"},
 	}).Run(context.Background(), "hello")
 	if result.Status != engine.Completed || result.Output != "anthropic ok" {
 		t.Fatalf("result = %#v", result)
@@ -538,14 +538,14 @@ func TestAnthropicProviderRendersAllSystemBlocksIncludingCompaction(t *testing.T
 		RunID: "r",
 		Messages: []session.Message{
 			{Role: session.System, Content: "base system"},
-			{Role: session.System, Content: "Previous conversation was compacted. Keep constraints."},
+			{Role: session.System, Content: "stable constraints", Kind: session.MessageKindCompactionSummary},
 			{Role: session.User, Content: "continue"},
 		},
 		Cache: promptcache.CachePolicy{Enabled: true, Retention: promptcache.RetentionShort},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(body.System) != 2 || body.System[0].Text != "base system" || body.System[1].Text != "Previous conversation was compacted. Keep constraints." {
+	if len(body.System) != 2 || body.System[0].Text != "base system" || body.System[1].Text != "stable constraints" {
 		t.Fatalf("system blocks = %#v", body.System)
 	}
 	if body.System[0].CacheControl != nil || body.System[1].CacheControl == nil || body.System[1].CacheControl.TTL != "" {
@@ -760,7 +760,7 @@ func TestOpenAICompatibleProviderMapsNaturalCompletion(t *testing.T) {
 		Store:    session.NewMemoryStore(),
 		Memory:   &memory.Manager{SystemPrompt: "test"},
 		Tools:    tools.NewRegistry(),
-		Options:  engine.Options{RunID: "run", MaxSteps: 2},
+		Options:  engine.Options{RunID: "run"},
 	}).Run(context.Background(), "hello")
 	if result.Status != engine.Completed || result.Output != "remote done" || result.FinishReason != provider.FinishStop {
 		t.Fatalf("result = %#v", result)
@@ -786,7 +786,7 @@ func TestNewProviderUsesProviderSpecificEnvKey(t *testing.T) {
 		Store:    session.NewMemoryStore(),
 		Memory:   &memory.Manager{SystemPrompt: "test"},
 		Tools:    tools.NewRegistry(),
-		Options:  engine.Options{RunID: "run", MaxSteps: 2},
+		Options:  engine.Options{RunID: "run"},
 	}).Run(context.Background(), "hello")
 	if result.Status != engine.Completed {
 		t.Fatalf("result = %#v", result)

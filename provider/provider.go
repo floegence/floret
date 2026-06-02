@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/session"
 )
@@ -12,14 +13,17 @@ import (
 var ErrContextOverflow = errors.New("provider context overflow")
 
 type Request struct {
-	RunID    string
-	Step     int
-	Provider string
-	Model    string
-	Messages []session.Message
-	Tools    []ToolDefinition
-	RawPlan  promptcache.RawPlan
-	Cache    promptcache.CachePolicy
+	RunID           string
+	Step            int
+	Provider        string
+	Model           string
+	Messages        []session.Message
+	Tools           []ToolDefinition
+	RawPlan         promptcache.RawPlan
+	Cache           promptcache.CachePolicy
+	ContextPolicy   contextpolicy.Policy
+	ContextUsage    contextpolicy.Usage
+	MaxOutputTokens int64
 }
 
 type ToolDefinition struct {

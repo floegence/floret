@@ -11,14 +11,27 @@ const (
 	Tool      Role = "tool"
 )
 
+type MessageKind string
+
+const (
+	MessageKindNormal             MessageKind = ""
+	MessageKindCompactionSummary  MessageKind = "compaction_summary"
+	MessageKindControlSignal      MessageKind = "control_signal"
+	MessageKindMicrocompactMarker MessageKind = "microcompact_marker"
+)
+
 type Message struct {
-	Role          Role
-	Content       string
-	ToolCallID    string
-	ToolName      string
-	ToolArgs      string
-	EntryID       string
-	ParentEntryID string
+	Role                 Role
+	Content              string
+	ToolCallID           string
+	ToolName             string
+	ToolArgs             string
+	EntryID              string
+	ParentEntryID        string
+	Kind                 MessageKind
+	CompactionID         string
+	CompactionGeneration int
+	CompactionWindowID   string
 }
 
 type Store interface {

@@ -3,6 +3,7 @@ package testui
 import (
 	"time"
 
+	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/eval"
 	"github.com/floegence/floret/event"
@@ -104,12 +105,11 @@ type SaveConfigRequest struct {
 }
 
 type AgentRunRequest struct {
-	ProfileID          string          `json:"profile_id"`
-	Profile            ProviderProfile `json:"profile,omitempty"`
-	Message            string          `json:"message"`
-	SystemPrompt       string          `json:"system_prompt"`
-	MaxSteps           int             `json:"max_steps"`
-	MaxContextMessages int             `json:"max_context_messages"`
+	ProfileID     string               `json:"profile_id"`
+	Profile       ProviderProfile      `json:"profile,omitempty"`
+	Message       string               `json:"message"`
+	SystemPrompt  string               `json:"system_prompt"`
+	ContextPolicy contextpolicy.Policy `json:"context_policy,omitempty"`
 }
 
 type AgentRunResponse struct {
@@ -165,16 +165,19 @@ type ObservedRawSegment struct {
 }
 
 type ObservedCacheSummary struct {
-	Namespace        string `json:"namespace,omitempty"`
-	Retention        string `json:"retention,omitempty"`
-	PrefixHash       string `json:"prefix_hash,omitempty"`
-	PayloadHash      string `json:"payload_hash,omitempty"`
-	ToolsetID        string `json:"toolset_id,omitempty"`
-	ToolsetEpoch     int    `json:"toolset_epoch,omitempty"`
-	ReusedSegments   int    `json:"reused_segments,omitempty"`
-	NewSegments      int    `json:"new_segments,omitempty"`
-	CacheReadTokens  int64  `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens int64  `json:"cache_write_tokens,omitempty"`
+	Namespace            string `json:"namespace,omitempty"`
+	Retention            string `json:"retention,omitempty"`
+	PrefixHash           string `json:"prefix_hash,omitempty"`
+	PayloadHash          string `json:"payload_hash,omitempty"`
+	ToolsetID            string `json:"toolset_id,omitempty"`
+	ToolsetEpoch         int    `json:"toolset_epoch,omitempty"`
+	CompactionGeneration int    `json:"compaction_generation,omitempty"`
+	CompactionWindowID   string `json:"compaction_window_id,omitempty"`
+	CompactionEntryID    string `json:"compaction_entry_id,omitempty"`
+	ReusedSegments       int    `json:"reused_segments,omitempty"`
+	NewSegments          int    `json:"new_segments,omitempty"`
+	CacheReadTokens      int64  `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens     int64  `json:"cache_write_tokens,omitempty"`
 }
 
 type ObservedProviderEvent struct {

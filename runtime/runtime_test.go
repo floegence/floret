@@ -12,13 +12,11 @@ import (
 
 func TestNewEngineFromConfigRunsFakeProvider(t *testing.T) {
 	e, err := NewEngine(config.Config{
-		Provider:           config.ProviderFake,
-		Model:              "fake-model",
-		FakeResponse:       "configured",
-		RunID:              "run",
-		SystemPrompt:       "test",
-		MaxContextMessages: 4,
-		MaxSteps:           2,
+		Provider:     config.ProviderFake,
+		Model:        "fake-model",
+		FakeResponse: "configured",
+		RunID:        "run",
+		SystemPrompt: "test",
 	}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -39,8 +37,6 @@ func TestNewEngineUsesConfiguredPromptCacheDir(t *testing.T) {
 		PromptCacheDir:       dir,
 		PromptCacheRetention: "in_memory",
 		SystemPrompt:         "test",
-		MaxContextMessages:   4,
-		MaxSteps:             2,
 	}, nil, nil)
 	if err != nil {
 		t.Fatal(err)

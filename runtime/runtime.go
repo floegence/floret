@@ -40,7 +40,6 @@ func NewEngineWithProvider(cfg config.Config, p provider.Provider, store session
 		Prompt:   promptStore,
 		Memory: &memory.Manager{
 			SystemPrompt: cfg.SystemPrompt,
-			MaxMessages:  cfg.MaxContextMessages,
 		},
 		Tools: registry,
 		Options: engine.Options{
@@ -50,8 +49,7 @@ func NewEngineWithProvider(cfg config.Config, p provider.Provider, store session
 			ProviderName:            cfg.Provider,
 			Model:                   cfg.Model,
 			CacheRetention:          config.PromptCacheRetention(cfg),
-			MaxSteps:                cfg.MaxSteps,
-			HardMaxSteps:            cfg.HardMaxSteps,
+			ContextPolicy:           cfg.ContextPolicy,
 			MaxEmptyProviderRetries: cfg.MaxEmptyProviderRetries,
 			NoProgressLimit:         cfg.NoProgressLimit,
 			DuplicateToolLimit:      cfg.DuplicateToolLimit,

@@ -91,12 +91,16 @@
           </label>
           <div class="run-controls">
             <label class="field mini">
-              <span>Max steps</span>
-              <input id="maxSteps" type="number" min="1" max="32" value="8" />
+              <span>Context window</span>
+              <input id="contextWindowTokens" type="number" min="1024" step="1024" value="128000" />
             </label>
             <label class="field mini">
-              <span>Context messages</span>
-              <input id="maxContextMessages" type="number" min="1" max="256" value="32" />
+              <span>Max output</span>
+              <input id="maxOutputTokens" type="number" min="256" step="256" value="4096" />
+            </label>
+            <label class="field mini">
+              <span>Recent tail</span>
+              <input id="recentTailTokens" type="number" min="256" step="256" value="4096" />
             </label>
             <button id="runAgent" class="primary" type="button">Run Agent</button>
           </div>

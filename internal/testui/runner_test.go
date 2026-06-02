@@ -204,11 +204,9 @@ func TestRunnerRunAgentReturnsInteractionObservation(t *testing.T) {
 	}
 
 	result := runner.RunAgent(context.Background(), AgentRunRequest{
-		ProfileID:          "fake",
-		Message:            "hello",
-		SystemPrompt:       "test",
-		MaxSteps:           4,
-		MaxContextMessages: 8,
+		ProfileID:    "fake",
+		Message:      "hello",
+		SystemPrompt: "test",
 	})
 
 	if result.Status != "completed" || result.Output != "agent-ok" {
@@ -284,10 +282,8 @@ func TestRunnerRunAgentUsesUnsavedProfileSnapshot(t *testing.T) {
 			Model:        "fake-model",
 			FakeResponse: "unsaved-response",
 		},
-		Message:            "hello",
-		SystemPrompt:       "test",
-		MaxSteps:           4,
-		MaxContextMessages: 8,
+		Message:      "hello",
+		SystemPrompt: "test",
 	})
 
 	if result.Status != "completed" || result.Output != "unsaved-response" {

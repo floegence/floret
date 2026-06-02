@@ -29,8 +29,9 @@ const el = {
   saveConfig: $("saveConfig"),
   systemPrompt: $("systemPrompt"),
   userMessage: $("userMessage"),
-  maxSteps: $("maxSteps"),
-  maxContextMessages: $("maxContextMessages"),
+  contextWindowTokens: $("contextWindowTokens"),
+  maxOutputTokens: $("maxOutputTokens"),
+  recentTailTokens: $("recentTailTokens"),
   runAgent: $("runAgent"),
   runStatus: $("runStatus"),
   runTitle: $("runTitle"),
@@ -365,8 +366,11 @@ async function runAgent() {
         profile: activeProfile(),
         message,
         system_prompt: el.systemPrompt.value,
-        max_steps: Number(el.maxSteps.value || 8),
-        max_context_messages: Number(el.maxContextMessages.value || 32),
+        context_policy: {
+          context_window_tokens: Number(el.contextWindowTokens.value || 0),
+          max_output_tokens: Number(el.maxOutputTokens.value || 0),
+          recent_tail_tokens: Number(el.recentTailTokens.value || 0),
+        },
       }),
     });
     const result = await response.json();

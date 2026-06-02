@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/floret/compaction"
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/event"
 	scriptharness "github.com/floegence/floret/harness"
@@ -288,7 +289,7 @@ func TestRetryAfterInterruptedTurnUsesRealtimeToolSavePoint(t *testing.T) {
 		Tools:         registry,
 		Repo:          repo,
 		PromptStore:   promptStore,
-		EngineOptions: engine.Options{MaxSteps: 4, HardMaxSteps: 4, MaxEmptyProviderRetries: 1, NoProgressLimit: 2, DuplicateToolLimit: 3},
+		EngineOptions: engine.Options{MaxEmptyProviderRetries: 1, NoProgressLimit: 2, DuplicateToolLimit: 3},
 	})
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
@@ -419,7 +420,11 @@ func TestEngineCompactionIsProjectedAsSessionTreeCompactionEntry(t *testing.T) {
 	p := scriptharness.NewScriptedProvider(nil, scriptharness.Step(scriptharness.Text("ok"), scriptharness.Done()))
 	p.Errs[1] = provider.ErrContextOverflow
 	h := newTestHarness(p, repo, promptcache.NewMemoryStore())
-	h.options.MaxContextMessages = 2
+	h.options.ContextPolicy.ContextWindowTokens = 8000
+	h.options.ContextPolicy.ReservedOutputTokens = 512
+	h.options.ContextPolicy.ReservedSummaryTokens = 512
+	h.options.ContextPolicy.RecentTailTokens = 256
+	h.options.CompactionGenerator = compaction.ExtractiveSummaryGenerator{}
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
 		t.Fatal(err)
@@ -446,9 +451,80 @@ func TestEngineCompactionIsProjectedAsSessionTreeCompactionEntry(t *testing.T) {
 		t.Fatalf("compaction entry missing details: %#v", snap.Entries)
 	}
 	if !slices.ContainsFunc(snap.Context, func(msg session.Message) bool {
-		return msg.Role == session.Assistant && strings.HasPrefix(msg.Content, "Previous conversation was compacted.")
+		return msg.Role == session.Assistant && msg.Kind == session.MessageKindCompactionSummary
 	}) {
 		t.Fatalf("compaction summary should be provider-visible: %#v", snap.Context)
+	}
+}
+
+func TestMultipleCompactionsForkReloadAndContinueUseLatestWindow(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	promptRoot := t.TempDir()
+	repo := sessiontree.NewFileRepo(root)
+	promptStore := promptcache.NewFileStore(promptRoot)
+	p := scriptharness.NewScriptedProvider(
+		nil,
+		scriptharness.Step(scriptharness.Text("after first"), scriptharness.Done()),
+		nil,
+		scriptharness.Step(scriptharness.Text("after second"), scriptharness.Done()),
+	)
+	p.Errs[1] = provider.ErrContextOverflow
+	p.Errs[3] = provider.ErrContextOverflow
+	h := newTestHarness(p, repo, promptStore)
+	h.options.CompactionGenerator = compaction.ExtractiveSummaryGenerator{}
+	h.options.ContextPolicy.ContextWindowTokens = 12000
+	h.options.ContextPolicy.ReservedOutputTokens = 512
+	h.options.ContextPolicy.ReservedSummaryTokens = 512
+	h.options.ContextPolicy.RecentTailTokens = 512
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := thread.Run(ctx, "first "+strings.Repeat("alpha ", 120), RunOptions{TurnID: "turn-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := thread.Run(ctx, "second "+strings.Repeat("beta ", 120), RunOptions{TurnID: "turn-2"}); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := thread.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if countEntries(snap.Entries, sessiontree.EntryCompaction) != 2 {
+		t.Fatalf("expected two durable compactions: %#v", snap.Entries)
+	}
+	if got := countMessagesByKind(snap.Context, session.MessageKindCompactionSummary); got != 1 {
+		t.Fatalf("active context should expose only latest compaction summary, got %d: %#v", got, snap.Context)
+	}
+	latest := latestEntry(snap.Entries, sessiontree.EntryCompaction)
+	if latest.CompactionGeneration != 2 || latest.PreviousCompactionID == "" {
+		t.Fatalf("second compaction should link previous generation: %#v", latest)
+	}
+
+	reloadedHarness := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("fork done"), scriptharness.Done())), sessiontree.NewFileRepo(root), promptcache.NewFileStore(promptRoot))
+	fork, err := reloadedHarness.ForkThread(ctx, ForkOptions{SourceThreadID: "thread", EntryID: latest.ID, NewThreadID: "fork"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := fork.Run(ctx, "continue from fork", RunOptions{TurnID: "turn-fork"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != engine.Completed {
+		t.Fatalf("fork result = %#v", result)
+	}
+	req := reloadedHarness.options.Provider.(*scriptharness.ScriptedProvider).Requests[0]
+	if got := countMessagesByKind(req.Messages, session.MessageKindCompactionSummary); got != 1 {
+		t.Fatalf("fork request should carry one latest summary, got %d: %#v", got, req.Messages)
+	}
+	if req.RawPlan.CompactionGeneration != 2 || req.RawPlan.CompactionWindowID != latest.CompactionWindowID {
+		t.Fatalf("fork request should carry latest compaction window: latest=%#v plan=%#v", latest, req.RawPlan)
+	}
+	if !slices.ContainsFunc(req.Messages, func(msg session.Message) bool {
+		return msg.Role == session.User && msg.Content == "continue from fork"
+	}) {
+		t.Fatalf("fork continuation missing from provider request: %#v", req.Messages)
 	}
 }
 
@@ -489,7 +565,7 @@ func TestFileRepoResumeContinuesThreadAndReusesRawSegments(t *testing.T) {
 	wantMessages := []session.Message{
 		{Role: session.System, Content: "You are Floret."},
 		{Role: session.User, Content: "hello"},
-		{Role: session.Assistant, Content: "Agent requested user input: more?"},
+		{Role: session.Assistant, Content: "Agent requested user input: more?", Kind: session.MessageKindControlSignal},
 		{Role: session.User, Content: "answer"},
 	}
 	if !messagePrefixEqual(secondProvider.Requests[0].Messages, wantMessages) {
@@ -581,8 +657,6 @@ func newTestHarness(p provider.Provider, repo sessiontree.Repo, promptStore prom
 		PromptStore:  promptStore,
 		Sink:         rec,
 		EngineOptions: engine.Options{
-			MaxSteps:                4,
-			HardMaxSteps:            4,
 			MaxEmptyProviderRetries: 1,
 			NoProgressLimit:         2,
 			DuplicateToolLimit:      3,
@@ -681,6 +755,25 @@ func firstEntry(entries []sessiontree.Entry, entryType sessiontree.EntryType) se
 		}
 	}
 	return sessiontree.Entry{}
+}
+
+func latestEntry(entries []sessiontree.Entry, entryType sessiontree.EntryType) sessiontree.Entry {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Type == entryType {
+			return entries[i]
+		}
+	}
+	return sessiontree.Entry{}
+}
+
+func countMessagesByKind(messages []session.Message, kind session.MessageKind) int {
+	count := 0
+	for _, msg := range messages {
+		if msg.Kind == kind {
+			count++
+		}
+	}
+	return count
 }
 
 type blockingProvider struct {

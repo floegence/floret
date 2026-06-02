@@ -15,6 +15,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/floret/compaction"
+	"github.com/floegence/floret/contextpolicy"
+	"github.com/floegence/floret/control"
 	"github.com/floegence/floret/session"
 )
 
@@ -64,22 +67,35 @@ type ThreadMeta struct {
 }
 
 type Entry struct {
-	ID               string            `json:"id"`
-	ThreadID         string            `json:"thread_id"`
-	ParentID         string            `json:"parent_id,omitempty"`
-	Type             EntryType         `json:"type"`
-	TurnID           string            `json:"turn_id,omitempty"`
-	CreatedAt        time.Time         `json:"created_at"`
-	Message          session.Message   `json:"message,omitempty"`
-	Raw              string            `json:"raw,omitempty"`
-	RawHash          string            `json:"raw_hash,omitempty"`
-	TurnStatus       TurnMarkerStatus  `json:"turn_status,omitempty"`
-	Provider         string            `json:"provider,omitempty"`
-	Model            string            `json:"model,omitempty"`
-	FirstKeptEntryID string            `json:"first_kept_entry_id,omitempty"`
-	Summary          string            `json:"summary,omitempty"`
-	Error            string            `json:"error,omitempty"`
-	Metadata         map[string]string `json:"metadata,omitempty"`
+	ID                      string              `json:"id"`
+	ThreadID                string              `json:"thread_id"`
+	ParentID                string              `json:"parent_id,omitempty"`
+	Type                    EntryType           `json:"type"`
+	TurnID                  string              `json:"turn_id,omitempty"`
+	CreatedAt               time.Time           `json:"created_at"`
+	Message                 session.Message     `json:"message,omitempty"`
+	Raw                     string              `json:"raw,omitempty"`
+	RawHash                 string              `json:"raw_hash,omitempty"`
+	TurnStatus              TurnMarkerStatus    `json:"turn_status,omitempty"`
+	Provider                string              `json:"provider,omitempty"`
+	Model                   string              `json:"model,omitempty"`
+	CompactionID            string              `json:"compaction_id,omitempty"`
+	PreviousCompactionID    string              `json:"previous_compaction_id,omitempty"`
+	CompactedThroughEntryID string              `json:"compacted_through_entry_id,omitempty"`
+	SummarySchemaVersion    string              `json:"summary_schema_version,omitempty"`
+	CompactionGeneration    int                 `json:"compaction_generation,omitempty"`
+	CompactionWindowID      string              `json:"compaction_window_id,omitempty"`
+	FirstKeptEntryID        string              `json:"first_kept_entry_id,omitempty"`
+	Summary                 string              `json:"summary,omitempty"`
+	CompactionTrigger       string              `json:"compaction_trigger,omitempty"`
+	CompactionReason        string              `json:"compaction_reason,omitempty"`
+	CompactionPhase         string              `json:"compaction_phase,omitempty"`
+	TokensBefore            int64               `json:"tokens_before,omitempty"`
+	TokensAfterEstimate     int64               `json:"tokens_after_estimate,omitempty"`
+	ContextUsageBefore      contextpolicy.Usage `json:"context_usage_before,omitempty"`
+	ContextUsageAfter       contextpolicy.Usage `json:"context_usage_after,omitempty"`
+	Error                   string              `json:"error,omitempty"`
+	Metadata                map[string]string   `json:"metadata,omitempty"`
 }
 
 type AppendOptions struct {
@@ -299,6 +315,8 @@ func (r *MemoryRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, er
 		next.ID = fmt.Sprintf("%s-entry-%d", newID, r.seq)
 		next.ThreadID = newID
 		next.ParentID = oldToNew[entry.ParentID]
+		next.FirstKeptEntryID = oldToNew[entry.FirstKeptEntryID]
+		next.CompactedThroughEntryID = oldToNew[entry.CompactedThroughEntryID]
 		next.CreatedAt = now
 		next.Raw = rawForEntry(next)
 		next.RawHash = stableHash(next.Raw)
@@ -514,13 +532,25 @@ func BuildContext(path []Entry, _ ContextOptions) []session.Message {
 			if entry.FirstKeptEntryID != "" {
 				firstKeptIndex = slices.IndexFunc(path, func(candidate Entry) bool { return candidate.ID == entry.FirstKeptEntryID })
 			}
+			if firstKeptIndex < 0 {
+				firstKeptIndex = repairFirstKeptIndex(path, i)
+			}
 		}
 	}
 	var messages []session.Message
 	if compactionIndex >= 0 {
 		compaction := path[compactionIndex]
 		if compaction.Summary != "" {
-			messages = append(messages, session.Message{Role: session.Assistant, Content: compaction.Summary})
+			messages = append(messages, session.Message{
+				Role:                 session.Assistant,
+				Content:              compaction.Summary,
+				EntryID:              compaction.ID,
+				ParentEntryID:        compaction.ParentID,
+				Kind:                 session.MessageKindCompactionSummary,
+				CompactionID:         compaction.CompactionID,
+				CompactionGeneration: compaction.CompactionGeneration,
+				CompactionWindowID:   compaction.CompactionWindowID,
+			})
 		}
 		if firstKeptIndex >= 0 && firstKeptIndex < compactionIndex {
 			for _, entry := range path[firstKeptIndex:compactionIndex] {
@@ -543,8 +573,10 @@ func appendProviderVisible(messages []session.Message, entry Entry) []session.Me
 	case EntryUserMessage, EntryAssistantMessage, EntryToolCall, EntryToolResult:
 		if entry.Message.Role != "" {
 			msg := entry.Message
-			if entry.Type == EntryToolCall && isSignalTool(msg.ToolName) {
-				msg = session.Message{Role: session.Assistant, Content: signalContent(msg)}
+			if entry.Type == EntryToolCall {
+				if projected, ok := control.ProjectMessage(msg); ok {
+					msg = projected
+				}
 			}
 			msg.EntryID = entry.ID
 			msg.ParentEntryID = entry.ParentID
@@ -558,22 +590,36 @@ func appendProviderVisible(messages []session.Message, entry Entry) []session.Me
 	return messages
 }
 
-func isSignalTool(name string) bool {
-	return name == "task_complete" || name == "ask_user"
-}
-
-func signalContent(msg session.Message) string {
-	if msg.ToolName == "ask_user" {
-		return "Agent requested user input: " + msg.ToolArgs
-	}
-	if msg.ToolName == "task_complete" {
-		return "Agent completed the task: " + msg.ToolArgs
-	}
-	return msg.Content
-}
-
 func AppendMessage(ctx context.Context, repo Repo, threadID, turnID string, msg session.Message) (Entry, error) {
 	return repo.Append(ctx, Entry{ThreadID: threadID, TurnID: turnID, Type: typeForMessage(msg), Message: msg}, AppendOptions{})
+}
+
+func AppendCompaction(ctx context.Context, repo Repo, threadID, turnID string, result compaction.Result) (Entry, error) {
+	windowID := result.CompactionID
+	if windowID == "" {
+		windowID = result.FirstKeptEntryID
+	}
+	return repo.Append(ctx, Entry{
+		ThreadID:                threadID,
+		TurnID:                  turnID,
+		Type:                    EntryCompaction,
+		CompactionID:            result.CompactionID,
+		PreviousCompactionID:    result.PreviousCompactionID,
+		CompactedThroughEntryID: result.CompactedThroughEntryID,
+		SummarySchemaVersion:    result.SummarySchemaVersion,
+		CompactionGeneration:    nextCompactionGeneration(result),
+		CompactionWindowID:      windowID,
+		FirstKeptEntryID:        result.FirstKeptEntryID,
+		Summary:                 result.Summary,
+		CompactionTrigger:       string(result.Trigger),
+		CompactionReason:        string(result.Reason),
+		CompactionPhase:         string(result.Phase),
+		TokensBefore:            result.TokensBefore,
+		TokensAfterEstimate:     result.TokensAfterEstimate,
+		ContextUsageBefore:      result.UsageBefore,
+		ContextUsageAfter:       result.UsageAfter,
+		Metadata:                mapsClone(result.Details),
+	}, AppendOptions{})
 }
 
 func AppendTurnMarker(ctx context.Context, repo Repo, threadID, turnID string, status TurnMarkerStatus, metadata map[string]string) (Entry, error) {
@@ -582,6 +628,36 @@ func AppendTurnMarker(ctx context.Context, repo Repo, threadID, turnID string, s
 
 func AppendFailure(ctx context.Context, repo Repo, threadID, turnID, message string) (Entry, error) {
 	return repo.Append(ctx, Entry{ThreadID: threadID, TurnID: turnID, Type: EntryRunFailure, Error: message}, AppendOptions{})
+}
+
+func repairFirstKeptIndex(path []Entry, compactionIndex int) int {
+	if compactionIndex <= 0 {
+		return -1
+	}
+	for i := compactionIndex - 1; i >= 0; i-- {
+		switch path[i].Type {
+		case EntryUserMessage, EntryAssistantMessage, EntryToolCall, EntryToolResult:
+			start := i
+			for start > 0 && path[start].Type == EntryToolResult {
+				start--
+			}
+			return start
+		}
+	}
+	return -1
+}
+
+func nextCompactionGeneration(result compaction.Result) int {
+	if value := result.Details["compaction_generation"]; value != "" {
+		var generation int
+		if _, err := fmt.Sscanf(value, "%d", &generation); err == nil && generation > 0 {
+			return generation
+		}
+	}
+	if result.PreviousCompactionID != "" {
+		return 2
+	}
+	return 1
 }
 
 func typeForMessage(msg session.Message) EntryType {
@@ -655,17 +731,49 @@ func readEntries(path string) ([]Entry, error) {
 
 func rawForEntry(entry Entry) string {
 	type rawEntry struct {
-		Type             EntryType         `json:"type"`
-		TurnStatus       TurnMarkerStatus  `json:"turn_status,omitempty"`
-		Message          session.Message   `json:"message,omitempty"`
-		Provider         string            `json:"provider,omitempty"`
-		Model            string            `json:"model,omitempty"`
-		FirstKeptEntryID string            `json:"first_kept_entry_id,omitempty"`
-		Summary          string            `json:"summary,omitempty"`
-		Error            string            `json:"error,omitempty"`
-		Metadata         map[string]string `json:"metadata,omitempty"`
+		Type                    EntryType         `json:"type"`
+		TurnStatus              TurnMarkerStatus  `json:"turn_status,omitempty"`
+		Message                 session.Message   `json:"message,omitempty"`
+		Provider                string            `json:"provider,omitempty"`
+		Model                   string            `json:"model,omitempty"`
+		CompactionID            string            `json:"compaction_id,omitempty"`
+		PreviousCompactionID    string            `json:"previous_compaction_id,omitempty"`
+		CompactedThroughEntryID string            `json:"compacted_through_entry_id,omitempty"`
+		SummarySchemaVersion    string            `json:"summary_schema_version,omitempty"`
+		CompactionGeneration    int               `json:"compaction_generation,omitempty"`
+		CompactionWindowID      string            `json:"compaction_window_id,omitempty"`
+		FirstKeptEntryID        string            `json:"first_kept_entry_id,omitempty"`
+		Summary                 string            `json:"summary,omitempty"`
+		CompactionTrigger       string            `json:"compaction_trigger,omitempty"`
+		CompactionReason        string            `json:"compaction_reason,omitempty"`
+		CompactionPhase         string            `json:"compaction_phase,omitempty"`
+		TokensBefore            int64             `json:"tokens_before,omitempty"`
+		TokensAfterEstimate     int64             `json:"tokens_after_estimate,omitempty"`
+		Error                   string            `json:"error,omitempty"`
+		Metadata                map[string]string `json:"metadata,omitempty"`
 	}
-	data, _ := json.Marshal(rawEntry{Type: entry.Type, TurnStatus: entry.TurnStatus, Message: entry.Message, Provider: entry.Provider, Model: entry.Model, FirstKeptEntryID: entry.FirstKeptEntryID, Summary: entry.Summary, Error: entry.Error, Metadata: entry.Metadata})
+	data, _ := json.Marshal(rawEntry{
+		Type:                    entry.Type,
+		TurnStatus:              entry.TurnStatus,
+		Message:                 entry.Message,
+		Provider:                entry.Provider,
+		Model:                   entry.Model,
+		CompactionID:            entry.CompactionID,
+		PreviousCompactionID:    entry.PreviousCompactionID,
+		CompactedThroughEntryID: entry.CompactedThroughEntryID,
+		SummarySchemaVersion:    entry.SummarySchemaVersion,
+		CompactionGeneration:    entry.CompactionGeneration,
+		CompactionWindowID:      entry.CompactionWindowID,
+		FirstKeptEntryID:        entry.FirstKeptEntryID,
+		Summary:                 entry.Summary,
+		CompactionTrigger:       entry.CompactionTrigger,
+		CompactionReason:        entry.CompactionReason,
+		CompactionPhase:         entry.CompactionPhase,
+		TokensBefore:            entry.TokensBefore,
+		TokensAfterEstimate:     entry.TokensAfterEstimate,
+		Error:                   entry.Error,
+		Metadata:                entry.Metadata,
+	})
 	return string(data)
 }
 

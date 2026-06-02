@@ -48,7 +48,7 @@ func TestRunnerPassesOnlyWhenEngineCompletesAndOraclePasses(t *testing.T) {
 			Memory:  &memory.Manager{SystemPrompt: "test"},
 			Tools:   registry,
 			Sink:    rec,
-			Options: engine.Options{RunID: "eval", MaxSteps: 3},
+			Options: engine.Options{RunID: "eval"},
 		},
 	}
 	result, err := runner.Run(context.Background(), Case{
@@ -110,7 +110,7 @@ func TestRunnerWritesArtifactsForEngineFailure(t *testing.T) {
 			Memory:   &memory.Manager{SystemPrompt: "test"},
 			Tools:    tools.NewRegistry(),
 			Sink:     rec,
-			Options:  engine.Options{RunID: "eval", MaxSteps: 2},
+			Options:  engine.Options{RunID: "eval"},
 		},
 	}
 	result, err := runner.Run(context.Background(), Case{
@@ -254,6 +254,6 @@ func newEvalEngine(p provider.Provider) *engine.Engine {
 		Store:    session.NewMemoryStore(),
 		Memory:   &memory.Manager{SystemPrompt: "test"},
 		Tools:    tools.NewRegistry(),
-		Options:  engine.Options{RunID: "eval", MaxSteps: 2},
+		Options:  engine.Options{RunID: "eval"},
 	}
 }

@@ -100,9 +100,7 @@ func (r Runner) RunAgent(ctx context.Context, req AgentRunRequest) AgentRunRespo
 		FakeResponse:            profile.FakeResponse,
 		RunID:                   "testui-agent-" + resp.ID,
 		SystemPrompt:            strings.TrimSpace(req.SystemPrompt),
-		MaxContextMessages:      req.MaxContextMessages,
-		MaxSteps:                req.MaxSteps,
-		HardMaxSteps:            req.MaxSteps,
+		ContextPolicy:           req.ContextPolicy,
 		MaxEmptyProviderRetries: 1,
 		NoProgressLimit:         2,
 		DuplicateToolLimit:      3,
@@ -110,13 +108,6 @@ func (r Runner) RunAgent(ctx context.Context, req AgentRunRequest) AgentRunRespo
 	}
 	if cfg.SystemPrompt == "" {
 		cfg.SystemPrompt = "You are Floret. Answer naturally when the user's request is complete, or call ask_user if you need missing information."
-	}
-	if cfg.MaxContextMessages <= 0 {
-		cfg.MaxContextMessages = 32
-	}
-	if cfg.MaxSteps <= 0 {
-		cfg.MaxSteps = 8
-		cfg.HardMaxSteps = 8
 	}
 	cfg, err = config.Resolve(cfg, nil)
 	if err != nil {
@@ -150,7 +141,6 @@ func (r Runner) RunAgent(ctx context.Context, req AgentRunRequest) AgentRunRespo
 		Prompt:   promptStore,
 		Memory: &memory.Manager{
 			SystemPrompt: cfg.SystemPrompt,
-			MaxMessages:  cfg.MaxContextMessages,
 		},
 		Tools: registry,
 		Sink:  rec,
@@ -161,8 +151,7 @@ func (r Runner) RunAgent(ctx context.Context, req AgentRunRequest) AgentRunRespo
 			ProviderName:            cfg.Provider,
 			Model:                   cfg.Model,
 			CacheRetention:          config.PromptCacheRetention(cfg),
-			MaxSteps:                cfg.MaxSteps,
-			HardMaxSteps:            cfg.HardMaxSteps,
+			ContextPolicy:           cfg.ContextPolicy,
 			MaxEmptyProviderRetries: cfg.MaxEmptyProviderRetries,
 			NoProgressLimit:         cfg.NoProgressLimit,
 			DuplicateToolLimit:      cfg.DuplicateToolLimit,
@@ -362,7 +351,7 @@ func (r Runner) runEvalDemo(ctx context.Context, resp RunResponse) RunResponse {
 	eng := &engine.Engine{
 		Provider: prov,
 		Store:    session.NewMemoryStore(),
-		Memory:   &memory.Manager{SystemPrompt: "You are a deterministic Floret eval agent.", MaxMessages: 8},
+		Memory:   &memory.Manager{SystemPrompt: "You are a deterministic Floret eval agent."},
 		Tools:    registry,
 		Sink:     rec,
 		Options: engine.Options{
@@ -371,7 +360,6 @@ func (r Runner) runEvalDemo(ctx context.Context, resp RunResponse) RunResponse {
 			TraceID:            "testui-eval-demo",
 			ProviderName:       "scripted",
 			Model:              "scripted-eval",
-			MaxSteps:           4,
 			MaxTotalTokens:     200,
 			DuplicateToolLimit: 3,
 		},
@@ -391,7 +379,7 @@ func (r Runner) runEvalDemo(ctx context.Context, resp RunResponse) RunResponse {
 		Title:    "Write and verify RESULT.txt",
 		Category: "smoke",
 		Prompt:   "Create RESULT.txt with the expected text.",
-		Budgets:  eval.Budgets{MaxSteps: 4, MaxTotalTokens: 200},
+		Budgets:  eval.Budgets{MaxTotalTokens: 200},
 		Oracle:   eval.Oracle{ExpectedFiles: map[string]string{"RESULT.txt": "floret eval passed\n"}},
 	})
 	if err != nil {
@@ -428,12 +416,6 @@ func (r Runner) runProviderSmoke(ctx context.Context, resp RunResponse) RunRespo
 	if cfg.WallTime == 0 {
 		cfg.WallTime = 45 * time.Second
 	}
-	if cfg.MaxSteps <= 0 || cfg.MaxSteps > 4 {
-		cfg.MaxSteps = 4
-	}
-	if cfg.HardMaxSteps < cfg.MaxSteps {
-		cfg.HardMaxSteps = cfg.MaxSteps
-	}
 	p, err := adapters.NewProvider(cfg)
 	if err != nil {
 		return r.failAgent(resp, err)
@@ -450,7 +432,6 @@ func (r Runner) runProviderSmoke(ctx context.Context, resp RunResponse) RunRespo
 		Prompt:   promptStore,
 		Memory: &memory.Manager{
 			SystemPrompt: "You are Floret's smoke-test assistant. Reply with a short success message. Do not call normal tools unless you need to ask the user for missing information.",
-			MaxMessages:  cfg.MaxContextMessages,
 		},
 		Tools: registry,
 		Sink:  rec,
@@ -461,8 +442,7 @@ func (r Runner) runProviderSmoke(ctx context.Context, resp RunResponse) RunRespo
 			ProviderName:            cfg.Provider,
 			Model:                   cfg.Model,
 			CacheRetention:          config.PromptCacheRetention(cfg),
-			MaxSteps:                cfg.MaxSteps,
-			HardMaxSteps:            cfg.HardMaxSteps,
+			ContextPolicy:           cfg.ContextPolicy,
 			MaxEmptyProviderRetries: cfg.MaxEmptyProviderRetries,
 			NoProgressLimit:         cfg.NoProgressLimit,
 			DuplicateToolLimit:      cfg.DuplicateToolLimit,

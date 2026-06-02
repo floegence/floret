@@ -74,7 +74,7 @@ func TestServerSavesConfigAndRunsAgent(t *testing.T) {
 		t.Fatalf("save status = %d, body = %s", saveRec.Code, saveRec.Body.String())
 	}
 
-	runBody := `{"profile_id":"fake","message":"hello","system_prompt":"test","max_steps":4,"max_context_messages":8}`
+	runBody := `{"profile_id":"fake","message":"hello","system_prompt":"test","context_policy":{"context_window_tokens":8192,"max_output_tokens":1024,"recent_tail_tokens":1024}}`
 	runReq := httptest.NewRequest(http.MethodPost, "/api/agent/run", strings.NewReader(runBody))
 	runRec := httptest.NewRecorder()
 	handler.ServeHTTP(runRec, runReq)

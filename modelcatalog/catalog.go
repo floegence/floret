@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/provider"
 )
 
@@ -207,6 +208,20 @@ func CostForUsage(model Model, usage provider.Usage) float64 {
 		float64(usage.CacheWriteTokens)*model.Cost.CacheWritePerMTok) / 1_000_000
 }
 
+func ContextPolicy(providerID, modelID string) contextpolicy.Policy {
+	policy := contextpolicy.Normalize(contextpolicy.Policy{})
+	if model, ok := FindModel(providerID, modelID); ok {
+		if model.ContextWindow > 0 {
+			policy.ContextWindowTokens = model.ContextWindow
+		}
+		if model.MaxTokens > 0 {
+			policy.MaxOutputTokens = model.MaxTokens
+			policy.ReservedOutputTokens = minInt64(model.MaxTokens, contextpolicy.DefaultReservedOutputTokens)
+		}
+	}
+	return contextpolicy.Normalize(policy)
+}
+
 func modelsForProvider(p Provider) []Model {
 	out := make([]Model, 0, len(p.Models))
 	for _, model := range p.Models {
@@ -238,4 +253,11 @@ func RegisterForTest(p Provider) func() {
 	previous := providers
 	providers = append(providers, p)
 	return func() { providers = previous }
+}
+
+func minInt64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
 }

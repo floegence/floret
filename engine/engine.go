@@ -7,6 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/floegence/floret/compaction"
+	"github.com/floegence/floret/contextpolicy"
+	"github.com/floegence/floret/control"
 	"github.com/floegence/floret/event"
 	"github.com/floegence/floret/memory"
 	"github.com/floegence/floret/promptcache"
@@ -16,10 +19,10 @@ import (
 )
 
 var (
-	ErrMaxSteps            = errors.New("agent loop reached max steps")
 	ErrNoProgress          = errors.New("agent loop made no progress")
 	ErrDuplicateTools      = errors.New("agent loop repeated identical tool calls")
 	ErrDuplicateToolCallID = errors.New("provider returned duplicate tool call id")
+	ErrMixedControlTools   = errors.New("provider returned control signal with ordinary tool calls")
 	ErrProviderTruncated   = errors.New("provider output was truncated")
 	ErrContentFiltered     = errors.New("provider output was content filtered")
 	ErrProviderFinishError = errors.New("provider returned error finish reason")
@@ -90,8 +93,7 @@ type Options struct {
 	Model                    string
 	CacheNamespace           string
 	CacheRetention           promptcache.Retention
-	MaxSteps                 int
-	HardMaxSteps             int
+	ContextPolicy            contextpolicy.Policy
 	MaxEmptyProviderRetries  int
 	NoProgressLimit          int
 	DuplicateToolLimit       int
@@ -146,16 +148,74 @@ type RunInput struct {
 	History   []session.Message
 }
 
+type CompactionManager interface {
+	Compact(context.Context, CompactionRequest) (compaction.Result, []session.Message, error)
+}
+
+type CompactionRequest struct {
+	RunID                string
+	SessionID            string
+	TraceID              string
+	Step                 int
+	History              []session.Message
+	Policy               contextpolicy.Policy
+	Trigger              compaction.Trigger
+	Reason               compaction.Reason
+	Phase                compaction.Phase
+	Provider             provider.Provider
+	ProviderName         string
+	Model                string
+	PreviousCompactionID string
+	PreviousSummary      string
+	ContextUsage         contextpolicy.Usage
+	Details              map[string]string
+}
+
 type Engine struct {
-	Provider provider.Provider
-	Tools    *tools.Registry
-	Store    session.Store
-	Prompt   promptcache.Store
-	Memory   *memory.Manager
-	Sink     event.Sink
-	Approver tools.Approver
-	StopHook StopHook
-	Options  Options
+	Provider       provider.Provider
+	Tools          *tools.Registry
+	Store          session.Store
+	Prompt         promptcache.Store
+	Memory         *memory.Manager
+	Sink           event.Sink
+	Approver       tools.Approver
+	StopHook       StopHook
+	Compactor      CompactionManager
+	Options        Options
+	activeMessages []session.Message
+}
+
+type LocalCompactionManager struct {
+	Generator compaction.SummaryGenerator
+	Now       func() time.Time
+}
+
+func (m LocalCompactionManager) Compact(ctx context.Context, req CompactionRequest) (compaction.Result, []session.Message, error) {
+	now := time.Now()
+	if m.Now != nil {
+		now = m.Now()
+	}
+	generator := m.Generator
+	if generator == nil {
+		generator = compaction.ExtractiveSummaryGenerator{}
+	}
+	prep, err := compaction.Prepare(ctx, compaction.Request{
+		CompactionID:         "",
+		PreviousCompactionID: req.PreviousCompactionID,
+		PreviousSummary:      req.PreviousSummary,
+		History:              req.History,
+		Policy:               req.Policy,
+		Trigger:              req.Trigger,
+		Reason:               req.Reason,
+		Phase:                req.Phase,
+		Step:                 req.Step,
+		Details:              req.Details,
+		Now:                  now,
+	}, generator)
+	if err != nil {
+		return compaction.Result{}, nil, err
+	}
+	return prep.Result, prep.ActiveMessages, nil
 }
 
 func (e *Engine) Run(ctx context.Context, userText string) Result {
@@ -226,24 +286,33 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 	noProgress := 0
 	lengthContinuations := 0
 	stopHookContinuations := 0
+	compactionFailures := 0
 	lastToolSig := ""
 	duplicateCount := 0
 	started := time.Now()
 	metrics := RunMetrics{}
-	for step := 1; step <= opts.HardMaxSteps; step++ {
-		if step > opts.MaxSteps {
-			return e.end(opts, step, Failed, output, ErrMaxSteps, metrics, started, RunDecision{})
-		}
+	activeHistory, err := e.Store.Messages(opts.RunID)
+	if err != nil {
+		return Result{Status: Failed, Err: err}
+	}
+	e.activeMessages = append([]session.Message(nil), activeHistory...)
+	for step := 1; ; step++ {
 		if ctx.Err() != nil {
 			return e.end(opts, step, Cancelled, output, ctx.Err(), metrics, started, RunDecision{})
 		}
 		metrics.Steps = step
 		e.emit(event.Event{Type: event.StepStart, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model})
-		history, err := e.Store.Messages(opts.RunID)
+		var compacted bool
+		activeHistory, compacted, err = e.maybeCompact(ctx, opts, step, activeHistory, compaction.TriggerPreRequest, compaction.ReasonThreshold, &metrics, &compactionFailures)
 		if err != nil {
-			return e.end(opts, step, Failed, output, err, metrics, started, RunDecision{})
+			return e.end(opts, step, Failed, output, err, metrics, started, RunDecision{ContinuationReason: ContinueCompaction})
 		}
-		req, err := e.providerRequest(ctx, opts, step, history)
+		if compacted {
+			noProgress = 0
+			duplicateCount = 0
+		}
+		e.activeMessages = append([]session.Message(nil), activeHistory...)
+		req, err := e.providerRequest(ctx, opts, step, activeHistory)
 		if err != nil {
 			return e.end(opts, step, Failed, output, err, metrics, started, RunDecision{})
 		}
@@ -252,11 +321,12 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		providerStarted := time.Now()
 		stream, err := e.Provider.Stream(ctx, req)
 		if errors.Is(err, provider.ErrContextOverflow) {
-			metrics.Compactions++
-			if err := e.compact(opts, step); err != nil {
+			activeHistory, _, err = e.forceCompact(ctx, opts, step, activeHistory, compaction.TriggerOverflow, compaction.ReasonProviderOverflow, &metrics, &compactionFailures)
+			if err != nil {
 				return e.end(opts, step, Failed, output, err, metrics, started, RunDecision{})
 			}
 			e.emitStepEnd(opts, step, time.Since(providerStarted).Milliseconds(), 0, provider.Usage{}, 0, RunDecision{ContinuationReason: ContinueCompaction})
+			e.activeMessages = append([]session.Message(nil), activeHistory...)
 			continue
 		}
 		if err != nil {
@@ -291,19 +361,6 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		if budgetErr := e.checkBudget(opts, metrics, step); budgetErr != nil {
 			return e.end(opts, step, Failed, output, budgetErr, metrics, started, decision)
 		}
-		if stepOutput.Truncated || stepOutput.FinishReason == provider.FinishLength {
-			lengthContinuations++
-			if lengthContinuations > opts.MaxLengthContinuations {
-				return e.end(opts, step, Failed, output, ErrProviderTruncated, metrics, started, decision)
-			}
-			metrics.Compactions++
-			if err := e.compact(opts, step); err != nil {
-				return e.end(opts, step, Failed, output, err, metrics, started, decision)
-			}
-			decision.ContinuationReason = ContinueProviderTruncated
-			e.emitStepEnd(opts, step, providerLatency, 0, usage, len(calls), decision)
-			continue
-		}
 		if stepOutput.FinishReason == provider.FinishContentFilter {
 			return e.end(opts, step, Failed, output, ErrContentFiltered, metrics, started, decision)
 		}
@@ -312,6 +369,35 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		}
 		if stepOutput.FinishReason == provider.FinishCancelled {
 			return e.end(opts, step, Cancelled, output, context.Canceled, metrics, started, decision)
+		}
+		if stepText != "" {
+			output += stepText
+			noProgress = 0
+			msg := session.Message{Role: session.Assistant, Content: stepText}
+			if err := e.Store.Append(opts.RunID, msg); err != nil {
+				return e.end(opts, step, Failed, output, err, metrics, started, decision)
+			}
+			activeHistory = append(activeHistory, msg)
+			e.activeMessages = append([]session.Message(nil), activeHistory...)
+		}
+		if stepOutput.Truncated || stepOutput.FinishReason == provider.FinishLength {
+			lengthContinuations++
+			if lengthContinuations > opts.MaxLengthContinuations {
+				return e.end(opts, step, Failed, output, ErrProviderTruncated, metrics, started, decision)
+			}
+			contextUsage := contextpolicy.EstimateMessages(e.Memory.SystemPrompt, activeHistory, len(opts.ToolDefinitions), opts.ContextPolicy)
+			if contextUsage.CompactionNeeded || contextUsage.TokenPressureHigh {
+				activeHistory, _, err = e.forceCompact(ctx, opts, step, activeHistory, compaction.TriggerPostResponse, compaction.ReasonOutputContinuation, &metrics, &compactionFailures)
+				if err != nil {
+					return e.end(opts, step, Failed, output, err, metrics, started, decision)
+				}
+				noProgress = 0
+				duplicateCount = 0
+			}
+			e.activeMessages = append([]session.Message(nil), activeHistory...)
+			decision.ContinuationReason = ContinueProviderTruncated
+			e.emitStepEnd(opts, step, providerLatency, 0, usage, len(calls), decision)
+			continue
 		}
 		if stepOutput.Retry {
 			emptyRetries++
@@ -326,13 +412,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		}
 		emptyRetries = 0
 		lengthContinuations = 0
-		if stepText != "" {
-			output += stepText
-			noProgress = 0
-			if err := e.Store.Append(opts.RunID, session.Message{Role: session.Assistant, Content: stepText}); err != nil {
-				return e.end(opts, step, Failed, output, err, metrics, started, decision)
-			}
-		} else if len(calls) == 0 {
+		if stepText == "" && len(calls) == 0 {
 			noProgress++
 			if noProgress >= opts.NoProgressLimit {
 				return e.end(opts, step, Failed, output, ErrNoProgress, metrics, started, decision)
@@ -356,6 +436,8 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 					if err := e.Store.Append(opts.RunID, session.Message{Role: session.User, Content: prompt}); err != nil {
 						return e.end(opts, step, Failed, output, err, metrics, started, decision)
 					}
+					activeHistory = append(activeHistory, session.Message{Role: session.User, Content: prompt})
+					e.activeMessages = append([]session.Message(nil), activeHistory...)
 					decision.ContinuationReason = ContinueHook
 					decision.Detail = strings.TrimSpace(hook.Reason)
 					e.emit(event.Event{Type: event.ContextContinue, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: prompt, ContinuationReason: string(ContinueHook), Result: decision.Detail})
@@ -374,9 +456,12 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			return e.end(opts, step, Failed, output, err, metrics, started, decision)
 		}
 		for _, call := range calls {
-			if err := e.Store.Append(opts.RunID, session.Message{Role: session.Assistant, Content: "tool_call", ToolCallID: call.ID, ToolName: call.Name, ToolArgs: call.Args}); err != nil {
+			msg := session.Message{Role: session.Assistant, Content: "tool_call", ToolCallID: call.ID, ToolName: call.Name, ToolArgs: call.Args}
+			if err := e.Store.Append(opts.RunID, msg); err != nil {
 				return e.end(opts, step, Failed, output, err, metrics, started, decision)
 			}
+			activeHistory = append(activeHistory, msg)
+			e.activeMessages = append([]session.Message(nil), activeHistory...)
 		}
 		sig := toolSignature(calls)
 		if sig == lastToolSig {
@@ -415,14 +500,25 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				text = "ERROR: " + errText
 			}
 			e.emit(event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.Call.ID, ToolName: result.Call.Name, Result: text, Err: errText, Duration: toolLatency})
-			if err := e.Store.Append(opts.RunID, session.Message{Role: session.Tool, Content: text, ToolCallID: result.Call.ID, ToolName: result.Call.Name}); err != nil {
+			msg := session.Message{Role: session.Tool, Content: text, ToolCallID: result.Call.ID, ToolName: result.Call.Name}
+			if err := e.Store.Append(opts.RunID, msg); err != nil {
 				return e.end(opts, step, Failed, output, err, metrics, started, decision)
 			}
+			activeHistory = append(activeHistory, msg)
+			e.activeMessages = append([]session.Message(nil), activeHistory...)
 		}
+		activeHistory, compacted, err = e.maybeCompact(ctx, opts, step, activeHistory, compaction.TriggerPostResponse, compaction.ReasonFollowUpPressure, &metrics, &compactionFailures)
+		if err != nil {
+			return e.end(opts, step, Failed, output, err, metrics, started, decision)
+		}
+		if compacted {
+			noProgress = 0
+			duplicateCount = 0
+		}
+		e.activeMessages = append([]session.Message(nil), activeHistory...)
 		decision.ContinuationReason = ContinueToolResults
 		e.emitStepEnd(opts, step, providerLatency, toolLatency, usage, len(calls), decision)
 	}
-	return e.end(opts, opts.HardMaxSteps, Failed, output, ErrMaxSteps, metrics, started, RunDecision{})
 }
 
 func normalizeOptions(o Options) Options {
@@ -438,12 +534,7 @@ func normalizeOptions(o Options) Options {
 	if o.CacheNamespace == "" {
 		o.CacheNamespace = promptcache.DefaultNamespace(o.SessionID, o.ProviderName, o.Model)
 	}
-	if o.MaxSteps <= 0 {
-		o.MaxSteps = 16
-	}
-	if o.HardMaxSteps <= 0 || o.HardMaxSteps < o.MaxSteps {
-		o.HardMaxSteps = o.MaxSteps
-	}
+	o.ContextPolicy = contextpolicy.Normalize(o.ContextPolicy)
 	if o.MaxEmptyProviderRetries <= 0 {
 		o.MaxEmptyProviderRetries = 1
 	}
@@ -500,9 +591,10 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		AdapterVersion: promptcache.Version,
 		CacheNamespace: opts.CacheNamespace,
 		SystemPrompt:   e.Memory.SystemPrompt,
-		History:        providerSafeHistory(boundedHistory(e.Memory, history)),
+		History:        providerSafeHistory(e.Memory.Assemble(history)[systemOffset(e.Memory):]),
 		Toolset:        toolset,
 		Renderer:       rendererForProvider(e.Provider),
+		ContextPolicy:  opts.ContextPolicy,
 		Now:            time.Now(),
 	})
 	if err != nil {
@@ -530,14 +622,17 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		}
 	}
 	req := provider.Request{
-		RunID:    opts.RunID,
-		Step:     step,
-		Provider: opts.ProviderName,
-		Model:    opts.Model,
-		Messages: messages,
-		Tools:    activeTools,
-		RawPlan:  plan,
-		Cache:    cache,
+		RunID:           opts.RunID,
+		Step:            step,
+		Provider:        opts.ProviderName,
+		Model:           opts.Model,
+		Messages:        messages,
+		Tools:           activeTools,
+		RawPlan:         plan,
+		Cache:           cache,
+		ContextPolicy:   opts.ContextPolicy,
+		ContextUsage:    contextpolicy.EstimateMessages(e.Memory.SystemPrompt, history, len(activeTools), opts.ContextPolicy),
+		MaxOutputTokens: opts.ContextPolicy.MaxOutputTokens,
 	}
 	if hasher, ok := e.Provider.(provider.PayloadHasher); ok {
 		payloadHash, err := hasher.PayloadHash(req)
@@ -550,6 +645,120 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		return provider.Request{}, err
 	}
 	return req, nil
+}
+
+func (e *Engine) maybeCompact(ctx context.Context, opts Options, step int, history []session.Message, trigger compaction.Trigger, reason compaction.Reason, metrics *RunMetrics, failures *int) ([]session.Message, bool, error) {
+	usage := contextpolicy.EstimateMessages(e.Memory.SystemPrompt, history, len(opts.ToolDefinitions), opts.ContextPolicy)
+	if !usage.CompactionNeeded && !usage.TokenPressureHigh {
+		return history, false, nil
+	}
+	next, err := e.runCompaction(ctx, opts, step, history, trigger, reason, usage, failures)
+	if err != nil {
+		return history, false, err
+	}
+	if metrics != nil {
+		metrics.Compactions++
+	}
+	return next, true, nil
+}
+
+func (e *Engine) forceCompact(ctx context.Context, opts Options, step int, history []session.Message, trigger compaction.Trigger, reason compaction.Reason, metrics *RunMetrics, failures *int) ([]session.Message, compaction.Result, error) {
+	usage := contextpolicy.EstimateMessages(e.Memory.SystemPrompt, history, len(opts.ToolDefinitions), opts.ContextPolicy)
+	next, err := e.runCompaction(ctx, opts, step, history, trigger, reason, usage, failures)
+	if err != nil {
+		return history, compaction.Result{}, err
+	}
+	if metrics != nil {
+		metrics.Compactions++
+	}
+	return next, latestCompaction(history, next), nil
+}
+
+func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, history []session.Message, trigger compaction.Trigger, reason compaction.Reason, usage contextpolicy.Usage, failures *int) ([]session.Message, error) {
+	if failures != nil && *failures >= opts.ContextPolicy.MaxCompactionFailures {
+		return nil, fmt.Errorf("compaction failure circuit breaker reached after %d failures", *failures)
+	}
+	manager := e.Compactor
+	if manager == nil {
+		manager = LocalCompactionManager{}
+	}
+	e.emit(event.Event{
+		Type:      event.ContextCompact,
+		TraceID:   opts.TraceID,
+		RunID:     opts.RunID,
+		SessionID: opts.SessionID,
+		Step:      step,
+		Provider:  opts.ProviderName,
+		Model:     opts.Model,
+		Message:   fmt.Sprintf("%s/%s", trigger, reason),
+		Metrics:   usage,
+	})
+	result, active, err := manager.Compact(ctx, CompactionRequest{
+		RunID:        opts.RunID,
+		SessionID:    opts.SessionID,
+		TraceID:      opts.TraceID,
+		Step:         step,
+		History:      history,
+		Policy:       opts.ContextPolicy,
+		Trigger:      trigger,
+		Reason:       reason,
+		Phase:        compaction.PhaseGenerate,
+		Provider:     e.Provider,
+		ProviderName: opts.ProviderName,
+		Model:        opts.Model,
+		ContextUsage: usage,
+		Details: map[string]string{
+			"run_id":               opts.RunID,
+			"session_id":           opts.SessionID,
+			"context_window":       fmt.Sprintf("%d", opts.ContextPolicy.ContextWindowTokens),
+			"threshold_tokens":     fmt.Sprintf("%d", usage.ThresholdTokens),
+			"tokens_before":        fmt.Sprintf("%d", usage.InputTokens),
+			"consecutive_failures": fmt.Sprintf("%d", derefInt(failures)),
+		},
+	})
+	if err != nil {
+		if failures != nil {
+			*failures++
+		}
+		return nil, err
+	}
+	if failures != nil {
+		*failures = 0
+	}
+	e.emit(event.Event{
+		Type:      event.ContextCompact,
+		TraceID:   opts.TraceID,
+		RunID:     opts.RunID,
+		SessionID: opts.SessionID,
+		Step:      step,
+		Provider:  opts.ProviderName,
+		Model:     opts.Model,
+		Message:   result.CompactionID,
+		Result:    result.Summary,
+		Metrics:   result,
+	})
+	return active, nil
+}
+
+func latestCompaction(_, active []session.Message) compaction.Result {
+	if len(active) == 0 || active[0].Kind != session.MessageKindCompactionSummary {
+		return compaction.Result{}
+	}
+	return compaction.Result{CompactionID: active[0].CompactionID, Summary: active[0].Content}
+}
+
+func derefInt(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+func systemOffset(m *memory.Manager) int {
+	if m != nil && m.SystemPrompt != "" {
+		return 1
+	}
+	return 0
 }
 
 func rendererForProvider(p provider.Provider) promptcache.Renderer {
@@ -606,45 +815,8 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 	}
 }
 
-func (e *Engine) compact(opts Options, step int) error {
-	history, err := e.Store.Messages(opts.RunID)
-	if err != nil {
-		return err
-	}
-	e.emit(event.Event{Type: event.ContextCompact, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model})
-	return e.Store.Replace(opts.RunID, e.Memory.Compact(history))
-}
-
-func boundedHistory(m *memory.Manager, history []session.Message) []session.Message {
-	if m == nil || m.MaxMessages <= 0 || len(history) <= m.MaxMessages {
-		return append([]session.Message(nil), history...)
-	}
-	messages := m.Assemble(history)
-	if len(messages) > 0 && messages[0].Role == session.System && messages[0].Content == m.SystemPrompt {
-		return append([]session.Message(nil), messages[1:]...)
-	}
-	return append([]session.Message(nil), messages...)
-}
-
 func providerSafeHistory(history []session.Message) []session.Message {
-	out := make([]session.Message, 0, len(history))
-	for _, msg := range history {
-		if msg.Role == session.Assistant && (msg.ToolName == "ask_user" || msg.ToolName == "task_complete") {
-			msg = session.Message{Role: session.Assistant, Content: signalText(msg.ToolName, msg.ToolArgs)}
-		}
-		out = append(out, msg)
-	}
-	return out
-}
-
-func signalText(name, args string) string {
-	if name == "ask_user" {
-		return "Agent requested user input: " + args
-	}
-	if name == "task_complete" {
-		return "Agent completed the task: " + args
-	}
-	return args
+	return control.ProjectHistory(history)
 }
 
 func convertToolDefinitions(defs []provider.ToolDefinition) []promptcache.ToolDefinition {
@@ -712,7 +884,9 @@ func (e *Engine) end(opts Options, step int, status Status, output string, err e
 	metrics.WallTimeMS = time.Since(started).Milliseconds()
 	e.emit(event.Event{Type: event.RunEnd, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: string(status), Result: output, Err: errText, FinishReason: string(decision.FinishReason), RawFinishReason: decision.RawFinishReason, FinishInferred: decision.FinishInferred, CompletionReason: string(decision.CompletionReason), ContinuationReason: string(decision.ContinuationReason), Metrics: metrics})
 	var messages []session.Message
-	if e.Store != nil {
+	if len(e.activeMessages) > 0 {
+		messages = append([]session.Message(nil), e.activeMessages...)
+	} else if e.Store != nil {
 		messages, _ = e.Store.Messages(opts.RunID)
 	}
 	return Result{Status: status, Output: output, Err: err, Metrics: metrics, Messages: messages, CompletionReason: decision.CompletionReason, ContinuationReason: decision.ContinuationReason, FinishReason: decision.FinishReason, RawFinishReason: decision.RawFinishReason, FinishInferred: decision.FinishInferred}
@@ -750,26 +924,29 @@ func completionSignal(opts Options, calls []provider.ToolCall) (string, bool) {
 	if opts.CompletionPolicy != CompletionExplicitSignal {
 		return "", false
 	}
-	for _, c := range calls {
-		if c.Name == "task_complete" {
-			return c.Args, true
-		}
+	if signal, ok := control.Completion(calls); ok {
+		return signal.Output, true
 	}
 	return "", false
 }
 
 func askUserSignal(calls []provider.ToolCall) (string, bool) {
-	for _, c := range calls {
-		if c.Name == "ask_user" {
-			return c.Args, true
-		}
+	if signal, ok := control.AskUser(calls); ok {
+		return signal.Prompt, true
 	}
 	return "", false
 }
 
 func validateToolCalls(calls []provider.ToolCall) error {
 	seen := map[string]struct{}{}
+	controlCalls := 0
+	ordinaryCalls := 0
 	for _, call := range calls {
+		if isControlTool(call.Name) {
+			controlCalls++
+		} else {
+			ordinaryCalls++
+		}
 		if call.ID == "" {
 			continue
 		}
@@ -778,7 +955,15 @@ func validateToolCalls(calls []provider.ToolCall) error {
 		}
 		seen[call.ID] = struct{}{}
 	}
+	if controlCalls > 0 && ordinaryCalls > 0 {
+		return ErrMixedControlTools
+	}
 	return nil
+}
+
+func isControlTool(name string) bool {
+	name = strings.TrimSpace(name)
+	return name == control.AskUserTool || name == control.TaskCompleteTool
 }
 
 func toolSignature(calls []provider.ToolCall) string {

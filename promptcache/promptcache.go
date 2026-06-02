@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/session"
 )
 
@@ -59,44 +60,51 @@ type CachePolicy struct {
 }
 
 type RawPlan struct {
-	Version            string    `json:"version"`
-	SegmentIDs         []string  `json:"segment_ids"`
-	Segments           []Segment `json:"segments"`
-	ToolsetID          string    `json:"toolset_id,omitempty"`
-	ToolsetEpoch       int       `json:"toolset_epoch,omitempty"`
-	PrefixHash         string    `json:"prefix_hash"`
-	PayloadHash        string    `json:"payload_hash"`
-	CacheNamespace     string    `json:"cache_namespace,omitempty"`
-	PreviousResponseID string    `json:"previous_response_id,omitempty"`
-	ReusedSegments     int       `json:"reused_segments"`
-	NewSegments        int       `json:"new_segments"`
-	SegmentStates      []string  `json:"segment_states,omitempty"`
+	Version              string              `json:"version"`
+	SegmentIDs           []string            `json:"segment_ids"`
+	Segments             []Segment           `json:"segments"`
+	ToolsetID            string              `json:"toolset_id,omitempty"`
+	ToolsetEpoch         int                 `json:"toolset_epoch,omitempty"`
+	PrefixHash           string              `json:"prefix_hash"`
+	PayloadHash          string              `json:"payload_hash"`
+	CacheNamespace       string              `json:"cache_namespace,omitempty"`
+	PreviousResponseID   string              `json:"previous_response_id,omitempty"`
+	CompactionGeneration int                 `json:"compaction_generation,omitempty"`
+	CompactionWindowID   string              `json:"compaction_window_id,omitempty"`
+	CompactionEntryID    string              `json:"compaction_entry_id,omitempty"`
+	ContextUsage         contextpolicy.Usage `json:"context_usage,omitempty"`
+	ReusedSegments       int                 `json:"reused_segments"`
+	NewSegments          int                 `json:"new_segments"`
+	SegmentStates        []string            `json:"segment_states,omitempty"`
 }
 
 type Segment struct {
-	ID              string          `json:"id"`
-	RunID           string          `json:"run_id"`
-	SessionID       string          `json:"session_id,omitempty"`
-	ThreadID        string          `json:"thread_id,omitempty"`
-	TurnID          string          `json:"turn_id,omitempty"`
-	EntryID         string          `json:"entry_id,omitempty"`
-	ParentEntryID   string          `json:"parent_entry_id,omitempty"`
-	Provider        string          `json:"provider"`
-	Model           string          `json:"model"`
-	AdapterVersion  string          `json:"adapter_version"`
-	SchemaVersion   string          `json:"schema_version"`
-	Kind            SegmentKind     `json:"kind"`
-	Role            string          `json:"role,omitempty"`
-	Epoch           int             `json:"epoch,omitempty"`
-	Sequence        int64           `json:"sequence"`
-	StructuredRefID string          `json:"structured_ref_id,omitempty"`
-	Fingerprint     string          `json:"fingerprint"`
-	FragmentType    string          `json:"fragment_type,omitempty"`
-	Raw             string          `json:"raw"`
-	SHA256          string          `json:"sha256"`
-	ByteLength      int             `json:"byte_length"`
-	Message         MessageSnapshot `json:"message,omitempty"`
-	CreatedAt       time.Time       `json:"created_at"`
+	ID                   string          `json:"id"`
+	RunID                string          `json:"run_id"`
+	SessionID            string          `json:"session_id,omitempty"`
+	ThreadID             string          `json:"thread_id,omitempty"`
+	TurnID               string          `json:"turn_id,omitempty"`
+	EntryID              string          `json:"entry_id,omitempty"`
+	ParentEntryID        string          `json:"parent_entry_id,omitempty"`
+	Provider             string          `json:"provider"`
+	Model                string          `json:"model"`
+	AdapterVersion       string          `json:"adapter_version"`
+	SchemaVersion        string          `json:"schema_version"`
+	Kind                 SegmentKind     `json:"kind"`
+	Role                 string          `json:"role,omitempty"`
+	Epoch                int             `json:"epoch,omitempty"`
+	Sequence             int64           `json:"sequence"`
+	StructuredRefID      string          `json:"structured_ref_id,omitempty"`
+	CompactionGeneration int             `json:"compaction_generation,omitempty"`
+	CompactionWindowID   string          `json:"compaction_window_id,omitempty"`
+	CompactionEntryID    string          `json:"compaction_entry_id,omitempty"`
+	Fingerprint          string          `json:"fingerprint"`
+	FragmentType         string          `json:"fragment_type,omitempty"`
+	Raw                  string          `json:"raw"`
+	SHA256               string          `json:"sha256"`
+	ByteLength           int             `json:"byte_length"`
+	Message              MessageSnapshot `json:"message,omitempty"`
+	CreatedAt            time.Time       `json:"created_at"`
 }
 
 type MessageSnapshot struct {
@@ -105,6 +113,7 @@ type MessageSnapshot struct {
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	ToolName   string `json:"tool_name,omitempty"`
 	ToolArgs   string `json:"tool_args,omitempty"`
+	Kind       string `json:"kind,omitempty"`
 }
 
 type ToolDefinition struct {
@@ -128,21 +137,25 @@ type ToolsetSnapshot struct {
 }
 
 type ProviderRequestRecord struct {
-	ID                  string    `json:"id"`
-	RunID               string    `json:"run_id"`
-	SessionID           string    `json:"session_id,omitempty"`
-	ThreadID            string    `json:"thread_id,omitempty"`
-	TurnID              string    `json:"turn_id,omitempty"`
-	Step                int       `json:"step"`
-	Provider            string    `json:"provider"`
-	Model               string    `json:"model"`
-	CacheNamespace      string    `json:"cache_namespace,omitempty"`
-	CacheRetention      Retention `json:"cache_retention,omitempty"`
-	SegmentIDs          []string  `json:"segment_ids"`
-	ProviderPayloadHash string    `json:"provider_payload_hash"`
-	PrefixRawHash       string    `json:"prefix_raw_hash"`
-	PreviousResponseID  string    `json:"previous_response_id,omitempty"`
-	CreatedAt           time.Time `json:"created_at"`
+	ID                   string              `json:"id"`
+	RunID                string              `json:"run_id"`
+	SessionID            string              `json:"session_id,omitempty"`
+	ThreadID             string              `json:"thread_id,omitempty"`
+	TurnID               string              `json:"turn_id,omitempty"`
+	Step                 int                 `json:"step"`
+	Provider             string              `json:"provider"`
+	Model                string              `json:"model"`
+	CacheNamespace       string              `json:"cache_namespace,omitempty"`
+	CacheRetention       Retention           `json:"cache_retention,omitempty"`
+	SegmentIDs           []string            `json:"segment_ids"`
+	ProviderPayloadHash  string              `json:"provider_payload_hash"`
+	PrefixRawHash        string              `json:"prefix_raw_hash"`
+	PreviousResponseID   string              `json:"previous_response_id,omitempty"`
+	CompactionGeneration int                 `json:"compaction_generation,omitempty"`
+	CompactionWindowID   string              `json:"compaction_window_id,omitempty"`
+	CompactionEntryID    string              `json:"compaction_entry_id,omitempty"`
+	ContextUsage         contextpolicy.Usage `json:"context_usage,omitempty"`
+	CreatedAt            time.Time           `json:"created_at"`
 }
 
 type ProviderResponseRecord struct {
@@ -424,6 +437,7 @@ type BuildInput struct {
 	History        []session.Message
 	Toolset        ToolsetSnapshot
 	Renderer       Renderer
+	ContextPolicy  contextpolicy.Policy
 	Now            time.Time
 }
 
@@ -464,6 +478,8 @@ func BuildPlan(ctx context.Context, store Store, input BuildInput) (RawPlan, []s
 	plan.ToolsetID = input.Toolset.ID
 	plan.ToolsetEpoch = input.Toolset.Epoch
 	plan.CacheNamespace = input.CacheNamespace
+	plan.ContextUsage = contextpolicy.EstimateMessages(input.SystemPrompt, input.History, len(input.Toolset.Tools), input.ContextPolicy)
+	plan.CompactionGeneration, plan.CompactionWindowID, plan.CompactionEntryID = activeCompactionWindow(input.History)
 	var requestMessages []session.Message
 	sequence := nextSequence(existing)
 	add := func(seg Segment, created bool) error {
@@ -554,6 +570,9 @@ func segmentForCurrentRef(existing, current Segment) Segment {
 	existing.EntryID = current.EntryID
 	existing.ParentEntryID = current.ParentEntryID
 	existing.TurnID = current.TurnID
+	existing.CompactionGeneration = current.CompactionGeneration
+	existing.CompactionWindowID = current.CompactionWindowID
+	existing.CompactionEntryID = current.CompactionEntryID
 	return existing
 }
 
@@ -738,21 +757,25 @@ func cacheScopeID(runID, sessionID string) string {
 
 func RecordRequest(ctx context.Context, store Store, runID, sessionID string, step int, providerName, model string, policy CachePolicy, plan RawPlan) (ProviderRequestRecord, error) {
 	record := ProviderRequestRecord{
-		ID:                  fmt.Sprintf("%s:req:%d", runID, step),
-		RunID:               runID,
-		SessionID:           sessionID,
-		ThreadID:            sessionID,
-		TurnID:              runID,
-		Step:                step,
-		Provider:            providerName,
-		Model:               model,
-		CacheNamespace:      policy.Namespace,
-		CacheRetention:      policy.Retention,
-		SegmentIDs:          append([]string(nil), plan.SegmentIDs...),
-		ProviderPayloadHash: plan.PayloadHash,
-		PrefixRawHash:       plan.PrefixHash,
-		PreviousResponseID:  plan.PreviousResponseID,
-		CreatedAt:           time.Now(),
+		ID:                   fmt.Sprintf("%s:req:%d", runID, step),
+		RunID:                runID,
+		SessionID:            sessionID,
+		ThreadID:             sessionID,
+		TurnID:               runID,
+		Step:                 step,
+		Provider:             providerName,
+		Model:                model,
+		CacheNamespace:       policy.Namespace,
+		CacheRetention:       policy.Retention,
+		SegmentIDs:           append([]string(nil), plan.SegmentIDs...),
+		ProviderPayloadHash:  plan.PayloadHash,
+		PrefixRawHash:        plan.PrefixHash,
+		PreviousResponseID:   plan.PreviousResponseID,
+		CompactionGeneration: plan.CompactionGeneration,
+		CompactionWindowID:   plan.CompactionWindowID,
+		CompactionEntryID:    plan.CompactionEntryID,
+		ContextUsage:         plan.ContextUsage,
+		CreatedAt:            time.Now(),
 	}
 	if store == nil {
 		return record, nil
@@ -784,9 +807,13 @@ func newMessageSegment(input BuildInput, kind SegmentKind, msg session.Message, 
 		ToolCallID: msg.ToolCallID,
 		ToolName:   msg.ToolName,
 		ToolArgs:   msg.ToolArgs,
+		Kind:       string(msg.Kind),
 	}
 	entryID := msg.EntryID
 	parentEntryID := msg.ParentEntryID
+	generation := msg.CompactionGeneration
+	windowID := msg.CompactionWindowID
+	compactionEntryID := msg.CompactionID
 	msg.EntryID = ""
 	msg.ParentEntryID = ""
 	raw := ""
@@ -806,33 +833,37 @@ func newMessageSegment(input BuildInput, kind SegmentKind, msg session.Message, 
 			"tool_call_id": snap.ToolCallID,
 			"tool_name":    snap.ToolName,
 			"tool_args":    snap.ToolArgs,
+			"message_kind": snap.Kind,
 		})
 	}
 	fingerprint := StableHash(raw)
 	scopeID := cacheScopeID(input.RunID, input.SessionID)
 	return Segment{
-		ID:              fmt.Sprintf("%s:%s:%s", scopeID, kind, fingerprint[:12]),
-		RunID:           scopeID,
-		SessionID:       input.SessionID,
-		ThreadID:        input.ThreadID,
-		TurnID:          input.TurnID,
-		EntryID:         entryID,
-		ParentEntryID:   parentEntryID,
-		Provider:        input.Provider,
-		Model:           input.Model,
-		AdapterVersion:  input.AdapterVersion,
-		SchemaVersion:   Version,
-		Kind:            kind,
-		Role:            snap.Role,
-		Sequence:        sequence,
-		StructuredRefID: fmt.Sprintf("%s:%s", kind, fingerprint[:12]),
-		Fingerprint:     fingerprint,
-		FragmentType:    fragmentType,
-		Raw:             raw,
-		SHA256:          fingerprint,
-		ByteLength:      len(raw),
-		Message:         snap,
-		CreatedAt:       input.Now,
+		ID:                   fmt.Sprintf("%s:%s:%s", scopeID, kind, fingerprint[:12]),
+		RunID:                scopeID,
+		SessionID:            input.SessionID,
+		ThreadID:             input.ThreadID,
+		TurnID:               input.TurnID,
+		EntryID:              entryID,
+		ParentEntryID:        parentEntryID,
+		Provider:             input.Provider,
+		Model:                input.Model,
+		AdapterVersion:       input.AdapterVersion,
+		SchemaVersion:        Version,
+		Kind:                 kind,
+		Role:                 snap.Role,
+		Sequence:             sequence,
+		StructuredRefID:      fmt.Sprintf("%s:%s", kind, fingerprint[:12]),
+		CompactionGeneration: generation,
+		CompactionWindowID:   windowID,
+		CompactionEntryID:    compactionEntryID,
+		Fingerprint:          fingerprint,
+		FragmentType:         fragmentType,
+		Raw:                  raw,
+		SHA256:               fingerprint,
+		ByteLength:           len(raw),
+		Message:              snap,
+		CreatedAt:            input.Now,
 	}, nil
 }
 
@@ -866,6 +897,9 @@ func newRenderedToolSegment(input BuildInput, toolset ToolsetSnapshot, tool Tool
 }
 
 func kindForMessage(msg session.Message) SegmentKind {
+	if msg.Kind == session.MessageKindCompactionSummary {
+		return SegmentCompaction
+	}
 	switch msg.Role {
 	case session.User:
 		return SegmentUserMessage
@@ -877,9 +911,6 @@ func kindForMessage(msg session.Message) SegmentKind {
 	case session.Tool:
 		return SegmentToolResult
 	case session.System:
-		if strings.Contains(strings.ToLower(msg.Content), "compacted") {
-			return SegmentCompaction
-		}
 		return SegmentSystem
 	default:
 		return SegmentUserMessage
@@ -893,7 +924,21 @@ func (m MessageSnapshot) toSession() session.Message {
 		ToolCallID: m.ToolCallID,
 		ToolName:   m.ToolName,
 		ToolArgs:   m.ToolArgs,
+		Kind:       session.MessageKind(m.Kind),
 	}
+}
+
+func activeCompactionWindow(history []session.Message) (int, string, string) {
+	for i := len(history) - 1; i >= 0; i-- {
+		msg := history[i]
+		if msg.Kind != session.MessageKindCompactionSummary {
+			continue
+		}
+		if msg.CompactionGeneration > 0 || msg.CompactionWindowID != "" || msg.CompactionID != "" {
+			return msg.CompactionGeneration, msg.CompactionWindowID, msg.CompactionID
+		}
+	}
+	return 0, "", ""
 }
 
 func findSegmentByID(segments []Segment, id string) (Segment, bool) {

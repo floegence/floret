@@ -27,7 +27,6 @@ type Case struct {
 }
 
 type Budgets struct {
-	MaxSteps       int
 	MaxWallTime    time.Duration
 	MaxTotalTokens int64
 	MaxCostUSD     float64
@@ -196,9 +195,6 @@ func (r Runner) runOracle(ctx context.Context, c Case) (string, error) {
 }
 
 func applyBudgets(e *engine.Engine, b Budgets) {
-	if b.MaxSteps > 0 {
-		e.Options.MaxSteps = b.MaxSteps
-	}
 	if b.MaxWallTime > 0 {
 		e.Options.WallTime = b.MaxWallTime
 	}

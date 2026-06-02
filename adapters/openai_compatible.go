@@ -30,6 +30,7 @@ type chatRequest struct {
 	Model                string        `json:"model"`
 	Messages             []chatMessage `json:"messages"`
 	Stream               bool          `json:"stream"`
+	MaxTokens            int64         `json:"max_tokens,omitempty"`
 	Tools                []chatTool    `json:"tools,omitempty"`
 	ToolChoice           string        `json:"tool_choice,omitempty"`
 	PromptCacheKey       string        `json:"prompt_cache_key,omitempty"`
@@ -263,7 +264,11 @@ func (p OpenAICompatibleProvider) buildChatRequest(req provider.Request) chatReq
 		renderedMessages = renderMessagesFromRawPlan(req.RawPlan, renderedMessages)
 		renderedTools = renderToolsFromRawPlan(req.RawPlan, renderedTools)
 	}
-	chatReq := chatRequest{Model: p.Model, Messages: renderedMessages, Stream: p.StreamResponses, Tools: renderedTools}
+	maxTokens := req.MaxOutputTokens
+	if maxTokens <= 0 {
+		maxTokens = req.ContextPolicy.MaxOutputTokens
+	}
+	chatReq := chatRequest{Model: p.Model, Messages: renderedMessages, Stream: p.StreamResponses, MaxTokens: maxTokens, Tools: renderedTools}
 	if len(chatReq.Tools) > 0 {
 		chatReq.ToolChoice = "auto"
 	}

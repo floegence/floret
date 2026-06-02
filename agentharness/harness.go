@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/floret/compaction"
+	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/event"
 	"github.com/floegence/floret/memory"
@@ -57,21 +59,22 @@ type HarnessSink interface {
 }
 
 type Options struct {
-	Provider           provider.Provider
-	ProviderName       string
-	Model              string
-	SystemPrompt       string
-	Tools              *tools.Registry
-	PromptStore        promptcache.Store
-	Repo               sessiontree.Repo
-	Sink               event.Sink
-	HarnessSink        HarnessSink
-	Approver           tools.Approver
-	StopHook           engine.StopHook
-	MaxContextMessages int
-	EngineOptions      engine.Options
-	NewID              func(string) string
-	Now                func() time.Time
+	Provider            provider.Provider
+	ProviderName        string
+	Model               string
+	SystemPrompt        string
+	Tools               *tools.Registry
+	PromptStore         promptcache.Store
+	Repo                sessiontree.Repo
+	Sink                event.Sink
+	HarnessSink         HarnessSink
+	Approver            tools.Approver
+	StopHook            engine.StopHook
+	ContextPolicy       contextpolicy.Policy
+	CompactionGenerator compaction.SummaryGenerator
+	EngineOptions       engine.Options
+	NewID               func(string) string
+	Now                 func() time.Time
 }
 
 type AgentHarness struct {
@@ -326,7 +329,17 @@ func (t *Thread) MoveTo(ctx context.Context, entryID string, opts MoveOptions) e
 }
 
 func (t *Thread) Compact(ctx context.Context, summary, firstKeptEntryID string) (sessiontree.Entry, error) {
-	entry, err := t.harness.options.Repo.Append(ctx, sessiontree.Entry{ThreadID: t.id, Type: sessiontree.EntryCompaction, Summary: summary, FirstKeptEntryID: firstKeptEntryID}, sessiontree.AppendOptions{})
+	result := compaction.Result{
+		CompactionID:         t.harness.nextID("compaction"),
+		FirstKeptEntryID:     firstKeptEntryID,
+		Summary:              summary,
+		SummarySchemaVersion: compaction.SummarySchemaVersion,
+		Trigger:              compaction.TriggerManual,
+		Reason:               compaction.ReasonManual,
+		Phase:                compaction.PhaseInstall,
+		CreatedAt:            t.harness.now(),
+	}
+	entry, err := sessiontree.AppendCompaction(ctx, t.harness.options.Repo, t.id, "", result)
 	if err != nil {
 		return sessiontree.Entry{}, err
 	}
@@ -369,18 +382,19 @@ func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retryUs
 	engineOptions.TraceID = runID
 	engineOptions.ProviderName = t.harness.options.ProviderName
 	engineOptions.Model = t.harness.options.Model
+	engineOptions.ContextPolicy = contextpolicy.Normalize(mergeContextPolicy(engineOptions.ContextPolicy, t.harness.options.ContextPolicy))
 	eng := &engine.Engine{
 		Provider: t.harness.options.Provider,
 		Tools:    t.harness.options.Tools,
 		Prompt:   t.harness.options.PromptStore,
 		Memory: &memory.Manager{
 			SystemPrompt: t.harness.options.SystemPrompt,
-			MaxMessages:  t.harness.options.MaxContextMessages,
 		},
-		Sink:     nil,
-		Approver: t.harness.options.Approver,
-		StopHook: t.harness.options.StopHook,
-		Options:  engineOptions,
+		Sink:      nil,
+		Approver:  t.harness.options.Approver,
+		StopHook:  t.harness.options.StopHook,
+		Compactor: &durableCompactionManager{thread: t, turnID: turnID},
+		Options:   engineOptions,
 	}
 	projection := &turnProjection{thread: t, ctx: ctx, turnID: turnID, downstream: t.harness.options.Sink}
 	eng.Sink = projection
@@ -389,13 +403,11 @@ func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retryUs
 		return TurnResult{}, projection.err
 	}
 	deltaBase := history
-	if !isEngineCompacted(result.Messages) {
-		current, err := t.Read(ctx)
-		if err != nil {
-			return TurnResult{}, err
-		}
-		deltaBase = current.Context
+	current, err := t.Read(ctx)
+	if err != nil {
+		return TurnResult{}, err
 	}
+	deltaBase = current.Context
 	if err := t.appendDelta(ctx, turnID, deltaBase, result.Messages); err != nil {
 		return TurnResult{}, err
 	}
@@ -461,31 +473,20 @@ func (t *Thread) leaveTurn() {
 }
 
 func (t *Thread) appendDelta(ctx context.Context, turnID string, before, after []session.Message) error {
-	if isEngineCompacted(after) {
-		firstKeptEntryID := firstKeptEntryID(before, after[1:])
-		entry, err := t.harness.options.Repo.Append(ctx, sessiontree.Entry{ThreadID: t.id, TurnID: turnID, Type: sessiontree.EntryCompaction, Summary: after[0].Content, FirstKeptEntryID: firstKeptEntryID}, sessiontree.AppendOptions{})
-		if err != nil {
-			return err
-		}
-		t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: "compaction"})
-		if len(after) <= 1 {
-			return nil
-		}
-		start := sharedMessagePrefix(after[1:], before)
-		for _, msg := range after[1+start:] {
-			if err := t.appendMessage(ctx, turnID, msg); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
 	start := sharedMessagePrefix(before, after)
 	for _, msg := range after[start:] {
+		if nonDurableProjection(msg) {
+			continue
+		}
 		if err := t.appendMessage(ctx, turnID, msg); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func nonDurableProjection(msg session.Message) bool {
+	return msg.Kind == session.MessageKindCompactionSummary || msg.Kind == session.MessageKindMicrocompactMarker
 }
 
 func (t *Thread) appendMessage(ctx context.Context, turnID string, msg session.Message) error {
@@ -497,37 +498,6 @@ func (t *Thread) appendMessage(ctx context.Context, turnID string, msg session.M
 	}
 	t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID})
 	return nil
-}
-
-func isEngineCompacted(messages []session.Message) bool {
-	return len(messages) > 0 && messages[0].Role == session.System && strings.HasPrefix(messages[0].Content, "Previous conversation was compacted.")
-}
-
-func firstKeptEntryID(before, tail []session.Message) string {
-	if len(tail) == 0 {
-		return ""
-	}
-	for i := 0; i < len(before); i++ {
-		if messageSlicesEqual(before[i:], tail[:min(len(tail), len(before)-i)]) {
-			return before[i].EntryID
-		}
-	}
-	if tail[0].EntryID != "" {
-		return tail[0].EntryID
-	}
-	return ""
-}
-
-func messageSlicesEqual(a, b []session.Message) bool {
-	if len(a) < len(b) {
-		return false
-	}
-	for i := range b {
-		if !messagesEqualForDelta(a[i], b[i]) {
-			return false
-		}
-	}
-	return true
 }
 
 func sharedMessagePrefix(a, b []session.Message) int {
@@ -582,6 +552,117 @@ func markerMetadata(runID string, result engine.Result) map[string]string {
 type retryTargetResult struct {
 	Entry  sessiontree.Entry
 	Source string
+}
+
+type durableCompactionManager struct {
+	thread *Thread
+	turnID string
+}
+
+func (m *durableCompactionManager) Compact(ctx context.Context, req engine.CompactionRequest) (compaction.Result, []session.Message, error) {
+	if m == nil || m.thread == nil {
+		return compaction.Result{}, nil, errors.New("durable compaction manager requires thread")
+	}
+	snap, err := m.thread.Read(ctx)
+	if err != nil {
+		return compaction.Result{}, nil, err
+	}
+	previous := latestCompactionEntry(snap.Path)
+	previousSummary := previous.Summary
+	if req.PreviousSummary != "" {
+		previousSummary = req.PreviousSummary
+	}
+	previousID := previous.CompactionID
+	if req.PreviousCompactionID != "" {
+		previousID = req.PreviousCompactionID
+	}
+	generator := m.thread.harness.options.CompactionGenerator
+	if generator == nil {
+		generator = compaction.ProviderSummaryGenerator{
+			Provider:     req.Provider,
+			ProviderName: req.ProviderName,
+			Model:        req.Model,
+			Policy:       req.Policy,
+			Fallback:     compaction.ExtractiveSummaryGenerator{},
+		}
+	}
+	compactionID := m.thread.harness.nextID("compaction")
+	prep, err := compaction.Prepare(ctx, compaction.Request{
+		CompactionID:         compactionID,
+		PreviousCompactionID: previousID,
+		PreviousSummary:      previousSummary,
+		History:              req.History,
+		Policy:               req.Policy,
+		Trigger:              req.Trigger,
+		Reason:               req.Reason,
+		Phase:                compaction.PhaseInstall,
+		Step:                 req.Step,
+		Details:              req.Details,
+		Now:                  m.thread.harness.now(),
+	}, generator)
+	if err != nil {
+		return compaction.Result{}, nil, err
+	}
+	if previous.CompactionGeneration > 0 {
+		prep.Result.Details["compaction_generation"] = strconv.Itoa(previous.CompactionGeneration + 1)
+	}
+	if prep.Result.PreviousCompactionID == "" {
+		prep.Result.PreviousCompactionID = previousID
+	}
+	entry, err := sessiontree.AppendCompaction(ctx, m.thread.harness.options.Repo, m.thread.id, m.turnID, prep.Result)
+	if err != nil {
+		return compaction.Result{}, nil, err
+	}
+	prep.Result.CompactionID = entry.CompactionID
+	for i := range prep.ActiveMessages {
+		if prep.ActiveMessages[i].Kind != session.MessageKindCompactionSummary {
+			continue
+		}
+		prep.ActiveMessages[i].EntryID = entry.ID
+		prep.ActiveMessages[i].ParentEntryID = entry.ParentID
+		prep.ActiveMessages[i].CompactionID = entry.CompactionID
+		prep.ActiveMessages[i].CompactionGeneration = entry.CompactionGeneration
+		prep.ActiveMessages[i].CompactionWindowID = entry.CompactionWindowID
+	}
+	m.thread.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: m.thread.id, TurnID: m.turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: "compaction"})
+	return prep.Result, prep.ActiveMessages, nil
+}
+
+func latestCompactionEntry(path []sessiontree.Entry) sessiontree.Entry {
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i].Type == sessiontree.EntryCompaction {
+			return path[i]
+		}
+	}
+	return sessiontree.Entry{}
+}
+
+func mergeContextPolicy(primary, fallback contextpolicy.Policy) contextpolicy.Policy {
+	if primary.ContextWindowTokens <= 0 {
+		primary.ContextWindowTokens = fallback.ContextWindowTokens
+	}
+	if primary.MaxOutputTokens <= 0 {
+		primary.MaxOutputTokens = fallback.MaxOutputTokens
+	}
+	if primary.ReservedOutputTokens <= 0 {
+		primary.ReservedOutputTokens = fallback.ReservedOutputTokens
+	}
+	if primary.ReservedSummaryTokens <= 0 {
+		primary.ReservedSummaryTokens = fallback.ReservedSummaryTokens
+	}
+	if primary.RecentTailTokens <= 0 {
+		primary.RecentTailTokens = fallback.RecentTailTokens
+	}
+	if primary.EstimatorSource == "" {
+		primary.EstimatorSource = fallback.EstimatorSource
+	}
+	if primary.MaxCompactionFailures <= 0 {
+		primary.MaxCompactionFailures = fallback.MaxCompactionFailures
+	}
+	if primary.MicrocompactToolTokens <= 0 {
+		primary.MicrocompactToolTokens = fallback.MicrocompactToolTokens
+	}
+	return primary
 }
 
 func retryTarget(path []sessiontree.Entry) retryTargetResult {

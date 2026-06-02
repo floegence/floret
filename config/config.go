@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/modelcatalog"
 	"github.com/floegence/floret/promptcache"
 )
@@ -31,9 +32,7 @@ type Config struct {
 	PromptCacheDir          string
 	PromptCacheRetention    string
 	SystemPrompt            string
-	MaxContextMessages      int
-	MaxSteps                int
-	HardMaxSteps            int
+	ContextPolicy           contextpolicy.Policy
 	MaxEmptyProviderRetries int
 	NoProgressLimit         int
 	DuplicateToolLimit      int
@@ -96,21 +95,31 @@ func fromValues(values map[string]string) (Config, error) {
 		PromptCacheDir:          get(values, "FLORET_PROMPT_CACHE_DIR", ".floret/sessions"),
 		PromptCacheRetention:    get(values, "FLORET_PROMPT_CACHE_RETENTION", defaultPromptCacheRetention(providerName)),
 		SystemPrompt:            get(values, "FLORET_SYSTEM_PROMPT", "You are Floret."),
-		MaxContextMessages:      32,
-		MaxSteps:                16,
-		HardMaxSteps:            16,
+		ContextPolicy:           modelcatalog.ContextPolicy(providerName, get(values, "FLORET_MODEL", defaultModel)),
 		MaxEmptyProviderRetries: 1,
 		NoProgressLimit:         2,
 		DuplicateToolLimit:      3,
 	}
 	var err error
-	if cfg.MaxContextMessages, err = getInt(values, "FLORET_MAX_CONTEXT_MESSAGES", cfg.MaxContextMessages); err != nil {
+	if cfg.ContextPolicy.ContextWindowTokens, err = getInt64(values, "FLORET_CONTEXT_WINDOW_TOKENS", cfg.ContextPolicy.ContextWindowTokens); err != nil {
 		return Config{}, err
 	}
-	if cfg.MaxSteps, err = getInt(values, "FLORET_MAX_STEPS", cfg.MaxSteps); err != nil {
+	if cfg.ContextPolicy.MaxOutputTokens, err = getInt64(values, "FLORET_MAX_OUTPUT_TOKENS", cfg.ContextPolicy.MaxOutputTokens); err != nil {
 		return Config{}, err
 	}
-	if cfg.HardMaxSteps, err = getInt(values, "FLORET_HARD_MAX_STEPS", cfg.HardMaxSteps); err != nil {
+	if cfg.ContextPolicy.ReservedOutputTokens, err = getInt64(values, "FLORET_RESERVED_OUTPUT_TOKENS", cfg.ContextPolicy.ReservedOutputTokens); err != nil {
+		return Config{}, err
+	}
+	if cfg.ContextPolicy.ReservedSummaryTokens, err = getInt64(values, "FLORET_RESERVED_SUMMARY_TOKENS", cfg.ContextPolicy.ReservedSummaryTokens); err != nil {
+		return Config{}, err
+	}
+	if cfg.ContextPolicy.RecentTailTokens, err = getInt64(values, "FLORET_RECENT_TAIL_TOKENS", cfg.ContextPolicy.RecentTailTokens); err != nil {
+		return Config{}, err
+	}
+	if cfg.ContextPolicy.MaxCompactionFailures, err = getInt(values, "FLORET_MAX_COMPACTION_FAILURES", cfg.ContextPolicy.MaxCompactionFailures); err != nil {
+		return Config{}, err
+	}
+	if cfg.ContextPolicy.MicrocompactToolTokens, err = getInt64(values, "FLORET_MICROCOMPACT_TOOL_TOKENS", cfg.ContextPolicy.MicrocompactToolTokens); err != nil {
 		return Config{}, err
 	}
 	if cfg.MaxEmptyProviderRetries, err = getInt(values, "FLORET_MAX_EMPTY_PROVIDER_RETRIES", cfg.MaxEmptyProviderRetries); err != nil {
@@ -155,6 +164,13 @@ func Resolve(cfg Config, environ map[string]string) (Config, error) {
 	if cfg.PromptCacheRetention == "" {
 		cfg.PromptCacheRetention = defaultPromptCacheRetention(cfg.Provider)
 	}
+	defaultPolicy := modelcatalog.ContextPolicy(cfg.Provider, cfg.Model)
+	if cfg.ContextPolicy.ContextWindowTokens <= 0 {
+		cfg.ContextPolicy.ContextWindowTokens = defaultPolicy.ContextWindowTokens
+	}
+	if cfg.ContextPolicy.MaxOutputTokens <= 0 {
+		cfg.ContextPolicy.MaxOutputTokens = defaultPolicy.MaxOutputTokens
+	}
 	return validate(cfg)
 }
 
@@ -182,6 +198,7 @@ func validate(cfg Config) (Config, error) {
 	if _, err := normalizePromptCacheRetention(cfg.PromptCacheRetention); err != nil {
 		return Config{}, err
 	}
+	cfg.ContextPolicy = contextpolicy.Normalize(cfg.ContextPolicy)
 	return cfg, nil
 }
 
@@ -302,6 +319,21 @@ func getInt(values map[string]string, key string, fallback int) (int, error) {
 		return fallback, nil
 	}
 	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer: %w", key, err)
+	}
+	if parsed < 0 {
+		return 0, fmt.Errorf("%s must be non-negative", key)
+	}
+	return parsed, nil
+}
+
+func getInt64(values map[string]string, key string, fallback int64) (int64, error) {
+	value, ok := values[key]
+	if !ok || value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("%s must be an integer: %w", key, err)
 	}

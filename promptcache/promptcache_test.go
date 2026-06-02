@@ -2,6 +2,7 @@ package promptcache
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -294,6 +295,107 @@ func TestCanonicalSegmentHashIgnoresToolRegistrationOrder(t *testing.T) {
 	}
 	if rawA != rawB || StableHash(rawA) != StableHash(rawB) {
 		t.Fatalf("canonical tool raw/hash differs:\n%s\n%s", rawA, rawB)
+	}
+}
+
+func TestCompactionSegmentKindAndWindowComeFromStructuredMessageKind(t *testing.T) {
+	store := NewMemoryStore()
+	toolset, _, err := EnsureToolset(context.Background(), store, "run", "thread", "openai", "model", nil, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, _, err := BuildPlan(context.Background(), store, BuildInput{
+		RunID:     "run",
+		SessionID: "thread",
+		Provider:  "openai",
+		Model:     "model",
+		Toolset:   toolset,
+		History: []session.Message{
+			{Role: session.Assistant, Content: "summary without magic words", Kind: session.MessageKindCompactionSummary, CompactionID: "c1", CompactionGeneration: 3, CompactionWindowID: "w3"},
+			{Role: session.User, Content: "continue"},
+			{Role: session.System, Content: "This content says compacted but is ordinary system context."},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.CompactionGeneration != 3 || plan.CompactionWindowID != "w3" || plan.CompactionEntryID != "c1" {
+		t.Fatalf("plan compaction window missing: %#v", plan)
+	}
+	var structured, heuristic bool
+	for _, seg := range plan.Segments {
+		if seg.Kind == SegmentCompaction && seg.Message.Content == "summary without magic words" && seg.CompactionWindowID == "w3" {
+			structured = true
+		}
+		if seg.Kind == SegmentCompaction && strings.Contains(seg.Message.Content, "compacted but is ordinary") {
+			heuristic = true
+		}
+	}
+	if !structured || heuristic {
+		t.Fatalf("compaction kind should be structured only: %#v", plan.Segments)
+	}
+}
+
+func TestActiveCompactionWindowUsesLatestStructuredSummary(t *testing.T) {
+	store := NewMemoryStore()
+	toolset, _, err := EnsureToolset(context.Background(), store, "run", "thread", "openai", "model", nil, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, _, err := BuildPlan(context.Background(), store, BuildInput{
+		RunID:     "run",
+		SessionID: "thread",
+		Provider:  "openai",
+		Model:     "model",
+		Toolset:   toolset,
+		History: []session.Message{
+			{Role: session.Assistant, Content: "old summary", Kind: session.MessageKindCompactionSummary, CompactionID: "c1", CompactionGeneration: 1, CompactionWindowID: "w1"},
+			{Role: session.User, Content: "middle"},
+			{Role: session.Assistant, Content: "new summary", Kind: session.MessageKindCompactionSummary, CompactionID: "c2", CompactionGeneration: 2, CompactionWindowID: "w2"},
+			{Role: session.User, Content: "continue"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.CompactionGeneration != 2 || plan.CompactionWindowID != "w2" || plan.CompactionEntryID != "c2" {
+		t.Fatalf("plan should use latest compaction window: %#v", plan)
+	}
+}
+
+func TestReusedCompactionSegmentRefreshesWindowMetadata(t *testing.T) {
+	store := NewMemoryStore()
+	now := time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC)
+	toolset, _, err := EnsureToolset(context.Background(), store, "run", "thread", "openai", "model", nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := BuildInput{
+		RunID:     "run",
+		SessionID: "thread",
+		Provider:  "openai",
+		Model:     "model",
+		Toolset:   toolset,
+		History: []session.Message{
+			{Role: session.Assistant, Content: "summary", Kind: session.MessageKindCompactionSummary, CompactionID: "c1", CompactionGeneration: 1, CompactionWindowID: "w1"},
+		},
+	}
+	first, _, err := BuildPlan(context.Background(), store, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.History = []session.Message{
+		{Role: session.Assistant, Content: "summary", Kind: session.MessageKindCompactionSummary, CompactionID: "c2", CompactionGeneration: 2, CompactionWindowID: "w2"},
+	}
+	second, _, err := BuildPlan(context.Background(), store, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Segments[len(first.Segments)-1].CompactionWindowID != "w1" {
+		t.Fatalf("first plan window = %#v", first.Segments[len(first.Segments)-1])
+	}
+	if second.Segments[len(second.Segments)-1].CompactionWindowID != "w2" || second.Segments[len(second.Segments)-1].CompactionGeneration != 2 {
+		t.Fatalf("reused segment metadata should refresh to latest window: %#v", second.Segments[len(second.Segments)-1])
 	}
 }
 

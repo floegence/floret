@@ -92,10 +92,7 @@ func (p AnthropicProvider) Stream(ctx context.Context, req provider.Request) (<-
 		return nil, err
 	}
 	req.Cache = normalizedCache
-	maxTokens := p.MaxTokens
-	if maxTokens <= 0 {
-		maxTokens = 4096
-	}
+	maxTokens := p.maxTokensForRequest(req)
 	body, err := json.Marshal(p.buildAnthropicRequest(req, maxTokens))
 	if err != nil {
 		return nil, err
@@ -219,15 +216,25 @@ func (p AnthropicProvider) PayloadHash(req provider.Request) (string, error) {
 		return "", err
 	}
 	req.Cache = policy
-	maxTokens := p.MaxTokens
-	if maxTokens <= 0 {
-		maxTokens = 4096
-	}
+	maxTokens := p.maxTokensForRequest(req)
 	body, err := json.Marshal(p.buildAnthropicRequest(req, maxTokens))
 	if err != nil {
 		return "", err
 	}
 	return promptcache.StableHash(string(body)), nil
+}
+
+func (p AnthropicProvider) maxTokensForRequest(req provider.Request) int64 {
+	maxTokens := p.MaxTokens
+	if req.MaxOutputTokens > 0 {
+		maxTokens = int64(req.MaxOutputTokens)
+	} else if req.ContextPolicy.MaxOutputTokens > 0 {
+		maxTokens = int64(req.ContextPolicy.MaxOutputTokens)
+	}
+	if maxTokens <= 0 {
+		maxTokens = 4096
+	}
+	return maxTokens
 }
 
 func (p AnthropicProvider) MessageRaw(kind promptcache.SegmentKind, msg session.Message) (string, string, error) {

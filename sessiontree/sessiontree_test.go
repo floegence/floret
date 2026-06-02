@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/floegence/floret/compaction"
 	"github.com/floegence/floret/session"
 )
 
@@ -130,12 +131,110 @@ func TestCompactionContextReplacesHeadAndKeepsTail(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := BuildContext(path, ContextOptions{})
-	if len(got) != 3 || got[0].Content != "summary" || got[1].Content != "kept" || got[2].Content != "tail" {
+	if len(got) != 3 || got[0].Content != "summary" || got[0].Kind != session.MessageKindCompactionSummary || got[1].Content != "kept" || got[2].Content != "tail" {
 		t.Fatalf("compaction should replace earlier head and keep suffix: %#v", got)
 	}
 	entries, _ := repo.Entries(ctx, "thread")
 	if len(entries) != 4 {
 		t.Fatalf("compaction should not delete old entries: %#v", entries)
+	}
+}
+
+func TestMultipleCompactionsUseOnlyLastBoundary(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemoryRepo()
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := AppendMessage(ctx, repo, "thread", "t1", session.Message{Role: session.User, Content: "old"})
+	kept1, _ := AppendMessage(ctx, repo, "thread", "t2", session.Message{Role: session.User, Content: "kept1"})
+	c1, err := AppendCompaction(ctx, repo, "thread", "t2", compaction.Result{
+		CompactionID:            "c1",
+		FirstKeptEntryID:        kept1.ID,
+		CompactedThroughEntryID: old.ID,
+		Summary:                 "S1",
+		SummarySchemaVersion:    compaction.SummarySchemaVersion,
+		Trigger:                 compaction.TriggerPreRequest,
+		Reason:                  compaction.ReasonThreshold,
+		Phase:                   compaction.PhaseInstall,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept2, _ := AppendMessage(ctx, repo, "thread", "t3", session.Message{Role: session.User, Content: "kept2"})
+	_, err = AppendCompaction(ctx, repo, "thread", "t3", compaction.Result{
+		CompactionID:            "c2",
+		PreviousCompactionID:    "c1",
+		FirstKeptEntryID:        kept2.ID,
+		CompactedThroughEntryID: c1.ID,
+		Summary:                 "S2",
+		SummarySchemaVersion:    compaction.SummarySchemaVersion,
+		Trigger:                 compaction.TriggerPostResponse,
+		Reason:                  compaction.ReasonFollowUpPressure,
+		Phase:                   compaction.PhaseInstall,
+		Details:                 map[string]string{"compaction_generation": "2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := repo.Path(ctx, "thread", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := BuildContext(path, ContextOptions{})
+	if len(got) != 2 || got[0].Content != "S2" || got[1].Content != "kept2" {
+		t.Fatalf("context should use only last compaction boundary: %#v", got)
+	}
+	if pathContains(path, old.ID) && len(got) > 0 && got[0].Content == "S1" {
+		t.Fatalf("old summary should not stack into active context: %#v", got)
+	}
+}
+
+func TestForkRewritesCompactionReferences(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemoryRepo()
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "source"}); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := AppendMessage(ctx, repo, "source", "t1", session.Message{Role: session.User, Content: "old"})
+	kept, _ := AppendMessage(ctx, repo, "source", "t2", session.Message{Role: session.User, Content: "kept"})
+	compacted, err := AppendCompaction(ctx, repo, "source", "t2", compaction.Result{
+		CompactionID:            "c1",
+		FirstKeptEntryID:        kept.ID,
+		CompactedThroughEntryID: old.ID,
+		Summary:                 "summary",
+		SummarySchemaVersion:    compaction.SummarySchemaVersion,
+		Trigger:                 compaction.TriggerPreRequest,
+		Reason:                  compaction.ReasonThreshold,
+		Phase:                   compaction.PhaseInstall,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fork, err := repo.Fork(ctx, ForkOptions{SourceThreadID: "source", EntryID: compacted.ID, NewThreadID: "fork"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := repo.Path(ctx, fork.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var comp Entry
+	for _, entry := range path {
+		if entry.Type == EntryCompaction {
+			comp = entry
+			break
+		}
+	}
+	if comp.FirstKeptEntryID == kept.ID || comp.CompactedThroughEntryID == old.ID {
+		t.Fatalf("fork should rewrite compaction entry refs: %#v", comp)
+	}
+	if comp.PreviousCompactionID != "" {
+		t.Fatalf("fork should not rewrite stable previous compaction id: %#v", comp)
+	}
+	got := BuildContext(path, ContextOptions{})
+	if len(got) != 2 || got[0].Content != "summary" || got[1].Content != "kept" {
+		t.Fatalf("forked context should retain rewritten tail: %#v", got)
 	}
 }
 
