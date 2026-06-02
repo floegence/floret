@@ -45,6 +45,10 @@ summary {
   cursor: pointer;
 }
 
+button {
+  min-width: 0;
+}
+
 button:focus-visible,
 select:focus-visible,
 input:focus-visible,
@@ -456,13 +460,17 @@ textarea:focus {
 .summary-tile,
 .cache-card,
 .tool-definition,
+.message-card,
 .message-row,
+.engine-event-card,
 .diagnostic,
 .sequence-item,
 .tool-call,
 .usage-grid > div,
 .kv-grid > div,
-.hash-row {
+.hash-row,
+.decision-board,
+.cache-decision-strip {
   border: 1px solid rgba(216, 221, 210, 0.9);
   border-radius: 7px;
   background: #fff;
@@ -473,6 +481,18 @@ textarea:focus {
   gap: 4px;
   min-height: 76px;
   padding: 10px;
+  color: var(--ink);
+  text-align: left;
+}
+
+.health-card.action-card {
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+}
+
+.health-card.action-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(31, 36, 40, 0.45);
+  box-shadow: 0 8px 20px rgba(31, 36, 40, 0.08);
 }
 
 .health-card span,
@@ -480,7 +500,9 @@ textarea:focus {
 .cache-card h4,
 .kv-grid span,
 .hash-row span,
-.usage-grid span {
+.usage-grid span,
+.decision-facts span,
+.cache-decision-strip span {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
@@ -784,6 +806,28 @@ textarea:focus {
   font-weight: 800;
 }
 
+.step-pills .decision-pill {
+  border: 1px solid transparent;
+}
+
+.step-pills .decision-pill.finish {
+  border-color: rgba(32, 107, 145, 0.24);
+  background: #e9f3f8;
+  color: var(--blue);
+}
+
+.step-pills .decision-pill.completion {
+  border-color: rgba(32, 115, 79, 0.28);
+  background: #e8f6ec;
+  color: var(--green);
+}
+
+.step-pills .decision-pill.continuation {
+  border-color: rgba(239, 190, 69, 0.55);
+  background: #fff4d2;
+  color: #7c5b08;
+}
+
 .step-cache {
   grid-column: 1 / -1;
   justify-self: start;
@@ -854,6 +898,130 @@ textarea:focus {
   margin-bottom: 14px;
 }
 
+.decision-board {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(260px, 0.85fr);
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 13px;
+  border-left: 5px solid var(--blue);
+}
+
+.decision-board.ok {
+  border-left-color: var(--green);
+  background: #fbfef9;
+}
+
+.decision-board.warn {
+  border-left-color: var(--yellow);
+  background: #fffaf0;
+}
+
+.decision-board.bad {
+  border-left-color: var(--red);
+  background: #fff6f4;
+}
+
+.decision-board > div:first-child {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.decision-board > div:first-child > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.decision-board > div:first-child > strong {
+  font-size: 22px;
+  letter-spacing: 0;
+}
+
+.decision-board p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.decision-path {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid rgba(32, 107, 145, 0.18);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #24566f;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.decision-path span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.decision-path b {
+  color: var(--subtle);
+  font-weight: 900;
+}
+
+.decision-facts,
+.cache-decision-strip {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.decision-facts > div,
+.cache-decision-strip > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid rgba(216, 221, 210, 0.88);
+  border-radius: 7px;
+  background: #fff;
+}
+
+.decision-facts strong,
+.cache-decision-strip strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.decision-evidence {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.cache-decision-strip {
+  margin-bottom: 14px;
+  padding: 10px;
+  border-left: 5px solid var(--blue);
+}
+
+.cache-decision-strip.ok {
+  border-left-color: var(--green);
+}
+
+.cache-decision-strip.warn {
+  border-left-color: var(--yellow);
+}
+
+.cache-decision-strip.bad {
+  border-left-color: var(--red);
+}
+
 .cache-layout {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -877,9 +1045,52 @@ textarea:focus {
 .event-list,
 .segment-list,
 .sequence-list,
+.engine-event-list,
 .tool-call-list {
   display: grid;
   gap: 8px;
+}
+
+.message-card {
+  overflow: hidden;
+}
+
+.message-card summary,
+.engine-event-card summary {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  padding: 9px;
+}
+
+.message-card summary span,
+.message-card summary small,
+.engine-event-card summary span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.message-card summary > span:not(.state-badge),
+.engine-event-card summary > span:not(.state-badge) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-card summary:hover,
+.engine-event-card summary:hover,
+.event-card summary:hover,
+.segment-card summary:hover {
+  background: #f8fbf4;
+}
+
+.message-body {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+  background: #fbfcf8;
 }
 
 .message-row {
@@ -968,7 +1179,8 @@ textarea:focus {
 }
 
 .event-card,
-.segment-card {
+.segment-card,
+.engine-event-card {
   border: 1px solid var(--line);
   border-radius: 7px;
   background: #fff;
@@ -1003,6 +1215,14 @@ textarea:focus {
   padding: 10px;
   border-top: 1px solid var(--line);
   background: #fbfcf8;
+}
+
+.engine-event-card > pre.raw {
+  margin: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: #101820;
+  color: #dfeef2;
 }
 
 .text-block,
@@ -1209,6 +1429,9 @@ button:disabled {
   .health-grid,
   .detail-summary-grid,
   .cache-layout,
+  .decision-board,
+  .decision-facts,
+  .cache-decision-strip,
   .usage-grid,
   .kv-grid,
   .sequence-item,

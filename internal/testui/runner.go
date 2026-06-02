@@ -549,10 +549,14 @@ func buildTransitions(events []event.Event, result engine.Result) []StateTransit
 			add(ev.Timestamp, ev.Step, "provider_waiting", "provider_request", ev.Message)
 		case event.ProviderDelta:
 			add(ev.Timestamp, ev.Step, "receiving_model_output", "provider_delta", trimForDisplay(ev.Message, 80))
+		case event.ProviderFinish:
+			add(ev.Timestamp, ev.Step, "provider_finished", "provider_finish", finishDetails(ev))
 		case event.ProviderRetry:
 			add(ev.Timestamp, ev.Step, "retrying_provider", "provider_retry", ev.Message)
 		case event.ContextCompact:
 			add(ev.Timestamp, ev.Step, "compacting_context", "context_compact", "context was compacted")
+		case event.ContextContinue:
+			add(ev.Timestamp, ev.Step, "continuing_context", "context_continue", eventDetails(ev))
 		case event.ToolCall:
 			add(ev.Timestamp, ev.Step, "tool_calling", "tool_call", ev.ToolName)
 		case event.ToolResult:
@@ -560,7 +564,7 @@ func buildTransitions(events []event.Event, result engine.Result) []StateTransit
 		case event.BudgetExceeded:
 			add(ev.Timestamp, ev.Step, "budget_exceeded", "budget_exceeded", ev.Message)
 		case event.StepEnd:
-			add(ev.Timestamp, ev.Step, "step_finished", "step_end", fmt.Sprintf("step %d ended", ev.Step))
+			add(ev.Timestamp, ev.Step, "step_finished", "step_end", decisionDetails(ev))
 		case event.RunEnd:
 			add(ev.Timestamp, ev.Step, string(result.Status), "run_end", eventDetails(ev))
 		}
@@ -605,6 +609,43 @@ func eventDetails(ev event.Event) string {
 		return trimForDisplay(ev.Result, 120)
 	}
 	return trimForDisplay(ev.Message, 120)
+}
+
+func finishDetails(ev event.Event) string {
+	parts := []string{}
+	if ev.FinishReason != "" {
+		parts = append(parts, "finish="+ev.FinishReason)
+	}
+	if ev.RawFinishReason != "" && ev.RawFinishReason != ev.FinishReason {
+		parts = append(parts, "raw="+ev.RawFinishReason)
+	}
+	if ev.FinishInferred {
+		parts = append(parts, "inferred")
+	}
+	if len(parts) == 0 {
+		return "provider stream reached a terminal event"
+	}
+	return strings.Join(parts, " · ")
+}
+
+func decisionDetails(ev event.Event) string {
+	parts := []string{}
+	if ev.CompletionReason != "" {
+		parts = append(parts, "completion="+ev.CompletionReason)
+	}
+	if ev.ContinuationReason != "" {
+		parts = append(parts, "continue="+ev.ContinuationReason)
+	}
+	if ev.FinishReason != "" {
+		parts = append(parts, "finish="+ev.FinishReason)
+	}
+	if ev.Message != "" {
+		parts = append(parts, trimForDisplay(ev.Message, 80))
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf("step %d ended", ev.Step)
+	}
+	return strings.Join(parts, " · ")
 }
 
 func (r Runner) now() time.Time {

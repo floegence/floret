@@ -464,9 +464,18 @@ function renderFlowHealth(result) {
   const diagnostics = runDiagnostics(result);
   const cache = aggregateCache(result);
   const profile = result.profile || {};
+  const finalDecision = runDecisionSummary(result);
+  const finalStep = lastStepNumber(result);
+  const decisionAttrs = finalStep ? `type="button" data-select-step="${finalStep}" data-open-tab="overview" data-detail-focus="decision"` : "type=\"button\"";
+  const cacheAttrs = finalStep ? `type="button" data-select-step="${finalStep}" data-open-tab="cache" data-detail-focus="segments"` : "type=\"button\"";
   const level = diagnostics.some((item) => item.severity === "bad") ? "bad" : diagnostics.some((item) => item.severity === "warn") ? "warn" : "ok";
   el.flowHealth.className = "health-grid";
   el.flowHealth.innerHTML = `
+    <button class="health-card action-card decision ${escapeAttr(finalDecision.severity)}" ${decisionAttrs}>
+      <span>Agent decision</span>
+      <strong>${escapeHTML(finalDecision.title)}</strong>
+      <small>${escapeHTML(finalDecision.detail)}</small>
+    </button>
     <div class="health-card ${escapeAttr(level)}">
       <span>Diagnostics</span>
       <strong>${diagnostics.length ? `${diagnostics.length} item(s)` : "clear"}</strong>
@@ -477,16 +486,16 @@ function renderFlowHealth(result) {
       <strong>${escapeHTML(profile.provider || "-")}</strong>
       <small>${escapeHTML(profile.model || "-")}</small>
     </div>
-    <div class="health-card">
+    <button class="health-card action-card" ${cacheAttrs}>
       <span>Prompt cache</span>
       <strong>${cache.reusedSegments} reused / ${cache.newSegments} new</strong>
       <small>${cache.cacheReadTokens} read / ${cache.cacheWriteTokens} write tokens</small>
-    </div>
-    <div class="health-card">
+    </button>
+    <button class="health-card action-card" ${decisionAttrs}>
       <span>Terminal state</span>
       <strong>${escapeHTML(result.status || "-")}</strong>
-      <small>${escapeHTML(result.error || result.summary || "")}</small>
-    </div>
+      <small>${escapeHTML(finalDecision.terminal || result.error || result.summary || "")}</small>
+    </button>
     <div class="diagnostics-list ${diagnostics.length ? "" : "empty-diagnostics"}">
       ${diagnostics.length ? diagnostics.map(renderDiagnostic).join("") : "<span>No warnings detected in the captured events.</span>"}
     </div>
@@ -539,11 +548,19 @@ function renderTransitionActions(item) {
       if (tools > 0) chips.push(flowChip(`${tools} tools`, step.step, "request", "tools"));
       break;
     case "provider_delta":
+    case "provider_finish":
     case "provider_retry":
+      if (item.reason === "provider_finish") chips.push(flowChip("finish decision", step.step, "overview", "decision"));
       if (events > 0) chips.push(flowChip(`${events} provider events`, step.step, "stream", "events"));
       break;
     case "context_compact":
+    case "context_continue":
       if (segments > 0) chips.push(flowChip(`${segments} raw segments`, step.step, "cache", "segments"));
+      chips.push(flowChip("step decision", step.step, "overview", "decision"));
+      break;
+    case "step_end":
+      chips.push(flowChip("decision", step.step, "overview", "decision"));
+      if (events > 0) chips.push(flowChip("stream", step.step, "stream", "events"));
       break;
     default:
       chips.push(flowChip("step sequence", step.step, "overview", "sequence"));
@@ -568,8 +585,14 @@ function transitionAction(item) {
     case "provider_delta":
     case "provider_retry":
       return { tab: "stream", focus: "events" };
+    case "provider_finish":
+      return { tab: "overview", focus: "decision" };
+    case "context_continue":
+      return { tab: "overview", focus: "decision" };
     case "context_compact":
       return { tab: "cache", focus: "segments" };
+    case "step_end":
+      return { tab: "overview", focus: "decision" };
     case "tool_call":
     case "tool_result":
     case "run_end":
@@ -591,6 +614,7 @@ function renderStepList(result) {
   }
   steps.forEach((step) => {
     const selected = step.step === state.selectedStep;
+    const decision = step.decision;
     const row = document.createElement("button");
     row.type = "button";
     row.className = `step-row ${selected ? "selected" : ""} ${step.severity}`;
@@ -598,12 +622,15 @@ function renderStepList(result) {
     row.innerHTML = `
       <span class="step-main">
         <strong>Step ${step.step}</strong>
-        <small>${escapeHTML(step.provider)} / ${escapeHTML(step.model)}</small>
+        <small>${escapeHTML(decision.title)} · ${escapeHTML(step.provider)} / ${escapeHTML(step.model)}</small>
       </span>
       <span class="step-pills">
         <span>${step.request.messages.length} msg</span>
         <span>${step.request.tools.length} tools</span>
         <span>${step.providerEvents.length} stream</span>
+        ${decision.finish ? `<span class="decision-pill finish">finish ${escapeHTML(decision.finish)}</span>` : ""}
+        ${decision.completion ? `<span class="decision-pill completion">done ${escapeHTML(decision.completion)}</span>` : ""}
+        ${decision.continuation ? `<span class="decision-pill continuation">continue ${escapeHTML(decision.continuation)}</span>` : ""}
         <span>${totalTokens(step.usage)} tokens</span>
       </span>
       <span class="step-cache">${step.cache.reused_segments || 0} reused / ${step.cache.new_segments || 0} new</span>
@@ -656,6 +683,28 @@ function renderStepDetail() {
 function renderOverviewTab(step) {
   const diagnostics = step.diagnostics.length ? step.diagnostics.map(renderDiagnostic).join("") : "<span>No warnings detected for this step.</span>";
   return `
+    <section class="decision-board ${escapeAttr(step.decision.severity)} ${focusClass("decision")}">
+      <div>
+        <span>Step decision</span>
+        <strong>${escapeHTML(step.decision.title)}</strong>
+        <p>${escapeHTML(step.decision.detail)}</p>
+      </div>
+      <div class="decision-facts">
+        ${decisionFact("Finish", step.decision.finish || "-")}
+        ${decisionFact("Raw finish", step.decision.rawFinish || "-")}
+        ${decisionFact("Completion", step.decision.completion || "-")}
+        ${decisionFact("Continuation", step.decision.continuation || "-")}
+        ${decisionFact("Inferred", step.decision.inferred ? "yes" : "no")}
+      </div>
+      <div class="decision-path">${stepDecisionPath(step)}</div>
+      <div class="decision-evidence">
+        ${flowChip("Request messages", step.step, "request", "messages")}
+        ${flowChip("Provider stream", step.step, "stream", "events")}
+        ${flowChip("Prompt segments", step.step, "cache", "segments")}
+        ${flowChip("Raw step JSON", step.step, "raw", "events")}
+      </div>
+    </section>
+    ${focusNote("decision", "Opened from State Flow. This panel explains why the selected step completed, continued, waited, or failed.")}
     <div class="detail-summary-grid">
       ${summaryTile("Provider events", step.providerEvents.length)}
       ${summaryTile("Engine events", step.engineEvents.length)}
@@ -686,7 +735,7 @@ function renderRequestTab(step) {
         <span>${step.request.messages.length} messages</span>
       </div>
       ${focusNote("messages", "Opened from State Flow. These are the exact messages sent to the provider for this request.")}
-      <div class="message-stack">${step.request.messages.map(renderMessage).join("") || "<p class=\"empty-note\">No request messages.</p>"}</div>
+      <div class="message-stack">${step.request.messages.map((message, index) => renderMessage(message, index, { collapsible: true })).join("") || "<p class=\"empty-note\">No request messages.</p>"}</div>
     </section>
     <section class="detail-section ${focusClass("tools")}">
       <div class="section-label split">
@@ -735,6 +784,12 @@ function renderCacheTab(step) {
   const cache = step.cache || {};
   const segments = step.request.raw_segments || [];
   return `
+    <section class="cache-decision-strip ${escapeAttr(step.decision.severity)}">
+      ${decisionFact("Continuation", step.decision.continuation || "none")}
+      ${decisionFact("Completion", step.decision.completion || "-")}
+      ${decisionFact("Segments", `${cache.reused_segments || 0} reused / ${cache.new_segments || 0} new`)}
+      ${decisionFact("Expected next request", step.decision.continuation ? "yes" : "no")}
+    </section>
     <section class="cache-layout">
       ${cacheCard("Prefix identity", [
         hashRow("Prefix hash", cache.prefix_hash),
@@ -776,6 +831,16 @@ function renderRawTab(step) {
     transitions: step.transitions,
   };
   return `
+    <section class="detail-section ${focusClass("events")}">
+      <div class="section-label split">
+        <span>Engine events</span>
+        <span>${step.engineEvents.length} events</span>
+      </div>
+      ${focusNote("events", "Opened from State Flow. These are the engine-side events behind this state transition.")}
+      <div class="engine-event-list">
+        ${step.engineEvents.map(renderEngineEvent).join("") || "<p class=\"empty-note\">No engine events were captured for this step.</p>"}
+      </div>
+    </section>
     <div class="code-actions">
       <button class="secondary tiny" type="button" data-copy="step-json" data-step="${step.step}">Copy step JSON</button>
     </div>
@@ -791,14 +856,10 @@ function renderSessionMessages(messages) {
     el.sessionMessages.textContent = "No session messages yet.";
     return;
   }
-  messages.forEach((message) => {
+  messages.forEach((message, index) => {
     const row = document.createElement("div");
     row.className = `message-row role-${escapeAttr(message.role)}`;
-    row.innerHTML = `
-      <strong>${escapeHTML(message.role)}</strong>
-      <p>${escapeHTML(message.content || message.tool_args || "")}</p>
-      ${message.tool_name ? `<small>${escapeHTML(message.tool_name)} · ${escapeHTML(message.tool_call_id || "")}</small>` : ""}
-    `;
+    row.innerHTML = renderMessageInner(message, index, "Session message");
     el.sessionMessages.appendChild(row);
   });
 }
@@ -818,14 +879,49 @@ function renderRawTrace() {
   }, null, 2);
 }
 
-function renderMessage(message, index) {
-  const content = message.content || message.tool_args || message.tool_name || "";
+function renderMessage(message, index, options = {}) {
+  if (options.collapsible) {
+    return `
+      <details class="message-card role-${escapeAttr(message.role)} ${focusClass("messages")}">
+        <summary>${renderMessageSummary(message, index)}</summary>
+        <div class="message-body">${renderMessageDetails(message)}</div>
+      </details>
+    `;
+  }
   return `
     <div class="message-row role-${escapeAttr(message.role)} ${focusClass("messages")}">
-      <strong>Message #${index + 1} · ${escapeHTML(message.role || "-")}</strong>
+      ${renderMessageInner(message, index, "Message")}
+    </div>
+  `;
+}
+
+function renderMessageInner(message, index, label) {
+  const content = message.content || message.tool_args || message.tool_name || "";
+  return `
+      <strong>${escapeHTML(label)} #${index + 1} · ${escapeHTML(message.role || "-")}</strong>
       <p>${escapeHTML(content)}</p>
       ${message.tool_name ? `<small>${escapeHTML(message.tool_name)} · ${escapeHTML(message.tool_call_id || "")}</small>` : ""}
-    </div>
+  `;
+}
+
+function renderMessageSummary(message, index) {
+  const content = message.content || message.tool_args || message.tool_name || "";
+  return `
+    <span class="state-badge info">${escapeHTML(message.role || "-")}</span>
+    <strong>#${index + 1}</strong>
+    <span>${escapeHTML(previewText(content, 140))}</span>
+    ${message.tool_name ? `<small>${escapeHTML(message.tool_name)} · ${escapeHTML(message.tool_call_id || "")}</small>` : ""}
+  `;
+}
+
+function renderMessageDetails(message) {
+  return `
+    ${renderKeyValueGrid([
+      ["Role", message.role || "-"],
+      ["Tool name", message.tool_name || "-"],
+      ["Tool call ID", message.tool_call_id || "-"],
+    ])}
+    <pre class="text-block">${escapeHTML(message.content || message.tool_args || "")}</pre>
   `;
 }
 
@@ -851,7 +947,7 @@ function renderProviderEvent(event, index) {
   return `
     <details class="event-card ${escapeAttr(type)}">
       <summary>
-        <span class="state-badge ${eventSeverity(type)}">${escapeHTML(type)}</span>
+        <span class="state-badge ${eventSeverity(type, event)}">${escapeHTML(type)}</span>
         <strong>#${index + 1}</strong>
         <span>${escapeHTML(summary)}</span>
       </summary>
@@ -865,6 +961,20 @@ function renderProviderEvent(event, index) {
         </div>
         <pre class="raw raw-block">${escapeHTML(JSON.stringify(event, null, 2))}</pre>
       </div>
+    </details>
+  `;
+}
+
+function renderEngineEvent(event) {
+  const type = eventKind(event);
+  return `
+    <details class="engine-event-card ${escapeAttr(engineEventSeverity(type, event))}">
+      <summary>
+        <span class="state-badge ${escapeAttr(engineEventSeverity(type, event))}">${escapeHTML(type)}</span>
+        <strong>step ${escapeHTML(event.step || event.Step || "-")}</strong>
+        <span>${escapeHTML(engineEventDetail(event) || event.message || event.Message || "(empty)")}</span>
+      </summary>
+      <pre class="raw raw-block">${escapeHTML(JSON.stringify(event, null, 2))}</pre>
     </details>
   `;
 }
@@ -899,7 +1009,7 @@ function renderSegment(step, segment, index) {
     <details class="segment-card ${stateLabel} ${focusClass("segments")}"${open}>
       <summary>
         <span class="state-badge ${stateLabel}">${stateLabel}</span>
-        <strong>Segment #${index + 1} · ${escapeHTML(segment.kind || "-")}</strong>
+        <strong>Segment #${index + 1} · seq ${segment.sequence || 0} · epoch ${segment.epoch || 0}</strong>
         <span>${escapeHTML(segment.role || segment.fragment_type || segment.id || "")}</span>
         <small>${escapeHTML(shortHash(segment.sha256 || ""))} · ${segment.byte_length || 0} bytes</small>
       </summary>
@@ -964,6 +1074,7 @@ function renderSequenceRequestChips(stepNumber) {
 function sequenceAction(item) {
   if (item.type === "provider_request") return { tab: "request", focus: "messages" };
   if (item.kind === "provider") return { tab: "stream", focus: "events" };
+  if (item.type === "context_continue") return { tab: "overview", focus: "decision" };
   if (item.type === "context_compact") return { tab: "cache", focus: "segments" };
   if (["tool_call", "tool_result", "run_end", "budget_exceeded", "provider_retry"].includes(item.type)) return { tab: "raw", focus: "events" };
   return { tab: "overview", focus: "sequence" };
@@ -989,6 +1100,29 @@ function renderKeyValueGrid(rows) {
       ` : row).join("")}
     </div>
   `;
+}
+
+function decisionFact(label, value) {
+  return `
+    <div>
+      <span>${escapeHTML(label)}</span>
+      <strong>${escapeHTML(value)}</strong>
+    </div>
+  `;
+}
+
+function stepDecisionPath(step) {
+  const decision = step.decision;
+  const pieces = [];
+  const hasProviderFinish = step.engineEvents.some((event) => eventKind(event) === "provider_finish");
+  const source = hasProviderFinish && !decision.inferred ? "provider_finish captured" : "finish inferred from provider done";
+  if (decision.finish || decision.rawFinish) pieces.push(`${source}: ${decision.finish || decision.rawFinish}`);
+  if (step.toolCalls.length === 0) pieces.push("no tool calls");
+  if (decision.completion) pieces.push(`completion_reason=${decision.completion}`);
+  if (decision.continuation) pieces.push(`continuation_reason=${decision.continuation}`);
+  if (!decision.continuation) pieces.push("no continuation");
+  if (pieces.length === 0) pieces.push("no explicit terminal decision captured");
+  return pieces.map((piece) => `<span>${escapeHTML(piece)}</span>`).join("<b>→</b>");
 }
 
 function cacheCard(title, rows) {
@@ -1072,6 +1206,13 @@ function stepModels(result) {
   const transitions = result.observation?.transitions || [];
   return requests.map((request) => {
     const step = request.step || request.Step || 0;
+    request = {
+      ...request,
+      messages: request.messages || request.Messages || [],
+      tools: request.tools || request.Tools || [],
+      raw_segments: request.raw_segments || request.RawSegments || [],
+      cache_summary: request.cache_summary || request.CacheSummary || {},
+    };
     const pEvents = providerEvents.filter((event) => (event.step || event.Step) === step);
     const eEvents = engineEvents.filter((event) => (event.step || event.Step) === step);
     const tEvents = transitions.filter((item) => item.step === step);
@@ -1079,6 +1220,7 @@ function stepModels(result) {
     const toolCallItems = pEvents.flatMap(toolCalls);
     const toolResultItems = eEvents.filter((event) => event.type === "tool_result" || event.Type === "tool_result");
     const verifier = verifyStepFlow(request, pEvents, eEvents, result);
+    const decision = stepDecision(step, pEvents, eEvents, result, toolCallItems, toolResultItems);
     const diagnostics = [...verifier.diagnostics, ...stepDiagnostics(request, pEvents, eEvents, tEvents, result)];
     const severity = diagnostics.some((item) => item.severity === "bad") ? "bad" : diagnostics.some((item) => item.severity === "warn") ? "warn" : "ok";
     return {
@@ -1095,8 +1237,9 @@ function stepModels(result) {
       cache: request.cache_summary || request.CacheSummary || {},
       sequence: verifier.sequence,
       diagnostics,
+      decision,
       severity,
-      label: severity === "ok" ? "ok" : severity === "warn" ? "review" : "attention",
+      label: decision.shortLabel || (severity === "ok" ? "ok" : severity === "warn" ? "review" : "attention"),
     };
   });
 }
@@ -1126,8 +1269,12 @@ function runDiagnostics(result) {
   }
   providerEvents.forEach((event) => {
     const type = eventType(event);
+    const reason = event.reason || event.Reason || "";
     if (type === "empty") diagnostics.push({ severity: "warn", step: event.step, title: "Provider returned empty output", detail: event.reason || "" });
     if (type === "truncated") diagnostics.push({ severity: "bad", step: event.step, title: "Provider output was truncated", detail: event.reason || "" });
+    if (type === "done" && ["content_filter", "error", "cancelled", "canceled"].includes(reason)) {
+      diagnostics.push({ severity: "bad", step: event.step, title: `Provider finish ${reason}`, detail: "The provider terminal reason requires engine recovery or failure handling." });
+    }
   });
   engineEvents.forEach((event) => {
     const type = event.type || event.Type;
@@ -1210,7 +1357,7 @@ function buildStepTimeline(request, providerEvents, engineEvents) {
       order: timeOrder(event.timestamp || event.Timestamp, 20 + index),
       severity: engineEventSeverity(type, event),
       title: `engine ${type}`,
-      detail: event.message || event.Message || event.tool_name || event.ToolName || event.err || event.Err || "",
+      detail: engineEventDetail(event),
     });
   });
   if (request.observed_at || request.ObservedAt) {
@@ -1231,7 +1378,7 @@ function buildStepTimeline(request, providerEvents, engineEvents) {
       type: `provider_${type}`,
       step,
       order: timeOrder(event.observed_at || event.ObservedAt, 100 + index),
-      severity: eventSeverity(type),
+      severity: eventSeverity(type, event),
       title: `provider ${type}`,
       detail: providerEventSummary(event, index),
     });
@@ -1274,8 +1421,12 @@ function stepDiagnostics(request, providerEvents, engineEvents, transitions, res
   const step = request.step || request.Step || 0;
   providerEvents.forEach((event) => {
     const type = eventType(event);
+    const reason = event.reason || event.Reason || "";
     if (type === "empty") diagnostics.push({ severity: "warn", step, title: "Empty provider event", detail: event.reason || "" });
     if (type === "truncated") diagnostics.push({ severity: "bad", step, title: "Truncated provider event", detail: event.reason || "" });
+    if (type === "done" && ["content_filter", "error", "cancelled", "canceled"].includes(reason)) {
+      diagnostics.push({ severity: "bad", step, title: `Terminal provider reason ${reason}`, detail: "Engine should surface this finish reason explicitly." });
+    }
   });
   if ((request.raw_segments || []).length === 0) {
     diagnostics.push({ severity: "info", step, title: "No raw prompt segments", detail: "Prompt cache ledger data was not present on this request." });
@@ -1287,6 +1438,143 @@ function stepDiagnostics(request, providerEvents, engineEvents, transitions, res
     diagnostics.push({ severity: "info", step, title: "No state transition rows", detail: "This step has no derived transition entries." });
   }
   return diagnostics;
+}
+
+function stepDecision(step, providerEvents, engineEvents, result, toolCallItems, toolResultItems) {
+  const stepEnd = lastEvent(engineEvents, "step_end");
+  const runEnd = lastEvent(engineEvents, "run_end");
+  const providerFinish = lastEvent(engineEvents, "provider_finish");
+  const contextContinue = lastEvent(engineEvents, "context_continue");
+  const providerDone = [...providerEvents].reverse().find((event) => eventType(event) === "done");
+  const finish = eventValue(stepEnd, "finish_reason", "FinishReason") ||
+    eventValue(runEnd, "finish_reason", "FinishReason") ||
+    eventValue(providerFinish, "finish_reason", "FinishReason") ||
+    eventValue(providerDone, "reason", "Reason") ||
+    "";
+  const rawFinish = eventValue(stepEnd, "raw_finish_reason", "RawFinishReason") ||
+    eventValue(runEnd, "raw_finish_reason", "RawFinishReason") ||
+    eventValue(providerFinish, "raw_finish_reason", "RawFinishReason") ||
+    eventValue(providerDone, "reason", "Reason") ||
+    "";
+  const completion = eventValue(stepEnd, "completion_reason", "CompletionReason") || eventValue(runEnd, "completion_reason", "CompletionReason") || "";
+  const continuation = eventValue(stepEnd, "continuation_reason", "ContinuationReason") ||
+    eventValue(contextContinue, "continuation_reason", "ContinuationReason") ||
+    eventValue(runEnd, "continuation_reason", "ContinuationReason") ||
+    "";
+  const inferred = Boolean(stepEnd?.finish_inferred || stepEnd?.FinishInferred || runEnd?.finish_inferred || runEnd?.FinishInferred || providerFinish?.finish_inferred || providerFinish?.FinishInferred);
+  const isLast = step === lastStepNumber(result);
+  const status = isLast ? result.status : "";
+  if (completion === "natural_stop") {
+    return {
+      title: "Natural stop",
+      detail: "Assistant text reached a terminal provider finish with no pending tool calls.",
+      finish,
+      rawFinish,
+      completion,
+      continuation,
+      inferred,
+      severity: "ok",
+      shortLabel: "natural",
+      terminal: finish ? `finish=${finish}` : "",
+    };
+  }
+  if (completion) {
+    return { title: `Completed by ${completion}`, detail: "The engine completed this step through an explicit completion policy.", finish, rawFinish, completion, continuation, inferred, severity: "ok", shortLabel: "done" };
+  }
+  if (continuation) {
+    return {
+      title: `Continue: ${continuation}`,
+      detail: continuationDetail(continuation),
+      finish,
+      rawFinish,
+      completion,
+      continuation,
+      inferred,
+      severity: continuation === "provider_truncated" ? "warn" : "info",
+      shortLabel: "continue",
+    };
+  }
+  if (status === "waiting") {
+    return { title: "Waiting for user", detail: "The model called ask_user, so the turn interrupted before normal tool execution.", finish, rawFinish, completion, continuation, inferred, severity: "warn", shortLabel: "waiting" };
+  }
+  if (status === "failed" || status === "error") {
+    return { title: "Failed", detail: result.error || "The engine ended with a failure state.", finish, rawFinish, completion, continuation, inferred, severity: "bad", shortLabel: "failed" };
+  }
+  if (status === "cancelled") {
+    return { title: "Cancelled", detail: result.error || "The run was cancelled or timed out.", finish, rawFinish, completion, continuation, inferred, severity: "bad", shortLabel: "cancelled" };
+  }
+  if (toolCallItems.length) {
+    const missingResults = Math.max(0, toolCallItems.length - toolResultItems.length);
+    return {
+      title: missingResults ? "Tools pending" : "Tool results returned",
+      detail: missingResults ? `${missingResults} tool call(s) still need results or a follow-up model step.` : "Normal tool results were fed back to the model in the next request.",
+      finish,
+      rawFinish,
+      completion,
+      continuation,
+      inferred,
+      severity: missingResults ? "warn" : "ok",
+      shortLabel: "tools",
+    };
+  }
+  if (finish) {
+    return { title: `Provider finish: ${finish}`, detail: "Provider returned a terminal reason; inspect engine events to see the resulting state.", finish, rawFinish, completion, continuation, inferred, severity: finishSeverity(finish), shortLabel: finish };
+  }
+  return { title: "Observed", detail: "No explicit completion or continuation decision was captured for this step.", finish, rawFinish, completion, continuation, inferred, severity: "info", shortLabel: "observed" };
+}
+
+function runDecisionSummary(result) {
+  const steps = stepModels(result);
+  const last = steps[steps.length - 1];
+  if (!last) {
+    return { title: result.status || "-", detail: "No provider step was captured.", severity: result.status === "completed" ? "ok" : "bad", terminal: result.error || "" };
+  }
+  if (result.status === "completed") {
+    const detail = [
+      last.decision.finish ? `finish=${last.decision.finish}` : "",
+      last.decision.completion ? `completion=${last.decision.completion}` : "",
+      last.decision.continuation ? `continue=${last.decision.continuation}` : "no continuation",
+    ].filter(Boolean).join(" · ");
+    return {
+      title: last.decision.title,
+      detail: detail || result.summary || "Run completed.",
+      severity: "ok",
+      terminal: detail || result.summary || "",
+    };
+  }
+  return {
+    title: result.status || last.decision.title,
+    detail: result.error || last.decision.detail || result.summary || "",
+    severity: result.status === "waiting" ? "warn" : "bad",
+    terminal: last.decision.finish ? `finish=${last.decision.finish}` : "",
+  };
+}
+
+function lastEvent(events, type) {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    if (eventKind(events[i]) === type) return events[i];
+  }
+  return null;
+}
+
+function eventValue(event, lower, upper) {
+  return event?.[lower] || event?.[upper] || "";
+}
+
+function continuationDetail(reason) {
+  if (reason === "tool_results") return "The step produced normal tool results, so the engine continued with another provider request.";
+  if (reason === "compaction") return "The context was compacted before the next provider request.";
+  if (reason === "provider_truncated") return "The provider output hit a length limit; Floret compacted and retried within the continuation budget.";
+  if (reason === "retry_empty") return "The provider returned no usable output, so Floret retried the request.";
+  if (reason === "hook") return "A host stop hook requested an auditable continuation prompt.";
+  if (reason === "no_progress") return "The step did not produce enough progress to finish yet.";
+  return "The engine continued because the step left pending work.";
+}
+
+function finishSeverity(reason) {
+  if (["content_filter", "error", "cancelled", "canceled", "length"].includes(reason)) return "bad";
+  if (reason === "tool_calls") return "info";
+  return "ok";
 }
 
 function aggregateCache(result) {
@@ -1363,18 +1651,44 @@ function providerEventSummary(event, index) {
   ].filter(Boolean).join(" · ");
 }
 
-function eventSeverity(type) {
+function eventSeverity(type, event = {}) {
+  const reason = event.reason || event.Reason || "";
   if (type === "truncated") return "bad";
   if (type === "empty") return "warn";
+  if (type === "done" && ["content_filter", "error", "cancelled", "canceled", "length"].includes(reason)) return "bad";
   if (type === "usage" || type === "done") return "ok";
   return "info";
 }
 
 function engineEventSeverity(type, event) {
   if (type === "budget_exceeded" || event.err || event.Err) return "bad";
+  if (type === "provider_finish") return finishSeverity(event.finish_reason || event.FinishReason || "");
   if (type === "provider_retry") return "warn";
   if (type === "tool_result" || type === "run_end" || type === "step_end") return "ok";
   return "info";
+}
+
+function engineEventDetail(event) {
+  const type = eventKind(event);
+  if (type === "provider_finish") {
+    return [
+      event.finish_reason || event.FinishReason ? `finish=${event.finish_reason || event.FinishReason}` : "",
+      event.raw_finish_reason || event.RawFinishReason ? `raw=${event.raw_finish_reason || event.RawFinishReason}` : "",
+      event.finish_inferred || event.FinishInferred ? "inferred" : "",
+    ].filter(Boolean).join(" · ");
+  }
+  if (type === "step_end" || type === "run_end") {
+    return [
+      event.completion_reason || event.CompletionReason ? `completion=${event.completion_reason || event.CompletionReason}` : "",
+      event.continuation_reason || event.ContinuationReason ? `continue=${event.continuation_reason || event.ContinuationReason}` : "",
+      event.finish_reason || event.FinishReason ? `finish=${event.finish_reason || event.FinishReason}` : "",
+      event.err || event.Err || "",
+    ].filter(Boolean).join(" · ");
+  }
+  if (type === "context_continue") {
+    return [event.continuation_reason || event.ContinuationReason || "", event.result || event.Result || "", event.message || event.Message || ""].filter(Boolean).join(" · ");
+  }
+  return event.message || event.Message || event.tool_name || event.ToolName || event.err || event.Err || "";
 }
 
 function reuseRatio(cache) {
@@ -1469,6 +1783,13 @@ function usageValue(usage, lower, upper) {
 function shortHash(value) {
   value = String(value || "");
   return value.length > 12 ? value.slice(0, 12) : value;
+}
+
+function previewText(value, limit) {
+  value = String(value || "").replace(/\s+/g, " ").trim();
+  if (!value) return "(empty)";
+  if (value.length <= limit) return value;
+  return `${value.slice(0, Math.max(0, limit - 1))}...`;
 }
 
 function transitionClass(status) {
