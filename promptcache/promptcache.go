@@ -77,6 +77,10 @@ type Segment struct {
 	ID              string          `json:"id"`
 	RunID           string          `json:"run_id"`
 	SessionID       string          `json:"session_id,omitempty"`
+	ThreadID        string          `json:"thread_id,omitempty"`
+	TurnID          string          `json:"turn_id,omitempty"`
+	EntryID         string          `json:"entry_id,omitempty"`
+	ParentEntryID   string          `json:"parent_entry_id,omitempty"`
 	Provider        string          `json:"provider"`
 	Model           string          `json:"model"`
 	AdapterVersion  string          `json:"adapter_version"`
@@ -112,6 +116,8 @@ type ToolsetSnapshot struct {
 	ID           string           `json:"id"`
 	RunID        string           `json:"run_id"`
 	SessionID    string           `json:"session_id,omitempty"`
+	ThreadID     string           `json:"thread_id,omitempty"`
+	TurnID       string           `json:"turn_id,omitempty"`
 	Provider     string           `json:"provider"`
 	Model        string           `json:"model"`
 	Epoch        int              `json:"epoch"`
@@ -125,6 +131,8 @@ type ProviderRequestRecord struct {
 	ID                  string    `json:"id"`
 	RunID               string    `json:"run_id"`
 	SessionID           string    `json:"session_id,omitempty"`
+	ThreadID            string    `json:"thread_id,omitempty"`
+	TurnID              string    `json:"turn_id,omitempty"`
 	Step                int       `json:"step"`
 	Provider            string    `json:"provider"`
 	Model               string    `json:"model"`
@@ -140,6 +148,8 @@ type ProviderRequestRecord struct {
 type ProviderResponseRecord struct {
 	RequestID          string    `json:"request_id"`
 	RunID              string    `json:"run_id,omitempty"`
+	ThreadID           string    `json:"thread_id,omitempty"`
+	TurnID             string    `json:"turn_id,omitempty"`
 	ProviderResponseID string    `json:"provider_response_id,omitempty"`
 	StopReason         string    `json:"stop_reason,omitempty"`
 	CacheReadTokens    int64     `json:"cache_read_tokens,omitempty"`
@@ -155,6 +165,7 @@ type Store interface {
 	AppendProviderRequest(context.Context, ProviderRequestRecord) error
 	ProviderRequests(context.Context, string) ([]ProviderRequestRecord, error)
 	AppendProviderResponse(context.Context, ProviderResponseRecord) error
+	ProviderResponses(context.Context, string) ([]ProviderResponseRecord, error)
 }
 
 type MemoryStore struct {
@@ -227,6 +238,18 @@ func (s *MemoryStore) AppendProviderResponse(_ context.Context, resp ProviderRes
 	return nil
 }
 
+func (s *MemoryStore) ProviderResponses(_ context.Context, runID string) ([]ProviderResponseRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []ProviderResponseRecord
+	for _, resp := range s.responses {
+		if resp.RunID == runID {
+			out = append(out, resp)
+		}
+	}
+	return out, nil
+}
+
 type FileStore struct {
 	root string
 	mu   sync.Mutex
@@ -287,6 +310,14 @@ func (s *FileStore) AppendProviderResponse(ctx context.Context, resp ProviderRes
 		return errors.New("promptcache response must include run id")
 	}
 	return s.append(ctx, runID, "responses.jsonl", resp)
+}
+
+func (s *FileStore) ProviderResponses(ctx context.Context, runID string) ([]ProviderResponseRecord, error) {
+	var all []ProviderResponseRecord
+	if err := s.read(ctx, runID, "responses.jsonl", &all); err != nil {
+		return nil, err
+	}
+	return all, nil
 }
 
 func (s *FileStore) append(ctx context.Context, runID, name string, value any) error {
@@ -363,6 +394,17 @@ func (s *FileStore) read(ctx context.Context, runID, name string, target any) er
 			}
 			*out = append(*out, item)
 		}
+	case *[]ProviderResponseRecord:
+		for _, line := range lines {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			var item ProviderResponseRecord
+			if err := json.Unmarshal([]byte(line), &item); err != nil {
+				return err
+			}
+			*out = append(*out, item)
+		}
 	default:
 		return fmt.Errorf("unsupported promptcache target %T", target)
 	}
@@ -372,6 +414,8 @@ func (s *FileStore) read(ctx context.Context, runID, name string, target any) er
 type BuildInput struct {
 	RunID          string
 	SessionID      string
+	ThreadID       string
+	TurnID         string
 	Provider       string
 	Model          string
 	AdapterVersion string
@@ -395,10 +439,17 @@ func BuildPlan(ctx context.Context, store Store, input BuildInput) (RawPlan, []s
 	if input.AdapterVersion == "" {
 		input.AdapterVersion = Version
 	}
+	if input.ThreadID == "" {
+		input.ThreadID = input.SessionID
+	}
+	if input.TurnID == "" {
+		input.TurnID = input.RunID
+	}
 	if input.Now.IsZero() {
 		input.Now = time.Now()
 	}
-	existing, err := store.Segments(ctx, input.RunID, input.Provider, input.Model)
+	scopeID := cacheScopeID(input.RunID, input.SessionID)
+	existing, err := store.Segments(ctx, scopeID, input.Provider, input.Model)
 	if err != nil {
 		return RawPlan{}, nil, err
 	}
@@ -438,6 +489,7 @@ func BuildPlan(ctx context.Context, store Store, input BuildInput) (RawPlan, []s
 			}
 			seg := newRenderedToolSegment(input, input.Toolset, tool, raw, fragmentType, sequence)
 			if existing, ok := byFingerprint[seg.Fingerprint]; ok {
+				existing = segmentForCurrentRef(existing, seg)
 				if err := add(existing, false); err != nil {
 					return RawPlan{}, nil, err
 				}
@@ -461,6 +513,7 @@ func BuildPlan(ctx context.Context, store Store, input BuildInput) (RawPlan, []s
 			return RawPlan{}, nil, err
 		}
 		if existing, ok := byFingerprint[seg.Fingerprint]; ok {
+			existing = segmentForCurrentRef(existing, seg)
 			if err := add(existing, false); err != nil {
 				return RawPlan{}, nil, err
 			}
@@ -479,6 +532,7 @@ func BuildPlan(ctx context.Context, store Store, input BuildInput) (RawPlan, []s
 			return RawPlan{}, nil, err
 		}
 		if existing, ok := byFingerprint[seg.Fingerprint]; ok {
+			existing = segmentForCurrentRef(existing, seg)
 			if err := add(existing, false); err != nil {
 				return RawPlan{}, nil, err
 			}
@@ -496,11 +550,19 @@ func BuildPlan(ctx context.Context, store Store, input BuildInput) (RawPlan, []s
 	return plan, requestMessages, nil
 }
 
+func segmentForCurrentRef(existing, current Segment) Segment {
+	existing.EntryID = current.EntryID
+	existing.ParentEntryID = current.ParentEntryID
+	existing.TurnID = current.TurnID
+	return existing
+}
+
 func EnsureToolset(ctx context.Context, store Store, runID, sessionID, provider, model string, defs []ToolDefinition, now time.Time) (ToolsetSnapshot, bool, error) {
 	if store == nil {
 		store = NewMemoryStore()
 	}
-	if snap, ok, err := store.ActiveToolset(ctx, runID, provider, model); ok || err != nil {
+	scopeID := cacheScopeID(runID, sessionID)
+	if snap, ok, err := store.ActiveToolset(ctx, scopeID, provider, model); ok || err != nil {
 		return snap, false, err
 	}
 	if now.IsZero() {
@@ -510,9 +572,11 @@ func EnsureToolset(ctx context.Context, store Store, runID, sessionID, provider,
 	raw := mustCanonical(map[string]any{"kind": SegmentToolset, "tools": defs})
 	fingerprint := StableHash(raw)
 	seg := Segment{
-		ID:             fmt.Sprintf("%s:%s:%s", runID, SegmentToolset, fingerprint[:12]),
-		RunID:          runID,
+		ID:             fmt.Sprintf("%s:%s:%s", scopeID, SegmentToolset, fingerprint[:12]),
+		RunID:          scopeID,
 		SessionID:      sessionID,
+		ThreadID:       sessionID,
+		TurnID:         runID,
 		Provider:       provider,
 		Model:          model,
 		AdapterVersion: Version,
@@ -530,9 +594,11 @@ func EnsureToolset(ctx context.Context, store Store, runID, sessionID, provider,
 		return ToolsetSnapshot{}, false, err
 	}
 	snap := ToolsetSnapshot{
-		ID:           fmt.Sprintf("%s:toolset:1", runID),
-		RunID:        runID,
+		ID:           fmt.Sprintf("%s:toolset:1", scopeID),
+		RunID:        scopeID,
 		SessionID:    sessionID,
+		ThreadID:     sessionID,
+		TurnID:       runID,
 		Provider:     provider,
 		Model:        model,
 		Epoch:        1,
@@ -544,6 +610,22 @@ func EnsureToolset(ctx context.Context, store Store, runID, sessionID, provider,
 	return snap, true, store.AppendToolset(ctx, snap)
 }
 
+func EnsureCurrentToolset(ctx context.Context, store Store, runID, sessionID, provider, model string, defs []ToolDefinition, now time.Time) (ToolsetSnapshot, bool, error) {
+	defs = NormalizeTools(defs)
+	scopeID := cacheScopeID(runID, sessionID)
+	raw := mustCanonical(map[string]any{"kind": SegmentToolset, "tools": defs})
+	fingerprint := StableHash(raw)
+	if active, ok, err := store.ActiveToolset(ctx, scopeID, provider, model); err != nil {
+		return ToolsetSnapshot{}, false, err
+	} else if ok && active.Fingerprint == fingerprint {
+		return active, false, nil
+	} else if ok {
+		snap, err := ActivateToolset(ctx, store, runID, sessionID, provider, model, defs, now)
+		return snap, true, err
+	}
+	return EnsureToolset(ctx, store, runID, sessionID, provider, model, defs, now)
+}
+
 func ActivateToolset(ctx context.Context, store Store, runID, sessionID, provider, model string, defs []ToolDefinition, now time.Time) (ToolsetSnapshot, error) {
 	if store == nil {
 		store = NewMemoryStore()
@@ -551,19 +633,22 @@ func ActivateToolset(ctx context.Context, store Store, runID, sessionID, provide
 	if now.IsZero() {
 		now = time.Now()
 	}
+	scopeID := cacheScopeID(runID, sessionID)
 	epoch := 1
-	if active, ok, err := store.ActiveToolset(ctx, runID, provider, model); err != nil {
+	if active, ok, err := store.ActiveToolset(ctx, scopeID, provider, model); err != nil {
 		return ToolsetSnapshot{}, err
 	} else if ok {
 		epoch = active.Epoch + 1
 	}
 	defs = NormalizeTools(defs)
-	raw := mustCanonical(map[string]any{"kind": SegmentToolset, "tools": defs, "epoch": epoch})
+	raw := mustCanonical(map[string]any{"kind": SegmentToolset, "tools": defs})
 	fingerprint := StableHash(raw)
 	seg := Segment{
-		ID:             fmt.Sprintf("%s:%s:%d:%s", runID, SegmentToolset, epoch, fingerprint[:12]),
-		RunID:          runID,
+		ID:             fmt.Sprintf("%s:%s:%d:%s", scopeID, SegmentToolset, epoch, fingerprint[:12]),
+		RunID:          scopeID,
 		SessionID:      sessionID,
+		ThreadID:       sessionID,
+		TurnID:         runID,
 		Provider:       provider,
 		Model:          model,
 		AdapterVersion: Version,
@@ -581,9 +666,11 @@ func ActivateToolset(ctx context.Context, store Store, runID, sessionID, provide
 		return ToolsetSnapshot{}, err
 	}
 	snap := ToolsetSnapshot{
-		ID:           fmt.Sprintf("%s:toolset:%d", runID, epoch),
-		RunID:        runID,
+		ID:           fmt.Sprintf("%s:toolset:%d", scopeID, epoch),
+		RunID:        scopeID,
 		SessionID:    sessionID,
+		ThreadID:     sessionID,
+		TurnID:       runID,
 		Provider:     provider,
 		Model:        model,
 		Epoch:        epoch,
@@ -642,11 +729,20 @@ func DefaultNamespace(runID, provider, model string) string {
 	return "floret:v1:" + StableHash(raw)[:24]
 }
 
+func cacheScopeID(runID, sessionID string) string {
+	if sessionID != "" {
+		return sessionID
+	}
+	return runID
+}
+
 func RecordRequest(ctx context.Context, store Store, runID, sessionID string, step int, providerName, model string, policy CachePolicy, plan RawPlan) (ProviderRequestRecord, error) {
 	record := ProviderRequestRecord{
 		ID:                  fmt.Sprintf("%s:req:%d", runID, step),
 		RunID:               runID,
 		SessionID:           sessionID,
+		ThreadID:            sessionID,
+		TurnID:              runID,
 		Step:                step,
 		Provider:            providerName,
 		Model:               model,
@@ -674,6 +770,8 @@ func Messages(plan RawPlan) []session.Message {
 		if msg.Role == "" {
 			continue
 		}
+		msg.EntryID = seg.EntryID
+		msg.ParentEntryID = seg.ParentEntryID
 		out = append(out, msg)
 	}
 	return out
@@ -687,6 +785,10 @@ func newMessageSegment(input BuildInput, kind SegmentKind, msg session.Message, 
 		ToolName:   msg.ToolName,
 		ToolArgs:   msg.ToolArgs,
 	}
+	entryID := msg.EntryID
+	parentEntryID := msg.ParentEntryID
+	msg.EntryID = ""
+	msg.ParentEntryID = ""
 	raw := ""
 	fragmentType := FragmentGenericMessage
 	var err error
@@ -707,10 +809,15 @@ func newMessageSegment(input BuildInput, kind SegmentKind, msg session.Message, 
 		})
 	}
 	fingerprint := StableHash(raw)
+	scopeID := cacheScopeID(input.RunID, input.SessionID)
 	return Segment{
-		ID:              fmt.Sprintf("%s:%s:%s", input.RunID, kind, fingerprint[:12]),
-		RunID:           input.RunID,
+		ID:              fmt.Sprintf("%s:%s:%s", scopeID, kind, fingerprint[:12]),
+		RunID:           scopeID,
 		SessionID:       input.SessionID,
+		ThreadID:        input.ThreadID,
+		TurnID:          input.TurnID,
+		EntryID:         entryID,
+		ParentEntryID:   parentEntryID,
 		Provider:        input.Provider,
 		Model:           input.Model,
 		AdapterVersion:  input.AdapterVersion,
@@ -734,10 +841,13 @@ func newRenderedToolSegment(input BuildInput, toolset ToolsetSnapshot, tool Tool
 		fragmentType = FragmentGenericToolset
 	}
 	fingerprint := StableHash(raw)
+	scopeID := cacheScopeID(input.RunID, input.SessionID)
 	return Segment{
-		ID:              fmt.Sprintf("%s:%s:%s:%s", input.RunID, SegmentToolset, tool.Name, fingerprint[:12]),
-		RunID:           input.RunID,
+		ID:              fmt.Sprintf("%s:%s:%s:%s", scopeID, SegmentToolset, tool.Name, fingerprint[:12]),
+		RunID:           scopeID,
 		SessionID:       input.SessionID,
+		ThreadID:        input.ThreadID,
+		TurnID:          input.TurnID,
 		Provider:        input.Provider,
 		Model:           input.Model,
 		AdapterVersion:  input.AdapterVersion,

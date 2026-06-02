@@ -12,11 +12,13 @@ const (
 )
 
 type Message struct {
-	Role       Role
-	Content    string
-	ToolCallID string
-	ToolName   string
-	ToolArgs   string
+	Role          Role
+	Content       string
+	ToolCallID    string
+	ToolName      string
+	ToolArgs      string
+	EntryID       string
+	ParentEntryID string
 }
 
 type Store interface {

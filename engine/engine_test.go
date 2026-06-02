@@ -54,7 +54,53 @@ func TestRunDirectAnswerCompletesThroughExplicitSignal(t *testing.T) {
 	assertEventOrder(t, rec.Events, event.StepStart, event.ProviderRequest, event.ProviderDelta, event.RunEnd)
 }
 
-func TestTaskCompleteToolCallAppearsInRawLedgerWhenRunContinues(t *testing.T) {
+func TestRunTurnUsesCallerSuppliedHistoryWithoutAppendingUserText(t *testing.T) {
+	p := harness.NewScriptedProvider(harness.Step(harness.Tool("done", "task_complete", "ok")))
+	e := newTestEngine(p, &event.Recorder{})
+	originalStore := session.NewMemoryStore()
+	if err := originalStore.Append("run", session.Message{Role: session.User, Content: "existing"}); err != nil {
+		t.Fatal(err)
+	}
+	e.Store = originalStore
+	e.Options.RunID = "original-run"
+	e.Options.SessionID = "original-session"
+	result := e.RunTurn(context.Background(), engine.RunInput{
+		RunID:     "turn",
+		SessionID: "thread",
+		TraceID:   "turn",
+		History: []session.Message{
+			{Role: session.User, Content: "caller-owned user"},
+			{Role: session.Assistant, Content: "previous"},
+		},
+	})
+	if result.Status != engine.Completed {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(p.Requests) != 1 {
+		t.Fatalf("requests = %d", len(p.Requests))
+	}
+	if got := p.Requests[0].Messages; len(got) != 3 || got[1].Content != "caller-owned user" || got[2].Content != "previous" {
+		t.Fatalf("RunTurn should use supplied history exactly after system prompt: %#v", got)
+	}
+	if countUserMessages(result.Messages, "caller-owned user") != 1 {
+		t.Fatalf("RunTurn duplicated caller-owned user message: %#v", result.Messages)
+	}
+	if e.Store != originalStore {
+		t.Fatalf("RunTurn did not restore original store")
+	}
+	if e.Options.RunID != "original-run" || e.Options.SessionID != "original-session" {
+		t.Fatalf("RunTurn did not restore options: %#v", e.Options)
+	}
+	originalMessages, err := originalStore.Messages("run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(originalMessages) != 1 || originalMessages[0].Content != "existing" {
+		t.Fatalf("RunTurn polluted original store: %#v", originalMessages)
+	}
+}
+
+func TestTaskCompleteSignalIsProviderSafeWhenRunContinues(t *testing.T) {
 	store := session.NewMemoryStore()
 	promptStore := promptcache.NewMemoryStore()
 	p1 := harness.NewScriptedProvider(harness.Step(harness.Tool("done", "task_complete", "first done")))
@@ -73,10 +119,24 @@ func TestTaskCompleteToolCallAppearsInRawLedgerWhenRunContinues(t *testing.T) {
 	if got.Status != engine.Completed {
 		t.Fatalf("second result = %#v", got)
 	}
-	if !slices.ContainsFunc(p2.Requests[0].RawPlan.Segments, func(seg promptcache.Segment) bool {
-		return seg.Kind == promptcache.SegmentToolCall && seg.Message.ToolName == "task_complete" && seg.Message.ToolCallID == "done"
+	if slices.ContainsFunc(p2.Requests[0].RawPlan.Segments, func(seg promptcache.Segment) bool {
+		return seg.Kind == promptcache.SegmentToolCall && seg.Message.ToolName == "task_complete"
 	}) {
-		t.Fatalf("continued run missing task_complete raw segment: %#v", p2.Requests[0].RawPlan.Segments)
+		t.Fatalf("continued run should not send orphan task_complete tool call: %#v", p2.Requests[0].RawPlan.Segments)
+	}
+	if !slices.ContainsFunc(p2.Requests[0].RawPlan.Segments, func(seg promptcache.Segment) bool {
+		return seg.Kind == promptcache.SegmentAssistant && seg.Message.Content == "Agent completed the task: first done"
+	}) {
+		t.Fatalf("continued run missing provider-safe task_complete text: %#v", p2.Requests[0].RawPlan.Segments)
+	}
+	messages, err := store.Messages("run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(messages, func(msg session.Message) bool {
+		return msg.Role == session.Assistant && msg.ToolName == "task_complete" && msg.ToolCallID == "done"
+	}) {
+		t.Fatalf("raw session should still retain signal tool call for audit: %#v", messages)
 	}
 }
 
@@ -156,6 +216,57 @@ func TestPromptCacheFreezesToolsetWhenRegistryChanges(t *testing.T) {
 	}
 	if p.Requests[0].RawPlan.ToolsetID != p.Requests[1].RawPlan.ToolsetID || p.Requests[1].RawPlan.ToolsetEpoch != 1 {
 		t.Fatalf("toolset snapshot was not reused: first=%#v second=%#v", p.Requests[0].RawPlan, p.Requests[1].RawPlan)
+	}
+}
+
+func TestPromptCacheActivatesNewToolsetOnNextTurnWhenRegistryChanges(t *testing.T) {
+	store := session.NewMemoryStore()
+	promptStore := promptcache.NewMemoryStore()
+	reg := tools.NewRegistry()
+	mustRegister(t, reg, tools.Tool{Name: "read", Description: "Read", Handler: func(context.Context, string) (string, error) {
+		return "content", nil
+	}})
+	firstProvider := harness.NewScriptedProvider(harness.Step(harness.Tool("done", "task_complete", "first")))
+	first := newTestEngine(firstProvider, &event.Recorder{})
+	first.Store = store
+	first.Prompt = promptStore
+	first.Tools = reg
+	first.Options.RunID = "turn-1"
+	first.Options.SessionID = "thread"
+	if got := first.Run(context.Background(), "first"); got.Status != engine.Completed {
+		t.Fatalf("first = %#v", got)
+	}
+	mustRegister(t, reg, tools.Tool{Name: "write", Description: "Write", Handler: func(context.Context, string) (string, error) {
+		return "written", nil
+	}})
+	secondProvider := harness.NewScriptedProvider(harness.Step(harness.Tool("done-2", "task_complete", "second")))
+	second := newTestEngine(secondProvider, &event.Recorder{})
+	second.Store = store
+	second.Prompt = promptStore
+	second.Tools = reg
+	second.Options.RunID = "turn-2"
+	second.Options.SessionID = "thread"
+	if got := second.Run(context.Background(), "second"); got.Status != engine.Completed {
+		t.Fatalf("second = %#v", got)
+	}
+	if firstProvider.Requests[0].RawPlan.ToolsetEpoch != 1 || secondProvider.Requests[0].RawPlan.ToolsetEpoch != 2 {
+		t.Fatalf("toolset epochs: first=%#v second=%#v", firstProvider.Requests[0].RawPlan, secondProvider.Requests[0].RawPlan)
+	}
+	if len(secondProvider.Requests[0].Tools) != 2 {
+		t.Fatalf("second turn should expose updated tools: %#v", secondProvider.Requests[0].Tools)
+	}
+	thirdProvider := harness.NewScriptedProvider(harness.Step(harness.Tool("done-3", "task_complete", "third")))
+	third := newTestEngine(thirdProvider, &event.Recorder{})
+	third.Store = store
+	third.Prompt = promptStore
+	third.Tools = reg
+	third.Options.RunID = "turn-3"
+	third.Options.SessionID = "thread"
+	if got := third.Run(context.Background(), "third"); got.Status != engine.Completed {
+		t.Fatalf("third = %#v", got)
+	}
+	if thirdProvider.Requests[0].RawPlan.ToolsetEpoch != 2 {
+		t.Fatalf("unchanged toolset should stay on epoch 2, got %#v", thirdProvider.Requests[0].RawPlan)
 	}
 }
 
@@ -242,6 +353,39 @@ func TestProviderRequestRecordsActualPayloadHashWhenProviderExposesIt(t *testing
 	}
 }
 
+func TestProviderRequestAndResponseRecordsCarryThreadAndTurnIDs(t *testing.T) {
+	p := harness.NewScriptedProvider(harness.Step(
+		provider.StreamEvent{Type: provider.UsageEvent, Usage: provider.Usage{CacheReadTokens: 10, CacheWriteTokens: 5}},
+		provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "done", Name: "task_complete", Args: "ok"}}},
+		provider.StreamEvent{Type: provider.Done, ResponseID: "resp-1"},
+	))
+	promptStore := promptcache.NewMemoryStore()
+	e := newTestEngine(p, &event.Recorder{})
+	e.Prompt = promptStore
+	e.Options.RunID = "turn"
+	e.Options.SessionID = "thread"
+
+	got := e.Run(context.Background(), "hello")
+
+	if got.Status != engine.Completed {
+		t.Fatalf("result = %#v", got)
+	}
+	requests, err := promptStore.ProviderRequests(context.Background(), "turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 1 || requests[0].ThreadID != "thread" || requests[0].TurnID != "turn" {
+		t.Fatalf("request thread/turn linkage missing: %#v", requests)
+	}
+	responses, err := promptStore.ProviderResponses(context.Background(), "turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(responses) != 1 || responses[0].ThreadID != "thread" || responses[0].TurnID != "turn" || responses[0].ProviderResponseID != "resp-1" {
+		t.Fatalf("response thread/turn linkage missing: %#v", responses)
+	}
+}
+
 func TestAskUserSignalReturnsWaitingWithoutExecutingTool(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
@@ -302,10 +446,15 @@ func TestWaitingCanResumeByAppendingUserAnswerToSameRun(t *testing.T) {
 	if !sawOriginal || !sawAnswer {
 		t.Fatalf("resume request missing context: %#v", p2.Requests[0].Messages)
 	}
-	if !slices.ContainsFunc(p2.Requests[0].RawPlan.Segments, func(seg promptcache.Segment) bool {
-		return seg.Kind == promptcache.SegmentToolCall && seg.Message.ToolName == "ask_user"
+	if slices.ContainsFunc(p2.Requests[0].Messages, func(msg session.Message) bool {
+		return msg.ToolName == "ask_user"
 	}) {
-		t.Fatalf("resume request missing persisted ask_user raw segment: %#v", p2.Requests[0].RawPlan.Segments)
+		t.Fatalf("resume request should not include orphan ask_user tool call: %#v", p2.Requests[0].Messages)
+	}
+	if !slices.ContainsFunc(p2.Requests[0].Messages, func(msg session.Message) bool {
+		return msg.Role == session.Assistant && msg.Content == "Agent requested user input: Which file?"
+	}) {
+		t.Fatalf("resume request missing provider-safe ask_user text: %#v", p2.Requests[0].Messages)
 	}
 }
 
@@ -748,6 +897,16 @@ func assertEventOrder(t *testing.T, events []event.Event, want ...event.Type) {
 
 func hasEvent(events []event.Event, typ event.Type) bool {
 	return slices.ContainsFunc(events, func(ev event.Event) bool { return ev.Type == typ })
+}
+
+func countUserMessages(messages []session.Message, content string) int {
+	count := 0
+	for _, msg := range messages {
+		if msg.Role == session.User && msg.Content == content {
+			count++
+		}
+	}
+	return count
 }
 
 func sameSet(a, b []string) bool {

@@ -85,7 +85,7 @@ func TestBuildPlanAppendsNewSystemSegmentWhenPromptChanges(t *testing.T) {
 	if len(messages) == 0 || messages[0].Role != session.System || messages[0].Content != "system v2" {
 		t.Fatalf("request messages did not use new system prompt: %#v", messages)
 	}
-	segments, err := store.Segments(context.Background(), "run", "openai", "model")
+	segments, err := store.Segments(context.Background(), "session", "openai", "model")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,6 +103,150 @@ func TestBuildPlanAppendsNewSystemSegmentWhenPromptChanges(t *testing.T) {
 	}
 	if !sawV1 || !sawV2 {
 		t.Fatalf("system prompt changes should append, not rewrite: %#v", segments)
+	}
+}
+
+func TestBuildPlanReusesSegmentsAcrossTurnsInSameSession(t *testing.T) {
+	store := NewMemoryStore()
+	now := time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC)
+	toolset, _, err := EnsureToolset(context.Background(), store, "turn-1", "thread", "openai", "model", nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _, err := BuildPlan(context.Background(), store, BuildInput{
+		RunID:     "turn-1",
+		SessionID: "thread",
+		Provider:  "openai",
+		Model:     "model",
+		History:   []session.Message{{Role: session.User, Content: "hello"}},
+		Toolset:   toolset,
+		Now:       now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := BuildPlan(context.Background(), store, BuildInput{
+		RunID:     "turn-2",
+		SessionID: "thread",
+		Provider:  "openai",
+		Model:     "model",
+		History: []session.Message{
+			{Role: session.User, Content: "hello"},
+			{Role: session.Assistant, Content: "hi"},
+		},
+		Toolset: toolset,
+		Now:     now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ReusedSegments < len(first.Segments) {
+		t.Fatalf("second turn should reuse same thread ledger segments: first=%#v second=%#v", first, second)
+	}
+	if first.Segments[len(first.Segments)-1].RunID != "thread" {
+		t.Fatalf("message segment should be stored under stable session scope: %#v", first.Segments)
+	}
+}
+
+func TestFileStoreKeepsExactRawPrefixAcrossTurnsInSameSession(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	now := time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC)
+	toolset, _, err := EnsureToolset(ctx, store, "turn-1", "thread", "openai", "model", []ToolDefinition{{Name: "read"}}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _, err := BuildPlan(ctx, store, BuildInput{
+		RunID:     "turn-1",
+		SessionID: "thread",
+		Provider:  "openai",
+		Model:     "model",
+		History:   []session.Message{{Role: session.User, Content: "hello"}},
+		Toolset:   toolset,
+		Now:       now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded := NewFileStore(store.root)
+	active, ok, err := reloaded.ActiveToolset(ctx, "thread", "openai", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatalf("active toolset missing after reload")
+	}
+	second, _, err := BuildPlan(ctx, reloaded, BuildInput{
+		RunID:     "turn-2",
+		SessionID: "thread",
+		Provider:  "openai",
+		Model:     "model",
+		History: []session.Message{
+			{Role: session.User, Content: "hello"},
+			{Role: session.Assistant, Content: "hi"},
+		},
+		Toolset: active,
+		Now:     now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equalStrings(first.SegmentIDs, second.SegmentIDs[:len(first.SegmentIDs)]) {
+		t.Fatalf("segment id prefix changed: first=%#v second=%#v", first.SegmentIDs, second.SegmentIDs)
+	}
+	if !equalStrings(segmentRaws(first.Segments), segmentRaws(second.Segments[:len(first.Segments)])) {
+		t.Fatalf("raw string prefix changed")
+	}
+	if second.NewSegments != 1 {
+		t.Fatalf("second turn should append only new suffix: %#v", second)
+	}
+}
+
+func TestBuildPlanReusedRawSegmentCarriesCurrentEntryRef(t *testing.T) {
+	store := NewMemoryStore()
+	now := time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC)
+	toolset, _, err := EnsureToolset(context.Background(), store, "turn-1", "thread", "openai", "model", nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _, err := BuildPlan(context.Background(), store, BuildInput{
+		RunID:     "turn-1",
+		SessionID: "thread",
+		Provider:  "openai",
+		Model:     "model",
+		History:   []session.Message{{Role: session.User, Content: "same", EntryID: "entry-a", ParentEntryID: "parent-a"}},
+		Toolset:   toolset,
+		Now:       now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := BuildPlan(context.Background(), store, BuildInput{
+		RunID:     "turn-2",
+		SessionID: "thread",
+		Provider:  "openai",
+		Model:     "model",
+		History:   []session.Message{{Role: session.User, Content: "same", EntryID: "entry-b", ParentEntryID: "parent-b"}},
+		Toolset:   toolset,
+		Now:       now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstUser := first.Segments[len(first.Segments)-1]
+	secondUser := second.Segments[len(second.Segments)-1]
+	if firstUser.ID != secondUser.ID || firstUser.Raw != secondUser.Raw {
+		t.Fatalf("raw segment should be reused for identical provider payload: first=%#v second=%#v", firstUser, secondUser)
+	}
+	if secondUser.EntryID != "entry-b" || secondUser.ParentEntryID != "parent-b" {
+		t.Fatalf("reused segment in current plan should carry current entry ref: %#v", secondUser)
+	}
+	stored, err := store.Segments(context.Background(), "thread", "openai", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored[len(stored)-1].EntryID != "entry-a" {
+		t.Fatalf("stored immutable segment should not be rewritten: %#v", stored)
 	}
 }
 
@@ -151,4 +295,16 @@ func TestCanonicalSegmentHashIgnoresToolRegistrationOrder(t *testing.T) {
 	if rawA != rawB || StableHash(rawA) != StableHash(rawB) {
 		t.Fatalf("canonical tool raw/hash differs:\n%s\n%s", rawA, rawB)
 	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

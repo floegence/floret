@@ -47,13 +47,22 @@ type Options struct {
 	MaxTotalTokens          int64
 	MaxCostUSD              float64
 	MaxToolCalls            int
+	ToolDefinitions         []provider.ToolDefinition
 }
 
 type Result struct {
-	Status  Status
-	Output  string
-	Err     error
-	Metrics RunMetrics
+	Status   Status
+	Output   string
+	Err      error
+	Metrics  RunMetrics
+	Messages []session.Message
+}
+
+type RunInput struct {
+	RunID     string
+	SessionID string
+	TraceID   string
+	History   []session.Message
 }
 
 type Engine struct {
@@ -68,6 +77,39 @@ type Engine struct {
 }
 
 func (e *Engine) Run(ctx context.Context, userText string) Result {
+	return e.run(ctx, userText)
+}
+
+func (e *Engine) RunTurn(ctx context.Context, input RunInput) Result {
+	originalStore := e.Store
+	originalOptions := e.Options
+	store := session.NewMemoryStore()
+	opts := e.Options
+	if input.RunID != "" {
+		opts.RunID = input.RunID
+	}
+	if input.SessionID != "" {
+		opts.SessionID = input.SessionID
+	}
+	if input.TraceID != "" {
+		opts.TraceID = input.TraceID
+	}
+	opts = normalizeOptions(opts)
+	if len(input.History) > 0 {
+		if err := store.Append(opts.RunID, input.History...); err != nil {
+			return Result{Status: Failed, Err: err}
+		}
+	}
+	e.Store = store
+	e.Options = opts
+	defer func() {
+		e.Store = originalStore
+		e.Options = originalOptions
+	}()
+	return e.run(ctx, "")
+}
+
+func (e *Engine) run(ctx context.Context, userText string) Result {
 	if e.Provider == nil {
 		return Result{Status: Failed, Err: errors.New("provider is required")}
 	}
@@ -84,6 +126,9 @@ func (e *Engine) Run(ctx context.Context, userText string) Result {
 		e.Tools = tools.NewRegistry()
 	}
 	opts := normalizeOptions(e.Options)
+	if len(opts.ToolDefinitions) == 0 && e.Tools != nil {
+		opts.ToolDefinitions = e.Tools.Definitions()
+	}
 	if opts.WallTime > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, opts.WallTime)
@@ -141,6 +186,8 @@ func (e *Engine) Run(ctx context.Context, userText string) Result {
 		_ = e.Prompt.AppendProviderResponse(ctx, promptcache.ProviderResponseRecord{
 			RequestID:          fmt.Sprintf("%s:req:%d", opts.RunID, step),
 			RunID:              opts.RunID,
+			ThreadID:           opts.SessionID,
+			TurnID:             opts.RunID,
 			ProviderResponseID: responseID,
 			CacheReadTokens:    usage.CacheReadTokens,
 			CacheWriteTokens:   usage.CacheWriteTokens,
@@ -265,8 +312,7 @@ func normalizeOptions(o Options) Options {
 }
 
 func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, history []session.Message) (provider.Request, error) {
-	toolDefs := e.Tools.Definitions()
-	toolset, _, err := promptcache.EnsureToolset(ctx, e.Prompt, opts.RunID, opts.SessionID, opts.ProviderName, opts.Model, convertToolDefinitions(toolDefs), time.Now())
+	toolset, _, err := promptcache.EnsureCurrentToolset(ctx, e.Prompt, opts.RunID, opts.SessionID, opts.ProviderName, opts.Model, convertToolDefinitions(opts.ToolDefinitions), time.Now())
 	if err != nil {
 		return provider.Request{}, err
 	}
@@ -278,7 +324,7 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		AdapterVersion: promptcache.Version,
 		CacheNamespace: opts.CacheNamespace,
 		SystemPrompt:   e.Memory.SystemPrompt,
-		History:        boundedHistory(e.Memory, history),
+		History:        providerSafeHistory(boundedHistory(e.Memory, history)),
 		Toolset:        toolset,
 		Renderer:       rendererForProvider(e.Provider),
 		Now:            time.Now(),
@@ -394,6 +440,27 @@ func boundedHistory(m *memory.Manager, history []session.Message) []session.Mess
 	return append([]session.Message(nil), messages...)
 }
 
+func providerSafeHistory(history []session.Message) []session.Message {
+	out := make([]session.Message, 0, len(history))
+	for _, msg := range history {
+		if msg.Role == session.Assistant && (msg.ToolName == "ask_user" || msg.ToolName == "task_complete") {
+			msg = session.Message{Role: session.Assistant, Content: signalText(msg.ToolName, msg.ToolArgs)}
+		}
+		out = append(out, msg)
+	}
+	return out
+}
+
+func signalText(name, args string) string {
+	if name == "ask_user" {
+		return "Agent requested user input: " + args
+	}
+	if name == "task_complete" {
+		return "Agent completed the task: " + args
+	}
+	return args
+}
+
 func convertToolDefinitions(defs []provider.ToolDefinition) []promptcache.ToolDefinition {
 	out := make([]promptcache.ToolDefinition, 0, len(defs))
 	for _, def := range defs {
@@ -424,7 +491,11 @@ func (e *Engine) end(opts Options, step int, status Status, output string, err e
 	}
 	metrics.WallTimeMS = time.Since(started).Milliseconds()
 	e.emit(event.Event{Type: event.RunEnd, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: string(status), Result: output, Err: errText, Metrics: metrics})
-	return Result{Status: status, Output: output, Err: err, Metrics: metrics}
+	var messages []session.Message
+	if e.Store != nil {
+		messages, _ = e.Store.Messages(opts.RunID)
+	}
+	return Result{Status: status, Output: output, Err: err, Metrics: metrics, Messages: messages}
 }
 
 func (e *Engine) emit(ev event.Event) {
