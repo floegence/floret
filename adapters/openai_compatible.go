@@ -420,12 +420,29 @@ func renderMessages(messages []session.Message) []chatMessage {
 func renderMessagesFromRawPlan(plan promptcache.RawPlan, fallback []chatMessage) []chatMessage {
 	var out []chatMessage
 	for _, segment := range plan.Segments {
-		if segment.FragmentType != promptcache.FragmentOpenAIMessage {
+		if segment.Kind == promptcache.SegmentToolset {
 			continue
 		}
-		var msg chatMessage
-		if err := json.Unmarshal([]byte(segment.Raw), &msg); err == nil {
-			out = append(out, msg)
+		if segment.FragmentType == promptcache.FragmentOpenAIMessage {
+			var msg chatMessage
+			if err := json.Unmarshal([]byte(segment.Raw), &msg); err == nil {
+				out = append(out, msg)
+				continue
+			}
+		}
+		msg := session.Message{
+			Role:       session.Role(segment.Message.Role),
+			Content:    segment.Message.Content,
+			ToolCallID: segment.Message.ToolCallID,
+			ToolName:   segment.Message.ToolName,
+			ToolArgs:   segment.Message.ToolArgs,
+		}
+		if msg.Role == "" {
+			continue
+		}
+		rendered := renderMessages([]session.Message{msg})
+		if len(rendered) > 0 {
+			out = append(out, rendered[0])
 		}
 	}
 	if len(out) == 0 {

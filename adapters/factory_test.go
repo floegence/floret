@@ -321,6 +321,46 @@ func TestOpenAICompatibleProviderBuildsPayloadFromRawPlanFragments(t *testing.T)
 	}
 }
 
+func TestOpenAICompatibleProviderFallsBackToRawPlanMessageSnapshots(t *testing.T) {
+	var body struct {
+		Messages []chatMessage `json:"messages"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
+
+	_, err := p.Stream(context.Background(), provider.Request{
+		RunID: "r",
+		RawPlan: promptcache.RawPlan{Segments: []promptcache.Segment{
+			{Kind: promptcache.SegmentToolset, FragmentType: promptcache.FragmentOpenAITool, Raw: `{}`},
+			{
+				Kind:         promptcache.SegmentSystem,
+				FragmentType: promptcache.FragmentGenericMessage,
+				Message:      promptcache.MessageSnapshot{Role: "system", Content: "system"},
+				Raw:          `{"kind":"system","role":"system","content":"system"}`,
+			},
+			{
+				Kind:         promptcache.SegmentUserMessage,
+				FragmentType: promptcache.FragmentGenericMessage,
+				Message:      promptcache.MessageSnapshot{Role: "user", Content: "hello"},
+				Raw:          `{"kind":"user_message","role":"user","content":"hello"}`,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Messages) != 2 || body.Messages[0].Role != "system" || body.Messages[1].Role != "user" || body.Messages[1].Content != "hello" {
+		t.Fatalf("raw plan message snapshots did not render into chat messages: %#v", body.Messages)
+	}
+}
+
 func TestOpenAICompatibleProviderPayloadHashMatchesActualBody(t *testing.T) {
 	var actualBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

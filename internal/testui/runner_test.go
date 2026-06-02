@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/floegence/floret/config"
+	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
+	"github.com/floegence/floret/session"
 )
 
 func TestRunnerParsesGoTestJSON(t *testing.T) {
@@ -238,6 +240,115 @@ func TestRunnerRunAgentReturnsInteractionObservation(t *testing.T) {
 	}) {
 		t.Fatalf("raw segment state not exposed: %#v", result.Observation.ProviderRequests[0].RawSegments)
 	}
+	if !slices.ContainsFunc(result.Observation.ProviderRequests[0].RawSegments, func(segment ObservedRawSegment) bool {
+		return segment.Kind == "system" &&
+			segment.Raw != "" &&
+			segment.RawPreview != "" &&
+			segment.Fingerprint != "" &&
+			segment.SchemaVersion != "" &&
+			segment.AdapterVersion != "" &&
+			segment.Sequence > 0
+	}) {
+		t.Fatalf("raw segment ledger fields not exposed: %#v", result.Observation.ProviderRequests[0].RawSegments)
+	}
+}
+
+func TestRunnerRunAgentUsesUnsavedProfileSnapshot(t *testing.T) {
+	root := t.TempDir()
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	if _, err := runner.SaveConfigState(SaveConfigRequest{
+		ActiveProfileID: "saved",
+		Profiles: []ProviderProfile{{
+			ID:           "saved",
+			Name:         "Saved",
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "saved-response",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result := runner.RunAgent(context.Background(), AgentRunRequest{
+		ProfileID: "saved",
+		Profile: ProviderProfile{
+			ID:           "saved",
+			Name:         "Unsaved",
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "unsaved-response",
+		},
+		Message:            "hello",
+		SystemPrompt:       "test",
+		MaxSteps:           4,
+		MaxContextMessages: 8,
+	})
+
+	if result.Status != "completed" || result.Output != "unsaved-response" {
+		t.Fatalf("result did not use unsaved profile snapshot: %#v", result)
+	}
+}
+
+func TestObserveRawSegmentsMarksTruncatedRaw(t *testing.T) {
+	largeRaw := strings.Repeat("x", maxObservedRawSegmentBytes+8)
+
+	segments := observeRawSegments(promptcache.RawPlan{Segments: []promptcache.Segment{{
+		ID:         "large",
+		Kind:       promptcache.SegmentSystem,
+		SHA256:     "abc",
+		ByteLength: len(largeRaw),
+		Raw:        largeRaw,
+	}}})
+
+	if len(segments) != 1 {
+		t.Fatalf("segments = %#v", segments)
+	}
+	if !segments[0].RawTruncated {
+		t.Fatalf("RawTruncated = false, want true")
+	}
+	if len(segments[0].Raw) <= maxObservedRawSegmentBytes || !strings.Contains(segments[0].Raw, "truncated in test UI response") {
+		t.Fatalf("raw was not bounded with marker: len=%d raw=%q", len(segments[0].Raw), segments[0].Raw)
+	}
+	if segments[0].RawPreview == "" || len(segments[0].RawPreview) > 260 {
+		t.Fatalf("preview not bounded: %q", segments[0].RawPreview)
+	}
+}
+
+func TestObservingProviderForwardsPromptRenderer(t *testing.T) {
+	inner := rendererProvider{}
+	observed := newObservingProvider(inner)
+
+	raw, fragment, err := observed.MessageRaw(promptcache.SegmentUserMessage, session.Message{Role: session.User, Content: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw != `{"role":"user","content":"hello"}` || fragment != promptcache.FragmentOpenAIMessage {
+		t.Fatalf("MessageRaw = %q, %q", raw, fragment)
+	}
+	raw, fragment, err = observed.ToolRaw(promptcache.ToolDefinition{Name: "read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw != `{"type":"function","function":{"name":"read"}}` || fragment != promptcache.FragmentOpenAITool {
+		t.Fatalf("ToolRaw = %q, %q", raw, fragment)
+	}
+}
+
+type rendererProvider struct{}
+
+func (rendererProvider) Stream(context.Context, provider.Request) (<-chan provider.StreamEvent, error) {
+	ch := make(chan provider.StreamEvent)
+	close(ch)
+	return ch, nil
+}
+
+func (rendererProvider) MessageRaw(_ promptcache.SegmentKind, msg session.Message) (string, string, error) {
+	return `{"role":"` + string(msg.Role) + `","content":"` + msg.Content + `"}`, promptcache.FragmentOpenAIMessage, nil
+}
+
+func (rendererProvider) ToolRaw(def promptcache.ToolDefinition) (string, string, error) {
+	return `{"type":"function","function":{"name":"` + def.Name + `"}}`, promptcache.FragmentOpenAITool, nil
 }
 
 func fixedClock() func() time.Time {

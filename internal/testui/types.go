@@ -104,11 +104,12 @@ type SaveConfigRequest struct {
 }
 
 type AgentRunRequest struct {
-	ProfileID          string `json:"profile_id"`
-	Message            string `json:"message"`
-	SystemPrompt       string `json:"system_prompt"`
-	MaxSteps           int    `json:"max_steps"`
-	MaxContextMessages int    `json:"max_context_messages"`
+	ProfileID          string          `json:"profile_id"`
+	Profile            ProviderProfile `json:"profile,omitempty"`
+	Message            string          `json:"message"`
+	SystemPrompt       string          `json:"system_prompt"`
+	MaxSteps           int             `json:"max_steps"`
+	MaxContextMessages int             `json:"max_context_messages"`
 }
 
 type AgentRunResponse struct {
@@ -137,6 +138,7 @@ type ObservedProviderRequest struct {
 	Step         int                       `json:"step"`
 	Provider     string                    `json:"provider"`
 	Model        string                    `json:"model"`
+	ObservedAt   time.Time                 `json:"observed_at"`
 	Messages     []ObservedSessionMessage  `json:"messages"`
 	Tools        []provider.ToolDefinition `json:"tools"`
 	RawSegments  []ObservedRawSegment      `json:"raw_segments,omitempty"`
@@ -144,14 +146,22 @@ type ObservedProviderRequest struct {
 }
 
 type ObservedRawSegment struct {
-	ID         string                  `json:"id"`
-	Kind       promptcache.SegmentKind `json:"kind"`
-	Role       string                  `json:"role,omitempty"`
-	SHA256     string                  `json:"sha256"`
-	ByteLength int                     `json:"byte_length"`
-	Epoch      int                     `json:"epoch,omitempty"`
-	Reused     bool                    `json:"reused"`
-	RawPreview string                  `json:"raw_preview,omitempty"`
+	ID              string                  `json:"id"`
+	Kind            promptcache.SegmentKind `json:"kind"`
+	Role            string                  `json:"role,omitempty"`
+	SHA256          string                  `json:"sha256"`
+	ByteLength      int                     `json:"byte_length"`
+	Epoch           int                     `json:"epoch,omitempty"`
+	Sequence        int64                   `json:"sequence,omitempty"`
+	Reused          bool                    `json:"reused"`
+	FragmentType    string                  `json:"fragment_type,omitempty"`
+	StructuredRefID string                  `json:"structured_ref_id,omitempty"`
+	Fingerprint     string                  `json:"fingerprint,omitempty"`
+	SchemaVersion   string                  `json:"schema_version,omitempty"`
+	AdapterVersion  string                  `json:"adapter_version,omitempty"`
+	Raw             string                  `json:"raw,omitempty"`
+	RawTruncated    bool                    `json:"raw_truncated,omitempty"`
+	RawPreview      string                  `json:"raw_preview,omitempty"`
 }
 
 type ObservedCacheSummary struct {
@@ -168,12 +178,14 @@ type ObservedCacheSummary struct {
 }
 
 type ObservedProviderEvent struct {
-	Step      int                 `json:"step"`
-	Type      provider.EventType  `json:"type"`
-	Text      string              `json:"text,omitempty"`
-	ToolCalls []provider.ToolCall `json:"tool_calls,omitempty"`
-	Reason    string              `json:"reason,omitempty"`
-	Usage     provider.Usage      `json:"usage,omitempty"`
+	Step       int                 `json:"step"`
+	Type       provider.EventType  `json:"type"`
+	ObservedAt time.Time           `json:"observed_at"`
+	ResponseID string              `json:"response_id,omitempty"`
+	Text       string              `json:"text,omitempty"`
+	ToolCalls  []provider.ToolCall `json:"tool_calls,omitempty"`
+	Reason     string              `json:"reason,omitempty"`
+	Usage      provider.Usage      `json:"usage,omitempty"`
 }
 
 type ObservedSessionMessage struct {

@@ -3,11 +3,14 @@ package testui
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/session"
 )
+
+const maxObservedRawSegmentBytes = 16 * 1024
 
 type observingProvider struct {
 	inner provider.Provider
@@ -41,12 +44,27 @@ func (p *observingProvider) PayloadHash(req provider.Request) (string, error) {
 	return req.RawPlan.PayloadHash, nil
 }
 
+func (p *observingProvider) MessageRaw(kind promptcache.SegmentKind, msg session.Message) (string, string, error) {
+	if renderer, ok := p.inner.(promptcache.Renderer); ok {
+		return renderer.MessageRaw(kind, msg)
+	}
+	return "", "", nil
+}
+
+func (p *observingProvider) ToolRaw(def promptcache.ToolDefinition) (string, string, error) {
+	if renderer, ok := p.inner.(promptcache.Renderer); ok {
+		return renderer.ToolRaw(def)
+	}
+	return "", "", nil
+}
+
 func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
 	p.mu.Lock()
 	p.reqs = append(p.reqs, ObservedProviderRequest{
 		Step:        req.Step,
 		Provider:    req.Provider,
 		Model:       req.Model,
+		ObservedAt:  time.Now(),
 		Messages:    observeMessages(req.Messages),
 		Tools:       append([]provider.ToolDefinition(nil), req.Tools...),
 		RawSegments: observeRawSegments(req.RawPlan),
@@ -104,12 +122,14 @@ func (p *observingProvider) recordEvent(step int, ev provider.StreamEvent) {
 		}
 	}
 	p.evs = append(p.evs, ObservedProviderEvent{
-		Step:      step,
-		Type:      ev.Type,
-		Text:      ev.Text,
-		ToolCalls: append([]provider.ToolCall(nil), ev.ToolCalls...),
-		Reason:    ev.Reason,
-		Usage:     ev.Usage,
+		Step:       step,
+		Type:       ev.Type,
+		ObservedAt: time.Now(),
+		ResponseID: ev.ResponseID,
+		Text:       ev.Text,
+		ToolCalls:  append([]provider.ToolCall(nil), ev.ToolCalls...),
+		Reason:     ev.Reason,
+		Usage:      ev.Usage,
 	})
 }
 
@@ -120,18 +140,34 @@ func observeRawSegments(plan promptcache.RawPlan) []ObservedRawSegment {
 		if i < len(plan.SegmentStates) {
 			reused = plan.SegmentStates[i] == "reused"
 		}
+		raw, truncated := boundedRaw(seg.Raw, maxObservedRawSegmentBytes)
 		out = append(out, ObservedRawSegment{
-			ID:         seg.ID,
-			Kind:       seg.Kind,
-			Role:       seg.Role,
-			SHA256:     seg.SHA256,
-			ByteLength: seg.ByteLength,
-			Epoch:      seg.Epoch,
-			Reused:     reused,
-			RawPreview: preview(seg.Raw, 240),
+			ID:              seg.ID,
+			Kind:            seg.Kind,
+			Role:            seg.Role,
+			SHA256:          seg.SHA256,
+			ByteLength:      seg.ByteLength,
+			Epoch:           seg.Epoch,
+			Sequence:        seg.Sequence,
+			Reused:          reused,
+			FragmentType:    seg.FragmentType,
+			StructuredRefID: seg.StructuredRefID,
+			Fingerprint:     seg.Fingerprint,
+			SchemaVersion:   seg.SchemaVersion,
+			AdapterVersion:  seg.AdapterVersion,
+			Raw:             raw,
+			RawTruncated:    truncated,
+			RawPreview:      preview(seg.Raw, 240),
 		})
 	}
 	return out
+}
+
+func boundedRaw(value string, max int) (string, bool) {
+	if max <= 0 || len(value) <= max {
+		return value, false
+	}
+	return value[:max] + "\n...[truncated in test UI response]", true
 }
 
 func preview(value string, max int) string {

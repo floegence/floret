@@ -87,7 +87,7 @@ func (r Runner) RunAgent(ctx context.Context, req AgentRunRequest) AgentRunRespo
 		resp.DurationMS = resp.FinishedAt.Sub(resp.StartedAt).Milliseconds()
 		return resp
 	}
-	profile, err := r.profileByID(req.ProfileID)
+	profile, err := r.profileForRun(req)
 	if err != nil {
 		return r.failAgentRun(resp, err)
 	}
@@ -197,6 +197,29 @@ func (r Runner) failAgentRun(resp AgentRunResponse, err error) AgentRunResponse 
 	resp.FinishedAt = r.now()
 	resp.DurationMS = resp.FinishedAt.Sub(resp.StartedAt).Milliseconds()
 	return resp
+}
+
+func (r Runner) profileForRun(req AgentRunRequest) (ProviderProfile, error) {
+	if req.Profile.Provider == "" && req.Profile.Model == "" && req.Profile.ID == "" {
+		return r.profileByID(req.ProfileID)
+	}
+	profile := req.Profile
+	if profile.ID == "" {
+		profile.ID = req.ProfileID
+	}
+	profile = normalizeProfile(profile, 0)
+	if profile.APIKey == "" {
+		if saved, err := r.profileByID(profile.ID); err == nil {
+			profile.APIKey = saved.APIKey
+			profile.APIKeySet = saved.APIKey != "" || saved.APIKeySet
+		} else if req.ProfileID != "" && req.ProfileID != profile.ID {
+			if saved, err := r.profileByID(req.ProfileID); err == nil {
+				profile.APIKey = saved.APIKey
+				profile.APIKeySet = saved.APIKey != "" || saved.APIKeySet
+			}
+		}
+	}
+	return profile, nil
 }
 
 func (r Runner) Run(ctx context.Context, target string) RunResponse {

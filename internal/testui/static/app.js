@@ -4,6 +4,11 @@ const state = {
   activeProfileId: "",
   running: false,
   lastResult: null,
+  selectedStep: null,
+  activeTab: "overview",
+  detailFocus: null,
+  streamFilter: "all",
+  traceFilter: "",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -36,15 +41,22 @@ const el = {
   metricTools: $("metricTools"),
   metricTokens: $("metricTokens"),
   metricDuration: $("metricDuration"),
+  flowHealth: $("flowHealth"),
+  eventCount: $("eventCount"),
   transitions: $("transitions"),
   transitionCount: $("transitionCount"),
   finalOutput: $("finalOutput"),
   outputMeta: $("outputMeta"),
-  stepInspector: $("stepInspector"),
+  stepList: $("stepList"),
   stepCount: $("stepCount"),
+  detailTitle: $("detailTitle"),
+  detailMeta: $("detailMeta"),
+  stepDetail: $("stepDetail"),
+  tabs: Array.from(document.querySelectorAll(".tab")),
   sessionMessages: $("sessionMessages"),
   messageCount: $("messageCount"),
   rawJson: $("rawJson"),
+  traceSearch: $("traceSearch"),
   copyRaw: $("copyRaw"),
   checkStatus: $("checkStatus"),
 };
@@ -54,6 +66,7 @@ el.profileSelect.addEventListener("change", () => {
   state.activeProfileId = el.profileSelect.value;
   renderProfileForm();
 });
+
 ["input", "change"].forEach((eventName) => {
   [el.profileName, el.providerType, el.modelName, el.baseURL, el.apiKey, el.fakeResponse].forEach((input) => {
     input.addEventListener(eventName, () => {
@@ -64,22 +77,75 @@ el.profileSelect.addEventListener("change", () => {
     });
   });
 });
+
 el.modelSelect.addEventListener("change", () => {
   el.modelName.value = el.modelSelect.value;
   syncCurrentProfileFromForm();
   renderModelDetails();
   renderProfileOptions();
 });
+
 el.addProfile.addEventListener("click", addProfile);
 el.duplicateProfile.addEventListener("click", duplicateProfile);
 el.saveConfig.addEventListener("click", saveConfig);
 el.runAgent.addEventListener("click", runAgent);
 el.copyRaw.addEventListener("click", copyRaw);
+el.traceSearch.addEventListener("input", () => {
+  state.traceFilter = el.traceSearch.value.trim();
+  renderRawTrace();
+});
+
+el.tabs.forEach((button) => {
+  button.addEventListener("click", () => {
+    state.activeTab = button.dataset.tab || "overview";
+    state.detailFocus = null;
+    if (state.activeTab !== "stream") state.streamFilter = "all";
+    renderTabs();
+    renderStepDetail();
+  });
+});
+
 document.querySelectorAll(".check-button").forEach((button) => {
   button.addEventListener("click", () => runCheck(button.dataset.target));
 });
 
+document.addEventListener("click", (event) => {
+  const tabTarget = event.target.closest("[data-open-tab]");
+  if (tabTarget) {
+    openStepDetail(tabTarget.dataset.selectStep, tabTarget.dataset.openTab, tabTarget.dataset.detailFocus);
+    return;
+  }
+
+  const stepTarget = event.target.closest("[data-select-step]");
+  if (stepTarget) {
+    openStepDetail(stepTarget.dataset.selectStep, stepTarget.dataset.openTab || state.activeTab, stepTarget.dataset.detailFocus);
+    return;
+  }
+
+  const filterTarget = event.target.closest("[data-stream-filter]");
+  if (filterTarget) {
+    state.streamFilter = filterTarget.dataset.streamFilter || "all";
+    renderStepDetail();
+    return;
+  }
+
+  const copyTarget = event.target.closest("[data-copy]");
+  if (copyTarget) {
+    copyDynamic(copyTarget);
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (!["Enter", " "].includes(event.key)) return;
+  if (event.target.closest("button, input, select, textarea, summary")) return;
+  const target = event.target.closest("[role='button'][data-select-step]");
+  if (!target) return;
+  event.preventDefault();
+  openStepDetail(target.dataset.selectStep, target.dataset.openTab || state.activeTab, target.dataset.detailFocus);
+});
+
 loadConfig();
+resetRunView("idle");
 
 async function loadConfig() {
   const response = await fetch("/api/config");
@@ -193,6 +259,7 @@ function renderModelDetails() {
     pieces.push(`${formatTokens(model.max_tokens)} max output`);
     pieces.push((model.input || []).includes("image") ? "text + image" : "text only");
     pieces.push(model.reasoning ? "reasoning" : "no reasoning flag");
+    if (model.cache?.prompt_cache_key || model.cache?.anthropic_cache_control) pieces.push("prompt cache");
   } else {
     pieces.push("custom model metadata");
   }
@@ -295,6 +362,7 @@ async function runAgent() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         profile_id: state.activeProfileId,
+        profile: activeProfile(),
         message,
         system_prompt: el.systemPrompt.value,
         max_steps: Number(el.maxSteps.value || 8),
@@ -302,7 +370,14 @@ async function runAgent() {
       }),
     });
     const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "agent run failed");
+    if (!response.ok) {
+      if (result && (result.id || result.status || result.observation)) {
+        state.lastResult = result;
+        renderAgentResult(result);
+        return;
+      }
+      throw new Error(result.error || "agent run failed");
+    }
     state.lastResult = result;
     renderAgentResult(result);
   } catch (error) {
@@ -329,115 +404,382 @@ async function runCheck(target) {
 
 function renderAgentResult(result) {
   setStatus(result.status);
-  el.runTitle.textContent = `${result.profile.name} / ${result.profile.model}`;
+  el.runTitle.textContent = profileLabel(result.profile);
   el.summaryText.textContent = result.summary || "";
   el.metricStatus.textContent = result.status;
-  el.metricSteps.textContent = String(result.metrics.steps || 0);
-  el.metricRequests.textContent = String(result.metrics.llm_requests || 0);
-  el.metricTools.textContent = String(result.metrics.tool_calls || 0);
-  el.metricTokens.textContent = String(totalTokens(result.metrics.usage));
+  el.metricSteps.textContent = String(result.metrics?.steps || 0);
+  el.metricRequests.textContent = String(result.metrics?.llm_requests || 0);
+  el.metricTools.textContent = String(result.metrics?.tool_calls || 0);
+  el.metricTokens.textContent = String(totalTokens(result.metrics?.usage));
   el.metricDuration.textContent = formatDuration(result.duration_ms);
   el.finalOutput.textContent = result.output || result.error || "(empty output)";
   el.outputMeta.textContent = result.error ? "error" : "captured";
-  renderTransitions(result.observation.transitions || []);
-  renderSteps(result);
-  renderSessionMessages(result.observation.session_messages || []);
-  el.rawJson.textContent = JSON.stringify(result, null, 2);
+  el.eventCount.textContent = `${eventTotal(result)} events`;
+
+  const steps = stepModels(result);
+  state.selectedStep = steps[0]?.step || null;
+  state.activeTab = "overview";
+  state.detailFocus = null;
+  state.streamFilter = "all";
+  renderRunInspector();
+  renderSessionMessages(result.observation?.session_messages || []);
+  renderRawTrace();
+}
+
+function renderRunInspector() {
+  const result = state.lastResult;
+  renderFlowHealth(result);
+  renderTransitions(result?.observation?.transitions || []);
+  renderStepList(result);
+  renderTabs();
+  renderStepDetail();
+}
+
+function openStepDetail(stepValue, tab, focus) {
+  const step = Number(stepValue);
+  if (Number.isFinite(step) && step > 0) {
+    state.selectedStep = step;
+  }
+  state.activeTab = normalizeTab(tab);
+  state.detailFocus = focus || null;
+  if (state.activeTab !== "stream") state.streamFilter = "all";
+  renderRunInspector();
+  requestAnimationFrame(() => {
+    const target = el.stepDetail.querySelector(".focus-target") || el.stepDetail;
+    target.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  });
+}
+
+function normalizeTab(tab) {
+  return ["overview", "request", "stream", "cache", "raw"].includes(tab) ? tab : "overview";
+}
+
+function renderFlowHealth(result) {
+  if (!result) {
+    el.flowHealth.className = "health-grid empty";
+    el.flowHealth.textContent = "No run has completed yet.";
+    el.eventCount.textContent = "0 events";
+    return;
+  }
+  const diagnostics = runDiagnostics(result);
+  const cache = aggregateCache(result);
+  const profile = result.profile || {};
+  const level = diagnostics.some((item) => item.severity === "bad") ? "bad" : diagnostics.some((item) => item.severity === "warn") ? "warn" : "ok";
+  el.flowHealth.className = "health-grid";
+  el.flowHealth.innerHTML = `
+    <div class="health-card ${escapeAttr(level)}">
+      <span>Diagnostics</span>
+      <strong>${diagnostics.length ? `${diagnostics.length} item(s)` : "clear"}</strong>
+      <small>${level === "ok" ? "No state-flow warnings" : severityLabel(level)}</small>
+    </div>
+    <div class="health-card">
+      <span>Run snapshot</span>
+      <strong>${escapeHTML(profile.provider || "-")}</strong>
+      <small>${escapeHTML(profile.model || "-")}</small>
+    </div>
+    <div class="health-card">
+      <span>Prompt cache</span>
+      <strong>${cache.reusedSegments} reused / ${cache.newSegments} new</strong>
+      <small>${cache.cacheReadTokens} read / ${cache.cacheWriteTokens} write tokens</small>
+    </div>
+    <div class="health-card">
+      <span>Terminal state</span>
+      <strong>${escapeHTML(result.status || "-")}</strong>
+      <small>${escapeHTML(result.error || result.summary || "")}</small>
+    </div>
+    <div class="diagnostics-list ${diagnostics.length ? "" : "empty-diagnostics"}">
+      ${diagnostics.length ? diagnostics.map(renderDiagnostic).join("") : "<span>No warnings detected in the captured events.</span>"}
+    </div>
+  `;
 }
 
 function renderTransitions(transitions) {
-  el.transitionCount.textContent = String(transitions.length);
+  el.transitionCount.textContent = `${transitions.length} transitions`;
   el.transitions.classList.toggle("empty", transitions.length === 0);
   el.transitions.innerHTML = "";
   if (transitions.length === 0) {
     el.transitions.textContent = "No transitions yet.";
     return;
   }
-  transitions.forEach((item) => {
+  transitions.forEach((item, index) => {
+    const action = transitionAction(item);
+    const selected = item.step && item.step === state.selectedStep;
     const row = document.createElement("div");
-    row.className = `transition ${transitionClass(item.to)}`;
+    row.className = `transition-item ${transitionClass(item.to)} ${item.step ? "interactive" : ""} ${selected ? "selected" : ""}`;
+    const attrs = item.step ? `data-select-step="${item.step}" data-open-tab="${escapeAttr(action.tab)}"${action.focus ? ` data-detail-focus="${escapeAttr(action.focus)}"` : ""}` : "";
+    const summaryTag = item.step ? "button" : "div";
+    const summaryType = item.step ? " type=\"button\"" : "";
     row.innerHTML = `
-      <span class="dot"></span>
-      <div>
-        <strong>${escapeHTML(item.from)} → ${escapeHTML(item.to)}</strong>
-        <small>step ${item.step || "-"} · ${escapeHTML(item.reason || "")}</small>
-        <p>${escapeHTML(item.details || "")}</p>
-      </div>
+      <${summaryTag} class="transition-summary"${summaryType} ${attrs}>
+        <span class="dot"></span>
+        <span class="transition-copy">
+          <strong>${escapeHTML(item.from)} -> ${escapeHTML(item.to)}</strong>
+          <small>${formatTime(item.at)} · ${item.step ? `step ${item.step}` : `event ${index + 1}`} · ${escapeHTML(item.reason || "")}</small>
+          ${item.details ? `<p>${escapeHTML(item.details)}</p>` : ""}
+        </span>
+      </${summaryTag}>
+      ${item.step ? renderTransitionActions(item) : ""}
     `;
     el.transitions.appendChild(row);
   });
 }
 
-function renderSteps(result) {
-  const requests = result.observation.provider_requests || [];
-  const providerEvents = result.observation.provider_events || [];
-  el.stepCount.textContent = `${requests.length} steps`;
-  el.stepInspector.classList.toggle("empty", requests.length === 0);
-  el.stepInspector.innerHTML = "";
-  if (requests.length === 0) {
-    el.stepInspector.textContent = "No provider steps yet.";
+function renderTransitionActions(item) {
+  const step = stepModels(state.lastResult).find((model) => model.step === item.step);
+  if (!step) return "";
+  const chips = [];
+  const messages = step.request.messages.length;
+  const segments = step.request.raw_segments?.length || 0;
+  const tools = step.request.tools.length;
+  const events = step.providerEvents.length;
+  switch (item.reason) {
+    case "provider_request":
+      if (messages > 0) chips.push(flowChip(`${messages} messages`, step.step, "request", "messages"));
+      if (segments > 0) chips.push(flowChip(`${segments} raw segments`, step.step, "cache", "segments"));
+      if (tools > 0) chips.push(flowChip(`${tools} tools`, step.step, "request", "tools"));
+      break;
+    case "provider_delta":
+    case "provider_retry":
+      if (events > 0) chips.push(flowChip(`${events} provider events`, step.step, "stream", "events"));
+      break;
+    case "context_compact":
+      if (segments > 0) chips.push(flowChip(`${segments} raw segments`, step.step, "cache", "segments"));
+      break;
+    default:
+      chips.push(flowChip("step sequence", step.step, "overview", "sequence"));
+      break;
+  }
+  return chips.length ? `<div class="flow-actions" aria-label="Open captured details">${chips.join("")}</div>` : "";
+}
+
+function flowChip(label, step, tab, focus) {
+  const active = state.selectedStep === step && state.activeTab === tab && state.detailFocus === focus;
+  return `
+    <button class="flow-chip ${active ? "active" : ""}" type="button" data-select-step="${step}" data-open-tab="${escapeAttr(tab)}" data-detail-focus="${escapeAttr(focus)}">
+      ${escapeHTML(label)}
+    </button>
+  `;
+}
+
+function transitionAction(item) {
+  switch (item.reason) {
+    case "provider_request":
+      return { tab: "request", focus: "messages" };
+    case "provider_delta":
+    case "provider_retry":
+      return { tab: "stream", focus: "events" };
+    case "context_compact":
+      return { tab: "cache", focus: "segments" };
+    case "tool_call":
+    case "tool_result":
+    case "run_end":
+    case "budget_exceeded":
+      return { tab: "raw", focus: "events" };
+    default:
+      return { tab: "overview", focus: "sequence" };
+  }
+}
+
+function renderStepList(result) {
+  const steps = stepModels(result);
+  el.stepCount.textContent = `${steps.length} steps`;
+  el.stepList.classList.toggle("empty", steps.length === 0);
+  el.stepList.innerHTML = "";
+  if (steps.length === 0) {
+    el.stepList.textContent = "No provider steps yet.";
     return;
   }
-  requests.forEach((request) => {
-    const events = providerEvents.filter((event) => event.step === request.step);
-    const card = document.createElement("article");
-    card.className = "step-card";
-    const segments = request.raw_segments || [];
-    const cache = request.cache_summary || {};
-    card.innerHTML = `
-      <header>
-        <span class="step-badge">Step ${request.step}</span>
-        <strong>${escapeHTML(request.provider)} / ${escapeHTML(request.model)}</strong>
-        <small>${request.messages.length} messages · ${request.tools.length} tools · ${segments.length} raw segments · ${events.length} stream events</small>
-      </header>
-      ${renderCacheSummary(cache)}
-      <div class="step-columns">
-        <div>
-          <h4>Provider Request</h4>
-          ${request.messages.map(renderMessageMini).join("")}
-          <div class="tool-list">${request.tools.map((tool) => `<code>${escapeHTML(tool.name || tool.Name)}</code>`).join("")}</div>
-          ${renderRawSegments(segments)}
-        </div>
-        <div>
-          <h4>Provider Stream</h4>
-          ${events.map(renderProviderEvent).join("")}
-        </div>
-      </div>
+  steps.forEach((step) => {
+    const selected = step.step === state.selectedStep;
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = `step-row ${selected ? "selected" : ""} ${step.severity}`;
+    row.dataset.selectStep = String(step.step);
+    row.innerHTML = `
+      <span class="step-main">
+        <strong>Step ${step.step}</strong>
+        <small>${escapeHTML(step.provider)} / ${escapeHTML(step.model)}</small>
+      </span>
+      <span class="step-pills">
+        <span>${step.request.messages.length} msg</span>
+        <span>${step.request.tools.length} tools</span>
+        <span>${step.providerEvents.length} stream</span>
+        <span>${totalTokens(step.usage)} tokens</span>
+      </span>
+      <span class="step-cache">${step.cache.reused_segments || 0} reused / ${step.cache.new_segments || 0} new</span>
+      <span class="state-badge ${step.severity}">${step.label}</span>
     `;
-    el.stepInspector.appendChild(card);
+    el.stepList.appendChild(row);
   });
 }
 
-function renderCacheSummary(cache) {
-  const items = [
-    cache.namespace ? `namespace ${cache.namespace}` : "",
-    cache.retention ? `retention ${cache.retention}` : "",
-    cache.prefix_hash ? `prefix ${shortHash(cache.prefix_hash)}` : "",
-    cache.payload_hash ? `payload ${shortHash(cache.payload_hash)}` : "",
-    cache.toolset_id ? `toolset ${cache.toolset_id}${cache.toolset_epoch ? `@${cache.toolset_epoch}` : ""}` : "",
-    cache.reused_segments || cache.new_segments ? `${cache.reused_segments || 0} reused / ${cache.new_segments || 0} new` : "",
-    cache.cache_read_tokens || cache.cache_write_tokens ? `cache ${cache.cache_read_tokens || 0} read / ${cache.cache_write_tokens || 0} write` : "",
-  ].filter(Boolean);
-  if (!items.length) return "";
-  return `<div class="cache-summary">${items.map((item) => `<span>${escapeHTML(item)}</span>`).join("")}</div>`;
+function renderTabs() {
+  el.tabs.forEach((button) => {
+    const active = button.dataset.tab === state.activeTab;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
 }
 
-function renderRawSegments(segments) {
-  if (!segments.length) return "";
+function renderStepDetail() {
+  const step = selectedStepModel();
+  if (!step) {
+    el.detailTitle.textContent = "Step Detail";
+    el.detailMeta.textContent = "select a step";
+    el.stepDetail.className = "detail-body empty";
+    el.stepDetail.textContent = "Select a provider step to inspect its request, stream, cache, and raw data.";
+    return;
+  }
+  el.detailTitle.textContent = `Step ${step.step}`;
+  el.detailMeta.textContent = `${step.provider} / ${step.model}`;
+  el.stepDetail.className = "detail-body";
+  switch (state.activeTab) {
+    case "request":
+      el.stepDetail.innerHTML = renderRequestTab(step);
+      break;
+    case "stream":
+      el.stepDetail.innerHTML = renderStreamTab(step);
+      break;
+    case "cache":
+      el.stepDetail.innerHTML = renderCacheTab(step);
+      break;
+    case "raw":
+      el.stepDetail.innerHTML = renderRawTab(step);
+      break;
+    case "overview":
+    default:
+      el.stepDetail.innerHTML = renderOverviewTab(step);
+      break;
+  }
+}
+
+function renderOverviewTab(step) {
+  const diagnostics = step.diagnostics.length ? step.diagnostics.map(renderDiagnostic).join("") : "<span>No warnings detected for this step.</span>";
   return `
-    <div class="raw-segments">
-      <h4>Raw Segments</h4>
-      ${segments.map((segment) => `
-        <details class="raw-segment">
-          <summary>
-            <code>${escapeHTML(segment.kind || "")}</code>
-            <span>${escapeHTML(segment.role || segment.id || "")}</span>
-            <small>${escapeHTML(shortHash(segment.sha256 || ""))} · ${segment.byte_length || 0} bytes · ${segment.reused ? "reused" : "new"}</small>
-          </summary>
-          <pre>${escapeHTML(segment.raw_preview || "")}</pre>
-        </details>
-      `).join("")}
+    <div class="detail-summary-grid">
+      ${summaryTile("Provider events", step.providerEvents.length)}
+      ${summaryTile("Engine events", step.engineEvents.length)}
+      ${summaryTile("Tool calls", step.toolCalls.length)}
+      ${summaryTile("Tool results", step.toolResults.length)}
+      ${summaryTile("Prompt segments", step.request.raw_segments?.length || 0)}
+      ${summaryTile("Tokens", totalTokens(step.usage))}
     </div>
+    <section class="detail-section">
+      <div class="section-label">Step diagnostics</div>
+      <div class="diagnostics-list ${step.diagnostics.length ? "" : "empty-diagnostics"}">${diagnostics}</div>
+    </section>
+    <section class="detail-section ${focusClass("sequence")}">
+      <div class="section-label">Event sequence</div>
+      ${focusNote("sequence", "Opened from State Flow. This sequence shows the ordered engine and provider events for the selected step.")}
+      <div class="sequence-list">
+        ${stepSequence(step).map(renderSequenceItem).join("") || "<p class=\"empty-note\">No captured sequence items.</p>"}
+      </div>
+    </section>
+  `;
+}
+
+function renderRequestTab(step) {
+  return `
+    <section class="detail-section ${focusClass("messages")}">
+      <div class="section-label split">
+        <span>Provider request messages</span>
+        <span>${step.request.messages.length} messages</span>
+      </div>
+      ${focusNote("messages", "Opened from State Flow. These are the exact messages sent to the provider for this request.")}
+      <div class="message-stack">${step.request.messages.map(renderMessage).join("") || "<p class=\"empty-note\">No request messages.</p>"}</div>
+    </section>
+    <section class="detail-section ${focusClass("tools")}">
+      <div class="section-label split">
+        <span>Tool definitions</span>
+        <span>${step.request.tools.length} tools</span>
+      </div>
+      ${focusNote("tools", "Opened from State Flow. These are the tool definitions exposed to the selected provider call.")}
+      <div class="tool-definition-list">${step.request.tools.map(renderToolDefinition).join("") || "<p class=\"empty-note\">No tools were exposed.</p>"}</div>
+    </section>
+    <section class="detail-section">
+      <div class="section-label">Request metadata</div>
+      ${renderKeyValueGrid([
+        ["Provider", step.provider],
+        ["Model", step.model],
+        ["Step", step.step],
+        ["Messages", step.request.messages.length],
+        ["Tools", step.request.tools.length],
+        ["Raw segments", step.request.raw_segments?.length || 0],
+      ])}
+    </section>
+  `;
+}
+
+function renderStreamTab(step) {
+  const allEvents = step.providerEvents.map((event, index) => ({ event, index }));
+  const eventTypes = ["all", ...Array.from(new Set(step.providerEvents.map((event) => eventType(event))))];
+  const visible = state.streamFilter === "all" ? allEvents : allEvents.filter((item) => eventType(item.event) === state.streamFilter);
+  return `
+    <section class="detail-section ${focusClass("events")}">
+      ${focusNote("events", "Opened from State Flow. These are the provider stream events captured after the selected request.")}
+      <div class="stream-toolbar">
+        ${eventTypes.map((type) => `
+          <button class="filter-chip ${state.streamFilter === type ? "active" : ""}" type="button" data-stream-filter="${escapeAttr(type)}">
+            ${escapeHTML(type)}${type === "all" ? ` (${step.providerEvents.length})` : ""}
+          </button>
+        `).join("")}
+      </div>
+      <div class="event-list">
+        ${visible.map((item) => renderProviderEvent(item.event, item.index)).join("") || "<p class=\"empty-note\">No provider events match this filter.</p>"}
+      </div>
+    </section>
+  `;
+}
+
+function renderCacheTab(step) {
+  const cache = step.cache || {};
+  const segments = step.request.raw_segments || [];
+  return `
+    <section class="cache-layout">
+      ${cacheCard("Prefix identity", [
+        hashRow("Prefix hash", cache.prefix_hash),
+        ["Retention", cache.retention || "-"],
+        ["Namespace", cache.namespace || "-"],
+      ])}
+      ${cacheCard("Payload identity", [
+        hashRow("Payload hash", cache.payload_hash),
+        ["Toolset", cache.toolset_id ? `${cache.toolset_id}@${cache.toolset_epoch || 0}` : "-"],
+      ])}
+      ${cacheCard("Reuse", [
+        ["Reused segments", cache.reused_segments || 0],
+        ["New segments", cache.new_segments || 0],
+        ["Reuse ratio", reuseRatio(cache)],
+      ])}
+      ${cacheCard("Provider cache tokens", [
+        ["Read tokens", cache.cache_read_tokens || 0],
+        ["Write tokens", cache.cache_write_tokens || 0],
+      ])}
+    </section>
+    <section class="detail-section ${focusClass("segments")}">
+      <div class="section-label split">
+        <span>Raw segment ledger</span>
+        <span>${segments.length} segments</span>
+      </div>
+      ${focusNote("segments", "Opened from State Flow. These are the immutable raw prompt-cache segments captured for this provider request.")}
+      <div class="segment-list">
+        ${segments.map((segment, index) => renderSegment(step.step, segment, index)).join("") || "<p class=\"empty-note\">No raw prompt segments were captured.</p>"}
+      </div>
+    </section>
+  `;
+}
+
+function renderRawTab(step) {
+  const payload = {
+    request: step.request,
+    provider_events: step.providerEvents,
+    engine_events: step.engineEvents,
+    transitions: step.transitions,
+  };
+  return `
+    <div class="code-actions">
+      <button class="secondary tiny" type="button" data-copy="step-json" data-step="${step.step}">Copy step JSON</button>
+    </div>
+    <pre class="raw raw-block">${escapeHTML(JSON.stringify(payload, null, 2))}</pre>
   `;
 }
 
@@ -461,48 +803,258 @@ function renderSessionMessages(messages) {
   });
 }
 
-function renderMessageMini(message) {
-  const content = message.content || message.tool_args || "";
+function renderRawTrace() {
+  if (!state.lastResult) {
+    el.rawJson.textContent = "{}";
+    return;
+  }
+  if (!state.traceFilter) {
+    el.rawJson.textContent = JSON.stringify(state.lastResult, null, 2);
+    return;
+  }
+  el.rawJson.textContent = JSON.stringify({
+    query: state.traceFilter,
+    matches: collectMatches(state.lastResult, state.traceFilter),
+  }, null, 2);
+}
+
+function renderMessage(message, index) {
+  const content = message.content || message.tool_args || message.tool_name || "";
   return `
-    <div class="mini-message role-${escapeAttr(message.role)}">
-      <strong>${escapeHTML(message.role)}</strong>
-      <span>${escapeHTML(content || message.tool_name || "")}</span>
+    <div class="message-row role-${escapeAttr(message.role)} ${focusClass("messages")}">
+      <strong>Message #${index + 1} · ${escapeHTML(message.role || "-")}</strong>
+      <p>${escapeHTML(content)}</p>
+      ${message.tool_name ? `<small>${escapeHTML(message.tool_name)} · ${escapeHTML(message.tool_call_id || "")}</small>` : ""}
     </div>
   `;
 }
 
-function renderProviderEvent(event) {
-  const toolCalls = event.tool_calls || event.ToolCalls || [];
+function renderToolDefinition(tool) {
+  return `
+    <div class="tool-definition">
+      <strong>${escapeHTML(tool.name || tool.Name || "-")}</strong>
+      <p>${escapeHTML(tool.description || tool.Description || "")}</p>
+    </div>
+  `;
+}
+
+function renderProviderEvent(event, index) {
+  const type = eventType(event);
   const usage = event.usage || event.Usage || {};
-  const body = [
+  const calls = toolCalls(event);
+  const summary = [
     event.text || event.Text || "",
     event.reason || event.Reason || "",
-    toolCalls.length ? toolCalls.map((call) => `${call.Name || call.name}(${call.Args || call.args || ""})`).join(", ") : "",
+    calls.length ? `${calls.length} tool call(s)` : "",
     totalTokens(usage) ? `${totalTokens(usage)} tokens` : "",
-  ].filter(Boolean).join(" · ");
+  ].filter(Boolean).join(" · ") || "(empty)";
   return `
-    <div class="stream-event">
-      <strong>${escapeHTML(event.type || event.Type)}</strong>
-      <span>${escapeHTML(body || "(empty)")}</span>
+    <details class="event-card ${escapeAttr(type)}">
+      <summary>
+        <span class="state-badge ${eventSeverity(type)}">${escapeHTML(type)}</span>
+        <strong>#${index + 1}</strong>
+        <span>${escapeHTML(summary)}</span>
+      </summary>
+      <div class="event-body">
+        ${event.text || event.Text ? `<pre class="text-block">${escapeHTML(event.text || event.Text)}</pre>` : ""}
+        ${event.reason || event.Reason ? `<p class="reason">${escapeHTML(event.reason || event.Reason)}</p>` : ""}
+        ${calls.length ? `<div class="tool-call-list">${calls.map(renderToolCall).join("")}</div>` : ""}
+        ${totalTokens(usage) ? renderUsage(usage) : ""}
+        <div class="code-actions">
+          <button class="secondary tiny" type="button" data-copy="event-json" data-step="${event.step || event.Step}" data-event-index="${index}">Copy event JSON</button>
+        </div>
+        <pre class="raw raw-block">${escapeHTML(JSON.stringify(event, null, 2))}</pre>
+      </div>
+    </details>
+  `;
+}
+
+function renderToolCall(call) {
+  return `
+    <div class="tool-call">
+      <strong>${escapeHTML(call.name || call.Name || "-")}</strong>
+      <small>${escapeHTML(call.id || call.ID || "")}${call.read_only || call.ReadOnly ? " · read only" : ""}</small>
+      <pre>${escapeHTML(call.args || call.Args || "")}</pre>
+    </div>
+  `;
+}
+
+function renderUsage(usage) {
+  return `
+    <div class="usage-grid">
+      ${usageItem("Input", usageValue(usage, "input_tokens", "InputTokens"))}
+      ${usageItem("Output", usageValue(usage, "output_tokens", "OutputTokens"))}
+      ${usageItem("Reasoning", usageValue(usage, "reasoning_tokens", "ReasoningTokens"))}
+      ${usageItem("Cache read", usageValue(usage, "cache_read_tokens", "CacheReadTokens"))}
+      ${usageItem("Cache write", usageValue(usage, "cache_write_tokens", "CacheWriteTokens"))}
+      ${usageItem("Cost", formatCost(usageValue(usage, "cost_usd", "CostUSD")))}
+    </div>
+  `;
+}
+
+function renderSegment(step, segment, index) {
+  const stateLabel = segment.reused ? "reused" : "new";
+  const open = state.detailFocus === "segments" ? " open" : "";
+  return `
+    <details class="segment-card ${stateLabel} ${focusClass("segments")}"${open}>
+      <summary>
+        <span class="state-badge ${stateLabel}">${stateLabel}</span>
+        <strong>Segment #${index + 1} · ${escapeHTML(segment.kind || "-")}</strong>
+        <span>${escapeHTML(segment.role || segment.fragment_type || segment.id || "")}</span>
+        <small>${escapeHTML(shortHash(segment.sha256 || ""))} · ${segment.byte_length || 0} bytes</small>
+      </summary>
+      <div class="segment-body">
+        ${renderKeyValueGrid([
+          ["ID", segment.id || "-"],
+          ["SHA-256", segment.sha256 || "-"],
+          ["Fingerprint", segment.fingerprint || "-"],
+          ["Fragment type", segment.fragment_type || "-"],
+          ["Schema version", segment.schema_version || "-"],
+          ["Adapter version", segment.adapter_version || "-"],
+          ["Structured ref", segment.structured_ref_id || "-"],
+          ["Epoch", segment.epoch || 0],
+          ["Sequence", segment.sequence || 0],
+        ])}
+        <div class="code-actions">
+          <button class="secondary tiny" type="button" data-copy="segment-raw" data-step="${step}" data-segment-index="${index}">Copy raw segment</button>
+          <button class="secondary tiny" type="button" data-copy="hash" data-value="${escapeAttr(segment.sha256 || "")}">Copy hash</button>
+        </div>
+        <pre class="raw raw-block">${escapeHTML(segment.raw || segment.raw_preview || "")}</pre>
+      </div>
+    </details>
+  `;
+}
+
+function renderDiagnostic(item) {
+  return `
+    <div class="diagnostic ${escapeAttr(item.severity)}">
+      <strong>${escapeHTML(item.title)}</strong>
+      <span>${escapeHTML(item.detail || "")}</span>
+      ${item.step ? `<small>step ${item.step}</small>` : ""}
+    </div>
+  `;
+}
+
+function renderSequenceItem(item) {
+  const action = sequenceAction(item);
+  const chips = item.type === "provider_request" ? renderSequenceRequestChips(item.step) : "";
+  return `
+    <div class="sequence-item ${escapeAttr(item.kind)}">
+      <button class="sequence-summary" type="button" data-select-step="${item.step}" data-open-tab="${escapeAttr(action.tab)}" data-detail-focus="${escapeAttr(action.focus)}">
+        <span class="state-badge ${escapeAttr(item.severity || "info")}">${escapeHTML(item.kind)}</span>
+        <strong>${escapeHTML(item.title)}</strong>
+        <span>${escapeHTML(item.detail || "")}</span>
+      </button>
+      ${chips}
+    </div>
+  `;
+}
+
+function renderSequenceRequestChips(stepNumber) {
+  const step = stepModels(state.lastResult).find((model) => model.step === stepNumber);
+  if (!step) return "";
+  return `
+    <div class="flow-actions sequence-actions">
+      ${flowChip(`${step.request.messages.length} messages`, step.step, "request", "messages")}
+      ${flowChip(`${step.request.raw_segments?.length || 0} raw segments`, step.step, "cache", "segments")}
+    </div>
+  `;
+}
+
+function sequenceAction(item) {
+  if (item.type === "provider_request") return { tab: "request", focus: "messages" };
+  if (item.kind === "provider") return { tab: "stream", focus: "events" };
+  if (item.type === "context_compact") return { tab: "cache", focus: "segments" };
+  if (["tool_call", "tool_result", "run_end", "budget_exceeded", "provider_retry"].includes(item.type)) return { tab: "raw", focus: "events" };
+  return { tab: "overview", focus: "sequence" };
+}
+
+function focusClass(key) {
+  return state.detailFocus === key ? "focus-target" : "";
+}
+
+function focusNote(key, text) {
+  if (state.detailFocus !== key) return "";
+  return `<div class="focus-note">${escapeHTML(text)}</div>`;
+}
+
+function renderKeyValueGrid(rows) {
+  return `
+    <div class="kv-grid">
+      ${rows.map((row) => Array.isArray(row) ? `
+        <div>
+          <span>${escapeHTML(row[0])}</span>
+          <strong>${escapeHTML(row[1])}</strong>
+        </div>
+      ` : row).join("")}
+    </div>
+  `;
+}
+
+function cacheCard(title, rows) {
+  return `
+    <div class="cache-card">
+      <h4>${escapeHTML(title)}</h4>
+      ${renderKeyValueGrid(rows)}
+    </div>
+  `;
+}
+
+function hashRow(label, hash) {
+  if (!hash) return [label, "-"];
+  return `
+    <div class="hash-row">
+      <span>${escapeHTML(label)}</span>
+      <strong title="${escapeHTML(hash)}">${escapeHTML(shortHash(hash))}</strong>
+      <button class="secondary tiny" type="button" data-copy="hash" data-value="${escapeAttr(hash)}">Copy</button>
+    </div>
+  `;
+}
+
+function summaryTile(label, value) {
+  return `
+    <div class="summary-tile">
+      <span>${escapeHTML(label)}</span>
+      <strong>${escapeHTML(value)}</strong>
+    </div>
+  `;
+}
+
+function usageItem(label, value) {
+  return `
+    <div>
+      <span>${escapeHTML(label)}</span>
+      <strong>${escapeHTML(value)}</strong>
     </div>
   `;
 }
 
 function resetRunView(status) {
+  state.lastResult = null;
+  state.selectedStep = null;
+  state.activeTab = "overview";
+  state.streamFilter = "all";
+  state.traceFilter = "";
+  el.traceSearch.value = "";
   setStatus(status);
-  el.runTitle.textContent = "Running agent...";
-  el.summaryText.textContent = "Waiting for engine events and provider stream.";
+  el.runTitle.textContent = status === "running" ? "Running agent..." : "Inspect one Floret turn";
+  el.summaryText.textContent = status === "running" ? "Waiting for engine events and provider stream." : "Run an agent turn to inspect state transitions and provider interaction.";
   ["metricStatus", "metricSteps", "metricRequests", "metricTools", "metricTokens", "metricDuration"].forEach((key) => {
     el[key].textContent = "-";
   });
+  el.eventCount.textContent = "0 events";
   el.transitions.textContent = "No transitions yet.";
-  el.transitions.className = "scroll empty";
-  el.stepInspector.textContent = "No provider steps yet.";
-  el.stepInspector.className = "steps empty";
+  el.transitions.className = "flow-list empty";
+  el.stepList.textContent = "No provider steps yet.";
+  el.stepList.className = "step-list empty";
   el.sessionMessages.textContent = "No session messages yet.";
-  el.sessionMessages.className = "scroll empty";
+  el.sessionMessages.className = "message-list empty";
   el.finalOutput.textContent = "The agent output will appear here.";
+  el.outputMeta.textContent = "waiting";
   el.rawJson.textContent = "{}";
+  renderFlowHealth(null);
+  renderTabs();
+  renderStepDetail();
 }
 
 function renderError(message) {
@@ -512,15 +1064,329 @@ function renderError(message) {
   el.outputMeta.textContent = "error";
 }
 
-function setRunning(value) {
-  state.running = value;
-  el.runAgent.disabled = value;
-  el.runAgent.textContent = value ? "Running..." : "Run Agent";
+function stepModels(result) {
+  if (!result) return [];
+  const requests = result.observation?.provider_requests || [];
+  const providerEvents = result.observation?.provider_events || [];
+  const engineEvents = result.events || [];
+  const transitions = result.observation?.transitions || [];
+  return requests.map((request) => {
+    const step = request.step || request.Step || 0;
+    const pEvents = providerEvents.filter((event) => (event.step || event.Step) === step);
+    const eEvents = engineEvents.filter((event) => (event.step || event.Step) === step);
+    const tEvents = transitions.filter((item) => item.step === step);
+    const usage = sumUsage(pEvents);
+    const toolCallItems = pEvents.flatMap(toolCalls);
+    const toolResultItems = eEvents.filter((event) => event.type === "tool_result" || event.Type === "tool_result");
+    const verifier = verifyStepFlow(request, pEvents, eEvents, result);
+    const diagnostics = [...verifier.diagnostics, ...stepDiagnostics(request, pEvents, eEvents, tEvents, result)];
+    const severity = diagnostics.some((item) => item.severity === "bad") ? "bad" : diagnostics.some((item) => item.severity === "warn") ? "warn" : "ok";
+    return {
+      step,
+      request,
+      provider: request.provider || request.Provider || "-",
+      model: request.model || request.Model || "-",
+      providerEvents: pEvents,
+      engineEvents: eEvents,
+      transitions: tEvents,
+      usage,
+      toolCalls: toolCallItems,
+      toolResults: toolResultItems,
+      cache: request.cache_summary || request.CacheSummary || {},
+      sequence: verifier.sequence,
+      diagnostics,
+      severity,
+      label: severity === "ok" ? "ok" : severity === "warn" ? "review" : "attention",
+    };
+  });
 }
 
-function setStatus(status) {
-  el.runStatus.className = `status ${escapeAttr(status || "idle")}`;
-  el.runStatus.textContent = status || "idle";
+function selectedStepModel() {
+  return stepModels(state.lastResult).find((step) => step.step === state.selectedStep) || null;
+}
+
+function stepSequence(step) {
+  return step.sequence || [];
+}
+
+function runDiagnostics(result) {
+  const diagnostics = [];
+  const requests = result.observation?.provider_requests || [];
+  const providerEvents = result.observation?.provider_events || [];
+  const engineEvents = result.events || [];
+  if (result.status && result.status !== "completed") {
+    diagnostics.push({
+      severity: result.status === "waiting" ? "warn" : "bad",
+      title: `Run ended as ${result.status}`,
+      detail: result.error || result.summary || "The terminal state needs review.",
+    });
+  }
+  if (requests.length === 0) {
+    diagnostics.push({ severity: "bad", title: "No provider request captured", detail: "The agent loop did not reach a model call." });
+  }
+  providerEvents.forEach((event) => {
+    const type = eventType(event);
+    if (type === "empty") diagnostics.push({ severity: "warn", step: event.step, title: "Provider returned empty output", detail: event.reason || "" });
+    if (type === "truncated") diagnostics.push({ severity: "bad", step: event.step, title: "Provider output was truncated", detail: event.reason || "" });
+  });
+  engineEvents.forEach((event) => {
+    const type = event.type || event.Type;
+    if (type === "budget_exceeded") diagnostics.push({ severity: "bad", step: event.step, title: "Budget exceeded", detail: event.message || "" });
+    if (type === "provider_retry") diagnostics.push({ severity: "warn", step: event.step, title: "Provider retry", detail: event.message || "" });
+    if (type === "context_compact") diagnostics.push({ severity: "info", step: event.step, title: "Context compacted", detail: "The memory manager compacted context during this run." });
+    if (event.err || event.Err) diagnostics.push({ severity: "bad", step: event.step, title: `${type} error`, detail: event.err || event.Err });
+  });
+  stepModels(result).forEach((step) => {
+    step.diagnostics.forEach((item) => diagnostics.push(item));
+  });
+  return diagnostics;
+}
+
+function verifyStepFlow(request, providerEvents, engineEvents, result) {
+  const step = request.step || request.Step || 0;
+  const diagnostics = [];
+  const sequence = buildStepTimeline(request, providerEvents, engineEvents);
+  const types = sequence.map((item) => item.type);
+  const hasProviderRequest = types.includes("provider_request");
+  const hasStream = providerEvents.length > 0;
+  const hasProviderDone = providerEvents.some((event) => eventType(event) === "done");
+  const hasProviderTerminal = providerEvents.some((event) => ["done", "empty", "truncated"].includes(eventType(event)));
+  const calls = providerEvents.flatMap(toolCalls);
+  const signalCalls = calls.filter(isSignalToolCall);
+  const normalCalls = calls.filter((call) => !isSignalToolCall(call));
+  const toolCallEvents = engineEvents.filter((event) => eventKind(event) === "tool_call");
+  const toolResultEvents = engineEvents.filter((event) => eventKind(event) === "tool_result");
+  const stepEndEvents = engineEvents.filter((event) => eventKind(event) === "step_end");
+  const runEndEvents = engineEvents.filter((event) => eventKind(event) === "run_end");
+  const retryEvents = engineEvents.filter((event) => eventKind(event) === "provider_retry");
+  const terminalSignalStep = signalCalls.length > 0 && runEndEvents.length > 0;
+
+  if (!hasProviderRequest) {
+    diagnostics.push({ severity: "bad", step, title: "Missing provider_request event", detail: "A provider request was observed, but the engine trace did not emit provider_request for this step." });
+  }
+  if (!hasStream) {
+    diagnostics.push({ severity: "warn", step, title: "Missing provider stream", detail: "Expected at least one provider stream event after provider_request." });
+  }
+  if (hasStream && !hasProviderTerminal) {
+    diagnostics.push({ severity: "warn", step, title: "Provider stream has no terminal event", detail: "Expected done, empty, or truncated before the engine leaves the step." });
+  }
+  if (hasStream && !hasProviderDone && !providerEvents.some((event) => ["empty", "truncated"].includes(eventType(event)))) {
+    diagnostics.push({ severity: "warn", step, title: "No provider done event", detail: "The provider stream ended without an explicit done event." });
+  }
+  if (normalCalls.length > 0 && toolCallEvents.length < normalCalls.length) {
+    diagnostics.push({ severity: "bad", step, title: "Missing tool_call event", detail: `Expected ${normalCalls.length} engine tool_call event(s), captured ${toolCallEvents.length}.` });
+  }
+  if (normalCalls.length > 0 && toolResultEvents.length < normalCalls.length) {
+    diagnostics.push({ severity: "bad", step, title: "Missing tool_result event", detail: `Expected ${normalCalls.length} tool_result event(s), captured ${toolResultEvents.length}.` });
+  }
+  if (signalCalls.length > 0 && toolResultEvents.length > 0) {
+    diagnostics.push({ severity: "warn", step, title: "Signal produced tool_result", detail: "task_complete and ask_user should terminate or interrupt without normal tool execution." });
+  }
+  if (normalCalls.length > 0 && stepEndEvents.length === 0 && step !== lastStepNumber(result)) {
+    diagnostics.push({ severity: "bad", step, title: "Missing step_end", detail: "A non-terminal step with normal tool execution should emit step_end before the next provider request." });
+  }
+  if (normalCalls.length === 0 && signalCalls.length === 0 && stepEndEvents.length === 0 && runEndEvents.length === 0 && retryEvents.length === 0) {
+    diagnostics.push({ severity: "warn", step, title: "Step has no closing event", detail: "Expected step_end, run_end, or provider_retry after the provider stream." });
+  }
+  if (terminalSignalStep && stepEndEvents.length > 0) {
+    diagnostics.push({ severity: "info", step, title: "Signal step also emitted step_end", detail: "Signal tools normally finish through run_end without a step_end event." });
+  }
+  const orderIssue = firstOrderIssue(sequence);
+  if (orderIssue) diagnostics.push(orderIssue);
+
+  return { diagnostics, sequence };
+}
+
+function buildStepTimeline(request, providerEvents, engineEvents) {
+  const step = request.step || request.Step || 0;
+  const items = [];
+  engineEvents.forEach((event, index) => {
+    const type = eventKind(event);
+    items.push({
+      kind: "engine",
+      type,
+      step,
+      order: timeOrder(event.timestamp || event.Timestamp, 20 + index),
+      severity: engineEventSeverity(type, event),
+      title: `engine ${type}`,
+      detail: event.message || event.Message || event.tool_name || event.ToolName || event.err || event.Err || "",
+    });
+  });
+  if (request.observed_at || request.ObservedAt) {
+    items.push({
+      kind: "engine",
+      type: "provider_request",
+      step,
+      order: timeOrder(request.observed_at || request.ObservedAt, 10),
+      severity: "info",
+      title: "engine provider_request",
+      detail: `${request.messages?.length || 0} messages · ${request.raw_segments?.length || 0} raw segments`,
+    });
+  }
+  providerEvents.forEach((event, index) => {
+    const type = eventType(event);
+    items.push({
+      kind: "provider",
+      type: `provider_${type}`,
+      step,
+      order: timeOrder(event.observed_at || event.ObservedAt, 100 + index),
+      severity: eventSeverity(type),
+      title: `provider ${type}`,
+      detail: providerEventSummary(event, index),
+    });
+  });
+  return items
+    .sort((a, b) => a.order - b.order)
+    .filter((item, index, all) => !isDuplicateProviderRequest(item, all[index - 1]));
+}
+
+function firstOrderIssue(sequence) {
+  const index = (type) => sequence.findIndex((item) => item.type === type || item.type === `provider_${type}`);
+  const providerRequest = index("provider_request");
+  const firstProviderEvent = sequence.findIndex((item) => item.kind === "provider");
+  const firstToolCall = index("tool_call");
+  const firstToolResult = index("tool_result");
+  const stepEnd = index("step_end");
+  const runEnd = index("run_end");
+  const step = sequence[0]?.step || 0;
+  if (providerRequest >= 0 && firstProviderEvent >= 0 && firstProviderEvent < providerRequest) {
+    return { severity: "bad", step, title: "Provider stream before provider_request", detail: "Captured provider stream ordering does not match the expected agent loop." };
+  }
+  if (firstToolResult >= 0 && firstToolCall >= 0 && firstToolResult < firstToolCall) {
+    return { severity: "bad", step, title: "tool_result before tool_call", detail: "Engine event order is inconsistent for this step." };
+  }
+  if (stepEnd >= 0 && firstProviderEvent >= 0 && stepEnd < firstProviderEvent) {
+    return { severity: "bad", step, title: "step_end before provider stream", detail: "Expected provider output before step_end." };
+  }
+  if (runEnd >= 0 && providerRequest >= 0 && runEnd < providerRequest) {
+    return { severity: "bad", step, title: "run_end before provider_request", detail: "Terminal run event appeared before the step request." };
+  }
+  return null;
+}
+
+function isDuplicateProviderRequest(item, previous) {
+  return item?.type === "provider_request" && previous?.type === "provider_request" && Math.abs(item.order - previous.order) < 3;
+}
+
+function stepDiagnostics(request, providerEvents, engineEvents, transitions, result) {
+  const diagnostics = [];
+  const step = request.step || request.Step || 0;
+  providerEvents.forEach((event) => {
+    const type = eventType(event);
+    if (type === "empty") diagnostics.push({ severity: "warn", step, title: "Empty provider event", detail: event.reason || "" });
+    if (type === "truncated") diagnostics.push({ severity: "bad", step, title: "Truncated provider event", detail: event.reason || "" });
+  });
+  if ((request.raw_segments || []).length === 0) {
+    diagnostics.push({ severity: "info", step, title: "No raw prompt segments", detail: "Prompt cache ledger data was not present on this request." });
+  }
+  if (result.status !== "completed" && step === lastStepNumber(result)) {
+    diagnostics.push({ severity: "bad", step, title: `Terminal state ${result.status}`, detail: result.error || result.summary || "" });
+  }
+  if (transitions.length === 0) {
+    diagnostics.push({ severity: "info", step, title: "No state transition rows", detail: "This step has no derived transition entries." });
+  }
+  return diagnostics;
+}
+
+function aggregateCache(result) {
+  const out = { reusedSegments: 0, newSegments: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+  (result?.observation?.provider_requests || []).forEach((request) => {
+    const cache = request.cache_summary || {};
+    out.reusedSegments += cache.reused_segments || 0;
+    out.newSegments += cache.new_segments || 0;
+    out.cacheReadTokens += cache.cache_read_tokens || 0;
+    out.cacheWriteTokens += cache.cache_write_tokens || 0;
+  });
+  return out;
+}
+
+function lastStepNumber(result) {
+  const steps = (result.observation?.provider_requests || []).map((request) => request.step || request.Step || 0);
+  return steps.length ? Math.max(...steps) : 0;
+}
+
+function sumUsage(events) {
+  return events.reduce((sum, event) => addUsage(sum, event.usage || event.Usage || {}), {});
+}
+
+function addUsage(a, b) {
+  return {
+    input_tokens: usageValue(a, "input_tokens", "InputTokens") + usageValue(b, "input_tokens", "InputTokens"),
+    output_tokens: usageValue(a, "output_tokens", "OutputTokens") + usageValue(b, "output_tokens", "OutputTokens"),
+    reasoning_tokens: usageValue(a, "reasoning_tokens", "ReasoningTokens") + usageValue(b, "reasoning_tokens", "ReasoningTokens"),
+    cache_read_tokens: usageValue(a, "cache_read_tokens", "CacheReadTokens") + usageValue(b, "cache_read_tokens", "CacheReadTokens"),
+    cache_write_tokens: usageValue(a, "cache_write_tokens", "CacheWriteTokens") + usageValue(b, "cache_write_tokens", "CacheWriteTokens"),
+    total_tokens: usageValue(a, "total_tokens", "TotalTokens") + usageValue(b, "total_tokens", "TotalTokens"),
+    cost_usd: usageValue(a, "cost_usd", "CostUSD") + usageValue(b, "cost_usd", "CostUSD"),
+  };
+}
+
+function toolCalls(event) {
+  return event.tool_calls || event.ToolCalls || [];
+}
+
+function eventType(event) {
+  return event.type || event.Type || "event";
+}
+
+function eventKind(event) {
+  return event.type || event.Type || "event";
+}
+
+function isSignalToolCall(call) {
+  const name = call.name || call.Name || "";
+  return name === "task_complete" || name === "ask_user";
+}
+
+function timeOrder(value, fallback) {
+  if (!value) return fallback;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return fallback;
+  return date.getTime() + fallback / 1000;
+}
+
+function providerEventSummary(event, index) {
+  const usage = event.usage || event.Usage || {};
+  const calls = toolCalls(event);
+  return [
+    `#${index + 1}`,
+    event.text || event.Text || "",
+    event.reason || event.Reason || "",
+    calls.length ? `${calls.length} tool call(s)` : "",
+    totalTokens(usage) ? `${totalTokens(usage)} tokens` : "",
+  ].filter(Boolean).join(" · ");
+}
+
+function eventSeverity(type) {
+  if (type === "truncated") return "bad";
+  if (type === "empty") return "warn";
+  if (type === "usage" || type === "done") return "ok";
+  return "info";
+}
+
+function engineEventSeverity(type, event) {
+  if (type === "budget_exceeded" || event.err || event.Err) return "bad";
+  if (type === "provider_retry") return "warn";
+  if (type === "tool_result" || type === "run_end" || type === "step_end") return "ok";
+  return "info";
+}
+
+function reuseRatio(cache) {
+  const reused = cache.reused_segments || 0;
+  const fresh = cache.new_segments || 0;
+  const total = reused + fresh;
+  if (!total) return "0%";
+  return `${Math.round((reused / total) * 100)}%`;
+}
+
+function severityLabel(level) {
+  if (level === "bad") return "Needs attention";
+  if (level === "warn") return "Review suggested";
+  return "Informational";
+}
+
+function eventTotal(result) {
+  return (result?.events?.length || 0) + (result?.observation?.provider_events?.length || 0) + (result?.observation?.transitions?.length || 0);
 }
 
 function activeProfile() {
@@ -584,7 +1450,14 @@ function slug(value) {
 
 function totalTokens(usage) {
   usage = usage || {};
-  return usage.total_tokens || usage.TotalTokens || ["input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens"].reduce((sum, key) => sum + (usage[key] || 0), 0) || ["InputTokens", "OutputTokens", "ReasoningTokens", "CacheReadTokens", "CacheWriteTokens"].reduce((sum, key) => sum + (usage[key] || 0), 0);
+  const explicit = usageValue(usage, "total_tokens", "TotalTokens");
+  if (explicit) return explicit;
+  return ["input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens"].reduce((sum, key) => sum + (usage[key] || 0), 0) ||
+    ["InputTokens", "OutputTokens", "ReasoningTokens", "CacheReadTokens", "CacheWriteTokens"].reduce((sum, key) => sum + (usage[key] || 0), 0);
+}
+
+function usageValue(usage, lower, upper) {
+  return Number(usage?.[lower] || usage?.[upper] || 0);
 }
 
 function shortHash(value) {
@@ -596,7 +1469,7 @@ function transitionClass(status) {
   if (["completed", "step_finished", "tool_result_received"].includes(status)) return "ok";
   if (["failed", "error", "budget_exceeded", "cancelled"].includes(status)) return "bad";
   if (["waiting", "provider_waiting", "tool_calling"].includes(status)) return "active";
-  return "";
+  return "info";
 }
 
 function formatDuration(ms) {
@@ -605,10 +1478,109 @@ function formatDuration(ms) {
   return `${(ms / 1000).toFixed(1)} s`;
 }
 
+function formatCost(value) {
+  const n = Number(value || 0);
+  if (!n) return "$0";
+  return `$${n.toFixed(n < 0.01 ? 5 : 3)}`;
+}
+
+function formatTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function setRunning(value) {
+  state.running = value;
+  el.runAgent.disabled = value;
+  el.runAgent.textContent = value ? "Running..." : "Run Agent";
+}
+
+function setStatus(status) {
+  el.runStatus.className = `status ${escapeAttr(status || "idle")}`;
+  el.runStatus.textContent = status || "idle";
+}
+
 async function copyRaw() {
   await navigator.clipboard.writeText(el.rawJson.textContent);
-  el.copyRaw.textContent = "Copied";
-  setTimeout(() => { el.copyRaw.textContent = "Copy"; }, 1200);
+  flashCopied(el.copyRaw, "Copy JSON");
+}
+
+async function copyDynamic(button) {
+  const text = copyPayload(button);
+  if (!text) return;
+  await navigator.clipboard.writeText(text);
+  flashCopied(button, button.dataset.originalLabel || button.textContent || "Copy");
+}
+
+function copyPayload(button) {
+  const kind = button.dataset.copy;
+  if (kind === "hash") return button.dataset.value || "";
+  const step = Number(button.dataset.step);
+  const model = stepModels(state.lastResult).find((item) => item.step === step);
+  if (!model) return "";
+  if (kind === "step-json") {
+    return JSON.stringify({
+      request: model.request,
+      provider_events: model.providerEvents,
+      engine_events: model.engineEvents,
+      transitions: model.transitions,
+    }, null, 2);
+  }
+  if (kind === "segment-raw") {
+    const index = Number(button.dataset.segmentIndex);
+    const segment = model.request.raw_segments?.[index];
+    return segment?.raw || segment?.raw_preview || "";
+  }
+  if (kind === "event-json") {
+    const index = Number(button.dataset.eventIndex);
+    return JSON.stringify(model.providerEvents[index] || {}, null, 2);
+  }
+  return "";
+}
+
+function flashCopied(button, fallback) {
+  if (!button.dataset.originalLabel) button.dataset.originalLabel = fallback || button.textContent || "Copy";
+  button.textContent = "Copied";
+  setTimeout(() => {
+    button.textContent = button.dataset.originalLabel;
+  }, 1200);
+}
+
+function collectMatches(value, query) {
+  const matches = [];
+  const needle = query.toLowerCase();
+  walkJSON(value, "result", needle, matches);
+  return matches.slice(0, 200);
+}
+
+function walkJSON(value, path, needle, matches) {
+  if (matches.length >= 200) return;
+  if (value == null) return;
+  if (typeof value !== "object") {
+    const text = String(value);
+    if (text.toLowerCase().includes(needle)) matches.push({ path, value: text });
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => walkJSON(item, `${path}[${index}]`, needle, matches));
+    return;
+  }
+  Object.entries(value).forEach(([key, child]) => {
+    const childPath = `${path}.${key}`;
+    if (key.toLowerCase().includes(needle)) {
+      matches.push({ path: childPath, value: summarizeJSON(child) });
+    }
+    walkJSON(child, childPath, needle, matches);
+  });
+}
+
+function summarizeJSON(value) {
+  if (value == null) return null;
+  if (typeof value !== "object") return String(value);
+  const text = JSON.stringify(value);
+  return text.length > 500 ? `${text.slice(0, 500)}...` : text;
 }
 
 function escapeHTML(value) {
