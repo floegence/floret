@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -190,7 +191,11 @@ func TestAnthropicProviderSendsMessagesRequestAndReceivesNaturalAnswer(t *testin
 	if seenPath != "/messages" || seenKey != "secret" || seenVersion == "" || seenBody.Model != "claude-sonnet-4-6" || !strings.Contains(string(seenBody.System), "anthropic system") {
 		t.Fatalf("bad anthropic request path/key/version/body = %q/%q/%q/%#v", seenPath, seenKey, seenVersion, seenBody)
 	}
-	if len(seenBody.Messages) == 0 || seenBody.Messages[0].Role != "user" || len(seenBody.Tools) != 0 {
+	if len(seenBody.Messages) == 0 || seenBody.Messages[0].Role != "user" || !slices.ContainsFunc(seenBody.Tools, func(tool struct {
+		Name string `json:"name"`
+	}) bool {
+		return tool.Name == "ask_user"
+	}) {
 		t.Fatalf("bad anthropic messages/tools = %#v", seenBody)
 	}
 }
@@ -793,5 +798,94 @@ func TestNewProviderUsesProviderSpecificEnvKey(t *testing.T) {
 	}
 	if seenAuth != "Bearer deepseek-secret" {
 		t.Fatalf("auth = %q", seenAuth)
+	}
+}
+
+func TestOpenAICompatibleProviderRendersStrictFunctionSchemaAndRejectsHostedTools(t *testing.T) {
+	var body struct {
+		Tools []struct {
+			Type     string `json:"type"`
+			Function struct {
+				Name        string         `json:"name"`
+				Description string         `json:"description"`
+				Parameters  map[string]any `json:"parameters"`
+			} `json:"function"`
+		} `json:"tools"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
+	_, err := p.Stream(context.Background(), provider.Request{
+		RunID: "r",
+		Tools: []provider.ToolDefinition{{
+			Name:        "read",
+			Description: "Read a file.",
+			InputSchema: tools.StrictObject(map[string]any{"path": tools.String("path")}, []string{"path"}),
+			Strict:      true,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Tools) != 1 || body.Tools[0].Type != "function" || body.Tools[0].Function.Name != "read" || body.Tools[0].Function.Description != "Read a file." || body.Tools[0].Function.Parameters["additionalProperties"] != false {
+		t.Fatalf("tool schema = %#v", body.Tools)
+	}
+	if required, ok := body.Tools[0].Function.Parameters["required"].([]any); !ok || len(required) != 1 || required[0] != "path" {
+		t.Fatalf("required properties = %#v", body.Tools[0].Function.Parameters["required"])
+	}
+	if _, err := p.Stream(context.Background(), provider.Request{RunID: "r", HostedTools: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}}); err == nil || !strings.Contains(err.Error(), "hosted tools") {
+		t.Fatalf("expected hosted tool rejection, got %v", err)
+	}
+	if _, err := p.PayloadHash(provider.Request{RunID: "r", HostedTools: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}}); err == nil || !strings.Contains(err.Error(), "hosted tools") {
+		t.Fatalf("expected hosted tool payload hash rejection, got %v", err)
+	}
+}
+
+func TestAnthropicProviderRendersStrictInputSchemaAndRejectsHostedTools(t *testing.T) {
+	var body struct {
+		Tools []struct {
+			Name        string         `json:"name"`
+			Description string         `json:"description"`
+			InputSchema map[string]any `json:"input_schema"`
+		} `json:"tools"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+	p := AnthropicProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
+	_, err := p.Stream(context.Background(), provider.Request{
+		RunID: "r",
+		Tools: []provider.ToolDefinition{{
+			Name:        "read",
+			Description: "Read a file.",
+			InputSchema: tools.StrictObject(map[string]any{"path": tools.String("path")}, []string{"path"}),
+			Strict:      true,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Tools) != 1 || body.Tools[0].Name != "read" || body.Tools[0].Description != "Read a file." || body.Tools[0].InputSchema["additionalProperties"] != false {
+		t.Fatalf("tool schema = %#v", body.Tools)
+	}
+	if required, ok := body.Tools[0].InputSchema["required"].([]any); !ok || len(required) != 1 || required[0] != "path" {
+		t.Fatalf("required properties = %#v", body.Tools[0].InputSchema["required"])
+	}
+	if _, err := p.Stream(context.Background(), provider.Request{RunID: "r", HostedTools: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}}); err == nil || !strings.Contains(err.Error(), "hosted tools") {
+		t.Fatalf("expected hosted tool rejection, got %v", err)
+	}
+	if _, err := p.PayloadHash(provider.Request{RunID: "r", HostedTools: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}}); err == nil || !strings.Contains(err.Error(), "hosted tools") {
+		t.Fatalf("expected hosted tool payload hash rejection, got %v", err)
 	}
 }

@@ -121,13 +121,13 @@ func TestThreadRunStopHookContinuationBeforeToolCallKeepsSessionTreeOrder(t *tes
 	promptStore := promptcache.NewMemoryStore()
 	p := scriptharness.NewScriptedProvider(
 		scriptharness.Step(scriptharness.Text("draft"), scriptharness.Done()),
-		scriptharness.Step(scriptharness.Tool("read-1", "read", "{}"), scriptharness.DoneReason("tool_calls")),
+		scriptharness.Step(scriptharness.Tool("read-1", "read", `{"value":"README.md"}`), scriptharness.DoneReason("tool_calls")),
 		scriptharness.Step(scriptharness.Text("final"), scriptharness.Done()),
 	)
 	h := newTestHarness(p, repo, promptStore)
-	mustRegister(h.options.Tools, tools.Tool{Name: "read", Handler: func(context.Context, string) (string, error) {
+	mustRegister(h.options.Tools, stringTool("read", func(context.Context, string) (string, error) {
 		return "read result", nil
-	}})
+	}))
 	h.options.StopHook = func(_ context.Context, hook engine.StopHookContext) (engine.StopHookResult, error) {
 		if hook.Step == 1 {
 			return engine.StopHookResult{Continue: true, Prompt: "Please inspect with a tool.", Reason: "tool-check"}, nil
@@ -155,7 +155,7 @@ func TestThreadRunStopHookContinuationBeforeToolCallKeepsSessionTreeOrder(t *tes
 		{Role: session.User, Content: "do it"},
 		{Role: session.Assistant, Content: "draft"},
 		{Role: session.User, Content: "Please inspect with a tool."},
-		{Role: session.Assistant, Content: "tool_call", ToolCallID: "read-1", ToolName: "read", ToolArgs: "{}"},
+		{Role: session.Assistant, Content: "tool_call", ToolCallID: "read-1", ToolName: "read", ToolArgs: `{"value":"README.md"}`},
 		{Role: session.Tool, Content: "read result", ToolCallID: "read-1", ToolName: "read"},
 		{Role: session.Assistant, Content: "final"},
 	}
@@ -271,16 +271,15 @@ func TestRetryAfterInterruptedTurnUsesRealtimeToolSavePoint(t *testing.T) {
 	repo := sessiontree.NewMemoryRepo()
 	promptStore := promptcache.NewMemoryStore()
 	p := scriptharness.NewScriptedProvider(
-		scriptharness.Step(scriptharness.Tool("read-1", "read", "{}")),
+		scriptharness.Step(scriptharness.Tool("read-1", "read", `{"value":"README.md"}`)),
 		scriptharness.Step(scriptharness.Hang()),
 	)
 	registry := tools.NewRegistry()
 	readCalls := 0
-	mustRegister(registry, tools.Tool{Name: "ask_user", Handler: func(context.Context, string) (string, error) { return "", nil }})
-	mustRegister(registry, tools.Tool{Name: "read", Handler: func(context.Context, string) (string, error) {
+	mustRegister(registry, stringTool("read", func(context.Context, string) (string, error) {
 		readCalls++
 		return "read result", nil
-	}})
+	}))
 	h := New(Options{
 		Provider:      p,
 		ProviderName:  "fake",
@@ -534,7 +533,7 @@ func TestFileRepoResumeContinuesThreadAndReusesRawSegments(t *testing.T) {
 	promptRoot := t.TempDir()
 	repo := sessiontree.NewFileRepo(root)
 	promptStore := promptcache.NewFileStore(promptRoot)
-	firstProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Tool("ask", "ask_user", "more?")))
+	firstProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Tool("ask", "ask_user", `{"question":"more?"}`)))
 	h := newTestHarness(firstProvider, repo, promptStore)
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
@@ -646,7 +645,6 @@ func TestActiveTurnBusyGuard(t *testing.T) {
 func newTestHarness(p provider.Provider, repo sessiontree.Repo, promptStore promptcache.Store) *AgentHarness {
 	rec := &event.Recorder{}
 	registry := tools.NewRegistry()
-	mustRegister(registry, tools.Tool{Name: "ask_user", Handler: func(context.Context, string) (string, error) { return "", nil }})
 	return New(Options{
 		Provider:     p,
 		ProviderName: "fake",
@@ -668,6 +666,30 @@ func mustRegister(registry *tools.Registry, tool tools.Tool) {
 	if err := registry.Register(tool); err != nil {
 		panic(err)
 	}
+}
+
+type stringArgs struct {
+	Value string `json:"value"`
+}
+
+func stringTool(name string, handler func(context.Context, string) (string, error)) tools.Tool {
+	return tools.Define[stringArgs](
+		tools.Definition{
+			Name: name,
+			InputSchema: tools.StrictObject(map[string]any{
+				"value": tools.String("test value"),
+			}, []string{"value"}),
+		},
+		nil,
+		nil,
+		func(ctx context.Context, inv tools.Invocation[stringArgs]) (tools.Result, error) {
+			text, err := handler(ctx, inv.Args.Value)
+			if err != nil {
+				return tools.Result{}, err
+			}
+			return tools.Result{Text: text}, nil
+		},
+	)
 }
 
 func hasEntry(entries []sessiontree.Entry, entryType sessiontree.EntryType, status sessiontree.TurnMarkerStatus) bool {

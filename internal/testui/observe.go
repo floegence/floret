@@ -74,6 +74,7 @@ func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<
 		ObservedAt:   time.Now(),
 		Messages:     observeMessages(req.Messages),
 		Tools:        append([]provider.ToolDefinition(nil), req.Tools...),
+		HostedTools:  append([]provider.HostedToolDefinition(nil), req.HostedTools...),
 		ContextUsage: req.ContextUsage,
 		RawSegments:  observeRawSegments(req.RawPlan),
 		CacheSummary: ObservedCacheSummary{

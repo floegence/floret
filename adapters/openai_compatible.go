@@ -134,6 +134,9 @@ func (p OpenAICompatibleProvider) Stream(ctx context.Context, req provider.Reque
 	if p.Model == "" {
 		return nil, fmt.Errorf("openai-compatible model is required")
 	}
+	if len(req.HostedTools) > 0 {
+		return nil, fmt.Errorf("openai-compatible chat provider does not support hosted tools: %s", hostedToolNames(req.HostedTools))
+	}
 	normalizedCache, err := p.NormalizeCachePolicy(req.Cache)
 	if err != nil {
 		return nil, err
@@ -246,6 +249,9 @@ func (p OpenAICompatibleProvider) PayloadHash(req provider.Request) (string, err
 		return "", err
 	}
 	req.Cache = policy
+	if len(req.HostedTools) > 0 {
+		return "", fmt.Errorf("openai-compatible chat provider does not support hosted tools: %s", hostedToolNames(req.HostedTools))
+	}
 	body, err := json.Marshal(p.buildChatRequest(req))
 	if err != nil {
 		return "", err
@@ -295,7 +301,15 @@ func (p OpenAICompatibleProvider) MessageRaw(kind promptcache.SegmentKind, msg s
 }
 
 func (p OpenAICompatibleProvider) ToolRaw(def promptcache.ToolDefinition) (string, string, error) {
-	rendered := renderTools([]provider.ToolDefinition{{Name: def.Name, Description: def.Description}})
+	rendered := renderTools([]provider.ToolDefinition{{
+		Name:         def.Name,
+		Title:        def.Title,
+		Description:  def.Description,
+		InputSchema:  def.InputSchema,
+		OutputSchema: def.OutputSchema,
+		Strict:       def.Strict,
+		Annotations:  def.Annotations,
+	}})
 	if len(rendered) == 0 {
 		return "", "", nil
 	}
@@ -466,13 +480,26 @@ func renderTools(defs []provider.ToolDefinition) []chatTool {
 		tool.Type = "function"
 		tool.Function.Name = def.Name
 		tool.Function.Description = def.Description
-		tool.Function.Parameters = map[string]any{
-			"type":                 "object",
-			"additionalProperties": true,
+		tool.Function.Parameters = def.InputSchema
+		if tool.Function.Parameters == nil {
+			tool.Function.Parameters = map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{},
+				"required":             []string{},
+				"additionalProperties": false,
+			}
 		}
 		tools = append(tools, tool)
 	}
 	return tools
+}
+
+func hostedToolNames(defs []provider.HostedToolDefinition) string {
+	names := make([]string, 0, len(defs))
+	for _, def := range defs {
+		names = append(names, def.Type+"/"+def.Name)
+	}
+	return strings.Join(names, ", ")
 }
 
 func renderToolsFromRawPlan(plan promptcache.RawPlan, fallback []chatTool) []chatTool {

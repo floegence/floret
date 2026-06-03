@@ -13,7 +13,7 @@ import (
 func BenchmarkBuildPlanTenThousandSegmentsWithCompactionWindow(b *testing.B) {
 	ctx := context.Background()
 	store := NewMemoryStore()
-	toolset, _, err := EnsureToolset(ctx, store, "turn-0", "thread", "openai", "model", []ToolDefinition{{Name: "read"}}, time.Time{})
+	toolset, _, err := EnsureToolset(ctx, store, "turn-0", "thread", "openai", "model", []ToolDefinition{{Name: "read"}}, nil, time.Time{})
 	if err != nil {
 		b.Fatal(err)
 	}

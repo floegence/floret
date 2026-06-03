@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/floegence/floret/modelcatalog"
 	"github.com/floegence/floret/promptcache"
@@ -86,6 +87,9 @@ func (p AnthropicProvider) Stream(ctx context.Context, req provider.Request) (<-
 	}
 	if p.Model == "" {
 		return nil, fmt.Errorf("anthropic model is required")
+	}
+	if len(req.HostedTools) > 0 {
+		return nil, fmt.Errorf("anthropic provider does not support hosted tools in this adapter: %s", anthropicHostedToolNames(req.HostedTools))
 	}
 	normalizedCache, err := p.NormalizeCachePolicy(req.Cache)
 	if err != nil {
@@ -216,6 +220,9 @@ func (p AnthropicProvider) PayloadHash(req provider.Request) (string, error) {
 		return "", err
 	}
 	req.Cache = policy
+	if len(req.HostedTools) > 0 {
+		return "", fmt.Errorf("anthropic provider does not support hosted tools in this adapter: %s", anthropicHostedToolNames(req.HostedTools))
+	}
 	maxTokens := p.maxTokensForRequest(req)
 	body, err := json.Marshal(p.buildAnthropicRequest(req, maxTokens))
 	if err != nil {
@@ -256,7 +263,15 @@ func (p AnthropicProvider) MessageRaw(kind promptcache.SegmentKind, msg session.
 }
 
 func (p AnthropicProvider) ToolRaw(def promptcache.ToolDefinition) (string, string, error) {
-	rendered := renderAnthropicTools([]provider.ToolDefinition{{Name: def.Name, Description: def.Description}}, nil)
+	rendered := renderAnthropicTools([]provider.ToolDefinition{{
+		Name:         def.Name,
+		Title:        def.Title,
+		Description:  def.Description,
+		InputSchema:  def.InputSchema,
+		OutputSchema: def.OutputSchema,
+		Strict:       def.Strict,
+		Annotations:  def.Annotations,
+	}}, nil)
 	if len(rendered) == 0 {
 		return "", "", nil
 	}
@@ -380,16 +395,33 @@ func renderAnthropicTools(defs []provider.ToolDefinition, cacheControl *anthropi
 			toolCacheControl = cacheControl
 		}
 		tools = append(tools, anthropicTool{
-			Name:        def.Name,
-			Description: def.Description,
-			InputSchema: map[string]any{
-				"type":                 "object",
-				"additionalProperties": true,
-			},
+			Name:         def.Name,
+			Description:  def.Description,
+			InputSchema:  inputSchemaForAnthropic(def),
 			CacheControl: toolCacheControl,
 		})
 	}
 	return tools
+}
+
+func inputSchemaForAnthropic(def provider.ToolDefinition) map[string]any {
+	if def.InputSchema != nil {
+		return def.InputSchema
+	}
+	return map[string]any{
+		"type":                 "object",
+		"properties":           map[string]any{},
+		"required":             []string{},
+		"additionalProperties": false,
+	}
+}
+
+func anthropicHostedToolNames(defs []provider.HostedToolDefinition) string {
+	names := make([]string, 0, len(defs))
+	for _, def := range defs {
+		names = append(names, def.Type+"/"+def.Name)
+	}
+	return strings.Join(names, ", ")
 }
 
 func renderAnthropicToolsFromRawPlan(plan promptcache.RawPlan, cacheControl *anthropicCacheControl, fallback []anthropicTool) []anthropicTool {

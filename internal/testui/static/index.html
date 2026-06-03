@@ -102,6 +102,16 @@
               <span>Recent tail</span>
               <input id="recentTailTokens" type="number" min="256" step="256" value="4096" />
             </label>
+            <label class="field mini">
+              <span>Tools</span>
+              <select id="toolMode">
+                <option value="chat">Chat</option>
+                <option value="read_only">Read only</option>
+                <option value="coding">Coding</option>
+                <option value="coding_shell">Coding + shell</option>
+                <option value="network">Network</option>
+              </select>
+            </label>
             <button id="runAgent" class="primary" type="button">New Session</button>
             <button id="appendMessage" class="secondary" type="button" disabled>Send Message</button>
           </div>

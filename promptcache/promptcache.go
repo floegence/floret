@@ -65,6 +65,7 @@ type RawPlan struct {
 	Segments             []Segment           `json:"segments"`
 	ToolsetID            string              `json:"toolset_id,omitempty"`
 	ToolsetEpoch         int                 `json:"toolset_epoch,omitempty"`
+	HostedToolsetHash    string              `json:"hosted_toolset_hash,omitempty"`
 	PrefixHash           string              `json:"prefix_hash"`
 	PayloadHash          string              `json:"payload_hash"`
 	CacheNamespace       string              `json:"cache_namespace,omitempty"`
@@ -117,23 +118,37 @@ type MessageSnapshot struct {
 }
 
 type ToolDefinition struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
+	Name         string         `json:"name"`
+	Title        string         `json:"title,omitempty"`
+	Description  string         `json:"description,omitempty"`
+	InputSchema  map[string]any `json:"input_schema,omitempty"`
+	OutputSchema map[string]any `json:"output_schema,omitempty"`
+	Strict       bool           `json:"strict,omitempty"`
+	Annotations  map[string]any `json:"annotations,omitempty"`
+}
+
+type HostedToolDefinition struct {
+	Name        string         `json:"name"`
+	Type        string         `json:"type"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
+	Options     map[string]any `json:"options,omitempty"`
 }
 
 type ToolsetSnapshot struct {
-	ID           string           `json:"id"`
-	RunID        string           `json:"run_id"`
-	SessionID    string           `json:"session_id,omitempty"`
-	ThreadID     string           `json:"thread_id,omitempty"`
-	TurnID       string           `json:"turn_id,omitempty"`
-	Provider     string           `json:"provider"`
-	Model        string           `json:"model"`
-	Epoch        int              `json:"epoch"`
-	Tools        []ToolDefinition `json:"tools"`
-	RawSegmentID string           `json:"raw_segment_id"`
-	Fingerprint  string           `json:"fingerprint"`
-	CreatedAt    time.Time        `json:"created_at"`
+	ID           string                 `json:"id"`
+	RunID        string                 `json:"run_id"`
+	SessionID    string                 `json:"session_id,omitempty"`
+	ThreadID     string                 `json:"thread_id,omitempty"`
+	TurnID       string                 `json:"turn_id,omitempty"`
+	Provider     string                 `json:"provider"`
+	Model        string                 `json:"model"`
+	Epoch        int                    `json:"epoch"`
+	Tools        []ToolDefinition       `json:"tools"`
+	HostedTools  []HostedToolDefinition `json:"hosted_tools,omitempty"`
+	RawSegmentID string                 `json:"raw_segment_id"`
+	Fingerprint  string                 `json:"fingerprint"`
+	CreatedAt    time.Time              `json:"created_at"`
 }
 
 type ProviderRequestRecord struct {
@@ -436,6 +451,7 @@ type BuildInput struct {
 	SystemPrompt   string
 	History        []session.Message
 	Toolset        ToolsetSnapshot
+	HostedTools    []HostedToolDefinition
 	Renderer       Renderer
 	ContextPolicy  contextpolicy.Policy
 	Now            time.Time
@@ -477,8 +493,9 @@ func BuildPlan(ctx context.Context, store Store, input BuildInput) (RawPlan, []s
 	plan.Version = Version
 	plan.ToolsetID = input.Toolset.ID
 	plan.ToolsetEpoch = input.Toolset.Epoch
+	plan.HostedToolsetHash = StableHash(mustCanonical(input.HostedTools))
 	plan.CacheNamespace = input.CacheNamespace
-	plan.ContextUsage = contextpolicy.EstimateMessages(input.SystemPrompt, input.History, len(input.Toolset.Tools), input.ContextPolicy)
+	plan.ContextUsage = contextpolicy.EstimateMessages(input.SystemPrompt, input.History, len(input.Toolset.Tools)+len(input.HostedTools), input.ContextPolicy)
 	plan.CompactionGeneration, plan.CompactionWindowID, plan.CompactionEntryID = activeCompactionWindow(input.History)
 	var requestMessages []session.Message
 	sequence := nextSequence(existing)
@@ -562,7 +579,7 @@ func BuildPlan(ctx context.Context, store Store, input BuildInput) (RawPlan, []s
 		requestMessages = append(requestMessages, seg.Message.toSession())
 	}
 	plan.PrefixHash = HashStrings(segmentRaws(plan.Segments)...)
-	plan.PayloadHash = plan.PrefixHash
+	plan.PayloadHash = HashStrings(plan.PrefixHash, plan.HostedToolsetHash)
 	return plan, requestMessages, nil
 }
 
@@ -576,7 +593,7 @@ func segmentForCurrentRef(existing, current Segment) Segment {
 	return existing
 }
 
-func EnsureToolset(ctx context.Context, store Store, runID, sessionID, provider, model string, defs []ToolDefinition, now time.Time) (ToolsetSnapshot, bool, error) {
+func EnsureToolset(ctx context.Context, store Store, runID, sessionID, provider, model string, defs []ToolDefinition, hosted []HostedToolDefinition, now time.Time) (ToolsetSnapshot, bool, error) {
 	if store == nil {
 		store = NewMemoryStore()
 	}
@@ -588,7 +605,8 @@ func EnsureToolset(ctx context.Context, store Store, runID, sessionID, provider,
 		now = time.Now()
 	}
 	defs = NormalizeTools(defs)
-	raw := mustCanonical(map[string]any{"kind": SegmentToolset, "tools": defs})
+	hosted = NormalizeHostedTools(hosted)
+	raw := mustCanonical(map[string]any{"hosted_tools": hosted, "kind": SegmentToolset, "tools": defs})
 	fingerprint := StableHash(raw)
 	seg := Segment{
 		ID:             fmt.Sprintf("%s:%s:%s", scopeID, SegmentToolset, fingerprint[:12]),
@@ -622,6 +640,7 @@ func EnsureToolset(ctx context.Context, store Store, runID, sessionID, provider,
 		Model:        model,
 		Epoch:        1,
 		Tools:        defs,
+		HostedTools:  hosted,
 		RawSegmentID: seg.ID,
 		Fingerprint:  fingerprint,
 		CreatedAt:    now,
@@ -629,23 +648,24 @@ func EnsureToolset(ctx context.Context, store Store, runID, sessionID, provider,
 	return snap, true, store.AppendToolset(ctx, snap)
 }
 
-func EnsureCurrentToolset(ctx context.Context, store Store, runID, sessionID, provider, model string, defs []ToolDefinition, now time.Time) (ToolsetSnapshot, bool, error) {
+func EnsureCurrentToolset(ctx context.Context, store Store, runID, sessionID, provider, model string, defs []ToolDefinition, hosted []HostedToolDefinition, now time.Time) (ToolsetSnapshot, bool, error) {
 	defs = NormalizeTools(defs)
+	hosted = NormalizeHostedTools(hosted)
 	scopeID := cacheScopeID(runID, sessionID)
-	raw := mustCanonical(map[string]any{"kind": SegmentToolset, "tools": defs})
+	raw := mustCanonical(map[string]any{"hosted_tools": hosted, "kind": SegmentToolset, "tools": defs})
 	fingerprint := StableHash(raw)
 	if active, ok, err := store.ActiveToolset(ctx, scopeID, provider, model); err != nil {
 		return ToolsetSnapshot{}, false, err
 	} else if ok && active.Fingerprint == fingerprint {
 		return active, false, nil
 	} else if ok {
-		snap, err := ActivateToolset(ctx, store, runID, sessionID, provider, model, defs, now)
+		snap, err := ActivateToolset(ctx, store, runID, sessionID, provider, model, defs, hosted, now)
 		return snap, true, err
 	}
-	return EnsureToolset(ctx, store, runID, sessionID, provider, model, defs, now)
+	return EnsureToolset(ctx, store, runID, sessionID, provider, model, defs, hosted, now)
 }
 
-func ActivateToolset(ctx context.Context, store Store, runID, sessionID, provider, model string, defs []ToolDefinition, now time.Time) (ToolsetSnapshot, error) {
+func ActivateToolset(ctx context.Context, store Store, runID, sessionID, provider, model string, defs []ToolDefinition, hosted []HostedToolDefinition, now time.Time) (ToolsetSnapshot, error) {
 	if store == nil {
 		store = NewMemoryStore()
 	}
@@ -660,7 +680,8 @@ func ActivateToolset(ctx context.Context, store Store, runID, sessionID, provide
 		epoch = active.Epoch + 1
 	}
 	defs = NormalizeTools(defs)
-	raw := mustCanonical(map[string]any{"kind": SegmentToolset, "tools": defs})
+	hosted = NormalizeHostedTools(hosted)
+	raw := mustCanonical(map[string]any{"hosted_tools": hosted, "kind": SegmentToolset, "tools": defs})
 	fingerprint := StableHash(raw)
 	seg := Segment{
 		ID:             fmt.Sprintf("%s:%s:%d:%s", scopeID, SegmentToolset, epoch, fingerprint[:12]),
@@ -694,6 +715,7 @@ func ActivateToolset(ctx context.Context, store Store, runID, sessionID, provide
 		Model:        model,
 		Epoch:        epoch,
 		Tools:        defs,
+		HostedTools:  hosted,
 		RawSegmentID: seg.ID,
 		Fingerprint:  fingerprint,
 		CreatedAt:    now,
@@ -717,6 +739,30 @@ func NormalizeTools(defs []ToolDefinition) []ToolDefinition {
 	}
 	slices.SortFunc(out, func(a, b ToolDefinition) int {
 		return strings.Compare(a.Name, b.Name)
+	})
+	return out
+}
+
+func NormalizeHostedTools(defs []HostedToolDefinition) []HostedToolDefinition {
+	out := make([]HostedToolDefinition, 0, len(defs))
+	seen := map[string]struct{}{}
+	for _, def := range defs {
+		def.Name = strings.TrimSpace(def.Name)
+		def.Type = strings.TrimSpace(def.Type)
+		if def.Name == "" || def.Type == "" {
+			continue
+		}
+		key := def.Type + "\x00" + def.Name
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, def)
+	}
+	slices.SortFunc(out, func(a, b HostedToolDefinition) int {
+		left := a.Type + "\x00" + a.Name
+		right := b.Type + "\x00" + b.Name
+		return strings.Compare(left, right)
 	})
 	return out
 }
@@ -989,6 +1035,7 @@ func segmentRaws(segments []Segment) []string {
 
 func cloneToolset(snap ToolsetSnapshot) ToolsetSnapshot {
 	snap.Tools = append([]ToolDefinition(nil), snap.Tools...)
+	snap.HostedTools = append([]HostedToolDefinition(nil), snap.HostedTools...)
 	return snap
 }
 

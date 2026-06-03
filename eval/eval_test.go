@@ -23,9 +23,19 @@ func TestRunnerPassesOnlyWhenEngineCompletesAndOraclePasses(t *testing.T) {
 	artifacts := filepath.Join(t.TempDir(), "artifacts")
 	rec := &event.Recorder{}
 	registry := tools.NewRegistry()
-	if err := registry.Register(tools.Tool{Name: "write", Handler: func(_ context.Context, arg string) (string, error) {
-		return "wrote", os.WriteFile(filepath.Join(workspace, "answer.txt"), []byte(arg), 0o644)
-	}}); err != nil {
+	if err := registry.Register(tools.Define[writeArgs](
+		tools.Definition{
+			Name: "write",
+			InputSchema: tools.StrictObject(map[string]any{
+				"content": tools.String("content"),
+			}, []string{"content"}),
+		},
+		nil,
+		nil,
+		func(_ context.Context, inv tools.Invocation[writeArgs]) (tools.Result, error) {
+			return tools.Result{Text: "wrote"}, os.WriteFile(filepath.Join(workspace, "answer.txt"), []byte(inv.Args.Content), 0o644)
+		},
+	)); err != nil {
 		t.Fatal(err)
 	}
 	runner := Runner{
@@ -40,7 +50,7 @@ func TestRunnerPassesOnlyWhenEngineCompletesAndOraclePasses(t *testing.T) {
 			Provider: harness.NewScriptedProvider(
 				harness.Step(
 					harness.Usage(provider.Usage{InputTokens: 10, OutputTokens: 2}),
-					harness.Tool("write-1", "write", "done"),
+					harness.Tool("write-1", "write", `{"content":"done"}`),
 				),
 				harness.Step(harness.Text("ok"), harness.Done()),
 			),
@@ -72,6 +82,10 @@ func TestRunnerPassesOnlyWhenEngineCompletesAndOraclePasses(t *testing.T) {
 	if result.Artifacts["trace"] == "" {
 		t.Fatalf("trace artifact missing: %#v", result.Artifacts)
 	}
+}
+
+type writeArgs struct {
+	Content string `json:"content"`
 }
 
 func TestRunnerFailsWhenOracleFailsDespiteNaturalCompletion(t *testing.T) {

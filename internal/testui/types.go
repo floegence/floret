@@ -111,6 +111,7 @@ type AgentRunRequest struct {
 	Profile       ProviderProfile      `json:"profile,omitempty"`
 	Message       string               `json:"message"`
 	SystemPrompt  string               `json:"system_prompt"`
+	ToolMode      string               `json:"tool_mode,omitempty"`
 	ContextPolicy contextpolicy.Policy `json:"context_policy,omitempty"`
 }
 
@@ -155,19 +156,20 @@ type AgentObservation struct {
 }
 
 type ObservedProviderRequest struct {
-	RunID        string                    `json:"run_id,omitempty"`
-	SessionID    string                    `json:"session_id,omitempty"`
-	ThreadID     string                    `json:"thread_id,omitempty"`
-	TurnID       string                    `json:"turn_id,omitempty"`
-	Step         int                       `json:"step"`
-	Provider     string                    `json:"provider"`
-	Model        string                    `json:"model"`
-	ObservedAt   time.Time                 `json:"observed_at"`
-	Messages     []ObservedSessionMessage  `json:"messages"`
-	Tools        []provider.ToolDefinition `json:"tools"`
-	ContextUsage contextpolicy.Usage       `json:"context_usage,omitempty"`
-	RawSegments  []ObservedRawSegment      `json:"raw_segments,omitempty"`
-	CacheSummary ObservedCacheSummary      `json:"cache_summary,omitempty"`
+	RunID        string                          `json:"run_id,omitempty"`
+	SessionID    string                          `json:"session_id,omitempty"`
+	ThreadID     string                          `json:"thread_id,omitempty"`
+	TurnID       string                          `json:"turn_id,omitempty"`
+	Step         int                             `json:"step"`
+	Provider     string                          `json:"provider"`
+	Model        string                          `json:"model"`
+	ObservedAt   time.Time                       `json:"observed_at"`
+	Messages     []ObservedSessionMessage        `json:"messages"`
+	Tools        []provider.ToolDefinition       `json:"tools"`
+	HostedTools  []provider.HostedToolDefinition `json:"hosted_tools,omitempty"`
+	ContextUsage contextpolicy.Usage             `json:"context_usage,omitempty"`
+	RawSegments  []ObservedRawSegment            `json:"raw_segments,omitempty"`
+	CacheSummary ObservedCacheSummary            `json:"cache_summary,omitempty"`
 }
 
 type ObservedRawSegment struct {
@@ -279,6 +281,7 @@ type AgentSessionSnapshot struct {
 	UpdatedAt        time.Time                `json:"updated_at"`
 	Profile          ProviderProfile          `json:"profile"`
 	SystemPrompt     string                   `json:"system_prompt"`
+	ToolMode         string                   `json:"tool_mode"`
 	ContextPolicy    contextpolicy.Policy     `json:"context_policy"`
 	LatestTurnID     string                   `json:"latest_turn_id,omitempty"`
 	WaitingPrompt    string                   `json:"waiting_prompt,omitempty"`

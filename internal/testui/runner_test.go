@@ -261,10 +261,60 @@ func TestRunnerRunAgentReturnsInteractionObservation(t *testing.T) {
 	}
 }
 
+func TestRunnerAgentSessionToolModeExplicitlyExposesBuiltInTools(t *testing.T) {
+	root := t.TempDir()
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	if _, err := runner.SaveConfigState(SaveConfigRequest{
+		ActiveProfileID: "fake",
+		Profiles: []ProviderProfile{{
+			ID:           "fake",
+			Name:         "Fake",
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "ok",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	chat := runner.RunAgent(context.Background(), AgentRunRequest{
+		ProfileID:    "fake",
+		Message:      "hello",
+		SystemPrompt: "test",
+		ToolMode:     "chat",
+	})
+	if chat.Status != "completed" || chat.Session.ToolMode != "chat" {
+		t.Fatalf("chat = %#v", chat)
+	}
+	if slices.ContainsFunc(chat.Observation.ProviderRequests[0].Tools, func(tool provider.ToolDefinition) bool {
+		return tool.Name == "read" || tool.Name == "grep"
+	}) {
+		t.Fatalf("chat mode should not expose built-in workspace tools: %#v", chat.Observation.ProviderRequests[0].Tools)
+	}
+
+	readOnly := runner.RunAgent(context.Background(), AgentRunRequest{
+		ProfileID:    "fake",
+		Message:      "hello",
+		SystemPrompt: "test",
+		ToolMode:     "read_only",
+	})
+	if readOnly.Status != "completed" || readOnly.Session.ToolMode != "read_only" {
+		t.Fatalf("readOnly = %#v", readOnly)
+	}
+	for _, name := range []string{"read", "list", "glob", "grep"} {
+		if !slices.ContainsFunc(readOnly.Observation.ProviderRequests[0].Tools, func(tool provider.ToolDefinition) bool {
+			return tool.Name == name && tool.Strict && tool.InputSchema["additionalProperties"] == false
+		}) {
+			t.Fatalf("read_only mode missing tool %s: %#v", name, readOnly.Observation.ProviderRequests[0].Tools)
+		}
+	}
+}
+
 func TestRunnerAgentSessionWaitsAndResumesWithAppendMessage(t *testing.T) {
 	root := t.TempDir()
 	scripted := harness.NewScriptedProvider(
-		harness.Step(harness.Tool("ask", "ask_user", "Which file?"), harness.Done()),
+		harness.Step(harness.Tool("ask", "ask_user", `{"question":"Which file?"}`), harness.Done()),
 		harness.Step(harness.Text("resumed"), harness.Done()),
 	)
 	runner := NewRunner(root)
@@ -297,7 +347,7 @@ func TestRunnerAgentSessionWaitsAndResumesWithAppendMessage(t *testing.T) {
 		t.Fatalf("missing session/turn ids: %#v", first)
 	}
 	if !slices.ContainsFunc(first.Observation.SessionMessages, func(msg ObservedSessionMessage) bool {
-		return msg.ToolName == "ask_user" && msg.ToolArgs == "Which file?"
+		return msg.ToolName == "ask_user" && msg.ToolArgs == `{"question":"Which file?"}`
 	}) {
 		t.Fatalf("ask_user call not exposed in session messages: %#v", first.Observation.SessionMessages)
 	}
@@ -348,7 +398,7 @@ func TestRunnerAgentSessionWaitsAndResumesWithAppendMessage(t *testing.T) {
 func TestRunnerAgentSessionPersistsAndResumesAfterNewRunner(t *testing.T) {
 	root := t.TempDir()
 	firstProvider := harness.NewScriptedProvider(
-		harness.Step(harness.Tool("ask", "ask_user", "Which file?"), harness.Done()),
+		harness.Step(harness.Tool("ask", "ask_user", `{"question":"Which file?"}`), harness.Done()),
 	)
 	firstRunner := NewRunner(root)
 	firstRunner.Now = fixedClock()
@@ -476,7 +526,7 @@ func TestRunnerRestoredSessionRehydratesSavedAPIKeyWithoutPersistingSecret(t *te
 		t.Fatal(err)
 	}
 	runner.ProviderFactory = func(cfg config.Config) (provider.Provider, error) {
-		return harness.NewScriptedProvider(harness.Step(harness.Tool("ask", "ask_user", "Need file?"), harness.Done())), nil
+		return harness.NewScriptedProvider(harness.Step(harness.Tool("ask", "ask_user", `{"question":"Need file?"}`), harness.Done())), nil
 	}
 	first := runner.CreateAgentSession(context.Background(), AgentRunRequest{
 		ProfileID:    "live",
@@ -609,7 +659,7 @@ func TestRunnerAgentSessionCanContinueAfterCompletedTurn(t *testing.T) {
 func TestRunnerAgentSessionRegistryIsStableForLiteralRunner(t *testing.T) {
 	root := t.TempDir()
 	scripted := harness.NewScriptedProvider(
-		harness.Step(harness.Tool("ask", "ask_user", "Need value?"), harness.Done()),
+		harness.Step(harness.Tool("ask", "ask_user", `{"question":"Need value?"}`), harness.Done()),
 		harness.Step(harness.Text("literal resumed"), harness.Done()),
 	)
 	runner := Runner{
@@ -825,6 +875,41 @@ func TestObservingProviderForwardsPromptRenderer(t *testing.T) {
 	}
 	if raw != `{"type":"function","function":{"name":"read"}}` || fragment != promptcache.FragmentOpenAITool {
 		t.Fatalf("ToolRaw = %q, %q", raw, fragment)
+	}
+}
+
+func TestObservingProviderRecordsHostedToolsSeparatelyFromLocalTools(t *testing.T) {
+	inner := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
+	observed := newObservingProvider(inner)
+	stream, err := observed.Stream(context.Background(), provider.Request{
+		RunID: "run",
+		Step:  1,
+		Tools: []provider.ToolDefinition{{
+			Name:        "read",
+			InputSchema: map[string]any{"type": "object", "additionalProperties": false},
+			Strict:      true,
+		}},
+		HostedTools: []provider.HostedToolDefinition{{
+			Name:    "web_search",
+			Type:    "web_search",
+			Options: map[string]any{"limit": 3},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range stream {
+	}
+	snapshot := observed.Snapshot()
+	if len(snapshot.ProviderRequests) != 1 {
+		t.Fatalf("requests = %#v", snapshot.ProviderRequests)
+	}
+	req := snapshot.ProviderRequests[0]
+	if len(req.Tools) != 1 || req.Tools[0].Name != "read" {
+		t.Fatalf("local tools = %#v", req.Tools)
+	}
+	if len(req.HostedTools) != 1 || req.HostedTools[0].Name != "web_search" || req.HostedTools[0].Type != "web_search" {
+		t.Fatalf("hosted tools = %#v", req.HostedTools)
 	}
 }
 

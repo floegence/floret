@@ -32,5 +32,5 @@ func (p FakeProvider) DefaultCacheRetention() promptcache.Retention {
 }
 
 func (p FakeProvider) PayloadHash(req provider.Request) (string, error) {
-	return req.RawPlan.PrefixHash, nil
+	return req.RawPlan.PayloadHash, nil
 }

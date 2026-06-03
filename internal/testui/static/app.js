@@ -34,6 +34,7 @@ const el = {
   contextWindowTokens: $("contextWindowTokens"),
   maxOutputTokens: $("maxOutputTokens"),
   recentTailTokens: $("recentTailTokens"),
+  toolMode: $("toolMode"),
   runAgent: $("runAgent"),
   appendMessage: $("appendMessage"),
   sessionSelect: $("sessionSelect"),
@@ -383,6 +384,7 @@ async function createSession() {
         profile: activeProfile(),
         message,
         system_prompt: el.systemPrompt.value,
+        tool_mode: el.toolMode.value,
         context_policy: {
           context_window_tokens: Number(el.contextWindowTokens.value || 0),
           max_output_tokens: Number(el.maxOutputTokens.value || 0),
@@ -700,7 +702,7 @@ function renderTransitionActions(item) {
   const chips = [];
   const messages = step.request.messages.length;
   const segments = step.request.raw_segments?.length || 0;
-  const tools = step.request.tools.length;
+  const tools = requestToolCount(step.request);
   const events = step.providerEvents.length;
   switch (item.reason) {
     case "provider_request":
@@ -889,6 +891,8 @@ function renderOverviewTab(step) {
 }
 
 function renderRequestTab(step) {
+  const hostedTools = step.request.hosted_tools || [];
+  const totalTools = requestToolCount(step.request);
   return `
     <section class="detail-section ${focusClass("messages")}">
       <div class="section-label split">
@@ -901,10 +905,14 @@ function renderRequestTab(step) {
     <section class="detail-section ${focusClass("tools")}">
       <div class="section-label split">
         <span>Tool definitions</span>
-        <span>${step.request.tools.length} tools</span>
+        <span>${totalTools} tools · ${hostedTools.length} hosted</span>
       </div>
       ${focusNote("tools", "Opened from State Flow. These are the tool definitions exposed to the selected provider call.")}
-      <div class="tool-definition-list">${step.request.tools.map(renderToolDefinition).join("") || "<p class=\"empty-note\">No tools were exposed.</p>"}</div>
+      <div class="tool-definition-list">
+        ${step.request.tools.map((tool) => renderToolDefinition(tool, "local")).join("")}
+        ${hostedTools.map((tool) => renderHostedToolDefinition(tool)).join("")}
+        ${totalTools === 0 ? "<p class=\"empty-note\">No tools were exposed.</p>" : ""}
+      </div>
     </section>
     <section class="detail-section">
       <div class="section-label">Request metadata</div>
@@ -913,7 +921,8 @@ function renderRequestTab(step) {
         ["Model", step.model],
         ["Step", step.step],
         ["Messages", step.request.messages.length],
-        ["Tools", step.request.tools.length],
+        ["Local tools", step.request.tools.length],
+        ["Hosted tools", hostedTools.length],
         ["Raw segments", step.request.raw_segments?.length || 0],
       ])}
     </section>
@@ -1159,13 +1168,92 @@ function renderMessageDetails(message) {
   `;
 }
 
-function renderToolDefinition(tool) {
+function renderToolDefinition(tool, kind = "local") {
+  const name = tool.name || tool.Name || "-";
+  const title = tool.title || tool.Title || "";
+  const description = tool.description || tool.Description || "";
+  const inputSchema = tool.input_schema || tool.InputSchema || null;
+  const outputSchema = tool.output_schema || tool.OutputSchema || null;
+  const annotations = tool.annotations || tool.Annotations || null;
+  const strict = Boolean(tool.strict || tool.Strict);
+  const annotationText = compactJSON(annotations);
   return `
-    <div class="tool-definition">
-      <strong>${escapeHTML(tool.name || tool.Name || "-")}</strong>
-      <p>${escapeHTML(tool.description || tool.Description || "")}</p>
-    </div>
+    <details class="tool-definition">
+      <summary>
+        <span class="state-badge ${kind === "local" ? "info" : "active"}">${escapeHTML(kind)}</span>
+        <strong>${escapeHTML(name)}</strong>
+        <small>${strict ? "strict schema" : "non-strict"}${title ? ` · ${escapeHTML(title)}` : ""}</small>
+      </summary>
+      <div class="tool-definition-body">
+        ${description ? `<p>${escapeHTML(description)}</p>` : ""}
+        <div class="tool-pill-row">
+          ${toolSchemaBadges(inputSchema)}
+          ${annotationText ? `<span>${escapeHTML(annotationText)}</span>` : ""}
+          ${outputSchema ? "<span>output schema</span>" : ""}
+        </div>
+        ${renderToolSchemaBlock("Input schema", inputSchema)}
+        ${renderToolSchemaBlock("Output schema", outputSchema)}
+        ${renderToolSchemaBlock("Annotations", annotations)}
+      </div>
+    </details>
   `;
+}
+
+function renderHostedToolDefinition(tool) {
+  const name = tool.name || tool.Name || "-";
+  const type = tool.type || tool.Type || "-";
+  const description = tool.description || tool.Description || "";
+  const parameters = tool.parameters || tool.Parameters || null;
+  const options = tool.options || tool.Options || null;
+  return `
+    <details class="tool-definition hosted-tool">
+      <summary>
+        <span class="state-badge active">hosted</span>
+        <strong>${escapeHTML(name)}</strong>
+        <small>${escapeHTML(type)}</small>
+      </summary>
+      <div class="tool-definition-body">
+        ${description ? `<p>${escapeHTML(description)}</p>` : ""}
+        <div class="tool-pill-row">
+          <span>${escapeHTML(type)}</span>
+          ${parameters ? "<span>parameters</span>" : ""}
+          ${options ? "<span>options</span>" : ""}
+        </div>
+        ${renderToolSchemaBlock("Parameters", parameters)}
+        ${renderToolSchemaBlock("Options", options)}
+      </div>
+    </details>
+  `;
+}
+
+function renderToolSchemaBlock(label, value) {
+  if (!value || (typeof value === "object" && Object.keys(value).length === 0)) return "";
+  return `
+    <details class="schema-block">
+      <summary>${escapeHTML(label)}</summary>
+      <pre class="text-block">${escapeHTML(JSON.stringify(value, null, 2))}</pre>
+    </details>
+  `;
+}
+
+function toolSchemaBadges(schema) {
+  if (!schema) return "<span>no schema</span>";
+  const required = schema.required || schema.Required || [];
+  const props = schema.properties || schema.Properties || {};
+  const badges = [];
+  badges.push(schema.additionalProperties === false || schema.AdditionalProperties === false ? "closed object" : "open object");
+  badges.push(`${Object.keys(props).length} fields`);
+  badges.push(`${Array.isArray(required) ? required.length : 0} required`);
+  return badges.map((badge) => `<span>${escapeHTML(badge)}</span>`).join("");
+}
+
+function compactJSON(value) {
+  if (!value || typeof value !== "object" || Object.keys(value).length === 0) return "";
+  return JSON.stringify(value);
+}
+
+function requestToolCount(request) {
+  return (request.tools?.length || 0) + (request.hosted_tools?.length || 0);
 }
 
 function renderProviderEvent(event, index) {
@@ -1217,7 +1305,7 @@ function renderToolCall(call) {
   return `
     <div class="tool-call">
       <strong>${escapeHTML(call.name || call.Name || "-")}</strong>
-      <small>${escapeHTML(call.id || call.ID || "")}${call.read_only || call.ReadOnly ? " · read only" : ""}</small>
+      <small>${escapeHTML(call.id || call.ID || "")}</small>
       <pre>${escapeHTML(call.args || call.Args || "")}</pre>
     </div>
   `;
@@ -1457,6 +1545,7 @@ function stepModels(result) {
       ...request,
       messages: request.messages || request.Messages || [],
       tools: request.tools || request.Tools || [],
+      hosted_tools: request.hosted_tools || request.HostedTools || [],
       raw_segments: request.raw_segments || request.RawSegments || [],
       cache_summary: request.cache_summary || request.CacheSummary || {},
     };
@@ -2006,12 +2095,12 @@ function eventKind(event) {
 
 function isSignalToolCall(call) {
   const name = call.name || call.Name || "";
-  return name === "ask_user";
+  return name === "ask_user" || name === "task_complete";
 }
 
 function isInterruptToolCall(call) {
   const name = call.name || call.Name || "";
-  return name === "ask_user";
+  return name === "ask_user" || name === "task_complete";
 }
 
 function timeOrder(value, fallback) {

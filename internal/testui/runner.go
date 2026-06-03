@@ -19,8 +19,10 @@ import (
 
 	"github.com/floegence/floret/adapters"
 	"github.com/floegence/floret/agentharness"
+	"github.com/floegence/floret/builtintools"
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/contextpolicy"
+	"github.com/floegence/floret/control"
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/eval"
 	"github.com/floegence/floret/event"
@@ -73,6 +75,7 @@ type agentSession struct {
 	id              string
 	profile         ProviderProfile
 	systemPrompt    string
+	toolMode        string
 	contextPolicy   contextpolicy.Policy
 	cfg             config.Config
 	provider        *observingProvider
@@ -193,6 +196,7 @@ func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) Ag
 		UpdatedAt:     started,
 		Profile:       resolvedProfile,
 		SystemPrompt:  cfg.SystemPrompt,
+		ToolMode:      req.ToolMode,
 		ContextPolicy: cfg.ContextPolicy,
 		Config:        cfg,
 		Start:         true,
@@ -306,6 +310,7 @@ type agentSessionBuildOptions struct {
 	UpdatedAt     time.Time
 	Profile       ProviderProfile
 	SystemPrompt  string
+	ToolMode      string
 	ContextPolicy contextpolicy.Policy
 	Config        config.Config
 	Turns         []AgentTurnSummary
@@ -324,8 +329,9 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 	harnessRec := &agentharness.HarnessRecorder{}
 	repo := sessiontree.NewFileRepo(r.agentSessionTreeRoot())
 	promptStore := promptcache.NewFileStore(filepath.Join(r.Root, ".floret-test-ui", "prompt-cache"))
+	toolMode := normalizeToolMode(opts.ToolMode)
 	registry := tools.NewRegistry()
-	if err := registerInterruptTools(registry); err != nil {
+	if err := registerAgentSessionTools(registry, r.Root, toolMode); err != nil {
 		return nil, err
 	}
 	h := agentharness.New(agentharness.Options{
@@ -338,6 +344,7 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 		Repo:          repo,
 		Sink:          rec,
 		HarnessSink:   harnessRec,
+		Approver:      testUIToolApprover,
 		ContextPolicy: cfg.ContextPolicy,
 		EngineOptions: engine.Options{
 			CacheRetention:          config.PromptCacheRetention(cfg),
@@ -372,6 +379,7 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 		id:              opts.ID,
 		profile:         opts.Profile,
 		systemPrompt:    cfg.SystemPrompt,
+		toolMode:        toolMode,
 		contextPolicy:   cfg.ContextPolicy,
 		cfg:             cfg,
 		provider:        observed,
@@ -403,6 +411,47 @@ func (r *Runner) agentSessionIDGenerator(ctx context.Context, repo sessiontree.R
 		seqByPrefix[prefix]++
 		return fmt.Sprintf("%s-%d", prefix, seqByPrefix[prefix])
 	}
+}
+
+func normalizeToolMode(mode string) string {
+	switch strings.TrimSpace(mode) {
+	case "", "chat":
+		return "chat"
+	case "read_only", "coding", "coding_shell", "network":
+		return strings.TrimSpace(mode)
+	default:
+		return "chat"
+	}
+}
+
+func registerAgentSessionTools(registry *tools.Registry, root string, mode string) error {
+	mode = normalizeToolMode(mode)
+	if mode == "chat" {
+		return nil
+	}
+	if err := builtintools.RegisterReadOnlyWorkspace(registry, builtintools.WorkspaceOptions{Root: root}); err != nil {
+		return err
+	}
+	if mode == "read_only" {
+		return nil
+	}
+	if err := builtintools.RegisterWorkspaceMutation(registry, builtintools.WorkspaceOptions{Root: root}); err != nil {
+		return err
+	}
+	if mode == "coding" {
+		return nil
+	}
+	if err := builtintools.RegisterShell(registry, builtintools.ShellOptions{CWD: root}); err != nil {
+		return err
+	}
+	if mode == "coding_shell" {
+		return nil
+	}
+	return builtintools.RegisterNetwork(registry, builtintools.NetworkOptions{})
+}
+
+func testUIToolApprover(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {
+	return tools.PermissionDecisionAllow, nil
 }
 
 func rememberPrefixedID(seqByPrefix map[string]int, value string) {
@@ -443,6 +492,7 @@ func (r *Runner) restoreAgentSession(ctx context.Context, sessionID string) (*ag
 		UpdatedAt:     meta.UpdatedAt,
 		Profile:       profile,
 		SystemPrompt:  meta.SystemPrompt,
+		ToolMode:      meta.ToolMode,
 		ContextPolicy: meta.ContextPolicy,
 		Config:        cfg,
 		Turns:         meta.Turns,
@@ -653,6 +703,7 @@ func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) 
 		UpdatedAt:        sess.updatedAt,
 		Profile:          sess.profile,
 		SystemPrompt:     sess.systemPrompt,
+		ToolMode:         sess.toolMode,
 		ContextPolicy:    sess.contextPolicy,
 		LatestTurnID:     latestTurnID,
 		WaitingPrompt:    waitingPrompt,
@@ -738,6 +789,9 @@ func waitingPromptForTurn(path []sessiontree.Entry, turnID string) string {
 			continue
 		}
 		if entry.Message.ToolName == "ask_user" {
+			if signal, ok, err := control.Project(provider.ToolCall{Name: entry.Message.ToolName, Args: entry.Message.ToolArgs}); ok && err == nil {
+				return signal.Prompt
+			}
 			return entry.Message.ToolArgs
 		}
 	}
@@ -968,36 +1022,13 @@ func (r Runner) runEvalDemo(ctx context.Context, resp RunResponse) RunResponse {
 	}
 	rec := &event.Recorder{}
 	registry := tools.NewRegistry()
-	if err := registerInterruptTools(registry); err != nil {
-		return r.failAgent(resp, err)
-	}
-	if err := registry.Register(tools.Tool{
-		Name:        "write_file",
-		Description: "Write a text file in the eval workspace.",
-		Handler: func(_ context.Context, args string) (string, error) {
-			path, content, err := parseWriteArgs(args)
-			if err != nil {
-				return "", err
-			}
-			if filepath.IsAbs(path) || strings.Contains(filepath.Clean(path), "..") {
-				return "", fmt.Errorf("unsafe path %q", path)
-			}
-			full := filepath.Join(workspace, filepath.Clean(path))
-			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-				return "", err
-			}
-			if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
-				return "", err
-			}
-			return "wrote " + path, nil
-		},
-	}); err != nil {
+	if err := builtintools.RegisterWorkspaceMutation(registry, builtintools.WorkspaceOptions{Root: workspace}); err != nil {
 		return r.failAgent(resp, err)
 	}
 	prov := harness.NewScriptedProvider(
 		harness.Step(
 			harness.Usage(provider.Usage{InputTokens: 42, OutputTokens: 8, CostUSD: 0, Source: provider.UsageNative}),
-			harness.Tool("write-readme", "write_file", "RESULT.txt=floret eval passed\n"),
+			harness.Tool("write-readme", "write", `{"path":"RESULT.txt","content":"floret eval passed\n"}`),
 			harness.Done(),
 		),
 		harness.Step(
@@ -1012,6 +1043,9 @@ func (r Runner) runEvalDemo(ctx context.Context, resp RunResponse) RunResponse {
 		Memory:   &memory.Manager{SystemPrompt: "You are a deterministic Floret eval agent."},
 		Tools:    registry,
 		Sink:     rec,
+		Approver: func(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {
+			return tools.PermissionDecisionAllow, nil
+		},
 		Options: engine.Options{
 			RunID:              "testui-eval-demo",
 			SessionID:          "testui-eval-demo",
@@ -1081,9 +1115,6 @@ func (r Runner) runProviderSmoke(ctx context.Context, resp RunResponse) RunRespo
 	rec := &event.Recorder{}
 	registry := tools.NewRegistry()
 	promptStore := promptcache.NewFileStore(filepath.Join(r.Root, ".floret-test-ui", "prompt-cache"))
-	if err := registerInterruptTools(registry); err != nil {
-		return r.failAgent(resp, err)
-	}
 	eng := &engine.Engine{
 		Provider: p,
 		Store:    session.NewMemoryStore(),
@@ -1138,19 +1169,6 @@ func (r Runner) newRunWorkspace(prefix string) (string, error) {
 		return "", err
 	}
 	return os.MkdirTemp(root, prefix+"-*")
-}
-
-func registerInterruptTools(registry *tools.Registry) error {
-	if err := registry.Register(tools.Tool{
-		Name:        "ask_user",
-		Description: "Ask the user for missing information. The argument is the question to show.",
-		Handler: func(context.Context, string) (string, error) {
-			return "", nil
-		},
-	}); err != nil {
-		return err
-	}
-	return nil
 }
 
 func (r Runner) failAgent(resp RunResponse, err error) RunResponse {
@@ -1350,18 +1368,6 @@ func runGit(ctx context.Context, dir string, args ...string) error {
 		return fmt.Errorf("git %s failed: %w\n%s", strings.Join(args, " "), err, output)
 	}
 	return nil
-}
-
-func parseWriteArgs(args string) (string, string, error) {
-	path, content, ok := strings.Cut(args, "=")
-	if !ok {
-		return "", "", fmt.Errorf("expected PATH=CONTENT")
-	}
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return "", "", fmt.Errorf("path is required")
-	}
-	return path, content, nil
 }
 
 func readArtifacts(paths map[string]string) map[string]ArtifactSnapshot {

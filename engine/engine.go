@@ -102,6 +102,7 @@ type Options struct {
 	MaxCostUSD               float64
 	MaxToolCalls             int
 	ToolDefinitions          []provider.ToolDefinition
+	HostedToolDefinitions    []provider.HostedToolDefinition
 	CompletionPolicy         CompletionPolicy
 	MaxLengthContinuations   int
 	MaxStopHookContinuations int
@@ -276,6 +277,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		ctx, cancel = context.WithTimeout(ctx, opts.WallTime)
 		defer cancel()
 	}
+	opts.ToolDefinitions = appendControlToolDefinitions(opts.ToolDefinitions, opts.CompletionPolicy)
 	if userText != "" {
 		if err := e.Store.Append(opts.RunID, session.Message{Role: session.User, Content: userText}); err != nil {
 			return Result{Status: Failed, Err: err}
@@ -317,7 +319,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			return e.end(opts, step, Failed, output, err, metrics, started, RunDecision{})
 		}
 		metrics.LLMRequests++
-		e.emit(event.Event{Type: event.ProviderRequest, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: fmt.Sprintf("%d messages, %d raw segments, prefix %s", len(req.Messages), len(req.RawPlan.Segments), shortHash(req.RawPlan.PrefixHash))})
+		e.emit(event.Event{Type: event.ProviderRequest, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: fmt.Sprintf("%d messages, %d raw segments, %d local tools, %d hosted tools, prefix %s", len(req.Messages), len(req.RawPlan.Segments), len(req.Tools), len(req.HostedTools), shortHash(req.RawPlan.PrefixHash))})
 		providerStarted := time.Now()
 		stream, err := e.Provider.Stream(ctx, req)
 		if errors.Is(err, provider.ErrContextOverflow) {
@@ -385,7 +387,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			if lengthContinuations > opts.MaxLengthContinuations {
 				return e.end(opts, step, Failed, output, ErrProviderTruncated, metrics, started, decision)
 			}
-			contextUsage := contextpolicy.EstimateMessages(e.Memory.SystemPrompt, activeHistory, len(opts.ToolDefinitions), opts.ContextPolicy)
+			contextUsage := contextpolicy.EstimateMessages(e.Memory.SystemPrompt, activeHistory, len(opts.ToolDefinitions)+len(opts.HostedToolDefinitions), opts.ContextPolicy)
 			if contextUsage.CompactionNeeded || contextUsage.TokenPressureHigh {
 				activeHistory, _, err = e.forceCompact(ctx, opts, step, activeHistory, compaction.TriggerPostResponse, compaction.ReasonOutputContinuation, &metrics, &compactionFailures)
 				if err != nil {
@@ -473,12 +475,16 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			lastToolSig = sig
 			duplicateCount = 0
 		}
-		if final, ok := completionSignal(opts, calls); ok {
+		if final, ok, err := completionSignal(opts, calls); err != nil {
+			return e.end(opts, step, Failed, output, err, metrics, started, decision)
+		} else if ok {
 			decision.CompletionReason = CompletionReasonToolSignal
 			e.emitStepEnd(opts, step, providerLatency, 0, usage, len(calls), decision)
 			return e.end(opts, step, Completed, final, nil, metrics, started, decision)
 		}
-		if prompt, ok := askUserSignal(calls); ok {
+		if prompt, ok, err := askUserSignal(calls); err != nil {
+			return e.end(opts, step, Failed, output, err, metrics, started, decision)
+		} else if ok {
 			e.emitStepEnd(opts, step, providerLatency, 0, usage, len(calls), decision)
 			return e.end(opts, step, Waiting, prompt, nil, metrics, started, decision)
 		}
@@ -487,20 +493,21 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			return e.end(opts, step, Failed, output, budgetErr, metrics, started, decision)
 		}
 		for _, call := range calls {
-			e.emit(event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, Args: call.Args})
+			e.emit(event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args})
 		}
 		toolStarted := time.Now()
-		results := e.Tools.RunBatch(ctx, calls, e.Approver)
+		results := e.Tools.RunBatchWithOptions(ctx, calls, e.Approver, tools.RunOptions{RunID: opts.RunID, SessionID: opts.SessionID, Step: step})
 		toolLatency := time.Since(toolStarted).Milliseconds()
 		for _, result := range results {
+			result = tools.ApplyResultLimit(result, e.Tools.LimitFor(result.Name))
 			text := result.Text
 			errText := ""
-			if result.Err != nil {
-				errText = result.Err.Error()
-				text = "ERROR: " + errText
+			if result.IsError {
+				errText = text
+				text = "ERROR: " + text
 			}
-			e.emit(event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.Call.ID, ToolName: result.Call.Name, Result: text, Err: errText, Duration: toolLatency})
-			msg := session.Message{Role: session.Tool, Content: text, ToolCallID: result.Call.ID, ToolName: result.Call.Name}
+			e.emit(event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: toolLatency, Metadata: result.Metadata, Artifacts: eventArtifacts(result.Artifacts)})
+			msg := session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name}
 			if err := e.Store.Append(opts.RunID, msg); err != nil {
 				return e.end(opts, step, Failed, output, err, metrics, started, decision)
 			}
@@ -579,7 +586,7 @@ func (e *Engine) applyStopHook(ctx context.Context, opts Options, step int, last
 }
 
 func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, history []session.Message) (provider.Request, error) {
-	toolset, _, err := promptcache.EnsureCurrentToolset(ctx, e.Prompt, opts.RunID, opts.SessionID, opts.ProviderName, opts.Model, convertToolDefinitions(opts.ToolDefinitions), time.Now())
+	toolset, _, err := promptcache.EnsureCurrentToolset(ctx, e.Prompt, opts.RunID, opts.SessionID, opts.ProviderName, opts.Model, convertToolDefinitions(opts.ToolDefinitions), convertHostedToolDefinitions(opts.HostedToolDefinitions), time.Now())
 	if err != nil {
 		return provider.Request{}, err
 	}
@@ -593,6 +600,7 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		SystemPrompt:   e.Memory.SystemPrompt,
 		History:        providerSafeHistory(e.Memory.Assemble(history)[systemOffset(e.Memory):]),
 		Toolset:        toolset,
+		HostedTools:    convertHostedToolDefinitions(opts.HostedToolDefinitions),
 		Renderer:       rendererForProvider(e.Provider),
 		ContextPolicy:  opts.ContextPolicy,
 		Now:            time.Now(),
@@ -601,6 +609,7 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		return provider.Request{}, err
 	}
 	activeTools := providerToolDefinitions(toolset.Tools)
+	activeHostedTools := hostedToolDefinitions(toolset.HostedTools)
 	cache := promptcache.CachePolicy{
 		Enabled:            true,
 		Namespace:          opts.CacheNamespace,
@@ -628,10 +637,11 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		Model:           opts.Model,
 		Messages:        messages,
 		Tools:           activeTools,
+		HostedTools:     activeHostedTools,
 		RawPlan:         plan,
 		Cache:           cache,
 		ContextPolicy:   opts.ContextPolicy,
-		ContextUsage:    contextpolicy.EstimateMessages(e.Memory.SystemPrompt, history, len(activeTools), opts.ContextPolicy),
+		ContextUsage:    contextpolicy.EstimateMessages(e.Memory.SystemPrompt, history, len(activeTools)+len(activeHostedTools), opts.ContextPolicy),
 		MaxOutputTokens: opts.ContextPolicy.MaxOutputTokens,
 	}
 	if hasher, ok := e.Provider.(provider.PayloadHasher); ok {
@@ -648,7 +658,7 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 }
 
 func (e *Engine) maybeCompact(ctx context.Context, opts Options, step int, history []session.Message, trigger compaction.Trigger, reason compaction.Reason, metrics *RunMetrics, failures *int) ([]session.Message, bool, error) {
-	usage := contextpolicy.EstimateMessages(e.Memory.SystemPrompt, history, len(opts.ToolDefinitions), opts.ContextPolicy)
+	usage := contextpolicy.EstimateMessages(e.Memory.SystemPrompt, history, len(opts.ToolDefinitions)+len(opts.HostedToolDefinitions), opts.ContextPolicy)
 	if !usage.CompactionNeeded && !usage.TokenPressureHigh {
 		return history, false, nil
 	}
@@ -663,7 +673,7 @@ func (e *Engine) maybeCompact(ctx context.Context, opts Options, step int, histo
 }
 
 func (e *Engine) forceCompact(ctx context.Context, opts Options, step int, history []session.Message, trigger compaction.Trigger, reason compaction.Reason, metrics *RunMetrics, failures *int) ([]session.Message, compaction.Result, error) {
-	usage := contextpolicy.EstimateMessages(e.Memory.SystemPrompt, history, len(opts.ToolDefinitions), opts.ContextPolicy)
+	usage := contextpolicy.EstimateMessages(e.Memory.SystemPrompt, history, len(opts.ToolDefinitions)+len(opts.HostedToolDefinitions), opts.ContextPolicy)
 	next, err := e.runCompaction(ctx, opts, step, history, trigger, reason, usage, failures)
 	if err != nil {
 		return history, compaction.Result{}, err
@@ -822,7 +832,29 @@ func providerSafeHistory(history []session.Message) []session.Message {
 func convertToolDefinitions(defs []provider.ToolDefinition) []promptcache.ToolDefinition {
 	out := make([]promptcache.ToolDefinition, 0, len(defs))
 	for _, def := range defs {
-		out = append(out, promptcache.ToolDefinition{Name: def.Name, Description: def.Description})
+		out = append(out, promptcache.ToolDefinition{
+			Name:         def.Name,
+			Title:        def.Title,
+			Description:  def.Description,
+			InputSchema:  def.InputSchema,
+			OutputSchema: def.OutputSchema,
+			Strict:       def.Strict,
+			Annotations:  def.Annotations,
+		})
+	}
+	return out
+}
+
+func convertHostedToolDefinitions(defs []provider.HostedToolDefinition) []promptcache.HostedToolDefinition {
+	out := make([]promptcache.HostedToolDefinition, 0, len(defs))
+	for _, def := range defs {
+		out = append(out, promptcache.HostedToolDefinition{
+			Name:        def.Name,
+			Type:        def.Type,
+			Description: def.Description,
+			Parameters:  def.Parameters,
+			Options:     def.Options,
+		})
 	}
 	return out
 }
@@ -830,7 +862,52 @@ func convertToolDefinitions(defs []provider.ToolDefinition) []promptcache.ToolDe
 func providerToolDefinitions(defs []promptcache.ToolDefinition) []provider.ToolDefinition {
 	out := make([]provider.ToolDefinition, 0, len(defs))
 	for _, def := range defs {
-		out = append(out, provider.ToolDefinition{Name: def.Name, Description: def.Description})
+		out = append(out, provider.ToolDefinition{
+			Name:         def.Name,
+			Title:        def.Title,
+			Description:  def.Description,
+			InputSchema:  def.InputSchema,
+			OutputSchema: def.OutputSchema,
+			Strict:       def.Strict,
+			Annotations:  def.Annotations,
+		})
+	}
+	return out
+}
+
+func hostedToolDefinitions(defs []promptcache.HostedToolDefinition) []provider.HostedToolDefinition {
+	out := make([]provider.HostedToolDefinition, 0, len(defs))
+	for _, def := range defs {
+		out = append(out, provider.HostedToolDefinition{
+			Name:        def.Name,
+			Type:        def.Type,
+			Description: def.Description,
+			Parameters:  def.Parameters,
+			Options:     def.Options,
+		})
+	}
+	return out
+}
+
+func appendControlToolDefinitions(defs []provider.ToolDefinition, policy CompletionPolicy) []provider.ToolDefinition {
+	out := append([]provider.ToolDefinition(nil), defs...)
+	seen := map[string]struct{}{}
+	for _, def := range out {
+		seen[strings.TrimSpace(def.Name)] = struct{}{}
+	}
+	for _, def := range control.ToolDefinitions(policy == CompletionExplicitSignal) {
+		if _, ok := seen[def.Name]; ok {
+			continue
+		}
+		out = append(out, def)
+	}
+	return out
+}
+
+func eventArtifacts(items []tools.ArtifactRef) []event.Artifact {
+	out := make([]event.Artifact, 0, len(items))
+	for _, item := range items {
+		out = append(out, event.Artifact{Kind: item.Kind, Path: item.Path, MIME: item.MIME})
 	}
 	return out
 }
@@ -920,21 +997,33 @@ func (e *Engine) checkBudget(opts Options, metrics RunMetrics, step int) error {
 	return err
 }
 
-func completionSignal(opts Options, calls []provider.ToolCall) (string, bool) {
+func completionSignal(opts Options, calls []provider.ToolCall) (string, bool, error) {
 	if opts.CompletionPolicy != CompletionExplicitSignal {
-		return "", false
+		return "", false, nil
 	}
-	if signal, ok := control.Completion(calls); ok {
-		return signal.Output, true
+	for _, call := range calls {
+		signal, ok, err := control.Project(call)
+		if err != nil {
+			return "", false, err
+		}
+		if ok && signal.Kind == control.SignalTaskComplete {
+			return signal.Output, true, nil
+		}
 	}
-	return "", false
+	return "", false, nil
 }
 
-func askUserSignal(calls []provider.ToolCall) (string, bool) {
-	if signal, ok := control.AskUser(calls); ok {
-		return signal.Prompt, true
+func askUserSignal(calls []provider.ToolCall) (string, bool, error) {
+	for _, call := range calls {
+		signal, ok, err := control.Project(call)
+		if err != nil {
+			return "", false, err
+		}
+		if ok && signal.Kind == control.SignalAskUser {
+			return signal.Prompt, true, nil
+		}
 	}
-	return "", false
+	return "", false, nil
 }
 
 func validateToolCalls(calls []provider.ToolCall) error {
@@ -942,7 +1031,7 @@ func validateToolCalls(calls []provider.ToolCall) error {
 	controlCalls := 0
 	ordinaryCalls := 0
 	for _, call := range calls {
-		if isControlTool(call.Name) {
+		if control.IsControlTool(call.Name) {
 			controlCalls++
 		} else {
 			ordinaryCalls++
@@ -962,8 +1051,7 @@ func validateToolCalls(calls []provider.ToolCall) error {
 }
 
 func isControlTool(name string) bool {
-	name = strings.TrimSpace(name)
-	return name == control.AskUserTool || name == control.TaskCompleteTool
+	return control.IsControlTool(name)
 }
 
 func toolSignature(calls []provider.ToolCall) string {

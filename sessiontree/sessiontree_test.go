@@ -245,7 +245,7 @@ func TestBuildContextConvertsSignalToolCallsToProviderSafeAssistantText(t *testi
 		t.Fatal(err)
 	}
 	user, _ := AppendMessage(ctx, repo, "thread", "turn-1", session.Message{Role: session.User, Content: "hello"})
-	ask, _ := AppendMessage(ctx, repo, "thread", "turn-1", session.Message{Role: session.Assistant, Content: "tool_call", ToolCallID: "ask", ToolName: "ask_user", ToolArgs: "more?"})
+	ask, _ := AppendMessage(ctx, repo, "thread", "turn-1", session.Message{Role: session.Assistant, Content: "tool_call", ToolCallID: "ask", ToolName: "ask_user", ToolArgs: `{"question":"more?"}`})
 	path, err := repo.Path(ctx, "thread", "")
 	if err != nil {
 		t.Fatal(err)

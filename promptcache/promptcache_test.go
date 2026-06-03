@@ -13,7 +13,7 @@ func TestBuildPlanReusesPersistedSegmentsAcrossStores(t *testing.T) {
 	root := t.TempDir()
 	store := NewFileStore(root)
 	now := time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC)
-	toolset, newToolset, err := EnsureToolset(context.Background(), store, "run", "session", "openai", "model", []ToolDefinition{{Name: "read", Description: "Read"}}, now)
+	toolset, newToolset, err := EnsureToolset(context.Background(), store, "run", "session", "openai", "model", []ToolDefinition{{Name: "read", Description: "Read"}}, nil, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestBuildPlanReusesPersistedSegmentsAcrossStores(t *testing.T) {
 func TestBuildPlanAppendsNewSystemSegmentWhenPromptChanges(t *testing.T) {
 	store := NewMemoryStore()
 	now := time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC)
-	toolset, _, err := EnsureToolset(context.Background(), store, "run", "session", "openai", "model", nil, now)
+	toolset, _, err := EnsureToolset(context.Background(), store, "run", "session", "openai", "model", nil, nil, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestBuildPlanAppendsNewSystemSegmentWhenPromptChanges(t *testing.T) {
 func TestBuildPlanReusesSegmentsAcrossTurnsInSameSession(t *testing.T) {
 	store := NewMemoryStore()
 	now := time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC)
-	toolset, _, err := EnsureToolset(context.Background(), store, "turn-1", "thread", "openai", "model", nil, now)
+	toolset, _, err := EnsureToolset(context.Background(), store, "turn-1", "thread", "openai", "model", nil, nil, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestFileStoreKeepsExactRawPrefixAcrossTurnsInSameSession(t *testing.T) {
 	ctx := context.Background()
 	store := NewFileStore(t.TempDir())
 	now := time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC)
-	toolset, _, err := EnsureToolset(ctx, store, "turn-1", "thread", "openai", "model", []ToolDefinition{{Name: "read"}}, now)
+	toolset, _, err := EnsureToolset(ctx, store, "turn-1", "thread", "openai", "model", []ToolDefinition{{Name: "read"}}, nil, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestFileStoreKeepsExactRawPrefixAcrossTurnsInSameSession(t *testing.T) {
 func TestBuildPlanReusedRawSegmentCarriesCurrentEntryRef(t *testing.T) {
 	store := NewMemoryStore()
 	now := time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC)
-	toolset, _, err := EnsureToolset(context.Background(), store, "turn-1", "thread", "openai", "model", nil, now)
+	toolset, _, err := EnsureToolset(context.Background(), store, "turn-1", "thread", "openai", "model", nil, nil, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,14 +256,14 @@ func TestToolsetSnapshotFreezesInitialDefinitions(t *testing.T) {
 	first, _, err := EnsureToolset(context.Background(), store, "run", "session", "openai", "model", []ToolDefinition{
 		{Name: "z", Description: "last"},
 		{Name: "a", Description: "first"},
-	}, time.Time{})
+	}, nil, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	second, newToolset, err := EnsureToolset(context.Background(), store, "run", "session", "openai", "model", []ToolDefinition{
 		{Name: "a", Description: "changed"},
 		{Name: "new", Description: "new"},
-	}, time.Time{})
+	}, nil, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +273,7 @@ func TestToolsetSnapshotFreezesInitialDefinitions(t *testing.T) {
 	if first.Fingerprint != second.Fingerprint || len(second.Tools) != 2 || second.Tools[0].Name != "a" || second.Tools[0].Description != "first" {
 		t.Fatalf("toolset was not frozen: first=%#v second=%#v", first, second)
 	}
-	third, err := ActivateToolset(context.Background(), store, "run", "session", "openai", "model", []ToolDefinition{{Name: "new"}}, time.Time{})
+	third, err := ActivateToolset(context.Background(), store, "run", "session", "openai", "model", []ToolDefinition{{Name: "new"}}, nil, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,9 +298,44 @@ func TestCanonicalSegmentHashIgnoresToolRegistrationOrder(t *testing.T) {
 	}
 }
 
+func TestHostedToolsAffectToolsetAndPayloadHash(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	now := time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC)
+	tools := []ToolDefinition{{Name: "read"}}
+	hostedA := []HostedToolDefinition{{Name: "web_search", Type: "web_search", Options: map[string]any{"limit": 3}}}
+	hostedB := []HostedToolDefinition{{Name: "web_search", Type: "web_search", Options: map[string]any{"limit": 5}}}
+
+	toolsetA, _, err := EnsureCurrentToolset(ctx, store, "turn-a", "thread", "openai", "model", tools, hostedA, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planA, _, err := BuildPlan(ctx, store, BuildInput{RunID: "turn-a", SessionID: "thread", Provider: "openai", Model: "model", Toolset: toolsetA, HostedTools: hostedA, History: []session.Message{{Role: session.User, Content: "search"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolsetB, changed, err := EnsureCurrentToolset(ctx, store, "turn-b", "thread", "openai", "model", tools, hostedB, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed || toolsetA.Fingerprint == toolsetB.Fingerprint {
+		t.Fatalf("hosted tool change should rotate toolset: a=%#v b=%#v changed=%v", toolsetA, toolsetB, changed)
+	}
+	planB, _, err := BuildPlan(ctx, store, BuildInput{RunID: "turn-b", SessionID: "thread", Provider: "openai", Model: "model", Toolset: toolsetB, HostedTools: hostedB, History: []session.Message{{Role: session.User, Content: "search"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planA.HostedToolsetHash == "" || planA.HostedToolsetHash == planB.HostedToolsetHash {
+		t.Fatalf("hosted hash should differ: a=%#v b=%#v", planA, planB)
+	}
+	if planA.PayloadHash == planA.PrefixHash || planA.PayloadHash == planB.PayloadHash {
+		t.Fatalf("payload hash should include hosted hash: a=%#v b=%#v", planA, planB)
+	}
+}
+
 func TestCompactionSegmentKindAndWindowComeFromStructuredMessageKind(t *testing.T) {
 	store := NewMemoryStore()
-	toolset, _, err := EnsureToolset(context.Background(), store, "run", "thread", "openai", "model", nil, time.Time{})
+	toolset, _, err := EnsureToolset(context.Background(), store, "run", "thread", "openai", "model", nil, nil, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +373,7 @@ func TestCompactionSegmentKindAndWindowComeFromStructuredMessageKind(t *testing.
 
 func TestActiveCompactionWindowUsesLatestStructuredSummary(t *testing.T) {
 	store := NewMemoryStore()
-	toolset, _, err := EnsureToolset(context.Background(), store, "run", "thread", "openai", "model", nil, time.Time{})
+	toolset, _, err := EnsureToolset(context.Background(), store, "run", "thread", "openai", "model", nil, nil, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +401,7 @@ func TestActiveCompactionWindowUsesLatestStructuredSummary(t *testing.T) {
 func TestReusedCompactionSegmentRefreshesWindowMetadata(t *testing.T) {
 	store := NewMemoryStore()
 	now := time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC)
-	toolset, _, err := EnsureToolset(context.Background(), store, "run", "thread", "openai", "model", nil, now)
+	toolset, _, err := EnsureToolset(context.Background(), store, "run", "thread", "openai", "model", nil, nil, now)
 	if err != nil {
 		t.Fatal(err)
 	}

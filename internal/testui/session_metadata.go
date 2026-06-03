@@ -23,6 +23,7 @@ type agentSessionMetadata struct {
 	ProfileID      string               `json:"profile_id,omitempty"`
 	Profile        ProviderProfile      `json:"profile"`
 	SystemPrompt   string               `json:"system_prompt"`
+	ToolMode       string               `json:"tool_mode,omitempty"`
 	ContextPolicy  contextpolicy.Policy `json:"context_policy"`
 	Engine         agentSessionEngine   `json:"engine"`
 	Turns          []AgentTurnSummary   `json:"turns"`
@@ -163,10 +164,11 @@ func (r Runner) metadataFromSession(sess *agentSession) agentSessionMetadata {
 		ID:            sess.id,
 		CreatedAt:     sess.createdAt,
 		UpdatedAt:     sess.updatedAt,
-		ProfileID:     sess.profile.ID,
-		Profile:       sess.profile,
-		SystemPrompt:  sess.systemPrompt,
-		ContextPolicy: sess.contextPolicy,
+			ProfileID:     sess.profile.ID,
+			Profile:       sess.profile,
+			SystemPrompt:  sess.systemPrompt,
+			ToolMode:      sess.toolMode,
+			ContextPolicy: sess.contextPolicy,
 		Engine: agentSessionEngine{
 			MaxEmptyProviderRetries: sess.cfg.MaxEmptyProviderRetries,
 			NoProgressLimit:         sess.cfg.NoProgressLimit,

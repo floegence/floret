@@ -19,6 +19,7 @@ type Request struct {
 	Model           string
 	Messages        []session.Message
 	Tools           []ToolDefinition
+	HostedTools     []HostedToolDefinition
 	RawPlan         promptcache.RawPlan
 	Cache           promptcache.CachePolicy
 	ContextPolicy   contextpolicy.Policy
@@ -27,8 +28,21 @@ type Request struct {
 }
 
 type ToolDefinition struct {
+	Name         string
+	Title        string
+	Description  string
+	InputSchema  map[string]any
+	OutputSchema map[string]any
+	Strict       bool
+	Annotations  map[string]any
+}
+
+type HostedToolDefinition struct {
 	Name        string
+	Type        string
 	Description string
+	Parameters  map[string]any
+	Options     map[string]any
 }
 
 type EventType string
@@ -92,10 +106,9 @@ func IsTerminalNaturalFinish(reason FinishReason) bool {
 }
 
 type ToolCall struct {
-	ID       string
-	Name     string
-	Args     string
-	ReadOnly bool
+	ID   string
+	Name string
+	Args string
 }
 
 type StreamEvent struct {

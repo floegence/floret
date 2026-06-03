@@ -99,7 +99,7 @@ func TestServerSavesConfigAndRunsAgent(t *testing.T) {
 
 func TestServerAgentSessionCreateAndAppendTurn(t *testing.T) {
 	scripted := harness.NewScriptedProvider(
-		harness.Step(harness.Tool("ask", "ask_user", "Need file?"), harness.Done()),
+		harness.Step(harness.Tool("ask", "ask_user", `{"question":"Need file?"}`), harness.Done()),
 		harness.Step(harness.Text("done"), harness.Done()),
 	)
 	runner := NewRunner(t.TempDir())
@@ -188,7 +188,7 @@ func TestServerAgentSessionCreateAndAppendTurn(t *testing.T) {
 func TestServerAgentSessionPersistsAcrossServerRestart(t *testing.T) {
 	root := t.TempDir()
 	firstProvider := harness.NewScriptedProvider(
-		harness.Step(harness.Tool("ask", "ask_user", "Need file?"), harness.Done()),
+		harness.Step(harness.Tool("ask", "ask_user", `{"question":"Need file?"}`), harness.Done()),
 	)
 	firstRunner := NewRunner(root)
 	firstRunner.Now = fixedClock()
