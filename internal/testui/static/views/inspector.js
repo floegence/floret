@@ -28,13 +28,16 @@ export function renderInspector({ session, result, tools, tab }) {
   `;
 }
 
-export function bindInspector(root, { tools, onEditTools, onTab }) {
+export function bindInspector(root, { tools, onEditTools, onToolEditDraft, onTab }) {
   root.querySelectorAll("[data-inspector-tab]").forEach((button) => {
     button.addEventListener("click", () => onTab(button.dataset.inspectorTab || "tools"));
   });
   const editForm = root.querySelector("[data-tool-edit-form]");
   if (editForm) {
-    bindToolPresets(editForm, tools, "session-tools");
+    const persistDraft = () => onToolEditDraft(editForm.dataset.sessionId || "", readDraft(editForm));
+    bindToolPresets(editForm, tools, "session-tools", persistDraft);
+    editForm.addEventListener("input", persistDraft);
+    editForm.addEventListener("change", persistDraft);
     editForm.addEventListener("submit", (event) => {
       event.preventDefault();
       onEditTools(readSelectedTools(editForm, "session-tools"), editForm.elements.reason?.value || "");
@@ -62,8 +65,10 @@ function renderTools(session, tools, observation) {
   const audit = (session.path_entries || []).filter((entry) => entry.type === "active_tools_change").slice().reverse();
   const request = latestProviderRequest(observation.provider_requests || []);
   const isUpdating = state.action === "update-tools";
+  const draft = state.toolEditDrafts[session.id] || {};
+  const selected = draft.selected_tools || session.selected_tools || [];
   return `
-    <form class="profile-card" data-tool-edit-form>
+    <form class="profile-card" data-tool-edit-form data-session-id="${escapeHTML(session.id)}">
       <div>
         <h3>Session Tools</h3>
         <p class="muted">These tools are bound to this session. Changes here affect future turns only.</p>
@@ -82,10 +87,10 @@ function renderTools(session, tools, observation) {
           <span>${escapeHTML(hostedToolLabel(request?.hosted_tools || []))}</span>
         </div>
       </div>
-      ${renderToolMatrix({ tools, selected: session.selected_tools || [], editable: true, name: "session-tools" })}
+      ${renderToolMatrix({ tools, selected, editable: true, name: "session-tools" })}
       <label class="field">
         <span>Audit note</span>
-        <input name="reason" placeholder="why this toolset changed" />
+        <input name="reason" value="${escapeHTML(draft.reason || "")}" placeholder="why this toolset changed" />
       </label>
       <div class="form-actions">
         <span class="muted">Control capability: ask_user is always available.</span>
@@ -97,6 +102,13 @@ function renderTools(session, tools, observation) {
       ${audit.length ? audit.map(renderToolAudit).join("") : `<p class="muted">No tool changes after session creation.</p>`}
     </section>
   `;
+}
+
+function readDraft(form) {
+  return {
+    selected_tools: readSelectedTools(form, "session-tools"),
+    reason: form.elements.reason?.value || "",
+  };
 }
 
 function renderToolAudit(entry) {

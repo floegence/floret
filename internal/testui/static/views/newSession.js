@@ -8,6 +8,8 @@ export function renderNewSession() {
   const isCreating = state.action === "create-session";
   const isProbing = state.action === "run-probe";
   const selectedTools = draft.selected_tools || [];
+  const message = Object.prototype.hasOwnProperty.call(draft, "message") ? draft.message : "Say hello from Floret and complete the task.";
+  const systemPrompt = Object.prototype.hasOwnProperty.call(draft, "system_prompt") ? draft.system_prompt : "You are Floret. Answer naturally when the user's request is complete, or call ask_user if you need missing information.";
   return `
     <section class="new-page">
       <header class="new-head">
@@ -26,11 +28,11 @@ export function renderNewSession() {
         </label>
         <label class="field">
           <span>Initial task</span>
-          <textarea name="message" required>${escapeHTML(draft.message || "Say hello from Floret and complete the task.")}</textarea>
+          <textarea name="message" required>${escapeHTML(message)}</textarea>
         </label>
         <label class="field">
           <span>System prompt</span>
-          <textarea name="system_prompt" required>${escapeHTML(draft.system_prompt || "You are Floret. Answer naturally when the user's request is complete, or call ask_user if you need missing information.")}</textarea>
+          <textarea name="system_prompt" required>${escapeHTML(systemPrompt)}</textarea>
         </label>
         <div class="field-row">
           <label class="field">
@@ -75,9 +77,14 @@ export function renderNewSession() {
 export function bindNewSession(root, handlers) {
   const form = root.querySelector("[data-new-session-form]");
   const toolArea = root.querySelector("[data-new-tools]");
-  bindToolPresets(toolArea, state.config?.tools || [], "new-tools");
-  root.querySelector("[data-run-probe]")?.addEventListener("click", () => {
+  const persistDraft = () => {
     state.newSessionDraft = readDraft(form, toolArea);
+  };
+  form?.addEventListener("input", persistDraft);
+  form?.addEventListener("change", persistDraft);
+  bindToolPresets(toolArea, state.config?.tools || [], "new-tools", persistDraft);
+  root.querySelector("[data-run-probe]")?.addEventListener("click", () => {
+    persistDraft();
     handlers.onProbe(readSelectedTools(toolArea, "new-tools"));
   });
   form?.addEventListener("submit", (event) => {

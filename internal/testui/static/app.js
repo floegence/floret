@@ -2,7 +2,7 @@ import { api } from "./api.js";
 import { clone, defaultProfile, normalizePath, providerByID, providerDefaultBaseURL, providerDefaultModel, routePath, state } from "./state.js";
 import { bindNewSession, renderNewSession } from "./views/newSession.js";
 import { bindSessionWorkspace, renderSessionWorkspace } from "./views/sessionWorkspace.js";
-import { bindSettings, renderSettings } from "./views/settings.js";
+import { bindSettings, readSettingsDraft, renderSettings } from "./views/settings.js";
 
 const appView = document.getElementById("appView");
 const envStatus = document.getElementById("envStatus");
@@ -20,10 +20,12 @@ document.addEventListener("click", (event) => {
   const url = new URL(link.href, window.location.href);
   if (url.origin !== window.location.origin) return;
   event.preventDefault();
+  captureActiveDrafts();
   navigate(normalizePath(url.pathname));
 });
 
 window.addEventListener("popstate", () => {
+  captureActiveDrafts();
   state.route = normalizePath();
   render();
 });
@@ -67,7 +69,21 @@ async function refreshSessions({ selectRoute = false } = {}) {
   }
   if (state.activeSession?.id) {
     const fresh = state.sessions.find((session) => session.id === state.activeSession.id);
-    state.activeSession = fresh ? await api.session(fresh.id) : null;
+    if (fresh) {
+      state.activeSession = await api.session(fresh.id);
+      return;
+    }
+    if (state.sessions.length) {
+      state.activeSession = await api.session(state.sessions[0].id);
+      if (state.route.name === "sessions") {
+        replaceRoute({ name: "sessions", id: state.activeSession.id });
+      }
+      return;
+    }
+    state.activeSession = null;
+    if (state.route.name === "sessions") {
+      replaceRoute({ name: "sessions", id: "" });
+    }
     return;
   }
   if (state.sessions.length) {
@@ -121,7 +137,9 @@ function render(options = {}) {
         },
         onSelect: selectSession,
         onAppend: appendTurn,
+        onComposerDraft: updateComposerDraft,
         onEditTools: updateSessionTools,
+        onToolEditDraft: updateToolEditDraft,
         onInspectorTab: (tab) => {
           state.inspectorTab = tab;
           render();
@@ -152,8 +170,12 @@ function renderTopbar() {
 
 async function selectSession(id) {
   if (!id) return;
+  captureActiveDrafts();
+  const token = ++state.selectionToken;
   await runWithStatus({ status: "loading", action: "select-session", renderStart: false }, async () => {
-    state.activeSession = await api.session(id);
+    const session = await api.session(id);
+    if (token !== state.selectionToken) return;
+    state.activeSession = session;
     state.lastResult = null;
     replaceRoute({ name: "sessions", id });
   });
@@ -161,30 +183,48 @@ async function selectSession(id) {
 
 async function createSession(payload) {
   state.newSessionDraft = payload;
+  const token = ++state.mutationToken;
   await runWithStatus({ status: "running", action: "create-session", successMessage: "Session created and opened" }, async () => {
     const result = await api.createSession(payload);
-    await activateSession(result);
-    state.newSessionDraft = null;
+    if (token !== state.mutationToken) return false;
+    await activateSession(result, token);
+    if (token === state.mutationToken) state.newSessionDraft = null;
+    return true;
   });
 }
 
 async function appendTurn(message) {
   if (!state.activeSession?.id) return;
+  const sessionID = state.activeSession.id;
+  const token = ++state.mutationToken;
   await runWithStatus({ status: "running", action: "append-turn", successMessage: "Message sent" }, async () => {
-    const result = await api.appendTurn(state.activeSession.id, { message });
+    const result = await api.appendTurn(sessionID, { message });
+    if (token !== state.mutationToken) return false;
     state.lastResult = result;
-    state.sessions = await api.sessions();
-    state.activeSession = result.session;
+    if (state.activeSession?.id === sessionID || state.route.id === sessionID) {
+      state.activeSession = result.session;
+    }
+    delete state.composerDrafts[sessionID];
+    await refreshSessionsNonBlocking(token);
+    return true;
   });
 }
 
 async function updateSessionTools(selectedTools, reason) {
   if (!state.activeSession?.id) return;
+  const sessionID = state.activeSession.id;
+  state.toolEditDrafts[sessionID] = { selected_tools: selectedTools, reason };
+  const token = ++state.mutationToken;
   await runWithStatus({ status: "loading", action: "update-tools", successMessage: "Session tools updated" }, async () => {
-    const snapshot = await api.updateTools(state.activeSession.id, { selected_tools: selectedTools, reason });
-    state.sessions = await api.sessions();
-    state.activeSession = snapshot;
+    const snapshot = await api.updateTools(sessionID, { selected_tools: selectedTools, reason });
+    if (token !== state.mutationToken) return false;
+    if (state.activeSession?.id === sessionID || state.route.id === sessionID) {
+      state.activeSession = snapshot;
+    }
+    delete state.toolEditDrafts[sessionID];
     state.lastResult = null;
+    await refreshSessionsNonBlocking(token);
+    return true;
   });
 }
 
@@ -199,13 +239,15 @@ async function runProbe(selectedTools) {
 }
 
 function switchSettingsProfile(profileID) {
-  state.config.active_profile_id = profileID;
+  ensureSettingsDraft();
+  state.settingsDraft.active_profile_id = profileID;
   render();
 }
 
 function switchSettingsProvider(providerID) {
-  const profiles = clone(state.config?.profiles || [defaultProfile()]);
-  const activeID = state.config?.active_profile_id || profiles[0]?.id;
+  ensureSettingsDraft();
+  const profiles = clone(state.settingsDraft.profiles || state.config?.profiles || [defaultProfile()]);
+  const activeID = state.settingsDraft.active_profile_id || state.config?.active_profile_id || profiles[0]?.id;
   const index = profiles.findIndex((profile) => profile.id === activeID);
   if (index < 0) return;
   const provider = providerByID(providerID);
@@ -215,19 +257,28 @@ function switchSettingsProvider(providerID) {
     model: providerDefaultModel(provider) || profiles[index].model || "",
     base_url: providerDefaultBaseURL(provider) || profiles[index].base_url || "",
   };
-  state.config.profiles = profiles;
+  state.settingsDraft.profiles = profiles;
   render();
 }
 
 async function saveSettings(payload) {
+  const token = ++state.mutationToken;
+  state.settingsDraft = payload;
   await runWithStatus({ status: "loading", action: "save-settings", successMessage: "Settings saved" }, async () => {
     state.config = await api.saveConfig(payload);
+    if (token !== state.mutationToken) return false;
+    if (token === state.mutationToken && state.settingsDraft === payload) {
+      state.settingsDraft = null;
+    }
+    return true;
   });
 }
 
 function duplicateProfile() {
-  const profiles = clone(state.config?.profiles || [defaultProfile()]);
-  const active = profiles.find((profile) => profile.id === state.config.active_profile_id) || profiles[0] || defaultProfile();
+  ensureSettingsDraft();
+  const profiles = clone(state.settingsDraft.profiles || state.config?.profiles || [defaultProfile()]);
+  const activeID = state.settingsDraft.active_profile_id || state.config?.active_profile_id || profiles[0]?.id;
+  const active = profiles.find((profile) => profile.id === activeID) || profiles[0] || defaultProfile();
   const copy = {
     ...active,
     id: `${active.id || "profile"}-${Date.now().toString(36)}`,
@@ -236,8 +287,8 @@ function duplicateProfile() {
     api_key_set: active.api_key_set,
   };
   profiles.push(copy);
-  state.config.profiles = profiles;
-  state.config.active_profile_id = copy.id;
+  state.settingsDraft.profiles = profiles;
+  state.settingsDraft.active_profile_id = copy.id;
   addToast("info", "Profile duplicated");
   render();
 }
@@ -267,13 +318,14 @@ function replaceRoute(route) {
   window.history.replaceState({}, "", routePath(route));
 }
 
-async function activateSession(result) {
+async function activateSession(result, token) {
+  if (token && token !== state.mutationToken) return;
   state.lastResult = result;
-  state.sessions = await api.sessions();
   state.activeSession = result.session;
   state.mobilePanel = "";
   state.inspectorTab = "requests";
   replaceRoute({ name: "sessions", id: result.session_id });
+  await refreshSessionsNonBlocking(token);
 }
 
 function restoreSessionFilterFocus() {
@@ -285,6 +337,7 @@ function restoreSessionFilterFocus() {
 }
 
 async function runWithStatus({ status = "loading", action = "", target = "", successMessage = "", renderStart = true }, fn) {
+  const token = ++state.actionToken;
   state.action = action;
   state.actionTarget = target;
   state.running = Boolean(action);
@@ -292,16 +345,18 @@ async function runWithStatus({ status = "loading", action = "", target = "", suc
   if (renderStart) render();
   let finalStatus = "idle";
   try {
-    await fn();
-    if (successMessage) addToast("success", successMessage);
+    const result = await fn();
+    if (result !== false && successMessage) addToast("success", successMessage);
   } catch (error) {
     finalStatus = "error";
     addToast("error", error.message || "Action failed");
   } finally {
-    state.action = "";
-    state.actionTarget = "";
-    state.running = false;
-    setStatus(finalStatus);
+    if (token === state.actionToken) {
+      state.action = "";
+      state.actionTarget = "";
+      state.running = false;
+      setStatus(finalStatus);
+    }
     render();
   }
 }
@@ -331,9 +386,9 @@ function dismissToast(id) {
 function renderToasts() {
   if (!toastRegion) return;
   toastRegion.innerHTML = state.toasts.map((toast) => `
-    <article class="toast ${escapeText(toast.kind)}" role="status">
+    <article class="toast ${escapeText(toast.kind)}" role="${toast.kind === "error" ? "alert" : "status"}">
       <span>${escapeText(toast.message)}</span>
-      <button type="button" class="toast-close" data-toast-close="${escapeText(toast.id)}" aria-label="Dismiss notification">x</button>
+      <button type="button" class="toast-close" data-toast-close="${escapeText(toast.id)}" aria-label="Dismiss notification">&times;</button>
     </article>
   `).join("");
 }
@@ -363,4 +418,85 @@ function actionLabel(action) {
 
 function escapeText(value) {
   return String(value ?? "").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+async function refreshSessionsNonBlocking(mutationToken = 0) {
+  const refreshToken = ++state.refreshToken;
+  try {
+    const sessions = await api.sessions();
+    if (refreshToken !== state.refreshToken) return;
+    if (mutationToken && mutationToken !== state.mutationToken) return;
+    state.sessions = sessions;
+  } catch (error) {
+    addToast("error", `Action completed, but the session list could not refresh: ${error.message || "refresh failed"}`);
+  }
+}
+
+function updateComposerDraft(sessionID, message) {
+  if (!sessionID) return;
+  state.composerDrafts[sessionID] = message;
+}
+
+function updateToolEditDraft(sessionID, draft) {
+  if (!sessionID) return;
+  state.toolEditDrafts[sessionID] = draft;
+}
+
+function ensureSettingsDraft() {
+  if (state.settingsDraft) return;
+  state.settingsDraft = {
+    active_profile_id: state.config?.active_profile_id || "",
+    profiles: clone(state.config?.profiles || [defaultProfile()]),
+    search_provider: {
+      provider: state.config?.search_provider?.provider || "brave",
+      api_key: "",
+      endpoint: state.config?.search_provider?.endpoint || "",
+    },
+  };
+}
+
+function captureActiveDrafts() {
+  if (state.route.name === "new") {
+    const form = appView.querySelector("[data-new-session-form]");
+    const toolArea = appView.querySelector("[data-new-tools]");
+    if (form && toolArea) {
+      state.newSessionDraft = readNewSessionDraft(form, toolArea);
+    }
+  }
+  if (state.route.name === "settings") {
+    const form = appView.querySelector("[data-settings-form]");
+    if (form) {
+      state.settingsDraft = readSettingsDraft(form);
+    }
+  }
+  const appendForm = appView.querySelector("[data-append-form]");
+  if (appendForm && state.activeSession?.id) {
+    state.composerDrafts[state.activeSession.id] = appendForm.elements.message?.value || "";
+  }
+  const toolForm = appView.querySelector("[data-tool-edit-form]");
+  if (toolForm && state.activeSession?.id) {
+    state.toolEditDrafts[state.activeSession.id] = readToolEditDraft(toolForm);
+  }
+}
+
+function readNewSessionDraft(form, toolArea) {
+  const data = new FormData(form);
+  return {
+    profile_id: String(data.get("profile_id") || ""),
+    message: String(data.get("message") || ""),
+    system_prompt: String(data.get("system_prompt") || ""),
+    selected_tools: Array.from(toolArea.querySelectorAll('input[name="new-tools"]:checked')).map((input) => input.value),
+    context_policy: {
+      context_window_tokens: Number(data.get("context_window_tokens") || 0),
+      max_output_tokens: Number(data.get("max_output_tokens") || 0),
+      recent_tail_tokens: Number(data.get("recent_tail_tokens") || 0),
+    },
+  };
+}
+
+function readToolEditDraft(form) {
+  return {
+    selected_tools: Array.from(form.querySelectorAll('input[name="session-tools"]:checked')).map((input) => input.value),
+    reason: form.elements.reason?.value || "",
+  };
 }

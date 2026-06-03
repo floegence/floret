@@ -15,6 +15,7 @@
   --yellow: #efbd45;
   --violet: #6557b8;
   --shadow: 0 18px 44px rgba(32, 37, 42, 0.08);
+  --topbar-height: 68px;
   color: var(--ink);
   font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Avenir Next", "Segoe UI", sans-serif;
 }
@@ -522,6 +523,7 @@ button:disabled {
 button.is-pending {
   position: relative;
   overflow: hidden;
+  opacity: 0.88;
 }
 
 .button.is-pending::after,
@@ -863,6 +865,7 @@ button.small {
   padding: 0;
   border-color: var(--line-strong);
   color: var(--muted);
+  font-size: 16px;
   line-height: 1;
 }
 
@@ -925,30 +928,27 @@ button.small {
 
   .session-rail,
   .inspector {
-    position: fixed;
-    top: 68px;
-    bottom: 0;
-    z-index: 30;
-    width: min(88vw, 360px);
-    min-height: 0;
+    display: none;
+    width: 100%;
+    min-height: auto;
     overflow: auto;
     border-bottom: 0;
-    box-shadow: var(--shadow);
+    box-shadow: none;
   }
 
   .session-rail {
-    left: 0;
-    transform: translateX(-104%);
+    left: auto;
+    transform: none;
   }
 
   .inspector {
-    right: 0;
-    transform: translateX(104%);
+    right: auto;
+    transform: none;
   }
 
   .sessions-layout.show-sessions .session-rail,
   .sessions-layout.show-inspector .inspector {
-    transform: translateX(0);
+    display: block;
   }
 
   .mobile-workspace-actions {
@@ -970,7 +970,7 @@ button.small {
   }
 
   .workspace-head {
-    top: 0;
+    top: var(--topbar-height);
   }
 
   .toast-region {

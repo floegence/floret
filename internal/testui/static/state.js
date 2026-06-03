@@ -7,6 +7,10 @@ export const state = {
   running: false,
   action: "",
   actionTarget: "",
+  actionToken: 0,
+  mutationToken: 0,
+  refreshToken: 0,
+  selectionToken: 0,
   toasts: [],
   inspectorTab: "tools",
   selectedRequest: 0,
@@ -15,6 +19,9 @@ export const state = {
   checkResult: "",
   mobilePanel: "",
   newSessionDraft: null,
+  composerDrafts: {},
+  settingsDraft: null,
+  toolEditDrafts: {},
 };
 
 export function currentProfile() {

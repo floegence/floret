@@ -23,11 +23,16 @@ export function bindSessionWorkspace(root, handlers) {
   root.querySelector("[data-append-form]")?.addEventListener("submit", (event) => {
     event.preventDefault();
     const message = event.currentTarget.elements.message.value.trim();
+    handlers.onComposerDraft(state.activeSession?.id || "", event.currentTarget.elements.message.value);
     if (message) handlers.onAppend(message);
+  });
+  root.querySelector("[data-append-form] textarea[name=\"message\"]")?.addEventListener("input", (event) => {
+    handlers.onComposerDraft(state.activeSession?.id || "", event.target.value);
   });
   bindInspector(root, {
     tools: handlers.tools,
     onEditTools: handlers.onEditTools,
+    onToolEditDraft: handlers.onToolEditDraft,
     onTab: handlers.onInspectorTab,
   });
 }
@@ -85,6 +90,7 @@ function renderWorkspace(session, result) {
   const turns = session.turns || [];
   const isSending = state.action === "append-turn";
   const canAppend = session.can_append_message && !state.running;
+  const composerDraft = state.composerDrafts[session.id] || "";
   return `
     <section class="workspace">
       <header class="workspace-head">
@@ -106,7 +112,7 @@ function renderWorkspace(session, result) {
         ${renderTimeline(session, result)}
       </div>
       <form class="composer-bar" data-append-form>
-        <textarea name="message" placeholder="${canAppend ? "Send the next message to this session" : appendDisabledReason(session)}" ${canAppend ? "" : "disabled"}></textarea>
+        <textarea name="message" placeholder="${canAppend ? "Send the next message to this session" : appendDisabledReason(session)}" ${canAppend ? "" : "disabled"}>${escapeHTML(composerDraft)}</textarea>
         <div class="composer-actions">
           <span class="muted">${escapeHTML(appendDisabledReason(session))}</span>
           <button class="primary ${isSending ? "is-pending" : ""}" type="submit" ${canAppend ? "" : "disabled"}>${isSending ? "Sending..." : "Send"}</button>
