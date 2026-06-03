@@ -121,6 +121,11 @@ type AgentTurnRequest struct {
 	Message string `json:"message"`
 }
 
+type AgentToolsUpdateRequest struct {
+	SelectedTools *[]string `json:"selected_tools"`
+	Reason        string    `json:"reason,omitempty"`
+}
+
 type AgentInterfaceProbeRequest struct {
 	SelectedTools []string             `json:"selected_tools,omitempty"`
 	ContextPolicy contextpolicy.Policy `json:"context_policy,omitempty"`

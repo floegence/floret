@@ -43,6 +43,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/agent/sessions", s.handleAgentSessionCreate)
 	mux.HandleFunc("GET /api/agent/sessions/", s.handleAgentSessionRoute)
 	mux.HandleFunc("POST /api/agent/sessions/", s.handleAgentSessionRoute)
+	mux.HandleFunc("PATCH /api/agent/sessions/", s.handleAgentSessionRoute)
 	mux.HandleFunc("POST /api/run", s.handleRun)
 	mux.HandleFunc("GET /", s.handleStatic)
 	return mux
@@ -152,7 +153,34 @@ func (s *Server) handleAgentSessionRoute(w http.ResponseWriter, r *http.Request)
 		s.handleAgentSessionTurn(w, r, sessionID)
 		return
 	}
+	if r.Method == http.MethodPatch && len(parts) == 2 && parts[1] == "tools" {
+		s.handleAgentSessionTools(w, r, sessionID)
+		return
+	}
 	http.NotFound(w, r)
+}
+
+func (s *Server) handleAgentSessionTools(w http.ResponseWriter, r *http.Request, sessionID string) {
+	defer r.Body.Close()
+	var req AgentToolsUpdateRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON request"})
+		return
+	}
+	snapshot, err := s.Runner.UpdateAgentSessionTools(r.Context(), sessionID, req)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if isMissingAgentSessionError(err) {
+			status = http.StatusNotFound
+		} else if errors.Is(err, errAgentSessionBusy) {
+			status = http.StatusConflict
+		} else if isAgentSessionInputError(err) {
+			status = http.StatusBadRequest
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot)
 }
 
 func (s *Server) handleAgentSessionTurn(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -197,6 +225,9 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		http.NotFound(w, r)
 		return
+	}
+	if r.URL.Path == "/sessions" || strings.HasPrefix(r.URL.Path, "/sessions/") || r.URL.Path == "/settings" {
+		r.URL.Path = "/"
 	}
 	s.static.ServeHTTP(w, r)
 }

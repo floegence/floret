@@ -1,0 +1,172 @@
+import { escapeHTML, formatDuration, formatTime, toolLabelList, totalTokens } from "../state.js";
+import { bindToolPresets, readSelectedTools, renderToolMatrix } from "../components/toolMatrix.js";
+
+export function renderInspector({ session, result, tools, tab }) {
+  if (!session) {
+    return `
+      <aside class="inspector">
+        <div class="inspector-head"><h2>Inspector</h2></div>
+        <div class="inspector-body muted">Select or create a session to inspect tools, requests, events, and context.</div>
+      </aside>
+    `;
+  }
+  const activeTab = tab || "tools";
+  const observation = result?.session_id === session.id ? result.observation || {} : {};
+  return `
+    <aside class="inspector">
+      <div class="inspector-head">
+        <h2>Inspector</h2>
+        <span class="tiny-pill">${escapeHTML(toolLabelList(session.selected_tools || []))}</span>
+      </div>
+      <div class="inspector-tabs" role="tablist" aria-label="Inspector">
+        ${["tools", "requests", "events", "context", "raw"].map((item) => `<button type="button" data-inspector-tab="${item}" class="${activeTab === item ? "active" : ""}">${label(item)}</button>`).join("")}
+      </div>
+      <div class="inspector-body">
+        ${renderTab(activeTab, session, observation, result, tools)}
+      </div>
+    </aside>
+  `;
+}
+
+export function bindInspector(root, { tools, onEditTools, onTab }) {
+  root.querySelectorAll("[data-inspector-tab]").forEach((button) => {
+    button.addEventListener("click", () => onTab(button.dataset.inspectorTab || "tools"));
+  });
+  const editForm = root.querySelector("[data-tool-edit-form]");
+  if (editForm) {
+    bindToolPresets(editForm, tools, "session-tools");
+    editForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      onEditTools(readSelectedTools(editForm, "session-tools"), editForm.elements.reason?.value || "");
+    });
+  }
+}
+
+function renderTab(tab, session, observation, result, tools) {
+  switch (tab) {
+    case "requests":
+      return renderRequests(observation.provider_requests || []);
+    case "events":
+      return renderEvents([...(result?.events || []), ...(result?.harness_events || [])], observation.provider_events || []);
+    case "context":
+      return renderContext(session);
+    case "raw":
+      return `<pre class="json-block">${escapeHTML(JSON.stringify({ session, result }, null, 2))}</pre>`;
+    case "tools":
+    default:
+      return renderTools(session, tools);
+  }
+}
+
+function renderTools(session, tools) {
+  const audit = (session.path_entries || []).filter((entry) => entry.type === "active_tools_change").slice().reverse();
+  return `
+    <form class="profile-card" data-tool-edit-form>
+      <div>
+        <h3>Session Tools</h3>
+        <p class="muted">These tools are bound to this session. Changes here affect future turns only.</p>
+      </div>
+      ${renderToolMatrix({ tools, selected: session.selected_tools || [], editable: true, name: "session-tools" })}
+      <label class="field">
+        <span>Audit note</span>
+        <input name="reason" placeholder="why this toolset changed" />
+      </label>
+      <div class="form-actions">
+        <span class="muted">Control capability: ask_user is always available.</span>
+        <button class="primary" type="submit">Update Session Tools</button>
+      </div>
+    </form>
+    <section class="section">
+      <h3>Tool Change Audit</h3>
+      ${audit.length ? audit.map(renderToolAudit).join("") : `<p class="muted">No tool changes after session creation.</p>`}
+    </section>
+  `;
+}
+
+function renderToolAudit(entry) {
+  const meta = entry.metadata || {};
+  return `
+    <div class="event-item">
+      <strong>${escapeHTML(meta.previous_tools || "none")} -> ${escapeHTML(meta.selected_tools || "none")}</strong>
+      <span class="muted">${escapeHTML(formatTime(entry.created_at))}${meta.reason ? ` · ${escapeHTML(meta.reason)}` : ""}</span>
+    </div>
+  `;
+}
+
+function renderRequests(requests) {
+  if (!requests.length) return `<p class="muted">No provider request captured for the selected session view.</p>`;
+  return `
+    <div class="request-list">
+      ${requests.map((request, index) => `
+        <article class="request-item">
+          <strong>Step ${escapeHTML(request.step || index + 1)} · ${escapeHTML(request.provider || "")} / ${escapeHTML(request.model || "")}</strong>
+          <div class="metric-strip">
+            <span class="metric">${(request.messages || []).length} messages</span>
+            <span class="metric">${(request.tools || []).length} tools</span>
+            <span class="metric">${escapeHTML(request.cache_summary?.toolset_id || "toolset n/a")}</span>
+            <span class="metric">${totalTokens(request.context_usage)} est tokens</span>
+          </div>
+          <div class="key-value"><span>Tools</span><span>${escapeHTML((request.tools || []).map((tool) => tool.name).join(", ") || "none")}</span></div>
+          <details>
+            <summary>Messages</summary>
+            <pre class="json-block">${escapeHTML(JSON.stringify(request.messages || [], null, 2))}</pre>
+          </details>
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderEvents(events, providerEvents) {
+  const all = [
+    ...events.map((event) => ({ source: "event", ...event })),
+    ...providerEvents.map((event) => ({ source: "provider", ...event })),
+  ];
+  if (!all.length) return `<p class="muted">No events captured yet.</p>`;
+  return `
+    <div class="event-list">
+      ${all.map((event) => `
+        <article class="event-item">
+          <strong>${escapeHTML(event.source)} · ${escapeHTML(event.type || "")}</strong>
+          <span class="muted">${escapeHTML(event.reason || event.message || event.text || event.reasoning || "")}</span>
+          ${event.duration_ms ? `<span class="tiny-pill">${escapeHTML(formatDuration(event.duration_ms))}</span>` : ""}
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderContext(session) {
+  const path = session.path_entries || [];
+  if (!path.length) return `<p class="muted">No durable entries yet.</p>`;
+  return `
+    <div class="event-list">
+      ${path.map((entry) => `
+        <article class="context-item">
+          <strong>${escapeHTML(entry.type)}${entry.turn_status ? ` · ${escapeHTML(entry.turn_status)}` : ""}</strong>
+          <span class="muted">${escapeHTML(entry.id || "")}</span>
+          ${entry.message?.content ? `<pre class="code-block">${escapeHTML(entry.message.content)}</pre>` : ""}
+          ${entry.error ? `<pre class="code-block">${escapeHTML(entry.error)}</pre>` : ""}
+          ${entry.metadata ? `<pre class="json-block">${escapeHTML(JSON.stringify(entry.metadata, null, 2))}</pre>` : ""}
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
+function label(tab) {
+  switch (tab) {
+    case "tools":
+      return "Tools";
+    case "requests":
+      return "Requests";
+    case "events":
+      return "Events";
+    case "context":
+      return "Context";
+    case "raw":
+      return "Raw";
+    default:
+      return tab;
+  }
+}

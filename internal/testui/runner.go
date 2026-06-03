@@ -44,6 +44,11 @@ const (
 	TargetAll           = "all"
 )
 
+var (
+	errAgentSessionBusy  = errors.New("agent session is running")
+	errAgentSessionInput = errors.New("agent session input error")
+)
+
 type Runner struct {
 	Root            string
 	EnvFile         string
@@ -90,6 +95,15 @@ type agentSession struct {
 	turns           []AgentTurnSummary
 	createdAt       time.Time
 	updatedAt       time.Time
+}
+
+type agentSessionRuntime struct {
+	provider        *observingProvider
+	recorder        *event.Recorder
+	harnessRecorder *agentharness.HarnessRecorder
+	registry        *tools.Registry
+	harness         *agentharness.AgentHarness
+	thread          *agentharness.Thread
 }
 
 func newAgentSessionRegistry() *agentSessionRegistry {
@@ -212,7 +226,7 @@ func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeR
 		return r.failAgentRun(resp, err)
 	}
 	resp.Profile = profile
-	result := probe.runAgentTurn(ctx, sess, resp, "Run the test UI tool contract probe for the selected draft tools.")
+	result := probe.runAgentTurn(ctx, sess, resp, "Run the test UI tool contract probe for the selected tools.")
 	result.Probe = true
 	if result.Status == string(engine.Completed) {
 		result.Summary = "Interface probe passed: selected tools were bound to a transient session and captured in the provider request."
@@ -338,6 +352,66 @@ func (r *Runner) RunAgentTurn(ctx context.Context, sessionID string, req AgentTu
 	return r.runAgentTurnLocked(ctx, sess, resp, req.Message)
 }
 
+func (r *Runner) UpdateAgentSessionTools(ctx context.Context, sessionID string, req AgentToolsUpdateRequest) (AgentSessionSnapshot, error) {
+	if req.SelectedTools == nil {
+		return AgentSessionSnapshot{}, fmt.Errorf("%w: selected_tools is required", errAgentSessionInput)
+	}
+	selectedTools, err := normalizeAgentSessionTools(*req.SelectedTools, "")
+	if err != nil {
+		return AgentSessionSnapshot{}, fmt.Errorf("%w: %v", errAgentSessionInput, err)
+	}
+	sess, ok := r.sessionRegistry().get(sessionID)
+	if !ok {
+		sess, err = r.restoreAgentSession(ctx, sessionID)
+		if err != nil {
+			return AgentSessionSnapshot{}, err
+		}
+	}
+	if !sess.mu.TryLock() {
+		return AgentSessionSnapshot{}, fmt.Errorf("%w: %s", errAgentSessionBusy, sessionID)
+	}
+	defer sess.mu.Unlock()
+	current, err := r.sessionSnapshotLocked(ctx, sess)
+	if err != nil {
+		return AgentSessionSnapshot{}, err
+	}
+	if current.Status == "running" || sess.threadPhase() == "turn" {
+		return AgentSessionSnapshot{}, fmt.Errorf("%w: %s", errAgentSessionBusy, sessionID)
+	}
+	if slices.Equal(sess.selectedTools, selectedTools) {
+		return current, nil
+	}
+	previous := cloneSelectedTools(sess.selectedTools)
+	nextRuntime, err := sess.prepareRuntime(ctx, r, selectedTools)
+	if err != nil {
+		return AgentSessionSnapshot{}, err
+	}
+	now := r.now()
+	reason := strings.TrimSpace(req.Reason)
+	metadata := map[string]string{
+		"source":         "test-ui",
+		"previous_tools": strings.Join(previous, ","),
+		"selected_tools": strings.Join(selectedTools, ","),
+	}
+	if reason != "" {
+		metadata["reason"] = reason
+	}
+	if _, err := sessiontree.AppendActiveTools(ctx, sess.repo, sess.id, metadata); err != nil {
+		return AgentSessionSnapshot{}, err
+	}
+	currentTools := sess.selectedTools
+	currentUpdatedAt := sess.updatedAt
+	sess.selectedTools = selectedTools
+	sess.updatedAt = now
+	if err := r.saveAgentSessionMetadata(r.metadataFromSession(sess)); err != nil {
+		sess.selectedTools = currentTools
+		sess.updatedAt = currentUpdatedAt
+		return AgentSessionSnapshot{}, err
+	}
+	sess.applyRuntime(nextRuntime)
+	return r.sessionSnapshotLocked(ctx, sess)
+}
+
 func (r *Runner) AgentSession(ctx context.Context, sessionID string) (AgentSessionSnapshot, error) {
 	sess, ok := r.sessionRegistry().get(sessionID)
 	if !ok {
@@ -350,6 +424,80 @@ func (r *Runner) AgentSession(ctx context.Context, sessionID string) (AgentSessi
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	return r.sessionSnapshotLocked(ctx, sess)
+}
+
+func (sess *agentSession) threadPhase() string {
+	if sess == nil || sess.thread == nil {
+		return ""
+	}
+	snap, err := sess.thread.Read(context.Background())
+	if err != nil {
+		return ""
+	}
+	return snap.Phase
+}
+
+func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selectedTools []string) (agentSessionRuntime, error) {
+	p, err := r.providerFactory()(sess.cfg)
+	if err != nil {
+		return agentSessionRuntime{}, err
+	}
+	observed := newObservingProvider(p)
+	rec := &event.Recorder{}
+	harnessRec := &agentharness.HarnessRecorder{}
+	registry := tools.NewRegistry()
+	if err := registerAgentSessionTools(registry, r.Root, selectedTools); err != nil {
+		return agentSessionRuntime{}, err
+	}
+	h := agentharness.New(agentharness.Options{
+		Provider:      observed,
+		ProviderName:  sess.cfg.Provider,
+		Model:         sess.cfg.Model,
+		SystemPrompt:  sess.systemPrompt,
+		Tools:         registry,
+		PromptStore:   sess.promptStore,
+		Repo:          sess.repo,
+		Sink:          rec,
+		HarnessSink:   harnessRec,
+		Approver:      testUIToolApprover,
+		ContextPolicy: sess.contextPolicy,
+		EngineOptions: engine.Options{
+			CacheRetention:          config.PromptCacheRetention(sess.cfg),
+			ContextPolicy:           sess.contextPolicy,
+			MaxEmptyProviderRetries: sess.cfg.MaxEmptyProviderRetries,
+			NoProgressLimit:         sess.cfg.NoProgressLimit,
+			DuplicateToolLimit:      sess.cfg.DuplicateToolLimit,
+			WallTime:                sess.cfg.WallTime,
+			MaxCostUSD:              1.00,
+		},
+		NewID: r.agentSessionIDGenerator(ctx, sess.repo, sess.id),
+		Now:   r.now,
+	})
+	thread, err := h.ResumeThread(ctx, sess.id, agentharness.ResumeOptions{})
+	if err != nil {
+		return agentSessionRuntime{}, err
+	}
+	return agentSessionRuntime{
+		provider:        observed,
+		recorder:        rec,
+		harnessRecorder: harnessRec,
+		registry:        registry,
+		harness:         h,
+		thread:          thread,
+	}, nil
+}
+
+func (sess *agentSession) applyRuntime(runtime agentSessionRuntime) {
+	sess.provider = runtime.provider
+	sess.recorder = runtime.recorder
+	sess.harnessRecorder = runtime.harnessRecorder
+	sess.registry = runtime.registry
+	sess.harness = runtime.harness
+	sess.thread = runtime.thread
+}
+
+func isAgentSessionInputError(err error) bool {
+	return errors.Is(err, errAgentSessionInput)
 }
 
 func (r *Runner) AgentSessions(ctx context.Context) []AgentSessionSnapshot {

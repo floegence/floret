@@ -629,6 +629,10 @@ func AppendTurnMarker(ctx context.Context, repo Repo, threadID, turnID string, s
 	return repo.Append(ctx, Entry{ThreadID: threadID, TurnID: turnID, Type: EntryTurnMarker, TurnStatus: status, Metadata: metadata}, AppendOptions{})
 }
 
+func AppendActiveTools(ctx context.Context, repo Repo, threadID string, metadata map[string]string) (Entry, error) {
+	return repo.Append(ctx, Entry{ThreadID: threadID, Type: EntryActiveTools, Metadata: metadata}, AppendOptions{})
+}
+
 func AppendFailure(ctx context.Context, repo Repo, threadID, turnID, message string) (Entry, error) {
 	return repo.Append(ctx, Entry{ThreadID: threadID, TurnID: turnID, Type: EntryRunFailure, Error: message}, AppendOptions{})
 }

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/harness"
@@ -266,6 +267,292 @@ func TestServerAgentSessionAppendIgnoresSelectedToolsPayload(t *testing.T) {
 	if !hasOnlyObservedTools(second.Observation.ProviderRequests[0].Tools, "ask_user") {
 		t.Fatalf("append payload changed session tools: %#v", second.Observation.ProviderRequests[0].Tools)
 	}
+}
+
+func TestServerAgentSessionToolsPatchUpdatesNextProviderRequest(t *testing.T) {
+	scripted := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("ask", "ask_user", `{"question":"Need file?"}`), harness.Done()),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"unused"},"message":"hello","system_prompt":"test","selected_tools":[]}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var first AgentRunResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+
+	patchReq := httptest.NewRequest(http.MethodPatch, "/api/agent/sessions/"+first.SessionID+"/tools", strings.NewReader(`{"selected_tools":["grep","web_fetch"],"reason":"need network read"}`))
+	patchRec := httptest.NewRecorder()
+	handler.ServeHTTP(patchRec, patchReq)
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("patch status = %d, body = %s", patchRec.Code, patchRec.Body.String())
+	}
+	var patched AgentSessionSnapshot
+	if err := json.Unmarshal(patchRec.Body.Bytes(), &patched); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(patched.SelectedTools, []string{"grep", "web_fetch"}) {
+		t.Fatalf("patched selected tools = %#v", patched.SelectedTools)
+	}
+	if !slices.ContainsFunc(patched.PathEntries, func(entry ObservedSessionEntry) bool {
+		return entry.Type == "active_tools_change" &&
+			entry.Metadata["previous_tools"] == "" &&
+			entry.Metadata["selected_tools"] == "grep,web_fetch" &&
+			entry.Metadata["reason"] == "need network read"
+	}) {
+		t.Fatalf("tool audit entry missing: %#v", patched.PathEntries)
+	}
+
+	turnReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+first.SessionID+"/turns", strings.NewReader(`{"message":"main.go"}`))
+	turnRec := httptest.NewRecorder()
+	handler.ServeHTTP(turnRec, turnReq)
+	if turnRec.Code != http.StatusOK {
+		t.Fatalf("turn status = %d, body = %s", turnRec.Code, turnRec.Body.String())
+	}
+	var second AgentRunResponse
+	if err := json.Unmarshal(turnRec.Body.Bytes(), &second); err != nil {
+		t.Fatal(err)
+	}
+	if second.Status != "completed" || !slices.Equal(second.Session.SelectedTools, []string{"grep", "web_fetch"}) {
+		t.Fatalf("second = %#v", second)
+	}
+	if !hasObservedTool(second.Observation.ProviderRequests[0].Tools, "grep") || !hasObservedTool(second.Observation.ProviderRequests[0].Tools, "web_fetch") {
+		t.Fatalf("patched tools missing from provider request: %#v", second.Observation.ProviderRequests[0].Tools)
+	}
+	if hasObservedTool(second.Observation.ProviderRequests[0].Tools, "read") {
+		t.Fatalf("unselected read tool exposed after patch: %#v", second.Observation.ProviderRequests[0].Tools)
+	}
+}
+
+func TestServerAgentSessionToolsPatchSameToolsetDoesNotAddAuditNoise(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"ok"},"message":"hello","system_prompt":"test","selected_tools":["grep"]}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var first AgentRunResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+
+	patchReq := httptest.NewRequest(http.MethodPatch, "/api/agent/sessions/"+first.SessionID+"/tools", strings.NewReader(`{"selected_tools":["grep"],"reason":"no-op"}`))
+	patchRec := httptest.NewRecorder()
+	handler.ServeHTTP(patchRec, patchReq)
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("patch status = %d, body = %s", patchRec.Code, patchRec.Body.String())
+	}
+	var patched AgentSessionSnapshot
+	if err := json.Unmarshal(patchRec.Body.Bytes(), &patched); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(patched.SelectedTools, []string{"grep"}) {
+		t.Fatalf("patched selected tools = %#v", patched.SelectedTools)
+	}
+	if slices.ContainsFunc(patched.PathEntries, func(entry ObservedSessionEntry) bool {
+		return entry.Type == "active_tools_change"
+	}) {
+		t.Fatalf("same toolset patch wrote audit entry: %#v", patched.PathEntries)
+	}
+}
+
+func TestServerAgentSessionToolsPatchRequiresSelectedToolsField(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"ok"},"message":"hello","system_prompt":"test","selected_tools":["grep"]}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var first AgentRunResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+
+	patchReq := httptest.NewRequest(http.MethodPatch, "/api/agent/sessions/"+first.SessionID+"/tools", strings.NewReader(`{"reason":"missing tools"}`))
+	patchRec := httptest.NewRecorder()
+	handler.ServeHTTP(patchRec, patchReq)
+	if patchRec.Code != http.StatusBadRequest || !strings.Contains(patchRec.Body.String(), "selected_tools is required") {
+		t.Fatalf("patch status/body = %d %s", patchRec.Code, patchRec.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+first.SessionID, nil)
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get status = %d, body = %s", getRec.Code, getRec.Body.String())
+	}
+	var snapshot AgentSessionSnapshot
+	if err := json.Unmarshal(getRec.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(snapshot.SelectedTools, []string{"grep"}) {
+		t.Fatalf("missing selected_tools patch changed tools: %#v", snapshot.SelectedTools)
+	}
+}
+
+func TestServerAgentSessionToolsPatchCanClearLocalTools(t *testing.T) {
+	scripted := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("ask", "ask_user", `{"question":"Continue?"}`), harness.Done()),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"unused"},"message":"hello","system_prompt":"test","selected_tools":["grep"]}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var first AgentRunResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+
+	patchReq := httptest.NewRequest(http.MethodPatch, "/api/agent/sessions/"+first.SessionID+"/tools", strings.NewReader(`{"selected_tools":[],"reason":"chat only"}`))
+	patchRec := httptest.NewRecorder()
+	handler.ServeHTTP(patchRec, patchReq)
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("patch status = %d, body = %s", patchRec.Code, patchRec.Body.String())
+	}
+	var patched AgentSessionSnapshot
+	if err := json.Unmarshal(patchRec.Body.Bytes(), &patched); err != nil {
+		t.Fatal(err)
+	}
+	if len(patched.SelectedTools) != 0 {
+		t.Fatalf("patched selected tools = %#v", patched.SelectedTools)
+	}
+
+	turnReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+first.SessionID+"/turns", strings.NewReader(`{"message":"yes"}`))
+	turnRec := httptest.NewRecorder()
+	handler.ServeHTTP(turnRec, turnReq)
+	if turnRec.Code != http.StatusOK {
+		t.Fatalf("turn status = %d, body = %s", turnRec.Code, turnRec.Body.String())
+	}
+	var second AgentRunResponse
+	if err := json.Unmarshal(turnRec.Body.Bytes(), &second); err != nil {
+		t.Fatal(err)
+	}
+	if !hasOnlyObservedTools(second.Observation.ProviderRequests[0].Tools, "ask_user") {
+		t.Fatalf("cleared tools should expose only control tools: %#v", second.Observation.ProviderRequests[0].Tools)
+	}
+}
+
+func TestServerAgentSessionToolsPatchRejectsUnknownTool(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"ok"},"message":"hello","system_prompt":"test"}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var first AgentRunResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+
+	patchReq := httptest.NewRequest(http.MethodPatch, "/api/agent/sessions/"+first.SessionID+"/tools", strings.NewReader(`{"selected_tools":["missing"]}`))
+	patchRec := httptest.NewRecorder()
+	handler.ServeHTTP(patchRec, patchReq)
+	if patchRec.Code != http.StatusBadRequest {
+		t.Fatalf("patch status/body = %d %s", patchRec.Code, patchRec.Body.String())
+	}
+}
+
+func TestServerAgentSessionToolsPatchRejectsRunningSession(t *testing.T) {
+	scripted := harness.NewScriptedProvider(harness.Step(harness.Hang()))
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Timeout = 250 * time.Millisecond
+	handler := server.Handler()
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"unused"},"message":"hello","system_prompt":"test","selected_tools":[]}`
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+		createRec := httptest.NewRecorder()
+		handler.ServeHTTP(createRec, createReq)
+	}()
+	for i := 0; i < 50; i++ {
+		registry := runner.sessionRegistry()
+		registry.mu.Lock()
+		var sessionID string
+		if len(registry.order) == 1 {
+			sessionID = registry.order[0]
+		}
+		registry.mu.Unlock()
+		if sessionID != "" {
+			patchReq := httptest.NewRequest(http.MethodPatch, "/api/agent/sessions/"+sessionID+"/tools", strings.NewReader(`{"selected_tools":["grep"]}`))
+			patchRec := httptest.NewRecorder()
+			handler.ServeHTTP(patchRec, patchReq)
+			if patchRec.Code != http.StatusConflict {
+				t.Fatalf("patch status/body = %d %s", patchRec.Code, patchRec.Body.String())
+			}
+			<-done
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("session did not appear while running")
 }
 
 func TestServerAgentSessionCreateRejectsUnknownSelectedTool(t *testing.T) {
@@ -550,16 +837,22 @@ func TestServerServesStaticConsole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	rec := httptest.NewRecorder()
-
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d", rec.Code)
+	for _, path := range []string{"/", "/sessions", "/sessions/new", "/settings"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d", path, rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "Floret Agent Console") {
+			t.Fatalf("%s body did not contain console title", path)
+		}
 	}
-	if !strings.Contains(rec.Body.String(), "Floret Agent Console") {
-		t.Fatalf("body did not contain console title")
+	moduleReq := httptest.NewRequest(http.MethodGet, "/views/sessionWorkspace.js", nil)
+	moduleRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(moduleRec, moduleReq)
+	if moduleRec.Code != http.StatusOK || !strings.Contains(moduleRec.Body.String(), "renderSessionWorkspace") {
+		t.Fatalf("module status/body = %d %s", moduleRec.Code, moduleRec.Body.String())
 	}
 }
 

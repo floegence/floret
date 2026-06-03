@@ -1,0 +1,85 @@
+import { clone, defaultProfile, escapeHTML, profileLabel, providerCatalog, state } from "../state.js";
+
+export function renderSettings() {
+  const profiles = state.config?.profiles?.length ? state.config.profiles : [defaultProfile()];
+  const activeID = state.config?.active_profile_id || profiles[0].id;
+  const active = profiles.find((profile) => profile.id === activeID) || profiles[0];
+  const providers = providerCatalog();
+  return `
+    <section class="settings-page">
+      <header class="settings-head">
+        <div>
+          <h1>Settings</h1>
+          <p class="muted">Provider profiles and local quality checks live here, away from the session workflow.</p>
+        </div>
+      </header>
+      <div class="settings-grid">
+        <form class="profile-card" data-settings-form>
+          <h2>Model Configuration</h2>
+          <label class="field">
+            <span>Saved configuration</span>
+            <select name="active_profile_id">
+              ${profiles.map((profile) => `<option value="${escapeHTML(profile.id)}" ${profile.id === activeID ? "selected" : ""}>${escapeHTML(profileLabel(profile))}</option>`).join("")}
+            </select>
+          </label>
+          <label class="field"><span>Name</span><input name="name" value="${escapeHTML(active.name || "")}" /></label>
+          <label class="field">
+            <span>Provider</span>
+            <select name="provider">
+              ${providers.map((provider) => `<option value="${escapeHTML(provider.id)}" ${provider.id === active.provider ? "selected" : ""}>${escapeHTML(provider.name || provider.id)} · ${escapeHTML(provider.id)}</option>`).join("")}
+              ${providers.some((provider) => provider.id === active.provider) ? "" : `<option value="${escapeHTML(active.provider || "openai-compatible")}" selected>${escapeHTML(active.provider || "custom")}</option>`}
+            </select>
+          </label>
+          <label class="field"><span>Model</span><input name="model" value="${escapeHTML(active.model || "")}" /></label>
+          <label class="field"><span>Base URL</span><input name="base_url" value="${escapeHTML(active.base_url || "")}" placeholder="https://api.example.com/v1" /></label>
+          <label class="field"><span>API key</span><input name="api_key" type="password" placeholder="${active.api_key_set ? "saved key retained if empty" : "optional"}" /></label>
+          <label class="field"><span>Fake response</span><input name="fake_response" value="${escapeHTML(active.fake_response || "")}" /></label>
+          <div class="form-actions">
+            <button type="button" data-duplicate-profile>Duplicate</button>
+            <button class="primary" type="submit">Save .env.local</button>
+          </div>
+        </form>
+        <section class="check-card">
+          <h2>Quality Checks</h2>
+          <p class="muted">Run local checks without leaving the console.</p>
+          <div class="form-actions">
+            <button type="button" data-run-check="unit">go test</button>
+            <button type="button" data-run-check="race">race</button>
+            <button type="button" data-run-check="eval-demo">eval demo</button>
+          </div>
+          <pre id="checkOutput" class="code-block">${escapeHTML(state.checkResult || "No check has run in this browser session.")}</pre>
+        </section>
+      </div>
+    </section>
+  `;
+}
+
+export function bindSettings(root, handlers) {
+  const form = root.querySelector("[data-settings-form]");
+  form?.elements.active_profile_id?.addEventListener("change", () => handlers.onSwitchProfile(form.elements.active_profile_id.value));
+  form?.elements.provider?.addEventListener("change", () => handlers.onSwitchProvider(form.elements.provider.value));
+  form?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const profiles = clone(state.config?.profiles || [defaultProfile()]);
+    const activeID = form.elements.active_profile_id.value;
+    const index = profiles.findIndex((profile) => profile.id === activeID);
+    const current = index >= 0 ? profiles[index] : defaultProfile();
+    const next = {
+      ...current,
+      id: current.id || activeID || "profile",
+      name: form.elements.name.value,
+      provider: form.elements.provider.value,
+      model: form.elements.model.value,
+      base_url: form.elements.base_url.value,
+      api_key: form.elements.api_key.value,
+      api_key_set: current.api_key_set,
+      fake_response: form.elements.fake_response.value,
+    };
+    if (index >= 0) profiles[index] = next;
+    handlers.onSave({ active_profile_id: next.id, profiles });
+  });
+  root.querySelector("[data-duplicate-profile]")?.addEventListener("click", () => handlers.onDuplicate());
+  root.querySelectorAll("[data-run-check]").forEach((button) => {
+    button.addEventListener("click", () => handlers.onRunCheck(button.dataset.runCheck || "unit"));
+  });
+}

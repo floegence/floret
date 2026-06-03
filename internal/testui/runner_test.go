@@ -437,6 +437,58 @@ func TestRunnerAgentSessionRestoresSelectedToolsForAppend(t *testing.T) {
 	}
 }
 
+func TestRunnerAgentSessionToolPatchPersistsAcrossRestore(t *testing.T) {
+	root := t.TempDir()
+	firstProvider := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("ask", "ask_user", `{"question":"Continue?"}`), harness.Done()),
+	)
+	firstRunner := NewRunner(root)
+	firstRunner.Now = fixedClock()
+	firstRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return firstProvider, nil
+	}
+	first := firstRunner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:       "start",
+		SystemPrompt:  "test",
+		SelectedTools: []string{"grep"},
+	})
+	if first.Status != "waiting" || !slices.Equal(first.Session.SelectedTools, []string{"grep"}) {
+		t.Fatalf("first = %#v", first)
+	}
+	patched, err := firstRunner.UpdateAgentSessionTools(context.Background(), first.SessionID, AgentToolsUpdateRequest{SelectedTools: toolSelection("read", "web_fetch"), Reason: "restore test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(patched.SelectedTools, []string{"read", "web_fetch"}) {
+		t.Fatalf("patched tools = %#v", patched.SelectedTools)
+	}
+
+	restoredRunner := NewRunner(root)
+	restoredRunner.Now = fixedClock()
+	restoredRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return harness.NewScriptedProvider(harness.Step(harness.Text("done"), harness.Done())), nil
+	}
+	second := restoredRunner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "yes"})
+	if second.Status != "completed" || !slices.Equal(second.Session.SelectedTools, []string{"read", "web_fetch"}) {
+		t.Fatalf("second = %#v", second)
+	}
+	if !hasStrictTool(second.Observation.ProviderRequests[0].Tools, "read") || !hasStrictTool(second.Observation.ProviderRequests[0].Tools, "web_fetch") {
+		t.Fatalf("patched tools missing after restore: %#v", second.Observation.ProviderRequests[0].Tools)
+	}
+	if hasStrictTool(second.Observation.ProviderRequests[0].Tools, "grep") {
+		t.Fatalf("old tool still exposed after restore: %#v", second.Observation.ProviderRequests[0].Tools)
+	}
+	if !slices.ContainsFunc(second.Session.PathEntries, func(entry ObservedSessionEntry) bool {
+		return entry.Type == "active_tools_change" &&
+			entry.Metadata["previous_tools"] == "grep" &&
+			entry.Metadata["selected_tools"] == "read,web_fetch" &&
+			entry.Metadata["reason"] == "restore test"
+	}) {
+		t.Fatalf("tool patch audit entry missing after restore: %#v", second.Session.PathEntries)
+	}
+}
+
 func TestRunnerRestoresLongSessionEntryAndKeepsSelectedTools(t *testing.T) {
 	root := t.TempDir()
 	longOutput := strings.Repeat("weather payload ", 12_000)
@@ -1163,4 +1215,9 @@ func contextPolicyForTest(window int64) contextpolicy.Policy {
 		ReservedSummaryTokens: 32,
 		RecentTailTokens:      32,
 	}
+}
+
+func toolSelection(names ...string) *[]string {
+	selected := append([]string(nil), names...)
+	return &selected
 }
