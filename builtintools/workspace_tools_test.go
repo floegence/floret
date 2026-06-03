@@ -49,6 +49,46 @@ func TestReadListGlobAndGrepWorkspaceTools(t *testing.T) {
 	}
 }
 
+func TestRegisterSelectedExposesOnlyRequestedTools(t *testing.T) {
+	reg := tools.NewRegistry()
+	if err := RegisterSelected(reg, SelectedOptions{
+		Workspace: WorkspaceOptions{Root: t.TempDir()},
+		Shell:     ShellOptions{CWD: t.TempDir(), Runner: fakeRunner{result: CommandResult{Stdout: "ok\n", ExitCode: 0}}},
+		Network:   NetworkOptions{AllowPrivateIPs: true},
+	}, ToolGrep, ToolShell); err != nil {
+		t.Fatal(err)
+	}
+
+	defs := reg.Definitions()
+	if len(defs) != 2 || !hasToolDefinition(defs, ToolGrep) || !hasToolDefinition(defs, ToolShell) {
+		t.Fatalf("definitions = %#v", defs)
+	}
+	if hasToolDefinition(defs, ToolRead) || hasToolDefinition(defs, ToolWrite) || hasToolDefinition(defs, ToolWebFetch) {
+		t.Fatalf("unselected tools were registered: %#v", defs)
+	}
+}
+
+func TestRegisterSelectedRejectsUnknownTool(t *testing.T) {
+	err := RegisterSelected(tools.NewRegistry(), SelectedOptions{Workspace: WorkspaceOptions{Root: t.TempDir()}}, "missing")
+	if err == nil || !strings.Contains(err.Error(), `unknown built-in tool "missing"`) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestRegisterSelectedOnlyRequiresOptionsForSelectedTools(t *testing.T) {
+	reg := tools.NewRegistry()
+	if err := RegisterSelected(reg, SelectedOptions{
+		Workspace: WorkspaceOptions{Root: string([]byte{0})},
+		Network:   NetworkOptions{AllowPrivateIPs: true},
+	}, ToolWebFetch); err != nil {
+		t.Fatal(err)
+	}
+	defs := reg.Definitions()
+	if len(defs) != 1 || !hasToolDefinition(defs, ToolWebFetch) {
+		t.Fatalf("definitions = %#v", defs)
+	}
+}
+
 func TestWorkspaceMutationRequiresApprovalAndWritesFile(t *testing.T) {
 	root := t.TempDir()
 	reg := tools.NewRegistry()
@@ -510,6 +550,15 @@ func quoteJSON(value string) string {
 	value = strings.ReplaceAll(value, `"`, `\"`)
 	value = strings.ReplaceAll(value, "\n", `\n`)
 	return `"` + value + `"`
+}
+
+func hasToolDefinition(defs []provider.ToolDefinition, name string) bool {
+	for _, def := range defs {
+		if def.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func sameStrings(a, b []string) bool {

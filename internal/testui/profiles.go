@@ -21,7 +21,7 @@ const (
 )
 
 func (r Runner) ConfigState() (ConfigState, error) {
-	state := ConfigState{EnvFile: r.EnvFile, Catalog: r.Catalog()}
+	state := ConfigState{EnvFile: r.EnvFile, Catalog: r.Catalog(), Tools: agentToolCatalog()}
 	fileValues := map[string]string{}
 	if _, err := os.Stat(r.EnvFile); err == nil {
 		state.EnvFileFound = true

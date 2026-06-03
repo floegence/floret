@@ -75,7 +75,7 @@ type agentSession struct {
 	id              string
 	profile         ProviderProfile
 	systemPrompt    string
-	toolMode        string
+	selectedTools   []string
 	contextPolicy   contextpolicy.Policy
 	cfg             config.Config
 	provider        *observingProvider
@@ -190,13 +190,17 @@ func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) Ag
 		FakeResponse: cfg.FakeResponse,
 	})
 	resp.Profile = resolvedProfile
+	selectedTools, err := normalizeAgentSessionTools(req.SelectedTools, req.ToolMode)
+	if err != nil {
+		return r.failAgentRunWithStatus(resp, http.StatusBadRequest, err)
+	}
 	sess, err := r.buildAgentSession(ctx, agentSessionBuildOptions{
 		ID:            sessionID,
 		CreatedAt:     started,
 		UpdatedAt:     started,
 		Profile:       resolvedProfile,
 		SystemPrompt:  cfg.SystemPrompt,
-		ToolMode:      req.ToolMode,
+		SelectedTools: selectedTools,
 		ContextPolicy: cfg.ContextPolicy,
 		Config:        cfg,
 		Start:         true,
@@ -310,7 +314,7 @@ type agentSessionBuildOptions struct {
 	UpdatedAt     time.Time
 	Profile       ProviderProfile
 	SystemPrompt  string
-	ToolMode      string
+	SelectedTools []string
 	ContextPolicy contextpolicy.Policy
 	Config        config.Config
 	Turns         []AgentTurnSummary
@@ -329,9 +333,12 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 	harnessRec := &agentharness.HarnessRecorder{}
 	repo := sessiontree.NewFileRepo(r.agentSessionTreeRoot())
 	promptStore := promptcache.NewFileStore(filepath.Join(r.Root, ".floret-test-ui", "prompt-cache"))
-	toolMode := normalizeToolMode(opts.ToolMode)
+	selectedTools, err := normalizeAgentSessionTools(opts.SelectedTools, "")
+	if err != nil {
+		return nil, err
+	}
 	registry := tools.NewRegistry()
-	if err := registerAgentSessionTools(registry, r.Root, toolMode); err != nil {
+	if err := registerAgentSessionTools(registry, r.Root, selectedTools); err != nil {
 		return nil, err
 	}
 	h := agentharness.New(agentharness.Options{
@@ -379,7 +386,7 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 		id:              opts.ID,
 		profile:         opts.Profile,
 		systemPrompt:    cfg.SystemPrompt,
-		toolMode:        toolMode,
+		selectedTools:   selectedTools,
 		contextPolicy:   cfg.ContextPolicy,
 		cfg:             cfg,
 		provider:        observed,
@@ -411,43 +418,6 @@ func (r *Runner) agentSessionIDGenerator(ctx context.Context, repo sessiontree.R
 		seqByPrefix[prefix]++
 		return fmt.Sprintf("%s-%d", prefix, seqByPrefix[prefix])
 	}
-}
-
-func normalizeToolMode(mode string) string {
-	switch strings.TrimSpace(mode) {
-	case "", "chat":
-		return "chat"
-	case "read_only", "coding", "coding_shell", "network":
-		return strings.TrimSpace(mode)
-	default:
-		return "chat"
-	}
-}
-
-func registerAgentSessionTools(registry *tools.Registry, root string, mode string) error {
-	mode = normalizeToolMode(mode)
-	if mode == "chat" {
-		return nil
-	}
-	if err := builtintools.RegisterReadOnlyWorkspace(registry, builtintools.WorkspaceOptions{Root: root}); err != nil {
-		return err
-	}
-	if mode == "read_only" {
-		return nil
-	}
-	if err := builtintools.RegisterWorkspaceMutation(registry, builtintools.WorkspaceOptions{Root: root}); err != nil {
-		return err
-	}
-	if mode == "coding" {
-		return nil
-	}
-	if err := builtintools.RegisterShell(registry, builtintools.ShellOptions{CWD: root}); err != nil {
-		return err
-	}
-	if mode == "coding_shell" {
-		return nil
-	}
-	return builtintools.RegisterNetwork(registry, builtintools.NetworkOptions{})
 }
 
 func testUIToolApprover(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {
@@ -492,7 +462,7 @@ func (r *Runner) restoreAgentSession(ctx context.Context, sessionID string) (*ag
 		UpdatedAt:     meta.UpdatedAt,
 		Profile:       profile,
 		SystemPrompt:  meta.SystemPrompt,
-		ToolMode:      meta.ToolMode,
+		SelectedTools: meta.SelectedTools,
 		ContextPolicy: meta.ContextPolicy,
 		Config:        cfg,
 		Turns:         meta.Turns,
@@ -546,6 +516,7 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 		UpdatedAt:        updatedAt,
 		Profile:          stripProfileSecret(meta.Profile),
 		SystemPrompt:     meta.SystemPrompt,
+		SelectedTools:    cloneSelectedTools(meta.SelectedTools),
 		ContextPolicy:    meta.ContextPolicy,
 		LatestTurnID:     latestTurnID,
 		WaitingPrompt:    waitingPrompt,
@@ -703,7 +674,7 @@ func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) 
 		UpdatedAt:        sess.updatedAt,
 		Profile:          sess.profile,
 		SystemPrompt:     sess.systemPrompt,
-		ToolMode:         sess.toolMode,
+		SelectedTools:    cloneSelectedTools(sess.selectedTools),
 		ContextPolicy:    sess.contextPolicy,
 		LatestTurnID:     latestTurnID,
 		WaitingPrompt:    waitingPrompt,

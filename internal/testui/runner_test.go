@@ -261,7 +261,7 @@ func TestRunnerRunAgentReturnsInteractionObservation(t *testing.T) {
 	}
 }
 
-func TestRunnerAgentSessionToolModeExplicitlyExposesBuiltInTools(t *testing.T) {
+func TestRunnerAgentSessionSelectedToolsExplicitlyExposeBuiltInTools(t *testing.T) {
 	root := t.TempDir()
 	runner := NewRunner(root)
 	runner.Now = fixedClock()
@@ -279,12 +279,12 @@ func TestRunnerAgentSessionToolModeExplicitlyExposesBuiltInTools(t *testing.T) {
 	}
 
 	chat := runner.RunAgent(context.Background(), AgentRunRequest{
-		ProfileID:    "fake",
-		Message:      "hello",
-		SystemPrompt: "test",
-		ToolMode:     "chat",
+		ProfileID:     "fake",
+		Message:       "hello",
+		SystemPrompt:  "test",
+		SelectedTools: []string{},
 	})
-	if chat.Status != "completed" || chat.Session.ToolMode != "chat" {
+	if chat.Status != "completed" || chat.Session.SelectedTools == nil || len(chat.Session.SelectedTools) != 0 {
 		t.Fatalf("chat = %#v", chat)
 	}
 	if slices.ContainsFunc(chat.Observation.ProviderRequests[0].Tools, func(tool provider.ToolDefinition) bool {
@@ -292,23 +292,112 @@ func TestRunnerAgentSessionToolModeExplicitlyExposesBuiltInTools(t *testing.T) {
 	}) {
 		t.Fatalf("chat mode should not expose built-in workspace tools: %#v", chat.Observation.ProviderRequests[0].Tools)
 	}
+	metaData, err := os.ReadFile(runner.agentSessionMetadataPath(chat.SessionID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(metaData), `"selected_tools": []`) {
+		t.Fatalf("metadata should persist empty selected tools: %s", string(metaData))
+	}
 
-	readOnly := runner.RunAgent(context.Background(), AgentRunRequest{
-		ProfileID:    "fake",
+	grepOnly := runner.RunAgent(context.Background(), AgentRunRequest{
+		ProfileID:     "fake",
+		Message:       "hello",
+		SystemPrompt:  "test",
+		SelectedTools: []string{"grep"},
+	})
+	if grepOnly.Status != "completed" || !slices.Equal(grepOnly.Session.SelectedTools, []string{"grep"}) {
+		t.Fatalf("grepOnly = %#v", grepOnly)
+	}
+	if !hasStrictTool(grepOnly.Observation.ProviderRequests[0].Tools, "grep") {
+		t.Fatalf("grep tool missing: %#v", grepOnly.Observation.ProviderRequests[0].Tools)
+	}
+	if hasStrictTool(grepOnly.Observation.ProviderRequests[0].Tools, "read") || hasStrictTool(grepOnly.Observation.ProviderRequests[0].Tools, "list") {
+		t.Fatalf("unselected read tools were exposed: %#v", grepOnly.Observation.ProviderRequests[0].Tools)
+	}
+
+	coding := runner.RunAgent(context.Background(), AgentRunRequest{
+		ProfileID:     "fake",
+		Message:       "hello",
+		SystemPrompt:  "test",
+		SelectedTools: []string{"read", "list", "glob", "grep", "apply_patch", "edit", "write", "shell", "web_fetch"},
+	})
+	if coding.Status != "completed" || len(coding.Session.SelectedTools) != 9 {
+		t.Fatalf("coding = %#v", coding)
+	}
+	for _, name := range []string{"read", "list", "glob", "grep", "apply_patch", "edit", "write", "shell", "web_fetch"} {
+		if !hasStrictTool(coding.Observation.ProviderRequests[0].Tools, name) {
+			t.Fatalf("selected tool %s missing: %#v", name, coding.Observation.ProviderRequests[0].Tools)
+		}
+	}
+}
+
+func TestRunnerAgentSessionRestoresSelectedToolsForAppend(t *testing.T) {
+	root := t.TempDir()
+	firstProvider := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("ask", "ask_user", `{"question":"Next?"}`), harness.Done()),
+	)
+	firstRunner := NewRunner(root)
+	firstRunner.Now = fixedClock()
+	firstRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return firstProvider, nil
+	}
+
+	first := firstRunner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:       "start",
+		SystemPrompt:  "test",
+		SelectedTools: []string{"grep", "shell"},
+	})
+	if first.Status != "waiting" || !slices.Equal(first.Session.SelectedTools, []string{"grep", "shell"}) {
+		t.Fatalf("first = %#v", first)
+	}
+	if !hasStrictTool(first.Observation.ProviderRequests[0].Tools, "grep") || !hasStrictTool(first.Observation.ProviderRequests[0].Tools, "shell") {
+		t.Fatalf("first tools = %#v", first.Observation.ProviderRequests[0].Tools)
+	}
+
+	secondProvider := harness.NewScriptedProvider(harness.Step(harness.Text("done"), harness.Done()))
+	secondRunner := NewRunner(root)
+	secondRunner.Now = fixedClock()
+	secondRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return secondProvider, nil
+	}
+	second := secondRunner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "continue"})
+	if second.Status != "completed" || !slices.Equal(second.Session.SelectedTools, []string{"grep", "shell"}) {
+		t.Fatalf("second = %#v", second)
+	}
+	if len(second.Observation.ProviderRequests) != 1 {
+		t.Fatalf("requests = %#v", second.Observation.ProviderRequests)
+	}
+	if !hasStrictTool(second.Observation.ProviderRequests[0].Tools, "grep") || !hasStrictTool(second.Observation.ProviderRequests[0].Tools, "shell") {
+		t.Fatalf("restored tools missing: %#v", second.Observation.ProviderRequests[0].Tools)
+	}
+	if hasStrictTool(second.Observation.ProviderRequests[0].Tools, "read") || hasStrictTool(second.Observation.ProviderRequests[0].Tools, "web_fetch") {
+		t.Fatalf("unselected tools restored: %#v", second.Observation.ProviderRequests[0].Tools)
+	}
+}
+
+func TestRunnerAgentSessionMigratesLegacyToolMode(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	result := runner.RunAgent(context.Background(), AgentRunRequest{
+		Profile:      ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "ok"},
 		Message:      "hello",
 		SystemPrompt: "test",
 		ToolMode:     "read_only",
 	})
-	if readOnly.Status != "completed" || readOnly.Session.ToolMode != "read_only" {
-		t.Fatalf("readOnly = %#v", readOnly)
+	if result.Status != "completed" {
+		t.Fatalf("result = %#v", result)
 	}
-	for _, name := range []string{"read", "list", "glob", "grep"} {
-		if !slices.ContainsFunc(readOnly.Observation.ProviderRequests[0].Tools, func(tool provider.ToolDefinition) bool {
-			return tool.Name == name && tool.Strict && tool.InputSchema["additionalProperties"] == false
-		}) {
-			t.Fatalf("read_only mode missing tool %s: %#v", name, readOnly.Observation.ProviderRequests[0].Tools)
-		}
+	if !slices.Equal(result.Session.SelectedTools, []string{"read", "list", "glob", "grep"}) {
+		t.Fatalf("selected tools = %#v", result.Session.SelectedTools)
 	}
+}
+
+func hasStrictTool(defs []provider.ToolDefinition, name string) bool {
+	return slices.ContainsFunc(defs, func(tool provider.ToolDefinition) bool {
+		return tool.Name == name && tool.Strict && tool.InputSchema["additionalProperties"] == false
+	})
 }
 
 func TestRunnerAgentSessionWaitsAndResumesWithAppendMessage(t *testing.T) {

@@ -102,19 +102,25 @@
               <span>Recent tail</span>
               <input id="recentTailTokens" type="number" min="256" step="256" value="4096" />
             </label>
-            <label class="field mini">
-              <span>Tools</span>
-              <select id="toolMode">
-                <option value="chat">Chat</option>
-                <option value="read_only">Read only</option>
-                <option value="coding">Coding</option>
-                <option value="coding_shell">Coding + shell</option>
-                <option value="network">Network</option>
-              </select>
-            </label>
             <button id="runAgent" class="primary" type="button">New Session</button>
             <button id="appendMessage" class="secondary" type="button" disabled>Send Message</button>
           </div>
+          <section class="tool-selector" aria-label="Local tools">
+            <div class="tool-selector-head">
+              <div>
+                <span class="section-kicker">Local tools</span>
+                <strong id="toolSelectionSummary">No local tools selected</strong>
+              </div>
+              <div class="tool-presets" aria-label="Tool presets">
+                <button class="secondary tiny" type="button" data-tool-preset="chat">Chat</button>
+                <button class="secondary tiny" type="button" data-tool-preset="read">Read</button>
+                <button class="secondary tiny" type="button" data-tool-preset="coding">Coding</button>
+                <button class="secondary tiny" type="button" data-tool-preset="shell">Shell</button>
+                <button class="secondary tiny" type="button" data-tool-preset="all">All</button>
+              </div>
+            </div>
+            <div id="toolCheckboxes" class="tool-checkbox-grid"></div>
+          </section>
           <div class="session-controls">
             <label class="field session-field">
               <span>Active session</span>

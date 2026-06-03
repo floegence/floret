@@ -23,6 +23,7 @@ type agentSessionMetadata struct {
 	ProfileID      string               `json:"profile_id,omitempty"`
 	Profile        ProviderProfile      `json:"profile"`
 	SystemPrompt   string               `json:"system_prompt"`
+	SelectedTools  []string             `json:"selected_tools"`
 	ToolMode       string               `json:"tool_mode,omitempty"`
 	ContextPolicy  contextpolicy.Policy `json:"context_policy"`
 	Engine         agentSessionEngine   `json:"engine"`
@@ -118,6 +119,12 @@ func (r Runner) loadAgentSessionMetadata(sessionID string) (agentSessionMetadata
 	meta.Profile = normalizeProfile(meta.Profile, 0)
 	meta.Profile.APIKey = ""
 	meta.Profile.APIKeySet = meta.APIKeyRequired || meta.Profile.APIKeySet
+	selected, err := normalizeAgentSessionTools(meta.SelectedTools, meta.ToolMode)
+	if err != nil {
+		return agentSessionMetadata{}, err
+	}
+	meta.SelectedTools = cloneSelectedTools(selected)
+	meta.ToolMode = ""
 	meta.ContextPolicy = contextpolicy.Normalize(meta.ContextPolicy)
 	return meta, nil
 }
@@ -143,6 +150,12 @@ func (r Runner) listAgentSessionMetadata() ([]agentSessionMetadata, error) {
 		meta.Profile = normalizeProfile(meta.Profile, 0)
 		meta.Profile.APIKey = ""
 		meta.Profile.APIKeySet = meta.APIKeyRequired || meta.Profile.APIKeySet
+		selected, err := normalizeAgentSessionTools(meta.SelectedTools, meta.ToolMode)
+		if err != nil {
+			continue
+		}
+		meta.SelectedTools = cloneSelectedTools(selected)
+		meta.ToolMode = ""
 		meta.ContextPolicy = contextpolicy.Normalize(meta.ContextPolicy)
 		out = append(out, meta)
 	}
@@ -164,11 +177,11 @@ func (r Runner) metadataFromSession(sess *agentSession) agentSessionMetadata {
 		ID:            sess.id,
 		CreatedAt:     sess.createdAt,
 		UpdatedAt:     sess.updatedAt,
-			ProfileID:     sess.profile.ID,
-			Profile:       sess.profile,
-			SystemPrompt:  sess.systemPrompt,
-			ToolMode:      sess.toolMode,
-			ContextPolicy: sess.contextPolicy,
+		ProfileID:     sess.profile.ID,
+		Profile:       sess.profile,
+		SystemPrompt:  sess.systemPrompt,
+		SelectedTools: cloneSelectedTools(sess.selectedTools),
+		ContextPolicy: sess.contextPolicy,
 		Engine: agentSessionEngine{
 			MaxEmptyProviderRetries: sess.cfg.MaxEmptyProviderRetries,
 			NoProgressLimit:         sess.cfg.NoProgressLimit,

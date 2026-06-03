@@ -86,6 +86,7 @@ type ConfigState struct {
 	ActiveProfileID string            `json:"active_profile_id"`
 	Profiles        []ProviderProfile `json:"profiles"`
 	Catalog         []CatalogProvider `json:"catalog"`
+	Tools           []AgentToolOption `json:"tools"`
 }
 
 type ProviderProfile struct {
@@ -111,6 +112,7 @@ type AgentRunRequest struct {
 	Profile       ProviderProfile      `json:"profile,omitempty"`
 	Message       string               `json:"message"`
 	SystemPrompt  string               `json:"system_prompt"`
+	SelectedTools []string             `json:"selected_tools,omitempty"`
 	ToolMode      string               `json:"tool_mode,omitempty"`
 	ContextPolicy contextpolicy.Policy `json:"context_policy,omitempty"`
 }
@@ -281,7 +283,7 @@ type AgentSessionSnapshot struct {
 	UpdatedAt        time.Time                `json:"updated_at"`
 	Profile          ProviderProfile          `json:"profile"`
 	SystemPrompt     string                   `json:"system_prompt"`
-	ToolMode         string                   `json:"tool_mode"`
+	SelectedTools    []string                 `json:"selected_tools"`
 	ContextPolicy    contextpolicy.Policy     `json:"context_policy"`
 	LatestTurnID     string                   `json:"latest_turn_id,omitempty"`
 	WaitingPrompt    string                   `json:"waiting_prompt,omitempty"`

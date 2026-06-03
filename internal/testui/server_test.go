@@ -38,6 +38,9 @@ func TestServerExposesConfigAndRunAPI(t *testing.T) {
 	if !strings.Contains(configRec.Body.String(), `"id":"openai"`) || !strings.Contains(configRec.Body.String(), `"gpt-5.4"`) {
 		t.Fatalf("config body missing catalog = %s", configRec.Body.String())
 	}
+	if !strings.Contains(configRec.Body.String(), `"name":"grep"`) || !strings.Contains(configRec.Body.String(), `"name":"web_fetch"`) {
+		t.Fatalf("config body missing tools = %s", configRec.Body.String())
+	}
 
 	catalogReq := httptest.NewRequest(http.MethodGet, "/api/catalog", nil)
 	catalogRec := httptest.NewRecorder()
@@ -94,6 +97,65 @@ func TestServerSavesConfigAndRunsAgent(t *testing.T) {
 	}
 	if len(result.Observation.ProviderRequests) == 0 || len(result.Observation.Transitions) == 0 {
 		t.Fatalf("observation missing: %#v", result.Observation)
+	}
+}
+
+func TestServerAgentSessionCreateAcceptsSelectedTools(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"ok"},"message":"hello","system_prompt":"test","selected_tools":["grep","web_fetch"],"context_policy":{"context_window_tokens":8192,"max_output_tokens":1024,"recent_tail_tokens":1024}}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var result AgentRunResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "completed" || len(result.Session.SelectedTools) != 2 || result.Session.SelectedTools[0] != "grep" || result.Session.SelectedTools[1] != "web_fetch" {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(result.Observation.ProviderRequests) != 1 {
+		t.Fatalf("requests = %#v", result.Observation.ProviderRequests)
+	}
+	if !hasObservedTool(result.Observation.ProviderRequests[0].Tools, "grep") || !hasObservedTool(result.Observation.ProviderRequests[0].Tools, "web_fetch") {
+		t.Fatalf("selected tools missing: %#v", result.Observation.ProviderRequests[0].Tools)
+	}
+	if hasObservedTool(result.Observation.ProviderRequests[0].Tools, "read") || hasObservedTool(result.Observation.ProviderRequests[0].Tools, "shell") {
+		t.Fatalf("unselected tools exposed: %#v", result.Observation.ProviderRequests[0].Tools)
+	}
+}
+
+func TestServerAgentSessionCreateRejectsUnknownSelectedTool(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"ok"},"message":"hello","system_prompt":"test","selected_tools":["missing"]}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusBadRequest {
+		t.Fatalf("create status/body = %d %s", createRec.Code, createRec.Body.String())
+	}
+	var result AgentRunResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Error, `unknown test UI tool "missing"`) {
+		t.Fatalf("result = %#v", result)
 	}
 }
 
@@ -365,4 +427,13 @@ func TestServerServesStaticConsole(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "Floret Agent Console") {
 		t.Fatalf("body did not contain console title")
 	}
+}
+
+func hasObservedTool(defs []provider.ToolDefinition, name string) bool {
+	for _, def := range defs {
+		if def.Name == name {
+			return true
+		}
+	}
+	return false
 }

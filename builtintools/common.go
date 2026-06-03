@@ -29,6 +29,85 @@ type NetworkOptions struct {
 	AllowPrivateIPs  bool
 }
 
+type SelectedOptions struct {
+	Workspace WorkspaceOptions
+	Shell     ShellOptions
+	Network   NetworkOptions
+}
+
+const (
+	ToolRead       = "read"
+	ToolList       = "list"
+	ToolGlob       = "glob"
+	ToolGrep       = "grep"
+	ToolApplyPatch = "apply_patch"
+	ToolEdit       = "edit"
+	ToolWrite      = "write"
+	ToolShell      = "shell"
+	ToolWebFetch   = "web_fetch"
+)
+
+func RegisterSelected(reg *tools.Registry, opts SelectedOptions, names ...string) error {
+	names = normalizeSelectedToolNames(names)
+	workspace, err := workspaceOptionsForSelection(opts.Workspace, names)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, name := range names {
+		switch name {
+		case ToolRead:
+			errs = append(errs, reg.Register(readTool(workspace)))
+		case ToolList:
+			errs = append(errs, reg.Register(listTool(workspace)))
+		case ToolGlob:
+			errs = append(errs, reg.Register(globTool(workspace)))
+		case ToolGrep:
+			errs = append(errs, reg.Register(grepTool(workspace)))
+		case ToolApplyPatch:
+			errs = append(errs, reg.Register(applyPatchTool(workspace)))
+		case ToolEdit:
+			errs = append(errs, reg.Register(editTool(workspace)))
+		case ToolWrite:
+			errs = append(errs, reg.Register(writeTool(workspace)))
+		case ToolShell:
+			errs = append(errs, RegisterShell(reg, opts.Shell))
+		case ToolWebFetch:
+			errs = append(errs, RegisterNetwork(reg, opts.Network))
+		default:
+			errs = append(errs, fmt.Errorf("unknown built-in tool %q", name))
+		}
+	}
+	return mergeRegisterErrors(errs...)
+}
+
+func workspaceOptionsForSelection(opts WorkspaceOptions, names []string) (WorkspaceOptions, error) {
+	for _, name := range names {
+		switch name {
+		case ToolRead, ToolList, ToolGlob, ToolGrep, ToolApplyPatch, ToolEdit, ToolWrite:
+			return normalizeWorkspaceOptions(opts)
+		}
+	}
+	return opts, nil
+}
+
+func normalizeSelectedToolNames(names []string) []string {
+	out := make([]string, 0, len(names))
+	seen := map[string]struct{}{}
+	for _, raw := range names {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
 func normalizeWorkspaceOptions(opts WorkspaceOptions) (WorkspaceOptions, error) {
 	root := opts.Root
 	if root == "" {

@@ -1,6 +1,7 @@
 const state = {
   config: null,
   catalog: [],
+  toolCatalog: [],
   activeProfileId: "",
   running: false,
   lastResult: null,
@@ -34,7 +35,8 @@ const el = {
   contextWindowTokens: $("contextWindowTokens"),
   maxOutputTokens: $("maxOutputTokens"),
   recentTailTokens: $("recentTailTokens"),
-  toolMode: $("toolMode"),
+  toolSelectionSummary: $("toolSelectionSummary"),
+  toolCheckboxes: $("toolCheckboxes"),
   runAgent: $("runAgent"),
   appendMessage: $("appendMessage"),
   sessionSelect: $("sessionSelect"),
@@ -112,6 +114,16 @@ el.traceSearch.addEventListener("input", () => {
   renderRawTrace();
 });
 
+document.querySelectorAll("[data-tool-preset]").forEach((button) => {
+  button.addEventListener("click", () => applyToolPreset(button.dataset.toolPreset || "chat"));
+});
+
+el.toolCheckboxes.addEventListener("change", (event) => {
+  if (event.target.matches("[data-tool-name]")) {
+    renderToolSelectionSummary();
+  }
+});
+
 el.tabs.forEach((button) => {
   button.addEventListener("click", () => {
     state.activeTab = button.dataset.tab || "overview";
@@ -172,6 +184,7 @@ async function loadConfig() {
   }
   state.config = await response.json();
   state.catalog = state.config.catalog || [];
+  state.toolCatalog = state.config.tools || [];
   state.activeProfileId = state.config.active_profile_id || state.config.profiles?.[0]?.id || "";
   if (!state.config.profiles || state.config.profiles.length === 0) {
     state.config.profiles = [defaultProfile()];
@@ -187,6 +200,120 @@ function renderConfig() {
   renderProviderOptions();
   renderProfileOptions();
   renderProfileForm();
+  renderToolCheckboxes();
+  restoreToolSelectionFromState();
+}
+
+function renderToolCheckboxes() {
+  const groups = groupedTools();
+  el.toolCheckboxes.innerHTML = "";
+  groups.forEach((group) => {
+    const section = document.createElement("section");
+    section.className = "tool-group";
+    const head = document.createElement("div");
+    head.className = "tool-group-head";
+    const title = document.createElement("strong");
+    title.textContent = group.title;
+    const count = document.createElement("span");
+    count.textContent = `${group.tools.length} tool${group.tools.length === 1 ? "" : "s"}`;
+    head.append(title, count);
+    section.appendChild(head);
+
+    group.tools.forEach((tool) => {
+      const label = document.createElement("label");
+      label.className = "tool-check";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.dataset.toolName = tool.name;
+      input.value = tool.name;
+
+      const body = document.createElement("span");
+      body.className = "tool-check-body";
+      const line = document.createElement("span");
+      line.className = "tool-check-line";
+      const name = document.createElement("strong");
+      name.textContent = tool.title || tool.name;
+      const code = document.createElement("code");
+      code.textContent = tool.name;
+      line.append(name, code);
+
+      const description = document.createElement("small");
+      description.textContent = tool.description || "";
+      body.append(line, description);
+      if (tool.risk) {
+        const risk = document.createElement("em");
+        risk.textContent = tool.risk;
+        body.appendChild(risk);
+      }
+      label.append(input, body);
+      section.appendChild(label);
+    });
+    el.toolCheckboxes.appendChild(section);
+  });
+  renderToolSelectionSummary();
+}
+
+function groupedTools() {
+  const groups = [];
+  (state.toolCatalog || []).forEach((tool) => {
+    const groupID = tool.group || "tools";
+    let group = groups.find((item) => item.id === groupID);
+    if (!group) {
+      group = { id: groupID, title: tool.group_title || groupID, tools: [] };
+      groups.push(group);
+    }
+    group.tools.push(tool);
+  });
+  return groups;
+}
+
+function selectedToolNames() {
+  return Array.from(el.toolCheckboxes.querySelectorAll("[data-tool-name]:checked")).map((input) => input.value);
+}
+
+function setSelectedTools(names) {
+  const selected = new Set(names || []);
+  el.toolCheckboxes.querySelectorAll("[data-tool-name]").forEach((input) => {
+    input.checked = selected.has(input.value);
+  });
+  renderToolSelectionSummary();
+}
+
+function applyToolPreset(preset) {
+  const read = ["read", "list", "glob", "grep"];
+  const write = ["apply_patch", "edit", "write"];
+  const shell = ["shell"];
+  const network = ["web_fetch"];
+  const presets = {
+    chat: [],
+    read,
+    coding: [...read, ...write],
+    shell: [...read, ...write, ...shell],
+    all: [...read, ...write, ...shell, ...network],
+  };
+  setSelectedTools(presets[preset] || []);
+}
+
+function renderToolSelectionSummary() {
+  const selected = selectedToolNames();
+  if (!selected.length) {
+    el.toolSelectionSummary.textContent = "No local tools selected";
+    return;
+  }
+  const risky = selected.filter((name) => {
+    const tool = state.toolCatalog.find((item) => item.name === name);
+    return tool?.risk;
+  }).length;
+  el.toolSelectionSummary.textContent = `${selected.length} selected${risky ? ` · ${risky} privileged` : ""}`;
+}
+
+function restoreToolSelectionFromState() {
+  const activeSession = state.sessions.find((session) => session.id === state.activeSessionId);
+  if (activeSession) {
+    setSelectedTools(activeSession.selected_tools || []);
+    return;
+  }
+  applyToolPreset("chat");
 }
 
 function renderProviderOptions() {
@@ -384,7 +511,7 @@ async function createSession() {
         profile: activeProfile(),
         message,
         system_prompt: el.systemPrompt.value,
-        tool_mode: el.toolMode.value,
+        selected_tools: selectedToolNames(),
         context_policy: {
           context_window_tokens: Number(el.contextWindowTokens.value || 0),
           max_output_tokens: Number(el.maxOutputTokens.value || 0),
@@ -509,6 +636,7 @@ function renderSessionOptions() {
 }
 
 function renderSessionSnapshot(session) {
+  setSelectedTools(session.selected_tools || []);
   const latest = latestTurn(session);
   const result = {
     id: latest?.id || session.latest_turn_id || session.id,
@@ -561,6 +689,9 @@ async function runCheck(target) {
 
 function renderAgentResult(result) {
   state.activeSessionId = result.session_id || state.activeSessionId || "";
+  if (result.session?.selected_tools) {
+    setSelectedTools(result.session.selected_tools);
+  }
   setStatus(result.status);
   el.runTitle.textContent = result.session_id ? `Session ${shortID(result.session_id)}` : profileLabel(result.profile);
   el.summaryText.textContent = result.summary || "";
@@ -1947,10 +2078,12 @@ function sessionSummary(result) {
   const session = result?.session || {};
   if (!result?.session_id) return "No active session.";
   const aggregate = session.aggregate_metrics || {};
+  const toolCount = session.selected_tools?.length || 0;
   return [
     `session ${shortID(result.session_id)}`,
     result.turn_id ? `turn ${shortID(result.turn_id)}` : "",
     `${session.turns?.length || 0} turn(s)`,
+    `${toolCount} local tool${toolCount === 1 ? "" : "s"}`,
     `${session.compactions || aggregate.compactions || 0} compaction(s)`,
     `${totalTokens(aggregate.usage)} session tokens`,
     result.waiting_prompt ? "waiting for input" : "",
