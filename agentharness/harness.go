@@ -715,6 +715,7 @@ type turnProjection struct {
 	downstream event.Sink
 	mu         sync.Mutex
 	text       string
+	reasoning  string
 	err        error
 }
 
@@ -730,19 +731,23 @@ func (p *turnProjection) Emit(ev event.Event) {
 	switch ev.Type {
 	case event.ProviderDelta:
 		p.text += ev.Message
+	case event.ProviderReasoning:
+		p.reasoning += ev.Message
 	case event.ToolCall:
 		if p.text != "" {
-			p.err = p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Assistant, Content: p.text})
+			p.err = p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Assistant, Content: p.text, Reasoning: p.reasoning})
 			p.text = ""
 			if p.err != nil {
 				return
 			}
 		}
-		p.err = p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Assistant, Content: "tool_call", ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolArgs: ev.Args})
+		p.err = p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Assistant, Content: "tool_call", Reasoning: p.reasoning, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolArgs: ev.Args})
+		p.reasoning = ""
 	case event.ToolResult:
 		if p.text != "" {
-			p.err = p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Assistant, Content: p.text})
+			p.err = p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Assistant, Content: p.text, Reasoning: p.reasoning})
 			p.text = ""
+			p.reasoning = ""
 			if p.err != nil {
 				return
 			}
@@ -754,8 +759,9 @@ func (p *turnProjection) Emit(ev event.Event) {
 		_, p.err = sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, sessiontree.TurnSavePoint, map[string]string{"reason": "tool_result"})
 	case event.ContextContinue:
 		if p.text != "" {
-			p.err = p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Assistant, Content: p.text})
+			p.err = p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Assistant, Content: p.text, Reasoning: p.reasoning})
 			p.text = ""
+			p.reasoning = ""
 			if p.err != nil {
 				return
 			}

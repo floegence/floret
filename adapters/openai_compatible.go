@@ -54,11 +54,12 @@ type tokenDetails struct {
 }
 
 type chatMessage struct {
-	Role       string         `json:"role"`
-	Content    string         `json:"content"`
-	ToolCallID string         `json:"tool_call_id,omitempty"`
-	Name       string         `json:"name,omitempty"`
-	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
+	Role             string         `json:"role"`
+	Content          string         `json:"content"`
+	ReasoningContent string         `json:"reasoning_content,omitempty"`
+	ToolCallID       string         `json:"tool_call_id,omitempty"`
+	Name             string         `json:"name,omitempty"`
+	ToolCalls        []chatToolCall `json:"tool_calls,omitempty"`
 }
 
 type chatTool struct {
@@ -82,8 +83,9 @@ type chatToolCall struct {
 type chatResponse struct {
 	Choices []struct {
 		Message struct {
-			Content   string `json:"content"`
-			ToolCalls []struct {
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
+			ToolCalls        []struct {
 				ID       string `json:"id"`
 				Type     string `json:"type"`
 				Function struct {
@@ -104,8 +106,9 @@ type chatResponse struct {
 type chatStreamResponse struct {
 	Choices []struct {
 		Delta struct {
-			Content   string `json:"content"`
-			ToolCalls []struct {
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
+			ToolCalls        []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
 				Type     string `json:"type"`
@@ -189,6 +192,9 @@ func (p OpenAICompatibleProvider) Stream(ctx context.Context, req provider.Reque
 		return ch, nil
 	}
 	choice := parsed.Choices[0]
+	if choice.Message.ReasoningContent != "" {
+		ch <- provider.StreamEvent{Type: provider.Reasoning, Text: choice.Message.ReasoningContent}
+	}
 	if choice.Message.Content != "" {
 		ch <- provider.StreamEvent{Type: provider.Delta, Text: choice.Message.Content}
 	}
@@ -199,9 +205,10 @@ func (p OpenAICompatibleProvider) Stream(ctx context.Context, req provider.Reque
 		calls := make([]provider.ToolCall, 0, len(choice.Message.ToolCalls))
 		for _, call := range choice.Message.ToolCalls {
 			calls = append(calls, provider.ToolCall{
-				ID:   call.ID,
-				Name: call.Function.Name,
-				Args: call.Function.Arguments,
+				ID:        call.ID,
+				Name:      call.Function.Name,
+				Args:      call.Function.Arguments,
+				Reasoning: choice.Message.ReasoningContent,
 			})
 		}
 		ch <- provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: calls}
@@ -338,7 +345,9 @@ func (p OpenAICompatibleProvider) streamResponse(httpResp *http.Response) (<-cha
 			args string
 		}
 		tools := map[int]partialTool{}
+		var reasoning strings.Builder
 		scanner := bufio.NewScanner(httpResp.Body)
+		scanner.Buffer(make([]byte, 32*1024), 4*1024*1024)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 			if line == "" || strings.HasPrefix(line, ":") {
@@ -364,6 +373,10 @@ func (p OpenAICompatibleProvider) streamResponse(httpResp *http.Response) (<-cha
 				ch <- provider.StreamEvent{Type: provider.UsageEvent, Usage: usage}
 			}
 			for _, choice := range parsed.Choices {
+				if choice.Delta.ReasoningContent != "" {
+					reasoning.WriteString(choice.Delta.ReasoningContent)
+					ch <- provider.StreamEvent{Type: provider.Reasoning, Text: choice.Delta.ReasoningContent}
+				}
 				if choice.Delta.Content != "" {
 					ch <- provider.StreamEvent{Type: provider.Delta, Text: choice.Delta.Content}
 				}
@@ -386,7 +399,7 @@ func (p OpenAICompatibleProvider) streamResponse(httpResp *http.Response) (<-cha
 						if !ok {
 							continue
 						}
-						calls = append(calls, provider.ToolCall{ID: item.id, Name: item.name, Args: item.args})
+						calls = append(calls, provider.ToolCall{ID: item.id, Name: item.name, Args: item.args, Reasoning: reasoning.String()})
 					}
 					ch <- provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: calls}
 					ch <- provider.StreamEvent{Type: provider.Done, Reason: choice.FinishReason}
@@ -402,6 +415,9 @@ func (p OpenAICompatibleProvider) streamResponse(httpResp *http.Response) (<-cha
 					return
 				}
 			}
+		}
+		if err := scanner.Err(); err != nil {
+			ch <- provider.StreamEvent{Type: provider.Empty, Reason: err.Error()}
 		}
 	}()
 	return ch, nil
@@ -419,6 +435,9 @@ func renderMessages(messages []session.Message) []chatMessage {
 			Content:    msg.Content,
 			ToolCallID: msg.ToolCallID,
 			Name:       msg.ToolName,
+		}
+		if msg.Role == session.Assistant {
+			rendered.ReasoningContent = msg.Reasoning
 		}
 		if msg.Role == session.Assistant && msg.ToolCallID != "" && msg.ToolName != "" {
 			var call chatToolCall
@@ -452,6 +471,7 @@ func renderMessagesFromRawPlan(plan promptcache.RawPlan, fallback []chatMessage)
 		msg := session.Message{
 			Role:       session.Role(segment.Message.Role),
 			Content:    segment.Message.Content,
+			Reasoning:  segment.Message.Reasoning,
 			ToolCallID: segment.Message.ToolCallID,
 			ToolName:   segment.Message.ToolName,
 			ToolArgs:   segment.Message.ToolArgs,

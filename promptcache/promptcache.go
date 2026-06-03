@@ -111,6 +111,7 @@ type Segment struct {
 type MessageSnapshot struct {
 	Role       string `json:"role,omitempty"`
 	Content    string `json:"content,omitempty"`
+	Reasoning string `json:"reasoning,omitempty"`
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	ToolName   string `json:"tool_name,omitempty"`
 	ToolArgs   string `json:"tool_args,omitempty"`
@@ -850,6 +851,7 @@ func newMessageSegment(input BuildInput, kind SegmentKind, msg session.Message, 
 	snap := MessageSnapshot{
 		Role:       string(msg.Role),
 		Content:    msg.Content,
+		Reasoning: msg.Reasoning,
 		ToolCallID: msg.ToolCallID,
 		ToolName:   msg.ToolName,
 		ToolArgs:   msg.ToolArgs,
@@ -876,6 +878,7 @@ func newMessageSegment(input BuildInput, kind SegmentKind, msg session.Message, 
 			"kind":         kind,
 			"role":         snap.Role,
 			"content":      snap.Content,
+			"reasoning":    snap.Reasoning,
 			"tool_call_id": snap.ToolCallID,
 			"tool_name":    snap.ToolName,
 			"tool_args":    snap.ToolArgs,
@@ -967,6 +970,7 @@ func (m MessageSnapshot) toSession() session.Message {
 	return session.Message{
 		Role:       session.Role(m.Role),
 		Content:    m.Content,
+		Reasoning: m.Reasoning,
 		ToolCallID: m.ToolCallID,
 		ToolName:   m.ToolName,
 		ToolArgs:   m.ToolArgs,

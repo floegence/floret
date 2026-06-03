@@ -121,9 +121,15 @@ type AgentTurnRequest struct {
 	Message string `json:"message"`
 }
 
+type AgentInterfaceProbeRequest struct {
+	SelectedTools []string             `json:"selected_tools,omitempty"`
+	ContextPolicy contextpolicy.Policy `json:"context_policy,omitempty"`
+}
+
 type AgentRunResponse struct {
 	StatusCode         int                         `json:"-"`
 	ID                 string                      `json:"id"`
+	Probe              bool                        `json:"probe,omitempty"`
 	SessionID          string                      `json:"session_id"`
 	TurnID             string                      `json:"turn_id"`
 	Status             string                      `json:"status"`
@@ -226,6 +232,7 @@ type ObservedProviderEvent struct {
 	ObservedAt time.Time           `json:"observed_at"`
 	ResponseID string              `json:"response_id,omitempty"`
 	Text       string              `json:"text,omitempty"`
+	Reasoning  string              `json:"reasoning,omitempty"`
 	ToolCalls  []provider.ToolCall `json:"tool_calls,omitempty"`
 	Reason     string              `json:"reason,omitempty"`
 	Usage      provider.Usage      `json:"usage,omitempty"`
@@ -234,6 +241,7 @@ type ObservedProviderEvent struct {
 type ObservedSessionMessage struct {
 	Role                 string `json:"role"`
 	Content              string `json:"content,omitempty"`
+	Reasoning            string `json:"reasoning,omitempty"`
 	ToolCallID           string `json:"tool_call_id,omitempty"`
 	ToolName             string `json:"tool_name,omitempty"`
 	ToolArgs             string `json:"tool_args,omitempty"`

@@ -1,13 +1,13 @@
 package sessiontree
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -473,17 +473,20 @@ func (r *FileRepo) load(ctx context.Context) error {
 	for _, path := range threads {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return err
+			continue
 		}
 		var meta ThreadMeta
 		if err := json.Unmarshal(data, &meta); err != nil {
-			return err
+			continue
 		}
-		mem.threads[meta.ID] = meta
+		if meta.ID == "" {
+			continue
+		}
 		entries, err := readEntries(filepath.Join(filepath.Dir(path), "entries.jsonl"))
 		if err != nil {
-			return err
+			continue
 		}
+		mem.threads[meta.ID] = meta
 		mem.entries[meta.ID] = entries
 	}
 	r.mem = mem
@@ -714,19 +717,16 @@ func readEntries(path string) ([]Entry, error) {
 	}
 	defer f.Close()
 	var entries []Entry
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
+	dec := json.NewDecoder(f)
+	for {
 		var entry Entry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		if err := dec.Decode(&entry); errors.Is(err, io.EOF) {
+			return entries, nil
+		} else if err != nil {
 			return nil, err
 		}
 		entries = append(entries, entry)
 	}
-	return entries, scanner.Err()
 }
 
 func rawForEntry(entry Entry) string {

@@ -38,6 +38,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/catalog", s.handleCatalog)
 	mux.HandleFunc("PUT /api/config", s.handleSaveConfig)
 	mux.HandleFunc("POST /api/agent/run", s.handleAgentRun)
+	mux.HandleFunc("POST /api/agent/interface-probe", s.handleAgentInterfaceProbe)
 	mux.HandleFunc("GET /api/agent/sessions", s.handleAgentSessions)
 	mux.HandleFunc("POST /api/agent/sessions", s.handleAgentSessionCreate)
 	mux.HandleFunc("GET /api/agent/sessions/", s.handleAgentSessionRoute)
@@ -89,6 +90,23 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 	}
 	resp := s.Runner.RunAgent(ctx, req)
+	writeJSON(w, agentHTTPStatus(resp), resp)
+}
+
+func (s *Server) handleAgentInterfaceProbe(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	var req AgentInterfaceProbeRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON request"})
+		return
+	}
+	ctx := r.Context()
+	var cancel context.CancelFunc
+	if s.Timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, s.Timeout)
+		defer cancel()
+	}
+	resp := s.Runner.RunInterfaceProbe(ctx, req)
 	writeJSON(w, agentHTTPStatus(resp), resp)
 }
 

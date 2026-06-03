@@ -11,6 +11,7 @@ const (
 	StepStart       Type = "step_start"
 	ProviderRequest Type = "provider_request"
 	ProviderDelta   Type = "provider_delta"
+	ProviderReasoning Type = "provider_reasoning"
 	ProviderUsage   Type = "provider_usage"
 	ProviderFinish  Type = "provider_finish"
 	ProviderRetry   Type = "provider_retry"

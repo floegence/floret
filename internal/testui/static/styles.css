@@ -500,6 +500,43 @@ textarea:focus {
   font-size: 14px;
 }
 
+.tool-boundary-note {
+  margin: -2px 0 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--accent);
+  background: var(--surface-strong);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.interface-probe {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 12px 0 0;
+  border-top: 1px solid var(--line);
+}
+
+.interface-probe > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.interface-probe strong {
+  font-size: 14px;
+}
+
+.interface-probe small {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
 .section-kicker {
   color: var(--accent);
   font-size: 11px;
@@ -1664,6 +1701,20 @@ textarea:focus {
   font-size: 12px;
 }
 
+.reasoning-block {
+  margin: 0;
+  padding: 9px 10px;
+  border-left: 4px solid var(--violet);
+  border-radius: 7px;
+  background: #f4f1ff;
+  color: #463b86;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .usage-grid,
 .kv-grid {
   display: grid;
@@ -1909,6 +1960,10 @@ button:disabled {
   .tool-selector-head {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .interface-probe {
+    grid-template-columns: 1fr;
   }
 
   .tool-presets {

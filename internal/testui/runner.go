@@ -73,6 +73,7 @@ type agentSessionRegistry struct {
 type agentSession struct {
 	mu              sync.Mutex
 	id              string
+	transient       bool
 	profile         ProviderProfile
 	systemPrompt    string
 	selectedTools   []string
@@ -134,6 +135,89 @@ func (r Runner) Catalog() []CatalogProvider {
 
 func (r *Runner) RunAgent(ctx context.Context, req AgentRunRequest) AgentRunResponse {
 	return r.CreateAgentSession(ctx, req)
+}
+
+func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeRequest) AgentRunResponse {
+	started := r.now()
+	resp := AgentRunResponse{
+		ID:        fmt.Sprintf("%d", started.UnixNano()),
+		Probe:     true,
+		StartedAt: started,
+	}
+	selectedTools, err := normalizeAgentSessionTools(req.SelectedTools, "")
+	if err != nil {
+		return r.failAgentRunWithStatus(resp, http.StatusBadRequest, err)
+	}
+	probe := *r
+	probe.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		if slices.Contains(selectedTools, builtintools.ToolList) {
+			return harness.NewScriptedProvider(
+				harness.Step(
+					provider.StreamEvent{Type: provider.Reasoning, Text: "Inspect selected tool contract."},
+					harness.Text("Checking selected tool definitions before running a low-risk read probe."),
+					harness.Tool("probe-list", builtintools.ToolList, `{"path":null,"limit":5}`),
+					harness.DoneReason("tool_calls"),
+				),
+				harness.Step(
+					provider.StreamEvent{Type: provider.Reasoning, Text: "Confirm tool result handoff."},
+					harness.Text("Tool contract probe passed: provider request exposed the selected toolset and the list tool result reached the follow-up request."),
+					harness.Done(),
+				),
+			), nil
+		}
+		return harness.NewScriptedProvider(
+			harness.Step(
+				provider.StreamEvent{Type: provider.Reasoning, Text: "Inspect selected tool contract."},
+				harness.Text("Tool contract probe passed: provider request exposed the selected toolset. No low-risk list tool was selected, so no local tool was executed."),
+				harness.Done(),
+			),
+		), nil
+	}
+	cfg := config.Config{
+		Provider:                config.ProviderFake,
+		Model:                   "tool-contract-probe",
+		RunID:                   "testui-probe-" + resp.ID,
+		SystemPrompt:            "You are Floret's deterministic test UI interface probe. Exercise only the scripted low-risk probe behavior.",
+		ContextPolicy:           req.ContextPolicy,
+		MaxEmptyProviderRetries: 1,
+		NoProgressLimit:         2,
+		DuplicateToolLimit:      3,
+		WallTime:                30 * time.Second,
+	}
+	cfg, err = config.Resolve(cfg, nil)
+	if err != nil {
+		return r.failAgentRun(resp, err)
+	}
+	sessionID := "testui-probe-" + resp.ID
+	cfg.RunID = sessionID
+	profile := ProviderProfile{
+		ID:       "tool-contract-probe",
+		Name:     "Tool Contract Probe",
+		Provider: cfg.Provider,
+		Model:    cfg.Model,
+	}
+	sess, err := probe.buildAgentSession(ctx, agentSessionBuildOptions{
+		ID:            sessionID,
+		Transient:     true,
+		CreatedAt:     started,
+		UpdatedAt:     started,
+		Profile:       profile,
+		SystemPrompt:  cfg.SystemPrompt,
+		SelectedTools: selectedTools,
+		ContextPolicy: cfg.ContextPolicy,
+		Config:        cfg,
+		Start:         true,
+	})
+	if err != nil {
+		return r.failAgentRun(resp, err)
+	}
+	resp.Profile = profile
+	result := probe.runAgentTurn(ctx, sess, resp, "Run the test UI tool contract probe for the selected draft tools.")
+	result.Probe = true
+	if result.Status == string(engine.Completed) {
+		result.Summary = "Interface probe passed: selected tools were bound to a transient session and captured in the provider request."
+	}
+	return result
 }
 
 func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) AgentRunResponse {
@@ -310,6 +394,7 @@ func (r *Runner) AgentSessions(ctx context.Context) []AgentSessionSnapshot {
 
 type agentSessionBuildOptions struct {
 	ID            string
+	Transient     bool
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 	Profile       ProviderProfile
@@ -331,8 +416,12 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 	observed := newObservingProvider(p)
 	rec := &event.Recorder{}
 	harnessRec := &agentharness.HarnessRecorder{}
-	repo := sessiontree.NewFileRepo(r.agentSessionTreeRoot())
-	promptStore := promptcache.NewFileStore(filepath.Join(r.Root, ".floret-test-ui", "prompt-cache"))
+	var repo sessiontree.Repo = sessiontree.NewFileRepo(r.agentSessionTreeRoot())
+	var promptStore promptcache.Store = promptcache.NewFileStore(filepath.Join(r.Root, ".floret-test-ui", "prompt-cache"))
+	if opts.Transient {
+		repo = sessiontree.NewMemoryRepo()
+		promptStore = promptcache.NewMemoryStore()
+	}
 	selectedTools, err := normalizeAgentSessionTools(opts.SelectedTools, "")
 	if err != nil {
 		return nil, err
@@ -384,6 +473,7 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 	}
 	return &agentSession{
 		id:              opts.ID,
+		transient:       opts.Transient,
 		profile:         opts.Profile,
 		systemPrompt:    cfg.SystemPrompt,
 		selectedTools:   selectedTools,
@@ -594,8 +684,13 @@ func (r *Runner) runAgentTurnLocked(ctx context.Context, sess *agentSession, res
 	if snapErr != nil {
 		return r.failAgentRun(resp, snapErr)
 	}
-	if err := r.saveAgentSessionMetadata(r.metadataFromSession(sess)); err != nil {
-		return r.failAgentRun(resp, err)
+	if !sess.transient {
+		if err := r.saveAgentSessionMetadata(r.metadataFromSession(sess)); err != nil {
+			return r.failAgentRun(resp, err)
+		}
+	}
+	if sess.transient {
+		snapshot.CanAppendMessage = false
 	}
 	resp.Session = snapshot
 	resp.CanAppendMessage = snapshot.CanAppendMessage
@@ -628,6 +723,9 @@ func isMissingAgentSessionError(err error) bool {
 }
 
 func (r *agentSessionRegistry) put(sess *agentSession) {
+	if sess.transient {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.sessions[sess.id]; !ok {

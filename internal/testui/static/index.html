@@ -162,10 +162,19 @@
                   <button class="secondary tiny" type="button" data-tool-preset="all">All</button>
                 </div>
               </div>
+              <p class="tool-boundary-note">Network tools currently expose URL fetch only. All does not add web search or weather API access.</p>
               <div id="toolCheckboxes" class="tool-matrix"></div>
             </section>
             <div class="run-controls start-controls">
               <button id="runAgent" class="primary" type="button">Start Session with Selected Tools</button>
+            </div>
+            <div class="interface-probe" aria-label="Interface probe">
+              <div>
+                <span class="section-kicker">Interface Probe</span>
+                <strong>Tool Contract Test</strong>
+                <small id="probeStatus">Checks provider tool definitions and a low-risk handoff path; active session is unchanged.</small>
+              </div>
+              <button id="interfaceProbe" class="secondary" type="button">Run Tool Contract Probe</button>
             </div>
           </section>
         </section>

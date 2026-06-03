@@ -330,6 +330,68 @@ func TestRunnerAgentSessionSelectedToolsExplicitlyExposeBuiltInTools(t *testing.
 	}
 }
 
+func TestRunnerAgentSessionCarriesReasoningThroughToolFollowUp(t *testing.T) {
+	root := t.TempDir()
+	scripted := harness.NewScriptedProvider(
+		harness.Step(
+			provider.StreamEvent{Type: provider.Reasoning, Text: "Inspect workspace before answering."},
+			harness.Text("Checking files first."),
+			harness.Tool("probe-list", "list", `{"path":null,"limit":5}`),
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(
+			provider.StreamEvent{Type: provider.Reasoning, Text: "Use the list result."},
+			harness.Text("done"),
+			harness.Done(),
+		),
+	)
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+
+	result := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:       "inspect",
+		SystemPrompt:  "test",
+		SelectedTools: []string{"list"},
+	})
+
+	if result.Status != "completed" || result.Output != "Checking files first.done" {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(result.Observation.ProviderRequests) != 2 {
+		t.Fatalf("provider requests = %#v", result.Observation.ProviderRequests)
+	}
+	if !slices.ContainsFunc(result.Observation.ProviderEvents, func(ev ObservedProviderEvent) bool {
+		return ev.Type == provider.Reasoning && ev.Reasoning == "Inspect workspace before answering."
+	}) {
+		t.Fatalf("reasoning provider event missing: %#v", result.Observation.ProviderEvents)
+	}
+	if !slices.ContainsFunc(result.Observation.SessionMessages, func(msg ObservedSessionMessage) bool {
+		return msg.Role == "assistant" && msg.Content == "Checking files first." && msg.Reasoning == "Inspect workspace before answering."
+	}) {
+		t.Fatalf("assistant text reasoning missing: %#v", result.Observation.SessionMessages)
+	}
+	if !slices.ContainsFunc(result.Observation.SessionMessages, func(msg ObservedSessionMessage) bool {
+		return msg.Role == "assistant" &&
+			msg.ToolName == "list" &&
+			msg.ToolCallID == "probe-list" &&
+			msg.Reasoning == "Inspect workspace before answering."
+	}) {
+		t.Fatalf("tool call reasoning missing: %#v", result.Observation.SessionMessages)
+	}
+	if !slices.ContainsFunc(result.Observation.ProviderRequests[1].Messages, func(msg ObservedSessionMessage) bool {
+		return msg.Role == "assistant" &&
+			msg.ToolName == "list" &&
+			msg.ToolCallID == "probe-list" &&
+			msg.Reasoning == "Inspect workspace before answering."
+	}) {
+		t.Fatalf("follow-up request did not replay tool-call reasoning: %#v", result.Observation.ProviderRequests[1].Messages)
+	}
+}
+
 func TestRunnerAgentSessionRestoresSelectedToolsForAppend(t *testing.T) {
 	root := t.TempDir()
 	firstProvider := harness.NewScriptedProvider(
@@ -372,6 +434,63 @@ func TestRunnerAgentSessionRestoresSelectedToolsForAppend(t *testing.T) {
 	}
 	if hasStrictTool(second.Observation.ProviderRequests[0].Tools, "read") || hasStrictTool(second.Observation.ProviderRequests[0].Tools, "web_fetch") {
 		t.Fatalf("unselected tools restored: %#v", second.Observation.ProviderRequests[0].Tools)
+	}
+}
+
+func TestRunnerRestoresLongSessionEntryAndKeepsSelectedTools(t *testing.T) {
+	root := t.TempDir()
+	longOutput := strings.Repeat("weather payload ", 12_000)
+	firstProvider := harness.NewScriptedProvider(
+		harness.Step(harness.Text(longOutput), harness.Done()),
+	)
+	firstRunner := NewRunner(root)
+	firstRunner.Now = fixedClock()
+	firstRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return firstProvider, nil
+	}
+	first := firstRunner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:       "store a long answer",
+		SystemPrompt:  "test",
+		SelectedTools: []string{"grep", "web_fetch"},
+		ContextPolicy: contextpolicy.Policy{
+			ContextWindowTokens:   1_000_000,
+			MaxOutputTokens:       4096,
+			RecentTailTokens:      4096,
+			ReservedSummaryTokens: 1024,
+			ReservedOutputTokens:  4096,
+		},
+	})
+	if first.Status != "completed" || first.Output != longOutput {
+		t.Fatalf("first = %#v", first)
+	}
+
+	recoveredRunner := NewRunner(root)
+	recoveredRunner.Now = fixedClock()
+	recoveredRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return harness.NewScriptedProvider(harness.Step(harness.Text("restored done"), harness.Done())), nil
+	}
+	sessions := recoveredRunner.AgentSessions(context.Background())
+	if len(sessions) != 1 || sessions[0].ID != first.SessionID || !slices.Equal(sessions[0].SelectedTools, []string{"grep", "web_fetch"}) {
+		t.Fatalf("sessions = %#v", sessions)
+	}
+	second := recoveredRunner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "continue"})
+	if second.Status != "completed" || second.Output != "restored done" {
+		t.Fatalf("second = %#v", second)
+	}
+	if !slices.Equal(second.Session.SelectedTools, []string{"grep", "web_fetch"}) {
+		t.Fatalf("selected tools lost after restore: %#v", second.Session.SelectedTools)
+	}
+	if len(second.Observation.ProviderRequests) != 1 {
+		t.Fatalf("provider requests = %#v", second.Observation.ProviderRequests)
+	}
+	if !slices.ContainsFunc(second.Observation.ProviderRequests[0].Messages, func(msg ObservedSessionMessage) bool {
+		return msg.Role == "assistant" && msg.Content == longOutput
+	}) {
+		t.Fatalf("follow-up request missing restored long assistant entry")
+	}
+	if !hasStrictTool(second.Observation.ProviderRequests[0].Tools, "grep") || !hasStrictTool(second.Observation.ProviderRequests[0].Tools, "web_fetch") {
+		t.Fatalf("restored selected tools missing from provider request: %#v", second.Observation.ProviderRequests[0].Tools)
 	}
 }
 

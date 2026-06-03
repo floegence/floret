@@ -49,6 +49,7 @@ type EventType string
 
 const (
 	Delta      EventType = "delta"
+	Reasoning  EventType = "reasoning"
 	ToolCalls  EventType = "tool_calls"
 	Done       EventType = "done"
 	Empty      EventType = "empty"
@@ -106,9 +107,10 @@ func IsTerminalNaturalFinish(reason FinishReason) bool {
 }
 
 type ToolCall struct {
-	ID   string
-	Name string
-	Args string
+	ID        string
+	Name      string
+	Args      string
+	Reasoning string
 }
 
 type StreamEvent struct {

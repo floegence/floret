@@ -3,6 +3,9 @@ package sessiontree
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/floegence/floret/compaction"
@@ -47,6 +50,77 @@ func TestMemoryRepoAppendUpdatesLeafAndBuildContextFiltersEntries(t *testing.T) 
 	}
 	if user.Raw == "" || user.RawHash == "" {
 		t.Fatalf("entry raw ledger was not created: %#v", user)
+	}
+}
+
+func TestFileRepoReadsLongJSONLEntries(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	repo := NewFileRepo(root)
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AppendMessage(ctx, repo, "thread", "turn-1", session.Message{Role: session.User, Content: "start"}); err != nil {
+		t.Fatal(err)
+	}
+	longResult := strings.Repeat("weather payload ", 12_000)
+	tool, err := AppendMessage(ctx, repo, "thread", "turn-1", session.Message{Role: session.Tool, Content: longResult, ToolCallID: "fetch-1", ToolName: "web_fetch"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restored := NewFileRepo(root)
+	entries, err := restored.Entries(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || entries[1].Message.Content != longResult {
+		t.Fatalf("restored entries = %#v", entries)
+	}
+	path, err := restored.Path(ctx, "thread", tool.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(path) != 2 || path[1].Message.Content != longResult {
+		t.Fatalf("path = %#v", path)
+	}
+	if _, err := AppendMessage(ctx, restored, "thread", "turn-2", session.Message{Role: session.User, Content: "continue"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFileRepoSkipsMalformedThreadWithoutHidingValidThreads(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	repo := NewFileRepo(root)
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "good"}); err != nil {
+		t.Fatal(err)
+	}
+	longResult := strings.Repeat("weather payload ", 12_000)
+	if _, err := AppendMessage(ctx, repo, "good", "turn-1", session.Message{Role: session.Tool, Content: longResult, ToolCallID: "fetch-1", ToolName: "web_fetch"}); err != nil {
+		t.Fatal(err)
+	}
+	badDir := filepath.Join(root, "bad")
+	if err := os.MkdirAll(badDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(badDir, "thread.json"), []byte(`{"id":"bad","created_at":"2026-06-03T00:00:00Z","updated_at":"2026-06-03T00:00:00Z","leaf_id":"bad-entry"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(badDir, "entries.jsonl"), []byte(`{"id":"bad-entry"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	restored := NewFileRepo(root)
+	entries, err := restored.Entries(ctx, "good")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Message.Content != longResult {
+		t.Fatalf("good entries = %#v", entries)
+	}
+	if _, err := restored.Thread(ctx, "bad"); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("bad thread err = %v, want ErrThreadNotFound", err)
 	}
 }
 

@@ -50,6 +50,8 @@ const el = {
   continueToolDetail: $("continueToolDetail"),
   runAgent: $("runAgent"),
   appendMessage: $("appendMessage"),
+  interfaceProbe: $("interfaceProbe"),
+  probeStatus: $("probeStatus"),
   sessionSelect: $("sessionSelect"),
   refreshSessions: $("refreshSessions"),
   sessionMeta: $("sessionMeta"),
@@ -117,6 +119,7 @@ el.duplicateProfile.addEventListener("click", duplicateProfile);
 el.saveConfig.addEventListener("click", saveConfig);
 el.runAgent.addEventListener("click", createSession);
 el.appendMessage.addEventListener("click", appendMessage);
+el.interfaceProbe.addEventListener("click", runInterfaceProbe);
 el.sessionSelect.addEventListener("change", () => selectSession(el.sessionSelect.value));
 el.refreshSessions.addEventListener("click", () => loadSessions({ selectActive: true }));
 el.copyRaw.addEventListener("click", copyRaw);
@@ -309,6 +312,15 @@ function selectedToolNames() {
   return Array.from(el.toolCheckboxes.querySelectorAll("[data-tool-name]:checked")).map((input) => input.value);
 }
 
+function catalogToolNames() {
+  return (state.toolCatalog || []).map((tool) => tool.name).filter(Boolean);
+}
+
+function toolNamesForGroups(groups) {
+  const wanted = new Set(groups || []);
+  return (state.toolCatalog || []).filter((tool) => wanted.has(tool.group)).map((tool) => tool.name).filter(Boolean);
+}
+
 function setSelectedTools(names) {
   const selected = new Set(names || []);
   el.toolCheckboxes.querySelectorAll("[data-tool-name]").forEach((input) => {
@@ -320,16 +332,15 @@ function setSelectedTools(names) {
 }
 
 function applyToolPreset(preset) {
-  const read = ["read", "list", "glob", "grep"];
-  const write = ["apply_patch", "edit", "write"];
-  const shell = ["shell"];
-  const network = ["web_fetch"];
+  const read = toolNamesForGroups(["workspace_read"]);
+  const write = toolNamesForGroups(["workspace_write"]);
+  const shell = toolNamesForGroups(["execution"]);
   const presets = {
     chat: [],
     read,
     coding: [...read, ...write],
     shell: [...read, ...write, ...shell],
-    all: [...read, ...write, ...shell, ...network],
+    all: catalogToolNames(),
   };
   setSelectedTools(presets[preset] || []);
   setComposerMode("start");
@@ -655,6 +666,56 @@ async function appendMessage() {
   }
 }
 
+async function runInterfaceProbe() {
+  setComposerMode("start");
+  setRunning(true);
+  el.probeStatus.textContent = "Running isolated probe with the selected draft tools...";
+  const previousActiveSessionID = state.activeSessionId;
+  try {
+    const response = await fetch("/api/agent/interface-probe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        selected_tools: selectedToolNames(),
+        context_policy: {
+          context_window_tokens: Number(el.contextWindowTokens.value || 0),
+          max_output_tokens: Number(el.maxOutputTokens.value || 0),
+          recent_tail_tokens: Number(el.recentTailTokens.value || 0),
+        },
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      if (result && (result.id || result.status || result.observation)) {
+        state.lastResult = result;
+        renderAgentResult(result);
+        state.activeSessionId = previousActiveSessionID;
+        renderSessionOptions();
+        renderCapabilitySummary();
+        renderActionState(result);
+        el.probeStatus.textContent = probeStatusText(result);
+        return;
+      }
+      throw new Error(result.error || "interface probe failed");
+    }
+    state.lastResult = result;
+    renderAgentResult(result);
+    state.activeSessionId = previousActiveSessionID;
+    renderSessionOptions();
+    renderCapabilitySummary();
+    renderActionState(result);
+    el.probeStatus.textContent = probeStatusText(result);
+  } catch (error) {
+    state.activeSessionId = previousActiveSessionID;
+    renderError(error.message);
+    renderCapabilitySummary();
+    renderActionState(state.lastResult);
+    el.probeStatus.textContent = error.message;
+  } finally {
+    setRunning(false);
+  }
+}
+
 async function loadSessions(options = {}) {
   try {
     const response = await fetch("/api/agent/sessions");
@@ -769,9 +830,11 @@ async function runCheck(target) {
 }
 
 function renderAgentResult(result) {
-  state.activeSessionId = result.session_id || state.activeSessionId || "";
+  if (!result.probe) {
+    state.activeSessionId = result.session_id || state.activeSessionId || "";
+  }
   setStatus(result.status);
-  el.runTitle.textContent = result.session_id ? `Session ${shortID(result.session_id)}` : profileLabel(result.profile);
+  el.runTitle.textContent = result.probe ? "Tool Contract Probe" : result.session_id ? `Session ${shortID(result.session_id)}` : profileLabel(result.profile);
   el.summaryText.textContent = result.summary || "";
   el.metricStatus.textContent = result.status;
   el.metricSteps.textContent = String(result.metrics?.steps || 0);
@@ -1358,6 +1421,7 @@ function renderMessageInner(message, index, label) {
   return `
       <strong>${escapeHTML(label)} #${index + 1} · ${escapeHTML(message.role || "-")}</strong>
       <p>${escapeHTML(content)}</p>
+      ${message.reasoning ? `<pre class="reasoning-block">${escapeHTML(message.reasoning)}</pre>` : ""}
       ${message.tool_name ? `<small>${escapeHTML(message.tool_name)} · ${escapeHTML(message.tool_call_id || "")}</small>` : ""}
   `;
 }
@@ -1378,7 +1442,9 @@ function renderMessageDetails(message) {
       ["Role", message.role || "-"],
       ["Tool name", message.tool_name || "-"],
       ["Tool call ID", message.tool_call_id || "-"],
+      ["Reasoning", message.reasoning ? `${message.reasoning.length} chars` : "-"],
     ])}
+    ${message.reasoning ? `<pre class="reasoning-block">${escapeHTML(message.reasoning)}</pre>` : ""}
     <pre class="text-block">${escapeHTML(message.content || message.tool_args || "")}</pre>
   `;
 }
@@ -1475,8 +1541,10 @@ function renderProviderEvent(event, index) {
   const type = eventType(event);
   const usage = event.usage || event.Usage || {};
   const calls = toolCalls(event);
+  const reasoning = event.reasoning || event.Reasoning || "";
   const summary = [
     event.text || event.Text || "",
+    reasoning ? `reasoning ${reasoning.length} chars` : "",
     event.reason || event.Reason || "",
     calls.length ? `${calls.length} tool call(s)` : "",
     totalTokens(usage) ? `${totalTokens(usage)} tokens` : "",
@@ -1490,6 +1558,7 @@ function renderProviderEvent(event, index) {
       </summary>
       <div class="event-body">
         ${event.text || event.Text ? `<pre class="text-block">${escapeHTML(event.text || event.Text)}</pre>` : ""}
+        ${reasoning ? `<pre class="reasoning-block">${escapeHTML(reasoning)}</pre>` : ""}
         ${event.reason || event.Reason ? `<p class="reason">${escapeHTML(event.reason || event.Reason)}</p>` : ""}
         ${calls.length ? `<div class="tool-call-list">${calls.map(renderToolCall).join("")}</div>` : ""}
         ${totalTokens(usage) ? renderUsage(usage) : ""}
@@ -1517,10 +1586,12 @@ function renderEngineEvent(event) {
 }
 
 function renderToolCall(call) {
+  const reasoning = call.reasoning || call.Reasoning || "";
   return `
     <div class="tool-call">
       <strong>${escapeHTML(call.name || call.Name || "-")}</strong>
       <small>${escapeHTML(call.id || call.ID || "")}</small>
+      ${reasoning ? `<pre class="reasoning-block">${escapeHTML(reasoning)}</pre>` : ""}
       <pre>${escapeHTML(call.args || call.Args || "")}</pre>
     </div>
   `;
@@ -2219,9 +2290,10 @@ function sessionOptionLabel(session) {
 }
 
 function activeSessionSnapshot() {
-  const activeID = state.activeSessionId || state.lastResult?.session_id || "";
+  const fallbackID = state.lastResult?.probe ? "" : state.lastResult?.session_id || "";
+  const activeID = state.activeSessionId || fallbackID;
   if (!activeID) return null;
-  if (state.lastResult?.session?.id === activeID) return state.lastResult.session;
+  if (!state.lastResult?.probe && state.lastResult?.session?.id === activeID) return state.lastResult.session;
   return state.sessions.find((session) => session.id === activeID) || null;
 }
 
@@ -2258,10 +2330,16 @@ function actualRequestToolNames(result) {
 }
 
 function renderActionState(result) {
-  const hasSession = Boolean(state.activeSessionId || result?.session_id);
-  const canAppend = Boolean(result?.can_append_message || result?.status === "waiting" || result?.status === "completed");
+  const activeID = state.activeSessionId || (!result?.probe ? result?.session_id : "") || "";
+  const activeSession = activeSessionSnapshot();
+  const hasSession = Boolean(activeID);
+  const canAppend = Boolean(hasSession && (
+    activeSession?.can_append_message ||
+    (!result?.probe && (result?.can_append_message || result?.status === "waiting" || result?.status === "completed"))
+  ));
   el.appendMessage.disabled = state.running || !hasSession || !canAppend;
   el.runAgent.disabled = state.running;
+  el.interfaceProbe.disabled = state.running;
   if (!hasSession) {
     el.appendMessage.title = "Start a session before sending to an active session";
   } else if (!canAppend) {
@@ -2270,7 +2348,16 @@ function renderActionState(result) {
     el.appendMessage.title = `Send using active session tools: ${toolLabelList(activeSessionSnapshot()?.selected_tools || [])}`;
   }
   el.runAgent.title = "Start a new session and capture the selected draft tools";
+  el.interfaceProbe.title = "Run an isolated tool contract probe with selected draft tools";
   renderCapabilitySummary();
+}
+
+function probeStatusText(result) {
+  const requests = currentTurnProviderRequests(result);
+  const latest = requests[requests.length - 1];
+  const names = latest ? actualRequestToolNames(result) : "no provider request captured";
+  const callCount = currentTurnProviderEvents(result).flatMap(toolCalls).length;
+  return `Probe ${result.status || "finished"} · ${actualRequestToolSummary(result)} · ${names}${callCount ? ` · ${callCount} tool call(s)` : ""}.`;
 }
 
 function entrySummary(entry) {
@@ -2560,8 +2647,10 @@ function setRunning(value) {
   state.running = value;
   el.runAgent.disabled = value;
   el.appendMessage.disabled = value || el.appendMessage.disabled;
+  el.interfaceProbe.disabled = value;
   el.runAgent.textContent = value ? "Running..." : "Start Session with Selected Tools";
   el.appendMessage.textContent = value ? "Waiting..." : "Send to Active Session";
+  el.interfaceProbe.textContent = value ? "Probing..." : "Run Tool Contract Probe";
   if (!value) renderActionState(state.lastResult);
 }
 

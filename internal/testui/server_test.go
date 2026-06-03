@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -131,6 +132,87 @@ func TestServerAgentSessionCreateAcceptsSelectedTools(t *testing.T) {
 	}
 	if hasObservedTool(result.Observation.ProviderRequests[0].Tools, "read") || hasObservedTool(result.Observation.ProviderRequests[0].Tools, "shell") {
 		t.Fatalf("unselected tools exposed: %#v", result.Observation.ProviderRequests[0].Tools)
+	}
+}
+
+func TestServerAgentInterfaceProbeExposesSelectedToolsAndDoesNotPersistSession(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+	allTools := allAgentToolNamesForTest()
+	body, err := json.Marshal(AgentInterfaceProbeRequest{
+		SelectedTools: allTools,
+		ContextPolicy: contextPolicyForTest(8192),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	probeReq := httptest.NewRequest(http.MethodPost, "/api/agent/interface-probe", bytes.NewReader(body))
+	probeRec := httptest.NewRecorder()
+	handler.ServeHTTP(probeRec, probeReq)
+	if probeRec.Code != http.StatusOK {
+		t.Fatalf("probe status = %d, body = %s", probeRec.Code, probeRec.Body.String())
+	}
+	var result AgentRunResponse
+	if err := json.Unmarshal(probeRec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Probe || result.Status != "completed" || result.CanAppendMessage || result.Session.CanAppendMessage {
+		t.Fatalf("probe result = %#v", result)
+	}
+	if !slices.Equal(result.Session.SelectedTools, allTools) {
+		t.Fatalf("selected tools = %#v, want %#v", result.Session.SelectedTools, allTools)
+	}
+	if len(result.Observation.ProviderRequests) != 2 {
+		t.Fatalf("provider requests = %#v", result.Observation.ProviderRequests)
+	}
+	firstReq := result.Observation.ProviderRequests[0]
+	if len(firstReq.Tools) != len(allTools)+1 || !hasObservedTool(firstReq.Tools, "ask_user") {
+		t.Fatalf("first request tools = %#v", firstReq.Tools)
+	}
+	for _, name := range allTools {
+		if !hasObservedTool(firstReq.Tools, name) {
+			t.Fatalf("selected tool %q missing from provider request: %#v", name, firstReq.Tools)
+		}
+	}
+	if !slices.ContainsFunc(result.Observation.ProviderEvents, func(ev ObservedProviderEvent) bool {
+		return ev.Type == provider.Reasoning && strings.Contains(ev.Reasoning, "Inspect selected tool contract")
+	}) {
+		t.Fatalf("reasoning provider event missing: %#v", result.Observation.ProviderEvents)
+	}
+	if !slices.ContainsFunc(result.Observation.SessionMessages, func(msg ObservedSessionMessage) bool {
+		return msg.Role == "assistant" && msg.ToolName == "list" && msg.ToolCallID == "probe-list" && strings.Contains(msg.Reasoning, "Inspect selected tool contract")
+	}) {
+		t.Fatalf("tool call message with reasoning missing: %#v", result.Observation.SessionMessages)
+	}
+	if !slices.ContainsFunc(result.Observation.SessionMessages, func(msg ObservedSessionMessage) bool {
+		return msg.Role == "tool" && msg.ToolName == "list" && msg.ToolCallID == "probe-list"
+	}) {
+		t.Fatalf("tool result message missing: %#v", result.Observation.SessionMessages)
+	}
+	if !slices.ContainsFunc(result.Observation.ProviderRequests[1].Messages, func(msg ObservedSessionMessage) bool {
+		return msg.Role == "assistant" && msg.ToolName == "list" && strings.Contains(msg.Reasoning, "Inspect selected tool contract")
+	}) {
+		t.Fatalf("follow-up request did not carry assistant tool-call reasoning: %#v", result.Observation.ProviderRequests[1].Messages)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/agent/sessions", nil)
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", listRec.Code, listRec.Body.String())
+	}
+	var sessions []AgentSessionSnapshot
+	if err := json.Unmarshal(listRec.Body.Bytes(), &sessions); err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("probe should not persist sessions: %#v", sessions)
 	}
 }
 
@@ -500,4 +582,12 @@ func hasOnlyObservedTools(defs []provider.ToolDefinition, names ...string) bool 
 		}
 	}
 	return true
+}
+
+func allAgentToolNamesForTest() []string {
+	names := make([]string, 0, len(agentToolOptions))
+	for _, option := range agentToolOptions {
+		names = append(names, option.Name)
+	}
+	return names
 }

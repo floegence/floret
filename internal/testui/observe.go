@@ -141,10 +141,31 @@ func (p *observingProvider) recordEvent(runID string, sessionID string, step int
 		ObservedAt: time.Now(),
 		ResponseID: ev.ResponseID,
 		Text:       ev.Text,
+		Reasoning:  reasoningText(ev),
 		ToolCalls:  append([]provider.ToolCall(nil), ev.ToolCalls...),
 		Reason:     ev.Reason,
 		Usage:      ev.Usage,
 	})
+}
+
+func reasoningText(ev provider.StreamEvent) string {
+	if ev.Type == provider.Reasoning {
+		return ev.Text
+	}
+	if len(ev.ToolCalls) == 0 {
+		return ""
+	}
+	var out string
+	for _, call := range ev.ToolCalls {
+		if call.Reasoning == "" {
+			continue
+		}
+		if out != "" {
+			out += "\n"
+		}
+		out += call.Reasoning
+	}
+	return out
 }
 
 func observedSessionID(req provider.Request) string {
@@ -233,6 +254,7 @@ func observeMessages(messages []session.Message) []ObservedSessionMessage {
 		out = append(out, ObservedSessionMessage{
 			Role:                 string(msg.Role),
 			Content:              msg.Content,
+			Reasoning:            msg.Reasoning,
 			ToolCallID:           msg.ToolCallID,
 			ToolName:             msg.ToolName,
 			ToolArgs:             msg.ToolArgs,

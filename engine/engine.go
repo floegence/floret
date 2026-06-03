@@ -132,6 +132,7 @@ type RunDecision struct {
 
 type StepOutput struct {
 	Text            string
+	Reasoning       string
 	Calls           []provider.ToolCall
 	Usage           provider.Usage
 	ResponseID      string
@@ -372,10 +373,11 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		if stepOutput.FinishReason == provider.FinishCancelled {
 			return e.end(opts, step, Cancelled, output, context.Canceled, metrics, started, decision)
 		}
+		stepReasoning := stepOutput.Reasoning
 		if stepText != "" {
 			output += stepText
 			noProgress = 0
-			msg := session.Message{Role: session.Assistant, Content: stepText}
+			msg := session.Message{Role: session.Assistant, Content: stepText, Reasoning: stepReasoning}
 			if err := e.Store.Append(opts.RunID, msg); err != nil {
 				return e.end(opts, step, Failed, output, err, metrics, started, decision)
 			}
@@ -422,7 +424,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		}
 		if len(calls) == 0 {
 			if stepText != "" && provider.IsTerminalNaturalFinish(stepOutput.FinishReason) {
-				hook, err := e.applyStopHook(ctx, opts, step, session.Message{Role: session.Assistant, Content: stepText}, metrics, stepOutput)
+				hook, err := e.applyStopHook(ctx, opts, step, session.Message{Role: session.Assistant, Content: stepText, Reasoning: stepReasoning}, metrics, stepOutput)
 				if err != nil {
 					return e.end(opts, step, Failed, output, err, metrics, started, decision)
 				}
@@ -458,7 +460,11 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			return e.end(opts, step, Failed, output, err, metrics, started, decision)
 		}
 		for _, call := range calls {
-			msg := session.Message{Role: session.Assistant, Content: "tool_call", ToolCallID: call.ID, ToolName: call.Name, ToolArgs: call.Args}
+			reasoning := call.Reasoning
+			if reasoning == "" {
+				reasoning = stepReasoning
+			}
+			msg := session.Message{Role: session.Assistant, Content: "tool_call", Reasoning: reasoning, ToolCallID: call.ID, ToolName: call.Name, ToolArgs: call.Args}
 			if err := e.Store.Append(opts.RunID, msg); err != nil {
 				return e.end(opts, step, Failed, output, err, metrics, started, decision)
 			}
@@ -801,6 +807,9 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 			case provider.Delta:
 				out.Text += ev.Text
 				e.emit(event.Event{Type: event.ProviderDelta, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
+			case provider.Reasoning:
+				out.Reasoning += ev.Text
+				e.emit(event.Event{Type: event.ProviderReasoning, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
 			case provider.ToolCalls:
 				out.Calls = append(out.Calls, ev.ToolCalls...)
 			case provider.UsageEvent:

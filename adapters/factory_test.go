@@ -640,6 +640,92 @@ func TestOpenAICompatibleProviderStreamsPartialToolArguments(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleProviderReplaysReasoningContentForToolFollowUp(t *testing.T) {
+	var requests []struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []map[string]any `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		requests = append(requests, body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch len(requests) {
+		case 1:
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"look up weather\"}}]}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"Checking.\"}}]}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"fetch-1\",\"type\":\"function\",\"function\":{\"name\":\"web_fetch\",\"arguments\":\"{\\\"url\\\":\\\"https://wttr.in/Changsha?format=4\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n"))
+		default:
+			assistant := body.Messages[len(body.Messages)-2]
+			if assistant["role"] != "assistant" {
+				t.Fatalf("follow-up assistant tool-call message missing: %#v", body.Messages)
+			}
+			if assistant["reasoning_content"] != "look up weather" {
+				t.Fatalf("reasoning_content was not replayed: %#v", body.Messages)
+			}
+			toolCalls, ok := assistant["tool_calls"].([]any)
+			if !ok || len(toolCalls) != 1 {
+				t.Fatalf("follow-up assistant tool_calls missing: %#v", assistant)
+			}
+			call, ok := toolCalls[0].(map[string]any)
+			if !ok {
+				t.Fatalf("follow-up assistant tool_call malformed: %#v", toolCalls[0])
+			}
+			fn, ok := call["function"].(map[string]any)
+			if !ok {
+				t.Fatalf("follow-up assistant tool_call function missing: %#v", call)
+			}
+			if call["id"] != "fetch-1" || fn["name"] != "web_fetch" || fn["arguments"] != `{"url":"https://wttr.in/Changsha?format=4"}` {
+				t.Fatalf("follow-up assistant tool_call mismatch: %#v", call)
+			}
+			toolResult := body.Messages[len(body.Messages)-1]
+			if toolResult["role"] != "tool" || toolResult["tool_call_id"] != "fetch-1" || toolResult["name"] != "web_fetch" {
+				t.Fatalf("follow-up tool result shape missing binding metadata: %#v", toolResult)
+			}
+			if toolResult["reasoning_content"] != nil {
+				t.Fatalf("follow-up tool result must not replay reasoning_content: %#v", toolResult)
+			}
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"长沙天气：有阵雨。\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":6,\"total_tokens\":26}}\n\n"))
+		}
+	}))
+	defer server.Close()
+
+	reg := tools.NewRegistry()
+	mustRegisterAdapterTestTool(t, reg, tools.Define[struct {
+		URL string `json:"url"`
+	}](
+		tools.Definition{
+			Name:        "web_fetch",
+			Description: "Fetch a URL.",
+			InputSchema: tools.StrictObject(map[string]any{"url": tools.String("URL to fetch.")}, []string{"url"}),
+			ReadOnly:    true,
+		},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[struct {
+			URL string `json:"url"`
+		}]) (tools.Result, error) {
+			return tools.Result{Text: "changsha: rain"}, nil
+		},
+	))
+	result := (&engine.Engine{
+		Provider: OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "deepseek-v4-pro", StreamResponses: true, HTTPClient: server.Client()},
+		Store:    session.NewMemoryStore(),
+		Memory:   &memory.Manager{SystemPrompt: "test"},
+		Tools:    reg,
+		Options:  engine.Options{RunID: "run", ProviderName: "deepseek", Model: "deepseek-v4-pro"},
+	}).Run(context.Background(), "请查询长沙天气")
+	if result.Status != engine.Completed || !strings.Contains(result.Output, "长沙天气") {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d", len(requests))
+	}
+}
+
 func TestOpenAICompatibleProviderStreamsContentFilterFinishReason(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -715,8 +801,8 @@ func TestOpenAICompatibleProviderRendersToolResultRequestShape(t *testing.T) {
 	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
 	_, err := p.Stream(context.Background(), provider.Request{RunID: "r", Messages: []session.Message{
 		{Role: session.System, Content: "system"},
-		{Role: session.Assistant, Content: "tool_call", ToolCallID: "read-1", ToolName: "read", ToolArgs: `{"path":"a.go"}`},
-		{Role: session.Tool, Content: "content", ToolCallID: "read-1", ToolName: "read"},
+		{Role: session.Assistant, Content: "tool_call", Reasoning: "assistant reasoning", ToolCallID: "read-1", ToolName: "read", ToolArgs: `{"path":"a.go"}`},
+		{Role: session.Tool, Content: "content", Reasoning: "must not render", ToolCallID: "read-1", ToolName: "read"},
 	}, Tools: []provider.ToolDefinition{{Name: "read", Description: "Read a file"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -741,6 +827,12 @@ func TestOpenAICompatibleProviderRendersToolResultRequestShape(t *testing.T) {
 	}
 	if body.Messages[1]["tool_call_id"] != nil {
 		t.Fatalf("assistant tool-call message should not use top-level tool_call_id: %#v", body.Messages[1])
+	}
+	if body.Messages[1]["reasoning_content"] != "assistant reasoning" {
+		t.Fatalf("assistant tool-call reasoning missing: %#v", body.Messages[1])
+	}
+	if body.Messages[2]["reasoning_content"] != nil {
+		t.Fatalf("tool result must not render assistant reasoning_content: %#v", body.Messages[2])
 	}
 }
 
@@ -887,5 +979,12 @@ func TestAnthropicProviderRendersStrictInputSchemaAndRejectsHostedTools(t *testi
 	}
 	if _, err := p.PayloadHash(provider.Request{RunID: "r", HostedTools: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}}); err == nil || !strings.Contains(err.Error(), "hosted tools") {
 		t.Fatalf("expected hosted tool payload hash rejection, got %v", err)
+	}
+}
+
+func mustRegisterAdapterTestTool(t *testing.T, reg *tools.Registry, tool tools.Tool) {
+	t.Helper()
+	if err := reg.Register(tool); err != nil {
+		t.Fatalf("register %s: %v", tool.Definition.Name, err)
 	}
 }
