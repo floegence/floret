@@ -885,6 +885,70 @@ func TestOpenAICompatibleProviderMergesConsecutiveAssistantToolCalls(t *testing.
 	}
 }
 
+func TestOpenAICompatibleProviderReordersToolResultsToMatchToolCalls(t *testing.T) {
+	var body struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
+	_, err := p.Stream(context.Background(), provider.Request{RunID: "r", Messages: []session.Message{
+		{Role: session.User, Content: "weather"},
+		{Role: session.Assistant, Content: "tool_call", Reasoning: "search and fetch", ToolCallID: "search-1", ToolName: "web_search", ToolArgs: `{"query":"Changsha weather"}`},
+		{Role: session.Assistant, Content: "tool_call", Reasoning: "search and fetch", ToolCallID: "fetch-1", ToolName: "web_fetch", ToolArgs: `{"url":"https://example.com/weather"}`},
+		{Role: session.Tool, Content: "fetch result", ToolCallID: "fetch-1", ToolName: "web_fetch"},
+		{Role: session.Tool, Content: "search result", ToolCallID: "search-1", ToolName: "web_search"},
+	}, Tools: []provider.ToolDefinition{{Name: "web_search"}, {Name: "web_fetch"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Messages) != 4 {
+		t.Fatalf("messages = %#v", body.Messages)
+	}
+	if body.Messages[2]["role"] != "tool" || body.Messages[2]["tool_call_id"] != "search-1" || body.Messages[2]["content"] != "search result" {
+		t.Fatalf("first tool result was not reordered: %#v", body.Messages)
+	}
+	if body.Messages[3]["role"] != "tool" || body.Messages[3]["tool_call_id"] != "fetch-1" || body.Messages[3]["content"] != "fetch result" {
+		t.Fatalf("second tool result was not reordered: %#v", body.Messages)
+	}
+}
+
+func TestOpenAICompatibleProviderPayloadHashUsesReorderedToolResults(t *testing.T) {
+	messages := []session.Message{
+		{Role: session.User, Content: "weather"},
+		{Role: session.Assistant, Content: "tool_call", ToolCallID: "search-1", ToolName: "web_search", ToolArgs: `{"query":"Changsha weather"}`},
+		{Role: session.Assistant, Content: "tool_call", ToolCallID: "fetch-1", ToolName: "web_fetch", ToolArgs: `{"url":"https://example.com/weather"}`},
+		{Role: session.Tool, Content: "fetch result", ToolCallID: "fetch-1", ToolName: "web_fetch"},
+		{Role: session.Tool, Content: "search result", ToolCallID: "search-1", ToolName: "web_search"},
+	}
+	ordered := []session.Message{
+		{Role: session.User, Content: "weather"},
+		{Role: session.Assistant, Content: "tool_call", ToolCallID: "search-1", ToolName: "web_search", ToolArgs: `{"query":"Changsha weather"}`},
+		{Role: session.Assistant, Content: "tool_call", ToolCallID: "fetch-1", ToolName: "web_fetch", ToolArgs: `{"url":"https://example.com/weather"}`},
+		{Role: session.Tool, Content: "search result", ToolCallID: "search-1", ToolName: "web_search"},
+		{Role: session.Tool, Content: "fetch result", ToolCallID: "fetch-1", ToolName: "web_fetch"},
+	}
+	p := OpenAICompatibleProvider{Endpoint: "https://example.test/chat", APIKey: "secret", Model: "remote-model"}
+	got, err := p.PayloadHash(provider.Request{RunID: "r", Messages: messages, Tools: []provider.ToolDefinition{{Name: "web_search"}, {Name: "web_fetch"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := p.PayloadHash(provider.Request{RunID: "r", Messages: ordered, Tools: []provider.ToolDefinition{{Name: "web_search"}, {Name: "web_fetch"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("payload hash did not use normalized tool result order: got %s want %s", got, want)
+	}
+}
+
 func TestOpenAICompatibleProviderRejectsMalformedToolAdjacencyBeforeRequest(t *testing.T) {
 	called := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -905,6 +969,60 @@ func TestOpenAICompatibleProviderRejectsMalformedToolAdjacencyBeforeRequest(t *t
 	}
 	if called {
 		t.Fatalf("provider should not be called for malformed tool adjacency")
+	}
+}
+
+func TestOpenAICompatibleProviderRejectsMissingAndDuplicateToolResultsBeforeRequest(t *testing.T) {
+	tests := []struct {
+		name     string
+		messages []session.Message
+		wantErr  string
+	}{
+		{
+			name: "missing",
+			messages: []session.Message{
+				{Role: session.User, Content: "weather"},
+				{Role: session.Assistant, Content: "tool_call", ToolCallID: "search-1", ToolName: "web_search", ToolArgs: `{"query":"Changsha"}`},
+			},
+			wantErr: `missing tool result for "search-1"`,
+		},
+		{
+			name: "duplicate",
+			messages: []session.Message{
+				{Role: session.User, Content: "weather"},
+				{Role: session.Assistant, Content: "tool_call", ToolCallID: "search-1", ToolName: "web_search", ToolArgs: `{"query":"Changsha"}`},
+				{Role: session.Assistant, Content: "tool_call", ToolCallID: "fetch-1", ToolName: "web_fetch", ToolArgs: `{"url":"https://example.com"}`},
+				{Role: session.Tool, Content: "search result", ToolCallID: "search-1", ToolName: "web_search"},
+				{Role: session.Tool, Content: "duplicate search result", ToolCallID: "search-1", ToolName: "web_search"},
+			},
+			wantErr: `does not match preceding assistant tool_calls`,
+		},
+		{
+			name: "orphan",
+			messages: []session.Message{
+				{Role: session.User, Content: "weather"},
+				{Role: session.Tool, Content: "orphan", ToolCallID: "search-1", ToolName: "web_search"},
+			},
+			wantErr: `orphan tool result "search-1"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				http.Error(w, "should not be called", http.StatusInternalServerError)
+			}))
+			defer server.Close()
+			p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
+			_, err := p.Stream(context.Background(), provider.Request{RunID: "r", Messages: tt.messages, Tools: []provider.ToolDefinition{{Name: "web_search"}, {Name: "web_fetch"}}})
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want %q", err, tt.wantErr)
+			}
+			if called {
+				t.Fatalf("provider should not be called for malformed tool history")
+			}
+		})
 	}
 }
 
@@ -973,6 +1091,68 @@ func TestOpenAICompatibleProviderMergesRawPlanAssistantToolCalls(t *testing.T) {
 	if body.Messages[2]["role"] != "tool" || body.Messages[2]["tool_call_id"] != "search-1" ||
 		body.Messages[3]["role"] != "tool" || body.Messages[3]["tool_call_id"] != "search-2" {
 		t.Fatalf("raw plan tool results not adjacent: %#v", body.Messages)
+	}
+}
+
+func TestOpenAICompatibleProviderReordersRawPlanToolResults(t *testing.T) {
+	var body struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	rawMessage := func(msg session.Message) promptcache.Segment {
+		rendered := renderMessages([]session.Message{msg})
+		raw, err := promptcache.CanonicalJSON(rendered[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return promptcache.Segment{
+			Kind:         promptcache.SegmentKind(kindForAdapterTest(msg)),
+			FragmentType: promptcache.FragmentOpenAIMessage,
+			Raw:          raw,
+			Message: promptcache.MessageSnapshot{
+				Role:       string(msg.Role),
+				Content:    msg.Content,
+				Reasoning:  msg.Reasoning,
+				ToolCallID: msg.ToolCallID,
+				ToolName:   msg.ToolName,
+				ToolArgs:   msg.ToolArgs,
+			},
+		}
+	}
+	messages := []session.Message{
+		{Role: session.User, Content: "weather"},
+		{Role: session.Assistant, Content: "tool_call", Reasoning: "search twice", ToolCallID: "search-1", ToolName: "web_search", ToolArgs: `{"query":"a"}`},
+		{Role: session.Assistant, Content: "tool_call", Reasoning: "search twice", ToolCallID: "search-2", ToolName: "web_search", ToolArgs: `{"query":"b"}`},
+		{Role: session.Tool, Content: "result b", ToolCallID: "search-2", ToolName: "web_search"},
+		{Role: session.Tool, Content: "result a", ToolCallID: "search-1", ToolName: "web_search"},
+	}
+	segments := make([]promptcache.Segment, 0, len(messages))
+	for _, msg := range messages {
+		segments = append(segments, rawMessage(msg))
+	}
+	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
+	_, err := p.Stream(context.Background(), provider.Request{
+		RunID:    "r",
+		Messages: messages,
+		RawPlan:  promptcache.RawPlan{Segments: segments},
+		Tools:    []provider.ToolDefinition{{Name: "web_search"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body.Messages[2]["role"] != "tool" || body.Messages[2]["tool_call_id"] != "search-1" || body.Messages[2]["content"] != "result a" {
+		t.Fatalf("raw plan first tool result was not reordered: %#v", body.Messages)
+	}
+	if body.Messages[3]["role"] != "tool" || body.Messages[3]["tool_call_id"] != "search-2" || body.Messages[3]["content"] != "result b" {
+		t.Fatalf("raw plan second tool result was not reordered: %#v", body.Messages)
 	}
 }
 

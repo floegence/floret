@@ -150,6 +150,7 @@ func (p OpenAICompatibleProvider) Stream(ctx context.Context, req provider.Reque
 		client = http.DefaultClient
 	}
 	chatReq := p.buildChatRequest(req)
+	chatReq.Messages = normalizeChatToolResults(chatReq.Messages)
 	if err := validateChatToolAdjacency(chatReq.Messages); err != nil {
 		return nil, err
 	}
@@ -263,6 +264,7 @@ func (p OpenAICompatibleProvider) PayloadHash(req provider.Request) (string, err
 		return "", fmt.Errorf("openai-compatible chat provider does not support hosted tools: %s", hostedToolNames(req.HostedTools))
 	}
 	chatReq := p.buildChatRequest(req)
+	chatReq.Messages = normalizeChatToolResults(chatReq.Messages)
 	if err := validateChatToolAdjacency(chatReq.Messages); err != nil {
 		return "", err
 	}
@@ -481,6 +483,9 @@ func isAssistantToolCall(msg session.Message) bool {
 func validateChatToolAdjacency(messages []chatMessage) error {
 	for i := 0; i < len(messages); i++ {
 		msg := messages[i]
+		if msg.Role == "tool" {
+			return fmt.Errorf("openai-compatible request has orphan tool result %q without preceding assistant tool_calls", msg.ToolCallID)
+		}
 		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
 			continue
 		}
@@ -505,6 +510,13 @@ func validateChatToolAdjacency(messages []chatMessage) error {
 			if toolMsg.Role != "tool" {
 				return fmt.Errorf("openai-compatible request assistant tool_calls must be followed by tool messages: got %q before result for %q", toolMsg.Role, id)
 			}
+			if strings.TrimSpace(toolMsg.ToolCallID) == "" {
+				return fmt.Errorf("openai-compatible request tool result after assistant tool_calls has empty tool_call_id, want %q", id)
+			}
+			if _, ok := seen[toolMsg.ToolCallID]; !ok {
+				return fmt.Errorf("openai-compatible request tool result %q does not match preceding assistant tool_calls", toolMsg.ToolCallID)
+			}
+			delete(seen, toolMsg.ToolCallID)
 			if toolMsg.ToolCallID != id {
 				return fmt.Errorf("openai-compatible request tool result order mismatch: got %q, want %q", toolMsg.ToolCallID, id)
 			}
@@ -512,6 +524,62 @@ func validateChatToolAdjacency(messages []chatMessage) error {
 		i += len(want)
 	}
 	return nil
+}
+
+func normalizeChatToolResults(messages []chatMessage) []chatMessage {
+	out := make([]chatMessage, 0, len(messages))
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
+		out = append(out, msg)
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			continue
+		}
+		needed := make([]string, 0, len(msg.ToolCalls))
+		for _, call := range msg.ToolCalls {
+			needed = append(needed, call.ID)
+		}
+		start := i + 1
+		end := start
+		for end < len(messages) && messages[end].Role == "tool" {
+			end++
+		}
+		toolBatch := messages[start:end]
+		if len(toolBatch) == 0 {
+			continue
+		}
+		if reordered, ok := reorderToolBatch(needed, toolBatch); ok {
+			out = append(out, reordered...)
+		} else {
+			out = append(out, toolBatch...)
+		}
+		i = end - 1
+	}
+	return out
+}
+
+func reorderToolBatch(ids []string, toolBatch []chatMessage) ([]chatMessage, bool) {
+	if len(ids) != len(toolBatch) {
+		return nil, false
+	}
+	byID := make(map[string]chatMessage, len(toolBatch))
+	for _, toolMsg := range toolBatch {
+		if toolMsg.ToolCallID == "" {
+			return nil, false
+		}
+		if _, exists := byID[toolMsg.ToolCallID]; exists {
+			return nil, false
+		}
+		byID[toolMsg.ToolCallID] = toolMsg
+	}
+	reordered := make([]chatMessage, 0, len(ids))
+	for _, id := range ids {
+		toolMsg, ok := byID[id]
+		if !ok {
+			return nil, false
+		}
+		reordered = append(reordered, toolMsg)
+	}
+	return reordered, true
 }
 
 func renderMessagesFromRawPlan(plan promptcache.RawPlan, fallback []chatMessage) []chatMessage {

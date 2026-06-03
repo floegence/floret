@@ -1,7 +1,10 @@
 import { escapeHTML, formatLocalTime, profileLabel, relativeTime, shortID, state, toolLabelList, totalTokens } from "../state.js";
 import { bindInspector, renderInspector } from "./inspector.js";
 
+const copyPayloads = new Map();
+
 export function renderSessionWorkspace({ sessions, activeSession, result, tools, inspectorTab }) {
+  copyPayloads.clear();
   return `
     <div class="sessions-layout ${state.mobilePanel === "sessions" ? "show-sessions" : ""} ${state.mobilePanel === "inspector" ? "show-inspector" : ""}">
       ${renderSessionRail(sessions, activeSession)}
@@ -19,6 +22,12 @@ export function bindSessionWorkspace(root, handlers) {
   });
   root.querySelectorAll("[data-session-id]").forEach((button) => {
     button.addEventListener("click", () => handlers.onSelect(button.dataset.sessionId || ""));
+  });
+  root.querySelectorAll("[data-copy-key]").forEach((button) => {
+    button.addEventListener("click", () => handlers.onCopy(copyPayloads.get(button.dataset.copyKey || "") || "", button.dataset.copyLabel || "Copied"));
+  });
+  root.querySelectorAll("[data-delete-session]").forEach((button) => {
+    button.addEventListener("click", () => handlers.onDelete(button.dataset.deleteSession || ""));
   });
   root.querySelector("[data-append-form]")?.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -64,14 +73,20 @@ function renderSessionRow(session, activeID) {
   const turns = session.turns?.length || 0;
   const exactTime = formatLocalTime(session.updated_at);
   return `
-    <button class="session-row ${session.id === activeID ? "active" : ""}" type="button" data-session-id="${escapeHTML(session.id)}">
-      <strong>${escapeHTML(shortID(session.id))}</strong>
-      <span class="row-meta">${escapeHTML(session.status || "idle")} · ${turns} turn${turns === 1 ? "" : "s"} · ${escapeHTML(session.profile?.model || "model")}</span>
-      <span class="row-pills">
-        <span class="tiny-pill">${escapeHTML((session.selected_tools || []).length)} tools</span>
-        <span class="tiny-pill" title="${escapeHTML(exactTime)}">${escapeHTML(relativeTime(session.updated_at))}</span>
-      </span>
-    </button>
+    <article class="session-row ${session.id === activeID ? "active" : ""}">
+      <button class="session-select" type="button" data-session-id="${escapeHTML(session.id)}">
+        <strong>${escapeHTML(shortID(session.id))}</strong>
+        <span class="row-meta">${escapeHTML(session.status || "idle")} · ${turns} turn${turns === 1 ? "" : "s"} · ${escapeHTML(session.profile?.model || "model")}</span>
+        <span class="row-pills">
+          <span class="tiny-pill">${escapeHTML((session.selected_tools || []).length)} tools</span>
+          <span class="tiny-pill" title="${escapeHTML(exactTime)}">${escapeHTML(relativeTime(session.updated_at))}</span>
+        </span>
+      </button>
+      <div class="row-actions">
+        ${copyButton(session.id, "Copy ID", "Session id copied", "small ghost")}
+        <button class="small danger" type="button" data-delete-session="${escapeHTML(session.id)}">Delete</button>
+      </div>
+    </article>
   `;
 }
 
@@ -102,6 +117,8 @@ function renderWorkspace(session, result) {
           <span class="status-pill ${escapeHTML(session.status || "idle")}">${escapeHTML(session.status || "idle")}</span>
           <span class="metric">${turns.length} turns</span>
           <span class="metric">${totalTokens(session.aggregate_metrics?.usage)} tokens</span>
+          ${copyButton(session.id, "Copy ID", "Session id copied", "small ghost")}
+          <button class="small danger" type="button" data-delete-session="${escapeHTML(session.id)}">Delete</button>
         </div>
         <div class="mobile-workspace-actions">
           <button type="button" class="small" data-mobile-panel="sessions">Sessions</button>
@@ -133,27 +150,31 @@ function renderTimeline(session, result) {
 
 function renderEntry(entry) {
   if (entry.type === "turn_marker") {
+    const payload = `turn ${entry.turn_status || ""} ${entry.turn_id || ""}`.trim();
     return `
       <article class="message entry">
-        <div class="message-head"><span>turn ${escapeHTML(entry.turn_status || "")}</span><span>${escapeHTML(entry.turn_id || "")}</span></div>
+        <div class="message-head"><span>turn ${escapeHTML(entry.turn_status || "")}</span><span>${escapeHTML(entry.turn_id || "")}</span>${copyButton(payload)}</div>
       </article>
     `;
   }
   if (entry.type === "active_tools_change") {
     const meta = entry.metadata || {};
+    const body = `${meta.previous_tools || "none"} -> ${meta.selected_tools || "none"}${meta.reason ? `\n${meta.reason}` : ""}`;
     return `
       <article class="message entry">
-        <div class="message-head"><span>tools changed</span><span>${escapeHTML(formatLocalTime(entry.created_at))}</span></div>
-        <div class="message-text">${escapeHTML(meta.previous_tools || "none")} -> ${escapeHTML(meta.selected_tools || "none")}</div>
+        <div class="message-head"><span>tools changed</span><span>${escapeHTML(formatLocalTime(entry.created_at))}</span>${copyButton(body)}</div>
+        ${renderMessageBody(body, "tools changed")}
         ${meta.reason ? `<div class="muted">${escapeHTML(meta.reason)}</div>` : ""}
       </article>
     `;
   }
   if (entry.type === "run_failure") {
+    const body = entry.error || "";
+    const copyPayload = body || `run failure\nturn_id: ${entry.turn_id || "-"}`;
     return `
       <article class="message entry">
-        <div class="message-head"><span>run failure</span><span>${escapeHTML(entry.turn_id || "")}</span></div>
-        <pre>${escapeHTML(entry.error || "")}</pre>
+        <div class="message-head"><span>run failure</span><span>${escapeHTML(entry.turn_id || "")}</span>${copyButton(copyPayload)}</div>
+        ${renderMessageBody(body, "run failure")}
       </article>
     `;
   }
@@ -161,12 +182,46 @@ function renderEntry(entry) {
   const role = msg.role || (entry.type === "tool_call" ? "assistant" : "entry");
   const title = entry.type === "tool_call" ? `tool call · ${msg.tool_name || ""}` : entry.type === "tool_result" ? `tool result · ${msg.tool_name || ""}` : role;
   const body = entry.type === "tool_call" ? msg.tool_args || msg.content : msg.content;
+  const copyPayload = [msg.reasoning, body].filter(Boolean).join("\n\n") || structuredEntryCopy(entry, title, msg);
   return `
     <article class="message ${escapeHTML(role)}">
-      <div class="message-head"><span>${escapeHTML(title)}</span><span>${escapeHTML(entry.turn_id || "")}</span></div>
+      <div class="message-head"><span>${escapeHTML(title)}</span><span>${escapeHTML(entry.turn_id || "")}</span>${copyButton(copyPayload)}</div>
       ${msg.reasoning ? `<pre class="code-block">${escapeHTML(msg.reasoning)}</pre>` : ""}
-      <div class="message-text">${escapeHTML(body || "")}</div>
+      ${renderMessageBody(body || "", title)}
     </article>
+  `;
+}
+
+function structuredEntryCopy(entry, title, msg) {
+  return [
+    title,
+    `entry_type: ${entry.type || "-"}`,
+    `turn_id: ${entry.turn_id || "-"}`,
+    `role: ${msg.role || "-"}`,
+    msg.tool_name ? `tool_name: ${msg.tool_name}` : "",
+    msg.tool_call_id ? `tool_call_id: ${msg.tool_call_id}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+function copyButton(payload, text = "Copy", label = "Message copied", className = "copy-inline") {
+  const key = `copy-${copyPayloads.size + 1}`;
+  copyPayloads.set(key, String(payload || ""));
+  return `<button class="${escapeHTML(className)}" type="button" data-copy-key="${escapeHTML(key)}" data-copy-label="${escapeHTML(label)}">${escapeHTML(text)}</button>`;
+}
+
+function renderMessageBody(body, label) {
+  const text = String(body || "");
+  const lineCount = text.split("\n").length;
+  const long = text.length > 1200 || lineCount > 12;
+  if (!long) {
+    return `<div class="message-text">${escapeHTML(text)}</div>`;
+  }
+  const preview = text.slice(0, 180).replace(/\s+/g, " ").trim();
+  return `
+    <details class="message-fold">
+      <summary>${escapeHTML(label)} · ${text.length} chars · ${lineCount} lines · ${escapeHTML(preview)}${text.length > 180 ? "..." : ""}</summary>
+      <div class="message-text">${escapeHTML(text)}</div>
+    </details>
   `;
 }
 

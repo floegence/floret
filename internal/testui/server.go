@@ -45,6 +45,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/agent/sessions/", s.handleAgentSessionRoute)
 	mux.HandleFunc("POST /api/agent/sessions/", s.handleAgentSessionRoute)
 	mux.HandleFunc("PATCH /api/agent/sessions/", s.handleAgentSessionRoute)
+	mux.HandleFunc("DELETE /api/agent/sessions/", s.handleAgentSessionRoute)
 	mux.HandleFunc("POST /api/run", s.handleRun)
 	mux.HandleFunc("GET /", s.handleStatic)
 	return mux
@@ -177,7 +178,27 @@ func (s *Server) handleAgentSessionRoute(w http.ResponseWriter, r *http.Request)
 		s.handleAgentSessionTools(w, r, sessionID)
 		return
 	}
+	if r.Method == http.MethodDelete && len(parts) == 1 {
+		s.handleAgentSessionDelete(w, r, sessionID)
+		return
+	}
 	http.NotFound(w, r)
+}
+
+func (s *Server) handleAgentSessionDelete(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if err := s.Runner.DeleteAgentSession(r.Context(), sessionID); err != nil {
+		status := http.StatusInternalServerError
+		if isMissingAgentSessionError(err) {
+			status = http.StatusNotFound
+		} else if errors.Is(err, errAgentSessionBusy) {
+			status = http.StatusConflict
+		} else if isAgentSessionInputError(err) {
+			status = http.StatusBadRequest
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 }
 
 func (s *Server) handleAgentSessionTools(w http.ResponseWriter, r *http.Request, sessionID string) {

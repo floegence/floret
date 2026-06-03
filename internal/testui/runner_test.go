@@ -983,6 +983,113 @@ func TestRunnerAgentSessionCanContinueAfterCompletedTurn(t *testing.T) {
 	}
 }
 
+func TestRunnerDeleteAgentSessionRemovesMetadataTreeAndPromptCache(t *testing.T) {
+	root := t.TempDir()
+	scripted := harness.NewScriptedProvider(
+		harness.Step(harness.Text("first done"), harness.Done()),
+		harness.Step(harness.Text("second done"), harness.Done()),
+	)
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+
+	first := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:      ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:      "first",
+		SystemPrompt: "test",
+	})
+	if first.Status != "completed" {
+		t.Fatalf("first = %#v", first)
+	}
+	second := runner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "second"})
+	if second.Status != "completed" {
+		t.Fatalf("second = %#v", second)
+	}
+	if first.TurnID == "" || second.TurnID == "" || first.TurnID == second.TurnID {
+		t.Fatalf("turn ids = %q, %q", first.TurnID, second.TurnID)
+	}
+	for _, path := range []string{
+		runner.agentSessionMetadataPath(first.SessionID),
+		filepath.Join(runner.agentSessionTreeRoot(), safeSessionFileName(first.SessionID)),
+		filepath.Join(root, ".floret-test-ui", "prompt-cache", safeSessionFileName(first.SessionID)),
+		filepath.Join(root, ".floret-test-ui", "prompt-cache", safeSessionFileName(first.TurnID)),
+		filepath.Join(root, ".floret-test-ui", "prompt-cache", safeSessionFileName(second.TurnID)),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected persisted session artifact %s: %v", path, err)
+		}
+	}
+
+	if err := runner.DeleteAgentSession(context.Background(), first.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.AgentSession(context.Background(), first.SessionID); err == nil || !isMissingAgentSessionError(err) {
+		t.Fatalf("AgentSession err = %v, want missing", err)
+	}
+	if sessions := runner.AgentSessions(context.Background()); len(sessions) != 0 {
+		t.Fatalf("sessions = %#v", sessions)
+	}
+	for _, path := range []string{
+		runner.agentSessionMetadataPath(first.SessionID),
+		filepath.Join(runner.agentSessionTreeRoot(), safeSessionFileName(first.SessionID)),
+		filepath.Join(root, ".floret-test-ui", "prompt-cache", safeSessionFileName(first.SessionID)),
+		filepath.Join(root, ".floret-test-ui", "prompt-cache", safeSessionFileName(first.TurnID)),
+		filepath.Join(root, ".floret-test-ui", "prompt-cache", safeSessionFileName(second.TurnID)),
+	} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("artifact %s still exists or returned unexpected err: %v", path, err)
+		}
+	}
+}
+
+func TestRunnerDeleteRestoredAgentSessionRemovesPromptCacheWithoutProvider(t *testing.T) {
+	root := t.TempDir()
+	firstProvider := harness.NewScriptedProvider(
+		harness.Step(harness.Text("first done"), harness.Done()),
+		harness.Step(harness.Text("second done"), harness.Done()),
+	)
+	firstRunner := NewRunner(root)
+	firstRunner.Now = fixedClock()
+	firstRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return firstProvider, nil
+	}
+
+	first := firstRunner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:      ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:      "first",
+		SystemPrompt: "test",
+	})
+	if first.Status != "completed" {
+		t.Fatalf("first = %#v", first)
+	}
+	second := firstRunner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "second"})
+	if second.Status != "completed" {
+		t.Fatalf("second = %#v", second)
+	}
+
+	restored := NewRunner(root)
+	restored.Now = fixedClock()
+	restored.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return nil, errors.New("delete should not build provider runtime")
+	}
+	if err := restored.DeleteAgentSession(context.Background(), first.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		restored.agentSessionMetadataPath(first.SessionID),
+		filepath.Join(restored.agentSessionTreeRoot(), safeSessionFileName(first.SessionID)),
+		filepath.Join(root, ".floret-test-ui", "prompt-cache", safeSessionFileName(first.SessionID)),
+		filepath.Join(root, ".floret-test-ui", "prompt-cache", safeSessionFileName(first.TurnID)),
+		filepath.Join(root, ".floret-test-ui", "prompt-cache", safeSessionFileName(second.TurnID)),
+	} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("artifact %s still exists or returned unexpected err: %v", path, err)
+		}
+	}
+}
+
 func TestRunnerAgentSessionHandlesMultipleToolCallsAndFollowUpUserTurn(t *testing.T) {
 	root := t.TempDir()
 	fetchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

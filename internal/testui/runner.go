@@ -478,6 +478,72 @@ func (r *Runner) UpdateAgentSessionTools(ctx context.Context, sessionID string, 
 	return r.sessionSnapshotLocked(ctx, sess)
 }
 
+func (r *Runner) DeleteAgentSession(ctx context.Context, sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return fmt.Errorf("%w: session id is required", errAgentSessionInput)
+	}
+	registry := r.sessionRegistry()
+	runIDs := []string{sessionID}
+	registry.mu.Lock()
+	sess, inMemory := registry.sessions[sessionID]
+	if inMemory && !sess.mu.TryLock() {
+		registry.mu.Unlock()
+		return fmt.Errorf("%w: %s", errAgentSessionBusy, sessionID)
+	}
+	if inMemory {
+		snap, err := r.sessionSnapshotLocked(ctx, sess)
+		if err != nil {
+			sess.mu.Unlock()
+			registry.mu.Unlock()
+			return err
+		}
+		if snap.Status == "running" || sess.threadPhase() == "turn" {
+			sess.mu.Unlock()
+			registry.mu.Unlock()
+			return fmt.Errorf("%w: %s", errAgentSessionBusy, sessionID)
+		}
+		runIDs = agentSessionPromptCacheRunIDs(sessionID, sess.turns, snap.PathEntries)
+		delete(registry.sessions, sessionID)
+		registry.order = removeSessionID(registry.order, sessionID)
+		sess.mu.Unlock()
+	}
+	registry.mu.Unlock()
+	if !inMemory {
+		meta, err := r.loadAgentSessionMetadata(sessionID)
+		if err != nil {
+			return fmt.Errorf("agent session %q not found", sessionID)
+		}
+		if meta.ID == "" {
+			return fmt.Errorf("agent session %q not found", sessionID)
+		}
+		snap, err := r.sessionSnapshotFromMetadata(ctx, meta)
+		if err != nil {
+			return err
+		}
+		if snap.Status == "running" || snap.Phase == "turn" {
+			return fmt.Errorf("%w: %s", errAgentSessionBusy, sessionID)
+		}
+		runIDs = agentSessionPromptCacheRunIDs(sessionID, meta.Turns, snap.PathEntries)
+		registry.mu.Lock()
+		delete(registry.sessions, sessionID)
+		registry.order = removeSessionID(registry.order, sessionID)
+		registry.mu.Unlock()
+	}
+	if err := os.Remove(r.agentSessionMetadataPath(sessionID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.RemoveAll(filepath.Join(r.agentSessionTreeRoot(), safeSessionFileName(sessionID))); err != nil {
+		return err
+	}
+	for _, runID := range runIDs {
+		if err := os.RemoveAll(filepath.Join(r.Root, ".floret-test-ui", "prompt-cache", safeSessionFileName(runID))); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *Runner) AgentSession(ctx context.Context, sessionID string) (AgentSessionSnapshot, error) {
 	sess, ok := r.sessionRegistry().get(sessionID)
 	if !ok {
@@ -963,6 +1029,40 @@ func (r *agentSessionRegistry) list() []*agentSession {
 		if sess, ok := r.sessions[id]; ok {
 			out = append(out, sess)
 		}
+	}
+	return out
+}
+
+func removeSessionID(ids []string, id string) []string {
+	out := ids[:0]
+	for _, item := range ids {
+		if item != id {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func agentSessionPromptCacheRunIDs(sessionID string, turns []AgentTurnSummary, entries []ObservedSessionEntry) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	add(sessionID)
+	for _, turn := range turns {
+		add(turn.ID)
+	}
+	for _, entry := range entries {
+		add(entry.TurnID)
 	}
 	return out
 }

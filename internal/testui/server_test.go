@@ -771,6 +771,106 @@ func TestServerAgentSessionCreateAndAppendTurn(t *testing.T) {
 	}
 }
 
+func TestServerAgentSessionDeleteRemovesCompletedSession(t *testing.T) {
+	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("done"), harness.Done()))
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model"},"message":"hello","system_prompt":"test"}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var first AgentRunResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != "completed" || first.SessionID == "" {
+		t.Fatalf("first = %#v", first)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/agent/sessions/"+first.SessionID, nil)
+	deleteRec := httptest.NewRecorder()
+	handler.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK || !strings.Contains(deleteRec.Body.String(), `"deleted":true`) {
+		t.Fatalf("delete status/body = %d %s", deleteRec.Code, deleteRec.Body.String())
+	}
+	getReq := httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+first.SessionID, nil)
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusNotFound {
+		t.Fatalf("get deleted status/body = %d %s", getRec.Code, getRec.Body.String())
+	}
+	listReq := httptest.NewRequest(http.MethodGet, "/api/agent/sessions", nil)
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", listRec.Code, listRec.Body.String())
+	}
+	var sessions []AgentSessionSnapshot
+	if err := json.Unmarshal(listRec.Body.Bytes(), &sessions); err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("sessions = %#v", sessions)
+	}
+}
+
+func TestServerAgentSessionDeleteRejectsRunningSession(t *testing.T) {
+	scripted := harness.NewScriptedProvider(harness.Step(harness.Hang()))
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Timeout = 250 * time.Millisecond
+	handler := server.Handler()
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model"},"message":"hello","system_prompt":"test"}`
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody))
+		createRec := httptest.NewRecorder()
+		handler.ServeHTTP(createRec, createReq)
+	}()
+	for i := 0; i < 50; i++ {
+		registry := runner.sessionRegistry()
+		registry.mu.Lock()
+		var sessionID string
+		if len(registry.order) == 1 {
+			sessionID = registry.order[0]
+		}
+		registry.mu.Unlock()
+		if sessionID != "" {
+			deleteReq := httptest.NewRequest(http.MethodDelete, "/api/agent/sessions/"+sessionID, nil)
+			deleteRec := httptest.NewRecorder()
+			handler.ServeHTTP(deleteRec, deleteReq)
+			if deleteRec.Code != http.StatusConflict {
+				t.Fatalf("delete status/body = %d %s", deleteRec.Code, deleteRec.Body.String())
+			}
+			<-done
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("session did not appear while running")
+}
+
 func TestServerAgentSessionPersistsAcrossServerRestart(t *testing.T) {
 	root := t.TempDir()
 	firstProvider := harness.NewScriptedProvider(

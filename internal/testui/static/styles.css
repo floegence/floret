@@ -286,14 +286,33 @@ a {
 
 .session-row {
   display: grid;
-  gap: 6px;
+  gap: 8px;
   width: 100%;
-  padding: 13px 14px;
   border: 0;
   border-bottom: 1px solid var(--line);
   background: transparent;
   color: var(--ink);
   text-align: left;
+}
+
+.session-select {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  min-height: 0;
+  padding: 13px 14px 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  box-shadow: none;
+}
+
+.session-select:not(:disabled):hover,
+.session-select:not(:disabled):active {
+  background: transparent;
+  box-shadow: none;
+  transform: none;
 }
 
 .session-row:hover,
@@ -311,6 +330,13 @@ a {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 14px 12px;
 }
 
 .row-meta,
@@ -421,6 +447,27 @@ a {
   font-size: 11px;
   font-weight: 900;
   text-transform: uppercase;
+}
+
+.copy-inline {
+  min-height: 24px;
+  padding: 2px 7px;
+  border-color: var(--line-strong);
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: none;
+  box-shadow: none;
+}
+
+.message-fold {
+  display: grid;
+  gap: 8px;
+}
+
+.message-fold summary {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .message pre,

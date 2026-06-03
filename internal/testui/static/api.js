@@ -43,6 +43,9 @@ export const api = {
   updateTools(id, payload) {
     return requestJSON(`/api/agent/sessions/${encodeURIComponent(id)}/tools`, { method: "PATCH", body: JSON.stringify(payload) });
   },
+  deleteSession(id) {
+    return requestJSON(`/api/agent/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
   interfaceProbe(payload) {
     return requestJSON("/api/agent/interface-probe", { method: "POST", body: JSON.stringify(payload) });
   },

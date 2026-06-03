@@ -188,6 +188,47 @@ func TestStaticConsoleCreateSessionActivatesNewWorkspace(t *testing.T) {
 	}
 }
 
+func TestStaticConsoleSessionOperationsAndPolling(t *testing.T) {
+	apiJS := readStaticTestFile(t, "api.js")
+	appJS := readStaticTestFile(t, "app.js")
+	workspace := readStaticTestFile(t, "views", "sessionWorkspace.js")
+
+	for _, want := range []string{"deleteSession(id)", `method: "DELETE"`, "api.deleteSession(sessionID)", "async function deleteSession", "Delete session ${sessionID}?", "Session deleted"} {
+		if !strings.Contains(apiJS+appJS, want) {
+			t.Fatalf("session delete flow missing %q", want)
+		}
+	}
+	for _, want := range []string{"data-delete-session", "Copy ID", "data-copy-key", "copyPayloads", "copyButton", "navigator.clipboard.writeText"} {
+		if !strings.Contains(workspace+appJS, want) {
+			t.Fatalf("session/message copy controls missing %q", want)
+		}
+	}
+	if strings.Contains(workspace, "data-copy-text") {
+		t.Fatalf("copy controls should not duplicate large message bodies into data-copy-text attributes")
+	}
+	for _, want := range []string{"let autoRefreshTimer = 0", "visibilitychange", "scheduleAutoRefresh", "refreshActiveSessionSnapshot", "document.hidden", "state.route.name !== \"sessions\"", "api.session(sessionID)", "1000", "2000"} {
+		if !strings.Contains(appJS, want) {
+			t.Fatalf("active session polling missing %q", want)
+		}
+	}
+}
+
+func TestStaticConsoleTimelineLongMessagesCollapseAndCopy(t *testing.T) {
+	workspace := readStaticTestFile(t, "views", "sessionWorkspace.js")
+	css := readStaticTestFile(t, "styles.css")
+
+	for _, want := range []string{"renderMessageBody", "message-fold", "text.length > 1200", "lineCount > 12", "<details", "<summary>", "Copy", "structuredEntryCopy"} {
+		if !strings.Contains(workspace, want) {
+			t.Fatalf("timeline long message/copy rendering missing %q", want)
+		}
+	}
+	for _, want := range []string{".message-fold", ".message-fold summary", ".copy-inline", ".row-actions", ".session-select"} {
+		if !strings.Contains(css, want) {
+			t.Fatalf("timeline/session operation styles missing %q", want)
+		}
+	}
+}
+
 func TestStaticConsoleSettingsSavesSearchProviderContract(t *testing.T) {
 	settings := readStaticTestFile(t, "views", "settings.js")
 	for _, want := range []string{"search_provider", "search_api_key", "search_endpoint", `provider: "brave"`} {

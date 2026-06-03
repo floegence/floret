@@ -8,6 +8,7 @@ const appView = document.getElementById("appView");
 const envStatus = document.getElementById("envStatus");
 const globalStatus = document.getElementById("globalStatus");
 const toastRegion = document.getElementById("toastRegion");
+let autoRefreshTimer = 0;
 
 document.addEventListener("click", (event) => {
   const toastClose = event.target.closest("[data-toast-close]");
@@ -29,6 +30,8 @@ window.addEventListener("popstate", () => {
   state.route = normalizePath();
   render();
 });
+
+document.addEventListener("visibilitychange", scheduleAutoRefresh);
 
 boot();
 
@@ -137,6 +140,8 @@ function render(options = {}) {
         },
         onSelect: selectSession,
         onAppend: appendTurn,
+        onCopy: copyText,
+        onDelete: deleteSession,
         onComposerDraft: updateComposerDraft,
         onEditTools: updateSessionTools,
         onToolEditDraft: updateToolEditDraft,
@@ -154,6 +159,7 @@ function render(options = {}) {
   if (options.restoreFilterFocus) {
     restoreSessionFilterFocus();
   }
+  scheduleAutoRefresh();
 }
 
 function renderTopbar() {
@@ -243,6 +249,40 @@ async function updateSessionTools(selectedTools, reason) {
     await refreshSessionsNonBlocking(token);
     return true;
   });
+}
+
+async function deleteSession(sessionID) {
+  if (!sessionID) return;
+  const confirmed = window.confirm(`Delete session ${sessionID}? This removes the test UI session, tree, and prompt-cache data.`);
+  if (!confirmed) return;
+  const token = ++state.mutationToken;
+  await runWithStatus({ status: "loading", action: "delete-session", target: sessionID, successMessage: "Session deleted" }, async () => {
+    await api.deleteSession(sessionID);
+    if (token !== state.mutationToken) return false;
+    if (state.activeSession?.id === sessionID) {
+      state.activeSession = null;
+      state.lastResult = null;
+      delete state.composerDrafts[sessionID];
+      delete state.toolEditDrafts[sessionID];
+      replaceRoute({ name: "sessions", id: "" });
+    }
+    await refreshSessions();
+    return true;
+  });
+}
+
+async function copyText(text, label = "Copied") {
+  const value = String(text || "");
+  if (!value) {
+    addToast("error", "Nothing to copy");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(value);
+    addToast("success", label);
+  } catch {
+    addToast("error", "Clipboard copy failed");
+  }
 }
 
 async function runProbe(selectedTools) {
@@ -432,8 +472,41 @@ function actionLabel(action) {
       return "running check";
     case "select-session":
       return "opening";
+    case "delete-session":
+      return "deleting";
     default:
       return action || "working";
+  }
+}
+
+function scheduleAutoRefresh() {
+  window.clearTimeout(autoRefreshTimer);
+  autoRefreshTimer = 0;
+  if (document.hidden || state.route.name !== "sessions" || !state.activeSession?.id) return;
+  const delay = state.activeSession.status === "running" || state.activeSession.phase === "turn" ? 1000 : 2000;
+  autoRefreshTimer = window.setTimeout(refreshActiveSessionSnapshot, delay);
+}
+
+async function refreshActiveSessionSnapshot() {
+  if (document.hidden || state.route.name !== "sessions" || !state.activeSession?.id) return;
+  if (state.action === "select-session" || state.action === "delete-session") return scheduleAutoRefresh();
+  const sessionID = state.activeSession.id;
+  try {
+    const [sessions, session] = await Promise.all([api.sessions(), api.session(sessionID)]);
+    if (state.route.name !== "sessions" || state.activeSession?.id !== sessionID) return;
+    state.sessions = sessions;
+    state.activeSession = session;
+    render();
+  } catch (error) {
+    if (error.status === 404 && state.activeSession?.id === sessionID) {
+      state.activeSession = null;
+      state.lastResult = null;
+      replaceRoute({ name: "sessions", id: "" });
+      await refreshSessions();
+      render();
+      return;
+    }
+    scheduleAutoRefresh();
   }
 }
 
