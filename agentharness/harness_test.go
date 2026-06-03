@@ -3,6 +3,7 @@ package agentharness
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -586,6 +587,86 @@ func TestFileRepoResumeContinuesThreadAndReusesRawSegments(t *testing.T) {
 	}
 }
 
+func TestToolProjectionDoesNotDuplicateMultiToolBatches(t *testing.T) {
+	ctx := context.Background()
+	repo := sessiontree.NewMemoryRepo()
+	promptStore := promptcache.NewMemoryStore()
+	p := scriptharness.NewScriptedProvider(
+		scriptharness.Step(
+			provider.StreamEvent{Type: provider.Reasoning, Text: "first batch"},
+			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
+				{ID: "call-00-a", Name: "read", Args: `{"value":"a"}`, Reasoning: "first batch"},
+				{ID: "call-01-a", Name: "read", Args: `{"value":"b"}`, Reasoning: "first batch"},
+			}},
+			scriptharness.DoneReason("tool_calls"),
+		),
+		scriptharness.Step(
+			provider.StreamEvent{Type: provider.Reasoning, Text: "second batch"},
+			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
+				{ID: "call-00-b", Name: "read", Args: `{"value":"c"}`, Reasoning: "second batch"},
+				{ID: "call-01-b", Name: "read", Args: `{"value":"d"}`, Reasoning: "second batch"},
+			}},
+			scriptharness.DoneReason("tool_calls"),
+		),
+		scriptharness.Step(scriptharness.Text("done"), scriptharness.Done()),
+		scriptharness.Step(scriptharness.Text("follow-up"), scriptharness.Done()),
+	)
+	registry := tools.NewRegistry()
+	mustRegister(registry, stringTool("read", func(_ context.Context, value string) (string, error) {
+		return "result " + value, nil
+	}))
+	h := New(Options{
+		Provider:      p,
+		ProviderName:  "fake",
+		Model:         "fake-model",
+		SystemPrompt:  "You are Floret.",
+		Tools:         registry,
+		Repo:          repo,
+		PromptStore:   promptStore,
+		EngineOptions: engine.Options{MaxEmptyProviderRetries: 1, NoProgressLimit: 2, DuplicateToolLimit: 3},
+	})
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := thread.Run(ctx, "inspect", RunOptions{TurnID: "turn-1"})
+	if err != nil || first.Status != engine.Completed {
+		t.Fatalf("first = %#v err=%v", first, err)
+	}
+	snap, err := thread.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"call-00-a", "call-01-a", "call-00-b", "call-01-b"} {
+		if got := countToolEntries(snap.Entries, sessiontree.EntryToolCall, id); got != 1 {
+			t.Fatalf("tool call %s count = %d in %#v", id, got, snap.Entries)
+		}
+		if got := countToolEntries(snap.Entries, sessiontree.EntryToolResult, id); got != 1 {
+			t.Fatalf("tool result %s count = %d in %#v", id, got, snap.Entries)
+		}
+	}
+	for _, marker := range savePointEntries(snap.Entries, "tool_result_batch") {
+		path, err := repo.Path(ctx, "thread", marker.ParentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := assertProviderSafeToolHistory(sessiontree.BuildContext(path, sessiontree.ContextOptions{})); err != nil {
+			t.Fatalf("save point before %s is not provider-safe: %v", marker.ID, err)
+		}
+	}
+	second, err := thread.Run(ctx, "continue", RunOptions{TurnID: "turn-2"})
+	if err != nil || second.Status != engine.Completed {
+		t.Fatalf("second = %#v err=%v", second, err)
+	}
+	snap, err = thread.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := assertProviderSafeToolHistory(snap.Context); err != nil {
+		t.Fatalf("follow-up context is not provider-safe: %v\n%#v", err, snap.Context)
+	}
+}
+
 func TestResumeMarksUnfinishedTurnInterrupted(t *testing.T) {
 	ctx := context.Background()
 	repo := sessiontree.NewMemoryRepo()
@@ -725,6 +806,58 @@ func countEntriesWithContent(entries []sessiontree.Entry, entryType sessiontree.
 		}
 	}
 	return count
+}
+
+func countToolEntries(entries []sessiontree.Entry, entryType sessiontree.EntryType, callID string) int {
+	count := 0
+	for _, entry := range entries {
+		if entry.Type == entryType && entry.Message.ToolCallID == callID {
+			count++
+		}
+	}
+	return count
+}
+
+func savePointEntries(entries []sessiontree.Entry, reason string) []sessiontree.Entry {
+	var out []sessiontree.Entry
+	for _, entry := range entries {
+		if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnSavePoint && entry.Metadata["reason"] == reason {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+func assertProviderSafeToolHistory(messages []session.Message) error {
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
+		if msg.Role == session.Tool {
+			return fmt.Errorf("orphan tool result %q at %d", msg.ToolCallID, i)
+		}
+		if msg.Role != session.Assistant || msg.ToolCallID == "" || msg.ToolName == "" {
+			continue
+		}
+		var calls []session.Message
+		for i < len(messages) && messages[i].Role == session.Assistant && messages[i].ToolCallID != "" && messages[i].ToolName != "" {
+			calls = append(calls, messages[i])
+			i++
+		}
+		for _, call := range calls {
+			if i >= len(messages) {
+				return fmt.Errorf("missing result for %q", call.ToolCallID)
+			}
+			result := messages[i]
+			if result.Role != session.Tool {
+				return fmt.Errorf("got %q before result for %q", result.Role, call.ToolCallID)
+			}
+			if result.ToolCallID != call.ToolCallID {
+				return fmt.Errorf("result %q does not match call %q", result.ToolCallID, call.ToolCallID)
+			}
+			i++
+		}
+		i--
+	}
+	return nil
 }
 
 func userContents(messages []session.Message) []string {

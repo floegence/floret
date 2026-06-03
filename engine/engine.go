@@ -498,13 +498,13 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		if budgetErr := e.checkBudget(opts, metrics, step); budgetErr != nil {
 			return e.end(opts, step, Failed, output, budgetErr, metrics, started, decision)
 		}
-		for _, call := range calls {
-			e.emit(event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args})
+		for i, call := range calls {
+			e.emit(event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args, Metadata: map[string]any{"batch_index": i, "batch_size": len(calls)}})
 		}
 		toolStarted := time.Now()
 		results := e.Tools.RunBatchWithOptions(ctx, calls, e.Approver, tools.RunOptions{RunID: opts.RunID, SessionID: opts.SessionID, Step: step})
 		toolLatency := time.Since(toolStarted).Milliseconds()
-		for _, result := range results {
+		for i, result := range results {
 			result = tools.ApplyResultLimit(result, e.Tools.LimitFor(result.Name))
 			text := result.Text
 			errText := ""
@@ -512,7 +512,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				errText = text
 				text = "ERROR: " + text
 			}
-			e.emit(event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: toolLatency, Metadata: result.Metadata, Artifacts: eventArtifacts(result.Artifacts)})
+			e.emit(event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: toolLatency, Metadata: mergeToolResultMetadata(result.Metadata, i, len(results)), Artifacts: eventArtifacts(result.Artifacts)})
 			msg := session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name}
 			if err := e.Store.Append(opts.RunID, msg); err != nil {
 				return e.end(opts, step, Failed, output, err, metrics, started, decision)
@@ -919,6 +919,16 @@ func eventArtifacts(items []tools.ArtifactRef) []event.Artifact {
 		out = append(out, event.Artifact{Kind: item.Kind, Path: item.Path, MIME: item.MIME})
 	}
 	return out
+}
+
+func mergeToolResultMetadata(base map[string]any, batchIndex, batchSize int) map[string]any {
+	metadata := make(map[string]any, len(base)+2)
+	for key, value := range base {
+		metadata[key] = value
+	}
+	metadata["batch_index"] = batchIndex
+	metadata["batch_size"] = batchSize
+	return metadata
 }
 
 func shortHash(hash string) string {

@@ -282,7 +282,7 @@ func TestOpenAICompatibleProviderSendsPromptCacheKeyWhenSupported(t *testing.T) 
 	}
 }
 
-func TestOpenAICompatibleProviderBuildsPayloadFromRawPlanFragments(t *testing.T) {
+func TestOpenAICompatibleProviderBuildsPayloadFromRawPlanSnapshots(t *testing.T) {
 	var body struct {
 		Messages []chatMessage `json:"messages"`
 	}
@@ -295,24 +295,21 @@ func TestOpenAICompatibleProviderBuildsPayloadFromRawPlanFragments(t *testing.T)
 	}))
 	defer server.Close()
 	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
-	raw, err := promptcache.CanonicalJSON(chatMessage{Role: "user", Content: "from raw"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = p.Stream(context.Background(), provider.Request{
+	_, err := p.Stream(context.Background(), provider.Request{
 		RunID:    "r",
 		Messages: []session.Message{{Role: session.User, Content: "from fallback"}},
 		RawPlan: promptcache.RawPlan{Segments: []promptcache.Segment{{
 			Kind:         promptcache.SegmentUserMessage,
 			FragmentType: promptcache.FragmentOpenAIMessage,
-			Raw:          raw,
+			Raw:          `{"role":"user","content":"from stale raw"}`,
+			Message:      promptcache.MessageSnapshot{Role: "user", Content: "from snapshot"},
 		}}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(body.Messages) != 1 || body.Messages[0].Content != "from raw" {
-		t.Fatalf("provider payload was not built from raw plan fragment: %#v", body.Messages)
+	if len(body.Messages) != 1 || body.Messages[0].Content != "from snapshot" {
+		t.Fatalf("provider payload was not built from raw plan snapshot: %#v", body.Messages)
 	}
 }
 
@@ -1156,6 +1153,78 @@ func TestOpenAICompatibleProviderReordersRawPlanToolResults(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleProviderRejectsRawPlanPartialAssistantToolCallBatch(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		http.Error(w, "should not be called", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	segments := []promptcache.Segment{
+		rawSegmentForAdapterTest(t, session.Message{Role: session.User, Content: "weather"}),
+		rawSegmentForAdapterTest(t, session.Message{Role: session.Assistant, Content: "tool_call", ToolCallID: "call-01", ToolName: "web_fetch", ToolArgs: `{"url":"b"}`}),
+		rawSegmentForAdapterTest(t, session.Message{Role: session.Tool, Content: "result a", ToolCallID: "call-00", ToolName: "web_fetch"}),
+		rawSegmentForAdapterTest(t, session.Message{Role: session.Tool, Content: "result b", ToolCallID: "call-01", ToolName: "web_fetch"}),
+	}
+	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
+	req := provider.Request{
+		RunID:   "r",
+		RawPlan: promptcache.RawPlan{Segments: segments},
+		Tools:   []provider.ToolDefinition{{Name: "web_fetch"}},
+	}
+	_, err := p.Stream(context.Background(), req)
+	if err == nil || !strings.Contains(err.Error(), `tool result "call-00" does not match preceding assistant tool_calls`) {
+		t.Fatalf("err = %v", err)
+	}
+	if called {
+		t.Fatalf("provider should not be called for malformed raw plan")
+	}
+	if _, hashErr := p.PayloadHash(req); hashErr == nil || !strings.Contains(hashErr.Error(), `tool result "call-00" does not match preceding assistant tool_calls`) {
+		t.Fatalf("PayloadHash err = %v", hashErr)
+	}
+}
+
+func TestOpenAICompatibleProviderDoesNotMergeSeparateToolBatches(t *testing.T) {
+	var body struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+	messages := []session.Message{
+		{Role: session.User, Content: "weather"},
+		{Role: session.Assistant, Content: "tool_call", Reasoning: "first", ToolCallID: "call-a", ToolName: "web_fetch", ToolArgs: `{"url":"a"}`},
+		{Role: session.Tool, Content: "result a", ToolCallID: "call-a", ToolName: "web_fetch"},
+		{Role: session.Assistant, Content: "tool_call", Reasoning: "second", ToolCallID: "call-b", ToolName: "web_fetch", ToolArgs: `{"url":"b"}`},
+		{Role: session.Tool, Content: "result b", ToolCallID: "call-b", ToolName: "web_fetch"},
+	}
+	segments := make([]promptcache.Segment, 0, len(messages))
+	for _, msg := range messages {
+		segments = append(segments, rawSegmentForAdapterTest(t, msg))
+	}
+	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
+	if _, err := p.Stream(context.Background(), provider.Request{
+		RunID:   "r",
+		RawPlan: promptcache.RawPlan{Segments: segments},
+		Tools:   []provider.ToolDefinition{{Name: "web_fetch"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Messages) != 5 {
+		t.Fatalf("messages = %#v", body.Messages)
+	}
+	firstCalls := body.Messages[1]["tool_calls"].([]any)
+	secondCalls := body.Messages[3]["tool_calls"].([]any)
+	if len(firstCalls) != 1 || len(secondCalls) != 1 || body.Messages[2]["tool_call_id"] != "call-a" || body.Messages[4]["tool_call_id"] != "call-b" {
+		t.Fatalf("separate batches were merged or reordered incorrectly: %#v", body.Messages)
+	}
+}
+
 func kindForAdapterTest(msg session.Message) promptcache.SegmentKind {
 	switch msg.Role {
 	case session.User:
@@ -1169,6 +1238,32 @@ func kindForAdapterTest(msg session.Message) promptcache.SegmentKind {
 		return promptcache.SegmentAssistant
 	default:
 		return promptcache.SegmentUserMessage
+	}
+}
+
+func rawSegmentForAdapterTest(t *testing.T, msg session.Message) promptcache.Segment {
+	t.Helper()
+	rendered := renderMessages([]session.Message{msg})
+	raw := "{}"
+	if len(rendered) > 0 {
+		var err error
+		raw, err = promptcache.CanonicalJSON(rendered[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return promptcache.Segment{
+		Kind:         promptcache.SegmentKind(kindForAdapterTest(msg)),
+		FragmentType: promptcache.FragmentOpenAIMessage,
+		Raw:          raw,
+		Message: promptcache.MessageSnapshot{
+			Role:       string(msg.Role),
+			Content:    msg.Content,
+			Reasoning:  msg.Reasoning,
+			ToolCallID: msg.ToolCallID,
+			ToolName:   msg.ToolName,
+			ToolArgs:   msg.ToolArgs,
+		},
 	}
 }
 

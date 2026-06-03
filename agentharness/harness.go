@@ -402,13 +402,16 @@ func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retryUs
 	if projection.err != nil {
 		return TurnResult{}, projection.err
 	}
+	if err := projection.Flush(); err != nil {
+		return TurnResult{}, err
+	}
 	deltaBase := history
 	current, err := t.Read(ctx)
 	if err != nil {
 		return TurnResult{}, err
 	}
 	deltaBase = current.Context
-	if err := t.appendDelta(ctx, turnID, deltaBase, result.Messages); err != nil {
+	if err := t.appendDelta(ctx, turnID, deltaBase, result.Messages, current.Path); err != nil {
 		return TurnResult{}, err
 	}
 	status := markerForStatus(result.Status)
@@ -472,10 +475,14 @@ func (t *Thread) leaveTurn() {
 	t.phase = "idle"
 }
 
-func (t *Thread) appendDelta(ctx context.Context, turnID string, before, after []session.Message) error {
+func (t *Thread) appendDelta(ctx context.Context, turnID string, before, after []session.Message, currentPath []sessiontree.Entry) error {
 	start := sharedMessagePrefix(before, after)
+	seenToolCalls, seenToolResults := persistedToolMessages(currentPath, turnID)
 	for _, msg := range after[start:] {
 		if nonDurableProjection(msg) {
+			continue
+		}
+		if skipPersistedToolDelta(msg, seenToolCalls, seenToolResults) {
 			continue
 		}
 		if err := t.appendMessage(ctx, turnID, msg); err != nil {
@@ -483,6 +490,39 @@ func (t *Thread) appendDelta(ctx context.Context, turnID string, before, after [
 		}
 	}
 	return nil
+}
+
+func persistedToolMessages(entries []sessiontree.Entry, turnID string) (map[string]struct{}, map[string]struct{}) {
+	calls := map[string]struct{}{}
+	results := map[string]struct{}{}
+	for _, entry := range entries {
+		if entry.TurnID != turnID || entry.Message.ToolCallID == "" {
+			continue
+		}
+		switch entry.Type {
+		case sessiontree.EntryToolCall:
+			calls[entry.Message.ToolCallID] = struct{}{}
+		case sessiontree.EntryToolResult:
+			results[entry.Message.ToolCallID] = struct{}{}
+		}
+	}
+	return calls, results
+}
+
+func skipPersistedToolDelta(msg session.Message, seenToolCalls, seenToolResults map[string]struct{}) bool {
+	if msg.ToolCallID == "" {
+		return false
+	}
+	switch msg.Role {
+	case session.Assistant:
+		_, ok := seenToolCalls[msg.ToolCallID]
+		return ok
+	case session.Tool:
+		_, ok := seenToolResults[msg.ToolCallID]
+		return ok
+	default:
+		return false
+	}
 }
 
 func nonDurableProjection(msg session.Message) bool {
@@ -709,14 +749,17 @@ func (r *HarnessRecorder) Snapshot() []HarnessEvent {
 }
 
 type turnProjection struct {
-	thread     *Thread
-	ctx        context.Context
-	turnID     string
-	downstream event.Sink
-	mu         sync.Mutex
-	text       string
-	reasoning  string
-	err        error
+	thread           *Thread
+	ctx              context.Context
+	turnID           string
+	downstream       event.Sink
+	mu               sync.Mutex
+	text             string
+	reasoning        string
+	pendingCalls     []session.Message
+	pendingResults   []session.Message
+	pendingBatchSize int
+	err              error
 }
 
 func (p *turnProjection) Emit(ev event.Event) {
@@ -730,6 +773,10 @@ func (p *turnProjection) Emit(ev event.Event) {
 	}
 	switch ev.Type {
 	case event.ProviderDelta:
+		if err := p.flushPendingToolBatch(false); err != nil {
+			p.err = err
+			return
+		}
 		p.text += ev.Message
 	case event.ProviderReasoning:
 		p.reasoning += ev.Message
@@ -741,8 +788,10 @@ func (p *turnProjection) Emit(ev event.Event) {
 				return
 			}
 		}
-		p.err = p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Assistant, Content: "tool_call", Reasoning: p.reasoning, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolArgs: ev.Args})
-		p.reasoning = ""
+		p.pendingCalls = append(p.pendingCalls, session.Message{Role: session.Assistant, Content: "tool_call", Reasoning: p.reasoning, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolArgs: ev.Args})
+		if size := eventBatchSize(ev.Metadata); size > p.pendingBatchSize {
+			p.pendingBatchSize = size
+		}
 	case event.ToolResult:
 		if p.text != "" {
 			p.err = p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Assistant, Content: p.text, Reasoning: p.reasoning})
@@ -752,12 +801,19 @@ func (p *turnProjection) Emit(ev event.Event) {
 				return
 			}
 		}
-		p.err = p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Tool, Content: ev.Result, ToolCallID: ev.ToolID, ToolName: ev.ToolName})
-		if p.err != nil {
+		p.pendingResults = append(p.pendingResults, session.Message{Role: session.Tool, Content: ev.Result, ToolCallID: ev.ToolID, ToolName: ev.ToolName})
+		if size := eventBatchSize(ev.Metadata); size > p.pendingBatchSize {
+			p.pendingBatchSize = size
+		}
+		if err := p.flushPendingToolBatch(false); err != nil {
+			p.err = err
 			return
 		}
-		_, p.err = sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, sessiontree.TurnSavePoint, map[string]string{"reason": "tool_result"})
 	case event.ContextContinue:
+		if err := p.flushPendingToolBatch(false); err != nil {
+			p.err = err
+			return
+		}
 		if p.text != "" {
 			p.err = p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Assistant, Content: p.text, Reasoning: p.reasoning})
 			p.text = ""
@@ -775,5 +831,91 @@ func (p *turnProjection) Emit(ev event.Event) {
 			metadata["hook_reason"] = ev.Result
 		}
 		_, p.err = sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, sessiontree.TurnSavePoint, metadata)
+	}
+}
+
+func (p *turnProjection) Flush() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.err != nil {
+		return p.err
+	}
+	if err := p.flushPendingToolBatch(true); err != nil {
+		p.err = err
+		return err
+	}
+	if p.text != "" {
+		if err := p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Assistant, Content: p.text, Reasoning: p.reasoning}); err != nil {
+			p.err = err
+			return err
+		}
+		p.text = ""
+		p.reasoning = ""
+	}
+	return nil
+}
+
+func (p *turnProjection) flushPendingToolBatch(force bool) error {
+	if len(p.pendingCalls) == 0 && len(p.pendingResults) == 0 {
+		return nil
+	}
+	size := p.pendingBatchSize
+	if size <= 0 {
+		size = len(p.pendingCalls)
+	}
+	if !force && (len(p.pendingCalls) < size || len(p.pendingResults) < size) {
+		return nil
+	}
+	if len(p.pendingCalls) != len(p.pendingResults) {
+		return fmt.Errorf("incomplete tool result batch: %d calls, %d results", len(p.pendingCalls), len(p.pendingResults))
+	}
+	byID := make(map[string]session.Message, len(p.pendingResults))
+	for _, result := range p.pendingResults {
+		if result.ToolCallID == "" {
+			return errors.New("tool result batch contains empty tool_call_id")
+		}
+		if _, ok := byID[result.ToolCallID]; ok {
+			return fmt.Errorf("tool result batch contains duplicate tool_call_id %q", result.ToolCallID)
+		}
+		byID[result.ToolCallID] = result
+	}
+	for _, call := range p.pendingCalls {
+		if err := p.thread.appendMessage(p.ctx, p.turnID, call); err != nil {
+			return err
+		}
+	}
+	for _, call := range p.pendingCalls {
+		result, ok := byID[call.ToolCallID]
+		if !ok {
+			return fmt.Errorf("tool result batch missing result for %q", call.ToolCallID)
+		}
+		if err := p.thread.appendMessage(p.ctx, p.turnID, result); err != nil {
+			return err
+		}
+	}
+	if _, err := sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, sessiontree.TurnSavePoint, map[string]string{"reason": "tool_result_batch"}); err != nil {
+		return err
+	}
+	p.pendingCalls = nil
+	p.pendingResults = nil
+	p.pendingBatchSize = 0
+	p.reasoning = ""
+	return nil
+}
+
+func eventBatchSize(metadata any) int {
+	values, ok := metadata.(map[string]any)
+	if !ok {
+		return 0
+	}
+	switch size := values["batch_size"].(type) {
+	case int:
+		return size
+	case int64:
+		return int(size)
+	case float64:
+		return int(size)
+	default:
+		return 0
 	}
 }

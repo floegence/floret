@@ -583,18 +583,10 @@ func reorderToolBatch(ids []string, toolBatch []chatMessage) ([]chatMessage, boo
 }
 
 func renderMessagesFromRawPlan(plan promptcache.RawPlan, fallback []chatMessage) []chatMessage {
-	var raw []chatMessage
 	var sessionMessages []session.Message
 	for _, segment := range plan.Segments {
 		if segment.Kind == promptcache.SegmentToolset {
 			continue
-		}
-		if segment.FragmentType == promptcache.FragmentOpenAIMessage {
-			var msg chatMessage
-			if err := json.Unmarshal([]byte(segment.Raw), &msg); err == nil {
-				raw = append(raw, msg)
-				continue
-			}
 		}
 		msg := session.Message{
 			Role:       session.Role(segment.Message.Role),
@@ -609,69 +601,11 @@ func renderMessagesFromRawPlan(plan promptcache.RawPlan, fallback []chatMessage)
 		}
 		sessionMessages = append(sessionMessages, msg)
 	}
-	out := mergeRawAndSessionMessages(raw, sessionMessages)
+	out := renderMessages(sessionMessages)
 	if len(out) == 0 {
 		return fallback
 	}
 	return out
-}
-
-func mergeRawAndSessionMessages(raw []chatMessage, sessionMessages []session.Message) []chatMessage {
-	if len(raw) == 0 {
-		return renderMessages(sessionMessages)
-	}
-	sessionIdx := 0
-	for i := range raw {
-		if sessionIdx >= len(sessionMessages) {
-			break
-		}
-		if messageMatchesRaw(sessionMessages[sessionIdx], raw[i]) {
-			sessionIdx++
-		}
-	}
-	if sessionIdx < len(sessionMessages) {
-		raw = append(raw, renderMessages(sessionMessages[sessionIdx:])...)
-	}
-	return normalizeChatToolCalls(raw)
-}
-
-func normalizeChatToolCalls(messages []chatMessage) []chatMessage {
-	out := make([]chatMessage, 0, len(messages))
-	for i := 0; i < len(messages); i++ {
-		msg := messages[i]
-		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
-			out = append(out, msg)
-			continue
-		}
-		merged := msg
-		for i+1 < len(messages) && messages[i+1].Role == "assistant" && len(messages[i+1].ToolCalls) > 0 {
-			next := messages[i+1]
-			if merged.ReasoningContent == "" {
-				merged.ReasoningContent = next.ReasoningContent
-			}
-			merged.ToolCalls = append(merged.ToolCalls, next.ToolCalls...)
-			i++
-		}
-		out = append(out, merged)
-	}
-	return out
-}
-
-func messageMatchesRaw(msg session.Message, raw chatMessage) bool {
-	role := string(msg.Role)
-	if msg.Role == session.Tool {
-		role = "tool"
-	}
-	if role != raw.Role {
-		return false
-	}
-	if isAssistantToolCall(msg) {
-		return raw.Role == "assistant" && len(raw.ToolCalls) > 0 && raw.ToolCalls[0].ID == msg.ToolCallID
-	}
-	if msg.Role == session.Tool {
-		return raw.ToolCallID == msg.ToolCallID
-	}
-	return raw.Content == msg.Content
 }
 
 func renderTools(defs []provider.ToolDefinition) []chatTool {

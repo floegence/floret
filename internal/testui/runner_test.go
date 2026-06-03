@@ -1166,6 +1166,83 @@ func TestRunnerAgentSessionHandlesMultipleToolCallsAndFollowUpUserTurn(t *testin
 	}
 }
 
+func TestRunnerAgentSessionHandlesRepeatedWeatherToolBatchesAndFollowUp(t *testing.T) {
+	root := t.TempDir()
+	fetchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/china-weather":
+			_, _ = w.Write([]byte("Changsha June 3: rain. June 4: cloudy then clear."))
+		default:
+			_, _ = w.Write([]byte("Changsha: showers, 81F"))
+		}
+	}))
+	defer fetchServer.Close()
+	scripted := harness.NewScriptedProvider(
+		harness.Step(
+			provider.StreamEvent{Type: provider.Reasoning, Text: "try search"},
+			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
+				{ID: "search-1", Name: "web_search", Args: `{"query":"Changsha weather 2026-06-03","count":3}`, Reasoning: "try search"},
+			}},
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(
+			provider.StreamEvent{Type: provider.Reasoning, Text: "try fetch without timeout"},
+			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
+				{ID: "fetch-bad-00", Name: "web_fetch", Args: fmt.Sprintf(`{"url":%q}`, fetchServer.URL+"/china-weather"), Reasoning: "try fetch without timeout"},
+				{ID: "fetch-bad-01", Name: "web_fetch", Args: fmt.Sprintf(`{"url":%q}`, fetchServer.URL+"/wttr"), Reasoning: "try fetch without timeout"},
+			}},
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(
+			provider.StreamEvent{Type: provider.Reasoning, Text: "retry fetch with timeout"},
+			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
+				{ID: "fetch-good-00", Name: "web_fetch", Args: fmt.Sprintf(`{"url":%q,"timeout_ms":15000}`, fetchServer.URL+"/china-weather"), Reasoning: "retry fetch with timeout"},
+				{ID: "fetch-good-01", Name: "web_fetch", Args: fmt.Sprintf(`{"url":%q,"timeout_ms":15000}`, fetchServer.URL+"/wttr"), Reasoning: "retry fetch with timeout"},
+			}},
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(harness.Text("Changsha weather summary."), harness.Done()),
+		harness.Step(harness.Text("Tomorrow is cloudy then clear."), harness.Done()),
+	)
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+
+	first := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:       "今天是2026-06-03，请你获取长沙的天气",
+		SystemPrompt:  "test",
+		SelectedTools: []string{"web_search", "web_fetch"},
+	})
+	if first.Status != "completed" || first.Output != "Changsha weather summary." {
+		t.Fatalf("first = %#v", first)
+	}
+	if len(first.Observation.ProviderRequests) != 4 {
+		t.Fatalf("provider requests = %#v", first.Observation.ProviderRequests)
+	}
+	for _, id := range []string{"search-1", "fetch-bad-00", "fetch-bad-01", "fetch-good-00", "fetch-good-01"} {
+		if got := countObservedToolMessages(first.Observation.SessionMessages, "assistant", id); got != 1 {
+			t.Fatalf("assistant tool call %s count = %d in %#v", id, got, first.Observation.SessionMessages)
+		}
+		if got := countObservedToolMessages(first.Observation.SessionMessages, "tool", id); got != 1 {
+			t.Fatalf("tool result %s count = %d in %#v", id, got, first.Observation.SessionMessages)
+		}
+	}
+	if err := assertObservedProviderSafeToolHistory(first.Observation.SessionMessages); err != nil {
+		t.Fatalf("first session messages are not provider-safe: %v\n%#v", err, first.Observation.SessionMessages)
+	}
+	second := runner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "那么明天会天气晴吗，适合出门吗"})
+	if second.Status != "completed" || second.Output != "Tomorrow is cloudy then clear." {
+		t.Fatalf("second = %#v", second)
+	}
+	latestRequest := second.Observation.ProviderRequests[len(second.Observation.ProviderRequests)-1]
+	if err := assertObservedProviderSafeToolHistory(latestRequest.Messages); err != nil {
+		t.Fatalf("follow-up request messages are not provider-safe: %v\n%#v", err, latestRequest.Messages)
+	}
+}
+
 func TestRunnerAgentSessionRegistryIsStableForLiteralRunner(t *testing.T) {
 	root := t.TempDir()
 	scripted := harness.NewScriptedProvider(
@@ -1460,4 +1537,46 @@ func contextPolicyForTest(window int64) contextpolicy.Policy {
 func toolSelection(names ...string) *[]string {
 	selected := append([]string(nil), names...)
 	return &selected
+}
+
+func countObservedToolMessages(messages []ObservedSessionMessage, role, callID string) int {
+	count := 0
+	for _, msg := range messages {
+		if msg.Role == role && msg.ToolCallID == callID {
+			count++
+		}
+	}
+	return count
+}
+
+func assertObservedProviderSafeToolHistory(messages []ObservedSessionMessage) error {
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
+		if msg.Role == "tool" {
+			return fmt.Errorf("orphan tool result %q at %d", msg.ToolCallID, i)
+		}
+		if msg.Role != "assistant" || msg.ToolCallID == "" || msg.ToolName == "" {
+			continue
+		}
+		var calls []ObservedSessionMessage
+		for i < len(messages) && messages[i].Role == "assistant" && messages[i].ToolCallID != "" && messages[i].ToolName != "" {
+			calls = append(calls, messages[i])
+			i++
+		}
+		for _, call := range calls {
+			if i >= len(messages) {
+				return fmt.Errorf("missing result for %q", call.ToolCallID)
+			}
+			result := messages[i]
+			if result.Role != "tool" {
+				return fmt.Errorf("got %q before result for %q", result.Role, call.ToolCallID)
+			}
+			if result.ToolCallID != call.ToolCallID {
+				return fmt.Errorf("result %q does not match call %q", result.ToolCallID, call.ToolCallID)
+			}
+			i++
+		}
+		i--
+	}
+	return nil
 }
