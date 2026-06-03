@@ -34,6 +34,9 @@ export const api = {
   createSession(payload) {
     return requestJSON("/api/agent/sessions", { method: "POST", body: JSON.stringify(payload) });
   },
+  createAndRunSession(payload) {
+    return requestJSON("/api/agent/sessions/run", { method: "POST", body: JSON.stringify(payload) });
+  },
   appendTurn(id, payload) {
     return requestJSON(`/api/agent/sessions/${encodeURIComponent(id)}/turns`, { method: "POST", body: JSON.stringify(payload) });
   },

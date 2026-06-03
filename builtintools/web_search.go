@@ -85,7 +85,7 @@ func webSearchTool(opts SearchOptions) tools.Tool {
 				"country":     tools.Nullable(tools.String("Optional two-letter country code such as US, CN, or GB.")),
 				"search_lang": tools.Nullable(tools.String("Optional search language code such as en or zh-hans.")),
 				"freshness":   tools.Nullable(tools.Enum("pd", "pw", "pm", "py")),
-			}, []string{"count", "country", "freshness", "query", "search_lang"}),
+			}, []string{"query"}),
 			Effects:     []tools.Effect{tools.EffectNetwork},
 			ReadOnly:    true,
 			OpenWorld:   true,

@@ -151,6 +151,72 @@ func (r *Runner) RunAgent(ctx context.Context, req AgentRunRequest) AgentRunResp
 	return r.CreateAgentSession(ctx, req)
 }
 
+func (r *Runner) CreateIdleAgentSession(ctx context.Context, req AgentRunRequest) (AgentSessionSnapshot, error) {
+	started := r.now()
+	profile, err := r.profileForRun(req)
+	if err != nil {
+		return AgentSessionSnapshot{}, err
+	}
+	cfg := config.Config{
+		Provider:                profile.Provider,
+		Model:                   profile.Model,
+		BaseURL:                 profile.BaseURL,
+		APIKey:                  profile.APIKey,
+		FakeResponse:            profile.FakeResponse,
+		RunID:                   fmt.Sprintf("testui-agent-%d", started.UnixNano()),
+		SystemPrompt:            strings.TrimSpace(req.SystemPrompt),
+		ContextPolicy:           req.ContextPolicy,
+		MaxEmptyProviderRetries: 1,
+		NoProgressLimit:         2,
+		DuplicateToolLimit:      3,
+		WallTime:                60 * time.Second,
+	}
+	if cfg.SystemPrompt == "" {
+		cfg.SystemPrompt = "You are Floret. Answer naturally when the user's request is complete, or call ask_user if you need missing information."
+	}
+	cfg, err = config.Resolve(cfg, nil)
+	if err != nil {
+		return AgentSessionSnapshot{}, err
+	}
+	sessionID := fmt.Sprintf("testui-session-%d", started.UnixNano())
+	cfg.RunID = sessionID
+	resolvedProfile := stripProfileSecret(ProviderProfile{
+		ID:           profile.ID,
+		Name:         profile.Name,
+		Provider:     cfg.Provider,
+		Model:        cfg.Model,
+		BaseURL:      cfg.BaseURL,
+		APIKey:       cfg.APIKey,
+		APIKeySet:    cfg.APIKey != "" || profile.APIKeySet,
+		FakeResponse: cfg.FakeResponse,
+	})
+	selectedTools, err := normalizeAgentSessionTools(req.SelectedTools, req.ToolMode)
+	if err != nil {
+		return AgentSessionSnapshot{}, fmt.Errorf("%w: %v", errAgentSessionInput, err)
+	}
+	sess, err := r.buildAgentSession(ctx, agentSessionBuildOptions{
+		ID:            sessionID,
+		CreatedAt:     started,
+		UpdatedAt:     started,
+		Profile:       resolvedProfile,
+		SystemPrompt:  cfg.SystemPrompt,
+		SelectedTools: selectedTools,
+		ContextPolicy: cfg.ContextPolicy,
+		Config:        cfg,
+		Start:         true,
+	})
+	if err != nil {
+		return AgentSessionSnapshot{}, err
+	}
+	r.sessionRegistry().put(sess)
+	if err := r.saveAgentSessionMetadata(r.metadataFromSession(sess)); err != nil {
+		return AgentSessionSnapshot{}, err
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return r.sessionSnapshotLocked(ctx, sess)
+}
+
 func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeRequest) AgentRunResponse {
 	started := r.now()
 	resp := AgentRunResponse{

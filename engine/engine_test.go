@@ -313,6 +313,54 @@ func TestRunToolLoopFeedsResultIntoNextProviderRequest(t *testing.T) {
 	assertEventOrder(t, rec.Events, event.StepStart, event.ProviderRequest, event.ToolCall, event.ToolResult, event.StepEnd, event.StepStart, event.ProviderRequest, event.RunEnd)
 }
 
+func TestRunMultipleToolCallsFeedAllResultsIntoNextProviderRequest(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(
+		harness.Step(
+			harness.Text("checking "),
+			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
+				{ID: "search-1", Name: "search", Args: `{"value":"weather"}`},
+				{ID: "read-1", Name: "read", Args: `{"value":"forecast.md"}`},
+			}},
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	reg := tools.NewRegistry()
+	mustRegister(t, reg, stringTool("search", "Search", true, tools.PermissionSpec{}, func(context.Context, string) (string, error) {
+		return "search result", nil
+	}))
+	mustRegister(t, reg, stringTool("read", "Read", true, tools.PermissionSpec{}, func(context.Context, string) (string, error) {
+		return "read result", nil
+	}))
+	e := newTestEngine(p, rec)
+	e.Tools = reg
+
+	got := e.Run(context.Background(), "inspect")
+
+	if got.Status != engine.Completed || got.Output != "checking done" {
+		t.Fatalf("result = %#v", got)
+	}
+	if len(p.Requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(p.Requests))
+	}
+	second := p.Requests[1].Messages
+	want := []session.Message{
+		{Role: session.Assistant, ToolCallID: "search-1", ToolName: "search"},
+		{Role: session.Assistant, ToolCallID: "read-1", ToolName: "read"},
+		{Role: session.Tool, ToolCallID: "search-1", ToolName: "search"},
+		{Role: session.Tool, ToolCallID: "read-1", ToolName: "read"},
+	}
+	for _, item := range want {
+		if !slices.ContainsFunc(second, func(m session.Message) bool {
+			return m.Role == item.Role && m.ToolCallID == item.ToolCallID && m.ToolName == item.ToolName
+		}) {
+			t.Fatalf("second provider request missing %#v in %#v", item, second)
+		}
+	}
+	assertEventOrder(t, rec.Events, event.StepStart, event.ProviderRequest, event.ProviderDelta, event.ToolCall, event.ToolCall, event.ToolResult, event.ToolResult, event.StepEnd, event.StepStart, event.ProviderRequest, event.RunEnd)
+}
+
 func TestPromptCacheFreezesToolsetWhenRegistryChanges(t *testing.T) {
 	p := harness.NewScriptedProvider(
 		harness.Step(harness.Tool("read-1", "read", `{"value":"README.md"}`)),

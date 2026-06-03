@@ -48,6 +48,32 @@ func TestStaticConsoleToolSelectionSemanticsStayAuditable(t *testing.T) {
 	}
 }
 
+func TestStaticConsoleCreatesSessionBeforeRunningInitialTurn(t *testing.T) {
+	appJS := readStaticTestFile(t, "app.js")
+	apiJS := readStaticTestFile(t, "api.js")
+
+	for _, want := range []string{"api.createSession(payload)", "activateSessionSnapshot(session)", "void queueInitialTurn(session.id, payload.message, token)", "async function queueInitialTurn", "api.appendTurn(sessionID, { message })"} {
+		if !strings.Contains(appJS, want) {
+			t.Fatalf("app missing create-before-run flow %q", want)
+		}
+	}
+	if !strings.Contains(apiJS, `requestJSON("/api/agent/sessions"`) || !strings.Contains(apiJS, `requestJSON("/api/agent/sessions/run"`) {
+		t.Fatalf("api should expose create-only and compatibility create-and-run paths")
+	}
+	createStart := strings.Index(appJS, "async function createSession")
+	createEnd := strings.Index(appJS[createStart:], "async function queueInitialTurn")
+	if createStart < 0 || createEnd < 0 {
+		t.Fatalf("create/initial turn functions not found")
+	}
+	createBody := appJS[createStart : createStart+createEnd]
+	if strings.Contains(createBody, "await api.appendTurn") {
+		t.Fatalf("create session should not await the initial agent turn")
+	}
+	if strings.Contains(createBody, "api.createAndRunSession") {
+		t.Fatalf("frontend should not use compatibility create-and-run path")
+	}
+}
+
 func TestStaticConsoleActionLifecycleAndToastFeedback(t *testing.T) {
 	stateJS := readStaticTestFile(t, "state.js")
 	appJS := readStaticTestFile(t, "app.js")
@@ -155,7 +181,7 @@ func TestStaticConsoleUsesExplicitLocalTimeFormatting(t *testing.T) {
 func TestStaticConsoleCreateSessionActivatesNewWorkspace(t *testing.T) {
 	appJS := readStaticTestFile(t, "app.js")
 
-	for _, want := range []string{"async function activateSession", "state.inspectorTab = \"requests\"", "replaceRoute({ name: \"sessions\", id: result.session_id })", "Session created and opened"} {
+	for _, want := range []string{"async function activateSession", "function activateSessionSnapshot", "state.inspectorTab = \"requests\"", "replaceRoute({ name: \"sessions\", id: session.id })", "Session created and opened"} {
 		if !strings.Contains(appJS, want) {
 			t.Fatalf("create session activation flow missing %q", want)
 		}

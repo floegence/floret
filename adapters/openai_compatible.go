@@ -150,6 +150,9 @@ func (p OpenAICompatibleProvider) Stream(ctx context.Context, req provider.Reque
 		client = http.DefaultClient
 	}
 	chatReq := p.buildChatRequest(req)
+	if err := validateChatToolAdjacency(chatReq.Messages); err != nil {
+		return nil, err
+	}
 	body, err := json.Marshal(chatReq)
 	if err != nil {
 		return nil, err
@@ -259,7 +262,11 @@ func (p OpenAICompatibleProvider) PayloadHash(req provider.Request) (string, err
 	if len(req.HostedTools) > 0 {
 		return "", fmt.Errorf("openai-compatible chat provider does not support hosted tools: %s", hostedToolNames(req.HostedTools))
 	}
-	body, err := json.Marshal(p.buildChatRequest(req))
+	chatReq := p.buildChatRequest(req)
+	if err := validateChatToolAdjacency(chatReq.Messages); err != nil {
+		return "", err
+	}
+	body, err := json.Marshal(chatReq)
 	if err != nil {
 		return "", err
 	}
@@ -425,7 +432,8 @@ func (p OpenAICompatibleProvider) streamResponse(httpResp *http.Response) (<-cha
 
 func renderMessages(messages []session.Message) []chatMessage {
 	out := make([]chatMessage, 0, len(messages))
-	for _, msg := range messages {
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
 		role := string(msg.Role)
 		if msg.Role == session.Tool {
 			role = "tool"
@@ -439,24 +447,76 @@ func renderMessages(messages []session.Message) []chatMessage {
 		if msg.Role == session.Assistant {
 			rendered.ReasoningContent = msg.Reasoning
 		}
-		if msg.Role == session.Assistant && msg.ToolCallID != "" && msg.ToolName != "" {
-			var call chatToolCall
-			call.ID = msg.ToolCallID
-			call.Type = "function"
-			call.Function.Name = msg.ToolName
-			call.Function.Arguments = msg.ToolArgs
+		if isAssistantToolCall(msg) {
 			rendered.Content = ""
-			rendered.ToolCalls = []chatToolCall{call}
 			rendered.ToolCallID = ""
 			rendered.Name = ""
+			var calls []chatToolCall
+			for i < len(messages) && isAssistantToolCall(messages[i]) {
+				callMsg := messages[i]
+				var call chatToolCall
+				call.ID = callMsg.ToolCallID
+				call.Type = "function"
+				call.Function.Name = callMsg.ToolName
+				call.Function.Arguments = callMsg.ToolArgs
+				calls = append(calls, call)
+				if rendered.ReasoningContent == "" && callMsg.Reasoning != "" {
+					rendered.ReasoningContent = callMsg.Reasoning
+				}
+				i++
+			}
+			i--
+			rendered.Content = ""
+			rendered.ToolCalls = calls
 		}
 		out = append(out, rendered)
 	}
 	return out
 }
 
+func isAssistantToolCall(msg session.Message) bool {
+	return msg.Role == session.Assistant && msg.ToolCallID != "" && msg.ToolName != ""
+}
+
+func validateChatToolAdjacency(messages []chatMessage) error {
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			continue
+		}
+		want := make([]string, 0, len(msg.ToolCalls))
+		seen := map[string]struct{}{}
+		for _, call := range msg.ToolCalls {
+			if strings.TrimSpace(call.ID) == "" {
+				return fmt.Errorf("openai-compatible request has assistant tool_calls with empty tool_call id")
+			}
+			if _, ok := seen[call.ID]; ok {
+				return fmt.Errorf("openai-compatible request has duplicate assistant tool_call id %q", call.ID)
+			}
+			seen[call.ID] = struct{}{}
+			want = append(want, call.ID)
+		}
+		for offset, id := range want {
+			idx := i + 1 + offset
+			if idx >= len(messages) {
+				return fmt.Errorf("openai-compatible request assistant tool_calls must be followed by tool messages: missing tool result for %q", id)
+			}
+			toolMsg := messages[idx]
+			if toolMsg.Role != "tool" {
+				return fmt.Errorf("openai-compatible request assistant tool_calls must be followed by tool messages: got %q before result for %q", toolMsg.Role, id)
+			}
+			if toolMsg.ToolCallID != id {
+				return fmt.Errorf("openai-compatible request tool result order mismatch: got %q, want %q", toolMsg.ToolCallID, id)
+			}
+		}
+		i += len(want)
+	}
+	return nil
+}
+
 func renderMessagesFromRawPlan(plan promptcache.RawPlan, fallback []chatMessage) []chatMessage {
-	var out []chatMessage
+	var raw []chatMessage
+	var sessionMessages []session.Message
 	for _, segment := range plan.Segments {
 		if segment.Kind == promptcache.SegmentToolset {
 			continue
@@ -464,7 +524,7 @@ func renderMessagesFromRawPlan(plan promptcache.RawPlan, fallback []chatMessage)
 		if segment.FragmentType == promptcache.FragmentOpenAIMessage {
 			var msg chatMessage
 			if err := json.Unmarshal([]byte(segment.Raw), &msg); err == nil {
-				out = append(out, msg)
+				raw = append(raw, msg)
 				continue
 			}
 		}
@@ -479,15 +539,71 @@ func renderMessagesFromRawPlan(plan promptcache.RawPlan, fallback []chatMessage)
 		if msg.Role == "" {
 			continue
 		}
-		rendered := renderMessages([]session.Message{msg})
-		if len(rendered) > 0 {
-			out = append(out, rendered[0])
-		}
+		sessionMessages = append(sessionMessages, msg)
 	}
+	out := mergeRawAndSessionMessages(raw, sessionMessages)
 	if len(out) == 0 {
 		return fallback
 	}
 	return out
+}
+
+func mergeRawAndSessionMessages(raw []chatMessage, sessionMessages []session.Message) []chatMessage {
+	if len(raw) == 0 {
+		return renderMessages(sessionMessages)
+	}
+	sessionIdx := 0
+	for i := range raw {
+		if sessionIdx >= len(sessionMessages) {
+			break
+		}
+		if messageMatchesRaw(sessionMessages[sessionIdx], raw[i]) {
+			sessionIdx++
+		}
+	}
+	if sessionIdx < len(sessionMessages) {
+		raw = append(raw, renderMessages(sessionMessages[sessionIdx:])...)
+	}
+	return normalizeChatToolCalls(raw)
+}
+
+func normalizeChatToolCalls(messages []chatMessage) []chatMessage {
+	out := make([]chatMessage, 0, len(messages))
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			out = append(out, msg)
+			continue
+		}
+		merged := msg
+		for i+1 < len(messages) && messages[i+1].Role == "assistant" && len(messages[i+1].ToolCalls) > 0 {
+			next := messages[i+1]
+			if merged.ReasoningContent == "" {
+				merged.ReasoningContent = next.ReasoningContent
+			}
+			merged.ToolCalls = append(merged.ToolCalls, next.ToolCalls...)
+			i++
+		}
+		out = append(out, merged)
+	}
+	return out
+}
+
+func messageMatchesRaw(msg session.Message, raw chatMessage) bool {
+	role := string(msg.Role)
+	if msg.Role == session.Tool {
+		role = "tool"
+	}
+	if role != raw.Role {
+		return false
+	}
+	if isAssistantToolCall(msg) {
+		return raw.Role == "assistant" && len(raw.ToolCalls) > 0 && raw.ToolCalls[0].ID == msg.ToolCallID
+	}
+	if msg.Role == session.Tool {
+		return raw.ToolCallID == msg.ToolCallID
+	}
+	return raw.Content == msg.Content
 }
 
 func renderTools(defs []provider.ToolDefinition) []chatTool {

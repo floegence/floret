@@ -126,6 +126,57 @@ func TestServerSavesConfigAndRunsAgent(t *testing.T) {
 	}
 }
 
+func TestServerCreatesIdleAgentSessionBeforeInitialTurn(t *testing.T) {
+	scripted := harness.NewScriptedProvider(
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"unused"},"message":"hello","system_prompt":"test","selected_tools":["grep","web_search"],"context_policy":{"context_window_tokens":8192,"max_output_tokens":1024,"recent_tail_tokens":1024}}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var snapshot AgentSessionSnapshot
+	if err := json.Unmarshal(createRec.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.ID == "" || snapshot.Status != "idle" || len(snapshot.Turns) != 0 || !snapshot.CanAppendMessage {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	if !slices.Equal(snapshot.SelectedTools, []string{"grep", "web_search"}) {
+		t.Fatalf("selected tools = %#v", snapshot.SelectedTools)
+	}
+	if len(scripted.Requests) != 0 {
+		t.Fatalf("create-only session should not call provider: %#v", scripted.Requests)
+	}
+
+	turnReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+snapshot.ID+"/turns", strings.NewReader(`{"message":"hello"}`))
+	turnRec := httptest.NewRecorder()
+	handler.ServeHTTP(turnRec, turnReq)
+	if turnRec.Code != http.StatusOK {
+		t.Fatalf("turn status = %d, body = %s", turnRec.Code, turnRec.Body.String())
+	}
+	var result AgentRunResponse
+	if err := json.Unmarshal(turnRec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "completed" || result.SessionID != snapshot.ID || result.Output != "done" || len(result.Session.Turns) != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestServerAgentSessionCreateAcceptsSelectedTools(t *testing.T) {
 	runner := NewRunner(t.TempDir())
 	runner.Now = fixedClock()
@@ -136,7 +187,7 @@ func TestServerAgentSessionCreateAcceptsSelectedTools(t *testing.T) {
 	handler := server.Handler()
 
 	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"ok"},"message":"hello","system_prompt":"test","selected_tools":["grep","web_fetch"],"context_policy":{"context_window_tokens":8192,"max_output_tokens":1024,"recent_tail_tokens":1024}}`
-	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody))
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, createReq)
 	if createRec.Code != http.StatusOK {
@@ -170,7 +221,7 @@ func TestServerAgentSessionCreateAcceptsClientWebSearchTool(t *testing.T) {
 	handler := server.Handler()
 
 	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"ok"},"message":"hello","system_prompt":"test","selected_tools":["web_search"]}`
-	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody))
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, createReq)
 	if createRec.Code != http.StatusOK {
@@ -286,7 +337,7 @@ func TestServerAgentSessionAppendIgnoresSelectedToolsPayload(t *testing.T) {
 	handler := server.Handler()
 
 	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"unused"},"message":"hello","system_prompt":"test","selected_tools":[]}`
-	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody))
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, createReq)
 	if createRec.Code != http.StatusOK {
@@ -338,7 +389,7 @@ func TestServerAgentSessionToolsPatchUpdatesNextProviderRequest(t *testing.T) {
 	handler := server.Handler()
 
 	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"unused"},"message":"hello","system_prompt":"test","selected_tools":[]}`
-	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody))
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, createReq)
 	if createRec.Code != http.StatusOK {
@@ -402,7 +453,7 @@ func TestServerAgentSessionToolsPatchSameToolsetDoesNotAddAuditNoise(t *testing.
 	handler := server.Handler()
 
 	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"ok"},"message":"hello","system_prompt":"test","selected_tools":["grep"]}`
-	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody))
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, createReq)
 	if createRec.Code != http.StatusOK {
@@ -443,7 +494,7 @@ func TestServerAgentSessionToolsPatchRequiresSelectedToolsField(t *testing.T) {
 	handler := server.Handler()
 
 	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"ok"},"message":"hello","system_prompt":"test","selected_tools":["grep"]}`
-	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody))
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, createReq)
 	if createRec.Code != http.StatusOK {
@@ -493,7 +544,7 @@ func TestServerAgentSessionToolsPatchCanClearLocalTools(t *testing.T) {
 	handler := server.Handler()
 
 	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"unused"},"message":"hello","system_prompt":"test","selected_tools":["grep"]}`
-	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody))
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, createReq)
 	if createRec.Code != http.StatusOK {
@@ -543,7 +594,7 @@ func TestServerAgentSessionToolsPatchRejectsUnknownTool(t *testing.T) {
 	handler := server.Handler()
 
 	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"ok"},"message":"hello","system_prompt":"test"}`
-	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody))
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, createReq)
 	if createRec.Code != http.StatusOK {
@@ -580,7 +631,7 @@ func TestServerAgentSessionToolsPatchRejectsRunningSession(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+		createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody))
 		createRec := httptest.NewRecorder()
 		handler.ServeHTTP(createRec, createReq)
 	}()
@@ -617,7 +668,7 @@ func TestServerAgentSessionCreateRejectsUnknownSelectedTool(t *testing.T) {
 	handler := server.Handler()
 
 	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"ok"},"message":"hello","system_prompt":"test","selected_tools":["missing"]}`
-	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody))
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, createReq)
 	if createRec.Code != http.StatusBadRequest {
@@ -649,7 +700,7 @@ func TestServerAgentSessionCreateAndAppendTurn(t *testing.T) {
 	handler := server.Handler()
 
 	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"unused"},"message":"hello","system_prompt":"test","context_policy":{"context_window_tokens":8192,"max_output_tokens":1024,"recent_tail_tokens":1024}}`
-	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody))
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, createReq)
 	if createRec.Code != http.StatusOK {
@@ -737,7 +788,7 @@ func TestServerAgentSessionPersistsAcrossServerRestart(t *testing.T) {
 	firstHandler := firstServer.Handler()
 
 	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"unused"},"message":"hello","system_prompt":"test","context_policy":{"context_window_tokens":8192,"max_output_tokens":1024,"recent_tail_tokens":1024}}`
-	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody))
 	createRec := httptest.NewRecorder()
 	firstHandler.ServeHTTP(createRec, createReq)
 	if createRec.Code != http.StatusOK {
@@ -817,7 +868,7 @@ func TestServerAgentSessionTurnErrorsUseClientStatuses(t *testing.T) {
 	}
 	handler := server.Handler()
 
-	emptyReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(`{"message":""}`))
+	emptyReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(`{"message":""}`))
 	emptyRec := httptest.NewRecorder()
 	handler.ServeHTTP(emptyRec, emptyReq)
 	if emptyRec.Code != http.StatusBadRequest {
@@ -847,7 +898,7 @@ func TestServerAgentSessionRejectsAppendAfterFailedTurn(t *testing.T) {
 	handler := server.Handler()
 
 	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model"},"message":"hello","system_prompt":"test"}`
-	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody))
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, createReq)
 	if createRec.Code != http.StatusOK {

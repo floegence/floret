@@ -185,10 +185,27 @@ async function createSession(payload) {
   state.newSessionDraft = payload;
   const token = ++state.mutationToken;
   await runWithStatus({ status: "running", action: "create-session", successMessage: "Session created and opened" }, async () => {
-    const result = await api.createSession(payload);
+    const session = await api.createSession(payload);
     if (token !== state.mutationToken) return false;
-    await activateSession(result, token);
+    activateSessionSnapshot(session);
+    state.lastResult = null;
     if (token === state.mutationToken) state.newSessionDraft = null;
+    await refreshSessionsNonBlocking(token);
+    void queueInitialTurn(session.id, payload.message, token);
+    return true;
+  });
+}
+
+async function queueInitialTurn(sessionID, message, token) {
+  if (!sessionID || !message || token !== state.mutationToken) return;
+  await runWithStatus({ status: "running", action: "append-turn", target: sessionID, successMessage: "Initial task completed" }, async () => {
+    const result = await api.appendTurn(sessionID, { message });
+    if (token !== state.mutationToken) return false;
+    state.lastResult = result;
+    if (state.activeSession?.id === sessionID || state.route.id === sessionID) {
+      state.activeSession = result.session;
+    }
+    await refreshSessionsNonBlocking(token);
     return true;
   });
 }
@@ -321,11 +338,15 @@ function replaceRoute(route) {
 async function activateSession(result, token) {
   if (token && token !== state.mutationToken) return;
   state.lastResult = result;
-  state.activeSession = result.session;
+  activateSessionSnapshot(result.session);
+  await refreshSessionsNonBlocking(token);
+}
+
+function activateSessionSnapshot(session) {
+  state.activeSession = session;
   state.mobilePanel = "";
   state.inspectorTab = "requests";
-  replaceRoute({ name: "sessions", id: result.session_id });
-  await refreshSessionsNonBlocking(token);
+  replaceRoute({ name: "sessions", id: session.id });
 }
 
 function restoreSessionFilterFocus() {

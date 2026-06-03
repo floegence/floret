@@ -3,6 +3,7 @@ package testui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -979,6 +980,82 @@ func TestRunnerAgentSessionCanContinueAfterCompletedTurn(t *testing.T) {
 		return msg.Role == "assistant" && msg.Content == "first done"
 	}) {
 		t.Fatalf("active context missing previous assistant output: %#v", second.Observation.ActiveContext)
+	}
+}
+
+func TestRunnerAgentSessionHandlesMultipleToolCallsAndFollowUpUserTurn(t *testing.T) {
+	root := t.TempDir()
+	fetchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("Changsha detailed page: thunderstorms with uncertainty."))
+	}))
+	defer fetchServer.Close()
+	fetchURL := fetchServer.URL + "/changsha-weather"
+	searchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"web":{"results":[{"title":"Changsha weather","url":%q,"description":"Thunderstorms forecast.","profile":{"name":"Weather Source"}}]}}`, fetchURL)))
+	}))
+	defer searchServer.Close()
+	scripted := harness.NewScriptedProvider(
+		harness.Step(
+			provider.StreamEvent{Type: provider.Reasoning, Text: "Search then inspect a known URL."},
+			harness.Text("I will check sources."),
+			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
+				{ID: "search-1", Name: "web_search", Args: `{"query":"Changsha weather 2026-06-03","count":3}`},
+				{ID: "fetch-1", Name: "web_fetch", Args: fmt.Sprintf(`{"url":%q}`, fetchURL)},
+			}},
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(harness.Text("Changsha has thunderstorms."), harness.Done()),
+		harness.Step(harness.Text("Sources were search and fetch results."), harness.Done()),
+	)
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+	if err := os.WriteFile(filepath.Join(root, config.DefaultEnvFile), []byte("FLORET_BRAVE_SEARCH_API_KEY=test-key\nFLORET_BRAVE_SEARCH_ENDPOINT="+searchServer.URL+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	first := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:       "查询长沙天气",
+		SystemPrompt:  "test",
+		SelectedTools: []string{"web_search", "web_fetch"},
+	})
+	if first.Status != "completed" || !strings.Contains(first.Output, "Changsha") {
+		t.Fatalf("first = %#v", first)
+	}
+	if len(first.Observation.ProviderRequests) != 2 {
+		t.Fatalf("provider requests = %#v", first.Observation.ProviderRequests)
+	}
+	if !slices.ContainsFunc(first.Observation.SessionMessages, func(msg ObservedSessionMessage) bool {
+		return msg.Role == "assistant" && msg.ToolName == "web_search" && msg.ToolCallID == "search-1" && strings.Contains(msg.Reasoning, "Search then inspect")
+	}) {
+		t.Fatalf("web_search call missing from session messages: %#v", first.Observation.SessionMessages)
+	}
+	if !slices.ContainsFunc(first.Observation.SessionMessages, func(msg ObservedSessionMessage) bool {
+		return msg.Role == "assistant" && msg.ToolName == "web_fetch" && msg.ToolCallID == "fetch-1" && strings.Contains(msg.Reasoning, "Search then inspect")
+	}) {
+		t.Fatalf("web_fetch call missing from session messages: %#v", first.Observation.SessionMessages)
+	}
+	if !slices.ContainsFunc(first.Observation.ProviderRequests[1].Messages, func(msg ObservedSessionMessage) bool {
+		return msg.Role == "tool" && msg.ToolName == "web_search" && msg.ToolCallID == "search-1"
+	}) || !slices.ContainsFunc(first.Observation.ProviderRequests[1].Messages, func(msg ObservedSessionMessage) bool {
+		return msg.Role == "tool" && msg.ToolName == "web_fetch" && msg.ToolCallID == "fetch-1"
+	}) {
+		t.Fatalf("follow-up request missing tool results: %#v", first.Observation.ProviderRequests[1].Messages)
+	}
+
+	second := runner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "请给出信息来源和不确定性"})
+	if second.Status != "completed" || second.Output != "Sources were search and fetch results." || len(second.Session.Turns) != 2 {
+		t.Fatalf("second = %#v", second)
+	}
+	latestRequest := second.Observation.ProviderRequests[len(second.Observation.ProviderRequests)-1]
+	if !slices.ContainsFunc(latestRequest.Messages, func(msg ObservedSessionMessage) bool {
+		return msg.Role == "user" && msg.Content == "请给出信息来源和不确定性"
+	}) {
+		t.Fatalf("second turn request missing appended user message: %#v", latestRequest.Messages)
 	}
 }
 

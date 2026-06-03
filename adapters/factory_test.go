@@ -836,6 +836,162 @@ func TestOpenAICompatibleProviderRendersToolResultRequestShape(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleProviderMergesConsecutiveAssistantToolCalls(t *testing.T) {
+	var body struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
+	_, err := p.Stream(context.Background(), provider.Request{RunID: "r", Messages: []session.Message{
+		{Role: session.User, Content: "weather"},
+		{Role: session.Assistant, Content: "I will inspect sources.", Reasoning: "plan"},
+		{Role: session.Assistant, Content: "tool_call", Reasoning: "search and fetch", ToolCallID: "search-1", ToolName: "web_search", ToolArgs: `{"query":"Changsha weather"}`},
+		{Role: session.Assistant, Content: "tool_call", Reasoning: "search and fetch", ToolCallID: "fetch-1", ToolName: "web_fetch", ToolArgs: `{"url":"https://example.com/weather"}`},
+		{Role: session.Tool, Content: "search result", ToolCallID: "search-1", ToolName: "web_search"},
+		{Role: session.Tool, Content: "fetch result", ToolCallID: "fetch-1", ToolName: "web_fetch"},
+	}, Tools: []provider.ToolDefinition{{Name: "web_search"}, {Name: "web_fetch"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Messages) != 5 {
+		t.Fatalf("messages = %#v", body.Messages)
+	}
+	assistant := body.Messages[2]
+	if assistant["role"] != "assistant" || assistant["content"] != "" || assistant["reasoning_content"] != "search and fetch" {
+		t.Fatalf("merged assistant message malformed: %#v", assistant)
+	}
+	toolCalls, ok := assistant["tool_calls"].([]any)
+	if !ok || len(toolCalls) != 2 {
+		t.Fatalf("tool calls were not merged: %#v", assistant)
+	}
+	first := toolCalls[0].(map[string]any)
+	second := toolCalls[1].(map[string]any)
+	if first["id"] != "search-1" || second["id"] != "fetch-1" {
+		t.Fatalf("tool calls out of order: %#v", toolCalls)
+	}
+	if body.Messages[3]["role"] != "tool" || body.Messages[3]["tool_call_id"] != "search-1" {
+		t.Fatalf("first tool result malformed: %#v", body.Messages[3])
+	}
+	if body.Messages[4]["role"] != "tool" || body.Messages[4]["tool_call_id"] != "fetch-1" {
+		t.Fatalf("second tool result malformed: %#v", body.Messages[4])
+	}
+}
+
+func TestOpenAICompatibleProviderRejectsMalformedToolAdjacencyBeforeRequest(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		http.Error(w, "should not be called", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
+	_, err := p.Stream(context.Background(), provider.Request{RunID: "r", Messages: []session.Message{
+		{Role: session.User, Content: "weather"},
+		{Role: session.Assistant, Content: "tool_call", ToolCallID: "search-1", ToolName: "web_search", ToolArgs: `{"query":"Changsha"}`},
+		{Role: session.User, Content: "interrupt"},
+		{Role: session.Tool, Content: "late", ToolCallID: "search-1", ToolName: "web_search"},
+	}, Tools: []provider.ToolDefinition{{Name: "web_search"}}})
+	if err == nil || !strings.Contains(err.Error(), "assistant tool_calls must be followed by tool messages") {
+		t.Fatalf("err = %v, want local adjacency validation", err)
+	}
+	if called {
+		t.Fatalf("provider should not be called for malformed tool adjacency")
+	}
+}
+
+func TestOpenAICompatibleProviderMergesRawPlanAssistantToolCalls(t *testing.T) {
+	var body struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	rawMessage := func(msg session.Message) promptcache.Segment {
+		rendered := renderMessages([]session.Message{msg})
+		raw, err := promptcache.CanonicalJSON(rendered[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return promptcache.Segment{
+			Kind:         promptcache.SegmentKind(kindForAdapterTest(msg)),
+			FragmentType: promptcache.FragmentOpenAIMessage,
+			Raw:          raw,
+			Message: promptcache.MessageSnapshot{
+				Role:       string(msg.Role),
+				Content:    msg.Content,
+				Reasoning:  msg.Reasoning,
+				ToolCallID: msg.ToolCallID,
+				ToolName:   msg.ToolName,
+				ToolArgs:   msg.ToolArgs,
+			},
+		}
+	}
+	messages := []session.Message{
+		{Role: session.User, Content: "weather"},
+		{Role: session.Assistant, Content: "tool_call", Reasoning: "search twice", ToolCallID: "search-1", ToolName: "web_search", ToolArgs: `{"query":"a"}`},
+		{Role: session.Assistant, Content: "tool_call", Reasoning: "search twice", ToolCallID: "search-2", ToolName: "web_search", ToolArgs: `{"query":"b"}`},
+		{Role: session.Tool, Content: "result a", ToolCallID: "search-1", ToolName: "web_search"},
+		{Role: session.Tool, Content: "result b", ToolCallID: "search-2", ToolName: "web_search"},
+	}
+	segments := make([]promptcache.Segment, 0, len(messages))
+	for _, msg := range messages {
+		segments = append(segments, rawMessage(msg))
+	}
+	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
+	_, err := p.Stream(context.Background(), provider.Request{
+		RunID:    "r",
+		Messages: messages,
+		RawPlan:  promptcache.RawPlan{Segments: segments},
+		Tools:    []provider.ToolDefinition{{Name: "web_search"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Messages) != 4 {
+		t.Fatalf("messages = %#v", body.Messages)
+	}
+	assistant := body.Messages[1]
+	toolCalls, ok := assistant["tool_calls"].([]any)
+	if !ok || len(toolCalls) != 2 {
+		t.Fatalf("raw plan tool calls were not merged: %#v", body.Messages)
+	}
+	if body.Messages[2]["role"] != "tool" || body.Messages[2]["tool_call_id"] != "search-1" ||
+		body.Messages[3]["role"] != "tool" || body.Messages[3]["tool_call_id"] != "search-2" {
+		t.Fatalf("raw plan tool results not adjacent: %#v", body.Messages)
+	}
+}
+
+func kindForAdapterTest(msg session.Message) promptcache.SegmentKind {
+	switch msg.Role {
+	case session.User:
+		return promptcache.SegmentUserMessage
+	case session.Tool:
+		return promptcache.SegmentToolResult
+	case session.Assistant:
+		if msg.ToolCallID != "" || msg.ToolName != "" {
+			return promptcache.SegmentToolCall
+		}
+		return promptcache.SegmentAssistant
+	default:
+		return promptcache.SegmentUserMessage
+	}
+}
+
 func TestOpenAICompatibleProviderMapsNaturalCompletion(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

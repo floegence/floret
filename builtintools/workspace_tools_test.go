@@ -213,6 +213,30 @@ func TestWebSearchCallsBraveAndReturnsCompactResults(t *testing.T) {
 	}
 }
 
+func TestWebSearchAcceptsQueryOnlyAndUsesDefaults(t *testing.T) {
+	var seenPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.RawQuery
+		writeTestJSON(t, w, map[string]any{
+			"web": map[string]any{"results": []map[string]any{
+				{"title": "Changsha weather", "url": "https://example.com/weather", "description": "Rain."},
+			}},
+		})
+	}))
+	defer server.Close()
+	reg := tools.NewRegistry()
+	if err := RegisterSearch(reg, SearchOptions{APIKey: "brave-key", Endpoint: server.URL}); err != nil {
+		t.Fatal(err)
+	}
+	got := reg.Run(context.Background(), provider.ToolCall{Name: ToolWebSearch, Args: `{"query":"Changsha weather 2026-06-03"}`}, allowAll)
+	if got.IsError || !strings.Contains(got.Text, "Changsha weather") || got.Metadata["count"] != 8 {
+		t.Fatalf("web_search query-only = %#v", got)
+	}
+	if !strings.Contains(seenPath, "q=Changsha+weather+2026-06-03") || !strings.Contains(seenPath, "count=8") || strings.Contains(seenPath, "country=") || strings.Contains(seenPath, "search_lang=") || strings.Contains(seenPath, "freshness=") {
+		t.Fatalf("request query=%q", seenPath)
+	}
+}
+
 func TestWebSearchHandlesEmptyErrorsAndTimeouts(t *testing.T) {
 	t.Run("empty results", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
