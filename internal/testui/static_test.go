@@ -211,6 +211,11 @@ func TestStaticConsoleSessionOperationsAndPolling(t *testing.T) {
 			t.Fatalf("active session polling missing %q", want)
 		}
 	}
+	for _, want := range []string{"captureActiveDrafts();", "render({ preserveFocus: true })", "captureFocusState", "restoreFocusState", "focusSelectorFor", "selectionStart", "selectionEnd", "preventScroll", "data-append-form", "data-tool-edit-form"} {
+		if !strings.Contains(appJS, want) {
+			t.Fatalf("active session polling must preserve input focus: missing %q", want)
+		}
+	}
 }
 
 func TestStaticConsoleTimelineLongMessagesCollapseAndCopy(t *testing.T) {

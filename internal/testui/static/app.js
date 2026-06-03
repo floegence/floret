@@ -98,6 +98,7 @@ async function refreshSessions({ selectRoute = false } = {}) {
 }
 
 function render(options = {}) {
+  const focusState = options.preserveFocus ? captureFocusState() : null;
   renderTopbar();
   renderToasts();
   switch (state.route.name) {
@@ -158,6 +159,9 @@ function render(options = {}) {
   }
   if (options.restoreFilterFocus) {
     restoreSessionFilterFocus();
+  }
+  if (focusState) {
+    restoreFocusState(focusState);
   }
   scheduleAutoRefresh();
 }
@@ -491,12 +495,13 @@ async function refreshActiveSessionSnapshot() {
   if (document.hidden || state.route.name !== "sessions" || !state.activeSession?.id) return;
   if (state.action === "select-session" || state.action === "delete-session") return scheduleAutoRefresh();
   const sessionID = state.activeSession.id;
+  captureActiveDrafts();
   try {
     const [sessions, session] = await Promise.all([api.sessions(), api.session(sessionID)]);
     if (state.route.name !== "sessions" || state.activeSession?.id !== sessionID) return;
     state.sessions = sessions;
     state.activeSession = session;
-    render();
+    render({ preserveFocus: true });
   } catch (error) {
     if (error.status === 404 && state.activeSession?.id === sessionID) {
       state.activeSession = null;
@@ -508,6 +513,59 @@ async function refreshActiveSessionSnapshot() {
     }
     scheduleAutoRefresh();
   }
+}
+
+function captureFocusState() {
+  const active = document.activeElement;
+  if (!active || !appView.contains(active) || !isEditableControl(active)) return null;
+  const selector = focusSelectorFor(active);
+  if (!selector) return null;
+  return {
+    selector,
+    value: "value" in active ? active.value : "",
+    selectionStart: typeof active.selectionStart === "number" ? active.selectionStart : null,
+    selectionEnd: typeof active.selectionEnd === "number" ? active.selectionEnd : null,
+    scrollTop: typeof active.scrollTop === "number" ? active.scrollTop : 0,
+  };
+}
+
+function restoreFocusState(focusState) {
+  if (!focusState?.selector) return;
+  const next = appView.querySelector(focusState.selector);
+  if (!next || !isEditableControl(next) || next.disabled) return;
+  next.focus({ preventScroll: true });
+  if ("value" in next && next.value !== focusState.value) {
+    next.value = focusState.value;
+  }
+  if (typeof next.setSelectionRange === "function" && focusState.selectionStart !== null && focusState.selectionEnd !== null) {
+    const max = String(next.value || "").length;
+    next.setSelectionRange(Math.min(focusState.selectionStart, max), Math.min(focusState.selectionEnd, max));
+  }
+  if (typeof next.scrollTop === "number") {
+    next.scrollTop = focusState.scrollTop || 0;
+  }
+}
+
+function isEditableControl(element) {
+  if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement)) return false;
+  if (element.type === "button" || element.type === "submit" || element.type === "checkbox" || element.type === "radio") return false;
+  return !element.readOnly;
+}
+
+function focusSelectorFor(element) {
+  if (element.matches("[data-session-filter]")) return "[data-session-filter]";
+  const name = element.getAttribute("name");
+  if (!name) return "";
+  if (element.closest("[data-append-form]")) return `[data-append-form] [name="${cssEscape(name)}"]`;
+  if (element.closest("[data-tool-edit-form]")) return `[data-tool-edit-form] [name="${cssEscape(name)}"]`;
+  if (element.closest("[data-new-session-form]")) return `[data-new-session-form] [name="${cssEscape(name)}"]`;
+  if (element.closest("[data-settings-form]")) return `[data-settings-form] [name="${cssEscape(name)}"]`;
+  return "";
+}
+
+function cssEscape(value) {
+  if (window.CSS?.escape) return window.CSS.escape(value);
+  return String(value).replaceAll("\\", "\\\\").replaceAll('"', '\\"');
 }
 
 function escapeText(value) {
