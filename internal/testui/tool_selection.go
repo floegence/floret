@@ -27,7 +27,7 @@ var agentToolOptions = []AgentToolOption{
 	{Name: builtintools.ToolEdit, Title: "Edit", Description: "Replace exact text in a file.", Group: "workspace_write", GroupTitle: "Workspace write", Risk: "writes files"},
 	{Name: builtintools.ToolWrite, Title: "Write", Description: "Create or overwrite a file.", Group: "workspace_write", GroupTitle: "Workspace write", Risk: "writes files"},
 	{Name: builtintools.ToolShell, Title: "Shell", Description: "Run non-interactive shell commands.", Group: "execution", GroupTitle: "Execution", Risk: "runs commands"},
-	{Name: builtintools.ToolWebFetch, Title: "Web fetch", Description: "Fetch one HTTP(S) URL.", Group: "network", GroupTitle: "Network", Risk: "network"},
+	{Name: builtintools.ToolWebFetch, Title: "Web fetch", Description: "Fetch one explicit HTTP(S) URL. This is not web search or a weather API.", Group: "network", GroupTitle: "Network", Risk: "network"},
 }
 
 func agentToolCatalog() []AgentToolOption {

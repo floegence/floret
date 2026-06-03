@@ -287,10 +287,8 @@ func TestRunnerAgentSessionSelectedToolsExplicitlyExposeBuiltInTools(t *testing.
 	if chat.Status != "completed" || chat.Session.SelectedTools == nil || len(chat.Session.SelectedTools) != 0 {
 		t.Fatalf("chat = %#v", chat)
 	}
-	if slices.ContainsFunc(chat.Observation.ProviderRequests[0].Tools, func(tool provider.ToolDefinition) bool {
-		return tool.Name == "read" || tool.Name == "grep"
-	}) {
-		t.Fatalf("chat mode should not expose built-in workspace tools: %#v", chat.Observation.ProviderRequests[0].Tools)
+	if !hasOnlyStrictTools(chat.Observation.ProviderRequests[0].Tools, "ask_user") {
+		t.Fatalf("chat mode should expose only control tools: %#v", chat.Observation.ProviderRequests[0].Tools)
 	}
 	metaData, err := os.ReadFile(runner.agentSessionMetadataPath(chat.SessionID))
 	if err != nil {
@@ -398,6 +396,18 @@ func hasStrictTool(defs []provider.ToolDefinition, name string) bool {
 	return slices.ContainsFunc(defs, func(tool provider.ToolDefinition) bool {
 		return tool.Name == name && tool.Strict && tool.InputSchema["additionalProperties"] == false
 	})
+}
+
+func hasOnlyStrictTools(defs []provider.ToolDefinition, names ...string) bool {
+	if len(defs) != len(names) {
+		return false
+	}
+	for _, name := range names {
+		if !hasStrictTool(defs, name) {
+			return false
+		}
+	}
+	return true
 }
 
 func TestRunnerAgentSessionWaitsAndResumesWithAppendMessage(t *testing.T) {

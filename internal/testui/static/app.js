@@ -12,6 +12,7 @@ const state = {
   detailFocus: null,
   streamFilter: "all",
   traceFilter: "",
+  composerMode: "continue",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -35,8 +36,18 @@ const el = {
   contextWindowTokens: $("contextWindowTokens"),
   maxOutputTokens: $("maxOutputTokens"),
   recentTailTokens: $("recentTailTokens"),
+  activeSessionSummary: $("activeSessionSummary"),
+  activeSessionTools: $("activeSessionTools"),
   toolSelectionSummary: $("toolSelectionSummary"),
+  draftToolScope: $("draftToolScope"),
+  toolDriftWarning: $("toolDriftWarning"),
   toolCheckboxes: $("toolCheckboxes"),
+  continueModeTab: $("continueModeTab"),
+  startModeTab: $("startModeTab"),
+  continuePanel: $("continuePanel"),
+  startPanel: $("startPanel"),
+  continueToolNote: $("continueToolNote"),
+  continueToolDetail: $("continueToolDetail"),
   runAgent: $("runAgent"),
   appendMessage: $("appendMessage"),
   sessionSelect: $("sessionSelect"),
@@ -118,9 +129,15 @@ document.querySelectorAll("[data-tool-preset]").forEach((button) => {
   button.addEventListener("click", () => applyToolPreset(button.dataset.toolPreset || "chat"));
 });
 
+document.querySelectorAll("[data-composer-mode]").forEach((button) => {
+  button.addEventListener("click", () => setComposerMode(button.dataset.composerMode || "continue"));
+});
+
 el.toolCheckboxes.addEventListener("change", (event) => {
   if (event.target.matches("[data-tool-name]")) {
     renderToolSelectionSummary();
+    renderCapabilitySummary();
+    renderActionState(state.lastResult);
   }
 });
 
@@ -201,7 +218,9 @@ function renderConfig() {
   renderProfileOptions();
   renderProfileForm();
   renderToolCheckboxes();
-  restoreToolSelectionFromState();
+  initializeDraftToolSelection();
+  renderComposerMode();
+  renderCapabilitySummary();
 }
 
 function renderToolCheckboxes() {
@@ -209,45 +228,64 @@ function renderToolCheckboxes() {
   el.toolCheckboxes.innerHTML = "";
   groups.forEach((group) => {
     const section = document.createElement("section");
-    section.className = "tool-group";
-    const head = document.createElement("div");
-    head.className = "tool-group-head";
-    const title = document.createElement("strong");
-    title.textContent = group.title;
-    const count = document.createElement("span");
-    count.textContent = `${group.tools.length} tool${group.tools.length === 1 ? "" : "s"}`;
-    head.append(title, count);
-    section.appendChild(head);
+    section.className = "tool-matrix-group";
+    const title = document.createElement("h3");
+    title.textContent = `${group.title} · ${group.tools.length}`;
+    section.appendChild(title);
+
+    const table = document.createElement("div");
+    table.className = "tool-table";
+    table.setAttribute("role", "table");
+    const header = document.createElement("div");
+    header.className = "tool-row tool-row-head";
+    header.setAttribute("role", "row");
+    ["Enabled", "Tool", "Scope", "Risk", "Description"].forEach((label) => {
+      const cell = document.createElement("span");
+      cell.setAttribute("role", "columnheader");
+      cell.textContent = label;
+      header.appendChild(cell);
+    });
+    table.appendChild(header);
 
     group.tools.forEach((tool) => {
       const label = document.createElement("label");
-      label.className = "tool-check";
+      label.className = "tool-row";
+      label.setAttribute("role", "row");
       const input = document.createElement("input");
       input.type = "checkbox";
       input.dataset.toolName = tool.name;
       input.value = tool.name;
 
-      const body = document.createElement("span");
-      body.className = "tool-check-body";
-      const line = document.createElement("span");
-      line.className = "tool-check-line";
-      const name = document.createElement("strong");
-      name.textContent = tool.title || tool.name;
+      const toggle = document.createElement("span");
+      toggle.className = "tool-enabled";
+      toggle.appendChild(input);
+
+      const name = document.createElement("span");
+      name.className = "tool-name";
+      const strong = document.createElement("strong");
+      strong.textContent = tool.title || tool.name;
       const code = document.createElement("code");
       code.textContent = tool.name;
-      line.append(name, code);
+      name.append(strong, code);
 
-      const description = document.createElement("small");
+      const scope = document.createElement("span");
+      scope.className = "tool-scope";
+      scope.textContent = group.title;
+
+      const risk = document.createElement("span");
+      risk.className = tool.risk ? "tool-risk warn" : "tool-risk";
+      risk.textContent = tool.risk || "read";
+
+      const description = document.createElement("span");
+      description.className = "tool-description";
       description.textContent = tool.description || "";
-      body.append(line, description);
       if (tool.risk) {
-        const risk = document.createElement("em");
-        risk.textContent = tool.risk;
-        body.appendChild(risk);
+        description.dataset.risk = tool.risk;
       }
-      label.append(input, body);
-      section.appendChild(label);
+      label.append(toggle, name, scope, risk, description);
+      table.appendChild(label);
     });
+    section.appendChild(table);
     el.toolCheckboxes.appendChild(section);
   });
   renderToolSelectionSummary();
@@ -277,6 +315,8 @@ function setSelectedTools(names) {
     input.checked = selected.has(input.value);
   });
   renderToolSelectionSummary();
+  renderCapabilitySummary();
+  renderActionState(state.lastResult);
 }
 
 function applyToolPreset(preset) {
@@ -292,12 +332,14 @@ function applyToolPreset(preset) {
     all: [...read, ...write, ...shell, ...network],
   };
   setSelectedTools(presets[preset] || []);
+  setComposerMode("start");
 }
 
 function renderToolSelectionSummary() {
   const selected = selectedToolNames();
   if (!selected.length) {
     el.toolSelectionSummary.textContent = "No local tools selected";
+    el.draftToolScope.textContent = "Staged for the next new session.";
     return;
   }
   const risky = selected.filter((name) => {
@@ -305,15 +347,48 @@ function renderToolSelectionSummary() {
     return tool?.risk;
   }).length;
   el.toolSelectionSummary.textContent = `${selected.length} selected${risky ? ` · ${risky} privileged` : ""}`;
+  el.draftToolScope.textContent = `Will apply to the next new session: ${toolLabelList(selected)}`;
 }
 
-function restoreToolSelectionFromState() {
-  const activeSession = state.sessions.find((session) => session.id === state.activeSessionId);
-  if (activeSession) {
-    setSelectedTools(activeSession.selected_tools || []);
+function initializeDraftToolSelection() {
+  applyToolPreset("chat");
+}
+
+function setComposerMode(mode) {
+  state.composerMode = mode === "start" ? "start" : "continue";
+  renderComposerMode();
+  renderActionState(state.lastResult);
+}
+
+function renderComposerMode() {
+  const start = state.composerMode === "start";
+  el.continueModeTab.classList.toggle("active", !start);
+  el.startModeTab.classList.toggle("active", start);
+  el.continueModeTab.setAttribute("aria-selected", String(!start));
+  el.startModeTab.setAttribute("aria-selected", String(start));
+  el.continuePanel.classList.toggle("hidden", start);
+  el.startPanel.classList.toggle("hidden", !start);
+}
+
+function renderCapabilitySummary() {
+  const session = activeSessionSnapshot();
+  const activeTools = session?.selected_tools || [];
+  const draftTools = selectedToolNames();
+  if (!session) {
+    el.activeSessionSummary.textContent = "No active session";
+    el.activeSessionTools.textContent = "Local tools: none. Start a session to bind tools.";
+    el.continueToolNote.textContent = "No active session selected.";
+    el.continueToolDetail.textContent = "Start a session before sending another message.";
+    el.toolDriftWarning.hidden = true;
     return;
   }
-  applyToolPreset("chat");
+  const turns = session.turns?.length || 0;
+  el.activeSessionSummary.textContent = `${shortID(session.id)} · ${session.status || "idle"} · ${turns} turn${turns === 1 ? "" : "s"}`;
+  el.activeSessionTools.textContent = `Local tools: ${toolLabelList(activeTools)}. Control: ask_user.`;
+  el.continueToolNote.textContent = `Uses active session tools: ${toolLabelList(activeTools)}`;
+  el.continueToolDetail.textContent = "Draft tool changes only apply when starting a new session.";
+  const drift = !sameToolSelection(activeTools, draftTools);
+  el.toolDriftWarning.hidden = !drift;
 }
 
 function renderProviderOptions() {
@@ -531,6 +606,7 @@ async function createSession() {
     state.lastResult = result;
     state.activeSessionId = result.session_id || "";
     renderAgentResult(result);
+    setComposerMode("continue");
     await loadSessions({ selectActive: true });
   } catch (error) {
     renderError(error.message);
@@ -593,10 +669,15 @@ async function loadSessions(options = {}) {
       await selectSession(state.sessions[0].id);
     } else if (!state.sessions.length) {
       state.activeSessionId = "";
+      setComposerMode("start");
     }
+    renderCapabilitySummary();
+    renderActionState(state.lastResult);
   } catch (error) {
     state.sessions = [];
     renderSessionOptions();
+    renderCapabilitySummary();
+    renderActionState(state.lastResult);
     el.sessionMeta.textContent = `Session list unavailable: ${error.message}`;
   }
 }
@@ -636,7 +717,7 @@ function renderSessionOptions() {
 }
 
 function renderSessionSnapshot(session) {
-  setSelectedTools(session.selected_tools || []);
+  setComposerMode("continue");
   const latest = latestTurn(session);
   const result = {
     id: latest?.id || session.latest_turn_id || session.id,
@@ -689,9 +770,6 @@ async function runCheck(target) {
 
 function renderAgentResult(result) {
   state.activeSessionId = result.session_id || state.activeSessionId || "";
-  if (result.session?.selected_tools) {
-    setSelectedTools(result.session.selected_tools);
-  }
   setStatus(result.status);
   el.runTitle.textContent = result.session_id ? `Session ${shortID(result.session_id)}` : profileLabel(result.profile);
   el.summaryText.textContent = result.summary || "";
@@ -717,6 +795,7 @@ function renderAgentResult(result) {
   renderPathEntries(result.session?.path_entries || result.observation?.path_entries || []);
   renderTurnList(result.session?.turns || []);
   renderRawTrace();
+  renderCapabilitySummary();
   renderActionState(result);
 }
 
@@ -780,6 +859,11 @@ function renderFlowHealth(result) {
       <strong>${escapeHTML(profile.provider || "-")}</strong>
       <small>${escapeHTML(profile.model || "-")}</small>
     </div>
+    <button class="health-card action-card" ${finalStep ? `type="button" data-select-step="${finalStep}" data-open-tab="request" data-detail-focus="tools"` : "type=\"button\""}>
+      <span>Provider tools</span>
+      <strong>${escapeHTML(actualRequestToolSummary(result))}</strong>
+      <small>${escapeHTML(actualRequestToolNames(result))}</small>
+    </button>
     <button class="health-card action-card" ${cacheAttrs}>
       <span>Prompt cache</span>
       <strong>${cache.reusedSegments} reused / ${cache.newSegments} new</strong>
@@ -1516,10 +1600,12 @@ function renderSequenceItem(item) {
 function renderSequenceRequestChips(stepNumber) {
   const step = stepModels(state.lastResult).find((model) => model.step === stepNumber);
   if (!step) return "";
+  const tools = requestToolCount(step.request);
   return `
     <div class="flow-actions sequence-actions">
       ${flowChip(`${step.request.messages.length} messages`, step.step, "request", "messages")}
       ${flowChip(`${step.request.raw_segments?.length || 0} raw segments`, step.step, "cache", "segments")}
+      ${tools ? flowChip(`${tools} tools`, step.step, "request", "tools") : ""}
     </div>
   `;
 }
@@ -1654,6 +1740,7 @@ function resetRunView(status) {
   renderFlowHealth(null);
   renderTabs();
   renderStepDetail();
+  renderCapabilitySummary();
   renderActionState(null);
 }
 
@@ -2131,18 +2218,59 @@ function sessionOptionLabel(session) {
   return `${shortID(session.id)} · ${status} · ${turns} turn(s) · ${model}`;
 }
 
+function activeSessionSnapshot() {
+  const activeID = state.activeSessionId || state.lastResult?.session_id || "";
+  if (!activeID) return null;
+  if (state.lastResult?.session?.id === activeID) return state.lastResult.session;
+  return state.sessions.find((session) => session.id === activeID) || null;
+}
+
+function sameToolSelection(a, b) {
+  const left = [...new Set(a || [])].sort();
+  const right = [...new Set(b || [])].sort();
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function toolLabelList(names) {
+  const clean = (names || []).filter(Boolean);
+  if (!clean.length) return "none";
+  if (clean.length <= 4) return clean.join(", ");
+  return `${clean.slice(0, 4).join(", ")} +${clean.length - 4} more`;
+}
+
+function actualRequestToolSummary(result) {
+  const requests = currentTurnProviderRequests(result);
+  const latest = requests[requests.length - 1];
+  if (!latest) return "No request captured";
+  const local = latest.tools?.length || 0;
+  const hosted = latest.hosted_tools?.length || 0;
+  return `${local} definitions · ${hosted} hosted`;
+}
+
+function actualRequestToolNames(result) {
+  const requests = currentTurnProviderRequests(result);
+  const latest = requests[requests.length - 1];
+  if (!latest) return "Loaded snapshots do not include provider request details.";
+  const local = (latest.tools || []).map((tool) => tool.name || tool.Name).filter(Boolean);
+  const hosted = (latest.hosted_tools || []).map((tool) => tool.name || tool.Name).filter(Boolean);
+  const names = [...local, ...hosted];
+  return names.length ? toolLabelList(names) : "No provider tools exposed beyond control signals.";
+}
+
 function renderActionState(result) {
   const hasSession = Boolean(state.activeSessionId || result?.session_id);
   const canAppend = Boolean(result?.can_append_message || result?.status === "waiting" || result?.status === "completed");
   el.appendMessage.disabled = state.running || !hasSession || !canAppend;
   el.runAgent.disabled = state.running;
   if (!hasSession) {
-    el.appendMessage.title = "Create a session first";
+    el.appendMessage.title = "Start a session before sending to an active session";
   } else if (!canAppend) {
     el.appendMessage.title = "The current session is not ready for another message";
   } else {
-    el.appendMessage.title = "Append this message to the active session";
+    el.appendMessage.title = `Send using active session tools: ${toolLabelList(activeSessionSnapshot()?.selected_tools || [])}`;
   }
+  el.runAgent.title = "Start a new session and capture the selected draft tools";
+  renderCapabilitySummary();
 }
 
 function entrySummary(entry) {
@@ -2432,8 +2560,8 @@ function setRunning(value) {
   state.running = value;
   el.runAgent.disabled = value;
   el.appendMessage.disabled = value || el.appendMessage.disabled;
-  el.runAgent.textContent = value ? "Running..." : "New Session";
-  el.appendMessage.textContent = value ? "Waiting..." : "Send Message";
+  el.runAgent.textContent = value ? "Running..." : "Start Session with Selected Tools";
+  el.appendMessage.textContent = value ? "Waiting..." : "Send to Active Session";
   if (!value) renderActionState(state.lastResult);
 }
 

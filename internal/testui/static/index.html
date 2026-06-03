@@ -80,54 +80,94 @@
           <div id="runStatus" class="status idle" aria-live="polite">idle</div>
         </header>
 
-        <section class="composer">
-          <label class="field system-field">
-            <span>System prompt</span>
-            <textarea id="systemPrompt" rows="3">You are Floret. Answer naturally when the user's request is complete, or call ask_user if you need missing information.</textarea>
-          </label>
-          <label class="field message-field">
-            <span>User message</span>
-            <textarea id="userMessage" rows="5">Say hello from Floret and complete the task.</textarea>
-          </label>
-          <div class="run-controls">
-            <label class="field mini">
-              <span>Context window</span>
-              <input id="contextWindowTokens" type="number" min="1024" step="1024" value="128000" />
-            </label>
-            <label class="field mini">
-              <span>Max output</span>
-              <input id="maxOutputTokens" type="number" min="256" step="256" value="4096" />
-            </label>
-            <label class="field mini">
-              <span>Recent tail</span>
-              <input id="recentTailTokens" type="number" min="256" step="256" value="4096" />
-            </label>
-            <button id="runAgent" class="primary" type="button">New Session</button>
-            <button id="appendMessage" class="secondary" type="button" disabled>Send Message</button>
-          </div>
-          <section class="tool-selector" aria-label="Local tools">
-            <div class="tool-selector-head">
-              <div>
-                <span class="section-kicker">Local tools</span>
-                <strong id="toolSelectionSummary">No local tools selected</strong>
-              </div>
-              <div class="tool-presets" aria-label="Tool presets">
-                <button class="secondary tiny" type="button" data-tool-preset="chat">Chat</button>
-                <button class="secondary tiny" type="button" data-tool-preset="read">Read</button>
-                <button class="secondary tiny" type="button" data-tool-preset="coding">Coding</button>
-                <button class="secondary tiny" type="button" data-tool-preset="shell">Shell</button>
-                <button class="secondary tiny" type="button" data-tool-preset="all">All</button>
-              </div>
-            </div>
-            <div id="toolCheckboxes" class="tool-checkbox-grid"></div>
-          </section>
-          <div class="session-controls">
+        <section class="session-control" aria-label="Active session capabilities">
+          <div class="session-picker">
             <label class="field session-field">
               <span>Active session</span>
               <select id="sessionSelect"></select>
             </label>
             <button id="refreshSessions" class="secondary small" type="button">Refresh</button>
           </div>
+          <div class="capability-strip">
+            <div>
+              <span class="section-kicker">Active Session Capabilities</span>
+              <strong id="activeSessionSummary">No active session</strong>
+              <small id="activeSessionTools">Local tools: none</small>
+            </div>
+            <div>
+              <span class="section-kicker">Control Capability</span>
+              <strong>ask_user</strong>
+              <small>Always available for missing information.</small>
+            </div>
+            <div>
+              <span class="section-kicker">Draft Tools</span>
+              <strong id="toolSelectionSummary">No local tools selected</strong>
+              <small id="draftToolScope">Staged for the next new session.</small>
+            </div>
+          </div>
+          <p id="toolDriftWarning" class="capability-warning" hidden>Draft tools differ from the active session. This message will still use the active session tools.</p>
+        </section>
+
+        <section class="composer">
+          <label class="field message-field">
+            <span>User message</span>
+            <textarea id="userMessage" rows="5">Say hello from Floret and complete the task.</textarea>
+          </label>
+          <div class="composer-tabs" role="tablist" aria-label="Composer mode">
+            <button id="continueModeTab" class="mode-tab active" type="button" role="tab" aria-selected="true" data-composer-mode="continue">Continue Session</button>
+            <button id="startModeTab" class="mode-tab" type="button" role="tab" aria-selected="false" data-composer-mode="start">Start New Session</button>
+          </div>
+
+          <section id="continuePanel" class="composer-panel continue-panel" aria-label="Continue active session">
+            <div class="mode-note">
+              <strong id="continueToolNote">Uses active session tools.</strong>
+              <span id="continueToolDetail">Draft tool changes do not modify this session.</span>
+            </div>
+            <div class="run-controls continue-controls">
+              <button id="appendMessage" class="primary" type="button" disabled>Send to Active Session</button>
+            </div>
+          </section>
+
+          <section id="startPanel" class="composer-panel start-panel hidden" aria-label="Start new session">
+            <label class="field system-field">
+              <span>System prompt</span>
+              <textarea id="systemPrompt" rows="3">You are Floret. Answer naturally when the user's request is complete, or call ask_user if you need missing information.</textarea>
+            </label>
+            <div class="run-controls policy-controls">
+              <label class="field mini">
+                <span>Context window</span>
+                <input id="contextWindowTokens" type="number" min="1024" step="1024" value="128000" />
+              </label>
+              <label class="field mini">
+                <span>Max output</span>
+                <input id="maxOutputTokens" type="number" min="256" step="256" value="4096" />
+              </label>
+              <label class="field mini">
+                <span>Recent tail</span>
+                <input id="recentTailTokens" type="number" min="256" step="256" value="4096" />
+              </label>
+            </div>
+            <section class="tool-selector" aria-label="Tools for new session">
+              <div class="tool-selector-head">
+                <div>
+                  <span class="section-kicker">Tools for New Session</span>
+                  <strong>Captured when the session starts</strong>
+                  <small>Changes here are staged for the next new session.</small>
+                </div>
+                <div class="tool-presets" aria-label="Tool presets">
+                  <button class="secondary tiny" type="button" data-tool-preset="chat">Chat</button>
+                  <button class="secondary tiny" type="button" data-tool-preset="read">Read</button>
+                  <button class="secondary tiny" type="button" data-tool-preset="coding">Coding</button>
+                  <button class="secondary tiny" type="button" data-tool-preset="shell">Shell</button>
+                  <button class="secondary tiny" type="button" data-tool-preset="all">All</button>
+                </div>
+              </div>
+              <div id="toolCheckboxes" class="tool-matrix"></div>
+            </section>
+            <div class="run-controls start-controls">
+              <button id="runAgent" class="primary" type="button">Start Session with Selected Tools</button>
+            </div>
+          </section>
         </section>
 
         <section class="metrics" aria-label="Agent run metrics">

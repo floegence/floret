@@ -134,6 +134,58 @@ func TestServerAgentSessionCreateAcceptsSelectedTools(t *testing.T) {
 	}
 }
 
+func TestServerAgentSessionAppendIgnoresSelectedToolsPayload(t *testing.T) {
+	scripted := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("ask", "ask_user", `{"question":"Need file?"}`), harness.Done()),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"unused"},"message":"hello","system_prompt":"test","selected_tools":[]}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var first AgentRunResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != "waiting" || len(first.Session.SelectedTools) != 0 {
+		t.Fatalf("first = %#v", first)
+	}
+	if !hasOnlyObservedTools(first.Observation.ProviderRequests[0].Tools, "ask_user") {
+		t.Fatalf("empty selected_tools should expose only control tools: %#v", first.Observation.ProviderRequests[0].Tools)
+	}
+
+	turnReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+first.SessionID+"/turns", strings.NewReader(`{"message":"main.go","selected_tools":["grep","web_fetch"]}`))
+	turnRec := httptest.NewRecorder()
+	handler.ServeHTTP(turnRec, turnReq)
+	if turnRec.Code != http.StatusOK {
+		t.Fatalf("turn status = %d, body = %s", turnRec.Code, turnRec.Body.String())
+	}
+	var second AgentRunResponse
+	if err := json.Unmarshal(turnRec.Body.Bytes(), &second); err != nil {
+		t.Fatal(err)
+	}
+	if second.Status != "completed" || len(second.Session.SelectedTools) != 0 {
+		t.Fatalf("second = %#v", second)
+	}
+	if !hasOnlyObservedTools(second.Observation.ProviderRequests[0].Tools, "ask_user") {
+		t.Fatalf("append payload changed session tools: %#v", second.Observation.ProviderRequests[0].Tools)
+	}
+}
+
 func TestServerAgentSessionCreateRejectsUnknownSelectedTool(t *testing.T) {
 	runner := NewRunner(t.TempDir())
 	runner.Now = fixedClock()
@@ -436,4 +488,16 @@ func hasObservedTool(defs []provider.ToolDefinition, name string) bool {
 		}
 	}
 	return false
+}
+
+func hasOnlyObservedTools(defs []provider.ToolDefinition, names ...string) bool {
+	if len(defs) != len(names) {
+		return false
+	}
+	for _, name := range names {
+		if !hasObservedTool(defs, name) {
+			return false
+		}
+	}
+	return true
 }
