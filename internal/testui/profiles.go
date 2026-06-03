@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/modelcatalog"
@@ -26,6 +27,7 @@ const (
 
 func (r Runner) ConfigState() (ConfigState, error) {
 	state := ConfigState{EnvFile: r.EnvFile, Catalog: r.Catalog(), Tools: agentToolCatalog()}
+	state.LocalTime = localTimeInfo(r.now())
 	fileValues := map[string]string{}
 	if _, err := os.Stat(r.EnvFile); err == nil {
 		state.EnvFileFound = true
@@ -55,6 +57,23 @@ func (r Runner) ConfigState() (ConfigState, error) {
 	state.Profiles = []ProviderProfile{stripProfileSecret(profile)}
 	state.ActiveProfileID = profile.ID
 	return state, nil
+}
+
+func localTimeInfo(now time.Time) LocalTimeInfo {
+	local := now.Local()
+	zone, offsetSeconds := local.Zone()
+	offsetMinutes := offsetSeconds / 60
+	sign := "+"
+	if offsetMinutes < 0 {
+		sign = "-"
+		offsetMinutes = -offsetMinutes
+	}
+	return LocalTimeInfo{
+		Now:           local.Format(time.RFC3339),
+		TimeZone:      zone,
+		OffsetMinutes: offsetSeconds / 60,
+		OffsetLabel:   fmt.Sprintf("UTC%s%02d:%02d", sign, offsetMinutes/60, offsetMinutes%60),
+	}
 }
 
 func (r Runner) SaveConfigState(req SaveConfigRequest) (ConfigState, error) {

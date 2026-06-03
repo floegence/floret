@@ -39,6 +39,78 @@ func TestStaticConsoleToolSelectionSemanticsStayAuditable(t *testing.T) {
 	}
 }
 
+func TestStaticConsoleActionLifecycleAndToastFeedback(t *testing.T) {
+	stateJS := readStaticTestFile(t, "state.js")
+	appJS := readStaticTestFile(t, "app.js")
+	html := readStaticTestFile(t, "index.html")
+	newSession := readStaticTestFile(t, "views", "newSession.js")
+	workspace := readStaticTestFile(t, "views", "sessionWorkspace.js")
+	inspector := readStaticTestFile(t, "views", "inspector.js")
+	settings := readStaticTestFile(t, "views", "settings.js")
+
+	for _, want := range []string{"action: \"\"", "actionTarget: \"\"", "toasts: []"} {
+		if !strings.Contains(stateJS, want) {
+			t.Fatalf("state missing action/toast lifecycle field %q", want)
+		}
+	}
+	for _, want := range []string{"toastRegion", "renderToasts", "addToast", "dismissToast", "runWithStatus({ status:", "successMessage"} {
+		if !strings.Contains(appJS, want) {
+			t.Fatalf("app missing action/toast lifecycle %q", want)
+		}
+	}
+	if strings.Contains(appJS, "window.alert") {
+		t.Fatalf("test UI should route errors through toast instead of window.alert")
+	}
+	if !strings.Contains(html, `id="toastRegion"`) {
+		t.Fatalf("toast region missing from index.html")
+	}
+	for _, pair := range []struct {
+		file string
+		want string
+	}{
+		{newSession, "Creating..."},
+		{newSession, "Validating..."},
+		{workspace, "Refreshing..."},
+		{workspace, "Sending..."},
+		{inspector, "Updating..."},
+		{settings, "Saving..."},
+		{settings, "Running..."},
+	} {
+		if !strings.Contains(pair.file, pair.want) {
+			t.Fatalf("pending label %q missing", pair.want)
+		}
+	}
+}
+
+func TestStaticConsoleUsesExplicitLocalTimeFormatting(t *testing.T) {
+	stateJS := readStaticTestFile(t, "state.js")
+	workspace := readStaticTestFile(t, "views", "sessionWorkspace.js")
+	inspector := readStaticTestFile(t, "views", "inspector.js")
+
+	if !strings.Contains(stateJS, "formatLocalTime") || !strings.Contains(stateJS, "offset_label") || !strings.Contains(stateJS, "offset_minutes") {
+		t.Fatalf("state missing explicit local time formatter")
+	}
+	if strings.Contains(stateJS, "toLocaleString") {
+		t.Fatalf("state should not use ambiguous toLocaleString time formatting")
+	}
+	if !strings.Contains(workspace, "relativeTime") || !strings.Contains(workspace, "formatLocalTime") {
+		t.Fatalf("workspace should show relative and exact local session times")
+	}
+	if !strings.Contains(inspector, "formatLocalTime") {
+		t.Fatalf("inspector audit times should use explicit local time")
+	}
+}
+
+func TestStaticConsoleCreateSessionActivatesNewWorkspace(t *testing.T) {
+	appJS := readStaticTestFile(t, "app.js")
+
+	for _, want := range []string{"async function activateSession", "state.inspectorTab = \"requests\"", "replaceRoute({ name: \"sessions\", id: result.session_id })", "Session created and opened"} {
+		if !strings.Contains(appJS, want) {
+			t.Fatalf("create session activation flow missing %q", want)
+		}
+	}
+}
+
 func TestStaticConsoleSettingsSavesSearchProviderContract(t *testing.T) {
 	settings := readStaticTestFile(t, "views", "settings.js")
 	for _, want := range []string{"search_provider", "search_api_key", "search_endpoint", `provider: "brave"`} {

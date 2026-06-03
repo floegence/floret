@@ -5,12 +5,16 @@ export const state = {
   lastResult: null,
   route: { name: "sessions", id: "" },
   running: false,
+  action: "",
+  actionTarget: "",
+  toasts: [],
   inspectorTab: "tools",
   selectedRequest: 0,
   sessionFilter: "",
   probeResult: "",
   checkResult: "",
   mobilePanel: "",
+  newSessionDraft: null,
 };
 
 export function currentProfile() {
@@ -125,11 +129,35 @@ export function toolLabelList(names) {
   return `${clean.slice(0, 4).join(", ")} +${clean.length - 4} more`;
 }
 
-export function formatTime(value) {
+export function formatLocalTime(value) {
   if (!value) return "-";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleString();
+  const offsetMinutes = Number(state.config?.local_time?.offset_minutes || 0);
+  const shifted = new Date(date.getTime() + offsetMinutes * 60 * 1000);
+  const yyyy = shifted.getUTCFullYear();
+  const mm = pad2(shifted.getUTCMonth() + 1);
+  const dd = pad2(shifted.getUTCDate());
+  const hh = pad2(shifted.getUTCHours());
+  const min = pad2(shifted.getUTCMinutes());
+  const sec = pad2(shifted.getUTCSeconds());
+  const label = state.config?.local_time?.offset_label || offsetLabel(offsetMinutes);
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}:${sec} ${label}`;
+}
+
+export function relativeTime(value) {
+  if (!value) return "updated -";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "updated -";
+  const diffSeconds = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
+  if (diffSeconds < 45) return "updated just now";
+  const minutes = Math.round(diffSeconds / 60);
+  if (minutes < 60) return `updated ${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `updated ${hours} h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `updated ${days} d ago`;
+  return `updated ${formatLocalTime(value)}`;
 }
 
 export function formatDuration(ms) {
@@ -154,4 +182,14 @@ export function escapeHTML(value) {
 
 export function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function offsetLabel(offsetMinutes) {
+  const sign = offsetMinutes < 0 ? "-" : "+";
+  const abs = Math.abs(offsetMinutes);
+  return `UTC${sign}${pad2(Math.floor(abs / 60))}:${pad2(abs % 60)}`;
 }

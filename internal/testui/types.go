@@ -88,6 +88,14 @@ type ConfigState struct {
 	Catalog         []CatalogProvider  `json:"catalog"`
 	Tools           []AgentToolOption  `json:"tools"`
 	SearchProvider  SearchProviderInfo `json:"search_provider"`
+	LocalTime       LocalTimeInfo      `json:"local_time"`
+}
+
+type LocalTimeInfo struct {
+	Now           string `json:"now"`
+	TimeZone      string `json:"time_zone"`
+	OffsetMinutes int    `json:"offset_minutes"`
+	OffsetLabel   string `json:"offset_label"`
 }
 
 type SearchProviderInfo struct {

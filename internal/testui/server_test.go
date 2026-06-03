@@ -46,6 +46,16 @@ func TestServerExposesConfigAndRunAPI(t *testing.T) {
 	if !strings.Contains(configRec.Body.String(), `"search_provider"`) || !strings.Contains(configRec.Body.String(), `"env_key":"FLORET_BRAVE_SEARCH_API_KEY"`) {
 		t.Fatalf("config body missing search provider state = %s", configRec.Body.String())
 	}
+	if !strings.Contains(configRec.Body.String(), `"local_time"`) {
+		t.Fatalf("config body missing local time state = %s", configRec.Body.String())
+	}
+	var configState ConfigState
+	if err := json.Unmarshal(configRec.Body.Bytes(), &configState); err != nil {
+		t.Fatal(err)
+	}
+	if configState.LocalTime.Now == "" || !strings.HasPrefix(configState.LocalTime.OffsetLabel, "UTC") {
+		t.Fatalf("config local time state is incomplete = %#v", configState.LocalTime)
+	}
 
 	catalogReq := httptest.NewRequest(http.MethodGet, "/api/catalog", nil)
 	catalogRec := httptest.NewRecorder()

@@ -1,4 +1,4 @@
-import { escapeHTML, formatDuration, formatTime, toolLabelList, totalTokens } from "../state.js";
+import { escapeHTML, formatDuration, formatLocalTime, state, toolLabelList, totalTokens } from "../state.js";
 import { bindToolPresets, readSelectedTools, renderToolMatrix } from "../components/toolMatrix.js";
 
 export function renderInspector({ session, result, tools, tab }) {
@@ -61,6 +61,7 @@ function renderTab(tab, session, observation, result, tools) {
 function renderTools(session, tools, observation) {
   const audit = (session.path_entries || []).filter((entry) => entry.type === "active_tools_change").slice().reverse();
   const request = latestProviderRequest(observation.provider_requests || []);
+  const isUpdating = state.action === "update-tools";
   return `
     <form class="profile-card" data-tool-edit-form>
       <div>
@@ -88,7 +89,7 @@ function renderTools(session, tools, observation) {
       </label>
       <div class="form-actions">
         <span class="muted">Control capability: ask_user is always available.</span>
-        <button class="primary" type="submit">Update Session Tools</button>
+        <button class="primary ${isUpdating ? "is-pending" : ""}" type="submit" ${isUpdating ? "disabled" : ""}>${isUpdating ? "Updating..." : "Update Session Tools"}</button>
       </div>
     </form>
     <section class="section">
@@ -103,7 +104,7 @@ function renderToolAudit(entry) {
   return `
     <div class="event-item">
       <strong>${escapeHTML(meta.previous_tools || "none")} -> ${escapeHTML(meta.selected_tools || "none")}</strong>
-      <span class="muted">${escapeHTML(formatTime(entry.created_at))}${meta.reason ? ` · ${escapeHTML(meta.reason)}` : ""}</span>
+      <span class="muted">${escapeHTML(formatLocalTime(entry.created_at))}${meta.reason ? ` · ${escapeHTML(meta.reason)}` : ""}</span>
     </div>
   `;
 }

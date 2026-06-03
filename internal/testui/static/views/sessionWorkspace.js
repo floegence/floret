@@ -1,4 +1,4 @@
-import { escapeHTML, formatTime, profileLabel, shortID, state, toolLabelList, totalTokens } from "../state.js";
+import { escapeHTML, formatLocalTime, profileLabel, relativeTime, shortID, state, toolLabelList, totalTokens } from "../state.js";
 import { bindInspector, renderInspector } from "./inspector.js";
 
 export function renderSessionWorkspace({ sessions, activeSession, result, tools, inspectorTab }) {
@@ -46,7 +46,7 @@ function renderSessionRail(sessions, activeSession) {
       </div>
       <div class="rail-tools">
         <input class="search-input" data-session-filter placeholder="Filter sessions, model, tools" value="${escapeHTML(state.sessionFilter)}" />
-        <button class="small" type="button" data-refresh-sessions>Refresh</button>
+        <button class="small ${state.action === "refresh-sessions" ? "is-pending" : ""}" type="button" data-refresh-sessions ${state.action === "refresh-sessions" ? "disabled" : ""}>${state.action === "refresh-sessions" ? "Refreshing..." : "Refresh"}</button>
       </div>
       <div class="session-list">
         ${filtered.length ? filtered.map((session) => renderSessionRow(session, activeSession?.id)).join("") : `<div class="section muted">No sessions match the filter.</div>`}
@@ -57,13 +57,14 @@ function renderSessionRail(sessions, activeSession) {
 
 function renderSessionRow(session, activeID) {
   const turns = session.turns?.length || 0;
+  const exactTime = formatLocalTime(session.updated_at);
   return `
     <button class="session-row ${session.id === activeID ? "active" : ""}" type="button" data-session-id="${escapeHTML(session.id)}">
       <strong>${escapeHTML(shortID(session.id))}</strong>
       <span class="row-meta">${escapeHTML(session.status || "idle")} · ${turns} turn${turns === 1 ? "" : "s"} · ${escapeHTML(session.profile?.model || "model")}</span>
       <span class="row-pills">
         <span class="tiny-pill">${escapeHTML((session.selected_tools || []).length)} tools</span>
-        <span class="tiny-pill">${escapeHTML(formatTime(session.updated_at))}</span>
+        <span class="tiny-pill" title="${escapeHTML(exactTime)}">${escapeHTML(relativeTime(session.updated_at))}</span>
       </span>
     </button>
   `;
@@ -82,6 +83,7 @@ function renderWorkspace(session, result) {
     `;
   }
   const turns = session.turns || [];
+  const isSending = state.action === "append-turn";
   const canAppend = session.can_append_message && !state.running;
   return `
     <section class="workspace">
@@ -107,7 +109,7 @@ function renderWorkspace(session, result) {
         <textarea name="message" placeholder="${canAppend ? "Send the next message to this session" : appendDisabledReason(session)}" ${canAppend ? "" : "disabled"}></textarea>
         <div class="composer-actions">
           <span class="muted">${escapeHTML(appendDisabledReason(session))}</span>
-          <button class="primary" type="submit" ${canAppend ? "" : "disabled"}>Send</button>
+          <button class="primary ${isSending ? "is-pending" : ""}" type="submit" ${canAppend ? "" : "disabled"}>${isSending ? "Sending..." : "Send"}</button>
         </div>
       </form>
     </section>
@@ -135,7 +137,7 @@ function renderEntry(entry) {
     const meta = entry.metadata || {};
     return `
       <article class="message entry">
-        <div class="message-head"><span>tools changed</span><span>${escapeHTML(formatTime(entry.created_at))}</span></div>
+        <div class="message-head"><span>tools changed</span><span>${escapeHTML(formatLocalTime(entry.created_at))}</span></div>
         <div class="message-text">${escapeHTML(meta.previous_tools || "none")} -> ${escapeHTML(meta.selected_tools || "none")}</div>
         ${meta.reason ? `<div class="muted">${escapeHTML(meta.reason)}</div>` : ""}
       </article>

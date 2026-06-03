@@ -5,6 +5,7 @@ export function renderSettings() {
   const activeID = state.config?.active_profile_id || profiles[0].id;
   const active = profiles.find((profile) => profile.id === activeID) || profiles[0];
   const providers = providerCatalog();
+  const isSaving = state.action === "save-settings";
   return `
     <section class="settings-page">
       <header class="settings-head">
@@ -54,23 +55,29 @@ export function renderSettings() {
           <label class="field"><span>Brave API key</span><input name="search_api_key" type="password" placeholder="${state.config?.search_provider?.api_key_set ? "saved key retained if empty" : "required for web_search"}" /></label>
           <label class="field"><span>Endpoint override</span><input name="search_endpoint" value="${escapeHTML(state.config?.search_provider?.endpoint || "")}" placeholder="default Brave Web Search endpoint" /></label>
           <div class="form-actions">
-            <button type="button" data-duplicate-profile>Duplicate</button>
-            <button class="primary" type="submit">Save .env.local</button>
+            <button type="button" data-duplicate-profile ${isSaving ? "disabled" : ""}>Duplicate</button>
+            <button class="primary ${isSaving ? "is-pending" : ""}" type="submit" ${isSaving ? "disabled" : ""}>${isSaving ? "Saving..." : "Save .env.local"}</button>
           </div>
         </form>
         <section class="check-card">
           <h2>Quality Checks</h2>
           <p class="muted">Run local checks without leaving the console.</p>
           <div class="form-actions">
-            <button type="button" data-run-check="unit">go test</button>
-            <button type="button" data-run-check="race">race</button>
-            <button type="button" data-run-check="eval-demo">eval demo</button>
+            ${renderCheckButton("unit", "go test")}
+            ${renderCheckButton("race", "race")}
+            ${renderCheckButton("eval-demo", "eval demo")}
           </div>
           <pre id="checkOutput" class="code-block">${escapeHTML(state.checkResult || "No check has run in this browser session.")}</pre>
         </section>
       </div>
     </section>
   `;
+}
+
+function renderCheckButton(target, label) {
+  const isRunning = state.action === "run-check" && state.actionTarget === target;
+  const anyRunning = state.action === "run-check";
+  return `<button type="button" class="${isRunning ? "is-pending" : ""}" data-run-check="${escapeHTML(target)}" ${anyRunning ? "disabled" : ""}>${isRunning ? "Running..." : escapeHTML(label)}</button>`;
 }
 
 export function bindSettings(root, handlers) {
