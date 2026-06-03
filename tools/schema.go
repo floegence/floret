@@ -217,9 +217,15 @@ func validateValue(path string, schema map[string]any, value any) error {
 		if !isInteger(value) {
 			return fmt.Errorf("%w: %s must be an integer", ErrSchema, path)
 		}
+		if err := validateNumericRange(path, schema, numericValue(value)); err != nil {
+			return err
+		}
 	case "number":
 		if !isNumber(value) {
 			return fmt.Errorf("%w: %s must be a number", ErrSchema, path)
+		}
+		if err := validateNumericRange(path, schema, numericValue(value)); err != nil {
+			return err
 		}
 	case "array":
 		items, ok := value.([]any)
@@ -311,6 +317,91 @@ func isNumber(value any) bool {
 	default:
 		return false
 	}
+}
+
+func numericValue(value any) float64 {
+	switch v := value.(type) {
+	case json.Number:
+		f, _ := v.Float64()
+		return f
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int:
+		return float64(v)
+	case int8:
+		return float64(v)
+	case int16:
+		return float64(v)
+	case int32:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case uint:
+		return float64(v)
+	case uint8:
+		return float64(v)
+	case uint16:
+		return float64(v)
+	case uint32:
+		return float64(v)
+	case uint64:
+		return float64(v)
+	default:
+		return math.NaN()
+	}
+}
+
+func validateNumericRange(path string, schema map[string]any, value float64) error {
+	if min, ok := schemaNumber(schema["minimum"]); ok && value < min {
+		return fmt.Errorf("%w: %s must be >= %s", ErrSchema, path, trimNumber(min))
+	}
+	if max, ok := schemaNumber(schema["maximum"]); ok && value > max {
+		return fmt.Errorf("%w: %s must be <= %s", ErrSchema, path, trimNumber(max))
+	}
+	return nil
+}
+
+func schemaNumber(value any) (float64, bool) {
+	switch v := value.(type) {
+	case json.Number:
+		f, err := v.Float64()
+		return f, err == nil
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int8:
+		return float64(v), true
+	case int16:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case uint:
+		return float64(v), true
+	case uint8:
+		return float64(v), true
+	case uint16:
+		return float64(v), true
+	case uint32:
+		return float64(v), true
+	case uint64:
+		return float64(v), true
+	default:
+		return 0, false
+	}
+}
+
+func trimNumber(value float64) string {
+	if math.Trunc(value) == value {
+		return fmt.Sprintf("%.0f", value)
+	}
+	return fmt.Sprintf("%g", value)
 }
 
 func enumContains(enum []any, value any) bool {

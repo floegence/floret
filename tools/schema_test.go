@@ -81,3 +81,20 @@ func TestEnumArrayNestedObjectValidation(t *testing.T) {
 		t.Fatalf("nested array err = %v", err)
 	}
 }
+
+func TestValidateNumericMinimumAndMaximum(t *testing.T) {
+	limited := Integer("count")
+	limited["minimum"] = 1
+	limited["maximum"] = 20
+	schema := StrictObject(map[string]any{"count": limited}, []string{"count"})
+
+	if _, err := Validate(schema, []byte(`{"count":20}`)); err != nil {
+		t.Fatalf("valid range err = %v", err)
+	}
+	if _, err := Validate(schema, []byte(`{"count":0}`)); err == nil || !strings.Contains(err.Error(), "$.count must be >= 1") {
+		t.Fatalf("minimum err = %v", err)
+	}
+	if _, err := Validate(schema, []byte(`{"count":21}`)); err == nil || !strings.Contains(err.Error(), "$.count must be <= 20") {
+		t.Fatalf("maximum err = %v", err)
+	}
+}

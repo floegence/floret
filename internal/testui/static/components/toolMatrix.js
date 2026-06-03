@@ -7,7 +7,7 @@ export function renderToolMatrix({ tools, selected, editable = true, name = "too
     <div class="preset-bar" data-tool-presets="${escapeHTML(name)}">
       ${["chat", "read", "coding", "shell", "all"].map((preset) => `<button type="button" class="small" data-tool-preset="${preset}" ${editable ? "" : "disabled"}>${presetLabel(preset)}</button>`).join("")}
     </div>
-    <p class="tool-boundary-note">Network tools currently expose URL fetch only. All does not add web search or weather API access.</p>
+    <p class="tool-boundary-note">Network tools are explicit capabilities: web_fetch fetches a known URL; web_search searches by query through the configured client search provider. Neither is a weather API.</p>
     ${groups.map((group) => renderToolGroup(group, selectedSet, editable, name)).join("")}
   `;
 }

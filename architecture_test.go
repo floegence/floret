@@ -31,7 +31,7 @@ func TestImportBoundaries(t *testing.T) {
 	}
 }
 
-func TestNoLegacyToolHandlerOrLocalWebSearch(t *testing.T) {
+func TestNoLegacyToolHandlerOrHostedDispatchInLocalTools(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("tools", "tools.go"))
 	if err != nil {
 		t.Fatal(err)
@@ -42,8 +42,8 @@ func TestNoLegacyToolHandlerOrLocalWebSearch(t *testing.T) {
 			t.Fatalf("legacy tool contract still present: %s", forbidden)
 		}
 	}
-	if strings.Contains(text, `"web_search"`) {
-		t.Fatalf("local executable web_search must not be registered in tools")
+	if strings.Contains(text, "HostedToolDefinition") || strings.Contains(text, "HostedTools") {
+		t.Fatalf("generic local tool runtime must not dispatch provider-hosted tools")
 	}
 }
 

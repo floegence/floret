@@ -81,12 +81,22 @@ type ArtifactSnapshot struct {
 }
 
 type ConfigState struct {
-	EnvFile         string            `json:"env_file"`
-	EnvFileFound    bool              `json:"env_file_found"`
-	ActiveProfileID string            `json:"active_profile_id"`
-	Profiles        []ProviderProfile `json:"profiles"`
-	Catalog         []CatalogProvider `json:"catalog"`
-	Tools           []AgentToolOption `json:"tools"`
+	EnvFile         string             `json:"env_file"`
+	EnvFileFound    bool               `json:"env_file_found"`
+	ActiveProfileID string             `json:"active_profile_id"`
+	Profiles        []ProviderProfile  `json:"profiles"`
+	Catalog         []CatalogProvider  `json:"catalog"`
+	Tools           []AgentToolOption  `json:"tools"`
+	SearchProvider  SearchProviderInfo `json:"search_provider"`
+}
+
+type SearchProviderInfo struct {
+	Provider    string `json:"provider"`
+	APIKeySet   bool   `json:"api_key_set"`
+	Endpoint    string `json:"endpoint,omitempty"`
+	EnvKey      string `json:"env_key"`
+	EndpointKey string `json:"endpoint_key"`
+	Capability  string `json:"capability"`
 }
 
 type ProviderProfile struct {
@@ -103,8 +113,15 @@ type ProviderProfile struct {
 type CatalogProvider = modelcatalog.Provider
 
 type SaveConfigRequest struct {
-	ActiveProfileID string            `json:"active_profile_id"`
-	Profiles        []ProviderProfile `json:"profiles"`
+	ActiveProfileID string             `json:"active_profile_id"`
+	Profiles        []ProviderProfile  `json:"profiles"`
+	SearchProvider  SaveSearchProvider `json:"search_provider,omitempty"`
+}
+
+type SaveSearchProvider struct {
+	Provider string  `json:"provider,omitempty"`
+	APIKey   string  `json:"api_key,omitempty"`
+	Endpoint *string `json:"endpoint,omitempty"`
 }
 
 type AgentRunRequest struct {

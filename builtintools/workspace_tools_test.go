@@ -2,7 +2,9 @@ package builtintools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -147,6 +149,135 @@ func TestWebFetchRequiresApprovalAndFetchesHTTP(t *testing.T) {
 	got := reg.Run(context.Background(), provider.ToolCall{Name: "web_fetch", Args: `{"url":"` + server.URL + `","format":"markdown","timeout_ms":null,"max_bytes":null}`}, allowAll)
 	if got.IsError || !strings.Contains(got.Text, "Hello Floret") || got.Metadata["status"] != http.StatusOK {
 		t.Fatalf("web_fetch = %#v", got)
+	}
+}
+
+func TestWebSearchRequiresAPIKeyAndSearchQueryApproval(t *testing.T) {
+	t.Setenv("FLORET_BRAVE_SEARCH_API_KEY", "")
+	reg := tools.NewRegistry()
+	if err := RegisterSearch(reg, SearchOptions{APIKey: ""}); err != nil {
+		t.Fatal(err)
+	}
+	denied := reg.Run(context.Background(), provider.ToolCall{Name: ToolWebSearch, Args: `{"query":"Changsha weather 2026-06-03","count":8,"country":null,"search_lang":null,"freshness":null}`}, nil)
+	if !denied.IsError || denied.Text != tools.ErrRejected.Error() {
+		t.Fatalf("denied = %#v", denied)
+	}
+	var approval tools.ApprovalRequest
+	approvedWithoutKey := reg.Run(context.Background(), provider.ToolCall{Name: ToolWebSearch, Args: `{"query":"Changsha weather 2026-06-03","count":8,"country":null,"search_lang":null,"freshness":null}`}, func(_ context.Context, req tools.ApprovalRequest) (tools.PermissionDecision, error) {
+		approval = req
+		return tools.PermissionDecisionAllow, nil
+	})
+	if !approvedWithoutKey.IsError || !strings.Contains(approvedWithoutKey.Text, "FLORET_BRAVE_SEARCH_API_KEY") {
+		t.Fatalf("missing key = %#v", approvedWithoutKey)
+	}
+	if len(approval.Resources) != 1 || approval.Resources[0].Kind != "search_query" || approval.Resources[0].Value != "Changsha weather 2026-06-03" {
+		t.Fatalf("approval resources = %#v", approval.Resources)
+	}
+}
+
+func TestWebSearchCallsBraveAndReturnsCompactResults(t *testing.T) {
+	var seenPath string
+	var seenToken string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.RawQuery
+		seenToken = r.Header.Get("X-Subscription-Token")
+		writeTestJSON(t, w, map[string]any{
+			"web": map[string]any{
+				"results": []map[string]any{
+					{
+						"title":       "Changsha weather",
+						"url":         "https://example.com/weather",
+						"description": "Thunderstorms in Changsha today.",
+						"age":         "2 hours ago",
+						"profile":     map[string]any{"name": "Example Weather"},
+					},
+				},
+			},
+			"query": map[string]any{"original": "Changsha weather 2026-06-03"},
+		})
+	}))
+	defer server.Close()
+	reg := tools.NewRegistry()
+	if err := RegisterSearch(reg, SearchOptions{APIKey: "brave-key", Endpoint: server.URL}); err != nil {
+		t.Fatal(err)
+	}
+	got := reg.Run(context.Background(), provider.ToolCall{Name: ToolWebSearch, Args: `{"query":"Changsha weather 2026-06-03","count":3,"country":"CN","search_lang":"zh-hans","freshness":"pd"}`}, allowAll)
+	if got.IsError || !strings.Contains(got.Text, "Changsha weather") || !strings.Contains(got.Text, "https://example.com/weather") {
+		t.Fatalf("web_search = %#v", got)
+	}
+	if got.Metadata["provider"] != "brave" || got.Metadata["query"] != "Changsha weather 2026-06-03" || got.Metadata["count"] != 3 || got.Metadata["result_count"] != 1 {
+		t.Fatalf("metadata = %#v", got.Metadata)
+	}
+	if seenToken != "brave-key" || !strings.Contains(seenPath, "q=Changsha+weather+2026-06-03") || !strings.Contains(seenPath, "count=3") || !strings.Contains(seenPath, "country=CN") || !strings.Contains(seenPath, "search_lang=zh-hans") || !strings.Contains(seenPath, "freshness=pd") {
+		t.Fatalf("request query=%q token=%q", seenPath, seenToken)
+	}
+}
+
+func TestWebSearchHandlesEmptyErrorsAndTimeouts(t *testing.T) {
+	t.Run("empty results", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeTestJSON(t, w, map[string]any{"web": map[string]any{"results": []any{}}})
+		}))
+		defer server.Close()
+		reg := tools.NewRegistry()
+		if err := RegisterSearch(reg, SearchOptions{APIKey: "key", Endpoint: server.URL}); err != nil {
+			t.Fatal(err)
+		}
+		got := reg.Run(context.Background(), provider.ToolCall{Name: ToolWebSearch, Args: `{"query":"no such result","count":null,"country":null,"search_lang":null,"freshness":null}`}, allowAll)
+		if got.IsError || !strings.Contains(got.Text, "No web search results") || got.Metadata["result_count"] != 0 {
+			t.Fatalf("empty = %#v", got)
+		}
+	})
+
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests, http.StatusBadGateway} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, http.StatusText(status), status)
+			}))
+			defer server.Close()
+			reg := tools.NewRegistry()
+			if err := RegisterSearch(reg, SearchOptions{APIKey: "key", Endpoint: server.URL}); err != nil {
+				t.Fatal(err)
+			}
+			got := reg.Run(context.Background(), provider.ToolCall{Name: ToolWebSearch, Args: `{"query":"error","count":null,"country":null,"search_lang":null,"freshness":null}`}, allowAll)
+			if !got.IsError || !strings.Contains(got.Text, fmt.Sprintf("status %d", status)) {
+				t.Fatalf("http status %d = %#v", status, got)
+			}
+		})
+	}
+
+	t.Run("timeout", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(200 * time.Millisecond)
+			_, _ = w.Write([]byte(`{"web":{"results":[]}}`))
+		}))
+		defer server.Close()
+		reg := tools.NewRegistry()
+		if err := RegisterSearch(reg, SearchOptions{APIKey: "key", Endpoint: server.URL, DefaultTimeoutMS: 20}); err != nil {
+			t.Fatal(err)
+		}
+		got := reg.Run(context.Background(), provider.ToolCall{Name: ToolWebSearch, Args: `{"query":"slow","count":null,"country":null,"search_lang":null,"freshness":null}`}, allowAll)
+		if !got.IsError || !strings.Contains(got.Text, "deadline") && !strings.Contains(got.Text, "timeout") {
+			t.Fatalf("timeout = %#v", got)
+		}
+	})
+}
+
+func TestWebSearchRejectsInvalidArgumentsBeforeExecution(t *testing.T) {
+	reg := tools.NewRegistry()
+	if err := RegisterSearch(reg, SearchOptions{APIKey: "key"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range []string{
+		`{"query":"","count":8,"country":null,"search_lang":null,"freshness":null}`,
+		`{"query":"x","count":0,"country":null,"search_lang":null,"freshness":null}`,
+		`{"query":"x","count":21,"country":null,"search_lang":null,"freshness":null}`,
+		`{"query":"x","count":8,"country":null,"search_lang":null,"freshness":"bad"}`,
+	} {
+		got := reg.Run(context.Background(), provider.ToolCall{Name: ToolWebSearch, Args: args}, allowAll)
+		if !got.IsError {
+			t.Fatalf("args %s should fail: %#v", args, got)
+		}
 	}
 }
 
@@ -550,6 +681,14 @@ func quoteJSON(value string) string {
 	value = strings.ReplaceAll(value, `"`, `\"`)
 	value = strings.ReplaceAll(value, "\n", `\n`)
 	return `"` + value + `"`
+}
+
+func writeTestJSON(t *testing.T, w http.ResponseWriter, value any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func hasToolDefinition(defs []provider.ToolDefinition, name string) bool {

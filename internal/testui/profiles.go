@@ -16,8 +16,12 @@ import (
 )
 
 const (
-	profilesKey      = "FLORET_TESTUI_PROFILES_B64"
-	activeProfileKey = "FLORET_TESTUI_ACTIVE_PROFILE"
+	profilesKey          = "FLORET_TESTUI_PROFILES_B64"
+	activeProfileKey     = "FLORET_TESTUI_ACTIVE_PROFILE"
+	braveSearchKey       = "FLORET_BRAVE_SEARCH_API_KEY"
+	braveSearchEndpoint  = "FLORET_BRAVE_SEARCH_ENDPOINT"
+	searchProviderBrave  = "brave"
+	defaultSearchSummary = "Client web_search uses Brave Search when selected. Hosted provider search is shown separately when an adapter supports it."
 )
 
 func (r Runner) ConfigState() (ConfigState, error) {
@@ -31,6 +35,7 @@ func (r Runner) ConfigState() (ConfigState, error) {
 			return state, readErr
 		}
 	}
+	state.SearchProvider = searchProviderInfo(fileValues)
 	if raw := fileValues[profilesKey]; raw != "" {
 		profiles, err := decodeProfiles(raw)
 		if err != nil {
@@ -84,7 +89,7 @@ func (r Runner) SaveConfigState(req SaveConfigRequest) (ConfigState, error) {
 	if activeIdx < 0 {
 		return ConfigState{}, fmt.Errorf("active profile %q was not found", activeID)
 	}
-	if err := writeProfilesEnv(r.EnvFile, activeID, profiles[activeIdx], profiles); err != nil {
+	if err := writeProfilesEnv(r.EnvFile, activeID, profiles[activeIdx], profiles, req.SearchProvider); err != nil {
 		return ConfigState{}, err
 	}
 	return r.ConfigState()
@@ -223,10 +228,19 @@ func encodeProfiles(profiles []ProviderProfile) (string, error) {
 	return base64.StdEncoding.EncodeToString(data), nil
 }
 
-func writeProfilesEnv(path, activeID string, active ProviderProfile, profiles []ProviderProfile) error {
+func writeProfilesEnv(path, activeID string, active ProviderProfile, profiles []ProviderProfile, search SaveSearchProvider) error {
 	rawProfiles, err := encodeProfiles(profiles)
 	if err != nil {
 		return err
+	}
+	existingValues, _ := readDotEnv(path)
+	searchKey := strings.TrimSpace(search.APIKey)
+	if searchKey == "" {
+		searchKey = existingValues[braveSearchKey]
+	}
+	searchEndpoint := existingValues[braveSearchEndpoint]
+	if search.Endpoint != nil {
+		searchEndpoint = strings.TrimSpace(*search.Endpoint)
 	}
 	managed := []struct {
 		key   string
@@ -239,6 +253,8 @@ func writeProfilesEnv(path, activeID string, active ProviderProfile, profiles []
 		{"FLORET_BASE_URL", active.BaseURL},
 		{"FLORET_API_KEY", active.APIKey},
 		{"FLORET_FAKE_RESPONSE", active.FakeResponse},
+		{braveSearchKey, searchKey},
+		{braveSearchEndpoint, searchEndpoint},
 	}
 	managedKeys := map[string]struct{}{}
 	for _, item := range managed {
@@ -277,6 +293,17 @@ func writeProfilesEnv(path, activeID string, active ProviderProfile, profiles []
 		return err
 	}
 	return os.WriteFile(path, []byte(b.String()), 0o600)
+}
+
+func searchProviderInfo(values map[string]string) SearchProviderInfo {
+	return SearchProviderInfo{
+		Provider:    searchProviderBrave,
+		APIKeySet:   strings.TrimSpace(values[braveSearchKey]) != "",
+		Endpoint:    strings.TrimSpace(values[braveSearchEndpoint]),
+		EnvKey:      braveSearchKey,
+		EndpointKey: braveSearchEndpoint,
+		Capability:  defaultSearchSummary,
+	}
 }
 
 func getEnvValue(values map[string]string, key string, fallback string) string {

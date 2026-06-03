@@ -54,17 +54,32 @@ function renderTab(tab, session, observation, result, tools) {
       return `<pre class="json-block">${escapeHTML(JSON.stringify({ session, result }, null, 2))}</pre>`;
     case "tools":
     default:
-      return renderTools(session, tools);
+      return renderTools(session, tools, observation);
   }
 }
 
-function renderTools(session, tools) {
+function renderTools(session, tools, observation) {
   const audit = (session.path_entries || []).filter((entry) => entry.type === "active_tools_change").slice().reverse();
+  const request = latestProviderRequest(observation.provider_requests || []);
   return `
     <form class="profile-card" data-tool-edit-form>
       <div>
         <h3>Session Tools</h3>
         <p class="muted">These tools are bound to this session. Changes here affect future turns only.</p>
+      </div>
+      <div class="tool-boundary-grid">
+        <div>
+          <strong>Local client tools</strong>
+          <span>${escapeHTML(toolLabelList(session.selected_tools || []))}</span>
+        </div>
+        <div>
+          <strong>Always available</strong>
+          <span>ask_user</span>
+        </div>
+        <div>
+          <strong>Provider-hosted tools</strong>
+          <span>${escapeHTML(hostedToolLabel(request?.hosted_tools || []))}</span>
+        </div>
       </div>
       ${renderToolMatrix({ tools, selected: session.selected_tools || [], editable: true, name: "session-tools" })}
       <label class="field">
@@ -107,6 +122,7 @@ function renderRequests(requests) {
             <span class="metric">${totalTokens(request.context_usage)} est tokens</span>
           </div>
           <div class="key-value"><span>Tools</span><span>${escapeHTML((request.tools || []).map((tool) => tool.name).join(", ") || "none")}</span></div>
+          <div class="key-value"><span>Hosted</span><span>${escapeHTML(hostedToolLabel(request.hosted_tools || []))}</span></div>
           <details>
             <summary>Messages</summary>
             <pre class="json-block">${escapeHTML(JSON.stringify(request.messages || [], null, 2))}</pre>
@@ -115,6 +131,15 @@ function renderRequests(requests) {
       `).join("")}
     </div>
   `;
+}
+
+function latestProviderRequest(requests) {
+  return requests[requests.length - 1] || null;
+}
+
+function hostedToolLabel(tools) {
+  if (!tools || !tools.length) return "none";
+  return tools.map((tool) => `${tool.name || tool.type} (${tool.type || "hosted"})`).join(", ");
 }
 
 function renderEvents(events, providerEvents) {

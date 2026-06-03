@@ -614,6 +614,43 @@ button.small {
   line-height: 1.45;
 }
 
+.tool-boundary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.tool-boundary-grid > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+  border-right: 1px solid var(--line);
+}
+
+.tool-boundary-grid > div:last-child {
+  border-right: 0;
+}
+
+.tool-boundary-grid strong {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.tool-boundary-grid span {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.settings-divider {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--line);
+}
+
 .preset-bar {
   display: flex;
   flex-wrap: wrap;
@@ -763,8 +800,18 @@ button.small {
   }
 
   .settings-grid,
-  .field-row {
+  .field-row,
+  .tool-boundary-grid {
     grid-template-columns: 1fr;
+  }
+
+  .tool-boundary-grid > div {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .tool-boundary-grid > div:last-child {
+    border-bottom: 0;
   }
 
   .sessions-layout {

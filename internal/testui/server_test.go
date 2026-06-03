@@ -40,8 +40,11 @@ func TestServerExposesConfigAndRunAPI(t *testing.T) {
 	if !strings.Contains(configRec.Body.String(), `"id":"openai"`) || !strings.Contains(configRec.Body.String(), `"gpt-5.4"`) {
 		t.Fatalf("config body missing catalog = %s", configRec.Body.String())
 	}
-	if !strings.Contains(configRec.Body.String(), `"name":"grep"`) || !strings.Contains(configRec.Body.String(), `"name":"web_fetch"`) {
+	if !strings.Contains(configRec.Body.String(), `"name":"grep"`) || !strings.Contains(configRec.Body.String(), `"name":"web_fetch"`) || !strings.Contains(configRec.Body.String(), `"name":"web_search"`) {
 		t.Fatalf("config body missing tools = %s", configRec.Body.String())
+	}
+	if !strings.Contains(configRec.Body.String(), `"search_provider"`) || !strings.Contains(configRec.Body.String(), `"env_key":"FLORET_BRAVE_SEARCH_API_KEY"`) {
+		t.Fatalf("config body missing search provider state = %s", configRec.Body.String())
 	}
 
 	catalogReq := httptest.NewRequest(http.MethodGet, "/api/catalog", nil)
@@ -75,12 +78,23 @@ func TestServerSavesConfigAndRunsAgent(t *testing.T) {
 	}
 	handler := server.Handler()
 
-	saveBody := `{"active_profile_id":"fake","profiles":[{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"server-ok"}]}`
+	saveBody := `{"active_profile_id":"fake","profiles":[{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"server-ok"}],"search_provider":{"provider":"brave","api_key":"search-key","endpoint":"https://search.example.test"}}`
 	saveReq := httptest.NewRequest(http.MethodPut, "/api/config", strings.NewReader(saveBody))
 	saveRec := httptest.NewRecorder()
 	handler.ServeHTTP(saveRec, saveReq)
 	if saveRec.Code != http.StatusOK {
 		t.Fatalf("save status = %d, body = %s", saveRec.Code, saveRec.Body.String())
+	}
+	if !strings.Contains(saveRec.Body.String(), `"api_key_set":true`) || !strings.Contains(saveRec.Body.String(), `"endpoint":"https://search.example.test"`) {
+		t.Fatalf("save body missing search provider state = %s", saveRec.Body.String())
+	}
+
+	resaveBody := `{"active_profile_id":"fake","profiles":[{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"server-ok"}],"search_provider":{"provider":"brave","api_key":"","endpoint":"https://search.example.test/next"}}`
+	resaveReq := httptest.NewRequest(http.MethodPut, "/api/config", strings.NewReader(resaveBody))
+	resaveRec := httptest.NewRecorder()
+	handler.ServeHTTP(resaveRec, resaveReq)
+	if resaveRec.Code != http.StatusOK || !strings.Contains(resaveRec.Body.String(), `"api_key_set":true`) || !strings.Contains(resaveRec.Body.String(), `"endpoint":"https://search.example.test/next"`) {
+		t.Fatalf("resave status/body = %d %s", resaveRec.Code, resaveRec.Body.String())
 	}
 
 	runBody := `{"profile_id":"fake","message":"hello","system_prompt":"test","context_policy":{"context_window_tokens":8192,"max_output_tokens":1024,"recent_tail_tokens":1024}}`
@@ -133,6 +147,34 @@ func TestServerAgentSessionCreateAcceptsSelectedTools(t *testing.T) {
 	}
 	if hasObservedTool(result.Observation.ProviderRequests[0].Tools, "read") || hasObservedTool(result.Observation.ProviderRequests[0].Tools, "shell") {
 		t.Fatalf("unselected tools exposed: %#v", result.Observation.ProviderRequests[0].Tools)
+	}
+}
+
+func TestServerAgentSessionCreateAcceptsClientWebSearchTool(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"ok"},"message":"hello","system_prompt":"test","selected_tools":["web_search"]}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var result AgentRunResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "completed" || !slices.Equal(result.Session.SelectedTools, []string{"web_search"}) {
+		t.Fatalf("result = %#v", result)
+	}
+	if !hasObservedTool(result.Observation.ProviderRequests[0].Tools, "web_search") || hasObservedTool(result.Observation.ProviderRequests[0].Tools, "web_fetch") {
+		t.Fatalf("web_search not isolated in provider request: %#v", result.Observation.ProviderRequests[0].Tools)
 	}
 }
 

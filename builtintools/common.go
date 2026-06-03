@@ -2,6 +2,7 @@ package builtintools
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,10 +30,19 @@ type NetworkOptions struct {
 	AllowPrivateIPs  bool
 }
 
+type SearchOptions struct {
+	Provider         string
+	APIKey           string
+	Endpoint         string
+	DefaultTimeoutMS int
+	HTTPClient       *http.Client
+}
+
 type SelectedOptions struct {
 	Workspace WorkspaceOptions
 	Shell     ShellOptions
 	Network   NetworkOptions
+	Search    SearchOptions
 }
 
 const (
@@ -45,6 +55,7 @@ const (
 	ToolWrite      = "write"
 	ToolShell      = "shell"
 	ToolWebFetch   = "web_fetch"
+	ToolWebSearch  = "web_search"
 )
 
 func RegisterSelected(reg *tools.Registry, opts SelectedOptions, names ...string) error {
@@ -74,6 +85,8 @@ func RegisterSelected(reg *tools.Registry, opts SelectedOptions, names ...string
 			errs = append(errs, RegisterShell(reg, opts.Shell))
 		case ToolWebFetch:
 			errs = append(errs, RegisterNetwork(reg, opts.Network))
+		case ToolWebSearch:
+			errs = append(errs, RegisterSearch(reg, opts.Search))
 		default:
 			errs = append(errs, fmt.Errorf("unknown built-in tool %q", name))
 		}

@@ -446,7 +446,7 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 	rec := &event.Recorder{}
 	harnessRec := &agentharness.HarnessRecorder{}
 	registry := tools.NewRegistry()
-	if err := registerAgentSessionTools(registry, r.Root, selectedTools); err != nil {
+	if err := registerAgentSessionTools(registry, r.Root, r.EnvFile, selectedTools); err != nil {
 		return agentSessionRuntime{}, err
 	}
 	h := agentharness.New(agentharness.Options{
@@ -575,7 +575,7 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 		return nil, err
 	}
 	registry := tools.NewRegistry()
-	if err := registerAgentSessionTools(registry, r.Root, selectedTools); err != nil {
+	if err := registerAgentSessionTools(registry, r.Root, r.EnvFile, selectedTools); err != nil {
 		return nil, err
 	}
 	h := agentharness.New(agentharness.Options{

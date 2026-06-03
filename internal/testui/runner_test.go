@@ -3,6 +3,8 @@ package testui
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -318,12 +320,12 @@ func TestRunnerAgentSessionSelectedToolsExplicitlyExposeBuiltInTools(t *testing.
 		ProfileID:     "fake",
 		Message:       "hello",
 		SystemPrompt:  "test",
-		SelectedTools: []string{"read", "list", "glob", "grep", "apply_patch", "edit", "write", "shell", "web_fetch"},
+		SelectedTools: []string{"read", "list", "glob", "grep", "apply_patch", "edit", "write", "shell", "web_fetch", "web_search"},
 	})
-	if coding.Status != "completed" || len(coding.Session.SelectedTools) != 9 {
+	if coding.Status != "completed" || len(coding.Session.SelectedTools) != 10 {
 		t.Fatalf("coding = %#v", coding)
 	}
-	for _, name := range []string{"read", "list", "glob", "grep", "apply_patch", "edit", "write", "shell", "web_fetch"} {
+	for _, name := range []string{"read", "list", "glob", "grep", "apply_patch", "edit", "write", "shell", "web_fetch", "web_search"} {
 		if !hasStrictTool(coding.Observation.ProviderRequests[0].Tools, name) {
 			t.Fatalf("selected tool %s missing: %#v", name, coding.Observation.ProviderRequests[0].Tools)
 		}
@@ -389,6 +391,60 @@ func TestRunnerAgentSessionCarriesReasoningThroughToolFollowUp(t *testing.T) {
 			msg.Reasoning == "Inspect workspace before answering."
 	}) {
 		t.Fatalf("follow-up request did not replay tool-call reasoning: %#v", result.Observation.ProviderRequests[1].Messages)
+	}
+}
+
+func TestRunnerAgentSessionCanExecuteClientWebSearch(t *testing.T) {
+	root := t.TempDir()
+	searchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Subscription-Token") != "test-search-key" {
+			http.Error(w, "missing search token", http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Query().Get("q") != "Changsha weather 2026-06-03" {
+			http.Error(w, "wrong query", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"web":{"results":[{"title":"Changsha forecast","url":"https://example.com/changsha","description":"Thunderstorms today.","profile":{"name":"Example Weather"}}]}}`))
+	}))
+	defer searchServer.Close()
+	if err := os.WriteFile(filepath.Join(root, config.DefaultEnvFile), []byte("FLORET_BRAVE_SEARCH_API_KEY=test-search-key\nFLORET_BRAVE_SEARCH_ENDPOINT="+searchServer.URL+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scripted := harness.NewScriptedProvider(
+		harness.Step(
+			harness.Tool("search-1", "web_search", `{"query":"Changsha weather 2026-06-03","count":3,"country":"CN","search_lang":"zh-hans","freshness":null}`),
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(harness.Text("The search result says thunderstorms today."), harness.Done()),
+	)
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+
+	result := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:       "查询长沙天气",
+		SystemPrompt:  "test",
+		SelectedTools: []string{"web_search"},
+	})
+
+	if result.Status != "completed" || !strings.Contains(result.Output, "thunderstorms") {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(result.Observation.ProviderRequests) != 2 {
+		t.Fatalf("provider requests = %#v", result.Observation.ProviderRequests)
+	}
+	if !hasStrictTool(result.Observation.ProviderRequests[0].Tools, "web_search") || hasStrictTool(result.Observation.ProviderRequests[0].Tools, "web_fetch") {
+		t.Fatalf("web_search tool contract missing or mixed with fetch: %#v", result.Observation.ProviderRequests[0].Tools)
+	}
+	if !slices.ContainsFunc(result.Observation.SessionMessages, func(msg ObservedSessionMessage) bool {
+		return msg.Role == "tool" && msg.ToolName == "web_search" && strings.Contains(msg.Content, "Changsha forecast")
+	}) {
+		t.Fatalf("web_search tool result missing: %#v", result.Observation.SessionMessages)
 	}
 }
 

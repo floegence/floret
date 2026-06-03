@@ -34,6 +34,25 @@ export function renderSettings() {
           <label class="field"><span>Base URL</span><input name="base_url" value="${escapeHTML(active.base_url || "")}" placeholder="https://api.example.com/v1" /></label>
           <label class="field"><span>API key</span><input name="api_key" type="password" placeholder="${active.api_key_set ? "saved key retained if empty" : "optional"}" /></label>
           <label class="field"><span>Fake response</span><input name="fake_response" value="${escapeHTML(active.fake_response || "")}" /></label>
+          <div class="settings-divider"></div>
+          <h2>Search Provider</h2>
+          <p class="muted">Client web_search uses Brave Search for providers that do not offer hosted web search. Hosted provider tools remain separate in the Inspector.</p>
+          <div class="tool-boundary-grid">
+            <div>
+              <strong>Provider</strong>
+              <span>${escapeHTML(state.config?.search_provider?.provider || "brave")}</span>
+            </div>
+            <div>
+              <strong>API key</strong>
+              <span>${state.config?.search_provider?.api_key_set ? "saved" : "not saved"}</span>
+            </div>
+            <div>
+              <strong>Tool</strong>
+              <span>web_search</span>
+            </div>
+          </div>
+          <label class="field"><span>Brave API key</span><input name="search_api_key" type="password" placeholder="${state.config?.search_provider?.api_key_set ? "saved key retained if empty" : "required for web_search"}" /></label>
+          <label class="field"><span>Endpoint override</span><input name="search_endpoint" value="${escapeHTML(state.config?.search_provider?.endpoint || "")}" placeholder="default Brave Web Search endpoint" /></label>
           <div class="form-actions">
             <button type="button" data-duplicate-profile>Duplicate</button>
             <button class="primary" type="submit">Save .env.local</button>
@@ -76,7 +95,15 @@ export function bindSettings(root, handlers) {
       fake_response: form.elements.fake_response.value,
     };
     if (index >= 0) profiles[index] = next;
-    handlers.onSave({ active_profile_id: next.id, profiles });
+    handlers.onSave({
+      active_profile_id: next.id,
+      profiles,
+      search_provider: {
+        provider: "brave",
+        api_key: form.elements.search_api_key?.value || "",
+        endpoint: form.elements.search_endpoint?.value || "",
+      },
+    });
   });
   root.querySelector("[data-duplicate-profile]")?.addEventListener("click", () => handlers.onDuplicate());
   root.querySelectorAll("[data-run-check]").forEach((button) => {
