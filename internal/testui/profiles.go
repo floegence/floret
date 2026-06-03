@@ -195,7 +195,7 @@ func stripProfileSecrets(profiles []ProviderProfile) []ProviderProfile {
 }
 
 func stripProfileSecret(profile ProviderProfile) ProviderProfile {
-	profile.APIKeySet = profile.APIKey != ""
+	profile.APIKeySet = profile.APIKey != "" || profile.APIKeySet
 	profile.APIKey = ""
 	return profile
 }

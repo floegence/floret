@@ -128,6 +128,20 @@ func TestServerAgentSessionCreateAndAppendTurn(t *testing.T) {
 		t.Fatalf("first = %#v", first)
 	}
 
+	waitingGetReq := httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+first.SessionID, nil)
+	waitingGetRec := httptest.NewRecorder()
+	handler.ServeHTTP(waitingGetRec, waitingGetReq)
+	if waitingGetRec.Code != http.StatusOK {
+		t.Fatalf("waiting get status = %d, body = %s", waitingGetRec.Code, waitingGetRec.Body.String())
+	}
+	var waitingSnapshot AgentSessionSnapshot
+	if err := json.Unmarshal(waitingGetRec.Body.Bytes(), &waitingSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	if waitingSnapshot.Status != "waiting" || waitingSnapshot.WaitingPrompt != "Need file?" || !waitingSnapshot.CanAppendMessage || len(waitingSnapshot.Turns) != 1 {
+		t.Fatalf("waiting snapshot = %#v", waitingSnapshot)
+	}
+
 	turnReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+first.SessionID+"/turns", strings.NewReader(`{"message":"main.go"}`))
 	turnRec := httptest.NewRecorder()
 	handler.ServeHTTP(turnRec, turnReq)
@@ -168,6 +182,94 @@ func TestServerAgentSessionCreateAndAppendTurn(t *testing.T) {
 	}
 	if len(sessions) != 1 || sessions[0].ID != first.SessionID || len(sessions[0].Turns) != 2 {
 		t.Fatalf("sessions = %#v", sessions)
+	}
+}
+
+func TestServerAgentSessionPersistsAcrossServerRestart(t *testing.T) {
+	root := t.TempDir()
+	firstProvider := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("ask", "ask_user", "Need file?"), harness.Done()),
+	)
+	firstRunner := NewRunner(root)
+	firstRunner.Now = fixedClock()
+	firstRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return firstProvider, nil
+	}
+	firstServer, err := NewServer(firstRunner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstHandler := firstServer.Handler()
+
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"unused"},"message":"hello","system_prompt":"test","context_policy":{"context_window_tokens":8192,"max_output_tokens":1024,"recent_tail_tokens":1024}}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	firstHandler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var first AgentRunResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != "waiting" || first.SessionID == "" {
+		t.Fatalf("first = %#v", first)
+	}
+
+	secondProvider := harness.NewScriptedProvider(
+		harness.Step(harness.Text("done after restart"), harness.Done()),
+	)
+	secondRunner := NewRunner(root)
+	secondRunner.Now = fixedClock()
+	secondRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return secondProvider, nil
+	}
+	secondServer, err := NewServer(secondRunner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondHandler := secondServer.Handler()
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/agent/sessions", nil)
+	listRec := httptest.NewRecorder()
+	secondHandler.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", listRec.Code, listRec.Body.String())
+	}
+	var sessions []AgentSessionSnapshot
+	if err := json.Unmarshal(listRec.Body.Bytes(), &sessions); err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != first.SessionID || sessions[0].Status != "waiting" || sessions[0].WaitingPrompt != "Need file?" {
+		t.Fatalf("sessions = %#v", sessions)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+first.SessionID, nil)
+	getRec := httptest.NewRecorder()
+	secondHandler.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get status = %d, body = %s", getRec.Code, getRec.Body.String())
+	}
+	var snapshot AgentSessionSnapshot
+	if err := json.Unmarshal(getRec.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Status != "waiting" || !snapshot.CanAppendMessage || len(snapshot.Turns) != 1 {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+
+	turnReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+first.SessionID+"/turns", strings.NewReader(`{"message":"main.go"}`))
+	turnRec := httptest.NewRecorder()
+	secondHandler.ServeHTTP(turnRec, turnReq)
+	if turnRec.Code != http.StatusOK {
+		t.Fatalf("turn status = %d, body = %s", turnRec.Code, turnRec.Body.String())
+	}
+	var second AgentRunResponse
+	if err := json.Unmarshal(turnRec.Body.Bytes(), &second); err != nil {
+		t.Fatal(err)
+	}
+	if second.Status != "completed" || second.Output != "done after restart" || second.SessionID != first.SessionID || second.TurnID == first.TurnID || len(second.Session.Turns) != 2 {
+		t.Fatalf("second = %#v", second)
 	}
 }
 

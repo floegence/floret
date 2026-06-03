@@ -456,11 +456,14 @@ async function loadSessions(options = {}) {
     if (!response.ok) throw new Error("session list failed");
     state.sessions = await response.json();
     renderSessionOptions();
-    if (options.selectActive && state.activeSessionId) {
+    const hasActive = state.activeSessionId && state.sessions.some((session) => session.id === state.activeSessionId);
+    if (options.selectActive && hasActive) {
       el.sessionSelect.value = state.activeSessionId;
     }
-    if (!state.activeSessionId && state.sessions.length) {
-      await selectSession(state.sessions[state.sessions.length - 1].id);
+    if (!hasActive && state.sessions.length) {
+      await selectSession(state.sessions[0].id);
+    } else if (!state.sessions.length) {
+      state.activeSessionId = "";
     }
   } catch (error) {
     state.sessions = [];
@@ -492,7 +495,7 @@ function renderSessionOptions() {
   el.sessionSelect.innerHTML = "";
   const empty = document.createElement("option");
   empty.value = "";
-  empty.textContent = state.sessions.length ? "Select a session" : "No sessions in this process";
+  empty.textContent = state.sessions.length ? "Select a session" : "No saved sessions";
   el.sessionSelect.appendChild(empty);
   state.sessions.forEach((session) => {
     const option = document.createElement("option");
