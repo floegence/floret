@@ -13,13 +13,13 @@ func TestStaticConsoleDocumentsWebFetchAndWebSearchSeparately(t *testing.T) {
 	settings := readStaticTestFile(t, "views", "settings.js")
 	inspector := readStaticTestFile(t, "views", "inspector.js")
 
-	if !strings.Contains(toolMatrix, "web_fetch fetches a known URL") || !strings.Contains(toolMatrix, "web_search searches by query") {
+	if !strings.Contains(toolMatrix, "web_fetch fetches a known URL") || !strings.Contains(toolMatrix, "web_search searches by query through either provider-hosted search or the configured client search provider") {
 		t.Fatalf("tool matrix does not describe web_fetch and web_search separately")
 	}
-	if !strings.Contains(settings, "Client web_search uses Brave Search") || !strings.Contains(settings, "Hosted provider tools remain separate") {
-		t.Fatalf("settings view does not explain client and hosted search split")
+	if !strings.Contains(settings, "Provider-hosted web search") || !strings.Contains(settings, "Client search via Brave") || !strings.Contains(settings, "readWebSearchCapability") {
+		t.Fatalf("settings view does not expose provider-hosted/client/disabled search configuration")
 	}
-	if !strings.Contains(inspector, "Local client tools") || !strings.Contains(inspector, "Provider-hosted tools") {
+	if !strings.Contains(inspector, "Local client tools") || !strings.Contains(inspector, "Provider-hosted tools") || !strings.Contains(inspector, "Unavailable") {
 		t.Fatalf("inspector does not split local and hosted tool capabilities")
 	}
 }
@@ -29,8 +29,16 @@ func TestStaticConsoleToolSelectionSemanticsStayAuditable(t *testing.T) {
 	appJS := readStaticTestFile(t, "app.js")
 	newSession := readStaticTestFile(t, "views", "newSession.js")
 
-	if !strings.Contains(stateJS, `case "all":`) || !strings.Contains(stateJS, "(tools || []).map((tool) => tool.name)") {
-		t.Fatalf("All preset should derive from the server tool catalog")
+	if !strings.Contains(stateJS, `case "all":`) || !strings.Contains(stateJS, "availableTools.map((tool) => tool.name)") || !strings.Contains(stateJS, "tool.available !== false") {
+		t.Fatalf("All preset should derive from available server tool catalog entries")
+	}
+	if !strings.Contains(readStaticTestFile(t, "components", "toolMatrix.js"), "tool.available !== false") || !strings.Contains(readStaticTestFile(t, "components", "toolMatrix.js"), "source-badge") || !strings.Contains(readStaticTestFile(t, "components", "toolMatrix.js"), "Unavailable:") {
+		t.Fatalf("tool matrix should disable unavailable tools and expose source/unavailable state")
+	}
+	for _, want := range []string{"Provider-hosted capabilities", "Local client tools", "Disabled / unavailable capabilities"} {
+		if !strings.Contains(stateJS, want) {
+			t.Fatalf("tool grouping should expose %q", want)
+		}
 	}
 	if !strings.Contains(newSession, "selected_tools: readSelectedTools") {
 		t.Fatalf("new session form must send selected_tools")
@@ -278,7 +286,7 @@ func TestStaticConsoleTimelineLongMessagesCollapseAndCopy(t *testing.T) {
 
 func TestStaticConsoleSettingsSavesSearchProviderContract(t *testing.T) {
 	settings := readStaticTestFile(t, "views", "settings.js")
-	for _, want := range []string{"search_provider", "search_api_key", "search_endpoint", `provider: "brave"`} {
+	for _, want := range []string{"search_provider", "search_api_key", "search_endpoint", `provider: "brave"`, "web_search: readWebSearchCapability", "search_mode", "search_wire_shape"} {
 		if !strings.Contains(settings, want) {
 			t.Fatalf("settings view missing %q", want)
 		}

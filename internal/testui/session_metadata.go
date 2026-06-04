@@ -11,6 +11,7 @@ import (
 
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/contextpolicy"
+	"github.com/floegence/floret/provider"
 )
 
 const agentSessionMetadataVersion = 1
@@ -171,6 +172,28 @@ func (r Runner) listAgentSessionMetadata() ([]agentSessionMetadata, error) {
 	return out, nil
 }
 
+func searchSnapshotHostedTools(profile ProviderProfile, envFile string, selectedTools []string) []provider.HostedToolDefinition {
+	if !slices.Contains(selectedTools, "web_search") {
+		return nil
+	}
+	resolved, err := resolveProfileWebSearch(profile, envFile)
+	if err != nil {
+		return nil
+	}
+	return resolved.HostedTools
+}
+
+func searchSnapshotUnavailable(profile ProviderProfile, envFile string, selectedTools []string) []string {
+	if !slices.Contains(selectedTools, "web_search") {
+		return nil
+	}
+	resolved, err := resolveProfileWebSearch(profile, envFile)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	return resolved.UnavailableReasons
+}
+
 func (r Runner) metadataFromSession(sess *agentSession) agentSessionMetadata {
 	return agentSessionMetadata{
 		Version:       agentSessionMetadataVersion,
@@ -237,16 +260,7 @@ func (r Runner) cfgFromSessionMetadata(meta agentSessionMetadata) (config.Config
 	if err != nil {
 		return config.Config{}, ProviderProfile{}, err
 	}
-	resolved := stripProfileSecret(ProviderProfile{
-		ID:           profile.ID,
-		Name:         profile.Name,
-		Provider:     cfg.Provider,
-		Model:        cfg.Model,
-		BaseURL:      cfg.BaseURL,
-		APIKey:       cfg.APIKey,
-		APIKeySet:    cfg.APIKey != "" || profile.APIKeySet || meta.APIKeyRequired,
-		FakeResponse: cfg.FakeResponse,
-	})
+	resolved := resolvedProfileFromConfig(profile, cfg, cfg.APIKey != "" || profile.APIKeySet || meta.APIKeyRequired)
 	return cfg, resolved, nil
 }
 

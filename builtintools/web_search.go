@@ -48,6 +48,9 @@ type braveSearchResult struct {
 
 func RegisterSearch(reg *tools.Registry, opts SearchOptions) error {
 	opts = normalizeSearchOptions(opts)
+	if opts.APIKey == "" {
+		return fmt.Errorf("FLORET_BRAVE_SEARCH_API_KEY is required to register web_search")
+	}
 	return reg.Register(webSearchTool(opts))
 }
 

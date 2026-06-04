@@ -84,7 +84,11 @@ function renderTools(session, tools, observation) {
         </div>
         <div>
           <strong>Provider-hosted tools</strong>
-          <span>${escapeHTML(hostedToolLabel(request?.hosted_tools || []))}</span>
+          <span>${escapeHTML(hostedToolLabel(session.hosted_tools || request?.hosted_tools || []))}</span>
+        </div>
+        <div>
+          <strong>Unavailable</strong>
+          <span>${escapeHTML((session.unavailable_capabilities || request?.unavailable_capabilities || []).join("; ") || "none")}</span>
         </div>
       </div>
       ${renderToolMatrix({ tools, selected, editable: true, name: "session-tools" })}
@@ -136,6 +140,7 @@ function renderRequests(requests) {
           </div>
           <div class="key-value"><span>Tools</span><span>${escapeHTML((request.tools || []).map((tool) => tool.name).join(", ") || "none")}</span></div>
           <div class="key-value"><span>Hosted</span><span>${escapeHTML(hostedToolLabel(request.hosted_tools || []))}</span></div>
+          <div class="key-value"><span>Unavailable</span><span>${escapeHTML((request.unavailable_capabilities || []).join("; ") || "none")}</span></div>
           <details>
             <summary>Messages</summary>
             <pre class="json-block">${escapeHTML(JSON.stringify(request.messages || [], null, 2))}</pre>
@@ -152,7 +157,10 @@ function latestProviderRequest(requests) {
 
 function hostedToolLabel(tools) {
   if (!tools || !tools.length) return "none";
-  return tools.map((tool) => `${tool.name || tool.type} (${tool.type || "hosted"})`).join(", ");
+  return tools.map((tool) => {
+    const shape = tool.options?.wire_shape ? ` · ${tool.options.wire_shape}` : "";
+    return `${tool.name || tool.type} (${tool.type || "hosted"}${shape})`;
+  }).join(", ");
 }
 
 function renderEvents(events, providerEvents) {

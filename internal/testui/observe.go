@@ -67,19 +67,20 @@ func (p *observingProvider) ToolRaw(def promptcache.ToolDefinition) (string, str
 
 func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
 	observedRequest := ObservedProviderRequest{
-		RunID:        req.RunID,
-		SessionID:    observedSessionID(req),
-		ThreadID:     observedThreadID(req),
-		TurnID:       observedTurnID(req),
-		Step:         req.Step,
-		Provider:     req.Provider,
-		Model:        req.Model,
-		ObservedAt:   time.Now(),
-		Messages:     observeMessages(req.Messages),
-		Tools:        append([]provider.ToolDefinition(nil), req.Tools...),
-		HostedTools:  append([]provider.HostedToolDefinition(nil), req.HostedTools...),
-		ContextUsage: req.ContextUsage,
-		RawSegments:  observeRawSegments(req.RawPlan),
+		RunID:                   req.RunID,
+		SessionID:               observedSessionID(req),
+		ThreadID:                observedThreadID(req),
+		TurnID:                  observedTurnID(req),
+		Step:                    req.Step,
+		Provider:                req.Provider,
+		Model:                   req.Model,
+		ObservedAt:              time.Now(),
+		Messages:                observeMessages(req.Messages),
+		Tools:                   append([]provider.ToolDefinition(nil), req.Tools...),
+		HostedTools:             append([]provider.HostedToolDefinition(nil), req.HostedTools...),
+		UnavailableCapabilities: unavailableCapabilitiesFromHostedRequest(req),
+		ContextUsage:            req.ContextUsage,
+		RawSegments:             observeRawSegments(req.RawPlan),
 		CacheSummary: ObservedCacheSummary{
 			Namespace:            req.Cache.Namespace,
 			Retention:            string(req.Cache.Retention),
@@ -148,7 +149,7 @@ func (p *observingProvider) recordEvent(runID string, sessionID string, step int
 		ResponseID: ev.ResponseID,
 		Text:       ev.Text,
 		Reasoning:  reasoningText(ev),
-		ToolCalls:  append([]provider.ToolCall(nil), ev.ToolCalls...),
+		ToolCalls:  observedToolCalls(ev),
 		Reason:     ev.Reason,
 		Usage:      ev.Usage,
 	}
@@ -164,6 +165,20 @@ func (p *observingProvider) recordEvent(runID string, sessionID string, step int
 	}
 	p.evs = append(p.evs, observed)
 	p.mu.Unlock()
+}
+
+func unavailableCapabilitiesFromHostedRequest(req provider.Request) []string {
+	return nil
+}
+
+func observedToolCalls(ev provider.StreamEvent) []provider.ToolCall {
+	if len(ev.ToolCalls) > 0 {
+		return append([]provider.ToolCall(nil), ev.ToolCalls...)
+	}
+	if ev.ToolCall.ID != "" || ev.ToolCall.Name != "" || ev.ToolCall.Args != "" {
+		return []provider.ToolCall{ev.ToolCall}
+	}
+	return nil
 }
 
 func reasoningText(ev provider.StreamEvent) string {

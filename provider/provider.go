@@ -48,13 +48,15 @@ type HostedToolDefinition struct {
 type EventType string
 
 const (
-	Delta      EventType = "delta"
-	Reasoning  EventType = "reasoning"
-	ToolCalls  EventType = "tool_calls"
-	Done       EventType = "done"
-	Empty      EventType = "empty"
-	Truncated  EventType = "truncated"
-	UsageEvent EventType = "usage"
+	Delta            EventType = "delta"
+	Reasoning        EventType = "reasoning"
+	ToolCalls        EventType = "tool_calls"
+	Done             EventType = "done"
+	Empty            EventType = "empty"
+	Truncated        EventType = "truncated"
+	UsageEvent       EventType = "usage"
+	HostedToolCall   EventType = "hosted_tool_call"
+	HostedToolResult EventType = "hosted_tool_result"
 )
 
 type FinishReason string
@@ -117,6 +119,7 @@ type StreamEvent struct {
 	Type       EventType
 	Text       string
 	ToolCalls  []ToolCall
+	ToolCall   ToolCall
 	Reason     string
 	Usage      Usage
 	ResponseID string

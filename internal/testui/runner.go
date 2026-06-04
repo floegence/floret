@@ -76,34 +76,38 @@ type agentSessionRegistry struct {
 }
 
 type agentSession struct {
-	mu              sync.Mutex
-	id              string
-	transient       bool
-	profile         ProviderProfile
-	systemPrompt    string
-	selectedTools   []string
-	contextPolicy   contextpolicy.Policy
-	cfg             config.Config
-	provider        *observingProvider
-	recorder        agentEventRecorder
-	harnessRecorder agentHarnessRecorder
-	repo            sessiontree.Repo
-	promptStore     promptcache.Store
-	registry        *tools.Registry
-	harness         *agentharness.AgentHarness
-	thread          *agentharness.Thread
-	turns           []AgentTurnSummary
-	createdAt       time.Time
-	updatedAt       time.Time
+	mu                      sync.Mutex
+	id                      string
+	transient               bool
+	profile                 ProviderProfile
+	systemPrompt            string
+	selectedTools           []string
+	hostedTools             []provider.HostedToolDefinition
+	unavailableCapabilities []string
+	contextPolicy           contextpolicy.Policy
+	cfg                     config.Config
+	provider                *observingProvider
+	recorder                agentEventRecorder
+	harnessRecorder         agentHarnessRecorder
+	repo                    sessiontree.Repo
+	promptStore             promptcache.Store
+	registry                *tools.Registry
+	harness                 *agentharness.AgentHarness
+	thread                  *agentharness.Thread
+	turns                   []AgentTurnSummary
+	createdAt               time.Time
+	updatedAt               time.Time
 }
 
 type agentSessionRuntime struct {
-	provider        *observingProvider
-	recorder        agentEventRecorder
-	harnessRecorder agentHarnessRecorder
-	registry        *tools.Registry
-	harness         *agentharness.AgentHarness
-	thread          *agentharness.Thread
+	provider                *observingProvider
+	recorder                agentEventRecorder
+	harnessRecorder         agentHarnessRecorder
+	registry                *tools.Registry
+	hostedTools             []provider.HostedToolDefinition
+	unavailableCapabilities []string
+	harness                 *agentharness.AgentHarness
+	thread                  *agentharness.Thread
 }
 
 type agentEventRecorder interface {
@@ -190,17 +194,8 @@ func (r *Runner) CreateIdleAgentSession(ctx context.Context, req AgentRunRequest
 	}
 	sessionID := fmt.Sprintf("testui-session-%d", started.UnixNano())
 	cfg.RunID = sessionID
-	resolvedProfile := stripProfileSecret(ProviderProfile{
-		ID:           profile.ID,
-		Name:         profile.Name,
-		Provider:     cfg.Provider,
-		Model:        cfg.Model,
-		BaseURL:      cfg.BaseURL,
-		APIKey:       cfg.APIKey,
-		APIKeySet:    cfg.APIKey != "" || profile.APIKeySet,
-		FakeResponse: cfg.FakeResponse,
-	})
-	selectedTools, err := normalizeAgentSessionTools(req.SelectedTools, req.ToolMode)
+	resolvedProfile := resolvedProfileFromConfig(profile, cfg, cfg.APIKey != "" || profile.APIKeySet)
+	selectedTools, err := normalizeAgentSessionToolsForProfile(req.SelectedTools, req.ToolMode, resolvedProfile, r.EnvFile)
 	if err != nil {
 		return AgentSessionSnapshot{}, fmt.Errorf("%w: %v", errAgentSessionInput, err)
 	}
@@ -234,7 +229,8 @@ func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeR
 		Probe:     true,
 		StartedAt: started,
 	}
-	selectedTools, err := normalizeAgentSessionTools(req.SelectedTools, "")
+	profile := ProviderProfile{ID: "tool-contract-probe", Name: "Tool Contract Probe", Provider: config.ProviderFake, Model: "tool-contract-probe"}
+	selectedTools, err := normalizeAgentSessionToolsForProfile(req.SelectedTools, "", profile, r.EnvFile)
 	if err != nil {
 		return r.failAgentRunWithStatus(resp, http.StatusBadRequest, err)
 	}
@@ -280,12 +276,8 @@ func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeR
 	}
 	sessionID := "testui-probe-" + resp.ID
 	cfg.RunID = sessionID
-	profile := ProviderProfile{
-		ID:       "tool-contract-probe",
-		Name:     "Tool Contract Probe",
-		Provider: cfg.Provider,
-		Model:    cfg.Model,
-	}
+	profile.Provider = cfg.Provider
+	profile.Model = cfg.Model
 	sess, err := probe.buildAgentSession(ctx, agentSessionBuildOptions{
 		ID:            sessionID,
 		Transient:     true,
@@ -353,18 +345,9 @@ func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) Ag
 	}
 	sessionID := "testui-session-" + resp.ID
 	cfg.RunID = sessionID
-	resolvedProfile := stripProfileSecret(ProviderProfile{
-		ID:           profile.ID,
-		Name:         profile.Name,
-		Provider:     cfg.Provider,
-		Model:        cfg.Model,
-		BaseURL:      cfg.BaseURL,
-		APIKey:       cfg.APIKey,
-		APIKeySet:    cfg.APIKey != "" || profile.APIKeySet,
-		FakeResponse: cfg.FakeResponse,
-	})
+	resolvedProfile := resolvedProfileFromConfig(profile, cfg, cfg.APIKey != "" || profile.APIKeySet)
 	resp.Profile = resolvedProfile
-	selectedTools, err := normalizeAgentSessionTools(req.SelectedTools, req.ToolMode)
+	selectedTools, err := normalizeAgentSessionToolsForProfile(req.SelectedTools, req.ToolMode, resolvedProfile, r.EnvFile)
 	if err != nil {
 		return r.failAgentRunWithStatus(resp, http.StatusBadRequest, err)
 	}
@@ -469,16 +452,17 @@ func (r *Runner) UpdateAgentSessionTools(ctx context.Context, sessionID string, 
 	if req.SelectedTools == nil {
 		return AgentSessionSnapshot{}, fmt.Errorf("%w: selected_tools is required", errAgentSessionInput)
 	}
-	selectedTools, err := normalizeAgentSessionTools(*req.SelectedTools, "")
-	if err != nil {
-		return AgentSessionSnapshot{}, fmt.Errorf("%w: %v", errAgentSessionInput, err)
-	}
+	var err error
 	sess, ok := r.sessionRegistry().get(sessionID)
 	if !ok {
 		sess, err = r.restoreAgentSession(ctx, sessionID)
 		if err != nil {
 			return AgentSessionSnapshot{}, err
 		}
+	}
+	selectedTools, err := normalizeAgentSessionToolsForProfile(*req.SelectedTools, "", sess.profile, r.EnvFile)
+	if err != nil {
+		return AgentSessionSnapshot{}, fmt.Errorf("%w: %v", errAgentSessionInput, err)
 	}
 	if !sess.mu.TryLock() {
 		return AgentSessionSnapshot{}, fmt.Errorf("%w: %s", errAgentSessionBusy, sessionID)
@@ -614,7 +598,8 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 	rec := &streamingEventRecorder{}
 	harnessRec := &streamingHarnessRecorder{repo: sess.repo, threadID: sess.id}
 	registry := tools.NewRegistry()
-	if err := registerAgentSessionTools(registry, r.Root, r.EnvFile, selectedTools); err != nil {
+	hostedTools, unavailableCapabilities, err := registerAgentSessionTools(registry, r.Root, r.EnvFile, selectedTools, sess.profile)
+	if err != nil {
 		return agentSessionRuntime{}, err
 	}
 	h := agentharness.New(agentharness.Options{
@@ -637,6 +622,7 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 			DuplicateToolLimit:      sess.cfg.DuplicateToolLimit,
 			WallTime:                sess.cfg.WallTime,
 			MaxCostUSD:              1.00,
+			HostedToolDefinitions:   hostedTools,
 		},
 		NewID: r.agentSessionIDGenerator(ctx, sess.repo, sess.id),
 		Now:   r.now,
@@ -646,12 +632,14 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 		return agentSessionRuntime{}, err
 	}
 	return agentSessionRuntime{
-		provider:        observed,
-		recorder:        rec,
-		harnessRecorder: harnessRec,
-		registry:        registry,
-		harness:         h,
-		thread:          thread,
+		provider:                observed,
+		recorder:                rec,
+		harnessRecorder:         harnessRec,
+		registry:                registry,
+		hostedTools:             hostedTools,
+		unavailableCapabilities: unavailableCapabilities,
+		harness:                 h,
+		thread:                  thread,
 	}, nil
 }
 
@@ -660,6 +648,8 @@ func (sess *agentSession) applyRuntime(runtime agentSessionRuntime) {
 	sess.recorder = runtime.recorder
 	sess.harnessRecorder = runtime.harnessRecorder
 	sess.registry = runtime.registry
+	sess.hostedTools = runtime.hostedTools
+	sess.unavailableCapabilities = runtime.unavailableCapabilities
 	sess.harness = runtime.harness
 	sess.thread = runtime.thread
 }
@@ -753,12 +743,13 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 	}
 	rec := &streamingEventRecorder{}
 	harnessRec := &streamingHarnessRecorder{repo: repo, threadID: opts.ID}
-	selectedTools, err := normalizeAgentSessionTools(opts.SelectedTools, "")
+	selectedTools, err := normalizeAgentSessionToolsForProfile(opts.SelectedTools, "", opts.Profile, r.EnvFile)
 	if err != nil {
 		return nil, err
 	}
 	registry := tools.NewRegistry()
-	if err := registerAgentSessionTools(registry, r.Root, r.EnvFile, selectedTools); err != nil {
+	hostedTools, unavailableCapabilities, err := registerAgentSessionTools(registry, r.Root, r.EnvFile, selectedTools, opts.Profile)
+	if err != nil {
 		return nil, err
 	}
 	h := agentharness.New(agentharness.Options{
@@ -781,6 +772,7 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 			DuplicateToolLimit:      cfg.DuplicateToolLimit,
 			WallTime:                cfg.WallTime,
 			MaxCostUSD:              1.00,
+			HostedToolDefinitions:   hostedTools,
 		},
 		NewID: r.agentSessionIDGenerator(ctx, repo, opts.ID),
 		Now:   r.now,
@@ -803,24 +795,26 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 		updatedAt = createdAt
 	}
 	return &agentSession{
-		id:              opts.ID,
-		transient:       opts.Transient,
-		profile:         opts.Profile,
-		systemPrompt:    cfg.SystemPrompt,
-		selectedTools:   selectedTools,
-		contextPolicy:   cfg.ContextPolicy,
-		cfg:             cfg,
-		provider:        observed,
-		recorder:        rec,
-		harnessRecorder: harnessRec,
-		repo:            repo,
-		promptStore:     promptStore,
-		registry:        registry,
-		harness:         h,
-		thread:          thread,
-		turns:           append([]AgentTurnSummary(nil), opts.Turns...),
-		createdAt:       createdAt,
-		updatedAt:       updatedAt,
+		id:                      opts.ID,
+		transient:               opts.Transient,
+		profile:                 opts.Profile,
+		systemPrompt:            cfg.SystemPrompt,
+		selectedTools:           selectedTools,
+		hostedTools:             hostedTools,
+		unavailableCapabilities: unavailableCapabilities,
+		contextPolicy:           cfg.ContextPolicy,
+		cfg:                     cfg,
+		provider:                observed,
+		recorder:                rec,
+		harnessRecorder:         harnessRec,
+		repo:                    repo,
+		promptStore:             promptStore,
+		registry:                registry,
+		harness:                 h,
+		thread:                  thread,
+		turns:                   append([]AgentTurnSummary(nil), opts.Turns...),
+		createdAt:               createdAt,
+		updatedAt:               updatedAt,
 	}, nil
 }
 
@@ -929,26 +923,28 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 		updatedAt = thread.UpdatedAt
 	}
 	return AgentSessionSnapshot{
-		ID:               meta.ID,
-		Status:           lifecycle.Status(),
-		Phase:            lifecycle.Phase(),
-		LeafID:           thread.LeafID,
-		CreatedAt:        meta.CreatedAt,
-		UpdatedAt:        updatedAt,
-		Profile:          stripProfileSecret(meta.Profile),
-		SystemPrompt:     meta.SystemPrompt,
-		SelectedTools:    cloneSelectedTools(meta.SelectedTools),
-		ContextPolicy:    meta.ContextPolicy,
-		LatestTurnID:     lifecycle.LatestTurnID(),
-		WaitingPrompt:    lifecycle.WaitingPrompt(),
-		Recoverable:      lifecycle.Recoverable(),
-		CanAppendMessage: lifecycle.CanAppendMessage(),
-		Turns:            turns,
-		ActiveContext:    active,
-		PathEntries:      pathEntries,
-		AllEntries:       allEntries,
-		AggregateMetrics: aggregateTurnMetrics(turns),
-		Compactions:      countCompactions(path),
+		ID:                      meta.ID,
+		Status:                  lifecycle.Status(),
+		Phase:                   lifecycle.Phase(),
+		LeafID:                  thread.LeafID,
+		CreatedAt:               meta.CreatedAt,
+		UpdatedAt:               updatedAt,
+		Profile:                 stripProfileSecret(meta.Profile),
+		SystemPrompt:            meta.SystemPrompt,
+		SelectedTools:           cloneSelectedTools(meta.SelectedTools),
+		HostedTools:             append([]provider.HostedToolDefinition(nil), searchSnapshotHostedTools(meta.Profile, r.EnvFile, meta.SelectedTools)...),
+		UnavailableCapabilities: searchSnapshotUnavailable(meta.Profile, r.EnvFile, meta.SelectedTools),
+		ContextPolicy:           meta.ContextPolicy,
+		LatestTurnID:            lifecycle.LatestTurnID(),
+		WaitingPrompt:           lifecycle.WaitingPrompt(),
+		Recoverable:             lifecycle.Recoverable(),
+		CanAppendMessage:        lifecycle.CanAppendMessage(),
+		Turns:                   turns,
+		ActiveContext:           active,
+		PathEntries:             pathEntries,
+		AllEntries:              allEntries,
+		AggregateMetrics:        aggregateTurnMetrics(turns),
+		Compactions:             countCompactions(path),
 	}, nil
 }
 
@@ -1134,26 +1130,28 @@ func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) 
 	pathEntries := observeEntries(snap.Path)
 	allEntries := observeEntries(snap.Entries)
 	return AgentSessionSnapshot{
-		ID:               sess.id,
-		Status:           lifecycle.Status(),
-		Phase:            lifecycle.Phase(),
-		LeafID:           snap.Meta.LeafID,
-		CreatedAt:        sess.createdAt,
-		UpdatedAt:        sess.updatedAt,
-		Profile:          sess.profile,
-		SystemPrompt:     sess.systemPrompt,
-		SelectedTools:    cloneSelectedTools(sess.selectedTools),
-		ContextPolicy:    sess.contextPolicy,
-		LatestTurnID:     lifecycle.LatestTurnID(),
-		WaitingPrompt:    lifecycle.WaitingPrompt(),
-		Recoverable:      lifecycle.Recoverable(),
-		CanAppendMessage: lifecycle.CanAppendMessage(),
-		Turns:            turns,
-		ActiveContext:    active,
-		PathEntries:      pathEntries,
-		AllEntries:       allEntries,
-		AggregateMetrics: aggregateTurnMetrics(turns),
-		Compactions:      countCompactions(snap.Path),
+		ID:                      sess.id,
+		Status:                  lifecycle.Status(),
+		Phase:                   lifecycle.Phase(),
+		LeafID:                  snap.Meta.LeafID,
+		CreatedAt:               sess.createdAt,
+		UpdatedAt:               sess.updatedAt,
+		Profile:                 sess.profile,
+		SystemPrompt:            sess.systemPrompt,
+		SelectedTools:           cloneSelectedTools(sess.selectedTools),
+		HostedTools:             append([]provider.HostedToolDefinition(nil), sess.hostedTools...),
+		UnavailableCapabilities: append([]string(nil), sess.unavailableCapabilities...),
+		ContextPolicy:           sess.contextPolicy,
+		LatestTurnID:            lifecycle.LatestTurnID(),
+		WaitingPrompt:           lifecycle.WaitingPrompt(),
+		Recoverable:             lifecycle.Recoverable(),
+		CanAppendMessage:        lifecycle.CanAppendMessage(),
+		Turns:                   turns,
+		ActiveContext:           active,
+		PathEntries:             pathEntries,
+		AllEntries:              allEntries,
+		AggregateMetrics:        aggregateTurnMetrics(turns),
+		Compactions:             countCompactions(snap.Path),
 	}, nil
 }
 
@@ -1302,6 +1300,20 @@ func (r Runner) profileForRun(req AgentRunRequest) (ProviderProfile, error) {
 		}
 	}
 	return profile, nil
+}
+
+func resolvedProfileFromConfig(profile ProviderProfile, cfg config.Config, apiKeySet bool) ProviderProfile {
+	return stripProfileSecret(ProviderProfile{
+		ID:           profile.ID,
+		Name:         profile.Name,
+		Provider:     cfg.Provider,
+		Model:        cfg.Model,
+		BaseURL:      cfg.BaseURL,
+		APIKey:       cfg.APIKey,
+		APIKeySet:    apiKeySet,
+		FakeResponse: cfg.FakeResponse,
+		WebSearch:    profile.WebSearch,
+	})
 }
 
 func (r Runner) Run(ctx context.Context, target string) RunResponse {

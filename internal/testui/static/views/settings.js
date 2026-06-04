@@ -10,6 +10,9 @@ export function renderSettings() {
   const isSaving = state.action === "save-settings";
   const profileKeyDraft = active.api_key || "";
   const searchKeyDraft = searchProvider.api_key || "";
+  const webSearch = normalizeWebSearch(active.web_search);
+  const searchMode = webSearchMode(webSearch);
+  const wireShapes = state.config?.search_wire_shapes || [];
   return `
     <section class="settings-page">
       <header class="settings-head">
@@ -40,24 +43,38 @@ export function renderSettings() {
           <label class="field"><span>API key</span><input name="api_key" type="password" value="${escapeHTML(profileKeyDraft)}" placeholder="${active.api_key_set ? "saved key retained if empty" : "optional"}" ${isSaving ? "disabled" : ""} /></label>
           <label class="field"><span>Fake response</span><input name="fake_response" value="${escapeHTML(active.fake_response || "")}" ${isSaving ? "disabled" : ""} /></label>
           <div class="settings-divider"></div>
-          <h2>Search Provider</h2>
-          <p class="muted">Client web_search uses Brave Search for providers that do not offer hosted web search. Hosted provider tools remain separate in the Inspector.</p>
+          <h2>Web Search Capability</h2>
+          <p class="muted">web_search is configured per provider profile. Provider-hosted search is preferred when enabled; Brave client search is shown only when selected here.</p>
+          <label class="field">
+            <span>Search mode</span>
+            <select name="search_mode" ${isSaving ? "disabled" : ""}>
+              <option value="provider_hosted" ${searchMode === "provider_hosted" ? "selected" : ""}>Provider-hosted web search</option>
+              <option value="client" ${searchMode === "client" ? "selected" : ""}>Client search via Brave</option>
+              <option value="disabled" ${searchMode === "disabled" ? "selected" : ""}>Disabled</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Hosted wire shape</span>
+            <select name="search_wire_shape" ${isSaving || searchMode !== "provider_hosted" ? "disabled" : ""}>
+              ${wireShapeOptions(wireShapes, webSearch.provider_hosted?.wire_shape)}
+            </select>
+          </label>
           <div class="tool-boundary-grid">
             <div>
-              <strong>Provider</strong>
-              <span>${escapeHTML(searchProvider.provider || "brave")}</span>
+              <strong>Active source</strong>
+              <span>${escapeHTML(searchModeLabel(searchMode, webSearch.provider_hosted?.wire_shape))}</span>
             </div>
             <div>
-              <strong>API key</strong>
+              <strong>Brave API key</strong>
               <span>${state.config?.search_provider?.api_key_set ? "saved" : "not saved"}</span>
             </div>
             <div>
-              <strong>Tool</strong>
-              <span>web_search</span>
+              <strong>Local client</strong>
+              <span>${searchMode === "client" ? "enabled" : "not exposed"}</span>
             </div>
           </div>
-          <label class="field"><span>Brave API key</span><input name="search_api_key" type="password" value="${escapeHTML(searchKeyDraft)}" placeholder="${state.config?.search_provider?.api_key_set ? "saved key retained if empty" : "required for web_search"}" ${isSaving ? "disabled" : ""} /></label>
-          <label class="field"><span>Endpoint override</span><input name="search_endpoint" value="${escapeHTML(searchProvider.endpoint || "")}" placeholder="default Brave Web Search endpoint" ${isSaving ? "disabled" : ""} /></label>
+          <label class="field"><span>Brave API key</span><input name="search_api_key" type="password" value="${escapeHTML(searchKeyDraft)}" placeholder="${state.config?.search_provider?.api_key_set ? "saved key retained if empty" : "required only for client search"}" ${isSaving || searchMode !== "client" ? "disabled" : ""} /></label>
+          <label class="field"><span>Brave endpoint override</span><input name="search_endpoint" value="${escapeHTML(searchProvider.endpoint || "")}" placeholder="default Brave Web Search endpoint" ${isSaving || searchMode !== "client" ? "disabled" : ""} /></label>
           <div class="form-actions">
             <button type="button" data-duplicate-profile ${isSaving ? "disabled" : ""}>Duplicate</button>
             <button class="primary ${isSaving ? "is-pending" : ""}" type="submit" ${isSaving ? "disabled" : ""}>${isSaving ? "Saving..." : "Save .env.local"}</button>
@@ -93,6 +110,9 @@ export function bindSettings(root, handlers) {
   form?.addEventListener("change", (event) => {
     if (event.target === form.elements.active_profile_id || event.target === form.elements.provider) return;
     persistDraft();
+    if (event.target === form.elements.search_mode) {
+      handlers.onSwitchSearchMode?.();
+    }
   });
   form?.elements.active_profile_id?.addEventListener("change", () => {
     state.settingsDraft = readSettingsDraft(form, form.dataset.currentProfileId || "");
@@ -128,6 +148,7 @@ export function readSettingsDraft(form, activeIDOverride = "") {
     api_key: form.elements.api_key.value,
     api_key_set: current.api_key_set,
     fake_response: form.elements.fake_response.value,
+    web_search: readWebSearchCapability(form, current),
   };
   if (index >= 0) profiles[index] = next;
   return {
@@ -139,4 +160,69 @@ export function readSettingsDraft(form, activeIDOverride = "") {
       endpoint: form.elements.search_endpoint?.value || "",
     },
   };
+}
+
+function normalizeWebSearch(value) {
+  const next = clone(value || {});
+  next.provider_hosted = next.provider_hosted || {};
+  next.client = next.client || {};
+  if (!next.client.provider) next.client.provider = "brave";
+  return next;
+}
+
+function webSearchMode(capability) {
+  if (capability.disabled) return "disabled";
+  if (capability.client?.enabled) return "client";
+  if (capability.provider_hosted?.enabled) return "provider_hosted";
+  return "disabled";
+}
+
+function readWebSearchCapability(form, current) {
+  const previous = normalizeWebSearch(current.web_search);
+  const mode = form.elements.search_mode?.value || "disabled";
+  const selectedWireShape = form.elements.search_wire_shape?.value || previous.provider_hosted?.wire_shape || "";
+  const supportedWireShapes = previous.provider_hosted?.supported_wire_shapes?.length
+    ? previous.provider_hosted.supported_wire_shapes
+    : (state.config?.search_wire_shapes || []).map((shape) => shape.id);
+  if (mode === "provider_hosted") {
+    return {
+      provider_hosted: {
+        enabled: true,
+        wire_shape: selectedWireShape,
+        supported_wire_shapes: supportedWireShapes,
+      },
+      client: { enabled: false, provider: "brave" },
+    };
+  }
+  if (mode === "client") {
+    return {
+      provider_hosted: {
+        enabled: false,
+        wire_shape: selectedWireShape,
+        supported_wire_shapes: supportedWireShapes,
+      },
+      client: { enabled: true, provider: "brave" },
+    };
+  }
+  return {
+    provider_hosted: {
+      enabled: false,
+      wire_shape: selectedWireShape,
+      supported_wire_shapes: supportedWireShapes,
+    },
+    client: { enabled: false, provider: "brave" },
+    disabled: true,
+  };
+}
+
+function wireShapeOptions(wireShapes, selected) {
+  const shapes = wireShapes?.length ? wireShapes : [{ id: selected || "openai_chat_web_search_options", title: selected || "OpenAI-compatible chat web_search_options" }];
+  const active = selected || shapes[0]?.id || "";
+  return shapes.map((shape) => `<option value="${escapeHTML(shape.id)}" ${shape.id === active ? "selected" : ""}>${escapeHTML(shape.title || shape.id)}</option>`).join("");
+}
+
+function searchModeLabel(mode, wireShape) {
+  if (mode === "provider_hosted") return wireShape ? `provider-hosted · ${wireShape}` : "provider-hosted";
+  if (mode === "client") return "client · brave";
+  return "disabled";
 }

@@ -38,10 +38,10 @@ func webFetchTool(opts NetworkOptions) tools.Tool {
 			Description: "Fetch one HTTP(S) URL and return high-signal text. This is not web_search.",
 			InputSchema: tools.StrictObject(map[string]any{
 				"url":        tools.String("Absolute http or https URL to fetch."),
-				"format":     tools.Enum("text", "markdown", "raw"),
-				"timeout_ms": tools.Nullable(tools.Integer("Timeout in milliseconds.")),
-				"max_bytes":  tools.Nullable(tools.Integer("Maximum response bytes.")),
-			}, []string{"format", "max_bytes", "timeout_ms", "url"}),
+				"format":     tools.Nullable(tools.Enum("text", "markdown", "raw")),
+				"timeout_ms": tools.Nullable(tools.Integer("Timeout in milliseconds. Defaults to the tool configuration.")),
+				"max_bytes":  tools.Nullable(tools.Integer("Maximum response bytes. Defaults to the tool configuration.")),
+			}, []string{"url"}),
 			Effects:     []tools.Effect{tools.EffectNetwork},
 			ReadOnly:    true,
 			OpenWorld:   true,
@@ -94,13 +94,29 @@ func webFetchTool(opts NetworkOptions) tools.Tool {
 			if err != nil {
 				return tools.Result{}, err
 			}
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				return tools.Result{
+					Title:   fmt.Sprintf("Fetch failed %s", u.Hostname()),
+					Text:    fmt.Sprintf("HTTP status %d for %s", resp.StatusCode, u.String()),
+					IsError: true,
+					Metadata: map[string]any{
+						"url":          u.String(),
+						"status":       resp.StatusCode,
+						"content_type": resp.Header.Get("Content-Type"),
+					},
+				}, nil
+			}
 			truncated := len(body) > limit
 			if truncated {
 				body = body[:limit]
 			}
 			returnedBytes := len(body)
 			text := string(body)
-			if inv.Args.Format == "markdown" {
+			format := strings.TrimSpace(inv.Args.Format)
+			if format == "" {
+				format = "markdown"
+			}
+			if format == "markdown" {
 				text = htmlToMarkdownLite(text)
 			}
 			return tools.Result{

@@ -81,6 +81,39 @@ func TestSessionLifecycleBoundaryIsEnforced(t *testing.T) {
 	}
 }
 
+func TestWebSearchCapabilityBoundaryIsEnforced(t *testing.T) {
+	searchCap, err := os.ReadFile(filepath.Join("internal", "searchcap", "searchcap.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(searchCap)
+	if !strings.Contains(text, "IMPORTANT: Web search source selection must be derived from provider profile") {
+		t.Fatalf("web search capability resolver must be protected by an IMPORTANT comment")
+	}
+	for _, forbidden := range []string{
+		"ProviderDeepSeek",
+		"ProviderOpenAI",
+		"ProviderOpenRouter",
+		"ProviderGoogle",
+		"ProviderQwen",
+		"ProviderMoonshot",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("web search capability resolver must not special-case provider names, found %q", forbidden)
+		}
+	}
+	testUI, err := os.ReadFile(filepath.Join("internal", "testui", "tool_selection.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	testUIText := string(testUI)
+	for _, want := range []string{"resolved.ProviderHosted", "resolved.Client", "removeToolName(localSelected, builtintools.ToolWebSearch)"} {
+		if !strings.Contains(testUIText, want) {
+			t.Fatalf("test UI tool selection missing hosted/client search guard %q", want)
+		}
+	}
+}
+
 func TestNoLegacyToolHandlerOrHostedDispatchInLocalTools(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("tools", "tools.go"))
 	if err != nil {

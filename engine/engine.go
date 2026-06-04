@@ -616,6 +616,9 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 	}
 	activeTools := providerToolDefinitions(toolset.Tools)
 	activeHostedTools := hostedToolDefinitions(toolset.HostedTools)
+	if err := validateNoLocalHostedToolNameConflict(activeTools, activeHostedTools); err != nil {
+		return provider.Request{}, err
+	}
 	cache := promptcache.CachePolicy{
 		Enabled:            true,
 		Namespace:          opts.CacheNamespace,
@@ -661,6 +664,27 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		return provider.Request{}, err
 	}
 	return req, nil
+}
+
+func validateNoLocalHostedToolNameConflict(local []provider.ToolDefinition, hosted []provider.HostedToolDefinition) error {
+	if len(local) == 0 || len(hosted) == 0 {
+		return nil
+	}
+	localNames := map[string]struct{}{}
+	for _, def := range local {
+		if def.Name != "" {
+			localNames[def.Name] = struct{}{}
+		}
+	}
+	for _, def := range hosted {
+		if def.Name == "" {
+			continue
+		}
+		if _, ok := localNames[def.Name]; ok {
+			return fmt.Errorf("tool %q cannot be exposed as both a local tool and a provider-hosted tool", def.Name)
+		}
+	}
+	return nil
 }
 
 func (e *Engine) maybeCompact(ctx context.Context, opts Options, step int, history []session.Message, trigger compaction.Trigger, reason compaction.Reason, metrics *RunMetrics, failures *int) ([]session.Message, bool, error) {
@@ -812,6 +836,10 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 				e.emit(event.Event{Type: event.ProviderReasoning, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
 			case provider.ToolCalls:
 				out.Calls = append(out.Calls, ev.ToolCalls...)
+			case provider.HostedToolCall:
+				e.emit(event.Event{Type: event.HostedToolCall, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Args: ev.ToolCall.Args})
+			case provider.HostedToolResult:
+				e.emit(event.Event{Type: event.HostedToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Result: ev.Text})
 			case provider.UsageEvent:
 				out.Usage = out.Usage.Add(ev.Usage)
 				e.emit(event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: ev.Usage.Normalized()})

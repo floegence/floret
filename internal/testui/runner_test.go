@@ -16,7 +16,9 @@ import (
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/engine"
+	"github.com/floegence/floret/event"
 	"github.com/floegence/floret/harness"
+	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/session"
@@ -194,6 +196,109 @@ func TestRunnerConfigStateIncludesCatalogAndNormalizesProviderDefaults(t *testin
 	}
 }
 
+func TestRunnerToolCatalogReflectsWebSearchCapability(t *testing.T) {
+	t.Run("fake default unavailable", func(t *testing.T) {
+		runner := NewRunner(t.TempDir())
+		state, err := runner.ConfigState()
+		if err != nil {
+			t.Fatal(err)
+		}
+		option := toolOptionByName(t, state.Tools, "web_search")
+		if option.Available || option.Source != "disabled" || !strings.Contains(option.Unavailable, "not enabled") {
+			t.Fatalf("web_search option = %#v", option)
+		}
+	})
+
+	t.Run("provider hosted", func(t *testing.T) {
+		runner := NewRunner(t.TempDir())
+		state, err := runner.SaveConfigState(SaveConfigRequest{
+			ActiveProfileID: "hosted",
+			Profiles: []ProviderProfile{{
+				ID:       "hosted",
+				Name:     "Hosted",
+				Provider: config.ProviderOpenAICompatible,
+				Model:    "model-a",
+				WebSearch: searchcap.Capability{ProviderHosted: searchcap.ProviderHostedConfig{
+					Enabled:             true,
+					WireShape:           searchcap.WireShapeOpenAIChatWebSearchOptions,
+					SupportedWireShapes: []string{searchcap.WireShapeOpenAIChatWebSearchOptions},
+				}},
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		option := toolOptionByName(t, state.Tools, "web_search")
+		if !option.Available || option.Source != "provider-hosted" || option.WireShape != searchcap.WireShapeOpenAIChatWebSearchOptions {
+			t.Fatalf("web_search option = %#v", option)
+		}
+	})
+
+	t.Run("client key gates availability", func(t *testing.T) {
+		root := t.TempDir()
+		runner := NewRunner(root)
+		state, err := runner.SaveConfigState(SaveConfigRequest{
+			ActiveProfileID: "client",
+			Profiles: []ProviderProfile{{
+				ID:        "client",
+				Name:      "Client",
+				Provider:  config.ProviderFake,
+				Model:     "fake-model",
+				WebSearch: searchcap.Capability{Client: searchcap.ClientConfig{Enabled: true, Provider: searchcap.ClientProviderBrave}},
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		option := toolOptionByName(t, state.Tools, "web_search")
+		if option.Available || !strings.Contains(option.Unavailable, "API key") {
+			t.Fatalf("web_search without key = %#v", option)
+		}
+		state, err = runner.SaveConfigState(SaveConfigRequest{
+			ActiveProfileID: "client",
+			Profiles: []ProviderProfile{{
+				ID:        "client",
+				Name:      "Client",
+				Provider:  config.ProviderFake,
+				Model:     "fake-model",
+				WebSearch: searchcap.Capability{Client: searchcap.ClientConfig{Enabled: true, Provider: searchcap.ClientProviderBrave}},
+			}},
+			SearchProvider: SaveSearchProvider{Provider: "brave", APIKey: "search-key"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		option = toolOptionByName(t, state.Tools, "web_search")
+		if !option.Available || option.Source != "client:brave" {
+			t.Fatalf("web_search with key = %#v", option)
+		}
+		if data, err := os.ReadFile(filepath.Join(root, config.DefaultEnvFile)); err != nil || !strings.Contains(string(data), "FLORET_BRAVE_SEARCH_API_KEY") {
+			t.Fatalf("env data = %q err=%v", data, err)
+		}
+	})
+}
+
+func TestRunnerRejectsUnsupportedHostedSearchWireShapeOnSave(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	_, err := runner.SaveConfigState(SaveConfigRequest{
+		ActiveProfileID: "bad",
+		Profiles: []ProviderProfile{{
+			ID:       "bad",
+			Name:     "Bad",
+			Provider: config.ProviderOpenAICompatible,
+			Model:    "model-a",
+			WebSearch: searchcap.Capability{ProviderHosted: searchcap.ProviderHostedConfig{
+				Enabled:             true,
+				WireShape:           "bad_shape",
+				SupportedWireShapes: []string{"bad_shape"},
+			}},
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported hosted web_search wire shape") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestRunnerRunAgentReturnsInteractionObservation(t *testing.T) {
 	root := t.TempDir()
 	runner := NewRunner(root)
@@ -321,15 +426,18 @@ func TestRunnerAgentSessionSelectedToolsExplicitlyExposeBuiltInTools(t *testing.
 		ProfileID:     "fake",
 		Message:       "hello",
 		SystemPrompt:  "test",
-		SelectedTools: []string{"read", "list", "glob", "grep", "apply_patch", "edit", "write", "shell", "web_fetch", "web_search"},
+		SelectedTools: []string{"read", "list", "glob", "grep", "apply_patch", "edit", "write", "shell", "web_fetch"},
 	})
-	if coding.Status != "completed" || len(coding.Session.SelectedTools) != 10 {
+	if coding.Status != "completed" || len(coding.Session.SelectedTools) != 9 {
 		t.Fatalf("coding = %#v", coding)
 	}
-	for _, name := range []string{"read", "list", "glob", "grep", "apply_patch", "edit", "write", "shell", "web_fetch", "web_search"} {
+	for _, name := range []string{"read", "list", "glob", "grep", "apply_patch", "edit", "write", "shell", "web_fetch"} {
 		if !hasStrictTool(coding.Observation.ProviderRequests[0].Tools, name) {
 			t.Fatalf("selected tool %s missing: %#v", name, coding.Observation.ProviderRequests[0].Tools)
 		}
+	}
+	if hasStrictTool(coding.Observation.ProviderRequests[0].Tools, "web_search") {
+		t.Fatalf("unavailable web_search should not be exposed: %#v", coding.Observation.ProviderRequests[0].Tools)
 	}
 }
 
@@ -427,7 +535,7 @@ func TestRunnerAgentSessionCanExecuteClientWebSearch(t *testing.T) {
 	}
 
 	result := runner.CreateAgentSession(context.Background(), AgentRunRequest{
-		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Profile:       fakeClientSearchProfile(),
 		Message:       "查询长沙天气",
 		SystemPrompt:  "test",
 		SelectedTools: []string{"web_search"},
@@ -446,6 +554,72 @@ func TestRunnerAgentSessionCanExecuteClientWebSearch(t *testing.T) {
 		return msg.Role == "tool" && msg.ToolName == "web_search" && strings.Contains(msg.Content, "Changsha forecast")
 	}) {
 		t.Fatalf("web_search tool result missing: %#v", result.Observation.SessionMessages)
+	}
+}
+
+func TestRunnerAgentSessionUsesProviderHostedSearchWithoutLocalWebSearch(t *testing.T) {
+	root := t.TempDir()
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return harness.NewScriptedProvider(
+			harness.Step(
+				provider.StreamEvent{Type: provider.HostedToolCall, ToolCall: provider.ToolCall{ID: "hosted-search-1", Name: "web_search", Args: `{"query":"Changsha weather"}`}},
+				provider.StreamEvent{Type: provider.HostedToolResult, ToolCall: provider.ToolCall{ID: "hosted-search-1", Name: "web_search"}, Text: "provider-hosted result"},
+				harness.Text("Hosted search answered."),
+				harness.Done(),
+			),
+		), nil
+	}
+
+	result := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile: ProviderProfile{
+			ID:       "hosted",
+			Name:     "Hosted",
+			Provider: config.ProviderOpenAICompatible,
+			Model:    "model",
+			APIKey:   "secret",
+			WebSearch: searchcap.Capability{ProviderHosted: searchcap.ProviderHostedConfig{
+				Enabled:             true,
+				WireShape:           searchcap.WireShapeOpenAIChatWebSearchOptions,
+				SupportedWireShapes: []string{searchcap.WireShapeOpenAIChatWebSearchOptions},
+			}},
+		},
+		Message:       "search",
+		SystemPrompt:  "test",
+		SelectedTools: []string{"web_search"},
+	})
+
+	if result.Status != "completed" || result.Output != "Hosted search answered." {
+		t.Fatalf("result = %#v", result)
+	}
+	req := result.Observation.ProviderRequests[0]
+	if hasStrictTool(req.Tools, "web_search") {
+		t.Fatalf("provider-hosted web_search must not enter local tools: %#v", req.Tools)
+	}
+	if len(req.HostedTools) != 1 || req.HostedTools[0].Name != "web_search" || req.HostedTools[0].Options["wire_shape"] != searchcap.WireShapeOpenAIChatWebSearchOptions {
+		t.Fatalf("hosted tools = %#v", req.HostedTools)
+	}
+	if !slices.ContainsFunc(result.Events, func(ev event.Event) bool {
+		return ev.Type == event.HostedToolCall && ev.ToolName == "web_search"
+	}) || !slices.ContainsFunc(result.Events, func(ev event.Event) bool {
+		return ev.Type == event.HostedToolResult && ev.ToolName == "web_search"
+	}) {
+		t.Fatalf("hosted tool events missing: %#v", result.Events)
+	}
+}
+
+func TestRunnerAgentSessionRejectsUnavailableWebSearch(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	result := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:       "search",
+		SystemPrompt:  "test",
+		SelectedTools: []string{"web_search"},
+	})
+	if result.Status != "error" || result.StatusCode != http.StatusBadRequest || !strings.Contains(result.Error, "web_search is unavailable") {
+		t.Fatalf("result = %#v", result)
 	}
 }
 
@@ -1174,7 +1348,7 @@ func TestRunnerAgentSessionHandlesMultipleToolCallsAndFollowUpUserTurn(t *testin
 	}
 
 	first := runner.CreateAgentSession(context.Background(), AgentRunRequest{
-		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Profile:       fakeClientSearchProfile(),
 		Message:       "查询长沙天气",
 		SystemPrompt:  "test",
 		SelectedTools: []string{"web_search", "web_fetch"},
@@ -1217,6 +1391,14 @@ func TestRunnerAgentSessionHandlesMultipleToolCallsAndFollowUpUserTurn(t *testin
 
 func TestRunnerAgentSessionHandlesRepeatedWeatherToolBatchesAndFollowUp(t *testing.T) {
 	root := t.TempDir()
+	searchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"web":{"results":[{"title":"Changsha weather","url":"https://example.com/weather","description":"Rain in Changsha.","profile":{"name":"Weather Source"}}]}}`))
+	}))
+	defer searchServer.Close()
+	if err := os.WriteFile(filepath.Join(root, config.DefaultEnvFile), []byte("FLORET_BRAVE_SEARCH_API_KEY=test-key\nFLORET_BRAVE_SEARCH_ENDPOINT="+searchServer.URL+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	fetchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/china-weather":
@@ -1260,7 +1442,7 @@ func TestRunnerAgentSessionHandlesRepeatedWeatherToolBatchesAndFollowUp(t *testi
 	}
 
 	first := runner.CreateAgentSession(context.Background(), AgentRunRequest{
-		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Profile:       fakeClientSearchProfile(),
 		Message:       "今天是2026-06-03，请你获取长沙的天气",
 		SystemPrompt:  "test",
 		SelectedTools: []string{"web_search", "web_fetch"},
@@ -1586,6 +1768,29 @@ func contextPolicyForTest(window int64) contextpolicy.Policy {
 func toolSelection(names ...string) *[]string {
 	selected := append([]string(nil), names...)
 	return &selected
+}
+
+func fakeClientSearchProfile() ProviderProfile {
+	return ProviderProfile{
+		ID:       "fake",
+		Name:     "Fake",
+		Provider: config.ProviderFake,
+		Model:    "fake-model",
+		WebSearch: searchcap.Capability{
+			Client: searchcap.ClientConfig{Enabled: true, Provider: searchcap.ClientProviderBrave},
+		},
+	}
+}
+
+func toolOptionByName(t *testing.T, options []AgentToolOption, name string) AgentToolOption {
+	t.Helper()
+	for _, option := range options {
+		if option.Name == name {
+			return option
+		}
+	}
+	t.Fatalf("tool option %q not found in %#v", name, options)
+	return AgentToolOption{}
 }
 
 func countObservedToolMessages(messages []ObservedSessionMessage, role, callID string) int {

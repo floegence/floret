@@ -8,6 +8,7 @@ import (
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/eval"
 	"github.com/floegence/floret/event"
+	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/modelcatalog"
 	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
@@ -81,14 +82,15 @@ type ArtifactSnapshot struct {
 }
 
 type ConfigState struct {
-	EnvFile         string             `json:"env_file"`
-	EnvFileFound    bool               `json:"env_file_found"`
-	ActiveProfileID string             `json:"active_profile_id"`
-	Profiles        []ProviderProfile  `json:"profiles"`
-	Catalog         []CatalogProvider  `json:"catalog"`
-	Tools           []AgentToolOption  `json:"tools"`
-	SearchProvider  SearchProviderInfo `json:"search_provider"`
-	LocalTime       LocalTimeInfo      `json:"local_time"`
+	EnvFile          string             `json:"env_file"`
+	EnvFileFound     bool               `json:"env_file_found"`
+	ActiveProfileID  string             `json:"active_profile_id"`
+	Profiles         []ProviderProfile  `json:"profiles"`
+	Catalog          []CatalogProvider  `json:"catalog"`
+	Tools            []AgentToolOption  `json:"tools"`
+	SearchWireShapes []SearchWireShape  `json:"search_wire_shapes"`
+	SearchProvider   SearchProviderInfo `json:"search_provider"`
+	LocalTime        LocalTimeInfo      `json:"local_time"`
 }
 
 type LocalTimeInfo struct {
@@ -107,15 +109,21 @@ type SearchProviderInfo struct {
 	Capability  string `json:"capability"`
 }
 
+type SearchWireShape struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
 type ProviderProfile struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Provider     string `json:"provider"`
-	Model        string `json:"model"`
-	BaseURL      string `json:"base_url,omitempty"`
-	APIKey       string `json:"api_key,omitempty"`
-	APIKeySet    bool   `json:"api_key_set,omitempty"`
-	FakeResponse string `json:"fake_response,omitempty"`
+	ID           string               `json:"id"`
+	Name         string               `json:"name"`
+	Provider     string               `json:"provider"`
+	Model        string               `json:"model"`
+	BaseURL      string               `json:"base_url,omitempty"`
+	APIKey       string               `json:"api_key,omitempty"`
+	APIKeySet    bool                 `json:"api_key_set,omitempty"`
+	FakeResponse string               `json:"fake_response,omitempty"`
+	WebSearch    searchcap.Capability `json:"web_search,omitempty"`
 }
 
 type CatalogProvider = modelcatalog.Provider
@@ -233,20 +241,21 @@ type AgentObservation struct {
 }
 
 type ObservedProviderRequest struct {
-	RunID        string                          `json:"run_id,omitempty"`
-	SessionID    string                          `json:"session_id,omitempty"`
-	ThreadID     string                          `json:"thread_id,omitempty"`
-	TurnID       string                          `json:"turn_id,omitempty"`
-	Step         int                             `json:"step"`
-	Provider     string                          `json:"provider"`
-	Model        string                          `json:"model"`
-	ObservedAt   time.Time                       `json:"observed_at"`
-	Messages     []ObservedSessionMessage        `json:"messages"`
-	Tools        []provider.ToolDefinition       `json:"tools"`
-	HostedTools  []provider.HostedToolDefinition `json:"hosted_tools,omitempty"`
-	ContextUsage contextpolicy.Usage             `json:"context_usage,omitempty"`
-	RawSegments  []ObservedRawSegment            `json:"raw_segments,omitempty"`
-	CacheSummary ObservedCacheSummary            `json:"cache_summary,omitempty"`
+	RunID                   string                          `json:"run_id,omitempty"`
+	SessionID               string                          `json:"session_id,omitempty"`
+	ThreadID                string                          `json:"thread_id,omitempty"`
+	TurnID                  string                          `json:"turn_id,omitempty"`
+	Step                    int                             `json:"step"`
+	Provider                string                          `json:"provider"`
+	Model                   string                          `json:"model"`
+	ObservedAt              time.Time                       `json:"observed_at"`
+	Messages                []ObservedSessionMessage        `json:"messages"`
+	Tools                   []provider.ToolDefinition       `json:"tools"`
+	HostedTools             []provider.HostedToolDefinition `json:"hosted_tools,omitempty"`
+	UnavailableCapabilities []string                        `json:"unavailable_capabilities,omitempty"`
+	ContextUsage            contextpolicy.Usage             `json:"context_usage,omitempty"`
+	RawSegments             []ObservedRawSegment            `json:"raw_segments,omitempty"`
+	CacheSummary            ObservedCacheSummary            `json:"cache_summary,omitempty"`
 }
 
 type ObservedRawSegment struct {
@@ -352,26 +361,28 @@ type ObservedSessionEntry struct {
 }
 
 type AgentSessionSnapshot struct {
-	ID               string                   `json:"id"`
-	Status           string                   `json:"status"`
-	Phase            string                   `json:"phase"`
-	LeafID           string                   `json:"leaf_id,omitempty"`
-	CreatedAt        time.Time                `json:"created_at"`
-	UpdatedAt        time.Time                `json:"updated_at"`
-	Profile          ProviderProfile          `json:"profile"`
-	SystemPrompt     string                   `json:"system_prompt"`
-	SelectedTools    []string                 `json:"selected_tools"`
-	ContextPolicy    contextpolicy.Policy     `json:"context_policy"`
-	LatestTurnID     string                   `json:"latest_turn_id,omitempty"`
-	WaitingPrompt    string                   `json:"waiting_prompt,omitempty"`
-	Recoverable      bool                     `json:"recoverable,omitempty"`
-	CanAppendMessage bool                     `json:"can_append_message"`
-	Turns            []AgentTurnSummary       `json:"turns"`
-	ActiveContext    []ObservedSessionMessage `json:"active_context"`
-	PathEntries      []ObservedSessionEntry   `json:"path_entries"`
-	AllEntries       []ObservedSessionEntry   `json:"all_entries"`
-	AggregateMetrics engine.RunMetrics        `json:"aggregate_metrics"`
-	Compactions      int                      `json:"compactions"`
+	ID                      string                          `json:"id"`
+	Status                  string                          `json:"status"`
+	Phase                   string                          `json:"phase"`
+	LeafID                  string                          `json:"leaf_id,omitempty"`
+	CreatedAt               time.Time                       `json:"created_at"`
+	UpdatedAt               time.Time                       `json:"updated_at"`
+	Profile                 ProviderProfile                 `json:"profile"`
+	SystemPrompt            string                          `json:"system_prompt"`
+	SelectedTools           []string                        `json:"selected_tools"`
+	HostedTools             []provider.HostedToolDefinition `json:"hosted_tools,omitempty"`
+	UnavailableCapabilities []string                        `json:"unavailable_capabilities,omitempty"`
+	ContextPolicy           contextpolicy.Policy            `json:"context_policy"`
+	LatestTurnID            string                          `json:"latest_turn_id,omitempty"`
+	WaitingPrompt           string                          `json:"waiting_prompt,omitempty"`
+	Recoverable             bool                            `json:"recoverable,omitempty"`
+	CanAppendMessage        bool                            `json:"can_append_message"`
+	Turns                   []AgentTurnSummary              `json:"turns"`
+	ActiveContext           []ObservedSessionMessage        `json:"active_context"`
+	PathEntries             []ObservedSessionEntry          `json:"path_entries"`
+	AllEntries              []ObservedSessionEntry          `json:"all_entries"`
+	AggregateMetrics        engine.RunMetrics               `json:"aggregate_metrics"`
+	Compactions             int                             `json:"compactions"`
 }
 
 type AgentTurnSummary struct {

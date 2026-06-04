@@ -8,20 +8,22 @@ import (
 type Type string
 
 const (
-	StepStart       Type = "step_start"
-	ProviderRequest Type = "provider_request"
-	ProviderDelta   Type = "provider_delta"
+	StepStart         Type = "step_start"
+	ProviderRequest   Type = "provider_request"
+	ProviderDelta     Type = "provider_delta"
 	ProviderReasoning Type = "provider_reasoning"
-	ProviderUsage   Type = "provider_usage"
-	ProviderFinish  Type = "provider_finish"
-	ProviderRetry   Type = "provider_retry"
-	ToolCall        Type = "tool_call"
-	ToolResult      Type = "tool_result"
-	ContextCompact  Type = "context_compact"
-	ContextContinue Type = "context_continue"
-	BudgetExceeded  Type = "budget_exceeded"
-	StepEnd         Type = "step_end"
-	RunEnd          Type = "run_end"
+	ProviderUsage     Type = "provider_usage"
+	ProviderFinish    Type = "provider_finish"
+	ProviderRetry     Type = "provider_retry"
+	ToolCall          Type = "tool_call"
+	ToolResult        Type = "tool_result"
+	HostedToolCall    Type = "hosted_tool_call"
+	HostedToolResult  Type = "hosted_tool_result"
+	ContextCompact    Type = "context_compact"
+	ContextContinue   Type = "context_continue"
+	BudgetExceeded    Type = "budget_exceeded"
+	StepEnd           Type = "step_end"
+	RunEnd            Type = "run_end"
 )
 
 type Event struct {

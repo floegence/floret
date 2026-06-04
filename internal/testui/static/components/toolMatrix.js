@@ -7,7 +7,7 @@ export function renderToolMatrix({ tools, selected, editable = true, name = "too
     <div class="preset-bar" data-tool-presets="${escapeHTML(name)}">
       ${["chat", "read", "coding", "shell", "all"].map((preset) => `<button type="button" class="small" data-tool-preset="${preset}" ${editable ? "" : "disabled"}>${presetLabel(preset)}</button>`).join("")}
     </div>
-    <p class="tool-boundary-note">Network tools are explicit capabilities: web_fetch fetches a known URL; web_search searches by query through the configured client search provider. Neither is a weather API.</p>
+    <p class="tool-boundary-note">Network tools are explicit capabilities: web_fetch fetches a known URL; web_search searches by query through either provider-hosted search or the configured client search provider. Neither is a weather API.</p>
     ${groups.map((group) => renderToolGroup(group, selectedSet, editable, name)).join("")}
   `;
 }
@@ -19,6 +19,7 @@ function renderToolGroup(group, selectedSet, editable, name) {
         <span>Enabled</span>
         <span>Tool</span>
         <span>Scope</span>
+        <span>Source</span>
         <span>Risk</span>
         <span>Description</span>
       </div>
@@ -28,15 +29,28 @@ function renderToolGroup(group, selectedSet, editable, name) {
 }
 
 function renderToolRow(tool, checked, editable, name) {
+  const available = tool.available !== false;
+  const disabled = !editable || !available;
+  const source = toolSourceLabel(tool);
+  const description = available ? tool.description || "" : `${tool.description || ""} Unavailable: ${tool.unavailable || "not available"}`;
   return `
-    <label class="tool-row">
-      <span><input type="checkbox" name="${escapeHTML(name)}" value="${escapeHTML(tool.name)}" ${checked ? "checked" : ""} ${editable ? "" : "disabled"} /></span>
+    <label class="tool-row ${available ? "" : "unavailable"}">
+      <span><input type="checkbox" name="${escapeHTML(name)}" value="${escapeHTML(tool.name)}" ${checked && available ? "checked" : ""} ${disabled ? "disabled" : ""} /></span>
       <span class="tool-name"><strong>${escapeHTML(tool.title || tool.name)}</strong><small>${escapeHTML(tool.name)}</small></span>
       <span>${escapeHTML(tool.group_title || tool.group || "tool")}</span>
+      <span><span class="source-badge ${available ? "" : "unavailable"}">${escapeHTML(source)}</span></span>
       <span class="risk">${escapeHTML(tool.risk || "read")}</span>
-      <span>${escapeHTML(tool.description || "")}</span>
+      <span>${escapeHTML(description)}</span>
     </label>
   `;
+}
+
+function toolSourceLabel(tool) {
+  if (tool.available === false) return tool.unavailable || "unavailable";
+  if (tool.source === "provider-hosted") return tool.wire_shape ? `hosted · ${tool.wire_shape}` : "provider-hosted";
+  if (tool.source?.startsWith("client:")) return tool.source.replace("client:", "client · ");
+  if (tool.kind === "capability") return tool.source || "capability";
+  return tool.kind || "local";
 }
 
 function presetLabel(preset) {

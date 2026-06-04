@@ -13,6 +13,7 @@ import (
 
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/harness"
+	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/provider"
 )
 
@@ -141,7 +142,7 @@ func TestServerCreatesIdleAgentSessionBeforeInitialTurn(t *testing.T) {
 	}
 	handler := server.Handler()
 
-	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"unused"},"message":"hello","system_prompt":"test","selected_tools":["grep","web_search"],"context_policy":{"context_window_tokens":8192,"max_output_tokens":1024,"recent_tail_tokens":1024}}`
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"unused"},"message":"hello","system_prompt":"test","selected_tools":["grep","web_fetch"],"context_policy":{"context_window_tokens":8192,"max_output_tokens":1024,"recent_tail_tokens":1024}}`
 	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, createReq)
@@ -155,7 +156,7 @@ func TestServerCreatesIdleAgentSessionBeforeInitialTurn(t *testing.T) {
 	if snapshot.ID == "" || snapshot.Status != "idle" || len(snapshot.Turns) != 0 || !snapshot.CanAppendMessage {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}
-	if !slices.Equal(snapshot.SelectedTools, []string{"grep", "web_search"}) {
+	if !slices.Equal(snapshot.SelectedTools, []string{"grep", "web_fetch"}) {
 		t.Fatalf("selected tools = %#v", snapshot.SelectedTools)
 	}
 	if len(scripted.Requests) != 0 {
@@ -272,15 +273,29 @@ func TestServerAgentSessionCreateAcceptsSelectedTools(t *testing.T) {
 }
 
 func TestServerAgentSessionCreateAcceptsClientWebSearchTool(t *testing.T) {
-	runner := NewRunner(t.TempDir())
+	root := t.TempDir()
+	runner := NewRunner(root)
 	runner.Now = fixedClock()
+	if _, err := runner.SaveConfigState(SaveConfigRequest{
+		ActiveProfileID: "fake",
+		Profiles: []ProviderProfile{{
+			ID:        "fake",
+			Name:      "Fake",
+			Provider:  config.ProviderFake,
+			Model:     "fake-model",
+			WebSearch: searchcap.Capability{Client: searchcap.ClientConfig{Enabled: true, Provider: searchcap.ClientProviderBrave}},
+		}},
+		SearchProvider: SaveSearchProvider{Provider: "brave", APIKey: "search-key"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	server, err := NewServer(runner)
 	if err != nil {
 		t.Fatal(err)
 	}
 	handler := server.Handler()
 
-	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"ok"},"message":"hello","system_prompt":"test","selected_tools":["web_search"]}`
+	createBody := `{"profile_id":"fake","message":"hello","system_prompt":"test","selected_tools":["web_search"]}`
 	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody))
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, createReq)
@@ -307,7 +322,7 @@ func TestServerAgentInterfaceProbeExposesSelectedToolsAndDoesNotPersistSession(t
 		t.Fatal(err)
 	}
 	handler := server.Handler()
-	allTools := allAgentToolNamesForTest()
+	allTools := availableAgentToolNamesForTest(t, runner)
 	body, err := json.Marshal(AgentInterfaceProbeRequest{
 		SelectedTools: allTools,
 		ContextPolicy: contextPolicyForTest(8192),
@@ -1144,6 +1159,21 @@ func allAgentToolNamesForTest() []string {
 	names := make([]string, 0, len(agentToolOptions))
 	for _, option := range agentToolOptions {
 		names = append(names, option.Name)
+	}
+	return names
+}
+
+func availableAgentToolNamesForTest(t *testing.T, runner Runner) []string {
+	t.Helper()
+	state, err := runner.ConfigState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(state.Tools))
+	for _, option := range state.Tools {
+		if option.Available {
+			names = append(names, option.Name)
+		}
 	}
 	return names
 }

@@ -114,6 +114,7 @@ function render(options = {}) {
       bindSettings(appView, {
         onSwitchProfile: switchSettingsProfile,
         onSwitchProvider: switchSettingsProvider,
+        onSwitchSearchMode: () => render(),
         onSave: saveSettings,
         onDuplicate: duplicateProfile,
         onRunCheck: runCheck,

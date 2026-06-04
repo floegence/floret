@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
+	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/modelcatalog"
 	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
@@ -40,6 +40,7 @@ type anthropicMessage struct {
 
 type anthropicTool struct {
 	Name         string                 `json:"name"`
+	Type         string                 `json:"type,omitempty"`
 	Description  string                 `json:"description,omitempty"`
 	InputSchema  map[string]any         `json:"input_schema"`
 	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
@@ -53,6 +54,7 @@ type anthropicContentBlock struct {
 	Input        json.RawMessage        `json:"input,omitempty"`
 	ToolUseID    string                 `json:"tool_use_id,omitempty"`
 	Content      string                 `json:"content,omitempty"`
+	Query        string                 `json:"query,omitempty"`
 	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
 }
 
@@ -88,8 +90,8 @@ func (p AnthropicProvider) Stream(ctx context.Context, req provider.Request) (<-
 	if p.Model == "" {
 		return nil, fmt.Errorf("anthropic model is required")
 	}
-	if len(req.HostedTools) > 0 {
-		return nil, fmt.Errorf("anthropic provider does not support hosted tools in this adapter: %s", anthropicHostedToolNames(req.HostedTools))
+	if err := validateAnthropicHostedTools(req.HostedTools); err != nil {
+		return nil, err
 	}
 	normalizedCache, err := p.NormalizeCachePolicy(req.Cache)
 	if err != nil {
@@ -134,7 +136,7 @@ func (p AnthropicProvider) Stream(ctx context.Context, req provider.Request) (<-
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		return nil, fmt.Errorf("anthropic provider status %d", httpResp.StatusCode)
 	}
-	ch := make(chan provider.StreamEvent, 4)
+	ch := make(chan provider.StreamEvent, len(parsed.Content)+4)
 	if len(parsed.Content) == 0 {
 		ch <- provider.StreamEvent{Type: provider.Empty}
 		close(ch)
@@ -149,6 +151,10 @@ func (p AnthropicProvider) Stream(ctx context.Context, req provider.Request) (<-
 			}
 		case "tool_use":
 			calls = append(calls, provider.ToolCall{ID: block.ID, Name: block.Name, Args: string(block.Input)})
+		case "server_tool_use":
+			ch <- provider.StreamEvent{Type: provider.HostedToolCall, ToolCall: provider.ToolCall{ID: block.ID, Name: block.Name, Args: block.Query}}
+		case "web_search_tool_result":
+			ch <- provider.StreamEvent{Type: provider.HostedToolResult, ToolCall: provider.ToolCall{ID: block.ToolUseID, Name: searchcap.ToolWebSearch}, Text: block.Content}
 		}
 	}
 	if usage := normalizeAnthropicUsage(parsed.Usage, p.CostModel); usage.TotalTokens > 0 || usage.CostUSD > 0 {
@@ -174,7 +180,7 @@ func (p AnthropicProvider) buildAnthropicRequest(req provider.Request, maxTokens
 	cacheControl := anthropicCacheControlFor(req, p.Cache)
 	system := renderAnthropicSystem(messages, cacheControl)
 	renderedMessages := renderAnthropicMessages(messages, cacheControl)
-	renderedTools := renderAnthropicTools(req.Tools, cacheControl)
+	renderedTools := append(renderAnthropicTools(req.Tools, cacheControl), renderAnthropicHostedTools(req.HostedTools)...)
 	if len(req.RawPlan.Segments) > 0 {
 		system = renderAnthropicSystemFromRawPlan(req.RawPlan, cacheControl, system)
 		renderedMessages = renderAnthropicMessagesFromRawPlan(req.RawPlan, renderedMessages)
@@ -220,8 +226,8 @@ func (p AnthropicProvider) PayloadHash(req provider.Request) (string, error) {
 		return "", err
 	}
 	req.Cache = policy
-	if len(req.HostedTools) > 0 {
-		return "", fmt.Errorf("anthropic provider does not support hosted tools in this adapter: %s", anthropicHostedToolNames(req.HostedTools))
+	if err := validateAnthropicHostedTools(req.HostedTools); err != nil {
+		return "", err
 	}
 	maxTokens := p.maxTokensForRequest(req)
 	body, err := json.Marshal(p.buildAnthropicRequest(req, maxTokens))
@@ -416,12 +422,31 @@ func inputSchemaForAnthropic(def provider.ToolDefinition) map[string]any {
 	}
 }
 
-func anthropicHostedToolNames(defs []provider.HostedToolDefinition) string {
-	names := make([]string, 0, len(defs))
+func validateAnthropicHostedTools(defs []provider.HostedToolDefinition) error {
 	for _, def := range defs {
-		names = append(names, def.Type+"/"+def.Name)
+		shape, _ := def.Options["wire_shape"].(string)
+		if def.Name != searchcap.ToolWebSearch || def.Type != searchcap.ToolWebSearch || shape != searchcap.WireShapeAnthropicServerWebSearch {
+			return fmt.Errorf("anthropic provider does not support hosted tool %s/%s with wire shape %q", def.Type, def.Name, shape)
+		}
 	}
-	return strings.Join(names, ", ")
+	return nil
+}
+
+func renderAnthropicHostedTools(defs []provider.HostedToolDefinition) []anthropicTool {
+	out := make([]anthropicTool, 0, len(defs))
+	for _, def := range defs {
+		shape, _ := def.Options["wire_shape"].(string)
+		if def.Name != searchcap.ToolWebSearch || def.Type != searchcap.ToolWebSearch || shape != searchcap.WireShapeAnthropicServerWebSearch {
+			continue
+		}
+		out = append(out, anthropicTool{
+			Type:        "web_search_20250305",
+			Name:        searchcap.ToolWebSearch,
+			Description: "Search the web using the provider-hosted search capability.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}, "additionalProperties": false},
+		})
+	}
+	return out
 }
 
 func renderAnthropicToolsFromRawPlan(plan promptcache.RawPlan, cacheControl *anthropicCacheControl, fallback []anthropicTool) []anthropicTool {

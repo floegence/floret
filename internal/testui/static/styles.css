@@ -803,13 +803,18 @@ button.small {
 
 .tool-row {
   display: grid;
-  grid-template-columns: 76px 140px 130px 100px minmax(180px, 1fr);
+  grid-template-columns: 76px 140px 130px 140px 90px minmax(180px, 1fr);
   gap: 12px;
   align-items: center;
   min-height: 42px;
   padding: 8px 10px;
   border-bottom: 1px solid var(--line);
   font-size: 13px;
+}
+
+.tool-row.unavailable {
+  color: var(--muted);
+  background: rgba(216, 221, 210, 0.22);
 }
 
 .tool-row:last-child {
@@ -839,6 +844,23 @@ button.small {
   color: var(--accent-dark);
   font-size: 12px;
   font-weight: 800;
+}
+
+.source-badge {
+  display: inline-block;
+  max-width: 100%;
+  padding: 2px 6px;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  color: var(--blue);
+  font-size: 11px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.source-badge.unavailable {
+  color: var(--red);
+  background: #fff7f5;
 }
 
 .settings-grid {

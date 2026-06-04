@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/config"
+	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/modelcatalog"
 )
 
@@ -22,11 +23,11 @@ const (
 	braveSearchKey       = "FLORET_BRAVE_SEARCH_API_KEY"
 	braveSearchEndpoint  = "FLORET_BRAVE_SEARCH_ENDPOINT"
 	searchProviderBrave  = "brave"
-	defaultSearchSummary = "Client web_search uses Brave Search when selected. Hosted provider search is shown separately when an adapter supports it."
+	defaultSearchSummary = "web_search is selected from each provider profile. Provider-hosted search is preferred; Brave client search is available only when explicitly enabled and configured."
 )
 
 func (r Runner) ConfigState() (ConfigState, error) {
-	state := ConfigState{EnvFile: r.EnvFile, Catalog: r.Catalog(), Tools: agentToolCatalog()}
+	state := ConfigState{EnvFile: r.EnvFile, Catalog: r.Catalog(), SearchWireShapes: searchWireShapes()}
 	state.LocalTime = localTimeInfo(r.now())
 	fileValues := map[string]string{}
 	if _, err := os.Stat(r.EnvFile); err == nil {
@@ -48,6 +49,7 @@ func (r Runner) ConfigState() (ConfigState, error) {
 		if state.ActiveProfileID == "" && len(state.Profiles) > 0 {
 			state.ActiveProfileID = state.Profiles[0].ID
 		}
+		state.Tools = agentToolCatalog(activeProfileForCatalog(state.Profiles, state.ActiveProfileID), r.EnvFile)
 		return state, nil
 	}
 	profile, err := r.legacyProfile()
@@ -56,6 +58,7 @@ func (r Runner) ConfigState() (ConfigState, error) {
 	}
 	state.Profiles = []ProviderProfile{stripProfileSecret(profile)}
 	state.ActiveProfileID = profile.ID
+	state.Tools = agentToolCatalog(stripProfileSecret(profile), r.EnvFile)
 	return state, nil
 }
 
@@ -91,6 +94,9 @@ func (r Runner) SaveConfigState(req SaveConfigRequest) (ConfigState, error) {
 		normalized := normalizeProfile(profile, i)
 		if normalized.APIKey == "" {
 			normalized.APIKey = existingByID[normalized.ID].APIKey
+		}
+		if err := validateProfileWebSearch(normalized); err != nil {
+			return ConfigState{}, err
 		}
 		if _, ok := seen[normalized.ID]; ok {
 			return ConfigState{}, fmt.Errorf("duplicate profile id %q", normalized.ID)
@@ -207,6 +213,7 @@ func normalizeProfile(profile ProviderProfile, index int) ProviderProfile {
 		profile.Name = profile.Provider + " / " + profile.Model
 	}
 	profile.APIKeySet = profile.APIKey != "" || profile.APIKeySet
+	profile.WebSearch = searchcap.NormalizeCapability(profile.Provider, profile.WebSearch)
 	return profile
 }
 
@@ -323,6 +330,63 @@ func searchProviderInfo(values map[string]string) SearchProviderInfo {
 		EndpointKey: braveSearchEndpoint,
 		Capability:  defaultSearchSummary,
 	}
+}
+
+func searchWireShapes() []SearchWireShape {
+	out := make([]SearchWireShape, 0, len(searchcap.AvailableWireShapes()))
+	for _, shape := range searchcap.AvailableWireShapes() {
+		out = append(out, SearchWireShape{ID: shape, Title: searchWireShapeTitle(shape)})
+	}
+	return out
+}
+
+func searchWireShapeTitle(shape string) string {
+	switch shape {
+	case searchcap.WireShapeOpenAIChatWebSearchOptions:
+		return "OpenAI-compatible chat web_search_options"
+	case searchcap.WireShapeAnthropicServerWebSearch:
+		return "Anthropic server web_search_20250305"
+	default:
+		return shape
+	}
+}
+
+func validateProfileWebSearch(profile ProviderProfile) error {
+	capability := profile.WebSearch
+	if capability.ProviderHosted.Enabled {
+		shape := strings.TrimSpace(capability.ProviderHosted.WireShape)
+		if shape == "" {
+			return fmt.Errorf("profile %q provider web_search is enabled but no hosted wire shape is configured", profile.ID)
+		}
+		if err := searchcap.ValidateWireShape(shape); err != nil {
+			return fmt.Errorf("profile %q: %w", profile.ID, err)
+		}
+		if len(capability.ProviderHosted.SupportedWireShapes) > 0 && !slices.Contains(capability.ProviderHosted.SupportedWireShapes, shape) {
+			return fmt.Errorf("profile %q provider web_search wire shape %q is not in supported_wire_shapes", profile.ID, shape)
+		}
+	}
+	if capability.Client.Enabled {
+		provider := strings.TrimSpace(capability.Client.Provider)
+		if provider == "" {
+			provider = searchProviderBrave
+		}
+		if provider != searchProviderBrave {
+			return fmt.Errorf("profile %q has unsupported client web_search provider %q", profile.ID, provider)
+		}
+	}
+	return nil
+}
+
+func activeProfileForCatalog(profiles []ProviderProfile, activeID string) ProviderProfile {
+	for _, profile := range profiles {
+		if profile.ID == activeID {
+			return profile
+		}
+	}
+	if len(profiles) > 0 {
+		return profiles[0]
+	}
+	return ProviderProfile{Provider: config.ProviderFake, Model: "fake-model"}
 }
 
 func getEnvValue(values map[string]string, key string, fallback string) string {

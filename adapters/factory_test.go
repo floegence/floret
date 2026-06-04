@@ -13,6 +13,7 @@ import (
 
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/engine"
+	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/memory"
 	"github.com/floegence/floret/modelcatalog"
 	"github.com/floegence/floret/promptcache"
@@ -1362,11 +1363,62 @@ func TestOpenAICompatibleProviderRendersStrictFunctionSchemaAndRejectsHostedTool
 	if required, ok := body.Tools[0].Function.Parameters["required"].([]any); !ok || len(required) != 1 || required[0] != "path" {
 		t.Fatalf("required properties = %#v", body.Tools[0].Function.Parameters["required"])
 	}
-	if _, err := p.Stream(context.Background(), provider.Request{RunID: "r", HostedTools: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}}); err == nil || !strings.Contains(err.Error(), "hosted tools") {
-		t.Fatalf("expected hosted tool rejection, got %v", err)
+	if _, err := p.Stream(context.Background(), provider.Request{RunID: "r", HostedTools: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}}); err == nil || !strings.Contains(err.Error(), "wire shape") {
+		t.Fatalf("expected unsupported hosted tool rejection, got %v", err)
 	}
-	if _, err := p.PayloadHash(provider.Request{RunID: "r", HostedTools: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}}); err == nil || !strings.Contains(err.Error(), "hosted tools") {
-		t.Fatalf("expected hosted tool payload hash rejection, got %v", err)
+	if _, err := p.PayloadHash(provider.Request{RunID: "r", HostedTools: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}}); err == nil || !strings.Contains(err.Error(), "wire shape") {
+		t.Fatalf("expected unsupported hosted tool payload hash rejection, got %v", err)
+	}
+}
+
+func TestOpenAICompatibleProviderRendersHostedWebSearchOptions(t *testing.T) {
+	var body struct {
+		Tools            []map[string]any `json:"tools"`
+		WebSearchOptions map[string]any   `json:"web_search_options"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
+
+	if _, err := p.Stream(context.Background(), provider.Request{
+		RunID: "r",
+		HostedTools: []provider.HostedToolDefinition{{
+			Name:    "web_search",
+			Type:    "web_search",
+			Options: map[string]any{"wire_shape": searchcap.WireShapeOpenAIChatWebSearchOptions},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if body.WebSearchOptions == nil {
+		t.Fatalf("web_search_options missing from request body: %#v", body)
+	}
+	if len(body.Tools) != 0 {
+		t.Fatalf("hosted web_search must not render as local function tool: %#v", body.Tools)
+	}
+	hashA, err := p.PayloadHash(provider.Request{RunID: "r"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hashB, err := p.PayloadHash(provider.Request{
+		RunID: "r",
+		HostedTools: []provider.HostedToolDefinition{{
+			Name:    "web_search",
+			Type:    "web_search",
+			Options: map[string]any{"wire_shape": searchcap.WireShapeOpenAIChatWebSearchOptions},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hashA == hashB {
+		t.Fatalf("hosted web search should affect payload hash")
 	}
 }
 
@@ -1405,11 +1457,56 @@ func TestAnthropicProviderRendersStrictInputSchemaAndRejectsHostedTools(t *testi
 	if required, ok := body.Tools[0].InputSchema["required"].([]any); !ok || len(required) != 1 || required[0] != "path" {
 		t.Fatalf("required properties = %#v", body.Tools[0].InputSchema["required"])
 	}
-	if _, err := p.Stream(context.Background(), provider.Request{RunID: "r", HostedTools: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}}); err == nil || !strings.Contains(err.Error(), "hosted tools") {
-		t.Fatalf("expected hosted tool rejection, got %v", err)
+	if _, err := p.Stream(context.Background(), provider.Request{RunID: "r", HostedTools: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}}); err == nil || !strings.Contains(err.Error(), "wire shape") {
+		t.Fatalf("expected unsupported hosted tool rejection, got %v", err)
 	}
-	if _, err := p.PayloadHash(provider.Request{RunID: "r", HostedTools: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}}); err == nil || !strings.Contains(err.Error(), "hosted tools") {
-		t.Fatalf("expected hosted tool payload hash rejection, got %v", err)
+	if _, err := p.PayloadHash(provider.Request{RunID: "r", HostedTools: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}}); err == nil || !strings.Contains(err.Error(), "wire shape") {
+		t.Fatalf("expected unsupported hosted tool payload hash rejection, got %v", err)
+	}
+}
+
+func TestAnthropicProviderRendersAndReadsHostedWebSearch(t *testing.T) {
+	var body struct {
+		Tools []struct {
+			Name string `json:"name"`
+			Type string `json:"type"`
+		} `json:"tools"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"server_tool_use","id":"srv-1","name":"web_search","query":"Changsha weather"},{"type":"web_search_tool_result","tool_use_id":"srv-1","content":"rain"},{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+	p := AnthropicProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
+
+	stream, err := p.Stream(context.Background(), provider.Request{
+		RunID: "r",
+		HostedTools: []provider.HostedToolDefinition{{
+			Name:    "web_search",
+			Type:    "web_search",
+			Options: map[string]any{"wire_shape": searchcap.WireShapeAnthropicServerWebSearch},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawCall, sawResult bool
+	for ev := range stream {
+		if ev.Type == provider.HostedToolCall && ev.ToolCall.ID == "srv-1" && ev.ToolCall.Name == "web_search" {
+			sawCall = true
+		}
+		if ev.Type == provider.HostedToolResult && ev.ToolCall.ID == "srv-1" && ev.Text == "rain" {
+			sawResult = true
+		}
+	}
+	if len(body.Tools) != 1 || body.Tools[0].Name != "web_search" || body.Tools[0].Type != "web_search_20250305" {
+		t.Fatalf("hosted anthropic tool body = %#v", body.Tools)
+	}
+	if !sawCall || !sawResult {
+		t.Fatalf("hosted events: call=%v result=%v", sawCall, sawResult)
 	}
 }
 

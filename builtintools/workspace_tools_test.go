@@ -150,12 +150,46 @@ func TestWebFetchRequiresApprovalAndFetchesHTTP(t *testing.T) {
 	if got.IsError || !strings.Contains(got.Text, "Hello Floret") || got.Metadata["status"] != http.StatusOK {
 		t.Fatalf("web_fetch = %#v", got)
 	}
+	queryOnly := reg.Run(context.Background(), provider.ToolCall{Name: "web_fetch", Args: `{"url":"` + server.URL + `"}`}, allowAll)
+	if queryOnly.IsError || !strings.Contains(queryOnly.Text, "Hello Floret") || queryOnly.Metadata["status"] != http.StatusOK {
+		t.Fatalf("web_fetch url-only = %#v", queryOnly)
+	}
+}
+
+func TestWebFetchReturnsConciseHTTPStatusErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, strings.Repeat("not found body ", 200), http.StatusNotFound)
+	}))
+	defer server.Close()
+	reg := tools.NewRegistry()
+	if err := RegisterNetwork(reg, NetworkOptions{AllowPrivateIPs: true}); err != nil {
+		t.Fatal(err)
+	}
+	got := reg.Run(context.Background(), provider.ToolCall{Name: "web_fetch", Args: `{"url":"` + server.URL + `"}`}, allowAll)
+	if !got.IsError || !strings.Contains(got.Text, "HTTP status 404") || strings.Contains(got.Text, "not found body not found body") {
+		t.Fatalf("web_fetch 404 = %#v", got)
+	}
+	if got.Metadata["status"] != http.StatusNotFound {
+		t.Fatalf("web_fetch 404 metadata = %#v", got.Metadata)
+	}
 }
 
 func TestWebSearchRequiresAPIKeyAndSearchQueryApproval(t *testing.T) {
 	t.Setenv("FLORET_BRAVE_SEARCH_API_KEY", "")
 	reg := tools.NewRegistry()
 	if err := RegisterSearch(reg, SearchOptions{APIKey: ""}); err != nil {
+		if !strings.Contains(err.Error(), "FLORET_BRAVE_SEARCH_API_KEY") {
+			t.Fatalf("register error = %v", err)
+		}
+	} else {
+		t.Fatalf("expected missing API key registration error")
+	}
+	if got := reg.Run(context.Background(), provider.ToolCall{Name: ToolWebSearch, Args: `{"query":"Changsha weather 2026-06-03"}`}, allowAll); !got.IsError || !strings.Contains(got.Text, "unknown tool") {
+		t.Fatalf("unregistered web_search = %#v", got)
+	}
+
+	reg = tools.NewRegistry()
+	if err := RegisterSearch(reg, SearchOptions{APIKey: "brave-key", Endpoint: "http://127.0.0.1"}); err != nil {
 		t.Fatal(err)
 	}
 	denied := reg.Run(context.Background(), provider.ToolCall{Name: ToolWebSearch, Args: `{"query":"Changsha weather 2026-06-03","count":8,"country":null,"search_lang":null,"freshness":null}`}, nil)
@@ -163,13 +197,10 @@ func TestWebSearchRequiresAPIKeyAndSearchQueryApproval(t *testing.T) {
 		t.Fatalf("denied = %#v", denied)
 	}
 	var approval tools.ApprovalRequest
-	approvedWithoutKey := reg.Run(context.Background(), provider.ToolCall{Name: ToolWebSearch, Args: `{"query":"Changsha weather 2026-06-03","count":8,"country":null,"search_lang":null,"freshness":null}`}, func(_ context.Context, req tools.ApprovalRequest) (tools.PermissionDecision, error) {
+	_ = reg.Run(context.Background(), provider.ToolCall{Name: ToolWebSearch, Args: `{"query":"Changsha weather 2026-06-03","count":8,"country":null,"search_lang":null,"freshness":null}`}, func(_ context.Context, req tools.ApprovalRequest) (tools.PermissionDecision, error) {
 		approval = req
-		return tools.PermissionDecisionAllow, nil
+		return tools.PermissionDecisionDeny, nil
 	})
-	if !approvedWithoutKey.IsError || !strings.Contains(approvedWithoutKey.Text, "FLORET_BRAVE_SEARCH_API_KEY") {
-		t.Fatalf("missing key = %#v", approvedWithoutKey)
-	}
 	if len(approval.Resources) != 1 || approval.Resources[0].Kind != "search_query" || approval.Resources[0].Value != "Changsha weather 2026-06-03" {
 		t.Fatalf("approval resources = %#v", approval.Resources)
 	}

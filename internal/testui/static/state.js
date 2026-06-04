@@ -64,9 +64,10 @@ export function routePath(route) {
 }
 
 export function toolNamesForPreset(preset, tools) {
+  const availableTools = (tools || []).filter((tool) => tool.available !== false);
   const byGroup = (groups) => {
     const wanted = new Set(groups);
-    return (tools || []).filter((tool) => wanted.has(tool.group)).map((tool) => tool.name);
+    return availableTools.filter((tool) => wanted.has(tool.group)).map((tool) => tool.name);
   };
   const read = byGroup(["workspace_read"]);
   const write = byGroup(["workspace_write"]);
@@ -79,7 +80,7 @@ export function toolNamesForPreset(preset, tools) {
     case "shell":
       return [...read, ...write, ...shell];
     case "all":
-      return (tools || []).map((tool) => tool.name);
+      return availableTools.map((tool) => tool.name);
     default:
       return [];
   }
@@ -88,15 +89,31 @@ export function toolNamesForPreset(preset, tools) {
 export function groupTools(tools) {
   const groups = [];
   for (const tool of tools || []) {
-    const id = tool.group || "tools";
+    const sourceGroup = toolMatrixGroup(tool);
+    const id = sourceGroup.id;
     let group = groups.find((item) => item.id === id);
     if (!group) {
-      group = { id, title: tool.group_title || id, tools: [] };
+      group = { id, title: sourceGroup.title, tools: [] };
       groups.push(group);
     }
     group.tools.push(tool);
   }
   return groups;
+}
+
+function toolMatrixGroup(tool) {
+  if (tool.name === "web_search") {
+    if (tool.available === false) {
+      return { id: "unavailable_capabilities", title: "Disabled / unavailable capabilities" };
+    }
+    if (tool.source === "provider-hosted") {
+      return { id: "provider_hosted_capabilities", title: "Provider-hosted capabilities" };
+    }
+    if (tool.source?.startsWith("client:")) {
+      return { id: "local_client_tools", title: "Local client tools" };
+    }
+  }
+  return { id: tool.group || "tools", title: tool.group_title || tool.group || "Tools" };
 }
 
 export function providerCatalog() {

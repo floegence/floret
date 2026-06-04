@@ -886,6 +886,32 @@ func TestHostedToolsAreSentToProviderButNeverEnterLocalRunBatch(t *testing.T) {
 	}
 }
 
+func TestProviderRequestRejectsLocalHostedToolNameConflict(t *testing.T) {
+	p := harness.NewScriptedProvider(harness.Step(harness.Text("unused"), harness.Done()))
+	reg := tools.NewRegistry()
+	mustRegister(t, reg, tools.Define[stringArgs](
+		tools.Definition{Name: "web_search", InputSchema: tools.StrictObject(map[string]any{"query": tools.String("query")}, []string{"query"})},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
+			return tools.Result{Text: "bad"}, nil
+		},
+	))
+	e := newTestEngine(p, &event.Recorder{})
+	e.Tools = reg
+	e.Options.ToolDefinitions = reg.Definitions()
+	e.Options.HostedToolDefinitions = []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}
+
+	got := e.Run(context.Background(), "search")
+
+	if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), "both a local tool and a provider-hosted tool") {
+		t.Fatalf("result = %#v", got)
+	}
+	if len(p.Requests) != 0 {
+		t.Fatalf("conflicting request should not reach provider: %#v", p.Requests)
+	}
+}
+
 func TestReadOnlyToolsRunInParallelAndMutatingToolsKeepOrder(t *testing.T) {
 	reg := tools.NewRegistry()
 	order := make(chan string, 4)
