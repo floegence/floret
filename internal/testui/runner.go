@@ -95,6 +95,8 @@ type agentSession struct {
 	harness                 *agentharness.AgentHarness
 	thread                  *agentharness.Thread
 	turns                   []AgentTurnSummary
+	snapshotMu              sync.Mutex
+	lastSnapshot            AgentSessionSnapshot
 	createdAt               time.Time
 	updatedAt               time.Time
 }
@@ -418,6 +420,7 @@ func (r *Runner) runAgentTurnResponse(ctx context.Context, sessionID string, req
 	if !snapshot.CanAppendMessage {
 		return r.failAgentRunWithStatus(resp, http.StatusConflict, fmt.Errorf("agent session %q is %s and cannot accept a new message", sessionID, snapshot.Status))
 	}
+	r.markAgentSessionRunningLocked(sess, resp.ID)
 	if sink != nil {
 		setAgentSessionStreamSink(sess, sink)
 		defer setAgentSessionStreamSink(sess, nil)
@@ -584,7 +587,9 @@ func (r *Runner) AgentSession(ctx context.Context, sessionID string) (AgentSessi
 		}
 		return r.sessionSnapshotFromMetadata(ctx, meta)
 	}
-	sess.mu.Lock()
+	if !sess.mu.TryLock() {
+		return runningAgentSessionSnapshot(sess), nil
+	}
 	defer sess.mu.Unlock()
 	return r.sessionSnapshotLocked(ctx, sess)
 }
@@ -677,7 +682,10 @@ func (r *Runner) AgentSessions(ctx context.Context) []AgentSessionSnapshot {
 	sessions := r.sessionRegistry().list()
 	out := make([]AgentSessionSnapshot, 0, len(sessions))
 	for _, sess := range sessions {
-		sess.mu.Lock()
+		if !sess.mu.TryLock() {
+			out = append(out, runningAgentSessionSnapshot(sess))
+			continue
+		}
 		snap, err := r.sessionSnapshotLocked(ctx, sess)
 		sess.mu.Unlock()
 		if err == nil {
@@ -951,6 +959,7 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 func (r *Runner) runAgentTurn(ctx context.Context, sess *agentSession, resp AgentRunResponse, message string) AgentRunResponse {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
+	r.markAgentSessionRunningLocked(sess, resp.ID)
 	return r.runAgentTurnLocked(ctx, sess, resp, message)
 }
 
@@ -1027,6 +1036,7 @@ func (r *Runner) runAgentTurnLocked(ctx context.Context, sess *agentSession, res
 	resp.Summary = agentSummary(result)
 	resp.FinishedAt = finished
 	resp.DurationMS = resp.FinishedAt.Sub(resp.StartedAt).Milliseconds()
+	storeAgentSessionSnapshot(sess, resp.Session)
 	return resp
 }
 
@@ -1129,7 +1139,7 @@ func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) 
 	active := observeMessages(snap.Context)
 	pathEntries := observeEntries(snap.Path)
 	allEntries := observeEntries(snap.Entries)
-	return AgentSessionSnapshot{
+	snapshot := AgentSessionSnapshot{
 		ID:                      sess.id,
 		Status:                  lifecycle.Status(),
 		Phase:                   lifecycle.Phase(),
@@ -1152,7 +1162,73 @@ func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) 
 		AllEntries:              allEntries,
 		AggregateMetrics:        aggregateTurnMetrics(turns),
 		Compactions:             countCompactions(snap.Path),
-	}, nil
+	}
+	storeAgentSessionSnapshot(sess, snapshot)
+	return snapshot, nil
+}
+
+func (r *Runner) markAgentSessionRunningLocked(sess *agentSession, turnID string) {
+	now := r.now()
+	sess.updatedAt = now
+	lifecycle := sessionlifecycle.Running(turnID)
+	snapshot := loadAgentSessionSnapshot(sess)
+	if snapshot.ID == "" {
+		snapshot = AgentSessionSnapshot{
+			ID:                      sess.id,
+			CreatedAt:               sess.createdAt,
+			Profile:                 sess.profile,
+			SystemPrompt:            sess.systemPrompt,
+			SelectedTools:           cloneSelectedTools(sess.selectedTools),
+			HostedTools:             append([]provider.HostedToolDefinition(nil), sess.hostedTools...),
+			UnavailableCapabilities: append([]string(nil), sess.unavailableCapabilities...),
+			ContextPolicy:           sess.contextPolicy,
+		}
+	}
+	snapshot.Status = lifecycle.Status()
+	snapshot.Phase = lifecycle.Phase()
+	snapshot.UpdatedAt = now
+	snapshot.LatestTurnID = lifecycle.LatestTurnID()
+	snapshot.WaitingPrompt = lifecycle.WaitingPrompt()
+	snapshot.Recoverable = lifecycle.Recoverable()
+	snapshot.CanAppendMessage = lifecycle.CanAppendMessage()
+	storeAgentSessionSnapshot(sess, snapshot)
+}
+
+func runningAgentSessionSnapshot(sess *agentSession) AgentSessionSnapshot {
+	snapshot := loadAgentSessionSnapshot(sess)
+	lifecycle := sessionlifecycle.Running(snapshot.LatestTurnID)
+	if snapshot.ID == "" {
+		snapshot = AgentSessionSnapshot{
+			ID:                      sess.id,
+			CreatedAt:               sess.createdAt,
+			UpdatedAt:               sess.createdAt,
+			Profile:                 sess.profile,
+			SystemPrompt:            sess.systemPrompt,
+			SelectedTools:           cloneSelectedTools(sess.selectedTools),
+			HostedTools:             append([]provider.HostedToolDefinition(nil), sess.hostedTools...),
+			UnavailableCapabilities: append([]string(nil), sess.unavailableCapabilities...),
+			ContextPolicy:           sess.contextPolicy,
+		}
+	}
+	snapshot.Status = lifecycle.Status()
+	snapshot.Phase = lifecycle.Phase()
+	snapshot.LatestTurnID = lifecycle.LatestTurnID()
+	snapshot.WaitingPrompt = lifecycle.WaitingPrompt()
+	snapshot.Recoverable = lifecycle.Recoverable()
+	snapshot.CanAppendMessage = lifecycle.CanAppendMessage()
+	return snapshot
+}
+
+func storeAgentSessionSnapshot(sess *agentSession, snapshot AgentSessionSnapshot) {
+	sess.snapshotMu.Lock()
+	defer sess.snapshotMu.Unlock()
+	sess.lastSnapshot = snapshot
+}
+
+func loadAgentSessionSnapshot(sess *agentSession) AgentSessionSnapshot {
+	sess.snapshotMu.Lock()
+	defer sess.snapshotMu.Unlock()
+	return sess.lastSnapshot
 }
 
 func (r *Runner) agentObservationLocked(sess *agentSession, snapshot AgentSessionSnapshot, result engine.Result, turnID string) AgentObservation {

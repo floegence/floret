@@ -19,6 +19,7 @@ import (
 	"github.com/floegence/floret/event"
 	"github.com/floegence/floret/harness"
 	"github.com/floegence/floret/internal/searchcap"
+	"github.com/floegence/floret/internal/sessionlifecycle"
 	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/session"
@@ -1556,6 +1557,63 @@ func TestRunnerRejectsAppendWhileSessionIsBusy(t *testing.T) {
 	busy := runner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "again"})
 	if busy.Status != "error" || busy.StatusCode != 409 || !strings.Contains(busy.Error, "already running") {
 		t.Fatalf("busy = %#v", busy)
+	}
+}
+
+func TestRunnerAgentSessionSnapshotsDoNotBlockOnRunningTurn(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+
+	first, err := runner.CreateIdleAgentSession(context.Background(), AgentRunRequest{
+		Profile:      ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:      "hello",
+		SystemPrompt: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sess, ok := runner.Sessions.get(first.ID)
+	if !ok {
+		t.Fatalf("session not registered")
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	runner.markAgentSessionRunningLocked(sess, "turn-busy")
+
+	listResult := make(chan []AgentSessionSnapshot, 1)
+	go func() {
+		listResult <- runner.AgentSessions(context.Background())
+	}()
+	var sessions []AgentSessionSnapshot
+	select {
+	case sessions = <-listResult:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("AgentSessions blocked on running session")
+	}
+	if len(sessions) != 1 || sessions[0].ID != first.ID || !sessionlifecycle.IsRunningStatus(sessions[0].Status, sessions[0].Phase) || sessions[0].CanAppendMessage {
+		t.Fatalf("running sessions snapshot = %#v", sessions)
+	}
+
+	getResult := make(chan AgentSessionSnapshot, 1)
+	getErr := make(chan error, 1)
+	go func() {
+		snapshot, err := runner.AgentSession(context.Background(), first.ID)
+		if err != nil {
+			getErr <- err
+			return
+		}
+		getResult <- snapshot
+	}()
+	select {
+	case err := <-getErr:
+		t.Fatal(err)
+	case snapshot := <-getResult:
+		if snapshot.ID != first.ID || !sessionlifecycle.IsRunningStatus(snapshot.Status, snapshot.Phase) || snapshot.CanAppendMessage {
+			t.Fatalf("running session snapshot = %#v", snapshot)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("AgentSession blocked on running session")
 	}
 }
 

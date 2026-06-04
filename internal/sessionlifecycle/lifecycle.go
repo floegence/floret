@@ -67,6 +67,10 @@ func (l Lifecycle) IsRunning() bool {
 	return isRunning(l.status, l.phase)
 }
 
+func Running(latestTurnID string) Lifecycle {
+	return Lifecycle{status: statusRunning, phase: phaseTurn, latestTurnID: latestTurnID}
+}
+
 // IMPORTANT: SessionLifecycle is the only host/UI boundary for session status,
 // recoverability, and appendability. Do not derive these decisions directly from
 // engine status, thread phase, sessiontree markers, or inspector transitions.

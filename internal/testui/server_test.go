@@ -14,6 +14,7 @@ import (
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/harness"
 	"github.com/floegence/floret/internal/searchcap"
+	"github.com/floegence/floret/internal/sessionlifecycle"
 	"github.com/floegence/floret/provider"
 )
 
@@ -731,6 +732,82 @@ func TestServerAgentSessionToolsPatchRejectsRunningSession(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("session did not appear while running")
+}
+
+func TestServerAgentSessionReadsDoNotBlockRunningSession(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"unused"},"message":"hello","system_prompt":"test","selected_tools":[]}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status/body = %d %s", createRec.Code, createRec.Body.String())
+	}
+	var created AgentSessionSnapshot
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	sess, ok := runner.Sessions.get(created.ID)
+	if !ok {
+		t.Fatalf("session not registered")
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	runner.markAgentSessionRunningLocked(sess, "turn-busy")
+
+	listDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		listReq := httptest.NewRequest(http.MethodGet, "/api/agent/sessions", nil)
+		listRec := httptest.NewRecorder()
+		handler.ServeHTTP(listRec, listReq)
+		listDone <- listRec
+	}()
+	var listRec *httptest.ResponseRecorder
+	select {
+	case listRec = <-listDone:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("GET /api/agent/sessions blocked on running session")
+	}
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status/body = %d %s", listRec.Code, listRec.Body.String())
+	}
+	var sessions []AgentSessionSnapshot
+	if err := json.Unmarshal(listRec.Body.Bytes(), &sessions); err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != created.ID || !sessionlifecycle.IsRunningStatus(sessions[0].Status, sessions[0].Phase) || sessions[0].CanAppendMessage {
+		t.Fatalf("sessions = %#v", sessions)
+	}
+
+	getDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		getReq := httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+created.ID, nil)
+		getRec := httptest.NewRecorder()
+		handler.ServeHTTP(getRec, getReq)
+		getDone <- getRec
+	}()
+	var getRec *httptest.ResponseRecorder
+	select {
+	case getRec = <-getDone:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("GET /api/agent/sessions/{id} blocked on running session")
+	}
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get status/body = %d %s", getRec.Code, getRec.Body.String())
+	}
+	var snapshot AgentSessionSnapshot
+	if err := json.Unmarshal(getRec.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.ID != created.ID || !sessionlifecycle.IsRunningStatus(snapshot.Status, snapshot.Phase) || snapshot.CanAppendMessage {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
 }
 
 func TestServerAgentSessionCreateRejectsUnknownSelectedTool(t *testing.T) {
