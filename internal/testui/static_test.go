@@ -132,7 +132,7 @@ func TestStaticConsoleStreamsTurnsIncrementally(t *testing.T) {
 			t.Fatalf("workspace missing live turn rendering %q", want)
 		}
 	}
-	for _, want := range []string{"mergeTimelineEntries", "timelineEntryKey", "live.entries", "tool_call", "tool_result", "renderToolEntry", "tool-entry", "tool-summary-preview"} {
+	for _, want := range []string{"mergeTimelineEntries", "timelineEntryKey", "live.entries", "tool_call", "tool_result", "renderToolActivity", "tool-activity", "tool-summary-preview"} {
 		if !strings.Contains(workspace+css, want) {
 			t.Fatalf("workspace missing live tool timeline rendering %q", want)
 		}
@@ -364,7 +364,7 @@ func TestStaticConsoleTimelineLongMessagesCollapseAndCopy(t *testing.T) {
 	workspace := readStaticTestFile(t, "views", "sessionWorkspace.js")
 	css := readStaticTestFile(t, "styles.css")
 
-	for _, want := range []string{"renderMessageBody", "message-fold", "text.length > 1200", "lineCount > 12", "<details", "<summary>", "Copy", "structuredEntryCopy"} {
+	for _, want := range []string{"renderExpandableBody", "message-fold", "text.length > 1200", "lines > 12", "<details", "<summary>", "Copy", "structuredEntryCopy"} {
 		if !strings.Contains(workspace, want) {
 			t.Fatalf("timeline long message/copy rendering missing %q", want)
 		}
@@ -374,7 +374,7 @@ func TestStaticConsoleTimelineLongMessagesCollapseAndCopy(t *testing.T) {
 			t.Fatalf("timeline/session operation styles missing %q", want)
 		}
 	}
-	for _, want := range []string{"renderToolEntry", "toolEntryStatus", "toolPreview", "tool_call", "tool_result", "tool-entry", "tool-summary-main", "tool-summary-preview", "tool-entry-body"} {
+	for _, want := range []string{"renderToolActivity", "toolActivityStatus", "toolPreview", "tool_call", "tool_result", "tool-activity", "tool-summary-main", "tool-summary-preview", "tool-activity-body"} {
 		if !strings.Contains(workspace+css, want) {
 			t.Fatalf("timeline tool call/result collapse rendering missing %q", want)
 		}
@@ -392,6 +392,39 @@ func TestStaticConsoleInspectorEventsAreExpandable(t *testing.T) {
 		if !strings.Contains(inspector+css, want) {
 			t.Fatalf("inspector events should be expandable and auditable: missing %q", want)
 		}
+	}
+}
+
+func TestStaticConsolePrioritizesAssistantFinalOverReasoning(t *testing.T) {
+	workspace := readStaticTestFile(t, "views", "sessionWorkspace.js")
+	css := readStaticTestFile(t, "styles.css")
+
+	for _, want := range []string{"renderAssistantMessage", "assistant final", `renderExpandableBody(body, { label: "assistant final", mode: "final-answer" })`, "renderReasoningBlock(msg.reasoning", "Copy reasoning"} {
+		if !strings.Contains(workspace, want) {
+			t.Fatalf("assistant final/reasoning rendering missing %q", want)
+		}
+	}
+	if strings.Contains(workspace, "msg.reasoning ? `<pre class=\"code-block\"") {
+		t.Fatalf("assistant reasoning should not be directly expanded before the final answer")
+	}
+	for _, want := range []string{".message-text.final-answer", ".reasoning-fold", ".answer-expand", "Show full answer"} {
+		if !strings.Contains(workspace+css, want) {
+			t.Fatalf("assistant final answer treatment missing %q", want)
+		}
+	}
+}
+
+func TestStaticConsoleTimelineToolActivityIsCompactAndExpandable(t *testing.T) {
+	workspace := readStaticTestFile(t, "views", "sessionWorkspace.js")
+	css := readStaticTestFile(t, "styles.css")
+
+	for _, want := range []string{"renderToolActivity", "toolActivityStatus", "toolPreview", "tool_call", "tool_result", "tool-activity", "tool-summary-main", "tool-summary-preview", "tool-activity-body"} {
+		if !strings.Contains(workspace+css, want) {
+			t.Fatalf("timeline tool call/result collapse rendering missing %q", want)
+		}
+	}
+	if strings.Contains(workspace, "data-copy-text") {
+		t.Fatalf("tool copy controls should keep large payloads out of data attributes")
 	}
 }
 

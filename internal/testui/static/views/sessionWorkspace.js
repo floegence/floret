@@ -188,15 +188,15 @@ function renderLiveTurn(session) {
   const userEcho = !durableUser && live.user_message ? `
     <article class="message user pending">
       <div class="message-head"><span>user</span><span>pending</span>${copyButton(live.user_message)}</div>
-      ${renderMessageBody(live.user_message, "user")}
+      ${renderExpandableBody(live.user_message, { label: "user", mode: "user" })}
     </article>
   ` : "";
   const existingAssistant = (session.path_entries || []).some((entry) => entry.type === "assistant_message" && entry.turn_id === live.turn_id);
   const assistant = live.assistant_delta && !existingAssistant ? `
     <article class="message assistant streaming">
-      <div class="message-head"><span>assistant</span><span>streaming</span>${copyButton(live.assistant_delta)}</div>
-      ${live.reasoning_delta ? `<pre class="code-block">${escapeHTML(live.reasoning_delta)}</pre>` : ""}
-      <div class="message-text">${escapeHTML(live.assistant_delta)}<span class="stream-caret" aria-hidden="true"></span></div>
+      <div class="message-head"><span>assistant final</span><span>streaming</span>${copyButton(live.assistant_delta)}</div>
+      ${renderExpandableBody(live.assistant_delta, { label: "assistant final", mode: "streaming-answer", caret: true })}
+      ${renderReasoningBlock(live.reasoning_delta, "live")}
     </article>
   ` : "";
   const visibleLiveEntries = (live.entries || []).filter((entry) => ["user_message", "assistant_message", "tool_call", "tool_result", "run_failure", "turn_marker"].includes(entry.type)).length;
@@ -220,7 +220,7 @@ function renderEntry(entry) {
     return `
       <article class="message entry">
         <div class="message-head"><span>tools changed</span><span>${escapeHTML(formatLocalTime(entry.created_at))}</span>${copyButton(body)}</div>
-        ${renderMessageBody(body, "tools changed")}
+        ${renderExpandableBody(body, { label: "tools changed", mode: "audit" })}
         ${meta.reason ? `<div class="muted">${escapeHTML(meta.reason)}</div>` : ""}
       </article>
     `;
@@ -231,53 +231,78 @@ function renderEntry(entry) {
     return `
       <article class="message entry">
         <div class="message-head"><span>run failure</span><span>${escapeHTML(entry.turn_id || "")}</span>${copyButton(copyPayload)}</div>
-        ${renderMessageBody(body, "run failure")}
+        ${renderExpandableBody(body, { label: "run failure", mode: "error" })}
       </article>
     `;
   }
   const msg = entry.message || {};
-  if (entry.type === "tool_call" || entry.type === "tool_result") {
-    return renderToolEntry(entry, msg);
-  }
-  const role = msg.role || (entry.type === "tool_call" ? "assistant" : "entry");
-  const title = entry.type === "tool_call" ? `tool call · ${msg.tool_name || ""}` : entry.type === "tool_result" ? `tool result · ${msg.tool_name || ""}` : role;
-  const body = entry.type === "tool_call" ? msg.tool_args || msg.content : msg.content;
-  const copyPayload = [msg.reasoning, body].filter(Boolean).join("\n\n") || structuredEntryCopy(entry, title, msg);
+  if (entry.type === "assistant_message") return renderAssistantMessage(entry, msg);
+  if (entry.type === "tool_call" || entry.type === "tool_result") return renderToolActivity(entry, msg);
+  const role = msg.role || "entry";
+  const title = role;
+  const body = msg.content || "";
+  const copyPayload = body || structuredEntryCopy(entry, title, msg);
   return `
     <article class="message ${escapeHTML(role)}">
       <div class="message-head"><span>${escapeHTML(title)}</span><span>${escapeHTML(entry.turn_id || "")}</span>${copyButton(copyPayload)}</div>
-      ${msg.reasoning ? `<pre class="code-block">${escapeHTML(msg.reasoning)}</pre>` : ""}
-      ${renderMessageBody(body || "", title)}
+      ${renderExpandableBody(body, { label: title, mode: role === "user" ? "user" : "audit" })}
     </article>
   `;
 }
 
-function renderToolEntry(entry, msg) {
+function renderAssistantMessage(entry, msg) {
+  const body = msg.content || "";
+  const copyPayload = body || structuredEntryCopy(entry, "assistant final", msg);
+  return `
+    <article class="message assistant">
+      <div class="message-head"><span>assistant final</span><span>${escapeHTML(entry.turn_id || "")}</span>${copyButton(copyPayload)}</div>
+      ${renderExpandableBody(body, { label: "assistant final", mode: "final-answer" })}
+      ${renderReasoningBlock(msg.reasoning, entry.turn_id || "")}
+    </article>
+  `;
+}
+
+function renderReasoningBlock(reasoning, scope) {
+  const text = String(reasoning || "");
+  if (!text.trim()) return "";
+  return `
+    <details class="reasoning-fold">
+      <summary>
+        <span>Reasoning</span>
+        <span>${escapeHTML(scope || "hidden")} · ${text.length} chars · ${lineCount(text)} lines</span>
+        ${copyButton(text, "Copy reasoning", "Reasoning copied", "copy-inline subtle-copy")}
+      </summary>
+      <pre class="code-block">${escapeHTML(text)}</pre>
+    </details>
+  `;
+}
+
+function renderToolActivity(entry, msg) {
   const isResult = entry.type === "tool_result";
   const title = `${isResult ? "tool result" : "tool call"} · ${msg.tool_name || "tool"}`;
   const body = isResult ? msg.content || "" : msg.tool_args || msg.content || "";
-  const status = toolEntryStatus(entry, msg);
+  const status = toolActivityStatus(entry, msg);
   const preview = toolPreview(body, msg, isResult);
-  const copyPayload = [msg.reasoning, body].filter(Boolean).join("\n\n") || structuredEntryCopy(entry, title, msg);
+  const copyPayload = body || structuredEntryCopy(entry, title, msg);
   const metadata = entry.metadata && Object.keys(entry.metadata).length ? `<pre class="json-block">${escapeHTML(JSON.stringify(entry.metadata, null, 2))}</pre>` : "";
   return `
     <article class="message tool ${status === "error" ? "tool-error" : ""}">
-      <details class="tool-entry">
+      <details class="tool-activity">
         <summary>
           <span class="tool-summary-main">
             <span class="tool-kind">${escapeHTML(isResult ? "tool result" : "tool call")}</span>
             <span class="tool-name-pill">${escapeHTML(msg.tool_name || "tool")}</span>
             <span class="tiny-pill">${escapeHTML(entry.turn_id || "turn")}</span>
             <span class="tiny-pill ${status === "error" ? "danger-pill" : ""}">${escapeHTML(status)}</span>
-            ${toolEntryMetrics(entry)}
+            ${toolActivityMetrics(entry)}
           </span>
           <span class="tool-summary-preview">${escapeHTML(preview)}</span>
           ${copyButton(copyPayload)}
         </summary>
-        <div class="tool-entry-body">
-          ${msg.reasoning ? `<div class="key-value"><span>Reasoning</span><span>${escapeHTML(msg.reasoning)}</span></div>` : ""}
+        <div class="tool-activity-body">
+          ${renderReasoningBlock(msg.reasoning, "tool")}
           ${msg.tool_call_id ? `<div class="key-value"><span>Call ID</span><span>${escapeHTML(msg.tool_call_id)}</span></div>` : ""}
-          ${body ? `<pre class="${isLikelyJSON(body) ? "json-block" : "code-block"}">${escapeHTML(formatToolBody(body))}</pre>` : `<p class="muted">No ${isResult ? "result body" : "arguments"} captured.</p>`}
+          ${renderExpandableBody(body, { label: isResult ? "Tool result" : "Tool arguments", mode: "tool", forceOpen: true })}
           ${metadata}
         </div>
       </details>
@@ -285,7 +310,7 @@ function renderToolEntry(entry, msg) {
   `;
 }
 
-function toolEntryMetrics(entry) {
+function toolActivityMetrics(entry) {
   const meta = entry.metadata || {};
   const parts = [
     meta.duration_ms ? `${meta.duration_ms} ms` : "",
@@ -296,10 +321,10 @@ function toolEntryMetrics(entry) {
   return parts.map((part) => `<span class="tiny-pill">${escapeHTML(part)}</span>`).join("");
 }
 
-function toolEntryStatus(entry, msg) {
+function toolActivityStatus(entry, msg) {
   const text = `${entry.error || ""}\n${msg.content || ""}`.trim();
   if (entry.error || /^ERROR:/i.test(text)) return "error";
-  if (entry.type === "tool_call") return "running";
+  if (entry.type === "tool_call") return "called";
   return "success";
 }
 
@@ -330,7 +355,7 @@ function isLikelyJSON(value) {
   return (text.startsWith("{") && text.endsWith("}")) || (text.startsWith("[") && text.endsWith("]"));
 }
 
-function formatToolBody(value) {
+function formatStructuredBody(value) {
   const text = String(value || "");
   const parsed = parseJSONMaybe(text);
   return parsed ? JSON.stringify(parsed, null, 2) : text;
@@ -359,20 +384,66 @@ function copyButton(payload, text = "Copy", label = "Message copied", className 
   return `<button class="${escapeHTML(className)}" type="button" data-copy-key="${escapeHTML(key)}" data-copy-label="${escapeHTML(label)}">${escapeHTML(text)}</button>`;
 }
 
-function renderMessageBody(body, label) {
+function renderExpandableBody(body, options = {}) {
+  const {
+    label = "message",
+    mode = "audit",
+    caret = false,
+    forceOpen = false,
+  } = options;
   const text = String(body || "");
-  const lineCount = text.split("\n").length;
-  const long = text.length > 1200 || lineCount > 12;
-  if (!long) {
-    return `<div class="message-text">${escapeHTML(text)}</div>`;
+  const lines = lineCount(text);
+  const long = text.length > 1200 || lines > 12;
+  const escaped = escapeHTML(mode === "tool" && isLikelyJSON(text) ? formatStructuredBody(text) : text);
+  if (mode === "final-answer" || mode === "streaming-answer") {
+    if (mode === "streaming-answer") {
+      return `<div class="message-text final-answer">${escaped}${caret ? `<span class="stream-caret" aria-hidden="true"></span>` : ""}</div>`;
+    }
+    if (lines > 80 || text.length > 12000) {
+      const preview = firstLines(text, 60);
+      return `
+        <div class="message-text final-answer answer-preview">${escapeHTML(preview)}</div>
+        <details class="answer-expand">
+          <summary>${escapeHTML(label)} · ${text.length} chars · ${lines} lines · Show full answer</summary>
+          <div class="message-text final-answer">${escaped}</div>
+        </details>
+      `;
+    }
+    return `<div class="message-text final-answer">${escaped}</div>`;
   }
-  const preview = text.slice(0, 180).replace(/\s+/g, " ").trim();
+  if (!long && !forceOpen) {
+    return `<div class="message-text">${escaped}</div>`;
+  }
+  if (forceOpen) {
+    return `<pre class="${isLikelyJSON(text) ? "json-block" : "code-block"}">${escaped}</pre>`;
+  }
+  const preview = previewText(text);
   return `
     <details class="message-fold">
-      <summary>${escapeHTML(label)} · ${text.length} chars · ${lineCount} lines · ${escapeHTML(preview)}${text.length > 180 ? "..." : ""}</summary>
-      <div class="message-text">${escapeHTML(text)}</div>
+      <summary>${escapeHTML(label)} · ${text.length} chars · ${lines} lines · ${escapeHTML(preview)}</summary>
+      <div class="message-text">${escaped}</div>
     </details>
   `;
+}
+
+function renderMessageBody(body, label) {
+  return renderExpandableBody(body, { label, mode: "audit" });
+}
+
+function lineCount(text) {
+  return String(text || "").split("\n").length;
+}
+
+function previewText(value, limit = 180) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 3))}...`;
+}
+
+function firstLines(value, limit) {
+  const lines = String(value || "").split("\n");
+  if (lines.length <= limit) return String(value || "");
+  return `${lines.slice(0, limit).join("\n")}\n...`;
 }
 
 function appendDisabledReason(session) {

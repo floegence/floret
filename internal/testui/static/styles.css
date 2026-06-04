@@ -484,82 +484,54 @@ a {
   gap: 8px;
 }
 
-.message-fold summary {
+.message-fold summary,
+.answer-expand summary,
+.reasoning-fold summary,
+.tool-activity summary,
+.event-row summary {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.4;
 }
 
-.tool-entry {
-  display: grid;
-  gap: 10px;
+.answer-expand,
+.reasoning-fold,
+.tool-activity,
+.event-row {
+  min-width: 0;
 }
 
-.tool-entry summary,
+.answer-expand summary,
+.reasoning-fold summary,
+.tool-activity summary,
 .event-row summary {
   display: grid;
-  grid-template-columns: minmax(0, auto) minmax(80px, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 8px;
   align-items: center;
-  min-width: 0;
-  color: var(--muted);
-  font-size: 12px;
+  padding: 7px 0;
 }
 
-.tool-entry summary:hover,
-.event-row summary:hover {
-  color: var(--ink);
+.answer-expand summary {
+  border-bottom: 1px solid var(--line);
+  color: var(--green);
+  font-weight: 900;
 }
 
-.tool-summary-main,
-.event-summary-main {
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
-  min-width: 0;
-  white-space: nowrap;
+.reasoning-fold {
+  border-top: 1px solid var(--line);
 }
 
-.tool-kind,
-.tool-name-pill {
-  font-size: 11px;
+.reasoning-fold summary {
+  color: var(--blue);
   font-weight: 900;
   text-transform: uppercase;
 }
 
-.tool-name-pill {
-  max-width: 160px;
-  overflow: hidden;
-  color: var(--ink);
-  text-overflow: ellipsis;
-}
-
-.danger-pill {
-  border-color: var(--red);
-  background: #fff7f5;
-  color: var(--red);
-}
-
-.tool-summary-preview,
-.event-summary-preview {
-  min-width: 0;
-  overflow: hidden;
+.reasoning-fold summary span:last-of-type {
   color: var(--muted);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tool-entry-body,
-.event-row-body {
-  display: grid;
-  gap: 10px;
-  padding-top: 8px;
-  border-top: 1px solid var(--line);
-}
-
-.event-facts {
-  display: grid;
-  gap: 6px;
+  font-weight: 800;
+  text-transform: none;
 }
 
 .message pre,
@@ -578,6 +550,89 @@ a {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.5;
+}
+
+.message-text.final-answer {
+  font-size: 15px;
+  line-height: 1.62;
+}
+
+.subtle-copy {
+  justify-self: end;
+  color: var(--blue);
+}
+
+.tool-activity {
+  display: grid;
+  gap: 8px;
+}
+
+.tool-activity summary,
+.event-row summary {
+  grid-template-columns: minmax(0, 1.1fr) minmax(140px, 1fr) auto;
+  min-height: 34px;
+  padding: 8px 0;
+}
+
+.tool-summary-main,
+.event-summary-main {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.tool-kind,
+.tool-name-pill {
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.tool-name-pill {
+  padding: 2px 6px;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  color: var(--violet);
+}
+
+.tool-summary-preview,
+.event-summary-preview {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-activity-body,
+.event-row-body {
+  display: grid;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.tool-error {
+  border-color: rgba(182, 64, 61, 0.28);
+}
+
+.danger-pill {
+  border-color: rgba(182, 64, 61, 0.28);
+  background: #fff0ef;
+  color: var(--red);
+}
+
+.event-row {
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.event-facts {
+  display: grid;
+  gap: 7px;
 }
 
 .stream-status {
