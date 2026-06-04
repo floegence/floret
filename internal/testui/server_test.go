@@ -370,6 +370,19 @@ func TestServerStreamsAgentTurnEventsBeforeCompletion(t *testing.T) {
 	if deltaIndex < 0 || completedIndex < 0 || deltaIndex >= completedIndex {
 		t.Fatalf("provider delta should arrive before completion: %#v", events)
 	}
+	toolCallIndex := indexStreamEventWithEntry(events, AgentStreamToolCall)
+	toolResultIndex := indexStreamEventWithEntry(events, AgentStreamToolResult)
+	if toolCallIndex < 0 || toolResultIndex < 0 || toolCallIndex >= completedIndex || toolResultIndex >= completedIndex {
+		t.Fatalf("tool call/result should stream before completion: %#v", events)
+	}
+	toolCall := events[toolCallIndex]
+	if toolCall.Entry == nil || toolCall.Entry.Type != "tool_call" || toolCall.Entry.Message.ToolName != "list" || toolCall.Entry.Message.ToolCallID != "list-1" || toolCall.Entry.ID == "" {
+		t.Fatalf("tool call stream event missing observed entry payload: %#v", toolCall)
+	}
+	toolResult := events[toolResultIndex]
+	if toolResult.Entry == nil || toolResult.Entry.Type != "tool_result" || toolResult.Entry.Message.ToolName != "list" || toolResult.Entry.Message.ToolCallID != "list-1" || !strings.Contains(toolResult.Entry.Message.Content, ".") {
+		t.Fatalf("tool result stream event missing observed entry payload: %#v", toolResult)
+	}
 	completed := events[completedIndex]
 	if completed.Result == nil || completed.Result.Status != "completed" || completed.Result.Session.ID != snapshot.ID {
 		t.Fatalf("completion event missing final result: %#v", completed)
@@ -1520,6 +1533,15 @@ func assertStreamEventOrder(t *testing.T, events []AgentStreamEvent, wants ...Ag
 func indexStreamEvent(events []AgentStreamEvent, typ AgentStreamEventType) int {
 	for i, ev := range events {
 		if ev.Type == typ {
+			return i
+		}
+	}
+	return -1
+}
+
+func indexStreamEventWithEntry(events []AgentStreamEvent, typ AgentStreamEventType) int {
+	for i, ev := range events {
+		if ev.Type == typ && ev.Entry != nil {
 			return i
 		}
 	}

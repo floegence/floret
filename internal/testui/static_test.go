@@ -132,6 +132,11 @@ func TestStaticConsoleStreamsTurnsIncrementally(t *testing.T) {
 			t.Fatalf("workspace missing live turn rendering %q", want)
 		}
 	}
+	for _, want := range []string{"mergeTimelineEntries", "timelineEntryKey", "live.entries", "tool_call", "tool_result", "renderToolEntry", "tool-entry", "tool-summary-preview"} {
+		if !strings.Contains(workspace+css, want) {
+			t.Fatalf("workspace missing live tool timeline rendering %q", want)
+		}
+	}
 }
 
 func TestStaticConsoleShowsInterruptedLifecycle(t *testing.T) {
@@ -367,6 +372,25 @@ func TestStaticConsoleTimelineLongMessagesCollapseAndCopy(t *testing.T) {
 	for _, want := range []string{".message-fold", ".message-fold summary", ".copy-inline", ".row-actions", ".session-select"} {
 		if !strings.Contains(css, want) {
 			t.Fatalf("timeline/session operation styles missing %q", want)
+		}
+	}
+	for _, want := range []string{"renderToolEntry", "toolEntryStatus", "toolPreview", "tool_call", "tool_result", "tool-entry", "tool-summary-main", "tool-summary-preview", "tool-entry-body"} {
+		if !strings.Contains(workspace+css, want) {
+			t.Fatalf("timeline tool call/result collapse rendering missing %q", want)
+		}
+	}
+	if strings.Contains(workspace, "data-copy-text") {
+		t.Fatalf("tool copy controls should keep large payloads out of data attributes")
+	}
+}
+
+func TestStaticConsoleInspectorEventsAreExpandable(t *testing.T) {
+	inspector := readStaticTestFile(t, "views", "inspector.js")
+	css := readStaticTestFile(t, "styles.css")
+
+	for _, want := range []string{"renderEventRow", "event-row", "<details", "<summary>", "event-summary-main", "event-summary-preview", "event-row-body", "renderEventFacts", "JSON.stringify(event, null, 2)"} {
+		if !strings.Contains(inspector+css, want) {
+			t.Fatalf("inspector events should be expandable and auditable: missing %q", want)
 		}
 	}
 }

@@ -24,7 +24,11 @@ export function bindSessionWorkspace(root, handlers) {
     button.addEventListener("click", () => handlers.onSelect(button.dataset.sessionId || ""));
   });
   root.querySelectorAll("[data-copy-key]").forEach((button) => {
-    button.addEventListener("click", () => handlers.onCopy(copyPayloads.get(button.dataset.copyKey || "") || "", button.dataset.copyLabel || "Copied"));
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      handlers.onCopy(copyPayloads.get(button.dataset.copyKey || "") || "", button.dataset.copyLabel || "Copied");
+    });
   });
   root.querySelectorAll("[data-delete-session]").forEach((button) => {
     button.addEventListener("click", () => handlers.onDelete(button.dataset.deleteSession || ""));
@@ -141,12 +145,35 @@ function renderWorkspace(session, result) {
 }
 
 function renderTimeline(session, result) {
-  const entries = session.path_entries || [];
+  const entries = mergeTimelineEntries(session);
   if (!entries.length && !activeLiveTurn(session)) return `<div class="message entry"><div class="message-text muted">No durable messages yet.</div></div>`;
   const messages = entries.filter((entry) => {
     return ["user_message", "assistant_message", "tool_call", "tool_result", "active_tools_change", "run_failure", "turn_marker"].includes(entry.type);
   });
   return `${messages.map(renderEntry).join("")}${renderLiveTurn(session)}`;
+}
+
+function mergeTimelineEntries(session) {
+  const entries = [];
+  const seen = new Set();
+  const append = (entry) => {
+    if (!entry) return;
+    const key = timelineEntryKey(entry);
+    if (seen.has(key)) return;
+    seen.add(key);
+    entries.push(entry);
+  };
+  (session.path_entries || []).forEach(append);
+  const live = activeLiveTurn(session);
+  (live?.entries || []).forEach(append);
+  return entries;
+}
+
+function timelineEntryKey(entry) {
+  if (entry.id) return `id:${entry.id}`;
+  const msg = entry.message || {};
+  if (msg.tool_call_id) return `tool:${entry.type || ""}:${entry.turn_id || ""}:${msg.tool_call_id}`;
+  return `${entry.type || "entry"}:${entry.turn_id || ""}:${entry.created_at || ""}:${msg.role || ""}:${String(msg.content || "").slice(0, 80)}`;
 }
 
 function activeLiveTurn(session) {
@@ -172,7 +199,9 @@ function renderLiveTurn(session) {
       <div class="message-text">${escapeHTML(live.assistant_delta)}<span class="stream-caret" aria-hidden="true"></span></div>
     </article>
   ` : "";
-  const activity = live.events?.length ? `<div class="stream-status">Live turn · ${live.events.length} event${live.events.length === 1 ? "" : "s"}</div>` : `<div class="stream-status">Live turn started</div>`;
+  const visibleLiveEntries = (live.entries || []).filter((entry) => ["user_message", "assistant_message", "tool_call", "tool_result", "run_failure", "turn_marker"].includes(entry.type)).length;
+  const activityLabel = visibleLiveEntries ? `${visibleLiveEntries} timeline update${visibleLiveEntries === 1 ? "" : "s"}` : `${live.events?.length || 0} event${live.events?.length === 1 ? "" : "s"}`;
+  const activity = live.events?.length ? `<div class="stream-status">Live turn · ${activityLabel}</div>` : `<div class="stream-status">Live turn started</div>`;
   return `${userEcho}${assistant}${activity}`;
 }
 
@@ -207,6 +236,9 @@ function renderEntry(entry) {
     `;
   }
   const msg = entry.message || {};
+  if (entry.type === "tool_call" || entry.type === "tool_result") {
+    return renderToolEntry(entry, msg);
+  }
   const role = msg.role || (entry.type === "tool_call" ? "assistant" : "entry");
   const title = entry.type === "tool_call" ? `tool call · ${msg.tool_name || ""}` : entry.type === "tool_result" ? `tool result · ${msg.tool_name || ""}` : role;
   const body = entry.type === "tool_call" ? msg.tool_args || msg.content : msg.content;
@@ -218,6 +250,96 @@ function renderEntry(entry) {
       ${renderMessageBody(body || "", title)}
     </article>
   `;
+}
+
+function renderToolEntry(entry, msg) {
+  const isResult = entry.type === "tool_result";
+  const title = `${isResult ? "tool result" : "tool call"} · ${msg.tool_name || "tool"}`;
+  const body = isResult ? msg.content || "" : msg.tool_args || msg.content || "";
+  const status = toolEntryStatus(entry, msg);
+  const preview = toolPreview(body, msg, isResult);
+  const copyPayload = [msg.reasoning, body].filter(Boolean).join("\n\n") || structuredEntryCopy(entry, title, msg);
+  const metadata = entry.metadata && Object.keys(entry.metadata).length ? `<pre class="json-block">${escapeHTML(JSON.stringify(entry.metadata, null, 2))}</pre>` : "";
+  return `
+    <article class="message tool ${status === "error" ? "tool-error" : ""}">
+      <details class="tool-entry">
+        <summary>
+          <span class="tool-summary-main">
+            <span class="tool-kind">${escapeHTML(isResult ? "tool result" : "tool call")}</span>
+            <span class="tool-name-pill">${escapeHTML(msg.tool_name || "tool")}</span>
+            <span class="tiny-pill">${escapeHTML(entry.turn_id || "turn")}</span>
+            <span class="tiny-pill ${status === "error" ? "danger-pill" : ""}">${escapeHTML(status)}</span>
+            ${toolEntryMetrics(entry)}
+          </span>
+          <span class="tool-summary-preview">${escapeHTML(preview)}</span>
+          ${copyButton(copyPayload)}
+        </summary>
+        <div class="tool-entry-body">
+          ${msg.reasoning ? `<div class="key-value"><span>Reasoning</span><span>${escapeHTML(msg.reasoning)}</span></div>` : ""}
+          ${msg.tool_call_id ? `<div class="key-value"><span>Call ID</span><span>${escapeHTML(msg.tool_call_id)}</span></div>` : ""}
+          ${body ? `<pre class="${isLikelyJSON(body) ? "json-block" : "code-block"}">${escapeHTML(formatToolBody(body))}</pre>` : `<p class="muted">No ${isResult ? "result body" : "arguments"} captured.</p>`}
+          ${metadata}
+        </div>
+      </details>
+    </article>
+  `;
+}
+
+function toolEntryMetrics(entry) {
+  const meta = entry.metadata || {};
+  const parts = [
+    meta.duration_ms ? `${meta.duration_ms} ms` : "",
+    meta.byte_length ? `${meta.byte_length} bytes` : "",
+    meta.bytes ? `${meta.bytes} bytes` : "",
+    meta.output_bytes ? `${meta.output_bytes} bytes` : "",
+  ].filter(Boolean);
+  return parts.map((part) => `<span class="tiny-pill">${escapeHTML(part)}</span>`).join("");
+}
+
+function toolEntryStatus(entry, msg) {
+  const text = `${entry.error || ""}\n${msg.content || ""}`.trim();
+  if (entry.error || /^ERROR:/i.test(text)) return "error";
+  if (entry.type === "tool_call") return "running";
+  return "success";
+}
+
+function toolPreview(body, msg, isResult) {
+  if (!isResult && msg.tool_args) {
+    const parsed = parseJSONMaybe(msg.tool_args);
+    if (parsed && typeof parsed === "object") {
+      for (const key of ["query", "command", "url", "path", "pattern"]) {
+        if (parsed[key]) return truncateOneLine(`${key}: ${JSON.stringify(parsed[key])}`, 120);
+      }
+    }
+  }
+  const text = String(body || msg.content || "").split("\n").find((line) => line.trim()) || (isResult ? "result captured" : "arguments captured");
+  return truncateOneLine(text, 120);
+}
+
+function parseJSONMaybe(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function isLikelyJSON(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return (text.startsWith("{") && text.endsWith("}")) || (text.startsWith("[") && text.endsWith("]"));
+}
+
+function formatToolBody(value) {
+  const text = String(value || "");
+  const parsed = parseJSONMaybe(text);
+  return parsed ? JSON.stringify(parsed, null, 2) : text;
+}
+
+function truncateOneLine(value, limit) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 3))}...`;
 }
 
 function structuredEntryCopy(entry, title, msg) {

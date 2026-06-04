@@ -174,15 +174,74 @@ function renderEvents(events, providerEvents) {
   if (!all.length) return `<p class="muted">No events captured yet.</p>`;
   return `
     <div class="event-list">
-      ${all.map((event) => `
-        <article class="event-item">
-          <strong>${escapeHTML(event.source)} · ${escapeHTML(event.type || "")}</strong>
-          <span class="muted">${escapeHTML(event.reason || event.message || event.text || event.reasoning || "")}</span>
-          ${event.duration_ms ? `<span class="tiny-pill">${escapeHTML(formatDuration(event.duration_ms))}</span>` : ""}
-        </article>
-      `).join("")}
+      ${all.map(renderEventRow).join("")}
     </div>
   `;
+}
+
+function renderEventRow(event) {
+  const error = event.err || event.error || "";
+  const summary = eventSummary(event);
+  return `
+    <details class="event-row ${error ? "event-error" : ""}">
+      <summary>
+        <span class="event-summary-main">
+          <strong>${escapeHTML(event.source)} · ${escapeHTML(event.type || "")}</strong>
+          ${event.step ? `<span class="tiny-pill">step ${escapeHTML(event.step)}</span>` : ""}
+          ${event.run_id || event.runID ? `<span class="tiny-pill">${escapeHTML(event.run_id || event.runID)}</span>` : ""}
+          ${event.tool_name || event.ToolName ? `<span class="tiny-pill">${escapeHTML(event.tool_name || event.ToolName)}</span>` : ""}
+          ${event.duration_ms ? `<span class="tiny-pill">${escapeHTML(formatDuration(event.duration_ms))}</span>` : ""}
+        </span>
+        <span class="event-summary-preview">${escapeHTML(summary)}</span>
+      </summary>
+      <div class="event-row-body">
+        ${renderEventFacts(event)}
+        <pre class="json-block">${escapeHTML(JSON.stringify(event, null, 2))}</pre>
+      </div>
+    </details>
+  `;
+}
+
+function renderEventFacts(event) {
+  const facts = [
+    ["Source", event.source],
+    ["Type", event.type],
+    ["Run", event.run_id || event.runID],
+    ["Session", event.session_id || event.sessionID],
+    ["Step", event.step],
+    ["Tool", event.tool_name || event.toolName],
+    ["Tool ID", event.tool_id || event.toolID],
+    ["Finish", event.finish_reason || event.finishReason || event.raw_finish_reason],
+    ["Observed", event.observed_at || event.timestamp],
+    ["Message", event.message || event.reason || event.text || event.reasoning || event.err || event.error],
+  ].filter(([, value]) => value || value === 0);
+  if (!facts.length) return "";
+  return `
+    <div class="event-facts">
+      ${facts.map(([key, value]) => `<div class="key-value"><span>${escapeHTML(key)}</span><span>${escapeHTML(value)}</span></div>`).join("")}
+    </div>
+  `;
+}
+
+function eventSummary(event) {
+  const toolCalls = event.tool_calls || event.toolCalls || [];
+  const candidates = [
+    event.err,
+    event.error,
+    event.message,
+    event.reason,
+    event.text,
+    event.reasoning,
+    event.result,
+    toolCalls.length ? `${toolCalls.length} tool call${toolCalls.length === 1 ? "" : "s"}` : "",
+  ];
+  return truncateOneLine(candidates.find(Boolean) || "Open for details.", 140);
+}
+
+function truncateOneLine(value, limit) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 3))}...`;
 }
 
 function renderContext(session) {
