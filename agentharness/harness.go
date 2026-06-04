@@ -493,51 +493,90 @@ func (t *Thread) leaveTurn() {
 
 func (t *Thread) appendDelta(ctx context.Context, turnID string, before, after []session.Message, currentPath []sessiontree.Entry) error {
 	start := sharedMessagePrefix(before, after)
-	seenToolCalls, seenToolResults := persistedToolMessages(currentPath, turnID)
+	persisted := persistedTurnMessages(currentPath, turnID)
 	for _, msg := range after[start:] {
 		if nonDurableProjection(msg) {
 			continue
 		}
-		if skipPersistedToolDelta(msg, seenToolCalls, seenToolResults) {
+		// IMPORTANT: Realtime turn projection and appendDelta share the durable
+		// journal for one turn. appendDelta may only backfill messages that were
+		// not already persisted by projection; hiding duplicates in the UI or
+		// deduping across turns would corrupt the session history contract.
+		if persisted.skip(msg) {
 			continue
 		}
 		if err := t.appendMessage(ctx, turnID, msg); err != nil {
 			return err
 		}
+		persisted.record(msg)
 	}
 	return nil
 }
 
-func persistedToolMessages(entries []sessiontree.Entry, turnID string) (map[string]struct{}, map[string]struct{}) {
-	calls := map[string]struct{}{}
-	results := map[string]struct{}{}
+type durableMessageCounter struct {
+	counts map[durableMessageSignature]int
+}
+
+type durableMessageSignature struct {
+	Role                 session.Role
+	Content              string
+	Reasoning           string
+	ToolCallID           string
+	ToolName             string
+	ToolArgs             string
+	Kind                 session.MessageKind
+	CompactionID         string
+	CompactionGeneration int
+	CompactionWindowID   string
+}
+
+func persistedTurnMessages(entries []sessiontree.Entry, turnID string) *durableMessageCounter {
+	counter := &durableMessageCounter{counts: map[durableMessageSignature]int{}}
 	for _, entry := range entries {
-		if entry.TurnID != turnID || entry.Message.ToolCallID == "" {
+		if entry.TurnID != turnID {
 			continue
 		}
 		switch entry.Type {
-		case sessiontree.EntryToolCall:
-			calls[entry.Message.ToolCallID] = struct{}{}
-		case sessiontree.EntryToolResult:
-			results[entry.Message.ToolCallID] = struct{}{}
+		case sessiontree.EntryUserMessage, sessiontree.EntryAssistantMessage, sessiontree.EntryToolCall, sessiontree.EntryToolResult:
+			counter.record(entry.Message)
 		}
 	}
-	return calls, results
+	return counter
 }
 
-func skipPersistedToolDelta(msg session.Message, seenToolCalls, seenToolResults map[string]struct{}) bool {
-	if msg.ToolCallID == "" {
+func (c *durableMessageCounter) skip(msg session.Message) bool {
+	if c == nil {
 		return false
 	}
-	switch msg.Role {
-	case session.Assistant:
-		_, ok := seenToolCalls[msg.ToolCallID]
-		return ok
-	case session.Tool:
-		_, ok := seenToolResults[msg.ToolCallID]
-		return ok
-	default:
+	key := durableSignature(msg)
+	if c.counts[key] <= 0 {
 		return false
+	}
+	c.counts[key]--
+	return true
+}
+
+func (c *durableMessageCounter) record(msg session.Message) {
+	if c == nil {
+		return
+	}
+	c.counts[durableSignature(msg)]++
+}
+
+func durableSignature(msg session.Message) durableMessageSignature {
+	msg.EntryID = ""
+	msg.ParentEntryID = ""
+	return durableMessageSignature{
+		Role:                 msg.Role,
+		Content:              msg.Content,
+		Reasoning:           msg.Reasoning,
+		ToolCallID:           msg.ToolCallID,
+		ToolName:             msg.ToolName,
+		ToolArgs:             msg.ToolArgs,
+		Kind:                 msg.Kind,
+		CompactionID:         msg.CompactionID,
+		CompactionGeneration: msg.CompactionGeneration,
+		CompactionWindowID:   msg.CompactionWindowID,
 	}
 }
 

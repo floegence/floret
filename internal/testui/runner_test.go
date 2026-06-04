@@ -1540,6 +1540,9 @@ func TestRunnerAgentSessionHandlesRepeatedWeatherToolBatchesAndFollowUp(t *testi
 	if err := assertObservedProviderSafeToolHistory(first.Observation.SessionMessages); err != nil {
 		t.Fatalf("first session messages are not provider-safe: %v\n%#v", err, first.Observation.SessionMessages)
 	}
+	if got := countObservedAssistantContent(first.Observation.SessionMessages, "Changsha weather summary."); got != 1 {
+		t.Fatalf("first final assistant count = %d in %#v", got, first.Observation.SessionMessages)
+	}
 	second := runner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "那么明天会天气晴吗，适合出门吗"})
 	if second.Status != "completed" || second.Output != "Tomorrow is cloudy then clear." {
 		t.Fatalf("second = %#v", second)
@@ -1547,6 +1550,12 @@ func TestRunnerAgentSessionHandlesRepeatedWeatherToolBatchesAndFollowUp(t *testi
 	latestRequest := second.Observation.ProviderRequests[len(second.Observation.ProviderRequests)-1]
 	if err := assertObservedProviderSafeToolHistory(latestRequest.Messages); err != nil {
 		t.Fatalf("follow-up request messages are not provider-safe: %v\n%#v", err, latestRequest.Messages)
+	}
+	if got := countObservedAssistantContent(second.Observation.SessionMessages, "Changsha weather summary."); got != 1 {
+		t.Fatalf("second snapshot duplicated first final assistant: count=%d in %#v", got, second.Observation.SessionMessages)
+	}
+	if got := countObservedAssistantContent(latestRequest.Messages, "Changsha weather summary."); got != 1 {
+		t.Fatalf("follow-up request duplicated first final assistant: count=%d in %#v", got, latestRequest.Messages)
 	}
 }
 
@@ -1982,6 +1991,16 @@ func countObservedToolMessages(messages []ObservedSessionMessage, role, callID s
 	count := 0
 	for _, msg := range messages {
 		if msg.Role == role && msg.ToolCallID == callID {
+			count++
+		}
+	}
+	return count
+}
+
+func countObservedAssistantContent(messages []ObservedSessionMessage, content string) int {
+	count := 0
+	for _, msg := range messages {
+		if msg.Role == "assistant" && msg.ToolCallID == "" && msg.Content == content {
 			count++
 		}
 	}

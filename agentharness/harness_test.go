@@ -646,6 +646,9 @@ func TestToolProjectionDoesNotDuplicateMultiToolBatches(t *testing.T) {
 			t.Fatalf("tool result %s count = %d in %#v", id, got, snap.Entries)
 		}
 	}
+	if got := countEntriesWithContent(snap.Entries, sessiontree.EntryAssistantMessage, "done"); got != 1 {
+		t.Fatalf("final assistant message count = %d in %#v", got, snap.Entries)
+	}
 	for _, marker := range savePointEntries(snap.Entries, "tool_result_batch") {
 		path, err := repo.Path(ctx, "thread", marker.ParentID)
 		if err != nil {
@@ -665,6 +668,48 @@ func TestToolProjectionDoesNotDuplicateMultiToolBatches(t *testing.T) {
 	}
 	if err := assertProviderSafeToolHistory(snap.Context); err != nil {
 		t.Fatalf("follow-up context is not provider-safe: %v\n%#v", err, snap.Context)
+	}
+	if got := countEntriesWithContent(snap.Entries, sessiontree.EntryAssistantMessage, "done"); got != 1 {
+		t.Fatalf("follow-up should not duplicate previous final assistant message: count=%d entries=%#v", got, snap.Entries)
+	}
+}
+
+func TestAppendDeltaSkipsProjectedAssistantFinalButKeepsSeparateTurns(t *testing.T) {
+	ctx := context.Background()
+	repo := sessiontree.NewMemoryRepo()
+	promptStore := promptcache.NewMemoryStore()
+	h := newTestHarness(scriptharness.NewScriptedProvider(), repo, promptStore)
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected := session.Message{Role: session.Assistant, Content: "final answer", Reasoning: "done reasoning"}
+	if err := thread.appendMessage(ctx, "turn-1", projected); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := thread.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := thread.appendDelta(ctx, "turn-1", nil, []session.Message{projected}, snap.Path); err != nil {
+		t.Fatal(err)
+	}
+	snap, err = thread.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countEntriesWithContent(snap.Entries, sessiontree.EntryAssistantMessage, "final answer"); got != 1 {
+		t.Fatalf("projected assistant final should not be backfilled again: count=%d entries=%#v", got, snap.Entries)
+	}
+	if err := thread.appendDelta(ctx, "turn-2", nil, []session.Message{projected}, snap.Path); err != nil {
+		t.Fatal(err)
+	}
+	snap, err = thread.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countEntriesWithContent(snap.Entries, sessiontree.EntryAssistantMessage, "final answer"); got != 2 {
+		t.Fatalf("same assistant content in another turn should remain valid: count=%d entries=%#v", got, snap.Entries)
 	}
 }
 
