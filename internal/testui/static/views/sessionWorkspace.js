@@ -36,6 +36,7 @@ export function bindSessionWorkspace(root, handlers) {
     if (message) handlers.onAppend(message);
   });
   root.querySelector("[data-append-form] textarea[name=\"message\"]")?.addEventListener("input", (event) => {
+    if (event.isComposing) return;
     handlers.onComposerDraft(state.activeSession?.id || "", event.target.value);
   });
   bindInspector(root, {

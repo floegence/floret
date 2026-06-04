@@ -36,7 +36,10 @@ export function bindInspector(root, { tools, onEditTools, onToolEditDraft, onTab
   if (editForm) {
     const persistDraft = () => onToolEditDraft(editForm.dataset.sessionId || "", readDraft(editForm));
     bindToolPresets(editForm, tools, "session-tools", persistDraft);
-    editForm.addEventListener("input", persistDraft);
+    editForm.addEventListener("input", (event) => {
+      if (event.isComposing) return;
+      persistDraft();
+    });
     editForm.addEventListener("change", persistDraft);
     editForm.addEventListener("submit", (event) => {
       event.preventDefault();

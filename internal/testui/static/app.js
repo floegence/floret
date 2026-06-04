@@ -10,6 +10,40 @@ const globalStatus = document.getElementById("globalStatus");
 const toastRegion = document.getElementById("toastRegion");
 let autoRefreshTimer = 0;
 
+// IMPORTANT: IME composition owns the editable DOM node until compositionend;
+// background refresh or streaming renders must not replace it mid-candidate.
+document.addEventListener("compositionstart", (event) => {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  if (!appView.contains(target) || !isEditableControl(target)) return;
+  state.imeComposition = {
+    active: true,
+    selector: focusSelectorFor(target),
+    pendingRender: false,
+    pendingRefresh: false,
+  };
+  scheduleAutoRefresh();
+});
+
+document.addEventListener("compositionend", (event) => {
+  const target = event.target;
+  const wasActive = state.imeComposition.active;
+  const pendingRender = state.imeComposition.pendingRender;
+  const pendingRefresh = state.imeComposition.pendingRefresh;
+  state.imeComposition = { active: false, selector: "", pendingRender: false, pendingRefresh: false };
+  if (target instanceof Element && appView.contains(target) && isEditableControl(target)) {
+    persistEditableDraft(target);
+  }
+  if (!wasActive) return;
+  if (pendingRender) {
+    render({ preserveFocus: true });
+    return;
+  }
+  if (pendingRefresh) {
+    scheduleAutoRefresh();
+  }
+});
+
 document.addEventListener("click", (event) => {
   const toastClose = event.target.closest("[data-toast-close]");
   if (toastClose) {
@@ -98,6 +132,11 @@ async function refreshSessions({ selectRoute = false } = {}) {
 }
 
 function render(options = {}) {
+  if (state.imeComposition.active && !options.force) {
+    state.imeComposition.pendingRender = true;
+    if (options.scheduleRefresh) state.imeComposition.pendingRefresh = true;
+    return;
+  }
   const focusState = options.preserveFocus ? captureFocusState() : null;
   renderTopbar();
   renderToasts();
@@ -259,7 +298,7 @@ async function runStreamingTurn(sessionID, message, token, successMessage) {
       await api.streamTurn(sessionID, { message: trimmed }, (event) => {
         if (token !== state.mutationToken || state.liveTurn?.session_id !== sessionID) return;
         applyStreamEvent(event);
-        render({ preserveFocus: true });
+        render({ preserveFocus: true, scheduleRefresh: true });
       });
     } catch (error) {
       if (token === state.mutationToken && state.liveTurn?.session_id === sessionID) {
@@ -288,7 +327,7 @@ async function runStreamingTurn(sessionID, message, token, successMessage) {
   });
   if (token === state.mutationToken && state.liveTurn?.session_id === sessionID && state.liveTurn.failed) {
     state.liveTurn = null;
-    render({ preserveFocus: true });
+    render({ preserveFocus: true, scheduleRefresh: true });
   }
 }
 
@@ -686,6 +725,10 @@ function scheduleAutoRefresh() {
   autoRefreshTimer = 0;
   if (document.hidden || state.route.name !== "sessions" || !state.activeSession?.id) return;
   if (state.liveTurn?.session_id === state.activeSession.id) return;
+  if (state.imeComposition.active) {
+    state.imeComposition.pendingRefresh = true;
+    return;
+  }
   const delay = state.activeSession.status === "running" || state.activeSession.phase === "turn" ? 1000 : 2000;
   autoRefreshTimer = window.setTimeout(refreshActiveSessionSnapshot, delay);
 }
@@ -693,6 +736,10 @@ function scheduleAutoRefresh() {
 async function refreshActiveSessionSnapshot() {
   if (document.hidden || state.route.name !== "sessions" || !state.activeSession?.id) return;
   if (state.liveTurn?.session_id === state.activeSession.id) return;
+  if (state.imeComposition.active) {
+    state.imeComposition.pendingRefresh = true;
+    return;
+  }
   if (state.action === "select-session" || state.action === "delete-session") return scheduleAutoRefresh();
   const sessionID = state.activeSession.id;
   captureActiveDrafts();
@@ -792,6 +839,29 @@ function updateComposerDraft(sessionID, message) {
 function updateToolEditDraft(sessionID, draft) {
   if (!sessionID) return;
   state.toolEditDrafts[sessionID] = draft;
+}
+
+function persistEditableDraft(element) {
+  if (!element || !isEditableControl(element)) return;
+  if (element.closest("[data-append-form]") && state.activeSession?.id) {
+    state.composerDrafts[state.activeSession.id] = element.value || "";
+    return;
+  }
+  const newSessionForm = element.closest("[data-new-session-form]");
+  if (newSessionForm) {
+    const toolArea = appView.querySelector("[data-new-tools]");
+    if (toolArea) state.newSessionDraft = readNewSessionDraft(newSessionForm, toolArea);
+    return;
+  }
+  const settingsForm = element.closest("[data-settings-form]");
+  if (settingsForm) {
+    state.settingsDraft = readSettingsDraft(settingsForm);
+    return;
+  }
+  const toolForm = element.closest("[data-tool-edit-form]");
+  if (toolForm && state.activeSession?.id) {
+    state.toolEditDrafts[state.activeSession.id] = readToolEditDraft(toolForm);
+  }
 }
 
 function ensureSettingsDraft() {

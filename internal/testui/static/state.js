@@ -19,6 +19,7 @@ export const state = {
   checkResult: "",
   mobilePanel: "",
   liveTurn: null,
+  imeComposition: { active: false, selector: "", pendingRender: false, pendingRefresh: false },
   newSessionDraft: null,
   composerDrafts: {},
   settingsDraft: null,

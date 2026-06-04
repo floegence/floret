@@ -127,7 +127,10 @@ export function bindSettings(root, handlers) {
   const persistDraft = () => {
     state.settingsDraft = readSettingsDraft(form);
   };
-  form?.addEventListener("input", persistDraft);
+  form?.addEventListener("input", (event) => {
+    if (event.isComposing) return;
+    persistDraft();
+  });
   form?.addEventListener("change", (event) => {
     if (event.target === form.elements.active_profile_id || event.target === form.elements.provider) return;
     persistDraft();

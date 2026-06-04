@@ -206,7 +206,7 @@ func TestStaticConsolePreservesDraftsAndSeparatesRefreshFailures(t *testing.T) {
 			t.Fatalf("app missing draft/refresh hardening %q", want)
 		}
 	}
-	if !strings.Contains(newSession, `form?.addEventListener("input", persistDraft)`) || !strings.Contains(newSession, "bindToolPresets(toolArea, state.config?.tools || [], \"new-tools\", persistDraft)") {
+	if !strings.Contains(newSession, `form?.addEventListener("input"`) || !strings.Contains(newSession, "if (event.isComposing) return") || !strings.Contains(newSession, "persistDraft();") || !strings.Contains(newSession, "bindToolPresets(toolArea, state.config?.tools || [], \"new-tools\", persistDraft)") {
 		t.Fatalf("new session form does not persist ordinary edits")
 	}
 	if !strings.Contains(newSession, `hasOwnProperty.call(draft, "message")`) || !strings.Contains(newSession, `hasOwnProperty.call(draft, "system_prompt")`) {
@@ -287,6 +287,49 @@ func TestStaticConsoleSessionOperationsAndPolling(t *testing.T) {
 	for _, want := range []string{"captureActiveDrafts();", "render({ preserveFocus: true })", "captureFocusState", "restoreFocusState", "focusSelectorFor", "selectionStart", "selectionEnd", "preventScroll", "data-append-form", "data-tool-edit-form"} {
 		if !strings.Contains(appJS, want) {
 			t.Fatalf("active session polling must preserve input focus: missing %q", want)
+		}
+	}
+}
+
+func TestStaticConsoleProtectsIMECompositionFromRefreshRenders(t *testing.T) {
+	stateJS := readStaticTestFile(t, "state.js")
+	appJS := readStaticTestFile(t, "app.js")
+	workspace := readStaticTestFile(t, "views", "sessionWorkspace.js")
+	newSession := readStaticTestFile(t, "views", "newSession.js")
+	settings := readStaticTestFile(t, "views", "settings.js")
+	inspector := readStaticTestFile(t, "views", "inspector.js")
+
+	for _, want := range []string{"imeComposition", "active: false", "pendingRender: false", "pendingRefresh: false"} {
+		if !strings.Contains(stateJS, want) {
+			t.Fatalf("state missing IME composition guard field %q", want)
+		}
+	}
+	for _, want := range []string{
+		`document.addEventListener("compositionstart"`,
+		`document.addEventListener("compositionend"`,
+		"IMPORTANT: IME composition owns the editable DOM node",
+		"persistEditableDraft(target)",
+		"state.imeComposition.active && !options.force",
+		"state.imeComposition.pendingRender = true",
+		"state.imeComposition.pendingRefresh = true",
+		"if (state.imeComposition.active)",
+		"render({ preserveFocus: true, scheduleRefresh: true })",
+	} {
+		if !strings.Contains(appJS, want) {
+			t.Fatalf("app missing IME-safe render/refresh guard %q", want)
+		}
+	}
+	for _, file := range []struct {
+		name string
+		body string
+	}{
+		{"session workspace", workspace},
+		{"new session", newSession},
+		{"settings", settings},
+		{"inspector", inspector},
+	} {
+		if !strings.Contains(file.body, "event.isComposing") {
+			t.Fatalf("%s input handler must avoid persisting draft during IME composition", file.name)
 		}
 	}
 }

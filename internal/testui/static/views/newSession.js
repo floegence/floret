@@ -80,7 +80,10 @@ export function bindNewSession(root, handlers) {
   const persistDraft = () => {
     state.newSessionDraft = readDraft(form, toolArea);
   };
-  form?.addEventListener("input", persistDraft);
+  form?.addEventListener("input", (event) => {
+    if (event.isComposing) return;
+    persistDraft();
+  });
   form?.addEventListener("change", persistDraft);
   bindToolPresets(toolArea, state.config?.tools || [], "new-tools", persistDraft);
   root.querySelector("[data-run-probe]")?.addEventListener("click", () => {
