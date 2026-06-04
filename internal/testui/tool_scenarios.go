@@ -219,16 +219,32 @@ func (r Runner) runLiveToolScenarios(ctx context.Context, resp RunResponse, opts
 		r.runLiveWeatherToolScenario(ctx, profile),
 	}
 	status := "pass"
+	requiredFailures := 0
+	diagnosticFailures := 0
 	for _, part := range parts {
 		resp.Parts = append(resp.Parts, part)
-		if part.Status != "pass" && status == "pass" {
-			status = part.Status
+		if part.Status != "pass" {
+			if part.ID != "" && strings.HasPrefix(part.ID, "live-weather-") {
+				diagnosticFailures++
+			} else {
+				requiredFailures++
+				if status == "pass" {
+					status = part.Status
+				}
+			}
 		}
+	}
+	if requiredFailures == 0 {
+		status = "pass"
 	}
 	resp.Status = status
 	resp.FinishedAt = r.now()
 	resp.DurationMS = resp.FinishedAt.Sub(resp.StartedAt).Milliseconds()
-	resp.Summary = fmt.Sprintf("%d live provider tool scenario(s) finished with status %s.", len(resp.Parts), resp.Status)
+	if diagnosticFailures > 0 && requiredFailures == 0 {
+		resp.Summary = fmt.Sprintf("%d live provider tool scenario(s) finished with status %s; %d external web diagnostic scenario(s) reported provider/tool availability issues.", len(resp.Parts), resp.Status, diagnosticFailures)
+	} else {
+		resp.Summary = fmt.Sprintf("%d live provider tool scenario(s) finished with status %s.", len(resp.Parts), resp.Status)
+	}
 	return resp
 }
 

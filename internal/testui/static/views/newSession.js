@@ -20,32 +20,32 @@ export function renderNewSession() {
         <a class="button ghost" href="/sessions" data-link>Cancel</a>
       </header>
       <form class="form-grid" data-new-session-form>
-        <label class="field">
+        <label class="field" for="new-profile-id">
           <span>Profile</span>
-          <select name="profile_id">
+          <select id="new-profile-id" name="profile_id" aria-label="Profile">
             ${(state.config?.profiles || []).map((item) => `<option value="${escapeHTML(item.id)}" ${item.id === (draft.profile_id || profile.id) ? "selected" : ""}>${escapeHTML(profileLabel(item))}</option>`).join("")}
           </select>
         </label>
-        <label class="field">
+        <label class="field" for="new-initial-task">
           <span>Initial task</span>
-          <textarea name="message" required>${escapeHTML(message)}</textarea>
+          <textarea id="new-initial-task" name="message" aria-label="Initial task" required>${escapeHTML(message)}</textarea>
         </label>
-        <label class="field">
+        <label class="field" for="new-system-prompt">
           <span>System prompt</span>
-          <textarea name="system_prompt" required>${escapeHTML(systemPrompt)}</textarea>
+          <textarea id="new-system-prompt" name="system_prompt" aria-label="System prompt" required>${escapeHTML(systemPrompt)}</textarea>
         </label>
         <div class="field-row">
-          <label class="field">
+          <label class="field" for="new-context-window">
             <span>Context window</span>
-            <input name="context_window_tokens" type="number" min="1024" step="1024" value="${policy.context_window_tokens}" />
+            <input id="new-context-window" name="context_window_tokens" aria-label="Context window" type="number" min="1024" step="1024" value="${policy.context_window_tokens}" />
           </label>
-          <label class="field">
+          <label class="field" for="new-max-output">
             <span>Max output</span>
-            <input name="max_output_tokens" type="number" min="256" step="256" value="${policy.max_output_tokens}" />
+            <input id="new-max-output" name="max_output_tokens" aria-label="Max output" type="number" min="256" step="256" value="${policy.max_output_tokens}" />
           </label>
-          <label class="field">
+          <label class="field" for="new-recent-tail">
             <span>Recent tail</span>
-            <input name="recent_tail_tokens" type="number" min="256" step="256" value="${policy.recent_tail_tokens}" />
+            <input id="new-recent-tail" name="recent_tail_tokens" aria-label="Recent tail" type="number" min="256" step="256" value="${policy.recent_tail_tokens}" />
           </label>
         </div>
         <section class="profile-card" data-new-tools>

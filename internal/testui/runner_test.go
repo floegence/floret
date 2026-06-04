@@ -1707,6 +1707,14 @@ func TestRunnerRunningSnapshotUsesRealTurnID(t *testing.T) {
 	}) {
 		t.Fatalf("running snapshot did not expose persisted user message: %#v", snapshot.PathEntries)
 	}
+	if len(snapshot.Observation.ProviderRequests) != 1 {
+		t.Fatalf("running snapshot should expose provider request observation: %#v", snapshot.Observation)
+	}
+	if !slices.ContainsFunc(snapshot.Observation.Transitions, func(transition StateTransition) bool {
+		return transition.To == "provider_waiting"
+	}) {
+		t.Fatalf("running snapshot should expose provider waiting transition: %#v", snapshot.Observation.Transitions)
+	}
 	cancel()
 	result := <-done
 	if result.Status != string(engine.Cancelled) {

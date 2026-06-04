@@ -82,6 +82,29 @@ func TestStaticConsoleCreatesSessionBeforeRunningInitialTurn(t *testing.T) {
 	}
 }
 
+func TestStaticConsoleNewSessionFieldsAreExplicitlyLabelled(t *testing.T) {
+	newSession := readStaticTestFile(t, "views", "newSession.js")
+
+	for _, want := range []string{
+		`for="new-profile-id"`,
+		`id="new-profile-id" name="profile_id" aria-label="Profile"`,
+		`for="new-initial-task"`,
+		`id="new-initial-task" name="message" aria-label="Initial task"`,
+		`for="new-system-prompt"`,
+		`id="new-system-prompt" name="system_prompt" aria-label="System prompt"`,
+		`for="new-context-window"`,
+		`id="new-context-window" name="context_window_tokens" aria-label="Context window"`,
+		`for="new-max-output"`,
+		`id="new-max-output" name="max_output_tokens" aria-label="Max output"`,
+		`for="new-recent-tail"`,
+		`id="new-recent-tail" name="recent_tail_tokens" aria-label="Recent tail"`,
+	} {
+		if !strings.Contains(newSession, want) {
+			t.Fatalf("new session form is missing explicit label/control binding %q", want)
+		}
+	}
+}
+
 func TestStaticConsoleStreamsTurnsIncrementally(t *testing.T) {
 	apiJS := readStaticTestFile(t, "api.js")
 	appJS := readStaticTestFile(t, "app.js")
@@ -268,6 +291,24 @@ func TestStaticConsoleSessionOperationsAndPolling(t *testing.T) {
 	}
 }
 
+func TestStaticConsoleStreamingTurnKeepsFinalSessionSnapshot(t *testing.T) {
+	appJS := readStaticTestFile(t, "app.js")
+
+	for _, want := range []string{"let finalSession = null", "finalSession = await api.session(sessionID)", "setActiveSessionSnapshot(finalSession)", "if (finalSession) result.session = finalSession"} {
+		if !strings.Contains(appJS, want) {
+			t.Fatalf("streaming turn final snapshot guard missing %q", want)
+		}
+	}
+	if strings.Contains(appJS, "state.activeSession = result.session") {
+		t.Fatalf("streaming turn must not let an older live result session overwrite the final refreshed session")
+	}
+	for _, want := range []string{"setActiveSessionSnapshot", "shouldAcceptSessionSnapshot", "nextTime < currentTime", "current.can_append_message && current.status !== \"running\" && next.status === \"running\""} {
+		if !strings.Contains(appJS, want) {
+			t.Fatalf("active session snapshot regression guard missing %q", want)
+		}
+	}
+}
+
 func TestStaticConsoleTimelineLongMessagesCollapseAndCopy(t *testing.T) {
 	workspace := readStaticTestFile(t, "views", "sessionWorkspace.js")
 	css := readStaticTestFile(t, "styles.css")
@@ -310,6 +351,20 @@ func TestStaticConsoleExposesSavedToolScenarioChecks(t *testing.T) {
 	}
 	if !strings.Contains(apiJS, "runCheck(target, payload = {})") || !strings.Contains(apiJS, "JSON.stringify({ target, ...payload })") {
 		t.Fatalf("api.runCheck should preserve target and optional profile payload")
+	}
+}
+
+func TestStaticConsoleDisablesStaticAssetCaching(t *testing.T) {
+	index := readStaticTestFile(t, "index.html")
+	server := readStaticTestFile(t, "..", "server.go")
+
+	for _, want := range []string{"/styles.css?v=testui", "/app.js?v=testui"} {
+		if !strings.Contains(index, want) {
+			t.Fatalf("index should version static asset %q", want)
+		}
+	}
+	if !strings.Contains(server, `w.Header().Set("Cache-Control", "no-store")`) {
+		t.Fatalf("static handler should disable browser caching for test UI assets")
 	}
 }
 

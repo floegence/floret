@@ -57,11 +57,11 @@ async function refreshSessions({ selectRoute = false } = {}) {
   state.sessions = await api.sessions();
   if (selectRoute && state.route.id) {
     try {
-      state.activeSession = await api.session(state.route.id);
+      setActiveSessionSnapshot(await api.session(state.route.id), { force: true });
     } catch (error) {
       if (error.status !== 404) throw error;
       if (state.sessions.length) {
-        state.activeSession = await api.session(state.sessions[0].id);
+        setActiveSessionSnapshot(await api.session(state.sessions[0].id), { force: true });
         replaceRoute({ name: "sessions", id: state.activeSession.id });
       } else {
         state.activeSession = null;
@@ -73,11 +73,11 @@ async function refreshSessions({ selectRoute = false } = {}) {
   if (state.activeSession?.id) {
     const fresh = state.sessions.find((session) => session.id === state.activeSession.id);
     if (fresh) {
-      state.activeSession = await api.session(fresh.id);
+      setActiveSessionSnapshot(await api.session(fresh.id));
       return;
     }
     if (state.sessions.length) {
-      state.activeSession = await api.session(state.sessions[0].id);
+      setActiveSessionSnapshot(await api.session(state.sessions[0].id), { force: true });
       if (state.route.name === "sessions") {
         replaceRoute({ name: "sessions", id: state.activeSession.id });
       }
@@ -90,7 +90,7 @@ async function refreshSessions({ selectRoute = false } = {}) {
     return;
   }
   if (state.sessions.length) {
-    state.activeSession = await api.session(state.sessions[0].id);
+    setActiveSessionSnapshot(await api.session(state.sessions[0].id), { force: true });
     if (state.route.name === "sessions" && !state.route.id) {
       replaceRoute({ name: "sessions", id: state.activeSession.id });
     }
@@ -179,6 +179,34 @@ function renderTopbar() {
   });
 }
 
+function setActiveSessionSnapshot(session, options = {}) {
+  if (!session) {
+    state.activeSession = null;
+    return true;
+  }
+  if (!options.force && !shouldAcceptSessionSnapshot(state.activeSession, session, options)) {
+    return false;
+  }
+  state.activeSession = session;
+  return true;
+}
+
+function shouldAcceptSessionSnapshot(current, next, options = {}) {
+  if (!current?.id || current.id !== next?.id) return true;
+  if (options.allowRunningOverlay) {
+    return current.status === "running" || current.phase === "turn";
+  }
+  const currentTime = Date.parse(current.updated_at || "");
+  const nextTime = Date.parse(next.updated_at || "");
+  if (Number.isFinite(currentTime) && Number.isFinite(nextTime) && nextTime < currentTime) {
+    return false;
+  }
+  if (current.can_append_message && current.status !== "running" && next.status === "running") {
+    return false;
+  }
+  return true;
+}
+
 async function selectSession(id) {
   if (!id) return;
   captureActiveDrafts();
@@ -186,7 +214,7 @@ async function selectSession(id) {
   await runWithStatus({ status: "loading", action: "select-session", renderStart: false }, async () => {
     const session = await api.session(id);
     if (token !== state.selectionToken) return;
-    state.activeSession = session;
+    setActiveSessionSnapshot(session, { force: true });
     state.lastResult = null;
     replaceRoute({ name: "sessions", id });
   });
@@ -226,6 +254,7 @@ async function runStreamingTurn(sessionID, message, token, successMessage) {
   state.liveTurn = createLiveTurn(sessionID, trimmed);
   state.inspectorTab = "events";
   await runWithStatus({ status: "running", action: "append-turn", target: sessionID, successMessage }, async () => {
+    let finalSession = null;
     try {
       await api.streamTurn(sessionID, { message: trimmed }, (event) => {
         if (token !== state.mutationToken || state.liveTurn?.session_id !== sessionID) return;
@@ -240,7 +269,8 @@ async function runStreamingTurn(sessionID, message, token, successMessage) {
     } finally {
       if (token === state.mutationToken && state.activeSession?.id === sessionID) {
         try {
-          state.activeSession = await api.session(sessionID);
+          finalSession = await api.session(sessionID);
+          setActiveSessionSnapshot(finalSession);
         } catch {
           // The toast path in runWithStatus will surface the stream failure.
         }
@@ -250,9 +280,7 @@ async function runStreamingTurn(sessionID, message, token, successMessage) {
     const result = state.liveTurn?.result || null;
     if (result) {
       state.lastResult = result;
-      if (result.session && (state.activeSession?.id === sessionID || state.route.id === sessionID)) {
-        state.activeSession = result.session;
-      }
+      if (finalSession) result.session = finalSession;
     }
     state.liveTurn = null;
     await refreshSessionsNonBlocking(token);
@@ -273,7 +301,7 @@ async function updateSessionTools(selectedTools, reason) {
     const snapshot = await api.updateTools(sessionID, { selected_tools: selectedTools, reason });
     if (token !== state.mutationToken) return false;
     if (state.activeSession?.id === sessionID || state.route.id === sessionID) {
-      state.activeSession = snapshot;
+      setActiveSessionSnapshot(snapshot, { force: true });
     }
     delete state.toolEditDrafts[sessionID];
     state.lastResult = null;
@@ -309,7 +337,7 @@ function applyStreamEvent(event) {
   switch (event.type) {
     case "session_snapshot":
       if (event.session_snapshot) {
-        state.activeSession = event.session_snapshot;
+        setActiveSessionSnapshot(event.session_snapshot);
         state.liveTurn.result.session = event.session_snapshot;
       }
       break;
@@ -344,7 +372,7 @@ function applyStreamEvent(event) {
       if (event.result) {
         state.liveTurn.result = event.result;
         state.lastResult = event.result;
-        if (event.result.session) state.activeSession = event.result.session;
+        if (event.result.session) setActiveSessionSnapshot(event.result.session);
       }
       if (event.entry) {
         upsertLiveEntry(event.entry);
@@ -419,7 +447,7 @@ function upsertLiveEntry(entry) {
     const entries = state.activeSession.path_entries || [];
     const existing = entries.findIndex((item) => item.id === entry.id);
     const nextEntries = existing >= 0 ? entries.map((item, idx) => (idx === existing ? entry : item)) : [...entries, entry];
-    state.activeSession = { ...state.activeSession, path_entries: nextEntries, status: "running", phase: "turn" };
+    setActiveSessionSnapshot({ ...state.activeSession, path_entries: nextEntries, status: "running", phase: "turn" }, { allowRunningOverlay: true });
     state.liveTurn.result.session = state.activeSession;
   }
 }
@@ -557,7 +585,7 @@ async function activateSession(result, token) {
 }
 
 function activateSessionSnapshot(session) {
-  state.activeSession = session;
+  setActiveSessionSnapshot(session, { force: true });
   state.mobilePanel = "";
   state.inspectorTab = "requests";
   replaceRoute({ name: "sessions", id: session.id });
@@ -672,7 +700,7 @@ async function refreshActiveSessionSnapshot() {
     const [sessions, session] = await Promise.all([api.sessions(), api.session(sessionID)]);
     if (state.route.name !== "sessions" || state.activeSession?.id !== sessionID) return;
     state.sessions = sessions;
-    state.activeSession = session;
+    setActiveSessionSnapshot(session);
     render({ preserveFocus: true });
   } catch (error) {
     if (error.status === 404 && state.activeSession?.id === sessionID) {

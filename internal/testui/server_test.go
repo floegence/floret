@@ -156,6 +156,9 @@ func TestServerRunAPILiveToolScenariosUseSelectedSavedProfile(t *testing.T) {
 			t.Fatalf("local tool scenario should expose %s: %#v", name, localReq.Tools)
 		}
 	}
+	assertProviderToolRequiredFields(t, localReq.Tools, "list")
+	assertProviderToolRequiredFields(t, localReq.Tools, "read", "path")
+	assertProviderToolRequiredFields(t, localReq.Tools, "grep", "pattern")
 	var weatherReq provider.Request
 	for _, req := range requests {
 		if hasProviderTool(req.Tools, "web_fetch") || len(req.HostedTools) > 0 {
@@ -171,6 +174,45 @@ func TestServerRunAPILiveToolScenariosUseSelectedSavedProfile(t *testing.T) {
 	}
 	if len(weatherReq.HostedTools) != 1 || weatherReq.HostedTools[0].Name != "web_search" {
 		t.Fatalf("provider-hosted profile should expose hosted web_search: %#v", weatherReq.HostedTools)
+	}
+}
+
+func TestServerRunAPILiveToolScenariosTreatWeatherAsDiagnostic(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	recording := &recordingToolScenarioProvider{failWeather: true}
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return recording, nil
+	}
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	saveBody := `{"active_profile_id":"hosted-live","profiles":[{"id":"hosted-live","name":"Hosted Live","provider":"openai-compatible","model":"model-a","base_url":"https://api.example.test/v1","api_key":"provider-key","web_search":{"provider_hosted":{"enabled":true,"wire_shape":"openai_chat_web_search_options","supported_wire_shapes":["openai_chat_web_search_options"]},"client":{"enabled":false,"provider":"brave"}}}],"search_provider":{"provider":"brave","api_key":"search-key","endpoint":"https://search.example.test"}}`
+	saveReq := httptest.NewRequest(http.MethodPut, "/api/config", strings.NewReader(saveBody))
+	saveRec := httptest.NewRecorder()
+	handler.ServeHTTP(saveRec, saveReq)
+	if saveRec.Code != http.StatusOK {
+		t.Fatalf("save status = %d, body = %s", saveRec.Code, saveRec.Body.String())
+	}
+
+	runReq := httptest.NewRequest(http.MethodPost, "/api/run", bytes.NewBufferString(`{"target":"live-tool-scenarios","profile_id":"hosted-live"}`))
+	runRec := httptest.NewRecorder()
+	handler.ServeHTTP(runRec, runReq)
+	if runRec.Code != http.StatusOK {
+		t.Fatalf("run status = %d, body = %s", runRec.Code, runRec.Body.String())
+	}
+	var result RunResponse
+	if err := json.Unmarshal(runRec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "pass" || !strings.Contains(result.Summary, "external web diagnostic") {
+		t.Fatalf("diagnostic failure should not fail required live local suite: %#v", result)
+	}
+	if len(result.Parts) != 2 || result.Parts[0].Status != "pass" || result.Parts[1].Status == "pass" {
+		t.Fatalf("parts = %#v", result.Parts)
 	}
 }
 
@@ -848,48 +890,50 @@ func TestServerAgentSessionToolsPatchRejectsUnknownTool(t *testing.T) {
 }
 
 func TestServerAgentSessionToolsPatchRejectsRunningSession(t *testing.T) {
-	scripted := harness.NewScriptedProvider(harness.Step(harness.Hang()))
+	blocking := newBlockingTestProvider()
 	runner := NewRunner(t.TempDir())
 	runner.Now = fixedClock()
 	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
-		return scripted, nil
+		return blocking, nil
 	}
 	server, err := NewServer(runner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	server.Timeout = 250 * time.Millisecond
 	handler := server.Handler()
-	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"unused"},"message":"hello","system_prompt":"test","selected_tools":[]}`
 
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"unused"},"message":"hello","system_prompt":"test","selected_tools":[]}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var snapshot AgentSessionSnapshot
+	if err := json.Unmarshal(createRec.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	runCtx, cancelRun := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody))
-		createRec := httptest.NewRecorder()
-		handler.ServeHTTP(createRec, createReq)
+		turnReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+snapshot.ID+"/turns", strings.NewReader(`{"message":"hello"}`)).WithContext(runCtx)
+		turnRec := httptest.NewRecorder()
+		handler.ServeHTTP(turnRec, turnReq)
 	}()
-	for i := 0; i < 50; i++ {
-		registry := runner.sessionRegistry()
-		registry.mu.Lock()
-		var sessionID string
-		if len(registry.order) == 1 {
-			sessionID = registry.order[0]
-		}
-		registry.mu.Unlock()
-		if sessionID != "" {
-			patchReq := httptest.NewRequest(http.MethodPatch, "/api/agent/sessions/"+sessionID+"/tools", strings.NewReader(`{"selected_tools":["grep"]}`))
-			patchRec := httptest.NewRecorder()
-			handler.ServeHTTP(patchRec, patchReq)
-			if patchRec.Code != http.StatusConflict {
-				t.Fatalf("patch status/body = %d %s", patchRec.Code, patchRec.Body.String())
-			}
-			<-done
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	blocking.waitStarted(t)
+
+	patchReq := httptest.NewRequest(http.MethodPatch, "/api/agent/sessions/"+snapshot.ID+"/tools", strings.NewReader(`{"selected_tools":["grep"]}`))
+	patchRec := httptest.NewRecorder()
+	handler.ServeHTTP(patchRec, patchReq)
+	if patchRec.Code != http.StatusConflict {
+		cancelRun()
+		<-done
+		t.Fatalf("patch status/body = %d %s", patchRec.Code, patchRec.Body.String())
 	}
-	t.Fatal("session did not appear while running")
+	cancelRun()
+	<-done
 }
 
 func TestServerAgentSessionReadsDoNotBlockRunningSession(t *testing.T) {
@@ -1464,8 +1508,9 @@ func indexStreamEvent(events []AgentStreamEvent, typ AgentStreamEventType) int {
 }
 
 type recordingToolScenarioProvider struct {
-	mu       sync.Mutex
-	requests []provider.Request
+	mu          sync.Mutex
+	requests    []provider.Request
+	failWeather bool
 }
 
 func (p *recordingToolScenarioProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
@@ -1474,12 +1519,15 @@ func (p *recordingToolScenarioProvider) Stream(ctx context.Context, req provider
 	requestNo := len(p.requests)
 	p.mu.Unlock()
 	events := []provider.StreamEvent{harness.Text("live-ok"), harness.Done()}
+	if p.failWeather && (hasProviderTool(req.Tools, "web_fetch") || len(req.HostedTools) > 0) {
+		events = []provider.StreamEvent{harness.Truncated("diagnostic unavailable")}
+	}
 	if hasProviderTool(req.Tools, "list") && hasProviderTool(req.Tools, "read") && hasProviderTool(req.Tools, "grep") && requestNo == 1 {
 		events = []provider.StreamEvent{
 			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
-				{ID: "live-list", Name: "list", Args: `{"path":null,"limit":20}`},
-				{ID: "live-read", Name: "read", Args: `{"path":"README.md","offset":0,"limit":40}`},
-				{ID: "live-grep", Name: "grep", Args: `{"pattern":"Status","path":"notes","glob":null,"ignore_case":false,"literal":true,"context":null,"limit":20}`},
+				{ID: "live-list", Name: "list", Args: `{"path":"."}`},
+				{ID: "live-read", Name: "read", Args: `{"path":"README.md"}`},
+				{ID: "live-grep", Name: "grep", Args: `{"pattern":"Status","path":"notes"}`},
 			}},
 			harness.DoneReason("tool_calls"),
 		}
@@ -1508,4 +1556,27 @@ func hasProviderTool(defs []provider.ToolDefinition, name string) bool {
 	return slices.ContainsFunc(defs, func(def provider.ToolDefinition) bool {
 		return def.Name == name
 	})
+}
+
+func assertProviderToolRequiredFields(t *testing.T, defs []provider.ToolDefinition, name string, want ...string) {
+	t.Helper()
+	var schema map[string]any
+	for _, def := range defs {
+		if def.Name == name {
+			schema = def.InputSchema
+			break
+		}
+	}
+	if schema == nil {
+		t.Fatalf("tool %s missing from provider definitions", name)
+	}
+	required, _ := schema["required"].([]any)
+	if len(required) != len(want) {
+		t.Fatalf("%s required fields = %#v, want %#v", name, schema["required"], want)
+	}
+	for i, field := range want {
+		if required[i] != field {
+			t.Fatalf("%s required fields = %#v, want %#v", name, schema["required"], want)
+		}
+	}
 }

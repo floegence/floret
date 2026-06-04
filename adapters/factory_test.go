@@ -638,6 +638,53 @@ func TestOpenAICompatibleProviderStreamsPartialToolArguments(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleProviderNonStreamResponseDoesNotBlockWhenAllEventTypesArePresent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"choices":[{
+				"message":{
+					"role":"assistant",
+					"content":"I will inspect the workspace.",
+					"reasoning_content":"Need a local tool.",
+					"tool_calls":[{
+						"id":"call-1",
+						"type":"function",
+						"function":{"name":"list","arguments":"{\"path\":null,\"limit\":5}"}
+					}]
+				},
+				"finish_reason":"tool_calls"
+			}],
+			"usage":{"prompt_tokens":10,"completion_tokens":6,"total_tokens":16}
+		}`))
+	}))
+	defer server.Close()
+	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
+	stream, err := p.Stream(context.Background(), provider.Request{
+		RunID:    "run",
+		Messages: []session.Message{{Role: session.User, Content: "hello"}},
+		Tools:    []provider.ToolDefinition{{Name: "list"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	var call provider.ToolCall
+	for ev := range stream {
+		got = append(got, string(ev.Type))
+		if ev.Type == provider.ToolCalls && len(ev.ToolCalls) == 1 {
+			call = ev.ToolCalls[0]
+		}
+	}
+	want := []string{string(provider.Reasoning), string(provider.Delta), string(provider.UsageEvent), string(provider.ToolCalls), string(provider.Done)}
+	if !slices.Equal(got, want) {
+		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+	if call.ID != "call-1" || call.Name != "list" || call.Reasoning != "Need a local tool." {
+		t.Fatalf("tool call = %#v", call)
+	}
+}
+
 func TestOpenAICompatibleProviderReplaysReasoningContentForToolFollowUp(t *testing.T) {
 	var requests []struct {
 		Messages []map[string]any `json:"messages"`

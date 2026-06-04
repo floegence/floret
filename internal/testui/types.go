@@ -384,6 +384,7 @@ type AgentSessionSnapshot struct {
 	AllEntries              []ObservedSessionEntry          `json:"all_entries"`
 	AggregateMetrics        engine.RunMetrics               `json:"aggregate_metrics"`
 	Compactions             int                             `json:"compactions"`
+	Observation             AgentObservation                `json:"observation,omitempty"`
 }
 
 type AgentTurnSummary struct {

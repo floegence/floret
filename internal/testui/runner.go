@@ -1258,6 +1258,7 @@ func (r *Runner) runningAgentSessionSnapshot(ctx context.Context, sess *agentSes
 	if refreshed, err := r.refreshRunningSnapshotFromThread(ctx, sess, snapshot); err == nil {
 		snapshot = refreshed
 	}
+	snapshot.Observation = r.runningAgentObservation(sess, snapshot)
 	return snapshot
 }
 
@@ -1298,6 +1299,15 @@ func (r *Runner) agentObservationLocked(sess *agentSession, snapshot AgentSessio
 	observation.ActiveContext = snapshot.ActiveContext
 	observation.PathEntries = snapshot.PathEntries
 	observation.Transitions = buildTransitions(eventsForRun(sess.recorder.Snapshot(), turnID), result)
+	return observation
+}
+
+func (r *Runner) runningAgentObservation(sess *agentSession, snapshot AgentSessionSnapshot) AgentObservation {
+	observation := sess.provider.Snapshot()
+	observation.SessionMessages = sessionMessagesFromEntries(snapshot.PathEntries)
+	observation.ActiveContext = snapshot.ActiveContext
+	observation.PathEntries = snapshot.PathEntries
+	observation.Transitions = buildRunningTransitions(eventsForRun(sess.recorder.Snapshot(), snapshot.LatestTurnID))
 	return observation
 }
 
@@ -1776,6 +1786,42 @@ func buildTransitions(events []event.Event, result engine.Result) []StateTransit
 	}
 	if len(transitions) == 0 {
 		add(time.Now(), 0, string(result.Status), "run_end", "")
+	}
+	return transitions
+}
+
+func buildRunningTransitions(events []event.Event) []StateTransition {
+	transitions := []StateTransition{}
+	current := "created"
+	add := func(at time.Time, step int, to string, reason string, details string) {
+		if to == "" || to == current {
+			return
+		}
+		transitions = append(transitions, StateTransition{
+			At:      at,
+			Step:    step,
+			From:    current,
+			To:      to,
+			Reason:  reason,
+			Details: details,
+		})
+		current = to
+	}
+	for _, ev := range events {
+		switch ev.Type {
+		case event.StepStart:
+			add(ev.Timestamp, ev.Step, "step_running", "step_start", fmt.Sprintf("step %d started", ev.Step))
+		case event.ProviderRequest:
+			add(ev.Timestamp, ev.Step, "provider_waiting", "provider_request", ev.Message)
+		case event.ProviderDelta:
+			add(ev.Timestamp, ev.Step, "receiving_model_output", "provider_delta", trimForDisplay(ev.Message, 80))
+		case event.ToolCall:
+			add(ev.Timestamp, ev.Step, "tool_calling", "tool_call", ev.ToolName)
+		case event.ToolResult:
+			add(ev.Timestamp, ev.Step, "tool_result_received", "tool_result", eventDetails(ev))
+		case event.ContextCompact:
+			add(ev.Timestamp, ev.Step, "compacting_context", "context_compact", "context was compacted")
+		}
 	}
 	return transitions
 }

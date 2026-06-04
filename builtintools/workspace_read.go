@@ -27,9 +27,10 @@ type listArgs struct {
 }
 
 type globArgs struct {
-	Pattern string  `json:"pattern"`
-	Path    *string `json:"path"`
-	Limit   *int    `json:"limit"`
+	Pattern    string  `json:"pattern"`
+	Path       *string `json:"path"`
+	Limit      *int    `json:"limit"`
+	IgnoreCase bool    `json:"ignore_case"`
 }
 
 type grepArgs struct {
@@ -60,7 +61,7 @@ func readTool(opts WorkspaceOptions) tools.Tool {
 		"path":   tools.String("Workspace-relative file or directory path to read."),
 		"offset": tools.Nullable(tools.Integer("Zero-based line offset for text files.")),
 		"limit":  tools.Nullable(tools.Integer("Maximum number of lines to return.")),
-	}, []string{"limit", "offset", "path"})
+	}, []string{"path"})
 	return tools.Define[readArgs](
 		tools.Definition{
 			Name:        "read",
@@ -140,7 +141,7 @@ func listTool(opts WorkspaceOptions) tools.Tool {
 			InputSchema: tools.StrictObject(map[string]any{
 				"path":  tools.Nullable(tools.String("Workspace-relative directory path. Use null for the workspace root.")),
 				"limit": tools.Nullable(tools.Integer("Maximum number of entries to return.")),
-			}, []string{"limit", "path"}),
+			}, []string{}),
 			Effects:     []tools.Effect{tools.EffectRead},
 			ReadOnly:    true,
 			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow, ResourceKinds: []string{"directory"}},
@@ -186,10 +187,11 @@ func globTool(opts WorkspaceOptions) tools.Tool {
 			Title:       "Glob",
 			Description: "Find workspace files by path glob pattern. Use grep for file contents.",
 			InputSchema: tools.StrictObject(map[string]any{
-				"pattern": tools.String("Glob pattern, for example **/*.go."),
-				"path":    tools.Nullable(tools.String("Workspace-relative directory to search from.")),
-				"limit":   tools.Nullable(tools.Integer("Maximum number of paths to return.")),
-			}, []string{"limit", "path", "pattern"}),
+				"pattern":     tools.String("Glob pattern, for example **/*.go."),
+				"path":        tools.Nullable(tools.String("Workspace-relative directory to search from.")),
+				"limit":       tools.Nullable(tools.Integer("Maximum number of paths to return.")),
+				"ignore_case": tools.Boolean("Whether matching ignores case."),
+			}, []string{"pattern"}),
 			Effects:     []tools.Effect{tools.EffectRead},
 			ReadOnly:    true,
 			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow, ResourceKinds: []string{"directory"}},
@@ -233,11 +235,17 @@ func globTool(opts WorkspaceOptions) tools.Tool {
 				if rel == "." {
 					return nil
 				}
-				ok, err := filepath.Match(strings.ReplaceAll(inv.Args.Pattern, "**/", "*"), rel)
+				pattern := inv.Args.Pattern
+				candidate := rel
+				if inv.Args.IgnoreCase {
+					pattern = strings.ToLower(pattern)
+					candidate = strings.ToLower(candidate)
+				}
+				ok, err := filepath.Match(strings.ReplaceAll(pattern, "**/", "*"), candidate)
 				if err != nil {
 					return err
 				}
-				if ok || simpleGlobMatch(inv.Args.Pattern, rel) {
+				if ok || simpleGlobMatch(pattern, candidate) {
 					if d.IsDir() {
 						rel += "/"
 					}
@@ -271,7 +279,7 @@ func grepTool(opts WorkspaceOptions) tools.Tool {
 				"literal":     tools.Boolean("Whether to treat pattern as literal text."),
 				"context":     tools.Nullable(tools.Integer("Number of context lines around each match.")),
 				"limit":       tools.Nullable(tools.Integer("Maximum number of matching lines to return.")),
-			}, []string{"context", "glob", "ignore_case", "limit", "literal", "path", "pattern"}),
+			}, []string{"pattern"}),
 			Effects:     []tools.Effect{tools.EffectRead},
 			ReadOnly:    true,
 			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow, ResourceKinds: []string{"directory", "file"}},

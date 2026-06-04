@@ -11,7 +11,7 @@ export function renderInspector({ session, result, tools, tab }) {
     `;
   }
   const activeTab = tab || "tools";
-  const observation = result?.session_id === session.id ? result.observation || {} : {};
+  const observation = result?.session_id === session.id ? result.observation || {} : session.observation || {};
   return `
     <aside class="inspector">
       <div class="inspector-head">

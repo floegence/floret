@@ -192,21 +192,22 @@ func (p OpenAICompatibleProvider) Stream(ctx context.Context, req provider.Reque
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		return nil, fmt.Errorf("openai-compatible provider status %d", httpResp.StatusCode)
 	}
-	ch := make(chan provider.StreamEvent, 4)
 	if len(parsed.Choices) == 0 {
+		ch := make(chan provider.StreamEvent, 1)
 		ch <- provider.StreamEvent{Type: provider.Empty}
 		close(ch)
 		return ch, nil
 	}
+	events := make([]provider.StreamEvent, 0, 5)
 	choice := parsed.Choices[0]
 	if choice.Message.ReasoningContent != "" {
-		ch <- provider.StreamEvent{Type: provider.Reasoning, Text: choice.Message.ReasoningContent}
+		events = append(events, provider.StreamEvent{Type: provider.Reasoning, Text: choice.Message.ReasoningContent})
 	}
 	if choice.Message.Content != "" {
-		ch <- provider.StreamEvent{Type: provider.Delta, Text: choice.Message.Content}
+		events = append(events, provider.StreamEvent{Type: provider.Delta, Text: choice.Message.Content})
 	}
 	if usage := normalizeUsage(parsed.Usage, p.CostModel); usage.TotalTokens > 0 || usage.CostUSD > 0 {
-		ch <- provider.StreamEvent{Type: provider.UsageEvent, Usage: usage}
+		events = append(events, provider.StreamEvent{Type: provider.UsageEvent, Usage: usage})
 	}
 	if len(choice.Message.ToolCalls) > 0 {
 		calls := make([]provider.ToolCall, 0, len(choice.Message.ToolCalls))
@@ -218,12 +219,16 @@ func (p OpenAICompatibleProvider) Stream(ctx context.Context, req provider.Reque
 				Reasoning: choice.Message.ReasoningContent,
 			})
 		}
-		ch <- provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: calls}
+		events = append(events, provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: calls})
 	}
 	if choice.FinishReason == "length" {
-		ch <- provider.StreamEvent{Type: provider.Truncated, Reason: "length"}
+		events = append(events, provider.StreamEvent{Type: provider.Truncated, Reason: "length"})
 	} else {
-		ch <- provider.StreamEvent{Type: provider.Done, Reason: choice.FinishReason}
+		events = append(events, provider.StreamEvent{Type: provider.Done, Reason: choice.FinishReason})
+	}
+	ch := make(chan provider.StreamEvent, len(events))
+	for _, ev := range events {
+		ch <- ev
 	}
 	close(ch)
 	return ch, nil

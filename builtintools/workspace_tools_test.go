@@ -37,17 +37,58 @@ func TestReadListGlobAndGrepWorkspaceTools(t *testing.T) {
 	if read.IsError || read.Text != "package main" {
 		t.Fatalf("read = %#v", read)
 	}
+	readDefaultRange := reg.Run(context.Background(), provider.ToolCall{Name: "read", Args: `{"path":"main.go"}`}, nil)
+	if readDefaultRange.IsError || !strings.Contains(readDefaultRange.Text, "func main()") {
+		t.Fatalf("read with default range = %#v", readDefaultRange)
+	}
+	assertRequiredFields(t, reg, "read", "path")
 	list := reg.Run(context.Background(), provider.ToolCall{Name: "list", Args: `{"path":null,"limit":10}`}, nil)
 	if list.IsError || !strings.Contains(list.Text, "pkg/") || !strings.Contains(list.Text, "main.go") {
 		t.Fatalf("list = %#v", list)
 	}
+	listDefaultLimit := reg.Run(context.Background(), provider.ToolCall{Name: "list", Args: `{"path":"."}`}, nil)
+	if listDefaultLimit.IsError || !strings.Contains(listDefaultLimit.Text, "pkg/") || !strings.Contains(listDefaultLimit.Text, "main.go") {
+		t.Fatalf("list with default limit = %#v", listDefaultLimit)
+	}
+	assertRequiredFields(t, reg, "list")
 	glob := reg.Run(context.Background(), provider.ToolCall{Name: "glob", Args: `{"pattern":"**/*.go","path":null,"limit":10}`}, nil)
 	if glob.IsError || !strings.Contains(glob.Text, "main.go") || !strings.Contains(glob.Text, "pkg/util.go") {
 		t.Fatalf("glob = %#v", glob)
 	}
+	globDefaultRange := reg.Run(context.Background(), provider.ToolCall{Name: "glob", Args: `{"pattern":"**/*.go"}`}, nil)
+	if globDefaultRange.IsError || !strings.Contains(globDefaultRange.Text, "main.go") || !strings.Contains(globDefaultRange.Text, "pkg/util.go") {
+		t.Fatalf("glob with default range = %#v", globDefaultRange)
+	}
+	globIgnoreCase := reg.Run(context.Background(), provider.ToolCall{Name: "glob", Args: `{"pattern":"**/UTIL.GO","ignore_case":true}`}, nil)
+	if globIgnoreCase.IsError || !strings.Contains(globIgnoreCase.Text, "pkg/util.go") {
+		t.Fatalf("glob with ignore_case = %#v", globIgnoreCase)
+	}
+	assertRequiredFields(t, reg, "glob", "pattern")
 	grep := reg.Run(context.Background(), provider.ToolCall{Name: "grep", Args: `{"pattern":"Floret","path":null,"glob":"*.go","ignore_case":false,"literal":true,"context":null,"limit":10}`}, nil)
 	if grep.IsError || !strings.Contains(grep.Text, "util.go") {
 		t.Fatalf("grep = %#v", grep)
+	}
+	grepDefaults := reg.Run(context.Background(), provider.ToolCall{Name: "grep", Args: `{"pattern":"Floret","path":"pkg"}`}, nil)
+	if grepDefaults.IsError || !strings.Contains(grepDefaults.Text, "util.go") {
+		t.Fatalf("grep with defaults = %#v", grepDefaults)
+	}
+	assertRequiredFields(t, reg, "grep", "pattern")
+}
+
+func assertRequiredFields(t *testing.T, reg *tools.Registry, name string, want ...string) {
+	t.Helper()
+	def, ok := reg.Definition(name)
+	if !ok {
+		t.Fatalf("%s definition missing", name)
+	}
+	required, _ := def.InputSchema["required"].([]any)
+	if len(required) != len(want) {
+		t.Fatalf("%s required fields = %#v, want %#v", name, def.InputSchema["required"], want)
+	}
+	for i, field := range want {
+		if required[i] != field {
+			t.Fatalf("%s required fields = %#v, want %#v", name, def.InputSchema["required"], want)
+		}
 	}
 }
 
