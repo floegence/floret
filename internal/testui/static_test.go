@@ -293,6 +293,26 @@ func TestStaticConsoleSettingsSavesSearchProviderContract(t *testing.T) {
 	}
 }
 
+func TestStaticConsoleExposesSavedToolScenarioChecks(t *testing.T) {
+	appJS := readStaticTestFile(t, "app.js")
+	apiJS := readStaticTestFile(t, "api.js")
+	settings := readStaticTestFile(t, "views", "settings.js")
+
+	for _, want := range []string{"Tool Scenario Checks", "tool-scenarios", "live-tool-scenarios", "multi-tool, multi-turn", "saved active provider profile"} {
+		if !strings.Contains(settings, want) {
+			t.Fatalf("settings view missing tool scenario check copy %q", want)
+		}
+	}
+	for _, want := range []string{"api.runCheck(target, payload)", `target === "live-tool-scenarios"`, "profile_id: state.config?.active_profile_id"} {
+		if !strings.Contains(appJS, want) {
+			t.Fatalf("app missing live tool scenario run payload %q", want)
+		}
+	}
+	if !strings.Contains(apiJS, "runCheck(target, payload = {})") || !strings.Contains(apiJS, "JSON.stringify({ target, ...payload })") {
+		t.Fatalf("api.runCheck should preserve target and optional profile payload")
+	}
+}
+
 func TestStaticConsoleFormatLocalTimeBehavior(t *testing.T) {
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node is not installed; skipping optional static JS behavior test")

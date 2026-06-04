@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -79,6 +80,97 @@ func TestServerExposesConfigAndRunAPI(t *testing.T) {
 	}
 	if result.Status != "pass" || result.Target != TargetUnit {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestServerRunAPIExposesSavedToolScenarioSuite(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	runReq := httptest.NewRequest(http.MethodPost, "/api/run", bytes.NewBufferString(`{"target":"tool-scenarios"}`))
+	runRec := httptest.NewRecorder()
+	handler.ServeHTTP(runRec, runReq)
+	if runRec.Code != http.StatusOK {
+		t.Fatalf("run status = %d, body = %s", runRec.Code, runRec.Body.String())
+	}
+	var result RunResponse
+	if err := json.Unmarshal(runRec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "pass" || result.Target != TargetToolScenarios || len(result.Parts) != 3 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestServerRunAPILiveToolScenariosUseSelectedSavedProfile(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	recording := &recordingToolScenarioProvider{}
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return recording, nil
+	}
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	saveBody := `{"active_profile_id":"hosted-live","profiles":[{"id":"hosted-live","name":"Hosted Live","provider":"openai-compatible","model":"model-a","base_url":"https://api.example.test/v1","api_key":"provider-key","web_search":{"provider_hosted":{"enabled":true,"wire_shape":"openai_chat_web_search_options","supported_wire_shapes":["openai_chat_web_search_options"]},"client":{"enabled":false,"provider":"brave"}}}],"search_provider":{"provider":"brave","api_key":"search-key","endpoint":"https://search.example.test"}}`
+	saveReq := httptest.NewRequest(http.MethodPut, "/api/config", strings.NewReader(saveBody))
+	saveRec := httptest.NewRecorder()
+	handler.ServeHTTP(saveRec, saveReq)
+	if saveRec.Code != http.StatusOK {
+		t.Fatalf("save status = %d, body = %s", saveRec.Code, saveRec.Body.String())
+	}
+
+	runReq := httptest.NewRequest(http.MethodPost, "/api/run", bytes.NewBufferString(`{"target":"live-tool-scenarios","profile_id":"hosted-live"}`))
+	runRec := httptest.NewRecorder()
+	handler.ServeHTTP(runRec, runReq)
+	if runRec.Code != http.StatusOK {
+		t.Fatalf("run status = %d, body = %s", runRec.Code, runRec.Body.String())
+	}
+	var result RunResponse
+	if err := json.Unmarshal(runRec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "pass" || result.Target != TargetLiveToolScenarios || len(result.Parts) != 2 {
+		t.Fatalf("result = %#v", result)
+	}
+	for _, part := range result.Parts {
+		if part.Agent == nil || part.Agent.Config.Model != "model-a" {
+			t.Fatalf("live part missing selected profile config: %#v", part)
+		}
+	}
+	requests := recording.Requests()
+	if len(requests) < 2 {
+		t.Fatalf("live scenario did not call provider enough times: %#v", requests)
+	}
+	localReq := requests[0]
+	for _, name := range []string{"list", "read", "grep"} {
+		if !hasProviderTool(localReq.Tools, name) {
+			t.Fatalf("local tool scenario should expose %s: %#v", name, localReq.Tools)
+		}
+	}
+	var weatherReq provider.Request
+	for _, req := range requests {
+		if hasProviderTool(req.Tools, "web_fetch") || len(req.HostedTools) > 0 {
+			weatherReq = req
+			break
+		}
+	}
+	if hasProviderTool(weatherReq.Tools, "web_search") {
+		t.Fatalf("provider-hosted profile should not expose local web_search: %#v", weatherReq.Tools)
+	}
+	if !hasProviderTool(weatherReq.Tools, "web_fetch") {
+		t.Fatalf("provider-hosted profile should expose local web_fetch: %#v", weatherReq.Tools)
+	}
+	if len(weatherReq.HostedTools) != 1 || weatherReq.HostedTools[0].Name != "web_search" {
+		t.Fatalf("provider-hosted profile should expose hosted web_search: %#v", weatherReq.HostedTools)
 	}
 }
 
@@ -1369,4 +1461,51 @@ func indexStreamEvent(events []AgentStreamEvent, typ AgentStreamEventType) int {
 		}
 	}
 	return -1
+}
+
+type recordingToolScenarioProvider struct {
+	mu       sync.Mutex
+	requests []provider.Request
+}
+
+func (p *recordingToolScenarioProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
+	p.mu.Lock()
+	p.requests = append(p.requests, req)
+	requestNo := len(p.requests)
+	p.mu.Unlock()
+	events := []provider.StreamEvent{harness.Text("live-ok"), harness.Done()}
+	if hasProviderTool(req.Tools, "list") && hasProviderTool(req.Tools, "read") && hasProviderTool(req.Tools, "grep") && requestNo == 1 {
+		events = []provider.StreamEvent{
+			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
+				{ID: "live-list", Name: "list", Args: `{"path":null,"limit":20}`},
+				{ID: "live-read", Name: "read", Args: `{"path":"README.md","offset":0,"limit":40}`},
+				{ID: "live-grep", Name: "grep", Args: `{"pattern":"Status","path":"notes","glob":null,"ignore_case":false,"literal":true,"context":null,"limit":20}`},
+			}},
+			harness.DoneReason("tool_calls"),
+		}
+	}
+	ch := make(chan provider.StreamEvent, len(events))
+	go func() {
+		defer close(ch)
+		for _, ev := range events {
+			select {
+			case <-ctx.Done():
+				return
+			case ch <- ev:
+			}
+		}
+	}()
+	return ch, nil
+}
+
+func (p *recordingToolScenarioProvider) Requests() []provider.Request {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]provider.Request(nil), p.requests...)
+}
+
+func hasProviderTool(defs []provider.ToolDefinition, name string) bool {
+	return slices.ContainsFunc(defs, func(def provider.ToolDefinition) bool {
+		return def.Name == name
+	})
 }

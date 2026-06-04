@@ -129,7 +129,7 @@ func selectedToolsForLegacyMode(mode string) []string {
 	}
 }
 
-func registerAgentSessionTools(registry *tools.Registry, root string, envFile string, selected []string, profile ProviderProfile) ([]provider.HostedToolDefinition, []string, error) {
+func registerAgentSessionTools(registry *tools.Registry, root string, envFile string, selected []string, profile ProviderProfile, allowPrivateNetworkTools bool) ([]provider.HostedToolDefinition, []string, error) {
 	selected, err := normalizeAgentSessionToolsForProfile(selected, "", profile, envFile)
 	if err != nil {
 		return nil, nil, err
@@ -155,7 +155,7 @@ func registerAgentSessionTools(registry *tools.Registry, root string, envFile st
 	if err := builtintools.RegisterSelected(registry, builtintools.SelectedOptions{
 		Workspace: builtintools.WorkspaceOptions{Root: root},
 		Shell:     builtintools.ShellOptions{CWD: root},
-		Network:   builtintools.NetworkOptions{},
+		Network:   builtintools.NetworkOptions{AllowPrivateIPs: allowPrivateNetworkTools},
 		Search:    searchOptions,
 	}, localSelected...); err != nil {
 		return nil, nil, err

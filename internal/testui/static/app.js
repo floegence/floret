@@ -527,7 +527,8 @@ async function runCheck(target) {
   state.checkResult = `Running ${target}...`;
   render();
   await runWithStatus({ status: "running", action: "run-check", target, successMessage: `${target} completed` }, async () => {
-    const result = await api.runCheck(target);
+    const payload = target === "live-tool-scenarios" ? { profile_id: state.config?.active_profile_id || "" } : {};
+    const result = await api.runCheck(target, payload);
     state.checkResult = JSON.stringify(result, null, 2);
   });
 }

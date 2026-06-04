@@ -88,6 +88,27 @@ export function renderSettings() {
             ${renderCheckButton("race", "race")}
             ${renderCheckButton("eval-demo", "eval demo")}
           </div>
+          <div class="settings-divider"></div>
+          <h2>Tool Scenario Checks</h2>
+          <p class="muted">Saved repeatable scenarios for multi-tool, multi-turn agent behavior. Mock scenarios are deterministic; live scenarios use the saved active provider profile.</p>
+          <div class="tool-boundary-grid">
+            <div>
+              <strong>Mock suite</strong>
+              <span>read/grep/shell, mutation recovery, web_search + web_fetch</span>
+            </div>
+            <div>
+              <strong>Live profile</strong>
+              <span>${escapeHTML(profileLabel(active))}</span>
+            </div>
+            <div>
+              <strong>Search mode</strong>
+              <span>${escapeHTML(searchModeLabel(searchMode, webSearch.provider_hosted?.wire_shape))}</span>
+            </div>
+          </div>
+          <div class="form-actions">
+            ${renderCheckButton("tool-scenarios", "tool scenarios")}
+            ${renderCheckButton("live-tool-scenarios", "live tool scenarios")}
+          </div>
           <pre id="checkOutput" class="code-block">${escapeHTML(state.checkResult || "No check has run in this browser session.")}</pre>
         </section>
       </div>

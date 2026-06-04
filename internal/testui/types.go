@@ -25,7 +25,8 @@ type ConfigInfo struct {
 }
 
 type RunRequest struct {
-	Target string `json:"target"`
+	Target    string `json:"target"`
+	ProfileID string `json:"profile_id,omitempty"`
 }
 
 type RunResponse struct {

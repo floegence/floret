@@ -37,11 +37,13 @@ import (
 )
 
 const (
-	TargetUnit          = "unit"
-	TargetRace          = "race"
-	TargetEvalDemo      = "eval-demo"
-	TargetProviderSmoke = "provider-smoke"
-	TargetAll           = "all"
+	TargetUnit              = "unit"
+	TargetRace              = "race"
+	TargetEvalDemo          = "eval-demo"
+	TargetProviderSmoke     = "provider-smoke"
+	TargetToolScenarios     = "tool-scenarios"
+	TargetLiveToolScenarios = "live-tool-scenarios"
+	TargetAll               = "all"
 )
 
 var (
@@ -52,12 +54,13 @@ var (
 const agentSessionTurnLockTimeout = 250 * time.Millisecond
 
 type Runner struct {
-	Root            string
-	EnvFile         string
-	Now             func() time.Time
-	Exec            func(context.Context, string, []string, string, []string) ([]byte, int)
-	ProviderFactory func(config.Config) (provider.Provider, error)
-	Sessions        *agentSessionRegistry
+	Root                     string
+	EnvFile                  string
+	Now                      func() time.Time
+	Exec                     func(context.Context, string, []string, string, []string) ([]byte, int)
+	ProviderFactory          func(config.Config) (provider.Provider, error)
+	allowPrivateNetworkTools bool
+	Sessions                 *agentSessionRegistry
 }
 
 func NewRunner(root string) Runner {
@@ -608,7 +611,7 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 	rec := &streamingEventRecorder{}
 	harnessRec := &streamingHarnessRecorder{repo: sess.repo, threadID: sess.id}
 	registry := tools.NewRegistry()
-	hostedTools, unavailableCapabilities, err := registerAgentSessionTools(registry, r.Root, r.EnvFile, selectedTools, sess.profile)
+	hostedTools, unavailableCapabilities, err := registerAgentSessionTools(registry, r.Root, r.EnvFile, selectedTools, sess.profile, r.allowPrivateNetworkTools)
 	if err != nil {
 		return agentSessionRuntime{}, err
 	}
@@ -764,7 +767,7 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 		return nil, err
 	}
 	registry := tools.NewRegistry()
-	hostedTools, unavailableCapabilities, err := registerAgentSessionTools(registry, r.Root, r.EnvFile, selectedTools, opts.Profile)
+	hostedTools, unavailableCapabilities, err := registerAgentSessionTools(registry, r.Root, r.EnvFile, selectedTools, opts.Profile, r.allowPrivateNetworkTools)
 	if err != nil {
 		return nil, err
 	}
@@ -1458,6 +1461,10 @@ func resolvedProfileFromConfig(profile ProviderProfile, cfg config.Config, apiKe
 }
 
 func (r Runner) Run(ctx context.Context, target string) RunResponse {
+	return r.RunWithOptions(ctx, target, runOptions{})
+}
+
+func (r Runner) RunWithOptions(ctx context.Context, target string, opts runOptions) RunResponse {
 	if target == "" {
 		target = TargetUnit
 	}
@@ -1484,6 +1491,10 @@ func (r Runner) Run(ctx context.Context, target string) RunResponse {
 		resp.Title = "Configured provider smoke"
 		resp.Kind = "agent"
 		resp = r.runProviderSmoke(ctx, resp)
+	case TargetToolScenarios:
+		resp = r.runToolScenarioSuite(ctx, resp)
+	case TargetLiveToolScenarios:
+		resp = r.runLiveToolScenarios(ctx, resp, opts)
 	case TargetAll:
 		resp.Title = "Full local suite"
 		resp.Kind = "suite"
@@ -1499,7 +1510,7 @@ func (r Runner) Run(ctx context.Context, target string) RunResponse {
 }
 
 func (r Runner) runAll(ctx context.Context, resp RunResponse) RunResponse {
-	targets := []string{TargetUnit, TargetRace, TargetEvalDemo}
+	targets := []string{TargetUnit, TargetRace, TargetEvalDemo, TargetToolScenarios}
 	cfg := r.ConfigInfo()
 	if cfg.LiveProvider || cfg.Provider == config.ProviderFake {
 		targets = append(targets, TargetProviderSmoke)

@@ -73,8 +73,8 @@ export const api = {
   interfaceProbe(payload) {
     return requestJSON("/api/agent/interface-probe", { method: "POST", body: JSON.stringify(payload) });
   },
-  runCheck(target) {
-    return requestJSON("/api/run", { method: "POST", body: JSON.stringify({ target }) });
+  runCheck(target, payload = {}) {
+    return requestJSON("/api/run", { method: "POST", body: JSON.stringify({ target, ...payload }) });
   },
 };
 

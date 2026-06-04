@@ -132,8 +132,27 @@ func TestRunnerFullSuiteAggregatesParts(t *testing.T) {
 	if result.Status != "pass" {
 		t.Fatalf("result = %#v", result)
 	}
-	if len(result.Parts) != 4 {
-		t.Fatalf("parts = %d, want unit, race, eval, provider smoke", len(result.Parts))
+	if len(result.Parts) != 5 {
+		t.Fatalf("parts = %d, want unit, race, eval, tool scenarios, provider smoke", len(result.Parts))
+	}
+}
+
+func TestRunnerToolScenarioSuitePassesAndPersistsCoverage(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+
+	result := runner.Run(context.Background(), TargetToolScenarios)
+
+	if result.Status != "pass" || len(result.Parts) != 3 {
+		t.Fatalf("result = %#v", result)
+	}
+	for _, part := range result.Parts {
+		if part.Agent == nil || part.Agent.Artifacts["scenario"].Content == "" {
+			t.Fatalf("scenario part missing artifact: %#v", part)
+		}
+		if part.Agent.Metrics.ToolCalls == 0 {
+			t.Fatalf("scenario %s did not execute tools: %#v", part.Title, part.Agent.Metrics)
+		}
 	}
 }
 
@@ -555,6 +574,40 @@ func TestRunnerAgentSessionCanExecuteClientWebSearch(t *testing.T) {
 		return msg.Role == "tool" && msg.ToolName == "web_search" && strings.Contains(msg.Content, "Changsha forecast")
 	}) {
 		t.Fatalf("web_search tool result missing: %#v", result.Observation.SessionMessages)
+	}
+}
+
+func TestRunnerAgentSessionWebFetchKeepsPrivateNetworkBlockedByDefault(t *testing.T) {
+	root := t.TempDir()
+	fetchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("private test server"))
+	}))
+	defer fetchServer.Close()
+	scripted := harness.NewScriptedProvider(
+		harness.Step(
+			harness.Tool("fetch-private", "web_fetch", fmt.Sprintf(`{"url":%q}`, fetchServer.URL)),
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+
+	result := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:       "fetch private",
+		SystemPrompt:  "test",
+		SelectedTools: []string{"web_fetch"},
+	})
+
+	if result.Status != "completed" {
+		t.Fatalf("result = %#v", result)
+	}
+	if !hasToolResultContaining(result.Observation.SessionMessages, "fetch-private", "refusing to fetch private host") {
+		t.Fatalf("private web_fetch was not blocked in ordinary session: %#v", result.Observation.SessionMessages)
 	}
 }
 

@@ -335,7 +335,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel = context.WithTimeout(ctx, s.Timeout)
 		defer cancel()
 	}
-	resp := s.Runner.Run(ctx, req.Target)
+	resp := s.Runner.RunWithOptions(ctx, req.Target, runOptions{ProfileID: req.ProfileID})
 	status := http.StatusOK
 	if resp.Status == "error" {
 		status = http.StatusInternalServerError
