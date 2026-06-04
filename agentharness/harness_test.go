@@ -14,6 +14,7 @@ import (
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/event"
 	scriptharness "github.com/floegence/floret/harness"
+	"github.com/floegence/floret/internal/sessionlifecycle"
 	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/session"
@@ -721,6 +722,44 @@ func TestActiveTurnBusyGuard(t *testing.T) {
 	}
 	cancel()
 	<-done
+}
+
+func TestThreadRunPersistsTerminalMarkerAfterDeadline(t *testing.T) {
+	ctx := context.Background()
+	p := newBlockingProvider()
+	repo := sessiontree.NewMemoryRepo()
+	h := newTestHarness(p, repo, promptcache.NewMemoryStore())
+	h.options.EngineOptions.WallTime = 10 * time.Millisecond
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := thread.Run(ctx, "hang", RunOptions{TurnID: "turn-deadline"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want deadline exceeded", err)
+	}
+	if result.Status != engine.Cancelled {
+		t.Fatalf("result = %#v", result)
+	}
+	snap, err := thread.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(snap.Entries, func(entry sessiontree.Entry) bool {
+		return entry.Type == sessiontree.EntryRunFailure && entry.TurnID == "turn-deadline" && strings.Contains(entry.Error, context.DeadlineExceeded.Error())
+	}) {
+		t.Fatalf("deadline failure was not persisted: %#v", snap.Entries)
+	}
+	if !slices.ContainsFunc(snap.Entries, func(entry sessiontree.Entry) bool {
+		return entry.Type == sessiontree.EntryTurnMarker && entry.TurnID == "turn-deadline" && entry.TurnStatus == sessiontree.TurnAborted
+	}) {
+		t.Fatalf("deadline terminal marker was not persisted: %#v", snap.Entries)
+	}
+	lifecycle := sessionlifecycle.Derive(snap.Path, sessionlifecycle.PhaseIdle)
+	if lifecycle.Status() != string(engine.Cancelled) || lifecycle.CanAppendMessage() {
+		t.Fatalf("lifecycle = %#v", lifecycle)
+	}
 }
 
 func newTestHarness(p provider.Provider, repo sessiontree.Repo, promptStore promptcache.Store) *AgentHarness {

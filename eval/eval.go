@@ -185,6 +185,7 @@ func (r Runner) runOracle(ctx context.Context, c Case) (string, error) {
 	for _, command := range c.Oracle.Commands {
 		cmd := exec.CommandContext(ctx, "sh", "-lc", command)
 		cmd.Dir = r.Workspace
+		cmd.Env = CleanCommandEnv(os.Environ())
 		output, err := cmd.CombinedOutput()
 		fmt.Fprintf(&log, "$ %s\n%s", command, output)
 		if err != nil {
@@ -225,6 +226,7 @@ func (r Runner) workspaceDiff(ctx context.Context) string {
 	}
 	cmd := exec.CommandContext(ctx, "git", "diff", "--no-ext-diff")
 	cmd.Dir = r.Workspace
+	cmd.Env = CleanCommandEnv(os.Environ())
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if len(output) == 0 {
@@ -236,6 +238,26 @@ func (r Runner) workspaceDiff(ctx context.Context) string {
 		return "no diff\n"
 	}
 	return string(output)
+}
+
+func CleanCommandEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, item := range env {
+		key, _, ok := strings.Cut(item, "=")
+		if !ok || isNestedWorkspaceEnv(key) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func isNestedWorkspaceEnv(key string) bool {
+	if key == "GIT_DIR" || key == "GIT_WORK_TREE" || key == "GIT_INDEX_FILE" || key == "GIT_PREFIX" || key == "GIT_OBJECT_DIRECTORY" ||
+		key == "GIT_COMMON_DIR" || key == "GIT_QUARANTINE_PATH" {
+		return true
+	}
+	return strings.HasPrefix(key, "GIT_ALTERNATE_OBJECT_DIRECTORIES")
 }
 
 func safeJoin(root, rel string) (string, error) {

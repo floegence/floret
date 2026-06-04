@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -253,10 +254,46 @@ func TestRunnerCapturesGitDiffArtifact(t *testing.T) {
 	}
 }
 
+func TestCleanCommandEnvRemovesHookRepositoryVariables(t *testing.T) {
+	got := CleanCommandEnv([]string{
+		"PATH=/bin",
+		"GIT_DIR=/outer/.git",
+		"GIT_WORK_TREE=/outer",
+		"GIT_INDEX_FILE=/outer/.git/index",
+		"GIT_PREFIX=internal/testui",
+		"GIT_OBJECT_DIRECTORY=/outer/.git/objects",
+		"GIT_COMMON_DIR=/outer/.git",
+		"GIT_QUARANTINE_PATH=/outer/quarantine",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES=/outer/alt",
+		"HOME=/tmp/home",
+	})
+	joined := "\n" + strings.Join(got, "\n") + "\n"
+	for _, forbidden := range []string{
+		"\nGIT_DIR=",
+		"\nGIT_WORK_TREE=",
+		"\nGIT_INDEX_FILE=",
+		"\nGIT_PREFIX=",
+		"\nGIT_OBJECT_DIRECTORY=",
+		"\nGIT_COMMON_DIR=",
+		"\nGIT_QUARANTINE_PATH=",
+		"\nGIT_ALTERNATE_OBJECT_DIRECTORIES=",
+	} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("nested workspace env kept %q in %#v", forbidden, got)
+		}
+	}
+	for _, want := range []string{"PATH=/bin", "HOME=/tmp/home"} {
+		if !slices.Contains(got, want) {
+			t.Fatalf("nested workspace env removed ordinary variable %q from %#v", want, got)
+		}
+	}
+}
+
 func runCmd(t *testing.T, dir string, command string) {
 	t.Helper()
 	cmd := exec.Command("sh", "-lc", command)
 	cmd.Dir = dir
+	cmd.Env = CleanCommandEnv(os.Environ())
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%s failed: %v\n%s", command, err, output)
 	}

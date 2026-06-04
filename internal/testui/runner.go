@@ -49,6 +49,8 @@ var (
 	errAgentSessionInput = errors.New("agent session input error")
 )
 
+const agentSessionTurnLockTimeout = 250 * time.Millisecond
+
 type Runner struct {
 	Root            string
 	EnvFile         string
@@ -94,6 +96,7 @@ type agentSession struct {
 	registry                *tools.Registry
 	harness                 *agentharness.AgentHarness
 	thread                  *agentharness.Thread
+	nextID                  func(string) string
 	turns                   []AgentTurnSummary
 	snapshotMu              sync.Mutex
 	lastSnapshot            AgentSessionSnapshot
@@ -110,6 +113,7 @@ type agentSessionRuntime struct {
 	unavailableCapabilities []string
 	harness                 *agentharness.AgentHarness
 	thread                  *agentharness.Thread
+	nextID                  func(string) string
 }
 
 type agentEventRecorder interface {
@@ -409,7 +413,7 @@ func (r *Runner) runAgentTurnResponse(ctx context.Context, sessionID string, req
 		}
 	}
 	resp.Profile = sess.profile
-	if !sess.mu.TryLock() {
+	if err := lockAgentSessionForTurn(ctx, sess); err != nil {
 		return r.failAgentRunWithStatus(resp, http.StatusConflict, fmt.Errorf("agent session %q is already running", sessionID))
 	}
 	defer sess.mu.Unlock()
@@ -420,12 +424,13 @@ func (r *Runner) runAgentTurnResponse(ctx context.Context, sessionID string, req
 	if !snapshot.CanAppendMessage {
 		return r.failAgentRunWithStatus(resp, http.StatusConflict, fmt.Errorf("agent session %q is %s and cannot accept a new message", sessionID, snapshot.Status))
 	}
-	r.markAgentSessionRunningLocked(sess, resp.ID)
+	turnID := sess.nextTurnID()
+	r.markAgentSessionRunningLocked(sess, turnID)
 	if sink != nil {
 		setAgentSessionStreamSink(sess, sink)
 		defer setAgentSessionStreamSink(sess, nil)
 	}
-	result := r.runAgentTurnLocked(ctx, sess, resp, req.Message)
+	result := r.runAgentTurnLocked(ctx, sess, resp, req.Message, turnID)
 	if sink != nil {
 		if result.Session.ID != "" {
 			snapshotCopy := result.Session
@@ -588,7 +593,7 @@ func (r *Runner) AgentSession(ctx context.Context, sessionID string) (AgentSessi
 		return r.sessionSnapshotFromMetadata(ctx, meta)
 	}
 	if !sess.mu.TryLock() {
-		return runningAgentSessionSnapshot(sess), nil
+		return r.runningAgentSessionSnapshot(ctx, sess), nil
 	}
 	defer sess.mu.Unlock()
 	return r.sessionSnapshotLocked(ctx, sess)
@@ -607,6 +612,7 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 	if err != nil {
 		return agentSessionRuntime{}, err
 	}
+	idGenerator := r.agentSessionIDGenerator(ctx, sess.repo, sess.id)
 	h := agentharness.New(agentharness.Options{
 		Provider:      observed,
 		ProviderName:  sess.cfg.Provider,
@@ -629,7 +635,7 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 			MaxCostUSD:              1.00,
 			HostedToolDefinitions:   hostedTools,
 		},
-		NewID: r.agentSessionIDGenerator(ctx, sess.repo, sess.id),
+		NewID: idGenerator,
 		Now:   r.now,
 	})
 	thread, err := h.ResumeThread(ctx, sess.id, agentharness.ResumeOptions{})
@@ -645,6 +651,7 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 		unavailableCapabilities: unavailableCapabilities,
 		harness:                 h,
 		thread:                  thread,
+		nextID:                  idGenerator,
 	}, nil
 }
 
@@ -657,6 +664,7 @@ func (sess *agentSession) applyRuntime(runtime agentSessionRuntime) {
 	sess.unavailableCapabilities = runtime.unavailableCapabilities
 	sess.harness = runtime.harness
 	sess.thread = runtime.thread
+	sess.nextID = runtime.nextID
 }
 
 func setAgentSessionStreamSink(sess *agentSession, sink AgentStreamSink) {
@@ -683,7 +691,7 @@ func (r *Runner) AgentSessions(ctx context.Context) []AgentSessionSnapshot {
 	out := make([]AgentSessionSnapshot, 0, len(sessions))
 	for _, sess := range sessions {
 		if !sess.mu.TryLock() {
-			out = append(out, runningAgentSessionSnapshot(sess))
+			out = append(out, r.runningAgentSessionSnapshot(ctx, sess))
 			continue
 		}
 		snap, err := r.sessionSnapshotLocked(ctx, sess)
@@ -760,6 +768,7 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 	if err != nil {
 		return nil, err
 	}
+	idGenerator := r.agentSessionIDGenerator(ctx, repo, opts.ID)
 	h := agentharness.New(agentharness.Options{
 		Provider:      observed,
 		ProviderName:  cfg.Provider,
@@ -782,7 +791,7 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 			MaxCostUSD:              1.00,
 			HostedToolDefinitions:   hostedTools,
 		},
-		NewID: r.agentSessionIDGenerator(ctx, repo, opts.ID),
+		NewID: idGenerator,
 		Now:   r.now,
 	})
 	var thread *agentharness.Thread
@@ -820,6 +829,7 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 		registry:                registry,
 		harness:                 h,
 		thread:                  thread,
+		nextID:                  idGenerator,
 		turns:                   append([]AgentTurnSummary(nil), opts.Turns...),
 		createdAt:               createdAt,
 		updatedAt:               updatedAt,
@@ -959,15 +969,18 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 func (r *Runner) runAgentTurn(ctx context.Context, sess *agentSession, resp AgentRunResponse, message string) AgentRunResponse {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	r.markAgentSessionRunningLocked(sess, resp.ID)
-	return r.runAgentTurnLocked(ctx, sess, resp, message)
+	turnID := sess.nextTurnID()
+	r.markAgentSessionRunningLocked(sess, turnID)
+	return r.runAgentTurnLocked(ctx, sess, resp, message, turnID)
 }
 
-func (r *Runner) runAgentTurnLocked(ctx context.Context, sess *agentSession, resp AgentRunResponse, message string) AgentRunResponse {
-	turn, err := sess.thread.Run(ctx, message, agentharness.RunOptions{})
+func (r *Runner) runAgentTurnLocked(ctx context.Context, sess *agentSession, resp AgentRunResponse, message string, turnID string) AgentRunResponse {
+	turn, err := sess.thread.Run(ctx, message, agentharness.RunOptions{TurnID: turnID})
 	if err != nil && turn.Status == "" {
 		return r.failAgentRun(resp, err)
 	}
+	finalCtx, cancelFinal := agentTurnResponseFinalizationContext(ctx)
+	defer cancelFinal()
 	finished := r.now()
 	sess.updatedAt = finished
 	resp.SessionID = sess.id
@@ -1017,7 +1030,7 @@ func (r *Runner) runAgentTurnLocked(ctx context.Context, sess *agentSession, res
 		FinishInferred:     turn.FinishInferred,
 	}
 	sess.turns = append(sess.turns, summary)
-	snapshot, snapErr := r.sessionSnapshotLocked(ctx, sess)
+	snapshot, snapErr := r.sessionSnapshotLocked(finalCtx, sess)
 	if snapErr != nil {
 		return r.failAgentRun(resp, snapErr)
 	}
@@ -1038,6 +1051,29 @@ func (r *Runner) runAgentTurnLocked(ctx context.Context, sess *agentSession, res
 	resp.DurationMS = resp.FinishedAt.Sub(resp.StartedAt).Milliseconds()
 	storeAgentSessionSnapshot(sess, resp.Session)
 	return resp
+}
+
+func lockAgentSessionForTurn(ctx context.Context, sess *agentSession) error {
+	deadline := time.NewTimer(agentSessionTurnLockTimeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if sess.mu.TryLock() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return errAgentSessionBusy
+		case <-tick.C:
+		}
+	}
+}
+
+func agentTurnResponseFinalizationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 }
 
 func (r *Runner) failAgentRun(resp AgentRunResponse, err error) AgentRunResponse {
@@ -1194,7 +1230,7 @@ func (r *Runner) markAgentSessionRunningLocked(sess *agentSession, turnID string
 	storeAgentSessionSnapshot(sess, snapshot)
 }
 
-func runningAgentSessionSnapshot(sess *agentSession) AgentSessionSnapshot {
+func (r *Runner) runningAgentSessionSnapshot(ctx context.Context, sess *agentSession) AgentSessionSnapshot {
 	snapshot := loadAgentSessionSnapshot(sess)
 	lifecycle := sessionlifecycle.Running(snapshot.LatestTurnID)
 	if snapshot.ID == "" {
@@ -1216,7 +1252,29 @@ func runningAgentSessionSnapshot(sess *agentSession) AgentSessionSnapshot {
 	snapshot.WaitingPrompt = lifecycle.WaitingPrompt()
 	snapshot.Recoverable = lifecycle.Recoverable()
 	snapshot.CanAppendMessage = lifecycle.CanAppendMessage()
+	if refreshed, err := r.refreshRunningSnapshotFromThread(ctx, sess, snapshot); err == nil {
+		snapshot = refreshed
+	}
 	return snapshot
+}
+
+func (r *Runner) refreshRunningSnapshotFromThread(ctx context.Context, sess *agentSession, snapshot AgentSessionSnapshot) (AgentSessionSnapshot, error) {
+	snap, err := sess.thread.Read(ctx)
+	if err != nil {
+		return snapshot, err
+	}
+	lifecycle := sessionlifecycle.Running(snapshot.LatestTurnID)
+	snapshot.LeafID = snap.Meta.LeafID
+	snapshot.Status = lifecycle.Status()
+	snapshot.Phase = lifecycle.Phase()
+	snapshot.WaitingPrompt = lifecycle.WaitingPrompt()
+	snapshot.Recoverable = lifecycle.Recoverable()
+	snapshot.CanAppendMessage = lifecycle.CanAppendMessage()
+	snapshot.ActiveContext = observeMessages(snap.Context)
+	snapshot.PathEntries = observeEntries(snap.Path)
+	snapshot.AllEntries = observeEntries(snap.Entries)
+	snapshot.Compactions = countCompactions(snap.Path)
+	return snapshot, nil
 }
 
 func storeAgentSessionSnapshot(sess *agentSession, snapshot AgentSessionSnapshot) {
@@ -1238,6 +1296,13 @@ func (r *Runner) agentObservationLocked(sess *agentSession, snapshot AgentSessio
 	observation.PathEntries = snapshot.PathEntries
 	observation.Transitions = buildTransitions(eventsForRun(sess.recorder.Snapshot(), turnID), result)
 	return observation
+}
+
+func (sess *agentSession) nextTurnID() string {
+	if sess.nextID != nil {
+		return sess.nextID("turn")
+	}
+	return ""
 }
 
 func eventsForRun(events []event.Event, runID string) []event.Event {
@@ -1833,6 +1898,7 @@ func initDemoGitWorkspace(ctx context.Context, workspace string) error {
 func runGit(ctx context.Context, dir string, args ...string) error {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
+	cmd.Env = eval.CleanCommandEnv(os.Environ())
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git %s failed: %w\n%s", strings.Join(args, " "), err, output)
 	}

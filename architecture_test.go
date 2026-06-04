@@ -114,6 +114,45 @@ func TestWebSearchCapabilityBoundaryIsEnforced(t *testing.T) {
 	}
 }
 
+func TestPreCommitQualityGateIsEnforced(t *testing.T) {
+	hook, err := os.ReadFile(filepath.Join(".githooks", "pre-commit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hookText := string(hook)
+	if !strings.Contains(hookText, "exec scripts/pre-commit.sh") {
+		t.Fatalf("committed pre-commit hook must delegate to scripts/pre-commit.sh")
+	}
+	script, err := os.ReadFile(filepath.Join("scripts", "pre-commit.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scriptText := string(script)
+	for _, want := range []string{
+		"go test ./...",
+		"TestServerStreamsAgentTurnEventsBeforeCompletion",
+		"TestServerStreamTurnTimeoutPersistsTerminalSnapshot",
+		"TestRunnerRunningSnapshotUsesRealTurnID",
+		"go test ./eval -run TestCleanCommandEnvRemovesHookRepositoryVariables -count=1",
+		"node --check internal/testui/static/*.js internal/testui/static/views/*.js internal/testui/static/components/*.js",
+		"git diff --check",
+	} {
+		if !strings.Contains(scriptText, want) {
+			t.Fatalf("pre-commit quality gate missing %q", want)
+		}
+	}
+}
+
+func TestTurnFinalizationInvariantIsDocumented(t *testing.T) {
+	harness, err := os.ReadFile(filepath.Join("agentharness", "harness.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(harness), "IMPORTANT: Turn finalization must outlive caller cancellation") {
+		t.Fatalf("turn finalization cancellation boundary must be protected by an IMPORTANT comment")
+	}
+}
+
 func TestNoLegacyToolHandlerOrHostedDispatchInLocalTools(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("tools", "tools.go"))
 	if err != nil {

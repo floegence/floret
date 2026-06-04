@@ -1594,6 +1594,9 @@ func TestRunnerAgentSessionSnapshotsDoNotBlockOnRunningTurn(t *testing.T) {
 	if len(sessions) != 1 || sessions[0].ID != first.ID || !sessionlifecycle.IsRunningStatus(sessions[0].Status, sessions[0].Phase) || sessions[0].CanAppendMessage {
 		t.Fatalf("running sessions snapshot = %#v", sessions)
 	}
+	if sessions[0].LatestTurnID != "turn-busy" {
+		t.Fatalf("latest turn id = %q, want turn-busy", sessions[0].LatestTurnID)
+	}
 
 	getResult := make(chan AgentSessionSnapshot, 1)
 	getErr := make(chan error, 1)
@@ -1614,6 +1617,47 @@ func TestRunnerAgentSessionSnapshotsDoNotBlockOnRunningTurn(t *testing.T) {
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("AgentSession blocked on running session")
+	}
+}
+
+func TestRunnerRunningSnapshotUsesRealTurnID(t *testing.T) {
+	blocking := newBlockingTestProvider()
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return blocking, nil
+	}
+	first, err := runner.CreateIdleAgentSession(context.Background(), AgentRunRequest{
+		Profile:      ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:      "hello",
+		SystemPrompt: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan AgentRunResponse, 1)
+	go func() {
+		done <- runner.RunAgentTurn(ctx, first.ID, AgentTurnRequest{Message: "hello"})
+	}()
+	blocking.waitStarted(t)
+	snapshot, err := runner.AgentSession(context.Background(), first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sessionlifecycle.IsRunningStatus(snapshot.Status, snapshot.Phase) || snapshot.LatestTurnID != "turn-1" {
+		t.Fatalf("running snapshot = %#v", snapshot)
+	}
+	if !slices.ContainsFunc(snapshot.PathEntries, func(entry ObservedSessionEntry) bool {
+		return entry.Type == sessiontree.EntryUserMessage && entry.TurnID == "turn-1"
+	}) {
+		t.Fatalf("running snapshot did not expose persisted user message: %#v", snapshot.PathEntries)
+	}
+	cancel()
+	result := <-done
+	if result.Status != string(engine.Cancelled) {
+		t.Fatalf("result = %#v", result)
 	}
 }
 

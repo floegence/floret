@@ -16,6 +16,7 @@ import (
 	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/internal/sessionlifecycle"
 	"github.com/floegence/floret/provider"
+	"github.com/floegence/floret/sessiontree"
 )
 
 func TestServerExposesConfigAndRunAPI(t *testing.T) {
@@ -236,6 +237,71 @@ func TestServerStreamsAgentTurnEventsBeforeCompletion(t *testing.T) {
 	completed := events[completedIndex]
 	if completed.Result == nil || completed.Result.Status != "completed" || completed.Result.Session.ID != snapshot.ID {
 		t.Fatalf("completion event missing final result: %#v", completed)
+	}
+}
+
+func TestServerStreamTurnTimeoutPersistsTerminalSnapshot(t *testing.T) {
+	blocking := newBlockingTestProvider()
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return blocking, nil
+	}
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Timeout = 100 * time.Millisecond
+	handler := server.Handler()
+
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model"},"message":"hello","system_prompt":"test","selected_tools":[]}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var created AgentSessionSnapshot
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	turnReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+created.ID+"/turns/stream", strings.NewReader(`{"message":"hello"}`))
+	turnRec := httptest.NewRecorder()
+	handler.ServeHTTP(turnRec, turnReq)
+	if turnRec.Code != http.StatusOK {
+		t.Fatalf("stream status = %d, body = %s", turnRec.Code, turnRec.Body.String())
+	}
+	events := parseSSEAgentEvents(t, turnRec.Body.String())
+	assertStreamEventOrder(t, events,
+		AgentStreamTurnStarted,
+		AgentStreamUserMessageAppended,
+		AgentStreamProviderRequest,
+		AgentStreamSessionSnapshot,
+		AgentStreamTurnFailed,
+	)
+	failed := events[indexStreamEvent(events, AgentStreamTurnFailed)]
+	if failed.Result == nil || failed.Result.Status == "running" || failed.Result.Session.Status == "running" || failed.Result.Session.CanAppendMessage {
+		t.Fatalf("failed event did not expose terminal session: %#v", failed)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+created.ID, nil)
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get status = %d, body = %s", getRec.Code, getRec.Body.String())
+	}
+	var snapshot AgentSessionSnapshot
+	if err := json.Unmarshal(getRec.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if sessionlifecycle.IsRunningStatus(snapshot.Status, snapshot.Phase) || snapshot.CanAppendMessage {
+		t.Fatalf("timeout session remained running: %#v", snapshot)
+	}
+	if !slices.ContainsFunc(snapshot.PathEntries, func(entry ObservedSessionEntry) bool {
+		return entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnAborted
+	}) {
+		t.Fatalf("timeout terminal marker missing: %#v", snapshot.PathEntries)
 	}
 }
 

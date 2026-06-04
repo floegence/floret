@@ -405,6 +405,9 @@ func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retryUs
 	projection := &turnProjection{thread: t, ctx: ctx, turnID: turnID, downstream: t.harness.options.Sink}
 	eng.Sink = projection
 	result := eng.RunTurn(ctx, engine.RunInput{RunID: runID, SessionID: t.id, TraceID: runID, History: history})
+	persistCtx, cancelPersist := turnFinalizationContext(ctx)
+	defer cancelPersist()
+	projection.ctx = persistCtx
 	if projection.err != nil {
 		return TurnResult{}, projection.err
 	}
@@ -412,22 +415,22 @@ func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retryUs
 		return TurnResult{}, err
 	}
 	deltaBase := history
-	current, err := t.Read(ctx)
+	current, err := t.Read(persistCtx)
 	if err != nil {
 		return TurnResult{}, err
 	}
 	deltaBase = current.Context
-	if err := t.appendDelta(ctx, turnID, deltaBase, result.Messages, current.Path); err != nil {
+	if err := t.appendDelta(persistCtx, turnID, deltaBase, result.Messages, current.Path); err != nil {
 		return TurnResult{}, err
 	}
 	status := markerForStatus(result.Status)
 	savePointMetadata := markerMetadata(runID, result)
 	savePointMetadata["reason"] = "run_result"
-	if _, err := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, sessiontree.TurnSavePoint, savePointMetadata); err != nil {
+	if _, err := sessiontree.AppendTurnMarker(persistCtx, t.harness.options.Repo, t.id, turnID, sessiontree.TurnSavePoint, savePointMetadata); err != nil {
 		return TurnResult{}, err
 	}
 	if result.Err != nil {
-		if _, err := sessiontree.AppendFailure(ctx, t.harness.options.Repo, t.id, turnID, result.Err.Error()); err != nil {
+		if _, err := sessiontree.AppendFailure(persistCtx, t.harness.options.Repo, t.id, turnID, result.Err.Error()); err != nil {
 			return TurnResult{}, err
 		}
 	}
@@ -438,7 +441,7 @@ func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retryUs
 	if result.Status == engine.Waiting {
 		terminalMetadata["interrupt_reason"] = "ask_user"
 	}
-	if _, err := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, status, terminalMetadata); err != nil {
+	if _, err := sessiontree.AppendTurnMarker(persistCtx, t.harness.options.Repo, t.id, turnID, status, terminalMetadata); err != nil {
 		return TurnResult{}, err
 	}
 	eventType := EventTurnCompleted
@@ -461,6 +464,13 @@ func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retryUs
 		RawFinishReason:    result.RawFinishReason,
 		FinishInferred:     result.FinishInferred,
 	}, result.Err
+}
+
+func turnFinalizationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	// IMPORTANT: Turn finalization must outlive caller cancellation long enough to
+	// persist the terminal marker; host/UI deadlines must not strand a durable
+	// session in a permanently running state.
+	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 }
 
 func (t *Thread) enterTurn() error {
