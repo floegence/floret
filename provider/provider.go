@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/floegence/floret/contextpolicy"
@@ -11,6 +12,8 @@ import (
 )
 
 var ErrContextOverflow = errors.New("provider context overflow")
+var ErrStreamMissingTerminal = errors.New("provider stream closed without terminal event")
+var ErrStreamNotClosedAfterTerminal = errors.New("provider stream did not close after terminal event")
 
 type Request struct {
 	RunID           string
@@ -123,6 +126,97 @@ type StreamEvent struct {
 	Reason     string
 	Usage      Usage
 	ResponseID string
+}
+
+// StreamValidator checks provider stream invariants that the engine relies on.
+// Providers may emit delta, reasoning, usage, tool call, and hosted tool events
+// before exactly one terminal event. They must not emit unknown event types,
+// duplicate tool call IDs, incomplete tool calls, hosted results without prior
+// hosted calls, or any event after a terminal event.
+type StreamValidator struct {
+	terminalSeen bool
+	toolIDs      map[string]struct{}
+	hostedCalls  map[string]string
+	hostedDone   map[string]struct{}
+}
+
+func (v *StreamValidator) Observe(ev StreamEvent) error {
+	if v.terminalSeen {
+		return fmt.Errorf("provider emitted %q after terminal event", ev.Type)
+	}
+	switch ev.Type {
+	case Delta, Reasoning, UsageEvent:
+		return nil
+	case ToolCalls:
+		if v.toolIDs == nil {
+			v.toolIDs = map[string]struct{}{}
+		}
+		for _, call := range ev.ToolCalls {
+			if err := ValidateToolCall(call); err != nil {
+				return err
+			}
+			if _, ok := v.toolIDs[call.ID]; ok {
+				return fmt.Errorf("provider returned duplicate tool call id %q", call.ID)
+			}
+			v.toolIDs[call.ID] = struct{}{}
+		}
+		return nil
+	case HostedToolCall, HostedToolResult:
+		if err := ValidateToolCall(ev.ToolCall); err != nil {
+			return err
+		}
+		if ev.Type == HostedToolCall {
+			if v.hostedCalls == nil {
+				v.hostedCalls = map[string]string{}
+			}
+			if _, ok := v.hostedCalls[ev.ToolCall.ID]; ok {
+				return fmt.Errorf("provider returned duplicate hosted tool call id %q", ev.ToolCall.ID)
+			}
+			v.hostedCalls[ev.ToolCall.ID] = ev.ToolCall.Name
+			return nil
+		}
+		name, ok := v.hostedCalls[ev.ToolCall.ID]
+		if !ok {
+			return fmt.Errorf("provider returned hosted tool result %q without a prior call", ev.ToolCall.ID)
+		}
+		if name != ev.ToolCall.Name {
+			return fmt.Errorf("provider returned hosted tool result %q for %q after call to %q", ev.ToolCall.ID, ev.ToolCall.Name, name)
+		}
+		if v.hostedDone == nil {
+			v.hostedDone = map[string]struct{}{}
+		}
+		if _, ok := v.hostedDone[ev.ToolCall.ID]; ok {
+			return fmt.Errorf("provider returned duplicate hosted tool result id %q", ev.ToolCall.ID)
+		}
+		v.hostedDone[ev.ToolCall.ID] = struct{}{}
+		return nil
+	case Empty, Truncated, Done:
+		v.terminalSeen = true
+		return nil
+	default:
+		return fmt.Errorf("unknown provider event type %q", ev.Type)
+	}
+}
+
+func (v *StreamValidator) TerminalSeen() bool {
+	return v != nil && v.terminalSeen
+}
+
+func (v *StreamValidator) Finish() error {
+	if !v.TerminalSeen() {
+		return ErrStreamMissingTerminal
+	}
+	return nil
+}
+
+func ValidateToolCall(call ToolCall) error {
+	if strings.TrimSpace(call.ID) == "" {
+		return errors.New("provider tool call id is required")
+	}
+	if strings.TrimSpace(call.Name) == "" {
+		return errors.New("provider tool call name is required")
+	}
+	return nil
 }
 
 type Provider interface {

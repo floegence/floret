@@ -3,6 +3,7 @@ package promptcache
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -134,6 +135,10 @@ type HostedToolDefinition struct {
 	Description string         `json:"description,omitempty"`
 	Parameters  map[string]any `json:"parameters,omitempty"`
 	Options     map[string]any `json:"options,omitempty"`
+}
+
+type ToolsetOptions struct {
+	AllowControlTools bool
 }
 
 type ToolsetSnapshot struct {
@@ -652,8 +657,17 @@ func segmentForCurrentRef(existing, current Segment) Segment {
 }
 
 func EnsureToolset(ctx context.Context, store Store, runID, sessionID, provider, model string, defs []ToolDefinition, hosted []HostedToolDefinition, now time.Time) (ToolsetSnapshot, bool, error) {
+	return EnsureToolsetWithOptions(ctx, store, runID, sessionID, provider, model, defs, hosted, now, ToolsetOptions{})
+}
+
+func EnsureToolsetWithOptions(ctx context.Context, store Store, runID, sessionID, provider, model string, defs []ToolDefinition, hosted []HostedToolDefinition, now time.Time, options ToolsetOptions) (ToolsetSnapshot, bool, error) {
 	if store == nil {
 		store = NewMemoryStore()
+	}
+	var err error
+	defs, hosted, err = NormalizeToolsetChecked(defs, hosted, options)
+	if err != nil {
+		return ToolsetSnapshot{}, false, err
 	}
 	scopeID := cacheScopeID(runID, sessionID)
 	if snap, ok, err := store.ActiveToolset(ctx, scopeID, provider, model); ok || err != nil {
@@ -662,8 +676,6 @@ func EnsureToolset(ctx context.Context, store Store, runID, sessionID, provider,
 	if now.IsZero() {
 		now = time.Now()
 	}
-	defs = NormalizeTools(defs)
-	hosted = NormalizeHostedTools(hosted)
 	raw := mustCanonical(map[string]any{"hosted_tools": hosted, "kind": SegmentToolset, "tools": defs})
 	fingerprint := StableHash(raw)
 	seg := Segment{
@@ -707,8 +719,18 @@ func EnsureToolset(ctx context.Context, store Store, runID, sessionID, provider,
 }
 
 func EnsureCurrentToolset(ctx context.Context, store Store, runID, sessionID, provider, model string, defs []ToolDefinition, hosted []HostedToolDefinition, now time.Time) (ToolsetSnapshot, bool, error) {
-	defs = NormalizeTools(defs)
-	hosted = NormalizeHostedTools(hosted)
+	return EnsureCurrentToolsetWithOptions(ctx, store, runID, sessionID, provider, model, defs, hosted, now, ToolsetOptions{})
+}
+
+func EnsureCurrentToolsetWithOptions(ctx context.Context, store Store, runID, sessionID, provider, model string, defs []ToolDefinition, hosted []HostedToolDefinition, now time.Time, options ToolsetOptions) (ToolsetSnapshot, bool, error) {
+	if store == nil {
+		store = NewMemoryStore()
+	}
+	var err error
+	defs, hosted, err = NormalizeToolsetChecked(defs, hosted, options)
+	if err != nil {
+		return ToolsetSnapshot{}, false, err
+	}
 	scopeID := cacheScopeID(runID, sessionID)
 	raw := mustCanonical(map[string]any{"hosted_tools": hosted, "kind": SegmentToolset, "tools": defs})
 	fingerprint := StableHash(raw)
@@ -717,15 +739,24 @@ func EnsureCurrentToolset(ctx context.Context, store Store, runID, sessionID, pr
 	} else if ok && active.Fingerprint == fingerprint {
 		return active, false, nil
 	} else if ok {
-		snap, err := ActivateToolset(ctx, store, runID, sessionID, provider, model, defs, hosted, now)
+		snap, err := ActivateToolsetWithOptions(ctx, store, runID, sessionID, provider, model, defs, hosted, now, options)
 		return snap, true, err
 	}
-	return EnsureToolset(ctx, store, runID, sessionID, provider, model, defs, hosted, now)
+	return EnsureToolsetWithOptions(ctx, store, runID, sessionID, provider, model, defs, hosted, now, options)
 }
 
 func ActivateToolset(ctx context.Context, store Store, runID, sessionID, provider, model string, defs []ToolDefinition, hosted []HostedToolDefinition, now time.Time) (ToolsetSnapshot, error) {
+	return ActivateToolsetWithOptions(ctx, store, runID, sessionID, provider, model, defs, hosted, now, ToolsetOptions{})
+}
+
+func ActivateToolsetWithOptions(ctx context.Context, store Store, runID, sessionID, provider, model string, defs []ToolDefinition, hosted []HostedToolDefinition, now time.Time, options ToolsetOptions) (ToolsetSnapshot, error) {
 	if store == nil {
 		store = NewMemoryStore()
+	}
+	var err error
+	defs, hosted, err = NormalizeToolsetChecked(defs, hosted, options)
+	if err != nil {
+		return ToolsetSnapshot{}, err
 	}
 	if now.IsZero() {
 		now = time.Now()
@@ -737,8 +768,6 @@ func ActivateToolset(ctx context.Context, store Store, runID, sessionID, provide
 	} else if ok {
 		epoch = active.Epoch + 1
 	}
-	defs = NormalizeTools(defs)
-	hosted = NormalizeHostedTools(hosted)
 	raw := mustCanonical(map[string]any{"hosted_tools": hosted, "kind": SegmentToolset, "tools": defs})
 	fingerprint := StableHash(raw)
 	seg := Segment{
@@ -781,6 +810,80 @@ func ActivateToolset(ctx context.Context, store Store, runID, sessionID, provide
 	return snap, store.AppendToolset(ctx, snap)
 }
 
+func NormalizeToolsetChecked(defs []ToolDefinition, hosted []HostedToolDefinition, options ToolsetOptions) ([]ToolDefinition, []HostedToolDefinition, error) {
+	tools, err := NormalizeToolsChecked(defs, options)
+	if err != nil {
+		return nil, nil, err
+	}
+	hostedTools, err := NormalizeHostedToolsChecked(hosted)
+	if err != nil {
+		return nil, nil, err
+	}
+	localNames := map[string]struct{}{}
+	for _, def := range tools {
+		localNames[def.Name] = struct{}{}
+	}
+	for _, def := range hostedTools {
+		if _, ok := localNames[def.Name]; ok {
+			return nil, nil, fmt.Errorf("tool %q cannot be both a local tool and a provider-hosted tool", def.Name)
+		}
+	}
+	return tools, hostedTools, nil
+}
+
+func NormalizeToolsChecked(defs []ToolDefinition, options ToolsetOptions) ([]ToolDefinition, error) {
+	out := make([]ToolDefinition, 0, len(defs))
+	seen := map[string]struct{}{}
+	for _, def := range defs {
+		def.Name = strings.TrimSpace(def.Name)
+		if def.Name == "" {
+			return nil, errors.New("tool definition name is required")
+		}
+		if isReservedToolName(def.Name) && (!options.AllowControlTools || !isControlToolDefinition(def)) {
+			return nil, fmt.Errorf("tool name %q is reserved for engine control", def.Name)
+		}
+		if _, ok := seen[def.Name]; ok {
+			return nil, fmt.Errorf("duplicate tool name %q", def.Name)
+		}
+		seen[def.Name] = struct{}{}
+		out = append(out, def)
+	}
+	slices.SortFunc(out, func(a, b ToolDefinition) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	return out, nil
+}
+
+func NormalizeHostedToolsChecked(defs []HostedToolDefinition) ([]HostedToolDefinition, error) {
+	out := make([]HostedToolDefinition, 0, len(defs))
+	seen := map[string]struct{}{}
+	for _, def := range defs {
+		def.Name = strings.TrimSpace(def.Name)
+		def.Type = strings.TrimSpace(def.Type)
+		if def.Name == "" {
+			return nil, errors.New("hosted tool definition name is required")
+		}
+		if def.Type == "" {
+			return nil, fmt.Errorf("hosted tool %q type is required", def.Name)
+		}
+		if isReservedToolName(def.Name) {
+			return nil, fmt.Errorf("hosted tool name %q is reserved for engine control", def.Name)
+		}
+		if _, ok := seen[def.Name]; ok {
+			return nil, fmt.Errorf("duplicate hosted tool name %q", def.Name)
+		}
+		seen[def.Name] = struct{}{}
+		out = append(out, def)
+	}
+	slices.SortFunc(out, func(a, b HostedToolDefinition) int {
+		if a.Name == b.Name {
+			return strings.Compare(a.Type, b.Type)
+		}
+		return strings.Compare(a.Name, b.Name)
+	})
+	return out, nil
+}
+
 func NormalizeTools(defs []ToolDefinition) []ToolDefinition {
 	out := make([]ToolDefinition, 0, len(defs))
 	seen := map[string]struct{}{}
@@ -799,6 +902,19 @@ func NormalizeTools(defs []ToolDefinition) []ToolDefinition {
 		return strings.Compare(a.Name, b.Name)
 	})
 	return out
+}
+
+func isReservedToolName(name string) bool {
+	name = strings.TrimSpace(name)
+	return name == "ask_user" || name == "task_complete"
+}
+
+func isControlToolDefinition(def ToolDefinition) bool {
+	if def.Annotations == nil {
+		return false
+	}
+	kind, ok := def.Annotations["kind"].(string)
+	return ok && strings.TrimSpace(kind) == "control"
 }
 
 func NormalizeHostedTools(defs []HostedToolDefinition) []HostedToolDefinition {
@@ -1121,18 +1237,5 @@ func safePath(value string) string {
 	if value == "" {
 		return "default"
 	}
-	return strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z':
-			return r
-		case r >= 'A' && r <= 'Z':
-			return r
-		case r >= '0' && r <= '9':
-			return r
-		case r == '-', r == '_', r == '.':
-			return r
-		default:
-			return '-'
-		}
-	}, value)
+	return "id_" + base64.RawURLEncoding.EncodeToString([]byte(value))
 }

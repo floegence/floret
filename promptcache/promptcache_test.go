@@ -3,6 +3,7 @@ package promptcache
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -346,6 +347,131 @@ func TestCanonicalSegmentHashIgnoresToolRegistrationOrder(t *testing.T) {
 	}
 	if rawA != rawB || StableHash(rawA) != StableHash(rawB) {
 		t.Fatalf("canonical tool raw/hash differs:\n%s\n%s", rawA, rawB)
+	}
+}
+
+func TestEnsureToolsetRejectsInvalidToolDefinitions(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	cases := []struct {
+		name   string
+		tools  []ToolDefinition
+		hosted []HostedToolDefinition
+		want   string
+	}{
+		{name: "empty local name", tools: []ToolDefinition{{Name: ""}}, want: "name is required"},
+		{name: "duplicate local", tools: []ToolDefinition{{Name: "read"}, {Name: " read "}}, want: "duplicate tool name"},
+		{name: "reserved local", tools: []ToolDefinition{{Name: "ask_user"}}, want: "reserved"},
+		{name: "empty hosted name", hosted: []HostedToolDefinition{{Type: "web_search"}}, want: "name is required"},
+		{name: "empty hosted type", hosted: []HostedToolDefinition{{Name: "web_search"}}, want: "type is required"},
+		{name: "duplicate hosted name", hosted: []HostedToolDefinition{{Name: "web_search", Type: "web_search"}, {Name: "web_search", Type: "search"}}, want: "duplicate hosted tool name"},
+		{name: "reserved hosted", hosted: []HostedToolDefinition{{Name: "task_complete", Type: "control"}}, want: "reserved"},
+		{name: "local hosted conflict", tools: []ToolDefinition{{Name: "web_search"}}, hosted: []HostedToolDefinition{{Name: "web_search", Type: "web_search"}}, want: "both a local tool and a provider-hosted tool"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := EnsureToolset(ctx, store, "run-"+tt.name, "session-"+tt.name, "openai", "model", tt.tools, tt.hosted, time.Time{})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeToolsCheckedAllowsEngineControlDefinitionsOnlyWhenMarked(t *testing.T) {
+	_, err := NormalizeToolsChecked([]ToolDefinition{{Name: "ask_user"}}, ToolsetOptions{AllowControlTools: true})
+	if err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("plain reserved control should fail: %v", err)
+	}
+	defs, err := NormalizeToolsChecked([]ToolDefinition{{Name: "ask_user", Annotations: map[string]any{"kind": "control"}}}, ToolsetOptions{AllowControlTools: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defs) != 1 || defs[0].Name != "ask_user" {
+		t.Fatalf("defs = %#v", defs)
+	}
+}
+
+func TestConcurrentBuildPlanRecordRequestAcrossSessionsIsIsolated(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	run := func(runID, sessionID, toolName, content string) {
+		defer wg.Done()
+		toolset, _, err := EnsureCurrentToolset(ctx, store, runID, sessionID, "openai", "model", []ToolDefinition{{Name: toolName}}, nil, time.Time{})
+		if err != nil {
+			errs <- err
+			return
+		}
+		plan, _, err := BuildPlan(ctx, store, BuildInput{
+			RunID:     runID,
+			SessionID: sessionID,
+			Provider:  "openai",
+			Model:     "model",
+			Toolset:   toolset,
+			History:   []session.Message{{Role: session.User, Content: content}},
+		})
+		if err != nil {
+			errs <- err
+			return
+		}
+		if _, err := RecordRequest(ctx, store, runID, sessionID, 1, "openai", "model", CachePolicy{}, plan); err != nil {
+			errs <- err
+			return
+		}
+	}
+	wg.Add(2)
+	go run("turn-a", "thread-a", "read_a", "message a")
+	go run("turn-b", "thread-b", "read_b", "message b")
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, item := range []struct {
+		runID     string
+		sessionID string
+		toolName  string
+		content   string
+	}{
+		{"turn-a", "thread-a", "read_a", "message a"},
+		{"turn-b", "thread-b", "read_b", "message b"},
+	} {
+		requests, err := store.ProviderRequests(ctx, item.runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(requests) != 1 || requests[0].SessionID != item.sessionID {
+			t.Fatalf("%s requests = %#v", item.runID, requests)
+		}
+		segments, err := store.Segments(ctx, item.sessionID, "openai", "model")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sawTool, sawMessage bool
+		for _, seg := range segments {
+			if strings.Contains(seg.Raw, item.toolName) {
+				sawTool = true
+			}
+			if seg.Message.Content == item.content {
+				sawMessage = true
+			}
+			if strings.Contains(seg.Raw, "read_a") && item.toolName != "read_a" || strings.Contains(seg.Raw, "read_b") && item.toolName != "read_b" {
+				t.Fatalf("%s saw cross-session tool segment: %#v", item.sessionID, seg)
+			}
+			if seg.Message.Content == "message a" && item.content != "message a" || seg.Message.Content == "message b" && item.content != "message b" {
+				t.Fatalf("%s saw cross-session message segment: %#v", item.sessionID, seg)
+			}
+		}
+		if !sawTool || !sawMessage {
+			t.Fatalf("%s missing own tool/message segments: %#v", item.sessionID, segments)
+		}
+	}
+	if _, _, err := EnsureCurrentToolset(ctx, store, "turn-c", "thread-c", "openai", "model", []ToolDefinition{{Name: "x"}, {Name: "x"}}, nil, time.Time{}); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("duplicate check regressed: %v", err)
 	}
 }
 

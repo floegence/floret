@@ -45,6 +45,8 @@ const (
 	CompletionExplicitSignal CompletionPolicy = "explicit_signal"
 )
 
+const terminalCloseGrace = 250 * time.Millisecond
+
 type CompletionReason string
 
 const (
@@ -174,17 +176,51 @@ type CompactionRequest struct {
 }
 
 type Engine struct {
-	Provider       provider.Provider
-	Tools          *tools.Registry
-	Store          session.Store
-	Prompt         promptcache.Store
-	Memory         *memory.Manager
-	Sink           event.Sink
-	Approver       tools.Approver
-	StopHook       StopHook
-	Compactor      CompactionManager
-	Options        Options
+	Provider  provider.Provider
+	Tools     *tools.Registry
+	Store     session.Store
+	Prompt    promptcache.Store
+	Memory    *memory.Manager
+	Sink      event.Sink
+	Approver  tools.Approver
+	StopHook  StopHook
+	Compactor CompactionManager
+	Options   Options
+}
+
+type turnState struct {
 	activeMessages []session.Message
+}
+
+type Config struct {
+	Provider  provider.Provider
+	Tools     *tools.Registry
+	Store     session.Store
+	Prompt    promptcache.Store
+	Memory    *memory.Manager
+	Sink      event.Sink
+	Approver  tools.Approver
+	StopHook  StopHook
+	Compactor CompactionManager
+	Options   Options
+}
+
+func New(cfg Config) (*Engine, error) {
+	if cfg.Provider == nil {
+		return nil, errors.New("provider is required")
+	}
+	return &Engine{
+		Provider:  cfg.Provider,
+		Tools:     cfg.Tools,
+		Store:     cfg.Store,
+		Prompt:    cfg.Prompt,
+		Memory:    cfg.Memory,
+		Sink:      cfg.Sink,
+		Approver:  cfg.Approver,
+		StopHook:  cfg.StopHook,
+		Compactor: cfg.Compactor,
+		Options:   cfg.Options,
+	}, nil
 }
 
 type LocalCompactionManager struct {
@@ -221,12 +257,14 @@ func (m LocalCompactionManager) Compact(ctx context.Context, req CompactionReque
 }
 
 func (e *Engine) Run(ctx context.Context, userText string) Result {
-	return e.run(ctx, userText)
+	runner, err := e.runner(e.Store, e.Options)
+	if err != nil {
+		return Result{Status: Failed, Err: err}
+	}
+	return runner.run(ctx, userText)
 }
 
 func (e *Engine) RunTurn(ctx context.Context, input RunInput) Result {
-	originalStore := e.Store
-	originalOptions := e.Options
 	store := session.NewMemoryStore()
 	opts := e.Options
 	if input.RunID != "" {
@@ -244,31 +282,55 @@ func (e *Engine) RunTurn(ctx context.Context, input RunInput) Result {
 			return Result{Status: Failed, Err: err}
 		}
 	}
-	e.Store = store
-	e.Options = opts
-	defer func() {
-		e.Store = originalStore
-		e.Options = originalOptions
-	}()
-	return e.run(ctx, "")
+	runner, err := e.runner(store, opts)
+	if err != nil {
+		return Result{Status: Failed, Err: err}
+	}
+	return runner.run(ctx, "")
+}
+
+func (e *Engine) runner(store session.Store, opts Options) (*Engine, error) {
+	if e.Provider == nil {
+		return nil, errors.New("provider is required")
+	}
+	if store == nil {
+		store = session.NewMemoryStore()
+	}
+	prompt := e.Prompt
+	if prompt == nil {
+		prompt = promptcache.NewMemoryStore()
+	}
+	mem := e.Memory
+	if mem == nil {
+		mem = &memory.Manager{}
+	}
+	registry := e.Tools
+	if registry == nil {
+		registry = tools.NewRegistry()
+	}
+	opts = normalizeOptions(opts)
+	if len(opts.ToolDefinitions) == 0 {
+		opts.ToolDefinitions = registry.Definitions()
+	}
+	if err := validateConfiguredTools(opts.ToolDefinitions, opts.HostedToolDefinitions, false); err != nil {
+		return nil, err
+	}
+	return &Engine{
+		Provider:  e.Provider,
+		Tools:     registry,
+		Store:     store,
+		Prompt:    prompt,
+		Memory:    mem,
+		Sink:      e.Sink,
+		Approver:  e.Approver,
+		StopHook:  e.StopHook,
+		Compactor: e.Compactor,
+		Options:   opts,
+	}, nil
 }
 
 func (e *Engine) run(ctx context.Context, userText string) Result {
-	if e.Provider == nil {
-		return Result{Status: Failed, Err: errors.New("provider is required")}
-	}
-	if e.Store == nil {
-		e.Store = session.NewMemoryStore()
-	}
-	if e.Prompt == nil {
-		e.Prompt = promptcache.NewMemoryStore()
-	}
-	if e.Memory == nil {
-		e.Memory = &memory.Manager{}
-	}
-	if e.Tools == nil {
-		e.Tools = tools.NewRegistry()
-	}
+	state := &turnState{}
 	opts := normalizeOptions(e.Options)
 	if len(opts.ToolDefinitions) == 0 && e.Tools != nil {
 		opts.ToolDefinitions = e.Tools.Definitions()
@@ -278,7 +340,13 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		ctx, cancel = context.WithTimeout(ctx, opts.WallTime)
 		defer cancel()
 	}
+	if err := validateConfiguredTools(opts.ToolDefinitions, opts.HostedToolDefinitions, false); err != nil {
+		return Result{Status: Failed, Err: err}
+	}
 	opts.ToolDefinitions = appendControlToolDefinitions(opts.ToolDefinitions, opts.CompletionPolicy)
+	if err := validateConfiguredTools(opts.ToolDefinitions, opts.HostedToolDefinitions, true); err != nil {
+		return Result{Status: Failed, Err: err}
+	}
 	if userText != "" {
 		if err := e.Store.Append(opts.RunID, session.Message{Role: session.User, Content: userText}); err != nil {
 			return Result{Status: Failed, Err: err}
@@ -298,26 +366,26 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 	if err != nil {
 		return Result{Status: Failed, Err: err}
 	}
-	e.activeMessages = append([]session.Message(nil), activeHistory...)
+	state.activeMessages = append([]session.Message(nil), activeHistory...)
 	for step := 1; ; step++ {
 		if ctx.Err() != nil {
-			return e.end(opts, step, Cancelled, output, ctx.Err(), metrics, started, RunDecision{})
+			return e.end(state, opts, step, Cancelled, output, ctx.Err(), metrics, started, RunDecision{})
 		}
 		metrics.Steps = step
 		e.emit(event.Event{Type: event.StepStart, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model})
 		var compacted bool
 		activeHistory, compacted, err = e.maybeCompact(ctx, opts, step, activeHistory, compaction.TriggerPreRequest, compaction.ReasonThreshold, &metrics, &compactionFailures)
 		if err != nil {
-			return e.end(opts, step, Failed, output, err, metrics, started, RunDecision{ContinuationReason: ContinueCompaction})
+			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{ContinuationReason: ContinueCompaction})
 		}
 		if compacted {
 			noProgress = 0
 			duplicateCount = 0
 		}
-		e.activeMessages = append([]session.Message(nil), activeHistory...)
+		state.activeMessages = append([]session.Message(nil), activeHistory...)
 		req, err := e.providerRequest(ctx, opts, step, activeHistory)
 		if err != nil {
-			return e.end(opts, step, Failed, output, err, metrics, started, RunDecision{})
+			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
 		}
 		metrics.LLMRequests++
 		e.emit(event.Event{Type: event.ProviderRequest, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: fmt.Sprintf("%d messages, %d raw segments, %d local tools, %d hosted tools, prefix %s", len(req.Messages), len(req.RawPlan.Segments), len(req.Tools), len(req.HostedTools), shortHash(req.RawPlan.PrefixHash))})
@@ -326,22 +394,22 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		if errors.Is(err, provider.ErrContextOverflow) {
 			activeHistory, _, err = e.forceCompact(ctx, opts, step, activeHistory, compaction.TriggerOverflow, compaction.ReasonProviderOverflow, &metrics, &compactionFailures)
 			if err != nil {
-				return e.end(opts, step, Failed, output, err, metrics, started, RunDecision{})
+				return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
 			}
 			e.emitStepEnd(opts, step, time.Since(providerStarted).Milliseconds(), 0, provider.Usage{}, 0, RunDecision{ContinuationReason: ContinueCompaction})
-			e.activeMessages = append([]session.Message(nil), activeHistory...)
+			state.activeMessages = append([]session.Message(nil), activeHistory...)
 			continue
 		}
 		if err != nil {
-			return e.end(opts, step, Failed, output, err, metrics, started, RunDecision{})
+			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
 		}
 		stepOutput, err := e.consume(ctx, opts, step, stream)
 		providerLatency := time.Since(providerStarted).Milliseconds()
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return e.end(opts, step, Cancelled, output, err, metrics, started, RunDecision{})
+				return e.end(state, opts, step, Cancelled, output, err, metrics, started, RunDecision{})
 			}
-			return e.end(opts, step, Failed, output, err, metrics, started, RunDecision{})
+			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
 		}
 		stepText := stepOutput.Text
 		calls := stepOutput.Calls
@@ -362,16 +430,16 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			e.emit(event.Event{Type: event.ProviderFinish, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, FinishReason: string(stepOutput.FinishReason), RawFinishReason: stepOutput.RawFinishReason, FinishInferred: stepOutput.FinishInferred})
 		}
 		if budgetErr := e.checkBudget(opts, metrics, step); budgetErr != nil {
-			return e.end(opts, step, Failed, output, budgetErr, metrics, started, decision)
+			return e.end(state, opts, step, Failed, output, budgetErr, metrics, started, decision)
 		}
 		if stepOutput.FinishReason == provider.FinishContentFilter {
-			return e.end(opts, step, Failed, output, ErrContentFiltered, metrics, started, decision)
+			return e.end(state, opts, step, Failed, output, ErrContentFiltered, metrics, started, decision)
 		}
 		if stepOutput.FinishReason == provider.FinishError {
-			return e.end(opts, step, Failed, output, ErrProviderFinishError, metrics, started, decision)
+			return e.end(state, opts, step, Failed, output, ErrProviderFinishError, metrics, started, decision)
 		}
 		if stepOutput.FinishReason == provider.FinishCancelled {
-			return e.end(opts, step, Cancelled, output, context.Canceled, metrics, started, decision)
+			return e.end(state, opts, step, Cancelled, output, context.Canceled, metrics, started, decision)
 		}
 		stepReasoning := stepOutput.Reasoning
 		if stepText != "" {
@@ -379,26 +447,26 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			noProgress = 0
 			msg := session.Message{Role: session.Assistant, Content: stepText, Reasoning: stepReasoning}
 			if err := e.Store.Append(opts.RunID, msg); err != nil {
-				return e.end(opts, step, Failed, output, err, metrics, started, decision)
+				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 			}
 			activeHistory = append(activeHistory, msg)
-			e.activeMessages = append([]session.Message(nil), activeHistory...)
+			state.activeMessages = append([]session.Message(nil), activeHistory...)
 		}
 		if stepOutput.Truncated || stepOutput.FinishReason == provider.FinishLength {
 			lengthContinuations++
 			if lengthContinuations > opts.MaxLengthContinuations {
-				return e.end(opts, step, Failed, output, ErrProviderTruncated, metrics, started, decision)
+				return e.end(state, opts, step, Failed, output, ErrProviderTruncated, metrics, started, decision)
 			}
 			contextUsage := contextpolicy.EstimateMessages(e.Memory.SystemPrompt, activeHistory, len(opts.ToolDefinitions)+len(opts.HostedToolDefinitions), opts.ContextPolicy)
 			if contextUsage.CompactionNeeded || contextUsage.TokenPressureHigh {
 				activeHistory, _, err = e.forceCompact(ctx, opts, step, activeHistory, compaction.TriggerPostResponse, compaction.ReasonOutputContinuation, &metrics, &compactionFailures)
 				if err != nil {
-					return e.end(opts, step, Failed, output, err, metrics, started, decision)
+					return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 				}
 				noProgress = 0
 				duplicateCount = 0
 			}
-			e.activeMessages = append([]session.Message(nil), activeHistory...)
+			state.activeMessages = append([]session.Message(nil), activeHistory...)
 			decision.ContinuationReason = ContinueProviderTruncated
 			e.emitStepEnd(opts, step, providerLatency, 0, usage, len(calls), decision)
 			continue
@@ -406,7 +474,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		if stepOutput.Retry {
 			emptyRetries++
 			if emptyRetries > opts.MaxEmptyProviderRetries {
-				return e.end(opts, step, Failed, output, errors.New("provider returned empty output"), metrics, started, decision)
+				return e.end(state, opts, step, Failed, output, errors.New("provider returned empty output"), metrics, started, decision)
 			}
 			metrics.Retries++
 			e.emit(event.Event{Type: event.ProviderRetry, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: "empty provider output"})
@@ -419,29 +487,29 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		if stepText == "" && len(calls) == 0 {
 			noProgress++
 			if noProgress >= opts.NoProgressLimit {
-				return e.end(opts, step, Failed, output, ErrNoProgress, metrics, started, decision)
+				return e.end(state, opts, step, Failed, output, ErrNoProgress, metrics, started, decision)
 			}
 		}
 		if len(calls) == 0 {
 			if stepText != "" && provider.IsTerminalNaturalFinish(stepOutput.FinishReason) {
 				hook, err := e.applyStopHook(ctx, opts, step, session.Message{Role: session.Assistant, Content: stepText, Reasoning: stepReasoning}, metrics, stepOutput)
 				if err != nil {
-					return e.end(opts, step, Failed, output, err, metrics, started, decision)
+					return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 				}
 				if hook.Continue {
 					stopHookContinuations++
 					if stopHookContinuations > opts.MaxStopHookContinuations {
-						return e.end(opts, step, Failed, output, ErrStopHookLoop, metrics, started, decision)
+						return e.end(state, opts, step, Failed, output, ErrStopHookLoop, metrics, started, decision)
 					}
 					prompt := strings.TrimSpace(hook.Prompt)
 					if prompt == "" {
 						prompt = "Continue the task and address the remaining pending work."
 					}
 					if err := e.Store.Append(opts.RunID, session.Message{Role: session.User, Content: prompt}); err != nil {
-						return e.end(opts, step, Failed, output, err, metrics, started, decision)
+						return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 					}
 					activeHistory = append(activeHistory, session.Message{Role: session.User, Content: prompt})
-					e.activeMessages = append([]session.Message(nil), activeHistory...)
+					state.activeMessages = append([]session.Message(nil), activeHistory...)
 					decision.ContinuationReason = ContinueHook
 					decision.Detail = strings.TrimSpace(hook.Reason)
 					e.emit(event.Event{Type: event.ContextContinue, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: prompt, ContinuationReason: string(ContinueHook), Result: decision.Detail})
@@ -450,14 +518,14 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				}
 				decision.CompletionReason = CompletionReasonNaturalStop
 				e.emitStepEnd(opts, step, providerLatency, 0, usage, 0, decision)
-				return e.end(opts, step, Completed, output, nil, metrics, started, decision)
+				return e.end(state, opts, step, Completed, output, nil, metrics, started, decision)
 			}
 			decision.ContinuationReason = ContinueNoProgress
 			e.emitStepEnd(opts, step, providerLatency, 0, usage, 0, decision)
 			continue
 		}
 		if err := validateToolCalls(calls); err != nil {
-			return e.end(opts, step, Failed, output, err, metrics, started, decision)
+			return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 		}
 		for _, call := range calls {
 			reasoning := call.Reasoning
@@ -466,37 +534,37 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			}
 			msg := session.Message{Role: session.Assistant, Content: "tool_call", Reasoning: reasoning, ToolCallID: call.ID, ToolName: call.Name, ToolArgs: call.Args}
 			if err := e.Store.Append(opts.RunID, msg); err != nil {
-				return e.end(opts, step, Failed, output, err, metrics, started, decision)
+				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 			}
 			activeHistory = append(activeHistory, msg)
-			e.activeMessages = append([]session.Message(nil), activeHistory...)
+			state.activeMessages = append([]session.Message(nil), activeHistory...)
 		}
 		sig := toolSignature(calls)
 		if sig == lastToolSig {
 			duplicateCount++
 			if duplicateCount >= opts.DuplicateToolLimit {
-				return e.end(opts, step, Failed, output, ErrDuplicateTools, metrics, started, decision)
+				return e.end(state, opts, step, Failed, output, ErrDuplicateTools, metrics, started, decision)
 			}
 		} else {
 			lastToolSig = sig
 			duplicateCount = 0
 		}
 		if final, ok, err := completionSignal(opts, calls); err != nil {
-			return e.end(opts, step, Failed, output, err, metrics, started, decision)
+			return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 		} else if ok {
 			decision.CompletionReason = CompletionReasonToolSignal
 			e.emitStepEnd(opts, step, providerLatency, 0, usage, len(calls), decision)
-			return e.end(opts, step, Completed, final, nil, metrics, started, decision)
+			return e.end(state, opts, step, Completed, final, nil, metrics, started, decision)
 		}
 		if prompt, ok, err := askUserSignal(calls); err != nil {
-			return e.end(opts, step, Failed, output, err, metrics, started, decision)
+			return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 		} else if ok {
 			e.emitStepEnd(opts, step, providerLatency, 0, usage, len(calls), decision)
-			return e.end(opts, step, Waiting, prompt, nil, metrics, started, decision)
+			return e.end(state, opts, step, Waiting, prompt, nil, metrics, started, decision)
 		}
 		metrics.ToolCalls += len(calls)
 		if budgetErr := e.checkBudget(opts, metrics, step); budgetErr != nil {
-			return e.end(opts, step, Failed, output, budgetErr, metrics, started, decision)
+			return e.end(state, opts, step, Failed, output, budgetErr, metrics, started, decision)
 		}
 		for i, call := range calls {
 			e.emit(event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args, Metadata: map[string]any{"batch_index": i, "batch_size": len(calls)}})
@@ -515,20 +583,20 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			e.emit(event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: toolLatency, Metadata: mergeToolResultMetadata(result.Metadata, i, len(results)), Artifacts: eventArtifacts(result.Artifacts)})
 			msg := session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name}
 			if err := e.Store.Append(opts.RunID, msg); err != nil {
-				return e.end(opts, step, Failed, output, err, metrics, started, decision)
+				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 			}
 			activeHistory = append(activeHistory, msg)
-			e.activeMessages = append([]session.Message(nil), activeHistory...)
+			state.activeMessages = append([]session.Message(nil), activeHistory...)
 		}
 		activeHistory, compacted, err = e.maybeCompact(ctx, opts, step, activeHistory, compaction.TriggerPostResponse, compaction.ReasonFollowUpPressure, &metrics, &compactionFailures)
 		if err != nil {
-			return e.end(opts, step, Failed, output, err, metrics, started, decision)
+			return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 		}
 		if compacted {
 			noProgress = 0
 			duplicateCount = 0
 		}
-		e.activeMessages = append([]session.Message(nil), activeHistory...)
+		state.activeMessages = append([]session.Message(nil), activeHistory...)
 		decision.ContinuationReason = ContinueToolResults
 		e.emitStepEnd(opts, step, providerLatency, toolLatency, usage, len(calls), decision)
 	}
@@ -592,7 +660,7 @@ func (e *Engine) applyStopHook(ctx context.Context, opts Options, step int, last
 }
 
 func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, history []session.Message) (provider.Request, error) {
-	toolset, _, err := promptcache.EnsureCurrentToolset(ctx, e.Prompt, opts.RunID, opts.SessionID, opts.ProviderName, opts.Model, convertToolDefinitions(opts.ToolDefinitions), convertHostedToolDefinitions(opts.HostedToolDefinitions), time.Now())
+	toolset, _, err := promptcache.EnsureCurrentToolsetWithOptions(ctx, e.Prompt, opts.RunID, opts.SessionID, opts.ProviderName, opts.Model, convertToolDefinitions(opts.ToolDefinitions), convertHostedToolDefinitions(opts.HostedToolDefinitions), time.Now(), promptcache.ToolsetOptions{AllowControlTools: true})
 	if err != nil {
 		return provider.Request{}, err
 	}
@@ -685,6 +753,11 @@ func validateNoLocalHostedToolNameConflict(local []provider.ToolDefinition, host
 		}
 	}
 	return nil
+}
+
+func validateConfiguredTools(local []provider.ToolDefinition, hosted []provider.HostedToolDefinition, allowControl bool) error {
+	_, _, err := promptcache.NormalizeToolsetChecked(convertToolDefinitions(local), convertHostedToolDefinitions(hosted), promptcache.ToolsetOptions{AllowControlTools: allowControl})
+	return err
 }
 
 func (e *Engine) maybeCompact(ctx context.Context, opts Options, step int, history []session.Message, trigger compaction.Trigger, reason compaction.Reason, metrics *RunMetrics, failures *int) ([]session.Message, bool, error) {
@@ -808,12 +881,23 @@ func rendererForProvider(p provider.Provider) promptcache.Renderer {
 
 func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-chan provider.StreamEvent) (StepOutput, error) {
 	out := StepOutput{}
+	hostedTools := map[string]struct{}{}
+	for _, def := range opts.HostedToolDefinitions {
+		name := strings.TrimSpace(def.Name)
+		if name != "" {
+			hostedTools[name] = struct{}{}
+		}
+	}
+	validator := provider.StreamValidator{}
 	for {
 		select {
 		case <-ctx.Done():
 			return out, ctx.Err()
 		case ev, ok := <-stream:
 			if !ok {
+				if err := validator.Finish(); err != nil {
+					return out, err
+				}
 				if out.Text == "" && len(out.Calls) == 0 {
 					out.Retry = true
 					return out, nil
@@ -827,6 +911,12 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 			if ev.Reason != "" {
 				out.RawFinishReason = ev.Reason
 			}
+			if err := validator.Observe(ev); err != nil {
+				if strings.Contains(err.Error(), "duplicate tool call id") {
+					return out, ErrDuplicateToolCallID
+				}
+				return out, err
+			}
 			switch ev.Type {
 			case provider.Delta:
 				out.Text += ev.Text
@@ -837,8 +927,14 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 			case provider.ToolCalls:
 				out.Calls = append(out.Calls, ev.ToolCalls...)
 			case provider.HostedToolCall:
+				if err := validateHostedToolEvent(ev.ToolCall, hostedTools); err != nil {
+					return out, err
+				}
 				e.emit(event.Event{Type: event.HostedToolCall, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Args: ev.ToolCall.Args})
 			case provider.HostedToolResult:
+				if err := validateHostedToolEvent(ev.ToolCall, hostedTools); err != nil {
+					return out, err
+				}
 				e.emit(event.Event{Type: event.HostedToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Result: ev.Text})
 			case provider.UsageEvent:
 				out.Usage = out.Usage.Add(ev.Usage)
@@ -846,20 +942,61 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 			case provider.Empty:
 				out.Retry = true
 				out.FinishReason, out.FinishInferred = provider.NormalizeFinishReason(out.RawFinishReason, false, false, false)
+				if err := validateNoEventAfterTerminal(ctx, stream, &validator); err != nil {
+					return out, err
+				}
 				return out, nil
 			case provider.Truncated:
 				out.Truncated = true
 				out.FinishReason, out.FinishInferred = provider.NormalizeFinishReason(out.RawFinishReason, len(out.Calls) > 0, true, out.Text != "")
+				if err := validateNoEventAfterTerminal(ctx, stream, &validator); err != nil {
+					return out, err
+				}
 				return out, nil
 			case provider.Done:
 				out.FinishReason, out.FinishInferred = provider.NormalizeFinishReason(out.RawFinishReason, len(out.Calls) > 0, false, out.Text != "")
 				if out.Text == "" && len(out.Calls) == 0 && out.FinishReason == provider.FinishUnknown {
 					out.Retry = true
 				}
+				if err := validateNoEventAfterTerminal(ctx, stream, &validator); err != nil {
+					return out, err
+				}
 				return out, nil
 			}
 		}
 	}
+}
+
+func validateNoEventAfterTerminal(ctx context.Context, stream <-chan provider.StreamEvent, validator *provider.StreamValidator) error {
+	timer := time.NewTimer(terminalCloseGrace)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case ev, ok := <-stream:
+			if !ok {
+				return nil
+			}
+			return validator.Observe(ev)
+		case <-timer.C:
+			return provider.ErrStreamNotClosedAfterTerminal
+		}
+	}
+}
+
+func validateHostedToolEvent(call provider.ToolCall, allowed map[string]struct{}) error {
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		return errors.New("provider hosted tool event missing tool name")
+	}
+	if len(allowed) == 0 {
+		return fmt.Errorf("provider returned hosted tool %q but no hosted tools were requested", name)
+	}
+	if _, ok := allowed[name]; !ok {
+		return fmt.Errorf("provider returned unrequested hosted tool %q", name)
+	}
+	return nil
 }
 
 func providerSafeHistory(history []session.Message) []session.Message {
@@ -1000,7 +1137,7 @@ func (e *Engine) emitStepEnd(opts Options, step int, providerLatency, toolLatenc
 	})
 }
 
-func (e *Engine) end(opts Options, step int, status Status, output string, err error, metrics RunMetrics, started time.Time, decision RunDecision) Result {
+func (e *Engine) end(state *turnState, opts Options, step int, status Status, output string, err error, metrics RunMetrics, started time.Time, decision RunDecision) Result {
 	errText := ""
 	if err != nil {
 		errText = err.Error()
@@ -1008,8 +1145,8 @@ func (e *Engine) end(opts Options, step int, status Status, output string, err e
 	metrics.WallTimeMS = time.Since(started).Milliseconds()
 	e.emit(event.Event{Type: event.RunEnd, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: string(status), Result: output, Err: errText, FinishReason: string(decision.FinishReason), RawFinishReason: decision.RawFinishReason, FinishInferred: decision.FinishInferred, CompletionReason: string(decision.CompletionReason), ContinuationReason: string(decision.ContinuationReason), Metrics: metrics})
 	var messages []session.Message
-	if len(e.activeMessages) > 0 {
-		messages = append([]session.Message(nil), e.activeMessages...)
+	if len(state.activeMessages) > 0 {
+		messages = append([]session.Message(nil), state.activeMessages...)
 	} else if e.Store != nil {
 		messages, _ = e.Store.Messages(opts.RunID)
 	}

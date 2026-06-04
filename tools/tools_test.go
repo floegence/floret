@@ -21,7 +21,9 @@ func testTool(name string, readOnly bool, handler func(context.Context, Invocati
 			InputSchema: StrictObject(map[string]any{
 				"value": String("test value"),
 			}, []string{"value"}),
-			ReadOnly: readOnly,
+			Effects:    []Effect{EffectRead},
+			ReadOnly:   readOnly,
+			Permission: PermissionSpec{Mode: PermissionAllow},
 		},
 		nil,
 		nil,
@@ -67,6 +69,7 @@ func TestSchemaErrorDoesNotCallResourceApproverOrHandler(t *testing.T) {
 		Definition{
 			Name:        "read",
 			InputSchema: StrictObject(map[string]any{"value": String("")}, []string{"value"}),
+			Permission:  PermissionSpec{Mode: PermissionAllow},
 		},
 		nil,
 		func(Invocation[testArgs]) ([]ResourceRef, error) {
@@ -177,7 +180,7 @@ func TestDefinePassesRunSessionStepCWDAndTypedArgs(t *testing.T) {
 	reg := NewRegistry()
 	var seen Invocation[testArgs]
 	if err := reg.Register(Define[testArgs](
-		Definition{Name: "inspect", InputSchema: StrictObject(map[string]any{"value": String("")}, []string{"value"})},
+		Definition{Name: "inspect", InputSchema: StrictObject(map[string]any{"value": String("")}, []string{"value"}), Permission: PermissionSpec{Mode: PermissionAllow}},
 		nil,
 		func(inv Invocation[testArgs]) ([]ResourceRef, error) {
 			if inv.RunID != "run" || inv.SessionID != "session" || inv.Step != 3 || inv.CWD != "/repo" || inv.Args.Value != "typed" {
@@ -208,6 +211,7 @@ func TestOutputSchemaViolationReturnsStableError(t *testing.T) {
 			Name:         "structured",
 			InputSchema:  StrictObject(map[string]any{"value": String("")}, []string{"value"}),
 			OutputSchema: StrictObject(map[string]any{"ok": Boolean("")}, []string{"ok"}),
+			Permission:   PermissionSpec{Mode: PermissionAllow},
 		},
 		nil,
 		nil,
@@ -224,7 +228,62 @@ func TestOutputSchemaViolationReturnsStableError(t *testing.T) {
 	}
 }
 
-func TestRunBatchUsesRegistryReadOnlyFlagForParallelWaves(t *testing.T) {
+func TestRegisterRejectsUnknownPermissionMode(t *testing.T) {
+	err := NewRegistry().Register(Define[testArgs](
+		Definition{Name: "bad", Permission: PermissionSpec{Mode: "aks"}},
+		nil,
+		nil,
+		func(context.Context, Invocation[testArgs]) (Result, error) { return Result{}, nil },
+	))
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err = %v, want invalid", err)
+	}
+}
+
+func TestRegisterRejectsReservedControlName(t *testing.T) {
+	err := NewRegistry().Register(Define[testArgs](
+		Definition{Name: ControlAskUser, Permission: PermissionSpec{Mode: PermissionAllow}},
+		nil,
+		nil,
+		func(context.Context, Invocation[testArgs]) (Result, error) { return Result{}, nil },
+	))
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err = %v, want invalid", err)
+	}
+}
+
+func TestRegisterRejectsContradictoryEffects(t *testing.T) {
+	cases := []Definition{
+		{Name: "readonly_write", ReadOnly: true, Effects: []Effect{EffectWrite}, Permission: PermissionSpec{Mode: PermissionAllow}},
+		{Name: "destructive_read", Destructive: true, Effects: []Effect{EffectRead}, Permission: PermissionSpec{Mode: PermissionAsk}},
+		{Name: "open_world_read", OpenWorld: true, Effects: []Effect{EffectRead}, Permission: PermissionSpec{Mode: PermissionAsk}},
+		{Name: "open_world_allow", OpenWorld: true, Effects: []Effect{EffectNetwork}, Permission: PermissionSpec{Mode: PermissionAllow}},
+		{Name: "parallel_shell", ReadOnly: true, ParallelSafe: true, Effects: []Effect{EffectNetwork}, Permission: PermissionSpec{Mode: PermissionAllow}},
+	}
+	for _, def := range cases {
+		err := NewRegistry().Register(Define[testArgs](
+			def,
+			nil,
+			nil,
+			func(context.Context, Invocation[testArgs]) (Result, error) { return Result{}, nil },
+		))
+		if !errors.Is(err, ErrInvalid) {
+			t.Fatalf("%s err = %v, want invalid", def.Name, err)
+		}
+	}
+}
+
+func TestNewRegistryEPropagatesDuplicateConstructorError(t *testing.T) {
+	_, err := NewRegistryE(
+		testTool("read", true, func(context.Context, Invocation[testArgs]) (Result, error) { return Result{}, nil }),
+		testTool("read", true, func(context.Context, Invocation[testArgs]) (Result, error) { return Result{}, nil }),
+	)
+	if !errors.Is(err, ErrDuplicate) {
+		t.Fatalf("err = %v, want duplicate", err)
+	}
+}
+
+func TestRunBatchUsesParallelSafeFlagForParallelWaves(t *testing.T) {
 	reg := NewRegistry()
 	order := make(chan string, 4)
 	release := make(chan struct{})

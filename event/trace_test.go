@@ -3,6 +3,7 @@ package event
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -30,11 +31,8 @@ func TestTraceWriterWritesParseableRedactedJSONL(t *testing.T) {
 	if decoded.ArgsHash == "" || decoded.ArgsHash != StableHash(`{"api_key":"secret-token","path":"a.go"}`) {
 		t.Fatalf("args hash not stable: %#v", decoded)
 	}
-	if strings.Contains(decoded.Args, "secret-token") {
-		t.Fatalf("secret was not redacted: %s", decoded.Args)
-	}
-	if !strings.Contains(decoded.Args, "[REDACTED]") {
-		t.Fatalf("redaction marker missing: %s", decoded.Args)
+	if decoded.Args != "" {
+		t.Fatalf("trace exposed raw args: %s", decoded.Args)
 	}
 }
 
@@ -45,5 +43,43 @@ func TestRecorderSnapshotIsIsolated(t *testing.T) {
 	snapshot[0].RunID = "mutated"
 	if rec.Snapshot()[0].RunID != "run" {
 		t.Fatalf("snapshot exposed recorder internals")
+	}
+}
+
+func TestSanitizeRemovesRawPayloads(t *testing.T) {
+	got := Sanitize(Event{
+		Type:      ToolResult,
+		RunID:     "run",
+		Message:   "public-ish api_key secret-value",
+		Args:      `{"token":"secret-token"}`,
+		Result:    "tool secret result",
+		Err:       "authorization bearer-secret failed",
+		Metadata:  map[string]any{"path": "/private/workspace/report.txt", "exit_code": 7, "files": []string{"secret.txt"}},
+		Artifacts: []Artifact{{Kind: "file", Path: "/private/workspace/report.txt", MIME: "text/plain"}},
+	})
+	if got.Args != "" || got.Result != "" {
+		t.Fatalf("raw args/result exposed: %#v", got)
+	}
+	if got.ArgsHash != StableHash(`{"token":"secret-token"}`) {
+		t.Fatalf("args hash missing: %#v", got)
+	}
+	if strings.Contains(got.Message, "secret-value") || got.Err != "" {
+		t.Fatalf("secret text not redacted: %#v", got)
+	}
+	if len(got.Artifacts) != 1 || strings.Contains(got.Artifacts[0].Path, "/private/workspace") || !strings.Contains(got.Artifacts[0].Path, "report.txt#") {
+		t.Fatalf("artifact path not sanitized: %#v", got.Artifacts)
+	}
+	meta, ok := got.Metadata.(map[string]any)
+	if !ok || meta["exit_code"] != 7 || strings.Contains(fmt.Sprint(meta), "secret.txt") || strings.Contains(fmt.Sprint(meta), "/private") {
+		t.Fatalf("metadata not sanitized: %#v", got.Metadata)
+	}
+}
+
+func TestSanitizeRemovesProviderDeltaAndReasoning(t *testing.T) {
+	for _, typ := range []Type{ProviderDelta, ProviderReasoning} {
+		got := Sanitize(Event{Type: typ, RunID: "run", Message: "raw model text"})
+		if got.Message != "" {
+			t.Fatalf("%s message exposed: %#v", typ, got)
+		}
 	}
 }

@@ -62,6 +62,7 @@ type Runner struct {
 	Exec                func(context.Context, string, []string, string, []string) ([]byte, int)
 	ProviderFactory     func(config.Config) (provider.Provider, error)
 	Sessions            *agentSessionRegistry
+	AllowDebugRaw       bool
 	StorageMode         string
 	StoragePath         string
 	StorageImportLegacy bool
@@ -92,6 +93,7 @@ type agentSession struct {
 	mu                      sync.Mutex
 	id                      string
 	transient               bool
+	debugRaw                bool
 	profile                 ProviderProfile
 	systemPrompt            string
 	selectedTools           []string
@@ -156,6 +158,10 @@ func (r *Runner) providerFactory() func(config.Config) (provider.Provider, error
 	return adapters.NewProvider
 }
 
+func (r Runner) debugRawAllowed(requested bool) bool {
+	return requested && r.AllowDebugRaw
+}
+
 func (r *Runner) ConfigInfo() ConfigInfo {
 	info := ConfigInfo{EnvFile: r.EnvFile}
 	info.Storage = r.storageStatus(context.Background())
@@ -218,6 +224,7 @@ func (r *Runner) CreateIdleAgentSession(ctx context.Context, req AgentRunRequest
 	}
 	sess, err := r.buildAgentSession(ctx, agentSessionBuildOptions{
 		ID:            sessionID,
+		DebugRaw:      r.debugRawAllowed(req.DebugRaw),
 		CreatedAt:     started,
 		UpdatedAt:     started,
 		Profile:       resolvedProfile,
@@ -236,7 +243,11 @@ func (r *Runner) CreateIdleAgentSession(ctx context.Context, req AgentRunRequest
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	return r.sessionSnapshotLocked(ctx, sess)
+	snapshot, err := r.sessionSnapshotLocked(ctx, sess)
+	if err != nil {
+		return AgentSessionSnapshot{}, err
+	}
+	return publicAgentSessionSnapshot(snapshot, r.debugRawAllowed(req.DebugRaw)), nil
 }
 
 func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeRequest) AgentRunResponse {
@@ -249,7 +260,7 @@ func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeR
 	profile := ProviderProfile{ID: "tool-contract-probe", Name: "Tool Contract Probe", Provider: config.ProviderFake, Model: "tool-contract-probe"}
 	selectedTools, err := normalizeAgentSessionToolsForProfile(req.SelectedTools, "", profile, r.EnvFile)
 	if err != nil {
-		return r.failAgentRunWithStatus(resp, http.StatusBadRequest, err)
+		return publicAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusBadRequest, err), r.debugRawAllowed(req.DebugRaw))
 	}
 	probe := *r
 	probe.ProviderFactory = func(config.Config) (provider.Provider, error) {
@@ -289,7 +300,7 @@ func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeR
 	}
 	cfg, err = config.Resolve(cfg, nil)
 	if err != nil {
-		return r.failAgentRun(resp, err)
+		return publicAgentRunResponse(r.failAgentRun(resp, err), r.debugRawAllowed(req.DebugRaw))
 	}
 	sessionID := "testui-probe-" + resp.ID
 	cfg.RunID = sessionID
@@ -298,6 +309,7 @@ func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeR
 	sess, err := probe.buildAgentSession(ctx, agentSessionBuildOptions{
 		ID:            sessionID,
 		Transient:     true,
+		DebugRaw:      r.debugRawAllowed(req.DebugRaw),
 		CreatedAt:     started,
 		UpdatedAt:     started,
 		Profile:       profile,
@@ -308,15 +320,15 @@ func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeR
 		Start:         true,
 	})
 	if err != nil {
-		return r.failAgentRun(resp, err)
+		return publicAgentRunResponse(r.failAgentRun(resp, err), r.debugRawAllowed(req.DebugRaw))
 	}
-	resp.Profile = profile
+	resp.Profile = stripProfileSecret(profile)
 	result := probe.runAgentTurn(ctx, sess, resp, "Run the test UI tool contract probe for the selected tools.")
 	result.Probe = true
 	if result.Status == string(engine.Completed) {
 		result.Summary = "Interface probe passed: selected tools were bound to a transient session and captured in the provider request."
 	}
-	return result
+	return publicAgentRunResponse(result, r.debugRawAllowed(req.DebugRaw))
 }
 
 func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) AgentRunResponse {
@@ -332,11 +344,11 @@ func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) Ag
 		resp.Summary = resp.Error
 		resp.FinishedAt = r.now()
 		resp.DurationMS = resp.FinishedAt.Sub(resp.StartedAt).Milliseconds()
-		return resp
+		return publicAgentRunResponse(resp, r.debugRawAllowed(req.DebugRaw))
 	}
 	profile, err := r.profileForRun(req)
 	if err != nil {
-		return r.failAgentRun(resp, err)
+		return publicAgentRunResponse(r.failAgentRun(resp, err), r.debugRawAllowed(req.DebugRaw))
 	}
 	resp.Profile = stripProfileSecret(profile)
 	cfg := config.Config{
@@ -357,18 +369,19 @@ func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) Ag
 	}
 	cfg, err = config.Resolve(cfg, nil)
 	if err != nil {
-		return r.failAgentRun(resp, err)
+		return publicAgentRunResponse(r.failAgentRun(resp, err), r.debugRawAllowed(req.DebugRaw))
 	}
 	sessionID := "testui-session-" + resp.ID
 	cfg.RunID = sessionID
 	resolvedProfile := resolvedProfileFromConfig(profile, cfg, cfg.APIKey != "" || profile.APIKeySet)
-	resp.Profile = resolvedProfile
+	resp.Profile = stripProfileSecret(resolvedProfile)
 	selectedTools, err := normalizeAgentSessionToolsForProfile(req.SelectedTools, req.ToolMode, resolvedProfile, r.EnvFile)
 	if err != nil {
-		return r.failAgentRunWithStatus(resp, http.StatusBadRequest, err)
+		return publicAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusBadRequest, err), r.debugRawAllowed(req.DebugRaw))
 	}
 	sess, err := r.buildAgentSession(ctx, agentSessionBuildOptions{
 		ID:            sessionID,
+		DebugRaw:      r.debugRawAllowed(req.DebugRaw),
 		CreatedAt:     started,
 		UpdatedAt:     started,
 		Profile:       resolvedProfile,
@@ -379,12 +392,17 @@ func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) Ag
 		Start:         true,
 	})
 	if err != nil {
-		return r.failAgentRun(resp, err)
+		return publicAgentRunResponse(r.failAgentRun(resp, err), r.debugRawAllowed(req.DebugRaw))
 	}
 	r.sessionRegistry().put(sess)
 	if err := r.saveAgentSessionMetadata(r.metadataFromSession(sess)); err != nil {
-		return r.failAgentRun(resp, err)
+		return publicAgentRunResponse(r.failAgentRun(resp, err), r.debugRawAllowed(req.DebugRaw))
 	}
+	debugRaw := r.debugRawAllowed(req.DebugRaw)
+	sess.debugRaw = debugRaw
+	defer func() {
+		sess.debugRaw = false
+	}()
 	return r.runAgentTurn(ctx, sess, resp, req.Message)
 }
 
@@ -401,6 +419,7 @@ func (r *Runner) RunAgentTurnStream(ctx context.Context, sessionID string, req A
 }
 
 func (r *Runner) runAgentTurnResponse(ctx context.Context, sessionID string, req AgentTurnRequest, resp AgentRunResponse, sink AgentStreamSink) AgentRunResponse {
+	debugRaw := r.debugRawAllowed(req.DebugRaw)
 	if strings.TrimSpace(req.Message) == "" {
 		resp.Status = "error"
 		resp.StatusCode = http.StatusBadRequest
@@ -408,7 +427,7 @@ func (r *Runner) runAgentTurnResponse(ctx context.Context, sessionID string, req
 		resp.Summary = resp.Error
 		resp.FinishedAt = r.now()
 		resp.DurationMS = resp.FinishedAt.Sub(resp.StartedAt).Milliseconds()
-		return resp
+		return publicAgentRunResponse(resp, debugRaw)
 	}
 	sess, ok := r.sessionRegistry().get(sessionID)
 	if !ok {
@@ -419,20 +438,24 @@ func (r *Runner) runAgentTurnResponse(ctx context.Context, sessionID string, req
 			if isMissingAgentSessionError(err) {
 				status = http.StatusNotFound
 			}
-			return r.failAgentRunWithStatus(resp, status, err)
+			return publicAgentRunResponse(r.failAgentRunWithStatus(resp, status, err), debugRaw)
 		}
 	}
-	resp.Profile = sess.profile
+	resp.Profile = stripProfileSecret(sess.profile)
+	sess.debugRaw = debugRaw
+	defer func() {
+		sess.debugRaw = false
+	}()
 	if err := lockAgentSessionForTurn(ctx, sess); err != nil {
-		return r.failAgentRunWithStatus(resp, http.StatusConflict, fmt.Errorf("agent session %q is already running", sessionID))
+		return publicAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusConflict, fmt.Errorf("agent session %q is already running", sessionID)), debugRaw)
 	}
 	defer sess.mu.Unlock()
 	snapshot, err := r.sessionSnapshotLocked(ctx, sess)
 	if err != nil {
-		return r.failAgentRun(resp, err)
+		return publicAgentRunResponse(r.failAgentRun(resp, err), debugRaw)
 	}
 	if !snapshot.CanAppendMessage {
-		return r.failAgentRunWithStatus(resp, http.StatusConflict, fmt.Errorf("agent session %q is %s and cannot accept a new message", sessionID, snapshot.Status))
+		return publicAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusConflict, fmt.Errorf("agent session %q is %s and cannot accept a new message", sessionID, snapshot.Status)), debugRaw)
 	}
 	turnID := sess.nextTurnID()
 	r.markAgentSessionRunningLocked(sess, turnID)
@@ -443,7 +466,7 @@ func (r *Runner) runAgentTurnResponse(ctx context.Context, sessionID string, req
 	result := r.runAgentTurnLocked(ctx, sess, resp, req.Message, turnID)
 	if sink != nil {
 		if result.Session.ID != "" {
-			snapshotCopy := result.Session
+			snapshotCopy := publicAgentSessionSnapshot(result.Session, debugRaw)
 			sink.EmitAgentStream(AgentStreamEvent{
 				Type:      AgentStreamSessionSnapshot,
 				SessionID: sessionID,
@@ -452,7 +475,7 @@ func (r *Runner) runAgentTurnResponse(ctx context.Context, sessionID string, req
 				Snapshot:  &snapshotCopy,
 			})
 		}
-		resultCopy := result
+		resultCopy := publicAgentRunResponse(result, debugRaw)
 		sink.EmitAgentStream(AgentStreamEvent{
 			Type:      agentStreamEventForResult(result),
 			SessionID: sessionID,
@@ -463,7 +486,7 @@ func (r *Runner) runAgentTurnResponse(ctx context.Context, sessionID string, req
 			Error:     result.Error,
 		})
 	}
-	return result
+	return publicAgentRunResponse(result, debugRaw)
 }
 
 func (r *Runner) UpdateAgentSessionTools(ctx context.Context, sessionID string, req AgentToolsUpdateRequest) (AgentSessionSnapshot, error) {
@@ -494,7 +517,7 @@ func (r *Runner) UpdateAgentSessionTools(ctx context.Context, sessionID string, 
 		return AgentSessionSnapshot{}, fmt.Errorf("%w: %s", errAgentSessionBusy, sessionID)
 	}
 	if slices.Equal(sess.selectedTools, selectedTools) {
-		return current, nil
+		return publicAgentSessionSnapshot(current, false), nil
 	}
 	previous := cloneSelectedTools(sess.selectedTools)
 	nextRuntime, err := sess.prepareRuntime(ctx, r, selectedTools)
@@ -524,7 +547,11 @@ func (r *Runner) UpdateAgentSessionTools(ctx context.Context, sessionID string, 
 		return AgentSessionSnapshot{}, err
 	}
 	sess.applyRuntime(nextRuntime)
-	return r.sessionSnapshotLocked(ctx, sess)
+	next, err := r.sessionSnapshotLocked(ctx, sess)
+	if err != nil {
+		return AgentSessionSnapshot{}, err
+	}
+	return publicAgentSessionSnapshot(next, false), nil
 }
 
 func (r *Runner) DeleteAgentSession(ctx context.Context, sessionID string) error {
@@ -606,13 +633,21 @@ func (r *Runner) AgentSession(ctx context.Context, sessionID string) (AgentSessi
 		if err != nil {
 			return AgentSessionSnapshot{}, fmt.Errorf("agent session %q not found", sessionID)
 		}
-		return r.sessionSnapshotFromMetadata(ctx, meta)
+		snapshot, err := r.sessionSnapshotFromMetadata(ctx, meta)
+		if err != nil {
+			return AgentSessionSnapshot{}, err
+		}
+		return publicAgentSessionSnapshot(snapshot, false), nil
 	}
 	if !sess.mu.TryLock() {
-		return r.runningAgentSessionSnapshot(ctx, sess), nil
+		return publicAgentSessionSnapshot(r.runningAgentSessionSnapshot(ctx, sess), false), nil
 	}
 	defer sess.mu.Unlock()
-	return r.sessionSnapshotLocked(ctx, sess)
+	snapshot, err := r.sessionSnapshotLocked(ctx, sess)
+	if err != nil {
+		return AgentSessionSnapshot{}, err
+	}
+	return publicAgentSessionSnapshot(snapshot, false), nil
 }
 
 func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selectedTools []string) (agentSessionRuntime, error) {
@@ -630,26 +665,27 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 	}
 	idGenerator := r.agentSessionIDGenerator(ctx, sess.repo, sess.id)
 	h := agentharness.New(agentharness.Options{
-		Provider:      observed,
-		ProviderName:  sess.cfg.Provider,
-		Model:         sess.cfg.Model,
-		SystemPrompt:  sess.systemPrompt,
-		Tools:         registry,
-		PromptStore:   sess.promptStore,
-		Repo:          sess.repo,
-		Sink:          rec,
-		HarnessSink:   harnessRec,
-		Approver:      testUIToolApprover,
-		ContextPolicy: sess.contextPolicy,
-		EngineOptions: engine.Options{
-			CacheRetention:          config.PromptCacheRetention(sess.cfg),
-			ContextPolicy:           sess.contextPolicy,
+		Provider:     observed,
+		ProviderName: sess.cfg.Provider,
+		Model:        sess.cfg.Model,
+		SystemPrompt: sess.systemPrompt,
+		Tools:        registry,
+		PromptStore:  sess.promptStore,
+		Repo:         sess.repo,
+		Sink:         rec,
+		HarnessSink:  harnessRec,
+		Approver:     testUIToolApprover,
+		TurnPolicy: agentharness.TurnPolicy{
+			CacheRetention:        config.PromptCacheRetention(sess.cfg),
+			ContextPolicy:         sess.contextPolicy,
+			HostedToolDefinitions: hostedTools,
+		},
+		LoopLimits: agentharness.LoopLimits{
 			MaxEmptyProviderRetries: sess.cfg.MaxEmptyProviderRetries,
 			NoProgressLimit:         sess.cfg.NoProgressLimit,
 			DuplicateToolLimit:      sess.cfg.DuplicateToolLimit,
 			WallTime:                sess.cfg.WallTime,
 			MaxCostUSD:              1.00,
-			HostedToolDefinitions:   hostedTools,
 		},
 		NewID: idGenerator,
 		Now:   r.now,
@@ -707,13 +743,13 @@ func (r *Runner) AgentSessions(ctx context.Context) []AgentSessionSnapshot {
 	out := make([]AgentSessionSnapshot, 0, len(sessions))
 	for _, sess := range sessions {
 		if !sess.mu.TryLock() {
-			out = append(out, r.runningAgentSessionSnapshot(ctx, sess))
+			out = append(out, publicAgentSessionSnapshot(r.runningAgentSessionSnapshot(ctx, sess), false))
 			continue
 		}
 		snap, err := r.sessionSnapshotLocked(ctx, sess)
 		sess.mu.Unlock()
 		if err == nil {
-			out = append(out, snap)
+			out = append(out, publicAgentSessionSnapshot(snap, false))
 		}
 	}
 	seen := map[string]struct{}{}
@@ -730,7 +766,7 @@ func (r *Runner) AgentSessions(ctx context.Context) []AgentSessionSnapshot {
 		}
 		snap, err := r.sessionSnapshotFromMetadata(ctx, meta)
 		if err == nil {
-			out = append(out, snap)
+			out = append(out, publicAgentSessionSnapshot(snap, false))
 		}
 	}
 	slices.SortFunc(out, func(a, b AgentSessionSnapshot) int {
@@ -748,6 +784,7 @@ func (r *Runner) AgentSessions(ctx context.Context) []AgentSessionSnapshot {
 type agentSessionBuildOptions struct {
 	ID            string
 	Transient     bool
+	DebugRaw      bool
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 	Profile       ProviderProfile
@@ -793,26 +830,27 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 	}
 	idGenerator := r.agentSessionIDGenerator(ctx, repo, opts.ID)
 	h := agentharness.New(agentharness.Options{
-		Provider:      observed,
-		ProviderName:  cfg.Provider,
-		Model:         cfg.Model,
-		SystemPrompt:  cfg.SystemPrompt,
-		Tools:         registry,
-		PromptStore:   promptStore,
-		Repo:          repo,
-		Sink:          rec,
-		HarnessSink:   harnessRec,
-		Approver:      testUIToolApprover,
-		ContextPolicy: cfg.ContextPolicy,
-		EngineOptions: engine.Options{
-			CacheRetention:          config.PromptCacheRetention(cfg),
-			ContextPolicy:           cfg.ContextPolicy,
+		Provider:     observed,
+		ProviderName: cfg.Provider,
+		Model:        cfg.Model,
+		SystemPrompt: cfg.SystemPrompt,
+		Tools:        registry,
+		PromptStore:  promptStore,
+		Repo:         repo,
+		Sink:         rec,
+		HarnessSink:  harnessRec,
+		Approver:     testUIToolApprover,
+		TurnPolicy: agentharness.TurnPolicy{
+			CacheRetention:        config.PromptCacheRetention(cfg),
+			ContextPolicy:         cfg.ContextPolicy,
+			HostedToolDefinitions: hostedTools,
+		},
+		LoopLimits: agentharness.LoopLimits{
 			MaxEmptyProviderRetries: cfg.MaxEmptyProviderRetries,
 			NoProgressLimit:         cfg.NoProgressLimit,
 			DuplicateToolLimit:      cfg.DuplicateToolLimit,
 			WallTime:                cfg.WallTime,
 			MaxCostUSD:              1.00,
-			HostedToolDefinitions:   hostedTools,
 		},
 		NewID: idGenerator,
 		Now:   r.now,
@@ -837,6 +875,7 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 	return &agentSession{
 		id:                      opts.ID,
 		transient:               opts.Transient,
+		debugRaw:                opts.DebugRaw,
 		profile:                 opts.Profile,
 		systemPrompt:            cfg.SystemPrompt,
 		selectedTools:           selectedTools,
@@ -1003,7 +1042,8 @@ func (r *Runner) runAgentTurn(ctx context.Context, sess *agentSession, resp Agen
 	defer sess.mu.Unlock()
 	turnID := sess.nextTurnID()
 	r.markAgentSessionRunningLocked(sess, turnID)
-	return r.runAgentTurnLocked(ctx, sess, resp, message, turnID)
+	result := r.runAgentTurnLocked(ctx, sess, resp, message, turnID)
+	return publicAgentRunResponse(result, sess.debugRaw)
 }
 
 func (r *Runner) runAgentTurnLocked(ctx context.Context, sess *agentSession, resp AgentRunResponse, message string, turnID string) AgentRunResponse {

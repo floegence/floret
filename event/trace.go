@@ -22,13 +22,7 @@ func NewTraceWriter(w io.Writer) *TraceWriter {
 func (t *TraceWriter) Emit(e Event) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if e.ArgsHash == "" && e.Args != "" {
-		e.ArgsHash = StableHash(e.Args)
-	}
-	e.Args = Redact(e.Args)
-	e.Result = Redact(e.Result)
-	e.Message = Redact(e.Message)
-	e.Err = Redact(e.Err)
+	e = Sanitize(e)
 	_ = json.NewEncoder(t.w).Encode(e)
 	_ = t.w.Flush()
 }

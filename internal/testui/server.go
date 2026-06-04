@@ -246,6 +246,7 @@ func (s *Server) handleAgentSessionTurnStream(w http.ResponseWriter, r *http.Req
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	stream := newAgentStream(512)
+	debugRaw := s.Runner.debugRawAllowed(req.DebugRaw)
 	runCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -264,7 +265,7 @@ func (s *Server) handleAgentSessionTurnStream(w http.ResponseWriter, r *http.Req
 				flusher.Flush()
 				return
 			}
-			if err := writeSSE(w, ev); err != nil {
+			if err := writeSSE(w, publicAgentStreamEvent(ev, debugRaw)); err != nil {
 				return
 			}
 			flusher.Flush()
@@ -311,7 +312,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel = context.WithTimeout(ctx, s.Timeout)
 		defer cancel()
 	}
-	resp := s.Runner.RunWithOptions(ctx, req.Target, runOptions{ProfileID: req.ProfileID})
+	resp := publicRunResponse(s.Runner.RunWithOptions(ctx, req.Target, runOptions{ProfileID: req.ProfileID}))
 	status := http.StatusOK
 	if resp.Status == "error" {
 		status = http.StatusInternalServerError

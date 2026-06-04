@@ -126,6 +126,70 @@ func TestFileRepoSkipsMalformedThreadWithoutHidingValidThreads(t *testing.T) {
 	}
 }
 
+func TestRepoRejectsDuplicateThreadAndForkIDs(t *testing.T) {
+	ctx := context.Background()
+	for _, repo := range []Repo{NewMemoryRepo(), NewFileRepo(t.TempDir())} {
+		if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "source"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "source"}); !errors.Is(err, ErrThreadExists) {
+			t.Fatalf("%T duplicate create err = %v, want ErrThreadExists", repo, err)
+		}
+		if _, err := AppendMessage(ctx, repo, "source", "turn-1", session.Message{Role: session.User, Content: "seed"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "existing"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.Fork(ctx, ForkOptions{SourceThreadID: "source", NewThreadID: "existing"}); !errors.Is(err, ErrThreadExists) {
+			t.Fatalf("%T duplicate fork err = %v, want ErrThreadExists", repo, err)
+		}
+		entries, err := repo.Entries(ctx, "existing")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("%T duplicate fork polluted existing entries: %#v", repo, entries)
+		}
+	}
+}
+
+func TestFileRepoThreadIDsDoNotShareEncodedDirectoryOrLease(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	repo := NewFileRepo(root)
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "a/b"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "a_b"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AppendMessage(ctx, repo, "a/b", "turn-a", session.Message{Role: session.User, Content: "slash"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AppendMessage(ctx, repo, "a_b", "turn-b", session.Message{Role: session.User, Content: "underscore"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.AcquireTurnLease(ctx, TurnLease{ThreadID: "a/b", TurnID: "turn-a", OwnerID: "owner-a", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.AcquireTurnLease(ctx, TurnLease{ThreadID: "a_b", TurnID: "turn-b", OwnerID: "owner-b", CreatedAt: time.Now()}); err != nil {
+		t.Fatalf("distinct thread IDs should not share lease file: %v", err)
+	}
+	reloaded := NewFileRepo(root)
+	slash, err := reloaded.Entries(ctx, "a/b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	underscore, err := reloaded.Entries(ctx, "a_b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(slash) != 1 || slash[0].Message.Content != "slash" || len(underscore) != 1 || underscore[0].Message.Content != "underscore" {
+		t.Fatalf("distinct thread journals polluted: slash=%#v underscore=%#v", slash, underscore)
+	}
+}
+
 func TestMoveLeafPreservesOldBranch(t *testing.T) {
 	ctx := context.Background()
 	repo := NewMemoryRepo()
@@ -488,7 +552,7 @@ func TestFileRepoRepairsStaleThreadLeafFromJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "thread", "thread.json"), data, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, safePath("thread"), "thread.json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -530,7 +594,7 @@ func TestFileRepoRepairsMissingThreadLeafWhenJournalIsReachable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "thread", "thread.json"), data, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, safePath("thread"), "thread.json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -547,7 +611,7 @@ func TestFileRepoRepairsMissingThreadLeafWhenJournalIsReachable(t *testing.T) {
 func TestFileRepoDoesNotRepairMissingThreadLeafFromBrokenJournal(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
-	threadDir := filepath.Join(root, "thread")
+	threadDir := filepath.Join(root, safePath("thread"))
 	if err := os.MkdirAll(threadDir, 0o700); err != nil {
 		t.Fatal(err)
 	}

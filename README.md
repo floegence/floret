@@ -8,22 +8,30 @@ approval decisions, and presentation surfaces through small contracts.
 
 ## Package Map
 
-- `engine`: explicit turn loop, status outcomes, loop guards, provider recovery, tool execution, and event emission.
+- `runtime`: configuration helpers; `NewHarness` is the recommended host entry point and `NewEngine` is the low-level executor entry point.
+- `agentharness`: durable thread API for host/UI conversations: start, resume, fork, run, retry, move leaf, compact, and read snapshots.
+- `engine`: low-level turn executor with explicit loop guards, provider recovery, tool execution, and event emission.
 - `provider`: normalized streaming provider request and event contracts.
-- `tools`: tool registry, approval checks, read-only parallel scheduling, mutation serialization, and panic recovery.
+- `tools`: fail-closed tool registry, approval checks, parallel-safe scheduling, mutation serialization, and panic recovery.
 - `memory`: system prompt assembly.
 - `contextpolicy` and `compaction`: token-aware active context policy and compact-and-continue contracts.
-- `session`: append/replace message storage with an in-memory implementation.
-- `event`: presentation-neutral lifecycle events and a thread-safe recorder for tests.
+- `sessiontree`: durable thread journal, forks, leaf movement, compaction entries, and active-turn leases.
+- `session`: provider-visible transcript shape and low-level ephemeral run storage.
+- `promptcache`: provider-visible raw prompt segment and toolset ledger.
+- `event`: presentation-neutral lifecycle events, default sanitization, and a thread-safe recorder for tests.
 - `harness`: deterministic scripted provider for engine and host tests.
 - `config`: `.env.local` and environment variable loading.
 - `adapters`: provider adapters, including fake and OpenAI-compatible chat completions.
-- `runtime`: configuration-to-engine assembly helpers for hosts.
 - `eval`: lightweight task-eval runner with oracle checks and artifacts.
 
 ## Runtime Shape
 
-The engine is intentionally small and explicit:
+Most hosts should use `runtime.NewHarness`, then `StartThread` or `ResumeThread`,
+and finally `Thread.Run` for each user turn. That API keeps durable conversation
+state in `sessiontree.Repo` and serializes only the same durable `ThreadID`.
+Different threads and forked threads can run concurrently.
+
+The engine remains intentionally small and explicit:
 
 1. Append the user message.
 2. Assemble provider context from the current active projection.
@@ -36,6 +44,9 @@ The engine is intentionally small and explicit:
 
 Events are presentation-neutral so a terminal UI, desktop app, test harness, or automation
 surface can render the same runtime facts without parsing human text.
+Public views should expose sanitized events and observations. Raw provider deltas,
+reasoning, tool arguments/results, prompt segments, and artifact paths are local
+debug data and require explicit opt-in at the host boundary.
 
 ## Local Provider Configuration
 
@@ -119,6 +130,12 @@ The console is an interactive runtime inspector. It can manage one or more local
 provider profiles, save the active profile to `.env.local`, run a single agent turn
 from a first user message, and show the engine state transitions, provider requests,
 provider stream events, session messages, final output, and token/tool metrics.
+Public API responses are sanitized by default. Local raw inspection requires an
+explicit launch-time capability:
+
+```bash
+go run ./cmd/floret-test-ui -- -allow-debug-raw
+```
 
 The sidebar also exposes quick local checks for `go test`, `go test -race`, and the
 deterministic eval demo. Live provider runs use the selected profile and can make

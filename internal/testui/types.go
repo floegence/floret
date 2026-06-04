@@ -151,10 +151,12 @@ type AgentRunRequest struct {
 	SelectedTools []string             `json:"selected_tools,omitempty"`
 	ToolMode      string               `json:"tool_mode,omitempty"`
 	ContextPolicy contextpolicy.Policy `json:"context_policy,omitempty"`
+	DebugRaw      bool                 `json:"debug_raw,omitempty"`
 }
 
 type AgentTurnRequest struct {
-	Message string `json:"message"`
+	Message  string `json:"message"`
+	DebugRaw bool   `json:"debug_raw,omitempty"`
 }
 
 type AgentStreamEventType string
@@ -204,6 +206,7 @@ type AgentToolsUpdateRequest struct {
 type AgentInterfaceProbeRequest struct {
 	SelectedTools []string             `json:"selected_tools,omitempty"`
 	ContextPolicy contextpolicy.Policy `json:"context_policy,omitempty"`
+	DebugRaw      bool                 `json:"debug_raw,omitempty"`
 }
 
 type AgentRunResponse struct {

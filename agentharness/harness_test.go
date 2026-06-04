@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/session"
 	"github.com/floegence/floret/sessiontree"
+	"github.com/floegence/floret/sqlitestore"
 	"github.com/floegence/floret/tools"
 )
 
@@ -57,6 +59,63 @@ func TestThreadRunPersistsTurnEntriesAndContext(t *testing.T) {
 	}
 	if len(snap.Context) != 2 || snap.Context[0].Content != "do it" || snap.Context[1].Content != "done text" || snap.Context[1].ToolName != "" {
 		t.Fatalf("provider-visible context = %#v", snap.Context)
+	}
+}
+
+func TestHarnessOwnsEngineIdentityAndToolDefinitions(t *testing.T) {
+	ctx := context.Background()
+	p := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done"), scriptharness.Done()))
+	h := New(Options{
+		Provider:     p,
+		ProviderName: "fake",
+		Model:        "fake-model",
+		SystemPrompt: "You are Floret.",
+		Tools:        tools.NewRegistry(),
+		Repo:         sessiontree.NewMemoryRepo(),
+		PromptStore:  promptcache.NewMemoryStore(),
+		LoopLimits: LoopLimits{
+			MaxEmptyProviderRetries:  1,
+			NoProgressLimit:          2,
+			DuplicateToolLimit:       3,
+			MaxLengthContinuations:   1,
+			MaxStopHookContinuations: 1,
+		},
+	})
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := thread.Run(ctx, "do it", RunOptions{TurnID: "turn-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != engine.Completed {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(p.Requests) != 1 {
+		t.Fatalf("requests = %#v", p.Requests)
+	}
+	req := p.Requests[0]
+	if req.RunID != "turn-1" || req.RawPlan.Segments[0].SessionID != "thread" || req.Provider != "fake" || req.Model != "fake-model" {
+		t.Fatalf("harness did not own identity/provider/model: %#v", req)
+	}
+	controlTools := 0
+	for _, def := range req.Tools {
+		if def.Name == "ask_user" {
+			controlTools++
+			if def.Annotations["kind"] != "control" {
+				t.Fatalf("ask_user should be engine-owned control tool: %#v", def)
+			}
+		}
+		if def.Name == "task_complete" {
+			t.Fatalf("host-provided raw task_complete leaked into request: %#v", req.Tools)
+		}
+	}
+	if controlTools != 1 {
+		t.Fatalf("expected exactly one engine-owned ask_user tool, got %d in %#v", controlTools, req.Tools)
+	}
+	if len(req.HostedTools) != 0 {
+		t.Fatalf("unexpected hosted tools leaked into request: %#v", req.HostedTools)
 	}
 }
 
@@ -192,7 +251,7 @@ func TestRetryDoesNotDuplicateUserMessageAndKeepsPrefixStable(t *testing.T) {
 	repo := sessiontree.NewMemoryRepo()
 	promptStore := promptcache.NewMemoryStore()
 	failing := scriptharness.NewScriptedProvider(
-		scriptharness.Step(scriptharness.Text("partial before failure"), scriptharness.Tool("missing-1", "missing", "{}")),
+		scriptharness.Step(scriptharness.Text("partial before failure"), scriptharness.Tool("missing-1", "missing", "{}"), scriptharness.DoneReason("tool_calls")),
 		nil,
 	)
 	failing.Errs[2] = errors.New("provider down")
@@ -273,7 +332,7 @@ func TestRetryAfterInterruptedTurnUsesRealtimeToolSavePoint(t *testing.T) {
 	repo := sessiontree.NewMemoryRepo()
 	promptStore := promptcache.NewMemoryStore()
 	p := scriptharness.NewScriptedProvider(
-		scriptharness.Step(scriptharness.Tool("read-1", "read", `{"value":"README.md"}`)),
+		scriptharness.Step(scriptharness.Tool("read-1", "read", `{"value":"README.md"}`), scriptharness.DoneReason("tool_calls")),
 		scriptharness.Step(scriptharness.Hang()),
 	)
 	registry := tools.NewRegistry()
@@ -283,14 +342,14 @@ func TestRetryAfterInterruptedTurnUsesRealtimeToolSavePoint(t *testing.T) {
 		return "read result", nil
 	}))
 	h := New(Options{
-		Provider:      p,
-		ProviderName:  "fake",
-		Model:         "fake-model",
-		SystemPrompt:  "You are Floret.",
-		Tools:         registry,
-		Repo:          repo,
-		PromptStore:   promptStore,
-		EngineOptions: engine.Options{MaxEmptyProviderRetries: 1, NoProgressLimit: 2, DuplicateToolLimit: 3},
+		Provider:     p,
+		ProviderName: "fake",
+		Model:        "fake-model",
+		SystemPrompt: "You are Floret.",
+		Tools:        registry,
+		Repo:         repo,
+		PromptStore:  promptStore,
+		LoopLimits:   LoopLimits{MaxEmptyProviderRetries: 1, NoProgressLimit: 2, DuplicateToolLimit: 3},
 	})
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
@@ -421,10 +480,10 @@ func TestEngineCompactionIsProjectedAsSessionTreeCompactionEntry(t *testing.T) {
 	p := scriptharness.NewScriptedProvider(nil, scriptharness.Step(scriptharness.Text("ok"), scriptharness.Done()))
 	p.Errs[1] = provider.ErrContextOverflow
 	h := newTestHarness(p, repo, promptcache.NewMemoryStore())
-	h.options.ContextPolicy.ContextWindowTokens = 8000
-	h.options.ContextPolicy.ReservedOutputTokens = 512
-	h.options.ContextPolicy.ReservedSummaryTokens = 512
-	h.options.ContextPolicy.RecentTailTokens = 256
+	h.options.TurnPolicy.ContextPolicy.ContextWindowTokens = 8000
+	h.options.TurnPolicy.ContextPolicy.ReservedOutputTokens = 512
+	h.options.TurnPolicy.ContextPolicy.ReservedSummaryTokens = 512
+	h.options.TurnPolicy.ContextPolicy.RecentTailTokens = 256
 	h.options.CompactionGenerator = compaction.ExtractiveSummaryGenerator{}
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
@@ -474,10 +533,10 @@ func TestMultipleCompactionsForkReloadAndContinueUseLatestWindow(t *testing.T) {
 	p.Errs[3] = provider.ErrContextOverflow
 	h := newTestHarness(p, repo, promptStore)
 	h.options.CompactionGenerator = compaction.ExtractiveSummaryGenerator{}
-	h.options.ContextPolicy.ContextWindowTokens = 12000
-	h.options.ContextPolicy.ReservedOutputTokens = 512
-	h.options.ContextPolicy.ReservedSummaryTokens = 512
-	h.options.ContextPolicy.RecentTailTokens = 512
+	h.options.TurnPolicy.ContextPolicy.ContextWindowTokens = 12000
+	h.options.TurnPolicy.ContextPolicy.ReservedOutputTokens = 512
+	h.options.TurnPolicy.ContextPolicy.ReservedSummaryTokens = 512
+	h.options.TurnPolicy.ContextPolicy.RecentTailTokens = 512
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
 		t.Fatal(err)
@@ -535,7 +594,7 @@ func TestFileRepoResumeContinuesThreadAndReusesRawSegments(t *testing.T) {
 	promptRoot := t.TempDir()
 	repo := sessiontree.NewFileRepo(root)
 	promptStore := promptcache.NewFileStore(promptRoot)
-	firstProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Tool("ask", "ask_user", `{"question":"more?"}`)))
+	firstProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Tool("ask", "ask_user", `{"question":"more?"}`), scriptharness.DoneReason("tool_calls")))
 	h := newTestHarness(firstProvider, repo, promptStore)
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
@@ -588,6 +647,259 @@ func TestFileRepoResumeContinuesThreadAndReusesRawSegments(t *testing.T) {
 	}
 }
 
+func TestFileRepoActiveTurnLeaseBlocksSecondHarnessResume(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	promptRoot := t.TempDir()
+	blocking := newBlockingProvider()
+	firstHarness := newTestHarness(blocking, sessiontree.NewFileRepo(root), promptcache.NewFileStore(promptRoot))
+	thread, err := firstHarness.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := thread.Run(runCtx, "hang", RunOptions{TurnID: "turn-live"})
+		done <- err
+	}()
+	<-blocking.started
+
+	secondHarness := newTestHarness(scriptharness.NewScriptedProvider(), sessiontree.NewFileRepo(root), promptcache.NewFileStore(promptRoot))
+	if _, err := secondHarness.ResumeThread(ctx, "thread", ResumeOptions{}); !errors.Is(err, ErrActiveTurn) {
+		t.Fatalf("resume err = %v, want active turn guard", err)
+	}
+	entries, err := sessiontree.NewFileRepo(root).Entries(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(entries, func(entry sessiontree.Entry) bool {
+		return entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnAborted ||
+			entry.Type == sessiontree.EntryRunFailure && strings.Contains(entry.Error, "interrupted")
+	}) {
+		t.Fatalf("live turn should not be marked interrupted: %#v", entries)
+	}
+	cancel()
+	<-done
+}
+
+func TestFileRepoResumeClearsOnlyExpiredActiveTurnLease(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	promptRoot := t.TempDir()
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	repo := sessiontree.NewFileRepo(root)
+	h := newTestHarness(scriptharness.NewScriptedProvider(), repo, promptcache.NewFileStore(promptRoot))
+	h.options.Now = func() time.Time { return now }
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendTurnMarker(ctx, repo, thread.ID(), "turn-stale", sessiontree.TurnStarted, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.AcquireTurnLease(ctx, sessiontree.TurnLease{ThreadID: thread.ID(), TurnID: "turn-stale", OwnerID: "dead-owner", CreatedAt: now.Add(-25 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	resumedHarness := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("ok"), scriptharness.Done())), sessiontree.NewFileRepo(root), promptcache.NewFileStore(promptRoot))
+	resumedHarness.options.Now = func() time.Time { return now }
+	resumed, err := resumedHarness.ResumeThread(ctx, thread.ID(), ResumeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := resumed.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(snap.Entries, func(entry sessiontree.Entry) bool {
+		return entry.Type == sessiontree.EntryTurnMarker && entry.TurnID == "turn-stale" && entry.TurnStatus == sessiontree.TurnAborted
+	}) {
+		t.Fatalf("stale started turn should be marked aborted after expired lease recovery: %#v", snap.Entries)
+	}
+	if _, ok, err := sessiontree.NewFileRepo(root).ActiveTurnLease(ctx, thread.ID()); err != nil || ok {
+		t.Fatalf("expired lease should be cleared, ok=%v err=%v", ok, err)
+	}
+}
+
+func TestMoveToHoldsActiveTurnGuardDuringMutation(t *testing.T) {
+	ctx := context.Background()
+	repo := &blockingMoveRepo{MemoryRepo: sessiontree.NewMemoryRepo(), entered: make(chan struct{}), release: make(chan struct{})}
+	h := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done"), scriptharness.Done())), repo, promptcache.NewMemoryStore())
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := thread.Run(ctx, "first", RunOptions{TurnID: "turn-1"}); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := thread.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := firstEntry(snap.Entries, sessiontree.EntryUserMessage).ID
+	done := make(chan error, 1)
+	go func() {
+		done <- thread.MoveTo(ctx, target, MoveOptions{})
+	}()
+	<-repo.entered
+	if _, err := thread.Run(ctx, "racing", RunOptions{TurnID: "turn-race"}); !errors.Is(err, ErrActiveTurn) {
+		t.Fatalf("run err = %v, want active turn during MoveTo", err)
+	}
+	close(repo.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestManualCompactHoldsActiveTurnGuardDuringMutation(t *testing.T) {
+	ctx := context.Background()
+	repo := &blockingAppendRepo{MemoryRepo: sessiontree.NewMemoryRepo(), entered: make(chan struct{}), release: make(chan struct{})}
+	h := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done"), scriptharness.Done())), repo, promptcache.NewMemoryStore())
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := thread.Run(ctx, "first", RunOptions{TurnID: "turn-1"}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := thread.Compact(ctx, "manual summary", "")
+		done <- err
+	}()
+	<-repo.entered
+	if _, err := thread.Run(ctx, "racing", RunOptions{TurnID: "turn-race"}); !errors.Is(err, ErrActiveTurn) {
+		t.Fatalf("run err = %v, want active turn during Compact", err)
+	}
+	close(repo.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDifferentThreadsRunConcurrently(t *testing.T) {
+	ctx := context.Background()
+	assertDifferentThreadsRunConcurrently(t, ctx, sessiontree.NewMemoryRepo(), promptcache.NewMemoryStore())
+}
+
+func TestSQLiteDifferentThreadsRunConcurrently(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlitestore.Open(filepath.Join(t.TempDir(), "floret.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	assertDifferentThreadsRunConcurrently(t, ctx, repo, repo)
+}
+
+func TestForkAndSourceRunConcurrentlyWithoutPollution(t *testing.T) {
+	ctx := context.Background()
+	assertForkAndSourceRunConcurrentlyWithoutPollution(t, ctx, sessiontree.NewMemoryRepo(), promptcache.NewMemoryStore())
+}
+
+func TestSQLiteForkAndSourceRunConcurrentlyWithoutPollution(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlitestore.Open(filepath.Join(t.TempDir(), "floret.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	assertForkAndSourceRunConcurrentlyWithoutPollution(t, ctx, repo, repo)
+}
+
+func assertDifferentThreadsRunConcurrently(t *testing.T, ctx context.Context, repo sessiontree.Repo, promptStore promptcache.Store) {
+	t.Helper()
+	provider := newConcurrentProvider(2)
+	h := newTestHarness(provider, repo, promptStore)
+	first, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	var firstResult, secondResult TurnResult
+	var firstErr, secondErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		firstResult, firstErr = first.Run(ctx, "alpha", RunOptions{TurnID: "turn-a"})
+	}()
+	go func() {
+		defer wg.Done()
+		secondResult, secondErr = second.Run(ctx, "beta", RunOptions{TurnID: "turn-b"})
+	}()
+	wg.Wait()
+
+	if firstErr != nil || secondErr != nil {
+		t.Fatalf("run errors: first=%v second=%v", firstErr, secondErr)
+	}
+	if firstResult.Status != engine.Completed || secondResult.Status != engine.Completed {
+		t.Fatalf("results = %#v %#v", firstResult, secondResult)
+	}
+	if provider.MaxConcurrent() < 2 {
+		t.Fatalf("provider did not observe concurrent runs, max=%d", provider.MaxConcurrent())
+	}
+	firstSnap, _ := first.Read(ctx)
+	secondSnap, _ := second.Read(ctx)
+	if countEntriesWithContent(firstSnap.Entries, sessiontree.EntryUserMessage, "beta") != 0 ||
+		countEntriesWithContent(secondSnap.Entries, sessiontree.EntryUserMessage, "alpha") != 0 {
+		t.Fatalf("thread entries polluted: first=%#v second=%#v", firstSnap.Entries, secondSnap.Entries)
+	}
+}
+
+func assertForkAndSourceRunConcurrentlyWithoutPollution(t *testing.T, ctx context.Context, repo sessiontree.Repo, promptStore promptcache.Store) {
+	t.Helper()
+	setup := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("base"), scriptharness.Done()))
+	h := newTestHarness(setup, repo, promptStore)
+	source, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "source"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Run(ctx, "seed", RunOptions{TurnID: "turn-seed"}); err != nil {
+		t.Fatal(err)
+	}
+	fork, err := h.ForkThread(ctx, ForkOptions{SourceThreadID: "source", NewThreadID: "fork"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	concurrent := newConcurrentProvider(2)
+	h.options.Provider = concurrent
+
+	var wg sync.WaitGroup
+	var sourceErr, forkErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, sourceErr = source.Run(ctx, "source-only", RunOptions{TurnID: "turn-source"})
+	}()
+	go func() {
+		defer wg.Done()
+		_, forkErr = fork.Run(ctx, "fork-only", RunOptions{TurnID: "turn-fork"})
+	}()
+	wg.Wait()
+	if sourceErr != nil || forkErr != nil {
+		t.Fatalf("run errors: source=%v fork=%v", sourceErr, forkErr)
+	}
+	if concurrent.MaxConcurrent() < 2 {
+		t.Fatalf("provider did not observe concurrent source/fork runs, max=%d", concurrent.MaxConcurrent())
+	}
+	sourceSnap, _ := source.Read(ctx)
+	forkSnap, _ := fork.Read(ctx)
+	if countEntriesWithContent(sourceSnap.Entries, sessiontree.EntryUserMessage, "fork-only") != 0 ||
+		countEntriesWithContent(forkSnap.Entries, sessiontree.EntryUserMessage, "source-only") != 0 {
+		t.Fatalf("fork/source entries polluted: source=%#v fork=%#v", sourceSnap.Entries, forkSnap.Entries)
+	}
+	if countEntriesWithContent(sourceSnap.Entries, sessiontree.EntryUserMessage, "source-only") != 1 ||
+		countEntriesWithContent(forkSnap.Entries, sessiontree.EntryUserMessage, "fork-only") != 1 {
+		t.Fatalf("own continuation missing: source=%#v fork=%#v", sourceSnap.Entries, forkSnap.Entries)
+	}
+}
+
 func TestToolProjectionDoesNotDuplicateMultiToolBatches(t *testing.T) {
 	ctx := context.Background()
 	repo := sessiontree.NewMemoryRepo()
@@ -617,14 +929,14 @@ func TestToolProjectionDoesNotDuplicateMultiToolBatches(t *testing.T) {
 		return "result " + value, nil
 	}))
 	h := New(Options{
-		Provider:      p,
-		ProviderName:  "fake",
-		Model:         "fake-model",
-		SystemPrompt:  "You are Floret.",
-		Tools:         registry,
-		Repo:          repo,
-		PromptStore:   promptStore,
-		EngineOptions: engine.Options{MaxEmptyProviderRetries: 1, NoProgressLimit: 2, DuplicateToolLimit: 3},
+		Provider:     p,
+		ProviderName: "fake",
+		Model:        "fake-model",
+		SystemPrompt: "You are Floret.",
+		Tools:        registry,
+		Repo:         repo,
+		PromptStore:  promptStore,
+		LoopLimits:   LoopLimits{MaxEmptyProviderRetries: 1, NoProgressLimit: 2, DuplicateToolLimit: 3},
 	})
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
@@ -748,7 +1060,8 @@ func TestResumeMarksUnfinishedTurnInterrupted(t *testing.T) {
 func TestActiveTurnBusyGuard(t *testing.T) {
 	ctx := context.Background()
 	p := newBlockingProvider()
-	h := newTestHarness(p, sessiontree.NewMemoryRepo(), promptcache.NewMemoryStore())
+	repo := sessiontree.NewMemoryRepo()
+	h := newTestHarness(p, repo, promptcache.NewMemoryStore())
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
 		t.Fatal(err)
@@ -765,6 +1078,103 @@ func TestActiveTurnBusyGuard(t *testing.T) {
 	if !errors.Is(err, ErrActiveTurn) {
 		t.Fatalf("err = %v, want active turn guard", err)
 	}
+	snap, err := thread.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(snap.Entries, func(entry sessiontree.Entry) bool {
+		return entry.TurnID == "turn-2" || (entry.Type == sessiontree.EntryUserMessage && entry.Message.Content == "second")
+	}) {
+		t.Fatalf("rejected active turn should not append entries: %#v", snap.Entries)
+	}
+	cancel()
+	<-done
+}
+
+func TestSQLiteRepoActiveTurnBusyGuard(t *testing.T) {
+	ctx := context.Background()
+	p := newBlockingProvider()
+	repo, err := sqlitestore.Open(filepath.Join(t.TempDir(), "floret.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	h := newTestHarness(p, repo, promptcache.NewMemoryStore())
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := thread.Run(runCtx, "hang", RunOptions{TurnID: "turn-live"})
+		done <- err
+	}()
+	<-p.started
+	_, err = thread.Run(ctx, "second", RunOptions{TurnID: "turn-second"})
+	if !errors.Is(err, ErrActiveTurn) {
+		t.Fatalf("err = %v, want active turn guard", err)
+	}
+	snap, err := thread.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(snap.Entries, func(entry sessiontree.Entry) bool {
+		return entry.TurnID == "turn-second" || (entry.Type == sessiontree.EntryUserMessage && entry.Message.Content == "second")
+	}) {
+		t.Fatalf("rejected sqlite active turn should not append entries: %#v", snap.Entries)
+	}
+	cancel()
+	<-done
+}
+
+func TestRetryDuringActiveTurnReturnsErrActiveTurnWithoutMovingLeaf(t *testing.T) {
+	ctx := context.Background()
+	repo := sessiontree.NewMemoryRepo()
+	promptStore := promptcache.NewMemoryStore()
+	failing := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("failed"), scriptharness.DoneReason("error")))
+	h := newTestHarness(failing, repo, promptStore)
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := thread.Run(ctx, "retryable", RunOptions{TurnID: "turn-failed"}); err == nil {
+		t.Fatalf("first run should fail")
+	}
+	failedSnap, err := thread.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedLeaf := failedSnap.Meta.LeafID
+
+	blocking := newBlockingProvider()
+	h.options.Provider = blocking
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := thread.Run(runCtx, "active", RunOptions{TurnID: "turn-active"})
+		done <- err
+	}()
+	<-blocking.started
+
+	_, err = thread.Retry(ctx, RetryOptions{Reason: "busy"})
+	if !errors.Is(err, ErrActiveTurn) {
+		t.Fatalf("err = %v, want active turn guard", err)
+	}
+	activeSnap, err := thread.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activeSnap.Meta.LeafID == failedLeaf {
+		t.Fatalf("active turn should have advanced leaf before retry check")
+	}
+	if slices.ContainsFunc(activeSnap.Entries, func(entry sessiontree.Entry) bool {
+		return entry.TurnID != "" && strings.HasPrefix(entry.TurnID, "turn-") && entry.TurnID != "turn-failed" && entry.TurnID != "turn-active"
+	}) {
+		t.Fatalf("busy retry should not append retry entries: %#v", activeSnap.Entries)
+	}
 	cancel()
 	<-done
 }
@@ -774,7 +1184,7 @@ func TestThreadRunPersistsTerminalMarkerAfterDeadline(t *testing.T) {
 	p := newBlockingProvider()
 	repo := sessiontree.NewMemoryRepo()
 	h := newTestHarness(p, repo, promptcache.NewMemoryStore())
-	h.options.EngineOptions.WallTime = 10 * time.Millisecond
+	h.options.LoopLimits.WallTime = 10 * time.Millisecond
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
 		t.Fatal(err)
@@ -819,7 +1229,7 @@ func newTestHarness(p provider.Provider, repo sessiontree.Repo, promptStore prom
 		Repo:         repo,
 		PromptStore:  promptStore,
 		Sink:         rec,
-		EngineOptions: engine.Options{
+		LoopLimits: LoopLimits{
 			MaxEmptyProviderRetries: 1,
 			NoProgressLimit:         2,
 			DuplicateToolLimit:      3,
@@ -844,6 +1254,7 @@ func stringTool(name string, handler func(context.Context, string) (string, erro
 			InputSchema: tools.StrictObject(map[string]any{
 				"value": tools.String("test value"),
 			}, []string{"value"}),
+			Permission: tools.PermissionSpec{Mode: tools.PermissionAllow},
 		},
 		nil,
 		nil,
@@ -1020,6 +1431,42 @@ type blockingProvider struct {
 	once    sync.Once
 }
 
+type blockingMoveRepo struct {
+	*sessiontree.MemoryRepo
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (r *blockingMoveRepo) MoveLeaf(ctx context.Context, threadID, entryID string) error {
+	r.once.Do(func() { close(r.entered) })
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-r.release:
+	}
+	return r.MemoryRepo.MoveLeaf(ctx, threadID, entryID)
+}
+
+type blockingAppendRepo struct {
+	*sessiontree.MemoryRepo
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (r *blockingAppendRepo) Append(ctx context.Context, entry sessiontree.Entry, opts sessiontree.AppendOptions) (sessiontree.Entry, error) {
+	if entry.Type == sessiontree.EntryCompaction {
+		r.once.Do(func() { close(r.entered) })
+		select {
+		case <-ctx.Done():
+			return sessiontree.Entry{}, ctx.Err()
+		case <-r.release:
+		}
+	}
+	return r.MemoryRepo.Append(ctx, entry, opts)
+}
+
 func newBlockingProvider() *blockingProvider {
 	return &blockingProvider{started: make(chan struct{})}
 }
@@ -1032,4 +1479,57 @@ func (p *blockingProvider) Stream(ctx context.Context, _ provider.Request) (<-ch
 		<-ctx.Done()
 	}()
 	return ch, nil
+}
+
+type concurrentProvider struct {
+	mu        sync.Mutex
+	want      int
+	active    int
+	maxActive int
+	arrived   int
+	released  chan struct{}
+	requests  []provider.Request
+}
+
+func newConcurrentProvider(want int) *concurrentProvider {
+	return &concurrentProvider{want: want, released: make(chan struct{})}
+}
+
+func (p *concurrentProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
+	p.mu.Lock()
+	p.requests = append(p.requests, req)
+	p.active++
+	if p.active > p.maxActive {
+		p.maxActive = p.active
+	}
+	p.arrived++
+	if p.arrived == p.want {
+		close(p.released)
+	}
+	p.mu.Unlock()
+
+	select {
+	case <-ctx.Done():
+		p.finish()
+		return nil, ctx.Err()
+	case <-p.released:
+	}
+	ch := make(chan provider.StreamEvent, 2)
+	ch <- provider.StreamEvent{Type: provider.Delta, Text: "done " + req.RunID}
+	ch <- provider.StreamEvent{Type: provider.Done, Reason: "stop"}
+	close(ch)
+	p.finish()
+	return ch, nil
+}
+
+func (p *concurrentProvider) finish() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.active--
+}
+
+func (p *concurrentProvider) MaxConcurrent() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.maxActive
 }
