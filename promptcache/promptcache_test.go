@@ -203,6 +203,57 @@ func TestFileStoreKeepsExactRawPrefixAcrossTurnsInSameSession(t *testing.T) {
 	}
 }
 
+func TestPromptCacheDeleteRunsAcrossMemoryAndFileStores(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name  string
+		store interface {
+			Store
+			Deleter
+		}
+	}{
+		{name: "memory", store: NewMemoryStore()},
+		{name: "file", store: NewFileStore(t.TempDir())},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Date(2026, 6, 4, 12, 30, 0, 0, time.UTC)
+			if err := tc.store.AppendSegment(ctx, Segment{ID: "seg-1", RunID: "run-1", Provider: "openai", Model: "model", Kind: SegmentSystem, Raw: "system", CreatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.store.AppendToolset(ctx, ToolsetSnapshot{ID: "toolset-1", RunID: "run-1", Provider: "openai", Model: "model", Epoch: 1, CreatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.store.AppendProviderRequest(ctx, ProviderRequestRecord{ID: "run-1:req:1", RunID: "run-1", Provider: "openai", Model: "model", CreatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.store.AppendProviderResponse(ctx, ProviderResponseRecord{RequestID: "run-1:req:1", RunID: "run-1", ProviderResponseID: "resp-1", CreatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.store.AppendSegment(ctx, Segment{ID: "seg-2", RunID: "run-2", Provider: "openai", Model: "model", Kind: SegmentUserMessage, Raw: "user", CreatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.store.DeleteRuns(ctx, "run-1"); err != nil {
+				t.Fatal(err)
+			}
+			if segments, err := tc.store.Segments(ctx, "run-1", "openai", "model"); err != nil || len(segments) != 0 {
+				t.Fatalf("deleted segments = %#v err=%v", segments, err)
+			}
+			if _, ok, err := tc.store.ActiveToolset(ctx, "run-1", "openai", "model"); err != nil || ok {
+				t.Fatalf("deleted toolset ok=%v err=%v", ok, err)
+			}
+			if requests, err := tc.store.ProviderRequests(ctx, "run-1"); err != nil || len(requests) != 0 {
+				t.Fatalf("deleted requests = %#v err=%v", requests, err)
+			}
+			if responses, err := tc.store.ProviderResponses(ctx, "run-1"); err != nil || len(responses) != 0 {
+				t.Fatalf("deleted responses = %#v err=%v", responses, err)
+			}
+			if segments, err := tc.store.Segments(ctx, "run-2", "openai", "model"); err != nil || len(segments) != 1 {
+				t.Fatalf("kept run segments = %#v err=%v", segments, err)
+			}
+		})
+	}
+}
+
 func TestBuildPlanReusedRawSegmentCarriesCurrentEntryRef(t *testing.T) {
 	store := NewMemoryStore()
 	now := time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC)

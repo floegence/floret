@@ -25,6 +25,7 @@ import (
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/session"
 	"github.com/floegence/floret/sessiontree"
+	"github.com/floegence/floret/sqlitestore"
 )
 
 func TestRunnerParsesGoTestJSON(t *testing.T) {
@@ -457,12 +458,12 @@ func TestRunnerAgentSessionSelectedToolsExplicitlyExposeBuiltInTools(t *testing.
 	if !hasOnlyStrictTools(chat.Observation.ProviderRequests[0].Tools, "ask_user") {
 		t.Fatalf("chat mode should expose only control tools: %#v", chat.Observation.ProviderRequests[0].Tools)
 	}
-	metaData, err := os.ReadFile(runner.agentSessionMetadataPath(chat.SessionID))
+	meta, err := runner.loadAgentSessionMetadata(chat.SessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(metaData), `"selected_tools": []`) {
-		t.Fatalf("metadata should persist empty selected tools: %s", string(metaData))
+	if meta.SelectedTools == nil || len(meta.SelectedTools) != 0 {
+		t.Fatalf("metadata should persist empty selected tools: %#v", meta.SelectedTools)
 	}
 
 	grepOnly := runner.RunAgent(context.Background(), AgentRunRequest{
@@ -1112,12 +1113,16 @@ func TestRunnerRestoredSessionRehydratesSavedAPIKeyWithoutPersistingSecret(t *te
 	if first.Status != "waiting" {
 		t.Fatalf("first = %#v", first)
 	}
-	metadata, err := os.ReadFile(runner.agentSessionMetadataPath(first.SessionID))
+	metadata, err := runner.loadAgentSessionMetadata(first.SessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(metadata), "secret") {
-		t.Fatalf("metadata leaked API key:\n%s", string(metadata))
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(metadataJSON), "secret") {
+		t.Fatalf("metadata leaked API key:\n%s", string(metadataJSON))
 	}
 
 	restored := NewRunner(root)
@@ -1363,6 +1368,7 @@ func TestRunnerDeleteAgentSessionRemovesMetadataTreeAndPromptCache(t *testing.T)
 		harness.Step(harness.Text("second done"), harness.Done()),
 	)
 	runner := NewRunner(root)
+	runner.StorageMode = StorageModeFile
 	runner.Now = fixedClock()
 	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
 		return scripted, nil
@@ -1424,6 +1430,7 @@ func TestRunnerDeleteRestoredAgentSessionRemovesPromptCacheWithoutProvider(t *te
 		harness.Step(harness.Text("second done"), harness.Done()),
 	)
 	firstRunner := NewRunner(root)
+	firstRunner.StorageMode = StorageModeFile
 	firstRunner.Now = fixedClock()
 	firstRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
 		return firstProvider, nil
@@ -1443,6 +1450,7 @@ func TestRunnerDeleteRestoredAgentSessionRemovesPromptCacheWithoutProvider(t *te
 	}
 
 	restored := NewRunner(root)
+	restored.StorageMode = StorageModeFile
 	restored.Now = fixedClock()
 	restored.ProviderFactory = func(config.Config) (provider.Provider, error) {
 		return nil, errors.New("delete should not build provider runtime")
@@ -1460,6 +1468,163 @@ func TestRunnerDeleteRestoredAgentSessionRemovesPromptCacheWithoutProvider(t *te
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("artifact %s still exists or returned unexpected err: %v", path, err)
 		}
+	}
+}
+
+func TestRunnerDefaultSQLitePersistsListsRestoresAndDeletesSession(t *testing.T) {
+	root := t.TempDir()
+	firstProvider := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("ask", "ask_user", `{"question":"Continue?"}`), harness.Done()),
+	)
+	firstRunner := NewRunner(root)
+	firstRunner.Now = fixedClock()
+	firstRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return firstProvider, nil
+	}
+	first := firstRunner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:       "start",
+		SystemPrompt:  "test",
+		SelectedTools: []string{"grep"},
+	})
+	if first.Status != "waiting" {
+		t.Fatalf("first = %#v", first)
+	}
+	if _, err := os.Stat(sqlitestore.DefaultTestUIPath(root)); err != nil {
+		t.Fatalf("default sqlite db missing: %v", err)
+	}
+	if _, err := os.Stat(firstRunner.agentSessionMetadataPath(first.SessionID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("default sqlite should not write JSON metadata file, err=%v", err)
+	}
+
+	secondProvider := harness.NewScriptedProvider(harness.Step(harness.Text("done"), harness.Done()))
+	secondRunner := NewRunner(root)
+	secondRunner.Now = fixedClock()
+	secondRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return secondProvider, nil
+	}
+	sessions := secondRunner.AgentSessions(context.Background())
+	if len(sessions) != 1 || sessions[0].ID != first.SessionID || !slices.Equal(sessions[0].SelectedTools, []string{"grep"}) {
+		t.Fatalf("restarted sessions = %#v", sessions)
+	}
+	opened, err := secondRunner.AgentSession(context.Background(), first.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened.ID != first.SessionID || opened.Status != "waiting" || !opened.CanAppendMessage {
+		t.Fatalf("opened = %#v", opened)
+	}
+	second := secondRunner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "yes"})
+	if second.Status != "completed" || second.Output != "done" {
+		t.Fatalf("second = %#v", second)
+	}
+	if err := secondRunner.DeleteAgentSession(context.Background(), first.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	if sessions := secondRunner.AgentSessions(context.Background()); len(sessions) != 0 {
+		t.Fatalf("sessions after delete = %#v", sessions)
+	}
+	if _, err := secondRunner.AgentSession(context.Background(), first.SessionID); err == nil || !isMissingAgentSessionError(err) {
+		t.Fatalf("AgentSession after delete err = %v", err)
+	}
+}
+
+func TestRunnerSQLiteImportsLegacyFileStorageOnce(t *testing.T) {
+	root := t.TempDir()
+	legacyRunner := NewRunner(root)
+	legacyRunner.StorageMode = StorageModeFile
+	legacyRunner.Now = fixedClock()
+	legacyRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return harness.NewScriptedProvider(harness.Step(harness.Text("legacy done"), harness.Done())), nil
+	}
+	legacy := legacyRunner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:      ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:      "legacy",
+		SystemPrompt: "test",
+	})
+	if legacy.Status != "completed" {
+		t.Fatalf("legacy = %#v", legacy)
+	}
+	if _, err := os.Stat(legacyRunner.agentSessionMetadataPath(legacy.SessionID)); err != nil {
+		t.Fatalf("legacy metadata file missing: %v", err)
+	}
+
+	sqliteRunner := NewRunner(root)
+	sqliteRunner.Now = fixedClock()
+	sessions := sqliteRunner.AgentSessions(context.Background())
+	if len(sessions) != 1 || sessions[0].ID != legacy.SessionID || sessions[0].Status != "completed" {
+		t.Fatalf("imported sessions = %#v", sessions)
+	}
+	status := sqliteRunner.storageStatus(context.Background())
+	if status.Mode != StorageModeSQLite || status.SchemaVersion != "1" || !strings.Contains(status.LegacyImport, "threads=1") || !strings.Contains(status.LegacyImport, "metadata=1") {
+		t.Fatalf("storage status = %#v", status)
+	}
+	restarted := NewRunner(root)
+	restarted.Now = fixedClock()
+	if sessions := restarted.AgentSessions(context.Background()); len(sessions) != 1 || sessions[0].ID != legacy.SessionID {
+		t.Fatalf("restarted imported sessions = %#v", sessions)
+	}
+}
+
+func TestRunnerSQLiteSkipsMalformedLegacySessionWithoutHidingValidSession(t *testing.T) {
+	root := t.TempDir()
+	validRunner := NewRunner(root)
+	validRunner.StorageMode = StorageModeFile
+	validRunner.Now = fixedClock()
+	validRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return harness.NewScriptedProvider(harness.Step(harness.Text("valid done"), harness.Done())), nil
+	}
+	valid := validRunner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:      ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:      "valid",
+		SystemPrompt: "test",
+	})
+	if valid.Status != "completed" {
+		t.Fatalf("valid = %#v", valid)
+	}
+	badDir := filepath.Join(validRunner.agentSessionTreeRoot(), "bad")
+	if err := os.MkdirAll(badDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(badDir, "thread.json"), []byte(`{"id":"bad","leaf_id":"bad-entry"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(badDir, "entries.jsonl"), []byte("{bad json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	metaDir := validRunner.agentSessionMetadataRoot()
+	if err := os.WriteFile(filepath.Join(metaDir, "bad.json"), []byte("{bad json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sqliteRunner := NewRunner(root)
+	sqliteRunner.Now = fixedClock()
+	sessions := sqliteRunner.AgentSessions(context.Background())
+	if len(sessions) != 1 || sessions[0].ID != valid.SessionID {
+		t.Fatalf("valid session should survive malformed legacy data: %#v", sessions)
+	}
+	status := sqliteRunner.storageStatus(context.Background())
+	if !strings.Contains(status.LegacyImport, "skipped=2") {
+		t.Fatalf("legacy skipped summary missing: %#v", status)
+	}
+}
+
+func TestRunnerInterfaceProbeDoesNotOpenDefaultSQLite(t *testing.T) {
+	root := t.TempDir()
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	result := runner.RunInterfaceProbe(context.Background(), AgentInterfaceProbeRequest{
+		SelectedTools: []string{"list"},
+		ContextPolicy: contextPolicyForTest(8192),
+	})
+	if !result.Probe || result.Status != "completed" {
+		t.Fatalf("probe result = %#v", result)
+	}
+	if _, err := os.Stat(sqlitestore.DefaultTestUIPath(root)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("transient probe should not create sqlite db, err=%v", err)
+	}
+	if runner.storageSQLite != nil {
+		t.Fatalf("transient probe opened sqlite store")
 	}
 }
 

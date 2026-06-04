@@ -15,6 +15,8 @@ import (
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8765", "HTTP listen address")
 	root := flag.String("root", ".", "Floret repository root")
+	storageMode := flag.String("storage", testui.StorageModeSQLite, "session storage mode: sqlite, file, or memory")
+	storagePath := flag.String("storage-path", "", "SQLite storage path (default: <root>/.floret-test-ui/floret.db)")
 	flag.Parse()
 
 	absRoot, err := filepath.Abs(*root)
@@ -22,7 +24,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "resolve root: %v\n", err)
 		os.Exit(1)
 	}
-	server, err := testui.NewServer(testui.NewRunner(absRoot))
+	runner := testui.NewRunner(absRoot)
+	runner.StorageMode = *storageMode
+	runner.StoragePath = *storagePath
+	server, err := testui.NewServer(runner)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create server: %v\n", err)
 		os.Exit(1)

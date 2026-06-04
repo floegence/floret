@@ -1,6 +1,7 @@
 package testui
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -26,9 +27,10 @@ const (
 	defaultSearchSummary = "web_search is selected from each provider profile. Provider-hosted search is preferred; Brave client search is available only when explicitly enabled and configured."
 )
 
-func (r Runner) ConfigState() (ConfigState, error) {
+func (r *Runner) ConfigState() (ConfigState, error) {
 	state := ConfigState{EnvFile: r.EnvFile, Catalog: r.Catalog(), SearchWireShapes: searchWireShapes()}
 	state.LocalTime = localTimeInfo(r.now())
+	state.Storage = r.storageStatus(context.Background())
 	fileValues := map[string]string{}
 	if _, err := os.Stat(r.EnvFile); err == nil {
 		state.EnvFileFound = true
@@ -79,7 +81,7 @@ func localTimeInfo(now time.Time) LocalTimeInfo {
 	}
 }
 
-func (r Runner) SaveConfigState(req SaveConfigRequest) (ConfigState, error) {
+func (r *Runner) SaveConfigState(req SaveConfigRequest) (ConfigState, error) {
 	if len(req.Profiles) == 0 {
 		return ConfigState{}, fmt.Errorf("at least one provider profile is required")
 	}

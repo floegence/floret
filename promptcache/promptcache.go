@@ -111,7 +111,7 @@ type Segment struct {
 type MessageSnapshot struct {
 	Role       string `json:"role,omitempty"`
 	Content    string `json:"content,omitempty"`
-	Reasoning string `json:"reasoning,omitempty"`
+	Reasoning  string `json:"reasoning,omitempty"`
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	ToolName   string `json:"tool_name,omitempty"`
 	ToolArgs   string `json:"tool_args,omitempty"`
@@ -197,6 +197,10 @@ type Store interface {
 	ProviderResponses(context.Context, string) ([]ProviderResponseRecord, error)
 }
 
+type Deleter interface {
+	DeleteRuns(context.Context, ...string) error
+}
+
 type MemoryStore struct {
 	mu        sync.Mutex
 	segments  []Segment
@@ -279,6 +283,41 @@ func (s *MemoryStore) ProviderResponses(_ context.Context, runID string) ([]Prov
 	return out, nil
 }
 
+func (s *MemoryStore) DeleteRuns(_ context.Context, runIDs ...string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	remove := map[string]struct{}{}
+	for _, runID := range runIDs {
+		if runID = strings.TrimSpace(runID); runID != "" {
+			remove[runID] = struct{}{}
+		}
+	}
+	if len(remove) == 0 {
+		return nil
+	}
+	s.segments = slices.DeleteFunc(s.segments, func(seg Segment) bool {
+		_, ok := remove[seg.RunID]
+		return ok
+	})
+	s.toolsets = slices.DeleteFunc(s.toolsets, func(snap ToolsetSnapshot) bool {
+		_, ok := remove[snap.RunID]
+		return ok
+	})
+	s.requests = slices.DeleteFunc(s.requests, func(req ProviderRequestRecord) bool {
+		_, ok := remove[req.RunID]
+		return ok
+	})
+	s.responses = slices.DeleteFunc(s.responses, func(resp ProviderResponseRecord) bool {
+		runID := resp.RunID
+		if runID == "" {
+			runID = runIDFromRequest(resp.RequestID)
+		}
+		_, ok := remove[runID]
+		return ok
+	})
+	return nil
+}
+
 type FileStore struct {
 	root string
 	mu   sync.Mutex
@@ -347,6 +386,24 @@ func (s *FileStore) ProviderResponses(ctx context.Context, runID string) ([]Prov
 		return nil, err
 	}
 	return all, nil
+}
+
+func (s *FileStore) DeleteRuns(ctx context.Context, runIDs ...string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, runID := range runIDs {
+		runID = strings.TrimSpace(runID)
+		if runID == "" {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(s.root, safePath(runID))); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *FileStore) append(ctx context.Context, runID, name string, value any) error {
@@ -851,7 +908,7 @@ func newMessageSegment(input BuildInput, kind SegmentKind, msg session.Message, 
 	snap := MessageSnapshot{
 		Role:       string(msg.Role),
 		Content:    msg.Content,
-		Reasoning: msg.Reasoning,
+		Reasoning:  msg.Reasoning,
 		ToolCallID: msg.ToolCallID,
 		ToolName:   msg.ToolName,
 		ToolArgs:   msg.ToolArgs,
@@ -970,7 +1027,7 @@ func (m MessageSnapshot) toSession() session.Message {
 	return session.Message{
 		Role:       session.Role(m.Role),
 		Content:    m.Content,
-		Reasoning: m.Reasoning,
+		Reasoning:  m.Reasoning,
 		ToolCallID: m.ToolCallID,
 		ToolName:   m.ToolName,
 		ToolArgs:   m.ToolArgs,

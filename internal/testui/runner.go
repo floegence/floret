@@ -34,6 +34,7 @@ import (
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/session"
 	"github.com/floegence/floret/sessiontree"
+	"github.com/floegence/floret/sqlitestore"
 	"github.com/floegence/floret/tools"
 )
 
@@ -55,22 +56,29 @@ var (
 const agentSessionTurnLockTimeout = 250 * time.Millisecond
 
 type Runner struct {
-	Root            string
-	EnvFile         string
-	Now             func() time.Time
-	Exec            func(context.Context, string, []string, string, []string) ([]byte, int)
-	ProviderFactory func(config.Config) (provider.Provider, error)
-	Sessions        *agentSessionRegistry
+	Root                string
+	EnvFile             string
+	Now                 func() time.Time
+	Exec                func(context.Context, string, []string, string, []string) ([]byte, int)
+	ProviderFactory     func(config.Config) (provider.Provider, error)
+	Sessions            *agentSessionRegistry
+	StorageMode         string
+	StoragePath         string
+	StorageImportLegacy bool
+	storageSQLite       *sqlitestore.Store
+	storageMemory       *memoryStorage
 }
 
 func NewRunner(root string) Runner {
 	return Runner{
-		Root:            root,
-		EnvFile:         filepath.Join(root, config.DefaultEnvFile),
-		Now:             time.Now,
-		Exec:            execCommand,
-		ProviderFactory: adapters.NewProvider,
-		Sessions:        newAgentSessionRegistry(),
+		Root:                root,
+		EnvFile:             filepath.Join(root, config.DefaultEnvFile),
+		Now:                 time.Now,
+		Exec:                execCommand,
+		ProviderFactory:     adapters.NewProvider,
+		Sessions:            newAgentSessionRegistry(),
+		StorageMode:         StorageModeSQLite,
+		StorageImportLegacy: true,
 	}
 }
 
@@ -148,8 +156,9 @@ func (r *Runner) providerFactory() func(config.Config) (provider.Provider, error
 	return adapters.NewProvider
 }
 
-func (r Runner) ConfigInfo() ConfigInfo {
+func (r *Runner) ConfigInfo() ConfigInfo {
 	info := ConfigInfo{EnvFile: r.EnvFile}
+	info.Storage = r.storageStatus(context.Background())
 	if _, err := os.Stat(r.EnvFile); err == nil {
 		info.EnvFileFound = true
 	}
@@ -525,6 +534,10 @@ func (r *Runner) DeleteAgentSession(ctx context.Context, sessionID string) error
 	}
 	registry := r.sessionRegistry()
 	runIDs := []string{sessionID}
+	store, err := r.sessionStorage(ctx)
+	if err != nil {
+		return err
+	}
 	registry.mu.Lock()
 	sess, inMemory := registry.sessions[sessionID]
 	if inMemory && !sess.mu.TryLock() {
@@ -570,18 +583,20 @@ func (r *Runner) DeleteAgentSession(ctx context.Context, sessionID string) error
 		registry.order = removeSessionID(registry.order, sessionID)
 		registry.mu.Unlock()
 	}
-	if err := os.Remove(r.agentSessionMetadataPath(sessionID)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := os.RemoveAll(filepath.Join(r.agentSessionTreeRoot(), safeSessionFileName(sessionID))); err != nil {
-		return err
-	}
-	for _, runID := range runIDs {
-		if err := os.RemoveAll(filepath.Join(r.Root, ".floret-test-ui", "prompt-cache", safeSessionFileName(runID))); err != nil {
+	return store.deleteSession(ctx, r.Root, sessionID, runIDs, func() error {
+		if err := os.Remove(r.agentSessionMetadataPath(sessionID)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-	}
-	return nil
+		if err := os.RemoveAll(filepath.Join(r.agentSessionTreeRoot(), safeSessionFileName(sessionID))); err != nil {
+			return err
+		}
+		for _, runID := range runIDs {
+			if err := os.RemoveAll(filepath.Join(r.Root, ".floret-test-ui", "prompt-cache", safeSessionFileName(runID))); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (r *Runner) AgentSession(ctx context.Context, sessionID string) (AgentSessionSnapshot, error) {
@@ -752,11 +767,18 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 		return nil, err
 	}
 	observed := newObservingProvider(p)
-	var repo sessiontree.Repo = sessiontree.NewFileRepo(r.agentSessionTreeRoot())
-	var promptStore promptcache.Store = promptcache.NewFileStore(filepath.Join(r.Root, ".floret-test-ui", "prompt-cache"))
+	var repo sessiontree.Repo
+	var promptStore promptcache.Store
 	if opts.Transient {
 		repo = sessiontree.NewMemoryRepo()
 		promptStore = promptcache.NewMemoryStore()
+	} else {
+		store, err := r.sessionStorage(ctx)
+		if err != nil {
+			return nil, err
+		}
+		repo = store.repo(r.Root)
+		promptStore = store.prompt(r.Root)
 	}
 	rec := &streamingEventRecorder{}
 	harnessRec := &streamingHarnessRecorder{repo: repo, threadID: opts.ID}
@@ -919,7 +941,11 @@ func (r *Runner) restoreAgentSession(ctx context.Context, sessionID string) (*ag
 }
 
 func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSessionMetadata) (AgentSessionSnapshot, error) {
-	repo := sessiontree.NewFileRepo(r.agentSessionTreeRoot())
+	store, err := r.sessionStorage(ctx)
+	if err != nil {
+		return AgentSessionSnapshot{}, err
+	}
+	repo := store.repo(r.Root)
 	thread, err := repo.Thread(ctx, meta.ID)
 	if err != nil {
 		return AgentSessionSnapshot{}, err
@@ -1884,7 +1910,11 @@ func (r Runner) runProviderSmoke(ctx context.Context, resp RunResponse) RunRespo
 	}
 	rec := &event.Recorder{}
 	registry := tools.NewRegistry()
-	promptStore := promptcache.NewFileStore(filepath.Join(r.Root, ".floret-test-ui", "prompt-cache"))
+	store, err := r.sessionStorage(ctx)
+	if err != nil {
+		return r.failAgent(resp, err)
+	}
+	promptStore := store.prompt(r.Root)
 	eng := &engine.Engine{
 		Provider: p,
 		Store:    session.NewMemoryStore(),

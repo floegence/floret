@@ -434,6 +434,38 @@ func TestFileRepoAppendAfterReloadDoesNotReuseEntryID(t *testing.T) {
 	}
 }
 
+func TestMemoryAndFileRepoDeleteThread(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		repo Repo
+	}{
+		{name: "memory", repo: NewMemoryRepo()},
+		{name: "file", repo: NewFileRepo(t.TempDir())},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := tc.repo.CreateThread(ctx, ThreadMeta{ID: "thread"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := AppendMessage(ctx, tc.repo, "thread", "turn-1", session.Message{Role: session.User, Content: "hello"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.repo.DeleteThread(ctx, "thread"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tc.repo.Thread(ctx, "thread"); !errors.Is(err, ErrThreadNotFound) {
+				t.Fatalf("thread err = %v, want ErrThreadNotFound", err)
+			}
+			if _, err := tc.repo.Entries(ctx, "thread"); !errors.Is(err, ErrThreadNotFound) {
+				t.Fatalf("entries err = %v, want ErrThreadNotFound", err)
+			}
+			if err := tc.repo.DeleteThread(ctx, "thread"); !errors.Is(err, ErrThreadNotFound) {
+				t.Fatalf("second delete err = %v, want ErrThreadNotFound", err)
+			}
+		})
+	}
+}
+
 func TestFileRepoRepairsStaleThreadLeafFromJournal(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

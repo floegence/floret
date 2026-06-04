@@ -1,6 +1,7 @@
 package testui
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -55,7 +56,7 @@ func (r Runner) agentSessionMetadataPath(sessionID string) string {
 	return filepath.Join(r.agentSessionMetadataRoot(), safeSessionFileName(sessionID)+".json")
 }
 
-func (r Runner) saveAgentSessionMetadata(meta agentSessionMetadata) error {
+func (r *Runner) saveAgentSessionMetadata(meta agentSessionMetadata) error {
 	if meta.ID == "" {
 		return errors.New("agent session metadata id is required")
 	}
@@ -65,6 +66,14 @@ func (r Runner) saveAgentSessionMetadata(meta agentSessionMetadata) error {
 	if meta.UpdatedAt.IsZero() {
 		meta.UpdatedAt = meta.CreatedAt
 	}
+	store, err := r.sessionStorage(context.Background())
+	if err != nil {
+		return err
+	}
+	return store.saveMetadata(context.Background(), meta, r.saveAgentSessionMetadataFile)
+}
+
+func (r Runner) saveAgentSessionMetadataFile(meta agentSessionMetadata) error {
 	if err := os.MkdirAll(r.agentSessionMetadataRoot(), 0o700); err != nil {
 		return err
 	}
@@ -102,7 +111,19 @@ func (r Runner) saveAgentSessionMetadata(meta agentSessionMetadata) error {
 	return nil
 }
 
-func (r Runner) loadAgentSessionMetadata(sessionID string) (agentSessionMetadata, error) {
+func (r *Runner) loadAgentSessionMetadata(sessionID string) (agentSessionMetadata, error) {
+	store, err := r.sessionStorage(context.Background())
+	if err != nil {
+		return agentSessionMetadata{}, err
+	}
+	meta, err := store.loadMetadata(context.Background(), sessionID, r.loadAgentSessionMetadataFile)
+	if err != nil {
+		return agentSessionMetadata{}, err
+	}
+	return r.normalizeAgentSessionMetadata(sessionID, meta)
+}
+
+func (r Runner) loadAgentSessionMetadataFile(sessionID string) (agentSessionMetadata, error) {
 	data, err := os.ReadFile(r.agentSessionMetadataPath(sessionID))
 	if err != nil {
 		return agentSessionMetadata{}, err
@@ -111,6 +132,10 @@ func (r Runner) loadAgentSessionMetadata(sessionID string) (agentSessionMetadata
 	if err := json.Unmarshal(data, &meta); err != nil {
 		return agentSessionMetadata{}, err
 	}
+	return meta, nil
+}
+
+func (r Runner) normalizeAgentSessionMetadata(sessionID string, meta agentSessionMetadata) (agentSessionMetadata, error) {
 	if meta.ID == "" {
 		meta.ID = sessionID
 	}
@@ -130,7 +155,36 @@ func (r Runner) loadAgentSessionMetadata(sessionID string) (agentSessionMetadata
 	return meta, nil
 }
 
-func (r Runner) listAgentSessionMetadata() ([]agentSessionMetadata, error) {
+func (r *Runner) listAgentSessionMetadata() ([]agentSessionMetadata, error) {
+	store, err := r.sessionStorage(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	raw, err := store.listMetadata(context.Background(), r.listAgentSessionMetadataFiles)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]agentSessionMetadata, 0, len(raw))
+	for _, meta := range raw {
+		normalized, err := r.normalizeAgentSessionMetadata(meta.ID, meta)
+		if err != nil {
+			continue
+		}
+		out = append(out, normalized)
+	}
+	slices.SortFunc(out, func(a, b agentSessionMetadata) int {
+		if a.UpdatedAt.Equal(b.UpdatedAt) {
+			return strings.Compare(b.ID, a.ID)
+		}
+		if a.UpdatedAt.After(b.UpdatedAt) {
+			return -1
+		}
+		return 1
+	})
+	return out, nil
+}
+
+func (r Runner) listAgentSessionMetadataFiles() ([]agentSessionMetadata, error) {
 	paths, err := filepath.Glob(filepath.Join(r.agentSessionMetadataRoot(), "*.json"))
 	if err != nil {
 		return nil, err
@@ -145,30 +199,8 @@ func (r Runner) listAgentSessionMetadata() ([]agentSessionMetadata, error) {
 		if err := json.Unmarshal(data, &meta); err != nil || meta.ID == "" {
 			continue
 		}
-		if meta.Version != 0 && meta.Version != agentSessionMetadataVersion {
-			continue
-		}
-		meta.Profile = normalizeProfile(meta.Profile, 0)
-		meta.Profile.APIKey = ""
-		meta.Profile.APIKeySet = meta.APIKeyRequired || meta.Profile.APIKeySet
-		selected, err := normalizeAgentSessionTools(meta.SelectedTools, meta.ToolMode)
-		if err != nil {
-			continue
-		}
-		meta.SelectedTools = cloneSelectedTools(selected)
-		meta.ToolMode = ""
-		meta.ContextPolicy = contextpolicy.Normalize(meta.ContextPolicy)
 		out = append(out, meta)
 	}
-	slices.SortFunc(out, func(a, b agentSessionMetadata) int {
-		if a.UpdatedAt.Equal(b.UpdatedAt) {
-			return strings.Compare(b.ID, a.ID)
-		}
-		if a.UpdatedAt.After(b.UpdatedAt) {
-			return -1
-		}
-		return 1
-	})
 	return out, nil
 }
 

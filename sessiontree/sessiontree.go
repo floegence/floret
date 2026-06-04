@@ -139,6 +139,7 @@ type Repo interface {
 	CreateThread(context.Context, ThreadMeta) (ThreadMeta, error)
 	Thread(context.Context, string) (ThreadMeta, error)
 	UpdateThread(context.Context, ThreadMeta) error
+	DeleteThread(context.Context, string) error
 	Append(context.Context, Entry, AppendOptions) (Entry, error)
 	Entry(context.Context, string, string) (Entry, error)
 	Entries(context.Context, string) ([]Entry, error)
@@ -193,6 +194,17 @@ func (r *MemoryRepo) UpdateThread(_ context.Context, meta ThreadMeta) error {
 	}
 	meta.UpdatedAt = nonZeroTime(meta.UpdatedAt)
 	r.threads[meta.ID] = meta
+	return nil
+}
+
+func (r *MemoryRepo) DeleteThread(_ context.Context, threadID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.threads[threadID]; !ok {
+		return ErrThreadNotFound
+	}
+	delete(r.threads, threadID)
+	delete(r.entries, threadID)
 	return nil
 }
 
@@ -383,6 +395,20 @@ func (r *FileRepo) UpdateThread(ctx context.Context, meta ThreadMeta) error {
 		return err
 	}
 	return r.saveThread(meta)
+}
+
+func (r *FileRepo) DeleteThread(ctx context.Context, threadID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.load(ctx); err != nil {
+		return err
+	}
+	if _, ok := r.mem.threads[threadID]; !ok {
+		return ErrThreadNotFound
+	}
+	delete(r.mem.threads, threadID)
+	delete(r.mem.entries, threadID)
+	return os.RemoveAll(filepath.Join(r.root, safePath(threadID)))
 }
 
 func (r *FileRepo) Append(ctx context.Context, entry Entry, opts AppendOptions) (Entry, error) {
@@ -818,6 +844,20 @@ func readEntries(path string) ([]Entry, error) {
 		}
 		entries = append(entries, entry)
 	}
+}
+
+func PrepareEntry(entry Entry) Entry {
+	entry.Raw = rawForEntry(entry)
+	entry.RawHash = stableHash(entry.Raw)
+	return entry
+}
+
+func RawForEntry(entry Entry) string {
+	return rawForEntry(entry)
+}
+
+func StableHash(value string) string {
+	return stableHash(value)
 }
 
 func rawForEntry(entry Entry) string {

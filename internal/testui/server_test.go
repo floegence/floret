@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -1283,11 +1282,17 @@ func TestServerAgentSessionDeadlineTurnIsTerminalOnLaterRead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runCtx, cancelRun := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancelRun()
-	turnReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+created.ID+"/turns", strings.NewReader(`{"message":"hello"}`)).WithContext(runCtx)
-	turnRec := httptest.NewRecorder()
-	handler.ServeHTTP(turnRec, turnReq)
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	turnDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		turnReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+created.ID+"/turns", strings.NewReader(`{"message":"hello"}`)).WithContext(runCtx)
+		turnRec := httptest.NewRecorder()
+		handler.ServeHTTP(turnRec, turnReq)
+		turnDone <- turnRec
+	}()
+	blocking.waitStarted(t)
+	cancelRun()
+	turnRec := <-turnDone
 	if turnRec.Code != http.StatusOK {
 		t.Fatalf("turn status/body = %d %s", turnRec.Code, turnRec.Body.String())
 	}
@@ -1295,7 +1300,8 @@ func TestServerAgentSessionDeadlineTurnIsTerminalOnLaterRead(t *testing.T) {
 	if err := json.Unmarshal(turnRec.Body.Bytes(), &turn); err != nil {
 		t.Fatal(err)
 	}
-	if (turn.Status != string(engine.Cancelled) && turn.Status != string(engine.Failed)) || !strings.Contains(turn.Error, context.DeadlineExceeded.Error()) {
+	if (turn.Status != string(engine.Cancelled) && turn.Status != string(engine.Failed)) ||
+		(!strings.Contains(turn.Error, context.DeadlineExceeded.Error()) && !strings.Contains(turn.Error, context.Canceled.Error())) {
 		t.Fatalf("turn = %#v", turn)
 	}
 
@@ -1316,12 +1322,8 @@ func TestServerAgentSessionDeadlineTurnIsTerminalOnLaterRead(t *testing.T) {
 		t.Fatalf("turn summaries = %#v", snapshot.Turns)
 	}
 
-	var meta agentSessionMetadata
-	data, err := os.ReadFile(runner.agentSessionMetadataPath(created.ID))
+	meta, err := runner.loadAgentSessionMetadata(created.ID)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(data, &meta); err != nil {
 		t.Fatal(err)
 	}
 	if len(meta.Turns) != 1 || meta.Turns[0].Status != snapshot.Status || !meta.UpdatedAt.After(meta.CreatedAt) {

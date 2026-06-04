@@ -16,12 +16,13 @@ import (
 )
 
 type ConfigInfo struct {
-	Provider     string `json:"provider"`
-	Model        string `json:"model"`
-	EnvFile      string `json:"env_file"`
-	EnvFileFound bool   `json:"env_file_found"`
-	LiveProvider bool   `json:"live_provider"`
-	BaseURL      string `json:"base_url,omitempty"`
+	Provider     string        `json:"provider"`
+	Model        string        `json:"model"`
+	EnvFile      string        `json:"env_file"`
+	EnvFileFound bool          `json:"env_file_found"`
+	LiveProvider bool          `json:"live_provider"`
+	BaseURL      string        `json:"base_url,omitempty"`
+	Storage      storageStatus `json:"storage"`
 }
 
 type RunRequest struct {
@@ -92,6 +93,7 @@ type ConfigState struct {
 	SearchWireShapes []SearchWireShape  `json:"search_wire_shapes"`
 	SearchProvider   SearchProviderInfo `json:"search_provider"`
 	LocalTime        LocalTimeInfo      `json:"local_time"`
+	Storage          storageStatus      `json:"storage"`
 }
 
 type LocalTimeInfo struct {

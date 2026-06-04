@@ -81,6 +81,8 @@ export function renderSettings() {
           </div>
         </form>
         <section class="check-card">
+          ${renderStorageStatus()}
+          <div class="settings-divider"></div>
           <h2>Quality Checks</h2>
           <p class="muted">Run local checks without leaving the console.</p>
           <div class="form-actions">
@@ -113,6 +115,32 @@ export function renderSettings() {
         </section>
       </div>
     </section>
+  `;
+}
+
+function renderStorageStatus() {
+  const storage = state.config?.storage || {};
+  const mode = storage.mode || "sqlite";
+  const detail = storage.path || "in-memory";
+  const schema = storage.schema_version ? `schema ${storage.schema_version}` : "";
+  const imported = storage.legacy_import || "no legacy import recorded";
+  const error = storage.error ? `error: ${storage.error}` : "";
+  return `
+    <h2>Session Storage</h2>
+    <div class="tool-boundary-grid">
+      <div>
+        <strong>Mode</strong>
+        <span>${escapeHTML(mode)}</span>
+      </div>
+      <div>
+        <strong>Location</strong>
+        <span title="${escapeHTML(detail)}">${escapeHTML(detail)}</span>
+      </div>
+      <div>
+        <strong>Status</strong>
+        <span>${escapeHTML([error, schema, imported].filter(Boolean).join(" · "))}</span>
+      </div>
+    </div>
   `;
 }
 
