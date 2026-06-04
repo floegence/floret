@@ -114,6 +114,49 @@ func TestWebSearchCapabilityBoundaryIsEnforced(t *testing.T) {
 	}
 }
 
+func TestNoBuiltInWebFetchBoundaryIsEnforced(t *testing.T) {
+	builtins, err := os.ReadFile(filepath.Join("builtintools", "common.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	testUI, err := os.ReadFile(filepath.Join("internal", "testui", "tool_selection.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	staticMatrix, err := os.ReadFile(filepath.Join("internal", "testui", "static", "components", "toolMatrix.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, text := range map[string]string{
+		"builtintools/common.go":                          string(builtins),
+		"internal/testui/tool_selection.go":               string(testUI),
+		"internal/testui/static/components/toolMatrix.js": string(staticMatrix),
+	} {
+		if strings.Contains(text, "web_fetch") || strings.Contains(text, "ToolWebFetch") || strings.Contains(text, "RegisterNetwork") {
+			t.Fatalf("%s must not expose built-in web_fetch", path)
+		}
+	}
+	if !strings.Contains(string(testUI), "IMPORTANT: Floret core does not expose a built-in URL fetch/browser-lite") {
+		t.Fatalf("web fetch boundary must be protected by an IMPORTANT comment")
+	}
+}
+
+func TestTestUIDoesNotDefaultAgentTurnsToWallTime(t *testing.T) {
+	for _, file := range []string{
+		filepath.Join("internal", "testui", "runner.go"),
+		filepath.Join("internal", "testui", "session_metadata.go"),
+	} {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		if strings.Contains(text, "WallTime:                60 * time.Second") || strings.Contains(text, "cfg.WallTime = 60 * time.Second") {
+			t.Fatalf("%s must not default ordinary agent sessions to a 60s wall-time", file)
+		}
+	}
+}
+
 func TestPreCommitQualityGateIsEnforced(t *testing.T) {
 	hook, err := os.ReadFile(filepath.Join(".githooks", "pre-commit"))
 	if err != nil {
@@ -131,7 +174,7 @@ func TestPreCommitQualityGateIsEnforced(t *testing.T) {
 	for _, want := range []string{
 		"go test ./...",
 		"TestServerStreamsAgentTurnEventsBeforeCompletion",
-		"TestServerStreamTurnTimeoutPersistsTerminalSnapshot",
+		"TestServerAgentSessionTurnIgnoresServerTimeout",
 		"TestRunnerRunningSnapshotUsesRealTurnID",
 		"go test ./eval -run TestCleanCommandEnvRemovesHookRepositoryVariables -count=1",
 		"node --check internal/testui/static/*.js internal/testui/static/views/*.js internal/testui/static/components/*.js",

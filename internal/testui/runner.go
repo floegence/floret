@@ -54,13 +54,12 @@ var (
 const agentSessionTurnLockTimeout = 250 * time.Millisecond
 
 type Runner struct {
-	Root                     string
-	EnvFile                  string
-	Now                      func() time.Time
-	Exec                     func(context.Context, string, []string, string, []string) ([]byte, int)
-	ProviderFactory          func(config.Config) (provider.Provider, error)
-	allowPrivateNetworkTools bool
-	Sessions                 *agentSessionRegistry
+	Root            string
+	EnvFile         string
+	Now             func() time.Time
+	Exec            func(context.Context, string, []string, string, []string) ([]byte, int)
+	ProviderFactory func(config.Config) (provider.Provider, error)
+	Sessions        *agentSessionRegistry
 }
 
 func NewRunner(root string) Runner {
@@ -192,7 +191,6 @@ func (r *Runner) CreateIdleAgentSession(ctx context.Context, req AgentRunRequest
 		MaxEmptyProviderRetries: 1,
 		NoProgressLimit:         2,
 		DuplicateToolLimit:      3,
-		WallTime:                60 * time.Second,
 	}
 	if cfg.SystemPrompt == "" {
 		cfg.SystemPrompt = "You are Floret. Answer naturally when the user's request is complete, or call ask_user if you need missing information."
@@ -343,7 +341,6 @@ func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) Ag
 		MaxEmptyProviderRetries: 1,
 		NoProgressLimit:         2,
 		DuplicateToolLimit:      3,
-		WallTime:                60 * time.Second,
 	}
 	if cfg.SystemPrompt == "" {
 		cfg.SystemPrompt = "You are Floret. Answer naturally when the user's request is complete, or call ask_user if you need missing information."
@@ -611,7 +608,7 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 	rec := &streamingEventRecorder{}
 	harnessRec := &streamingHarnessRecorder{repo: sess.repo, threadID: sess.id}
 	registry := tools.NewRegistry()
-	hostedTools, unavailableCapabilities, err := registerAgentSessionTools(registry, r.Root, r.EnvFile, selectedTools, sess.profile, r.allowPrivateNetworkTools)
+	hostedTools, unavailableCapabilities, err := registerAgentSessionTools(registry, r.Root, r.EnvFile, selectedTools, sess.profile)
 	if err != nil {
 		return agentSessionRuntime{}, err
 	}
@@ -767,7 +764,7 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 		return nil, err
 	}
 	registry := tools.NewRegistry()
-	hostedTools, unavailableCapabilities, err := registerAgentSessionTools(registry, r.Root, r.EnvFile, selectedTools, opts.Profile, r.allowPrivateNetworkTools)
+	hostedTools, unavailableCapabilities, err := registerAgentSessionTools(registry, r.Root, r.EnvFile, selectedTools, opts.Profile)
 	if err != nil {
 		return nil, err
 	}

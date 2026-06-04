@@ -37,13 +37,12 @@ type toolScenario struct {
 }
 
 type toolScenarioRuntime struct {
-	Provider       provider.Provider
-	Profile        ProviderProfile
-	SystemPrompt   string
-	Env            map[string]string
-	Cleanup        func()
-	ClientFetchURL string
-	Check          func() error
+	Provider     provider.Provider
+	Profile      ProviderProfile
+	SystemPrompt string
+	Env          map[string]string
+	Cleanup      func()
+	Check        func() error
 }
 
 type toolScenarioRun struct {
@@ -82,14 +81,14 @@ func deterministicToolScenarios() []toolScenario {
 			Verify:        verifyMutationRecoveryScenario,
 		},
 		{
-			ID:            "search-fetch-batches-followup",
-			Title:         "Search, fetch batches, and follow-up",
-			Description:   "Exercises client web_search, web_fetch, repeated multi-tool batches, and a second user turn.",
+			ID:            "search-shell-curl-followup",
+			Title:         "Search, shell curl, and follow-up",
+			Description:   "Exercises client web_search, bounded shell curl, repeated multi-tool batches, and a second user turn.",
 			Message:       "今天是 2026-06-03，请查询长沙天气并给出来源。",
 			FollowUps:     []string{"那么明天会晴吗，适合出门吗？"},
-			SelectedTools: []string{builtintools.ToolWebSearch, builtintools.ToolWebFetch},
-			Setup:         setupSearchFetchScenario,
-			Verify:        verifySearchFetchScenario,
+			SelectedTools: []string{builtintools.ToolWebSearch, builtintools.ToolShell},
+			Setup:         setupSearchShellScenario,
+			Verify:        verifySearchShellScenario,
 		},
 	}
 }
@@ -143,10 +142,6 @@ func (r Runner) runToolScenario(ctx context.Context, scenario toolScenario) RunR
 	}
 	scenarioRunner := NewRunner(workspace)
 	scenarioRunner.Now = r.Now
-	// IMPORTANT: Only deterministic tool scenarios may fetch private loopback
-	// httptest servers. Normal test-ui sessions keep the safer default and must
-	// not inherit this flag silently.
-	scenarioRunner.allowPrivateNetworkTools = true
 	scenarioRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
 		return runtime.Provider, nil
 	}
@@ -317,7 +312,7 @@ func (r Runner) runLiveWeatherToolScenario(ctx context.Context, profile Provider
 	}
 	req := AgentRunRequest{
 		Profile:       profile,
-		Message:       "请查询长沙在 2026-06-03 这一天的天气。请优先使用可用的 web_search 能力；如果需要打开具体来源，再使用 web_fetch。",
+		Message:       "请查询长沙在 2026-06-03 这一天的天气。请优先使用可用的 web_search 能力；如果需要打开具体来源或 HTTP API，请使用 shell 运行有输出上限的 curl 命令。",
 		SystemPrompt:  liveToolScenarioSystemPrompt(),
 		SelectedTools: selected,
 		ContextPolicy: scenarioContextPolicy(),
@@ -352,7 +347,6 @@ func (r Runner) runLiveAgentTurnsWithTimeout(ctx context.Context, workspace stri
 		liveRunner.Exec = r.Exec
 		liveRunner.ProviderFactory = r.ProviderFactory
 		liveRunner.Sessions = newAgentSessionRegistry()
-		liveRunner.allowPrivateNetworkTools = false
 		first := liveRunner.CreateAgentSession(liveCtx, req)
 		results := []AgentRunResponse{first}
 		if first.Status == string(engine.Completed) {
@@ -439,11 +433,11 @@ func setupMutationRecoveryScenario(ctx context.Context, workspace string) (toolS
 	return toolScenarioRuntime{Provider: prov, Profile: fakeScenarioProfile(), SystemPrompt: "Exercise mutation tools and error recovery deterministically."}, ctx.Err()
 }
 
-func setupSearchFetchScenario(ctx context.Context, workspace string) (toolScenarioRuntime, error) {
+func setupSearchShellScenario(ctx context.Context, workspace string) (toolScenarioRuntime, error) {
 	var searchMu sync.Mutex
 	searchCount := 0
 	var searchErr error
-	fetchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	contentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/changsha-weather":
 			_, _ = w.Write([]byte("Changsha 2026-06-03: thunderstorms and showers, 29-31C."))
@@ -474,26 +468,26 @@ func setupSearchFetchScenario(ctx context.Context, workspace string) (toolScenar
 		}
 		searchMu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(fmt.Sprintf(`{"web":{"results":[{"title":"Changsha weather","url":%q,"description":"Thunderstorms forecast.","profile":{"name":"Weather Source"}}]}}`, fetchServer.URL+"/changsha-weather")))
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"web":{"results":[{"title":"Changsha weather","url":%q,"description":"Thunderstorms forecast.","profile":{"name":"Weather Source"}}]}}`, contentServer.URL+"/changsha-weather")))
 	}))
 	cleanup := func() {
 		searchServer.Close()
-		fetchServer.Close()
+		contentServer.Close()
 	}
 	prov := harness.NewScriptedProvider(
 		harness.Step(
-			provider.StreamEvent{Type: provider.Reasoning, Text: "Search and fetch current weather."},
+			provider.StreamEvent{Type: provider.Reasoning, Text: "Search and inspect current weather with bounded shell curl."},
 			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
 				{ID: "search-weather", Name: builtintools.ToolWebSearch, Args: `{"query":"长沙 2026-06-03 天气","count":3,"country":"CN","search_lang":"zh-hans","freshness":"pd"}`},
-				{ID: "fetch-weather", Name: builtintools.ToolWebFetch, Args: fmt.Sprintf(`{"url":%q}`, fetchServer.URL+"/changsha-weather")},
+				{ID: "curl-weather", Name: builtintools.ToolShell, Args: boundedCurlArgs(contentServer.URL + "/changsha-weather")},
 			}},
 			harness.DoneReason("tool_calls"),
 		),
 		harness.Step(harness.Text("长沙 2026-06-03 有雷阵雨/小雨，约 29-31C。"), harness.Done()),
 		harness.Step(
-			provider.StreamEvent{Type: provider.Reasoning, Text: "Fetch tomorrow after the user's follow-up."},
+			provider.StreamEvent{Type: provider.Reasoning, Text: "Inspect tomorrow after the user's follow-up with bounded shell curl."},
 			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
-				{ID: "fetch-tomorrow", Name: builtintools.ToolWebFetch, Args: fmt.Sprintf(`{"url":%q}`, fetchServer.URL+"/tomorrow")},
+				{ID: "curl-tomorrow", Name: builtintools.ToolShell, Args: boundedCurlArgs(contentServer.URL + "/tomorrow")},
 			}},
 			harness.DoneReason("tool_calls"),
 		),
@@ -502,7 +496,7 @@ func setupSearchFetchScenario(ctx context.Context, workspace string) (toolScenar
 	return toolScenarioRuntime{
 		Provider:     prov,
 		Profile:      scenarioFakeClientSearchProfile(),
-		SystemPrompt: "Exercise web_search and web_fetch as separate deterministic tools.",
+		SystemPrompt: "Exercise web_search and bounded shell curl as separate deterministic tools.",
 		Env: map[string]string{
 			braveSearchKey:      "test-key",
 			braveSearchEndpoint: searchServer.URL,
@@ -560,12 +554,12 @@ func verifyMutationRecoveryScenario(run toolScenarioRun) error {
 	return nil
 }
 
-func verifySearchFetchScenario(run toolScenarioRun) error {
+func verifySearchShellScenario(run toolScenarioRun) error {
 	if err := verifyScenarioBase(run, 2); err != nil {
 		return err
 	}
 	first := run.Results[0]
-	for _, id := range []string{"search-weather", "fetch-weather"} {
+	for _, id := range []string{"search-weather", "curl-weather"} {
 		if err := assertExactlyOneToolCallAndResult(first.Observation.SessionMessages, id); err != nil {
 			return err
 		}
@@ -573,15 +567,15 @@ func verifySearchFetchScenario(run toolScenarioRun) error {
 	if !hasToolResultContaining(first.Observation.SessionMessages, "search-weather", "Changsha weather") {
 		return fmt.Errorf("expected web_search result content")
 	}
-	if !hasToolResultContaining(first.Observation.SessionMessages, "fetch-weather", "29-31C") {
-		return fmt.Errorf("expected web_fetch weather content")
+	if !hasToolResultContaining(first.Observation.SessionMessages, "curl-weather", "29-31C") {
+		return fmt.Errorf("expected shell curl weather content")
 	}
 	second := run.Results[1]
-	if err := assertExactlyOneToolCallAndResult(second.Observation.SessionMessages, "fetch-tomorrow"); err != nil {
+	if err := assertExactlyOneToolCallAndResult(second.Observation.SessionMessages, "curl-tomorrow"); err != nil {
 		return err
 	}
-	if !hasToolResultContaining(second.Observation.SessionMessages, "fetch-tomorrow", "2026-06-04") {
-		return fmt.Errorf("expected second-turn web_fetch tomorrow content")
+	if !hasToolResultContaining(second.Observation.SessionMessages, "curl-tomorrow", "2026-06-04") {
+		return fmt.Errorf("expected second-turn shell curl tomorrow content")
 	}
 	if !latestRequestContainsUser(second.Observation.ProviderRequests, "那么明天会晴吗") {
 		return fmt.Errorf("second-turn provider request did not include appended user follow-up")
@@ -677,7 +671,6 @@ func verifyLiveToolScenario(results []AgentRunResponse, selected []string) error
 type webCapabilityExposure struct {
 	hostedSearch bool
 	localSearch  bool
-	localFetch   bool
 }
 
 func newWebCapabilityExposure() webCapabilityExposure {
@@ -691,9 +684,6 @@ func (e *webCapabilityExposure) Observe(req ObservedProviderRequest) {
 	e.localSearch = e.localSearch || slices.ContainsFunc(req.Tools, func(tool provider.ToolDefinition) bool {
 		return tool.Name == builtintools.ToolWebSearch
 	})
-	e.localFetch = e.localFetch || slices.ContainsFunc(req.Tools, func(tool provider.ToolDefinition) bool {
-		return tool.Name == builtintools.ToolWebFetch
-	})
 }
 
 func (e webCapabilityExposure) Require(selected []string) error {
@@ -702,10 +692,6 @@ func (e webCapabilityExposure) Require(selected []string) error {
 		case builtintools.ToolWebSearch:
 			if !e.hostedSearch && !e.localSearch {
 				return fmt.Errorf("live scenario did not expose web_search as hosted or local tool")
-			}
-		case builtintools.ToolWebFetch:
-			if !e.localFetch {
-				return fmt.Errorf("live scenario did not expose web_fetch as a local tool")
 			}
 		}
 	}
@@ -725,7 +711,7 @@ func providerRequestExposesLocalTool(requests []ObservedProviderRequest, name st
 }
 
 func liveWeatherScenarioTools(profile ProviderProfile, envFile string) ([]string, error) {
-	tools := []string{builtintools.ToolWebSearch, builtintools.ToolWebFetch}
+	tools := []string{builtintools.ToolWebSearch, builtintools.ToolShell}
 	selected, err := normalizeAgentSessionToolsForProfile(tools, "", profile, envFile)
 	if err != nil {
 		return nil, err
@@ -738,9 +724,14 @@ func liveToolScenarioSystemPrompt() string {
 		"You are Floret's live provider tool scenario runner.",
 		"Call available tools when they are relevant; do not answer tool-backed requests from memory.",
 		"Use available web_search when the user asks for web-backed information.",
-		"Use web_fetch only for explicit URLs or URLs discovered through search.",
+		"For explicit URLs or HTTP APIs, use shell with bounded commands such as curl -fsSL URL | head -c 20000, jq, sed, or python, and keep max_output_bytes low.",
 		"After using tools, provide a concise answer and mention uncertainty.",
 	}, " ")
+}
+
+func boundedCurlArgs(rawURL string) string {
+	command := fmt.Sprintf("curl -fsSL %q | head -c 2000", rawURL)
+	return fmt.Sprintf(`{"command":%q,"workdir":null,"timeout_ms":5000,"max_output_bytes":2000}`, command)
 }
 
 func renderToolScenarioArtifact(scenario toolScenario, results []AgentRunResponse) string {

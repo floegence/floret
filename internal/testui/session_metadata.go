@@ -253,9 +253,6 @@ func (r Runner) cfgFromSessionMetadata(meta agentSessionMetadata) (config.Config
 	if cfg.DuplicateToolLimit <= 0 {
 		cfg.DuplicateToolLimit = 3
 	}
-	if cfg.WallTime <= 0 {
-		cfg.WallTime = 60 * time.Second
-	}
 	cfg, err := config.Resolve(cfg, nil)
 	if err != nil {
 		return config.Config{}, ProviderProfile{}, err

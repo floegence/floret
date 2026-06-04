@@ -7,7 +7,7 @@ export function renderToolMatrix({ tools, selected, editable = true, name = "too
     <div class="preset-bar" data-tool-presets="${escapeHTML(name)}">
       ${["chat", "read", "coding", "shell", "all"].map((preset) => `<button type="button" class="small" data-tool-preset="${preset}" ${editable ? "" : "disabled"}>${presetLabel(preset)}</button>`).join("")}
     </div>
-    <p class="tool-boundary-note">Network tools are explicit capabilities: web_fetch fetches a known URL; web_search searches by query through either provider-hosted search or the configured client search provider. Neither is a weather API.</p>
+    <p class="tool-boundary-note">Network access is explicit: web_search searches by query through either provider-hosted search or the configured client search provider. Opening URLs or calling HTTP APIs belongs to shell, MCP, extensions, or user tools with bounded output.</p>
     ${groups.map((group) => renderToolGroup(group, selectedSet, editable, name)).join("")}
   `;
 }

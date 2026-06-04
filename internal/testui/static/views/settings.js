@@ -94,7 +94,7 @@ export function renderSettings() {
           <div class="tool-boundary-grid">
             <div>
               <strong>Mock suite</strong>
-              <span>read/grep/shell, mutation recovery, web_search + web_fetch</span>
+              <span>read/grep/shell, mutation recovery, web_search + shell curl</span>
             </div>
             <div>
               <strong>Live profile</strong>

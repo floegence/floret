@@ -62,7 +62,7 @@ func shellTool(opts ShellOptions) tools.Tool {
 		tools.Definition{
 			Name:        "shell",
 			Title:       "Shell",
-			Description: "Run a non-interactive shell command in the workspace. Stdin is closed; use read/grep/list/edit/write/apply_patch for file operations when possible.",
+			Description: "Run a non-interactive shell command in the workspace. Stdin is closed; use read/grep/list/edit/write/apply_patch for file operations when possible. For explicit URL or HTTP API access, use bounded commands such as curl -fsSL URL | head -c 20000, jq, sed, or python, and keep max_output_bytes low.",
 			InputSchema: tools.StrictObject(map[string]any{
 				"command":          tools.String("Shell command to execute."),
 				"workdir":          tools.Nullable(tools.String("Working directory. Use null for the configured workspace root.")),

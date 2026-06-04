@@ -87,13 +87,7 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON request"})
 		return
 	}
-	ctx := r.Context()
-	var cancel context.CancelFunc
-	if s.Timeout > 0 {
-		ctx, cancel = context.WithTimeout(ctx, s.Timeout)
-		defer cancel()
-	}
-	resp := s.Runner.RunAgent(ctx, req)
+	resp := s.Runner.RunAgent(r.Context(), req)
 	writeJSON(w, agentHTTPStatus(resp), resp)
 }
 
@@ -144,13 +138,7 @@ func (s *Server) handleAgentSessionCreateAndRun(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON request"})
 		return
 	}
-	ctx := r.Context()
-	var cancel context.CancelFunc
-	if s.Timeout > 0 {
-		ctx, cancel = context.WithTimeout(ctx, s.Timeout)
-		defer cancel()
-	}
-	resp := s.Runner.CreateAgentSession(ctx, req)
+	resp := s.Runner.CreateAgentSession(r.Context(), req)
 	writeJSON(w, agentHTTPStatus(resp), resp)
 }
 
@@ -236,13 +224,7 @@ func (s *Server) handleAgentSessionTurn(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON request"})
 		return
 	}
-	ctx := r.Context()
-	var cancel context.CancelFunc
-	if s.Timeout > 0 {
-		ctx, cancel = context.WithTimeout(ctx, s.Timeout)
-		defer cancel()
-	}
-	resp := s.Runner.RunAgentTurn(ctx, sessionID, req)
+	resp := s.Runner.RunAgentTurn(r.Context(), sessionID, req)
 	writeJSON(w, agentHTTPStatus(resp), resp)
 }
 
@@ -264,13 +246,7 @@ func (s *Server) handleAgentSessionTurnStream(w http.ResponseWriter, r *http.Req
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	stream := newAgentStream(512)
-	runCtx := context.Background()
-	var cancel context.CancelFunc
-	if s.Timeout > 0 {
-		runCtx, cancel = context.WithTimeout(runCtx, s.Timeout)
-	} else {
-		runCtx, cancel = context.WithCancel(runCtx)
-	}
+	runCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

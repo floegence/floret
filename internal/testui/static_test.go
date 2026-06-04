@@ -8,16 +8,19 @@ import (
 	"testing"
 )
 
-func TestStaticConsoleDocumentsWebFetchAndWebSearchSeparately(t *testing.T) {
+func TestStaticConsoleDocumentsWebSearchAndExternalFetchBoundary(t *testing.T) {
 	toolMatrix := readStaticTestFile(t, "components", "toolMatrix.js")
 	settings := readStaticTestFile(t, "views", "settings.js")
 	inspector := readStaticTestFile(t, "views", "inspector.js")
 
-	if !strings.Contains(toolMatrix, "web_fetch fetches a known URL") || !strings.Contains(toolMatrix, "web_search searches by query through either provider-hosted search or the configured client search provider") {
-		t.Fatalf("tool matrix does not describe web_fetch and web_search separately")
+	if strings.Contains(toolMatrix, "web_fetch") || !strings.Contains(toolMatrix, "web_search searches by query through either provider-hosted search or the configured client search provider") || !strings.Contains(toolMatrix, "Opening URLs or calling HTTP APIs belongs to shell, MCP, extensions, or user tools") {
+		t.Fatalf("tool matrix does not describe the web_search/external-fetch boundary")
 	}
 	if !strings.Contains(settings, "Provider-hosted web search") || !strings.Contains(settings, "Client search via Brave") || !strings.Contains(settings, "readWebSearchCapability") {
 		t.Fatalf("settings view does not expose provider-hosted/client/disabled search configuration")
+	}
+	if strings.Contains(settings, "web_fetch") || !strings.Contains(settings, "web_search + shell curl") {
+		t.Fatalf("settings view should not describe web_fetch as an available scenario capability")
 	}
 	if !strings.Contains(inspector, "Local client tools") || !strings.Contains(inspector, "Provider-hosted tools") || !strings.Contains(inspector, "Unavailable") {
 		t.Fatalf("inspector does not split local and hosted tool capabilities")

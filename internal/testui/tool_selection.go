@@ -34,7 +34,6 @@ var agentToolOptions = []AgentToolOption{
 	{Name: builtintools.ToolEdit, Title: "Edit", Description: "Replace exact text in a file.", Group: "workspace_write", GroupTitle: "Workspace write", Risk: "writes files"},
 	{Name: builtintools.ToolWrite, Title: "Write", Description: "Create or overwrite a file.", Group: "workspace_write", GroupTitle: "Workspace write", Risk: "writes files"},
 	{Name: builtintools.ToolShell, Title: "Shell", Description: "Run non-interactive shell commands.", Group: "execution", GroupTitle: "Execution", Risk: "runs commands"},
-	{Name: builtintools.ToolWebFetch, Title: "Web fetch", Description: "Fetch one explicit HTTP(S) URL. This is not web search or a weather API.", Group: "network", GroupTitle: "Network", Risk: "network"},
 	{Name: builtintools.ToolWebSearch, Title: "Web search", Description: "Search query via the active provider-hosted or configured client search capability. This is not URL fetch.", Group: "network", GroupTitle: "Network", Risk: "network"},
 }
 
@@ -123,13 +122,13 @@ func selectedToolsForLegacyMode(mode string) []string {
 	case "coding_shell":
 		return []string{builtintools.ToolRead, builtintools.ToolList, builtintools.ToolGlob, builtintools.ToolGrep, builtintools.ToolApplyPatch, builtintools.ToolEdit, builtintools.ToolWrite, builtintools.ToolShell}
 	case "network":
-		return []string{builtintools.ToolRead, builtintools.ToolList, builtintools.ToolGlob, builtintools.ToolGrep, builtintools.ToolApplyPatch, builtintools.ToolEdit, builtintools.ToolWrite, builtintools.ToolShell, builtintools.ToolWebFetch, builtintools.ToolWebSearch}
+		return []string{builtintools.ToolRead, builtintools.ToolList, builtintools.ToolGlob, builtintools.ToolGrep, builtintools.ToolApplyPatch, builtintools.ToolEdit, builtintools.ToolWrite, builtintools.ToolShell, builtintools.ToolWebSearch}
 	default:
 		return nil
 	}
 }
 
-func registerAgentSessionTools(registry *tools.Registry, root string, envFile string, selected []string, profile ProviderProfile, allowPrivateNetworkTools bool) ([]provider.HostedToolDefinition, []string, error) {
+func registerAgentSessionTools(registry *tools.Registry, root string, envFile string, selected []string, profile ProviderProfile) ([]provider.HostedToolDefinition, []string, error) {
 	selected, err := normalizeAgentSessionToolsForProfile(selected, "", profile, envFile)
 	if err != nil {
 		return nil, nil, err
@@ -152,10 +151,13 @@ func registerAgentSessionTools(registry *tools.Registry, root string, envFile st
 		}
 	}
 	searchOptions := searchOptionsFromEnvFile(envFile)
+	// IMPORTANT: Floret core does not expose a built-in URL fetch/browser-lite
+	// tool. Web search is a search capability; opening URLs or calling HTTP APIs
+	// belongs to shell, MCP, extensions, or user-provided tools with their own
+	// output limits and approval contracts.
 	if err := builtintools.RegisterSelected(registry, builtintools.SelectedOptions{
 		Workspace: builtintools.WorkspaceOptions{Root: root},
 		Shell:     builtintools.ShellOptions{CWD: root},
-		Network:   builtintools.NetworkOptions{AllowPrivateIPs: allowPrivateNetworkTools},
 		Search:    searchOptions,
 	}, localSelected...); err != nil {
 		return nil, nil, err

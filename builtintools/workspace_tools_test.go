@@ -97,7 +97,6 @@ func TestRegisterSelectedExposesOnlyRequestedTools(t *testing.T) {
 	if err := RegisterSelected(reg, SelectedOptions{
 		Workspace: WorkspaceOptions{Root: t.TempDir()},
 		Shell:     ShellOptions{CWD: t.TempDir(), Runner: fakeRunner{result: CommandResult{Stdout: "ok\n", ExitCode: 0}}},
-		Network:   NetworkOptions{AllowPrivateIPs: true},
 	}, ToolGrep, ToolShell); err != nil {
 		t.Fatal(err)
 	}
@@ -106,15 +105,17 @@ func TestRegisterSelectedExposesOnlyRequestedTools(t *testing.T) {
 	if len(defs) != 2 || !hasToolDefinition(defs, ToolGrep) || !hasToolDefinition(defs, ToolShell) {
 		t.Fatalf("definitions = %#v", defs)
 	}
-	if hasToolDefinition(defs, ToolRead) || hasToolDefinition(defs, ToolWrite) || hasToolDefinition(defs, ToolWebFetch) {
+	if hasToolDefinition(defs, ToolRead) || hasToolDefinition(defs, ToolWrite) || hasToolDefinition(defs, ToolWebSearch) {
 		t.Fatalf("unselected tools were registered: %#v", defs)
 	}
 }
 
 func TestRegisterSelectedRejectsUnknownTool(t *testing.T) {
-	err := RegisterSelected(tools.NewRegistry(), SelectedOptions{Workspace: WorkspaceOptions{Root: t.TempDir()}}, "missing")
-	if err == nil || !strings.Contains(err.Error(), `unknown built-in tool "missing"`) {
-		t.Fatalf("err = %v", err)
+	for _, name := range []string{"missing", "web_fetch"} {
+		err := RegisterSelected(tools.NewRegistry(), SelectedOptions{Workspace: WorkspaceOptions{Root: t.TempDir()}}, name)
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf(`unknown built-in tool %q`, name)) {
+			t.Fatalf("%s err = %v", name, err)
+		}
 	}
 }
 
@@ -122,12 +123,12 @@ func TestRegisterSelectedOnlyRequiresOptionsForSelectedTools(t *testing.T) {
 	reg := tools.NewRegistry()
 	if err := RegisterSelected(reg, SelectedOptions{
 		Workspace: WorkspaceOptions{Root: string([]byte{0})},
-		Network:   NetworkOptions{AllowPrivateIPs: true},
-	}, ToolWebFetch); err != nil {
+		Shell:     ShellOptions{CWD: t.TempDir(), Runner: fakeRunner{result: CommandResult{Stdout: "ok\n", ExitCode: 0}}},
+	}, ToolShell); err != nil {
 		t.Fatal(err)
 	}
 	defs := reg.Definitions()
-	if len(defs) != 1 || !hasToolDefinition(defs, ToolWebFetch) {
+	if len(defs) != 1 || !hasToolDefinition(defs, ToolShell) {
 		t.Fatalf("definitions = %#v", defs)
 	}
 }
@@ -175,43 +176,6 @@ func TestShellRequiresApprovalAndReturnsExitMetadata(t *testing.T) {
 	got := reg.Run(context.Background(), provider.ToolCall{Name: "shell", Args: `{"command":"echo ok","workdir":null,"timeout_ms":null,"max_output_bytes":null}`}, allowAll)
 	if got.IsError || got.Text != "ok" || got.Metadata["exit_code"] != 0 {
 		t.Fatalf("shell = %#v", got)
-	}
-}
-
-func TestWebFetchRequiresApprovalAndFetchesHTTP(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("<p>Hello Floret</p>"))
-	}))
-	defer server.Close()
-	reg := tools.NewRegistry()
-	if err := RegisterNetwork(reg, NetworkOptions{AllowPrivateIPs: true}); err != nil {
-		t.Fatal(err)
-	}
-	got := reg.Run(context.Background(), provider.ToolCall{Name: "web_fetch", Args: `{"url":"` + server.URL + `","format":"markdown","timeout_ms":null,"max_bytes":null}`}, allowAll)
-	if got.IsError || !strings.Contains(got.Text, "Hello Floret") || got.Metadata["status"] != http.StatusOK {
-		t.Fatalf("web_fetch = %#v", got)
-	}
-	queryOnly := reg.Run(context.Background(), provider.ToolCall{Name: "web_fetch", Args: `{"url":"` + server.URL + `"}`}, allowAll)
-	if queryOnly.IsError || !strings.Contains(queryOnly.Text, "Hello Floret") || queryOnly.Metadata["status"] != http.StatusOK {
-		t.Fatalf("web_fetch url-only = %#v", queryOnly)
-	}
-}
-
-func TestWebFetchReturnsConciseHTTPStatusErrors(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, strings.Repeat("not found body ", 200), http.StatusNotFound)
-	}))
-	defer server.Close()
-	reg := tools.NewRegistry()
-	if err := RegisterNetwork(reg, NetworkOptions{AllowPrivateIPs: true}); err != nil {
-		t.Fatal(err)
-	}
-	got := reg.Run(context.Background(), provider.ToolCall{Name: "web_fetch", Args: `{"url":"` + server.URL + `"}`}, allowAll)
-	if !got.IsError || !strings.Contains(got.Text, "HTTP status 404") || strings.Contains(got.Text, "not found body not found body") {
-		t.Fatalf("web_fetch 404 = %#v", got)
-	}
-	if got.Metadata["status"] != http.StatusNotFound {
-		t.Fatalf("web_fetch 404 metadata = %#v", got.Metadata)
 	}
 }
 
@@ -680,74 +644,6 @@ func TestShellTimeoutWorkdirAndClosedStdin(t *testing.T) {
 	timeout := live.Run(context.Background(), provider.ToolCall{Name: "shell", Args: `{"command":"sleep 1","workdir":null,"timeout_ms":20,"max_output_bytes":null}`}, allowAll)
 	if !timeout.IsError || !strings.Contains(timeout.Text, "deadline") || time.Since(started) > 500*time.Millisecond {
 		t.Fatalf("timeout = %#v elapsed=%s", timeout, time.Since(started))
-	}
-}
-
-func TestWebFetchRejectsPrivateIPAndCrossDomainRedirect(t *testing.T) {
-	reg := tools.NewRegistry()
-	if err := RegisterNetwork(reg, NetworkOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	private := reg.Run(context.Background(), provider.ToolCall{Name: "web_fetch", Args: `{"url":"http://127.0.0.1/","format":"text","timeout_ms":null,"max_bytes":null}`}, allowAll)
-	if !private.IsError || !strings.Contains(private.Text, "private host") {
-		t.Fatalf("private fetch = %#v", private)
-	}
-
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("target"))
-	}))
-	defer target.Close()
-	crossDomainURL := strings.Replace(target.URL, "127.0.0.1", "localhost", 1)
-	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, crossDomainURL, http.StatusFound)
-	}))
-	defer redirect.Close()
-	approvedReg := tools.NewRegistry()
-	if err := RegisterNetwork(approvedReg, NetworkOptions{AllowPrivateIPs: true}); err != nil {
-		t.Fatal(err)
-	}
-	got := approvedReg.Run(context.Background(), provider.ToolCall{Name: "web_fetch", Args: `{"url":"` + redirect.URL + `","format":"text","timeout_ms":null,"max_bytes":null}`}, allowAll)
-	if !got.IsError || !strings.Contains(got.Text, "requires a new approval") {
-		t.Fatalf("cross-domain redirect = %#v", got)
-	}
-}
-
-func TestWebFetchTruncatesLargeResponseAndRecordsSizeMetadata(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		_, _ = w.Write([]byte("0123456789abcdef"))
-	}))
-	defer server.Close()
-	reg := tools.NewRegistry()
-	if err := RegisterNetwork(reg, NetworkOptions{AllowPrivateIPs: true}); err != nil {
-		t.Fatal(err)
-	}
-	got := reg.Run(context.Background(), provider.ToolCall{Name: "web_fetch", Args: `{"url":"` + server.URL + `","format":"text","timeout_ms":null,"max_bytes":8}`}, allowAll)
-	if got.IsError || got.Text != "01234567" || got.Metadata["truncated"] != true || got.Metadata["returned_bytes"] != 8 || got.Metadata["limit_bytes"] != 8 || got.Metadata["status"] != http.StatusOK || got.Metadata["content_type"] != "text/plain" {
-		t.Fatalf("web_fetch = %#v", got)
-	}
-}
-
-func TestWebFetchRejectsNonHTTPURLAndTimesOut(t *testing.T) {
-	reg := tools.NewRegistry()
-	if err := RegisterNetwork(reg, NetworkOptions{AllowPrivateIPs: true, DefaultTimeoutMS: 25}); err != nil {
-		t.Fatal(err)
-	}
-	for _, rawURL := range []string{"file:///tmp/a", "ftp://example.com/a"} {
-		got := reg.Run(context.Background(), provider.ToolCall{Name: "web_fetch", Args: `{"url":"` + rawURL + `","format":"text","timeout_ms":null,"max_bytes":null}`}, allowAll)
-		if !got.IsError || !strings.Contains(got.Text, "scheme") {
-			t.Fatalf("url %s = %#v", rawURL, got)
-		}
-	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(200 * time.Millisecond)
-		_, _ = w.Write([]byte("late"))
-	}))
-	defer server.Close()
-	started := time.Now()
-	got := reg.Run(context.Background(), provider.ToolCall{Name: "web_fetch", Args: `{"url":"` + server.URL + `","format":"text","timeout_ms":25,"max_bytes":null}`}, allowAll)
-	if !got.IsError || !strings.Contains(got.Text, "timeout") && !strings.Contains(got.Text, "deadline") || time.Since(started) > time.Second {
-		t.Fatalf("timeout = %#v elapsed=%s", got, time.Since(started))
 	}
 }
 

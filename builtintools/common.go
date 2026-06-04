@@ -24,12 +24,6 @@ type ShellOptions struct {
 	MaxOutputBytes   int
 }
 
-type NetworkOptions struct {
-	DefaultTimeoutMS int
-	MaxBytes         int
-	AllowPrivateIPs  bool
-}
-
 type SearchOptions struct {
 	Provider         string
 	APIKey           string
@@ -41,7 +35,6 @@ type SearchOptions struct {
 type SelectedOptions struct {
 	Workspace WorkspaceOptions
 	Shell     ShellOptions
-	Network   NetworkOptions
 	Search    SearchOptions
 }
 
@@ -54,7 +47,6 @@ const (
 	ToolEdit       = "edit"
 	ToolWrite      = "write"
 	ToolShell      = "shell"
-	ToolWebFetch   = "web_fetch"
 	ToolWebSearch  = "web_search"
 )
 
@@ -83,8 +75,6 @@ func RegisterSelected(reg *tools.Registry, opts SelectedOptions, names ...string
 			errs = append(errs, reg.Register(writeTool(workspace)))
 		case ToolShell:
 			errs = append(errs, RegisterShell(reg, opts.Shell))
-		case ToolWebFetch:
-			errs = append(errs, RegisterNetwork(reg, opts.Network))
 		case ToolWebSearch:
 			errs = append(errs, RegisterSearch(reg, opts.Search))
 		default:

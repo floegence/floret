@@ -17,7 +17,6 @@ import (
 	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/internal/sessionlifecycle"
 	"github.com/floegence/floret/provider"
-	"github.com/floegence/floret/sessiontree"
 )
 
 func TestServerExposesConfigAndRunAPI(t *testing.T) {
@@ -44,7 +43,7 @@ func TestServerExposesConfigAndRunAPI(t *testing.T) {
 	if !strings.Contains(configRec.Body.String(), `"id":"openai"`) || !strings.Contains(configRec.Body.String(), `"gpt-5.4"`) {
 		t.Fatalf("config body missing catalog = %s", configRec.Body.String())
 	}
-	if !strings.Contains(configRec.Body.String(), `"name":"grep"`) || !strings.Contains(configRec.Body.String(), `"name":"web_fetch"`) || !strings.Contains(configRec.Body.String(), `"name":"web_search"`) {
+	if !strings.Contains(configRec.Body.String(), `"name":"grep"`) || !strings.Contains(configRec.Body.String(), `"name":"shell"`) || !strings.Contains(configRec.Body.String(), `"name":"web_search"`) || strings.Contains(configRec.Body.String(), `"name":"web_fetch"`) {
 		t.Fatalf("config body missing tools = %s", configRec.Body.String())
 	}
 	if !strings.Contains(configRec.Body.String(), `"search_provider"`) || !strings.Contains(configRec.Body.String(), `"env_key":"FLORET_BRAVE_SEARCH_API_KEY"`) {
@@ -161,7 +160,7 @@ func TestServerRunAPILiveToolScenariosUseSelectedSavedProfile(t *testing.T) {
 	assertProviderToolRequiredFields(t, localReq.Tools, "grep", "pattern")
 	var weatherReq provider.Request
 	for _, req := range requests {
-		if hasProviderTool(req.Tools, "web_fetch") || len(req.HostedTools) > 0 {
+		if hasProviderTool(req.Tools, "shell") && len(req.HostedTools) > 0 {
 			weatherReq = req
 			break
 		}
@@ -169,8 +168,11 @@ func TestServerRunAPILiveToolScenariosUseSelectedSavedProfile(t *testing.T) {
 	if hasProviderTool(weatherReq.Tools, "web_search") {
 		t.Fatalf("provider-hosted profile should not expose local web_search: %#v", weatherReq.Tools)
 	}
-	if !hasProviderTool(weatherReq.Tools, "web_fetch") {
-		t.Fatalf("provider-hosted profile should expose local web_fetch: %#v", weatherReq.Tools)
+	if hasProviderTool(weatherReq.Tools, "web_fetch") {
+		t.Fatalf("provider-hosted profile must not expose local web_fetch: %#v", weatherReq.Tools)
+	}
+	if !hasProviderTool(weatherReq.Tools, "shell") {
+		t.Fatalf("provider-hosted profile should expose shell for explicit URL/API access: %#v", weatherReq.Tools)
 	}
 	if len(weatherReq.HostedTools) != 1 || weatherReq.HostedTools[0].Name != "web_search" {
 		t.Fatalf("provider-hosted profile should expose hosted web_search: %#v", weatherReq.HostedTools)
@@ -278,7 +280,7 @@ func TestServerCreatesIdleAgentSessionBeforeInitialTurn(t *testing.T) {
 	}
 	handler := server.Handler()
 
-	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"unused"},"message":"hello","system_prompt":"test","selected_tools":["grep","web_fetch"],"context_policy":{"context_window_tokens":8192,"max_output_tokens":1024,"recent_tail_tokens":1024}}`
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"unused"},"message":"hello","system_prompt":"test","selected_tools":["grep","shell"],"context_policy":{"context_window_tokens":8192,"max_output_tokens":1024,"recent_tail_tokens":1024}}`
 	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, createReq)
@@ -292,7 +294,7 @@ func TestServerCreatesIdleAgentSessionBeforeInitialTurn(t *testing.T) {
 	if snapshot.ID == "" || snapshot.Status != "idle" || len(snapshot.Turns) != 0 || !snapshot.CanAppendMessage {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}
-	if !slices.Equal(snapshot.SelectedTools, []string{"grep", "web_fetch"}) {
+	if !slices.Equal(snapshot.SelectedTools, []string{"grep", "shell"}) {
 		t.Fatalf("selected tools = %#v", snapshot.SelectedTools)
 	}
 	if len(scripted.Requests) != 0 {
@@ -374,18 +376,20 @@ func TestServerStreamsAgentTurnEventsBeforeCompletion(t *testing.T) {
 	}
 }
 
-func TestServerStreamTurnTimeoutPersistsTerminalSnapshot(t *testing.T) {
-	blocking := newBlockingTestProvider()
+func TestServerAgentSessionTurnIgnoresServerTimeout(t *testing.T) {
+	scripted := harness.NewScriptedProvider(
+		harness.Step(provider.StreamEvent{Type: provider.Delta, Text: "slow-ok", Reason: "50ms"}, harness.Done()),
+	)
 	runner := NewRunner(t.TempDir())
 	runner.Now = fixedClock()
 	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
-		return blocking, nil
+		return scripted, nil
 	}
 	server, err := NewServer(runner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	server.Timeout = 100 * time.Millisecond
+	server.Timeout = time.Nanosecond
 	handler := server.Handler()
 
 	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model"},"message":"hello","system_prompt":"test","selected_tools":[]}`
@@ -400,23 +404,18 @@ func TestServerStreamTurnTimeoutPersistsTerminalSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	turnReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+created.ID+"/turns/stream", strings.NewReader(`{"message":"hello"}`))
+	turnReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+created.ID+"/turns", strings.NewReader(`{"message":"hello"}`))
 	turnRec := httptest.NewRecorder()
 	handler.ServeHTTP(turnRec, turnReq)
 	if turnRec.Code != http.StatusOK {
-		t.Fatalf("stream status = %d, body = %s", turnRec.Code, turnRec.Body.String())
+		t.Fatalf("turn status = %d, body = %s", turnRec.Code, turnRec.Body.String())
 	}
-	events := parseSSEAgentEvents(t, turnRec.Body.String())
-	assertStreamEventOrder(t, events,
-		AgentStreamTurnStarted,
-		AgentStreamUserMessageAppended,
-		AgentStreamProviderRequest,
-		AgentStreamSessionSnapshot,
-		AgentStreamTurnFailed,
-	)
-	failed := events[indexStreamEvent(events, AgentStreamTurnFailed)]
-	if failed.Result == nil || failed.Result.Status == "running" || failed.Result.Session.Status == "running" || failed.Result.Session.CanAppendMessage {
-		t.Fatalf("failed event did not expose terminal session: %#v", failed)
+	var result AgentRunResponse
+	if err := json.Unmarshal(turnRec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "completed" || result.Output != "slow-ok" {
+		t.Fatalf("server timeout should not cancel agent session turn: %#v", result)
 	}
 
 	getReq := httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+created.ID, nil)
@@ -429,13 +428,8 @@ func TestServerStreamTurnTimeoutPersistsTerminalSnapshot(t *testing.T) {
 	if err := json.Unmarshal(getRec.Body.Bytes(), &snapshot); err != nil {
 		t.Fatal(err)
 	}
-	if sessionlifecycle.IsRunningStatus(snapshot.Status, snapshot.Phase) || snapshot.CanAppendMessage {
-		t.Fatalf("timeout session remained running: %#v", snapshot)
-	}
-	if !slices.ContainsFunc(snapshot.PathEntries, func(entry ObservedSessionEntry) bool {
-		return entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnAborted
-	}) {
-		t.Fatalf("timeout terminal marker missing: %#v", snapshot.PathEntries)
+	if snapshot.Status != "completed" || !snapshot.CanAppendMessage {
+		t.Fatalf("snapshot = %#v", snapshot)
 	}
 }
 
@@ -448,7 +442,7 @@ func TestServerAgentSessionCreateAcceptsSelectedTools(t *testing.T) {
 	}
 	handler := server.Handler()
 
-	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"ok"},"message":"hello","system_prompt":"test","selected_tools":["grep","web_fetch"],"context_policy":{"context_window_tokens":8192,"max_output_tokens":1024,"recent_tail_tokens":1024}}`
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"ok"},"message":"hello","system_prompt":"test","selected_tools":["grep","shell"],"context_policy":{"context_window_tokens":8192,"max_output_tokens":1024,"recent_tail_tokens":1024}}`
 	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody))
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, createReq)
@@ -459,17 +453,42 @@ func TestServerAgentSessionCreateAcceptsSelectedTools(t *testing.T) {
 	if err := json.Unmarshal(createRec.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != "completed" || len(result.Session.SelectedTools) != 2 || result.Session.SelectedTools[0] != "grep" || result.Session.SelectedTools[1] != "web_fetch" {
+	if result.Status != "completed" || len(result.Session.SelectedTools) != 2 || result.Session.SelectedTools[0] != "grep" || result.Session.SelectedTools[1] != "shell" {
 		t.Fatalf("result = %#v", result)
 	}
 	if len(result.Observation.ProviderRequests) != 1 {
 		t.Fatalf("requests = %#v", result.Observation.ProviderRequests)
 	}
-	if !hasObservedTool(result.Observation.ProviderRequests[0].Tools, "grep") || !hasObservedTool(result.Observation.ProviderRequests[0].Tools, "web_fetch") {
+	if !hasObservedTool(result.Observation.ProviderRequests[0].Tools, "grep") || !hasObservedTool(result.Observation.ProviderRequests[0].Tools, "shell") {
 		t.Fatalf("selected tools missing: %#v", result.Observation.ProviderRequests[0].Tools)
 	}
-	if hasObservedTool(result.Observation.ProviderRequests[0].Tools, "read") || hasObservedTool(result.Observation.ProviderRequests[0].Tools, "shell") {
+	if hasObservedTool(result.Observation.ProviderRequests[0].Tools, "read") || hasObservedTool(result.Observation.ProviderRequests[0].Tools, "web_fetch") {
 		t.Fatalf("unselected tools exposed: %#v", result.Observation.ProviderRequests[0].Tools)
+	}
+}
+
+func TestServerAgentSessionCreateRejectsWebFetchTool(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"ok"},"message":"hello","system_prompt":"test","selected_tools":["web_fetch"]}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusBadRequest {
+		t.Fatalf("create status/body = %d %s", createRec.Code, createRec.Body.String())
+	}
+	var result AgentRunResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Error, `unknown test UI tool "web_fetch"`) {
+		t.Fatalf("result = %#v", result)
 	}
 }
 
@@ -630,7 +649,7 @@ func TestServerAgentSessionAppendIgnoresSelectedToolsPayload(t *testing.T) {
 		t.Fatalf("empty selected_tools should expose only control tools: %#v", first.Observation.ProviderRequests[0].Tools)
 	}
 
-	turnReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+first.SessionID+"/turns", strings.NewReader(`{"message":"main.go","selected_tools":["grep","web_fetch"]}`))
+	turnReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+first.SessionID+"/turns", strings.NewReader(`{"message":"main.go","selected_tools":["grep","shell"]}`))
 	turnRec := httptest.NewRecorder()
 	handler.ServeHTTP(turnRec, turnReq)
 	if turnRec.Code != http.StatusOK {
@@ -676,7 +695,7 @@ func TestServerAgentSessionToolsPatchUpdatesNextProviderRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	patchReq := httptest.NewRequest(http.MethodPatch, "/api/agent/sessions/"+first.SessionID+"/tools", strings.NewReader(`{"selected_tools":["grep","web_fetch"],"reason":"need network read"}`))
+	patchReq := httptest.NewRequest(http.MethodPatch, "/api/agent/sessions/"+first.SessionID+"/tools", strings.NewReader(`{"selected_tools":["grep","shell"],"reason":"need command access"}`))
 	patchRec := httptest.NewRecorder()
 	handler.ServeHTTP(patchRec, patchReq)
 	if patchRec.Code != http.StatusOK {
@@ -686,14 +705,14 @@ func TestServerAgentSessionToolsPatchUpdatesNextProviderRequest(t *testing.T) {
 	if err := json.Unmarshal(patchRec.Body.Bytes(), &patched); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(patched.SelectedTools, []string{"grep", "web_fetch"}) {
+	if !slices.Equal(patched.SelectedTools, []string{"grep", "shell"}) {
 		t.Fatalf("patched selected tools = %#v", patched.SelectedTools)
 	}
 	if !slices.ContainsFunc(patched.PathEntries, func(entry ObservedSessionEntry) bool {
 		return entry.Type == "active_tools_change" &&
 			entry.Metadata["previous_tools"] == "" &&
-			entry.Metadata["selected_tools"] == "grep,web_fetch" &&
-			entry.Metadata["reason"] == "need network read"
+			entry.Metadata["selected_tools"] == "grep,shell" &&
+			entry.Metadata["reason"] == "need command access"
 	}) {
 		t.Fatalf("tool audit entry missing: %#v", patched.PathEntries)
 	}
@@ -708,13 +727,13 @@ func TestServerAgentSessionToolsPatchUpdatesNextProviderRequest(t *testing.T) {
 	if err := json.Unmarshal(turnRec.Body.Bytes(), &second); err != nil {
 		t.Fatal(err)
 	}
-	if second.Status != "completed" || !slices.Equal(second.Session.SelectedTools, []string{"grep", "web_fetch"}) {
+	if second.Status != "completed" || !slices.Equal(second.Session.SelectedTools, []string{"grep", "shell"}) {
 		t.Fatalf("second = %#v", second)
 	}
-	if !hasObservedTool(second.Observation.ProviderRequests[0].Tools, "grep") || !hasObservedTool(second.Observation.ProviderRequests[0].Tools, "web_fetch") {
+	if !hasObservedTool(second.Observation.ProviderRequests[0].Tools, "grep") || !hasObservedTool(second.Observation.ProviderRequests[0].Tools, "shell") {
 		t.Fatalf("patched tools missing from provider request: %#v", second.Observation.ProviderRequests[0].Tools)
 	}
-	if hasObservedTool(second.Observation.ProviderRequests[0].Tools, "read") {
+	if hasObservedTool(second.Observation.ProviderRequests[0].Tools, "read") || hasObservedTool(second.Observation.ProviderRequests[0].Tools, "web_fetch") {
 		t.Fatalf("unselected read tool exposed after patch: %#v", second.Observation.ProviderRequests[0].Tools)
 	}
 }
@@ -1181,48 +1200,48 @@ func TestServerAgentSessionDeleteRemovesCompletedSession(t *testing.T) {
 }
 
 func TestServerAgentSessionDeleteRejectsRunningSession(t *testing.T) {
-	scripted := harness.NewScriptedProvider(harness.Step(harness.Hang()))
+	blocking := newBlockingTestProvider()
 	runner := NewRunner(t.TempDir())
 	runner.Now = fixedClock()
 	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
-		return scripted, nil
+		return blocking, nil
 	}
 	server, err := NewServer(runner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	server.Timeout = 250 * time.Millisecond
 	handler := server.Handler()
 	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model"},"message":"hello","system_prompt":"test"}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status/body = %d %s", createRec.Code, createRec.Body.String())
+	}
+	var created AgentSessionSnapshot
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
 
+	runCtx, cancelRun := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody))
-		createRec := httptest.NewRecorder()
-		handler.ServeHTTP(createRec, createReq)
+		turnReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+created.ID+"/turns", strings.NewReader(`{"message":"hello"}`)).WithContext(runCtx)
+		turnRec := httptest.NewRecorder()
+		handler.ServeHTTP(turnRec, turnReq)
 	}()
-	for i := 0; i < 50; i++ {
-		registry := runner.sessionRegistry()
-		registry.mu.Lock()
-		var sessionID string
-		if len(registry.order) == 1 {
-			sessionID = registry.order[0]
-		}
-		registry.mu.Unlock()
-		if sessionID != "" {
-			deleteReq := httptest.NewRequest(http.MethodDelete, "/api/agent/sessions/"+sessionID, nil)
-			deleteRec := httptest.NewRecorder()
-			handler.ServeHTTP(deleteRec, deleteReq)
-			if deleteRec.Code != http.StatusConflict {
-				t.Fatalf("delete status/body = %d %s", deleteRec.Code, deleteRec.Body.String())
-			}
-			<-done
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	blocking.waitStarted(t)
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/agent/sessions/"+created.ID, nil)
+	deleteRec := httptest.NewRecorder()
+	handler.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusConflict {
+		cancelRun()
+		<-done
+		t.Fatalf("delete status/body = %d %s", deleteRec.Code, deleteRec.Body.String())
 	}
-	t.Fatal("session did not appear while running")
+	cancelRun()
+	<-done
 }
 
 func TestServerAgentSessionPersistsAcrossServerRestart(t *testing.T) {
@@ -1519,7 +1538,7 @@ func (p *recordingToolScenarioProvider) Stream(ctx context.Context, req provider
 	requestNo := len(p.requests)
 	p.mu.Unlock()
 	events := []provider.StreamEvent{harness.Text("live-ok"), harness.Done()}
-	if p.failWeather && (hasProviderTool(req.Tools, "web_fetch") || len(req.HostedTools) > 0) {
+	if p.failWeather && hasProviderTool(req.Tools, "shell") && len(req.HostedTools) > 0 {
 		events = []provider.StreamEvent{harness.Truncated("diagnostic unavailable")}
 	}
 	if hasProviderTool(req.Tools, "list") && hasProviderTool(req.Tools, "read") && hasProviderTool(req.Tools, "grep") && requestNo == 1 {

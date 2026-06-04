@@ -702,7 +702,7 @@ func TestOpenAICompatibleProviderReplaysReasoningContentForToolFollowUp(t *testi
 		case 1:
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"look up weather\"}}]}\n\n"))
 			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"Checking.\"}}]}\n\n"))
-			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"fetch-1\",\"type\":\"function\",\"function\":{\"name\":\"web_fetch\",\"arguments\":\"{\\\"url\\\":\\\"https://wttr.in/Changsha?format=4\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"shell-1\",\"type\":\"function\",\"function\":{\"name\":\"shell\",\"arguments\":\"{\\\"command\\\":\\\"curl -fsSL https://wttr.in/Changsha?format=4 | head -c 2000\\\",\\\"workdir\\\":null,\\\"timeout_ms\\\":1000,\\\"max_output_bytes\\\":2000}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n"))
 		default:
 			assistant := body.Messages[len(body.Messages)-2]
 			if assistant["role"] != "assistant" {
@@ -723,11 +723,11 @@ func TestOpenAICompatibleProviderReplaysReasoningContentForToolFollowUp(t *testi
 			if !ok {
 				t.Fatalf("follow-up assistant tool_call function missing: %#v", call)
 			}
-			if call["id"] != "fetch-1" || fn["name"] != "web_fetch" || fn["arguments"] != `{"url":"https://wttr.in/Changsha?format=4"}` {
+			if call["id"] != "shell-1" || fn["name"] != "shell" || fn["arguments"] != `{"command":"curl -fsSL https://wttr.in/Changsha?format=4 | head -c 2000","workdir":null,"timeout_ms":1000,"max_output_bytes":2000}` {
 				t.Fatalf("follow-up assistant tool_call mismatch: %#v", call)
 			}
 			toolResult := body.Messages[len(body.Messages)-1]
-			if toolResult["role"] != "tool" || toolResult["tool_call_id"] != "fetch-1" || toolResult["name"] != "web_fetch" {
+			if toolResult["role"] != "tool" || toolResult["tool_call_id"] != "shell-1" || toolResult["name"] != "shell" {
 				t.Fatalf("follow-up tool result shape missing binding metadata: %#v", toolResult)
 			}
 			if toolResult["reasoning_content"] != nil {
@@ -740,18 +740,29 @@ func TestOpenAICompatibleProviderReplaysReasoningContentForToolFollowUp(t *testi
 
 	reg := tools.NewRegistry()
 	mustRegisterAdapterTestTool(t, reg, tools.Define[struct {
-		URL string `json:"url"`
+		Command        string  `json:"command"`
+		Workdir        *string `json:"workdir"`
+		TimeoutMS      *int    `json:"timeout_ms"`
+		MaxOutputBytes *int    `json:"max_output_bytes"`
 	}](
 		tools.Definition{
-			Name:        "web_fetch",
-			Description: "Fetch a URL.",
-			InputSchema: tools.StrictObject(map[string]any{"url": tools.String("URL to fetch.")}, []string{"url"}),
-			ReadOnly:    true,
+			Name:        "shell",
+			Description: "Run a bounded command.",
+			InputSchema: tools.StrictObject(map[string]any{
+				"command":          tools.String("Command to run."),
+				"workdir":          tools.Nullable(tools.String("Working directory.")),
+				"timeout_ms":       tools.Nullable(tools.Integer("Timeout in milliseconds.")),
+				"max_output_bytes": tools.Nullable(tools.Integer("Maximum output bytes.")),
+			}, []string{"command", "max_output_bytes", "timeout_ms", "workdir"}),
+			ReadOnly: true,
 		},
 		nil,
 		nil,
 		func(context.Context, tools.Invocation[struct {
-			URL string `json:"url"`
+			Command        string  `json:"command"`
+			Workdir        *string `json:"workdir"`
+			TimeoutMS      *int    `json:"timeout_ms"`
+			MaxOutputBytes *int    `json:"max_output_bytes"`
 		}]) (tools.Result, error) {
 			return tools.Result{Text: "changsha: rain"}, nil
 		},
@@ -898,11 +909,11 @@ func TestOpenAICompatibleProviderMergesConsecutiveAssistantToolCalls(t *testing.
 	_, err := p.Stream(context.Background(), provider.Request{RunID: "r", Messages: []session.Message{
 		{Role: session.User, Content: "weather"},
 		{Role: session.Assistant, Content: "I will inspect sources.", Reasoning: "plan"},
-		{Role: session.Assistant, Content: "tool_call", Reasoning: "search and fetch", ToolCallID: "search-1", ToolName: "web_search", ToolArgs: `{"query":"Changsha weather"}`},
-		{Role: session.Assistant, Content: "tool_call", Reasoning: "search and fetch", ToolCallID: "fetch-1", ToolName: "web_fetch", ToolArgs: `{"url":"https://example.com/weather"}`},
+		{Role: session.Assistant, Content: "tool_call", Reasoning: "search and shell", ToolCallID: "search-1", ToolName: "web_search", ToolArgs: `{"query":"Changsha weather"}`},
+		{Role: session.Assistant, Content: "tool_call", Reasoning: "search and shell", ToolCallID: "shell-1", ToolName: "shell", ToolArgs: `{"command":"curl -fsSL https://example.com/weather | head -c 2000","workdir":null,"timeout_ms":1000,"max_output_bytes":2000}`},
 		{Role: session.Tool, Content: "search result", ToolCallID: "search-1", ToolName: "web_search"},
-		{Role: session.Tool, Content: "fetch result", ToolCallID: "fetch-1", ToolName: "web_fetch"},
-	}, Tools: []provider.ToolDefinition{{Name: "web_search"}, {Name: "web_fetch"}}})
+		{Role: session.Tool, Content: "shell result", ToolCallID: "shell-1", ToolName: "shell"},
+	}, Tools: []provider.ToolDefinition{{Name: "web_search"}, {Name: "shell"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -910,7 +921,7 @@ func TestOpenAICompatibleProviderMergesConsecutiveAssistantToolCalls(t *testing.
 		t.Fatalf("messages = %#v", body.Messages)
 	}
 	assistant := body.Messages[2]
-	if assistant["role"] != "assistant" || assistant["content"] != "" || assistant["reasoning_content"] != "search and fetch" {
+	if assistant["role"] != "assistant" || assistant["content"] != "" || assistant["reasoning_content"] != "search and shell" {
 		t.Fatalf("merged assistant message malformed: %#v", assistant)
 	}
 	toolCalls, ok := assistant["tool_calls"].([]any)
@@ -919,13 +930,13 @@ func TestOpenAICompatibleProviderMergesConsecutiveAssistantToolCalls(t *testing.
 	}
 	first := toolCalls[0].(map[string]any)
 	second := toolCalls[1].(map[string]any)
-	if first["id"] != "search-1" || second["id"] != "fetch-1" {
+	if first["id"] != "search-1" || second["id"] != "shell-1" {
 		t.Fatalf("tool calls out of order: %#v", toolCalls)
 	}
 	if body.Messages[3]["role"] != "tool" || body.Messages[3]["tool_call_id"] != "search-1" {
 		t.Fatalf("first tool result malformed: %#v", body.Messages[3])
 	}
-	if body.Messages[4]["role"] != "tool" || body.Messages[4]["tool_call_id"] != "fetch-1" {
+	if body.Messages[4]["role"] != "tool" || body.Messages[4]["tool_call_id"] != "shell-1" {
 		t.Fatalf("second tool result malformed: %#v", body.Messages[4])
 	}
 }
@@ -946,11 +957,11 @@ func TestOpenAICompatibleProviderReordersToolResultsToMatchToolCalls(t *testing.
 	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
 	_, err := p.Stream(context.Background(), provider.Request{RunID: "r", Messages: []session.Message{
 		{Role: session.User, Content: "weather"},
-		{Role: session.Assistant, Content: "tool_call", Reasoning: "search and fetch", ToolCallID: "search-1", ToolName: "web_search", ToolArgs: `{"query":"Changsha weather"}`},
-		{Role: session.Assistant, Content: "tool_call", Reasoning: "search and fetch", ToolCallID: "fetch-1", ToolName: "web_fetch", ToolArgs: `{"url":"https://example.com/weather"}`},
-		{Role: session.Tool, Content: "fetch result", ToolCallID: "fetch-1", ToolName: "web_fetch"},
+		{Role: session.Assistant, Content: "tool_call", Reasoning: "search and shell", ToolCallID: "search-1", ToolName: "web_search", ToolArgs: `{"query":"Changsha weather"}`},
+		{Role: session.Assistant, Content: "tool_call", Reasoning: "search and shell", ToolCallID: "shell-1", ToolName: "shell", ToolArgs: `{"command":"curl -fsSL https://example.com/weather | head -c 2000","workdir":null,"timeout_ms":1000,"max_output_bytes":2000}`},
+		{Role: session.Tool, Content: "shell result", ToolCallID: "shell-1", ToolName: "shell"},
 		{Role: session.Tool, Content: "search result", ToolCallID: "search-1", ToolName: "web_search"},
-	}, Tools: []provider.ToolDefinition{{Name: "web_search"}, {Name: "web_fetch"}}})
+	}, Tools: []provider.ToolDefinition{{Name: "web_search"}, {Name: "shell"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -960,7 +971,7 @@ func TestOpenAICompatibleProviderReordersToolResultsToMatchToolCalls(t *testing.
 	if body.Messages[2]["role"] != "tool" || body.Messages[2]["tool_call_id"] != "search-1" || body.Messages[2]["content"] != "search result" {
 		t.Fatalf("first tool result was not reordered: %#v", body.Messages)
 	}
-	if body.Messages[3]["role"] != "tool" || body.Messages[3]["tool_call_id"] != "fetch-1" || body.Messages[3]["content"] != "fetch result" {
+	if body.Messages[3]["role"] != "tool" || body.Messages[3]["tool_call_id"] != "shell-1" || body.Messages[3]["content"] != "shell result" {
 		t.Fatalf("second tool result was not reordered: %#v", body.Messages)
 	}
 }
@@ -969,23 +980,23 @@ func TestOpenAICompatibleProviderPayloadHashUsesReorderedToolResults(t *testing.
 	messages := []session.Message{
 		{Role: session.User, Content: "weather"},
 		{Role: session.Assistant, Content: "tool_call", ToolCallID: "search-1", ToolName: "web_search", ToolArgs: `{"query":"Changsha weather"}`},
-		{Role: session.Assistant, Content: "tool_call", ToolCallID: "fetch-1", ToolName: "web_fetch", ToolArgs: `{"url":"https://example.com/weather"}`},
-		{Role: session.Tool, Content: "fetch result", ToolCallID: "fetch-1", ToolName: "web_fetch"},
+		{Role: session.Assistant, Content: "tool_call", ToolCallID: "shell-1", ToolName: "shell", ToolArgs: `{"command":"curl -fsSL https://example.com/weather | head -c 2000","workdir":null,"timeout_ms":1000,"max_output_bytes":2000}`},
+		{Role: session.Tool, Content: "shell result", ToolCallID: "shell-1", ToolName: "shell"},
 		{Role: session.Tool, Content: "search result", ToolCallID: "search-1", ToolName: "web_search"},
 	}
 	ordered := []session.Message{
 		{Role: session.User, Content: "weather"},
 		{Role: session.Assistant, Content: "tool_call", ToolCallID: "search-1", ToolName: "web_search", ToolArgs: `{"query":"Changsha weather"}`},
-		{Role: session.Assistant, Content: "tool_call", ToolCallID: "fetch-1", ToolName: "web_fetch", ToolArgs: `{"url":"https://example.com/weather"}`},
+		{Role: session.Assistant, Content: "tool_call", ToolCallID: "shell-1", ToolName: "shell", ToolArgs: `{"command":"curl -fsSL https://example.com/weather | head -c 2000","workdir":null,"timeout_ms":1000,"max_output_bytes":2000}`},
 		{Role: session.Tool, Content: "search result", ToolCallID: "search-1", ToolName: "web_search"},
-		{Role: session.Tool, Content: "fetch result", ToolCallID: "fetch-1", ToolName: "web_fetch"},
+		{Role: session.Tool, Content: "shell result", ToolCallID: "shell-1", ToolName: "shell"},
 	}
 	p := OpenAICompatibleProvider{Endpoint: "https://example.test/chat", APIKey: "secret", Model: "remote-model"}
-	got, err := p.PayloadHash(provider.Request{RunID: "r", Messages: messages, Tools: []provider.ToolDefinition{{Name: "web_search"}, {Name: "web_fetch"}}})
+	got, err := p.PayloadHash(provider.Request{RunID: "r", Messages: messages, Tools: []provider.ToolDefinition{{Name: "web_search"}, {Name: "shell"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := p.PayloadHash(provider.Request{RunID: "r", Messages: ordered, Tools: []provider.ToolDefinition{{Name: "web_search"}, {Name: "web_fetch"}}})
+	want, err := p.PayloadHash(provider.Request{RunID: "r", Messages: ordered, Tools: []provider.ToolDefinition{{Name: "web_search"}, {Name: "shell"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1036,7 +1047,7 @@ func TestOpenAICompatibleProviderRejectsMissingAndDuplicateToolResultsBeforeRequ
 			messages: []session.Message{
 				{Role: session.User, Content: "weather"},
 				{Role: session.Assistant, Content: "tool_call", ToolCallID: "search-1", ToolName: "web_search", ToolArgs: `{"query":"Changsha"}`},
-				{Role: session.Assistant, Content: "tool_call", ToolCallID: "fetch-1", ToolName: "web_fetch", ToolArgs: `{"url":"https://example.com"}`},
+				{Role: session.Assistant, Content: "tool_call", ToolCallID: "shell-1", ToolName: "shell", ToolArgs: `{"command":"curl -fsSL https://example.com | head -c 2000","workdir":null,"timeout_ms":1000,"max_output_bytes":2000}`},
 				{Role: session.Tool, Content: "search result", ToolCallID: "search-1", ToolName: "web_search"},
 				{Role: session.Tool, Content: "duplicate search result", ToolCallID: "search-1", ToolName: "web_search"},
 			},
@@ -1060,7 +1071,7 @@ func TestOpenAICompatibleProviderRejectsMissingAndDuplicateToolResultsBeforeRequ
 			}))
 			defer server.Close()
 			p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
-			_, err := p.Stream(context.Background(), provider.Request{RunID: "r", Messages: tt.messages, Tools: []provider.ToolDefinition{{Name: "web_search"}, {Name: "web_fetch"}}})
+			_, err := p.Stream(context.Background(), provider.Request{RunID: "r", Messages: tt.messages, Tools: []provider.ToolDefinition{{Name: "web_search"}, {Name: "shell"}}})
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("err = %v, want %q", err, tt.wantErr)
 			}
@@ -1210,15 +1221,15 @@ func TestOpenAICompatibleProviderRejectsRawPlanPartialAssistantToolCallBatch(t *
 	defer server.Close()
 	segments := []promptcache.Segment{
 		rawSegmentForAdapterTest(t, session.Message{Role: session.User, Content: "weather"}),
-		rawSegmentForAdapterTest(t, session.Message{Role: session.Assistant, Content: "tool_call", ToolCallID: "call-01", ToolName: "web_fetch", ToolArgs: `{"url":"b"}`}),
-		rawSegmentForAdapterTest(t, session.Message{Role: session.Tool, Content: "result a", ToolCallID: "call-00", ToolName: "web_fetch"}),
-		rawSegmentForAdapterTest(t, session.Message{Role: session.Tool, Content: "result b", ToolCallID: "call-01", ToolName: "web_fetch"}),
+		rawSegmentForAdapterTest(t, session.Message{Role: session.Assistant, Content: "tool_call", ToolCallID: "call-01", ToolName: "shell", ToolArgs: `{"command":"printf b","workdir":null,"timeout_ms":1000,"max_output_bytes":2000}`}),
+		rawSegmentForAdapterTest(t, session.Message{Role: session.Tool, Content: "result a", ToolCallID: "call-00", ToolName: "shell"}),
+		rawSegmentForAdapterTest(t, session.Message{Role: session.Tool, Content: "result b", ToolCallID: "call-01", ToolName: "shell"}),
 	}
 	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
 	req := provider.Request{
 		RunID:   "r",
 		RawPlan: promptcache.RawPlan{Segments: segments},
-		Tools:   []provider.ToolDefinition{{Name: "web_fetch"}},
+		Tools:   []provider.ToolDefinition{{Name: "shell"}},
 	}
 	_, err := p.Stream(context.Background(), req)
 	if err == nil || !strings.Contains(err.Error(), `tool result "call-00" does not match preceding assistant tool_calls`) {
@@ -1246,10 +1257,10 @@ func TestOpenAICompatibleProviderDoesNotMergeSeparateToolBatches(t *testing.T) {
 	defer server.Close()
 	messages := []session.Message{
 		{Role: session.User, Content: "weather"},
-		{Role: session.Assistant, Content: "tool_call", Reasoning: "first", ToolCallID: "call-a", ToolName: "web_fetch", ToolArgs: `{"url":"a"}`},
-		{Role: session.Tool, Content: "result a", ToolCallID: "call-a", ToolName: "web_fetch"},
-		{Role: session.Assistant, Content: "tool_call", Reasoning: "second", ToolCallID: "call-b", ToolName: "web_fetch", ToolArgs: `{"url":"b"}`},
-		{Role: session.Tool, Content: "result b", ToolCallID: "call-b", ToolName: "web_fetch"},
+		{Role: session.Assistant, Content: "tool_call", Reasoning: "first", ToolCallID: "call-a", ToolName: "shell", ToolArgs: `{"command":"printf a","workdir":null,"timeout_ms":1000,"max_output_bytes":2000}`},
+		{Role: session.Tool, Content: "result a", ToolCallID: "call-a", ToolName: "shell"},
+		{Role: session.Assistant, Content: "tool_call", Reasoning: "second", ToolCallID: "call-b", ToolName: "shell", ToolArgs: `{"command":"printf b","workdir":null,"timeout_ms":1000,"max_output_bytes":2000}`},
+		{Role: session.Tool, Content: "result b", ToolCallID: "call-b", ToolName: "shell"},
 	}
 	segments := make([]promptcache.Segment, 0, len(messages))
 	for _, msg := range messages {
@@ -1259,7 +1270,7 @@ func TestOpenAICompatibleProviderDoesNotMergeSeparateToolBatches(t *testing.T) {
 	if _, err := p.Stream(context.Background(), provider.Request{
 		RunID:   "r",
 		RawPlan: promptcache.RawPlan{Segments: segments},
-		Tools:   []provider.ToolDefinition{{Name: "web_fetch"}},
+		Tools:   []provider.ToolDefinition{{Name: "shell"}},
 	}); err != nil {
 		t.Fatal(err)
 	}

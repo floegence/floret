@@ -71,6 +71,44 @@ func TestRunnerReportsFailedCommand(t *testing.T) {
 	}
 }
 
+func TestRunnerAgentSessionDefaultsDoNotSetWallTime(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return harness.NewScriptedProvider(harness.Step(harness.Text("done"), harness.Done())), nil
+	}
+	idle, err := runner.CreateIdleAgentSession(context.Background(), AgentRunRequest{
+		Profile:      ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:      "hello",
+		SystemPrompt: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	idleSession, ok := runner.Sessions.get(idle.ID)
+	if !ok {
+		t.Fatalf("idle session not registered")
+	}
+	if idleSession.cfg.WallTime != 0 {
+		t.Fatalf("idle session wall time = %s, want 0", idleSession.cfg.WallTime)
+	}
+	run := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:      ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:      "hello",
+		SystemPrompt: "test",
+	})
+	if run.Status != "completed" {
+		t.Fatalf("run = %#v", run)
+	}
+	runSession, ok := runner.Sessions.get(run.SessionID)
+	if !ok {
+		t.Fatalf("run session not registered")
+	}
+	if runSession.cfg.WallTime != 0 {
+		t.Fatalf("run session wall time = %s, want 0", runSession.cfg.WallTime)
+	}
+}
+
 func TestRunnerEvalDemoReturnsTraceMetricsAndArtifacts(t *testing.T) {
 	runner := NewRunner(t.TempDir())
 	runner.Now = fixedClock()
@@ -446,18 +484,18 @@ func TestRunnerAgentSessionSelectedToolsExplicitlyExposeBuiltInTools(t *testing.
 		ProfileID:     "fake",
 		Message:       "hello",
 		SystemPrompt:  "test",
-		SelectedTools: []string{"read", "list", "glob", "grep", "apply_patch", "edit", "write", "shell", "web_fetch"},
+		SelectedTools: []string{"read", "list", "glob", "grep", "apply_patch", "edit", "write", "shell"},
 	})
-	if coding.Status != "completed" || len(coding.Session.SelectedTools) != 9 {
+	if coding.Status != "completed" || len(coding.Session.SelectedTools) != 8 {
 		t.Fatalf("coding = %#v", coding)
 	}
-	for _, name := range []string{"read", "list", "glob", "grep", "apply_patch", "edit", "write", "shell", "web_fetch"} {
+	for _, name := range []string{"read", "list", "glob", "grep", "apply_patch", "edit", "write", "shell"} {
 		if !hasStrictTool(coding.Observation.ProviderRequests[0].Tools, name) {
 			t.Fatalf("selected tool %s missing: %#v", name, coding.Observation.ProviderRequests[0].Tools)
 		}
 	}
-	if hasStrictTool(coding.Observation.ProviderRequests[0].Tools, "web_search") {
-		t.Fatalf("unavailable web_search should not be exposed: %#v", coding.Observation.ProviderRequests[0].Tools)
+	if hasStrictTool(coding.Observation.ProviderRequests[0].Tools, "web_search") || hasStrictTool(coding.Observation.ProviderRequests[0].Tools, "web_fetch") {
+		t.Fatalf("unavailable network tools should not be exposed: %#v", coding.Observation.ProviderRequests[0].Tools)
 	}
 }
 
@@ -577,37 +615,19 @@ func TestRunnerAgentSessionCanExecuteClientWebSearch(t *testing.T) {
 	}
 }
 
-func TestRunnerAgentSessionWebFetchKeepsPrivateNetworkBlockedByDefault(t *testing.T) {
-	root := t.TempDir()
-	fetchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("private test server"))
-	}))
-	defer fetchServer.Close()
-	scripted := harness.NewScriptedProvider(
-		harness.Step(
-			harness.Tool("fetch-private", "web_fetch", fmt.Sprintf(`{"url":%q}`, fetchServer.URL)),
-			harness.DoneReason("tool_calls"),
-		),
-		harness.Step(harness.Text("done"), harness.Done()),
-	)
-	runner := NewRunner(root)
+func TestRunnerAgentSessionRejectsWebFetchSelection(t *testing.T) {
+	runner := NewRunner(t.TempDir())
 	runner.Now = fixedClock()
-	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
-		return scripted, nil
-	}
 
 	result := runner.CreateAgentSession(context.Background(), AgentRunRequest{
 		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
-		Message:       "fetch private",
+		Message:       "fetch url",
 		SystemPrompt:  "test",
 		SelectedTools: []string{"web_fetch"},
 	})
 
-	if result.Status != "completed" {
+	if result.Status != "error" || result.StatusCode != http.StatusBadRequest || !strings.Contains(result.Error, `unknown test UI tool "web_fetch"`) {
 		t.Fatalf("result = %#v", result)
-	}
-	if !hasToolResultContaining(result.Observation.SessionMessages, "fetch-private", "refusing to fetch private host") {
-		t.Fatalf("private web_fetch was not blocked in ordinary session: %#v", result.Observation.SessionMessages)
 	}
 }
 
@@ -741,11 +761,11 @@ func TestRunnerAgentSessionToolPatchPersistsAcrossRestore(t *testing.T) {
 	if first.Status != "waiting" || !slices.Equal(first.Session.SelectedTools, []string{"grep"}) {
 		t.Fatalf("first = %#v", first)
 	}
-	patched, err := firstRunner.UpdateAgentSessionTools(context.Background(), first.SessionID, AgentToolsUpdateRequest{SelectedTools: toolSelection("read", "web_fetch"), Reason: "restore test"})
+	patched, err := firstRunner.UpdateAgentSessionTools(context.Background(), first.SessionID, AgentToolsUpdateRequest{SelectedTools: toolSelection("read", "shell"), Reason: "restore test"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(patched.SelectedTools, []string{"read", "web_fetch"}) {
+	if !slices.Equal(patched.SelectedTools, []string{"read", "shell"}) {
 		t.Fatalf("patched tools = %#v", patched.SelectedTools)
 	}
 
@@ -755,10 +775,10 @@ func TestRunnerAgentSessionToolPatchPersistsAcrossRestore(t *testing.T) {
 		return harness.NewScriptedProvider(harness.Step(harness.Text("done"), harness.Done())), nil
 	}
 	second := restoredRunner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "yes"})
-	if second.Status != "completed" || !slices.Equal(second.Session.SelectedTools, []string{"read", "web_fetch"}) {
+	if second.Status != "completed" || !slices.Equal(second.Session.SelectedTools, []string{"read", "shell"}) {
 		t.Fatalf("second = %#v", second)
 	}
-	if !hasStrictTool(second.Observation.ProviderRequests[0].Tools, "read") || !hasStrictTool(second.Observation.ProviderRequests[0].Tools, "web_fetch") {
+	if !hasStrictTool(second.Observation.ProviderRequests[0].Tools, "read") || !hasStrictTool(second.Observation.ProviderRequests[0].Tools, "shell") {
 		t.Fatalf("patched tools missing after restore: %#v", second.Observation.ProviderRequests[0].Tools)
 	}
 	if hasStrictTool(second.Observation.ProviderRequests[0].Tools, "grep") {
@@ -767,7 +787,7 @@ func TestRunnerAgentSessionToolPatchPersistsAcrossRestore(t *testing.T) {
 	if !slices.ContainsFunc(second.Session.PathEntries, func(entry ObservedSessionEntry) bool {
 		return entry.Type == "active_tools_change" &&
 			entry.Metadata["previous_tools"] == "grep" &&
-			entry.Metadata["selected_tools"] == "read,web_fetch" &&
+			entry.Metadata["selected_tools"] == "read,shell" &&
 			entry.Metadata["reason"] == "restore test"
 	}) {
 		t.Fatalf("tool patch audit entry missing after restore: %#v", second.Session.PathEntries)
@@ -789,7 +809,7 @@ func TestRunnerRestoresLongSessionEntryAndKeepsSelectedTools(t *testing.T) {
 		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
 		Message:       "store a long answer",
 		SystemPrompt:  "test",
-		SelectedTools: []string{"grep", "web_fetch"},
+		SelectedTools: []string{"grep", "shell"},
 		ContextPolicy: contextpolicy.Policy{
 			ContextWindowTokens:   1_000_000,
 			MaxOutputTokens:       4096,
@@ -808,14 +828,14 @@ func TestRunnerRestoresLongSessionEntryAndKeepsSelectedTools(t *testing.T) {
 		return harness.NewScriptedProvider(harness.Step(harness.Text("restored done"), harness.Done())), nil
 	}
 	sessions := recoveredRunner.AgentSessions(context.Background())
-	if len(sessions) != 1 || sessions[0].ID != first.SessionID || !slices.Equal(sessions[0].SelectedTools, []string{"grep", "web_fetch"}) {
+	if len(sessions) != 1 || sessions[0].ID != first.SessionID || !slices.Equal(sessions[0].SelectedTools, []string{"grep", "shell"}) {
 		t.Fatalf("sessions = %#v", sessions)
 	}
 	second := recoveredRunner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "continue"})
 	if second.Status != "completed" || second.Output != "restored done" {
 		t.Fatalf("second = %#v", second)
 	}
-	if !slices.Equal(second.Session.SelectedTools, []string{"grep", "web_fetch"}) {
+	if !slices.Equal(second.Session.SelectedTools, []string{"grep", "shell"}) {
 		t.Fatalf("selected tools lost after restore: %#v", second.Session.SelectedTools)
 	}
 	if len(second.Observation.ProviderRequests) != 1 {
@@ -826,7 +846,7 @@ func TestRunnerRestoresLongSessionEntryAndKeepsSelectedTools(t *testing.T) {
 	}) {
 		t.Fatalf("follow-up request missing restored long assistant entry")
 	}
-	if !hasStrictTool(second.Observation.ProviderRequests[0].Tools, "grep") || !hasStrictTool(second.Observation.ProviderRequests[0].Tools, "web_fetch") {
+	if !hasStrictTool(second.Observation.ProviderRequests[0].Tools, "grep") || !hasStrictTool(second.Observation.ProviderRequests[0].Tools, "shell") {
 		t.Fatalf("restored selected tools missing from provider request: %#v", second.Observation.ProviderRequests[0].Tools)
 	}
 }
@@ -1369,28 +1389,28 @@ func TestRunnerDeleteRestoredAgentSessionRemovesPromptCacheWithoutProvider(t *te
 
 func TestRunnerAgentSessionHandlesMultipleToolCallsAndFollowUpUserTurn(t *testing.T) {
 	root := t.TempDir()
-	fetchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	contentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("Changsha detailed page: thunderstorms with uncertainty."))
 	}))
-	defer fetchServer.Close()
-	fetchURL := fetchServer.URL + "/changsha-weather"
+	defer contentServer.Close()
+	contentURL := contentServer.URL + "/changsha-weather"
 	searchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(fmt.Sprintf(`{"web":{"results":[{"title":"Changsha weather","url":%q,"description":"Thunderstorms forecast.","profile":{"name":"Weather Source"}}]}}`, fetchURL)))
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"web":{"results":[{"title":"Changsha weather","url":%q,"description":"Thunderstorms forecast.","profile":{"name":"Weather Source"}}]}}`, contentURL)))
 	}))
 	defer searchServer.Close()
 	scripted := harness.NewScriptedProvider(
 		harness.Step(
-			provider.StreamEvent{Type: provider.Reasoning, Text: "Search then inspect a known URL."},
+			provider.StreamEvent{Type: provider.Reasoning, Text: "Search then inspect a known URL with bounded shell curl."},
 			harness.Text("I will check sources."),
 			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
 				{ID: "search-1", Name: "web_search", Args: `{"query":"Changsha weather 2026-06-03","count":3}`},
-				{ID: "fetch-1", Name: "web_fetch", Args: fmt.Sprintf(`{"url":%q}`, fetchURL)},
+				{ID: "curl-1", Name: "shell", Args: boundedCurlArgs(contentURL)},
 			}},
 			harness.DoneReason("tool_calls"),
 		),
 		harness.Step(harness.Text("Changsha has thunderstorms."), harness.Done()),
-		harness.Step(harness.Text("Sources were search and fetch results."), harness.Done()),
+		harness.Step(harness.Text("Sources were search and shell results."), harness.Done()),
 	)
 	runner := NewRunner(root)
 	runner.Now = fixedClock()
@@ -1405,7 +1425,7 @@ func TestRunnerAgentSessionHandlesMultipleToolCallsAndFollowUpUserTurn(t *testin
 		Profile:       fakeClientSearchProfile(),
 		Message:       "查询长沙天气",
 		SystemPrompt:  "test",
-		SelectedTools: []string{"web_search", "web_fetch"},
+		SelectedTools: []string{"web_search", "shell"},
 	})
 	if first.Status != "completed" || !strings.Contains(first.Output, "Changsha") {
 		t.Fatalf("first = %#v", first)
@@ -1419,20 +1439,20 @@ func TestRunnerAgentSessionHandlesMultipleToolCallsAndFollowUpUserTurn(t *testin
 		t.Fatalf("web_search call missing from session messages: %#v", first.Observation.SessionMessages)
 	}
 	if !slices.ContainsFunc(first.Observation.SessionMessages, func(msg ObservedSessionMessage) bool {
-		return msg.Role == "assistant" && msg.ToolName == "web_fetch" && msg.ToolCallID == "fetch-1" && strings.Contains(msg.Reasoning, "Search then inspect")
+		return msg.Role == "assistant" && msg.ToolName == "shell" && msg.ToolCallID == "curl-1" && strings.Contains(msg.Reasoning, "Search then inspect")
 	}) {
-		t.Fatalf("web_fetch call missing from session messages: %#v", first.Observation.SessionMessages)
+		t.Fatalf("shell curl call missing from session messages: %#v", first.Observation.SessionMessages)
 	}
 	if !slices.ContainsFunc(first.Observation.ProviderRequests[1].Messages, func(msg ObservedSessionMessage) bool {
 		return msg.Role == "tool" && msg.ToolName == "web_search" && msg.ToolCallID == "search-1"
 	}) || !slices.ContainsFunc(first.Observation.ProviderRequests[1].Messages, func(msg ObservedSessionMessage) bool {
-		return msg.Role == "tool" && msg.ToolName == "web_fetch" && msg.ToolCallID == "fetch-1"
+		return msg.Role == "tool" && msg.ToolName == "shell" && msg.ToolCallID == "curl-1"
 	}) {
 		t.Fatalf("follow-up request missing tool results: %#v", first.Observation.ProviderRequests[1].Messages)
 	}
 
 	second := runner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "请给出信息来源和不确定性"})
-	if second.Status != "completed" || second.Output != "Sources were search and fetch results." || len(second.Session.Turns) != 2 {
+	if second.Status != "completed" || second.Output != "Sources were search and shell results." || len(second.Session.Turns) != 2 {
 		t.Fatalf("second = %#v", second)
 	}
 	latestRequest := second.Observation.ProviderRequests[len(second.Observation.ProviderRequests)-1]
@@ -1453,15 +1473,17 @@ func TestRunnerAgentSessionHandlesRepeatedWeatherToolBatchesAndFollowUp(t *testi
 	if err := os.WriteFile(filepath.Join(root, config.DefaultEnvFile), []byte("FLORET_BRAVE_SEARCH_API_KEY=test-key\nFLORET_BRAVE_SEARCH_ENDPOINT="+searchServer.URL+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fetchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	contentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/china-weather":
 			_, _ = w.Write([]byte("Changsha June 3: rain. June 4: cloudy then clear."))
-		default:
+		case "/wttr":
 			_, _ = w.Write([]byte("Changsha: showers, 81F"))
+		default:
+			http.NotFound(w, r)
 		}
 	}))
-	defer fetchServer.Close()
+	defer contentServer.Close()
 	scripted := harness.NewScriptedProvider(
 		harness.Step(
 			provider.StreamEvent{Type: provider.Reasoning, Text: "try search"},
@@ -1471,18 +1493,18 @@ func TestRunnerAgentSessionHandlesRepeatedWeatherToolBatchesAndFollowUp(t *testi
 			harness.DoneReason("tool_calls"),
 		),
 		harness.Step(
-			provider.StreamEvent{Type: provider.Reasoning, Text: "try fetch without timeout"},
+			provider.StreamEvent{Type: provider.Reasoning, Text: "try shell curl calls that fail"},
 			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
-				{ID: "fetch-bad-00", Name: "web_fetch", Args: fmt.Sprintf(`{"url":%q}`, fetchServer.URL+"/china-weather"), Reasoning: "try fetch without timeout"},
-				{ID: "fetch-bad-01", Name: "web_fetch", Args: fmt.Sprintf(`{"url":%q}`, fetchServer.URL+"/wttr"), Reasoning: "try fetch without timeout"},
+				{ID: "curl-bad-00", Name: "shell", Args: boundedCurlArgs(contentServer.URL + "/missing-weather"), Reasoning: "try shell curl calls that fail"},
+				{ID: "curl-bad-01", Name: "shell", Args: boundedCurlArgs(contentServer.URL + "/missing-wttr"), Reasoning: "try shell curl calls that fail"},
 			}},
 			harness.DoneReason("tool_calls"),
 		),
 		harness.Step(
-			provider.StreamEvent{Type: provider.Reasoning, Text: "retry fetch with timeout"},
+			provider.StreamEvent{Type: provider.Reasoning, Text: "retry shell curl with bounded output"},
 			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
-				{ID: "fetch-good-00", Name: "web_fetch", Args: fmt.Sprintf(`{"url":%q,"timeout_ms":15000}`, fetchServer.URL+"/china-weather"), Reasoning: "retry fetch with timeout"},
-				{ID: "fetch-good-01", Name: "web_fetch", Args: fmt.Sprintf(`{"url":%q,"timeout_ms":15000}`, fetchServer.URL+"/wttr"), Reasoning: "retry fetch with timeout"},
+				{ID: "curl-good-00", Name: "shell", Args: boundedCurlArgs(contentServer.URL + "/china-weather"), Reasoning: "retry shell curl with bounded output"},
+				{ID: "curl-good-01", Name: "shell", Args: boundedCurlArgs(contentServer.URL + "/wttr"), Reasoning: "retry shell curl with bounded output"},
 			}},
 			harness.DoneReason("tool_calls"),
 		),
@@ -1499,7 +1521,7 @@ func TestRunnerAgentSessionHandlesRepeatedWeatherToolBatchesAndFollowUp(t *testi
 		Profile:       fakeClientSearchProfile(),
 		Message:       "今天是2026-06-03，请你获取长沙的天气",
 		SystemPrompt:  "test",
-		SelectedTools: []string{"web_search", "web_fetch"},
+		SelectedTools: []string{"web_search", "shell"},
 	})
 	if first.Status != "completed" || first.Output != "Changsha weather summary." {
 		t.Fatalf("first = %#v", first)
@@ -1507,7 +1529,7 @@ func TestRunnerAgentSessionHandlesRepeatedWeatherToolBatchesAndFollowUp(t *testi
 	if len(first.Observation.ProviderRequests) != 4 {
 		t.Fatalf("provider requests = %#v", first.Observation.ProviderRequests)
 	}
-	for _, id := range []string{"search-1", "fetch-bad-00", "fetch-bad-01", "fetch-good-00", "fetch-good-01"} {
+	for _, id := range []string{"search-1", "curl-bad-00", "curl-bad-01", "curl-good-00", "curl-good-01"} {
 		if got := countObservedToolMessages(first.Observation.SessionMessages, "assistant", id); got != 1 {
 			t.Fatalf("assistant tool call %s count = %d in %#v", id, got, first.Observation.SessionMessages)
 		}
