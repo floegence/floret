@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -174,6 +175,10 @@ func (s *Server) handleAgentSessionRoute(w http.ResponseWriter, r *http.Request)
 		s.handleAgentSessionTurn(w, r, sessionID)
 		return
 	}
+	if r.Method == http.MethodPost && len(parts) == 3 && parts[1] == "turns" && parts[2] == "stream" {
+		s.handleAgentSessionTurnStream(w, r, sessionID)
+		return
+	}
 	if r.Method == http.MethodPatch && len(parts) == 2 && parts[1] == "tools" {
 		s.handleAgentSessionTools(w, r, sessionID)
 		return
@@ -239,6 +244,82 @@ func (s *Server) handleAgentSessionTurn(w http.ResponseWriter, r *http.Request, 
 	}
 	resp := s.Runner.RunAgentTurn(ctx, sessionID, req)
 	writeJSON(w, agentHTTPStatus(resp), resp)
+}
+
+func (s *Server) handleAgentSessionTurnStream(w http.ResponseWriter, r *http.Request, sessionID string) {
+	defer r.Body.Close()
+	var req AgentTurnRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON request"})
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming is not supported"})
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	stream := newAgentStream(512)
+	runCtx := context.Background()
+	var cancel context.CancelFunc
+	if s.Timeout > 0 {
+		runCtx, cancel = context.WithTimeout(runCtx, s.Timeout)
+	} else {
+		runCtx, cancel = context.WithCancel(runCtx)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer cancel()
+		defer stream.Close()
+		s.Runner.RunAgentTurnStream(runCtx, sessionID, req, stream)
+	}()
+
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case ev, ok := <-stream.Events():
+			if !ok {
+				flusher.Flush()
+				return
+			}
+			if err := writeSSE(w, ev); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-heartbeat.C:
+			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+func writeSSE(w http.ResponseWriter, ev AgentStreamEvent) error {
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return err
+	}
+	if ev.Sequence > 0 {
+		if _, err := fmt.Fprintf(w, "id: %d\n", ev.Sequence); err != nil {
+			return err
+		}
+	}
+	if ev.Type != "" {
+		if _, err := fmt.Fprintf(w, "event: %s\n", ev.Type); err != nil {
+			return err
+		}
+	}
+	_, err = fmt.Fprintf(w, "data: %s\n\n", data)
+	return err
 }
 
 func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {

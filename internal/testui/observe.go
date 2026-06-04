@@ -17,10 +17,17 @@ type observingProvider struct {
 	mu    sync.Mutex
 	reqs  []ObservedProviderRequest
 	evs   []ObservedProviderEvent
+	sink  AgentStreamSink
 }
 
 func newObservingProvider(inner provider.Provider) *observingProvider {
 	return &observingProvider{inner: inner}
+}
+
+func (p *observingProvider) SetStreamSink(sink AgentStreamSink) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.sink = sink
 }
 
 func (p *observingProvider) NormalizeCachePolicy(policy promptcache.CachePolicy) (promptcache.CachePolicy, error) {
@@ -59,15 +66,11 @@ func (p *observingProvider) ToolRaw(def promptcache.ToolDefinition) (string, str
 }
 
 func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
-	p.mu.Lock()
-	sessionID := observedSessionID(req)
-	threadID := observedThreadID(req)
-	turnID := observedTurnID(req)
-	p.reqs = append(p.reqs, ObservedProviderRequest{
+	observedRequest := ObservedProviderRequest{
 		RunID:        req.RunID,
-		SessionID:    sessionID,
-		ThreadID:     threadID,
-		TurnID:       turnID,
+		SessionID:    observedSessionID(req),
+		ThreadID:     observedThreadID(req),
+		TurnID:       observedTurnID(req),
 		Step:         req.Step,
 		Provider:     req.Provider,
 		Model:        req.Model,
@@ -90,8 +93,22 @@ func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<
 			ReusedSegments:       req.RawPlan.ReusedSegments,
 			NewSegments:          req.RawPlan.NewSegments,
 		},
-	})
+	}
+	p.mu.Lock()
+	p.reqs = append(p.reqs, observedRequest)
+	sink := p.sink
 	p.mu.Unlock()
+	if sink != nil {
+		reqCopy := observedRequest
+		sink.EmitAgentStream(AgentStreamEvent{
+			Type:            AgentStreamProviderRequest,
+			SessionID:       observedRequest.SessionID,
+			TurnID:          observedRequest.TurnID,
+			Step:            observedRequest.Step,
+			At:              observedRequest.ObservedAt,
+			ProviderRequest: &reqCopy,
+		})
+	}
 
 	stream, err := p.inner.Stream(ctx, req)
 	if err != nil {
@@ -101,7 +118,7 @@ func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<
 	go func() {
 		defer close(out)
 		for ev := range stream {
-			p.recordEvent(req.RunID, sessionID, req.Step, ev)
+			p.recordEvent(req.RunID, observedRequest.SessionID, req.Step, ev)
 			select {
 			case <-ctx.Done():
 				return
@@ -122,18 +139,7 @@ func (p *observingProvider) Snapshot() AgentObservation {
 }
 
 func (p *observingProvider) recordEvent(runID string, sessionID string, step int, ev provider.StreamEvent) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if ev.Type == provider.UsageEvent {
-		for i := len(p.reqs) - 1; i >= 0; i-- {
-			if p.reqs[i].RunID == runID && p.reqs[i].Step == step {
-				p.reqs[i].CacheSummary.CacheReadTokens += ev.Usage.CacheReadTokens
-				p.reqs[i].CacheSummary.CacheWriteTokens += ev.Usage.CacheWriteTokens
-				break
-			}
-		}
-	}
-	p.evs = append(p.evs, ObservedProviderEvent{
+	observed := ObservedProviderEvent{
 		RunID:      runID,
 		SessionID:  sessionID,
 		Step:       step,
@@ -145,7 +151,19 @@ func (p *observingProvider) recordEvent(runID string, sessionID string, step int
 		ToolCalls:  append([]provider.ToolCall(nil), ev.ToolCalls...),
 		Reason:     ev.Reason,
 		Usage:      ev.Usage,
-	})
+	}
+	p.mu.Lock()
+	if ev.Type == provider.UsageEvent {
+		for i := len(p.reqs) - 1; i >= 0; i-- {
+			if p.reqs[i].RunID == runID && p.reqs[i].Step == step {
+				p.reqs[i].CacheSummary.CacheReadTokens += ev.Usage.CacheReadTokens
+				p.reqs[i].CacheSummary.CacheWriteTokens += ev.Usage.CacheWriteTokens
+				break
+			}
+		}
+	}
+	p.evs = append(p.evs, observed)
+	p.mu.Unlock()
 }
 
 func reasoningText(ev provider.StreamEvent) string {

@@ -141,11 +141,38 @@ function renderWorkspace(session, result) {
 
 function renderTimeline(session, result) {
   const entries = session.path_entries || [];
-  if (!entries.length) return `<div class="message entry"><div class="message-text muted">No durable messages yet.</div></div>`;
+  if (!entries.length && !activeLiveTurn(session)) return `<div class="message entry"><div class="message-text muted">No durable messages yet.</div></div>`;
   const messages = entries.filter((entry) => {
     return ["user_message", "assistant_message", "tool_call", "tool_result", "active_tools_change", "run_failure", "turn_marker"].includes(entry.type);
   });
-  return messages.map(renderEntry).join("");
+  return `${messages.map(renderEntry).join("")}${renderLiveTurn(session)}`;
+}
+
+function activeLiveTurn(session) {
+  if (!session?.id || !state.liveTurn) return null;
+  return state.liveTurn.session_id === session.id ? state.liveTurn : null;
+}
+
+function renderLiveTurn(session) {
+  const live = activeLiveTurn(session);
+  if (!live) return "";
+  const durableUser = (session.path_entries || []).some((entry) => entry.type === "user_message" && entry.turn_id === live.turn_id);
+  const userEcho = !durableUser && live.user_message ? `
+    <article class="message user pending">
+      <div class="message-head"><span>user</span><span>pending</span>${copyButton(live.user_message)}</div>
+      ${renderMessageBody(live.user_message, "user")}
+    </article>
+  ` : "";
+  const existingAssistant = (session.path_entries || []).some((entry) => entry.type === "assistant_message" && entry.turn_id === live.turn_id);
+  const assistant = live.assistant_delta && !existingAssistant ? `
+    <article class="message assistant streaming">
+      <div class="message-head"><span>assistant</span><span>streaming</span>${copyButton(live.assistant_delta)}</div>
+      ${live.reasoning_delta ? `<pre class="code-block">${escapeHTML(live.reasoning_delta)}</pre>` : ""}
+      <div class="message-text">${escapeHTML(live.assistant_delta)}<span class="stream-caret" aria-hidden="true"></span></div>
+    </article>
+  ` : "";
+  const activity = live.events?.length ? `<div class="stream-status">Live turn · ${live.events.length} event${live.events.length === 1 ? "" : "s"}</div>` : `<div class="stream-status">Live turn started</div>`;
+  return `${userEcho}${assistant}${activity}`;
 }
 
 function renderEntry(entry) {

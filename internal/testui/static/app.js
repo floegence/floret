@@ -208,33 +208,59 @@ async function createSession(payload) {
 
 async function queueInitialTurn(sessionID, message, token) {
   if (!sessionID || !message || token !== state.mutationToken) return;
-  await runWithStatus({ status: "running", action: "append-turn", target: sessionID, successMessage: "Initial task completed" }, async () => {
-    const result = await api.appendTurn(sessionID, { message });
-    if (token !== state.mutationToken) return false;
-    state.lastResult = result;
-    if (state.activeSession?.id === sessionID || state.route.id === sessionID) {
-      state.activeSession = result.session;
-    }
-    await refreshSessionsNonBlocking(token);
-    return true;
-  });
+  await runStreamingTurn(sessionID, message, token, "Initial task completed");
 }
 
 async function appendTurn(message) {
   if (!state.activeSession?.id) return;
   const sessionID = state.activeSession.id;
   const token = ++state.mutationToken;
-  await runWithStatus({ status: "running", action: "append-turn", successMessage: "Message sent" }, async () => {
-    const result = await api.appendTurn(sessionID, { message });
-    if (token !== state.mutationToken) return false;
-    state.lastResult = result;
-    if (state.activeSession?.id === sessionID || state.route.id === sessionID) {
-      state.activeSession = result.session;
+  await runStreamingTurn(sessionID, message, token, "Message sent");
+}
+
+async function runStreamingTurn(sessionID, message, token, successMessage) {
+  const trimmed = String(message || "").trim();
+  if (!sessionID || !trimmed) return;
+  delete state.composerDrafts[sessionID];
+  state.liveTurn = createLiveTurn(sessionID, trimmed);
+  state.inspectorTab = "events";
+  await runWithStatus({ status: "running", action: "append-turn", target: sessionID, successMessage }, async () => {
+    try {
+      await api.streamTurn(sessionID, { message: trimmed }, (event) => {
+        if (token !== state.mutationToken || state.liveTurn?.session_id !== sessionID) return;
+        applyStreamEvent(event);
+        render({ preserveFocus: true });
+      });
+    } catch (error) {
+      if (token === state.mutationToken && state.liveTurn?.session_id === sessionID) {
+        state.liveTurn.failed = true;
+      }
+      throw error;
+    } finally {
+      if (token === state.mutationToken && state.activeSession?.id === sessionID) {
+        try {
+          state.activeSession = await api.session(sessionID);
+        } catch {
+          // The toast path in runWithStatus will surface the stream failure.
+        }
+      }
     }
-    delete state.composerDrafts[sessionID];
+    if (token !== state.mutationToken) return false;
+    const result = state.liveTurn?.result || null;
+    if (result) {
+      state.lastResult = result;
+      if (result.session && (state.activeSession?.id === sessionID || state.route.id === sessionID)) {
+        state.activeSession = result.session;
+      }
+    }
+    state.liveTurn = null;
     await refreshSessionsNonBlocking(token);
     return true;
   });
+  if (token === state.mutationToken && state.liveTurn?.session_id === sessionID && state.liveTurn.failed) {
+    state.liveTurn = null;
+    render({ preserveFocus: true });
+  }
 }
 
 async function updateSessionTools(selectedTools, reason) {
@@ -253,6 +279,148 @@ async function updateSessionTools(selectedTools, reason) {
     await refreshSessionsNonBlocking(token);
     return true;
   });
+}
+
+function createLiveTurn(sessionID, message) {
+  return {
+    session_id: sessionID,
+    turn_id: "",
+    sequence: 0,
+    user_message: message,
+    assistant_delta: "",
+    reasoning_delta: "",
+    events: [],
+    provider_events: [],
+    provider_requests: [],
+    entries: [],
+    result: null,
+    failed: false,
+  };
+}
+
+function applyStreamEvent(event) {
+  if (!event || !state.liveTurn) return;
+  if (Number(event.sequence || 0) <= Number(state.liveTurn.sequence || 0)) return;
+  state.liveTurn.sequence = Number(event.sequence || 0);
+  if (event.turn_id) state.liveTurn.turn_id = event.turn_id;
+  state.liveTurn.events.push(event);
+  ensureStreamingResult();
+  switch (event.type) {
+    case "session_snapshot":
+      if (event.session_snapshot) {
+        state.activeSession = event.session_snapshot;
+        state.liveTurn.result.session = event.session_snapshot;
+      }
+      break;
+    case "provider_request":
+      if (event.provider_request) {
+        state.liveTurn.provider_requests.push(event.provider_request);
+        state.liveTurn.result.observation.provider_requests = state.liveTurn.provider_requests;
+      }
+      break;
+    case "provider_delta":
+      applyProviderDelta(event);
+      break;
+    case "tool_call":
+    case "tool_result":
+    case "assistant_message_appended":
+    case "user_message_appended":
+    case "turn_save_point":
+      if (event.entry) {
+        upsertLiveEntry(event.entry);
+      }
+      if (event.engine_event) {
+        state.liveTurn.result.events.push(event.engine_event);
+      }
+      if (event.provider_event) {
+        state.liveTurn.provider_events.push(event.provider_event);
+        state.liveTurn.result.observation.provider_events = state.liveTurn.provider_events;
+      }
+      if (event.error) state.liveTurn.failed = true;
+      break;
+    case "turn_completed":
+    case "turn_failed":
+      if (event.result) {
+        state.liveTurn.result = event.result;
+        state.lastResult = event.result;
+        if (event.result.session) state.activeSession = event.result.session;
+      }
+      if (event.entry) {
+        upsertLiveEntry(event.entry);
+      }
+      if (event.error) state.liveTurn.failed = true;
+      break;
+    default:
+      if (event.engine_event) {
+        state.liveTurn.result.events.push(event.engine_event);
+      }
+  }
+  if (state.liveTurn?.result) {
+    state.lastResult = state.liveTurn.result;
+  }
+}
+
+function ensureStreamingResult() {
+  if (!state.liveTurn.result) {
+    state.liveTurn.result = {
+      session_id: state.liveTurn.session_id,
+      turn_id: state.liveTurn.turn_id,
+      status: "running",
+      summary: "Turn is running.",
+      events: [],
+      harness_events: [],
+      observation: {
+        provider_requests: state.liveTurn.provider_requests,
+        provider_events: state.liveTurn.provider_events,
+        path_entries: state.liveTurn.entries,
+      },
+      session: state.activeSession,
+    };
+  }
+  if (!state.liveTurn.result.observation) {
+    state.liveTurn.result.observation = {};
+  }
+  state.liveTurn.result.observation.provider_requests = state.liveTurn.provider_requests;
+  state.liveTurn.result.observation.provider_events = state.liveTurn.provider_events;
+  state.liveTurn.result.observation.path_entries = state.liveTurn.entries;
+}
+
+function applyProviderDelta(event) {
+  const engineEvent = event.engine_event || null;
+  const providerEvent = event.provider_event || null;
+  if (engineEvent) {
+    state.liveTurn.result.events.push(engineEvent);
+    if (engineEvent.type === "provider_delta") {
+      state.liveTurn.assistant_delta += engineEvent.message || "";
+    }
+    if (engineEvent.type === "provider_reasoning") {
+      state.liveTurn.reasoning_delta += engineEvent.message || "";
+    }
+  }
+  if (providerEvent) {
+    state.liveTurn.provider_events.push(providerEvent);
+    state.liveTurn.result.observation.provider_events = state.liveTurn.provider_events;
+    if (providerEvent.type === "delta") {
+      state.liveTurn.assistant_delta += providerEvent.text || "";
+    }
+  }
+}
+
+function upsertLiveEntry(entry) {
+  if (!entry?.id) return;
+  const index = state.liveTurn.entries.findIndex((item) => item.id === entry.id);
+  if (index >= 0) {
+    state.liveTurn.entries[index] = entry;
+  } else {
+    state.liveTurn.entries.push(entry);
+  }
+  if (state.activeSession?.id === state.liveTurn.session_id) {
+    const entries = state.activeSession.path_entries || [];
+    const existing = entries.findIndex((item) => item.id === entry.id);
+    const nextEntries = existing >= 0 ? entries.map((item, idx) => (idx === existing ? entry : item)) : [...entries, entry];
+    state.activeSession = { ...state.activeSession, path_entries: nextEntries, status: "running", phase: "turn" };
+    state.liveTurn.result.session = state.activeSession;
+  }
 }
 
 async function deleteSession(sessionID) {
@@ -487,12 +655,14 @@ function scheduleAutoRefresh() {
   window.clearTimeout(autoRefreshTimer);
   autoRefreshTimer = 0;
   if (document.hidden || state.route.name !== "sessions" || !state.activeSession?.id) return;
+  if (state.liveTurn?.session_id === state.activeSession.id) return;
   const delay = state.activeSession.status === "running" || state.activeSession.phase === "turn" ? 1000 : 2000;
   autoRefreshTimer = window.setTimeout(refreshActiveSessionSnapshot, delay);
 }
 
 async function refreshActiveSessionSnapshot() {
   if (document.hidden || state.route.name !== "sessions" || !state.activeSession?.id) return;
+  if (state.liveTurn?.session_id === state.activeSession.id) return;
   if (state.action === "select-session" || state.action === "delete-session") return scheduleAutoRefresh();
   const sessionID = state.activeSession.id;
   captureActiveDrafts();

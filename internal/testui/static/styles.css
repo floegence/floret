@@ -428,6 +428,15 @@ a {
   border-left: 4px solid var(--green);
 }
 
+.message.pending,
+.message.streaming {
+  border-style: dashed;
+}
+
+.message.streaming {
+  background: #fbfff9;
+}
+
 .message.tool {
   border-left: 4px solid var(--violet);
 }
@@ -486,6 +495,24 @@ a {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.5;
+}
+
+.stream-status {
+  max-width: 920px;
+  padding: 6px 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.stream-caret {
+  display: inline-block;
+  width: 7px;
+  height: 1.1em;
+  margin-left: 2px;
+  background: var(--green);
+  vertical-align: -0.16em;
+  animation: stream-caret 1s steps(2, start) infinite;
 }
 
 .composer-bar {
@@ -919,6 +946,12 @@ button.small {
 @keyframes pending-sheen {
   to {
     transform: translateX(100%);
+  }
+}
+
+@keyframes stream-caret {
+  50% {
+    opacity: 0;
   }
 }
 

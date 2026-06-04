@@ -85,8 +85,8 @@ type agentSession struct {
 	contextPolicy   contextpolicy.Policy
 	cfg             config.Config
 	provider        *observingProvider
-	recorder        *event.Recorder
-	harnessRecorder *agentharness.HarnessRecorder
+	recorder        agentEventRecorder
+	harnessRecorder agentHarnessRecorder
 	repo            sessiontree.Repo
 	promptStore     promptcache.Store
 	registry        *tools.Registry
@@ -99,11 +99,21 @@ type agentSession struct {
 
 type agentSessionRuntime struct {
 	provider        *observingProvider
-	recorder        *event.Recorder
-	harnessRecorder *agentharness.HarnessRecorder
+	recorder        agentEventRecorder
+	harnessRecorder agentHarnessRecorder
 	registry        *tools.Registry
 	harness         *agentharness.AgentHarness
 	thread          *agentharness.Thread
+}
+
+type agentEventRecorder interface {
+	event.Sink
+	Snapshot() []event.Event
+}
+
+type agentHarnessRecorder interface {
+	agentharness.HarnessSink
+	Snapshot() []agentharness.HarnessEvent
 }
 
 func newAgentSessionRegistry() *agentSessionRegistry {
@@ -382,6 +392,16 @@ func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) Ag
 func (r *Runner) RunAgentTurn(ctx context.Context, sessionID string, req AgentTurnRequest) AgentRunResponse {
 	started := r.now()
 	resp := AgentRunResponse{ID: fmt.Sprintf("%d", started.UnixNano()), SessionID: sessionID, StartedAt: started}
+	return r.runAgentTurnResponse(ctx, sessionID, req, resp, nil)
+}
+
+func (r *Runner) RunAgentTurnStream(ctx context.Context, sessionID string, req AgentTurnRequest, sink AgentStreamSink) AgentRunResponse {
+	started := r.now()
+	resp := AgentRunResponse{ID: fmt.Sprintf("%d", started.UnixNano()), SessionID: sessionID, StartedAt: started}
+	return r.runAgentTurnResponse(ctx, sessionID, req, resp, sink)
+}
+
+func (r *Runner) runAgentTurnResponse(ctx context.Context, sessionID string, req AgentTurnRequest, resp AgentRunResponse, sink AgentStreamSink) AgentRunResponse {
 	if strings.TrimSpace(req.Message) == "" {
 		resp.Status = "error"
 		resp.StatusCode = http.StatusBadRequest
@@ -415,7 +435,34 @@ func (r *Runner) RunAgentTurn(ctx context.Context, sessionID string, req AgentTu
 	if !snapshot.CanAppendMessage {
 		return r.failAgentRunWithStatus(resp, http.StatusConflict, fmt.Errorf("agent session %q is %s and cannot accept a new message", sessionID, snapshot.Status))
 	}
-	return r.runAgentTurnLocked(ctx, sess, resp, req.Message)
+	if sink != nil {
+		setAgentSessionStreamSink(sess, sink)
+		defer setAgentSessionStreamSink(sess, nil)
+	}
+	result := r.runAgentTurnLocked(ctx, sess, resp, req.Message)
+	if sink != nil {
+		if result.Session.ID != "" {
+			snapshotCopy := result.Session
+			sink.EmitAgentStream(AgentStreamEvent{
+				Type:      AgentStreamSessionSnapshot,
+				SessionID: sessionID,
+				TurnID:    result.TurnID,
+				At:        r.now(),
+				Snapshot:  &snapshotCopy,
+			})
+		}
+		resultCopy := result
+		sink.EmitAgentStream(AgentStreamEvent{
+			Type:      agentStreamEventForResult(result),
+			SessionID: sessionID,
+			TurnID:    result.TurnID,
+			At:        result.FinishedAt,
+			Result:    &resultCopy,
+			Message:   result.Summary,
+			Error:     result.Error,
+		})
+	}
+	return result
 }
 
 func (r *Runner) UpdateAgentSessionTools(ctx context.Context, sessionID string, req AgentToolsUpdateRequest) (AgentSessionSnapshot, error) {
@@ -575,8 +622,8 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 		return agentSessionRuntime{}, err
 	}
 	observed := newObservingProvider(p)
-	rec := &event.Recorder{}
-	harnessRec := &agentharness.HarnessRecorder{}
+	rec := &streamingEventRecorder{}
+	harnessRec := &streamingHarnessRecorder{repo: sess.repo, threadID: sess.id}
 	registry := tools.NewRegistry()
 	if err := registerAgentSessionTools(registry, r.Root, r.EnvFile, selectedTools); err != nil {
 		return agentSessionRuntime{}, err
@@ -626,6 +673,21 @@ func (sess *agentSession) applyRuntime(runtime agentSessionRuntime) {
 	sess.registry = runtime.registry
 	sess.harness = runtime.harness
 	sess.thread = runtime.thread
+}
+
+func setAgentSessionStreamSink(sess *agentSession, sink AgentStreamSink) {
+	if sess == nil {
+		return
+	}
+	if sess.provider != nil {
+		sess.provider.SetStreamSink(sink)
+	}
+	if rec, ok := sess.recorder.(interface{ SetStreamSink(AgentStreamSink) }); ok {
+		rec.SetStreamSink(sink)
+	}
+	if rec, ok := sess.harnessRecorder.(interface{ SetStreamSink(AgentStreamSink) }); ok {
+		rec.SetStreamSink(sink)
+	}
 }
 
 func isAgentSessionInputError(err error) bool {
@@ -694,14 +756,14 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 		return nil, err
 	}
 	observed := newObservingProvider(p)
-	rec := &event.Recorder{}
-	harnessRec := &agentharness.HarnessRecorder{}
 	var repo sessiontree.Repo = sessiontree.NewFileRepo(r.agentSessionTreeRoot())
 	var promptStore promptcache.Store = promptcache.NewFileStore(filepath.Join(r.Root, ".floret-test-ui", "prompt-cache"))
 	if opts.Transient {
 		repo = sessiontree.NewMemoryRepo()
 		promptStore = promptcache.NewMemoryStore()
 	}
+	rec := &streamingEventRecorder{}
+	harnessRec := &streamingHarnessRecorder{repo: repo, threadID: opts.ID}
 	selectedTools, err := normalizeAgentSessionTools(opts.SelectedTools, "")
 	if err != nil {
 		return nil, err

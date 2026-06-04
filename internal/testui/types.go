@@ -146,6 +146,45 @@ type AgentTurnRequest struct {
 	Message string `json:"message"`
 }
 
+type AgentStreamEventType string
+
+const (
+	AgentStreamTurnStarted              AgentStreamEventType = "turn_started"
+	AgentStreamUserMessageAppended      AgentStreamEventType = "user_message_appended"
+	AgentStreamProviderRequest          AgentStreamEventType = "provider_request"
+	AgentStreamProviderDelta            AgentStreamEventType = "provider_delta"
+	AgentStreamAssistantMessageAppended AgentStreamEventType = "assistant_message_appended"
+	AgentStreamToolCall                 AgentStreamEventType = "tool_call"
+	AgentStreamToolResult               AgentStreamEventType = "tool_result"
+	AgentStreamTurnSavePoint            AgentStreamEventType = "turn_save_point"
+	AgentStreamSessionSnapshot          AgentStreamEventType = "session_snapshot"
+	AgentStreamTurnCompleted            AgentStreamEventType = "turn_completed"
+	AgentStreamTurnFailed               AgentStreamEventType = "turn_failed"
+)
+
+type AgentStreamEvent struct {
+	Sequence        int64                    `json:"sequence"`
+	Type            AgentStreamEventType     `json:"type"`
+	SessionID       string                   `json:"session_id,omitempty"`
+	TurnID          string                   `json:"turn_id,omitempty"`
+	EntryID         string                   `json:"entry_id,omitempty"`
+	Step            int                      `json:"step,omitempty"`
+	At              time.Time                `json:"at"`
+	Entry           *ObservedSessionEntry    `json:"entry,omitempty"`
+	ProviderRequest *ObservedProviderRequest `json:"provider_request,omitempty"`
+	ProviderEvent   *ObservedProviderEvent   `json:"provider_event,omitempty"`
+	EngineEvent     *event.Event             `json:"engine_event,omitempty"`
+	Snapshot        *AgentSessionSnapshot    `json:"session_snapshot,omitempty"`
+	Result          *AgentRunResponse        `json:"result,omitempty"`
+	Message         string                   `json:"message,omitempty"`
+	Error           string                   `json:"error,omitempty"`
+	Metadata        map[string]string        `json:"metadata,omitempty"`
+}
+
+type AgentStreamSink interface {
+	EmitAgentStream(AgentStreamEvent)
+}
+
 type AgentToolsUpdateRequest struct {
 	SelectedTools *[]string `json:"selected_tools"`
 	Reason        string    `json:"reason,omitempty"`

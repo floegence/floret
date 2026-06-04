@@ -177,6 +177,66 @@ func TestServerCreatesIdleAgentSessionBeforeInitialTurn(t *testing.T) {
 	}
 }
 
+func TestServerStreamsAgentTurnEventsBeforeCompletion(t *testing.T) {
+	scripted := harness.NewScriptedProvider(
+		harness.Step(
+			provider.StreamEvent{Type: provider.Delta, Text: "looking", Reason: "15ms"},
+			harness.Tool("list-1", "list", `{"path":null,"limit":2}`),
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model"},"message":"hello","system_prompt":"test","selected_tools":["list"]}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var snapshot AgentSessionSnapshot
+	if err := json.Unmarshal(createRec.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	turnReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+snapshot.ID+"/turns/stream", strings.NewReader(`{"message":"hello"}`))
+	turnRec := httptest.NewRecorder()
+	handler.ServeHTTP(turnRec, turnReq)
+	if turnRec.Code != http.StatusOK {
+		t.Fatalf("stream status = %d, body = %s", turnRec.Code, turnRec.Body.String())
+	}
+	events := parseSSEAgentEvents(t, turnRec.Body.String())
+	assertStreamEventOrder(t, events,
+		AgentStreamTurnStarted,
+		AgentStreamUserMessageAppended,
+		AgentStreamProviderRequest,
+		AgentStreamProviderDelta,
+		AgentStreamToolCall,
+		AgentStreamToolResult,
+		AgentStreamSessionSnapshot,
+		AgentStreamTurnCompleted,
+	)
+	deltaIndex := indexStreamEvent(events, AgentStreamProviderDelta)
+	completedIndex := indexStreamEvent(events, AgentStreamTurnCompleted)
+	if deltaIndex < 0 || completedIndex < 0 || deltaIndex >= completedIndex {
+		t.Fatalf("provider delta should arrive before completion: %#v", events)
+	}
+	completed := events[completedIndex]
+	if completed.Result == nil || completed.Result.Status != "completed" || completed.Result.Session.ID != snapshot.ID {
+		t.Fatalf("completion event missing final result: %#v", completed)
+	}
+}
+
 func TestServerAgentSessionCreateAcceptsSelectedTools(t *testing.T) {
 	runner := NewRunner(t.TempDir())
 	runner.Now = fixedClock()
@@ -1086,4 +1146,54 @@ func allAgentToolNamesForTest() []string {
 		names = append(names, option.Name)
 	}
 	return names
+}
+
+func parseSSEAgentEvents(t *testing.T, body string) []AgentStreamEvent {
+	t.Helper()
+	events := []AgentStreamEvent{}
+	for _, frame := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n\n") {
+		var data []string
+		for _, line := range strings.Split(frame, "\n") {
+			if strings.HasPrefix(line, "data:") {
+				data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			}
+		}
+		if len(data) == 0 {
+			continue
+		}
+		var ev AgentStreamEvent
+		if err := json.Unmarshal([]byte(strings.Join(data, "\n")), &ev); err != nil {
+			t.Fatalf("invalid SSE event %q: %v", strings.Join(data, "\n"), err)
+		}
+		events = append(events, ev)
+	}
+	return events
+}
+
+func assertStreamEventOrder(t *testing.T, events []AgentStreamEvent, wants ...AgentStreamEventType) {
+	t.Helper()
+	cursor := 0
+	for _, want := range wants {
+		found := false
+		for cursor < len(events) {
+			if events[cursor].Type == want {
+				found = true
+				cursor++
+				break
+			}
+			cursor++
+		}
+		if !found {
+			t.Fatalf("stream event %q not found in order; events = %#v", want, events)
+		}
+	}
+}
+
+func indexStreamEvent(events []AgentStreamEvent, typ AgentStreamEventType) int {
+	for i, ev := range events {
+		if ev.Type == typ {
+			return i
+		}
+	}
+	return -1
 }

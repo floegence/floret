@@ -18,6 +18,7 @@ export const state = {
   probeResult: "",
   checkResult: "",
   mobilePanel: "",
+  liveTurn: null,
   newSessionDraft: null,
   composerDrafts: {},
   settingsDraft: null,

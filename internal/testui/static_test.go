@@ -35,8 +35,8 @@ func TestStaticConsoleToolSelectionSemanticsStayAuditable(t *testing.T) {
 	if !strings.Contains(newSession, "selected_tools: readSelectedTools") {
 		t.Fatalf("new session form must send selected_tools")
 	}
-	if !strings.Contains(appJS, "api.appendTurn(sessionID, { message })") {
-		t.Fatalf("append turn must not smuggle selected_tools")
+	if !strings.Contains(appJS, "api.streamTurn(sessionID, { message: trimmed }") {
+		t.Fatalf("append turn should use the streaming endpoint")
 	}
 	appendStart := strings.Index(appJS, "async function appendTurn")
 	appendEnd := strings.Index(appJS[appendStart:], "async function updateSessionTools")
@@ -52,7 +52,7 @@ func TestStaticConsoleCreatesSessionBeforeRunningInitialTurn(t *testing.T) {
 	appJS := readStaticTestFile(t, "app.js")
 	apiJS := readStaticTestFile(t, "api.js")
 
-	for _, want := range []string{"api.createSession(payload)", "activateSessionSnapshot(session)", "void queueInitialTurn(session.id, payload.message, token)", "async function queueInitialTurn", "api.appendTurn(sessionID, { message })"} {
+	for _, want := range []string{"api.createSession(payload)", "activateSessionSnapshot(session)", "void queueInitialTurn(session.id, payload.message, token)", "async function queueInitialTurn", "api.streamTurn(sessionID, { message: trimmed }"} {
 		if !strings.Contains(appJS, want) {
 			t.Fatalf("app missing create-before-run flow %q", want)
 		}
@@ -71,6 +71,32 @@ func TestStaticConsoleCreatesSessionBeforeRunningInitialTurn(t *testing.T) {
 	}
 	if strings.Contains(createBody, "api.createAndRunSession") {
 		t.Fatalf("frontend should not use compatibility create-and-run path")
+	}
+}
+
+func TestStaticConsoleStreamsTurnsIncrementally(t *testing.T) {
+	apiJS := readStaticTestFile(t, "api.js")
+	appJS := readStaticTestFile(t, "app.js")
+	workspace := readStaticTestFile(t, "views", "sessionWorkspace.js")
+	css := readStaticTestFile(t, "styles.css")
+
+	for _, want := range []string{"streamTurn(id, payload, onEvent)", "/turns/stream", "readSSE", "consumeSSEFrame"} {
+		if !strings.Contains(apiJS, want) {
+			t.Fatalf("api missing streaming turn support %q", want)
+		}
+	}
+	for _, want := range []string{"createLiveTurn", "applyStreamEvent", "state.liveTurn", "assistant_delta", "provider_requests", "session_snapshot", "delete state.composerDrafts[sessionID]"} {
+		if !strings.Contains(appJS, want) {
+			t.Fatalf("app missing streaming reducer behavior %q", want)
+		}
+	}
+	if strings.Contains(appJS, "await api.appendTurn(sessionID, { message") {
+		t.Fatalf("frontend should not wait for the synchronous append JSON path")
+	}
+	for _, want := range []string{"renderLiveTurn", "streaming", "pending", "stream-caret", "Live turn"} {
+		if !strings.Contains(workspace+css, want) {
+			t.Fatalf("workspace missing live turn rendering %q", want)
+		}
 	}
 }
 
