@@ -17,7 +17,8 @@ func TestImportBoundaries(t *testing.T) {
 	}{
 		{pkg: "tools", forbidden: []string{"github.com/floegence/floret/engine", "github.com/floegence/floret/event", "github.com/floegence/floret/sessiontree", "github.com/floegence/floret/promptcache", "github.com/floegence/floret/internal/testui"}},
 		{pkg: "builtintools", forbidden: []string{"github.com/floegence/floret/engine", "github.com/floegence/floret/adapters", "github.com/floegence/floret/sessiontree", "github.com/floegence/floret/promptcache", "github.com/floegence/floret/internal/testui"}},
-		{pkg: "engine", forbidden: []string{"github.com/floegence/floret/builtintools"}},
+		{pkg: "engine", forbidden: []string{"github.com/floegence/floret/builtintools", "github.com/floegence/floret/internal/sessionlifecycle"}},
+		{pkg: "sessiontree", forbidden: []string{"github.com/floegence/floret/internal/sessionlifecycle"}},
 		{pkg: "adapters", forbidden: []string{"github.com/floegence/floret/builtintools"}},
 	} {
 		t.Run(rule.pkg, func(t *testing.T) {
@@ -28,6 +29,55 @@ func TestImportBoundaries(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSessionLifecycleBoundaryIsEnforced(t *testing.T) {
+	lifecycle, err := os.ReadFile(filepath.Join("internal", "sessionlifecycle", "lifecycle.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycleText := string(lifecycle)
+	if !strings.Contains(lifecycleText, "IMPORTANT: SessionLifecycle is the only host/UI boundary") {
+		t.Fatalf("session lifecycle boundary must be protected by an IMPORTANT comment")
+	}
+	for _, forbidden := range []string{"type status string", "const (\n\tstatusIdle", "func Derive("} {
+		if !strings.Contains(lifecycleText, forbidden) {
+			t.Fatalf("session lifecycle package missing expected constrained construct %q", forbidden)
+		}
+	}
+
+	testUIRunner, err := os.ReadFile(filepath.Join("internal", "testui", "runner.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	testUIText := string(testUIRunner)
+	for _, forbidden := range []string{
+		"latestSessionStatus",
+		"status == string(engine.Waiting)",
+		"status == string(engine.Completed)",
+		"status == \"idle\"",
+		"Status == \"running\"",
+		"Phase == \"turn\"",
+	} {
+		if strings.Contains(testUIText, forbidden) {
+			t.Fatalf("test UI must derive lifecycle decisions through internal/sessionlifecycle, found %q", forbidden)
+		}
+	}
+
+	agents, err := os.ReadFile("AGENTS.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentsText := string(agents)
+	for _, want := range []string{
+		"## IMPORTANT Design Constraints",
+		"`IMPORTANT:` comments mark product, security, or interaction invariants",
+		"Do not work around an `IMPORTANT:` constraint with hidden fallback behavior",
+	} {
+		if !strings.Contains(agentsText, want) {
+			t.Fatalf("AGENTS.md missing IMPORTANT constraint rule %q", want)
+		}
 	}
 }
 

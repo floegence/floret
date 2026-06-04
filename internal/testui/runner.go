@@ -22,11 +22,11 @@ import (
 	"github.com/floegence/floret/builtintools"
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/contextpolicy"
-	"github.com/floegence/floret/control"
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/eval"
 	"github.com/floegence/floret/event"
 	"github.com/floegence/floret/harness"
+	"github.com/floegence/floret/internal/sessionlifecycle"
 	"github.com/floegence/floret/memory"
 	"github.com/floegence/floret/modelcatalog"
 	"github.com/floegence/floret/promptcache"
@@ -488,7 +488,7 @@ func (r *Runner) UpdateAgentSessionTools(ctx context.Context, sessionID string, 
 	if err != nil {
 		return AgentSessionSnapshot{}, err
 	}
-	if current.Status == "running" || sess.threadPhase() == "turn" {
+	if snapshotIsRunning(current) {
 		return AgentSessionSnapshot{}, fmt.Errorf("%w: %s", errAgentSessionBusy, sessionID)
 	}
 	if slices.Equal(sess.selectedTools, selectedTools) {
@@ -545,7 +545,7 @@ func (r *Runner) DeleteAgentSession(ctx context.Context, sessionID string) error
 			registry.mu.Unlock()
 			return err
 		}
-		if snap.Status == "running" || sess.threadPhase() == "turn" {
+		if snapshotIsRunning(snap) {
 			sess.mu.Unlock()
 			registry.mu.Unlock()
 			return fmt.Errorf("%w: %s", errAgentSessionBusy, sessionID)
@@ -568,7 +568,7 @@ func (r *Runner) DeleteAgentSession(ctx context.Context, sessionID string) error
 		if err != nil {
 			return err
 		}
-		if snap.Status == "running" || snap.Phase == "turn" {
+		if snapshotIsRunning(snap) {
 			return fmt.Errorf("%w: %s", errAgentSessionBusy, sessionID)
 		}
 		runIDs = agentSessionPromptCacheRunIDs(sessionID, meta.Turns, snap.PathEntries)
@@ -603,17 +603,6 @@ func (r *Runner) AgentSession(ctx context.Context, sessionID string) (AgentSessi
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	return r.sessionSnapshotLocked(ctx, sess)
-}
-
-func (sess *agentSession) threadPhase() string {
-	if sess == nil || sess.thread == nil {
-		return ""
-	}
-	snap, err := sess.thread.Read(context.Background())
-	if err != nil {
-		return ""
-	}
-	return snap.Phase
 }
 
 func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selectedTools []string) (agentSessionRuntime, error) {
@@ -930,7 +919,7 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 	if err != nil {
 		return AgentSessionSnapshot{}, err
 	}
-	status, latestTurnID, waitingPrompt := latestSessionStatus(path)
+	lifecycle := sessionlifecycle.Derive(path, sessionlifecycle.PhaseIdle)
 	turns := append([]AgentTurnSummary(nil), meta.Turns...)
 	active := observeMessages(sessiontree.BuildContext(path, sessiontree.ContextOptions{}))
 	pathEntries := observeEntries(path)
@@ -941,8 +930,8 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 	}
 	return AgentSessionSnapshot{
 		ID:               meta.ID,
-		Status:           status,
-		Phase:            "idle",
+		Status:           lifecycle.Status(),
+		Phase:            lifecycle.Phase(),
 		LeafID:           thread.LeafID,
 		CreatedAt:        meta.CreatedAt,
 		UpdatedAt:        updatedAt,
@@ -950,9 +939,10 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 		SystemPrompt:     meta.SystemPrompt,
 		SelectedTools:    cloneSelectedTools(meta.SelectedTools),
 		ContextPolicy:    meta.ContextPolicy,
-		LatestTurnID:     latestTurnID,
-		WaitingPrompt:    waitingPrompt,
-		CanAppendMessage: status == string(engine.Waiting) || status == string(engine.Completed) || status == "idle",
+		LatestTurnID:     lifecycle.LatestTurnID(),
+		WaitingPrompt:    lifecycle.WaitingPrompt(),
+		Recoverable:      lifecycle.Recoverable(),
+		CanAppendMessage: lifecycle.CanAppendMessage(),
 		Turns:            turns,
 		ActiveContext:    active,
 		PathEntries:      pathEntries,
@@ -1105,6 +1095,10 @@ func removeSessionID(ids []string, id string) []string {
 	return out
 }
 
+func snapshotIsRunning(snapshot AgentSessionSnapshot) bool {
+	return sessionlifecycle.IsRunningStatus(snapshot.Status, snapshot.Phase)
+}
+
 func agentSessionPromptCacheRunIDs(sessionID string, turns []AgentTurnSummary, entries []ObservedSessionEntry) []string {
 	seen := map[string]struct{}{}
 	out := []string{}
@@ -1134,15 +1128,15 @@ func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) 
 	if err != nil {
 		return AgentSessionSnapshot{}, err
 	}
-	status, latestTurnID, waitingPrompt := latestSessionStatus(snap.Path)
+	lifecycle := sessionlifecycle.Derive(snap.Path, snap.Phase)
 	turns := append([]AgentTurnSummary(nil), sess.turns...)
 	active := observeMessages(snap.Context)
 	pathEntries := observeEntries(snap.Path)
 	allEntries := observeEntries(snap.Entries)
 	return AgentSessionSnapshot{
 		ID:               sess.id,
-		Status:           status,
-		Phase:            snap.Phase,
+		Status:           lifecycle.Status(),
+		Phase:            lifecycle.Phase(),
 		LeafID:           snap.Meta.LeafID,
 		CreatedAt:        sess.createdAt,
 		UpdatedAt:        sess.updatedAt,
@@ -1150,9 +1144,10 @@ func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) 
 		SystemPrompt:     sess.systemPrompt,
 		SelectedTools:    cloneSelectedTools(sess.selectedTools),
 		ContextPolicy:    sess.contextPolicy,
-		LatestTurnID:     latestTurnID,
-		WaitingPrompt:    waitingPrompt,
-		CanAppendMessage: status == string(engine.Waiting) || status == string(engine.Completed) || status == "idle",
+		LatestTurnID:     lifecycle.LatestTurnID(),
+		WaitingPrompt:    lifecycle.WaitingPrompt(),
+		Recoverable:      lifecycle.Recoverable(),
+		CanAppendMessage: lifecycle.CanAppendMessage(),
 		Turns:            turns,
 		ActiveContext:    active,
 		PathEntries:      pathEntries,
@@ -1182,65 +1177,6 @@ func eventsForRun(events []event.Event, runID string) []event.Event {
 		}
 	}
 	return out
-}
-
-func latestSessionStatus(path []sessiontree.Entry) (string, string, string) {
-	status := "idle"
-	latestTurnID := ""
-	waitingPrompt := ""
-	started := map[string]bool{}
-	terminal := map[string]bool{}
-	for _, entry := range path {
-		if entry.Type != sessiontree.EntryTurnMarker || entry.TurnStatus == "" {
-			continue
-		}
-		if entry.TurnID != "" {
-			latestTurnID = entry.TurnID
-		}
-		if entry.TurnID != "" && entry.TurnStatus == sessiontree.TurnStarted {
-			started[entry.TurnID] = true
-		}
-		switch entry.TurnStatus {
-		case sessiontree.TurnStarted:
-			status = "running"
-		case sessiontree.TurnCompleted:
-			status = string(engine.Completed)
-			waitingPrompt = ""
-			terminal[entry.TurnID] = true
-		case sessiontree.TurnWaiting:
-			status = string(engine.Waiting)
-			waitingPrompt = waitingPromptForTurn(path, entry.TurnID)
-			terminal[entry.TurnID] = true
-		case sessiontree.TurnFailed:
-			status = string(engine.Failed)
-			waitingPrompt = ""
-			terminal[entry.TurnID] = true
-		case sessiontree.TurnAborted:
-			status = string(engine.Cancelled)
-			waitingPrompt = ""
-			terminal[entry.TurnID] = true
-		}
-	}
-	if latestTurnID != "" && started[latestTurnID] && !terminal[latestTurnID] {
-		return string(engine.Cancelled), latestTurnID, ""
-	}
-	return status, latestTurnID, waitingPrompt
-}
-
-func waitingPromptForTurn(path []sessiontree.Entry, turnID string) string {
-	for i := len(path) - 1; i >= 0; i-- {
-		entry := path[i]
-		if entry.TurnID != turnID || entry.Type != sessiontree.EntryToolCall {
-			continue
-		}
-		if entry.Message.ToolName == "ask_user" {
-			if signal, ok, err := control.Project(provider.ToolCall{Name: entry.Message.ToolName, Args: entry.Message.ToolArgs}); ok && err == nil {
-				return signal.Prompt
-			}
-			return entry.Message.ToolArgs
-		}
-	}
-	return ""
 }
 
 func aggregateTurnMetrics(turns []AgentTurnSummary) engine.RunMetrics {

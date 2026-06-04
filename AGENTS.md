@@ -33,6 +33,13 @@ git worktree add -b "$BR" "$WT" origin/main
 - Keep provider, context, tool runtime, session storage, and host UI concerns separated.
 - Important intent and policy decisions must be observable through events or testable state.
 
+## IMPORTANT Design Constraints
+
+- `IMPORTANT:` comments mark product, security, or interaction invariants that must stay rare, intentional, and backed by code or tests where practical.
+- If a change would remove, bypass, weaken, or contradict an `IMPORTANT:` comment, discuss the design impact with the user and receive explicit confirmation before implementing that change.
+- Do not work around an `IMPORTANT:` constraint with hidden fallback behavior, alternate entry points, or silent compatibility paths.
+- When adding a new `IMPORTANT:` comment, keep it concise, explain the invariant rather than the implementation detail, and add focused test coverage or another enforceable guard whenever possible.
+
 ## Language Policy
 
 - English is the default language for maintained repository content.

@@ -202,6 +202,13 @@ a {
   color: #795500;
 }
 
+.status-pill.interrupted,
+.global-status.interrupted {
+  border-color: rgba(101, 87, 184, 0.38);
+  background: #f3f0ff;
+  color: var(--violet);
+}
+
 .app-view {
   min-height: calc(100vh - 68px);
 }

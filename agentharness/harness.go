@@ -14,6 +14,7 @@ import (
 	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/event"
+	"github.com/floegence/floret/internal/sessionlifecycle"
 	"github.com/floegence/floret/memory"
 	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
@@ -25,6 +26,11 @@ import (
 var (
 	ErrActiveTurn    = errors.New("thread already has an active turn")
 	ErrNoRetryTarget = errors.New("thread has no retryable turn")
+)
+
+const (
+	threadPhaseIdle = sessionlifecycle.PhaseIdle
+	threadPhaseTurn = sessionlifecycle.PhaseTurn
 )
 
 type HarnessEventType string
@@ -232,7 +238,7 @@ func (h *AgentHarness) cacheThread(id string) *Thread {
 	if thread, ok := h.threads[id]; ok {
 		return thread
 	}
-	thread := &Thread{harness: h, id: id, phase: "idle"}
+	thread := &Thread{harness: h, id: id, phase: threadPhaseIdle}
 	h.threads[id] = thread
 	return thread
 }
@@ -464,7 +470,7 @@ func (t *Thread) enterTurn() error {
 		return ErrActiveTurn
 	}
 	t.active = true
-	t.phase = "turn"
+	t.phase = threadPhaseTurn
 	return nil
 }
 
@@ -472,7 +478,7 @@ func (t *Thread) leaveTurn() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.active = false
-	t.phase = "idle"
+	t.phase = threadPhaseIdle
 }
 
 func (t *Thread) appendDelta(ctx context.Context, turnID string, before, after []session.Message, currentPath []sessiontree.Entry) error {
@@ -559,16 +565,7 @@ func messagesEqualForDelta(a, b session.Message) bool {
 }
 
 func markerForStatus(status engine.Status) sessiontree.TurnMarkerStatus {
-	switch status {
-	case engine.Completed:
-		return sessiontree.TurnCompleted
-	case engine.Waiting:
-		return sessiontree.TurnWaiting
-	case engine.Cancelled:
-		return sessiontree.TurnAborted
-	default:
-		return sessiontree.TurnFailed
-	}
+	return sessionlifecycle.MarkerForEngineStatus(status)
 }
 
 func markerMetadata(runID string, result engine.Result) map[string]string {

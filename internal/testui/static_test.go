@@ -100,6 +100,22 @@ func TestStaticConsoleStreamsTurnsIncrementally(t *testing.T) {
 	}
 }
 
+func TestStaticConsoleShowsInterruptedLifecycle(t *testing.T) {
+	workspace := readStaticTestFile(t, "views", "sessionWorkspace.js")
+	css := readStaticTestFile(t, "styles.css")
+
+	for _, want := range []string{"session?.status === \"interrupted\"", "interrupted turn", "Inspect or recover"} {
+		if !strings.Contains(workspace, want) {
+			t.Fatalf("workspace missing interrupted lifecycle copy %q", want)
+		}
+	}
+	for _, want := range []string{".status-pill.interrupted", ".global-status.interrupted"} {
+		if !strings.Contains(css, want) {
+			t.Fatalf("styles missing interrupted lifecycle treatment %q", want)
+		}
+	}
+}
+
 func TestStaticConsoleActionLifecycleAndToastFeedback(t *testing.T) {
 	stateJS := readStaticTestFile(t, "state.js")
 	appJS := readStaticTestFile(t, "app.js")

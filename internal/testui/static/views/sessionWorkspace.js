@@ -254,6 +254,7 @@ function renderMessageBody(body, label) {
 
 function appendDisabledReason(session) {
   if (state.running) return "A request is running.";
+  if (session?.status === "interrupted") return "This session has an interrupted turn. Inspect or recover it before appending another message.";
   if (!session?.can_append_message) return `This session is ${session?.status || "not ready"} and cannot accept another message.`;
   return "This message will use the current session tools.";
 }

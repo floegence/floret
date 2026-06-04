@@ -887,7 +887,7 @@ func TestRunnerRestoredSessionRehydratesSavedAPIKeyWithoutPersistingSecret(t *te
 	}
 }
 
-func TestRunnerPersistedInterruptedTurnSnapshotsAsCancelled(t *testing.T) {
+func TestRunnerPersistedInterruptedTurnSnapshotsAsInterrupted(t *testing.T) {
 	root := t.TempDir()
 	runner := NewRunner(root)
 	runner.Now = fixedClock()
@@ -929,19 +929,68 @@ func TestRunnerPersistedInterruptedTurnSnapshotsAsCancelled(t *testing.T) {
 	restored := NewRunner(root)
 	restored.Now = fixedClock()
 	sessions := restored.AgentSessions(context.Background())
-	if len(sessions) != 1 || sessions[0].Status != string(engine.Cancelled) || sessions[0].CanAppendMessage {
+	if len(sessions) != 1 || sessions[0].Status != "interrupted" || !sessions[0].Recoverable || sessions[0].CanAppendMessage {
 		t.Fatalf("sessions = %#v", sessions)
 	}
 	snapshot, err := restored.AgentSession(context.Background(), sessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Status != string(engine.Cancelled) || snapshot.CanAppendMessage {
+	if snapshot.Status != "interrupted" || !snapshot.Recoverable || snapshot.CanAppendMessage {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}
 	appendResult := restored.RunAgentTurn(context.Background(), sessionID, AgentTurnRequest{Message: "again"})
 	if appendResult.Status != "error" || appendResult.StatusCode != 409 || !strings.Contains(appendResult.Error, "cannot accept") {
 		t.Fatalf("appendResult = %#v", appendResult)
+	}
+}
+
+func TestRunnerPersistedAbortedTurnSnapshotsAsCancelled(t *testing.T) {
+	root := t.TempDir()
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	sessionID := "testui-session-cancelled"
+	turnID := "turn-1"
+	started := runner.now()
+	repo := sessiontree.NewFileRepo(runner.agentSessionTreeRoot())
+	if _, err := repo.CreateThread(context.Background(), sessiontree.ThreadMeta{ID: sessionID, CreatedAt: started, UpdatedAt: started}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendTurnMarker(context.Background(), repo, sessionID, turnID, sessiontree.TurnStarted, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendTurnMarker(context.Background(), repo, sessionID, turnID, sessiontree.TurnAborted, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.saveAgentSessionMetadata(agentSessionMetadata{
+		ID:            sessionID,
+		CreatedAt:     started,
+		UpdatedAt:     started,
+		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		SystemPrompt:  "test",
+		ContextPolicy: contextPolicyForTest(8192),
+		Engine: agentSessionEngine{
+			MaxEmptyProviderRetries: 1,
+			NoProgressLimit:         2,
+			DuplicateToolLimit:      3,
+			WallTime:                60 * time.Second,
+		},
+		Turns: []AgentTurnSummary{{
+			ID:        turnID,
+			Status:    string(engine.Cancelled),
+			StartedAt: started,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	restored := NewRunner(root)
+	snapshot, err := restored.AgentSession(context.Background(), sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Status != string(engine.Cancelled) || snapshot.Recoverable || snapshot.CanAppendMessage {
+		t.Fatalf("snapshot = %#v", snapshot)
 	}
 }
 

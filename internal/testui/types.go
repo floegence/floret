@@ -364,6 +364,7 @@ type AgentSessionSnapshot struct {
 	ContextPolicy    contextpolicy.Policy     `json:"context_policy"`
 	LatestTurnID     string                   `json:"latest_turn_id,omitempty"`
 	WaitingPrompt    string                   `json:"waiting_prompt,omitempty"`
+	Recoverable      bool                     `json:"recoverable,omitempty"`
 	CanAppendMessage bool                     `json:"can_append_message"`
 	Turns            []AgentTurnSummary       `json:"turns"`
 	ActiveContext    []ObservedSessionMessage `json:"active_context"`
