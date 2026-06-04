@@ -138,6 +138,7 @@ function render(options = {}) {
     return;
   }
   const focusState = options.preserveFocus ? captureFocusState() : null;
+  const viewportState = captureSessionViewportState();
   renderTopbar();
   renderToasts();
   switch (state.route.name) {
@@ -203,6 +204,7 @@ function render(options = {}) {
   if (focusState) {
     restoreFocusState(focusState);
   }
+  restoreSessionViewportState(viewportState);
   scheduleAutoRefresh();
 }
 
@@ -249,6 +251,7 @@ function shouldAcceptSessionSnapshot(current, next, options = {}) {
 async function selectSession(id) {
   if (!id) return;
   captureActiveDrafts();
+  captureSessionViewportState();
   const token = ++state.selectionToken;
   await runWithStatus({ status: "loading", action: "select-session", renderStart: false }, async () => {
     const session = await api.session(id);
@@ -294,6 +297,7 @@ async function runStreamingTurn(sessionID, message, token, successMessage) {
   state.inspectorTab = "events";
   await runWithStatus({ status: "running", action: "append-turn", target: sessionID, successMessage }, async () => {
     let finalSession = null;
+    let streamError = null;
     try {
       await api.streamTurn(sessionID, { message: trimmed }, (event) => {
         if (token !== state.mutationToken || state.liveTurn?.session_id !== sessionID) return;
@@ -301,10 +305,10 @@ async function runStreamingTurn(sessionID, message, token, successMessage) {
         render({ preserveFocus: true, scheduleRefresh: true });
       });
     } catch (error) {
+      streamError = error;
       if (token === state.mutationToken && state.liveTurn?.session_id === sessionID) {
         state.liveTurn.failed = true;
       }
-      throw error;
     } finally {
       if (token === state.mutationToken && state.activeSession?.id === sessionID) {
         try {
@@ -323,10 +327,12 @@ async function runStreamingTurn(sessionID, message, token, successMessage) {
     }
     state.liveTurn = null;
     await refreshSessionsNonBlocking(token);
+    if (streamError) throw streamError;
     return true;
   });
-  if (token === state.mutationToken && state.liveTurn?.session_id === sessionID && state.liveTurn.failed) {
+  if (token === state.mutationToken && state.liveTurn?.session_id === sessionID) {
     state.liveTurn = null;
+    await refreshSessionsNonBlocking(token);
     render({ preserveFocus: true, scheduleRefresh: true });
   }
 }
@@ -499,6 +505,7 @@ async function deleteSession(sessionID) {
   await runWithStatus({ status: "loading", action: "delete-session", target: sessionID, successMessage: "Session deleted" }, async () => {
     await api.deleteSession(sessionID);
     if (token !== state.mutationToken) return false;
+    clearSessionViewportState(sessionID);
     if (state.activeSession?.id === sessionID) {
       state.activeSession = null;
       state.lastResult = null;
@@ -636,6 +643,55 @@ function restoreSessionFilterFocus() {
   input.focus();
   const end = input.value.length;
   input.setSelectionRange(end, end);
+}
+
+function captureSessionViewportState() {
+  if (state.route.name !== "sessions" || !state.activeSession?.id) return null;
+  captureConversationScroll(state.activeSession.id);
+  captureTimelineExpanded();
+  return { sessionID: state.activeSession.id };
+}
+
+function restoreSessionViewportState(viewportState) {
+	if (state.route.name !== "sessions" || !state.activeSession?.id) return;
+	if (viewportState === null) return;
+	restoreConversationScroll(state.activeSession.id);
+}
+
+function captureConversationScroll(sessionID) {
+	const conversation = appView.querySelector(".conversation");
+	const renderedSessionID = conversation?.dataset.sessionId || sessionID;
+	if (!conversation || !renderedSessionID) return;
+	const bottomGap = conversation.scrollHeight - conversation.clientHeight - conversation.scrollTop;
+	state.conversationScroll[renderedSessionID] = {
+		top: conversation.scrollTop,
+		bottomPinned: bottomGap <= 16,
+	};
+}
+
+function restoreConversationScroll(sessionID) {
+  const conversation = appView.querySelector(".conversation");
+  const saved = state.conversationScroll[sessionID];
+  if (!conversation || !saved) return;
+  if (saved.bottomPinned) {
+    conversation.scrollTop = Math.max(0, conversation.scrollHeight - conversation.clientHeight);
+    return;
+  }
+  conversation.scrollTop = Math.min(saved.top || 0, Math.max(0, conversation.scrollHeight - conversation.clientHeight));
+}
+
+function captureTimelineExpanded() {
+  appView.querySelectorAll("details[data-expand-key]").forEach((details) => {
+    state.timelineExpanded[details.dataset.expandKey || ""] = details.open;
+  });
+}
+
+function clearSessionViewportState(sessionID) {
+  delete state.conversationScroll[sessionID];
+  const prefix = `session:${sessionID}:`;
+  for (const key of Object.keys(state.timelineExpanded)) {
+    if (key.startsWith(prefix)) delete state.timelineExpanded[key];
+  }
 }
 
 async function runWithStatus({ status = "loading", action = "", target = "", successMessage = "", renderStart = true }, fn) {

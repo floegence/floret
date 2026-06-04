@@ -235,8 +235,46 @@ func TestStaticConsolePreservesDraftsAndSeparatesRefreshFailures(t *testing.T) {
 	if !strings.Contains(settings, "profileKeyDraft") || !strings.Contains(settings, "searchKeyDraft") {
 		t.Fatalf("settings API key drafts should survive re-render before save")
 	}
-	if !strings.Contains(css, ".sessions-layout.show-sessions .session-rail") || !strings.Contains(css, "display: block") {
+	if !strings.Contains(css, ".sessions-layout.show-sessions .session-rail") || !strings.Contains(css, "display: flex") {
 		t.Fatalf("mobile session and inspector panels should expand without overlaying the topbar")
+	}
+}
+
+func TestStaticConsoleSessionsUseIndependentScrollRegions(t *testing.T) {
+	css := readStaticTestFile(t, "styles.css")
+
+	for _, want := range []string{
+		".sessions-layout",
+		"height: calc(100vh - var(--topbar-height))",
+		"overflow: hidden",
+		".session-rail,\n.inspector",
+		"flex-direction: column",
+		".workspace",
+		"grid-template-rows: auto minmax(0, 1fr) auto",
+		".conversation",
+		"overflow: auto",
+		".session-list",
+		".inspector-body",
+	} {
+		if !strings.Contains(css, want) {
+			t.Fatalf("sessions scroll isolation CSS missing %q", want)
+		}
+	}
+	if strings.Contains(css, "max-height: calc(100vh - 196px)") || strings.Contains(css, "max-height: calc(100vh - 158px)") {
+		t.Fatalf("session list and inspector should not use viewport max-height calculations")
+	}
+}
+
+func TestStaticConsoleStreamingCleanupClearsLiveTurnAfterSnapshotFetchOnErrors(t *testing.T) {
+	appJS := readStaticTestFile(t, "app.js")
+
+	for _, want := range []string{"let streamError = null", "streamError = error", "finalSession = await api.session(sessionID)", "setActiveSessionSnapshot(finalSession)", "state.liveTurn = null", "if (streamError) throw streamError"} {
+		if !strings.Contains(appJS, want) {
+			t.Fatalf("streaming failure cleanup missing %q", want)
+		}
+	}
+	if !strings.Contains(appJS, "await refreshSessionsNonBlocking(token);\n    if (streamError) throw streamError") {
+		t.Fatalf("streaming cleanup should refresh after clearing liveTurn before surfacing stream errors")
 	}
 }
 
@@ -296,6 +334,42 @@ func TestStaticConsoleSessionOperationsAndPolling(t *testing.T) {
 		if !strings.Contains(appJS, want) {
 			t.Fatalf("active session polling must preserve input focus: missing %q", want)
 		}
+	}
+	for _, want := range []string{"captureSessionViewportState", "restoreSessionViewportState", "captureConversationScroll", "restoreConversationScroll", "bottomPinned", "conversation.scrollTop", "captureTimelineExpanded", "renderedSessionID"} {
+		if !strings.Contains(appJS, want) {
+			t.Fatalf("active session polling must preserve conversation viewport: missing %q", want)
+		}
+	}
+	if !strings.Contains(appJS, "const viewportState = captureSessionViewportState();") || !strings.Contains(appJS, "restoreSessionViewportState(viewportState);") {
+		t.Fatalf("render should capture and restore session viewport around DOM replacement")
+	}
+}
+
+func TestStaticConsolePreservesTimelineExpansionState(t *testing.T) {
+	stateJS := readStaticTestFile(t, "state.js")
+	appJS := readStaticTestFile(t, "app.js")
+	workspace := readStaticTestFile(t, "views", "sessionWorkspace.js")
+
+	for _, want := range []string{"conversationScroll: {}", "timelineExpanded: {}"} {
+		if !strings.Contains(stateJS, want) {
+			t.Fatalf("state missing timeline preservation field %q", want)
+		}
+	}
+	for _, want := range []string{"details[data-expand-key]", "addEventListener(\"toggle\"", "state.timelineExpanded[details.dataset.expandKey || \"\"] = details.open"} {
+		if !strings.Contains(workspace, want) {
+			t.Fatalf("workspace must persist details expansion state: missing %q", want)
+		}
+	}
+	for _, want := range []string{"data-expand-key", "detailStateAttributes", "entryExpandKey(entry", "liveExpandKey(session", "timelineEntryKey(entry)"} {
+		if !strings.Contains(workspace, want) {
+			t.Fatalf("workspace must render stable expandable keys: missing %q", want)
+		}
+	}
+	if !strings.Contains(workspace, `class="conversation" data-session-id`) {
+		t.Fatalf("conversation scroll state should be keyed by the rendered session id")
+	}
+	if !strings.Contains(appJS, "clearSessionViewportState(sessionID)") || !strings.Contains(appJS, "delete state.conversationScroll[sessionID]") || !strings.Contains(appJS, "key.startsWith(prefix)") {
+		t.Fatalf("session deletion should clear saved viewport state")
 	}
 }
 
@@ -399,7 +473,7 @@ func TestStaticConsolePrioritizesAssistantFinalOverReasoning(t *testing.T) {
 	workspace := readStaticTestFile(t, "views", "sessionWorkspace.js")
 	css := readStaticTestFile(t, "styles.css")
 
-	for _, want := range []string{"renderAssistantMessage", "assistant final", `renderExpandableBody(body, { label: "assistant final", mode: "final-answer" })`, "renderReasoningBlock(msg.reasoning", "Copy reasoning"} {
+	for _, want := range []string{"renderAssistantMessage", "assistant final", `renderExpandableBody(body, { label: "assistant final", mode: "final-answer", expandKey: entryExpandKey(entry, "answer") })`, "renderReasoningBlock(msg.reasoning", "Copy reasoning"} {
 		if !strings.Contains(workspace, want) {
 			t.Fatalf("assistant final/reasoning rendering missing %q", want)
 		}
@@ -493,6 +567,58 @@ if (formatLocalTime('not a date') !== '-') {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("formatLocalTime behavior failed: %v\n%s", err, output)
+	}
+}
+
+func TestStaticConsoleTimelineExpansionBehavior(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed; skipping optional static JS behavior test")
+	}
+	cmd := exec.Command("node", "--input-type=module", "-e", `
+import { state } from './static/state.js';
+import { renderSessionWorkspace } from './static/views/sessionWorkspace.js';
+
+const longBody = Array.from({ length: 90 }, (_, i) => 'line ' + i).join('\n');
+const session = {
+  id: 'session-1',
+  status: 'completed',
+  can_append_message: true,
+  turns: [{ id: 'turn-1' }],
+  selected_tools: [],
+  profile: { name: 'Fake', model: 'fake-model' },
+  aggregate_metrics: { usage: {} },
+  path_entries: [{
+    id: 'entry-1',
+    thread_id: 'session-1',
+    turn_id: 'turn-1',
+    type: 'assistant_message',
+    message: { role: 'assistant', content: longBody, reasoning: 'hidden reasoning' },
+  }],
+};
+state.activeSession = session;
+let html = renderSessionWorkspace({ sessions: [session], activeSession: session, result: null, tools: [], inspectorTab: 'tools' });
+const key = 'session:session-1:id:entry-1:answer';
+if (!html.includes('data-expand-key="' + key + '"')) {
+  throw new Error('missing stable answer expand key');
+}
+if (html.includes('data-expand-key="' + key + '" open')) {
+  throw new Error('answer should be closed before user state is saved');
+}
+state.timelineExpanded[key] = true;
+html = renderSessionWorkspace({ sessions: [session], activeSession: session, result: null, tools: [], inspectorTab: 'tools' });
+if (!html.includes('data-expand-key="' + key + '" open')) {
+  throw new Error('saved open state was not rendered');
+}
+state.timelineExpanded[key] = false;
+html = renderSessionWorkspace({ sessions: [session], activeSession: session, result: null, tools: [], inspectorTab: 'tools' });
+if (html.includes('data-expand-key="' + key + '" open')) {
+  throw new Error('saved closed state was not rendered');
+}
+`)
+	cmd.Dir = filepath.Join("static", "..")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("timeline expansion behavior failed: %v\n%s", err, output)
 	}
 }
 

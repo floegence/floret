@@ -128,6 +128,7 @@ type TurnResult struct {
 	Status             engine.Status
 	Output             string
 	Err                error
+	Diagnostics        map[string]string
 	Metrics            engine.RunMetrics
 	CompletionReason   engine.CompletionReason
 	ContinuationReason engine.ContinuationReason
@@ -442,6 +443,10 @@ func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retryUs
 		terminalMetadata["interrupt_reason"] = "ask_user"
 	}
 	if _, err := sessiontree.AppendTurnMarker(persistCtx, t.harness.options.Repo, t.id, turnID, status, terminalMetadata); err != nil {
+		var committed sessiontree.AppendCommittedError
+		if errors.As(err, &committed) {
+			return turnResultFromEngine(turnID, result, map[string]string{"terminal_persistence_error": err.Error()}), result.Err
+		}
 		return TurnResult{}, err
 	}
 	eventType := EventTurnCompleted
@@ -452,18 +457,23 @@ func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retryUs
 		eventType = EventTurnAborted
 	}
 	t.harness.emit(HarnessEvent{Type: eventType, ThreadID: t.id, TurnID: turnID, Status: string(result.Status), Message: result.Output})
+	return turnResultFromEngine(turnID, result, nil), result.Err
+}
+
+func turnResultFromEngine(turnID string, result engine.Result, diagnostics map[string]string) TurnResult {
 	return TurnResult{
 		ID:                 turnID,
 		Status:             result.Status,
 		Output:             result.Output,
 		Err:                result.Err,
+		Diagnostics:        diagnostics,
 		Metrics:            result.Metrics,
 		CompletionReason:   result.CompletionReason,
 		ContinuationReason: result.ContinuationReason,
 		FinishReason:       result.FinishReason,
 		RawFinishReason:    result.RawFinishReason,
 		FinishInferred:     result.FinishInferred,
-	}, result.Err
+	}
 }
 
 func turnFinalizationContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -520,7 +530,7 @@ type durableMessageCounter struct {
 type durableMessageSignature struct {
 	Role                 session.Role
 	Content              string
-	Reasoning           string
+	Reasoning            string
 	ToolCallID           string
 	ToolName             string
 	ToolArgs             string
@@ -569,7 +579,7 @@ func durableSignature(msg session.Message) durableMessageSignature {
 	return durableMessageSignature{
 		Role:                 msg.Role,
 		Content:              msg.Content,
-		Reasoning:           msg.Reasoning,
+		Reasoning:            msg.Reasoning,
 		ToolCallID:           msg.ToolCallID,
 		ToolName:             msg.ToolName,
 		ToolArgs:             msg.ToolArgs,

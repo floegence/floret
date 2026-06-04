@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/config"
+	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/harness"
 	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/internal/sessionlifecycle"
@@ -1255,6 +1257,76 @@ func TestServerAgentSessionDeleteRejectsRunningSession(t *testing.T) {
 	}
 	cancelRun()
 	<-done
+}
+
+func TestServerAgentSessionDeadlineTurnIsTerminalOnLaterRead(t *testing.T) {
+	blocking := newBlockingTestProvider()
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return blocking, nil
+	}
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model"},"message":"hello","system_prompt":"test"}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status/body = %d %s", createRec.Code, createRec.Body.String())
+	}
+	var created AgentSessionSnapshot
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	runCtx, cancelRun := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancelRun()
+	turnReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+created.ID+"/turns", strings.NewReader(`{"message":"hello"}`)).WithContext(runCtx)
+	turnRec := httptest.NewRecorder()
+	handler.ServeHTTP(turnRec, turnReq)
+	if turnRec.Code != http.StatusOK {
+		t.Fatalf("turn status/body = %d %s", turnRec.Code, turnRec.Body.String())
+	}
+	var turn AgentRunResponse
+	if err := json.Unmarshal(turnRec.Body.Bytes(), &turn); err != nil {
+		t.Fatal(err)
+	}
+	if (turn.Status != string(engine.Cancelled) && turn.Status != string(engine.Failed)) || !strings.Contains(turn.Error, context.DeadlineExceeded.Error()) {
+		t.Fatalf("turn = %#v", turn)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+created.ID, nil)
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get status/body = %d %s", getRec.Code, getRec.Body.String())
+	}
+	var snapshot AgentSessionSnapshot
+	if err := json.Unmarshal(getRec.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if (snapshot.Status != string(engine.Cancelled) && snapshot.Status != string(engine.Failed)) || sessionlifecycle.IsRunningStatus(snapshot.Status, snapshot.Phase) || snapshot.CanAppendMessage {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	if len(snapshot.Turns) != 1 || snapshot.Turns[0].ID == "" || snapshot.Turns[0].Status != snapshot.Status {
+		t.Fatalf("turn summaries = %#v", snapshot.Turns)
+	}
+
+	var meta agentSessionMetadata
+	data, err := os.ReadFile(runner.agentSessionMetadataPath(created.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		t.Fatal(err)
+	}
+	if len(meta.Turns) != 1 || meta.Turns[0].Status != snapshot.Status || !meta.UpdatedAt.After(meta.CreatedAt) {
+		t.Fatalf("metadata = %#v", meta)
+	}
 }
 
 func TestServerAgentSessionPersistsAcrossServerRestart(t *testing.T) {

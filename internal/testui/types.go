@@ -226,6 +226,7 @@ type AgentRunResponse struct {
 	FinishReason       string                      `json:"finish_reason,omitempty"`
 	RawFinishReason    string                      `json:"raw_finish_reason,omitempty"`
 	FinishInferred     bool                        `json:"finish_inferred,omitempty"`
+	Diagnostics        map[string]string           `json:"diagnostics,omitempty"`
 	CanAppendMessage   bool                        `json:"can_append_message"`
 	WaitingPrompt      string                      `json:"waiting_prompt,omitempty"`
 	Session            AgentSessionSnapshot        `json:"session"`
@@ -239,6 +240,7 @@ type AgentObservation struct {
 	ActiveContext    []ObservedSessionMessage  `json:"active_context"`
 	PathEntries      []ObservedSessionEntry    `json:"path_entries"`
 	Transitions      []StateTransition         `json:"transitions"`
+	Diagnostics      map[string]string         `json:"diagnostics,omitempty"`
 }
 
 type ObservedProviderRequest struct {

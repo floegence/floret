@@ -55,6 +55,18 @@ var (
 	ErrInvalidParent  = errors.New("session tree invalid parent")
 )
 
+type AppendCommittedError struct {
+	Err error
+}
+
+func (e AppendCommittedError) Error() string {
+	return fmt.Sprintf("session tree append committed but thread snapshot save failed: %v", e.Err)
+}
+
+func (e AppendCommittedError) Unwrap() error {
+	return e.Err
+}
+
 type ThreadMeta struct {
 	ID                 string    `json:"id"`
 	LeafID             string    `json:"leaf_id,omitempty"`
@@ -390,7 +402,10 @@ func (r *FileRepo) Append(ctx context.Context, entry Entry, opts AppendOptions) 
 	if err != nil {
 		return Entry{}, err
 	}
-	return entry, r.saveThread(meta)
+	if err := r.saveThread(meta); err != nil {
+		return entry, AppendCommittedError{Err: err}
+	}
+	return entry, nil
 }
 
 func (r *FileRepo) Entry(ctx context.Context, threadID, entryID string) (Entry, error) {
@@ -482,15 +497,87 @@ func (r *FileRepo) load(ctx context.Context) error {
 		if meta.ID == "" {
 			continue
 		}
-		entries, err := readEntries(filepath.Join(filepath.Dir(path), "entries.jsonl"))
+		dir := filepath.Dir(path)
+		entries, err := readEntries(filepath.Join(dir, "entries.jsonl"))
 		if err != nil {
 			continue
+		}
+		repairedMeta := reconcileFileThreadLeaf(meta, entries)
+		if repairedMeta != meta {
+			meta = repairedMeta
+			if err := r.saveThread(meta); err != nil {
+				return err
+			}
 		}
 		mem.threads[meta.ID] = meta
 		mem.entries[meta.ID] = entries
 	}
 	r.mem = mem
 	return nil
+}
+
+func reconcileFileThreadLeaf(meta ThreadMeta, entries []Entry) ThreadMeta {
+	// IMPORTANT: entries.jsonl is the durable append journal. If a process writes
+	// an entry but exits before refreshing thread.json, reads must repair the
+	// effective leaf instead of treating the stale snapshot as authoritative.
+	if len(entries) == 0 {
+		return meta
+	}
+	leafIndex := -1
+	if meta.LeafID != "" {
+		for i, entry := range entries {
+			if entry.ID == meta.LeafID {
+				leafIndex = i
+				break
+			}
+		}
+	}
+	if leafIndex == len(entries)-1 {
+		return meta
+	}
+	if leafIndex < 0 && meta.LeafID != "" {
+		if newest, ok := newestRootReachableEntry(entries); ok {
+			meta.LeafID = newest.ID
+			meta.UpdatedAt = newest.CreatedAt
+			return meta
+		}
+		return meta
+	}
+	reachable := reachableEntryIDs(entries, meta.LeafID)
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if meta.LeafID == "" || reachable[entry.ParentID] {
+			meta.LeafID = entry.ID
+			meta.UpdatedAt = entry.CreatedAt
+			return meta
+		}
+	}
+	return meta
+}
+
+func newestRootReachableEntry(entries []Entry) (Entry, bool) {
+	reachable := map[string]bool{"": true}
+	var newest Entry
+	found := false
+	for _, entry := range entries {
+		if !reachable[entry.ParentID] {
+			continue
+		}
+		reachable[entry.ID] = true
+		newest = entry
+		found = true
+	}
+	return newest, found
+}
+
+func reachableEntryIDs(entries []Entry, leafID string) map[string]bool {
+	reachable := map[string]bool{"": leafID == ""}
+	for _, entry := range entries {
+		if leafID == "" || entry.ID == leafID || reachable[entry.ParentID] {
+			reachable[entry.ID] = true
+		}
+	}
+	return reachable
 }
 
 func (r *FileRepo) saveThread(meta ThreadMeta) error {

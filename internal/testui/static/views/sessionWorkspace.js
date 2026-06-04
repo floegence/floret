@@ -43,6 +43,11 @@ export function bindSessionWorkspace(root, handlers) {
     if (event.isComposing) return;
     handlers.onComposerDraft(state.activeSession?.id || "", event.target.value);
   });
+  root.querySelectorAll(".conversation details[data-expand-key]").forEach((details) => {
+    details.addEventListener("toggle", () => {
+      state.timelineExpanded[details.dataset.expandKey || ""] = details.open;
+    });
+  });
   bindInspector(root, {
     tools: handlers.tools,
     onEditTools: handlers.onEditTools,
@@ -130,7 +135,7 @@ function renderWorkspace(session, result) {
           <button type="button" class="small" data-mobile-panel="inspector">Inspector</button>
         </div>
       </header>
-      <div class="conversation">
+      <div class="conversation" data-session-id="${escapeHTML(session.id)}">
         ${renderTimeline(session, result)}
       </div>
       <form class="composer-bar" data-append-form>
@@ -188,7 +193,7 @@ function renderLiveTurn(session) {
   const userEcho = !durableUser && live.user_message ? `
     <article class="message user pending">
       <div class="message-head"><span>user</span><span>pending</span>${copyButton(live.user_message)}</div>
-      ${renderExpandableBody(live.user_message, { label: "user", mode: "user" })}
+      ${renderExpandableBody(live.user_message, { label: "user", mode: "user", expandKey: liveExpandKey(session, live, "user") })}
     </article>
   ` : "";
   const existingAssistant = (session.path_entries || []).some((entry) => entry.type === "assistant_message" && entry.turn_id === live.turn_id);
@@ -196,7 +201,7 @@ function renderLiveTurn(session) {
     <article class="message assistant streaming">
       <div class="message-head"><span>assistant final</span><span>streaming</span>${copyButton(live.assistant_delta)}</div>
       ${renderExpandableBody(live.assistant_delta, { label: "assistant final", mode: "streaming-answer", caret: true })}
-      ${renderReasoningBlock(live.reasoning_delta, "live")}
+      ${renderReasoningBlock(live.reasoning_delta, "live", liveExpandKey(session, live, "reasoning"))}
     </article>
   ` : "";
   const visibleLiveEntries = (live.entries || []).filter((entry) => ["user_message", "assistant_message", "tool_call", "tool_result", "run_failure", "turn_marker"].includes(entry.type)).length;
@@ -220,7 +225,7 @@ function renderEntry(entry) {
     return `
       <article class="message entry">
         <div class="message-head"><span>tools changed</span><span>${escapeHTML(formatLocalTime(entry.created_at))}</span>${copyButton(body)}</div>
-        ${renderExpandableBody(body, { label: "tools changed", mode: "audit" })}
+        ${renderExpandableBody(body, { label: "tools changed", mode: "audit", expandKey: entryExpandKey(entry, "body") })}
         ${meta.reason ? `<div class="muted">${escapeHTML(meta.reason)}</div>` : ""}
       </article>
     `;
@@ -231,7 +236,7 @@ function renderEntry(entry) {
     return `
       <article class="message entry">
         <div class="message-head"><span>run failure</span><span>${escapeHTML(entry.turn_id || "")}</span>${copyButton(copyPayload)}</div>
-        ${renderExpandableBody(body, { label: "run failure", mode: "error" })}
+        ${renderExpandableBody(body, { label: "run failure", mode: "error", expandKey: entryExpandKey(entry, "body") })}
       </article>
     `;
   }
@@ -245,7 +250,7 @@ function renderEntry(entry) {
   return `
     <article class="message ${escapeHTML(role)}">
       <div class="message-head"><span>${escapeHTML(title)}</span><span>${escapeHTML(entry.turn_id || "")}</span>${copyButton(copyPayload)}</div>
-      ${renderExpandableBody(body, { label: title, mode: role === "user" ? "user" : "audit" })}
+      ${renderExpandableBody(body, { label: title, mode: role === "user" ? "user" : "audit", expandKey: entryExpandKey(entry, "body") })}
     </article>
   `;
 }
@@ -256,17 +261,17 @@ function renderAssistantMessage(entry, msg) {
   return `
     <article class="message assistant">
       <div class="message-head"><span>assistant final</span><span>${escapeHTML(entry.turn_id || "")}</span>${copyButton(copyPayload)}</div>
-      ${renderExpandableBody(body, { label: "assistant final", mode: "final-answer" })}
-      ${renderReasoningBlock(msg.reasoning, entry.turn_id || "")}
+      ${renderExpandableBody(body, { label: "assistant final", mode: "final-answer", expandKey: entryExpandKey(entry, "answer") })}
+      ${renderReasoningBlock(msg.reasoning, entry.turn_id || "", entryExpandKey(entry, "reasoning"))}
     </article>
   `;
 }
 
-function renderReasoningBlock(reasoning, scope) {
+function renderReasoningBlock(reasoning, scope, expandKey = "") {
   const text = String(reasoning || "");
   if (!text.trim()) return "";
   return `
-    <details class="reasoning-fold">
+    <details class="reasoning-fold"${detailStateAttributes(expandKey, false)}>
       <summary>
         <span>Reasoning</span>
         <span>${escapeHTML(scope || "hidden")} · ${text.length} chars · ${lineCount(text)} lines</span>
@@ -287,7 +292,7 @@ function renderToolActivity(entry, msg) {
   const metadata = entry.metadata && Object.keys(entry.metadata).length ? `<pre class="json-block">${escapeHTML(JSON.stringify(entry.metadata, null, 2))}</pre>` : "";
   return `
     <article class="message tool ${status === "error" ? "tool-error" : ""}">
-      <details class="tool-activity">
+      <details class="tool-activity"${detailStateAttributes(entryExpandKey(entry, "activity"), false)}>
         <summary>
           <span class="tool-summary-main">
             <span class="tool-kind">${escapeHTML(isResult ? "tool result" : "tool call")}</span>
@@ -300,7 +305,7 @@ function renderToolActivity(entry, msg) {
           ${copyButton(copyPayload)}
         </summary>
         <div class="tool-activity-body">
-          ${renderReasoningBlock(msg.reasoning, "tool")}
+          ${renderReasoningBlock(msg.reasoning, "tool", entryExpandKey(entry, "reasoning"))}
           ${msg.tool_call_id ? `<div class="key-value"><span>Call ID</span><span>${escapeHTML(msg.tool_call_id)}</span></div>` : ""}
           ${renderExpandableBody(body, { label: isResult ? "Tool result" : "Tool arguments", mode: "tool", forceOpen: true })}
           ${metadata}
@@ -390,6 +395,7 @@ function renderExpandableBody(body, options = {}) {
     mode = "audit",
     caret = false,
     forceOpen = false,
+    expandKey = "",
   } = options;
   const text = String(body || "");
   const lines = lineCount(text);
@@ -403,7 +409,7 @@ function renderExpandableBody(body, options = {}) {
       const preview = firstLines(text, 60);
       return `
         <div class="message-text final-answer answer-preview">${escapeHTML(preview)}</div>
-        <details class="answer-expand">
+        <details class="answer-expand"${detailStateAttributes(expandKey, false)}>
           <summary>${escapeHTML(label)} · ${text.length} chars · ${lines} lines · Show full answer</summary>
           <div class="message-text final-answer">${escaped}</div>
         </details>
@@ -419,11 +425,28 @@ function renderExpandableBody(body, options = {}) {
   }
   const preview = previewText(text);
   return `
-    <details class="message-fold">
+    <details class="message-fold"${detailStateAttributes(expandKey, false)}>
       <summary>${escapeHTML(label)} · ${text.length} chars · ${lines} lines · ${escapeHTML(preview)}</summary>
       <div class="message-text">${escaped}</div>
     </details>
   `;
+}
+
+function detailStateAttributes(expandKey, defaultOpen = false) {
+  if (!expandKey) return defaultOpen ? " open" : "";
+  const hasSaved = Object.prototype.hasOwnProperty.call(state.timelineExpanded, expandKey);
+  const open = hasSaved ? state.timelineExpanded[expandKey] : defaultOpen;
+  return ` data-expand-key="${escapeHTML(expandKey)}"${open ? " open" : ""}`;
+}
+
+function entryExpandKey(entry, part) {
+  const stable = entry.id ? `id:${entry.id}` : timelineEntryKey(entry);
+  return `session:${entry.thread_id || state.activeSession?.id || "unknown"}:${stable}:${part}`;
+}
+
+function liveExpandKey(session, live, part) {
+  const stable = live.turn_id || live.sequence || "pending";
+  return `session:${session?.id || live.session_id || "unknown"}:live:${stable}:${part}`;
 }
 
 function renderMessageBody(body, label) {

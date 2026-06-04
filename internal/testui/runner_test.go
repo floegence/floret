@@ -2,6 +2,7 @@ package testui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -1239,6 +1240,81 @@ func TestRunnerPersistedAbortedTurnSnapshotsAsCancelled(t *testing.T) {
 	}
 	if snapshot.Status != string(engine.Cancelled) || snapshot.Recoverable || snapshot.CanAppendMessage {
 		t.Fatalf("snapshot = %#v", snapshot)
+	}
+}
+
+func TestRunnerRepairsStaleThreadLeafAndMetadataTurnsFromJournal(t *testing.T) {
+	root := t.TempDir()
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	sessionID := "testui-session-stale-leaf"
+	turnID := "turn-1"
+	started := runner.now()
+	repo := sessiontree.NewFileRepo(runner.agentSessionTreeRoot())
+	if _, err := repo.CreateThread(context.Background(), sessiontree.ThreadMeta{ID: sessionID, CreatedAt: started, UpdatedAt: started}); err != nil {
+		t.Fatal(err)
+	}
+	user, err := sessiontree.AppendMessage(context.Background(), repo, sessionID, turnID, session.Message{Role: session.User, Content: "start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendTurnMarker(context.Background(), repo, sessionID, turnID, sessiontree.TurnCompleted, map[string]string{"finish_reason": "stop"}); err != nil {
+		t.Fatal(err)
+	}
+	threadPath := filepath.Join(runner.agentSessionTreeRoot(), sessionID, "thread.json")
+	threadData, err := os.ReadFile(threadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var thread sessiontree.ThreadMeta
+	if err := json.Unmarshal(threadData, &thread); err != nil {
+		t.Fatal(err)
+	}
+	thread.LeafID = user.ID
+	thread.UpdatedAt = user.CreatedAt
+	staleThreadData, err := json.Marshal(thread)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(threadPath, staleThreadData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.saveAgentSessionMetadata(agentSessionMetadata{
+		ID:            sessionID,
+		CreatedAt:     started,
+		UpdatedAt:     started,
+		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		SystemPrompt:  "test",
+		ContextPolicy: contextPolicyForTest(8192),
+		Engine: agentSessionEngine{
+			MaxEmptyProviderRetries: 1,
+			NoProgressLimit:         2,
+			DuplicateToolLimit:      3,
+			WallTime:                60 * time.Second,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	restored := NewRunner(root)
+	restored.Now = fixedClock()
+	sessions := restored.AgentSessions(context.Background())
+	if len(sessions) != 1 || sessions[0].Status != string(engine.Completed) || !sessions[0].CanAppendMessage || len(sessions[0].Turns) != 1 {
+		t.Fatalf("sessions = %#v", sessions)
+	}
+	snapshot, err := restored.AgentSession(context.Background(), sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Status != string(engine.Completed) || snapshot.LeafID == user.ID || len(snapshot.Turns) != 1 || snapshot.Turns[0].Status != string(engine.Completed) {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	meta, err := restored.loadAgentSessionMetadata(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(meta.Turns) != 1 || meta.Turns[0].Status != string(engine.Completed) || !meta.UpdatedAt.After(started) {
+		t.Fatalf("metadata was not refreshed from journal: %#v", meta)
 	}
 }
 

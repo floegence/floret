@@ -2,11 +2,13 @@ package sessiontree
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/floegence/floret/compaction"
 	"github.com/floegence/floret/session"
@@ -429,6 +431,121 @@ func TestFileRepoAppendAfterReloadDoesNotReuseEntryID(t *testing.T) {
 	}
 	if got := BuildContext(path, ContextOptions{}); len(got) != 2 || got[0].Content != "first" || got[1].Content != "second" {
 		t.Fatalf("path after reload append = %#v", got)
+	}
+}
+
+func TestFileRepoRepairsStaleThreadLeafFromJournal(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	repo := NewFileRepo(root)
+	meta, err := repo.CreateThread(ctx, ThreadMeta{ID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := AppendMessage(ctx, repo, "thread", "turn-1", session.Message{Role: session.User, Content: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := AppendTurnMarker(ctx, repo, "thread", "turn-1", TurnCompleted, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.LeafID = first.ID
+	meta.UpdatedAt = first.CreatedAt
+	data, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "thread", "thread.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	restored := NewFileRepo(root)
+	repaired, err := restored.Thread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired.LeafID != second.ID || !repaired.UpdatedAt.Equal(second.CreatedAt) {
+		t.Fatalf("repaired meta = %#v, want leaf %q", repaired, second.ID)
+	}
+	path, err := restored.Path(ctx, "thread", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pathContains(path, second.ID) {
+		t.Fatalf("path should include repaired terminal marker: %#v", path)
+	}
+}
+
+func TestFileRepoRepairsMissingThreadLeafWhenJournalIsReachable(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	repo := NewFileRepo(root)
+	meta, err := repo.CreateThread(ctx, ThreadMeta{ID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AppendMessage(ctx, repo, "thread", "turn-1", session.Message{Role: session.User, Content: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := AppendTurnMarker(ctx, repo, "thread", "turn-1", TurnAborted, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.LeafID = "missing-leaf"
+	meta.UpdatedAt = meta.CreatedAt
+	data, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "thread", "thread.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	restored := NewFileRepo(root)
+	repaired, err := restored.Thread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired.LeafID != terminal.ID || !repaired.UpdatedAt.Equal(terminal.CreatedAt) {
+		t.Fatalf("repaired meta = %#v, want leaf %q", repaired, terminal.ID)
+	}
+}
+
+func TestFileRepoDoesNotRepairMissingThreadLeafFromBrokenJournal(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	threadDir := filepath.Join(root, "thread")
+	if err := os.MkdirAll(threadDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	meta := ThreadMeta{ID: "thread", LeafID: "missing-leaf", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	data, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(threadDir, "thread.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	broken := Entry{ID: "orphan", ThreadID: "thread", ParentID: "missing-parent", Type: EntryTurnMarker, TurnID: "turn-1", TurnStatus: TurnCompleted, CreatedAt: meta.UpdatedAt.Add(time.Second)}
+	entryData, err := json.Marshal(broken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(threadDir, "entries.jsonl"), append(entryData, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	restored := NewFileRepo(root)
+	reloaded, err := restored.Thread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.LeafID != "missing-leaf" {
+		t.Fatalf("broken journal should not repair leaf: %#v", reloaded)
+	}
+	if _, err := restored.Path(ctx, "thread", ""); !errors.Is(err, ErrEntryNotFound) {
+		t.Fatalf("path err = %v, want ErrEntryNotFound", err)
 	}
 }
 

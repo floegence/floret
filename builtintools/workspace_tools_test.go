@@ -169,13 +169,45 @@ func TestShellRequiresApprovalAndReturnsExitMetadata(t *testing.T) {
 	if err := RegisterShell(reg, ShellOptions{CWD: t.TempDir(), Runner: fakeRunner{result: CommandResult{Stdout: "ok\n", ExitCode: 0, DurationMS: 7}}}); err != nil {
 		t.Fatal(err)
 	}
-	denied := reg.Run(context.Background(), provider.ToolCall{Name: "shell", Args: `{"command":"echo ok","workdir":null,"timeout_ms":null,"max_output_bytes":null}`}, nil)
+	denied := reg.Run(context.Background(), provider.ToolCall{Name: "shell", Args: `{"command":"echo ok"}`}, nil)
 	if !denied.IsError {
 		t.Fatalf("shell without approval should fail: %#v", denied)
 	}
-	got := reg.Run(context.Background(), provider.ToolCall{Name: "shell", Args: `{"command":"echo ok","workdir":null,"timeout_ms":null,"max_output_bytes":null}`}, allowAll)
+	got := reg.Run(context.Background(), provider.ToolCall{Name: "shell", Args: `{"command":"echo ok"}`}, allowAll)
 	if got.IsError || got.Text != "ok" || got.Metadata["exit_code"] != 0 {
 		t.Fatalf("shell = %#v", got)
+	}
+}
+
+func TestShellDefaultsOptionalRuntimeFieldsAndKeepsStrictSchema(t *testing.T) {
+	root := t.TempDir()
+	seen := recordingRunner{}
+	reg := tools.NewRegistry()
+	if err := RegisterShell(reg, ShellOptions{CWD: root, Runner: &seen, DefaultTimeoutMS: 4321, MaxOutputBytes: 4}); err != nil {
+		t.Fatal(err)
+	}
+	// Keep model-facing shell schemas aligned with the successful pattern used by
+	// ../codex, ../pi, and ../opencode: only the command is required, while cwd,
+	// timeout, and output limits are runtime defaults. Making those knobs required
+	// turns otherwise valid calls into schema failures before execution.
+	assertRequiredFields(t, reg, "shell", "command")
+	got := reg.Run(context.Background(), provider.ToolCall{Name: "shell", Args: `{"command":"printf 0123456789"}`}, allowAll)
+	if got.IsError {
+		t.Fatalf("shell with command-only args should succeed: %#v", got)
+	}
+	if seen.request.Command != "printf 0123456789" || seen.request.Workdir != root || seen.request.TimeoutMS != 4321 {
+		t.Fatalf("request = %#v", seen.request)
+	}
+	if got.Metadata["truncated"] != true || got.Text != "6789" {
+		t.Fatalf("default max_output_bytes was not applied: %#v", got)
+	}
+	extra := reg.Run(context.Background(), provider.ToolCall{Name: "shell", Args: `{"command":"echo ok","extra":true}`}, allowAll)
+	if !extra.IsError || !strings.Contains(extra.Text, "$.extra is not allowed") {
+		t.Fatalf("extra field should still be rejected: %#v", extra)
+	}
+	wrongType := reg.Run(context.Background(), provider.ToolCall{Name: "shell", Args: `{"command":"echo ok","timeout_ms":"soon"}`}, allowAll)
+	if !wrongType.IsError || !strings.Contains(wrongType.Text, "$.timeout_ms must be an integer") {
+		t.Fatalf("wrong optional type should still be rejected: %#v", wrongType)
 	}
 }
 
@@ -665,7 +697,7 @@ type recordingRunner struct {
 
 func (r *recordingRunner) Run(_ context.Context, req CommandRequest) (CommandResult, error) {
 	r.request = req
-	return CommandResult{Stdout: "ok", ExitCode: 0}, nil
+	return CommandResult{Stdout: "0123456789", ExitCode: 0}, nil
 }
 
 func quoteJSON(value string) string {

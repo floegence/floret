@@ -20,6 +20,8 @@ export const state = {
   mobilePanel: "",
   liveTurn: null,
   imeComposition: { active: false, selector: "", pendingRender: false, pendingRefresh: false },
+  conversationScroll: {},
+  timelineExpanded: {},
   newSessionDraft: null,
   composerDrafts: {},
   settingsDraft: null,

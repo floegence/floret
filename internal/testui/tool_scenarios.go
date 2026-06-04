@@ -390,7 +390,7 @@ func setupReadGrepShellScenario(ctx context.Context, workspace string) (toolScen
 			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
 				{ID: "list-root", Name: builtintools.ToolList, Args: `{"path":null,"limit":20}`},
 				{ID: "grep-status", Name: builtintools.ToolGrep, Args: `{"pattern":"status","path":null,"glob":"*.txt","ignore_case":true,"literal":true,"context":null,"limit":20}`},
-				{ID: "shell-date", Name: builtintools.ToolShell, Args: `{"command":"printf scenario-shell-ok","workdir":null,"timeout_ms":5000,"max_output_bytes":2000}`},
+				{ID: "shell-date", Name: builtintools.ToolShell, Args: `{"command":"printf scenario-shell-ok"}`},
 			}},
 			harness.DoneReason("tool_calls"),
 		),

@@ -22,6 +22,7 @@ import (
 	"github.com/floegence/floret/builtintools"
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/contextpolicy"
+	"github.com/floegence/floret/control"
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/eval"
 	"github.com/floegence/floret/event"
@@ -932,13 +933,18 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 		return AgentSessionSnapshot{}, err
 	}
 	lifecycle := sessionlifecycle.Derive(path, sessionlifecycle.PhaseIdle)
-	turns := append([]AgentTurnSummary(nil), meta.Turns...)
+	turns := summariesFromEntries(entries, meta.Turns)
 	active := observeMessages(sessiontree.BuildContext(path, sessiontree.ContextOptions{}))
 	pathEntries := observeEntries(path)
 	allEntries := observeEntries(entries)
 	updatedAt := meta.UpdatedAt
 	if thread.UpdatedAt.After(updatedAt) {
 		updatedAt = thread.UpdatedAt
+	}
+	if !slices.Equal(turns, meta.Turns) || updatedAt.After(meta.UpdatedAt) {
+		meta.Turns = append([]AgentTurnSummary(nil), turns...)
+		meta.UpdatedAt = updatedAt
+		_ = r.saveAgentSessionMetadata(meta)
 	}
 	return AgentSessionSnapshot{
 		ID:                      meta.ID,
@@ -997,6 +1003,7 @@ func (r *Runner) runAgentTurnLocked(ctx context.Context, sess *agentSession, res
 	resp.FinishReason = string(turn.FinishReason)
 	resp.RawFinishReason = turn.RawFinishReason
 	resp.FinishInferred = turn.FinishInferred
+	resp.Diagnostics = cloneStringMap(turn.Diagnostics)
 	resp.CanAppendMessage = turn.Status == engine.Waiting || turn.Status == engine.Completed
 	if turn.Status == engine.Waiting {
 		resp.WaitingPrompt = turn.Output
@@ -1029,14 +1036,25 @@ func (r *Runner) runAgentTurnLocked(ctx context.Context, sess *agentSession, res
 		RawFinishReason:    turn.RawFinishReason,
 		FinishInferred:     turn.FinishInferred,
 	}
-	sess.turns = append(sess.turns, summary)
+	sess.turns = upsertAgentTurnSummary(sess.turns, summary)
 	snapshot, snapErr := r.sessionSnapshotLocked(finalCtx, sess)
 	if snapErr != nil {
-		return r.failAgentRun(resp, snapErr)
+		resp.Diagnostics = withDiagnostic(resp.Diagnostics, "final_snapshot_error", snapErr.Error())
+		snapshot = r.fallbackAgentSessionSnapshot(sess, turn.Status)
+	} else {
+		sess.updatedAt = snapshot.UpdatedAt
+		if snap, err := sess.thread.Read(finalCtx); err == nil {
+			sess.turns = summariesFromEntries(snap.Entries, sess.turns)
+		}
+		snapshot.Turns = append([]AgentTurnSummary(nil), sess.turns...)
+		snapshot.AggregateMetrics = aggregateTurnMetrics(snapshot.Turns)
+	}
+	if turn.Diagnostics != nil {
+		resp.Diagnostics = withDiagnostics(resp.Diagnostics, turn.Diagnostics)
 	}
 	if !sess.transient {
 		if err := r.saveAgentSessionMetadata(r.metadataFromSession(sess)); err != nil {
-			return r.failAgentRun(resp, err)
+			resp.Diagnostics = withDiagnostic(resp.Diagnostics, "metadata_save_error", err.Error())
 		}
 	}
 	if sess.transient {
@@ -1046,11 +1064,36 @@ func (r *Runner) runAgentTurnLocked(ctx context.Context, sess *agentSession, res
 	resp.CanAppendMessage = snapshot.CanAppendMessage
 	resp.WaitingPrompt = snapshot.WaitingPrompt
 	resp.Observation = r.agentObservationLocked(sess, snapshot, result, turn.ID)
+	resp.Observation.Diagnostics = cloneStringMap(resp.Diagnostics)
 	resp.Summary = agentSummary(result)
 	resp.FinishedAt = finished
 	resp.DurationMS = resp.FinishedAt.Sub(resp.StartedAt).Milliseconds()
 	storeAgentSessionSnapshot(sess, resp.Session)
 	return resp
+}
+
+func (r *Runner) fallbackAgentSessionSnapshot(sess *agentSession, status engine.Status) AgentSessionSnapshot {
+	snapshot := loadAgentSessionSnapshot(sess)
+	if snapshot.ID == "" {
+		snapshot = AgentSessionSnapshot{
+			ID:                      sess.id,
+			CreatedAt:               sess.createdAt,
+			Profile:                 sess.profile,
+			SystemPrompt:            sess.systemPrompt,
+			SelectedTools:           cloneSelectedTools(sess.selectedTools),
+			HostedTools:             append([]provider.HostedToolDefinition(nil), sess.hostedTools...),
+			UnavailableCapabilities: append([]string(nil), sess.unavailableCapabilities...),
+			ContextPolicy:           sess.contextPolicy,
+		}
+	}
+	snapshot.Status = string(status)
+	snapshot.Phase = sessionlifecycle.PhaseIdle
+	snapshot.UpdatedAt = sess.updatedAt
+	snapshot.Turns = append([]AgentTurnSummary(nil), sess.turns...)
+	snapshot.AggregateMetrics = aggregateTurnMetrics(snapshot.Turns)
+	snapshot.CanAppendMessage = status == engine.Waiting || status == engine.Completed
+	snapshot.Recoverable = false
+	return snapshot
 }
 
 func lockAgentSessionForTurn(ctx context.Context, sess *agentSession) error {
@@ -1171,7 +1214,7 @@ func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) 
 		return AgentSessionSnapshot{}, err
 	}
 	lifecycle := sessionlifecycle.Derive(snap.Path, snap.Phase)
-	turns := append([]AgentTurnSummary(nil), sess.turns...)
+	turns := summariesFromEntries(snap.Entries, sess.turns)
 	active := observeMessages(snap.Context)
 	pathEntries := observeEntries(snap.Path)
 	allEntries := observeEntries(snap.Entries)
@@ -1342,6 +1385,155 @@ func aggregateTurnMetrics(turns []AgentTurnSummary) engine.RunMetrics {
 	return out
 }
 
+func summariesFromEntries(entries []sessiontree.Entry, existing []AgentTurnSummary) []AgentTurnSummary {
+	out := append([]AgentTurnSummary(nil), existing...)
+	index := make(map[string]int, len(out))
+	for i, turn := range out {
+		if turn.ID != "" {
+			index[turn.ID] = i
+		}
+	}
+	for _, entry := range entries {
+		if entry.TurnID == "" {
+			continue
+		}
+		i, ok := index[entry.TurnID]
+		if !ok {
+			if !entryCreatesTurnSummary(entry) {
+				continue
+			}
+			out = append(out, AgentTurnSummary{ID: entry.TurnID})
+			i = len(out) - 1
+			index[entry.TurnID] = i
+		}
+		turn := out[i]
+		if turn.StartedAt.IsZero() || (entry.TurnStatus == sessiontree.TurnStarted && !entry.CreatedAt.IsZero()) {
+			turn.StartedAt = entry.CreatedAt
+		}
+		if entry.Type == sessiontree.EntryRunFailure {
+			turn.Error = entry.Error
+		}
+		if entry.Type == sessiontree.EntryAssistantMessage && entry.Message.Content != "" {
+			turn.Output = entry.Message.Content
+		}
+		if entry.Type == sessiontree.EntryTurnMarker {
+			switch entry.TurnStatus {
+			case sessiontree.TurnCompleted, sessiontree.TurnWaiting, sessiontree.TurnFailed, sessiontree.TurnAborted:
+				turn.Status = statusForTurnMarker(entry.TurnStatus)
+				turn.FinishedAt = entry.CreatedAt
+				if entry.TurnStatus == sessiontree.TurnWaiting && turn.Output == "" {
+					turn.Output = waitingPromptForEntries(entries, entry.TurnID)
+				}
+				if entry.Metadata != nil {
+					turn.CompletionReason = entry.Metadata["completion_reason"]
+					turn.ContinuationReason = entry.Metadata["continuation_reason"]
+					turn.FinishReason = entry.Metadata["finish_reason"]
+					turn.RawFinishReason = entry.Metadata["raw_finish_reason"]
+					turn.FinishInferred = entry.Metadata["finish_inferred"] == "true"
+				}
+			case sessiontree.TurnStarted:
+				if turn.Status == "" {
+					turn.Status = "running"
+				}
+			}
+		}
+		out[i] = turn
+	}
+	return out
+}
+
+func entryCreatesTurnSummary(entry sessiontree.Entry) bool {
+	switch entry.Type {
+	case sessiontree.EntryRunFailure, sessiontree.EntryAssistantMessage:
+		return true
+	case sessiontree.EntryTurnMarker:
+		switch entry.TurnStatus {
+		case sessiontree.TurnStarted, sessiontree.TurnCompleted, sessiontree.TurnWaiting, sessiontree.TurnFailed, sessiontree.TurnAborted:
+			return true
+		}
+	}
+	return false
+}
+
+func upsertAgentTurnSummary(turns []AgentTurnSummary, summary AgentTurnSummary) []AgentTurnSummary {
+	if summary.ID == "" {
+		return turns
+	}
+	out := append([]AgentTurnSummary(nil), turns...)
+	for i, turn := range out {
+		if turn.ID == summary.ID {
+			out[i] = mergeAgentTurnSummary(turn, summary)
+			return out
+		}
+	}
+	return append(out, summary)
+}
+
+func mergeAgentTurnSummary(old, next AgentTurnSummary) AgentTurnSummary {
+	if next.Status != "" {
+		old.Status = next.Status
+	}
+	if next.Output != "" {
+		old.Output = next.Output
+	}
+	if next.Error != "" {
+		old.Error = next.Error
+	}
+	if !next.StartedAt.IsZero() {
+		old.StartedAt = next.StartedAt
+	}
+	if !next.FinishedAt.IsZero() {
+		old.FinishedAt = next.FinishedAt
+	}
+	if next.Metrics != (engine.RunMetrics{}) {
+		old.Metrics = next.Metrics
+	}
+	if next.CompletionReason != "" {
+		old.CompletionReason = next.CompletionReason
+	}
+	if next.ContinuationReason != "" {
+		old.ContinuationReason = next.ContinuationReason
+	}
+	if next.FinishReason != "" {
+		old.FinishReason = next.FinishReason
+	}
+	if next.RawFinishReason != "" {
+		old.RawFinishReason = next.RawFinishReason
+	}
+	if next.FinishInferred {
+		old.FinishInferred = true
+	}
+	return old
+}
+
+func statusForTurnMarker(status sessiontree.TurnMarkerStatus) string {
+	switch status {
+	case sessiontree.TurnCompleted:
+		return string(engine.Completed)
+	case sessiontree.TurnWaiting:
+		return string(engine.Waiting)
+	case sessiontree.TurnAborted:
+		return string(engine.Cancelled)
+	case sessiontree.TurnFailed:
+		return string(engine.Failed)
+	default:
+		return ""
+	}
+}
+
+func waitingPromptForEntries(entries []sessiontree.Entry, turnID string) string {
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if entry.TurnID == turnID && entry.Type == sessiontree.EntryAssistantMessage && entry.Message.ToolName == "ask_user" {
+			if signal, ok, err := control.Project(provider.ToolCall{Name: entry.Message.ToolName, Args: entry.Message.ToolArgs}); ok && err == nil {
+				return signal.Prompt
+			}
+			return entry.Message.ToolArgs
+		}
+	}
+	return ""
+}
+
 func countCompactions(entries []sessiontree.Entry) int {
 	count := 0
 	for _, entry := range entries {
@@ -1425,6 +1617,32 @@ func cloneStringMap(in map[string]string) map[string]string {
 	}
 	out := make(map[string]string, len(in))
 	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func withDiagnostic(in map[string]string, key, value string) map[string]string {
+	if value == "" {
+		return cloneStringMap(in)
+	}
+	out := cloneStringMap(in)
+	if out == nil {
+		out = map[string]string{}
+	}
+	out[key] = value
+	return out
+}
+
+func withDiagnostics(in, extra map[string]string) map[string]string {
+	out := cloneStringMap(in)
+	for key, value := range extra {
+		if value == "" {
+			continue
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
 		out[key] = value
 	}
 	return out
