@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	schemaVersion     = "2"
+	schemaVersion     = "3"
 	initialSchema     = "1"
 	rawEncoderVersion = "1"
 	driverName        = "sqlite"
@@ -140,6 +140,12 @@ func (s *Store) init(ctx context.Context) error {
 		if err := s.migrateV1ToV2(ctx); err != nil {
 			return err
 		}
+		current = "2"
+	}
+	if current == "2" {
+		if err := s.migrateV2ToV3(ctx); err != nil {
+			return err
+		}
 		current = schemaVersion
 	}
 	if current != schemaVersion {
@@ -159,6 +165,18 @@ func (s *Store) migrateV1ToV2(ctx context.Context) error {
 	return s.withImmediate(ctx, func(tx sqlRunner) error {
 		if _, err := tx.ExecContext(ctx, activeTurnLeasesSQL); err != nil {
 			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = '2' WHERE key = 'schema_version'`)
+		return err
+	})
+}
+
+func (s *Store) migrateV2ToV3(ctx context.Context) error {
+	return s.withImmediate(ctx, func(tx sqlRunner) error {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE entries ADD COLUMN kept_user_entry_ids_json TEXT NOT NULL DEFAULT '[]'`); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				return err
+			}
 		}
 		_, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_version'`, schemaVersion)
 		return err
@@ -530,6 +548,7 @@ func (s *Store) Fork(ctx context.Context, opts sessiontree.ForkOptions) (session
 			next.ParentID = oldToNew[entry.ParentID]
 			next.FirstKeptEntryID = oldToNew[entry.FirstKeptEntryID]
 			next.CompactedThroughEntryID = oldToNew[entry.CompactedThroughEntryID]
+			next.KeptUserEntryIDs = rewriteEntryIDs(entry.KeptUserEntryIDs, oldToNew)
 			next.CreatedAt = now
 			next = sessiontree.PrepareEntry(next)
 			ordinal, err := nextOrdinal(ctx, tx, newID)
@@ -1136,20 +1155,24 @@ func insertEntry(ctx context.Context, tx sqlRunner, entry sessiontree.Entry, ord
 	if err != nil {
 		return err
 	}
+	keptUserEntryIDsJSON, err := json.Marshal(entry.KeptUserEntryIDs)
+	if err != nil {
+		return err
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO entries(
 		thread_id, id, ordinal, parent_id, type, turn_id, created_at,
 		message_json, raw, raw_hash, raw_encoder_version,
 		turn_status, provider, model, compaction_id, previous_compaction_id,
 		compacted_through_entry_id, summary_schema_version, compaction_generation,
-		compaction_window_id, first_kept_entry_id, summary, compaction_trigger,
+		compaction_window_id, first_kept_entry_id, kept_user_entry_ids_json, summary, compaction_trigger,
 		compaction_reason, compaction_phase, tokens_before, tokens_after_estimate,
 		context_usage_before_json, context_usage_after_json, error, metadata_json
-	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.ThreadID, entry.ID, ordinal, entry.ParentID, string(entry.Type), entry.TurnID, formatTime(entry.CreatedAt),
 		string(messageJSON), entry.Raw, entry.RawHash, 1,
 		string(entry.TurnStatus), entry.Provider, entry.Model, entry.CompactionID, entry.PreviousCompactionID,
 		entry.CompactedThroughEntryID, entry.SummarySchemaVersion, entry.CompactionGeneration,
-		entry.CompactionWindowID, entry.FirstKeptEntryID, entry.Summary, entry.CompactionTrigger,
+		entry.CompactionWindowID, entry.FirstKeptEntryID, string(keptUserEntryIDsJSON), entry.Summary, entry.CompactionTrigger,
 		entry.CompactionReason, entry.CompactionPhase, entry.TokensBefore, entry.TokensAfterEstimate,
 		string(beforeJSON), string(afterJSON), entry.Error, string(metadataJSON))
 	return err
@@ -1237,14 +1260,14 @@ func loadEntries(ctx context.Context, q sqlRunner, threadID string) ([]sessiontr
 
 func scanEntry(rows *sql.Rows) (sessiontree.Entry, error) {
 	var entry sessiontree.Entry
-	var typ, turnStatus, created, messageJSON, beforeJSON, afterJSON, metadataJSON string
+	var typ, turnStatus, created, messageJSON, keptUserEntryIDsJSON, beforeJSON, afterJSON, metadataJSON string
 	var rawEncoder int
 	err := rows.Scan(
 		&entry.ThreadID, &entry.ID, &entry.ParentID, &typ, &entry.TurnID, &created,
 		&messageJSON, &entry.Raw, &entry.RawHash, &rawEncoder,
 		&turnStatus, &entry.Provider, &entry.Model, &entry.CompactionID, &entry.PreviousCompactionID,
 		&entry.CompactedThroughEntryID, &entry.SummarySchemaVersion, &entry.CompactionGeneration,
-		&entry.CompactionWindowID, &entry.FirstKeptEntryID, &entry.Summary, &entry.CompactionTrigger,
+		&entry.CompactionWindowID, &entry.FirstKeptEntryID, &keptUserEntryIDsJSON, &entry.Summary, &entry.CompactionTrigger,
 		&entry.CompactionReason, &entry.CompactionPhase, &entry.TokensBefore, &entry.TokensAfterEstimate,
 		&beforeJSON, &afterJSON, &entry.Error, &metadataJSON,
 	)
@@ -1259,6 +1282,11 @@ func scanEntry(rows *sql.Rows) (sessiontree.Entry, error) {
 	entry.CreatedAt = parseTime(created)
 	if strings.TrimSpace(messageJSON) != "" {
 		if err := json.Unmarshal([]byte(messageJSON), &entry.Message); err != nil {
+			return sessiontree.Entry{}, err
+		}
+	}
+	if strings.TrimSpace(keptUserEntryIDsJSON) != "" && keptUserEntryIDsJSON != "null" {
+		if err := json.Unmarshal([]byte(keptUserEntryIDsJSON), &entry.KeptUserEntryIDs); err != nil {
 			return sessiontree.Entry{}, err
 		}
 	}
@@ -1480,7 +1508,23 @@ func cloneEntry(entry sessiontree.Entry) sessiontree.Entry {
 		}
 		entry.Metadata = metadata
 	}
+	if entry.KeptUserEntryIDs != nil {
+		entry.KeptUserEntryIDs = append([]string(nil), entry.KeptUserEntryIDs...)
+	}
 	return entry
+}
+
+func rewriteEntryIDs(ids []string, oldToNew map[string]string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if next := oldToNew[id]; next != "" {
+			out = append(out, next)
+		}
+	}
+	return out
 }
 
 func runIDFromRequest(requestID string) string {
@@ -1525,7 +1569,7 @@ const entryColumns = `thread_id, id, parent_id, type, turn_id, created_at,
 	message_json, raw, raw_hash, raw_encoder_version,
 	turn_status, provider, model, compaction_id, previous_compaction_id,
 	compacted_through_entry_id, summary_schema_version, compaction_generation,
-	compaction_window_id, first_kept_entry_id, summary, compaction_trigger,
+	compaction_window_id, first_kept_entry_id, kept_user_entry_ids_json, summary, compaction_trigger,
 	compaction_reason, compaction_phase, tokens_before, tokens_after_estimate,
 	context_usage_before_json, context_usage_after_json, error, metadata_json`
 
@@ -1568,6 +1612,7 @@ CREATE TABLE IF NOT EXISTS entries (
 	compaction_generation INTEGER NOT NULL DEFAULT 0,
 	compaction_window_id TEXT NOT NULL DEFAULT '',
 	first_kept_entry_id TEXT NOT NULL DEFAULT '',
+	kept_user_entry_ids_json TEXT NOT NULL DEFAULT '[]',
 	summary TEXT NOT NULL DEFAULT '',
 	compaction_trigger TEXT NOT NULL DEFAULT '',
 	compaction_reason TEXT NOT NULL DEFAULT '',

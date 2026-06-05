@@ -106,6 +106,14 @@ func TestStaticConsoleNewSessionFieldsAreExplicitlyLabelled(t *testing.T) {
 			t.Fatalf("new session form is missing explicit label/control binding %q", want)
 		}
 	}
+	for _, want := range []string{
+		`Recent tail controls the verbatim assistant, tool, and nearby message tail kept after summary.`,
+		`Recent user inputs are protected separately up to 15k tokens, and the latest user message is always kept.`,
+	} {
+		if !strings.Contains(newSession, want) {
+			t.Fatalf("new session form is missing recent tail help text %q", want)
+		}
+	}
 }
 
 func TestStaticConsoleNewSessionDefaultsFollowProviderCatalog(t *testing.T) {

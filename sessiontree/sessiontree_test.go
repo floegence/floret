@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -280,6 +281,64 @@ func TestCompactionContextReplacesHeadAndKeepsTail(t *testing.T) {
 	}
 }
 
+func TestCompactionContextPlacesKeptUsersBeforeSummaryAndDedupesTail(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemoryRepo()
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	oldUser, _ := AppendMessage(ctx, repo, "thread", "turn-1", session.Message{Role: session.User, Content: "old user"})
+	_, _ = AppendMessage(ctx, repo, "thread", "turn-1", session.Message{Role: session.Assistant, Content: "old assistant"})
+	latestUser, _ := AppendMessage(ctx, repo, "thread", "turn-2", session.Message{Role: session.User, Content: "latest user"})
+	if _, err := repo.Append(ctx, Entry{
+		ThreadID:         "thread",
+		Type:             EntryCompaction,
+		Summary:          "summary",
+		FirstKeptEntryID: latestUser.ID,
+		KeptUserEntryIDs: []string{oldUser.ID, latestUser.ID},
+	}, AppendOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	tail, _ := AppendMessage(ctx, repo, "thread", "turn-2", session.Message{Role: session.Assistant, Content: "tail assistant"})
+	path, err := repo.Path(ctx, "thread", tail.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := BuildContext(path, ContextOptions{})
+	contents := messageContents(got)
+	want := []string{"old user", "summary", "latest user", "tail assistant"}
+	if !slices.Equal(contents, want) {
+		t.Fatalf("context contents = %#v, want %#v; full=%#v", contents, want, got)
+	}
+}
+
+func TestCompactionContextDoesNotInferTailWhenKeptUsersAreExplicit(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemoryRepo()
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	user, _ := AppendMessage(ctx, repo, "thread", "turn-1", session.Message{Role: session.User, Content: "single user"})
+	if _, err := repo.Append(ctx, Entry{
+		ThreadID:         "thread",
+		Type:             EntryCompaction,
+		Summary:          "summary",
+		KeptUserEntryIDs: []string{user.ID},
+	}, AppendOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	path, err := repo.Path(ctx, "thread", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := BuildContext(path, ContextOptions{})
+	contents := messageContents(got)
+	want := []string{"single user", "summary"}
+	if !slices.Equal(contents, want) {
+		t.Fatalf("context contents = %#v, want %#v; full=%#v", contents, want, got)
+	}
+}
+
 func TestMultipleCompactionsUseOnlyLastBoundary(t *testing.T) {
 	ctx := context.Background()
 	repo := NewMemoryRepo()
@@ -341,6 +400,7 @@ func TestForkRewritesCompactionReferences(t *testing.T) {
 	compacted, err := AppendCompaction(ctx, repo, "source", "t2", compaction.Result{
 		CompactionID:            "c1",
 		FirstKeptEntryID:        kept.ID,
+		KeptUserEntryIDs:        []string{old.ID},
 		CompactedThroughEntryID: old.ID,
 		Summary:                 "summary",
 		SummarySchemaVersion:    compaction.SummarySchemaVersion,
@@ -369,13 +429,24 @@ func TestForkRewritesCompactionReferences(t *testing.T) {
 	if comp.FirstKeptEntryID == kept.ID || comp.CompactedThroughEntryID == old.ID {
 		t.Fatalf("fork should rewrite compaction entry refs: %#v", comp)
 	}
+	if len(comp.KeptUserEntryIDs) > 0 && comp.KeptUserEntryIDs[0] == old.ID {
+		t.Fatalf("fork should rewrite kept user refs: %#v", comp)
+	}
 	if comp.PreviousCompactionID != "" {
 		t.Fatalf("fork should not rewrite stable previous compaction id: %#v", comp)
 	}
 	got := BuildContext(path, ContextOptions{})
-	if len(got) != 2 || got[0].Content != "summary" || got[1].Content != "kept" {
+	if len(got) != 3 || got[0].Content != "old" || got[1].Content != "summary" || got[2].Content != "kept" {
 		t.Fatalf("forked context should retain rewritten tail: %#v", got)
 	}
+}
+
+func messageContents(messages []session.Message) []string {
+	out := make([]string, len(messages))
+	for i, msg := range messages {
+		out[i] = msg.Content
+	}
+	return out
 }
 
 func TestBuildContextConvertsSignalToolCallsToProviderSafeAssistantText(t *testing.T) {

@@ -1693,7 +1693,7 @@ func TestRunnerSQLiteImportsLegacyFileStorageOnce(t *testing.T) {
 		t.Fatalf("imported sessions = %#v", sessions)
 	}
 	status := sqliteRunner.storageStatus(context.Background())
-	if status.Mode != StorageModeSQLite || status.SchemaVersion != "2" || !strings.Contains(status.LegacyImport, "threads=1") || !strings.Contains(status.LegacyImport, "metadata=1") {
+	if status.Mode != StorageModeSQLite || status.SchemaVersion != "3" || !strings.Contains(status.LegacyImport, "threads=1") || !strings.Contains(status.LegacyImport, "metadata=1") {
 		t.Fatalf("storage status = %#v", status)
 	}
 	restarted := NewRunner(root)
@@ -2170,8 +2170,13 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 	}) {
 		t.Fatalf("active context missing structured compaction summary: %#v", result.Observation.ActiveContext)
 	}
+	if !slices.ContainsFunc(result.Observation.ActiveContext, func(msg ObservedSessionMessage) bool {
+		return msg.Role == "user" && msg.Content == long
+	}) {
+		t.Fatalf("active context missing kept original user input: %#v", result.Observation.ActiveContext)
+	}
 	if !slices.ContainsFunc(result.Observation.PathEntries, func(entry ObservedSessionEntry) bool {
-		return entry.Type == "compaction" && entry.CompactionID != "" && entry.CompactionGeneration > 0
+		return entry.Type == "compaction" && entry.CompactionID != "" && entry.CompactionGeneration > 0 && len(entry.KeptUserEntryIDs) > 0
 	}) {
 		t.Fatalf("path entries missing compaction metadata: %#v", result.Observation.PathEntries)
 	}

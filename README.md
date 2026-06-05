@@ -34,6 +34,14 @@ context pressure handling, retry/fork flows, usage metrics, and UI-friendly even
 Floret keeps those contracts small and separable so product code can focus on the host
 experience.
 
+## Runtime Shape
+
+Context compaction replaces older assistant/tool history with a structured
+summary while retaining a verbatim recent tail for execution continuity. Recent
+user inputs are protected separately: the latest user message is always kept, and
+recent older user messages are retained within a 15k-token user-input budget and
+replayed in their original order.
+
 Most hosts should use `runtime.NewHarness`, then `StartThread` or `ResumeThread`,
 and finally `Thread.Run` for each user turn. That API keeps durable conversation
 state in `sessiontree.Repo` and serializes only the same durable `ThreadID`.

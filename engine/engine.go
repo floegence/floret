@@ -854,10 +854,13 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 }
 
 func latestCompaction(_, active []session.Message) compaction.Result {
-	if len(active) == 0 || active[0].Kind != session.MessageKindCompactionSummary {
-		return compaction.Result{}
+	for i := len(active) - 1; i >= 0; i-- {
+		if active[i].Kind != session.MessageKindCompactionSummary {
+			continue
+		}
+		return compaction.Result{CompactionID: active[i].CompactionID, Summary: active[i].Content}
 	}
-	return compaction.Result{CompactionID: active[0].CompactionID, Summary: active[0].Content}
+	return compaction.Result{}
 }
 
 func derefInt(value *int) int {

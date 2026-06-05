@@ -1653,6 +1653,7 @@ func observeEntries(entries []sessiontree.Entry) []ObservedSessionEntry {
 			CompactionGeneration:    entry.CompactionGeneration,
 			CompactionWindowID:      entry.CompactionWindowID,
 			FirstKeptEntryID:        entry.FirstKeptEntryID,
+			KeptUserEntryIDs:        append([]string(nil), entry.KeptUserEntryIDs...),
 			Summary:                 entry.Summary,
 			CompactionTrigger:       entry.CompactionTrigger,
 			CompactionReason:        entry.CompactionReason,

@@ -12,6 +12,7 @@ const (
 	DefaultReservedOutputTokens  int64 = 4096
 	DefaultReservedSummaryTokens int64 = 2048
 	DefaultRecentTailTokens      int64 = 12000
+	DefaultRecentUserTokens      int64 = 15000
 	DefaultEstimatorSource             = "chars_per_token"
 )
 

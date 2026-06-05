@@ -281,6 +281,7 @@ func TestSQLiteStoreForkRewritesCompactionEntryReferences(t *testing.T) {
 		CompactionID:            "compaction-2",
 		PreviousCompactionID:    "compaction-1",
 		FirstKeptEntryID:        kept.ID,
+		KeptUserEntryIDs:        []string{old.ID},
 		CompactedThroughEntryID: old.ID,
 		Summary:                 "summary",
 		SummarySchemaVersion:    compaction.SummarySchemaVersion,
@@ -309,10 +310,13 @@ func TestSQLiteStoreForkRewritesCompactionEntryReferences(t *testing.T) {
 	if entry.FirstKeptEntryID == kept.ID || entry.CompactedThroughEntryID == old.ID {
 		t.Fatalf("fork should rewrite entry references: %#v", entry)
 	}
+	if len(entry.KeptUserEntryIDs) != 1 || entry.KeptUserEntryIDs[0] == old.ID {
+		t.Fatalf("fork should rewrite kept user entry references: %#v", entry)
+	}
 	if entry.PreviousCompactionID != "compaction-1" {
 		t.Fatalf("previous compaction id should stay stable: %#v", entry)
 	}
-	if got := sessiontree.BuildContext(pathEntries, sessiontree.ContextOptions{}); len(got) != 2 || got[0].Content != "summary" || got[1].Content != "kept" {
+	if got := sessiontree.BuildContext(pathEntries, sessiontree.ContextOptions{}); len(got) != 3 || got[0].Content != "old" || got[1].Content != "summary" || got[2].Content != "kept" {
 		t.Fatalf("fork context = %#v", got)
 	}
 }
@@ -522,7 +526,7 @@ func TestSQLiteStorePromptCacheConcurrentSessionsAreIsolated(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreMigratesSchemaV1ToV2(t *testing.T) {
+func TestSQLiteStoreMigratesSchemaV1ToV3(t *testing.T) {
 	ctx := context.Background()
 	store, dbPath := openSQLiteStoreForTest(t)
 	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread"}); err != nil {
@@ -546,11 +550,14 @@ func TestSQLiteStoreMigratesSchemaV1ToV2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != "2" {
-		t.Fatalf("schema version = %q, want 2", version)
+	if version != "3" {
+		t.Fatalf("schema version = %q, want 3", version)
 	}
 	if err := store.AcquireTurnLease(ctx, sessiontree.TurnLease{ThreadID: "thread", TurnID: "turn", OwnerID: "owner"}); err != nil {
 		t.Fatalf("migrated store should support turn leases: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO entries(thread_id, id, ordinal, type, created_at, kept_user_entry_ids_json) VALUES('thread', 'entry', 1, 'compaction', 'now', '["u1"]')`); err != nil {
+		t.Fatalf("migrated store should support kept user ids column: %v", err)
 	}
 }
 

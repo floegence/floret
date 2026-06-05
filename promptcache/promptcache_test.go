@@ -575,6 +575,32 @@ func TestActiveCompactionWindowUsesLatestStructuredSummary(t *testing.T) {
 	}
 }
 
+func TestActiveCompactionWindowAllowsKeptUsersBeforeSummary(t *testing.T) {
+	store := NewMemoryStore()
+	toolset, _, err := EnsureToolset(context.Background(), store, "run", "thread", "openai", "model", nil, nil, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, _, err := BuildPlan(context.Background(), store, BuildInput{
+		RunID:     "run",
+		SessionID: "thread",
+		Provider:  "openai",
+		Model:     "model",
+		Toolset:   toolset,
+		History: []session.Message{
+			{Role: session.User, Content: "kept original user"},
+			{Role: session.Assistant, Content: "summary", Kind: session.MessageKindCompactionSummary, CompactionID: "c1", CompactionGeneration: 4, CompactionWindowID: "w4"},
+			{Role: session.User, Content: "tail user"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.CompactionGeneration != 4 || plan.CompactionWindowID != "w4" || plan.CompactionEntryID != "c1" {
+		t.Fatalf("plan should find compaction window after kept users: %#v", plan)
+	}
+}
+
 func TestReusedCompactionSegmentRefreshesWindowMetadata(t *testing.T) {
 	store := NewMemoryStore()
 	now := time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC)

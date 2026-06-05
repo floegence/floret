@@ -41,8 +41,17 @@ func BenchmarkBuildContextTenThousandEntriesWithCompactions(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		messages := BuildContext(path, ContextOptions{})
-		if len(messages) == 0 || messages[0].Kind != session.MessageKindCompactionSummary {
+		if !containsCompactionSummary(messages) {
 			b.Fatalf("missing compaction summary in context: %#v", messages)
 		}
 	}
+}
+
+func containsCompactionSummary(messages []session.Message) bool {
+	for _, msg := range messages {
+		if msg.Kind == session.MessageKindCompactionSummary {
+			return true
+		}
+	}
+	return false
 }

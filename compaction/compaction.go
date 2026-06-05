@@ -68,6 +68,7 @@ type Result struct {
 	CompactionID            string              `json:"compaction_id"`
 	PreviousCompactionID    string              `json:"previous_compaction_id,omitempty"`
 	FirstKeptEntryID        string              `json:"first_kept_entry_id,omitempty"`
+	KeptUserEntryIDs        []string            `json:"kept_user_entry_ids,omitempty"`
 	CompactedThroughEntryID string              `json:"compacted_through_entry_id,omitempty"`
 	Summary                 string              `json:"summary"`
 	SummarySchemaVersion    string              `json:"summary_schema_version"`
@@ -122,21 +123,15 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		req.Phase = PhaseGenerate
 	}
 	history := stripEmptyMessages(req.History)
-	if len(history) > 0 && history[0].Kind == session.MessageKindCompactionSummary {
-		if req.PreviousSummary == "" {
-			req.PreviousSummary = history[0].Content
-		}
-		if req.PreviousCompactionID == "" {
-			req.PreviousCompactionID = history[0].CompactionID
-		}
-		history = history[1:]
-	}
+	history = removeActiveCompactionSummary(history, &req)
 	history = microcompact(history, req.Policy)
 	usageBefore := contextpolicy.EstimateMessages("", history, 0, req.Policy)
 	if len(history) == 1 {
+		keptUsers := selectKeptUserMessages(history, contextpolicy.DefaultRecentUserTokens)
 		result := Result{
 			CompactionID:            req.CompactionID,
 			PreviousCompactionID:    req.PreviousCompactionID,
+			KeptUserEntryIDs:        keptUserEntryIDs(keptUsers),
 			CompactedThroughEntryID: lastEntryID(history),
 			SummarySchemaVersion:    SummarySchemaVersion,
 			Trigger:                 req.Trigger,
@@ -159,7 +154,8 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 			return Preparation{}, err
 		}
 		prep.Result.Summary = trimToTokenBudget(strings.TrimSpace(summary), req.Policy.ReservedSummaryTokens)
-		prep.ActiveMessages = []session.Message{{Role: session.Assistant, Content: prep.Result.Summary, Kind: session.MessageKindCompactionSummary, CompactionID: prep.Result.CompactionID}}
+		summaryMsg := session.Message{Role: session.Assistant, Content: prep.Result.Summary, Kind: session.MessageKindCompactionSummary, CompactionID: prep.Result.CompactionID}
+		prep.ActiveMessages = buildActiveMessages(summaryMsg, keptUsers, nil)
 		usageAfter := contextpolicy.EstimateMessages("", prep.ActiveMessages, 0, req.Policy)
 		prep.Result.TokensAfterEstimate = usageAfter.InputTokens
 		prep.Result.UsageAfter = usageAfter
@@ -179,14 +175,30 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	if start <= 0 || start >= len(history) {
 		return Preparation{}, ErrNoCutPoint
 	}
+	keptUsers := selectKeptUserMessages(history, contextpolicy.DefaultRecentUserTokens)
+	var tailShrunk bool
+	start, tailShrunk = fitTailStartBeforeSummary(history, start, keptUsers, req.Policy)
 	head := append([]session.Message(nil), history[:start]...)
 	tail := append([]session.Message(nil), history[start:]...)
 	firstKept := tail[0].EntryID
 	compactedThrough := lastEntryID(head)
+	details := map[string]string{
+		"history_messages":       fmt.Sprintf("%d", len(history)),
+		"compacted_messages":     fmt.Sprintf("%d", len(head)),
+		"retained_tail_messages": fmt.Sprintf("%d", len(tail)),
+		"estimator_source":       req.Policy.EstimatorSource,
+		"read_files":             "",
+		"modified_files":         "",
+		"trim_retries":           "0",
+	}
+	if tailShrunk {
+		details["tail_shrunk_before_summary"] = "true"
+	}
 	result := Result{
 		CompactionID:            req.CompactionID,
 		PreviousCompactionID:    req.PreviousCompactionID,
 		FirstKeptEntryID:        firstKept,
+		KeptUserEntryIDs:        keptUserEntryIDs(keptUsers),
 		CompactedThroughEntryID: compactedThrough,
 		SummarySchemaVersion:    SummarySchemaVersion,
 		Trigger:                 req.Trigger,
@@ -194,16 +206,8 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		Phase:                   req.Phase,
 		TokensBefore:            usageBefore.InputTokens,
 		UsageBefore:             usageBefore,
-		Details: mergeDetails(req.Details, map[string]string{
-			"history_messages":       fmt.Sprintf("%d", len(history)),
-			"compacted_messages":     fmt.Sprintf("%d", len(head)),
-			"retained_tail_messages": fmt.Sprintf("%d", len(tail)),
-			"estimator_source":       req.Policy.EstimatorSource,
-			"read_files":             "",
-			"modified_files":         "",
-			"trim_retries":           "0",
-		}),
-		CreatedAt: req.Now,
+		Details:                 mergeDetails(req.Details, details),
+		CreatedAt:               req.Now,
 	}
 	if result.CompactionID == "" {
 		result.CompactionID = stableCompactionID(req, head, tail)
@@ -231,21 +235,12 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		Kind:         session.MessageKindCompactionSummary,
 		CompactionID: prep.Result.CompactionID,
 	}
-	prep.ActiveMessages = append([]session.Message{summaryMsg}, tail...)
+	prep.ActiveMessages = buildActiveMessages(summaryMsg, keptUsers, tail)
 	usageAfter := contextpolicy.EstimateMessages("", prep.ActiveMessages, 0, req.Policy)
 	prep.Result.TokensAfterEstimate = usageAfter.InputTokens
 	prep.Result.UsageAfter = usageAfter
 	if usageAfter.InputTokens >= usageAfter.ThresholdTokens {
-		shrunk := shrinkTail(prep.ActiveMessages, req.Policy)
-		shrunkUsage := contextpolicy.EstimateMessages("", shrunk, 0, req.Policy)
-		if shrunkUsage.InputTokens >= shrunkUsage.ThresholdTokens {
-			return Preparation{}, ErrStillOverBudget
-		}
-		prep.ActiveMessages = shrunk
-		prep.Result.TokensAfterEstimate = shrunkUsage.InputTokens
-		prep.Result.UsageAfter = shrunkUsage
-		prep.Result.FirstKeptEntryID = firstEntryID(shrunk[1:])
-		prep.Result.Details["tail_shrunk_after_summary"] = "true"
+		return Preparation{}, ErrStillOverBudget
 	}
 	return prep, nil
 }
@@ -328,6 +323,23 @@ func BuildActiveMessages(result Result, tail []session.Message) []session.Messag
 	return out
 }
 
+func buildActiveMessages(summary session.Message, keptUsers, tail []session.Message) []session.Message {
+	tailIDs := entryIDSet(tail)
+	out := make([]session.Message, 0, len(keptUsers)+1+len(tail))
+	for _, msg := range keptUsers {
+		if msg.EntryID == "" {
+			continue
+		}
+		if _, ok := tailIDs[msg.EntryID]; ok {
+			continue
+		}
+		out = append(out, msg)
+	}
+	out = append(out, summary)
+	out = append(out, tail...)
+	return out
+}
+
 func stripEmptyMessages(messages []session.Message) []session.Message {
 	out := make([]session.Message, 0, len(messages))
 	for _, msg := range messages {
@@ -336,6 +348,29 @@ func stripEmptyMessages(messages []session.Message) []session.Message {
 		}
 		out = append(out, msg)
 	}
+	return out
+}
+
+func removeActiveCompactionSummary(messages []session.Message, req *Request) []session.Message {
+	index := -1
+	for i, msg := range messages {
+		if msg.Kind == session.MessageKindCompactionSummary {
+			index = i
+		}
+	}
+	if index < 0 {
+		return messages
+	}
+	summary := messages[index]
+	if req.PreviousSummary == "" {
+		req.PreviousSummary = summary.Content
+	}
+	if req.PreviousCompactionID == "" {
+		req.PreviousCompactionID = summary.CompactionID
+	}
+	out := make([]session.Message, 0, len(messages)-1)
+	out = append(out, messages[:index]...)
+	out = append(out, messages[index+1:]...)
 	return out
 }
 
@@ -351,6 +386,98 @@ func findTailStart(history []session.Message, keepTokens int64) int {
 		}
 	}
 	return 0
+}
+
+func fitTailStartBeforeSummary(history []session.Message, start int, keptUsers []session.Message, policy contextpolicy.Policy) (int, bool) {
+	summary := summaryBudgetMessage(policy)
+	shrunk := false
+	for start > 0 && start < len(history) {
+		candidate := buildActiveMessages(summary, keptUsers, history[start:])
+		if contextpolicy.EstimateMessages("", candidate, 0, policy).InputTokens < contextpolicy.Threshold(policy) {
+			return start, shrunk
+		}
+		next := nextShrinkableTailStart(history, start)
+		if next <= start || next >= len(history) {
+			return start, shrunk
+		}
+		start = next
+		shrunk = true
+	}
+	return start, shrunk
+}
+
+func summaryBudgetMessage(policy contextpolicy.Policy) session.Message {
+	policy = contextpolicy.Normalize(policy)
+	return session.Message{
+		Role:    session.Assistant,
+		Content: strings.Repeat("x", int(policy.ReservedSummaryTokens*4)),
+		Kind:    session.MessageKindCompactionSummary,
+	}
+}
+
+func nextShrinkableTailStart(history []session.Message, start int) int {
+	if start >= len(history)-1 {
+		return start
+	}
+	next := advancePastOrphanToolResults(history, start+1)
+	if next >= len(history) {
+		return start
+	}
+	return next
+}
+
+func advancePastOrphanToolResults(history []session.Message, start int) int {
+	for start < len(history) {
+		advanced := false
+		for i := start; i < len(history); i++ {
+			msg := history[i]
+			if msg.Role != session.Tool || msg.ToolCallID == "" {
+				continue
+			}
+			if hasAssistantToolCall(history[start:], msg.ToolCallID) {
+				continue
+			}
+			start = i + 1
+			advanced = true
+			break
+		}
+		if !advanced {
+			return start
+		}
+	}
+	return start
+}
+
+func selectKeptUserMessages(history []session.Message, budget int64) []session.Message {
+	if budget <= 0 {
+		budget = contextpolicy.DefaultRecentUserTokens
+	}
+	latest := -1
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role == session.User && history[i].EntryID != "" {
+			latest = i
+			break
+		}
+	}
+	if latest < 0 {
+		return nil
+	}
+	var selected []session.Message
+	total := contextpolicy.EstimateMessage(history[latest])
+	for i := latest - 1; i >= 0; i-- {
+		if history[i].Role != session.User || history[i].EntryID == "" {
+			continue
+		}
+		msgTokens := contextpolicy.EstimateMessage(history[i])
+		if total+msgTokens > budget {
+			break
+		}
+		selected = append(selected, history[i])
+		total += msgTokens
+	}
+	reverseMessages(selected)
+	selected = append(selected, history[latest])
+	return selected
 }
 
 func repairToolBoundary(history []session.Message, start int) int {
@@ -416,24 +543,30 @@ func toolMarker(msg session.Message, budget int64) string {
 		msg.ToolName, msg.ToolCallID, contextpolicy.EstimateText(msg.Content), trimToTokenBudget(msg.Content, previewBudget))
 }
 
-func shrinkTail(messages []session.Message, policy contextpolicy.Policy) []session.Message {
-	if len(messages) <= 2 {
-		return messages
-	}
-	summary := messages[0]
-	tail := messages[1:]
-	for len(tail) > 1 {
-		tail = tail[1:]
-		tailStart := repairToolBoundary(tail, 0)
-		if tailStart > 0 && tailStart < len(tail) {
-			tail = tail[tailStart:]
-		}
-		candidate := append([]session.Message{summary}, tail...)
-		if contextpolicy.EstimateMessages("", candidate, 0, policy).InputTokens < contextpolicy.Threshold(policy) {
-			return candidate
+func keptUserEntryIDs(messages []session.Message) []string {
+	ids := make([]string, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role == session.User && msg.EntryID != "" {
+			ids = append(ids, msg.EntryID)
 		}
 	}
-	return append([]session.Message{summary}, tail...)
+	return ids
+}
+
+func entryIDSet(messages []session.Message) map[string]struct{} {
+	out := make(map[string]struct{}, len(messages))
+	for _, msg := range messages {
+		if msg.EntryID != "" {
+			out[msg.EntryID] = struct{}{}
+		}
+	}
+	return out
+}
+
+func reverseMessages(messages []session.Message) {
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
+	}
 }
 
 func stableCompactionID(req Request, head, tail []session.Message) string {

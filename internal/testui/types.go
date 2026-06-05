@@ -356,6 +356,7 @@ type ObservedSessionEntry struct {
 	CompactionGeneration    int                          `json:"compaction_generation,omitempty"`
 	CompactionWindowID      string                       `json:"compaction_window_id,omitempty"`
 	FirstKeptEntryID        string                       `json:"first_kept_entry_id,omitempty"`
+	KeptUserEntryIDs        []string                     `json:"kept_user_entry_ids,omitempty"`
 	Summary                 string                       `json:"summary,omitempty"`
 	CompactionTrigger       string                       `json:"compaction_trigger,omitempty"`
 	CompactionReason        string                       `json:"compaction_reason,omitempty"`

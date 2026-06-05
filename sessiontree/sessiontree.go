@@ -101,6 +101,7 @@ type Entry struct {
 	CompactionGeneration    int                 `json:"compaction_generation,omitempty"`
 	CompactionWindowID      string              `json:"compaction_window_id,omitempty"`
 	FirstKeptEntryID        string              `json:"first_kept_entry_id,omitempty"`
+	KeptUserEntryIDs        []string            `json:"kept_user_entry_ids,omitempty"`
 	Summary                 string              `json:"summary,omitempty"`
 	CompactionTrigger       string              `json:"compaction_trigger,omitempty"`
 	CompactionReason        string              `json:"compaction_reason,omitempty"`
@@ -430,6 +431,7 @@ func (r *MemoryRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, er
 		next.ParentID = oldToNew[entry.ParentID]
 		next.FirstKeptEntryID = oldToNew[entry.FirstKeptEntryID]
 		next.CompactedThroughEntryID = oldToNew[entry.CompactedThroughEntryID]
+		next.KeptUserEntryIDs = rewriteEntryIDs(entry.KeptUserEntryIDs, oldToNew)
 		next.CreatedAt = now
 		next.Raw = rawForEntry(next)
 		next.RawHash = stableHash(next.Raw)
@@ -855,7 +857,7 @@ func BuildContext(path []Entry, _ ContextOptions) []session.Message {
 			if entry.FirstKeptEntryID != "" {
 				firstKeptIndex = slices.IndexFunc(path, func(candidate Entry) bool { return candidate.ID == entry.FirstKeptEntryID })
 			}
-			if firstKeptIndex < 0 {
+			if firstKeptIndex < 0 && len(entry.KeptUserEntryIDs) == 0 {
 				firstKeptIndex = repairFirstKeptIndex(path, i)
 			}
 		}
@@ -863,6 +865,18 @@ func BuildContext(path []Entry, _ ContextOptions) []session.Message {
 	var messages []session.Message
 	if compactionIndex >= 0 {
 		compaction := path[compactionIndex]
+		tailEntryIDs := map[string]struct{}{}
+		if firstKeptIndex >= 0 && firstKeptIndex < compactionIndex {
+			for _, entry := range path[firstKeptIndex:compactionIndex] {
+				tailEntryIDs[entry.ID] = struct{}{}
+			}
+		}
+		for _, entry := range path[compactionIndex+1:] {
+			tailEntryIDs[entry.ID] = struct{}{}
+		}
+		for _, entry := range keptUserEntries(path[:compactionIndex], compaction.KeptUserEntryIDs, tailEntryIDs) {
+			messages = appendProviderVisible(messages, entry)
+		}
 		if compaction.Summary != "" {
 			messages = append(messages, session.Message{
 				Role:                 session.Assistant,
@@ -933,6 +947,7 @@ func AppendCompaction(ctx context.Context, repo Repo, threadID, turnID string, r
 		CompactionGeneration:    nextCompactionGeneration(result),
 		CompactionWindowID:      windowID,
 		FirstKeptEntryID:        result.FirstKeptEntryID,
+		KeptUserEntryIDs:        append([]string(nil), result.KeptUserEntryIDs...),
 		Summary:                 result.Summary,
 		CompactionTrigger:       string(result.Trigger),
 		CompactionReason:        string(result.Reason),
@@ -972,6 +987,51 @@ func repairFirstKeptIndex(path []Entry, compactionIndex int) int {
 		}
 	}
 	return -1
+}
+
+func keptUserEntries(prefix []Entry, ids []string, skip map[string]struct{}) []Entry {
+	if len(ids) == 0 {
+		return nil
+	}
+	byID := make(map[string]Entry, len(prefix))
+	for _, entry := range prefix {
+		if entry.Type == EntryUserMessage && entry.Message.Role == session.User {
+			byID[entry.ID] = entry
+		}
+	}
+	out := make([]Entry, 0, len(ids))
+	seen := map[string]struct{}{}
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		if _, ok := skip[id]; ok {
+			continue
+		}
+		entry, ok := byID[id]
+		if !ok {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func rewriteEntryIDs(ids []string, oldToNew map[string]string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if next := oldToNew[id]; next != "" {
+			out = append(out, next)
+		}
+	}
+	return out
 }
 
 func nextCompactionGeneration(result compaction.Result) int {
@@ -1081,6 +1141,7 @@ func rawForEntry(entry Entry) string {
 		CompactionGeneration    int               `json:"compaction_generation,omitempty"`
 		CompactionWindowID      string            `json:"compaction_window_id,omitempty"`
 		FirstKeptEntryID        string            `json:"first_kept_entry_id,omitempty"`
+		KeptUserEntryIDs        []string          `json:"kept_user_entry_ids,omitempty"`
 		Summary                 string            `json:"summary,omitempty"`
 		CompactionTrigger       string            `json:"compaction_trigger,omitempty"`
 		CompactionReason        string            `json:"compaction_reason,omitempty"`
@@ -1103,6 +1164,7 @@ func rawForEntry(entry Entry) string {
 		CompactionGeneration:    entry.CompactionGeneration,
 		CompactionWindowID:      entry.CompactionWindowID,
 		FirstKeptEntryID:        entry.FirstKeptEntryID,
+		KeptUserEntryIDs:        entry.KeptUserEntryIDs,
 		Summary:                 entry.Summary,
 		CompactionTrigger:       entry.CompactionTrigger,
 		CompactionReason:        entry.CompactionReason,
@@ -1131,6 +1193,9 @@ func cloneEntries(entries []Entry) []Entry {
 func cloneEntry(entry Entry) Entry {
 	if entry.Metadata != nil {
 		entry.Metadata = mapsClone(entry.Metadata)
+	}
+	if entry.KeptUserEntryIDs != nil {
+		entry.KeptUserEntryIDs = append([]string(nil), entry.KeptUserEntryIDs...)
 	}
 	return entry
 }
