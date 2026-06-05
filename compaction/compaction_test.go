@@ -194,6 +194,103 @@ func TestPrepareExtractsPurePreviousSummaryFromCheckpoint(t *testing.T) {
 	}
 }
 
+func TestExtractCheckpointSummaryIgnoresPureSummaryDelimiterMentions(t *testing.T) {
+	summary := "Document the literal <compaction_summary schema=\"floret.compaction.summary.v1\"> marker and </compaction_summary> closing marker."
+	if got := ExtractCheckpointSummary(summary); got != summary {
+		t.Fatalf("pure summary should not be parsed as checkpoint: %q", got)
+	}
+}
+
+func TestExtractCheckpointSummaryUsesOuterCheckpointEnvelope(t *testing.T) {
+	summary := "Keep this literal <compaction_summary> example and </compaction_summary> marker in the markdown body."
+	checkpoint := BuildCheckpointMessage(summary, nil, []session.Message{{Role: session.User, Content: "tail", EntryID: "tail"}})
+	if got := ExtractCheckpointSummary(checkpoint.Content); got != summary {
+		t.Fatalf("summary body = %q, want %q", got, summary)
+	}
+}
+
+func TestBuildActiveMessagesWithKeptUsersEmbedsOnlyTailExternalUsers(t *testing.T) {
+	keptUsers := []session.Message{
+		{Role: session.User, Content: "old", EntryID: "u1"},
+		{Role: session.User, Content: "tail user", EntryID: "u2"},
+	}
+	tail := []session.Message{{Role: session.User, Content: "tail user", EntryID: "u2"}}
+	messages := BuildActiveMessagesWithKeptUsers(Result{CompactionID: "c1", Summary: "summary"}, keptUsers, tail)
+	if len(messages) != 2 || messages[0].Role != session.User || messages[0].Kind != session.MessageKindCompactionSummary || messages[1].EntryID != "u2" {
+		t.Fatalf("active messages = %#v", messages)
+	}
+	if !strings.Contains(messages[0].Content, `"entry_id": "u1"`) || strings.Contains(messages[0].Content, `"entry_id": "u2"`) {
+		t.Fatalf("checkpoint should embed only tail-external kept users: %q", messages[0].Content)
+	}
+}
+
+func TestBuildActiveMessagesOmitsPreservedUsers(t *testing.T) {
+	messages := BuildActiveMessages(Result{CompactionID: "c1", Summary: "summary"}, []session.Message{{Role: session.User, Content: "tail", EntryID: "u1"}})
+	if len(messages) != 2 || strings.Contains(messages[0].Content, "preserved_user_inputs") {
+		t.Fatalf("convenience helper should not synthesize preserved user inputs: %#v", messages)
+	}
+}
+
+func TestSingleMessageCompactionCheckpointDoesNotClaimRetainedTail(t *testing.T) {
+	prep, err := Prepare(context.Background(), Request{
+		History: []session.Message{{Role: session.User, Content: strings.Repeat("single ", 80), EntryID: "u1"}},
+		Policy:  contextpolicy.Policy{ContextWindowTokens: 1200, ReservedOutputTokens: 80, ReservedSummaryTokens: 120, RecentTailTokens: 12},
+	}, ExtractiveSummaryGenerator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prep.ActiveMessages) != 1 || prep.ActiveMessages[0].Kind != session.MessageKindCompactionSummary {
+		t.Fatalf("single-message compaction should produce one checkpoint: %#v", prep.ActiveMessages)
+	}
+	content := prep.ActiveMessages[0].Content
+	for _, forbidden := range []string{"The retained tail follows", "Do not answer this checkpoint directly"} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("single-message checkpoint should not include %q: %q", forbidden, content)
+		}
+	}
+	if !strings.Contains(content, "No retained tail follows this checkpoint.") || !strings.Contains(content, "Use it as the current conversation context.") {
+		t.Fatalf("single-message checkpoint missing no-tail guidance: %q", content)
+	}
+}
+
+func TestSummaryWriterPromptContract(t *testing.T) {
+	system := summaryWriterSystemPrompt()
+	for _, want := range []string{
+		"handoff summary",
+		"another LLM",
+		"Summarize only the conversation history you are given",
+		"newer turns may be retained outside the summary",
+		"previous summary",
+		"Do not continue the conversation",
+		"answer questions in the transcript",
+		"key files, commands, errors, risks",
+		"concrete next steps",
+	} {
+		if !strings.Contains(system, want) {
+			t.Fatalf("summary writer system prompt missing %q: %q", want, system)
+		}
+	}
+
+	prompt := summaryPrompt(Preparation{
+		Request:       Request{PreviousSummary: "previous summary body"},
+		CompactedHead: []session.Message{{Role: session.User, Content: "/tmp/file.go failed with E42", EntryID: "u1"}},
+	}, contextpolicy.Normalize(contextpolicy.Policy{ContextWindowTokens: 2000, ReservedOutputTokens: 100, ReservedSummaryTokens: 200, RecentTailTokens: 100}))
+	for _, want := range []string{
+		"# Floret Compaction Summary",
+		"## Goals",
+		"## Constraints",
+		"## Next Steps",
+		"Previous summary:",
+		"previous summary body",
+		"Transcript to compact:",
+		"/tmp/file.go failed with E42",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("summary prompt missing %q: %q", want, prompt)
+		}
+	}
+}
+
 func TestPrepareShrinksTailWithoutLeavingOrphanToolResult(t *testing.T) {
 	history := []session.Message{
 		{Role: session.User, Content: "old", EntryID: "u1"},

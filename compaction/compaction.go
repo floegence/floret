@@ -22,6 +22,11 @@ const (
 	checkpointSummaryClose = "</compaction_summary>"
 )
 
+const (
+	checkpointWithTailIntro = "The conversation before the retained tail was compacted into this checkpoint."
+	checkpointNoTailIntro   = "The compacted conversation is represented by this checkpoint."
+)
+
 var (
 	ErrNoCutPoint       = errors.New("compaction has no safe cut point")
 	ErrStillOverBudget  = errors.New("compacted context still exceeds token threshold")
@@ -160,7 +165,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 			return Preparation{}, err
 		}
 		prep.Result.Summary = trimToTokenBudget(strings.TrimSpace(summary), req.Policy.ReservedSummaryTokens)
-		prep.ActiveMessages = buildActiveMessages(prep.Result, keptUsers, nil)
+		prep.ActiveMessages = BuildActiveMessagesWithKeptUsers(prep.Result, keptUsers, nil)
 		usageAfter := contextpolicy.EstimateMessages("", prep.ActiveMessages, 0, req.Policy)
 		prep.Result.TokensAfterEstimate = usageAfter.InputTokens
 		prep.Result.UsageAfter = usageAfter
@@ -234,7 +239,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		prep.Result.Details["summary_trimmed"] = "true"
 	}
 	prep.Result.Summary = summary
-	prep.ActiveMessages = buildActiveMessages(prep.Result, keptUsers, tail)
+	prep.ActiveMessages = BuildActiveMessagesWithKeptUsers(prep.Result, keptUsers, tail)
 	usageAfter := contextpolicy.EstimateMessages("", prep.ActiveMessages, 0, req.Policy)
 	prep.Result.TokensAfterEstimate = usageAfter.InputTokens
 	prep.Result.UsageAfter = usageAfter
@@ -315,6 +320,10 @@ func BuildActiveMessages(result Result, tail []session.Message) []session.Messag
 	return buildActiveMessages(result, nil, tail)
 }
 
+func BuildActiveMessagesWithKeptUsers(result Result, keptUsers, tail []session.Message) []session.Message {
+	return buildActiveMessages(result, keptUsers, tail)
+}
+
 func buildActiveMessages(result Result, keptUsers, tail []session.Message) []session.Message {
 	checkpoint := BuildCheckpointMessage(result.Summary, keptUsers, tail)
 	checkpoint.CompactionID = result.CompactionID
@@ -325,7 +334,7 @@ func buildActiveMessages(result Result, keptUsers, tail []session.Message) []ses
 func BuildCheckpointMessage(summary string, keptUsers, tail []session.Message) session.Message {
 	return session.Message{
 		Role:    session.User,
-		Content: checkpointContent(summary, keptUsersOutsideTail(keptUsers, tail)),
+		Content: checkpointContent(summary, keptUsersOutsideTail(keptUsers, tail), len(tail) > 0),
 		Kind:    session.MessageKindCompactionSummary,
 	}
 }
@@ -345,11 +354,19 @@ func keptUsersOutsideTail(keptUsers, tail []session.Message) []session.Message {
 	return out
 }
 
-func checkpointContent(summary string, keptUsers []session.Message) string {
+func checkpointContent(summary string, keptUsers []session.Message, hasTail bool) string {
 	var out strings.Builder
-	out.WriteString("The conversation before the retained tail was compacted into this checkpoint.\n")
-	out.WriteString("Use it as historical context only. Do not answer this checkpoint directly.\n")
-	out.WriteString("The retained tail follows after this message and is the most recent source of truth.\n\n")
+	if hasTail {
+		out.WriteString(checkpointWithTailIntro)
+		out.WriteString("\n")
+		out.WriteString("Use it as historical context only. Do not answer this checkpoint directly.\n")
+		out.WriteString("The retained tail follows after this message and is the most recent source of truth.\n\n")
+	} else {
+		out.WriteString(checkpointNoTailIntro)
+		out.WriteString("\n")
+		out.WriteString("Use it as the current conversation context.\n")
+		out.WriteString("No retained tail follows this checkpoint.\n\n")
+	}
 	if len(keptUsers) > 0 {
 		out.WriteString("<preserved_user_inputs>\n")
 		out.WriteString("These recent user messages were preserved from before the retained tail because they may contain intent, constraints, or preferences.\n")
@@ -411,20 +428,24 @@ func removeActiveCompactionSummary(messages []session.Message, req *Request) []s
 }
 
 func ExtractCheckpointSummary(content string) string {
-	start := strings.LastIndex(content, "<compaction_summary")
+	trimmed := strings.TrimSpace(content)
+	if !strings.HasPrefix(trimmed, checkpointWithTailIntro) && !strings.HasPrefix(trimmed, checkpointNoTailIntro) {
+		return content
+	}
+	start := strings.Index(trimmed, "<compaction_summary")
 	if start < 0 {
 		return content
 	}
-	openEnd := strings.Index(content[start:], ">")
+	openEnd := strings.Index(trimmed[start:], ">")
 	if openEnd < 0 {
 		return content
 	}
 	bodyStart := start + openEnd + 1
-	bodyEnd := strings.Index(content[bodyStart:], checkpointSummaryClose)
-	if bodyEnd < 0 {
+	bodyEnd := strings.LastIndex(trimmed, checkpointSummaryClose)
+	if bodyEnd < bodyStart {
 		return content
 	}
-	return strings.TrimSpace(content[bodyStart : bodyStart+bodyEnd])
+	return strings.TrimSpace(trimmed[bodyStart:bodyEnd])
 }
 
 func findTailStart(history []session.Message, keepTokens int64) int {
