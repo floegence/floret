@@ -401,6 +401,17 @@ func TestStaticConsoleSessionOperationsAndPolling(t *testing.T) {
 	if !strings.Contains(appJS, "const viewportState = captureSessionViewportState();") || !strings.Contains(appJS, "restoreSessionViewportState(viewportState);") {
 		t.Fatalf("render should capture and restore session viewport around DOM replacement")
 	}
+	for _, want := range []string{"[data-session-select-id]", "dataset.sessionSelectId", "data-session-select-id"} {
+		if !strings.Contains(workspace, want) {
+			t.Fatalf("session row selection should use a dedicated click target: missing %q", want)
+		}
+	}
+	if strings.Contains(workspace, `querySelectorAll("[data-session-id]")`) {
+		t.Fatalf("conversation data-session-id is scroll state metadata and must not be bound as a session select click target")
+	}
+	if !strings.Contains(appJS, "state.activeSession?.id === id") {
+		t.Fatalf("selecting the already active session should be a no-op to avoid replacing selected message text")
+	}
 }
 
 func TestStaticConsoleSessionDebugRawAndToolRuns(t *testing.T) {

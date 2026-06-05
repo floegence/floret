@@ -21,8 +21,8 @@ export function bindSessionWorkspace(root, handlers) {
   root.querySelectorAll("[data-mobile-panel]").forEach((button) => {
     button.addEventListener("click", () => handlers.onMobilePanel(button.dataset.mobilePanel || ""));
   });
-  root.querySelectorAll("[data-session-id]").forEach((button) => {
-    button.addEventListener("click", () => handlers.onSelect(button.dataset.sessionId || ""));
+  root.querySelectorAll("[data-session-select-id]").forEach((button) => {
+    button.addEventListener("click", () => handlers.onSelect(button.dataset.sessionSelectId || ""));
   });
   root.querySelectorAll("[data-copy-key]").forEach((button) => {
     button.addEventListener("click", (event) => {
@@ -85,7 +85,7 @@ function renderSessionRow(session, activeID) {
   const exactTime = formatLocalTime(session.updated_at);
   return `
     <article class="session-row ${session.id === activeID ? "active" : ""}">
-      <button class="session-select" type="button" data-session-id="${escapeHTML(session.id)}">
+      <button class="session-select" type="button" data-session-select-id="${escapeHTML(session.id)}">
         <strong>${escapeHTML(shortID(session.id))}</strong>
         <span class="row-meta">${escapeHTML(session.status || "idle")} · ${turns} turn${turns === 1 ? "" : "s"} · ${escapeHTML(session.profile?.model || "model")}</span>
         <span class="row-pills">
