@@ -108,6 +108,24 @@ func TestStaticConsoleNewSessionFieldsAreExplicitlyLabelled(t *testing.T) {
 	}
 }
 
+func TestStaticConsoleNewSessionDefaultsFollowProviderCatalog(t *testing.T) {
+	stateJS := readStaticTestFile(t, "state.js")
+	newSession := readStaticTestFile(t, "views", "newSession.js")
+	appJS := readStaticTestFile(t, "app.js")
+
+	for _, want := range []string{"contextPolicyForProfile", "providerModel", "context_policy_defaults", "model?.context_window", "model?.max_tokens"} {
+		if !strings.Contains(stateJS, want) {
+			t.Fatalf("state.js missing provider/model context default logic %q", want)
+		}
+	}
+	if !strings.Contains(newSession, "contextPolicyForProfile(profile)") || !strings.Contains(appJS, "switchNewSessionProfile") {
+		t.Fatalf("new session flow should derive context policy from selected profile")
+	}
+	if strings.Contains(newSession, "defaultContextPolicy") || strings.Contains(stateJS, "recent_tail_tokens: 4096") {
+		t.Fatalf("new session defaults should not use stale hard-coded context policy values")
+	}
+}
+
 func TestStaticConsoleStreamsTurnsIncrementally(t *testing.T) {
 	apiJS := readStaticTestFile(t, "api.js")
 	appJS := readStaticTestFile(t, "app.js")

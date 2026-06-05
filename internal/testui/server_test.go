@@ -61,6 +61,9 @@ func TestServerExposesConfigAndRunAPI(t *testing.T) {
 	if configState.LocalTime.Now == "" || !strings.HasPrefix(configState.LocalTime.OffsetLabel, "UTC") {
 		t.Fatalf("config local time state is incomplete = %#v", configState.LocalTime)
 	}
+	if configState.ContextPolicyDefaults.ContextWindowTokens != 128000 || configState.ContextPolicyDefaults.RecentTailTokens != 12000 {
+		t.Fatalf("config context policy defaults are incomplete = %#v", configState.ContextPolicyDefaults)
+	}
 
 	catalogReq := httptest.NewRequest(http.MethodGet, "/api/catalog", nil)
 	catalogRec := httptest.NewRecorder()

@@ -254,6 +254,9 @@ func TestRunnerConfigStateIncludesCatalogAndNormalizesProviderDefaults(t *testin
 	if saved.Profiles[0].Model != "gpt-5.4" || saved.Profiles[0].BaseURL != "https://api.openai.com/v1" {
 		t.Fatalf("profile was not defaulted from catalog: %#v", saved.Profiles[0])
 	}
+	if saved.ContextPolicyDefaults.ContextWindowTokens != 1050000 || saved.ContextPolicyDefaults.MaxOutputTokens != 128000 || saved.ContextPolicyDefaults.RecentTailTokens != 12000 {
+		t.Fatalf("context policy defaults were not defaulted from active catalog model: %#v", saved.ContextPolicyDefaults)
+	}
 }
 
 func TestRunnerToolCatalogReflectsWebSearchCapability(t *testing.T) {
