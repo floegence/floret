@@ -271,6 +271,7 @@ function shouldAcceptSessionSnapshot(current, next, options = {}) {
 
 async function selectSession(id) {
   if (!id) return;
+  if (state.activeSession?.id === id) return;
   captureActiveDrafts();
   captureSessionViewportState();
   const token = ++state.selectionToken;
