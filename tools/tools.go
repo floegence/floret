@@ -180,14 +180,6 @@ func ValidateDefinition(def Definition) (Definition, error) {
 	if IsReservedName(def.Name) {
 		return def, fmt.Errorf("%w: reserved tool name %q", ErrInvalid, def.Name)
 	}
-	if def.Permission.Mode == "" {
-		def.Permission.Mode = PermissionDeny
-	}
-	switch def.Permission.Mode {
-	case PermissionAllow, PermissionAsk, PermissionDeny:
-	default:
-		return def, fmt.Errorf("%w: unknown permission mode %q", ErrInvalid, def.Permission.Mode)
-	}
 	effects := map[Effect]bool{}
 	for _, effect := range def.Effects {
 		switch effect {
@@ -196,6 +188,18 @@ func ValidateDefinition(def Definition) (Definition, error) {
 		default:
 			return def, fmt.Errorf("%w: unknown effect %q", ErrInvalid, effect)
 		}
+	}
+	if def.Permission.Mode == "" {
+		if safeReadOnlyDefault(def, effects) {
+			def.Permission.Mode = PermissionAllow
+		} else {
+			return def, fmt.Errorf("%w: tool %q must declare permission mode", ErrInvalid, def.Name)
+		}
+	}
+	switch def.Permission.Mode {
+	case PermissionAllow, PermissionAsk, PermissionDeny:
+	default:
+		return def, fmt.Errorf("%w: unknown permission mode %q", ErrInvalid, def.Permission.Mode)
 	}
 	if def.ReadOnly {
 		if def.Destructive || effects[EffectWrite] || effects[EffectShell] {
@@ -226,6 +230,15 @@ func ValidateDefinition(def Definition) (Definition, error) {
 	return def, nil
 }
 
+func safeReadOnlyDefault(def Definition, effects map[Effect]bool) bool {
+	return def.ReadOnly &&
+		!def.Destructive &&
+		!def.OpenWorld &&
+		!effects[EffectWrite] &&
+		!effects[EffectShell] &&
+		!effects[EffectNetwork]
+}
+
 func IsReservedName(name string) bool {
 	name = strings.TrimSpace(name)
 	return name == ControlAskUser || name == ControlTaskComplete
@@ -254,20 +267,30 @@ func (r *Registry) Definition(name string) (Definition, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	t, ok := r.tools[name]
-	return t.Definition, ok
+	if !ok {
+		return Definition{}, false
+	}
+	return cloneDefinition(t.Definition), true
 }
 
 func (r *Registry) Definitions() []provider.ToolDefinition {
+	return r.ExposedDefinitions()
+}
+
+func (r *Registry) ExposedDefinitions() []provider.ToolDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	defs := make([]provider.ToolDefinition, 0, len(r.tools))
 	for _, tool := range r.tools {
+		if tool.Definition.Permission.Mode == PermissionDeny {
+			continue
+		}
 		defs = append(defs, provider.ToolDefinition{
 			Name:         tool.Definition.Name,
 			Title:        tool.Definition.Title,
 			Description:  tool.Definition.Description,
-			InputSchema:  tool.Definition.InputSchema,
-			OutputSchema: tool.Definition.OutputSchema,
+			InputSchema:  cloneSchema(tool.Definition.InputSchema),
+			OutputSchema: cloneSchema(tool.Definition.OutputSchema),
 			Strict:       true,
 			Annotations: map[string]any{
 				"effects":       effectsAsStrings(tool.Definition.Effects),
@@ -282,6 +305,14 @@ func (r *Registry) Definitions() []provider.ToolDefinition {
 		return strings.Compare(a.Name, b.Name)
 	})
 	return defs
+}
+
+func cloneDefinition(def Definition) Definition {
+	def.InputSchema = cloneSchema(def.InputSchema)
+	def.OutputSchema = cloneSchema(def.OutputSchema)
+	def.Effects = append([]Effect(nil), def.Effects...)
+	def.Permission.ResourceKinds = append([]string(nil), def.Permission.ResourceKinds...)
+	return def
 }
 
 func (r *Registry) Run(ctx context.Context, call provider.ToolCall, approver Approver) Result {

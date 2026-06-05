@@ -103,11 +103,12 @@ type Options struct {
 	MaxTotalTokens           int64
 	MaxCostUSD               float64
 	MaxToolCalls             int
-	ToolDefinitions          []provider.ToolDefinition
 	HostedToolDefinitions    []provider.HostedToolDefinition
 	CompletionPolicy         CompletionPolicy
 	MaxLengthContinuations   int
 	MaxStopHookContinuations int
+
+	toolDefinitions []provider.ToolDefinition
 }
 
 type Result struct {
@@ -176,16 +177,16 @@ type CompactionRequest struct {
 }
 
 type Engine struct {
-	Provider  provider.Provider
-	Tools     *tools.Registry
-	Store     session.Store
-	Prompt    promptcache.Store
-	Memory    *memory.Manager
-	Sink      event.Sink
-	Approver  tools.Approver
-	StopHook  StopHook
-	Compactor CompactionManager
-	Options   Options
+	provider  provider.Provider
+	tools     *tools.Registry
+	store     session.Store
+	prompt    promptcache.Store
+	memory    *memory.Manager
+	sink      event.Sink
+	approver  tools.Approver
+	stopHook  StopHook
+	compactor CompactionManager
+	options   Options
 }
 
 type turnState struct {
@@ -209,18 +210,83 @@ func New(cfg Config) (*Engine, error) {
 	if cfg.Provider == nil {
 		return nil, errors.New("provider is required")
 	}
+	if cfg.Store == nil {
+		cfg.Store = session.NewMemoryStore()
+	}
+	if cfg.Prompt == nil {
+		cfg.Prompt = promptcache.NewMemoryStore()
+	}
+	if cfg.Memory == nil {
+		cfg.Memory = &memory.Manager{}
+	}
+	if cfg.Tools == nil {
+		cfg.Tools = tools.NewRegistry()
+	}
+	cfg.Options = normalizeOptions(cfg.Options)
+	cfg.Options.toolDefinitions = cfg.Tools.Definitions()
+	if err := validateConfiguredTools(cfg.Options.toolDefinitions, cfg.Options.HostedToolDefinitions, false); err != nil {
+		return nil, err
+	}
 	return &Engine{
-		Provider:  cfg.Provider,
-		Tools:     cfg.Tools,
-		Store:     cfg.Store,
-		Prompt:    cfg.Prompt,
-		Memory:    cfg.Memory,
-		Sink:      cfg.Sink,
-		Approver:  cfg.Approver,
-		StopHook:  cfg.StopHook,
-		Compactor: cfg.Compactor,
-		Options:   cfg.Options,
+		provider:  cfg.Provider,
+		tools:     cfg.Tools,
+		store:     cfg.Store,
+		prompt:    cfg.Prompt,
+		memory:    cfg.Memory,
+		sink:      cfg.Sink,
+		approver:  cfg.Approver,
+		stopHook:  cfg.StopHook,
+		compactor: cfg.Compactor,
+		options:   cloneOptions(cfg.Options),
 	}, nil
+}
+
+func (e *Engine) Options() Options {
+	if e == nil {
+		return Options{}
+	}
+	return cloneOptions(e.options)
+}
+
+func (e *Engine) WithOptions(options Options) (*Engine, error) {
+	if e == nil {
+		return nil, errors.New("engine is required")
+	}
+	options = normalizeOptions(options)
+	options.toolDefinitions = registryDefinitions(e.tools)
+	if err := validateConfiguredTools(options.toolDefinitions, options.HostedToolDefinitions, false); err != nil {
+		return nil, err
+	}
+	next := *e
+	next.options = cloneOptions(options)
+	return &next, nil
+}
+
+// SetSink replaces the event sink for subsequent runs. It is a host wiring
+// hook and must not be called concurrently with an active Run or RunTurn.
+func (e *Engine) SetSink(sink event.Sink) {
+	if e == nil {
+		return
+	}
+	e.sink = sink
+}
+
+// SetApprover replaces the tool approver for subsequent runs. It is a host
+// wiring hook and must not be called concurrently with an active Run or RunTurn.
+func (e *Engine) SetApprover(approver tools.Approver) {
+	if e == nil {
+		return
+	}
+	e.approver = approver
+}
+
+// SetStopHook replaces the stop hook for subsequent runs. It is a host wiring
+// hook and must not be called concurrently with an active Run or RunTurn.
+func (e *Engine) SetStopHook(hook StopHook) {
+	if e == nil {
+		return
+	}
+	e.stopHook = hook
 }
 
 type LocalCompactionManager struct {
@@ -257,7 +323,7 @@ func (m LocalCompactionManager) Compact(ctx context.Context, req CompactionReque
 }
 
 func (e *Engine) Run(ctx context.Context, userText string) Result {
-	runner, err := e.runner(e.Store, e.Options)
+	runner, err := e.runner(e.store, e.options)
 	if err != nil {
 		return Result{Status: Failed, Err: err}
 	}
@@ -266,7 +332,7 @@ func (e *Engine) Run(ctx context.Context, userText string) Result {
 
 func (e *Engine) RunTurn(ctx context.Context, input RunInput) Result {
 	store := session.NewMemoryStore()
-	opts := e.Options
+	opts := e.options
 	if input.RunID != "" {
 		opts.RunID = input.RunID
 	}
@@ -290,65 +356,63 @@ func (e *Engine) RunTurn(ctx context.Context, input RunInput) Result {
 }
 
 func (e *Engine) runner(store session.Store, opts Options) (*Engine, error) {
-	if e.Provider == nil {
+	if e.provider == nil {
 		return nil, errors.New("provider is required")
 	}
 	if store == nil {
 		store = session.NewMemoryStore()
 	}
-	prompt := e.Prompt
+	prompt := e.prompt
 	if prompt == nil {
 		prompt = promptcache.NewMemoryStore()
 	}
-	mem := e.Memory
+	mem := e.memory
 	if mem == nil {
 		mem = &memory.Manager{}
 	}
-	registry := e.Tools
+	registry := e.tools
 	if registry == nil {
 		registry = tools.NewRegistry()
 	}
 	opts = normalizeOptions(opts)
-	if len(opts.ToolDefinitions) == 0 {
-		opts.ToolDefinitions = registry.Definitions()
-	}
-	if err := validateConfiguredTools(opts.ToolDefinitions, opts.HostedToolDefinitions, false); err != nil {
+	opts.toolDefinitions = registry.Definitions()
+	if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, false); err != nil {
 		return nil, err
 	}
 	return &Engine{
-		Provider:  e.Provider,
-		Tools:     registry,
-		Store:     store,
-		Prompt:    prompt,
-		Memory:    mem,
-		Sink:      e.Sink,
-		Approver:  e.Approver,
-		StopHook:  e.StopHook,
-		Compactor: e.Compactor,
-		Options:   opts,
+		provider:  e.provider,
+		tools:     registry,
+		store:     store,
+		prompt:    prompt,
+		memory:    mem,
+		sink:      e.sink,
+		approver:  e.approver,
+		stopHook:  e.stopHook,
+		compactor: e.compactor,
+		options:   cloneOptions(opts),
 	}, nil
 }
 
 func (e *Engine) run(ctx context.Context, userText string) Result {
 	state := &turnState{}
-	opts := normalizeOptions(e.Options)
-	if len(opts.ToolDefinitions) == 0 && e.Tools != nil {
-		opts.ToolDefinitions = e.Tools.Definitions()
-	}
+	opts := normalizeOptions(e.options)
 	if opts.WallTime > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, opts.WallTime)
 		defer cancel()
 	}
-	if err := validateConfiguredTools(opts.ToolDefinitions, opts.HostedToolDefinitions, false); err != nil {
+	if len(opts.toolDefinitions) == 0 && e.tools != nil {
+		opts.toolDefinitions = e.tools.Definitions()
+	}
+	if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, false); err != nil {
 		return Result{Status: Failed, Err: err}
 	}
-	opts.ToolDefinitions = appendControlToolDefinitions(opts.ToolDefinitions, opts.CompletionPolicy)
-	if err := validateConfiguredTools(opts.ToolDefinitions, opts.HostedToolDefinitions, true); err != nil {
+	opts.toolDefinitions = appendControlToolDefinitions(opts.toolDefinitions, opts.CompletionPolicy)
+	if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, true); err != nil {
 		return Result{Status: Failed, Err: err}
 	}
 	if userText != "" {
-		if err := e.Store.Append(opts.RunID, session.Message{Role: session.User, Content: userText}); err != nil {
+		if err := e.store.Append(opts.RunID, session.Message{Role: session.User, Content: userText}); err != nil {
 			return Result{Status: Failed, Err: err}
 		}
 	}
@@ -362,7 +426,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 	duplicateCount := 0
 	started := time.Now()
 	metrics := RunMetrics{}
-	activeHistory, err := e.Store.Messages(opts.RunID)
+	activeHistory, err := e.store.Messages(opts.RunID)
 	if err != nil {
 		return Result{Status: Failed, Err: err}
 	}
@@ -390,7 +454,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		metrics.LLMRequests++
 		e.emit(event.Event{Type: event.ProviderRequest, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: fmt.Sprintf("%d messages, %d raw segments, %d local tools, %d hosted tools, prefix %s", len(req.Messages), len(req.RawPlan.Segments), len(req.Tools), len(req.HostedTools), shortHash(req.RawPlan.PrefixHash))})
 		providerStarted := time.Now()
-		stream, err := e.Provider.Stream(ctx, req)
+		stream, err := e.provider.Stream(ctx, req)
 		if errors.Is(err, provider.ErrContextOverflow) {
 			activeHistory, _, err = e.forceCompact(ctx, opts, step, activeHistory, compaction.TriggerOverflow, compaction.ReasonProviderOverflow, &metrics, &compactionFailures)
 			if err != nil {
@@ -415,7 +479,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		calls := stepOutput.Calls
 		usage := stepOutput.Usage
 		metrics.AddUsage(usage)
-		_ = e.Prompt.AppendProviderResponse(ctx, promptcache.ProviderResponseRecord{
+		_ = e.prompt.AppendProviderResponse(ctx, promptcache.ProviderResponseRecord{
 			RequestID:          fmt.Sprintf("%s:req:%d", opts.RunID, step),
 			RunID:              opts.RunID,
 			ThreadID:           opts.SessionID,
@@ -446,7 +510,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			output += stepText
 			noProgress = 0
 			msg := session.Message{Role: session.Assistant, Content: stepText, Reasoning: stepReasoning}
-			if err := e.Store.Append(opts.RunID, msg); err != nil {
+			if err := e.store.Append(opts.RunID, msg); err != nil {
 				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 			}
 			activeHistory = append(activeHistory, msg)
@@ -457,7 +521,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			if lengthContinuations > opts.MaxLengthContinuations {
 				return e.end(state, opts, step, Failed, output, ErrProviderTruncated, metrics, started, decision)
 			}
-			contextUsage := contextpolicy.EstimateMessages(e.Memory.SystemPrompt, activeHistory, len(opts.ToolDefinitions)+len(opts.HostedToolDefinitions), opts.ContextPolicy)
+			contextUsage := contextpolicy.EstimateMessages(e.memory.SystemPrompt, activeHistory, len(opts.toolDefinitions)+len(opts.HostedToolDefinitions), opts.ContextPolicy)
 			if contextUsage.CompactionNeeded || contextUsage.TokenPressureHigh {
 				activeHistory, _, err = e.forceCompact(ctx, opts, step, activeHistory, compaction.TriggerPostResponse, compaction.ReasonOutputContinuation, &metrics, &compactionFailures)
 				if err != nil {
@@ -505,7 +569,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 					if prompt == "" {
 						prompt = "Continue the task and address the remaining pending work."
 					}
-					if err := e.Store.Append(opts.RunID, session.Message{Role: session.User, Content: prompt}); err != nil {
+					if err := e.store.Append(opts.RunID, session.Message{Role: session.User, Content: prompt}); err != nil {
 						return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 					}
 					activeHistory = append(activeHistory, session.Message{Role: session.User, Content: prompt})
@@ -533,7 +597,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				reasoning = stepReasoning
 			}
 			msg := session.Message{Role: session.Assistant, Content: "tool_call", Reasoning: reasoning, ToolCallID: call.ID, ToolName: call.Name, ToolArgs: call.Args}
-			if err := e.Store.Append(opts.RunID, msg); err != nil {
+			if err := e.store.Append(opts.RunID, msg); err != nil {
 				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 			}
 			activeHistory = append(activeHistory, msg)
@@ -570,10 +634,10 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			e.emit(event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args, Metadata: map[string]any{"batch_index": i, "batch_size": len(calls)}})
 		}
 		toolStarted := time.Now()
-		results := e.Tools.RunBatchWithOptions(ctx, calls, e.Approver, tools.RunOptions{RunID: opts.RunID, SessionID: opts.SessionID, Step: step})
+		results := e.tools.RunBatchWithOptions(ctx, calls, e.approver, tools.RunOptions{RunID: opts.RunID, SessionID: opts.SessionID, Step: step})
 		toolLatency := time.Since(toolStarted).Milliseconds()
 		for i, result := range results {
-			result = tools.ApplyResultLimit(result, e.Tools.LimitFor(result.Name))
+			result = tools.ApplyResultLimit(result, e.tools.LimitFor(result.Name))
 			text := result.Text
 			errText := ""
 			if result.IsError {
@@ -582,7 +646,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			}
 			e.emit(event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: toolLatency, Metadata: mergeToolResultMetadata(result.Metadata, i, len(results)), Artifacts: eventArtifacts(result.Artifacts)})
 			msg := session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name}
-			if err := e.Store.Append(opts.RunID, msg); err != nil {
+			if err := e.store.Append(opts.RunID, msg); err != nil {
 				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 			}
 			activeHistory = append(activeHistory, msg)
@@ -599,6 +663,75 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		state.activeMessages = append([]session.Message(nil), activeHistory...)
 		decision.ContinuationReason = ContinueToolResults
 		e.emitStepEnd(opts, step, providerLatency, toolLatency, usage, len(calls), decision)
+	}
+}
+
+func cloneOptions(o Options) Options {
+	o.toolDefinitions = cloneProviderToolDefinitions(o.toolDefinitions)
+	o.HostedToolDefinitions = cloneHostedToolDefinitions(o.HostedToolDefinitions)
+	o.ContextPolicy = contextpolicy.Normalize(o.ContextPolicy)
+	return o
+}
+
+func registryDefinitions(registry *tools.Registry) []provider.ToolDefinition {
+	if registry == nil {
+		return nil
+	}
+	return registry.Definitions()
+}
+
+func cloneProviderToolDefinitions(defs []provider.ToolDefinition) []provider.ToolDefinition {
+	if defs == nil {
+		return nil
+	}
+	out := make([]provider.ToolDefinition, len(defs))
+	for i, def := range defs {
+		out[i] = def
+		out[i].InputSchema = cloneAnyMap(def.InputSchema)
+		out[i].OutputSchema = cloneAnyMap(def.OutputSchema)
+		out[i].Annotations = cloneAnyMap(def.Annotations)
+	}
+	return out
+}
+
+func cloneHostedToolDefinitions(defs []provider.HostedToolDefinition) []provider.HostedToolDefinition {
+	if defs == nil {
+		return nil
+	}
+	out := make([]provider.HostedToolDefinition, len(defs))
+	for i, def := range defs {
+		out[i] = def
+		out[i].Parameters = cloneAnyMap(def.Parameters)
+		out[i].Options = cloneAnyMap(def.Options)
+	}
+	return out
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = cloneAny(value)
+	}
+	return out
+}
+
+func cloneAny(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		return cloneAnyMap(v)
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = cloneAny(item)
+		}
+		return out
+	case []string:
+		return append([]string(nil), v...)
+	default:
+		return value
 	}
 }
 
@@ -638,14 +771,14 @@ func normalizeOptions(o Options) Options {
 }
 
 func (e *Engine) applyStopHook(ctx context.Context, opts Options, step int, lastAssistant session.Message, metrics RunMetrics, stepOutput StepOutput) (StopHookResult, error) {
-	if e.StopHook == nil {
+	if e.stopHook == nil {
 		return StopHookResult{}, nil
 	}
-	messages, err := e.Store.Messages(opts.RunID)
+	messages, err := e.store.Messages(opts.RunID)
 	if err != nil {
 		return StopHookResult{}, err
 	}
-	return e.StopHook(ctx, StopHookContext{
+	return e.stopHook(ctx, StopHookContext{
 		RunID:           opts.RunID,
 		SessionID:       opts.SessionID,
 		TraceID:         opts.TraceID,
@@ -660,22 +793,22 @@ func (e *Engine) applyStopHook(ctx context.Context, opts Options, step int, last
 }
 
 func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, history []session.Message) (provider.Request, error) {
-	toolset, _, err := promptcache.EnsureCurrentToolsetWithOptions(ctx, e.Prompt, opts.RunID, opts.SessionID, opts.ProviderName, opts.Model, convertToolDefinitions(opts.ToolDefinitions), convertHostedToolDefinitions(opts.HostedToolDefinitions), time.Now(), promptcache.ToolsetOptions{AllowControlTools: true})
+	toolset, _, err := promptcache.EnsureCurrentToolsetWithOptions(ctx, e.prompt, opts.RunID, opts.SessionID, opts.ProviderName, opts.Model, convertToolDefinitions(opts.toolDefinitions), convertHostedToolDefinitions(opts.HostedToolDefinitions), time.Now(), promptcache.ToolsetOptions{AllowControlTools: true})
 	if err != nil {
 		return provider.Request{}, err
 	}
-	plan, messages, err := promptcache.BuildPlan(ctx, e.Prompt, promptcache.BuildInput{
+	plan, messages, err := promptcache.BuildPlan(ctx, e.prompt, promptcache.BuildInput{
 		RunID:          opts.RunID,
 		SessionID:      opts.SessionID,
 		Provider:       opts.ProviderName,
 		Model:          opts.Model,
 		AdapterVersion: promptcache.Version,
 		CacheNamespace: opts.CacheNamespace,
-		SystemPrompt:   e.Memory.SystemPrompt,
-		History:        providerSafeHistory(e.Memory.Assemble(history)[systemOffset(e.Memory):]),
+		SystemPrompt:   e.memory.SystemPrompt,
+		History:        providerSafeHistory(e.memory.Assemble(history)[systemOffset(e.memory):]),
 		Toolset:        toolset,
 		HostedTools:    convertHostedToolDefinitions(opts.HostedToolDefinitions),
-		Renderer:       rendererForProvider(e.Provider),
+		Renderer:       rendererForProvider(e.provider),
 		ContextPolicy:  opts.ContextPolicy,
 		Now:            time.Now(),
 	})
@@ -694,14 +827,14 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		PreferContinuation: true,
 	}
 	if cache.Retention == "" {
-		if defaults, ok := e.Provider.(provider.CacheRetentionDefault); ok {
+		if defaults, ok := e.provider.(provider.CacheRetentionDefault); ok {
 			cache.Retention = defaults.DefaultCacheRetention()
 		} else {
 			cache.Retention = promptcache.RetentionInMemory
 		}
 	}
 	cache.Enabled = cache.Retention != promptcache.RetentionNone
-	if normalizer, ok := e.Provider.(provider.CachePolicyNormalizer); ok {
+	if normalizer, ok := e.provider.(provider.CachePolicyNormalizer); ok {
 		cache, err = normalizer.NormalizeCachePolicy(cache)
 		if err != nil {
 			return provider.Request{}, err
@@ -718,17 +851,17 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		RawPlan:         plan,
 		Cache:           cache,
 		ContextPolicy:   opts.ContextPolicy,
-		ContextUsage:    contextpolicy.EstimateMessages(e.Memory.SystemPrompt, history, len(activeTools)+len(activeHostedTools), opts.ContextPolicy),
+		ContextUsage:    contextpolicy.EstimateMessages(e.memory.SystemPrompt, history, len(activeTools)+len(activeHostedTools), opts.ContextPolicy),
 		MaxOutputTokens: opts.ContextPolicy.MaxOutputTokens,
 	}
-	if hasher, ok := e.Provider.(provider.PayloadHasher); ok {
+	if hasher, ok := e.provider.(provider.PayloadHasher); ok {
 		payloadHash, err := hasher.PayloadHash(req)
 		if err != nil {
 			return provider.Request{}, err
 		}
 		req.RawPlan.PayloadHash = payloadHash
 	}
-	if _, err := promptcache.RecordRequest(ctx, e.Prompt, opts.RunID, opts.SessionID, step, opts.ProviderName, opts.Model, cache, req.RawPlan); err != nil {
+	if _, err := promptcache.RecordRequest(ctx, e.prompt, opts.RunID, opts.SessionID, step, opts.ProviderName, opts.Model, cache, req.RawPlan); err != nil {
 		return provider.Request{}, err
 	}
 	return req, nil
@@ -761,7 +894,7 @@ func validateConfiguredTools(local []provider.ToolDefinition, hosted []provider.
 }
 
 func (e *Engine) maybeCompact(ctx context.Context, opts Options, step int, history []session.Message, trigger compaction.Trigger, reason compaction.Reason, metrics *RunMetrics, failures *int) ([]session.Message, bool, error) {
-	usage := contextpolicy.EstimateMessages(e.Memory.SystemPrompt, history, len(opts.ToolDefinitions)+len(opts.HostedToolDefinitions), opts.ContextPolicy)
+	usage := contextpolicy.EstimateMessages(e.memory.SystemPrompt, history, len(opts.toolDefinitions)+len(opts.HostedToolDefinitions), opts.ContextPolicy)
 	if !usage.CompactionNeeded && !usage.TokenPressureHigh {
 		return history, false, nil
 	}
@@ -776,7 +909,7 @@ func (e *Engine) maybeCompact(ctx context.Context, opts Options, step int, histo
 }
 
 func (e *Engine) forceCompact(ctx context.Context, opts Options, step int, history []session.Message, trigger compaction.Trigger, reason compaction.Reason, metrics *RunMetrics, failures *int) ([]session.Message, compaction.Result, error) {
-	usage := contextpolicy.EstimateMessages(e.Memory.SystemPrompt, history, len(opts.ToolDefinitions)+len(opts.HostedToolDefinitions), opts.ContextPolicy)
+	usage := contextpolicy.EstimateMessages(e.memory.SystemPrompt, history, len(opts.toolDefinitions)+len(opts.HostedToolDefinitions), opts.ContextPolicy)
 	next, err := e.runCompaction(ctx, opts, step, history, trigger, reason, usage, failures)
 	if err != nil {
 		return history, compaction.Result{}, err
@@ -791,7 +924,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 	if failures != nil && *failures >= opts.ContextPolicy.MaxCompactionFailures {
 		return nil, fmt.Errorf("compaction failure circuit breaker reached after %d failures", *failures)
 	}
-	manager := e.Compactor
+	manager := e.compactor
 	if manager == nil {
 		manager = LocalCompactionManager{}
 	}
@@ -816,7 +949,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		Trigger:      trigger,
 		Reason:       reason,
 		Phase:        compaction.PhaseGenerate,
-		Provider:     e.Provider,
+		Provider:     e.provider,
 		ProviderName: opts.ProviderName,
 		Model:        opts.Model,
 		ContextUsage: usage,
@@ -1150,18 +1283,18 @@ func (e *Engine) end(state *turnState, opts Options, step int, status Status, ou
 	var messages []session.Message
 	if len(state.activeMessages) > 0 {
 		messages = append([]session.Message(nil), state.activeMessages...)
-	} else if e.Store != nil {
-		messages, _ = e.Store.Messages(opts.RunID)
+	} else if e.store != nil {
+		messages, _ = e.store.Messages(opts.RunID)
 	}
 	return Result{Status: status, Output: output, Err: err, Metrics: metrics, Messages: messages, CompletionReason: decision.CompletionReason, ContinuationReason: decision.ContinuationReason, FinishReason: decision.FinishReason, RawFinishReason: decision.RawFinishReason, FinishInferred: decision.FinishInferred}
 }
 
 func (e *Engine) emit(ev event.Event) {
-	if e.Sink == nil {
+	if e.sink == nil {
 		return
 	}
 	ev.Timestamp = time.Now()
-	e.Sink.Emit(ev)
+	e.sink.Emit(ev)
 }
 
 func (e *Engine) checkBudget(opts Options, metrics RunMetrics, step int) error {

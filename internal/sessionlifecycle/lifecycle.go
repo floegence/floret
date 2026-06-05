@@ -199,7 +199,7 @@ func waitingPromptForTurn(path []sessiontree.Entry, turnID string) string {
 			if signal, ok, err := control.Project(provider.ToolCall{Name: entry.Message.ToolName, Args: entry.Message.ToolArgs}); ok && err == nil {
 				return signal.Prompt
 			}
-			return entry.Message.ToolArgs
+			return ""
 		}
 	}
 	return ""

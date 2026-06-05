@@ -59,6 +59,35 @@ func TestRunDirectAnswerCompletesThroughNaturalStop(t *testing.T) {
 	assertEventOrder(t, rec.Events, event.StepStart, event.ProviderRequest, event.ProviderDelta, event.ProviderFinish, event.StepEnd, event.RunEnd)
 }
 
+func TestNewRequiresProvider(t *testing.T) {
+	if _, err := engine.New(engine.Config{}); err == nil || !strings.Contains(err.Error(), "provider is required") {
+		t.Fatalf("New without provider error = %v", err)
+	}
+}
+
+func TestOptionsReturnsDeepCopyWithoutProviderToolDefinitions(t *testing.T) {
+	eng, err := engine.New(engine.Config{
+		Provider: harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done())),
+		Options: engine.Options{
+			RunID: "run",
+			HostedToolDefinitions: []provider.HostedToolDefinition{{
+				Name:       "web_search",
+				Type:       "web_search",
+				Parameters: map[string]any{"nested": map[string]any{"value": "original"}},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := eng.Options()
+	first.HostedToolDefinitions[0].Parameters["nested"].(map[string]any)["value"] = "mutated"
+	second := eng.Options()
+	if got := second.HostedToolDefinitions[0].Parameters["nested"].(map[string]any)["value"]; got != "original" {
+		t.Fatalf("Options did not deep copy hosted tool params: %#v", second.HostedToolDefinitions)
+	}
+}
+
 func TestNaturalStopHookCanRequestAuditableContinuation(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
@@ -918,7 +947,7 @@ func TestHostedToolsAreSentToProviderButNeverEnterLocalRunBatch(t *testing.T) {
 	reg := tools.NewRegistry()
 	called := false
 	mustRegister(t, reg, tools.Define[stringArgs](
-		tools.Definition{Name: "local_read", InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"})},
+		tools.Definition{Name: "local_read", InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}), ReadOnly: true},
 		nil,
 		nil,
 		func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
@@ -928,7 +957,6 @@ func TestHostedToolsAreSentToProviderButNeverEnterLocalRunBatch(t *testing.T) {
 	))
 	e := newTestEngine(p, &event.Recorder{})
 	e.Tools = reg
-	e.Options.ToolDefinitions = reg.Definitions()
 	e.Options.HostedToolDefinitions = []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}
 
 	got := e.Run(context.Background(), "search")
@@ -957,7 +985,7 @@ func TestProviderRequestRejectsLocalHostedToolNameConflict(t *testing.T) {
 	p := harness.NewScriptedProvider(harness.Step(harness.Text("unused"), harness.Done()))
 	reg := tools.NewRegistry()
 	mustRegister(t, reg, tools.Define[stringArgs](
-		tools.Definition{Name: "web_search", InputSchema: tools.StrictObject(map[string]any{"query": tools.String("query")}, []string{"query"})},
+		tools.Definition{Name: "web_search", InputSchema: tools.StrictObject(map[string]any{"query": tools.String("query")}, []string{"query"}), ReadOnly: true},
 		nil,
 		nil,
 		func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
@@ -966,7 +994,6 @@ func TestProviderRequestRejectsLocalHostedToolNameConflict(t *testing.T) {
 	))
 	e := newTestEngine(p, &event.Recorder{})
 	e.Tools = reg
-	e.Options.ToolDefinitions = reg.Definitions()
 	e.Options.HostedToolDefinitions = []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}
 
 	got := e.Run(context.Background(), "search")
@@ -979,30 +1006,39 @@ func TestProviderRequestRejectsLocalHostedToolNameConflict(t *testing.T) {
 	}
 }
 
-func TestEngineRejectsHostProvidedReservedAndDuplicateToolDefinitions(t *testing.T) {
-	cases := []struct {
-		name  string
-		tools []provider.ToolDefinition
-		want  string
-	}{
-		{name: "reserved ask", tools: []provider.ToolDefinition{{Name: "ask_user"}}, want: "reserved"},
-		{name: "reserved task complete", tools: []provider.ToolDefinition{{Name: "task_complete"}}, want: "reserved"},
-		{name: "duplicate", tools: []provider.ToolDefinition{{Name: "read"}, {Name: " read "}}, want: "duplicate"},
-		{name: "empty", tools: []provider.ToolDefinition{{Name: ""}}, want: "name is required"},
+func TestEngineExposesOnlyRegistryVisibleLocalTools(t *testing.T) {
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("hidden-1", "hidden", `{"value":"x"}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Text("recovered"), harness.Done()),
+	)
+	reg := tools.NewRegistry()
+	hiddenCalled := false
+	mustRegister(t, reg, stringTool("visible", "Visible", true, tools.PermissionSpec{}, func(context.Context, string) (string, error) {
+		return "visible", nil
+	}))
+	mustRegister(t, reg, stringTool("needs_approval", "Needs approval", false, tools.PermissionSpec{Mode: tools.PermissionAsk}, func(context.Context, string) (string, error) {
+		return "ask", nil
+	}))
+	mustRegister(t, reg, stringTool("hidden", "Hidden", false, tools.PermissionSpec{Mode: tools.PermissionDeny}, func(context.Context, string) (string, error) {
+		hiddenCalled = true
+		return "hidden", nil
+	}))
+	e := newTestEngine(p, &event.Recorder{})
+	e.Tools = reg
+
+	got := e.Run(context.Background(), "work")
+
+	if got.Status != engine.Completed || got.Output != "recovered" {
+		t.Fatalf("result = %#v", got)
 	}
-	for _, tt := range cases {
-		t.Run(tt.name, func(t *testing.T) {
-			p := harness.NewScriptedProvider(harness.Step(harness.Text("unused"), harness.Done()))
-			e := newTestEngine(p, &event.Recorder{})
-			e.Options.ToolDefinitions = tt.tools
-			got := e.Run(context.Background(), "work")
-			if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), tt.want) {
-				t.Fatalf("result = %#v, want %q", got, tt.want)
-			}
-			if len(p.Requests) != 0 {
-				t.Fatalf("invalid tool definitions should not reach provider: %#v", p.Requests)
-			}
-		})
+	if hiddenCalled {
+		t.Fatalf("deny tool handler should not run")
+	}
+	if len(p.Requests) < 1 {
+		t.Fatalf("provider was not called")
+	}
+	if !hasProviderTool(p.Requests[0].Tools, "visible") || !hasProviderTool(p.Requests[0].Tools, "needs_approval") || hasProviderTool(p.Requests[0].Tools, "hidden") {
+		t.Fatalf("provider-visible toolset = %#v", p.Requests[0].Tools)
 	}
 }
 
@@ -1569,10 +1605,24 @@ func (p *hashingProvider) PayloadHash(req provider.Request) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func newTestEngine(p provider.Provider, rec *event.Recorder) *engine.Engine {
-	return &engine.Engine{
+type testEngine struct {
+	Provider  provider.Provider
+	Store     session.Store
+	Prompt    promptcache.Store
+	Memory    *memory.Manager
+	Tools     *tools.Registry
+	Sink      event.Sink
+	Approver  tools.Approver
+	StopHook  engine.StopHook
+	Compactor engine.CompactionManager
+	Options   engine.Options
+}
+
+func newTestEngine(p provider.Provider, rec *event.Recorder) *testEngine {
+	return &testEngine{
 		Provider: p,
 		Store:    session.NewMemoryStore(),
+		Prompt:   promptcache.NewMemoryStore(),
 		Memory:   &memory.Manager{SystemPrompt: "You are Floret."},
 		Tools:    tools.NewRegistry(),
 		Sink:     rec,
@@ -1585,11 +1635,62 @@ func newTestEngine(p provider.Provider, rec *event.Recorder) *engine.Engine {
 	}
 }
 
+func (e *testEngine) build(t *testing.T) *engine.Engine {
+	t.Helper()
+	eng, err := engine.New(engine.Config{
+		Provider:  e.Provider,
+		Store:     e.Store,
+		Prompt:    e.Prompt,
+		Memory:    e.Memory,
+		Tools:     e.Tools,
+		Sink:      e.Sink,
+		Approver:  e.Approver,
+		StopHook:  e.StopHook,
+		Compactor: e.Compactor,
+		Options:   e.Options,
+	})
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	return eng
+}
+
+func (e *testEngine) tryBuild() (*engine.Engine, error) {
+	return engine.New(engine.Config{
+		Provider:  e.Provider,
+		Store:     e.Store,
+		Prompt:    e.Prompt,
+		Memory:    e.Memory,
+		Tools:     e.Tools,
+		Sink:      e.Sink,
+		Approver:  e.Approver,
+		StopHook:  e.StopHook,
+		Compactor: e.Compactor,
+		Options:   e.Options,
+	})
+}
+
+func (e *testEngine) Run(ctx context.Context, userText string) engine.Result {
+	eng, err := e.tryBuild()
+	if err != nil {
+		return engine.Result{Status: engine.Failed, Err: err}
+	}
+	return eng.Run(ctx, userText)
+}
+
+func (e *testEngine) RunTurn(ctx context.Context, input engine.RunInput) engine.Result {
+	eng, err := e.tryBuild()
+	if err != nil {
+		return engine.Result{Status: engine.Failed, Err: err}
+	}
+	return eng.RunTurn(ctx, input)
+}
+
 func promptCachePathForTest(value string) string {
 	return "id_" + base64.RawURLEncoding.EncodeToString([]byte(value))
 }
 
-func buildProviderRequestForTest(ctx context.Context, e *engine.Engine, step int, history []session.Message) (provider.Request, error) {
+func buildProviderRequestForTest(ctx context.Context, e *testEngine, step int, history []session.Message) (provider.Request, error) {
 	if e.Prompt == nil {
 		e.Prompt = promptcache.NewMemoryStore()
 	}
@@ -1686,6 +1787,12 @@ func assertEventOrder(t *testing.T, events []event.Event, want ...event.Type) {
 
 func hasEvent(events []event.Event, typ event.Type) bool {
 	return slices.ContainsFunc(events, func(ev event.Event) bool { return ev.Type == typ })
+}
+
+func hasProviderTool(defs []provider.ToolDefinition, name string) bool {
+	return slices.ContainsFunc(defs, func(def provider.ToolDefinition) bool {
+		return def.Name == name
+	})
 }
 
 func countUserMessages(messages []session.Message, content string) int {

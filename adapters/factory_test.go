@@ -27,13 +27,7 @@ func TestNewProviderCreatesFakeProviderThatRunsEngine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := (&engine.Engine{
-		Provider: p,
-		Store:    session.NewMemoryStore(),
-		Memory:   &memory.Manager{SystemPrompt: "test"},
-		Tools:    tools.NewRegistry(),
-		Options:  engine.Options{RunID: "run"},
-	}).Run(context.Background(), "hello")
+	result := runAdapterEngine(t, p, nil, engine.Options{RunID: "run"}, "test", "hello")
 	if result.Status != engine.Completed || result.Output != "fake ok" {
 		t.Fatalf("result = %#v", result)
 	}
@@ -65,13 +59,7 @@ func TestOpenAICompatibleProviderSendsConfiguredModelAndReceivesAnswer(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := (&engine.Engine{
-		Provider: p,
-		Store:    session.NewMemoryStore(),
-		Memory:   &memory.Manager{SystemPrompt: "test"},
-		Tools:    tools.NewRegistry(),
-		Options:  engine.Options{RunID: "run"},
-	}).Run(context.Background(), "hello")
+	result := runAdapterEngine(t, p, nil, engine.Options{RunID: "run"}, "test", "hello")
 	if result.Status != engine.Completed || result.Output != "remote ok" || result.CompletionReason != engine.CompletionReasonNaturalStop {
 		t.Fatalf("result = %#v, want natural completion from remote text", result)
 	}
@@ -96,13 +84,7 @@ func TestOpenAICompatibleProviderNormalizesUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := (&engine.Engine{
-		Provider: p,
-		Store:    session.NewMemoryStore(),
-		Memory:   &memory.Manager{SystemPrompt: "test"},
-		Tools:    tools.NewRegistry(),
-		Options:  engine.Options{RunID: "run"},
-	}).Run(context.Background(), "hello")
+	result := runAdapterEngine(t, p, nil, engine.Options{RunID: "run"}, "test", "hello")
 	if result.Status != engine.Completed {
 		t.Fatalf("result = %#v", result)
 	}
@@ -134,13 +116,7 @@ func TestNewProviderUsesBuiltInOpenAIProviderPreset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := (&engine.Engine{
-		Provider: p,
-		Store:    session.NewMemoryStore(),
-		Memory:   &memory.Manager{SystemPrompt: "test"},
-		Tools:    tools.NewRegistry(),
-		Options:  engine.Options{RunID: "run"},
-	}).Run(context.Background(), "hello")
+	result := runAdapterEngine(t, p, nil, engine.Options{RunID: "run"}, "test", "hello")
 	if result.Status != engine.Completed {
 		t.Fatalf("result = %#v", result)
 	}
@@ -179,13 +155,7 @@ func TestAnthropicProviderSendsMessagesRequestAndReceivesNaturalAnswer(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := (&engine.Engine{
-		Provider: p,
-		Store:    session.NewMemoryStore(),
-		Memory:   &memory.Manager{SystemPrompt: "anthropic system"},
-		Tools:    tools.NewRegistry(),
-		Options:  engine.Options{RunID: "run"},
-	}).Run(context.Background(), "hello")
+	result := runAdapterEngine(t, p, nil, engine.Options{RunID: "run"}, "anthropic system", "hello")
 	if result.Status != engine.Completed || result.Output != "anthropic ok" {
 		t.Fatalf("result = %#v", result)
 	}
@@ -767,13 +737,7 @@ func TestOpenAICompatibleProviderReplaysReasoningContentForToolFollowUp(t *testi
 			return tools.Result{Text: "changsha: rain"}, nil
 		},
 	))
-	result := (&engine.Engine{
-		Provider: OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "deepseek-v4-pro", StreamResponses: true, HTTPClient: server.Client()},
-		Store:    session.NewMemoryStore(),
-		Memory:   &memory.Manager{SystemPrompt: "test"},
-		Tools:    reg,
-		Options:  engine.Options{RunID: "run", ProviderName: "deepseek", Model: "deepseek-v4-pro"},
-	}).Run(context.Background(), "请查询长沙天气")
+	result := runAdapterEngine(t, OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "deepseek-v4-pro", StreamResponses: true, HTTPClient: server.Client()}, reg, engine.Options{RunID: "run", ProviderName: "deepseek", Model: "deepseek-v4-pro"}, "test", "请查询长沙天气")
 	if result.Status != engine.Completed || !strings.Contains(result.Output, "长沙天气") {
 		t.Fatalf("result = %#v", result)
 	}
@@ -1342,13 +1306,7 @@ func TestOpenAICompatibleProviderMapsNaturalCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := (&engine.Engine{
-		Provider: p,
-		Store:    session.NewMemoryStore(),
-		Memory:   &memory.Manager{SystemPrompt: "test"},
-		Tools:    tools.NewRegistry(),
-		Options:  engine.Options{RunID: "run"},
-	}).Run(context.Background(), "hello")
+	result := runAdapterEngine(t, p, nil, engine.Options{RunID: "run"}, "test", "hello")
 	if result.Status != engine.Completed || result.Output != "remote done" || result.FinishReason != provider.FinishStop {
 		t.Fatalf("result = %#v", result)
 	}
@@ -1368,13 +1326,7 @@ func TestNewProviderUsesProviderSpecificEnvKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := (&engine.Engine{
-		Provider: p,
-		Store:    session.NewMemoryStore(),
-		Memory:   &memory.Manager{SystemPrompt: "test"},
-		Tools:    tools.NewRegistry(),
-		Options:  engine.Options{RunID: "run"},
-	}).Run(context.Background(), "hello")
+	result := runAdapterEngine(t, p, nil, engine.Options{RunID: "run"}, "test", "hello")
 	if result.Status != engine.Completed {
 		t.Fatalf("result = %#v", result)
 	}
@@ -1566,6 +1518,24 @@ func TestAnthropicProviderRendersAndReadsHostedWebSearch(t *testing.T) {
 	if !sawCall || !sawResult {
 		t.Fatalf("hosted events: call=%v result=%v", sawCall, sawResult)
 	}
+}
+
+func runAdapterEngine(t *testing.T, p provider.Provider, reg *tools.Registry, options engine.Options, systemPrompt, userText string) engine.Result {
+	t.Helper()
+	if reg == nil {
+		reg = tools.NewRegistry()
+	}
+	eng, err := engine.New(engine.Config{
+		Provider: p,
+		Store:    session.NewMemoryStore(),
+		Memory:   &memory.Manager{SystemPrompt: systemPrompt},
+		Tools:    reg,
+		Options:  options,
+	})
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	return eng.Run(context.Background(), userText)
 }
 
 func mustRegisterAdapterTestTool(t *testing.T, reg *tools.Registry, tool tools.Tool) {

@@ -11,4 +11,8 @@
 // Hosts that need durable conversations should prefer runtime.NewHarness or
 // agentharness.AgentHarness. Direct Engine use is intended for tests, eval
 // runners, and specialized hosts that already own session persistence.
+//
+// Construct engines with New(Config). Provider-visible local tool definitions
+// are derived from tools.Registry so registry validation, permission policy, and
+// deny-tool hiding remain the single local-tool boundary.
 package engine

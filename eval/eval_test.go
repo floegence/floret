@@ -49,7 +49,7 @@ func TestRunnerPassesOnlyWhenEngineCompletesAndOraclePasses(t *testing.T) {
 		Workspace:    workspace,
 		ArtifactsDir: artifacts,
 		Trace:        rec,
-		Engine: &engine.Engine{
+		Engine: newEvalEngineWithConfig(t, engine.Config{
 			Provider: harness.NewScriptedProvider(
 				harness.Step(
 					harness.Usage(provider.Usage{InputTokens: 10, OutputTokens: 2}),
@@ -58,7 +58,6 @@ func TestRunnerPassesOnlyWhenEngineCompletesAndOraclePasses(t *testing.T) {
 				),
 				harness.Step(harness.Text("ok"), harness.Done()),
 			),
-			Store:  session.NewMemoryStore(),
 			Memory: &memory.Manager{SystemPrompt: "test"},
 			Tools:  registry,
 			Sink:   rec,
@@ -66,7 +65,7 @@ func TestRunnerPassesOnlyWhenEngineCompletesAndOraclePasses(t *testing.T) {
 				return tools.PermissionDecisionAllow, nil
 			},
 			Options: engine.Options{RunID: "eval"},
-		},
+		}),
 	}
 	result, err := runner.Run(context.Background(), Case{
 		ID:       "write-one-file",
@@ -125,14 +124,13 @@ func TestRunnerWritesArtifactsForEngineFailure(t *testing.T) {
 		Workspace:    workspace,
 		ArtifactsDir: artifacts,
 		Trace:        rec,
-		Engine: &engine.Engine{
+		Engine: newEvalEngineWithConfig(t, engine.Config{
 			Provider: harness.NewScriptedProvider(harness.Step(harness.Usage(provider.Usage{InputTokens: 101}))),
-			Store:    session.NewMemoryStore(),
 			Memory:   &memory.Manager{SystemPrompt: "test"},
 			Tools:    tools.NewRegistry(),
 			Sink:     rec,
 			Options:  engine.Options{RunID: "eval"},
-		},
+		}),
 	}
 	result, err := runner.Run(context.Background(), Case{
 		ID:      "engine-failure",
@@ -306,11 +304,30 @@ func runCmd(t *testing.T, dir string, command string) {
 }
 
 func newEvalEngine(p provider.Provider) *engine.Engine {
-	return &engine.Engine{
+	eng, err := engine.New(engine.Config{
 		Provider: p,
 		Store:    session.NewMemoryStore(),
 		Memory:   &memory.Manager{SystemPrompt: "test"},
 		Tools:    tools.NewRegistry(),
 		Options:  engine.Options{RunID: "eval"},
+	})
+	if err != nil {
+		panic(err)
 	}
+	return eng
+}
+
+func newEvalEngineWithConfig(t *testing.T, cfg engine.Config) *engine.Engine {
+	t.Helper()
+	if cfg.Store == nil {
+		cfg.Store = session.NewMemoryStore()
+	}
+	if cfg.Tools == nil {
+		cfg.Tools = tools.NewRegistry()
+	}
+	eng, err := engine.New(cfg)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	return eng
 }

@@ -108,9 +108,12 @@ func (r Runner) Run(ctx context.Context, c Case) (Result, error) {
 		_ = os.WriteFile(diffPath, []byte(r.workspaceDiff(ctx)), 0o644)
 		artifacts["final_diff"] = diffPath
 	}
-	applyBudgets(r.Engine, c.Budgets)
+	engineForRun, err := withBudgets(r.Engine, c.Budgets)
+	if err != nil {
+		return Result{}, err
+	}
 	start := time.Now()
-	eng := r.Engine.Run(ctx, c.Prompt)
+	eng := engineForRun.Run(ctx, c.Prompt)
 	result := Result{
 		CaseID:       c.ID,
 		Suite:        r.Suite,
@@ -195,16 +198,21 @@ func (r Runner) runOracle(ctx context.Context, c Case) (string, error) {
 	return log.String(), nil
 }
 
-func applyBudgets(e *engine.Engine, b Budgets) {
+func withBudgets(e *engine.Engine, b Budgets) (*engine.Engine, error) {
+	if e == nil {
+		return nil, errors.New("engine is required")
+	}
+	options := e.Options()
 	if b.MaxWallTime > 0 {
-		e.Options.WallTime = b.MaxWallTime
+		options.WallTime = b.MaxWallTime
 	}
 	if b.MaxTotalTokens > 0 {
-		e.Options.MaxTotalTokens = b.MaxTotalTokens
+		options.MaxTotalTokens = b.MaxTotalTokens
 	}
 	if b.MaxCostUSD > 0 {
-		e.Options.MaxCostUSD = b.MaxCostUSD
+		options.MaxCostUSD = b.MaxCostUSD
 	}
+	return e.WithOptions(options)
 }
 
 func writeTrace(path string, events []event.Event) error {

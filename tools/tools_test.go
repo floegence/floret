@@ -174,6 +174,162 @@ func TestPermissionDenyDoesNotCallResourcesApproverOrHandler(t *testing.T) {
 	if called {
 		t.Fatalf("deny should not call resource extractor, approver, or handler")
 	}
+	if defs := reg.Definitions(); len(defs) != 0 {
+		t.Fatalf("deny tool should not be exposed to provider: %#v", defs)
+	}
+	if _, ok := reg.Definition("blocked"); !ok {
+		t.Fatalf("deny tool should remain available for host-side registry inspection")
+	}
+}
+
+func TestReadOnlyToolDefaultsToAllowAndExposesDefinition(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.Register(Define[testArgs](
+		Definition{
+			Name:        "inspect",
+			InputSchema: StrictObject(map[string]any{"value": String("")}, []string{"value"}),
+			ReadOnly:    true,
+		},
+		nil,
+		nil,
+		func(_ context.Context, inv Invocation[testArgs]) (Result, error) {
+			return Result{Text: inv.Args.Value}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	def, ok := reg.Definition("inspect")
+	if !ok {
+		t.Fatalf("definition missing")
+	}
+	if def.Permission.Mode != PermissionAllow || !def.ParallelSafe || len(def.Effects) != 1 || def.Effects[0] != EffectRead {
+		t.Fatalf("normalized definition = %#v", def)
+	}
+	defs := reg.Definitions()
+	if len(defs) != 1 || defs[0].Name != "inspect" {
+		t.Fatalf("provider definitions = %#v", defs)
+	}
+	got := reg.Run(context.Background(), provider.ToolCall{Name: "inspect", Args: `{"value":"ok"}`}, nil)
+	if got.IsError || got.Text != "ok" {
+		t.Fatalf("result = %#v", got)
+	}
+}
+
+func TestRegisterRejectsAmbiguousPermissionForRiskyTools(t *testing.T) {
+	cases := []Definition{
+		{Name: "write", Effects: []Effect{EffectWrite}},
+		{Name: "shell", Effects: []Effect{EffectShell}},
+		{Name: "network", Effects: []Effect{EffectNetwork}},
+		{Name: "readonly_network", ReadOnly: true, Effects: []Effect{EffectNetwork}},
+		{Name: "destructive", Destructive: true, Effects: []Effect{EffectWrite}},
+		{Name: "open_world", OpenWorld: true, Effects: []Effect{EffectNetwork}},
+		{Name: "readonly_open_world", ReadOnly: true, OpenWorld: true, Effects: []Effect{EffectNetwork}},
+		{Name: "plain_mutating"},
+	}
+	for _, def := range cases {
+		err := NewRegistry().Register(Define[testArgs](
+			def,
+			nil,
+			nil,
+			func(context.Context, Invocation[testArgs]) (Result, error) { return Result{}, nil },
+		))
+		if !errors.Is(err, ErrInvalid) || !contains(err.Error(), "must declare permission mode") {
+			t.Fatalf("%s err = %v, want explicit permission error", def.Name, err)
+		}
+	}
+}
+
+func TestExposedDefinitionsIncludeAllowAskAndHideDeny(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.Register(Define[testArgs](
+		Definition{Name: "allow", ReadOnly: true},
+		nil, nil, func(context.Context, Invocation[testArgs]) (Result, error) { return Result{}, nil },
+	)); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(Define[testArgs](
+		Definition{Name: "ask", Effects: []Effect{EffectWrite}, Permission: PermissionSpec{Mode: PermissionAsk}},
+		nil, nil, func(context.Context, Invocation[testArgs]) (Result, error) { return Result{}, nil },
+	)); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(Define[testArgs](
+		Definition{Name: "deny", Effects: []Effect{EffectWrite}, Permission: PermissionSpec{Mode: PermissionDeny}},
+		nil, nil, func(context.Context, Invocation[testArgs]) (Result, error) { return Result{}, nil },
+	)); err != nil {
+		t.Fatal(err)
+	}
+	defs := reg.ExposedDefinitions()
+	if len(defs) != 2 || defs[0].Name != "allow" || defs[1].Name != "ask" {
+		t.Fatalf("exposed definitions = %#v", defs)
+	}
+}
+
+func TestDefinitionSnapshotsDoNotShareSchemaMaps(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.Register(Define[testArgs](
+		Definition{
+			Name: "inspect",
+			InputSchema: StrictObject(map[string]any{
+				"value": String("original"),
+			}, []string{"value"}),
+			OutputSchema: StrictObject(map[string]any{
+				"ok": Boolean("original"),
+			}, []string{"ok"}),
+			ReadOnly: true,
+		},
+		nil,
+		nil,
+		func(context.Context, Invocation[testArgs]) (Result, error) { return Result{}, nil },
+	)); err != nil {
+		t.Fatal(err)
+	}
+
+	def, ok := reg.Definition("inspect")
+	if !ok {
+		t.Fatalf("definition missing")
+	}
+	def.InputSchema["properties"].(map[string]any)["value"].(map[string]any)["description"] = "mutated"
+	def.OutputSchema["properties"].(map[string]any)["ok"].(map[string]any)["description"] = "mutated"
+	def.Effects[0] = EffectWrite
+
+	providerDefs := reg.ExposedDefinitions()
+	providerDefs[0].InputSchema["properties"].(map[string]any)["value"].(map[string]any)["description"] = "provider-mutated"
+	providerDefs[0].OutputSchema["properties"].(map[string]any)["ok"].(map[string]any)["description"] = "provider-mutated"
+
+	fresh, ok := reg.Definition("inspect")
+	if !ok {
+		t.Fatalf("definition missing after mutation")
+	}
+	if got := fresh.InputSchema["properties"].(map[string]any)["value"].(map[string]any)["description"]; got != "original" {
+		t.Fatalf("input schema leaked mutation: %#v", fresh.InputSchema)
+	}
+	if got := fresh.OutputSchema["properties"].(map[string]any)["ok"].(map[string]any)["description"]; got != "original" {
+		t.Fatalf("output schema leaked mutation: %#v", fresh.OutputSchema)
+	}
+	if fresh.Effects[0] != EffectRead {
+		t.Fatalf("effects leaked mutation: %#v", fresh.Effects)
+	}
+}
+
+func TestAskToolIsExposedAndRequiresApprover(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.Register(Define[testArgs](
+		Definition{Name: "write", InputSchema: StrictObject(map[string]any{"value": String("")}, []string{"value"}), Effects: []Effect{EffectWrite}, Permission: PermissionSpec{Mode: PermissionAsk}},
+		nil,
+		nil,
+		func(context.Context, Invocation[testArgs]) (Result, error) { return Result{Text: "ok"}, nil },
+	)); err != nil {
+		t.Fatal(err)
+	}
+	defs := reg.ExposedDefinitions()
+	if len(defs) != 1 || defs[0].Name != "write" {
+		t.Fatalf("ask tool should be exposed: %#v", defs)
+	}
+	got := reg.Run(context.Background(), provider.ToolCall{ID: "call", Name: "write", Args: `{"value":"x"}`}, nil)
+	if !got.IsError || got.Text != ErrRejected.Error() {
+		t.Fatalf("result = %#v, want rejected without approver", got)
+	}
 }
 
 func TestDefinePassesRunSessionStepCWDAndTypedArgs(t *testing.T) {

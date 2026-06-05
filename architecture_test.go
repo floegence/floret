@@ -5,6 +5,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -212,6 +213,30 @@ func TestNoLegacyToolHandlerOrHostedDispatchInLocalTools(t *testing.T) {
 	}
 }
 
+func TestNoDirectEngineLiteralConstructionOutsideTests(t *testing.T) {
+	files := goFiles(t, ".")
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "&engine.Engine{") || strings.Contains(string(data), "new(engine.Engine)") {
+			t.Fatalf("%s must construct engines through engine.New(engine.Config)", file)
+		}
+	}
+}
+
+func TestNoGoWorkFilesInRepository(t *testing.T) {
+	for _, file := range goFilesAndWorkspaces(t, ".") {
+		if filepath.Base(file) == "go.work" || filepath.Base(file) == "go.work.sum" {
+			t.Fatalf("repository must not introduce %s", file)
+		}
+	}
+}
+
 func packageImports(t *testing.T, dir string) map[string]bool {
 	t.Helper()
 	out := map[string]bool{}
@@ -233,4 +258,43 @@ func packageImports(t *testing.T, dir string) map[string]bool {
 		}
 	}
 	return out
+}
+
+func goFiles(t *testing.T, root string) []string {
+	t.Helper()
+	files, err := walkFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return slices.DeleteFunc(files, func(file string) bool {
+		return !strings.HasSuffix(file, ".go")
+	})
+}
+
+func goFilesAndWorkspaces(t *testing.T, root string) []string {
+	t.Helper()
+	files, err := walkFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+func walkFiles(root string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			switch entry.Name() {
+			case ".git", ".floret-test-ui", "node_modules", "vendor":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		files = append(files, path)
+		return nil
+	})
+	return files, err
 }

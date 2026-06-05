@@ -94,7 +94,8 @@ func TestNewHarnessRunsDurableThreadWithExplicitPolicies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snap.Meta.ID != "thread" || len(snap.Context) != 2 || snap.Context[0].Content != "hello" || snap.Context[1].Content != "configured" {
+	if snap.ID != "thread" || snap.Status != string(engine.Completed) || !snap.CanAppendMessage ||
+		len(snap.Messages) != 2 || snap.Messages[0].Content != "hello" || snap.Messages[1].Content != "configured" {
 		t.Fatalf("durable thread snapshot = %#v", snap)
 	}
 }

@@ -72,6 +72,14 @@ func TestDeriveLifecycleTable(t *testing.T) {
 			waitingPrompt: "Which file?",
 		},
 		{
+			name:         "waiting malformed ask user hides raw args",
+			phase:        PhaseIdle,
+			path:         entries(marker("turn-1", sessiontree.TurnStarted, nil), toolCall("turn-1", "ask_user", `{"question":`), marker("turn-1", sessiontree.TurnWaiting, nil)),
+			status:       "waiting",
+			latestTurnID: "turn-1",
+			appendable:   true,
+		},
+		{
 			name:         "failed",
 			phase:        PhaseIdle,
 			path:         entries(marker("turn-1", sessiontree.TurnStarted, nil), marker("turn-1", sessiontree.TurnFailed, nil)),

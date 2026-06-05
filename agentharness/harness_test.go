@@ -2,6 +2,7 @@ package agentharness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -39,7 +40,7 @@ func TestThreadRunPersistsTurnEntriesAndContext(t *testing.T) {
 	if result.Status != engine.Completed || result.Output != "done text" {
 		t.Fatalf("result = %#v", result)
 	}
-	snap, err := thread.Read(ctx)
+	snap, err := thread.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,6 +60,172 @@ func TestThreadRunPersistsTurnEntriesAndContext(t *testing.T) {
 	}
 	if len(snap.Context) != 2 || snap.Context[0].Content != "do it" || snap.Context[1].Content != "done text" || snap.Context[1].ToolName != "" {
 		t.Fatalf("provider-visible context = %#v", snap.Context)
+	}
+}
+
+func TestThreadReadReturnsHostSafeSnapshot(t *testing.T) {
+	ctx := context.Background()
+	p := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done text"), scriptharness.Done()))
+	h := newTestHarness(p, sessiontree.NewMemoryRepo(), promptcache.NewMemoryStore())
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := thread.Run(ctx, "do it", RunOptions{TurnID: "turn-1"}); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := thread.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.ID != "thread" || snap.Status != string(engine.Completed) || !snap.CanAppendMessage || snap.LatestTurnID != "turn-1" {
+		t.Fatalf("host snapshot lifecycle = %#v", snap)
+	}
+	if len(snap.Messages) != 2 || snap.Messages[0].Role != session.User || snap.Messages[0].Content != "do it" ||
+		snap.Messages[1].Role != session.Assistant || snap.Messages[1].Content != "done text" {
+		t.Fatalf("host messages = %#v", snap.Messages)
+	}
+	data, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := string(data)
+	for _, forbidden := range []string{"\"meta\"", "\"path\"", "\"entries\"", "\"context\"", "tool_args", "tool_call"} {
+		if strings.Contains(raw, forbidden) {
+			t.Fatalf("host snapshot leaked raw journal field %s: %s", forbidden, raw)
+		}
+	}
+}
+
+func TestThreadReadLifecycleStates(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name      string
+		provider  provider.Provider
+		prepare   func(context.Context, *AgentHarness, *Thread) error
+		run       bool
+		want      string
+		append    bool
+		recover   bool
+		phase     string
+		latest    string
+		waiting   string
+		wantError bool
+	}{
+		{
+			name:     "completed",
+			provider: scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done"), scriptharness.Done())),
+			run:      true,
+			want:     string(engine.Completed),
+			append:   true,
+			phase:    sessionlifecycle.PhaseIdle,
+			latest:   "turn-1",
+		},
+		{
+			name:     "waiting",
+			provider: scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Tool("ask", "ask_user", `{"question":"Need file?"}`), scriptharness.DoneReason("tool_calls"))),
+			run:      true,
+			want:     string(engine.Waiting),
+			append:   true,
+			phase:    sessionlifecycle.PhaseIdle,
+			latest:   "turn-1",
+			waiting:  "Need file?",
+		},
+		{
+			name:      "failed",
+			provider:  scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("unused"))),
+			run:       true,
+			want:      string(engine.Failed),
+			append:    false,
+			phase:     sessionlifecycle.PhaseIdle,
+			latest:    "turn-1",
+			wantError: true,
+		},
+		{
+			name:     "interrupted",
+			provider: scriptharness.NewScriptedProvider(),
+			prepare: func(ctx context.Context, _ *AgentHarness, thread *Thread) error {
+				if _, err := sessiontree.AppendTurnMarker(ctx, thread.harness.options.Repo, thread.ID(), "turn-1", sessiontree.TurnStarted, nil); err != nil {
+					return err
+				}
+				_, err := sessiontree.AppendMessage(ctx, thread.harness.options.Repo, thread.ID(), "turn-1", session.Message{Role: session.User, Content: "unfinished"})
+				return err
+			},
+			want:    "interrupted",
+			append:  false,
+			recover: true,
+			phase:   sessionlifecycle.PhaseIdle,
+			latest:  "turn-1",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := sessiontree.NewMemoryRepo()
+			h := newTestHarness(tc.provider, repo, promptcache.NewMemoryStore())
+			thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.prepare != nil {
+				if err := tc.prepare(ctx, h, thread); err != nil {
+					t.Fatal(err)
+				}
+				thread, err = h.ResumeThread(ctx, thread.ID(), ResumeOptions{})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.run {
+				_, err = thread.Run(ctx, "do it", RunOptions{TurnID: "turn-1"})
+				if tc.wantError {
+					if err == nil {
+						t.Fatalf("expected run error")
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+			}
+			snap, err := thread.Read(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if snap.Status != tc.want || snap.CanAppendMessage != tc.append || snap.Recoverable != tc.recover ||
+				snap.Phase != tc.phase || snap.LatestTurnID != tc.latest || snap.WaitingPrompt != tc.waiting {
+				t.Fatalf("snapshot = %#v", snap)
+			}
+		})
+	}
+}
+
+func TestThreadReadLifecycleWhileTurnIsRunning(t *testing.T) {
+	ctx := context.Background()
+	blocking := newBlockingProvider()
+	h := newTestHarness(blocking, sessiontree.NewMemoryRepo(), promptcache.NewMemoryStore())
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := thread.Run(runCtx, "hang", RunOptions{TurnID: "turn-running"})
+		done <- err
+	}()
+	<-blocking.started
+
+	snap, err := thread.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Status != "running" || snap.Phase != sessionlifecycle.PhaseTurn || snap.LatestTurnID != "turn-running" ||
+		snap.CanAppendMessage || snap.Recoverable || snap.WaitingPrompt != "" {
+		t.Fatalf("running snapshot = %#v", snap)
+	}
+
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("run err = %v, want context canceled", err)
 	}
 }
 
@@ -155,7 +322,7 @@ func TestThreadRunStopHookContinuationIsPersistedAndMetadataStaysOutOfPrompt(t *
 	}) {
 		t.Fatalf("hook continuation prompt missing from provider context: %#v", p.Requests[1].Messages)
 	}
-	snap, err := thread.Read(ctx)
+	snap, err := thread.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +375,7 @@ func TestThreadRunStopHookContinuationBeforeToolCallKeepsSessionTreeOrder(t *tes
 	if result.Status != engine.Completed || result.Output != "draftfinal" {
 		t.Fatalf("result = %#v", result)
 	}
-	snap, err := thread.Read(ctx)
+	snap, err := thread.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +438,7 @@ func TestRetryDoesNotDuplicateUserMessageAndKeepsPrefixStable(t *testing.T) {
 	if len(failedRequests) != 2 {
 		t.Fatalf("failed request records = %#v", failedRequests)
 	}
-	failedSnap, _ := thread.Read(ctx)
+	failedSnap, _ := thread.Journal(ctx)
 	failedLeaf := failedSnap.Meta.LeafID
 	if !slices.ContainsFunc(failedSnap.Entries, func(entry sessiontree.Entry) bool {
 		return entry.Type == sessiontree.EntryAssistantMessage && entry.Message.Content == "partial before failure"
@@ -287,7 +454,7 @@ func TestRetryDoesNotDuplicateUserMessageAndKeepsPrefixStable(t *testing.T) {
 	if result.Status != engine.Completed {
 		t.Fatalf("retry result = %#v", result)
 	}
-	snap, _ := thread.Read(ctx)
+	snap, _ := thread.Journal(ctx)
 	if countEntries(snap.Entries, sessiontree.EntryUserMessage) != 1 {
 		t.Fatalf("retry must not duplicate the original user entry: %#v", snap.Entries)
 	}
@@ -363,7 +530,7 @@ func TestRetryAfterInterruptedTurnUsesRealtimeToolSavePoint(t *testing.T) {
 	}()
 	deadline := time.After(2 * time.Second)
 	for {
-		snap, _ := thread.Read(ctx)
+		snap, _ := thread.Journal(ctx)
 		if slices.ContainsFunc(snap.Entries, func(entry sessiontree.Entry) bool {
 			return entry.Type == sessiontree.EntryToolResult && entry.Message.Content == "read result"
 		}) {
@@ -414,7 +581,7 @@ func TestForkContinuesWithoutPollutingSourceThread(t *testing.T) {
 	if _, err := source.Run(ctx, "first", RunOptions{TurnID: "turn-source"}); err != nil {
 		t.Fatal(err)
 	}
-	sourceSnap, _ := source.Read(ctx)
+	sourceSnap, _ := source.Journal(ctx)
 	userEntry := firstEntry(sourceSnap.Entries, sessiontree.EntryUserMessage)
 	fork, err := h.ForkThread(ctx, ForkOptions{SourceThreadID: "source", EntryID: userEntry.ID, NewThreadID: "fork"})
 	if err != nil {
@@ -425,8 +592,8 @@ func TestForkContinuesWithoutPollutingSourceThread(t *testing.T) {
 	if _, err := fork.Run(ctx, "second", RunOptions{TurnID: "turn-fork"}); err != nil {
 		t.Fatal(err)
 	}
-	sourceAfter, _ := source.Read(ctx)
-	forkAfter, _ := fork.Read(ctx)
+	sourceAfter, _ := source.Journal(ctx)
+	forkAfter, _ := fork.Journal(ctx)
 	if countEntries(sourceAfter.Entries, sessiontree.EntryUserMessage) != 1 {
 		t.Fatalf("source thread should not receive fork user input: %#v", sourceAfter.Entries)
 	}
@@ -442,7 +609,7 @@ func TestForkContinuesWithoutPollutingSourceThread(t *testing.T) {
 	if !slices.Equal(userMessages, []string{"first", "second"}) {
 		t.Fatalf("fork provider context = %#v", forkProvider.Requests[0].Messages)
 	}
-	forkSnap, _ := fork.Read(ctx)
+	forkSnap, _ := fork.Journal(ctx)
 	if forkSnap.Meta.ForkedFromThreadID != "source" || forkSnap.Meta.ForkedFromEntryID != userEntry.ID {
 		t.Fatalf("fork metadata = %#v", forkSnap.Meta)
 	}
@@ -465,7 +632,7 @@ func TestMoveToBranchSummaryEntersActiveContext(t *testing.T) {
 	if err := thread.MoveTo(ctx, first.ID, MoveOptions{Summary: "Left branch had branch work."}); err != nil {
 		t.Fatal(err)
 	}
-	snap, err := thread.Read(ctx)
+	snap, err := thread.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +669,7 @@ func TestEngineCompactionIsProjectedAsSessionTreeCompactionEntry(t *testing.T) {
 	if result.Status != engine.Completed {
 		t.Fatalf("result = %#v", result)
 	}
-	snap, err := thread.Read(ctx)
+	snap, err := thread.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -547,7 +714,7 @@ func TestMultipleCompactionsForkReloadAndContinueUseLatestWindow(t *testing.T) {
 	if _, err := thread.Run(ctx, "second "+strings.Repeat("beta ", 120), RunOptions{TurnID: "turn-2"}); err != nil {
 		t.Fatal(err)
 	}
-	snap, err := thread.Read(ctx)
+	snap, err := thread.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -640,7 +807,7 @@ func TestFileRepoResumeContinuesThreadAndReusesRawSegments(t *testing.T) {
 	if !slices.Equal(firstRequestRaws, segmentRaws(secondProvider.Requests[0].RawPlan.Segments[:len(firstRequestRaws)])) {
 		t.Fatalf("resumed raw string prefix changed")
 	}
-	resumedSnap, _ := resumed.Read(ctx)
+	resumedSnap, _ := resumed.Journal(ctx)
 	if !hasEntry(resumedSnap.Entries, sessiontree.EntryTurnMarker, sessiontree.TurnWaiting) ||
 		!hasEntry(resumedSnap.Entries, sessiontree.EntryTurnMarker, sessiontree.TurnCompleted) {
 		t.Fatalf("resume should preserve waiting and completed markers: %#v", resumedSnap.Entries)
@@ -708,7 +875,7 @@ func TestFileRepoResumeClearsOnlyExpiredActiveTurnLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap, err := resumed.Read(ctx)
+	snap, err := resumed.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -733,7 +900,7 @@ func TestMoveToHoldsActiveTurnGuardDuringMutation(t *testing.T) {
 	if _, err := thread.Run(ctx, "first", RunOptions{TurnID: "turn-1"}); err != nil {
 		t.Fatal(err)
 	}
-	snap, err := thread.Read(ctx)
+	snap, err := thread.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -844,8 +1011,8 @@ func assertDifferentThreadsRunConcurrently(t *testing.T, ctx context.Context, re
 	if provider.MaxConcurrent() < 2 {
 		t.Fatalf("provider did not observe concurrent runs, max=%d", provider.MaxConcurrent())
 	}
-	firstSnap, _ := first.Read(ctx)
-	secondSnap, _ := second.Read(ctx)
+	firstSnap, _ := first.Journal(ctx)
+	secondSnap, _ := second.Journal(ctx)
 	if countEntriesWithContent(firstSnap.Entries, sessiontree.EntryUserMessage, "beta") != 0 ||
 		countEntriesWithContent(secondSnap.Entries, sessiontree.EntryUserMessage, "alpha") != 0 {
 		t.Fatalf("thread entries polluted: first=%#v second=%#v", firstSnap.Entries, secondSnap.Entries)
@@ -888,8 +1055,8 @@ func assertForkAndSourceRunConcurrentlyWithoutPollution(t *testing.T, ctx contex
 	if concurrent.MaxConcurrent() < 2 {
 		t.Fatalf("provider did not observe concurrent source/fork runs, max=%d", concurrent.MaxConcurrent())
 	}
-	sourceSnap, _ := source.Read(ctx)
-	forkSnap, _ := fork.Read(ctx)
+	sourceSnap, _ := source.Journal(ctx)
+	forkSnap, _ := fork.Journal(ctx)
 	if countEntriesWithContent(sourceSnap.Entries, sessiontree.EntryUserMessage, "fork-only") != 0 ||
 		countEntriesWithContent(forkSnap.Entries, sessiontree.EntryUserMessage, "source-only") != 0 {
 		t.Fatalf("fork/source entries polluted: source=%#v fork=%#v", sourceSnap.Entries, forkSnap.Entries)
@@ -946,7 +1113,7 @@ func TestToolProjectionDoesNotDuplicateMultiToolBatches(t *testing.T) {
 	if err != nil || first.Status != engine.Completed {
 		t.Fatalf("first = %#v err=%v", first, err)
 	}
-	snap, err := thread.Read(ctx)
+	snap, err := thread.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -974,7 +1141,7 @@ func TestToolProjectionDoesNotDuplicateMultiToolBatches(t *testing.T) {
 	if err != nil || second.Status != engine.Completed {
 		t.Fatalf("second = %#v err=%v", second, err)
 	}
-	snap, err = thread.Read(ctx)
+	snap, err = thread.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -999,14 +1166,14 @@ func TestAppendDeltaSkipsProjectedAssistantFinalButKeepsSeparateTurns(t *testing
 	if err := thread.appendMessage(ctx, "turn-1", projected); err != nil {
 		t.Fatal(err)
 	}
-	snap, err := thread.Read(ctx)
+	snap, err := thread.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := thread.appendDelta(ctx, "turn-1", nil, []session.Message{projected}, snap.Path); err != nil {
 		t.Fatal(err)
 	}
-	snap, err = thread.Read(ctx)
+	snap, err = thread.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1016,7 +1183,7 @@ func TestAppendDeltaSkipsProjectedAssistantFinalButKeepsSeparateTurns(t *testing
 	if err := thread.appendDelta(ctx, "turn-2", nil, []session.Message{projected}, snap.Path); err != nil {
 		t.Fatal(err)
 	}
-	snap, err = thread.Read(ctx)
+	snap, err = thread.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1043,7 +1210,7 @@ func TestResumeMarksUnfinishedTurnInterrupted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap, err := resumed.Read(ctx)
+	snap, err := resumed.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1078,7 +1245,7 @@ func TestActiveTurnBusyGuard(t *testing.T) {
 	if !errors.Is(err, ErrActiveTurn) {
 		t.Fatalf("err = %v, want active turn guard", err)
 	}
-	snap, err := thread.Read(ctx)
+	snap, err := thread.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1116,7 +1283,7 @@ func TestSQLiteRepoActiveTurnBusyGuard(t *testing.T) {
 	if !errors.Is(err, ErrActiveTurn) {
 		t.Fatalf("err = %v, want active turn guard", err)
 	}
-	snap, err := thread.Read(ctx)
+	snap, err := thread.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1142,7 +1309,7 @@ func TestRetryDuringActiveTurnReturnsErrActiveTurnWithoutMovingLeaf(t *testing.T
 	if _, err := thread.Run(ctx, "retryable", RunOptions{TurnID: "turn-failed"}); err == nil {
 		t.Fatalf("first run should fail")
 	}
-	failedSnap, err := thread.Read(ctx)
+	failedSnap, err := thread.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1163,7 +1330,7 @@ func TestRetryDuringActiveTurnReturnsErrActiveTurnWithoutMovingLeaf(t *testing.T
 	if !errors.Is(err, ErrActiveTurn) {
 		t.Fatalf("err = %v, want active turn guard", err)
 	}
-	activeSnap, err := thread.Read(ctx)
+	activeSnap, err := thread.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1197,7 +1364,7 @@ func TestThreadRunPersistsTerminalMarkerAfterDeadline(t *testing.T) {
 	if result.Status != engine.Cancelled {
 		t.Fatalf("result = %#v", result)
 	}
-	snap, err := thread.Read(ctx)
+	snap, err := thread.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1365,7 +1532,7 @@ func userContents(messages []session.Message) []string {
 	return out
 }
 
-func countUserMessagesInSnapshot(snap ThreadSnapshot, content string) int {
+func countUserMessagesInSnapshot(snap ThreadJournalSnapshot, content string) int {
 	count := 0
 	for _, entry := range snap.Entries {
 		if entry.Type == sessiontree.EntryUserMessage && entry.Message.Content == content {

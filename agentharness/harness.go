@@ -136,6 +136,27 @@ type RetryOptions struct {
 }
 
 type ThreadSnapshot struct {
+	ID               string          `json:"id"`
+	CreatedAt        time.Time       `json:"created_at"`
+	UpdatedAt        time.Time       `json:"updated_at"`
+	Phase            string          `json:"phase"`
+	Status           string          `json:"status"`
+	LatestTurnID     string          `json:"latest_turn_id,omitempty"`
+	WaitingPrompt    string          `json:"waiting_prompt,omitempty"`
+	Recoverable      bool            `json:"recoverable"`
+	CanAppendMessage bool            `json:"can_append_message"`
+	CanRetry         bool            `json:"can_retry"`
+	Messages         []ThreadMessage `json:"messages"`
+}
+
+type ThreadMessage struct {
+	Role      session.Role `json:"role"`
+	Content   string       `json:"content"`
+	TurnID    string       `json:"turn_id,omitempty"`
+	CreatedAt time.Time    `json:"created_at"`
+}
+
+type ThreadJournalSnapshot struct {
 	Meta    sessiontree.ThreadMeta `json:"meta"`
 	Path    []sessiontree.Entry    `json:"path"`
 	Entries []sessiontree.Entry    `json:"entries"`
@@ -348,28 +369,71 @@ func (t *Thread) ID() string {
 }
 
 func (t *Thread) Read(ctx context.Context) (ThreadSnapshot, error) {
-	meta, err := t.harness.options.Repo.Thread(ctx, t.id)
+	journal, err := t.Journal(ctx)
 	if err != nil {
 		return ThreadSnapshot{}, err
+	}
+	lifecycle := sessionlifecycle.Derive(journal.Path, journal.Phase)
+	return ThreadSnapshot{
+		ID:               journal.Meta.ID,
+		CreatedAt:        journal.Meta.CreatedAt,
+		UpdatedAt:        journal.Meta.UpdatedAt,
+		Phase:            lifecycle.Phase(),
+		Status:           lifecycle.Status(),
+		LatestTurnID:     lifecycle.LatestTurnID(),
+		WaitingPrompt:    lifecycle.WaitingPrompt(),
+		Recoverable:      lifecycle.Recoverable(),
+		CanAppendMessage: lifecycle.CanAppendMessage(),
+		CanRetry:         retryTarget(journal.Path).Entry.ID != "",
+		Messages:         threadMessages(journal.Path),
+	}, nil
+}
+
+func (t *Thread) Journal(ctx context.Context) (ThreadJournalSnapshot, error) {
+	meta, err := t.harness.options.Repo.Thread(ctx, t.id)
+	if err != nil {
+		return ThreadJournalSnapshot{}, err
 	}
 	path, err := t.harness.options.Repo.Path(ctx, t.id, meta.LeafID)
 	if err != nil {
-		return ThreadSnapshot{}, err
+		return ThreadJournalSnapshot{}, err
 	}
 	entries, err := t.harness.options.Repo.Entries(ctx, t.id)
 	if err != nil {
-		return ThreadSnapshot{}, err
+		return ThreadJournalSnapshot{}, err
 	}
 	t.mu.Lock()
 	phase := t.phase
 	t.mu.Unlock()
-	return ThreadSnapshot{
+	return ThreadJournalSnapshot{
 		Meta:    meta,
 		Path:    path,
 		Entries: entries,
 		Context: sessiontree.BuildContext(path, sessiontree.ContextOptions{}),
 		Phase:   phase,
 	}, nil
+}
+
+func threadMessages(path []sessiontree.Entry) []ThreadMessage {
+	out := make([]ThreadMessage, 0)
+	for _, entry := range path {
+		switch entry.Type {
+		case sessiontree.EntryUserMessage, sessiontree.EntryAssistantMessage:
+			if entry.Message.Kind == session.MessageKindMicrocompactMarker {
+				continue
+			}
+			if entry.Message.Content == "" {
+				continue
+			}
+			out = append(out, ThreadMessage{
+				Role:      entry.Message.Role,
+				Content:   entry.Message.Content,
+				TurnID:    entry.TurnID,
+				CreatedAt: entry.CreatedAt,
+			})
+		}
+	}
+	return out
 }
 
 func (t *Thread) Run(ctx context.Context, input string, opts RunOptions) (TurnResult, error) {
@@ -391,7 +455,7 @@ func (t *Thread) Retry(ctx context.Context, opts RetryOptions) (TurnResult, erro
 		defer cancel()
 		_ = t.harness.releaseTurnLease(persistCtx, lease)
 	}()
-	snap, err := t.Read(ctx)
+	snap, err := t.Journal(ctx)
 	if err != nil {
 		return TurnResult{}, err
 	}
@@ -493,7 +557,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 		}
 		t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID})
 	}
-	snap, err := t.Read(ctx)
+	snap, err := t.Journal(ctx)
 	if err != nil {
 		persistCtx, cancelPersist := turnFinalizationContext(ctx)
 		defer cancelPersist()
@@ -508,21 +572,25 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	engineOptions.ProviderName = t.harness.options.ProviderName
 	engineOptions.Model = t.harness.options.Model
 	engineOptions.ContextPolicy = contextpolicy.Normalize(engineOptions.ContextPolicy)
-	eng := &engine.Engine{
+	eng, err := engine.New(engine.Config{
 		Provider: t.harness.options.Provider,
 		Tools:    t.harness.options.Tools,
 		Prompt:   t.harness.options.PromptStore,
 		Memory: &memory.Manager{
 			SystemPrompt: t.harness.options.SystemPrompt,
 		},
-		Sink:      nil,
 		Approver:  t.harness.options.Approver,
 		StopHook:  t.harness.options.StopHook,
 		Compactor: &durableCompactionManager{thread: t, turnID: turnID},
 		Options:   engineOptions,
+	})
+	if err != nil {
+		persistCtx, cancelPersist := turnFinalizationContext(ctx)
+		defer cancelPersist()
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, err, "engine_config_error")
 	}
 	projection := &turnProjection{thread: t, ctx: ctx, turnID: turnID, downstream: t.harness.options.Sink}
-	eng.Sink = projection
+	eng.SetSink(projection)
 	result := eng.RunTurn(ctx, engine.RunInput{RunID: runID, SessionID: t.id, TraceID: runID, History: history})
 	persistCtx, cancelPersist := turnFinalizationContext(ctx)
 	defer cancelPersist()
@@ -534,7 +602,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, err, "projection_flush_error")
 	}
 	deltaBase := history
-	current, err := t.Read(persistCtx)
+	current, err := t.Journal(persistCtx)
 	if err != nil {
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "snapshot_error")
 	}
@@ -901,7 +969,7 @@ func (m *durableCompactionManager) Compact(ctx context.Context, req engine.Compa
 	if m == nil || m.thread == nil {
 		return compaction.Result{}, nil, errors.New("durable compaction manager requires thread")
 	}
-	snap, err := m.thread.Read(ctx)
+	snap, err := m.thread.Journal(ctx)
 	if err != nil {
 		return compaction.Result{}, nil, err
 	}

@@ -1111,7 +1111,7 @@ func (r *Runner) runAgentTurnLocked(ctx context.Context, sess *agentSession, res
 		snapshot = r.fallbackAgentSessionSnapshot(sess, turn.Status)
 	} else {
 		sess.updatedAt = snapshot.UpdatedAt
-		if snap, err := sess.thread.Read(finalCtx); err == nil {
+		if snap, err := sess.thread.Journal(finalCtx); err == nil {
 			sess.turns = summariesFromEntries(snap.Entries, sess.turns)
 		}
 		snapshot.Turns = append([]AgentTurnSummary(nil), sess.turns...)
@@ -1277,7 +1277,7 @@ func agentSessionPromptCacheRunIDs(sessionID string, turns []AgentTurnSummary, e
 }
 
 func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) (AgentSessionSnapshot, error) {
-	snap, err := sess.thread.Read(ctx)
+	snap, err := sess.thread.Journal(ctx)
 	if err != nil {
 		return AgentSessionSnapshot{}, err
 	}
@@ -1371,7 +1371,7 @@ func (r *Runner) runningAgentSessionSnapshot(ctx context.Context, sess *agentSes
 }
 
 func (r *Runner) refreshRunningSnapshotFromThread(ctx context.Context, sess *agentSession, snapshot AgentSessionSnapshot) (AgentSessionSnapshot, error) {
-	snap, err := sess.thread.Read(ctx)
+	snap, err := sess.thread.Journal(ctx)
 	if err != nil {
 		return snapshot, err
 	}
@@ -1904,7 +1904,7 @@ func (r Runner) runEvalDemo(ctx context.Context, resp RunResponse) RunResponse {
 			harness.Done(),
 		),
 	)
-	eng := &engine.Engine{
+	eng, err := engine.New(engine.Config{
 		Provider: prov,
 		Store:    session.NewMemoryStore(),
 		Memory:   &memory.Manager{SystemPrompt: "You are a deterministic Floret eval agent."},
@@ -1922,6 +1922,9 @@ func (r Runner) runEvalDemo(ctx context.Context, resp RunResponse) RunResponse {
 			MaxTotalTokens:     200,
 			DuplicateToolLimit: 3,
 		},
+	})
+	if err != nil {
+		return r.failAgent(resp, err)
 	}
 	artifactsDir := filepath.Join(workspace, "artifacts")
 	result, err := eval.Runner{
@@ -1986,7 +1989,7 @@ func (r Runner) runProviderSmoke(ctx context.Context, resp RunResponse) RunRespo
 		return r.failAgent(resp, err)
 	}
 	promptStore := store.prompt(r.Root)
-	eng := &engine.Engine{
+	eng, err := engine.New(engine.Config{
 		Provider: p,
 		Store:    session.NewMemoryStore(),
 		Prompt:   promptStore,
@@ -2010,6 +2013,9 @@ func (r Runner) runProviderSmoke(ctx context.Context, resp RunResponse) RunRespo
 			MaxTotalTokens:          4000,
 			MaxCostUSD:              0.25,
 		},
+	})
+	if err != nil {
+		return r.failAgent(resp, err)
 	}
 	result := eng.Run(ctx, "Reply with a concise confirmation that the configured provider can run Floret.")
 	resp.Agent = &AgentRun{

@@ -36,7 +36,7 @@ func NewEngine(cfg config.Config, store session.Store, registry *tools.Registry)
 	if err != nil {
 		return nil, err
 	}
-	return NewEngineWithProvider(resolved, p, store, registry), nil
+	return NewEngineWithProvider(resolved, p, store, registry)
 }
 
 func NewHarness(cfg config.Config, opts HarnessOptions) (*agentharness.AgentHarness, error) {
@@ -102,7 +102,7 @@ func NewHarnessWithProvider(cfg config.Config, p provider.Provider, opts Harness
 	})
 }
 
-func NewEngineWithProvider(cfg config.Config, p provider.Provider, store session.Store, registry *tools.Registry) *engine.Engine {
+func NewEngineWithProvider(cfg config.Config, p provider.Provider, store session.Store, registry *tools.Registry) (*engine.Engine, error) {
 	if store == nil {
 		store = session.NewMemoryStore()
 	}
@@ -113,7 +113,7 @@ func NewEngineWithProvider(cfg config.Config, p provider.Provider, store session
 	if cfg.PromptCacheDir != "" {
 		promptStore = promptcache.NewFileStore(cfg.PromptCacheDir)
 	}
-	return &engine.Engine{
+	return engine.New(engine.Config{
 		Provider: p,
 		Store:    store,
 		Prompt:   promptStore,
@@ -134,7 +134,7 @@ func NewEngineWithProvider(cfg config.Config, p provider.Provider, store session
 			DuplicateToolLimit:      cfg.DuplicateToolLimit,
 			WallTime:                cfg.WallTime,
 		},
-	}
+	})
 }
 
 func mergeContextPolicy(primary, fallback contextpolicy.Policy) contextpolicy.Policy {

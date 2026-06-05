@@ -158,7 +158,7 @@ FLORET_API_KEY=your-api-key
 ## Using Floret in a Host
 
 The `runtime` package wires configuration, a provider adapter, prompt cache, memory
-manager, session store, and tool registry into an `engine.Engine`.
+manager, durable session storage, and a tool registry into an `agentharness.AgentHarness`.
 
 ```go
 package main
@@ -170,7 +170,8 @@ import (
 
 	"github.com/floegence/floret/config"
 	floretruntime "github.com/floegence/floret/runtime"
-	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/agentharness"
+	"github.com/floegence/floret/sessiontree"
 	"github.com/floegence/floret/tools"
 )
 
@@ -207,23 +208,38 @@ func main() {
 		log.Fatal(err)
 	}
 
-	store := session.NewMemoryStore()
-	eng, err := floretruntime.NewEngine(cfg, store, registry)
+	h, err := floretruntime.NewHarness(cfg, floretruntime.HarnessOptions{
+		Store: sessiontree.NewMemoryRepo(),
+		Tools: registry,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	thread, err := h.StartThread(ctx, agentharness.StartThreadOptions{})
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	result := eng.Run(ctx, "Say hello in one short sentence.")
-	if result.Err != nil {
-		log.Fatal(result.Err)
+	result, err := thread.Run(ctx, "Say hello in one short sentence.", agentharness.RunOptions{})
+	if err != nil {
+		log.Fatal(err)
 	}
 	fmt.Println(result.Output)
 }
 ```
 
-For lower-level hosts, construct `engine.Engine` directly with your own `provider.Provider`,
-`session.Store`, `tools.Registry`, `event.Sink`, approver, stop hook, compaction generator,
-and engine options.
+For lower-level hosts, construct `engine.Engine` with `engine.New(engine.Config{...})`
+using your own `provider.Provider`, `session.Store`, `tools.Registry`, `event.Sink`,
+approver, stop hook, compaction generator, and engine options. Direct engine use is best
+for tests, eval runners, and specialized hosts that already own session persistence.
+
+### Migration Notes
+
+Older host code should move direct engine struct literals to `engine.New(engine.Config{...})`.
+Use `SetSink`, `SetApprover`, and `SetStopHook` for explicit runtime policy replacement.
+Code that previously read `Thread.Read().Entries`, `Thread.Read().Path`,
+`Thread.Read().Context`, or `Thread.Read().Meta` should call `Thread.Journal()` in
+debug/admin/test paths. Ordinary host UI code should stay on `Thread.Read()`.
 
 ## Threaded Agent Harness
 
@@ -238,8 +254,10 @@ instead of isolated runs. It supports:
 - Emitting harness lifecycle events alongside engine events.
 
 The harness stores entries in a `sessiontree.Repo` and projects the active path into
-engine context for each turn. This keeps product-level thread operations separate from
-provider and tool execution.
+engine context for each turn. `Thread.Read()` returns a host-safe snapshot with lifecycle
+state and display messages. Raw session-tree data is available through `Thread.Journal()`
+for tests, debug consoles, migrations, and admin tooling. This keeps product-level
+thread operations separate from provider and tool execution.
 
 ## Tools
 
@@ -253,7 +271,11 @@ Tool scheduling is owned by the registry:
 - Read-only tools may run in parallel.
 - Mutating tools are serialized.
 - `PermissionAsk` tools call the host approver before execution.
-- `PermissionDeny` tools are rejected before execution.
+- `PermissionDeny` tools are not exposed to the provider and are rejected before execution.
+- Safe read-only tools may omit `Permission.Mode`; mutating, shell, network, destructive,
+  and open-world tools must declare `Permission.Mode` explicitly.
+- Open-world tools cannot use `PermissionAllow`; prefer `PermissionAsk` or
+  `PermissionDeny` for high-risk tools unless the host has a narrower policy gate.
 
 `builtintools` includes workspace reads (`read`, `list`, `glob`, `grep`), workspace
 mutations (`apply_patch`, `edit`, `write`), shell execution, and `web_search`.
@@ -294,6 +316,9 @@ agentharness or engine.Engine
 
 Important behavior is observable through events or testable state. Hosts should render
 events rather than parse assistant text to infer engine progress.
+Provider-visible local tools always come from `tools.Registry`; host code should not
+hand-write raw provider tool definitions to bypass registry validation or permission
+policy.
 
 ## Package Map
 
