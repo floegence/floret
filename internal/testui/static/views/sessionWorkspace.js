@@ -2,6 +2,7 @@ import { escapeHTML, formatLocalTime, profileLabel, relativeTime, shortID, state
 import { bindInspector, renderInspector } from "./inspector.js";
 
 const copyPayloads = new Map();
+const redactedToolDetail = "Raw arguments/results are redacted. Restart with --allow-debug-raw to inspect them.";
 
 export function renderSessionWorkspace({ sessions, activeSession, result, tools, inspectorTab }) {
   copyPayloads.clear();
@@ -152,10 +153,47 @@ function renderWorkspace(session, result) {
 function renderTimeline(session, result) {
   const entries = mergeTimelineEntries(session);
   if (!entries.length && !activeLiveTurn(session)) return `<div class="message entry"><div class="message-text muted">No durable messages yet.</div></div>`;
-  const messages = entries.filter((entry) => {
+  const visibleEntries = entries.filter((entry) => {
     return ["user_message", "assistant_message", "tool_call", "tool_result", "active_tools_change", "run_failure", "turn_marker"].includes(entry.type);
   });
-  return `${messages.map(renderEntry).join("")}${renderLiveTurn(session)}`;
+  return `${timelineItems(visibleEntries).map(renderTimelineItem).join("")}${renderLiveTurn(session)}`;
+}
+
+function timelineItems(entries) {
+  const items = [];
+  const pendingToolRuns = new Map();
+  for (const entry of entries) {
+    if (entry.type !== "tool_call" && entry.type !== "tool_result") {
+      items.push({ type: "entry", entry });
+      continue;
+    }
+    const key = toolRunKey(entry);
+    if (!key) {
+      items.push({ type: "entry", entry });
+      continue;
+    }
+    const existing = pendingToolRuns.get(key);
+    if (existing) {
+      if (entry.type === "tool_call") existing.call = entry;
+      if (entry.type === "tool_result") existing.result = entry;
+      continue;
+    }
+    const run = { type: "tool_run", key, call: entry.type === "tool_call" ? entry : null, result: entry.type === "tool_result" ? entry : null };
+    pendingToolRuns.set(key, run);
+    items.push(run);
+  }
+  return items;
+}
+
+function renderTimelineItem(item) {
+  if (item.type === "tool_run") return renderToolRun(item);
+  return renderEntry(item.entry);
+}
+
+function toolRunKey(entry) {
+  const msg = entry.message || {};
+  if (!msg.tool_call_id) return "";
+  return `${entry.turn_id || ""}:${msg.tool_call_id}`;
 }
 
 function mergeTimelineEntries(session) {
@@ -255,6 +293,46 @@ function renderEntry(entry) {
   `;
 }
 
+function renderToolRun(run) {
+  const call = run.call;
+  const result = run.result;
+  const sourceEntry = call || result || {};
+  const callMsg = call?.message || {};
+  const resultMsg = result?.message || {};
+  const toolName = callMsg.tool_name || resultMsg.tool_name || "tool";
+  const callID = callMsg.tool_call_id || resultMsg.tool_call_id || "";
+  const args = callMsg.tool_args || (callMsg.content && callMsg.content !== "tool_call" ? callMsg.content : "");
+  const output = resultMsg.content || "";
+  const status = result ? toolActivityStatus(result, resultMsg) : "called";
+  const preview = toolRunPreview(args, output, status);
+  const copyPayload = toolRunCopyPayload({ toolName, callID, args, output, status });
+  const metadata = toolRunMetadata(call, result);
+  return `
+    <article class="message tool ${status === "error" ? "tool-error" : ""}">
+      <details class="tool-activity"${detailStateAttributes(entryExpandKey(sourceEntry, "activity"), false)}>
+        <summary>
+          <span class="tool-summary-main">
+            <span class="tool-kind">tool run</span>
+            <span class="tool-name-pill">${escapeHTML(toolName)}</span>
+            <span class="tiny-pill">${escapeHTML(sourceEntry.turn_id || "turn")}</span>
+            <span class="tiny-pill ${status === "error" ? "danger-pill" : ""}">${escapeHTML(status)}</span>
+            ${toolRunMetrics(call, result)}
+          </span>
+          <span class="tool-summary-preview">${escapeHTML(preview)}</span>
+          ${copyButton(copyPayload)}
+        </summary>
+        <div class="tool-activity-body">
+          ${renderReasoningBlock(callMsg.reasoning || resultMsg.reasoning, "tool", entryExpandKey(sourceEntry, "reasoning"))}
+          ${callID ? `<div class="key-value"><span>Call ID</span><span>${escapeHTML(callID)}</span></div>` : ""}
+          ${renderToolDetailSection("Arguments", args)}
+          ${renderToolDetailSection("Result", output)}
+          ${metadata}
+        </div>
+      </details>
+    </article>
+  `;
+}
+
 function renderAssistantMessage(entry, msg) {
   const body = msg.content || "";
   const copyPayload = body || structuredEntryCopy(entry, "assistant final", msg);
@@ -313,6 +391,58 @@ function renderToolActivity(entry, msg) {
       </details>
     </article>
   `;
+}
+
+function renderToolDetailSection(label, body) {
+  if (String(body || "").trim()) {
+    return `
+      <div class="tool-detail-section">
+        <strong>${escapeHTML(label)}</strong>
+        ${renderExpandableBody(body, { label, mode: "tool", forceOpen: true })}
+      </div>
+    `;
+  }
+  return `
+    <div class="tool-detail-section redacted">
+      <strong>${escapeHTML(label)}</strong>
+      <p class="muted">${escapeHTML(redactedToolDetail)}</p>
+    </div>
+  `;
+}
+
+function toolRunMetadata(...entries) {
+  const merged = {};
+  for (const entry of entries) {
+    for (const [key, value] of Object.entries(entry?.metadata || {})) {
+      merged[key] = value;
+    }
+  }
+  return Object.keys(merged).length ? `<pre class="json-block">${escapeHTML(JSON.stringify(merged, null, 2))}</pre>` : "";
+}
+
+function toolRunMetrics(...entries) {
+  const merged = {};
+  for (const entry of entries) {
+    Object.assign(merged, entry?.metadata || {});
+  }
+  return toolActivityMetrics({ metadata: merged });
+}
+
+function toolRunPreview(args, output, status) {
+  const text = args || output;
+  if (text) return toolPreview(text, { tool_args: args, content: output }, !args);
+  return status === "called" ? "arguments redacted" : "result redacted";
+}
+
+function toolRunCopyPayload({ toolName, callID, args, output, status }) {
+  const parts = [
+    `tool: ${toolName || "-"}`,
+    `status: ${status || "-"}`,
+    callID ? `call_id: ${callID}` : "",
+    args ? `arguments:\n${formatStructuredBody(args)}` : `arguments: ${redactedToolDetail}`,
+    output ? `result:\n${formatStructuredBody(output)}` : `result: ${redactedToolDetail}`,
+  ];
+  return parts.filter(Boolean).join("\n\n");
 }
 
 function toolActivityMetrics(entry) {

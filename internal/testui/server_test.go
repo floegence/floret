@@ -64,6 +64,9 @@ func TestServerExposesConfigAndRunAPI(t *testing.T) {
 	if configState.ContextPolicyDefaults.ContextWindowTokens != 128000 || configState.ContextPolicyDefaults.RecentTailTokens != 12000 {
 		t.Fatalf("config context policy defaults are incomplete = %#v", configState.ContextPolicyDefaults)
 	}
+	if configState.DebugRawEnabled {
+		t.Fatalf("debug raw should not be enabled by default")
+	}
 
 	catalogReq := httptest.NewRequest(http.MethodGet, "/api/catalog", nil)
 	catalogRec := httptest.NewRecorder()
@@ -468,6 +471,66 @@ func TestServerStreamSanitizesRawAgentEventsByDefault(t *testing.T) {
 		if strings.Contains(ev.Message, "PRIVATE_OUTPUT_X") || strings.Contains(ev.Error, "PRIVATE_OUTPUT_X") {
 			t.Fatalf("SSE event exposed failed tool output: %#v", ev)
 		}
+	}
+}
+
+func TestServerAgentSessionDebugRawQueryRequiresCapability(t *testing.T) {
+	newRunner := func(allowDebugRaw bool) Runner {
+		scripted := harness.NewScriptedProvider(
+			harness.Step(
+				harness.Tool("list-1", "list", `{"path":null,"limit":2}`),
+				harness.DoneReason("tool_calls"),
+			),
+			harness.Step(harness.Text("done"), harness.Done()),
+		)
+		runner := NewRunner(t.TempDir())
+		runner.Now = fixedClock()
+		runner.AllowDebugRaw = allowDebugRaw
+		runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+			return scripted, nil
+		}
+		return runner
+	}
+	createAndFetch := func(t *testing.T, runner Runner) AgentSessionSnapshot {
+		t.Helper()
+		server, err := NewServer(runner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		handler := server.Handler()
+		createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model"},"message":"hello","system_prompt":"system","selected_tools":["list"],"debug_raw":true}`
+		createRec := httptest.NewRecorder()
+		handler.ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody)))
+		if createRec.Code != http.StatusOK {
+			t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+		}
+		var created AgentRunResponse
+		if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+			t.Fatal(err)
+		}
+		getRec := httptest.NewRecorder()
+		handler.ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+created.SessionID+"?debug_raw=1", nil))
+		if getRec.Code != http.StatusOK {
+			t.Fatalf("session status = %d, body = %s", getRec.Code, getRec.Body.String())
+		}
+		var snapshot AgentSessionSnapshot
+		if err := json.Unmarshal(getRec.Body.Bytes(), &snapshot); err != nil {
+			t.Fatal(err)
+		}
+		return snapshot
+	}
+
+	denied := createAndFetch(t, newRunner(false))
+	if slices.ContainsFunc(denied.PathEntries, func(entry ObservedSessionEntry) bool {
+		return entry.Message.ToolArgs == `{"path":null,"limit":2}`
+	}) {
+		t.Fatalf("debug_raw query exposed tool args without capability: %#v", denied.PathEntries)
+	}
+	allowed := createAndFetch(t, newRunner(true))
+	if !slices.ContainsFunc(allowed.PathEntries, func(entry ObservedSessionEntry) bool {
+		return entry.Type == "tool_call" && entry.Message.ToolCallID == "list-1" && entry.Message.ToolArgs == `{"path":null,"limit":2}`
+	}) {
+		t.Fatalf("debug_raw query did not expose tool args with capability: %#v", allowed.PathEntries)
 	}
 }
 

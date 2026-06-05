@@ -1144,7 +1144,7 @@ func TestRunnerAgentSessionPersistsAndResumesAfterNewRunner(t *testing.T) {
 		t.Fatalf("persisted turns = %#v", sessions[0].Turns)
 	}
 
-	snapshot, err := recoveredRunner.AgentSession(context.Background(), first.SessionID)
+	snapshot, err := recoveredRunner.AgentSession(context.Background(), first.SessionID, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1321,7 +1321,7 @@ func TestRunnerPersistedInterruptedTurnSnapshotsAsInterrupted(t *testing.T) {
 	if len(sessions) != 1 || sessions[0].Status != "interrupted" || !sessions[0].Recoverable || sessions[0].CanAppendMessage {
 		t.Fatalf("sessions = %#v", sessions)
 	}
-	snapshot, err := restored.AgentSession(context.Background(), sessionID)
+	snapshot, err := restored.AgentSession(context.Background(), sessionID, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1374,7 +1374,7 @@ func TestRunnerPersistedAbortedTurnSnapshotsAsCancelled(t *testing.T) {
 	}
 
 	restored := NewRunner(root)
-	snapshot, err := restored.AgentSession(context.Background(), sessionID)
+	snapshot, err := restored.AgentSession(context.Background(), sessionID, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1442,7 +1442,7 @@ func TestRunnerRepairsStaleThreadLeafAndMetadataTurnsFromJournal(t *testing.T) {
 	if len(sessions) != 1 || sessions[0].Status != string(engine.Completed) || !sessions[0].CanAppendMessage || len(sessions[0].Turns) != 1 {
 		t.Fatalf("sessions = %#v", sessions)
 	}
-	snapshot, err := restored.AgentSession(context.Background(), sessionID)
+	snapshot, err := restored.AgentSession(context.Background(), sessionID, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1541,7 +1541,7 @@ func TestRunnerDeleteAgentSessionRemovesMetadataTreeAndPromptCache(t *testing.T)
 	if err := runner.DeleteAgentSession(context.Background(), first.SessionID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runner.AgentSession(context.Background(), first.SessionID); err == nil || !isMissingAgentSessionError(err) {
+	if _, err := runner.AgentSession(context.Background(), first.SessionID, false); err == nil || !isMissingAgentSessionError(err) {
 		t.Fatalf("AgentSession err = %v, want missing", err)
 	}
 	if sessions := runner.AgentSessions(context.Background()); len(sessions) != 0 {
@@ -1644,7 +1644,7 @@ func TestRunnerDefaultSQLitePersistsListsRestoresAndDeletesSession(t *testing.T)
 	if len(sessions) != 1 || sessions[0].ID != first.SessionID || !slices.Equal(sessions[0].SelectedTools, []string{"grep"}) {
 		t.Fatalf("restarted sessions = %#v", sessions)
 	}
-	opened, err := secondRunner.AgentSession(context.Background(), first.SessionID)
+	opened, err := secondRunner.AgentSession(context.Background(), first.SessionID, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1661,7 +1661,7 @@ func TestRunnerDefaultSQLitePersistsListsRestoresAndDeletesSession(t *testing.T)
 	if sessions := secondRunner.AgentSessions(context.Background()); len(sessions) != 0 {
 		t.Fatalf("sessions after delete = %#v", sessions)
 	}
-	if _, err := secondRunner.AgentSession(context.Background(), first.SessionID); err == nil || !isMissingAgentSessionError(err) {
+	if _, err := secondRunner.AgentSession(context.Background(), first.SessionID, false); err == nil || !isMissingAgentSessionError(err) {
 		t.Fatalf("AgentSession after delete err = %v", err)
 	}
 }
@@ -2065,7 +2065,7 @@ func TestRunnerAgentSessionSnapshotsDoNotBlockOnRunningTurn(t *testing.T) {
 	getResult := make(chan AgentSessionSnapshot, 1)
 	getErr := make(chan error, 1)
 	go func() {
-		snapshot, err := runner.AgentSession(context.Background(), first.ID)
+		snapshot, err := runner.AgentSession(context.Background(), first.ID, false)
 		if err != nil {
 			getErr <- err
 			return
@@ -2106,7 +2106,7 @@ func TestRunnerRunningSnapshotUsesRealTurnID(t *testing.T) {
 		done <- runner.RunAgentTurn(ctx, first.ID, AgentTurnRequest{Message: "hello"})
 	}()
 	blocking.waitStarted(t)
-	snapshot, err := runner.AgentSession(context.Background(), first.ID)
+	snapshot, err := runner.AgentSession(context.Background(), first.ID, false)
 	if err != nil {
 		t.Fatal(err)
 	}

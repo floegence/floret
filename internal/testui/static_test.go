@@ -46,7 +46,7 @@ func TestStaticConsoleToolSelectionSemanticsStayAuditable(t *testing.T) {
 	if !strings.Contains(newSession, "selected_tools: readSelectedTools") {
 		t.Fatalf("new session form must send selected_tools")
 	}
-	if !strings.Contains(appJS, "api.streamTurn(sessionID, { message: trimmed }") {
+	if !strings.Contains(appJS, "api.streamTurn(sessionID, withDebugRaw({ message: trimmed })") {
 		t.Fatalf("append turn should use the streaming endpoint")
 	}
 	appendStart := strings.Index(appJS, "async function appendTurn")
@@ -63,7 +63,7 @@ func TestStaticConsoleCreatesSessionBeforeRunningInitialTurn(t *testing.T) {
 	appJS := readStaticTestFile(t, "app.js")
 	apiJS := readStaticTestFile(t, "api.js")
 
-	for _, want := range []string{"api.createSession(payload)", "activateSessionSnapshot(session)", "void queueInitialTurn(session.id, payload.message, token)", "async function queueInitialTurn", "api.streamTurn(sessionID, { message: trimmed }"} {
+	for _, want := range []string{"api.createSession(withDebugRaw(payload))", "activateSessionSnapshot(session)", "void queueInitialTurn(session.id, payload.message, token)", "async function queueInitialTurn", "api.streamTurn(sessionID, withDebugRaw({ message: trimmed })"} {
 		if !strings.Contains(appJS, want) {
 			t.Fatalf("app missing create-before-run flow %q", want)
 		}
@@ -169,7 +169,7 @@ func TestStaticConsoleStreamsTurnsIncrementally(t *testing.T) {
 			t.Fatalf("api missing streaming turn support %q", want)
 		}
 	}
-	for _, want := range []string{"createLiveTurn", "applyStreamEvent", "state.liveTurn", "assistant_delta", "provider_requests", "session_snapshot", "delete state.composerDrafts[sessionID]"} {
+	for _, want := range []string{"createLiveTurn", "applyStreamEvent", "state.liveTurn", "assistant_delta", "provider_requests", "session_snapshot", "delete state.composerDrafts[sessionID]", "withDebugRaw({ message: trimmed })"} {
 		if !strings.Contains(appJS, want) {
 			t.Fatalf("app missing streaming reducer behavior %q", want)
 		}
@@ -318,7 +318,7 @@ func TestStaticConsoleSessionsUseIndependentScrollRegions(t *testing.T) {
 func TestStaticConsoleStreamingCleanupClearsLiveTurnAfterSnapshotFetchOnErrors(t *testing.T) {
 	appJS := readStaticTestFile(t, "app.js")
 
-	for _, want := range []string{"let streamError = null", "streamError = error", "finalSession = await api.session(sessionID)", "setActiveSessionSnapshot(finalSession)", "state.liveTurn = null", "if (streamError) throw streamError"} {
+	for _, want := range []string{"let streamError = null", "streamError = error", "finalSession = await fetchSessionSnapshot(sessionID)", "setActiveSessionSnapshot(finalSession)", "state.liveTurn = null", "if (streamError) throw streamError"} {
 		if !strings.Contains(appJS, want) {
 			t.Fatalf("streaming failure cleanup missing %q", want)
 		}
@@ -375,14 +375,22 @@ func TestStaticConsoleSessionOperationsAndPolling(t *testing.T) {
 	if strings.Contains(workspace, "data-copy-text") {
 		t.Fatalf("copy controls should not duplicate large message bodies into data-copy-text attributes")
 	}
-	for _, want := range []string{"let autoRefreshTimer = 0", "visibilitychange", "scheduleAutoRefresh", "refreshActiveSessionSnapshot", "document.hidden", "state.route.name !== \"sessions\"", "api.session(sessionID)", "1000", "2000"} {
+	for _, want := range []string{"let autoRefreshTimer = 0", "visibilitychange", "scheduleAutoRefresh", "refreshActiveSessionSnapshot", "document.hidden", "state.route.name !== \"sessions\"", "fetchSessionSnapshot(sessionID)", "1000"} {
 		if !strings.Contains(appJS, want) {
 			t.Fatalf("active session polling missing %q", want)
 		}
 	}
+	if !strings.Contains(appJS, `state.activeSession.status !== "running" && state.activeSession.phase !== "turn"`) || strings.Contains(appJS, " ? 1000 : 2000") {
+		t.Fatalf("completed sessions should not keep polling and replacing selected text")
+	}
 	for _, want := range []string{"captureActiveDrafts();", "render({ preserveFocus: true })", "captureFocusState", "restoreFocusState", "focusSelectorFor", "selectionStart", "selectionEnd", "preventScroll", "data-append-form", "data-tool-edit-form"} {
 		if !strings.Contains(appJS, want) {
 			t.Fatalf("active session polling must preserve input focus: missing %q", want)
+		}
+	}
+	for _, want := range []string{"selectionchange", "hasActiveAppTextSelection", "window.getSelection", "range.intersectsNode", "deferForTextSelection", "state.deferredRender"} {
+		if !strings.Contains(appJS, want) {
+			t.Fatalf("active session polling must defer renders while text is selected: missing %q", want)
 		}
 	}
 	for _, want := range []string{"captureSessionViewportState", "restoreSessionViewportState", "captureConversationScroll", "restoreConversationScroll", "bottomPinned", "conversation.scrollTop", "captureTimelineExpanded", "renderedSessionID"} {
@@ -392,6 +400,30 @@ func TestStaticConsoleSessionOperationsAndPolling(t *testing.T) {
 	}
 	if !strings.Contains(appJS, "const viewportState = captureSessionViewportState();") || !strings.Contains(appJS, "restoreSessionViewportState(viewportState);") {
 		t.Fatalf("render should capture and restore session viewport around DOM replacement")
+	}
+}
+
+func TestStaticConsoleSessionDebugRawAndToolRuns(t *testing.T) {
+	apiJS := readStaticTestFile(t, "api.js")
+	appJS := readStaticTestFile(t, "app.js")
+	stateJS := readStaticTestFile(t, "state.js")
+	workspace := readStaticTestFile(t, "views", "sessionWorkspace.js")
+	css := readStaticTestFile(t, "styles.css")
+
+	for _, want := range []string{"debug_raw_enabled", "deferredRender"} {
+		if !strings.Contains(stateJS+appJS, want) {
+			t.Fatalf("session UI missing debug/selection state %q", want)
+		}
+	}
+	for _, want := range []string{`options.debugRaw ? "?debug_raw=1" : ""`, "debugRawEnabled()", "withDebugRaw(payload)", "withDebugRaw({ message: trimmed })"} {
+		if !strings.Contains(apiJS+appJS, want) {
+			t.Fatalf("session UI should request debug raw data when enabled: missing %q", want)
+		}
+	}
+	for _, want := range []string{"timelineItems", "renderTimelineItem", "renderToolRun", "toolRunKey", "tool run", "Arguments", "Result", "Raw arguments/results are redacted", "tool-detail-section"} {
+		if !strings.Contains(workspace+css, want) {
+			t.Fatalf("workspace should merge and expose tool run details: missing %q", want)
+		}
 	}
 }
 
@@ -469,7 +501,7 @@ func TestStaticConsoleProtectsIMECompositionFromRefreshRenders(t *testing.T) {
 func TestStaticConsoleStreamingTurnKeepsFinalSessionSnapshot(t *testing.T) {
 	appJS := readStaticTestFile(t, "app.js")
 
-	for _, want := range []string{"let finalSession = null", "finalSession = await api.session(sessionID)", "setActiveSessionSnapshot(finalSession)", "if (finalSession) result.session = finalSession"} {
+	for _, want := range []string{"let finalSession = null", "finalSession = await fetchSessionSnapshot(sessionID)", "setActiveSessionSnapshot(finalSession)", "if (finalSession) result.session = finalSession"} {
 		if !strings.Contains(appJS, want) {
 			t.Fatalf("streaming turn final snapshot guard missing %q", want)
 		}

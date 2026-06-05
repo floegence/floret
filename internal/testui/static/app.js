@@ -66,6 +66,7 @@ window.addEventListener("popstate", () => {
 });
 
 document.addEventListener("visibilitychange", scheduleAutoRefresh);
+document.addEventListener("selectionchange", flushDeferredRenderAfterSelection);
 
 boot();
 
@@ -91,11 +92,11 @@ async function refreshSessions({ selectRoute = false } = {}) {
   state.sessions = await api.sessions();
   if (selectRoute && state.route.id) {
     try {
-      setActiveSessionSnapshot(await api.session(state.route.id), { force: true });
+      setActiveSessionSnapshot(await fetchSessionSnapshot(state.route.id), { force: true });
     } catch (error) {
       if (error.status !== 404) throw error;
       if (state.sessions.length) {
-        setActiveSessionSnapshot(await api.session(state.sessions[0].id), { force: true });
+        setActiveSessionSnapshot(await fetchSessionSnapshot(state.sessions[0].id), { force: true });
         replaceRoute({ name: "sessions", id: state.activeSession.id });
       } else {
         state.activeSession = null;
@@ -107,11 +108,11 @@ async function refreshSessions({ selectRoute = false } = {}) {
   if (state.activeSession?.id) {
     const fresh = state.sessions.find((session) => session.id === state.activeSession.id);
     if (fresh) {
-      setActiveSessionSnapshot(await api.session(fresh.id));
+      setActiveSessionSnapshot(await fetchSessionSnapshot(fresh.id));
       return;
     }
     if (state.sessions.length) {
-      setActiveSessionSnapshot(await api.session(state.sessions[0].id), { force: true });
+      setActiveSessionSnapshot(await fetchSessionSnapshot(state.sessions[0].id), { force: true });
       if (state.route.name === "sessions") {
         replaceRoute({ name: "sessions", id: state.activeSession.id });
       }
@@ -124,7 +125,7 @@ async function refreshSessions({ selectRoute = false } = {}) {
     return;
   }
   if (state.sessions.length) {
-    setActiveSessionSnapshot(await api.session(state.sessions[0].id), { force: true });
+    setActiveSessionSnapshot(await fetchSessionSnapshot(state.sessions[0].id), { force: true });
     if (state.route.name === "sessions" && !state.route.id) {
       replaceRoute({ name: "sessions", id: state.activeSession.id });
     }
@@ -137,6 +138,12 @@ function render(options = {}) {
     if (options.scheduleRefresh) state.imeComposition.pendingRefresh = true;
     return;
   }
+  if (options.deferForTextSelection && hasActiveAppTextSelection()) {
+    state.deferredRender = { preserveFocus: Boolean(options.preserveFocus), scheduleRefresh: Boolean(options.scheduleRefresh) };
+    if (options.scheduleRefresh) scheduleAutoRefresh();
+    return;
+  }
+  state.deferredRender = null;
   const focusState = options.preserveFocus ? captureFocusState() : null;
   const viewportState = captureSessionViewportState();
   renderTopbar();
@@ -233,6 +240,19 @@ function setActiveSessionSnapshot(session, options = {}) {
   return true;
 }
 
+function fetchSessionSnapshot(id) {
+  return api.session(id, { debugRaw: debugRawEnabled() });
+}
+
+function withDebugRaw(payload) {
+  if (!debugRawEnabled()) return payload;
+  return { ...payload, debug_raw: true };
+}
+
+function debugRawEnabled() {
+  return Boolean(state.config?.debug_raw_enabled);
+}
+
 function shouldAcceptSessionSnapshot(current, next, options = {}) {
   if (!current?.id || current.id !== next?.id) return true;
   if (options.allowRunningOverlay) {
@@ -255,7 +275,7 @@ async function selectSession(id) {
   captureSessionViewportState();
   const token = ++state.selectionToken;
   await runWithStatus({ status: "loading", action: "select-session", renderStart: false }, async () => {
-    const session = await api.session(id);
+    const session = await fetchSessionSnapshot(id);
     if (token !== state.selectionToken) return;
     setActiveSessionSnapshot(session, { force: true });
     state.lastResult = null;
@@ -267,7 +287,7 @@ async function createSession(payload) {
   state.newSessionDraft = payload;
   const token = ++state.mutationToken;
   await runWithStatus({ status: "running", action: "create-session", successMessage: "Session created and opened" }, async () => {
-    const session = await api.createSession(payload);
+    const session = await api.createSession(withDebugRaw(payload));
     if (token !== state.mutationToken) return false;
     activateSessionSnapshot(session);
     state.lastResult = null;
@@ -300,7 +320,7 @@ async function runStreamingTurn(sessionID, message, token, successMessage) {
     let finalSession = null;
     let streamError = null;
     try {
-      await api.streamTurn(sessionID, { message: trimmed }, (event) => {
+      await api.streamTurn(sessionID, withDebugRaw({ message: trimmed }), (event) => {
         if (token !== state.mutationToken || state.liveTurn?.session_id !== sessionID) return;
         applyStreamEvent(event);
         render({ preserveFocus: true, scheduleRefresh: true });
@@ -313,7 +333,7 @@ async function runStreamingTurn(sessionID, message, token, successMessage) {
     } finally {
       if (token === state.mutationToken && state.activeSession?.id === sessionID) {
         try {
-          finalSession = await api.session(sessionID);
+          finalSession = await fetchSessionSnapshot(sessionID);
           setActiveSessionSnapshot(finalSession);
         } catch {
           // The toast path in runWithStatus will surface the stream failure.
@@ -797,7 +817,8 @@ function scheduleAutoRefresh() {
     state.imeComposition.pendingRefresh = true;
     return;
   }
-  const delay = state.activeSession.status === "running" || state.activeSession.phase === "turn" ? 1000 : 2000;
+  if (state.activeSession.status !== "running" && state.activeSession.phase !== "turn") return;
+  const delay = 1000;
   autoRefreshTimer = window.setTimeout(refreshActiveSessionSnapshot, delay);
 }
 
@@ -812,11 +833,11 @@ async function refreshActiveSessionSnapshot() {
   const sessionID = state.activeSession.id;
   captureActiveDrafts();
   try {
-    const [sessions, session] = await Promise.all([api.sessions(), api.session(sessionID)]);
+    const [sessions, session] = await Promise.all([api.sessions(), fetchSessionSnapshot(sessionID)]);
     if (state.route.name !== "sessions" || state.activeSession?.id !== sessionID) return;
     state.sessions = sessions;
     setActiveSessionSnapshot(session);
-    render({ preserveFocus: true });
+    render({ preserveFocus: true, deferForTextSelection: true, scheduleRefresh: true });
   } catch (error) {
     if (error.status === 404 && state.activeSession?.id === sessionID) {
       state.activeSession = null;
@@ -828,6 +849,32 @@ async function refreshActiveSessionSnapshot() {
     }
     scheduleAutoRefresh();
   }
+}
+
+function hasActiveAppTextSelection() {
+  const selection = window.getSelection?.();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return false;
+  for (let i = 0; i < selection.rangeCount; i += 1) {
+    const range = selection.getRangeAt(i);
+    if (range.intersectsNode?.(appView) || nodeInsideApp(range.commonAncestorContainer)) return true;
+  }
+  return false;
+}
+
+function nodeInsideApp(node) {
+  if (!node) return false;
+  const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  return Boolean(element && appView.contains(element));
+}
+
+function flushDeferredRenderAfterSelection() {
+  if (!state.deferredRender || hasActiveAppTextSelection()) return;
+  const options = state.deferredRender;
+  state.deferredRender = null;
+  window.setTimeout(() => {
+    if (state.deferredRender || hasActiveAppTextSelection()) return;
+    render(options);
+  }, 0);
 }
 
 function captureFocusState() {

@@ -151,7 +151,7 @@ func (s *Server) handleAgentSessionRoute(w http.ResponseWriter, r *http.Request)
 	}
 	sessionID := parts[0]
 	if r.Method == http.MethodGet && len(parts) == 1 {
-		snapshot, err := s.Runner.AgentSession(r.Context(), sessionID)
+		snapshot, err := s.Runner.AgentSession(r.Context(), sessionID, debugRawQuery(r))
 		if err != nil {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 			return
@@ -176,6 +176,11 @@ func (s *Server) handleAgentSessionRoute(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	http.NotFound(w, r)
+}
+
+func debugRawQuery(r *http.Request) bool {
+	value := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("debug_raw")))
+	return value == "1" || value == "true" || value == "yes"
 }
 
 func (s *Server) handleAgentSessionDelete(w http.ResponseWriter, r *http.Request, sessionID string) {

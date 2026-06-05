@@ -626,7 +626,8 @@ func (r *Runner) DeleteAgentSession(ctx context.Context, sessionID string) error
 	})
 }
 
-func (r *Runner) AgentSession(ctx context.Context, sessionID string) (AgentSessionSnapshot, error) {
+func (r *Runner) AgentSession(ctx context.Context, sessionID string, debugRaw bool) (AgentSessionSnapshot, error) {
+	debugRaw = r.debugRawAllowed(debugRaw)
 	sess, ok := r.sessionRegistry().get(sessionID)
 	if !ok {
 		meta, err := r.loadAgentSessionMetadata(sessionID)
@@ -637,17 +638,17 @@ func (r *Runner) AgentSession(ctx context.Context, sessionID string) (AgentSessi
 		if err != nil {
 			return AgentSessionSnapshot{}, err
 		}
-		return publicAgentSessionSnapshot(snapshot, false), nil
+		return publicAgentSessionSnapshot(snapshot, debugRaw), nil
 	}
 	if !sess.mu.TryLock() {
-		return publicAgentSessionSnapshot(r.runningAgentSessionSnapshot(ctx, sess), false), nil
+		return publicAgentSessionSnapshot(r.runningAgentSessionSnapshot(ctx, sess), debugRaw), nil
 	}
 	defer sess.mu.Unlock()
 	snapshot, err := r.sessionSnapshotLocked(ctx, sess)
 	if err != nil {
 		return AgentSessionSnapshot{}, err
 	}
-	return publicAgentSessionSnapshot(snapshot, false), nil
+	return publicAgentSessionSnapshot(snapshot, debugRaw), nil
 }
 
 func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selectedTools []string) (agentSessionRuntime, error) {

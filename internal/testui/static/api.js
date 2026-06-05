@@ -28,8 +28,9 @@ export const api = {
   sessions() {
     return requestJSON("/api/agent/sessions", { headers: {} });
   },
-  session(id) {
-    return requestJSON(`/api/agent/sessions/${encodeURIComponent(id)}`, { headers: {} });
+  session(id, options = {}) {
+    const query = options.debugRaw ? "?debug_raw=1" : "";
+    return requestJSON(`/api/agent/sessions/${encodeURIComponent(id)}${query}`, { headers: {} });
   },
   createSession(payload) {
     return requestJSON("/api/agent/sessions", { method: "POST", body: JSON.stringify(payload) });

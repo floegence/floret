@@ -87,6 +87,7 @@ type ConfigState struct {
 	EnvFile               string               `json:"env_file"`
 	EnvFileFound          bool                 `json:"env_file_found"`
 	ActiveProfileID       string               `json:"active_profile_id"`
+	DebugRawEnabled       bool                 `json:"debug_raw_enabled"`
 	Profiles              []ProviderProfile    `json:"profiles"`
 	Catalog               []CatalogProvider    `json:"catalog"`
 	ContextPolicyDefaults contextpolicy.Policy `json:"context_policy_defaults"`
