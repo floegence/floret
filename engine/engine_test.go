@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -174,6 +176,8 @@ func TestTaskCompleteOnlyCompletesWhenExplicitSignalPolicyIsEnabled(t *testing.T
 func TestTaskCompleteIsNormalToolUnderNaturalStopPolicy(t *testing.T) {
 	p := harness.NewScriptedProvider(
 		harness.Step(harness.Tool("done", "task_complete", `{"output":"done"}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Empty()),
+		harness.Step(harness.Empty()),
 	)
 	e := newTestEngine(p, &event.Recorder{})
 	got := e.Run(context.Background(), "do the thing")
@@ -225,6 +229,66 @@ func TestRunTurnUsesCallerSuppliedHistoryWithoutAppendingUserText(t *testing.T) 
 	}
 	if len(originalMessages) != 1 || originalMessages[0].Content != "existing" {
 		t.Fatalf("RunTurn polluted original store: %#v", originalMessages)
+	}
+}
+
+func TestRunTurnConcurrentSameEngineIsolatesTurnState(t *testing.T) {
+	p := newBarrierProvider(2)
+	e := newTestEngine(p, &event.Recorder{})
+	e.Options.RunID = "base-run"
+	e.Options.SessionID = "base-session"
+
+	var wg sync.WaitGroup
+	results := make([]engine.Result, 2)
+	inputs := []engine.RunInput{
+		{RunID: "turn-a", SessionID: "thread-a", TraceID: "turn-a", History: []session.Message{{Role: session.User, Content: "alpha"}}},
+		{RunID: "turn-b", SessionID: "thread-b", TraceID: "turn-b", History: []session.Message{{Role: session.User, Content: "beta"}}},
+	}
+	for i := range inputs {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			results[idx] = e.RunTurn(context.Background(), inputs[idx])
+		}(i)
+	}
+	wg.Wait()
+
+	for i, result := range results {
+		if result.Status != engine.Completed || result.Output == "" {
+			t.Fatalf("result %d = %#v", i, result)
+		}
+		if e.Options.RunID != "base-run" || e.Options.SessionID != "base-session" {
+			t.Fatalf("RunTurn mutated receiver options: %#v", e.Options)
+		}
+	}
+	requests := p.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(requests))
+	}
+	seen := map[string]provider.Request{}
+	for _, req := range requests {
+		seen[req.RunID] = req
+	}
+	for _, input := range inputs {
+		req, ok := seen[input.RunID]
+		if !ok {
+			t.Fatalf("missing request for run %s: %#v", input.RunID, requests)
+		}
+		if req.RunID != input.RunID {
+			t.Fatalf("request scope = %#v, want run %s", req, input.RunID)
+		}
+		if !slices.ContainsFunc(req.Messages, func(msg session.Message) bool {
+			return msg.Role == session.User && msg.Content == input.History[0].Content
+		}) {
+			t.Fatalf("request %s missing its own history: %#v", input.RunID, req.Messages)
+		}
+		other := "alpha"
+		if input.History[0].Content == "alpha" {
+			other = "beta"
+		}
+		if slices.ContainsFunc(req.Messages, func(msg session.Message) bool { return msg.Content == other }) {
+			t.Fatalf("request %s leaked other session history: %#v", input.RunID, req.Messages)
+		}
 	}
 }
 
@@ -363,7 +427,7 @@ func TestRunMultipleToolCallsFeedAllResultsIntoNextProviderRequest(t *testing.T)
 
 func TestPromptCacheFreezesToolsetWhenRegistryChanges(t *testing.T) {
 	p := harness.NewScriptedProvider(
-		harness.Step(harness.Tool("read-1", "read", `{"value":"README.md"}`)),
+		harness.Step(harness.Tool("read-1", "read", `{"value":"README.md"}`), harness.DoneReason("tool_calls")),
 		harness.Step(harness.Text("ok"), harness.Done()),
 	)
 	reg := tools.NewRegistry()
@@ -454,7 +518,7 @@ func TestPromptCacheFileStoreKeepsPrefixStableAcrossEngineRestart(t *testing.T) 
 	store := session.NewMemoryStore()
 	root := t.TempDir()
 	promptStore := promptcache.NewFileStore(root)
-	firstProvider := harness.NewScriptedProvider(harness.Step(harness.Tool("ask", "ask_user", `{"question":"more?"}`)))
+	firstProvider := harness.NewScriptedProvider(harness.Step(harness.Tool("ask", "ask_user", `{"question":"more?"}`), harness.DoneReason("tool_calls")))
 	first := newTestEngine(firstProvider, &event.Recorder{})
 	first.Store = store
 	first.Prompt = promptStore
@@ -486,11 +550,11 @@ func TestPromptCacheFileStoreKeepsPrefixStableAcrossEngineRestart(t *testing.T) 
 		t.Fatalf("resumed request did not preserve first raw prefix")
 	}
 	for _, name := range []string{"raw_segments.jsonl", "toolsets.jsonl", "requests.jsonl", "responses.jsonl"} {
-		if _, err := os.Stat(filepath.Join(root, "run", name)); err != nil {
+		if _, err := os.Stat(filepath.Join(root, promptCachePathForTest("run"), name)); err != nil {
 			t.Fatalf("expected persisted %s: %v", name, err)
 		}
 	}
-	data, err := os.ReadFile(filepath.Join(root, "run", "responses.jsonl"))
+	data, err := os.ReadFile(filepath.Join(root, promptCachePathForTest("run"), "responses.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -602,6 +666,7 @@ func TestMixedControlAndOrdinaryToolsFailBeforePersistingOrphans(t *testing.T) {
 				{ID: "ask", Name: "ask_user", Args: `{"question":"Which file?"}`},
 				{ID: "read", Name: "read", Args: `{"value":"x"}`},
 			}},
+			{Type: provider.Done, Reason: "tool_calls"},
 		},
 	)
 	reg := tools.NewRegistry()
@@ -627,7 +692,7 @@ func TestMixedControlAndOrdinaryToolsFailBeforePersistingOrphans(t *testing.T) {
 
 func TestWaitingCanResumeByAppendingUserAnswerToSameRun(t *testing.T) {
 	store := session.NewMemoryStore()
-	p1 := harness.NewScriptedProvider(harness.Step(harness.Tool("ask", "ask_user", `{"question":"Which file?"}`)))
+	p1 := harness.NewScriptedProvider(harness.Step(harness.Tool("ask", "ask_user", `{"question":"Which file?"}`), harness.DoneReason("tool_calls")))
 	e1 := newTestEngine(p1, &event.Recorder{})
 	e1.Store = store
 	got := e1.Run(context.Background(), "continue")
@@ -748,6 +813,7 @@ func TestToolResultLimitAppliesBeforeHistoryAndNextProviderRequest(t *testing.T)
 			Name:        "read",
 			InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
 			ReadOnly:    true,
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
 			ResultLimit: tools.ResultLimit{
 				MaxBytes: 8,
 				Strategy: "tail",
@@ -797,6 +863,7 @@ func TestErrorToolResultLimitPreservesErrorPrefixMetadataAndArtifacts(t *testing
 		tools.Definition{
 			Name:        "shell",
 			InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
 			ResultLimit: tools.ResultLimit{MaxBytes: 8, Strategy: "tail"},
 		},
 		nil,
@@ -912,6 +979,98 @@ func TestProviderRequestRejectsLocalHostedToolNameConflict(t *testing.T) {
 	}
 }
 
+func TestEngineRejectsHostProvidedReservedAndDuplicateToolDefinitions(t *testing.T) {
+	cases := []struct {
+		name  string
+		tools []provider.ToolDefinition
+		want  string
+	}{
+		{name: "reserved ask", tools: []provider.ToolDefinition{{Name: "ask_user"}}, want: "reserved"},
+		{name: "reserved task complete", tools: []provider.ToolDefinition{{Name: "task_complete"}}, want: "reserved"},
+		{name: "duplicate", tools: []provider.ToolDefinition{{Name: "read"}, {Name: " read "}}, want: "duplicate"},
+		{name: "empty", tools: []provider.ToolDefinition{{Name: ""}}, want: "name is required"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			p := harness.NewScriptedProvider(harness.Step(harness.Text("unused"), harness.Done()))
+			e := newTestEngine(p, &event.Recorder{})
+			e.Options.ToolDefinitions = tt.tools
+			got := e.Run(context.Background(), "work")
+			if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), tt.want) {
+				t.Fatalf("result = %#v, want %q", got, tt.want)
+			}
+			if len(p.Requests) != 0 {
+				t.Fatalf("invalid tool definitions should not reach provider: %#v", p.Requests)
+			}
+		})
+	}
+}
+
+func TestEngineRejectsInvalidHostedToolDefinitions(t *testing.T) {
+	cases := []struct {
+		name   string
+		hosted []provider.HostedToolDefinition
+		want   string
+	}{
+		{name: "empty name", hosted: []provider.HostedToolDefinition{{Type: "web_search"}}, want: "name is required"},
+		{name: "empty type", hosted: []provider.HostedToolDefinition{{Name: "web_search"}}, want: "type is required"},
+		{name: "reserved", hosted: []provider.HostedToolDefinition{{Name: "ask_user", Type: "control"}}, want: "reserved"},
+		{name: "duplicate", hosted: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}, {Name: "web_search", Type: "other"}}, want: "duplicate hosted tool name"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			p := harness.NewScriptedProvider(harness.Step(harness.Text("unused"), harness.Done()))
+			e := newTestEngine(p, &event.Recorder{})
+			e.Options.HostedToolDefinitions = tt.hosted
+			got := e.Run(context.Background(), "work")
+			if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), tt.want) {
+				t.Fatalf("result = %#v, want %q", got, tt.want)
+			}
+			if len(p.Requests) != 0 {
+				t.Fatalf("invalid hosted tools should not reach provider: %#v", p.Requests)
+			}
+		})
+	}
+}
+
+func TestProviderHostedToolEventMustMatchRequestedHostedTool(t *testing.T) {
+	p := harness.NewScriptedProvider(harness.Step(
+		provider.StreamEvent{Type: provider.HostedToolCall, ToolCall: provider.ToolCall{ID: "hosted-1", Name: "other_search", Args: `{"query":"x"}`}},
+		harness.Done(),
+	))
+	e := newTestEngine(p, &event.Recorder{})
+	e.Options.HostedToolDefinitions = []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}
+	got := e.Run(context.Background(), "search")
+	if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), "unrequested hosted tool") {
+		t.Fatalf("result = %#v", got)
+	}
+}
+
+func TestUnknownProviderEventFailsClearly(t *testing.T) {
+	p := harness.NewScriptedProvider(harness.Step(provider.StreamEvent{Type: "mystery"}))
+	e := newTestEngine(p, &event.Recorder{})
+	got := e.Run(context.Background(), "work")
+	if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), "unknown provider event type") {
+		t.Fatalf("result = %#v", got)
+	}
+}
+
+func TestProviderStreamMissingTerminalFails(t *testing.T) {
+	e := newTestEngine(missingTerminalProvider{}, &event.Recorder{})
+	got := e.Run(context.Background(), "work")
+	if got.Status != engine.Failed || !errors.Is(got.Err, provider.ErrStreamMissingTerminal) {
+		t.Fatalf("result = %#v, want missing terminal failure", got)
+	}
+}
+
+func TestProviderStreamEventAfterTerminalFails(t *testing.T) {
+	e := newTestEngine(eventAfterTerminalProvider{}, &event.Recorder{})
+	got := e.Run(context.Background(), "work")
+	if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), "after terminal") {
+		t.Fatalf("result = %#v, want post-terminal event failure", got)
+	}
+}
+
 func TestReadOnlyToolsRunInParallelAndMutatingToolsKeepOrder(t *testing.T) {
 	reg := tools.NewRegistry()
 	order := make(chan string, 4)
@@ -1000,6 +1159,7 @@ func TestRunAggregatesUsageAcrossMultipleSteps(t *testing.T) {
 		harness.Step(
 			harness.Usage(provider.Usage{InputTokens: 10, OutputTokens: 1, Source: provider.UsageNative}),
 			harness.Tool("missing-1", "missing", "{}"),
+			harness.DoneReason("tool_calls"),
 		),
 		harness.Step(
 			harness.Usage(provider.Usage{InputTokens: 20, OutputTokens: 2, Source: provider.UsageEstimated}),
@@ -1057,6 +1217,7 @@ func TestRunStopsOnTokenCostAndToolBudgets(t *testing.T) {
 				{ID: "a", Name: "missing", Args: `{"value":"a"}`},
 				{ID: "b", Name: "missing", Args: `{"value":"b"}`},
 			}},
+			harness.DoneReason("tool_calls"),
 		))
 		e := newTestEngine(p, &event.Recorder{})
 		e.Options.MaxToolCalls = 1
@@ -1249,8 +1410,14 @@ func TestUnknownFinishWithTextIsInferredNaturalStop(t *testing.T) {
 func TestLoopGuardsDuplicateToolsAndCancellation(t *testing.T) {
 	t.Run("duplicate tools", func(t *testing.T) {
 		p := harness.NewScriptedProvider(
-			[]provider.StreamEvent{{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "x1", Name: "missing", Args: `{"value":"same"}`}}}},
-			[]provider.StreamEvent{{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "x2", Name: "missing", Args: `{"value":"same"}`}}}},
+			[]provider.StreamEvent{
+				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "x1", Name: "missing", Args: `{"value":"same"}`}}},
+				{Type: provider.Done, Reason: "tool_calls"},
+			},
+			[]provider.StreamEvent{
+				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "x2", Name: "missing", Args: `{"value":"same"}`}}},
+				{Type: provider.Done, Reason: "tool_calls"},
+			},
 		)
 		e := newTestEngine(p, &event.Recorder{})
 		e.Options.DuplicateToolLimit = 1
@@ -1314,6 +1481,64 @@ func (blockingProvider) Stream(context.Context, provider.Request) (<-chan provid
 	return make(chan provider.StreamEvent), nil
 }
 
+type missingTerminalProvider struct{}
+
+func (missingTerminalProvider) Stream(context.Context, provider.Request) (<-chan provider.StreamEvent, error) {
+	ch := make(chan provider.StreamEvent, 1)
+	ch <- provider.StreamEvent{Type: provider.Delta, Text: "partial"}
+	close(ch)
+	return ch, nil
+}
+
+type eventAfterTerminalProvider struct{}
+
+func (eventAfterTerminalProvider) Stream(context.Context, provider.Request) (<-chan provider.StreamEvent, error) {
+	ch := make(chan provider.StreamEvent, 2)
+	ch <- provider.StreamEvent{Type: provider.Done, Reason: "stop"}
+	ch <- provider.StreamEvent{Type: provider.Delta, Text: "late"}
+	close(ch)
+	return ch, nil
+}
+
+type barrierProvider struct {
+	mu       sync.Mutex
+	want     int
+	arrived  int
+	released chan struct{}
+	requests []provider.Request
+}
+
+func newBarrierProvider(want int) *barrierProvider {
+	return &barrierProvider{want: want, released: make(chan struct{})}
+}
+
+func (p *barrierProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
+	p.mu.Lock()
+	p.requests = append(p.requests, req)
+	p.arrived++
+	if p.arrived == p.want {
+		close(p.released)
+	}
+	p.mu.Unlock()
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-p.released:
+	}
+	ch := make(chan provider.StreamEvent, 2)
+	ch <- provider.StreamEvent{Type: provider.Delta, Text: "ok " + req.RunID}
+	ch <- provider.StreamEvent{Type: provider.Done, Reason: "stop"}
+	close(ch)
+	return ch, nil
+}
+
+func (p *barrierProvider) Requests() []provider.Request {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]provider.Request(nil), p.requests...)
+}
+
 type cancelAfterFirstDeltaProvider struct {
 	cancel context.CancelFunc
 }
@@ -1358,6 +1583,10 @@ func newTestEngine(p provider.Provider, rec *event.Recorder) *engine.Engine {
 			DuplicateToolLimit:      3,
 		},
 	}
+}
+
+func promptCachePathForTest(value string) string {
+	return "id_" + base64.RawURLEncoding.EncodeToString([]byte(value))
 }
 
 func buildProviderRequestForTest(ctx context.Context, e *engine.Engine, step int, history []session.Message) (provider.Request, error) {
@@ -1413,6 +1642,9 @@ type stringArgs struct {
 }
 
 func stringTool(name, description string, readOnly bool, permission tools.PermissionSpec, handler func(context.Context, string) (string, error)) tools.Tool {
+	if permission.Mode == "" {
+		permission.Mode = tools.PermissionAllow
+	}
 	return tools.Define[stringArgs](
 		tools.Definition{
 			Name:        name,

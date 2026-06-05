@@ -29,8 +29,9 @@ var (
 )
 
 const (
-	threadPhaseIdle = sessionlifecycle.PhaseIdle
-	threadPhaseTurn = sessionlifecycle.PhaseTurn
+	threadPhaseIdle       = sessionlifecycle.PhaseIdle
+	threadPhaseTurn       = sessionlifecycle.PhaseTurn
+	staleTurnLeaseTimeout = 24 * time.Hour
 )
 
 type HarnessEventType string
@@ -76,11 +77,30 @@ type Options struct {
 	HarnessSink         HarnessSink
 	Approver            tools.Approver
 	StopHook            engine.StopHook
-	ContextPolicy       contextpolicy.Policy
 	CompactionGenerator compaction.SummaryGenerator
-	EngineOptions       engine.Options
+	TurnPolicy          TurnPolicy
+	LoopLimits          LoopLimits
 	NewID               func(string) string
 	Now                 func() time.Time
+}
+
+type TurnPolicy struct {
+	ContextPolicy         contextpolicy.Policy
+	CacheRetention        promptcache.Retention
+	HostedToolDefinitions []provider.HostedToolDefinition
+	CompletionPolicy      engine.CompletionPolicy
+}
+
+type LoopLimits struct {
+	MaxEmptyProviderRetries  int
+	NoProgressLimit          int
+	DuplicateToolLimit       int
+	WallTime                 time.Duration
+	MaxTotalTokens           int64
+	MaxCostUSD               float64
+	MaxToolCalls             int
+	MaxLengthContinuations   int
+	MaxStopHookContinuations int
 }
 
 type AgentHarness struct {
@@ -176,6 +196,16 @@ func (h *AgentHarness) ResumeThread(ctx context.Context, id string, _ ResumeOpti
 	if err != nil {
 		return nil, err
 	}
+	if lease, ok, err := h.activeTurnLease(ctx, meta.ID); err != nil {
+		return nil, err
+	} else if ok && lease.TurnID != "" {
+		cutoff := h.now().Add(-staleTurnLeaseTimeout)
+		if cleared, stale, clearErr := h.clearExpiredTurnLease(ctx, meta.ID, cutoff); clearErr != nil {
+			return nil, clearErr
+		} else if !stale || cleared.TurnID != lease.TurnID {
+			return nil, ErrActiveTurn
+		}
+	}
 	if err := h.markInterruptedTurns(ctx, meta); err != nil {
 		return nil, err
 	}
@@ -267,8 +297,50 @@ func (h *AgentHarness) emit(ev HarnessEvent) {
 		h.options.HarnessSink.EmitHarness(ev)
 	}
 	if h.options.Sink != nil {
-		h.options.Sink.Emit(event.Event{Type: event.Type(ev.Type), RunID: ev.TurnID, SessionID: ev.ThreadID, Message: ev.Message, Timestamp: ev.Timestamp})
+		h.options.Sink.Emit(event.Sanitize(event.Event{Type: event.Type(ev.Type), RunID: ev.TurnID, SessionID: ev.ThreadID, Message: ev.Message, Timestamp: ev.Timestamp}))
 	}
+}
+
+func (h *AgentHarness) activeTurnLease(ctx context.Context, threadID string) (sessiontree.TurnLease, bool, error) {
+	repo, ok := h.options.Repo.(sessiontree.TurnLeaseRepo)
+	if !ok {
+		return sessiontree.TurnLease{}, false, nil
+	}
+	return repo.ActiveTurnLease(ctx, threadID)
+}
+
+func (h *AgentHarness) clearExpiredTurnLease(ctx context.Context, threadID string, cutoff time.Time) (sessiontree.TurnLease, bool, error) {
+	repo, ok := h.options.Repo.(sessiontree.TurnLeaseRepo)
+	if !ok {
+		return sessiontree.TurnLease{}, false, nil
+	}
+	return repo.ClearExpiredTurnLease(ctx, threadID, cutoff)
+}
+
+func (h *AgentHarness) acquireTurnLease(ctx context.Context, threadID, turnID string) (sessiontree.TurnLease, error) {
+	repo, ok := h.options.Repo.(sessiontree.TurnLeaseRepo)
+	if !ok {
+		return sessiontree.TurnLease{}, nil
+	}
+	lease := sessiontree.TurnLease{ThreadID: threadID, TurnID: turnID, OwnerID: h.nextID("lease"), CreatedAt: h.now()}
+	if err := repo.AcquireTurnLease(ctx, lease); err != nil {
+		if errors.Is(err, sessiontree.ErrActiveTurn) {
+			return sessiontree.TurnLease{}, ErrActiveTurn
+		}
+		return sessiontree.TurnLease{}, err
+	}
+	return lease, nil
+}
+
+func (h *AgentHarness) releaseTurnLease(ctx context.Context, lease sessiontree.TurnLease) error {
+	if lease.ThreadID == "" {
+		return nil
+	}
+	repo, ok := h.options.Repo.(sessiontree.TurnLeaseRepo)
+	if !ok {
+		return nil
+	}
+	return repo.ReleaseTurnLease(ctx, lease)
 }
 
 func (t *Thread) ID() string {
@@ -305,6 +377,20 @@ func (t *Thread) Run(ctx context.Context, input string, opts RunOptions) (TurnRe
 }
 
 func (t *Thread) Retry(ctx context.Context, opts RetryOptions) (TurnResult, error) {
+	if err := t.enterTurn(); err != nil {
+		return TurnResult{}, err
+	}
+	defer t.leaveTurn()
+	turnID := t.harness.nextID("turn")
+	lease, err := t.harness.acquireTurnLease(ctx, t.id, turnID)
+	if err != nil {
+		return TurnResult{}, err
+	}
+	defer func() {
+		persistCtx, cancel := turnFinalizationContext(ctx)
+		defer cancel()
+		_ = t.harness.releaseTurnLease(persistCtx, lease)
+	}()
 	snap, err := t.Read(ctx)
 	if err != nil {
 		return TurnResult{}, err
@@ -317,10 +403,15 @@ func (t *Thread) Retry(ctx context.Context, opts RetryOptions) (TurnResult, erro
 		return TurnResult{}, err
 	}
 	t.harness.emit(HarnessEvent{Type: EventRetryStarted, ThreadID: t.id, EntryID: target.Entry.ID, Metadata: map[string]string{"reason": opts.Reason, "source": target.Source}})
-	return t.run(ctx, "", RunOptions{}, &target.Entry)
+	return t.runLeased(ctx, "", RunOptions{TurnID: turnID}, &target.Entry)
 }
 
 func (t *Thread) MoveTo(ctx context.Context, entryID string, opts MoveOptions) error {
+	release, err := t.enterMutation(ctx, t.harness.nextID("mutation"))
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := t.harness.options.Repo.MoveLeaf(ctx, t.id, entryID); err != nil {
 		return err
 	}
@@ -336,6 +427,11 @@ func (t *Thread) MoveTo(ctx context.Context, entryID string, opts MoveOptions) e
 }
 
 func (t *Thread) Compact(ctx context.Context, summary, firstKeptEntryID string) (sessiontree.Entry, error) {
+	release, err := t.enterMutation(ctx, t.harness.nextID("compact"))
+	if err != nil {
+		return sessiontree.Entry{}, err
+	}
+	defer release()
 	result := compaction.Result{
 		CompactionID:         t.harness.nextID("compaction"),
 		FirstKeptEntryID:     firstKeptEntryID,
@@ -362,10 +458,28 @@ func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retryUs
 		return TurnResult{}, err
 	}
 	defer t.leaveTurn()
+	return t.runEntered(ctx, input, opts, retryUser)
+}
+
+func (t *Thread) runEntered(ctx context.Context, input string, opts RunOptions, retryUser *sessiontree.Entry) (TurnResult, error) {
 	turnID := opts.TurnID
 	if turnID == "" {
 		turnID = t.harness.nextID("turn")
 	}
+	lease, err := t.harness.acquireTurnLease(ctx, t.id, turnID)
+	if err != nil {
+		return TurnResult{}, err
+	}
+	defer func() {
+		persistCtx, cancel := turnFinalizationContext(ctx)
+		defer cancel()
+		_ = t.harness.releaseTurnLease(persistCtx, lease)
+	}()
+	return t.runLeased(ctx, input, RunOptions{TurnID: turnID}, retryUser)
+}
+
+func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, retryUser *sessiontree.Entry) (TurnResult, error) {
+	turnID := opts.TurnID
 	if _, err := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, sessiontree.TurnStarted, nil); err != nil {
 		return TurnResult{}, err
 	}
@@ -373,23 +487,27 @@ func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retryUs
 	if retryUser == nil {
 		entry, err := sessiontree.AppendMessage(ctx, t.harness.options.Repo, t.id, turnID, session.Message{Role: session.User, Content: input})
 		if err != nil {
-			return TurnResult{}, err
+			persistCtx, cancelPersist := turnFinalizationContext(ctx)
+			defer cancelPersist()
+			return t.finalizeFailedTurn(persistCtx, turnID, turnID, statusForError(err), err, "append_user_error")
 		}
 		t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID})
 	}
 	snap, err := t.Read(ctx)
 	if err != nil {
-		return TurnResult{}, err
+		persistCtx, cancelPersist := turnFinalizationContext(ctx)
+		defer cancelPersist()
+		return t.finalizeFailedTurn(persistCtx, turnID, turnID, statusForError(err), err, "snapshot_error")
 	}
 	history := sessiontree.BuildContext(snap.Path, sessiontree.ContextOptions{})
 	runID := turnID
-	engineOptions := t.harness.options.EngineOptions
+	engineOptions := t.harness.engineOptions()
 	engineOptions.RunID = runID
 	engineOptions.SessionID = t.id
 	engineOptions.TraceID = runID
 	engineOptions.ProviderName = t.harness.options.ProviderName
 	engineOptions.Model = t.harness.options.Model
-	engineOptions.ContextPolicy = contextpolicy.Normalize(mergeContextPolicy(engineOptions.ContextPolicy, t.harness.options.ContextPolicy))
+	engineOptions.ContextPolicy = contextpolicy.Normalize(engineOptions.ContextPolicy)
 	eng := &engine.Engine{
 		Provider: t.harness.options.Provider,
 		Tools:    t.harness.options.Tools,
@@ -410,19 +528,19 @@ func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retryUs
 	defer cancelPersist()
 	projection.ctx = persistCtx
 	if projection.err != nil {
-		return TurnResult{}, projection.err
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, projection.err, "projection_error")
 	}
 	if err := projection.Flush(); err != nil {
-		return TurnResult{}, err
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, err, "projection_flush_error")
 	}
 	deltaBase := history
 	current, err := t.Read(persistCtx)
 	if err != nil {
-		return TurnResult{}, err
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "snapshot_error")
 	}
 	deltaBase = current.Context
 	if err := t.appendDelta(persistCtx, turnID, deltaBase, result.Messages, current.Path); err != nil {
-		return TurnResult{}, err
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "append_delta_error")
 	}
 	status := markerForStatus(result.Status)
 	savePointMetadata := markerMetadata(runID, result)
@@ -460,6 +578,98 @@ func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retryUs
 	return turnResultFromEngine(turnID, result, nil), result.Err
 }
 
+func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, status engine.Status, err error, diagnostic string) (TurnResult, error) {
+	if status == "" {
+		status = statusForError(err)
+	}
+	result := engine.Result{Status: status, Err: err}
+	if err != nil {
+		if _, appendErr := sessiontree.AppendFailure(ctx, t.harness.options.Repo, t.id, turnID, err.Error()); appendErr != nil {
+			return TurnResult{}, appendErr
+		}
+	}
+	metadata := markerMetadata(runID, result)
+	if err != nil {
+		metadata["failure_reason"] = err.Error()
+	}
+	if diagnostic != "" {
+		metadata["diagnostic"] = diagnostic
+	}
+	if _, appendErr := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, markerForStatus(status), metadata); appendErr != nil {
+		var committed sessiontree.AppendCommittedError
+		if errors.As(appendErr, &committed) {
+			return turnResultFromEngine(turnID, result, map[string]string{"terminal_persistence_error": appendErr.Error(), "diagnostic": diagnostic}), err
+		}
+		return TurnResult{}, appendErr
+	}
+	eventType := EventTurnFailed
+	if status == engine.Cancelled {
+		eventType = EventTurnAborted
+	}
+	t.harness.emit(HarnessEvent{Type: eventType, ThreadID: t.id, TurnID: turnID, Status: string(status)})
+	return turnResultFromEngine(turnID, result, map[string]string{"diagnostic": diagnostic}), err
+}
+
+func statusForError(err error) engine.Status {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return engine.Cancelled
+	}
+	return engine.Failed
+}
+
+func (h *AgentHarness) engineOptions() engine.Options {
+	engineOptions := engine.Options{}
+	policy := h.options.TurnPolicy
+	limits := h.options.LoopLimits
+	if policy.ContextPolicy.ContextWindowTokens > 0 ||
+		policy.ContextPolicy.MaxOutputTokens > 0 ||
+		policy.ContextPolicy.ReservedOutputTokens > 0 ||
+		policy.ContextPolicy.ReservedSummaryTokens > 0 ||
+		policy.ContextPolicy.RecentTailTokens > 0 ||
+		policy.ContextPolicy.MaxCompactionFailures > 0 ||
+		policy.ContextPolicy.MicrocompactToolTokens > 0 ||
+		policy.ContextPolicy.EstimatorSource != "" {
+		engineOptions.ContextPolicy = policy.ContextPolicy
+	}
+	if policy.CacheRetention != "" {
+		engineOptions.CacheRetention = policy.CacheRetention
+	}
+	if len(policy.HostedToolDefinitions) > 0 {
+		engineOptions.HostedToolDefinitions = append([]provider.HostedToolDefinition(nil), policy.HostedToolDefinitions...)
+	}
+	if policy.CompletionPolicy != "" {
+		engineOptions.CompletionPolicy = policy.CompletionPolicy
+	}
+	if limits.MaxEmptyProviderRetries > 0 {
+		engineOptions.MaxEmptyProviderRetries = limits.MaxEmptyProviderRetries
+	}
+	if limits.NoProgressLimit > 0 {
+		engineOptions.NoProgressLimit = limits.NoProgressLimit
+	}
+	if limits.DuplicateToolLimit > 0 {
+		engineOptions.DuplicateToolLimit = limits.DuplicateToolLimit
+	}
+	if limits.WallTime > 0 {
+		engineOptions.WallTime = limits.WallTime
+	}
+	if limits.MaxTotalTokens > 0 {
+		engineOptions.MaxTotalTokens = limits.MaxTotalTokens
+	}
+	if limits.MaxCostUSD > 0 {
+		engineOptions.MaxCostUSD = limits.MaxCostUSD
+	}
+	if limits.MaxToolCalls > 0 {
+		engineOptions.MaxToolCalls = limits.MaxToolCalls
+	}
+	if limits.MaxLengthContinuations > 0 {
+		engineOptions.MaxLengthContinuations = limits.MaxLengthContinuations
+	}
+	if limits.MaxStopHookContinuations > 0 {
+		engineOptions.MaxStopHookContinuations = limits.MaxStopHookContinuations
+	}
+	return engineOptions
+}
+
 func turnResultFromEngine(turnID string, result engine.Result, diagnostics map[string]string) TurnResult {
 	return TurnResult{
 		ID:                 turnID,
@@ -491,6 +701,38 @@ func (t *Thread) enterTurn() error {
 	}
 	t.active = true
 	t.phase = threadPhaseTurn
+	return nil
+}
+
+func (t *Thread) enterMutation(ctx context.Context, turnID string) (func(), error) {
+	if err := t.enterTurn(); err != nil {
+		return nil, err
+	}
+	lease, err := t.harness.acquireTurnLease(ctx, t.id, turnID)
+	if err != nil {
+		t.leaveTurn()
+		return nil, err
+	}
+	return func() {
+		persistCtx, cancel := turnFinalizationContext(ctx)
+		defer cancel()
+		_ = t.harness.releaseTurnLease(persistCtx, lease)
+		t.leaveTurn()
+	}, nil
+}
+
+func (t *Thread) checkIdle(ctx context.Context) error {
+	t.mu.Lock()
+	active := t.active
+	t.mu.Unlock()
+	if active {
+		return ErrActiveTurn
+	}
+	if lease, ok, err := t.harness.activeTurnLease(ctx, t.id); err != nil {
+		return err
+	} else if ok && lease.TurnID != "" {
+		return ErrActiveTurn
+	}
 	return nil
 }
 
@@ -733,34 +975,6 @@ func latestCompactionEntry(path []sessiontree.Entry) sessiontree.Entry {
 	return sessiontree.Entry{}
 }
 
-func mergeContextPolicy(primary, fallback contextpolicy.Policy) contextpolicy.Policy {
-	if primary.ContextWindowTokens <= 0 {
-		primary.ContextWindowTokens = fallback.ContextWindowTokens
-	}
-	if primary.MaxOutputTokens <= 0 {
-		primary.MaxOutputTokens = fallback.MaxOutputTokens
-	}
-	if primary.ReservedOutputTokens <= 0 {
-		primary.ReservedOutputTokens = fallback.ReservedOutputTokens
-	}
-	if primary.ReservedSummaryTokens <= 0 {
-		primary.ReservedSummaryTokens = fallback.ReservedSummaryTokens
-	}
-	if primary.RecentTailTokens <= 0 {
-		primary.RecentTailTokens = fallback.RecentTailTokens
-	}
-	if primary.EstimatorSource == "" {
-		primary.EstimatorSource = fallback.EstimatorSource
-	}
-	if primary.MaxCompactionFailures <= 0 {
-		primary.MaxCompactionFailures = fallback.MaxCompactionFailures
-	}
-	if primary.MicrocompactToolTokens <= 0 {
-		primary.MicrocompactToolTokens = fallback.MicrocompactToolTokens
-	}
-	return primary
-}
-
 func retryTarget(path []sessiontree.Entry) retryTargetResult {
 	failedTurnID := ""
 	for i := len(path) - 1; i >= 0; i-- {
@@ -820,7 +1034,7 @@ type turnProjection struct {
 
 func (p *turnProjection) Emit(ev event.Event) {
 	if p.downstream != nil {
-		p.downstream.Emit(ev)
+		p.downstream.Emit(event.Sanitize(ev))
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()

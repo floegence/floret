@@ -98,6 +98,97 @@ func TestSQLiteStorePersistsSessionTreeAndForkAfterReopen(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreRejectsDuplicateThreadAndForkIDs(t *testing.T) {
+	ctx := context.Background()
+	store, _ := openSQLiteStoreForTest(t)
+	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "source"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "source"}); !errors.Is(err, sessiontree.ErrThreadExists) {
+		t.Fatalf("duplicate create err = %v, want ErrThreadExists", err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, store, "source", "turn-1", session.Message{Role: session.User, Content: "seed"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "existing"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Fork(ctx, sessiontree.ForkOptions{SourceThreadID: "source", NewThreadID: "existing"}); !errors.Is(err, sessiontree.ErrThreadExists) {
+		t.Fatalf("duplicate fork err = %v, want ErrThreadExists", err)
+	}
+	entries, err := store.Entries(ctx, "existing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("duplicate fork polluted existing thread: %#v", entries)
+	}
+	source, err := store.Thread(ctx, "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.LeafID == "" {
+		t.Fatalf("duplicate create overwrote source leaf: %#v", source)
+	}
+}
+
+func TestSQLiteStoreTurnLeaseSerializesSameThreadAcrossStores(t *testing.T) {
+	ctx := context.Background()
+	first, path := openSQLiteStoreForTest(t)
+	second, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+	if _, err := first.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	lease := sessiontree.TurnLease{
+		ThreadID:  "thread",
+		TurnID:    "turn-1",
+		OwnerID:   "owner-1",
+		CreatedAt: time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC),
+	}
+	if err := first.AcquireTurnLease(ctx, lease); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.AcquireTurnLease(ctx, sessiontree.TurnLease{ThreadID: "thread", TurnID: "turn-2", OwnerID: "owner-2"}); !errors.Is(err, sessiontree.ErrActiveTurn) {
+		t.Fatalf("second acquire err = %v, want ErrActiveTurn", err)
+	}
+	active, ok, err := second.ActiveTurnLease(ctx, "thread")
+	if err != nil || !ok {
+		t.Fatalf("active lease ok=%v err=%v", ok, err)
+	}
+	if active.TurnID != lease.TurnID || active.OwnerID != lease.OwnerID || !active.CreatedAt.Equal(lease.CreatedAt) {
+		t.Fatalf("active lease = %#v", active)
+	}
+	if err := second.ReleaseTurnLease(ctx, sessiontree.TurnLease{ThreadID: "thread", TurnID: "turn-1", OwnerID: "wrong-owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := first.ActiveTurnLease(ctx, "thread"); err != nil || !ok {
+		t.Fatalf("wrong owner release cleared lease: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := first.ClearExpiredTurnLease(ctx, "thread", lease.CreatedAt.Add(-time.Second)); err != nil || ok {
+		t.Fatalf("fresh lease should not clear: ok=%v err=%v", ok, err)
+	}
+	cleared, ok, err := second.ClearExpiredTurnLease(ctx, "thread", lease.CreatedAt.Add(time.Second))
+	if err != nil || !ok {
+		t.Fatalf("expired lease clear ok=%v err=%v", ok, err)
+	}
+	if cleared.OwnerID != lease.OwnerID || cleared.TurnID != lease.TurnID {
+		t.Fatalf("cleared lease = %#v", cleared)
+	}
+	if _, ok, err := first.ActiveTurnLease(ctx, "thread"); err != nil || ok {
+		t.Fatalf("lease should be cleared: ok=%v err=%v", ok, err)
+	}
+	if err := first.AcquireTurnLease(ctx, sessiontree.TurnLease{ThreadID: "thread", TurnID: "turn-3", OwnerID: "owner-3"}); err != nil {
+		t.Fatalf("acquire after clear: %v", err)
+	}
+	if err := first.ReleaseTurnLease(ctx, sessiontree.TurnLease{ThreadID: "thread", TurnID: "turn-3", OwnerID: "owner-3"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSQLiteStoreRejectsInvalidParentDetectsPathDamageAndSerializesConcurrentAppends(t *testing.T) {
 	ctx := context.Background()
 	store, _ := openSQLiteStoreForTest(t)
@@ -348,6 +439,118 @@ func TestSQLiteStorePromptMetadataDeleteSessionAndSchemaGuard(t *testing.T) {
 	}
 	if _, err := Open(dbPath); err == nil || !strings.Contains(err.Error(), "unsupported sqlite store schema version") {
 		t.Fatalf("unsupported schema open err = %v", err)
+	}
+}
+
+func TestSQLiteStorePromptCacheConcurrentSessionsAreIsolated(t *testing.T) {
+	ctx := context.Background()
+	store, _ := openSQLiteStoreForTest(t)
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	run := func(runID, sessionID, toolName, content string) {
+		defer wg.Done()
+		toolset, _, err := promptcache.EnsureCurrentToolset(ctx, store, runID, sessionID, "openai", "model", []promptcache.ToolDefinition{{Name: toolName}}, nil, time.Time{})
+		if err != nil {
+			errs <- err
+			return
+		}
+		plan, _, err := promptcache.BuildPlan(ctx, store, promptcache.BuildInput{
+			RunID:     runID,
+			SessionID: sessionID,
+			Provider:  "openai",
+			Model:     "model",
+			Toolset:   toolset,
+			History:   []session.Message{{Role: session.User, Content: content}},
+		})
+		if err != nil {
+			errs <- err
+			return
+		}
+		if _, err := promptcache.RecordRequest(ctx, store, runID, sessionID, 1, "openai", "model", promptcache.CachePolicy{}, plan); err != nil {
+			errs <- err
+			return
+		}
+	}
+	wg.Add(2)
+	go run("turn-a", "thread-a", "read_a", "message a")
+	go run("turn-b", "thread-b", "read_b", "message b")
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, item := range []struct {
+		runID     string
+		sessionID string
+		toolName  string
+		content   string
+	}{
+		{"turn-a", "thread-a", "read_a", "message a"},
+		{"turn-b", "thread-b", "read_b", "message b"},
+	} {
+		requests, err := store.ProviderRequests(ctx, item.runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(requests) != 1 || requests[0].SessionID != item.sessionID {
+			t.Fatalf("%s requests = %#v", item.runID, requests)
+		}
+		segments, err := store.Segments(ctx, item.sessionID, "openai", "model")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sawTool, sawMessage bool
+		for _, seg := range segments {
+			if strings.Contains(seg.Raw, item.toolName) {
+				sawTool = true
+			}
+			if seg.Message.Content == item.content {
+				sawMessage = true
+			}
+			if strings.Contains(seg.Raw, "read_a") && item.toolName != "read_a" || strings.Contains(seg.Raw, "read_b") && item.toolName != "read_b" {
+				t.Fatalf("%s saw cross-session tool segment: %#v", item.sessionID, seg)
+			}
+			if seg.Message.Content == "message a" && item.content != "message a" || seg.Message.Content == "message b" && item.content != "message b" {
+				t.Fatalf("%s saw cross-session message segment: %#v", item.sessionID, seg)
+			}
+		}
+		if !sawTool || !sawMessage {
+			t.Fatalf("%s missing own tool/message segments: %#v", item.sessionID, segments)
+		}
+	}
+}
+
+func TestSQLiteStoreMigratesSchemaV1ToV2(t *testing.T) {
+	ctx := context.Background()
+	store, dbPath := openSQLiteStoreForTest(t)
+	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `DROP TABLE active_turn_leases`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutMetaValue(ctx, "schema_version", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	version, err := store.SchemaVersion(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != "2" {
+		t.Fatalf("schema version = %q, want 2", version)
+	}
+	if err := store.AcquireTurnLease(ctx, sessiontree.TurnLease{ThreadID: "thread", TurnID: "turn", OwnerID: "owner"}); err != nil {
+		t.Fatalf("migrated store should support turn leases: %v", err)
 	}
 }
 

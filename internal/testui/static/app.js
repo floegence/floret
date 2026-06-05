@@ -1,5 +1,5 @@
 import { api } from "./api.js";
-import { clone, defaultProfile, normalizePath, providerByID, providerDefaultBaseURL, providerDefaultModel, routePath, state } from "./state.js";
+import { clone, contextPolicyForProfile, defaultProfile, normalizePath, providerByID, providerDefaultBaseURL, providerDefaultModel, routePath, state } from "./state.js";
 import { bindNewSession, renderNewSession } from "./views/newSession.js";
 import { bindSessionWorkspace, renderSessionWorkspace } from "./views/sessionWorkspace.js";
 import { bindSettings, readSettingsDraft, renderSettings } from "./views/settings.js";
@@ -147,6 +147,7 @@ function render(options = {}) {
       bindNewSession(appView, {
         onCreate: createSession,
         onProbe: runProbe,
+        onSwitchProfile: switchNewSessionProfile,
       });
       break;
     case "settings":
@@ -542,6 +543,17 @@ async function runProbe(selectedTools) {
   });
 }
 
+function switchNewSessionProfile(profileID) {
+  const profiles = state.config?.profiles || [];
+  const profile = profiles.find((item) => item.id === profileID) || profiles[0] || defaultProfile();
+  state.newSessionDraft = {
+    ...(state.newSessionDraft || {}),
+    profile_id: profileID,
+    context_policy: contextPolicyForProfile(profile),
+  };
+  render();
+}
+
 function switchSettingsProfile(profileID) {
   ensureSettingsDraft();
   state.settingsDraft.active_profile_id = profileID;
@@ -559,7 +571,7 @@ function switchSettingsProvider(providerID) {
     ...profiles[index],
     provider: providerID,
     model: providerDefaultModel(provider) || profiles[index].model || "",
-    base_url: providerDefaultBaseURL(provider) || profiles[index].base_url || "",
+    base_url: providerDefaultBaseURL(provider),
   };
   state.settingsDraft.profiles = profiles;
   render();

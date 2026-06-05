@@ -138,7 +138,7 @@ func streamEntryAppended(ctx context.Context, sink AgentStreamSink, repo session
 	if err != nil {
 		return
 	}
-	observed := observeEntries([]sessiontree.Entry{entry})[0]
+	observed := publicObservedEntries(observeEntries([]sessiontree.Entry{entry}))[0]
 	eventType := AgentStreamAssistantMessageAppended
 	switch entry.Type {
 	case sessiontree.EntryUserMessage:
@@ -175,7 +175,7 @@ func emitEngineStreamEvent(sink AgentStreamSink, typ AgentStreamEventType, ev ev
 	if sink == nil {
 		return
 	}
-	evCopy := ev
+	evCopy := event.Sanitize(ev)
 	stream := AgentStreamEvent{
 		Type:        typ,
 		SessionID:   ev.SessionID,
@@ -183,11 +183,11 @@ func emitEngineStreamEvent(sink AgentStreamSink, typ AgentStreamEventType, ev ev
 		Step:        ev.Step,
 		At:          ev.Timestamp,
 		EngineEvent: &evCopy,
-		Message:     ev.Message,
-		Error:       ev.Err,
+		Message:     evCopy.Message,
+		Error:       evCopy.Err,
 	}
 	if ev.Type == event.ToolResult {
-		stream.Message = ev.Result
+		stream.Message = evCopy.Result
 	}
 	sink.EmitAgentStream(stream)
 }

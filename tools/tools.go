@@ -16,6 +16,11 @@ var ErrRejected = errors.New("tool call rejected")
 var ErrDuplicate = errors.New("duplicate tool name")
 var ErrInvalid = errors.New("invalid tool")
 
+const (
+	ControlAskUser      = "ask_user"
+	ControlTaskComplete = "task_complete"
+)
+
 type Definition struct {
 	Name         string
 	Title        string
@@ -23,10 +28,11 @@ type Definition struct {
 	InputSchema  map[string]any
 	OutputSchema map[string]any
 
-	Effects     []Effect
-	ReadOnly    bool
-	Destructive bool
-	OpenWorld   bool
+	Effects      []Effect
+	ReadOnly     bool
+	Destructive  bool
+	OpenWorld    bool
+	ParallelSafe bool
 
 	Permission  PermissionSpec
 	ResultLimit ResultLimit
@@ -124,9 +130,21 @@ type Registry struct {
 func NewRegistry(items ...Tool) *Registry {
 	r := &Registry{tools: map[string]Tool{}}
 	for _, item := range items {
-		_ = r.Register(item)
+		if err := r.Register(item); err != nil {
+			panic(err)
+		}
 	}
 	return r
+}
+
+func NewRegistryE(items ...Tool) (*Registry, error) {
+	r := &Registry{tools: map[string]Tool{}}
+	for _, item := range items {
+		if err := r.Register(item); err != nil {
+			return nil, err
+		}
+	}
+	return r, nil
 }
 
 func (r *Registry) Register(t Tool) error {
@@ -134,7 +152,7 @@ func (r *Registry) Register(t Tool) error {
 	defer r.mu.Unlock()
 	def := t.Definition
 	def.Name = strings.TrimSpace(def.Name)
-	if def.Name == "" || t.handler == nil {
+	if t.handler == nil {
 		return ErrInvalid
 	}
 	schema, err := NormalizeInputSchema(def.InputSchema)
@@ -142,8 +160,9 @@ func (r *Registry) Register(t Tool) error {
 		return err
 	}
 	def.InputSchema = schema
-	if def.Permission.Mode == "" {
-		def.Permission.Mode = PermissionAllow
+	def, err = ValidateDefinition(def)
+	if err != nil {
+		return err
 	}
 	t.Definition = def
 	if _, ok := r.tools[def.Name]; ok {
@@ -153,11 +172,82 @@ func (r *Registry) Register(t Tool) error {
 	return nil
 }
 
-func (r *Registry) IsReadOnly(name string) bool {
+func ValidateDefinition(def Definition) (Definition, error) {
+	def.Name = strings.TrimSpace(def.Name)
+	if def.Name == "" {
+		return def, ErrInvalid
+	}
+	if IsReservedName(def.Name) {
+		return def, fmt.Errorf("%w: reserved tool name %q", ErrInvalid, def.Name)
+	}
+	if def.Permission.Mode == "" {
+		def.Permission.Mode = PermissionDeny
+	}
+	switch def.Permission.Mode {
+	case PermissionAllow, PermissionAsk, PermissionDeny:
+	default:
+		return def, fmt.Errorf("%w: unknown permission mode %q", ErrInvalid, def.Permission.Mode)
+	}
+	effects := map[Effect]bool{}
+	for _, effect := range def.Effects {
+		switch effect {
+		case EffectRead, EffectWrite, EffectShell, EffectNetwork:
+			effects[effect] = true
+		default:
+			return def, fmt.Errorf("%w: unknown effect %q", ErrInvalid, effect)
+		}
+	}
+	if def.ReadOnly {
+		if def.Destructive || effects[EffectWrite] || effects[EffectShell] {
+			return def, fmt.Errorf("%w: read-only tool %q has mutating effects", ErrInvalid, def.Name)
+		}
+		if len(def.Effects) == 0 {
+			def.Effects = []Effect{EffectRead}
+		}
+	}
+	if def.Destructive && def.ReadOnly {
+		return def, fmt.Errorf("%w: destructive tool %q cannot be read-only", ErrInvalid, def.Name)
+	}
+	if def.Destructive && !(effects[EffectWrite] || effects[EffectShell]) {
+		return def, fmt.Errorf("%w: destructive tool %q must declare write or shell effect", ErrInvalid, def.Name)
+	}
+	if def.OpenWorld && !(effects[EffectNetwork] || effects[EffectShell]) {
+		return def, fmt.Errorf("%w: open-world tool %q must declare network or shell effect", ErrInvalid, def.Name)
+	}
+	if def.OpenWorld && def.Permission.Mode == PermissionAllow {
+		return def, fmt.Errorf("%w: open-world tool %q must ask or deny by default", ErrInvalid, def.Name)
+	}
+	if def.ParallelSafe && !deriveParallelSafe(def) {
+		return def, fmt.Errorf("%w: parallel-safe tool %q must be strictly read-only", ErrInvalid, def.Name)
+	}
+	if def.ParallelSafe == false && deriveParallelSafe(def) {
+		def.ParallelSafe = true
+	}
+	return def, nil
+}
+
+func IsReservedName(name string) bool {
+	name = strings.TrimSpace(name)
+	return name == ControlAskUser || name == ControlTaskComplete
+}
+
+func deriveParallelSafe(def Definition) bool {
+	if !def.ReadOnly || def.Destructive || def.OpenWorld {
+		return false
+	}
+	for _, effect := range def.Effects {
+		if effect != EffectRead {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *Registry) IsParallelSafe(name string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	t, ok := r.tools[name]
-	return ok && t.Definition.ReadOnly
+	return ok && t.Definition.ParallelSafe
 }
 
 func (r *Registry) Definition(name string) (Definition, bool) {
@@ -180,10 +270,11 @@ func (r *Registry) Definitions() []provider.ToolDefinition {
 			OutputSchema: tool.Definition.OutputSchema,
 			Strict:       true,
 			Annotations: map[string]any{
-				"effects":     effectsAsStrings(tool.Definition.Effects),
-				"read_only":   tool.Definition.ReadOnly,
-				"destructive": tool.Definition.Destructive,
-				"open_world":  tool.Definition.OpenWorld,
+				"effects":       effectsAsStrings(tool.Definition.Effects),
+				"read_only":     tool.Definition.ReadOnly,
+				"destructive":   tool.Definition.Destructive,
+				"open_world":    tool.Definition.OpenWorld,
+				"parallel_safe": tool.Definition.ParallelSafe,
 			},
 		})
 	}
@@ -252,6 +343,8 @@ func (r *Registry) permissionDenied(ctx context.Context, def Definition, call pr
 	switch def.Permission.Mode {
 	case PermissionDeny:
 		return ErrRejected.Error()
+	case PermissionAllow:
+		return ""
 	case PermissionAsk:
 		if approver == nil {
 			return ErrRejected.Error()
@@ -274,6 +367,8 @@ func (r *Registry) permissionDenied(ctx context.Context, def Definition, call pr
 		if decision != PermissionDecisionAllow {
 			return ErrRejected.Error()
 		}
+	default:
+		return ErrRejected.Error()
 	}
 	return ""
 }
@@ -286,7 +381,7 @@ func (r *Registry) RunBatchWithOptions(ctx context.Context, calls []provider.Too
 	results := make([]Result, len(calls))
 	for i := 0; i < len(calls); {
 		j := i
-		for j < len(calls) && r.IsReadOnly(calls[j].Name) {
+		for j < len(calls) && r.IsParallelSafe(calls[j].Name) {
 			j++
 		}
 		if j > i {

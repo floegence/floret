@@ -14,6 +14,7 @@ import (
 
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/engine"
+	"github.com/floegence/floret/event"
 	"github.com/floegence/floret/harness"
 	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/internal/sessionlifecycle"
@@ -59,6 +60,9 @@ func TestServerExposesConfigAndRunAPI(t *testing.T) {
 	}
 	if configState.LocalTime.Now == "" || !strings.HasPrefix(configState.LocalTime.OffsetLabel, "UTC") {
 		t.Fatalf("config local time state is incomplete = %#v", configState.LocalTime)
+	}
+	if configState.ContextPolicyDefaults.ContextWindowTokens != 128000 || configState.ContextPolicyDefaults.RecentTailTokens != 12000 {
+		t.Fatalf("config context policy defaults are incomplete = %#v", configState.ContextPolicyDefaults)
 	}
 
 	catalogReq := httptest.NewRequest(http.MethodGet, "/api/catalog", nil)
@@ -381,12 +385,89 @@ func TestServerStreamsAgentTurnEventsBeforeCompletion(t *testing.T) {
 		t.Fatalf("tool call stream event missing observed entry payload: %#v", toolCall)
 	}
 	toolResult := events[toolResultIndex]
-	if toolResult.Entry == nil || toolResult.Entry.Type != "tool_result" || toolResult.Entry.Message.ToolName != "list" || toolResult.Entry.Message.ToolCallID != "list-1" || !strings.Contains(toolResult.Entry.Message.Content, ".") {
+	if toolResult.Entry == nil || toolResult.Entry.Type != "tool_result" || toolResult.Entry.Message.ToolName != "list" || toolResult.Entry.Message.ToolCallID != "list-1" {
 		t.Fatalf("tool result stream event missing observed entry payload: %#v", toolResult)
+	}
+	if toolResult.Entry.Message.Content != "" || toolResult.Message != "" || toolResult.EngineEvent != nil && toolResult.EngineEvent.Result != "" {
+		t.Fatalf("tool result stream event exposed raw result: %#v", toolResult)
 	}
 	completed := events[completedIndex]
 	if completed.Result == nil || completed.Result.Status != "completed" || completed.Result.Session.ID != snapshot.ID {
 		t.Fatalf("completion event missing final result: %#v", completed)
+	}
+}
+
+func TestServerStreamSanitizesRawAgentEventsByDefault(t *testing.T) {
+	scripted := harness.NewScriptedProvider(
+		harness.Step(
+			provider.StreamEvent{Type: provider.Reasoning, Text: "secret reasoning token=abc"},
+			harness.Text("delta token=abc"),
+			harness.Tool("list-1", "list", `{"path":null,"limit":2}`),
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(
+			harness.Tool("shell-1", "shell", `{"command":"printf PRIVATE_OUTPUT_X; exit 7","timeout_ms":1000}`),
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model"},"message":"hello","system_prompt":"system token=abc","selected_tools":["list","shell"]}`
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody)))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var snapshot AgentSessionSnapshot
+	if err := json.Unmarshal(createRec.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	turnRec := httptest.NewRecorder()
+	handler.ServeHTTP(turnRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+snapshot.ID+"/turns/stream", strings.NewReader(`{"message":"hello token=abc"}`)))
+	if turnRec.Code != http.StatusOK {
+		t.Fatalf("stream status = %d, body = %s", turnRec.Code, turnRec.Body.String())
+	}
+	body := turnRec.Body.String()
+	for _, raw := range []string{"secret reasoning token=abc", `{"path":null,"limit":2}`, "PRIVATE_OUTPUT_X", "README", "go.mod"} {
+		if strings.Contains(body, raw) {
+			t.Fatalf("SSE exposed raw value %q: %s", raw, body)
+		}
+	}
+	events := parseSSEAgentEvents(t, body)
+	if indexStreamEvent(events, AgentStreamProviderRequest) < 0 || indexStreamEvent(events, AgentStreamProviderDelta) < 0 || indexStreamEvent(events, AgentStreamToolCall) < 0 || indexStreamEvent(events, AgentStreamToolResult) < 0 {
+		t.Fatalf("stream events missing expected public lifecycle events: %#v", events)
+	}
+	for _, ev := range events {
+		if ev.ProviderRequest != nil {
+			for _, segment := range ev.ProviderRequest.RawSegments {
+				if segment.Raw != "" || segment.RawPreview != "" {
+					t.Fatalf("SSE provider request exposed raw segment: %#v", ev.ProviderRequest.RawSegments)
+				}
+			}
+		}
+		if ev.ProviderEvent != nil && (ev.ProviderEvent.Text != "" || ev.ProviderEvent.Reasoning != "") {
+			t.Fatalf("SSE provider event exposed provider text/reasoning: %#v", ev.ProviderEvent)
+		}
+		if ev.EngineEvent != nil && (ev.EngineEvent.Type == event.ProviderDelta || ev.EngineEvent.Type == event.ProviderReasoning) && ev.EngineEvent.Message != "" {
+			t.Fatalf("SSE engine event exposed provider delta/reasoning text: %#v", ev.EngineEvent)
+		}
+		if ev.EngineEvent != nil && (ev.EngineEvent.Args != "" || (ev.EngineEvent.Type == event.ToolResult && (ev.EngineEvent.Result != "" || ev.EngineEvent.Err != ""))) {
+			t.Fatalf("SSE engine event exposed raw args/result: %#v", ev.EngineEvent)
+		}
+		if strings.Contains(ev.Message, "PRIVATE_OUTPUT_X") || strings.Contains(ev.Error, "PRIVATE_OUTPUT_X") {
+			t.Fatalf("SSE event exposed failed tool output: %#v", ev)
+		}
 	}
 }
 
@@ -594,14 +675,14 @@ func TestServerAgentInterfaceProbeExposesSelectedToolsAndDoesNotPersistSession(t
 		}
 	}
 	if !slices.ContainsFunc(result.Observation.ProviderEvents, func(ev ObservedProviderEvent) bool {
-		return ev.Type == provider.Reasoning && strings.Contains(ev.Reasoning, "Inspect selected tool contract")
+		return ev.Type == provider.Reasoning && ev.Reasoning == ""
 	}) {
-		t.Fatalf("reasoning provider event missing: %#v", result.Observation.ProviderEvents)
+		t.Fatalf("sanitized reasoning provider event missing: %#v", result.Observation.ProviderEvents)
 	}
 	if !slices.ContainsFunc(result.Observation.SessionMessages, func(msg ObservedSessionMessage) bool {
-		return msg.Role == "assistant" && msg.ToolName == "list" && msg.ToolCallID == "probe-list" && strings.Contains(msg.Reasoning, "Inspect selected tool contract")
+		return msg.Role == "assistant" && msg.ToolName == "list" && msg.ToolCallID == "probe-list" && msg.Reasoning == "" && msg.ToolArgs == ""
 	}) {
-		t.Fatalf("tool call message with reasoning missing: %#v", result.Observation.SessionMessages)
+		t.Fatalf("sanitized tool call message missing: %#v", result.Observation.SessionMessages)
 	}
 	if !slices.ContainsFunc(result.Observation.SessionMessages, func(msg ObservedSessionMessage) bool {
 		return msg.Role == "tool" && msg.ToolName == "list" && msg.ToolCallID == "probe-list"
@@ -609,9 +690,9 @@ func TestServerAgentInterfaceProbeExposesSelectedToolsAndDoesNotPersistSession(t
 		t.Fatalf("tool result message missing: %#v", result.Observation.SessionMessages)
 	}
 	if !slices.ContainsFunc(result.Observation.ProviderRequests[1].Messages, func(msg ObservedSessionMessage) bool {
-		return msg.Role == "assistant" && msg.ToolName == "list" && strings.Contains(msg.Reasoning, "Inspect selected tool contract")
+		return msg.Role == "assistant" && msg.ToolName == "list" && msg.Reasoning == "" && msg.ToolArgs == ""
 	}) {
-		t.Fatalf("follow-up request did not carry assistant tool-call reasoning: %#v", result.Observation.ProviderRequests[1].Messages)
+		t.Fatalf("follow-up request missing sanitized assistant tool-call: %#v", result.Observation.ProviderRequests[1].Messages)
 	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/api/agent/sessions", nil)
@@ -709,11 +790,14 @@ func TestServerAgentSessionToolsPatchUpdatesNextProviderRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	patchReq := httptest.NewRequest(http.MethodPatch, "/api/agent/sessions/"+first.SessionID+"/tools", strings.NewReader(`{"selected_tools":["grep","shell"],"reason":"need command access"}`))
+	patchReq := httptest.NewRequest(http.MethodPatch, "/api/agent/sessions/"+first.SessionID+"/tools", strings.NewReader(`{"selected_tools":["grep","shell"],"reason":"need command access PRIVATE_REASON_X"}`))
 	patchRec := httptest.NewRecorder()
 	handler.ServeHTTP(patchRec, patchReq)
 	if patchRec.Code != http.StatusOK {
 		t.Fatalf("patch status = %d, body = %s", patchRec.Code, patchRec.Body.String())
+	}
+	if strings.Contains(patchRec.Body.String(), "PRIVATE_REASON_X") {
+		t.Fatalf("patch response exposed raw tool update reason: %s", patchRec.Body.String())
 	}
 	var patched AgentSessionSnapshot
 	if err := json.Unmarshal(patchRec.Body.Bytes(), &patched); err != nil {
@@ -726,7 +810,8 @@ func TestServerAgentSessionToolsPatchUpdatesNextProviderRequest(t *testing.T) {
 		return entry.Type == "active_tools_change" &&
 			entry.Metadata["previous_tools"] == "" &&
 			entry.Metadata["selected_tools"] == "grep,shell" &&
-			entry.Metadata["reason"] == "need command access"
+			entry.Metadata["reason"] != "need command access PRIVATE_REASON_X" &&
+			strings.HasPrefix(entry.Metadata["reason"], "[redacted]")
 	}) {
 		t.Fatalf("tool audit entry missing: %#v", patched.PathEntries)
 	}

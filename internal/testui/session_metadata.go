@@ -2,6 +2,7 @@ package testui
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -298,17 +299,5 @@ func safeSessionFileName(value string) string {
 	if value == "" {
 		return "session"
 	}
-	var b strings.Builder
-	for _, r := range value {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
-			b.WriteRune(r)
-			continue
-		}
-		b.WriteByte('_')
-	}
-	out := strings.Trim(b.String(), "._-")
-	if out == "" {
-		return "session"
-	}
-	return out
+	return "id_" + base64.RawURLEncoding.EncodeToString([]byte(value))
 }

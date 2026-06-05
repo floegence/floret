@@ -1,10 +1,12 @@
-import { currentProfile, defaultContextPolicy, escapeHTML, profileLabel, state } from "../state.js";
+import { contextPolicyForProfile, currentProfile, escapeHTML, profileLabel, state } from "../state.js";
 import { bindToolPresets, readSelectedTools, renderToolMatrix } from "../components/toolMatrix.js";
 
 export function renderNewSession() {
-  const profile = currentProfile();
   const draft = state.newSessionDraft || {};
-  const policy = draft.context_policy || defaultContextPolicy();
+  const profiles = state.config?.profiles || [];
+  const profile = profiles.find((item) => item.id === draft.profile_id) || currentProfile();
+  const defaultPolicy = contextPolicyForProfile(profile);
+  const policy = { ...defaultPolicy, ...(draft.context_policy || {}) };
   const isCreating = state.action === "create-session";
   const isProbing = state.action === "run-probe";
   const selectedTools = draft.selected_tools || [];
@@ -84,7 +86,12 @@ export function bindNewSession(root, handlers) {
     if (event.isComposing) return;
     persistDraft();
   });
-  form?.addEventListener("change", persistDraft);
+  form?.addEventListener("change", (event) => {
+    persistDraft();
+    if (event.target === form.elements.profile_id) {
+      handlers.onSwitchProfile?.(form.elements.profile_id.value);
+    }
+  });
   bindToolPresets(toolArea, state.config?.tools || [], "new-tools", persistDraft);
   root.querySelector("[data-run-probe]")?.addEventListener("click", () => {
     persistDraft();

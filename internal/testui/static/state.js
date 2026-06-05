@@ -34,20 +34,35 @@ export function currentProfile() {
 }
 
 export function defaultProfile() {
+  const provider = providerCatalog()[0] || null;
+  const providerID = provider?.id || "fake";
   return {
     id: "fake",
-    name: "Fake",
-    provider: "fake",
-    model: "fake-model",
+    name: provider?.name || "Fake",
+    provider: providerID,
+    model: providerDefaultModel(provider) || "fake-model",
+    base_url: providerDefaultBaseURL(provider),
     fake_response: "floret local provider ok",
   };
 }
 
 export function defaultContextPolicy() {
   return {
+    ...baseContextPolicyDefaults(),
+    ...(state.config?.context_policy_defaults || {}),
+  };
+}
+
+function baseContextPolicyDefaults() {
+  return {
     context_window_tokens: 128000,
     max_output_tokens: 4096,
-    recent_tail_tokens: 4096,
+    reserved_output_tokens: 4096,
+    reserved_summary_tokens: 2048,
+    recent_tail_tokens: 12000,
+    estimator_source: "chars_per_token",
+    max_compaction_failures: 2,
+    microcompact_tool_tokens: 4096,
   };
 }
 
@@ -134,6 +149,24 @@ export function providerDefaultModel(provider) {
 
 export function providerDefaultBaseURL(provider) {
   return provider?.default_base_url || "";
+}
+
+export function providerModel(provider, modelID) {
+  if (!provider || !modelID) return null;
+  return provider.models?.find((model) => model.id === modelID) || null;
+}
+
+export function contextPolicyForProfile(profile) {
+  const defaults = baseContextPolicyDefaults();
+  const provider = providerByID(profile?.provider);
+  const model = providerModel(provider, profile?.model || providerDefaultModel(provider));
+  const maxOutput = Number(model?.max_tokens || defaults.max_output_tokens || 0);
+  return {
+    ...defaults,
+    context_window_tokens: Number(model?.context_window || defaults.context_window_tokens || 0),
+    max_output_tokens: maxOutput,
+    reserved_output_tokens: Math.min(maxOutput || defaults.reserved_output_tokens || 0, defaults.reserved_output_tokens || 4096),
+  };
 }
 
 export function shortID(id) {

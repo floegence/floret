@@ -3,6 +3,7 @@ package sessiontree
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -53,6 +54,8 @@ var (
 	ErrThreadNotFound = errors.New("session tree thread not found")
 	ErrEntryNotFound  = errors.New("session tree entry not found")
 	ErrInvalidParent  = errors.New("session tree invalid parent")
+	ErrActiveTurn     = errors.New("session tree thread already has an active turn")
+	ErrThreadExists   = errors.New("session tree thread already exists")
 )
 
 type AppendCommittedError struct {
@@ -148,23 +151,45 @@ type Repo interface {
 	Fork(context.Context, ForkOptions) (ThreadMeta, error)
 }
 
+type TurnLease struct {
+	ThreadID  string    `json:"thread_id"`
+	TurnID    string    `json:"turn_id"`
+	OwnerID   string    `json:"owner_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type TurnLeaseRepo interface {
+	AcquireTurnLease(context.Context, TurnLease) error
+	ReleaseTurnLease(context.Context, TurnLease) error
+	ActiveTurnLease(context.Context, string) (TurnLease, bool, error)
+	ClearExpiredTurnLease(context.Context, string, time.Time) (TurnLease, bool, error)
+}
+
 type MemoryRepo struct {
 	mu      sync.Mutex
 	threads map[string]ThreadMeta
 	entries map[string][]Entry
+	leases  map[string]TurnLease
 	seq     int64
 }
 
 func NewMemoryRepo() *MemoryRepo {
-	return &MemoryRepo{threads: map[string]ThreadMeta{}, entries: map[string][]Entry{}}
+	return &MemoryRepo{threads: map[string]ThreadMeta{}, entries: map[string][]Entry{}, leases: map[string]TurnLease{}}
 }
 
 func (r *MemoryRepo) CreateThread(_ context.Context, meta ThreadMeta) (ThreadMeta, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if meta.ID == "" {
-		r.seq++
-		meta.ID = fmt.Sprintf("thread-%d", r.seq)
+		for {
+			r.seq++
+			meta.ID = fmt.Sprintf("thread-%d", r.seq)
+			if _, ok := r.threads[meta.ID]; !ok {
+				break
+			}
+		}
+	} else if _, ok := r.threads[meta.ID]; ok {
+		return ThreadMeta{}, ErrThreadExists
 	}
 	now := meta.CreatedAt
 	if now.IsZero() {
@@ -174,6 +199,60 @@ func (r *MemoryRepo) CreateThread(_ context.Context, meta ThreadMeta) (ThreadMet
 	meta.UpdatedAt = now
 	r.threads[meta.ID] = meta
 	return meta, nil
+}
+
+func (r *MemoryRepo) AcquireTurnLease(_ context.Context, lease TurnLease) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.threads[lease.ThreadID]; !ok {
+		return ErrThreadNotFound
+	}
+	if active, ok := r.leases[lease.ThreadID]; ok && active.TurnID != "" {
+		return ErrActiveTurn
+	}
+	if lease.CreatedAt.IsZero() {
+		lease.CreatedAt = time.Now()
+	}
+	r.leases[lease.ThreadID] = lease
+	return nil
+}
+
+func (r *MemoryRepo) ReleaseTurnLease(_ context.Context, lease TurnLease) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	active, ok := r.leases[lease.ThreadID]
+	if !ok {
+		return nil
+	}
+	if active.OwnerID != lease.OwnerID || active.TurnID != lease.TurnID {
+		return nil
+	}
+	delete(r.leases, lease.ThreadID)
+	return nil
+}
+
+func (r *MemoryRepo) ActiveTurnLease(_ context.Context, threadID string) (TurnLease, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.threads[threadID]; !ok {
+		return TurnLease{}, false, ErrThreadNotFound
+	}
+	lease, ok := r.leases[threadID]
+	return lease, ok, nil
+}
+
+func (r *MemoryRepo) ClearExpiredTurnLease(_ context.Context, threadID string, cutoff time.Time) (TurnLease, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.threads[threadID]; !ok {
+		return TurnLease{}, false, ErrThreadNotFound
+	}
+	lease, ok := r.leases[threadID]
+	if !ok || cutoff.IsZero() || lease.CreatedAt.IsZero() || !lease.CreatedAt.Before(cutoff) {
+		return TurnLease{}, false, nil
+	}
+	delete(r.leases, threadID)
+	return lease, true, nil
 }
 
 func (r *MemoryRepo) Thread(_ context.Context, threadID string) (ThreadMeta, error) {
@@ -328,8 +407,18 @@ func (r *MemoryRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, er
 	}
 	newID := opts.NewThreadID
 	if newID == "" {
-		r.seq++
-		newID = fmt.Sprintf("%s-fork-%d", opts.SourceThreadID, r.seq)
+		for {
+			r.seq++
+			newID = fmt.Sprintf("%s-fork-%d", opts.SourceThreadID, r.seq)
+			if _, ok := r.threads[newID]; !ok {
+				break
+			}
+		}
+	} else if _, ok := r.threads[newID]; ok {
+		return ThreadMeta{}, ErrThreadExists
+	}
+	if len(r.entries[newID]) > 0 {
+		return ThreadMeta{}, ErrThreadExists
 	}
 	meta := ThreadMeta{ID: newID, ParentThreadID: opts.SourceThreadID, ForkedFromThreadID: opts.SourceThreadID, ForkedFromEntryID: targetID, CreatedAt: now, UpdatedAt: now}
 	oldToNew := map[string]string{"": ""}
@@ -374,6 +463,124 @@ func (r *FileRepo) CreateThread(ctx context.Context, meta ThreadMeta) (ThreadMet
 		return ThreadMeta{}, err
 	}
 	return meta, r.saveThread(meta)
+}
+
+func (r *FileRepo) AcquireTurnLease(ctx context.Context, lease TurnLease) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.load(ctx); err != nil {
+		return err
+	}
+	if _, err := r.mem.Thread(ctx, lease.ThreadID); err != nil {
+		return err
+	}
+	if lease.CreatedAt.IsZero() {
+		lease.CreatedAt = time.Now()
+	}
+	dir := filepath.Join(r.root, safePath(lease.ThreadID))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(lease, "", "  ")
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(dir, "active_turn.json")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return ErrActiveTurn
+	}
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	return nil
+}
+
+func (r *FileRepo) ReleaseTurnLease(ctx context.Context, lease TurnLease) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	path := filepath.Join(r.root, safePath(lease.ThreadID), "active_turn.json")
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var active TurnLease
+	if err := json.Unmarshal(data, &active); err != nil {
+		return err
+	}
+	if active.OwnerID != lease.OwnerID || active.TurnID != lease.TurnID {
+		return nil
+	}
+	return os.Remove(path)
+}
+
+func (r *FileRepo) ActiveTurnLease(ctx context.Context, threadID string) (TurnLease, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return TurnLease{}, false, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	path := filepath.Join(r.root, safePath(threadID), "active_turn.json")
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return TurnLease{}, false, nil
+	}
+	if err != nil {
+		return TurnLease{}, false, err
+	}
+	var lease TurnLease
+	if err := json.Unmarshal(data, &lease); err != nil {
+		return TurnLease{}, false, err
+	}
+	return lease, true, nil
+}
+
+func (r *FileRepo) ClearExpiredTurnLease(ctx context.Context, threadID string, cutoff time.Time) (TurnLease, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return TurnLease{}, false, err
+	}
+	if cutoff.IsZero() {
+		return TurnLease{}, false, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	path := filepath.Join(r.root, safePath(threadID), "active_turn.json")
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return TurnLease{}, false, nil
+	}
+	if err != nil {
+		return TurnLease{}, false, err
+	}
+	var lease TurnLease
+	if err := json.Unmarshal(data, &lease); err != nil {
+		return TurnLease{}, false, err
+	}
+	if lease.CreatedAt.IsZero() || !lease.CreatedAt.Before(cutoff) {
+		return TurnLease{}, false, nil
+	}
+	if err := os.Remove(path); err != nil {
+		return TurnLease{}, false, err
+	}
+	return lease, true, nil
 }
 
 func (r *FileRepo) Thread(ctx context.Context, threadID string) (ThreadMeta, error) {
@@ -962,10 +1169,5 @@ func safePath(value string) string {
 	if value == "" {
 		return "_"
 	}
-	return strings.Map(func(r rune) rune {
-		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.' {
-			return r
-		}
-		return '_'
-	}, value)
+	return "id_" + base64.RawURLEncoding.EncodeToString([]byte(value))
 }

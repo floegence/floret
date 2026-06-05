@@ -84,16 +84,17 @@ type ArtifactSnapshot struct {
 }
 
 type ConfigState struct {
-	EnvFile          string             `json:"env_file"`
-	EnvFileFound     bool               `json:"env_file_found"`
-	ActiveProfileID  string             `json:"active_profile_id"`
-	Profiles         []ProviderProfile  `json:"profiles"`
-	Catalog          []CatalogProvider  `json:"catalog"`
-	Tools            []AgentToolOption  `json:"tools"`
-	SearchWireShapes []SearchWireShape  `json:"search_wire_shapes"`
-	SearchProvider   SearchProviderInfo `json:"search_provider"`
-	LocalTime        LocalTimeInfo      `json:"local_time"`
-	Storage          storageStatus      `json:"storage"`
+	EnvFile               string               `json:"env_file"`
+	EnvFileFound          bool                 `json:"env_file_found"`
+	ActiveProfileID       string               `json:"active_profile_id"`
+	Profiles              []ProviderProfile    `json:"profiles"`
+	Catalog               []CatalogProvider    `json:"catalog"`
+	ContextPolicyDefaults contextpolicy.Policy `json:"context_policy_defaults"`
+	Tools                 []AgentToolOption    `json:"tools"`
+	SearchWireShapes      []SearchWireShape    `json:"search_wire_shapes"`
+	SearchProvider        SearchProviderInfo   `json:"search_provider"`
+	LocalTime             LocalTimeInfo        `json:"local_time"`
+	Storage               storageStatus        `json:"storage"`
 }
 
 type LocalTimeInfo struct {
@@ -151,10 +152,12 @@ type AgentRunRequest struct {
 	SelectedTools []string             `json:"selected_tools,omitempty"`
 	ToolMode      string               `json:"tool_mode,omitempty"`
 	ContextPolicy contextpolicy.Policy `json:"context_policy,omitempty"`
+	DebugRaw      bool                 `json:"debug_raw,omitempty"`
 }
 
 type AgentTurnRequest struct {
-	Message string `json:"message"`
+	Message  string `json:"message"`
+	DebugRaw bool   `json:"debug_raw,omitempty"`
 }
 
 type AgentStreamEventType string
@@ -204,6 +207,7 @@ type AgentToolsUpdateRequest struct {
 type AgentInterfaceProbeRequest struct {
 	SelectedTools []string             `json:"selected_tools,omitempty"`
 	ContextPolicy contextpolicy.Policy `json:"context_policy,omitempty"`
+	DebugRaw      bool                 `json:"debug_raw,omitempty"`
 }
 
 type AgentRunResponse struct {

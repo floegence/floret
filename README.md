@@ -13,15 +13,16 @@ Floret currently provides:
 - A small, explicit engine loop with provider streaming, tool continuations, loop guards,
   compaction triggers, and normalized run results.
 - Presentation-neutral events for provider requests, deltas, tool calls, tool results,
-  compaction, budgets, and final run state.
+  compaction, budgets, final run state, and default sanitization for public views.
 - A tool registry with strict schemas, approval hooks, read-only parallel scheduling,
   mutation serialization, result limits, and panic recovery.
 - Deterministic test harnesses for fake providers, scripted tool calls, evals, and host
   integration tests without real model calls.
 - Threaded session primitives for start, resume, fork, retry, interruption recovery, and
-  context projection over a session tree.
-- Memory, file-oriented, and SQLite-backed storage options, plus prompt-cache rendering
-  for provider-specific request shapes.
+  context projection over a session tree, with `runtime.NewHarness` as the recommended
+  host entry point.
+- Memory, file-oriented, and SQLite-backed storage options, plus a raw prompt segment
+  and toolset ledger for provider-specific request shapes.
 - Built-in provider adapters, an OpenAI-compatible chat completions adapter, a provider
   and model catalog, built-in workspace/shell/search tools, and a local runtime inspector.
 
@@ -33,9 +34,20 @@ context pressure handling, retry/fork flows, usage metrics, and UI-friendly even
 Floret keeps those contracts small and separable so product code can focus on the host
 experience.
 
+Most hosts should use `runtime.NewHarness`, then `StartThread` or `ResumeThread`,
+and finally `Thread.Run` for each user turn. That API keeps durable conversation
+state in `sessiontree.Repo` and serializes only the same durable `ThreadID`.
+Different threads and forked threads can run concurrently.
+
 The project is intentionally not a workflow graph engine. It is designed for interactive
 chat and coding-agent hosts where a model, a tool registry, a session store, and a UI
 surface cooperate around one observable turn loop.
+
+Events are presentation-neutral so a terminal UI, desktop app, test harness, or automation
+surface can render the same runtime facts without parsing human text.
+Public views should expose sanitized events and observations. Raw provider deltas,
+reasoning, tool arguments/results, prompt segments, and artifact paths are local
+debug data and require explicit opt-in at the host boundary.
 
 ## Quick Start
 
@@ -57,6 +69,12 @@ The console can run fake-provider turns immediately, manage local provider profi
 save the active profile to `.env.local`, inspect provider requests and stream events,
 view session messages, review token/tool metrics, and run local checks such as package
 tests, race tests, provider smoke tests, tool scenarios, and the deterministic eval demo.
+Public API responses are sanitized by default. Local raw inspection requires an explicit
+launch-time capability:
+
+```bash
+go run ./cmd/floret-test-ui -- -allow-debug-raw
+```
 
 ## Install / Import
 

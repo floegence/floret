@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/config"
+	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/modelcatalog"
 )
@@ -51,7 +52,9 @@ func (r *Runner) ConfigState() (ConfigState, error) {
 		if state.ActiveProfileID == "" && len(state.Profiles) > 0 {
 			state.ActiveProfileID = state.Profiles[0].ID
 		}
-		state.Tools = agentToolCatalog(activeProfileForCatalog(state.Profiles, state.ActiveProfileID), r.EnvFile)
+		activeProfile := activeProfileForCatalog(state.Profiles, state.ActiveProfileID)
+		state.ContextPolicyDefaults = contextPolicyDefaultsForProfile(activeProfile)
+		state.Tools = agentToolCatalog(activeProfile, r.EnvFile)
 		return state, nil
 	}
 	profile, err := r.legacyProfile()
@@ -60,6 +63,7 @@ func (r *Runner) ConfigState() (ConfigState, error) {
 	}
 	state.Profiles = []ProviderProfile{stripProfileSecret(profile)}
 	state.ActiveProfileID = profile.ID
+	state.ContextPolicyDefaults = contextPolicyDefaultsForProfile(profile)
 	state.Tools = agentToolCatalog(stripProfileSecret(profile), r.EnvFile)
 	return state, nil
 }
@@ -389,6 +393,10 @@ func activeProfileForCatalog(profiles []ProviderProfile, activeID string) Provid
 		return profiles[0]
 	}
 	return ProviderProfile{Provider: config.ProviderFake, Model: "fake-model"}
+}
+
+func contextPolicyDefaultsForProfile(profile ProviderProfile) contextpolicy.Policy {
+	return modelcatalog.ContextPolicy(profile.Provider, profile.Model)
 }
 
 func getEnvValue(values map[string]string, key string, fallback string) string {

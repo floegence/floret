@@ -21,7 +21,8 @@ import (
 )
 
 const (
-	schemaVersion     = "1"
+	schemaVersion     = "2"
+	initialSchema     = "1"
 	rawEncoderVersion = "1"
 	driverName        = "sqlite"
 )
@@ -135,6 +136,12 @@ func (s *Store) init(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if current == initialSchema {
+		if err := s.migrateV1ToV2(ctx); err != nil {
+			return err
+		}
+		current = schemaVersion
+	}
 	if current != schemaVersion {
 		return fmt.Errorf("unsupported sqlite store schema version %q", current)
 	}
@@ -146,6 +153,16 @@ func (s *Store) init(ctx context.Context) error {
 		return fmt.Errorf("unsupported sqlite store raw encoder version %q", rawVersion)
 	}
 	return nil
+}
+
+func (s *Store) migrateV1ToV2(ctx context.Context) error {
+	return s.withImmediate(ctx, func(tx sqlRunner) error {
+		if _, err := tx.ExecContext(ctx, activeTurnLeasesSQL); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_version'`, schemaVersion)
+		return err
+	})
 }
 
 func (s *Store) metaValue(ctx context.Context, key string) (string, error) {
@@ -191,19 +208,100 @@ func (s *Store) withImmediate(ctx context.Context, fn func(sqlRunner) error) err
 }
 
 func (s *Store) CreateThread(ctx context.Context, meta sessiontree.ThreadMeta) (sessiontree.ThreadMeta, error) {
-	if meta.ID == "" {
-		meta.ID = "thread-" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	}
 	now := meta.CreatedAt
 	if now.IsZero() {
 		now = time.Now()
 	}
-	meta.CreatedAt = now
-	meta.UpdatedAt = now
 	err := s.withImmediate(ctx, func(tx sqlRunner) error {
-		return upsertThread(ctx, tx, meta)
+		if meta.ID == "" {
+			for {
+				meta.ID = "thread-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+				ok, err := threadExists(ctx, tx, meta.ID)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					break
+				}
+			}
+		} else if ok, err := threadExists(ctx, tx, meta.ID); err != nil {
+			return err
+		} else if ok {
+			return sessiontree.ErrThreadExists
+		}
+		meta.CreatedAt = now
+		meta.UpdatedAt = now
+		return insertThread(ctx, tx, meta)
 	})
 	return meta, err
+}
+
+func (s *Store) AcquireTurnLease(ctx context.Context, lease sessiontree.TurnLease) error {
+	if strings.TrimSpace(lease.ThreadID) == "" {
+		return sessiontree.ErrThreadNotFound
+	}
+	if lease.CreatedAt.IsZero() {
+		lease.CreatedAt = time.Now()
+	}
+	return s.withImmediate(ctx, func(tx sqlRunner) error {
+		if ok, err := threadExists(ctx, tx, lease.ThreadID); err != nil {
+			return err
+		} else if !ok {
+			return sessiontree.ErrThreadNotFound
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO active_turn_leases(thread_id, turn_id, owner_id, created_at)
+			VALUES(?, ?, ?, ?)`, lease.ThreadID, lease.TurnID, lease.OwnerID, formatTime(lease.CreatedAt))
+		if isConstraintError(err) {
+			return sessiontree.ErrActiveTurn
+		}
+		return err
+	})
+}
+
+func (s *Store) ReleaseTurnLease(ctx context.Context, lease sessiontree.TurnLease) error {
+	return s.withImmediate(ctx, func(tx sqlRunner) error {
+		_, err := tx.ExecContext(ctx, `DELETE FROM active_turn_leases
+			WHERE thread_id = ? AND turn_id = ? AND owner_id = ?`, lease.ThreadID, lease.TurnID, lease.OwnerID)
+		return err
+	})
+}
+
+func (s *Store) ActiveTurnLease(ctx context.Context, threadID string) (sessiontree.TurnLease, bool, error) {
+	if ok, err := threadExists(ctx, s.db, threadID); err != nil {
+		return sessiontree.TurnLease{}, false, err
+	} else if !ok {
+		return sessiontree.TurnLease{}, false, sessiontree.ErrThreadNotFound
+	}
+	return loadTurnLease(ctx, s.db, threadID)
+}
+
+func (s *Store) ClearExpiredTurnLease(ctx context.Context, threadID string, cutoff time.Time) (sessiontree.TurnLease, bool, error) {
+	if cutoff.IsZero() {
+		return sessiontree.TurnLease{}, false, nil
+	}
+	var cleared sessiontree.TurnLease
+	ok := false
+	err := s.withImmediate(ctx, func(tx sqlRunner) error {
+		if exists, err := threadExists(ctx, tx, threadID); err != nil {
+			return err
+		} else if !exists {
+			return sessiontree.ErrThreadNotFound
+		}
+		lease, found, err := loadTurnLease(ctx, tx, threadID)
+		if err != nil || !found {
+			return err
+		}
+		if lease.CreatedAt.IsZero() || !lease.CreatedAt.Before(cutoff) {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM active_turn_leases WHERE thread_id = ?`, threadID); err != nil {
+			return err
+		}
+		cleared = lease
+		ok = true
+		return nil
+	})
+	return cleared, ok, err
 }
 
 func (s *Store) Thread(ctx context.Context, threadID string) (sessiontree.ThreadMeta, error) {
@@ -414,7 +512,7 @@ func (s *Store) Fork(ctx context.Context, opts sessiontree.ForkOptions) (session
 		} else if ok, err := threadExists(ctx, tx, newID); err != nil {
 			return err
 		} else if ok {
-			return fmt.Errorf("session tree thread id already exists: %s", newID)
+			return sessiontree.ErrThreadExists
 		}
 		meta := sessiontree.ThreadMeta{ID: newID, ParentThreadID: opts.SourceThreadID, ForkedFromThreadID: opts.SourceThreadID, ForkedFromEntryID: targetID, CreatedAt: now, UpdatedAt: now}
 		if err := insertThread(ctx, tx, meta); err != nil {
@@ -972,26 +1070,26 @@ func normalizeLegacyEntries(threadID string, entries []sessiontree.Entry) []sess
 	return out
 }
 
-func upsertThread(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO threads(id, leaf_id, parent_thread_id, forked_from_thread_id, forked_from_entry_id, archived, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET
-			leaf_id = excluded.leaf_id,
-			parent_thread_id = excluded.parent_thread_id,
-			forked_from_thread_id = excluded.forked_from_thread_id,
-			forked_from_entry_id = excluded.forked_from_entry_id,
-			archived = excluded.archived,
-			created_at = excluded.created_at,
-			updated_at = excluded.updated_at`,
-		meta.ID, meta.LeafID, meta.ParentThreadID, meta.ForkedFromThreadID, meta.ForkedFromEntryID, boolInt(meta.Archived), formatTime(meta.CreatedAt), formatTime(meta.UpdatedAt))
-	return err
-}
-
 func insertThread(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO threads(id, leaf_id, parent_thread_id, forked_from_thread_id, forked_from_entry_id, archived, created_at, updated_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
 		meta.ID, meta.LeafID, meta.ParentThreadID, meta.ForkedFromThreadID, meta.ForkedFromEntryID, boolInt(meta.Archived), formatTime(meta.CreatedAt), formatTime(meta.UpdatedAt))
 	return err
+}
+
+func loadTurnLease(ctx context.Context, q sqlRunner, threadID string) (sessiontree.TurnLease, bool, error) {
+	var lease sessiontree.TurnLease
+	var created string
+	err := q.QueryRowContext(ctx, `SELECT thread_id, turn_id, owner_id, created_at
+		FROM active_turn_leases WHERE thread_id = ?`, threadID).Scan(&lease.ThreadID, &lease.TurnID, &lease.OwnerID, &created)
+	if errors.Is(err, sql.ErrNoRows) {
+		return sessiontree.TurnLease{}, false, nil
+	}
+	if err != nil {
+		return sessiontree.TurnLease{}, false, err
+	}
+	lease.CreatedAt = parseTime(created)
+	return lease, true, nil
 }
 
 func updateThread(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta) error {
@@ -1233,6 +1331,10 @@ func threadExists(ctx context.Context, q sqlRunner, threadID string) (bool, erro
 		return false, err
 	}
 	return count > 0, nil
+}
+
+func isConstraintError(err error) bool {
+	return err != nil && (strings.Contains(err.Error(), "constraint failed") || strings.Contains(err.Error(), "UNIQUE constraint failed"))
 }
 
 func nextEntryID(ctx context.Context, q sqlRunner, threadID string) (string, error) {
@@ -1485,6 +1587,8 @@ CREATE INDEX IF NOT EXISTS entries_parent_idx ON entries(thread_id, parent_id);
 CREATE INDEX IF NOT EXISTS entries_thread_ordinal_idx ON entries(thread_id, ordinal);
 CREATE INDEX IF NOT EXISTS threads_updated_at_idx ON threads(updated_at);
 
+` + activeTurnLeasesSQL + `
+
 CREATE TABLE IF NOT EXISTS prompt_segments (
 	rowid INTEGER PRIMARY KEY AUTOINCREMENT,
 	id TEXT NOT NULL,
@@ -1545,4 +1649,16 @@ CREATE TABLE IF NOT EXISTS metadata_records (
 CREATE INDEX IF NOT EXISTS metadata_records_namespace_updated_idx ON metadata_records(namespace, updated_at, id);
 `
 
+const activeTurnLeasesSQL = `
+CREATE TABLE IF NOT EXISTS active_turn_leases (
+	thread_id TEXT PRIMARY KEY,
+	turn_id TEXT NOT NULL DEFAULT '',
+	owner_id TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
+);
+`
+
 var _ storage.Store = (*Store)(nil)
+var _ sessiontree.Repo = (*Store)(nil)
+var _ sessiontree.TurnLeaseRepo = (*Store)(nil)

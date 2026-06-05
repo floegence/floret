@@ -254,6 +254,9 @@ func TestRunnerConfigStateIncludesCatalogAndNormalizesProviderDefaults(t *testin
 	if saved.Profiles[0].Model != "gpt-5.4" || saved.Profiles[0].BaseURL != "https://api.openai.com/v1" {
 		t.Fatalf("profile was not defaulted from catalog: %#v", saved.Profiles[0])
 	}
+	if saved.ContextPolicyDefaults.ContextWindowTokens != 1050000 || saved.ContextPolicyDefaults.MaxOutputTokens != 128000 || saved.ContextPolicyDefaults.RecentTailTokens != 12000 {
+		t.Fatalf("context policy defaults were not defaulted from active catalog model: %#v", saved.ContextPolicyDefaults)
+	}
 }
 
 func TestRunnerToolCatalogReflectsWebSearchCapability(t *testing.T) {
@@ -418,8 +421,8 @@ func TestRunnerRunAgentReturnsInteractionObservation(t *testing.T) {
 	}
 	if !slices.ContainsFunc(result.Observation.ProviderRequests[0].RawSegments, func(segment ObservedRawSegment) bool {
 		return segment.Kind == "system" &&
-			segment.Raw != "" &&
-			segment.RawPreview != "" &&
+			segment.Raw == "" &&
+			segment.RawPreview == "" &&
 			segment.Fingerprint != "" &&
 			segment.SchemaVersion != "" &&
 			segment.AdapterVersion != "" &&
@@ -518,6 +521,7 @@ func TestRunnerAgentSessionCarriesReasoningThroughToolFollowUp(t *testing.T) {
 	)
 	runner := NewRunner(root)
 	runner.Now = fixedClock()
+	runner.AllowDebugRaw = true
 	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
 		return scripted, nil
 	}
@@ -527,6 +531,7 @@ func TestRunnerAgentSessionCarriesReasoningThroughToolFollowUp(t *testing.T) {
 		Message:       "inspect",
 		SystemPrompt:  "test",
 		SelectedTools: []string{"list"},
+		DebugRaw:      true,
 	})
 
 	if result.Status != "completed" || result.Output != "Checking files first.done" {
@@ -590,6 +595,7 @@ func TestRunnerAgentSessionCanExecuteClientWebSearch(t *testing.T) {
 	)
 	runner := NewRunner(root)
 	runner.Now = fixedClock()
+	runner.AllowDebugRaw = true
 	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
 		return scripted, nil
 	}
@@ -599,6 +605,7 @@ func TestRunnerAgentSessionCanExecuteClientWebSearch(t *testing.T) {
 		Message:       "查询长沙天气",
 		SystemPrompt:  "test",
 		SelectedTools: []string{"web_search"},
+		DebugRaw:      true,
 	})
 
 	if result.Status != "completed" || !strings.Contains(result.Output, "thunderstorms") {
@@ -662,7 +669,7 @@ func TestRunnerAgentSessionUsesProviderHostedSearchWithoutLocalWebSearch(t *test
 			}},
 		},
 		Message:       "search",
-		SystemPrompt:  "test",
+		SystemPrompt:  "system token=hosted-secret",
 		SelectedTools: []string{"web_search"},
 	})
 
@@ -673,7 +680,7 @@ func TestRunnerAgentSessionUsesProviderHostedSearchWithoutLocalWebSearch(t *test
 	if hasStrictTool(req.Tools, "web_search") {
 		t.Fatalf("provider-hosted web_search must not enter local tools: %#v", req.Tools)
 	}
-	if len(req.HostedTools) != 1 || req.HostedTools[0].Name != "web_search" || req.HostedTools[0].Options["wire_shape"] != searchcap.WireShapeOpenAIChatWebSearchOptions {
+	if len(req.HostedTools) != 1 || req.HostedTools[0].Name != "web_search" || req.HostedTools[0].Type != "web_search" || req.HostedTools[0].Options != nil {
 		t.Fatalf("hosted tools = %#v", req.HostedTools)
 	}
 	if !slices.ContainsFunc(result.Events, func(ev event.Event) bool {
@@ -682,6 +689,115 @@ func TestRunnerAgentSessionUsesProviderHostedSearchWithoutLocalWebSearch(t *test
 		return ev.Type == event.HostedToolResult && ev.ToolName == "web_search"
 	}) {
 		t.Fatalf("hosted tool events missing: %#v", result.Events)
+	}
+	body, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{`{"query":"Changsha weather"}`, "provider-hosted result", "secret"} {
+		if strings.Contains(string(body), secret) {
+			t.Fatalf("default hosted run response exposed raw value %q: %s", secret, body)
+		}
+	}
+	if strings.Contains(string(body), "system token=hosted-secret") || strings.Contains(string(body), `"Options":{`) || strings.Contains(string(body), `"Parameters":{`) {
+		t.Fatalf("default hosted run response exposed system prompt or hosted payload options: %s", body)
+	}
+	if len(result.Session.HostedTools) != 1 || result.Session.HostedTools[0].Parameters != nil || result.Session.HostedTools[0].Options != nil {
+		t.Fatalf("public session snapshot exposed hosted payload details: %#v", result.Session.HostedTools)
+	}
+	if result.Session.SystemPrompt != "" {
+		t.Fatalf("public session snapshot exposed system prompt: %#v", result.Session.SystemPrompt)
+	}
+}
+
+func TestRunnerAgentPublicObservationSanitizesRawDataUnlessDebugRaw(t *testing.T) {
+	root := t.TempDir()
+	newProvider := func() provider.Provider {
+		return harness.NewScriptedProvider(
+			harness.Step(
+				provider.StreamEvent{Type: provider.Reasoning, Text: "secret reasoning token=abc"},
+				harness.Tool("list-1", "list", `{"path":null,"limit":2}`),
+				harness.DoneReason("tool_calls"),
+			),
+			harness.Step(harness.Text("public answer token=abc"), harness.Done()),
+		)
+	}
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return newProvider(), nil
+	}
+
+	public := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:       "inspect token=abc",
+		SystemPrompt:  "system token=abc",
+		SelectedTools: []string{"list"},
+	})
+	if public.Status != "completed" {
+		t.Fatalf("public = %#v", public)
+	}
+	publicBody, err := json.Marshal(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{"secret reasoning token=abc", "public answer token=abc", `{"path":null,"limit":2}`, "README", "go.mod"} {
+		if strings.Contains(string(publicBody), raw) {
+			t.Fatalf("public response exposed raw value %q: %s", raw, publicBody)
+		}
+	}
+	if !slices.ContainsFunc(public.Observation.ProviderRequests[0].RawSegments, func(segment ObservedRawSegment) bool {
+		return segment.Raw == "" && segment.RawPreview == "" && segment.SHA256 != ""
+	}) {
+		t.Fatalf("public raw segments should keep ledger hashes without raw text: %#v", public.Observation.ProviderRequests[0].RawSegments)
+	}
+
+	deniedRaw := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:       "inspect token=abc",
+		SystemPrompt:  "system token=abc",
+		SelectedTools: []string{"list"},
+		DebugRaw:      true,
+	})
+	deniedBody, err := json.Marshal(deniedRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{"secret reasoning token=abc", "public answer token=abc", `{"path":null,"limit":2}`, "README", "go.mod"} {
+		if strings.Contains(string(deniedBody), raw) {
+			t.Fatalf("debug raw request without capability exposed raw value %q: %s", raw, deniedBody)
+		}
+	}
+
+	rawRunner := NewRunner(t.TempDir())
+	rawRunner.Now = fixedClock()
+	rawRunner.AllowDebugRaw = true
+	rawRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return newProvider(), nil
+	}
+	debug := rawRunner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:       "inspect token=abc",
+		SystemPrompt:  "system token=abc",
+		SelectedTools: []string{"list"},
+		DebugRaw:      true,
+	})
+	debugBody, err := json.Marshal(debug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(debugBody), "secret reasoning token=abc") {
+		t.Fatalf("debug raw response should expose reasoning for local inspection: %s", debugBody)
+	}
+	if !slices.ContainsFunc(debug.Observation.SessionMessages, func(msg ObservedSessionMessage) bool {
+		return msg.ToolCallID == "list-1" && msg.ToolArgs == `{"path":null,"limit":2}`
+	}) {
+		t.Fatalf("debug raw session messages should expose tool args: %#v", debug.Observation.SessionMessages)
+	}
+	if !slices.ContainsFunc(debug.Observation.ProviderEvents, func(ev ObservedProviderEvent) bool {
+		return len(ev.ToolCalls) == 1 && ev.ToolCalls[0].Args == `{"path":null,"limit":2}`
+	}) {
+		t.Fatalf("debug raw provider events should expose tool args: %#v", debug.Observation.ProviderEvents)
 	}
 }
 
@@ -790,9 +906,26 @@ func TestRunnerAgentSessionToolPatchPersistsAcrossRestore(t *testing.T) {
 		return entry.Type == "active_tools_change" &&
 			entry.Metadata["previous_tools"] == "grep" &&
 			entry.Metadata["selected_tools"] == "read,shell" &&
-			entry.Metadata["reason"] == "restore test"
+			entry.Metadata["reason"] != "restore test" &&
+			strings.HasPrefix(entry.Metadata["reason"], "[redacted]")
 	}) {
 		t.Fatalf("tool patch audit entry missing after restore: %#v", second.Session.PathEntries)
+	}
+	raw, err := restoredRunner.sessionStorage(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := raw.repo(root).Entries(context.Background(), first.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(entries, func(entry sessiontree.Entry) bool {
+		return entry.Type == sessiontree.EntryActiveTools &&
+			entry.Metadata["previous_tools"] == "grep" &&
+			entry.Metadata["selected_tools"] == "read,shell" &&
+			entry.Metadata["reason"] == "restore test"
+	}) {
+		t.Fatalf("durable audit metadata should retain raw reason: %#v", entries)
 	}
 }
 
@@ -896,6 +1029,7 @@ func TestRunnerAgentSessionWaitsAndResumesWithAppendMessage(t *testing.T) {
 	)
 	runner := NewRunner(root)
 	runner.Now = fixedClock()
+	runner.AllowDebugRaw = true
 	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
 		return scripted, nil
 	}
@@ -916,6 +1050,7 @@ func TestRunnerAgentSessionWaitsAndResumesWithAppendMessage(t *testing.T) {
 		ProfileID:    "fake",
 		Message:      "start",
 		SystemPrompt: "test",
+		DebugRaw:     true,
 	})
 	if first.Status != "waiting" || first.WaitingPrompt != "Which file?" || !first.CanAppendMessage {
 		t.Fatalf("first = %#v", first)
@@ -1266,7 +1401,7 @@ func TestRunnerRepairsStaleThreadLeafAndMetadataTurnsFromJournal(t *testing.T) {
 	if _, err := sessiontree.AppendTurnMarker(context.Background(), repo, sessionID, turnID, sessiontree.TurnCompleted, map[string]string{"finish_reason": "stop"}); err != nil {
 		t.Fatal(err)
 	}
-	threadPath := filepath.Join(runner.agentSessionTreeRoot(), sessionID, "thread.json")
+	threadPath := filepath.Join(runner.agentSessionTreeRoot(), safeSessionFileName(sessionID), "thread.json")
 	threadData, err := os.ReadFile(threadPath)
 	if err != nil {
 		t.Fatal(err)
@@ -1331,6 +1466,7 @@ func TestRunnerAgentSessionCanContinueAfterCompletedTurn(t *testing.T) {
 	)
 	runner := NewRunner(root)
 	runner.Now = fixedClock()
+	runner.AllowDebugRaw = true
 	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
 		return scripted, nil
 	}
@@ -1370,6 +1506,7 @@ func TestRunnerDeleteAgentSessionRemovesMetadataTreeAndPromptCache(t *testing.T)
 	runner := NewRunner(root)
 	runner.StorageMode = StorageModeFile
 	runner.Now = fixedClock()
+	runner.AllowDebugRaw = true
 	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
 		return scripted, nil
 	}
@@ -1556,7 +1693,7 @@ func TestRunnerSQLiteImportsLegacyFileStorageOnce(t *testing.T) {
 		t.Fatalf("imported sessions = %#v", sessions)
 	}
 	status := sqliteRunner.storageStatus(context.Background())
-	if status.Mode != StorageModeSQLite || status.SchemaVersion != "1" || !strings.Contains(status.LegacyImport, "threads=1") || !strings.Contains(status.LegacyImport, "metadata=1") {
+	if status.Mode != StorageModeSQLite || status.SchemaVersion != "2" || !strings.Contains(status.LegacyImport, "threads=1") || !strings.Contains(status.LegacyImport, "metadata=1") {
 		t.Fatalf("storage status = %#v", status)
 	}
 	restarted := NewRunner(root)
@@ -1655,6 +1792,7 @@ func TestRunnerAgentSessionHandlesMultipleToolCallsAndFollowUpUserTurn(t *testin
 	)
 	runner := NewRunner(root)
 	runner.Now = fixedClock()
+	runner.AllowDebugRaw = true
 	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
 		return scripted, nil
 	}
@@ -1667,6 +1805,7 @@ func TestRunnerAgentSessionHandlesMultipleToolCallsAndFollowUpUserTurn(t *testin
 		Message:       "查询长沙天气",
 		SystemPrompt:  "test",
 		SelectedTools: []string{"web_search", "shell"},
+		DebugRaw:      true,
 	})
 	if first.Status != "completed" || !strings.Contains(first.Output, "Changsha") {
 		t.Fatalf("first = %#v", first)
@@ -1692,7 +1831,7 @@ func TestRunnerAgentSessionHandlesMultipleToolCallsAndFollowUpUserTurn(t *testin
 		t.Fatalf("follow-up request missing tool results: %#v", first.Observation.ProviderRequests[1].Messages)
 	}
 
-	second := runner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "请给出信息来源和不确定性"})
+	second := runner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "请给出信息来源和不确定性", DebugRaw: true})
 	if second.Status != "completed" || second.Output != "Sources were search and shell results." || len(second.Session.Turns) != 2 {
 		t.Fatalf("second = %#v", second)
 	}

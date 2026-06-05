@@ -30,6 +30,8 @@ func TestRunnerPassesOnlyWhenEngineCompletesAndOraclePasses(t *testing.T) {
 			InputSchema: tools.StrictObject(map[string]any{
 				"content": tools.String("content"),
 			}, []string{"content"}),
+			Effects:    []tools.Effect{tools.EffectWrite},
+			Permission: tools.PermissionSpec{Mode: tools.PermissionAsk, ResourceKinds: []string{"file"}},
 		},
 		nil,
 		nil,
@@ -52,13 +54,17 @@ func TestRunnerPassesOnlyWhenEngineCompletesAndOraclePasses(t *testing.T) {
 				harness.Step(
 					harness.Usage(provider.Usage{InputTokens: 10, OutputTokens: 2}),
 					harness.Tool("write-1", "write", `{"content":"done"}`),
+					harness.DoneReason("tool_calls"),
 				),
 				harness.Step(harness.Text("ok"), harness.Done()),
 			),
-			Store:   session.NewMemoryStore(),
-			Memory:  &memory.Manager{SystemPrompt: "test"},
-			Tools:   registry,
-			Sink:    rec,
+			Store:  session.NewMemoryStore(),
+			Memory: &memory.Manager{SystemPrompt: "test"},
+			Tools:  registry,
+			Sink:   rec,
+			Approver: func(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {
+				return tools.PermissionDecisionAllow, nil
+			},
 			Options: engine.Options{RunID: "eval"},
 		},
 	}
