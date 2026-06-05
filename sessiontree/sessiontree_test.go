@@ -272,7 +272,7 @@ func TestCompactionContextReplacesHeadAndKeepsTail(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := BuildContext(path, ContextOptions{})
-	if len(got) != 3 || got[0].Content != "summary" || got[0].Kind != session.MessageKindCompactionSummary || got[1].Content != "kept" || got[2].Content != "tail" {
+	if len(got) != 3 || got[0].Role != session.User || got[0].Kind != session.MessageKindCompactionSummary || !strings.Contains(got[0].Content, "<compaction_summary") || got[1].Content != "kept" || got[2].Content != "tail" {
 		t.Fatalf("compaction should replace earlier head and keep suffix: %#v", got)
 	}
 	entries, _ := repo.Entries(ctx, "thread")
@@ -281,7 +281,7 @@ func TestCompactionContextReplacesHeadAndKeepsTail(t *testing.T) {
 	}
 }
 
-func TestCompactionContextPlacesKeptUsersBeforeSummaryAndDedupesTail(t *testing.T) {
+func TestCompactionContextEmbedsKeptUsersInCheckpointAndDedupesTail(t *testing.T) {
 	ctx := context.Background()
 	repo := NewMemoryRepo()
 	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "thread"}); err != nil {
@@ -306,9 +306,18 @@ func TestCompactionContextPlacesKeptUsersBeforeSummaryAndDedupesTail(t *testing.
 	}
 	got := BuildContext(path, ContextOptions{})
 	contents := messageContents(got)
-	want := []string{"old user", "summary", "latest user", "tail assistant"}
+	want := []string{got[0].Content, "latest user", "tail assistant"}
 	if !slices.Equal(contents, want) {
 		t.Fatalf("context contents = %#v, want %#v; full=%#v", contents, want, got)
+	}
+	if got[0].Role != session.User || got[0].Kind != session.MessageKindCompactionSummary {
+		t.Fatalf("context should start with user checkpoint: %#v", got)
+	}
+	if !strings.Contains(got[0].Content, `"entry_id": "`+oldUser.ID+`"`) || !strings.Contains(got[0].Content, "old user") {
+		t.Fatalf("tail-external kept user should be embedded in checkpoint: %#v", got[0])
+	}
+	if strings.Contains(got[0].Content, `"entry_id": "`+latestUser.ID+`"`) {
+		t.Fatalf("tail user should not be duplicated inside checkpoint: %#v", got[0])
 	}
 }
 
@@ -333,9 +342,15 @@ func TestCompactionContextDoesNotInferTailWhenKeptUsersAreExplicit(t *testing.T)
 	}
 	got := BuildContext(path, ContextOptions{})
 	contents := messageContents(got)
-	want := []string{"single user", "summary"}
+	want := []string{got[0].Content}
 	if !slices.Equal(contents, want) {
 		t.Fatalf("context contents = %#v, want %#v; full=%#v", contents, want, got)
+	}
+	if len(got) != 1 || got[0].Role != session.User || got[0].Kind != session.MessageKindCompactionSummary {
+		t.Fatalf("explicit kept users without tail should produce one checkpoint: %#v", got)
+	}
+	if !strings.Contains(got[0].Content, `"entry_id": "`+user.ID+`"`) || !strings.Contains(got[0].Content, "single user") {
+		t.Fatalf("explicit kept user should be embedded in checkpoint: %#v", got[0])
 	}
 }
 
@@ -381,7 +396,7 @@ func TestMultipleCompactionsUseOnlyLastBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := BuildContext(path, ContextOptions{})
-	if len(got) != 2 || got[0].Content != "S2" || got[1].Content != "kept2" {
+	if len(got) != 2 || !strings.Contains(got[0].Content, "S2") || got[0].Kind != session.MessageKindCompactionSummary || got[1].Content != "kept2" {
 		t.Fatalf("context should use only last compaction boundary: %#v", got)
 	}
 	if pathContains(path, old.ID) && len(got) > 0 && got[0].Content == "S1" {
@@ -436,7 +451,7 @@ func TestForkRewritesCompactionReferences(t *testing.T) {
 		t.Fatalf("fork should not rewrite stable previous compaction id: %#v", comp)
 	}
 	got := BuildContext(path, ContextOptions{})
-	if len(got) != 3 || got[0].Content != "old" || got[1].Content != "summary" || got[2].Content != "kept" {
+	if len(got) != 2 || !strings.Contains(got[0].Content, "old") || !strings.Contains(got[0].Content, "summary") || got[1].Content != "kept" {
 		t.Fatalf("forked context should retain rewritten tail: %#v", got)
 	}
 }

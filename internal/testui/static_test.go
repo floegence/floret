@@ -107,8 +107,8 @@ func TestStaticConsoleNewSessionFieldsAreExplicitlyLabelled(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`Recent tail controls the verbatim assistant, tool, and nearby message tail kept after summary.`,
-		`Recent user inputs are protected separately up to 15k tokens, and the latest user message is always kept.`,
+		`Recent tail controls the verbatim assistant, tool, and nearby message tail kept after the checkpoint.`,
+		`Recent user inputs outside the tail are protected inside the checkpoint up to 15k tokens, and the latest user message is always represented.`,
 	} {
 		if !strings.Contains(newSession, want) {
 			t.Fatalf("new session form is missing recent tail help text %q", want)
@@ -124,7 +124,7 @@ func TestStaticConsoleNewSessionContextPolicyIsAdvancedAndStepSafe(t *testing.T)
 		`<summary>Advanced options</summary>`,
 		`id="new-context-window" name="context_window_tokens" aria-label="Context window" type="number" min="1024" step="1"`,
 		`id="new-max-output" name="max_output_tokens" aria-label="Max output" type="number" min="256" step="1"`,
-		`id="new-recent-tail" name="recent_tail_tokens" aria-label="Recent tail" aria-description="Controls the verbatim assistant, tool, and nearby message tail kept after summary. Recent user inputs are protected separately up to 15k tokens, and the latest user message is always kept." type="number" min="256" step="1"`,
+		`id="new-recent-tail" name="recent_tail_tokens" aria-label="Recent tail" aria-description="Controls the verbatim assistant, tool, and nearby message tail kept after the checkpoint. Recent user inputs outside the tail are protected inside the checkpoint up to 15k tokens, and the latest user message is always represented." type="number" min="256" step="1"`,
 	} {
 		if !strings.Contains(newSession, want) {
 			t.Fatalf("new session context policy controls missing advanced/step-safe markup %q", want)

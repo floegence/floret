@@ -44,16 +44,17 @@ func TestPrepareProducesStableCutpointAndPreservesToolPair(t *testing.T) {
 }
 
 func TestPrepareUpdatesPreviousSummaryWithoutStackingOldSummaryMessages(t *testing.T) {
+	previous := BuildCheckpointMessage("S1 old summary", []session.Message{{Role: session.User, Content: "original user preserved in checkpoint", EntryID: "e1"}}, nil)
+	previous.CompactionID = "c1"
 	history := []session.Message{
-		{Role: session.User, Content: "original user kept before summary", EntryID: "e1"},
-		{Role: session.Assistant, Content: "S1 old summary", Kind: session.MessageKindCompactionSummary, CompactionID: "c1"},
+		previous,
 		{Role: session.User, Content: "new work", EntryID: "e2"},
 		{Role: session.Assistant, Content: "new decision", EntryID: "e3"},
 		{Role: session.User, Content: "tail", EntryID: "e4"},
 	}
 	prep, err := Prepare(context.Background(), Request{
 		History: history,
-		Policy:  contextpolicy.Policy{ContextWindowTokens: 200, ReservedOutputTokens: 20, ReservedSummaryTokens: 40, RecentTailTokens: 12},
+		Policy:  contextpolicy.Policy{ContextWindowTokens: 1200, ReservedOutputTokens: 80, ReservedSummaryTokens: 120, RecentTailTokens: 12},
 	}, ExtractiveSummaryGenerator{})
 	if err != nil {
 		t.Fatal(err)
@@ -89,8 +90,14 @@ func TestPrepareKeepsLatestUserAndRecentUsersWithinBudget(t *testing.T) {
 	if got, want := strings.Join(prep.Result.KeptUserEntryIDs, ","), "u3"; got != want {
 		t.Fatalf("kept user ids = %q, want %q", got, want)
 	}
-	if len(prep.ActiveMessages) == 0 || prep.ActiveMessages[0].EntryID != "u3" {
-		t.Fatalf("latest user should be kept before summary when outside tail: %#v", prep.ActiveMessages)
+	if len(prep.ActiveMessages) == 0 || prep.ActiveMessages[0].Role != session.User || prep.ActiveMessages[0].Kind != session.MessageKindCompactionSummary {
+		t.Fatalf("active context should start with user checkpoint: %#v", prep.ActiveMessages)
+	}
+	if !strings.Contains(prep.ActiveMessages[0].Content, `"entry_id": "u3"`) || !strings.Contains(prep.ActiveMessages[0].Content, "latest") {
+		t.Fatalf("latest user should be preserved inside checkpoint: %#v", prep.ActiveMessages[0])
+	}
+	if countEntryID(prep.ActiveMessages, "u3") != 0 {
+		t.Fatalf("tail-external kept user should not appear as standalone message: %#v", prep.ActiveMessages)
 	}
 }
 
@@ -152,14 +159,38 @@ func TestPrepareDeduplicatesKeptUsersAlreadyInTail(t *testing.T) {
 	if got, want := strings.Join(prep.Result.KeptUserEntryIDs, ","), "u1,u2"; got != want {
 		t.Fatalf("kept user ids = %q, want %q", got, want)
 	}
-	countLatest := 0
-	for _, msg := range prep.ActiveMessages {
-		if msg.EntryID == "u2" {
-			countLatest++
-		}
-	}
-	if countLatest != 1 {
+	if countEntryID(prep.ActiveMessages, "u2") != 1 {
 		t.Fatalf("latest user should appear once with tail position winning: %#v", prep.ActiveMessages)
+	}
+	if strings.Contains(prep.ActiveMessages[0].Content, `"entry_id": "u2"`) {
+		t.Fatalf("tail user should not be duplicated inside checkpoint: %#v", prep.ActiveMessages[0])
+	}
+	if !strings.Contains(prep.ActiveMessages[0].Content, `"entry_id": "u1"`) {
+		t.Fatalf("tail-external user should be preserved inside checkpoint: %#v", prep.ActiveMessages[0])
+	}
+}
+
+func TestPrepareExtractsPurePreviousSummaryFromCheckpoint(t *testing.T) {
+	previous := BuildCheckpointMessage("S1 old summary", []session.Message{{Role: session.User, Content: "old user", EntryID: "u1"}}, nil)
+	previous.CompactionID = "c1"
+	history := []session.Message{
+		previous,
+		{Role: session.User, Content: "new work", EntryID: "u2"},
+		{Role: session.Assistant, Content: "new decision", EntryID: "a2"},
+		{Role: session.User, Content: "tail", EntryID: "u3"},
+	}
+	prep, err := Prepare(context.Background(), Request{
+		History: history,
+		Policy:  contextpolicy.Policy{ContextWindowTokens: 1200, ReservedOutputTokens: 80, ReservedSummaryTokens: 120, RecentTailTokens: 12},
+	}, ExtractiveSummaryGenerator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prep.Result.PreviousCompactionID != "c1" {
+		t.Fatalf("previous compaction id should be carried forward: %#v", prep.Result)
+	}
+	if strings.Contains(prep.Result.Summary, "preserved_user_inputs") || !strings.Contains(prep.Result.Summary, "S1 old summary") {
+		t.Fatalf("summary should merge pure previous summary without checkpoint wrapper: %q", prep.Result.Summary)
 	}
 }
 
@@ -172,13 +203,13 @@ func TestPrepareShrinksTailWithoutLeavingOrphanToolResult(t *testing.T) {
 	}
 	prep, err := Prepare(context.Background(), Request{
 		History: history,
-		Policy:  contextpolicy.Policy{ContextWindowTokens: 180, ReservedOutputTokens: 20, ReservedSummaryTokens: 20, RecentTailTokens: 120, MicrocompactToolTokens: 1000},
+		Policy:  contextpolicy.Policy{ContextWindowTokens: 500, ReservedOutputTokens: 80, ReservedSummaryTokens: 80, RecentTailTokens: 120, MicrocompactToolTokens: 1000},
 	}, ExtractiveSummaryGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if prep.Result.Details["tail_shrunk_before_summary"] != "true" {
-		t.Fatalf("tail should shrink before summary: %#v", prep.Result.Details)
+		t.Fatalf("tail should shrink before checkpoint: %#v", prep.Result.Details)
 	}
 	for _, msg := range prep.ActiveMessages {
 		if msg.Role == session.Tool && msg.ToolCallID == "call-1" && !hasAssistantCall(prep.ActiveMessages, "call-1") {
@@ -197,4 +228,14 @@ func hasAssistantCall(messages []session.Message, id string) bool {
 		}
 	}
 	return false
+}
+
+func countEntryID(messages []session.Message, id string) int {
+	var count int
+	for _, msg := range messages {
+		if msg.EntryID == id {
+			count++
+		}
+	}
+	return count
 }

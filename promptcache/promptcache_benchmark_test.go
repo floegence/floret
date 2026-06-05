@@ -22,7 +22,7 @@ func BenchmarkBuildPlanTenThousandSegmentsWithCompactionWindow(b *testing.B) {
 		history = append(history, session.Message{Role: session.User, Content: fmt.Sprintf("message %05d", i), EntryID: fmt.Sprintf("entry-%05d", i)})
 	}
 	history[9000] = session.Message{
-		Role:                 session.Assistant,
+		Role:                 session.User,
 		Content:              "summary through 09000",
 		EntryID:              "entry-09000",
 		Kind:                 session.MessageKindCompactionSummary,

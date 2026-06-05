@@ -37,10 +37,11 @@ experience.
 ## Runtime Shape
 
 Context compaction replaces older assistant/tool history with a structured
-summary while retaining a verbatim recent tail for execution continuity. Recent
-user inputs are protected separately: the latest user message is always kept, and
-recent older user messages are retained within a 15k-token user-input budget and
-replayed in their original order.
+checkpoint while retaining a verbatim recent tail for execution continuity.
+Recent user inputs outside that tail are protected inside the checkpoint: the
+latest user message is always represented, and recent older user messages are
+preserved within a 15k-token user-input budget without replaying them as new
+standalone turns.
 
 Most hosts should use `runtime.NewHarness`, then `StartThread` or `ResumeThread`,
 and finally `Thread.Run` for each user turn. That API keeps durable conversation

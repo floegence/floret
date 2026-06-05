@@ -48,8 +48,8 @@ export function renderNewSession() {
               <input id="new-max-output" name="max_output_tokens" aria-label="Max output" type="number" min="256" step="1" value="${policy.max_output_tokens}" />
             </label>
             <label class="field" for="new-recent-tail">
-              <span title="Recent tail controls the verbatim assistant, tool, and nearby message tail kept after summary. Recent user inputs are protected separately up to 15k tokens, and the latest user message is always kept.">Recent tail</span>
-              <input id="new-recent-tail" name="recent_tail_tokens" aria-label="Recent tail" aria-description="Controls the verbatim assistant, tool, and nearby message tail kept after summary. Recent user inputs are protected separately up to 15k tokens, and the latest user message is always kept." type="number" min="256" step="1" value="${policy.recent_tail_tokens}" />
+              <span title="Recent tail controls the verbatim assistant, tool, and nearby message tail kept after the checkpoint. Recent user inputs outside the tail are protected inside the checkpoint up to 15k tokens, and the latest user message is always represented.">Recent tail</span>
+              <input id="new-recent-tail" name="recent_tail_tokens" aria-label="Recent tail" aria-description="Controls the verbatim assistant, tool, and nearby message tail kept after the checkpoint. Recent user inputs outside the tail are protected inside the checkpoint up to 15k tokens, and the latest user message is always represented." type="number" min="256" step="1" value="${policy.recent_tail_tokens}" />
             </label>
           </div>
         </details>

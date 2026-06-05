@@ -511,7 +511,7 @@ func TestEngineCompactionIsProjectedAsSessionTreeCompactionEntry(t *testing.T) {
 		t.Fatalf("compaction entry missing details: %#v", snap.Entries)
 	}
 	if !slices.ContainsFunc(snap.Context, func(msg session.Message) bool {
-		return msg.Role == session.Assistant && msg.Kind == session.MessageKindCompactionSummary
+		return msg.Role == session.User && msg.Kind == session.MessageKindCompactionSummary
 	}) {
 		t.Fatalf("compaction summary should be provider-visible: %#v", snap.Context)
 	}

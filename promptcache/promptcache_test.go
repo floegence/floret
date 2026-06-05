@@ -523,7 +523,7 @@ func TestCompactionSegmentKindAndWindowComeFromStructuredMessageKind(t *testing.
 		Model:     "model",
 		Toolset:   toolset,
 		History: []session.Message{
-			{Role: session.Assistant, Content: "summary without magic words", Kind: session.MessageKindCompactionSummary, CompactionID: "c1", CompactionGeneration: 3, CompactionWindowID: "w3"},
+			{Role: session.User, Content: "summary without magic words", Kind: session.MessageKindCompactionSummary, CompactionID: "c1", CompactionGeneration: 3, CompactionWindowID: "w3"},
 			{Role: session.User, Content: "continue"},
 			{Role: session.System, Content: "This content says compacted but is ordinary system context."},
 		},
@@ -563,7 +563,7 @@ func TestActiveCompactionWindowUsesLatestStructuredSummary(t *testing.T) {
 		History: []session.Message{
 			{Role: session.Assistant, Content: "old summary", Kind: session.MessageKindCompactionSummary, CompactionID: "c1", CompactionGeneration: 1, CompactionWindowID: "w1"},
 			{Role: session.User, Content: "middle"},
-			{Role: session.Assistant, Content: "new summary", Kind: session.MessageKindCompactionSummary, CompactionID: "c2", CompactionGeneration: 2, CompactionWindowID: "w2"},
+			{Role: session.User, Content: "new summary", Kind: session.MessageKindCompactionSummary, CompactionID: "c2", CompactionGeneration: 2, CompactionWindowID: "w2"},
 			{Role: session.User, Content: "continue"},
 		},
 	})
@@ -575,7 +575,7 @@ func TestActiveCompactionWindowUsesLatestStructuredSummary(t *testing.T) {
 	}
 }
 
-func TestActiveCompactionWindowAllowsKeptUsersBeforeSummary(t *testing.T) {
+func TestActiveCompactionWindowUsesUserCheckpointSummary(t *testing.T) {
 	store := NewMemoryStore()
 	toolset, _, err := EnsureToolset(context.Background(), store, "run", "thread", "openai", "model", nil, nil, time.Time{})
 	if err != nil {
@@ -588,8 +588,7 @@ func TestActiveCompactionWindowAllowsKeptUsersBeforeSummary(t *testing.T) {
 		Model:     "model",
 		Toolset:   toolset,
 		History: []session.Message{
-			{Role: session.User, Content: "kept original user"},
-			{Role: session.Assistant, Content: "summary", Kind: session.MessageKindCompactionSummary, CompactionID: "c1", CompactionGeneration: 4, CompactionWindowID: "w4"},
+			{Role: session.User, Content: "checkpoint summary", Kind: session.MessageKindCompactionSummary, CompactionID: "c1", CompactionGeneration: 4, CompactionWindowID: "w4"},
 			{Role: session.User, Content: "tail user"},
 		},
 	})
@@ -597,7 +596,7 @@ func TestActiveCompactionWindowAllowsKeptUsersBeforeSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	if plan.CompactionGeneration != 4 || plan.CompactionWindowID != "w4" || plan.CompactionEntryID != "c1" {
-		t.Fatalf("plan should find compaction window after kept users: %#v", plan)
+		t.Fatalf("plan should find compaction window from user checkpoint: %#v", plan)
 	}
 }
 
@@ -615,7 +614,7 @@ func TestReusedCompactionSegmentRefreshesWindowMetadata(t *testing.T) {
 		Model:     "model",
 		Toolset:   toolset,
 		History: []session.Message{
-			{Role: session.Assistant, Content: "summary", Kind: session.MessageKindCompactionSummary, CompactionID: "c1", CompactionGeneration: 1, CompactionWindowID: "w1"},
+			{Role: session.User, Content: "summary", Kind: session.MessageKindCompactionSummary, CompactionID: "c1", CompactionGeneration: 1, CompactionWindowID: "w1"},
 		},
 	}
 	first, _, err := BuildPlan(context.Background(), store, input)
@@ -623,7 +622,7 @@ func TestReusedCompactionSegmentRefreshesWindowMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	input.History = []session.Message{
-		{Role: session.Assistant, Content: "summary", Kind: session.MessageKindCompactionSummary, CompactionID: "c2", CompactionGeneration: 2, CompactionWindowID: "w2"},
+		{Role: session.User, Content: "summary", Kind: session.MessageKindCompactionSummary, CompactionID: "c2", CompactionGeneration: 2, CompactionWindowID: "w2"},
 	}
 	second, _, err := BuildPlan(context.Background(), store, input)
 	if err != nil {

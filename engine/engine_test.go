@@ -1308,7 +1308,7 @@ func TestPreRequestThresholdCompactsWithoutReplacingStore(t *testing.T) {
 		t.Fatalf("pre-request compaction not reflected in metrics/request count: result=%#v requests=%d", got, len(p.Requests))
 	}
 	if !slices.ContainsFunc(p.Requests[0].Messages, func(message session.Message) bool {
-		return message.Kind == session.MessageKindCompactionSummary
+		return message.Role == session.User && message.Kind == session.MessageKindCompactionSummary
 	}) {
 		t.Fatalf("provider request did not use compacted active projection: %#v", p.Requests[0].Messages)
 	}

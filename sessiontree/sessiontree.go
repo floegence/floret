@@ -864,7 +864,7 @@ func BuildContext(path []Entry, _ ContextOptions) []session.Message {
 	}
 	var messages []session.Message
 	if compactionIndex >= 0 {
-		compaction := path[compactionIndex]
+		compactionEntry := path[compactionIndex]
 		tailEntryIDs := map[string]struct{}{}
 		if firstKeptIndex >= 0 && firstKeptIndex < compactionIndex {
 			for _, entry := range path[firstKeptIndex:compactionIndex] {
@@ -874,20 +874,15 @@ func BuildContext(path []Entry, _ ContextOptions) []session.Message {
 		for _, entry := range path[compactionIndex+1:] {
 			tailEntryIDs[entry.ID] = struct{}{}
 		}
-		for _, entry := range keptUserEntries(path[:compactionIndex], compaction.KeptUserEntryIDs, tailEntryIDs) {
-			messages = appendProviderVisible(messages, entry)
-		}
-		if compaction.Summary != "" {
-			messages = append(messages, session.Message{
-				Role:                 session.Assistant,
-				Content:              compaction.Summary,
-				EntryID:              compaction.ID,
-				ParentEntryID:        compaction.ParentID,
-				Kind:                 session.MessageKindCompactionSummary,
-				CompactionID:         compaction.CompactionID,
-				CompactionGeneration: compaction.CompactionGeneration,
-				CompactionWindowID:   compaction.CompactionWindowID,
-			})
+		if compactionEntry.Summary != "" {
+			keptUsers := messagesForEntries(keptUserEntries(path[:compactionIndex], compactionEntry.KeptUserEntryIDs, tailEntryIDs))
+			msg := compaction.BuildCheckpointMessage(compactionEntry.Summary, keptUsers, nil)
+			msg.EntryID = compactionEntry.ID
+			msg.ParentEntryID = compactionEntry.ParentID
+			msg.CompactionID = compactionEntry.CompactionID
+			msg.CompactionGeneration = compactionEntry.CompactionGeneration
+			msg.CompactionWindowID = compactionEntry.CompactionWindowID
+			messages = append(messages, msg)
 		}
 		if firstKeptIndex >= 0 && firstKeptIndex < compactionIndex {
 			for _, entry := range path[firstKeptIndex:compactionIndex] {
@@ -903,6 +898,20 @@ func BuildContext(path []Entry, _ ContextOptions) []session.Message {
 		messages = appendProviderVisible(messages, entry)
 	}
 	return messages
+}
+
+func messagesForEntries(entries []Entry) []session.Message {
+	out := make([]session.Message, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Message.Role == "" {
+			continue
+		}
+		msg := entry.Message
+		msg.EntryID = entry.ID
+		msg.ParentEntryID = entry.ParentID
+		out = append(out, msg)
+	}
+	return out
 }
 
 func appendProviderVisible(messages []session.Message, entry Entry) []session.Message {

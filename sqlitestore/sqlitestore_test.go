@@ -316,7 +316,12 @@ func TestSQLiteStoreForkRewritesCompactionEntryReferences(t *testing.T) {
 	if entry.PreviousCompactionID != "compaction-1" {
 		t.Fatalf("previous compaction id should stay stable: %#v", entry)
 	}
-	if got := sessiontree.BuildContext(pathEntries, sessiontree.ContextOptions{}); len(got) != 3 || got[0].Content != "old" || got[1].Content != "summary" || got[2].Content != "kept" {
+	if got := sessiontree.BuildContext(pathEntries, sessiontree.ContextOptions{}); len(got) != 2 ||
+		got[0].Role != session.User ||
+		got[0].Kind != session.MessageKindCompactionSummary ||
+		!strings.Contains(got[0].Content, "old") ||
+		!strings.Contains(got[0].Content, "summary") ||
+		got[1].Content != "kept" {
 		t.Fatalf("fork context = %#v", got)
 	}
 }

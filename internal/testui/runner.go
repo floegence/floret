@@ -20,6 +20,7 @@ import (
 	"github.com/floegence/floret/adapters"
 	"github.com/floegence/floret/agentharness"
 	"github.com/floegence/floret/builtintools"
+	"github.com/floegence/floret/compaction"
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/control"
@@ -1620,17 +1621,45 @@ func sessionMessagesFromEntries(entries []ObservedSessionEntry) []ObservedSessio
 				out = append(out, entry.Message)
 			}
 		case sessiontree.EntryCompaction:
-			out = append(out, ObservedSessionMessage{
-				Role:                 string(session.Assistant),
-				Content:              entry.Summary,
-				Kind:                 string(session.MessageKindCompactionSummary),
-				EntryID:              entry.ID,
-				ParentEntryID:        entry.ParentID,
-				CompactionID:         entry.CompactionID,
-				CompactionGeneration: entry.CompactionGeneration,
-				CompactionWindowID:   entry.CompactionWindowID,
-			})
+			out = append(out, observedCompactionCheckpoint(entry, out))
 		}
+	}
+	return out
+}
+
+func observedCompactionCheckpoint(entry ObservedSessionEntry, previous []ObservedSessionMessage) ObservedSessionMessage {
+	msg := compaction.BuildCheckpointMessage(entry.Summary, observedKeptUsers(previous, entry.KeptUserEntryIDs), nil)
+	msg.EntryID = entry.ID
+	msg.ParentEntryID = entry.ParentID
+	msg.CompactionID = entry.CompactionID
+	msg.CompactionGeneration = entry.CompactionGeneration
+	msg.CompactionWindowID = entry.CompactionWindowID
+	return observeEntryMessage(msg)
+}
+
+func observedKeptUsers(messages []ObservedSessionMessage, ids []string) []session.Message {
+	if len(ids) == 0 || len(messages) == 0 {
+		return nil
+	}
+	byID := make(map[string]ObservedSessionMessage, len(messages))
+	for _, msg := range messages {
+		if msg.EntryID == "" || msg.Role != string(session.User) {
+			continue
+		}
+		byID[msg.EntryID] = msg
+	}
+	out := make([]session.Message, 0, len(ids))
+	for _, id := range ids {
+		msg, ok := byID[id]
+		if !ok {
+			continue
+		}
+		out = append(out, session.Message{
+			Role:          session.User,
+			Content:       msg.Content,
+			EntryID:       msg.EntryID,
+			ParentEntryID: msg.ParentEntryID,
+		})
 	}
 	return out
 }

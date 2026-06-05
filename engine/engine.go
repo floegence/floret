@@ -858,7 +858,7 @@ func latestCompaction(_, active []session.Message) compaction.Result {
 		if active[i].Kind != session.MessageKindCompactionSummary {
 			continue
 		}
-		return compaction.Result{CompactionID: active[i].CompactionID, Summary: active[i].Content}
+		return compaction.Result{CompactionID: active[i].CompactionID, Summary: compaction.ExtractCheckpointSummary(active[i].Content)}
 	}
 	return compaction.Result{}
 }

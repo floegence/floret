@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -15,6 +16,11 @@ import (
 )
 
 const SummarySchemaVersion = "floret.compaction.summary.v1"
+
+const (
+	checkpointSummaryOpen  = `<compaction_summary schema="` + SummarySchemaVersion + `">`
+	checkpointSummaryClose = "</compaction_summary>"
+)
 
 var (
 	ErrNoCutPoint       = errors.New("compaction has no safe cut point")
@@ -154,8 +160,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 			return Preparation{}, err
 		}
 		prep.Result.Summary = trimToTokenBudget(strings.TrimSpace(summary), req.Policy.ReservedSummaryTokens)
-		summaryMsg := session.Message{Role: session.Assistant, Content: prep.Result.Summary, Kind: session.MessageKindCompactionSummary, CompactionID: prep.Result.CompactionID}
-		prep.ActiveMessages = buildActiveMessages(summaryMsg, keptUsers, nil)
+		prep.ActiveMessages = buildActiveMessages(prep.Result, keptUsers, nil)
 		usageAfter := contextpolicy.EstimateMessages("", prep.ActiveMessages, 0, req.Policy)
 		prep.Result.TokensAfterEstimate = usageAfter.InputTokens
 		prep.Result.UsageAfter = usageAfter
@@ -229,13 +234,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		prep.Result.Details["summary_trimmed"] = "true"
 	}
 	prep.Result.Summary = summary
-	summaryMsg := session.Message{
-		Role:         session.Assistant,
-		Content:      summary,
-		Kind:         session.MessageKindCompactionSummary,
-		CompactionID: prep.Result.CompactionID,
-	}
-	prep.ActiveMessages = buildActiveMessages(summaryMsg, keptUsers, tail)
+	prep.ActiveMessages = buildActiveMessages(prep.Result, keptUsers, tail)
 	usageAfter := contextpolicy.EstimateMessages("", prep.ActiveMessages, 0, req.Policy)
 	prep.Result.TokensAfterEstimate = usageAfter.InputTokens
 	prep.Result.UsageAfter = usageAfter
@@ -275,7 +274,7 @@ func (g ProviderSummaryGenerator) GenerateSummary(ctx context.Context, prep Prep
 	}
 	policy := contextpolicy.Normalize(g.Policy)
 	messages := []session.Message{
-		{Role: session.System, Content: "You are Floret's context compaction writer. Produce a concise checkpoint summary using the requested schema. Preserve goals, constraints, completed work, open work, key files, commands, errors, and decisions. Do not include old transcript verbatim."},
+		{Role: session.System, Content: summaryWriterSystemPrompt()},
 		{Role: session.User, Content: summaryPrompt(prep, policy)},
 	}
 	stream, err := g.Provider.Stream(ctx, provider.Request{
@@ -313,19 +312,27 @@ func (g ProviderSummaryGenerator) GenerateSummary(ctx context.Context, prep Prep
 }
 
 func BuildActiveMessages(result Result, tail []session.Message) []session.Message {
-	msg := session.Message{
-		Role:         session.Assistant,
-		Content:      result.Summary,
-		Kind:         session.MessageKindCompactionSummary,
-		CompactionID: result.CompactionID,
-	}
-	out := append([]session.Message{msg}, tail...)
+	return buildActiveMessages(result, nil, tail)
+}
+
+func buildActiveMessages(result Result, keptUsers, tail []session.Message) []session.Message {
+	checkpoint := BuildCheckpointMessage(result.Summary, keptUsers, tail)
+	checkpoint.CompactionID = result.CompactionID
+	out := append([]session.Message{checkpoint}, tail...)
 	return out
 }
 
-func buildActiveMessages(summary session.Message, keptUsers, tail []session.Message) []session.Message {
+func BuildCheckpointMessage(summary string, keptUsers, tail []session.Message) session.Message {
+	return session.Message{
+		Role:    session.User,
+		Content: checkpointContent(summary, keptUsersOutsideTail(keptUsers, tail)),
+		Kind:    session.MessageKindCompactionSummary,
+	}
+}
+
+func keptUsersOutsideTail(keptUsers, tail []session.Message) []session.Message {
 	tailIDs := entryIDSet(tail)
-	out := make([]session.Message, 0, len(keptUsers)+1+len(tail))
+	out := make([]session.Message, 0, len(keptUsers))
 	for _, msg := range keptUsers {
 		if msg.EntryID == "" {
 			continue
@@ -335,9 +342,38 @@ func buildActiveMessages(summary session.Message, keptUsers, tail []session.Mess
 		}
 		out = append(out, msg)
 	}
-	out = append(out, summary)
-	out = append(out, tail...)
 	return out
+}
+
+func checkpointContent(summary string, keptUsers []session.Message) string {
+	var out strings.Builder
+	out.WriteString("The conversation before the retained tail was compacted into this checkpoint.\n")
+	out.WriteString("Use it as historical context only. Do not answer this checkpoint directly.\n")
+	out.WriteString("The retained tail follows after this message and is the most recent source of truth.\n\n")
+	if len(keptUsers) > 0 {
+		out.WriteString("<preserved_user_inputs>\n")
+		out.WriteString("These recent user messages were preserved from before the retained tail because they may contain intent, constraints, or preferences.\n")
+		out.WriteString("Treat them as historical requirements unless the retained tail or the latest user message supersedes them.\n\n")
+		data := make([]preservedUserInput, 0, len(keptUsers))
+		for _, msg := range keptUsers {
+			data = append(data, preservedUserInput{EntryID: msg.EntryID, Content: msg.Content})
+		}
+		encoded, _ := json.MarshalIndent(data, "", "  ")
+		out.Write(encoded)
+		out.WriteString("\n")
+		out.WriteString("</preserved_user_inputs>\n\n")
+	}
+	out.WriteString(checkpointSummaryOpen)
+	out.WriteString("\n")
+	out.WriteString(strings.TrimSpace(summary))
+	out.WriteString("\n")
+	out.WriteString(checkpointSummaryClose)
+	return out.String()
+}
+
+type preservedUserInput struct {
+	EntryID string `json:"entry_id"`
+	Content string `json:"content"`
 }
 
 func stripEmptyMessages(messages []session.Message) []session.Message {
@@ -363,7 +399,7 @@ func removeActiveCompactionSummary(messages []session.Message, req *Request) []s
 	}
 	summary := messages[index]
 	if req.PreviousSummary == "" {
-		req.PreviousSummary = summary.Content
+		req.PreviousSummary = ExtractCheckpointSummary(summary.Content)
 	}
 	if req.PreviousCompactionID == "" {
 		req.PreviousCompactionID = summary.CompactionID
@@ -372,6 +408,23 @@ func removeActiveCompactionSummary(messages []session.Message, req *Request) []s
 	out = append(out, messages[:index]...)
 	out = append(out, messages[index+1:]...)
 	return out
+}
+
+func ExtractCheckpointSummary(content string) string {
+	start := strings.LastIndex(content, "<compaction_summary")
+	if start < 0 {
+		return content
+	}
+	openEnd := strings.Index(content[start:], ">")
+	if openEnd < 0 {
+		return content
+	}
+	bodyStart := start + openEnd + 1
+	bodyEnd := strings.Index(content[bodyStart:], checkpointSummaryClose)
+	if bodyEnd < 0 {
+		return content
+	}
+	return strings.TrimSpace(content[bodyStart : bodyStart+bodyEnd])
 }
 
 func findTailStart(history []session.Message, keepTokens int64) int {
@@ -389,10 +442,9 @@ func findTailStart(history []session.Message, keepTokens int64) int {
 }
 
 func fitTailStartBeforeSummary(history []session.Message, start int, keptUsers []session.Message, policy contextpolicy.Policy) (int, bool) {
-	summary := summaryBudgetMessage(policy)
 	shrunk := false
 	for start > 0 && start < len(history) {
-		candidate := buildActiveMessages(summary, keptUsers, history[start:])
+		candidate := buildActiveMessages(Result{Summary: summaryBudgetText(policy)}, keptUsers, history[start:])
 		if contextpolicy.EstimateMessages("", candidate, 0, policy).InputTokens < contextpolicy.Threshold(policy) {
 			return start, shrunk
 		}
@@ -406,13 +458,9 @@ func fitTailStartBeforeSummary(history []session.Message, start int, keptUsers [
 	return start, shrunk
 }
 
-func summaryBudgetMessage(policy contextpolicy.Policy) session.Message {
+func summaryBudgetText(policy contextpolicy.Policy) string {
 	policy = contextpolicy.Normalize(policy)
-	return session.Message{
-		Role:    session.Assistant,
-		Content: strings.Repeat("x", int(policy.ReservedSummaryTokens*4)),
-		Kind:    session.MessageKindCompactionSummary,
-	}
+	return strings.Repeat("x", int(policy.ReservedSummaryTokens*4))
 }
 
 func nextShrinkableTailStart(history []session.Message, start int) int {
@@ -676,6 +724,18 @@ func trimToTokenBudget(value string, budget int64) string {
 		return value
 	}
 	return string(runes[:maxRunes]) + "\n...[trimmed]"
+}
+
+func summaryWriterSystemPrompt() string {
+	return strings.Join([]string{
+		"You are Floret's context compaction writer.",
+		"Create a structured handoff summary for another LLM that will continue the work from the retained tail.",
+		"Summarize only the conversation history you are given; newer turns may be retained outside the summary.",
+		"Preserve current goals, user constraints and preferences, progress, decisions, key files, commands, errors, risks, examples, references, and concrete next steps.",
+		"If a previous summary is provided, update it by preserving still-true details, removing stale details, and merging in new facts.",
+		"Do not continue the conversation, answer questions in the transcript, or mention that you are summarizing or compacting.",
+		"Be concise, structured, and focused on helping the next LLM continue without rereading the compacted transcript.",
+	}, " ")
 }
 
 func summaryPrompt(prep Preparation, policy contextpolicy.Policy) string {

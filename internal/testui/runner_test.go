@@ -2170,11 +2170,6 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 	}) {
 		t.Fatalf("active context missing structured compaction summary: %#v", result.Observation.ActiveContext)
 	}
-	if !slices.ContainsFunc(result.Observation.ActiveContext, func(msg ObservedSessionMessage) bool {
-		return msg.Role == "user" && msg.Content == long
-	}) {
-		t.Fatalf("active context missing kept original user input: %#v", result.Observation.ActiveContext)
-	}
 	if !slices.ContainsFunc(result.Observation.PathEntries, func(entry ObservedSessionEntry) bool {
 		return entry.Type == "compaction" && entry.CompactionID != "" && entry.CompactionGeneration > 0 && len(entry.KeptUserEntryIDs) > 0
 	}) {
