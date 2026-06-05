@@ -872,6 +872,25 @@ button.small {
   gap: 12px;
 }
 
+.advanced-options {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 10px 0;
+}
+
+.advanced-options summary {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.advanced-options[open] summary {
+  margin-bottom: 2px;
+  color: var(--ink);
+}
+
 .tool-boundary-note,
 .notice {
   padding: 9px 11px;

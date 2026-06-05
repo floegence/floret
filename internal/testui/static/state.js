@@ -157,7 +157,7 @@ export function providerModel(provider, modelID) {
 }
 
 export function contextPolicyForProfile(profile) {
-  const defaults = baseContextPolicyDefaults();
+  const defaults = defaultContextPolicy();
   const provider = providerByID(profile?.provider);
   const model = providerModel(provider, profile?.model || providerDefaultModel(provider));
   const maxOutput = Number(model?.max_tokens || defaults.max_output_tokens || 0);

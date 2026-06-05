@@ -116,12 +116,36 @@ func TestStaticConsoleNewSessionFieldsAreExplicitlyLabelled(t *testing.T) {
 	}
 }
 
-func TestStaticConsoleNewSessionDefaultsFollowProviderCatalog(t *testing.T) {
+func TestStaticConsoleNewSessionContextPolicyIsAdvancedAndStepSafe(t *testing.T) {
+	newSession := readStaticTestFile(t, "views", "newSession.js")
+
+	for _, want := range []string{
+		`<details class="advanced-options" data-context-policy-options>`,
+		`<summary>Advanced options</summary>`,
+		`id="new-context-window" name="context_window_tokens" aria-label="Context window" type="number" min="1024" step="1"`,
+		`id="new-max-output" name="max_output_tokens" aria-label="Max output" type="number" min="256" step="1"`,
+		`id="new-recent-tail" name="recent_tail_tokens" aria-label="Recent tail" aria-description="Controls the verbatim assistant, tool, and nearby message tail kept after summary. Recent user inputs are protected separately up to 15k tokens, and the latest user message is always kept." type="number" min="256" step="1"`,
+	} {
+		if !strings.Contains(newSession, want) {
+			t.Fatalf("new session context policy controls missing advanced/step-safe markup %q", want)
+		}
+	}
+	if strings.Contains(newSession, `data-context-policy-options open`) || strings.Contains(newSession, `open data-context-policy-options`) {
+		t.Fatalf("context policy advanced options should be collapsed by default")
+	}
+	for _, stale := range []string{`step="1024"`, `step="256"`} {
+		if strings.Contains(newSession, stale) {
+			t.Fatalf("context policy inputs should not use catalog-breaking token steps %q", stale)
+		}
+	}
+}
+
+func TestStaticConsoleNewSessionDefaultsFollowBackendAndProviderCatalog(t *testing.T) {
 	stateJS := readStaticTestFile(t, "state.js")
 	newSession := readStaticTestFile(t, "views", "newSession.js")
 	appJS := readStaticTestFile(t, "app.js")
 
-	for _, want := range []string{"contextPolicyForProfile", "providerModel", "context_policy_defaults", "model?.context_window", "model?.max_tokens"} {
+	for _, want := range []string{"contextPolicyForProfile", "defaultContextPolicy()", "providerModel", "context_policy_defaults", "model?.context_window", "model?.max_tokens"} {
 		if !strings.Contains(stateJS, want) {
 			t.Fatalf("state.js missing provider/model context default logic %q", want)
 		}

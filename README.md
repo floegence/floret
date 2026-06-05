@@ -77,6 +77,9 @@ The console can run fake-provider turns immediately, manage local provider profi
 save the active profile to `.env.local`, inspect provider requests and stream events,
 view session messages, review token/tool metrics, and run local checks such as package
 tests, race tests, provider smoke tests, tool scenarios, and the deterministic eval demo.
+New Session keeps context policy controls in Advanced options by default; those values
+are derived from the active provider/model catalog and backend context defaults, while
+still being submitted with the session create request.
 Public API responses are sanitized by default. Local raw inspection requires an explicit
 launch-time capability:
 
