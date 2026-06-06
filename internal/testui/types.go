@@ -100,9 +100,10 @@ type ConfigState struct {
 }
 
 type CapabilityState struct {
-	MCPServers  []MCPCapabilityState   `json:"mcp_servers"`
-	Skills      []SkillCapabilityState `json:"skills"`
-	Diagnostics []CapabilityDiagnostic `json:"diagnostics,omitempty"`
+	MCPServers   []MCPCapabilityState   `json:"mcp_servers"`
+	SkillSources []SkillSourceState     `json:"skill_sources,omitempty"`
+	Skills       []SkillCapabilityState `json:"skills"`
+	Diagnostics  []CapabilityDiagnostic `json:"diagnostics,omitempty"`
 }
 
 type MCPCapabilityState struct {
@@ -121,7 +122,18 @@ type SkillCapabilityState struct {
 	SourceKind   string `json:"source_kind,omitempty"`
 	SourceLabel  string `json:"source_label,omitempty"`
 	RelativePath string `json:"relative_path,omitempty"`
+	ContentHash  string `json:"content_hash,omitempty"`
+	License      string `json:"license,omitempty"`
 	Status       string `json:"status"`
+}
+
+type SkillSourceState struct {
+	Root       string `json:"root"`
+	Kind       string `json:"kind"`
+	Label      string `json:"label,omitempty"`
+	Enabled    bool   `json:"enabled"`
+	Managed    bool   `json:"managed"`
+	SkillCount int    `json:"skill_count,omitempty"`
 }
 
 type CapabilityDiagnostic struct {
@@ -130,6 +142,45 @@ type CapabilityDiagnostic struct {
 	SourceKind string `json:"source_kind,omitempty"`
 	Message    string `json:"message"`
 	NextAction string `json:"next_action,omitempty"`
+}
+
+type SkillInstallPreviewRequest struct {
+	URL string `json:"url"`
+}
+
+type SkillInstallRequest struct {
+	URL          string `json:"url"`
+	PreviewToken string `json:"preview_token"`
+	Replace      bool   `json:"replace,omitempty"`
+}
+
+type SkillInstallPreview struct {
+	URL             string             `json:"url"`
+	PreviewToken    string             `json:"preview_token"`
+	Repo            string             `json:"repo"`
+	Ref             string             `json:"ref"`
+	SourcePath      string             `json:"source_path"`
+	Name            string             `json:"name"`
+	Description     string             `json:"description"`
+	License         string             `json:"license,omitempty"`
+	Files           []SkillInstallFile `json:"files"`
+	TotalBytes      int64              `json:"total_bytes"`
+	TargetPath      string             `json:"target_path"`
+	ExistingHash    string             `json:"existing_hash,omitempty"`
+	ContentHash     string             `json:"content_hash"`
+	RequiresReplace bool               `json:"requires_replace"`
+}
+
+type SkillInstallFile struct {
+	Path  string `json:"path"`
+	Bytes int64  `json:"bytes"`
+}
+
+type SkillInstallResponse struct {
+	Skill        SkillInstallPreview `json:"skill"`
+	Capabilities CapabilityState     `json:"capabilities"`
+	SourceRoot   string              `json:"source_root"`
+	EnvUpdated   bool                `json:"env_updated"`
 }
 
 type LocalTimeInfo struct {

@@ -2,6 +2,7 @@ import { api } from "./api.js";
 import { clone, contextPolicyForProfile, defaultProfile, normalizePath, providerByID, providerDefaultBaseURL, providerDefaultModel, routePath, state } from "./state.js";
 import { bindNewSession, renderNewSession } from "./views/newSession.js";
 import { bindSessionWorkspace, renderSessionWorkspace } from "./views/sessionWorkspace.js";
+import { bindSkills, landingDemoDraft, readSkillInstallDraft, renderSkills } from "./views/skills.js";
 import { bindSettings, readSettingsDraft, renderSettings } from "./views/settings.js";
 
 const appView = document.getElementById("appView");
@@ -166,6 +167,14 @@ function render(options = {}) {
         onSave: saveSettings,
         onDuplicate: duplicateProfile,
         onRunCheck: runCheck,
+      });
+      break;
+    case "skills":
+      appView.innerHTML = renderSkills();
+      bindSkills(appView, {
+        onPreview: previewSkill,
+        onInstall: installSkill,
+        onLandingDemo: useLandingDemo,
       });
       break;
     case "sessions":
@@ -640,6 +649,47 @@ async function runCheck(target) {
   });
 }
 
+async function previewSkill(draft) {
+  state.skillsInstallDraft = draft;
+  await runWithStatus({ status: "loading", action: "skill-preview", successMessage: "Skill preview ready" }, async () => {
+    state.skillsPreview = await api.previewSkill({ url: draft.url });
+    state.skillsInstallDraft = { url: draft.url, replace: false };
+  });
+}
+
+async function installSkill(draft) {
+  if (!state.skillsPreview?.preview_token) {
+    addToast("error", "Preview the skill before installing it");
+    return;
+  }
+  if (String(state.skillsPreview.url || "").trim() !== String(draft.url || "").trim()) {
+    addToast("error", "Preview the current skill URL before installing it");
+    return;
+  }
+  if (state.skillsPreview.requires_replace && !draft.replace) {
+    addToast("error", "Confirm replacement before installing over the existing skill");
+    return;
+  }
+  state.skillsInstallDraft = draft;
+  await runWithStatus({ status: "loading", action: "skill-install", successMessage: state.skillsPreview.requires_replace ? "Skill replaced" : "Skill installed" }, async () => {
+    const response = await api.installSkill({
+      url: draft.url,
+      preview_token: state.skillsPreview.preview_token,
+      replace: Boolean(draft.replace),
+    });
+    state.config.capabilities = response.capabilities;
+    state.skillsPreview = null;
+    state.skillsInstallDraft = { url: draft.url, replace: false };
+  });
+}
+
+function useLandingDemo() {
+  state.newSessionDraft = landingDemoDraft(state.config?.tools || []);
+  state.inspectorTab = "events";
+  navigate({ name: "new", id: "" });
+  addToast("info", "Landing demo loaded into New Session");
+}
+
 function navigate(route, options = {}) {
   state.route = route;
   const path = routePath(route);
@@ -800,6 +850,10 @@ function actionLabel(action) {
       return "validating";
     case "run-check":
       return "running check";
+    case "skill-preview":
+      return "previewing skill";
+    case "skill-install":
+      return "installing skill";
     case "select-session":
       return "opening";
     case "delete-session":
@@ -922,6 +976,7 @@ function focusSelectorFor(element) {
   if (element.closest("[data-append-form]")) return `[data-append-form] [name="${cssEscape(name)}"]`;
   if (element.closest("[data-tool-edit-form]")) return `[data-tool-edit-form] [name="${cssEscape(name)}"]`;
   if (element.closest("[data-new-session-form]")) return `[data-new-session-form] [name="${cssEscape(name)}"]`;
+  if (element.closest("[data-skill-install-form]")) return `[data-skill-install-form] [name="${cssEscape(name)}"]`;
   if (element.closest("[data-settings-form]")) return `[data-settings-form] [name="${cssEscape(name)}"]`;
   return "";
 }
@@ -974,6 +1029,11 @@ function persistEditableDraft(element) {
     state.settingsDraft = readSettingsDraft(settingsForm);
     return;
   }
+  const skillsForm = element.closest("[data-skill-install-form]");
+  if (skillsForm) {
+    state.skillsInstallDraft = readSkillInstallDraft(skillsForm);
+    return;
+  }
   const toolForm = element.closest("[data-tool-edit-form]");
   if (toolForm && state.activeSession?.id) {
     state.toolEditDrafts[state.activeSession.id] = readToolEditDraft(toolForm);
@@ -1005,6 +1065,12 @@ function captureActiveDrafts() {
     const form = appView.querySelector("[data-settings-form]");
     if (form) {
       state.settingsDraft = readSettingsDraft(form);
+    }
+  }
+  if (state.route.name === "skills") {
+    const form = appView.querySelector("[data-skill-install-form]");
+    if (form) {
+      state.skillsInstallDraft = readSkillInstallDraft(form);
     }
   }
   const appendForm = appView.querySelector("[data-append-form]");

@@ -77,6 +77,12 @@ export const api = {
   runCheck(target, payload = {}) {
     return requestJSON("/api/run", { method: "POST", body: JSON.stringify({ target, ...payload }) });
   },
+  previewSkill(payload) {
+    return requestJSON("/api/skills/preview", { method: "POST", body: JSON.stringify(payload) });
+  },
+  installSkill(payload) {
+    return requestJSON("/api/skills/install", { method: "POST", body: JSON.stringify(payload) });
+  },
 };
 
 async function readSSE(body, onEvent) {
