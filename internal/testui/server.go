@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -47,7 +48,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/agent/sessions/", s.handleAgentSessionRoute)
 	mux.HandleFunc("PATCH /api/agent/sessions/", s.handleAgentSessionRoute)
 	mux.HandleFunc("DELETE /api/agent/sessions/", s.handleAgentSessionRoute)
+	mux.HandleFunc("POST /api/skills/preview", s.handleSkillPreview)
+	mux.HandleFunc("POST /api/skills/install", s.handleSkillInstall)
 	mux.HandleFunc("POST /api/run", s.handleRun)
+	mux.HandleFunc("GET /artifacts/", s.handleArtifact)
 	mux.HandleFunc("GET /", s.handleStatic)
 	return mux
 }
@@ -325,13 +329,80 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, resp)
 }
 
+func (s *Server) handleSkillPreview(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	var req SkillInstallPreviewRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON request"})
+		return
+	}
+	ctx := r.Context()
+	var cancel context.CancelFunc
+	if s.Timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, s.Timeout)
+		defer cancel()
+	}
+	preview, err := s.Runner.PreviewSkillInstall(ctx, req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, preview)
+}
+
+func (s *Server) handleSkillInstall(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	var req SkillInstallRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON request"})
+		return
+	}
+	ctx := r.Context()
+	var cancel context.CancelFunc
+	if s.Timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, s.Timeout)
+		defer cancel()
+	}
+	resp, err := s.Runner.InstallSkill(ctx, req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
+	file, err := artifactFile(s.Runner.managedArtifactsRoot(), strings.TrimPrefix(r.URL.Path, "/artifacts/"))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := ensureRealPathInsideRoot(s.Runner.managedArtifactsRoot(), file); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	info, err := os.Stat(file)
+	if err != nil || info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	f, err := os.Open(file)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
+}
+
 func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		http.NotFound(w, r)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	if r.URL.Path == "/sessions" || strings.HasPrefix(r.URL.Path, "/sessions/") || r.URL.Path == "/settings" {
+	if r.URL.Path == "/sessions" || strings.HasPrefix(r.URL.Path, "/sessions/") || r.URL.Path == "/settings" || r.URL.Path == "/skills" {
 		r.URL.Path = "/"
 	}
 	s.static.ServeHTTP(w, r)

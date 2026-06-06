@@ -241,7 +241,8 @@ a {
 .inspector-head,
 .workspace-head,
 .settings-head,
-.new-head {
+.new-head,
+.skills-head {
   display: flex;
   gap: 12px;
   align-items: center;
@@ -253,7 +254,8 @@ a {
 .rail-head h2,
 .workspace-head h1,
 .settings-head h1,
-.new-head h1 {
+.new-head h1,
+.skills-head h1 {
   font-size: 20px;
   letter-spacing: 0;
 }
@@ -859,7 +861,8 @@ button.small {
 }
 
 .new-page,
-.settings-page {
+.settings-page,
+.skills-page {
   max-width: 1180px;
   margin: 0 auto;
   padding: 22px;
@@ -1047,6 +1050,170 @@ button.small {
   gap: 16px;
 }
 
+.skills-layout {
+  display: grid;
+  grid-template-columns: minmax(360px, 1.05fr) minmax(320px, 0.95fr);
+  gap: 16px;
+}
+
+.skill-install-panel,
+.skill-status-panel,
+.skill-demo-panel {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.skill-demo-panel {
+  grid-column: 1 / -1;
+}
+
+.skill-install-form,
+.skill-preview,
+.source-list,
+.skill-list,
+.empty-skill-list {
+  display: grid;
+  gap: 12px;
+}
+
+.skill-preview {
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.empty-preview {
+  border-style: dashed;
+}
+
+.skill-preview-head,
+.source-row,
+.skill-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.skill-preview-head > div,
+.skill-row > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.skill-preview-head strong,
+.skill-preview-head span,
+.skill-row strong,
+.skill-row span,
+.source-row strong,
+.source-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.skill-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.skill-facts > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 9px 10px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.skill-facts > div:nth-child(2n) {
+  border-right: 0;
+}
+
+.skill-facts > div:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.skill-facts strong,
+.source-row strong {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.skill-facts span {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.replace-confirm {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 9px 10px;
+  border-left: 4px solid var(--yellow);
+  background: #fff8df;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.skill-file-list summary {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.skill-file-list div {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.skill-file-list span {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  overflow-wrap: anywhere;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.skill-file-list small {
+  color: var(--muted);
+}
+
+.source-row,
+.skill-row,
+.empty-skill-list {
+  padding: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.skill-row {
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
+}
+
+.action-cluster {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .profile-card,
 .check-card,
 .inspector-card {
@@ -1207,9 +1374,29 @@ button.small {
   }
 
   .settings-grid,
+  .skills-layout,
   .field-row,
-  .tool-boundary-grid {
+  .tool-boundary-grid,
+  .skill-facts {
     grid-template-columns: 1fr;
+  }
+
+  .skill-preview-head,
+  .source-row,
+  .skill-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .skill-facts > div,
+  .skill-facts > div:nth-child(2n),
+  .skill-facts > div:nth-last-child(-n + 2) {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .skill-facts > div:last-child {
+    border-bottom: 0;
   }
 
   .tool-boundary-grid > div {

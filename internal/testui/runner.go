@@ -987,6 +987,8 @@ func (r *Runner) registerAgentCapabilities(registry *tools.Registry, sink event.
 		})
 	}
 	if !cfg.SkillsEnabled {
+		state.SkillSources = skillSourceStates(cfg.SkillSources, nil, r.managedSkillRoot(), false)
+		state.Diagnostics = append(state.Diagnostics, managedSkillRootDiagnostic(r.managedSkillRoot()))
 		return state, "", manager, nil
 	}
 	sources := make([]skills.Source, 0, len(cfg.SkillSources))
@@ -1000,6 +1002,7 @@ func (r *Runner) registerAgentCapabilities(registry *tools.Registry, sink event.
 		}
 		return state, "", nil, err
 	}
+	state.SkillSources = skillSourceStates(cfg.SkillSources, catalog.Skills, r.managedSkillRoot(), true)
 	for _, diagnostic := range catalog.Diagnostics {
 		state.Diagnostics = append(state.Diagnostics, CapabilityDiagnostic{
 			Kind:       diagnostic.Kind,
@@ -1016,6 +1019,8 @@ func (r *Runner) registerAgentCapabilities(registry *tools.Registry, sink event.
 			SourceKind:   string(skill.SourceInfo.Kind),
 			SourceLabel:  skill.SourceInfo.DisplayLabel,
 			RelativePath: skill.SourceInfo.RelativePath,
+			ContentHash:  skill.ContentHash,
+			License:      licenseForInstalledSkill(filepath.Dir(skill.Path)),
 			Status:       "detected",
 		})
 		if sink != nil {
@@ -1029,7 +1034,7 @@ func (r *Runner) registerAgentCapabilities(registry *tools.Registry, sink event.
 	}
 	prompt, promptDiagnostics := skills.BuildPrompt(catalog.Skills, skills.PromptOptions{MaxBytes: cfg.SkillPromptBudgetBytes})
 	for _, diagnostic := range promptDiagnostics {
-		state.Diagnostics = append(state.Diagnostics, CapabilityDiagnostic{Kind: diagnostic.Kind, Message: diagnostic.Message, NextAction: "Raise FLORET_SKILL_PROMPT_BUDGET_BYTES or reduce available skills."})
+		state.Diagnostics = append(state.Diagnostics, CapabilityDiagnostic{Kind: diagnostic.Kind, Capability: "skills", Message: diagnostic.Message, NextAction: "Raise FLORET_SKILL_PROMPT_BUDGET_BYTES or reduce available skills."})
 	}
 	if prompt != "" && sink != nil {
 		sink.Emit(event.Event{Type: event.SkillDisclosureApplied, Metadata: map[string]any{
@@ -1156,6 +1161,50 @@ func appendCapabilityPrompt(base, addition string) string {
 		return addition
 	}
 	return base + "\n\n" + addition
+}
+
+func skillSourceStates(roots []string, discovered []skills.Skill, managedRoot string, enabled bool) []SkillSourceState {
+	out := make([]SkillSourceState, 0, len(roots))
+	counts := map[string]int{}
+	for _, skill := range discovered {
+		root := strings.TrimSpace(skill.SourceInfo.Root)
+		if root != "" {
+			counts[root]++
+		}
+	}
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		out = append(out, SkillSourceState{
+			Root:       root,
+			Kind:       string(skills.SourceConfig),
+			Label:      "config",
+			Enabled:    enabled,
+			Managed:    samePath(root, managedRoot),
+			SkillCount: counts[root],
+		})
+	}
+	if len(out) == 0 {
+		out = append(out, SkillSourceState{
+			Root:    managedRoot,
+			Kind:    string(skills.SourceConfig),
+			Label:   "test UI managed",
+			Enabled: false,
+			Managed: true,
+		})
+	}
+	return out
+}
+
+func samePath(a, b string) bool {
+	aa, errA := filepath.Abs(a)
+	bb, errB := filepath.Abs(b)
+	if errA != nil || errB != nil {
+		return a == b
+	}
+	return aa == bb
 }
 
 func (r *Runner) capabilityStateFromEnv() CapabilityState {

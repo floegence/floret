@@ -24,6 +24,8 @@ export const state = {
   conversationScroll: {},
   timelineExpanded: {},
   newSessionDraft: null,
+  skillsInstallDraft: null,
+  skillsPreview: null,
   composerDrafts: {},
   settingsDraft: null,
   toolEditDrafts: {},
@@ -70,6 +72,7 @@ function baseContextPolicyDefaults() {
 export function normalizePath(pathname = window.location.pathname) {
   if (pathname === "/" || pathname === "") return { name: "sessions", id: "" };
   if (pathname === "/sessions/new") return { name: "new", id: "" };
+  if (pathname === "/skills") return { name: "skills", id: "" };
   if (pathname === "/settings") return { name: "settings", id: "" };
   if (pathname.startsWith("/sessions/")) return { name: "sessions", id: decodeURIComponent(pathname.slice("/sessions/".length)) };
   return { name: "sessions", id: "" };
@@ -77,6 +80,7 @@ export function normalizePath(pathname = window.location.pathname) {
 
 export function routePath(route) {
   if (route.name === "new") return "/sessions/new";
+  if (route.name === "skills") return "/skills";
   if (route.name === "settings") return "/settings";
   if (route.id) return `/sessions/${encodeURIComponent(route.id)}`;
   return "/sessions";

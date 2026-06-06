@@ -189,6 +189,95 @@ func TestStaticConsoleStreamsTurnsIncrementally(t *testing.T) {
 	}
 }
 
+func TestStaticConsoleSkillsInstallPageAndDemoFlow(t *testing.T) {
+	apiJS := readStaticTestFile(t, "api.js")
+	stateJS := readStaticTestFile(t, "state.js")
+	appJS := readStaticTestFile(t, "app.js")
+	html := readStaticTestFile(t, "index.html")
+	skills := readStaticTestFile(t, "views", "skills.js")
+	css := readStaticTestFile(t, "styles.css")
+
+	for _, want := range []string{
+		`href="/skills" data-link data-route="skills">Skills</a>`,
+		`if (pathname === "/skills") return { name: "skills", id: "" }`,
+		`if (route.name === "skills") return "/skills"`,
+		`case "skills":`,
+		"renderSkills",
+		"bindSkills",
+	} {
+		if !strings.Contains(html+stateJS+appJS, want) {
+			t.Fatalf("skills route/nav missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		"previewSkill(payload)",
+		`requestJSON("/api/skills/preview"`,
+		"installSkill(payload)",
+		`requestJSON("/api/skills/install"`,
+		"Skill preview ready",
+		"Skill installed",
+		"Skill replaced",
+		"state.config.capabilities = response.capabilities",
+		"Preview the current skill URL before installing it",
+	} {
+		if !strings.Contains(apiJS+appJS, want) {
+			t.Fatalf("skills API flow missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		"Install Agent Skill",
+		"Installed Skills",
+		"GitHub skill URL",
+		"data-skill-install-form",
+		"data-preview-skill",
+		`querySelectorAll("[data-use-landing-demo]")`,
+		"Replace the installed copy",
+		`name="replace"`,
+		"skill_sources",
+		"Diagnostics",
+		"No skills detected",
+	} {
+		if !strings.Contains(skills, want) {
+			t.Fatalf("skills page missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		"First call the read-only skill tool",
+		`{"name":"frontend-design"}`,
+		".floret-test-ui/artifacts/frontend-design-landing/index.html",
+		"/artifacts/frontend-design-landing/index.html",
+		"LANDING_DEMO_TOOLS = [\"read\", \"list\", \"glob\", \"grep\", \"write\"]",
+		"selected_tools: LANDING_DEMO_TOOLS.filter",
+		"Do not use shell.",
+		"Use in Landing Demo",
+		"state.newSessionDraft = landingDemoDraft",
+		`navigate({ name: "new", id: "" })`,
+	} {
+		if !strings.Contains(skills+appJS, want) {
+			t.Fatalf("landing demo flow missing %q", want)
+		}
+	}
+	if strings.Contains(skills, `LANDING_DEMO_TOOLS = ["read", "list", "glob", "grep", "write", "shell"]`) {
+		t.Fatalf("landing demo must not enable shell by default")
+	}
+	for _, want := range []string{
+		"skillsInstallDraft",
+		"skillsPreview",
+		"readSkillInstallDraft",
+		`[data-skill-install-form] [name="${cssEscape(name)}"]`,
+		"state.skillsInstallDraft = readSkillInstallDraft",
+	} {
+		if !strings.Contains(stateJS+appJS+skills, want) {
+			t.Fatalf("skills draft/focus preservation missing %q", want)
+		}
+	}
+	for _, want := range []string{".skills-layout", ".skill-install-panel", ".skill-preview", ".replace-confirm", ".skill-row", ".skill-facts"} {
+		if !strings.Contains(css, want) {
+			t.Fatalf("skills page CSS missing %q", want)
+		}
+	}
+}
+
 func TestStaticConsoleShowsInterruptedLifecycle(t *testing.T) {
 	workspace := readStaticTestFile(t, "views", "sessionWorkspace.js")
 	css := readStaticTestFile(t, "styles.css")

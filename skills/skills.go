@@ -99,6 +99,14 @@ type skillArgs struct {
 
 var skillNameRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$`)
 
+func ParseMetadata(text string) (map[string]string, error) {
+	return parseFrontmatter(text)
+}
+
+func ValidateName(name string) error {
+	return validateName(name)
+}
+
 func Discover(sources []Source) (Catalog, error) {
 	var catalog Catalog
 	seen := map[string]string{}
