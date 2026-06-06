@@ -31,6 +31,8 @@ func TestStaticConsoleToolSelectionSemanticsStayAuditable(t *testing.T) {
 	stateJS := readStaticTestFile(t, "state.js")
 	appJS := readStaticTestFile(t, "app.js")
 	newSession := readStaticTestFile(t, "views", "newSession.js")
+	toolSelection := readRepoTestFile(t, "internal", "testui", "tool_selection.go")
+	shellTool := readRepoTestFile(t, "builtintools", "shell.go")
 
 	if !strings.Contains(stateJS, `case "all":`) || !strings.Contains(stateJS, "availableTools.map((tool) => tool.name)") || !strings.Contains(stateJS, "tool.available !== false") {
 		t.Fatalf("All preset should derive from available server tool catalog entries")
@@ -56,6 +58,19 @@ func TestStaticConsoleToolSelectionSemanticsStayAuditable(t *testing.T) {
 	}
 	if strings.Contains(appJS[appendStart:appendStart+appendEnd], "selected_tools") {
 		t.Fatalf("append turn must not mention selected_tools")
+	}
+	for _, stale := range []string{"ToolEdit", `Name: "edit"`, "Replace exact text in a file.", "read/grep/list/edit/write/apply_patch"} {
+		if strings.Contains(toolSelection+shellTool, stale) {
+			t.Fatalf("old edit tool surface should not remain: %q", stale)
+		}
+	}
+	for _, want := range []string{`ToolApplyPatch, Title: "Apply patch"`, `Risk: "writes files", Permission: "ask"`, `ToolWrite, Title: "Write"`, `Risk: "overwrites files", Permission: "ask"`} {
+		if !strings.Contains(toolSelection, want) {
+			t.Fatalf("local write tool catalog should expose explicit ask permission: missing %q", want)
+		}
+	}
+	if !strings.Contains(readStaticTestFile(t, "components", "toolMatrix.js"), "tool.permission_mode || tool.annotations?.permission_mode") {
+		t.Fatalf("tool matrix should prefer explicit catalog permission_mode before fallback")
 	}
 }
 
@@ -257,8 +272,9 @@ func TestStaticConsoleSkillsInstallPageAndDemoFlow(t *testing.T) {
 		`{"name":"frontend-design"}`,
 		".floret-test-ui/artifacts/frontend-design-landing/index.html",
 		"/artifacts/frontend-design-landing/index.html",
-		"LANDING_DEMO_TOOLS = [\"read\", \"list\", \"glob\", \"grep\", \"write\"]",
+		"LANDING_DEMO_TOOLS = [\"read\", \"list\", \"glob\", \"grep\", \"apply_patch\", \"write\"]",
 		"selected_tools: LANDING_DEMO_TOOLS.filter",
+		"Prefer apply_patch",
 		"Do not use shell.",
 		"Use in Landing Demo",
 		"state.newSessionDraft = landingDemoDraft",
@@ -270,6 +286,9 @@ func TestStaticConsoleSkillsInstallPageAndDemoFlow(t *testing.T) {
 	}
 	if strings.Contains(skills, `LANDING_DEMO_TOOLS = ["read", "list", "glob", "grep", "write", "shell"]`) {
 		t.Fatalf("landing demo must not enable shell by default")
+	}
+	if strings.Contains(skills, `LANDING_DEMO_TOOLS = ["read", "list", "glob", "grep", "write"]`) {
+		t.Fatalf("landing demo should include apply_patch alongside write")
 	}
 	for _, want := range []string{
 		"skillsInstallDraft",
@@ -818,6 +837,16 @@ if (html.includes('data-expand-key="' + key + '" open')) {
 func readStaticTestFile(t *testing.T, parts ...string) string {
 	t.Helper()
 	path := filepath.Join(append([]string{"static"}, parts...)...)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func readRepoTestFile(t *testing.T, parts ...string) string {
+	t.Helper()
+	path := filepath.Join(append([]string{"..", ".."}, parts...)...)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

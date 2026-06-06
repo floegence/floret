@@ -56,7 +56,7 @@ export function renderNewSession() {
         <section class="profile-card" data-new-tools>
           <div>
             <h2>Tools</h2>
-            <p class="muted">Choose the local tools available to this session. You can edit them later from the session Inspector.</p>
+            <p class="muted">Choose the local tools available to this session. You can update this toolset later from the session Inspector.</p>
           </div>
           ${renderCapabilitySummary(state.config?.capabilities)}
           ${renderToolMatrix({ tools: state.config?.tools || [], selected: selectedTools, editable: true, name: "new-tools" })}

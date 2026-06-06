@@ -154,13 +154,21 @@ func TestWorkspaceMutationRequiresApprovalAndWritesFile(t *testing.T) {
 	if string(data) != "yes" {
 		t.Fatalf("file = %q", data)
 	}
-	edit := reg.Run(context.Background(), provider.ToolCall{Name: "edit", Args: `{"path":"answer.txt","old_text":"yes","new_text":"done","replace_all":false}`}, allowAll)
-	if edit.IsError {
-		t.Fatalf("edit = %#v", edit)
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: answer.txt",
+		"@@",
+		"-yes",
+		"+done",
+		"*** End Patch",
+	}, "\n")
+	applied := reg.Run(context.Background(), provider.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
+	if applied.IsError {
+		t.Fatalf("apply_patch = %#v", applied)
 	}
 	data, _ = os.ReadFile(filepath.Join(root, "answer.txt"))
-	if string(data) != "done" {
-		t.Fatalf("edited file = %q", data)
+	if string(data) != "done\n" {
+		t.Fatalf("patched file = %q", data)
 	}
 }
 
@@ -419,7 +427,7 @@ func TestReadOffsetBeyondEOFAndDirectoryMetadata(t *testing.T) {
 	}
 }
 
-func TestApplyPatchAtomicRollbackAndRejectsEscape(t *testing.T) {
+func TestApplyPatchPlanningFailureDoesNotWriteAndRejectsEscape(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("old\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -433,6 +441,7 @@ func TestApplyPatchAtomicRollbackAndRejectsEscape(t *testing.T) {
 		"*** Add File: created.txt",
 		"+created",
 		"*** Update File: a.txt",
+		"@@",
 		"-missing",
 		"+new",
 		"*** End Patch",
@@ -442,14 +451,14 @@ func TestApplyPatchAtomicRollbackAndRejectsEscape(t *testing.T) {
 		t.Fatalf("patch should fail on context mismatch: %#v", got)
 	}
 	if _, err := os.Stat(filepath.Join(root, "created.txt")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("created file should have been rolled back, err=%v", err)
+		t.Fatalf("created file should not have been written, err=%v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(root, "a.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(data) != "old\n" {
-		t.Fatalf("updated file should have been rolled back: %q", data)
+		t.Fatalf("updated file should not have changed: %q", data)
 	}
 	escape := strings.Join([]string{"*** Begin Patch", "*** Add File: ../escape.txt", "+x", "*** End Patch"}, "\n")
 	escaped := reg.Run(context.Background(), provider.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(escape) + `}`}, allowAll)
@@ -475,6 +484,7 @@ func TestApplyPatchAddUpdateDeleteHappyPath(t *testing.T) {
 		"*** Add File: add.txt",
 		"+added",
 		"*** Update File: update.txt",
+		"@@",
 		"-old",
 		"+new",
 		"*** Delete File: delete.txt",
@@ -492,7 +502,7 @@ func TestApplyPatchAddUpdateDeleteHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(added) != "added" || string(updated) != "new\n" {
+	if string(added) != "added\n" || string(updated) != "new\n" {
 		t.Fatalf("added=%q updated=%q", added, updated)
 	}
 	if _, err := os.Stat(filepath.Join(root, "delete.txt")); !errors.Is(err, os.ErrNotExist) {
@@ -504,29 +514,201 @@ func TestApplyPatchAddUpdateDeleteHappyPath(t *testing.T) {
 	}
 }
 
-func TestEditRejectsMultipleMatchesUnlessReplaceAll(t *testing.T) {
+func TestApplyPatchMultiChunkAnchorEOFAndMove(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("x\nx\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("header\none\ntwo\nfooter\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	reg := tools.NewRegistry()
 	if err := RegisterWorkspaceMutation(reg, WorkspaceOptions{Root: root}); err != nil {
 		t.Fatal(err)
 	}
-	one := reg.Run(context.Background(), provider.ToolCall{Name: "edit", Args: `{"path":"a.txt","old_text":"x","new_text":"y","replace_all":false}`}, allowAll)
-	if !one.IsError || !strings.Contains(one.Text, "matched 2 times") {
-		t.Fatalf("single edit = %#v", one)
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: a.txt",
+		"*** Move to: nested/b.txt",
+		"@@ header",
+		" header",
+		"-one",
+		"+uno",
+		" two",
+		"@@",
+		"-footer",
+		"+done",
+		"*** End of File",
+		"*** End Patch",
+	}, "\n")
+	got := reg.Run(context.Background(), provider.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
+	if got.IsError {
+		t.Fatalf("patch = %#v", got)
 	}
-	all := reg.Run(context.Background(), provider.ToolCall{Name: "edit", Args: `{"path":"a.txt","old_text":"x","new_text":"y","replace_all":true}`}, allowAll)
-	if all.IsError {
-		t.Fatalf("replace all = %#v", all)
+	if _, err := os.Stat(filepath.Join(root, "a.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("source should be moved, err=%v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "nested", "b.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "header\nuno\ntwo\ndone\n" {
+		t.Fatalf("file = %q", data)
+	}
+}
+
+func TestApplyPatchUpdatesNoFinalNewlineWithTrailingNewline(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "no-newline.txt"), []byte("no newline at end"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	if err := RegisterWorkspaceMutation(reg, WorkspaceOptions{Root: root}); err != nil {
+		t.Fatal(err)
+	}
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: no-newline.txt",
+		"@@",
+		"-no newline at end",
+		"+first line",
+		"+second line",
+		"*** End Patch",
+	}, "\n")
+	got := reg.Run(context.Background(), provider.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
+	if got.IsError {
+		t.Fatalf("patch = %#v", got)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "no-newline.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "first line\nsecond line\n" {
+		t.Fatalf("file = %q", data)
+	}
+}
+
+func TestApplyPatchPureAdditionUpdateChunkAppends(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "input.txt"), []byte("line1\nline2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	if err := RegisterWorkspaceMutation(reg, WorkspaceOptions{Root: root}); err != nil {
+		t.Fatal(err)
+	}
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: input.txt",
+		"@@",
+		"+added line 1",
+		"+added line 2",
+		"*** End Patch",
+	}, "\n")
+	got := reg.Run(context.Background(), provider.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
+	if got.IsError {
+		t.Fatalf("patch = %#v", got)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "input.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "line1\nline2\nadded line 1\nadded line 2\n" {
+		t.Fatalf("file = %q", data)
+	}
+}
+
+func TestApplyPatchRejectsInvalidFormsExistingAddMissingFilesAndMoveTarget(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "exists.txt"), []byte("exists\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "move.txt"), []byte("move\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	if err := RegisterWorkspaceMutation(reg, WorkspaceOptions{Root: root}); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name  string
+		patch string
+		want  string
+	}{
+		{"missing begin", "*** Add File: a.txt\n+x\n*** End Patch", "must start"},
+		{"empty hunk", "*** Begin Patch\n*** End Patch", "no file operations"},
+		{"bad add line", "*** Begin Patch\n*** Add File: a.txt\nbad\n*** End Patch", "must start with +"},
+		{"empty path", "*** Begin Patch\n*** Add File: \n+x\n*** End Patch", "path is required"},
+		{"empty delete path", "*** Begin Patch\n*** Delete File: \n*** End Patch", "path is required"},
+		{"add existing", "*** Begin Patch\n*** Add File: exists.txt\n+x\n*** End Patch", "cannot add existing"},
+		{"delete missing", "*** Begin Patch\n*** Delete File: missing.txt\n*** End Patch", "does not exist"},
+		{"update missing", "*** Begin Patch\n*** Update File: missing.txt\n@@\n-old\n+new\n*** End Patch", "does not exist"},
+		{"move existing", "*** Begin Patch\n*** Update File: move.txt\n*** Move to: exists.txt\n@@\n-move\n+moved\n*** End Patch", "cannot move to existing"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := reg.Run(context.Background(), provider.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(tc.patch) + `}`}, allowAll)
+			if !got.IsError || !strings.Contains(got.Text, tc.want) {
+				t.Fatalf("patch result = %#v, want error containing %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestApplyPatchApplyFailureRollsBackVisibleWrites(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(root, "blocked")
+	if err := os.Mkdir(blocked, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(blocked, 0o755)
+	reg := tools.NewRegistry()
+	if err := RegisterWorkspaceMutation(reg, WorkspaceOptions{Root: root}); err != nil {
+		t.Fatal(err)
+	}
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: a.txt",
+		"@@",
+		"-old",
+		"+new",
+		"*** Add File: blocked/new.txt",
+		"+created",
+		"*** End Patch",
+	}, "\n")
+	got := reg.Run(context.Background(), provider.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
+	if !got.IsError {
+		if err := os.WriteFile(filepath.Join(blocked, "probe.txt"), []byte("probe"), 0o644); err == nil {
+			t.Skip("read-only directory is writable on this platform")
+		}
+		t.Fatalf("patch should fail: %#v", got)
 	}
 	data, err := os.ReadFile(filepath.Join(root, "a.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != "y\ny\n" {
-		t.Fatalf("file = %q", data)
+	if string(data) != "old\n" {
+		t.Fatalf("updated file should have been restored: %q", data)
+	}
+	if _, err := os.Stat(filepath.Join(root, "blocked", "new.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed add target should not exist, err=%v", err)
+	}
+}
+
+func TestEditToolIsNotRegistered(t *testing.T) {
+	reg := tools.NewRegistry()
+	if err := RegisterWorkspaceMutation(reg, WorkspaceOptions{Root: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	if hasToolDefinition(reg.Definitions(), "edit") {
+		t.Fatalf("edit tool should not be registered: %#v", reg.Definitions())
+	}
+	got := reg.Run(context.Background(), provider.ToolCall{Name: "edit", Args: `{"path":"a.txt","old_text":"x","new_text":"y","replace_all":false}`}, allowAll)
+	if !got.IsError || !strings.Contains(got.Text, `unknown tool "edit"`) {
+		t.Fatalf("edit call = %#v", got)
+	}
+	if err := RegisterSelected(reg, SelectedOptions{Workspace: WorkspaceOptions{Root: t.TempDir()}}, "edit"); err == nil || !strings.Contains(err.Error(), `unknown built-in tool "edit"`) {
+		t.Fatalf("RegisterSelected edit err = %v", err)
 	}
 }
 
@@ -558,6 +740,56 @@ func TestWriteCreatesParentsOverwritesExistingEmptyAndRejectsEscape(t *testing.T
 	escape := reg.Run(context.Background(), provider.ToolCall{Name: "write", Args: `{"path":"../escape.txt","content":"x"}`}, allowAll)
 	if !escape.IsError || !strings.Contains(escape.Text, "workspace") {
 		t.Fatalf("escape = %#v", escape)
+	}
+	rootPath := reg.Run(context.Background(), provider.ToolCall{Name: "write", Args: `{"path":"","content":"x"}`}, allowAll)
+	if !rootPath.IsError || !strings.Contains(rootPath.Text, "must name a file") {
+		t.Fatalf("root path = %#v", rootPath)
+	}
+	directory := reg.Run(context.Background(), provider.ToolCall{Name: "write", Args: `{"path":"nested","content":"x"}`}, allowAll)
+	if !directory.IsError || !strings.Contains(directory.Text, "directory") {
+		t.Fatalf("directory = %#v", directory)
+	}
+}
+
+func TestWorkspaceMutationRejectsSymlinkEscapes(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "target.txt"), []byte("outside\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "target.txt"), filepath.Join(root, "linked-file.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "linked-dir")); err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	if err := RegisterWorkspaceMutation(reg, WorkspaceOptions{Root: root}); err != nil {
+		t.Fatal(err)
+	}
+	write := reg.Run(context.Background(), provider.ToolCall{Name: "write", Args: `{"path":"linked-file.txt","content":"changed"}`}, allowAll)
+	if !write.IsError || !strings.Contains(write.Text, "symlink") {
+		t.Fatalf("write symlink escape = %#v", write)
+	}
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Add File: linked-dir/new.txt",
+		"+created",
+		"*** End Patch",
+	}, "\n")
+	got := reg.Run(context.Background(), provider.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
+	if !got.IsError || !strings.Contains(got.Text, "symlink") {
+		t.Fatalf("apply_patch symlink escape = %#v", got)
+	}
+	data, err := os.ReadFile(filepath.Join(outside, "target.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "outside\n" {
+		t.Fatalf("outside file changed: %q", data)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "new.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("outside new file should not exist, err=%v", err)
 	}
 }
 

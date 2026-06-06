@@ -3,7 +3,7 @@ import { contextPolicyForProfile, currentProfile, escapeHTML, state } from "../s
 export const FRONTEND_DESIGN_SKILL_URL = "https://github.com/anthropics/skills/tree/main/skills/frontend-design";
 export const LANDING_ARTIFACT_PATH = ".floret-test-ui/artifacts/frontend-design-landing/index.html";
 export const LANDING_ARTIFACT_URL = "/artifacts/frontend-design-landing/index.html";
-export const LANDING_DEMO_TOOLS = ["read", "list", "glob", "grep", "write"];
+export const LANDING_DEMO_TOOLS = ["read", "list", "glob", "grep", "apply_patch", "write"];
 
 export function renderSkills() {
   const draft = skillInstallDraft();
@@ -58,7 +58,7 @@ export function renderSkills() {
         <section class="skill-demo-panel">
           <div>
             <h2>Landing Demo</h2>
-            <p class="muted">Use frontend-design through progressive disclosure, then write a self-contained artifact in the managed artifact directory.</p>
+            <p class="muted">Use frontend-design through progressive disclosure, then create a self-contained artifact in the managed artifact directory.</p>
           </div>
           <div class="tool-boundary-grid">
             <div>
@@ -133,7 +133,7 @@ export function landingDemoPrompt() {
   return [
     "First call the read-only skill tool with {\"name\":\"frontend-design\"}.",
     "After the tool result, design a distinctive, production-grade landing page for a fictional product named Floret Canvas: an agent workspace for composing tool-rich AI sessions.",
-    `Use the write tool to create ${LANDING_ARTIFACT_PATH}.`,
+    `Prefer apply_patch to create ${LANDING_ARTIFACT_PATH}; use write only if you need to create the complete file in one call.`,
     "The file must be a complete self-contained HTML document with polished CSS and lightweight JavaScript. Make it visually striking, accessible, responsive, and avoid generic purple-gradient AI aesthetics.",
     "Do not use shell. End by telling me to open /artifacts/frontend-design-landing/index.html.",
   ].join("\n");

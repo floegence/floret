@@ -565,12 +565,12 @@ func TestRunnerAgentSessionSelectedToolsExplicitlyExposeBuiltInTools(t *testing.
 		ProfileID:     "fake",
 		Message:       "hello",
 		SystemPrompt:  "test",
-		SelectedTools: []string{"read", "list", "glob", "grep", "apply_patch", "edit", "write", "shell"},
+		SelectedTools: []string{"read", "list", "glob", "grep", "apply_patch", "write", "shell"},
 	})
-	if coding.Status != "completed" || len(coding.Session.SelectedTools) != 8 {
+	if coding.Status != "completed" || len(coding.Session.SelectedTools) != 7 {
 		t.Fatalf("coding = %#v", coding)
 	}
-	for _, name := range []string{"read", "list", "glob", "grep", "apply_patch", "edit", "write", "shell"} {
+	for _, name := range []string{"read", "list", "glob", "grep", "apply_patch", "write", "shell"} {
 		if !hasStrictTool(coding.Observation.ProviderRequests[0].Tools, name) {
 			t.Fatalf("selected tool %s missing: %#v", name, coding.Observation.ProviderRequests[0].Tools)
 		}

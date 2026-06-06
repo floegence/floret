@@ -281,7 +281,7 @@ Tool scheduling is owned by the registry:
   `PermissionDeny` for high-risk tools unless the host has a narrower policy gate.
 
 `builtintools` includes workspace reads (`read`, `list`, `glob`, `grep`), workspace
-mutations (`apply_patch`, `edit`, `write`), shell execution, and `web_search`.
+mutations (`apply_patch`, `write`), shell execution, and `web_search`.
 
 ## Storage
 

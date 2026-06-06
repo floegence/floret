@@ -18,6 +18,7 @@ type AgentToolOption struct {
 	Group       string `json:"group"`
 	GroupTitle  string `json:"group_title"`
 	Risk        string `json:"risk,omitempty"`
+	Permission  string `json:"permission_mode,omitempty"`
 	Kind        string `json:"kind,omitempty"`
 	Available   bool   `json:"available"`
 	Unavailable string `json:"unavailable,omitempty"`
@@ -26,15 +27,14 @@ type AgentToolOption struct {
 }
 
 var agentToolOptions = []AgentToolOption{
-	{Name: builtintools.ToolRead, Title: "Read", Description: "Read files and directories.", Group: "workspace_read", GroupTitle: "Workspace read"},
-	{Name: builtintools.ToolList, Title: "List", Description: "List directory entries.", Group: "workspace_read", GroupTitle: "Workspace read"},
-	{Name: builtintools.ToolGlob, Title: "Glob", Description: "Find files by path pattern.", Group: "workspace_read", GroupTitle: "Workspace read"},
-	{Name: builtintools.ToolGrep, Title: "Grep", Description: "Search file contents.", Group: "workspace_read", GroupTitle: "Workspace read"},
-	{Name: builtintools.ToolApplyPatch, Title: "Apply patch", Description: "Apply structured multi-file patches.", Group: "workspace_write", GroupTitle: "Workspace write", Risk: "writes files"},
-	{Name: builtintools.ToolEdit, Title: "Edit", Description: "Replace exact text in a file.", Group: "workspace_write", GroupTitle: "Workspace write", Risk: "writes files"},
-	{Name: builtintools.ToolWrite, Title: "Write", Description: "Create or overwrite a file.", Group: "workspace_write", GroupTitle: "Workspace write", Risk: "writes files"},
-	{Name: builtintools.ToolShell, Title: "Shell", Description: "Run non-interactive shell commands.", Group: "execution", GroupTitle: "Execution", Risk: "runs commands"},
-	{Name: builtintools.ToolWebSearch, Title: "Web search", Description: "Search query via the active provider-hosted or configured client search capability. This is not URL fetch.", Group: "network", GroupTitle: "Network", Risk: "network"},
+	{Name: builtintools.ToolRead, Title: "Read", Description: "Read files and directories.", Group: "workspace_read", GroupTitle: "Workspace read", Permission: "allow"},
+	{Name: builtintools.ToolList, Title: "List", Description: "List directory entries.", Group: "workspace_read", GroupTitle: "Workspace read", Permission: "allow"},
+	{Name: builtintools.ToolGlob, Title: "Glob", Description: "Find files by path pattern.", Group: "workspace_read", GroupTitle: "Workspace read", Permission: "allow"},
+	{Name: builtintools.ToolGrep, Title: "Grep", Description: "Search file contents.", Group: "workspace_read", GroupTitle: "Workspace read", Permission: "allow"},
+	{Name: builtintools.ToolApplyPatch, Title: "Apply patch", Description: "Apply structured multi-file patches for code edits, renames, and audited local modifications.", Group: "workspace_write", GroupTitle: "Workspace write", Risk: "writes files", Permission: "ask"},
+	{Name: builtintools.ToolWrite, Title: "Write", Description: "Create or overwrite one complete file.", Group: "workspace_write", GroupTitle: "Workspace write", Risk: "overwrites files", Permission: "ask"},
+	{Name: builtintools.ToolShell, Title: "Shell", Description: "Run non-interactive shell commands.", Group: "execution", GroupTitle: "Execution", Risk: "runs commands", Permission: "ask"},
+	{Name: builtintools.ToolWebSearch, Title: "Web search", Description: "Search query via the active provider-hosted or configured client search capability. This is not URL fetch.", Group: "network", GroupTitle: "Network", Risk: "network", Permission: "ask"},
 }
 
 func agentToolCatalog(profile ProviderProfile, envFile string) []AgentToolOption {
@@ -118,11 +118,11 @@ func selectedToolsForLegacyMode(mode string) []string {
 	case "read_only":
 		return []string{builtintools.ToolRead, builtintools.ToolList, builtintools.ToolGlob, builtintools.ToolGrep}
 	case "coding":
-		return []string{builtintools.ToolRead, builtintools.ToolList, builtintools.ToolGlob, builtintools.ToolGrep, builtintools.ToolApplyPatch, builtintools.ToolEdit, builtintools.ToolWrite}
+		return []string{builtintools.ToolRead, builtintools.ToolList, builtintools.ToolGlob, builtintools.ToolGrep, builtintools.ToolApplyPatch, builtintools.ToolWrite}
 	case "coding_shell":
-		return []string{builtintools.ToolRead, builtintools.ToolList, builtintools.ToolGlob, builtintools.ToolGrep, builtintools.ToolApplyPatch, builtintools.ToolEdit, builtintools.ToolWrite, builtintools.ToolShell}
+		return []string{builtintools.ToolRead, builtintools.ToolList, builtintools.ToolGlob, builtintools.ToolGrep, builtintools.ToolApplyPatch, builtintools.ToolWrite, builtintools.ToolShell}
 	case "network":
-		return []string{builtintools.ToolRead, builtintools.ToolList, builtintools.ToolGlob, builtintools.ToolGrep, builtintools.ToolApplyPatch, builtintools.ToolEdit, builtintools.ToolWrite, builtintools.ToolShell, builtintools.ToolWebSearch}
+		return []string{builtintools.ToolRead, builtintools.ToolList, builtintools.ToolGlob, builtintools.ToolGrep, builtintools.ToolApplyPatch, builtintools.ToolWrite, builtintools.ToolShell, builtintools.ToolWebSearch}
 	default:
 		return nil
 	}

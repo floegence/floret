@@ -41,7 +41,7 @@ function renderToolRow(tool, checked, editable, name) {
       <span>${escapeHTML(tool.group_title || tool.group || "tool")}</span>
       <span><span class="source-badge ${available ? "" : "unavailable"}">${escapeHTML(source)}</span></span>
       <span class="risk">${escapeHTML(tool.risk || "read")}</span>
-      <span>${escapeHTML(tool.annotations?.permission_mode || (tool.annotations?.open_world ? "ask" : "allow"))}</span>
+      <span>${escapeHTML(tool.permission_mode || tool.annotations?.permission_mode || (tool.annotations?.open_world ? "ask" : "allow"))}</span>
       <span>${escapeHTML(description)}</span>
     </label>
   `;

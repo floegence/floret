@@ -467,6 +467,7 @@ function toolPreview(body, msg, isResult) {
   if (!isResult && msg.tool_args) {
     const parsed = parseJSONMaybe(msg.tool_args);
     if (parsed && typeof parsed === "object") {
+      if (parsed.patch) return truncateOneLine(`patch: ${patchOperationPreview(parsed.patch)}`, 120);
       for (const key of ["query", "command", "url", "path", "pattern"]) {
         if (parsed[key]) return truncateOneLine(`${key}: ${JSON.stringify(parsed[key])}`, 120);
       }
@@ -474,6 +475,13 @@ function toolPreview(body, msg, isResult) {
   }
   const text = String(body || msg.content || "").split("\n").find((line) => line.trim()) || (isResult ? "result captured" : "arguments captured");
   return truncateOneLine(text, 120);
+}
+
+function patchOperationPreview(patch) {
+  const ops = String(patch || "").split("\n").map((line) => line.trim()).filter((line) => {
+    return line.startsWith("*** Add File:") || line.startsWith("*** Update File:") || line.startsWith("*** Delete File:") || line.startsWith("*** Move to:");
+  });
+  return ops.length ? ops.join(" · ") : "structured patch";
 }
 
 function parseJSONMaybe(value) {

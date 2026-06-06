@@ -44,7 +44,6 @@ const (
 	ToolGlob       = "glob"
 	ToolGrep       = "grep"
 	ToolApplyPatch = "apply_patch"
-	ToolEdit       = "edit"
 	ToolWrite      = "write"
 	ToolShell      = "shell"
 	ToolWebSearch  = "web_search"
@@ -69,8 +68,6 @@ func RegisterSelected(reg *tools.Registry, opts SelectedOptions, names ...string
 			errs = append(errs, reg.Register(grepTool(workspace)))
 		case ToolApplyPatch:
 			errs = append(errs, reg.Register(applyPatchTool(workspace)))
-		case ToolEdit:
-			errs = append(errs, reg.Register(editTool(workspace)))
 		case ToolWrite:
 			errs = append(errs, reg.Register(writeTool(workspace)))
 		case ToolShell:
@@ -87,7 +84,7 @@ func RegisterSelected(reg *tools.Registry, opts SelectedOptions, names ...string
 func workspaceOptionsForSelection(opts WorkspaceOptions, names []string) (WorkspaceOptions, error) {
 	for _, name := range names {
 		switch name {
-		case ToolRead, ToolList, ToolGlob, ToolGrep, ToolApplyPatch, ToolEdit, ToolWrite:
+		case ToolRead, ToolList, ToolGlob, ToolGrep, ToolApplyPatch, ToolWrite:
 			return normalizeWorkspaceOptions(opts)
 		}
 	}
@@ -152,7 +149,52 @@ func safeJoin(root, path string, allowExternal bool) (string, string, error) {
 	if strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || rel == ".." {
 		return "", "", fmt.Errorf("path escapes workspace: %s", path)
 	}
+	if !allowExternal {
+		if err := ensureWithinWorkspace(root, full, path); err != nil {
+			return "", "", err
+		}
+	}
 	return full, filepath.ToSlash(rel), nil
+}
+
+func ensureWithinWorkspace(root, full, originalPath string) error {
+	rootReal, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("workspace root is not accessible: %w", err)
+	}
+	fullReal, err := filepath.EvalSymlinks(full)
+	if err == nil {
+		return ensureRealPathWithin(rootReal, fullReal, originalPath)
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+	parent := filepath.Dir(full)
+	for {
+		parentReal, parentErr := filepath.EvalSymlinks(parent)
+		if parentErr == nil {
+			return ensureRealPathWithin(rootReal, parentReal, originalPath)
+		}
+		if !os.IsNotExist(parentErr) {
+			return parentErr
+		}
+		next := filepath.Dir(parent)
+		if next == parent {
+			return fmt.Errorf("path escapes workspace: %s", originalPath)
+		}
+		parent = next
+	}
+}
+
+func ensureRealPathWithin(rootReal, targetReal, originalPath string) error {
+	rel, err := filepath.Rel(rootReal, targetReal)
+	if err != nil {
+		return err
+	}
+	if rel == "." || (!strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && rel != "..") {
+		return nil
+	}
+	return fmt.Errorf("path escapes workspace via symlink: %s", originalPath)
 }
 
 func resource(kind, value string) []tools.ResourceRef {

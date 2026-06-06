@@ -73,10 +73,10 @@ func deterministicToolScenarios() []toolScenario {
 		{
 			ID:            "mutation-error-recovery",
 			Title:         "Mutation tool error recovery",
-			Description:   "Calls write and edit, intentionally triggers one edit error, then recovers with a valid edit before the follow-up.",
-			Message:       "Create a report file, correct it, and mention how you recovered from the failed edit.",
+			Description:   "Calls write and apply_patch, intentionally triggers one patch context error, then recovers with a valid patch before the follow-up.",
+			Message:       "Create a report file, correct it, and mention how you recovered from the failed patch.",
 			FollowUps:     []string{"Read the report back and confirm the final contents."},
-			SelectedTools: []string{builtintools.ToolWrite, builtintools.ToolEdit, builtintools.ToolRead},
+			SelectedTools: []string{builtintools.ToolWrite, builtintools.ToolApplyPatch, builtintools.ToolRead},
 			Setup:         setupMutationRecoveryScenario,
 			Verify:        verifyMutationRecoveryScenario,
 		},
@@ -411,24 +411,40 @@ func setupReadGrepShellScenario(ctx context.Context, workspace string) (toolScen
 }
 
 func setupMutationRecoveryScenario(ctx context.Context, workspace string) (toolScenarioRuntime, error) {
+	missingPatch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: reports/weather.md",
+		"@@",
+		"-Missing text",
+		"+Recovered",
+		"*** End Patch",
+	}, "\n")
+	recoveryPatch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: reports/weather.md",
+		"@@",
+		"-Status: draft",
+		"+Status: verified",
+		"*** End Patch",
+	}, "\n")
 	prov := harness.NewScriptedProvider(
 		harness.Step(
-			provider.StreamEvent{Type: provider.Reasoning, Text: "Create and then intentionally fail one edit."},
+			provider.StreamEvent{Type: provider.Reasoning, Text: "Create and then intentionally fail one patch."},
 			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
 				{ID: "write-report", Name: builtintools.ToolWrite, Args: `{"path":"reports/weather.md","content":"Status: draft\nCity: Changsha\n"}`},
-				{ID: "edit-missing", Name: builtintools.ToolEdit, Args: `{"path":"reports/weather.md","old_text":"Missing text","new_text":"Recovered","replace_all":false}`},
+				{ID: "patch-missing", Name: builtintools.ToolApplyPatch, Args: fmt.Sprintf(`{"patch":%q}`, missingPatch)},
 			}},
 			harness.DoneReason("tool_calls"),
 		),
 		harness.Step(
-			provider.StreamEvent{Type: provider.Reasoning, Text: "Recover with a valid edit and read back."},
+			provider.StreamEvent{Type: provider.Reasoning, Text: "Recover with a valid patch and read back."},
 			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
-				{ID: "edit-report", Name: builtintools.ToolEdit, Args: `{"path":"reports/weather.md","old_text":"Status: draft","new_text":"Status: verified","replace_all":false}`},
+				{ID: "patch-report", Name: builtintools.ToolApplyPatch, Args: fmt.Sprintf(`{"patch":%q}`, recoveryPatch)},
 				{ID: "read-report", Name: builtintools.ToolRead, Args: `{"path":"reports/weather.md","offset":0,"limit":40}`},
 			}},
 			harness.DoneReason("tool_calls"),
 		),
-		harness.Step(harness.Text("Recovered from the failed edit and verified the report."), harness.Done()),
+		harness.Step(harness.Text("Recovered from the failed patch and verified the report."), harness.Done()),
 		harness.Step(
 			harness.Tool("read-report-followup", builtintools.ToolRead, `{"path":"reports/weather.md","offset":0,"limit":40}`),
 			harness.DoneReason("tool_calls"),
@@ -542,13 +558,13 @@ func verifyMutationRecoveryScenario(run toolScenarioRun) error {
 		return err
 	}
 	first := run.Results[0]
-	for _, id := range []string{"write-report", "edit-missing", "edit-report", "read-report"} {
+	for _, id := range []string{"write-report", "patch-missing", "patch-report", "read-report"} {
 		if err := assertExactlyOneToolCallAndResult(first.Observation.SessionMessages, id); err != nil {
 			return err
 		}
 	}
-	if !hasToolResultContaining(first.Observation.SessionMessages, "edit-missing", "old_text was not found") {
-		return fmt.Errorf("expected failed edit result to be visible")
+	if !hasToolResultContaining(first.Observation.SessionMessages, "patch-missing", "did not match") {
+		return fmt.Errorf("expected failed patch result to be visible")
 	}
 	if !hasToolResultContaining(first.Observation.SessionMessages, "read-report", "Status: verified") {
 		return fmt.Errorf("expected recovered report readback")
