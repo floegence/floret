@@ -127,6 +127,7 @@ func TestNewHarnessWithProviderMapsExplicitPoliciesToTurn(t *testing.T) {
 				ContextWindowTokens: 4096,
 				MaxOutputTokens:     123,
 				RecentTailTokens:    512,
+				RecentUserTokens:    321,
 			},
 			CacheRetention:        promptcache.RetentionLong,
 			HostedToolDefinitions: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}},
@@ -154,7 +155,7 @@ func TestNewHarnessWithProviderMapsExplicitPoliciesToTurn(t *testing.T) {
 		t.Fatalf("provider requests = %#v", scripted.Requests)
 	}
 	req := scripted.Requests[0]
-	if req.MaxOutputTokens != 123 || req.ContextPolicy.ContextWindowTokens != 4096 {
+	if req.MaxOutputTokens != 123 || req.ContextPolicy.ContextWindowTokens != 4096 || req.ContextPolicy.RecentUserTokens != 321 {
 		t.Fatalf("context policy not mapped into request: %#v", req.ContextPolicy)
 	}
 	if req.Cache.Retention != promptcache.RetentionLong {
@@ -162,6 +163,67 @@ func TestNewHarnessWithProviderMapsExplicitPoliciesToTurn(t *testing.T) {
 	}
 	if len(req.HostedTools) != 1 || req.HostedTools[0].Name != "web_search" {
 		t.Fatalf("hosted tools = %#v", req.HostedTools)
+	}
+}
+
+func TestNewEngineWithProviderKeepsProvidedZeroMaxOutputTokens(t *testing.T) {
+	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
+	e, err := NewEngineWithProvider(config.Config{
+		Provider:     "openai",
+		Model:        "gpt-5.4",
+		SystemPrompt: "test",
+		RunID:        "run",
+		ContextPolicy: contextpolicy.Policy{
+			ContextWindowTokens: 8192,
+			MaxOutputTokens:     0,
+		},
+		MaxEmptyProviderRetries: 1,
+		NoProgressLimit:         2,
+		DuplicateToolLimit:      3,
+	}, scripted, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := e.Run(context.Background(), "hello")
+	if result.Status != engine.Completed {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(scripted.Requests) != 1 {
+		t.Fatalf("provider requests = %#v", scripted.Requests)
+	}
+	req := scripted.Requests[0]
+	if req.MaxOutputTokens != 0 || req.ContextPolicy.MaxOutputTokens != 0 {
+		t.Fatalf("max output should remain unset: max=%d policy=%#v", req.MaxOutputTokens, req.ContextPolicy)
+	}
+	if req.ContextPolicy.ReservedOutputTokens != contextpolicy.DefaultReservedOutputTokens {
+		t.Fatalf("reserved output = %d, want default budget", req.ContextPolicy.ReservedOutputTokens)
+	}
+}
+
+func TestNewEngineWithProviderUsesCatalogMaxOutputWhenPolicyOmitted(t *testing.T) {
+	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
+	cfg, err := config.Resolve(config.Config{
+		Provider: "openai",
+		Model:    "gpt-5.4",
+		APIKey:   "token",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := NewEngineWithProvider(cfg, scripted, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := e.Run(context.Background(), "hello")
+	if result.Status != engine.Completed {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(scripted.Requests) != 1 {
+		t.Fatalf("provider requests = %#v", scripted.Requests)
+	}
+	req := scripted.Requests[0]
+	if req.MaxOutputTokens != 128000 || req.ContextPolicy.MaxOutputTokens != 128000 {
+		t.Fatalf("max output should use catalog max: max=%d policy=%#v", req.MaxOutputTokens, req.ContextPolicy)
 	}
 }
 

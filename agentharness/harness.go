@@ -694,6 +694,7 @@ func (h *AgentHarness) engineOptions() engine.Options {
 		policy.ContextPolicy.ReservedOutputTokens > 0 ||
 		policy.ContextPolicy.ReservedSummaryTokens > 0 ||
 		policy.ContextPolicy.RecentTailTokens > 0 ||
+		policy.ContextPolicy.RecentUserTokens > 0 ||
 		policy.ContextPolicy.MaxCompactionFailures > 0 ||
 		policy.ContextPolicy.MicrocompactToolTokens > 0 ||
 		policy.ContextPolicy.EstimatorSource != "" {

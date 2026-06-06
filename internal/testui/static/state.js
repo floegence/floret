@@ -57,10 +57,11 @@ export function defaultContextPolicy() {
 function baseContextPolicyDefaults() {
   return {
     context_window_tokens: 128000,
-    max_output_tokens: 4096,
+    max_output_tokens: 0,
     reserved_output_tokens: 4096,
-    reserved_summary_tokens: 2048,
+    reserved_summary_tokens: 20000,
     recent_tail_tokens: 12000,
+    recent_user_tokens: 15000,
     estimator_source: "chars_per_token",
     max_compaction_failures: 2,
     microcompact_tool_tokens: 4096,
@@ -165,14 +166,15 @@ export function providerModel(provider, modelID) {
 
 export function contextPolicyForProfile(profile) {
   const defaults = defaultContextPolicy();
+  const baseDefaults = baseContextPolicyDefaults();
   const provider = providerByID(profile?.provider);
   const model = providerModel(provider, profile?.model || providerDefaultModel(provider));
-  const maxOutput = Number(model?.max_tokens || defaults.max_output_tokens || 0);
+  const maxOutput = Number(model?.max_tokens ?? baseDefaults.max_output_tokens ?? 0);
   return {
     ...defaults,
-    context_window_tokens: Number(model?.context_window || defaults.context_window_tokens || 0),
+    context_window_tokens: Number(model?.context_window ?? defaults.context_window_tokens ?? baseDefaults.context_window_tokens ?? 0),
     max_output_tokens: maxOutput,
-    reserved_output_tokens: Math.min(maxOutput || defaults.reserved_output_tokens || 0, defaults.reserved_output_tokens || 4096),
+    reserved_output_tokens: Number(defaults.reserved_output_tokens ?? 4096),
   };
 }
 

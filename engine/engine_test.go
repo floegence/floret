@@ -1317,6 +1317,22 @@ func TestProviderContextOverflowCompactsAndRetries(t *testing.T) {
 	}
 }
 
+func TestProviderRequestKeepsUnsetMaxOutputTokens(t *testing.T) {
+	e := newTestEngine(harness.NewScriptedProvider(), &event.Recorder{})
+	e.Options.ContextPolicy = contextpolicy.Policy{
+		ContextWindowTokens:  8192,
+		MaxOutputTokens:      0,
+		ReservedOutputTokens: 1024,
+	}
+	req, err := buildProviderRequestForTest(context.Background(), e, 0, []session.Message{{Role: session.User, Content: "hello"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.MaxOutputTokens != 0 || req.ContextPolicy.MaxOutputTokens != 0 {
+		t.Fatalf("max output should remain unset: max=%d policy=%#v", req.MaxOutputTokens, req.ContextPolicy)
+	}
+}
+
 func TestPreRequestThresholdCompactsWithoutReplacingStore(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))

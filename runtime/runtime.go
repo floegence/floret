@@ -297,10 +297,11 @@ func NewEngineWithProvider(cfg config.Config, p provider.Provider, store session
 }
 
 func mergeContextPolicy(primary, fallback contextpolicy.Policy) contextpolicy.Policy {
+	primaryProvided := hasContextPolicyValues(primary)
 	if primary.ContextWindowTokens <= 0 {
 		primary.ContextWindowTokens = fallback.ContextWindowTokens
 	}
-	if primary.MaxOutputTokens <= 0 {
+	if primary.MaxOutputTokens <= 0 && !primaryProvided {
 		primary.MaxOutputTokens = fallback.MaxOutputTokens
 	}
 	if primary.ReservedOutputTokens <= 0 {
@@ -312,6 +313,9 @@ func mergeContextPolicy(primary, fallback contextpolicy.Policy) contextpolicy.Po
 	if primary.RecentTailTokens <= 0 {
 		primary.RecentTailTokens = fallback.RecentTailTokens
 	}
+	if primary.RecentUserTokens <= 0 {
+		primary.RecentUserTokens = fallback.RecentUserTokens
+	}
 	if primary.EstimatorSource == "" {
 		primary.EstimatorSource = fallback.EstimatorSource
 	}
@@ -322,4 +326,16 @@ func mergeContextPolicy(primary, fallback contextpolicy.Policy) contextpolicy.Po
 		primary.MicrocompactToolTokens = fallback.MicrocompactToolTokens
 	}
 	return primary
+}
+
+func hasContextPolicyValues(policy contextpolicy.Policy) bool {
+	return policy.ContextWindowTokens > 0 ||
+		policy.MaxOutputTokens > 0 ||
+		policy.ReservedOutputTokens > 0 ||
+		policy.ReservedSummaryTokens > 0 ||
+		policy.RecentTailTokens > 0 ||
+		policy.RecentUserTokens > 0 ||
+		policy.EstimatorSource != "" ||
+		policy.MaxCompactionFailures > 0 ||
+		policy.MicrocompactToolTokens > 0
 }

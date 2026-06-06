@@ -235,7 +235,7 @@ var providers = []Provider{
 		EnvKeys:        []string{"FLORET_API_KEY", "OPENAI_COMPATIBLE_API_KEY"},
 		Custom:         true,
 		Models: []Model{
-			{ID: "custom-model", Name: "Custom model", ContextWindow: 128000, MaxTokens: 8192, Input: text},
+			{ID: "custom-model", Name: "Custom model", ContextWindow: 128000, Input: text},
 		},
 	},
 }

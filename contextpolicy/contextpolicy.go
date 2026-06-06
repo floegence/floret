@@ -7,13 +7,15 @@ import (
 )
 
 const (
-	DefaultContextWindowTokens   int64 = 128000
-	DefaultMaxOutputTokens       int64 = 4096
-	DefaultReservedOutputTokens  int64 = 4096
-	DefaultReservedSummaryTokens int64 = 2048
-	DefaultRecentTailTokens      int64 = 12000
-	DefaultRecentUserTokens      int64 = 15000
-	DefaultEstimatorSource             = "chars_per_token"
+	DefaultContextWindowTokens          int64 = 128000
+	DefaultMaxOutputTokens              int64 = 0
+	DefaultReservedOutputTokens         int64 = 4096
+	DefaultCompactedContextTargetTokens int64 = 50000
+	DefaultReservedSummaryTokens        int64 = 20000
+	DefaultRecentTailTokens             int64 = 12000
+	DefaultRecentUserTokens             int64 = 15000
+	DefaultCheckpointOverheadTokens     int64 = 2000
+	DefaultEstimatorSource                    = "chars_per_token"
 )
 
 type Policy struct {
@@ -22,6 +24,7 @@ type Policy struct {
 	ReservedOutputTokens   int64  `json:"reserved_output_tokens,omitempty"`
 	ReservedSummaryTokens  int64  `json:"reserved_summary_tokens,omitempty"`
 	RecentTailTokens       int64  `json:"recent_tail_tokens,omitempty"`
+	RecentUserTokens       int64  `json:"recent_user_tokens,omitempty"`
 	EstimatorSource        string `json:"estimator_source,omitempty"`
 	MaxCompactionFailures  int    `json:"max_compaction_failures,omitempty"`
 	MicrocompactToolTokens int64  `json:"microcompact_tool_tokens,omitempty"`
@@ -42,6 +45,7 @@ type Usage struct {
 	ReservedOutput    int64  `json:"reserved_output,omitempty"`
 	ReservedSummary   int64  `json:"reserved_summary,omitempty"`
 	RecentTailTokens  int64  `json:"recent_tail_tokens,omitempty"`
+	RecentUserTokens  int64  `json:"recent_user_tokens,omitempty"`
 	EstimatorSource   string `json:"estimator_source,omitempty"`
 	CompactionNeeded  bool   `json:"compaction_needed,omitempty"`
 	TokenPressureHigh bool   `json:"token_pressure_high,omitempty"`
@@ -51,17 +55,20 @@ func Normalize(policy Policy) Policy {
 	if policy.ContextWindowTokens <= 0 {
 		policy.ContextWindowTokens = DefaultContextWindowTokens
 	}
-	if policy.MaxOutputTokens <= 0 {
-		policy.MaxOutputTokens = DefaultMaxOutputTokens
-	}
 	if policy.ReservedOutputTokens <= 0 {
-		policy.ReservedOutputTokens = min64(policy.MaxOutputTokens, DefaultReservedOutputTokens)
+		policy.ReservedOutputTokens = DefaultReservedOutputTokens
+		if policy.MaxOutputTokens > 0 {
+			policy.ReservedOutputTokens = min64(policy.MaxOutputTokens, DefaultReservedOutputTokens)
+		}
 	}
 	if policy.ReservedSummaryTokens <= 0 {
 		policy.ReservedSummaryTokens = DefaultReservedSummaryTokens
 	}
 	if policy.RecentTailTokens <= 0 {
 		policy.RecentTailTokens = DefaultRecentTailTokens
+	}
+	if policy.RecentUserTokens <= 0 {
+		policy.RecentUserTokens = DefaultRecentUserTokens
 	}
 	if policy.EstimatorSource == "" {
 		policy.EstimatorSource = DefaultEstimatorSource
@@ -95,6 +102,7 @@ func EstimateMessages(systemPrompt string, history []session.Message, toolCount 
 		ReservedOutput:   policy.ReservedOutputTokens,
 		ReservedSummary:  policy.ReservedSummaryTokens,
 		RecentTailTokens: policy.RecentTailTokens,
+		RecentUserTokens: policy.RecentUserTokens,
 		EstimatorSource:  policy.EstimatorSource,
 	}
 	if systemPrompt != "" {

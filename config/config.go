@@ -36,6 +36,7 @@ type Config struct {
 	SkillSources            []string
 	SkillPromptBudgetBytes  int
 	ContextPolicy           contextpolicy.Policy
+	MaxOutputTokensSet      bool
 	MaxEmptyProviderRetries int
 	NoProgressLimit         int
 	DuplicateToolLimit      int
@@ -109,8 +110,11 @@ func fromValues(values map[string]string) (Config, error) {
 	if cfg.ContextPolicy.ContextWindowTokens, err = getInt64(values, "FLORET_CONTEXT_WINDOW_TOKENS", cfg.ContextPolicy.ContextWindowTokens); err != nil {
 		return Config{}, err
 	}
-	if cfg.ContextPolicy.MaxOutputTokens, err = getInt64(values, "FLORET_MAX_OUTPUT_TOKENS", cfg.ContextPolicy.MaxOutputTokens); err != nil {
+	if maxOutputTokens, ok, err := getOptionalInt64(values, "FLORET_MAX_OUTPUT_TOKENS"); err != nil {
 		return Config{}, err
+	} else if ok {
+		cfg.ContextPolicy.MaxOutputTokens = maxOutputTokens
+		cfg.MaxOutputTokensSet = true
 	}
 	if cfg.ContextPolicy.ReservedOutputTokens, err = getInt64(values, "FLORET_RESERVED_OUTPUT_TOKENS", cfg.ContextPolicy.ReservedOutputTokens); err != nil {
 		return Config{}, err
@@ -119,6 +123,9 @@ func fromValues(values map[string]string) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.ContextPolicy.RecentTailTokens, err = getInt64(values, "FLORET_RECENT_TAIL_TOKENS", cfg.ContextPolicy.RecentTailTokens); err != nil {
+		return Config{}, err
+	}
+	if cfg.ContextPolicy.RecentUserTokens, err = getInt64(values, "FLORET_RECENT_USER_TOKENS", cfg.ContextPolicy.RecentUserTokens); err != nil {
 		return Config{}, err
 	}
 	if cfg.ContextPolicy.MaxCompactionFailures, err = getInt(values, "FLORET_MAX_COMPACTION_FAILURES", cfg.ContextPolicy.MaxCompactionFailures); err != nil {
@@ -179,13 +186,26 @@ func Resolve(cfg Config, environ map[string]string) (Config, error) {
 		cfg.SkillPromptBudgetBytes = 16 * 1024
 	}
 	defaultPolicy := modelcatalog.ContextPolicy(cfg.Provider, cfg.Model)
+	contextPolicyProvided := hasContextPolicyValues(cfg.ContextPolicy)
 	if cfg.ContextPolicy.ContextWindowTokens <= 0 {
 		cfg.ContextPolicy.ContextWindowTokens = defaultPolicy.ContextWindowTokens
 	}
-	if cfg.ContextPolicy.MaxOutputTokens <= 0 {
+	if cfg.ContextPolicy.MaxOutputTokens <= 0 && !cfg.MaxOutputTokensSet && !contextPolicyProvided {
 		cfg.ContextPolicy.MaxOutputTokens = defaultPolicy.MaxOutputTokens
 	}
 	return validate(cfg)
+}
+
+func hasContextPolicyValues(policy contextpolicy.Policy) bool {
+	return policy.ContextWindowTokens > 0 ||
+		policy.MaxOutputTokens > 0 ||
+		policy.ReservedOutputTokens > 0 ||
+		policy.ReservedSummaryTokens > 0 ||
+		policy.RecentTailTokens > 0 ||
+		policy.RecentUserTokens > 0 ||
+		policy.EstimatorSource != "" ||
+		policy.MaxCompactionFailures > 0 ||
+		policy.MicrocompactToolTokens > 0
 }
 
 func defaultPromptCacheRetention(providerName string) string {
@@ -361,6 +381,22 @@ func getInt64(values map[string]string, key string, fallback int64) (int64, erro
 	if !ok || value == "" {
 		return fallback, nil
 	}
+	return parseNonNegativeInt64(key, value)
+}
+
+func getOptionalInt64(values map[string]string, key string) (int64, bool, error) {
+	value, ok := values[key]
+	if !ok || value == "" {
+		return 0, false, nil
+	}
+	parsed, err := parseNonNegativeInt64(key, value)
+	if err != nil {
+		return 0, false, err
+	}
+	return parsed, true, nil
+}
+
+func parseNonNegativeInt64(key, value string) (int64, error) {
 	parsed, err := strconv.ParseInt(value, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("%s must be an integer: %w", key, err)

@@ -98,7 +98,10 @@ func (p AnthropicProvider) Stream(ctx context.Context, req provider.Request) (<-
 		return nil, err
 	}
 	req.Cache = normalizedCache
-	maxTokens := p.maxTokensForRequest(req)
+	maxTokens, err := p.maxTokensForRequest(req)
+	if err != nil {
+		return nil, err
+	}
 	body, err := json.Marshal(p.buildAnthropicRequest(req, maxTokens))
 	if err != nil {
 		return nil, err
@@ -229,7 +232,10 @@ func (p AnthropicProvider) PayloadHash(req provider.Request) (string, error) {
 	if err := validateAnthropicHostedTools(req.HostedTools); err != nil {
 		return "", err
 	}
-	maxTokens := p.maxTokensForRequest(req)
+	maxTokens, err := p.maxTokensForRequest(req)
+	if err != nil {
+		return "", err
+	}
 	body, err := json.Marshal(p.buildAnthropicRequest(req, maxTokens))
 	if err != nil {
 		return "", err
@@ -237,7 +243,7 @@ func (p AnthropicProvider) PayloadHash(req provider.Request) (string, error) {
 	return promptcache.StableHash(string(body)), nil
 }
 
-func (p AnthropicProvider) maxTokensForRequest(req provider.Request) int64 {
+func (p AnthropicProvider) maxTokensForRequest(req provider.Request) (int64, error) {
 	maxTokens := p.MaxTokens
 	if req.MaxOutputTokens > 0 {
 		maxTokens = int64(req.MaxOutputTokens)
@@ -245,9 +251,9 @@ func (p AnthropicProvider) maxTokensForRequest(req provider.Request) int64 {
 		maxTokens = int64(req.ContextPolicy.MaxOutputTokens)
 	}
 	if maxTokens <= 0 {
-		maxTokens = 4096
+		return 0, fmt.Errorf("anthropic max output tokens are required for model %q; set FLORET_MAX_OUTPUT_TOKENS or add model catalog max_tokens", p.Model)
 	}
-	return maxTokens
+	return maxTokens, nil
 }
 
 func (p AnthropicProvider) MessageRaw(kind promptcache.SegmentKind, msg session.Message) (string, string, error) {

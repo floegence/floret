@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/floegence/floret/config"
+	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/memory"
@@ -71,6 +72,55 @@ func TestOpenAICompatibleProviderSendsConfiguredModelAndReceivesAnswer(t *testin
 	}
 }
 
+func TestOpenAICompatibleProviderMaxOutputTokensAreOptional(t *testing.T) {
+	tests := []struct {
+		name      string
+		reqMax    int64
+		policyMax int64
+		wantSet   bool
+		wantMax   int64
+	}{
+		{name: "unset omits max_tokens"},
+		{name: "request override", reqMax: 123, policyMax: 456, wantSet: true, wantMax: 123},
+		{name: "context policy fallback", policyMax: 456, wantSet: true, wantMax: 456},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body map[string]json.RawMessage
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+			}))
+			defer server.Close()
+			p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
+			if _, err := p.Stream(context.Background(), provider.Request{
+				RunID:           "r",
+				MaxOutputTokens: tt.reqMax,
+				ContextPolicy:   contextpolicy.Policy{MaxOutputTokens: tt.policyMax},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			raw, ok := body["max_tokens"]
+			if ok != tt.wantSet {
+				t.Fatalf("max_tokens present = %v, want %v; body=%#v", ok, tt.wantSet, body)
+			}
+			if !tt.wantSet {
+				return
+			}
+			var got int64
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.wantMax {
+				t.Fatalf("max_tokens = %d, want %d", got, tt.wantMax)
+			}
+		})
+	}
+}
+
 func TestOpenAICompatibleProviderNormalizesUsage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -122,6 +172,55 @@ func TestNewProviderUsesBuiltInOpenAIProviderPreset(t *testing.T) {
 	}
 	if seenPath != "/chat/completions" || seenAuth != "Bearer secret" || seenModel != "gpt-5.4" {
 		t.Fatalf("path/auth/model = %q/%q/%q", seenPath, seenAuth, seenModel)
+	}
+}
+
+func TestAnthropicProviderMaxOutputTokensPriorityAndRequiredError(t *testing.T) {
+	tests := []struct {
+		name      string
+		reqMax    int64
+		policyMax int64
+		modelMax  int64
+		wantMax   int64
+		wantErr   string
+	}{
+		{name: "request override", reqMax: 123, policyMax: 456, modelMax: 789, wantMax: 123},
+		{name: "context policy fallback", policyMax: 456, modelMax: 789, wantMax: 456},
+		{name: "provider model fallback", modelMax: 789, wantMax: 789},
+		{name: "missing cap errors", wantErr: "max output tokens are required"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body struct {
+				MaxTokens int64 `json:"max_tokens"`
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+			}))
+			defer server.Close()
+			p := AnthropicProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", MaxTokens: tt.modelMax, HTTPClient: server.Client()}
+			_, err := p.Stream(context.Background(), provider.Request{
+				RunID:           "r",
+				MaxOutputTokens: tt.reqMax,
+				ContextPolicy:   contextpolicy.Policy{MaxOutputTokens: tt.policyMax},
+			})
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if body.MaxTokens != tt.wantMax {
+				t.Fatalf("max_tokens = %d, want %d", body.MaxTokens, tt.wantMax)
+			}
+		})
 	}
 }
 
@@ -377,6 +476,7 @@ func TestAnthropicProviderAddsCacheControlBreakpoints(t *testing.T) {
 		Endpoint:   server.URL,
 		APIKey:     "secret",
 		Model:      "claude",
+		MaxTokens:  4096,
 		HTTPClient: server.Client(),
 		Cache:      modelcatalog.CacheCapability{AnthropicCacheControl: true},
 	}
@@ -422,7 +522,7 @@ func TestAnthropicProviderBuildsPayloadFromRawPlanFragments(t *testing.T) {
 		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
 	}))
 	defer server.Close()
-	p := AnthropicProvider{Endpoint: server.URL, APIKey: "secret", Model: "claude", HTTPClient: server.Client()}
+	p := AnthropicProvider{Endpoint: server.URL, APIKey: "secret", Model: "claude", MaxTokens: 4096, HTTPClient: server.Client()}
 	systemRaw, err := promptcache.CanonicalJSON(anthropicContentBlock{Type: "text", Text: "raw system"})
 	if err != nil {
 		t.Fatal(err)
@@ -467,6 +567,7 @@ func TestAnthropicProviderPayloadHashMatchesActualBody(t *testing.T) {
 		Endpoint:   server.URL,
 		APIKey:     "secret",
 		Model:      "claude",
+		MaxTokens:  4096,
 		HTTPClient: server.Client(),
 		Cache:      modelcatalog.CacheCapability{AnthropicCacheControl: true},
 	}
@@ -504,6 +605,7 @@ func TestAnthropicProviderRendersAllSystemBlocksIncludingCompaction(t *testing.T
 		Endpoint:   server.URL,
 		APIKey:     "secret",
 		Model:      "claude",
+		MaxTokens:  4096,
 		HTTPClient: server.Client(),
 		Cache:      modelcatalog.CacheCapability{AnthropicCacheControl: true},
 	}
@@ -540,7 +642,7 @@ func TestAnthropicProviderCacheControlCapabilityAndRetentionValidation(t *testin
 			_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
 		}))
 		defer server.Close()
-		p := AnthropicProvider{Endpoint: server.URL, APIKey: "secret", Model: "claude", HTTPClient: server.Client()}
+		p := AnthropicProvider{Endpoint: server.URL, APIKey: "secret", Model: "claude", MaxTokens: 4096, HTTPClient: server.Client()}
 		if _, err := p.Stream(context.Background(), provider.Request{
 			RunID:    "r",
 			Messages: []session.Message{{Role: session.System, Content: "system"}, {Role: session.User, Content: "hello"}},
@@ -1448,7 +1550,7 @@ func TestAnthropicProviderRendersStrictInputSchemaAndRejectsHostedTools(t *testi
 		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
 	}))
 	defer server.Close()
-	p := AnthropicProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
+	p := AnthropicProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", MaxTokens: 4096, HTTPClient: server.Client()}
 	_, err := p.Stream(context.Background(), provider.Request{
 		RunID: "r",
 		Tools: []provider.ToolDefinition{{
@@ -1490,7 +1592,7 @@ func TestAnthropicProviderRendersAndReadsHostedWebSearch(t *testing.T) {
 		_, _ = w.Write([]byte(`{"content":[{"type":"server_tool_use","id":"srv-1","name":"web_search","query":"Changsha weather"},{"type":"web_search_tool_result","tool_use_id":"srv-1","content":"rain"},{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
 	}))
 	defer server.Close()
-	p := AnthropicProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
+	p := AnthropicProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", MaxTokens: 4096, HTTPClient: server.Client()}
 
 	stream, err := p.Stream(context.Background(), provider.Request{
 		RunID: "r",

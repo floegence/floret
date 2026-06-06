@@ -118,12 +118,15 @@ Common context and runtime controls:
 
 ```bash
 FLORET_CONTEXT_WINDOW_TOKENS=128000
-FLORET_MAX_OUTPUT_TOKENS=4096
+FLORET_MAX_OUTPUT_TOKENS=0
 FLORET_RESERVED_OUTPUT_TOKENS=4096
-FLORET_RESERVED_SUMMARY_TOKENS=2048
+FLORET_RESERVED_SUMMARY_TOKENS=20000
 FLORET_RECENT_TAIL_TOKENS=12000
+FLORET_RECENT_USER_TOKENS=15000
 FLORET_WALL_TIME=30s
 ```
+
+When `FLORET_MAX_OUTPUT_TOKENS` is omitted, a selected catalog model's `max_tokens` can provide the ordinary response cap. Setting `FLORET_MAX_OUTPUT_TOKENS=0` explicitly leaves ordinary assistant responses uncapped by Floret. The reserved output and summary settings are context-budget controls; they are not ordinary response caps.
 
 Supported provider IDs include:
 

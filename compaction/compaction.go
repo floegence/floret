@@ -27,12 +27,32 @@ const (
 	checkpointNoTailIntro   = "The compacted conversation is represented by this checkpoint."
 )
 
+const (
+	summaryRetryReasonOverBudget = "over_budget"
+	summaryRetryReasonTruncated  = "provider_truncated"
+)
+
 var (
 	ErrNoCutPoint       = errors.New("compaction has no safe cut point")
 	ErrStillOverBudget  = errors.New("compacted context still exceeds token threshold")
-	ErrSummaryTooLarge  = errors.New("compaction summary exceeds reserved summary budget")
 	ErrInvalidReference = errors.New("compaction reference is invalid")
 )
+
+type summaryGenerationDetails struct {
+	Attempts          int
+	RetryReason       string
+	RetryCapTokens    int64
+	ProviderTruncated bool
+}
+
+type summaryGeneratorWithDetails interface {
+	GenerateSummaryWithDetails(context.Context, Preparation) (string, summaryGenerationDetails, error)
+}
+
+type providerSummaryAttempt struct {
+	Summary   string
+	Truncated bool
+}
 
 type Trigger string
 
@@ -138,7 +158,9 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	history = microcompact(history, req.Policy)
 	usageBefore := contextpolicy.EstimateMessages("", history, 0, req.Policy)
 	if len(history) == 1 {
-		keptUsers := selectKeptUserMessages(history, contextpolicy.DefaultRecentUserTokens)
+		keptUsers := selectKeptUserMessages(history, req.Policy.RecentUserTokens)
+		details := mergeDetails(req.Details, map[string]string{"history_messages": "1", "compacted_messages": "1", "retained_tail_messages": "0", "single_message_compaction": "true"})
+		recordCompactionBudgetDetails(details, req.Policy)
 		result := Result{
 			CompactionID:            req.CompactionID,
 			PreviousCompactionID:    req.PreviousCompactionID,
@@ -150,7 +172,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 			Phase:                   req.Phase,
 			TokensBefore:            usageBefore.InputTokens,
 			UsageBefore:             usageBefore,
-			Details:                 mergeDetails(req.Details, map[string]string{"history_messages": "1", "compacted_messages": "1", "retained_tail_messages": "0", "single_message_compaction": "true"}),
+			Details:                 details,
 			CreatedAt:               req.Now,
 		}
 		if result.CompactionID == "" {
@@ -160,15 +182,17 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		if generator == nil {
 			generator = ExtractiveSummaryGenerator{}
 		}
-		summary, err := generator.GenerateSummary(ctx, prep)
+		summary, generationDetails, err := generateSummary(ctx, generator, prep)
 		if err != nil {
 			return Preparation{}, err
 		}
-		prep.Result.Summary = trimToTokenBudget(strings.TrimSpace(summary), req.Policy.ReservedSummaryTokens)
+		prep.Result.Summary = finalizeSummary(&prep.Result, summary, req.Policy)
+		recordSummaryGenerationDetails(&prep.Result, generationDetails, req.Policy)
 		prep.ActiveMessages = BuildActiveMessagesWithKeptUsers(prep.Result, keptUsers, nil)
 		usageAfter := contextpolicy.EstimateMessages("", prep.ActiveMessages, 0, req.Policy)
 		prep.Result.TokensAfterEstimate = usageAfter.InputTokens
 		prep.Result.UsageAfter = usageAfter
+		recordUsageAfterDetails(&prep.Result, usageAfter, req.Policy)
 		return prep, nil
 	}
 	if len(history) < 2 {
@@ -185,7 +209,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	if start <= 0 || start >= len(history) {
 		return Preparation{}, ErrNoCutPoint
 	}
-	keptUsers := selectKeptUserMessages(history, contextpolicy.DefaultRecentUserTokens)
+	keptUsers := selectKeptUserMessages(history, req.Policy.RecentUserTokens)
 	var tailShrunk bool
 	start, tailShrunk = fitTailStartBeforeSummary(history, start, keptUsers, req.Policy)
 	head := append([]session.Message(nil), history[:start]...)
@@ -199,8 +223,8 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		"estimator_source":       req.Policy.EstimatorSource,
 		"read_files":             "",
 		"modified_files":         "",
-		"trim_retries":           "0",
 	}
+	recordCompactionBudgetDetails(details, req.Policy)
 	if tailShrunk {
 		details["tail_shrunk_before_summary"] = "true"
 	}
@@ -226,7 +250,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	if generator == nil {
 		generator = ExtractiveSummaryGenerator{}
 	}
-	summary, err := generator.GenerateSummary(ctx, prep)
+	summary, generationDetails, err := generateSummary(ctx, generator, prep)
 	if err != nil {
 		return Preparation{}, err
 	}
@@ -234,15 +258,14 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	if summary == "" {
 		return Preparation{}, errors.New("compaction summary is empty")
 	}
-	if contextpolicy.EstimateText(summary) > req.Policy.ReservedSummaryTokens {
-		summary = trimToTokenBudget(summary, req.Policy.ReservedSummaryTokens)
-		prep.Result.Details["summary_trimmed"] = "true"
-	}
+	summary = finalizeSummary(&prep.Result, summary, req.Policy)
+	recordSummaryGenerationDetails(&prep.Result, generationDetails, req.Policy)
 	prep.Result.Summary = summary
 	prep.ActiveMessages = BuildActiveMessagesWithKeptUsers(prep.Result, keptUsers, tail)
 	usageAfter := contextpolicy.EstimateMessages("", prep.ActiveMessages, 0, req.Policy)
 	prep.Result.TokensAfterEstimate = usageAfter.InputTokens
 	prep.Result.UsageAfter = usageAfter
+	recordUsageAfterDetails(&prep.Result, usageAfter, req.Policy)
 	if usageAfter.InputTokens >= usageAfter.ThresholdTokens {
 		return Preparation{}, ErrStillOverBudget
 	}
@@ -271,16 +294,52 @@ func (ExtractiveSummaryGenerator) GenerateSummary(_ context.Context, prep Prepar
 }
 
 func (g ProviderSummaryGenerator) GenerateSummary(ctx context.Context, prep Preparation) (string, error) {
+	summary, _, err := g.GenerateSummaryWithDetails(ctx, prep)
+	return summary, err
+}
+
+func (g ProviderSummaryGenerator) GenerateSummaryWithDetails(ctx context.Context, prep Preparation) (string, summaryGenerationDetails, error) {
 	if g.Provider == nil {
 		if g.Fallback != nil {
-			return g.Fallback.GenerateSummary(ctx, prep)
+			summary, err := g.Fallback.GenerateSummary(ctx, prep)
+			return summary, summaryGenerationDetails{Attempts: 1}, err
 		}
-		return (ExtractiveSummaryGenerator{}).GenerateSummary(ctx, prep)
+		summary, err := (ExtractiveSummaryGenerator{}).GenerateSummary(ctx, prep)
+		return summary, summaryGenerationDetails{Attempts: 1}, err
 	}
 	policy := contextpolicy.Normalize(g.Policy)
+	details := summaryGenerationDetails{Attempts: 1}
+	attempt, err := g.generateProviderSummaryAttempt(ctx, prep, policy, policy.ReservedSummaryTokens)
+	if err != nil {
+		return "", details, err
+	}
+	if attempt.Truncated || contextpolicy.EstimateText(attempt.Summary) > policy.ReservedSummaryTokens {
+		details.Attempts = 2
+		details.ProviderTruncated = attempt.Truncated
+		if attempt.Truncated {
+			details.RetryReason = summaryRetryReasonTruncated
+		} else {
+			details.RetryReason = summaryRetryReasonOverBudget
+		}
+		details.RetryCapTokens = retrySummaryCap(policy.ReservedSummaryTokens)
+		retry, retryErr := g.generateProviderSummaryAttempt(ctx, prep, policy, details.RetryCapTokens)
+		if retryErr != nil {
+			return "", details, retryErr
+		}
+		if retry.Truncated {
+			details.ProviderTruncated = true
+		}
+		if retry.Summary != "" {
+			return retry.Summary, details, nil
+		}
+	}
+	return attempt.Summary, details, nil
+}
+
+func (g ProviderSummaryGenerator) generateProviderSummaryAttempt(ctx context.Context, prep Preparation, policy contextpolicy.Policy, outputCap int64) (providerSummaryAttempt, error) {
 	messages := []session.Message{
 		{Role: session.System, Content: summaryWriterSystemPrompt()},
-		{Role: session.User, Content: summaryPrompt(prep, policy)},
+		{Role: session.User, Content: summaryPrompt(prep, policy, outputCap)},
 	}
 	stream, err := g.Provider.Stream(ctx, provider.Request{
 		RunID:           prep.Request.CompactionID,
@@ -289,10 +348,10 @@ func (g ProviderSummaryGenerator) GenerateSummary(ctx context.Context, prep Prep
 		Model:           g.Model,
 		Messages:        messages,
 		ContextPolicy:   policy,
-		MaxOutputTokens: policy.ReservedSummaryTokens,
+		MaxOutputTokens: outputCap,
 	})
 	if err != nil {
-		return "", err
+		return providerSummaryAttempt{}, err
 	}
 	var text strings.Builder
 	for ev := range stream {
@@ -304,16 +363,16 @@ func (g ProviderSummaryGenerator) GenerateSummary(ctx context.Context, prep Prep
 			if summary == "" {
 				break
 			}
-			return summary, nil
+			return providerSummaryAttempt{Summary: summary, Truncated: ev.Type == provider.Truncated}, nil
 		case provider.Empty:
-			return "", errors.New("provider returned empty compaction summary")
+			return providerSummaryAttempt{}, errors.New("provider returned empty compaction summary")
 		}
 	}
 	summary := strings.TrimSpace(text.String())
 	if summary == "" {
-		return "", errors.New("provider returned empty compaction summary")
+		return providerSummaryAttempt{}, errors.New("provider returned empty compaction summary")
 	}
-	return summary, nil
+	return providerSummaryAttempt{Summary: summary}, nil
 }
 
 func BuildActiveMessages(result Result, tail []session.Message) []session.Message {
@@ -322,6 +381,74 @@ func BuildActiveMessages(result Result, tail []session.Message) []session.Messag
 
 func BuildActiveMessagesWithKeptUsers(result Result, keptUsers, tail []session.Message) []session.Message {
 	return buildActiveMessages(result, keptUsers, tail)
+}
+
+func generateSummary(ctx context.Context, generator SummaryGenerator, prep Preparation) (string, summaryGenerationDetails, error) {
+	if generatorWithDetails, ok := generator.(summaryGeneratorWithDetails); ok {
+		return generatorWithDetails.GenerateSummaryWithDetails(ctx, prep)
+	}
+	summary, err := generator.GenerateSummary(ctx, prep)
+	return summary, summaryGenerationDetails{Attempts: 1}, err
+}
+
+func finalizeSummary(result *Result, summary string, policy contextpolicy.Policy) string {
+	if result.Details == nil {
+		result.Details = map[string]string{}
+	}
+	summary = strings.TrimSpace(summary)
+	result.Details["summary_trimmed"] = "false"
+	if contextpolicy.EstimateText(summary) > policy.ReservedSummaryTokens {
+		summary = trimToTokenBudget(summary, policy.ReservedSummaryTokens)
+		result.Details["summary_trimmed"] = "true"
+	}
+	result.Details["summary_tokens_estimate"] = fmt.Sprintf("%d", contextpolicy.EstimateText(summary))
+	return summary
+}
+
+func recordCompactionBudgetDetails(details map[string]string, policy contextpolicy.Policy) {
+	details["compacted_context_target_tokens"] = fmt.Sprintf("%d", contextpolicy.DefaultCompactedContextTargetTokens)
+	details["effective_compacted_context_target_tokens"] = fmt.Sprintf("%d", compactedContextTarget(policy))
+	details["summary_output_cap_tokens"] = fmt.Sprintf("%d", policy.ReservedSummaryTokens)
+	details["kept_user_budget_tokens"] = fmt.Sprintf("%d", policy.RecentUserTokens)
+	details["retained_tail_budget_tokens"] = fmt.Sprintf("%d", policy.RecentTailTokens)
+	details["checkpoint_overhead_budget_tokens"] = fmt.Sprintf("%d", contextpolicy.DefaultCheckpointOverheadTokens)
+}
+
+func recordSummaryGenerationDetails(result *Result, details summaryGenerationDetails, policy contextpolicy.Policy) {
+	if result.Details == nil {
+		result.Details = map[string]string{}
+	}
+	if result.Details["summary_output_cap_tokens"] == "" {
+		result.Details["summary_output_cap_tokens"] = fmt.Sprintf("%d", policy.ReservedSummaryTokens)
+	}
+	if details.Attempts <= 0 {
+		details.Attempts = 1
+	}
+	result.Details["summary_generation_attempts"] = fmt.Sprintf("%d", details.Attempts)
+	if details.RetryReason != "" {
+		result.Details["summary_retry_reason"] = details.RetryReason
+	}
+	if details.RetryCapTokens > 0 {
+		result.Details["summary_retry_cap_tokens"] = fmt.Sprintf("%d", details.RetryCapTokens)
+	}
+	if details.ProviderTruncated {
+		result.Details["summary_provider_truncated"] = "true"
+	} else {
+		result.Details["summary_provider_truncated"] = "false"
+	}
+}
+
+func recordUsageAfterDetails(result *Result, usage contextpolicy.Usage, policy contextpolicy.Policy) {
+	if result.Details == nil {
+		result.Details = map[string]string{}
+	}
+	result.Details["tokens_after_estimate"] = fmt.Sprintf("%d", usage.InputTokens)
+	target := compactedContextTarget(policy)
+	afterWithOverhead := usage.InputTokens + contextpolicy.DefaultCheckpointOverheadTokens
+	if afterWithOverhead > target {
+		result.Details["compacted_context_target_exceeded"] = "true"
+		result.Details["compacted_context_over_budget_tokens"] = fmt.Sprintf("%d", afterWithOverhead-target)
+	}
 }
 
 func buildActiveMessages(result Result, keptUsers, tail []session.Message) []session.Message {
@@ -464,9 +591,10 @@ func findTailStart(history []session.Message, keepTokens int64) int {
 
 func fitTailStartBeforeSummary(history []session.Message, start int, keptUsers []session.Message, policy contextpolicy.Policy) (int, bool) {
 	shrunk := false
+	target := compactedContextTarget(policy)
 	for start > 0 && start < len(history) {
 		candidate := buildActiveMessages(Result{Summary: summaryBudgetText(policy)}, keptUsers, history[start:])
-		if contextpolicy.EstimateMessages("", candidate, 0, policy).InputTokens < contextpolicy.Threshold(policy) {
+		if contextpolicy.EstimateMessages("", candidate, 0, policy).InputTokens+contextpolicy.DefaultCheckpointOverheadTokens <= target {
 			return start, shrunk
 		}
 		next := nextShrinkableTailStart(history, start)
@@ -477,6 +605,23 @@ func fitTailStartBeforeSummary(history []session.Message, start int, keptUsers [
 		shrunk = true
 	}
 	return start, shrunk
+}
+
+func compactedContextTarget(policy contextpolicy.Policy) int64 {
+	policy = contextpolicy.Normalize(policy)
+	target := contextpolicy.DefaultCompactedContextTargetTokens
+	threshold := contextpolicy.Threshold(policy)
+	if threshold < target {
+		return threshold
+	}
+	return target
+}
+
+func retrySummaryCap(cap int64) int64 {
+	if cap <= 1 {
+		return 1
+	}
+	return cap / 2
 }
 
 func summaryBudgetText(policy contextpolicy.Policy) string {
@@ -739,12 +884,28 @@ func trimToTokenBudget(value string, budget int64) string {
 	if budget <= 0 {
 		return ""
 	}
-	maxRunes := int(budget * 4)
-	runes := []rune(value)
-	if len(runes) <= maxRunes {
+	if contextpolicy.EstimateText(value) <= budget {
 		return value
 	}
-	return string(runes[:maxRunes]) + "\n...[trimmed]"
+	runes := []rune(value)
+	maxRunes := int(budget * 4)
+	marker := "\n...[trimmed]"
+	markerRunes := []rune(marker)
+	if maxRunes <= len(markerRunes) {
+		return string(runes[:minInt(maxRunes, len(runes))])
+	}
+	contentRunes := maxRunes - len(markerRunes)
+	if contentRunes > len(runes) {
+		contentRunes = len(runes)
+	}
+	return string(runes[:contentRunes]) + marker
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func summaryWriterSystemPrompt() string {
@@ -759,12 +920,21 @@ func summaryWriterSystemPrompt() string {
 	}, " ")
 }
 
-func summaryPrompt(prep Preparation, policy contextpolicy.Policy) string {
+func summaryPrompt(prep Preparation, policy contextpolicy.Policy, outputCap int64) string {
+	if outputCap <= 0 {
+		outputCap = policy.ReservedSummaryTokens
+	}
 	var out strings.Builder
 	out.WriteString("Return a markdown checkpoint summary with this exact section set:\n")
 	out.WriteString("# Floret Compaction Summary\n")
 	out.WriteString("schema: " + SummarySchemaVersion + "\n")
 	out.WriteString("## Goals\n## Constraints\n## Completed Work\n## Open Work\n## Key Files\n## Commands And Results\n## Errors And Risks\n## Decisions\n## Next Steps\n\n")
+	out.WriteString(fmt.Sprintf("The final markdown summary must fit within at most %d estimated tokens. ", outputCap))
+	if outputCap < policy.ReservedSummaryTokens {
+		out.WriteString("This is a retry after the first summary exceeded the budget or hit the provider output limit; use only terse bullets and keep lower-value details out.\n\n")
+	} else {
+		out.WriteString("Keep every section concise and avoid prose paragraphs.\n\n")
+	}
 	out.WriteString("Previous summary:\n")
 	if prep.Request.PreviousSummary == "" {
 		out.WriteString("(none)\n")

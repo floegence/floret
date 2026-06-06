@@ -4,6 +4,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/provider"
 )
 
@@ -44,5 +45,56 @@ func TestCostForUsageUsesPerMillionTokenRates(t *testing.T) {
 	want := 7.08
 	if math.Abs(got-want) > 0.000001 {
 		t.Fatalf("cost = %.4f, want %.4f", got, want)
+	}
+}
+
+func TestContextPolicyUsesModelMaxTokens(t *testing.T) {
+	cleanup := RegisterForTest(Provider{
+		ID:           "test-provider",
+		Name:         "Test Provider",
+		API:          APIOpenAIChat,
+		DefaultModel: "test-model",
+		Models: []Model{{
+			ID:            "test-model",
+			Name:          "Test Model",
+			ContextWindow: 98765,
+			MaxTokens:     1024,
+			Input:         []string{"text"},
+		}},
+	})
+	defer cleanup()
+
+	policy := ContextPolicy("test-provider", "test-model")
+	if policy.ContextWindowTokens != 98765 {
+		t.Fatalf("context window = %d, want 98765", policy.ContextWindowTokens)
+	}
+	if policy.MaxOutputTokens != 1024 {
+		t.Fatalf("max output = %d, want model max tokens", policy.MaxOutputTokens)
+	}
+	if policy.ReservedOutputTokens != 1024 {
+		t.Fatalf("reserved output = %d, want min(model max tokens, default)", policy.ReservedOutputTokens)
+	}
+	if policy.ReservedSummaryTokens != contextpolicy.DefaultReservedSummaryTokens {
+		t.Fatalf("reserved summary = %d, want default", policy.ReservedSummaryTokens)
+	}
+}
+
+func TestContextPolicyKeepsUnknownAndCustomModelMaxOutputUnset(t *testing.T) {
+	for _, tt := range []struct {
+		provider string
+		model    string
+	}{
+		{provider: "missing-provider", model: "missing-model"},
+		{provider: ProviderOpenAICompatible, model: "custom-model"},
+	} {
+		t.Run(tt.provider+"/"+tt.model, func(t *testing.T) {
+			policy := ContextPolicy(tt.provider, tt.model)
+			if policy.MaxOutputTokens != 0 {
+				t.Fatalf("max output = %d, want unset", policy.MaxOutputTokens)
+			}
+			if policy.ReservedOutputTokens != contextpolicy.DefaultReservedOutputTokens {
+				t.Fatalf("reserved output = %d, want default budget", policy.ReservedOutputTokens)
+			}
+		})
 	}
 }

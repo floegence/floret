@@ -123,7 +123,7 @@ func TestStaticConsoleNewSessionContextPolicyIsAdvancedAndStepSafe(t *testing.T)
 		`<details class="advanced-options" data-context-policy-options>`,
 		`<summary>Advanced options</summary>`,
 		`id="new-context-window" name="context_window_tokens" aria-label="Context window" type="number" min="1024" step="1"`,
-		`id="new-max-output" name="max_output_tokens" aria-label="Max output" type="number" min="256" step="1"`,
+		`id="new-max-output" name="max_output_tokens" aria-label="Max output" type="number" min="0" step="1"`,
 		`id="new-recent-tail" name="recent_tail_tokens" aria-label="Recent tail" aria-description="Controls the verbatim assistant, tool, and nearby message tail kept after the checkpoint. Recent user inputs outside the tail are protected inside the checkpoint up to 15k tokens, and the latest user message is always represented." type="number" min="256" step="1"`,
 	} {
 		if !strings.Contains(newSession, want) {
@@ -155,6 +155,17 @@ func TestStaticConsoleNewSessionDefaultsFollowBackendAndProviderCatalog(t *testi
 	}
 	if strings.Contains(newSession, "defaultContextPolicy") || strings.Contains(stateJS, "recent_tail_tokens: 4096") {
 		t.Fatalf("new session defaults should not use stale hard-coded context policy values")
+	}
+	for _, want := range []string{"max_output_tokens: 0", "reserved_summary_tokens: 20000", "recent_user_tokens: 15000", "model?.max_tokens ?? baseDefaults.max_output_tokens", "Number(defaults.reserved_output_tokens ?? 4096)"} {
+		if !strings.Contains(stateJS, want) {
+			t.Fatalf("state.js missing no-cap context policy default logic %q", want)
+		}
+	}
+	if !strings.Contains(stateJS, "const baseDefaults = baseContextPolicyDefaults()") {
+		t.Fatalf("state.js should use base context defaults for selected-profile max output fallback")
+	}
+	if strings.Contains(stateJS, "Math.min(maxOutput") {
+		t.Fatalf("reserved output budget should not be derived from ordinary max output cap")
 	}
 }
 

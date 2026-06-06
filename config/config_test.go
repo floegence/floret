@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/floegence/floret/contextpolicy"
 )
 
 func TestLoadDefaultsToFakeProvider(t *testing.T) {
@@ -71,6 +73,36 @@ func TestLoadReadsSkillConfiguration(t *testing.T) {
 	}
 }
 
+func TestLoadReadsRecentUserTokens(t *testing.T) {
+	cfg, err := Load(WithPath(""), WithEnviron(map[string]string{
+		"FLORET_PROVIDER":           "fake",
+		"FLORET_RECENT_USER_TOKENS": "321",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ContextPolicy.RecentUserTokens != 321 {
+		t.Fatalf("recent user tokens = %d, want 321", cfg.ContextPolicy.RecentUserTokens)
+	}
+}
+
+func TestLoadExplicitZeroMaxOutputTokensOverridesCatalog(t *testing.T) {
+	cfg, err := Load(WithPath(""), WithEnviron(map[string]string{
+		"FLORET_PROVIDER":          "openai",
+		"OPENAI_API_KEY":           "openai-token",
+		"FLORET_MAX_OUTPUT_TOKENS": "0",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ContextPolicy.MaxOutputTokens != 0 {
+		t.Fatalf("max output tokens = %d, want explicit unset", cfg.ContextPolicy.MaxOutputTokens)
+	}
+	if cfg.ContextPolicy.ReservedOutputTokens != 4096 {
+		t.Fatalf("reserved output tokens = %d, want budget default", cfg.ContextPolicy.ReservedOutputTokens)
+	}
+}
+
 func TestLoadUsesProviderSpecificPromptCacheDefault(t *testing.T) {
 	cfg, err := Load(WithPath(""), WithEnviron(map[string]string{
 		"FLORET_PROVIDER":   "anthropic",
@@ -91,6 +123,36 @@ func TestLoadUsesProviderSpecificPromptCacheDefault(t *testing.T) {
 	}
 	if cfg.PromptCacheRetention != "in_memory" {
 		t.Fatalf("openai default retention = %q, want in_memory", cfg.PromptCacheRetention)
+	}
+}
+
+func TestResolveKeepsExplicitZeroOnlyMaxOutputTokens(t *testing.T) {
+	cfg, err := Resolve(Config{
+		Provider:           "openai",
+		Model:              "gpt-5.4",
+		APIKey:             "token",
+		ContextPolicy:      contextpolicy.Policy{MaxOutputTokens: 0},
+		MaxOutputTokensSet: true,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ContextPolicy.MaxOutputTokens != 0 {
+		t.Fatalf("max output tokens = %d, want provided zero to remain unset", cfg.ContextPolicy.MaxOutputTokens)
+	}
+}
+
+func TestResolveUsesCatalogMaxOutputWhenPolicyOmitted(t *testing.T) {
+	cfg, err := Resolve(Config{
+		Provider: "openai",
+		Model:    "gpt-5.4",
+		APIKey:   "token",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ContextPolicy.MaxOutputTokens != 128000 {
+		t.Fatalf("max output tokens = %d, want catalog model max", cfg.ContextPolicy.MaxOutputTokens)
 	}
 }
 
