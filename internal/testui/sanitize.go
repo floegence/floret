@@ -146,10 +146,20 @@ func publicToolDefinition(def provider.ToolDefinition) provider.ToolDefinition {
 		"input_schema":  def.InputSchema,
 		"output_schema": def.OutputSchema,
 	})
-	def.Annotations = map[string]any{
-		"schema_hash": schemaHash,
-	}
+	def.Annotations = publicToolAnnotations(def.Annotations)
+	def.Annotations["schema_hash"] = schemaHash
 	return def
+}
+
+func publicToolAnnotations(in map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, value := range in {
+		switch key {
+		case "source", "effects", "read_only", "destructive", "open_world", "parallel_safe", "permission_mode", "mcp_server", "mcp_tool", "transport", "read_path":
+			out[key] = value
+		}
+	}
+	return out
 }
 
 func publicObservedProviderEvent(ev ObservedProviderEvent) ObservedProviderEvent {

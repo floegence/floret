@@ -50,6 +50,27 @@ func TestLoadReadsPromptCacheConfiguration(t *testing.T) {
 	}
 }
 
+func TestLoadReadsSkillConfiguration(t *testing.T) {
+	cfg, err := Load(WithPath(""), WithEnviron(map[string]string{
+		"FLORET_PROVIDER":                  "fake",
+		"FLORET_SKILLS_ENABLED":            "true",
+		"FLORET_SKILLS_PATHS":              "/repo/skills,/user/skills",
+		"FLORET_SKILL_PROMPT_BUDGET_BYTES": "4096",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.SkillsEnabled {
+		t.Fatalf("skills should be enabled")
+	}
+	if cfg.SkillPromptBudgetBytes != 4096 {
+		t.Fatalf("skill prompt budget = %d", cfg.SkillPromptBudgetBytes)
+	}
+	if len(cfg.SkillSources) != 2 || cfg.SkillSources[0] != "/repo/skills" || cfg.SkillSources[1] != "/user/skills" {
+		t.Fatalf("skill sources = %#v", cfg.SkillSources)
+	}
+}
+
 func TestLoadUsesProviderSpecificPromptCacheDefault(t *testing.T) {
 	cfg, err := Load(WithPath(""), WithEnviron(map[string]string{
 		"FLORET_PROVIDER":   "anthropic",

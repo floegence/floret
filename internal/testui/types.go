@@ -94,8 +94,42 @@ type ConfigState struct {
 	Tools                 []AgentToolOption    `json:"tools"`
 	SearchWireShapes      []SearchWireShape    `json:"search_wire_shapes"`
 	SearchProvider        SearchProviderInfo   `json:"search_provider"`
+	Capabilities          CapabilityState      `json:"capabilities"`
 	LocalTime             LocalTimeInfo        `json:"local_time"`
 	Storage               storageStatus        `json:"storage"`
+}
+
+type CapabilityState struct {
+	MCPServers  []MCPCapabilityState   `json:"mcp_servers"`
+	Skills      []SkillCapabilityState `json:"skills"`
+	Diagnostics []CapabilityDiagnostic `json:"diagnostics,omitempty"`
+}
+
+type MCPCapabilityState struct {
+	Name            string `json:"name"`
+	Status          string `json:"status"`
+	Transport       string `json:"transport,omitempty"`
+	ToolCount       int    `json:"tool_count,omitempty"`
+	PermissionMode  string `json:"permission_mode,omitempty"`
+	FailureCategory string `json:"failure_category,omitempty"`
+	NextAction      string `json:"next_action,omitempty"`
+}
+
+type SkillCapabilityState struct {
+	Name         string `json:"name"`
+	Description  string `json:"description,omitempty"`
+	SourceKind   string `json:"source_kind,omitempty"`
+	SourceLabel  string `json:"source_label,omitempty"`
+	RelativePath string `json:"relative_path,omitempty"`
+	Status       string `json:"status"`
+}
+
+type CapabilityDiagnostic struct {
+	Kind       string `json:"kind"`
+	Capability string `json:"capability,omitempty"`
+	SourceKind string `json:"source_kind,omitempty"`
+	Message    string `json:"message"`
+	NextAction string `json:"next_action,omitempty"`
 }
 
 type LocalTimeInfo struct {
@@ -383,6 +417,7 @@ type AgentSessionSnapshot struct {
 	SelectedTools           []string                        `json:"selected_tools"`
 	HostedTools             []provider.HostedToolDefinition `json:"hosted_tools,omitempty"`
 	UnavailableCapabilities []string                        `json:"unavailable_capabilities,omitempty"`
+	Capabilities            CapabilityState                 `json:"capabilities"`
 	ContextPolicy           contextpolicy.Policy            `json:"context_policy"`
 	LatestTurnID            string                          `json:"latest_turn_id,omitempty"`
 	WaitingPrompt           string                          `json:"waiting_prompt,omitempty"`

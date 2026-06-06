@@ -29,12 +29,14 @@ import (
 	"github.com/floegence/floret/event"
 	"github.com/floegence/floret/harness"
 	"github.com/floegence/floret/internal/sessionlifecycle"
+	"github.com/floegence/floret/mcpclient"
 	"github.com/floegence/floret/memory"
 	"github.com/floegence/floret/modelcatalog"
 	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/session"
 	"github.com/floegence/floret/sessiontree"
+	"github.com/floegence/floret/skills"
 	"github.com/floegence/floret/sqlitestore"
 	"github.com/floegence/floret/tools"
 )
@@ -100,6 +102,8 @@ type agentSession struct {
 	selectedTools           []string
 	hostedTools             []provider.HostedToolDefinition
 	unavailableCapabilities []string
+	capabilities            CapabilityState
+	mcpManager              *mcpclient.Manager
 	contextPolicy           contextpolicy.Policy
 	cfg                     config.Config
 	provider                *observingProvider
@@ -125,6 +129,8 @@ type agentSessionRuntime struct {
 	registry                *tools.Registry
 	hostedTools             []provider.HostedToolDefinition
 	unavailableCapabilities []string
+	capabilities            CapabilityState
+	mcpManager              *mcpclient.Manager
 	harness                 *agentharness.AgentHarness
 	thread                  *agentharness.Thread
 	nextID                  func(string) string
@@ -587,6 +593,10 @@ func (r *Runner) DeleteAgentSession(ctx context.Context, sessionID string) error
 		runIDs = agentSessionPromptCacheRunIDs(sessionID, sess.turns, snap.PathEntries)
 		delete(registry.sessions, sessionID)
 		registry.order = removeSessionID(registry.order, sessionID)
+		if sess.mcpManager != nil {
+			_ = sess.mcpManager.Close()
+			sess.mcpManager = nil
+		}
 		sess.mu.Unlock()
 	}
 	registry.mu.Unlock()
@@ -665,12 +675,17 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 	if err != nil {
 		return agentSessionRuntime{}, err
 	}
+	capabilities, skillPrompt, mcpManager, err := r.registerAgentCapabilities(registry, rec)
+	if err != nil {
+		return agentSessionRuntime{}, err
+	}
+	systemPrompt := appendCapabilityPrompt(sess.systemPrompt, skillPrompt)
 	idGenerator := r.agentSessionIDGenerator(ctx, sess.repo, sess.id)
 	h := agentharness.New(agentharness.Options{
 		Provider:     observed,
 		ProviderName: sess.cfg.Provider,
 		Model:        sess.cfg.Model,
-		SystemPrompt: sess.systemPrompt,
+		SystemPrompt: systemPrompt,
 		Tools:        registry,
 		PromptStore:  sess.promptStore,
 		Repo:         sess.repo,
@@ -703,6 +718,8 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 		registry:                registry,
 		hostedTools:             hostedTools,
 		unavailableCapabilities: unavailableCapabilities,
+		capabilities:            capabilities,
+		mcpManager:              mcpManager,
 		harness:                 h,
 		thread:                  thread,
 		nextID:                  idGenerator,
@@ -710,12 +727,17 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 }
 
 func (sess *agentSession) applyRuntime(runtime agentSessionRuntime) {
+	if sess.mcpManager != nil {
+		_ = sess.mcpManager.Close()
+	}
 	sess.provider = runtime.provider
 	sess.recorder = runtime.recorder
 	sess.harnessRecorder = runtime.harnessRecorder
 	sess.registry = runtime.registry
 	sess.hostedTools = runtime.hostedTools
 	sess.unavailableCapabilities = runtime.unavailableCapabilities
+	sess.capabilities = runtime.capabilities
+	sess.mcpManager = runtime.mcpManager
 	sess.harness = runtime.harness
 	sess.thread = runtime.thread
 	sess.nextID = runtime.nextID
@@ -830,12 +852,17 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 	if err != nil {
 		return nil, err
 	}
+	capabilities, skillPrompt, mcpManager, err := r.registerAgentCapabilities(registry, rec)
+	if err != nil {
+		return nil, err
+	}
+	systemPrompt := appendCapabilityPrompt(cfg.SystemPrompt, skillPrompt)
 	idGenerator := r.agentSessionIDGenerator(ctx, repo, opts.ID)
 	h := agentharness.New(agentharness.Options{
 		Provider:     observed,
 		ProviderName: cfg.Provider,
 		Model:        cfg.Model,
-		SystemPrompt: cfg.SystemPrompt,
+		SystemPrompt: systemPrompt,
 		Tools:        registry,
 		PromptStore:  promptStore,
 		Repo:         repo,
@@ -864,6 +891,9 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 		thread, err = h.ResumeThread(ctx, opts.ID, agentharness.ResumeOptions{})
 	}
 	if err != nil {
+		if mcpManager != nil {
+			_ = mcpManager.Close()
+		}
 		return nil, err
 	}
 	createdAt := opts.CreatedAt
@@ -883,6 +913,8 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 		selectedTools:           selectedTools,
 		hostedTools:             hostedTools,
 		unavailableCapabilities: unavailableCapabilities,
+		capabilities:            capabilities,
+		mcpManager:              mcpManager,
 		contextPolicy:           cfg.ContextPolicy,
 		cfg:                     cfg,
 		provider:                observed,
@@ -917,8 +949,225 @@ func (r *Runner) agentSessionIDGenerator(ctx context.Context, repo sessiontree.R
 	}
 }
 
-func testUIToolApprover(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {
+func testUIToolApprover(_ context.Context, req tools.ApprovalRequest) (tools.PermissionDecision, error) {
+	if strings.HasPrefix(strings.TrimSpace(req.Name), "mcp__") {
+		return tools.PermissionDecisionDeny, nil
+	}
 	return tools.PermissionDecisionAllow, nil
+}
+
+func (r *Runner) registerAgentCapabilities(registry *tools.Registry, sink event.Sink) (CapabilityState, string, *mcpclient.Manager, error) {
+	state := CapabilityState{}
+	cfg, err := config.Load(config.WithPath(r.EnvFile))
+	if err != nil {
+		state.Diagnostics = append(state.Diagnostics, CapabilityDiagnostic{Kind: "config_invalid", Message: err.Error(), NextAction: "Fix .env.local before enabling skills."})
+		return state, "", nil, nil
+	}
+	mcpConfigured, mcpServers, mcpDiagnostics := r.loadMCPServersFromEnv()
+	state.Diagnostics = append(state.Diagnostics, mcpDiagnostics...)
+	var manager *mcpclient.Manager
+	if mcpConfigured {
+		manager = mcpclient.NewManager(mcpclient.Options{Sink: testUIMCPSink{sink: sink}})
+		if err := manager.Start(context.Background(), mcpServers); err != nil {
+			state.Diagnostics = append(state.Diagnostics, CapabilityDiagnostic{Kind: "mcp_required_failed", Message: err.Error(), NextAction: "Fix or disable the required MCP server in FLORET_MCP_CONFIG."})
+			_ = manager.Close()
+			return state, "", nil, err
+		}
+		if err := manager.RegisterTools(registry); err != nil {
+			_ = manager.Close()
+			return state, "", nil, err
+		}
+		state.MCPServers = mcpCapabilityStates(manager.Snapshots())
+	} else {
+		state.Diagnostics = append(state.Diagnostics, CapabilityDiagnostic{
+			Kind:       "mcp_not_configured",
+			Capability: "mcp",
+			Message:    "No MCP servers provided by host.",
+			NextAction: "Set FLORET_MCP_CONFIG to a host-managed MCP server config file.",
+		})
+	}
+	if !cfg.SkillsEnabled {
+		return state, "", manager, nil
+	}
+	sources := make([]skills.Source, 0, len(cfg.SkillSources))
+	for _, root := range cfg.SkillSources {
+		sources = append(sources, skills.Source{Root: root, Kind: skills.SourceConfig, Enabled: true, DisplayLabel: "config"})
+	}
+	catalog, err := skills.Discover(sources)
+	if err != nil {
+		if manager != nil {
+			_ = manager.Close()
+		}
+		return state, "", nil, err
+	}
+	for _, diagnostic := range catalog.Diagnostics {
+		state.Diagnostics = append(state.Diagnostics, CapabilityDiagnostic{
+			Kind:       diagnostic.Kind,
+			Capability: diagnostic.SkillName,
+			SourceKind: string(diagnostic.SourceKind),
+			Message:    diagnostic.Message,
+			NextAction: "Fix or remove the downstream skill source entry.",
+		})
+	}
+	for _, skill := range catalog.Skills {
+		state.Skills = append(state.Skills, SkillCapabilityState{
+			Name:         skill.Name,
+			Description:  skill.Description,
+			SourceKind:   string(skill.SourceInfo.Kind),
+			SourceLabel:  skill.SourceInfo.DisplayLabel,
+			RelativePath: skill.SourceInfo.RelativePath,
+			Status:       "detected",
+		})
+		if sink != nil {
+			sink.Emit(event.Event{Type: event.SkillDetected, Metadata: map[string]any{
+				"skill_id":     skill.Name,
+				"source_kind":  string(skill.SourceInfo.Kind),
+				"source_label": skill.SourceInfo.DisplayLabel,
+				"content_hash": skill.ContentHash,
+			}})
+		}
+	}
+	prompt, promptDiagnostics := skills.BuildPrompt(catalog.Skills, skills.PromptOptions{MaxBytes: cfg.SkillPromptBudgetBytes})
+	for _, diagnostic := range promptDiagnostics {
+		state.Diagnostics = append(state.Diagnostics, CapabilityDiagnostic{Kind: diagnostic.Kind, Message: diagnostic.Message, NextAction: "Raise FLORET_SKILL_PROMPT_BUDGET_BYTES or reduce available skills."})
+	}
+	if prompt != "" && sink != nil {
+		sink.Emit(event.Event{Type: event.SkillDisclosureApplied, Metadata: map[string]any{
+			"skill_count":   len(catalog.Skills),
+			"prompt_bytes":  len(prompt),
+			"prompt_sha256": event.StableHash(prompt),
+		}})
+	}
+	if len(catalog.Skills) == 0 {
+		return state, prompt, manager, nil
+	}
+	tool, err := skills.DefineSkillTool(catalog.Skills, skills.ToolOptions{
+		ResultLimit: tools.ResultLimit{MaxBytes: 64 * 1024, Strategy: "head"},
+		OnLoad: func(load skills.SkillLoad) {
+			if sink != nil {
+				sink.Emit(event.Event{Type: event.SkillLoaded, Metadata: map[string]any{
+					"skill_id":     load.Name,
+					"source_kind":  string(load.SourceKind),
+					"content_hash": load.ContentHash,
+					"bytes":        load.Bytes,
+				}})
+			}
+		},
+	})
+	if err != nil {
+		if manager != nil {
+			_ = manager.Close()
+		}
+		return state, "", nil, err
+	}
+	if err := registry.Register(tool); err != nil {
+		if manager != nil {
+			_ = manager.Close()
+		}
+		return state, "", nil, err
+	}
+	return state, prompt, manager, nil
+}
+
+type testUIMCPSink struct {
+	sink event.Sink
+}
+
+func (s testUIMCPSink) EmitMCP(diag mcpclient.Diagnostic) {
+	if s.sink == nil {
+		return
+	}
+	s.sink.Emit(event.Event{Type: event.Type(diag.Type), Metadata: map[string]any{
+		"server_id":        diag.ServerName,
+		"transport":        string(diag.Transport),
+		"status":           string(diag.Status),
+		"tool_name":        diag.ToolName,
+		"tool_count":       diag.ToolCount,
+		"protocol_version": diag.ProtocolVersion,
+		"failure_category": diag.FailureCategory,
+		"next_action":      diag.NextAction,
+		"message":          diag.Message,
+	}})
+}
+
+type mcpConfigFile struct {
+	Servers []mcpclient.ServerConfig `json:"servers"`
+}
+
+func (r *Runner) loadMCPServersFromEnv() (bool, []mcpclient.ServerConfig, []CapabilityDiagnostic) {
+	values, err := readDotEnv(r.EnvFile)
+	if err != nil && !os.IsNotExist(err) {
+		return false, nil, []CapabilityDiagnostic{{Kind: "mcp_config_unreadable", Capability: "mcp", Message: err.Error(), NextAction: "Fix .env.local before configuring MCP servers."}}
+	}
+	path := strings.TrimSpace(values["FLORET_MCP_CONFIG"])
+	if path == "" {
+		return false, nil, nil
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(r.Root, path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return true, nil, []CapabilityDiagnostic{{Kind: "mcp_config_unreadable", Capability: "mcp", Message: err.Error(), NextAction: "Create the host-managed MCP config file or update FLORET_MCP_CONFIG."}}
+	}
+	var servers []mcpclient.ServerConfig
+	if err := json.Unmarshal(data, &servers); err != nil {
+		var wrapped mcpConfigFile
+		if wrappedErr := json.Unmarshal(data, &wrapped); wrappedErr != nil {
+			return true, nil, []CapabilityDiagnostic{{Kind: "mcp_config_invalid", Capability: "mcp", Message: err.Error(), NextAction: "Use a JSON array of MCP server configs or an object with a servers array."}}
+		}
+		servers = wrapped.Servers
+	}
+	if len(servers) == 0 {
+		return true, nil, []CapabilityDiagnostic{{Kind: "mcp_config_empty", Capability: "mcp", Message: "MCP config does not contain any servers.", NextAction: "Add host-managed MCP server configs or unset FLORET_MCP_CONFIG."}}
+	}
+	return true, servers, nil
+}
+
+func mcpCapabilityStates(snapshots []mcpclient.Snapshot) []MCPCapabilityState {
+	out := make([]MCPCapabilityState, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		nextAction := ""
+		failure := ""
+		if snapshot.Status == mcpclient.StatusFailed {
+			failure = "connection_failed"
+			nextAction = "Check that the downstream host installed and enabled this MCP server."
+		}
+		out = append(out, MCPCapabilityState{
+			Name:            snapshot.ServerName,
+			Status:          string(snapshot.Status),
+			Transport:       string(snapshot.Transport),
+			ToolCount:       snapshot.ToolCount,
+			PermissionMode:  string(snapshot.DefaultPermission),
+			FailureCategory: failure,
+			NextAction:      nextAction,
+		})
+	}
+	return out
+}
+
+func appendCapabilityPrompt(base, addition string) string {
+	base = strings.TrimRight(base, "\n")
+	addition = strings.TrimSpace(addition)
+	if addition == "" {
+		return base
+	}
+	if base == "" {
+		return addition
+	}
+	return base + "\n\n" + addition
+}
+
+func (r *Runner) capabilityStateFromEnv() CapabilityState {
+	registry := tools.NewRegistry()
+	state, _, manager, err := r.registerAgentCapabilities(registry, nil)
+	if manager != nil {
+		_ = manager.Close()
+	}
+	if err != nil {
+		return CapabilityState{Diagnostics: []CapabilityDiagnostic{{Kind: "capability_error", Message: err.Error()}}}
+	}
+	return state
 }
 
 func rememberPrefixedID(seqByPrefix map[string]int, value string) {
@@ -1025,6 +1274,7 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 		SelectedTools:           cloneSelectedTools(meta.SelectedTools),
 		HostedTools:             append([]provider.HostedToolDefinition(nil), searchSnapshotHostedTools(meta.Profile, r.EnvFile, meta.SelectedTools)...),
 		UnavailableCapabilities: searchSnapshotUnavailable(meta.Profile, r.EnvFile, meta.SelectedTools),
+		Capabilities:            r.capabilityStateFromEnv(),
 		ContextPolicy:           meta.ContextPolicy,
 		LatestTurnID:            lifecycle.LatestTurnID(),
 		WaitingPrompt:           lifecycle.WaitingPrompt(),
@@ -1151,6 +1401,7 @@ func (r *Runner) fallbackAgentSessionSnapshot(sess *agentSession, status engine.
 			SelectedTools:           cloneSelectedTools(sess.selectedTools),
 			HostedTools:             append([]provider.HostedToolDefinition(nil), sess.hostedTools...),
 			UnavailableCapabilities: append([]string(nil), sess.unavailableCapabilities...),
+			Capabilities:            sess.capabilities,
 			ContextPolicy:           sess.contextPolicy,
 		}
 	}
@@ -1298,6 +1549,7 @@ func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) 
 		SelectedTools:           cloneSelectedTools(sess.selectedTools),
 		HostedTools:             append([]provider.HostedToolDefinition(nil), sess.hostedTools...),
 		UnavailableCapabilities: append([]string(nil), sess.unavailableCapabilities...),
+		Capabilities:            sess.capabilities,
 		ContextPolicy:           sess.contextPolicy,
 		LatestTurnID:            lifecycle.LatestTurnID(),
 		WaitingPrompt:           lifecycle.WaitingPrompt(),
@@ -1328,6 +1580,7 @@ func (r *Runner) markAgentSessionRunningLocked(sess *agentSession, turnID string
 			SelectedTools:           cloneSelectedTools(sess.selectedTools),
 			HostedTools:             append([]provider.HostedToolDefinition(nil), sess.hostedTools...),
 			UnavailableCapabilities: append([]string(nil), sess.unavailableCapabilities...),
+			Capabilities:            sess.capabilities,
 			ContextPolicy:           sess.contextPolicy,
 		}
 	}
@@ -1354,6 +1607,7 @@ func (r *Runner) runningAgentSessionSnapshot(ctx context.Context, sess *agentSes
 			SelectedTools:           cloneSelectedTools(sess.selectedTools),
 			HostedTools:             append([]provider.HostedToolDefinition(nil), sess.hostedTools...),
 			UnavailableCapabilities: append([]string(nil), sess.unavailableCapabilities...),
+			Capabilities:            sess.capabilities,
 			ContextPolicy:           sess.contextPolicy,
 		}
 	}

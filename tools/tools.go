@@ -36,6 +36,7 @@ type Definition struct {
 
 	Permission  PermissionSpec
 	ResultLimit ResultLimit
+	Annotations map[string]any
 }
 
 type RunOptions struct {
@@ -285,6 +286,12 @@ func (r *Registry) ExposedDefinitions() []provider.ToolDefinition {
 		if tool.Definition.Permission.Mode == PermissionDeny {
 			continue
 		}
+		annotations := cloneSchema(tool.Definition.Annotations)
+		annotations["effects"] = effectsAsStrings(tool.Definition.Effects)
+		annotations["read_only"] = tool.Definition.ReadOnly
+		annotations["destructive"] = tool.Definition.Destructive
+		annotations["open_world"] = tool.Definition.OpenWorld
+		annotations["parallel_safe"] = tool.Definition.ParallelSafe
 		defs = append(defs, provider.ToolDefinition{
 			Name:         tool.Definition.Name,
 			Title:        tool.Definition.Title,
@@ -292,13 +299,7 @@ func (r *Registry) ExposedDefinitions() []provider.ToolDefinition {
 			InputSchema:  cloneSchema(tool.Definition.InputSchema),
 			OutputSchema: cloneSchema(tool.Definition.OutputSchema),
 			Strict:       true,
-			Annotations: map[string]any{
-				"effects":       effectsAsStrings(tool.Definition.Effects),
-				"read_only":     tool.Definition.ReadOnly,
-				"destructive":   tool.Definition.Destructive,
-				"open_world":    tool.Definition.OpenWorld,
-				"parallel_safe": tool.Definition.ParallelSafe,
-			},
+			Annotations:  annotations,
 		})
 	}
 	slices.SortFunc(defs, func(a, b provider.ToolDefinition) int {
@@ -310,6 +311,7 @@ func (r *Registry) ExposedDefinitions() []provider.ToolDefinition {
 func cloneDefinition(def Definition) Definition {
 	def.InputSchema = cloneSchema(def.InputSchema)
 	def.OutputSchema = cloneSchema(def.OutputSchema)
+	def.Annotations = cloneSchema(def.Annotations)
 	def.Effects = append([]Effect(nil), def.Effects...)
 	def.Permission.ResourceKinds = append([]string(nil), def.Permission.ResourceKinds...)
 	return def

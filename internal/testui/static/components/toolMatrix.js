@@ -21,6 +21,7 @@ function renderToolGroup(group, selectedSet, editable, name) {
         <span>Scope</span>
         <span>Source</span>
         <span>Risk</span>
+        <span>Permission</span>
         <span>Description</span>
       </div>
       ${group.tools.map((tool) => renderToolRow(tool, selectedSet.has(tool.name), editable, name)).join("")}
@@ -40,6 +41,7 @@ function renderToolRow(tool, checked, editable, name) {
       <span>${escapeHTML(tool.group_title || tool.group || "tool")}</span>
       <span><span class="source-badge ${available ? "" : "unavailable"}">${escapeHTML(source)}</span></span>
       <span class="risk">${escapeHTML(tool.risk || "read")}</span>
+      <span>${escapeHTML(tool.annotations?.permission_mode || (tool.annotations?.open_world ? "ask" : "allow"))}</span>
       <span>${escapeHTML(description)}</span>
     </label>
   `;
@@ -47,6 +49,8 @@ function renderToolRow(tool, checked, editable, name) {
 
 function toolSourceLabel(tool) {
   if (tool.available === false) return tool.unavailable || "unavailable";
+  if (tool.annotations?.source === "mcp") return `mcp · ${tool.annotations.mcp_server || "server"}`;
+  if (tool.annotations?.source === "skill") return "agent skill";
   if (tool.source === "provider-hosted") return tool.wire_shape ? `hosted · ${tool.wire_shape}` : "provider-hosted";
   if (tool.source?.startsWith("client:")) return tool.source.replace("client:", "client · ");
   if (tool.kind === "capability") return tool.source || "capability";

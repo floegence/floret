@@ -12,22 +12,33 @@ import (
 type Type string
 
 const (
-	StepStart         Type = "step_start"
-	ProviderRequest   Type = "provider_request"
-	ProviderDelta     Type = "provider_delta"
-	ProviderReasoning Type = "provider_reasoning"
-	ProviderUsage     Type = "provider_usage"
-	ProviderFinish    Type = "provider_finish"
-	ProviderRetry     Type = "provider_retry"
-	ToolCall          Type = "tool_call"
-	ToolResult        Type = "tool_result"
-	HostedToolCall    Type = "hosted_tool_call"
-	HostedToolResult  Type = "hosted_tool_result"
-	ContextCompact    Type = "context_compact"
-	ContextContinue   Type = "context_continue"
-	BudgetExceeded    Type = "budget_exceeded"
-	StepEnd           Type = "step_end"
-	RunEnd            Type = "run_end"
+	StepStart              Type = "step_start"
+	ProviderRequest        Type = "provider_request"
+	ProviderDelta          Type = "provider_delta"
+	ProviderReasoning      Type = "provider_reasoning"
+	ProviderUsage          Type = "provider_usage"
+	ProviderFinish         Type = "provider_finish"
+	ProviderRetry          Type = "provider_retry"
+	ToolCall               Type = "tool_call"
+	ToolResult             Type = "tool_result"
+	HostedToolCall         Type = "hosted_tool_call"
+	HostedToolResult       Type = "hosted_tool_result"
+	MCPServerConnecting    Type = "mcp_server_connecting"
+	MCPServerReady         Type = "mcp_server_ready"
+	MCPServerFailed        Type = "mcp_server_failed"
+	MCPToolsListed         Type = "mcp_tools_listed"
+	MCPToolCall            Type = "mcp_tool_call"
+	MCPToolResult          Type = "mcp_tool_result"
+	SkillDetected          Type = "skill_detected"
+	SkillLoaded            Type = "skill_loaded"
+	SkillBlocked           Type = "skill_blocked"
+	SkillInstallRequired   Type = "skill_install_required"
+	SkillDisclosureApplied Type = "skill_disclosure_applied"
+	ContextCompact         Type = "context_compact"
+	ContextContinue        Type = "context_continue"
+	BudgetExceeded         Type = "budget_exceeded"
+	StepEnd                Type = "step_end"
+	RunEnd                 Type = "run_end"
 )
 
 type Event struct {
@@ -180,13 +191,13 @@ func sanitizeMetadata(value any) any {
 	case map[string]string:
 		out := make(map[string]string, len(v))
 		for key, item := range v {
-			out[key] = safeStringLabel(item)
+			out[key] = sanitizeMetadataString(key, item)
 		}
 		return out
 	case map[string]any:
 		out := make(map[string]any, len(v))
 		for key, item := range v {
-			out[key] = sanitizeMetadata(item)
+			out[key] = sanitizeMetadataWithKey(key, item)
 		}
 		return out
 	case []string:
@@ -208,6 +219,55 @@ func sanitizeMetadata(value any) any {
 		}
 		return safeStringLabel(string(data))
 	}
+}
+
+func sanitizeMetadataWithKey(key string, value any) any {
+	switch v := value.(type) {
+	case string:
+		return sanitizeMetadataString(key, v)
+	case []string:
+		out := make([]string, len(v))
+		for i, item := range v {
+			out[i] = sanitizeMetadataString(key, item)
+		}
+		return out
+	default:
+		return sanitizeMetadata(value)
+	}
+}
+
+func sanitizeMetadataString(key, value string) string {
+	if publicMetadataStringKey(key) && safeMetadataToken(value) {
+		return value
+	}
+	return safeStringLabel(value)
+}
+
+func publicMetadataStringKey(key string) bool {
+	switch key {
+	case "server_id", "skill_id", "tool_name", "remote_tool", "source_kind", "source_label", "status", "transport", "protocol_version", "failure_category", "next_action", "capability", "permission_mode", "content_hash", "prompt_sha256":
+		return true
+	default:
+		return false
+	}
+}
+
+func safeMetadataToken(value string) bool {
+	if len(value) > 240 {
+		return false
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '_', '-', '.', ':', ',', '/', ' ', '(', ')':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func safeStringLabel(value string) string {

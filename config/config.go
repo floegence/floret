@@ -32,6 +32,9 @@ type Config struct {
 	PromptCacheDir          string
 	PromptCacheRetention    string
 	SystemPrompt            string
+	SkillsEnabled           bool
+	SkillSources            []string
+	SkillPromptBudgetBytes  int
 	ContextPolicy           contextpolicy.Policy
 	MaxEmptyProviderRetries int
 	NoProgressLimit         int
@@ -95,6 +98,8 @@ func fromValues(values map[string]string) (Config, error) {
 		PromptCacheDir:          get(values, "FLORET_PROMPT_CACHE_DIR", ".floret/sessions"),
 		PromptCacheRetention:    get(values, "FLORET_PROMPT_CACHE_RETENTION", defaultPromptCacheRetention(providerName)),
 		SystemPrompt:            get(values, "FLORET_SYSTEM_PROMPT", "You are Floret."),
+		SkillSources:            splitList(get(values, "FLORET_SKILLS_PATHS", "")),
+		SkillPromptBudgetBytes:  16 * 1024,
 		ContextPolicy:           modelcatalog.ContextPolicy(providerName, get(values, "FLORET_MODEL", defaultModel)),
 		MaxEmptyProviderRetries: 1,
 		NoProgressLimit:         2,
@@ -134,6 +139,12 @@ func fromValues(values map[string]string) (Config, error) {
 	if cfg.WallTime, err = getDuration(values, "FLORET_WALL_TIME", 0); err != nil {
 		return Config{}, err
 	}
+	if cfg.SkillsEnabled, err = getBool(values, "FLORET_SKILLS_ENABLED", false); err != nil {
+		return Config{}, err
+	}
+	if cfg.SkillPromptBudgetBytes, err = getInt(values, "FLORET_SKILL_PROMPT_BUDGET_BYTES", cfg.SkillPromptBudgetBytes); err != nil {
+		return Config{}, err
+	}
 	return validate(cfg)
 }
 
@@ -163,6 +174,9 @@ func Resolve(cfg Config, environ map[string]string) (Config, error) {
 	}
 	if cfg.PromptCacheRetention == "" {
 		cfg.PromptCacheRetention = defaultPromptCacheRetention(cfg.Provider)
+	}
+	if cfg.SkillPromptBudgetBytes <= 0 {
+		cfg.SkillPromptBudgetBytes = 16 * 1024
 	}
 	defaultPolicy := modelcatalog.ContextPolicy(cfg.Provider, cfg.Model)
 	if cfg.ContextPolicy.ContextWindowTokens <= 0 {
@@ -264,6 +278,20 @@ func unique(values []string) []string {
 	return out
 }
 
+func splitList(value string) []string {
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == ';'
+	})
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
 func readEnvFile(path string) (map[string]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -356,6 +384,21 @@ func getDuration(values map[string]string, key string, fallback time.Duration) (
 		return 0, fmt.Errorf("%s must be non-negative", key)
 	}
 	return parsed, nil
+}
+
+func getBool(values map[string]string, key string, fallback bool) (bool, error) {
+	value, ok := values[key]
+	if !ok || value == "" {
+		return fallback, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true, nil
+	case "0", "false", "no", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s must be a boolean", key)
+	}
 }
 
 func unquote(value string) string {

@@ -83,3 +83,35 @@ func TestSanitizeRemovesProviderDeltaAndReasoning(t *testing.T) {
 		}
 	}
 }
+
+func TestSanitizeKeepsSafeCapabilityMetadataReadable(t *testing.T) {
+	got := Sanitize(Event{
+		Type:  MCPServerFailed,
+		RunID: "run",
+		Metadata: map[string]any{
+			"server_id":        "context7",
+			"skill_id":         "code-review",
+			"failure_category": "connection_failed",
+			"next_action":      "Check downstream host config.",
+			"path":             "/private/workspace/skill/SKILL.md",
+			"message":          "token secret-value",
+		},
+	})
+	meta, ok := got.Metadata.(map[string]any)
+	if !ok {
+		t.Fatalf("metadata = %#v", got.Metadata)
+	}
+	for key, want := range map[string]string{
+		"server_id":        "context7",
+		"skill_id":         "code-review",
+		"failure_category": "connection_failed",
+		"next_action":      "Check downstream host config.",
+	} {
+		if meta[key] != want {
+			t.Fatalf("%s = %#v, want %q in %#v", key, meta[key], want, meta)
+		}
+	}
+	if strings.Contains(fmt.Sprint(meta["path"]), "/private") || strings.Contains(fmt.Sprint(meta["message"]), "secret-value") {
+		t.Fatalf("unsafe metadata exposed: %#v", meta)
+	}
+}

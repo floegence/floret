@@ -18,7 +18,10 @@ func TestImportBoundaries(t *testing.T) {
 	}{
 		{pkg: "tools", forbidden: []string{"github.com/floegence/floret/engine", "github.com/floegence/floret/event", "github.com/floegence/floret/sessiontree", "github.com/floegence/floret/promptcache", "github.com/floegence/floret/internal/testui"}},
 		{pkg: "builtintools", forbidden: []string{"github.com/floegence/floret/engine", "github.com/floegence/floret/adapters", "github.com/floegence/floret/sessiontree", "github.com/floegence/floret/promptcache", "github.com/floegence/floret/internal/testui"}},
-		{pkg: "engine", forbidden: []string{"github.com/floegence/floret/builtintools", "github.com/floegence/floret/internal/sessionlifecycle"}},
+		{pkg: "engine", forbidden: []string{"github.com/floegence/floret/builtintools", "github.com/floegence/floret/internal/sessionlifecycle", "github.com/floegence/floret/mcpclient", "github.com/floegence/floret/skills"}},
+		{pkg: "agentharness", forbidden: []string{"github.com/floegence/floret/mcpclient", "github.com/floegence/floret/skills"}},
+		{pkg: "mcpclient", forbidden: []string{"github.com/floegence/floret/engine", "github.com/floegence/floret/agentharness", "github.com/floegence/floret/sessiontree", "github.com/floegence/floret/internal/testui"}},
+		{pkg: "skills", forbidden: []string{"github.com/floegence/floret/engine", "github.com/floegence/floret/agentharness", "github.com/floegence/floret/sessiontree", "github.com/floegence/floret/internal/testui"}},
 		{pkg: "sessiontree", forbidden: []string{"github.com/floegence/floret/internal/sessionlifecycle"}},
 		{pkg: "adapters", forbidden: []string{"github.com/floegence/floret/builtintools"}},
 	} {

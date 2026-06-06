@@ -21,6 +21,7 @@ import (
 	"github.com/floegence/floret/harness"
 	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/internal/sessionlifecycle"
+	"github.com/floegence/floret/mcpclient"
 	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/session"
@@ -256,6 +257,81 @@ func TestRunnerConfigStateIncludesCatalogAndNormalizesProviderDefaults(t *testin
 	}
 	if saved.ContextPolicyDefaults.ContextWindowTokens != 1050000 || saved.ContextPolicyDefaults.MaxOutputTokens != 128000 || saved.ContextPolicyDefaults.RecentTailTokens != 12000 {
 		t.Fatalf("context policy defaults were not defaulted from active catalog model: %#v", saved.ContextPolicyDefaults)
+	}
+}
+
+func TestRunnerConfigStateLoadsHostMCPConfig(t *testing.T) {
+	root := t.TempDir()
+	server := fakeHTTPMCPServer(t, "lookup", "ok")
+	defer server.Close()
+	writeEnv(t, root, "FLORET_PROVIDER=fake\nFLORET_MCP_CONFIG=mcp.json\n")
+	writeMCPConfig(t, root, []map[string]any{{
+		"Name":      "docs",
+		"Transport": "streamable_http",
+		"URL":       server.URL,
+		"Enabled":   true,
+	}})
+	runner := NewRunner(root)
+	state, err := runner.ConfigState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Capabilities.MCPServers) != 1 {
+		t.Fatalf("mcp servers = %#v", state.Capabilities.MCPServers)
+	}
+	got := state.Capabilities.MCPServers[0]
+	if got.Name != "docs" || got.Status != "ready" || got.Transport != "streamable_http" || got.ToolCount != 1 || got.PermissionMode != "ask" {
+		t.Fatalf("mcp state = %#v", got)
+	}
+}
+
+func TestRunnerMCPConfigExposesToolAndDeniesDefaultApproval(t *testing.T) {
+	root := t.TempDir()
+	server := fakeHTTPMCPServer(t, "lookup", "mcp ok")
+	defer server.Close()
+	writeEnv(t, root, "FLORET_PROVIDER=fake\nFLORET_MCP_CONFIG=mcp.json\n")
+	writeMCPConfig(t, root, []map[string]any{{
+		"Name":      "docs",
+		"Transport": "streamable_http",
+		"URL":       server.URL,
+		"Enabled":   true,
+	}})
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return harness.NewScriptedProvider(
+			harness.Step(provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "mcp-1", Name: "mcp__docs__lookup", Args: `{"query":"x"}`}}}, harness.DoneReason("tool_calls")),
+			harness.Step(harness.Text("recovered"), harness.Done()),
+		), nil
+	}
+	result := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:      ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:      "use mcp",
+		SystemPrompt: "test",
+	})
+	if result.Status != "completed" || result.Output != "recovered" {
+		t.Fatalf("result = %#v", result)
+	}
+	if !slices.ContainsFunc(result.Observation.ProviderRequests[0].Tools, func(def provider.ToolDefinition) bool {
+		return def.Name == "mcp__docs__lookup" && def.Annotations["source"] == "mcp" && def.Annotations["permission_mode"] == "ask"
+	}) {
+		t.Fatalf("mcp tool not visible: %#v", result.Observation.ProviderRequests[0].Tools)
+	}
+	if !slices.ContainsFunc(result.Session.Capabilities.MCPServers, func(server MCPCapabilityState) bool {
+		return server.Name == "docs" && server.Status == "ready" && server.ToolCount == 1
+	}) {
+		t.Fatalf("mcp capability missing: %#v", result.Session.Capabilities)
+	}
+	if !slices.ContainsFunc(result.Events, func(ev event.Event) bool {
+		meta, _ := ev.Metadata.(map[string]any)
+		return ev.Type == event.MCPServerReady && meta["server_id"] == "docs"
+	}) {
+		t.Fatalf("readable mcp event missing: %#v", result.Events)
+	}
+	if !slices.ContainsFunc(result.Observation.ActiveContext, func(msg ObservedSessionMessage) bool {
+		return msg.Role == "tool" && msg.ToolName == "mcp__docs__lookup" && msg.Content == ""
+	}) {
+		t.Fatalf("sanitized denied mcp result missing: %#v", result.Observation.ActiveContext)
 	}
 }
 
@@ -2417,4 +2493,57 @@ func assertObservedProviderSafeToolHistory(messages []ObservedSessionMessage) er
 		i--
 	}
 	return nil
+}
+
+func fakeHTTPMCPServer(t *testing.T, toolName, resultText string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		id := req["id"]
+		switch req["method"] {
+		case "initialize", "notifications/initialized":
+			writeTestRPC(w, id, map[string]any{"protocolVersion": mcpclient.ProtocolVersion})
+		case "tools/list":
+			writeTestRPC(w, id, map[string]any{"tools": []map[string]any{{
+				"name":        toolName,
+				"description": "Lookup from fake MCP.",
+				"inputSchema": map[string]any{
+					"type":                 "object",
+					"properties":           map[string]any{"query": map[string]any{"type": "string"}},
+					"required":             []string{"query"},
+					"additionalProperties": false,
+				},
+			}}})
+		case "tools/call":
+			writeTestRPC(w, id, map[string]any{"content": []map[string]any{{"type": "text", "text": resultText}}})
+		default:
+			writeTestRPC(w, id, map[string]any{})
+		}
+	}))
+}
+
+func writeMCPConfig(t *testing.T, root string, servers []map[string]any) {
+	t.Helper()
+	data, err := json.Marshal(map[string]any{"servers": servers})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "mcp.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeEnv(t *testing.T, root, text string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(root, config.DefaultEnvFile), []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeTestRPC(w http.ResponseWriter, id any, result map[string]any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
 }

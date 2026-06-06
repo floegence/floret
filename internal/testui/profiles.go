@@ -43,6 +43,7 @@ func (r *Runner) ConfigState() (ConfigState, error) {
 		}
 	}
 	state.SearchProvider = searchProviderInfo(fileValues)
+	state.Capabilities = r.capabilityStateFromEnv()
 	if raw := fileValues[profilesKey]; raw != "" {
 		profiles, err := decodeProfiles(raw)
 		if err != nil {

@@ -121,6 +121,12 @@ export function groupTools(tools) {
 }
 
 function toolMatrixGroup(tool) {
+  if (tool.kind === "mcp" || tool.source === "mcp" || tool.annotations?.source === "mcp") {
+    return { id: "mcp_client_tools", title: "MCP client tools" };
+  }
+  if (tool.kind === "skill" || tool.source === "skill" || tool.annotations?.source === "skill") {
+    return { id: "agent_skills", title: "Agent skills" };
+  }
   if (tool.name === "web_search") {
     if (tool.available === false) {
       return { id: "unavailable_capabilities", title: "Disabled / unavailable capabilities" };

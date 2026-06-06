@@ -58,6 +58,7 @@ export function renderNewSession() {
             <h2>Tools</h2>
             <p class="muted">Choose the local tools available to this session. You can edit them later from the session Inspector.</p>
           </div>
+          ${renderCapabilitySummary(state.config?.capabilities)}
           ${renderToolMatrix({ tools: state.config?.tools || [], selected: selectedTools, editable: true, name: "new-tools" })}
         </section>
         <section class="profile-card">
@@ -76,6 +77,52 @@ export function renderNewSession() {
         </div>
       </form>
     </section>
+  `;
+}
+
+function renderCapabilitySummary(capabilities) {
+  const skills = capabilities?.skills || [];
+  const mcpServers = capabilities?.mcp_servers || [];
+  const diagnostics = capabilities?.diagnostics || [];
+  return `
+    <section class="section">
+      <h3>Capabilities</h3>
+      ${renderCapabilityRows("MCP Servers", mcpServers, (item) => [
+        item.name || "server",
+        item.status || "unknown",
+        item.transport || "transport n/a",
+        `${item.tool_count || 0} tools`,
+        item.permission_mode || "ask",
+        item.next_action || "",
+      ])}
+      ${renderCapabilityRows("Agent Skills", skills, (item) => [
+        item.name || "skill",
+        item.status || "unknown",
+        item.source_label || item.source_kind || "source n/a",
+        item.relative_path || "",
+        item.description || "",
+      ])}
+      ${renderCapabilityRows("Diagnostics", diagnostics, (item) => [
+        item.kind || "diagnostic",
+        item.capability || "",
+        item.message || "",
+        item.next_action || "",
+      ])}
+    </section>
+  `;
+}
+
+function renderCapabilityRows(title, rows, valuesFor) {
+  if (!rows.length) return `<div class="event-item"><strong>${escapeHTML(title)}</strong><span class="muted">none</span></div>`;
+  return `
+    <div class="event-list">
+      <strong>${escapeHTML(title)}</strong>
+      ${rows.map((row) => `
+        <div class="event-item">
+          ${valuesFor(row).filter(Boolean).map((value, index) => index === 0 ? `<strong>${escapeHTML(value)}</strong>` : `<span class="muted">${escapeHTML(value)}</span>`).join("")}
+        </div>
+      `).join("")}
+    </div>
   `;
 }
 

@@ -76,6 +76,7 @@ function renderTools(session, tools, observation) {
         <h3>Session Tools</h3>
         <p class="muted">These tools are bound to this session. Changes here affect future turns only.</p>
       </div>
+      ${renderCapabilitySummary(session, observation)}
       <div class="tool-boundary-grid">
         <div>
           <strong>Local client tools</strong>
@@ -108,6 +109,67 @@ function renderTools(session, tools, observation) {
       <h3>Tool Change Audit</h3>
       ${audit.length ? audit.map(renderToolAudit).join("") : `<p class="muted">No tool changes after session creation.</p>`}
     </section>
+  `;
+}
+
+function renderCapabilitySummary(session, observation) {
+  const caps = session.capabilities || {};
+  const request = latestProviderRequest(observation.provider_requests || []);
+  const requestTools = request?.tools || [];
+  const mcpTools = requestTools.filter((tool) => tool.annotations?.source === "mcp");
+  const skillTools = requestTools.filter((tool) => tool.annotations?.source === "skill");
+  const mcpServers = caps.mcp_servers || [];
+  const skills = caps.skills || [];
+  const diagnostics = caps.diagnostics || [];
+  return `
+    <section class="section">
+      <h3>Capabilities</h3>
+      ${renderCapabilityRows("MCP Servers", mcpServers, (item) => [
+        item.name || "server",
+        item.status || "unknown",
+        item.transport || "transport n/a",
+        `${item.tool_count || 0} tools`,
+        item.permission_mode || "ask",
+        item.next_action || "",
+      ])}
+      ${renderCapabilityRows("MCP Tools", mcpTools, (tool) => [
+        tool.name || "tool",
+        `remote: ${tool.annotations?.mcp_tool || "unknown"}`,
+        `server: ${tool.annotations?.mcp_server || "unknown"}`,
+        `permission: ${tool.annotations?.permission_mode || "ask"}`,
+      ])}
+      ${renderCapabilityRows("Agent Skills", skills, (item) => [
+        item.name || "skill",
+        item.status || "unknown",
+        item.source_label || item.source_kind || "source n/a",
+        item.relative_path || "",
+        item.description || "",
+      ])}
+      ${renderCapabilityRows("Skill Tool", skillTools, (tool) => [
+        tool.name || "skill",
+        `permission: ${tool.annotations?.permission_mode || "allow"}`,
+      ])}
+      ${renderCapabilityRows("Diagnostics", diagnostics, (item) => [
+        item.kind || "diagnostic",
+        item.capability || "",
+        item.message || "",
+        item.next_action || "",
+      ])}
+    </section>
+  `;
+}
+
+function renderCapabilityRows(title, rows, valuesFor) {
+  if (!rows.length) return `<div class="event-item"><strong>${escapeHTML(title)}</strong><span class="muted">none</span></div>`;
+  return `
+    <div class="event-list">
+      <strong>${escapeHTML(title)}</strong>
+      ${rows.map((row) => `
+        <div class="event-item">
+          ${valuesFor(row).filter(Boolean).map((value, index) => index === 0 ? `<strong>${escapeHTML(value)}</strong>` : `<span class="muted">${escapeHTML(value)}</span>`).join("")}
+        </div>
+      `).join("")}
+    </div>
   `;
 }
 
