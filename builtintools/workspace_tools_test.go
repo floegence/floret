@@ -615,6 +615,97 @@ func TestApplyPatchPureAdditionUpdateChunkAppends(t *testing.T) {
 	}
 }
 
+func TestApplyPatchUnifiedRangeHeadersAndLenientMatching(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"deepseek.txt":   "status: initial\nprovider: deepseek\n",
+		"nearby.txt":     "header\nkeep\nold\nfooter\n",
+		"whitespace.txt": "alpha   \nbeta\n",
+		"unicode.txt":    "quote: \u201chello\u201d\ndash: \u2014\n",
+		"insert.txt":     "first\nsecond\nthird\n",
+		"duplicate.txt":  "target\nsame\nmiddle\ntarget\nsame\n",
+		"anchor.txt":     "section: \u201cintro\u201d\nold\n",
+		"single.txt":     "one\n",
+		"eof.txt":        "top\nbottom\n",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reg := tools.NewRegistry()
+	if err := RegisterWorkspaceMutation(reg, WorkspaceOptions{Root: root}); err != nil {
+		t.Fatal(err)
+	}
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: deepseek.txt",
+		"@@ -1,2 +1,2 @@",
+		"-status: initial",
+		"+status: patched",
+		" provider: deepseek",
+		"*** Update File: nearby.txt",
+		"@@ -3,1 +3,1 @@ optional function hint",
+		"-old",
+		"+new",
+		"*** Update File: whitespace.txt",
+		"@@ -1,2 +1,2 @@",
+		"-alpha",
+		"+alpha patched",
+		" beta",
+		"*** Update File: unicode.txt",
+		"@@ -1,2 +1,2 @@",
+		"-quote: \"hello\"",
+		"+quote: \"world\"",
+		" dash: -",
+		"*** Update File: insert.txt",
+		"@@ -2,0 +3 @@",
+		"+inserted after second",
+		"*** Update File: duplicate.txt",
+		"@@ -4,2 +4,2 @@",
+		" target",
+		"-same",
+		"+range selected",
+		"*** Update File: anchor.txt",
+		"@@ section: \"intro\"",
+		"-old",
+		"+new",
+		"*** Update File: single.txt",
+		"@@ -1 +1 @@",
+		"-one",
+		"+uno",
+		"*** Update File: eof.txt",
+		"@@ -2 +2 @@",
+		"-bottom",
+		"+end",
+		"*** End of File",
+		"*** End Patch",
+	}, "\n")
+	got := reg.Run(context.Background(), provider.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
+	if got.IsError {
+		t.Fatalf("patch = %#v", got)
+	}
+	for name, want := range map[string]string{
+		"deepseek.txt":   "status: patched\nprovider: deepseek\n",
+		"nearby.txt":     "header\nkeep\nnew\nfooter\n",
+		"whitespace.txt": "alpha patched\nbeta\n",
+		"unicode.txt":    "quote: \"world\"\ndash: \u2014\n",
+		"insert.txt":     "first\nsecond\ninserted after second\nthird\n",
+		"duplicate.txt":  "target\nsame\nmiddle\ntarget\nrange selected\n",
+		"anchor.txt":     "section: \u201cintro\u201d\nnew\n",
+		"single.txt":     "uno\n",
+		"eof.txt":        "top\nend\n",
+	} {
+		data, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != want {
+			t.Fatalf("%s = %q, want %q", name, data, want)
+		}
+	}
+}
+
 func TestApplyPatchRejectsInvalidFormsExistingAddMissingFilesAndMoveTarget(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "exists.txt"), []byte("exists\n"), 0o644); err != nil {
@@ -640,6 +731,8 @@ func TestApplyPatchRejectsInvalidFormsExistingAddMissingFilesAndMoveTarget(t *te
 		{"add existing", "*** Begin Patch\n*** Add File: exists.txt\n+x\n*** End Patch", "cannot add existing"},
 		{"delete missing", "*** Begin Patch\n*** Delete File: missing.txt\n*** End Patch", "does not exist"},
 		{"update missing", "*** Begin Patch\n*** Update File: missing.txt\n@@\n-old\n+new\n*** End Patch", "does not exist"},
+		{"update marker missing colon", "*** Begin Patch\n*** Update File move.txt\n@@\n-move\n+moved\n*** End Patch", "expected one of"},
+		{"unknown modify marker", "*** Begin Patch\n*** Modify File: move.txt\n@@\n-move\n+moved\n*** End Patch", "expected one of"},
 		{"move existing", "*** Begin Patch\n*** Update File: move.txt\n*** Move to: exists.txt\n@@\n-move\n+moved\n*** End Patch", "cannot move to existing"},
 	}
 	for _, tc := range cases {
