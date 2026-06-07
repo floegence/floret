@@ -25,7 +25,7 @@ const (
 	braveSearchKey       = "FLORET_BRAVE_SEARCH_API_KEY"
 	braveSearchEndpoint  = "FLORET_BRAVE_SEARCH_ENDPOINT"
 	searchProviderBrave  = "brave"
-	defaultSearchSummary = "web_search is selected from each provider profile. Provider-hosted search is preferred; Brave client search is available only when explicitly enabled and configured."
+	defaultSearchSummary = "web_search is selected from each provider profile as exactly one source: provider-hosted, external Brave, or disabled."
 )
 
 func (r *Runner) ConfigState() (ConfigState, error) {
@@ -103,9 +103,10 @@ func (r *Runner) SaveConfigState(req SaveConfigRequest) (ConfigState, error) {
 		if normalized.APIKey == "" {
 			normalized.APIKey = existingByID[normalized.ID].APIKey
 		}
-		if err := validateProfileWebSearch(normalized); err != nil {
+		if err := validateProfileWebSearch(normalized.ID, normalized.Provider, profile.WebSearch); err != nil {
 			return ConfigState{}, err
 		}
+		normalized.WebSearch = searchcap.NormalizeCapability(normalized.Provider, profile.WebSearch)
 		if _, ok := seen[normalized.ID]; ok {
 			return ConfigState{}, fmt.Errorf("duplicate profile id %q", normalized.ID)
 		}
@@ -134,11 +135,10 @@ func (r Runner) profileByID(id string) (ProviderProfile, error) {
 		return ProviderProfile{}, err
 	}
 	if id == "" {
-		state, err := r.ConfigState()
+		id, err = r.activeProfileIDFromEnv(profiles)
 		if err != nil {
 			return ProviderProfile{}, err
 		}
-		id = state.ActiveProfileID
 	}
 	for _, profile := range profiles {
 		if profile.ID == id {
@@ -161,6 +161,18 @@ func (r Runner) loadRawProfiles() ([]ProviderProfile, error) {
 		return nil, err
 	}
 	return []ProviderProfile{profile}, nil
+}
+
+func (r Runner) activeProfileIDFromEnv(profiles []ProviderProfile) (string, error) {
+	values, err := readDotEnv(r.EnvFile)
+	if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	id := strings.TrimSpace(values[activeProfileKey])
+	if id == "" && len(profiles) > 0 {
+		id = profiles[0].ID
+	}
+	return id, nil
 }
 
 func (r Runner) legacyProfile() (ProviderProfile, error) {
@@ -343,44 +355,25 @@ func searchProviderInfo(values map[string]string) SearchProviderInfo {
 func searchWireShapes() []SearchWireShape {
 	out := make([]SearchWireShape, 0, len(searchcap.AvailableWireShapes()))
 	for _, shape := range searchcap.AvailableWireShapes() {
-		out = append(out, SearchWireShape{ID: shape, Title: searchWireShapeTitle(shape)})
+		out = append(out, SearchWireShape{ID: string(shape), Title: searchWireShapeTitle(shape)})
 	}
 	return out
 }
 
-func searchWireShapeTitle(shape string) string {
+func searchWireShapeTitle(shape searchcap.HostedWireShape) string {
 	switch shape {
 	case searchcap.WireShapeOpenAIChatWebSearchOptions:
 		return "OpenAI-compatible chat web_search_options"
 	case searchcap.WireShapeAnthropicServerWebSearch:
 		return "Anthropic server web_search_20250305"
 	default:
-		return shape
+		return string(shape)
 	}
 }
 
-func validateProfileWebSearch(profile ProviderProfile) error {
-	capability := profile.WebSearch
-	if capability.ProviderHosted.Enabled {
-		shape := strings.TrimSpace(capability.ProviderHosted.WireShape)
-		if shape == "" {
-			return fmt.Errorf("profile %q provider web_search is enabled but no hosted wire shape is configured", profile.ID)
-		}
-		if err := searchcap.ValidateWireShape(shape); err != nil {
-			return fmt.Errorf("profile %q: %w", profile.ID, err)
-		}
-		if len(capability.ProviderHosted.SupportedWireShapes) > 0 && !slices.Contains(capability.ProviderHosted.SupportedWireShapes, shape) {
-			return fmt.Errorf("profile %q provider web_search wire shape %q is not in supported_wire_shapes", profile.ID, shape)
-		}
-	}
-	if capability.Client.Enabled {
-		provider := strings.TrimSpace(capability.Client.Provider)
-		if provider == "" {
-			provider = searchProviderBrave
-		}
-		if provider != searchProviderBrave {
-			return fmt.Errorf("profile %q has unsupported client web_search provider %q", profile.ID, provider)
-		}
+func validateProfileWebSearch(profileID string, providerID string, capability searchcap.Capability) error {
+	if err := searchcap.ValidateCapability(providerID, capability); err != nil {
+		return fmt.Errorf("profile %q: %w", profileID, err)
 	}
 	return nil
 }

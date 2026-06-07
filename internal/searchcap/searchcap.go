@@ -1,6 +1,8 @@
 package searchcap
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -12,51 +14,104 @@ import (
 const (
 	ToolWebSearch = "web_search"
 
-	WireShapeOpenAIChatWebSearchOptions = "openai_chat_web_search_options"
-	WireShapeAnthropicServerWebSearch   = "anthropic_server_web_search"
+	WireShapeOpenAIChatWebSearchOptions HostedWireShape = "openai_chat_web_search_options"
+	WireShapeAnthropicServerWebSearch   HostedWireShape = "anthropic_server_web_search"
 
-	ClientProviderBrave = "brave"
+	ExternalProviderBrave = "brave"
 )
 
-type ProviderHostedConfig struct {
-	Enabled             bool     `json:"enabled"`
-	WireShape           string   `json:"wire_shape,omitempty"`
-	SupportedWireShapes []string `json:"supported_wire_shapes,omitempty"`
+type WebSearchSource string
+
+const (
+	WebSearchProviderHosted WebSearchSource = "provider_hosted"
+	WebSearchExternalBrave  WebSearchSource = "external_brave"
+	WebSearchDisabled       WebSearchSource = "disabled"
+)
+
+type ResolveStatus string
+
+const (
+	ResolveReady       ResolveStatus = "ready"
+	ResolveUnavailable ResolveStatus = "unavailable"
+	ResolveInvalid     ResolveStatus = "invalid"
+)
+
+type HostedWireShape string
+
+type HostedConfig struct {
+	WireShape HostedWireShape `json:"wire_shape,omitempty"`
 }
 
-type ClientConfig struct {
-	Enabled  bool   `json:"enabled"`
+type BraveConfig struct {
 	Provider string `json:"provider,omitempty"`
 }
 
 type Capability struct {
-	ProviderHosted ProviderHostedConfig `json:"provider_hosted"`
-	Client         ClientConfig         `json:"client"`
-	Disabled       bool                 `json:"disabled,omitempty"`
+	Source WebSearchSource `json:"source,omitempty"`
+	Hosted HostedConfig    `json:"hosted,omitempty"`
+	Brave  BraveConfig     `json:"brave,omitempty"`
+}
+
+func (c *Capability) UnmarshalJSON(data []byte) error {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		*c = Capability{}
+		return nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	for key := range raw {
+		switch key {
+		case "source", "hosted", "brave":
+		case "provider_hosted", "client", "disabled":
+			return fmt.Errorf("legacy web_search configuration key %q is unsupported; use source, hosted, and brave", key)
+		default:
+			return fmt.Errorf("unsupported web_search configuration key %q", key)
+		}
+	}
+	type capabilityJSON Capability
+	var decoded capabilityJSON
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*c = Capability(decoded)
+	return nil
 }
 
 type ResolveInput struct {
-	Provider        string
-	Capability      Capability
-	ClientAvailable bool
+	Provider       string
+	Capability     Capability
+	BraveAvailable bool
 }
 
 type Resolved struct {
-	LocalToolNames      []string
-	HostedTools         []provider.HostedToolDefinition
-	UnavailableReasons  []string
-	ProviderHosted      bool
-	Client              bool
-	WireShape           string
-	ClientProvider      string
-	ProviderSearchKnown bool
+	Source             WebSearchSource                 `json:"source"`
+	Status             ResolveStatus                   `json:"status"`
+	Available          bool                            `json:"available"`
+	LocalToolNames     []string                        `json:"local_tool_names,omitempty"`
+	HostedTools        []provider.HostedToolDefinition `json:"hosted_tools,omitempty"`
+	UnavailableReasons []string                        `json:"unavailable_reasons,omitempty"`
+	WireShape          HostedWireShape                 `json:"wire_shape,omitempty"`
+	ExternalProvider   string                          `json:"external_provider,omitempty"`
 }
 
-func AvailableWireShapes() []string {
-	return []string{
+func AvailableWireShapes() []HostedWireShape {
+	return []HostedWireShape{
 		WireShapeOpenAIChatWebSearchOptions,
 		WireShapeAnthropicServerWebSearch,
 	}
+}
+
+func SupportedWireShapes(providerID string) []HostedWireShape {
+	capability := modelcatalog.WebSearch(providerID)
+	out := make([]HostedWireShape, 0, len(capability.HostedWireShapes))
+	for _, shape := range capability.HostedWireShapes {
+		if hostedShape := HostedWireShape(strings.TrimSpace(shape)); hostedShape != "" {
+			out = append(out, hostedShape)
+		}
+	}
+	return out
 }
 
 // IMPORTANT: Web search source selection must be derived from provider profile
@@ -64,96 +119,155 @@ func AvailableWireShapes() []string {
 // cases, hidden fallback, or runtime probing here; callers must surface
 // unavailable capability state instead of exposing guaranteed-failing tools.
 func Resolve(input ResolveInput) (Resolved, error) {
-	capability := NormalizeCapability(input.Provider, input.Capability)
-	var out Resolved
-	if capability.Disabled {
-		out.UnavailableReasons = append(out.UnavailableReasons, "web search disabled")
-		return out, nil
+	if err := ValidateCapability(input.Provider, input.Capability); err != nil {
+		source := input.Capability.Source
+		if source == "" {
+			source = WebSearchDisabled
+		}
+		return Resolved{Source: source, Status: ResolveInvalid}, err
 	}
-	if capability.ProviderHosted.Enabled {
-		shape := strings.TrimSpace(capability.ProviderHosted.WireShape)
-		if shape == "" {
-			return Resolved{}, fmt.Errorf("provider web_search is enabled but no hosted wire shape is configured")
-		}
-		if !slices.Contains(capability.ProviderHosted.SupportedWireShapes, shape) {
-			return Resolved{}, fmt.Errorf("provider web_search wire shape %q is not supported by this profile", shape)
-		}
-		if err := ValidateWireShape(shape); err != nil {
-			return Resolved{}, err
-		}
-		out.ProviderHosted = true
+	capability := NormalizeCapability(input.Provider, input.Capability)
+	out := Resolved{Source: capability.Source, Status: ResolveUnavailable}
+	switch capability.Source {
+	case WebSearchProviderHosted:
+		shape := capability.Hosted.WireShape
 		out.WireShape = shape
-		out.ProviderSearchKnown = true
 		out.HostedTools = []provider.HostedToolDefinition{{
 			Name: ToolWebSearch,
 			Type: ToolWebSearch,
 			Options: map[string]any{
-				"wire_shape": shape,
+				"wire_shape": string(shape),
 			},
 		}}
-		return out, nil
-	}
-	if capability.Client.Enabled {
-		clientProvider := strings.TrimSpace(capability.Client.Provider)
-		if clientProvider == "" {
-			clientProvider = ClientProviderBrave
-		}
-		if clientProvider != ClientProviderBrave {
-			return Resolved{}, fmt.Errorf("unsupported client web_search provider %q", clientProvider)
-		}
-		if !input.ClientAvailable {
+		out.Status = ResolveReady
+		out.Available = true
+	case WebSearchExternalBrave:
+		out.ExternalProvider = ExternalProviderBrave
+		if !input.BraveAvailable {
 			out.UnavailableReasons = append(out.UnavailableReasons, "Brave Search API key is not configured")
-			return out, nil
+			break
 		}
-		out.Client = true
-		out.ClientProvider = clientProvider
 		out.LocalToolNames = []string{ToolWebSearch}
-		return out, nil
+		out.Status = ResolveReady
+		out.Available = true
+	case WebSearchDisabled:
+		out.UnavailableReasons = append(out.UnavailableReasons, "web search disabled")
+	default:
+		return Resolved{Source: capability.Source, Status: ResolveInvalid}, fmt.Errorf("unsupported web_search source %q", capability.Source)
 	}
-	out.UnavailableReasons = append(out.UnavailableReasons, "web search is not enabled")
+	if !out.Available && len(out.UnavailableReasons) == 0 {
+		out.UnavailableReasons = append(out.UnavailableReasons, "web search is unavailable")
+	}
 	return out, nil
 }
 
 func NormalizeCapability(providerID string, capability Capability) Capability {
-	providerID = modelcatalog.NormalizeProvider(providerID)
-	defaults := DefaultCapability(providerID)
-	if len(capability.ProviderHosted.SupportedWireShapes) == 0 {
-		capability.ProviderHosted.SupportedWireShapes = append([]string(nil), defaults.ProviderHosted.SupportedWireShapes...)
+	source := capability.Source
+	if source == "" {
+		source = WebSearchDisabled
 	}
-	if capability.ProviderHosted.WireShape == "" {
-		capability.ProviderHosted.WireShape = defaults.ProviderHosted.WireShape
+	switch source {
+	case WebSearchProviderHosted:
+		shape := capability.Hosted.WireShape
+		if shape == "" {
+			shape = defaultHostedWireShape(providerID)
+		}
+		return Capability{Source: WebSearchProviderHosted, Hosted: HostedConfig{WireShape: shape}}
+	case WebSearchExternalBrave:
+		provider := strings.TrimSpace(capability.Brave.Provider)
+		if provider == "" {
+			provider = ExternalProviderBrave
+		}
+		return Capability{Source: WebSearchExternalBrave, Brave: BraveConfig{Provider: provider}}
+	case WebSearchDisabled:
+		return Capability{Source: WebSearchDisabled}
+	default:
+		return Capability{Source: source}
 	}
-	if !capability.Disabled && !capability.ProviderHosted.Enabled && !capability.Client.Enabled {
-		capability.ProviderHosted.Enabled = defaults.ProviderHosted.Enabled
-		capability.Client.Enabled = defaults.Client.Enabled
-	}
-	if capability.Client.Provider == "" {
-		capability.Client.Provider = ClientProviderBrave
-	}
-	return capability
 }
 
 func DefaultCapability(providerID string) Capability {
-	switch modelcatalog.APIKind(modelcatalog.NormalizeProvider(providerID)) {
-	case modelcatalog.APIOpenAIChat:
-		return Capability{ProviderHosted: ProviderHostedConfig{
-			Enabled:             true,
-			WireShape:           WireShapeOpenAIChatWebSearchOptions,
-			SupportedWireShapes: []string{WireShapeOpenAIChatWebSearchOptions},
-		}, Client: ClientConfig{Provider: ClientProviderBrave}}
-	case modelcatalog.APIAnthropicMessages:
-		return Capability{ProviderHosted: ProviderHostedConfig{
-			Enabled:             true,
-			WireShape:           WireShapeAnthropicServerWebSearch,
-			SupportedWireShapes: []string{WireShapeAnthropicServerWebSearch},
-		}, Client: ClientConfig{Provider: ClientProviderBrave}}
+	return NormalizeCapability(providerID, Capability{})
+}
+
+func ProviderPresetCapability(providerID string) Capability {
+	capability := modelcatalog.WebSearch(providerID)
+	source := WebSearchSource(strings.TrimSpace(capability.DefaultSource))
+	switch source {
+	case WebSearchProviderHosted:
+		return Capability{
+			Source: WebSearchProviderHosted,
+			Hosted: HostedConfig{WireShape: HostedWireShape(strings.TrimSpace(capability.HostedWireShape))},
+		}
+	case WebSearchExternalBrave:
+		return Capability{Source: WebSearchExternalBrave, Brave: BraveConfig{Provider: ExternalProviderBrave}}
 	default:
-		return Capability{Client: ClientConfig{Provider: ClientProviderBrave}}
+		return Capability{Source: WebSearchDisabled}
 	}
 }
 
-func ValidateWireShape(shape string) error {
-	switch strings.TrimSpace(shape) {
+func ValidateCapability(providerID string, capability Capability) error {
+	if err := ValidateRawCapability(providerID, capability); err != nil {
+		return err
+	}
+	capability = NormalizeCapability(providerID, capability)
+	switch capability.Source {
+	case WebSearchProviderHosted:
+		shape := capability.Hosted.WireShape
+		if shape == "" {
+			return fmt.Errorf("provider web_search is selected but no hosted wire shape is configured")
+		}
+		if err := ValidateWireShape(shape); err != nil {
+			return err
+		}
+		if !slices.Contains(SupportedWireShapes(providerID), shape) {
+			return fmt.Errorf("provider web_search wire shape %q is not supported by this profile", shape)
+		}
+	case WebSearchExternalBrave:
+		provider := strings.TrimSpace(capability.Brave.Provider)
+		if provider == "" {
+			provider = ExternalProviderBrave
+		}
+		if provider != ExternalProviderBrave {
+			return fmt.Errorf("unsupported external web_search provider %q", provider)
+		}
+	case WebSearchDisabled:
+	default:
+		return fmt.Errorf("unsupported web_search source %q", capability.Source)
+	}
+	return nil
+}
+
+func ValidateRawCapability(providerID string, capability Capability) error {
+	source := capability.Source
+	if source == "" {
+		source = WebSearchDisabled
+	}
+	switch source {
+	case WebSearchProviderHosted:
+		if strings.TrimSpace(capability.Brave.Provider) != "" {
+			return fmt.Errorf("provider-hosted web_search cannot include external Brave configuration")
+		}
+	case WebSearchExternalBrave:
+		if capability.Hosted.WireShape != "" {
+			return fmt.Errorf("external Brave web_search cannot include hosted wire shape configuration")
+		}
+		provider := strings.TrimSpace(capability.Brave.Provider)
+		if provider != "" && provider != ExternalProviderBrave {
+			return fmt.Errorf("unsupported external web_search provider %q", provider)
+		}
+	case WebSearchDisabled:
+		if capability.Hosted.WireShape != "" || strings.TrimSpace(capability.Brave.Provider) != "" {
+			return fmt.Errorf("disabled web_search cannot include hosted or external configuration")
+		}
+	default:
+		return fmt.Errorf("unsupported web_search source %q", source)
+	}
+	return nil
+}
+
+func ValidateWireShape(shape HostedWireShape) error {
+	switch shape {
 	case WireShapeOpenAIChatWebSearchOptions, WireShapeAnthropicServerWebSearch:
 		return nil
 	default:
@@ -161,10 +275,6 @@ func ValidateWireShape(shape string) error {
 	}
 }
 
-func DisableProviderHosted(capability Capability) Capability {
-	capability.ProviderHosted.Enabled = false
-	if capability.Client.Provider == "" {
-		capability.Client.Provider = ClientProviderBrave
-	}
-	return capability
+func defaultHostedWireShape(providerID string) HostedWireShape {
+	return HostedWireShape(strings.TrimSpace(modelcatalog.WebSearch(providerID).HostedWireShape))
 }

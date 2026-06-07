@@ -1503,7 +1503,7 @@ func TestOpenAICompatibleProviderRendersHostedWebSearchOptions(t *testing.T) {
 		HostedTools: []provider.HostedToolDefinition{{
 			Name:    "web_search",
 			Type:    "web_search",
-			Options: map[string]any{"wire_shape": searchcap.WireShapeOpenAIChatWebSearchOptions},
+			Options: map[string]any{"wire_shape": string(searchcap.WireShapeOpenAIChatWebSearchOptions)},
 		}},
 	}); err != nil {
 		t.Fatal(err)
@@ -1523,7 +1523,7 @@ func TestOpenAICompatibleProviderRendersHostedWebSearchOptions(t *testing.T) {
 		HostedTools: []provider.HostedToolDefinition{{
 			Name:    "web_search",
 			Type:    "web_search",
-			Options: map[string]any{"wire_shape": searchcap.WireShapeOpenAIChatWebSearchOptions},
+			Options: map[string]any{"wire_shape": string(searchcap.WireShapeOpenAIChatWebSearchOptions)},
 		}},
 	})
 	if err != nil {
@@ -1599,7 +1599,7 @@ func TestAnthropicProviderRendersAndReadsHostedWebSearch(t *testing.T) {
 		HostedTools: []provider.HostedToolDefinition{{
 			Name:    "web_search",
 			Type:    "web_search",
-			Options: map[string]any{"wire_shape": searchcap.WireShapeAnthropicServerWebSearch},
+			Options: map[string]any{"wire_shape": string(searchcap.WireShapeAnthropicServerWebSearch)},
 		}},
 	})
 	if err != nil {

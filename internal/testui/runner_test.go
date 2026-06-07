@@ -22,6 +22,7 @@ import (
 	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/internal/sessionlifecycle"
 	"github.com/floegence/floret/mcpclient"
+	"github.com/floegence/floret/modelcatalog"
 	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/session"
@@ -343,7 +344,7 @@ func TestRunnerToolCatalogReflectsWebSearchCapability(t *testing.T) {
 			t.Fatal(err)
 		}
 		option := toolOptionByName(t, state.Tools, "web_search")
-		if option.Available || option.Source != "disabled" || !strings.Contains(option.Unavailable, "not enabled") {
+		if option.Available || option.Source != string(searchcap.WebSearchDisabled) || !strings.Contains(option.Unavailable, "web search disabled") {
 			t.Fatalf("web_search option = %#v", option)
 		}
 	})
@@ -353,37 +354,33 @@ func TestRunnerToolCatalogReflectsWebSearchCapability(t *testing.T) {
 		state, err := runner.SaveConfigState(SaveConfigRequest{
 			ActiveProfileID: "hosted",
 			Profiles: []ProviderProfile{{
-				ID:       "hosted",
-				Name:     "Hosted",
-				Provider: config.ProviderOpenAICompatible,
-				Model:    "model-a",
-				WebSearch: searchcap.Capability{ProviderHosted: searchcap.ProviderHostedConfig{
-					Enabled:             true,
-					WireShape:           searchcap.WireShapeOpenAIChatWebSearchOptions,
-					SupportedWireShapes: []string{searchcap.WireShapeOpenAIChatWebSearchOptions},
-				}},
+				ID:        "hosted",
+				Name:      "Hosted",
+				Provider:  modelcatalog.ProviderOpenAI,
+				Model:     "model-a",
+				WebSearch: searchcap.Capability{Source: searchcap.WebSearchProviderHosted, Hosted: searchcap.HostedConfig{WireShape: searchcap.WireShapeOpenAIChatWebSearchOptions}},
 			}},
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
 		option := toolOptionByName(t, state.Tools, "web_search")
-		if !option.Available || option.Source != "provider-hosted" || option.WireShape != searchcap.WireShapeOpenAIChatWebSearchOptions {
+		if !option.Available || option.Source != string(searchcap.WebSearchProviderHosted) || option.WireShape != string(searchcap.WireShapeOpenAIChatWebSearchOptions) || option.Exposure != "hosted tool: web_search" {
 			t.Fatalf("web_search option = %#v", option)
 		}
 	})
 
-	t.Run("client key gates availability", func(t *testing.T) {
+	t.Run("external brave key gates availability", func(t *testing.T) {
 		root := t.TempDir()
 		runner := NewRunner(root)
 		state, err := runner.SaveConfigState(SaveConfigRequest{
-			ActiveProfileID: "client",
+			ActiveProfileID: "external-brave",
 			Profiles: []ProviderProfile{{
-				ID:        "client",
-				Name:      "Client",
+				ID:        "external-brave",
+				Name:      "External Brave",
 				Provider:  config.ProviderFake,
 				Model:     "fake-model",
-				WebSearch: searchcap.Capability{Client: searchcap.ClientConfig{Enabled: true, Provider: searchcap.ClientProviderBrave}},
+				WebSearch: searchcap.Capability{Source: searchcap.WebSearchExternalBrave, Brave: searchcap.BraveConfig{Provider: searchcap.ExternalProviderBrave}},
 			}},
 		})
 		if err != nil {
@@ -394,13 +391,13 @@ func TestRunnerToolCatalogReflectsWebSearchCapability(t *testing.T) {
 			t.Fatalf("web_search without key = %#v", option)
 		}
 		state, err = runner.SaveConfigState(SaveConfigRequest{
-			ActiveProfileID: "client",
+			ActiveProfileID: "external-brave",
 			Profiles: []ProviderProfile{{
-				ID:        "client",
-				Name:      "Client",
+				ID:        "external-brave",
+				Name:      "External Brave",
 				Provider:  config.ProviderFake,
 				Model:     "fake-model",
-				WebSearch: searchcap.Capability{Client: searchcap.ClientConfig{Enabled: true, Provider: searchcap.ClientProviderBrave}},
+				WebSearch: searchcap.Capability{Source: searchcap.WebSearchExternalBrave, Brave: searchcap.BraveConfig{Provider: searchcap.ExternalProviderBrave}},
 			}},
 			SearchProvider: SaveSearchProvider{Provider: "brave", APIKey: "search-key"},
 		})
@@ -408,7 +405,7 @@ func TestRunnerToolCatalogReflectsWebSearchCapability(t *testing.T) {
 			t.Fatal(err)
 		}
 		option = toolOptionByName(t, state.Tools, "web_search")
-		if !option.Available || option.Source != "client:brave" {
+		if !option.Available || option.Source != string(searchcap.WebSearchExternalBrave) || option.Exposure != "local tool: web_search" {
 			t.Fatalf("web_search with key = %#v", option)
 		}
 		if data, err := os.ReadFile(filepath.Join(root, config.DefaultEnvFile)); err != nil || !strings.Contains(string(data), "FLORET_BRAVE_SEARCH_API_KEY") {
@@ -422,15 +419,11 @@ func TestRunnerRejectsUnsupportedHostedSearchWireShapeOnSave(t *testing.T) {
 	_, err := runner.SaveConfigState(SaveConfigRequest{
 		ActiveProfileID: "bad",
 		Profiles: []ProviderProfile{{
-			ID:       "bad",
-			Name:     "Bad",
-			Provider: config.ProviderOpenAICompatible,
-			Model:    "model-a",
-			WebSearch: searchcap.Capability{ProviderHosted: searchcap.ProviderHostedConfig{
-				Enabled:             true,
-				WireShape:           "bad_shape",
-				SupportedWireShapes: []string{"bad_shape"},
-			}},
+			ID:        "bad",
+			Name:      "Bad",
+			Provider:  modelcatalog.ProviderOpenAI,
+			Model:     "model-a",
+			WebSearch: searchcap.Capability{Source: searchcap.WebSearchProviderHosted, Hosted: searchcap.HostedConfig{WireShape: "bad_shape"}},
 		}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "unsupported hosted web_search wire shape") {
@@ -644,7 +637,7 @@ func TestRunnerAgentSessionCarriesReasoningThroughToolFollowUp(t *testing.T) {
 	}
 }
 
-func TestRunnerAgentSessionCanExecuteClientWebSearch(t *testing.T) {
+func TestRunnerAgentSessionCanExecuteExternalBraveWebSearch(t *testing.T) {
 	root := t.TempDir()
 	searchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Subscription-Token") != "test-search-key" {
@@ -677,7 +670,7 @@ func TestRunnerAgentSessionCanExecuteClientWebSearch(t *testing.T) {
 	}
 
 	result := runner.CreateAgentSession(context.Background(), AgentRunRequest{
-		Profile:       fakeClientSearchProfile(),
+		Profile:       fakeExternalBraveSearchProfile(),
 		Message:       "查询长沙天气",
 		SystemPrompt:  "test",
 		SelectedTools: []string{"web_search"},
@@ -733,16 +726,12 @@ func TestRunnerAgentSessionUsesProviderHostedSearchWithoutLocalWebSearch(t *test
 
 	result := runner.CreateAgentSession(context.Background(), AgentRunRequest{
 		Profile: ProviderProfile{
-			ID:       "hosted",
-			Name:     "Hosted",
-			Provider: config.ProviderOpenAICompatible,
-			Model:    "model",
-			APIKey:   "secret",
-			WebSearch: searchcap.Capability{ProviderHosted: searchcap.ProviderHostedConfig{
-				Enabled:             true,
-				WireShape:           searchcap.WireShapeOpenAIChatWebSearchOptions,
-				SupportedWireShapes: []string{searchcap.WireShapeOpenAIChatWebSearchOptions},
-			}},
+			ID:        "hosted",
+			Name:      "Hosted",
+			Provider:  modelcatalog.ProviderOpenAI,
+			Model:     "model",
+			APIKey:    "secret",
+			WebSearch: searchcap.Capability{Source: searchcap.WebSearchProviderHosted, Hosted: searchcap.HostedConfig{WireShape: searchcap.WireShapeOpenAIChatWebSearchOptions}},
 		},
 		Message:       "search",
 		SystemPrompt:  "system token=hosted-secret",
@@ -1877,7 +1866,7 @@ func TestRunnerAgentSessionHandlesMultipleToolCallsAndFollowUpUserTurn(t *testin
 	}
 
 	first := runner.CreateAgentSession(context.Background(), AgentRunRequest{
-		Profile:       fakeClientSearchProfile(),
+		Profile:       fakeExternalBraveSearchProfile(),
 		Message:       "查询长沙天气",
 		SystemPrompt:  "test",
 		SelectedTools: []string{"web_search", "shell"},
@@ -1974,7 +1963,7 @@ func TestRunnerAgentSessionHandlesRepeatedWeatherToolBatchesAndFollowUp(t *testi
 	}
 
 	first := runner.CreateAgentSession(context.Background(), AgentRunRequest{
-		Profile:       fakeClientSearchProfile(),
+		Profile:       fakeExternalBraveSearchProfile(),
 		Message:       "今天是2026-06-03，请你获取长沙的天气",
 		SystemPrompt:  "test",
 		SelectedTools: []string{"web_search", "shell"},
@@ -2420,14 +2409,15 @@ func toolSelection(names ...string) *[]string {
 	return &selected
 }
 
-func fakeClientSearchProfile() ProviderProfile {
+func fakeExternalBraveSearchProfile() ProviderProfile {
 	return ProviderProfile{
 		ID:       "fake",
 		Name:     "Fake",
 		Provider: config.ProviderFake,
 		Model:    "fake-model",
 		WebSearch: searchcap.Capability{
-			Client: searchcap.ClientConfig{Enabled: true, Provider: searchcap.ClientProviderBrave},
+			Source: searchcap.WebSearchExternalBrave,
+			Brave:  searchcap.BraveConfig{Provider: searchcap.ExternalProviderBrave},
 		},
 	}
 }

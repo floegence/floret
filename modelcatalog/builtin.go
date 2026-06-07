@@ -23,6 +23,11 @@ var providers = []Provider{
 		EnvKeys:        []string{"OPENAI_API_KEY"},
 		Custom:         true,
 		Cache:          CacheCapability{PromptCacheKey: true, PromptCacheRetention: true},
+		WebSearch: WebSearchCapability{
+			DefaultSource:    "provider_hosted",
+			HostedWireShape:  "openai_chat_web_search_options",
+			HostedWireShapes: []string{"openai_chat_web_search_options"},
+		},
 		Models: []Model{
 			{ID: "gpt-5.5", Name: "GPT-5.5", ContextWindow: 1050000, MaxTokens: 128000, Input: vision, Reasoning: true, Cost: Cost{InputPerMTok: 15, OutputPerMTok: 120}},
 			{ID: "gpt-5.4", Name: "GPT-5.4", ContextWindow: 1050000, MaxTokens: 128000, Input: vision, Reasoning: true, Cost: Cost{InputPerMTok: 10, OutputPerMTok: 80}},
@@ -43,6 +48,11 @@ var providers = []Provider{
 		EnvKeys:        []string{"ANTHROPIC_API_KEY"},
 		Custom:         true,
 		Cache:          CacheCapability{AnthropicCacheControl: true},
+		WebSearch: WebSearchCapability{
+			DefaultSource:    "provider_hosted",
+			HostedWireShape:  "anthropic_server_web_search",
+			HostedWireShapes: []string{"anthropic_server_web_search"},
+		},
 		Models: []Model{
 			{ID: "claude-opus-4-7", Name: "Claude Opus 4.7", ContextWindow: 1000000, MaxTokens: 128000, Input: vision, Reasoning: true, Cost: Cost{InputPerMTok: 15, OutputPerMTok: 75}},
 			{ID: "claude-sonnet-4-6", Name: "Claude Sonnet 4.6", ContextWindow: 1000000, MaxTokens: 64000, Input: vision, Reasoning: true, Cost: Cost{InputPerMTok: 3, OutputPerMTok: 15}},

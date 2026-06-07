@@ -1,4 +1,4 @@
-import { contextPolicyForProfile, currentProfile, escapeHTML, profileLabel, state } from "../state.js";
+import { contextPolicyForProfile, currentProfile, escapeHTML, profileLabel, state, toolsForProfile } from "../state.js";
 import { bindToolPresets, readSelectedTools, renderToolMatrix } from "../components/toolMatrix.js";
 
 export function renderNewSession() {
@@ -10,6 +10,7 @@ export function renderNewSession() {
   const isCreating = state.action === "create-session";
   const isProbing = state.action === "run-probe";
   const selectedTools = draft.selected_tools || [];
+  const tools = toolsForProfile(profile);
   const message = Object.prototype.hasOwnProperty.call(draft, "message") ? draft.message : "Say hello from Floret and complete the task.";
   const systemPrompt = Object.prototype.hasOwnProperty.call(draft, "system_prompt") ? draft.system_prompt : "You are Floret. Answer naturally when the user's request is complete, or call ask_user if you need missing information.";
   return `
@@ -56,10 +57,10 @@ export function renderNewSession() {
         <section class="profile-card" data-new-tools>
           <div>
             <h2>Tools</h2>
-            <p class="muted">Choose the local tools available to this session. You can update this toolset later from the session Inspector.</p>
+            <p class="muted">Choose the tools and capabilities available to this session. You can update this toolset later from the session Inspector.</p>
           </div>
           ${renderCapabilitySummary(state.config?.capabilities)}
-          ${renderToolMatrix({ tools: state.config?.tools || [], selected: selectedTools, editable: true, name: "new-tools" })}
+          ${renderToolMatrix({ tools, selected: selectedTools, editable: true, name: "new-tools", profileScope: "selected profile" })}
         </section>
         <section class="profile-card">
           <div>
@@ -142,7 +143,9 @@ export function bindNewSession(root, handlers) {
       handlers.onSwitchProfile?.(form.elements.profile_id.value);
     }
   });
-  bindToolPresets(toolArea, state.config?.tools || [], "new-tools", persistDraft);
+  const profiles = state.config?.profiles || [];
+  const profile = profiles.find((item) => item.id === form?.elements.profile_id?.value) || currentProfile();
+  bindToolPresets(toolArea, toolsForProfile(profile), "new-tools", persistDraft);
   root.querySelector("[data-run-probe]")?.addEventListener("click", () => {
     persistDraft();
     handlers.onProbe(readSelectedTools(toolArea, "new-tools"));

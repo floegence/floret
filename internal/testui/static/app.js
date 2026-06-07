@@ -1,5 +1,5 @@
 import { api } from "./api.js";
-import { clone, contextPolicyForProfile, defaultProfile, normalizePath, providerByID, providerDefaultBaseURL, providerDefaultModel, routePath, state } from "./state.js";
+import { clone, contextPolicyForProfile, defaultProfile, defaultWebSearchForProvider, normalizePath, providerByID, providerDefaultBaseURL, providerDefaultModel, routePath, state, toolsForProfile } from "./state.js";
 import { bindNewSession, renderNewSession } from "./views/newSession.js";
 import { bindSessionWorkspace, renderSessionWorkspace } from "./views/sessionWorkspace.js";
 import { bindSkills, landingDemoDraft, readSkillInstallDraft, renderSkills } from "./views/skills.js";
@@ -179,15 +179,16 @@ function render(options = {}) {
       break;
     case "sessions":
     default:
+      const sessionTools = toolsForProfile(state.activeSession?.profile);
       appView.innerHTML = renderSessionWorkspace({
         sessions: state.sessions,
         activeSession: state.activeSession,
         result: state.lastResult,
-        tools: state.config?.tools || [],
+        tools: sessionTools,
         inspectorTab: state.inspectorTab,
       });
       bindSessionWorkspace(appView, {
-        tools: state.config?.tools || [],
+        tools: sessionTools,
         onFilter: (value) => {
           state.sessionFilter = value;
           render({ restoreFilterFocus: true });
@@ -567,7 +568,10 @@ async function runProbe(selectedTools) {
   state.probeResult = "Running tool contract probe...";
   render();
   await runWithStatus({ status: "running", action: "run-probe", successMessage: "Tool contract probe completed" }, async () => {
-    const result = await api.interfaceProbe({ selected_tools: selectedTools });
+    const result = await api.interfaceProbe({
+      profile_id: state.newSessionDraft?.profile_id || state.config?.active_profile_id || "",
+      selected_tools: selectedTools,
+    });
     state.lastResult = result;
     state.probeResult = result.summary || result.output || "Probe completed.";
   });
@@ -602,6 +606,7 @@ function switchSettingsProvider(providerID) {
     provider: providerID,
     model: providerDefaultModel(provider) || profiles[index].model || "",
     base_url: providerDefaultBaseURL(provider),
+    web_search: defaultWebSearchForProvider(provider),
   };
   state.settingsDraft.profiles = profiles;
   render();
@@ -610,12 +615,27 @@ function switchSettingsProvider(providerID) {
 async function saveSettings(payload) {
   const token = ++state.mutationToken;
   state.settingsDraft = payload;
-  await runWithStatus({ status: "loading", action: "save-settings", successMessage: "Settings saved" }, async () => {
+  state.settingsError = null;
+  await runWithStatus({
+    status: "loading",
+    action: "save-settings",
+    successMessage: "Settings saved",
+    onError: (error) => {
+      const activeProfile = (payload.profiles || []).find((profile) => profile.id === payload.active_profile_id) || payload.profiles?.[0] || {};
+      state.settingsError = {
+        message: error.message || "Settings save failed",
+        profile_id: activeProfile.id || "",
+        source: activeProfile.web_search?.source || "disabled",
+        wire_shape: activeProfile.web_search?.hosted?.wire_shape || "",
+      };
+    },
+  }, async () => {
     state.config = await api.saveConfig(payload);
     if (token !== state.mutationToken) return false;
     if (token === state.mutationToken && state.settingsDraft === payload) {
       state.settingsDraft = null;
     }
+    state.settingsError = null;
     return true;
   });
 }
@@ -684,10 +704,15 @@ async function installSkill(draft) {
 }
 
 function useLandingDemo() {
-  state.newSessionDraft = landingDemoDraft(state.config?.tools || []);
+  state.newSessionDraft = landingDemoDraft(toolsForProfile(currentLandingDemoProfile()));
   state.inspectorTab = "events";
   navigate({ name: "new", id: "" });
   addToast("info", "Landing demo loaded into New Session");
+}
+
+function currentLandingDemoProfile() {
+  const profiles = state.config?.profiles || [];
+  return profiles.find((profile) => profile.id === state.config?.active_profile_id) || profiles[0] || defaultProfile();
 }
 
 function navigate(route, options = {}) {
@@ -777,7 +802,7 @@ function clearSessionViewportState(sessionID) {
   }
 }
 
-async function runWithStatus({ status = "loading", action = "", target = "", successMessage = "", renderStart = true }, fn) {
+async function runWithStatus({ status = "loading", action = "", target = "", successMessage = "", renderStart = true, onError = null }, fn) {
   const token = ++state.actionToken;
   state.action = action;
   state.actionTarget = target;
@@ -790,6 +815,7 @@ async function runWithStatus({ status = "loading", action = "", target = "", suc
     if (result !== false && successMessage) addToast("success", successMessage);
   } catch (error) {
     finalStatus = "error";
+    onError?.(error);
     addToast("error", error.message || "Action failed");
   } finally {
     if (token === state.actionToken) {

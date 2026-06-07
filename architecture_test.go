@@ -111,9 +111,9 @@ func TestWebSearchCapabilityBoundaryIsEnforced(t *testing.T) {
 		t.Fatal(err)
 	}
 	testUIText := string(testUI)
-	for _, want := range []string{"resolved.ProviderHosted", "resolved.Client", "removeToolName(localSelected, builtintools.ToolWebSearch)"} {
+	for _, want := range []string{"resolved.Available", "resolved.Source == searchcap.WebSearchProviderHosted", "removeToolName(localSelected, builtintools.ToolWebSearch)"} {
 		if !strings.Contains(testUIText, want) {
-			t.Fatalf("test UI tool selection missing hosted/client search guard %q", want)
+			t.Fatalf("test UI tool selection missing single-source search guard %q", want)
 		}
 	}
 }
