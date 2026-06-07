@@ -75,6 +75,7 @@ func TestTopLevelPackageLayoutIsConstrained(t *testing.T) {
 		"agentharness": true,
 		"cmd":          true,
 		"config":       true,
+		"docs":         true,
 		"engine":       true,
 		"event":        true,
 		"internal":     true,
