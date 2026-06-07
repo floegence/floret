@@ -6,7 +6,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/floegence/floret/tools"
@@ -37,9 +39,9 @@ func applyPatchTool(opts WorkspaceOptions) tools.Tool {
 		tools.Definition{
 			Name:        "apply_patch",
 			Title:       "Apply patch",
-			Description: "Apply a structured patch to workspace files. Prefer this for code edits, multi-file changes, renames, and audited local modifications.",
+			Description: "Apply a structured Codex-style patch to workspace files. Prefer this for code edits, multi-file changes, renames, and audited local modifications.",
 			InputSchema: tools.StrictObject(map[string]any{
-				"patch": tools.String("Patch text beginning with *** Begin Patch and ending with *** End Patch. Supports *** Add File, *** Update File, *** Move to, *** Delete File, @@ context chunks, + additions, - removals, and context lines prefixed by a space."),
+				"patch": tools.String("Patch text beginning with *** Begin Patch and ending with *** End Patch. File operation markers must use a colon, for example *** Update File: path/to/file. Supports *** Add File: path, *** Update File: path, *** Move to: path, *** Delete File: path, @@ context chunks, standard unified range headers such as @@ -1,2 +1,2 @@, + additions, - removals, and context lines prefixed by a space."),
 			}, []string{"patch"}),
 			Effects:     []tools.Effect{tools.EffectWrite},
 			Destructive: true,
@@ -173,11 +175,19 @@ type patchDocument struct {
 }
 
 type patchChunk struct {
-	Anchor     string
-	OldLines   []string
-	NewLines   []string
-	EndOfFile  bool
-	SourceLine int
+	Anchor            string
+	Range             patchRange
+	OldLines          []string
+	NewLines          []string
+	NewLineOldIndexes []int
+	EndOfFile         bool
+	SourceLine        int
+}
+
+type patchRange struct {
+	OldStart int
+	NewStart int
+	Present  bool
 }
 
 type patchFileChange struct {
@@ -196,6 +206,8 @@ type patchReplacement struct {
 	OldN  int
 	Lines []string
 }
+
+var unifiedHunkHeaderPattern = regexp.MustCompile(`^-([0-9]+)(?:,([0-9]+))?\s+\+([0-9]+)(?:,([0-9]+))?(?:\s+@@\s*(.*))?$`)
 
 func parsePatchDocument(patch string) (patchDocument, error) {
 	lines := strings.Split(strings.ReplaceAll(strings.ReplaceAll(patch, "\r\n", "\n"), "\r", "\n"), "\n")
@@ -282,7 +294,7 @@ func parsePatchDocument(patch string) (patchDocument, error) {
 					continue
 				}
 				if strings.HasPrefix(trimmed, "***") {
-					return patchDocument{}, fmt.Errorf("line %d: invalid patch file operation: %s", lineNo, trimmed)
+					return patchDocument{}, invalidPatchOperationError(lineNo, trimmed)
 				}
 				return patchDocument{}, fmt.Errorf("line %d: patch content appears before a file operation", lineNo)
 			}
@@ -312,7 +324,7 @@ func parsePatchDocument(patch string) (patchDocument, error) {
 					if err := flushChunk(); err != nil {
 						return patchDocument{}, err
 					}
-					currentChunk = &patchChunk{Anchor: strings.TrimSpace(strings.TrimPrefix(trimmed, "@@")), SourceLine: lineNo}
+					currentChunk = parsePatchChunkHeader(trimmed, lineNo)
 					continue
 				}
 				if currentChunk == nil {
@@ -321,12 +333,15 @@ func parsePatchDocument(patch string) (patchDocument, error) {
 				switch {
 				case strings.HasPrefix(line, " "):
 					text := strings.TrimPrefix(line, " ")
+					oldIndex := len(currentChunk.OldLines)
 					currentChunk.OldLines = append(currentChunk.OldLines, text)
 					currentChunk.NewLines = append(currentChunk.NewLines, text)
+					currentChunk.NewLineOldIndexes = append(currentChunk.NewLineOldIndexes, oldIndex)
 				case strings.HasPrefix(line, "-"):
 					currentChunk.OldLines = append(currentChunk.OldLines, strings.TrimPrefix(line, "-"))
 				case strings.HasPrefix(line, "+"):
 					currentChunk.NewLines = append(currentChunk.NewLines, strings.TrimPrefix(line, "+"))
+					currentChunk.NewLineOldIndexes = append(currentChunk.NewLineOldIndexes, -1)
 				case trimmed == "*** End of File":
 					currentChunk.EndOfFile = true
 				default:
@@ -350,6 +365,41 @@ func patchMarkerArg(line, marker string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(strings.TrimPrefix(trimmedLeft, marker)), true
+}
+
+func invalidPatchOperationError(lineNo int, line string) error {
+	return fmt.Errorf("line %d: invalid patch file operation: %s (expected one of: *** Add File: path, *** Update File: path, *** Delete File: path)", lineNo, line)
+}
+
+func parsePatchChunkHeader(trimmed string, lineNo int) *patchChunk {
+	header := strings.TrimSpace(strings.TrimPrefix(trimmed, "@@"))
+	if strings.HasSuffix(header, "@@") {
+		header = strings.TrimSpace(strings.TrimSuffix(header, "@@"))
+	}
+	chunk := &patchChunk{SourceLine: lineNo}
+	if header == "" {
+		return chunk
+	}
+	if rng, ok := parseUnifiedHunkRange(header); ok {
+		chunk.Range = rng
+		return chunk
+	}
+	chunk.Anchor = header
+	return chunk
+}
+
+func parseUnifiedHunkRange(header string) (patchRange, bool) {
+	match := unifiedHunkHeaderPattern.FindStringSubmatch(header)
+	if match == nil {
+		return patchRange{}, false
+	}
+	oldStart, _ := strconv.Atoi(match[1])
+	newStart, _ := strconv.Atoi(match[3])
+	return patchRange{
+		OldStart: oldStart,
+		NewStart: newStart,
+		Present:  true,
+	}, true
 }
 
 func planPatchChanges(root string, doc patchDocument) ([]patchFileChange, error) {
@@ -448,16 +498,20 @@ func deriveUpdatedContent(original string, op patchOp) (string, error) {
 	cursor := 0
 	for _, chunk := range op.Chunks {
 		oldLines := patchLinesWithNewlines(chunk.OldLines)
-		newLines := patchLinesWithNewlines(chunk.NewLines)
 		if len(oldLines) == 0 {
-			insertAt := len(originalLines)
+			insertAt := insertionIndex(originalLines, chunk)
+			newLines := patchLinesWithNewlines(chunk.NewLines)
 			replacements = append(replacements, patchReplacement{Start: insertAt, Lines: newLines})
+			if chunk.Range.Present {
+				cursor = insertAt
+			}
 			continue
 		}
 		matchStart := findChunk(originalLines, cursor, oldLines, chunk)
 		if matchStart < 0 {
 			return "", fmt.Errorf("line %d: patch context did not match %s", chunk.SourceLine, op.Path)
 		}
+		newLines := deriveNewLines(originalLines[matchStart:matchStart+len(oldLines)], chunk)
 		replacements = append(replacements, patchReplacement{Start: matchStart, OldN: len(oldLines), Lines: newLines})
 		cursor = matchStart + len(oldLines)
 	}
@@ -473,6 +527,24 @@ func deriveUpdatedContent(original string, op patchOp) (string, error) {
 		originalLines = append(originalLines, "\n")
 	}
 	return strings.Join(originalLines, ""), nil
+}
+
+func insertionIndex(lines []string, chunk patchChunk) int {
+	if chunk.Range.Present {
+		return clampIndex(chunk.Range.NewStart-1, 0, len(lines))
+	}
+	return len(lines)
+}
+
+func deriveNewLines(matchedOldLines []string, chunk patchChunk) []string {
+	newLines := patchLinesWithNewlines(chunk.NewLines)
+	for idx, oldIndex := range chunk.NewLineOldIndexes {
+		if oldIndex < 0 || idx >= len(newLines) || oldIndex >= len(matchedOldLines) {
+			continue
+		}
+		newLines[idx] = matchedOldLines[oldIndex]
+	}
+	return newLines
 }
 
 func splitPatchLines(content string) []string {
@@ -497,27 +569,39 @@ func findChunk(lines []string, cursor int, oldLines []string, chunk patchChunk) 
 	}
 	start := cursor
 	if chunk.Anchor != "" {
-		anchor := chunk.Anchor + "\n"
-		for start < len(lines) && normalizePatchLine(lines[start]) != normalizePatchLine(anchor) {
-			start++
-		}
-		if start >= len(lines) {
+		anchorStart := seekPatchLines(lines, []string{chunk.Anchor + "\n"}, start, false)
+		if anchorStart < 0 {
 			return -1
 		}
+		start = anchorStart
 	}
 	end := len(lines) - len(oldLines)
+	if end < start {
+		return -1
+	}
 	if chunk.EndOfFile {
 		start = end
 	}
-	for i := start; i <= end; i++ {
-		if sameLineSequence(lines[i:i+len(oldLines)], oldLines) {
-			return i
-		}
-		if chunk.EndOfFile {
-			break
+	if chunk.Range.Present && chunk.Anchor == "" && !chunk.EndOfFile {
+		hinted := clampIndex(chunk.Range.OldStart-1, start, end)
+		if found := seekPatchLinesAround(lines, oldLines, hinted, start, end); found >= 0 {
+			return found
 		}
 	}
+	if found := seekPatchLines(lines, oldLines, start, chunk.EndOfFile); found >= 0 {
+		return found
+	}
 	return -1
+}
+
+func clampIndex(value, min, max int) int {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
 }
 
 func sameLineSequence(a, b []string) bool {
@@ -534,6 +618,105 @@ func sameLineSequence(a, b []string) bool {
 
 func normalizePatchLine(line string) string {
 	return strings.TrimSuffix(line, "\n")
+}
+
+func seekPatchLines(lines []string, pattern []string, start int, eof bool) int {
+	if len(pattern) == 0 {
+		return start
+	}
+	if len(pattern) > len(lines) {
+		return -1
+	}
+	searchStart := start
+	if searchStart < 0 {
+		searchStart = 0
+	}
+	last := len(lines) - len(pattern)
+	if searchStart > last {
+		return -1
+	}
+	if eof {
+		if sameLineSequence(lines[last:last+len(pattern)], pattern) {
+			return last
+		}
+	}
+	for _, same := range patchLineComparators() {
+		if eof && samePatchSequence(lines[last:last+len(pattern)], pattern, same) {
+			return last
+		}
+		for i := searchStart; i <= last; i++ {
+			if samePatchSequence(lines[i:i+len(pattern)], pattern, same) {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func seekPatchLinesAround(lines []string, pattern []string, hinted, start, end int) int {
+	if len(pattern) == 0 || len(pattern) > len(lines) || end < start {
+		return -1
+	}
+	for _, same := range patchLineComparators() {
+		for radius := 0; radius <= 3; radius++ {
+			candidates := []int{hinted}
+			if radius > 0 {
+				candidates = []int{hinted - radius, hinted + radius}
+			}
+			for _, candidate := range candidates {
+				if candidate < start || candidate > end {
+					continue
+				}
+				if samePatchSequence(lines[candidate:candidate+len(pattern)], pattern, same) {
+					return candidate
+				}
+			}
+		}
+	}
+	return -1
+}
+
+func samePatchSequence(lines []string, pattern []string, same func(string, string) bool) bool {
+	for j := range pattern {
+		if !same(lines[j], pattern[j]) {
+			return false
+		}
+	}
+	return true
+}
+
+func patchLineComparators() []func(string, string) bool {
+	return []func(string, string) bool{
+		func(a, b string) bool { return normalizePatchLine(a) == normalizePatchLine(b) },
+		func(a, b string) bool {
+			return strings.TrimRight(normalizePatchLine(a), " \t") == strings.TrimRight(normalizePatchLine(b), " \t")
+		},
+		func(a, b string) bool {
+			return strings.TrimSpace(normalizePatchLine(a)) == strings.TrimSpace(normalizePatchLine(b))
+		},
+		func(a, b string) bool {
+			return normalizePatchUnicode(strings.TrimSpace(normalizePatchLine(a))) == normalizePatchUnicode(strings.TrimSpace(normalizePatchLine(b)))
+		},
+	}
+}
+
+func normalizePatchUnicode(line string) string {
+	var b strings.Builder
+	for _, r := range line {
+		switch r {
+		case '\u2010', '\u2011', '\u2012', '\u2013', '\u2014', '\u2015', '\u2212':
+			b.WriteRune('-')
+		case '\u2018', '\u2019', '\u201A', '\u201B':
+			b.WriteRune('\'')
+		case '\u201C', '\u201D', '\u201E', '\u201F':
+			b.WriteRune('"')
+		case '\u00A0', '\u2002', '\u2003', '\u2004', '\u2005', '\u2006', '\u2007', '\u2008', '\u2009', '\u200A', '\u202F', '\u205F', '\u3000':
+			b.WriteRune(' ')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func applyPatchChanges(changes []patchFileChange) error {
