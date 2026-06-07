@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/internal/searchcap"
-	"github.com/floegence/floret/modelcatalog"
+	"github.com/floegence/floret/provider/catalog"
+	"github.com/floegence/floret/session/contextpolicy"
 )
 
 const (
@@ -180,10 +180,10 @@ func (r Runner) legacyProfile() (ProviderProfile, error) {
 	if err != nil && !os.IsNotExist(err) {
 		return ProviderProfile{}, err
 	}
-	providerName := modelcatalog.NormalizeProvider(getEnvValue(values, "FLORET_PROVIDER", config.ProviderFake))
+	providerName := catalog.NormalizeProvider(getEnvValue(values, "FLORET_PROVIDER", config.ProviderFake))
 	model := getEnvValue(values, "FLORET_MODEL", "")
 	if model == "" {
-		if defaultModel, ok := modelcatalog.DefaultModel(providerName); ok {
+		if defaultModel, ok := catalog.DefaultModel(providerName); ok {
 			model = defaultModel.ID
 		} else {
 			model = "fake-model"
@@ -195,7 +195,7 @@ func (r Runner) legacyProfile() (ProviderProfile, error) {
 		Name:         name,
 		Provider:     providerName,
 		Model:        model,
-		BaseURL:      getEnvValue(values, "FLORET_BASE_URL", modelcatalog.DefaultBaseURL(providerName)),
+		BaseURL:      getEnvValue(values, "FLORET_BASE_URL", catalog.DefaultBaseURL(providerName)),
 		APIKey:       values["FLORET_API_KEY"],
 		APIKeySet:    values["FLORET_API_KEY"] != "",
 		FakeResponse: getEnvValue(values, "FLORET_FAKE_RESPONSE", "ok"),
@@ -211,7 +211,7 @@ func normalizeProfile(profile ProviderProfile, index int) ProviderProfile {
 		profile.ID = fmt.Sprintf("profile-%d", index+1)
 	}
 	profile.Name = strings.TrimSpace(profile.Name)
-	profile.Provider = modelcatalog.NormalizeProvider(profile.Provider)
+	profile.Provider = catalog.NormalizeProvider(profile.Provider)
 	profile.Model = strings.TrimSpace(profile.Model)
 	profile.BaseURL = strings.TrimSpace(profile.BaseURL)
 	profile.APIKey = strings.TrimSpace(profile.APIKey)
@@ -220,14 +220,14 @@ func normalizeProfile(profile ProviderProfile, index int) ProviderProfile {
 		profile.Provider = config.ProviderFake
 	}
 	if profile.Model == "" {
-		if defaultModel, ok := modelcatalog.DefaultModel(profile.Provider); ok {
+		if defaultModel, ok := catalog.DefaultModel(profile.Provider); ok {
 			profile.Model = defaultModel.ID
 		} else {
 			profile.Model = "fake-model"
 		}
 	}
 	if profile.BaseURL == "" {
-		profile.BaseURL = modelcatalog.DefaultBaseURL(profile.Provider)
+		profile.BaseURL = catalog.DefaultBaseURL(profile.Provider)
 	}
 	if profile.Name == "" {
 		profile.Name = profile.Provider + " / " + profile.Model
@@ -391,7 +391,7 @@ func activeProfileForCatalog(profiles []ProviderProfile, activeID string) Provid
 }
 
 func contextPolicyDefaultsForProfile(profile ProviderProfile) contextpolicy.Policy {
-	return modelcatalog.ContextPolicy(profile.Provider, profile.Model)
+	return catalog.ContextPolicy(profile.Provider, profile.Model)
 }
 
 func getEnvValue(values map[string]string, key string, fallback string) string {

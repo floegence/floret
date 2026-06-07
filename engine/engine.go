@@ -7,14 +7,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/compaction"
-	"github.com/floegence/floret/contextpolicy"
-	"github.com/floegence/floret/control"
 	"github.com/floegence/floret/event"
-	"github.com/floegence/floret/memory"
-	"github.com/floegence/floret/promptcache"
+	"github.com/floegence/floret/internal/control"
+	"github.com/floegence/floret/internal/memory"
 	"github.com/floegence/floret/provider"
+	"github.com/floegence/floret/provider/cache"
 	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/session/compaction"
+	"github.com/floegence/floret/session/contextpolicy"
 	"github.com/floegence/floret/tools"
 )
 
@@ -94,7 +94,7 @@ type Options struct {
 	ProviderName             string
 	Model                    string
 	CacheNamespace           string
-	CacheRetention           promptcache.Retention
+	CacheRetention           cache.Retention
 	ContextPolicy            contextpolicy.Policy
 	MaxEmptyProviderRetries  int
 	NoProgressLimit          int
@@ -180,7 +180,7 @@ type Engine struct {
 	provider  provider.Provider
 	tools     *tools.Registry
 	store     session.Store
-	prompt    promptcache.Store
+	prompt    cache.Store
 	memory    *memory.Manager
 	sink      event.Sink
 	approver  tools.Approver
@@ -194,16 +194,16 @@ type turnState struct {
 }
 
 type Config struct {
-	Provider  provider.Provider
-	Tools     *tools.Registry
-	Store     session.Store
-	Prompt    promptcache.Store
-	Memory    *memory.Manager
-	Sink      event.Sink
-	Approver  tools.Approver
-	StopHook  StopHook
-	Compactor CompactionManager
-	Options   Options
+	Provider     provider.Provider
+	Tools        *tools.Registry
+	Store        session.Store
+	Prompt       cache.Store
+	SystemPrompt string
+	Sink         event.Sink
+	Approver     tools.Approver
+	StopHook     StopHook
+	Compactor    CompactionManager
+	Options      Options
 }
 
 func New(cfg Config) (*Engine, error) {
@@ -214,11 +214,9 @@ func New(cfg Config) (*Engine, error) {
 		cfg.Store = session.NewMemoryStore()
 	}
 	if cfg.Prompt == nil {
-		cfg.Prompt = promptcache.NewMemoryStore()
+		cfg.Prompt = cache.NewMemoryStore()
 	}
-	if cfg.Memory == nil {
-		cfg.Memory = &memory.Manager{}
-	}
+	mem := &memory.Manager{SystemPrompt: cfg.SystemPrompt}
 	if cfg.Tools == nil {
 		cfg.Tools = tools.NewRegistry()
 	}
@@ -232,7 +230,7 @@ func New(cfg Config) (*Engine, error) {
 		tools:     cfg.Tools,
 		store:     cfg.Store,
 		prompt:    cfg.Prompt,
-		memory:    cfg.Memory,
+		memory:    mem,
 		sink:      cfg.Sink,
 		approver:  cfg.Approver,
 		stopHook:  cfg.StopHook,
@@ -295,13 +293,12 @@ type LocalCompactionManager struct {
 }
 
 func (m LocalCompactionManager) Compact(ctx context.Context, req CompactionRequest) (compaction.Result, []session.Message, error) {
+	if m.Generator == nil {
+		return compaction.Result{}, nil, errors.New("local compaction manager requires summary generator")
+	}
 	now := time.Now()
 	if m.Now != nil {
 		now = m.Now()
-	}
-	generator := m.Generator
-	if generator == nil {
-		generator = compaction.ExtractiveSummaryGenerator{}
 	}
 	prep, err := compaction.Prepare(ctx, compaction.Request{
 		CompactionID:         "",
@@ -315,7 +312,7 @@ func (m LocalCompactionManager) Compact(ctx context.Context, req CompactionReque
 		Step:                 req.Step,
 		Details:              req.Details,
 		Now:                  now,
-	}, generator)
+	}, m.Generator)
 	if err != nil {
 		return compaction.Result{}, nil, err
 	}
@@ -364,7 +361,7 @@ func (e *Engine) runner(store session.Store, opts Options) (*Engine, error) {
 	}
 	prompt := e.prompt
 	if prompt == nil {
-		prompt = promptcache.NewMemoryStore()
+		prompt = cache.NewMemoryStore()
 	}
 	mem := e.memory
 	if mem == nil {
@@ -479,7 +476,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		calls := stepOutput.Calls
 		usage := stepOutput.Usage
 		metrics.AddUsage(usage)
-		_ = e.prompt.AppendProviderResponse(ctx, promptcache.ProviderResponseRecord{
+		_ = e.prompt.AppendProviderResponse(ctx, cache.ProviderResponseRecord{
 			RequestID:          fmt.Sprintf("%s:req:%d", opts.RunID, step),
 			RunID:              opts.RunID,
 			ThreadID:           opts.SessionID,
@@ -746,7 +743,7 @@ func normalizeOptions(o Options) Options {
 		o.TraceID = o.RunID
 	}
 	if o.CacheNamespace == "" {
-		o.CacheNamespace = promptcache.DefaultNamespace(o.SessionID, o.ProviderName, o.Model)
+		o.CacheNamespace = cache.DefaultNamespace(o.SessionID, o.ProviderName, o.Model)
 	}
 	o.ContextPolicy = contextpolicy.Normalize(o.ContextPolicy)
 	if o.MaxEmptyProviderRetries <= 0 {
@@ -793,16 +790,16 @@ func (e *Engine) applyStopHook(ctx context.Context, opts Options, step int, last
 }
 
 func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, history []session.Message) (provider.Request, error) {
-	toolset, _, err := promptcache.EnsureCurrentToolsetWithOptions(ctx, e.prompt, opts.RunID, opts.SessionID, opts.ProviderName, opts.Model, convertToolDefinitions(opts.toolDefinitions), convertHostedToolDefinitions(opts.HostedToolDefinitions), time.Now(), promptcache.ToolsetOptions{AllowControlTools: true})
+	toolset, _, err := cache.EnsureCurrentToolsetWithOptions(ctx, e.prompt, opts.RunID, opts.SessionID, opts.ProviderName, opts.Model, convertToolDefinitions(opts.toolDefinitions), convertHostedToolDefinitions(opts.HostedToolDefinitions), time.Now(), cache.ToolsetOptions{AllowControlTools: true})
 	if err != nil {
 		return provider.Request{}, err
 	}
-	plan, messages, err := promptcache.BuildPlan(ctx, e.prompt, promptcache.BuildInput{
+	plan, messages, err := cache.BuildPlan(ctx, e.prompt, cache.BuildInput{
 		RunID:          opts.RunID,
 		SessionID:      opts.SessionID,
 		Provider:       opts.ProviderName,
 		Model:          opts.Model,
-		AdapterVersion: promptcache.Version,
+		AdapterVersion: cache.Version,
 		CacheNamespace: opts.CacheNamespace,
 		SystemPrompt:   e.memory.SystemPrompt,
 		History:        providerSafeHistory(e.memory.Assemble(history)[systemOffset(e.memory):]),
@@ -820,22 +817,22 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 	if err := validateNoLocalHostedToolNameConflict(activeTools, activeHostedTools); err != nil {
 		return provider.Request{}, err
 	}
-	cache := promptcache.CachePolicy{
+	cachePolicy := cache.CachePolicy{
 		Enabled:            true,
 		Namespace:          opts.CacheNamespace,
 		Retention:          opts.CacheRetention,
 		PreferContinuation: true,
 	}
-	if cache.Retention == "" {
+	if cachePolicy.Retention == "" {
 		if defaults, ok := e.provider.(provider.CacheRetentionDefault); ok {
-			cache.Retention = defaults.DefaultCacheRetention()
+			cachePolicy.Retention = defaults.DefaultCacheRetention()
 		} else {
-			cache.Retention = promptcache.RetentionInMemory
+			cachePolicy.Retention = cache.RetentionInMemory
 		}
 	}
-	cache.Enabled = cache.Retention != promptcache.RetentionNone
+	cachePolicy.Enabled = cachePolicy.Retention != cache.RetentionNone
 	if normalizer, ok := e.provider.(provider.CachePolicyNormalizer); ok {
-		cache, err = normalizer.NormalizeCachePolicy(cache)
+		cachePolicy, err = normalizer.NormalizeCachePolicy(cachePolicy)
 		if err != nil {
 			return provider.Request{}, err
 		}
@@ -849,7 +846,7 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		Tools:           activeTools,
 		HostedTools:     activeHostedTools,
 		RawPlan:         plan,
-		Cache:           cache,
+		Cache:           cachePolicy,
 		ContextPolicy:   opts.ContextPolicy,
 		ContextUsage:    contextpolicy.EstimateMessages(e.memory.SystemPrompt, history, len(activeTools)+len(activeHostedTools), opts.ContextPolicy),
 		MaxOutputTokens: opts.ContextPolicy.MaxOutputTokens,
@@ -861,7 +858,7 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		}
 		req.RawPlan.PayloadHash = payloadHash
 	}
-	if _, err := promptcache.RecordRequest(ctx, e.prompt, opts.RunID, opts.SessionID, step, opts.ProviderName, opts.Model, cache, req.RawPlan); err != nil {
+	if _, err := cache.RecordRequest(ctx, e.prompt, opts.RunID, opts.SessionID, step, opts.ProviderName, opts.Model, cachePolicy, req.RawPlan); err != nil {
 		return provider.Request{}, err
 	}
 	return req, nil
@@ -889,7 +886,7 @@ func validateNoLocalHostedToolNameConflict(local []provider.ToolDefinition, host
 }
 
 func validateConfiguredTools(local []provider.ToolDefinition, hosted []provider.HostedToolDefinition, allowControl bool) error {
-	_, _, err := promptcache.NormalizeToolsetChecked(convertToolDefinitions(local), convertHostedToolDefinitions(hosted), promptcache.ToolsetOptions{AllowControlTools: allowControl})
+	_, _, err := cache.NormalizeToolsetChecked(convertToolDefinitions(local), convertHostedToolDefinitions(hosted), cache.ToolsetOptions{AllowControlTools: allowControl})
 	return err
 }
 
@@ -926,7 +923,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 	}
 	manager := e.compactor
 	if manager == nil {
-		manager = LocalCompactionManager{}
+		return nil, errors.New("compaction manager is required when context exceeds policy")
 	}
 	e.emit(event.Event{
 		Type:      event.ContextCompact,
@@ -1010,8 +1007,8 @@ func systemOffset(m *memory.Manager) int {
 	return 0
 }
 
-func rendererForProvider(p provider.Provider) promptcache.Renderer {
-	renderer, _ := p.(promptcache.Renderer)
+func rendererForProvider(p provider.Provider) cache.Renderer {
+	renderer, _ := p.(cache.Renderer)
 	return renderer
 }
 
@@ -1139,10 +1136,10 @@ func providerSafeHistory(history []session.Message) []session.Message {
 	return control.ProjectHistory(history)
 }
 
-func convertToolDefinitions(defs []provider.ToolDefinition) []promptcache.ToolDefinition {
-	out := make([]promptcache.ToolDefinition, 0, len(defs))
+func convertToolDefinitions(defs []provider.ToolDefinition) []cache.ToolDefinition {
+	out := make([]cache.ToolDefinition, 0, len(defs))
 	for _, def := range defs {
-		out = append(out, promptcache.ToolDefinition{
+		out = append(out, cache.ToolDefinition{
 			Name:         def.Name,
 			Title:        def.Title,
 			Description:  def.Description,
@@ -1155,10 +1152,10 @@ func convertToolDefinitions(defs []provider.ToolDefinition) []promptcache.ToolDe
 	return out
 }
 
-func convertHostedToolDefinitions(defs []provider.HostedToolDefinition) []promptcache.HostedToolDefinition {
-	out := make([]promptcache.HostedToolDefinition, 0, len(defs))
+func convertHostedToolDefinitions(defs []provider.HostedToolDefinition) []cache.HostedToolDefinition {
+	out := make([]cache.HostedToolDefinition, 0, len(defs))
 	for _, def := range defs {
-		out = append(out, promptcache.HostedToolDefinition{
+		out = append(out, cache.HostedToolDefinition{
 			Name:        def.Name,
 			Type:        def.Type,
 			Description: def.Description,
@@ -1169,7 +1166,7 @@ func convertHostedToolDefinitions(defs []provider.HostedToolDefinition) []prompt
 	return out
 }
 
-func providerToolDefinitions(defs []promptcache.ToolDefinition) []provider.ToolDefinition {
+func providerToolDefinitions(defs []cache.ToolDefinition) []provider.ToolDefinition {
 	out := make([]provider.ToolDefinition, 0, len(defs))
 	for _, def := range defs {
 		out = append(out, provider.ToolDefinition{
@@ -1185,7 +1182,7 @@ func providerToolDefinitions(defs []promptcache.ToolDefinition) []provider.ToolD
 	return out
 }
 
-func hostedToolDefinitions(defs []promptcache.HostedToolDefinition) []provider.HostedToolDefinition {
+func hostedToolDefinitions(defs []cache.HostedToolDefinition) []provider.HostedToolDefinition {
 	out := make([]provider.HostedToolDefinition, 0, len(defs))
 	for _, def := range defs {
 		out = append(out, provider.HostedToolDefinition{

@@ -12,23 +12,23 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/compaction"
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/event"
-	scriptharness "github.com/floegence/floret/harness"
 	"github.com/floegence/floret/internal/sessionlifecycle"
-	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
+	"github.com/floegence/floret/provider/cache"
+	"github.com/floegence/floret/runtime/storage/sqlite"
 	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/session/compaction"
 	"github.com/floegence/floret/sessiontree"
-	"github.com/floegence/floret/sqlitestore"
+	scriptharness "github.com/floegence/floret/testing/harness"
 	"github.com/floegence/floret/tools"
 )
 
 func TestThreadRunPersistsTurnEntriesAndContext(t *testing.T) {
 	ctx := context.Background()
 	p := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done text"), scriptharness.Done()))
-	h := newTestHarness(p, sessiontree.NewMemoryRepo(), promptcache.NewMemoryStore())
+	h := newTestHarness(p, sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
 		t.Fatal(err)
@@ -66,7 +66,7 @@ func TestThreadRunPersistsTurnEntriesAndContext(t *testing.T) {
 func TestThreadReadReturnsHostSafeSnapshot(t *testing.T) {
 	ctx := context.Background()
 	p := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done text"), scriptharness.Done()))
-	h := newTestHarness(p, sessiontree.NewMemoryRepo(), promptcache.NewMemoryStore())
+	h := newTestHarness(p, sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
 		t.Fatal(err)
@@ -161,7 +161,7 @@ func TestThreadReadLifecycleStates(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := sessiontree.NewMemoryRepo()
-			h := newTestHarness(tc.provider, repo, promptcache.NewMemoryStore())
+			h := newTestHarness(tc.provider, repo, cache.NewMemoryStore())
 			thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 			if err != nil {
 				t.Fatal(err)
@@ -200,7 +200,7 @@ func TestThreadReadLifecycleStates(t *testing.T) {
 func TestThreadReadLifecycleWhileTurnIsRunning(t *testing.T) {
 	ctx := context.Background()
 	blocking := newBlockingProvider()
-	h := newTestHarness(blocking, sessiontree.NewMemoryRepo(), promptcache.NewMemoryStore())
+	h := newTestHarness(blocking, sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
 		t.Fatal(err)
@@ -239,7 +239,7 @@ func TestHarnessOwnsEngineIdentityAndToolDefinitions(t *testing.T) {
 		SystemPrompt: "You are Floret.",
 		Tools:        tools.NewRegistry(),
 		Repo:         sessiontree.NewMemoryRepo(),
-		PromptStore:  promptcache.NewMemoryStore(),
+		PromptStore:  cache.NewMemoryStore(),
 		LoopLimits: LoopLimits{
 			MaxEmptyProviderRetries:  1,
 			NoProgressLimit:          2,
@@ -289,7 +289,7 @@ func TestHarnessOwnsEngineIdentityAndToolDefinitions(t *testing.T) {
 func TestThreadRunStopHookContinuationIsPersistedAndMetadataStaysOutOfPrompt(t *testing.T) {
 	ctx := context.Background()
 	repo := sessiontree.NewMemoryRepo()
-	promptStore := promptcache.NewMemoryStore()
+	promptStore := cache.NewMemoryStore()
 	p := scriptharness.NewScriptedProvider(
 		scriptharness.Step(scriptharness.Text("draft"), scriptharness.Done()),
 		scriptharness.Step(scriptharness.Text("final"), scriptharness.Done()),
@@ -346,7 +346,7 @@ func TestThreadRunStopHookContinuationIsPersistedAndMetadataStaysOutOfPrompt(t *
 func TestThreadRunStopHookContinuationBeforeToolCallKeepsSessionTreeOrder(t *testing.T) {
 	ctx := context.Background()
 	repo := sessiontree.NewMemoryRepo()
-	promptStore := promptcache.NewMemoryStore()
+	promptStore := cache.NewMemoryStore()
 	p := scriptharness.NewScriptedProvider(
 		scriptharness.Step(scriptharness.Text("draft"), scriptharness.Done()),
 		scriptharness.Step(scriptharness.Tool("read-1", "read", `{"value":"README.md"}`), scriptharness.DoneReason("tool_calls")),
@@ -416,7 +416,7 @@ func TestThreadRunStopHookContinuationBeforeToolCallKeepsSessionTreeOrder(t *tes
 func TestRetryDoesNotDuplicateUserMessageAndKeepsPrefixStable(t *testing.T) {
 	ctx := context.Background()
 	repo := sessiontree.NewMemoryRepo()
-	promptStore := promptcache.NewMemoryStore()
+	promptStore := cache.NewMemoryStore()
 	failing := scriptharness.NewScriptedProvider(
 		scriptharness.Step(scriptharness.Text("partial before failure"), scriptharness.Tool("missing-1", "missing", "{}"), scriptharness.DoneReason("tool_calls")),
 		nil,
@@ -480,8 +480,8 @@ func TestRetryDoesNotDuplicateUserMessageAndKeepsPrefixStable(t *testing.T) {
 	if retryProvider.Requests[0].RawPlan.ReusedSegments == 0 {
 		t.Fatalf("retry should reuse immutable raw segments: %#v", retryProvider.Requests[0].RawPlan)
 	}
-	if !slices.ContainsFunc(retryProvider.Requests[0].RawPlan.Segments, func(seg promptcache.Segment) bool {
-		return seg.Kind == promptcache.SegmentUserMessage && seg.EntryID != ""
+	if !slices.ContainsFunc(retryProvider.Requests[0].RawPlan.Segments, func(seg cache.Segment) bool {
+		return seg.Kind == cache.SegmentUserMessage && seg.EntryID != ""
 	}) {
 		t.Fatalf("retry raw segments should carry source entry ids: %#v", retryProvider.Requests[0].RawPlan.Segments)
 	}
@@ -497,7 +497,7 @@ func TestRetryDoesNotDuplicateUserMessageAndKeepsPrefixStable(t *testing.T) {
 func TestRetryAfterInterruptedTurnUsesRealtimeToolSavePoint(t *testing.T) {
 	ctx := context.Background()
 	repo := sessiontree.NewMemoryRepo()
-	promptStore := promptcache.NewMemoryStore()
+	promptStore := cache.NewMemoryStore()
 	p := scriptharness.NewScriptedProvider(
 		scriptharness.Step(scriptharness.Tool("read-1", "read", `{"value":"README.md"}`), scriptharness.DoneReason("tool_calls")),
 		scriptharness.Step(scriptharness.Hang()),
@@ -571,7 +571,7 @@ func TestRetryAfterInterruptedTurnUsesRealtimeToolSavePoint(t *testing.T) {
 func TestForkContinuesWithoutPollutingSourceThread(t *testing.T) {
 	ctx := context.Background()
 	repo := sessiontree.NewMemoryRepo()
-	promptStore := promptcache.NewMemoryStore()
+	promptStore := cache.NewMemoryStore()
 	sourceProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("source done"), scriptharness.Done()))
 	h := newTestHarness(sourceProvider, repo, promptStore)
 	source, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "source"})
@@ -617,7 +617,7 @@ func TestForkContinuesWithoutPollutingSourceThread(t *testing.T) {
 
 func TestMoveToBranchSummaryEntersActiveContext(t *testing.T) {
 	ctx := context.Background()
-	h := newTestHarness(scriptharness.NewScriptedProvider(), sessiontree.NewMemoryRepo(), promptcache.NewMemoryStore())
+	h := newTestHarness(scriptharness.NewScriptedProvider(), sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
 		t.Fatal(err)
@@ -646,7 +646,7 @@ func TestEngineCompactionIsProjectedAsSessionTreeCompactionEntry(t *testing.T) {
 	repo := sessiontree.NewMemoryRepo()
 	p := scriptharness.NewScriptedProvider(nil, scriptharness.Step(scriptharness.Text("ok"), scriptharness.Done()))
 	p.Errs[1] = provider.ErrContextOverflow
-	h := newTestHarness(p, repo, promptcache.NewMemoryStore())
+	h := newTestHarness(p, repo, cache.NewMemoryStore())
 	h.options.TurnPolicy.ContextPolicy.ContextWindowTokens = 8000
 	h.options.TurnPolicy.ContextPolicy.ReservedOutputTokens = 512
 	h.options.TurnPolicy.ContextPolicy.ReservedSummaryTokens = 512
@@ -689,7 +689,7 @@ func TestMultipleCompactionsForkReloadAndContinueUseLatestWindow(t *testing.T) {
 	root := t.TempDir()
 	promptRoot := t.TempDir()
 	repo := sessiontree.NewFileRepo(root)
-	promptStore := promptcache.NewFileStore(promptRoot)
+	promptStore := cache.NewFileStore(promptRoot)
 	p := scriptharness.NewScriptedProvider(
 		nil,
 		scriptharness.Step(scriptharness.Text("after first"), scriptharness.Done()),
@@ -729,7 +729,7 @@ func TestMultipleCompactionsForkReloadAndContinueUseLatestWindow(t *testing.T) {
 		t.Fatalf("second compaction should link previous generation: %#v", latest)
 	}
 
-	reloadedHarness := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("fork done"), scriptharness.Done())), sessiontree.NewFileRepo(root), promptcache.NewFileStore(promptRoot))
+	reloadedHarness := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("fork done"), scriptharness.Done())), sessiontree.NewFileRepo(root), cache.NewFileStore(promptRoot))
 	fork, err := reloadedHarness.ForkThread(ctx, ForkOptions{SourceThreadID: "thread", EntryID: latest.ID, NewThreadID: "fork"})
 	if err != nil {
 		t.Fatal(err)
@@ -760,7 +760,7 @@ func TestFileRepoResumeContinuesThreadAndReusesRawSegments(t *testing.T) {
 	root := t.TempDir()
 	promptRoot := t.TempDir()
 	repo := sessiontree.NewFileRepo(root)
-	promptStore := promptcache.NewFileStore(promptRoot)
+	promptStore := cache.NewFileStore(promptRoot)
 	firstProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Tool("ask", "ask_user", `{"question":"more?"}`), scriptharness.DoneReason("tool_calls")))
 	h := newTestHarness(firstProvider, repo, promptStore)
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
@@ -777,7 +777,7 @@ func TestFileRepoResumeContinuesThreadAndReusesRawSegments(t *testing.T) {
 	firstRequestSegments := append([]string(nil), firstProvider.Requests[0].RawPlan.SegmentIDs...)
 	firstRequestRaws := segmentRaws(firstProvider.Requests[0].RawPlan.Segments)
 	secondProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("ok"), scriptharness.Done()))
-	resumedHarness := newTestHarness(secondProvider, sessiontree.NewFileRepo(root), promptcache.NewFileStore(promptRoot))
+	resumedHarness := newTestHarness(secondProvider, sessiontree.NewFileRepo(root), cache.NewFileStore(promptRoot))
 	resumed, err := resumedHarness.ResumeThread(ctx, "thread", ResumeOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -819,7 +819,7 @@ func TestFileRepoActiveTurnLeaseBlocksSecondHarnessResume(t *testing.T) {
 	root := t.TempDir()
 	promptRoot := t.TempDir()
 	blocking := newBlockingProvider()
-	firstHarness := newTestHarness(blocking, sessiontree.NewFileRepo(root), promptcache.NewFileStore(promptRoot))
+	firstHarness := newTestHarness(blocking, sessiontree.NewFileRepo(root), cache.NewFileStore(promptRoot))
 	thread, err := firstHarness.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
 		t.Fatal(err)
@@ -833,7 +833,7 @@ func TestFileRepoActiveTurnLeaseBlocksSecondHarnessResume(t *testing.T) {
 	}()
 	<-blocking.started
 
-	secondHarness := newTestHarness(scriptharness.NewScriptedProvider(), sessiontree.NewFileRepo(root), promptcache.NewFileStore(promptRoot))
+	secondHarness := newTestHarness(scriptharness.NewScriptedProvider(), sessiontree.NewFileRepo(root), cache.NewFileStore(promptRoot))
 	if _, err := secondHarness.ResumeThread(ctx, "thread", ResumeOptions{}); !errors.Is(err, ErrActiveTurn) {
 		t.Fatalf("resume err = %v, want active turn guard", err)
 	}
@@ -857,7 +857,7 @@ func TestFileRepoResumeClearsOnlyExpiredActiveTurnLease(t *testing.T) {
 	promptRoot := t.TempDir()
 	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
 	repo := sessiontree.NewFileRepo(root)
-	h := newTestHarness(scriptharness.NewScriptedProvider(), repo, promptcache.NewFileStore(promptRoot))
+	h := newTestHarness(scriptharness.NewScriptedProvider(), repo, cache.NewFileStore(promptRoot))
 	h.options.Now = func() time.Time { return now }
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
@@ -869,7 +869,7 @@ func TestFileRepoResumeClearsOnlyExpiredActiveTurnLease(t *testing.T) {
 	if err := repo.AcquireTurnLease(ctx, sessiontree.TurnLease{ThreadID: thread.ID(), TurnID: "turn-stale", OwnerID: "dead-owner", CreatedAt: now.Add(-25 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	resumedHarness := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("ok"), scriptharness.Done())), sessiontree.NewFileRepo(root), promptcache.NewFileStore(promptRoot))
+	resumedHarness := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("ok"), scriptharness.Done())), sessiontree.NewFileRepo(root), cache.NewFileStore(promptRoot))
 	resumedHarness.options.Now = func() time.Time { return now }
 	resumed, err := resumedHarness.ResumeThread(ctx, thread.ID(), ResumeOptions{})
 	if err != nil {
@@ -892,7 +892,7 @@ func TestFileRepoResumeClearsOnlyExpiredActiveTurnLease(t *testing.T) {
 func TestMoveToHoldsActiveTurnGuardDuringMutation(t *testing.T) {
 	ctx := context.Background()
 	repo := &blockingMoveRepo{MemoryRepo: sessiontree.NewMemoryRepo(), entered: make(chan struct{}), release: make(chan struct{})}
-	h := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done"), scriptharness.Done())), repo, promptcache.NewMemoryStore())
+	h := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done"), scriptharness.Done())), repo, cache.NewMemoryStore())
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
 		t.Fatal(err)
@@ -922,7 +922,7 @@ func TestMoveToHoldsActiveTurnGuardDuringMutation(t *testing.T) {
 func TestManualCompactHoldsActiveTurnGuardDuringMutation(t *testing.T) {
 	ctx := context.Background()
 	repo := &blockingAppendRepo{MemoryRepo: sessiontree.NewMemoryRepo(), entered: make(chan struct{}), release: make(chan struct{})}
-	h := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done"), scriptharness.Done())), repo, promptcache.NewMemoryStore())
+	h := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done"), scriptharness.Done())), repo, cache.NewMemoryStore())
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
 		t.Fatal(err)
@@ -947,12 +947,12 @@ func TestManualCompactHoldsActiveTurnGuardDuringMutation(t *testing.T) {
 
 func TestDifferentThreadsRunConcurrently(t *testing.T) {
 	ctx := context.Background()
-	assertDifferentThreadsRunConcurrently(t, ctx, sessiontree.NewMemoryRepo(), promptcache.NewMemoryStore())
+	assertDifferentThreadsRunConcurrently(t, ctx, sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
 }
 
 func TestSQLiteDifferentThreadsRunConcurrently(t *testing.T) {
 	ctx := context.Background()
-	repo, err := sqlitestore.Open(filepath.Join(t.TempDir(), "floret.db"))
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "floret.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -962,12 +962,12 @@ func TestSQLiteDifferentThreadsRunConcurrently(t *testing.T) {
 
 func TestForkAndSourceRunConcurrentlyWithoutPollution(t *testing.T) {
 	ctx := context.Background()
-	assertForkAndSourceRunConcurrentlyWithoutPollution(t, ctx, sessiontree.NewMemoryRepo(), promptcache.NewMemoryStore())
+	assertForkAndSourceRunConcurrentlyWithoutPollution(t, ctx, sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
 }
 
 func TestSQLiteForkAndSourceRunConcurrentlyWithoutPollution(t *testing.T) {
 	ctx := context.Background()
-	repo, err := sqlitestore.Open(filepath.Join(t.TempDir(), "floret.db"))
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "floret.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -975,7 +975,7 @@ func TestSQLiteForkAndSourceRunConcurrentlyWithoutPollution(t *testing.T) {
 	assertForkAndSourceRunConcurrentlyWithoutPollution(t, ctx, repo, repo)
 }
 
-func assertDifferentThreadsRunConcurrently(t *testing.T, ctx context.Context, repo sessiontree.Repo, promptStore promptcache.Store) {
+func assertDifferentThreadsRunConcurrently(t *testing.T, ctx context.Context, repo sessiontree.Repo, promptStore cache.Store) {
 	t.Helper()
 	provider := newConcurrentProvider(2)
 	h := newTestHarness(provider, repo, promptStore)
@@ -1019,7 +1019,7 @@ func assertDifferentThreadsRunConcurrently(t *testing.T, ctx context.Context, re
 	}
 }
 
-func assertForkAndSourceRunConcurrentlyWithoutPollution(t *testing.T, ctx context.Context, repo sessiontree.Repo, promptStore promptcache.Store) {
+func assertForkAndSourceRunConcurrentlyWithoutPollution(t *testing.T, ctx context.Context, repo sessiontree.Repo, promptStore cache.Store) {
 	t.Helper()
 	setup := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("base"), scriptharness.Done()))
 	h := newTestHarness(setup, repo, promptStore)
@@ -1070,7 +1070,7 @@ func assertForkAndSourceRunConcurrentlyWithoutPollution(t *testing.T, ctx contex
 func TestToolProjectionDoesNotDuplicateMultiToolBatches(t *testing.T) {
 	ctx := context.Background()
 	repo := sessiontree.NewMemoryRepo()
-	promptStore := promptcache.NewMemoryStore()
+	promptStore := cache.NewMemoryStore()
 	p := scriptharness.NewScriptedProvider(
 		scriptharness.Step(
 			provider.StreamEvent{Type: provider.Reasoning, Text: "first batch"},
@@ -1156,7 +1156,7 @@ func TestToolProjectionDoesNotDuplicateMultiToolBatches(t *testing.T) {
 func TestAppendDeltaSkipsProjectedAssistantFinalButKeepsSeparateTurns(t *testing.T) {
 	ctx := context.Background()
 	repo := sessiontree.NewMemoryRepo()
-	promptStore := promptcache.NewMemoryStore()
+	promptStore := cache.NewMemoryStore()
 	h := newTestHarness(scriptharness.NewScriptedProvider(), repo, promptStore)
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
@@ -1195,7 +1195,7 @@ func TestAppendDeltaSkipsProjectedAssistantFinalButKeepsSeparateTurns(t *testing
 func TestResumeMarksUnfinishedTurnInterrupted(t *testing.T) {
 	ctx := context.Background()
 	repo := sessiontree.NewMemoryRepo()
-	h := newTestHarness(scriptharness.NewScriptedProvider(), repo, promptcache.NewMemoryStore())
+	h := newTestHarness(scriptharness.NewScriptedProvider(), repo, cache.NewMemoryStore())
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
 		t.Fatal(err)
@@ -1228,7 +1228,7 @@ func TestActiveTurnBusyGuard(t *testing.T) {
 	ctx := context.Background()
 	p := newBlockingProvider()
 	repo := sessiontree.NewMemoryRepo()
-	h := newTestHarness(p, repo, promptcache.NewMemoryStore())
+	h := newTestHarness(p, repo, cache.NewMemoryStore())
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
 		t.Fatal(err)
@@ -1261,12 +1261,12 @@ func TestActiveTurnBusyGuard(t *testing.T) {
 func TestSQLiteRepoActiveTurnBusyGuard(t *testing.T) {
 	ctx := context.Background()
 	p := newBlockingProvider()
-	repo, err := sqlitestore.Open(filepath.Join(t.TempDir(), "floret.db"))
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "floret.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repo.Close() })
-	h := newTestHarness(p, repo, promptcache.NewMemoryStore())
+	h := newTestHarness(p, repo, cache.NewMemoryStore())
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
 		t.Fatal(err)
@@ -1299,7 +1299,7 @@ func TestSQLiteRepoActiveTurnBusyGuard(t *testing.T) {
 func TestRetryDuringActiveTurnReturnsErrActiveTurnWithoutMovingLeaf(t *testing.T) {
 	ctx := context.Background()
 	repo := sessiontree.NewMemoryRepo()
-	promptStore := promptcache.NewMemoryStore()
+	promptStore := cache.NewMemoryStore()
 	failing := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("failed"), scriptharness.DoneReason("error")))
 	h := newTestHarness(failing, repo, promptStore)
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
@@ -1350,7 +1350,7 @@ func TestThreadRunPersistsTerminalMarkerAfterDeadline(t *testing.T) {
 	ctx := context.Background()
 	p := newBlockingProvider()
 	repo := sessiontree.NewMemoryRepo()
-	h := newTestHarness(p, repo, promptcache.NewMemoryStore())
+	h := newTestHarness(p, repo, cache.NewMemoryStore())
 	h.options.LoopLimits.WallTime = 10 * time.Millisecond
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
@@ -1384,7 +1384,7 @@ func TestThreadRunPersistsTerminalMarkerAfterDeadline(t *testing.T) {
 	}
 }
 
-func newTestHarness(p provider.Provider, repo sessiontree.Repo, promptStore promptcache.Store) *AgentHarness {
+func newTestHarness(p provider.Provider, repo sessiontree.Repo, promptStore cache.Store) *AgentHarness {
 	rec := &event.Recorder{}
 	registry := tools.NewRegistry()
 	return New(Options{
@@ -1542,7 +1542,7 @@ func countUserMessagesInSnapshot(snap ThreadJournalSnapshot, content string) int
 	return count
 }
 
-func segmentRaws(segments []promptcache.Segment) []string {
+func segmentRaws(segments []cache.Segment) []string {
 	out := make([]string, len(segments))
 	for i, segment := range segments {
 		out[i] = segment.Raw

@@ -6,18 +6,18 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/modelcatalog"
+	"github.com/floegence/floret/provider/catalog"
 )
 
 func TestResolveUsesCapabilityAndCatalogWireShapeNotProviderName(t *testing.T) {
 	for _, providerID := range []string{
-		modelcatalog.ProviderOpenAI,
-		modelcatalog.ProviderAnthropic,
-		modelcatalog.ProviderDeepSeek,
-		modelcatalog.ProviderOpenRouter,
-		modelcatalog.ProviderOpenAICompatible,
-		modelcatalog.ProviderGoogle,
-		modelcatalog.ProviderFake,
+		catalog.ProviderOpenAI,
+		catalog.ProviderAnthropic,
+		catalog.ProviderDeepSeek,
+		catalog.ProviderOpenRouter,
+		catalog.ProviderOpenAICompatible,
+		catalog.ProviderGoogle,
+		catalog.ProviderFake,
 	} {
 		t.Run(providerID, func(t *testing.T) {
 			resolved, err := Resolve(ResolveInput{
@@ -59,7 +59,7 @@ func TestResolveSingleSourceStates(t *testing.T) {
 	}{
 		{
 			name:       "provider hosted",
-			provider:   modelcatalog.ProviderOpenAI,
+			provider:   catalog.ProviderOpenAI,
 			capability: Capability{Source: WebSearchProviderHosted, Hosted: HostedConfig{WireShape: WireShapeOpenAIChatWebSearchOptions}},
 			wantSource: WebSearchProviderHosted,
 			wantStatus: ResolveReady,
@@ -69,7 +69,7 @@ func TestResolveSingleSourceStates(t *testing.T) {
 		},
 		{
 			name:         "external brave requires key but keeps source",
-			provider:     modelcatalog.ProviderFake,
+			provider:     catalog.ProviderFake,
 			capability:   Capability{Source: WebSearchExternalBrave, Brave: BraveConfig{Provider: ExternalProviderBrave}},
 			wantSource:   WebSearchExternalBrave,
 			wantStatus:   ResolveUnavailable,
@@ -78,7 +78,7 @@ func TestResolveSingleSourceStates(t *testing.T) {
 		},
 		{
 			name:         "external brave with key",
-			provider:     modelcatalog.ProviderFake,
+			provider:     catalog.ProviderFake,
 			capability:   Capability{Source: WebSearchExternalBrave, Brave: BraveConfig{Provider: ExternalProviderBrave}},
 			braveKey:     true,
 			wantSource:   WebSearchExternalBrave,
@@ -89,14 +89,14 @@ func TestResolveSingleSourceStates(t *testing.T) {
 		},
 		{
 			name:       "external provider must not silently become brave",
-			provider:   modelcatalog.ProviderFake,
+			provider:   catalog.ProviderFake,
 			capability: Capability{Source: WebSearchExternalBrave, Brave: BraveConfig{Provider: "serpapi"}},
 			wantSource: WebSearchExternalBrave,
 			wantError:  `unsupported external web_search provider "serpapi"`,
 		},
 		{
 			name:       "disabled",
-			provider:   modelcatalog.ProviderOpenAI,
+			provider:   catalog.ProviderOpenAI,
 			capability: Capability{Source: WebSearchDisabled},
 			wantSource: WebSearchDisabled,
 			wantStatus: ResolveUnavailable,
@@ -104,28 +104,28 @@ func TestResolveSingleSourceStates(t *testing.T) {
 		},
 		{
 			name:       "unsupported hosted shape",
-			provider:   modelcatalog.ProviderOpenAI,
+			provider:   catalog.ProviderOpenAI,
 			capability: Capability{Source: WebSearchProviderHosted, Hosted: HostedConfig{WireShape: "custom_shape"}},
 			wantSource: WebSearchProviderHosted,
 			wantError:  `unsupported hosted web_search wire shape "custom_shape"`,
 		},
 		{
 			name:       "hosted not supported by provider",
-			provider:   modelcatalog.ProviderDeepSeek,
+			provider:   catalog.ProviderDeepSeek,
 			capability: Capability{Source: WebSearchProviderHosted, Hosted: HostedConfig{WireShape: WireShapeOpenAIChatWebSearchOptions}},
 			wantSource: WebSearchProviderHosted,
 			wantError:  `wire shape "openai_chat_web_search_options" is not supported by this profile`,
 		},
 		{
 			name:       "mixed payload is invalid",
-			provider:   modelcatalog.ProviderOpenAI,
+			provider:   catalog.ProviderOpenAI,
 			capability: Capability{Source: WebSearchProviderHosted, Hosted: HostedConfig{WireShape: WireShapeOpenAIChatWebSearchOptions}, Brave: BraveConfig{Provider: ExternalProviderBrave}},
 			wantSource: WebSearchProviderHosted,
 			wantError:  "cannot include external Brave configuration",
 		},
 		{
 			name:       "unknown source is invalid",
-			provider:   modelcatalog.ProviderFake,
+			provider:   catalog.ProviderFake,
 			capability: Capability{Source: "search_everywhere"},
 			wantSource: "search_everywhere",
 			wantError:  `unsupported web_search source "search_everywhere"`,
@@ -178,13 +178,13 @@ func TestResolveSingleSourceStates(t *testing.T) {
 
 func TestDefaultCapabilityIsDisabledAndProviderPresetIsExplicit(t *testing.T) {
 	for _, providerID := range []string{
-		modelcatalog.ProviderOpenAI,
-		modelcatalog.ProviderAnthropic,
-		modelcatalog.ProviderDeepSeek,
-		modelcatalog.ProviderOpenRouter,
-		modelcatalog.ProviderOpenAICompatible,
-		modelcatalog.ProviderGoogle,
-		modelcatalog.ProviderFake,
+		catalog.ProviderOpenAI,
+		catalog.ProviderAnthropic,
+		catalog.ProviderDeepSeek,
+		catalog.ProviderOpenRouter,
+		catalog.ProviderOpenAICompatible,
+		catalog.ProviderGoogle,
+		catalog.ProviderFake,
 	} {
 		capability := DefaultCapability(providerID)
 		if capability.Source != WebSearchDisabled {
@@ -192,20 +192,20 @@ func TestDefaultCapabilityIsDisabledAndProviderPresetIsExplicit(t *testing.T) {
 		}
 	}
 
-	openAI := ProviderPresetCapability(modelcatalog.ProviderOpenAI)
+	openAI := ProviderPresetCapability(catalog.ProviderOpenAI)
 	if openAI.Source != WebSearchProviderHosted || openAI.Hosted.WireShape != WireShapeOpenAIChatWebSearchOptions {
 		t.Fatalf("openai preset = %#v", openAI)
 	}
-	anthropic := ProviderPresetCapability(modelcatalog.ProviderAnthropic)
+	anthropic := ProviderPresetCapability(catalog.ProviderAnthropic)
 	if anthropic.Source != WebSearchProviderHosted || anthropic.Hosted.WireShape != WireShapeAnthropicServerWebSearch {
 		t.Fatalf("anthropic preset = %#v", anthropic)
 	}
 	for _, providerID := range []string{
-		modelcatalog.ProviderDeepSeek,
-		modelcatalog.ProviderOpenRouter,
-		modelcatalog.ProviderOpenAICompatible,
-		modelcatalog.ProviderGoogle,
-		modelcatalog.ProviderFake,
+		catalog.ProviderDeepSeek,
+		catalog.ProviderOpenRouter,
+		catalog.ProviderOpenAICompatible,
+		catalog.ProviderGoogle,
+		catalog.ProviderFake,
 	} {
 		capability := ProviderPresetCapability(providerID)
 		if capability.Source != WebSearchDisabled {
@@ -215,17 +215,17 @@ func TestDefaultCapabilityIsDisabledAndProviderPresetIsExplicit(t *testing.T) {
 }
 
 func TestNormalizeCapabilityCanonicalizesSingleSource(t *testing.T) {
-	disabled := NormalizeCapability(modelcatalog.ProviderOpenAI, Capability{Source: WebSearchDisabled})
+	disabled := NormalizeCapability(catalog.ProviderOpenAI, Capability{Source: WebSearchDisabled})
 	if disabled.Source != WebSearchDisabled || disabled.Hosted.WireShape != "" || disabled.Brave.Provider != "" {
 		t.Fatalf("disabled capability = %#v", disabled)
 	}
 
-	external := NormalizeCapability(modelcatalog.ProviderOpenAI, Capability{Source: WebSearchExternalBrave})
+	external := NormalizeCapability(catalog.ProviderOpenAI, Capability{Source: WebSearchExternalBrave})
 	if external.Source != WebSearchExternalBrave || external.Brave.Provider != ExternalProviderBrave || external.Hosted.WireShape != "" {
 		t.Fatalf("external capability = %#v", external)
 	}
 
-	hosted := NormalizeCapability(modelcatalog.ProviderOpenAI, Capability{Source: WebSearchProviderHosted})
+	hosted := NormalizeCapability(catalog.ProviderOpenAI, Capability{Source: WebSearchProviderHosted})
 	if hosted.Source != WebSearchProviderHosted || hosted.Hosted.WireShape != WireShapeOpenAIChatWebSearchOptions || hosted.Brave.Provider != "" {
 		t.Fatalf("hosted capability = %#v", hosted)
 	}

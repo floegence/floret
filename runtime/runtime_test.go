@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,17 +16,18 @@ import (
 
 	"github.com/floegence/floret/agentharness"
 	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/event"
-	"github.com/floegence/floret/harness"
-	"github.com/floegence/floret/mcpclient"
-	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
+	"github.com/floegence/floret/provider/cache"
+	storagesqlite "github.com/floegence/floret/runtime/storage/sqlite"
 	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/session/contextpolicy"
 	"github.com/floegence/floret/sessiontree"
-	"github.com/floegence/floret/skills"
+	"github.com/floegence/floret/testing/harness"
 	"github.com/floegence/floret/tools"
+	"github.com/floegence/floret/tools/mcp"
+	"github.com/floegence/floret/tools/skills"
 )
 
 func TestNewEngineFromConfigRunsFakeProvider(t *testing.T) {
@@ -129,7 +131,7 @@ func TestNewHarnessWithProviderMapsExplicitPoliciesToTurn(t *testing.T) {
 				RecentTailTokens:    512,
 				RecentUserTokens:    321,
 			},
-			CacheRetention:        promptcache.RetentionLong,
+			CacheRetention:        cache.RetentionLong,
 			HostedToolDefinitions: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}},
 		},
 		LoopLimits: agentharness.LoopLimits{
@@ -158,11 +160,87 @@ func TestNewHarnessWithProviderMapsExplicitPoliciesToTurn(t *testing.T) {
 	if req.MaxOutputTokens != 123 || req.ContextPolicy.ContextWindowTokens != 4096 || req.ContextPolicy.RecentUserTokens != 321 {
 		t.Fatalf("context policy not mapped into request: %#v", req.ContextPolicy)
 	}
-	if req.Cache.Retention != promptcache.RetentionLong {
+	if req.Cache.Retention != cache.RetentionLong {
 		t.Fatalf("cache retention = %q, want long", req.Cache.Retention)
 	}
 	if len(req.HostedTools) != 1 || req.HostedTools[0].Name != "web_search" {
 		t.Fatalf("hosted tools = %#v", req.HostedTools)
+	}
+}
+
+func TestPublicHostAPICompilesAndRunsWithSQLiteCustomProviderAndTool(t *testing.T) {
+	ctx := context.Background()
+	store, err := storagesqlite.Open(filepath.Join(t.TempDir(), "floret.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	registry := tools.NewRegistry()
+	if err := registry.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{
+			Name:        "echo",
+			Title:       "Echo",
+			Description: "Return the supplied text.",
+			InputSchema: tools.StrictObject(map[string]any{
+				"text": tools.String("Text to echo."),
+			}, []string{"text"}),
+			ReadOnly: true,
+		},
+		nil,
+		nil,
+		func(_ context.Context, inv tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			return tools.Result{Text: inv.Args.Text}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	scripted := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("echo-1", "echo", `{"text":"from tool"}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	h, err := NewHarnessWithProviderE(config.Config{
+		Provider:     config.ProviderFake,
+		Model:        "fake-model",
+		SystemPrompt: "test",
+	}, scripted, HarnessOptions{
+		Store:    store,
+		Tools:    registry,
+		NewID:    deterministicIDs(),
+		Approver: allowRuntimeTools,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread, err := h.StartThread(ctx, agentharness.StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := thread.Run(ctx, "use the echo tool", agentharness.RunOptions{TurnID: "turn-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != engine.Completed || result.Output != "done" {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(scripted.Requests) != 2 {
+		t.Fatalf("requests = %#v", scripted.Requests)
+	}
+	if !slices.ContainsFunc(scripted.Requests[0].Tools, func(def provider.ToolDefinition) bool { return def.Name == "echo" }) {
+		t.Fatalf("custom tool not exposed: %#v", scripted.Requests[0].Tools)
+	}
+	reopened, err := storagesqlite.Open(store.DBPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	path, err := reopened.Path(ctx, "thread", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(path, func(entry sessiontree.Entry) bool {
+		return entry.Type == sessiontree.EntryToolResult && entry.Message.Role == session.Tool && entry.Message.ToolName == "echo" && entry.Message.Content == "from tool"
+	}) {
+		t.Fatalf("SQLite-backed public API run did not persist tool result: %#v", path)
 	}
 }
 
@@ -298,7 +376,7 @@ func TestNewHarnessWithProviderERegistersMCPToolAsLocalTool(t *testing.T) {
 		id := req["id"]
 		switch req["method"] {
 		case "initialize", "notifications/initialized":
-			writeRuntimeRPC(w, id, map[string]any{"protocolVersion": mcpclient.ProtocolVersion})
+			writeRuntimeRPC(w, id, map[string]any{"protocolVersion": mcp.ProtocolVersion})
 		case "tools/list":
 			writeRuntimeRPC(w, id, map[string]any{"tools": []map[string]any{{
 				"name":        "lookup",
@@ -325,9 +403,9 @@ func TestNewHarnessWithProviderERegistersMCPToolAsLocalTool(t *testing.T) {
 		Store:    sessiontree.NewMemoryRepo(),
 		Sink:     rec,
 		Approver: allowRuntimeTools,
-		Capability: CapabilityOptions{MCPServers: []mcpclient.ServerConfig{{
+		Capability: CapabilityOptions{MCPServers: []mcp.ServerConfig{{
 			Name:      "docs",
-			Transport: mcpclient.TransportStreamableHTTP,
+			Transport: mcp.TransportStreamableHTTP,
 			URL:       server.URL,
 			Enabled:   true,
 		}}},
@@ -367,11 +445,15 @@ func TestNewHarnessWithProviderERegistersMCPToolAsLocalTool(t *testing.T) {
 	}
 }
 
+type runtimeEchoArgs struct {
+	Text string `json:"text"`
+}
+
 func deterministicIDs() func(string) string {
 	var seq int
 	return func(prefix string) string {
 		seq++
-		return prefix + "-deterministic"
+		return fmt.Sprintf("%s-deterministic-%d", prefix, seq)
 	}
 }
 

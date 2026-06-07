@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/compaction"
 	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/session/compaction"
 )
 
 func TestMemoryRepoAppendUpdatesLeafAndBuildContextFiltersEntries(t *testing.T) {

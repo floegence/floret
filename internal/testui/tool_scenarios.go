@@ -12,13 +12,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/builtintools"
 	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/engine"
-	"github.com/floegence/floret/harness"
 	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/provider"
+	"github.com/floegence/floret/session/contextpolicy"
+	"github.com/floegence/floret/testing/harness"
+	"github.com/floegence/floret/tools/builtin"
 )
 
 type runOptions struct {
@@ -62,10 +62,10 @@ func deterministicToolScenarios() []toolScenario {
 			Message:     "Inspect the local fixture and summarize the project status.",
 			FollowUps:   []string{"Now cite the exact file and command you used."},
 			SelectedTools: []string{
-				builtintools.ToolList,
-				builtintools.ToolRead,
-				builtintools.ToolGrep,
-				builtintools.ToolShell,
+				builtin.ToolList,
+				builtin.ToolRead,
+				builtin.ToolGrep,
+				builtin.ToolShell,
 			},
 			Setup:  setupReadGrepShellScenario,
 			Verify: verifyReadGrepShellScenario,
@@ -76,7 +76,7 @@ func deterministicToolScenarios() []toolScenario {
 			Description:   "Calls write and apply_patch, intentionally triggers one patch context error, then recovers with a valid patch before the follow-up.",
 			Message:       "Create a report file, correct it, and mention how you recovered from the failed patch.",
 			FollowUps:     []string{"Read the report back and confirm the final contents."},
-			SelectedTools: []string{builtintools.ToolWrite, builtintools.ToolApplyPatch, builtintools.ToolRead},
+			SelectedTools: []string{builtin.ToolWrite, builtin.ToolApplyPatch, builtin.ToolRead},
 			Setup:         setupMutationRecoveryScenario,
 			Verify:        verifyMutationRecoveryScenario,
 		},
@@ -86,7 +86,7 @@ func deterministicToolScenarios() []toolScenario {
 			Description:   "Exercises external Brave web_search, bounded shell curl, repeated multi-tool batches, and a second user turn.",
 			Message:       "今天是 2026-06-03，请查询长沙天气并给出来源。",
 			FollowUps:     []string{"那么明天会晴吗，适合出门吗？"},
-			SelectedTools: []string{builtintools.ToolWebSearch, builtintools.ToolShell},
+			SelectedTools: []string{builtin.ToolWebSearch, builtin.ToolShell},
 			Setup:         setupSearchShellScenario,
 			Verify:        verifySearchShellScenario,
 		},
@@ -276,16 +276,16 @@ func (r Runner) runLiveLocalToolScenario(ctx context.Context, profile ProviderPr
 			"When a schema shows nullable fields, include them with null when you do not need a value.",
 			"Do not answer from memory for this scenario.",
 		}, " "),
-		SelectedTools: []string{builtintools.ToolList, builtintools.ToolRead, builtintools.ToolGrep},
+		SelectedTools: []string{builtin.ToolList, builtin.ToolRead, builtin.ToolGrep},
 		ContextPolicy: scenarioContextPolicy(),
 		DebugRaw:      true,
 	}
 	results, err := r.runLiveAgentTurnsWithTimeout(ctx, workspace, req, []string{"Cite the exact file paths from the previous answer."})
 	if err != nil {
-		return r.failLiveScenario(resp, profile, "live-local-tools", []string{builtintools.ToolList, builtintools.ToolRead, builtintools.ToolGrep}, err, results)
+		return r.failLiveScenario(resp, profile, "live-local-tools", []string{builtin.ToolList, builtin.ToolRead, builtin.ToolGrep}, err, results)
 	}
 	if err := verifyLiveLocalToolScenario(results); err != nil {
-		return r.failLiveScenario(resp, profile, "live-local-tools", []string{builtintools.ToolList, builtintools.ToolRead, builtintools.ToolGrep}, err, results)
+		return r.failLiveScenario(resp, profile, "live-local-tools", []string{builtin.ToolList, builtin.ToolRead, builtin.ToolGrep}, err, results)
 	}
 	last := results[len(results)-1]
 	resp.Status = "pass"
@@ -393,15 +393,15 @@ func setupReadGrepShellScenario(ctx context.Context, workspace string) (toolScen
 		harness.Step(
 			provider.StreamEvent{Type: provider.Reasoning, Text: "Inspect files and command output."},
 			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
-				{ID: "list-root", Name: builtintools.ToolList, Args: `{"path":null,"limit":20}`},
-				{ID: "grep-status", Name: builtintools.ToolGrep, Args: `{"pattern":"status","path":null,"glob":"*.txt","ignore_case":true,"literal":true,"context":null,"limit":20}`},
-				{ID: "shell-date", Name: builtintools.ToolShell, Args: `{"command":"printf scenario-shell-ok"}`},
+				{ID: "list-root", Name: builtin.ToolList, Args: `{"path":null,"limit":20}`},
+				{ID: "grep-status", Name: builtin.ToolGrep, Args: `{"pattern":"status","path":null,"glob":"*.txt","ignore_case":true,"literal":true,"context":null,"limit":20}`},
+				{ID: "shell-date", Name: builtin.ToolShell, Args: `{"command":"printf scenario-shell-ok"}`},
 			}},
 			harness.DoneReason("tool_calls"),
 		),
 		harness.Step(
 			provider.StreamEvent{Type: provider.Reasoning, Text: "Read the primary file before summarizing."},
-			harness.Tool("read-readme", builtintools.ToolRead, `{"path":"README.md","offset":0,"limit":40}`),
+			harness.Tool("read-readme", builtin.ToolRead, `{"path":"README.md","offset":0,"limit":40}`),
 			harness.DoneReason("tool_calls"),
 		),
 		harness.Step(harness.Text("Fixture status is green; shell returned scenario-shell-ok."), harness.Done()),
@@ -431,22 +431,22 @@ func setupMutationRecoveryScenario(ctx context.Context, workspace string) (toolS
 		harness.Step(
 			provider.StreamEvent{Type: provider.Reasoning, Text: "Create and then intentionally fail one patch."},
 			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
-				{ID: "write-report", Name: builtintools.ToolWrite, Args: `{"path":"reports/weather.md","content":"Status: draft\nCity: Changsha\n"}`},
-				{ID: "patch-missing", Name: builtintools.ToolApplyPatch, Args: fmt.Sprintf(`{"patch":%q}`, missingPatch)},
+				{ID: "write-report", Name: builtin.ToolWrite, Args: `{"path":"reports/weather.md","content":"Status: draft\nCity: Changsha\n"}`},
+				{ID: "patch-missing", Name: builtin.ToolApplyPatch, Args: fmt.Sprintf(`{"patch":%q}`, missingPatch)},
 			}},
 			harness.DoneReason("tool_calls"),
 		),
 		harness.Step(
 			provider.StreamEvent{Type: provider.Reasoning, Text: "Recover with a valid patch and read back."},
 			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
-				{ID: "patch-report", Name: builtintools.ToolApplyPatch, Args: fmt.Sprintf(`{"patch":%q}`, recoveryPatch)},
-				{ID: "read-report", Name: builtintools.ToolRead, Args: `{"path":"reports/weather.md","offset":0,"limit":40}`},
+				{ID: "patch-report", Name: builtin.ToolApplyPatch, Args: fmt.Sprintf(`{"patch":%q}`, recoveryPatch)},
+				{ID: "read-report", Name: builtin.ToolRead, Args: `{"path":"reports/weather.md","offset":0,"limit":40}`},
 			}},
 			harness.DoneReason("tool_calls"),
 		),
 		harness.Step(harness.Text("Recovered from the failed patch and verified the report."), harness.Done()),
 		harness.Step(
-			harness.Tool("read-report-followup", builtintools.ToolRead, `{"path":"reports/weather.md","offset":0,"limit":40}`),
+			harness.Tool("read-report-followup", builtin.ToolRead, `{"path":"reports/weather.md","offset":0,"limit":40}`),
 			harness.DoneReason("tool_calls"),
 		),
 		harness.Step(harness.Text("Final report content is verified."), harness.Done()),
@@ -499,8 +499,8 @@ func setupSearchShellScenario(ctx context.Context, workspace string) (toolScenar
 		harness.Step(
 			provider.StreamEvent{Type: provider.Reasoning, Text: "Search and inspect current weather with bounded shell curl."},
 			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
-				{ID: "search-weather", Name: builtintools.ToolWebSearch, Args: `{"query":"长沙 2026-06-03 天气","count":3,"country":"CN","search_lang":"zh-hans","freshness":"pd"}`},
-				{ID: "curl-weather", Name: builtintools.ToolShell, Args: boundedCurlArgs(contentServer.URL + "/changsha-weather")},
+				{ID: "search-weather", Name: builtin.ToolWebSearch, Args: `{"query":"长沙 2026-06-03 天气","count":3,"country":"CN","search_lang":"zh-hans","freshness":"pd"}`},
+				{ID: "curl-weather", Name: builtin.ToolShell, Args: boundedCurlArgs(contentServer.URL + "/changsha-weather")},
 			}},
 			harness.DoneReason("tool_calls"),
 		),
@@ -508,7 +508,7 @@ func setupSearchShellScenario(ctx context.Context, workspace string) (toolScenar
 		harness.Step(
 			provider.StreamEvent{Type: provider.Reasoning, Text: "Inspect tomorrow after the user's follow-up with bounded shell curl."},
 			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
-				{ID: "curl-tomorrow", Name: builtintools.ToolShell, Args: boundedCurlArgs(contentServer.URL + "/tomorrow")},
+				{ID: "curl-tomorrow", Name: builtin.ToolShell, Args: boundedCurlArgs(contentServer.URL + "/tomorrow")},
 			}},
 			harness.DoneReason("tool_calls"),
 		),
@@ -639,7 +639,7 @@ func verifyLiveLocalToolScenario(results []AgentRunResponse) error {
 	if first.Status != string(engine.Completed) {
 		return fmt.Errorf("live local first turn status = %s, error = %s", first.Status, first.Error)
 	}
-	for _, name := range []string{builtintools.ToolList, builtintools.ToolRead, builtintools.ToolGrep} {
+	for _, name := range []string{builtin.ToolList, builtin.ToolRead, builtin.ToolGrep} {
 		if !hasAnyToolMessage(first.Observation.SessionMessages, name) {
 			return fmt.Errorf("live local scenario did not call %s", name)
 		}
@@ -700,17 +700,17 @@ func newWebCapabilityExposure() webCapabilityExposure {
 
 func (e *webCapabilityExposure) Observe(req ObservedProviderRequest) {
 	e.hostedSearch = e.hostedSearch || slices.ContainsFunc(req.HostedTools, func(tool provider.HostedToolDefinition) bool {
-		return tool.Name == builtintools.ToolWebSearch
+		return tool.Name == builtin.ToolWebSearch
 	})
 	e.localSearch = e.localSearch || slices.ContainsFunc(req.Tools, func(tool provider.ToolDefinition) bool {
-		return tool.Name == builtintools.ToolWebSearch
+		return tool.Name == builtin.ToolWebSearch
 	})
 }
 
 func (e webCapabilityExposure) Require(selected []string) error {
 	for _, name := range selected {
 		switch name {
-		case builtintools.ToolWebSearch:
+		case builtin.ToolWebSearch:
 			if !e.hostedSearch && !e.localSearch {
 				return fmt.Errorf("live scenario did not expose web_search as hosted or local tool")
 			}
@@ -732,7 +732,7 @@ func providerRequestExposesLocalTool(requests []ObservedProviderRequest, name st
 }
 
 func liveWeatherScenarioTools(profile ProviderProfile, envFile string) ([]string, error) {
-	tools := []string{builtintools.ToolWebSearch, builtintools.ToolShell}
+	tools := []string{builtin.ToolWebSearch, builtin.ToolShell}
 	selected, err := normalizeAgentSessionToolsForProfile(tools, "", profile, envFile)
 	if err != nil {
 		return nil, err
@@ -818,7 +818,7 @@ func renderLiveFailureArtifact(title string, profile ProviderProfile, selected [
 	fmt.Fprintf(&b, "Provider: %s\n", profile.Provider)
 	fmt.Fprintf(&b, "Model: %s\n", profile.Model)
 	fmt.Fprintf(&b, "Selected tools: %s\n", strings.Join(selected, ", "))
-	if slices.Contains(selected, builtintools.ToolWebSearch) {
+	if slices.Contains(selected, builtin.ToolWebSearch) {
 		resolved, resolveErr := searchcap.Resolve(searchcap.ResolveInput{
 			Provider:       profile.Provider,
 			Capability:     profile.WebSearch,

@@ -14,11 +14,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/builtintools"
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/event"
-	"github.com/floegence/floret/harness"
 	"github.com/floegence/floret/provider"
+	"github.com/floegence/floret/testing/harness"
+	"github.com/floegence/floret/tools/builtin"
 )
 
 func TestParseGitHubSkillURL(t *testing.T) {
@@ -348,7 +348,7 @@ func TestRunnerSkillToolDemoWritesArtifact(t *testing.T) {
 				harness.DoneReason("tool_calls"),
 			),
 			harness.Step(
-				provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "write-1", Name: builtintools.ToolWrite, Args: `{"path":".floret-test-ui/artifacts/frontend-design-landing/index.html","content":"<!doctype html><title>Floret demo</title>"}`}}},
+				provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "write-1", Name: builtin.ToolWrite, Args: `{"path":".floret-test-ui/artifacts/frontend-design-landing/index.html","content":"<!doctype html><title>Floret demo</title>"}`}}},
 				harness.DoneReason("tool_calls"),
 			),
 			harness.Step(harness.Text("Landing page created at /artifacts/frontend-design-landing/index.html"), harness.Done()),
@@ -358,7 +358,7 @@ func TestRunnerSkillToolDemoWritesArtifact(t *testing.T) {
 		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
 		Message:       "Use frontend-design to build a landing page.",
 		SystemPrompt:  "test",
-		SelectedTools: []string{builtintools.ToolRead, builtintools.ToolList, builtintools.ToolGlob, builtintools.ToolGrep, builtintools.ToolWrite},
+		SelectedTools: []string{builtin.ToolRead, builtin.ToolList, builtin.ToolGlob, builtin.ToolGrep, builtin.ToolWrite},
 	})
 	if result.Status != "completed" {
 		t.Fatalf("result = %#v", result)
@@ -372,7 +372,7 @@ func TestRunnerSkillToolDemoWritesArtifact(t *testing.T) {
 	if !slices.ContainsFunc(result.Observation.SessionMessages, func(msg ObservedSessionMessage) bool {
 		return msg.Role == "assistant" && msg.ToolName == "skill" && msg.ToolCallID == "skill-1"
 	}) || !slices.ContainsFunc(result.Observation.SessionMessages, func(msg ObservedSessionMessage) bool {
-		return msg.Role == "assistant" && msg.ToolName == builtintools.ToolWrite && msg.ToolCallID == "write-1"
+		return msg.Role == "assistant" && msg.ToolName == builtin.ToolWrite && msg.ToolCallID == "write-1"
 	}) {
 		t.Fatalf("skill/write tool calls missing: %#v", result.Observation.SessionMessages)
 	}

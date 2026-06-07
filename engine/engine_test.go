@@ -15,15 +15,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/compaction"
-	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/event"
-	"github.com/floegence/floret/harness"
-	"github.com/floegence/floret/memory"
-	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
+	"github.com/floegence/floret/provider/cache"
 	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/session/compaction"
+	"github.com/floegence/floret/session/contextpolicy"
+	"github.com/floegence/floret/testing/harness"
 	"github.com/floegence/floret/tools"
 )
 
@@ -323,7 +322,7 @@ func TestRunTurnConcurrentSameEngineIsolatesTurnState(t *testing.T) {
 
 func TestLegacyTaskCompleteSignalIsProviderSafeWhenRunContinues(t *testing.T) {
 	store := session.NewMemoryStore()
-	promptStore := promptcache.NewMemoryStore()
+	promptStore := cache.NewMemoryStore()
 	p1 := harness.NewScriptedProvider(harness.Step(harness.Tool("done", "task_complete", `{"output":"first done"}`), harness.DoneReason("tool_calls")))
 	e1 := newTestEngine(p1, &event.Recorder{})
 	e1.Store = store
@@ -341,13 +340,13 @@ func TestLegacyTaskCompleteSignalIsProviderSafeWhenRunContinues(t *testing.T) {
 	if got.Status != engine.Completed {
 		t.Fatalf("second result = %#v", got)
 	}
-	if slices.ContainsFunc(p2.Requests[0].RawPlan.Segments, func(seg promptcache.Segment) bool {
-		return seg.Kind == promptcache.SegmentToolCall && seg.Message.ToolName == "task_complete"
+	if slices.ContainsFunc(p2.Requests[0].RawPlan.Segments, func(seg cache.Segment) bool {
+		return seg.Kind == cache.SegmentToolCall && seg.Message.ToolName == "task_complete"
 	}) {
 		t.Fatalf("continued run should not send orphan task_complete tool call: %#v", p2.Requests[0].RawPlan.Segments)
 	}
-	if !slices.ContainsFunc(p2.Requests[0].RawPlan.Segments, func(seg promptcache.Segment) bool {
-		return seg.Kind == promptcache.SegmentAssistant && seg.Message.Content == "Agent completed the task: first done"
+	if !slices.ContainsFunc(p2.Requests[0].RawPlan.Segments, func(seg cache.Segment) bool {
+		return seg.Kind == cache.SegmentAssistant && seg.Message.Content == "Agent completed the task: first done"
 	}) {
 		t.Fatalf("continued run missing provider-safe task_complete text: %#v", p2.Requests[0].RawPlan.Segments)
 	}
@@ -493,7 +492,7 @@ func TestPromptCacheFreezesToolsetWhenRegistryChanges(t *testing.T) {
 
 func TestPromptCacheActivatesNewToolsetOnNextTurnWhenRegistryChanges(t *testing.T) {
 	store := session.NewMemoryStore()
-	promptStore := promptcache.NewMemoryStore()
+	promptStore := cache.NewMemoryStore()
 	reg := tools.NewRegistry()
 	mustRegister(t, reg, stringTool("read", "Read", false, tools.PermissionSpec{}, func(context.Context, string) (string, error) {
 		return "content", nil
@@ -546,7 +545,7 @@ func TestPromptCacheActivatesNewToolsetOnNextTurnWhenRegistryChanges(t *testing.
 func TestPromptCacheFileStoreKeepsPrefixStableAcrossEngineRestart(t *testing.T) {
 	store := session.NewMemoryStore()
 	root := t.TempDir()
-	promptStore := promptcache.NewFileStore(root)
+	promptStore := cache.NewFileStore(root)
 	firstProvider := harness.NewScriptedProvider(harness.Step(harness.Tool("ask", "ask_user", `{"question":"more?"}`), harness.DoneReason("tool_calls")))
 	first := newTestEngine(firstProvider, &event.Recorder{})
 	first.Store = store
@@ -561,7 +560,7 @@ func TestPromptCacheFileStoreKeepsPrefixStableAcrossEngineRestart(t *testing.T) 
 	secondProvider := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
 	second := newTestEngine(secondProvider, &event.Recorder{})
 	second.Store = store
-	second.Prompt = promptcache.NewFileStore(root)
+	second.Prompt = cache.NewFileStore(root)
 	got = second.Run(context.Background(), "answer")
 	if got.Status != engine.Completed {
 		t.Fatalf("second result = %#v", got)
@@ -595,8 +594,8 @@ func TestPromptCacheFileStoreKeepsPrefixStableAcrossEngineRestart(t *testing.T) 
 func TestProviderRequestRecordsActualPayloadHashWhenProviderExposesIt(t *testing.T) {
 	p := &hashingProvider{ScriptedProvider: harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))}
 	p.hash = "provider-payload-hash"
-	p.cache = promptcache.CachePolicy{Enabled: true, Namespace: "provider-ns", Retention: promptcache.RetentionLong}
-	promptStore := promptcache.NewMemoryStore()
+	p.cache = cache.CachePolicy{Enabled: true, Namespace: "provider-ns", Retention: cache.RetentionLong}
+	promptStore := cache.NewMemoryStore()
 	e := newTestEngine(p, &event.Recorder{})
 	e.Prompt = promptStore
 
@@ -618,7 +617,7 @@ func TestProviderRequestRecordsActualPayloadHashWhenProviderExposesIt(t *testing
 	if requests[0].PrefixRawHash == "" || requests[0].PrefixRawHash == requests[0].ProviderPayloadHash {
 		t.Fatalf("prefix hash should stay distinct from provider payload hash: %#v", requests[0])
 	}
-	if requests[0].CacheRetention != promptcache.RetentionLong || requests[0].CacheNamespace != "provider-ns" {
+	if requests[0].CacheRetention != cache.RetentionLong || requests[0].CacheNamespace != "provider-ns" {
 		t.Fatalf("cache policy was not normalized before recording: %#v", requests[0])
 	}
 	if p.Requests[0].RawPlan.PayloadHash != "provider-payload-hash" {
@@ -632,7 +631,7 @@ func TestProviderRequestAndResponseRecordsCarryThreadAndTurnIDs(t *testing.T) {
 		provider.StreamEvent{Type: provider.Delta, Text: "ok"},
 		provider.StreamEvent{Type: provider.Done, ResponseID: "resp-1"},
 	))
-	promptStore := promptcache.NewMemoryStore()
+	promptStore := cache.NewMemoryStore()
 	e := newTestEngine(p, &event.Recorder{})
 	e.Prompt = promptStore
 	e.Options.RunID = "turn"
@@ -1303,14 +1302,14 @@ func TestProviderContextOverflowCompactsAndRetries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.ContainsFunc(segments, func(seg promptcache.Segment) bool {
-		return seg.Kind == promptcache.SegmentCompaction
+	if !slices.ContainsFunc(segments, func(seg cache.Segment) bool {
+		return seg.Kind == cache.SegmentCompaction
 	}) {
 		t.Fatalf("compaction raw segment missing: %#v", segments)
 	}
 	for _, want := range []string{"older", "newer"} {
-		if !slices.ContainsFunc(segments, func(seg promptcache.Segment) bool {
-			return seg.Kind == promptcache.SegmentUserMessage && seg.Message.Content == want
+		if !slices.ContainsFunc(segments, func(seg cache.Segment) bool {
+			return seg.Kind == cache.SegmentUserMessage && seg.Message.Content == want
 		}) {
 			t.Fatalf("raw segment %q should remain append-only after compaction: %#v", want, segments)
 		}
@@ -1363,6 +1362,42 @@ func TestPreRequestThresholdCompactsWithoutReplacingStore(t *testing.T) {
 		return message.Role == session.User && message.Kind == session.MessageKindCompactionSummary
 	}) {
 		t.Fatalf("provider request did not use compacted active projection: %#v", p.Requests[0].Messages)
+	}
+}
+
+func TestPreRequestThresholdRequiresExplicitCompactor(t *testing.T) {
+	p := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
+	store := session.NewMemoryStore()
+	if err := store.Append("run",
+		session.Message{Role: session.User, Content: strings.Repeat("old ", 1200)},
+		session.Message{Role: session.User, Content: "new"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	e := newTestEngine(p, &event.Recorder{})
+	e.Store = store
+	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 900, ReservedOutputTokens: 80, ReservedSummaryTokens: 80, RecentTailTokens: 20}
+
+	got := e.Run(context.Background(), "")
+
+	if got.Status != engine.Failed || got.Err == nil || got.Err.Error() != "compaction manager is required when context exceeds policy" {
+		t.Fatalf("result = %#v, want explicit compactor error", got)
+	}
+	if len(p.Requests) != 0 {
+		t.Fatalf("provider should not receive request after missing compactor: %#v", p.Requests)
+	}
+}
+
+func TestLocalCompactionManagerRequiresExplicitGenerator(t *testing.T) {
+	_, _, err := engine.LocalCompactionManager{}.Compact(context.Background(), engine.CompactionRequest{
+		History: []session.Message{
+			{Role: session.User, Content: "old", EntryID: "u1"},
+			{Role: session.User, Content: "new", EntryID: "u2"},
+		},
+		Policy: contextpolicy.Policy{ContextWindowTokens: 900, ReservedOutputTokens: 80, ReservedSummaryTokens: 80, RecentTailTokens: 20},
+	})
+	if err == nil || err.Error() != "local compaction manager requires summary generator" {
+		t.Fatalf("err = %v, want explicit generator error", err)
 	}
 }
 
@@ -1605,10 +1640,10 @@ func (p *cancelAfterFirstDeltaProvider) Stream(context.Context, provider.Request
 type hashingProvider struct {
 	*harness.ScriptedProvider
 	hash  string
-	cache promptcache.CachePolicy
+	cache cache.CachePolicy
 }
 
-func (p *hashingProvider) NormalizeCachePolicy(promptcache.CachePolicy) (promptcache.CachePolicy, error) {
+func (p *hashingProvider) NormalizeCachePolicy(cache.CachePolicy) (cache.CachePolicy, error) {
 	return p.cache, nil
 }
 
@@ -1622,26 +1657,26 @@ func (p *hashingProvider) PayloadHash(req provider.Request) (string, error) {
 }
 
 type testEngine struct {
-	Provider  provider.Provider
-	Store     session.Store
-	Prompt    promptcache.Store
-	Memory    *memory.Manager
-	Tools     *tools.Registry
-	Sink      event.Sink
-	Approver  tools.Approver
-	StopHook  engine.StopHook
-	Compactor engine.CompactionManager
-	Options   engine.Options
+	Provider     provider.Provider
+	Store        session.Store
+	Prompt       cache.Store
+	SystemPrompt string
+	Tools        *tools.Registry
+	Sink         event.Sink
+	Approver     tools.Approver
+	StopHook     engine.StopHook
+	Compactor    engine.CompactionManager
+	Options      engine.Options
 }
 
 func newTestEngine(p provider.Provider, rec *event.Recorder) *testEngine {
 	return &testEngine{
-		Provider: p,
-		Store:    session.NewMemoryStore(),
-		Prompt:   promptcache.NewMemoryStore(),
-		Memory:   &memory.Manager{SystemPrompt: "You are Floret."},
-		Tools:    tools.NewRegistry(),
-		Sink:     rec,
+		Provider:     p,
+		Store:        session.NewMemoryStore(),
+		Prompt:       cache.NewMemoryStore(),
+		SystemPrompt: "You are Floret.",
+		Tools:        tools.NewRegistry(),
+		Sink:         rec,
 		Options: engine.Options{
 			RunID:                   "run",
 			MaxEmptyProviderRetries: 1,
@@ -1654,16 +1689,16 @@ func newTestEngine(p provider.Provider, rec *event.Recorder) *testEngine {
 func (e *testEngine) build(t *testing.T) *engine.Engine {
 	t.Helper()
 	eng, err := engine.New(engine.Config{
-		Provider:  e.Provider,
-		Store:     e.Store,
-		Prompt:    e.Prompt,
-		Memory:    e.Memory,
-		Tools:     e.Tools,
-		Sink:      e.Sink,
-		Approver:  e.Approver,
-		StopHook:  e.StopHook,
-		Compactor: e.Compactor,
-		Options:   e.Options,
+		Provider:     e.Provider,
+		Store:        e.Store,
+		Prompt:       e.Prompt,
+		SystemPrompt: e.SystemPrompt,
+		Tools:        e.Tools,
+		Sink:         e.Sink,
+		Approver:     e.Approver,
+		StopHook:     e.StopHook,
+		Compactor:    e.Compactor,
+		Options:      e.Options,
 	})
 	if err != nil {
 		t.Fatalf("new engine: %v", err)
@@ -1673,16 +1708,16 @@ func (e *testEngine) build(t *testing.T) *engine.Engine {
 
 func (e *testEngine) tryBuild() (*engine.Engine, error) {
 	return engine.New(engine.Config{
-		Provider:  e.Provider,
-		Store:     e.Store,
-		Prompt:    e.Prompt,
-		Memory:    e.Memory,
-		Tools:     e.Tools,
-		Sink:      e.Sink,
-		Approver:  e.Approver,
-		StopHook:  e.StopHook,
-		Compactor: e.Compactor,
-		Options:   e.Options,
+		Provider:     e.Provider,
+		Store:        e.Store,
+		Prompt:       e.Prompt,
+		SystemPrompt: e.SystemPrompt,
+		Tools:        e.Tools,
+		Sink:         e.Sink,
+		Approver:     e.Approver,
+		StopHook:     e.StopHook,
+		Compactor:    e.Compactor,
+		Options:      e.Options,
 	})
 }
 
@@ -1708,7 +1743,7 @@ func promptCachePathForTest(value string) string {
 
 func buildProviderRequestForTest(ctx context.Context, e *testEngine, step int, history []session.Message) (provider.Request, error) {
 	if e.Prompt == nil {
-		e.Prompt = promptcache.NewMemoryStore()
+		e.Prompt = cache.NewMemoryStore()
 	}
 	if e.Tools == nil {
 		e.Tools = tools.NewRegistry()
@@ -1724,18 +1759,18 @@ func buildProviderRequestForTest(ctx context.Context, e *testEngine, step int, h
 		opts.TraceID = opts.RunID
 	}
 	if opts.CacheNamespace == "" {
-		opts.CacheNamespace = promptcache.DefaultNamespace(opts.SessionID, opts.ProviderName, opts.Model)
+		opts.CacheNamespace = cache.DefaultNamespace(opts.SessionID, opts.ProviderName, opts.Model)
 	}
-	toolset, _, err := promptcache.EnsureToolset(ctx, e.Prompt, opts.RunID, opts.SessionID, opts.ProviderName, opts.Model, nil, nil, time.Now())
+	toolset, _, err := cache.EnsureToolset(ctx, e.Prompt, opts.RunID, opts.SessionID, opts.ProviderName, opts.Model, nil, nil, time.Now())
 	if err != nil {
 		return provider.Request{}, err
 	}
-	plan, messages, err := promptcache.BuildPlan(ctx, e.Prompt, promptcache.BuildInput{
+	plan, messages, err := cache.BuildPlan(ctx, e.Prompt, cache.BuildInput{
 		RunID:          opts.RunID,
 		SessionID:      opts.SessionID,
 		Provider:       opts.ProviderName,
 		Model:          opts.Model,
-		AdapterVersion: promptcache.Version,
+		AdapterVersion: cache.Version,
 		CacheNamespace: opts.CacheNamespace,
 		History:        history,
 		Toolset:        toolset,
@@ -1833,7 +1868,7 @@ func sameSet(a, b []string) bool {
 	return true
 }
 
-func segmentRawsForTest(segments []promptcache.Segment) []string {
+func segmentRawsForTest(segments []cache.Segment) []string {
 	out := make([]string, len(segments))
 	for i, segment := range segments {
 		out[i] = segment.Raw

@@ -21,8 +21,8 @@ Floret currently provides:
 - Threaded session primitives for start, resume, fork, retry, interruption recovery, and
   context projection over a session tree, with `runtime.NewHarness` as the recommended
   host entry point.
-- Memory, file-oriented, and SQLite-backed storage options, plus a raw prompt segment
-  and toolset ledger for provider-specific request shapes.
+- In-memory, file-oriented, and SQLite-backed storage options, plus a raw prompt
+  segment and toolset ledger for provider-specific request shapes.
 - Built-in provider adapters, an OpenAI-compatible chat completions adapter, a provider
   and model catalog, built-in workspace/shell/search tools, and a local runtime inspector.
 
@@ -85,7 +85,7 @@ Public API responses are sanitized by default. Local raw inspection requires an 
 launch-time capability:
 
 ```bash
-go run ./cmd/floret-test-ui -- -allow-debug-raw
+go run ./cmd/floret-test-ui -allow-debug-raw
 ```
 
 ## Install / Import
@@ -160,8 +160,9 @@ FLORET_API_KEY=your-api-key
 
 ## Using Floret in a Host
 
-The `runtime` package wires configuration, a provider adapter, prompt cache, memory
-manager, durable session storage, and a tool registry into an `agentharness.AgentHarness`.
+The `runtime` package wires configuration, a provider adapter, prompt cache, system
+prompt assembly, durable session storage, and a tool registry into an
+`agentharness.AgentHarness`.
 
 ```go
 package main
@@ -243,6 +244,26 @@ Use `SetSink`, `SetApprover`, and `SetStopHook` for explicit runtime policy repl
 Code that previously read `Thread.Read().Entries`, `Thread.Read().Path`,
 `Thread.Read().Context`, or `Thread.Read().Meta` should call `Thread.Journal()` in
 debug/admin/test paths. Ordinary host UI code should stay on `Thread.Read()`.
+Low-level engine hosts that can trigger context compaction must wire an explicit
+`CompactionManager` or `LocalCompactionManager{Generator: ...}`; `runtime.NewHarness`
+uses the durable provider-backed compaction path for ordinary threaded hosts.
+
+Package imports moved as follows:
+
+```text
+github.com/floegence/floret/adapters      -> github.com/floegence/floret/provider/adapters
+github.com/floegence/floret/modelcatalog  -> github.com/floegence/floret/provider/catalog
+github.com/floegence/floret/promptcache   -> github.com/floegence/floret/provider/cache
+github.com/floegence/floret/contextpolicy -> github.com/floegence/floret/session/contextpolicy
+github.com/floegence/floret/compaction    -> github.com/floegence/floret/session/compaction and github.com/floegence/floret/engine/compaction
+github.com/floegence/floret/builtintools  -> github.com/floegence/floret/tools/builtin
+github.com/floegence/floret/mcpclient     -> github.com/floegence/floret/tools/mcp
+github.com/floegence/floret/skills        -> github.com/floegence/floret/tools/skills
+github.com/floegence/floret/storage       -> github.com/floegence/floret/runtime/storage
+github.com/floegence/floret/sqlitestore   -> github.com/floegence/floret/runtime/storage/sqlite
+github.com/floegence/floret/harness       -> github.com/floegence/floret/testing/harness
+github.com/floegence/floret/eval          -> github.com/floegence/floret/testing/eval
+```
 
 ## Threaded Agent Harness
 
@@ -280,7 +301,7 @@ Tool scheduling is owned by the registry:
 - Open-world tools cannot use `PermissionAllow`; prefer `PermissionAsk` or
   `PermissionDeny` for high-risk tools unless the host has a narrower policy gate.
 
-`builtintools` includes workspace reads (`read`, `list`, `glob`, `grep`), workspace
+`tools/builtin` includes workspace reads (`read`, `list`, `glob`, `grep`), workspace
 mutations (`apply_patch`, `write`), shell execution, and `web_search`.
 
 ## Storage
@@ -290,10 +311,10 @@ host metadata:
 
 - `session.NewMemoryStore` is the simplest in-memory store for isolated engine runs.
 - `sessiontree.NewMemoryRepo` and `sessiontree.NewFileRepo` support threaded sessions.
-- `promptcache.NewMemoryStore` and `promptcache.NewFileStore` store rendered prompt
+- `provider/cache.NewMemoryStore` and `provider/cache.NewFileStore` store rendered prompt
   fragments and provider response records.
-- `sqlitestore.Open` provides one SQLite-backed store for session trees, prompt cache,
-  metadata, and session deletion.
+- `runtime/storage/sqlite.Open` provides one SQLite-backed store for session trees,
+  prompt cache, metadata, and session deletion.
 
 The local test UI defaults to SQLite at `.floret-test-ui/floret.db`. It can also run with
 file or memory storage through `go run ./cmd/floret-test-ui --storage=file` or
@@ -312,8 +333,8 @@ agentharness or engine.Engine
         +--> provider.Provider       model streaming and usage
         +--> tools.Registry          tool schemas, approvals, scheduling
         +--> session/sessiontree     messages, threads, forks, retries
-        +--> promptcache             provider-specific rendered context
-        +--> memory/contextpolicy    system prompt and active context policy
+        +--> provider/cache          provider-specific rendered context
+        +--> session/contextpolicy   active context policy
         +--> event.Sink              presentation-neutral observability
 ```
 
@@ -333,29 +354,36 @@ Runtime core:
 - `tools`: registry, schemas, approval checks, scheduling, result limits, and panic
   recovery.
 - `event`: presentation-neutral lifecycle events and a thread-safe recorder for tests.
-- `memory`, `contextpolicy`, `compaction`: prompt assembly and token-aware context control.
+- `session`: provider-visible transcript shape and in-memory message storage.
+- `session/contextpolicy`: token-aware context policy and usage estimation.
+- `session/compaction`: shared compaction data structures and pure compaction algorithm.
+- `engine/compaction`: provider-backed compaction summary generator adapter.
 
 Host integration:
 
 - `runtime`: configuration-to-engine assembly helpers.
 - `config`: `.env.local` and environment variable loading.
-- `adapters`: fake and provider adapters, including OpenAI-compatible chat completions.
-- `builtintools`: workspace, shell, and search tools for local agent hosts.
-- `modelcatalog`: built-in provider/model metadata and defaults.
+- `provider/adapters`: fake and provider adapters, including OpenAI-compatible chat
+  completions.
+- `provider/catalog`: built-in provider/model metadata and defaults.
+- `provider/cache`: rendered prompt fragments, toolset tracking, and provider response
+  records.
+- `tools/builtin`: workspace, shell, and search tools for local agent hosts.
+- `tools/mcp`: MCP server-to-tool bridge.
+- `tools/skills`: skill discovery, prompt disclosure, and the read-only skill tool.
 
 Sessions and storage:
 
 - `agentharness`: threaded agent runtime with resume, fork, retry, and lifecycle events.
 - `sessiontree`: append-only thread entries and active-path projection.
-- `session`: append/replace message storage with an in-memory implementation.
-- `storage`: combined storage contract for session trees, prompt cache, and metadata.
-- `sqlitestore`: SQLite-backed storage implementation.
-- `promptcache`: rendered prompt fragments, toolset tracking, and provider response records.
+- `runtime/storage`: combined storage contract for session trees, prompt cache, metadata,
+  and session deletion.
+- `runtime/storage/sqlite`: SQLite-backed storage implementation.
 
 Testing and evaluation:
 
-- `harness`: deterministic scripted provider for engine and host tests.
-- `eval`: lightweight task-eval runner with oracle checks and artifacts.
+- `testing/harness`: deterministic scripted provider for engine and host tests.
+- `testing/eval`: lightweight task-eval runner with oracle checks and artifacts.
 - `cmd/floret-test-ui`: local runtime inspector and smoke-test surface.
 
 ## Testing and Evals

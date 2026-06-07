@@ -15,19 +15,19 @@ import (
 	"time"
 
 	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/event"
-	"github.com/floegence/floret/harness"
 	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/internal/sessionlifecycle"
-	"github.com/floegence/floret/mcpclient"
-	"github.com/floegence/floret/modelcatalog"
-	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
+	"github.com/floegence/floret/provider/cache"
+	"github.com/floegence/floret/provider/catalog"
+	"github.com/floegence/floret/runtime/storage/sqlite"
 	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/session/contextpolicy"
 	"github.com/floegence/floret/sessiontree"
-	"github.com/floegence/floret/sqlitestore"
+	"github.com/floegence/floret/testing/harness"
+	"github.com/floegence/floret/tools/mcp"
 )
 
 func TestRunnerParsesGoTestJSON(t *testing.T) {
@@ -356,7 +356,7 @@ func TestRunnerToolCatalogReflectsWebSearchCapability(t *testing.T) {
 			Profiles: []ProviderProfile{{
 				ID:        "hosted",
 				Name:      "Hosted",
-				Provider:  modelcatalog.ProviderOpenAI,
+				Provider:  catalog.ProviderOpenAI,
 				Model:     "model-a",
 				WebSearch: searchcap.Capability{Source: searchcap.WebSearchProviderHosted, Hosted: searchcap.HostedConfig{WireShape: searchcap.WireShapeOpenAIChatWebSearchOptions}},
 			}},
@@ -421,7 +421,7 @@ func TestRunnerRejectsUnsupportedHostedSearchWireShapeOnSave(t *testing.T) {
 		Profiles: []ProviderProfile{{
 			ID:        "bad",
 			Name:      "Bad",
-			Provider:  modelcatalog.ProviderOpenAI,
+			Provider:  catalog.ProviderOpenAI,
 			Model:     "model-a",
 			WebSearch: searchcap.Capability{Source: searchcap.WebSearchProviderHosted, Hosted: searchcap.HostedConfig{WireShape: "bad_shape"}},
 		}},
@@ -728,7 +728,7 @@ func TestRunnerAgentSessionUsesProviderHostedSearchWithoutLocalWebSearch(t *test
 		Profile: ProviderProfile{
 			ID:        "hosted",
 			Name:      "Hosted",
-			Provider:  modelcatalog.ProviderOpenAI,
+			Provider:  catalog.ProviderOpenAI,
 			Model:     "model",
 			APIKey:    "secret",
 			WebSearch: searchcap.Capability{Source: searchcap.WebSearchProviderHosted, Hosted: searchcap.HostedConfig{WireShape: searchcap.WireShapeOpenAIChatWebSearchOptions}},
@@ -1692,7 +1692,7 @@ func TestRunnerDefaultSQLitePersistsListsRestoresAndDeletesSession(t *testing.T)
 	if first.Status != "waiting" {
 		t.Fatalf("first = %#v", first)
 	}
-	if _, err := os.Stat(sqlitestore.DefaultTestUIPath(root)); err != nil {
+	if _, err := os.Stat(sqlite.DefaultTestUIPath(root)); err != nil {
 		t.Fatalf("default sqlite db missing: %v", err)
 	}
 	if _, err := os.Stat(firstRunner.agentSessionMetadataPath(first.SessionID)); !errors.Is(err, os.ErrNotExist) {
@@ -1822,7 +1822,7 @@ func TestRunnerInterfaceProbeDoesNotOpenDefaultSQLite(t *testing.T) {
 	if !result.Probe || result.Status != "completed" {
 		t.Fatalf("probe result = %#v", result)
 	}
-	if _, err := os.Stat(sqlitestore.DefaultTestUIPath(root)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(sqlite.DefaultTestUIPath(root)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("transient probe should not create sqlite db, err=%v", err)
 	}
 	if runner.storageSQLite != nil {
@@ -2293,9 +2293,9 @@ func TestRunnerRunAgentUsesUnsavedProfileSnapshot(t *testing.T) {
 func TestObserveRawSegmentsMarksTruncatedRaw(t *testing.T) {
 	largeRaw := strings.Repeat("x", maxObservedRawSegmentBytes+8)
 
-	segments := observeRawSegments(promptcache.RawPlan{Segments: []promptcache.Segment{{
+	segments := observeRawSegments(cache.RawPlan{Segments: []cache.Segment{{
 		ID:         "large",
-		Kind:       promptcache.SegmentSystem,
+		Kind:       cache.SegmentSystem,
 		SHA256:     "abc",
 		ByteLength: len(largeRaw),
 		Raw:        largeRaw,
@@ -2319,18 +2319,18 @@ func TestObservingProviderForwardsPromptRenderer(t *testing.T) {
 	inner := rendererProvider{}
 	observed := newObservingProvider(inner)
 
-	raw, fragment, err := observed.MessageRaw(promptcache.SegmentUserMessage, session.Message{Role: session.User, Content: "hello"})
+	raw, fragment, err := observed.MessageRaw(cache.SegmentUserMessage, session.Message{Role: session.User, Content: "hello"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if raw != `{"role":"user","content":"hello"}` || fragment != promptcache.FragmentOpenAIMessage {
+	if raw != `{"role":"user","content":"hello"}` || fragment != cache.FragmentOpenAIMessage {
 		t.Fatalf("MessageRaw = %q, %q", raw, fragment)
 	}
-	raw, fragment, err = observed.ToolRaw(promptcache.ToolDefinition{Name: "read"})
+	raw, fragment, err = observed.ToolRaw(cache.ToolDefinition{Name: "read"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if raw != `{"type":"function","function":{"name":"read"}}` || fragment != promptcache.FragmentOpenAITool {
+	if raw != `{"type":"function","function":{"name":"read"}}` || fragment != cache.FragmentOpenAITool {
 		t.Fatalf("ToolRaw = %q, %q", raw, fragment)
 	}
 }
@@ -2378,12 +2378,12 @@ func (rendererProvider) Stream(context.Context, provider.Request) (<-chan provid
 	return ch, nil
 }
 
-func (rendererProvider) MessageRaw(_ promptcache.SegmentKind, msg session.Message) (string, string, error) {
-	return `{"role":"` + string(msg.Role) + `","content":"` + msg.Content + `"}`, promptcache.FragmentOpenAIMessage, nil
+func (rendererProvider) MessageRaw(_ cache.SegmentKind, msg session.Message) (string, string, error) {
+	return `{"role":"` + string(msg.Role) + `","content":"` + msg.Content + `"}`, cache.FragmentOpenAIMessage, nil
 }
 
-func (rendererProvider) ToolRaw(def promptcache.ToolDefinition) (string, string, error) {
-	return `{"type":"function","function":{"name":"` + def.Name + `"}}`, promptcache.FragmentOpenAITool, nil
+func (rendererProvider) ToolRaw(def cache.ToolDefinition) (string, string, error) {
+	return `{"type":"function","function":{"name":"` + def.Name + `"}}`, cache.FragmentOpenAITool, nil
 }
 
 func fixedClock() func() time.Time {
@@ -2495,7 +2495,7 @@ func fakeHTTPMCPServer(t *testing.T, toolName, resultText string) *httptest.Serv
 		id := req["id"]
 		switch req["method"] {
 		case "initialize", "notifications/initialized":
-			writeTestRPC(w, id, map[string]any{"protocolVersion": mcpclient.ProtocolVersion})
+			writeTestRPC(w, id, map[string]any{"protocolVersion": mcp.ProtocolVersion})
 		case "tools/list":
 			writeTestRPC(w, id, map[string]any{"tools": []map[string]any{{
 				"name":        toolName,

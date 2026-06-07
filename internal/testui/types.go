@@ -4,15 +4,15 @@ import (
 	"time"
 
 	"github.com/floegence/floret/agentharness"
-	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/engine"
-	"github.com/floegence/floret/eval"
 	"github.com/floegence/floret/event"
 	"github.com/floegence/floret/internal/searchcap"
-	"github.com/floegence/floret/modelcatalog"
-	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
+	"github.com/floegence/floret/provider/cache"
+	"github.com/floegence/floret/provider/catalog"
+	"github.com/floegence/floret/session/contextpolicy"
 	"github.com/floegence/floret/sessiontree"
+	"github.com/floegence/floret/testing/eval"
 )
 
 type ConfigInfo struct {
@@ -216,7 +216,7 @@ type ProviderProfile struct {
 	WebSearch    searchcap.Capability `json:"web_search,omitempty"`
 }
 
-type CatalogProvider = modelcatalog.Provider
+type CatalogProvider = catalog.Provider
 
 type SaveConfigRequest struct {
 	ActiveProfileID string             `json:"active_profile_id"`
@@ -355,31 +355,31 @@ type ObservedProviderRequest struct {
 }
 
 type ObservedRawSegment struct {
-	ID                   string                  `json:"id"`
-	RunID                string                  `json:"run_id,omitempty"`
-	SessionID            string                  `json:"session_id,omitempty"`
-	ThreadID             string                  `json:"thread_id,omitempty"`
-	TurnID               string                  `json:"turn_id,omitempty"`
-	EntryID              string                  `json:"entry_id,omitempty"`
-	ParentEntryID        string                  `json:"parent_entry_id,omitempty"`
-	Kind                 promptcache.SegmentKind `json:"kind"`
-	Role                 string                  `json:"role,omitempty"`
-	SHA256               string                  `json:"sha256"`
-	ByteLength           int                     `json:"byte_length"`
-	Epoch                int                     `json:"epoch,omitempty"`
-	Sequence             int64                   `json:"sequence,omitempty"`
-	Reused               bool                    `json:"reused"`
-	FragmentType         string                  `json:"fragment_type,omitempty"`
-	StructuredRefID      string                  `json:"structured_ref_id,omitempty"`
-	CompactionGeneration int                     `json:"compaction_generation,omitempty"`
-	CompactionWindowID   string                  `json:"compaction_window_id,omitempty"`
-	CompactionEntryID    string                  `json:"compaction_entry_id,omitempty"`
-	Fingerprint          string                  `json:"fingerprint,omitempty"`
-	SchemaVersion        string                  `json:"schema_version,omitempty"`
-	AdapterVersion       string                  `json:"adapter_version,omitempty"`
-	Raw                  string                  `json:"raw,omitempty"`
-	RawTruncated         bool                    `json:"raw_truncated,omitempty"`
-	RawPreview           string                  `json:"raw_preview,omitempty"`
+	ID                   string            `json:"id"`
+	RunID                string            `json:"run_id,omitempty"`
+	SessionID            string            `json:"session_id,omitempty"`
+	ThreadID             string            `json:"thread_id,omitempty"`
+	TurnID               string            `json:"turn_id,omitempty"`
+	EntryID              string            `json:"entry_id,omitempty"`
+	ParentEntryID        string            `json:"parent_entry_id,omitempty"`
+	Kind                 cache.SegmentKind `json:"kind"`
+	Role                 string            `json:"role,omitempty"`
+	SHA256               string            `json:"sha256"`
+	ByteLength           int               `json:"byte_length"`
+	Epoch                int               `json:"epoch,omitempty"`
+	Sequence             int64             `json:"sequence,omitempty"`
+	Reused               bool              `json:"reused"`
+	FragmentType         string            `json:"fragment_type,omitempty"`
+	StructuredRefID      string            `json:"structured_ref_id,omitempty"`
+	CompactionGeneration int               `json:"compaction_generation,omitempty"`
+	CompactionWindowID   string            `json:"compaction_window_id,omitempty"`
+	CompactionEntryID    string            `json:"compaction_entry_id,omitempty"`
+	Fingerprint          string            `json:"fingerprint,omitempty"`
+	SchemaVersion        string            `json:"schema_version,omitempty"`
+	AdapterVersion       string            `json:"adapter_version,omitempty"`
+	Raw                  string            `json:"raw,omitempty"`
+	RawTruncated         bool              `json:"raw_truncated,omitempty"`
+	RawPreview           string            `json:"raw_preview,omitempty"`
 }
 
 type ObservedCacheSummary struct {

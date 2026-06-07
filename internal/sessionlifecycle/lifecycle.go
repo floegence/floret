@@ -1,8 +1,8 @@
 package sessionlifecycle
 
 import (
-	"github.com/floegence/floret/control"
 	"github.com/floegence/floret/engine"
+	"github.com/floegence/floret/internal/control"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/sessiontree"
 )

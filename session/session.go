@@ -23,7 +23,7 @@ const (
 type Message struct {
 	Role                 Role
 	Content              string
-	Reasoning           string
+	Reasoning            string
 	ToolCallID           string
 	ToolName             string
 	ToolArgs             string

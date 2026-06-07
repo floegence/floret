@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/provider"
+	"github.com/floegence/floret/session/contextpolicy"
 )
 
 const agentSessionMetadataVersion = 1

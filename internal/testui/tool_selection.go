@@ -5,10 +5,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/floegence/floret/builtintools"
 	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/tools"
+	"github.com/floegence/floret/tools/builtin"
 )
 
 type AgentToolOption struct {
@@ -29,14 +29,14 @@ type AgentToolOption struct {
 }
 
 var agentToolOptions = []AgentToolOption{
-	{Name: builtintools.ToolRead, Title: "Read", Description: "Read files and directories.", Group: "workspace_read", GroupTitle: "Workspace read", Permission: "allow"},
-	{Name: builtintools.ToolList, Title: "List", Description: "List directory entries.", Group: "workspace_read", GroupTitle: "Workspace read", Permission: "allow"},
-	{Name: builtintools.ToolGlob, Title: "Glob", Description: "Find files by path pattern.", Group: "workspace_read", GroupTitle: "Workspace read", Permission: "allow"},
-	{Name: builtintools.ToolGrep, Title: "Grep", Description: "Search file contents.", Group: "workspace_read", GroupTitle: "Workspace read", Permission: "allow"},
-	{Name: builtintools.ToolApplyPatch, Title: "Apply patch", Description: "Apply structured multi-file patches for code edits, renames, and audited local modifications.", Group: "workspace_write", GroupTitle: "Workspace write", Risk: "writes files", Permission: "ask"},
-	{Name: builtintools.ToolWrite, Title: "Write", Description: "Create or overwrite one complete file.", Group: "workspace_write", GroupTitle: "Workspace write", Risk: "overwrites files", Permission: "ask"},
-	{Name: builtintools.ToolShell, Title: "Shell", Description: "Run non-interactive shell commands.", Group: "execution", GroupTitle: "Execution", Risk: "runs commands", Permission: "ask"},
-	{Name: builtintools.ToolWebSearch, Title: "Web search", Description: "Search query via the single selected web search source. This is not URL fetch.", Group: "network", GroupTitle: "Network", Risk: "network", Permission: "ask"},
+	{Name: builtin.ToolRead, Title: "Read", Description: "Read files and directories.", Group: "workspace_read", GroupTitle: "Workspace read", Permission: "allow"},
+	{Name: builtin.ToolList, Title: "List", Description: "List directory entries.", Group: "workspace_read", GroupTitle: "Workspace read", Permission: "allow"},
+	{Name: builtin.ToolGlob, Title: "Glob", Description: "Find files by path pattern.", Group: "workspace_read", GroupTitle: "Workspace read", Permission: "allow"},
+	{Name: builtin.ToolGrep, Title: "Grep", Description: "Search file contents.", Group: "workspace_read", GroupTitle: "Workspace read", Permission: "allow"},
+	{Name: builtin.ToolApplyPatch, Title: "Apply patch", Description: "Apply structured multi-file patches for code edits, renames, and audited local modifications.", Group: "workspace_write", GroupTitle: "Workspace write", Risk: "writes files", Permission: "ask"},
+	{Name: builtin.ToolWrite, Title: "Write", Description: "Create or overwrite one complete file.", Group: "workspace_write", GroupTitle: "Workspace write", Risk: "overwrites files", Permission: "ask"},
+	{Name: builtin.ToolShell, Title: "Shell", Description: "Run non-interactive shell commands.", Group: "execution", GroupTitle: "Execution", Risk: "runs commands", Permission: "ask"},
+	{Name: builtin.ToolWebSearch, Title: "Web search", Description: "Search query via the single selected web search source. This is not URL fetch.", Group: "network", GroupTitle: "Network", Risk: "network", Permission: "ask"},
 }
 
 func agentToolCatalog(profile ProviderProfile, envFile string) []AgentToolOption {
@@ -45,7 +45,7 @@ func agentToolCatalog(profile ProviderProfile, envFile string) []AgentToolOption
 	for i := range out {
 		out[i].Available = true
 		out[i].Kind = "local"
-		if out[i].Name != builtintools.ToolWebSearch {
+		if out[i].Name != builtin.ToolWebSearch {
 			continue
 		}
 		out[i].Kind = "capability"
@@ -97,7 +97,7 @@ func normalizeAgentSessionToolsForProfile(selected []string, legacyMode string, 
 	if err != nil {
 		return nil, err
 	}
-	if !slices.Contains(tools, builtintools.ToolWebSearch) {
+	if !slices.Contains(tools, builtin.ToolWebSearch) {
 		return tools, nil
 	}
 	resolved, err := resolveProfileWebSearch(profile, envFile)
@@ -115,13 +115,13 @@ func selectedToolsForLegacyMode(mode string) []string {
 	case "", "chat":
 		return nil
 	case "read_only":
-		return []string{builtintools.ToolRead, builtintools.ToolList, builtintools.ToolGlob, builtintools.ToolGrep}
+		return []string{builtin.ToolRead, builtin.ToolList, builtin.ToolGlob, builtin.ToolGrep}
 	case "coding":
-		return []string{builtintools.ToolRead, builtintools.ToolList, builtintools.ToolGlob, builtintools.ToolGrep, builtintools.ToolApplyPatch, builtintools.ToolWrite}
+		return []string{builtin.ToolRead, builtin.ToolList, builtin.ToolGlob, builtin.ToolGrep, builtin.ToolApplyPatch, builtin.ToolWrite}
 	case "coding_shell":
-		return []string{builtintools.ToolRead, builtintools.ToolList, builtintools.ToolGlob, builtintools.ToolGrep, builtintools.ToolApplyPatch, builtintools.ToolWrite, builtintools.ToolShell}
+		return []string{builtin.ToolRead, builtin.ToolList, builtin.ToolGlob, builtin.ToolGrep, builtin.ToolApplyPatch, builtin.ToolWrite, builtin.ToolShell}
 	case "network":
-		return []string{builtintools.ToolRead, builtintools.ToolList, builtintools.ToolGlob, builtintools.ToolGrep, builtintools.ToolApplyPatch, builtintools.ToolWrite, builtintools.ToolShell, builtintools.ToolWebSearch}
+		return []string{builtin.ToolRead, builtin.ToolList, builtin.ToolGlob, builtin.ToolGrep, builtin.ToolApplyPatch, builtin.ToolWrite, builtin.ToolShell, builtin.ToolWebSearch}
 	default:
 		return nil
 	}
@@ -135,7 +135,7 @@ func registerAgentSessionTools(registry *tools.Registry, root string, envFile st
 	localSelected := append([]string(nil), selected...)
 	hostedTools := []provider.HostedToolDefinition{}
 	unavailable := []string{}
-	if slices.Contains(localSelected, builtintools.ToolWebSearch) {
+	if slices.Contains(localSelected, builtin.ToolWebSearch) {
 		resolved, err := resolveProfileWebSearch(profile, envFile)
 		if err != nil {
 			return nil, nil, err
@@ -143,10 +143,10 @@ func registerAgentSessionTools(registry *tools.Registry, root string, envFile st
 		hostedTools = append(hostedTools, resolved.HostedTools...)
 		unavailable = append(unavailable, resolved.UnavailableReasons...)
 		if resolved.Source == searchcap.WebSearchProviderHosted {
-			localSelected = removeToolName(localSelected, builtintools.ToolWebSearch)
+			localSelected = removeToolName(localSelected, builtin.ToolWebSearch)
 		}
 		if !resolved.Available {
-			localSelected = removeToolName(localSelected, builtintools.ToolWebSearch)
+			localSelected = removeToolName(localSelected, builtin.ToolWebSearch)
 		}
 	}
 	searchOptions := searchOptionsFromEnvFile(envFile)
@@ -154,9 +154,9 @@ func registerAgentSessionTools(registry *tools.Registry, root string, envFile st
 	// tool. Web search is a search capability; opening URLs or calling HTTP APIs
 	// belongs to shell, MCP, extensions, or user-provided tools with their own
 	// output limits and approval contracts.
-	if err := builtintools.RegisterSelected(registry, builtintools.SelectedOptions{
-		Workspace: builtintools.WorkspaceOptions{Root: root},
-		Shell:     builtintools.ShellOptions{CWD: root},
+	if err := builtin.RegisterSelected(registry, builtin.SelectedOptions{
+		Workspace: builtin.WorkspaceOptions{Root: root},
+		Shell:     builtin.ShellOptions{CWD: root},
 		Search:    searchOptions,
 	}, localSelected...); err != nil {
 		return nil, nil, err
@@ -186,12 +186,12 @@ func searchExposure(resolved searchcap.Resolved) string {
 	}
 }
 
-func searchOptionsFromEnvFile(envFile string) builtintools.SearchOptions {
+func searchOptionsFromEnvFile(envFile string) builtin.SearchOptions {
 	values, err := readDotEnv(envFile)
 	if err != nil {
-		return builtintools.SearchOptions{Provider: "brave"}
+		return builtin.SearchOptions{Provider: "brave"}
 	}
-	return builtintools.SearchOptions{
+	return builtin.SearchOptions{
 		Provider: "brave",
 		APIKey:   values["FLORET_BRAVE_SEARCH_API_KEY"],
 		Endpoint: values["FLORET_BRAVE_SEARCH_ENDPOINT"],

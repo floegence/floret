@@ -7,8 +7,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/floegence/floret/modelcatalog"
 	"github.com/floegence/floret/provider"
+	"github.com/floegence/floret/provider/catalog"
 )
 
 const (
@@ -104,7 +104,7 @@ func AvailableWireShapes() []HostedWireShape {
 }
 
 func SupportedWireShapes(providerID string) []HostedWireShape {
-	capability := modelcatalog.WebSearch(providerID)
+	capability := catalog.WebSearch(providerID)
 	out := make([]HostedWireShape, 0, len(capability.HostedWireShapes))
 	for _, shape := range capability.HostedWireShapes {
 		if hostedShape := HostedWireShape(strings.TrimSpace(shape)); hostedShape != "" {
@@ -191,7 +191,7 @@ func DefaultCapability(providerID string) Capability {
 }
 
 func ProviderPresetCapability(providerID string) Capability {
-	capability := modelcatalog.WebSearch(providerID)
+	capability := catalog.WebSearch(providerID)
 	source := WebSearchSource(strings.TrimSpace(capability.DefaultSource))
 	switch source {
 	case WebSearchProviderHosted:
@@ -276,5 +276,5 @@ func ValidateWireShape(shape HostedWireShape) error {
 }
 
 func defaultHostedWireShape(providerID string) HostedWireShape {
-	return HostedWireShape(strings.TrimSpace(modelcatalog.WebSearch(providerID).HostedWireShape))
+	return HostedWireShape(strings.TrimSpace(catalog.WebSearch(providerID).HostedWireShape))
 }

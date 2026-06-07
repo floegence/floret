@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/contextpolicy"
-	"github.com/floegence/floret/promptcache"
+	"github.com/floegence/floret/provider/cache"
 	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/session/contextpolicy"
 )
 
 var ErrContextOverflow = errors.New("provider context overflow")
@@ -23,8 +23,8 @@ type Request struct {
 	Messages        []session.Message
 	Tools           []ToolDefinition
 	HostedTools     []HostedToolDefinition
-	RawPlan         promptcache.RawPlan
-	Cache           promptcache.CachePolicy
+	RawPlan         cache.RawPlan
+	Cache           cache.CachePolicy
 	ContextPolicy   contextpolicy.Policy
 	ContextUsage    contextpolicy.Usage
 	MaxOutputTokens int64
@@ -224,11 +224,11 @@ type Provider interface {
 }
 
 type CachePolicyNormalizer interface {
-	NormalizeCachePolicy(promptcache.CachePolicy) (promptcache.CachePolicy, error)
+	NormalizeCachePolicy(cache.CachePolicy) (cache.CachePolicy, error)
 }
 
 type CacheRetentionDefault interface {
-	DefaultCacheRetention() promptcache.Retention
+	DefaultCacheRetention() cache.Retention
 }
 
 type PayloadHasher interface {

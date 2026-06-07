@@ -4,26 +4,25 @@ import (
 	"context"
 	"strings"
 
-	"github.com/floegence/floret/adapters"
 	"github.com/floegence/floret/agentharness"
 	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/event"
-	"github.com/floegence/floret/mcpclient"
-	"github.com/floegence/floret/memory"
-	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
+	"github.com/floegence/floret/provider/adapters"
+	"github.com/floegence/floret/provider/cache"
 	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/session/contextpolicy"
 	"github.com/floegence/floret/sessiontree"
-	"github.com/floegence/floret/skills"
 	"github.com/floegence/floret/tools"
+	"github.com/floegence/floret/tools/mcp"
+	"github.com/floegence/floret/tools/skills"
 )
 
 type HarnessOptions struct {
 	Store       sessiontree.Repo
 	Tools       *tools.Registry
-	PromptStore promptcache.Store
+	PromptStore cache.Store
 	Sink        event.Sink
 	Approver    tools.Approver
 	StopHook    engine.StopHook
@@ -34,11 +33,11 @@ type HarnessOptions struct {
 }
 
 type CapabilityOptions struct {
-	MCPServers             []mcpclient.ServerConfig
+	MCPServers             []mcp.ServerConfig
 	SkillSources           []skills.Source
 	SkillsEnabled          bool
 	SkillPromptBudgetBytes int
-	MCPManager             *mcpclient.Manager
+	MCPManager             *mcp.Manager
 }
 
 func NewEngine(cfg config.Config, store session.Store, registry *tools.Registry) (*engine.Engine, error) {
@@ -89,13 +88,13 @@ func NewHarnessWithProviderE(cfg config.Config, p provider.Provider, opts Harnes
 	}
 	promptStore := opts.PromptStore
 	if promptStore == nil {
-		promptStore = promptcache.NewMemoryStore()
+		promptStore = cache.NewMemoryStore()
 		if cfg.PromptCacheDir != "" {
-			promptStore = promptcache.NewFileStore(cfg.PromptCacheDir)
+			promptStore = cache.NewFileStore(cfg.PromptCacheDir)
 		}
 	}
 	turnPolicy := opts.TurnPolicy
-	turnPolicy.ContextPolicy = mergeContextPolicy(turnPolicy.ContextPolicy, cfg.ContextPolicy)
+	turnPolicy.ContextPolicy = contextpolicy.MergeDefaults(turnPolicy.ContextPolicy, cfg.ContextPolicy)
 	if turnPolicy.CacheRetention == "" {
 		turnPolicy.CacheRetention = config.PromptCacheRetention(cfg)
 	}
@@ -147,7 +146,7 @@ func mergeCapabilityOptions(cfg config.Config, explicit CapabilityOptions) Capab
 
 func applyCapabilities(registry *tools.Registry, basePrompt string, capability CapabilityOptions, sink event.Sink) (string, error) {
 	if capability.MCPManager == nil && len(capability.MCPServers) > 0 {
-		capability.MCPManager = mcpclient.NewManager(mcpclient.Options{Sink: mcpEventSink{sink: sink}})
+		capability.MCPManager = mcp.NewManager(mcp.Options{Sink: mcpEventSink{sink: sink}})
 		if err := capability.MCPManager.Start(context.Background(), capability.MCPServers); err != nil {
 			return "", err
 		}
@@ -241,7 +240,7 @@ type mcpEventSink struct {
 	sink event.Sink
 }
 
-func (s mcpEventSink) EmitMCP(diag mcpclient.Diagnostic) {
+func (s mcpEventSink) EmitMCP(diag mcp.Diagnostic) {
 	if s.sink == nil {
 		return
 	}
@@ -268,18 +267,16 @@ func NewEngineWithProvider(cfg config.Config, p provider.Provider, store session
 	if registry == nil {
 		registry = tools.NewRegistry()
 	}
-	promptStore := promptcache.Store(promptcache.NewMemoryStore())
+	promptStore := cache.Store(cache.NewMemoryStore())
 	if cfg.PromptCacheDir != "" {
-		promptStore = promptcache.NewFileStore(cfg.PromptCacheDir)
+		promptStore = cache.NewFileStore(cfg.PromptCacheDir)
 	}
 	return engine.New(engine.Config{
-		Provider: p,
-		Store:    store,
-		Prompt:   promptStore,
-		Memory: &memory.Manager{
-			SystemPrompt: cfg.SystemPrompt,
-		},
-		Tools: registry,
+		Provider:     p,
+		Store:        store,
+		Prompt:       promptStore,
+		SystemPrompt: cfg.SystemPrompt,
+		Tools:        registry,
 		Options: engine.Options{
 			RunID:                   cfg.RunID,
 			SessionID:               cfg.RunID,
@@ -294,48 +291,4 @@ func NewEngineWithProvider(cfg config.Config, p provider.Provider, store session
 			WallTime:                cfg.WallTime,
 		},
 	})
-}
-
-func mergeContextPolicy(primary, fallback contextpolicy.Policy) contextpolicy.Policy {
-	primaryProvided := hasContextPolicyValues(primary)
-	if primary.ContextWindowTokens <= 0 {
-		primary.ContextWindowTokens = fallback.ContextWindowTokens
-	}
-	if primary.MaxOutputTokens <= 0 && !primaryProvided {
-		primary.MaxOutputTokens = fallback.MaxOutputTokens
-	}
-	if primary.ReservedOutputTokens <= 0 {
-		primary.ReservedOutputTokens = fallback.ReservedOutputTokens
-	}
-	if primary.ReservedSummaryTokens <= 0 {
-		primary.ReservedSummaryTokens = fallback.ReservedSummaryTokens
-	}
-	if primary.RecentTailTokens <= 0 {
-		primary.RecentTailTokens = fallback.RecentTailTokens
-	}
-	if primary.RecentUserTokens <= 0 {
-		primary.RecentUserTokens = fallback.RecentUserTokens
-	}
-	if primary.EstimatorSource == "" {
-		primary.EstimatorSource = fallback.EstimatorSource
-	}
-	if primary.MaxCompactionFailures <= 0 {
-		primary.MaxCompactionFailures = fallback.MaxCompactionFailures
-	}
-	if primary.MicrocompactToolTokens <= 0 {
-		primary.MicrocompactToolTokens = fallback.MicrocompactToolTokens
-	}
-	return primary
-}
-
-func hasContextPolicyValues(policy contextpolicy.Policy) bool {
-	return policy.ContextWindowTokens > 0 ||
-		policy.MaxOutputTokens > 0 ||
-		policy.ReservedOutputTokens > 0 ||
-		policy.ReservedSummaryTokens > 0 ||
-		policy.RecentTailTokens > 0 ||
-		policy.RecentUserTokens > 0 ||
-		policy.EstimatorSource != "" ||
-		policy.MaxCompactionFailures > 0 ||
-		policy.MicrocompactToolTokens > 0
 }

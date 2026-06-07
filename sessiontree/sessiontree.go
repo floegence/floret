@@ -16,10 +16,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/compaction"
-	"github.com/floegence/floret/contextpolicy"
-	"github.com/floegence/floret/control"
+	"github.com/floegence/floret/internal/control"
 	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/session/compaction"
+	"github.com/floegence/floret/session/contextpolicy"
 )
 
 type EntryType string

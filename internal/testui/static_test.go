@@ -35,7 +35,7 @@ func TestStaticConsoleToolSelectionSemanticsStayAuditable(t *testing.T) {
 	appJS := readStaticTestFile(t, "app.js")
 	newSession := readStaticTestFile(t, "views", "newSession.js")
 	toolSelection := readRepoTestFile(t, "internal", "testui", "tool_selection.go")
-	shellTool := readRepoTestFile(t, "builtintools", "shell.go")
+	shellTool := readRepoTestFile(t, "tools", "builtin", "shell.go")
 
 	if !strings.Contains(stateJS, `case "all":`) || !strings.Contains(stateJS, "availableTools.map((tool) => tool.name)") || !strings.Contains(stateJS, "tool.available !== false") {
 		t.Fatalf("All preset should derive from available server tool catalog entries")

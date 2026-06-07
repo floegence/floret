@@ -17,29 +17,28 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/adapters"
 	"github.com/floegence/floret/agentharness"
-	"github.com/floegence/floret/builtintools"
-	"github.com/floegence/floret/compaction"
 	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/contextpolicy"
-	"github.com/floegence/floret/control"
 	"github.com/floegence/floret/engine"
-	"github.com/floegence/floret/eval"
 	"github.com/floegence/floret/event"
-	"github.com/floegence/floret/harness"
+	"github.com/floegence/floret/internal/control"
 	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/internal/sessionlifecycle"
-	"github.com/floegence/floret/mcpclient"
-	"github.com/floegence/floret/memory"
-	"github.com/floegence/floret/modelcatalog"
-	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
+	"github.com/floegence/floret/provider/adapters"
+	"github.com/floegence/floret/provider/cache"
+	"github.com/floegence/floret/provider/catalog"
+	"github.com/floegence/floret/runtime/storage/sqlite"
 	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/session/compaction"
+	"github.com/floegence/floret/session/contextpolicy"
 	"github.com/floegence/floret/sessiontree"
-	"github.com/floegence/floret/skills"
-	"github.com/floegence/floret/sqlitestore"
+	"github.com/floegence/floret/testing/eval"
+	"github.com/floegence/floret/testing/harness"
 	"github.com/floegence/floret/tools"
+	"github.com/floegence/floret/tools/builtin"
+	"github.com/floegence/floret/tools/mcp"
+	"github.com/floegence/floret/tools/skills"
 )
 
 const (
@@ -70,7 +69,7 @@ type Runner struct {
 	StorageMode         string
 	StoragePath         string
 	StorageImportLegacy bool
-	storageSQLite       *sqlitestore.Store
+	storageSQLite       *sqlite.Store
 	storageMemory       *memoryStorage
 }
 
@@ -104,14 +103,14 @@ type agentSession struct {
 	hostedTools             []provider.HostedToolDefinition
 	unavailableCapabilities []string
 	capabilities            CapabilityState
-	mcpManager              *mcpclient.Manager
+	mcpManager              *mcp.Manager
 	contextPolicy           contextpolicy.Policy
 	cfg                     config.Config
 	provider                *observingProvider
 	recorder                agentEventRecorder
 	harnessRecorder         agentHarnessRecorder
 	repo                    sessiontree.Repo
-	promptStore             promptcache.Store
+	promptStore             cache.Store
 	registry                *tools.Registry
 	harness                 *agentharness.AgentHarness
 	thread                  *agentharness.Thread
@@ -131,7 +130,7 @@ type agentSessionRuntime struct {
 	hostedTools             []provider.HostedToolDefinition
 	unavailableCapabilities []string
 	capabilities            CapabilityState
-	mcpManager              *mcpclient.Manager
+	mcpManager              *mcp.Manager
 	harness                 *agentharness.AgentHarness
 	thread                  *agentharness.Thread
 	nextID                  func(string) string
@@ -190,7 +189,7 @@ func (r *Runner) ConfigInfo() ConfigInfo {
 }
 
 func (r Runner) Catalog() []CatalogProvider {
-	return modelcatalog.Providers()
+	return catalog.Providers()
 }
 
 func (r *Runner) RunAgent(ctx context.Context, req AgentRunRequest) AgentRunResponse {
@@ -275,12 +274,12 @@ func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeR
 	}
 	probe := *r
 	probe.ProviderFactory = func(config.Config) (provider.Provider, error) {
-		if slices.Contains(selectedTools, builtintools.ToolList) {
+		if slices.Contains(selectedTools, builtin.ToolList) {
 			return harness.NewScriptedProvider(
 				harness.Step(
 					provider.StreamEvent{Type: provider.Reasoning, Text: "Inspect selected tool contract."},
 					harness.Text("Checking selected tool definitions before running a low-risk read probe."),
-					harness.Tool("probe-list", builtintools.ToolList, `{"path":null,"limit":5}`),
+					harness.Tool("probe-list", builtin.ToolList, `{"path":null,"limit":5}`),
 					harness.DoneReason("tool_calls"),
 				),
 				harness.Step(
@@ -831,10 +830,10 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 	}
 	observed := newObservingProvider(p)
 	var repo sessiontree.Repo
-	var promptStore promptcache.Store
+	var promptStore cache.Store
 	if opts.Transient {
 		repo = sessiontree.NewMemoryRepo()
-		promptStore = promptcache.NewMemoryStore()
+		promptStore = cache.NewMemoryStore()
 	} else {
 		store, err := r.sessionStorage(ctx)
 		if err != nil {
@@ -958,7 +957,7 @@ func testUIToolApprover(_ context.Context, req tools.ApprovalRequest) (tools.Per
 	return tools.PermissionDecisionAllow, nil
 }
 
-func (r *Runner) registerAgentCapabilities(registry *tools.Registry, sink event.Sink) (CapabilityState, string, *mcpclient.Manager, error) {
+func (r *Runner) registerAgentCapabilities(registry *tools.Registry, sink event.Sink) (CapabilityState, string, *mcp.Manager, error) {
 	state := CapabilityState{}
 	cfg, err := config.Load(config.WithPath(r.EnvFile))
 	if err != nil {
@@ -967,9 +966,9 @@ func (r *Runner) registerAgentCapabilities(registry *tools.Registry, sink event.
 	}
 	mcpConfigured, mcpServers, mcpDiagnostics := r.loadMCPServersFromEnv()
 	state.Diagnostics = append(state.Diagnostics, mcpDiagnostics...)
-	var manager *mcpclient.Manager
+	var manager *mcp.Manager
 	if mcpConfigured {
-		manager = mcpclient.NewManager(mcpclient.Options{Sink: testUIMCPSink{sink: sink}})
+		manager = mcp.NewManager(mcp.Options{Sink: testUIMCPSink{sink: sink}})
 		if err := manager.Start(context.Background(), mcpServers); err != nil {
 			state.Diagnostics = append(state.Diagnostics, CapabilityDiagnostic{Kind: "mcp_required_failed", Message: err.Error(), NextAction: "Fix or disable the required MCP server in FLORET_MCP_CONFIG."})
 			_ = manager.Close()
@@ -1080,7 +1079,7 @@ type testUIMCPSink struct {
 	sink event.Sink
 }
 
-func (s testUIMCPSink) EmitMCP(diag mcpclient.Diagnostic) {
+func (s testUIMCPSink) EmitMCP(diag mcp.Diagnostic) {
 	if s.sink == nil {
 		return
 	}
@@ -1098,10 +1097,10 @@ func (s testUIMCPSink) EmitMCP(diag mcpclient.Diagnostic) {
 }
 
 type mcpConfigFile struct {
-	Servers []mcpclient.ServerConfig `json:"servers"`
+	Servers []mcp.ServerConfig `json:"servers"`
 }
 
-func (r *Runner) loadMCPServersFromEnv() (bool, []mcpclient.ServerConfig, []CapabilityDiagnostic) {
+func (r *Runner) loadMCPServersFromEnv() (bool, []mcp.ServerConfig, []CapabilityDiagnostic) {
 	values, err := readDotEnv(r.EnvFile)
 	if err != nil && !os.IsNotExist(err) {
 		return false, nil, []CapabilityDiagnostic{{Kind: "mcp_config_unreadable", Capability: "mcp", Message: err.Error(), NextAction: "Fix .env.local before configuring MCP servers."}}
@@ -1117,7 +1116,7 @@ func (r *Runner) loadMCPServersFromEnv() (bool, []mcpclient.ServerConfig, []Capa
 	if err != nil {
 		return true, nil, []CapabilityDiagnostic{{Kind: "mcp_config_unreadable", Capability: "mcp", Message: err.Error(), NextAction: "Create the host-managed MCP config file or update FLORET_MCP_CONFIG."}}
 	}
-	var servers []mcpclient.ServerConfig
+	var servers []mcp.ServerConfig
 	if err := json.Unmarshal(data, &servers); err != nil {
 		var wrapped mcpConfigFile
 		if wrappedErr := json.Unmarshal(data, &wrapped); wrappedErr != nil {
@@ -1131,12 +1130,12 @@ func (r *Runner) loadMCPServersFromEnv() (bool, []mcpclient.ServerConfig, []Capa
 	return true, servers, nil
 }
 
-func mcpCapabilityStates(snapshots []mcpclient.Snapshot) []MCPCapabilityState {
+func mcpCapabilityStates(snapshots []mcp.Snapshot) []MCPCapabilityState {
 	out := make([]MCPCapabilityState, 0, len(snapshots))
 	for _, snapshot := range snapshots {
 		nextAction := ""
 		failure := ""
-		if snapshot.Status == mcpclient.StatusFailed {
+		if snapshot.Status == mcp.StatusFailed {
 			failure = "connection_failed"
 			nextAction = "Check that the downstream host installed and enabled this MCP server."
 		}
@@ -2199,7 +2198,7 @@ func (r Runner) runEvalDemo(ctx context.Context, resp RunResponse) RunResponse {
 	}
 	rec := &event.Recorder{}
 	registry := tools.NewRegistry()
-	if err := builtintools.RegisterWorkspaceMutation(registry, builtintools.WorkspaceOptions{Root: workspace}); err != nil {
+	if err := builtin.RegisterWorkspaceMutation(registry, builtin.WorkspaceOptions{Root: workspace}); err != nil {
 		return r.failAgent(resp, err)
 	}
 	prov := harness.NewScriptedProvider(
@@ -2215,11 +2214,11 @@ func (r Runner) runEvalDemo(ctx context.Context, resp RunResponse) RunResponse {
 		),
 	)
 	eng, err := engine.New(engine.Config{
-		Provider: prov,
-		Store:    session.NewMemoryStore(),
-		Memory:   &memory.Manager{SystemPrompt: "You are a deterministic Floret eval agent."},
-		Tools:    registry,
-		Sink:     rec,
+		Provider:     prov,
+		Store:        session.NewMemoryStore(),
+		SystemPrompt: "You are a deterministic Floret eval agent.",
+		Tools:        registry,
+		Sink:         rec,
 		Approver: func(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {
 			return tools.PermissionDecisionAllow, nil
 		},
@@ -2300,14 +2299,12 @@ func (r Runner) runProviderSmoke(ctx context.Context, resp RunResponse) RunRespo
 	}
 	promptStore := store.prompt(r.Root)
 	eng, err := engine.New(engine.Config{
-		Provider: p,
-		Store:    session.NewMemoryStore(),
-		Prompt:   promptStore,
-		Memory: &memory.Manager{
-			SystemPrompt: "You are Floret's smoke-test assistant. Reply with a short success message. Do not call normal tools unless you need to ask the user for missing information.",
-		},
-		Tools: registry,
-		Sink:  rec,
+		Provider:     p,
+		Store:        session.NewMemoryStore(),
+		Prompt:       promptStore,
+		SystemPrompt: "You are Floret's smoke-test assistant. Reply with a short success message. Do not call normal tools unless you need to ask the user for missing information.",
+		Tools:        registry,
+		Sink:         rec,
 		Options: engine.Options{
 			RunID:                   cfg.RunID,
 			SessionID:               cfg.RunID,

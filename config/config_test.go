@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/contextpolicy"
+	"github.com/floegence/floret/session/contextpolicy"
 )
 
 func TestLoadDefaultsToFakeProvider(t *testing.T) {

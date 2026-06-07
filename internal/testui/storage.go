@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/promptcache"
+	"github.com/floegence/floret/provider/cache"
+	floretstorage "github.com/floegence/floret/runtime/storage"
+	"github.com/floegence/floret/runtime/storage/sqlite"
 	"github.com/floegence/floret/sessiontree"
-	"github.com/floegence/floret/sqlitestore"
-	floretstorage "github.com/floegence/floret/storage"
 )
 
 const (
@@ -35,13 +35,13 @@ type storageStatus struct {
 type testUIStorage struct {
 	mode   string
 	path   string
-	sqlite *sqlitestore.Store
+	sqlite *sqlite.Store
 	memory *memoryStorage
 }
 
 type memoryStorage struct {
 	repo     *sessiontree.MemoryRepo
-	prompt   *promptcache.MemoryStore
+	prompt   *cache.MemoryStore
 	metadata map[string]agentSessionMetadata
 }
 
@@ -66,7 +66,7 @@ func (r Runner) storagePath() string {
 	if strings.TrimSpace(r.StoragePath) != "" {
 		return r.StoragePath
 	}
-	return sqlitestore.DefaultTestUIPath(r.Root)
+	return sqlite.DefaultTestUIPath(r.Root)
 }
 
 func (r *Runner) sessionStorage(ctx context.Context) (*testUIStorage, error) {
@@ -75,7 +75,7 @@ func (r *Runner) sessionStorage(ctx context.Context) (*testUIStorage, error) {
 		if r.storageMemory == nil {
 			r.storageMemory = &memoryStorage{
 				repo:     sessiontree.NewMemoryRepo(),
-				prompt:   promptcache.NewMemoryStore(),
+				prompt:   cache.NewMemoryStore(),
 				metadata: map[string]agentSessionMetadata{},
 			}
 		}
@@ -87,7 +87,7 @@ func (r *Runner) sessionStorage(ctx context.Context) (*testUIStorage, error) {
 	if r.storageSQLite != nil {
 		return &testUIStorage{mode: mode, path: r.storageSQLite.DBPath(), sqlite: r.storageSQLite}, nil
 	}
-	store, err := sqlitestore.Open(r.storagePath())
+	store, err := sqlite.Open(r.storagePath())
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +101,7 @@ func (r *Runner) sessionStorage(ctx context.Context) (*testUIStorage, error) {
 	return &testUIStorage{mode: mode, path: store.DBPath(), sqlite: store}, nil
 }
 
-func (r *Runner) importLegacyStorage(ctx context.Context, store *sqlitestore.Store) error {
+func (r *Runner) importLegacyStorage(ctx context.Context, store *sqlite.Store) error {
 	if _, err := store.MetaValue(ctx, "legacy_testui_imported_at"); err == nil {
 		return nil
 	} else if !errors.Is(err, floretstorage.ErrMetadataNotFound) {
@@ -160,14 +160,14 @@ func (s *testUIStorage) repo(root string) sessiontree.Repo {
 	}
 }
 
-func (s *testUIStorage) prompt(root string) promptcache.Store {
+func (s *testUIStorage) prompt(root string) cache.Store {
 	switch s.mode {
 	case StorageModeSQLite:
 		return s.sqlite
 	case StorageModeMemory:
 		return s.memory.prompt
 	default:
-		return promptcache.NewFileStore(filepath.Join(root, ".floret-test-ui", "prompt-cache"))
+		return cache.NewFileStore(filepath.Join(root, ".floret-test-ui", "prompt-cache"))
 	}
 }
 

@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
+	"github.com/floegence/floret/provider/cache"
 	"github.com/floegence/floret/session"
 )
 
@@ -30,18 +30,18 @@ func (p *observingProvider) SetStreamSink(sink AgentStreamSink) {
 	p.sink = sink
 }
 
-func (p *observingProvider) NormalizeCachePolicy(policy promptcache.CachePolicy) (promptcache.CachePolicy, error) {
+func (p *observingProvider) NormalizeCachePolicy(policy cache.CachePolicy) (cache.CachePolicy, error) {
 	if normalizer, ok := p.inner.(provider.CachePolicyNormalizer); ok {
 		return normalizer.NormalizeCachePolicy(policy)
 	}
 	return policy, nil
 }
 
-func (p *observingProvider) DefaultCacheRetention() promptcache.Retention {
+func (p *observingProvider) DefaultCacheRetention() cache.Retention {
 	if defaults, ok := p.inner.(provider.CacheRetentionDefault); ok {
 		return defaults.DefaultCacheRetention()
 	}
-	return promptcache.RetentionInMemory
+	return cache.RetentionInMemory
 }
 
 func (p *observingProvider) PayloadHash(req provider.Request) (string, error) {
@@ -51,15 +51,15 @@ func (p *observingProvider) PayloadHash(req provider.Request) (string, error) {
 	return req.RawPlan.PayloadHash, nil
 }
 
-func (p *observingProvider) MessageRaw(kind promptcache.SegmentKind, msg session.Message) (string, string, error) {
-	if renderer, ok := p.inner.(promptcache.Renderer); ok {
+func (p *observingProvider) MessageRaw(kind cache.SegmentKind, msg session.Message) (string, string, error) {
+	if renderer, ok := p.inner.(cache.Renderer); ok {
 		return renderer.MessageRaw(kind, msg)
 	}
 	return "", "", nil
 }
 
-func (p *observingProvider) ToolRaw(def promptcache.ToolDefinition) (string, string, error) {
-	if renderer, ok := p.inner.(promptcache.Renderer); ok {
+func (p *observingProvider) ToolRaw(def cache.ToolDefinition) (string, string, error) {
+	if renderer, ok := p.inner.(cache.Renderer); ok {
 		return renderer.ToolRaw(def)
 	}
 	return "", "", nil
@@ -228,7 +228,7 @@ func observedTurnID(req provider.Request) string {
 	return req.RunID
 }
 
-func observeRawSegments(plan promptcache.RawPlan) []ObservedRawSegment {
+func observeRawSegments(plan cache.RawPlan) []ObservedRawSegment {
 	out := make([]ObservedRawSegment, 0, len(plan.Segments))
 	for i, seg := range plan.Segments {
 		reused := false

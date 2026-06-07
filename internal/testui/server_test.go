@@ -15,11 +15,11 @@ import (
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/event"
-	"github.com/floegence/floret/harness"
 	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/internal/sessionlifecycle"
-	"github.com/floegence/floret/modelcatalog"
 	"github.com/floegence/floret/provider"
+	"github.com/floegence/floret/provider/catalog"
+	"github.com/floegence/floret/testing/harness"
 )
 
 func TestServerExposesConfigAndRunAPI(t *testing.T) {
@@ -790,7 +790,7 @@ func TestServerAgentInterfaceProbeUsesSelectedProfileWebSearchSource(t *testing.
 			{
 				ID:        "hosted",
 				Name:      "Hosted",
-				Provider:  modelcatalog.ProviderOpenAI,
+				Provider:  catalog.ProviderOpenAI,
 				Model:     "gpt-5.4",
 				WebSearch: searchcap.Capability{Source: searchcap.WebSearchProviderHosted, Hosted: searchcap.HostedConfig{WireShape: searchcap.WireShapeOpenAIChatWebSearchOptions}},
 			},

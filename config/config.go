@@ -8,16 +8,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/contextpolicy"
-	"github.com/floegence/floret/modelcatalog"
-	"github.com/floegence/floret/promptcache"
+	"github.com/floegence/floret/provider/cache"
+	"github.com/floegence/floret/provider/catalog"
+	"github.com/floegence/floret/session/contextpolicy"
 )
 
 const (
 	DefaultEnvFile = ".env.local"
 
-	ProviderFake             = modelcatalog.ProviderFake
-	ProviderOpenAICompatible = modelcatalog.ProviderOpenAICompatible
+	ProviderFake             = catalog.ProviderFake
+	ProviderOpenAICompatible = catalog.ProviderOpenAICompatible
 )
 
 type Config struct {
@@ -84,15 +84,15 @@ func Load(opts ...Option) (Config, error) {
 }
 
 func fromValues(values map[string]string) (Config, error) {
-	providerName := modelcatalog.NormalizeProvider(get(values, "FLORET_PROVIDER", ProviderFake))
+	providerName := catalog.NormalizeProvider(get(values, "FLORET_PROVIDER", ProviderFake))
 	defaultModel := "fake-model"
-	if model, ok := modelcatalog.DefaultModel(providerName); ok {
+	if model, ok := catalog.DefaultModel(providerName); ok {
 		defaultModel = model.ID
 	}
 	cfg := Config{
 		Provider:                providerName,
 		Model:                   get(values, "FLORET_MODEL", defaultModel),
-		BaseURL:                 get(values, "FLORET_BASE_URL", modelcatalog.DefaultBaseURL(providerName)),
+		BaseURL:                 get(values, "FLORET_BASE_URL", catalog.DefaultBaseURL(providerName)),
 		APIKey:                  firstConfiguredAPIKey(values, providerName),
 		FakeResponse:            get(values, "FLORET_FAKE_RESPONSE", "ok"),
 		RunID:                   get(values, "FLORET_RUN_ID", "default"),
@@ -101,7 +101,7 @@ func fromValues(values map[string]string) (Config, error) {
 		SystemPrompt:            get(values, "FLORET_SYSTEM_PROMPT", "You are Floret."),
 		SkillSources:            splitList(get(values, "FLORET_SKILLS_PATHS", "")),
 		SkillPromptBudgetBytes:  16 * 1024,
-		ContextPolicy:           modelcatalog.ContextPolicy(providerName, get(values, "FLORET_MODEL", defaultModel)),
+		ContextPolicy:           catalog.ContextPolicy(providerName, get(values, "FLORET_MODEL", defaultModel)),
 		MaxEmptyProviderRetries: 1,
 		NoProgressLimit:         2,
 		DuplicateToolLimit:      3,
@@ -159,19 +159,19 @@ func Resolve(cfg Config, environ map[string]string) (Config, error) {
 	if environ == nil {
 		environ = processEnviron()
 	}
-	cfg.Provider = modelcatalog.NormalizeProvider(cfg.Provider)
+	cfg.Provider = catalog.NormalizeProvider(cfg.Provider)
 	if cfg.Provider == "" {
 		cfg.Provider = ProviderFake
 	}
 	if cfg.Model == "" {
-		if model, ok := modelcatalog.DefaultModel(cfg.Provider); ok {
+		if model, ok := catalog.DefaultModel(cfg.Provider); ok {
 			cfg.Model = model.ID
 		} else {
 			cfg.Model = "fake-model"
 		}
 	}
 	if cfg.BaseURL == "" {
-		cfg.BaseURL = modelcatalog.DefaultBaseURL(cfg.Provider)
+		cfg.BaseURL = catalog.DefaultBaseURL(cfg.Provider)
 	}
 	if cfg.APIKey == "" {
 		cfg.APIKey = firstConfiguredAPIKey(environ, cfg.Provider)
@@ -185,8 +185,8 @@ func Resolve(cfg Config, environ map[string]string) (Config, error) {
 	if cfg.SkillPromptBudgetBytes <= 0 {
 		cfg.SkillPromptBudgetBytes = 16 * 1024
 	}
-	defaultPolicy := modelcatalog.ContextPolicy(cfg.Provider, cfg.Model)
-	contextPolicyProvided := hasContextPolicyValues(cfg.ContextPolicy)
+	defaultPolicy := catalog.ContextPolicy(cfg.Provider, cfg.Model)
+	contextPolicyProvided := contextpolicy.HasValues(cfg.ContextPolicy)
 	if cfg.ContextPolicy.ContextWindowTokens <= 0 {
 		cfg.ContextPolicy.ContextWindowTokens = defaultPolicy.ContextWindowTokens
 	}
@@ -196,27 +196,15 @@ func Resolve(cfg Config, environ map[string]string) (Config, error) {
 	return validate(cfg)
 }
 
-func hasContextPolicyValues(policy contextpolicy.Policy) bool {
-	return policy.ContextWindowTokens > 0 ||
-		policy.MaxOutputTokens > 0 ||
-		policy.ReservedOutputTokens > 0 ||
-		policy.ReservedSummaryTokens > 0 ||
-		policy.RecentTailTokens > 0 ||
-		policy.RecentUserTokens > 0 ||
-		policy.EstimatorSource != "" ||
-		policy.MaxCompactionFailures > 0 ||
-		policy.MicrocompactToolTokens > 0
-}
-
 func defaultPromptCacheRetention(providerName string) string {
-	if modelcatalog.NormalizeProvider(providerName) == modelcatalog.ProviderAnthropic {
-		return string(promptcache.RetentionShort)
+	if catalog.NormalizeProvider(providerName) == catalog.ProviderAnthropic {
+		return string(cache.RetentionShort)
 	}
-	return string(promptcache.RetentionInMemory)
+	return string(cache.RetentionInMemory)
 }
 
 func validate(cfg Config) (Config, error) {
-	if !modelcatalog.SupportsProvider(cfg.Provider) {
+	if !catalog.SupportsProvider(cfg.Provider) {
 		return Config{}, fmt.Errorf("unsupported provider %q", cfg.Provider)
 	}
 	if cfg.Model == "" {
@@ -226,7 +214,7 @@ func validate(cfg Config) (Config, error) {
 		return Config{}, fmt.Errorf("FLORET_BASE_URL is required for provider %q", cfg.Provider)
 	}
 	if requiresAPIKey(cfg.Provider) && cfg.APIKey == "" {
-		keys := append([]string{"FLORET_API_KEY"}, modelcatalog.EnvKeys(cfg.Provider)...)
+		keys := append([]string{"FLORET_API_KEY"}, catalog.EnvKeys(cfg.Provider)...)
 		return Config{}, fmt.Errorf("FLORET_API_KEY or one of %s is required for provider %q", strings.Join(unique(keys), ", "), cfg.Provider)
 	}
 	if _, err := normalizePromptCacheRetention(cfg.PromptCacheRetention); err != nil {
@@ -236,21 +224,21 @@ func validate(cfg Config) (Config, error) {
 	return cfg, nil
 }
 
-func PromptCacheRetention(cfg Config) promptcache.Retention {
+func PromptCacheRetention(cfg Config) cache.Retention {
 	retention, err := normalizePromptCacheRetention(cfg.PromptCacheRetention)
 	if err != nil {
-		return promptcache.RetentionInMemory
+		return cache.RetentionInMemory
 	}
 	return retention
 }
 
-func normalizePromptCacheRetention(value string) (promptcache.Retention, error) {
-	retention := promptcache.Retention(strings.TrimSpace(value))
+func normalizePromptCacheRetention(value string) (cache.Retention, error) {
+	retention := cache.Retention(strings.TrimSpace(value))
 	if retention == "" {
-		return promptcache.RetentionInMemory, nil
+		return cache.RetentionInMemory, nil
 	}
 	switch retention {
-	case promptcache.RetentionNone, promptcache.RetentionInMemory, promptcache.RetentionShort, promptcache.RetentionLong, promptcache.RetentionDay:
+	case cache.RetentionNone, cache.RetentionInMemory, cache.RetentionShort, cache.RetentionLong, cache.RetentionDay:
 		return retention, nil
 	default:
 		return "", fmt.Errorf("unsupported FLORET_PROMPT_CACHE_RETENTION %q", value)
@@ -258,7 +246,7 @@ func normalizePromptCacheRetention(value string) (promptcache.Retention, error) 
 }
 
 func firstConfiguredAPIKey(values map[string]string, providerName string) string {
-	keys := append([]string{"FLORET_API_KEY"}, modelcatalog.EnvKeys(providerName)...)
+	keys := append([]string{"FLORET_API_KEY"}, catalog.EnvKeys(providerName)...)
 	for _, key := range unique(keys) {
 		if value := strings.TrimSpace(values[key]); value != "" {
 			return value
@@ -268,13 +256,13 @@ func firstConfiguredAPIKey(values map[string]string, providerName string) string
 }
 
 func requiresBaseURL(providerName string) bool {
-	api := modelcatalog.APIKind(providerName)
-	return api == modelcatalog.APIOpenAIChat || api == modelcatalog.APIAnthropicMessages
+	api := catalog.APIKind(providerName)
+	return api == catalog.APIOpenAIChat || api == catalog.APIAnthropicMessages
 }
 
 func requiresAPIKey(providerName string) bool {
 	switch providerName {
-	case modelcatalog.ProviderFake, modelcatalog.ProviderOllama:
+	case catalog.ProviderFake, catalog.ProviderOllama:
 		return false
 	default:
 		return requiresBaseURL(providerName)

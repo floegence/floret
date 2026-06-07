@@ -10,15 +10,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/compaction"
-	"github.com/floegence/floret/contextpolicy"
 	"github.com/floegence/floret/engine"
+	enginecompaction "github.com/floegence/floret/engine/compaction"
 	"github.com/floegence/floret/event"
 	"github.com/floegence/floret/internal/sessionlifecycle"
-	"github.com/floegence/floret/memory"
-	"github.com/floegence/floret/promptcache"
 	"github.com/floegence/floret/provider"
+	"github.com/floegence/floret/provider/cache"
 	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/session/compaction"
+	"github.com/floegence/floret/session/contextpolicy"
 	"github.com/floegence/floret/sessiontree"
 	"github.com/floegence/floret/tools"
 )
@@ -71,7 +71,7 @@ type Options struct {
 	Model               string
 	SystemPrompt        string
 	Tools               *tools.Registry
-	PromptStore         promptcache.Store
+	PromptStore         cache.Store
 	Repo                sessiontree.Repo
 	Sink                event.Sink
 	HarnessSink         HarnessSink
@@ -86,7 +86,7 @@ type Options struct {
 
 type TurnPolicy struct {
 	ContextPolicy         contextpolicy.Policy
-	CacheRetention        promptcache.Retention
+	CacheRetention        cache.Retention
 	HostedToolDefinitions []provider.HostedToolDefinition
 	CompletionPolicy      engine.CompletionPolicy
 }
@@ -191,7 +191,7 @@ func New(options Options) *AgentHarness {
 		options.Repo = sessiontree.NewMemoryRepo()
 	}
 	if options.PromptStore == nil {
-		options.PromptStore = promptcache.NewMemoryStore()
+		options.PromptStore = cache.NewMemoryStore()
 	}
 	if options.Tools == nil {
 		options.Tools = tools.NewRegistry()
@@ -573,16 +573,14 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	engineOptions.Model = t.harness.options.Model
 	engineOptions.ContextPolicy = contextpolicy.Normalize(engineOptions.ContextPolicy)
 	eng, err := engine.New(engine.Config{
-		Provider: t.harness.options.Provider,
-		Tools:    t.harness.options.Tools,
-		Prompt:   t.harness.options.PromptStore,
-		Memory: &memory.Manager{
-			SystemPrompt: t.harness.options.SystemPrompt,
-		},
-		Approver:  t.harness.options.Approver,
-		StopHook:  t.harness.options.StopHook,
-		Compactor: &durableCompactionManager{thread: t, turnID: turnID},
-		Options:   engineOptions,
+		Provider:     t.harness.options.Provider,
+		Tools:        t.harness.options.Tools,
+		Prompt:       t.harness.options.PromptStore,
+		SystemPrompt: t.harness.options.SystemPrompt,
+		Approver:     t.harness.options.Approver,
+		StopHook:     t.harness.options.StopHook,
+		Compactor:    &durableCompactionManager{thread: t, turnID: turnID},
+		Options:      engineOptions,
 	})
 	if err != nil {
 		persistCtx, cancelPersist := turnFinalizationContext(ctx)
@@ -985,12 +983,11 @@ func (m *durableCompactionManager) Compact(ctx context.Context, req engine.Compa
 	}
 	generator := m.thread.harness.options.CompactionGenerator
 	if generator == nil {
-		generator = compaction.ProviderSummaryGenerator{
+		generator = enginecompaction.ProviderSummaryGenerator{
 			Provider:     req.Provider,
 			ProviderName: req.ProviderName,
 			Model:        req.Model,
 			Policy:       req.Policy,
-			Fallback:     compaction.ExtractiveSummaryGenerator{},
 		}
 	}
 	compactionID := m.thread.harness.nextID("compaction")

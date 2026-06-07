@@ -4,35 +4,180 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 )
 
+const modulePath = "github.com/floegence/floret"
+
 func TestImportBoundaries(t *testing.T) {
-	root := "."
 	for _, rule := range []struct {
-		pkg       string
+		name      string
+		dir       string
+		recursive bool
 		forbidden []string
 	}{
-		{pkg: "tools", forbidden: []string{"github.com/floegence/floret/engine", "github.com/floegence/floret/event", "github.com/floegence/floret/sessiontree", "github.com/floegence/floret/promptcache", "github.com/floegence/floret/internal/testui"}},
-		{pkg: "builtintools", forbidden: []string{"github.com/floegence/floret/engine", "github.com/floegence/floret/adapters", "github.com/floegence/floret/sessiontree", "github.com/floegence/floret/promptcache", "github.com/floegence/floret/internal/testui"}},
-		{pkg: "engine", forbidden: []string{"github.com/floegence/floret/builtintools", "github.com/floegence/floret/internal/sessionlifecycle", "github.com/floegence/floret/mcpclient", "github.com/floegence/floret/skills"}},
-		{pkg: "agentharness", forbidden: []string{"github.com/floegence/floret/mcpclient", "github.com/floegence/floret/skills"}},
-		{pkg: "mcpclient", forbidden: []string{"github.com/floegence/floret/engine", "github.com/floegence/floret/agentharness", "github.com/floegence/floret/sessiontree", "github.com/floegence/floret/internal/testui"}},
-		{pkg: "skills", forbidden: []string{"github.com/floegence/floret/engine", "github.com/floegence/floret/agentharness", "github.com/floegence/floret/sessiontree", "github.com/floegence/floret/internal/testui"}},
-		{pkg: "sessiontree", forbidden: []string{"github.com/floegence/floret/internal/sessionlifecycle"}},
-		{pkg: "adapters", forbidden: []string{"github.com/floegence/floret/builtintools"}},
+		{name: "tools", dir: "tools", forbidden: []string{modulePath + "/engine", modulePath + "/event", modulePath + "/provider/cache", modulePath + "/sessiontree", modulePath + "/tools/builtin", modulePath + "/tools/mcp", modulePath + "/tools/skills", modulePath + "/internal/testui"}},
+		{name: "tools/builtin", dir: filepath.Join("tools", "builtin"), recursive: true, forbidden: []string{modulePath + "/engine", modulePath + "/provider/adapters", modulePath + "/provider/cache", modulePath + "/sessiontree", modulePath + "/internal/testui"}},
+		{name: "tools/mcp", dir: filepath.Join("tools", "mcp"), recursive: true, forbidden: []string{modulePath + "/engine", modulePath + "/agentharness", modulePath + "/sessiontree", modulePath + "/internal/testui"}},
+		{name: "tools/skills", dir: filepath.Join("tools", "skills"), recursive: true, forbidden: []string{modulePath + "/engine", modulePath + "/agentharness", modulePath + "/sessiontree", modulePath + "/internal/testui"}},
+		{name: "engine", dir: "engine", forbidden: []string{modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/sessiontree", modulePath + "/tools/builtin", modulePath + "/tools/mcp", modulePath + "/tools/skills", modulePath + "/internal/sessionlifecycle", modulePath + "/internal/testui"}},
+		{name: "engine/compaction", dir: filepath.Join("engine", "compaction"), recursive: true, forbidden: []string{modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/sessiontree", modulePath + "/tools/builtin", modulePath + "/tools/mcp", modulePath + "/tools/skills", modulePath + "/internal/testui"}},
+		{name: "session/compaction", dir: filepath.Join("session", "compaction"), recursive: true, forbidden: []string{modulePath + "/provider", modulePath + "/engine", modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/sessiontree", modulePath + "/tools"}},
+		{name: "agentharness", dir: "agentharness", forbidden: []string{modulePath + "/runtime", modulePath + "/tools/builtin", modulePath + "/tools/mcp", modulePath + "/tools/skills", modulePath + "/provider/adapters", modulePath + "/internal/testui"}},
+		{name: "provider", dir: "provider", forbidden: []string{modulePath + "/engine", modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/tools", modulePath + "/sessiontree", modulePath + "/internal/testui"}},
+		{name: "provider/adapters", dir: filepath.Join("provider", "adapters"), recursive: true, forbidden: []string{modulePath + "/engine", modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/tools/builtin", modulePath + "/internal/testui"}},
+		{name: "sessiontree", dir: "sessiontree", forbidden: []string{modulePath + "/engine", modulePath + "/engine/compaction", modulePath + "/runtime", modulePath + "/internal/sessionlifecycle"}},
+		{name: "runtime/storage", dir: filepath.Join("runtime", "storage"), forbidden: []string{modulePath + "/runtime/storage/sqlite"}},
 	} {
-		t.Run(rule.pkg, func(t *testing.T) {
-			imports := packageImports(t, filepath.Join(root, rule.pkg))
+		t.Run(rule.name, func(t *testing.T) {
+			imports := packageImports(t, rule.dir, rule.recursive, false)
 			for _, forbidden := range rule.forbidden {
 				if imports[forbidden] {
-					t.Fatalf("%s imports forbidden package %s", rule.pkg, forbidden)
+					t.Fatalf("%s imports forbidden package %s", rule.name, forbidden)
 				}
 			}
 		})
+	}
+}
+
+func TestTransitiveImportBoundaries(t *testing.T) {
+	for _, rule := range []struct {
+		name      string
+		pkg       string
+		forbidden []string
+	}{
+		{name: "provider", pkg: "./provider", forbidden: []string{modulePath + "/engine", modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/tools", modulePath + "/sessiontree", modulePath + "/internal/testui"}},
+		{name: "tools", pkg: "./tools", forbidden: []string{modulePath + "/engine", modulePath + "/event", modulePath + "/sessiontree", modulePath + "/tools/builtin", modulePath + "/tools/mcp", modulePath + "/tools/skills", modulePath + "/internal/testui"}},
+		{name: "engine", pkg: "./engine", forbidden: []string{modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/sessiontree", modulePath + "/tools/builtin", modulePath + "/tools/mcp", modulePath + "/tools/skills", modulePath + "/internal/sessionlifecycle", modulePath + "/internal/testui"}},
+		{name: "sessiontree", pkg: "./sessiontree", forbidden: []string{modulePath + "/engine", modulePath + "/engine/compaction", modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/internal/sessionlifecycle", modulePath + "/internal/testui"}},
+		{name: "session/compaction", pkg: "./session/compaction", forbidden: []string{modulePath + "/provider", modulePath + "/engine", modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/sessiontree", modulePath + "/tools"}},
+	} {
+		t.Run(rule.name, func(t *testing.T) {
+			deps := packageDeps(t, rule.pkg)
+			for _, forbidden := range rule.forbidden {
+				for dep := range deps {
+					if dep == forbidden || strings.HasPrefix(dep, forbidden+"/") {
+						t.Fatalf("%s transitively depends on forbidden package %s via %s", rule.name, forbidden, dep)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestTopLevelPackageLayoutIsConstrained(t *testing.T) {
+	allowed := map[string]bool{
+		".githooks":    true,
+		"agentharness": true,
+		"cmd":          true,
+		"config":       true,
+		"engine":       true,
+		"event":        true,
+		"internal":     true,
+		"provider":     true,
+		"runtime":      true,
+		"scripts":      true,
+		"session":      true,
+		"sessiontree":  true,
+		"testing":      true,
+		"tools":        true,
+	}
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if name == ".git" || name == ".floret-test-ui" || name == "node_modules" || name == "vendor" {
+			continue
+		}
+		if !allowed[name] {
+			t.Fatalf("unexpected top-level directory %q; add public packages under an existing domain package", name)
+		}
+	}
+}
+
+func TestDeprecatedRootPackagesAreRemoved(t *testing.T) {
+	for _, dir := range deprecatedRootPackages() {
+		if _, err := os.Stat(dir); err == nil {
+			t.Fatalf("deprecated root package directory still exists: %s", dir)
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestNoDeprecatedRootImportPaths(t *testing.T) {
+	files := textFiles(t, ".")
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		for _, dir := range deprecatedRootPackages() {
+			oldPath := modulePath + "/" + dir
+			if strings.Contains(text, oldPath) {
+				if !allowedDeprecatedImportMapping(file, text, oldPath) {
+					t.Fatalf("%s still references deprecated import path %s", file, oldPath)
+				}
+			}
+		}
+	}
+}
+
+func TestReadmeDoesNotAdvertiseDeprecatedRootPackages(t *testing.T) {
+	data, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, dir := range deprecatedRootPackages() {
+		token := "`" + dir + "`"
+		if strings.Contains(text, token) {
+			t.Fatalf("README still advertises deprecated root package %s", token)
+		}
+	}
+	for _, want := range []string{
+		"`provider/adapters`",
+		"`provider/cache`",
+		"`provider/catalog`",
+		"`runtime/storage`",
+		"`runtime/storage/sqlite`",
+		"`session/compaction`",
+		"`session/contextpolicy`",
+		"`testing/eval`",
+		"`testing/harness`",
+		"`tools/builtin`",
+		"`tools/mcp`",
+		"`tools/skills`",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("README missing new package path %s", want)
+		}
+	}
+}
+
+func TestEngineConfigKeepsMemoryInternal(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("engine", "engine.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "SystemPrompt string") {
+		t.Fatalf("engine.Config should expose SystemPrompt instead of memory.Manager")
+	}
+	for _, forbidden := range []string{"Memory *memory.Manager", modulePath + "/memory"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("engine.Config must not expose deprecated memory API: %s", forbidden)
+		}
 	}
 }
 
@@ -111,7 +256,7 @@ func TestWebSearchCapabilityBoundaryIsEnforced(t *testing.T) {
 		t.Fatal(err)
 	}
 	testUIText := string(testUI)
-	for _, want := range []string{"resolved.Available", "resolved.Source == searchcap.WebSearchProviderHosted", "removeToolName(localSelected, builtintools.ToolWebSearch)"} {
+	for _, want := range []string{"resolved.Available", "resolved.Source == searchcap.WebSearchProviderHosted", "removeToolName(localSelected, builtin.ToolWebSearch)"} {
 		if !strings.Contains(testUIText, want) {
 			t.Fatalf("test UI tool selection missing single-source search guard %q", want)
 		}
@@ -119,7 +264,7 @@ func TestWebSearchCapabilityBoundaryIsEnforced(t *testing.T) {
 }
 
 func TestNoBuiltInWebFetchBoundaryIsEnforced(t *testing.T) {
-	builtins, err := os.ReadFile(filepath.Join("builtintools", "common.go"))
+	builtins, err := os.ReadFile(filepath.Join("tools", "builtin", "common.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +277,7 @@ func TestNoBuiltInWebFetchBoundaryIsEnforced(t *testing.T) {
 		t.Fatal(err)
 	}
 	for path, text := range map[string]string{
-		"builtintools/common.go":                          string(builtins),
+		"tools/builtin/common.go":                         string(builtins),
 		"internal/testui/tool_selection.go":               string(testUI),
 		"internal/testui/static/components/toolMatrix.js": string(staticMatrix),
 	} {
@@ -180,7 +325,7 @@ func TestPreCommitQualityGateIsEnforced(t *testing.T) {
 		"TestServerStreamsAgentTurnEventsBeforeCompletion",
 		"TestServerAgentSessionTurnIgnoresServerTimeout",
 		"TestRunnerRunningSnapshotUsesRealTurnID",
-		"go test ./eval -run TestCleanCommandEnvRemovesHookRepositoryVariables -count=1",
+		"go test ./testing/eval -run TestCleanCommandEnvRemovesHookRepositoryVariables -count=1",
 		"node --check internal/testui/static/*.js internal/testui/static/views/*.js internal/testui/static/components/*.js",
 		"git diff --check",
 	} {
@@ -240,19 +385,15 @@ func TestNoGoWorkFilesInRepository(t *testing.T) {
 	}
 }
 
-func packageImports(t *testing.T, dir string) map[string]bool {
+func packageImports(t *testing.T, dir string, recursive, includeTests bool) map[string]bool {
 	t.Helper()
 	out := map[string]bool{}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
 	fset := token.NewFileSet()
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
+	for _, path := range goFilesInDir(t, dir, recursive) {
+		if !includeTests && strings.HasSuffix(path, "_test.go") {
 			continue
 		}
-		file, err := parser.ParseFile(fset, filepath.Join(dir, entry.Name()), nil, parser.ImportsOnly)
+		file, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -261,6 +402,48 @@ func packageImports(t *testing.T, dir string) map[string]bool {
 		}
 	}
 	return out
+}
+
+func goFilesInDir(t *testing.T, dir string, recursive bool) []string {
+	t.Helper()
+	if !recursive {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var files []string
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
+				continue
+			}
+			files = append(files, filepath.Join(dir, entry.Name()))
+		}
+		return files
+	}
+	files, err := walkFiles(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return slices.DeleteFunc(files, func(file string) bool {
+		return !strings.HasSuffix(file, ".go")
+	})
+}
+
+func packageDeps(t *testing.T, pkg string) map[string]bool {
+	t.Helper()
+	cmd := exec.Command("go", "list", "-deps", pkg)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list -deps %s: %v", pkg, err)
+	}
+	deps := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			deps[line] = true
+		}
+	}
+	return deps
 }
 
 func goFiles(t *testing.T, root string) []string {
@@ -272,6 +455,61 @@ func goFiles(t *testing.T, root string) []string {
 	return slices.DeleteFunc(files, func(file string) bool {
 		return !strings.HasSuffix(file, ".go")
 	})
+}
+
+func textFiles(t *testing.T, root string) []string {
+	t.Helper()
+	files, err := walkFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return slices.DeleteFunc(files, func(file string) bool {
+		switch filepath.Ext(file) {
+		case ".go", ".md", ".sh", ".js":
+			return false
+		default:
+			return true
+		}
+	})
+}
+
+func deprecatedRootPackages() []string {
+	return []string{
+		"adapters",
+		"builtintools",
+		"compaction",
+		"contextpolicy",
+		"control",
+		"eval",
+		"harness",
+		"mcpclient",
+		"memory",
+		"modelcatalog",
+		"promptcache",
+		"skills",
+		"sqlitestore",
+		"storage",
+	}
+}
+
+func allowedDeprecatedImportMapping(file, text, oldPath string) bool {
+	if file != "README.md" {
+		return false
+	}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, oldPath) {
+			continue
+		}
+		if !strings.Contains(line, " -> "+modulePath+"/") {
+			return false
+		}
+		if strings.Contains(line, "`") {
+			return false
+		}
+		return true
+	}
+	return false
 }
 
 func goFilesAndWorkspaces(t *testing.T, root string) []string {
