@@ -18,6 +18,7 @@ import (
 	"github.com/floegence/floret/harness"
 	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/internal/sessionlifecycle"
+	"github.com/floegence/floret/modelcatalog"
 	"github.com/floegence/floret/provider"
 )
 
@@ -127,7 +128,7 @@ func TestServerRunAPILiveToolScenariosUseSelectedSavedProfile(t *testing.T) {
 	}
 	handler := server.Handler()
 
-	saveBody := `{"active_profile_id":"hosted-live","profiles":[{"id":"hosted-live","name":"Hosted Live","provider":"openai-compatible","model":"model-a","base_url":"https://api.example.test/v1","api_key":"provider-key","web_search":{"provider_hosted":{"enabled":true,"wire_shape":"openai_chat_web_search_options","supported_wire_shapes":["openai_chat_web_search_options"]},"client":{"enabled":false,"provider":"brave"}}}],"search_provider":{"provider":"brave","api_key":"search-key","endpoint":"https://search.example.test"}}`
+	saveBody := `{"active_profile_id":"hosted-live","profiles":[{"id":"hosted-live","name":"Hosted Live","provider":"openai","model":"gpt-5.4","base_url":"https://api.example.test/v1","api_key":"provider-key","web_search":{"source":"provider_hosted","hosted":{"wire_shape":"openai_chat_web_search_options"}}}],"search_provider":{"provider":"brave","api_key":"search-key","endpoint":"https://search.example.test"}}`
 	saveReq := httptest.NewRequest(http.MethodPut, "/api/config", strings.NewReader(saveBody))
 	saveRec := httptest.NewRecorder()
 	handler.ServeHTTP(saveRec, saveReq)
@@ -149,7 +150,7 @@ func TestServerRunAPILiveToolScenariosUseSelectedSavedProfile(t *testing.T) {
 		t.Fatalf("result = %#v", result)
 	}
 	for _, part := range result.Parts {
-		if part.Agent == nil || part.Agent.Config.Model != "model-a" {
+		if part.Agent == nil || part.Agent.Config.Model != "gpt-5.4" {
 			t.Fatalf("live part missing selected profile config: %#v", part)
 		}
 	}
@@ -200,7 +201,7 @@ func TestServerRunAPILiveToolScenariosTreatWeatherAsDiagnostic(t *testing.T) {
 	}
 	handler := server.Handler()
 
-	saveBody := `{"active_profile_id":"hosted-live","profiles":[{"id":"hosted-live","name":"Hosted Live","provider":"openai-compatible","model":"model-a","base_url":"https://api.example.test/v1","api_key":"provider-key","web_search":{"provider_hosted":{"enabled":true,"wire_shape":"openai_chat_web_search_options","supported_wire_shapes":["openai_chat_web_search_options"]},"client":{"enabled":false,"provider":"brave"}}}],"search_provider":{"provider":"brave","api_key":"search-key","endpoint":"https://search.example.test"}}`
+	saveBody := `{"active_profile_id":"hosted-live","profiles":[{"id":"hosted-live","name":"Hosted Live","provider":"openai","model":"gpt-5.4","base_url":"https://api.example.test/v1","api_key":"provider-key","web_search":{"source":"provider_hosted","hosted":{"wire_shape":"openai_chat_web_search_options"}}}],"search_provider":{"provider":"brave","api_key":"search-key","endpoint":"https://search.example.test"}}`
 	saveReq := httptest.NewRequest(http.MethodPut, "/api/config", strings.NewReader(saveBody))
 	saveRec := httptest.NewRecorder()
 	handler.ServeHTTP(saveRec, saveReq)
@@ -650,7 +651,7 @@ func TestServerAgentSessionCreateRejectsWebFetchTool(t *testing.T) {
 	}
 }
 
-func TestServerAgentSessionCreateAcceptsClientWebSearchTool(t *testing.T) {
+func TestServerAgentSessionCreateAcceptsExternalBraveWebSearchTool(t *testing.T) {
 	root := t.TempDir()
 	runner := NewRunner(root)
 	runner.Now = fixedClock()
@@ -661,7 +662,7 @@ func TestServerAgentSessionCreateAcceptsClientWebSearchTool(t *testing.T) {
 			Name:      "Fake",
 			Provider:  config.ProviderFake,
 			Model:     "fake-model",
-			WebSearch: searchcap.Capability{Client: searchcap.ClientConfig{Enabled: true, Provider: searchcap.ClientProviderBrave}},
+			WebSearch: searchcap.Capability{Source: searchcap.WebSearchExternalBrave, Brave: searchcap.BraveConfig{Provider: searchcap.ExternalProviderBrave}},
 		}},
 		SearchProvider: SaveSearchProvider{Provider: "brave", APIKey: "search-key"},
 	}); err != nil {
@@ -770,6 +771,69 @@ func TestServerAgentInterfaceProbeExposesSelectedToolsAndDoesNotPersistSession(t
 	}
 	if len(sessions) != 0 {
 		t.Fatalf("probe should not persist sessions: %#v", sessions)
+	}
+}
+
+func TestServerAgentInterfaceProbeUsesSelectedProfileWebSearchSource(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	if _, err := runner.SaveConfigState(SaveConfigRequest{
+		ActiveProfileID: "external",
+		Profiles: []ProviderProfile{
+			{
+				ID:        "external",
+				Name:      "External",
+				Provider:  config.ProviderFake,
+				Model:     "fake-model",
+				WebSearch: searchcap.Capability{Source: searchcap.WebSearchExternalBrave, Brave: searchcap.BraveConfig{Provider: searchcap.ExternalProviderBrave}},
+			},
+			{
+				ID:        "hosted",
+				Name:      "Hosted",
+				Provider:  modelcatalog.ProviderOpenAI,
+				Model:     "gpt-5.4",
+				WebSearch: searchcap.Capability{Source: searchcap.WebSearchProviderHosted, Hosted: searchcap.HostedConfig{WireShape: searchcap.WireShapeOpenAIChatWebSearchOptions}},
+			},
+		},
+		SearchProvider: SaveSearchProvider{Provider: "brave", APIKey: "search-key"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	body, err := json.Marshal(AgentInterfaceProbeRequest{
+		ProfileID:     "hosted",
+		SelectedTools: []string{"web_search"},
+		ContextPolicy: contextPolicyForTest(8192),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	probeRec := httptest.NewRecorder()
+	handler.ServeHTTP(probeRec, httptest.NewRequest(http.MethodPost, "/api/agent/interface-probe", bytes.NewReader(body)))
+	if probeRec.Code != http.StatusOK {
+		t.Fatalf("probe status = %d, body = %s", probeRec.Code, probeRec.Body.String())
+	}
+	var result AgentRunResponse
+	if err := json.Unmarshal(probeRec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Probe || result.Status != "completed" || !slices.Equal(result.Session.SelectedTools, []string{"web_search"}) {
+		t.Fatalf("probe result = %#v", result)
+	}
+	if len(result.Observation.ProviderRequests) != 1 {
+		t.Fatalf("provider requests = %#v", result.Observation.ProviderRequests)
+	}
+	req := result.Observation.ProviderRequests[0]
+	if hasProviderTool(req.Tools, "web_search") {
+		t.Fatalf("selected hosted profile should not expose local web_search: %#v", req.Tools)
+	}
+	if len(req.HostedTools) != 1 || req.HostedTools[0].Name != "web_search" || req.HostedTools[0].Type != "web_search" {
+		t.Fatalf("selected hosted profile should expose hosted web_search: %#v", req.HostedTools)
 	}
 }
 

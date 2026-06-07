@@ -923,6 +923,23 @@ button.small {
   line-height: 1.45;
 }
 
+.settings-error {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(182, 64, 61, 0.28);
+  border-left: 4px solid var(--red);
+  background: #fff8f7;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.settings-error small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
 .tool-boundary-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

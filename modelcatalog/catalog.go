@@ -48,6 +48,12 @@ type CacheCapability struct {
 	AnthropicCacheControl bool `json:"anthropic_cache_control,omitempty"`
 }
 
+type WebSearchCapability struct {
+	DefaultSource    string   `json:"default_source,omitempty"`
+	HostedWireShape  string   `json:"hosted_wire_shape,omitempty"`
+	HostedWireShapes []string `json:"hosted_wire_shapes,omitempty"`
+}
+
 type Model struct {
 	ID             string          `json:"id"`
 	Name           string          `json:"name"`
@@ -65,15 +71,16 @@ type Model struct {
 }
 
 type Provider struct {
-	ID             string          `json:"id"`
-	Name           string          `json:"name"`
-	API            string          `json:"api"`
-	DefaultBaseURL string          `json:"default_base_url,omitempty"`
-	DefaultModel   string          `json:"default_model,omitempty"`
-	EnvKeys        []string        `json:"env_keys,omitempty"`
-	Custom         bool            `json:"custom,omitempty"`
-	Cache          CacheCapability `json:"cache,omitempty"`
-	Models         []Model         `json:"models"`
+	ID             string              `json:"id"`
+	Name           string              `json:"name"`
+	API            string              `json:"api"`
+	DefaultBaseURL string              `json:"default_base_url,omitempty"`
+	DefaultModel   string              `json:"default_model,omitempty"`
+	EnvKeys        []string            `json:"env_keys,omitempty"`
+	Custom         bool                `json:"custom,omitempty"`
+	Cache          CacheCapability     `json:"cache,omitempty"`
+	WebSearch      WebSearchCapability `json:"web_search,omitempty"`
+	Models         []Model             `json:"models"`
 }
 
 func Providers() []Provider {
@@ -188,6 +195,13 @@ func Cache(providerID, modelID string) CacheCapability {
 		return provider.Cache
 	}
 	return CacheCapability{}
+}
+
+func WebSearch(providerID string) WebSearchCapability {
+	if provider, ok := FindProvider(providerID); ok {
+		return provider.WebSearch
+	}
+	return WebSearchCapability{}
 }
 
 func SupportsProvider(id string) bool {

@@ -83,7 +83,7 @@ func deterministicToolScenarios() []toolScenario {
 		{
 			ID:            "search-shell-curl-followup",
 			Title:         "Search, shell curl, and follow-up",
-			Description:   "Exercises client web_search, bounded shell curl, repeated multi-tool batches, and a second user turn.",
+			Description:   "Exercises external Brave web_search, bounded shell curl, repeated multi-tool batches, and a second user turn.",
 			Message:       "今天是 2026-06-03，请查询长沙天气并给出来源。",
 			FollowUps:     []string{"那么明天会晴吗，适合出门吗？"},
 			SelectedTools: []string{builtintools.ToolWebSearch, builtintools.ToolShell},
@@ -516,7 +516,7 @@ func setupSearchShellScenario(ctx context.Context, workspace string) (toolScenar
 	)
 	return toolScenarioRuntime{
 		Provider:     prov,
-		Profile:      scenarioFakeClientSearchProfile(),
+		Profile:      scenarioFakeExternalBraveSearchProfile(),
 		SystemPrompt: "Exercise web_search and bounded shell curl as separate deterministic tools.",
 		Env: map[string]string{
 			braveSearchKey:      "test-key",
@@ -803,14 +803,14 @@ func (r Runner) failLiveScenario(resp RunResponse, profile ProviderProfile, id s
 	}
 	resp.Agent.Artifacts["scenario"] = ArtifactSnapshot{
 		Path:    id,
-		Content: renderLiveFailureArtifact(resp.Title, profile, selected, err, results),
+		Content: renderLiveFailureArtifact(resp.Title, profile, selected, err, results, r.EnvFile),
 	}
 	resp.FinishedAt = r.now()
 	resp.DurationMS = resp.FinishedAt.Sub(resp.StartedAt).Milliseconds()
 	return resp
 }
 
-func renderLiveFailureArtifact(title string, profile ProviderProfile, selected []string, err error, results []AgentRunResponse) string {
+func renderLiveFailureArtifact(title string, profile ProviderProfile, selected []string, err error, results []AgentRunResponse, envFile string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\n\n", title)
 	fmt.Fprintf(&b, "Status: fail\n")
@@ -819,11 +819,18 @@ func renderLiveFailureArtifact(title string, profile ProviderProfile, selected [
 	fmt.Fprintf(&b, "Model: %s\n", profile.Model)
 	fmt.Fprintf(&b, "Selected tools: %s\n", strings.Join(selected, ", "))
 	if slices.Contains(selected, builtintools.ToolWebSearch) {
-		capability := searchcap.NormalizeCapability(profile.Provider, profile.WebSearch)
-		if capability.ProviderHosted.Enabled {
-			fmt.Fprintf(&b, "web_search source: provider-hosted (%s)\n", capability.ProviderHosted.WireShape)
-		} else if capability.Client.Enabled {
-			fmt.Fprintf(&b, "web_search source: client (%s)\n", capability.Client.Provider)
+		resolved, resolveErr := searchcap.Resolve(searchcap.ResolveInput{
+			Provider:       profile.Provider,
+			Capability:     profile.WebSearch,
+			BraveAvailable: searchOptionsFromEnvFile(envFile).APIKey != "",
+		})
+		if resolveErr != nil {
+			fmt.Fprintf(&b, "web_search source: invalid (%s)\n", resolveErr)
+		} else {
+			fmt.Fprintf(&b, "web_search source: %s (%s)\n", resolved.Source, resolved.Status)
+			if resolved.WireShape != "" {
+				fmt.Fprintf(&b, "web_search wire shape: %s\n", resolved.WireShape)
+			}
 		}
 	}
 	if len(results) == 0 {
@@ -862,14 +869,15 @@ func fakeScenarioProfile() ProviderProfile {
 	return ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "unused"}
 }
 
-func scenarioFakeClientSearchProfile() ProviderProfile {
+func scenarioFakeExternalBraveSearchProfile() ProviderProfile {
 	return ProviderProfile{
-		ID:       "fake-client-search",
-		Name:     "Fake client search",
+		ID:       "fake-external-brave-search",
+		Name:     "Fake external Brave search",
 		Provider: config.ProviderFake,
 		Model:    "fake-model",
 		WebSearch: searchcap.Capability{
-			Client: searchcap.ClientConfig{Enabled: true, Provider: searchcap.ClientProviderBrave},
+			Source: searchcap.WebSearchExternalBrave,
+			Brave:  searchcap.BraveConfig{Provider: searchcap.ExternalProviderBrave},
 		},
 	}
 }

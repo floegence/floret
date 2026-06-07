@@ -291,6 +291,7 @@ type AgentToolsUpdateRequest struct {
 }
 
 type AgentInterfaceProbeRequest struct {
+	ProfileID     string               `json:"profile_id,omitempty"`
 	SelectedTools []string             `json:"selected_tools,omitempty"`
 	ContextPolicy contextpolicy.Policy `json:"context_policy,omitempty"`
 	DebugRaw      bool                 `json:"debug_raw,omitempty"`

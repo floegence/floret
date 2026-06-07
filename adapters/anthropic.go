@@ -431,7 +431,8 @@ func inputSchemaForAnthropic(def provider.ToolDefinition) map[string]any {
 func validateAnthropicHostedTools(defs []provider.HostedToolDefinition) error {
 	for _, def := range defs {
 		shape, _ := def.Options["wire_shape"].(string)
-		if def.Name != searchcap.ToolWebSearch || def.Type != searchcap.ToolWebSearch || shape != searchcap.WireShapeAnthropicServerWebSearch {
+		wireShape := searchcap.HostedWireShape(shape)
+		if def.Name != searchcap.ToolWebSearch || def.Type != searchcap.ToolWebSearch || wireShape != searchcap.WireShapeAnthropicServerWebSearch {
 			return fmt.Errorf("anthropic provider does not support hosted tool %s/%s with wire shape %q", def.Type, def.Name, shape)
 		}
 	}
@@ -442,7 +443,7 @@ func renderAnthropicHostedTools(defs []provider.HostedToolDefinition) []anthropi
 	out := make([]anthropicTool, 0, len(defs))
 	for _, def := range defs {
 		shape, _ := def.Options["wire_shape"].(string)
-		if def.Name != searchcap.ToolWebSearch || def.Type != searchcap.ToolWebSearch || shape != searchcap.WireShapeAnthropicServerWebSearch {
+		if def.Name != searchcap.ToolWebSearch || def.Type != searchcap.ToolWebSearch || searchcap.HostedWireShape(shape) != searchcap.WireShapeAnthropicServerWebSearch {
 			continue
 		}
 		out = append(out, anthropicTool{

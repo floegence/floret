@@ -28,6 +28,7 @@ export const state = {
   skillsPreview: null,
   composerDrafts: {},
   settingsDraft: null,
+  settingsError: null,
   toolEditDrafts: {},
 };
 
@@ -46,6 +47,7 @@ export function defaultProfile() {
     model: providerDefaultModel(provider) || "fake-model",
     base_url: providerDefaultBaseURL(provider),
     fake_response: "floret local provider ok",
+    web_search: defaultWebSearchForProvider(provider),
   };
 }
 
@@ -136,11 +138,11 @@ function toolMatrixGroup(tool) {
     if (tool.available === false) {
       return { id: "unavailable_capabilities", title: "Disabled / unavailable capabilities" };
     }
-    if (tool.source === "provider-hosted") {
+    if (tool.source === "provider_hosted") {
       return { id: "provider_hosted_capabilities", title: "Provider-hosted capabilities" };
     }
-    if (tool.source?.startsWith("client:")) {
-      return { id: "local_client_tools", title: "Local client tools" };
+    if (tool.source === "external_brave") {
+      return { id: "external_search_capabilities", title: "External search capabilities" };
     }
   }
   return { id: tool.group || "tools", title: tool.group_title || tool.group || "Tools" };
@@ -161,6 +163,131 @@ export function providerDefaultModel(provider) {
 
 export function providerDefaultBaseURL(provider) {
   return provider?.default_base_url || "";
+}
+
+export function hostedWireShapesForProvider(providerOrID) {
+  const provider = typeof providerOrID === "string" ? providerByID(providerOrID) : providerOrID;
+  return (provider?.web_search?.hosted_wire_shapes || []).filter(Boolean);
+}
+
+export function defaultWebSearchForProvider(providerOrID) {
+  const provider = typeof providerOrID === "string" ? providerByID(providerOrID) : providerOrID;
+  const search = provider?.web_search || {};
+  const source = search.default_source || "disabled";
+  if (source === "provider_hosted") {
+    const supported = hostedWireShapesForProvider(provider);
+    const wireShape = search.hosted_wire_shape || supported[0] || "";
+    if (wireShape && supported.includes(wireShape)) {
+      return { source: "provider_hosted", hosted: { wire_shape: wireShape } };
+    }
+  }
+  if (source === "external_brave") {
+    return { source: "external_brave", brave: { provider: "brave" } };
+  }
+  return { source: "disabled" };
+}
+
+export function normalizeWebSearch(value) {
+  const capability = clone(value || {});
+  if (capability.source !== "provider_hosted" && capability.source !== "external_brave" && capability.source !== "disabled") {
+    capability.source = "disabled";
+  }
+  if (capability.source === "provider_hosted") {
+    return { source: "provider_hosted", hosted: { wire_shape: capability.hosted?.wire_shape || "" } };
+  }
+  if (capability.source === "external_brave") {
+    return { source: "external_brave", brave: { provider: capability.brave?.provider || "brave" } };
+  }
+  return { source: "disabled" };
+}
+
+export function resolveWebSearchForProfile(profile, options = {}) {
+  const provider = providerByID(profile?.provider);
+  const capability = normalizeWebSearch(profile?.web_search || defaultWebSearchForProvider(provider));
+  const base = {
+    source: capability.source,
+    status: "unavailable",
+    available: false,
+    exposure: "not exposed",
+    unavailable: "",
+    wire_shape: "",
+  };
+  if (capability.source === "provider_hosted") {
+    const supported = hostedWireShapesForProvider(provider);
+    const wireShape = capability.hosted?.wire_shape || provider?.web_search?.hosted_wire_shape || supported[0] || "";
+    if (!wireShape) {
+      return { ...base, unavailable: "provider-hosted web_search is selected but no hosted wire shape is configured" };
+    }
+    if (!supported.includes(wireShape)) {
+      return { ...base, wire_shape: wireShape, unavailable: `wire shape "${wireShape}" is not supported by this profile` };
+    }
+    return {
+      ...base,
+      status: "ready",
+      available: true,
+      exposure: "hosted tool: web_search",
+      wire_shape: wireShape,
+      unavailable: "",
+    };
+  }
+  if (capability.source === "external_brave") {
+    const braveKeySet = Object.prototype.hasOwnProperty.call(options, "braveKeySet") ? Boolean(options.braveKeySet) : Boolean(state.config?.search_provider?.api_key_set);
+    if (!braveKeySet) {
+      return { ...base, unavailable: "Brave Search API key is not configured" };
+    }
+    return {
+      ...base,
+      status: "ready",
+      available: true,
+      exposure: "local tool: web_search",
+      external_provider: "brave",
+      unavailable: "",
+    };
+  }
+  return { ...base, source: "disabled", unavailable: "web search disabled" };
+}
+
+export function toolsForProfile(profile, baseTools = state.config?.tools || []) {
+  const template = (baseTools || []).find((tool) => tool.name === "web_search") || defaultWebSearchTool();
+  const resolved = resolveWebSearchForProfile(profile);
+  const webSearchTool = {
+    ...template,
+    name: "web_search",
+    title: template.title || "Web search",
+    description: "Search query via the single selected web search source. This is not URL fetch.",
+    group: template.group || "network",
+    group_title: template.group_title || "Network",
+    risk: template.risk || "network",
+    permission_mode: template.permission_mode || "ask",
+    kind: "capability",
+    available: resolved.available,
+    unavailable: resolved.available ? "" : resolved.unavailable,
+    source: resolved.source,
+    status: resolved.status,
+    exposure: resolved.exposure,
+    wire_shape: resolved.wire_shape || "",
+  };
+  let replaced = false;
+  const out = (baseTools || []).map((tool) => {
+    if (tool.name !== "web_search") return tool;
+    replaced = true;
+    return webSearchTool;
+  });
+  if (!replaced) out.push(webSearchTool);
+  return out;
+}
+
+function defaultWebSearchTool() {
+  return {
+    name: "web_search",
+    title: "Web search",
+    description: "Search query via the single selected web search source. This is not URL fetch.",
+    group: "network",
+    group_title: "Network",
+    risk: "network",
+    permission_mode: "ask",
+    kind: "capability",
+  };
 }
 
 export function providerModel(provider, modelID) {

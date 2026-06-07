@@ -1,13 +1,13 @@
 import { escapeHTML, groupTools, toolNamesForPreset } from "../state.js";
 
-export function renderToolMatrix({ tools, selected, editable = true, name = "tools" }) {
+export function renderToolMatrix({ tools, selected, editable = true, name = "tools", profileScope = "selected profile" }) {
   const selectedSet = new Set(selected || []);
   const groups = groupTools(tools);
   return `
     <div class="preset-bar" data-tool-presets="${escapeHTML(name)}">
       ${["chat", "read", "coding", "shell", "all"].map((preset) => `<button type="button" class="small" data-tool-preset="${preset}" ${editable ? "" : "disabled"}>${presetLabel(preset)}</button>`).join("")}
     </div>
-    <p class="tool-boundary-note">Network access is explicit: web_search searches by query through either provider-hosted search or the configured client search provider. Opening URLs or calling HTTP APIs belongs to shell, MCP, extensions, or user tools with bounded output.</p>
+    <p class="tool-boundary-note">Network access is explicit: web_search searches by query through the single selected source for the ${escapeHTML(profileScope)}. Opening URLs or calling HTTP APIs belongs to shell, MCP, extensions, or user tools with bounded output.</p>
     ${groups.map((group) => renderToolGroup(group, selectedSet, editable, name)).join("")}
   `;
 }
@@ -51,8 +51,8 @@ function toolSourceLabel(tool) {
   if (tool.available === false) return tool.unavailable || "unavailable";
   if (tool.annotations?.source === "mcp") return `mcp · ${tool.annotations.mcp_server || "server"}`;
   if (tool.annotations?.source === "skill") return "agent skill";
-  if (tool.source === "provider-hosted") return tool.wire_shape ? `hosted · ${tool.wire_shape}` : "provider-hosted";
-  if (tool.source?.startsWith("client:")) return tool.source.replace("client:", "client · ");
+  if (tool.source === "provider_hosted") return tool.wire_shape ? `hosted · ${tool.wire_shape}` : "provider-hosted";
+  if (tool.source === "external_brave") return "external · Brave";
   if (tool.kind === "capability") return tool.source || "capability";
   return tool.kind || "local";
 }

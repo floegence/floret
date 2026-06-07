@@ -23,6 +23,8 @@ type AgentToolOption struct {
 	Available   bool   `json:"available"`
 	Unavailable string `json:"unavailable,omitempty"`
 	Source      string `json:"source,omitempty"`
+	Status      string `json:"status,omitempty"`
+	Exposure    string `json:"exposure,omitempty"`
 	WireShape   string `json:"wire_shape,omitempty"`
 }
 
@@ -34,7 +36,7 @@ var agentToolOptions = []AgentToolOption{
 	{Name: builtintools.ToolApplyPatch, Title: "Apply patch", Description: "Apply structured multi-file patches for code edits, renames, and audited local modifications.", Group: "workspace_write", GroupTitle: "Workspace write", Risk: "writes files", Permission: "ask"},
 	{Name: builtintools.ToolWrite, Title: "Write", Description: "Create or overwrite one complete file.", Group: "workspace_write", GroupTitle: "Workspace write", Risk: "overwrites files", Permission: "ask"},
 	{Name: builtintools.ToolShell, Title: "Shell", Description: "Run non-interactive shell commands.", Group: "execution", GroupTitle: "Execution", Risk: "runs commands", Permission: "ask"},
-	{Name: builtintools.ToolWebSearch, Title: "Web search", Description: "Search query via the active provider-hosted or configured client search capability. This is not URL fetch.", Group: "network", GroupTitle: "Network", Risk: "network", Permission: "ask"},
+	{Name: builtintools.ToolWebSearch, Title: "Web search", Description: "Search query via the single selected web search source. This is not URL fetch.", Group: "network", GroupTitle: "Network", Risk: "network", Permission: "ask"},
 }
 
 func agentToolCatalog(profile ProviderProfile, envFile string) []AgentToolOption {
@@ -47,14 +49,11 @@ func agentToolCatalog(profile ProviderProfile, envFile string) []AgentToolOption
 			continue
 		}
 		out[i].Kind = "capability"
-		out[i].Available = searchErr == nil && (searchResolution.ProviderHosted || searchResolution.Client)
-		out[i].Source = "disabled"
-		if searchResolution.Client {
-			out[i].Source = "client:" + searchResolution.ClientProvider
-		} else if searchResolution.ProviderHosted {
-			out[i].Source = "provider-hosted"
-		}
-		out[i].WireShape = searchResolution.WireShape
+		out[i].Available = searchErr == nil && searchResolution.Available
+		out[i].Source = string(searchResolution.Source)
+		out[i].Status = string(searchResolution.Status)
+		out[i].Exposure = searchExposure(searchResolution)
+		out[i].WireShape = string(searchResolution.WireShape)
 		reasons := append([]string(nil), searchResolution.UnavailableReasons...)
 		if searchErr != nil {
 			reasons = append(reasons, searchErr.Error())
@@ -66,7 +65,7 @@ func agentToolCatalog(profile ProviderProfile, envFile string) []AgentToolOption
 			}
 		}
 		if searchResolution.WireShape != "" {
-			out[i].Description += " Hosted wire shape: " + searchResolution.WireShape + "."
+			out[i].Description += " Hosted wire shape: " + string(searchResolution.WireShape) + "."
 		}
 	}
 	return out
@@ -105,7 +104,7 @@ func normalizeAgentSessionToolsForProfile(selected []string, legacyMode string, 
 	if err != nil {
 		return nil, err
 	}
-	if !resolved.ProviderHosted && !resolved.Client {
+	if !resolved.Available {
 		return nil, fmt.Errorf("web_search is unavailable: %s", strings.Join(resolved.UnavailableReasons, "; "))
 	}
 	return tools, nil
@@ -143,10 +142,10 @@ func registerAgentSessionTools(registry *tools.Registry, root string, envFile st
 		}
 		hostedTools = append(hostedTools, resolved.HostedTools...)
 		unavailable = append(unavailable, resolved.UnavailableReasons...)
-		if resolved.ProviderHosted {
+		if resolved.Source == searchcap.WebSearchProviderHosted {
 			localSelected = removeToolName(localSelected, builtintools.ToolWebSearch)
 		}
-		if !resolved.ProviderHosted && !resolved.Client {
+		if !resolved.Available {
 			localSelected = removeToolName(localSelected, builtintools.ToolWebSearch)
 		}
 	}
@@ -167,10 +166,24 @@ func registerAgentSessionTools(registry *tools.Registry, root string, envFile st
 
 func resolveProfileWebSearch(profile ProviderProfile, envFile string) (searchcap.Resolved, error) {
 	return searchcap.Resolve(searchcap.ResolveInput{
-		Provider:        profile.Provider,
-		Capability:      profile.WebSearch,
-		ClientAvailable: searchOptionsFromEnvFile(envFile).APIKey != "",
+		Provider:       profile.Provider,
+		Capability:     profile.WebSearch,
+		BraveAvailable: searchOptionsFromEnvFile(envFile).APIKey != "",
 	})
+}
+
+func searchExposure(resolved searchcap.Resolved) string {
+	if !resolved.Available {
+		return "not exposed"
+	}
+	switch resolved.Source {
+	case searchcap.WebSearchProviderHosted:
+		return "hosted tool: web_search"
+	case searchcap.WebSearchExternalBrave:
+		return "local tool: web_search"
+	default:
+		return "not exposed"
+	}
 }
 
 func searchOptionsFromEnvFile(envFile string) builtintools.SearchOptions {

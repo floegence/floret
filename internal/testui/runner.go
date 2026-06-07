@@ -28,6 +28,7 @@ import (
 	"github.com/floegence/floret/eval"
 	"github.com/floegence/floret/event"
 	"github.com/floegence/floret/harness"
+	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/internal/sessionlifecycle"
 	"github.com/floegence/floret/mcpclient"
 	"github.com/floegence/floret/memory"
@@ -264,7 +265,10 @@ func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeR
 		Probe:     true,
 		StartedAt: started,
 	}
-	profile := ProviderProfile{ID: "tool-contract-probe", Name: "Tool Contract Probe", Provider: config.ProviderFake, Model: "tool-contract-probe"}
+	profile, err := r.profileByID(req.ProfileID)
+	if err != nil {
+		return publicAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusBadRequest, err), r.debugRawAllowed(req.DebugRaw))
+	}
 	selectedTools, err := normalizeAgentSessionToolsForProfile(req.SelectedTools, "", profile, r.EnvFile)
 	if err != nil {
 		return publicAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusBadRequest, err), r.debugRawAllowed(req.DebugRaw))
@@ -296,7 +300,7 @@ func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeR
 	}
 	cfg := config.Config{
 		Provider:                config.ProviderFake,
-		Model:                   "tool-contract-probe",
+		Model:                   "fake-model",
 		RunID:                   "testui-probe-" + resp.ID,
 		SystemPrompt:            "You are Floret's deterministic test UI interface probe. Exercise only the scripted low-risk probe behavior.",
 		ContextPolicy:           req.ContextPolicy,
@@ -311,8 +315,6 @@ func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeR
 	}
 	sessionID := "testui-probe-" + resp.ID
 	cfg.RunID = sessionID
-	profile.Provider = cfg.Provider
-	profile.Model = cfg.Model
 	sess, err := probe.buildAgentSession(ctx, agentSessionBuildOptions{
 		ID:            sessionID,
 		Transient:     true,
@@ -2056,7 +2058,12 @@ func (r Runner) profileForRun(req AgentRunRequest) (ProviderProfile, error) {
 	if profile.ID == "" {
 		profile.ID = req.ProfileID
 	}
+	rawSearch := profile.WebSearch
 	profile = normalizeProfile(profile, 0)
+	if err := validateProfileWebSearch(profile.ID, profile.Provider, rawSearch); err != nil {
+		return ProviderProfile{}, err
+	}
+	profile.WebSearch = searchcap.NormalizeCapability(profile.Provider, rawSearch)
 	if profile.APIKey == "" {
 		if saved, err := r.profileByID(profile.ID); err == nil {
 			profile.APIKey = saved.APIKey

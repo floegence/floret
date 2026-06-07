@@ -1,4 +1,4 @@
-import { clone, defaultProfile, escapeHTML, profileLabel, providerCatalog, state } from "../state.js";
+import { clone, defaultProfile, escapeHTML, hostedWireShapesForProvider, normalizeWebSearch, profileLabel, providerByID, providerCatalog, resolveWebSearchForProfile, state } from "../state.js";
 
 export function renderSettings() {
   const draft = state.settingsDraft;
@@ -11,8 +11,15 @@ export function renderSettings() {
   const profileKeyDraft = active.api_key || "";
   const searchKeyDraft = searchProvider.api_key || "";
   const webSearch = normalizeWebSearch(active.web_search);
-  const searchMode = webSearchMode(webSearch);
-  const wireShapes = state.config?.search_wire_shapes || [];
+  const provider = providerByID(active.provider);
+  const supportedWireShapes = hostedWireShapesForProvider(provider);
+  const hostedSupported = supportedWireShapes.length > 0;
+  const searchMode = webSearchMode(webSearch, hostedSupported);
+  const wireShapes = supportedWireShapes.map((shape) => ({ id: shape, title: searchWireShapeTitle(shape) }));
+  const resolvedSearch = resolveWebSearchForProfile({ ...active, web_search: webSearch });
+  const savedProfile = savedActiveProfile();
+  const savedSearch = normalizeWebSearch(savedProfile.web_search);
+  const savedSearchMode = webSearchMode(savedSearch, hostedWireShapesForProvider(providerByID(savedProfile.provider)).length > 0);
   return `
     <section class="settings-page">
       <header class="settings-head">
@@ -44,37 +51,38 @@ export function renderSettings() {
           <label class="field"><span>Fake response</span><input name="fake_response" value="${escapeHTML(active.fake_response || "")}" ${isSaving ? "disabled" : ""} /></label>
           <div class="settings-divider"></div>
           <h2>Web Search Capability</h2>
-          <p class="muted">web_search is configured per provider profile. Provider-hosted search is preferred when enabled; Brave client search is shown only when selected here.</p>
+          <p class="muted">web_search is configured per provider profile as one selected source. Provider-hosted, external Brave, and disabled modes never run at the same time.</p>
+          ${renderSettingsError(active, webSearch)}
           <label class="field">
             <span>Search mode</span>
             <select name="search_mode" ${isSaving ? "disabled" : ""}>
-              <option value="provider_hosted" ${searchMode === "provider_hosted" ? "selected" : ""}>Provider-hosted web search</option>
-              <option value="client" ${searchMode === "client" ? "selected" : ""}>Client search via Brave</option>
+              <option value="provider_hosted" ${searchMode === "provider_hosted" ? "selected" : ""} ${hostedSupported ? "" : "disabled"}>Provider-hosted web search${hostedSupported ? "" : " (unsupported)"}</option>
+              <option value="external_brave" ${searchMode === "external_brave" ? "selected" : ""}>External: Brave</option>
               <option value="disabled" ${searchMode === "disabled" ? "selected" : ""}>Disabled</option>
             </select>
           </label>
           <label class="field">
             <span>Hosted wire shape</span>
             <select name="search_wire_shape" ${isSaving || searchMode !== "provider_hosted" ? "disabled" : ""}>
-              ${wireShapeOptions(wireShapes, webSearch.provider_hosted?.wire_shape)}
+              ${wireShapeOptions(wireShapes, webSearch.hosted?.wire_shape)}
             </select>
           </label>
           <div class="tool-boundary-grid">
             <div>
               <strong>Active source</strong>
-              <span>${escapeHTML(searchModeLabel(searchMode, webSearch.provider_hosted?.wire_shape))}</span>
+              <span>${escapeHTML(searchModeLabel(searchMode, resolvedSearch.wire_shape || webSearch.hosted?.wire_shape))}</span>
             </div>
             <div>
-              <strong>Brave API key</strong>
-              <span>${state.config?.search_provider?.api_key_set ? "saved" : "not saved"}</span>
+              <strong>Saved Brave key</strong>
+              <span>${escapeHTML(braveKeyStatus(searchMode, searchKeyDraft))}</span>
             </div>
             <div>
-              <strong>Local client</strong>
-              <span>${searchMode === "client" ? "enabled" : "not exposed"}</span>
+              <strong>Exposure</strong>
+              <span>${escapeHTML(resolvedSearch.available ? resolvedSearch.exposure : resolvedSearch.unavailable || searchExposureLabel(searchMode))}</span>
             </div>
           </div>
-          <label class="field"><span>Brave API key</span><input name="search_api_key" type="password" value="${escapeHTML(searchKeyDraft)}" placeholder="${state.config?.search_provider?.api_key_set ? "saved key retained if empty" : "required only for client search"}" ${isSaving || searchMode !== "client" ? "disabled" : ""} /></label>
-          <label class="field"><span>Brave endpoint override</span><input name="search_endpoint" value="${escapeHTML(searchProvider.endpoint || "")}" placeholder="default Brave Web Search endpoint" ${isSaving || searchMode !== "client" ? "disabled" : ""} /></label>
+          <label class="field"><span>Brave API key</span><input name="search_api_key" type="password" value="${escapeHTML(searchKeyDraft)}" placeholder="${state.config?.search_provider?.api_key_set ? "saved key retained if empty" : "required only for external Brave"}" ${isSaving || searchMode !== "external_brave" ? "disabled" : ""} /></label>
+          <label class="field"><span>Brave endpoint override</span><input name="search_endpoint" value="${escapeHTML(searchProvider.endpoint || "")}" placeholder="default Brave Web Search endpoint" ${isSaving || searchMode !== "external_brave" ? "disabled" : ""} /></label>
           <div class="form-actions">
             <button type="button" data-duplicate-profile ${isSaving ? "disabled" : ""}>Duplicate</button>
             <button class="primary ${isSaving ? "is-pending" : ""}" type="submit" ${isSaving ? "disabled" : ""}>${isSaving ? "Saving..." : "Save .env.local"}</button>
@@ -92,7 +100,7 @@ export function renderSettings() {
           </div>
           <div class="settings-divider"></div>
           <h2>Tool Scenario Checks</h2>
-          <p class="muted">Saved repeatable scenarios for multi-tool, multi-turn agent behavior. Mock scenarios are deterministic; live scenarios use the saved active provider profile.</p>
+          <p class="muted">Saved repeatable scenarios for multi-tool, multi-turn agent behavior. Mock scenarios are deterministic; live scenarios use the saved active provider profile, not unsaved draft edits.</p>
           <div class="tool-boundary-grid">
             <div>
               <strong>Mock suite</strong>
@@ -100,11 +108,11 @@ export function renderSettings() {
             </div>
             <div>
               <strong>Live profile</strong>
-              <span>${escapeHTML(profileLabel(active))}</span>
+              <span>${escapeHTML(profileLabel(savedProfile))}</span>
             </div>
             <div>
-              <strong>Search mode</strong>
-              <span>${escapeHTML(searchModeLabel(searchMode, webSearch.provider_hosted?.wire_shape))}</span>
+              <strong>Saved search mode</strong>
+              <span>${escapeHTML(searchModeLabel(savedSearchMode, savedSearch.hosted?.wire_shape))}</span>
             </div>
           </div>
           <div class="form-actions">
@@ -115,6 +123,31 @@ export function renderSettings() {
         </section>
       </div>
     </section>
+  `;
+}
+
+function savedActiveProfile() {
+  const profiles = state.config?.profiles || [];
+  return profiles.find((profile) => profile.id === state.config?.active_profile_id) || profiles[0] || defaultProfile();
+}
+
+function braveKeyStatus(mode, draftKey) {
+  if (mode !== "external_brave") return "not used by this mode";
+  if (String(draftKey || "").trim()) return "new key entered; save required";
+  return state.config?.search_provider?.api_key_set ? "saved" : "missing";
+}
+
+function renderSettingsError(active, webSearch) {
+  const error = state.settingsError;
+  if (!error) return "";
+  const source = webSearch.source || "disabled";
+  const wireShape = webSearch.hosted?.wire_shape || "";
+  return `
+    <div class="settings-error" role="alert">
+      <strong>Settings were not saved</strong>
+      <span>${escapeHTML(error.message || "Save failed")}</span>
+      <small>${escapeHTML([`profile ${active.id || active.name || "current"}`, `source ${source}`, wireShape ? `wire ${wireShape}` : ""].filter(Boolean).join(" · "))}</small>
+    </div>
   `;
 }
 
@@ -157,21 +190,25 @@ export function bindSettings(root, handlers) {
   };
   form?.addEventListener("input", (event) => {
     if (event.isComposing) return;
+    state.settingsError = null;
     persistDraft();
   });
   form?.addEventListener("change", (event) => {
     if (event.target === form.elements.active_profile_id || event.target === form.elements.provider) return;
+    state.settingsError = null;
     persistDraft();
     if (event.target === form.elements.search_mode) {
       handlers.onSwitchSearchMode?.();
     }
   });
   form?.elements.active_profile_id?.addEventListener("change", () => {
+    state.settingsError = null;
     state.settingsDraft = readSettingsDraft(form, form.dataset.currentProfileId || "");
     state.settingsDraft.active_profile_id = form.elements.active_profile_id.value;
     handlers.onSwitchProfile(form.elements.active_profile_id.value);
   });
   form?.elements.provider?.addEventListener("change", () => {
+    state.settingsError = null;
     state.settingsDraft = readSettingsDraft(form, form.dataset.currentProfileId || "");
     handlers.onSwitchProvider(form.elements.provider.value);
   });
@@ -214,67 +251,55 @@ export function readSettingsDraft(form, activeIDOverride = "") {
   };
 }
 
-function normalizeWebSearch(value) {
-  const next = clone(value || {});
-  next.provider_hosted = next.provider_hosted || {};
-  next.client = next.client || {};
-  if (!next.client.provider) next.client.provider = "brave";
-  return next;
-}
-
-function webSearchMode(capability) {
-  if (capability.disabled) return "disabled";
-  if (capability.client?.enabled) return "client";
-  if (capability.provider_hosted?.enabled) return "provider_hosted";
+function webSearchMode(capability, hostedSupported = true) {
+  if (capability.source === "provider_hosted" || capability.source === "external_brave" || capability.source === "disabled") {
+    if (capability.source === "provider_hosted" && !hostedSupported) return "disabled";
+    return capability.source;
+  }
   return "disabled";
 }
 
 function readWebSearchCapability(form, current) {
   const previous = normalizeWebSearch(current.web_search);
   const mode = form.elements.search_mode?.value || "disabled";
-  const selectedWireShape = form.elements.search_wire_shape?.value || previous.provider_hosted?.wire_shape || "";
-  const supportedWireShapes = previous.provider_hosted?.supported_wire_shapes?.length
-    ? previous.provider_hosted.supported_wire_shapes
-    : (state.config?.search_wire_shapes || []).map((shape) => shape.id);
+  const selectedWireShape = form.elements.search_wire_shape?.value || previous.hosted?.wire_shape || "";
   if (mode === "provider_hosted") {
     return {
-      provider_hosted: {
-        enabled: true,
-        wire_shape: selectedWireShape,
-        supported_wire_shapes: supportedWireShapes,
-      },
-      client: { enabled: false, provider: "brave" },
+      source: "provider_hosted",
+      hosted: { wire_shape: selectedWireShape },
     };
   }
-  if (mode === "client") {
+  if (mode === "external_brave") {
     return {
-      provider_hosted: {
-        enabled: false,
-        wire_shape: selectedWireShape,
-        supported_wire_shapes: supportedWireShapes,
-      },
-      client: { enabled: true, provider: "brave" },
+      source: "external_brave",
+      brave: { provider: "brave" },
     };
   }
   return {
-    provider_hosted: {
-      enabled: false,
-      wire_shape: selectedWireShape,
-      supported_wire_shapes: supportedWireShapes,
-    },
-    client: { enabled: false, provider: "brave" },
-    disabled: true,
+    source: "disabled",
   };
 }
 
 function wireShapeOptions(wireShapes, selected) {
-  const shapes = wireShapes?.length ? wireShapes : [{ id: selected || "openai_chat_web_search_options", title: selected || "OpenAI-compatible chat web_search_options" }];
+  const shapes = wireShapes?.length ? wireShapes : [{ id: selected || "", title: selected || "No provider-hosted search wire shape" }];
   const active = selected || shapes[0]?.id || "";
   return shapes.map((shape) => `<option value="${escapeHTML(shape.id)}" ${shape.id === active ? "selected" : ""}>${escapeHTML(shape.title || shape.id)}</option>`).join("");
 }
 
+function searchWireShapeTitle(shape) {
+  if (shape === "openai_chat_web_search_options") return "OpenAI chat web_search_options";
+  if (shape === "anthropic_server_web_search") return "Anthropic server web_search_20250305";
+  return shape;
+}
+
 function searchModeLabel(mode, wireShape) {
   if (mode === "provider_hosted") return wireShape ? `provider-hosted · ${wireShape}` : "provider-hosted";
-  if (mode === "client") return "client · brave";
+  if (mode === "external_brave") return "external Brave";
   return "disabled";
+}
+
+function searchExposureLabel(mode) {
+  if (mode === "provider_hosted") return "hosted tool: web_search";
+  if (mode === "external_brave") return "local tool: web_search";
+  return "not exposed";
 }

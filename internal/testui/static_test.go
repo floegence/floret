@@ -13,17 +13,20 @@ func TestStaticConsoleDocumentsWebSearchAndExternalFetchBoundary(t *testing.T) {
 	settings := readStaticTestFile(t, "views", "settings.js")
 	inspector := readStaticTestFile(t, "views", "inspector.js")
 
-	if strings.Contains(toolMatrix, "web_fetch") || !strings.Contains(toolMatrix, "web_search searches by query through either provider-hosted search or the configured client search provider") || !strings.Contains(toolMatrix, "Opening URLs or calling HTTP APIs belongs to shell, MCP, extensions, or user tools") {
+	if strings.Contains(toolMatrix, "web_fetch") || !strings.Contains(toolMatrix, "web_search searches by query through the single selected source for the ${escapeHTML(profileScope)}") || !strings.Contains(toolMatrix, "Opening URLs or calling HTTP APIs belongs to shell, MCP, extensions, or user tools") {
 		t.Fatalf("tool matrix does not describe the web_search/external-fetch boundary")
 	}
-	if !strings.Contains(settings, "Provider-hosted web search") || !strings.Contains(settings, "Client search via Brave") || !strings.Contains(settings, "readWebSearchCapability") {
-		t.Fatalf("settings view does not expose provider-hosted/client/disabled search configuration")
+	if !strings.Contains(readStaticTestFile(t, "views", "newSession.js"), `profileScope: "selected profile"`) || !strings.Contains(readStaticTestFile(t, "views", "inspector.js"), `profileScope: "session profile"`) {
+		t.Fatalf("tool matrix callers should describe whether the source comes from the selected or session profile")
+	}
+	if !strings.Contains(settings, "Provider-hosted web search") || !strings.Contains(settings, "External: Brave") || !strings.Contains(settings, "readWebSearchCapability") || !strings.Contains(settings, `source: "external_brave"`) {
+		t.Fatalf("settings view does not expose provider-hosted/external Brave/disabled search configuration")
 	}
 	if strings.Contains(settings, "web_fetch") || !strings.Contains(settings, "web_search + shell curl") {
 		t.Fatalf("settings view should not describe web_fetch as an available scenario capability")
 	}
-	if !strings.Contains(inspector, "Local client tools") || !strings.Contains(inspector, "Provider-hosted tools") || !strings.Contains(inspector, "Unavailable") {
-		t.Fatalf("inspector does not split local and hosted tool capabilities")
+	if !strings.Contains(inspector, "Selected tools/capabilities") || !strings.Contains(inspector, "Provider-hosted tools") || !strings.Contains(inspector, "Unavailable") {
+		t.Fatalf("inspector does not split selected, hosted, and unavailable capabilities")
 	}
 }
 
@@ -40,7 +43,7 @@ func TestStaticConsoleToolSelectionSemanticsStayAuditable(t *testing.T) {
 	if !strings.Contains(readStaticTestFile(t, "components", "toolMatrix.js"), "tool.available !== false") || !strings.Contains(readStaticTestFile(t, "components", "toolMatrix.js"), "source-badge") || !strings.Contains(readStaticTestFile(t, "components", "toolMatrix.js"), "Unavailable:") {
 		t.Fatalf("tool matrix should disable unavailable tools and expose source/unavailable state")
 	}
-	for _, want := range []string{"Provider-hosted capabilities", "Local client tools", "Disabled / unavailable capabilities"} {
+	for _, want := range []string{"Provider-hosted capabilities", "External search capabilities", "Disabled / unavailable capabilities"} {
 		if !strings.Contains(stateJS, want) {
 			t.Fatalf("tool grouping should expose %q", want)
 		}
@@ -72,6 +75,77 @@ func TestStaticConsoleToolSelectionSemanticsStayAuditable(t *testing.T) {
 	if !strings.Contains(readStaticTestFile(t, "components", "toolMatrix.js"), "tool.permission_mode || tool.annotations?.permission_mode") {
 		t.Fatalf("tool matrix should prefer explicit catalog permission_mode before fallback")
 	}
+}
+
+func TestStaticConsoleWebSearchToolMatrixBehavior(t *testing.T) {
+	script := `
+import assert from "node:assert/strict";
+import { groupTools, toolNamesForPreset } from "./static/state.js";
+
+const unavailable = [
+  { name: "read", group: "workspace_read", available: true },
+  { name: "web_search", group: "network", available: false, source: "external_brave", unavailable: "Brave Search API key is not configured" },
+];
+assert.deepEqual(toolNamesForPreset("all", unavailable), ["read"]);
+assert.equal(groupTools(unavailable).filter((group) => group.tools.some((tool) => tool.name === "web_search")).length, 1);
+assert.equal(groupTools(unavailable).find((group) => group.tools.some((tool) => tool.name === "web_search")).title, "Disabled / unavailable capabilities");
+
+const hosted = [{ name: "web_search", available: true, source: "provider_hosted", wire_shape: "openai_chat_web_search_options" }];
+assert.deepEqual(toolNamesForPreset("all", hosted), ["web_search"]);
+assert.equal(groupTools(hosted)[0].title, "Provider-hosted capabilities");
+
+const brave = [{ name: "web_search", available: true, source: "external_brave" }];
+assert.deepEqual(toolNamesForPreset("all", brave), ["web_search"]);
+assert.equal(groupTools(brave)[0].title, "External search capabilities");
+`
+	runNodeStaticScript(t, script)
+}
+
+func TestStaticConsoleWebSearchToolsFollowSelectedProfile(t *testing.T) {
+	script := `
+import assert from "node:assert/strict";
+import { defaultWebSearchForProvider, resolveWebSearchForProfile, state, toolsForProfile, toolNamesForPreset } from "./static/state.js";
+
+state.config = {
+  search_provider: { api_key_set: false },
+  catalog: [
+    { id: "openai", name: "OpenAI", web_search: { default_source: "provider_hosted", hosted_wire_shape: "openai_chat_web_search_options", hosted_wire_shapes: ["openai_chat_web_search_options"] } },
+    { id: "anthropic", name: "Anthropic", web_search: { default_source: "provider_hosted", hosted_wire_shape: "anthropic_server_web_search", hosted_wire_shapes: ["anthropic_server_web_search"] } },
+    { id: "fake", name: "Fake", web_search: {} },
+    { id: "deepseek", name: "DeepSeek", web_search: {} },
+  ],
+  tools: [
+    { name: "read", group: "workspace_read", available: true },
+    { name: "web_search", group: "network", available: false, source: "disabled", unavailable: "web search disabled" },
+  ],
+};
+
+assert.deepEqual(defaultWebSearchForProvider("openai"), { source: "provider_hosted", hosted: { wire_shape: "openai_chat_web_search_options" } });
+assert.deepEqual(defaultWebSearchForProvider("fake"), { source: "disabled" });
+
+let tools = toolsForProfile({ provider: "openai", web_search: { source: "provider_hosted", hosted: { wire_shape: "openai_chat_web_search_options" } } });
+let search = tools.find((tool) => tool.name === "web_search");
+assert.equal(search.available, true);
+assert.equal(search.source, "provider_hosted");
+assert.equal(search.wire_shape, "openai_chat_web_search_options");
+assert.deepEqual(toolNamesForPreset("all", tools), ["read", "web_search"]);
+
+tools = toolsForProfile({ provider: "deepseek", web_search: { source: "provider_hosted", hosted: { wire_shape: "openai_chat_web_search_options" } } });
+search = tools.find((tool) => tool.name === "web_search");
+assert.equal(search.available, false);
+assert.match(search.unavailable, /not supported by this profile/);
+assert.deepEqual(toolNamesForPreset("all", tools), ["read"]);
+
+tools = toolsForProfile({ provider: "fake", web_search: { source: "external_brave", brave: { provider: "brave" } } });
+search = tools.find((tool) => tool.name === "web_search");
+assert.equal(search.available, false);
+assert.equal(search.source, "external_brave");
+assert.match(search.unavailable, /API key/);
+
+state.config.search_provider.api_key_set = true;
+assert.equal(resolveWebSearchForProfile({ provider: "fake", web_search: { source: "external_brave" } }).available, true);
+`
+	runNodeStaticScript(t, script)
 }
 
 func TestStaticConsoleCreatesSessionBeforeRunningInitialTurn(t *testing.T) {
@@ -167,6 +241,11 @@ func TestStaticConsoleNewSessionDefaultsFollowBackendAndProviderCatalog(t *testi
 	}
 	if !strings.Contains(newSession, "contextPolicyForProfile(profile)") || !strings.Contains(appJS, "switchNewSessionProfile") {
 		t.Fatalf("new session flow should derive context policy from selected profile")
+	}
+	for _, want := range []string{"toolsForProfile(profile)", "bindToolPresets(toolArea, toolsForProfile(profile)", "toolsForProfile(state.activeSession?.profile)", "defaultWebSearchForProvider(provider)"} {
+		if !strings.Contains(stateJS+newSession+appJS, want) {
+			t.Fatalf("profile-specific tool catalog flow missing %q", want)
+		}
 	}
 	if strings.Contains(newSession, "defaultContextPolicy") || strings.Contains(stateJS, "recent_tail_tokens: 4096") {
 		t.Fatalf("new session defaults should not use stale hard-coded context policy values")
@@ -383,7 +462,7 @@ func TestStaticConsolePreservesDraftsAndSeparatesRefreshFailures(t *testing.T) {
 			t.Fatalf("app missing draft/refresh hardening %q", want)
 		}
 	}
-	if !strings.Contains(newSession, `form?.addEventListener("input"`) || !strings.Contains(newSession, "if (event.isComposing) return") || !strings.Contains(newSession, "persistDraft();") || !strings.Contains(newSession, "bindToolPresets(toolArea, state.config?.tools || [], \"new-tools\", persistDraft)") {
+	if !strings.Contains(newSession, `form?.addEventListener("input"`) || !strings.Contains(newSession, "if (event.isComposing) return") || !strings.Contains(newSession, "persistDraft();") || !strings.Contains(newSession, "bindToolPresets(toolArea, toolsForProfile(profile), \"new-tools\", persistDraft)") {
 		t.Fatalf("new session form does not persist ordinary edits")
 	}
 	if !strings.Contains(newSession, `hasOwnProperty.call(draft, "message")`) || !strings.Contains(newSession, `hasOwnProperty.call(draft, "system_prompt")`) {
@@ -716,9 +795,21 @@ func TestStaticConsoleTimelineToolActivityIsCompactAndExpandable(t *testing.T) {
 
 func TestStaticConsoleSettingsSavesSearchProviderContract(t *testing.T) {
 	settings := readStaticTestFile(t, "views", "settings.js")
-	for _, want := range []string{"search_provider", "search_api_key", "search_endpoint", `provider: "brave"`, "web_search: readWebSearchCapability", "search_mode", "search_wire_shape"} {
+	appJS := readStaticTestFile(t, "app.js")
+	css := readStaticTestFile(t, "styles.css")
+	for _, want := range []string{"search_provider", "search_api_key", "search_endpoint", `provider: "brave"`, "web_search: readWebSearchCapability", "search_mode", "search_wire_shape", `source: "provider_hosted"`, `source: "external_brave"`, `source: "disabled"`, "renderSettingsError", "Settings were not saved", "resolveWebSearchForProfile"} {
 		if !strings.Contains(settings, want) {
 			t.Fatalf("settings view missing %q", want)
+		}
+	}
+	for _, want := range []string{"state.settingsError", "onError:", "defaultWebSearchForProvider(provider)", ".settings-error"} {
+		if !strings.Contains(appJS+css, want) {
+			t.Fatalf("settings persistent error/provider switch flow missing %q", want)
+		}
+	}
+	for _, stale := range []string{`client: { enabled`, `provider_hosted: {`, `"Client search via Brave"`, "preferred when enabled"} {
+		if strings.Contains(settings, stale) {
+			t.Fatalf("settings view should not submit or describe legacy web search shape %q", stale)
 		}
 	}
 }
@@ -842,6 +933,16 @@ func readStaticTestFile(t *testing.T, parts ...string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func runNodeStaticScript(t *testing.T, script string) {
+	t.Helper()
+	cmd := exec.Command("node", "--input-type=module", "-e", script)
+	cmd.Dir = "."
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("node static behavior test failed: %v\n%s", err, output)
+	}
 }
 
 func readRepoTestFile(t *testing.T, parts ...string) string {

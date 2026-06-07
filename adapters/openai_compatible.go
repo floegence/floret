@@ -338,7 +338,8 @@ func (p OpenAICompatibleProvider) buildChatRequest(req provider.Request) chatReq
 func validateOpenAICompatibleHostedTools(defs []provider.HostedToolDefinition) error {
 	for _, def := range defs {
 		shape, _ := def.Options["wire_shape"].(string)
-		if def.Name != searchcap.ToolWebSearch || def.Type != searchcap.ToolWebSearch || shape != searchcap.WireShapeOpenAIChatWebSearchOptions {
+		wireShape := searchcap.HostedWireShape(shape)
+		if def.Name != searchcap.ToolWebSearch || def.Type != searchcap.ToolWebSearch || wireShape != searchcap.WireShapeOpenAIChatWebSearchOptions {
 			return fmt.Errorf("openai-compatible chat provider does not support hosted tool %s/%s with wire shape %q", def.Type, def.Name, shape)
 		}
 	}
@@ -348,7 +349,7 @@ func validateOpenAICompatibleHostedTools(defs []provider.HostedToolDefinition) e
 func hasOpenAICompatibleHostedSearch(defs []provider.HostedToolDefinition) bool {
 	for _, def := range defs {
 		shape, _ := def.Options["wire_shape"].(string)
-		if def.Name == searchcap.ToolWebSearch && def.Type == searchcap.ToolWebSearch && shape == searchcap.WireShapeOpenAIChatWebSearchOptions {
+		if def.Name == searchcap.ToolWebSearch && def.Type == searchcap.ToolWebSearch && searchcap.HostedWireShape(shape) == searchcap.WireShapeOpenAIChatWebSearchOptions {
 			return true
 		}
 	}

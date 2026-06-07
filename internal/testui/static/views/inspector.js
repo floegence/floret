@@ -79,7 +79,7 @@ function renderTools(session, tools, observation) {
       ${renderCapabilitySummary(session, observation)}
       <div class="tool-boundary-grid">
         <div>
-          <strong>Local client tools</strong>
+          <strong>Selected tools/capabilities</strong>
           <span>${escapeHTML(toolLabelList(session.selected_tools || []))}</span>
         </div>
         <div>
@@ -95,7 +95,7 @@ function renderTools(session, tools, observation) {
           <span>${escapeHTML((session.unavailable_capabilities || request?.unavailable_capabilities || []).join("; ") || "none")}</span>
         </div>
       </div>
-      ${renderToolMatrix({ tools, selected, editable: true, name: "session-tools" })}
+      ${renderToolMatrix({ tools, selected, editable: true, name: "session-tools", profileScope: "session profile" })}
       <label class="field">
         <span>Audit note</span>
         <input name="reason" value="${escapeHTML(draft.reason || "")}" placeholder="why this toolset changed" />
@@ -223,9 +223,15 @@ function latestProviderRequest(requests) {
 function hostedToolLabel(tools) {
   if (!tools || !tools.length) return "none";
   return tools.map((tool) => {
-    const shape = tool.options?.wire_shape ? ` · ${tool.options.wire_shape}` : "";
-    return `${tool.name || tool.type} (${tool.type || "hosted"}${shape})`;
+    const shape = tool.options?.wire_shape || tool.wire_shape || hostedWireShapeFromType(tool.type);
+    const shapeLabel = shape ? ` · ${shape}` : "";
+    return `${tool.name || tool.type} (${tool.type || "hosted"}${shapeLabel})`;
   }).join(", ");
+}
+
+function hostedWireShapeFromType(type) {
+  if (type === "web_search_20250305") return "anthropic_server_web_search";
+  return "";
 }
 
 function renderEvents(events, providerEvents) {
