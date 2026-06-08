@@ -12,6 +12,11 @@ This file is the repository-level operating guide for `floret/`.
 - Do not introduce or rely on `go.work` or `go.work.sum` in this repository, sibling repositories, or their shared parent directory.
 - Do not wire local sibling repositories into manifests, lockfiles, imports, or build/test configuration.
 - Resolve conflicts only inside the feature worktree, never on `main`.
+- Conflict resolution must preserve the semantic intent of all involved branches, not just produce text that compiles.
+- Before resolving merge or rebase conflicts, review the substantive commits on each side for new features, bug fixes, behavior changes, tests, and user-facing workflows.
+- Do not drop, overwrite, or silently weaken current or historical functionality unless the user explicitly approves that product decision.
+- If two branches introduce incompatible behavior, surface the product or architecture tradeoff instead of choosing one side silently.
+- After resolving conflicts, run focused checks for the affected behavior in addition to the repository quality gate.
 
 Recommended setup after the first commit exists:
 
