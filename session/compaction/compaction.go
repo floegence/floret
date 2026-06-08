@@ -195,7 +195,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	start, tailShrunk = fitTailStartBeforeSummary(history, start, keptUsers, req.Policy)
 	head := append([]session.Message(nil), history[:start]...)
 	tail := append([]session.Message(nil), history[start:]...)
-	firstKept := tail[0].EntryID
+	firstKept := firstEntryID(tail)
 	compactedThrough := lastEntryID(head)
 	details := map[string]string{
 		"history_messages":       fmt.Sprintf("%d", len(history)),
@@ -450,8 +450,12 @@ func removeActiveCompactionSummary(messages []session.Message, req *Request) []s
 		req.PreviousCompactionID = summary.CompactionID
 	}
 	out := make([]session.Message, 0, len(messages)-1)
-	out = append(out, messages[:index]...)
-	out = append(out, messages[index+1:]...)
+	for _, msg := range messages {
+		if msg.Kind == session.MessageKindCompactionSummary {
+			continue
+		}
+		out = append(out, msg)
+	}
 	return out
 }
 

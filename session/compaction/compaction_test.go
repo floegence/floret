@@ -2,6 +2,8 @@ package compaction
 
 import (
 	"context"
+	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -72,14 +74,52 @@ func TestPrepareUpdatesPreviousSummaryWithoutStackingOldSummaryMessages(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	count := 0
-	for _, msg := range prep.ActiveMessages {
+	requireSingleCheckpoint(t, prep.ActiveMessages)
+	if prep.Result.PreviousCompactionID != "c1" || !strings.Contains(prep.Result.Summary, "Previous Summary") {
+		t.Fatalf("previous summary should be updated into one replacement summary: %#v", prep)
+	}
+}
+
+func TestPrepareDropsStackedCheckpointMessagesAndUsesLatestPreviousSummary(t *testing.T) {
+	older := BuildCheckpointMessage("S0 older summary", []session.Message{{Role: session.User, Content: "older preserved checkpoint user", EntryID: "u0"}}, nil)
+	older.CompactionID = "c0"
+	latest := BuildCheckpointMessage("S1 latest summary", []session.Message{{Role: session.User, Content: "latest preserved checkpoint user", EntryID: "u1"}}, nil)
+	latest.CompactionID = "c1"
+	generator := &recordingSummaryGenerator{summaries: []string{"S2 new summary"}}
+
+	prep, err := Prepare(context.Background(), Request{
+		History: []session.Message{
+			older,
+			latest,
+			{Role: session.User, Content: "new work", EntryID: "u2"},
+			{Role: session.Assistant, Content: "new decision", EntryID: "a2"},
+			{Role: session.User, Content: "tail", EntryID: "u3"},
+		},
+		Policy: contextpolicy.Policy{ContextWindowTokens: 200000, ReservedOutputTokens: 1000, ReservedSummaryTokens: 1000, RecentTailTokens: 12},
+	}, generator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(generator.calls) != 1 {
+		t.Fatalf("summary generator calls = %d, want 1", len(generator.calls))
+	}
+	call := generator.calls[0]
+	if call.Request.PreviousCompactionID != "c1" || call.Request.PreviousSummary != "S1 latest summary" {
+		t.Fatalf("latest checkpoint should be previous summary source: %#v", call.Request)
+	}
+	for _, msg := range append(append([]session.Message(nil), call.CompactedHead...), call.RetainedTail...) {
 		if msg.Kind == session.MessageKindCompactionSummary {
-			count++
+			t.Fatalf("old checkpoint should not remain in compacted scope or tail: %#v", call)
 		}
 	}
-	if count != 1 || prep.Result.PreviousCompactionID != "c1" || !strings.Contains(prep.Result.Summary, "Previous Summary") {
-		t.Fatalf("previous summary should be updated into one replacement summary: %#v", prep)
+	checkpoint := requireSingleCheckpoint(t, prep.ActiveMessages)
+	if got := ExtractCheckpointSummary(checkpoint.Content); got != "S2 new summary" {
+		t.Fatalf("new checkpoint summary = %q, want stub summary", got)
+	}
+	for _, input := range preservedUserInputs(t, checkpoint) {
+		if input.EntryID == "u0" || input.EntryID == "u1" {
+			t.Fatalf("old checkpoint users should not be structurally re-preserved: %#v", input)
+		}
 	}
 }
 
@@ -106,8 +146,10 @@ func TestPrepareKeepsLatestUserAndRecentUsersWithinBudget(t *testing.T) {
 	if len(prep.ActiveMessages) == 0 || prep.ActiveMessages[0].Role != session.User || prep.ActiveMessages[0].Kind != session.MessageKindCompactionSummary {
 		t.Fatalf("active context should start with user checkpoint: %#v", prep.ActiveMessages)
 	}
-	if !strings.Contains(prep.ActiveMessages[0].Content, `"entry_id": "u3"`) || !strings.Contains(prep.ActiveMessages[0].Content, "latest") {
-		t.Fatalf("latest user should be preserved inside checkpoint: %#v", prep.ActiveMessages[0])
+	checkpoint := requireSingleCheckpoint(t, prep.ActiveMessages)
+	preserved := preservedUserInputs(t, checkpoint)
+	if len(preserved) != 1 || preserved[0].EntryID != "u3" || preserved[0].Content != "latest" {
+		t.Fatalf("latest user should be preserved inside checkpoint: %#v", preserved)
 	}
 	if countEntryID(prep.ActiveMessages, "u3") != 0 {
 		t.Fatalf("tail-external kept user should not appear as standalone message: %#v", prep.ActiveMessages)
@@ -208,14 +250,11 @@ func TestPrepareDeduplicatesKeptUsersAlreadyInTail(t *testing.T) {
 	if got, want := strings.Join(prep.Result.KeptUserEntryIDs, ","), "u1,u2"; got != want {
 		t.Fatalf("kept user ids = %q, want %q", got, want)
 	}
-	if countEntryID(prep.ActiveMessages, "u2") != 1 {
-		t.Fatalf("latest user should appear once with tail position winning: %#v", prep.ActiveMessages)
-	}
-	if strings.Contains(prep.ActiveMessages[0].Content, `"entry_id": "u2"`) {
-		t.Fatalf("tail user should not be duplicated inside checkpoint: %#v", prep.ActiveMessages[0])
-	}
-	if !strings.Contains(prep.ActiveMessages[0].Content, `"entry_id": "u1"`) {
-		t.Fatalf("tail-external user should be preserved inside checkpoint: %#v", prep.ActiveMessages[0])
+	requireEntryIDCount(t, prep.ActiveMessages, "u2", 1)
+	checkpoint := requireSingleCheckpoint(t, prep.ActiveMessages)
+	preserved := preservedUserInputs(t, checkpoint)
+	if got, want := strings.Join(preservedUserEntryIDs(preserved), ","), "u1"; got != want {
+		t.Fatalf("checkpoint preserved user ids = %q, want %q", got, want)
 	}
 }
 
@@ -240,6 +279,139 @@ func TestPrepareExtractsPurePreviousSummaryFromCheckpoint(t *testing.T) {
 	}
 	if strings.Contains(prep.Result.Summary, "preserved_user_inputs") || !strings.Contains(prep.Result.Summary, "S1 old summary") {
 		t.Fatalf("summary should merge pure previous summary without checkpoint wrapper: %q", prep.Result.Summary)
+	}
+}
+
+func TestPrepareRepeatedCompactionReplacesCheckpointWithoutPreservedUserGrowth(t *testing.T) {
+	policy := contextpolicy.Policy{
+		ContextWindowTokens:   200000,
+		ReservedOutputTokens:  1000,
+		ReservedSummaryTokens: 1000,
+		RecentTailTokens:      20,
+		RecentUserTokens:      1000,
+	}
+	generator := &recordingSummaryGenerator{summaries: []string{
+		"round 1 summary body",
+		"round 2 summary body",
+		"round 3 summary body",
+	}}
+
+	round1, err := Prepare(context.Background(), Request{
+		CompactionID: "c1",
+		History: []session.Message{
+			{Role: session.User, Content: "round 1 root constraint", EntryID: "u1"},
+			{Role: session.Assistant, Content: "round 1 root decision", EntryID: "a1"},
+			{Role: session.User, Content: "round 1 preserved request", EntryID: "u2"},
+			{Role: session.Assistant, Content: "round 1 middle decision", EntryID: "a2"},
+			{Role: session.User, Content: "round 1 tail user", EntryID: "u3"},
+			{Role: session.Assistant, Content: "round 1 tail answer", EntryID: "a3"},
+		},
+		Policy: policy,
+	}, generator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint1 := requireCheckpointPlusTail(t, round1)
+	if got, want := strings.Join(preservedUserEntryIDs(preservedUserInputs(t, checkpoint1)), ","), "u1,u2"; got != want {
+		t.Fatalf("round 1 preserved user ids = %q, want %q", got, want)
+	}
+
+	round2History := append([]session.Message(nil), round1.ActiveMessages...)
+	round2History = append(round2History,
+		session.Message{Role: session.User, Content: "round 2 new request", EntryID: "u4"},
+		session.Message{Role: session.Assistant, Content: "round 2 new decision", EntryID: "a4"},
+		session.Message{Role: session.User, Content: "round 2 tail user", EntryID: "u5"},
+		session.Message{Role: session.Assistant, Content: "round 2 tail answer", EntryID: "a5"},
+	)
+	round2, err := Prepare(context.Background(), Request{
+		CompactionID: "c2",
+		History:      round2History,
+		Policy:       policy,
+	}, generator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint2 := requireCheckpointPlusTail(t, round2)
+	if len(generator.calls) != 2 {
+		t.Fatalf("summary generator calls = %d, want 2", len(generator.calls))
+	}
+	if got := generator.calls[1].Request.PreviousSummary; got != "round 1 summary body" {
+		t.Fatalf("round 2 previous summary = %q, want pure round 1 summary body", got)
+	}
+	if got, want := strings.Join(preservedUserEntryIDs(preservedUserInputs(t, checkpoint2)), ","), "u3,u4"; got != want {
+		t.Fatalf("round 2 preserved user ids = %q, want %q", got, want)
+	}
+
+	round3History := append([]session.Message(nil), round2.ActiveMessages...)
+	round3History = append(round3History,
+		session.Message{Role: session.User, Content: "round 3 new request", EntryID: "u6"},
+		session.Message{Role: session.Assistant, Content: "round 3 new decision", EntryID: "a6"},
+		session.Message{Role: session.User, Content: "round 3 tail user", EntryID: "u7"},
+		session.Message{Role: session.Assistant, Content: "round 3 tail answer", EntryID: "a7"},
+	)
+	round3, err := Prepare(context.Background(), Request{
+		CompactionID: "c3",
+		History:      round3History,
+		Policy:       policy,
+	}, generator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint3 := requireCheckpointPlusTail(t, round3)
+	if len(generator.calls) != 3 {
+		t.Fatalf("summary generator calls = %d, want 3", len(generator.calls))
+	}
+	if got := generator.calls[2].Request.PreviousSummary; got != "round 2 summary body" {
+		t.Fatalf("round 3 previous summary = %q, want pure round 2 summary body", got)
+	}
+	if got, want := strings.Join(preservedUserEntryIDs(preservedUserInputs(t, checkpoint3)), ","), "u5,u6"; got != want {
+		t.Fatalf("round 3 preserved user ids = %q, want %q", got, want)
+	}
+
+	stacked := append([]session.Message{checkpoint1}, round3.ActiveMessages...)
+	stackedEstimate := contextpolicy.EstimateMessages("", stacked, 0, contextpolicy.Normalize(policy)).InputTokens
+	if round3.Result.TokensAfterEstimate >= stackedEstimate {
+		t.Fatalf("tokens after estimate looks stacked: after=%d stacked=%d active=%#v", round3.Result.TokensAfterEstimate, stackedEstimate, round3.ActiveMessages)
+	}
+	if got := contextpolicy.EstimateMessages("", round3.ActiveMessages, 0, contextpolicy.Normalize(policy)).InputTokens; got != round3.Result.TokensAfterEstimate {
+		t.Fatalf("tokens after estimate = %d, want active projection estimate %d", round3.Result.TokensAfterEstimate, got)
+	}
+}
+
+func TestPrepareSkipsEntryIDlessUserForKeptUsersButRetainsTail(t *testing.T) {
+	prep, err := Prepare(context.Background(), Request{
+		History: []session.Message{
+			{Role: session.User, Content: "identified root request", EntryID: "u1"},
+			{Role: session.Assistant, Content: "identified root answer", EntryID: "a1"},
+			{Role: session.User, Content: "entryless tail user stays in place"},
+			{Role: session.Assistant, Content: "tail answer with id", EntryID: "a2"},
+		},
+		Policy: contextpolicy.Policy{
+			ContextWindowTokens:   200000,
+			ReservedOutputTokens:  1000,
+			ReservedSummaryTokens: 1000,
+			RecentTailTokens:      20,
+			RecentUserTokens:      1000,
+		},
+	}, ExtractiveSummaryGenerator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := requireCheckpointPlusTail(t, prep)
+	if got, want := strings.Join(prep.Result.KeptUserEntryIDs, ","), "u1"; got != want {
+		t.Fatalf("kept user ids = %q, want %q", got, want)
+	}
+	if got, want := prep.Result.FirstKeptEntryID, "a2"; got != want {
+		t.Fatalf("first kept entry id = %q, want first non-empty tail entry id %q", got, want)
+	}
+	if len(prep.RetainedTail) != 2 || prep.RetainedTail[0].EntryID != "" || prep.RetainedTail[0].Content != "entryless tail user stays in place" {
+		t.Fatalf("entry-id-less user should be retained in tail unchanged: %#v", prep.RetainedTail)
+	}
+	if got, want := strings.Join(preservedUserEntryIDs(preservedUserInputs(t, checkpoint)), ","), "u1"; got != want {
+		t.Fatalf("preserved user ids = %q, want %q", got, want)
+	}
+	if strings.Contains(checkpoint.Content, "entryless tail user stays in place") {
+		t.Fatalf("entry-id-less tail user should not be duplicated inside checkpoint: %q", checkpoint.Content)
 	}
 }
 
@@ -288,10 +460,11 @@ func TestSingleMessageCompactionCheckpointDoesNotClaimRetainedTail(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(prep.ActiveMessages) != 1 || prep.ActiveMessages[0].Kind != session.MessageKindCompactionSummary {
+	checkpoint := requireSingleCheckpoint(t, prep.ActiveMessages)
+	if len(prep.ActiveMessages) != 1 {
 		t.Fatalf("single-message compaction should produce one checkpoint: %#v", prep.ActiveMessages)
 	}
-	content := prep.ActiveMessages[0].Content
+	content := checkpoint.Content
 	for _, forbidden := range []string{"The retained tail follows", "Do not answer this checkpoint directly"} {
 		if strings.Contains(content, forbidden) {
 			t.Fatalf("single-message checkpoint should not include %q: %q", forbidden, content)
@@ -435,4 +608,91 @@ func countEntryID(messages []session.Message, id string) int {
 		}
 	}
 	return count
+}
+
+type recordingSummaryGenerator struct {
+	summaries []string
+	calls     []Preparation
+}
+
+func (g *recordingSummaryGenerator) GenerateSummary(_ context.Context, prep Preparation) (string, error) {
+	g.calls = append(g.calls, prep)
+	index := len(g.calls) - 1
+	if index < len(g.summaries) {
+		return g.summaries[index], nil
+	}
+	return "summary", nil
+}
+
+func compactionSummaryMessages(messages []session.Message) []session.Message {
+	var out []session.Message
+	for _, msg := range messages {
+		if msg.Kind == session.MessageKindCompactionSummary {
+			out = append(out, msg)
+		}
+	}
+	return out
+}
+
+func requireSingleCheckpoint(t *testing.T, messages []session.Message) session.Message {
+	t.Helper()
+	checkpoints := compactionSummaryMessages(messages)
+	if len(checkpoints) != 1 {
+		t.Fatalf("compaction summary messages = %d, want 1: %#v", len(checkpoints), messages)
+	}
+	if len(messages) == 0 || messages[0].Kind != session.MessageKindCompactionSummary {
+		t.Fatalf("active messages should start with checkpoint: %#v", messages)
+	}
+	return checkpoints[0]
+}
+
+func requireCheckpointPlusTail(t *testing.T, prep Preparation) session.Message {
+	t.Helper()
+	checkpoint := requireSingleCheckpoint(t, prep.ActiveMessages)
+	if len(prep.ActiveMessages) != len(prep.RetainedTail)+1 {
+		t.Fatalf("active messages length = %d, want checkpoint plus %d retained tail messages: %#v", len(prep.ActiveMessages), len(prep.RetainedTail), prep.ActiveMessages)
+	}
+	if !slices.Equal(prep.ActiveMessages[1:], prep.RetainedTail) {
+		t.Fatalf("active messages should be [checkpoint] + retained tail: active=%#v tail=%#v", prep.ActiveMessages, prep.RetainedTail)
+	}
+	return checkpoint
+}
+
+func requireEntryIDCount(t *testing.T, messages []session.Message, id string, want int) {
+	t.Helper()
+	if got := countEntryID(messages, id); got != want {
+		t.Fatalf("entry id %q count = %d, want %d: %#v", id, got, want, messages)
+	}
+}
+
+func preservedUserInputs(t *testing.T, checkpoint session.Message) []preservedUserInput {
+	t.Helper()
+	start := strings.Index(checkpoint.Content, "<preserved_user_inputs>")
+	if start < 0 {
+		return nil
+	}
+	start += len("<preserved_user_inputs>")
+	end := strings.Index(checkpoint.Content[start:], "</preserved_user_inputs>")
+	if end < 0 {
+		t.Fatalf("checkpoint preserved user inputs block is not closed: %q", checkpoint.Content)
+	}
+	block := checkpoint.Content[start : start+end]
+	jsonStart := strings.Index(block, "[")
+	jsonEnd := strings.LastIndex(block, "]")
+	if jsonStart < 0 || jsonEnd < jsonStart {
+		t.Fatalf("checkpoint preserved user inputs block has no JSON array: %q", block)
+	}
+	var inputs []preservedUserInput
+	if err := json.Unmarshal([]byte(block[jsonStart:jsonEnd+1]), &inputs); err != nil {
+		t.Fatalf("decode preserved user inputs: %v\n%s", err, block[jsonStart:jsonEnd+1])
+	}
+	return inputs
+}
+
+func preservedUserEntryIDs(inputs []preservedUserInput) []string {
+	ids := make([]string, 0, len(inputs))
+	for _, input := range inputs {
+		ids = append(ids, input.EntryID)
+	}
+	return ids
 }

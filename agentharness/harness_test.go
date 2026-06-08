@@ -724,6 +724,19 @@ func TestMultipleCompactionsForkReloadAndContinueUseLatestWindow(t *testing.T) {
 	if got := countMessagesByKind(snap.Context, session.MessageKindCompactionSummary); got != 1 {
 		t.Fatalf("active context should expose only latest compaction summary, got %d: %#v", got, snap.Context)
 	}
+	checkpoint, ok := firstMessageByKind(snap.Context, session.MessageKindCompactionSummary)
+	if !ok || checkpoint.Kind != session.MessageKindCompactionSummary {
+		t.Fatalf("active context missing checkpoint: %#v", snap.Context)
+	}
+	if strings.Count(checkpoint.Content, "<compaction_summary") != 1 || strings.Count(checkpoint.Content, "</compaction_summary>") != 1 {
+		t.Fatalf("active checkpoint should contain one summary envelope: %q", checkpoint.Content)
+	}
+	if strings.Count(checkpoint.Content, "<preserved_user_inputs>") > 1 {
+		t.Fatalf("active checkpoint should not duplicate preserved user blocks: %q", checkpoint.Content)
+	}
+	if strings.Contains(compaction.ExtractCheckpointSummary(checkpoint.Content), "preserved_user_inputs") {
+		t.Fatalf("active checkpoint summary should not include an older checkpoint envelope: %q", checkpoint.Content)
+	}
 	latest := latestEntry(snap.Entries, sessiontree.EntryCompaction)
 	if latest.CompactionGeneration != 2 || latest.PreviousCompactionID == "" {
 		t.Fatalf("second compaction should link previous generation: %#v", latest)
@@ -744,6 +757,19 @@ func TestMultipleCompactionsForkReloadAndContinueUseLatestWindow(t *testing.T) {
 	req := reloadedHarness.options.Provider.(*scriptharness.ScriptedProvider).Requests[0]
 	if got := countMessagesByKind(req.Messages, session.MessageKindCompactionSummary); got != 1 {
 		t.Fatalf("fork request should carry one latest summary, got %d: %#v", got, req.Messages)
+	}
+	requestCheckpoint, ok := firstMessageByKind(req.Messages, session.MessageKindCompactionSummary)
+	if !ok || requestCheckpoint.Kind != session.MessageKindCompactionSummary {
+		t.Fatalf("fork request missing checkpoint: %#v", req.Messages)
+	}
+	if strings.Count(requestCheckpoint.Content, "<compaction_summary") != 1 || strings.Count(requestCheckpoint.Content, "</compaction_summary>") != 1 {
+		t.Fatalf("fork request checkpoint should contain one summary envelope: %q", requestCheckpoint.Content)
+	}
+	if strings.Count(requestCheckpoint.Content, "<preserved_user_inputs>") > 1 {
+		t.Fatalf("fork request checkpoint should not duplicate preserved user blocks: %q", requestCheckpoint.Content)
+	}
+	if strings.Contains(compaction.ExtractCheckpointSummary(requestCheckpoint.Content), "preserved_user_inputs") {
+		t.Fatalf("fork request checkpoint summary should not include an older checkpoint envelope: %q", requestCheckpoint.Content)
 	}
 	if req.RawPlan.CompactionGeneration != 2 || req.RawPlan.CompactionWindowID != latest.CompactionWindowID {
 		t.Fatalf("fork request should carry latest compaction window: latest=%#v plan=%#v", latest, req.RawPlan)
@@ -1591,6 +1617,15 @@ func countMessagesByKind(messages []session.Message, kind session.MessageKind) i
 		}
 	}
 	return count
+}
+
+func firstMessageByKind(messages []session.Message, kind session.MessageKind) (session.Message, bool) {
+	for _, msg := range messages {
+		if msg.Kind == kind {
+			return msg, true
+		}
+	}
+	return session.Message{}, false
 }
 
 type blockingProvider struct {

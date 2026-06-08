@@ -365,6 +365,7 @@ func TestMultipleCompactionsUseOnlyLastBoundary(t *testing.T) {
 	c1, err := AppendCompaction(ctx, repo, "thread", "t2", compaction.Result{
 		CompactionID:            "c1",
 		FirstKeptEntryID:        kept1.ID,
+		KeptUserEntryIDs:        []string{old.ID, kept1.ID},
 		CompactedThroughEntryID: old.ID,
 		Summary:                 "S1",
 		SummarySchemaVersion:    compaction.SummarySchemaVersion,
@@ -376,10 +377,12 @@ func TestMultipleCompactionsUseOnlyLastBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	kept2, _ := AppendMessage(ctx, repo, "thread", "t3", session.Message{Role: session.User, Content: "kept2"})
+	kept3, _ := AppendMessage(ctx, repo, "thread", "t3", session.Message{Role: session.User, Content: "kept3"})
 	_, err = AppendCompaction(ctx, repo, "thread", "t3", compaction.Result{
 		CompactionID:            "c2",
 		PreviousCompactionID:    "c1",
-		FirstKeptEntryID:        kept2.ID,
+		FirstKeptEntryID:        kept3.ID,
+		KeptUserEntryIDs:        []string{kept2.ID, kept3.ID},
 		CompactedThroughEntryID: c1.ID,
 		Summary:                 "S2",
 		SummarySchemaVersion:    compaction.SummarySchemaVersion,
@@ -396,11 +399,21 @@ func TestMultipleCompactionsUseOnlyLastBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := BuildContext(path, ContextOptions{})
-	if len(got) != 2 || !strings.Contains(got[0].Content, "S2") || got[0].Kind != session.MessageKindCompactionSummary || got[1].Content != "kept2" {
+	if len(got) != 2 || !strings.Contains(got[0].Content, "S2") || got[0].Kind != session.MessageKindCompactionSummary || got[1].Content != "kept3" {
 		t.Fatalf("context should use only last compaction boundary: %#v", got)
 	}
-	if pathContains(path, old.ID) && len(got) > 0 && got[0].Content == "S1" {
-		t.Fatalf("old summary should not stack into active context: %#v", got)
+	if summary := compaction.ExtractCheckpointSummary(got[0].Content); summary != "S2" {
+		t.Fatalf("context should use only latest compaction summary, got %q", summary)
+	}
+	if strings.Count(got[0].Content, "<preserved_user_inputs>") != 1 || strings.Count(got[0].Content, "<compaction_summary") != 1 {
+		t.Fatalf("latest checkpoint should have one preserved block and one summary envelope: %q", got[0].Content)
+	}
+	if !strings.Contains(got[0].Content, "The retained tail follows") || strings.Contains(got[0].Content, "No retained tail follows this checkpoint.") {
+		t.Fatalf("durable checkpoint should describe the retained tail it is followed by: %q", got[0].Content)
+	}
+	preserved := preservedUsersFromCheckpoint(t, got[0].Content)
+	if len(preserved) != 1 || preserved[0].EntryID != kept2.ID || preserved[0].Content != "kept2" {
+		t.Fatalf("latest checkpoint should preserve only tail-external kept users: %#v", preserved)
 	}
 }
 
@@ -462,6 +475,35 @@ func messageContents(messages []session.Message) []string {
 		out[i] = msg.Content
 	}
 	return out
+}
+
+type checkpointPreservedUser struct {
+	EntryID string `json:"entry_id"`
+	Content string `json:"content"`
+}
+
+func preservedUsersFromCheckpoint(t *testing.T, content string) []checkpointPreservedUser {
+	t.Helper()
+	start := strings.Index(content, "<preserved_user_inputs>")
+	if start < 0 {
+		return nil
+	}
+	start += len("<preserved_user_inputs>")
+	end := strings.Index(content[start:], "</preserved_user_inputs>")
+	if end < 0 {
+		t.Fatalf("checkpoint preserved block is not closed: %q", content)
+	}
+	block := content[start : start+end]
+	jsonStart := strings.Index(block, "[")
+	jsonEnd := strings.LastIndex(block, "]")
+	if jsonStart < 0 || jsonEnd < jsonStart {
+		t.Fatalf("checkpoint preserved block has no JSON array: %q", block)
+	}
+	var users []checkpointPreservedUser
+	if err := json.Unmarshal([]byte(block[jsonStart:jsonEnd+1]), &users); err != nil {
+		t.Fatalf("decode checkpoint preserved users: %v\n%s", err, block[jsonStart:jsonEnd+1])
+	}
+	return users
 }
 
 func TestBuildContextConvertsSignalToolCallsToProviderSafeAssistantText(t *testing.T) {

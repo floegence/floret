@@ -1298,6 +1298,27 @@ func TestProviderContextOverflowCompactsAndRetries(t *testing.T) {
 	if got.Metrics.Compactions != 1 {
 		t.Fatalf("compactions = %d, want 1", got.Metrics.Compactions)
 	}
+	if len(p.Requests) != 2 {
+		t.Fatalf("provider requests = %d, want failed request plus compacted retry", len(p.Requests))
+	}
+	retryMessages := p.Requests[1].Messages
+	activeStart := firstNonSystemMessageIndex(retryMessages)
+	if activeStart < 0 || len(retryMessages[activeStart:]) < 2 || retryMessages[activeStart].Kind != session.MessageKindCompactionSummary {
+		t.Fatalf("retry request should start with checkpoint followed by retained tail: %#v", retryMessages)
+	}
+	if got := countMessagesByKind(retryMessages, session.MessageKindCompactionSummary); got != 1 {
+		t.Fatalf("retry request checkpoint count = %d, want 1: %#v", got, retryMessages)
+	}
+	checkpoint := retryMessages[activeStart]
+	if strings.Count(checkpoint.Content, "<compaction_summary") != 1 {
+		t.Fatalf("retry checkpoint should contain one summary envelope: %q", checkpoint.Content)
+	}
+	if len(retryMessages[activeStart:]) != 2 || retryMessages[activeStart+1].Content != "newer" {
+		t.Fatalf("retry active projection should be checkpoint plus retained tail: %#v", retryMessages[activeStart:])
+	}
+	if got := countMessagesWithExactContent(retryMessages, "newer"); got != 1 {
+		t.Fatalf("retained tail user count = %d, want 1: %#v", got, retryMessages)
+	}
 	segments, err := e.Prompt.Segments(context.Background(), "run", "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -1913,6 +1934,35 @@ func countUserMessages(messages []session.Message, content string) int {
 		}
 	}
 	return count
+}
+
+func countMessagesByKind(messages []session.Message, kind session.MessageKind) int {
+	count := 0
+	for _, msg := range messages {
+		if msg.Kind == kind {
+			count++
+		}
+	}
+	return count
+}
+
+func countMessagesWithExactContent(messages []session.Message, content string) int {
+	count := 0
+	for _, msg := range messages {
+		if msg.Content == content {
+			count++
+		}
+	}
+	return count
+}
+
+func firstNonSystemMessageIndex(messages []session.Message) int {
+	for i, msg := range messages {
+		if msg.Role != session.System {
+			return i
+		}
+	}
+	return -1
 }
 
 func sameSet(a, b []string) bool {

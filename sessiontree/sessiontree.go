@@ -874,9 +874,18 @@ func BuildContext(path []Entry, _ ContextOptions) []session.Message {
 		for _, entry := range path[compactionIndex+1:] {
 			tailEntryIDs[entry.ID] = struct{}{}
 		}
+		var tail []session.Message
+		if firstKeptIndex >= 0 && firstKeptIndex < compactionIndex {
+			for _, entry := range path[firstKeptIndex:compactionIndex] {
+				tail = appendProviderVisible(tail, entry)
+			}
+		}
+		for _, entry := range path[compactionIndex+1:] {
+			tail = appendProviderVisible(tail, entry)
+		}
 		if compactionEntry.Summary != "" {
 			keptUsers := messagesForEntries(keptUserEntries(path[:compactionIndex], compactionEntry.KeptUserEntryIDs, tailEntryIDs))
-			msg := compaction.BuildCheckpointMessage(compactionEntry.Summary, keptUsers, nil)
+			msg := compaction.BuildCheckpointMessage(compactionEntry.Summary, keptUsers, tail)
 			msg.EntryID = compactionEntry.ID
 			msg.ParentEntryID = compactionEntry.ParentID
 			msg.CompactionID = compactionEntry.CompactionID
@@ -884,14 +893,7 @@ func BuildContext(path []Entry, _ ContextOptions) []session.Message {
 			msg.CompactionWindowID = compactionEntry.CompactionWindowID
 			messages = append(messages, msg)
 		}
-		if firstKeptIndex >= 0 && firstKeptIndex < compactionIndex {
-			for _, entry := range path[firstKeptIndex:compactionIndex] {
-				messages = appendProviderVisible(messages, entry)
-			}
-		}
-		for _, entry := range path[compactionIndex+1:] {
-			messages = appendProviderVisible(messages, entry)
-		}
+		messages = append(messages, tail...)
 		return messages
 	}
 	for _, entry := range path {
