@@ -289,34 +289,6 @@ using your own `provider.Provider`, `session.Store`, `tools.Registry`, `event.Si
 approver, stop hook, compaction generator, and engine options. Direct engine use is best
 for tests, eval runners, and specialized hosts that already own session persistence.
 
-### Migration Notes
-
-Older host code should move direct engine struct literals to `engine.New(engine.Config{...})`.
-Use `SetSink`, `SetApprover`, and `SetStopHook` for explicit runtime policy replacement.
-Code that previously read `Thread.Read().Entries`, `Thread.Read().Path`,
-`Thread.Read().Context`, or `Thread.Read().Meta` should call `Thread.Journal()` in
-debug/admin/test paths. Ordinary host UI code should stay on `Thread.Read()`.
-Low-level engine hosts that can trigger context compaction must wire an explicit
-`CompactionManager` or `LocalCompactionManager{Generator: ...}`; `runtime.NewHarness`
-uses the durable provider-backed compaction path for ordinary threaded hosts.
-
-Package imports moved as follows:
-
-```text
-github.com/floegence/floret/adapters      -> github.com/floegence/floret/provider/adapters
-github.com/floegence/floret/modelcatalog  -> github.com/floegence/floret/provider/catalog
-github.com/floegence/floret/promptcache   -> github.com/floegence/floret/provider/cache
-github.com/floegence/floret/contextpolicy -> github.com/floegence/floret/session/contextpolicy
-github.com/floegence/floret/compaction    -> github.com/floegence/floret/session/compaction and github.com/floegence/floret/engine/compaction
-github.com/floegence/floret/builtintools  -> github.com/floegence/floret/tools/builtin
-github.com/floegence/floret/mcpclient     -> github.com/floegence/floret/tools/mcp
-github.com/floegence/floret/skills        -> github.com/floegence/floret/tools/skills
-github.com/floegence/floret/storage       -> github.com/floegence/floret/runtime/storage
-github.com/floegence/floret/sqlitestore   -> github.com/floegence/floret/runtime/storage/sqlite
-github.com/floegence/floret/harness       -> github.com/floegence/floret/testing/harness
-github.com/floegence/floret/eval          -> github.com/floegence/floret/testing/eval
-```
-
 ## Threaded Agent Harness
 
 `agentharness` builds on the engine for applications that need persistent threads
