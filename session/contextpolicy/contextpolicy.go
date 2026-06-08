@@ -7,9 +7,10 @@ import (
 )
 
 const (
-	DefaultContextWindowTokens          int64 = 128000
+	MinSupportedContextWindowTokens     int64 = 256000
+	DefaultContextWindowTokens          int64 = MinSupportedContextWindowTokens
 	DefaultMaxOutputTokens              int64 = 0
-	DefaultReservedOutputTokens         int64 = 4096
+	DefaultReservedOutputTokens         int64 = 64000
 	DefaultAutoCompactRatioPercent      int64 = 90
 	DefaultCompactedContextTargetTokens int64 = 50000
 	DefaultReservedSummaryTokens        int64 = 20000

@@ -98,7 +98,7 @@ func TestLoadExplicitZeroMaxOutputTokensOverridesCatalog(t *testing.T) {
 	if cfg.ContextPolicy.MaxOutputTokens != 0 {
 		t.Fatalf("max output tokens = %d, want explicit unset", cfg.ContextPolicy.MaxOutputTokens)
 	}
-	if cfg.ContextPolicy.ReservedOutputTokens != 4096 {
+	if cfg.ContextPolicy.ReservedOutputTokens != contextpolicy.DefaultReservedOutputTokens {
 		t.Fatalf("reserved output tokens = %d, want budget default", cfg.ContextPolicy.ReservedOutputTokens)
 	}
 	usage := contextpolicy.EstimateMessages("", nil, 0, cfg.ContextPolicy)
@@ -124,7 +124,7 @@ func TestLoadScalesDefaultCompactionBudgetsAfterContextWindowOverride(t *testing
 	if cfg.ContextPolicy.RecentUserTokens != 2048 {
 		t.Fatalf("recent users = %d, want small-window default", cfg.ContextPolicy.RecentUserTokens)
 	}
-	if got := contextpolicy.Threshold(cfg.ContextPolicy); got != 2048 {
+	if got := contextpolicy.Threshold(cfg.ContextPolicy); got != 1 {
 		t.Fatalf("threshold = %d, want self-consistent small-window threshold", got)
 	}
 }

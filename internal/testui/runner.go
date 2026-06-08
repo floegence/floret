@@ -857,6 +857,7 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 	if err != nil {
 		return nil, err
 	}
+	capabilities.Diagnostics = append(capabilities.Diagnostics, modelRiskDiagnostics(opts.Profile, cfg.ContextPolicy)...)
 	systemPrompt := appendCapabilityPrompt(cfg.SystemPrompt, skillPrompt)
 	idGenerator := r.agentSessionIDGenerator(ctx, repo, opts.ID)
 	h := agentharness.New(agentharness.Options{
@@ -1372,6 +1373,7 @@ func (r *Runner) runAgentTurnLocked(ctx context.Context, sess *agentSession, res
 	resp.RawFinishReason = turn.RawFinishReason
 	resp.FinishInferred = turn.FinishInferred
 	resp.Diagnostics = cloneStringMap(turn.Diagnostics)
+	resp.Diagnostics = withDiagnostics(resp.Diagnostics, modelRiskDiagnosticMap(sess.profile, sess.contextPolicy))
 	resp.CanAppendMessage = turn.Status == engine.Waiting || turn.Status == engine.Completed
 	if turn.Status == engine.Waiting {
 		resp.WaitingPrompt = turn.Output

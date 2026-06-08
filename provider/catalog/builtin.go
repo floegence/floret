@@ -11,7 +11,7 @@ var providers = []Provider{
 		DefaultModel: "fake-model",
 		Custom:       true,
 		Models: []Model{
-			{ID: "fake-model", Name: "Fake model", ContextWindow: 128000, MaxTokens: 4096, Input: text},
+			{ID: "fake-model", Name: "Fake model", ContextWindow: 256000, MaxTokens: 64000, Input: text},
 		},
 	},
 	{
@@ -51,7 +51,6 @@ var providers = []Provider{
 		Models: []Model{
 			{ID: "claude-opus-4-7", Name: "Claude Opus 4.7", ContextWindow: 1000000, MaxTokens: 128000, Input: vision, Reasoning: true, Cost: Cost{InputPerMTok: 15, OutputPerMTok: 75}},
 			{ID: "claude-sonnet-4-6", Name: "Claude Sonnet 4.6", ContextWindow: 1000000, MaxTokens: 64000, Input: vision, Reasoning: true, Cost: Cost{InputPerMTok: 3, OutputPerMTok: 15}},
-			{ID: "claude-haiku-4-5-20251001", Name: "Claude Haiku 4.5", ContextWindow: 200000, MaxTokens: 64000, Input: vision, Reasoning: false, Cost: Cost{InputPerMTok: 0.8, OutputPerMTok: 4}},
 		},
 	},
 	{
@@ -85,11 +84,11 @@ var providers = []Provider{
 		Name:           "ChatGLM / Z.ai",
 		API:            APIOpenAIChat,
 		DefaultBaseURL: "https://api.z.ai/api/paas/v4",
-		DefaultModel:   "glm-5.1",
+		DefaultModel:   "custom-model",
 		EnvKeys:        []string{"ZAI_API_KEY", "CHATGLM_API_KEY"},
+		Custom:         true,
 		Models: []Model{
-			{ID: "glm-5.1", Name: "GLM 5.1", ContextWindow: 200000, MaxTokens: 128000, Input: text, Reasoning: true},
-			{ID: "glm-4.5", Name: "GLM 4.5", ContextWindow: 128000, MaxTokens: 96000, Input: text, Reasoning: true},
+			{ID: "custom-model", Name: "Custom model", ContextWindow: 256000, Input: text},
 		},
 	},
 	{
@@ -102,8 +101,6 @@ var providers = []Provider{
 		Models: []Model{
 			{ID: "deepseek-v4-pro", Name: "DeepSeek V4 Pro", ContextWindow: 1000000, MaxTokens: 384000, Input: text, Reasoning: true},
 			{ID: "deepseek-v4-flash", Name: "DeepSeek V4 Flash", ContextWindow: 1000000, MaxTokens: 384000, Input: text, Reasoning: true},
-			{ID: "deepseek-chat", Name: "DeepSeek Chat", ContextWindow: 128000, MaxTokens: 8192, Input: text},
-			{ID: "deepseek-reasoner", Name: "DeepSeek Reasoner", ContextWindow: 128000, MaxTokens: 8192, Input: text, Reasoning: true},
 		},
 	},
 	{
@@ -150,11 +147,11 @@ var providers = []Provider{
 		Name:           "Groq",
 		API:            APIOpenAIChat,
 		DefaultBaseURL: "https://api.groq.com/openai/v1",
-		DefaultModel:   "openai/gpt-oss-120b",
+		DefaultModel:   "custom-model",
 		EnvKeys:        []string{"GROQ_API_KEY"},
+		Custom:         true,
 		Models: []Model{
-			{ID: "openai/gpt-oss-120b", Name: "GPT OSS 120B", ContextWindow: 131072, MaxTokens: 65536, Input: text, Reasoning: true, OpenAIModelID: "openai/gpt-oss-120b"},
-			{ID: "openai/gpt-oss-20b", Name: "GPT OSS 20B", ContextWindow: 131072, MaxTokens: 65536, Input: text, Reasoning: true, OpenAIModelID: "openai/gpt-oss-20b"},
+			{ID: "custom-model", Name: "Custom model", ContextWindow: 256000, Input: text},
 		},
 	},
 	{
@@ -162,11 +159,11 @@ var providers = []Provider{
 		Name:           "Cerebras",
 		API:            APIOpenAIChat,
 		DefaultBaseURL: "https://api.cerebras.ai/v1",
-		DefaultModel:   "zai-glm-4.7",
+		DefaultModel:   "custom-model",
 		EnvKeys:        []string{"CEREBRAS_API_KEY"},
+		Custom:         true,
 		Models: []Model{
-			{ID: "zai-glm-4.7", Name: "Z.ai GLM 4.7", ContextWindow: 128000, MaxTokens: 65536, Input: text, Reasoning: true},
-			{ID: "qwen-3-coder-480b", Name: "Qwen3 Coder 480B", ContextWindow: 128000, MaxTokens: 65536, Input: text},
+			{ID: "custom-model", Name: "Custom model", ContextWindow: 256000, Input: text},
 		},
 	},
 	{
@@ -174,11 +171,11 @@ var providers = []Provider{
 		Name:           "Mistral",
 		API:            APIOpenAIChat,
 		DefaultBaseURL: "https://api.mistral.ai/v1",
-		DefaultModel:   "devstral-medium-latest",
+		DefaultModel:   "custom-model",
 		EnvKeys:        []string{"MISTRAL_API_KEY"},
+		Custom:         true,
 		Models: []Model{
-			{ID: "devstral-medium-latest", Name: "Devstral Medium", ContextWindow: 131072, MaxTokens: 65536, Input: text},
-			{ID: "mistral-large-latest", Name: "Mistral Large", ContextWindow: 131072, MaxTokens: 65536, Input: text},
+			{ID: "custom-model", Name: "Custom model", ContextWindow: 256000, Input: text},
 		},
 	},
 	{
@@ -210,10 +207,9 @@ var providers = []Provider{
 		Name:           "Vercel AI Gateway",
 		API:            APIOpenAIChat,
 		DefaultBaseURL: "https://ai-gateway.vercel.sh/v1",
-		DefaultModel:   "zai/glm-5.1",
+		DefaultModel:   "moonshotai/kimi-k2.6",
 		EnvKeys:        []string{"AI_GATEWAY_API_KEY"},
 		Models: []Model{
-			{ID: "zai/glm-5.1", Name: "GLM 5.1", ContextWindow: 200000, MaxTokens: 128000, Input: text, Reasoning: true},
 			{ID: "moonshotai/kimi-k2.6", Name: "Kimi K2.6", ContextWindow: 256000, MaxTokens: 96000, Input: text, Reasoning: true},
 			{ID: "openai/gpt-5.4", Name: "GPT-5.4", ContextWindow: 1050000, MaxTokens: 128000, Input: vision, Reasoning: true},
 		},
@@ -223,12 +219,10 @@ var providers = []Provider{
 		Name:           "Ollama",
 		API:            APIOpenAIChat,
 		DefaultBaseURL: "http://127.0.0.1:11434/v1",
-		DefaultModel:   "gpt-oss:20b",
+		DefaultModel:   "custom-model",
 		Custom:         true,
 		Models: []Model{
-			{ID: "gpt-oss:20b", Name: "GPT OSS 20B local", ContextWindow: 131072, MaxTokens: 32768, Input: text, Reasoning: true},
-			{ID: "qwen3-coder:latest", Name: "Qwen3 Coder local", ContextWindow: 131072, MaxTokens: 32768, Input: text},
-			{ID: "llama3.1:8b", Name: "Llama 3.1 8B local", ContextWindow: 128000, MaxTokens: 8192, Input: text},
+			{ID: "custom-model", Name: "Custom model", ContextWindow: 256000, Input: text},
 		},
 	},
 	{
@@ -240,7 +234,7 @@ var providers = []Provider{
 		EnvKeys:        []string{"FLORET_API_KEY", "OPENAI_COMPATIBLE_API_KEY"},
 		Custom:         true,
 		Models: []Model{
-			{ID: "custom-model", Name: "Custom model", ContextWindow: 128000, Input: text},
+			{ID: "custom-model", Name: "Custom model", ContextWindow: 256000, Input: text},
 		},
 	},
 }

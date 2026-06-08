@@ -1,3 +1,5 @@
+export const MIN_SUPPORTED_CONTEXT_WINDOW_TOKENS = 256000;
+
 export const state = {
   config: null,
   sessions: [],
@@ -60,9 +62,9 @@ export function defaultContextPolicy() {
 
 function baseContextPolicyDefaults() {
   return {
-    context_window_tokens: 128000,
+    context_window_tokens: MIN_SUPPORTED_CONTEXT_WINDOW_TOKENS,
     max_output_tokens: 0,
-    reserved_output_tokens: 4096,
+    reserved_output_tokens: 64000,
     reserved_summary_tokens: 20000,
     recent_tail_tokens: 12000,
     recent_user_tokens: 15000,
@@ -305,8 +307,23 @@ export function contextPolicyForProfile(profile) {
     ...defaults,
     context_window_tokens: Number(model?.context_window ?? defaults.context_window_tokens ?? baseDefaults.context_window_tokens ?? 0),
     max_output_tokens: maxOutput,
-    reserved_output_tokens: Number(defaults.reserved_output_tokens ?? 4096),
+    reserved_output_tokens: Number(defaults.reserved_output_tokens ?? 64000),
   };
+}
+
+export function modelRiskMessages(profile, policy = contextPolicyForProfile(profile)) {
+  const provider = providerByID(profile?.provider);
+  const modelID = profile?.model || providerDefaultModel(provider);
+  const model = providerModel(provider, modelID);
+  const messages = [];
+  if (modelID && !model) {
+    messages.push(`Model ${modelID} is not in the predefined catalog; verify its context window and output limit with the provider.`);
+  }
+  const contextWindow = Number(policy?.context_window_tokens ?? model?.context_window ?? 0);
+  if (contextWindow > 0 && contextWindow < MIN_SUPPORTED_CONTEXT_WINDOW_TOKENS) {
+    messages.push(`Context window ${contextWindow} is below the recommended ${MIN_SUPPORTED_CONTEXT_WINDOW_TOKENS}-token baseline and may behave poorly on long tasks.`);
+  }
+  return messages;
 }
 
 export function shortID(id) {

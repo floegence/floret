@@ -1,4 +1,4 @@
-import { contextPolicyForProfile, currentProfile, escapeHTML, profileLabel, state, toolsForProfile } from "../state.js";
+import { contextPolicyForProfile, currentProfile, escapeHTML, modelRiskMessages, profileLabel, state, toolsForProfile } from "../state.js";
 import { bindToolPresets, readSelectedTools, renderToolMatrix } from "../components/toolMatrix.js";
 
 export function renderNewSession() {
@@ -11,6 +11,7 @@ export function renderNewSession() {
   const isProbing = state.action === "run-probe";
   const selectedTools = draft.selected_tools || [];
   const tools = toolsForProfile(profile);
+  const riskMessages = modelRiskMessages(profile, policy);
   const message = Object.prototype.hasOwnProperty.call(draft, "message") ? draft.message : "Say hello from Floret and complete the task.";
   const systemPrompt = Object.prototype.hasOwnProperty.call(draft, "system_prompt") ? draft.system_prompt : "You are Floret. Answer naturally when the user's request is complete, or call ask_user if you need missing information.";
   return `
@@ -53,6 +54,7 @@ export function renderNewSession() {
               <input id="new-recent-tail" name="recent_tail_tokens" aria-label="Recent tail" aria-description="Controls the verbatim assistant, tool, and nearby message tail kept after the checkpoint. Recent user inputs outside the tail are protected inside the checkpoint up to 15k tokens, and the latest user message is always represented." type="number" min="256" step="1" value="${policy.recent_tail_tokens}" />
             </label>
           </div>
+          ${renderModelRiskNotice(riskMessages)}
         </details>
         <section class="profile-card" data-new-tools>
           <div>
@@ -79,6 +81,11 @@ export function renderNewSession() {
       </form>
     </section>
   `;
+}
+
+function renderModelRiskNotice(messages) {
+  if (!messages.length) return "";
+  return `<div class="notice" role="status">${messages.map((message) => `<span>${escapeHTML(message)}</span>`).join("")}</div>`;
 }
 
 function renderCapabilitySummary(capabilities) {

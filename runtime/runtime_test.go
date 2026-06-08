@@ -252,7 +252,7 @@ func TestNewEngineWithProviderKeepsProvidedZeroMaxOutputTokens(t *testing.T) {
 		SystemPrompt: "test",
 		RunID:        "run",
 		ContextPolicy: contextpolicy.Policy{
-			ContextWindowTokens: 8192,
+			ContextWindowTokens: contextpolicy.DefaultContextWindowTokens,
 			MaxOutputTokens:     0,
 		},
 		MaxEmptyProviderRetries: 1,

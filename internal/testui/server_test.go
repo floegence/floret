@@ -19,6 +19,7 @@ import (
 	"github.com/floegence/floret/internal/sessionlifecycle"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/provider/catalog"
+	"github.com/floegence/floret/session/contextpolicy"
 	"github.com/floegence/floret/testing/harness"
 )
 
@@ -62,7 +63,7 @@ func TestServerExposesConfigAndRunAPI(t *testing.T) {
 	if configState.LocalTime.Now == "" || !strings.HasPrefix(configState.LocalTime.OffsetLabel, "UTC") {
 		t.Fatalf("config local time state is incomplete = %#v", configState.LocalTime)
 	}
-	if configState.ContextPolicyDefaults.ContextWindowTokens != 128000 || configState.ContextPolicyDefaults.RecentTailTokens != 12000 {
+	if configState.ContextPolicyDefaults.ContextWindowTokens != contextpolicy.DefaultContextWindowTokens || configState.ContextPolicyDefaults.RecentTailTokens != contextpolicy.DefaultRecentTailTokens {
 		t.Fatalf("config context policy defaults are incomplete = %#v", configState.ContextPolicyDefaults)
 	}
 	if configState.DebugRawEnabled {

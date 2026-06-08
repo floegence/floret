@@ -117,9 +117,9 @@ FLORET_SYSTEM_PROMPT=You are Floret.
 Common context and runtime controls:
 
 ```bash
-FLORET_CONTEXT_WINDOW_TOKENS=128000
+FLORET_CONTEXT_WINDOW_TOKENS=256000
 FLORET_MAX_OUTPUT_TOKENS=0
-FLORET_RESERVED_OUTPUT_TOKENS=4096
+FLORET_RESERVED_OUTPUT_TOKENS=64000
 FLORET_RESERVED_SUMMARY_TOKENS=20000
 FLORET_RECENT_TAIL_TOKENS=12000
 FLORET_RECENT_USER_TOKENS=15000
@@ -128,13 +128,17 @@ FLORET_WALL_TIME=30s
 
 When `FLORET_MAX_OUTPUT_TOKENS` is omitted, a selected catalog model's `max_tokens` can provide the ordinary response cap. Setting `FLORET_MAX_OUTPUT_TOKENS=0` explicitly leaves ordinary assistant responses uncapped by Floret. The reserved output and summary settings are context-budget controls; they are not ordinary response caps.
 
-Supported provider IDs include:
+Built-in catalog defaults target models with at least a 256000-token context window. Custom or newly released models are still allowed, including smaller-context configurations, but Floret may warn that they can behave poorly on long agent tasks.
+
+Built-in provider IDs include:
 
 ```text
 fake, openai, anthropic, google, moonshot, chatglm, deepseek, qwen,
 openrouter, xai, groq, cerebras, mistral, together, fireworks,
 vercel-ai-gateway, ollama, openai-compatible
 ```
+
+Some provider entries, such as local or fast-changing OpenAI-compatible services, use a `custom-model` placeholder instead of predefined low-context model names. Set `FLORET_MODEL`, `FLORET_CONTEXT_WINDOW_TOKENS`, and related output budget values to match the model you intend to run.
 
 When `FLORET_MODEL` is omitted, Floret uses the catalog default for that provider. When
 `FLORET_BASE_URL` is omitted, Floret uses the provider default endpoint. `FLORET_API_KEY`

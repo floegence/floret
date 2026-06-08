@@ -56,6 +56,7 @@ func (r *Runner) ConfigState() (ConfigState, error) {
 		}
 		activeProfile := activeProfileForCatalog(state.Profiles, state.ActiveProfileID)
 		state.ContextPolicyDefaults = contextPolicyDefaultsForProfile(activeProfile)
+		state.Capabilities.Diagnostics = append(state.Capabilities.Diagnostics, modelRiskDiagnostics(activeProfile, state.ContextPolicyDefaults)...)
 		state.Tools = agentToolCatalog(activeProfile, r.EnvFile)
 		return state, nil
 	}
@@ -66,6 +67,7 @@ func (r *Runner) ConfigState() (ConfigState, error) {
 	state.Profiles = []ProviderProfile{stripProfileSecret(profile)}
 	state.ActiveProfileID = profile.ID
 	state.ContextPolicyDefaults = contextPolicyDefaultsForProfile(profile)
+	state.Capabilities.Diagnostics = append(state.Capabilities.Diagnostics, modelRiskDiagnostics(profile, state.ContextPolicyDefaults)...)
 	state.Tools = agentToolCatalog(stripProfileSecret(profile), r.EnvFile)
 	return state, nil
 }
@@ -390,6 +392,43 @@ func activeProfileForCatalog(profiles []ProviderProfile, activeID string) Provid
 
 func contextPolicyDefaultsForProfile(profile ProviderProfile) contextpolicy.Policy {
 	return catalog.ContextPolicy(profile.Provider, profile.Model)
+}
+
+func modelRiskDiagnostics(profile ProviderProfile, policy contextpolicy.Policy) []CapabilityDiagnostic {
+	diagnostics := []CapabilityDiagnostic{}
+	if _, ok := catalog.FindModel(profile.Provider, profile.Model); !ok {
+		diagnostics = append(diagnostics, CapabilityDiagnostic{
+			Kind:       "model_not_predefined",
+			Capability: "model",
+			Message:    fmt.Sprintf("Model %q is not in Floret's predefined catalog for provider %q.", profile.Model, profile.Provider),
+			NextAction: "You can still use it, but verify the model's context window and output limit with the provider.",
+		})
+	}
+	if policy.ContextWindowTokens > 0 && policy.ContextWindowTokens < contextpolicy.MinSupportedContextWindowTokens {
+		diagnostics = append(diagnostics, CapabilityDiagnostic{
+			Kind:       "context_window_below_recommended",
+			Capability: "context_policy",
+			Message:    fmt.Sprintf("Context window %d is below Floret's recommended %d-token baseline and may behave poorly on long tasks.", policy.ContextWindowTokens, contextpolicy.MinSupportedContextWindowTokens),
+			NextAction: "You can continue, but use a larger context window when the model supports it.",
+		})
+	}
+	return diagnostics
+}
+
+func modelRiskDiagnosticMap(profile ProviderProfile, policy contextpolicy.Policy) map[string]string {
+	diagnostics := modelRiskDiagnostics(profile, policy)
+	if len(diagnostics) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for _, diagnostic := range diagnostics {
+		value := diagnostic.Message
+		if diagnostic.NextAction != "" {
+			value += " " + diagnostic.NextAction
+		}
+		out[diagnostic.Kind] = value
+	}
+	return out
 }
 
 func getEnvValue(values map[string]string, key string, fallback string) string {

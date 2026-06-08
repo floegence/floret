@@ -257,7 +257,7 @@ func TestStaticConsoleNewSessionDefaultsFollowBackendAndProviderCatalog(t *testi
 	if strings.Contains(newSession, "defaultContextPolicy") || strings.Contains(stateJS, "recent_tail_tokens: 4096") {
 		t.Fatalf("new session defaults should not use stale hard-coded context policy values")
 	}
-	for _, want := range []string{"max_output_tokens: 0", "reserved_summary_tokens: 20000", "recent_user_tokens: 15000", "model?.max_tokens ?? baseDefaults.max_output_tokens", "Number(defaults.reserved_output_tokens ?? 4096)"} {
+	for _, want := range []string{"MIN_SUPPORTED_CONTEXT_WINDOW_TOKENS = 256000", "max_output_tokens: 0", "reserved_output_tokens: 64000", "reserved_summary_tokens: 20000", "recent_user_tokens: 15000", "model?.max_tokens ?? baseDefaults.max_output_tokens", "Number(defaults.reserved_output_tokens ?? 64000)", "modelRiskMessages"} {
 		if !strings.Contains(stateJS, want) {
 			t.Fatalf("state.js missing no-cap context policy default logic %q", want)
 		}

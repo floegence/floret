@@ -23,6 +23,28 @@ func TestCatalogContainsFlowerProvidersAndPiStyleMetadata(t *testing.T) {
 	}
 }
 
+func TestCatalogPredefinedModelsUseSupportedContextBaseline(t *testing.T) {
+	var minMaxTokens int64
+	for _, provider := range Providers() {
+		for _, model := range provider.Models {
+			if model.ContextWindow < contextpolicy.MinSupportedContextWindowTokens {
+				t.Fatalf("%s/%s context window = %d, want at least %d", provider.ID, model.ID, model.ContextWindow, contextpolicy.MinSupportedContextWindowTokens)
+			}
+			if model.MaxTokens > 0 && (minMaxTokens == 0 || model.MaxTokens < minMaxTokens) {
+				minMaxTokens = model.MaxTokens
+			}
+		}
+	}
+	if minMaxTokens != contextpolicy.DefaultReservedOutputTokens {
+		t.Fatalf("minimum predefined max tokens = %d, want reserved output default %d", minMaxTokens, contextpolicy.DefaultReservedOutputTokens)
+	}
+	for _, model := range []string{"deepseek-chat", "deepseek-reasoner"} {
+		if SupportsModel(ProviderDeepSeek, model) {
+			t.Fatalf("%s should not be a predefined DeepSeek model", model)
+		}
+	}
+}
+
 func TestNormalizeProviderAcceptsFlowerAndPiAliases(t *testing.T) {
 	cases := map[string]string{
 		"openai_compatible": ProviderOpenAICompatible,

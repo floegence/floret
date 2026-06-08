@@ -69,7 +69,7 @@ func TestMergeDefaultsUsesFallbackMaxOutputOnlyWhenPolicyOmitted(t *testing.T) {
 	fallback := Policy{
 		ContextWindowTokens:    128000,
 		MaxOutputTokens:        64000,
-		ReservedOutputTokens:   4096,
+		ReservedOutputTokens:   DefaultReservedOutputTokens,
 		ReservedSummaryTokens:  20000,
 		RecentTailTokens:       12000,
 		RecentUserTokens:       15000,
@@ -112,9 +112,14 @@ func TestThresholdUsesOutputHeadroomRatioAndSummaryLimits(t *testing.T) {
 		want   int64
 	}{
 		{
-			name:   "default 128k uses summary safety",
+			name:   "default policy uses summary safety",
+			policy: Policy{},
+			want:   172000,
+		},
+		{
+			name:   "128k with default reserve is very conservative",
 			policy: Policy{ContextWindowTokens: 128000, MaxOutputTokens: 0},
-			want:   103904,
+			want:   44000,
 		},
 		{
 			name:   "large window with 128k output cap uses request safety",
@@ -139,7 +144,7 @@ func TestThresholdUsesOutputHeadroomRatioAndSummaryLimits(t *testing.T) {
 		{
 			name:   "128k window with 65536 output cap",
 			policy: Policy{ContextWindowTokens: 128000, MaxOutputTokens: 65536},
-			want:   62464,
+			want:   44000,
 		},
 	}
 

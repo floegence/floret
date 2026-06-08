@@ -1,4 +1,4 @@
-import { clone, defaultProfile, escapeHTML, hostedWireShapesForProvider, normalizeWebSearch, profileLabel, providerByID, providerCatalog, resolveWebSearchForProfile, state } from "../state.js";
+import { clone, contextPolicyForProfile, defaultProfile, escapeHTML, hostedWireShapesForProvider, modelRiskMessages, normalizeWebSearch, profileLabel, providerByID, providerCatalog, resolveWebSearchForProfile, state } from "../state.js";
 
 export function renderSettings() {
   const draft = state.settingsDraft;
@@ -20,6 +20,7 @@ export function renderSettings() {
   const savedProfile = savedActiveProfile();
   const savedSearch = normalizeWebSearch(savedProfile.web_search);
   const savedSearchMode = webSearchMode(savedSearch, hostedWireShapesForProvider(providerByID(savedProfile.provider)).length > 0);
+  const riskMessages = modelRiskMessages(active, contextPolicyForProfile(active));
   return `
     <section class="settings-page">
       <header class="settings-head">
@@ -46,6 +47,7 @@ export function renderSettings() {
             </select>
           </label>
           <label class="field"><span>Model</span><input name="model" value="${escapeHTML(active.model || "")}" ${isSaving ? "disabled" : ""} /></label>
+          ${renderModelRiskNotice(riskMessages)}
           <label class="field"><span>Base URL</span><input name="base_url" value="${escapeHTML(active.base_url || "")}" placeholder="https://api.example.com/v1" ${isSaving ? "disabled" : ""} /></label>
           <label class="field"><span>API key</span><input name="api_key" type="password" value="${escapeHTML(profileKeyDraft)}" placeholder="${active.api_key_set ? "saved key retained if empty" : "optional"}" ${isSaving ? "disabled" : ""} /></label>
           <label class="field"><span>Fake response</span><input name="fake_response" value="${escapeHTML(active.fake_response || "")}" ${isSaving ? "disabled" : ""} /></label>
@@ -124,6 +126,11 @@ export function renderSettings() {
       </div>
     </section>
   `;
+}
+
+function renderModelRiskNotice(messages) {
+  if (!messages.length) return "";
+  return `<div class="notice" role="status">${messages.map((message) => `<span>${escapeHTML(message)}</span>`).join("")}</div>`;
 }
 
 function savedActiveProfile() {
