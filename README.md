@@ -1,12 +1,13 @@
 # Floret
 
-Reusable runtime primitives for interactive AI chat and coding agents in Go.
+Reusable runtime primitives for interactive AI agents in host applications.
 
-Floret is a prompt-first agent runtime for hosts that need model streaming, tool
-execution, session state, context management, and observable lifecycle events without
-adopting a graph workflow or multi-agent orchestration framework. Hosts keep control
-of UI, approvals, storage, provider choice, and domain-specific tools while Floret
-handles the repeatable mechanics of an interactive agent loop.
+Floret is a prompt-first AI agent engine library for Go hosts that need model
+streaming, tool execution, session state, context management, storage, compaction,
+and observable lifecycle events without adopting a graph workflow or multi-agent
+orchestration framework. Host applications keep control of UI, permission policy,
+business state, provider choice, domain-specific tools, and product experience while
+Floret handles the repeatable mechanics of an interactive agent loop.
 
 Floret currently provides:
 
@@ -24,15 +25,15 @@ Floret currently provides:
 - In-memory, file-oriented, and SQLite-backed storage options, plus a raw prompt
   segment and toolset ledger for provider-specific request shapes.
 - Built-in provider adapters, an OpenAI-compatible chat completions adapter, a provider
-  and model catalog, built-in workspace/shell/search tools, and a local runtime inspector.
+  and model catalog, optional workspace/shell/search tools, and a local runtime inspector.
 
 ## Why Floret
 
-Most agent applications need the same hard-to-test runtime pieces: prompt assembly,
+Most AI agent products need the same hard-to-test runtime pieces: prompt assembly,
 streaming provider adapters, tool-call validation, human approval, session persistence,
 context pressure handling, retry/fork flows, usage metrics, and UI-friendly events.
-Floret keeps those contracts small and separable so product code can focus on the host
-experience.
+Floret keeps those contracts small and separable so host code can focus on its
+domain model, workflows, and product experience.
 
 ## Runtime Shape
 
@@ -49,8 +50,8 @@ state in `sessiontree.Repo` and serializes only the same durable `ThreadID`.
 Different threads and forked threads can run concurrently.
 
 The project is intentionally not a workflow graph engine. It is designed for interactive
-chat and coding-agent hosts where a model, a tool registry, a session store, and a UI
-surface cooperate around one observable turn loop.
+agent hosts where a model, a tool registry, a session store, and a UI surface cooperate
+around one observable turn loop.
 
 Events are presentation-neutral so a terminal UI, desktop app, test harness, or automation
 surface can render the same runtime facts without parsing human text.
@@ -292,7 +293,9 @@ thread operations separate from provider and tool execution.
 Floret tools are registered through `tools.Registry` with strict JSON object schemas.
 The registry validates arguments before execution, extracts resource references for
 approval decisions, applies result limits, recovers from panics, and reports structured
-tool results back into the engine.
+tool results back into the engine. Tool definitions are a host-facing contract: the
+runtime owns validation, scheduling, permission hooks, and result shaping, while host
+applications decide which domain tools exist and how those tools affect product state.
 
 Tool scheduling is owned by the registry:
 
@@ -305,8 +308,10 @@ Tool scheduling is owned by the registry:
 - Open-world tools cannot use `PermissionAllow`; prefer `PermissionAsk` or
   `PermissionDeny` for high-risk tools unless the host has a narrower policy gate.
 
-`tools/builtin` includes workspace reads (`read`, `list`, `glob`, `grep`), workspace
-mutations (`apply_patch`, `write`), shell execution, and `web_search`.
+`tools/builtin` is an optional default tool pack for local host applications. It includes
+workspace reads (`read`, `list`, `glob`, `grep`), workspace mutations (`apply_patch`,
+`write`), shell execution, and `web_search`, but those tools are examples and conveniences
+rather than Floret's product boundary.
 
 ## Storage
 
@@ -326,10 +331,12 @@ file or memory storage through `go run ./cmd/floret-test-ui --storage=file` or
 
 ## Architecture
 
-Floret keeps runtime concerns separated:
+Floret keeps runtime concerns separated from host product concerns:
 
 ```text
-Host UI / CLI / automation
+Host product
+  UI / CLI / automation
+  domain tools / permission policy / business state
         |
         v
 agentharness or engine.Engine
