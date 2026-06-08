@@ -627,7 +627,7 @@ func TestProviderRequestRecordsActualPayloadHashWhenProviderExposesIt(t *testing
 
 func TestProviderRequestAndResponseRecordsCarryThreadAndTurnIDs(t *testing.T) {
 	p := harness.NewScriptedProvider(harness.Step(
-		provider.StreamEvent{Type: provider.UsageEvent, Usage: provider.Usage{CacheReadTokens: 10, CacheWriteTokens: 5}},
+		provider.StreamEvent{Type: provider.UsageEvent, Usage: provider.Usage{InputTokens: 100, OutputTokens: 20, ReasoningTokens: 3, CacheReadTokens: 10, CacheWriteTokens: 5, Source: provider.UsageNative}},
 		provider.StreamEvent{Type: provider.Delta, Text: "ok"},
 		provider.StreamEvent{Type: provider.Done, ResponseID: "resp-1"},
 	))
@@ -655,6 +655,73 @@ func TestProviderRequestAndResponseRecordsCarryThreadAndTurnIDs(t *testing.T) {
 	}
 	if len(responses) != 1 || responses[0].ThreadID != "thread" || responses[0].TurnID != "turn" || responses[0].ProviderResponseID != "resp-1" {
 		t.Fatalf("response thread/turn linkage missing: %#v", responses)
+	}
+	if responses[0].InputTokens != 100 || responses[0].OutputTokens != 20 || responses[0].ReasoningTokens != 3 || responses[0].CacheReadTokens != 10 || responses[0].CacheWriteTokens != 5 || responses[0].TotalTokens != 138 || responses[0].UsageSource != string(provider.UsageNative) {
+		t.Fatalf("response native usage fields missing: %#v", responses[0])
+	}
+}
+
+func TestProviderRequestRecordsProviderEstimateMetadata(t *testing.T) {
+	rec := &event.Recorder{}
+	p := &hashingProvider{
+		ScriptedProvider: harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done())),
+		cache:            cache.CachePolicy{Enabled: true, Namespace: "provider-ns", Retention: cache.RetentionLong},
+		estimate: provider.TokenEstimate{
+			InputTokens: 1234,
+			Source:      "provider_api",
+			Confidence:  provider.EstimateConservative,
+		},
+	}
+	promptStore := cache.NewMemoryStore()
+	e := newTestEngine(p, rec)
+	e.Prompt = promptStore
+
+	got := e.Run(context.Background(), "hello")
+
+	if got.Status != engine.Completed {
+		t.Fatalf("result = %#v", got)
+	}
+	requests, err := promptStore.ProviderRequests(context.Background(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("requests = %#v", requests)
+	}
+	usage := requests[0].ContextUsage
+	if usage.InputTokens != 1234 || usage.EstimatorSource != "provider_api" || usage.EstimatorConfidence != string(provider.EstimateConservative) {
+		t.Fatalf("request context usage did not use provider estimate: %#v", usage)
+	}
+	providerRequest := firstEvent(rec.Events, event.ProviderRequest)
+	meta, ok := providerRequest.Metadata.(map[string]any)
+	if !ok {
+		t.Fatalf("provider request metadata = %#v", providerRequest.Metadata)
+	}
+	if meta["estimator_source"] != "provider_api" || meta["estimator_confidence"] != string(provider.EstimateConservative) || meta["input_tokens"] != int64(1234) {
+		t.Fatalf("provider request metadata missing estimator details: %#v", meta)
+	}
+}
+
+func TestProviderEstimatorErrorBlocksRequest(t *testing.T) {
+	p := &estimatingProvider{
+		Provider: harness.NewScriptedProvider(harness.Step(harness.Text("should not run"), harness.Done())),
+		err:      errors.New("estimate failed"),
+	}
+	promptStore := cache.NewMemoryStore()
+	e := newTestEngine(p, &event.Recorder{})
+	e.Prompt = promptStore
+
+	got := e.Run(context.Background(), "hello")
+
+	if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), "estimate failed") {
+		t.Fatalf("result = %#v", got)
+	}
+	requests, err := promptStore.ProviderRequests(context.Background(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 0 {
+		t.Fatalf("estimator failure should block request recording, got %#v", requests)
 	}
 }
 
@@ -1397,6 +1464,122 @@ func TestPreRequestThresholdCompactsWithoutReplacingStore(t *testing.T) {
 	}
 }
 
+func TestProviderEstimateTriggersPreRequestCompaction(t *testing.T) {
+	rec := &event.Recorder{}
+	p := &estimatingProvider{
+		Provider: harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done())),
+		estimates: []provider.TokenEstimate{
+			{InputTokens: 1000, Source: "provider_api", Confidence: provider.EstimateConservative},
+			{InputTokens: 10, Source: "provider_api", Confidence: provider.EstimateConservative},
+		},
+	}
+	store := &replaceCountingStore{inner: session.NewMemoryStore()}
+	if err := store.Append("run",
+		session.Message{Role: session.User, Content: "old request", EntryID: "u1"},
+		session.Message{Role: session.Assistant, Content: "old answer", EntryID: "a1"},
+		session.Message{Role: session.User, Content: "new", EntryID: "u2"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	e := newTestEngine(p, rec)
+	e.Store = store
+	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100, ReservedSummaryTokens: 80, RecentTailTokens: 20, RecentUserTokens: 20}
+
+	got := e.Run(context.Background(), "")
+
+	if got.Status != engine.Completed {
+		t.Fatalf("result = %#v", got)
+	}
+	if got.Metrics.Compactions != 1 || store.replaceCalls != 0 {
+		t.Fatalf("provider-estimate compaction not reflected in metrics/store: result=%#v replace=%d", got, store.replaceCalls)
+	}
+	if len(p.Provider.(*harness.ScriptedProvider).Requests) != 1 {
+		t.Fatalf("provider should only receive compacted retry request: %#v", p.Provider.(*harness.ScriptedProvider).Requests)
+	}
+	prepare := firstEvent(rec.Events, event.ContextCompact)
+	usage, ok := prepare.Metrics.(contextpolicy.Usage)
+	if !ok || usage.EstimatorSource != "provider_api" || usage.EstimatorConfidence != string(provider.EstimateConservative) {
+		t.Fatalf("provider estimate should drive pre-request compaction metrics: %#v", prepare.Metrics)
+	}
+}
+
+func TestProviderEstimateFixedOverheadNarrowsCompactionPolicy(t *testing.T) {
+	p := &estimatingProvider{
+		Provider: harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done())),
+		estimate: provider.TokenEstimate{
+			PrefixTokens:  100,
+			HistoryTokens: 900,
+			ToolTokens:    200,
+			InputTokens:   1200,
+			Source:        "provider_api",
+			Confidence:    provider.EstimateConservative,
+		},
+	}
+	store := session.NewMemoryStore()
+	if err := store.Append("run", session.Message{Role: session.User, Content: "old", EntryID: "u1"}); err != nil {
+		t.Fatal(err)
+	}
+	compactor := &policyRecordingCompactor{}
+	e := newTestEngine(p, &event.Recorder{})
+	e.Store = store
+	e.Compactor = compactor
+	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100, ReservedSummaryTokens: 80, RecentTailTokens: 20}
+
+	got := e.Run(context.Background(), "")
+
+	if got.Status != engine.Failed || compactor.policy.ContextWindowTokens != 700 {
+		t.Fatalf("compaction policy should reserve fixed prefix/tool overhead: result=%#v policy=%#v", got, compactor.policy)
+	}
+}
+
+func TestGenericRequestEstimateIncludesToolsForProvidersWithoutEstimator(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
+	promptStore := cache.NewMemoryStore()
+	e := newTestEngine(p, rec)
+	e.Prompt = promptStore
+	if err := e.Tools.Register(tools.Define[struct{}](
+		tools.Definition{
+			Name:        "large_tool",
+			Description: strings.Repeat("Large schema tool. ", 20),
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+			InputSchema: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"value": map[string]any{"type": "string", "description": strings.Repeat("Detailed value. ", 20)},
+				},
+			},
+		},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[struct{}]) (tools.Result, error) {
+			return tools.Result{Text: "ok"}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+
+	got := e.Run(context.Background(), "hello")
+
+	if got.Status != engine.Completed {
+		t.Fatalf("result = %#v", got)
+	}
+	requests, err := promptStore.ProviderRequests(context.Background(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("requests = %#v", requests)
+	}
+	messageOnly := contextpolicy.EstimateMessages("", []session.Message{{Role: session.User, Content: "hello"}}, e.Options.ContextPolicy)
+	usage := requests[0].ContextUsage
+	if usage.InputTokens <= messageOnly.InputTokens || usage.EstimatorSource != "generic_request_json" {
+		t.Fatalf("generic request estimate should include rendered tools: usage=%#v messageOnly=%#v", usage, messageOnly)
+	}
+}
+
 func TestPreRequestThresholdUsesMaxOutputHeadroom(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
@@ -1710,8 +1893,9 @@ func (p *cancelAfterFirstDeltaProvider) Stream(context.Context, provider.Request
 
 type hashingProvider struct {
 	*harness.ScriptedProvider
-	hash  string
-	cache cache.CachePolicy
+	hash     string
+	cache    cache.CachePolicy
+	estimate provider.TokenEstimate
 }
 
 func (p *hashingProvider) NormalizeCachePolicy(cache.CachePolicy) (cache.CachePolicy, error) {
@@ -1725,6 +1909,41 @@ func (p *hashingProvider) PayloadHash(req provider.Request) (string, error) {
 		return p.hash, nil
 	}
 	return hex.EncodeToString(sum[:]), nil
+}
+
+func (p *hashingProvider) EstimateTokens(context.Context, provider.Request) (provider.TokenEstimate, error) {
+	if p.estimate.Source != "" || p.estimate.InputTokens > 0 {
+		return p.estimate, nil
+	}
+	return provider.TokenEstimate{InputTokens: 1, Source: "hashing_provider", Confidence: provider.EstimateExact}, nil
+}
+
+type estimatingProvider struct {
+	provider.Provider
+	estimate  provider.TokenEstimate
+	estimates []provider.TokenEstimate
+	err       error
+}
+
+func (p *estimatingProvider) EstimateTokens(context.Context, provider.Request) (provider.TokenEstimate, error) {
+	if p.err != nil {
+		return provider.TokenEstimate{}, p.err
+	}
+	if len(p.estimates) > 0 {
+		next := p.estimates[0]
+		p.estimates = p.estimates[1:]
+		return next, nil
+	}
+	return p.estimate, nil
+}
+
+type policyRecordingCompactor struct {
+	policy contextpolicy.Policy
+}
+
+func (c *policyRecordingCompactor) Compact(_ context.Context, req engine.CompactionRequest) (compaction.Result, []session.Message, error) {
+	c.policy = req.Policy
+	return compaction.Result{}, nil, errors.New("stop after recording policy")
 }
 
 type testEngine struct {

@@ -109,7 +109,7 @@ func TestBuildPlanAppendsNewSystemSegmentWhenPromptChanges(t *testing.T) {
 	}
 }
 
-func TestBuildPlanRecordsContextUsageBudgetFields(t *testing.T) {
+func TestRecordRequestStoresEngineInjectedContextUsage(t *testing.T) {
 	store := NewMemoryStore()
 	now := time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC)
 	toolset, _, err := EnsureToolset(context.Background(), store, "run", "thread", "openai", "model", nil, nil, now)
@@ -123,20 +123,24 @@ func TestBuildPlanRecordsContextUsageBudgetFields(t *testing.T) {
 		Model:     "model",
 		Toolset:   toolset,
 		History:   []session.Message{{Role: session.User, Content: "hello"}},
-		ContextPolicy: contextpolicy.Policy{
-			ContextWindowTokens:   1000000,
-			MaxOutputTokens:       384000,
-			ReservedOutputTokens:  4096,
-			ReservedSummaryTokens: 20000,
-		},
-		Now: now,
+		Now:       now,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.ContextUsage.ThresholdTokens != 616000 || plan.ContextUsage.OutputHeadroom != 384000 || plan.ContextUsage.AutoCompactRatio != contextpolicy.DefaultAutoCompactRatioPercent {
-		t.Fatalf("plan context usage missing budget fields: %#v", plan.ContextUsage)
+	if plan.ContextUsage != (contextpolicy.Usage{}) {
+		t.Fatalf("build plan should not estimate request context usage: %#v", plan.ContextUsage)
 	}
+	plan.ContextUsage = contextpolicy.UsageFromEstimate(contextpolicy.Estimate{
+		InputTokens: 1234,
+		Source:      "provider_api",
+		Confidence:  contextpolicy.EstimateConservative,
+	}, contextpolicy.Policy{
+		ContextWindowTokens:   1000000,
+		MaxOutputTokens:       384000,
+		ReservedOutputTokens:  4096,
+		ReservedSummaryTokens: 20000,
+	})
 	if _, err := RecordRequest(context.Background(), store, "run", "thread", 1, "openai", "model", CachePolicy{}, plan); err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +151,7 @@ func TestBuildPlanRecordsContextUsageBudgetFields(t *testing.T) {
 	if len(requests) != 1 {
 		t.Fatalf("provider requests = %d, want 1", len(requests))
 	}
-	if requests[0].ContextUsage.OutputHeadroom != 384000 || requests[0].ContextUsage.MaxOutputTokens != 384000 {
+	if requests[0].ContextUsage.InputTokens != 1234 || requests[0].ContextUsage.OutputHeadroom != 384000 || requests[0].ContextUsage.MaxOutputTokens != 384000 || requests[0].ContextUsage.EstimatorSource != "provider_api" {
 		t.Fatalf("stored request context usage missing budget fields: %#v", requests[0].ContextUsage)
 	}
 }

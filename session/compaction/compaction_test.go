@@ -389,11 +389,11 @@ func TestPrepareRepeatedCompactionReplacesCheckpointWithoutPreservedUserGrowth(t
 	}
 
 	stacked := append([]session.Message{checkpoint1}, round3.ActiveMessages...)
-	stackedEstimate := contextpolicy.EstimateMessages("", stacked, 0, contextpolicy.Normalize(policy)).InputTokens
+	stackedEstimate := contextpolicy.EstimateMessages("", stacked, contextpolicy.Normalize(policy)).InputTokens
 	if round3.Result.TokensAfterEstimate >= stackedEstimate {
 		t.Fatalf("tokens after estimate looks stacked: after=%d stacked=%d active=%#v", round3.Result.TokensAfterEstimate, stackedEstimate, round3.ActiveMessages)
 	}
-	if got := contextpolicy.EstimateMessages("", round3.ActiveMessages, 0, contextpolicy.Normalize(policy)).InputTokens; got != round3.Result.TokensAfterEstimate {
+	if got := contextpolicy.EstimateMessages("", round3.ActiveMessages, contextpolicy.Normalize(policy)).InputTokens; got != round3.Result.TokensAfterEstimate {
 		t.Fatalf("tokens after estimate = %d, want active projection estimate %d", round3.Result.TokensAfterEstimate, got)
 	}
 }
@@ -541,7 +541,7 @@ func TestSummaryPromptKeepsFullPreviousSummaryWithinReservedBudget(t *testing.T)
 		ReservedSummaryTokens: 120,
 		RecentTailTokens:      100,
 	})
-	previousSummary := "prev-start " + strings.Repeat("durable detail ", 28) + "prev-end"
+	previousSummary := "prev-start " + strings.Repeat("durable detail ", 22) + "prev-end"
 	oldOneThirdCap := policy.ReservedSummaryTokens / int64(3)
 	if got := contextpolicy.EstimateText(previousSummary); got <= oldOneThirdCap || got > policy.ReservedSummaryTokens {
 		t.Fatalf("test previous summary estimate = %d, want > %d and <= %d", got, oldOneThirdCap, policy.ReservedSummaryTokens)

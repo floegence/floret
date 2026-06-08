@@ -186,8 +186,13 @@ type ProviderResponseRecord struct {
 	TurnID             string    `json:"turn_id,omitempty"`
 	ProviderResponseID string    `json:"provider_response_id,omitempty"`
 	StopReason         string    `json:"stop_reason,omitempty"`
+	InputTokens        int64     `json:"input_tokens,omitempty"`
+	OutputTokens       int64     `json:"output_tokens,omitempty"`
+	ReasoningTokens    int64     `json:"reasoning_tokens,omitempty"`
 	CacheReadTokens    int64     `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens   int64     `json:"cache_write_tokens,omitempty"`
+	TotalTokens        int64     `json:"total_tokens,omitempty"`
+	UsageSource        string    `json:"usage_source,omitempty"`
 	CreatedAt          time.Time `json:"created_at"`
 }
 
@@ -516,7 +521,6 @@ type BuildInput struct {
 	Toolset        ToolsetSnapshot
 	HostedTools    []HostedToolDefinition
 	Renderer       Renderer
-	ContextPolicy  contextpolicy.Policy
 	Now            time.Time
 }
 
@@ -558,7 +562,6 @@ func BuildPlan(ctx context.Context, store Store, input BuildInput) (RawPlan, []s
 	plan.ToolsetEpoch = input.Toolset.Epoch
 	plan.HostedToolsetHash = StableHash(mustCanonical(input.HostedTools))
 	plan.CacheNamespace = input.CacheNamespace
-	plan.ContextUsage = contextpolicy.EstimateMessages(input.SystemPrompt, input.History, len(input.Toolset.Tools)+len(input.HostedTools), input.ContextPolicy)
 	plan.CompactionGeneration, plan.CompactionWindowID, plan.CompactionEntryID = activeCompactionWindow(input.History)
 	var requestMessages []session.Message
 	sequence := nextSequence(existing)

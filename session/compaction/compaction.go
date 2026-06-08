@@ -142,7 +142,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	history := stripEmptyMessages(req.History)
 	history = removeActiveCompactionSummary(history, &req)
 	history = microcompact(history, req.Policy)
-	usageBefore := contextpolicy.EstimateMessages("", history, 0, req.Policy)
+	usageBefore := contextpolicy.EstimateMessages("", history, req.Policy)
 	if len(history) == 1 {
 		keptUsers := selectKeptUserMessages(history, req.Policy.RecentUserTokens)
 		details := mergeDetails(req.Details, map[string]string{"history_messages": "1", "compacted_messages": "1", "retained_tail_messages": "0", "single_message_compaction": "true"})
@@ -172,7 +172,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		prep.Result.Summary = finalizeSummary(&prep.Result, summary, req.Policy)
 		recordSummaryGenerationDetails(&prep.Result, generationDetails, req.Policy)
 		prep.ActiveMessages = BuildActiveMessagesWithKeptUsers(prep.Result, keptUsers, nil)
-		usageAfter := contextpolicy.EstimateMessages("", prep.ActiveMessages, 0, req.Policy)
+		usageAfter := contextpolicy.EstimateMessages("", prep.ActiveMessages, req.Policy)
 		prep.Result.TokensAfterEstimate = usageAfter.InputTokens
 		prep.Result.UsageAfter = usageAfter
 		recordUsageAfterDetails(&prep.Result, usageAfter, req.Policy)
@@ -242,7 +242,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	recordSummaryGenerationDetails(&prep.Result, generationDetails, req.Policy)
 	prep.Result.Summary = summary
 	prep.ActiveMessages = BuildActiveMessagesWithKeptUsers(prep.Result, keptUsers, tail)
-	usageAfter := contextpolicy.EstimateMessages("", prep.ActiveMessages, 0, req.Policy)
+	usageAfter := contextpolicy.EstimateMessages("", prep.ActiveMessages, req.Policy)
 	prep.Result.TokensAfterEstimate = usageAfter.InputTokens
 	prep.Result.UsageAfter = usageAfter
 	recordUsageAfterDetails(&prep.Result, usageAfter, req.Policy)
@@ -308,7 +308,7 @@ func recordCompactionBudgetDetails(details map[string]string, policy contextpoli
 	details["effective_compacted_context_target_tokens"] = fmt.Sprintf("%d", compactedContextTarget(policy))
 	details["context_window"] = fmt.Sprintf("%d", policy.ContextWindowTokens)
 	details["threshold_tokens"] = fmt.Sprintf("%d", contextpolicy.Threshold(policy))
-	usage := contextpolicy.EstimateMessages("", nil, 0, policy)
+	usage := contextpolicy.EstimateMessages("", nil, policy)
 	details["ratio_limit_tokens"] = fmt.Sprintf("%d", usage.RatioLimitTokens)
 	details["request_safe_limit_tokens"] = fmt.Sprintf("%d", usage.RequestSafeLimit)
 	details["max_output_tokens"] = fmt.Sprintf("%d", policy.MaxOutputTokens)
@@ -512,7 +512,7 @@ func fitTailStartForCompactedContext(history []session.Message, start int, keptU
 	target := compactedContextTarget(policy)
 	for start > 0 && start < len(history) {
 		candidate := buildActiveMessages(Result{Summary: summaryBudgetText(policy)}, keptUsers, history[start:])
-		if contextpolicy.EstimateMessages("", candidate, 0, policy).InputTokens+contextpolicy.DefaultCheckpointOverheadTokens <= target {
+		if contextpolicy.EstimateMessages("", candidate, policy).InputTokens+contextpolicy.DefaultCheckpointOverheadTokens <= target {
 			return start, shrunk
 		}
 		next := nextShrinkableTailStart(history, start)
@@ -799,17 +799,17 @@ func trimToTokenBudget(value string, budget int64) string {
 		return value
 	}
 	runes := []rune(value)
-	maxRunes := int(budget * 4)
 	marker := "\n...[trimmed]"
-	markerRunes := []rune(marker)
-	if maxRunes <= len(markerRunes) {
-		return string(runes[:minInt(maxRunes, len(runes))])
+	if contextpolicy.EstimateText(marker) > budget {
+		for len(runes) > 0 && contextpolicy.EstimateText(string(runes)) > budget {
+			runes = runes[:len(runes)-1]
+		}
+		return string(runes)
 	}
-	contentRunes := maxRunes - len(markerRunes)
-	if contentRunes > len(runes) {
-		contentRunes = len(runes)
+	for len(runes) > 0 && contextpolicy.EstimateText(string(runes)+marker) > budget {
+		runes = runes[:len(runes)-1]
 	}
-	return string(runes[:contentRunes]) + marker
+	return string(runes) + marker
 }
 
 func minInt(a, b int) int {

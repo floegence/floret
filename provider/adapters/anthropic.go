@@ -111,11 +111,7 @@ func (p AnthropicProvider) Stream(ctx context.Context, req provider.Request) (<-
 		return nil, err
 	}
 	req.Cache = normalizedCache
-	maxTokens, err := p.maxTokensForRequest(req)
-	if err != nil {
-		return nil, err
-	}
-	body, err := json.Marshal(p.buildAnthropicRequest(req, maxTokens))
+	body, err := p.anthropicRequestBody(req)
 	if err != nil {
 		return nil, err
 	}
@@ -250,11 +246,21 @@ func anthropicSearchItemsResult(items []anthropicWebSearchResultItem) provider.H
 }
 
 func (p AnthropicProvider) buildAnthropicRequest(req provider.Request, maxTokens int64) anthropicRequest {
+	anthropicReq := p.contextAnthropicRequestWithCacheControl(req, anthropicCacheControlFor(req, p.Cache))
+	anthropicReq.Model = p.Model
+	anthropicReq.MaxTokens = maxTokens
+	return anthropicReq
+}
+
+func (p AnthropicProvider) contextAnthropicRequest(req provider.Request) (anthropicRequest, error) {
+	return p.contextAnthropicRequestWithCacheControl(req, nil), nil
+}
+
+func (p AnthropicProvider) contextAnthropicRequestWithCacheControl(req provider.Request, cacheControl *anthropicCacheControl) anthropicRequest {
 	messages := req.Messages
 	if len(req.RawPlan.Segments) > 0 {
 		messages = nil
 	}
-	cacheControl := anthropicCacheControlFor(req, p.Cache)
 	system := renderAnthropicSystem(messages, cacheControl)
 	renderedMessages := renderAnthropicMessages(messages, cacheControl)
 	renderedTools := append(renderAnthropicTools(req.Tools, cacheControl), renderAnthropicHostedTools(req.HostedTools)...)
@@ -264,11 +270,9 @@ func (p AnthropicProvider) buildAnthropicRequest(req provider.Request, maxTokens
 		renderedTools = renderAnthropicToolsFromRawPlan(req.RawPlan, cacheControl, renderedTools)
 	}
 	return anthropicRequest{
-		Model:     p.Model,
-		MaxTokens: maxTokens,
-		System:    system,
-		Messages:  renderedMessages,
-		Tools:     renderedTools,
+		System:   system,
+		Messages: renderedMessages,
+		Tools:    renderedTools,
 	}
 }
 
@@ -306,15 +310,27 @@ func (p AnthropicProvider) PayloadHash(req provider.Request) (string, error) {
 	if err := validateAnthropicHostedTools(req.HostedTools); err != nil {
 		return "", err
 	}
-	maxTokens, err := p.maxTokensForRequest(req)
-	if err != nil {
-		return "", err
-	}
-	body, err := json.Marshal(p.buildAnthropicRequest(req, maxTokens))
+	body, err := p.anthropicRequestBody(req)
 	if err != nil {
 		return "", err
 	}
 	return cache.StableHash(string(body)), nil
+}
+
+func (p AnthropicProvider) EstimateTokens(_ context.Context, req provider.Request) (provider.TokenEstimate, error) {
+	policy, err := p.NormalizeCachePolicy(req.Cache)
+	if err != nil {
+		return provider.TokenEstimate{}, err
+	}
+	req.Cache = policy
+	if err := validateAnthropicHostedTools(req.HostedTools); err != nil {
+		return provider.TokenEstimate{}, err
+	}
+	anthropicReq, err := p.contextAnthropicRequest(req)
+	if err != nil {
+		return provider.TokenEstimate{}, err
+	}
+	return estimateRenderedParts("anthropic_rendered_json", anthropicReq.System, anthropicReq.Messages, anthropicReq.Tools)
 }
 
 func (p AnthropicProvider) maxTokensForRequest(req provider.Request) (int64, error) {
@@ -328,6 +344,14 @@ func (p AnthropicProvider) maxTokensForRequest(req provider.Request) (int64, err
 		return 0, fmt.Errorf("anthropic max output tokens are required for model %q; set FLORET_MAX_OUTPUT_TOKENS or add model catalog max_tokens", p.Model)
 	}
 	return maxTokens, nil
+}
+
+func (p AnthropicProvider) anthropicRequestBody(req provider.Request) ([]byte, error) {
+	maxTokens, err := p.maxTokensForRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(p.buildAnthropicRequest(req, maxTokens))
 }
 
 func (p AnthropicProvider) MessageRaw(kind cache.SegmentKind, msg session.Message) (string, string, error) {
@@ -545,8 +569,19 @@ func renderAnthropicToolsFromRawPlan(plan cache.RawPlan, cacheControl *anthropic
 	if len(out) == 0 {
 		return fallback
 	}
+	for _, tool := range fallback {
+		if tool.Type == "" {
+			continue
+		}
+		out = append(out, tool)
+	}
 	if cacheControl != nil {
-		out[len(out)-1].CacheControl = cacheControl
+		for i := len(out) - 1; i >= 0; i-- {
+			if out[i].Type == "" {
+				out[i].CacheControl = cacheControl
+				break
+			}
+		}
 	}
 	return out
 }

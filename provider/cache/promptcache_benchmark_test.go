@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/floegence/floret/session"
-	"github.com/floegence/floret/session/contextpolicy"
 )
 
 func BenchmarkBuildPlanTenThousandSegmentsWithCompactionWindow(b *testing.B) {
@@ -31,14 +30,13 @@ func BenchmarkBuildPlanTenThousandSegmentsWithCompactionWindow(b *testing.B) {
 		CompactionWindowID:   "window-09",
 	}
 	input := BuildInput{
-		RunID:         "turn-1",
-		SessionID:     "thread",
-		Provider:      "openai",
-		Model:         "model",
-		SystemPrompt:  "system",
-		History:       history,
-		Toolset:       toolset,
-		ContextPolicy: contextpolicy.Policy{ContextWindowTokens: 128000, MaxOutputTokens: 4096, RecentTailTokens: 4096},
+		RunID:        "turn-1",
+		SessionID:    "thread",
+		Provider:     "openai",
+		Model:        "model",
+		SystemPrompt: "system",
+		History:      history,
+		Toolset:      toolset,
 	}
 	if _, _, err := BuildPlan(ctx, store, input); err != nil {
 		b.Fatal(err)

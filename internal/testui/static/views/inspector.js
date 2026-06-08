@@ -225,7 +225,11 @@ function renderContextBudgetMetrics(usage) {
   const headroom = usage.output_headroom_tokens ?? usage.OutputHeadroom;
   const maxOutput = usage.max_output_tokens ?? usage.MaxOutputTokens;
   const ratio = usage.auto_compact_ratio_pct ?? usage.AutoCompactRatio;
+  const source = usage.estimator_source ?? usage.EstimatorSource;
+  const confidence = usage.estimator_confidence ?? usage.EstimatorConfidence;
   return [
+    source ? `<span class="metric">estimator ${escapeHTML(source)}</span>` : "",
+    confidence ? `<span class="metric">confidence ${escapeHTML(confidence)}</span>` : "",
     threshold || threshold === 0 ? `<span class="metric">threshold ${escapeHTML(threshold)}</span>` : "",
     requestSafe || requestSafe === 0 ? `<span class="metric">request safe ${escapeHTML(requestSafe)}</span>` : "",
     ratioLimit || ratioLimit === 0 ? `<span class="metric">ratio limit ${escapeHTML(ratioLimit)}</span>` : "",

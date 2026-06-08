@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -298,6 +299,89 @@ type CacheRetentionDefault interface {
 
 type PayloadHasher interface {
 	PayloadHash(Request) (string, error)
+}
+
+type EstimateConfidence string
+
+const (
+	EstimateExact        EstimateConfidence = "exact"
+	EstimateApproximate  EstimateConfidence = "approximate"
+	EstimateConservative EstimateConfidence = "conservative"
+)
+
+type TokenEstimate struct {
+	PrefixTokens  int64
+	HistoryTokens int64
+	ToolTokens    int64
+	InputTokens   int64
+	Source        string
+	Confidence    EstimateConfidence
+}
+
+type TokenEstimator interface {
+	EstimateTokens(context.Context, Request) (TokenEstimate, error)
+}
+
+func GenericRequestEstimate(req Request) (TokenEstimate, error) {
+	prefix, history := splitSystemMessages(req.Messages)
+	prefixTokens, err := estimateMessagesJSON(prefix)
+	if err != nil {
+		return TokenEstimate{}, err
+	}
+	historyTokens, err := estimateMessagesJSON(history)
+	if err != nil {
+		return TokenEstimate{}, err
+	}
+	toolTokens, err := estimateToolsJSON(req.Tools, req.HostedTools)
+	if err != nil {
+		return TokenEstimate{}, err
+	}
+	return TokenEstimate{
+		PrefixTokens:  prefixTokens,
+		HistoryTokens: historyTokens,
+		ToolTokens:    toolTokens,
+		InputTokens:   prefixTokens + historyTokens + toolTokens,
+		Source:        "generic_request_json",
+		Confidence:    EstimateConservative,
+	}, nil
+}
+
+func estimateMessagesJSON(messages []session.Message) (int64, error) {
+	if len(messages) == 0 {
+		return 0, nil
+	}
+	raw, err := json.Marshal(messages)
+	if err != nil {
+		return 0, err
+	}
+	return contextpolicy.EstimateText(string(raw)), nil
+}
+
+func estimateToolsJSON(tools []ToolDefinition, hostedTools []HostedToolDefinition) (int64, error) {
+	if len(tools) == 0 && len(hostedTools) == 0 {
+		return 0, nil
+	}
+	raw, err := json.Marshal(map[string]any{
+		"tools":        tools,
+		"hosted_tools": hostedTools,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return contextpolicy.EstimateText(string(raw)), nil
+}
+
+func splitSystemMessages(messages []session.Message) ([]session.Message, []session.Message) {
+	var prefix []session.Message
+	var history []session.Message
+	for _, msg := range messages {
+		if msg.Role == session.System {
+			prefix = append(prefix, msg)
+			continue
+		}
+		history = append(history, msg)
+	}
+	return prefix, history
 }
 
 type UsageSource string

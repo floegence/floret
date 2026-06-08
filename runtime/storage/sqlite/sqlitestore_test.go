@@ -364,7 +364,7 @@ func TestSQLiteStorePromptMetadataDeleteSessionAndSchemaGuard(t *testing.T) {
 	if _, err := cache.RecordRequest(ctx, store, "turn-1", "thread", 1, "openai", "model", cache.CachePolicy{}, firstPlan); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AppendProviderResponse(ctx, cache.ProviderResponseRecord{RequestID: "turn-1:request:1", ProviderResponseID: "provider-response"}); err != nil {
+	if err := store.AppendProviderResponse(ctx, cache.ProviderResponseRecord{RequestID: "turn-1:request:1", ProviderResponseID: "provider-response", InputTokens: 100, OutputTokens: 20, ReasoningTokens: 3, CacheReadTokens: 10, CacheWriteTokens: 5, TotalTokens: 138, UsageSource: "native"}); err != nil {
 		t.Fatal(err)
 	}
 	created := now.Add(-time.Minute)
@@ -421,6 +421,9 @@ func TestSQLiteStorePromptMetadataDeleteSessionAndSchemaGuard(t *testing.T) {
 	}
 	if len(requests) != 1 || len(responses) != 1 {
 		t.Fatalf("provider records requests=%#v responses=%#v", requests, responses)
+	}
+	if responses[0].InputTokens != 100 || responses[0].OutputTokens != 20 || responses[0].ReasoningTokens != 3 || responses[0].CacheReadTokens != 10 || responses[0].CacheWriteTokens != 5 || responses[0].TotalTokens != 138 || responses[0].UsageSource != "native" {
+		t.Fatalf("provider response usage did not round trip: %#v", responses[0])
 	}
 	if err := store.DeleteSession(ctx, storage.DeleteSessionRequest{SessionID: "thread", PromptScopeIDs: []string{"turn-1"}, MetadataNamespaces: []string{"ns"}}); err != nil {
 		t.Fatal(err)

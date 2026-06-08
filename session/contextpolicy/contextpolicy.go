@@ -2,6 +2,7 @@ package contextpolicy
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"github.com/floegence/floret/session"
 )
@@ -17,8 +18,25 @@ const (
 	DefaultRecentTailTokens             int64 = 12000
 	DefaultRecentUserTokens             int64 = 15000
 	DefaultCheckpointOverheadTokens     int64 = 2000
-	DefaultEstimatorSource                    = "chars_per_token"
+	DefaultEstimatorSource                    = "generic_conservative"
 )
+
+type EstimateConfidence string
+
+const (
+	EstimateExact        EstimateConfidence = "exact"
+	EstimateApproximate  EstimateConfidence = "approximate"
+	EstimateConservative EstimateConfidence = "conservative"
+)
+
+type Estimate struct {
+	PrefixTokens  int64              `json:"prefix_tokens,omitempty"`
+	HistoryTokens int64              `json:"history_tokens,omitempty"`
+	ToolTokens    int64              `json:"tool_tokens,omitempty"`
+	InputTokens   int64              `json:"input_tokens,omitempty"`
+	Source        string             `json:"source,omitempty"`
+	Confidence    EstimateConfidence `json:"confidence,omitempty"`
+}
 
 type Policy struct {
 	ContextWindowTokens    int64  `json:"context_window_tokens,omitempty"`
@@ -33,29 +51,30 @@ type Policy struct {
 }
 
 type Usage struct {
-	ActiveTokens      int64  `json:"active_tokens,omitempty"`
-	HistoryTokens     int64  `json:"history_tokens,omitempty"`
-	PrefixTokens      int64  `json:"prefix_tokens,omitempty"`
-	ToolTokens        int64  `json:"tool_tokens,omitempty"`
-	CacheReadTokens   int64  `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens  int64  `json:"cache_write_tokens,omitempty"`
-	InputTokens       int64  `json:"input_tokens,omitempty"`
-	OutputTokens      int64  `json:"output_tokens,omitempty"`
-	TotalTokens       int64  `json:"total_tokens,omitempty"`
-	ContextWindow     int64  `json:"context_window,omitempty"`
-	ThresholdTokens   int64  `json:"threshold_tokens,omitempty"`
-	RatioLimitTokens  int64  `json:"ratio_limit_tokens,omitempty"`
-	RequestSafeLimit  int64  `json:"request_safe_limit_tokens,omitempty"`
-	MaxOutputTokens   int64  `json:"max_output_tokens,omitempty"`
-	ReservedOutput    int64  `json:"reserved_output,omitempty"`
-	ReservedSummary   int64  `json:"reserved_summary,omitempty"`
-	OutputHeadroom    int64  `json:"output_headroom_tokens,omitempty"`
-	AutoCompactRatio  int64  `json:"auto_compact_ratio_pct,omitempty"`
-	RecentTailTokens  int64  `json:"recent_tail_tokens,omitempty"`
-	RecentUserTokens  int64  `json:"recent_user_tokens,omitempty"`
-	EstimatorSource   string `json:"estimator_source,omitempty"`
-	CompactionNeeded  bool   `json:"compaction_needed,omitempty"`
-	TokenPressureHigh bool   `json:"token_pressure_high,omitempty"`
+	ActiveTokens        int64  `json:"active_tokens,omitempty"`
+	HistoryTokens       int64  `json:"history_tokens,omitempty"`
+	PrefixTokens        int64  `json:"prefix_tokens,omitempty"`
+	ToolTokens          int64  `json:"tool_tokens,omitempty"`
+	CacheReadTokens     int64  `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens    int64  `json:"cache_write_tokens,omitempty"`
+	InputTokens         int64  `json:"input_tokens,omitempty"`
+	OutputTokens        int64  `json:"output_tokens,omitempty"`
+	TotalTokens         int64  `json:"total_tokens,omitempty"`
+	ContextWindow       int64  `json:"context_window,omitempty"`
+	ThresholdTokens     int64  `json:"threshold_tokens,omitempty"`
+	RatioLimitTokens    int64  `json:"ratio_limit_tokens,omitempty"`
+	RequestSafeLimit    int64  `json:"request_safe_limit_tokens,omitempty"`
+	MaxOutputTokens     int64  `json:"max_output_tokens,omitempty"`
+	ReservedOutput      int64  `json:"reserved_output,omitempty"`
+	ReservedSummary     int64  `json:"reserved_summary,omitempty"`
+	OutputHeadroom      int64  `json:"output_headroom_tokens,omitempty"`
+	AutoCompactRatio    int64  `json:"auto_compact_ratio_pct,omitempty"`
+	RecentTailTokens    int64  `json:"recent_tail_tokens,omitempty"`
+	RecentUserTokens    int64  `json:"recent_user_tokens,omitempty"`
+	EstimatorSource     string `json:"estimator_source,omitempty"`
+	EstimatorConfidence string `json:"estimator_confidence,omitempty"`
+	CompactionNeeded    bool   `json:"compaction_needed,omitempty"`
+	TokenPressureHigh   bool   `json:"token_pressure_high,omitempty"`
 }
 
 func HasValues(policy Policy) bool {
@@ -190,7 +209,7 @@ func defaultWindowBudget(value, fallback, contextWindow int64) int64 {
 	return min64(value, limit)
 }
 
-func EstimateMessages(systemPrompt string, history []session.Message, toolCount int, policy Policy) Usage {
+func UsageFromEstimate(estimate Estimate, policy Policy) Usage {
 	policy = Normalize(policy)
 	ratioLimitTokens := ratioLimit(policy)
 	requestSafeLimitTokens := requestSafeLimit(policy)
@@ -198,36 +217,57 @@ func EstimateMessages(systemPrompt string, history []session.Message, toolCount 
 	if thresholdTokens < 1 {
 		thresholdTokens = 1
 	}
+	if estimate.InputTokens <= 0 {
+		estimate.InputTokens = estimate.PrefixTokens + estimate.HistoryTokens + estimate.ToolTokens
+	}
+	source := estimate.Source
+	if source == "" {
+		source = policy.EstimatorSource
+	}
+	confidence := estimate.Confidence
+	if confidence == "" {
+		confidence = EstimateConservative
+	}
 	usage := Usage{
-		ContextWindow:    policy.ContextWindowTokens,
-		ThresholdTokens:  thresholdTokens,
-		RatioLimitTokens: ratioLimitTokens,
-		RequestSafeLimit: requestSafeLimitTokens,
-		MaxOutputTokens:  policy.MaxOutputTokens,
-		ReservedOutput:   policy.ReservedOutputTokens,
-		ReservedSummary:  policy.ReservedSummaryTokens,
-		OutputHeadroom:   OutputHeadroom(policy),
-		AutoCompactRatio: DefaultAutoCompactRatioPercent,
-		RecentTailTokens: policy.RecentTailTokens,
-		RecentUserTokens: policy.RecentUserTokens,
-		EstimatorSource:  policy.EstimatorSource,
+		ActiveTokens:        estimate.HistoryTokens,
+		HistoryTokens:       estimate.HistoryTokens,
+		PrefixTokens:        estimate.PrefixTokens,
+		ToolTokens:          estimate.ToolTokens,
+		InputTokens:         estimate.InputTokens,
+		TotalTokens:         estimate.InputTokens,
+		ContextWindow:       policy.ContextWindowTokens,
+		ThresholdTokens:     thresholdTokens,
+		RatioLimitTokens:    ratioLimitTokens,
+		RequestSafeLimit:    requestSafeLimitTokens,
+		MaxOutputTokens:     policy.MaxOutputTokens,
+		ReservedOutput:      policy.ReservedOutputTokens,
+		ReservedSummary:     policy.ReservedSummaryTokens,
+		OutputHeadroom:      OutputHeadroom(policy),
+		AutoCompactRatio:    DefaultAutoCompactRatioPercent,
+		RecentTailTokens:    policy.RecentTailTokens,
+		RecentUserTokens:    policy.RecentUserTokens,
+		EstimatorSource:     source,
+		EstimatorConfidence: string(confidence),
 	}
-	if systemPrompt != "" {
-		usage.PrefixTokens += EstimateText(systemPrompt)
-	}
-	for _, msg := range history {
-		tokens := EstimateMessage(msg)
-		usage.HistoryTokens += tokens
-		usage.ActiveTokens += tokens
-	}
-	if toolCount > 0 {
-		usage.ToolTokens = int64(toolCount) * 96
-	}
-	usage.InputTokens = usage.PrefixTokens + usage.ActiveTokens + usage.ToolTokens
-	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 	usage.CompactionNeeded = usage.InputTokens >= usage.ThresholdTokens
 	usage.TokenPressureHigh = usage.InputTokens >= usage.RequestSafeLimit
 	return usage
+}
+
+func EstimateMessages(systemPrompt string, history []session.Message, policy Policy) Usage {
+	estimate := Estimate{
+		Source:     DefaultEstimatorSource,
+		Confidence: EstimateConservative,
+	}
+	if systemPrompt != "" {
+		estimate.PrefixTokens += EstimateText(systemPrompt)
+	}
+	for _, msg := range history {
+		tokens := EstimateMessage(msg)
+		estimate.HistoryTokens += tokens
+	}
+	estimate.InputTokens = estimate.PrefixTokens + estimate.HistoryTokens + estimate.ToolTokens
+	return UsageFromEstimate(estimate, policy)
 }
 
 func EstimateMessage(msg session.Message) int64 {
@@ -243,15 +283,26 @@ func EstimateText(value string) int64 {
 	if value == "" {
 		return 0
 	}
-	runes := int64(len([]rune(value)))
-	tokens := runes / 4
-	if runes%4 != 0 {
-		tokens++
+	var ascii, nonASCII int64
+	for _, r := range value {
+		if r < utf8.RuneSelf {
+			ascii++
+		} else {
+			nonASCII++
+		}
 	}
+	tokens := ceilDiv(ascii, 3) + nonASCII
 	if tokens < 1 {
 		return 1
 	}
 	return tokens
+}
+
+func ceilDiv(value, divisor int64) int64 {
+	if value <= 0 {
+		return 0
+	}
+	return (value + divisor - 1) / divisor
 }
 
 func min64(a, b int64) int64 {

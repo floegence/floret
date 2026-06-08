@@ -2270,9 +2270,7 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
 		return scripted, nil
 	}
-	long := strings.Repeat("history ", 220)
-
-	result := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+	initial, err := runner.CreateIdleAgentSession(context.Background(), AgentRunRequest{
 		Profile: ProviderProfile{
 			ID:           "fake",
 			Name:         "Fake",
@@ -2280,10 +2278,22 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 			Model:        "fake-model",
 			FakeResponse: "unused",
 		},
-		Message:       long,
 		SystemPrompt:  "test",
-		ContextPolicy: contextPolicyForTest(260),
+		ContextPolicy: contextPolicyForTest(1800),
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	long := strings.Repeat("history ", 620)
+	sess, ok := runner.Sessions.get(initial.ID)
+	if !ok {
+		t.Fatalf("idle session not registered: %#v", initial)
+	}
+	if _, err := sessiontree.AppendMessage(context.Background(), sess.repo, initial.ID, "turn-history", session.Message{Role: session.User, Content: long}); err != nil {
+		t.Fatal(err)
+	}
+
+	result := runner.RunAgentTurn(context.Background(), initial.ID, AgentTurnRequest{Message: "continue"})
 
 	if result.Status != "completed" || result.Output != "after compact" {
 		t.Fatalf("result = %#v", result)
@@ -2407,6 +2417,25 @@ func TestObservingProviderForwardsPromptRenderer(t *testing.T) {
 	}
 }
 
+func TestObservingProviderRuntimeOnlyExposesExistingEstimator(t *testing.T) {
+	noEstimator := newObservingProvider(harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done())))
+	if _, ok := observedProviderRuntime(noEstimator).(provider.TokenEstimator); ok {
+		t.Fatalf("observing provider should not add token estimator capability")
+	}
+	withEstimator := newObservingProvider(estimatingTestProvider{Provider: harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))})
+	estimator, ok := observedProviderRuntime(withEstimator).(provider.TokenEstimator)
+	if !ok {
+		t.Fatalf("observing provider should forward existing token estimator capability")
+	}
+	estimate, err := estimator.EstimateTokens(context.Background(), provider.Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if estimate.Source != "test_estimator" {
+		t.Fatalf("estimate = %#v", estimate)
+	}
+}
+
 func TestObservingProviderRecordsHostedToolsSeparatelyFromLocalTools(t *testing.T) {
 	inner := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
 	observed := newObservingProvider(inner)
@@ -2443,6 +2472,14 @@ func TestObservingProviderRecordsHostedToolsSeparatelyFromLocalTools(t *testing.
 }
 
 type rendererProvider struct{}
+
+type estimatingTestProvider struct {
+	provider.Provider
+}
+
+func (estimatingTestProvider) EstimateTokens(context.Context, provider.Request) (provider.TokenEstimate, error) {
+	return provider.TokenEstimate{InputTokens: 1, Source: "test_estimator", Confidence: provider.EstimateConservative}, nil
+}
 
 func (rendererProvider) Stream(context.Context, provider.Request) (<-chan provider.StreamEvent, error) {
 	ch := make(chan provider.StreamEvent)

@@ -448,8 +448,21 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		if err != nil {
 			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
 		}
+		if req.ContextUsage.CompactionNeeded {
+			activeHistory, err = e.compactProviderRequest(ctx, opts, step, activeHistory, req.ContextUsage, &metrics, &compactionFailures)
+			if err != nil {
+				return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{ContinuationReason: ContinueCompaction})
+			}
+			noProgress = 0
+			duplicateCount = 0
+			state.activeMessages = append([]session.Message(nil), activeHistory...)
+			continue
+		}
+		if _, err := cache.RecordRequest(ctx, e.prompt, opts.RunID, opts.SessionID, step, opts.ProviderName, opts.Model, req.Cache, req.RawPlan); err != nil {
+			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
+		}
 		metrics.LLMRequests++
-		e.emit(event.Event{Type: event.ProviderRequest, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: fmt.Sprintf("%d messages, %d raw segments, %d local tools, %d hosted tools, prefix %s", len(req.Messages), len(req.RawPlan.Segments), len(req.Tools), len(req.HostedTools), shortHash(req.RawPlan.PrefixHash))})
+		e.emit(event.Event{Type: event.ProviderRequest, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: fmt.Sprintf("%d messages, %d raw segments, %d local tools, %d hosted tools, prefix %s", len(req.Messages), len(req.RawPlan.Segments), len(req.Tools), len(req.HostedTools), shortHash(req.RawPlan.PrefixHash)), Metadata: providerRequestMetadata(req)})
 		providerStarted := time.Now()
 		stream, err := e.provider.Stream(ctx, req)
 		if errors.Is(err, provider.ErrContextOverflow) {
@@ -482,8 +495,13 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			ThreadID:           opts.SessionID,
 			TurnID:             opts.RunID,
 			ProviderResponseID: stepOutput.ResponseID,
+			InputTokens:        usage.InputTokens,
+			OutputTokens:       usage.OutputTokens,
+			ReasoningTokens:    usage.ReasoningTokens,
 			CacheReadTokens:    usage.CacheReadTokens,
 			CacheWriteTokens:   usage.CacheWriteTokens,
+			TotalTokens:        usage.Normalized().TotalTokens,
+			UsageSource:        string(usage.Normalized().Source),
 			CreatedAt:          time.Now(),
 		})
 		decision := RunDecision{FinishReason: stepOutput.FinishReason, RawFinishReason: stepOutput.RawFinishReason, FinishInferred: stepOutput.FinishInferred}
@@ -518,7 +536,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			if lengthContinuations > opts.MaxLengthContinuations {
 				return e.end(state, opts, step, Failed, output, ErrProviderTruncated, metrics, started, decision)
 			}
-			contextUsage := contextpolicy.EstimateMessages(e.memory.SystemPrompt, activeHistory, len(opts.toolDefinitions)+len(opts.HostedToolDefinitions), opts.ContextPolicy)
+			contextUsage := contextpolicy.EstimateMessages(e.memory.SystemPrompt, activeHistory, opts.ContextPolicy)
 			if contextUsage.CompactionNeeded {
 				activeHistory, _, err = e.forceCompact(ctx, opts, step, activeHistory, compaction.TriggerPostResponse, compaction.ReasonOutputContinuation, &metrics, &compactionFailures)
 				if err != nil {
@@ -806,7 +824,6 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		Toolset:        toolset,
 		HostedTools:    convertHostedToolDefinitions(opts.HostedToolDefinitions),
 		Renderer:       rendererForProvider(e.provider),
-		ContextPolicy:  opts.ContextPolicy,
 		Now:            time.Now(),
 	})
 	if err != nil {
@@ -848,9 +865,14 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		RawPlan:         plan,
 		Cache:           cachePolicy,
 		ContextPolicy:   opts.ContextPolicy,
-		ContextUsage:    contextpolicy.EstimateMessages(e.memory.SystemPrompt, history, len(activeTools)+len(activeHostedTools), opts.ContextPolicy),
 		MaxOutputTokens: opts.ContextPolicy.MaxOutputTokens,
 	}
+	usage, err := e.estimateContextUsage(ctx, req)
+	if err != nil {
+		return provider.Request{}, err
+	}
+	req.ContextUsage = usage
+	req.RawPlan.ContextUsage = usage
 	if hasher, ok := e.provider.(provider.PayloadHasher); ok {
 		payloadHash, err := hasher.PayloadHash(req)
 		if err != nil {
@@ -858,10 +880,67 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		}
 		req.RawPlan.PayloadHash = payloadHash
 	}
-	if _, err := cache.RecordRequest(ctx, e.prompt, opts.RunID, opts.SessionID, step, opts.ProviderName, opts.Model, cachePolicy, req.RawPlan); err != nil {
-		return provider.Request{}, err
-	}
 	return req, nil
+}
+
+func (e *Engine) estimateContextUsage(ctx context.Context, req provider.Request) (contextpolicy.Usage, error) {
+	if estimator, ok := e.provider.(provider.TokenEstimator); ok {
+		estimate, err := estimator.EstimateTokens(ctx, req)
+		if err != nil {
+			return contextpolicy.Usage{}, err
+		}
+		return contextpolicy.UsageFromEstimate(contextpolicy.Estimate{
+			PrefixTokens:  estimate.PrefixTokens,
+			HistoryTokens: estimate.HistoryTokens,
+			ToolTokens:    estimate.ToolTokens,
+			InputTokens:   estimate.InputTokens,
+			Source:        estimate.Source,
+			Confidence:    contextpolicy.EstimateConfidence(estimate.Confidence),
+		}, req.ContextPolicy), nil
+	}
+	estimate, err := provider.GenericRequestEstimate(req)
+	if err != nil {
+		return contextpolicy.Usage{}, err
+	}
+	return contextpolicy.UsageFromEstimate(contextpolicy.Estimate{
+		PrefixTokens:  estimate.PrefixTokens,
+		HistoryTokens: estimate.HistoryTokens,
+		ToolTokens:    estimate.ToolTokens,
+		InputTokens:   estimate.InputTokens,
+		Source:        estimate.Source,
+		Confidence:    contextpolicy.EstimateConfidence(estimate.Confidence),
+	}, req.ContextPolicy), nil
+}
+
+func providerRequestMetadata(req provider.Request) map[string]any {
+	usage := req.ContextUsage
+	return map[string]any{
+		"message_count":        len(req.Messages),
+		"raw_segment_count":    len(req.RawPlan.Segments),
+		"local_tool_count":     len(req.Tools),
+		"hosted_tool_count":    len(req.HostedTools),
+		"prefix_hash":          shortHash(req.RawPlan.PrefixHash),
+		"input_tokens":         usage.InputTokens,
+		"context_window":       usage.ContextWindow,
+		"threshold_tokens":     usage.ThresholdTokens,
+		"request_safe_limit":   usage.RequestSafeLimit,
+		"output_headroom":      usage.OutputHeadroom,
+		"estimator_source":     usage.EstimatorSource,
+		"estimator_confidence": usage.EstimatorConfidence,
+		"compaction_needed":    usage.CompactionNeeded,
+		"token_pressure_high":  usage.TokenPressureHigh,
+	}
+}
+
+func (e *Engine) compactProviderRequest(ctx context.Context, opts Options, step int, history []session.Message, usage contextpolicy.Usage, metrics *RunMetrics, failures *int) ([]session.Message, error) {
+	next, err := e.runCompaction(ctx, opts, step, history, compaction.TriggerPreRequest, compaction.ReasonThreshold, usage, failures)
+	if err != nil {
+		return history, err
+	}
+	if metrics != nil {
+		metrics.Compactions++
+	}
+	return next, nil
 }
 
 func validateNoLocalHostedToolNameConflict(local []provider.ToolDefinition, hosted []provider.HostedToolDefinition) error {
@@ -891,7 +970,7 @@ func validateConfiguredTools(local []provider.ToolDefinition, hosted []provider.
 }
 
 func (e *Engine) maybeCompact(ctx context.Context, opts Options, step int, history []session.Message, trigger compaction.Trigger, reason compaction.Reason, metrics *RunMetrics, failures *int) ([]session.Message, bool, error) {
-	usage := contextpolicy.EstimateMessages(e.memory.SystemPrompt, history, len(opts.toolDefinitions)+len(opts.HostedToolDefinitions), opts.ContextPolicy)
+	usage := contextpolicy.EstimateMessages(e.memory.SystemPrompt, history, opts.ContextPolicy)
 	if !usage.CompactionNeeded {
 		return history, false, nil
 	}
@@ -906,7 +985,7 @@ func (e *Engine) maybeCompact(ctx context.Context, opts Options, step int, histo
 }
 
 func (e *Engine) forceCompact(ctx context.Context, opts Options, step int, history []session.Message, trigger compaction.Trigger, reason compaction.Reason, metrics *RunMetrics, failures *int) ([]session.Message, compaction.Result, error) {
-	usage := contextpolicy.EstimateMessages(e.memory.SystemPrompt, history, len(opts.toolDefinitions)+len(opts.HostedToolDefinitions), opts.ContextPolicy)
+	usage := contextpolicy.EstimateMessages(e.memory.SystemPrompt, history, opts.ContextPolicy)
 	next, err := e.runCompaction(ctx, opts, step, history, trigger, reason, usage, failures)
 	if err != nil {
 		return history, compaction.Result{}, err
@@ -942,7 +1021,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		TraceID:      opts.TraceID,
 		Step:         step,
 		History:      history,
-		Policy:       opts.ContextPolicy,
+		Policy:       compactionPolicyForUsage(opts.ContextPolicy, usage),
 		Trigger:      trigger,
 		Reason:       reason,
 		Phase:        compaction.PhaseGenerate,
@@ -984,6 +1063,20 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		Metrics:   result,
 	})
 	return active, nil
+}
+
+func compactionPolicyForUsage(policy contextpolicy.Policy, usage contextpolicy.Usage) contextpolicy.Policy {
+	policy = contextpolicy.Normalize(policy)
+	fixedInputTokens := usage.PrefixTokens + usage.ToolTokens
+	if fixedInputTokens <= 0 {
+		return policy
+	}
+	if policy.ContextWindowTokens > fixedInputTokens+1 {
+		policy.ContextWindowTokens -= fixedInputTokens
+	} else {
+		policy.ContextWindowTokens = 1
+	}
+	return contextpolicy.Normalize(policy)
 }
 
 func latestCompaction(_, active []session.Message) compaction.Result {

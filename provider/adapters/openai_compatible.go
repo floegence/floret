@@ -149,12 +149,7 @@ func (p OpenAICompatibleProvider) Stream(ctx context.Context, req provider.Reque
 	if client == nil {
 		client = http.DefaultClient
 	}
-	chatReq := p.buildChatRequest(req)
-	chatReq.Messages = normalizeChatToolResults(chatReq.Messages)
-	if err := validateChatToolAdjacency(chatReq.Messages); err != nil {
-		return nil, err
-	}
-	body, err := json.Marshal(chatReq)
+	body, err := p.chatRequestBody(req)
 	if err != nil {
 		return nil, err
 	}
@@ -268,19 +263,59 @@ func (p OpenAICompatibleProvider) PayloadHash(req provider.Request) (string, err
 	if err := validateOpenAICompatibleHostedTools(req.HostedTools); err != nil {
 		return "", err
 	}
-	chatReq := p.buildChatRequest(req)
-	chatReq.Messages = normalizeChatToolResults(chatReq.Messages)
-	if err := validateChatToolAdjacency(chatReq.Messages); err != nil {
-		return "", err
-	}
-	body, err := json.Marshal(chatReq)
+	body, err := p.chatRequestBody(req)
 	if err != nil {
 		return "", err
 	}
 	return cache.StableHash(string(body)), nil
 }
 
-func (p OpenAICompatibleProvider) buildChatRequest(req provider.Request) chatRequest {
+func (p OpenAICompatibleProvider) EstimateTokens(_ context.Context, req provider.Request) (provider.TokenEstimate, error) {
+	policy, err := p.NormalizeCachePolicy(req.Cache)
+	if err != nil {
+		return provider.TokenEstimate{}, err
+	}
+	req.Cache = policy
+	if err := validateOpenAICompatibleHostedTools(req.HostedTools); err != nil {
+		return provider.TokenEstimate{}, err
+	}
+	chatReq, err := p.contextChatRequest(req)
+	if err != nil {
+		return provider.TokenEstimate{}, err
+	}
+	prefix, history := splitChatSystemMessages(chatReq.Messages)
+	return estimateRenderedParts("openai_compatible_rendered_json", prefix, history, chatReq.Tools)
+}
+
+func (p OpenAICompatibleProvider) chatRequestBody(req provider.Request) ([]byte, error) {
+	chatReq, err := p.contextChatRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	chatReq.Messages = normalizeChatToolResults(chatReq.Messages)
+	if err := validateChatToolAdjacency(chatReq.Messages); err != nil {
+		return nil, err
+	}
+	maxTokens := req.MaxOutputTokens
+	if maxTokens <= 0 {
+		maxTokens = req.ContextPolicy.MaxOutputTokens
+	}
+	chatReq.Model = p.Model
+	chatReq.Stream = p.StreamResponses
+	chatReq.MaxTokens = maxTokens
+	if len(chatReq.Tools) > 0 {
+		chatReq.ToolChoice = "auto"
+	}
+	if req.Cache.Enabled && p.Cache.PromptCacheKey {
+		chatReq.PromptCacheKey = req.Cache.Namespace
+	}
+	if req.Cache.Enabled && p.Cache.PromptCacheRetention {
+		chatReq.PromptCacheRetention = string(req.Cache.Retention)
+	}
+	return json.Marshal(chatReq)
+}
+
+func (p OpenAICompatibleProvider) contextChatRequest(req provider.Request) (chatRequest, error) {
 	messages := req.Messages
 	if len(req.RawPlan.Segments) > 0 {
 		messages = nil
@@ -291,21 +326,24 @@ func (p OpenAICompatibleProvider) buildChatRequest(req provider.Request) chatReq
 		renderedMessages = renderMessagesFromRawPlan(req.RawPlan, renderedMessages)
 		renderedTools = renderToolsFromRawPlan(req.RawPlan, renderedTools)
 	}
-	maxTokens := req.MaxOutputTokens
-	if maxTokens <= 0 {
-		maxTokens = req.ContextPolicy.MaxOutputTokens
+	renderedMessages = normalizeChatToolResults(renderedMessages)
+	if err := validateChatToolAdjacency(renderedMessages); err != nil {
+		return chatRequest{}, err
 	}
-	chatReq := chatRequest{Model: p.Model, Messages: renderedMessages, Stream: p.StreamResponses, MaxTokens: maxTokens, Tools: renderedTools}
-	if len(chatReq.Tools) > 0 {
-		chatReq.ToolChoice = "auto"
+	return chatRequest{Messages: renderedMessages, Tools: renderedTools}, nil
+}
+
+func splitChatSystemMessages(messages []chatMessage) ([]chatMessage, []chatMessage) {
+	var prefix []chatMessage
+	var history []chatMessage
+	for _, msg := range messages {
+		if msg.Role == "system" {
+			prefix = append(prefix, msg)
+			continue
+		}
+		history = append(history, msg)
 	}
-	if req.Cache.Enabled && p.Cache.PromptCacheKey {
-		chatReq.PromptCacheKey = req.Cache.Namespace
-	}
-	if req.Cache.Enabled && p.Cache.PromptCacheRetention {
-		chatReq.PromptCacheRetention = string(req.Cache.Retention)
-	}
-	return chatReq
+	return prefix, history
 }
 
 func validateOpenAICompatibleHostedTools(defs []provider.HostedToolDefinition) error {

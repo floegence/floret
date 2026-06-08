@@ -272,7 +272,7 @@ func TestStaticConsoleNewSessionDefaultsFollowBackendAndProviderCatalog(t *testi
 
 func TestStaticConsoleInspectorShowsContextBudgetBreakdown(t *testing.T) {
 	inspector := readStaticTestFile(t, "views", "inspector.js")
-	for _, want := range []string{"renderContextBudgetMetrics", "threshold_tokens", "ratio_limit_tokens", "request_safe_limit_tokens", "output_headroom_tokens", "max_output_tokens", "auto_compact_ratio_pct", "request safe", "ratio limit", "output headroom", "auto compact"} {
+	for _, want := range []string{"renderContextBudgetMetrics", "estimator_source", "estimator_confidence", "estimator ", "confidence ", "threshold_tokens", "ratio_limit_tokens", "request_safe_limit_tokens", "output_headroom_tokens", "max_output_tokens", "auto_compact_ratio_pct", "request safe", "ratio limit", "output headroom", "auto compact"} {
 		if !strings.Contains(inspector, want) {
 			t.Fatalf("inspector should expose context budget field %q", want)
 		}

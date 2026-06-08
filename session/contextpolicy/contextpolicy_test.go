@@ -99,7 +99,7 @@ func TestMergeDefaultsUsesFallbackMaxOutputOnlyWhenPolicyOmitted(t *testing.T) {
 }
 
 func TestEstimateMessagesReportsRecentUserBudget(t *testing.T) {
-	usage := EstimateMessages("", nil, 0, Policy{RecentUserTokens: 321})
+	usage := EstimateMessages("", nil, Policy{RecentUserTokens: 321})
 	if usage.RecentUserTokens != 321 {
 		t.Fatalf("recent user budget = %d, want 321", usage.RecentUserTokens)
 	}
@@ -158,7 +158,7 @@ func TestThresholdUsesOutputHeadroomAndRatioLimits(t *testing.T) {
 }
 
 func TestEstimateMessagesReportsOutputBudgetFields(t *testing.T) {
-	usage := EstimateMessages("system", []session.Message{{Role: session.User, Content: strings.Repeat("x", 40)}}, 1, Policy{
+	usage := EstimateMessages("system", []session.Message{{Role: session.User, Content: strings.Repeat("x", 40)}}, Policy{
 		ContextWindowTokens: 1000000,
 		MaxOutputTokens:     384000,
 	})
@@ -180,7 +180,7 @@ func TestEstimateMessagesReportsOutputBudgetFields(t *testing.T) {
 }
 
 func TestTokenPressureHighUsesOutputHeadroom(t *testing.T) {
-	high := EstimateMessages("", []session.Message{{Role: session.User, Content: strings.Repeat("x", 2464000)}}, 0, Policy{
+	high := EstimateMessages("", []session.Message{{Role: session.User, Content: strings.Repeat("x", 1848000)}}, Policy{
 		ContextWindowTokens: 1000000,
 		MaxOutputTokens:     384000,
 	})
@@ -188,7 +188,7 @@ func TestTokenPressureHighUsesOutputHeadroom(t *testing.T) {
 		t.Fatalf("expected high pressure with max output headroom, usage=%#v", high)
 	}
 
-	unset := EstimateMessages("", []session.Message{{Role: session.User, Content: strings.Repeat("x", 3990000)}}, 0, Policy{
+	unset := EstimateMessages("", []session.Message{{Role: session.User, Content: strings.Repeat("x", 2808000)}}, Policy{
 		ContextWindowTokens: 1000000,
 		MaxOutputTokens:     0,
 	})
@@ -197,5 +197,31 @@ func TestTokenPressureHighUsesOutputHeadroom(t *testing.T) {
 	}
 	if !unset.TokenPressureHigh {
 		t.Fatalf("expected high pressure with reserved output headroom, usage=%#v", unset)
+	}
+}
+
+func TestUsageFromEstimatePreservesEstimatorMetadata(t *testing.T) {
+	usage := UsageFromEstimate(Estimate{
+		PrefixTokens:  10,
+		HistoryTokens: 20,
+		ToolTokens:    30,
+		Source:        "provider_api",
+		Confidence:    EstimateExact,
+	}, Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100})
+
+	if usage.InputTokens != 60 || usage.PrefixTokens != 10 || usage.HistoryTokens != 20 || usage.ToolTokens != 30 {
+		t.Fatalf("usage token fields = %#v", usage)
+	}
+	if usage.EstimatorSource != "provider_api" || usage.EstimatorConfidence != string(EstimateExact) {
+		t.Fatalf("estimator metadata = %q/%q", usage.EstimatorSource, usage.EstimatorConfidence)
+	}
+}
+
+func TestEstimateTextIsConservativeForNonASCII(t *testing.T) {
+	if got := EstimateText("你好世界"); got != 4 {
+		t.Fatalf("CJK estimate = %d, want one token per rune", got)
+	}
+	if got := EstimateText(strings.Repeat("x", 10)); got != 4 {
+		t.Fatalf("ASCII estimate = %d, want ceil(chars/3)", got)
 	}
 }

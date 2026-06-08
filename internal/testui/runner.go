@@ -683,7 +683,7 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 	systemPrompt := appendCapabilityPrompt(sess.systemPrompt, skillPrompt)
 	idGenerator := r.agentSessionIDGenerator(ctx, sess.repo, sess.id)
 	h := agentharness.New(agentharness.Options{
-		Provider:     observed,
+		Provider:     observedProviderRuntime(observed),
 		ProviderName: sess.cfg.Provider,
 		Model:        sess.cfg.Model,
 		SystemPrompt: systemPrompt,
@@ -861,7 +861,7 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 	systemPrompt := appendCapabilityPrompt(cfg.SystemPrompt, skillPrompt)
 	idGenerator := r.agentSessionIDGenerator(ctx, repo, opts.ID)
 	h := agentharness.New(agentharness.Options{
-		Provider:     observed,
+		Provider:     observedProviderRuntime(observed),
 		ProviderName: cfg.Provider,
 		Model:        cfg.Model,
 		SystemPrompt: systemPrompt,

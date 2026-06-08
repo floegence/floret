@@ -76,7 +76,7 @@ func TestProviderSummaryUsesReservedSummaryTokensOutputCap(t *testing.T) {
 	if details["summary_prompt_input_tokens"] == "" || details["summary_request_budget_tokens"] == "" {
 		t.Fatalf("summary request budget details should be recorded: %#v", details)
 	}
-	promptInput := contextpolicy.EstimateMessages("", scripted.Requests[0].Messages, 0, policy).InputTokens
+	promptInput := contextpolicy.EstimateMessages("", scripted.Requests[0].Messages, policy).InputTokens
 	if details["summary_prompt_input_tokens"] != int64String(promptInput) || details["summary_request_budget_tokens"] != int64String(promptInput+policy.ReservedSummaryTokens) {
 		t.Fatalf("summary request budget details = prompt %q request %q, want %d/%d; details=%#v", details["summary_prompt_input_tokens"], details["summary_request_budget_tokens"], promptInput, promptInput+policy.ReservedSummaryTokens, details)
 	}
@@ -84,7 +84,7 @@ func TestProviderSummaryUsesReservedSummaryTokensOutputCap(t *testing.T) {
 
 func TestProviderSummaryRequestKeepsFullPreviousSummary(t *testing.T) {
 	policy := contextpolicy.Policy{ContextWindowTokens: 100000, ReservedOutputTokens: 1000, ReservedSummaryTokens: 120, RecentTailTokens: 8, RecentUserTokens: 20}
-	previousSummary := "prev-start " + strings.Repeat("durable detail ", 28) + "prev-end"
+	previousSummary := "prev-start " + strings.Repeat("durable detail ", 22) + "prev-end"
 	normalized := contextpolicy.Normalize(policy)
 	oldOneThirdCap := normalized.ReservedSummaryTokens / int64(3)
 	if got := contextpolicy.EstimateText(previousSummary); got <= oldOneThirdCap || got > normalized.ReservedSummaryTokens {
@@ -119,7 +119,7 @@ func TestProviderSummaryRequestKeepsFullPreviousSummary(t *testing.T) {
 		t.Fatalf("provider prompt should not token-trim previous summary: %q", previousBlock)
 	}
 	details := prep.Result.Details
-	promptInput := contextpolicy.EstimateMessages("", scripted.Requests[0].Messages, 0, policy).InputTokens
+	promptInput := contextpolicy.EstimateMessages("", scripted.Requests[0].Messages, policy).InputTokens
 	if details["summary_prompt_input_tokens"] != int64String(promptInput) || details["summary_request_budget_tokens"] != int64String(promptInput+normalized.ReservedSummaryTokens) {
 		t.Fatalf("summary request budget details = prompt %q request %q, want %d/%d; details=%#v", details["summary_prompt_input_tokens"], details["summary_request_budget_tokens"], promptInput, promptInput+normalized.ReservedSummaryTokens, details)
 	}
@@ -159,7 +159,7 @@ func TestProviderSummaryRetriesAfterTruncationWithHalfCap(t *testing.T) {
 	if details["summary_generation_attempts"] != "2" || details["summary_retry_reason"] != summaryRetryReasonTruncated || details["summary_provider_truncated"] != "true" {
 		t.Fatalf("retry details = %#v", details)
 	}
-	retryPromptInput := contextpolicy.EstimateMessages("", scripted.Requests[1].Messages, 0, policy).InputTokens
+	retryPromptInput := contextpolicy.EstimateMessages("", scripted.Requests[1].Messages, policy).InputTokens
 	if details["summary_prompt_input_tokens"] != int64String(retryPromptInput) || details["summary_request_budget_tokens"] != int64String(retryPromptInput+10) {
 		t.Fatalf("retry summary request budget details = %#v, want prompt %d request %d", details, retryPromptInput, retryPromptInput+10)
 	}

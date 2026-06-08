@@ -25,6 +25,21 @@ func newObservingProvider(inner provider.Provider) *observingProvider {
 	return &observingProvider{inner: inner}
 }
 
+func observedProviderRuntime(observed *observingProvider) provider.Provider {
+	if _, ok := observed.inner.(provider.TokenEstimator); ok {
+		return estimatingObservingProvider{observingProvider: observed}
+	}
+	return observed
+}
+
+type estimatingObservingProvider struct {
+	*observingProvider
+}
+
+func (p estimatingObservingProvider) EstimateTokens(ctx context.Context, req provider.Request) (provider.TokenEstimate, error) {
+	return p.inner.(provider.TokenEstimator).EstimateTokens(ctx, req)
+}
+
 func (p *observingProvider) SetStreamSink(sink AgentStreamSink) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

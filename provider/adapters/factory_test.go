@@ -34,6 +34,62 @@ func TestNewProviderCreatesFakeProviderThatRunsEngine(t *testing.T) {
 	}
 }
 
+func TestFakeProviderUsesGenericRequestEstimateIncludingTools(t *testing.T) {
+	p, err := NewProvider(config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "fake ok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	mustRegisterAdapterTestTool(t, reg, tools.Define[struct{}](
+		tools.Definition{
+			Name:        "large_tool",
+			Description: strings.Repeat("Large schema tool. ", 20),
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+			InputSchema: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"value": map[string]any{"type": "string", "description": strings.Repeat("Detailed value. ", 20)},
+				},
+			},
+		},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[struct{}]) (tools.Result, error) {
+			return tools.Result{Text: "ok"}, nil
+		},
+	))
+	promptStore := cache.NewMemoryStore()
+	eng, err := engine.New(engine.Config{
+		Provider: p,
+		Store:    session.NewMemoryStore(),
+		Tools:    reg,
+		Prompt:   promptStore,
+		Options:  engine.Options{RunID: "run"},
+	})
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+
+	result := eng.Run(context.Background(), "hello")
+
+	if result.Status != engine.Completed {
+		t.Fatalf("result = %#v", result)
+	}
+	requests, err := promptStore.ProviderRequests(context.Background(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("requests = %#v", requests)
+	}
+	messageOnly := contextpolicy.EstimateMessages("", []session.Message{{Role: session.User, Content: "hello"}}, contextpolicy.Policy{})
+	usage := requests[0].ContextUsage
+	if usage.InputTokens <= messageOnly.InputTokens || usage.EstimatorSource != "generic_request_json" || usage.EstimatorConfidence != string(provider.EstimateConservative) {
+		t.Fatalf("fake provider should use generic conservative request estimate including tools: usage=%#v messageOnly=%#v", usage, messageOnly)
+	}
+}
+
 func TestOpenAICompatibleProviderSendsConfiguredModelAndReceivesAnswer(t *testing.T) {
 	var seenModel string
 	var seenAuth string
@@ -459,6 +515,73 @@ func TestOpenAICompatibleProviderPayloadHashMatchesActualBody(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleEstimateTokensIncludesRenderedToolSchema(t *testing.T) {
+	p := OpenAICompatibleProvider{Endpoint: "https://example.test/chat/completions", APIKey: "secret", Model: "remote-model"}
+	baseReq := provider.Request{RunID: "r", Messages: []session.Message{{Role: session.User, Content: "hello"}}}
+	base, err := p.EstimateTokens(context.Background(), baseReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withTool, err := p.EstimateTokens(context.Background(), provider.Request{
+		RunID:    "r",
+		Messages: baseReq.Messages,
+		Tools: []provider.ToolDefinition{{
+			Name:        "read_file",
+			Description: strings.Repeat("Read a repository file. ", 20),
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path": map[string]any{"type": "string", "description": strings.Repeat("Repository relative path. ", 20)},
+				},
+				"required": []string{"path"},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withTool.InputTokens <= base.InputTokens || withTool.Source != "openai_compatible_rendered_json" || withTool.Confidence != provider.EstimateConservative {
+		t.Fatalf("estimate did not include rendered tool schema: base=%#v withTool=%#v", base, withTool)
+	}
+	if withTool.ToolTokens <= 0 || withTool.HistoryTokens != base.HistoryTokens {
+		t.Fatalf("estimate should split tool and history tokens: base=%#v withTool=%#v", base, withTool)
+	}
+	cacheEnabled := provider.Request{
+		RunID:    "r",
+		Messages: baseReq.Messages,
+		Tools:    withToolReqTools(),
+		Cache:    cache.CachePolicy{Enabled: true, Namespace: "cache-key", Retention: cache.RetentionDay},
+	}
+	p.Cache = catalog.CacheCapability{PromptCacheKey: true, PromptCacheRetention: true}
+	cached, err := p.EstimateTokens(context.Background(), cacheEnabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheDisabled := cacheEnabled
+	cacheDisabled.Cache = cache.CachePolicy{Enabled: false, Retention: cache.RetentionNone}
+	uncached, err := p.EstimateTokens(context.Background(), cacheDisabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cached.InputTokens != uncached.InputTokens || cached.ToolTokens != uncached.ToolTokens || cached.HistoryTokens != uncached.HistoryTokens {
+		t.Fatalf("cache settings should not change context estimate: cached=%#v uncached=%#v", cached, uncached)
+	}
+}
+
+func withToolReqTools() []provider.ToolDefinition {
+	return []provider.ToolDefinition{{
+		Name:        "read_file",
+		Description: strings.Repeat("Read a repository file. ", 20),
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{"type": "string", "description": strings.Repeat("Repository relative path. ", 20)},
+			},
+			"required": []string{"path"},
+		},
+	}}
+}
+
 func TestAnthropicProviderAddsCacheControlBreakpoints(t *testing.T) {
 	var body struct {
 		System []anthropicContentBlock `json:"system"`
@@ -506,6 +629,71 @@ func TestAnthropicProviderAddsCacheControlBreakpoints(t *testing.T) {
 	}
 	if usage.CacheReadTokens != 2 || usage.CacheWriteTokens != 3 {
 		t.Fatalf("usage = %#v", usage)
+	}
+}
+
+func TestAnthropicRawPlanToolsKeepHostedTools(t *testing.T) {
+	var body struct {
+		Tools []anthropicTool `json:"tools"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+	p := AnthropicProvider{Endpoint: server.URL, APIKey: "secret", Model: "claude", MaxTokens: 4096, HTTPClient: server.Client(), Cache: catalog.CacheCapability{AnthropicCacheControl: true}}
+	rawTool, fragment, err := p.ToolRaw(cache.ToolDefinition{Name: "local_tool", InputSchema: map[string]any{"type": "object"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := provider.Request{
+		RunID: "r",
+		RawPlan: cache.RawPlan{Segments: []cache.Segment{{
+			Kind:         cache.SegmentToolset,
+			FragmentType: fragment,
+			Raw:          rawTool,
+		}}},
+		HostedTools: []provider.HostedToolDefinition{{
+			Name:    searchcap.ToolWebSearch,
+			Type:    searchcap.ToolWebSearch,
+			Options: map[string]any{"wire_shape": string(searchcap.WireShapeAnthropicServerWebSearch)},
+		}},
+		Cache: cache.CachePolicy{Enabled: true, Retention: cache.RetentionLong},
+	}
+	baseEstimate, err := p.EstimateTokens(context.Background(), provider.Request{RunID: "r", Messages: []session.Message{{Role: session.User, Content: "hello"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	estimate, err := p.EstimateTokens(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if estimate.InputTokens <= baseEstimate.InputTokens || estimate.Source != "anthropic_rendered_json" || estimate.Confidence != provider.EstimateConservative {
+		t.Fatalf("anthropic estimate did not include rendered tools/source/confidence: base=%#v estimate=%#v", baseEstimate, estimate)
+	}
+	if estimate.PrefixTokens != 0 || estimate.ToolTokens <= 0 {
+		t.Fatalf("anthropic estimate should split tool tokens: %#v", estimate)
+	}
+	uncachedReq := req
+	uncachedReq.Cache = cache.CachePolicy{Enabled: false, Retention: cache.RetentionNone}
+	uncachedEstimate, err := p.EstimateTokens(context.Background(), uncachedReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if estimate.InputTokens != uncachedEstimate.InputTokens || estimate.ToolTokens != uncachedEstimate.ToolTokens || estimate.HistoryTokens != uncachedEstimate.HistoryTokens {
+		t.Fatalf("cache control should not change context estimate: cached=%#v uncached=%#v", estimate, uncachedEstimate)
+	}
+	if _, err := p.Stream(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Tools) != 2 || body.Tools[0].Name != "local_tool" || body.Tools[1].Name != searchcap.ToolWebSearch || body.Tools[1].Type != "web_search_20250305" {
+		t.Fatalf("raw local tool should keep hosted tool: %#v", body.Tools)
+	}
+	if body.Tools[0].CacheControl == nil || body.Tools[0].CacheControl.TTL != "1h" || body.Tools[1].CacheControl != nil {
+		t.Fatalf("cache control should stay on local raw tool before hosted tool: %#v", body.Tools)
 	}
 }
 

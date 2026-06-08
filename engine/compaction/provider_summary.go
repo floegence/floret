@@ -77,7 +77,7 @@ func (g ProviderSummaryGenerator) generateProviderSummaryAttempt(ctx context.Con
 		{Role: session.System, Content: sessioncompaction.SummaryWriterSystemPrompt()},
 		{Role: session.User, Content: sessioncompaction.SummaryPrompt(prep, policy, outputCap)},
 	}
-	promptInputTokens := contextpolicy.EstimateMessages("", messages, 0, policy).InputTokens
+	promptInputTokens := contextpolicy.EstimateMessages("", messages, policy).InputTokens
 	stream, err := g.Provider.Stream(ctx, provider.Request{
 		RunID:           prep.Request.CompactionID,
 		Step:            prep.Request.Step,
