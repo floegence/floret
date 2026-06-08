@@ -1363,6 +1363,56 @@ func TestPreRequestThresholdCompactsWithoutReplacingStore(t *testing.T) {
 	}) {
 		t.Fatalf("provider request did not use compacted active projection: %#v", p.Requests[0].Messages)
 	}
+	prepare := firstEvent(rec.Events, event.ContextCompact)
+	if prepare.Metrics == nil {
+		t.Fatalf("context compact prepare event missing usage metrics: %#v", rec.Events)
+	}
+	usage, ok := prepare.Metrics.(contextpolicy.Usage)
+	if !ok {
+		t.Fatalf("context compact prepare metrics = %T, want contextpolicy.Usage", prepare.Metrics)
+	}
+	if usage.OutputHeadroom == 0 || usage.AutoCompactRatio != contextpolicy.DefaultAutoCompactRatioPercent {
+		t.Fatalf("context compact usage missing budget fields: %#v", usage)
+	}
+}
+
+func TestPreRequestThresholdUsesMaxOutputHeadroom(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
+	store := session.NewMemoryStore()
+	if err := store.Append("run",
+		session.Message{Role: session.User, Content: strings.Repeat("old ", 620000)},
+		session.Message{Role: session.User, Content: "new"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	e := newTestEngine(p, rec)
+	e.Store = store
+	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	e.Options.ContextPolicy = contextpolicy.Policy{
+		ContextWindowTokens:   1000000,
+		MaxOutputTokens:       384000,
+		ReservedOutputTokens:  4096,
+		ReservedSummaryTokens: 20000,
+		RecentTailTokens:      12000,
+	}
+
+	got := e.Run(context.Background(), "")
+
+	if got.Status != engine.Completed {
+		t.Fatalf("result = %#v", got)
+	}
+	if got.Metrics.Compactions != 1 {
+		t.Fatalf("compactions = %d, want 1", got.Metrics.Compactions)
+	}
+	prepare := firstEvent(rec.Events, event.ContextCompact)
+	usage, ok := prepare.Metrics.(contextpolicy.Usage)
+	if !ok {
+		t.Fatalf("context compact metrics = %T, want contextpolicy.Usage", prepare.Metrics)
+	}
+	if usage.ThresholdTokens != 616000 || usage.OutputHeadroom != 384000 || usage.MaxOutputTokens != 384000 {
+		t.Fatalf("compaction should use max output headroom: %#v", usage)
+	}
 }
 
 func TestPreRequestThresholdRequiresExplicitCompactor(t *testing.T) {
@@ -1838,6 +1888,15 @@ func assertEventOrder(t *testing.T, events []event.Event, want ...event.Type) {
 
 func hasEvent(events []event.Event, typ event.Type) bool {
 	return slices.ContainsFunc(events, func(ev event.Event) bool { return ev.Type == typ })
+}
+
+func firstEvent(events []event.Event, typ event.Type) event.Event {
+	for _, ev := range events {
+		if ev.Type == typ {
+			return ev
+		}
+	}
+	return event.Event{}
 }
 
 func hasProviderTool(defs []provider.ToolDefinition, name string) bool {

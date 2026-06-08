@@ -304,6 +304,11 @@ func finalizeSummary(result *Result, summary string, policy contextpolicy.Policy
 func recordCompactionBudgetDetails(details map[string]string, policy contextpolicy.Policy) {
 	details["compacted_context_target_tokens"] = fmt.Sprintf("%d", contextpolicy.DefaultCompactedContextTargetTokens)
 	details["effective_compacted_context_target_tokens"] = fmt.Sprintf("%d", compactedContextTarget(policy))
+	details["context_window"] = fmt.Sprintf("%d", policy.ContextWindowTokens)
+	details["threshold_tokens"] = fmt.Sprintf("%d", contextpolicy.Threshold(policy))
+	details["max_output_tokens"] = fmt.Sprintf("%d", policy.MaxOutputTokens)
+	details["output_headroom_tokens"] = fmt.Sprintf("%d", contextpolicy.OutputHeadroom(policy))
+	details["auto_compact_ratio_pct"] = fmt.Sprintf("%d", contextpolicy.DefaultAutoCompactRatioPercent)
 	details["summary_output_cap_tokens"] = fmt.Sprintf("%d", policy.ReservedSummaryTokens)
 	details["kept_user_budget_tokens"] = fmt.Sprintf("%d", policy.RecentUserTokens)
 	details["retained_tail_budget_tokens"] = fmt.Sprintf("%d", policy.RecentTailTokens)
@@ -832,10 +837,7 @@ func SummaryPrompt(prep Preparation, policy contextpolicy.Policy, outputCap int6
 		out.WriteString("\n")
 	}
 	out.WriteString("\nTranscript to compact:\n")
-	budget := policy.ContextWindowTokens - policy.ReservedOutputTokens - policy.ReservedSummaryTokens - policy.RecentTailTokens
-	if budget < policy.ReservedSummaryTokens {
-		budget = policy.ReservedSummaryTokens
-	}
+	budget := summaryTranscriptBudget(policy, outputCap)
 	var used int64
 	for _, msg := range prep.CompactedHead {
 		line := renderForSummaryPrompt(msg)
@@ -849,6 +851,18 @@ func SummaryPrompt(prep Preparation, policy contextpolicy.Policy, outputCap int6
 		used += tokens
 	}
 	return out.String()
+}
+
+func summaryTranscriptBudget(policy contextpolicy.Policy, outputCap int64) int64 {
+	policy = contextpolicy.Normalize(policy)
+	if outputCap <= 0 {
+		outputCap = policy.ReservedSummaryTokens
+	}
+	budget := policy.ContextWindowTokens - contextpolicy.OutputHeadroom(policy) - outputCap - policy.RecentTailTokens
+	if budget < outputCap {
+		budget = outputCap
+	}
+	return budget
 }
 
 func renderForSummaryPrompt(msg session.Message) string {

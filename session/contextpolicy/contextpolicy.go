@@ -10,6 +10,7 @@ const (
 	DefaultContextWindowTokens          int64 = 128000
 	DefaultMaxOutputTokens              int64 = 0
 	DefaultReservedOutputTokens         int64 = 4096
+	DefaultAutoCompactRatioPercent      int64 = 90
 	DefaultCompactedContextTargetTokens int64 = 50000
 	DefaultReservedSummaryTokens        int64 = 20000
 	DefaultRecentTailTokens             int64 = 12000
@@ -42,8 +43,11 @@ type Usage struct {
 	TotalTokens       int64  `json:"total_tokens,omitempty"`
 	ContextWindow     int64  `json:"context_window,omitempty"`
 	ThresholdTokens   int64  `json:"threshold_tokens,omitempty"`
+	MaxOutputTokens   int64  `json:"max_output_tokens,omitempty"`
 	ReservedOutput    int64  `json:"reserved_output,omitempty"`
 	ReservedSummary   int64  `json:"reserved_summary,omitempty"`
+	OutputHeadroom    int64  `json:"output_headroom_tokens,omitempty"`
+	AutoCompactRatio  int64  `json:"auto_compact_ratio_pct,omitempty"`
 	RecentTailTokens  int64  `json:"recent_tail_tokens,omitempty"`
 	RecentUserTokens  int64  `json:"recent_user_tokens,omitempty"`
 	EstimatorSource   string `json:"estimator_source,omitempty"`
@@ -67,30 +71,48 @@ func MergeDefaults(policy, defaults Policy) Policy {
 	provided := HasValues(policy)
 	if policy.ContextWindowTokens <= 0 {
 		policy.ContextWindowTokens = defaults.ContextWindowTokens
+		if policy.ContextWindowTokens <= 0 {
+			policy.ContextWindowTokens = DefaultContextWindowTokens
+		}
 	}
 	if policy.MaxOutputTokens <= 0 && !provided {
 		policy.MaxOutputTokens = defaults.MaxOutputTokens
 	}
 	if policy.ReservedOutputTokens <= 0 {
 		policy.ReservedOutputTokens = defaults.ReservedOutputTokens
+		if policy.ReservedOutputTokens <= 0 {
+			policy.ReservedOutputTokens = DefaultReservedOutputTokens
+		}
+		if policy.MaxOutputTokens > 0 {
+			policy.ReservedOutputTokens = min64(policy.MaxOutputTokens, policy.ReservedOutputTokens)
+		}
 	}
 	if policy.ReservedSummaryTokens <= 0 {
-		policy.ReservedSummaryTokens = defaults.ReservedSummaryTokens
+		policy.ReservedSummaryTokens = defaultWindowBudget(defaults.ReservedSummaryTokens, DefaultReservedSummaryTokens, policy.ContextWindowTokens)
 	}
 	if policy.RecentTailTokens <= 0 {
-		policy.RecentTailTokens = defaults.RecentTailTokens
+		policy.RecentTailTokens = defaultWindowBudget(defaults.RecentTailTokens, DefaultRecentTailTokens, policy.ContextWindowTokens)
 	}
 	if policy.RecentUserTokens <= 0 {
-		policy.RecentUserTokens = defaults.RecentUserTokens
+		policy.RecentUserTokens = defaultWindowBudget(defaults.RecentUserTokens, DefaultRecentUserTokens, policy.ContextWindowTokens)
 	}
 	if policy.EstimatorSource == "" {
 		policy.EstimatorSource = defaults.EstimatorSource
+		if policy.EstimatorSource == "" {
+			policy.EstimatorSource = DefaultEstimatorSource
+		}
 	}
 	if policy.MaxCompactionFailures <= 0 {
 		policy.MaxCompactionFailures = defaults.MaxCompactionFailures
+		if policy.MaxCompactionFailures <= 0 {
+			policy.MaxCompactionFailures = 2
+		}
 	}
 	if policy.MicrocompactToolTokens <= 0 {
 		policy.MicrocompactToolTokens = defaults.MicrocompactToolTokens
+		if policy.MicrocompactToolTokens <= 0 {
+			policy.MicrocompactToolTokens = 4096
+		}
 	}
 	return policy
 }
@@ -106,13 +128,13 @@ func Normalize(policy Policy) Policy {
 		}
 	}
 	if policy.ReservedSummaryTokens <= 0 {
-		policy.ReservedSummaryTokens = DefaultReservedSummaryTokens
+		policy.ReservedSummaryTokens = defaultWindowBudget(DefaultReservedSummaryTokens, DefaultReservedSummaryTokens, policy.ContextWindowTokens)
 	}
 	if policy.RecentTailTokens <= 0 {
-		policy.RecentTailTokens = DefaultRecentTailTokens
+		policy.RecentTailTokens = defaultWindowBudget(DefaultRecentTailTokens, DefaultRecentTailTokens, policy.ContextWindowTokens)
 	}
 	if policy.RecentUserTokens <= 0 {
-		policy.RecentUserTokens = DefaultRecentUserTokens
+		policy.RecentUserTokens = defaultWindowBudget(DefaultRecentUserTokens, DefaultRecentUserTokens, policy.ContextWindowTokens)
 	}
 	if policy.EstimatorSource == "" {
 		policy.EstimatorSource = DefaultEstimatorSource
@@ -128,14 +150,48 @@ func Normalize(policy Policy) Policy {
 
 func Threshold(policy Policy) int64 {
 	policy = Normalize(policy)
-	threshold := policy.ContextWindowTokens - policy.ReservedOutputTokens - policy.ReservedSummaryTokens
-	if threshold < policy.ContextWindowTokens/2 {
-		threshold = policy.ContextWindowTokens / 2
-	}
+	threshold := min64(
+		ratioLimit(policy),
+		min64(requestSafeLimit(policy), summarySafeLimit(policy)),
+	)
 	if threshold < 1 {
 		threshold = 1
 	}
 	return threshold
+}
+
+func OutputHeadroom(policy Policy) int64 {
+	policy = Normalize(policy)
+	if policy.MaxOutputTokens > 0 {
+		return policy.MaxOutputTokens
+	}
+	return policy.ReservedOutputTokens
+}
+
+func ratioLimit(policy Policy) int64 {
+	return policy.ContextWindowTokens * DefaultAutoCompactRatioPercent / 100
+}
+
+func requestSafeLimit(policy Policy) int64 {
+	return policy.ContextWindowTokens - OutputHeadroom(policy)
+}
+
+func summarySafeLimit(policy Policy) int64 {
+	return policy.ContextWindowTokens - policy.ReservedOutputTokens - policy.ReservedSummaryTokens
+}
+
+func defaultWindowBudget(value, fallback, contextWindow int64) int64 {
+	if value <= 0 {
+		value = fallback
+	}
+	if contextWindow <= 0 {
+		return value
+	}
+	limit := contextWindow / 4
+	if limit < 1 {
+		limit = 1
+	}
+	return min64(value, limit)
 }
 
 func EstimateMessages(systemPrompt string, history []session.Message, toolCount int, policy Policy) Usage {
@@ -143,8 +199,11 @@ func EstimateMessages(systemPrompt string, history []session.Message, toolCount 
 	usage := Usage{
 		ContextWindow:    policy.ContextWindowTokens,
 		ThresholdTokens:  Threshold(policy),
+		MaxOutputTokens:  policy.MaxOutputTokens,
 		ReservedOutput:   policy.ReservedOutputTokens,
 		ReservedSummary:  policy.ReservedSummaryTokens,
+		OutputHeadroom:   OutputHeadroom(policy),
+		AutoCompactRatio: DefaultAutoCompactRatioPercent,
 		RecentTailTokens: policy.RecentTailTokens,
 		RecentUserTokens: policy.RecentUserTokens,
 		EstimatorSource:  policy.EstimatorSource,
@@ -163,7 +222,7 @@ func EstimateMessages(systemPrompt string, history []session.Message, toolCount 
 	usage.InputTokens = usage.PrefixTokens + usage.ActiveTokens + usage.ToolTokens
 	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 	usage.CompactionNeeded = usage.InputTokens >= usage.ThresholdTokens
-	usage.TokenPressureHigh = usage.InputTokens+policy.ReservedOutputTokens >= policy.ContextWindowTokens
+	usage.TokenPressureHigh = usage.InputTokens+usage.OutputHeadroom >= policy.ContextWindowTokens
 	return usage
 }
 

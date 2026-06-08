@@ -263,6 +263,15 @@ func TestStaticConsoleNewSessionDefaultsFollowBackendAndProviderCatalog(t *testi
 	}
 }
 
+func TestStaticConsoleInspectorShowsContextBudgetBreakdown(t *testing.T) {
+	inspector := readStaticTestFile(t, "views", "inspector.js")
+	for _, want := range []string{"renderContextBudgetMetrics", "threshold_tokens", "output_headroom_tokens", "max_output_tokens", "auto_compact_ratio_pct", "output headroom", "auto compact"} {
+		if !strings.Contains(inspector, want) {
+			t.Fatalf("inspector should expose context budget field %q", want)
+		}
+	}
+}
+
 func TestStaticConsoleStreamsTurnsIncrementally(t *testing.T) {
 	apiJS := readStaticTestFile(t, "api.js")
 	appJS := readStaticTestFile(t, "app.js")

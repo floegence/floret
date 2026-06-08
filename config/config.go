@@ -89,9 +89,11 @@ func fromValues(values map[string]string) (Config, error) {
 	if model, ok := catalog.DefaultModel(providerName); ok {
 		defaultModel = model.ID
 	}
+	modelName := get(values, "FLORET_MODEL", defaultModel)
+	defaultPolicy := catalog.ContextPolicy(providerName, modelName)
 	cfg := Config{
 		Provider:                providerName,
-		Model:                   get(values, "FLORET_MODEL", defaultModel),
+		Model:                   modelName,
 		BaseURL:                 get(values, "FLORET_BASE_URL", catalog.DefaultBaseURL(providerName)),
 		APIKey:                  firstConfiguredAPIKey(values, providerName),
 		FakeResponse:            get(values, "FLORET_FAKE_RESPONSE", "ok"),
@@ -101,38 +103,56 @@ func fromValues(values map[string]string) (Config, error) {
 		SystemPrompt:            get(values, "FLORET_SYSTEM_PROMPT", "You are Floret."),
 		SkillSources:            splitList(get(values, "FLORET_SKILLS_PATHS", "")),
 		SkillPromptBudgetBytes:  16 * 1024,
-		ContextPolicy:           catalog.ContextPolicy(providerName, get(values, "FLORET_MODEL", defaultModel)),
 		MaxEmptyProviderRetries: 1,
 		NoProgressLimit:         2,
 		DuplicateToolLimit:      3,
 	}
+	policyOverrides := contextpolicy.Policy{MaxOutputTokens: defaultPolicy.MaxOutputTokens}
 	var err error
-	if cfg.ContextPolicy.ContextWindowTokens, err = getInt64(values, "FLORET_CONTEXT_WINDOW_TOKENS", cfg.ContextPolicy.ContextWindowTokens); err != nil {
+	if value, ok, err := getOptionalInt64(values, "FLORET_CONTEXT_WINDOW_TOKENS"); err != nil {
 		return Config{}, err
+	} else if ok {
+		policyOverrides.ContextWindowTokens = value
 	}
 	if maxOutputTokens, ok, err := getOptionalInt64(values, "FLORET_MAX_OUTPUT_TOKENS"); err != nil {
 		return Config{}, err
 	} else if ok {
-		cfg.ContextPolicy.MaxOutputTokens = maxOutputTokens
+		policyOverrides.MaxOutputTokens = maxOutputTokens
 		cfg.MaxOutputTokensSet = true
 	}
-	if cfg.ContextPolicy.ReservedOutputTokens, err = getInt64(values, "FLORET_RESERVED_OUTPUT_TOKENS", cfg.ContextPolicy.ReservedOutputTokens); err != nil {
+	if value, ok, err := getOptionalInt64(values, "FLORET_RESERVED_OUTPUT_TOKENS"); err != nil {
 		return Config{}, err
+	} else if ok {
+		policyOverrides.ReservedOutputTokens = value
 	}
-	if cfg.ContextPolicy.ReservedSummaryTokens, err = getInt64(values, "FLORET_RESERVED_SUMMARY_TOKENS", cfg.ContextPolicy.ReservedSummaryTokens); err != nil {
+	if value, ok, err := getOptionalInt64(values, "FLORET_RESERVED_SUMMARY_TOKENS"); err != nil {
 		return Config{}, err
+	} else if ok {
+		policyOverrides.ReservedSummaryTokens = value
 	}
-	if cfg.ContextPolicy.RecentTailTokens, err = getInt64(values, "FLORET_RECENT_TAIL_TOKENS", cfg.ContextPolicy.RecentTailTokens); err != nil {
+	if value, ok, err := getOptionalInt64(values, "FLORET_RECENT_TAIL_TOKENS"); err != nil {
 		return Config{}, err
+	} else if ok {
+		policyOverrides.RecentTailTokens = value
 	}
-	if cfg.ContextPolicy.RecentUserTokens, err = getInt64(values, "FLORET_RECENT_USER_TOKENS", cfg.ContextPolicy.RecentUserTokens); err != nil {
+	if value, ok, err := getOptionalInt64(values, "FLORET_RECENT_USER_TOKENS"); err != nil {
 		return Config{}, err
+	} else if ok {
+		policyOverrides.RecentUserTokens = value
 	}
-	if cfg.ContextPolicy.MaxCompactionFailures, err = getInt(values, "FLORET_MAX_COMPACTION_FAILURES", cfg.ContextPolicy.MaxCompactionFailures); err != nil {
+	if value, ok, err := getOptionalInt(values, "FLORET_MAX_COMPACTION_FAILURES"); err != nil {
 		return Config{}, err
+	} else if ok {
+		policyOverrides.MaxCompactionFailures = value
 	}
-	if cfg.ContextPolicy.MicrocompactToolTokens, err = getInt64(values, "FLORET_MICROCOMPACT_TOOL_TOKENS", cfg.ContextPolicy.MicrocompactToolTokens); err != nil {
+	if value, ok, err := getOptionalInt64(values, "FLORET_MICROCOMPACT_TOOL_TOKENS"); err != nil {
 		return Config{}, err
+	} else if ok {
+		policyOverrides.MicrocompactToolTokens = value
+	}
+	cfg.ContextPolicy = contextpolicy.MergeDefaults(policyOverrides, defaultPolicy)
+	if cfg.MaxOutputTokensSet {
+		cfg.ContextPolicy.MaxOutputTokens = policyOverrides.MaxOutputTokens
 	}
 	if cfg.MaxEmptyProviderRetries, err = getInt(values, "FLORET_MAX_EMPTY_PROVIDER_RETRIES", cfg.MaxEmptyProviderRetries); err != nil {
 		return Config{}, err
@@ -362,6 +382,21 @@ func getInt(values map[string]string, key string, fallback int) (int, error) {
 		return 0, fmt.Errorf("%s must be non-negative", key)
 	}
 	return parsed, nil
+}
+
+func getOptionalInt(values map[string]string, key string) (int, bool, error) {
+	value, ok := values[key]
+	if !ok || value == "" {
+		return 0, false, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, false, fmt.Errorf("%s must be an integer: %w", key, err)
+	}
+	if parsed < 0 {
+		return 0, false, fmt.Errorf("%s must be non-negative", key)
+	}
+	return parsed, true, nil
 }
 
 func getInt64(values map[string]string, key string, fallback int64) (int64, error) {

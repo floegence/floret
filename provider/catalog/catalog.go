@@ -223,7 +223,7 @@ func CostForUsage(model Model, usage provider.Usage) float64 {
 }
 
 func ContextPolicy(providerID, modelID string) contextpolicy.Policy {
-	policy := contextpolicy.Normalize(contextpolicy.Policy{})
+	policy := contextpolicy.Policy{}
 	if model, ok := FindModel(providerID, modelID); ok {
 		if model.ContextWindow > 0 {
 			policy.ContextWindowTokens = model.ContextWindow

@@ -79,6 +79,31 @@ func TestContextPolicyUsesModelMaxTokens(t *testing.T) {
 	}
 }
 
+func TestContextPolicyScalesDefaultCompactionBudgetsAfterModelWindow(t *testing.T) {
+	cleanup := RegisterForTest(Provider{
+		ID:           "small-window-provider",
+		Name:         "Small Window Provider",
+		API:          APIOpenAIChat,
+		DefaultModel: "small-model",
+		Models: []Model{{
+			ID:            "small-model",
+			Name:          "Small Model",
+			ContextWindow: 8192,
+			MaxTokens:     1024,
+			Input:         []string{"text"},
+		}},
+	})
+	defer cleanup()
+
+	policy := ContextPolicy("small-window-provider", "small-model")
+	if policy.ContextWindowTokens != 8192 || policy.MaxOutputTokens != 1024 {
+		t.Fatalf("model context/max output not applied before normalize: %#v", policy)
+	}
+	if policy.ReservedSummaryTokens != 2048 || policy.RecentTailTokens != 2048 || policy.RecentUserTokens != 2048 {
+		t.Fatalf("small model defaults should scale compaction budgets: %#v", policy)
+	}
+}
+
 func TestContextPolicyKeepsUnknownAndCustomModelMaxOutputUnset(t *testing.T) {
 	for _, tt := range []struct {
 		provider string

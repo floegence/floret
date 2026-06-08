@@ -951,12 +951,15 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		Model:        opts.Model,
 		ContextUsage: usage,
 		Details: map[string]string{
-			"run_id":               opts.RunID,
-			"session_id":           opts.SessionID,
-			"context_window":       fmt.Sprintf("%d", opts.ContextPolicy.ContextWindowTokens),
-			"threshold_tokens":     fmt.Sprintf("%d", usage.ThresholdTokens),
-			"tokens_before":        fmt.Sprintf("%d", usage.InputTokens),
-			"consecutive_failures": fmt.Sprintf("%d", derefInt(failures)),
+			"run_id":                 opts.RunID,
+			"session_id":             opts.SessionID,
+			"context_window":         fmt.Sprintf("%d", usage.ContextWindow),
+			"threshold_tokens":       fmt.Sprintf("%d", usage.ThresholdTokens),
+			"max_output_tokens":      fmt.Sprintf("%d", usage.MaxOutputTokens),
+			"output_headroom_tokens": fmt.Sprintf("%d", usage.OutputHeadroom),
+			"auto_compact_ratio_pct": fmt.Sprintf("%d", usage.AutoCompactRatio),
+			"tokens_before":          fmt.Sprintf("%d", usage.InputTokens),
+			"consecutive_failures":   fmt.Sprintf("%d", derefInt(failures)),
 		},
 	})
 	if err != nil {

@@ -2235,10 +2235,21 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 	}) {
 		t.Fatalf("active context missing structured compaction summary: %#v", result.Observation.ActiveContext)
 	}
+	var compactionEntry ObservedSessionEntry
 	if !slices.ContainsFunc(result.Observation.PathEntries, func(entry ObservedSessionEntry) bool {
-		return entry.Type == "compaction" && entry.CompactionID != "" && entry.CompactionGeneration > 0 && len(entry.KeptUserEntryIDs) > 0
+		if entry.Type == "compaction" && entry.CompactionID != "" && entry.CompactionGeneration > 0 && len(entry.KeptUserEntryIDs) > 0 {
+			compactionEntry = entry
+			return true
+		}
+		return false
 	}) {
 		t.Fatalf("path entries missing compaction metadata: %#v", result.Observation.PathEntries)
+	}
+	if compactionEntry.ContextUsageBefore.OutputHeadroom == 0 || compactionEntry.ContextUsageBefore.AutoCompactRatio != contextpolicy.DefaultAutoCompactRatioPercent {
+		t.Fatalf("compaction entry missing before budget usage: %#v", compactionEntry.ContextUsageBefore)
+	}
+	if compactionEntry.ContextUsageAfter.OutputHeadroom == 0 || compactionEntry.ContextUsageAfter.AutoCompactRatio != contextpolicy.DefaultAutoCompactRatioPercent {
+		t.Fatalf("compaction entry missing after budget usage: %#v", compactionEntry.ContextUsageAfter)
 	}
 	if !slices.ContainsFunc(result.Observation.ProviderRequests, func(request ObservedProviderRequest) bool {
 		return slices.ContainsFunc(request.RawSegments, func(segment ObservedRawSegment) bool {

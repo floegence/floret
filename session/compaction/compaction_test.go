@@ -341,6 +341,25 @@ func TestSummaryWriterPromptContract(t *testing.T) {
 	}
 }
 
+func TestSummaryPromptTranscriptBudgetUsesOutputHeadroom(t *testing.T) {
+	policy := contextpolicy.Normalize(contextpolicy.Policy{
+		ContextWindowTokens:   1000,
+		MaxOutputTokens:       700,
+		ReservedOutputTokens:  10,
+		ReservedSummaryTokens: 80,
+		RecentTailTokens:      10,
+	})
+	prompt := SummaryPrompt(Preparation{
+		CompactedHead: []session.Message{
+			{Role: session.User, Content: strings.Repeat("a", 400), EntryID: "u1"},
+			{Role: session.User, Content: strings.Repeat("b", 800), EntryID: "u2"},
+		},
+	}, policy, 80)
+	if !strings.Contains(prompt, "...[older compact scope trimmed]") {
+		t.Fatalf("summary prompt should trim transcript using output headroom budget: %q", prompt)
+	}
+}
+
 func TestPrepareShrinksTailWithoutLeavingOrphanToolResult(t *testing.T) {
 	history := []session.Message{
 		{Role: session.User, Content: "old", EntryID: "u1"},
@@ -365,6 +384,37 @@ func TestPrepareShrinksTailWithoutLeavingOrphanToolResult(t *testing.T) {
 	}
 	if prep.Result.FirstKeptEntryID != "u2" {
 		t.Fatalf("tail should restart at latest user after dropping orphaned tool result, got %q", prep.Result.FirstKeptEntryID)
+	}
+}
+
+func TestPrepareRecordsContextBudgetDetails(t *testing.T) {
+	history := []session.Message{
+		{Role: session.User, Content: strings.Repeat("old ", 200), EntryID: "u1"},
+		{Role: session.User, Content: "latest", EntryID: "u2"},
+	}
+	prep, err := Prepare(context.Background(), Request{
+		History: history,
+		Policy: contextpolicy.Policy{
+			ContextWindowTokens:   1000000,
+			MaxOutputTokens:       384000,
+			ReservedOutputTokens:  4096,
+			ReservedSummaryTokens: 20000,
+			RecentTailTokens:      12,
+		},
+	}, ExtractiveSummaryGenerator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		"context_window":         "1000000",
+		"threshold_tokens":       "616000",
+		"max_output_tokens":      "384000",
+		"output_headroom_tokens": "384000",
+		"auto_compact_ratio_pct": "90",
+	} {
+		if got := prep.Result.Details[key]; got != want {
+			t.Fatalf("detail %s = %q, want %q; details=%#v", key, got, want, prep.Result.Details)
+		}
 	}
 }
 

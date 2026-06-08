@@ -101,6 +101,32 @@ func TestLoadExplicitZeroMaxOutputTokensOverridesCatalog(t *testing.T) {
 	if cfg.ContextPolicy.ReservedOutputTokens != 4096 {
 		t.Fatalf("reserved output tokens = %d, want budget default", cfg.ContextPolicy.ReservedOutputTokens)
 	}
+	usage := contextpolicy.EstimateMessages("", nil, 0, cfg.ContextPolicy)
+	if usage.OutputHeadroom != contextpolicy.DefaultReservedOutputTokens {
+		t.Fatalf("output headroom = %d, want reserved output", usage.OutputHeadroom)
+	}
+}
+
+func TestLoadScalesDefaultCompactionBudgetsAfterContextWindowOverride(t *testing.T) {
+	cfg, err := Load(WithPath(""), WithEnviron(map[string]string{
+		"FLORET_PROVIDER":              "fake",
+		"FLORET_CONTEXT_WINDOW_TOKENS": "8192",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ContextPolicy.ReservedSummaryTokens != 2048 {
+		t.Fatalf("reserved summary = %d, want small-window default", cfg.ContextPolicy.ReservedSummaryTokens)
+	}
+	if cfg.ContextPolicy.RecentTailTokens != 2048 {
+		t.Fatalf("recent tail = %d, want small-window default", cfg.ContextPolicy.RecentTailTokens)
+	}
+	if cfg.ContextPolicy.RecentUserTokens != 2048 {
+		t.Fatalf("recent users = %d, want small-window default", cfg.ContextPolicy.RecentUserTokens)
+	}
+	if got := contextpolicy.Threshold(cfg.ContextPolicy); got != 2048 {
+		t.Fatalf("threshold = %d, want self-consistent small-window threshold", got)
+	}
 }
 
 func TestLoadUsesProviderSpecificPromptCacheDefault(t *testing.T) {
@@ -153,6 +179,10 @@ func TestResolveUsesCatalogMaxOutputWhenPolicyOmitted(t *testing.T) {
 	}
 	if cfg.ContextPolicy.MaxOutputTokens != 128000 {
 		t.Fatalf("max output tokens = %d, want catalog model max", cfg.ContextPolicy.MaxOutputTokens)
+	}
+	usage := contextpolicy.EstimateMessages("", nil, 0, cfg.ContextPolicy)
+	if usage.ThresholdTokens != 922000 || usage.OutputHeadroom != 128000 {
+		t.Fatalf("catalog max output should shape threshold/headroom: %#v", usage)
 	}
 }
 

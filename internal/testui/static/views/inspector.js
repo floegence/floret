@@ -202,6 +202,7 @@ function renderRequests(requests) {
             <span class="metric">${(request.tools || []).length} tools</span>
             <span class="metric">${escapeHTML(request.cache_summary?.toolset_id || "toolset n/a")}</span>
             <span class="metric">${totalTokens(request.context_usage)} est tokens</span>
+            ${renderContextBudgetMetrics(request.context_usage)}
           </div>
           <div class="key-value"><span>Tools</span><span>${escapeHTML((request.tools || []).map((tool) => tool.name).join(", ") || "none")}</span></div>
           <div class="key-value"><span>Hosted</span><span>${escapeHTML(hostedToolLabel(request.hosted_tools || []))}</span></div>
@@ -214,6 +215,20 @@ function renderRequests(requests) {
       `).join("")}
     </div>
   `;
+}
+
+function renderContextBudgetMetrics(usage) {
+  if (!usage) return "";
+  const threshold = usage.threshold_tokens ?? usage.ThresholdTokens;
+  const headroom = usage.output_headroom_tokens ?? usage.OutputHeadroom;
+  const maxOutput = usage.max_output_tokens ?? usage.MaxOutputTokens;
+  const ratio = usage.auto_compact_ratio_pct ?? usage.AutoCompactRatio;
+  return [
+    threshold || threshold === 0 ? `<span class="metric">threshold ${escapeHTML(threshold)}</span>` : "",
+    headroom || headroom === 0 ? `<span class="metric">output headroom ${escapeHTML(headroom)}</span>` : "",
+    maxOutput || maxOutput === 0 ? `<span class="metric">max output ${escapeHTML(maxOutput)}</span>` : "",
+    ratio || ratio === 0 ? `<span class="metric">auto compact ${escapeHTML(ratio)}%</span>` : "",
+  ].join("");
 }
 
 function latestProviderRequest(requests) {
