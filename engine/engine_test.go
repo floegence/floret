@@ -20,6 +20,7 @@ import (
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/provider/cache"
 	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/session/artifact"
 	"github.com/floegence/floret/session/compaction"
 	"github.com/floegence/floret/session/contextpolicy"
 	"github.com/floegence/floret/testing/harness"
@@ -830,7 +831,7 @@ func TestSchemaErrorReturnsToolResultAndAllowsModelRecovery(t *testing.T) {
 	}
 }
 
-func TestToolResultLimitAppliesBeforeHistoryAndNextProviderRequest(t *testing.T) {
+func TestToolOutputProjectionAppliesBeforeHistoryAndNextProviderRequest(t *testing.T) {
 	p := harness.NewScriptedProvider(
 		harness.Step(harness.Tool("read-1", "read", `{"value":"x"}`), harness.DoneReason("tool_calls")),
 		harness.Step(harness.Text("ok"), harness.Done()),
@@ -842,9 +843,9 @@ func TestToolResultLimitAppliesBeforeHistoryAndNextProviderRequest(t *testing.T)
 			InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
 			ReadOnly:    true,
 			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
-			ResultLimit: tools.ResultLimit{
-				MaxBytes: 8,
-				Strategy: "tail",
+			OutputPolicy: tools.OutputPolicy{
+				VisibleMaxBytes: 8,
+				Strategy:        tools.OutputTail, PreserveFull: true,
 			},
 		},
 		nil,
@@ -880,7 +881,49 @@ func TestToolResultLimitAppliesBeforeHistoryAndNextProviderRequest(t *testing.T)
 	}
 }
 
-func TestErrorToolResultLimitPreservesErrorPrefixMetadataAndArtifacts(t *testing.T) {
+func TestToolOutputProjectionFailsWhenPreservingWithoutArtifactStore(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("read-1", "read", `{"value":"x"}`), harness.DoneReason("tool_calls")),
+	)
+	reg := tools.NewRegistry()
+	mustRegister(t, reg, tools.Define[stringArgs](
+		tools.Definition{
+			Name:        "read",
+			InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+			ReadOnly:    true,
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+			OutputPolicy: tools.OutputPolicy{
+				VisibleMaxBytes: 8,
+				Strategy:        tools.OutputTail, PreserveFull: true,
+			},
+		},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
+			return tools.Result{Text: "0123456789abcdef"}, nil
+		},
+	))
+	e := newTestEngine(p, rec)
+	e.Tools = reg
+	e.Artifacts = nil
+
+	got := e.Run(context.Background(), "read")
+
+	if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), "artifact store") {
+		t.Fatalf("result = %#v, want artifact store failure", got)
+	}
+	if len(p.Requests) != 1 {
+		t.Fatalf("provider should not receive a follow-up request after projection failure: %d", len(p.Requests))
+	}
+	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
+		return ev.Type == event.ToolResult && ev.ToolName == "read" && strings.Contains(ev.Err, "artifact store")
+	}) {
+		t.Fatalf("tool result failure event missing: %#v", rec.Events)
+	}
+}
+
+func TestErrorToolOutputProjectionPreservesErrorPrefixMetadataAndArtifacts(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
 		harness.Step(harness.Tool("run-1", "shell", `{"value":"x"}`), harness.DoneReason("tool_calls")),
@@ -889,19 +932,18 @@ func TestErrorToolResultLimitPreservesErrorPrefixMetadataAndArtifacts(t *testing
 	reg := tools.NewRegistry()
 	mustRegister(t, reg, tools.Define[stringArgs](
 		tools.Definition{
-			Name:        "shell",
-			InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
-			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
-			ResultLimit: tools.ResultLimit{MaxBytes: 8, Strategy: "tail"},
+			Name:         "shell",
+			InputSchema:  tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+			Permission:   tools.PermissionSpec{Mode: tools.PermissionAllow},
+			OutputPolicy: tools.OutputPolicy{VisibleMaxBytes: 8, Strategy: tools.OutputTail, PreserveFull: true},
 		},
 		nil,
 		nil,
 		func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
 			return tools.Result{
-				Text:      "0123456789abcdef",
-				Metadata:  map[string]any{"exit_code": 7},
-				Artifacts: []tools.ArtifactRef{{Kind: "log", Path: "/tmp/full.log", MIME: "text/plain"}},
-				IsError:   true,
+				Text:     "0123456789abcdef",
+				Metadata: map[string]any{"exit_code": 7},
+				IsError:  true,
 			}, nil
 		},
 	))
@@ -1731,6 +1773,7 @@ type testEngine struct {
 	Provider     provider.Provider
 	Store        session.Store
 	Prompt       cache.Store
+	Artifacts    artifact.Store
 	SystemPrompt string
 	Tools        *tools.Registry
 	Sink         event.Sink
@@ -1745,6 +1788,7 @@ func newTestEngine(p provider.Provider, rec *event.Recorder) *testEngine {
 		Provider:     p,
 		Store:        session.NewMemoryStore(),
 		Prompt:       cache.NewMemoryStore(),
+		Artifacts:    artifact.NewMemoryStore(),
 		SystemPrompt: "You are Floret.",
 		Tools:        tools.NewRegistry(),
 		Sink:         rec,
@@ -1763,6 +1807,7 @@ func (e *testEngine) build(t *testing.T) *engine.Engine {
 		Provider:     e.Provider,
 		Store:        e.Store,
 		Prompt:       e.Prompt,
+		Artifacts:    e.Artifacts,
 		SystemPrompt: e.SystemPrompt,
 		Tools:        e.Tools,
 		Sink:         e.Sink,
@@ -1782,6 +1827,7 @@ func (e *testEngine) tryBuild() (*engine.Engine, error) {
 		Provider:     e.Provider,
 		Store:        e.Store,
 		Prompt:       e.Prompt,
+		Artifacts:    e.Artifacts,
 		SystemPrompt: e.SystemPrompt,
 		Tools:        e.Tools,
 		Sink:         e.Sink,

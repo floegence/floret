@@ -646,6 +646,30 @@ a {
   background: var(--panel);
 }
 
+.tool-projection-grid {
+  display: grid;
+  gap: 6px;
+}
+
+.artifact-link-row {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.artifact-link-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .tool-error {
   border-color: rgba(182, 64, 61, 0.28);
 }

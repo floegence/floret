@@ -16,6 +16,7 @@ import (
 
 	"github.com/floegence/floret/provider/cache"
 	"github.com/floegence/floret/runtime/storage"
+	"github.com/floegence/floret/session"
 	"github.com/floegence/floret/sessiontree"
 	_ "modernc.org/sqlite"
 )
@@ -1501,6 +1502,7 @@ func reachableEntryIDs(entries []sessiontree.Entry, leafID string) map[string]bo
 }
 
 func cloneEntry(entry sessiontree.Entry) sessiontree.Entry {
+	entry.Message = session.CloneMessage(entry.Message)
 	if entry.Metadata != nil {
 		metadata := make(map[string]string, len(entry.Metadata))
 		for key, value := range entry.Metadata {

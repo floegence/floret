@@ -18,6 +18,7 @@ import (
 
 	"github.com/floegence/floret/internal/control"
 	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/session/artifact"
 	"github.com/floegence/floret/session/compaction"
 	"github.com/floegence/floret/session/contextpolicy"
 )
@@ -135,8 +136,35 @@ type ForkOptions struct {
 	Now            time.Time
 }
 
-type ContextOptions struct {
-	IncludeSystem bool
+type ContextOptions struct{}
+
+type ProjectionPurpose string
+
+const (
+	ProjectionProviderRequest ProjectionPurpose = "provider_request"
+	ProjectionCompaction      ProjectionPurpose = "compaction"
+	ProjectionTestUI          ProjectionPurpose = "test_ui"
+)
+
+type ContextProjectionOptions struct {
+	Purpose ProjectionPurpose
+}
+
+type ContextProjection struct {
+	Messages []session.Message  `json:"messages"`
+	Segments []ProjectedSegment `json:"segments,omitempty"`
+}
+
+type ProjectedSegment struct {
+	EntryID       string         `json:"entry_id,omitempty"`
+	EntryType     EntryType      `json:"entry_type,omitempty"`
+	MessageIndex  int            `json:"message_index"`
+	Role          session.Role   `json:"role,omitempty"`
+	ToolCallID    string         `json:"tool_call_id,omitempty"`
+	ToolName      string         `json:"tool_name,omitempty"`
+	TokenEstimate int64          `json:"token_estimate,omitempty"`
+	ArtifactRefs  []artifact.Ref `json:"artifact_refs,omitempty"`
+	UIPreview     string         `json:"ui_preview,omitempty"`
 }
 
 type Repo interface {
@@ -847,7 +875,19 @@ func (r *FileRepo) appendEntry(entry Entry) error {
 	return f.Sync()
 }
 
-func BuildContext(path []Entry, _ ContextOptions) []session.Message {
+func BuildContext(path []Entry, opts ContextOptions) []session.Message {
+	return BuildContextProjection(path, ContextProjectionOptions{}).Messages
+}
+
+func BuildContextProjection(path []Entry, opts ContextProjectionOptions) ContextProjection {
+	if opts.Purpose == "" {
+		opts.Purpose = ProjectionProviderRequest
+	}
+	messages := buildContextMessages(path)
+	return ContextProjection{Messages: messages, Segments: projectedSegments(path, messages, opts.Purpose)}
+}
+
+func buildContextMessages(path []Entry) []session.Message {
 	compactionIndex := -1
 	firstKeptIndex := -1
 	for i, entry := range path {
@@ -902,13 +942,59 @@ func BuildContext(path []Entry, _ ContextOptions) []session.Message {
 	return messages
 }
 
+func projectedSegments(path []Entry, messages []session.Message, purpose ProjectionPurpose) []ProjectedSegment {
+	if len(messages) == 0 {
+		return nil
+	}
+	entriesByID := make(map[string]Entry, len(path))
+	for _, entry := range path {
+		entriesByID[entry.ID] = entry
+	}
+	segments := make([]ProjectedSegment, 0, len(messages))
+	for i, msg := range messages {
+		seg := ProjectedSegment{
+			EntryID:       msg.EntryID,
+			MessageIndex:  i,
+			Role:          msg.Role,
+			ToolCallID:    msg.ToolCallID,
+			ToolName:      msg.ToolName,
+			TokenEstimate: contextpolicy.EstimateMessage(msg),
+		}
+		if purpose == ProjectionTestUI {
+			seg.ArtifactRefs = messageArtifactRefs(msg)
+			seg.UIPreview = previewMessageContent(msg.Content, 240)
+		}
+		if entry, ok := entriesByID[msg.EntryID]; ok {
+			seg.EntryType = entry.Type
+		} else if msg.Kind == session.MessageKindCompactionSummary {
+			seg.EntryType = EntryCompaction
+		}
+		segments = append(segments, seg)
+	}
+	return segments
+}
+
+func messageArtifactRefs(msg session.Message) []artifact.Ref {
+	if msg.ToolResult == nil || msg.ToolResult.FullOutput == nil {
+		return nil
+	}
+	return []artifact.Ref{*msg.ToolResult.FullOutput}
+}
+
+func previewMessageContent(value string, max int) string {
+	if max <= 0 || len(value) <= max {
+		return value
+	}
+	return value[:max] + "..."
+}
+
 func messagesForEntries(entries []Entry) []session.Message {
 	out := make([]session.Message, 0, len(entries))
 	for _, entry := range entries {
 		if entry.Message.Role == "" {
 			continue
 		}
-		msg := entry.Message
+		msg := session.CloneMessage(entry.Message)
 		msg.EntryID = entry.ID
 		msg.ParentEntryID = entry.ParentID
 		out = append(out, msg)
@@ -920,7 +1006,7 @@ func appendProviderVisible(messages []session.Message, entry Entry) []session.Me
 	switch entry.Type {
 	case EntryUserMessage, EntryAssistantMessage, EntryToolCall, EntryToolResult:
 		if entry.Message.Role != "" {
-			msg := entry.Message
+			msg := session.CloneMessage(entry.Message)
 			if entry.Type == EntryToolCall {
 				if projected, ok := control.ProjectMessage(msg); ok {
 					msg = projected
@@ -1202,6 +1288,7 @@ func cloneEntries(entries []Entry) []Entry {
 }
 
 func cloneEntry(entry Entry) Entry {
+	entry.Message = session.CloneMessage(entry.Message)
 	if entry.Metadata != nil {
 		entry.Metadata = mapsClone(entry.Metadata)
 	}

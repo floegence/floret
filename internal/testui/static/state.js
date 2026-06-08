@@ -70,7 +70,6 @@ function baseContextPolicyDefaults() {
     recent_user_tokens: 15000,
     estimator_source: "chars_per_token",
     max_compaction_failures: 2,
-    microcompact_tool_tokens: 4096,
   };
 }
 

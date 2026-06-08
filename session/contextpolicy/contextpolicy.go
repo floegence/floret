@@ -21,15 +21,14 @@ const (
 )
 
 type Policy struct {
-	ContextWindowTokens    int64  `json:"context_window_tokens,omitempty"`
-	MaxOutputTokens        int64  `json:"max_output_tokens,omitempty"`
-	ReservedOutputTokens   int64  `json:"reserved_output_tokens,omitempty"`
-	ReservedSummaryTokens  int64  `json:"reserved_summary_tokens,omitempty"`
-	RecentTailTokens       int64  `json:"recent_tail_tokens,omitempty"`
-	RecentUserTokens       int64  `json:"recent_user_tokens,omitempty"`
-	EstimatorSource        string `json:"estimator_source,omitempty"`
-	MaxCompactionFailures  int    `json:"max_compaction_failures,omitempty"`
-	MicrocompactToolTokens int64  `json:"microcompact_tool_tokens,omitempty"`
+	ContextWindowTokens   int64  `json:"context_window_tokens,omitempty"`
+	MaxOutputTokens       int64  `json:"max_output_tokens,omitempty"`
+	ReservedOutputTokens  int64  `json:"reserved_output_tokens,omitempty"`
+	ReservedSummaryTokens int64  `json:"reserved_summary_tokens,omitempty"`
+	RecentTailTokens      int64  `json:"recent_tail_tokens,omitempty"`
+	RecentUserTokens      int64  `json:"recent_user_tokens,omitempty"`
+	EstimatorSource       string `json:"estimator_source,omitempty"`
+	MaxCompactionFailures int    `json:"max_compaction_failures,omitempty"`
 }
 
 type Usage struct {
@@ -66,8 +65,7 @@ func HasValues(policy Policy) bool {
 		policy.RecentTailTokens > 0 ||
 		policy.RecentUserTokens > 0 ||
 		policy.EstimatorSource != "" ||
-		policy.MaxCompactionFailures > 0 ||
-		policy.MicrocompactToolTokens > 0
+		policy.MaxCompactionFailures > 0
 }
 
 func MergeDefaults(policy, defaults Policy) Policy {
@@ -111,12 +109,6 @@ func MergeDefaults(policy, defaults Policy) Policy {
 			policy.MaxCompactionFailures = 2
 		}
 	}
-	if policy.MicrocompactToolTokens <= 0 {
-		policy.MicrocompactToolTokens = defaults.MicrocompactToolTokens
-		if policy.MicrocompactToolTokens <= 0 {
-			policy.MicrocompactToolTokens = 4096
-		}
-	}
 	return policy
 }
 
@@ -144,9 +136,6 @@ func Normalize(policy Policy) Policy {
 	}
 	if policy.MaxCompactionFailures <= 0 {
 		policy.MaxCompactionFailures = 2
-	}
-	if policy.MicrocompactToolTokens <= 0 {
-		policy.MicrocompactToolTokens = 4096
 	}
 	return policy
 }

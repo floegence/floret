@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 
 	"github.com/floegence/floret/agentharness"
 	"github.com/floegence/floret/event"
@@ -50,7 +51,13 @@ func publicAgentRun(run AgentRun) AgentRun {
 
 func publicAgentRunResponse(resp AgentRunResponse, debugRaw bool) AgentRunResponse {
 	resp.Profile = stripProfileSecret(resp.Profile)
-	if !debugRaw {
+	if debugRaw {
+		resp.Summary = event.SafePathRefsText(resp.Summary)
+		resp.Output = event.SafePathRefsText(resp.Output)
+		resp.Error = event.SafePathRefsText(resp.Error)
+		resp.WaitingPrompt = event.SafePathRefsText(resp.WaitingPrompt)
+		resp.Diagnostics = pathSafeMetadata(resp.Diagnostics)
+	} else {
 		resp.Summary = event.Redact(resp.Summary)
 		resp.Output = event.Redact(resp.Output)
 		resp.Error = event.Redact(resp.Error)
@@ -87,7 +94,7 @@ func sanitizeTraceArtifact(content string) string {
 func publicAgentSessionSnapshot(snapshot AgentSessionSnapshot, debugRaw bool) AgentSessionSnapshot {
 	snapshot.Profile = stripProfileSecret(snapshot.Profile)
 	if debugRaw {
-		return snapshot
+		return pathSafeAgentSessionSnapshot(snapshot)
 	}
 	snapshot.SystemPrompt = ""
 	for i := range snapshot.HostedTools {
@@ -100,6 +107,7 @@ func publicAgentSessionSnapshot(snapshot AgentSessionSnapshot, debugRaw bool) Ag
 		snapshot.Turns[i].Error = event.Redact(snapshot.Turns[i].Error)
 	}
 	snapshot.ActiveContext = publicObservedMessages(snapshot.ActiveContext)
+	snapshot.ContextProjection = publicObservedContextProjection(snapshot.ContextProjection)
 	snapshot.PathEntries = publicObservedEntries(snapshot.PathEntries)
 	snapshot.AllEntries = publicObservedEntries(snapshot.AllEntries)
 	snapshot.Observation = publicAgentObservation(snapshot.Observation, false)
@@ -108,7 +116,7 @@ func publicAgentSessionSnapshot(snapshot AgentSessionSnapshot, debugRaw bool) Ag
 
 func publicAgentObservation(observation AgentObservation, debugRaw bool) AgentObservation {
 	if debugRaw {
-		return observation
+		return pathSafeAgentObservation(observation)
 	}
 	for i := range observation.ProviderRequests {
 		observation.ProviderRequests[i] = publicObservedProviderRequest(observation.ProviderRequests[i])
@@ -118,11 +126,118 @@ func publicAgentObservation(observation AgentObservation, debugRaw bool) AgentOb
 	}
 	observation.SessionMessages = publicObservedMessages(observation.SessionMessages)
 	observation.ActiveContext = publicObservedMessages(observation.ActiveContext)
+	observation.ContextProjection = publicObservedContextProjection(observation.ContextProjection)
 	observation.PathEntries = publicObservedEntries(observation.PathEntries)
 	for i := range observation.Transitions {
 		observation.Transitions[i].Details = event.Redact(observation.Transitions[i].Details)
 	}
 	return observation
+}
+
+func pathSafeAgentSessionSnapshot(snapshot AgentSessionSnapshot) AgentSessionSnapshot {
+	snapshot.SystemPrompt = event.SafePathRefsText(snapshot.SystemPrompt)
+	snapshot.WaitingPrompt = event.SafePathRefsText(snapshot.WaitingPrompt)
+	for i := range snapshot.HostedTools {
+		snapshot.HostedTools[i].Parameters = pathSafeAnyMap(snapshot.HostedTools[i].Parameters)
+		snapshot.HostedTools[i].Options = pathSafeAnyMap(snapshot.HostedTools[i].Options)
+	}
+	snapshot.Capabilities = pathSafeCapabilityState(snapshot.Capabilities)
+	for i := range snapshot.Turns {
+		snapshot.Turns[i].Output = event.SafePathRefsText(snapshot.Turns[i].Output)
+		snapshot.Turns[i].Error = event.SafePathRefsText(snapshot.Turns[i].Error)
+	}
+	snapshot.ActiveContext = pathSafeObservedMessages(snapshot.ActiveContext)
+	snapshot.ContextProjection = pathSafeObservedContextProjection(snapshot.ContextProjection)
+	for i := range snapshot.PathEntries {
+		snapshot.PathEntries[i] = pathSafeObservedEntry(snapshot.PathEntries[i])
+	}
+	for i := range snapshot.AllEntries {
+		snapshot.AllEntries[i] = pathSafeObservedEntry(snapshot.AllEntries[i])
+	}
+	snapshot.Observation = pathSafeAgentObservation(snapshot.Observation)
+	return snapshot
+}
+
+func pathSafeAgentObservation(observation AgentObservation) AgentObservation {
+	for i := range observation.ProviderRequests {
+		observation.ProviderRequests[i] = pathSafeObservedProviderRequest(observation.ProviderRequests[i])
+	}
+	for i := range observation.ProviderEvents {
+		observation.ProviderEvents[i] = pathSafeObservedProviderEvent(observation.ProviderEvents[i])
+	}
+	observation.SessionMessages = pathSafeObservedMessages(observation.SessionMessages)
+	observation.ActiveContext = pathSafeObservedMessages(observation.ActiveContext)
+	observation.ContextProjection = pathSafeObservedContextProjection(observation.ContextProjection)
+	for i := range observation.PathEntries {
+		observation.PathEntries[i] = pathSafeObservedEntry(observation.PathEntries[i])
+	}
+	for i := range observation.Transitions {
+		observation.Transitions[i].Details = event.SafePathRefsText(observation.Transitions[i].Details)
+	}
+	observation.Diagnostics = pathSafeMetadata(observation.Diagnostics)
+	return observation
+}
+
+func pathSafeObservedProviderRequest(req ObservedProviderRequest) ObservedProviderRequest {
+	req.Messages = pathSafeObservedMessages(req.Messages)
+	for i := range req.RawSegments {
+		req.RawSegments[i].Raw = event.SafePathRefsText(req.RawSegments[i].Raw)
+		req.RawSegments[i].RawPreview = event.SafePathRefsText(req.RawSegments[i].RawPreview)
+	}
+	for i := range req.Tools {
+		req.Tools[i].Annotations = pathSafeAnyMap(req.Tools[i].Annotations)
+	}
+	for i := range req.HostedTools {
+		req.HostedTools[i].Parameters = pathSafeAnyMap(req.HostedTools[i].Parameters)
+		req.HostedTools[i].Options = pathSafeAnyMap(req.HostedTools[i].Options)
+	}
+	return req
+}
+
+func pathSafeObservedProviderEvent(ev ObservedProviderEvent) ObservedProviderEvent {
+	ev.Text = event.SafePathRefsText(ev.Text)
+	ev.Reasoning = event.SafePathRefsText(ev.Reasoning)
+	for i := range ev.ToolCalls {
+		ev.ToolCalls[i].Args = event.SafePathRefsText(ev.ToolCalls[i].Args)
+		ev.ToolCalls[i].Reasoning = event.SafePathRefsText(ev.ToolCalls[i].Reasoning)
+	}
+	if ev.HostedResult != nil {
+		result := pathSafeHostedToolResult(*ev.HostedResult)
+		ev.HostedResult = &result
+	}
+	ev.Metadata = pathSafeMetadata(ev.Metadata)
+	ev.Reason = event.SafePathRefsText(ev.Reason)
+	return ev
+}
+
+func pathSafeHostedToolResult(result provider.HostedToolResultData) provider.HostedToolResultData {
+	result.Text = event.SafePathRefsText(result.Text)
+	for i := range result.Results {
+		result.Results[i].Title = event.SafePathRefsText(result.Results[i].Title)
+		result.Results[i].URL = event.SafePathRefsText(result.Results[i].URL)
+		result.Results[i].Snippet = event.SafePathRefsText(result.Results[i].Snippet)
+		result.Results[i].Source = event.SafePathRefsText(result.Results[i].Source)
+		result.Results[i].Metadata = pathSafeAnyMap(result.Results[i].Metadata)
+	}
+	if result.Error != nil {
+		result.Error.Message = event.SafePathRefsText(result.Error.Message)
+	}
+	result.Metadata = pathSafeAnyMap(result.Metadata)
+	return result
+}
+
+func pathSafeCapabilityState(state CapabilityState) CapabilityState {
+	for i := range state.SkillSources {
+		state.SkillSources[i].Root = event.SafePathLabel(state.SkillSources[i].Root)
+	}
+	for i := range state.Diagnostics {
+		state.Diagnostics[i].Message = pathSafeFreeformText(state.Diagnostics[i].Message)
+		state.Diagnostics[i].NextAction = pathSafeFreeformText(state.Diagnostics[i].NextAction)
+	}
+	for i := range state.MCPServers {
+		state.MCPServers[i].NextAction = pathSafeFreeformText(state.MCPServers[i].NextAction)
+	}
+	return state
 }
 
 func publicObservedProviderRequest(req ObservedProviderRequest) ObservedProviderRequest {
@@ -209,6 +324,63 @@ func publicObservedMessages(messages []ObservedSessionMessage) []ObservedSession
 	return out
 }
 
+func publicObservedContextProjection(projection ObservedContextProjection) ObservedContextProjection {
+	projection.Messages = publicObservedMessages(projection.Messages)
+	for i := range projection.Segments {
+		if projection.Segments[i].MessageIndex >= 0 && projection.Segments[i].MessageIndex < len(projection.Messages) {
+			msg := projection.Messages[projection.Segments[i].MessageIndex]
+			if msg.Content != "" {
+				projection.Segments[i].UIPreview = preview(msg.Content, 240)
+			} else {
+				projection.Segments[i].UIPreview = ""
+			}
+		} else {
+			projection.Segments[i].UIPreview = event.Redact(projection.Segments[i].UIPreview)
+		}
+	}
+	return projection
+}
+
+func pathSafeObservedEntries(entries []ObservedSessionEntry) []ObservedSessionEntry {
+	out := append([]ObservedSessionEntry(nil), entries...)
+	for i := range out {
+		out[i] = pathSafeObservedEntry(out[i])
+	}
+	return out
+}
+
+func pathSafeObservedEntry(entry ObservedSessionEntry) ObservedSessionEntry {
+	entry.Message = pathSafeObservedMessage(entry.Message)
+	entry.Summary = event.SafePathRefsText(entry.Summary)
+	entry.Error = event.SafePathRefsText(entry.Error)
+	entry.CompactionReason = event.SafePathRefsText(entry.CompactionReason)
+	entry.Metadata = pathSafeMetadata(entry.Metadata)
+	return entry
+}
+
+func pathSafeObservedMessages(messages []ObservedSessionMessage) []ObservedSessionMessage {
+	out := append([]ObservedSessionMessage(nil), messages...)
+	for i := range out {
+		out[i] = pathSafeObservedMessage(out[i])
+	}
+	return out
+}
+
+func pathSafeObservedContextProjection(projection ObservedContextProjection) ObservedContextProjection {
+	projection.Messages = pathSafeObservedMessages(projection.Messages)
+	for i := range projection.Segments {
+		projection.Segments[i].UIPreview = event.SafePathRefsText(projection.Segments[i].UIPreview)
+	}
+	return projection
+}
+
+func pathSafeObservedMessage(msg ObservedSessionMessage) ObservedSessionMessage {
+	msg.Content = event.SafePathRefsText(msg.Content)
+	msg.Reasoning = event.SafePathRefsText(msg.Reasoning)
+	msg.ToolArgs = event.SafePathRefsText(msg.ToolArgs)
+	return msg
+}
+
 func publicObservedMessage(msg ObservedSessionMessage) ObservedSessionMessage {
 	msg.Reasoning = ""
 	msg.ToolArgs = ""
@@ -238,6 +410,105 @@ func publicMetadata(in map[string]string) map[string]string {
 		}
 	}
 	return out
+}
+
+func pathSafeMetadata(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		if metadataKeyIsPath(key) {
+			out[key] = event.SafePathLabel(value)
+		} else {
+			out[key] = event.SafePathRefsText(value)
+		}
+	}
+	return out
+}
+
+func pathSafeAnyMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		switch typed := value.(type) {
+		case string:
+			if metadataKeyIsPath(key) {
+				out[key] = event.SafePathLabel(typed)
+			} else {
+				out[key] = event.SafePathRefsText(typed)
+			}
+		case map[string]string:
+			out[key] = pathSafeMetadata(typed)
+		case map[string]any:
+			out[key] = pathSafeAnyMap(typed)
+		case []string:
+			items := make([]string, len(typed))
+			for i, item := range typed {
+				if metadataKeyIsPath(key) {
+					items[i] = event.SafePathLabel(item)
+				} else {
+					items[i] = event.SafePathRefsText(item)
+				}
+			}
+			out[key] = items
+		case []any:
+			items := make([]any, len(typed))
+			for i, item := range typed {
+				items[i] = pathSafeAnyValue(key, item)
+			}
+			out[key] = items
+		default:
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func pathSafeAnyValue(key string, value any) any {
+	switch typed := value.(type) {
+	case string:
+		if metadataKeyIsPath(key) {
+			return event.SafePathLabel(typed)
+		}
+		return event.SafePathRefsText(typed)
+	case map[string]string:
+		return pathSafeMetadata(typed)
+	case map[string]any:
+		return pathSafeAnyMap(typed)
+	case []string:
+		out := make([]string, len(typed))
+		for i, item := range typed {
+			if metadataKeyIsPath(key) {
+				out[i] = event.SafePathLabel(item)
+			} else {
+				out[i] = event.SafePathRefsText(item)
+			}
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = pathSafeAnyValue(key, item)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func metadataKeyIsPath(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	return key == "path" ||
+		key == "workdir" ||
+		key == "cwd" ||
+		key == "dir" ||
+		key == "directory" ||
+		strings.HasSuffix(key, "_path") ||
+		strings.HasSuffix(key, "_dir") ||
+		strings.HasSuffix(key, "_directory")
 }
 
 func publicMetadataRedactedLabel(value string) string {
@@ -283,7 +554,7 @@ func publicEvents(events []event.Event, debugRaw bool) []event.Event {
 	out := make([]event.Event, len(events))
 	for i, ev := range events {
 		if debugRaw {
-			out[i] = ev
+			out[i] = event.SanitizePathRefs(ev)
 		} else {
 			out[i] = event.Sanitize(ev)
 		}
@@ -292,14 +563,17 @@ func publicEvents(events []event.Event, debugRaw bool) []event.Event {
 }
 
 func publicHarnessEvents(events []agentharness.HarnessEvent, debugRaw bool) []agentharness.HarnessEvent {
-	if debugRaw {
-		return events
-	}
 	out := append([]agentharness.HarnessEvent(nil), events...)
 	for i := range out {
-		out[i].Message = event.Redact(out[i].Message)
-		out[i].Status = event.Redact(out[i].Status)
-		out[i].Metadata = publicMetadata(out[i].Metadata)
+		if debugRaw {
+			out[i].Message = event.SafePathRefsText(out[i].Message)
+			out[i].Status = event.SafePathRefsText(out[i].Status)
+			out[i].Metadata = pathSafeMetadata(out[i].Metadata)
+		} else {
+			out[i].Message = event.Redact(out[i].Message)
+			out[i].Status = event.Redact(out[i].Status)
+			out[i].Metadata = publicMetadata(out[i].Metadata)
+		}
 	}
 	return out
 }
@@ -317,7 +591,7 @@ func publicStringMap(in map[string]string) map[string]string {
 
 func publicAgentStreamEvent(ev AgentStreamEvent, debugRaw bool) AgentStreamEvent {
 	if debugRaw {
-		return ev
+		return pathSafeAgentStreamEvent(ev)
 	}
 	if ev.Entry != nil {
 		entry := publicObservedEntries([]ObservedSessionEntry{*ev.Entry})[0]
@@ -355,6 +629,54 @@ func publicAgentStreamEvent(ev AgentStreamEvent, debugRaw bool) AgentStreamEvent
 	ev.Error = event.Redact(ev.Error)
 	ev.Metadata = publicMetadata(ev.Metadata)
 	return ev
+}
+
+func pathSafeAgentStreamEvent(ev AgentStreamEvent) AgentStreamEvent {
+	if ev.Entry != nil {
+		entry := pathSafeObservedEntry(*ev.Entry)
+		ev.Entry = &entry
+	}
+	if ev.ProviderRequest != nil {
+		req := pathSafeObservedProviderRequest(*ev.ProviderRequest)
+		ev.ProviderRequest = &req
+	}
+	if ev.ProviderEvent != nil {
+		providerEvent := pathSafeObservedProviderEvent(*ev.ProviderEvent)
+		ev.ProviderEvent = &providerEvent
+	}
+	if ev.EngineEvent != nil {
+		engineEvent := event.SanitizePathRefs(*ev.EngineEvent)
+		ev.EngineEvent = &engineEvent
+	}
+	if ev.Snapshot != nil {
+		snapshot := pathSafeAgentSessionSnapshot(*ev.Snapshot)
+		ev.Snapshot = &snapshot
+	}
+	if ev.Result != nil {
+		result := pathSafeAgentRunResponse(*ev.Result)
+		ev.Result = &result
+	}
+	ev.Message = event.SafePathRefsText(ev.Message)
+	ev.Error = event.SafePathRefsText(ev.Error)
+	ev.Metadata = pathSafeMetadata(ev.Metadata)
+	return ev
+}
+
+func pathSafeAgentRunResponse(resp AgentRunResponse) AgentRunResponse {
+	resp.Summary = event.SafePathRefsText(resp.Summary)
+	resp.Output = event.SafePathRefsText(resp.Output)
+	resp.Error = event.SafePathRefsText(resp.Error)
+	resp.WaitingPrompt = event.SafePathRefsText(resp.WaitingPrompt)
+	resp.Events = publicEvents(resp.Events, true)
+	resp.HarnessEvents = publicHarnessEvents(resp.HarnessEvents, true)
+	resp.Diagnostics = pathSafeMetadata(resp.Diagnostics)
+	resp.Session = pathSafeAgentSessionSnapshot(resp.Session)
+	resp.Observation = pathSafeAgentObservation(resp.Observation)
+	return resp
+}
+
+func pathSafeFreeformText(value string) string {
+	return event.SafePathRefsText(value)
 }
 
 func stableHashAny(value any) string {

@@ -1035,8 +1035,7 @@ func newMessageSegment(input BuildInput, kind SegmentKind, msg session.Message, 
 	generation := msg.CompactionGeneration
 	windowID := msg.CompactionWindowID
 	compactionEntryID := msg.CompactionID
-	msg.EntryID = ""
-	msg.ParentEntryID = ""
+	msg = providerOnlyMessageForRaw(msg)
 	raw := ""
 	fragmentType := FragmentGenericMessage
 	var err error
@@ -1087,6 +1086,13 @@ func newMessageSegment(input BuildInput, kind SegmentKind, msg session.Message, 
 		Message:              snap,
 		CreatedAt:            input.Now,
 	}, nil
+}
+
+func providerOnlyMessageForRaw(msg session.Message) session.Message {
+	msg.EntryID = ""
+	msg.ParentEntryID = ""
+	msg.ToolResult = nil
+	return msg
 }
 
 func newRenderedToolSegment(input BuildInput, toolset ToolsetSnapshot, tool ToolDefinition, raw, fragmentType string, sequence int64) Segment {

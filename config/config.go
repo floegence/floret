@@ -145,11 +145,6 @@ func fromValues(values map[string]string) (Config, error) {
 	} else if ok {
 		policyOverrides.MaxCompactionFailures = value
 	}
-	if value, ok, err := getOptionalInt64(values, "FLORET_MICROCOMPACT_TOOL_TOKENS"); err != nil {
-		return Config{}, err
-	} else if ok {
-		policyOverrides.MicrocompactToolTokens = value
-	}
 	cfg.ContextPolicy = contextpolicy.MergeDefaults(policyOverrides, defaultPolicy)
 	if cfg.MaxOutputTokensSet {
 		cfg.ContextPolicy.MaxOutputTokens = policyOverrides.MaxOutputTokens

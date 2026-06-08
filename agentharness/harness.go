@@ -2,6 +2,7 @@ package agentharness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -17,6 +18,7 @@ import (
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/provider/cache"
 	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/session/artifact"
 	"github.com/floegence/floret/session/compaction"
 	"github.com/floegence/floret/session/contextpolicy"
 	"github.com/floegence/floret/sessiontree"
@@ -74,10 +76,12 @@ type Options struct {
 	PromptStore         cache.Store
 	Repo                sessiontree.Repo
 	Sink                event.Sink
+	SinkPolicy          event.SinkPolicy
 	HarnessSink         HarnessSink
 	Approver            tools.Approver
 	StopHook            engine.StopHook
 	CompactionGenerator compaction.SummaryGenerator
+	Artifacts           artifact.Store
 	TurnPolicy          TurnPolicy
 	LoopLimits          LoopLimits
 	NewID               func(string) string
@@ -195,6 +199,9 @@ func New(options Options) *AgentHarness {
 	}
 	if options.Tools == nil {
 		options.Tools = tools.NewRegistry()
+	}
+	if options.Artifacts == nil {
+		options.Artifacts = artifact.NewMemoryStore()
 	}
 	if options.Now == nil {
 		options.Now = time.Now
@@ -419,9 +426,6 @@ func threadMessages(path []sessiontree.Entry) []ThreadMessage {
 	for _, entry := range path {
 		switch entry.Type {
 		case sessiontree.EntryUserMessage, sessiontree.EntryAssistantMessage:
-			if entry.Message.Kind == session.MessageKindMicrocompactMarker {
-				continue
-			}
 			if entry.Message.Content == "" {
 				continue
 			}
@@ -580,6 +584,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 		Approver:     t.harness.options.Approver,
 		StopHook:     t.harness.options.StopHook,
 		Compactor:    &durableCompactionManager{thread: t, turnID: turnID},
+		Artifacts:    t.harness.options.Artifacts,
 		Options:      engineOptions,
 	})
 	if err != nil {
@@ -694,7 +699,6 @@ func (h *AgentHarness) engineOptions() engine.Options {
 		policy.ContextPolicy.RecentTailTokens > 0 ||
 		policy.ContextPolicy.RecentUserTokens > 0 ||
 		policy.ContextPolicy.MaxCompactionFailures > 0 ||
-		policy.ContextPolicy.MicrocompactToolTokens > 0 ||
 		policy.ContextPolicy.EstimatorSource != "" {
 		engineOptions.ContextPolicy = policy.ContextPolicy
 	}
@@ -844,6 +848,7 @@ type durableMessageSignature struct {
 	ToolName             string
 	ToolArgs             string
 	Kind                 session.MessageKind
+	ToolResult           string
 	CompactionID         string
 	CompactionGeneration int
 	CompactionWindowID   string
@@ -893,6 +898,7 @@ func durableSignature(msg session.Message) durableMessageSignature {
 		ToolName:             msg.ToolName,
 		ToolArgs:             msg.ToolArgs,
 		Kind:                 msg.Kind,
+		ToolResult:           toolResultSignature(msg.ToolResult),
 		CompactionID:         msg.CompactionID,
 		CompactionGeneration: msg.CompactionGeneration,
 		CompactionWindowID:   msg.CompactionWindowID,
@@ -900,7 +906,7 @@ func durableSignature(msg session.Message) durableMessageSignature {
 }
 
 func nonDurableProjection(msg session.Message) bool {
-	return msg.Kind == session.MessageKindCompactionSummary || msg.Kind == session.MessageKindMicrocompactMarker
+	return msg.Kind == session.MessageKindCompactionSummary
 }
 
 func (t *Thread) appendMessage(ctx context.Context, turnID string, msg session.Message) error {
@@ -929,7 +935,18 @@ func messagesEqualForDelta(a, b session.Message) bool {
 	a.ParentEntryID = ""
 	b.EntryID = ""
 	b.ParentEntryID = ""
-	return a == b
+	return durableSignature(a) == durableSignature(b)
+}
+
+func toolResultSignature(view *session.ToolResultView) string {
+	if view == nil {
+		return ""
+	}
+	data, err := json.Marshal(view)
+	if err != nil {
+		return fmt.Sprintf("%#v", view)
+	}
+	return string(data)
 }
 
 func markerForStatus(status engine.Status) sessiontree.TurnMarkerStatus {
@@ -1100,7 +1117,7 @@ type turnProjection struct {
 
 func (p *turnProjection) Emit(ev event.Event) {
 	if p.downstream != nil {
-		p.downstream.Emit(event.Sanitize(ev))
+		p.downstream.Emit(event.SanitizeWithPolicy(ev, p.thread.harness.options.SinkPolicy))
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -1137,7 +1154,7 @@ func (p *turnProjection) Emit(ev event.Event) {
 				return
 			}
 		}
-		p.pendingResults = append(p.pendingResults, session.Message{Role: session.Tool, Content: ev.Result, ToolCallID: ev.ToolID, ToolName: ev.ToolName})
+		p.pendingResults = append(p.pendingResults, session.Message{Role: session.Tool, Content: ev.Result, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolResult: toolResultViewFromEvent(ev)})
 		if size := eventBatchSize(ev.Metadata); size > p.pendingBatchSize {
 			p.pendingBatchSize = size
 		}
@@ -1251,6 +1268,94 @@ func eventBatchSize(metadata any) int {
 		return int(size)
 	case float64:
 		return int(size)
+	default:
+		return 0
+	}
+}
+
+func toolResultViewFromEvent(ev event.Event) *session.ToolResultView {
+	values, _ := ev.Metadata.(map[string]any)
+	if len(values) == 0 && len(ev.Artifacts) == 0 {
+		return nil
+	}
+	view := &session.ToolResultView{
+		Truncated:     metadataBool(values, "truncated"),
+		OriginalBytes: metadataInt(values, "original_bytes"),
+		VisibleBytes:  metadataInt(values, "visible_bytes"),
+		OriginalLines: metadataInt(values, "original_lines"),
+		VisibleLines:  metadataInt(values, "visible_lines"),
+		Strategy:      metadataString(values, "strategy"),
+		ContentSHA256: metadataString(values, "content_sha256"),
+	}
+	if artifactID := metadataString(values, "artifact_id"); artifactID != "" {
+		for _, item := range ev.Artifacts {
+			if item.ID != artifactID {
+				continue
+			}
+			ref := artifactRefFromEvent(item)
+			if ref.ID != "" || ref.SafeLabel != "" || ref.URL != "" {
+				view.FullOutput = &ref
+			}
+			break
+		}
+	}
+	if emptyToolResultView(view) {
+		return nil
+	}
+	return view
+}
+
+func emptyToolResultView(view *session.ToolResultView) bool {
+	return view == nil ||
+		(!view.Truncated &&
+			view.OriginalBytes == 0 &&
+			view.VisibleBytes == 0 &&
+			view.OriginalLines == 0 &&
+			view.VisibleLines == 0 &&
+			view.Strategy == "" &&
+			view.ContentSHA256 == "" &&
+			view.FullOutput == nil)
+}
+
+func artifactRefFromEvent(in event.Artifact) artifact.Ref {
+	return artifact.Ref{
+		ID:        in.ID,
+		SafeLabel: in.SafeLabel,
+		URL:       in.URL,
+		Kind:      in.Kind,
+		MIME:      in.MIME,
+		SizeBytes: in.SizeBytes,
+		SHA256:    in.SHA256,
+	}
+}
+
+func metadataString(values map[string]any, key string) string {
+	if values == nil {
+		return ""
+	}
+	value, _ := values[key].(string)
+	return value
+}
+
+func metadataBool(values map[string]any, key string) bool {
+	if values == nil {
+		return false
+	}
+	value, _ := values[key].(bool)
+	return value
+}
+
+func metadataInt(values map[string]any, key string) int {
+	if values == nil {
+		return 0
+	}
+	switch value := values[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
 	default:
 		return 0
 	}

@@ -184,12 +184,13 @@ func TestPublicHostAPICompilesAndRunsWithSQLiteCustomProviderAndTool(t *testing.
 			InputSchema: tools.StrictObject(map[string]any{
 				"text": tools.String("Text to echo."),
 			}, []string{"text"}),
-			ReadOnly: true,
+			ReadOnly:     true,
+			OutputPolicy: tools.OutputPolicy{VisibleMaxBytes: 8, Strategy: tools.OutputTail, PreserveFull: true},
 		},
 		nil,
 		nil,
 		func(_ context.Context, inv tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
-			return tools.Result{Text: inv.Args.Text}, nil
+			return tools.Result{Text: inv.Args.Text + "-0123456789abcdef"}, nil
 		},
 	)); err != nil {
 		t.Fatal(err)
@@ -225,6 +226,11 @@ func TestPublicHostAPICompilesAndRunsWithSQLiteCustomProviderAndTool(t *testing.
 	if len(scripted.Requests) != 2 {
 		t.Fatalf("requests = %#v", scripted.Requests)
 	}
+	if !slices.ContainsFunc(scripted.Requests[1].Messages, func(msg session.Message) bool {
+		return msg.Role == session.Tool && msg.ToolName == "echo" && msg.Content == "89abcdef"
+	}) {
+		t.Fatalf("follow-up request should only contain projected tool output: %#v", scripted.Requests[1].Messages)
+	}
 	if !slices.ContainsFunc(scripted.Requests[0].Tools, func(def provider.ToolDefinition) bool { return def.Name == "echo" }) {
 		t.Fatalf("custom tool not exposed: %#v", scripted.Requests[0].Tools)
 	}
@@ -238,7 +244,13 @@ func TestPublicHostAPICompilesAndRunsWithSQLiteCustomProviderAndTool(t *testing.
 		t.Fatal(err)
 	}
 	if !slices.ContainsFunc(path, func(entry sessiontree.Entry) bool {
-		return entry.Type == sessiontree.EntryToolResult && entry.Message.Role == session.Tool && entry.Message.ToolName == "echo" && entry.Message.Content == "from tool"
+		return entry.Type == sessiontree.EntryToolResult &&
+			entry.Message.Role == session.Tool &&
+			entry.Message.ToolName == "echo" &&
+			entry.Message.Content == "89abcdef" &&
+			entry.Message.ToolResult != nil &&
+			entry.Message.ToolResult.FullOutput != nil &&
+			entry.Message.ToolResult.FullOutput.SizeBytes > int64(len(entry.Message.Content))
 	}) {
 		t.Fatalf("SQLite-backed public API run did not persist tool result: %#v", path)
 	}

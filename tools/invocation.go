@@ -1,5 +1,7 @@
 package tools
 
+import "github.com/floegence/floret/session/artifact"
+
 type Invocation[T any] struct {
 	CallID    string
 	Name      string
@@ -12,20 +14,15 @@ type Invocation[T any] struct {
 }
 
 type Result struct {
-	CallID     string
-	Name       string
-	Title      string
-	Text       string
-	Structured map[string]any
-	Metadata   map[string]any
-	Artifacts  []ArtifactRef
-	IsError    bool
-}
-
-type ArtifactRef struct {
-	Kind string
-	Path string
-	MIME string
+	CallID       string
+	Name         string
+	Title        string
+	Text         string
+	Structured   map[string]any
+	Metadata     map[string]any
+	Artifacts    []artifact.Ref
+	OutputPolicy *OutputPolicy
+	IsError      bool
 }
 
 func ErrorResult(callID, name, text string) Result {

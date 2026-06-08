@@ -12,6 +12,7 @@ import (
 	"github.com/floegence/floret/provider/adapters"
 	"github.com/floegence/floret/provider/cache"
 	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/session/artifact"
 	"github.com/floegence/floret/session/contextpolicy"
 	"github.com/floegence/floret/sessiontree"
 	"github.com/floegence/floret/tools"
@@ -23,6 +24,7 @@ type HarnessOptions struct {
 	Store       sessiontree.Repo
 	Tools       *tools.Registry
 	PromptStore cache.Store
+	Artifacts   artifact.Store
 	Sink        event.Sink
 	Approver    tools.Approver
 	StopHook    engine.StopHook
@@ -93,6 +95,10 @@ func NewHarnessWithProviderE(cfg config.Config, p provider.Provider, opts Harnes
 			promptStore = cache.NewFileStore(cfg.PromptCacheDir)
 		}
 	}
+	artifacts := opts.Artifacts
+	if artifacts == nil {
+		artifacts = artifact.NewMemoryStore()
+	}
 	turnPolicy := opts.TurnPolicy
 	turnPolicy.ContextPolicy = contextpolicy.MergeDefaults(turnPolicy.ContextPolicy, cfg.ContextPolicy)
 	if turnPolicy.CacheRetention == "" {
@@ -122,6 +128,7 @@ func NewHarnessWithProviderE(cfg config.Config, p provider.Provider, opts Harnes
 		Sink:         opts.Sink,
 		Approver:     opts.Approver,
 		StopHook:     opts.StopHook,
+		Artifacts:    artifacts,
 		TurnPolicy:   turnPolicy,
 		LoopLimits:   loopLimits,
 		NewID:        opts.NewID,
@@ -184,7 +191,7 @@ func applyCapabilities(registry *tools.Registry, basePrompt string, capability C
 	}
 	if len(catalog.Skills) > 0 {
 		tool, err := skills.DefineSkillTool(catalog.Skills, skills.ToolOptions{
-			ResultLimit: tools.ResultLimit{MaxBytes: 64 * 1024, Strategy: "head"},
+			OutputPolicy: tools.OutputPolicy{VisibleMaxBytes: 64 * 1024, Strategy: tools.OutputHead, PreserveFull: true},
 			OnLoad: func(load skills.SkillLoad) {
 				emitSkillEvent(sink, event.SkillLoaded, map[string]any{
 					"skill_id":     load.Name,
@@ -275,6 +282,7 @@ func NewEngineWithProvider(cfg config.Config, p provider.Provider, store session
 		Provider:     p,
 		Store:        store,
 		Prompt:       promptStore,
+		Artifacts:    artifact.NewMemoryStore(),
 		SystemPrompt: cfg.SystemPrompt,
 		Tools:        registry,
 		Options: engine.Options{

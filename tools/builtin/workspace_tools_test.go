@@ -206,8 +206,8 @@ func TestShellDefaultsOptionalRuntimeFieldsAndKeepsStrictSchema(t *testing.T) {
 	if seen.request.Command != "printf 0123456789" || seen.request.Workdir != root || seen.request.TimeoutMS != 4321 {
 		t.Fatalf("request = %#v", seen.request)
 	}
-	if got.Metadata["truncated"] != true || got.Text != "6789" {
-		t.Fatalf("default max_output_bytes was not applied: %#v", got)
+	if got.Text != "0123456789" || got.OutputPolicy == nil || got.OutputPolicy.VisibleMaxBytes != 4 || got.OutputPolicy.Strategy != tools.OutputTail {
+		t.Fatalf("default max_output_bytes projection policy was not applied: %#v", got)
 	}
 	extra := reg.Run(context.Background(), provider.ToolCall{Name: "shell", Args: `{"command":"echo ok","extra":true}`}, allowAll)
 	if !extra.IsError || !strings.Contains(extra.Text, "$.extra is not allowed") {
@@ -960,13 +960,13 @@ func TestGlobSkipsGitDirectoryEvenWhenFilesMatchPattern(t *testing.T) {
 	}
 }
 
-func TestShellNonZeroAndMaxOutputBytesTruncate(t *testing.T) {
+func TestShellNonZeroAndMaxOutputBytesSetsProjectionPolicy(t *testing.T) {
 	reg := tools.NewRegistry()
 	if err := RegisterShell(reg, ShellOptions{CWD: t.TempDir(), Runner: fakeRunner{result: CommandResult{Stdout: "0123456789abcdef", Stderr: "bad\n", ExitCode: 9, DurationMS: 3}}, MaxOutputBytes: 8}); err != nil {
 		t.Fatal(err)
 	}
 	got := reg.Run(context.Background(), provider.ToolCall{Name: "shell", Args: `{"command":"fail","workdir":null,"timeout_ms":null,"max_output_bytes":8}`}, allowAll)
-	if !got.IsError || got.Metadata["exit_code"] != 9 || got.Metadata["truncated"] != true || !strings.HasSuffix(got.Text, "bad") {
+	if !got.IsError || got.Metadata["exit_code"] != 9 || got.OutputPolicy == nil || got.OutputPolicy.VisibleMaxBytes != 8 || got.Text != "0123456789abcdef\nstderr:\nbad" {
 		t.Fatalf("shell = %#v", got)
 	}
 }

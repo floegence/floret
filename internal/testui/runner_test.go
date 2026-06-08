@@ -637,6 +637,71 @@ func TestRunnerAgentSessionCarriesReasoningThroughToolFollowUp(t *testing.T) {
 	}
 }
 
+func TestRunnerAgentSessionExposesToolOutputArtifactMetadata(t *testing.T) {
+	root := t.TempDir()
+	scripted := harness.NewScriptedProvider(
+		harness.Step(
+			harness.Tool("shell-1", "shell", `{"command":"printf '0123456789abcdef'","max_output_bytes":8}`),
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+
+	result := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:       "run shell",
+		SystemPrompt:  "test",
+		SelectedTools: []string{"shell"},
+	})
+
+	if result.Status != "completed" || result.Output != "done" {
+		t.Fatalf("result = %#v", result)
+	}
+	if !slices.ContainsFunc(scripted.Requests[1].Messages, func(msg session.Message) bool {
+		return msg.Role == "tool" && msg.ToolCallID == "shell-1" && msg.Content == "89abcdef"
+	}) {
+		t.Fatalf("follow-up request should contain projected shell output: %#v", scripted.Requests[1].Messages)
+	}
+	var toolMsg ObservedSessionMessage
+	if !slices.ContainsFunc(result.Observation.SessionMessages, func(msg ObservedSessionMessage) bool {
+		if msg.Role == "tool" && msg.ToolCallID == "shell-1" {
+			toolMsg = msg
+			return true
+		}
+		return false
+	}) {
+		t.Fatalf("tool result message missing: %#v", result.Observation.SessionMessages)
+	}
+	if toolMsg.Content != "" {
+		t.Fatalf("public observation leaked tool result content: %#v", toolMsg)
+	}
+	if toolMsg.ToolResult == nil || !toolMsg.ToolResult.Truncated || toolMsg.ToolResult.FullOutput == nil {
+		t.Fatalf("tool result view missing artifact ref: %#v", toolMsg)
+	}
+	if strings.Contains(toolMsg.ToolResult.FullOutput.URL, root) || !strings.HasPrefix(toolMsg.ToolResult.FullOutput.URL, "/artifacts/") {
+		t.Fatalf("artifact ref should be safe and routed: %#v", toolMsg.ToolResult.FullOutput)
+	}
+	artifactPath := filepath.Join(runner.managedArtifactsRoot(), filepath.FromSlash(strings.TrimPrefix(toolMsg.ToolResult.FullOutput.URL, "/artifacts/")))
+	data, err := os.ReadFile(artifactPath)
+	if err != nil {
+		t.Fatalf("artifact file missing: %v", err)
+	}
+	if string(data) != "0123456789abcdef" {
+		t.Fatalf("artifact content = %q", data)
+	}
+	if err := runner.DeleteAgentSession(context.Background(), result.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(toolOutputArtifactSessionDir(runner.managedArtifactsRoot(), result.SessionID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("tool output artifact directory still exists or returned unexpected err: %v", err)
+	}
+}
+
 func TestRunnerAgentSessionCanExecuteExternalBraveWebSearch(t *testing.T) {
 	root := t.TempDir()
 	searchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -833,6 +898,15 @@ func TestRunnerAgentSessionUsesProviderHostedSearchWithoutLocalWebSearch(t *test
 			ev.HostedResult.Metadata["encrypted_content"] == "raw-provider-token"
 	}) {
 		t.Fatalf("debug raw provider events should expose hosted result details: %#v", raw.Observation.ProviderEvents)
+	}
+	hostedResults := 0
+	for _, ev := range raw.Events {
+		if ev.Type == event.HostedToolResult && ev.ToolName == "web_search" {
+			hostedResults++
+		}
+	}
+	if hostedResults != 1 {
+		t.Fatalf("hosted result should be emitted once, got %d: %#v", hostedResults, raw.Events)
 	}
 }
 

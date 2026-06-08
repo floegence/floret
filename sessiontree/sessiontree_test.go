@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/session/artifact"
 	"github.com/floegence/floret/session/compaction"
 )
 
@@ -545,6 +546,36 @@ func TestBuildContextAttachesEntryRefsToMessages(t *testing.T) {
 	got := BuildContext(path, ContextOptions{})
 	if got[0].EntryID != first.ID || got[1].EntryID != second.ID || got[1].ParentEntryID != first.ID {
 		t.Fatalf("entry refs missing from context: %#v", got)
+	}
+}
+
+func TestBuildContextProjectionKeepsMessagesCanonicalAndExposesArtifactSegments(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemoryRepo()
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	ref := artifact.Ref{ID: "artifact-1", SafeLabel: "tool-output.log", URL: "/artifacts/tool-output.log", Kind: artifact.DefaultKind, MIME: artifact.DefaultMIME, SizeBytes: 128, SHA256: "abc123"}
+	if _, err := AppendMessage(ctx, repo, "thread", "turn-1", session.Message{Role: session.User, Content: "inspect"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AppendMessage(ctx, repo, "thread", "turn-1", session.Message{Role: session.Tool, Content: "visible", ToolCallID: "call-1", ToolName: "read", ToolResult: &session.ToolResultView{Truncated: true, OriginalBytes: 128, VisibleBytes: 7, Strategy: "tail", ContentSHA256: "abc123", FullOutput: &ref}}); err != nil {
+		t.Fatal(err)
+	}
+	path, err := repo.Path(ctx, "thread", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection := BuildContextProjection(path, ContextProjectionOptions{Purpose: ProjectionTestUI})
+	canonical := BuildContext(path, ContextOptions{})
+	if len(projection.Messages) != len(canonical) || projection.Messages[1].Content != canonical[1].Content {
+		t.Fatalf("projection messages should match BuildContext: projection=%#v canonical=%#v", projection.Messages, canonical)
+	}
+	if len(projection.Segments) != len(projection.Messages) ||
+		len(projection.Segments[1].ArtifactRefs) != 1 ||
+		projection.Segments[1].ArtifactRefs[0].ID != ref.ID ||
+		projection.Segments[1].UIPreview != "visible" {
+		t.Fatalf("projection segments missing artifact metadata: %#v", projection.Segments)
 	}
 }
 

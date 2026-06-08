@@ -67,13 +67,13 @@ func shellTool(opts ShellOptions) tools.Tool {
 				"command":          tools.String("Shell command to execute."),
 				"workdir":          tools.Nullable(tools.String("Optional working directory. Omit or use null for the configured workspace root.")),
 				"timeout_ms":       tools.Nullable(tools.Integer("Optional timeout in milliseconds. Omit or use null for the configured default.")),
-				"max_output_bytes": tools.Nullable(tools.Integer("Optional maximum output bytes to return. Omit or use null for the configured default.")),
+				"max_output_bytes": tools.Nullable(tools.Integer("Optional maximum output bytes visible to the model. Full output is preserved when projection truncates it.")),
 			}, []string{"command"}),
-			Effects:     []tools.Effect{tools.EffectShell},
-			OpenWorld:   true,
-			Destructive: true,
-			Permission:  tools.PermissionSpec{Mode: tools.PermissionAsk, ResourceKinds: []string{"command", "directory"}},
-			ResultLimit: tools.ResultLimit{MaxBytes: opts.MaxOutputBytes, Strategy: "tail"},
+			Effects:      []tools.Effect{tools.EffectShell},
+			OpenWorld:    true,
+			Destructive:  true,
+			Permission:   tools.PermissionSpec{Mode: tools.PermissionAsk, ResourceKinds: []string{"command", "directory"}},
+			OutputPolicy: tools.OutputPolicy{VisibleMaxBytes: opts.MaxOutputBytes, Strategy: tools.OutputTail, PreserveFull: true},
 		},
 		nil,
 		func(inv tools.Invocation[shellArgs]) ([]tools.ResourceRef, error) {
@@ -101,17 +101,22 @@ func shellTool(opts ShellOptions) tools.Tool {
 			if err != nil {
 				return tools.Result{}, err
 			}
-			text := combinedShellOutput(result)
 			limit := valueOr(inv.Args.MaxOutputBytes, opts.MaxOutputBytes)
-			out := tools.ApplyResultLimit(tools.Result{Text: text}, tools.ResultLimit{MaxBytes: limit, Strategy: "tail"})
-			metadata := out.Metadata
-			if metadata == nil {
-				metadata = map[string]any{}
-			}
+			metadata := map[string]any{}
 			metadata["exit_code"] = result.ExitCode
 			metadata["duration_ms"] = result.DurationMS
 			metadata["workdir"] = workdir
-			return tools.Result{Title: inv.Args.Command, Text: out.Text, Metadata: metadata, IsError: result.ExitCode != 0}, nil
+			return tools.Result{
+				Title:    inv.Args.Command,
+				Text:     combinedShellOutput(result),
+				Metadata: metadata,
+				OutputPolicy: &tools.OutputPolicy{
+					VisibleMaxBytes: limit,
+					Strategy:        tools.OutputTail,
+					PreserveFull:    true,
+				},
+				IsError: result.ExitCode != 0,
+			}, nil
 		},
 	)
 }
