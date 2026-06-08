@@ -101,6 +101,39 @@ func TestContextPolicyUsesModelMaxTokens(t *testing.T) {
 	}
 }
 
+func TestBuiltInCatalogUsesAuditedProviderCapabilities(t *testing.T) {
+	cases := []struct {
+		provider string
+		model    string
+		context  int64
+		max      int64
+	}{
+		{provider: ProviderOpenAI, model: "gpt-5.4", context: 1050000, max: 128000},
+		{provider: ProviderGoogle, model: "gemini-3.1-pro-preview", context: 1048576, max: 65536},
+		{provider: ProviderGoogle, model: "gemini-2.5-flash", context: 1048576, max: 65536},
+		{provider: ProviderDeepSeek, model: "deepseek-v4-pro", context: 1000000, max: 384000},
+		{provider: ProviderDeepSeek, model: "deepseek-v4-flash", context: 1000000, max: 384000},
+		{provider: ProviderXAI, model: "grok-4.20-0309-reasoning", context: 1000000, max: 128000},
+		{provider: ProviderXAI, model: "grok-4.20", context: 1000000, max: 128000},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.provider+"/"+tt.model, func(t *testing.T) {
+			model, ok := FindModel(tt.provider, tt.model)
+			if !ok {
+				t.Fatalf("model not found")
+			}
+			if model.ContextWindow != tt.context || model.MaxTokens != tt.max {
+				t.Fatalf("capabilities = context %d max %d, want context %d max %d", model.ContextWindow, model.MaxTokens, tt.context, tt.max)
+			}
+			policy := ContextPolicy(tt.provider, tt.model)
+			if policy.ContextWindowTokens != tt.context || policy.MaxOutputTokens != tt.max {
+				t.Fatalf("policy = context %d max %d, want context %d max %d", policy.ContextWindowTokens, policy.MaxOutputTokens, tt.context, tt.max)
+			}
+		})
+	}
+}
+
 func TestContextPolicyScalesDefaultCompactionBudgetsAfterModelWindow(t *testing.T) {
 	cleanup := RegisterForTest(Provider{
 		ID:           "small-window-provider",
