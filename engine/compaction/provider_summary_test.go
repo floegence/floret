@@ -2,6 +2,7 @@ package compaction
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -72,6 +73,13 @@ func TestProviderSummaryUsesReservedSummaryTokensOutputCap(t *testing.T) {
 	if details["summary_tokens_estimate"] == "" || details["tokens_after_estimate"] == "" {
 		t.Fatalf("summary/after estimates should be recorded: %#v", details)
 	}
+	if details["summary_prompt_input_tokens"] == "" || details["summary_request_budget_tokens"] == "" {
+		t.Fatalf("summary request budget details should be recorded: %#v", details)
+	}
+	promptInput := contextpolicy.EstimateMessages("", scripted.Requests[0].Messages, 0, policy).InputTokens
+	if details["summary_prompt_input_tokens"] != int64String(promptInput) || details["summary_request_budget_tokens"] != int64String(promptInput+policy.ReservedSummaryTokens) {
+		t.Fatalf("summary request budget details = prompt %q request %q, want %d/%d; details=%#v", details["summary_prompt_input_tokens"], details["summary_request_budget_tokens"], promptInput, promptInput+policy.ReservedSummaryTokens, details)
+	}
 }
 
 func TestProviderSummaryRetriesAfterTruncationWithHalfCap(t *testing.T) {
@@ -107,6 +115,10 @@ func TestProviderSummaryRetriesAfterTruncationWithHalfCap(t *testing.T) {
 	details := prep.Result.Details
 	if details["summary_generation_attempts"] != "2" || details["summary_retry_reason"] != summaryRetryReasonTruncated || details["summary_provider_truncated"] != "true" {
 		t.Fatalf("retry details = %#v", details)
+	}
+	retryPromptInput := contextpolicy.EstimateMessages("", scripted.Requests[1].Messages, 0, policy).InputTokens
+	if details["summary_prompt_input_tokens"] != int64String(retryPromptInput) || details["summary_request_budget_tokens"] != int64String(retryPromptInput+10) {
+		t.Fatalf("retry summary request budget details = %#v, want prompt %d request %d", details, retryPromptInput, retryPromptInput+10)
 	}
 }
 
@@ -147,4 +159,8 @@ func TestProviderSummaryRetriesOverBudgetThenTrims(t *testing.T) {
 	if details["summary_tokens_estimate"] != "4" {
 		t.Fatalf("summary estimate detail = %q, want 4; details=%#v", details["summary_tokens_estimate"], details)
 	}
+}
+
+func int64String(value int64) string {
+	return strconv.FormatInt(value, 10)
 }

@@ -519,7 +519,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				return e.end(state, opts, step, Failed, output, ErrProviderTruncated, metrics, started, decision)
 			}
 			contextUsage := contextpolicy.EstimateMessages(e.memory.SystemPrompt, activeHistory, len(opts.toolDefinitions)+len(opts.HostedToolDefinitions), opts.ContextPolicy)
-			if contextUsage.CompactionNeeded || contextUsage.TokenPressureHigh {
+			if contextUsage.CompactionNeeded {
 				activeHistory, _, err = e.forceCompact(ctx, opts, step, activeHistory, compaction.TriggerPostResponse, compaction.ReasonOutputContinuation, &metrics, &compactionFailures)
 				if err != nil {
 					return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
@@ -892,7 +892,7 @@ func validateConfiguredTools(local []provider.ToolDefinition, hosted []provider.
 
 func (e *Engine) maybeCompact(ctx context.Context, opts Options, step int, history []session.Message, trigger compaction.Trigger, reason compaction.Reason, metrics *RunMetrics, failures *int) ([]session.Message, bool, error) {
 	usage := contextpolicy.EstimateMessages(e.memory.SystemPrompt, history, len(opts.toolDefinitions)+len(opts.HostedToolDefinitions), opts.ContextPolicy)
-	if !usage.CompactionNeeded && !usage.TokenPressureHigh {
+	if !usage.CompactionNeeded {
 		return history, false, nil
 	}
 	next, err := e.runCompaction(ctx, opts, step, history, trigger, reason, usage, failures)

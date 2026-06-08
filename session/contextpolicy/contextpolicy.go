@@ -44,6 +44,8 @@ type Usage struct {
 	TotalTokens       int64  `json:"total_tokens,omitempty"`
 	ContextWindow     int64  `json:"context_window,omitempty"`
 	ThresholdTokens   int64  `json:"threshold_tokens,omitempty"`
+	RatioLimitTokens  int64  `json:"ratio_limit_tokens,omitempty"`
+	RequestSafeLimit  int64  `json:"request_safe_limit_tokens,omitempty"`
 	MaxOutputTokens   int64  `json:"max_output_tokens,omitempty"`
 	ReservedOutput    int64  `json:"reserved_output,omitempty"`
 	ReservedSummary   int64  `json:"reserved_summary,omitempty"`
@@ -151,10 +153,7 @@ func Normalize(policy Policy) Policy {
 
 func Threshold(policy Policy) int64 {
 	policy = Normalize(policy)
-	threshold := min64(
-		ratioLimit(policy),
-		min64(requestSafeLimit(policy), summarySafeLimit(policy)),
-	)
+	threshold := min64(ratioLimit(policy), requestSafeLimit(policy))
 	if threshold < 1 {
 		threshold = 1
 	}
@@ -177,10 +176,6 @@ func requestSafeLimit(policy Policy) int64 {
 	return policy.ContextWindowTokens - OutputHeadroom(policy)
 }
 
-func summarySafeLimit(policy Policy) int64 {
-	return policy.ContextWindowTokens - policy.ReservedOutputTokens - policy.ReservedSummaryTokens
-}
-
 func defaultWindowBudget(value, fallback, contextWindow int64) int64 {
 	if value <= 0 {
 		value = fallback
@@ -197,9 +192,17 @@ func defaultWindowBudget(value, fallback, contextWindow int64) int64 {
 
 func EstimateMessages(systemPrompt string, history []session.Message, toolCount int, policy Policy) Usage {
 	policy = Normalize(policy)
+	ratioLimitTokens := ratioLimit(policy)
+	requestSafeLimitTokens := requestSafeLimit(policy)
+	thresholdTokens := min64(ratioLimitTokens, requestSafeLimitTokens)
+	if thresholdTokens < 1 {
+		thresholdTokens = 1
+	}
 	usage := Usage{
 		ContextWindow:    policy.ContextWindowTokens,
-		ThresholdTokens:  Threshold(policy),
+		ThresholdTokens:  thresholdTokens,
+		RatioLimitTokens: ratioLimitTokens,
+		RequestSafeLimit: requestSafeLimitTokens,
 		MaxOutputTokens:  policy.MaxOutputTokens,
 		ReservedOutput:   policy.ReservedOutputTokens,
 		ReservedSummary:  policy.ReservedSummaryTokens,
@@ -223,7 +226,7 @@ func EstimateMessages(systemPrompt string, history []session.Message, toolCount 
 	usage.InputTokens = usage.PrefixTokens + usage.ActiveTokens + usage.ToolTokens
 	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 	usage.CompactionNeeded = usage.InputTokens >= usage.ThresholdTokens
-	usage.TokenPressureHigh = usage.InputTokens+usage.OutputHeadroom >= policy.ContextWindowTokens
+	usage.TokenPressureHigh = usage.InputTokens >= usage.RequestSafeLimit
 	return usage
 }
 

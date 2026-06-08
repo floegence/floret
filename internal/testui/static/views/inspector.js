@@ -220,11 +220,15 @@ function renderRequests(requests) {
 function renderContextBudgetMetrics(usage) {
   if (!usage) return "";
   const threshold = usage.threshold_tokens ?? usage.ThresholdTokens;
+  const ratioLimit = usage.ratio_limit_tokens ?? usage.RatioLimitTokens;
+  const requestSafe = usage.request_safe_limit_tokens ?? usage.RequestSafeLimit;
   const headroom = usage.output_headroom_tokens ?? usage.OutputHeadroom;
   const maxOutput = usage.max_output_tokens ?? usage.MaxOutputTokens;
   const ratio = usage.auto_compact_ratio_pct ?? usage.AutoCompactRatio;
   return [
     threshold || threshold === 0 ? `<span class="metric">threshold ${escapeHTML(threshold)}</span>` : "",
+    requestSafe || requestSafe === 0 ? `<span class="metric">request safe ${escapeHTML(requestSafe)}</span>` : "",
+    ratioLimit || ratioLimit === 0 ? `<span class="metric">ratio limit ${escapeHTML(ratioLimit)}</span>` : "",
     headroom || headroom === 0 ? `<span class="metric">output headroom ${escapeHTML(headroom)}</span>` : "",
     maxOutput || maxOutput === 0 ? `<span class="metric">max output ${escapeHTML(maxOutput)}</span>` : "",
     ratio || ratio === 0 ? `<span class="metric">auto compact ${escapeHTML(ratio)}%</span>` : "",

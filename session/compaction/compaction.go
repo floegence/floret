@@ -33,10 +33,12 @@ var (
 )
 
 type SummaryGenerationDetails struct {
-	Attempts          int
-	RetryReason       string
-	RetryCapTokens    int64
-	ProviderTruncated bool
+	Attempts            int
+	RetryReason         string
+	RetryCapTokens      int64
+	ProviderTruncated   bool
+	PromptInputTokens   int64
+	RequestBudgetTokens int64
 }
 
 type summaryGeneratorWithDetails interface {
@@ -192,7 +194,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	}
 	keptUsers := selectKeptUserMessages(history, req.Policy.RecentUserTokens)
 	var tailShrunk bool
-	start, tailShrunk = fitTailStartBeforeSummary(history, start, keptUsers, req.Policy)
+	start, tailShrunk = fitTailStartForCompactedContext(history, start, keptUsers, req.Policy)
 	head := append([]session.Message(nil), history[:start]...)
 	tail := append([]session.Message(nil), history[start:]...)
 	firstKept := firstEntryID(tail)
@@ -207,7 +209,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	}
 	recordCompactionBudgetDetails(details, req.Policy)
 	if tailShrunk {
-		details["tail_shrunk_before_summary"] = "true"
+		details["tail_shrunk_for_compacted_context"] = "true"
 	}
 	result := Result{
 		CompactionID:            req.CompactionID,
@@ -306,6 +308,9 @@ func recordCompactionBudgetDetails(details map[string]string, policy contextpoli
 	details["effective_compacted_context_target_tokens"] = fmt.Sprintf("%d", compactedContextTarget(policy))
 	details["context_window"] = fmt.Sprintf("%d", policy.ContextWindowTokens)
 	details["threshold_tokens"] = fmt.Sprintf("%d", contextpolicy.Threshold(policy))
+	usage := contextpolicy.EstimateMessages("", nil, 0, policy)
+	details["ratio_limit_tokens"] = fmt.Sprintf("%d", usage.RatioLimitTokens)
+	details["request_safe_limit_tokens"] = fmt.Sprintf("%d", usage.RequestSafeLimit)
 	details["max_output_tokens"] = fmt.Sprintf("%d", policy.MaxOutputTokens)
 	details["output_headroom_tokens"] = fmt.Sprintf("%d", contextpolicy.OutputHeadroom(policy))
 	details["auto_compact_ratio_pct"] = fmt.Sprintf("%d", contextpolicy.DefaultAutoCompactRatioPercent)
@@ -337,6 +342,12 @@ func recordSummaryGenerationDetails(result *Result, details SummaryGenerationDet
 	} else {
 		result.Details["summary_provider_truncated"] = "false"
 	}
+	if details.PromptInputTokens > 0 {
+		result.Details["summary_prompt_input_tokens"] = fmt.Sprintf("%d", details.PromptInputTokens)
+	}
+	if details.RequestBudgetTokens > 0 {
+		result.Details["summary_request_budget_tokens"] = fmt.Sprintf("%d", details.RequestBudgetTokens)
+	}
 }
 
 func recordUsageAfterDetails(result *Result, usage contextpolicy.Usage, policy contextpolicy.Policy) {
@@ -344,6 +355,8 @@ func recordUsageAfterDetails(result *Result, usage contextpolicy.Usage, policy c
 		result.Details = map[string]string{}
 	}
 	result.Details["tokens_after_estimate"] = fmt.Sprintf("%d", usage.InputTokens)
+	result.Details["post_compaction_output_headroom_tokens"] = fmt.Sprintf("%d", contextpolicy.OutputHeadroom(policy))
+	result.Details["post_compaction_request_budget_tokens"] = fmt.Sprintf("%d", usage.InputTokens+contextpolicy.OutputHeadroom(policy))
 	target := compactedContextTarget(policy)
 	afterWithOverhead := usage.InputTokens + contextpolicy.DefaultCheckpointOverheadTokens
 	if afterWithOverhead > target {
@@ -494,7 +507,7 @@ func findTailStart(history []session.Message, keepTokens int64) int {
 	return 0
 }
 
-func fitTailStartBeforeSummary(history []session.Message, start int, keptUsers []session.Message, policy contextpolicy.Policy) (int, bool) {
+func fitTailStartForCompactedContext(history []session.Message, start int, keptUsers []session.Message, policy contextpolicy.Policy) (int, bool) {
 	shrunk := false
 	target := compactedContextTarget(policy)
 	for start > 0 && start < len(history) {
@@ -819,6 +832,7 @@ func SummaryWriterSystemPrompt() string {
 }
 
 func SummaryPrompt(prep Preparation, policy contextpolicy.Policy, outputCap int64) string {
+	policy = contextpolicy.Normalize(policy)
 	if outputCap <= 0 {
 		outputCap = policy.ReservedSummaryTokens
 	}
@@ -841,7 +855,7 @@ func SummaryPrompt(prep Preparation, policy contextpolicy.Policy, outputCap int6
 		out.WriteString("\n")
 	}
 	out.WriteString("\nTranscript to compact:\n")
-	budget := summaryTranscriptBudget(policy, outputCap)
+	budget := summaryTranscriptBudget(policy, outputCap, out.String())
 	var used int64
 	for _, msg := range prep.CompactedHead {
 		line := renderForSummaryPrompt(msg)
@@ -857,14 +871,15 @@ func SummaryPrompt(prep Preparation, policy contextpolicy.Policy, outputCap int6
 	return out.String()
 }
 
-func summaryTranscriptBudget(policy contextpolicy.Policy, outputCap int64) int64 {
+func summaryTranscriptBudget(policy contextpolicy.Policy, outputCap int64, promptPrefix string) int64 {
 	policy = contextpolicy.Normalize(policy)
 	if outputCap <= 0 {
 		outputCap = policy.ReservedSummaryTokens
 	}
-	budget := policy.ContextWindowTokens - contextpolicy.OutputHeadroom(policy) - outputCap - policy.RecentTailTokens
-	if budget < outputCap {
-		budget = outputCap
+	fixedInput := contextpolicy.EstimateText(SummaryWriterSystemPrompt()) + contextpolicy.EstimateText(promptPrefix)
+	budget := policy.ContextWindowTokens - outputCap - fixedInput
+	if budget < 0 {
+		return 0
 	}
 	return budget
 }

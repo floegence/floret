@@ -24,8 +24,10 @@ type ProviderSummaryGenerator struct {
 }
 
 type providerSummaryAttempt struct {
-	Summary   string
-	Truncated bool
+	Summary             string
+	Truncated           bool
+	PromptInputTokens   int64
+	RequestBudgetTokens int64
 }
 
 func (g ProviderSummaryGenerator) GenerateSummary(ctx context.Context, prep sessioncompaction.Preparation) (string, error) {
@@ -43,6 +45,8 @@ func (g ProviderSummaryGenerator) GenerateSummaryWithDetails(ctx context.Context
 	if err != nil {
 		return "", details, err
 	}
+	details.PromptInputTokens = attempt.PromptInputTokens
+	details.RequestBudgetTokens = attempt.RequestBudgetTokens
 	if attempt.Truncated || contextpolicy.EstimateText(attempt.Summary) > policy.ReservedSummaryTokens {
 		details.Attempts = 2
 		details.ProviderTruncated = attempt.Truncated
@@ -56,6 +60,8 @@ func (g ProviderSummaryGenerator) GenerateSummaryWithDetails(ctx context.Context
 		if retryErr != nil {
 			return "", details, retryErr
 		}
+		details.PromptInputTokens = retry.PromptInputTokens
+		details.RequestBudgetTokens = retry.RequestBudgetTokens
 		if retry.Truncated {
 			details.ProviderTruncated = true
 		}
@@ -71,6 +77,7 @@ func (g ProviderSummaryGenerator) generateProviderSummaryAttempt(ctx context.Con
 		{Role: session.System, Content: sessioncompaction.SummaryWriterSystemPrompt()},
 		{Role: session.User, Content: sessioncompaction.SummaryPrompt(prep, policy, outputCap)},
 	}
+	promptInputTokens := contextpolicy.EstimateMessages("", messages, 0, policy).InputTokens
 	stream, err := g.Provider.Stream(ctx, provider.Request{
 		RunID:           prep.Request.CompactionID,
 		Step:            prep.Request.Step,
@@ -93,7 +100,7 @@ func (g ProviderSummaryGenerator) generateProviderSummaryAttempt(ctx context.Con
 			if summary == "" {
 				break
 			}
-			return providerSummaryAttempt{Summary: summary, Truncated: ev.Type == provider.Truncated}, nil
+			return providerSummaryAttempt{Summary: summary, Truncated: ev.Type == provider.Truncated, PromptInputTokens: promptInputTokens, RequestBudgetTokens: promptInputTokens + outputCap}, nil
 		case provider.Empty:
 			return providerSummaryAttempt{}, errors.New("provider returned empty compaction summary")
 		}
@@ -102,7 +109,7 @@ func (g ProviderSummaryGenerator) generateProviderSummaryAttempt(ctx context.Con
 	if summary == "" {
 		return providerSummaryAttempt{}, errors.New("provider returned empty compaction summary")
 	}
-	return providerSummaryAttempt{Summary: summary}, nil
+	return providerSummaryAttempt{Summary: summary, PromptInputTokens: promptInputTokens, RequestBudgetTokens: promptInputTokens + outputCap}, nil
 }
 
 func retrySummaryCap(cap int64) int64 {

@@ -60,7 +60,7 @@ func TestNormalizeScalesDefaultCompactionBudgetsForSmallWindows(t *testing.T) {
 	if policy.RecentTailTokens != 1024 {
 		t.Fatalf("explicit recent tail = %d, want preserved", policy.RecentTailTokens)
 	}
-	if got := Threshold(policy); got != 5120 {
+	if got := Threshold(policy); got != 7168 {
 		t.Fatalf("threshold = %d, want self-consistent small-window threshold", got)
 	}
 }
@@ -105,21 +105,21 @@ func TestEstimateMessagesReportsRecentUserBudget(t *testing.T) {
 	}
 }
 
-func TestThresholdUsesOutputHeadroomRatioAndSummaryLimits(t *testing.T) {
+func TestThresholdUsesOutputHeadroomAndRatioLimits(t *testing.T) {
 	tests := []struct {
 		name   string
 		policy Policy
 		want   int64
 	}{
 		{
-			name:   "default policy uses summary safety",
+			name:   "default policy uses request safety",
 			policy: Policy{},
-			want:   172000,
+			want:   192000,
 		},
 		{
-			name:   "128k with default reserve is very conservative",
+			name:   "128k with default reserve uses request safety",
 			policy: Policy{ContextWindowTokens: 128000, MaxOutputTokens: 0},
-			want:   44000,
+			want:   64000,
 		},
 		{
 			name:   "large window with 128k output cap uses request safety",
@@ -144,7 +144,7 @@ func TestThresholdUsesOutputHeadroomRatioAndSummaryLimits(t *testing.T) {
 		{
 			name:   "128k window with 65536 output cap",
 			policy: Policy{ContextWindowTokens: 128000, MaxOutputTokens: 65536},
-			want:   44000,
+			want:   62464,
 		},
 	}
 
@@ -173,6 +173,9 @@ func TestEstimateMessagesReportsOutputBudgetFields(t *testing.T) {
 	}
 	if usage.ThresholdTokens != 616000 {
 		t.Fatalf("threshold = %d, want 616000", usage.ThresholdTokens)
+	}
+	if usage.RatioLimitTokens != 900000 || usage.RequestSafeLimit != 616000 {
+		t.Fatalf("pressure limits = ratio %d request %d, want 900000/616000", usage.RatioLimitTokens, usage.RequestSafeLimit)
 	}
 }
 

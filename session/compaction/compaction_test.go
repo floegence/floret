@@ -514,7 +514,7 @@ func TestSummaryWriterPromptContract(t *testing.T) {
 	}
 }
 
-func TestSummaryPromptTranscriptBudgetUsesOutputHeadroom(t *testing.T) {
+func TestSummaryPromptTranscriptBudgetIgnoresOrdinaryOutputHeadroom(t *testing.T) {
 	policy := contextpolicy.Normalize(contextpolicy.Policy{
 		ContextWindowTokens:   1000,
 		MaxOutputTokens:       700,
@@ -528,8 +528,27 @@ func TestSummaryPromptTranscriptBudgetUsesOutputHeadroom(t *testing.T) {
 			{Role: session.User, Content: strings.Repeat("b", 800), EntryID: "u2"},
 		},
 	}, policy, 80)
+	if strings.Contains(prompt, "...[older compact scope trimmed]") {
+		t.Fatalf("summary prompt should not trim transcript because ordinary output headroom is large: %q", prompt)
+	}
+}
+
+func TestSummaryPromptTranscriptBudgetUsesSummaryRequestBudget(t *testing.T) {
+	policy := contextpolicy.Normalize(contextpolicy.Policy{
+		ContextWindowTokens:   260,
+		MaxOutputTokens:       10,
+		ReservedOutputTokens:  10,
+		ReservedSummaryTokens: 80,
+		RecentTailTokens:      10,
+	})
+	prompt := SummaryPrompt(Preparation{
+		CompactedHead: []session.Message{
+			{Role: session.User, Content: strings.Repeat("a", 400), EntryID: "u1"},
+			{Role: session.User, Content: strings.Repeat("b", 800), EntryID: "u2"},
+		},
+	}, policy, 80)
 	if !strings.Contains(prompt, "...[older compact scope trimmed]") {
-		t.Fatalf("summary prompt should trim transcript using output headroom budget: %q", prompt)
+		t.Fatalf("summary prompt should trim transcript using summary request budget: %q", prompt)
 	}
 }
 
@@ -547,7 +566,7 @@ func TestPrepareShrinksTailWithoutLeavingOrphanToolResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prep.Result.Details["tail_shrunk_before_summary"] != "true" {
+	if prep.Result.Details["tail_shrunk_for_compacted_context"] != "true" {
 		t.Fatalf("tail should shrink before checkpoint: %#v", prep.Result.Details)
 	}
 	for _, msg := range prep.ActiveMessages {
@@ -579,11 +598,13 @@ func TestPrepareRecordsContextBudgetDetails(t *testing.T) {
 		t.Fatal(err)
 	}
 	for key, want := range map[string]string{
-		"context_window":         "1000000",
-		"threshold_tokens":       "616000",
-		"max_output_tokens":      "384000",
-		"output_headroom_tokens": "384000",
-		"auto_compact_ratio_pct": "90",
+		"context_window":            "1000000",
+		"threshold_tokens":          "616000",
+		"ratio_limit_tokens":        "900000",
+		"request_safe_limit_tokens": "616000",
+		"max_output_tokens":         "384000",
+		"output_headroom_tokens":    "384000",
+		"auto_compact_ratio_pct":    "90",
 	} {
 		if got := prep.Result.Details[key]; got != want {
 			t.Fatalf("detail %s = %q, want %q; details=%#v", key, got, want, prep.Result.Details)
