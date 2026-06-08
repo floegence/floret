@@ -34,9 +34,9 @@ type Definition struct {
 	OpenWorld    bool
 	ParallelSafe bool
 
-	Permission  PermissionSpec
-	ResultLimit ResultLimit
-	Annotations map[string]any
+	Permission   PermissionSpec
+	OutputPolicy OutputPolicy
+	Annotations  map[string]any
 }
 
 type RunOptions struct {
@@ -161,6 +161,7 @@ func (r *Registry) Register(t Tool) error {
 		return err
 	}
 	def.InputSchema = schema
+	def.OutputPolicy = NormalizeOutputPolicy(def.OutputPolicy)
 	def, err = ValidateDefinition(def)
 	if err != nil {
 		return err
@@ -436,14 +437,14 @@ func (r *Registry) RunBatchWithOptions(ctx context.Context, calls []provider.Too
 	return results
 }
 
-func (r *Registry) LimitFor(name string) ResultLimit {
+func (r *Registry) OutputPolicyFor(name string) OutputPolicy {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	tool, ok := r.tools[name]
 	if !ok {
-		return ResultLimit{}
+		return DefaultOutputPolicy()
 	}
-	return tool.Definition.ResultLimit
+	return tool.Definition.OutputPolicy
 }
 
 func effectsAsStrings(effects []Effect) []string {

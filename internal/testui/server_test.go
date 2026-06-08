@@ -626,6 +626,118 @@ func TestServerAgentSessionDebugRawQueryRequiresCapability(t *testing.T) {
 	}
 }
 
+func TestServerDebugRawKeepsToolBodiesButSanitizesPathMetadata(t *testing.T) {
+	root := t.TempDir()
+	secretPath := root + "/secret/debug.txt"
+	scripted := harness.NewScriptedProvider(
+		harness.Step(
+			harness.Tool("shell-1", "shell", `{"command":"printf 'DEBUG_RAW_OUTPUT `+secretPath+`'","workdir":"`+root+`","timeout_ms":1000}`),
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	runner.AllowDebugRaw = true
+	runner.Exec = func(context.Context, string, []string, string, []string) ([]byte, int) {
+		return []byte("DEBUG_RAW_OUTPUT " + secretPath), 0
+	}
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model"},"message":"hello","system_prompt":"system","selected_tools":["shell"],"debug_raw":true}`
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody)))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var created AgentRunResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	createBodyText := createRec.Body.String()
+	if !strings.Contains(createBodyText, "DEBUG_RAW_OUTPUT") {
+		t.Fatalf("debug raw run response should keep tool body: %s", createBodyText)
+	}
+	if strings.Contains(createBodyText, root) || strings.Contains(createBodyText, secretPath) {
+		t.Fatalf("debug raw run response exposed path: %s", createBodyText)
+	}
+	if !strings.Contains(createBodyText, event.SafePathLabel(secretPath)) {
+		t.Fatalf("debug raw run response should include safe path label: %s", createBodyText)
+	}
+
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+created.SessionID+"?debug_raw=1", nil))
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("session status = %d, body = %s", getRec.Code, getRec.Body.String())
+	}
+	getBodyText := getRec.Body.String()
+	if !strings.Contains(getBodyText, "DEBUG_RAW_OUTPUT") {
+		t.Fatalf("debug raw session should keep tool body: %s", getBodyText)
+	}
+	if strings.Contains(getBodyText, root) || strings.Contains(getBodyText, secretPath) {
+		t.Fatalf("debug raw session exposed path: %s", getBodyText)
+	}
+	if !strings.Contains(getBodyText, event.SafePathLabel(secretPath)) {
+		t.Fatalf("debug raw session should include safe path label: %s", getBodyText)
+	}
+
+	if !slices.ContainsFunc(created.Events, func(ev event.Event) bool {
+		if ev.Type != event.ToolResult {
+			return false
+		}
+		meta, _ := ev.Metadata.(map[string]any)
+		workdir, _ := meta["workdir"].(string)
+		return strings.Contains(ev.Result, "DEBUG_RAW_OUTPUT") &&
+			!strings.Contains(ev.Result, secretPath) &&
+			strings.Contains(ev.Result, event.SafePathLabel(secretPath)) &&
+			workdir != "" &&
+			!strings.Contains(workdir, root)
+	}) {
+		t.Fatalf("debug raw events should keep result but sanitize workdir: %#v", created.Events)
+	}
+}
+
+func TestServerDebugRawSanitizesHarnessEventMessages(t *testing.T) {
+	root := t.TempDir()
+	secretPath := root + "/secret/final.txt"
+	output := "final output " + secretPath + " https://example.com/docs/path /artifacts/session/run/output.txt"
+	scripted := harness.NewScriptedProvider(harness.Step(harness.Text(output), harness.Done()))
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	runner.AllowDebugRaw = true
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model"},"message":"hello","system_prompt":"system","debug_raw":true}`
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody)))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	body := createRec.Body.String()
+	if strings.Contains(body, root) || strings.Contains(body, secretPath) {
+		t.Fatalf("debug raw response exposed harness event path: %s", body)
+	}
+	for _, want := range []string{event.SafePathLabel(secretPath), "https://example.com/docs/path", "/artifacts/session/run/output.txt"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("debug raw response missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestServerAgentSessionTurnIgnoresServerTimeout(t *testing.T) {
 	scripted := harness.NewScriptedProvider(
 		harness.Step(provider.StreamEvent{Type: provider.Delta, Text: "slow-ok", Reason: "50ms"}, harness.Done()),
@@ -1573,6 +1685,71 @@ func TestServerAgentSessionDeleteRemovesCompletedSession(t *testing.T) {
 	}
 	if len(sessions) != 0 {
 		t.Fatalf("sessions = %#v", sessions)
+	}
+}
+
+func TestServerAgentSessionDeleteRemovesToolOutputArtifactRoute(t *testing.T) {
+	scripted := harness.NewScriptedProvider(
+		harness.Step(
+			harness.Tool("shell-1", "shell", `{"command":"printf '0123456789abcdef'","max_output_bytes":8}`),
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model"},"message":"hello","system_prompt":"test","selected_tools":["shell"]}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var first AgentRunResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != "completed" || first.SessionID == "" {
+		t.Fatalf("first = %#v", first)
+	}
+	var artifactURL string
+	for _, msg := range first.Observation.SessionMessages {
+		if msg.Role == "tool" && msg.ToolResult != nil && msg.ToolResult.FullOutput != nil {
+			artifactURL = msg.ToolResult.FullOutput.URL
+			break
+		}
+	}
+	if artifactURL == "" || !strings.HasPrefix(artifactURL, "/artifacts/") {
+		t.Fatalf("artifact route missing from observation: %#v", first.Observation.SessionMessages)
+	}
+
+	artifactReq := httptest.NewRequest(http.MethodGet, artifactURL, nil)
+	artifactRec := httptest.NewRecorder()
+	handler.ServeHTTP(artifactRec, artifactReq)
+	if artifactRec.Code != http.StatusOK || artifactRec.Body.String() != "0123456789abcdef" {
+		t.Fatalf("artifact before delete status/body = %d %q", artifactRec.Code, artifactRec.Body.String())
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/agent/sessions/"+first.SessionID, nil)
+	deleteRec := httptest.NewRecorder()
+	handler.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK || !strings.Contains(deleteRec.Body.String(), `"deleted":true`) {
+		t.Fatalf("delete status/body = %d %s", deleteRec.Code, deleteRec.Body.String())
+	}
+
+	artifactAfterDeleteRec := httptest.NewRecorder()
+	handler.ServeHTTP(artifactAfterDeleteRec, httptest.NewRequest(http.MethodGet, artifactURL, nil))
+	if artifactAfterDeleteRec.Code != http.StatusNotFound {
+		t.Fatalf("artifact after delete status/body = %d %s", artifactAfterDeleteRec.Code, artifactAfterDeleteRec.Body.String())
 	}
 }
 

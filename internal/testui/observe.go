@@ -9,6 +9,8 @@ import (
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/provider/cache"
 	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/session/artifact"
+	"github.com/floegence/floret/sessiontree"
 )
 
 const maxObservedRawSegmentBytes = 16 * 1024
@@ -348,12 +350,78 @@ func observeMessages(messages []session.Message) []ObservedSessionMessage {
 			ToolName:             msg.ToolName,
 			ToolArgs:             msg.ToolArgs,
 			Kind:                 string(msg.Kind),
+			ToolResult:           observeToolResultView(msg.ToolResult),
 			EntryID:              msg.EntryID,
 			ParentEntryID:        msg.ParentEntryID,
 			CompactionID:         msg.CompactionID,
 			CompactionGeneration: msg.CompactionGeneration,
 			CompactionWindowID:   msg.CompactionWindowID,
 		})
+	}
+	return out
+}
+
+func observeContextProjection(projection sessiontree.ContextProjection) ObservedContextProjection {
+	return ObservedContextProjection{
+		Messages: observeMessages(projection.Messages),
+		Segments: observeContextSegments(projection.Segments),
+	}
+}
+
+func observeContextSegments(segments []sessiontree.ProjectedSegment) []ObservedContextSegment {
+	out := make([]ObservedContextSegment, 0, len(segments))
+	for _, seg := range segments {
+		out = append(out, ObservedContextSegment{
+			EntryID:       seg.EntryID,
+			EntryType:     seg.EntryType,
+			MessageIndex:  seg.MessageIndex,
+			Role:          string(seg.Role),
+			ToolCallID:    seg.ToolCallID,
+			ToolName:      seg.ToolName,
+			TokenEstimate: seg.TokenEstimate,
+			ArtifactRefs:  observeArtifactRefs(seg.ArtifactRefs),
+			UIPreview:     seg.UIPreview,
+		})
+	}
+	return out
+}
+
+func observeArtifactRefs(refs []artifact.Ref) []ObservedArtifactRef {
+	out := make([]ObservedArtifactRef, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, observeArtifactRef(ref))
+	}
+	return out
+}
+
+func observeArtifactRef(ref artifact.Ref) ObservedArtifactRef {
+	return ObservedArtifactRef{
+		ID:        ref.ID,
+		SafeLabel: ref.SafeLabel,
+		URL:       ref.URL,
+		Kind:      ref.Kind,
+		MIME:      ref.MIME,
+		SizeBytes: ref.SizeBytes,
+		SHA256:    ref.SHA256,
+	}
+}
+
+func observeToolResultView(view *session.ToolResultView) *ObservedToolResultView {
+	if view == nil {
+		return nil
+	}
+	out := &ObservedToolResultView{
+		Truncated:     view.Truncated,
+		OriginalBytes: view.OriginalBytes,
+		VisibleBytes:  view.VisibleBytes,
+		OriginalLines: view.OriginalLines,
+		VisibleLines:  view.VisibleLines,
+		Strategy:      view.Strategy,
+		ContentSHA256: view.ContentSHA256,
+	}
+	if view.FullOutput != nil {
+		ref := observeArtifactRef(*view.FullOutput)
+		out.FullOutput = &ref
 	}
 	return out
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/session/artifact"
 	"github.com/floegence/floret/session/contextpolicy"
 )
 
@@ -25,15 +26,16 @@ func TestPrepareRequiresExplicitSummaryGenerator(t *testing.T) {
 }
 
 func TestPrepareProducesStableCutpointAndPreservesToolPair(t *testing.T) {
+	ref := artifact.Ref{ID: "artifact-1", SafeLabel: "tool-output.log", URL: "/artifacts/tool-output.log", SizeBytes: 4096, SHA256: "abc123"}
 	history := []session.Message{
 		{Role: session.User, Content: "old goal", EntryID: "e1"},
 		{Role: session.Assistant, Content: "tool_call", ToolCallID: "call-1", ToolName: "read", ToolArgs: "A", EntryID: "e2"},
-		{Role: session.Tool, Content: strings.Repeat("large result ", 200), ToolCallID: "call-1", ToolName: "read", EntryID: "e3"},
+		{Role: session.Tool, Content: strings.Repeat("projected result ", 20), ToolCallID: "call-1", ToolName: "read", EntryID: "e3", ToolResult: &session.ToolResultView{Truncated: true, OriginalBytes: 4096, VisibleBytes: 320, Strategy: "tail", ContentSHA256: "abc123", FullOutput: &ref}},
 		{Role: session.User, Content: "continue", EntryID: "e4"},
 	}
 	prep, err := Prepare(context.Background(), Request{
 		History: history,
-		Policy:  contextpolicy.Policy{ContextWindowTokens: 400, ReservedOutputTokens: 40, ReservedSummaryTokens: 40, RecentTailTokens: 30, MicrocompactToolTokens: 20},
+		Policy:  contextpolicy.Policy{ContextWindowTokens: 400, ReservedOutputTokens: 40, ReservedSummaryTokens: 40, RecentTailTokens: 30},
 		Trigger: TriggerPreRequest,
 		Reason:  ReasonThreshold,
 	}, ExtractiveSummaryGenerator{})
@@ -49,12 +51,14 @@ func TestPrepareProducesStableCutpointAndPreservesToolPair(t *testing.T) {
 				t.Fatalf("tool result retained without assistant tool call: %#v", prep.ActiveMessages)
 			}
 		}
-		if msg.Kind == session.MessageKindMicrocompactMarker && !strings.Contains(msg.Content, "large tool result compacted") {
-			t.Fatalf("microcompact marker lost recovery metadata: %#v", msg)
-		}
 	}
-	if prep.Result.SummarySchemaVersion != SummarySchemaVersion || prep.Result.TokensBefore <= prep.Result.TokensAfterEstimate {
+	if prep.Result.SummarySchemaVersion != SummarySchemaVersion || prep.Result.Summary == "" || prep.Result.TokensAfterEstimate <= 0 {
 		t.Fatalf("summary/token contract not satisfied: %#v", prep.Result)
+	}
+	if prep.Result.Details["tool_results_projected"] != "1" ||
+		prep.Result.Details["tool_artifacts_referenced"] != "1" ||
+		prep.Result.Details["retained_tail_projected_tokens"] == "" {
+		t.Fatalf("projected tool details missing: %#v", prep.Result.Details)
 	}
 }
 
@@ -675,7 +679,7 @@ func TestPrepareShrinksTailWithoutLeavingOrphanToolResult(t *testing.T) {
 	}
 	prep, err := Prepare(context.Background(), Request{
 		History: history,
-		Policy:  contextpolicy.Policy{ContextWindowTokens: 500, ReservedOutputTokens: 80, ReservedSummaryTokens: 80, RecentTailTokens: 120, MicrocompactToolTokens: 1000},
+		Policy:  contextpolicy.Policy{ContextWindowTokens: 500, ReservedOutputTokens: 80, ReservedSummaryTokens: 80, RecentTailTokens: 120},
 	}, ExtractiveSummaryGenerator{})
 	if err != nil {
 		t.Fatal(err)

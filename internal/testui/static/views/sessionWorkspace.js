@@ -307,6 +307,7 @@ function renderToolRun(run) {
   const preview = toolRunPreview(args, output, status);
   const copyPayload = toolRunCopyPayload({ toolName, callID, args, output, status });
   const metadata = toolRunMetadata(call, result);
+  const projection = renderToolProjection(resultMsg);
   return `
     <article class="message tool ${status === "error" ? "tool-error" : ""}">
       <details class="tool-activity"${detailStateAttributes(entryExpandKey(sourceEntry, "activity"), false)}>
@@ -326,6 +327,7 @@ function renderToolRun(run) {
           ${callID ? `<div class="key-value"><span>Call ID</span><span>${escapeHTML(callID)}</span></div>` : ""}
           ${renderToolDetailSection("Arguments", args)}
           ${renderToolDetailSection("Result", output)}
+          ${projection}
           ${metadata}
         </div>
       </details>
@@ -368,6 +370,7 @@ function renderToolActivity(entry, msg) {
   const preview = toolPreview(body, msg, isResult);
   const copyPayload = body || structuredEntryCopy(entry, title, msg);
   const metadata = entry.metadata && Object.keys(entry.metadata).length ? `<pre class="json-block">${escapeHTML(JSON.stringify(entry.metadata, null, 2))}</pre>` : "";
+  const projection = renderToolProjection(msg);
   return `
     <article class="message tool ${status === "error" ? "tool-error" : ""}">
       <details class="tool-activity"${detailStateAttributes(entryExpandKey(entry, "activity"), false)}>
@@ -386,6 +389,7 @@ function renderToolActivity(entry, msg) {
           ${renderReasoningBlock(msg.reasoning, "tool", entryExpandKey(entry, "reasoning"))}
           ${msg.tool_call_id ? `<div class="key-value"><span>Call ID</span><span>${escapeHTML(msg.tool_call_id)}</span></div>` : ""}
           ${renderExpandableBody(body, { label: isResult ? "Tool result" : "Tool arguments", mode: "tool", forceOpen: true })}
+          ${projection}
           ${metadata}
         </div>
       </details>
@@ -406,6 +410,33 @@ function renderToolDetailSection(label, body) {
     <div class="tool-detail-section redacted">
       <strong>${escapeHTML(label)}</strong>
       <p class="muted">${escapeHTML(redactedToolDetail)}</p>
+    </div>
+  `;
+}
+
+function renderToolProjection(msg) {
+  const view = msg?.tool_result;
+  if (!view) return "";
+  const ref = view.full_output;
+  const rows = [
+    ["Projection", view.truncated ? "truncated" : "full"],
+    ["Strategy", view.strategy || ""],
+    ["Visible", formatBytes(view.visible_bytes)],
+    ["Original", formatBytes(view.original_bytes)],
+    ["Hash", shortHash(view.content_sha256 || "")],
+  ].filter(([, value]) => value || value === 0);
+  return `
+    <div class="tool-detail-section">
+      <strong>Model-visible output</strong>
+      <div class="tool-projection-grid">
+        ${rows.map(([key, value]) => `<div class="key-value"><span>${escapeHTML(key)}</span><span>${escapeHTML(value)}</span></div>`).join("")}
+      </div>
+      ${ref ? `
+        <div class="artifact-link-row">
+          <span>${escapeHTML(ref.safe_label || ref.id || "tool output artifact")} · ${escapeHTML(formatBytes(ref.size_bytes))}</span>
+          <a class="button small ghost" href="${escapeHTML(ref.url || "#")}" target="_blank" rel="noreferrer">Open artifact</a>
+        </div>
+      ` : ""}
     </div>
   `;
 }
@@ -454,6 +485,21 @@ function toolActivityMetrics(entry) {
     meta.output_bytes ? `${meta.output_bytes} bytes` : "",
   ].filter(Boolean);
   return parts.map((part) => `<span class="tiny-pill">${escapeHTML(part)}</span>`).join("");
+}
+
+function formatBytes(value) {
+	const n = Number(value || 0);
+	if (!n) return "";
+	if (n < 1024) return `${n} B`;
+	if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} KB`;
+	return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function shortHash(value) {
+  const text = String(value || "");
+  if (!text) return "";
+  if (text.length <= 16) return text;
+  return `${text.slice(0, 8)}...${text.slice(-6)}`;
 }
 
 function toolActivityStatus(entry, msg) {

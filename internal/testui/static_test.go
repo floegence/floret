@@ -973,6 +973,85 @@ if (html.includes('data-expand-key="' + key + '" open')) {
 	}
 }
 
+func TestStaticConsoleRendersToolProjectionAndArtifactLink(t *testing.T) {
+	script := `
+import assert from "node:assert/strict";
+import { state } from "./static/state.js";
+import { renderSessionWorkspace } from "./static/views/sessionWorkspace.js";
+
+const session = {
+  id: "session-1",
+  status: "completed",
+  can_append_message: true,
+  turns: [{ id: "turn-1" }],
+  selected_tools: ["shell"],
+  profile: { name: "Fake", model: "fake-model" },
+  aggregate_metrics: { usage: {} },
+  path_entries: [
+    {
+      id: "call-entry",
+      thread_id: "session-1",
+      turn_id: "turn-1",
+      type: "tool_call",
+      message: {
+        role: "assistant",
+        content: "tool_call",
+        tool_name: "shell",
+        tool_call_id: "shell-1",
+        tool_args: "{\"command\":\"printf test\"}",
+      },
+    },
+    {
+      id: "result-entry",
+      thread_id: "session-1",
+      turn_id: "turn-1",
+      type: "tool_result",
+      message: {
+        role: "tool",
+        content: "89abcdef",
+        tool_name: "shell",
+        tool_call_id: "shell-1",
+        tool_result: {
+          truncated: true,
+          original_bytes: 16,
+          visible_bytes: 8,
+          original_lines: 1,
+          visible_lines: 1,
+          strategy: "tail",
+          content_sha256: "abcdef1234567890abcdef1234567890",
+          full_output: {
+            id: "artifact-1",
+            safe_label: "shell-output-000001.log",
+            url: "/artifacts/session-1/shell-output-000001.log",
+            kind: "tool_output",
+            mime: "text/plain; charset=utf-8",
+            size_bytes: 16,
+            sha256: "abcdef1234567890abcdef1234567890",
+          },
+        },
+      },
+      metadata: { truncated: true, original_bytes: 16, visible_bytes: 8 },
+    },
+  ],
+};
+state.activeSession = session;
+const html = renderSessionWorkspace({ sessions: [session], activeSession: session, result: null, tools: [], inspectorTab: "tools" });
+assert.ok(html.includes("Model-visible output"));
+assert.ok(html.includes("Projection"));
+assert.ok(html.includes("truncated"));
+assert.ok(html.includes("Strategy"));
+assert.ok(html.includes("tail"));
+assert.ok(html.includes("Visible"));
+assert.ok(html.includes("8 B"));
+assert.ok(html.includes("Original"));
+assert.ok(html.includes("16 B"));
+assert.ok(html.includes("shell-output-000001.log"));
+assert.ok(html.includes('href="/artifacts/session-1/shell-output-000001.log"'));
+assert.ok(html.includes("Open artifact"));
+`
+	runNodeStaticScript(t, script)
+}
+
 func readStaticTestFile(t *testing.T, parts ...string) string {
 	t.Helper()
 	path := filepath.Join(append([]string{"static"}, parts...)...)

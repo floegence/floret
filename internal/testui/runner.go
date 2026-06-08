@@ -30,6 +30,7 @@ import (
 	"github.com/floegence/floret/provider/catalog"
 	"github.com/floegence/floret/runtime/storage/sqlite"
 	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/session/artifact"
 	"github.com/floegence/floret/session/compaction"
 	"github.com/floegence/floret/session/contextpolicy"
 	"github.com/floegence/floret/sessiontree"
@@ -167,6 +168,13 @@ func (r *Runner) providerFactory() func(config.Config) (provider.Provider, error
 
 func (r Runner) debugRawAllowed(requested bool) bool {
 	return requested && r.AllowDebugRaw
+}
+
+func agentSessionSinkPolicy(debugRaw bool) event.SinkPolicy {
+	if !debugRaw {
+		return event.SinkPolicy{}
+	}
+	return event.SinkPolicy{AllowRaw: true, Redactor: event.SafePathRefsText}
 }
 
 func (r *Runner) ConfigInfo() ConfigInfo {
@@ -622,7 +630,7 @@ func (r *Runner) DeleteAgentSession(ctx context.Context, sessionID string) error
 		registry.order = removeSessionID(registry.order, sessionID)
 		registry.mu.Unlock()
 	}
-	return store.deleteSession(ctx, r.Root, sessionID, runIDs, func() error {
+	if err := store.deleteSession(ctx, r.Root, sessionID, runIDs, func() error {
 		if err := os.Remove(r.agentSessionMetadataPath(sessionID)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
@@ -635,7 +643,10 @@ func (r *Runner) DeleteAgentSession(ctx context.Context, sessionID string) error
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	return os.RemoveAll(toolOutputArtifactSessionDir(r.managedArtifactsRoot(), sessionID))
 }
 
 func (r *Runner) AgentSession(ctx context.Context, sessionID string, debugRaw bool) (AgentSessionSnapshot, error) {
@@ -690,7 +701,9 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 		Tools:        registry,
 		PromptStore:  sess.promptStore,
 		Repo:         sess.repo,
+		Artifacts:    newToolOutputArtifactStore(r.managedArtifactsRoot()),
 		Sink:         rec,
+		SinkPolicy:   agentSessionSinkPolicy(sess.debugRaw),
 		HarnessSink:  harnessRec,
 		Approver:     testUIToolApprover,
 		TurnPolicy: agentharness.TurnPolicy{
@@ -868,7 +881,9 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 		Tools:        registry,
 		PromptStore:  promptStore,
 		Repo:         repo,
+		Artifacts:    newToolOutputArtifactStore(r.managedArtifactsRoot()),
 		Sink:         rec,
+		SinkPolicy:   agentSessionSinkPolicy(opts.DebugRaw),
 		HarnessSink:  harnessRec,
 		Approver:     testUIToolApprover,
 		TurnPolicy: agentharness.TurnPolicy{
@@ -1049,7 +1064,7 @@ func (r *Runner) registerAgentCapabilities(registry *tools.Registry, sink event.
 		return state, prompt, manager, nil
 	}
 	tool, err := skills.DefineSkillTool(catalog.Skills, skills.ToolOptions{
-		ResultLimit: tools.ResultLimit{MaxBytes: 64 * 1024, Strategy: "head"},
+		OutputPolicy: tools.OutputPolicy{VisibleMaxBytes: 64 * 1024, Strategy: tools.OutputHead, PreserveFull: true},
 		OnLoad: func(load skills.SkillLoad) {
 			if sink != nil {
 				sink.Emit(event.Event{Type: event.SkillLoaded, Metadata: map[string]any{
@@ -1301,7 +1316,8 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 	}
 	lifecycle := sessionlifecycle.Derive(path, sessionlifecycle.PhaseIdle)
 	turns := summariesFromEntries(entries, meta.Turns)
-	active := observeMessages(sessiontree.BuildContext(path, sessiontree.ContextOptions{}))
+	projection := observeContextProjection(sessiontree.BuildContextProjection(path, sessiontree.ContextProjectionOptions{Purpose: sessiontree.ProjectionTestUI}))
+	active := projection.Messages
 	pathEntries := observeEntries(path)
 	allEntries := observeEntries(entries)
 	updatedAt := meta.UpdatedAt
@@ -1333,6 +1349,7 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 		CanAppendMessage:        lifecycle.CanAppendMessage(),
 		Turns:                   turns,
 		ActiveContext:           active,
+		ContextProjection:       projection,
 		PathEntries:             pathEntries,
 		AllEntries:              allEntries,
 		AggregateMetrics:        aggregateTurnMetrics(turns),
@@ -1586,7 +1603,8 @@ func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) 
 	}
 	lifecycle := sessionlifecycle.Derive(snap.Path, snap.Phase)
 	turns := summariesFromEntries(snap.Entries, sess.turns)
-	active := observeMessages(snap.Context)
+	projection := observeContextProjection(sessiontree.BuildContextProjection(snap.Path, sessiontree.ContextProjectionOptions{Purpose: sessiontree.ProjectionTestUI}))
+	active := projection.Messages
 	pathEntries := observeEntries(snap.Path)
 	allEntries := observeEntries(snap.Entries)
 	snapshot := AgentSessionSnapshot{
@@ -1609,6 +1627,7 @@ func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) 
 		CanAppendMessage:        lifecycle.CanAppendMessage(),
 		Turns:                   turns,
 		ActiveContext:           active,
+		ContextProjection:       projection,
 		PathEntries:             pathEntries,
 		AllEntries:              allEntries,
 		AggregateMetrics:        aggregateTurnMetrics(turns),
@@ -1688,7 +1707,9 @@ func (r *Runner) refreshRunningSnapshotFromThread(ctx context.Context, sess *age
 	snapshot.WaitingPrompt = lifecycle.WaitingPrompt()
 	snapshot.Recoverable = lifecycle.Recoverable()
 	snapshot.CanAppendMessage = lifecycle.CanAppendMessage()
-	snapshot.ActiveContext = observeMessages(snap.Context)
+	projection := observeContextProjection(sessiontree.BuildContextProjection(snap.Path, sessiontree.ContextProjectionOptions{Purpose: sessiontree.ProjectionTestUI}))
+	snapshot.ActiveContext = projection.Messages
+	snapshot.ContextProjection = projection
 	snapshot.PathEntries = observeEntries(snap.Path)
 	snapshot.AllEntries = observeEntries(snap.Entries)
 	snapshot.Compactions = countCompactions(snap.Path)
@@ -1711,6 +1732,7 @@ func (r *Runner) agentObservationLocked(sess *agentSession, snapshot AgentSessio
 	observation := sess.provider.Snapshot()
 	observation.SessionMessages = sessionMessagesFromEntries(snapshot.PathEntries)
 	observation.ActiveContext = snapshot.ActiveContext
+	observation.ContextProjection = snapshot.ContextProjection
 	observation.PathEntries = snapshot.PathEntries
 	observation.Transitions = buildTransitions(eventsForRun(sess.recorder.Snapshot(), turnID), result)
 	return observation
@@ -1720,6 +1742,7 @@ func (r *Runner) runningAgentObservation(sess *agentSession, snapshot AgentSessi
 	observation := sess.provider.Snapshot()
 	observation.SessionMessages = sessionMessagesFromEntries(snapshot.PathEntries)
 	observation.ActiveContext = snapshot.ActiveContext
+	observation.ContextProjection = snapshot.ContextProjection
 	observation.PathEntries = snapshot.PathEntries
 	observation.Transitions = buildRunningTransitions(eventsForRun(sess.recorder.Snapshot(), snapshot.LatestTurnID))
 	return observation
@@ -2218,6 +2241,7 @@ func (r Runner) runEvalDemo(ctx context.Context, resp RunResponse) RunResponse {
 	eng, err := engine.New(engine.Config{
 		Provider:     prov,
 		Store:        session.NewMemoryStore(),
+		Artifacts:    artifact.NewMemoryStore(),
 		SystemPrompt: "You are a deterministic Floret eval agent.",
 		Tools:        registry,
 		Sink:         rec,
@@ -2304,6 +2328,7 @@ func (r Runner) runProviderSmoke(ctx context.Context, resp RunResponse) RunRespo
 		Provider:     p,
 		Store:        session.NewMemoryStore(),
 		Prompt:       promptStore,
+		Artifacts:    artifact.NewMemoryStore(),
 		SystemPrompt: "You are Floret's smoke-test assistant. Reply with a short success message. Do not call normal tools unless you need to ask the user for missing information.",
 		Tools:        registry,
 		Sink:         rec,

@@ -287,14 +287,14 @@ func (s *serverSession) defineTool(desc ToolDescriptor) tools.Tool {
 		description = fmt.Sprintf("Call MCP tool %s on server %s.", desc.ToolName, s.cfg.Name)
 	}
 	def := tools.Definition{
-		Name:        desc.Name,
-		Title:       desc.Title,
-		Description: description,
-		InputSchema: cloneSchema(desc.InputSchema),
-		Effects:     []tools.Effect{tools.EffectNetwork},
-		OpenWorld:   true,
-		Permission:  tools.PermissionSpec{Mode: permission, ResourceKinds: []string{"mcp_server", "mcp_tool"}},
-		ResultLimit: tools.ResultLimit{MaxBytes: 64 * 1024, Strategy: "tail"},
+		Name:         desc.Name,
+		Title:        desc.Title,
+		Description:  description,
+		InputSchema:  cloneSchema(desc.InputSchema),
+		Effects:      []tools.Effect{tools.EffectNetwork},
+		OpenWorld:    true,
+		Permission:   tools.PermissionSpec{Mode: permission, ResourceKinds: []string{"mcp_server", "mcp_tool"}},
+		OutputPolicy: tools.OutputPolicy{VisibleMaxBytes: 64 * 1024, Strategy: tools.OutputTail, PreserveFull: true},
 		Annotations: map[string]any{
 			"source":          "mcp",
 			"mcp_server":      s.cfg.Name,

@@ -390,6 +390,14 @@ func TestThreadRunStopHookContinuationBeforeToolCallKeepsSessionTreeOrder(t *tes
 	if !messagePrefixEqual(snap.Context, want) || len(snap.Context) != len(want) {
 		t.Fatalf("session context order = %#v", snap.Context)
 	}
+	if !slices.ContainsFunc(snap.Entries, func(entry sessiontree.Entry) bool {
+		return entry.Type == sessiontree.EntryToolResult &&
+			entry.Message.ToolCallID == "read-1" &&
+			entry.Message.ToolResult != nil &&
+			entry.Message.ToolResult.ContentSHA256 != ""
+	}) {
+		t.Fatalf("tool result projection metadata missing: %#v", snap.Entries)
+	}
 	if countUserMessagesInSnapshot(snap, "Please inspect with a tool.") != 1 ||
 		countEntriesWithContent(snap.Entries, sessiontree.EntryAssistantMessage, "draft") != 1 ||
 		countEntriesWithContent(snap.Entries, sessiontree.EntryAssistantMessage, "final") != 1 ||
@@ -410,6 +418,44 @@ func TestThreadRunStopHookContinuationBeforeToolCallKeepsSessionTreeOrder(t *tes
 		return msg.Role == session.User && msg.Content == "Please inspect with a tool."
 	}) {
 		t.Fatalf("hook continuation missing from tool step request: %#v", p.Requests)
+	}
+}
+
+func TestToolResultViewFromEventBindsOnlyProjectionArtifact(t *testing.T) {
+	view := toolResultViewFromEvent(event.Event{
+		Metadata: map[string]any{
+			"truncated":       true,
+			"original_bytes":  128,
+			"visible_bytes":   8,
+			"strategy":        "tail",
+			"content_sha256":  "abc123",
+			"artifact_id":     "projection",
+			"artifact_label":  "projection.txt#123",
+			"artifact_sha256": "full-sha",
+		},
+		Artifacts: []event.Artifact{
+			{ID: "ordinary", SafeLabel: "ordinary.txt#123", URL: "/artifacts/ordinary", Kind: "report"},
+			{ID: "projection", SafeLabel: "projection.txt#123", URL: "/artifacts/projection", Kind: "tool_output"},
+		},
+	})
+	if view == nil || view.FullOutput == nil || view.FullOutput.ID != "projection" {
+		t.Fatalf("view bound wrong artifact: %#v", view)
+	}
+
+	view = toolResultViewFromEvent(event.Event{
+		Metadata: map[string]any{
+			"truncated":      false,
+			"original_bytes": 32,
+			"visible_bytes":  32,
+			"content_sha256": "abc123",
+		},
+		Artifacts: []event.Artifact{{ID: "ordinary", SafeLabel: "ordinary.txt#123", URL: "/artifacts/ordinary", Kind: "report"}},
+	})
+	if view == nil {
+		t.Fatalf("view should retain projection metrics")
+	}
+	if view.FullOutput != nil {
+		t.Fatalf("ordinary artifact should not become full output: %#v", view.FullOutput)
 	}
 }
 
@@ -1584,6 +1630,7 @@ func messagePrefixEqual(got, want []session.Message) bool {
 		candidate := got[i]
 		candidate.EntryID = ""
 		candidate.ParentEntryID = ""
+		candidate.ToolResult = nil
 		if candidate != msg {
 			return false
 		}

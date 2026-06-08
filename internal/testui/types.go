@@ -327,13 +327,14 @@ type AgentRunResponse struct {
 }
 
 type AgentObservation struct {
-	ProviderRequests []ObservedProviderRequest `json:"provider_requests"`
-	ProviderEvents   []ObservedProviderEvent   `json:"provider_events"`
-	SessionMessages  []ObservedSessionMessage  `json:"session_messages"`
-	ActiveContext    []ObservedSessionMessage  `json:"active_context"`
-	PathEntries      []ObservedSessionEntry    `json:"path_entries"`
-	Transitions      []StateTransition         `json:"transitions"`
-	Diagnostics      map[string]string         `json:"diagnostics,omitempty"`
+	ProviderRequests  []ObservedProviderRequest `json:"provider_requests"`
+	ProviderEvents    []ObservedProviderEvent   `json:"provider_events"`
+	SessionMessages   []ObservedSessionMessage  `json:"session_messages"`
+	ActiveContext     []ObservedSessionMessage  `json:"active_context"`
+	ContextProjection ObservedContextProjection `json:"context_projection,omitempty"`
+	PathEntries       []ObservedSessionEntry    `json:"path_entries"`
+	Transitions       []StateTransition         `json:"transitions"`
+	Diagnostics       map[string]string         `json:"diagnostics,omitempty"`
 }
 
 type ObservedProviderRequest struct {
@@ -414,19 +415,58 @@ type ObservedProviderEvent struct {
 	Usage        provider.Usage                 `json:"usage,omitempty"`
 }
 
+type ObservedArtifactRef struct {
+	ID        string `json:"id,omitempty"`
+	SafeLabel string `json:"safe_label,omitempty"`
+	URL       string `json:"url,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	MIME      string `json:"mime,omitempty"`
+	SizeBytes int64  `json:"size_bytes,omitempty"`
+	SHA256    string `json:"sha256,omitempty"`
+}
+
+type ObservedToolResultView struct {
+	Truncated     bool                 `json:"truncated,omitempty"`
+	OriginalBytes int                  `json:"original_bytes,omitempty"`
+	VisibleBytes  int                  `json:"visible_bytes,omitempty"`
+	OriginalLines int                  `json:"original_lines,omitempty"`
+	VisibleLines  int                  `json:"visible_lines,omitempty"`
+	Strategy      string               `json:"strategy,omitempty"`
+	ContentSHA256 string               `json:"content_sha256,omitempty"`
+	FullOutput    *ObservedArtifactRef `json:"full_output,omitempty"`
+}
+
+type ObservedContextProjection struct {
+	Messages []ObservedSessionMessage `json:"messages,omitempty"`
+	Segments []ObservedContextSegment `json:"segments,omitempty"`
+}
+
+type ObservedContextSegment struct {
+	EntryID       string                `json:"entry_id,omitempty"`
+	EntryType     sessiontree.EntryType `json:"entry_type,omitempty"`
+	MessageIndex  int                   `json:"message_index"`
+	Role          string                `json:"role,omitempty"`
+	ToolCallID    string                `json:"tool_call_id,omitempty"`
+	ToolName      string                `json:"tool_name,omitempty"`
+	TokenEstimate int64                 `json:"token_estimate,omitempty"`
+	ArtifactRefs  []ObservedArtifactRef `json:"artifact_refs,omitempty"`
+	UIPreview     string                `json:"ui_preview,omitempty"`
+}
+
 type ObservedSessionMessage struct {
-	Role                 string `json:"role"`
-	Content              string `json:"content,omitempty"`
-	Reasoning            string `json:"reasoning,omitempty"`
-	ToolCallID           string `json:"tool_call_id,omitempty"`
-	ToolName             string `json:"tool_name,omitempty"`
-	ToolArgs             string `json:"tool_args,omitempty"`
-	Kind                 string `json:"kind,omitempty"`
-	EntryID              string `json:"entry_id,omitempty"`
-	ParentEntryID        string `json:"parent_entry_id,omitempty"`
-	CompactionID         string `json:"compaction_id,omitempty"`
-	CompactionGeneration int    `json:"compaction_generation,omitempty"`
-	CompactionWindowID   string `json:"compaction_window_id,omitempty"`
+	Role                 string                  `json:"role"`
+	Content              string                  `json:"content,omitempty"`
+	Reasoning            string                  `json:"reasoning,omitempty"`
+	ToolCallID           string                  `json:"tool_call_id,omitempty"`
+	ToolName             string                  `json:"tool_name,omitempty"`
+	ToolArgs             string                  `json:"tool_args,omitempty"`
+	Kind                 string                  `json:"kind,omitempty"`
+	ToolResult           *ObservedToolResultView `json:"tool_result,omitempty"`
+	EntryID              string                  `json:"entry_id,omitempty"`
+	ParentEntryID        string                  `json:"parent_entry_id,omitempty"`
+	CompactionID         string                  `json:"compaction_id,omitempty"`
+	CompactionGeneration int                     `json:"compaction_generation,omitempty"`
+	CompactionWindowID   string                  `json:"compaction_window_id,omitempty"`
 }
 
 type ObservedSessionEntry struct {
@@ -479,6 +519,7 @@ type AgentSessionSnapshot struct {
 	CanAppendMessage        bool                            `json:"can_append_message"`
 	Turns                   []AgentTurnSummary              `json:"turns"`
 	ActiveContext           []ObservedSessionMessage        `json:"active_context"`
+	ContextProjection       ObservedContextProjection       `json:"context_projection,omitempty"`
 	PathEntries             []ObservedSessionEntry          `json:"path_entries"`
 	AllEntries              []ObservedSessionEntry          `json:"all_entries"`
 	AggregateMetrics        engine.RunMetrics               `json:"aggregate_metrics"`

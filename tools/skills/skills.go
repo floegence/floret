@@ -81,8 +81,8 @@ type PromptOptions struct {
 }
 
 type ToolOptions struct {
-	ResultLimit tools.ResultLimit
-	OnLoad      func(SkillLoad)
+	OutputPolicy tools.OutputPolicy
+	OnLoad       func(SkillLoad)
 }
 
 type SkillLoad struct {
@@ -224,7 +224,7 @@ func DefineSkillTool(skills []Skill, opts ToolOptions) (tools.Tool, error) {
 			ReadOnly:     true,
 			ParallelSafe: true,
 			Permission:   tools.PermissionSpec{Mode: tools.PermissionAllow, ResourceKinds: []string{"skill"}},
-			ResultLimit:  opts.ResultLimit,
+			OutputPolicy: opts.OutputPolicy,
 			Annotations: map[string]any{
 				"source":          "skill",
 				"permission_mode": string(tools.PermissionAllow),

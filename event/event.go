@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -70,9 +72,14 @@ type Event struct {
 }
 
 type Artifact struct {
-	Kind string `json:"kind,omitempty"`
-	Path string `json:"path,omitempty"`
-	MIME string `json:"mime,omitempty"`
+	ID        string `json:"id,omitempty"`
+	SafeLabel string `json:"safe_label,omitempty"`
+	URL       string `json:"url,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	MIME      string `json:"mime,omitempty"`
+	SizeBytes int64  `json:"size_bytes,omitempty"`
+	SHA256    string `json:"sha256,omitempty"`
+	Path      string `json:"path,omitempty"`
 }
 
 type Sink interface {
@@ -97,7 +104,16 @@ func Sanitize(e Event) Event {
 	return sanitize(e, SinkPolicy{})
 }
 
+func SanitizeWithPolicy(e Event, policy SinkPolicy) Event {
+	return sanitize(e, policy)
+}
+
+func SanitizePathRefs(e Event) Event {
+	return sanitizePathRefs(e)
+}
+
 func sanitize(e Event, policy SinkPolicy) Event {
+	e = sanitizePathRefs(e)
 	if policy.AllowRaw {
 		if policy.Redactor != nil {
 			e.Message = policy.Redactor(e.Message)
@@ -126,8 +142,19 @@ func sanitize(e Event, policy SinkPolicy) Event {
 	e.Args = ""
 	e.Result = Redact(e.Result)
 	e.Metadata = sanitizeMetadata(e.Metadata)
+	return e
+}
+
+func sanitizePathRefs(e Event) Event {
+	e.Message = SafePathRefsText(e.Message)
+	e.Args = SafePathRefsText(e.Args)
+	e.Result = SafePathRefsText(e.Result)
+	e.Err = SafePathRefsText(e.Err)
+	e.Metadata = sanitizePathMetadata(e.Metadata)
 	for i := range e.Artifacts {
-		e.Artifacts[i].Path = SafePathLabel(e.Artifacts[i].Path)
+		if e.Artifacts[i].Path != "" {
+			e.Artifacts[i].Path = SafePathLabel(e.Artifacts[i].Path)
+		}
 	}
 	return e
 }
@@ -180,6 +207,62 @@ func SafePathLabel(path string) string {
 	return base + "#" + hex.EncodeToString(sum[:])[:12]
 }
 
+var pathRefPattern = regexp.MustCompile(`(?:/[^\s,"'<>]+|[A-Za-z]:\\[^\s,"'<>]+)`)
+
+func SafePathRefsText(value string) string {
+	if value == "" {
+		return ""
+	}
+	matches := pathRefPattern.FindAllStringIndex(value, -1)
+	if len(matches) == 0 {
+		return value
+	}
+	var out strings.Builder
+	last := 0
+	for _, match := range matches {
+		start, end := match[0], match[1]
+		text := value[start:end]
+		if preservePathRef(value, start, text) {
+			continue
+		}
+		path := strings.TrimRight(text, ".,;:!?)")
+		if path == "" {
+			continue
+		}
+		out.WriteString(value[last:start])
+		out.WriteString(SafePathLabel(path))
+		out.WriteString(text[len(path):])
+		last = end
+	}
+	if last == 0 {
+		return value
+	}
+	out.WriteString(value[last:])
+	return out.String()
+}
+
+func preservePathRef(value string, start int, text string) bool {
+	if strings.HasPrefix(text, "/artifacts/") {
+		return true
+	}
+	if start > 0 && value[start-1] == ':' {
+		schemeStart := start - 1
+		for schemeStart > 0 {
+			r := value[schemeStart-1]
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				schemeStart--
+				continue
+			}
+			break
+		}
+		switch strings.ToLower(value[schemeStart : start-1]) {
+		case "http", "https", "ws", "wss":
+			return true
+		}
+	}
+	return false
+}
+
 func sanitizeMetadata(value any) any {
 	switch v := value.(type) {
 	case nil:
@@ -219,6 +302,64 @@ func sanitizeMetadata(value any) any {
 		}
 		return safeStringLabel(string(data))
 	}
+}
+
+func sanitizePathMetadata(value any) any {
+	return sanitizePathMetadataWithKey("", value)
+}
+
+func sanitizePathMetadataWithKey(key string, value any) any {
+	switch v := value.(type) {
+	case nil:
+		return nil
+	case string:
+		if metadataKeyIsPath(key) {
+			return SafePathLabel(v)
+		}
+		return SafePathRefsText(v)
+	case map[string]string:
+		out := make(map[string]string, len(v))
+		for itemKey, item := range v {
+			out[itemKey] = sanitizePathMetadataWithKey(itemKey, item).(string)
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for itemKey, item := range v {
+			out[itemKey] = sanitizePathMetadataWithKey(itemKey, item)
+		}
+		return out
+	case []string:
+		out := make([]string, len(v))
+		for i, item := range v {
+			if metadataKeyIsPath(key) {
+				out[i] = SafePathLabel(item)
+			} else {
+				out[i] = SafePathRefsText(item)
+			}
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = sanitizePathMetadataWithKey(key, item)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func metadataKeyIsPath(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	return key == "path" ||
+		key == "workdir" ||
+		key == "cwd" ||
+		key == "dir" ||
+		key == "directory" ||
+		strings.HasSuffix(key, "_path") ||
+		strings.HasSuffix(key, "_dir") ||
+		strings.HasSuffix(key, "_directory")
 }
 
 func sanitizeMetadataWithKey(key string, value any) any {

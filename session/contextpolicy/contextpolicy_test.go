@@ -67,15 +67,14 @@ func TestNormalizeScalesDefaultCompactionBudgetsForSmallWindows(t *testing.T) {
 
 func TestMergeDefaultsUsesFallbackMaxOutputOnlyWhenPolicyOmitted(t *testing.T) {
 	fallback := Policy{
-		ContextWindowTokens:    128000,
-		MaxOutputTokens:        64000,
-		ReservedOutputTokens:   DefaultReservedOutputTokens,
-		ReservedSummaryTokens:  20000,
-		RecentTailTokens:       12000,
-		RecentUserTokens:       15000,
-		EstimatorSource:        "catalog",
-		MaxCompactionFailures:  2,
-		MicrocompactToolTokens: 4096,
+		ContextWindowTokens:   128000,
+		MaxOutputTokens:       64000,
+		ReservedOutputTokens:  DefaultReservedOutputTokens,
+		ReservedSummaryTokens: 20000,
+		RecentTailTokens:      12000,
+		RecentUserTokens:      15000,
+		EstimatorSource:       "catalog",
+		MaxCompactionFailures: 2,
 	}
 	empty := MergeDefaults(Policy{}, fallback)
 	if empty.MaxOutputTokens != 64000 || empty.ContextWindowTokens != 128000 {

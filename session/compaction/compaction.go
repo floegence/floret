@@ -141,12 +141,12 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	}
 	history := stripEmptyMessages(req.History)
 	history = removeActiveCompactionSummary(history, &req)
-	history = microcompact(history, req.Policy)
 	usageBefore := contextpolicy.EstimateMessages("", history, req.Policy)
 	if len(history) == 1 {
 		keptUsers := selectKeptUserMessages(history, req.Policy.RecentUserTokens)
 		details := mergeDetails(req.Details, map[string]string{"history_messages": "1", "compacted_messages": "1", "retained_tail_messages": "0", "single_message_compaction": "true"})
 		recordCompactionBudgetDetails(details, req.Policy)
+		recordProjectedToolDetails(details, history, nil)
 		result := Result{
 			CompactionID:            req.CompactionID,
 			PreviousCompactionID:    req.PreviousCompactionID,
@@ -208,6 +208,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		"modified_files":         "",
 	}
 	recordCompactionBudgetDetails(details, req.Policy)
+	recordProjectedToolDetails(details, history, tail)
 	if tailShrunk {
 		details["tail_shrunk_for_compacted_context"] = "true"
 	}
@@ -318,6 +319,35 @@ func recordCompactionBudgetDetails(details map[string]string, policy contextpoli
 	details["kept_user_budget_tokens"] = fmt.Sprintf("%d", policy.RecentUserTokens)
 	details["retained_tail_budget_tokens"] = fmt.Sprintf("%d", policy.RecentTailTokens)
 	details["checkpoint_overhead_budget_tokens"] = fmt.Sprintf("%d", contextpolicy.DefaultCheckpointOverheadTokens)
+}
+
+func recordProjectedToolDetails(details map[string]string, history, retainedTail []session.Message) {
+	toolResults, artifactRefs := projectedToolStats(history)
+	details["tool_results_projected"] = fmt.Sprintf("%d", toolResults)
+	details["tool_artifacts_referenced"] = fmt.Sprintf("%d", artifactRefs)
+	details["retained_tail_projected_tokens"] = fmt.Sprintf("%d", estimateMessages(retainedTail))
+}
+
+func projectedToolStats(messages []session.Message) (int, int) {
+	var toolResults, artifactRefs int
+	for _, msg := range messages {
+		if msg.Role != session.Tool {
+			continue
+		}
+		toolResults++
+		if msg.ToolResult != nil && msg.ToolResult.FullOutput != nil {
+			artifactRefs++
+		}
+	}
+	return toolResults, artifactRefs
+}
+
+func estimateMessages(messages []session.Message) int64 {
+	var out int64
+	for _, msg := range messages {
+		out += contextpolicy.EstimateMessage(msg)
+	}
+	return out
 }
 
 func recordSummaryGenerationDetails(result *Result, details SummaryGenerationDetails, policy contextpolicy.Policy) {
@@ -639,33 +669,6 @@ func hasAssistantToolCall(messages []session.Message, id string) bool {
 		}
 	}
 	return false
-}
-
-func microcompact(history []session.Message, policy contextpolicy.Policy) []session.Message {
-	out := make([]session.Message, len(history))
-	copy(out, history)
-	for i := range out {
-		msg := out[i]
-		if msg.Role != session.Tool {
-			continue
-		}
-		if contextpolicy.EstimateMessage(msg) <= policy.MicrocompactToolTokens {
-			continue
-		}
-		msg.Kind = session.MessageKindMicrocompactMarker
-		msg.Content = toolMarker(msg, policy.MicrocompactToolTokens)
-		out[i] = msg
-	}
-	return out
-}
-
-func toolMarker(msg session.Message, budget int64) string {
-	previewBudget := budget / 2
-	if previewBudget < 256 {
-		previewBudget = 256
-	}
-	return fmt.Sprintf("[large tool result compacted]\ntool: %s\ncall_id: %s\nestimated_tokens: %d\npreview:\n%s",
-		msg.ToolName, msg.ToolCallID, contextpolicy.EstimateText(msg.Content), trimToTokenBudget(msg.Content, previewBudget))
 }
 
 func keptUserEntryIDs(messages []session.Message) []string {

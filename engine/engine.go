@@ -13,6 +13,7 @@ import (
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/provider/cache"
 	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/session/artifact"
 	"github.com/floegence/floret/session/compaction"
 	"github.com/floegence/floret/session/contextpolicy"
 	"github.com/floegence/floret/tools"
@@ -181,6 +182,7 @@ type Engine struct {
 	tools     *tools.Registry
 	store     session.Store
 	prompt    cache.Store
+	artifacts artifact.Store
 	memory    *memory.Manager
 	sink      event.Sink
 	approver  tools.Approver
@@ -194,10 +196,14 @@ type turnState struct {
 }
 
 type Config struct {
-	Provider     provider.Provider
-	Tools        *tools.Registry
-	Store        session.Store
-	Prompt       cache.Store
+	Provider provider.Provider
+	Tools    *tools.Registry
+	Store    session.Store
+	Prompt   cache.Store
+	// Artifacts is required when a tool output policy preserves truncated full
+	// output. Runtime and harness callers provide a default store; direct engine
+	// callers may leave it nil only if their tools do not need preservation.
+	Artifacts    artifact.Store
 	SystemPrompt string
 	Sink         event.Sink
 	Approver     tools.Approver
@@ -230,6 +236,7 @@ func New(cfg Config) (*Engine, error) {
 		tools:     cfg.Tools,
 		store:     cfg.Store,
 		prompt:    cfg.Prompt,
+		artifacts: cfg.Artifacts,
 		memory:    mem,
 		sink:      cfg.Sink,
 		approver:  cfg.Approver,
@@ -381,6 +388,7 @@ func (e *Engine) runner(store session.Store, opts Options) (*Engine, error) {
 		tools:     registry,
 		store:     store,
 		prompt:    prompt,
+		artifacts: e.artifacts,
 		memory:    mem,
 		sink:      e.sink,
 		approver:  e.approver,
@@ -652,15 +660,21 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		results := e.tools.RunBatchWithOptions(ctx, calls, e.approver, tools.RunOptions{RunID: opts.RunID, SessionID: opts.SessionID, Step: step})
 		toolLatency := time.Since(toolStarted).Milliseconds()
 		for i, result := range results {
-			result = tools.ApplyResultLimit(result, e.tools.LimitFor(result.Name))
-			text := result.Text
+			policy := tools.MergeOutputPolicy(e.tools.OutputPolicyFor(result.Name), result.OutputPolicy)
+			projection, err := tools.BuildOutputProjection(ctx, toolOutputArtifactResult(result, opts, step), policy, e.artifacts)
+			if err != nil {
+				e.emit(event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: toolLatency, Metadata: mergeToolResultMetadata(result.Metadata, i, len(results))})
+				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+			}
+			text := projection.VisibleText
 			errText := ""
 			if result.IsError {
 				errText = text
 				text = "ERROR: " + text
 			}
-			e.emit(event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: toolLatency, Metadata: mergeToolResultMetadata(result.Metadata, i, len(results)), Artifacts: eventArtifacts(result.Artifacts)})
-			msg := session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name}
+			metadata := mergeToolResultMetadata(toolProjectionMetadata(result.Metadata, projection), i, len(results))
+			e.emit(event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: toolLatency, Metadata: metadata, Artifacts: eventArtifacts(projection, result.Artifacts)})
+			msg := session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: toolResultView(projection)}
 			if err := e.store.Append(opts.RunID, msg); err != nil {
 				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 			}
@@ -1359,12 +1373,81 @@ func appendControlToolDefinitions(defs []provider.ToolDefinition, policy Complet
 	return out
 }
 
-func eventArtifacts(items []tools.ArtifactRef) []event.Artifact {
-	out := make([]event.Artifact, 0, len(items))
+func eventArtifacts(projection tools.OutputProjection, items []artifact.Ref) []event.Artifact {
+	out := make([]event.Artifact, 0, len(items)+1)
+	if projection.FullOutput != nil {
+		out = append(out, eventArtifact(*projection.FullOutput))
+	}
 	for _, item := range items {
-		out = append(out, event.Artifact{Kind: item.Kind, Path: item.Path, MIME: item.MIME})
+		out = append(out, eventArtifact(item))
 	}
 	return out
+}
+
+func eventArtifact(ref artifact.Ref) event.Artifact {
+	return event.Artifact{
+		ID:        ref.ID,
+		SafeLabel: ref.SafeLabel,
+		URL:       ref.URL,
+		Kind:      ref.Kind,
+		MIME:      ref.MIME,
+		SizeBytes: ref.SizeBytes,
+		SHA256:    ref.SHA256,
+	}
+}
+
+func toolProjectionMetadata(base map[string]any, projection tools.OutputProjection) map[string]any {
+	metadata := make(map[string]any, len(base)+12)
+	for key, value := range base {
+		metadata[key] = value
+	}
+	metadata["truncated"] = projection.Truncated
+	metadata["original_bytes"] = projection.OriginalBytes
+	metadata["visible_bytes"] = projection.VisibleBytes
+	metadata["original_lines"] = projection.OriginalLines
+	metadata["visible_lines"] = projection.VisibleLines
+	metadata["strategy"] = string(projection.Strategy)
+	metadata["content_sha256"] = projection.ContentSHA256
+	if projection.FullOutput != nil {
+		metadata["artifact_id"] = projection.FullOutput.ID
+		metadata["artifact_label"] = projection.FullOutput.SafeLabel
+		metadata["artifact_size_bytes"] = projection.FullOutput.SizeBytes
+		metadata["artifact_sha256"] = projection.FullOutput.SHA256
+	}
+	return metadata
+}
+
+func toolResultView(projection tools.OutputProjection) *session.ToolResultView {
+	view := &session.ToolResultView{
+		Truncated:     projection.Truncated,
+		OriginalBytes: projection.OriginalBytes,
+		VisibleBytes:  projection.VisibleBytes,
+		OriginalLines: projection.OriginalLines,
+		VisibleLines:  projection.VisibleLines,
+		Strategy:      string(projection.Strategy),
+		ContentSHA256: projection.ContentSHA256,
+	}
+	if projection.FullOutput != nil {
+		ref := *projection.FullOutput
+		view.FullOutput = &ref
+	}
+	return view
+}
+
+func toolOutputArtifactResult(result tools.Result, opts Options, step int) tools.Result {
+	if result.Metadata == nil {
+		result.Metadata = map[string]any{}
+	} else {
+		metadata := make(map[string]any, len(result.Metadata)+3)
+		for key, value := range result.Metadata {
+			metadata[key] = value
+		}
+		result.Metadata = metadata
+	}
+	result.Metadata["run_id"] = opts.RunID
+	result.Metadata["session_id"] = opts.SessionID
+	result.Metadata["step"] = step
+	return result
 }
 
 func mergeToolResultMetadata(base map[string]any, batchIndex, batchSize int) map[string]any {

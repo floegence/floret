@@ -19,7 +19,7 @@ export function renderInspector({ session, result, tools, tab }) {
         <span class="tiny-pill">${escapeHTML(toolLabelList(session.selected_tools || []))}</span>
       </div>
       <div class="inspector-tabs" role="tablist" aria-label="Inspector">
-        ${["tools", "requests", "events", "context", "raw"].map((item) => `<button type="button" data-inspector-tab="${item}" class="${activeTab === item ? "active" : ""}">${label(item)}</button>`).join("")}
+        ${["tools", "requests", "outputs", "events", "context", "raw"].map((item) => `<button type="button" data-inspector-tab="${item}" class="${activeTab === item ? "active" : ""}">${label(item)}</button>`).join("")}
       </div>
       <div class="inspector-body">
         ${renderTab(activeTab, session, observation, result, tools)}
@@ -52,6 +52,8 @@ function renderTab(tab, session, observation, result, tools) {
   switch (tab) {
     case "requests":
       return renderRequests(observation.provider_requests || []);
+    case "outputs":
+      return renderOutputs(session);
     case "events":
       return renderEvents([...(result?.events || []), ...(result?.harness_events || [])], observation.provider_events || []);
     case "context":
@@ -217,6 +219,44 @@ function renderRequests(requests) {
   `;
 }
 
+function renderOutputs(session) {
+  const rows = toolOutputRows(session);
+  if (!rows.length) return `<p class="muted">No tool output projections captured yet.</p>`;
+  return `
+    <div class="event-list">
+      ${rows.map(({ entry, msg, view }) => `
+        <article class="output-item">
+          <strong>${escapeHTML(msg.tool_name || "tool")} · ${escapeHTML(msg.tool_call_id || entry.id || "")}</strong>
+          <div class="metric-strip">
+            <span class="metric">${escapeHTML(view.truncated ? "truncated" : "full")}</span>
+            ${view.strategy ? `<span class="metric">${escapeHTML(view.strategy)}</span>` : ""}
+            ${view.visible_bytes || view.visible_bytes === 0 ? `<span class="metric">visible ${escapeHTML(formatBytes(view.visible_bytes))}</span>` : ""}
+            ${view.original_bytes || view.original_bytes === 0 ? `<span class="metric">original ${escapeHTML(formatBytes(view.original_bytes))}</span>` : ""}
+            ${view.content_sha256 ? `<span class="metric">sha256 ${escapeHTML(shortHash(view.content_sha256))}</span>` : ""}
+          </div>
+          ${msg.content ? `<pre class="code-block">${escapeHTML(msg.content)}</pre>` : `<p class="muted">Model-visible result body is redacted in public mode.</p>`}
+          ${view.full_output ? renderArtifactLink(view.full_output) : ""}
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
+function toolOutputRows(session) {
+  return (session.path_entries || [])
+    .filter((entry) => entry.type === "tool_result" && entry.message?.tool_result)
+    .map((entry) => ({ entry, msg: entry.message || {}, view: entry.message.tool_result || {} }));
+}
+
+function renderArtifactLink(ref) {
+  return `
+    <div class="artifact-link-row">
+      <span>${escapeHTML(ref.safe_label || ref.id || "tool output artifact")} · ${escapeHTML(formatBytes(ref.size_bytes))}</span>
+      ${ref.url ? `<a class="button small ghost" href="${escapeHTML(ref.url)}" target="_blank" rel="noreferrer">Open artifact</a>` : ""}
+    </div>
+  `;
+}
+
 function renderContextBudgetMetrics(usage) {
   if (!usage) return "";
   const threshold = usage.threshold_tokens ?? usage.ThresholdTokens;
@@ -336,21 +376,52 @@ function truncateOneLine(value, limit) {
 }
 
 function renderContext(session) {
-  const path = session.path_entries || [];
-  if (!path.length) return `<p class="muted">No durable entries yet.</p>`;
+  const projection = session.context_projection || {};
+  const messages = projection.messages || session.active_context || [];
+  const segments = projection.segments || messages.map((message, index) => ({
+    message_index: index,
+    role: message.role,
+    tool_call_id: message.tool_call_id,
+    tool_name: message.tool_name,
+    ui_preview: message.content || "",
+  }));
+  if (!segments.length) return `<p class="muted">No provider-visible context yet.</p>`;
   return `
     <div class="event-list">
-      ${path.map((entry) => `
+      ${segments.map((segment, index) => {
+        const msg = messages[segment.message_index] || {};
+        return `
         <article class="context-item">
-          <strong>${escapeHTML(entry.type)}${entry.turn_status ? ` · ${escapeHTML(entry.turn_status)}` : ""}</strong>
-          <span class="muted">${escapeHTML(entry.id || "")}</span>
-          ${entry.message?.content ? `<pre class="code-block">${escapeHTML(entry.message.content)}</pre>` : ""}
-          ${entry.error ? `<pre class="code-block">${escapeHTML(entry.error)}</pre>` : ""}
-          ${entry.metadata ? `<pre class="json-block">${escapeHTML(JSON.stringify(entry.metadata, null, 2))}</pre>` : ""}
+          <strong>${escapeHTML(segment.entry_type || msg.kind || msg.role || "message")} · #${escapeHTML(index + 1)}</strong>
+          <div class="metric-strip">
+            <span class="metric">${escapeHTML(segment.role || msg.role || "role n/a")}</span>
+            ${segment.token_estimate || segment.token_estimate === 0 ? `<span class="metric">${escapeHTML(segment.token_estimate)} est tokens</span>` : ""}
+            ${segment.tool_name ? `<span class="metric">${escapeHTML(segment.tool_name)}</span>` : ""}
+            ${segment.tool_call_id ? `<span class="metric">${escapeHTML(segment.tool_call_id)}</span>` : ""}
+          </div>
+          ${segment.entry_id ? `<span class="muted">${escapeHTML(segment.entry_id)}</span>` : ""}
+          ${segment.ui_preview ? `<pre class="code-block">${escapeHTML(segment.ui_preview)}</pre>` : ""}
+          ${(segment.artifact_refs || []).map(renderArtifactLink).join("")}
         </article>
-      `).join("")}
+      `;
+      }).join("")}
     </div>
   `;
+}
+
+function formatBytes(value) {
+  const n = Number(value || 0);
+  if (!n) return "0 B";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function shortHash(value) {
+  const text = String(value || "");
+  if (!text) return "";
+  if (text.length <= 16) return text;
+  return `${text.slice(0, 8)}...${text.slice(-6)}`;
 }
 
 function label(tab) {
@@ -359,6 +430,8 @@ function label(tab) {
       return "Tools";
     case "requests":
       return "Requests";
+    case "outputs":
+      return "Outputs";
     case "events":
       return "Events";
     case "context":
