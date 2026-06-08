@@ -1,39 +1,83 @@
 # Floret
 
-Reusable runtime primitives for interactive AI agents in host applications.
+<p align="center">
+  <strong>A Go library for building interactive, tool-using AI agents.</strong><br />
+  <sub>Floret handles the agent loop; your application keeps the UI, permissions, storage choices, and domain tools.</sub>
+</p>
 
-Floret is a prompt-first AI agent engine library for Go hosts that need model
-streaming, tool execution, session state, context management, storage, compaction,
-and observable lifecycle events without adopting a graph workflow or multi-agent
-orchestration framework. Host applications keep control of UI, permission policy,
-business state, provider choice, domain-specific tools, and product experience while
-Floret handles the repeatable mechanics of an interactive agent loop.
+<p align="center">
+  <a href="https://pkg.go.dev/github.com/floegence/floret">
+    <img alt="Go Reference" src="https://pkg.go.dev/badge/github.com/floegence/floret.svg" />
+  </a>
+  <a href="./LICENSE">
+    <img alt="License" src="https://img.shields.io/badge/license-MIT-16a34a" />
+  </a>
+  <img alt="Go Version" src="https://img.shields.io/badge/Go-1.22-00ADD8?logo=go" />
+</p>
 
-Floret currently provides:
+<p align="center">
+  <img alt="Agent loop" src="https://img.shields.io/badge/Agent-Loop-0f766e?style=for-the-badge" />
+  <img alt="Bring your UI" src="https://img.shields.io/badge/Bring-Your%20UI-1d4ed8?style=for-the-badge" />
+  <img alt="Fake providers" src="https://img.shields.io/badge/Fake-Providers-7c2d12?style=for-the-badge" />
+</p>
 
-- A small, explicit engine loop with provider streaming, tool continuations, loop guards,
-  compaction triggers, and normalized run results.
-- Presentation-neutral events for provider requests, deltas, tool calls, tool results,
-  compaction, budgets, final run state, and default sanitization for public views.
-- A tool registry with strict schemas, approval hooks, read-only parallel scheduling,
-  mutation serialization, result limits, and panic recovery.
-- Deterministic test harnesses for fake providers, scripted tool calls, evals, and host
-  integration tests without real model calls.
-- Threaded session primitives for start, resume, fork, retry, interruption recovery, and
-  context projection over a session tree, with `runtime.NewHarness` as the recommended
-  host entry point.
-- In-memory, file-oriented, and SQLite-backed storage options, plus a raw prompt
-  segment and toolset ledger for provider-specific request shapes.
-- Built-in provider adapters, an OpenAI-compatible chat completions adapter, a provider
-  and model catalog, optional workspace/shell/search tools, and a local runtime inspector.
+<p align="center">
+  <a href="#-why-floret">Why Floret</a> ·
+  <a href="#-at-a-glance">At a glance</a> ·
+  <a href="#-quick-start">Quick Start</a> ·
+  <a href="#using-floret-in-a-host">Using Floret</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#-packages">Packages</a> ·
+  <a href="#license">License</a>
+</p>
 
-## Why Floret
+Floret is a Go library for applications that need model streaming, tool execution,
+session state, context management, storage, compaction, and runtime events. It is not
+a graph workflow framework. It keeps the agent runtime small so your application can
+decide how users see and control it.
 
-Most AI agent products need the same hard-to-test runtime pieces: prompt assembly,
-streaming provider adapters, tool-call validation, human approval, session persistence,
-context pressure handling, retry/fork flows, usage metrics, and UI-friendly events.
-Floret keeps those contracts small and separable so host code can focus on its
-domain model, workflows, and product experience.
+## ✨ Why Floret
+
+Most AI agent applications end up rebuilding the same plumbing: prompt assembly,
+provider adapters, tool-call validation, approval hooks, session persistence, long
+conversation handling, retries, usage metrics, and events that a UI can render.
+Floret packages those pieces as small Go APIs.
+
+- **Agent loop**: stream model output, continue after tool calls, enforce loop limits,
+  and return a clear run result.
+- **Tools**: register strict JSON-schema tools, ask for approval when needed, run safe
+  read-only tools in parallel, and serialize mutating tools.
+- **Threads**: start, resume, fork, retry, and recover interrupted conversations with
+  `agentharness`.
+- **Context**: estimate usage, keep a recent tail, and compact older history when a
+  run exceeds the configured context policy.
+- **Events**: send provider, tool, compaction, budget, and final-state events without
+  tying them to a specific UI.
+- **Tests**: use fake providers and scripted tool calls to test agent behavior without
+  real model calls.
+
+## 🧭 At a glance
+
+| You need to... | Use... |
+| --- | --- |
+| Run one agent turn | `engine.Engine` for provider streaming, tool continuation, stop hooks, loop limits, and run metrics |
+| Build durable conversations | `agentharness` for start, resume, fork, retry, waiting, and interruption recovery |
+| Expose your own tools | `tools.Registry` for schemas, effects, permission hooks, scheduling, and result limits |
+| Keep long sessions within budget | `session/contextpolicy`, `session/compaction`, and `engine/compaction` |
+| Show progress in your UI | `event` records plus sanitized public observations |
+| Test without model calls | `testing/harness`, `testing/eval`, and the fake provider adapter |
+
+## 🧩 Core building blocks
+
+| Building block | Purpose |
+| --- | --- |
+| `engine` | Low-level turn executor with provider streaming, tool execution, compaction triggers, and events |
+| `agentharness` | Durable conversation API for threaded sessions, retries, forks, and lifecycle events |
+| `provider` | Streaming provider request, response, usage, and tool-call contracts |
+| `tools` | Tool registry, JSON schemas, resource references, approval checks, scheduling, result limits, and panic recovery |
+| `session` / `sessiontree` | Provider-visible transcript shape plus append-only thread entries and active-path projection |
+| `event` | Runtime events and a thread-safe recorder for tests |
+| `runtime` / `runtime/storage` | Configuration helpers plus memory, file, prompt-cache, and SQLite-backed storage |
 
 ## Runtime Shape
 
@@ -50,30 +94,30 @@ state in `sessiontree.Repo` and serializes only the same durable `ThreadID`.
 Different threads and forked threads can run concurrently.
 
 The project is intentionally not a workflow graph engine. It is designed for interactive
-agent hosts where a model, a tool registry, a session store, and a UI surface cooperate
-around one observable turn loop.
+agent hosts where a model, a tool registry, a session store, and a UI work around one
+turn loop that emits events.
 
-Events are presentation-neutral so a terminal UI, desktop app, test harness, or automation
-surface can render the same runtime facts without parsing human text.
+Events are UI-neutral so a terminal UI, desktop app, test harness, or automation surface
+can render the same runtime facts without parsing human text.
 Public views should expose sanitized events and observations. Raw provider deltas,
 reasoning, tool arguments/results, prompt segments, and artifact paths are local
 debug data and require explicit opt-in at the host boundary.
 
-## Quick Start
+## 🚀 Quick Start
 
-Clone the repository and run the test suite:
+1. Clone the repository and run the test suite:
 
-```bash
-go test ./...
-```
+   ```bash
+   go test ./...
+   ```
 
-Start the local agent console:
+2. Start the local agent console:
 
-```bash
-go run ./cmd/floret-test-ui
-```
+   ```bash
+   go run ./cmd/floret-test-ui
+   ```
 
-Then open `http://127.0.0.1:8765`.
+3. Open `http://127.0.0.1:8765`.
 
 The console can run fake-provider turns immediately, manage local provider profiles,
 save the active profile to `.env.local`, inspect provider requests and stream events,
@@ -104,6 +148,9 @@ Floret targets Go 1.22.
 Floret reads `.env.local` by default through `config.Load`. The file is intentionally
 ignored by git so local API keys and model choices stay private. Environment variables
 override `.env.local`, which is useful for CI and one-off smoke tests.
+
+Tip: start with the fake provider first. It lets you validate the host loop, tool
+registry, storage, and UI wiring before adding any external model credentials.
 
 A minimal fake-provider configuration:
 
@@ -272,7 +319,7 @@ github.com/floegence/floret/eval          -> github.com/floegence/floret/testing
 
 ## Threaded Agent Harness
 
-`agentharness` builds on the engine for interactive products that need persistent threads
+`agentharness` builds on the engine for applications that need persistent threads
 instead of isolated runs. It supports:
 
 - Starting and resuming threads.
@@ -285,17 +332,17 @@ instead of isolated runs. It supports:
 The harness stores entries in a `sessiontree.Repo` and projects the active path into
 engine context for each turn. `Thread.Read()` returns a host-safe snapshot with lifecycle
 state and display messages. Raw session-tree data is available through `Thread.Journal()`
-for tests, debug consoles, migrations, and admin tooling. This keeps product-level
-thread operations separate from provider and tool execution.
+for tests, debug consoles, migrations, and admin tooling. This keeps thread operations
+separate from provider and tool execution.
 
 ## Tools
 
 Floret tools are registered through `tools.Registry` with strict JSON object schemas.
 The registry validates arguments before execution, extracts resource references for
 approval decisions, applies result limits, recovers from panics, and reports structured
-tool results back into the engine. Tool definitions are a host-facing contract: the
+tool results back into the engine. Tool definitions are part of the host contract: the
 runtime owns validation, scheduling, permission hooks, and result shaping, while host
-applications decide which domain tools exist and how those tools affect product state.
+applications decide which domain tools exist and what those tools do.
 
 Tool scheduling is owned by the registry:
 
@@ -308,10 +355,10 @@ Tool scheduling is owned by the registry:
 - Open-world tools cannot use `PermissionAllow`; prefer `PermissionAsk` or
   `PermissionDeny` for high-risk tools unless the host has a narrower policy gate.
 
-`tools/builtin` is an optional default tool pack for local host applications. It includes
+`tools/builtin` is an optional default tool set for local host applications. It includes
 workspace reads (`read`, `list`, `glob`, `grep`), workspace mutations (`apply_patch`,
 `write`), shell execution, and `web_search`, but those tools are examples and conveniences
-rather than Floret's product boundary.
+rather than the whole project.
 
 ## Storage
 
@@ -331,12 +378,12 @@ file or memory storage through `go run ./cmd/floret-test-ui --storage=file` or
 
 ## Architecture
 
-Floret keeps runtime concerns separated from host product concerns:
+Floret keeps runtime concerns separated from your application code:
 
 ```text
-Host product
+Your application
   UI / CLI / automation
-  domain tools / permission policy / business state
+  domain tools / permission policy / app state
         |
         v
 agentharness or engine.Engine
@@ -346,56 +393,25 @@ agentharness or engine.Engine
         +--> session/sessiontree     messages, threads, forks, retries
         +--> provider/cache          provider-specific rendered context
         +--> session/contextpolicy   active context policy
-        +--> event.Sink              presentation-neutral observability
+        +--> event.Sink              UI-neutral runtime events
 ```
 
-Important behavior is observable through events or testable state. Hosts should render
-events rather than parse assistant text to infer engine progress.
+Important behavior is available through events or testable state. Hosts should render
+events rather than parse assistant text to infer progress.
 Provider-visible local tools always come from `tools.Registry`; host code should not
 hand-write raw provider tool definitions to bypass registry validation or permission
 policy.
 
-## Package Map
+## 📦 Packages
 
-Runtime core:
-
-- `engine`: explicit turn loop, status outcomes, loop guards, provider recovery, tool
-  execution, compaction triggers, and event emission.
-- `provider`: normalized streaming provider request and event contracts.
-- `tools`: registry, schemas, approval checks, scheduling, result limits, and panic
-  recovery.
-- `event`: presentation-neutral lifecycle events and a thread-safe recorder for tests.
-- `session`: provider-visible transcript shape and in-memory message storage.
-- `session/contextpolicy`: token-aware context policy and usage estimation.
-- `session/compaction`: shared compaction data structures and pure compaction algorithm.
-- `engine/compaction`: provider-backed compaction summary generator adapter.
-
-Host integration:
-
-- `runtime`: configuration-to-engine assembly helpers.
-- `config`: `.env.local` and environment variable loading.
-- `provider/adapters`: fake and provider adapters, including OpenAI-compatible chat
-  completions.
-- `provider/catalog`: built-in provider/model metadata and defaults.
-- `provider/cache`: rendered prompt fragments, toolset tracking, and provider response
-  records.
-- `tools/builtin`: workspace, shell, and search tools for local agent hosts.
-- `tools/mcp`: MCP server-to-tool bridge.
-- `tools/skills`: skill discovery, prompt disclosure, and the read-only skill tool.
-
-Sessions and storage:
-
-- `agentharness`: threaded agent runtime with resume, fork, retry, and lifecycle events.
-- `sessiontree`: append-only thread entries and active-path projection.
-- `runtime/storage`: combined storage contract for session trees, prompt cache, metadata,
-  and session deletion.
-- `runtime/storage/sqlite`: SQLite-backed storage implementation.
-
-Testing and evaluation:
-
-- `testing/harness`: deterministic scripted provider for engine and host tests.
-- `testing/eval`: lightweight task-eval runner with oracle checks and artifacts.
-- `cmd/floret-test-ui`: local runtime inspector and smoke-test surface.
+| Area | Packages | What they do |
+| --- | --- | --- |
+| Runtime core | `engine`, `provider`, `tools`, `event` | Run turns, define provider streams, execute tools, and emit events |
+| Context and compaction | `session/contextpolicy`, `session/compaction`, `engine/compaction` | Track context usage and summarize older history |
+| Host integration | `runtime`, `config`, `provider/adapters`, `provider/catalog`, `provider/cache` | Load config, create providers, track prompt fragments, and store provider response records |
+| Optional capabilities | `tools/builtin`, `tools/mcp`, `tools/skills` | Add local tools, MCP tools, or skill disclosure when a host wants them |
+| Sessions and storage | `agentharness`, `session`, `sessiontree`, `runtime/storage`, `runtime/storage/sqlite` | Store transcripts, thread trees, prompt cache data, and SQLite-backed runtime state |
+| Testing and inspection | `testing/harness`, `testing/eval`, `cmd/floret-test-ui` | Script turns, run small evals, and inspect a local runtime |
 
 ## Testing and Evals
 
@@ -428,7 +444,7 @@ local inspector UI.
 
 ## Contributing
 
-Keep changes small, observable, and easy to test without real model calls. Prefer focused
+Keep changes small, visible in events or tests, and easy to test without real model calls. Prefer focused
 contracts over framework-style extension layers, and keep provider, context, tool runtime,
 session storage, and host UI concerns separated.
 
@@ -440,4 +456,4 @@ go test ./...
 
 ## License
 
-A license has not been published yet.
+Floret is licensed under the [MIT License](LICENSE).
