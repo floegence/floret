@@ -82,6 +82,49 @@ func TestProviderSummaryUsesReservedSummaryTokensOutputCap(t *testing.T) {
 	}
 }
 
+func TestProviderSummaryRequestKeepsFullPreviousSummary(t *testing.T) {
+	policy := contextpolicy.Policy{ContextWindowTokens: 100000, ReservedOutputTokens: 1000, ReservedSummaryTokens: 120, RecentTailTokens: 8, RecentUserTokens: 20}
+	previousSummary := "prev-start " + strings.Repeat("durable detail ", 28) + "prev-end"
+	normalized := contextpolicy.Normalize(policy)
+	oldOneThirdCap := normalized.ReservedSummaryTokens / int64(3)
+	if got := contextpolicy.EstimateText(previousSummary); got <= oldOneThirdCap || got > normalized.ReservedSummaryTokens {
+		t.Fatalf("test previous summary estimate = %d, want > %d and <= %d", got, oldOneThirdCap, normalized.ReservedSummaryTokens)
+	}
+	previous := sessioncompaction.BuildCheckpointMessage(previousSummary, nil, nil)
+	previous.CompactionID = "c0"
+	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("summary ok"), harness.Done()))
+
+	prep, err := sessioncompaction.Prepare(context.Background(), sessioncompaction.Request{
+		CompactionID: "c1",
+		History: []session.Message{
+			previous,
+			{Role: session.User, Content: "new request", EntryID: "u1"},
+			{Role: session.Assistant, Content: "new answer", EntryID: "a1"},
+			{Role: session.User, Content: "latest", EntryID: "u2"},
+		},
+		Policy: policy,
+	}, ProviderSummaryGenerator{Provider: scripted, ProviderName: "fake", Model: "fake-model", Policy: policy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scripted.Requests) != 1 {
+		t.Fatalf("provider requests = %#v", scripted.Requests)
+	}
+	prompt := scripted.Requests[0].Messages[1].Content
+	previousBlock := summaryPromptPreviousBlock(t, prompt)
+	if !strings.Contains(previousBlock, "prev-start") || !strings.Contains(previousBlock, "prev-end") {
+		t.Fatalf("provider prompt should preserve previous summary in full: %q", previousBlock)
+	}
+	if strings.Contains(previousBlock, "...[trimmed]") {
+		t.Fatalf("provider prompt should not token-trim previous summary: %q", previousBlock)
+	}
+	details := prep.Result.Details
+	promptInput := contextpolicy.EstimateMessages("", scripted.Requests[0].Messages, 0, policy).InputTokens
+	if details["summary_prompt_input_tokens"] != int64String(promptInput) || details["summary_request_budget_tokens"] != int64String(promptInput+normalized.ReservedSummaryTokens) {
+		t.Fatalf("summary request budget details = prompt %q request %q, want %d/%d; details=%#v", details["summary_prompt_input_tokens"], details["summary_request_budget_tokens"], promptInput, promptInput+normalized.ReservedSummaryTokens, details)
+	}
+}
+
 func TestProviderSummaryRetriesAfterTruncationWithHalfCap(t *testing.T) {
 	policy := contextpolicy.Policy{ContextWindowTokens: 100000, ReservedOutputTokens: 1000, ReservedSummaryTokens: 20, RecentTailTokens: 8, RecentUserTokens: 20}
 	scripted := harness.NewScriptedProvider(
@@ -163,4 +206,20 @@ func TestProviderSummaryRetriesOverBudgetThenTrims(t *testing.T) {
 
 func int64String(value int64) string {
 	return strconv.FormatInt(value, 10)
+}
+
+func summaryPromptPreviousBlock(t *testing.T, prompt string) string {
+	t.Helper()
+	const startMarker = "Previous summary:\n"
+	const endMarker = "\n\nTranscript to compact:"
+	start := strings.Index(prompt, startMarker)
+	if start < 0 {
+		t.Fatalf("prompt missing previous summary block: %q", prompt)
+	}
+	start += len(startMarker)
+	end := strings.Index(prompt[start:], endMarker)
+	if end < 0 {
+		t.Fatalf("prompt missing transcript marker after previous summary: %q", prompt)
+	}
+	return prompt[start : start+end]
 }
