@@ -59,13 +59,13 @@ func TestResolveSingleSourceStates(t *testing.T) {
 	}{
 		{
 			name:       "provider hosted",
-			provider:   catalog.ProviderOpenAI,
-			capability: Capability{Source: WebSearchProviderHosted, Hosted: HostedConfig{WireShape: WireShapeOpenAIChatWebSearchOptions}},
+			provider:   catalog.ProviderAnthropic,
+			capability: Capability{Source: WebSearchProviderHosted, Hosted: HostedConfig{WireShape: WireShapeAnthropicServerWebSearch}},
 			wantSource: WebSearchProviderHosted,
 			wantStatus: ResolveReady,
 			wantAvail:  true,
 			wantHosted: true,
-			wantWire:   WireShapeOpenAIChatWebSearchOptions,
+			wantWire:   WireShapeAnthropicServerWebSearch,
 		},
 		{
 			name:         "external brave requires key but keeps source",
@@ -112,14 +112,14 @@ func TestResolveSingleSourceStates(t *testing.T) {
 		{
 			name:       "hosted not supported by provider",
 			provider:   catalog.ProviderDeepSeek,
-			capability: Capability{Source: WebSearchProviderHosted, Hosted: HostedConfig{WireShape: WireShapeOpenAIChatWebSearchOptions}},
+			capability: Capability{Source: WebSearchProviderHosted, Hosted: HostedConfig{WireShape: WireShapeAnthropicServerWebSearch}},
 			wantSource: WebSearchProviderHosted,
-			wantError:  `wire shape "openai_chat_web_search_options" is not supported by this profile`,
+			wantError:  "provider-hosted web_search is not supported by this profile",
 		},
 		{
 			name:       "mixed payload is invalid",
-			provider:   catalog.ProviderOpenAI,
-			capability: Capability{Source: WebSearchProviderHosted, Hosted: HostedConfig{WireShape: WireShapeOpenAIChatWebSearchOptions}, Brave: BraveConfig{Provider: ExternalProviderBrave}},
+			provider:   catalog.ProviderAnthropic,
+			capability: Capability{Source: WebSearchProviderHosted, Hosted: HostedConfig{WireShape: WireShapeAnthropicServerWebSearch}, Brave: BraveConfig{Provider: ExternalProviderBrave}},
 			wantSource: WebSearchProviderHosted,
 			wantError:  "cannot include external Brave configuration",
 		},
@@ -193,7 +193,7 @@ func TestDefaultCapabilityIsDisabledAndProviderPresetIsExplicit(t *testing.T) {
 	}
 
 	openAI := ProviderPresetCapability(catalog.ProviderOpenAI)
-	if openAI.Source != WebSearchProviderHosted || openAI.Hosted.WireShape != WireShapeOpenAIChatWebSearchOptions {
+	if openAI.Source != WebSearchDisabled {
 		t.Fatalf("openai preset = %#v", openAI)
 	}
 	anthropic := ProviderPresetCapability(catalog.ProviderAnthropic)
@@ -201,6 +201,7 @@ func TestDefaultCapabilityIsDisabledAndProviderPresetIsExplicit(t *testing.T) {
 		t.Fatalf("anthropic preset = %#v", anthropic)
 	}
 	for _, providerID := range []string{
+		catalog.ProviderOpenAI,
 		catalog.ProviderDeepSeek,
 		catalog.ProviderOpenRouter,
 		catalog.ProviderOpenAICompatible,
@@ -225,8 +226,8 @@ func TestNormalizeCapabilityCanonicalizesSingleSource(t *testing.T) {
 		t.Fatalf("external capability = %#v", external)
 	}
 
-	hosted := NormalizeCapability(catalog.ProviderOpenAI, Capability{Source: WebSearchProviderHosted})
-	if hosted.Source != WebSearchProviderHosted || hosted.Hosted.WireShape != WireShapeOpenAIChatWebSearchOptions || hosted.Brave.Provider != "" {
+	hosted := NormalizeCapability(catalog.ProviderAnthropic, Capability{Source: WebSearchProviderHosted})
+	if hosted.Source != WebSearchProviderHosted || hosted.Hosted.WireShape != WireShapeAnthropicServerWebSearch || hosted.Brave.Provider != "" {
 		t.Fatalf("hosted capability = %#v", hosted)
 	}
 
@@ -247,7 +248,7 @@ func TestCapabilityRejectsLegacyShape(t *testing.T) {
 	}{
 		{
 			name: "legacy hosted",
-			raw:  `{"provider_hosted":{"enabled":true,"wire_shape":"openai_chat_web_search_options","supported_wire_shapes":["openai_chat_web_search_options"]},"client":{"enabled":false,"provider":"brave"}}`,
+			raw:  `{"provider_hosted":{"enabled":true,"wire_shape":"legacy_shape","supported_wire_shapes":["legacy_shape"]},"client":{"enabled":false,"provider":"brave"}}`,
 		},
 		{
 			name: "legacy external search shape",
@@ -259,7 +260,7 @@ func TestCapabilityRejectsLegacyShape(t *testing.T) {
 		},
 		{
 			name: "canonical cannot mix legacy",
-			raw:  `{"source":"provider_hosted","hosted":{"wire_shape":"openai_chat_web_search_options"},"client":{"enabled":true,"provider":"brave"}}`,
+			raw:  `{"source":"provider_hosted","hosted":{"wire_shape":"legacy_shape"},"client":{"enabled":true,"provider":"brave"}}`,
 		},
 		{
 			name: "unknown key",

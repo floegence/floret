@@ -118,14 +118,79 @@ type ToolCall struct {
 	Reasoning string
 }
 
+type HostedToolResultData struct {
+	Text     string                 `json:"text,omitempty"`
+	Results  []HostedToolResultItem `json:"results,omitempty"`
+	Error    *HostedToolResultError `json:"error,omitempty"`
+	Metadata map[string]any         `json:"metadata,omitempty"`
+}
+
+type HostedToolResultItem struct {
+	Title    string         `json:"title,omitempty"`
+	URL      string         `json:"url,omitempty"`
+	Snippet  string         `json:"snippet,omitempty"`
+	Source   string         `json:"source,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+type HostedToolResultError struct {
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+func (r HostedToolResultData) IsZero() bool {
+	return strings.TrimSpace(r.Text) == "" && len(r.Results) == 0 && r.Error == nil && len(r.Metadata) == 0
+}
+
+func (r HostedToolResultData) SummaryText() string {
+	if strings.TrimSpace(r.Text) != "" {
+		return r.Text
+	}
+	if r.Error != nil {
+		if strings.TrimSpace(r.Error.Message) != "" {
+			return r.Error.Message
+		}
+		if strings.TrimSpace(r.Error.Code) != "" {
+			return "Hosted tool result error: " + r.Error.Code
+		}
+	}
+	if len(r.Results) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, item := range r.Results {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		title := strings.TrimSpace(item.Title)
+		if title == "" {
+			title = strings.TrimSpace(item.URL)
+		}
+		if title == "" {
+			title = "Result"
+		}
+		fmt.Fprintf(&b, "%d. %s", i+1, title)
+		if url := strings.TrimSpace(item.URL); url != "" && url != title {
+			b.WriteString("\n   URL: ")
+			b.WriteString(url)
+		}
+		if snippet := strings.TrimSpace(item.Snippet); snippet != "" {
+			b.WriteString("\n   Snippet: ")
+			b.WriteString(snippet)
+		}
+	}
+	return b.String()
+}
+
 type StreamEvent struct {
-	Type       EventType
-	Text       string
-	ToolCalls  []ToolCall
-	ToolCall   ToolCall
-	Reason     string
-	Usage      Usage
-	ResponseID string
+	Type         EventType
+	Text         string
+	ToolCalls    []ToolCall
+	ToolCall     ToolCall
+	HostedResult HostedToolResultData
+	Reason       string
+	Usage        Usage
+	ResponseID   string
 }
 
 // StreamValidator checks provider stream invariants that the engine relies on.

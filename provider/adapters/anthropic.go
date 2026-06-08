@@ -53,9 +53,22 @@ type anthropicContentBlock struct {
 	Name         string                 `json:"name,omitempty"`
 	Input        json.RawMessage        `json:"input,omitempty"`
 	ToolUseID    string                 `json:"tool_use_id,omitempty"`
-	Content      string                 `json:"content,omitempty"`
+	Content      json.RawMessage        `json:"content,omitempty"`
 	Query        string                 `json:"query,omitempty"`
 	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
+}
+
+type anthropicWebSearchResultItem struct {
+	Type             string `json:"type"`
+	URL              string `json:"url"`
+	Title            string `json:"title"`
+	PageAge          string `json:"page_age"`
+	EncryptedContent string `json:"encrypted_content"`
+}
+
+type anthropicWebSearchResultError struct {
+	Type      string `json:"type"`
+	ErrorCode string `json:"error_code"`
 }
 
 type anthropicCacheControl struct {
@@ -157,7 +170,8 @@ func (p AnthropicProvider) Stream(ctx context.Context, req provider.Request) (<-
 		case "server_tool_use":
 			ch <- provider.StreamEvent{Type: provider.HostedToolCall, ToolCall: provider.ToolCall{ID: block.ID, Name: block.Name, Args: block.Query}}
 		case "web_search_tool_result":
-			ch <- provider.StreamEvent{Type: provider.HostedToolResult, ToolCall: provider.ToolCall{ID: block.ToolUseID, Name: searchcap.ToolWebSearch}, Text: block.Content}
+			result := decodeAnthropicWebSearchResult(block.Content)
+			ch <- provider.StreamEvent{Type: provider.HostedToolResult, ToolCall: provider.ToolCall{ID: block.ToolUseID, Name: searchcap.ToolWebSearch}, Text: result.Text, HostedResult: result}
 		}
 	}
 	if usage := normalizeAnthropicUsage(parsed.Usage, p.CostModel); usage.TotalTokens > 0 || usage.CostUSD > 0 {
@@ -173,6 +187,66 @@ func (p AnthropicProvider) Stream(ctx context.Context, req provider.Request) (<-
 	}
 	close(ch)
 	return ch, nil
+}
+
+func decodeAnthropicWebSearchResult(raw json.RawMessage) provider.HostedToolResultData {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return provider.HostedToolResultData{}
+	}
+	if raw[0] == '"' {
+		var text string
+		if err := json.Unmarshal(raw, &text); err == nil {
+			return provider.HostedToolResultData{Text: text}
+		}
+	}
+	if raw[0] == '[' {
+		var items []anthropicWebSearchResultItem
+		if err := json.Unmarshal(raw, &items); err == nil {
+			return anthropicSearchItemsResult(items)
+		}
+	}
+	if raw[0] == '{' {
+		var errPayload anthropicWebSearchResultError
+		if err := json.Unmarshal(raw, &errPayload); err == nil && errPayload.Type == "web_search_tool_result_error" {
+			return provider.HostedToolResultData{
+				Text: fmt.Sprintf("Anthropic web_search failed: %s", errPayload.ErrorCode),
+				Error: &provider.HostedToolResultError{
+					Code:    errPayload.ErrorCode,
+					Message: fmt.Sprintf("Anthropic web_search failed: %s", errPayload.ErrorCode),
+				},
+			}
+		}
+	}
+	return provider.HostedToolResultData{Text: string(raw)}
+}
+
+func anthropicSearchItemsResult(items []anthropicWebSearchResultItem) provider.HostedToolResultData {
+	results := make([]provider.HostedToolResultItem, 0, len(items))
+	for _, item := range items {
+		if item.Type != "" && item.Type != "web_search_result" {
+			continue
+		}
+		metadata := map[string]any{}
+		if item.PageAge != "" {
+			metadata["page_age"] = item.PageAge
+		}
+		if item.EncryptedContent != "" {
+			metadata["encrypted_content"] = item.EncryptedContent
+		}
+		if len(metadata) == 0 {
+			metadata = nil
+		}
+		results = append(results, provider.HostedToolResultItem{
+			Title:    item.Title,
+			URL:      item.URL,
+			Source:   item.URL,
+			Metadata: metadata,
+		})
+	}
+	result := provider.HostedToolResultData{Results: results}
+	result.Text = result.SummaryText()
+	return result
 }
 
 func (p AnthropicProvider) buildAnthropicRequest(req provider.Request, maxTokens int64) anthropicRequest {
@@ -369,10 +443,11 @@ func renderAnthropicMessages(messages []session.Message, _ *anthropicCacheContro
 			}
 			out = append(out, anthropicMessage{Role: "assistant", Content: msg.Content})
 		case session.Tool:
+			content, _ := json.Marshal(msg.Content)
 			out = append(out, anthropicMessage{Role: "user", Content: []anthropicContentBlock{{
 				Type:      "tool_result",
 				ToolUseID: msg.ToolCallID,
-				Content:   msg.Content,
+				Content:   content,
 			}}})
 		}
 	}

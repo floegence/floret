@@ -14,8 +14,7 @@ import (
 const (
 	ToolWebSearch = "web_search"
 
-	WireShapeOpenAIChatWebSearchOptions HostedWireShape = "openai_chat_web_search_options"
-	WireShapeAnthropicServerWebSearch   HostedWireShape = "anthropic_server_web_search"
+	WireShapeAnthropicServerWebSearch HostedWireShape = "anthropic_server_web_search"
 
 	ExternalProviderBrave = "brave"
 )
@@ -98,7 +97,6 @@ type Resolved struct {
 
 func AvailableWireShapes() []HostedWireShape {
 	return []HostedWireShape{
-		WireShapeOpenAIChatWebSearchOptions,
 		WireShapeAnthropicServerWebSearch,
 	}
 }
@@ -221,7 +219,7 @@ func ValidateCapability(providerID string, capability Capability) error {
 			return err
 		}
 		if !slices.Contains(SupportedWireShapes(providerID), shape) {
-			return fmt.Errorf("provider web_search wire shape %q is not supported by this profile", shape)
+			return fmt.Errorf("provider-hosted web_search is not supported by this profile")
 		}
 	case WebSearchExternalBrave:
 		provider := strings.TrimSpace(capability.Brave.Provider)
@@ -268,7 +266,7 @@ func ValidateRawCapability(providerID string, capability Capability) error {
 
 func ValidateWireShape(shape HostedWireShape) error {
 	switch shape {
-	case WireShapeOpenAIChatWebSearchOptions, WireShapeAnthropicServerWebSearch:
+	case WireShapeAnthropicServerWebSearch:
 		return nil
 	default:
 		return fmt.Errorf("unsupported hosted web_search wire shape %q", shape)

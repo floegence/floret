@@ -399,17 +399,19 @@ type ObservedCacheSummary struct {
 }
 
 type ObservedProviderEvent struct {
-	RunID      string              `json:"run_id,omitempty"`
-	SessionID  string              `json:"session_id,omitempty"`
-	Step       int                 `json:"step"`
-	Type       provider.EventType  `json:"type"`
-	ObservedAt time.Time           `json:"observed_at"`
-	ResponseID string              `json:"response_id,omitempty"`
-	Text       string              `json:"text,omitempty"`
-	Reasoning  string              `json:"reasoning,omitempty"`
-	ToolCalls  []provider.ToolCall `json:"tool_calls,omitempty"`
-	Reason     string              `json:"reason,omitempty"`
-	Usage      provider.Usage      `json:"usage,omitempty"`
+	RunID        string                         `json:"run_id,omitempty"`
+	SessionID    string                         `json:"session_id,omitempty"`
+	Step         int                            `json:"step"`
+	Type         provider.EventType             `json:"type"`
+	ObservedAt   time.Time                      `json:"observed_at"`
+	ResponseID   string                         `json:"response_id,omitempty"`
+	Text         string                         `json:"text,omitempty"`
+	Reasoning    string                         `json:"reasoning,omitempty"`
+	ToolCalls    []provider.ToolCall            `json:"tool_calls,omitempty"`
+	HostedResult *provider.HostedToolResultData `json:"hosted_result,omitempty"`
+	Metadata     map[string]string              `json:"metadata,omitempty"`
+	Reason       string                         `json:"reason,omitempty"`
+	Usage        provider.Usage                 `json:"usage,omitempty"`
 }
 
 type ObservedSessionMessage struct {

@@ -166,6 +166,8 @@ func publicObservedProviderEvent(ev ObservedProviderEvent) ObservedProviderEvent
 	ev.Text = ""
 	ev.Reasoning = ""
 	ev.ToolCalls = publicProviderToolCalls(ev.ToolCalls)
+	ev.HostedResult = nil
+	ev.Metadata = publicMetadata(ev.Metadata)
 	ev.Reason = event.Redact(ev.Reason)
 	return ev
 }
@@ -247,7 +249,7 @@ func publicMetadataRedactedLabel(value string) string {
 
 func publicMetadataValueIsSafe(key, value string) bool {
 	switch key {
-	case "source", "previous_tools", "selected_tools", "status", "phase", "completion_reason", "continuation_reason", "finish_reason", "raw_finish_reason", "turn_status", "entry_type":
+	case "source", "previous_tools", "selected_tools", "status", "phase", "completion_reason", "continuation_reason", "finish_reason", "raw_finish_reason", "turn_status", "entry_type", "result_hash", "error_code":
 		return value == "" || isSafeTokenList(value)
 	case "finish_inferred":
 		return value == "true" || value == "false" || value == ""

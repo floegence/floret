@@ -356,16 +356,16 @@ func TestRunnerToolCatalogReflectsWebSearchCapability(t *testing.T) {
 			Profiles: []ProviderProfile{{
 				ID:        "hosted",
 				Name:      "Hosted",
-				Provider:  catalog.ProviderOpenAI,
+				Provider:  catalog.ProviderAnthropic,
 				Model:     "model-a",
-				WebSearch: searchcap.Capability{Source: searchcap.WebSearchProviderHosted, Hosted: searchcap.HostedConfig{WireShape: searchcap.WireShapeOpenAIChatWebSearchOptions}},
+				WebSearch: searchcap.Capability{Source: searchcap.WebSearchProviderHosted, Hosted: searchcap.HostedConfig{WireShape: searchcap.WireShapeAnthropicServerWebSearch}},
 			}},
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
 		option := toolOptionByName(t, state.Tools, "web_search")
-		if !option.Available || option.Source != string(searchcap.WebSearchProviderHosted) || option.WireShape != string(searchcap.WireShapeOpenAIChatWebSearchOptions) || option.Exposure != "hosted tool: web_search" {
+		if !option.Available || option.Source != string(searchcap.WebSearchProviderHosted) || option.WireShape != string(searchcap.WireShapeAnthropicServerWebSearch) || option.Exposure != "hosted tool: web_search" {
 			t.Fatalf("web_search option = %#v", option)
 		}
 	})
@@ -711,27 +711,38 @@ func TestRunnerAgentSessionRejectsWebFetchSelection(t *testing.T) {
 
 func TestRunnerAgentSessionUsesProviderHostedSearchWithoutLocalWebSearch(t *testing.T) {
 	root := t.TempDir()
-	runner := NewRunner(root)
-	runner.Now = fixedClock()
-	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+	newProvider := func() provider.Provider {
 		return harness.NewScriptedProvider(
 			harness.Step(
 				provider.StreamEvent{Type: provider.HostedToolCall, ToolCall: provider.ToolCall{ID: "hosted-search-1", Name: "web_search", Args: `{"query":"Changsha weather"}`}},
-				provider.StreamEvent{Type: provider.HostedToolResult, ToolCall: provider.ToolCall{ID: "hosted-search-1", Name: "web_search"}, Text: "provider-hosted result"},
+				provider.StreamEvent{Type: provider.HostedToolResult, ToolCall: provider.ToolCall{ID: "hosted-search-1", Name: "web_search"}, HostedResult: provider.HostedToolResultData{
+					Results: []provider.HostedToolResultItem{{
+						Title:   "Changsha forecast",
+						URL:     "https://example.com/hosted/changsha",
+						Snippet: "provider-hosted result",
+						Source:  "Example Weather",
+					}},
+					Metadata: map[string]any{"encrypted_content": "raw-provider-token"},
+				}},
 				harness.Text("Hosted search answered."),
 				harness.Done(),
 			),
-		), nil
+		)
+	}
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return newProvider(), nil
 	}
 
 	result := runner.CreateAgentSession(context.Background(), AgentRunRequest{
 		Profile: ProviderProfile{
 			ID:        "hosted",
 			Name:      "Hosted",
-			Provider:  catalog.ProviderOpenAI,
+			Provider:  catalog.ProviderAnthropic,
 			Model:     "model",
 			APIKey:    "secret",
-			WebSearch: searchcap.Capability{Source: searchcap.WebSearchProviderHosted, Hosted: searchcap.HostedConfig{WireShape: searchcap.WireShapeOpenAIChatWebSearchOptions}},
+			WebSearch: searchcap.Capability{Source: searchcap.WebSearchProviderHosted, Hosted: searchcap.HostedConfig{WireShape: searchcap.WireShapeAnthropicServerWebSearch}},
 		},
 		Message:       "search",
 		SystemPrompt:  "system token=hosted-secret",
@@ -759,12 +770,12 @@ func TestRunnerAgentSessionUsesProviderHostedSearchWithoutLocalWebSearch(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{`{"query":"Changsha weather"}`, "provider-hosted result", "secret"} {
+	for _, secret := range []string{`{"query":"Changsha weather"}`, "provider-hosted result", "https://example.com/hosted/changsha", "Changsha forecast", "raw-provider-token", "secret"} {
 		if strings.Contains(string(body), secret) {
 			t.Fatalf("default hosted run response exposed raw value %q: %s", secret, body)
 		}
 	}
-	if strings.Contains(string(body), "system token=hosted-secret") || strings.Contains(string(body), `"Options":{`) || strings.Contains(string(body), `"Parameters":{`) {
+	if strings.Contains(string(body), "system token=hosted-secret") || strings.Contains(string(body), `"Options":{`) || strings.Contains(string(body), `"Parameters":{`) || strings.Contains(string(body), `"hosted_result"`) {
 		t.Fatalf("default hosted run response exposed system prompt or hosted payload options: %s", body)
 	}
 	if len(result.Session.HostedTools) != 1 || result.Session.HostedTools[0].Parameters != nil || result.Session.HostedTools[0].Options != nil {
@@ -772,6 +783,56 @@ func TestRunnerAgentSessionUsesProviderHostedSearchWithoutLocalWebSearch(t *test
 	}
 	if result.Session.SystemPrompt != "" {
 		t.Fatalf("public session snapshot exposed system prompt: %#v", result.Session.SystemPrompt)
+	}
+
+	rawRunner := NewRunner(t.TempDir())
+	rawRunner.Now = fixedClock()
+	rawRunner.AllowDebugRaw = true
+	rawRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return newProvider(), nil
+	}
+	raw := rawRunner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile: ProviderProfile{
+			ID:        "hosted",
+			Name:      "Hosted",
+			Provider:  catalog.ProviderAnthropic,
+			Model:     "model",
+			APIKey:    "secret",
+			WebSearch: searchcap.Capability{Source: searchcap.WebSearchProviderHosted, Hosted: searchcap.HostedConfig{WireShape: searchcap.WireShapeAnthropicServerWebSearch}},
+		},
+		Message:       "search",
+		SystemPrompt:  "system token=hosted-secret",
+		SelectedTools: []string{"web_search"},
+		DebugRaw:      true,
+	})
+	rawBody, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"provider-hosted result", "https://example.com/hosted/changsha", "Changsha forecast", "raw-provider-token"} {
+		if !strings.Contains(string(rawBody), want) {
+			t.Fatalf("debug raw hosted response missing %q: %s", want, rawBody)
+		}
+	}
+	if !slices.ContainsFunc(raw.Observation.ProviderEvents, func(ev ObservedProviderEvent) bool {
+		return ev.Type == provider.HostedToolCall &&
+			len(ev.ToolCalls) == 1 &&
+			ev.ToolCalls[0].ID == "hosted-search-1" &&
+			ev.ToolCalls[0].Name == "web_search" &&
+			ev.ToolCalls[0].Args == `{"query":"Changsha weather"}`
+	}) {
+		t.Fatalf("debug raw provider events should expose hosted call args: %#v", raw.Observation.ProviderEvents)
+	}
+	if !slices.ContainsFunc(raw.Observation.ProviderEvents, func(ev ObservedProviderEvent) bool {
+		return ev.Type == provider.HostedToolResult &&
+			ev.HostedResult != nil &&
+			len(ev.HostedResult.Results) == 1 &&
+			ev.HostedResult.Results[0].Title == "Changsha forecast" &&
+			ev.HostedResult.Results[0].URL == "https://example.com/hosted/changsha" &&
+			ev.HostedResult.Results[0].Snippet == "provider-hosted result" &&
+			ev.HostedResult.Metadata["encrypted_content"] == "raw-provider-token"
+	}) {
+		t.Fatalf("debug raw provider events should expose hosted result details: %#v", raw.Observation.ProviderEvents)
 	}
 }
 

@@ -1071,7 +1071,7 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 				if err := validateHostedToolEvent(ev.ToolCall, hostedTools); err != nil {
 					return out, err
 				}
-				e.emit(event.Event{Type: event.HostedToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Result: ev.Text})
+				e.emit(event.Event{Type: event.HostedToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Result: hostedToolResultText(ev), Metadata: hostedToolResultMetadata(ev.HostedResult)})
 			case provider.UsageEvent:
 				out.Usage = out.Usage.Add(ev.Usage)
 				e.emit(event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: ev.Usage.Normalized()})
@@ -1101,6 +1101,58 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 			}
 		}
 	}
+}
+
+func hostedToolResultText(ev provider.StreamEvent) string {
+	if text := ev.HostedResult.SummaryText(); text != "" {
+		return text
+	}
+	return ev.Text
+}
+
+func hostedToolResultMetadata(result provider.HostedToolResultData) map[string]any {
+	out := map[string]any{}
+	if len(result.Results) > 0 {
+		out["result_count"] = len(result.Results)
+		items := make([]map[string]any, 0, len(result.Results))
+		for _, item := range result.Results {
+			entry := map[string]any{}
+			if item.Title != "" {
+				entry["title"] = item.Title
+			}
+			if item.URL != "" {
+				entry["url"] = item.URL
+			}
+			if item.Snippet != "" {
+				entry["snippet"] = item.Snippet
+			}
+			if item.Source != "" {
+				entry["source"] = item.Source
+			}
+			if len(item.Metadata) > 0 {
+				entry["metadata"] = item.Metadata
+			}
+			items = append(items, entry)
+		}
+		out["results"] = items
+	}
+	if result.Error != nil {
+		if result.Error.Code != "" {
+			out["error_code"] = result.Error.Code
+		}
+		if result.Error.Message != "" {
+			out["error_message"] = result.Error.Message
+		}
+	}
+	for key, value := range result.Metadata {
+		if _, exists := out[key]; !exists {
+			out[key] = value
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func validateNoEventAfterTerminal(ctx context.Context, stream <-chan provider.StreamEvent, validator *provider.StreamValidator) error {

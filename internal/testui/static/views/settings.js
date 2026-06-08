@@ -141,12 +141,11 @@ function renderSettingsError(active, webSearch) {
   const error = state.settingsError;
   if (!error) return "";
   const source = webSearch.source || "disabled";
-  const wireShape = webSearch.hosted?.wire_shape || "";
   return `
     <div class="settings-error" role="alert">
       <strong>Settings were not saved</strong>
       <span>${escapeHTML(error.message || "Save failed")}</span>
-      <small>${escapeHTML([`profile ${active.id || active.name || "current"}`, `source ${source}`, wireShape ? `wire ${wireShape}` : ""].filter(Boolean).join(" · "))}</small>
+      <small>${escapeHTML([`profile ${active.id || active.name || "current"}`, `source ${source}`].filter(Boolean).join(" · "))}</small>
     </div>
   `;
 }
@@ -281,13 +280,12 @@ function readWebSearchCapability(form, current) {
 }
 
 function wireShapeOptions(wireShapes, selected) {
-  const shapes = wireShapes?.length ? wireShapes : [{ id: selected || "", title: selected || "No provider-hosted search wire shape" }];
+  const shapes = wireShapes?.length ? wireShapes : [{ id: "", title: "No provider-hosted search wire shape" }];
   const active = selected || shapes[0]?.id || "";
   return shapes.map((shape) => `<option value="${escapeHTML(shape.id)}" ${shape.id === active ? "selected" : ""}>${escapeHTML(shape.title || shape.id)}</option>`).join("");
 }
 
 function searchWireShapeTitle(shape) {
-  if (shape === "openai_chat_web_search_options") return "OpenAI chat web_search_options";
   if (shape === "anthropic_server_web_search") return "Anthropic server web_search_20250305";
   return shape;
 }

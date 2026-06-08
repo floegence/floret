@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1474,62 +1475,40 @@ func TestOpenAICompatibleProviderRendersStrictFunctionSchemaAndRejectsHostedTool
 	if required, ok := body.Tools[0].Function.Parameters["required"].([]any); !ok || len(required) != 1 || required[0] != "path" {
 		t.Fatalf("required properties = %#v", body.Tools[0].Function.Parameters["required"])
 	}
-	if _, err := p.Stream(context.Background(), provider.Request{RunID: "r", HostedTools: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}}); err == nil || !strings.Contains(err.Error(), "wire shape") {
+	if _, err := p.Stream(context.Background(), provider.Request{RunID: "r", HostedTools: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}}); err == nil || !strings.Contains(err.Error(), "provider-hosted tool") {
 		t.Fatalf("expected unsupported hosted tool rejection, got %v", err)
 	}
-	if _, err := p.PayloadHash(provider.Request{RunID: "r", HostedTools: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}}); err == nil || !strings.Contains(err.Error(), "wire shape") {
+	if _, err := p.PayloadHash(provider.Request{RunID: "r", HostedTools: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}}}); err == nil || !strings.Contains(err.Error(), "provider-hosted tool") {
 		t.Fatalf("expected unsupported hosted tool payload hash rejection, got %v", err)
 	}
 }
 
-func TestOpenAICompatibleProviderRendersHostedWebSearchOptions(t *testing.T) {
-	var body struct {
-		Tools            []map[string]any `json:"tools"`
-		WebSearchOptions map[string]any   `json:"web_search_options"`
-	}
+func TestOpenAICompatibleProviderRejectsHostedSearchWithoutHTTPRequest(t *testing.T) {
+	var requests int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatal(err)
-		}
+		requests++
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
 
-	if _, err := p.Stream(context.Background(), provider.Request{
+	req := provider.Request{
 		RunID: "r",
 		HostedTools: []provider.HostedToolDefinition{{
 			Name:    "web_search",
 			Type:    "web_search",
-			Options: map[string]any{"wire_shape": string(searchcap.WireShapeOpenAIChatWebSearchOptions)},
+			Options: map[string]any{"wire_shape": string(searchcap.WireShapeAnthropicServerWebSearch)},
 		}},
-	}); err != nil {
-		t.Fatal(err)
 	}
-	if body.WebSearchOptions == nil {
-		t.Fatalf("web_search_options missing from request body: %#v", body)
+	if _, err := p.Stream(context.Background(), req); err == nil || !strings.Contains(err.Error(), "provider-hosted tool") {
+		t.Fatalf("expected hosted web search rejection, got %v", err)
 	}
-	if len(body.Tools) != 0 {
-		t.Fatalf("hosted web_search must not render as local function tool: %#v", body.Tools)
+	if _, err := p.PayloadHash(req); err == nil || !strings.Contains(err.Error(), "provider-hosted tool") {
+		t.Fatalf("expected hosted web search payload hash rejection, got %v", err)
 	}
-	hashA, err := p.PayloadHash(provider.Request{RunID: "r"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	hashB, err := p.PayloadHash(provider.Request{
-		RunID: "r",
-		HostedTools: []provider.HostedToolDefinition{{
-			Name:    "web_search",
-			Type:    "web_search",
-			Options: map[string]any{"wire_shape": string(searchcap.WireShapeOpenAIChatWebSearchOptions)},
-		}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if hashA == hashB {
-		t.Fatalf("hosted web search should affect payload hash")
+	if requests != 0 {
+		t.Fatalf("rejected hosted web search should not reach HTTP server, got %d request(s)", requests)
 	}
 }
 
@@ -1577,47 +1556,91 @@ func TestAnthropicProviderRendersStrictInputSchemaAndRejectsHostedTools(t *testi
 }
 
 func TestAnthropicProviderRendersAndReadsHostedWebSearch(t *testing.T) {
-	var body struct {
-		Tools []struct {
-			Name string `json:"name"`
-			Type string `json:"type"`
-		} `json:"tools"`
+	tests := []struct {
+		name       string
+		content    string
+		wantText   string
+		wantTitle  string
+		wantURL    string
+		wantError  string
+		wantResult bool
+	}{
+		{
+			name:     "string content",
+			content:  `"rain"`,
+			wantText: "rain",
+		},
+		{
+			name:       "result array",
+			content:    `[{"type":"web_search_result","url":"https://example.com/weather","title":"Weather report","page_age":"1h","encrypted_content":"cipher"}]`,
+			wantText:   "Weather report",
+			wantTitle:  "Weather report",
+			wantURL:    "https://example.com/weather",
+			wantResult: true,
+		},
+		{
+			name:      "error object",
+			content:   `{"type":"web_search_tool_result_error","error_code":"max_uses_exceeded"}`,
+			wantText:  "max_uses_exceeded",
+			wantError: "max_uses_exceeded",
+		},
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatal(err)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"content":[{"type":"server_tool_use","id":"srv-1","name":"web_search","query":"Changsha weather"},{"type":"web_search_tool_result","tool_use_id":"srv-1","content":"rain"},{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
-	}))
-	defer server.Close()
-	p := AnthropicProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", MaxTokens: 4096, HTTPClient: server.Client()}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body struct {
+				Tools []struct {
+					Name string `json:"name"`
+					Type string `json:"type"`
+				} `json:"tools"`
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(fmt.Sprintf(`{"content":[{"type":"server_tool_use","id":"srv-1","name":"web_search","query":"Changsha weather"},{"type":"web_search_tool_result","tool_use_id":"srv-1","content":%s},{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`, tt.content)))
+			}))
+			defer server.Close()
+			p := AnthropicProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", MaxTokens: 4096, HTTPClient: server.Client()}
 
-	stream, err := p.Stream(context.Background(), provider.Request{
-		RunID: "r",
-		HostedTools: []provider.HostedToolDefinition{{
-			Name:    "web_search",
-			Type:    "web_search",
-			Options: map[string]any{"wire_shape": string(searchcap.WireShapeAnthropicServerWebSearch)},
-		}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var sawCall, sawResult bool
-	for ev := range stream {
-		if ev.Type == provider.HostedToolCall && ev.ToolCall.ID == "srv-1" && ev.ToolCall.Name == "web_search" {
-			sawCall = true
-		}
-		if ev.Type == provider.HostedToolResult && ev.ToolCall.ID == "srv-1" && ev.Text == "rain" {
-			sawResult = true
-		}
-	}
-	if len(body.Tools) != 1 || body.Tools[0].Name != "web_search" || body.Tools[0].Type != "web_search_20250305" {
-		t.Fatalf("hosted anthropic tool body = %#v", body.Tools)
-	}
-	if !sawCall || !sawResult {
-		t.Fatalf("hosted events: call=%v result=%v", sawCall, sawResult)
+			stream, err := p.Stream(context.Background(), provider.Request{
+				RunID: "r",
+				HostedTools: []provider.HostedToolDefinition{{
+					Name:    "web_search",
+					Type:    "web_search",
+					Options: map[string]any{"wire_shape": string(searchcap.WireShapeAnthropicServerWebSearch)},
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var sawCall bool
+			var result provider.HostedToolResultData
+			for ev := range stream {
+				if ev.Type == provider.HostedToolCall && ev.ToolCall.ID == "srv-1" && ev.ToolCall.Name == "web_search" {
+					sawCall = true
+				}
+				if ev.Type == provider.HostedToolResult && ev.ToolCall.ID == "srv-1" && strings.Contains(ev.Text, tt.wantText) {
+					result = ev.HostedResult
+				}
+			}
+			if len(body.Tools) != 1 || body.Tools[0].Name != "web_search" || body.Tools[0].Type != "web_search_20250305" {
+				t.Fatalf("hosted anthropic tool body = %#v", body.Tools)
+			}
+			if !sawCall || !strings.Contains(result.SummaryText(), tt.wantText) {
+				t.Fatalf("hosted events: call=%v result=%#v", sawCall, result)
+			}
+			if tt.wantResult {
+				if len(result.Results) != 1 || result.Results[0].Title != tt.wantTitle || result.Results[0].URL != tt.wantURL || result.Results[0].Metadata["encrypted_content"] != "cipher" {
+					t.Fatalf("structured results = %#v", result.Results)
+				}
+			}
+			if tt.wantError != "" {
+				if result.Error == nil || result.Error.Code != tt.wantError {
+					t.Fatalf("error result = %#v", result.Error)
+				}
+			}
+		})
 	}
 }
 

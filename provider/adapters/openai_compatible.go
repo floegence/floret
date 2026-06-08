@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/provider/cache"
 	"github.com/floegence/floret/provider/catalog"
@@ -28,16 +27,14 @@ type OpenAICompatibleProvider struct {
 }
 
 type chatRequest struct {
-	Model                string         `json:"model"`
-	Messages             []chatMessage  `json:"messages"`
-	Stream               bool           `json:"stream"`
-	MaxTokens            int64          `json:"max_tokens,omitempty"`
-	Tools                []chatTool     `json:"tools,omitempty"`
-	WebSearchOptions     map[string]any `json:"web_search_options,omitempty"`
-	HasWebSearchOptions  bool           `json:"-"`
-	ToolChoice           string         `json:"tool_choice,omitempty"`
-	PromptCacheKey       string         `json:"prompt_cache_key,omitempty"`
-	PromptCacheRetention string         `json:"prompt_cache_retention,omitempty"`
+	Model                string        `json:"model"`
+	Messages             []chatMessage `json:"messages"`
+	Stream               bool          `json:"stream"`
+	MaxTokens            int64         `json:"max_tokens,omitempty"`
+	Tools                []chatTool    `json:"tools,omitempty"`
+	ToolChoice           string        `json:"tool_choice,omitempty"`
+	PromptCacheKey       string        `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention string        `json:"prompt_cache_retention,omitempty"`
 }
 
 type usagePayload struct {
@@ -283,26 +280,6 @@ func (p OpenAICompatibleProvider) PayloadHash(req provider.Request) (string, err
 	return cache.StableHash(string(body)), nil
 }
 
-func (r chatRequest) MarshalJSON() ([]byte, error) {
-	type alias chatRequest
-	out := struct {
-		alias
-		WebSearchOptions *map[string]any `json:"web_search_options,omitempty"`
-	}{
-		alias: alias(r),
-	}
-	out.alias.HasWebSearchOptions = false
-	out.alias.WebSearchOptions = nil
-	if r.HasWebSearchOptions {
-		options := r.WebSearchOptions
-		if r.WebSearchOptions == nil {
-			options = map[string]any{}
-		}
-		out.WebSearchOptions = &options
-	}
-	return json.Marshal(out)
-}
-
 func (p OpenAICompatibleProvider) buildChatRequest(req provider.Request) chatRequest {
 	messages := req.Messages
 	if len(req.RawPlan.Segments) > 0 {
@@ -319,10 +296,6 @@ func (p OpenAICompatibleProvider) buildChatRequest(req provider.Request) chatReq
 		maxTokens = req.ContextPolicy.MaxOutputTokens
 	}
 	chatReq := chatRequest{Model: p.Model, Messages: renderedMessages, Stream: p.StreamResponses, MaxTokens: maxTokens, Tools: renderedTools}
-	if hasOpenAICompatibleHostedSearch(req.HostedTools) {
-		chatReq.WebSearchOptions = map[string]any{}
-		chatReq.HasWebSearchOptions = true
-	}
 	if len(chatReq.Tools) > 0 {
 		chatReq.ToolChoice = "auto"
 	}
@@ -338,22 +311,9 @@ func (p OpenAICompatibleProvider) buildChatRequest(req provider.Request) chatReq
 func validateOpenAICompatibleHostedTools(defs []provider.HostedToolDefinition) error {
 	for _, def := range defs {
 		shape, _ := def.Options["wire_shape"].(string)
-		wireShape := searchcap.HostedWireShape(shape)
-		if def.Name != searchcap.ToolWebSearch || def.Type != searchcap.ToolWebSearch || wireShape != searchcap.WireShapeOpenAIChatWebSearchOptions {
-			return fmt.Errorf("openai-compatible chat provider does not support hosted tool %s/%s with wire shape %q", def.Type, def.Name, shape)
-		}
+		return fmt.Errorf("openai-compatible chat provider does not support provider-hosted tool %s/%s with wire shape %q", def.Type, def.Name, shape)
 	}
 	return nil
-}
-
-func hasOpenAICompatibleHostedSearch(defs []provider.HostedToolDefinition) bool {
-	for _, def := range defs {
-		shape, _ := def.Options["wire_shape"].(string)
-		if def.Name == searchcap.ToolWebSearch && def.Type == searchcap.ToolWebSearch && searchcap.HostedWireShape(shape) == searchcap.WireShapeOpenAIChatWebSearchOptions {
-			return true
-		}
-	}
-	return false
 }
 
 func (p OpenAICompatibleProvider) MessageRaw(kind cache.SegmentKind, msg session.Message) (string, string, error) {

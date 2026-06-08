@@ -219,7 +219,7 @@ export function resolveWebSearchForProfile(profile, options = {}) {
       return { ...base, unavailable: "provider-hosted web_search is selected but no hosted wire shape is configured" };
     }
     if (!supported.includes(wireShape)) {
-      return { ...base, wire_shape: wireShape, unavailable: `wire shape "${wireShape}" is not supported by this profile` };
+      return { ...base, unavailable: "provider-hosted web_search is not supported by this profile" };
     }
     return {
       ...base,

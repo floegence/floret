@@ -2,6 +2,7 @@ package testui
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -140,18 +141,21 @@ func (p *observingProvider) Snapshot() AgentObservation {
 }
 
 func (p *observingProvider) recordEvent(runID string, sessionID string, step int, ev provider.StreamEvent) {
+	hostedResult := observedHostedResult(ev.HostedResult)
 	observed := ObservedProviderEvent{
-		RunID:      runID,
-		SessionID:  sessionID,
-		Step:       step,
-		Type:       ev.Type,
-		ObservedAt: time.Now(),
-		ResponseID: ev.ResponseID,
-		Text:       ev.Text,
-		Reasoning:  reasoningText(ev),
-		ToolCalls:  observedToolCalls(ev),
-		Reason:     ev.Reason,
-		Usage:      ev.Usage,
+		RunID:        runID,
+		SessionID:    sessionID,
+		Step:         step,
+		Type:         ev.Type,
+		ObservedAt:   time.Now(),
+		ResponseID:   ev.ResponseID,
+		Text:         ev.Text,
+		Reasoning:    reasoningText(ev),
+		ToolCalls:    observedToolCalls(ev),
+		HostedResult: hostedResult,
+		Metadata:     observedHostedResultMetadata(ev),
+		Reason:       ev.Reason,
+		Usage:        ev.Usage,
 	}
 	p.mu.Lock()
 	if ev.Type == provider.UsageEvent {
@@ -165,6 +169,43 @@ func (p *observingProvider) recordEvent(runID string, sessionID string, step int
 	}
 	p.evs = append(p.evs, observed)
 	p.mu.Unlock()
+}
+
+func observedHostedResult(result provider.HostedToolResultData) *provider.HostedToolResultData {
+	if result.IsZero() {
+		return nil
+	}
+	return &result
+}
+
+func observedHostedResultMetadata(ev provider.StreamEvent) map[string]string {
+	if ev.Type != provider.HostedToolResult {
+		return nil
+	}
+	result := ev.HostedResult
+	out := map[string]string{}
+	if len(result.Results) > 0 {
+		out["result_count"] = fmt.Sprintf("%d", len(result.Results))
+	}
+	if result.Error != nil && result.Error.Code != "" {
+		out["error_code"] = result.Error.Code
+	}
+	if text := result.SummaryText(); text != "" {
+		out["result_hash"] = providerResultHash(text)
+	} else if ev.Text != "" {
+		out["result_hash"] = providerResultHash(ev.Text)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func providerResultHash(value string) string {
+	if value == "" {
+		return ""
+	}
+	return "sha256:" + cache.StableHash(value)
 }
 
 func unavailableCapabilitiesFromHostedRequest(req provider.Request) []string {

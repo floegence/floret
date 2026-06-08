@@ -356,7 +356,7 @@ func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) Ag
 	}
 	profile, err := r.profileForRun(req)
 	if err != nil {
-		return publicAgentRunResponse(r.failAgentRun(resp, err), r.debugRawAllowed(req.DebugRaw))
+		return publicAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusBadRequest, err), r.debugRawAllowed(req.DebugRaw))
 	}
 	resp.Profile = stripProfileSecret(profile)
 	cfg := config.Config{
@@ -2060,7 +2060,7 @@ func (r Runner) profileForRun(req AgentRunRequest) (ProviderProfile, error) {
 	rawSearch := profile.WebSearch
 	profile = normalizeProfile(profile, 0)
 	if err := validateProfileWebSearch(profile.ID, profile.Provider, rawSearch); err != nil {
-		return ProviderProfile{}, err
+		return ProviderProfile{}, fmt.Errorf("%w: %v", errAgentSessionInput, err)
 	}
 	profile.WebSearch = searchcap.NormalizeCapability(profile.Provider, rawSearch)
 	if profile.APIKey == "" {

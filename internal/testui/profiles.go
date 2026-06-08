@@ -362,8 +362,6 @@ func searchWireShapes() []SearchWireShape {
 
 func searchWireShapeTitle(shape searchcap.HostedWireShape) string {
 	switch shape {
-	case searchcap.WireShapeOpenAIChatWebSearchOptions:
-		return "OpenAI-compatible chat web_search_options"
 	case searchcap.WireShapeAnthropicServerWebSearch:
 		return "Anthropic server web_search_20250305"
 	default:

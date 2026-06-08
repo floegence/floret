@@ -73,9 +73,9 @@ func (r *streamingEventRecorder) Emit(ev event.Event) {
 	switch ev.Type {
 	case event.ProviderDelta:
 		emitEngineStreamEvent(sink, AgentStreamProviderDelta, ev)
-	case event.ToolCall:
+	case event.ToolCall, event.HostedToolCall:
 		emitEngineStreamEvent(sink, AgentStreamToolCall, ev)
-	case event.ToolResult:
+	case event.ToolResult, event.HostedToolResult:
 		emitEngineStreamEvent(sink, AgentStreamToolResult, ev)
 	}
 }
@@ -175,7 +175,7 @@ func emitEngineStreamEvent(sink AgentStreamSink, typ AgentStreamEventType, ev ev
 	if sink == nil {
 		return
 	}
-	evCopy := event.Sanitize(ev)
+	evCopy := ev
 	stream := AgentStreamEvent{
 		Type:        typ,
 		SessionID:   ev.SessionID,
@@ -186,7 +186,7 @@ func emitEngineStreamEvent(sink AgentStreamSink, typ AgentStreamEventType, ev ev
 		Message:     evCopy.Message,
 		Error:       evCopy.Err,
 	}
-	if ev.Type == event.ToolResult {
+	if ev.Type == event.ToolResult || ev.Type == event.HostedToolResult {
 		stream.Message = evCopy.Result
 	}
 	sink.EmitAgentStream(stream)

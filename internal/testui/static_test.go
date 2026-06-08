@@ -90,7 +90,7 @@ assert.deepEqual(toolNamesForPreset("all", unavailable), ["read"]);
 assert.equal(groupTools(unavailable).filter((group) => group.tools.some((tool) => tool.name === "web_search")).length, 1);
 assert.equal(groupTools(unavailable).find((group) => group.tools.some((tool) => tool.name === "web_search")).title, "Disabled / unavailable capabilities");
 
-const hosted = [{ name: "web_search", available: true, source: "provider_hosted", wire_shape: "openai_chat_web_search_options" }];
+const hosted = [{ name: "web_search", available: true, source: "provider_hosted", wire_shape: "anthropic_server_web_search" }];
 assert.deepEqual(toolNamesForPreset("all", hosted), ["web_search"]);
 assert.equal(groupTools(hosted)[0].title, "Provider-hosted capabilities");
 
@@ -109,7 +109,7 @@ import { defaultWebSearchForProvider, resolveWebSearchForProfile, state, toolsFo
 state.config = {
   search_provider: { api_key_set: false },
   catalog: [
-    { id: "openai", name: "OpenAI", web_search: { default_source: "provider_hosted", hosted_wire_shape: "openai_chat_web_search_options", hosted_wire_shapes: ["openai_chat_web_search_options"] } },
+    { id: "openai", name: "OpenAI", web_search: {} },
     { id: "anthropic", name: "Anthropic", web_search: { default_source: "provider_hosted", hosted_wire_shape: "anthropic_server_web_search", hosted_wire_shapes: ["anthropic_server_web_search"] } },
     { id: "fake", name: "Fake", web_search: {} },
     { id: "deepseek", name: "DeepSeek", web_search: {} },
@@ -120,20 +120,27 @@ state.config = {
   ],
 };
 
-assert.deepEqual(defaultWebSearchForProvider("openai"), { source: "provider_hosted", hosted: { wire_shape: "openai_chat_web_search_options" } });
+assert.deepEqual(defaultWebSearchForProvider("openai"), { source: "disabled" });
+assert.deepEqual(defaultWebSearchForProvider("anthropic"), { source: "provider_hosted", hosted: { wire_shape: "anthropic_server_web_search" } });
 assert.deepEqual(defaultWebSearchForProvider("fake"), { source: "disabled" });
 
-let tools = toolsForProfile({ provider: "openai", web_search: { source: "provider_hosted", hosted: { wire_shape: "openai_chat_web_search_options" } } });
+let tools = toolsForProfile({ provider: "anthropic", web_search: { source: "provider_hosted", hosted: { wire_shape: "anthropic_server_web_search" } } });
 let search = tools.find((tool) => tool.name === "web_search");
 assert.equal(search.available, true);
 assert.equal(search.source, "provider_hosted");
-assert.equal(search.wire_shape, "openai_chat_web_search_options");
+assert.equal(search.wire_shape, "anthropic_server_web_search");
 assert.deepEqual(toolNamesForPreset("all", tools), ["read", "web_search"]);
 
-tools = toolsForProfile({ provider: "deepseek", web_search: { source: "provider_hosted", hosted: { wire_shape: "openai_chat_web_search_options" } } });
+tools = toolsForProfile({ provider: "openai", web_search: { source: "provider_hosted", hosted: { wire_shape: "anthropic_server_web_search" } } });
 search = tools.find((tool) => tool.name === "web_search");
 assert.equal(search.available, false);
-assert.match(search.unavailable, /not supported by this profile/);
+assert.match(search.unavailable, /provider-hosted web_search is not supported by this profile/);
+assert.deepEqual(toolNamesForPreset("all", tools), ["read"]);
+
+tools = toolsForProfile({ provider: "deepseek", web_search: { source: "provider_hosted", hosted: { wire_shape: "anthropic_server_web_search" } } });
+search = tools.find((tool) => tool.name === "web_search");
+assert.equal(search.available, false);
+assert.match(search.unavailable, /provider-hosted web_search is not supported by this profile/);
 assert.deepEqual(toolNamesForPreset("all", tools), ["read"]);
 
 tools = toolsForProfile({ provider: "fake", web_search: { source: "external_brave", brave: { provider: "brave" } } });
@@ -821,6 +828,38 @@ func TestStaticConsoleSettingsSavesSearchProviderContract(t *testing.T) {
 			t.Fatalf("settings view should not submit or describe legacy web search shape %q", stale)
 		}
 	}
+}
+
+func TestStaticConsoleSettingsDoesNotRenderLegacyUnsupportedHostedWireShape(t *testing.T) {
+	script := `
+import assert from "node:assert/strict";
+import { renderSettings } from "./static/views/settings.js";
+import { state } from "./static/state.js";
+
+const legacyShape = "openai_chat_" + "web_search_" + "options";
+state.config = {
+  active_profile_id: "legacy-openai",
+  catalog: [
+    { id: "openai", name: "OpenAI", default_model: "gpt-5.4", web_search: {} },
+    { id: "anthropic", name: "Anthropic", default_model: "claude", web_search: { default_source: "provider_hosted", hosted_wire_shape: "anthropic_server_web_search", hosted_wire_shapes: ["anthropic_server_web_search"] } },
+  ],
+  profiles: [{
+    id: "legacy-openai",
+    name: "Legacy OpenAI",
+    provider: "openai",
+    model: "gpt-5.4",
+    web_search: { source: "provider_hosted", hosted: { wire_shape: legacyShape } },
+  }],
+  search_provider: {},
+};
+state.settingsDraft = null;
+state.settingsError = null;
+const html = renderSettings();
+assert.ok(html.includes("Provider-hosted web search (unsupported)"));
+assert.ok(html.includes("No provider-hosted search wire shape"));
+assert.ok(!html.includes(legacyShape));
+`
+	runNodeStaticScript(t, script)
 }
 
 func TestStaticConsoleExposesSavedToolScenarioChecks(t *testing.T) {

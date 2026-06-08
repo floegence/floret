@@ -128,7 +128,7 @@ func TestServerRunAPILiveToolScenariosUseSelectedSavedProfile(t *testing.T) {
 	}
 	handler := server.Handler()
 
-	saveBody := `{"active_profile_id":"hosted-live","profiles":[{"id":"hosted-live","name":"Hosted Live","provider":"openai","model":"gpt-5.4","base_url":"https://api.example.test/v1","api_key":"provider-key","web_search":{"source":"provider_hosted","hosted":{"wire_shape":"openai_chat_web_search_options"}}}],"search_provider":{"provider":"brave","api_key":"search-key","endpoint":"https://search.example.test"}}`
+	saveBody := `{"active_profile_id":"hosted-live","profiles":[{"id":"hosted-live","name":"Hosted Live","provider":"anthropic","model":"claude-sonnet-4-6","base_url":"https://api.example.test/v1","api_key":"provider-key","web_search":{"source":"provider_hosted","hosted":{"wire_shape":"anthropic_server_web_search"}}}],"search_provider":{"provider":"brave","api_key":"search-key","endpoint":"https://search.example.test"}}`
 	saveReq := httptest.NewRequest(http.MethodPut, "/api/config", strings.NewReader(saveBody))
 	saveRec := httptest.NewRecorder()
 	handler.ServeHTTP(saveRec, saveReq)
@@ -150,7 +150,7 @@ func TestServerRunAPILiveToolScenariosUseSelectedSavedProfile(t *testing.T) {
 		t.Fatalf("result = %#v", result)
 	}
 	for _, part := range result.Parts {
-		if part.Agent == nil || part.Agent.Config.Model != "gpt-5.4" {
+		if part.Agent == nil || part.Agent.Config.Model != "claude-sonnet-4-6" {
 			t.Fatalf("live part missing selected profile config: %#v", part)
 		}
 	}
@@ -201,7 +201,7 @@ func TestServerRunAPILiveToolScenariosTreatWeatherAsDiagnostic(t *testing.T) {
 	}
 	handler := server.Handler()
 
-	saveBody := `{"active_profile_id":"hosted-live","profiles":[{"id":"hosted-live","name":"Hosted Live","provider":"openai","model":"gpt-5.4","base_url":"https://api.example.test/v1","api_key":"provider-key","web_search":{"source":"provider_hosted","hosted":{"wire_shape":"openai_chat_web_search_options"}}}],"search_provider":{"provider":"brave","api_key":"search-key","endpoint":"https://search.example.test"}}`
+	saveBody := `{"active_profile_id":"hosted-live","profiles":[{"id":"hosted-live","name":"Hosted Live","provider":"anthropic","model":"claude-sonnet-4-6","base_url":"https://api.example.test/v1","api_key":"provider-key","web_search":{"source":"provider_hosted","hosted":{"wire_shape":"anthropic_server_web_search"}}}],"search_provider":{"provider":"brave","api_key":"search-key","endpoint":"https://search.example.test"}}`
 	saveReq := httptest.NewRequest(http.MethodPut, "/api/config", strings.NewReader(saveBody))
 	saveRec := httptest.NewRecorder()
 	handler.ServeHTTP(saveRec, saveReq)
@@ -398,6 +398,96 @@ func TestServerStreamsAgentTurnEventsBeforeCompletion(t *testing.T) {
 	completed := events[completedIndex]
 	if completed.Result == nil || completed.Result.Status != "completed" || completed.Result.Session.ID != snapshot.ID {
 		t.Fatalf("completion event missing final result: %#v", completed)
+	}
+}
+
+func TestServerStreamsHostedSearchEventsWithPublicSanitization(t *testing.T) {
+	newProvider := func() provider.Provider {
+		return harness.NewScriptedProvider(
+			harness.Step(
+				provider.StreamEvent{Type: provider.HostedToolCall, ToolCall: provider.ToolCall{ID: "hosted-search-1", Name: "web_search", Args: `{"query":"Changsha weather"}`}},
+				provider.StreamEvent{Type: provider.HostedToolResult, ToolCall: provider.ToolCall{ID: "hosted-search-1", Name: "web_search"}, HostedResult: provider.HostedToolResultData{
+					Results: []provider.HostedToolResultItem{{
+						Title:   "Changsha forecast",
+						URL:     "https://example.com/hosted/changsha",
+						Snippet: "provider-hosted result",
+						Source:  "Example Weather",
+					}},
+					Metadata: map[string]any{"encrypted_content": "raw-provider-token"},
+				}},
+				harness.Text("done"),
+				harness.Done(),
+			),
+		)
+	}
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.AllowDebugRaw = true
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return newProvider(), nil
+	}
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	createBody := `{"profile":{"id":"hosted","name":"Hosted","provider":"anthropic","model":"model","api_key":"secret","web_search":{"source":"provider_hosted","hosted":{"wire_shape":"anthropic_server_web_search"}}},"message":"hello","system_prompt":"test","selected_tools":["web_search"]}`
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody)))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var snapshot AgentSessionSnapshot
+	if err := json.Unmarshal(createRec.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	publicRec := httptest.NewRecorder()
+	handler.ServeHTTP(publicRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+snapshot.ID+"/turns/stream", strings.NewReader(`{"message":"hello"}`)))
+	if publicRec.Code != http.StatusOK {
+		t.Fatalf("public stream status = %d, body = %s", publicRec.Code, publicRec.Body.String())
+	}
+	publicBody := publicRec.Body.String()
+	for _, raw := range []string{`{"query":"Changsha weather"}`, "provider-hosted result", "https://example.com/hosted/changsha", "Changsha forecast", "raw-provider-token"} {
+		if strings.Contains(publicBody, raw) {
+			t.Fatalf("public hosted SSE exposed raw value %q: %s", raw, publicBody)
+		}
+	}
+	publicEvents := parseSSEAgentEvents(t, publicBody)
+	if !slices.ContainsFunc(publicEvents, func(ev AgentStreamEvent) bool {
+		return ev.Type == AgentStreamToolCall &&
+			ev.EngineEvent != nil &&
+			ev.EngineEvent.Type == event.HostedToolCall &&
+			ev.EngineEvent.ToolKind == "hosted" &&
+			ev.EngineEvent.ToolName == "web_search" &&
+			ev.EngineEvent.Args == "" &&
+			ev.EngineEvent.ArgsHash != ""
+	}) {
+		t.Fatalf("public hosted call SSE event missing sanitized engine event: %#v", publicEvents)
+	}
+	if !slices.ContainsFunc(publicEvents, func(ev AgentStreamEvent) bool {
+		return ev.Type == AgentStreamToolResult &&
+			ev.EngineEvent != nil &&
+			ev.EngineEvent.Type == event.HostedToolResult &&
+			ev.EngineEvent.ToolKind == "hosted" &&
+			ev.EngineEvent.ToolName == "web_search" &&
+			ev.EngineEvent.Result == "" &&
+			ev.EngineEvent.Metadata != nil
+	}) {
+		t.Fatalf("public hosted result SSE event missing sanitized engine event: %#v", publicEvents)
+	}
+
+	debugRec := httptest.NewRecorder()
+	handler.ServeHTTP(debugRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+snapshot.ID+"/turns/stream", strings.NewReader(`{"message":"hello","debug_raw":true}`)))
+	if debugRec.Code != http.StatusOK {
+		t.Fatalf("debug stream status = %d, body = %s", debugRec.Code, debugRec.Body.String())
+	}
+	debugBody := debugRec.Body.String()
+	for _, raw := range []string{`{\"query\":\"Changsha weather\"}`, "provider-hosted result", "https://example.com/hosted/changsha", "Changsha forecast", "raw-provider-token"} {
+		if !strings.Contains(debugBody, raw) {
+			t.Fatalf("debug hosted SSE missing raw value %q: %s", raw, debugBody)
+		}
 	}
 }
 
@@ -774,6 +864,66 @@ func TestServerAgentInterfaceProbeExposesSelectedToolsAndDoesNotPersistSession(t
 	}
 }
 
+func TestServerRejectsOpenAIChatProviderHostedWebSearch(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	saveBody := `{"active_profile_id":"bad-openai","profiles":[{"id":"bad-openai","name":"Bad OpenAI","provider":"openai","model":"gpt-5.4","web_search":{"source":"provider_hosted","hosted":{"wire_shape":"anthropic_server_web_search"}}}],"search_provider":{"provider":"brave","api_key":"search-key"}}`
+	saveReq := httptest.NewRequest(http.MethodPut, "/api/config", strings.NewReader(saveBody))
+	saveRec := httptest.NewRecorder()
+	handler.ServeHTTP(saveRec, saveReq)
+	if saveRec.Code != http.StatusBadRequest || !strings.Contains(saveRec.Body.String(), "not supported by this profile") {
+		t.Fatalf("save status/body = %d %s", saveRec.Code, saveRec.Body.String())
+	}
+	if strings.Contains(saveRec.Body.String(), "anthropic_server_web_search") {
+		t.Fatalf("save rejection should not echo unsupported hosted wire shape: %s", saveRec.Body.String())
+	}
+
+	state, err := runner.ConfigState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Profiles) != 1 || state.Profiles[0].Provider != config.ProviderFake || state.Profiles[0].WebSearch.Source != searchcap.WebSearchDisabled {
+		t.Fatalf("invalid hosted save should not mutate active profile or silently fallback: %#v", state.Profiles)
+	}
+
+	runBody := `{"profile":{"id":"bad-openai","name":"Bad OpenAI","provider":"openai","model":"gpt-5.4","web_search":{"source":"provider_hosted","hosted":{"wire_shape":"anthropic_server_web_search"}}},"message":"search","system_prompt":"test","selected_tools":["web_search"]}`
+	runReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(runBody))
+	runRec := httptest.NewRecorder()
+	handler.ServeHTTP(runRec, runReq)
+	if runRec.Code != http.StatusBadRequest || !strings.Contains(runRec.Body.String(), "not supported by this profile") {
+		t.Fatalf("run status/body = %d %s", runRec.Code, runRec.Body.String())
+	}
+	if strings.Contains(runRec.Body.String(), "anthropic_server_web_search") {
+		t.Fatalf("run rejection should not echo unsupported hosted wire shape: %s", runRec.Body.String())
+	}
+	var runResult AgentRunResponse
+	if err := json.Unmarshal(runRec.Body.Bytes(), &runResult); err != nil {
+		t.Fatal(err)
+	}
+	if runResult.Status != "error" || runResult.SessionID != "" || len(runResult.Observation.ProviderRequests) != 0 {
+		t.Fatalf("invalid hosted run should fail before creating a provider request/session: %#v", runResult)
+	}
+	listReq := httptest.NewRequest(http.MethodGet, "/api/agent/sessions", nil)
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", listRec.Code, listRec.Body.String())
+	}
+	var sessions []AgentSessionSnapshot
+	if err := json.Unmarshal(listRec.Body.Bytes(), &sessions); err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("invalid hosted run should not persist a session: %#v", sessions)
+	}
+}
+
 func TestServerAgentInterfaceProbeUsesSelectedProfileWebSearchSource(t *testing.T) {
 	runner := NewRunner(t.TempDir())
 	runner.Now = fixedClock()
@@ -790,9 +940,9 @@ func TestServerAgentInterfaceProbeUsesSelectedProfileWebSearchSource(t *testing.
 			{
 				ID:        "hosted",
 				Name:      "Hosted",
-				Provider:  catalog.ProviderOpenAI,
-				Model:     "gpt-5.4",
-				WebSearch: searchcap.Capability{Source: searchcap.WebSearchProviderHosted, Hosted: searchcap.HostedConfig{WireShape: searchcap.WireShapeOpenAIChatWebSearchOptions}},
+				Provider:  catalog.ProviderAnthropic,
+				Model:     "claude-sonnet-4-6",
+				WebSearch: searchcap.Capability{Source: searchcap.WebSearchProviderHosted, Hosted: searchcap.HostedConfig{WireShape: searchcap.WireShapeAnthropicServerWebSearch}},
 			},
 		},
 		SearchProvider: SaveSearchProvider{Provider: "brave", APIKey: "search-key"},
