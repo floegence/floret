@@ -127,6 +127,26 @@ func TestPrepareDropsStackedCheckpointMessagesAndUsesLatestPreviousSummary(t *te
 	}
 }
 
+func TestExtractiveSummaryKeepsFullPreviousSummary(t *testing.T) {
+	previousSummary := "prev-start " + strings.Repeat("durable detail ", 120) + "prev-end"
+	prep := Preparation{
+		Request:       Request{PreviousSummary: previousSummary},
+		CompactedHead: []session.Message{{Role: session.User, Content: "new work", EntryID: "u1"}},
+	}
+
+	summary, err := ExtractiveSummaryGenerator{}.GenerateSummary(context.Background(), prep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := extractivePreviousSummaryBlock(t, summary)
+	if !strings.Contains(block, "prev-start") || !strings.Contains(block, "prev-end") {
+		t.Fatalf("extractive summary should preserve previous summary in full: %q", block)
+	}
+	if strings.Contains(block, "...") {
+		t.Fatalf("extractive previous summary block should not be character-trimmed: %q", block)
+	}
+}
+
 func TestPrepareKeepsLatestUserAndRecentUsersWithinBudget(t *testing.T) {
 	large := strings.Repeat("x", int(contextpolicy.DefaultRecentUserTokens*4))
 	history := []session.Message{
@@ -518,6 +538,68 @@ func TestSummaryWriterPromptContract(t *testing.T) {
 	}
 }
 
+func TestSummaryPromptKeepsFullPreviousSummaryWithinReservedBudget(t *testing.T) {
+	policy := contextpolicy.Normalize(contextpolicy.Policy{
+		ContextWindowTokens:   4000,
+		ReservedOutputTokens:  100,
+		ReservedSummaryTokens: 120,
+		RecentTailTokens:      100,
+	})
+	previousSummary := "prev-start " + strings.Repeat("durable detail ", 28) + "prev-end"
+	oldOneThirdCap := policy.ReservedSummaryTokens / int64(3)
+	if got := contextpolicy.EstimateText(previousSummary); got <= oldOneThirdCap || got > policy.ReservedSummaryTokens {
+		t.Fatalf("test previous summary estimate = %d, want > %d and <= %d", got, oldOneThirdCap, policy.ReservedSummaryTokens)
+	}
+
+	prompt := SummaryPrompt(Preparation{
+		Request:       Request{PreviousSummary: previousSummary},
+		CompactedHead: []session.Message{{Role: session.User, Content: "head content", EntryID: "u1"}},
+	}, policy, policy.ReservedSummaryTokens)
+	block := summaryPromptPreviousBlock(t, prompt)
+	if !strings.Contains(block, "prev-start") || !strings.Contains(block, "prev-end") {
+		t.Fatalf("previous summary should be preserved in full: %q", block)
+	}
+	if strings.Contains(block, "...[trimmed]") {
+		t.Fatalf("previous summary block should not be token-trimmed: %q", block)
+	}
+}
+
+func TestSummaryPromptTrimsTranscriptNotPreviousSummaryWhenPrefixConsumesBudget(t *testing.T) {
+	outputCap := int64(120)
+	previousSummary := "prev-start " + strings.Repeat("durable detail ", 26) + "prev-end"
+	basePolicy := contextpolicy.Normalize(contextpolicy.Policy{
+		ContextWindowTokens:   100000,
+		ReservedOutputTokens:  100,
+		ReservedSummaryTokens: outputCap,
+		RecentTailTokens:      100,
+	})
+	headKeep := session.Message{Role: session.User, Content: "head-keep", EntryID: "u1"}
+	headDrop := session.Message{Role: session.User, Content: "head-drop " + strings.Repeat("x", 2000), EntryID: "u2"}
+	prefix := SummaryPrompt(Preparation{Request: Request{PreviousSummary: previousSummary}}, basePolicy, outputCap)
+	prefixInput := contextpolicy.EstimateText(SummaryWriterSystemPrompt()) + contextpolicy.EstimateText(prefix)
+	keepTokens := contextpolicy.EstimateText(renderForSummaryPrompt(headKeep))
+	policy := basePolicy
+	policy.ContextWindowTokens = prefixInput + outputCap + keepTokens + 1
+
+	prompt := SummaryPrompt(Preparation{
+		Request:       Request{PreviousSummary: previousSummary},
+		CompactedHead: []session.Message{headKeep, headDrop},
+	}, policy, outputCap)
+	block := summaryPromptPreviousBlock(t, prompt)
+	if !strings.Contains(block, "prev-end") || strings.Contains(block, "...[trimmed]") {
+		t.Fatalf("previous summary should remain complete while transcript is budgeted: %q", block)
+	}
+	if !strings.Contains(prompt, "head-keep") {
+		t.Fatalf("first transcript line should fit: %q", prompt)
+	}
+	if strings.Contains(prompt, "head-drop") {
+		t.Fatalf("oversized transcript line should be trimmed, not previous summary: %q", prompt)
+	}
+	if !strings.Contains(prompt, "...[older compact scope trimmed]") {
+		t.Fatalf("prompt should record transcript trimming: %q", prompt)
+	}
+}
+
 func TestSummaryPromptTranscriptBudgetIgnoresOrdinaryOutputHeadroom(t *testing.T) {
 	policy := contextpolicy.Normalize(contextpolicy.Policy{
 		ContextWindowTokens:   1000,
@@ -554,6 +636,38 @@ func TestSummaryPromptTranscriptBudgetUsesSummaryRequestBudget(t *testing.T) {
 	if !strings.Contains(prompt, "...[older compact scope trimmed]") {
 		t.Fatalf("summary prompt should trim transcript using summary request budget: %q", prompt)
 	}
+}
+
+func summaryPromptPreviousBlock(t *testing.T, prompt string) string {
+	t.Helper()
+	const startMarker = "Previous summary:\n"
+	const endMarker = "\n\nTranscript to compact:"
+	start := strings.Index(prompt, startMarker)
+	if start < 0 {
+		t.Fatalf("prompt missing previous summary block: %q", prompt)
+	}
+	start += len(startMarker)
+	end := strings.Index(prompt[start:], endMarker)
+	if end < 0 {
+		t.Fatalf("prompt missing transcript marker after previous summary: %q", prompt)
+	}
+	return prompt[start : start+end]
+}
+
+func extractivePreviousSummaryBlock(t *testing.T, summary string) string {
+	t.Helper()
+	const startMarker = "## Previous Summary\n"
+	const endMarker = "\n\n## Completed Work And Decisions"
+	start := strings.Index(summary, startMarker)
+	if start < 0 {
+		t.Fatalf("summary missing previous summary block: %q", summary)
+	}
+	start += len(startMarker)
+	end := strings.Index(summary[start:], endMarker)
+	if end < 0 {
+		t.Fatalf("summary missing completed work marker after previous summary: %q", summary)
+	}
+	return summary[start : start+end]
 }
 
 func TestPrepareShrinksTailWithoutLeavingOrphanToolResult(t *testing.T) {

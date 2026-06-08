@@ -261,7 +261,7 @@ func (ExtractiveSummaryGenerator) GenerateSummary(_ context.Context, prep Prepar
 	writeRoleSamples(&out, prep.CompactedHead, session.User, "- ")
 	if prep.Request.PreviousSummary != "" {
 		out.WriteString("\n## Previous Summary\n")
-		out.WriteString(trimForSummary(prep.Request.PreviousSummary, 1200))
+		out.WriteString(strings.TrimSpace(prep.Request.PreviousSummary))
 		out.WriteString("\n")
 	}
 	out.WriteString("\n## Completed Work And Decisions\n")
@@ -854,7 +854,7 @@ func SummaryPrompt(prep Preparation, policy contextpolicy.Policy, outputCap int6
 	if prep.Request.PreviousSummary == "" {
 		out.WriteString("(none)\n")
 	} else {
-		out.WriteString(trimToTokenBudget(prep.Request.PreviousSummary, policy.ReservedSummaryTokens/3))
+		out.WriteString(strings.TrimSpace(prep.Request.PreviousSummary))
 		out.WriteString("\n")
 	}
 	out.WriteString("\nTranscript to compact:\n")
