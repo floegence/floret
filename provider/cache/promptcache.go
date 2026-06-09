@@ -61,23 +61,25 @@ type CachePolicy struct {
 }
 
 type RawPlan struct {
-	Version              string              `json:"version"`
-	SegmentIDs           []string            `json:"segment_ids"`
-	Segments             []Segment           `json:"segments"`
-	ToolsetID            string              `json:"toolset_id,omitempty"`
-	ToolsetEpoch         int                 `json:"toolset_epoch,omitempty"`
-	HostedToolsetHash    string              `json:"hosted_toolset_hash,omitempty"`
-	PrefixHash           string              `json:"prefix_hash"`
-	PayloadHash          string              `json:"payload_hash"`
-	CacheNamespace       string              `json:"cache_namespace,omitempty"`
-	PreviousResponseID   string              `json:"previous_response_id,omitempty"`
-	CompactionGeneration int                 `json:"compaction_generation,omitempty"`
-	CompactionWindowID   string              `json:"compaction_window_id,omitempty"`
-	CompactionEntryID    string              `json:"compaction_entry_id,omitempty"`
-	ContextUsage         contextpolicy.Usage `json:"context_usage,omitempty"`
-	ReusedSegments       int                 `json:"reused_segments"`
-	NewSegments          int                 `json:"new_segments"`
-	SegmentStates        []string            `json:"segment_states,omitempty"`
+	Version              string                        `json:"version"`
+	SegmentIDs           []string                      `json:"segment_ids"`
+	Segments             []Segment                     `json:"segments"`
+	ToolsetID            string                        `json:"toolset_id,omitempty"`
+	ToolsetEpoch         int                           `json:"toolset_epoch,omitempty"`
+	HostedToolsetHash    string                        `json:"hosted_toolset_hash,omitempty"`
+	PrefixHash           string                        `json:"prefix_hash"`
+	PayloadHash          string                        `json:"payload_hash"`
+	CacheNamespace       string                        `json:"cache_namespace,omitempty"`
+	PreviousResponseID   string                        `json:"previous_response_id,omitempty"`
+	CompactionGeneration int                           `json:"compaction_generation,omitempty"`
+	CompactionWindowID   string                        `json:"compaction_window_id,omitempty"`
+	CompactionEntryID    string                        `json:"compaction_entry_id,omitempty"`
+	RequestEstimate      contextpolicy.RequestEstimate `json:"request_estimate,omitempty"`
+	ProjectedPressure    contextpolicy.ContextPressure `json:"projected_context_pressure,omitempty"`
+	RequestShape         RequestShapeHashes            `json:"request_shape,omitempty"`
+	ReusedSegments       int                           `json:"reused_segments"`
+	NewSegments          int                           `json:"new_segments"`
+	SegmentStates        []string                      `json:"segment_states,omitempty"`
 }
 
 type Segment struct {
@@ -158,42 +160,127 @@ type ToolsetSnapshot struct {
 }
 
 type ProviderRequestRecord struct {
-	ID                   string              `json:"id"`
-	RunID                string              `json:"run_id"`
-	SessionID            string              `json:"session_id,omitempty"`
-	ThreadID             string              `json:"thread_id,omitempty"`
-	TurnID               string              `json:"turn_id,omitempty"`
-	Step                 int                 `json:"step"`
-	Provider             string              `json:"provider"`
-	Model                string              `json:"model"`
-	CacheNamespace       string              `json:"cache_namespace,omitempty"`
-	CacheRetention       Retention           `json:"cache_retention,omitempty"`
-	SegmentIDs           []string            `json:"segment_ids"`
-	ProviderPayloadHash  string              `json:"provider_payload_hash"`
-	PrefixRawHash        string              `json:"prefix_raw_hash"`
-	PreviousResponseID   string              `json:"previous_response_id,omitempty"`
-	CompactionGeneration int                 `json:"compaction_generation,omitempty"`
-	CompactionWindowID   string              `json:"compaction_window_id,omitempty"`
-	CompactionEntryID    string              `json:"compaction_entry_id,omitempty"`
-	ContextUsage         contextpolicy.Usage `json:"context_usage,omitempty"`
-	CreatedAt            time.Time           `json:"created_at"`
+	ID                   string                        `json:"id"`
+	RunID                string                        `json:"run_id"`
+	SessionID            string                        `json:"session_id,omitempty"`
+	ThreadID             string                        `json:"thread_id,omitempty"`
+	TurnID               string                        `json:"turn_id,omitempty"`
+	Step                 int                           `json:"step"`
+	LogicalRequestID     string                        `json:"logical_request_id,omitempty"`
+	Attempt              int                           `json:"attempt,omitempty"`
+	OverflowRetried      bool                          `json:"overflow_retried,omitempty"`
+	Provider             string                        `json:"provider"`
+	Model                string                        `json:"model"`
+	CacheNamespace       string                        `json:"cache_namespace,omitempty"`
+	CacheRetention       Retention                     `json:"cache_retention,omitempty"`
+	SegmentIDs           []string                      `json:"segment_ids"`
+	ProviderPayloadHash  string                        `json:"provider_payload_hash"`
+	PrefixRawHash        string                        `json:"prefix_raw_hash"`
+	PreviousResponseID   string                        `json:"previous_response_id,omitempty"`
+	CompactionGeneration int                           `json:"compaction_generation,omitempty"`
+	CompactionWindowID   string                        `json:"compaction_window_id,omitempty"`
+	CompactionEntryID    string                        `json:"compaction_entry_id,omitempty"`
+	RequestEstimate      contextpolicy.RequestEstimate `json:"request_estimate,omitempty"`
+	ProjectedPressure    contextpolicy.ContextPressure `json:"projected_context_pressure,omitempty"`
+	RequestShape         RequestShapeHashes            `json:"request_shape,omitempty"`
+	CreatedAt            time.Time                     `json:"created_at"`
+}
+
+func (r *ProviderRequestRecord) UnmarshalJSON(data []byte) error {
+	type recordAlias ProviderRequestRecord
+	var raw struct {
+		recordAlias
+		ContextUsage legacyContextUsage `json:"context_usage,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*r = ProviderRequestRecord(raw.recordAlias)
+	if r.RequestEstimate == (contextpolicy.RequestEstimate{}) && raw.ContextUsage.hasValues() {
+		r.RequestEstimate = raw.ContextUsage.requestEstimate()
+	}
+	if r.ProjectedPressure == (contextpolicy.ContextPressure{}) && raw.ContextUsage.hasValues() {
+		r.ProjectedPressure = raw.ContextUsage.projectedPressure()
+	}
+	return nil
 }
 
 type ProviderResponseRecord struct {
-	RequestID          string    `json:"request_id"`
-	RunID              string    `json:"run_id,omitempty"`
-	ThreadID           string    `json:"thread_id,omitempty"`
-	TurnID             string    `json:"turn_id,omitempty"`
-	ProviderResponseID string    `json:"provider_response_id,omitempty"`
-	StopReason         string    `json:"stop_reason,omitempty"`
-	InputTokens        int64     `json:"input_tokens,omitempty"`
-	OutputTokens       int64     `json:"output_tokens,omitempty"`
-	ReasoningTokens    int64     `json:"reasoning_tokens,omitempty"`
-	CacheReadTokens    int64     `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens   int64     `json:"cache_write_tokens,omitempty"`
-	TotalTokens        int64     `json:"total_tokens,omitempty"`
-	UsageSource        string    `json:"usage_source,omitempty"`
-	CreatedAt          time.Time `json:"created_at"`
+	RequestID          string                        `json:"request_id"`
+	RunID              string                        `json:"run_id,omitempty"`
+	ThreadID           string                        `json:"thread_id,omitempty"`
+	TurnID             string                        `json:"turn_id,omitempty"`
+	ProviderResponseID string                        `json:"provider_response_id,omitempty"`
+	StopReason         string                        `json:"stop_reason,omitempty"`
+	InputTokens        int64                         `json:"input_tokens,omitempty"`
+	WindowInputTokens  int64                         `json:"window_input_tokens,omitempty"`
+	OutputTokens       int64                         `json:"output_tokens,omitempty"`
+	ReasoningTokens    int64                         `json:"reasoning_tokens,omitempty"`
+	CacheReadTokens    int64                         `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens   int64                         `json:"cache_write_tokens,omitempty"`
+	TotalTokens        int64                         `json:"total_tokens,omitempty"`
+	UsageSource        string                        `json:"usage_source,omitempty"`
+	UsageAvailable     bool                          `json:"usage_available,omitempty"`
+	NativePressure     contextpolicy.ContextPressure `json:"native_context_pressure,omitempty"`
+	PressureAnchor     PressureAnchorState           `json:"pressure_anchor,omitempty"`
+	CreatedAt          time.Time                     `json:"created_at"`
+}
+
+func (r *ProviderResponseRecord) UnmarshalJSON(data []byte) error {
+	type recordAlias ProviderResponseRecord
+	var raw struct {
+		recordAlias
+		EstimatedInputTokens int64 `json:"estimated_input_tokens,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*r = ProviderResponseRecord(raw.recordAlias)
+	if r.InputTokens == 0 && raw.EstimatedInputTokens != 0 {
+		r.InputTokens = raw.EstimatedInputTokens
+	}
+	if r.WindowInputTokens == 0 && raw.EstimatedInputTokens != 0 {
+		r.WindowInputTokens = raw.EstimatedInputTokens
+	}
+	if r.UsageSource == "" && (r.InputTokens != 0 || r.OutputTokens != 0 || r.WindowInputTokens != 0 || r.TotalTokens != 0) {
+		r.UsageSource = "native"
+		r.UsageAvailable = true
+	}
+	return nil
+}
+
+type RequestShapeHashes struct {
+	SystemPrefixHash    string `json:"system_prefix_hash,omitempty"`
+	MessagePayloadHash  string `json:"message_payload_hash,omitempty"`
+	LocalToolsetHash    string `json:"local_toolset_hash,omitempty"`
+	HostedToolsetHash   string `json:"hosted_toolset_hash,omitempty"`
+	ProviderPayloadHash string `json:"provider_payload_hash,omitempty"`
+	CacheShapeHash      string `json:"cache_shape_hash,omitempty"`
+}
+
+type PressureAnchorState struct {
+	SessionID            string                           `json:"session_id,omitempty"`
+	ThreadID             string                           `json:"thread_id,omitempty"`
+	Provider             string                           `json:"provider,omitempty"`
+	Model                string                           `json:"model,omitempty"`
+	AdapterVersion       string                           `json:"adapter_version,omitempty"`
+	RequestID            string                           `json:"request_id,omitempty"`
+	RunID                string                           `json:"run_id,omitempty"`
+	LogicalRequestID     string                           `json:"logical_request_id,omitempty"`
+	LastMessageEntryID   string                           `json:"last_message_entry_id,omitempty"`
+	LastMessageIndex     int                              `json:"last_message_index,omitempty"`
+	CompactionGeneration int                              `json:"compaction_generation,omitempty"`
+	CompactionWindowID   string                           `json:"compaction_window_id,omitempty"`
+	Shape                RequestShapeHashes               `json:"shape,omitempty"`
+	WindowInputTokens    int64                            `json:"window_input_tokens,omitempty"`
+	PrefixTokens         int64                            `json:"prefix_tokens,omitempty"`
+	MessageTokens        int64                            `json:"message_tokens,omitempty"`
+	ToolDefinitionTokens int64                            `json:"tool_definition_tokens,omitempty"`
+	ContextWindowTokens  int64                            `json:"context_window_tokens,omitempty"`
+	EstimateSource       string                           `json:"estimate_source,omitempty"`
+	Confidence           contextpolicy.EstimateConfidence `json:"confidence,omitempty"`
+	PressureSource       contextpolicy.PressureSource     `json:"pressure_source,omitempty"`
+	CreatedAt            time.Time                        `json:"created_at,omitempty"`
 }
 
 type Store interface {
@@ -205,6 +292,7 @@ type Store interface {
 	ProviderRequests(context.Context, string) ([]ProviderRequestRecord, error)
 	AppendProviderResponse(context.Context, ProviderResponseRecord) error
 	ProviderResponses(context.Context, string) ([]ProviderResponseRecord, error)
+	LatestPressureAnchor(context.Context, string, string, string) (PressureAnchorState, bool, error)
 }
 
 type Deleter interface {
@@ -291,6 +379,18 @@ func (s *MemoryStore) ProviderResponses(_ context.Context, runID string) ([]Prov
 		}
 	}
 	return out, nil
+}
+
+func (s *MemoryStore) LatestPressureAnchor(_ context.Context, sessionID, providerName, model string) (PressureAnchorState, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(s.responses) - 1; i >= 0; i-- {
+		anchor := s.responses[i].PressureAnchor
+		if pressureAnchorMatches(anchor, sessionID, providerName, model) {
+			return anchor, true, nil
+		}
+	}
+	return PressureAnchorState{}, false, nil
 }
 
 func (s *MemoryStore) DeleteRuns(_ context.Context, runIDs ...string) error {
@@ -396,6 +496,53 @@ func (s *FileStore) ProviderResponses(ctx context.Context, runID string) ([]Prov
 		return nil, err
 	}
 	return all, nil
+}
+
+func (s *FileStore) LatestPressureAnchor(ctx context.Context, sessionID, providerName, model string) (PressureAnchorState, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return PressureAnchorState{}, false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := os.ReadDir(s.root)
+	if errors.Is(err, os.ErrNotExist) {
+		return PressureAnchorState{}, false, nil
+	}
+	if err != nil {
+		return PressureAnchorState{}, false, err
+	}
+	var latest PressureAnchorState
+	var found bool
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(s.root, entry.Name(), "responses.jsonl"))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return PressureAnchorState{}, false, err
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			var resp ProviderResponseRecord
+			if err := json.Unmarshal([]byte(line), &resp); err != nil {
+				return PressureAnchorState{}, false, err
+			}
+			anchor := resp.PressureAnchor
+			if !pressureAnchorMatches(anchor, sessionID, providerName, model) {
+				continue
+			}
+			if !found || latest.CreatedAt.IsZero() || anchor.CreatedAt.After(latest.CreatedAt) {
+				latest = anchor
+				found = true
+			}
+		}
+	}
+	return latest, found, nil
 }
 
 func (s *FileStore) DeleteRuns(ctx context.Context, runIDs ...string) error {
@@ -997,7 +1144,58 @@ func RecordRequest(ctx context.Context, store Store, runID, sessionID string, st
 		CompactionGeneration: plan.CompactionGeneration,
 		CompactionWindowID:   plan.CompactionWindowID,
 		CompactionEntryID:    plan.CompactionEntryID,
-		ContextUsage:         plan.ContextUsage,
+		RequestEstimate:      plan.RequestEstimate,
+		ProjectedPressure:    plan.ProjectedPressure,
+		RequestShape:         plan.RequestShape,
+		CreatedAt:            time.Now(),
+	}
+	if store == nil {
+		return record, nil
+	}
+	return record, store.AppendProviderRequest(ctx, record)
+}
+
+type ProviderRequestSnapshot struct {
+	RunID            string
+	SessionID        string
+	Step             int
+	LogicalRequestID string
+	Attempt          int
+	OverflowRetried  bool
+	Provider         string
+	Model            string
+	Cache            CachePolicy
+	RawPlan          RawPlan
+}
+
+func RecordProviderRequest(ctx context.Context, store Store, req ProviderRequestSnapshot) (ProviderRequestRecord, error) {
+	if req.Attempt <= 0 {
+		req.Attempt = 1
+	}
+	record := ProviderRequestRecord{
+		ID:                   fmt.Sprintf("%s:req:%d", req.RunID, req.Step),
+		RunID:                req.RunID,
+		SessionID:            req.SessionID,
+		ThreadID:             req.SessionID,
+		TurnID:               req.RunID,
+		Step:                 req.Step,
+		LogicalRequestID:     req.LogicalRequestID,
+		Attempt:              req.Attempt,
+		OverflowRetried:      req.OverflowRetried,
+		Provider:             req.Provider,
+		Model:                req.Model,
+		CacheNamespace:       req.Cache.Namespace,
+		CacheRetention:       req.Cache.Retention,
+		SegmentIDs:           append([]string(nil), req.RawPlan.SegmentIDs...),
+		ProviderPayloadHash:  req.RawPlan.PayloadHash,
+		PrefixRawHash:        req.RawPlan.PrefixHash,
+		PreviousResponseID:   req.RawPlan.PreviousResponseID,
+		CompactionGeneration: req.RawPlan.CompactionGeneration,
+		CompactionWindowID:   req.RawPlan.CompactionWindowID,
+		CompactionEntryID:    req.RawPlan.CompactionEntryID,
+		RequestEstimate:      req.RawPlan.RequestEstimate,
+		ProjectedPressure:    req.RawPlan.ProjectedPressure,
+		RequestShape:         req.RawPlan.RequestShape,
 		CreatedAt:            time.Now(),
 	}
 	if store == nil {
@@ -1239,6 +1437,112 @@ func runIDFromRequest(id string) string {
 		return parts[0]
 	}
 	return ""
+}
+
+type legacyContextUsage struct {
+	PrefixTokens         int64  `json:"prefix_tokens,omitempty"`
+	MessageTokens        int64  `json:"message_tokens,omitempty"`
+	HistoryTokens        int64  `json:"history_tokens,omitempty"`
+	ToolDefinitionTokens int64  `json:"tool_definition_tokens,omitempty"`
+	ToolTokens           int64  `json:"tool_tokens,omitempty"`
+	InputTokens          int64  `json:"input_tokens,omitempty"`
+	EstimatedInputTokens int64  `json:"estimated_input_tokens,omitempty"`
+	ContextWindow        int64  `json:"context_window,omitempty"`
+	ThresholdTokens      int64  `json:"threshold_tokens,omitempty"`
+	RequestSafeLimit     int64  `json:"request_safe_limit_tokens,omitempty"`
+	OutputHeadroom       int64  `json:"output_headroom_tokens,omitempty"`
+	CompactionNeeded     bool   `json:"compaction_needed,omitempty"`
+	HardLimitExceeded    bool   `json:"hard_limit_exceeded,omitempty"`
+	Source               string `json:"source,omitempty"`
+	EstimatorSource      string `json:"estimator_source,omitempty"`
+	Confidence           string `json:"confidence,omitempty"`
+	EstimatorConfidence  string `json:"estimator_confidence,omitempty"`
+}
+
+func (u legacyContextUsage) hasValues() bool {
+	return u.PrefixTokens != 0 ||
+		u.MessageTokens != 0 ||
+		u.HistoryTokens != 0 ||
+		u.ToolDefinitionTokens != 0 ||
+		u.ToolTokens != 0 ||
+		u.InputTokens != 0 ||
+		u.EstimatedInputTokens != 0 ||
+		u.ContextWindow != 0 ||
+		u.ThresholdTokens != 0 ||
+		u.RequestSafeLimit != 0 ||
+		u.OutputHeadroom != 0 ||
+		u.CompactionNeeded ||
+		u.HardLimitExceeded ||
+		u.Source != "" ||
+		u.EstimatorSource != "" ||
+		u.Confidence != "" ||
+		u.EstimatorConfidence != ""
+}
+
+func (u legacyContextUsage) requestEstimate() contextpolicy.RequestEstimate {
+	messageTokens := u.MessageTokens
+	if messageTokens == 0 {
+		messageTokens = u.HistoryTokens
+	}
+	toolTokens := u.ToolDefinitionTokens
+	if toolTokens == 0 {
+		toolTokens = u.ToolTokens
+	}
+	total := u.EstimatedInputTokens
+	if total == 0 {
+		total = u.InputTokens
+	}
+	if total == 0 {
+		total = u.PrefixTokens + messageTokens + toolTokens
+	}
+	source := u.Source
+	if source == "" {
+		source = u.EstimatorSource
+	}
+	confidence := u.Confidence
+	if confidence == "" {
+		confidence = u.EstimatorConfidence
+	}
+	return contextpolicy.RequestEstimate{
+		PrefixTokens:         u.PrefixTokens,
+		MessageTokens:        messageTokens,
+		ToolDefinitionTokens: toolTokens,
+		EstimatedInputTokens: total,
+		Source:               source,
+		Confidence:           contextpolicy.EstimateConfidence(confidence),
+	}
+}
+
+func (u legacyContextUsage) projectedPressure() contextpolicy.ContextPressure {
+	estimate := u.requestEstimate()
+	return contextpolicy.ContextPressure{
+		ProjectedInputTokens: estimate.EstimatedInputTokens,
+		ContextWindowTokens:  u.ContextWindow,
+		ThresholdTokens:      u.ThresholdTokens,
+		RequestSafeLimit:     u.RequestSafeLimit,
+		OutputHeadroomTokens: u.OutputHeadroom,
+		Signal:               contextpolicy.PressureSignalProjected,
+		Source:               contextpolicy.PressureSourceFullRequestEstimate,
+		Confidence:           estimate.Confidence,
+		CompactionNeeded:     u.CompactionNeeded,
+		HardLimitExceeded:    u.HardLimitExceeded,
+	}
+}
+
+func pressureAnchorMatches(anchor PressureAnchorState, sessionID, providerName, model string) bool {
+	if anchor.WindowInputTokens <= 0 {
+		return false
+	}
+	if sessionID != "" && anchor.SessionID != sessionID && anchor.ThreadID != sessionID {
+		return false
+	}
+	if providerName != "" && anchor.Provider != providerName {
+		return false
+	}
+	if model != "" && anchor.Model != model {
+		return false
+	}
+	return true
 }
 
 func safePath(value string) string {

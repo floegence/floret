@@ -270,11 +270,16 @@ func TestStaticConsoleNewSessionDefaultsFollowBackendAndProviderCatalog(t *testi
 	}
 }
 
-func TestStaticConsoleInspectorShowsContextBudgetBreakdown(t *testing.T) {
+func TestStaticConsoleInspectorShowsContextStatusAndDebugBreakdown(t *testing.T) {
 	inspector := readStaticTestFile(t, "views", "inspector.js")
-	for _, want := range []string{"renderContextBudgetMetrics", "estimator_source", "estimator_confidence", "estimator ", "confidence ", "threshold_tokens", "ratio_limit_tokens", "request_safe_limit_tokens", "output_headroom_tokens", "max_output_tokens", "auto_compact_ratio_pct", "request safe", "ratio limit", "output headroom", "auto compact"} {
+	for _, want := range []string{"renderContextStatusMetrics", "Context ", "Output room", "Compaction ", "Request Debug", "pressure_signal", "pressure_source", "confidence", "threshold_tokens", "request_safe_limit_tokens", "output_headroom_tokens", "tool_definition_tokens", "estimate_source"} {
 		if !strings.Contains(inspector, want) {
-			t.Fatalf("inspector should expose context budget field %q", want)
+			t.Fatalf("inspector should expose context status/debug field %q", want)
+		}
+	}
+	for _, forbidden := range []string{"est tokens", "estimator_source", "estimator_confidence", "estimator "} {
+		if strings.Contains(inspector, forbidden) {
+			t.Fatalf("inspector should not expose old provider request wording %q", forbidden)
 		}
 	}
 }

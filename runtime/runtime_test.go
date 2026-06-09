@@ -288,8 +288,8 @@ func TestNewEngineWithProviderKeepsProvidedZeroMaxOutputTokens(t *testing.T) {
 	if req.ContextPolicy.ReservedOutputTokens != contextpolicy.DefaultReservedOutputTokens {
 		t.Fatalf("reserved output = %d, want default budget", req.ContextPolicy.ReservedOutputTokens)
 	}
-	if req.ContextUsage.OutputHeadroom != contextpolicy.DefaultReservedOutputTokens {
-		t.Fatalf("output headroom = %d, want reserved output", req.ContextUsage.OutputHeadroom)
+	if req.ContextPressure.OutputHeadroomTokens != contextpolicy.DefaultReservedOutputTokens {
+		t.Fatalf("output headroom = %d, want reserved output", req.ContextPressure.OutputHeadroomTokens)
 	}
 }
 
@@ -318,8 +318,8 @@ func TestNewEngineWithProviderUsesCatalogMaxOutputWhenPolicyOmitted(t *testing.T
 	if req.MaxOutputTokens != 128000 || req.ContextPolicy.MaxOutputTokens != 128000 {
 		t.Fatalf("max output should use catalog max: max=%d policy=%#v", req.MaxOutputTokens, req.ContextPolicy)
 	}
-	if req.ContextUsage.ThresholdTokens != 922000 || req.ContextUsage.OutputHeadroom != 128000 {
-		t.Fatalf("catalog max output should shape request context usage: %#v", req.ContextUsage)
+	if req.ContextPressure.ThresholdTokens != 922000 || req.ContextPressure.OutputHeadroomTokens != 128000 || req.ContextPressure.RequestSafeLimit != 922000 {
+		t.Fatalf("catalog max output should shape request context pressure: %#v", req.ContextPressure)
 	}
 }
 

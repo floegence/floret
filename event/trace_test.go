@@ -115,3 +115,42 @@ func TestSanitizeKeepsSafeCapabilityMetadataReadable(t *testing.T) {
 		t.Fatalf("unsafe metadata exposed: %#v", meta)
 	}
 }
+
+func TestSanitizeKeepsSafePressureMetadataReadable(t *testing.T) {
+	got := Sanitize(Event{
+		Type:  ProviderRequest,
+		RunID: "run",
+		Metadata: map[string]any{
+			"pressure_signal":    "projected_request",
+			"pressure_source":    "full_request_estimate",
+			"confidence":         "conservative",
+			"estimate_source":    "generic_request_json",
+			"compaction_trigger": "preflight",
+			"trigger":            "provider_overflow",
+			"reason":             "follow_up_pressure",
+			"source":             "provider_usage",
+			"prompt":             "secret raw user prompt",
+		},
+	})
+	meta, ok := got.Metadata.(map[string]any)
+	if !ok {
+		t.Fatalf("metadata = %#v", got.Metadata)
+	}
+	for key, want := range map[string]string{
+		"pressure_signal":    "projected_request",
+		"pressure_source":    "full_request_estimate",
+		"confidence":         "conservative",
+		"estimate_source":    "generic_request_json",
+		"compaction_trigger": "preflight",
+		"trigger":            "provider_overflow",
+		"reason":             "follow_up_pressure",
+		"source":             "provider_usage",
+	} {
+		if meta[key] != want {
+			t.Fatalf("%s = %#v, want %q in %#v", key, meta[key], want, meta)
+		}
+	}
+	if strings.Contains(fmt.Sprint(meta["prompt"]), "secret raw user prompt") {
+		t.Fatalf("unsafe metadata exposed: %#v", meta)
+	}
+}

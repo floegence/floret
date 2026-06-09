@@ -101,7 +101,7 @@ func TestLoadExplicitZeroMaxOutputTokensOverridesCatalog(t *testing.T) {
 	if cfg.ContextPolicy.ReservedOutputTokens != contextpolicy.DefaultReservedOutputTokens {
 		t.Fatalf("reserved output tokens = %d, want budget default", cfg.ContextPolicy.ReservedOutputTokens)
 	}
-	usage := contextpolicy.EstimateMessages("", nil, cfg.ContextPolicy)
+	usage := contextpolicy.EstimateMessageContext("", nil, cfg.ContextPolicy)
 	if usage.OutputHeadroom != contextpolicy.DefaultReservedOutputTokens {
 		t.Fatalf("output headroom = %d, want reserved output", usage.OutputHeadroom)
 	}
@@ -180,7 +180,7 @@ func TestResolveUsesCatalogMaxOutputWhenPolicyOmitted(t *testing.T) {
 	if cfg.ContextPolicy.MaxOutputTokens != 128000 {
 		t.Fatalf("max output tokens = %d, want catalog model max", cfg.ContextPolicy.MaxOutputTokens)
 	}
-	usage := contextpolicy.EstimateMessages("", nil, cfg.ContextPolicy)
+	usage := contextpolicy.EstimateMessageContext("", nil, cfg.ContextPolicy)
 	if usage.ThresholdTokens != 922000 || usage.OutputHeadroom != 128000 {
 		t.Fatalf("catalog max output should shape threshold/headroom: %#v", usage)
 	}

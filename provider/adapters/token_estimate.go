@@ -22,9 +22,9 @@ func estimateRenderedParts(source string, prefix, history, tools any) (provider.
 	}
 	return provider.TokenEstimate{
 		PrefixTokens:  prefixTokens,
-		HistoryTokens: historyTokens,
-		ToolTokens:    toolTokens,
-		InputTokens:   prefixTokens + historyTokens + toolTokens,
+		MessageTokens: historyTokens,
+		ToolDefinitionTokens:    toolTokens,
+		EstimatedInputTokens:   prefixTokens + historyTokens + toolTokens,
 		Source:        source,
 		Confidence:    provider.EstimateConservative,
 	}, nil
@@ -38,7 +38,7 @@ func estimateRenderedValue(value any) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return contextpolicy.EstimateText(string(raw)), nil
+	return contextpolicy.EstimateTextTokens(string(raw)), nil
 }
 
 func isEmptyRenderedValue(value any) bool {

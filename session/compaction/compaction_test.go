@@ -393,11 +393,11 @@ func TestPrepareRepeatedCompactionReplacesCheckpointWithoutPreservedUserGrowth(t
 	}
 
 	stacked := append([]session.Message{checkpoint1}, round3.ActiveMessages...)
-	stackedEstimate := contextpolicy.EstimateMessages("", stacked, contextpolicy.Normalize(policy)).InputTokens
+	stackedEstimate := contextpolicy.EstimateMessageContext("", stacked, contextpolicy.Normalize(policy)).InputTokens
 	if round3.Result.TokensAfterEstimate >= stackedEstimate {
 		t.Fatalf("tokens after estimate looks stacked: after=%d stacked=%d active=%#v", round3.Result.TokensAfterEstimate, stackedEstimate, round3.ActiveMessages)
 	}
-	if got := contextpolicy.EstimateMessages("", round3.ActiveMessages, contextpolicy.Normalize(policy)).InputTokens; got != round3.Result.TokensAfterEstimate {
+	if got := contextpolicy.EstimateMessageContext("", round3.ActiveMessages, contextpolicy.Normalize(policy)).InputTokens; got != round3.Result.TokensAfterEstimate {
 		t.Fatalf("tokens after estimate = %d, want active projection estimate %d", round3.Result.TokensAfterEstimate, got)
 	}
 }
@@ -547,7 +547,7 @@ func TestSummaryPromptKeepsFullPreviousSummaryWithinReservedBudget(t *testing.T)
 	})
 	previousSummary := "prev-start " + strings.Repeat("durable detail ", 22) + "prev-end"
 	oldOneThirdCap := policy.ReservedSummaryTokens / int64(3)
-	if got := contextpolicy.EstimateText(previousSummary); got <= oldOneThirdCap || got > policy.ReservedSummaryTokens {
+	if got := contextpolicy.EstimateTextTokens(previousSummary); got <= oldOneThirdCap || got > policy.ReservedSummaryTokens {
 		t.Fatalf("test previous summary estimate = %d, want > %d and <= %d", got, oldOneThirdCap, policy.ReservedSummaryTokens)
 	}
 
@@ -576,8 +576,8 @@ func TestSummaryPromptTrimsTranscriptNotPreviousSummaryWhenPrefixConsumesBudget(
 	headKeep := session.Message{Role: session.User, Content: "head-keep", EntryID: "u1"}
 	headDrop := session.Message{Role: session.User, Content: "head-drop " + strings.Repeat("x", 2000), EntryID: "u2"}
 	prefix := SummaryPrompt(Preparation{Request: Request{PreviousSummary: previousSummary}}, basePolicy, outputCap)
-	prefixInput := contextpolicy.EstimateText(SummaryWriterSystemPrompt()) + contextpolicy.EstimateText(prefix)
-	keepTokens := contextpolicy.EstimateText(renderForSummaryPrompt(headKeep))
+	prefixInput := contextpolicy.EstimateTextTokens(SummaryWriterSystemPrompt()) + contextpolicy.EstimateTextTokens(prefix)
+	keepTokens := contextpolicy.EstimateTextTokens(renderForSummaryPrompt(headKeep))
 	policy := basePolicy
 	policy.ContextWindowTokens = prefixInput + outputCap + keepTokens + 1
 

@@ -17,18 +17,23 @@ var ErrStreamMissingTerminal = errors.New("provider stream closed without termin
 var ErrStreamNotClosedAfterTerminal = errors.New("provider stream did not close after terminal event")
 
 type Request struct {
-	RunID           string
-	Step            int
-	Provider        string
-	Model           string
-	Messages        []session.Message
-	Tools           []ToolDefinition
-	HostedTools     []HostedToolDefinition
-	RawPlan         cache.RawPlan
-	Cache           cache.CachePolicy
-	ContextPolicy   contextpolicy.Policy
-	ContextUsage    contextpolicy.Usage
-	MaxOutputTokens int64
+	RunID            string
+	SessionID        string
+	Step             int
+	LogicalRequestID string
+	Attempt          int
+	OverflowRetried  bool
+	Provider         string
+	Model            string
+	Messages         []session.Message
+	Tools            []ToolDefinition
+	HostedTools      []HostedToolDefinition
+	RawPlan          cache.RawPlan
+	Cache            cache.CachePolicy
+	ContextPolicy    contextpolicy.Policy
+	RequestEstimate  contextpolicy.RequestEstimate
+	ContextPressure  contextpolicy.ContextPressure
+	MaxOutputTokens  int64
 }
 
 type ToolDefinition struct {
@@ -58,6 +63,7 @@ const (
 	Done             EventType = "done"
 	Empty            EventType = "empty"
 	Truncated        EventType = "truncated"
+	Error            EventType = "error"
 	UsageEvent       EventType = "usage"
 	HostedToolCall   EventType = "hosted_tool_call"
 	HostedToolResult EventType = "hosted_tool_result"
@@ -192,6 +198,7 @@ type StreamEvent struct {
 	Reason       string
 	Usage        Usage
 	ResponseID   string
+	Err          error
 }
 
 // StreamValidator checks provider stream invariants that the engine relies on.
@@ -256,7 +263,7 @@ func (v *StreamValidator) Observe(ev StreamEvent) error {
 		}
 		v.hostedDone[ev.ToolCall.ID] = struct{}{}
 		return nil
-	case Empty, Truncated, Done:
+	case Empty, Truncated, Done, Error:
 		v.terminalSeen = true
 		return nil
 	default:
@@ -310,12 +317,12 @@ const (
 )
 
 type TokenEstimate struct {
-	PrefixTokens  int64
-	HistoryTokens int64
-	ToolTokens    int64
-	InputTokens   int64
-	Source        string
-	Confidence    EstimateConfidence
+	PrefixTokens         int64
+	MessageTokens        int64
+	ToolDefinitionTokens int64
+	EstimatedInputTokens int64
+	Source               string
+	Confidence           EstimateConfidence
 }
 
 type TokenEstimator interface {
@@ -323,26 +330,26 @@ type TokenEstimator interface {
 }
 
 func GenericRequestEstimate(req Request) (TokenEstimate, error) {
-	prefix, history := splitSystemMessages(req.Messages)
+	prefix, messages := splitSystemMessages(req.Messages)
 	prefixTokens, err := estimateMessagesJSON(prefix)
 	if err != nil {
 		return TokenEstimate{}, err
 	}
-	historyTokens, err := estimateMessagesJSON(history)
+	messageTokens, err := estimateMessagesJSON(messages)
 	if err != nil {
 		return TokenEstimate{}, err
 	}
-	toolTokens, err := estimateToolsJSON(req.Tools, req.HostedTools)
+	toolDefinitionTokens, err := estimateToolsJSON(req.Tools, req.HostedTools)
 	if err != nil {
 		return TokenEstimate{}, err
 	}
 	return TokenEstimate{
-		PrefixTokens:  prefixTokens,
-		HistoryTokens: historyTokens,
-		ToolTokens:    toolTokens,
-		InputTokens:   prefixTokens + historyTokens + toolTokens,
-		Source:        "generic_request_json",
-		Confidence:    EstimateConservative,
+		PrefixTokens:         prefixTokens,
+		MessageTokens:        messageTokens,
+		ToolDefinitionTokens: toolDefinitionTokens,
+		EstimatedInputTokens: prefixTokens + messageTokens + toolDefinitionTokens,
+		Source:               "generic_request_json",
+		Confidence:           EstimateConservative,
 	}, nil
 }
 
@@ -354,7 +361,7 @@ func estimateMessagesJSON(messages []session.Message) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return contextpolicy.EstimateText(string(raw)), nil
+	return contextpolicy.EstimateTextTokens(string(raw)), nil
 }
 
 func estimateToolsJSON(tools []ToolDefinition, hostedTools []HostedToolDefinition) (int64, error) {
@@ -368,7 +375,7 @@ func estimateToolsJSON(tools []ToolDefinition, hostedTools []HostedToolDefinitio
 	if err != nil {
 		return 0, err
 	}
-	return contextpolicy.EstimateText(string(raw)), nil
+	return contextpolicy.EstimateTextTokens(string(raw)), nil
 }
 
 func splitSystemMessages(messages []session.Message) ([]session.Message, []session.Message) {
@@ -387,21 +394,24 @@ func splitSystemMessages(messages []session.Message) ([]session.Message, []sessi
 type UsageSource string
 
 const (
-	UsageNative    UsageSource = "native"
-	UsageEstimated UsageSource = "estimated"
-	UsageMixed     UsageSource = "mixed"
-	UsageUnknown   UsageSource = "unknown"
+	UsageNative      UsageSource = "native"
+	UsageEstimated   UsageSource = "estimated"
+	UsageMixed       UsageSource = "mixed"
+	UsageUnknown     UsageSource = "unknown"
+	UsageUnavailable UsageSource = "unavailable"
 )
 
 type Usage struct {
-	InputTokens      int64
-	OutputTokens     int64
-	ReasoningTokens  int64
-	CacheReadTokens  int64
-	CacheWriteTokens int64
-	TotalTokens      int64
-	CostUSD          float64
-	Source           UsageSource
+	InputTokens       int64       `json:"input_tokens,omitempty"`
+	OutputTokens      int64       `json:"output_tokens,omitempty"`
+	ReasoningTokens   int64       `json:"reasoning_tokens,omitempty"`
+	CacheReadTokens   int64       `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens  int64       `json:"cache_write_tokens,omitempty"`
+	TotalTokens       int64       `json:"total_tokens,omitempty"`
+	CostUSD           float64     `json:"cost_usd,omitempty"`
+	Source            UsageSource `json:"source,omitempty"`
+	Available         bool        `json:"available,omitempty"`
+	WindowInputTokens int64       `json:"window_input_tokens,omitempty"`
 }
 
 func (u Usage) Normalized() Usage {
@@ -410,10 +420,20 @@ func (u Usage) Normalized() Usage {
 	}
 	if u.Source == "" {
 		if u.TotalTokens == 0 && u.CostUSD == 0 {
-			u.Source = UsageUnknown
+			u.Source = UsageUnavailable
 		} else {
 			u.Source = UsageNative
 		}
+	}
+	if u.Source == UsageUnavailable || u.Source == UsageUnknown {
+		u.Available = false
+		return u
+	}
+	if u.TotalTokens > 0 || u.CostUSD > 0 || u.InputTokens > 0 || u.OutputTokens > 0 || u.WindowInputTokens > 0 || u.CacheReadTokens > 0 || u.CacheWriteTokens > 0 {
+		u.Available = true
+	}
+	if u.WindowInputTokens <= 0 && u.Available {
+		u.WindowInputTokens = u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens
 	}
 	return u
 }
@@ -421,21 +441,44 @@ func (u Usage) Normalized() Usage {
 func (u Usage) Add(other Usage) Usage {
 	u = u.Normalized()
 	other = other.Normalized()
+	if !usageHasValues(u) {
+		return other
+	}
+	if !usageHasValues(other) {
+		return u
+	}
 	source := u.Source
 	if source == "" || source == UsageUnknown {
 		source = other.Source
 	}
-	if other.Source != "" && source != other.Source {
+	if source == UsageUnavailable {
+		source = other.Source
+	}
+	if other.Source != "" && other.Source != UsageUnavailable && source != other.Source {
 		source = UsageMixed
 	}
 	return Usage{
-		InputTokens:      u.InputTokens + other.InputTokens,
-		OutputTokens:     u.OutputTokens + other.OutputTokens,
-		ReasoningTokens:  u.ReasoningTokens + other.ReasoningTokens,
-		CacheReadTokens:  u.CacheReadTokens + other.CacheReadTokens,
-		CacheWriteTokens: u.CacheWriteTokens + other.CacheWriteTokens,
-		TotalTokens:      u.TotalTokens + other.TotalTokens,
-		CostUSD:          u.CostUSD + other.CostUSD,
-		Source:           source,
+		InputTokens:       u.InputTokens + other.InputTokens,
+		OutputTokens:      u.OutputTokens + other.OutputTokens,
+		ReasoningTokens:   u.ReasoningTokens + other.ReasoningTokens,
+		CacheReadTokens:   u.CacheReadTokens + other.CacheReadTokens,
+		CacheWriteTokens:  u.CacheWriteTokens + other.CacheWriteTokens,
+		TotalTokens:       u.TotalTokens + other.TotalTokens,
+		CostUSD:           u.CostUSD + other.CostUSD,
+		Source:            source,
+		Available:         u.Available || other.Available,
+		WindowInputTokens: u.WindowInputTokens + other.WindowInputTokens,
 	}
+}
+
+func usageHasValues(u Usage) bool {
+	return u.Available ||
+		u.InputTokens != 0 ||
+		u.OutputTokens != 0 ||
+		u.ReasoningTokens != 0 ||
+		u.CacheReadTokens != 0 ||
+		u.CacheWriteTokens != 0 ||
+		u.TotalTokens != 0 ||
+		u.CostUSD != 0 ||
+		u.WindowInputTokens != 0
 }

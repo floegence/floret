@@ -2189,7 +2189,7 @@ func TestRunnerRejectsAppendWhenSessionCannotAcceptMessage(t *testing.T) {
 		Message:      "fail",
 		SystemPrompt: "test",
 	})
-	if first.Status != "failed" {
+	if first.Status != "cancelled" {
 		t.Fatalf("first = %#v", first)
 	}
 
@@ -2552,7 +2552,7 @@ type estimatingTestProvider struct {
 }
 
 func (estimatingTestProvider) EstimateTokens(context.Context, provider.Request) (provider.TokenEstimate, error) {
-	return provider.TokenEstimate{InputTokens: 1, Source: "test_estimator", Confidence: provider.EstimateConservative}, nil
+	return provider.TokenEstimate{EstimatedInputTokens: 1, Source: "test_estimator", Confidence: provider.EstimateConservative}, nil
 }
 
 func (rendererProvider) Stream(context.Context, provider.Request) (<-chan provider.StreamEvent, error) {

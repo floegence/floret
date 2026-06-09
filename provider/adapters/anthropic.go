@@ -599,15 +599,13 @@ func anthropicCacheControlFor(req provider.Request, capability catalog.CacheCapa
 
 func normalizeAnthropicUsage(payload anthropicUsage, model catalog.Model) provider.Usage {
 	usage := provider.Usage{
-		InputTokens:      payload.InputTokens,
-		OutputTokens:     payload.OutputTokens,
-		CacheReadTokens:  payload.CacheReadInputTokens,
-		CacheWriteTokens: payload.CacheCreationInputTokens,
-		Source:           provider.UsageNative,
+		InputTokens:       payload.InputTokens,
+		OutputTokens:      payload.OutputTokens,
+		CacheReadTokens:   payload.CacheReadInputTokens,
+		CacheWriteTokens:  payload.CacheCreationInputTokens,
+		Source:            provider.UsageNative,
+		WindowInputTokens: payload.InputTokens + payload.CacheCreationInputTokens + payload.CacheReadInputTokens,
 	}.Normalized()
-	if usage.InputTokens >= usage.CacheReadTokens {
-		usage.InputTokens -= usage.CacheReadTokens
-	}
 	if model.ID != "" {
 		usage.CostUSD = catalog.CostForUsage(model, usage)
 	}

@@ -103,6 +103,34 @@ Public views should expose sanitized events and observations. Raw provider delta
 reasoning, tool arguments/results, prompt segments, and artifact paths are local
 debug data and require explicit opt-in at the host boundary.
 
+### Context Pressure
+
+Floret keeps context-budget signals separate so hosts and storage do not have to
+guess what a token number means:
+
+- `provider.Usage` is native provider usage and cost data from a successful
+  response. `WindowInputTokens` is the context-window input; `InputTokens` may be
+  cost-normalized. Cached prompt reads and writes are still model-visible input
+  for window pressure.
+- `contextpolicy.RequestEstimate` is a preflight prediction for the actual
+  provider request, including prefix messages, active messages, local tool
+  definitions, and provider-hosted tool options. It is stored with provider
+  request records, not as fake provider usage.
+- `contextpolicy.ContextPressure` is the only structure that drives ordinary
+  auto-compaction. It distinguishes native usage, projected request pressure,
+  and provider overflow. Provider overflow compacts, rebuilds the request,
+  re-estimates pressure, and retries the same logical request once.
+- `contextpolicy.MessageContextEstimate` and `contextpolicy.Usage` are
+  compaction-internal message budgets. They are used for retained tail and
+  summary prompts, not for deciding whether an ordinary provider request can be
+  sent.
+
+After a successful ordinary request with native usage, Floret stores a pressure
+anchor in the prompt cache. The next preflight projection can use that anchor plus
+a request delta when the session, provider, model, rendered request shape, and
+active message lineage still match; otherwise it falls back to a full request
+estimate.
+
 ## 🚀 Quick Start
 
 1. Clone the repository and run the test suite:

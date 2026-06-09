@@ -522,6 +522,8 @@ func publicMetadataValueIsSafe(key, value string) bool {
 	switch key {
 	case "source", "previous_tools", "selected_tools", "status", "phase", "completion_reason", "continuation_reason", "finish_reason", "raw_finish_reason", "turn_status", "entry_type", "result_hash", "error_code":
 		return value == "" || isSafeTokenList(value)
+	case "pressure_signal", "pressure_source", "confidence", "estimate_source", "compaction_trigger", "trigger", "reason":
+		return value == "" || isSafeTokenList(value)
 	case "finish_inferred":
 		return value == "true" || value == "false" || value == ""
 	case "batch_index", "batch_size", "exit_code", "matches", "bytes", "line_start", "line_end", "replacements", "count", "result_count", "compaction_generation":

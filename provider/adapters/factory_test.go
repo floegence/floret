@@ -83,10 +83,10 @@ func TestFakeProviderUsesGenericRequestEstimateIncludingTools(t *testing.T) {
 	if len(requests) != 1 {
 		t.Fatalf("requests = %#v", requests)
 	}
-	messageOnly := contextpolicy.EstimateMessages("", []session.Message{{Role: session.User, Content: "hello"}}, contextpolicy.Policy{})
-	usage := requests[0].ContextUsage
-	if usage.InputTokens <= messageOnly.InputTokens || usage.EstimatorSource != "generic_request_json" || usage.EstimatorConfidence != string(provider.EstimateConservative) {
-		t.Fatalf("fake provider should use generic conservative request estimate including tools: usage=%#v messageOnly=%#v", usage, messageOnly)
+	messageOnly := contextpolicy.EstimateMessageContext("", []session.Message{{Role: session.User, Content: "hello"}}, contextpolicy.Policy{})
+	estimate := requests[0].RequestEstimate
+	if estimate.EstimatedInputTokens <= messageOnly.InputTokens || estimate.Source != "generic_request_json" || estimate.Confidence != contextpolicy.EstimateConfidence(provider.EstimateConservative) {
+		t.Fatalf("fake provider should use generic conservative request estimate including tools: estimate=%#v messageOnly=%#v", estimate, messageOnly)
 	}
 }
 
@@ -194,7 +194,7 @@ func TestOpenAICompatibleProviderNormalizesUsage(t *testing.T) {
 	if result.Status != engine.Completed {
 		t.Fatalf("result = %#v", result)
 	}
-	if result.Metrics.Usage.InputTokens != 100 || result.Metrics.Usage.OutputTokens != 30 || result.Metrics.Usage.CacheReadTokens != 20 || result.Metrics.Usage.CacheWriteTokens != 5 || result.Metrics.Usage.ReasoningTokens != 10 || result.Metrics.Usage.TotalTokens != 160 {
+	if result.Metrics.Usage.InputTokens != 100 || result.Metrics.Usage.WindowInputTokens != 120 || result.Metrics.Usage.OutputTokens != 30 || result.Metrics.Usage.CacheReadTokens != 20 || result.Metrics.Usage.CacheWriteTokens != 5 || result.Metrics.Usage.ReasoningTokens != 10 || result.Metrics.Usage.TotalTokens != 160 {
 		t.Fatalf("usage = %#v", result.Metrics.Usage)
 	}
 }
@@ -540,10 +540,10 @@ func TestOpenAICompatibleEstimateTokensIncludesRenderedToolSchema(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if withTool.InputTokens <= base.InputTokens || withTool.Source != "openai_compatible_rendered_json" || withTool.Confidence != provider.EstimateConservative {
+	if withTool.EstimatedInputTokens <= base.EstimatedInputTokens || withTool.Source != "openai_compatible_rendered_json" || withTool.Confidence != provider.EstimateConservative {
 		t.Fatalf("estimate did not include rendered tool schema: base=%#v withTool=%#v", base, withTool)
 	}
-	if withTool.ToolTokens <= 0 || withTool.HistoryTokens != base.HistoryTokens {
+	if withTool.ToolDefinitionTokens <= 0 || withTool.MessageTokens != base.MessageTokens {
 		t.Fatalf("estimate should split tool and history tokens: base=%#v withTool=%#v", base, withTool)
 	}
 	cacheEnabled := provider.Request{
@@ -563,7 +563,7 @@ func TestOpenAICompatibleEstimateTokensIncludesRenderedToolSchema(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cached.InputTokens != uncached.InputTokens || cached.ToolTokens != uncached.ToolTokens || cached.HistoryTokens != uncached.HistoryTokens {
+	if cached.EstimatedInputTokens != uncached.EstimatedInputTokens || cached.ToolDefinitionTokens != uncached.ToolDefinitionTokens || cached.MessageTokens != uncached.MessageTokens {
 		t.Fatalf("cache settings should not change context estimate: cached=%#v uncached=%#v", cached, uncached)
 	}
 }
@@ -671,10 +671,10 @@ func TestAnthropicRawPlanToolsKeepHostedTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if estimate.InputTokens <= baseEstimate.InputTokens || estimate.Source != "anthropic_rendered_json" || estimate.Confidence != provider.EstimateConservative {
+	if estimate.EstimatedInputTokens <= baseEstimate.EstimatedInputTokens || estimate.Source != "anthropic_rendered_json" || estimate.Confidence != provider.EstimateConservative {
 		t.Fatalf("anthropic estimate did not include rendered tools/source/confidence: base=%#v estimate=%#v", baseEstimate, estimate)
 	}
-	if estimate.PrefixTokens != 0 || estimate.ToolTokens <= 0 {
+	if estimate.PrefixTokens != 0 || estimate.ToolDefinitionTokens <= 0 {
 		t.Fatalf("anthropic estimate should split tool tokens: %#v", estimate)
 	}
 	uncachedReq := req
@@ -683,7 +683,7 @@ func TestAnthropicRawPlanToolsKeepHostedTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if estimate.InputTokens != uncachedEstimate.InputTokens || estimate.ToolTokens != uncachedEstimate.ToolTokens || estimate.HistoryTokens != uncachedEstimate.HistoryTokens {
+	if estimate.EstimatedInputTokens != uncachedEstimate.EstimatedInputTokens || estimate.ToolDefinitionTokens != uncachedEstimate.ToolDefinitionTokens || estimate.MessageTokens != uncachedEstimate.MessageTokens {
 		t.Fatalf("cache control should not change context estimate: cached=%#v uncached=%#v", estimate, uncachedEstimate)
 	}
 	if _, err := p.Stream(context.Background(), req); err != nil {

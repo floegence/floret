@@ -17,6 +17,7 @@ import (
 	"github.com/floegence/floret/runtime/storage"
 	"github.com/floegence/floret/session"
 	"github.com/floegence/floret/session/compaction"
+	"github.com/floegence/floret/session/contextpolicy"
 	"github.com/floegence/floret/sessiontree"
 )
 
@@ -451,6 +452,139 @@ func TestSQLiteStorePromptMetadataDeleteSessionAndSchemaGuard(t *testing.T) {
 	}
 	if _, err := Open(dbPath); err == nil || !strings.Contains(err.Error(), "unsupported sqlite store schema version") {
 		t.Fatalf("unsupported schema open err = %v", err)
+	}
+}
+
+func TestSQLiteStoreImportsLegacyProviderRequestContextUsageAndWritesNewFields(t *testing.T) {
+	ctx := context.Background()
+	store, _ := openSQLiteStoreForTest(t)
+	legacy := `{
+		"id":"turn-1:req:1",
+		"run_id":"turn-1",
+		"provider":"openai",
+		"model":"model",
+		"context_usage":{
+			"prefix_tokens":11,
+			"history_tokens":22,
+			"tool_tokens":7,
+			"estimated_input_tokens":40,
+			"context_window":1000,
+			"threshold_tokens":900,
+			"request_safe_limit_tokens":800,
+			"output_headroom_tokens":200,
+			"estimator_source":"legacy_estimator",
+			"estimator_confidence":"conservative",
+			"compaction_needed":true
+		}
+	}`
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO prompt_requests(id, run_id, provider, model, created_at, data_json) VALUES(?, ?, ?, ?, ?, ?)`, "turn-1:req:1", "turn-1", "openai", "model", formatTime(time.Now().UTC()), legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	requests, err := store.ProviderRequests(ctx, "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("requests = %#v", requests)
+	}
+	if requests[0].RequestEstimate.MessageTokens != 22 ||
+		requests[0].RequestEstimate.ToolDefinitionTokens != 7 ||
+		requests[0].RequestEstimate.EstimatedInputTokens != 40 ||
+		requests[0].RequestEstimate.Source != "legacy_estimator" {
+		t.Fatalf("legacy request estimate = %#v", requests[0].RequestEstimate)
+	}
+	if requests[0].ProjectedPressure.ProjectedInputTokens != 40 ||
+		requests[0].ProjectedPressure.Signal != contextpolicy.PressureSignalProjected ||
+		requests[0].ProjectedPressure.Source != contextpolicy.PressureSourceFullRequestEstimate ||
+		!requests[0].ProjectedPressure.CompactionNeeded {
+		t.Fatalf("legacy projected pressure = %#v", requests[0].ProjectedPressure)
+	}
+
+	if err := store.AppendProviderRequest(ctx, cache.ProviderRequestRecord{
+		ID:       "turn-2:req:1",
+		RunID:    "turn-2",
+		Provider: "openai",
+		Model:    "model",
+		RequestEstimate: contextpolicy.RequestEstimate{
+			PrefixTokens:         1,
+			MessageTokens:        2,
+			ToolDefinitionTokens: 3,
+			EstimatedInputTokens: 6,
+			Source:               "provider_api",
+			Confidence:           contextpolicy.EstimateApproximate,
+		},
+		ProjectedPressure: contextpolicy.ContextPressure{
+			ProjectedInputTokens: 6,
+			Signal:               contextpolicy.PressureSignalProjected,
+			Source:               contextpolicy.PressureSourceFullRequestEstimate,
+			Confidence:           contextpolicy.EstimateApproximate,
+		},
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	if err := store.db.QueryRowContext(ctx, `SELECT data_json FROM prompt_requests WHERE id = ?`, "turn-2:req:1").Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"context_usage", "history_tokens", "tool_tokens", "active_tokens", "estimator_source", "estimator_confidence"} {
+		if strings.Contains(stored, forbidden) {
+			t.Fatalf("legacy field %q was written in new sqlite row: %s", forbidden, stored)
+		}
+	}
+	for _, want := range []string{"request_estimate", "projected_context_pressure", "tool_definition_tokens", "message_tokens"} {
+		if !strings.Contains(stored, want) {
+			t.Fatalf("new field %q missing from sqlite row: %s", want, stored)
+		}
+	}
+}
+
+func TestSQLiteStoreLatestPressureAnchorRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store, _ := openSQLiteStoreForTest(t)
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	old := cache.PressureAnchorState{
+		SessionID:          "thread",
+		ThreadID:           "thread",
+		Provider:           "openai",
+		Model:              "model",
+		RequestID:          "turn-1:req:1",
+		LastMessageEntryID: "entry-1",
+		WindowInputTokens:  100,
+		CreatedAt:          now,
+	}
+	newer := old
+	newer.RequestID = "turn-2:req:1"
+	newer.LastMessageEntryID = "entry-2"
+	newer.WindowInputTokens = 200
+	newer.CreatedAt = now.Add(time.Minute)
+	other := newer
+	other.SessionID = "other-thread"
+	other.ThreadID = "other-thread"
+	other.RequestID = "turn-other:req:1"
+	other.WindowInputTokens = 999
+	other.CreatedAt = now.Add(2 * time.Minute)
+
+	for _, resp := range []cache.ProviderResponseRecord{
+		{RequestID: "turn-1:req:1", RunID: "turn-1", PressureAnchor: old, CreatedAt: old.CreatedAt},
+		{RequestID: "turn-other:req:1", RunID: "turn-other", PressureAnchor: other, CreatedAt: other.CreatedAt},
+		{RequestID: "turn-2:req:1", RunID: "turn-2", PressureAnchor: newer, CreatedAt: newer.CreatedAt},
+	} {
+		if err := store.AppendProviderResponse(ctx, resp); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, ok, err := store.LatestPressureAnchor(ctx, "thread", "openai", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || got.RequestID != "turn-2:req:1" || got.WindowInputTokens != 200 || got.LastMessageEntryID != "entry-2" {
+		t.Fatalf("latest anchor = %#v ok=%v", got, ok)
+	}
+	if _, ok, err := store.LatestPressureAnchor(ctx, "thread", "anthropic", "model"); err != nil || ok {
+		t.Fatalf("mismatched provider anchor ok=%v err=%v", ok, err)
 	}
 }
 

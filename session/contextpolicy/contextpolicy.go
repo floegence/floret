@@ -1,6 +1,7 @@
 package contextpolicy
 
 import (
+	"encoding/json"
 	"strings"
 	"unicode/utf8"
 
@@ -29,13 +30,107 @@ const (
 	EstimateConservative EstimateConfidence = "conservative"
 )
 
-type Estimate struct {
+type RequestEstimate struct {
+	PrefixTokens         int64              `json:"prefix_tokens,omitempty"`
+	MessageTokens        int64              `json:"message_tokens,omitempty"`
+	ToolDefinitionTokens int64              `json:"tool_definition_tokens,omitempty"`
+	EstimatedInputTokens int64              `json:"estimated_input_tokens,omitempty"`
+	Source               string             `json:"source,omitempty"`
+	Confidence           EstimateConfidence `json:"confidence,omitempty"`
+}
+
+func (e RequestEstimate) Normalized(policy Policy) RequestEstimate {
+	if e.EstimatedInputTokens <= 0 {
+		e.EstimatedInputTokens = e.PrefixTokens + e.MessageTokens + e.ToolDefinitionTokens
+	}
+	if e.Source == "" {
+		e.Source = Normalize(policy).EstimatorSource
+	}
+	if e.Confidence == "" {
+		e.Confidence = EstimateConservative
+	}
+	return e
+}
+
+type RequestDeltaEstimate struct {
+	MessageDeltaTokens        int64              `json:"message_delta_tokens,omitempty"`
+	PrefixDeltaTokens         int64              `json:"prefix_delta_tokens,omitempty"`
+	ToolDefinitionDeltaTokens int64              `json:"tool_definition_delta_tokens,omitempty"`
+	EstimatedDeltaTokens      int64              `json:"estimated_delta_tokens,omitempty"`
+	Source                    string             `json:"source,omitempty"`
+	Confidence                EstimateConfidence `json:"confidence,omitempty"`
+}
+
+func (e RequestDeltaEstimate) Normalized() RequestDeltaEstimate {
+	if e.EstimatedDeltaTokens == 0 {
+		e.EstimatedDeltaTokens = e.MessageDeltaTokens + e.PrefixDeltaTokens + e.ToolDefinitionDeltaTokens
+	}
+	if e.Confidence == "" {
+		e.Confidence = EstimateConservative
+	}
+	return e
+}
+
+type MessageContextEstimate struct {
 	PrefixTokens  int64              `json:"prefix_tokens,omitempty"`
-	HistoryTokens int64              `json:"history_tokens,omitempty"`
-	ToolTokens    int64              `json:"tool_tokens,omitempty"`
+	MessageTokens int64              `json:"message_tokens,omitempty"`
 	InputTokens   int64              `json:"input_tokens,omitempty"`
 	Source        string             `json:"source,omitempty"`
 	Confidence    EstimateConfidence `json:"confidence,omitempty"`
+}
+
+func (e MessageContextEstimate) Normalized(policy Policy) MessageContextEstimate {
+	if e.InputTokens <= 0 {
+		e.InputTokens = e.PrefixTokens + e.MessageTokens
+	}
+	if e.Source == "" {
+		e.Source = Normalize(policy).EstimatorSource
+	}
+	if e.Confidence == "" {
+		e.Confidence = EstimateConservative
+	}
+	return e
+}
+
+type PressureSignal string
+
+const (
+	PressureSignalNativeUsage PressureSignal = "native_usage"
+	PressureSignalProjected   PressureSignal = "projected_request"
+	PressureSignalOverflow    PressureSignal = "provider_overflow"
+	PressureSignalManual      PressureSignal = "manual"
+)
+
+type PressureSource string
+
+const (
+	PressureSourceProviderUsage       PressureSource = "provider_usage"
+	PressureSourceUsageAnchoredDelta  PressureSource = "usage_anchored_delta"
+	PressureSourceFullRequestEstimate PressureSource = "full_request_estimate"
+	PressureSourceMissingNativeUsage  PressureSource = "missing_native_usage_request_estimate"
+	PressureSourceManual              PressureSource = "manual"
+)
+
+type ContextPressure struct {
+	WindowInputTokens    int64              `json:"window_input_tokens,omitempty"`
+	ProjectedInputTokens int64              `json:"projected_input_tokens,omitempty"`
+	ContextWindowTokens  int64              `json:"context_window_tokens,omitempty"`
+	ThresholdTokens      int64              `json:"threshold_tokens,omitempty"`
+	RequestSafeLimit     int64              `json:"request_safe_limit_tokens,omitempty"`
+	OutputHeadroomTokens int64              `json:"output_headroom_tokens,omitempty"`
+	Signal               PressureSignal     `json:"pressure_signal,omitempty"`
+	Source               PressureSource     `json:"pressure_source,omitempty"`
+	Confidence           EstimateConfidence `json:"confidence,omitempty"`
+	CompactionNeeded     bool               `json:"compaction_needed,omitempty"`
+	HardLimitExceeded    bool               `json:"hard_limit_exceeded,omitempty"`
+}
+
+type NativeUsage struct {
+	InputTokens       int64
+	CacheReadTokens   int64
+	CacheWriteTokens  int64
+	WindowInputTokens int64
+	Available         bool
 }
 
 type Policy struct {
@@ -49,31 +144,70 @@ type Policy struct {
 	MaxCompactionFailures int    `json:"max_compaction_failures,omitempty"`
 }
 
+// Usage is the compaction-internal message-context budget. It intentionally
+// excludes request tool schemas, native usage, projected pressure, and triggers.
 type Usage struct {
-	ActiveTokens        int64  `json:"active_tokens,omitempty"`
-	HistoryTokens       int64  `json:"history_tokens,omitempty"`
-	PrefixTokens        int64  `json:"prefix_tokens,omitempty"`
-	ToolTokens          int64  `json:"tool_tokens,omitempty"`
-	CacheReadTokens     int64  `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens    int64  `json:"cache_write_tokens,omitempty"`
-	InputTokens         int64  `json:"input_tokens,omitempty"`
-	OutputTokens        int64  `json:"output_tokens,omitempty"`
-	TotalTokens         int64  `json:"total_tokens,omitempty"`
-	ContextWindow       int64  `json:"context_window,omitempty"`
-	ThresholdTokens     int64  `json:"threshold_tokens,omitempty"`
-	RatioLimitTokens    int64  `json:"ratio_limit_tokens,omitempty"`
-	RequestSafeLimit    int64  `json:"request_safe_limit_tokens,omitempty"`
-	MaxOutputTokens     int64  `json:"max_output_tokens,omitempty"`
-	ReservedOutput      int64  `json:"reserved_output,omitempty"`
-	ReservedSummary     int64  `json:"reserved_summary,omitempty"`
-	OutputHeadroom      int64  `json:"output_headroom_tokens,omitempty"`
-	AutoCompactRatio    int64  `json:"auto_compact_ratio_pct,omitempty"`
-	RecentTailTokens    int64  `json:"recent_tail_tokens,omitempty"`
-	RecentUserTokens    int64  `json:"recent_user_tokens,omitempty"`
-	EstimatorSource     string `json:"estimator_source,omitempty"`
-	EstimatorConfidence string `json:"estimator_confidence,omitempty"`
-	CompactionNeeded    bool   `json:"compaction_needed,omitempty"`
-	TokenPressureHigh   bool   `json:"token_pressure_high,omitempty"`
+	PrefixTokens        int64              `json:"prefix_tokens,omitempty"`
+	MessageTokens       int64              `json:"message_tokens,omitempty"`
+	InputTokens         int64              `json:"input_tokens,omitempty"`
+	ContextWindow       int64              `json:"context_window,omitempty"`
+	ThresholdTokens     int64              `json:"threshold_tokens,omitempty"`
+	RatioLimitTokens    int64              `json:"ratio_limit_tokens,omitempty"`
+	RequestSafeLimit    int64              `json:"request_safe_limit_tokens,omitempty"`
+	MaxOutputTokens     int64              `json:"max_output_tokens,omitempty"`
+	ReservedOutput      int64              `json:"reserved_output,omitempty"`
+	ReservedSummary     int64              `json:"reserved_summary,omitempty"`
+	OutputHeadroom      int64              `json:"output_headroom_tokens,omitempty"`
+	AutoCompactRatio    int64              `json:"auto_compact_ratio_pct,omitempty"`
+	RecentTailTokens    int64              `json:"recent_tail_tokens,omitempty"`
+	RecentUserTokens    int64              `json:"recent_user_tokens,omitempty"`
+	Source              string             `json:"source,omitempty"`
+	Confidence          EstimateConfidence `json:"confidence,omitempty"`
+	CompactionNeeded    bool               `json:"compaction_needed,omitempty"`
+	HardLimitExceeded   bool               `json:"hard_limit_exceeded,omitempty"`
+	legacyActiveTokens  int64
+	legacyHistoryTokens int64
+	legacyToolTokens    int64
+}
+
+func (u *Usage) UnmarshalJSON(data []byte) error {
+	type usageAlias Usage
+	var raw struct {
+		usageAlias
+		EstimatedInputTokens int64  `json:"estimated_input_tokens,omitempty"`
+		HistoryTokens        int64  `json:"history_tokens,omitempty"`
+		ActiveTokens         int64  `json:"active_tokens,omitempty"`
+		ToolTokens           int64  `json:"tool_tokens,omitempty"`
+		EstimatorSource      string `json:"estimator_source,omitempty"`
+		EstimatorConfidence  string `json:"estimator_confidence,omitempty"`
+		TokenPressureHigh    bool   `json:"token_pressure_high,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*u = Usage(raw.usageAlias)
+	if u.MessageTokens == 0 {
+		u.MessageTokens = raw.HistoryTokens
+	}
+	if u.InputTokens == 0 && raw.EstimatedInputTokens != 0 {
+		u.InputTokens = raw.EstimatedInputTokens
+	}
+	if u.InputTokens == 0 && (u.PrefixTokens != 0 || u.MessageTokens != 0 || raw.ToolTokens != 0) {
+		u.InputTokens = u.PrefixTokens + u.MessageTokens + raw.ToolTokens
+	}
+	if u.Source == "" {
+		u.Source = raw.EstimatorSource
+	}
+	if u.Confidence == "" && raw.EstimatorConfidence != "" {
+		u.Confidence = EstimateConfidence(raw.EstimatorConfidence)
+	}
+	u.legacyActiveTokens = raw.ActiveTokens
+	u.legacyHistoryTokens = raw.HistoryTokens
+	u.legacyToolTokens = raw.ToolTokens
+	if raw.TokenPressureHigh {
+		u.HardLimitExceeded = true
+	}
+	return nil
 }
 
 func HasValues(policy Policy) bool {
@@ -161,7 +295,7 @@ func Normalize(policy Policy) Policy {
 
 func Threshold(policy Policy) int64 {
 	policy = Normalize(policy)
-	threshold := min64(ratioLimit(policy), requestSafeLimit(policy))
+	threshold := min64(RatioLimitTokens(policy), RequestSafeLimitTokens(policy))
 	if threshold < 1 {
 		threshold = 1
 	}
@@ -176,98 +310,130 @@ func OutputHeadroom(policy Policy) int64 {
 	return policy.ReservedOutputTokens
 }
 
-func ratioLimit(policy Policy) int64 {
+func RatioLimitTokens(policy Policy) int64 {
+	policy = Normalize(policy)
 	return policy.ContextWindowTokens * DefaultAutoCompactRatioPercent / 100
 }
 
-func requestSafeLimit(policy Policy) int64 {
+func RequestSafeLimitTokens(policy Policy) int64 {
+	policy = Normalize(policy)
 	return policy.ContextWindowTokens - OutputHeadroom(policy)
 }
 
-func defaultWindowBudget(value, fallback, contextWindow int64) int64 {
-	if value <= 0 {
-		value = fallback
+func PressureFromNativeUsage(usage NativeUsage, policy Policy) ContextPressure {
+	policy = Normalize(policy)
+	pressure := basePressure(policy)
+	pressure.Signal = PressureSignalNativeUsage
+	pressure.Source = PressureSourceProviderUsage
+	pressure.Confidence = EstimateExact
+	if !usage.Available {
+		pressure.Confidence = EstimateConservative
+		return pressure
 	}
-	if contextWindow <= 0 {
-		return value
+	windowInput := usage.WindowInputTokens
+	if windowInput <= 0 {
+		windowInput = usage.InputTokens + usage.CacheReadTokens + usage.CacheWriteTokens
 	}
-	limit := contextWindow / 4
-	if limit < 1 {
-		limit = 1
-	}
-	return min64(value, limit)
+	pressure.WindowInputTokens = windowInput
+	pressure.CompactionNeeded = windowInput >= pressure.ThresholdTokens
+	pressure.HardLimitExceeded = windowInput >= pressure.RequestSafeLimit
+	return pressure
 }
 
-func UsageFromEstimate(estimate Estimate, policy Policy) Usage {
+func PressureFromProjectedRequest(estimate RequestEstimate, delta RequestDeltaEstimate, policy Policy) ContextPressure {
+	estimate = estimate.Normalized(policy)
 	policy = Normalize(policy)
-	ratioLimitTokens := ratioLimit(policy)
-	requestSafeLimitTokens := requestSafeLimit(policy)
-	thresholdTokens := min64(ratioLimitTokens, requestSafeLimitTokens)
-	if thresholdTokens < 1 {
-		thresholdTokens = 1
+	pressure := basePressure(policy)
+	pressure.Signal = PressureSignalProjected
+	pressure.Source = PressureSourceFullRequestEstimate
+	pressure.Confidence = estimate.Confidence
+	projected := estimate.EstimatedInputTokens
+	delta = delta.Normalized()
+	if delta.Source != "" {
+		projected += delta.EstimatedDeltaTokens
+		pressure.Source = PressureSourceUsageAnchoredDelta
+		if delta.Confidence != "" {
+			pressure.Confidence = delta.Confidence
+		}
 	}
-	if estimate.InputTokens <= 0 {
-		estimate.InputTokens = estimate.PrefixTokens + estimate.HistoryTokens + estimate.ToolTokens
+	if projected < 0 {
+		projected = 0
 	}
-	source := estimate.Source
-	if source == "" {
-		source = policy.EstimatorSource
-	}
-	confidence := estimate.Confidence
-	if confidence == "" {
-		confidence = EstimateConservative
-	}
+	pressure.ProjectedInputTokens = projected
+	pressure.HardLimitExceeded = projected >= pressure.RequestSafeLimit
+	return pressure
+}
+
+func PressureFromMissingNativeUsage(estimate RequestEstimate, policy Policy) ContextPressure {
+	pressure := PressureFromProjectedRequest(estimate, RequestDeltaEstimate{}, policy)
+	pressure.Source = PressureSourceMissingNativeUsage
+	return pressure
+}
+
+func PressureFromOverflow(policy Policy) ContextPressure {
+	pressure := basePressure(policy)
+	pressure.Signal = PressureSignalOverflow
+	pressure.Source = PressureSourceProviderUsage
+	pressure.Confidence = EstimateExact
+	pressure.CompactionNeeded = true
+	pressure.HardLimitExceeded = true
+	return pressure
+}
+
+func UsageFromMessageContextEstimate(estimate MessageContextEstimate, policy Policy) Usage {
+	policy = Normalize(policy)
+	estimate = estimate.Normalized(policy)
 	usage := Usage{
-		ActiveTokens:        estimate.HistoryTokens,
-		HistoryTokens:       estimate.HistoryTokens,
-		PrefixTokens:        estimate.PrefixTokens,
-		ToolTokens:          estimate.ToolTokens,
-		InputTokens:         estimate.InputTokens,
-		TotalTokens:         estimate.InputTokens,
-		ContextWindow:       policy.ContextWindowTokens,
-		ThresholdTokens:     thresholdTokens,
-		RatioLimitTokens:    ratioLimitTokens,
-		RequestSafeLimit:    requestSafeLimitTokens,
-		MaxOutputTokens:     policy.MaxOutputTokens,
-		ReservedOutput:      policy.ReservedOutputTokens,
-		ReservedSummary:     policy.ReservedSummaryTokens,
-		OutputHeadroom:      OutputHeadroom(policy),
-		AutoCompactRatio:    DefaultAutoCompactRatioPercent,
-		RecentTailTokens:    policy.RecentTailTokens,
-		RecentUserTokens:    policy.RecentUserTokens,
-		EstimatorSource:     source,
-		EstimatorConfidence: string(confidence),
+		PrefixTokens:     estimate.PrefixTokens,
+		MessageTokens:    estimate.MessageTokens,
+		InputTokens:      estimate.InputTokens,
+		ContextWindow:    policy.ContextWindowTokens,
+		ThresholdTokens:  Threshold(policy),
+		RatioLimitTokens: RatioLimitTokens(policy),
+		RequestSafeLimit: RequestSafeLimitTokens(policy),
+		MaxOutputTokens:  policy.MaxOutputTokens,
+		ReservedOutput:   policy.ReservedOutputTokens,
+		ReservedSummary:  policy.ReservedSummaryTokens,
+		OutputHeadroom:   OutputHeadroom(policy),
+		AutoCompactRatio: DefaultAutoCompactRatioPercent,
+		RecentTailTokens: policy.RecentTailTokens,
+		RecentUserTokens: policy.RecentUserTokens,
+		Source:           estimate.Source,
+		Confidence:       estimate.Confidence,
 	}
 	usage.CompactionNeeded = usage.InputTokens >= usage.ThresholdTokens
-	usage.TokenPressureHigh = usage.InputTokens >= usage.RequestSafeLimit
+	usage.HardLimitExceeded = usage.InputTokens >= usage.RequestSafeLimit
 	return usage
 }
 
-func EstimateMessages(systemPrompt string, history []session.Message, policy Policy) Usage {
-	estimate := Estimate{
+func UsageFromEstimate(estimate MessageContextEstimate, policy Policy) Usage {
+	return UsageFromMessageContextEstimate(estimate, policy)
+}
+
+func EstimateMessageContext(systemPrompt string, history []session.Message, policy Policy) Usage {
+	estimate := MessageContextEstimate{
 		Source:     DefaultEstimatorSource,
 		Confidence: EstimateConservative,
 	}
 	if systemPrompt != "" {
-		estimate.PrefixTokens += EstimateText(systemPrompt)
+		estimate.PrefixTokens += EstimateTextTokens(systemPrompt)
 	}
 	for _, msg := range history {
-		tokens := EstimateMessage(msg)
-		estimate.HistoryTokens += tokens
+		estimate.MessageTokens += EstimateMessageTokens(msg)
 	}
-	estimate.InputTokens = estimate.PrefixTokens + estimate.HistoryTokens + estimate.ToolTokens
-	return UsageFromEstimate(estimate, policy)
+	estimate.InputTokens = estimate.PrefixTokens + estimate.MessageTokens
+	return UsageFromMessageContextEstimate(estimate, policy)
 }
 
-func EstimateMessage(msg session.Message) int64 {
-	tokens := EstimateText(msg.Content) + EstimateText(msg.ToolName) + EstimateText(msg.ToolArgs) + EstimateText(msg.ToolCallID) + 8
+func EstimateMessageTokens(msg session.Message) int64 {
+	tokens := EstimateTextTokens(msg.Content) + EstimateTextTokens(msg.ToolName) + EstimateTextTokens(msg.ToolArgs) + EstimateTextTokens(msg.ToolCallID) + 8
 	if msg.Kind != "" {
-		tokens += EstimateText(string(msg.Kind))
+		tokens += EstimateTextTokens(string(msg.Kind))
 	}
 	return tokens
 }
 
-func EstimateText(value string) int64 {
+func EstimateTextTokens(value string) int64 {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return 0
@@ -285,6 +451,30 @@ func EstimateText(value string) int64 {
 		return 1
 	}
 	return tokens
+}
+
+func basePressure(policy Policy) ContextPressure {
+	policy = Normalize(policy)
+	return ContextPressure{
+		ContextWindowTokens:  policy.ContextWindowTokens,
+		ThresholdTokens:      Threshold(policy),
+		RequestSafeLimit:     RequestSafeLimitTokens(policy),
+		OutputHeadroomTokens: OutputHeadroom(policy),
+	}
+}
+
+func defaultWindowBudget(value, fallback, contextWindow int64) int64 {
+	if value <= 0 {
+		value = fallback
+	}
+	if contextWindow <= 0 {
+		return value
+	}
+	limit := contextWindow / 4
+	if limit < 1 {
+		limit = 1
+	}
+	return min64(value, limit)
 }
 
 func ceilDiv(value, divisor int64) int64 {

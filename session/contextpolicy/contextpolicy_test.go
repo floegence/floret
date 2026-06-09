@@ -97,8 +97,8 @@ func TestMergeDefaultsUsesFallbackMaxOutputOnlyWhenPolicyOmitted(t *testing.T) {
 	}
 }
 
-func TestEstimateMessagesReportsRecentUserBudget(t *testing.T) {
-	usage := EstimateMessages("", nil, Policy{RecentUserTokens: 321})
+func TestEstimateMessageContextReportsRecentUserBudget(t *testing.T) {
+	usage := EstimateMessageContext("", nil, Policy{RecentUserTokens: 321})
 	if usage.RecentUserTokens != 321 {
 		t.Fatalf("recent user budget = %d, want 321", usage.RecentUserTokens)
 	}
@@ -156,8 +156,8 @@ func TestThresholdUsesOutputHeadroomAndRatioLimits(t *testing.T) {
 	}
 }
 
-func TestEstimateMessagesReportsOutputBudgetFields(t *testing.T) {
-	usage := EstimateMessages("system", []session.Message{{Role: session.User, Content: strings.Repeat("x", 40)}}, Policy{
+func TestEstimateMessageContextReportsOutputBudgetFields(t *testing.T) {
+	usage := EstimateMessageContext("system", []session.Message{{Role: session.User, Content: strings.Repeat("x", 40)}}, Policy{
 		ContextWindowTokens: 1000000,
 		MaxOutputTokens:     384000,
 	})
@@ -178,49 +178,155 @@ func TestEstimateMessagesReportsOutputBudgetFields(t *testing.T) {
 	}
 }
 
-func TestTokenPressureHighUsesOutputHeadroom(t *testing.T) {
-	high := EstimateMessages("", []session.Message{{Role: session.User, Content: strings.Repeat("x", 1848000)}}, Policy{
+func TestMessageContextHardLimitUsesOutputHeadroom(t *testing.T) {
+	high := EstimateMessageContext("", []session.Message{{Role: session.User, Content: strings.Repeat("x", 1848000)}}, Policy{
 		ContextWindowTokens: 1000000,
 		MaxOutputTokens:     384000,
 	})
-	if !high.TokenPressureHigh {
+	if !high.HardLimitExceeded {
 		t.Fatalf("expected high pressure with max output headroom, usage=%#v", high)
 	}
 
-	unset := EstimateMessages("", []session.Message{{Role: session.User, Content: strings.Repeat("x", 2808000)}}, Policy{
+	unset := EstimateMessageContext("", []session.Message{{Role: session.User, Content: strings.Repeat("x", 2808000)}}, Policy{
 		ContextWindowTokens: 1000000,
 		MaxOutputTokens:     0,
 	})
 	if unset.OutputHeadroom != DefaultReservedOutputTokens {
 		t.Fatalf("unset max output headroom = %d, want %d", unset.OutputHeadroom, DefaultReservedOutputTokens)
 	}
-	if !unset.TokenPressureHigh {
+	if !unset.HardLimitExceeded {
 		t.Fatalf("expected high pressure with reserved output headroom, usage=%#v", unset)
 	}
 }
 
-func TestUsageFromEstimatePreservesEstimatorMetadata(t *testing.T) {
-	usage := UsageFromEstimate(Estimate{
+func TestPressureFromNativeUsageUsesWindowInputTokens(t *testing.T) {
+	policy := Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100}
+	pressure := PressureFromNativeUsage(NativeUsage{
+		InputTokens:       100,
+		CacheReadTokens:   300,
+		CacheWriteTokens:  200,
+		WindowInputTokens: 950,
+		Available:         true,
+	}, policy)
+
+	if pressure.Signal != PressureSignalNativeUsage || pressure.Source != PressureSourceProviderUsage || pressure.Confidence != EstimateExact {
+		t.Fatalf("native pressure metadata = %#v", pressure)
+	}
+	if pressure.WindowInputTokens != 950 || pressure.ProjectedInputTokens != 0 {
+		t.Fatalf("native pressure should only expose observed window tokens: %#v", pressure)
+	}
+	if !pressure.CompactionNeeded || !pressure.HardLimitExceeded {
+		t.Fatalf("native pressure should use window input against limits: %#v", pressure)
+	}
+}
+
+func TestPressureFromNativeUsageFallsBackToInputAndCacheBuckets(t *testing.T) {
+	pressure := PressureFromNativeUsage(NativeUsage{
+		InputTokens:      100,
+		CacheReadTokens:  20,
+		CacheWriteTokens: 30,
+		Available:        true,
+	}, Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100})
+
+	if pressure.WindowInputTokens != 150 {
+		t.Fatalf("window input fallback = %d, want input + cache buckets", pressure.WindowInputTokens)
+	}
+}
+
+func TestPressureFromNativeUsageUnavailableDoesNotProjectRequest(t *testing.T) {
+	pressure := PressureFromNativeUsage(NativeUsage{InputTokens: 999, Available: false}, Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100})
+
+	if pressure.Signal != PressureSignalNativeUsage || pressure.Source != PressureSourceProviderUsage {
+		t.Fatalf("unavailable native pressure metadata = %#v", pressure)
+	}
+	if pressure.WindowInputTokens != 0 || pressure.ProjectedInputTokens != 0 || pressure.CompactionNeeded || pressure.HardLimitExceeded {
+		t.Fatalf("unavailable native usage should not synthesize observed or projected tokens: %#v", pressure)
+	}
+	if pressure.Confidence != EstimateConservative {
+		t.Fatalf("unavailable native usage confidence = %q", pressure.Confidence)
+	}
+}
+
+func TestPressureFromProjectedRequestUsesAnchorDeltaWhenComparable(t *testing.T) {
+	estimate := RequestEstimate{
+		PrefixTokens:         100,
+		MessageTokens:        700,
+		ToolDefinitionTokens: 50,
+		Source:               "provider_api",
+		Confidence:           EstimateApproximate,
+	}
+	delta := RequestDeltaEstimate{
+		MessageDeltaTokens:        60,
+		PrefixDeltaTokens:         -10,
+		ToolDefinitionDeltaTokens: 5,
+		Source:                    "provider_api",
+		Confidence:                EstimateApproximate,
+	}
+	base := estimate.Normalized(Policy{})
+	base.EstimatedInputTokens = 850
+
+	pressure := PressureFromProjectedRequest(base, delta, Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100})
+
+	if pressure.Signal != PressureSignalProjected || pressure.Source != PressureSourceUsageAnchoredDelta {
+		t.Fatalf("projected pressure metadata = %#v", pressure)
+	}
+	if pressure.WindowInputTokens != 0 || pressure.ProjectedInputTokens != 905 {
+		t.Fatalf("anchored projection tokens = %#v", pressure)
+	}
+	if pressure.CompactionNeeded || !pressure.HardLimitExceeded {
+		t.Fatalf("projected pressure should only mark hard preflight risk: %#v", pressure)
+	}
+}
+
+func TestPressureFromProjectedRequestFullEstimateAndMissingUsageSources(t *testing.T) {
+	estimate := RequestEstimate{
+		EstimatedInputTokens: 700,
+		Source:               "generic_request_json",
+		Confidence:           EstimateConservative,
+	}
+	full := PressureFromProjectedRequest(estimate, RequestDeltaEstimate{}, Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100})
+	missing := PressureFromMissingNativeUsage(estimate, Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100})
+
+	if full.Source != PressureSourceFullRequestEstimate || full.ProjectedInputTokens != 700 || full.WindowInputTokens != 0 {
+		t.Fatalf("full estimate pressure = %#v", full)
+	}
+	if missing.Source != PressureSourceMissingNativeUsage || missing.ProjectedInputTokens != 700 {
+		t.Fatalf("missing native pressure = %#v", missing)
+	}
+}
+
+func TestPressureFromOverflowIsHardCompactionSignal(t *testing.T) {
+	pressure := PressureFromOverflow(Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100})
+
+	if pressure.Signal != PressureSignalOverflow || pressure.Source != PressureSourceProviderUsage || pressure.Confidence != EstimateExact {
+		t.Fatalf("overflow pressure metadata = %#v", pressure)
+	}
+	if !pressure.CompactionNeeded || !pressure.HardLimitExceeded || pressure.WindowInputTokens != 0 || pressure.ProjectedInputTokens != 0 {
+		t.Fatalf("overflow pressure should be a hard signal without token synthesis: %#v", pressure)
+	}
+}
+
+func TestUsageFromMessageContextEstimatePreservesMetadata(t *testing.T) {
+	usage := UsageFromMessageContextEstimate(MessageContextEstimate{
 		PrefixTokens:  10,
-		HistoryTokens: 20,
-		ToolTokens:    30,
-		Source:        "provider_api",
+		MessageTokens: 20,
+		Source:        "message_context_test",
 		Confidence:    EstimateExact,
 	}, Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100})
 
-	if usage.InputTokens != 60 || usage.PrefixTokens != 10 || usage.HistoryTokens != 20 || usage.ToolTokens != 30 {
+	if usage.InputTokens != 30 || usage.PrefixTokens != 10 || usage.MessageTokens != 20 {
 		t.Fatalf("usage token fields = %#v", usage)
 	}
-	if usage.EstimatorSource != "provider_api" || usage.EstimatorConfidence != string(EstimateExact) {
-		t.Fatalf("estimator metadata = %q/%q", usage.EstimatorSource, usage.EstimatorConfidence)
+	if usage.Source != "message_context_test" || usage.Confidence != EstimateExact {
+		t.Fatalf("metadata = %q/%q", usage.Source, usage.Confidence)
 	}
 }
 
 func TestEstimateTextIsConservativeForNonASCII(t *testing.T) {
-	if got := EstimateText("你好世界"); got != 4 {
+	if got := EstimateTextTokens("你好世界"); got != 4 {
 		t.Fatalf("CJK estimate = %d, want one token per rune", got)
 	}
-	if got := EstimateText(strings.Repeat("x", 10)); got != 4 {
+	if got := EstimateTextTokens(strings.Repeat("x", 10)); got != 4 {
 		t.Fatalf("ASCII estimate = %d, want ceil(chars/3)", got)
 	}
 }

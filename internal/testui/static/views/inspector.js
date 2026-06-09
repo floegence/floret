@@ -1,4 +1,4 @@
-import { escapeHTML, formatDuration, formatLocalTime, state, toolLabelList, totalTokens } from "../state.js";
+import { escapeHTML, formatDuration, formatLocalTime, state, toolLabelList } from "../state.js";
 import { bindToolPresets, readSelectedTools, renderToolMatrix } from "../components/toolMatrix.js";
 
 export function renderInspector({ session, result, tools, tab }) {
@@ -203,12 +203,15 @@ function renderRequests(requests) {
             <span class="metric">${(request.messages || []).length} messages</span>
             <span class="metric">${(request.tools || []).length} tools</span>
             <span class="metric">${escapeHTML(request.cache_summary?.toolset_id || "toolset n/a")}</span>
-            <span class="metric">${totalTokens(request.context_usage)} est tokens</span>
-            ${renderContextBudgetMetrics(request.context_usage)}
+            ${renderContextStatusMetrics(request.projected_context_pressure)}
           </div>
           <div class="key-value"><span>Tools</span><span>${escapeHTML((request.tools || []).map((tool) => tool.name).join(", ") || "none")}</span></div>
           <div class="key-value"><span>Hosted</span><span>${escapeHTML(hostedToolLabel(request.hosted_tools || []))}</span></div>
           <div class="key-value"><span>Unavailable</span><span>${escapeHTML((request.unavailable_capabilities || []).join("; ") || "none")}</span></div>
+          <details>
+            <summary>Request Debug</summary>
+            ${renderRequestDebug(request)}
+          </details>
           <details>
             <summary>Messages</summary>
             <pre class="json-block">${escapeHTML(JSON.stringify(request.messages || [], null, 2))}</pre>
@@ -257,26 +260,51 @@ function renderArtifactLink(ref) {
   `;
 }
 
-function renderContextBudgetMetrics(usage) {
-  if (!usage) return "";
-  const threshold = usage.threshold_tokens ?? usage.ThresholdTokens;
-  const ratioLimit = usage.ratio_limit_tokens ?? usage.RatioLimitTokens;
-  const requestSafe = usage.request_safe_limit_tokens ?? usage.RequestSafeLimit;
-  const headroom = usage.output_headroom_tokens ?? usage.OutputHeadroom;
-  const maxOutput = usage.max_output_tokens ?? usage.MaxOutputTokens;
-  const ratio = usage.auto_compact_ratio_pct ?? usage.AutoCompactRatio;
-  const source = usage.estimator_source ?? usage.EstimatorSource;
-  const confidence = usage.estimator_confidence ?? usage.EstimatorConfidence;
+function renderContextStatusMetrics(pressure) {
+  if (!pressure) return "";
+  const projected = pressure.projected_input_tokens ?? pressure.ProjectedInputTokens;
+  const observed = pressure.window_input_tokens ?? pressure.WindowInputTokens;
+  const threshold = pressure.threshold_tokens ?? pressure.ThresholdTokens;
+  const requestSafe = pressure.request_safe_limit_tokens ?? pressure.RequestSafeLimit;
+  const headroom = pressure.output_headroom_tokens ?? pressure.OutputHeadroomTokens;
+  const compact = pressure.compaction_needed ?? pressure.CompactionNeeded;
+  const hard = pressure.hard_limit_exceeded ?? pressure.HardLimitExceeded;
+  const current = projected ?? observed;
+  const contextLabel = current || current === 0 ? `${formatCount(current)}${threshold ? ` / ${formatCount(threshold)}` : ""}` : "n/a";
+  const room = requestSafe && (current || current === 0) ? Math.max(0, requestSafe - current) : null;
   return [
-    source ? `<span class="metric">estimator ${escapeHTML(source)}</span>` : "",
-    confidence ? `<span class="metric">confidence ${escapeHTML(confidence)}</span>` : "",
-    threshold || threshold === 0 ? `<span class="metric">threshold ${escapeHTML(threshold)}</span>` : "",
-    requestSafe || requestSafe === 0 ? `<span class="metric">request safe ${escapeHTML(requestSafe)}</span>` : "",
-    ratioLimit || ratioLimit === 0 ? `<span class="metric">ratio limit ${escapeHTML(ratioLimit)}</span>` : "",
-    headroom || headroom === 0 ? `<span class="metric">output headroom ${escapeHTML(headroom)}</span>` : "",
-    maxOutput || maxOutput === 0 ? `<span class="metric">max output ${escapeHTML(maxOutput)}</span>` : "",
-    ratio || ratio === 0 ? `<span class="metric">auto compact ${escapeHTML(ratio)}%</span>` : "",
+    `<span class="metric">Context ${escapeHTML(contextLabel)}</span>`,
+    headroom || headroom === 0 ? `<span class="metric">Output room ${escapeHTML(formatCount(headroom))}</span>` : "",
+    room || room === 0 ? `<span class="metric">Request room ${escapeHTML(formatCount(room))}</span>` : "",
+    `<span class="metric">Compaction ${escapeHTML(hard ? "required" : compact ? "will compact" : "stable")}</span>`,
   ].join("");
+}
+
+function renderRequestDebug(request) {
+  const estimate = request.request_estimate || {};
+  const pressure = request.projected_context_pressure || {};
+  const debug = {
+    pressure_signal: pressure.pressure_signal ?? pressure.Signal,
+    pressure_source: pressure.pressure_source ?? pressure.Source,
+    confidence: pressure.confidence ?? pressure.Confidence ?? estimate.confidence ?? estimate.Confidence,
+    prefix_tokens: estimate.prefix_tokens ?? estimate.PrefixTokens,
+    message_tokens: estimate.message_tokens ?? estimate.MessageTokens,
+    tool_definition_tokens: estimate.tool_definition_tokens ?? estimate.ToolDefinitionTokens,
+    estimated_input_tokens: estimate.estimated_input_tokens ?? estimate.EstimatedInputTokens,
+    projected_input_tokens: pressure.projected_input_tokens ?? pressure.ProjectedInputTokens,
+    window_input_tokens: pressure.window_input_tokens ?? pressure.WindowInputTokens,
+    threshold_tokens: pressure.threshold_tokens ?? pressure.ThresholdTokens,
+    request_safe_limit_tokens: pressure.request_safe_limit_tokens ?? pressure.RequestSafeLimit,
+    output_headroom_tokens: pressure.output_headroom_tokens ?? pressure.OutputHeadroomTokens,
+    estimate_source: estimate.source ?? estimate.Source,
+  };
+  return `<pre class="json-block">${escapeHTML(JSON.stringify(debug, null, 2))}</pre>`;
+}
+
+function formatCount(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return String(value || 0);
+  return num.toLocaleString();
 }
 
 function latestProviderRequest(requests) {
@@ -395,7 +423,7 @@ function renderContext(session) {
           <strong>${escapeHTML(segment.entry_type || msg.kind || msg.role || "message")} · #${escapeHTML(index + 1)}</strong>
           <div class="metric-strip">
             <span class="metric">${escapeHTML(segment.role || msg.role || "role n/a")}</span>
-            ${segment.token_estimate || segment.token_estimate === 0 ? `<span class="metric">${escapeHTML(segment.token_estimate)} est tokens</span>` : ""}
+            ${segment.token_estimate || segment.token_estimate === 0 ? `<span class="metric">fragment ${escapeHTML(segment.token_estimate)}</span>` : ""}
             ${segment.tool_name ? `<span class="metric">${escapeHTML(segment.tool_name)}</span>` : ""}
             ${segment.tool_call_id ? `<span class="metric">${escapeHTML(segment.tool_call_id)}</span>` : ""}
           </div>

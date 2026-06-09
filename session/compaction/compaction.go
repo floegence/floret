@@ -141,7 +141,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	}
 	history := stripEmptyMessages(req.History)
 	history = removeActiveCompactionSummary(history, &req)
-	usageBefore := contextpolicy.EstimateMessages("", history, req.Policy)
+	usageBefore := contextpolicy.EstimateMessageContext("", history, req.Policy)
 	if len(history) == 1 {
 		keptUsers := selectKeptUserMessages(history, req.Policy.RecentUserTokens)
 		details := mergeDetails(req.Details, map[string]string{"history_messages": "1", "compacted_messages": "1", "retained_tail_messages": "0", "single_message_compaction": "true"})
@@ -172,7 +172,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		prep.Result.Summary = finalizeSummary(&prep.Result, summary, req.Policy)
 		recordSummaryGenerationDetails(&prep.Result, generationDetails, req.Policy)
 		prep.ActiveMessages = BuildActiveMessagesWithKeptUsers(prep.Result, keptUsers, nil)
-		usageAfter := contextpolicy.EstimateMessages("", prep.ActiveMessages, req.Policy)
+		usageAfter := contextpolicy.EstimateMessageContext("", prep.ActiveMessages, req.Policy)
 		prep.Result.TokensAfterEstimate = usageAfter.InputTokens
 		prep.Result.UsageAfter = usageAfter
 		recordUsageAfterDetails(&prep.Result, usageAfter, req.Policy)
@@ -200,12 +200,12 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	firstKept := firstEntryID(tail)
 	compactedThrough := lastEntryID(head)
 	details := map[string]string{
-		"history_messages":       fmt.Sprintf("%d", len(history)),
-		"compacted_messages":     fmt.Sprintf("%d", len(head)),
-		"retained_tail_messages": fmt.Sprintf("%d", len(tail)),
-		"estimator_source":       req.Policy.EstimatorSource,
-		"read_files":             "",
-		"modified_files":         "",
+		"history_messages":                fmt.Sprintf("%d", len(history)),
+		"compacted_messages":              fmt.Sprintf("%d", len(head)),
+		"retained_tail_messages":          fmt.Sprintf("%d", len(tail)),
+		"message_context_estimate_source": req.Policy.EstimatorSource,
+		"read_files":                      "",
+		"modified_files":                  "",
 	}
 	recordCompactionBudgetDetails(details, req.Policy)
 	recordProjectedToolDetails(details, history, tail)
@@ -243,7 +243,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	recordSummaryGenerationDetails(&prep.Result, generationDetails, req.Policy)
 	prep.Result.Summary = summary
 	prep.ActiveMessages = BuildActiveMessagesWithKeptUsers(prep.Result, keptUsers, tail)
-	usageAfter := contextpolicy.EstimateMessages("", prep.ActiveMessages, req.Policy)
+	usageAfter := contextpolicy.EstimateMessageContext("", prep.ActiveMessages, req.Policy)
 	prep.Result.TokensAfterEstimate = usageAfter.InputTokens
 	prep.Result.UsageAfter = usageAfter
 	recordUsageAfterDetails(&prep.Result, usageAfter, req.Policy)
@@ -296,11 +296,11 @@ func finalizeSummary(result *Result, summary string, policy contextpolicy.Policy
 	}
 	summary = strings.TrimSpace(summary)
 	result.Details["summary_trimmed"] = "false"
-	if contextpolicy.EstimateText(summary) > policy.ReservedSummaryTokens {
+	if contextpolicy.EstimateTextTokens(summary) > policy.ReservedSummaryTokens {
 		summary = trimToTokenBudget(summary, policy.ReservedSummaryTokens)
 		result.Details["summary_trimmed"] = "true"
 	}
-	result.Details["summary_tokens_estimate"] = fmt.Sprintf("%d", contextpolicy.EstimateText(summary))
+	result.Details["summary_tokens_estimate"] = fmt.Sprintf("%d", contextpolicy.EstimateTextTokens(summary))
 	return summary
 }
 
@@ -309,7 +309,7 @@ func recordCompactionBudgetDetails(details map[string]string, policy contextpoli
 	details["effective_compacted_context_target_tokens"] = fmt.Sprintf("%d", compactedContextTarget(policy))
 	details["context_window"] = fmt.Sprintf("%d", policy.ContextWindowTokens)
 	details["threshold_tokens"] = fmt.Sprintf("%d", contextpolicy.Threshold(policy))
-	usage := contextpolicy.EstimateMessages("", nil, policy)
+	usage := contextpolicy.EstimateMessageContext("", nil, policy)
 	details["ratio_limit_tokens"] = fmt.Sprintf("%d", usage.RatioLimitTokens)
 	details["request_safe_limit_tokens"] = fmt.Sprintf("%d", usage.RequestSafeLimit)
 	details["max_output_tokens"] = fmt.Sprintf("%d", policy.MaxOutputTokens)
@@ -345,7 +345,7 @@ func projectedToolStats(messages []session.Message) (int, int) {
 func estimateMessages(messages []session.Message) int64 {
 	var out int64
 	for _, msg := range messages {
-		out += contextpolicy.EstimateMessage(msg)
+		out += contextpolicy.EstimateMessageTokens(msg)
 	}
 	return out
 }
@@ -529,7 +529,7 @@ func findTailStart(history []session.Message, keepTokens int64) int {
 	}
 	var tokens int64
 	for i := len(history) - 1; i >= 0; i-- {
-		tokens += contextpolicy.EstimateMessage(history[i])
+		tokens += contextpolicy.EstimateMessageTokens(history[i])
 		if tokens >= keepTokens {
 			return i
 		}
@@ -542,7 +542,7 @@ func fitTailStartForCompactedContext(history []session.Message, start int, keptU
 	target := compactedContextTarget(policy)
 	for start > 0 && start < len(history) {
 		candidate := buildActiveMessages(Result{Summary: summaryBudgetText(policy)}, keptUsers, history[start:])
-		if contextpolicy.EstimateMessages("", candidate, policy).InputTokens+contextpolicy.DefaultCheckpointOverheadTokens <= target {
+		if contextpolicy.EstimateMessageContext("", candidate, policy).InputTokens+contextpolicy.DefaultCheckpointOverheadTokens <= target {
 			return start, shrunk
 		}
 		next := nextShrinkableTailStart(history, start)
@@ -618,12 +618,12 @@ func selectKeptUserMessages(history []session.Message, budget int64) []session.M
 		return nil
 	}
 	var selected []session.Message
-	total := contextpolicy.EstimateMessage(history[latest])
+	total := contextpolicy.EstimateMessageTokens(history[latest])
 	for i := latest - 1; i >= 0; i-- {
 		if history[i].Role != session.User || history[i].EntryID == "" {
 			continue
 		}
-		msgTokens := contextpolicy.EstimateMessage(history[i])
+		msgTokens := contextpolicy.EstimateMessageTokens(history[i])
 		if total+msgTokens > budget {
 			break
 		}
@@ -798,18 +798,18 @@ func trimToTokenBudget(value string, budget int64) string {
 	if budget <= 0 {
 		return ""
 	}
-	if contextpolicy.EstimateText(value) <= budget {
+	if contextpolicy.EstimateTextTokens(value) <= budget {
 		return value
 	}
 	runes := []rune(value)
 	marker := "\n...[trimmed]"
-	if contextpolicy.EstimateText(marker) > budget {
-		for len(runes) > 0 && contextpolicy.EstimateText(string(runes)) > budget {
+	if contextpolicy.EstimateTextTokens(marker) > budget {
+		for len(runes) > 0 && contextpolicy.EstimateTextTokens(string(runes)) > budget {
 			runes = runes[:len(runes)-1]
 		}
 		return string(runes)
 	}
-	for len(runes) > 0 && contextpolicy.EstimateText(string(runes)+marker) > budget {
+	for len(runes) > 0 && contextpolicy.EstimateTextTokens(string(runes)+marker) > budget {
 		runes = runes[:len(runes)-1]
 	}
 	return string(runes) + marker
@@ -862,7 +862,7 @@ func SummaryPrompt(prep Preparation, policy contextpolicy.Policy, outputCap int6
 	var used int64
 	for _, msg := range prep.CompactedHead {
 		line := renderForSummaryPrompt(msg)
-		tokens := contextpolicy.EstimateText(line)
+		tokens := contextpolicy.EstimateTextTokens(line)
 		if used+tokens > budget {
 			out.WriteString("\n...[older compact scope trimmed]\n")
 			break
@@ -879,7 +879,7 @@ func summaryTranscriptBudget(policy contextpolicy.Policy, outputCap int64, promp
 	if outputCap <= 0 {
 		outputCap = policy.ReservedSummaryTokens
 	}
-	fixedInput := contextpolicy.EstimateText(SummaryWriterSystemPrompt()) + contextpolicy.EstimateText(promptPrefix)
+	fixedInput := contextpolicy.EstimateTextTokens(SummaryWriterSystemPrompt()) + contextpolicy.EstimateTextTokens(promptPrefix)
 	budget := policy.ContextWindowTokens - outputCap - fixedInput
 	if budget < 0 {
 		return 0

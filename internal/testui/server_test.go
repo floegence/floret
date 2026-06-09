@@ -2008,7 +2008,7 @@ func TestServerAgentSessionRejectsAppendAfterFailedTurn(t *testing.T) {
 	if err := json.Unmarshal(createRec.Body.Bytes(), &first); err != nil {
 		t.Fatal(err)
 	}
-	if first.Status != "failed" || first.SessionID == "" {
+	if first.Status != "cancelled" || first.SessionID == "" {
 		t.Fatalf("first = %#v", first)
 	}
 

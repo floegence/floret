@@ -47,7 +47,7 @@ func (g ProviderSummaryGenerator) GenerateSummaryWithDetails(ctx context.Context
 	}
 	details.PromptInputTokens = attempt.PromptInputTokens
 	details.RequestBudgetTokens = attempt.RequestBudgetTokens
-	if attempt.Truncated || contextpolicy.EstimateText(attempt.Summary) > policy.ReservedSummaryTokens {
+	if attempt.Truncated || contextpolicy.EstimateTextTokens(attempt.Summary) > policy.ReservedSummaryTokens {
 		details.Attempts = 2
 		details.ProviderTruncated = attempt.Truncated
 		if attempt.Truncated {
@@ -77,7 +77,7 @@ func (g ProviderSummaryGenerator) generateProviderSummaryAttempt(ctx context.Con
 		{Role: session.System, Content: sessioncompaction.SummaryWriterSystemPrompt()},
 		{Role: session.User, Content: sessioncompaction.SummaryPrompt(prep, policy, outputCap)},
 	}
-	promptInputTokens := contextpolicy.EstimateMessages("", messages, policy).InputTokens
+	promptInputTokens := contextpolicy.EstimateMessageContext("", messages, policy).InputTokens
 	stream, err := g.Provider.Stream(ctx, provider.Request{
 		RunID:           prep.Request.CompactionID,
 		Step:            prep.Request.Step,

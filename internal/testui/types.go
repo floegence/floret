@@ -350,7 +350,8 @@ type ObservedProviderRequest struct {
 	Tools                   []provider.ToolDefinition       `json:"tools"`
 	HostedTools             []provider.HostedToolDefinition `json:"hosted_tools,omitempty"`
 	UnavailableCapabilities []string                        `json:"unavailable_capabilities,omitempty"`
-	ContextUsage            contextpolicy.Usage             `json:"context_usage,omitempty"`
+	RequestEstimate         contextpolicy.RequestEstimate   `json:"request_estimate,omitempty"`
+	ProjectedPressure       contextpolicy.ContextPressure   `json:"projected_context_pressure,omitempty"`
 	RawSegments             []ObservedRawSegment            `json:"raw_segments,omitempty"`
 	CacheSummary            ObservedCacheSummary            `json:"cache_summary,omitempty"`
 }

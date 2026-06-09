@@ -422,11 +422,15 @@ func (p OpenAICompatibleProvider) streamResponse(httpResp *http.Response) (<-cha
 			}
 			var parsed chatStreamResponse
 			if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
-				ch <- provider.StreamEvent{Type: provider.Empty, Reason: err.Error()}
+				ch <- provider.StreamEvent{Type: provider.Error, Reason: err.Error(), Err: fmt.Errorf("decode openai-compatible stream event: %w", err)}
 				return
 			}
 			if parsed.Error != nil {
-				ch <- provider.StreamEvent{Type: provider.Empty, Reason: parsed.Error.Message}
+				err := fmt.Errorf("openai-compatible provider error: %s", parsed.Error.Message)
+				if looksLikeContextOverflow([]byte(parsed.Error.Message + " " + parsed.Error.Type)) {
+					err = provider.ErrContextOverflow
+				}
+				ch <- provider.StreamEvent{Type: provider.Error, Reason: parsed.Error.Message, Err: err}
 				return
 			}
 			if usage := normalizeUsage(parsed.Usage, p.CostModel); usage.TotalTokens > 0 || usage.CostUSD > 0 {
@@ -477,7 +481,7 @@ func (p OpenAICompatibleProvider) streamResponse(httpResp *http.Response) (<-cha
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			ch <- provider.StreamEvent{Type: provider.Empty, Reason: err.Error()}
+			ch <- provider.StreamEvent{Type: provider.Error, Reason: err.Error(), Err: err}
 		}
 	}()
 	return ch, nil
@@ -710,7 +714,8 @@ func renderToolsFromRawPlan(plan cache.RawPlan, fallback []chatTool) []chatTool 
 
 func looksLikeContextOverflow(body []byte) bool {
 	text := strings.ToLower(string(body))
-	return strings.Contains(text, "context") && (strings.Contains(text, "length") || strings.Contains(text, "window") || strings.Contains(text, "token"))
+	return strings.Contains(text, "context") && (strings.Contains(text, "length") || strings.Contains(text, "window") || strings.Contains(text, "token")) ||
+		strings.Contains(text, "input") && strings.Contains(text, "too large")
 }
 
 func normalizeUsage(payload usagePayload, model catalog.Model) provider.Usage {
@@ -722,13 +727,14 @@ func normalizeUsage(payload usagePayload, model catalog.Model) provider.Usage {
 		input -= cacheRead
 	}
 	usage := provider.Usage{
-		InputTokens:      input,
-		OutputTokens:     payload.CompletionTokens,
-		ReasoningTokens:  reasoning,
-		CacheReadTokens:  cacheRead,
-		CacheWriteTokens: cacheWrite,
-		TotalTokens:      payload.TotalTokens,
-		Source:           provider.UsageNative,
+		InputTokens:       input,
+		OutputTokens:      payload.CompletionTokens,
+		ReasoningTokens:   reasoning,
+		CacheReadTokens:   cacheRead,
+		CacheWriteTokens:  cacheWrite,
+		TotalTokens:       payload.TotalTokens,
+		Source:            provider.UsageNative,
+		WindowInputTokens: payload.PromptTokens,
 	}.Normalized()
 	if model.ID != "" {
 		usage.CostUSD = catalog.CostForUsage(model, usage)

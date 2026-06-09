@@ -97,7 +97,8 @@ func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<
 		Tools:                   append([]provider.ToolDefinition(nil), req.Tools...),
 		HostedTools:             append([]provider.HostedToolDefinition(nil), req.HostedTools...),
 		UnavailableCapabilities: unavailableCapabilitiesFromHostedRequest(req),
-		ContextUsage:            req.ContextUsage,
+		RequestEstimate:         req.RequestEstimate,
+		ProjectedPressure:       req.ContextPressure,
 		RawSegments:             observeRawSegments(req.RawPlan),
 		CacheSummary: ObservedCacheSummary{
 			Namespace:            req.Cache.Namespace,

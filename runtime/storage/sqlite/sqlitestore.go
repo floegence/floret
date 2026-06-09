@@ -676,6 +676,39 @@ func (s *Store) ProviderResponses(ctx context.Context, runID string) ([]cache.Pr
 	return out, rows.Err()
 }
 
+func (s *Store) LatestPressureAnchor(ctx context.Context, sessionID, providerName, model string) (cache.PressureAnchorState, bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT data_json FROM prompt_responses ORDER BY rowid DESC`)
+	if err != nil {
+		return cache.PressureAnchorState{}, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return cache.PressureAnchorState{}, false, err
+		}
+		var resp cache.ProviderResponseRecord
+		if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+			return cache.PressureAnchorState{}, false, err
+		}
+		anchor := resp.PressureAnchor
+		if anchor.WindowInputTokens <= 0 {
+			continue
+		}
+		if sessionID != "" && anchor.SessionID != sessionID && anchor.ThreadID != sessionID {
+			continue
+		}
+		if providerName != "" && anchor.Provider != providerName {
+			continue
+		}
+		if model != "" && anchor.Model != model {
+			continue
+		}
+		return anchor, true, nil
+	}
+	return cache.PressureAnchorState{}, false, rows.Err()
+}
+
 func (s *Store) DeleteRuns(ctx context.Context, runIDs ...string) error {
 	clean := cleanIDs(runIDs)
 	if len(clean) == 0 {

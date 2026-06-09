@@ -958,7 +958,7 @@ func projectedSegments(path []Entry, messages []session.Message, purpose Project
 			Role:          msg.Role,
 			ToolCallID:    msg.ToolCallID,
 			ToolName:      msg.ToolName,
-			TokenEstimate: contextpolicy.EstimateMessage(msg),
+			TokenEstimate: contextpolicy.EstimateMessageTokens(msg),
 		}
 		if purpose == ProjectionTestUI {
 			seg.ArtifactRefs = messageArtifactRefs(msg)
