@@ -210,8 +210,7 @@ Built-in provider IDs include:
 
 ```text
 fake, openai, anthropic, google, moonshot, chatglm, deepseek, qwen,
-openrouter, xai, groq, cerebras, mistral, together, fireworks,
-vercel-ai-gateway, ollama, openai-compatible
+openrouter, xai, groq, ollama, openai-compatible
 ```
 
 Some provider entries, such as local or fast-changing OpenAI-compatible services, use a `custom-model` placeholder instead of predefined low-context model names. Set `FLORET_MODEL`, `FLORET_CONTEXT_WINDOW_TOKENS`, and related output budget values to match the model you intend to run.

@@ -20,11 +20,6 @@ const (
 	ProviderOpenRouter       = "openrouter"
 	ProviderXAI              = "xai"
 	ProviderGroq             = "groq"
-	ProviderCerebras         = "cerebras"
-	ProviderMistral          = "mistral"
-	ProviderTogether         = "together"
-	ProviderFireworks        = "fireworks"
-	ProviderVercelAIGateway  = "vercel-ai-gateway"
 	ProviderOllama           = "ollama"
 	ProviderOpenAICompatible = "openai-compatible"
 )

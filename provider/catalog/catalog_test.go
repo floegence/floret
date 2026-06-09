@@ -61,6 +61,22 @@ func TestNormalizeProviderAcceptsFlowerAndPiAliases(t *testing.T) {
 	}
 }
 
+func TestRemovedProviderPresetsAreNotSupported(t *testing.T) {
+	for _, id := range []string{"cerebras", "mistral", "together", "fireworks", "vercel-ai-gateway"} {
+		t.Run(id, func(t *testing.T) {
+			if SupportsProvider(id) {
+				t.Fatalf("provider %q should not be supported as a built-in preset", id)
+			}
+			if provider, ok := FindProvider(id); ok {
+				t.Fatalf("provider %q unexpectedly found: %#v", id, provider)
+			}
+			if models := Models(id); models != nil {
+				t.Fatalf("models for %q = %#v, want nil", id, models)
+			}
+		})
+	}
+}
+
 func TestCostForUsageUsesPerMillionTokenRates(t *testing.T) {
 	model := Model{Cost: Cost{InputPerMTok: 2, OutputPerMTok: 10, CacheReadPerMTok: 0.5, CacheWritePerMTok: 3}}
 	got := CostForUsage(model, provider.Usage{InputTokens: 1_000_000, OutputTokens: 500_000, CacheReadTokens: 100_000, CacheWriteTokens: 10_000})
