@@ -2,7 +2,9 @@ import { escapeHTML, formatLocalTime, profileLabel, relativeTime, shortID, state
 import { bindInspector, renderInspector } from "./inspector.js";
 
 const copyPayloads = new Map();
-const redactedToolDetail = "Raw arguments/results are redacted. Restart with --allow-debug-raw to inspect them.";
+const emptyToolArguments = "No arguments were captured for this tool call.";
+const emptyToolResult = "No result body was captured for this tool run.";
+const pendingToolResult = "Waiting for tool result...";
 
 export function renderSessionWorkspace({ sessions, activeSession, result, tools, inspectorTab }) {
   copyPayloads.clear();
@@ -325,8 +327,8 @@ function renderToolRun(run) {
         <div class="tool-activity-body">
           ${renderReasoningBlock(callMsg.reasoning || resultMsg.reasoning, "tool", entryExpandKey(sourceEntry, "reasoning"))}
           ${callID ? `<div class="key-value"><span>Call ID</span><span>${escapeHTML(callID)}</span></div>` : ""}
-          ${renderToolDetailSection("Arguments", args)}
-          ${renderToolDetailSection("Result", output)}
+          ${renderToolDetailSection("Arguments", args, emptyToolArguments)}
+          ${renderToolDetailSection("Result", output, result ? emptyToolResult : pendingToolResult)}
           ${projection}
           ${metadata}
         </div>
@@ -369,7 +371,7 @@ function renderToolActivity(entry, msg) {
   const status = toolActivityStatus(entry, msg);
   const preview = toolPreview(body, msg, isResult);
   const copyPayload = body || structuredEntryCopy(entry, title, msg);
-  const metadata = entry.metadata && Object.keys(entry.metadata).length ? `<pre class="json-block">${escapeHTML(JSON.stringify(entry.metadata, null, 2))}</pre>` : "";
+  const metadata = renderMetadataBlock(entry.metadata);
   const projection = renderToolProjection(msg);
   return `
     <article class="message tool ${status === "error" ? "tool-error" : ""}">
@@ -397,7 +399,7 @@ function renderToolActivity(entry, msg) {
   `;
 }
 
-function renderToolDetailSection(label, body) {
+function renderToolDetailSection(label, body, emptyText) {
   if (String(body || "").trim()) {
     return `
       <div class="tool-detail-section">
@@ -407,9 +409,9 @@ function renderToolDetailSection(label, body) {
     `;
   }
   return `
-    <div class="tool-detail-section redacted">
+    <div class="tool-detail-section empty">
       <strong>${escapeHTML(label)}</strong>
-      <p class="muted">${escapeHTML(redactedToolDetail)}</p>
+      <p class="muted">${escapeHTML(emptyText)}</p>
     </div>
   `;
 }
@@ -441,6 +443,16 @@ function renderToolProjection(msg) {
   `;
 }
 
+function renderMetadataBlock(metadata) {
+  if (!metadata || !Object.keys(metadata).length) return "";
+  return `
+    <div class="tool-detail-section metadata">
+      <strong>Metadata</strong>
+      <pre class="json-block">${escapeHTML(JSON.stringify(metadata, null, 2))}</pre>
+    </div>
+  `;
+}
+
 function toolRunMetadata(...entries) {
   const merged = {};
   for (const entry of entries) {
@@ -448,7 +460,7 @@ function toolRunMetadata(...entries) {
       merged[key] = value;
     }
   }
-  return Object.keys(merged).length ? `<pre class="json-block">${escapeHTML(JSON.stringify(merged, null, 2))}</pre>` : "";
+  return renderMetadataBlock(merged);
 }
 
 function toolRunMetrics(...entries) {
@@ -462,7 +474,7 @@ function toolRunMetrics(...entries) {
 function toolRunPreview(args, output, status) {
   const text = args || output;
   if (text) return toolPreview(text, { tool_args: args, content: output }, !args);
-  return status === "called" ? "arguments redacted" : "result redacted";
+  return status === "called" ? "waiting for result" : "no result body captured";
 }
 
 function toolRunCopyPayload({ toolName, callID, args, output, status }) {
@@ -470,8 +482,8 @@ function toolRunCopyPayload({ toolName, callID, args, output, status }) {
     `tool: ${toolName || "-"}`,
     `status: ${status || "-"}`,
     callID ? `call_id: ${callID}` : "",
-    args ? `arguments:\n${formatStructuredBody(args)}` : `arguments: ${redactedToolDetail}`,
-    output ? `result:\n${formatStructuredBody(output)}` : `result: ${redactedToolDetail}`,
+    args ? `arguments:\n${formatStructuredBody(args)}` : `arguments: ${emptyToolArguments}`,
+    output ? `result:\n${formatStructuredBody(output)}` : `result: ${status === "called" ? pendingToolResult : emptyToolResult}`,
   ];
   return parts.filter(Boolean).join("\n\n");
 }

@@ -66,8 +66,8 @@ func TestServerExposesConfigAndRunAPI(t *testing.T) {
 	if configState.ContextPolicyDefaults.ContextWindowTokens != contextpolicy.DefaultContextWindowTokens || configState.ContextPolicyDefaults.RecentTailTokens != contextpolicy.DefaultRecentTailTokens {
 		t.Fatalf("config context policy defaults are incomplete = %#v", configState.ContextPolicyDefaults)
 	}
-	if configState.DebugRawEnabled {
-		t.Fatalf("debug raw should not be enabled by default")
+	if strings.Contains(configRec.Body.String(), "debug"+"_raw"+"_enabled") {
+		t.Fatalf("config should not expose a debug raw gate = %s", configRec.Body.String())
 	}
 
 	catalogReq := httptest.NewRequest(http.MethodGet, "/api/catalog", nil)
@@ -113,6 +113,29 @@ func TestServerRunAPIExposesSavedToolScenarioSuite(t *testing.T) {
 	}
 	if result.Status != "pass" || result.Target != TargetToolScenarios || len(result.Parts) != 3 {
 		t.Fatalf("result = %#v", result)
+	}
+	for _, part := range result.Parts {
+		if part.Agent == nil {
+			t.Fatalf("tool scenario part missing agent run: %#v", part)
+		}
+		var sawToolCall, sawToolResult bool
+		for _, ev := range part.Agent.Events {
+			switch ev.Type {
+			case event.ToolCall:
+				sawToolCall = true
+				if ev.Args != "" || ev.ArgsHash == "" {
+					t.Fatalf("public /api/run should expose only a tool args hash: %#v", ev)
+				}
+			case event.ToolResult:
+				sawToolResult = true
+				if ev.Result != "" || ev.Err != "" {
+					t.Fatalf("public /api/run should not expose raw tool result details: %#v", ev)
+				}
+			}
+		}
+		if !sawToolCall || !sawToolResult {
+			t.Fatalf("tool scenario part should include sanitized tool lifecycle events: %#v", part.Agent.Events)
+		}
 	}
 }
 
@@ -326,6 +349,94 @@ func TestServerCreatesIdleAgentSessionBeforeInitialTurn(t *testing.T) {
 	}
 }
 
+func TestServerAgentSessionTurnExposesToolDetailsByDefault(t *testing.T) {
+	scripted := harness.NewScriptedProvider(
+		harness.Step(
+			harness.Tool("shell-1", "shell", `{"command":"printf APPEND_PRIVATE_RESULT","timeout_ms":1000}`),
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.Exec = func(context.Context, string, []string, string, []string) ([]byte, int) {
+		return []byte("APPEND_PRIVATE_RESULT"), 0
+	}
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model"},"message":"hello","system_prompt":"system","selected_tools":["shell"]}`
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody)))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var created AgentSessionSnapshot
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	turnRec := httptest.NewRecorder()
+	handler.ServeHTTP(turnRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+created.ID+"/turns", strings.NewReader(`{"message":"run it"}`)))
+	if turnRec.Code != http.StatusOK {
+		t.Fatalf("turn status = %d, body = %s", turnRec.Code, turnRec.Body.String())
+	}
+	body := turnRec.Body.String()
+	for _, want := range []string{`\"command\":\"printf APPEND_PRIVATE_RESULT\"`, "APPEND_PRIVATE_RESULT"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("non-stream turn local inspection missing %q: %s", want, body)
+		}
+	}
+	var result AgentRunResponse
+	if err := json.Unmarshal(turnRec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "completed" || result.SessionID != created.ID || result.Output != "done" {
+		t.Fatalf("turn result = %#v", result)
+	}
+	if !slices.ContainsFunc(result.Session.PathEntries, func(entry ObservedSessionEntry) bool {
+		return entry.Type == "tool_call" &&
+			entry.Message.ToolCallID == "shell-1" &&
+			strings.Contains(entry.Message.ToolArgs, "APPEND_PRIVATE_RESULT")
+	}) {
+		t.Fatalf("turn response should expose tool args by default: %#v", result.Session.PathEntries)
+	}
+	if !slices.ContainsFunc(result.Session.PathEntries, func(entry ObservedSessionEntry) bool {
+		return entry.Type == "tool_result" &&
+			entry.Message.ToolCallID == "shell-1" &&
+			strings.Contains(entry.Message.Content, "APPEND_PRIVATE_RESULT")
+	}) {
+		t.Fatalf("turn response should expose tool result by default: %#v", result.Session.PathEntries)
+	}
+
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+created.ID, nil))
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("session status = %d, body = %s", getRec.Code, getRec.Body.String())
+	}
+	var snapshot AgentSessionSnapshot
+	if err := json.Unmarshal(getRec.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(snapshot.PathEntries, func(entry ObservedSessionEntry) bool {
+		return entry.Type == "tool_call" &&
+			entry.Message.ToolCallID == "shell-1" &&
+			strings.Contains(entry.Message.ToolArgs, "APPEND_PRIVATE_RESULT")
+	}) || !slices.ContainsFunc(snapshot.PathEntries, func(entry ObservedSessionEntry) bool {
+		return entry.Type == "tool_result" &&
+			entry.Message.ToolCallID == "shell-1" &&
+			strings.Contains(entry.Message.Content, "APPEND_PRIVATE_RESULT")
+	}) {
+		t.Fatalf("GET session should keep non-stream turn tool details visible: %#v", snapshot.PathEntries)
+	}
+}
+
 func TestServerStreamsAgentTurnEventsBeforeCompletion(t *testing.T) {
 	scripted := harness.NewScriptedProvider(
 		harness.Step(
@@ -393,8 +504,8 @@ func TestServerStreamsAgentTurnEventsBeforeCompletion(t *testing.T) {
 	if toolResult.Entry == nil || toolResult.Entry.Type != "tool_result" || toolResult.Entry.Message.ToolName != "list" || toolResult.Entry.Message.ToolCallID != "list-1" {
 		t.Fatalf("tool result stream event missing observed entry payload: %#v", toolResult)
 	}
-	if toolResult.Entry.Message.Content != "" || toolResult.Message != "" || toolResult.EngineEvent != nil && toolResult.EngineEvent.Result != "" {
-		t.Fatalf("tool result stream event exposed raw result: %#v", toolResult)
+	if toolResult.Entry.Message.Content == "" {
+		t.Fatalf("tool result stream event should expose local inspection result content: %#v", toolResult)
 	}
 	completed := events[completedIndex]
 	if completed.Result == nil || completed.Result.Status != "completed" || completed.Result.Session.ID != snapshot.ID {
@@ -402,7 +513,7 @@ func TestServerStreamsAgentTurnEventsBeforeCompletion(t *testing.T) {
 	}
 }
 
-func TestServerStreamsHostedSearchEventsWithPublicSanitization(t *testing.T) {
+func TestServerStreamsHostedSearchEventsWithLocalInspectionByDefault(t *testing.T) {
 	newProvider := func() provider.Provider {
 		return harness.NewScriptedProvider(
 			harness.Step(
@@ -423,7 +534,6 @@ func TestServerStreamsHostedSearchEventsWithPublicSanitization(t *testing.T) {
 	}
 	runner := NewRunner(t.TempDir())
 	runner.Now = fixedClock()
-	runner.AllowDebugRaw = true
 	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
 		return newProvider(), nil
 	}
@@ -444,55 +554,42 @@ func TestServerStreamsHostedSearchEventsWithPublicSanitization(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	publicRec := httptest.NewRecorder()
-	handler.ServeHTTP(publicRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+snapshot.ID+"/turns/stream", strings.NewReader(`{"message":"hello"}`)))
-	if publicRec.Code != http.StatusOK {
-		t.Fatalf("public stream status = %d, body = %s", publicRec.Code, publicRec.Body.String())
+	streamRec := httptest.NewRecorder()
+	handler.ServeHTTP(streamRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+snapshot.ID+"/turns/stream", strings.NewReader(`{"message":"hello"}`)))
+	if streamRec.Code != http.StatusOK {
+		t.Fatalf("stream status = %d, body = %s", streamRec.Code, streamRec.Body.String())
 	}
-	publicBody := publicRec.Body.String()
-	for _, raw := range []string{`{"query":"Changsha weather"}`, "provider-hosted result", "https://example.com/hosted/changsha", "Changsha forecast", "raw-provider-token"} {
-		if strings.Contains(publicBody, raw) {
-			t.Fatalf("public hosted SSE exposed raw value %q: %s", raw, publicBody)
+	streamBody := streamRec.Body.String()
+	for _, want := range []string{`{\"query\":\"Changsha weather\"}`, "provider-hosted result", "https://example.com/hosted/changsha", "Changsha forecast", "raw-provider-token"} {
+		if !strings.Contains(streamBody, want) {
+			t.Fatalf("local inspection hosted SSE missing %q: %s", want, streamBody)
 		}
 	}
-	publicEvents := parseSSEAgentEvents(t, publicBody)
-	if !slices.ContainsFunc(publicEvents, func(ev AgentStreamEvent) bool {
+	events := parseSSEAgentEvents(t, streamBody)
+	if !slices.ContainsFunc(events, func(ev AgentStreamEvent) bool {
 		return ev.Type == AgentStreamToolCall &&
 			ev.EngineEvent != nil &&
 			ev.EngineEvent.Type == event.HostedToolCall &&
 			ev.EngineEvent.ToolKind == "hosted" &&
 			ev.EngineEvent.ToolName == "web_search" &&
-			ev.EngineEvent.Args == "" &&
-			ev.EngineEvent.ArgsHash != ""
+			ev.EngineEvent.Args == `{"query":"Changsha weather"}`
 	}) {
-		t.Fatalf("public hosted call SSE event missing sanitized engine event: %#v", publicEvents)
+		t.Fatalf("local inspection hosted call SSE event missing args: %#v", events)
 	}
-	if !slices.ContainsFunc(publicEvents, func(ev AgentStreamEvent) bool {
+	if !slices.ContainsFunc(events, func(ev AgentStreamEvent) bool {
 		return ev.Type == AgentStreamToolResult &&
 			ev.EngineEvent != nil &&
 			ev.EngineEvent.Type == event.HostedToolResult &&
 			ev.EngineEvent.ToolKind == "hosted" &&
 			ev.EngineEvent.ToolName == "web_search" &&
-			ev.EngineEvent.Result == "" &&
-			ev.EngineEvent.Metadata != nil
+			strings.Contains(ev.Message, "provider-hosted result") &&
+			strings.Contains(ev.EngineEvent.Result, "https://example.com/hosted/changsha")
 	}) {
-		t.Fatalf("public hosted result SSE event missing sanitized engine event: %#v", publicEvents)
-	}
-
-	debugRec := httptest.NewRecorder()
-	handler.ServeHTTP(debugRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+snapshot.ID+"/turns/stream", strings.NewReader(`{"message":"hello","debug_raw":true}`)))
-	if debugRec.Code != http.StatusOK {
-		t.Fatalf("debug stream status = %d, body = %s", debugRec.Code, debugRec.Body.String())
-	}
-	debugBody := debugRec.Body.String()
-	for _, raw := range []string{`{\"query\":\"Changsha weather\"}`, "provider-hosted result", "https://example.com/hosted/changsha", "Changsha forecast", "raw-provider-token"} {
-		if !strings.Contains(debugBody, raw) {
-			t.Fatalf("debug hosted SSE missing raw value %q: %s", raw, debugBody)
-		}
+		t.Fatalf("local inspection hosted result SSE event missing hosted result: %#v", events)
 	}
 }
 
-func TestServerStreamSanitizesRawAgentEventsByDefault(t *testing.T) {
+func TestServerStreamExposesLocalInspectionEventsByDefault(t *testing.T) {
 	scripted := harness.NewScriptedProvider(
 		harness.Step(
 			provider.StreamEvent{Type: provider.Reasoning, Text: "secret reasoning token=abc"},
@@ -534,99 +631,77 @@ func TestServerStreamSanitizesRawAgentEventsByDefault(t *testing.T) {
 		t.Fatalf("stream status = %d, body = %s", turnRec.Code, turnRec.Body.String())
 	}
 	body := turnRec.Body.String()
-	for _, raw := range []string{"secret reasoning token=abc", `{"path":null,"limit":2}`, "PRIVATE_OUTPUT_X", "README", "go.mod"} {
-		if strings.Contains(body, raw) {
-			t.Fatalf("SSE exposed raw value %q: %s", raw, body)
+	for _, want := range []string{"secret reasoning token=abc", `{\"path\":null,\"limit\":2}`, "PRIVATE_OUTPUT_X"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("SSE local inspection missing %q: %s", want, body)
 		}
 	}
 	events := parseSSEAgentEvents(t, body)
 	if indexStreamEvent(events, AgentStreamProviderRequest) < 0 || indexStreamEvent(events, AgentStreamProviderDelta) < 0 || indexStreamEvent(events, AgentStreamToolCall) < 0 || indexStreamEvent(events, AgentStreamToolResult) < 0 {
-		t.Fatalf("stream events missing expected public lifecycle events: %#v", events)
+		t.Fatalf("stream events missing expected lifecycle events: %#v", events)
 	}
-	for _, ev := range events {
-		if ev.ProviderRequest != nil {
-			for _, segment := range ev.ProviderRequest.RawSegments {
-				if segment.Raw != "" || segment.RawPreview != "" {
-					t.Fatalf("SSE provider request exposed raw segment: %#v", ev.ProviderRequest.RawSegments)
-				}
-			}
-		}
-		if ev.ProviderEvent != nil && (ev.ProviderEvent.Text != "" || ev.ProviderEvent.Reasoning != "") {
-			t.Fatalf("SSE provider event exposed provider text/reasoning: %#v", ev.ProviderEvent)
-		}
-		if ev.EngineEvent != nil && (ev.EngineEvent.Type == event.ProviderDelta || ev.EngineEvent.Type == event.ProviderReasoning) && ev.EngineEvent.Message != "" {
-			t.Fatalf("SSE engine event exposed provider delta/reasoning text: %#v", ev.EngineEvent)
-		}
-		if ev.EngineEvent != nil && (ev.EngineEvent.Args != "" || (ev.EngineEvent.Type == event.ToolResult && (ev.EngineEvent.Result != "" || ev.EngineEvent.Err != ""))) {
-			t.Fatalf("SSE engine event exposed raw args/result: %#v", ev.EngineEvent)
-		}
-		if strings.Contains(ev.Message, "PRIVATE_OUTPUT_X") || strings.Contains(ev.Error, "PRIVATE_OUTPUT_X") {
-			t.Fatalf("SSE event exposed failed tool output: %#v", ev)
-		}
+	if !slices.ContainsFunc(events, func(ev AgentStreamEvent) bool {
+		return ev.Entry != nil &&
+			ev.Entry.Type == "tool_call" &&
+			ev.Entry.Message.ToolCallID == "list-1" &&
+			ev.Entry.Message.ToolArgs == `{"path":null,"limit":2}`
+	}) {
+		t.Fatalf("SSE entry should expose tool call args by default: %#v", events)
+	}
+	if !slices.ContainsFunc(events, func(ev AgentStreamEvent) bool {
+		return ev.EngineEvent != nil &&
+			ev.EngineEvent.Type == event.ToolResult &&
+			strings.Contains(ev.EngineEvent.Result, "PRIVATE_OUTPUT_X")
+	}) {
+		t.Fatalf("SSE engine event should expose tool result by default: %#v", events)
 	}
 }
 
-func TestServerAgentSessionDebugRawQueryRequiresCapability(t *testing.T) {
-	newRunner := func(allowDebugRaw bool) Runner {
-		scripted := harness.NewScriptedProvider(
-			harness.Step(
-				harness.Tool("list-1", "list", `{"path":null,"limit":2}`),
-				harness.DoneReason("tool_calls"),
-			),
-			harness.Step(harness.Text("done"), harness.Done()),
-		)
-		runner := NewRunner(t.TempDir())
-		runner.Now = fixedClock()
-		runner.AllowDebugRaw = allowDebugRaw
-		runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
-			return scripted, nil
-		}
-		return runner
+func TestServerAgentSessionExposesToolArgsByDefault(t *testing.T) {
+	scripted := harness.NewScriptedProvider(
+		harness.Step(
+			harness.Tool("list-1", "list", `{"path":null,"limit":2}`),
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
 	}
-	createAndFetch := func(t *testing.T, runner Runner) AgentSessionSnapshot {
-		t.Helper()
-		server, err := NewServer(runner)
-		if err != nil {
-			t.Fatal(err)
-		}
-		handler := server.Handler()
-		createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model"},"message":"hello","system_prompt":"system","selected_tools":["list"],"debug_raw":true}`
-		createRec := httptest.NewRecorder()
-		handler.ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody)))
-		if createRec.Code != http.StatusOK {
-			t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
-		}
-		var created AgentRunResponse
-		if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
-			t.Fatal(err)
-		}
-		getRec := httptest.NewRecorder()
-		handler.ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+created.SessionID+"?debug_raw=1", nil))
-		if getRec.Code != http.StatusOK {
-			t.Fatalf("session status = %d, body = %s", getRec.Code, getRec.Body.String())
-		}
-		var snapshot AgentSessionSnapshot
-		if err := json.Unmarshal(getRec.Body.Bytes(), &snapshot); err != nil {
-			t.Fatal(err)
-		}
-		return snapshot
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	denied := createAndFetch(t, newRunner(false))
-	if slices.ContainsFunc(denied.PathEntries, func(entry ObservedSessionEntry) bool {
-		return entry.Message.ToolArgs == `{"path":null,"limit":2}`
-	}) {
-		t.Fatalf("debug_raw query exposed tool args without capability: %#v", denied.PathEntries)
+	handler := server.Handler()
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model"},"message":"hello","system_prompt":"system","selected_tools":["list"]}`
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody)))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
 	}
-	allowed := createAndFetch(t, newRunner(true))
-	if !slices.ContainsFunc(allowed.PathEntries, func(entry ObservedSessionEntry) bool {
+	var created AgentRunResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+created.SessionID, nil))
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("session status = %d, body = %s", getRec.Code, getRec.Body.String())
+	}
+	var snapshot AgentSessionSnapshot
+	if err := json.Unmarshal(getRec.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(snapshot.PathEntries, func(entry ObservedSessionEntry) bool {
 		return entry.Type == "tool_call" && entry.Message.ToolCallID == "list-1" && entry.Message.ToolArgs == `{"path":null,"limit":2}`
 	}) {
-		t.Fatalf("debug_raw query did not expose tool args with capability: %#v", allowed.PathEntries)
+		t.Fatalf("session should expose tool args by default: %#v", snapshot.PathEntries)
 	}
 }
 
-func TestServerDebugRawKeepsToolBodiesButSanitizesPathMetadata(t *testing.T) {
+func TestServerLocalInspectionKeepsToolBodiesButSanitizesPathMetadata(t *testing.T) {
 	root := t.TempDir()
 	secretPath := root + "/secret/debug.txt"
 	scripted := harness.NewScriptedProvider(
@@ -638,7 +713,6 @@ func TestServerDebugRawKeepsToolBodiesButSanitizesPathMetadata(t *testing.T) {
 	)
 	runner := NewRunner(root)
 	runner.Now = fixedClock()
-	runner.AllowDebugRaw = true
 	runner.Exec = func(context.Context, string, []string, string, []string) ([]byte, int) {
 		return []byte("DEBUG_RAW_OUTPUT " + secretPath), 0
 	}
@@ -651,7 +725,7 @@ func TestServerDebugRawKeepsToolBodiesButSanitizesPathMetadata(t *testing.T) {
 	}
 	handler := server.Handler()
 
-	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model"},"message":"hello","system_prompt":"system","selected_tools":["shell"],"debug_raw":true}`
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model"},"message":"hello","system_prompt":"system","selected_tools":["shell"]}`
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody)))
 	if createRec.Code != http.StatusOK {
@@ -663,29 +737,29 @@ func TestServerDebugRawKeepsToolBodiesButSanitizesPathMetadata(t *testing.T) {
 	}
 	createBodyText := createRec.Body.String()
 	if !strings.Contains(createBodyText, "DEBUG_RAW_OUTPUT") {
-		t.Fatalf("debug raw run response should keep tool body: %s", createBodyText)
+		t.Fatalf("local inspection run response should keep tool body: %s", createBodyText)
 	}
 	if strings.Contains(createBodyText, root) || strings.Contains(createBodyText, secretPath) {
-		t.Fatalf("debug raw run response exposed path: %s", createBodyText)
+		t.Fatalf("local inspection run response exposed path: %s", createBodyText)
 	}
 	if !strings.Contains(createBodyText, event.SafePathLabel(secretPath)) {
-		t.Fatalf("debug raw run response should include safe path label: %s", createBodyText)
+		t.Fatalf("local inspection run response should include safe path label: %s", createBodyText)
 	}
 
 	getRec := httptest.NewRecorder()
-	handler.ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+created.SessionID+"?debug_raw=1", nil))
+	handler.ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+created.SessionID, nil))
 	if getRec.Code != http.StatusOK {
 		t.Fatalf("session status = %d, body = %s", getRec.Code, getRec.Body.String())
 	}
 	getBodyText := getRec.Body.String()
 	if !strings.Contains(getBodyText, "DEBUG_RAW_OUTPUT") {
-		t.Fatalf("debug raw session should keep tool body: %s", getBodyText)
+		t.Fatalf("local inspection session should keep tool body: %s", getBodyText)
 	}
 	if strings.Contains(getBodyText, root) || strings.Contains(getBodyText, secretPath) {
-		t.Fatalf("debug raw session exposed path: %s", getBodyText)
+		t.Fatalf("local inspection session exposed path: %s", getBodyText)
 	}
 	if !strings.Contains(getBodyText, event.SafePathLabel(secretPath)) {
-		t.Fatalf("debug raw session should include safe path label: %s", getBodyText)
+		t.Fatalf("local inspection session should include safe path label: %s", getBodyText)
 	}
 
 	if !slices.ContainsFunc(created.Events, func(ev event.Event) bool {
@@ -700,18 +774,17 @@ func TestServerDebugRawKeepsToolBodiesButSanitizesPathMetadata(t *testing.T) {
 			workdir != "" &&
 			!strings.Contains(workdir, root)
 	}) {
-		t.Fatalf("debug raw events should keep result but sanitize workdir: %#v", created.Events)
+		t.Fatalf("local inspection events should keep result but sanitize workdir: %#v", created.Events)
 	}
 }
 
-func TestServerDebugRawSanitizesHarnessEventMessages(t *testing.T) {
+func TestServerLocalInspectionSanitizesHarnessEventMessages(t *testing.T) {
 	root := t.TempDir()
 	secretPath := root + "/secret/final.txt"
 	output := "final output " + secretPath + " https://example.com/docs/path /artifacts/session/run/output.txt"
 	scripted := harness.NewScriptedProvider(harness.Step(harness.Text(output), harness.Done()))
 	runner := NewRunner(root)
 	runner.Now = fixedClock()
-	runner.AllowDebugRaw = true
 	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
 		return scripted, nil
 	}
@@ -721,7 +794,7 @@ func TestServerDebugRawSanitizesHarnessEventMessages(t *testing.T) {
 	}
 	handler := server.Handler()
 
-	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model"},"message":"hello","system_prompt":"system","debug_raw":true}`
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model"},"message":"hello","system_prompt":"system"}`
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions/run", strings.NewReader(createBody)))
 	if createRec.Code != http.StatusOK {
@@ -729,11 +802,11 @@ func TestServerDebugRawSanitizesHarnessEventMessages(t *testing.T) {
 	}
 	body := createRec.Body.String()
 	if strings.Contains(body, root) || strings.Contains(body, secretPath) {
-		t.Fatalf("debug raw response exposed harness event path: %s", body)
+		t.Fatalf("local inspection response exposed harness event path: %s", body)
 	}
 	for _, want := range []string{event.SafePathLabel(secretPath), "https://example.com/docs/path", "/artifacts/session/run/output.txt"} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("debug raw response missing %q: %s", want, body)
+			t.Fatalf("local inspection response missing %q: %s", want, body)
 		}
 	}
 }
@@ -942,14 +1015,14 @@ func TestServerAgentInterfaceProbeExposesSelectedToolsAndDoesNotPersistSession(t
 		}
 	}
 	if !slices.ContainsFunc(result.Observation.ProviderEvents, func(ev ObservedProviderEvent) bool {
-		return ev.Type == provider.Reasoning && ev.Reasoning == ""
+		return ev.Type == provider.Reasoning && ev.Reasoning == "Inspect selected tool contract."
 	}) {
-		t.Fatalf("sanitized reasoning provider event missing: %#v", result.Observation.ProviderEvents)
+		t.Fatalf("reasoning provider event missing: %#v", result.Observation.ProviderEvents)
 	}
 	if !slices.ContainsFunc(result.Observation.SessionMessages, func(msg ObservedSessionMessage) bool {
-		return msg.Role == "assistant" && msg.ToolName == "list" && msg.ToolCallID == "probe-list" && msg.Reasoning == "" && msg.ToolArgs == ""
+		return msg.Role == "assistant" && msg.ToolName == "list" && msg.ToolCallID == "probe-list" && msg.Reasoning == "Inspect selected tool contract." && msg.ToolArgs == `{"path":null,"limit":5}`
 	}) {
-		t.Fatalf("sanitized tool call message missing: %#v", result.Observation.SessionMessages)
+		t.Fatalf("tool call message missing: %#v", result.Observation.SessionMessages)
 	}
 	if !slices.ContainsFunc(result.Observation.SessionMessages, func(msg ObservedSessionMessage) bool {
 		return msg.Role == "tool" && msg.ToolName == "list" && msg.ToolCallID == "probe-list"
@@ -957,9 +1030,9 @@ func TestServerAgentInterfaceProbeExposesSelectedToolsAndDoesNotPersistSession(t
 		t.Fatalf("tool result message missing: %#v", result.Observation.SessionMessages)
 	}
 	if !slices.ContainsFunc(result.Observation.ProviderRequests[1].Messages, func(msg ObservedSessionMessage) bool {
-		return msg.Role == "assistant" && msg.ToolName == "list" && msg.Reasoning == "" && msg.ToolArgs == ""
+		return msg.Role == "assistant" && msg.ToolName == "list" && msg.Reasoning == "Inspect selected tool contract." && msg.ToolArgs == `{"path":null,"limit":5}`
 	}) {
-		t.Fatalf("follow-up request missing sanitized assistant tool-call: %#v", result.Observation.ProviderRequests[1].Messages)
+		t.Fatalf("follow-up request missing assistant tool-call: %#v", result.Observation.ProviderRequests[1].Messages)
 	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/api/agent/sessions", nil)
@@ -1186,8 +1259,8 @@ func TestServerAgentSessionToolsPatchUpdatesNextProviderRequest(t *testing.T) {
 	if patchRec.Code != http.StatusOK {
 		t.Fatalf("patch status = %d, body = %s", patchRec.Code, patchRec.Body.String())
 	}
-	if strings.Contains(patchRec.Body.String(), "PRIVATE_REASON_X") {
-		t.Fatalf("patch response exposed raw tool update reason: %s", patchRec.Body.String())
+	if !strings.Contains(patchRec.Body.String(), "PRIVATE_REASON_X") {
+		t.Fatalf("patch response should expose local tool update reason: %s", patchRec.Body.String())
 	}
 	var patched AgentSessionSnapshot
 	if err := json.Unmarshal(patchRec.Body.Bytes(), &patched); err != nil {
@@ -1200,8 +1273,7 @@ func TestServerAgentSessionToolsPatchUpdatesNextProviderRequest(t *testing.T) {
 		return entry.Type == "active_tools_change" &&
 			entry.Metadata["previous_tools"] == "" &&
 			entry.Metadata["selected_tools"] == "grep,shell" &&
-			entry.Metadata["reason"] != "need command access PRIVATE_REASON_X" &&
-			strings.HasPrefix(entry.Metadata["reason"], "[redacted]")
+			entry.Metadata["reason"] == "need command access PRIVATE_REASON_X"
 	}) {
 		t.Fatalf("tool audit entry missing: %#v", patched.PathEntries)
 	}

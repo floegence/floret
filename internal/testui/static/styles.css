@@ -640,7 +640,7 @@ a {
   text-transform: uppercase;
 }
 
-.tool-detail-section.redacted {
+.tool-detail-section.empty {
   padding: 8px 10px;
   border: 1px dashed var(--line);
   background: var(--panel);

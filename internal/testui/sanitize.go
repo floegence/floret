@@ -32,7 +32,7 @@ func publicRunResponse(resp RunResponse) RunResponse {
 
 func publicAgentRun(run AgentRun) AgentRun {
 	run.Output = event.Redact(run.Output)
-	run.Events = publicEvents(run.Events, false)
+	run.Events = publicEngineEvents(run.Events)
 	if run.Artifacts != nil {
 		out := make(map[string]ArtifactSnapshot, len(run.Artifacts))
 		for key, artifact := range run.Artifacts {
@@ -49,25 +49,17 @@ func publicAgentRun(run AgentRun) AgentRun {
 	return run
 }
 
-func publicAgentRunResponse(resp AgentRunResponse, debugRaw bool) AgentRunResponse {
+func localInspectionAgentRunResponse(resp AgentRunResponse) AgentRunResponse {
 	resp.Profile = stripProfileSecret(resp.Profile)
-	if debugRaw {
-		resp.Summary = event.SafePathRefsText(resp.Summary)
-		resp.Output = event.SafePathRefsText(resp.Output)
-		resp.Error = event.SafePathRefsText(resp.Error)
-		resp.WaitingPrompt = event.SafePathRefsText(resp.WaitingPrompt)
-		resp.Diagnostics = pathSafeMetadata(resp.Diagnostics)
-	} else {
-		resp.Summary = event.Redact(resp.Summary)
-		resp.Output = event.Redact(resp.Output)
-		resp.Error = event.Redact(resp.Error)
-		resp.WaitingPrompt = event.Redact(resp.WaitingPrompt)
-		resp.Diagnostics = publicStringMap(resp.Diagnostics)
-	}
-	resp.Events = publicEvents(resp.Events, debugRaw)
-	resp.HarnessEvents = publicHarnessEvents(resp.HarnessEvents, debugRaw)
-	resp.Session = publicAgentSessionSnapshot(resp.Session, debugRaw)
-	resp.Observation = publicAgentObservation(resp.Observation, debugRaw)
+	resp.Summary = event.SafePathRefsText(resp.Summary)
+	resp.Output = event.SafePathRefsText(resp.Output)
+	resp.Error = event.SafePathRefsText(resp.Error)
+	resp.WaitingPrompt = event.SafePathRefsText(resp.WaitingPrompt)
+	resp.Events = pathSafeEngineEvents(resp.Events)
+	resp.HarnessEvents = pathSafeHarnessEvents(resp.HarnessEvents)
+	resp.Diagnostics = pathSafeMetadata(resp.Diagnostics)
+	resp.Session = localInspectionAgentSessionSnapshot(resp.Session)
+	resp.Observation = localInspectionAgentObservation(resp.Observation)
 	return resp
 }
 
@@ -91,50 +83,8 @@ func sanitizeTraceArtifact(content string) string {
 	return out.String()
 }
 
-func publicAgentSessionSnapshot(snapshot AgentSessionSnapshot, debugRaw bool) AgentSessionSnapshot {
+func localInspectionAgentSessionSnapshot(snapshot AgentSessionSnapshot) AgentSessionSnapshot {
 	snapshot.Profile = stripProfileSecret(snapshot.Profile)
-	if debugRaw {
-		return pathSafeAgentSessionSnapshot(snapshot)
-	}
-	snapshot.SystemPrompt = ""
-	for i := range snapshot.HostedTools {
-		snapshot.HostedTools[i].Parameters = nil
-		snapshot.HostedTools[i].Options = nil
-	}
-	snapshot.WaitingPrompt = event.Redact(snapshot.WaitingPrompt)
-	for i := range snapshot.Turns {
-		snapshot.Turns[i].Output = event.Redact(snapshot.Turns[i].Output)
-		snapshot.Turns[i].Error = event.Redact(snapshot.Turns[i].Error)
-	}
-	snapshot.ActiveContext = publicObservedMessages(snapshot.ActiveContext)
-	snapshot.ContextProjection = publicObservedContextProjection(snapshot.ContextProjection)
-	snapshot.PathEntries = publicObservedEntries(snapshot.PathEntries)
-	snapshot.AllEntries = publicObservedEntries(snapshot.AllEntries)
-	snapshot.Observation = publicAgentObservation(snapshot.Observation, false)
-	return snapshot
-}
-
-func publicAgentObservation(observation AgentObservation, debugRaw bool) AgentObservation {
-	if debugRaw {
-		return pathSafeAgentObservation(observation)
-	}
-	for i := range observation.ProviderRequests {
-		observation.ProviderRequests[i] = publicObservedProviderRequest(observation.ProviderRequests[i])
-	}
-	for i := range observation.ProviderEvents {
-		observation.ProviderEvents[i] = publicObservedProviderEvent(observation.ProviderEvents[i])
-	}
-	observation.SessionMessages = publicObservedMessages(observation.SessionMessages)
-	observation.ActiveContext = publicObservedMessages(observation.ActiveContext)
-	observation.ContextProjection = publicObservedContextProjection(observation.ContextProjection)
-	observation.PathEntries = publicObservedEntries(observation.PathEntries)
-	for i := range observation.Transitions {
-		observation.Transitions[i].Details = event.Redact(observation.Transitions[i].Details)
-	}
-	return observation
-}
-
-func pathSafeAgentSessionSnapshot(snapshot AgentSessionSnapshot) AgentSessionSnapshot {
 	snapshot.SystemPrompt = event.SafePathRefsText(snapshot.SystemPrompt)
 	snapshot.WaitingPrompt = event.SafePathRefsText(snapshot.WaitingPrompt)
 	for i := range snapshot.HostedTools {
@@ -154,11 +104,11 @@ func pathSafeAgentSessionSnapshot(snapshot AgentSessionSnapshot) AgentSessionSna
 	for i := range snapshot.AllEntries {
 		snapshot.AllEntries[i] = pathSafeObservedEntry(snapshot.AllEntries[i])
 	}
-	snapshot.Observation = pathSafeAgentObservation(snapshot.Observation)
+	snapshot.Observation = localInspectionAgentObservation(snapshot.Observation)
 	return snapshot
 }
 
-func pathSafeAgentObservation(observation AgentObservation) AgentObservation {
+func localInspectionAgentObservation(observation AgentObservation) AgentObservation {
 	for i := range observation.ProviderRequests {
 		observation.ProviderRequests[i] = pathSafeObservedProviderRequest(observation.ProviderRequests[i])
 	}
@@ -552,88 +502,33 @@ func isSafeDecimal(value string) bool {
 	return true
 }
 
-func publicEvents(events []event.Event, debugRaw bool) []event.Event {
+func publicEngineEvents(events []event.Event) []event.Event {
 	out := make([]event.Event, len(events))
 	for i, ev := range events {
-		if debugRaw {
-			out[i] = event.SanitizePathRefs(ev)
-		} else {
-			out[i] = event.Sanitize(ev)
-		}
+		out[i] = event.Sanitize(ev)
 	}
 	return out
 }
 
-func publicHarnessEvents(events []agentharness.HarnessEvent, debugRaw bool) []agentharness.HarnessEvent {
+func pathSafeEngineEvents(events []event.Event) []event.Event {
+	out := make([]event.Event, len(events))
+	for i, ev := range events {
+		out[i] = event.SanitizePathRefs(ev)
+	}
+	return out
+}
+
+func pathSafeHarnessEvents(events []agentharness.HarnessEvent) []agentharness.HarnessEvent {
 	out := append([]agentharness.HarnessEvent(nil), events...)
 	for i := range out {
-		if debugRaw {
-			out[i].Message = event.SafePathRefsText(out[i].Message)
-			out[i].Status = event.SafePathRefsText(out[i].Status)
-			out[i].Metadata = pathSafeMetadata(out[i].Metadata)
-		} else {
-			out[i].Message = event.Redact(out[i].Message)
-			out[i].Status = event.Redact(out[i].Status)
-			out[i].Metadata = publicMetadata(out[i].Metadata)
-		}
+		out[i].Message = event.SafePathRefsText(out[i].Message)
+		out[i].Status = event.SafePathRefsText(out[i].Status)
+		out[i].Metadata = pathSafeMetadata(out[i].Metadata)
 	}
 	return out
 }
 
-func publicStringMap(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for key, value := range in {
-		out[key] = event.Redact(value)
-	}
-	return out
-}
-
-func publicAgentStreamEvent(ev AgentStreamEvent, debugRaw bool) AgentStreamEvent {
-	if debugRaw {
-		return pathSafeAgentStreamEvent(ev)
-	}
-	if ev.Entry != nil {
-		entry := publicObservedEntries([]ObservedSessionEntry{*ev.Entry})[0]
-		ev.Entry = &entry
-	}
-	if ev.ProviderRequest != nil {
-		req := publicObservedProviderRequest(*ev.ProviderRequest)
-		ev.ProviderRequest = &req
-	}
-	if ev.ProviderEvent != nil {
-		providerEvent := publicObservedProviderEvent(*ev.ProviderEvent)
-		ev.ProviderEvent = &providerEvent
-	}
-	if ev.EngineEvent != nil {
-		engineEvent := event.Sanitize(*ev.EngineEvent)
-		ev.EngineEvent = &engineEvent
-	}
-	if ev.Snapshot != nil {
-		snapshot := publicAgentSessionSnapshot(*ev.Snapshot, false)
-		ev.Snapshot = &snapshot
-	}
-	if ev.Result != nil {
-		result := publicAgentRunResponse(*ev.Result, false)
-		ev.Result = &result
-	}
-	switch ev.Type {
-	case AgentStreamProviderDelta, AgentStreamToolResult:
-		ev.Message = ""
-	case AgentStreamToolCall:
-		if ev.EngineEvent == nil {
-			ev.Message = ""
-		}
-	}
-	ev.Message = event.Redact(ev.Message)
-	ev.Error = event.Redact(ev.Error)
-	ev.Metadata = publicMetadata(ev.Metadata)
-	return ev
-}
-
-func pathSafeAgentStreamEvent(ev AgentStreamEvent) AgentStreamEvent {
+func localInspectionAgentStreamEvent(ev AgentStreamEvent) AgentStreamEvent {
 	if ev.Entry != nil {
 		entry := pathSafeObservedEntry(*ev.Entry)
 		ev.Entry = &entry
@@ -651,30 +546,17 @@ func pathSafeAgentStreamEvent(ev AgentStreamEvent) AgentStreamEvent {
 		ev.EngineEvent = &engineEvent
 	}
 	if ev.Snapshot != nil {
-		snapshot := pathSafeAgentSessionSnapshot(*ev.Snapshot)
+		snapshot := localInspectionAgentSessionSnapshot(*ev.Snapshot)
 		ev.Snapshot = &snapshot
 	}
 	if ev.Result != nil {
-		result := pathSafeAgentRunResponse(*ev.Result)
+		result := localInspectionAgentRunResponse(*ev.Result)
 		ev.Result = &result
 	}
 	ev.Message = event.SafePathRefsText(ev.Message)
 	ev.Error = event.SafePathRefsText(ev.Error)
 	ev.Metadata = pathSafeMetadata(ev.Metadata)
 	return ev
-}
-
-func pathSafeAgentRunResponse(resp AgentRunResponse) AgentRunResponse {
-	resp.Summary = event.SafePathRefsText(resp.Summary)
-	resp.Output = event.SafePathRefsText(resp.Output)
-	resp.Error = event.SafePathRefsText(resp.Error)
-	resp.WaitingPrompt = event.SafePathRefsText(resp.WaitingPrompt)
-	resp.Events = publicEvents(resp.Events, true)
-	resp.HarnessEvents = publicHarnessEvents(resp.HarnessEvents, true)
-	resp.Diagnostics = pathSafeMetadata(resp.Diagnostics)
-	resp.Session = pathSafeAgentSessionSnapshot(resp.Session)
-	resp.Observation = pathSafeAgentObservation(resp.Observation)
-	return resp
 }
 
 func pathSafeFreeformText(value string) string {

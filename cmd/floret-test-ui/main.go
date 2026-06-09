@@ -17,7 +17,6 @@ func main() {
 	root := flag.String("root", ".", "Floret repository root")
 	storageMode := flag.String("storage", testui.StorageModeSQLite, "session storage mode: sqlite, file, or memory")
 	storagePath := flag.String("storage-path", "", "SQLite storage path (default: <root>/.floret-test-ui/floret.db)")
-	allowDebugRaw := flag.Bool("allow-debug-raw", false, "allow debug_raw API responses to include raw local inspection data")
 	flag.Parse()
 
 	absRoot, err := filepath.Abs(*root)
@@ -28,7 +27,6 @@ func main() {
 	runner := testui.NewRunner(absRoot)
 	runner.StorageMode = *storageMode
 	runner.StoragePath = *storagePath
-	runner.AllowDebugRaw = *allowDebugRaw
 	server, err := testui.NewServer(runner)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create server: %v\n", err)

@@ -251,16 +251,7 @@ function setActiveSessionSnapshot(session, options = {}) {
 }
 
 function fetchSessionSnapshot(id) {
-  return api.session(id, { debugRaw: debugRawEnabled() });
-}
-
-function withDebugRaw(payload) {
-  if (!debugRawEnabled()) return payload;
-  return { ...payload, debug_raw: true };
-}
-
-function debugRawEnabled() {
-  return Boolean(state.config?.debug_raw_enabled);
+  return api.session(id);
 }
 
 function shouldAcceptSessionSnapshot(current, next, options = {}) {
@@ -298,7 +289,7 @@ async function createSession(payload) {
   state.newSessionDraft = payload;
   const token = ++state.mutationToken;
   await runWithStatus({ status: "running", action: "create-session", successMessage: "Session created and opened" }, async () => {
-    const session = await api.createSession(withDebugRaw(payload));
+    const session = await api.createSession(payload);
     if (token !== state.mutationToken) return false;
     activateSessionSnapshot(session);
     state.lastResult = null;
@@ -331,7 +322,7 @@ async function runStreamingTurn(sessionID, message, token, successMessage) {
     let finalSession = null;
     let streamError = null;
     try {
-      await api.streamTurn(sessionID, withDebugRaw({ message: trimmed }), (event) => {
+      await api.streamTurn(sessionID, { message: trimmed }, (event) => {
         if (token !== state.mutationToken || state.liveTurn?.session_id !== sessionID) return;
         applyStreamEvent(event);
         render({ preserveFocus: true, scheduleRefresh: true });

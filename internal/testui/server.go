@@ -155,7 +155,7 @@ func (s *Server) handleAgentSessionRoute(w http.ResponseWriter, r *http.Request)
 	}
 	sessionID := parts[0]
 	if r.Method == http.MethodGet && len(parts) == 1 {
-		snapshot, err := s.Runner.AgentSession(r.Context(), sessionID, debugRawQuery(r))
+		snapshot, err := s.Runner.AgentSession(r.Context(), sessionID)
 		if err != nil {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 			return
@@ -180,11 +180,6 @@ func (s *Server) handleAgentSessionRoute(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	http.NotFound(w, r)
-}
-
-func debugRawQuery(r *http.Request) bool {
-	value := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("debug_raw")))
-	return value == "1" || value == "true" || value == "yes"
 }
 
 func (s *Server) handleAgentSessionDelete(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -255,7 +250,6 @@ func (s *Server) handleAgentSessionTurnStream(w http.ResponseWriter, r *http.Req
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	stream := newAgentStream(512)
-	debugRaw := s.Runner.debugRawAllowed(req.DebugRaw)
 	runCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -274,7 +268,7 @@ func (s *Server) handleAgentSessionTurnStream(w http.ResponseWriter, r *http.Req
 				flusher.Flush()
 				return
 			}
-			if err := writeSSE(w, publicAgentStreamEvent(ev, debugRaw)); err != nil {
+			if err := writeSSE(w, localInspectionAgentStreamEvent(ev)); err != nil {
 				return
 			}
 			flusher.Flush()

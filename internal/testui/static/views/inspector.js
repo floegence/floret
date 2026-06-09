@@ -237,7 +237,7 @@ function renderOutputs(session) {
             ${view.original_bytes || view.original_bytes === 0 ? `<span class="metric">original ${escapeHTML(formatBytes(view.original_bytes))}</span>` : ""}
             ${view.content_sha256 ? `<span class="metric">sha256 ${escapeHTML(shortHash(view.content_sha256))}</span>` : ""}
           </div>
-          ${msg.content ? `<pre class="code-block">${escapeHTML(msg.content)}</pre>` : `<p class="muted">Model-visible result body is redacted in public mode.</p>`}
+          ${msg.content ? `<pre class="code-block">${escapeHTML(msg.content)}</pre>` : `<p class="muted">No model-visible result body was captured.</p>`}
           ${view.full_output ? renderArtifactLink(view.full_output) : ""}
         </article>
       `).join("")}

@@ -154,12 +154,9 @@ tests, race tests, provider smoke tests, tool scenarios, and the deterministic e
 New Session keeps context policy controls in Advanced options by default; those values
 are derived from the active provider/model catalog and backend context defaults, while
 still being submitted with the session create request.
-Public API responses are sanitized by default. Local raw inspection requires an explicit
-launch-time capability:
-
-```bash
-go run ./cmd/floret-test-ui -allow-debug-raw
-```
+Session tool runs expose local inspection details by default, including tool arguments,
+results, reasoning, projections, and metadata. Host-specific path references are still
+normalized for readable local output.
 
 ## Install / Import
 

@@ -66,7 +66,6 @@ type Runner struct {
 	Exec                func(context.Context, string, []string, string, []string) ([]byte, int)
 	ProviderFactory     func(config.Config) (provider.Provider, error)
 	Sessions            *agentSessionRegistry
-	AllowDebugRaw       bool
 	StorageMode         string
 	StoragePath         string
 	StorageImportLegacy bool
@@ -97,7 +96,6 @@ type agentSession struct {
 	mu                      sync.Mutex
 	id                      string
 	transient               bool
-	debugRaw                bool
 	profile                 ProviderProfile
 	systemPrompt            string
 	selectedTools           []string
@@ -166,14 +164,7 @@ func (r *Runner) providerFactory() func(config.Config) (provider.Provider, error
 	return adapters.NewProvider
 }
 
-func (r Runner) debugRawAllowed(requested bool) bool {
-	return requested && r.AllowDebugRaw
-}
-
-func agentSessionSinkPolicy(debugRaw bool) event.SinkPolicy {
-	if !debugRaw {
-		return event.SinkPolicy{}
-	}
+func agentSessionSinkPolicy() event.SinkPolicy {
 	return event.SinkPolicy{AllowRaw: true, Redactor: event.SafePathRefsText}
 }
 
@@ -239,7 +230,6 @@ func (r *Runner) CreateIdleAgentSession(ctx context.Context, req AgentRunRequest
 	}
 	sess, err := r.buildAgentSession(ctx, agentSessionBuildOptions{
 		ID:            sessionID,
-		DebugRaw:      r.debugRawAllowed(req.DebugRaw),
 		CreatedAt:     started,
 		UpdatedAt:     started,
 		Profile:       resolvedProfile,
@@ -262,7 +252,7 @@ func (r *Runner) CreateIdleAgentSession(ctx context.Context, req AgentRunRequest
 	if err != nil {
 		return AgentSessionSnapshot{}, err
 	}
-	return publicAgentSessionSnapshot(snapshot, r.debugRawAllowed(req.DebugRaw)), nil
+	return localInspectionAgentSessionSnapshot(snapshot), nil
 }
 
 func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeRequest) AgentRunResponse {
@@ -274,11 +264,11 @@ func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeR
 	}
 	profile, err := r.profileByID(req.ProfileID)
 	if err != nil {
-		return publicAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusBadRequest, err), r.debugRawAllowed(req.DebugRaw))
+		return localInspectionAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusBadRequest, err))
 	}
 	selectedTools, err := normalizeAgentSessionToolsForProfile(req.SelectedTools, "", profile, r.EnvFile)
 	if err != nil {
-		return publicAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusBadRequest, err), r.debugRawAllowed(req.DebugRaw))
+		return localInspectionAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusBadRequest, err))
 	}
 	probe := *r
 	probe.ProviderFactory = func(config.Config) (provider.Provider, error) {
@@ -318,14 +308,13 @@ func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeR
 	}
 	cfg, err = config.Resolve(cfg, nil)
 	if err != nil {
-		return publicAgentRunResponse(r.failAgentRun(resp, err), r.debugRawAllowed(req.DebugRaw))
+		return localInspectionAgentRunResponse(r.failAgentRun(resp, err))
 	}
 	sessionID := "testui-probe-" + resp.ID
 	cfg.RunID = sessionID
 	sess, err := probe.buildAgentSession(ctx, agentSessionBuildOptions{
 		ID:            sessionID,
 		Transient:     true,
-		DebugRaw:      r.debugRawAllowed(req.DebugRaw),
 		CreatedAt:     started,
 		UpdatedAt:     started,
 		Profile:       profile,
@@ -336,7 +325,7 @@ func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeR
 		Start:         true,
 	})
 	if err != nil {
-		return publicAgentRunResponse(r.failAgentRun(resp, err), r.debugRawAllowed(req.DebugRaw))
+		return localInspectionAgentRunResponse(r.failAgentRun(resp, err))
 	}
 	resp.Profile = stripProfileSecret(profile)
 	result := probe.runAgentTurn(ctx, sess, resp, "Run the test UI tool contract probe for the selected tools.")
@@ -344,7 +333,7 @@ func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeR
 	if result.Status == string(engine.Completed) {
 		result.Summary = "Interface probe passed: selected tools were bound to a transient session and captured in the provider request."
 	}
-	return publicAgentRunResponse(result, r.debugRawAllowed(req.DebugRaw))
+	return localInspectionAgentRunResponse(result)
 }
 
 func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) AgentRunResponse {
@@ -360,11 +349,11 @@ func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) Ag
 		resp.Summary = resp.Error
 		resp.FinishedAt = r.now()
 		resp.DurationMS = resp.FinishedAt.Sub(resp.StartedAt).Milliseconds()
-		return publicAgentRunResponse(resp, r.debugRawAllowed(req.DebugRaw))
+		return localInspectionAgentRunResponse(resp)
 	}
 	profile, err := r.profileForRun(req)
 	if err != nil {
-		return publicAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusBadRequest, err), r.debugRawAllowed(req.DebugRaw))
+		return localInspectionAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusBadRequest, err))
 	}
 	resp.Profile = stripProfileSecret(profile)
 	cfg := config.Config{
@@ -385,7 +374,7 @@ func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) Ag
 	}
 	cfg, err = config.Resolve(cfg, nil)
 	if err != nil {
-		return publicAgentRunResponse(r.failAgentRun(resp, err), r.debugRawAllowed(req.DebugRaw))
+		return localInspectionAgentRunResponse(r.failAgentRun(resp, err))
 	}
 	sessionID := "testui-session-" + resp.ID
 	cfg.RunID = sessionID
@@ -393,11 +382,10 @@ func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) Ag
 	resp.Profile = stripProfileSecret(resolvedProfile)
 	selectedTools, err := normalizeAgentSessionToolsForProfile(req.SelectedTools, req.ToolMode, resolvedProfile, r.EnvFile)
 	if err != nil {
-		return publicAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusBadRequest, err), r.debugRawAllowed(req.DebugRaw))
+		return localInspectionAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusBadRequest, err))
 	}
 	sess, err := r.buildAgentSession(ctx, agentSessionBuildOptions{
 		ID:            sessionID,
-		DebugRaw:      r.debugRawAllowed(req.DebugRaw),
 		CreatedAt:     started,
 		UpdatedAt:     started,
 		Profile:       resolvedProfile,
@@ -408,17 +396,12 @@ func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) Ag
 		Start:         true,
 	})
 	if err != nil {
-		return publicAgentRunResponse(r.failAgentRun(resp, err), r.debugRawAllowed(req.DebugRaw))
+		return localInspectionAgentRunResponse(r.failAgentRun(resp, err))
 	}
 	r.sessionRegistry().put(sess)
 	if err := r.saveAgentSessionMetadata(r.metadataFromSession(sess)); err != nil {
-		return publicAgentRunResponse(r.failAgentRun(resp, err), r.debugRawAllowed(req.DebugRaw))
+		return localInspectionAgentRunResponse(r.failAgentRun(resp, err))
 	}
-	debugRaw := r.debugRawAllowed(req.DebugRaw)
-	sess.debugRaw = debugRaw
-	defer func() {
-		sess.debugRaw = false
-	}()
 	return r.runAgentTurn(ctx, sess, resp, req.Message)
 }
 
@@ -435,7 +418,6 @@ func (r *Runner) RunAgentTurnStream(ctx context.Context, sessionID string, req A
 }
 
 func (r *Runner) runAgentTurnResponse(ctx context.Context, sessionID string, req AgentTurnRequest, resp AgentRunResponse, sink AgentStreamSink) AgentRunResponse {
-	debugRaw := r.debugRawAllowed(req.DebugRaw)
 	if strings.TrimSpace(req.Message) == "" {
 		resp.Status = "error"
 		resp.StatusCode = http.StatusBadRequest
@@ -443,7 +425,7 @@ func (r *Runner) runAgentTurnResponse(ctx context.Context, sessionID string, req
 		resp.Summary = resp.Error
 		resp.FinishedAt = r.now()
 		resp.DurationMS = resp.FinishedAt.Sub(resp.StartedAt).Milliseconds()
-		return publicAgentRunResponse(resp, debugRaw)
+		return localInspectionAgentRunResponse(resp)
 	}
 	sess, ok := r.sessionRegistry().get(sessionID)
 	if !ok {
@@ -454,24 +436,20 @@ func (r *Runner) runAgentTurnResponse(ctx context.Context, sessionID string, req
 			if isMissingAgentSessionError(err) {
 				status = http.StatusNotFound
 			}
-			return publicAgentRunResponse(r.failAgentRunWithStatus(resp, status, err), debugRaw)
+			return localInspectionAgentRunResponse(r.failAgentRunWithStatus(resp, status, err))
 		}
 	}
 	resp.Profile = stripProfileSecret(sess.profile)
-	sess.debugRaw = debugRaw
-	defer func() {
-		sess.debugRaw = false
-	}()
 	if err := lockAgentSessionForTurn(ctx, sess); err != nil {
-		return publicAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusConflict, fmt.Errorf("agent session %q is already running", sessionID)), debugRaw)
+		return localInspectionAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusConflict, fmt.Errorf("agent session %q is already running", sessionID)))
 	}
 	defer sess.mu.Unlock()
 	snapshot, err := r.sessionSnapshotLocked(ctx, sess)
 	if err != nil {
-		return publicAgentRunResponse(r.failAgentRun(resp, err), debugRaw)
+		return localInspectionAgentRunResponse(r.failAgentRun(resp, err))
 	}
 	if !snapshot.CanAppendMessage {
-		return publicAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusConflict, fmt.Errorf("agent session %q is %s and cannot accept a new message", sessionID, snapshot.Status)), debugRaw)
+		return localInspectionAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusConflict, fmt.Errorf("agent session %q is %s and cannot accept a new message", sessionID, snapshot.Status)))
 	}
 	turnID := sess.nextTurnID()
 	r.markAgentSessionRunningLocked(sess, turnID)
@@ -482,7 +460,7 @@ func (r *Runner) runAgentTurnResponse(ctx context.Context, sessionID string, req
 	result := r.runAgentTurnLocked(ctx, sess, resp, req.Message, turnID)
 	if sink != nil {
 		if result.Session.ID != "" {
-			snapshotCopy := publicAgentSessionSnapshot(result.Session, debugRaw)
+			snapshotCopy := localInspectionAgentSessionSnapshot(result.Session)
 			sink.EmitAgentStream(AgentStreamEvent{
 				Type:      AgentStreamSessionSnapshot,
 				SessionID: sessionID,
@@ -491,7 +469,7 @@ func (r *Runner) runAgentTurnResponse(ctx context.Context, sessionID string, req
 				Snapshot:  &snapshotCopy,
 			})
 		}
-		resultCopy := publicAgentRunResponse(result, debugRaw)
+		resultCopy := localInspectionAgentRunResponse(result)
 		sink.EmitAgentStream(AgentStreamEvent{
 			Type:      agentStreamEventForResult(result),
 			SessionID: sessionID,
@@ -502,7 +480,7 @@ func (r *Runner) runAgentTurnResponse(ctx context.Context, sessionID string, req
 			Error:     result.Error,
 		})
 	}
-	return publicAgentRunResponse(result, debugRaw)
+	return localInspectionAgentRunResponse(result)
 }
 
 func (r *Runner) UpdateAgentSessionTools(ctx context.Context, sessionID string, req AgentToolsUpdateRequest) (AgentSessionSnapshot, error) {
@@ -533,7 +511,7 @@ func (r *Runner) UpdateAgentSessionTools(ctx context.Context, sessionID string, 
 		return AgentSessionSnapshot{}, fmt.Errorf("%w: %s", errAgentSessionBusy, sessionID)
 	}
 	if slices.Equal(sess.selectedTools, selectedTools) {
-		return publicAgentSessionSnapshot(current, false), nil
+		return localInspectionAgentSessionSnapshot(current), nil
 	}
 	previous := cloneSelectedTools(sess.selectedTools)
 	nextRuntime, err := sess.prepareRuntime(ctx, r, selectedTools)
@@ -567,7 +545,7 @@ func (r *Runner) UpdateAgentSessionTools(ctx context.Context, sessionID string, 
 	if err != nil {
 		return AgentSessionSnapshot{}, err
 	}
-	return publicAgentSessionSnapshot(next, false), nil
+	return localInspectionAgentSessionSnapshot(next), nil
 }
 
 func (r *Runner) DeleteAgentSession(ctx context.Context, sessionID string) error {
@@ -649,8 +627,7 @@ func (r *Runner) DeleteAgentSession(ctx context.Context, sessionID string) error
 	return os.RemoveAll(toolOutputArtifactSessionDir(r.managedArtifactsRoot(), sessionID))
 }
 
-func (r *Runner) AgentSession(ctx context.Context, sessionID string, debugRaw bool) (AgentSessionSnapshot, error) {
-	debugRaw = r.debugRawAllowed(debugRaw)
+func (r *Runner) AgentSession(ctx context.Context, sessionID string) (AgentSessionSnapshot, error) {
 	sess, ok := r.sessionRegistry().get(sessionID)
 	if !ok {
 		meta, err := r.loadAgentSessionMetadata(sessionID)
@@ -661,17 +638,17 @@ func (r *Runner) AgentSession(ctx context.Context, sessionID string, debugRaw bo
 		if err != nil {
 			return AgentSessionSnapshot{}, err
 		}
-		return publicAgentSessionSnapshot(snapshot, debugRaw), nil
+		return localInspectionAgentSessionSnapshot(snapshot), nil
 	}
 	if !sess.mu.TryLock() {
-		return publicAgentSessionSnapshot(r.runningAgentSessionSnapshot(ctx, sess), debugRaw), nil
+		return localInspectionAgentSessionSnapshot(r.runningAgentSessionSnapshot(ctx, sess)), nil
 	}
 	defer sess.mu.Unlock()
 	snapshot, err := r.sessionSnapshotLocked(ctx, sess)
 	if err != nil {
 		return AgentSessionSnapshot{}, err
 	}
-	return publicAgentSessionSnapshot(snapshot, debugRaw), nil
+	return localInspectionAgentSessionSnapshot(snapshot), nil
 }
 
 func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selectedTools []string) (agentSessionRuntime, error) {
@@ -703,7 +680,7 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 		Repo:         sess.repo,
 		Artifacts:    newToolOutputArtifactStore(r.managedArtifactsRoot()),
 		Sink:         rec,
-		SinkPolicy:   agentSessionSinkPolicy(sess.debugRaw),
+		SinkPolicy:   agentSessionSinkPolicy(),
 		HarnessSink:  harnessRec,
 		Approver:     testUIToolApprover,
 		TurnPolicy: agentharness.TurnPolicy{
@@ -781,13 +758,13 @@ func (r *Runner) AgentSessions(ctx context.Context) []AgentSessionSnapshot {
 	out := make([]AgentSessionSnapshot, 0, len(sessions))
 	for _, sess := range sessions {
 		if !sess.mu.TryLock() {
-			out = append(out, publicAgentSessionSnapshot(r.runningAgentSessionSnapshot(ctx, sess), false))
+			out = append(out, localInspectionAgentSessionSnapshot(r.runningAgentSessionSnapshot(ctx, sess)))
 			continue
 		}
 		snap, err := r.sessionSnapshotLocked(ctx, sess)
 		sess.mu.Unlock()
 		if err == nil {
-			out = append(out, publicAgentSessionSnapshot(snap, false))
+			out = append(out, localInspectionAgentSessionSnapshot(snap))
 		}
 	}
 	seen := map[string]struct{}{}
@@ -804,7 +781,7 @@ func (r *Runner) AgentSessions(ctx context.Context) []AgentSessionSnapshot {
 		}
 		snap, err := r.sessionSnapshotFromMetadata(ctx, meta)
 		if err == nil {
-			out = append(out, publicAgentSessionSnapshot(snap, false))
+			out = append(out, localInspectionAgentSessionSnapshot(snap))
 		}
 	}
 	slices.SortFunc(out, func(a, b AgentSessionSnapshot) int {
@@ -822,7 +799,6 @@ func (r *Runner) AgentSessions(ctx context.Context) []AgentSessionSnapshot {
 type agentSessionBuildOptions struct {
 	ID            string
 	Transient     bool
-	DebugRaw      bool
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 	Profile       ProviderProfile
@@ -883,7 +859,7 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 		Repo:         repo,
 		Artifacts:    newToolOutputArtifactStore(r.managedArtifactsRoot()),
 		Sink:         rec,
-		SinkPolicy:   agentSessionSinkPolicy(opts.DebugRaw),
+		SinkPolicy:   agentSessionSinkPolicy(),
 		HarnessSink:  harnessRec,
 		Approver:     testUIToolApprover,
 		TurnPolicy: agentharness.TurnPolicy{
@@ -924,7 +900,6 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 	return &agentSession{
 		id:                      opts.ID,
 		transient:               opts.Transient,
-		debugRaw:                opts.DebugRaw,
 		profile:                 opts.Profile,
 		systemPrompt:            cfg.SystemPrompt,
 		selectedTools:           selectedTools,
@@ -1363,7 +1338,7 @@ func (r *Runner) runAgentTurn(ctx context.Context, sess *agentSession, resp Agen
 	turnID := sess.nextTurnID()
 	r.markAgentSessionRunningLocked(sess, turnID)
 	result := r.runAgentTurnLocked(ctx, sess, resp, message, turnID)
-	return publicAgentRunResponse(result, sess.debugRaw)
+	return localInspectionAgentRunResponse(result)
 }
 
 func (r *Runner) runAgentTurnLocked(ctx context.Context, sess *agentSession, resp AgentRunResponse, message string, turnID string) AgentRunResponse {

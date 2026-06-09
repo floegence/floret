@@ -30,7 +30,6 @@ const (
 
 func (r *Runner) ConfigState() (ConfigState, error) {
 	state := ConfigState{EnvFile: r.EnvFile, Catalog: r.Catalog(), SearchWireShapes: searchWireShapes()}
-	state.DebugRawEnabled = r.AllowDebugRaw
 	state.LocalTime = localTimeInfo(r.now())
 	state.Storage = r.storageStatus(context.Background())
 	fileValues := map[string]string{}

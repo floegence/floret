@@ -51,7 +51,7 @@ func TestStaticConsoleToolSelectionSemanticsStayAuditable(t *testing.T) {
 	if !strings.Contains(newSession, "selected_tools: readSelectedTools") {
 		t.Fatalf("new session form must send selected_tools")
 	}
-	if !strings.Contains(appJS, "api.streamTurn(sessionID, withDebugRaw({ message: trimmed })") {
+	if !strings.Contains(appJS, "api.streamTurn(sessionID, { message: trimmed }") {
 		t.Fatalf("append turn should use the streaming endpoint")
 	}
 	appendStart := strings.Index(appJS, "async function appendTurn")
@@ -159,7 +159,7 @@ func TestStaticConsoleCreatesSessionBeforeRunningInitialTurn(t *testing.T) {
 	appJS := readStaticTestFile(t, "app.js")
 	apiJS := readStaticTestFile(t, "api.js")
 
-	for _, want := range []string{"api.createSession(withDebugRaw(payload))", "activateSessionSnapshot(session)", "void queueInitialTurn(session.id, payload.message, token)", "async function queueInitialTurn", "api.streamTurn(sessionID, withDebugRaw({ message: trimmed })"} {
+	for _, want := range []string{"api.createSession(payload)", "activateSessionSnapshot(session)", "void queueInitialTurn(session.id, payload.message, token)", "async function queueInitialTurn", "api.streamTurn(sessionID, { message: trimmed }"} {
 		if !strings.Contains(appJS, want) {
 			t.Fatalf("app missing create-before-run flow %q", want)
 		}
@@ -295,7 +295,7 @@ func TestStaticConsoleStreamsTurnsIncrementally(t *testing.T) {
 			t.Fatalf("api missing streaming turn support %q", want)
 		}
 	}
-	for _, want := range []string{"createLiveTurn", "applyStreamEvent", "state.liveTurn", "assistant_delta", "provider_requests", "session_snapshot", "delete state.composerDrafts[sessionID]", "withDebugRaw({ message: trimmed })"} {
+	for _, want := range []string{"createLiveTurn", "applyStreamEvent", "state.liveTurn", "assistant_delta", "provider_requests", "session_snapshot", "delete state.composerDrafts[sessionID]", "api.streamTurn(sessionID, { message: trimmed }"} {
 		if !strings.Contains(appJS, want) {
 			t.Fatalf("app missing streaming reducer behavior %q", want)
 		}
@@ -633,24 +633,30 @@ func TestStaticConsoleSessionOperationsAndPolling(t *testing.T) {
 	}
 }
 
-func TestStaticConsoleSessionDebugRawAndToolRuns(t *testing.T) {
+func TestStaticConsoleSessionToolRunsUseLocalInspectionByDefault(t *testing.T) {
 	apiJS := readStaticTestFile(t, "api.js")
 	appJS := readStaticTestFile(t, "app.js")
 	stateJS := readStaticTestFile(t, "state.js")
 	workspace := readStaticTestFile(t, "views", "sessionWorkspace.js")
 	css := readStaticTestFile(t, "styles.css")
 
-	for _, want := range []string{"debug_raw_enabled", "deferredRender"} {
-		if !strings.Contains(stateJS+appJS, want) {
-			t.Fatalf("session UI missing debug/selection state %q", want)
+	for _, stale := range []string{
+		"debug" + "_raw" + "_enabled",
+		"debug" + "Raw" + "Enabled()",
+		"with" + "Debug" + "Raw",
+		"?debug" + "_raw=1",
+		"Raw arguments/results are " + "redacted",
+		"arguments " + "redacted",
+		"result " + "redacted",
+	} {
+		if strings.Contains(apiJS+appJS+stateJS+workspace+css, stale) {
+			t.Fatalf("session UI should not keep debug raw gate or redacted tool copy %q", stale)
 		}
 	}
-	for _, want := range []string{`options.debugRaw ? "?debug_raw=1" : ""`, "debugRawEnabled()", "withDebugRaw(payload)", "withDebugRaw({ message: trimmed })"} {
-		if !strings.Contains(apiJS+appJS, want) {
-			t.Fatalf("session UI should request debug raw data when enabled: missing %q", want)
-		}
+	if !strings.Contains(stateJS+appJS, "deferredRender") {
+		t.Fatalf("session UI missing selection-safe deferred render state")
 	}
-	for _, want := range []string{"timelineItems", "renderTimelineItem", "renderToolRun", "toolRunKey", "tool run", "Arguments", "Result", "Raw arguments/results are redacted", "tool-detail-section"} {
+	for _, want := range []string{"timelineItems", "renderTimelineItem", "renderToolRun", "toolRunKey", "tool run", "Arguments", "Result", "No arguments were captured", "Waiting for tool result", "No result body was captured", "renderMetadataBlock", "tool-detail-section metadata", "Metadata", "tool-detail-section empty"} {
 		if !strings.Contains(workspace+css, want) {
 			t.Fatalf("workspace should merge and expose tool run details: missing %q", want)
 		}

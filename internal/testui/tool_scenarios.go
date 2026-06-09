@@ -142,7 +142,6 @@ func (r Runner) runToolScenario(ctx context.Context, scenario toolScenario) RunR
 	}
 	scenarioRunner := NewRunner(workspace)
 	scenarioRunner.Now = r.Now
-	scenarioRunner.AllowDebugRaw = true
 	scenarioRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
 		return runtime.Provider, nil
 	}
@@ -157,14 +156,13 @@ func (r Runner) runToolScenario(ctx context.Context, scenario toolScenario) RunR
 		SystemPrompt:  systemPrompt,
 		SelectedTools: scenario.SelectedTools,
 		ContextPolicy: scenarioContextPolicy(),
-		DebugRaw:      true,
 	})
 	run := toolScenarioRun{Scenario: scenario, Runtime: runtime, Results: []AgentRunResponse{first}}
 	for _, followUp := range scenario.FollowUps {
 		if first.SessionID == "" {
 			break
 		}
-		next := scenarioRunner.RunAgentTurn(ctx, first.SessionID, AgentTurnRequest{Message: followUp, DebugRaw: true})
+		next := scenarioRunner.RunAgentTurn(ctx, first.SessionID, AgentTurnRequest{Message: followUp})
 		run.Results = append(run.Results, next)
 	}
 	if scenario.Verify != nil {
@@ -278,7 +276,6 @@ func (r Runner) runLiveLocalToolScenario(ctx context.Context, profile ProviderPr
 		}, " "),
 		SelectedTools: []string{builtin.ToolList, builtin.ToolRead, builtin.ToolGrep},
 		ContextPolicy: scenarioContextPolicy(),
-		DebugRaw:      true,
 	}
 	results, err := r.runLiveAgentTurnsWithTimeout(ctx, workspace, req, []string{"Cite the exact file paths from the previous answer."})
 	if err != nil {
@@ -319,7 +316,6 @@ func (r Runner) runLiveWeatherToolScenario(ctx context.Context, profile Provider
 		SystemPrompt:  liveToolScenarioSystemPrompt(),
 		SelectedTools: selected,
 		ContextPolicy: scenarioContextPolicy(),
-		DebugRaw:      true,
 	}
 	results, err := r.runLiveAgentTurnsWithTimeout(ctx, workspace, req, []string{"请继续给出信息来源、不确定性，以及你实际使用了哪些工具。"})
 	if err != nil {
@@ -350,13 +346,12 @@ func (r Runner) runLiveAgentTurnsWithTimeout(ctx context.Context, workspace stri
 		liveRunner.Now = r.Now
 		liveRunner.Exec = r.Exec
 		liveRunner.ProviderFactory = r.ProviderFactory
-		liveRunner.AllowDebugRaw = true
 		liveRunner.Sessions = newAgentSessionRegistry()
 		first := liveRunner.CreateAgentSession(liveCtx, req)
 		results := []AgentRunResponse{first}
 		if first.Status == string(engine.Completed) {
 			for _, followUp := range followUps {
-				next := liveRunner.RunAgentTurn(liveCtx, first.SessionID, AgentTurnRequest{Message: followUp, DebugRaw: req.DebugRaw})
+				next := liveRunner.RunAgentTurn(liveCtx, first.SessionID, AgentTurnRequest{Message: followUp})
 				results = append(results, next)
 				if next.Status != string(engine.Completed) {
 					break

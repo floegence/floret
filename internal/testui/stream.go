@@ -138,7 +138,7 @@ func streamEntryAppended(ctx context.Context, sink AgentStreamSink, repo session
 	if err != nil {
 		return
 	}
-	observed := publicObservedEntries(observeEntries([]sessiontree.Entry{entry}))[0]
+	observed := pathSafeObservedEntry(observeEntries([]sessiontree.Entry{entry})[0])
 	eventType := AgentStreamAssistantMessageAppended
 	switch entry.Type {
 	case sessiontree.EntryUserMessage:

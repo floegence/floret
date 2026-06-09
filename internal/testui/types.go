@@ -87,7 +87,6 @@ type ConfigState struct {
 	EnvFile               string               `json:"env_file"`
 	EnvFileFound          bool                 `json:"env_file_found"`
 	ActiveProfileID       string               `json:"active_profile_id"`
-	DebugRawEnabled       bool                 `json:"debug_raw_enabled"`
 	Profiles              []ProviderProfile    `json:"profiles"`
 	Catalog               []CatalogProvider    `json:"catalog"`
 	ContextPolicyDefaults contextpolicy.Policy `json:"context_policy_defaults"`
@@ -238,12 +237,10 @@ type AgentRunRequest struct {
 	SelectedTools []string             `json:"selected_tools,omitempty"`
 	ToolMode      string               `json:"tool_mode,omitempty"`
 	ContextPolicy contextpolicy.Policy `json:"context_policy,omitempty"`
-	DebugRaw      bool                 `json:"debug_raw,omitempty"`
 }
 
 type AgentTurnRequest struct {
-	Message  string `json:"message"`
-	DebugRaw bool   `json:"debug_raw,omitempty"`
+	Message string `json:"message"`
 }
 
 type AgentStreamEventType string
@@ -294,7 +291,6 @@ type AgentInterfaceProbeRequest struct {
 	ProfileID     string               `json:"profile_id,omitempty"`
 	SelectedTools []string             `json:"selected_tools,omitempty"`
 	ContextPolicy contextpolicy.Policy `json:"context_policy,omitempty"`
-	DebugRaw      bool                 `json:"debug_raw,omitempty"`
 }
 
 type AgentRunResponse struct {
