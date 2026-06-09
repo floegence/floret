@@ -20,6 +20,7 @@ const (
 	DefaultRecentUserTokens             int64 = 15000
 	DefaultCheckpointOverheadTokens     int64 = 2000
 	DefaultEstimatorSource                    = "generic_conservative"
+	DefaultEstimatorMethod                    = EstimateMethodMessageContext
 )
 
 type EstimateConfidence string
@@ -30,12 +31,23 @@ const (
 	EstimateConservative EstimateConfidence = "conservative"
 )
 
+type EstimateMethod string
+
+const (
+	EstimateMethodGenericPayload          EstimateMethod = "generic_payload_estimate"
+	EstimateMethodProviderRenderedPayload EstimateMethod = "provider_rendered_payload_estimate"
+	EstimateMethodMessageContext          EstimateMethod = "message_context_estimate"
+	EstimateMethodOfficialPreflightCount  EstimateMethod = "official_preflight_count"
+	EstimateMethodUnknown                 EstimateMethod = "unknown_estimate_method"
+)
+
 type RequestEstimate struct {
 	PrefixTokens         int64              `json:"prefix_tokens,omitempty"`
 	MessageTokens        int64              `json:"message_tokens,omitempty"`
 	ToolDefinitionTokens int64              `json:"tool_definition_tokens,omitempty"`
 	EstimatedInputTokens int64              `json:"estimated_input_tokens,omitempty"`
 	Source               string             `json:"source,omitempty"`
+	Method               EstimateMethod     `json:"method,omitempty"`
 	Confidence           EstimateConfidence `json:"confidence,omitempty"`
 }
 
@@ -45,6 +57,9 @@ func (e RequestEstimate) Normalized(policy Policy) RequestEstimate {
 	}
 	if e.Source == "" {
 		e.Source = Normalize(policy).EstimatorSource
+	}
+	if e.Method == "" {
+		e.Method = MethodForEstimateSource(e.Source, EstimateMethodGenericPayload)
 	}
 	if e.Confidence == "" {
 		e.Confidence = EstimateConservative
@@ -58,12 +73,16 @@ type RequestDeltaEstimate struct {
 	ToolDefinitionDeltaTokens int64              `json:"tool_definition_delta_tokens,omitempty"`
 	EstimatedDeltaTokens      int64              `json:"estimated_delta_tokens,omitempty"`
 	Source                    string             `json:"source,omitempty"`
+	Method                    EstimateMethod     `json:"method,omitempty"`
 	Confidence                EstimateConfidence `json:"confidence,omitempty"`
 }
 
 func (e RequestDeltaEstimate) Normalized() RequestDeltaEstimate {
 	if e.EstimatedDeltaTokens == 0 {
 		e.EstimatedDeltaTokens = e.MessageDeltaTokens + e.PrefixDeltaTokens + e.ToolDefinitionDeltaTokens
+	}
+	if e.Method == "" && e.Source != "" {
+		e.Method = MethodForEstimateSource(e.Source, EstimateMethodGenericPayload)
 	}
 	if e.Confidence == "" {
 		e.Confidence = EstimateConservative
@@ -76,6 +95,7 @@ type MessageContextEstimate struct {
 	MessageTokens int64              `json:"message_tokens,omitempty"`
 	InputTokens   int64              `json:"input_tokens,omitempty"`
 	Source        string             `json:"source,omitempty"`
+	Method        EstimateMethod     `json:"method,omitempty"`
 	Confidence    EstimateConfidence `json:"confidence,omitempty"`
 }
 
@@ -85,6 +105,9 @@ func (e MessageContextEstimate) Normalized(policy Policy) MessageContextEstimate
 	}
 	if e.Source == "" {
 		e.Source = Normalize(policy).EstimatorSource
+	}
+	if e.Method == "" {
+		e.Method = MethodForEstimateSource(e.Source, EstimateMethodMessageContext)
 	}
 	if e.Confidence == "" {
 		e.Confidence = EstimateConservative
@@ -120,6 +143,7 @@ type ContextPressure struct {
 	OutputHeadroomTokens int64              `json:"output_headroom_tokens,omitempty"`
 	Signal               PressureSignal     `json:"pressure_signal,omitempty"`
 	Source               PressureSource     `json:"pressure_source,omitempty"`
+	EstimateMethod       EstimateMethod     `json:"estimate_method,omitempty"`
 	Confidence           EstimateConfidence `json:"confidence,omitempty"`
 	CompactionNeeded     bool               `json:"compaction_needed,omitempty"`
 	HardLimitExceeded    bool               `json:"hard_limit_exceeded,omitempty"`
@@ -134,14 +158,15 @@ type NativeUsage struct {
 }
 
 type Policy struct {
-	ContextWindowTokens   int64  `json:"context_window_tokens,omitempty"`
-	MaxOutputTokens       int64  `json:"max_output_tokens,omitempty"`
-	ReservedOutputTokens  int64  `json:"reserved_output_tokens,omitempty"`
-	ReservedSummaryTokens int64  `json:"reserved_summary_tokens,omitempty"`
-	RecentTailTokens      int64  `json:"recent_tail_tokens,omitempty"`
-	RecentUserTokens      int64  `json:"recent_user_tokens,omitempty"`
-	EstimatorSource       string `json:"estimator_source,omitempty"`
-	MaxCompactionFailures int    `json:"max_compaction_failures,omitempty"`
+	ContextWindowTokens   int64          `json:"context_window_tokens,omitempty"`
+	MaxOutputTokens       int64          `json:"max_output_tokens,omitempty"`
+	ReservedOutputTokens  int64          `json:"reserved_output_tokens,omitempty"`
+	ReservedSummaryTokens int64          `json:"reserved_summary_tokens,omitempty"`
+	RecentTailTokens      int64          `json:"recent_tail_tokens,omitempty"`
+	RecentUserTokens      int64          `json:"recent_user_tokens,omitempty"`
+	EstimatorSource       string         `json:"estimator_source,omitempty"`
+	EstimatorMethod       EstimateMethod `json:"estimator_method,omitempty"`
+	MaxCompactionFailures int            `json:"max_compaction_failures,omitempty"`
 }
 
 // Usage is the compaction-internal message-context budget. It intentionally
@@ -162,6 +187,7 @@ type Usage struct {
 	RecentTailTokens    int64              `json:"recent_tail_tokens,omitempty"`
 	RecentUserTokens    int64              `json:"recent_user_tokens,omitempty"`
 	Source              string             `json:"source,omitempty"`
+	Method              EstimateMethod     `json:"method,omitempty"`
 	Confidence          EstimateConfidence `json:"confidence,omitempty"`
 	CompactionNeeded    bool               `json:"compaction_needed,omitempty"`
 	HardLimitExceeded   bool               `json:"hard_limit_exceeded,omitempty"`
@@ -179,6 +205,7 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 		ActiveTokens         int64  `json:"active_tokens,omitempty"`
 		ToolTokens           int64  `json:"tool_tokens,omitempty"`
 		EstimatorSource      string `json:"estimator_source,omitempty"`
+		EstimatorMethod      string `json:"estimator_method,omitempty"`
 		EstimatorConfidence  string `json:"estimator_confidence,omitempty"`
 		TokenPressureHigh    bool   `json:"token_pressure_high,omitempty"`
 	}
@@ -197,6 +224,12 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 	}
 	if u.Source == "" {
 		u.Source = raw.EstimatorSource
+	}
+	if u.Method == "" && raw.EstimatorMethod != "" {
+		u.Method = EstimateMethod(raw.EstimatorMethod)
+	}
+	if u.Method == "" {
+		u.Method = MethodForEstimateSource(u.Source, EstimateMethodMessageContext)
 	}
 	if u.Confidence == "" && raw.EstimatorConfidence != "" {
 		u.Confidence = EstimateConfidence(raw.EstimatorConfidence)
@@ -218,6 +251,7 @@ func HasValues(policy Policy) bool {
 		policy.RecentTailTokens > 0 ||
 		policy.RecentUserTokens > 0 ||
 		policy.EstimatorSource != "" ||
+		policy.EstimatorMethod != "" ||
 		policy.MaxCompactionFailures > 0
 }
 
@@ -256,6 +290,12 @@ func MergeDefaults(policy, defaults Policy) Policy {
 			policy.EstimatorSource = DefaultEstimatorSource
 		}
 	}
+	if policy.EstimatorMethod == "" {
+		policy.EstimatorMethod = defaults.EstimatorMethod
+		if policy.EstimatorMethod == "" {
+			policy.EstimatorMethod = MethodForEstimateSource(policy.EstimatorSource, DefaultEstimatorMethod)
+		}
+	}
 	if policy.MaxCompactionFailures <= 0 {
 		policy.MaxCompactionFailures = defaults.MaxCompactionFailures
 		if policy.MaxCompactionFailures <= 0 {
@@ -286,6 +326,9 @@ func Normalize(policy Policy) Policy {
 	}
 	if policy.EstimatorSource == "" {
 		policy.EstimatorSource = DefaultEstimatorSource
+	}
+	if policy.EstimatorMethod == "" {
+		policy.EstimatorMethod = MethodForEstimateSource(policy.EstimatorSource, DefaultEstimatorMethod)
 	}
 	if policy.MaxCompactionFailures <= 0 {
 		policy.MaxCompactionFailures = 2
@@ -346,12 +389,16 @@ func PressureFromProjectedRequest(estimate RequestEstimate, delta RequestDeltaEs
 	pressure := basePressure(policy)
 	pressure.Signal = PressureSignalProjected
 	pressure.Source = PressureSourceFullRequestEstimate
+	pressure.EstimateMethod = estimate.Method
 	pressure.Confidence = estimate.Confidence
 	projected := estimate.EstimatedInputTokens
 	delta = delta.Normalized()
 	if delta.Source != "" {
 		projected += delta.EstimatedDeltaTokens
 		pressure.Source = PressureSourceUsageAnchoredDelta
+		if delta.Method != "" {
+			pressure.EstimateMethod = delta.Method
+		}
 		if delta.Confidence != "" {
 			pressure.Confidence = delta.Confidence
 		}
@@ -399,6 +446,7 @@ func UsageFromMessageContextEstimate(estimate MessageContextEstimate, policy Pol
 		RecentTailTokens: policy.RecentTailTokens,
 		RecentUserTokens: policy.RecentUserTokens,
 		Source:           estimate.Source,
+		Method:           estimate.Method,
 		Confidence:       estimate.Confidence,
 	}
 	usage.CompactionNeeded = usage.InputTokens >= usage.ThresholdTokens
@@ -411,8 +459,10 @@ func UsageFromEstimate(estimate MessageContextEstimate, policy Policy) Usage {
 }
 
 func EstimateMessageContext(systemPrompt string, history []session.Message, policy Policy) Usage {
+	policy = Normalize(policy)
 	estimate := MessageContextEstimate{
-		Source:     DefaultEstimatorSource,
+		Source:     policy.EstimatorSource,
+		Method:     policy.EstimatorMethod,
 		Confidence: EstimateConservative,
 	}
 	if systemPrompt != "" {
@@ -423,6 +473,32 @@ func EstimateMessageContext(systemPrompt string, history []session.Message, poli
 	}
 	estimate.InputTokens = estimate.PrefixTokens + estimate.MessageTokens
 	return UsageFromMessageContextEstimate(estimate, policy)
+}
+
+func MethodForEstimateSource(source string, fallback EstimateMethod) EstimateMethod {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		if fallback != "" {
+			return fallback
+		}
+		return EstimateMethodUnknown
+	}
+	if strings.HasSuffix(source, "_rendered_json") {
+		return EstimateMethodProviderRenderedPayload
+	}
+	switch source {
+	case "generic_request_json":
+		return EstimateMethodGenericPayload
+	case "generic_conservative", "message_context_test":
+		if fallback != "" {
+			return fallback
+		}
+		return EstimateMethodMessageContext
+	case "official_preflight_count":
+		return EstimateMethodOfficialPreflightCount
+	default:
+		return EstimateMethodUnknown
+	}
 }
 
 func EstimateMessageTokens(msg session.Message) int64 {

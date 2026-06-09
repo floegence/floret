@@ -143,7 +143,8 @@ func TestRecordRequestStoresEngineInjectedRequestEstimateAndPressure(t *testing.
 	}
 	plan.RequestEstimate = contextpolicy.RequestEstimate{
 		EstimatedInputTokens: 1234,
-		Source:               "provider_api",
+		Source:               "request_estimator_test",
+		Method:               contextpolicy.EstimateMethodProviderRenderedPayload,
 		Confidence:           contextpolicy.EstimateConservative,
 	}.Normalized(policy)
 	plan.ProjectedPressure = contextpolicy.PressureFromProjectedRequest(plan.RequestEstimate, contextpolicy.RequestDeltaEstimate{}, policy)
@@ -157,10 +158,16 @@ func TestRecordRequestStoresEngineInjectedRequestEstimateAndPressure(t *testing.
 	if len(requests) != 1 {
 		t.Fatalf("provider requests = %d, want 1", len(requests))
 	}
-	if requests[0].RequestEstimate.EstimatedInputTokens != 1234 || requests[0].RequestEstimate.Source != "provider_api" {
-		t.Fatalf("stored request estimate missing provider data: %#v", requests[0].RequestEstimate)
+	if requests[0].RequestEstimate.EstimatedInputTokens != 1234 ||
+		requests[0].RequestEstimate.Source != "request_estimator_test" ||
+		requests[0].RequestEstimate.Method != contextpolicy.EstimateMethodProviderRenderedPayload {
+		t.Fatalf("stored request estimate missing request estimate data: %#v", requests[0].RequestEstimate)
 	}
-	if requests[0].ProjectedPressure.ProjectedInputTokens != 1234 || requests[0].ProjectedPressure.OutputHeadroomTokens != 384000 || requests[0].ProjectedPressure.RequestSafeLimit != 616000 || requests[0].ProjectedPressure.Source != contextpolicy.PressureSourceFullRequestEstimate {
+	if requests[0].ProjectedPressure.ProjectedInputTokens != 1234 ||
+		requests[0].ProjectedPressure.OutputHeadroomTokens != 384000 ||
+		requests[0].ProjectedPressure.RequestSafeLimit != 616000 ||
+		requests[0].ProjectedPressure.Source != contextpolicy.PressureSourceFullRequestEstimate ||
+		requests[0].ProjectedPressure.EstimateMethod != contextpolicy.EstimateMethodProviderRenderedPayload {
 		t.Fatalf("stored projected pressure missing budget fields: %#v", requests[0].ProjectedPressure)
 	}
 }
@@ -194,12 +201,14 @@ func TestProviderRequestRecordImportsLegacyContextUsageWithoutReserializing(t *t
 		record.RequestEstimate.MessageTokens != 20 ||
 		record.RequestEstimate.ToolDefinitionTokens != 5 ||
 		record.RequestEstimate.EstimatedInputTokens != 35 ||
-		record.RequestEstimate.Source != "legacy_estimator" {
+		record.RequestEstimate.Source != "legacy_estimator" ||
+		record.RequestEstimate.Method != contextpolicy.EstimateMethodUnknown {
 		t.Fatalf("legacy context usage did not map to request estimate: %#v", record.RequestEstimate)
 	}
 	if record.ProjectedPressure.ProjectedInputTokens != 35 ||
 		record.ProjectedPressure.Signal != contextpolicy.PressureSignalProjected ||
 		record.ProjectedPressure.Source != contextpolicy.PressureSourceFullRequestEstimate ||
+		record.ProjectedPressure.EstimateMethod != contextpolicy.EstimateMethodUnknown ||
 		!record.ProjectedPressure.CompactionNeeded ||
 		!record.ProjectedPressure.HardLimitExceeded {
 		t.Fatalf("legacy context usage did not map to projected pressure: %#v", record.ProjectedPressure)
@@ -245,6 +254,9 @@ func TestLatestPressureAnchorAcrossMemoryAndFileStores(t *testing.T) {
 				RequestID:          "turn-1:req:1",
 				LastMessageEntryID: "entry-1",
 				WindowInputTokens:  100,
+				EstimateSource:     "request_estimator_test",
+				EstimateMethod:     contextpolicy.EstimateMethodProviderRenderedPayload,
+				Confidence:         contextpolicy.EstimateConservative,
 				CreatedAt:          now,
 			}
 			newer := old
@@ -272,7 +284,12 @@ func TestLatestPressureAnchorAcrossMemoryAndFileStores(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !ok || got.RequestID != "turn-2:req:1" || got.WindowInputTokens != 200 || got.LastMessageEntryID != "entry-2" {
+			if !ok ||
+				got.RequestID != "turn-2:req:1" ||
+				got.WindowInputTokens != 200 ||
+				got.LastMessageEntryID != "entry-2" ||
+				got.EstimateSource != "request_estimator_test" ||
+				got.EstimateMethod != contextpolicy.EstimateMethodProviderRenderedPayload {
 				t.Fatalf("latest anchor = %#v ok=%v", got, ok)
 			}
 			if _, ok, err := tc.store.LatestPressureAnchor(ctx, "thread", "anthropic", "model"); err != nil || ok {

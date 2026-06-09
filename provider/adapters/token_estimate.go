@@ -21,12 +21,13 @@ func estimateRenderedParts(source string, prefix, history, tools any) (provider.
 		return provider.TokenEstimate{}, err
 	}
 	return provider.TokenEstimate{
-		PrefixTokens:  prefixTokens,
-		MessageTokens: historyTokens,
-		ToolDefinitionTokens:    toolTokens,
-		EstimatedInputTokens:   prefixTokens + historyTokens + toolTokens,
-		Source:        source,
-		Confidence:    provider.EstimateConservative,
+		PrefixTokens:         prefixTokens,
+		MessageTokens:        historyTokens,
+		ToolDefinitionTokens: toolTokens,
+		EstimatedInputTokens: prefixTokens + historyTokens + toolTokens,
+		Source:               source,
+		Method:               provider.TokenEstimateProviderRenderedPayload,
+		Confidence:           provider.EstimateConservative,
 	}, nil
 }
 

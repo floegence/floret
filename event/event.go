@@ -388,7 +388,7 @@ func publicMetadataStringKey(key string) bool {
 	switch key {
 	case "server_id", "skill_id", "tool_name", "remote_tool", "source_kind", "source_label", "status", "transport", "protocol_version", "failure_category", "next_action", "capability", "permission_mode", "content_hash", "prompt_sha256":
 		return true
-	case "pressure_signal", "pressure_source", "confidence", "estimate_source", "compaction_trigger", "trigger", "reason", "source":
+	case "pressure_signal", "pressure_source", "confidence", "estimate_source", "estimate_method", "compaction_trigger", "trigger", "reason", "source":
 		return true
 	default:
 		return false

@@ -20,14 +20,15 @@ import (
 )
 
 var (
-	ErrNoProgress          = errors.New("agent loop made no progress")
-	ErrDuplicateTools      = errors.New("agent loop repeated identical tool calls")
-	ErrDuplicateToolCallID = errors.New("provider returned duplicate tool call id")
-	ErrMixedControlTools   = errors.New("provider returned control signal with ordinary tool calls")
-	ErrProviderTruncated   = errors.New("provider output was truncated")
-	ErrContentFiltered     = errors.New("provider output was content filtered")
-	ErrProviderFinishError = errors.New("provider returned error finish reason")
-	ErrStopHookLoop        = errors.New("stop hook requested too many continuations")
+	ErrNoProgress           = errors.New("agent loop made no progress")
+	ErrDuplicateTools       = errors.New("agent loop repeated identical tool calls")
+	ErrDuplicateToolCallID  = errors.New("provider returned duplicate tool call id")
+	ErrMixedControlTools    = errors.New("provider returned control signal with ordinary tool calls")
+	ErrProviderTruncated    = errors.New("provider output was truncated")
+	ErrContentFiltered      = errors.New("provider output was content filtered")
+	ErrProviderFinishError  = errors.New("provider returned error finish reason")
+	ErrStopHookLoop         = errors.New("stop hook requested too many continuations")
+	ErrInvalidTokenEstimate = errors.New("provider token estimate missing source or method")
 )
 
 type Status string
@@ -920,13 +921,26 @@ func (e *Engine) estimateRequestTokens(ctx context.Context, req provider.Request
 		if err != nil {
 			return contextpolicy.RequestEstimate{}, err
 		}
+		if err := validateProviderTokenEstimate(estimate); err != nil {
+			return contextpolicy.RequestEstimate{}, err
+		}
 		return providerEstimateToContextEstimate(estimate, req.ContextPolicy), nil
 	}
 	estimate, err := provider.GenericRequestEstimate(req)
 	if err != nil {
 		return contextpolicy.RequestEstimate{}, err
 	}
+	if err := validateProviderTokenEstimate(estimate); err != nil {
+		return contextpolicy.RequestEstimate{}, err
+	}
 	return providerEstimateToContextEstimate(estimate, req.ContextPolicy), nil
+}
+
+func validateProviderTokenEstimate(estimate provider.TokenEstimate) error {
+	if strings.TrimSpace(estimate.Source) == "" || estimate.Method == "" || contextpolicy.EstimateMethod(estimate.Method) == contextpolicy.EstimateMethodUnknown {
+		return fmt.Errorf("%w: source=%q method=%q", ErrInvalidTokenEstimate, estimate.Source, estimate.Method)
+	}
+	return nil
 }
 
 func providerEstimateToContextEstimate(estimate provider.TokenEstimate, policy contextpolicy.Policy) contextpolicy.RequestEstimate {
@@ -936,6 +950,7 @@ func providerEstimateToContextEstimate(estimate provider.TokenEstimate, policy c
 		ToolDefinitionTokens: estimate.ToolDefinitionTokens,
 		EstimatedInputTokens: estimate.EstimatedInputTokens,
 		Source:               estimate.Source,
+		Method:               contextpolicy.EstimateMethod(estimate.Method),
 		Confidence:           contextpolicy.EstimateConfidence(estimate.Confidence),
 	}.Normalized(policy)
 }
@@ -953,6 +968,8 @@ func providerRequestMetadata(req provider.Request) map[string]any {
 		"message_tokens":         estimate.MessageTokens,
 		"tool_definition_tokens": estimate.ToolDefinitionTokens,
 		"estimated_input_tokens": estimate.EstimatedInputTokens,
+		"estimate_source":        estimate.Source,
+		"estimate_method":        estimate.Method,
 		"projected_input_tokens": pressure.ProjectedInputTokens,
 		"context_window":         pressure.ContextWindowTokens,
 		"threshold_tokens":       pressure.ThresholdTokens,

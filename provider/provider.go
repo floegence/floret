@@ -316,15 +316,28 @@ const (
 	EstimateConservative EstimateConfidence = "conservative"
 )
 
+type TokenEstimateMethod = contextpolicy.EstimateMethod
+
+const (
+	TokenEstimateGenericPayload          = contextpolicy.EstimateMethodGenericPayload
+	TokenEstimateProviderRenderedPayload = contextpolicy.EstimateMethodProviderRenderedPayload
+	TokenEstimateOfficialPreflightCount  = contextpolicy.EstimateMethodOfficialPreflightCount
+)
+
+// TokenEstimate is a preflight request estimate. It is not provider usage and
+// does not imply an official provider token-count API unless Method says so.
 type TokenEstimate struct {
 	PrefixTokens         int64
 	MessageTokens        int64
 	ToolDefinitionTokens int64
 	EstimatedInputTokens int64
 	Source               string
+	Method               TokenEstimateMethod
 	Confidence           EstimateConfidence
 }
 
+// TokenEstimator lets an adapter estimate the fully rendered request before it
+// is sent. Implementations should report the calculation Method explicitly.
 type TokenEstimator interface {
 	EstimateTokens(context.Context, Request) (TokenEstimate, error)
 }
@@ -349,6 +362,7 @@ func GenericRequestEstimate(req Request) (TokenEstimate, error) {
 		ToolDefinitionTokens: toolDefinitionTokens,
 		EstimatedInputTokens: prefixTokens + messageTokens + toolDefinitionTokens,
 		Source:               "generic_request_json",
+		Method:               TokenEstimateGenericPayload,
 		Confidence:           EstimateConservative,
 	}, nil
 }

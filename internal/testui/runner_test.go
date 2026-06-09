@@ -2508,6 +2508,9 @@ func TestObservingProviderRuntimeOnlyExposesExistingEstimator(t *testing.T) {
 	if estimate.Source != "test_estimator" {
 		t.Fatalf("estimate = %#v", estimate)
 	}
+	if estimate.Method != provider.TokenEstimateProviderRenderedPayload {
+		t.Fatalf("estimate method = %#v, want %q", estimate.Method, provider.TokenEstimateProviderRenderedPayload)
+	}
 }
 
 func TestObservingProviderRecordsHostedToolsSeparatelyFromLocalTools(t *testing.T) {
@@ -2552,7 +2555,12 @@ type estimatingTestProvider struct {
 }
 
 func (estimatingTestProvider) EstimateTokens(context.Context, provider.Request) (provider.TokenEstimate, error) {
-	return provider.TokenEstimate{EstimatedInputTokens: 1, Source: "test_estimator", Confidence: provider.EstimateConservative}, nil
+	return provider.TokenEstimate{
+		EstimatedInputTokens: 1,
+		Source:               "test_estimator",
+		Method:               provider.TokenEstimateProviderRenderedPayload,
+		Confidence:           provider.EstimateConservative,
+	}, nil
 }
 
 func (rendererProvider) Stream(context.Context, provider.Request) (<-chan provider.StreamEvent, error) {

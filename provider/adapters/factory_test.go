@@ -85,7 +85,10 @@ func TestFakeProviderUsesGenericRequestEstimateIncludingTools(t *testing.T) {
 	}
 	messageOnly := contextpolicy.EstimateMessageContext("", []session.Message{{Role: session.User, Content: "hello"}}, contextpolicy.Policy{})
 	estimate := requests[0].RequestEstimate
-	if estimate.EstimatedInputTokens <= messageOnly.InputTokens || estimate.Source != "generic_request_json" || estimate.Confidence != contextpolicy.EstimateConfidence(provider.EstimateConservative) {
+	if estimate.EstimatedInputTokens <= messageOnly.InputTokens ||
+		estimate.Source != "generic_request_json" ||
+		estimate.Method != contextpolicy.EstimateMethodGenericPayload ||
+		estimate.Confidence != contextpolicy.EstimateConfidence(provider.EstimateConservative) {
 		t.Fatalf("fake provider should use generic conservative request estimate including tools: estimate=%#v messageOnly=%#v", estimate, messageOnly)
 	}
 }
@@ -540,7 +543,10 @@ func TestOpenAICompatibleEstimateTokensIncludesRenderedToolSchema(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if withTool.EstimatedInputTokens <= base.EstimatedInputTokens || withTool.Source != "openai_compatible_rendered_json" || withTool.Confidence != provider.EstimateConservative {
+	if withTool.EstimatedInputTokens <= base.EstimatedInputTokens ||
+		withTool.Source != "openai_compatible_rendered_json" ||
+		withTool.Method != provider.TokenEstimateProviderRenderedPayload ||
+		withTool.Confidence != provider.EstimateConservative {
 		t.Fatalf("estimate did not include rendered tool schema: base=%#v withTool=%#v", base, withTool)
 	}
 	if withTool.ToolDefinitionTokens <= 0 || withTool.MessageTokens != base.MessageTokens {
@@ -671,7 +677,10 @@ func TestAnthropicRawPlanToolsKeepHostedTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if estimate.EstimatedInputTokens <= baseEstimate.EstimatedInputTokens || estimate.Source != "anthropic_rendered_json" || estimate.Confidence != provider.EstimateConservative {
+	if estimate.EstimatedInputTokens <= baseEstimate.EstimatedInputTokens ||
+		estimate.Source != "anthropic_rendered_json" ||
+		estimate.Method != provider.TokenEstimateProviderRenderedPayload ||
+		estimate.Confidence != provider.EstimateConservative {
 		t.Fatalf("anthropic estimate did not include rendered tools/source/confidence: base=%#v estimate=%#v", baseEstimate, estimate)
 	}
 	if estimate.PrefixTokens != 0 || estimate.ToolDefinitionTokens <= 0 {

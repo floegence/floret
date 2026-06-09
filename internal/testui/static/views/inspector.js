@@ -297,6 +297,7 @@ function renderRequestDebug(request) {
     request_safe_limit_tokens: pressure.request_safe_limit_tokens ?? pressure.RequestSafeLimit,
     output_headroom_tokens: pressure.output_headroom_tokens ?? pressure.OutputHeadroomTokens,
     estimate_source: estimate.source ?? estimate.Source,
+    estimate_method: estimate.method ?? estimate.Method ?? pressure.estimate_method ?? pressure.EstimateMethod,
   };
   return `<pre class="json-block">${escapeHTML(JSON.stringify(debug, null, 2))}</pre>`;
 }

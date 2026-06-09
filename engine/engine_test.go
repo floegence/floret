@@ -662,14 +662,15 @@ func TestProviderRequestAndResponseRecordsCarryThreadAndTurnIDs(t *testing.T) {
 	}
 }
 
-func TestProviderRequestRecordsProviderEstimateMetadata(t *testing.T) {
+func TestRequestRecordsRequestEstimateMetadata(t *testing.T) {
 	rec := &event.Recorder{}
 	p := &hashingProvider{
 		ScriptedProvider: harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done())),
 		cache:            cache.CachePolicy{Enabled: true, Namespace: "provider-ns", Retention: cache.RetentionLong},
 		estimate: provider.TokenEstimate{
 			EstimatedInputTokens: 1234,
-			Source:               "provider_api",
+			Source:               "request_estimator_test",
+			Method:               provider.TokenEstimateProviderRenderedPayload,
 			Confidence:           provider.EstimateConservative,
 		},
 	}
@@ -690,19 +691,29 @@ func TestProviderRequestRecordsProviderEstimateMetadata(t *testing.T) {
 		t.Fatalf("requests = %#v", requests)
 	}
 	estimate := requests[0].RequestEstimate
-	if estimate.EstimatedInputTokens != 1234 || estimate.Source != "provider_api" || estimate.Confidence != contextpolicy.EstimateConfidence(provider.EstimateConservative) {
-		t.Fatalf("request estimate did not use provider estimate: %#v", estimate)
+	if estimate.EstimatedInputTokens != 1234 ||
+		estimate.Source != "request_estimator_test" ||
+		estimate.Method != contextpolicy.EstimateMethodProviderRenderedPayload ||
+		estimate.Confidence != contextpolicy.EstimateConfidence(provider.EstimateConservative) {
+		t.Fatalf("request estimate did not use request estimate: %#v", estimate)
 	}
 	pressure := requests[0].ProjectedPressure
-	if pressure.ProjectedInputTokens != 1234 || pressure.Source != contextpolicy.PressureSourceFullRequestEstimate || pressure.Signal != contextpolicy.PressureSignalProjected {
-		t.Fatalf("request projected pressure missing provider estimate: %#v", pressure)
+	if pressure.ProjectedInputTokens != 1234 ||
+		pressure.Source != contextpolicy.PressureSourceFullRequestEstimate ||
+		pressure.Signal != contextpolicy.PressureSignalProjected ||
+		pressure.EstimateMethod != contextpolicy.EstimateMethodProviderRenderedPayload {
+		t.Fatalf("request projected pressure missing request estimate: %#v", pressure)
 	}
 	providerRequest := firstEvent(rec.Events, event.ProviderRequest)
 	meta, ok := providerRequest.Metadata.(map[string]any)
 	if !ok {
 		t.Fatalf("provider request metadata = %#v", providerRequest.Metadata)
 	}
-	if meta["estimated_input_tokens"] != int64(1234) || meta["pressure_source"] != contextpolicy.PressureSourceFullRequestEstimate || meta["pressure_signal"] != contextpolicy.PressureSignalProjected {
+	if meta["estimated_input_tokens"] != int64(1234) ||
+		meta["estimate_source"] != "request_estimator_test" ||
+		meta["estimate_method"] != contextpolicy.EstimateMethodProviderRenderedPayload ||
+		meta["pressure_source"] != contextpolicy.PressureSourceFullRequestEstimate ||
+		meta["pressure_signal"] != contextpolicy.PressureSignalProjected {
 		t.Fatalf("provider request metadata missing estimate/pressure details: %#v", meta)
 	}
 }
@@ -724,7 +735,8 @@ func TestProjectionUsesLatestNativeUsageAnchorAcrossTurns(t *testing.T) {
 				MessageTokens:        20,
 				ToolDefinitionTokens: 5,
 				EstimatedInputTokens: 35,
-				Source:               "provider_api",
+				Source:               "request_estimator_test",
+				Method:               provider.TokenEstimateProviderRenderedPayload,
 				Confidence:           provider.EstimateApproximate,
 			},
 			{
@@ -732,7 +744,8 @@ func TestProjectionUsesLatestNativeUsageAnchorAcrossTurns(t *testing.T) {
 				MessageTokens:        50,
 				ToolDefinitionTokens: 5,
 				EstimatedInputTokens: 65,
-				Source:               "provider_api",
+				Source:               "request_estimator_test",
+				Method:               provider.TokenEstimateProviderRenderedPayload,
 				Confidence:           provider.EstimateApproximate,
 			},
 		},
@@ -754,6 +767,7 @@ func TestProjectionUsesLatestNativeUsageAnchorAcrossTurns(t *testing.T) {
 	pressure := scripted.Requests[1].ContextPressure
 	if pressure.Signal != contextpolicy.PressureSignalProjected ||
 		pressure.Source != contextpolicy.PressureSourceUsageAnchoredDelta ||
+		pressure.EstimateMethod != contextpolicy.EstimateMethodProviderRenderedPayload ||
 		pressure.ProjectedInputTokens != 130 {
 		t.Fatalf("second request should use native usage anchor plus rendered delta: %#v", pressure)
 	}
@@ -761,7 +775,10 @@ func TestProjectionUsesLatestNativeUsageAnchorAcrossTurns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(responses) == 0 || responses[0].PressureAnchor.WindowInputTokens != 100 || responses[0].PressureAnchor.LastMessageEntryID == "" {
+	if len(responses) == 0 ||
+		responses[0].PressureAnchor.WindowInputTokens != 100 ||
+		responses[0].PressureAnchor.LastMessageEntryID == "" ||
+		responses[0].PressureAnchor.EstimateMethod != contextpolicy.EstimateMethodProviderRenderedPayload {
 		t.Fatalf("native usage anchor not persisted: %#v", responses)
 	}
 }
@@ -786,6 +803,33 @@ func TestProviderEstimatorErrorBlocksRequest(t *testing.T) {
 	}
 	if len(requests) != 0 {
 		t.Fatalf("estimator failure should block request recording, got %#v", requests)
+	}
+}
+
+func TestProviderEstimatorMissingMethodBlocksRequest(t *testing.T) {
+	p := &estimatingProvider{
+		Provider: harness.NewScriptedProvider(harness.Step(harness.Text("should not run"), harness.Done())),
+		estimate: provider.TokenEstimate{
+			EstimatedInputTokens: 1,
+			Source:               "request_estimator_test",
+			Confidence:           provider.EstimateConservative,
+		},
+	}
+	promptStore := cache.NewMemoryStore()
+	e := newTestEngine(p, &event.Recorder{})
+	e.Prompt = promptStore
+
+	got := e.Run(context.Background(), "hello")
+
+	if got.Status != engine.Failed || !errors.Is(got.Err, engine.ErrInvalidTokenEstimate) {
+		t.Fatalf("result = %#v", got)
+	}
+	requests, err := promptStore.ProviderRequests(context.Background(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 0 {
+		t.Fatalf("invalid estimate should block request recording, got %#v", requests)
 	}
 }
 
@@ -1569,13 +1613,13 @@ func TestPreRequestThresholdCompactsWithoutReplacingStore(t *testing.T) {
 	}
 }
 
-func TestProviderEstimateTriggersPreRequestCompaction(t *testing.T) {
+func TestRequestEstimateTriggersPreRequestCompaction(t *testing.T) {
 	rec := &event.Recorder{}
 	p := &estimatingProvider{
 		Provider: harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done())),
 		estimates: []provider.TokenEstimate{
-			{EstimatedInputTokens: 1000, Source: "provider_api", Confidence: provider.EstimateConservative},
-			{EstimatedInputTokens: 10, Source: "provider_api", Confidence: provider.EstimateConservative},
+			{EstimatedInputTokens: 1000, Source: "request_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
+			{EstimatedInputTokens: 10, Source: "request_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
 		},
 	}
 	store := &replaceCountingStore{inner: session.NewMemoryStore()}
@@ -1597,7 +1641,7 @@ func TestProviderEstimateTriggersPreRequestCompaction(t *testing.T) {
 		t.Fatalf("result = %#v", got)
 	}
 	if got.Metrics.Compactions != 1 || store.replaceCalls != 0 {
-		t.Fatalf("provider-estimate compaction not reflected in metrics/store: result=%#v replace=%d", got, store.replaceCalls)
+		t.Fatalf("request-estimate compaction not reflected in metrics/store: result=%#v replace=%d", got, store.replaceCalls)
 	}
 	if len(p.Provider.(*harness.ScriptedProvider).Requests) != 1 {
 		t.Fatalf("provider should only receive compacted retry request: %#v", p.Provider.(*harness.ScriptedProvider).Requests)
@@ -1608,8 +1652,12 @@ func TestProviderEstimateTriggersPreRequestCompaction(t *testing.T) {
 		t.Fatalf("context compact metadata = %#v", prepare.Metadata)
 	}
 	before, ok := meta["before_pressure"].(contextpolicy.ContextPressure)
-	if !ok || before.ProjectedInputTokens != 1000 || before.Source != contextpolicy.PressureSourceFullRequestEstimate || before.Signal != contextpolicy.PressureSignalProjected {
-		t.Fatalf("provider estimate should drive pre-request pressure: %#v", prepare.Metadata)
+	if !ok ||
+		before.ProjectedInputTokens != 1000 ||
+		before.Source != contextpolicy.PressureSourceFullRequestEstimate ||
+		before.Signal != contextpolicy.PressureSignalProjected ||
+		before.EstimateMethod != contextpolicy.EstimateMethodProviderRenderedPayload {
+		t.Fatalf("request estimate should drive pre-request pressure: %#v", prepare.Metadata)
 	}
 }
 
@@ -1621,7 +1669,8 @@ func TestCompactionPolicyUsesMessageContextPrefixBudget(t *testing.T) {
 			MessageTokens:        900,
 			ToolDefinitionTokens: 200,
 			EstimatedInputTokens: 1200,
-			Source:               "provider_api",
+			Source:               "request_estimator_test",
+			Method:               provider.TokenEstimateProviderRenderedPayload,
 			Confidence:           provider.EstimateConservative,
 		},
 	}
@@ -2026,7 +2075,12 @@ func (p *hashingProvider) EstimateTokens(context.Context, provider.Request) (pro
 	if p.estimate.Source != "" || p.estimate.EstimatedInputTokens > 0 {
 		return p.estimate, nil
 	}
-	return provider.TokenEstimate{EstimatedInputTokens: 1, Source: "hashing_provider", Confidence: provider.EstimateExact}, nil
+	return provider.TokenEstimate{
+		EstimatedInputTokens: 1,
+		Source:               "hashing_provider",
+		Method:               provider.TokenEstimateProviderRenderedPayload,
+		Confidence:           provider.EstimateExact,
+	}, nil
 }
 
 type estimatingProvider struct {

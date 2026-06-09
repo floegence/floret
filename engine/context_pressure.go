@@ -45,6 +45,7 @@ func (t *ContextPressureTracker) Project(req provider.Request, history []session
 			PrefixDeltaTokens:         estimate.PrefixTokens - t.anchor.PrefixTokens,
 			ToolDefinitionDeltaTokens: estimate.ToolDefinitionTokens - t.anchor.ToolDefinitionTokens,
 			Source:                    estimate.Source,
+			Method:                    estimate.Method,
 			Confidence:                estimate.Confidence,
 		}
 		base := estimate
@@ -116,6 +117,9 @@ func validPressureAnchor(anchor PressureAnchorState, req provider.Request, histo
 	if anchor.EstimateSource != "" && anchor.EstimateSource != req.RequestEstimate.Source {
 		return false
 	}
+	if anchor.EstimateMethod != "" && anchor.EstimateMethod != req.RequestEstimate.Method {
+		return false
+	}
 	if anchor.LastMessageEntryID == "" {
 		return false
 	}
@@ -158,6 +162,7 @@ func pressureAnchorForRequest(req provider.Request, history []session.Message, u
 		ToolDefinitionTokens: req.RequestEstimate.ToolDefinitionTokens,
 		ContextWindowTokens:  pressure.ContextWindowTokens,
 		EstimateSource:       req.RequestEstimate.Source,
+		EstimateMethod:       req.RequestEstimate.Method,
 		Confidence:           req.RequestEstimate.Confidence,
 		PressureSource:       pressure.Source,
 		CreatedAt:            time.Now(),

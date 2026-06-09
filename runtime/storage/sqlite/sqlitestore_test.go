@@ -491,12 +491,14 @@ func TestSQLiteStoreImportsLegacyProviderRequestContextUsageAndWritesNewFields(t
 	if requests[0].RequestEstimate.MessageTokens != 22 ||
 		requests[0].RequestEstimate.ToolDefinitionTokens != 7 ||
 		requests[0].RequestEstimate.EstimatedInputTokens != 40 ||
-		requests[0].RequestEstimate.Source != "legacy_estimator" {
+		requests[0].RequestEstimate.Source != "legacy_estimator" ||
+		requests[0].RequestEstimate.Method != contextpolicy.EstimateMethodUnknown {
 		t.Fatalf("legacy request estimate = %#v", requests[0].RequestEstimate)
 	}
 	if requests[0].ProjectedPressure.ProjectedInputTokens != 40 ||
 		requests[0].ProjectedPressure.Signal != contextpolicy.PressureSignalProjected ||
 		requests[0].ProjectedPressure.Source != contextpolicy.PressureSourceFullRequestEstimate ||
+		requests[0].ProjectedPressure.EstimateMethod != contextpolicy.EstimateMethodUnknown ||
 		!requests[0].ProjectedPressure.CompactionNeeded {
 		t.Fatalf("legacy projected pressure = %#v", requests[0].ProjectedPressure)
 	}
@@ -511,13 +513,15 @@ func TestSQLiteStoreImportsLegacyProviderRequestContextUsageAndWritesNewFields(t
 			MessageTokens:        2,
 			ToolDefinitionTokens: 3,
 			EstimatedInputTokens: 6,
-			Source:               "provider_api",
+			Source:               "request_estimator_test",
+			Method:               contextpolicy.EstimateMethodProviderRenderedPayload,
 			Confidence:           contextpolicy.EstimateApproximate,
 		},
 		ProjectedPressure: contextpolicy.ContextPressure{
 			ProjectedInputTokens: 6,
 			Signal:               contextpolicy.PressureSignalProjected,
 			Source:               contextpolicy.PressureSourceFullRequestEstimate,
+			EstimateMethod:       contextpolicy.EstimateMethodProviderRenderedPayload,
 			Confidence:           contextpolicy.EstimateApproximate,
 		},
 		CreatedAt: time.Now().UTC(),
@@ -552,6 +556,9 @@ func TestSQLiteStoreLatestPressureAnchorRoundTrip(t *testing.T) {
 		RequestID:          "turn-1:req:1",
 		LastMessageEntryID: "entry-1",
 		WindowInputTokens:  100,
+		EstimateSource:     "request_estimator_test",
+		EstimateMethod:     contextpolicy.EstimateMethodProviderRenderedPayload,
+		Confidence:         contextpolicy.EstimateConservative,
 		CreatedAt:          now,
 	}
 	newer := old
@@ -580,7 +587,12 @@ func TestSQLiteStoreLatestPressureAnchorRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || got.RequestID != "turn-2:req:1" || got.WindowInputTokens != 200 || got.LastMessageEntryID != "entry-2" {
+	if !ok ||
+		got.RequestID != "turn-2:req:1" ||
+		got.WindowInputTokens != 200 ||
+		got.LastMessageEntryID != "entry-2" ||
+		got.EstimateSource != "request_estimator_test" ||
+		got.EstimateMethod != contextpolicy.EstimateMethodProviderRenderedPayload {
 		t.Fatalf("latest anchor = %#v ok=%v", got, ok)
 	}
 	if _, ok, err := store.LatestPressureAnchor(ctx, "thread", "anthropic", "model"); err != nil || ok {

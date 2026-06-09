@@ -278,6 +278,7 @@ type PressureAnchorState struct {
 	ToolDefinitionTokens int64                            `json:"tool_definition_tokens,omitempty"`
 	ContextWindowTokens  int64                            `json:"context_window_tokens,omitempty"`
 	EstimateSource       string                           `json:"estimate_source,omitempty"`
+	EstimateMethod       contextpolicy.EstimateMethod     `json:"estimate_method,omitempty"`
 	Confidence           contextpolicy.EstimateConfidence `json:"confidence,omitempty"`
 	PressureSource       contextpolicy.PressureSource     `json:"pressure_source,omitempty"`
 	CreatedAt            time.Time                        `json:"created_at,omitempty"`
@@ -1455,6 +1456,8 @@ type legacyContextUsage struct {
 	HardLimitExceeded    bool   `json:"hard_limit_exceeded,omitempty"`
 	Source               string `json:"source,omitempty"`
 	EstimatorSource      string `json:"estimator_source,omitempty"`
+	Method               string `json:"method,omitempty"`
+	EstimatorMethod      string `json:"estimator_method,omitempty"`
 	Confidence           string `json:"confidence,omitempty"`
 	EstimatorConfidence  string `json:"estimator_confidence,omitempty"`
 }
@@ -1475,6 +1478,8 @@ func (u legacyContextUsage) hasValues() bool {
 		u.HardLimitExceeded ||
 		u.Source != "" ||
 		u.EstimatorSource != "" ||
+		u.Method != "" ||
+		u.EstimatorMethod != "" ||
 		u.Confidence != "" ||
 		u.EstimatorConfidence != ""
 }
@@ -1499,6 +1504,13 @@ func (u legacyContextUsage) requestEstimate() contextpolicy.RequestEstimate {
 	if source == "" {
 		source = u.EstimatorSource
 	}
+	method := u.Method
+	if method == "" {
+		method = u.EstimatorMethod
+	}
+	if method == "" {
+		method = string(contextpolicy.MethodForEstimateSource(source, contextpolicy.EstimateMethodGenericPayload))
+	}
 	confidence := u.Confidence
 	if confidence == "" {
 		confidence = u.EstimatorConfidence
@@ -1509,6 +1521,7 @@ func (u legacyContextUsage) requestEstimate() contextpolicy.RequestEstimate {
 		ToolDefinitionTokens: toolTokens,
 		EstimatedInputTokens: total,
 		Source:               source,
+		Method:               contextpolicy.EstimateMethod(method),
 		Confidence:           contextpolicy.EstimateConfidence(confidence),
 	}
 }
@@ -1523,6 +1536,7 @@ func (u legacyContextUsage) projectedPressure() contextpolicy.ContextPressure {
 		OutputHeadroomTokens: u.OutputHeadroom,
 		Signal:               contextpolicy.PressureSignalProjected,
 		Source:               contextpolicy.PressureSourceFullRequestEstimate,
+		EstimateMethod:       estimate.Method,
 		Confidence:           estimate.Confidence,
 		CompactionNeeded:     u.CompactionNeeded,
 		HardLimitExceeded:    u.HardLimitExceeded,

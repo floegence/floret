@@ -204,6 +204,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		"compacted_messages":              fmt.Sprintf("%d", len(head)),
 		"retained_tail_messages":          fmt.Sprintf("%d", len(tail)),
 		"message_context_estimate_source": req.Policy.EstimatorSource,
+		"message_context_estimate_method": string(req.Policy.EstimatorMethod),
 		"read_files":                      "",
 		"modified_files":                  "",
 	}
@@ -319,6 +320,8 @@ func recordCompactionBudgetDetails(details map[string]string, policy contextpoli
 	details["kept_user_budget_tokens"] = fmt.Sprintf("%d", policy.RecentUserTokens)
 	details["retained_tail_budget_tokens"] = fmt.Sprintf("%d", policy.RecentTailTokens)
 	details["checkpoint_overhead_budget_tokens"] = fmt.Sprintf("%d", contextpolicy.DefaultCheckpointOverheadTokens)
+	details["message_context_estimate_source"] = policy.EstimatorSource
+	details["message_context_estimate_method"] = string(policy.EstimatorMethod)
 }
 
 func recordProjectedToolDetails(details map[string]string, history, retainedTail []session.Message) {

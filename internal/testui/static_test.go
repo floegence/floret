@@ -272,7 +272,7 @@ func TestStaticConsoleNewSessionDefaultsFollowBackendAndProviderCatalog(t *testi
 
 func TestStaticConsoleInspectorShowsContextStatusAndDebugBreakdown(t *testing.T) {
 	inspector := readStaticTestFile(t, "views", "inspector.js")
-	for _, want := range []string{"renderContextStatusMetrics", "Context ", "Output room", "Compaction ", "Request Debug", "pressure_signal", "pressure_source", "confidence", "threshold_tokens", "request_safe_limit_tokens", "output_headroom_tokens", "tool_definition_tokens", "estimate_source"} {
+	for _, want := range []string{"renderContextStatusMetrics", "Context ", "Output room", "Compaction ", "Request Debug", "pressure_signal", "pressure_source", "confidence", "threshold_tokens", "request_safe_limit_tokens", "output_headroom_tokens", "tool_definition_tokens", "estimate_source", "estimate_method"} {
 		if !strings.Contains(inspector, want) {
 			t.Fatalf("inspector should expose context status/debug field %q", want)
 		}

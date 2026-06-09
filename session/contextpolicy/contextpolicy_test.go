@@ -252,14 +252,16 @@ func TestPressureFromProjectedRequestUsesAnchorDeltaWhenComparable(t *testing.T)
 		PrefixTokens:         100,
 		MessageTokens:        700,
 		ToolDefinitionTokens: 50,
-		Source:               "provider_api",
+		Source:               "request_estimator_test",
+		Method:               EstimateMethodProviderRenderedPayload,
 		Confidence:           EstimateApproximate,
 	}
 	delta := RequestDeltaEstimate{
 		MessageDeltaTokens:        60,
 		PrefixDeltaTokens:         -10,
 		ToolDefinitionDeltaTokens: 5,
-		Source:                    "provider_api",
+		Source:                    "request_estimator_test",
+		Method:                    EstimateMethodProviderRenderedPayload,
 		Confidence:                EstimateApproximate,
 	}
 	base := estimate.Normalized(Policy{})
@@ -269,6 +271,9 @@ func TestPressureFromProjectedRequestUsesAnchorDeltaWhenComparable(t *testing.T)
 
 	if pressure.Signal != PressureSignalProjected || pressure.Source != PressureSourceUsageAnchoredDelta {
 		t.Fatalf("projected pressure metadata = %#v", pressure)
+	}
+	if pressure.EstimateMethod != EstimateMethodProviderRenderedPayload {
+		t.Fatalf("projected pressure method = %q, want rendered payload estimate", pressure.EstimateMethod)
 	}
 	if pressure.WindowInputTokens != 0 || pressure.ProjectedInputTokens != 905 {
 		t.Fatalf("anchored projection tokens = %#v", pressure)
@@ -282,6 +287,7 @@ func TestPressureFromProjectedRequestFullEstimateAndMissingUsageSources(t *testi
 	estimate := RequestEstimate{
 		EstimatedInputTokens: 700,
 		Source:               "generic_request_json",
+		Method:               EstimateMethodGenericPayload,
 		Confidence:           EstimateConservative,
 	}
 	full := PressureFromProjectedRequest(estimate, RequestDeltaEstimate{}, Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100})
@@ -289,6 +295,9 @@ func TestPressureFromProjectedRequestFullEstimateAndMissingUsageSources(t *testi
 
 	if full.Source != PressureSourceFullRequestEstimate || full.ProjectedInputTokens != 700 || full.WindowInputTokens != 0 {
 		t.Fatalf("full estimate pressure = %#v", full)
+	}
+	if full.EstimateMethod != EstimateMethodGenericPayload || missing.EstimateMethod != EstimateMethodGenericPayload {
+		t.Fatalf("projected pressure methods = full %#v missing %#v", full, missing)
 	}
 	if missing.Source != PressureSourceMissingNativeUsage || missing.ProjectedInputTokens != 700 {
 		t.Fatalf("missing native pressure = %#v", missing)
@@ -311,14 +320,24 @@ func TestUsageFromMessageContextEstimatePreservesMetadata(t *testing.T) {
 		PrefixTokens:  10,
 		MessageTokens: 20,
 		Source:        "message_context_test",
+		Method:        EstimateMethodMessageContext,
 		Confidence:    EstimateExact,
 	}, Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100})
 
 	if usage.InputTokens != 30 || usage.PrefixTokens != 10 || usage.MessageTokens != 20 {
 		t.Fatalf("usage token fields = %#v", usage)
 	}
-	if usage.Source != "message_context_test" || usage.Confidence != EstimateExact {
-		t.Fatalf("metadata = %q/%q", usage.Source, usage.Confidence)
+	if usage.Source != "message_context_test" || usage.Method != EstimateMethodMessageContext || usage.Confidence != EstimateExact {
+		t.Fatalf("metadata = %q/%q/%q", usage.Source, usage.Method, usage.Confidence)
+	}
+}
+
+func TestMethodForEstimateSourceKeepsUnknownSourcesObservable(t *testing.T) {
+	if got := MethodForEstimateSource("anthropic_rendered_json", ""); got != EstimateMethodProviderRenderedPayload {
+		t.Fatalf("rendered source method = %q", got)
+	}
+	if got := MethodForEstimateSource("legacy_surprise", EstimateMethodGenericPayload); got != EstimateMethodUnknown {
+		t.Fatalf("unknown source method = %q, want observable unknown", got)
 	}
 }
 
