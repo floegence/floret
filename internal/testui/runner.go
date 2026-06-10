@@ -1859,10 +1859,67 @@ func (r *Runner) observationFromPromptCache(ctx context.Context, promptStore cac
 			responses = append(responses, resps...)
 		}
 	}
+	requests = filterPromptCacheRequestsForSession(sessionID, requests)
+	responses = filterPromptCacheResponsesForSession(sessionID, responses, requests)
 	return promptCacheObservation{
 		ProviderRequests: observedProviderRequestsFromPromptCache(ctx, promptStore, requests),
 		ContextStatuses:  contextStatusesFromPromptRecords(requests, responses),
 	}
+}
+
+func filterPromptCacheRequestsForSession(sessionID string, records []cache.ProviderRequestRecord) []cache.ProviderRequestRecord {
+	if sessionID == "" {
+		return records
+	}
+	out := make([]cache.ProviderRequestRecord, 0, len(records))
+	for _, record := range records {
+		if promptCacheRequestBelongsToSession(sessionID, record) {
+			out = append(out, record)
+		}
+	}
+	return out
+}
+
+func promptCacheRequestBelongsToSession(sessionID string, record cache.ProviderRequestRecord) bool {
+	if record.SessionID != "" {
+		return record.SessionID == sessionID
+	}
+	if record.ThreadID != "" {
+		return record.ThreadID == sessionID
+	}
+	return record.RunID == sessionID
+}
+
+func filterPromptCacheResponsesForSession(sessionID string, records []cache.ProviderResponseRecord, requests []cache.ProviderRequestRecord) []cache.ProviderResponseRecord {
+	if sessionID == "" {
+		return records
+	}
+	allowedRequests := make(map[string]struct{}, len(requests)*2)
+	for _, req := range requests {
+		if req.ID != "" {
+			allowedRequests[req.ID] = struct{}{}
+		}
+		if id := requestID(req.RunID, req.Step); id != "" {
+			allowedRequests[id] = struct{}{}
+		}
+	}
+	out := make([]cache.ProviderResponseRecord, 0, len(records))
+	for _, record := range records {
+		if promptCacheResponseBelongsToSession(sessionID, record, allowedRequests) {
+			out = append(out, record)
+		}
+	}
+	return out
+}
+
+func promptCacheResponseBelongsToSession(sessionID string, record cache.ProviderResponseRecord, allowedRequests map[string]struct{}) bool {
+	if record.ThreadID != "" {
+		return record.ThreadID == sessionID
+	}
+	if _, ok := allowedRequests[record.RequestID]; ok {
+		return true
+	}
+	return record.RunID == sessionID
 }
 
 func observedProviderRequestsFromPromptCache(ctx context.Context, promptStore cache.Store, records []cache.ProviderRequestRecord) []ObservedProviderRequest {

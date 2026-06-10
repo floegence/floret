@@ -2811,6 +2811,54 @@ func TestContextStatusesFromPromptRecordsSkipLegacyResponseWithoutPressure(t *te
 	}
 }
 
+func TestPromptCacheObservationFiltersSharedTurnRunIDsBySession(t *testing.T) {
+	ctx := context.Background()
+	store := cache.NewMemoryStore()
+	created := time.Unix(26, 0)
+	foreignReq := cache.ProviderRequestRecord{
+		ID:               "turn-1:req:1",
+		RunID:            "turn-1",
+		SessionID:        "session-b",
+		ThreadID:         "session-b",
+		TurnID:           "turn-1",
+		Step:             1,
+		LogicalRequestID: "turn-1:logical:1",
+		Provider:         "fake",
+		Model:            "fake-model",
+		RequestEstimate:  contextpolicy.RequestEstimate{EstimatedInputTokens: 308},
+		ProjectedPressure: contextpolicy.ContextPressure{
+			ProjectedInputTokens: 308,
+			ContextWindowTokens:  256000,
+			ThresholdTokens:      192000,
+			Source:               contextpolicy.PressureSourceFullRequestEstimate,
+		},
+		CreatedAt: created,
+	}
+	if err := store.AppendProviderRequest(ctx, foreignReq); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendProviderResponse(ctx, cache.ProviderResponseRecord{
+		RequestID:         foreignReq.ID,
+		RunID:             foreignReq.RunID,
+		ThreadID:          foreignReq.SessionID,
+		TurnID:            foreignReq.TurnID,
+		WindowInputTokens: 308,
+		UsageSource:       string(provider.UsageUnavailable),
+		UsageAvailable:    false,
+		NativePressure:    foreignReq.ProjectedPressure,
+		CreatedAt:         created.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := NewRunner(t.TempDir())
+	observation := runner.observationFromPromptCache(ctx, store, "session-a", []AgentTurnSummary{{ID: "turn-1"}}, nil)
+
+	if len(observation.ProviderRequests) != 0 || len(observation.ContextStatuses) != 0 {
+		t.Fatalf("foreign prompt cache observations leaked into session-a: %#v", observation)
+	}
+}
+
 func TestCompactionEventsFromEngineEventsAndEntries(t *testing.T) {
 	start := event.Event{
 		Type:      event.ContextCompact,

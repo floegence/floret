@@ -353,6 +353,7 @@ func TestStaticConsoleContextStatusFormatterBehavior(t *testing.T) {
 import assert from "node:assert/strict";
 import { state } from "./static/state.js";
 import {
+  compactionEventKey,
   compactionEventsFor,
   contextStatusForRequest,
   contextStatusesFor,
@@ -439,6 +440,173 @@ assert.equal(contextStatusesFor(session, null).at(-1).status, "stable");
 assert.equal(latestContextStatus(session, null).context_pressure.window_input_tokens, 420);
 assert.equal(compactionEventsFor(session, null)[0].compaction_id, "compact-1");
 assert.match(renderCompactionEventRow(state.liveTurn.compactions[0]), /850 -&gt; 240 tokens/);
+
+session.compaction_events = [
+  {
+    phase: "start",
+    status: "running",
+    observed_at: "2026-01-01T00:00:01Z",
+    compaction_id: "compact-2",
+    tokens_before: 900,
+  },
+  {
+    phase: "complete",
+    status: "compacted",
+    observed_at: "2026-01-01T00:00:04Z",
+    compaction_id: "compact-2",
+    tokens_before: 900,
+    tokens_after_estimate: 300,
+  },
+];
+state.liveTurn.compactions = [{
+  phase: "complete",
+  status: "compacted",
+  observed_at: "2026-01-01T00:00:05Z",
+  compaction_id: "compact-2",
+  tokens_before: 900,
+  tokens_after_estimate: 300,
+}];
+const compacted = compactionEventsFor(session, null).filter((event) => event.compaction_id === "compact-2");
+assert.equal(compacted.length, 2);
+assert.equal(compacted.filter((event) => event.phase === "complete").length, 1);
+assert.equal(compactionEventKey({ compaction_id: "compact-3", phase: "start", observed_at: "a" }), "id:compact-3:start");
+assert.equal(compactionEventKey({ compaction_id: "compact-3", phase: "complete", observed_at: "a" }), "id:compact-3:complete");
+assert.equal(compactionEventKey({ compaction_id: "compact-3", phase: "complete", observed_at: "a" }), compactionEventKey({ compaction_id: "compact-3", phase: "complete", observed_at: "b" }));
+assert.notEqual(compactionEventKey({ phase: "complete", step: 1, observed_at: "a" }), compactionEventKey({ phase: "complete", step: 1, observed_at: "b" }));
+`
+	runNodeStaticScript(t, script)
+}
+
+func TestStaticConsoleSnapshotAndResultCompactionsDeduped(t *testing.T) {
+	script := `
+import assert from "node:assert/strict";
+import { state } from "./static/state.js";
+import { renderSessionWorkspace } from "./static/views/sessionWorkspace.js";
+
+const session = {
+  id: "session-1",
+  status: "failed",
+  can_append_message: false,
+  turns: [{ id: "turn-1" }],
+  selected_tools: [],
+  profile: { name: "Fake", model: "fake-model" },
+  aggregate_metrics: { usage: {} },
+  path_entries: [],
+  compaction_events: [
+    {
+      phase: "start",
+      status: "running",
+      observed_at: "2026-01-01T00:00:01Z",
+      compaction_id: "compaction-1",
+      trigger: "pre_request",
+      reason: "threshold",
+      tokens_before: 6431,
+    },
+    {
+      phase: "complete",
+      status: "compacted",
+      observed_at: "2026-01-01T00:00:02Z",
+      compaction_id: "compaction-1",
+      trigger: "pre_request",
+      reason: "threshold",
+      tokens_before: 6426,
+      tokens_after_estimate: 6637,
+    },
+  ],
+  observation: {
+    compaction_events: [{
+      phase: "complete",
+      status: "compacted",
+      observed_at: "2026-01-01T00:00:03Z",
+      compaction_id: "compaction-1",
+      trigger: "pre_request",
+      reason: "threshold",
+      tokens_before: 6426,
+      tokens_after_estimate: 6637,
+    }],
+  },
+};
+state.activeSession = session;
+state.liveTurn = null;
+const result = {
+  session_id: "session-1",
+  observation: {
+    compaction_events: [{
+      phase: "complete",
+      status: "compacted",
+      observed_at: "2026-01-01T00:00:04Z",
+      compaction_id: "compaction-1",
+      trigger: "pre_request",
+      reason: "threshold",
+      tokens_before: 6426,
+      tokens_after_estimate: 6637,
+    }],
+  },
+};
+const html = renderSessionWorkspace({ sessions: [session], activeSession: session, result, tools: [], inspectorTab: "context" });
+assert.equal((html.match(/context compacted/g) || []).length, 1);
+assert.equal((html.match(/compaction complete/g) || []).length, 2);
+assert.equal((html.match(/compaction started/g) || []).length, 2);
+`
+	runNodeStaticScript(t, script)
+}
+
+func TestStaticConsoleCompactionTimelineDedupesLiveAndSnapshotEvents(t *testing.T) {
+	script := `
+import assert from "node:assert/strict";
+import { state } from "./static/state.js";
+import { renderSessionWorkspace } from "./static/views/sessionWorkspace.js";
+
+const session = {
+  id: "session-1",
+  status: "failed",
+  can_append_message: false,
+  turns: [{ id: "turn-1" }],
+  selected_tools: [],
+  profile: { name: "Fake", model: "fake-model" },
+  aggregate_metrics: { usage: {} },
+  path_entries: [],
+  compaction_events: [
+    {
+      phase: "start",
+      status: "running",
+      observed_at: "2026-01-01T00:00:01Z",
+      compaction_id: "compaction-1",
+      trigger: "pre_request",
+      reason: "threshold",
+      tokens_before: 6431,
+    },
+    {
+      phase: "complete",
+      status: "compacted",
+      observed_at: "2026-01-01T00:00:02Z",
+      compaction_id: "compaction-1",
+      trigger: "pre_request",
+      reason: "threshold",
+      tokens_before: 6426,
+      tokens_after_estimate: 6637,
+    },
+  ],
+};
+state.activeSession = session;
+state.liveTurn = {
+  session_id: "session-1",
+  context_statuses: [],
+  compactions: [{
+    phase: "complete",
+    status: "compacted",
+    observed_at: "2026-01-01T00:00:04Z",
+    compaction_id: "compaction-1",
+    trigger: "pre_request",
+    reason: "threshold",
+    tokens_before: 6426,
+    tokens_after_estimate: 6637,
+  }],
+};
+const html = renderSessionWorkspace({ sessions: [session], activeSession: session, result: null, tools: [], inspectorTab: "context" });
+assert.equal((html.match(/context compacted/g) || []).length, 1);
+assert.equal((html.match(/compaction complete/g) || []).length, 3);
+assert.equal((html.match(/compaction started/g) || []).length, 2);
 `
 	runNodeStaticScript(t, script)
 }

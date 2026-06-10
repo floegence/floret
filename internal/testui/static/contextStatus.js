@@ -100,6 +100,17 @@ export function compactionEventsFor(session, result) {
   return dedupeCompactions(out);
 }
 
+export function compactionEventKey(compaction) {
+  const id = compaction?.compaction_id || "";
+  if (id) return ["id", id, compaction?.phase || ""].join(":");
+  return [
+    "event",
+    compaction?.phase || "",
+    compaction?.step || "",
+    compaction?.observed_at || "",
+  ].join(":");
+}
+
 export function formatContextCount(value) {
   const num = Number(value);
   if (!Number.isFinite(num)) return "0";
@@ -235,7 +246,7 @@ function dedupeCompactions(compactions) {
   const out = [];
   for (const item of compactions || []) {
     if (!item) continue;
-    const key = [item.phase || "", item.compaction_id || "", item.step || "", item.observed_at || ""].join(":");
+    const key = compactionEventKey(item);
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(item);

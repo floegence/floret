@@ -1,4 +1,5 @@
 import { api } from "./api.js";
+import { compactionEventKey } from "./contextStatus.js";
 import { clone, contextPolicyForProfile, defaultProfile, defaultWebSearchForProvider, normalizePath, providerByID, providerDefaultBaseURL, providerDefaultModel, routePath, state, toolsForProfile } from "./state.js";
 import { bindNewSession, renderNewSession } from "./views/newSession.js";
 import { bindSessionWorkspace, renderSessionWorkspace } from "./views/sessionWorkspace.js";
@@ -618,12 +619,7 @@ function contextStatusKey(status) {
 }
 
 function compactionKey(compaction) {
-  return [
-    compaction?.phase || "",
-    compaction?.compaction_id || "",
-    compaction?.step || "",
-    compaction?.observed_at || "",
-  ].join(":");
+  return compactionEventKey(compaction);
 }
 
 function upsertLiveEntry(entry) {
