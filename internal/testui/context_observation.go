@@ -85,6 +85,8 @@ func providerUsageContextStatusFromMetadata(value any) (engine.ProviderUsageCont
 			return engine.ProviderUsageContextStatus{}, false
 		}
 		return *v, true
+	case map[string]any:
+		return providerUsageContextStatusFromMetadata(v["details"])
 	default:
 		return engine.ProviderUsageContextStatus{}, false
 	}

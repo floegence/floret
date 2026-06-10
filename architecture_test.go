@@ -182,6 +182,39 @@ func TestEngineConfigKeepsMemoryInternal(t *testing.T) {
 	}
 }
 
+func TestKernelBoundaryFilesAvoidHostProductConcepts(t *testing.T) {
+	for _, file := range []string{
+		filepath.Join("engine", "control.go"),
+		filepath.Join("engine", "engine.go"),
+		filepath.Join("event", "event.go"),
+		filepath.Join("provider", "provider.go"),
+		filepath.Join("tools", "invocation.go"),
+		filepath.Join("tools", "permission.go"),
+	} {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := strings.ToLower(string(data))
+		for _, forbidden := range []string{
+			"flower",
+			"redeven",
+			"message block",
+			"messageblock",
+			"target_id",
+			"endpoint_id",
+			"plan_mode",
+			"handoff",
+			"followups",
+			"followup queue",
+		} {
+			if strings.Contains(text, forbidden) {
+				t.Fatalf("%s must not expose host product concept %q", file, forbidden)
+			}
+		}
+	}
+}
+
 func TestSessionLifecycleBoundaryIsEnforced(t *testing.T) {
 	lifecycle, err := os.ReadFile(filepath.Join("internal", "sessionlifecycle", "lifecycle.go"))
 	if err != nil {

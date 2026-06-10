@@ -156,3 +156,47 @@ func TestSanitizeKeepsSafePressureMetadataReadable(t *testing.T) {
 		t.Fatalf("unsafe metadata exposed: %#v", meta)
 	}
 }
+
+func TestSanitizeApprovalLifecycleEvents(t *testing.T) {
+	rawArgs := `{"path":"/private/workspace/secret.txt","token":"secret-value"}`
+	for _, typ := range []Type{ToolApprovalRequested, ToolApprovalApproved, ToolApprovalRejected, ToolApprovalTimedOut, ToolApprovalCanceled} {
+		got := Sanitize(Event{
+			Type:     typ,
+			RunID:    "run",
+			ToolID:   "tool-1",
+			ToolName: "write",
+			Args:     rawArgs,
+			Result:   "approval result with token secret-value",
+			Err:      "authorization bearer-secret failed",
+			Metadata: map[string]any{
+				"approval_id": "approval-1",
+				"reason":      "token secret-value",
+				"cwd":         "/private/workspace",
+				"labels": map[string]string{
+					"correlation.turn": "turn-1",
+					"host.secret":      "token secret-value",
+				},
+			},
+		})
+		if got.Args != "" || got.Result != "" || got.Err != "" {
+			t.Fatalf("%s exposed raw payloads: %#v", typ, got)
+		}
+		if got.ArgsHash == "" || got.ArgsHash == StableHash(rawArgs) {
+			t.Fatalf("%s args hash = %q", typ, got.ArgsHash)
+		}
+		meta, ok := got.Metadata.(map[string]any)
+		if !ok {
+			t.Fatalf("%s metadata = %#v", typ, got.Metadata)
+		}
+		if meta["approval_id"] != "approval-1" {
+			t.Fatalf("%s approval id should remain readable: %#v", typ, meta)
+		}
+		if strings.Contains(fmt.Sprint(meta), "/private") || strings.Contains(fmt.Sprint(meta), "secret-value") {
+			t.Fatalf("%s metadata leaked path/secret: %#v", typ, meta)
+		}
+		labels, ok := meta["labels"].(map[string]string)
+		if !ok || labels["correlation.turn"] != "turn-1" || strings.Contains(labels["host.secret"], "secret-value") {
+			t.Fatalf("%s labels not sanitized/readable as expected: %#v", typ, meta["labels"])
+		}
+	}
+}

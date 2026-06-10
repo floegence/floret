@@ -95,6 +95,7 @@ type Options struct {
 	TraceID                  string
 	ProviderName             string
 	Model                    string
+	Labels                   RunLabels
 	CacheNamespace           string
 	CacheRetention           cache.Retention
 	ContextPolicy            contextpolicy.Policy
@@ -107,10 +108,17 @@ type Options struct {
 	MaxToolCalls             int
 	HostedToolDefinitions    []provider.HostedToolDefinition
 	CompletionPolicy         CompletionPolicy
+	ControlSpec              ControlSpec
+	PreviousProviderState    *provider.State
 	MaxLengthContinuations   int
 	MaxStopHookContinuations int
 
 	toolDefinitions []provider.ToolDefinition
+}
+
+type RunLabels struct {
+	Correlation map[string]string
+	Host        map[string]string
 }
 
 type Result struct {
@@ -124,6 +132,8 @@ type Result struct {
 	FinishReason       provider.FinishReason
 	RawFinishReason    string
 	FinishInferred     bool
+	ControlSignal      *ControlSignal
+	ProviderState      *provider.State
 }
 
 type RunDecision struct {
@@ -133,6 +143,8 @@ type RunDecision struct {
 	RawFinishReason    string
 	FinishInferred     bool
 	Detail             string
+	ControlSignal      *ControlSignal
+	ProviderState      *provider.State
 }
 
 type StepOutput struct {
@@ -146,13 +158,16 @@ type StepOutput struct {
 	FinishReason    provider.FinishReason
 	RawFinishReason string
 	FinishInferred  bool
+	ResponseState   *provider.State
 }
 
 type RunInput struct {
-	RunID     string
-	SessionID string
-	TraceID   string
-	History   []session.Message
+	RunID                 string
+	SessionID             string
+	TraceID               string
+	Labels                RunLabels
+	PreviousProviderState *provider.State
+	History               []session.Message
 }
 
 type CompactionManager interface {
@@ -347,6 +362,12 @@ func (e *Engine) RunTurn(ctx context.Context, input RunInput) Result {
 	if input.TraceID != "" {
 		opts.TraceID = input.TraceID
 	}
+	if !input.Labels.isZero() {
+		opts.Labels = cloneRunLabels(input.Labels)
+	}
+	if input.PreviousProviderState != nil {
+		opts.PreviousProviderState = provider.CloneState(input.PreviousProviderState)
+	}
 	opts = normalizeOptions(opts)
 	if len(input.History) > 0 {
 		history := make([]session.Message, len(input.History))
@@ -417,10 +438,11 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 	if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, false); err != nil {
 		return Result{Status: Failed, Err: err}
 	}
-	opts.toolDefinitions = appendControlToolDefinitions(opts.toolDefinitions, opts.CompletionPolicy)
+	opts.toolDefinitions = appendControlToolDefinitions(opts.toolDefinitions, opts.ControlSpec)
 	if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, true); err != nil {
 		return Result{Status: Failed, Err: err}
 	}
+	latestProviderState := provider.CloneState(opts.PreviousProviderState)
 	if userText != "" {
 		msg := e.stableMessage(opts.RunID, session.Message{Role: session.User, Content: userText})
 		if err := e.store.Append(opts.RunID, msg); err != nil {
@@ -449,11 +471,12 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		pressureTracker.SetAnchor(anchor)
 	}
 	for step := 1; ; step++ {
+		opts.PreviousProviderState = provider.CloneState(latestProviderState)
 		if ctx.Err() != nil {
-			return e.end(state, opts, step, Cancelled, output, ctx.Err(), metrics, started, RunDecision{})
+			return e.end(state, opts, step, Cancelled, output, ctx.Err(), metrics, started, RunDecision{ProviderState: latestProviderState})
 		}
 		metrics.Steps = step
-		e.emit(event.Event{Type: event.StepStart, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model})
+		e.emit(opts, event.Event{Type: event.StepStart, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model})
 		req, preparedHistory, compacted, err := e.prepareOrdinaryRequest(ctx, opts, step, activeHistory, pressureTracker, &metrics, &compactionFailures)
 		if err != nil {
 			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
@@ -504,10 +527,13 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			PressureAnchor:     pressureAnchor,
 			CreatedAt:          time.Now(),
 		})
-		e.emit(event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: normalizedUsage, Metadata: providerUsageContextStatus(req, normalizedUsage, nativePressure)})
-		decision := RunDecision{FinishReason: stepOutput.FinishReason, RawFinishReason: stepOutput.RawFinishReason, FinishInferred: stepOutput.FinishInferred}
+		e.emit(opts, event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: normalizedUsage, Metadata: providerUsageContextStatus(req, normalizedUsage, nativePressure)})
+		if stepOutput.ResponseState != nil {
+			latestProviderState = provider.CloneState(stepOutput.ResponseState)
+		}
+		decision := RunDecision{FinishReason: stepOutput.FinishReason, RawFinishReason: stepOutput.RawFinishReason, FinishInferred: stepOutput.FinishInferred, ProviderState: provider.CloneState(latestProviderState)}
 		if stepOutput.FinishReason != "" {
-			e.emit(event.Event{Type: event.ProviderFinish, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, FinishReason: string(stepOutput.FinishReason), RawFinishReason: stepOutput.RawFinishReason, FinishInferred: stepOutput.FinishInferred})
+			e.emit(opts, event.Event{Type: event.ProviderFinish, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, FinishReason: string(stepOutput.FinishReason), RawFinishReason: stepOutput.RawFinishReason, FinishInferred: stepOutput.FinishInferred})
 		}
 		if budgetErr := e.checkBudget(opts, metrics, step); budgetErr != nil {
 			return e.end(state, opts, step, Failed, output, budgetErr, metrics, started, decision)
@@ -548,7 +574,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				return e.end(state, opts, step, Failed, output, errors.New("provider returned empty output"), metrics, started, decision)
 			}
 			metrics.Retries++
-			e.emit(event.Event{Type: event.ProviderRetry, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: "empty provider output"})
+			e.emit(opts, event.Event{Type: event.ProviderRetry, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: "empty provider output"})
 			decision.ContinuationReason = ContinueRetryEmpty
 			e.emitStepEnd(opts, step, providerLatency, 0, usage, len(calls), decision)
 			continue
@@ -584,7 +610,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 					state.activeMessages = append([]session.Message(nil), activeHistory...)
 					decision.ContinuationReason = ContinueHook
 					decision.Detail = strings.TrimSpace(hook.Reason)
-					e.emit(event.Event{Type: event.ContextContinue, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: prompt, ContinuationReason: string(ContinueHook), Result: decision.Detail})
+					e.emit(opts, event.Event{Type: event.ContextContinue, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: prompt, ContinuationReason: string(ContinueHook), Result: decision.Detail})
 					e.emitStepEnd(opts, step, providerLatency, 0, usage, 0, decision)
 					continue
 				}
@@ -596,7 +622,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			e.emitStepEnd(opts, step, providerLatency, 0, usage, 0, decision)
 			continue
 		}
-		if err := validateToolCalls(calls); err != nil {
+		if err := validateToolCalls(opts.ControlSpec, calls); err != nil {
 			return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 		}
 		for _, call := range calls {
@@ -621,34 +647,49 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			lastToolSig = sig
 			duplicateCount = 0
 		}
-		if final, ok, err := completionSignal(opts, calls); err != nil {
+		if signal, ok, err := controlSignal(opts.ControlSpec, calls); err != nil {
 			return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 		} else if ok {
-			decision.CompletionReason = CompletionReasonToolSignal
-			e.emitStepEnd(opts, step, providerLatency, 0, usage, len(calls), decision)
-			return e.end(state, opts, step, Completed, final, nil, metrics, started, decision)
-		}
-		if prompt, ok, err := askUserSignal(calls); err != nil {
-			return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
-		} else if ok {
-			e.emitStepEnd(opts, step, providerLatency, 0, usage, len(calls), decision)
-			return e.end(state, opts, step, Waiting, prompt, nil, metrics, started, decision)
+			if len(signal.Labels) == 0 {
+				signal.Labels = observabilityLabels(opts.Labels)
+			}
+			decision.ControlSignal = signal
+			switch signal.Disposition {
+			case ControlTerminal:
+				decision.CompletionReason = CompletionReasonToolSignal
+				e.emitStepEnd(opts, step, providerLatency, 0, usage, len(calls), decision)
+				return e.end(state, opts, step, Completed, signal.OutputText, nil, metrics, started, decision)
+			case ControlWaiting:
+				decision.CompletionReason = CompletionReasonToolSignal
+				e.emitStepEnd(opts, step, providerLatency, 0, usage, len(calls), decision)
+				return e.end(state, opts, step, Waiting, signal.OutputText, nil, metrics, started, decision)
+			case ControlContinue:
+				msg := e.stableMessage(opts.RunID, session.Message{Role: session.Tool, Content: signal.OutputText, ToolCallID: signal.CallID, ToolName: signal.Name})
+				if err := e.store.Append(opts.RunID, msg); err != nil {
+					return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+				}
+				activeHistory = append(activeHistory, msg)
+				state.activeMessages = append([]session.Message(nil), activeHistory...)
+				decision.ContinuationReason = ContinueToolResults
+				e.emitStepEnd(opts, step, providerLatency, 0, usage, len(calls), decision)
+				continue
+			}
 		}
 		metrics.ToolCalls += len(calls)
 		if budgetErr := e.checkBudget(opts, metrics, step); budgetErr != nil {
 			return e.end(state, opts, step, Failed, output, budgetErr, metrics, started, decision)
 		}
 		for i, call := range calls {
-			e.emit(event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args, Metadata: map[string]any{"batch_index": i, "batch_size": len(calls)}})
+			e.emit(opts, event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args, Metadata: map[string]any{"batch_index": i, "batch_size": len(calls)}})
 		}
 		toolStarted := time.Now()
-		results := e.tools.RunBatchWithOptions(ctx, calls, e.approver, tools.RunOptions{RunID: opts.RunID, SessionID: opts.SessionID, Step: step})
+		results := e.tools.RunBatchWithOptions(ctx, calls, e.approverWithEvents(opts, step), tools.RunOptions{RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Labels: observabilityLabels(opts.Labels)})
 		toolLatency := time.Since(toolStarted).Milliseconds()
 		for i, result := range results {
 			policy := tools.MergeOutputPolicy(e.tools.OutputPolicyFor(result.Name), result.OutputPolicy)
 			projection, err := tools.BuildOutputProjection(ctx, toolOutputArtifactResult(result, opts, step), policy, e.artifacts)
 			if err != nil {
-				e.emit(event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: toolLatency, Metadata: mergeToolResultMetadata(result.Metadata, i, len(results))})
+				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: toolLatency, Metadata: mergeToolResultMetadata(result.Metadata, i, len(results))})
 				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 			}
 			text := projection.VisibleText
@@ -658,7 +699,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				text = "ERROR: " + text
 			}
 			metadata := mergeToolResultMetadata(toolProjectionMetadata(result.Metadata, projection), i, len(results))
-			e.emit(event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: toolLatency, Metadata: metadata, Artifacts: eventArtifacts(projection, result.Artifacts)})
+			e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: toolLatency, Metadata: metadata, Artifacts: eventArtifacts(projection, result.Artifacts)})
 			msg := e.stableMessage(opts.RunID, session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: toolResultView(projection)})
 			if err := e.store.Append(opts.RunID, msg); err != nil {
 				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
@@ -676,7 +717,50 @@ func cloneOptions(o Options) Options {
 	o.toolDefinitions = cloneProviderToolDefinitions(o.toolDefinitions)
 	o.HostedToolDefinitions = cloneHostedToolDefinitions(o.HostedToolDefinitions)
 	o.ContextPolicy = contextpolicy.Normalize(o.ContextPolicy)
+	o.ControlSpec = cloneControlSpec(o.ControlSpec)
+	o.Labels = cloneRunLabels(o.Labels)
+	o.PreviousProviderState = provider.CloneState(o.PreviousProviderState)
 	return o
+}
+
+func (l RunLabels) isZero() bool {
+	return len(l.Correlation) == 0 && len(l.Host) == 0
+}
+
+func cloneRunLabels(labels RunLabels) RunLabels {
+	return RunLabels{
+		Correlation: cloneStringMap(labels.Correlation),
+		Host:        cloneStringMap(labels.Host),
+	}
+}
+
+func observabilityLabels(labels RunLabels) map[string]string {
+	out := make(map[string]string, len(labels.Correlation)+len(labels.Host))
+	for key, value := range labels.Correlation {
+		if key = strings.TrimSpace(key); key != "" {
+			out["correlation."+key] = value
+		}
+	}
+	for key, value := range labels.Host {
+		if key = strings.TrimSpace(key); key != "" {
+			out["host."+key] = value
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func registryDefinitions(registry *tools.Registry) []provider.ToolDefinition {
@@ -773,6 +857,9 @@ func normalizeOptions(o Options) Options {
 	if o.MaxStopHookContinuations <= 0 {
 		o.MaxStopHookContinuations = 2
 	}
+	o.Labels = cloneRunLabels(o.Labels)
+	o.ControlSpec = normalizeControlSpec(o.ControlSpec, o.CompletionPolicy)
+	o.PreviousProviderState = provider.CloneState(o.PreviousProviderState)
 	return o
 }
 
@@ -851,7 +938,7 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		AdapterVersion: cache.Version,
 		CacheNamespace: opts.CacheNamespace,
 		SystemPrompt:   e.memory.SystemPrompt,
-		History:        providerSafeHistory(e.memory.Assemble(history)[systemOffset(e.memory):]),
+		History:        providerSafeHistory(e.memory.Assemble(history)[systemOffset(e.memory):], opts.ControlSpec),
 		Toolset:        toolset,
 		HostedTools:    convertHostedToolDefinitions(opts.HostedToolDefinitions),
 		Renderer:       rendererForProvider(e.provider),
@@ -898,6 +985,7 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		Cache:           cachePolicy,
 		ContextPolicy:   opts.ContextPolicy,
 		MaxOutputTokens: opts.ContextPolicy.MaxOutputTokens,
+		PreviousState:   provider.CloneState(opts.PreviousProviderState),
 	}
 	estimate, err := e.estimateRequestTokens(ctx, req)
 	if err != nil {
@@ -1066,7 +1154,7 @@ func (e *Engine) sendProviderAttempt(ctx context.Context, opts Options, step int
 	if metrics != nil {
 		metrics.LLMRequests++
 	}
-	e.emit(event.Event{Type: event.ProviderRequest, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: fmt.Sprintf("%d messages, %d raw segments, %d local tools, %d hosted tools, prefix %s", len(req.Messages), len(req.RawPlan.Segments), len(req.Tools), len(req.HostedTools), shortHash(req.RawPlan.PrefixHash)), Metadata: providerRequestMetadata(req)})
+	e.emit(opts, event.Event{Type: event.ProviderRequest, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: fmt.Sprintf("%d messages, %d raw segments, %d local tools, %d hosted tools, prefix %s", len(req.Messages), len(req.RawPlan.Segments), len(req.Tools), len(req.HostedTools), shortHash(req.RawPlan.PrefixHash)), Metadata: providerRequestMetadata(req)})
 	started := time.Now()
 	stream, err := e.provider.Stream(ctx, req)
 	latency := time.Since(started).Milliseconds()
@@ -1145,7 +1233,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 	if manager == nil {
 		return nil, errors.New("compaction manager is required when context exceeds policy")
 	}
-	e.emit(event.Event{
+	e.emit(opts, event.Event{
 		Type:      event.ContextCompact,
 		TraceID:   opts.TraceID,
 		RunID:     opts.RunID,
@@ -1187,7 +1275,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		if failures != nil {
 			*failures++
 		}
-		e.emit(event.Event{
+		e.emit(opts, event.Event{
 			Type:      event.ContextCompact,
 			TraceID:   opts.TraceID,
 			RunID:     opts.RunID,
@@ -1205,7 +1293,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 	if failures != nil {
 		*failures = 0
 	}
-	e.emit(event.Event{
+	e.emit(opts, event.Event{
 		Type:      event.ContextCompact,
 		TraceID:   opts.TraceID,
 		RunID:     opts.RunID,
@@ -1283,6 +1371,9 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 			if ev.ResponseID != "" {
 				out.ResponseID = ev.ResponseID
 			}
+			if ev.ResponseState != nil {
+				out.ResponseState = provider.CloneState(ev.ResponseState)
+			}
 			if ev.Reason != "" {
 				out.RawFinishReason = ev.Reason
 			}
@@ -1295,25 +1386,25 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 			switch ev.Type {
 			case provider.Delta:
 				out.Text += ev.Text
-				e.emit(event.Event{Type: event.ProviderDelta, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
+				e.emit(opts, event.Event{Type: event.ProviderDelta, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
 			case provider.Reasoning:
 				out.Reasoning += ev.Text
-				e.emit(event.Event{Type: event.ProviderReasoning, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
+				e.emit(opts, event.Event{Type: event.ProviderReasoning, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
 			case provider.ToolCalls:
 				out.Calls = append(out.Calls, ev.ToolCalls...)
 			case provider.HostedToolCall:
 				if err := validateHostedToolEvent(ev.ToolCall, hostedTools); err != nil {
 					return out, err
 				}
-				e.emit(event.Event{Type: event.HostedToolCall, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Args: ev.ToolCall.Args})
+				e.emit(opts, event.Event{Type: event.HostedToolCall, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Args: ev.ToolCall.Args})
 			case provider.HostedToolResult:
 				if err := validateHostedToolEvent(ev.ToolCall, hostedTools); err != nil {
 					return out, err
 				}
-				e.emit(event.Event{Type: event.HostedToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Result: hostedToolResultText(ev), Metadata: hostedToolResultMetadata(ev.HostedResult)})
+				e.emit(opts, event.Event{Type: event.HostedToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Result: hostedToolResultText(ev), Metadata: hostedToolResultMetadata(ev.HostedResult)})
 			case provider.UsageEvent:
 				out.Usage = out.Usage.Add(ev.Usage)
-				e.emit(event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: ev.Usage.Normalized(), Metadata: streamUsageMetadata()})
+				e.emit(opts, event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: ev.Usage.Normalized(), Metadata: streamUsageMetadata()})
 			case provider.Empty:
 				out.Retry = true
 				out.FinishReason, out.FinishInferred = provider.NormalizeFinishReason(out.RawFinishReason, false, false, false)
@@ -1443,8 +1534,155 @@ func validateHostedToolEvent(call provider.ToolCall, allowed map[string]struct{}
 	return nil
 }
 
-func providerSafeHistory(history []session.Message) []session.Message {
-	return control.ProjectHistory(history)
+func providerSafeHistory(history []session.Message, spec ControlSpec) []session.Message {
+	out := make([]session.Message, 0, len(history))
+	for _, msg := range history {
+		if msg.Role == session.Assistant && msg.ToolName != "" && spec.isControlTool(msg.ToolName) {
+			out = append(out, providerSafeControlMessage(msg, spec))
+			continue
+		}
+		out = append(out, msg)
+	}
+	return out
+}
+
+func providerSafeControlMessage(msg session.Message, spec ControlSpec) session.Message {
+	signal, ok, err := projectProviderSafeControlSignal(msg, spec)
+	content := fmt.Sprintf("Agent control signal %q was emitted.", msg.ToolName)
+	if err == nil && ok {
+		content = providerSafeControlText(signal)
+	}
+	return session.Message{
+		Role:          session.Assistant,
+		Content:       content,
+		EntryID:       msg.EntryID,
+		ParentEntryID: msg.ParentEntryID,
+		Kind:          session.MessageKindControlSignal,
+	}
+}
+
+func projectProviderSafeControlSignal(msg session.Message, spec ControlSpec) (ControlSignal, bool, error) {
+	call := provider.ToolCall{ID: msg.ToolCallID, Name: msg.ToolName, Args: msg.ToolArgs}
+	return spec.project(call)
+}
+
+func providerSafeControlText(signal ControlSignal) string {
+	text := strings.TrimSpace(signal.OutputText)
+	switch signal.Name {
+	case control.AskUserTool:
+		if text != "" {
+			return "Agent requested user input: " + text
+		}
+		return "Agent requested user input."
+	case control.TaskCompleteTool:
+		if text != "" {
+			return "Agent completed the task: " + text
+		}
+		return "Agent completed the task."
+	default:
+		if text != "" {
+			return fmt.Sprintf("Agent control signal %q: %s", signal.Name, text)
+		}
+		return fmt.Sprintf("Agent control signal %q was emitted.", signal.Name)
+	}
+}
+
+func (e *Engine) approverWithEvents(opts Options, step int) tools.Approver {
+	return func(ctx context.Context, req tools.ApprovalRequest) (tools.PermissionDecision, error) {
+		e.emitApprovalEvent(opts, step, event.ToolApprovalRequested, req, "", "")
+		if e.approver == nil {
+			e.emitApprovalEvent(opts, step, event.ToolApprovalRejected, req, tools.ErrRejected.Error(), "")
+			return tools.PermissionDecisionDeny, nil
+		}
+		decision, err := e.approver(ctx, req)
+		if err != nil {
+			switch {
+			case errors.Is(err, context.DeadlineExceeded):
+				e.emitApprovalEvent(opts, step, event.ToolApprovalTimedOut, req, err.Error(), "")
+			case errors.Is(err, context.Canceled):
+				e.emitApprovalEvent(opts, step, event.ToolApprovalCanceled, req, err.Error(), "")
+			default:
+				e.emitApprovalEvent(opts, step, event.ToolApprovalRejected, req, err.Error(), "")
+			}
+			return decision, err
+		}
+		if decision.Allowed() {
+			e.emitApprovalEvent(opts, step, event.ToolApprovalApproved, req, strings.TrimSpace(decision.Reason), "")
+			return decision, nil
+		}
+		reason := strings.TrimSpace(decision.RejectionReason())
+		if reason == "" {
+			reason = tools.ErrRejected.Error()
+		}
+		e.emitApprovalEvent(opts, step, event.ToolApprovalRejected, req, reason, "")
+		return decision, nil
+	}
+}
+
+func (e *Engine) emitApprovalEvent(opts Options, step int, typ event.Type, req tools.ApprovalRequest, reason string, result string) {
+	e.emit(opts, event.Event{
+		Type:      typ,
+		TraceID:   opts.TraceID,
+		RunID:     opts.RunID,
+		SessionID: opts.SessionID,
+		Step:      step,
+		Provider:  opts.ProviderName,
+		Model:     opts.Model,
+		ToolID:    req.ID,
+		ToolName:  req.Name,
+		ToolKind:  "local",
+		Args:      req.Args,
+		ArgsHash:  req.ArgsHash,
+		Result:    result,
+		Err:       reason,
+		Metadata:  approvalEventMetadata(req, reason),
+	})
+}
+
+func approvalEventMetadata(req tools.ApprovalRequest, reason string) map[string]any {
+	metadata := map[string]any{
+		"approval_id": req.ApprovalID,
+		"resources":   approvalResources(req.Resources),
+		"effects":     approvalEffects(req.Effects),
+		"read_only":   req.ReadOnly,
+		"destructive": req.Destructive,
+		"open_world":  req.OpenWorld,
+	}
+	if strings.TrimSpace(reason) != "" {
+		metadata["reason"] = reason
+	}
+	if req.CWD != "" {
+		metadata["cwd"] = req.CWD
+	}
+	if len(req.Labels) > 0 {
+		metadata["labels"] = cloneStringMap(req.Labels)
+	}
+	return metadata
+}
+
+func approvalResources(resources []tools.ResourceRef) []map[string]string {
+	if len(resources) == 0 {
+		return nil
+	}
+	out := make([]map[string]string, 0, len(resources))
+	for _, resource := range resources {
+		out = append(out, map[string]string{
+			"kind":  resource.Kind,
+			"value": resource.Value,
+		})
+	}
+	return out
+}
+
+func approvalEffects(effects []tools.Effect) []string {
+	if len(effects) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(effects))
+	for _, effect := range effects {
+		out = append(out, string(effect))
+	}
+	return out
 }
 
 func convertToolDefinitions(defs []provider.ToolDefinition) []cache.ToolDefinition {
@@ -1507,16 +1745,9 @@ func hostedToolDefinitions(defs []cache.HostedToolDefinition) []provider.HostedT
 	return out
 }
 
-func appendControlToolDefinitions(defs []provider.ToolDefinition, policy CompletionPolicy) []provider.ToolDefinition {
+func appendControlToolDefinitions(defs []provider.ToolDefinition, spec ControlSpec) []provider.ToolDefinition {
 	out := append([]provider.ToolDefinition(nil), defs...)
-	seen := map[string]struct{}{}
-	for _, def := range out {
-		seen[strings.TrimSpace(def.Name)] = struct{}{}
-	}
-	for _, def := range control.ToolDefinitions(policy == CompletionExplicitSignal) {
-		if _, ok := seen[def.Name]; ok {
-			continue
-		}
+	for _, def := range spec.Definitions {
 		out = append(out, def)
 	}
 	return out
@@ -1618,7 +1849,7 @@ func shortHash(hash string) string {
 
 func (e *Engine) emitStepEnd(opts Options, step int, providerLatency, toolLatency int64, usage provider.Usage, toolCalls int, decision RunDecision) {
 	duration := providerLatency + toolLatency
-	e.emit(event.Event{
+	e.emit(opts, event.Event{
 		Type:               event.StepEnd,
 		TraceID:            opts.TraceID,
 		RunID:              opts.RunID,
@@ -1656,20 +1887,21 @@ func (e *Engine) end(state *turnState, opts Options, step int, status Status, ou
 		errText = err.Error()
 	}
 	metrics.WallTimeMS = time.Since(started).Milliseconds()
-	e.emit(event.Event{Type: event.RunEnd, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: string(status), Result: output, Err: errText, FinishReason: string(decision.FinishReason), RawFinishReason: decision.RawFinishReason, FinishInferred: decision.FinishInferred, CompletionReason: string(decision.CompletionReason), ContinuationReason: string(decision.ContinuationReason), Metrics: metrics})
+	e.emit(opts, event.Event{Type: event.RunEnd, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: string(status), Result: output, Err: errText, FinishReason: string(decision.FinishReason), RawFinishReason: decision.RawFinishReason, FinishInferred: decision.FinishInferred, CompletionReason: string(decision.CompletionReason), ContinuationReason: string(decision.ContinuationReason), Metrics: metrics})
 	var messages []session.Message
 	if len(state.activeMessages) > 0 {
 		messages = append([]session.Message(nil), state.activeMessages...)
 	} else if e.store != nil {
 		messages, _ = e.store.Messages(opts.RunID)
 	}
-	return Result{Status: status, Output: output, Err: err, Metrics: metrics, Messages: messages, CompletionReason: decision.CompletionReason, ContinuationReason: decision.ContinuationReason, FinishReason: decision.FinishReason, RawFinishReason: decision.RawFinishReason, FinishInferred: decision.FinishInferred}
+	return Result{Status: status, Output: output, Err: err, Metrics: metrics, Messages: messages, CompletionReason: decision.CompletionReason, ContinuationReason: decision.ContinuationReason, FinishReason: decision.FinishReason, RawFinishReason: decision.RawFinishReason, FinishInferred: decision.FinishInferred, ControlSignal: cloneControlSignal(decision.ControlSignal), ProviderState: provider.CloneState(decision.ProviderState)}
 }
 
-func (e *Engine) emit(ev event.Event) {
+func (e *Engine) emit(opts Options, ev event.Event) {
 	if e.sink == nil {
 		return
 	}
+	ev.Metadata = eventMetadata(opts, ev.Metadata)
 	ev.Timestamp = time.Now()
 	e.sink.Emit(ev)
 }
@@ -1681,54 +1913,67 @@ func (e *Engine) checkBudget(opts Options, metrics RunMetrics, step int) error {
 	case opts.MaxTotalTokens > 0 && metrics.Usage.Normalized().TotalTokens > opts.MaxTotalTokens:
 		err = fmt.Errorf("token budget exceeded")
 		message = fmt.Sprintf("total tokens %d exceeded limit %d", metrics.Usage.Normalized().TotalTokens, opts.MaxTotalTokens)
-		e.emit(event.Event{Type: event.BudgetExceeded, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: message, Metrics: BudgetMetrics{Type: "tokens", Used: float64(metrics.Usage.Normalized().TotalTokens), Limit: float64(opts.MaxTotalTokens), Run: metrics}})
+		e.emit(opts, event.Event{Type: event.BudgetExceeded, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: message, Metrics: BudgetMetrics{Type: "tokens", Used: float64(metrics.Usage.Normalized().TotalTokens), Limit: float64(opts.MaxTotalTokens), Run: metrics}})
 	case opts.MaxCostUSD > 0 && metrics.Usage.CostUSD > opts.MaxCostUSD:
 		err = fmt.Errorf("cost budget exceeded")
 		message = fmt.Sprintf("cost %.6f exceeded limit %.6f", metrics.Usage.CostUSD, opts.MaxCostUSD)
-		e.emit(event.Event{Type: event.BudgetExceeded, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: message, Metrics: BudgetMetrics{Type: "cost", Used: metrics.Usage.CostUSD, Limit: opts.MaxCostUSD, Run: metrics}})
+		e.emit(opts, event.Event{Type: event.BudgetExceeded, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: message, Metrics: BudgetMetrics{Type: "cost", Used: metrics.Usage.CostUSD, Limit: opts.MaxCostUSD, Run: metrics}})
 	case opts.MaxToolCalls > 0 && metrics.ToolCalls > opts.MaxToolCalls:
 		err = fmt.Errorf("tool call budget exceeded")
 		message = fmt.Sprintf("tool calls %d exceeded limit %d", metrics.ToolCalls, opts.MaxToolCalls)
-		e.emit(event.Event{Type: event.BudgetExceeded, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: message, Metrics: BudgetMetrics{Type: "tool_calls", Used: float64(metrics.ToolCalls), Limit: float64(opts.MaxToolCalls), Run: metrics}})
+		e.emit(opts, event.Event{Type: event.BudgetExceeded, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: message, Metrics: BudgetMetrics{Type: "tool_calls", Used: float64(metrics.ToolCalls), Limit: float64(opts.MaxToolCalls), Run: metrics}})
 	}
 	return err
 }
 
-func completionSignal(opts Options, calls []provider.ToolCall) (string, bool, error) {
-	if opts.CompletionPolicy != CompletionExplicitSignal {
-		return "", false, nil
-	}
-	for _, call := range calls {
-		signal, ok, err := control.Project(call)
-		if err != nil {
-			return "", false, err
+func eventMetadata(opts Options, base any) map[string]any {
+	out := map[string]any{}
+	if baseMap, ok := base.(map[string]any); ok {
+		for key, value := range baseMap {
+			if key == "schema_version" {
+				continue
+			}
+			out[key] = value
 		}
-		if ok && signal.Kind == control.SignalTaskComplete {
-			return signal.Output, true, nil
-		}
+	} else if base != nil {
+		out["details"] = base
 	}
-	return "", false, nil
+	if labels := observabilityLabels(opts.Labels); len(labels) > 0 {
+		out["labels"] = labels
+	}
+	out["schema_version"] = "event.v1"
+	return out
 }
 
-func askUserSignal(calls []provider.ToolCall) (string, bool, error) {
+func controlSignal(spec ControlSpec, calls []provider.ToolCall) (*ControlSignal, bool, error) {
 	for _, call := range calls {
-		signal, ok, err := control.Project(call)
+		signal, ok, err := spec.project(call)
 		if err != nil {
-			return "", false, err
+			return nil, false, err
 		}
-		if ok && signal.Kind == control.SignalAskUser {
-			return signal.Prompt, true, nil
+		if ok {
+			return cloneControlSignal(&signal), true, nil
 		}
 	}
-	return "", false, nil
+	return nil, false, nil
 }
 
-func validateToolCalls(calls []provider.ToolCall) error {
+func cloneControlSignal(in *ControlSignal) *ControlSignal {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.Payload = cloneAnyMap(in.Payload)
+	out.Labels = cloneStringMap(in.Labels)
+	return &out
+}
+
+func validateToolCalls(spec ControlSpec, calls []provider.ToolCall) error {
 	seen := map[string]struct{}{}
 	controlCalls := 0
 	ordinaryCalls := 0
 	for _, call := range calls {
-		if control.IsControlTool(call.Name) {
+		if spec.isControlTool(call.Name) {
 			controlCalls++
 		} else {
 			ordinaryCalls++
@@ -1745,10 +1990,6 @@ func validateToolCalls(calls []provider.ToolCall) error {
 		return ErrMixedControlTools
 	}
 	return nil
-}
-
-func isControlTool(name string) bool {
-	return control.IsControlTool(name)
 }
 
 func toolSignature(calls []provider.ToolCall) string {

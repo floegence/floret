@@ -2,6 +2,8 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,6 +46,7 @@ type RunOptions struct {
 	SessionID string
 	Step      int
 	CWD       string
+	Labels    map[string]string
 }
 
 type erasedInvocation struct {
@@ -384,12 +387,15 @@ func (r *Registry) permissionDenied(ctx context.Context, def Definition, call pr
 			return ErrRejected.Error()
 		}
 		decision, err := approver(ctx, ApprovalRequest{
+			ApprovalID:    approvalID(call),
 			ID:            call.ID,
 			Name:          call.Name,
 			Args:          call.Args,
+			ArgsHash:      stableApprovalArgsHash(call.Args),
 			ValidatedArgs: args,
 			Resources:     resources,
 			Effects:       append([]Effect(nil), def.Effects...),
+			Labels:        cloneStringMap(opts.Labels),
 			ReadOnly:      def.ReadOnly,
 			Destructive:   def.Destructive,
 			OpenWorld:     def.OpenWorld,
@@ -398,13 +404,46 @@ func (r *Registry) permissionDenied(ctx context.Context, def Definition, call pr
 		if err != nil {
 			return err.Error()
 		}
-		if decision != PermissionDecisionAllow {
+		if !decision.Allowed() {
+			if reason := strings.TrimSpace(decision.RejectionReason()); reason != "" {
+				return reason
+			}
 			return ErrRejected.Error()
 		}
 	default:
 		return ErrRejected.Error()
 	}
 	return ""
+}
+
+func approvalID(call provider.ToolCall) string {
+	if id := strings.TrimSpace(call.ID); id != "" {
+		return id
+	}
+	if name := strings.TrimSpace(call.Name); name != "" {
+		return name
+	}
+	return "tool"
+}
+
+func stableApprovalArgsHash(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func (r *Registry) RunBatch(ctx context.Context, calls []provider.ToolCall, approver Approver) []Result {

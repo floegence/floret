@@ -23,6 +23,11 @@ const (
 	ProviderRetry          Type = "provider_retry"
 	ToolCall               Type = "tool_call"
 	ToolResult             Type = "tool_result"
+	ToolApprovalRequested  Type = "tool_approval_requested"
+	ToolApprovalApproved   Type = "tool_approval_approved"
+	ToolApprovalRejected   Type = "tool_approval_rejected"
+	ToolApprovalTimedOut   Type = "tool_approval_timed_out"
+	ToolApprovalCanceled   Type = "tool_approval_canceled"
 	HostedToolCall         Type = "hosted_tool_call"
 	HostedToolResult       Type = "hosted_tool_result"
 	MCPServerConnecting    Type = "mcp_server_connecting"
@@ -131,7 +136,7 @@ func sanitize(e Event, policy SinkPolicy) Event {
 		e.Message = ""
 	case ToolCall, HostedToolCall:
 		e.Args = ""
-	case ToolResult, HostedToolResult:
+	case ToolResult, HostedToolResult, ToolApprovalRequested, ToolApprovalApproved, ToolApprovalRejected, ToolApprovalTimedOut, ToolApprovalCanceled:
 		e.Result = ""
 		e.Err = ""
 	case ContextCompact:
@@ -289,6 +294,15 @@ func sanitizeMetadata(value any) any {
 			out[i] = safeStringLabel(item)
 		}
 		return out
+	case []map[string]string:
+		out := make([]map[string]string, len(v))
+		for i, item := range v {
+			out[i] = make(map[string]string, len(item))
+			for itemKey, value := range item {
+				out[i][itemKey] = sanitizeMetadataString(itemKey, value)
+			}
+		}
+		return out
 	case []any:
 		out := make([]any, len(v))
 		for i, item := range v {
@@ -339,6 +353,15 @@ func sanitizePathMetadataWithKey(key string, value any) any {
 			}
 		}
 		return out
+	case []map[string]string:
+		out := make([]map[string]string, len(v))
+		for i, item := range v {
+			out[i] = make(map[string]string, len(item))
+			for itemKey, value := range item {
+				out[i][itemKey] = sanitizePathMetadataWithKey(itemKey, value).(string)
+			}
+		}
+		return out
 	case []any:
 		out := make([]any, len(v))
 		for i, item := range v {
@@ -372,21 +395,35 @@ func sanitizeMetadataWithKey(key string, value any) any {
 			out[i] = sanitizeMetadataString(key, item)
 		}
 		return out
+	case []map[string]string:
+		out := make([]map[string]string, len(v))
+		for i, item := range v {
+			out[i] = make(map[string]string, len(item))
+			for itemKey, value := range item {
+				out[i][itemKey] = sanitizeMetadataString(itemKey, value)
+			}
+		}
+		return out
 	default:
 		return sanitizeMetadata(value)
 	}
 }
 
 func sanitizeMetadataString(key, value string) string {
-	if publicMetadataStringKey(key) && safeMetadataToken(value) {
+	if publicMetadataStringKey(key) && safeMetadataToken(value) && Redact(value) == value {
 		return value
 	}
 	return safeStringLabel(value)
 }
 
 func publicMetadataStringKey(key string) bool {
+	if strings.HasPrefix(key, "correlation.") || strings.HasPrefix(key, "host.") {
+		return true
+	}
 	switch key {
 	case "server_id", "skill_id", "tool_name", "remote_tool", "source_kind", "source_label", "status", "transport", "protocol_version", "failure_category", "next_action", "capability", "permission_mode", "content_hash", "prompt_sha256":
+		return true
+	case "approval_id", "state", "kind", "effect", "effects":
 		return true
 	case "pressure_signal", "pressure_source", "confidence", "estimate_source", "estimate_method", "compaction_trigger", "trigger", "reason", "source":
 		return true

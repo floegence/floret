@@ -34,6 +34,13 @@ type Request struct {
 	RequestEstimate  contextpolicy.RequestEstimate
 	ContextPressure  contextpolicy.ContextPressure
 	MaxOutputTokens  int64
+	PreviousState    *State
+}
+
+type State struct {
+	Kind       string            `json:"kind,omitempty"`
+	ID         string            `json:"id,omitempty"`
+	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
 type ToolDefinition struct {
@@ -190,15 +197,30 @@ func (r HostedToolResultData) SummaryText() string {
 }
 
 type StreamEvent struct {
-	Type         EventType
-	Text         string
-	ToolCalls    []ToolCall
-	ToolCall     ToolCall
-	HostedResult HostedToolResultData
-	Reason       string
-	Usage        Usage
-	ResponseID   string
-	Err          error
+	Type          EventType
+	Text          string
+	ToolCalls     []ToolCall
+	ToolCall      ToolCall
+	HostedResult  HostedToolResultData
+	Reason        string
+	Usage         Usage
+	ResponseID    string
+	ResponseState *State
+	Err           error
+}
+
+func CloneState(in *State) *State {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.Attributes != nil {
+		out.Attributes = make(map[string]string, len(in.Attributes))
+		for key, value := range in.Attributes {
+			out.Attributes[key] = value
+		}
+	}
+	return &out
 }
 
 // StreamValidator checks provider stream invariants that the engine relies on.

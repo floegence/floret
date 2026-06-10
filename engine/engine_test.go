@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -337,6 +338,7 @@ func TestLegacyTaskCompleteSignalIsProviderSafeWhenRunContinues(t *testing.T) {
 	e2 := newTestEngine(p2, &event.Recorder{})
 	e2.Store = store
 	e2.Prompt = promptStore
+	e2.Options.CompletionPolicy = engine.CompletionExplicitSignal
 	got = e2.Run(context.Background(), "continue anyway")
 	if got.Status != engine.Completed {
 		t.Fatalf("second result = %#v", got)
@@ -694,7 +696,7 @@ func TestProviderUsageEventsSeparateStreamUsageAndFinalContextStatus(t *testing.
 	if !ok || streamMeta["phase"] != engine.ProviderUsagePhaseStreamUsage {
 		t.Fatalf("stream usage metadata = %#v", usageEvents[0].Metadata)
 	}
-	finalStatus, ok := usageEvents[1].Metadata.(engine.ProviderUsageContextStatus)
+	finalStatus, ok := usageEventContextStatus(usageEvents[1])
 	if !ok {
 		t.Fatalf("final usage metadata type = %T %#v", usageEvents[1].Metadata, usageEvents[1].Metadata)
 	}
@@ -729,7 +731,7 @@ func TestProviderUsageFinalContextStatusMarksMissingNativeUsageEstimated(t *test
 	var finalStatus engine.ProviderUsageContextStatus
 	for _, ev := range rec.Events {
 		if ev.Type == event.ProviderUsage {
-			status, ok := ev.Metadata.(engine.ProviderUsageContextStatus)
+			status, ok := usageEventContextStatus(ev)
 			if ok {
 				finalStatus = status
 			}
@@ -829,6 +831,128 @@ func TestContextPressureDisplayStatusAndRatios(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestProviderStateIsOpaqueRequestAndResultContinuation(t *testing.T) {
+	previous := &provider.State{Kind: "responses", ID: "prev", Attributes: map[string]string{"cursor": "one"}}
+	next := &provider.State{Kind: "responses", ID: "next", Attributes: map[string]string{"cursor": "two"}}
+	p := harness.NewScriptedProvider(harness.Step(
+		harness.Text("ok"),
+		provider.StreamEvent{Type: provider.Done, Reason: "stop", ResponseState: next},
+	))
+	promptStore := cache.NewMemoryStore()
+	e := newTestEngine(p, &event.Recorder{})
+	e.Prompt = promptStore
+	e.Options.PreviousProviderState = previous
+
+	eng := e.build(t)
+	got := eng.Run(context.Background(), "hello")
+
+	if got.Status != engine.Completed || got.ProviderState == nil || got.ProviderState.ID != "next" || got.ProviderState.Attributes["cursor"] != "two" {
+		t.Fatalf("result provider state = %#v", got.ProviderState)
+	}
+	if len(p.Requests) != 1 || p.Requests[0].PreviousState == nil || p.Requests[0].PreviousState.ID != "prev" || p.Requests[0].PreviousState.Attributes["cursor"] != "one" {
+		t.Fatalf("request previous state = %#v", p.Requests)
+	}
+	previous.Attributes["cursor"] = "mutated-before"
+	next.Attributes["cursor"] = "mutated-next"
+	p.Requests[0].PreviousState.Attributes["cursor"] = "mutated-request"
+	got.ProviderState.Attributes["cursor"] = "mutated-result"
+	if opts := eng.Options(); opts.PreviousProviderState == nil || opts.PreviousProviderState.Attributes["cursor"] != "one" {
+		t.Fatalf("engine options kept caller provider state by reference: %#v", opts.PreviousProviderState)
+	}
+	if p.Requests[0].PreviousState.Attributes["cursor"] == "mutated-before" {
+		t.Fatalf("request previous state aliased caller state: %#v", p.Requests[0].PreviousState)
+	}
+	responses, err := promptStore.ProviderResponses(context.Background(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests, err := promptStore.ProviderRequests(context.Background(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(struct {
+		Requests  any
+		Responses any
+		Messages  []session.Message
+	}{Requests: requests, Responses: responses, Messages: got.Messages})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"prev", "next", "mutated", "responses", "cursor"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("provider state leaked into prompt cache/session records: %s", encoded)
+		}
+	}
+}
+
+func TestRunTurnOverridesLabelsAndProviderStateWithoutProviderPromptLeak(t *testing.T) {
+	rec := &event.Recorder{}
+	previous := &provider.State{Kind: "opaque", ID: "turn-prev", Attributes: map[string]string{"token": "abc"}}
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("read-1", "read", `{"value":"x"}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Text("ok"), harness.Done()),
+	)
+	reg := tools.NewRegistry()
+	mustRegister(t, reg, tools.Define[stringArgs](
+		tools.Definition{Name: "read", InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}), ReadOnly: true},
+		nil,
+		nil,
+		func(_ context.Context, inv tools.Invocation[stringArgs]) (tools.Result, error) {
+			return tools.Result{Text: "content"}, nil
+		},
+	))
+	e := newTestEngine(p, rec)
+	e.Tools = reg
+	e.Options.Labels = engine.RunLabels{Correlation: map[string]string{"base": "base-value"}}
+	result := e.RunTurn(context.Background(), engine.RunInput{
+		RunID:                 "turn",
+		SessionID:             "thread",
+		TraceID:               "trace",
+		PreviousProviderState: previous,
+		Labels: engine.RunLabels{
+			Correlation: map[string]string{"turn": "turn-value"},
+			Host:        map[string]string{"surface": "desktop"},
+		},
+		History: []session.Message{{Role: session.User, Content: "read"}},
+	})
+	if result.Status != engine.Completed {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(p.Requests) != 2 || p.Requests[0].PreviousState == nil || p.Requests[0].PreviousState.ID != "turn-prev" {
+		t.Fatalf("RunTurn previous provider state missing from first request: %#v", p.Requests)
+	}
+	if p.Requests[1].PreviousState == nil || p.Requests[1].PreviousState.ID != "turn-prev" {
+		t.Fatalf("RunTurn previous provider state should continue until provider replaces it: %#v", p.Requests[1].PreviousState)
+	}
+	providerRequest := firstEvent(rec.Events, event.ProviderRequest)
+	meta, ok := providerRequest.Metadata.(map[string]any)
+	if !ok {
+		t.Fatalf("provider request metadata = %#v", providerRequest.Metadata)
+	}
+	if meta["schema_version"] != "event.v1" {
+		t.Fatalf("schema version missing: %#v", meta)
+	}
+	labels, ok := meta["labels"].(map[string]string)
+	if !ok || labels["correlation.turn"] != "turn-value" || labels["host.surface"] != "desktop" || labels["correlation.base"] != "" {
+		t.Fatalf("event labels = %#v", meta["labels"])
+	}
+	if strings.Contains(fmt.Sprint(p.Requests[0].Messages), "turn-value") || strings.Contains(fmt.Sprint(p.Requests[0].Messages), "desktop") || strings.Contains(fmt.Sprint(p.Requests[0].Messages), "turn-prev") {
+		t.Fatalf("provider-visible messages leaked labels/state: %#v", p.Requests[0].Messages)
+	}
+}
+
+func usageEventContextStatus(ev event.Event) (engine.ProviderUsageContextStatus, bool) {
+	if status, ok := ev.Metadata.(engine.ProviderUsageContextStatus); ok {
+		return status, true
+	}
+	meta, ok := ev.Metadata.(map[string]any)
+	if !ok {
+		return engine.ProviderUsageContextStatus{}, false
+	}
+	status, ok := meta["details"].(engine.ProviderUsageContextStatus)
+	return status, ok
 }
 
 func TestRequestRecordsRequestEstimateMetadata(t *testing.T) {
@@ -1031,6 +1155,255 @@ func TestAskUserSignalReturnsWaitingWithoutExecutingTool(t *testing.T) {
 	}
 }
 
+func TestCustomControlSpecWaitingSignalCarriesOpaquePayload(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("ask-rich", "host_wait", `{"prompt_id":"p1","question":"Pick a file","secret":"token abc"}`), harness.DoneReason("tool_calls")),
+	)
+	e := newTestEngine(p, rec)
+	e.Options.Labels = engine.RunLabels{Correlation: map[string]string{"run": "r1"}}
+	e.Options.ControlSpec = engine.ControlSpec{
+		Definitions: []provider.ToolDefinition{{
+			Name:        "host_wait",
+			Title:       "Host wait",
+			Description: "Wait for external input.",
+			InputSchema: tools.StrictObject(map[string]any{"prompt_id": tools.String("prompt id"), "question": tools.String("question"), "secret": tools.String("secret")}, []string{"prompt_id", "question"}),
+			Strict:      true,
+			Annotations: map[string]any{"kind": "control"},
+		}},
+		Project: func(call provider.ToolCall) (engine.ControlSignal, bool, error) {
+			return engine.ControlSignal{
+				Disposition: engine.ControlWaiting,
+				Name:        call.Name,
+				CallID:      call.ID,
+				OutputText:  "Pick a file",
+				Payload:     map[string]any{"prompt_id": "p1", "questions": []any{map[string]any{"id": "file", "mode": "write"}}},
+			}, true, nil
+		},
+	}
+
+	got := e.Run(context.Background(), "continue")
+
+	if got.Status != engine.Waiting || got.Output != "Pick a file" || got.ControlSignal == nil {
+		t.Fatalf("result = %#v, want waiting control signal", got)
+	}
+	if got.ControlSignal.Name != "host_wait" || got.ControlSignal.CallID != "ask-rich" || got.ControlSignal.Disposition != engine.ControlWaiting {
+		t.Fatalf("control signal = %#v", got.ControlSignal)
+	}
+	if got.ControlSignal.ArgsHash == "" || got.ControlSignal.Payload["prompt_id"] != "p1" || got.ControlSignal.Labels["correlation.run"] != "r1" {
+		t.Fatalf("control signal payload/labels/hash missing: %#v", got.ControlSignal)
+	}
+	if hasEvent(rec.Events, event.ToolCall) {
+		t.Fatalf("control signal should not be emitted as ordinary tool call: %#v", rec.Events)
+	}
+	messages, err := e.Store.Messages("run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(messages, func(msg session.Message) bool {
+		return msg.Role == session.Assistant && msg.ToolName == "host_wait" && msg.ToolArgs != "" && !strings.Contains(msg.Content, "token abc")
+	}) {
+		t.Fatalf("raw control call should be audit-only session data, not provider-visible text: %#v", messages)
+	}
+}
+
+func TestCustomControlSpecTerminalSignalCompletes(t *testing.T) {
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("done-rich", "host_complete", `{"summary":"finished"}`), harness.DoneReason("tool_calls")),
+	)
+	e := newTestEngine(p, &event.Recorder{})
+	e.Options.ControlSpec = engine.ControlSpec{
+		Definitions: []provider.ToolDefinition{{
+			Name:        "host_complete",
+			Description: "Complete the task.",
+			InputSchema: tools.StrictObject(map[string]any{"summary": tools.String("summary")}, []string{"summary"}),
+			Strict:      true,
+			Annotations: map[string]any{"kind": "control"},
+		}},
+		Project: func(call provider.ToolCall) (engine.ControlSignal, bool, error) {
+			return engine.ControlSignal{Disposition: engine.ControlTerminal, Name: call.Name, CallID: call.ID, OutputText: "finished"}, true, nil
+		},
+	}
+
+	got := e.Run(context.Background(), "finish")
+
+	if got.Status != engine.Completed || got.Output != "finished" || got.CompletionReason != engine.CompletionReasonToolSignal {
+		t.Fatalf("result = %#v, want terminal control completion", got)
+	}
+	if got.ControlSignal == nil || got.ControlSignal.Disposition != engine.ControlTerminal || got.ControlSignal.Name != "host_complete" {
+		t.Fatalf("control signal = %#v", got.ControlSignal)
+	}
+}
+
+func TestCustomControlContinueRequiresProviderVisibleText(t *testing.T) {
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("continue-rich", "host_continue", `{"secret":"token abc"}`), harness.DoneReason("tool_calls")),
+	)
+	e := newTestEngine(p, &event.Recorder{})
+	e.Options.ControlSpec = engine.ControlSpec{
+		Definitions: []provider.ToolDefinition{{
+			Name:        "host_continue",
+			Description: "Continue after host-side handling.",
+			InputSchema: tools.StrictObject(map[string]any{"secret": tools.String("secret")}, nil),
+			Strict:      true,
+			Annotations: map[string]any{"kind": "control"},
+		}},
+		Project: func(call provider.ToolCall) (engine.ControlSignal, bool, error) {
+			return engine.ControlSignal{
+				Disposition: engine.ControlContinue,
+				Name:        call.Name,
+				CallID:      call.ID,
+				Payload:     map[string]any{"secret": "token abc"},
+			}, true, nil
+		},
+	}
+
+	got := e.Run(context.Background(), "continue")
+
+	if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), "requires provider-visible output text") {
+		t.Fatalf("result = %#v, want missing provider-visible text failure", got)
+	}
+}
+
+func TestCustomControlContinueAddsOnlyOutputTextToProviderTranscript(t *testing.T) {
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("continue-rich", "host_continue", `{"secret":"token abc"}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	e := newTestEngine(p, &event.Recorder{})
+	e.Options.ControlSpec = engine.ControlSpec{
+		Definitions: []provider.ToolDefinition{{
+			Name:        "host_continue",
+			Description: "Continue after host-side handling.",
+			InputSchema: tools.StrictObject(map[string]any{"secret": tools.String("secret")}, nil),
+			Strict:      true,
+			Annotations: map[string]any{"kind": "control"},
+		}},
+		Project: func(call provider.ToolCall) (engine.ControlSignal, bool, error) {
+			return engine.ControlSignal{
+				Disposition: engine.ControlContinue,
+				Name:        call.Name,
+				CallID:      call.ID,
+				Payload:     map[string]any{"secret": "token abc"},
+				OutputText:  "Host accepted the continuation.",
+			}, true, nil
+		},
+	}
+
+	got := e.Run(context.Background(), "continue")
+
+	if got.Status != engine.Completed || got.Output != "done" {
+		t.Fatalf("result = %#v, want completed continuation", got)
+	}
+	if len(p.Requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(p.Requests))
+	}
+	second := p.Requests[1].Messages
+	if strings.Contains(fmt.Sprint(second), "token abc") {
+		t.Fatalf("provider request leaked host-only payload: %#v", second)
+	}
+	if !slices.ContainsFunc(second, func(msg session.Message) bool {
+		return msg.Role == session.Tool && msg.ToolName == "host_continue" && msg.Content == "Host accepted the continuation."
+	}) {
+		t.Fatalf("provider request missing synthetic control tool result: %#v", second)
+	}
+}
+
+func TestDeclaredControlToolMustProjectSignal(t *testing.T) {
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("control", "host_gate", `{"question":"Continue?"}`), harness.DoneReason("tool_calls")),
+	)
+	e := newTestEngine(p, &event.Recorder{})
+	e.Options.ControlSpec = engine.ControlSpec{
+		Definitions: []provider.ToolDefinition{{Name: "host_gate", Description: "Wait", InputSchema: tools.StrictObject(map[string]any{"question": tools.String("question")}, []string{"question"}), Annotations: map[string]any{"kind": "control"}}},
+		Project: func(provider.ToolCall) (engine.ControlSignal, bool, error) {
+			return engine.ControlSignal{}, false, nil
+		},
+	}
+
+	got := e.Run(context.Background(), "work")
+
+	if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), "projector returned no signal") {
+		t.Fatalf("result = %#v, want declared control projection failure", got)
+	}
+	if strings.Contains(got.Err.Error(), "unknown tool") {
+		t.Fatalf("declared control tool fell through to ordinary tool path: %v", got.Err)
+	}
+}
+
+func TestCustomControlToolMixedWithOrdinaryToolFails(t *testing.T) {
+	p := harness.NewScriptedProvider(
+		harness.Step(
+			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
+				{ID: "control", Name: "host_wait", Args: `{"question":"Continue?"}`},
+				{ID: "read", Name: "read", Args: `{"value":"README.md"}`},
+			}},
+			harness.DoneReason("tool_calls"),
+		),
+	)
+	reg := tools.NewRegistry()
+	mustRegister(t, reg, stringTool("read", "Read", true, tools.PermissionSpec{}, func(context.Context, string) (string, error) { return "ok", nil }))
+	e := newTestEngine(p, &event.Recorder{})
+	e.Tools = reg
+	e.Options.ControlSpec = engine.ControlSpec{
+		Definitions: []provider.ToolDefinition{{Name: "host_wait", Description: "Wait", InputSchema: tools.StrictObject(map[string]any{"question": tools.String("question")}, []string{"question"}), Annotations: map[string]any{"kind": "control"}}},
+		Project: func(call provider.ToolCall) (engine.ControlSignal, bool, error) {
+			return engine.ControlSignal{Disposition: engine.ControlWaiting, Name: call.Name, CallID: call.ID, OutputText: "Continue?"}, true, nil
+		},
+	}
+
+	got := e.Run(context.Background(), "work")
+
+	if got.Status != engine.Failed || !errors.Is(got.Err, engine.ErrMixedControlTools) {
+		t.Fatalf("result = %#v, want mixed-control failure", got)
+	}
+	messages, err := e.Store.Messages("run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(messages, func(msg session.Message) bool { return msg.ToolName == "host_wait" || msg.ToolName == "read" }) {
+		t.Fatalf("mixed control batch should not persist orphan tool calls: %#v", messages)
+	}
+}
+
+func TestProviderSafeHistoryProjectsCustomControlSignals(t *testing.T) {
+	store := session.NewMemoryStore()
+	controlSpec := engine.ControlSpec{
+		Definitions: []provider.ToolDefinition{{Name: "host_wait", Description: "Wait", InputSchema: tools.StrictObject(map[string]any{"question": tools.String("question"), "secret": tools.String("secret")}, []string{"question"}), Annotations: map[string]any{"kind": "control"}}},
+		Project: func(call provider.ToolCall) (engine.ControlSignal, bool, error) {
+			return engine.ControlSignal{Disposition: engine.ControlWaiting, Name: call.Name, CallID: call.ID, OutputText: "Need input"}, true, nil
+		},
+	}
+	firstProvider := harness.NewScriptedProvider(harness.Step(harness.Tool("control", "host_wait", `{"question":"Need input","secret":"token abc"}`), harness.DoneReason("tool_calls")))
+	first := newTestEngine(firstProvider, &event.Recorder{})
+	first.Store = store
+	first.Options.ControlSpec = controlSpec
+	if got := first.Run(context.Background(), "start"); got.Status != engine.Waiting {
+		t.Fatalf("first result = %#v", got)
+	}
+	secondProvider := harness.NewScriptedProvider(harness.Step(harness.Text("resumed"), harness.Done()))
+	second := newTestEngine(secondProvider, &event.Recorder{})
+	second.Store = store
+	second.Options.ControlSpec = controlSpec
+	got := second.Run(context.Background(), "answer")
+	if got.Status != engine.Completed {
+		t.Fatalf("second result = %#v", got)
+	}
+	if len(secondProvider.Requests) != 1 {
+		t.Fatalf("requests = %#v", secondProvider.Requests)
+	}
+	if slices.ContainsFunc(secondProvider.Requests[0].Messages, func(msg session.Message) bool {
+		return msg.ToolName == "host_wait" || strings.Contains(msg.Content, "token abc")
+	}) {
+		t.Fatalf("provider request leaked raw custom control call: %#v", secondProvider.Requests[0].Messages)
+	}
+	if !slices.ContainsFunc(secondProvider.Requests[0].Messages, func(msg session.Message) bool {
+		return msg.Role == session.Assistant && msg.Kind == session.MessageKindControlSignal && msg.Content == `Agent control signal "host_wait": Need input`
+	}) {
+		t.Fatalf("provider request missing safe custom control projection: %#v", secondProvider.Requests[0].Messages)
+	}
+}
+
 func TestMixedControlAndOrdinaryToolsFailBeforePersistingOrphans(t *testing.T) {
 	p := harness.NewScriptedProvider(
 		[]provider.StreamEvent{
@@ -1137,10 +1510,149 @@ func TestApprovalDeniedReturnsToolErrorAndAllowsModelRecovery(t *testing.T) {
 	if called {
 		t.Fatalf("approved-only tool handler ran after denial")
 	}
+	assertApprovalEvents(t, rec.Events, event.ToolApprovalRequested, event.ToolApprovalRejected)
 	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
 		return ev.Type == event.ToolResult && ev.Err == tools.ErrRejected.Error()
 	}) {
 		t.Fatalf("denial was not recorded as a structured tool result: %#v", rec.Events)
+	}
+}
+
+func TestApprovalApprovedLifecycleExecutesTool(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("write-1", "write", `{"value":"safe"}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Text("changed"), harness.Done()),
+	)
+	reg := tools.NewRegistry()
+	called := false
+	mustRegister(t, reg, tools.Define[stringArgs](
+		tools.Definition{
+			Name:        "write",
+			InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+			Effects:     []tools.Effect{tools.EffectWrite},
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAsk},
+		},
+		nil,
+		func(inv tools.Invocation[stringArgs]) ([]tools.ResourceRef, error) {
+			return []tools.ResourceRef{{Kind: "file", Value: inv.Args.Value}}, nil
+		},
+		func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
+			called = true
+			return tools.Result{Text: "written"}, nil
+		},
+	))
+	e := newTestEngine(p, rec)
+	e.Tools = reg
+	e.Options.Labels = engine.RunLabels{Correlation: map[string]string{"turn": "t1"}}
+	e.Approver = func(_ context.Context, req tools.ApprovalRequest) (tools.PermissionDecision, error) {
+		if req.ApprovalID != "write-1" || req.ArgsHash == "" || req.Labels["correlation.turn"] != "t1" {
+			t.Fatalf("approval request missing id/hash/labels: %#v", req)
+		}
+		if len(req.Resources) != 1 || req.Resources[0].Kind != "file" || req.Resources[0].Value != "safe" {
+			t.Fatalf("approval resources = %#v", req.Resources)
+		}
+		if len(req.Effects) != 1 || req.Effects[0] != tools.EffectWrite {
+			t.Fatalf("approval effects = %#v", req.Effects)
+		}
+		return tools.PermissionDecision{State: tools.PermissionDecisionStateAllow, Reason: "approved by test"}, nil
+	}
+
+	got := e.Run(context.Background(), "write")
+
+	if got.Status != engine.Completed || got.Output != "changed" {
+		t.Fatalf("result = %#v", got)
+	}
+	if !called {
+		t.Fatalf("approved tool handler did not run")
+	}
+	assertEventOrder(t, rec.Events, event.ToolCall, event.ToolApprovalRequested, event.ToolApprovalApproved, event.ToolResult)
+	requested := firstEvent(rec.Events, event.ToolApprovalRequested)
+	if requested.ArgsHash == "" || requested.Args != `{"value":"safe"}` {
+		t.Fatalf("approval requested event should include raw args for raw sink and stable hash: %#v", requested)
+	}
+	meta, ok := requested.Metadata.(map[string]any)
+	if !ok || meta["approval_id"] != "write-1" || meta["schema_version"] != "event.v1" {
+		t.Fatalf("approval metadata = %#v", requested.Metadata)
+	}
+}
+
+func TestApprovalRejectedReasonReturnsToolError(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("write-1", "write", `{"value":"danger"}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Text("recovered"), harness.Done()),
+	)
+	reg := tools.NewRegistry()
+	called := false
+	mustRegister(t, reg, stringTool("write", "Write", false, tools.PermissionSpec{Mode: tools.PermissionAsk}, func(context.Context, string) (string, error) {
+		called = true
+		return "changed", nil
+	}))
+	e := newTestEngine(p, rec)
+	e.Tools = reg
+	e.Approver = func(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {
+		return tools.PermissionDecisionDenied("not allowed by policy"), nil
+	}
+
+	got := e.Run(context.Background(), "write")
+
+	if got.Status != engine.Completed || got.Output != "recovered" {
+		t.Fatalf("result = %#v", got)
+	}
+	if called {
+		t.Fatalf("rejected tool handler ran")
+	}
+	assertApprovalEvents(t, rec.Events, event.ToolApprovalRequested, event.ToolApprovalRejected)
+	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
+		return ev.Type == event.ToolResult && ev.Err == "not allowed by policy"
+	}) {
+		t.Fatalf("rejection reason should be returned as structured tool error: %#v", rec.Events)
+	}
+}
+
+func TestApprovalTimeoutAndCancelLifecycleReturnToolErrors(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		err       error
+		wantEvent event.Type
+	}{
+		{name: "timeout", err: context.DeadlineExceeded, wantEvent: event.ToolApprovalTimedOut},
+		{name: "cancel", err: context.Canceled, wantEvent: event.ToolApprovalCanceled},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &event.Recorder{}
+			p := harness.NewScriptedProvider(
+				harness.Step(harness.Tool("write-1", "write", `{"value":"danger"}`), harness.DoneReason("tool_calls")),
+				harness.Step(harness.Text("recovered"), harness.Done()),
+			)
+			reg := tools.NewRegistry()
+			called := false
+			mustRegister(t, reg, stringTool("write", "Write", false, tools.PermissionSpec{Mode: tools.PermissionAsk}, func(context.Context, string) (string, error) {
+				called = true
+				return "changed", nil
+			}))
+			e := newTestEngine(p, rec)
+			e.Tools = reg
+			e.Approver = func(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {
+				return tools.PermissionDecision{}, tt.err
+			}
+
+			got := e.Run(context.Background(), "write")
+
+			if got.Status != engine.Completed || got.Output != "recovered" {
+				t.Fatalf("result = %#v", got)
+			}
+			if called {
+				t.Fatalf("%s approval tool handler ran", tt.name)
+			}
+			assertApprovalEvents(t, rec.Events, event.ToolApprovalRequested, tt.wantEvent)
+			if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
+				return ev.Type == event.ToolResult && ev.Err == tt.err.Error()
+			}) {
+				t.Fatalf("%s approval error should be returned as structured tool error: %#v", tt.name, rec.Events)
+			}
+		})
 	}
 }
 
@@ -2495,6 +3007,20 @@ func assertEventOrder(t *testing.T, events []event.Event, want ...event.Type) {
 
 func hasEvent(events []event.Event, typ event.Type) bool {
 	return slices.ContainsFunc(events, func(ev event.Event) bool { return ev.Type == typ })
+}
+
+func assertApprovalEvents(t *testing.T, events []event.Event, want ...event.Type) {
+	t.Helper()
+	var got []event.Type
+	for _, ev := range events {
+		switch ev.Type {
+		case event.ToolApprovalRequested, event.ToolApprovalApproved, event.ToolApprovalRejected, event.ToolApprovalTimedOut, event.ToolApprovalCanceled:
+			got = append(got, ev.Type)
+		}
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("approval events = %v, want %v; all events = %#v", got, want, events)
+	}
 }
 
 func firstEvent(events []event.Event, typ event.Type) event.Event {
