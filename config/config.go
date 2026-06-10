@@ -18,7 +18,34 @@ const (
 
 	ProviderFake             = catalog.ProviderFake
 	ProviderOpenAICompatible = catalog.ProviderOpenAICompatible
+
+	DefaultAgentProfileID     = "floret"
+	DefaultFloretSystemPrompt = "You are Floret."
 )
+
+type PromptSource string
+
+const (
+	PromptSourceSystemPromptOverride PromptSource = "system_prompt_override"
+	PromptSourceAgentProfile         PromptSource = "agent_profile"
+	PromptSourceEnv                  PromptSource = "env"
+	PromptSourceDefaultFloret        PromptSource = "default_floret"
+	PromptSourceSessionSnapshot      PromptSource = "session_snapshot"
+)
+
+type AgentProfile struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Description  string `json:"description,omitempty"`
+	SystemPrompt string `json:"system_prompt"`
+}
+
+type PromptIdentity struct {
+	AgentProfileID   string       `json:"agent_profile_id"`
+	AgentProfileName string       `json:"agent_profile_name"`
+	SystemPromptHash string       `json:"system_prompt_hash"`
+	Source           PromptSource `json:"source"`
+}
 
 type Config struct {
 	Provider string
@@ -32,6 +59,8 @@ type Config struct {
 	PromptCacheDir          string
 	PromptCacheRetention    string
 	SystemPrompt            string
+	AgentProfile            AgentProfile
+	PromptIdentity          PromptIdentity
 	SkillsEnabled           bool
 	SkillSources            []string
 	SkillPromptBudgetBytes  int
@@ -41,6 +70,9 @@ type Config struct {
 	NoProgressLimit         int
 	DuplicateToolLimit      int
 	WallTime                time.Duration
+
+	promptSource    PromptSource
+	envSystemPrompt string
 }
 
 type Option func(*loader)
@@ -100,12 +132,20 @@ func fromValues(values map[string]string) (Config, error) {
 		RunID:                   get(values, "FLORET_RUN_ID", "default"),
 		PromptCacheDir:          get(values, "FLORET_PROMPT_CACHE_DIR", ".floret/sessions"),
 		PromptCacheRetention:    get(values, "FLORET_PROMPT_CACHE_RETENTION", defaultPromptCacheRetention(providerName)),
-		SystemPrompt:            get(values, "FLORET_SYSTEM_PROMPT", "You are Floret."),
 		SkillSources:            splitList(get(values, "FLORET_SKILLS_PATHS", "")),
 		SkillPromptBudgetBytes:  16 * 1024,
 		MaxEmptyProviderRetries: 1,
 		NoProgressLimit:         2,
 		DuplicateToolLimit:      3,
+	}
+	promptSource := PromptSourceDefaultFloret
+	if prompt, ok := values["FLORET_SYSTEM_PROMPT"]; ok {
+		cfg.SystemPrompt = strings.TrimSpace(prompt)
+		if cfg.SystemPrompt != "" {
+			promptSource = PromptSourceEnv
+			cfg.promptSource = PromptSourceEnv
+			cfg.envSystemPrompt = cfg.SystemPrompt
+		}
 	}
 	policyOverrides := contextpolicy.Policy{MaxOutputTokens: defaultPolicy.MaxOutputTokens}
 	var err error
@@ -167,6 +207,7 @@ func fromValues(values map[string]string) (Config, error) {
 	if cfg.SkillPromptBudgetBytes, err = getInt(values, "FLORET_SKILL_PROMPT_BUDGET_BYTES", cfg.SkillPromptBudgetBytes); err != nil {
 		return Config{}, err
 	}
+	cfg = resolvePromptProfile(cfg, promptSource)
 	return validate(cfg)
 }
 
@@ -208,7 +249,207 @@ func Resolve(cfg Config, environ map[string]string) (Config, error) {
 	if cfg.ContextPolicy.MaxOutputTokens <= 0 && !cfg.MaxOutputTokensSet && !contextPolicyProvided {
 		cfg.ContextPolicy.MaxOutputTokens = defaultPolicy.MaxOutputTokens
 	}
+	cfg = resolvePromptProfile(cfg, promptSourceForConfig(cfg))
 	return validate(cfg)
+}
+
+func DefaultFloretAgentProfile() AgentProfile {
+	return AgentProfile{
+		ID:           DefaultAgentProfileID,
+		Name:         "Floret default assistant",
+		Description:  "Default interactive Floret agent.",
+		SystemPrompt: DefaultFloretSystemPrompt,
+	}
+}
+
+func ResolveEnvSystemPrompt(systemPrompt string) Config {
+	cfg := Config{}
+	if prompt := strings.TrimSpace(systemPrompt); prompt != "" {
+		cfg.SystemPrompt = prompt
+		cfg.promptSource = PromptSourceEnv
+		cfg.envSystemPrompt = prompt
+	}
+	return ResolvePrompt(cfg)
+}
+
+func ResolveAgentProfile(profile AgentProfile, systemPrompt string) AgentProfile {
+	resolved, _ := resolveAgentProfile(profile, systemPrompt, promptSourceForPromptInputs(profile, systemPrompt))
+	return resolved
+}
+
+func ResolvePrompt(cfg Config) Config {
+	return resolvePromptProfile(cfg, promptSourceForConfig(cfg))
+}
+
+func resolveAgentProfile(profile AgentProfile, systemPrompt string, source PromptSource) (AgentProfile, PromptIdentity) {
+	defaultProfile := DefaultFloretAgentProfile()
+	out := AgentProfile{
+		ID:           strings.TrimSpace(profile.ID),
+		Name:         strings.TrimSpace(profile.Name),
+		Description:  strings.TrimSpace(profile.Description),
+		SystemPrompt: strings.TrimSpace(profile.SystemPrompt),
+	}
+	if prompt := strings.TrimSpace(systemPrompt); prompt != "" {
+		out.SystemPrompt = prompt
+		switch source {
+		case PromptSourceSystemPromptOverride:
+			out.ID = "custom"
+			out.Name = "Custom session agent"
+			out.Description = "Session-level system prompt override."
+		case PromptSourceDefaultFloret:
+			if prompt == defaultProfile.SystemPrompt {
+				out.ID = defaultProfile.ID
+				out.Name = defaultProfile.Name
+				out.Description = defaultProfile.Description
+			} else {
+				source = PromptSourceSystemPromptOverride
+				out.ID = "custom"
+				out.Name = "Custom session agent"
+				out.Description = "Session-level system prompt override."
+			}
+		case PromptSourceAgentProfile:
+			if out.ID == "" {
+				out.ID = "custom"
+			}
+		case PromptSourceEnv:
+			out.ID = "custom"
+			out.Name = "Configured env agent"
+			if out.Description == "" {
+				out.Description = "Agent prompt loaded from FLORET_SYSTEM_PROMPT."
+			}
+		case PromptSourceSessionSnapshot:
+			if prompt == defaultProfile.SystemPrompt && out.ID == "" && out.Name == "" && out.Description == "" {
+				out = defaultProfile
+			} else if out.ID == "" {
+				out.ID = "custom"
+			}
+		default:
+			source = PromptSourceSystemPromptOverride
+			out.ID = "custom"
+			out.Name = "Custom session agent"
+			out.Description = "Session-level system prompt override."
+		}
+	}
+	if out.SystemPrompt == "" {
+		out = defaultProfile
+		source = PromptSourceDefaultFloret
+	}
+	if out.ID == "" {
+		if out.SystemPrompt == defaultProfile.SystemPrompt {
+			out.ID = defaultProfile.ID
+		} else {
+			out.ID = "custom"
+		}
+	}
+	if out.Name == "" {
+		if out.ID == defaultProfile.ID && out.SystemPrompt == defaultProfile.SystemPrompt {
+			out.Name = defaultProfile.Name
+		} else {
+			out.Name = out.ID
+		}
+	}
+	if out.Description == "" {
+		if out.ID == defaultProfile.ID && out.SystemPrompt == defaultProfile.SystemPrompt {
+			out.Description = defaultProfile.Description
+		} else {
+			out.Description = "Host-provided agent profile."
+		}
+	}
+	identity := PromptIdentity{
+		AgentProfileID:   out.ID,
+		AgentProfileName: out.Name,
+		SystemPromptHash: stablePromptHash(out.SystemPrompt),
+		Source:           normalizePromptSource(source, out, defaultProfile),
+	}
+	return out, identity
+}
+
+func resolvePromptProfile(cfg Config, source PromptSource) Config {
+	systemPrompt := cfg.SystemPrompt
+	if source == PromptSourceAgentProfile || source == PromptSourceDefaultFloret {
+		systemPrompt = ""
+	}
+	cfg.AgentProfile, cfg.PromptIdentity = resolveAgentProfile(cfg.AgentProfile, systemPrompt, source)
+	cfg.SystemPrompt = cfg.AgentProfile.SystemPrompt
+	cfg.promptSource = cfg.PromptIdentity.Source
+	if cfg.promptSource == PromptSourceEnv {
+		cfg.envSystemPrompt = cfg.SystemPrompt
+	} else {
+		cfg.envSystemPrompt = strings.TrimSpace(cfg.envSystemPrompt)
+	}
+	return cfg
+}
+
+func promptSourceForConfig(cfg Config) PromptSource {
+	if cfg.PromptIdentity.Source == PromptSourceSessionSnapshot {
+		return PromptSourceSessionSnapshot
+	}
+	systemPrompt := strings.TrimSpace(cfg.SystemPrompt)
+	if systemPrompt != "" && cfg.promptSource == PromptSourceEnv && cfg.envSystemPrompt != "" && systemPrompt == cfg.envSystemPrompt {
+		if strings.TrimSpace(cfg.AgentProfile.SystemPrompt) != "" && !sameAgentProfile(cfg.AgentProfile, envAgentProfile(systemPrompt)) {
+			return PromptSourceAgentProfile
+		}
+		return PromptSourceEnv
+	}
+	if cfg.promptSource == PromptSourceDefaultFloret && systemPrompt == DefaultFloretSystemPrompt {
+		if strings.TrimSpace(cfg.AgentProfile.SystemPrompt) != "" && !sameAgentProfile(cfg.AgentProfile, DefaultFloretAgentProfile()) {
+			return PromptSourceAgentProfile
+		}
+		return PromptSourceDefaultFloret
+	}
+	if cfg.promptSource == PromptSourceAgentProfile && strings.TrimSpace(cfg.AgentProfile.SystemPrompt) != "" && systemPrompt == strings.TrimSpace(cfg.AgentProfile.SystemPrompt) {
+		return PromptSourceAgentProfile
+	}
+	if cfg.promptSource == PromptSourceSystemPromptOverride && systemPrompt != "" {
+		return PromptSourceSystemPromptOverride
+	}
+	return promptSourceForPromptInputs(cfg.AgentProfile, cfg.SystemPrompt)
+}
+
+func promptSourceForPromptInputs(profile AgentProfile, systemPrompt string) PromptSource {
+	if strings.TrimSpace(systemPrompt) != "" {
+		return PromptSourceSystemPromptOverride
+	}
+	if strings.TrimSpace(profile.SystemPrompt) != "" {
+		return PromptSourceAgentProfile
+	}
+	return PromptSourceDefaultFloret
+}
+
+func normalizePromptSource(source PromptSource, profile, defaultProfile AgentProfile) PromptSource {
+	switch source {
+	case PromptSourceSystemPromptOverride, PromptSourceAgentProfile, PromptSourceEnv, PromptSourceDefaultFloret, PromptSourceSessionSnapshot:
+		return source
+	default:
+		if profile.ID == defaultProfile.ID && profile.SystemPrompt == defaultProfile.SystemPrompt {
+			return PromptSourceDefaultFloret
+		}
+		return PromptSourceAgentProfile
+	}
+}
+
+func stablePromptHash(value string) string {
+	return cache.StableHash(value)
+}
+
+func envAgentProfile(systemPrompt string) AgentProfile {
+	prompt := strings.TrimSpace(systemPrompt)
+	if prompt == "" {
+		return AgentProfile{}
+	}
+	return AgentProfile{
+		ID:           "custom",
+		Name:         "Configured env agent",
+		Description:  "Agent prompt loaded from FLORET_SYSTEM_PROMPT.",
+		SystemPrompt: prompt,
+	}
+}
+
+func sameAgentProfile(a, b AgentProfile) bool {
+	return strings.TrimSpace(a.ID) == strings.TrimSpace(b.ID) &&
+		strings.TrimSpace(a.Name) == strings.TrimSpace(b.Name) &&
+		strings.TrimSpace(a.Description) == strings.TrimSpace(b.Description) &&
+		strings.TrimSpace(a.SystemPrompt) == strings.TrimSpace(b.SystemPrompt)
 }
 
 func defaultPromptCacheRetention(providerName string) string {

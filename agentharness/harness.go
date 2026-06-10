@@ -81,6 +81,7 @@ type Options struct {
 	Approver            tools.Approver
 	StopHook            engine.StopHook
 	CompactionGenerator compaction.SummaryGenerator
+	CompactionPrompt    compaction.PromptOptions
 	Artifacts           artifact.Store
 	TurnPolicy          TurnPolicy
 	LoopLimits          LoopLimits
@@ -1001,10 +1002,11 @@ func (m *durableCompactionManager) Compact(ctx context.Context, req engine.Compa
 	generator := m.thread.harness.options.CompactionGenerator
 	if generator == nil {
 		generator = enginecompaction.ProviderSummaryGenerator{
-			Provider:     req.Provider,
-			ProviderName: req.ProviderName,
-			Model:        req.Model,
-			Policy:       req.Policy,
+			Provider:      req.Provider,
+			ProviderName:  req.ProviderName,
+			Model:         req.Model,
+			Policy:        req.Policy,
+			PromptOptions: m.thread.harness.options.CompactionPrompt,
 		}
 	}
 	compactionID := m.thread.harness.nextID("compaction")

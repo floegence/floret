@@ -97,6 +97,8 @@ type agentSession struct {
 	id                      string
 	transient               bool
 	profile                 ProviderProfile
+	agentProfile            config.AgentProfile
+	promptIdentity          config.PromptIdentity
 	systemPrompt            string
 	selectedTools           []string
 	hostedTools             []provider.HostedToolDefinition
@@ -201,22 +203,20 @@ func (r *Runner) CreateIdleAgentSession(ctx context.Context, req AgentRunRequest
 	if err != nil {
 		return AgentSessionSnapshot{}, err
 	}
-	cfg := config.Config{
-		Provider:                profile.Provider,
-		Model:                   profile.Model,
-		BaseURL:                 profile.BaseURL,
-		APIKey:                  profile.APIKey,
-		FakeResponse:            profile.FakeResponse,
-		RunID:                   fmt.Sprintf("testui-agent-%d", started.UnixNano()),
-		SystemPrompt:            strings.TrimSpace(req.SystemPrompt),
-		ContextPolicy:           req.ContextPolicy,
-		MaxEmptyProviderRetries: 1,
-		NoProgressLimit:         2,
-		DuplicateToolLimit:      3,
+	cfg, err := r.promptConfigForRun(req)
+	if err != nil {
+		return AgentSessionSnapshot{}, err
 	}
-	if cfg.SystemPrompt == "" {
-		cfg.SystemPrompt = "You are Floret. Answer naturally when the user's request is complete, or call ask_user if you need missing information."
-	}
+	cfg.Provider = profile.Provider
+	cfg.Model = profile.Model
+	cfg.BaseURL = profile.BaseURL
+	cfg.APIKey = profile.APIKey
+	cfg.FakeResponse = profile.FakeResponse
+	cfg.RunID = fmt.Sprintf("testui-agent-%d", started.UnixNano())
+	cfg.ContextPolicy = req.ContextPolicy
+	cfg.MaxEmptyProviderRetries = 1
+	cfg.NoProgressLimit = 2
+	cfg.DuplicateToolLimit = 3
 	cfg, err = config.Resolve(cfg, nil)
 	if err != nil {
 		return AgentSessionSnapshot{}, err
@@ -229,15 +229,17 @@ func (r *Runner) CreateIdleAgentSession(ctx context.Context, req AgentRunRequest
 		return AgentSessionSnapshot{}, fmt.Errorf("%w: %v", errAgentSessionInput, err)
 	}
 	sess, err := r.buildAgentSession(ctx, agentSessionBuildOptions{
-		ID:            sessionID,
-		CreatedAt:     started,
-		UpdatedAt:     started,
-		Profile:       resolvedProfile,
-		SystemPrompt:  cfg.SystemPrompt,
-		SelectedTools: selectedTools,
-		ContextPolicy: cfg.ContextPolicy,
-		Config:        cfg,
-		Start:         true,
+		ID:             sessionID,
+		CreatedAt:      started,
+		UpdatedAt:      started,
+		Profile:        resolvedProfile,
+		AgentProfile:   cfg.AgentProfile,
+		PromptIdentity: cfg.PromptIdentity,
+		SystemPrompt:   cfg.SystemPrompt,
+		SelectedTools:  selectedTools,
+		ContextPolicy:  cfg.ContextPolicy,
+		Config:         cfg,
+		Start:          true,
 	})
 	if err != nil {
 		return AgentSessionSnapshot{}, err
@@ -356,22 +358,20 @@ func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) Ag
 		return localInspectionAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusBadRequest, err))
 	}
 	resp.Profile = stripProfileSecret(profile)
-	cfg := config.Config{
-		Provider:                profile.Provider,
-		Model:                   profile.Model,
-		BaseURL:                 profile.BaseURL,
-		APIKey:                  profile.APIKey,
-		FakeResponse:            profile.FakeResponse,
-		RunID:                   "testui-agent-" + resp.ID,
-		SystemPrompt:            strings.TrimSpace(req.SystemPrompt),
-		ContextPolicy:           req.ContextPolicy,
-		MaxEmptyProviderRetries: 1,
-		NoProgressLimit:         2,
-		DuplicateToolLimit:      3,
+	cfg, err := r.promptConfigForRun(req)
+	if err != nil {
+		return localInspectionAgentRunResponse(r.failAgentRun(resp, err))
 	}
-	if cfg.SystemPrompt == "" {
-		cfg.SystemPrompt = "You are Floret. Answer naturally when the user's request is complete, or call ask_user if you need missing information."
-	}
+	cfg.Provider = profile.Provider
+	cfg.Model = profile.Model
+	cfg.BaseURL = profile.BaseURL
+	cfg.APIKey = profile.APIKey
+	cfg.FakeResponse = profile.FakeResponse
+	cfg.RunID = "testui-agent-" + resp.ID
+	cfg.ContextPolicy = req.ContextPolicy
+	cfg.MaxEmptyProviderRetries = 1
+	cfg.NoProgressLimit = 2
+	cfg.DuplicateToolLimit = 3
 	cfg, err = config.Resolve(cfg, nil)
 	if err != nil {
 		return localInspectionAgentRunResponse(r.failAgentRun(resp, err))
@@ -385,15 +385,17 @@ func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) Ag
 		return localInspectionAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusBadRequest, err))
 	}
 	sess, err := r.buildAgentSession(ctx, agentSessionBuildOptions{
-		ID:            sessionID,
-		CreatedAt:     started,
-		UpdatedAt:     started,
-		Profile:       resolvedProfile,
-		SystemPrompt:  cfg.SystemPrompt,
-		SelectedTools: selectedTools,
-		ContextPolicy: cfg.ContextPolicy,
-		Config:        cfg,
-		Start:         true,
+		ID:             sessionID,
+		CreatedAt:      started,
+		UpdatedAt:      started,
+		Profile:        resolvedProfile,
+		AgentProfile:   cfg.AgentProfile,
+		PromptIdentity: cfg.PromptIdentity,
+		SystemPrompt:   cfg.SystemPrompt,
+		SelectedTools:  selectedTools,
+		ContextPolicy:  cfg.ContextPolicy,
+		Config:         cfg,
+		Start:          true,
 	})
 	if err != nil {
 		return localInspectionAgentRunResponse(r.failAgentRun(resp, err))
@@ -797,21 +799,23 @@ func (r *Runner) AgentSessions(ctx context.Context) []AgentSessionSnapshot {
 }
 
 type agentSessionBuildOptions struct {
-	ID            string
-	Transient     bool
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	Profile       ProviderProfile
-	SystemPrompt  string
-	SelectedTools []string
-	ContextPolicy contextpolicy.Policy
-	Config        config.Config
-	Turns         []AgentTurnSummary
-	Start         bool
+	ID             string
+	Transient      bool
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	Profile        ProviderProfile
+	AgentProfile   config.AgentProfile
+	PromptIdentity config.PromptIdentity
+	SystemPrompt   string
+	SelectedTools  []string
+	ContextPolicy  contextpolicy.Policy
+	Config         config.Config
+	Turns          []AgentTurnSummary
+	Start          bool
 }
 
 func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOptions) (*agentSession, error) {
-	cfg := opts.Config
+	cfg := config.ResolvePrompt(agentSessionPromptConfig(opts))
 	cfg.RunID = opts.ID
 	p, err := r.providerFactory()(cfg)
 	if err != nil {
@@ -901,6 +905,8 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 		id:                      opts.ID,
 		transient:               opts.Transient,
 		profile:                 opts.Profile,
+		agentProfile:            cfg.AgentProfile,
+		promptIdentity:          cfg.PromptIdentity,
 		systemPrompt:            cfg.SystemPrompt,
 		selectedTools:           selectedTools,
 		hostedTools:             hostedTools,
@@ -922,6 +928,40 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 		createdAt:               createdAt,
 		updatedAt:               updatedAt,
 	}, nil
+}
+
+func (r Runner) promptConfigForRun(req AgentRunRequest) (config.Config, error) {
+	if prompt := strings.TrimSpace(req.SystemPrompt); prompt != "" {
+		return config.Config{SystemPrompt: prompt}, nil
+	}
+	if strings.TrimSpace(req.AgentProfile.SystemPrompt) != "" {
+		return config.Config{AgentProfile: req.AgentProfile}, nil
+	}
+	values, err := readDotEnv(r.EnvFile)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return config.Config{}, err
+	}
+	if prompt := strings.TrimSpace(values["FLORET_SYSTEM_PROMPT"]); prompt != "" {
+		return config.ResolveEnvSystemPrompt(prompt), nil
+	}
+	return config.Config{}, nil
+}
+
+func agentSessionPromptConfig(opts agentSessionBuildOptions) config.Config {
+	cfg := opts.Config
+	if hasPromptConfigInput(cfg) {
+		return cfg
+	}
+	cfg.SystemPrompt = opts.SystemPrompt
+	cfg.AgentProfile = opts.AgentProfile
+	cfg.PromptIdentity = opts.PromptIdentity
+	return cfg
+}
+
+func hasPromptConfigInput(cfg config.Config) bool {
+	return strings.TrimSpace(cfg.SystemPrompt) != "" ||
+		strings.TrimSpace(cfg.AgentProfile.SystemPrompt) != "" ||
+		cfg.PromptIdentity.Source != ""
 }
 
 func (r *Runner) agentSessionIDGenerator(ctx context.Context, repo sessiontree.Repo, sessionID string) func(string) string {
@@ -1272,6 +1312,7 @@ func (r *Runner) restoreAgentSession(ctx context.Context, sessionID string) (*ag
 }
 
 func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSessionMetadata) (AgentSessionSnapshot, error) {
+	promptCfg := promptConfigFromSessionMetadata(meta)
 	store, err := r.sessionStorage(ctx)
 	if err != nil {
 		return AgentSessionSnapshot{}, err
@@ -1312,7 +1353,9 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 		CreatedAt:               meta.CreatedAt,
 		UpdatedAt:               updatedAt,
 		Profile:                 stripProfileSecret(meta.Profile),
-		SystemPrompt:            meta.SystemPrompt,
+		AgentProfile:            promptCfg.AgentProfile,
+		PromptIdentity:          promptCfg.PromptIdentity,
+		SystemPrompt:            promptCfg.SystemPrompt,
 		SelectedTools:           cloneSelectedTools(meta.SelectedTools),
 		HostedTools:             append([]provider.HostedToolDefinition(nil), searchSnapshotHostedTools(meta.Profile, r.EnvFile, meta.SelectedTools)...),
 		UnavailableCapabilities: searchSnapshotUnavailable(meta.Profile, r.EnvFile, meta.SelectedTools),
@@ -1441,6 +1484,8 @@ func (r *Runner) fallbackAgentSessionSnapshot(sess *agentSession, status engine.
 			ID:                      sess.id,
 			CreatedAt:               sess.createdAt,
 			Profile:                 sess.profile,
+			AgentProfile:            sess.agentProfile,
+			PromptIdentity:          sess.promptIdentity,
 			SystemPrompt:            sess.systemPrompt,
 			SelectedTools:           cloneSelectedTools(sess.selectedTools),
 			HostedTools:             append([]provider.HostedToolDefinition(nil), sess.hostedTools...),
@@ -1449,6 +1494,7 @@ func (r *Runner) fallbackAgentSessionSnapshot(sess *agentSession, status engine.
 			ContextPolicy:           sess.contextPolicy,
 		}
 	}
+	restoreInternalSnapshotIdentity(&snapshot, sess)
 	snapshot.Status = string(status)
 	snapshot.Phase = sessionlifecycle.PhaseIdle
 	snapshot.UpdatedAt = sess.updatedAt
@@ -1590,6 +1636,8 @@ func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) 
 		CreatedAt:               sess.createdAt,
 		UpdatedAt:               sess.updatedAt,
 		Profile:                 sess.profile,
+		AgentProfile:            sess.agentProfile,
+		PromptIdentity:          sess.promptIdentity,
 		SystemPrompt:            sess.systemPrompt,
 		SelectedTools:           cloneSelectedTools(sess.selectedTools),
 		HostedTools:             append([]provider.HostedToolDefinition(nil), sess.hostedTools...),
@@ -1622,6 +1670,8 @@ func (r *Runner) markAgentSessionRunningLocked(sess *agentSession, turnID string
 			ID:                      sess.id,
 			CreatedAt:               sess.createdAt,
 			Profile:                 sess.profile,
+			AgentProfile:            sess.agentProfile,
+			PromptIdentity:          sess.promptIdentity,
 			SystemPrompt:            sess.systemPrompt,
 			SelectedTools:           cloneSelectedTools(sess.selectedTools),
 			HostedTools:             append([]provider.HostedToolDefinition(nil), sess.hostedTools...),
@@ -1630,6 +1680,7 @@ func (r *Runner) markAgentSessionRunningLocked(sess *agentSession, turnID string
 			ContextPolicy:           sess.contextPolicy,
 		}
 	}
+	restoreInternalSnapshotIdentity(&snapshot, sess)
 	snapshot.Status = lifecycle.Status()
 	snapshot.Phase = lifecycle.Phase()
 	snapshot.UpdatedAt = now
@@ -1649,6 +1700,8 @@ func (r *Runner) runningAgentSessionSnapshot(ctx context.Context, sess *agentSes
 			CreatedAt:               sess.createdAt,
 			UpdatedAt:               sess.createdAt,
 			Profile:                 sess.profile,
+			AgentProfile:            sess.agentProfile,
+			PromptIdentity:          sess.promptIdentity,
 			SystemPrompt:            sess.systemPrompt,
 			SelectedTools:           cloneSelectedTools(sess.selectedTools),
 			HostedTools:             append([]provider.HostedToolDefinition(nil), sess.hostedTools...),
@@ -1657,6 +1710,7 @@ func (r *Runner) runningAgentSessionSnapshot(ctx context.Context, sess *agentSes
 			ContextPolicy:           sess.contextPolicy,
 		}
 	}
+	restoreInternalSnapshotIdentity(&snapshot, sess)
 	snapshot.Status = lifecycle.Status()
 	snapshot.Phase = lifecycle.Phase()
 	snapshot.LatestTurnID = lifecycle.LatestTurnID()
@@ -1668,6 +1722,23 @@ func (r *Runner) runningAgentSessionSnapshot(ctx context.Context, sess *agentSes
 	}
 	snapshot.Observation = r.runningAgentObservation(sess, snapshot)
 	return snapshot
+}
+
+// restoreInternalSnapshotIdentity fills in raw identity fields that cached
+// in-memory snapshots need before they pass through the local inspection sanitizer.
+func restoreInternalSnapshotIdentity(snapshot *AgentSessionSnapshot, sess *agentSession) {
+	if snapshot == nil || sess == nil {
+		return
+	}
+	if snapshot.AgentProfile.ID == "" && snapshot.AgentProfile.SystemPrompt == "" {
+		snapshot.AgentProfile = sess.agentProfile
+	}
+	if snapshot.PromptIdentity.Source == "" {
+		snapshot.PromptIdentity = sess.promptIdentity
+	}
+	if snapshot.SystemPrompt == "" {
+		snapshot.SystemPrompt = sess.systemPrompt
+	}
 }
 
 func (r *Runner) refreshRunningSnapshotFromThread(ctx context.Context, sess *agentSession, snapshot AgentSessionSnapshot) (AgentSessionSnapshot, error) {

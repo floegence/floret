@@ -13,6 +13,7 @@ import (
 	"github.com/floegence/floret/provider/cache"
 	"github.com/floegence/floret/session"
 	"github.com/floegence/floret/session/artifact"
+	"github.com/floegence/floret/session/compaction"
 	"github.com/floegence/floret/session/contextpolicy"
 	"github.com/floegence/floret/sessiontree"
 	"github.com/floegence/floret/tools"
@@ -21,17 +22,18 @@ import (
 )
 
 type HarnessOptions struct {
-	Store       sessiontree.Repo
-	Tools       *tools.Registry
-	PromptStore cache.Store
-	Artifacts   artifact.Store
-	Sink        event.Sink
-	Approver    tools.Approver
-	StopHook    engine.StopHook
-	TurnPolicy  agentharness.TurnPolicy
-	LoopLimits  agentharness.LoopLimits
-	NewID       func(string) string
-	Capability  CapabilityOptions
+	Store            sessiontree.Repo
+	Tools            *tools.Registry
+	PromptStore      cache.Store
+	Artifacts        artifact.Store
+	Sink             event.Sink
+	Approver         tools.Approver
+	StopHook         engine.StopHook
+	CompactionPrompt compaction.PromptOptions
+	TurnPolicy       agentharness.TurnPolicy
+	LoopLimits       agentharness.LoopLimits
+	NewID            func(string) string
+	Capability       CapabilityOptions
 }
 
 type CapabilityOptions struct {
@@ -47,7 +49,7 @@ func NewEngine(cfg config.Config, store session.Store, registry *tools.Registry)
 	if err != nil {
 		return nil, err
 	}
-	p, err := adapters.NewProvider(cfg)
+	p, err := adapters.NewProvider(resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -75,6 +77,7 @@ func NewHarnessWithProvider(cfg config.Config, p provider.Provider, opts Harness
 }
 
 func NewHarnessWithProviderE(cfg config.Config, p provider.Provider, opts HarnessOptions) (*agentharness.AgentHarness, error) {
+	cfg = config.ResolvePrompt(cfg)
 	repo := opts.Store
 	if repo == nil {
 		repo = sessiontree.NewMemoryRepo()
@@ -118,20 +121,21 @@ func NewHarnessWithProviderE(cfg config.Config, p provider.Provider, opts Harnes
 		loopLimits.WallTime = cfg.WallTime
 	}
 	return agentharness.New(agentharness.Options{
-		Provider:     p,
-		ProviderName: cfg.Provider,
-		Model:        cfg.Model,
-		SystemPrompt: effectivePrompt,
-		Tools:        registry,
-		PromptStore:  promptStore,
-		Repo:         repo,
-		Sink:         opts.Sink,
-		Approver:     opts.Approver,
-		StopHook:     opts.StopHook,
-		Artifacts:    artifacts,
-		TurnPolicy:   turnPolicy,
-		LoopLimits:   loopLimits,
-		NewID:        opts.NewID,
+		Provider:         p,
+		ProviderName:     cfg.Provider,
+		Model:            cfg.Model,
+		SystemPrompt:     effectivePrompt,
+		Tools:            registry,
+		PromptStore:      promptStore,
+		Repo:             repo,
+		Sink:             opts.Sink,
+		Approver:         opts.Approver,
+		StopHook:         opts.StopHook,
+		CompactionPrompt: opts.CompactionPrompt,
+		Artifacts:        artifacts,
+		TurnPolicy:       turnPolicy,
+		LoopLimits:       loopLimits,
+		NewID:            opts.NewID,
 	}), nil
 }
 
@@ -268,6 +272,7 @@ func (s mcpEventSink) EmitMCP(diag mcp.Diagnostic) {
 }
 
 func NewEngineWithProvider(cfg config.Config, p provider.Provider, store session.Store, registry *tools.Registry) (*engine.Engine, error) {
+	cfg = config.ResolvePrompt(cfg)
 	if store == nil {
 		store = session.NewMemoryStore()
 	}

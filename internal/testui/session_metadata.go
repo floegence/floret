@@ -19,19 +19,21 @@ import (
 const agentSessionMetadataVersion = 1
 
 type agentSessionMetadata struct {
-	Version        int                  `json:"version"`
-	ID             string               `json:"id"`
-	CreatedAt      time.Time            `json:"created_at"`
-	UpdatedAt      time.Time            `json:"updated_at"`
-	ProfileID      string               `json:"profile_id,omitempty"`
-	Profile        ProviderProfile      `json:"profile"`
-	SystemPrompt   string               `json:"system_prompt"`
-	SelectedTools  []string             `json:"selected_tools"`
-	ToolMode       string               `json:"tool_mode,omitempty"`
-	ContextPolicy  contextpolicy.Policy `json:"context_policy"`
-	Engine         agentSessionEngine   `json:"engine"`
-	Turns          []AgentTurnSummary   `json:"turns"`
-	APIKeyRequired bool                 `json:"api_key_required,omitempty"`
+	Version        int                   `json:"version"`
+	ID             string                `json:"id"`
+	CreatedAt      time.Time             `json:"created_at"`
+	UpdatedAt      time.Time             `json:"updated_at"`
+	ProfileID      string                `json:"profile_id,omitempty"`
+	Profile        ProviderProfile       `json:"profile"`
+	AgentProfile   config.AgentProfile   `json:"agent_profile,omitempty"`
+	PromptIdentity config.PromptIdentity `json:"prompt_identity,omitempty"`
+	SystemPrompt   string                `json:"system_prompt"`
+	SelectedTools  []string              `json:"selected_tools"`
+	ToolMode       string                `json:"tool_mode,omitempty"`
+	ContextPolicy  contextpolicy.Policy  `json:"context_policy"`
+	Engine         agentSessionEngine    `json:"engine"`
+	Turns          []AgentTurnSummary    `json:"turns"`
+	APIKeyRequired bool                  `json:"api_key_required,omitempty"`
 }
 
 type agentSessionEngine struct {
@@ -121,7 +123,16 @@ func (r *Runner) loadAgentSessionMetadata(sessionID string) (agentSessionMetadat
 	if err != nil {
 		return agentSessionMetadata{}, err
 	}
-	return r.normalizeAgentSessionMetadata(sessionID, meta)
+	normalized, err := r.normalizeAgentSessionMetadata(sessionID, meta)
+	if err != nil {
+		return agentSessionMetadata{}, err
+	}
+	if agentSessionMetadataPromptChanged(meta, normalized) {
+		if err := r.saveAgentSessionMetadata(normalized); err != nil {
+			return agentSessionMetadata{}, err
+		}
+	}
+	return normalized, nil
 }
 
 func (r Runner) loadAgentSessionMetadataFile(sessionID string) (agentSessionMetadata, error) {
@@ -153,7 +164,17 @@ func (r Runner) normalizeAgentSessionMetadata(sessionID string, meta agentSessio
 	meta.SelectedTools = cloneSelectedTools(selected)
 	meta.ToolMode = ""
 	meta.ContextPolicy = contextpolicy.Normalize(meta.ContextPolicy)
+	promptCfg := promptConfigFromSessionMetadata(meta)
+	meta.SystemPrompt = promptCfg.SystemPrompt
+	meta.AgentProfile = promptCfg.AgentProfile
+	meta.PromptIdentity = promptCfg.PromptIdentity
 	return meta, nil
+}
+
+func agentSessionMetadataPromptChanged(before, after agentSessionMetadata) bool {
+	return before.SystemPrompt != after.SystemPrompt ||
+		before.AgentProfile != after.AgentProfile ||
+		before.PromptIdentity != after.PromptIdentity
 }
 
 func (r *Runner) listAgentSessionMetadata() ([]agentSessionMetadata, error) {
@@ -229,15 +250,17 @@ func searchSnapshotUnavailable(profile ProviderProfile, envFile string, selected
 
 func (r Runner) metadataFromSession(sess *agentSession) agentSessionMetadata {
 	return agentSessionMetadata{
-		Version:       agentSessionMetadataVersion,
-		ID:            sess.id,
-		CreatedAt:     sess.createdAt,
-		UpdatedAt:     sess.updatedAt,
-		ProfileID:     sess.profile.ID,
-		Profile:       sess.profile,
-		SystemPrompt:  sess.systemPrompt,
-		SelectedTools: cloneSelectedTools(sess.selectedTools),
-		ContextPolicy: sess.contextPolicy,
+		Version:        agentSessionMetadataVersion,
+		ID:             sess.id,
+		CreatedAt:      sess.createdAt,
+		UpdatedAt:      sess.updatedAt,
+		ProfileID:      sess.profile.ID,
+		Profile:        sess.profile,
+		AgentProfile:   sess.agentProfile,
+		PromptIdentity: sess.promptIdentity,
+		SystemPrompt:   sess.systemPrompt,
+		SelectedTools:  cloneSelectedTools(sess.selectedTools),
+		ContextPolicy:  sess.contextPolicy,
 		Engine: agentSessionEngine{
 			MaxEmptyProviderRetries: sess.cfg.MaxEmptyProviderRetries,
 			NoProgressLimit:         sess.cfg.NoProgressLimit,
@@ -263,6 +286,7 @@ func (r Runner) cfgFromSessionMetadata(meta agentSessionMetadata) (config.Config
 		}
 		profile.APIKeySet = saved.APIKey != "" || saved.APIKeySet || meta.APIKeyRequired
 	}
+	promptCfg := promptConfigFromSessionMetadata(meta)
 	cfg := config.Config{
 		Provider:                profile.Provider,
 		Model:                   profile.Model,
@@ -270,7 +294,9 @@ func (r Runner) cfgFromSessionMetadata(meta agentSessionMetadata) (config.Config
 		APIKey:                  profile.APIKey,
 		FakeResponse:            profile.FakeResponse,
 		RunID:                   meta.ID,
-		SystemPrompt:            meta.SystemPrompt,
+		SystemPrompt:            promptCfg.SystemPrompt,
+		AgentProfile:            promptCfg.AgentProfile,
+		PromptIdentity:          promptCfg.PromptIdentity,
 		ContextPolicy:           meta.ContextPolicy,
 		MaxEmptyProviderRetries: meta.Engine.MaxEmptyProviderRetries,
 		NoProgressLimit:         meta.Engine.NoProgressLimit,
@@ -292,6 +318,18 @@ func (r Runner) cfgFromSessionMetadata(meta agentSessionMetadata) (config.Config
 	}
 	resolved := resolvedProfileFromConfig(profile, cfg, cfg.APIKey != "" || profile.APIKeySet || meta.APIKeyRequired)
 	return cfg, resolved, nil
+}
+
+func promptConfigFromSessionMetadata(meta agentSessionMetadata) config.Config {
+	cfg := config.Config{
+		SystemPrompt:   meta.SystemPrompt,
+		AgentProfile:   meta.AgentProfile,
+		PromptIdentity: meta.PromptIdentity,
+	}
+	if cfg.PromptIdentity.Source == "" {
+		cfg.PromptIdentity.Source = config.PromptSourceSessionSnapshot
+	}
+	return config.ResolvePrompt(cfg)
 }
 
 func safeSessionFileName(value string) string {

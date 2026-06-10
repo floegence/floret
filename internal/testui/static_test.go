@@ -28,6 +28,12 @@ func TestStaticConsoleDocumentsWebSearchAndExternalFetchBoundary(t *testing.T) {
 	if !strings.Contains(inspector, "Selected tools/capabilities") || !strings.Contains(inspector, "Provider-hosted tools") || !strings.Contains(inspector, "Unavailable") {
 		t.Fatalf("inspector does not split selected, hosted, and unavailable capabilities")
 	}
+	if !strings.Contains(inspector, "renderIdentitySummary(session)") ||
+		!strings.Contains(inspector, "Agent Identity") ||
+		!strings.Contains(inspector, "System prompt hash") ||
+		strings.Contains(inspector, "profile.system_prompt") {
+		t.Fatalf("inspector should expose profile identity metadata without rendering the raw system prompt")
+	}
 }
 
 func TestStaticConsoleToolSelectionSemanticsStayAuditable(t *testing.T) {
@@ -159,7 +165,7 @@ func TestStaticConsoleCreatesSessionBeforeRunningInitialTurn(t *testing.T) {
 	appJS := readStaticTestFile(t, "app.js")
 	apiJS := readStaticTestFile(t, "api.js")
 
-	for _, want := range []string{"api.createSession(payload)", "activateSessionSnapshot(session)", "void queueInitialTurn(session.id, payload.message, token)", "async function queueInitialTurn", "api.streamTurn(sessionID, { message: trimmed }"} {
+	for _, want := range []string{"newSessionRequestPayload(payload)", "api.createSession(request)", "activateSessionSnapshot(session)", "void queueInitialTurn(session.id, payload.message, token)", "async function queueInitialTurn", "api.streamTurn(sessionID, { message: trimmed }"} {
 		if !strings.Contains(appJS, want) {
 			t.Fatalf("app missing create-before-run flow %q", want)
 		}
@@ -189,6 +195,9 @@ func TestStaticConsoleNewSessionFieldsAreExplicitlyLabelled(t *testing.T) {
 		`id="new-profile-id" name="profile_id" aria-label="Profile"`,
 		`for="new-initial-task"`,
 		`id="new-initial-task" name="message" aria-label="Initial task"`,
+		`data-agent-profile`,
+		`for="new-custom-prompt"`,
+		`id="new-custom-prompt" name="custom_prompt" type="checkbox"`,
 		`for="new-system-prompt"`,
 		`id="new-system-prompt" name="system_prompt" aria-label="System prompt"`,
 		`for="new-context-window"`,
@@ -486,8 +495,19 @@ func TestStaticConsolePreservesDraftsAndSeparatesRefreshFailures(t *testing.T) {
 	if !strings.Contains(newSession, `form?.addEventListener("input"`) || !strings.Contains(newSession, "if (event.isComposing) return") || !strings.Contains(newSession, "persistDraft();") || !strings.Contains(newSession, "bindToolPresets(toolArea, toolsForProfile(profile), \"new-tools\", persistDraft)") {
 		t.Fatalf("new session form does not persist ordinary edits")
 	}
-	if !strings.Contains(newSession, `hasOwnProperty.call(draft, "message")`) || !strings.Contains(newSession, `hasOwnProperty.call(draft, "system_prompt")`) {
+	if !strings.Contains(newSession, `hasOwnProperty.call(draft, "message")`) ||
+		!strings.Contains(newSession, `hasOwnProperty.call(draft, "system_prompt")`) ||
+		!strings.Contains(newSession, `hasOwnProperty.call(draft, "custom_prompt")`) ||
+		!strings.Contains(appJS, "newSessionRequestPayload(payload)") ||
+		!strings.Contains(appJS, `customPrompt ? String(draft.system_prompt || "").trim() : ""`) ||
+		!strings.Contains(appJS, "Custom prompt is enabled") {
 		t.Fatalf("new session empty draft fields should not be replaced by defaults")
+	}
+	if strings.Contains(newSession, "agentProfile.system_prompt ||") ||
+		strings.Contains(newSession, "Base prompt") ||
+		strings.Contains(appJS, "state.config?.agent_profile?.system_prompt ||") ||
+		!strings.Contains(appJS, "delete payload.agent_profile") {
+		t.Fatalf("new session default path should not render or submit raw system prompt")
 	}
 	if !strings.Contains(workspace, "state.composerDrafts[session.id]") || !strings.Contains(workspace, "onComposerDraft") {
 		t.Fatalf("composer draft is not preserved across errors")

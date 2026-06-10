@@ -113,6 +113,103 @@ func TestRunnerAgentSessionDefaultsDoNotSetWallTime(t *testing.T) {
 	}
 }
 
+func TestRunnerAgentSessionUsesDefaultFloretProfile(t *testing.T) {
+	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("done"), harness.Done()))
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+
+	result := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile: ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message: "hello",
+	})
+
+	if result.Status != "completed" {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(scripted.Requests) != 1 || len(scripted.Requests[0].Messages) == 0 {
+		t.Fatalf("provider requests = %#v", scripted.Requests)
+	}
+	if scripted.Requests[0].Messages[0].Role != session.System || scripted.Requests[0].Messages[0].Content != config.DefaultFloretSystemPrompt {
+		t.Fatalf("system message = %#v", scripted.Requests[0].Messages[0])
+	}
+	if result.Session.AgentProfile.ID != config.DefaultAgentProfileID || result.Session.AgentProfile.SystemPrompt != "" {
+		t.Fatalf("public agent profile = %#v", result.Session.AgentProfile)
+	}
+	if result.Session.PromptIdentity.Source != config.PromptSourceDefaultFloret || result.Session.PromptIdentity.SystemPromptHash == "" {
+		t.Fatalf("prompt identity = %#v", result.Session.PromptIdentity)
+	}
+	if result.Session.SystemPrompt != "" {
+		t.Fatalf("public session exposed system prompt: %q", result.Session.SystemPrompt)
+	}
+}
+
+func TestRunnerAgentSessionUsesHostAgentProfile(t *testing.T) {
+	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("done"), harness.Done()))
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+
+	result := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile: ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		AgentProfile: config.AgentProfile{
+			ID:           "acme-support",
+			Name:         "Acme Support",
+			Description:  "Support assistant.",
+			SystemPrompt: "You are Acme Support.",
+		},
+		Message: "hello",
+	})
+
+	if result.Status != "completed" {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(scripted.Requests) != 1 || scripted.Requests[0].Messages[0].Content != "You are Acme Support." {
+		t.Fatalf("provider requests = %#v", scripted.Requests)
+	}
+	if result.Session.AgentProfile.ID != "acme-support" || result.Session.AgentProfile.SystemPrompt != "" {
+		t.Fatalf("public agent profile = %#v", result.Session.AgentProfile)
+	}
+	if result.Session.PromptIdentity.Source != config.PromptSourceAgentProfile {
+		t.Fatalf("prompt identity = %#v", result.Session.PromptIdentity)
+	}
+}
+
+func TestRunnerAgentSessionUsesEnvPromptWhenRequestOmitsPrompt(t *testing.T) {
+	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("done"), harness.Done()))
+	root := t.TempDir()
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	if err := os.WriteFile(runner.EnvFile, []byte("FLORET_SYSTEM_PROMPT=You are Env Agent.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+
+	result := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile: ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message: "hello",
+	})
+
+	if result.Status != "completed" {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(scripted.Requests) != 1 || scripted.Requests[0].Messages[0].Content != "You are Env Agent." {
+		t.Fatalf("provider requests = %#v", scripted.Requests)
+	}
+	if result.Session.PromptIdentity.Source != config.PromptSourceEnv || result.Session.AgentProfile.ID != "custom" {
+		t.Fatalf("prompt identity = %#v profile=%#v", result.Session.PromptIdentity, result.Session.AgentProfile)
+	}
+	if result.Session.SystemPrompt != "" || result.Session.AgentProfile.SystemPrompt != "" {
+		t.Fatalf("public session exposed raw prompt: %#v", result.Session)
+	}
+}
+
 func TestRunnerEvalDemoReturnsTraceMetricsAndArtifacts(t *testing.T) {
 	runner := NewRunner(t.TempDir())
 	runner.Now = fixedClock()
@@ -844,8 +941,11 @@ func TestRunnerAgentSessionUsesProviderHostedSearchWithoutLocalWebSearch(t *test
 	if len(result.Session.HostedTools) != 1 || result.Session.HostedTools[0].Options["wire_shape"] != string(searchcap.WireShapeAnthropicServerWebSearch) {
 		t.Fatalf("local inspection session snapshot missing hosted payload details: %#v", result.Session.HostedTools)
 	}
-	if result.Session.SystemPrompt != "system token=hosted-secret" {
-		t.Fatalf("local inspection session snapshot missing system prompt: %#v", result.Session.SystemPrompt)
+	if result.Session.SystemPrompt != "" {
+		t.Fatalf("local inspection session snapshot exposed system prompt: %#v", result.Session.SystemPrompt)
+	}
+	if result.Session.AgentProfile.SystemPrompt != "" {
+		t.Fatalf("public session snapshot exposed agent profile prompt: %#v", result.Session.AgentProfile)
 	}
 
 	if !slices.ContainsFunc(result.Observation.ProviderEvents, func(ev ObservedProviderEvent) bool {
@@ -1401,6 +1501,52 @@ func TestRunnerRestoredSessionRehydratesSavedAPIKeyWithoutPersistingSecret(t *te
 	}
 	if seenKey != "secret" {
 		t.Fatalf("restored API key = %q", seenKey)
+	}
+}
+
+func TestRunnerUpgradesLegacySessionMetadataPromptIdentity(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	sessionID := "testui-session-legacy-prompt"
+	created := runner.now()
+	if err := runner.saveAgentSessionMetadata(agentSessionMetadata{
+		ID:            sessionID,
+		CreatedAt:     created,
+		UpdatedAt:     created,
+		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		SystemPrompt:  "You are Legacy Agent.",
+		SelectedTools: []string{"grep"},
+		ContextPolicy: contextPolicyForTest(8192),
+		Engine: agentSessionEngine{
+			MaxEmptyProviderRetries: 1,
+			NoProgressLimit:         2,
+			DuplicateToolLimit:      3,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	upgraded, err := runner.loadAgentSessionMetadata(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upgraded.AgentProfile.ID != "custom" || upgraded.AgentProfile.SystemPrompt != "You are Legacy Agent." {
+		t.Fatalf("agent profile = %#v", upgraded.AgentProfile)
+	}
+	if upgraded.PromptIdentity.Source != config.PromptSourceSessionSnapshot || upgraded.PromptIdentity.SystemPromptHash == "" {
+		t.Fatalf("prompt identity = %#v", upgraded.PromptIdentity)
+	}
+
+	store, err := runner.sessionStorage(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.loadMetadata(context.Background(), sessionID, runner.loadAgentSessionMetadataFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.AgentProfile.SystemPrompt != "You are Legacy Agent." || stored.PromptIdentity.Source != config.PromptSourceSessionSnapshot {
+		t.Fatalf("stored metadata was not upgraded: %#v", stored)
 	}
 }
 

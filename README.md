@@ -174,6 +174,12 @@ Floret reads `.env.local` by default through `config.Load`. The file is intentio
 ignored by git so local API keys and model choices stay private. Environment variables
 override `.env.local`, which is useful for CI and one-off smoke tests.
 
+When no prompt override is configured, Floret uses `DefaultFloretAgentProfile()` as
+the default agent identity, with the system prompt `You are Floret.`. Hosts can
+provide a `config.AgentProfile` in code to build their own role while keeping the
+same runtime, storage, tool, and provider contracts. `FLORET_SYSTEM_PROMPT` remains
+available as an environment-loaded system prompt override.
+
 Tip: start with the fake provider first. It lets you validate the host loop, tool
 registry, storage, and UI wiring before adding any external model credentials.
 
@@ -184,7 +190,6 @@ FLORET_PROVIDER=fake
 FLORET_MODEL=fake-model
 FLORET_FAKE_RESPONSE=floret local provider ok
 FLORET_RUN_ID=local
-FLORET_SYSTEM_PROMPT=You are Floret.
 ```
 
 Common context and runtime controls:
@@ -248,9 +253,9 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/floegence/floret/agentharness"
 	"github.com/floegence/floret/config"
 	floretruntime "github.com/floegence/floret/runtime"
-	"github.com/floegence/floret/agentharness"
 	"github.com/floegence/floret/sessiontree"
 	"github.com/floegence/floret/tools"
 )
@@ -265,6 +270,15 @@ func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	// Omit AgentProfile to use the default Floret identity.
+	// Set it when your host wants its own agent role and use case.
+	cfg.AgentProfile = config.AgentProfile{
+		ID:           "acme-support",
+		Name:         "Acme Support",
+		Description:  "Support assistant for Acme product workflows.",
+		SystemPrompt: "You are Acme Support. Help users troubleshoot Acme product workflows.",
 	}
 
 	registry := tools.NewRegistry()
@@ -307,6 +321,23 @@ func main() {
 	fmt.Println(result.Output)
 }
 ```
+
+Prompt precedence is intentionally small and explicit:
+
+```text
+Config.SystemPrompt
+  > Config.AgentProfile.SystemPrompt
+  > env-loaded FLORET_SYSTEM_PROMPT
+  > DefaultFloretAgentProfile().SystemPrompt
+```
+
+`SystemPrompt` is kept for compatibility and direct session-level overrides. When
+it is set, Floret marks the resolved identity as a custom session agent. Skills,
+MCP tools, and other capability disclosures are appended to the resolved base
+identity prompt; they do not replace or mutate the configured agent profile.
+Public session snapshots expose profile id/name/source/hash metadata, but not the
+raw system prompt. Raw prompt inspection in the test console requires
+`-allow-debug-raw`.
 
 For lower-level hosts, construct `engine.Engine` with `engine.New(engine.Config{...})`
 using your own `provider.Provider`, `session.Store`, `tools.Registry`, `event.Sink`,

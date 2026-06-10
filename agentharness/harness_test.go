@@ -730,6 +730,49 @@ func TestEngineCompactionIsProjectedAsSessionTreeCompactionEntry(t *testing.T) {
 	}
 }
 
+func TestDefaultProviderCompactionUsesConfiguredPromptOptions(t *testing.T) {
+	ctx := context.Background()
+	repo := sessiontree.NewMemoryRepo()
+	p := scriptharness.NewScriptedProvider(
+		nil,
+		scriptharness.Step(scriptharness.Text("summary ok"), scriptharness.Done()),
+		scriptharness.Step(scriptharness.Text("ok"), scriptharness.Done()),
+	)
+	p.Errs[1] = provider.ErrContextOverflow
+	h := newTestHarness(p, repo, cache.NewMemoryStore())
+	h.options.TurnPolicy.ContextPolicy.ContextWindowTokens = 8000
+	h.options.TurnPolicy.ContextPolicy.ReservedOutputTokens = 512
+	h.options.TurnPolicy.ContextPolicy.ReservedSummaryTokens = 512
+	h.options.TurnPolicy.ContextPolicy.RecentTailTokens = 256
+	h.options.CompactionPrompt = compaction.PromptOptions{
+		WriterSystemPrompt: "You are Acme's context checkpoint writer.",
+		SummaryTitle:       "Acme Conversation Checkpoint",
+	}
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, repo, "thread", "seed", session.Message{Role: session.User, Content: "old"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := thread.Run(ctx, "new", RunOptions{TurnID: "turn-compact"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != engine.Completed {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(p.Requests) != 3 {
+		t.Fatalf("requests = %#v", p.Requests)
+	}
+	summaryReq := p.Requests[1]
+	if len(summaryReq.Messages) < 2 ||
+		summaryReq.Messages[0].Content != "You are Acme's context checkpoint writer." ||
+		!strings.Contains(summaryReq.Messages[1].Content, "# Acme Conversation Checkpoint") {
+		t.Fatalf("custom compaction prompt was not used: %#v", summaryReq.Messages)
+	}
+}
+
 func TestMultipleCompactionsForkReloadAndContinueUseLatestWindow(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

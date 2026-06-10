@@ -168,6 +168,44 @@ func TestNewHarnessWithProviderMapsExplicitPoliciesToTurn(t *testing.T) {
 	}
 }
 
+func TestNewHarnessWithProviderEUsesAgentProfilePrompt(t *testing.T) {
+	ctx := context.Background()
+	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("configured"), harness.Done()))
+	h, err := NewHarnessWithProviderE(config.Config{
+		Provider: config.ProviderFake,
+		Model:    "fake-model",
+		AgentProfile: config.AgentProfile{
+			ID:           "acme-agent",
+			Name:         "Acme Agent",
+			Description:  "Acme workflow assistant.",
+			SystemPrompt: "You are Acme Agent.",
+		},
+	}, scripted, HarnessOptions{
+		Store: sessiontree.NewMemoryRepo(),
+		NewID: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread, err := h.StartThread(ctx, agentharness.StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := thread.Run(ctx, "hello", agentharness.RunOptions{TurnID: "turn-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != engine.Completed || result.Output != "configured" {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(scripted.Requests) != 1 || len(scripted.Requests[0].Messages) == 0 {
+		t.Fatalf("provider requests = %#v", scripted.Requests)
+	}
+	if scripted.Requests[0].Messages[0].Role != session.System || scripted.Requests[0].Messages[0].Content != "You are Acme Agent." {
+		t.Fatalf("system message = %#v", scripted.Requests[0].Messages[0])
+	}
+}
+
 func TestPublicHostAPICompilesAndRunsWithSQLiteCustomProviderAndTool(t *testing.T) {
 	ctx := context.Background()
 	store, err := storagesqlite.Open(filepath.Join(t.TempDir(), "floret.db"))

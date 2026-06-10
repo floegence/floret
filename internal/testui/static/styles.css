@@ -960,13 +960,90 @@ button.small {
 }
 
 .settings-error small {
-  color: var(--muted);
-  overflow-wrap: anywhere;
+	color: var(--muted);
+	overflow-wrap: anywhere;
+}
+
+.agent-profile-head {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+	align-items: flex-start;
+	justify-content: space-between;
+}
+
+.agent-profile-grid {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	border: 1px solid var(--line);
+	background: var(--panel);
+}
+
+.agent-profile-grid.identity-grid {
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.agent-profile-grid > div {
+	display: grid;
+	gap: 4px;
+	min-width: 0;
+	padding: 10px;
+	border-right: 1px solid var(--line);
+}
+
+.agent-profile-grid > div:last-child {
+	border-right: 0;
+}
+
+.agent-profile-grid strong,
+.prompt-preview strong {
+	color: var(--muted);
+	font-size: 11px;
+	font-weight: 900;
+	text-transform: uppercase;
+}
+
+.agent-profile-grid span {
+	overflow-wrap: anywhere;
+	font-size: 13px;
+}
+
+.prompt-preview {
+	display: grid;
+	gap: 6px;
+}
+
+.prompt-preview pre {
+	max-height: 150px;
+	padding: 10px;
+	border: 1px solid var(--line);
+	background: var(--panel);
+	white-space: pre-wrap;
+	overflow: auto;
+	overflow-wrap: anywhere;
+}
+
+.checkbox-field {
+	display: inline-flex;
+	gap: 8px;
+	align-items: center;
+	color: var(--ink);
+	font-size: 13px;
+	font-weight: 800;
+}
+
+.checkbox-field input {
+	width: 16px;
+	height: 16px;
+}
+
+.custom-prompt-panel[hidden] {
+	display: none;
 }
 
 .tool-boundary-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
   border: 1px solid var(--line);
   background: var(--panel);
 }
@@ -1414,13 +1491,14 @@ button.small {
     text-align: center;
   }
 
-  .settings-grid,
-  .skills-layout,
-  .field-row,
-  .tool-boundary-grid,
-  .skill-facts {
-    grid-template-columns: 1fr;
-  }
+	.settings-grid,
+	.skills-layout,
+	.field-row,
+	.agent-profile-grid,
+	.tool-boundary-grid,
+	.skill-facts {
+		grid-template-columns: 1fr;
+	}
 
   .skill-preview-head,
   .source-row,
@@ -1440,14 +1518,16 @@ button.small {
     border-bottom: 0;
   }
 
-  .tool-boundary-grid > div {
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
+	.agent-profile-grid > div,
+	.tool-boundary-grid > div {
+		border-right: 0;
+		border-bottom: 1px solid var(--line);
+	}
 
-  .tool-boundary-grid > div:last-child {
-    border-bottom: 0;
-  }
+	.agent-profile-grid > div:last-child,
+	.tool-boundary-grid > div:last-child {
+		border-bottom: 0;
+	}
 
   .sessions-layout {
     grid-template-columns: 1fr;

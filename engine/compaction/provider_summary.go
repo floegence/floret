@@ -17,10 +17,11 @@ const (
 )
 
 type ProviderSummaryGenerator struct {
-	Provider     provider.Provider
-	ProviderName string
-	Model        string
-	Policy       contextpolicy.Policy
+	Provider      provider.Provider
+	ProviderName  string
+	Model         string
+	Policy        contextpolicy.Policy
+	PromptOptions sessioncompaction.PromptOptions
 }
 
 type providerSummaryAttempt struct {
@@ -73,9 +74,10 @@ func (g ProviderSummaryGenerator) GenerateSummaryWithDetails(ctx context.Context
 }
 
 func (g ProviderSummaryGenerator) generateProviderSummaryAttempt(ctx context.Context, prep sessioncompaction.Preparation, policy contextpolicy.Policy, outputCap int64) (providerSummaryAttempt, error) {
+	promptOptions := sessioncompaction.NormalizePromptOptions(g.PromptOptions)
 	messages := []session.Message{
-		{Role: session.System, Content: sessioncompaction.SummaryWriterSystemPrompt()},
-		{Role: session.User, Content: sessioncompaction.SummaryPrompt(prep, policy, outputCap)},
+		{Role: session.System, Content: sessioncompaction.SummaryWriterSystemPromptWithOptions(promptOptions)},
+		{Role: session.User, Content: sessioncompaction.SummaryPromptWithOptions(prep, policy, outputCap, promptOptions)},
 	}
 	promptInputTokens := contextpolicy.EstimateMessageContext("", messages, policy).InputTokens
 	stream, err := g.Provider.Stream(ctx, provider.Request{

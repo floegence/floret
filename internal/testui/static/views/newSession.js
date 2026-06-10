@@ -13,19 +13,23 @@ export function renderNewSession() {
   const tools = toolsForProfile(profile);
   const riskMessages = modelRiskMessages(profile, policy);
   const message = Object.prototype.hasOwnProperty.call(draft, "message") ? draft.message : "Say hello from Floret and complete the task.";
-  const systemPrompt = Object.prototype.hasOwnProperty.call(draft, "system_prompt") ? draft.system_prompt : "You are Floret. Answer naturally when the user's request is complete, or call ask_user if you need missing information.";
+  const agentProfile = draft.agent_profile || state.config?.agent_profile || defaultAgentProfile();
+  const promptIdentity = state.config?.prompt_identity || {};
+  const hasCustomPromptState = Object.prototype.hasOwnProperty.call(draft, "custom_prompt");
+  const customPromptEnabled = Boolean(draft.custom_prompt) || (!hasCustomPromptState && Object.prototype.hasOwnProperty.call(draft, "system_prompt") && String(draft.system_prompt || "").trim() !== "");
+  const systemPrompt = customPromptEnabled && Object.prototype.hasOwnProperty.call(draft, "system_prompt") ? draft.system_prompt : "";
   return `
     <section class="new-page">
       <header class="new-head">
         <div>
           <h1>New Session</h1>
-          <p class="muted">Create a clean agent session with an explicit model, prompt, context policy, and toolset.</p>
+          <p class="muted">Create a clean agent session with an explicit model, agent profile, context policy, and toolset.</p>
         </div>
         <a class="button ghost" href="/sessions" data-link>Cancel</a>
       </header>
       <form class="form-grid" data-new-session-form>
         <label class="field" for="new-profile-id">
-          <span>Profile</span>
+          <span>Provider profile</span>
           <select id="new-profile-id" name="profile_id" aria-label="Profile">
             ${(state.config?.profiles || []).map((item) => `<option value="${escapeHTML(item.id)}" ${item.id === (draft.profile_id || profile.id) ? "selected" : ""}>${escapeHTML(profileLabel(item))}</option>`).join("")}
           </select>
@@ -34,10 +38,39 @@ export function renderNewSession() {
           <span>Initial task</span>
           <textarea id="new-initial-task" name="message" aria-label="Initial task" required>${escapeHTML(message)}</textarea>
         </label>
-        <label class="field" for="new-system-prompt">
-          <span>System prompt</span>
-          <textarea id="new-system-prompt" name="system_prompt" aria-label="System prompt" required>${escapeHTML(systemPrompt)}</textarea>
-        </label>
+        <section class="profile-card agent-profile-card" data-agent-profile>
+          <div class="agent-profile-head">
+            <div>
+              <h2>Agent profile</h2>
+              <p class="muted">${escapeHTML(agentProfile.description || "Default interactive Floret agent.")}</p>
+            </div>
+            <span class="tiny-pill">${escapeHTML(promptIdentity.source || "default_floret")}</span>
+          </div>
+          <div class="agent-profile-grid">
+            <div>
+              <strong>ID</strong>
+              <span>${escapeHTML(agentProfile.id || "floret")}</span>
+            </div>
+            <div>
+              <strong>Name</strong>
+              <span>${escapeHTML(agentProfile.name || "Floret default assistant")}</span>
+            </div>
+            <div>
+              <strong>Prompt hash</strong>
+              <span>${escapeHTML((promptIdentity.system_prompt_hash || "").slice(0, 12) || "pending")}</span>
+            </div>
+          </div>
+          <label class="checkbox-field" for="new-custom-prompt">
+            <input id="new-custom-prompt" name="custom_prompt" type="checkbox" ${customPromptEnabled ? "checked" : ""} />
+            <span>Custom system prompt</span>
+          </label>
+          <div class="custom-prompt-panel" data-custom-prompt-panel ${customPromptEnabled ? "" : "hidden"}>
+            <label class="field" for="new-system-prompt">
+              <span>System prompt</span>
+              <textarea id="new-system-prompt" name="system_prompt" aria-label="System prompt" ${customPromptEnabled ? "required" : "disabled"}>${escapeHTML(systemPrompt)}</textarea>
+            </label>
+          </div>
+        </section>
         <details class="advanced-options" data-context-policy-options>
           <summary>Advanced options</summary>
           <div class="field-row">
@@ -120,6 +153,15 @@ function renderCapabilitySummary(capabilities) {
   `;
 }
 
+function defaultAgentProfile() {
+  return {
+    id: "floret",
+    name: "Floret default assistant",
+    description: "Default interactive Floret agent.",
+    system_prompt: "",
+  };
+}
+
 function renderCapabilityRows(title, rows, valuesFor) {
   if (!rows.length) return `<div class="event-item"><strong>${escapeHTML(title)}</strong><span class="muted">none</span></div>`;
   return `
@@ -146,6 +188,9 @@ export function bindNewSession(root, handlers) {
   });
   form?.addEventListener("change", (event) => {
     persistDraft();
+    if (event.target === form.elements.custom_prompt) {
+      syncCustomPromptPanel(form);
+    }
     if (event.target === form.elements.profile_id) {
       handlers.onSwitchProfile?.(form.elements.profile_id.value);
     }
@@ -153,6 +198,7 @@ export function bindNewSession(root, handlers) {
   const profiles = state.config?.profiles || [];
   const profile = profiles.find((item) => item.id === form?.elements.profile_id?.value) || currentProfile();
   bindToolPresets(toolArea, toolsForProfile(profile), "new-tools", persistDraft);
+  syncCustomPromptPanel(form);
   root.querySelector("[data-run-probe]")?.addEventListener("click", () => {
     persistDraft();
     handlers.onProbe(readSelectedTools(toolArea, "new-tools"));
@@ -165,10 +211,14 @@ export function bindNewSession(root, handlers) {
 
 function readDraft(form, toolArea) {
   const data = new FormData(form);
+  const customPrompt = data.get("custom_prompt") === "on";
   return {
     profile_id: String(data.get("profile_id") || ""),
     message: String(data.get("message") || ""),
-    system_prompt: String(data.get("system_prompt") || ""),
+    agent_profile: state.config?.agent_profile || defaultAgentProfile(),
+    prompt_identity: state.config?.prompt_identity || {},
+    custom_prompt: customPrompt,
+    system_prompt: customPrompt ? String(data.get("system_prompt") || "") : "",
     selected_tools: readSelectedTools(toolArea, "new-tools"),
     context_policy: {
       context_window_tokens: Number(data.get("context_window_tokens") || 0),
@@ -176,4 +226,14 @@ function readDraft(form, toolArea) {
       recent_tail_tokens: Number(data.get("recent_tail_tokens") || 0),
     },
   };
+}
+
+function syncCustomPromptPanel(form) {
+  if (!form) return;
+  const enabled = Boolean(form.elements.custom_prompt?.checked);
+  const panel = form.querySelector("[data-custom-prompt-panel]");
+  const textarea = form.elements.system_prompt;
+  if (panel) panel.hidden = !enabled;
+  if (textarea) textarea.disabled = !enabled;
+  if (textarea) textarea.required = enabled;
 }

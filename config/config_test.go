@@ -18,6 +18,15 @@ func TestLoadDefaultsToFakeProvider(t *testing.T) {
 	if cfg.Provider != ProviderFake || cfg.Model != "fake-model" {
 		t.Fatalf("cfg = %#v", cfg)
 	}
+	if cfg.SystemPrompt != DefaultFloretSystemPrompt {
+		t.Fatalf("system prompt = %q, want default Floret prompt", cfg.SystemPrompt)
+	}
+	if cfg.AgentProfile.ID != DefaultAgentProfileID || cfg.AgentProfile.Name != "Floret default assistant" || cfg.AgentProfile.SystemPrompt != DefaultFloretSystemPrompt {
+		t.Fatalf("agent profile = %#v", cfg.AgentProfile)
+	}
+	if cfg.PromptIdentity.Source != PromptSourceDefaultFloret || cfg.PromptIdentity.AgentProfileID != DefaultAgentProfileID || cfg.PromptIdentity.SystemPromptHash == "" {
+		t.Fatalf("prompt identity = %#v", cfg.PromptIdentity)
+	}
 }
 
 func TestLoadReadsEnvLocalAndAllowsEnvironmentOverride(t *testing.T) {
@@ -49,6 +58,171 @@ func TestLoadReadsPromptCacheConfiguration(t *testing.T) {
 	}
 	if cfg.PromptCacheDir != "/tmp/floret-cache" || cfg.PromptCacheRetention != "24h" {
 		t.Fatalf("cfg = %#v", cfg)
+	}
+}
+
+func TestLoadReadsEnvSystemPromptAsPromptIdentity(t *testing.T) {
+	cfg, err := Load(WithPath(""), WithEnviron(map[string]string{
+		"FLORET_PROVIDER":      "fake",
+		"FLORET_SYSTEM_PROMPT": "You are Env Agent.",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SystemPrompt != "You are Env Agent." || cfg.AgentProfile.SystemPrompt != cfg.SystemPrompt {
+		t.Fatalf("prompt not resolved from env: %#v", cfg)
+	}
+	if cfg.AgentProfile.ID != "custom" || cfg.AgentProfile.Name != "Configured env agent" {
+		t.Fatalf("env prompt profile = %#v", cfg.AgentProfile)
+	}
+	if cfg.PromptIdentity.Source != PromptSourceEnv || cfg.PromptIdentity.AgentProfileID != "custom" {
+		t.Fatalf("prompt identity = %#v", cfg.PromptIdentity)
+	}
+}
+
+func TestResolveAgentProfileDoesNotReadEnvSystemPrompt(t *testing.T) {
+	cfg, err := Resolve(Config{
+		Provider: "fake",
+		Model:    "fake-model",
+		AgentProfile: AgentProfile{
+			ID:           "acme-support",
+			Name:         "Acme Support",
+			Description:  "Support assistant.",
+			SystemPrompt: "You are Acme Support.",
+		},
+	}, map[string]string{"FLORET_SYSTEM_PROMPT": "You are Env Agent."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SystemPrompt != "You are Acme Support." {
+		t.Fatalf("system prompt = %q, want profile prompt", cfg.SystemPrompt)
+	}
+	if cfg.AgentProfile.ID != "acme-support" || cfg.PromptIdentity.Source != PromptSourceAgentProfile {
+		t.Fatalf("resolved identity = %#v profile=%#v", cfg.PromptIdentity, cfg.AgentProfile)
+	}
+}
+
+func TestResolveAgentProfileWinsAfterLoadEnvSystemPrompt(t *testing.T) {
+	cfg, err := Load(WithPath(""), WithEnviron(map[string]string{
+		"FLORET_PROVIDER":      "fake",
+		"FLORET_SYSTEM_PROMPT": "You are Env Agent.",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.AgentProfile = AgentProfile{
+		ID:           "acme-support",
+		Name:         "Acme Support",
+		Description:  "Support assistant.",
+		SystemPrompt: "You are Acme Support.",
+	}
+	cfg, err = Resolve(cfg, map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SystemPrompt != "You are Acme Support." || cfg.PromptIdentity.Source != PromptSourceAgentProfile {
+		t.Fatalf("resolved identity = %#v profile=%#v", cfg.PromptIdentity, cfg.AgentProfile)
+	}
+}
+
+func TestResolveSystemPromptOverrideProducesCustomIdentity(t *testing.T) {
+	cfg, err := Resolve(Config{
+		Provider:     "fake",
+		Model:        "fake-model",
+		SystemPrompt: "You are Custom.",
+		AgentProfile: AgentProfile{
+			ID:           "acme-support",
+			Name:         "Acme Support",
+			SystemPrompt: "You are Acme Support.",
+		},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SystemPrompt != "You are Custom." {
+		t.Fatalf("system prompt = %q", cfg.SystemPrompt)
+	}
+	if cfg.AgentProfile.ID != "custom" || cfg.AgentProfile.Name != "Custom session agent" {
+		t.Fatalf("override profile = %#v", cfg.AgentProfile)
+	}
+	if cfg.PromptIdentity.Source != PromptSourceSystemPromptOverride || cfg.PromptIdentity.AgentProfileID != "custom" {
+		t.Fatalf("prompt identity = %#v", cfg.PromptIdentity)
+	}
+}
+
+func TestResolveIgnoresStalePromptIdentitySourceForOverride(t *testing.T) {
+	cfg, err := Resolve(Config{
+		Provider:     "fake",
+		Model:        "fake-model",
+		SystemPrompt: "You are Custom.",
+		PromptIdentity: PromptIdentity{
+			Source: PromptSourceAgentProfile,
+		},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AgentProfile.ID != "custom" || cfg.PromptIdentity.Source != PromptSourceSystemPromptOverride {
+		t.Fatalf("stale prompt identity affected resolver: %#v profile=%#v", cfg.PromptIdentity, cfg.AgentProfile)
+	}
+}
+
+func TestResolvePromptPreservesResolvedDefaultIdentity(t *testing.T) {
+	cfg := ResolvePrompt(Config{})
+	cfg = ResolvePrompt(cfg)
+	if cfg.SystemPrompt != DefaultFloretSystemPrompt || cfg.AgentProfile.ID != DefaultAgentProfileID || cfg.PromptIdentity.Source != PromptSourceDefaultFloret {
+		t.Fatalf("resolved default identity drifted: %#v", cfg)
+	}
+}
+
+func TestResolveAgentProfileWinsAfterResolvedDefaultPrompt(t *testing.T) {
+	cfg := ResolvePrompt(Config{})
+	cfg.Provider = "fake"
+	cfg.Model = "fake-model"
+	cfg.AgentProfile = AgentProfile{
+		ID:           "acme-support",
+		Name:         "Acme Support",
+		Description:  "Support assistant.",
+		SystemPrompt: "You are Acme Support.",
+	}
+	cfg, err := Resolve(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SystemPrompt != "You are Acme Support." || cfg.PromptIdentity.Source != PromptSourceAgentProfile {
+		t.Fatalf("resolved identity = %#v profile=%#v", cfg.PromptIdentity, cfg.AgentProfile)
+	}
+}
+
+func TestResolveEmptyAgentProfilePromptFallsBackToDefaultFloret(t *testing.T) {
+	cfg, err := Resolve(Config{
+		Provider:     "fake",
+		Model:        "fake-model",
+		AgentProfile: AgentProfile{ID: "empty-custom", Name: "Empty Custom"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SystemPrompt != DefaultFloretSystemPrompt || cfg.AgentProfile.ID != DefaultAgentProfileID {
+		t.Fatalf("cfg = %#v", cfg)
+	}
+	if cfg.PromptIdentity.Source != PromptSourceDefaultFloret {
+		t.Fatalf("prompt identity = %#v", cfg.PromptIdentity)
+	}
+}
+
+func TestResolveSessionSnapshotDefaultPromptKeepsFloretProfile(t *testing.T) {
+	cfg := ResolvePrompt(Config{
+		SystemPrompt: DefaultFloretSystemPrompt,
+		PromptIdentity: PromptIdentity{
+			Source: PromptSourceSessionSnapshot,
+		},
+	})
+	if cfg.AgentProfile.ID != DefaultAgentProfileID || cfg.AgentProfile.Name != "Floret default assistant" {
+		t.Fatalf("agent profile = %#v", cfg.AgentProfile)
+	}
+	if cfg.PromptIdentity.Source != PromptSourceSessionSnapshot {
+		t.Fatalf("prompt identity = %#v", cfg.PromptIdentity)
 	}
 }
 

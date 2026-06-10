@@ -43,6 +43,15 @@ func (r *Runner) ConfigState() (ConfigState, error) {
 	}
 	state.SearchProvider = searchProviderInfo(fileValues)
 	state.Capabilities = r.capabilityStateFromEnv()
+	if prompt := strings.TrimSpace(fileValues["FLORET_SYSTEM_PROMPT"]); prompt != "" {
+		promptCfg := config.ResolveEnvSystemPrompt(prompt)
+		state.AgentProfile = configStateAgentProfile(promptCfg.AgentProfile)
+		state.PromptIdentity = promptCfg.PromptIdentity
+	} else {
+		promptCfg := config.ResolvePrompt(config.Config{})
+		state.AgentProfile = configStateAgentProfile(promptCfg.AgentProfile)
+		state.PromptIdentity = promptCfg.PromptIdentity
+	}
 	if raw := fileValues[profilesKey]; raw != "" {
 		profiles, err := decodeProfiles(raw)
 		if err != nil {
@@ -69,6 +78,11 @@ func (r *Runner) ConfigState() (ConfigState, error) {
 	state.Capabilities.Diagnostics = append(state.Capabilities.Diagnostics, modelRiskDiagnostics(profile, state.ContextPolicyDefaults)...)
 	state.Tools = agentToolCatalog(stripProfileSecret(profile), r.EnvFile)
 	return state, nil
+}
+
+func configStateAgentProfile(profile config.AgentProfile) config.AgentProfile {
+	profile.SystemPrompt = ""
+	return profile
 }
 
 func localTimeInfo(now time.Time) LocalTimeInfo {

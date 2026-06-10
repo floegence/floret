@@ -538,6 +538,31 @@ func TestSummaryWriterPromptContract(t *testing.T) {
 	}
 }
 
+func TestCompactionPromptOptionsCustomizeWriterAndTitle(t *testing.T) {
+	options := PromptOptions{
+		WriterSystemPrompt: "You are Acme's context checkpoint writer.",
+		SummaryTitle:       "Acme Conversation Checkpoint",
+	}
+	if got := SummaryWriterSystemPromptWithOptions(options); got != options.WriterSystemPrompt {
+		t.Fatalf("writer prompt = %q, want custom prompt", got)
+	}
+	prompt := SummaryPromptWithOptions(Preparation{
+		CompactedHead: []session.Message{{Role: session.User, Content: "old request", EntryID: "u1"}},
+	}, contextpolicy.Normalize(contextpolicy.Policy{ContextWindowTokens: 2000, ReservedOutputTokens: 100, ReservedSummaryTokens: 200, RecentTailTokens: 100}), 200, options)
+	if !strings.Contains(prompt, "# Acme Conversation Checkpoint") || strings.Contains(prompt, "# Floret Compaction Summary") {
+		t.Fatalf("custom summary title not applied: %q", prompt)
+	}
+	summary, err := ExtractiveSummaryGenerator{PromptOptions: options}.GenerateSummary(context.Background(), Preparation{
+		CompactedHead: []session.Message{{Role: session.User, Content: "old request", EntryID: "u1"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(summary, "# Acme Conversation Checkpoint") || strings.Contains(summary, "# Floret Compaction Summary") {
+		t.Fatalf("extractive custom title not applied: %q", summary)
+	}
+}
+
 func TestSummaryPromptKeepsFullPreviousSummaryWithinReservedBudget(t *testing.T) {
 	policy := contextpolicy.Normalize(contextpolicy.Policy{
 		ContextWindowTokens:   4000,

@@ -85,7 +85,8 @@ func sanitizeTraceArtifact(content string) string {
 
 func localInspectionAgentSessionSnapshot(snapshot AgentSessionSnapshot) AgentSessionSnapshot {
 	snapshot.Profile = stripProfileSecret(snapshot.Profile)
-	snapshot.SystemPrompt = event.SafePathRefsText(snapshot.SystemPrompt)
+	snapshot.SystemPrompt = ""
+	snapshot.AgentProfile.SystemPrompt = ""
 	snapshot.WaitingPrompt = event.SafePathRefsText(snapshot.WaitingPrompt)
 	for i := range snapshot.HostedTools {
 		snapshot.HostedTools[i].Parameters = pathSafeAnyMap(snapshot.HostedTools[i].Parameters)

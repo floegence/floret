@@ -78,6 +78,7 @@ function renderTools(session, tools, observation) {
         <h3>Session Tools</h3>
         <p class="muted">These tools are bound to this session. Changes here affect future turns only.</p>
       </div>
+      ${renderIdentitySummary(session)}
       ${renderCapabilitySummary(session, observation)}
       <div class="tool-boundary-grid">
         <div>
@@ -110,6 +111,37 @@ function renderTools(session, tools, observation) {
     <section class="section">
       <h3>Tool Change Audit</h3>
       ${audit.length ? audit.map(renderToolAudit).join("") : `<p class="muted">No tool changes after session creation.</p>`}
+    </section>
+  `;
+}
+
+function renderIdentitySummary(session) {
+  const profile = session.agent_profile || {};
+  const identity = session.prompt_identity || {};
+  const profileID = identity.agent_profile_id || profile.id || "floret";
+  const profileName = identity.agent_profile_name || profile.name || "Floret default assistant";
+  const promptHash = identity.system_prompt_hash || "";
+  return `
+    <section class="section">
+      <h3>Agent Identity</h3>
+      <div class="agent-profile-grid identity-grid">
+        <div>
+          <strong>Profile ID</strong>
+          <span>${escapeHTML(profileID)}</span>
+        </div>
+        <div>
+          <strong>Name</strong>
+          <span>${escapeHTML(profileName)}</span>
+        </div>
+        <div>
+          <strong>Prompt source</strong>
+          <span>${escapeHTML(identity.source || "default_floret")}</span>
+        </div>
+        <div>
+          <strong>System prompt hash</strong>
+          <span>${escapeHTML(shortHash(promptHash) || "pending")}</span>
+        </div>
+      </div>
     </section>
   `;
 }

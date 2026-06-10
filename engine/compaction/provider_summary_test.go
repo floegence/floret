@@ -82,6 +82,34 @@ func TestProviderSummaryUsesReservedSummaryTokensOutputCap(t *testing.T) {
 	}
 }
 
+func TestProviderSummaryUsesCustomPromptOptions(t *testing.T) {
+	policy := contextpolicy.Policy{ContextWindowTokens: 100000, ReservedOutputTokens: 1000, ReservedSummaryTokens: 20, RecentTailTokens: 8, RecentUserTokens: 20}
+	options := sessioncompaction.PromptOptions{
+		WriterSystemPrompt: "You are Acme's context checkpoint writer.",
+		SummaryTitle:       "Acme Conversation Checkpoint",
+	}
+	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("summary ok"), harness.Done()))
+	_, err := sessioncompaction.Prepare(context.Background(), sessioncompaction.Request{
+		CompactionID: "c1",
+		History: []session.Message{
+			{Role: session.User, Content: "old request", EntryID: "u1"},
+			{Role: session.Assistant, Content: "old answer", EntryID: "a1"},
+			{Role: session.User, Content: "latest", EntryID: "u2"},
+		},
+		Policy: policy,
+	}, ProviderSummaryGenerator{Provider: scripted, ProviderName: "fake", Model: "fake-model", Policy: policy, PromptOptions: options})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scripted.Requests) != 1 {
+		t.Fatalf("provider requests = %#v", scripted.Requests)
+	}
+	messages := scripted.Requests[0].Messages
+	if len(messages) < 2 || messages[0].Content != options.WriterSystemPrompt || !strings.Contains(messages[1].Content, "# Acme Conversation Checkpoint") {
+		t.Fatalf("custom prompt options not used: %#v", messages)
+	}
+}
+
 func TestProviderSummaryRequestKeepsFullPreviousSummary(t *testing.T) {
 	policy := contextpolicy.Policy{ContextWindowTokens: 100000, ReservedOutputTokens: 1000, ReservedSummaryTokens: 120, RecentTailTokens: 8, RecentUserTokens: 20}
 	previousSummary := "prev-start " + strings.Repeat("durable detail ", 22) + "prev-end"

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/agentharness"
+	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/event"
 	"github.com/floegence/floret/internal/searchcap"
@@ -84,18 +85,20 @@ type ArtifactSnapshot struct {
 }
 
 type ConfigState struct {
-	EnvFile               string               `json:"env_file"`
-	EnvFileFound          bool                 `json:"env_file_found"`
-	ActiveProfileID       string               `json:"active_profile_id"`
-	Profiles              []ProviderProfile    `json:"profiles"`
-	Catalog               []CatalogProvider    `json:"catalog"`
-	ContextPolicyDefaults contextpolicy.Policy `json:"context_policy_defaults"`
-	Tools                 []AgentToolOption    `json:"tools"`
-	SearchWireShapes      []SearchWireShape    `json:"search_wire_shapes"`
-	SearchProvider        SearchProviderInfo   `json:"search_provider"`
-	Capabilities          CapabilityState      `json:"capabilities"`
-	LocalTime             LocalTimeInfo        `json:"local_time"`
-	Storage               storageStatus        `json:"storage"`
+	EnvFile               string                `json:"env_file"`
+	EnvFileFound          bool                  `json:"env_file_found"`
+	ActiveProfileID       string                `json:"active_profile_id"`
+	Profiles              []ProviderProfile     `json:"profiles"`
+	AgentProfile          config.AgentProfile   `json:"agent_profile"`
+	PromptIdentity        config.PromptIdentity `json:"prompt_identity"`
+	Catalog               []CatalogProvider     `json:"catalog"`
+	ContextPolicyDefaults contextpolicy.Policy  `json:"context_policy_defaults"`
+	Tools                 []AgentToolOption     `json:"tools"`
+	SearchWireShapes      []SearchWireShape     `json:"search_wire_shapes"`
+	SearchProvider        SearchProviderInfo    `json:"search_provider"`
+	Capabilities          CapabilityState       `json:"capabilities"`
+	LocalTime             LocalTimeInfo         `json:"local_time"`
+	Storage               storageStatus         `json:"storage"`
 }
 
 type CapabilityState struct {
@@ -230,13 +233,15 @@ type SaveSearchProvider struct {
 }
 
 type AgentRunRequest struct {
-	ProfileID     string               `json:"profile_id"`
-	Profile       ProviderProfile      `json:"profile,omitempty"`
-	Message       string               `json:"message"`
-	SystemPrompt  string               `json:"system_prompt"`
-	SelectedTools []string             `json:"selected_tools,omitempty"`
-	ToolMode      string               `json:"tool_mode,omitempty"`
-	ContextPolicy contextpolicy.Policy `json:"context_policy,omitempty"`
+	ProfileID      string                `json:"profile_id"`
+	Profile        ProviderProfile       `json:"profile,omitempty"`
+	AgentProfile   config.AgentProfile   `json:"agent_profile,omitempty"`
+	PromptIdentity config.PromptIdentity `json:"prompt_identity,omitempty"`
+	Message        string                `json:"message"`
+	SystemPrompt   string                `json:"system_prompt"`
+	SelectedTools  []string              `json:"selected_tools,omitempty"`
+	ToolMode       string                `json:"tool_mode,omitempty"`
+	ContextPolicy  contextpolicy.Policy  `json:"context_policy,omitempty"`
 }
 
 type AgentTurnRequest struct {
@@ -504,6 +509,8 @@ type AgentSessionSnapshot struct {
 	CreatedAt               time.Time                       `json:"created_at"`
 	UpdatedAt               time.Time                       `json:"updated_at"`
 	Profile                 ProviderProfile                 `json:"profile"`
+	AgentProfile            config.AgentProfile             `json:"agent_profile"`
+	PromptIdentity          config.PromptIdentity           `json:"prompt_identity"`
 	SystemPrompt            string                          `json:"system_prompt"`
 	SelectedTools           []string                        `json:"selected_tools"`
 	HostedTools             []provider.HostedToolDefinition `json:"hosted_tools,omitempty"`

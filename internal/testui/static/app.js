@@ -287,9 +287,10 @@ async function selectSession(id) {
 
 async function createSession(payload) {
   state.newSessionDraft = payload;
+  const request = newSessionRequestPayload(payload);
   const token = ++state.mutationToken;
   await runWithStatus({ status: "running", action: "create-session", successMessage: "Session created and opened" }, async () => {
-    const session = await api.createSession(payload);
+    const session = await api.createSession(request);
     if (token !== state.mutationToken) return false;
     activateSessionSnapshot(session);
     state.lastResult = null;
@@ -298,6 +299,27 @@ async function createSession(payload) {
     void queueInitialTurn(session.id, payload.message, token);
     return true;
   });
+}
+
+function newSessionRequestPayload(draft) {
+  const customPrompt = Boolean(draft.custom_prompt);
+  const systemPrompt = customPrompt ? String(draft.system_prompt || "").trim() : "";
+  if (customPrompt && !systemPrompt) {
+    throw new Error("Custom prompt is enabled, so enter a system prompt or turn off customization.");
+  }
+  const payload = {
+    profile_id: draft.profile_id || "",
+    agent_profile: customPrompt ? {} : {},
+    prompt_identity: customPrompt ? { source: "system_prompt_override" } : draft.prompt_identity || state.config?.prompt_identity || {},
+    message: draft.message || "",
+    system_prompt: systemPrompt,
+    selected_tools: draft.selected_tools || [],
+    context_policy: draft.context_policy || {},
+  };
+  if (!payload.system_prompt) delete payload.system_prompt;
+  delete payload.agent_profile;
+  if (!payload.prompt_identity?.source) delete payload.prompt_identity;
+  return payload;
 }
 
 async function queueInitialTurn(sessionID, message, token) {
@@ -1102,10 +1124,14 @@ function captureActiveDrafts() {
 
 function readNewSessionDraft(form, toolArea) {
   const data = new FormData(form);
+  const customPrompt = data.get("custom_prompt") === "on";
   return {
     profile_id: String(data.get("profile_id") || ""),
     message: String(data.get("message") || ""),
-    system_prompt: String(data.get("system_prompt") || ""),
+    agent_profile: state.config?.agent_profile || {},
+    prompt_identity: state.config?.prompt_identity || {},
+    custom_prompt: customPrompt,
+    system_prompt: customPrompt ? String(data.get("system_prompt") || "") : "",
     selected_tools: Array.from(toolArea.querySelectorAll('input[name="new-tools"]:checked')).map((input) => input.value),
     context_policy: {
       context_window_tokens: Number(data.get("context_window_tokens") || 0),

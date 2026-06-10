@@ -17,6 +17,11 @@ import (
 const SummarySchemaVersion = "floret.compaction.summary.v1"
 
 const (
+	DefaultSummaryTitle        = "Floret Compaction Summary"
+	defaultSummaryWriterPrefix = "You are Floret's context compaction writer."
+)
+
+const (
 	checkpointSummaryOpen  = `<compaction_summary schema="` + SummarySchemaVersion + `">`
 	checkpointSummaryClose = "</compaction_summary>"
 )
@@ -117,7 +122,14 @@ type SummaryGenerator interface {
 	GenerateSummary(context.Context, Preparation) (string, error)
 }
 
-type ExtractiveSummaryGenerator struct{}
+type PromptOptions struct {
+	WriterSystemPrompt string
+	SummaryTitle       string
+}
+
+type ExtractiveSummaryGenerator struct {
+	PromptOptions PromptOptions
+}
 
 func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Preparation, error) {
 	if err := ctx.Err(); err != nil {
@@ -254,9 +266,10 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	return prep, nil
 }
 
-func (ExtractiveSummaryGenerator) GenerateSummary(_ context.Context, prep Preparation) (string, error) {
+func (g ExtractiveSummaryGenerator) GenerateSummary(_ context.Context, prep Preparation) (string, error) {
+	options := NormalizePromptOptions(g.PromptOptions)
 	var out strings.Builder
-	out.WriteString("# Floret Compaction Summary\n")
+	out.WriteString("# " + options.SummaryTitle + "\n")
 	out.WriteString("schema: " + SummarySchemaVersion + "\n\n")
 	out.WriteString("## Goals\n")
 	writeRoleSamples(&out, prep.CompactedHead, session.User, "- ")
@@ -825,26 +838,55 @@ func minInt(a, b int) int {
 	return b
 }
 
+func DefaultPromptOptions() PromptOptions {
+	return PromptOptions{
+		WriterSystemPrompt: strings.Join([]string{
+			defaultSummaryWriterPrefix,
+			"Create a structured handoff summary for another LLM that will continue the work from the retained tail.",
+			"Summarize only the conversation history you are given; newer turns may be retained outside the summary.",
+			"Preserve current goals, user constraints and preferences, progress, decisions, key files, commands, errors, risks, examples, references, and concrete next steps.",
+			"If a previous summary is provided, update it by preserving still-true details, removing stale details, and merging in new facts.",
+			"Do not continue the conversation, answer questions in the transcript, or mention that you are summarizing or compacting.",
+			"Be concise, structured, and focused on helping the next LLM continue without rereading the compacted transcript.",
+		}, " "),
+		SummaryTitle: DefaultSummaryTitle,
+	}
+}
+
+func NormalizePromptOptions(options PromptOptions) PromptOptions {
+	defaults := DefaultPromptOptions()
+	options.WriterSystemPrompt = strings.TrimSpace(options.WriterSystemPrompt)
+	if options.WriterSystemPrompt == "" {
+		options.WriterSystemPrompt = defaults.WriterSystemPrompt
+	}
+	options.SummaryTitle = strings.TrimSpace(options.SummaryTitle)
+	if options.SummaryTitle == "" {
+		options.SummaryTitle = defaults.SummaryTitle
+	}
+	return options
+}
+
 func SummaryWriterSystemPrompt() string {
-	return strings.Join([]string{
-		"You are Floret's context compaction writer.",
-		"Create a structured handoff summary for another LLM that will continue the work from the retained tail.",
-		"Summarize only the conversation history you are given; newer turns may be retained outside the summary.",
-		"Preserve current goals, user constraints and preferences, progress, decisions, key files, commands, errors, risks, examples, references, and concrete next steps.",
-		"If a previous summary is provided, update it by preserving still-true details, removing stale details, and merging in new facts.",
-		"Do not continue the conversation, answer questions in the transcript, or mention that you are summarizing or compacting.",
-		"Be concise, structured, and focused on helping the next LLM continue without rereading the compacted transcript.",
-	}, " ")
+	return SummaryWriterSystemPromptWithOptions(PromptOptions{})
+}
+
+func SummaryWriterSystemPromptWithOptions(options PromptOptions) string {
+	return NormalizePromptOptions(options).WriterSystemPrompt
 }
 
 func SummaryPrompt(prep Preparation, policy contextpolicy.Policy, outputCap int64) string {
+	return SummaryPromptWithOptions(prep, policy, outputCap, PromptOptions{})
+}
+
+func SummaryPromptWithOptions(prep Preparation, policy contextpolicy.Policy, outputCap int64, options PromptOptions) string {
+	options = NormalizePromptOptions(options)
 	policy = contextpolicy.Normalize(policy)
 	if outputCap <= 0 {
 		outputCap = policy.ReservedSummaryTokens
 	}
 	var out strings.Builder
 	out.WriteString("Return a markdown checkpoint summary with this exact section set:\n")
-	out.WriteString("# Floret Compaction Summary\n")
+	out.WriteString("# " + options.SummaryTitle + "\n")
 	out.WriteString("schema: " + SummarySchemaVersion + "\n")
 	out.WriteString("## Goals\n## Constraints\n## Completed Work\n## Open Work\n## Key Files\n## Commands And Results\n## Errors And Risks\n## Decisions\n## Next Steps\n\n")
 	out.WriteString(fmt.Sprintf("The final markdown summary must fit within at most %d estimated tokens. ", outputCap))
@@ -861,7 +903,7 @@ func SummaryPrompt(prep Preparation, policy contextpolicy.Policy, outputCap int6
 		out.WriteString("\n")
 	}
 	out.WriteString("\nTranscript to compact:\n")
-	budget := summaryTranscriptBudget(policy, outputCap, out.String())
+	budget := summaryTranscriptBudget(policy, outputCap, out.String(), options)
 	var used int64
 	for _, msg := range prep.CompactedHead {
 		line := renderForSummaryPrompt(msg)
@@ -877,12 +919,12 @@ func SummaryPrompt(prep Preparation, policy contextpolicy.Policy, outputCap int6
 	return out.String()
 }
 
-func summaryTranscriptBudget(policy contextpolicy.Policy, outputCap int64, promptPrefix string) int64 {
+func summaryTranscriptBudget(policy contextpolicy.Policy, outputCap int64, promptPrefix string, options PromptOptions) int64 {
 	policy = contextpolicy.Normalize(policy)
 	if outputCap <= 0 {
 		outputCap = policy.ReservedSummaryTokens
 	}
-	fixedInput := contextpolicy.EstimateTextTokens(SummaryWriterSystemPrompt()) + contextpolicy.EstimateTextTokens(promptPrefix)
+	fixedInput := contextpolicy.EstimateTextTokens(SummaryWriterSystemPromptWithOptions(options)) + contextpolicy.EstimateTextTokens(promptPrefix)
 	budget := policy.ContextWindowTokens - outputCap - fixedInput
 	if budget < 0 {
 		return 0
