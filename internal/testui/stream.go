@@ -73,6 +73,34 @@ func (r *streamingEventRecorder) Emit(ev event.Event) {
 	switch ev.Type {
 	case event.ProviderDelta:
 		emitEngineStreamEvent(sink, AgentStreamProviderDelta, ev)
+	case event.ProviderUsage:
+		if status, ok := contextStatusFromEngineEvent(ev); ok {
+			sink.EmitAgentStream(AgentStreamEvent{
+				Type:          AgentStreamContextStatus,
+				SessionID:     ev.SessionID,
+				TurnID:        ev.RunID,
+				Step:          ev.Step,
+				At:            ev.Timestamp,
+				ContextStatus: &status,
+				EngineEvent:   &ev,
+			})
+		}
+	case event.ProviderFinish:
+		emitEngineStreamEvent(sink, AgentStreamProviderDelta, ev)
+	case event.ContextCompact:
+		if compact, ok := compactionEventFromEngineEvent(ev); ok {
+			sink.EmitAgentStream(AgentStreamEvent{
+				Type:        AgentStreamContextCompaction,
+				SessionID:   ev.SessionID,
+				TurnID:      ev.RunID,
+				Step:        ev.Step,
+				At:          ev.Timestamp,
+				Compaction:  &compact,
+				EngineEvent: &ev,
+				Message:     compact.SummaryPreview,
+				Error:       compact.Error,
+			})
+		}
 	case event.ToolCall, event.HostedToolCall:
 		emitEngineStreamEvent(sink, AgentStreamToolCall, ev)
 	case event.ToolResult, event.HostedToolResult:

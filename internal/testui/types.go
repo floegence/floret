@@ -255,6 +255,8 @@ const (
 	AgentStreamUserMessageAppended      AgentStreamEventType = "user_message_appended"
 	AgentStreamProviderRequest          AgentStreamEventType = "provider_request"
 	AgentStreamProviderDelta            AgentStreamEventType = "provider_delta"
+	AgentStreamContextStatus            AgentStreamEventType = "context_status"
+	AgentStreamContextCompaction        AgentStreamEventType = "context_compaction"
 	AgentStreamAssistantMessageAppended AgentStreamEventType = "assistant_message_appended"
 	AgentStreamToolCall                 AgentStreamEventType = "tool_call"
 	AgentStreamToolResult               AgentStreamEventType = "tool_result"
@@ -275,6 +277,8 @@ type AgentStreamEvent struct {
 	Entry           *ObservedSessionEntry    `json:"entry,omitempty"`
 	ProviderRequest *ObservedProviderRequest `json:"provider_request,omitempty"`
 	ProviderEvent   *ObservedProviderEvent   `json:"provider_event,omitempty"`
+	ContextStatus   *ObservedContextStatus   `json:"context_status,omitempty"`
+	Compaction      *ObservedCompactionEvent `json:"compaction,omitempty"`
 	EngineEvent     *event.Event             `json:"engine_event,omitempty"`
 	Snapshot        *AgentSessionSnapshot    `json:"session_snapshot,omitempty"`
 	Result          *AgentRunResponse        `json:"result,omitempty"`
@@ -330,6 +334,8 @@ type AgentRunResponse struct {
 type AgentObservation struct {
 	ProviderRequests  []ObservedProviderRequest `json:"provider_requests"`
 	ProviderEvents    []ObservedProviderEvent   `json:"provider_events"`
+	ContextStatuses   []ObservedContextStatus   `json:"context_statuses,omitempty"`
+	CompactionEvents  []ObservedCompactionEvent `json:"compaction_events,omitempty"`
 	SessionMessages   []ObservedSessionMessage  `json:"session_messages"`
 	ActiveContext     []ObservedSessionMessage  `json:"active_context"`
 	ContextProjection ObservedContextProjection `json:"context_projection,omitempty"`
@@ -344,6 +350,9 @@ type ObservedProviderRequest struct {
 	ThreadID                string                          `json:"thread_id,omitempty"`
 	TurnID                  string                          `json:"turn_id,omitempty"`
 	Step                    int                             `json:"step"`
+	LogicalRequestID        string                          `json:"logical_request_id,omitempty"`
+	Attempt                 int                             `json:"attempt,omitempty"`
+	OverflowRetried         bool                            `json:"overflow_retried,omitempty"`
 	Provider                string                          `json:"provider"`
 	Model                   string                          `json:"model"`
 	ObservedAt              time.Time                       `json:"observed_at"`
@@ -415,6 +424,51 @@ type ObservedProviderEvent struct {
 	Metadata     map[string]string              `json:"metadata,omitempty"`
 	Reason       string                         `json:"reason,omitempty"`
 	Usage        provider.Usage                 `json:"usage,omitempty"`
+}
+
+type ObservedContextStatus struct {
+	RunID                string                        `json:"run_id,omitempty"`
+	SessionID            string                        `json:"session_id,omitempty"`
+	TurnID               string                        `json:"turn_id,omitempty"`
+	Step                 int                           `json:"step,omitempty"`
+	RequestID            string                        `json:"request_id,omitempty"`
+	LogicalRequestID     string                        `json:"logical_request_id,omitempty"`
+	Attempt              int                           `json:"attempt,omitempty"`
+	Phase                string                        `json:"phase"`
+	Provider             string                        `json:"provider,omitempty"`
+	Model                string                        `json:"model,omitempty"`
+	ObservedAt           time.Time                     `json:"observed_at"`
+	Usage                provider.Usage                `json:"usage,omitempty"`
+	RequestEstimate      contextpolicy.RequestEstimate `json:"request_estimate,omitempty"`
+	ContextPressure      contextpolicy.ContextPressure `json:"context_pressure,omitempty"`
+	UsedRatio            float64                       `json:"used_ratio,omitempty"`
+	ThresholdRatio       float64                       `json:"threshold_ratio,omitempty"`
+	Status               string                        `json:"status"`
+	CompactionGeneration int                           `json:"compaction_generation,omitempty"`
+	CompactionWindowID   string                        `json:"compaction_window_id,omitempty"`
+}
+
+type ObservedCompactionEvent struct {
+	RunID                   string              `json:"run_id,omitempty"`
+	SessionID               string              `json:"session_id,omitempty"`
+	TurnID                  string              `json:"turn_id,omitempty"`
+	Step                    int                 `json:"step,omitempty"`
+	Phase                   string              `json:"phase"`
+	Status                  string              `json:"status"`
+	Trigger                 string              `json:"trigger,omitempty"`
+	Reason                  string              `json:"reason,omitempty"`
+	CompactionID            string              `json:"compaction_id,omitempty"`
+	CompactionGeneration    int                 `json:"compaction_generation,omitempty"`
+	CompactionWindowID      string              `json:"compaction_window_id,omitempty"`
+	CompactedThroughEntryID string              `json:"compacted_through_entry_id,omitempty"`
+	TokensBefore            int64               `json:"tokens_before,omitempty"`
+	TokensAfterEstimate     int64               `json:"tokens_after_estimate,omitempty"`
+	ContextBefore           contextpolicy.Usage `json:"context_before,omitempty"`
+	ContextAfter            contextpolicy.Usage `json:"context_after,omitempty"`
+	SummaryPreview          string              `json:"summary_preview,omitempty"`
+	Summary                 string              `json:"summary,omitempty"`
+	Error                   string              `json:"error,omitempty"`
+	ObservedAt              time.Time           `json:"observed_at"`
 }
 
 type ObservedArtifactRef struct {
@@ -528,6 +582,8 @@ type AgentSessionSnapshot struct {
 	AllEntries              []ObservedSessionEntry          `json:"all_entries"`
 	AggregateMetrics        engine.RunMetrics               `json:"aggregate_metrics"`
 	Compactions             int                             `json:"compactions"`
+	ContextStatuses         []ObservedContextStatus         `json:"context_statuses,omitempty"`
+	CompactionEvents        []ObservedCompactionEvent       `json:"compaction_events,omitempty"`
 	Observation             AgentObservation                `json:"observation,omitempty"`
 }
 

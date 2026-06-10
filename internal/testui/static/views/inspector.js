@@ -1,4 +1,13 @@
 import { escapeHTML, formatDuration, formatLocalTime, state, toolLabelList } from "../state.js";
+import {
+  compactionEventsFor,
+  contextStatusForRequest,
+  contextStatusesFor,
+  latestContextStatus,
+  renderCompactionEventRow,
+  renderContextMeter,
+  renderContextStatusRow,
+} from "../contextStatus.js";
 import { bindToolPresets, readSelectedTools, renderToolMatrix } from "../components/toolMatrix.js";
 
 export function renderInspector({ session, result, tools, tab }) {
@@ -51,13 +60,13 @@ export function bindInspector(root, { tools, onEditTools, onToolEditDraft, onTab
 function renderTab(tab, session, observation, result, tools) {
   switch (tab) {
     case "requests":
-      return renderRequests(observation.provider_requests || []);
+      return renderRequests(observation.provider_requests || [], contextStatusesFor(session, result));
     case "outputs":
       return renderOutputs(session);
     case "events":
       return renderEvents([...(result?.events || []), ...(result?.harness_events || [])], observation.provider_events || []);
     case "context":
-      return renderContext(session);
+      return renderContext(session, result);
     case "raw":
       return `<pre class="json-block">${escapeHTML(JSON.stringify({ session, result }, null, 2))}</pre>`;
     case "tools":
@@ -150,8 +159,8 @@ function renderCapabilitySummary(session, observation) {
   const caps = session.capabilities || {};
   const request = latestProviderRequest(observation.provider_requests || []);
   const requestTools = request?.tools || [];
-  const mcpTools = requestTools.filter((tool) => tool.annotations?.source === "mcp");
-  const skillTools = requestTools.filter((tool) => tool.annotations?.source === "skill");
+  const mcpTools = requestTools.filter((tool) => toolAnnotations(tool).source === "mcp");
+  const skillTools = requestTools.filter((tool) => toolAnnotations(tool).source === "skill");
   const mcpServers = caps.mcp_servers || [];
   const skills = caps.skills || [];
   const diagnostics = caps.diagnostics || [];
@@ -167,10 +176,10 @@ function renderCapabilitySummary(session, observation) {
         item.next_action || "",
       ])}
       ${renderCapabilityRows("MCP Tools", mcpTools, (tool) => [
-        tool.name || "tool",
-        `remote: ${tool.annotations?.mcp_tool || "unknown"}`,
-        `server: ${tool.annotations?.mcp_server || "unknown"}`,
-        `permission: ${tool.annotations?.permission_mode || "ask"}`,
+        toolName(tool) || "tool",
+        `remote: ${toolAnnotations(tool).mcp_tool || "unknown"}`,
+        `server: ${toolAnnotations(tool).mcp_server || "unknown"}`,
+        `permission: ${toolAnnotations(tool).permission_mode || "ask"}`,
       ])}
       ${renderCapabilityRows("Agent Skills", skills, (item) => [
         item.name || "skill",
@@ -180,8 +189,8 @@ function renderCapabilitySummary(session, observation) {
         item.description || "",
       ])}
       ${renderCapabilityRows("Skill Tool", skillTools, (tool) => [
-        tool.name || "skill",
-        `permission: ${tool.annotations?.permission_mode || "allow"}`,
+        toolName(tool) || "skill",
+        `permission: ${toolAnnotations(tool).permission_mode || "allow"}`,
       ])}
       ${renderCapabilityRows("Diagnostics", diagnostics, (item) => [
         item.kind || "diagnostic",
@@ -224,20 +233,20 @@ function renderToolAudit(entry) {
   `;
 }
 
-function renderRequests(requests) {
+function renderRequests(requests, contextStatuses) {
   if (!requests.length) return `<p class="muted">No provider request captured for the selected session view.</p>`;
   return `
     <div class="request-list">
       ${requests.map((request, index) => `
         <article class="request-item">
           <strong>Step ${escapeHTML(request.step || index + 1)} · ${escapeHTML(request.provider || "")} / ${escapeHTML(request.model || "")}</strong>
+          ${renderContextMeter(contextStatusForRequest(contextStatuses, request), { interactive: false })}
           <div class="metric-strip">
             <span class="metric">${(request.messages || []).length} messages</span>
             <span class="metric">${(request.tools || []).length} tools</span>
             <span class="metric">${escapeHTML(request.cache_summary?.toolset_id || "toolset n/a")}</span>
-            ${renderContextStatusMetrics(request.projected_context_pressure)}
           </div>
-          <div class="key-value"><span>Tools</span><span>${escapeHTML((request.tools || []).map((tool) => tool.name).join(", ") || "none")}</span></div>
+          <div class="key-value"><span>Tools</span><span>${escapeHTML((request.tools || []).map(toolName).filter(Boolean).join(", ") || "none")}</span></div>
           <div class="key-value"><span>Hosted</span><span>${escapeHTML(hostedToolLabel(request.hosted_tools || []))}</span></div>
           <div class="key-value"><span>Unavailable</span><span>${escapeHTML((request.unavailable_capabilities || []).join("; ") || "none")}</span></div>
           <details>
@@ -292,26 +301,6 @@ function renderArtifactLink(ref) {
   `;
 }
 
-function renderContextStatusMetrics(pressure) {
-  if (!pressure) return "";
-  const projected = pressure.projected_input_tokens ?? pressure.ProjectedInputTokens;
-  const observed = pressure.window_input_tokens ?? pressure.WindowInputTokens;
-  const threshold = pressure.threshold_tokens ?? pressure.ThresholdTokens;
-  const requestSafe = pressure.request_safe_limit_tokens ?? pressure.RequestSafeLimit;
-  const headroom = pressure.output_headroom_tokens ?? pressure.OutputHeadroomTokens;
-  const compact = pressure.compaction_needed ?? pressure.CompactionNeeded;
-  const hard = pressure.hard_limit_exceeded ?? pressure.HardLimitExceeded;
-  const current = projected ?? observed;
-  const contextLabel = current || current === 0 ? `${formatCount(current)}${threshold ? ` / ${formatCount(threshold)}` : ""}` : "n/a";
-  const room = requestSafe && (current || current === 0) ? Math.max(0, requestSafe - current) : null;
-  return [
-    `<span class="metric">Context ${escapeHTML(contextLabel)}</span>`,
-    headroom || headroom === 0 ? `<span class="metric">Output room ${escapeHTML(formatCount(headroom))}</span>` : "",
-    room || room === 0 ? `<span class="metric">Request room ${escapeHTML(formatCount(room))}</span>` : "",
-    `<span class="metric">Compaction ${escapeHTML(hard ? "required" : compact ? "will compact" : "stable")}</span>`,
-  ].join("");
-}
-
 function renderRequestDebug(request) {
   const estimate = request.request_estimate || {};
   const pressure = request.projected_context_pressure || {};
@@ -334,12 +323,6 @@ function renderRequestDebug(request) {
   return `<pre class="json-block">${escapeHTML(JSON.stringify(debug, null, 2))}</pre>`;
 }
 
-function formatCount(value) {
-  const num = Number(value);
-  if (!Number.isFinite(num)) return String(value || 0);
-  return num.toLocaleString();
-}
-
 function latestProviderRequest(requests) {
   return requests[requests.length - 1] || null;
 }
@@ -347,15 +330,32 @@ function latestProviderRequest(requests) {
 function hostedToolLabel(tools) {
   if (!tools || !tools.length) return "none";
   return tools.map((tool) => {
-    const shape = tool.options?.wire_shape || tool.wire_shape || hostedWireShapeFromType(tool.type);
+    const type = hostedToolType(tool);
+    const shape = (tool.options || tool.Options)?.wire_shape || tool.wire_shape || hostedWireShapeFromType(type);
     const shapeLabel = shape ? ` · ${shape}` : "";
-    return `${tool.name || tool.type} (${tool.type || "hosted"}${shapeLabel})`;
+    return `${hostedToolName(tool) || type} (${type || "hosted"}${shapeLabel})`;
   }).join(", ");
 }
 
 function hostedWireShapeFromType(type) {
   if (type === "web_search_20250305") return "anthropic_server_web_search";
   return "";
+}
+
+function toolName(tool) {
+  return tool?.name || tool?.Name || "";
+}
+
+function toolAnnotations(tool) {
+  return tool?.annotations || tool?.Annotations || {};
+}
+
+function hostedToolName(tool) {
+  return tool?.name || tool?.Name || "";
+}
+
+function hostedToolType(tool) {
+  return tool?.type || tool?.Type || "";
 }
 
 function renderEvents(events, providerEvents) {
@@ -436,7 +436,7 @@ function truncateOneLine(value, limit) {
   return `${text.slice(0, Math.max(0, limit - 3))}...`;
 }
 
-function renderContext(session) {
+function renderContext(session, result) {
   const projection = session.context_projection || {};
   const messages = projection.messages || session.active_context || [];
   const segments = projection.segments || messages.map((message, index) => ({
@@ -446,8 +446,30 @@ function renderContext(session) {
     tool_name: message.tool_name,
     ui_preview: message.content || "",
   }));
-  if (!segments.length) return `<p class="muted">No provider-visible context yet.</p>`;
+  const statuses = contextStatusesFor(session, result);
+  const compactions = compactionEventsFor(session, result);
+  const current = latestContextStatus(session, result);
+  const statusPanel = `
+    <section class="section context-current">
+      <h3>Current Pressure</h3>
+      ${renderContextMeter(current, { interactive: false })}
+    </section>
+    <section class="section">
+      <h3>Recent Context Events</h3>
+      ${statuses.length || compactions.length ? `
+        <div class="context-event-list">
+          ${statuses.slice(-8).map(renderContextStatusRow).join("")}
+          ${compactions.slice(-6).map(renderCompactionEventRow).join("")}
+        </div>
+      ` : `<p class="muted">No provider context status has been captured yet.</p>`}
+    </section>
+  `;
+  if (!segments.length) return `${statusPanel}<p class="muted">No provider-visible context yet.</p>`;
   return `
+    ${statusPanel}
+    <section class="section">
+      <h3>Provider-visible Context</h3>
+    </section>
     <div class="event-list">
       ${segments.map((segment, index) => {
         const msg = messages[segment.message_index] || {};

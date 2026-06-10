@@ -662,6 +662,175 @@ func TestProviderRequestAndResponseRecordsCarryThreadAndTurnIDs(t *testing.T) {
 	}
 }
 
+func TestProviderUsageEventsSeparateStreamUsageAndFinalContextStatus(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(harness.Step(
+		provider.StreamEvent{Type: provider.UsageEvent, Usage: provider.Usage{InputTokens: 100, WindowInputTokens: 115, OutputTokens: 20, Source: provider.UsageNative}},
+		provider.StreamEvent{Type: provider.Delta, Text: "ok"},
+		provider.StreamEvent{Type: provider.Done, ResponseID: "resp-usage"},
+	))
+	e := newTestEngine(p, rec)
+	e.Options.RunID = "turn"
+	e.Options.SessionID = "thread"
+	e.Options.ProviderName = "fake"
+	e.Options.Model = "fake-model"
+	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100}
+
+	got := e.Run(context.Background(), "hello")
+
+	if got.Status != engine.Completed {
+		t.Fatalf("result = %#v", got)
+	}
+	var usageEvents []event.Event
+	for _, ev := range rec.Events {
+		if ev.Type == event.ProviderUsage {
+			usageEvents = append(usageEvents, ev)
+		}
+	}
+	if len(usageEvents) != 2 {
+		t.Fatalf("provider usage events = %#v", usageEvents)
+	}
+	streamMeta, ok := usageEvents[0].Metadata.(map[string]any)
+	if !ok || streamMeta["phase"] != engine.ProviderUsagePhaseStreamUsage {
+		t.Fatalf("stream usage metadata = %#v", usageEvents[0].Metadata)
+	}
+	finalStatus, ok := usageEvents[1].Metadata.(engine.ProviderUsageContextStatus)
+	if !ok {
+		t.Fatalf("final usage metadata type = %T %#v", usageEvents[1].Metadata, usageEvents[1].Metadata)
+	}
+	if finalStatus.Phase != engine.ProviderUsagePhaseFinalContextStatus ||
+		finalStatus.RequestID != "turn:req:1" ||
+		finalStatus.Usage.WindowInputTokens != 115 ||
+		finalStatus.ContextPressure.WindowInputTokens != 115 ||
+		finalStatus.ContextPressure.ProjectedInputTokens != 0 ||
+		finalStatus.UsedRatio != 0.115 ||
+		finalStatus.ThresholdRatio != 0.9 ||
+		finalStatus.Status != engine.ContextStatusStable {
+		t.Fatalf("final context status = %#v", finalStatus)
+	}
+}
+
+func TestProviderUsageFinalContextStatusMarksMissingNativeUsageEstimated(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(harness.Step(
+		provider.StreamEvent{Type: provider.Delta, Text: "ok"},
+		provider.StreamEvent{Type: provider.Done, ResponseID: "resp-no-usage"},
+	))
+	e := newTestEngine(p, rec)
+	e.Options.RunID = "turn"
+	e.Options.SessionID = "thread"
+	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100}
+
+	got := e.Run(context.Background(), "hello")
+
+	if got.Status != engine.Completed {
+		t.Fatalf("result = %#v", got)
+	}
+	var finalStatus engine.ProviderUsageContextStatus
+	for _, ev := range rec.Events {
+		if ev.Type == event.ProviderUsage {
+			status, ok := ev.Metadata.(engine.ProviderUsageContextStatus)
+			if ok {
+				finalStatus = status
+			}
+		}
+	}
+	if finalStatus.Phase != engine.ProviderUsagePhaseFinalContextStatus {
+		t.Fatalf("final context status not emitted: %#v", rec.Events)
+	}
+	if finalStatus.Usage.Available || finalStatus.Usage.Source != provider.UsageUnavailable {
+		t.Fatalf("missing native usage should remain unavailable: %#v", finalStatus.Usage)
+	}
+	if finalStatus.ContextPressure.Source != contextpolicy.PressureSourceMissingNativeUsage ||
+		finalStatus.ContextPressure.WindowInputTokens != 0 ||
+		finalStatus.ContextPressure.ProjectedInputTokens == 0 ||
+		finalStatus.Status != engine.ContextStatusEstimated {
+		t.Fatalf("missing usage pressure/status = %#v", finalStatus)
+	}
+}
+
+func TestContextPressureDisplayStatusAndRatios(t *testing.T) {
+	tests := []struct {
+		name          string
+		pressure      contextpolicy.ContextPressure
+		wantStatus    string
+		wantUsed      float64
+		wantThreshold float64
+	}{
+		{
+			name: "hard limit",
+			pressure: contextpolicy.ContextPressure{
+				WindowInputTokens:   950,
+				ContextWindowTokens: 1000,
+				ThresholdTokens:     800,
+				HardLimitExceeded:   true,
+			},
+			wantStatus:    engine.ContextStatusHardLimit,
+			wantUsed:      0.95,
+			wantThreshold: 0.8,
+		},
+		{
+			name: "will compact",
+			pressure: contextpolicy.ContextPressure{
+				WindowInputTokens:   820,
+				ContextWindowTokens: 1000,
+				ThresholdTokens:     800,
+				CompactionNeeded:    true,
+			},
+			wantStatus:    engine.ContextStatusWillCompact,
+			wantUsed:      0.82,
+			wantThreshold: 0.8,
+		},
+		{
+			name: "estimated",
+			pressure: contextpolicy.ContextPressure{
+				ProjectedInputTokens: 500,
+				ContextWindowTokens:  1000,
+				ThresholdTokens:      800,
+				Source:               contextpolicy.PressureSourceMissingNativeUsage,
+			},
+			wantStatus:    engine.ContextStatusEstimated,
+			wantUsed:      0.5,
+			wantThreshold: 0.8,
+		},
+		{
+			name: "near threshold",
+			pressure: contextpolicy.ContextPressure{
+				WindowInputTokens:   730,
+				ContextWindowTokens: 1000,
+				ThresholdTokens:     800,
+			},
+			wantStatus:    engine.ContextStatusNearThreshold,
+			wantUsed:      0.73,
+			wantThreshold: 0.8,
+		},
+		{
+			name: "stable",
+			pressure: contextpolicy.ContextPressure{
+				WindowInputTokens:   400,
+				ContextWindowTokens: 1000,
+				ThresholdTokens:     800,
+			},
+			wantStatus:    engine.ContextStatusStable,
+			wantUsed:      0.4,
+			wantThreshold: 0.8,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := engine.ContextPressureDisplayStatus(tt.pressure); got != tt.wantStatus {
+				t.Fatalf("status = %q, want %q", got, tt.wantStatus)
+			}
+			if got := engine.ContextPressureUsedRatio(tt.pressure); got != tt.wantUsed {
+				t.Fatalf("used ratio = %v, want %v", got, tt.wantUsed)
+			}
+			if got := engine.ContextPressureThresholdRatio(tt.pressure); got != tt.wantThreshold {
+				t.Fatalf("threshold ratio = %v, want %v", got, tt.wantThreshold)
+			}
+		})
+	}
+}
+
 func TestRequestRecordsRequestEstimateMetadata(t *testing.T) {
 	rec := &event.Recorder{}
 	p := &hashingProvider{
@@ -1511,6 +1680,21 @@ func TestProviderContextOverflowCompactsAndRetries(t *testing.T) {
 	if !hasEvent(rec.Events, event.ContextCompact) {
 		t.Fatalf("context overflow did not compact")
 	}
+	compactions := eventsOfType(rec.Events, event.ContextCompact)
+	if len(compactions) != 2 {
+		t.Fatalf("context compaction should emit start and complete events: %#v", compactions)
+	}
+	completeMeta, ok := compactions[1].Metadata.(map[string]any)
+	if !ok {
+		t.Fatalf("context compact complete metadata = %#v", compactions[1].Metadata)
+	}
+	if completeMeta["phase"] != engine.ContextCompactPhaseComplete ||
+		completeMeta["trigger"] != compaction.TriggerOverflow ||
+		completeMeta["reason"] != compaction.ReasonProviderOverflow ||
+		completeMeta["compaction_generation"] != 1 ||
+		completeMeta["compaction_window_id"] == "" {
+		t.Fatalf("context compact complete metadata missing live window fields: %#v", completeMeta)
+	}
 	if got.Metrics.Compactions != 1 {
 		t.Fatalf("compactions = %d, want 1", got.Metrics.Compactions)
 	}
@@ -1679,7 +1863,8 @@ func TestCompactionPolicyUsesMessageContextPrefixBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	compactor := &policyRecordingCompactor{}
-	e := newTestEngine(p, &event.Recorder{})
+	rec := &event.Recorder{}
+	e := newTestEngine(p, rec)
 	e.Store = store
 	e.Compactor = compactor
 	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100, ReservedSummaryTokens: 80, RecentTailTokens: 20}
@@ -1690,6 +1875,19 @@ func TestCompactionPolicyUsesMessageContextPrefixBudget(t *testing.T) {
 	wantWindow := e.Options.ContextPolicy.ContextWindowTokens - messageContext.PrefixTokens
 	if got.Status != engine.Failed || compactor.policy.ContextWindowTokens != wantWindow {
 		t.Fatalf("compaction policy should stay message-context scoped: result=%#v policy=%#v", got, compactor.policy)
+	}
+	compactions := eventsOfType(rec.Events, event.ContextCompact)
+	if len(compactions) != 2 {
+		t.Fatalf("failed compaction should emit start and failed events: %#v", compactions)
+	}
+	failedMeta, ok := compactions[1].Metadata.(map[string]any)
+	if !ok {
+		t.Fatalf("failed compaction metadata = %#v", compactions[1].Metadata)
+	}
+	if failedMeta["phase"] != engine.ContextCompactPhaseFailed ||
+		compactions[1].Err != "stop after recording policy" ||
+		compactions[1].Result != "" {
+		t.Fatalf("failed compaction terminal event = %#v meta=%#v", compactions[1], failedMeta)
 	}
 }
 
@@ -2306,6 +2504,16 @@ func firstEvent(events []event.Event, typ event.Type) event.Event {
 		}
 	}
 	return event.Event{}
+}
+
+func eventsOfType(events []event.Event, typ event.Type) []event.Event {
+	var out []event.Event
+	for _, ev := range events {
+		if ev.Type == typ {
+			out = append(out, ev)
+		}
+	}
+	return out
 }
 
 func hasProviderTool(defs []provider.ToolDefinition, name string) bool {

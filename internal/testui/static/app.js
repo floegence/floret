@@ -411,6 +411,8 @@ function createLiveTurn(sessionID, message) {
     events: [],
     provider_events: [],
     provider_requests: [],
+    context_statuses: [],
+    compactions: [],
     entries: [],
     result: null,
     failed: false,
@@ -436,6 +438,23 @@ function applyStreamEvent(event) {
         state.liveTurn.provider_requests.push(event.provider_request);
         state.liveTurn.result.observation.provider_requests = state.liveTurn.provider_requests;
       }
+      break;
+    case "context_status":
+      if (event.context_status) {
+        upsertLiveContextStatus(event.context_status);
+      }
+      if (event.engine_event) {
+        state.liveTurn.result.events.push(event.engine_event);
+      }
+      break;
+    case "context_compaction":
+      if (event.compaction) {
+        upsertLiveCompaction(event.compaction);
+      }
+      if (event.engine_event) {
+        state.liveTurn.result.events.push(event.engine_event);
+      }
+      if (event.error) state.liveTurn.failed = true;
       break;
     case "provider_delta":
       applyProviderDelta(event);
@@ -491,6 +510,8 @@ function ensureStreamingResult() {
       observation: {
         provider_requests: state.liveTurn.provider_requests,
         provider_events: state.liveTurn.provider_events,
+        context_statuses: state.liveTurn.context_statuses,
+        compaction_events: state.liveTurn.compactions,
         path_entries: state.liveTurn.entries,
       },
       session: state.activeSession,
@@ -501,6 +522,8 @@ function ensureStreamingResult() {
   }
   state.liveTurn.result.observation.provider_requests = state.liveTurn.provider_requests;
   state.liveTurn.result.observation.provider_events = state.liveTurn.provider_events;
+  state.liveTurn.result.observation.context_statuses = state.liveTurn.context_statuses;
+  state.liveTurn.result.observation.compaction_events = state.liveTurn.compactions;
   state.liveTurn.result.observation.path_entries = state.liveTurn.entries;
 }
 
@@ -523,6 +546,84 @@ function applyProviderDelta(event) {
       state.liveTurn.assistant_delta += providerEvent.text || "";
     }
   }
+}
+
+function upsertLiveContextStatus(status) {
+  const next = upsertByKey(state.liveTurn.context_statuses, status, contextStatusKey);
+  state.liveTurn.context_statuses = next;
+  state.liveTurn.result.observation.context_statuses = next;
+  overlayActiveSessionContext({
+    contextStatuses: next,
+  });
+}
+
+function upsertLiveCompaction(compaction) {
+  const next = upsertByKey(state.liveTurn.compactions, compaction, compactionKey);
+  state.liveTurn.compactions = next;
+  state.liveTurn.result.observation.compaction_events = next;
+  overlayActiveSessionContext({
+    compactions: next,
+  });
+}
+
+function overlayActiveSessionContext({ contextStatuses, compactions }) {
+  if (state.activeSession?.id !== state.liveTurn?.session_id) return;
+  const observation = { ...(state.activeSession.observation || {}) };
+  const patch = {
+    ...state.activeSession,
+    observation,
+    status: "running",
+    phase: "turn",
+  };
+  if (contextStatuses) {
+    patch.context_statuses = mergeByKey(state.activeSession.context_statuses, contextStatuses, contextStatusKey);
+    observation.context_statuses = mergeByKey(observation.context_statuses, contextStatuses, contextStatusKey);
+  }
+  if (compactions) {
+    patch.compaction_events = mergeByKey(state.activeSession.compaction_events, compactions, compactionKey);
+    observation.compaction_events = mergeByKey(observation.compaction_events, compactions, compactionKey);
+  }
+  setActiveSessionSnapshot(patch, { allowRunningOverlay: true });
+  state.liveTurn.result.session = state.activeSession;
+}
+
+function upsertByKey(items, item, keyFor) {
+  if (!item) return items || [];
+  return mergeByKey(items, [item], keyFor);
+}
+
+function mergeByKey(base, additions, keyFor) {
+  const out = [...(base || [])];
+  for (const item of additions || []) {
+    if (!item) continue;
+    const key = keyFor(item);
+    const index = out.findIndex((existing) => keyFor(existing) === key);
+    if (index >= 0) {
+      out[index] = item;
+    } else {
+      out.push(item);
+    }
+  }
+  return out;
+}
+
+function contextStatusKey(status) {
+  return [
+    status?.phase || "",
+    status?.request_id || status?.logical_request_id || "",
+    status?.step || "",
+    status?.attempt || "",
+    status?.observed_at || "",
+  ].join(":");
+}
+
+function compactionKey(compaction) {
+  return [
+    compaction?.phase || "",
+    compaction?.compaction_id || "",
+    compaction?.step || "",
+    compaction?.observed_at || "",
+  ].join(":");
 }
 
 function upsertLiveEntry(entry) {

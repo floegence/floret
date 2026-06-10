@@ -90,6 +90,9 @@ func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<
 		ThreadID:                observedThreadID(req),
 		TurnID:                  observedTurnID(req),
 		Step:                    req.Step,
+		LogicalRequestID:        req.LogicalRequestID,
+		Attempt:                 req.Attempt,
+		OverflowRetried:         req.OverflowRetried,
 		Provider:                req.Provider,
 		Model:                   req.Model,
 		ObservedAt:              time.Now(),
@@ -120,6 +123,7 @@ func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<
 	p.mu.Unlock()
 	if sink != nil {
 		reqCopy := observedRequest
+		status := contextStatusFromProviderRequest(observedRequest)
 		sink.EmitAgentStream(AgentStreamEvent{
 			Type:            AgentStreamProviderRequest,
 			SessionID:       observedRequest.SessionID,
@@ -127,6 +131,14 @@ func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<
 			Step:            observedRequest.Step,
 			At:              observedRequest.ObservedAt,
 			ProviderRequest: &reqCopy,
+		})
+		sink.EmitAgentStream(AgentStreamEvent{
+			Type:          AgentStreamContextStatus,
+			SessionID:     observedRequest.SessionID,
+			TurnID:        observedRequest.TurnID,
+			Step:          observedRequest.Step,
+			At:            observedRequest.ObservedAt,
+			ContextStatus: &status,
 		})
 	}
 
@@ -266,7 +278,7 @@ func observedSessionID(req provider.Request) string {
 			return seg.SessionID
 		}
 	}
-	return ""
+	return req.SessionID
 }
 
 func observedThreadID(req provider.Request) string {

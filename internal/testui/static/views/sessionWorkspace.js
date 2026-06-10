@@ -1,4 +1,13 @@
 import { escapeHTML, formatLocalTime, profileLabel, relativeTime, shortID, state, toolLabelList, totalTokens } from "../state.js";
+import {
+  compactionEventsFor,
+  compactionTitle,
+  compactionTokenLabel,
+  latestContextStatus,
+  renderCompactionEventRow,
+  renderContextMeter,
+  renderContextStatusRow,
+} from "../contextStatus.js";
 import { bindInspector, renderInspector } from "./inspector.js";
 
 const copyPayloads = new Map();
@@ -25,6 +34,12 @@ export function bindSessionWorkspace(root, handlers) {
   });
   root.querySelectorAll("[data-session-select-id]").forEach((button) => {
     button.addEventListener("click", () => handlers.onSelect(button.dataset.sessionSelectId || ""));
+  });
+  root.querySelector("[data-context-meter]")?.addEventListener("click", () => {
+    handlers.onInspectorTab("context");
+    if (window.matchMedia("(max-width: 820px)").matches) {
+      handlers.onMobilePanel("inspector");
+    }
   });
   root.querySelectorAll("[data-copy-key]").forEach((button) => {
     button.addEventListener("click", (event) => {
@@ -119,6 +134,7 @@ function renderWorkspace(session, result) {
   const isSending = state.action === "append-turn";
   const canAppend = session.can_append_message && !state.running;
   const composerDraft = state.composerDrafts[session.id] || "";
+  const contextStatus = latestContextStatus(session, result);
   return `
     <section class="workspace">
       <header class="workspace-head">
@@ -137,6 +153,9 @@ function renderWorkspace(session, result) {
           <button type="button" class="small" data-mobile-panel="sessions">Sessions</button>
           <button type="button" class="small" data-mobile-panel="inspector">Inspector</button>
         </div>
+        <div class="workspace-context-meter">
+          ${renderContextMeter(contextStatus)}
+        </div>
       </header>
       <div class="conversation" data-session-id="${escapeHTML(session.id)}">
         ${renderTimeline(session, result)}
@@ -154,17 +173,36 @@ function renderWorkspace(session, result) {
 
 function renderTimeline(session, result) {
   const entries = mergeTimelineEntries(session);
-  if (!entries.length && !activeLiveTurn(session)) return `<div class="message entry"><div class="message-text muted">No durable messages yet.</div></div>`;
+  const compactions = compactionEventsFor(session, result);
+  if (!entries.length && !compactions.length && !activeLiveTurn(session)) return `<div class="message entry"><div class="message-text muted">No durable messages yet.</div></div>`;
   const visibleEntries = entries.filter((entry) => {
     return ["user_message", "assistant_message", "tool_call", "tool_result", "active_tools_change", "run_failure", "turn_marker"].includes(entry.type);
   });
-  return `${timelineItems(visibleEntries).map(renderTimelineItem).join("")}${renderLiveTurn(session)}`;
+  return `${timelineItems(timelineRows(visibleEntries, compactions)).map(renderTimelineItem).join("")}${renderLiveTurn(session)}`;
 }
 
-function timelineItems(entries) {
+function timelineRows(entries, compactions) {
+  const rows = [
+    ...entries.map((entry) => ({ type: "entry", entry, at: entry.created_at || "" })),
+    ...compactions.map((compaction) => ({ type: "compaction", compaction, at: compaction.observed_at || "" })),
+  ];
+  return rows.sort((a, b) => {
+    const at = Date.parse(a.at || "");
+    const bt = Date.parse(b.at || "");
+    if (Number.isFinite(at) && Number.isFinite(bt) && at !== bt) return at - bt;
+    return 0;
+  });
+}
+
+function timelineItems(rows) {
   const items = [];
   const pendingToolRuns = new Map();
-  for (const entry of entries) {
+  for (const row of rows) {
+    if (row.type === "compaction") {
+      items.push(row);
+      continue;
+    }
+    const entry = row.entry || row;
     if (entry.type !== "tool_call" && entry.type !== "tool_result") {
       items.push({ type: "entry", entry });
       continue;
@@ -189,7 +227,31 @@ function timelineItems(entries) {
 
 function renderTimelineItem(item) {
   if (item.type === "tool_run") return renderToolRun(item);
+  if (item.type === "compaction") return renderCompactionTimelineItem(item.compaction);
   return renderEntry(item.entry);
+}
+
+function renderCompactionTimelineItem(compaction) {
+  const copyPayload = [
+    `context compaction ${compaction?.phase || ""}`.trim(),
+    compaction?.trigger ? `trigger: ${compaction.trigger}` : "",
+    compaction?.reason ? `reason: ${compaction.reason}` : "",
+    compactionTokenLabel(compaction),
+    compaction?.compaction_id ? `compaction_id: ${compaction.compaction_id}` : "",
+    compaction?.summary ? `summary:\n${compaction.summary}` : "",
+    compaction?.error ? `error: ${compaction.error}` : "",
+  ].filter(Boolean).join("\n");
+  const title = compaction?.phase === "complete" ? "context compacted" : "context compaction";
+  return `
+    <article class="message entry context-compact-item" title="${escapeHTML(compactionTitle(compaction))}">
+      <div class="message-head">
+        <span>${escapeHTML(title)}</span>
+        <span>${escapeHTML(formatLocalTime(compaction?.observed_at))}</span>
+        ${copyButton(copyPayload, "Copy", "Compaction copied")}
+      </div>
+      ${renderCompactionEventRow(compaction)}
+    </article>
+  `;
 }
 
 function toolRunKey(entry) {
@@ -246,8 +308,24 @@ function renderLiveTurn(session) {
   ` : "";
   const visibleLiveEntries = (live.entries || []).filter((entry) => ["user_message", "assistant_message", "tool_call", "tool_result", "run_failure", "turn_marker"].includes(entry.type)).length;
   const activityLabel = visibleLiveEntries ? `${visibleLiveEntries} timeline update${visibleLiveEntries === 1 ? "" : "s"}` : `${live.events?.length || 0} event${live.events?.length === 1 ? "" : "s"}`;
+  const liveContext = renderLiveContextActivity(session, live);
   const activity = live.events?.length ? `<div class="stream-status">Live turn · ${activityLabel}</div>` : `<div class="stream-status">Live turn started</div>`;
-  return `${userEcho}${assistant}${activity}`;
+  return `${userEcho}${assistant}${liveContext}${activity}`;
+}
+
+function renderLiveContextActivity(session, live) {
+  const statuses = (live.context_statuses || []).slice(-4);
+  const compactions = (live.compactions || []).slice(-3);
+  if (!statuses.length && !compactions.length) return "";
+  return `
+    <article class="message entry context-live-item">
+      <div class="message-head"><span>context</span><span>live</span></div>
+      <div class="context-event-list">
+        ${statuses.map(renderContextStatusRow).join("")}
+        ${compactions.map(renderCompactionEventRow).join("")}
+      </div>
+    </article>
+  `;
 }
 
 function renderEntry(entry) {

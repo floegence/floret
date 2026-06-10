@@ -80,6 +80,7 @@ const (
 type Request struct {
 	CompactionID         string
 	PreviousCompactionID string
+	PreviousGeneration   int
 	PreviousSummary      string
 	History              []session.Message
 	Policy               contextpolicy.Policy
@@ -94,6 +95,8 @@ type Request struct {
 type Result struct {
 	CompactionID            string              `json:"compaction_id"`
 	PreviousCompactionID    string              `json:"previous_compaction_id,omitempty"`
+	CompactionGeneration    int                 `json:"compaction_generation,omitempty"`
+	CompactionWindowID      string              `json:"compaction_window_id,omitempty"`
 	FirstKeptEntryID        string              `json:"first_kept_entry_id,omitempty"`
 	KeptUserEntryIDs        []string            `json:"kept_user_entry_ids,omitempty"`
 	CompactedThroughEntryID string              `json:"compacted_through_entry_id,omitempty"`
@@ -176,6 +179,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		if result.CompactionID == "" {
 			result.CompactionID = stableCompactionID(req, history, nil)
 		}
+		normalizeResultWindow(&result, req)
 		prep := Preparation{Request: req, CompactedHead: append([]session.Message(nil), history...), Result: result}
 		summary, generationDetails, err := generateSummary(ctx, generator, prep)
 		if err != nil {
@@ -243,6 +247,7 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	if result.CompactionID == "" {
 		result.CompactionID = stableCompactionID(req, head, tail)
 	}
+	normalizeResultWindow(&result, req)
 	prep := Preparation{Request: req, CompactedHead: head, RetainedTail: tail, Result: result}
 	summary, generationDetails, err := generateSummary(ctx, generator, prep)
 	if err != nil {
@@ -414,6 +419,8 @@ func recordUsageAfterDetails(result *Result, usage contextpolicy.Usage, policy c
 func buildActiveMessages(result Result, keptUsers, tail []session.Message) []session.Message {
 	checkpoint := BuildCheckpointMessage(result.Summary, keptUsers, tail)
 	checkpoint.CompactionID = result.CompactionID
+	checkpoint.CompactionGeneration = result.CompactionGeneration
+	checkpoint.CompactionWindowID = result.CompactionWindowID
 	out := append([]session.Message{checkpoint}, tail...)
 	return out
 }
@@ -508,6 +515,9 @@ func removeActiveCompactionSummary(messages []session.Message, req *Request) []s
 	if req.PreviousCompactionID == "" {
 		req.PreviousCompactionID = summary.CompactionID
 	}
+	if req.PreviousGeneration == 0 {
+		req.PreviousGeneration = summary.CompactionGeneration
+	}
 	out := make([]session.Message, 0, len(messages)-1)
 	for _, msg := range messages {
 		if msg.Kind == session.MessageKindCompactionSummary {
@@ -516,6 +526,39 @@ func removeActiveCompactionSummary(messages []session.Message, req *Request) []s
 		out = append(out, msg)
 	}
 	return out
+}
+
+func normalizeResultWindow(result *Result, req Request) {
+	if result.CompactionGeneration <= 0 {
+		result.CompactionGeneration = requestedCompactionGeneration(result.Details)
+	}
+	if result.CompactionGeneration <= 0 && req.PreviousGeneration > 0 {
+		result.CompactionGeneration = req.PreviousGeneration + 1
+	}
+	if result.CompactionGeneration <= 0 {
+		if result.PreviousCompactionID != "" {
+			result.CompactionGeneration = 2
+		} else {
+			result.CompactionGeneration = 1
+		}
+	}
+	if result.CompactionWindowID == "" {
+		result.CompactionWindowID = result.CompactionID
+	}
+	if result.CompactionWindowID == "" {
+		result.CompactionWindowID = result.FirstKeptEntryID
+	}
+}
+
+func requestedCompactionGeneration(details map[string]string) int {
+	if details == nil {
+		return 0
+	}
+	var generation int
+	if _, err := fmt.Sscanf(details["compaction_generation"], "%d", &generation); err == nil && generation > 0 {
+		return generation
+	}
+	return 0
 }
 
 func ExtractCheckpointSummary(content string) string {

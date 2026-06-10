@@ -281,10 +281,34 @@ func TestStaticConsoleNewSessionDefaultsFollowBackendAndProviderCatalog(t *testi
 
 func TestStaticConsoleInspectorShowsContextStatusAndDebugBreakdown(t *testing.T) {
 	inspector := readStaticTestFile(t, "views", "inspector.js")
-	for _, want := range []string{"renderContextStatusMetrics", "Context ", "Output room", "Compaction ", "Request Debug", "pressure_signal", "pressure_source", "confidence", "threshold_tokens", "request_safe_limit_tokens", "output_headroom_tokens", "tool_definition_tokens", "estimate_source", "estimate_method"} {
+	contextStatus := readStaticTestFile(t, "contextStatus.js")
+	workspace := readStaticTestFile(t, "views", "sessionWorkspace.js")
+	css := readStaticTestFile(t, "styles.css")
+	for _, want := range []string{"renderContextMeter", "contextStatusForRequest", "contextStatusesFor", "compactionEventsFor", "Recent Context Events", "Current Pressure", "Provider-visible Context", "Request Debug", "pressure_signal", "pressure_source", "confidence", "threshold_tokens", "request_safe_limit_tokens", "output_headroom_tokens", "tool_definition_tokens", "estimate_source", "estimate_method"} {
 		if !strings.Contains(inspector, want) {
 			t.Fatalf("inspector should expose context status/debug field %q", want)
 		}
+	}
+	for _, want := range []string{"workspace-context-meter", "data-context-meter", "renderCompactionTimelineItem", "context-live-item", "renderLiveContextActivity", "live.context_statuses", "live.compactions"} {
+		if !strings.Contains(workspace, want) {
+			t.Fatalf("workspace should expose live/header context UI %q", want)
+		}
+	}
+	for _, want := range []string{"renderContextMeter", "renderContextStatusRow", "renderCompactionEventRow", "contextStatusTone", "contextStatusForRequest", "contextStatusMeta", "state.liveTurn?.session_id === session?.id"} {
+		if !strings.Contains(contextStatus, want) {
+			t.Fatalf("shared context status formatter missing %q", want)
+		}
+	}
+	if strings.Contains(contextStatus, "function pressureStatus") || strings.Contains(contextStatus, "function pressureRatio") || strings.Contains(contextStatus, "function thresholdRatio") {
+		t.Fatalf("frontend should not reimplement context pressure policy; backend context status DTOs are the source of truth")
+	}
+	for _, want := range []string{".context-meter", ".context-meter-bar", ".context-meter-fill", ".context-event-row", ".context-compact-item", "repeat(auto-fit, minmax(68px, 1fr))"} {
+		if !strings.Contains(css, want) {
+			t.Fatalf("context UI CSS missing %q", want)
+		}
+	}
+	if strings.Contains(inspector, "renderContextStatusMetrics") {
+		t.Fatalf("inspector should use the shared contextStatus formatter instead of local metric logic")
 	}
 	for _, forbidden := range []string{"est tokens", "estimator_source", "estimator_confidence", "estimator "} {
 		if strings.Contains(inspector, forbidden) {
@@ -304,7 +328,7 @@ func TestStaticConsoleStreamsTurnsIncrementally(t *testing.T) {
 			t.Fatalf("api missing streaming turn support %q", want)
 		}
 	}
-	for _, want := range []string{"createLiveTurn", "applyStreamEvent", "state.liveTurn", "assistant_delta", "provider_requests", "session_snapshot", "delete state.composerDrafts[sessionID]", "api.streamTurn(sessionID, { message: trimmed }"} {
+	for _, want := range []string{"createLiveTurn", "applyStreamEvent", "state.liveTurn", "assistant_delta", "provider_requests", "context_statuses", "compaction_events", "context_status", "context_compaction", "session_snapshot", "delete state.composerDrafts[sessionID]", "api.streamTurn(sessionID, { message: trimmed }"} {
 		if !strings.Contains(appJS, want) {
 			t.Fatalf("app missing streaming reducer behavior %q", want)
 		}
@@ -322,6 +346,167 @@ func TestStaticConsoleStreamsTurnsIncrementally(t *testing.T) {
 			t.Fatalf("workspace missing live tool timeline rendering %q", want)
 		}
 	}
+}
+
+func TestStaticConsoleContextStatusFormatterBehavior(t *testing.T) {
+	script := `
+import assert from "node:assert/strict";
+import { state } from "./static/state.js";
+import {
+  compactionEventsFor,
+  contextStatusForRequest,
+  contextStatusesFor,
+  latestContextStatus,
+  renderCompactionEventRow,
+  renderContextMeter,
+  renderContextStatusRow,
+} from "./static/contextStatus.js";
+
+const session = {
+  id: "thread-1",
+  context_statuses: [{
+    run_id: "turn-1",
+    session_id: "thread-1",
+    turn_id: "turn-1",
+    step: 1,
+    request_id: "turn-1:req:1",
+    phase: "projected_request",
+    status: "hard_limit",
+    used_ratio: 0.91,
+    threshold_ratio: 0.8,
+    observed_at: "2026-01-01T00:00:00Z",
+    context_pressure: {
+      projected_input_tokens: 910,
+      context_window_tokens: 1000,
+      threshold_tokens: 800,
+      hard_limit_exceeded: true,
+      pressure_source: "full_request_estimate",
+    },
+    request_estimate: { source: "test_estimator", method: "generic_payload", confidence: "conservative" },
+    compaction_generation: 2,
+    compaction_window_id: "window-2",
+  }],
+  observation: {
+    provider_requests: [{
+      run_id: "turn-1",
+      session_id: "thread-1",
+      turn_id: "turn-1",
+      step: 1,
+      provider: "fake",
+      model: "fake-model",
+      observed_at: "2026-01-01T00:00:00Z",
+      request_estimate: { source: "test_estimator", method: "generic_payload", confidence: "conservative" },
+      projected_context_pressure: {
+        projected_input_tokens: 910,
+        context_window_tokens: 1000,
+        threshold_tokens: 800,
+        hard_limit_exceeded: true,
+        pressure_source: "full_request_estimate",
+      },
+      cache_summary: { compaction_generation: 2, compaction_window_id: "window-2" },
+    }],
+  },
+};
+const projected = contextStatusForRequest(contextStatusesFor(session, null), session.observation.provider_requests[0]);
+assert.equal(projected.status, "hard_limit");
+assert.equal(projected.used_ratio, 0.91);
+assert.equal(projected.threshold_ratio, 0.8);
+assert.match(renderContextMeter(projected), /91% · hard limit · projected/);
+assert.match(renderContextStatusRow(projected), /Context 910 \/ 1,000/);
+
+state.liveTurn = {
+  session_id: "thread-1",
+  context_statuses: [{
+    phase: "provider_usage",
+    request_id: "turn-1:req:1",
+    observed_at: "2026-01-01T00:00:02Z",
+    status: "stable",
+    used_ratio: 0.42,
+    threshold_ratio: 0.8,
+    context_pressure: { window_input_tokens: 420, context_window_tokens: 1000, threshold_tokens: 800, pressure_source: "provider_usage" },
+  }],
+  compactions: [{
+    phase: "complete",
+    status: "compacted",
+    observed_at: "2026-01-01T00:00:03Z",
+    compaction_id: "compact-1",
+    tokens_before: 850,
+    tokens_after_estimate: 240,
+    summary_preview: "summary text",
+  }],
+};
+assert.equal(contextStatusesFor(session, null).at(-1).status, "stable");
+assert.equal(latestContextStatus(session, null).context_pressure.window_input_tokens, 420);
+assert.equal(compactionEventsFor(session, null)[0].compaction_id, "compact-1");
+assert.match(renderCompactionEventRow(state.liveTurn.compactions[0]), /850 -&gt; 240 tokens/);
+`
+	runNodeStaticScript(t, script)
+}
+
+func TestStaticConsoleInspectorRequestsRenderGoToolDTOs(t *testing.T) {
+	script := `
+import assert from "node:assert/strict";
+import { renderInspector } from "./static/views/inspector.js";
+
+const session = {
+  id: "thread-1",
+  status: "completed",
+  selected_tools: [],
+  capabilities: {},
+  turns: [{ id: "turn-1" }],
+  active_context: [],
+  context_projection: {},
+  path_entries: [],
+  context_statuses: [{
+    run_id: "turn-1",
+    session_id: "thread-1",
+    turn_id: "turn-1",
+    step: 1,
+    request_id: "turn-1:req:1",
+    phase: "projected_request",
+    status: "stable",
+    used_ratio: 0.035,
+    threshold_ratio: 0.875,
+    context_pressure: {
+      projected_input_tokens: 287,
+      context_window_tokens: 8192,
+      threshold_tokens: 7168,
+      pressure_source: "full_request_estimate",
+    },
+    request_estimate: { source: "generic_request_json", method: "generic_payload_estimate", confidence: "conservative" },
+  }],
+  observation: {
+    provider_requests: [{
+      run_id: "turn-1",
+      session_id: "thread-1",
+      turn_id: "turn-1",
+      step: 1,
+      provider: "fake",
+      model: "fake-model",
+      messages: [{ role: "user", content: "hello" }],
+      tools: [{ Name: "ask_user", Annotations: { kind: "control" } }],
+      hosted_tools: [{ Name: "hosted_search", Type: "web_search_20250305", Options: { wire_shape: "anthropic_server_web_search" } }],
+      request_estimate: { source: "generic_request_json", method: "generic_payload_estimate", confidence: "conservative" },
+      projected_context_pressure: {
+        projected_input_tokens: 287,
+        context_window_tokens: 8192,
+        threshold_tokens: 7168,
+        pressure_source: "full_request_estimate",
+      },
+      cache_summary: { toolset_id: "thread-1:toolset:1" },
+    }],
+  },
+};
+
+const html = renderInspector({ session, result: null, tools: [], tab: "requests" });
+assert.match(html, /Step 1 · fake \/ fake-model/);
+assert.match(html, /Context 287 \/ 8,192/);
+assert.match(html, /1 tools/);
+assert.match(html, /<span>ask_user<\/span>/);
+assert.doesNotMatch(html, /<span>none<\/span><\/div>\\s*<div class="key-value"><span>Hosted/);
+assert.ok(html.includes("hosted_search (web_search_20250305 · anthropic_server_web_search)"));
+`
+	runNodeStaticScript(t, script)
 }
 
 func TestStaticConsoleSkillsInstallPageAndDemoFlow(t *testing.T) {

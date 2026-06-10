@@ -1345,6 +1345,8 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 		meta.UpdatedAt = updatedAt
 		_ = r.saveAgentSessionMetadata(meta)
 	}
+	promptObservation := r.observationFromPromptCache(ctx, store.prompt(r.Root), meta.ID, turns, pathEntries)
+	compactionEvents := compactionEventsForObservation(pathEntries, nil)
 	return AgentSessionSnapshot{
 		ID:                      meta.ID,
 		Status:                  lifecycle.Status(),
@@ -1372,6 +1374,17 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 		AllEntries:              allEntries,
 		AggregateMetrics:        aggregateTurnMetrics(turns),
 		Compactions:             countCompactions(path),
+		ContextStatuses:         promptObservation.ContextStatuses,
+		CompactionEvents:        compactionEvents,
+		Observation: AgentObservation{
+			ProviderRequests:  promptObservation.ProviderRequests,
+			ContextStatuses:   promptObservation.ContextStatuses,
+			CompactionEvents:  compactionEvents,
+			SessionMessages:   sessionMessagesFromEntries(pathEntries),
+			ActiveContext:     active,
+			ContextProjection: projection,
+			PathEntries:       pathEntries,
+		},
 	}, nil
 }
 
@@ -1470,6 +1483,8 @@ func (r *Runner) runAgentTurnLocked(ctx context.Context, sess *agentSession, res
 	resp.WaitingPrompt = snapshot.WaitingPrompt
 	resp.Observation = r.agentObservationLocked(sess, snapshot, result, turn.ID)
 	resp.Observation.Diagnostics = cloneStringMap(resp.Diagnostics)
+	resp.Session.ContextStatuses = append([]ObservedContextStatus(nil), resp.Observation.ContextStatuses...)
+	resp.Session.CompactionEvents = append([]ObservedCompactionEvent(nil), resp.Observation.CompactionEvents...)
 	resp.Summary = agentSummary(result)
 	resp.FinishedAt = finished
 	resp.DurationMS = resp.FinishedAt.Sub(resp.StartedAt).Milliseconds()
@@ -1656,6 +1671,16 @@ func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) 
 		AggregateMetrics:        aggregateTurnMetrics(turns),
 		Compactions:             countCompactions(snap.Path),
 	}
+	promptObservation := r.observationFromPromptCache(ctx, sess.promptStore, sess.id, turns, pathEntries)
+	snapshot.ContextStatuses = promptObservation.ContextStatuses
+	snapshot.CompactionEvents = compactionEventsForObservation(pathEntries, nil)
+	snapshot.Observation.ProviderRequests = promptObservation.ProviderRequests
+	snapshot.Observation.ContextStatuses = promptObservation.ContextStatuses
+	snapshot.Observation.CompactionEvents = snapshot.CompactionEvents
+	snapshot.Observation.SessionMessages = sessionMessagesFromEntries(pathEntries)
+	snapshot.Observation.ActiveContext = active
+	snapshot.Observation.ContextProjection = projection
+	snapshot.Observation.PathEntries = pathEntries
 	storeAgentSessionSnapshot(sess, snapshot)
 	return snapshot, nil
 }
@@ -1721,6 +1746,8 @@ func (r *Runner) runningAgentSessionSnapshot(ctx context.Context, sess *agentSes
 		snapshot = refreshed
 	}
 	snapshot.Observation = r.runningAgentObservation(sess, snapshot)
+	snapshot.ContextStatuses = append([]ObservedContextStatus(nil), snapshot.Observation.ContextStatuses...)
+	snapshot.CompactionEvents = append([]ObservedCompactionEvent(nil), snapshot.Observation.CompactionEvents...)
 	return snapshot
 }
 
@@ -1759,6 +1786,16 @@ func (r *Runner) refreshRunningSnapshotFromThread(ctx context.Context, sess *age
 	snapshot.PathEntries = observeEntries(snap.Path)
 	snapshot.AllEntries = observeEntries(snap.Entries)
 	snapshot.Compactions = countCompactions(snap.Path)
+	promptObservation := r.observationFromPromptCache(ctx, sess.promptStore, sess.id, snapshot.Turns, snapshot.PathEntries)
+	snapshot.ContextStatuses = promptObservation.ContextStatuses
+	snapshot.CompactionEvents = compactionEventsForObservation(snapshot.PathEntries, nil)
+	snapshot.Observation.ProviderRequests = promptObservation.ProviderRequests
+	snapshot.Observation.ContextStatuses = promptObservation.ContextStatuses
+	snapshot.Observation.CompactionEvents = snapshot.CompactionEvents
+	snapshot.Observation.SessionMessages = sessionMessagesFromEntries(snapshot.PathEntries)
+	snapshot.Observation.ActiveContext = snapshot.ActiveContext
+	snapshot.Observation.ContextProjection = snapshot.ContextProjection
+	snapshot.Observation.PathEntries = snapshot.PathEntries
 	return snapshot, nil
 }
 
@@ -1780,7 +1817,10 @@ func (r *Runner) agentObservationLocked(sess *agentSession, snapshot AgentSessio
 	observation.ActiveContext = snapshot.ActiveContext
 	observation.ContextProjection = snapshot.ContextProjection
 	observation.PathEntries = snapshot.PathEntries
-	observation.Transitions = buildTransitions(eventsForRun(sess.recorder.Snapshot(), turnID), result)
+	events := eventsForRun(sess.recorder.Snapshot(), turnID)
+	observation.ContextStatuses = contextStatusesForObservation(observation.ProviderRequests, events)
+	observation.CompactionEvents = compactionEventsForObservation(snapshot.PathEntries, events)
+	observation.Transitions = buildTransitions(events, result)
 	return observation
 }
 
@@ -1790,8 +1830,162 @@ func (r *Runner) runningAgentObservation(sess *agentSession, snapshot AgentSessi
 	observation.ActiveContext = snapshot.ActiveContext
 	observation.ContextProjection = snapshot.ContextProjection
 	observation.PathEntries = snapshot.PathEntries
-	observation.Transitions = buildRunningTransitions(eventsForRun(sess.recorder.Snapshot(), snapshot.LatestTurnID))
+	events := eventsForRun(sess.recorder.Snapshot(), snapshot.LatestTurnID)
+	observation.ContextStatuses = contextStatusesForObservation(observation.ProviderRequests, events)
+	observation.CompactionEvents = compactionEventsForObservation(snapshot.PathEntries, events)
+	observation.Transitions = buildRunningTransitions(events)
 	return observation
+}
+
+type promptCacheObservation struct {
+	ProviderRequests []ObservedProviderRequest
+	ContextStatuses  []ObservedContextStatus
+}
+
+func (r *Runner) observationFromPromptCache(ctx context.Context, promptStore cache.Store, sessionID string, turns []AgentTurnSummary, entries []ObservedSessionEntry) promptCacheObservation {
+	if promptStore == nil {
+		return promptCacheObservation{}
+	}
+	runIDs := agentSessionPromptCacheRunIDs(sessionID, turns, entries)
+	var requests []cache.ProviderRequestRecord
+	var responses []cache.ProviderResponseRecord
+	for _, runID := range runIDs {
+		reqs, reqErr := promptStore.ProviderRequests(ctx, runID)
+		resps, respErr := promptStore.ProviderResponses(ctx, runID)
+		if reqErr == nil {
+			requests = append(requests, reqs...)
+		}
+		if respErr == nil {
+			responses = append(responses, resps...)
+		}
+	}
+	return promptCacheObservation{
+		ProviderRequests: observedProviderRequestsFromPromptCache(ctx, promptStore, requests),
+		ContextStatuses:  contextStatusesFromPromptRecords(requests, responses),
+	}
+}
+
+func observedProviderRequestsFromPromptCache(ctx context.Context, promptStore cache.Store, records []cache.ProviderRequestRecord) []ObservedProviderRequest {
+	out := make([]ObservedProviderRequest, 0, len(records))
+	for _, record := range records {
+		segments := promptSegmentsForRequest(ctx, promptStore, record)
+		toolset, _, _ := promptStore.ActiveToolset(ctx, promptScopeIDForRequest(record), record.Provider, record.Model)
+		out = append(out, observedProviderRequestFromPromptRecord(record, segments, toolset))
+	}
+	return out
+}
+
+func promptSegmentsForRequest(ctx context.Context, promptStore cache.Store, record cache.ProviderRequestRecord) []cache.Segment {
+	segments, err := promptStore.Segments(ctx, promptScopeIDForRequest(record), record.Provider, record.Model)
+	if err != nil {
+		return nil
+	}
+	if len(record.SegmentIDs) == 0 {
+		return segments
+	}
+	byID := make(map[string]cache.Segment, len(segments))
+	for _, segment := range segments {
+		byID[segment.ID] = segment
+	}
+	out := make([]cache.Segment, 0, len(record.SegmentIDs))
+	for _, id := range record.SegmentIDs {
+		if segment, ok := byID[id]; ok {
+			out = append(out, segment)
+		}
+	}
+	return out
+}
+
+func promptScopeIDForRequest(record cache.ProviderRequestRecord) string {
+	if record.SessionID != "" {
+		return record.SessionID
+	}
+	if record.ThreadID != "" {
+		return record.ThreadID
+	}
+	return record.RunID
+}
+
+func observedProviderRequestFromPromptRecord(record cache.ProviderRequestRecord, segments []cache.Segment, toolset cache.ToolsetSnapshot) ObservedProviderRequest {
+	plan := cache.RawPlan{
+		Version:              cache.Version,
+		SegmentIDs:           append([]string(nil), record.SegmentIDs...),
+		Segments:             append([]cache.Segment(nil), segments...),
+		ToolsetID:            toolset.ID,
+		ToolsetEpoch:         toolset.Epoch,
+		HostedToolsetHash:    toolset.Fingerprint,
+		PrefixHash:           record.PrefixRawHash,
+		PayloadHash:          record.ProviderPayloadHash,
+		CacheNamespace:       record.CacheNamespace,
+		PreviousResponseID:   record.PreviousResponseID,
+		CompactionGeneration: record.CompactionGeneration,
+		CompactionWindowID:   record.CompactionWindowID,
+		CompactionEntryID:    record.CompactionEntryID,
+		RequestEstimate:      record.RequestEstimate,
+		ProjectedPressure:    record.ProjectedPressure,
+		RequestShape:         record.RequestShape,
+	}
+	return ObservedProviderRequest{
+		RunID:             record.RunID,
+		SessionID:         record.SessionID,
+		ThreadID:          record.ThreadID,
+		TurnID:            record.TurnID,
+		Step:              record.Step,
+		LogicalRequestID:  record.LogicalRequestID,
+		Attempt:           record.Attempt,
+		OverflowRetried:   record.OverflowRetried,
+		Provider:          record.Provider,
+		Model:             record.Model,
+		ObservedAt:        record.CreatedAt,
+		Messages:          observeMessages(cache.Messages(plan)),
+		Tools:             providerToolDefinitionsFromCache(toolset.Tools),
+		HostedTools:       hostedToolDefinitionsFromCache(toolset.HostedTools),
+		RequestEstimate:   record.RequestEstimate,
+		ProjectedPressure: record.ProjectedPressure,
+		RawSegments:       observeRawSegments(plan),
+		CacheSummary: ObservedCacheSummary{
+			Namespace:            record.CacheNamespace,
+			Retention:            string(record.CacheRetention),
+			PrefixHash:           record.PrefixRawHash,
+			PayloadHash:          record.ProviderPayloadHash,
+			ToolsetID:            toolset.ID,
+			ToolsetEpoch:         toolset.Epoch,
+			CompactionGeneration: record.CompactionGeneration,
+			CompactionWindowID:   record.CompactionWindowID,
+			CompactionEntryID:    record.CompactionEntryID,
+			NewSegments:          len(segments),
+		},
+	}
+}
+
+func providerToolDefinitionsFromCache(defs []cache.ToolDefinition) []provider.ToolDefinition {
+	out := make([]provider.ToolDefinition, 0, len(defs))
+	for _, def := range defs {
+		out = append(out, provider.ToolDefinition{
+			Name:         def.Name,
+			Title:        def.Title,
+			Description:  def.Description,
+			InputSchema:  def.InputSchema,
+			OutputSchema: def.OutputSchema,
+			Strict:       def.Strict,
+			Annotations:  def.Annotations,
+		})
+	}
+	return out
+}
+
+func hostedToolDefinitionsFromCache(defs []cache.HostedToolDefinition) []provider.HostedToolDefinition {
+	out := make([]provider.HostedToolDefinition, 0, len(defs))
+	for _, def := range defs {
+		out = append(out, provider.HostedToolDefinition{
+			Name:        def.Name,
+			Type:        def.Type,
+			Description: def.Description,
+			Parameters:  def.Parameters,
+			Options:     def.Options,
+		})
+	}
+	return out
 }
 
 func (sess *agentSession) nextTurnID() string {

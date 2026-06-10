@@ -504,6 +504,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			PressureAnchor:     pressureAnchor,
 			CreatedAt:          time.Now(),
 		})
+		e.emit(event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: normalizedUsage, Metadata: providerUsageContextStatus(req, normalizedUsage, nativePressure)})
 		decision := RunDecision{FinishReason: stepOutput.FinishReason, RawFinishReason: stepOutput.RawFinishReason, FinishInferred: stepOutput.FinishInferred}
 		if stepOutput.FinishReason != "" {
 			e.emit(event.Event{Type: event.ProviderFinish, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, FinishReason: string(stepOutput.FinishReason), RawFinishReason: stepOutput.RawFinishReason, FinishInferred: stepOutput.FinishInferred})
@@ -1154,7 +1155,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		Model:     opts.Model,
 		Message:   fmt.Sprintf("%s/%s", trigger, reason),
 		Metrics:   usage,
-		Metadata:  map[string]any{"trigger": trigger, "reason": reason, "before_pressure": beforePressure, "message_context_before": usage},
+		Metadata:  compactionStartMetadata(trigger, reason, beforePressure, usage),
 	})
 	result, active, err := manager.Compact(ctx, CompactionRequest{
 		RunID:        opts.RunID,
@@ -1186,6 +1187,19 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		if failures != nil {
 			*failures++
 		}
+		e.emit(event.Event{
+			Type:      event.ContextCompact,
+			TraceID:   opts.TraceID,
+			RunID:     opts.RunID,
+			SessionID: opts.SessionID,
+			Step:      step,
+			Provider:  opts.ProviderName,
+			Model:     opts.Model,
+			Message:   fmt.Sprintf("%s/%s", trigger, reason),
+			Err:       err.Error(),
+			Metrics:   usage,
+			Metadata:  compactionFailedMetadata(trigger, reason, beforePressure, usage),
+		})
 		return nil, err
 	}
 	if failures != nil {
@@ -1202,6 +1216,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		Message:   result.CompactionID,
 		Result:    result.Summary,
 		Metrics:   result,
+		Metadata:  compactionCompleteMetadata(result),
 	})
 	return active, nil
 }
@@ -1298,7 +1313,7 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 				e.emit(event.Event{Type: event.HostedToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Result: hostedToolResultText(ev), Metadata: hostedToolResultMetadata(ev.HostedResult)})
 			case provider.UsageEvent:
 				out.Usage = out.Usage.Add(ev.Usage)
-				e.emit(event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: ev.Usage.Normalized()})
+				e.emit(event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: ev.Usage.Normalized(), Metadata: streamUsageMetadata()})
 			case provider.Empty:
 				out.Retry = true
 				out.FinishReason, out.FinishInferred = provider.NormalizeFinishReason(out.RawFinishReason, false, false, false)

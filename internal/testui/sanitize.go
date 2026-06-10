@@ -99,6 +99,8 @@ func localInspectionAgentSessionSnapshot(snapshot AgentSessionSnapshot) AgentSes
 	}
 	snapshot.ActiveContext = pathSafeObservedMessages(snapshot.ActiveContext)
 	snapshot.ContextProjection = pathSafeObservedContextProjection(snapshot.ContextProjection)
+	snapshot.ContextStatuses = pathSafeContextStatuses(snapshot.ContextStatuses)
+	snapshot.CompactionEvents = pathSafeCompactionEvents(snapshot.CompactionEvents)
 	for i := range snapshot.PathEntries {
 		snapshot.PathEntries[i] = pathSafeObservedEntry(snapshot.PathEntries[i])
 	}
@@ -116,6 +118,8 @@ func localInspectionAgentObservation(observation AgentObservation) AgentObservat
 	for i := range observation.ProviderEvents {
 		observation.ProviderEvents[i] = pathSafeObservedProviderEvent(observation.ProviderEvents[i])
 	}
+	observation.ContextStatuses = pathSafeContextStatuses(observation.ContextStatuses)
+	observation.CompactionEvents = pathSafeCompactionEvents(observation.CompactionEvents)
 	observation.SessionMessages = pathSafeObservedMessages(observation.SessionMessages)
 	observation.ActiveContext = pathSafeObservedMessages(observation.ActiveContext)
 	observation.ContextProjection = pathSafeObservedContextProjection(observation.ContextProjection)
@@ -159,6 +163,25 @@ func pathSafeObservedProviderEvent(ev ObservedProviderEvent) ObservedProviderEve
 	ev.Metadata = pathSafeMetadata(ev.Metadata)
 	ev.Reason = event.SafePathRefsText(ev.Reason)
 	return ev
+}
+
+func pathSafeContextStatuses(statuses []ObservedContextStatus) []ObservedContextStatus {
+	out := append([]ObservedContextStatus(nil), statuses...)
+	for i := range out {
+		out[i].CompactionWindowID = event.SafePathRefsText(out[i].CompactionWindowID)
+	}
+	return out
+}
+
+func pathSafeCompactionEvents(compactions []ObservedCompactionEvent) []ObservedCompactionEvent {
+	out := append([]ObservedCompactionEvent(nil), compactions...)
+	for i := range out {
+		out[i].Reason = event.SafePathRefsText(out[i].Reason)
+		out[i].SummaryPreview = event.SafePathRefsText(out[i].SummaryPreview)
+		out[i].Summary = event.SafePathRefsText(out[i].Summary)
+		out[i].Error = event.SafePathRefsText(out[i].Error)
+	}
+	return out
 }
 
 func pathSafeHostedToolResult(result provider.HostedToolResultData) provider.HostedToolResultData {
@@ -541,6 +564,14 @@ func localInspectionAgentStreamEvent(ev AgentStreamEvent) AgentStreamEvent {
 	if ev.ProviderEvent != nil {
 		providerEvent := pathSafeObservedProviderEvent(*ev.ProviderEvent)
 		ev.ProviderEvent = &providerEvent
+	}
+	if ev.ContextStatus != nil {
+		status := pathSafeContextStatuses([]ObservedContextStatus{*ev.ContextStatus})[0]
+		ev.ContextStatus = &status
+	}
+	if ev.Compaction != nil {
+		compaction := pathSafeCompactionEvents([]ObservedCompactionEvent{*ev.Compaction})[0]
+		ev.Compaction = &compaction
 	}
 	if ev.EngineEvent != nil {
 		engineEvent := event.SanitizePathRefs(*ev.EngineEvent)

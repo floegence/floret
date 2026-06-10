@@ -401,11 +401,14 @@ a {
 
 .workspace-head {
   z-index: 10;
+  flex-wrap: wrap;
+  align-items: flex-start;
   background: rgba(244, 245, 241, 0.96);
   backdrop-filter: blur(8px);
 }
 
 .workspace-title {
+  flex: 1 1 260px;
   min-width: 0;
 }
 
@@ -420,6 +423,11 @@ a {
   margin-top: 5px;
   color: var(--muted);
   font-size: 13px;
+}
+
+.workspace-context-meter {
+  flex: 1 0 100%;
+  min-width: 0;
 }
 
 .conversation {
@@ -699,6 +707,168 @@ a {
   font-weight: 800;
 }
 
+.context-meter {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(120px, 0.78fr) auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  text-align: left;
+  box-shadow: none;
+}
+
+button.context-meter {
+  font-weight: 800;
+}
+
+button.context-meter:not(:disabled):hover {
+  background: #f0f3ec;
+  box-shadow: inset 0 0 0 1px rgba(35, 107, 146, 0.12);
+  transform: none;
+}
+
+button.context-meter:not(:disabled):active {
+  transform: translate(0, 1px);
+}
+
+.context-meter-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.context-meter-main strong,
+.context-meter-main span,
+.context-status-pill,
+.context-event-row span,
+.context-event-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-meter-main strong {
+  font-size: 13px;
+}
+
+.context-meter-main span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.context-meter-bar {
+  position: relative;
+  display: block;
+  min-width: 96px;
+  height: 10px;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+}
+
+.context-meter-fill {
+  display: block;
+  height: 100%;
+  background: var(--green);
+}
+
+.context-meter-threshold {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  background: var(--ink);
+}
+
+.context-status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  max-width: 220px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.context-near .context-meter-fill {
+  background: var(--yellow);
+}
+
+.context-compact .context-meter-fill,
+.context-estimated .context-meter-fill {
+  background: var(--blue);
+}
+
+.context-hard .context-meter-fill {
+  background: var(--red);
+}
+
+.context-hard {
+  border-color: rgba(182, 64, 61, 0.42);
+  background: #fff8f7;
+}
+
+.context-compact {
+  border-color: rgba(35, 107, 146, 0.34);
+  background: #f3f9fc;
+}
+
+.context-near {
+  border-color: rgba(239, 189, 69, 0.52);
+  background: #fffaf0;
+}
+
+.context-estimated {
+  border-color: rgba(101, 87, 184, 0.34);
+  background: #f7f5ff;
+}
+
+.context-event-list {
+  display: grid;
+  gap: 8px;
+}
+
+.context-event-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.75fr) minmax(120px, 0.85fr) minmax(160px, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  font-size: 12px;
+}
+
+.context-event-row strong {
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.context-event-row span {
+  color: var(--muted);
+}
+
+.context-compact-item,
+.context-live-item {
+  border-left-color: var(--blue);
+}
+
 .stream-caret {
   display: inline-block;
   width: 7px;
@@ -824,7 +994,7 @@ button.small {
 
 .inspector-tabs {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(68px, 1fr));
   border-bottom: 1px solid var(--line);
 }
 
@@ -1573,6 +1743,25 @@ button.small {
 
   .workspace-head {
     display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-context-meter,
+  .context-meter {
+    width: 100%;
+  }
+
+  .context-meter {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .context-status-pill {
+    justify-content: flex-start;
+    max-width: none;
+  }
+
+  .context-event-row {
     grid-template-columns: 1fr;
   }
 

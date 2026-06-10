@@ -336,6 +336,12 @@ func TestPrepareRepeatedCompactionReplacesCheckpointWithoutPreservedUserGrowth(t
 		t.Fatal(err)
 	}
 	checkpoint1 := requireCheckpointPlusTail(t, round1)
+	if round1.Result.CompactionGeneration != 1 || round1.Result.CompactionWindowID != "c1" ||
+		checkpoint1.CompactionGeneration != 1 || checkpoint1.CompactionWindowID != "c1" {
+		t.Fatalf("round 1 compaction window = result(%d,%q) checkpoint(%d,%q)",
+			round1.Result.CompactionGeneration, round1.Result.CompactionWindowID,
+			checkpoint1.CompactionGeneration, checkpoint1.CompactionWindowID)
+	}
 	if got, want := strings.Join(preservedUserEntryIDs(preservedUserInputs(t, checkpoint1)), ","), "u1,u2"; got != want {
 		t.Fatalf("round 1 preserved user ids = %q, want %q", got, want)
 	}
@@ -356,6 +362,12 @@ func TestPrepareRepeatedCompactionReplacesCheckpointWithoutPreservedUserGrowth(t
 		t.Fatal(err)
 	}
 	checkpoint2 := requireCheckpointPlusTail(t, round2)
+	if round2.Result.CompactionGeneration != 2 || round2.Result.CompactionWindowID != "c2" ||
+		checkpoint2.CompactionGeneration != 2 || checkpoint2.CompactionWindowID != "c2" {
+		t.Fatalf("round 2 compaction window = result(%d,%q) checkpoint(%d,%q)",
+			round2.Result.CompactionGeneration, round2.Result.CompactionWindowID,
+			checkpoint2.CompactionGeneration, checkpoint2.CompactionWindowID)
+	}
 	if len(generator.calls) != 2 {
 		t.Fatalf("summary generator calls = %d, want 2", len(generator.calls))
 	}
@@ -382,6 +394,12 @@ func TestPrepareRepeatedCompactionReplacesCheckpointWithoutPreservedUserGrowth(t
 		t.Fatal(err)
 	}
 	checkpoint3 := requireCheckpointPlusTail(t, round3)
+	if round3.Result.CompactionGeneration != 3 || round3.Result.CompactionWindowID != "c3" ||
+		checkpoint3.CompactionGeneration != 3 || checkpoint3.CompactionWindowID != "c3" {
+		t.Fatalf("round 3 compaction window = result(%d,%q) checkpoint(%d,%q)",
+			round3.Result.CompactionGeneration, round3.Result.CompactionWindowID,
+			checkpoint3.CompactionGeneration, checkpoint3.CompactionWindowID)
+	}
 	if len(generator.calls) != 3 {
 		t.Fatalf("summary generator calls = %d, want 3", len(generator.calls))
 	}

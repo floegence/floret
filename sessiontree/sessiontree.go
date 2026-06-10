@@ -1029,10 +1029,6 @@ func AppendMessage(ctx context.Context, repo Repo, threadID, turnID string, msg 
 }
 
 func AppendCompaction(ctx context.Context, repo Repo, threadID, turnID string, result compaction.Result) (Entry, error) {
-	windowID := result.CompactionID
-	if windowID == "" {
-		windowID = result.FirstKeptEntryID
-	}
 	return repo.Append(ctx, Entry{
 		ThreadID:                threadID,
 		TurnID:                  turnID,
@@ -1041,8 +1037,8 @@ func AppendCompaction(ctx context.Context, repo Repo, threadID, turnID string, r
 		PreviousCompactionID:    result.PreviousCompactionID,
 		CompactedThroughEntryID: result.CompactedThroughEntryID,
 		SummarySchemaVersion:    result.SummarySchemaVersion,
-		CompactionGeneration:    nextCompactionGeneration(result),
-		CompactionWindowID:      windowID,
+		CompactionGeneration:    compactionGeneration(result),
+		CompactionWindowID:      compactionWindowID(result),
 		FirstKeptEntryID:        result.FirstKeptEntryID,
 		KeptUserEntryIDs:        append([]string(nil), result.KeptUserEntryIDs...),
 		Summary:                 result.Summary,
@@ -1131,7 +1127,10 @@ func rewriteEntryIDs(ids []string, oldToNew map[string]string) []string {
 	return out
 }
 
-func nextCompactionGeneration(result compaction.Result) int {
+func compactionGeneration(result compaction.Result) int {
+	if result.CompactionGeneration > 0 {
+		return result.CompactionGeneration
+	}
 	if value := result.Details["compaction_generation"]; value != "" {
 		var generation int
 		if _, err := fmt.Sscanf(value, "%d", &generation); err == nil && generation > 0 {
@@ -1142,6 +1141,16 @@ func nextCompactionGeneration(result compaction.Result) int {
 		return 2
 	}
 	return 1
+}
+
+func compactionWindowID(result compaction.Result) string {
+	if result.CompactionWindowID != "" {
+		return result.CompactionWindowID
+	}
+	if result.CompactionID != "" {
+		return result.CompactionID
+	}
+	return result.FirstKeptEntryID
 }
 
 func typeForMessage(msg session.Message) EntryType {
