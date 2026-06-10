@@ -30,6 +30,7 @@ func TestImportBoundaries(t *testing.T) {
 		{name: "agentharness", dir: "agentharness", forbidden: []string{modulePath + "/runtime", modulePath + "/tools/builtin", modulePath + "/tools/mcp", modulePath + "/tools/skills", modulePath + "/provider/adapters", modulePath + "/internal/testui"}},
 		{name: "provider", dir: "provider", forbidden: []string{modulePath + "/engine", modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/tools", modulePath + "/sessiontree", modulePath + "/internal/testui"}},
 		{name: "provider/adapters", dir: filepath.Join("provider", "adapters"), recursive: true, forbidden: []string{modulePath + "/engine", modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/tools/builtin", modulePath + "/internal/testui"}},
+		{name: "observation", dir: "observation", forbidden: []string{modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/sessiontree", modulePath + "/internal/testui"}},
 		{name: "sessiontree", dir: "sessiontree", forbidden: []string{modulePath + "/engine", modulePath + "/engine/compaction", modulePath + "/runtime", modulePath + "/internal/sessionlifecycle"}},
 		{name: "runtime/storage", dir: filepath.Join("runtime", "storage"), forbidden: []string{modulePath + "/runtime/storage/sqlite"}},
 	} {
@@ -79,6 +80,7 @@ func TestTopLevelPackageLayoutIsConstrained(t *testing.T) {
 		"engine":       true,
 		"event":        true,
 		"internal":     true,
+		"observation":  true,
 		"provider":     true,
 		"runtime":      true,
 		"scripts":      true,
@@ -150,6 +152,7 @@ func TestReadmeDoesNotAdvertiseDeprecatedRootPackages(t *testing.T) {
 		"`provider/adapters`",
 		"`provider/cache`",
 		"`provider/catalog`",
+		"`observation`",
 		"`runtime/storage`",
 		"`runtime/storage/sqlite`",
 		"`session/compaction`",

@@ -19,6 +19,7 @@ import (
 	"github.com/floegence/floret/event"
 	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/internal/sessionlifecycle"
+	"github.com/floegence/floret/observation"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/provider/cache"
 	"github.com/floegence/floret/provider/catalog"
@@ -2481,7 +2482,7 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 		t.Fatalf("provider request missing compaction segment: %#v", result.Observation.ProviderRequests)
 	}
 	if !slices.ContainsFunc(result.Session.ContextStatuses, func(status ObservedContextStatus) bool {
-		return status.Phase == contextStatusPhaseProjectedRequest &&
+		return status.Phase == observation.ContextPhaseProjectedRequest &&
 			status.SessionID == result.SessionID &&
 			status.TurnID == result.TurnID &&
 			status.RequestID != "" &&
@@ -2490,7 +2491,7 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 		t.Fatalf("session missing projected context status: %#v", result.Session.ContextStatuses)
 	}
 	if !slices.ContainsFunc(result.Session.ContextStatuses, func(status ObservedContextStatus) bool {
-		return status.Phase == contextStatusPhaseProviderUsage &&
+		return status.Phase == observation.ContextPhaseProviderUsage &&
 			status.SessionID == result.SessionID &&
 			status.TurnID == result.TurnID &&
 			status.RequestID != "" &&
@@ -2500,7 +2501,7 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 	}
 	if !slices.ContainsFunc(result.Session.CompactionEvents, func(event ObservedCompactionEvent) bool {
 		return event.Phase == engine.ContextCompactPhaseComplete &&
-			event.Status == compactionStatusCompacted &&
+			event.Status == observation.CompactionStatusCompacted &&
 			event.CompactionID == compactionEntry.CompactionID &&
 			event.CompactionGeneration == compactionEntry.CompactionGeneration &&
 			event.CompactionWindowID == compactionEntry.CompactionWindowID &&
@@ -2520,7 +2521,7 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 		t.Fatal(err)
 	}
 	if !slices.ContainsFunc(snapshot.ContextStatuses, func(status ObservedContextStatus) bool {
-		return status.Phase == contextStatusPhaseProjectedRequest &&
+		return status.Phase == observation.ContextPhaseProjectedRequest &&
 			status.SessionID == result.SessionID &&
 			status.TurnID == result.TurnID &&
 			status.RequestID != "" &&
@@ -2529,7 +2530,7 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 		t.Fatalf("reopened snapshot missing projected context status: %#v", snapshot.ContextStatuses)
 	}
 	if !slices.ContainsFunc(snapshot.ContextStatuses, func(status ObservedContextStatus) bool {
-		return status.Phase == contextStatusPhaseProviderUsage &&
+		return status.Phase == observation.ContextPhaseProviderUsage &&
 			status.SessionID == result.SessionID &&
 			status.TurnID == result.TurnID &&
 			status.RequestID != "" &&
@@ -2554,7 +2555,7 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 	}
 	if !slices.ContainsFunc(snapshot.CompactionEvents, func(event ObservedCompactionEvent) bool {
 		return event.Phase == engine.ContextCompactPhaseComplete &&
-			event.Status == compactionStatusCompacted &&
+			event.Status == observation.CompactionStatusCompacted &&
 			event.CompactionID == compactionEntry.CompactionID &&
 			event.CompactionGeneration == compactionEntry.CompactionGeneration &&
 			event.CompactionWindowID == compactionEntry.CompactionWindowID &&
@@ -2701,7 +2702,7 @@ func TestContextStatusFromProviderRequestUsesProjectedPressure(t *testing.T) {
 
 	status := contextStatusFromProviderRequest(req)
 
-	if status.Phase != contextStatusPhaseProjectedRequest ||
+	if status.Phase != observation.ContextPhaseProjectedRequest ||
 		status.RequestID != "turn-1:req:2" ||
 		status.LogicalRequestID != "logical-1" ||
 		status.Attempt != 2 ||
@@ -2756,7 +2757,7 @@ func TestContextStatusFromFinalProviderUsageEvent(t *testing.T) {
 	if !ok {
 		t.Fatalf("final provider usage context status was not converted")
 	}
-	if status.Phase != contextStatusPhaseProviderUsage ||
+	if status.Phase != observation.ContextPhaseProviderUsage ||
 		status.TurnID != "turn-1" ||
 		status.RequestID != "turn-1:req:1" ||
 		status.Provider != "fake" ||
@@ -2805,9 +2806,74 @@ func TestContextStatusesFromPromptRecordsSkipLegacyResponseWithoutPressure(t *te
 	}})
 
 	if len(statuses) != 1 ||
-		statuses[0].Phase != contextStatusPhaseProjectedRequest ||
+		statuses[0].Phase != observation.ContextPhaseProjectedRequest ||
 		statuses[0].RequestID != "turn-1:req:1" {
 		t.Fatalf("legacy response without pressure should only keep projected status: %#v", statuses)
+	}
+}
+
+func TestAgentObservationMergesPromptCacheContextStatusesWithLiveObservation(t *testing.T) {
+	req := ObservedProviderRequest{
+		RunID:      "turn-1",
+		SessionID:  "thread-1",
+		TurnID:     "turn-1",
+		Step:       1,
+		Provider:   "fake",
+		Model:      "fake-model",
+		ObservedAt: time.Unix(10, 0),
+		CacheSummary: ObservedCacheSummary{
+			CompactionGeneration: 2,
+			CompactionWindowID:   "window-2",
+		},
+		ProjectedPressure: contextpolicy.ContextPressure{
+			ProjectedInputTokens: 500,
+			ContextWindowTokens:  1000,
+			ThresholdTokens:      800,
+			Source:               contextpolicy.PressureSourceFullRequestEstimate,
+		},
+	}
+	promptCacheReq := req
+	promptCacheReq.ObservedAt = time.Unix(9, 0)
+	projected := contextStatusFromProviderRequest(promptCacheReq)
+	finalUsage := ObservedContextStatus{
+		RunID:                "turn-1",
+		SessionID:            "thread-1",
+		TurnID:               "turn-1",
+		Step:                 1,
+		RequestID:            "turn-1:req:1",
+		Phase:                observation.ContextPhaseProviderUsage,
+		Provider:             "fake",
+		Model:                "fake-model",
+		ObservedAt:           time.Unix(11, 0),
+		ContextPressure:      contextpolicy.ContextPressure{WindowInputTokens: 650, ContextWindowTokens: 1000, ThresholdTokens: 800},
+		UsedRatio:            0.65,
+		ThresholdRatio:       0.8,
+		Status:               engine.ContextStatusStable,
+		CompactionGeneration: 2,
+		CompactionWindowID:   "window-2",
+	}
+
+	runner := NewRunner(t.TempDir())
+	sess := &agentSession{
+		provider: &observingProvider{reqs: []ObservedProviderRequest{req}},
+		recorder: &streamingEventRecorder{},
+	}
+	got := runner.agentObservationLocked(sess, AgentSessionSnapshot{
+		ContextStatuses: []ObservedContextStatus{projected, finalUsage},
+	}, engine.Result{}, "turn-1")
+
+	if len(got.ContextStatuses) != 2 {
+		t.Fatalf("context statuses = %#v", got.ContextStatuses)
+	}
+	if !slices.ContainsFunc(got.ContextStatuses, func(status ObservedContextStatus) bool {
+		return status.Phase == observation.ContextPhaseProviderUsage &&
+			status.RequestID == "turn-1:req:1" &&
+			status.ContextPressure.WindowInputTokens == 650
+	}) {
+		t.Fatalf("prompt-cache provider usage status was not preserved: %#v", got.ContextStatuses)
+	}
+	if count := countContextStatuses(got.ContextStatuses, observation.ContextPhaseProjectedRequest, "turn-1:req:1"); count != 1 {
+		t.Fatalf("projected status count = %d, statuses = %#v", count, got.ContextStatuses)
 	}
 }
 
@@ -2917,7 +2983,7 @@ func TestCompactionEventsFromEngineEventsAndEntries(t *testing.T) {
 		t.Fatalf("start event was not converted")
 	}
 	if started.Phase != engine.ContextCompactPhaseStart ||
-		started.Status != compactionStatusRunning ||
+		started.Status != observation.CompactionStatusRunning ||
 		started.Trigger != string(compaction.TriggerPostResponse) ||
 		started.Reason != string(compaction.ReasonThreshold) ||
 		started.TokensBefore != 850 ||
@@ -2930,7 +2996,7 @@ func TestCompactionEventsFromEngineEventsAndEntries(t *testing.T) {
 		t.Fatalf("complete event was not converted")
 	}
 	if done.Phase != engine.ContextCompactPhaseComplete ||
-		done.Status != compactionStatusCompacted ||
+		done.Status != observation.CompactionStatusCompacted ||
 		done.CompactionID != "compact-1" ||
 		done.CompactionGeneration != 3 ||
 		done.CompactionWindowID != "window-3" ||
@@ -2945,7 +3011,7 @@ func TestCompactionEventsFromEngineEventsAndEntries(t *testing.T) {
 		t.Fatalf("failed event was not converted")
 	}
 	if failedEvent.Phase != engine.ContextCompactPhaseFailed ||
-		failedEvent.Status != compactionStatusFailed ||
+		failedEvent.Status != observation.CompactionStatusFailed ||
 		failedEvent.Error != "summary failed" ||
 		failedEvent.Trigger != string(compaction.TriggerOverflow) ||
 		failedEvent.TokensBefore != 990 {
@@ -2975,7 +3041,7 @@ func TestCompactionEventsFromEngineEventsAndEntries(t *testing.T) {
 	if !ok {
 		t.Fatalf("compaction entry was not converted")
 	}
-	if entryDone.Status != compactionStatusCompacted ||
+	if entryDone.Status != observation.CompactionStatusCompacted ||
 		entryDone.CompactionGeneration != 4 ||
 		entryDone.CompactionWindowID != "window-4" ||
 		entryDone.Trigger != string(compaction.TriggerOverflow) ||
@@ -3025,7 +3091,7 @@ func TestObservingProviderStreamsProjectedContextStatus(t *testing.T) {
 	if second.Type != AgentStreamContextStatus || second.ContextStatus == nil {
 		t.Fatalf("second stream event = %#v", second)
 	}
-	if second.ContextStatus.Phase != contextStatusPhaseProjectedRequest ||
+	if second.ContextStatus.Phase != observation.ContextPhaseProjectedRequest ||
 		second.ContextStatus.SessionID != "thread-1" ||
 		second.ContextStatus.TurnID != "turn-1" ||
 		second.ContextStatus.RequestID != "turn-1:req:1" ||
@@ -3079,7 +3145,7 @@ func TestStreamingEventRecorderStreamsFinalContextStatusAndCompaction(t *testing
 	compactEvent := <-stream.Events()
 	if statusEvent.Type != AgentStreamContextStatus ||
 		statusEvent.ContextStatus == nil ||
-		statusEvent.ContextStatus.Phase != contextStatusPhaseProviderUsage ||
+		statusEvent.ContextStatus.Phase != observation.ContextPhaseProviderUsage ||
 		statusEvent.ContextStatus.UsedRatio != 0.42 {
 		t.Fatalf("status stream event = %#v", statusEvent)
 	}
@@ -3088,7 +3154,7 @@ func TestStreamingEventRecorderStreamsFinalContextStatusAndCompaction(t *testing
 		compactEvent.Compaction.CompactionID != "compact-1" ||
 		compactEvent.Compaction.CompactionGeneration != 2 ||
 		compactEvent.Compaction.CompactionWindowID != "window-2" ||
-		compactEvent.Compaction.Status != compactionStatusCompacted ||
+		compactEvent.Compaction.Status != observation.CompactionStatusCompacted ||
 		compactEvent.Compaction.TokensAfterEstimate != 240 {
 		t.Fatalf("compaction stream event = %#v", compactEvent)
 	}
@@ -3117,7 +3183,7 @@ func TestStreamingEventRecorderStreamsFailedCompaction(t *testing.T) {
 	if got.Type != AgentStreamContextCompaction ||
 		got.Compaction == nil ||
 		got.Compaction.Phase != engine.ContextCompactPhaseFailed ||
-		got.Compaction.Status != compactionStatusFailed ||
+		got.Compaction.Status != observation.CompactionStatusFailed ||
 		got.Compaction.Error != "summary failed" ||
 		got.Compaction.TokensBefore != 980 {
 		t.Fatalf("failed compaction stream event = %#v", got)
@@ -3222,6 +3288,16 @@ func fakeExternalBraveSearchProfile() ProviderProfile {
 			Brave:  searchcap.BraveConfig{Provider: searchcap.ExternalProviderBrave},
 		},
 	}
+}
+
+func countContextStatuses(statuses []ObservedContextStatus, phase string, requestID string) int {
+	count := 0
+	for _, status := range statuses {
+		if status.Phase == phase && status.RequestID == requestID {
+			count++
+		}
+	}
+	return count
 }
 
 func toolOptionByName(t *testing.T, options []AgentToolOption, name string) AgentToolOption {

@@ -8,6 +8,7 @@ import (
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/event"
 	"github.com/floegence/floret/internal/searchcap"
+	"github.com/floegence/floret/observation"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/provider/cache"
 	"github.com/floegence/floret/provider/catalog"
@@ -344,6 +345,14 @@ type AgentObservation struct {
 	Diagnostics       map[string]string         `json:"diagnostics,omitempty"`
 }
 
+type ObservedContextStatus = observation.ContextStatus
+
+type ObservedCompactionEvent struct {
+	observation.CompactionEvent
+	SummaryPreview string `json:"summary_preview,omitempty"`
+	Summary        string `json:"summary,omitempty"`
+}
+
 type ObservedProviderRequest struct {
 	RunID                   string                          `json:"run_id,omitempty"`
 	SessionID               string                          `json:"session_id,omitempty"`
@@ -364,6 +373,22 @@ type ObservedProviderRequest struct {
 	ProjectedPressure       contextpolicy.ContextPressure   `json:"projected_context_pressure,omitempty"`
 	RawSegments             []ObservedRawSegment            `json:"raw_segments,omitempty"`
 	CacheSummary            ObservedCacheSummary            `json:"cache_summary,omitempty"`
+}
+
+type ObservedCacheSummary struct {
+	Namespace            string `json:"namespace,omitempty"`
+	Retention            string `json:"retention,omitempty"`
+	PrefixHash           string `json:"prefix_hash,omitempty"`
+	PayloadHash          string `json:"payload_hash,omitempty"`
+	ToolsetID            string `json:"toolset_id,omitempty"`
+	ToolsetEpoch         int    `json:"toolset_epoch,omitempty"`
+	CompactionGeneration int    `json:"compaction_generation,omitempty"`
+	CompactionWindowID   string `json:"compaction_window_id,omitempty"`
+	CompactionEntryID    string `json:"compaction_entry_id,omitempty"`
+	ReusedSegments       int    `json:"reused_segments,omitempty"`
+	NewSegments          int    `json:"new_segments,omitempty"`
+	CacheReadTokens      int64  `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens     int64  `json:"cache_write_tokens,omitempty"`
 }
 
 type ObservedRawSegment struct {
@@ -394,22 +419,6 @@ type ObservedRawSegment struct {
 	RawPreview           string            `json:"raw_preview,omitempty"`
 }
 
-type ObservedCacheSummary struct {
-	Namespace            string `json:"namespace,omitempty"`
-	Retention            string `json:"retention,omitempty"`
-	PrefixHash           string `json:"prefix_hash,omitempty"`
-	PayloadHash          string `json:"payload_hash,omitempty"`
-	ToolsetID            string `json:"toolset_id,omitempty"`
-	ToolsetEpoch         int    `json:"toolset_epoch,omitempty"`
-	CompactionGeneration int    `json:"compaction_generation,omitempty"`
-	CompactionWindowID   string `json:"compaction_window_id,omitempty"`
-	CompactionEntryID    string `json:"compaction_entry_id,omitempty"`
-	ReusedSegments       int    `json:"reused_segments,omitempty"`
-	NewSegments          int    `json:"new_segments,omitempty"`
-	CacheReadTokens      int64  `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens     int64  `json:"cache_write_tokens,omitempty"`
-}
-
 type ObservedProviderEvent struct {
 	RunID        string                         `json:"run_id,omitempty"`
 	SessionID    string                         `json:"session_id,omitempty"`
@@ -424,51 +433,6 @@ type ObservedProviderEvent struct {
 	Metadata     map[string]string              `json:"metadata,omitempty"`
 	Reason       string                         `json:"reason,omitempty"`
 	Usage        provider.Usage                 `json:"usage,omitempty"`
-}
-
-type ObservedContextStatus struct {
-	RunID                string                        `json:"run_id,omitempty"`
-	SessionID            string                        `json:"session_id,omitempty"`
-	TurnID               string                        `json:"turn_id,omitempty"`
-	Step                 int                           `json:"step,omitempty"`
-	RequestID            string                        `json:"request_id,omitempty"`
-	LogicalRequestID     string                        `json:"logical_request_id,omitempty"`
-	Attempt              int                           `json:"attempt,omitempty"`
-	Phase                string                        `json:"phase"`
-	Provider             string                        `json:"provider,omitempty"`
-	Model                string                        `json:"model,omitempty"`
-	ObservedAt           time.Time                     `json:"observed_at"`
-	Usage                provider.Usage                `json:"usage,omitempty"`
-	RequestEstimate      contextpolicy.RequestEstimate `json:"request_estimate,omitempty"`
-	ContextPressure      contextpolicy.ContextPressure `json:"context_pressure,omitempty"`
-	UsedRatio            float64                       `json:"used_ratio,omitempty"`
-	ThresholdRatio       float64                       `json:"threshold_ratio,omitempty"`
-	Status               string                        `json:"status"`
-	CompactionGeneration int                           `json:"compaction_generation,omitempty"`
-	CompactionWindowID   string                        `json:"compaction_window_id,omitempty"`
-}
-
-type ObservedCompactionEvent struct {
-	RunID                   string              `json:"run_id,omitempty"`
-	SessionID               string              `json:"session_id,omitempty"`
-	TurnID                  string              `json:"turn_id,omitempty"`
-	Step                    int                 `json:"step,omitempty"`
-	Phase                   string              `json:"phase"`
-	Status                  string              `json:"status"`
-	Trigger                 string              `json:"trigger,omitempty"`
-	Reason                  string              `json:"reason,omitempty"`
-	CompactionID            string              `json:"compaction_id,omitempty"`
-	CompactionGeneration    int                 `json:"compaction_generation,omitempty"`
-	CompactionWindowID      string              `json:"compaction_window_id,omitempty"`
-	CompactedThroughEntryID string              `json:"compacted_through_entry_id,omitempty"`
-	TokensBefore            int64               `json:"tokens_before,omitempty"`
-	TokensAfterEstimate     int64               `json:"tokens_after_estimate,omitempty"`
-	ContextBefore           contextpolicy.Usage `json:"context_before,omitempty"`
-	ContextAfter            contextpolicy.Usage `json:"context_after,omitempty"`
-	SummaryPreview          string              `json:"summary_preview,omitempty"`
-	Summary                 string              `json:"summary,omitempty"`
-	Error                   string              `json:"error,omitempty"`
-	ObservedAt              time.Time           `json:"observed_at"`
 }
 
 type ObservedArtifactRef struct {

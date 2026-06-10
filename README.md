@@ -53,6 +53,8 @@ Floret packages those pieces as small Go APIs.
   run exceeds the configured context policy.
 - **Events**: send provider, tool, compaction, budget, and final-state events without
   tying them to a specific UI.
+- **Observations**: project context pressure and compaction events into stable
+  host-facing DTOs without exposing raw prompt payloads.
 - **Tests**: use fake providers and scripted tool calls to test agent behavior without
   real model calls.
 
@@ -64,7 +66,7 @@ Floret packages those pieces as small Go APIs.
 | Build durable conversations | `agentharness` for start, resume, fork, retry, waiting, and interruption recovery |
 | Expose your own tools | `tools.Registry` for schemas, effects, permission hooks, scheduling, and result limits |
 | Keep long sessions within budget | `session/contextpolicy`, `session/compaction`, and `engine/compaction` |
-| Show progress in your UI | `event` records plus sanitized public observations |
+| Show progress in your UI | `event` records plus `observation` DTOs for context pressure and compaction state |
 | Test without model calls | `testing/harness`, `testing/eval`, and the fake provider adapter |
 
 ## 🧩 Core building blocks
@@ -77,6 +79,7 @@ Floret packages those pieces as small Go APIs.
 | `tools` | Tool registry, JSON schemas, resource references, approval checks, scheduling, result limits, and panic recovery |
 | `session` / `sessiontree` | Provider-visible transcript shape plus append-only thread entries and active-path projection |
 | `event` | Runtime events and a thread-safe recorder for tests |
+| `observation` | Host-facing context status and compaction projections built from narrow observation DTOs and engine events |
 | `runtime` / `runtime/storage` | Configuration helpers plus memory, file, prompt-cache, and SQLite-backed storage |
 
 ## Runtime Shape
@@ -102,6 +105,8 @@ can render the same runtime facts without parsing human text.
 Public views should expose sanitized events and observations. Raw provider deltas,
 reasoning, tool arguments/results, prompt segments, and artifact paths are local
 debug data and require explicit opt-in at the host boundary.
+Use `observation` when a host wants stable context-pressure and compaction DTOs;
+use `event` when it needs the lower-level runtime event stream.
 
 ### Context Pressure
 
@@ -421,6 +426,7 @@ agentharness or engine.Engine
         +--> provider/cache          provider-specific rendered context
         +--> session/contextpolicy   active context policy
         +--> event.Sink              UI-neutral runtime events
+        +--> observation             host-facing context and compaction DTOs
 ```
 
 Important behavior is available through events or testable state. Hosts should render
@@ -435,7 +441,7 @@ policy.
 | --- | --- | --- |
 | Runtime core | `engine`, `provider`, `tools`, `event` | Run turns, define provider streams, execute tools, and emit events |
 | Context and compaction | `session/contextpolicy`, `session/compaction`, `engine/compaction` | Track context usage and summarize older history |
-| Host integration | `runtime`, `config`, `provider/adapters`, `provider/catalog`, `provider/cache` | Load config, create providers, track prompt fragments, and store provider response records |
+| Host integration | `runtime`, `config`, `provider/adapters`, `provider/catalog`, `provider/cache`, `observation` | Load config, create providers, track prompt fragments, project host-facing status records, and store provider response records |
 | Optional capabilities | `tools/builtin`, `tools/mcp`, `tools/skills` | Add local tools, MCP tools, or skill disclosure when a host wants them |
 | Sessions and storage | `agentharness`, `session`, `sessiontree`, `runtime/storage`, `runtime/storage/sqlite` | Store transcripts, thread trees, prompt cache data, and SQLite-backed runtime state |
 | Testing and inspection | `testing/harness`, `testing/eval`, `cmd/floret-test-ui` | Script turns, run small evals, and inspect a local runtime |

@@ -1818,7 +1818,7 @@ func (r *Runner) agentObservationLocked(sess *agentSession, snapshot AgentSessio
 	observation.ContextProjection = snapshot.ContextProjection
 	observation.PathEntries = snapshot.PathEntries
 	events := eventsForRun(sess.recorder.Snapshot(), turnID)
-	observation.ContextStatuses = contextStatusesForObservation(observation.ProviderRequests, events)
+	observation.ContextStatuses = mergeContextStatuses(snapshot.ContextStatuses, contextStatusesForObservation(observation.ProviderRequests, events))
 	observation.CompactionEvents = compactionEventsForObservation(snapshot.PathEntries, events)
 	observation.Transitions = buildTransitions(events, result)
 	return observation
@@ -1831,7 +1831,7 @@ func (r *Runner) runningAgentObservation(sess *agentSession, snapshot AgentSessi
 	observation.ContextProjection = snapshot.ContextProjection
 	observation.PathEntries = snapshot.PathEntries
 	events := eventsForRun(sess.recorder.Snapshot(), snapshot.LatestTurnID)
-	observation.ContextStatuses = contextStatusesForObservation(observation.ProviderRequests, events)
+	observation.ContextStatuses = mergeContextStatuses(snapshot.ContextStatuses, contextStatusesForObservation(observation.ProviderRequests, events))
 	observation.CompactionEvents = compactionEventsForObservation(snapshot.PathEntries, events)
 	observation.Transitions = buildRunningTransitions(events)
 	return observation
