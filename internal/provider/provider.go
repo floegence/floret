@@ -39,6 +39,12 @@ type Request struct {
 	MaxOutputTokens  int64
 	DisableReasoning bool
 	PreviousState    *State
+	Labels           RequestLabels
+}
+
+type RequestLabels struct {
+	Correlation map[string]string
+	Host        map[string]string
 }
 
 type State struct {

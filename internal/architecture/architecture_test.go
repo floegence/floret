@@ -214,7 +214,7 @@ func TestPublicPackagesDoNotImportForbiddenImplementationPackages(t *testing.T) 
 
 func TestReadmeOnlyDocumentsStableDownstreamAPI(t *testing.T) {
 	text := readTextFile(t, "README.md")
-	for _, want := range []string{"runtime.NewHost", "runtime.NewMemoryStore", "runtime.OpenSQLiteStore", "tools.Registry", "observation"} {
+	for _, want := range []string{"runtime.NewHost", "runtime.RunProjectedTurn", "runtime.ModelGateway", "runtime.NewMemoryStore", "runtime.OpenSQLiteStore", "tools.Registry", "observation"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("README missing stable downstream API %q", want)
 		}
@@ -222,6 +222,25 @@ func TestReadmeOnlyDocumentsStableDownstreamAPI(t *testing.T) {
 	for _, forbidden := range publicDocsDenylist() {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("README advertises internal/downstream-forbidden API %q", forbidden)
+		}
+	}
+}
+
+func TestReadmeKeepsPolishedPresentation(t *testing.T) {
+	text := readTextFile(t, "README.md")
+	for _, want := range []string{
+		"pkg.go.dev/badge/github.com/floegence/floret/runtime.svg",
+		"img.shields.io/badge/license-MIT",
+		`<a href="#-why-floret">Why Floret</a>`,
+		"## \U00002728 Why Floret",
+		"## \U0001F9ED At a glance",
+		"## \U0001F4E6 Stable downstream API",
+		"| You need to... | Use... |",
+		"| Tool concern | Floret handles | Host handles |",
+		"Host UI/API",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("README lost polished presentation marker %q", want)
 		}
 	}
 }

@@ -242,6 +242,210 @@ func TestHarnessHelperRunsCustomToolWithoutPublicProviderAPI(t *testing.T) {
 	}
 }
 
+func TestRunProjectedTurnUsesPublicFacadeContracts(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	result, err := RunProjectedTurn(ctx, ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "projected ok",
+			SystemPrompt: "test",
+		},
+		Store: store,
+	}, ProjectedTurnRequest{
+		RunID:         "run-1",
+		ThreadID:      "thread-1",
+		TurnID:        "turn-1",
+		TraceID:       "trace-1",
+		PromptScopeID: "thread-1",
+		History: []TranscriptMessage{
+			{Role: "user", Content: "hello from host thread"},
+			{Role: "assistant", Content: "previous answer"},
+			{Role: "user", Content: "continue"},
+		},
+		Labels: RunLabels{
+			Correlation: map[string]string{"message_id": "msg-1"},
+			Host:        map[string]string{"workspace_id": "ws-1"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != TurnStatusCompleted || result.Output != "projected ok" {
+		t.Fatalf("projected result = %#v", result)
+	}
+	if result.RunID != "run-1" || result.ThreadID != "thread-1" || result.TurnID != "turn-1" {
+		t.Fatalf("projected identities = %#v", result)
+	}
+	if result.Metrics.LLMRequests != 1 || result.Metrics.Steps != 1 {
+		t.Fatalf("metrics = %#v", result.Metrics)
+	}
+	if len(result.Transcript) < 4 || result.Transcript[0].Role != "user" || result.Transcript[0].Content != "hello from host thread" || result.Transcript[len(result.Transcript)-1].Content != "projected ok" {
+		t.Fatalf("transcript = %#v", result.Transcript)
+	}
+	requests, err := store.prompt.ProviderRequests(ctx, "thread-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("provider requests = %#v", requests)
+	}
+	if requests[0].RunID != "run-1" || requests[0].ThreadID != "thread-1" || requests[0].TurnID != "turn-1" {
+		t.Fatalf("provider request identity/state = %#v", requests[0])
+	}
+}
+
+func TestRunProjectedTurnRejectsUnsupportedTranscriptRole(t *testing.T) {
+	_, err := RunProjectedTurn(context.Background(), ProjectedTurnOptions{
+		Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "ok", SystemPrompt: "test"},
+	}, ProjectedTurnRequest{
+		RunID:         "run-1",
+		ThreadID:      "thread-1",
+		TurnID:        "turn-1",
+		TraceID:       "trace-1",
+		PromptScopeID: "thread-1",
+		History: []TranscriptMessage{{
+			Role:    "developer",
+			Content: "unsupported",
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported role") {
+		t.Fatalf("err = %v, want unsupported role", err)
+	}
+}
+
+func TestRunProjectedTurnRejectsSystemTranscriptRole(t *testing.T) {
+	_, err := RunProjectedTurn(context.Background(), ProjectedTurnOptions{
+		Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "ok", SystemPrompt: "test"},
+	}, ProjectedTurnRequest{
+		RunID:         "run-1",
+		ThreadID:      "thread-1",
+		TurnID:        "turn-1",
+		TraceID:       "trace-1",
+		PromptScopeID: "thread-1",
+		History: []TranscriptMessage{{
+			Role:    "system",
+			Content: "inject",
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported role") {
+		t.Fatalf("err = %v, want unsupported role", err)
+	}
+}
+
+func TestRunProjectedTurnRequiresExplicitExecutionIdentity(t *testing.T) {
+	_, err := RunProjectedTurn(context.Background(), ProjectedTurnOptions{
+		Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "ok", SystemPrompt: "test"},
+	}, ProjectedTurnRequest{
+		RunID:    "run-1",
+		ThreadID: "thread-1",
+		TurnID:   "turn-1",
+		TraceID:  "trace-1",
+		History: []TranscriptMessage{{
+			Role:    "user",
+			Content: "hello",
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "prompt scope id is required") {
+		t.Fatalf("err = %v, want missing prompt scope id", err)
+	}
+}
+
+func TestRunProjectedTurnRejectsUnsupportedCompletionPolicy(t *testing.T) {
+	_, err := RunProjectedTurn(context.Background(), ProjectedTurnOptions{
+		Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "ok", SystemPrompt: "test"},
+	}, ProjectedTurnRequest{
+		RunID:         "run-1",
+		ThreadID:      "thread-1",
+		TurnID:        "turn-1",
+		TraceID:       "trace-1",
+		PromptScopeID: "thread-1",
+		Completion:    TurnCompletionPolicy("legacy_auto"),
+		History: []TranscriptMessage{{
+			Role:    "user",
+			Content: "hello",
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported completion policy") {
+		t.Fatalf("err = %v, want unsupported completion policy", err)
+	}
+}
+
+func TestProjectedTurnDisablesInternalControlToolsByDefault(t *testing.T) {
+	spec, err := engineTurnSignalSpec(TurnSignalSpec{}, engine.CompletionNaturalStop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.Definitions) != 0 {
+		t.Fatalf("definitions = %#v, want no default control tools", spec.Definitions)
+	}
+	if spec.Project == nil {
+		t.Fatal("projector should disable engine defaults")
+	}
+	if signal, ok, err := spec.Project(provider.ToolCall{Name: "ask_user", Args: `{"question":"x"}`}); err != nil || ok || signal.Name != "" {
+		t.Fatalf("project = %#v, %v, %v", signal, ok, err)
+	}
+}
+
+func TestProjectedTurnExplicitSignalRequiresPublicControlSpec(t *testing.T) {
+	_, err := engineTurnSignalSpec(TurnSignalSpec{}, engine.CompletionExplicitSignal)
+	if err == nil || !strings.Contains(err.Error(), "signal spec is required") {
+		t.Fatalf("err = %v, want required signal spec", err)
+	}
+}
+
+func TestProjectedControlSpecUsesPublicToolContracts(t *testing.T) {
+	spec, err := engineTurnSignalSpec(TurnSignalSpec{
+		Definitions: []tools.ToolDefinition{{
+			Name:        "host_wait",
+			Title:       "Host wait",
+			Description: "Wait for host input.",
+			InputSchema: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+			},
+			Strict:      true,
+			Annotations: map[string]any{"kind": "control"},
+		}},
+		Project: func(call tools.ToolCall) (TurnSignal, bool, error) {
+			if call.Name != "host_wait" || call.Args != "{}" {
+				t.Fatalf("call = %#v", call)
+			}
+			return TurnSignal{
+				Disposition: SignalWaiting,
+				Name:        call.Name,
+				CallID:      call.ID,
+				Payload:     map[string]any{"nested": map[string]any{"value": "original"}},
+				OutputText:  "Need input",
+				Labels:      map[string]string{"surface": "test"},
+			}, true, nil
+		},
+	}, engine.CompletionNaturalStop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.Definitions) != 1 || spec.Definitions[0].Name != "host_wait" || !spec.Definitions[0].Strict {
+		t.Fatalf("definitions = %#v", spec.Definitions)
+	}
+	signal, ok, err := spec.Project(provider.ToolCall{ID: "call-1", Name: "host_wait", Args: "{}"})
+	if err != nil || !ok {
+		t.Fatalf("project = %#v, %v", signal, err)
+	}
+	if signal.Disposition != engine.ControlWaiting || signal.OutputText != "Need input" || signal.Labels["surface"] != "test" {
+		t.Fatalf("signal = %#v", signal)
+	}
+	signal.Payload["nested"].(map[string]any)["value"] = "mutated"
+	signal.Labels["surface"] = "mutated"
+	again, ok, err := spec.Project(provider.ToolCall{ID: "call-2", Name: "host_wait", Args: "{}"})
+	if err != nil || !ok {
+		t.Fatalf("project again = %#v, %v", again, err)
+	}
+	if again.Payload["nested"].(map[string]any)["value"] != "original" || again.Labels["surface"] != "test" {
+		t.Fatalf("projected signal was aliased: %#v", again)
+	}
+}
+
 func TestEngineHelperPreservesExplicitZeroMaxOutputTokens(t *testing.T) {
 	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
 	e, err := newEngineWithProvider(config.Config{

@@ -25,6 +25,7 @@
   <a href="#-why-floret">Why Floret</a> ·
   <a href="#-at-a-glance">At a glance</a> ·
   <a href="#-quick-start">Quick Start</a> ·
+  <a href="#-projected-turns">Projected Turns</a> ·
   <a href="#-responsibility-boundary">Boundaries</a> ·
   <a href="#-runtime-flow">Runtime Flow</a> ·
   <a href="#-quality-gate">Quality Gate</a> ·
@@ -66,6 +67,8 @@ stay focused on product behavior.
 | --- | --- |
 | Configure a provider and agent persona | `config.Config` or `config.Load` |
 | Build a durable conversation host | `runtime.NewHost` |
+| Run one turn from a host-owned transcript projection | `runtime.RunProjectedTurn` |
+| Supply product-owned model transport | `runtime.ModelGateway` |
 | Keep Floret runtime data in memory | `runtime.NewMemoryStore` |
 | Keep Floret runtime data in SQLite | `runtime.OpenSQLiteStore` |
 | Expose product-specific actions | `tools.Registry` and typed tool handlers |
@@ -83,12 +86,14 @@ github.com/floegence/floret/observation
 ```
 
 Everything under `internal/` is Floret implementation. Downstream applications
-should not construct model requests for an agent turn, call model SDKs directly
-inside the Floret loop, manage Floret journal tables, or parse prompt-cache and
-provider-ledger records. Product data such as owners, workspaces, pinned state,
-read watermarks, and billing metadata belongs in the host database keyed by
-`runtime.ThreadID`. Any package outside the stable list above is contributor or
-runtime implementation, not a downstream contract.
+should not bypass the `runtime` facade to build turn requests, call Floret
+implementation contracts, manage Floret journal tables, or parse prompt-cache
+and provider-ledger records. If the product owns model transport, implement
+`runtime.ModelGateway` and let Floret construct the turn request, own the loop,
+dispatch tools, and record runtime facts. Product data such as owners,
+workspaces, pinned state, read watermarks, and billing metadata belongs in the
+host database keyed by `runtime.ThreadID`. Any package outside the stable list
+above is contributor or runtime implementation, not a downstream contract.
 
 ## 🚀 Quick Start
 
@@ -183,6 +188,20 @@ func main() {
 Use `runtime.OpenSQLiteStore(path)` when the host wants Floret-managed durable
 runtime storage. Treat `runtime.Store` as an opaque handle; do not reach into its
 tables or implementation details from downstream code.
+
+## 🔀 Projected Turns
+
+Use `runtime.RunProjectedTurn` only when the product already owns conversation
+rows and needs Floret to execute one turn from a host-built transcript
+projection. Durable Floret-managed conversations should use `runtime.Host`.
+
+Projected turn requests must carry explicit `RunID`, `ThreadID`, `TurnID`,
+`TraceID`, and `PromptScopeID`. `History` accepts only `user`, `assistant`, and
+`tool` messages; system instructions belong in `config.Config`. The returned
+`Transcript` is the provider-visible projection for the next turn, not a
+sanitized UI display row. When `ProjectedTurnOptions.ModelGateway` is set,
+Floret passes a `runtime.ModelRequest` to the host-owned model transport and
+continues to own tool dispatch, loop control, ledgers, and events.
 
 ## ⚙️ Configuration
 

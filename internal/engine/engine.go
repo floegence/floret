@@ -766,6 +766,13 @@ func cloneRunLabels(labels RunLabels) RunLabels {
 	}
 }
 
+func providerRequestLabels(labels RunLabels) provider.RequestLabels {
+	return provider.RequestLabels{
+		Correlation: cloneStringMap(labels.Correlation),
+		Host:        cloneStringMap(labels.Host),
+	}
+}
+
 func observabilityLabels(labels RunLabels) map[string]string {
 	out := make(map[string]string, len(labels.Correlation)+len(labels.Host))
 	for key, value := range labels.Correlation {
@@ -1032,6 +1039,7 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		ContextPolicy:   opts.ContextPolicy,
 		MaxOutputTokens: opts.ContextPolicy.MaxOutputTokens,
 		PreviousState:   provider.CloneState(opts.PreviousProviderState),
+		Labels:          providerRequestLabels(opts.Labels),
 	}
 	estimate, err := e.estimateRequestTokens(ctx, req)
 	if err != nil {
