@@ -128,6 +128,25 @@ git config --global rerere.enabled true
 git config --global merge.conflictstyle zdiff3
 ```
 
+### Commit Messages
+
+Use Conventional Commit style for every commit:
+
+```text
+<type>(<scope>): <summary>
+```
+
+Rules:
+
+- Use a lowercase type. Prefer `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `build`, or `ci`.
+- Always include a concise lowercase scope that names the affected area, for example `runtime`, `provider`, `tools`, `session`, `storage`, `docs`, or `repo`.
+- Keep the summary in imperative mood, start it lowercase, and omit a trailing period.
+- Use English for commit messages.
+- Examples:
+  - `feat(runtime): add streaming event contracts`
+  - `fix(provider): disable reasoning for title summaries`
+  - `docs(repo): document commit message format`
+
 ### Conflict Resolution Principles
 
 - Resolve conflicts only in the feature worktree.
