@@ -60,17 +60,18 @@ var (
 const agentSessionTurnLockTimeout = 250 * time.Millisecond
 
 type Runner struct {
-	Root                string
-	EnvFile             string
-	Now                 func() time.Time
-	Exec                func(context.Context, string, []string, string, []string) ([]byte, int)
-	ProviderFactory     func(config.Config) (provider.Provider, error)
-	Sessions            *agentSessionRegistry
-	StorageMode         string
-	StoragePath         string
-	StorageImportLegacy bool
-	storageSQLite       *sqlite.Store
-	storageMemory       *memoryStorage
+	Root                 string
+	EnvFile              string
+	Now                  func() time.Time
+	Exec                 func(context.Context, string, []string, string, []string) ([]byte, int)
+	ProviderFactory      func(config.Config) (provider.Provider, error)
+	TitleProviderFactory func(config.Config) (provider.Provider, error)
+	Sessions             *agentSessionRegistry
+	StorageMode          string
+	StoragePath          string
+	StorageImportLegacy  bool
+	storageSQLite        *sqlite.Store
+	storageMemory        *memoryStorage
 }
 
 func NewRunner(root string) Runner {
@@ -164,6 +165,25 @@ func (r *Runner) providerFactory() func(config.Config) (provider.Provider, error
 		return r.ProviderFactory
 	}
 	return adapters.NewProvider
+}
+
+func (r *Runner) titleProviderFactory() func(config.Config) (provider.Provider, error) {
+	if r.TitleProviderFactory != nil {
+		return r.TitleProviderFactory
+	}
+	return adapters.NewProvider
+}
+
+func (r *Runner) titleGenerator(cfg config.Config) (agentharness.TitleGenerator, error) {
+	p, err := r.titleProviderFactory()(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return agentharness.ProviderTitleGenerator{
+		Provider:     p,
+		ProviderName: cfg.Provider,
+		Model:        cfg.Model,
+	}, nil
 }
 
 func agentSessionSinkPolicy() event.SinkPolicy {
@@ -659,6 +679,10 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 		return agentSessionRuntime{}, err
 	}
 	observed := newObservingProvider(p)
+	titleGenerator, err := r.titleGenerator(sess.cfg)
+	if err != nil {
+		return agentSessionRuntime{}, err
+	}
 	rec := &streamingEventRecorder{}
 	harnessRec := &streamingHarnessRecorder{repo: sess.repo, threadID: sess.id}
 	registry := tools.NewRegistry()
@@ -673,18 +697,19 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 	systemPrompt := appendCapabilityPrompt(sess.systemPrompt, skillPrompt)
 	idGenerator := r.agentSessionIDGenerator(ctx, sess.repo, sess.id)
 	h := agentharness.New(agentharness.Options{
-		Provider:     observedProviderRuntime(observed),
-		ProviderName: sess.cfg.Provider,
-		Model:        sess.cfg.Model,
-		SystemPrompt: systemPrompt,
-		Tools:        registry,
-		PromptStore:  sess.promptStore,
-		Repo:         sess.repo,
-		Artifacts:    newToolOutputArtifactStore(r.managedArtifactsRoot()),
-		Sink:         rec,
-		SinkPolicy:   agentSessionSinkPolicy(),
-		HarnessSink:  harnessRec,
-		Approver:     testUIToolApprover,
+		Provider:       observedProviderRuntime(observed),
+		ProviderName:   sess.cfg.Provider,
+		Model:          sess.cfg.Model,
+		SystemPrompt:   systemPrompt,
+		Tools:          registry,
+		PromptStore:    sess.promptStore,
+		Repo:           sess.repo,
+		Artifacts:      newToolOutputArtifactStore(r.managedArtifactsRoot()),
+		Sink:           rec,
+		SinkPolicy:     agentSessionSinkPolicy(),
+		HarnessSink:    harnessRec,
+		Approver:       testUIToolApprover,
+		TitleGenerator: titleGenerator,
 		TurnPolicy: agentharness.TurnPolicy{
 			CacheRetention:        config.PromptCacheRetention(sess.cfg),
 			ContextPolicy:         sess.contextPolicy,
@@ -787,10 +812,10 @@ func (r *Runner) AgentSessions(ctx context.Context) []AgentSessionSnapshot {
 		}
 	}
 	slices.SortFunc(out, func(a, b AgentSessionSnapshot) int {
-		if a.UpdatedAt.Equal(b.UpdatedAt) {
+		if a.CreatedAt.Equal(b.CreatedAt) {
 			return strings.Compare(b.ID, a.ID)
 		}
-		if a.UpdatedAt.After(b.UpdatedAt) {
+		if a.CreatedAt.After(b.CreatedAt) {
 			return -1
 		}
 		return 1
@@ -822,6 +847,10 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 		return nil, err
 	}
 	observed := newObservingProvider(p)
+	titleGenerator, err := r.titleGenerator(cfg)
+	if err != nil {
+		return nil, err
+	}
 	var repo sessiontree.Repo
 	var promptStore cache.Store
 	if opts.Transient {
@@ -854,18 +883,19 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 	systemPrompt := appendCapabilityPrompt(cfg.SystemPrompt, skillPrompt)
 	idGenerator := r.agentSessionIDGenerator(ctx, repo, opts.ID)
 	h := agentharness.New(agentharness.Options{
-		Provider:     observedProviderRuntime(observed),
-		ProviderName: cfg.Provider,
-		Model:        cfg.Model,
-		SystemPrompt: systemPrompt,
-		Tools:        registry,
-		PromptStore:  promptStore,
-		Repo:         repo,
-		Artifacts:    newToolOutputArtifactStore(r.managedArtifactsRoot()),
-		Sink:         rec,
-		SinkPolicy:   agentSessionSinkPolicy(),
-		HarnessSink:  harnessRec,
-		Approver:     testUIToolApprover,
+		Provider:       observedProviderRuntime(observed),
+		ProviderName:   cfg.Provider,
+		Model:          cfg.Model,
+		SystemPrompt:   systemPrompt,
+		Tools:          registry,
+		PromptStore:    promptStore,
+		Repo:           repo,
+		Artifacts:      newToolOutputArtifactStore(r.managedArtifactsRoot()),
+		Sink:           rec,
+		SinkPolicy:     agentSessionSinkPolicy(),
+		HarnessSink:    harnessRec,
+		Approver:       testUIToolApprover,
+		TitleGenerator: titleGenerator,
 		TurnPolicy: agentharness.TurnPolicy{
 			CacheRetention:        config.PromptCacheRetention(cfg),
 			ContextPolicy:         cfg.ContextPolicy,
@@ -1349,6 +1379,11 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 	compactionEvents := compactionEventsForObservation(pathEntries, nil)
 	return AgentSessionSnapshot{
 		ID:                      meta.ID,
+		Title:                   thread.Title,
+		TitleStatus:             string(thread.TitleStatus),
+		TitleSource:             string(thread.TitleSource),
+		TitleUpdatedAt:          thread.TitleUpdatedAt,
+		TitleError:              thread.TitleError,
 		Status:                  lifecycle.Status(),
 		Phase:                   lifecycle.Phase(),
 		LeafID:                  thread.LeafID,
@@ -1645,6 +1680,11 @@ func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) 
 	allEntries := observeEntries(snap.Entries)
 	snapshot := AgentSessionSnapshot{
 		ID:                      sess.id,
+		Title:                   snap.Meta.Title,
+		TitleStatus:             string(snap.Meta.TitleStatus),
+		TitleSource:             string(snap.Meta.TitleSource),
+		TitleUpdatedAt:          snap.Meta.TitleUpdatedAt,
+		TitleError:              snap.Meta.TitleError,
 		Status:                  lifecycle.Status(),
 		Phase:                   lifecycle.Phase(),
 		LeafID:                  snap.Meta.LeafID,
@@ -1775,6 +1815,11 @@ func (r *Runner) refreshRunningSnapshotFromThread(ctx context.Context, sess *age
 	}
 	lifecycle := sessionlifecycle.Running(snapshot.LatestTurnID)
 	snapshot.LeafID = snap.Meta.LeafID
+	snapshot.Title = snap.Meta.Title
+	snapshot.TitleStatus = string(snap.Meta.TitleStatus)
+	snapshot.TitleSource = string(snap.Meta.TitleSource)
+	snapshot.TitleUpdatedAt = snap.Meta.TitleUpdatedAt
+	snapshot.TitleError = snap.Meta.TitleError
 	snapshot.Status = lifecycle.Status()
 	snapshot.Phase = lifecycle.Phase()
 	snapshot.WaitingPrompt = lifecycle.WaitingPrompt()

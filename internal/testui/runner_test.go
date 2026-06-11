@@ -1411,7 +1411,7 @@ func TestRunnerAgentSessionPersistsAndResumesAfterNewRunner(t *testing.T) {
 	}
 }
 
-func TestRunnerAgentSessionsSortsNewestFirstAcrossMemoryAndDisk(t *testing.T) {
+func TestRunnerAgentSessionsKeepCreatedOrderAcrossMemoryAndDisk(t *testing.T) {
 	root := t.TempDir()
 	clock := fixedClock()
 	firstRunner := NewRunner(root)
@@ -1447,6 +1447,21 @@ func TestRunnerAgentSessionsSortsNewestFirstAcrossMemoryAndDisk(t *testing.T) {
 	sessions := listRunner.AgentSessions(context.Background())
 	if len(sessions) != 2 || sessions[0].ID != second.SessionID || sessions[1].ID != first.SessionID {
 		t.Fatalf("sessions = %#v", sessions)
+	}
+	if sessions[0].Title == "" || sessions[1].Title == "" {
+		t.Fatalf("sessions should expose generated titles: %#v", sessions)
+	}
+
+	listRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return harness.NewScriptedProvider(harness.Step(harness.Text("updated first"), harness.Done())), nil
+	}
+	updatedFirst := listRunner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "continue first"})
+	if updatedFirst.Status != "completed" {
+		t.Fatalf("updated first = %#v", updatedFirst)
+	}
+	sessions = listRunner.AgentSessions(context.Background())
+	if len(sessions) != 2 || sessions[0].ID != second.SessionID || sessions[1].ID != first.SessionID {
+		t.Fatalf("updated session should not reorder created-time list: %#v", sessions)
 	}
 }
 
@@ -1967,7 +1982,7 @@ func TestRunnerSQLiteImportsLegacyFileStorageOnce(t *testing.T) {
 		t.Fatalf("imported sessions = %#v", sessions)
 	}
 	status := sqliteRunner.storageStatus(context.Background())
-	if status.Mode != StorageModeSQLite || status.SchemaVersion != "3" || !strings.Contains(status.LegacyImport, "threads=1") || !strings.Contains(status.LegacyImport, "metadata=1") {
+	if status.Mode != StorageModeSQLite || status.SchemaVersion != "4" || !strings.Contains(status.LegacyImport, "threads=1") || !strings.Contains(status.LegacyImport, "metadata=1") {
 		t.Fatalf("storage status = %#v", status)
 	}
 	restarted := NewRunner(root)

@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	schemaVersion     = "3"
+	schemaVersion     = "4"
 	initialSchema     = "1"
 	rawEncoderVersion = "1"
 	driverName        = "sqlite"
@@ -49,6 +49,10 @@ type sqlRunner interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+type rowScanner interface {
+	Scan(...any) error
 }
 
 func DefaultTestUIPath(root string) string {
@@ -147,6 +151,12 @@ func (s *Store) init(ctx context.Context) error {
 		if err := s.migrateV2ToV3(ctx); err != nil {
 			return err
 		}
+		current = "3"
+	}
+	if current == "3" {
+		if err := s.migrateV3ToV4(ctx); err != nil {
+			return err
+		}
 		current = schemaVersion
 	}
 	if current != schemaVersion {
@@ -176,6 +186,24 @@ func (s *Store) migrateV2ToV3(ctx context.Context) error {
 	return s.withImmediate(ctx, func(tx sqlRunner) error {
 		if _, err := tx.ExecContext(ctx, `ALTER TABLE entries ADD COLUMN kept_user_entry_ids_json TEXT NOT NULL DEFAULT '[]'`); err != nil {
 			if !strings.Contains(err.Error(), "duplicate column name") {
+				return err
+			}
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = '3' WHERE key = 'schema_version'`)
+		return err
+	})
+}
+
+func (s *Store) migrateV3ToV4(ctx context.Context) error {
+	return s.withImmediate(ctx, func(tx sqlRunner) error {
+		for _, stmt := range []string{
+			`ALTER TABLE threads ADD COLUMN title TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE threads ADD COLUMN title_status TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE threads ADD COLUMN title_source TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE threads ADD COLUMN title_updated_at TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE threads ADD COLUMN title_error TEXT NOT NULL DEFAULT ''`,
+		} {
+			if _, err := tx.ExecContext(ctx, stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 				return err
 			}
 		}
@@ -325,6 +353,39 @@ func (s *Store) ClearExpiredTurnLease(ctx context.Context, threadID string, cuto
 
 func (s *Store) Thread(ctx context.Context, threadID string) (sessiontree.ThreadMeta, error) {
 	return loadThread(ctx, s.db, threadID)
+}
+
+func (s *Store) ListThreads(ctx context.Context, opts sessiontree.ListThreadsOptions) ([]sessiontree.ThreadMeta, error) {
+	where := []string{}
+	args := []any{}
+	if !opts.IncludeArchived {
+		where = append(where, "archived = 0")
+	}
+	query := `SELECT
+		id, leaf_id, parent_thread_id, forked_from_thread_id, forked_from_entry_id, archived,
+		title, title_status, title_source, title_updated_at, title_error,
+		created_at, updated_at
+		FROM threads`
+	if len(where) > 0 {
+		query += ` WHERE ` + strings.Join(where, ` AND `)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]sessiontree.ThreadMeta, 0)
+	for rows.Next() {
+		meta, err := scanThreadMeta(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, meta)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return sessiontree.ApplyThreadListOptions(out, opts), nil
 }
 
 func (s *Store) UpdateThread(ctx context.Context, meta sessiontree.ThreadMeta) error {
@@ -1124,9 +1185,14 @@ func normalizeLegacyEntries(threadID string, entries []sessiontree.Entry) []sess
 }
 
 func insertThread(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO threads(id, leaf_id, parent_thread_id, forked_from_thread_id, forked_from_entry_id, archived, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
-		meta.ID, meta.LeafID, meta.ParentThreadID, meta.ForkedFromThreadID, meta.ForkedFromEntryID, boolInt(meta.Archived), formatTime(meta.CreatedAt), formatTime(meta.UpdatedAt))
+	_, err := tx.ExecContext(ctx, `INSERT INTO threads(
+		id, leaf_id, parent_thread_id, forked_from_thread_id, forked_from_entry_id, archived,
+		title, title_status, title_source, title_updated_at, title_error,
+		created_at, updated_at
+	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		meta.ID, meta.LeafID, meta.ParentThreadID, meta.ForkedFromThreadID, meta.ForkedFromEntryID, boolInt(meta.Archived),
+		meta.Title, string(meta.TitleStatus), string(meta.TitleSource), formatTime(meta.TitleUpdatedAt), meta.TitleError,
+		formatTime(meta.CreatedAt), formatTime(meta.UpdatedAt))
 	return err
 }
 
@@ -1146,24 +1212,45 @@ func loadTurnLease(ctx context.Context, q sqlRunner, threadID string) (sessiontr
 }
 
 func updateThread(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta) error {
-	_, err := tx.ExecContext(ctx, `UPDATE threads SET leaf_id = ?, parent_thread_id = ?, forked_from_thread_id = ?, forked_from_entry_id = ?, archived = ?, created_at = ?, updated_at = ? WHERE id = ?`,
-		meta.LeafID, meta.ParentThreadID, meta.ForkedFromThreadID, meta.ForkedFromEntryID, boolInt(meta.Archived), formatTime(meta.CreatedAt), formatTime(meta.UpdatedAt), meta.ID)
+	_, err := tx.ExecContext(ctx, `UPDATE threads SET
+		leaf_id = ?, parent_thread_id = ?, forked_from_thread_id = ?, forked_from_entry_id = ?, archived = ?,
+		title = ?, title_status = ?, title_source = ?, title_updated_at = ?, title_error = ?,
+		created_at = ?, updated_at = ?
+		WHERE id = ?`,
+		meta.LeafID, meta.ParentThreadID, meta.ForkedFromThreadID, meta.ForkedFromEntryID, boolInt(meta.Archived),
+		meta.Title, string(meta.TitleStatus), string(meta.TitleSource), formatTime(meta.TitleUpdatedAt), meta.TitleError,
+		formatTime(meta.CreatedAt), formatTime(meta.UpdatedAt), meta.ID)
 	return err
 }
 
 func loadThread(ctx context.Context, q sqlRunner, threadID string) (sessiontree.ThreadMeta, error) {
-	var meta sessiontree.ThreadMeta
-	var archived int
-	var created, updated string
-	err := q.QueryRowContext(ctx, `SELECT id, leaf_id, parent_thread_id, forked_from_thread_id, forked_from_entry_id, archived, created_at, updated_at
-		FROM threads WHERE id = ?`, threadID).Scan(&meta.ID, &meta.LeafID, &meta.ParentThreadID, &meta.ForkedFromThreadID, &meta.ForkedFromEntryID, &archived, &created, &updated)
+	meta, err := scanThreadMeta(q.QueryRowContext(ctx, `SELECT
+		id, leaf_id, parent_thread_id, forked_from_thread_id, forked_from_entry_id, archived,
+		title, title_status, title_source, title_updated_at, title_error,
+		created_at, updated_at
+		FROM threads WHERE id = ?`, threadID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return sessiontree.ThreadMeta{}, sessiontree.ErrThreadNotFound
 	}
+	return meta, err
+}
+
+func scanThreadMeta(scanner rowScanner) (sessiontree.ThreadMeta, error) {
+	var meta sessiontree.ThreadMeta
+	var archived int
+	var titleStatus, titleSource, titleUpdated, created, updated string
+	err := scanner.Scan(
+		&meta.ID, &meta.LeafID, &meta.ParentThreadID, &meta.ForkedFromThreadID, &meta.ForkedFromEntryID, &archived,
+		&meta.Title, &titleStatus, &titleSource, &titleUpdated, &meta.TitleError,
+		&created, &updated,
+	)
 	if err != nil {
 		return sessiontree.ThreadMeta{}, err
 	}
 	meta.Archived = archived != 0
+	meta.TitleStatus = sessiontree.ThreadTitleStatus(titleStatus)
+	meta.TitleSource = sessiontree.ThreadTitleSource(titleSource)
+	meta.TitleUpdatedAt = parseTime(titleUpdated)
 	meta.CreatedAt = parseTime(created)
 	meta.UpdatedAt = parseTime(updated)
 	return meta, nil
@@ -1621,6 +1708,11 @@ CREATE TABLE IF NOT EXISTS threads (
 	forked_from_thread_id TEXT NOT NULL DEFAULT '',
 	forked_from_entry_id TEXT NOT NULL DEFAULT '',
 	archived INTEGER NOT NULL DEFAULT 0,
+	title TEXT NOT NULL DEFAULT '',
+	title_status TEXT NOT NULL DEFAULT '',
+	title_source TEXT NOT NULL DEFAULT '',
+	title_updated_at TEXT NOT NULL DEFAULT '',
+	title_error TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 );

@@ -49,6 +49,8 @@ const (
 	EventTurnAborted   HarnessEventType = "turn_aborted"
 	EventEntryAppended HarnessEventType = "entry_appended"
 	EventRetryStarted  HarnessEventType = "retry_started"
+	EventTitleUpdated  HarnessEventType = "thread_title_updated"
+	EventTitleFailed   HarnessEventType = "thread_title_failed"
 )
 
 type HarnessEvent struct {
@@ -82,6 +84,7 @@ type Options struct {
 	StopHook            engine.StopHook
 	CompactionGenerator compaction.SummaryGenerator
 	CompactionPrompt    compaction.PromptOptions
+	TitleGenerator      TitleGenerator
 	Artifacts           artifact.Store
 	TurnPolicy          TurnPolicy
 	LoopLimits          LoopLimits
@@ -134,14 +137,21 @@ type MoveOptions struct {
 
 type RunOptions struct {
 	TurnID string
+	Labels engine.RunLabels
 }
 
 type RetryOptions struct {
 	Reason string
+	Labels engine.RunLabels
 }
 
 type ThreadSnapshot struct {
 	ID               string          `json:"id"`
+	Title            string          `json:"title,omitempty"`
+	TitleStatus      string          `json:"title_status,omitempty"`
+	TitleSource      string          `json:"title_source,omitempty"`
+	TitleUpdatedAt   time.Time       `json:"title_updated_at,omitempty"`
+	TitleError       string          `json:"title_error,omitempty"`
 	CreatedAt        time.Time       `json:"created_at"`
 	UpdatedAt        time.Time       `json:"updated_at"`
 	Phase            string          `json:"phase"`
@@ -203,6 +213,13 @@ func New(options Options) *AgentHarness {
 	}
 	if options.Artifacts == nil {
 		options.Artifacts = artifact.NewMemoryStore()
+	}
+	if options.TitleGenerator == nil {
+		options.TitleGenerator = ProviderTitleGenerator{
+			Provider:     options.Provider,
+			ProviderName: options.ProviderName,
+			Model:        options.Model,
+		}
 	}
 	if options.Now == nil {
 		options.Now = time.Now
@@ -384,6 +401,11 @@ func (t *Thread) Read(ctx context.Context) (ThreadSnapshot, error) {
 	lifecycle := sessionlifecycle.Derive(journal.Path, journal.Phase)
 	return ThreadSnapshot{
 		ID:               journal.Meta.ID,
+		Title:            journal.Meta.Title,
+		TitleStatus:      string(journal.Meta.TitleStatus),
+		TitleSource:      string(journal.Meta.TitleSource),
+		TitleUpdatedAt:   journal.Meta.TitleUpdatedAt,
+		TitleError:       journal.Meta.TitleError,
 		CreatedAt:        journal.Meta.CreatedAt,
 		UpdatedAt:        journal.Meta.UpdatedAt,
 		Phase:            lifecycle.Phase(),
@@ -472,7 +494,7 @@ func (t *Thread) Retry(ctx context.Context, opts RetryOptions) (TurnResult, erro
 		return TurnResult{}, err
 	}
 	t.harness.emit(HarnessEvent{Type: EventRetryStarted, ThreadID: t.id, EntryID: target.Entry.ID, Metadata: map[string]string{"reason": opts.Reason, "source": target.Source}})
-	return t.runLeased(ctx, "", RunOptions{TurnID: turnID}, &target.Entry)
+	return t.runLeased(ctx, "", RunOptions{TurnID: turnID, Labels: opts.Labels}, &target.Entry)
 }
 
 func (t *Thread) MoveTo(ctx context.Context, entryID string, opts MoveOptions) error {
@@ -544,7 +566,8 @@ func (t *Thread) runEntered(ctx context.Context, input string, opts RunOptions, 
 		defer cancel()
 		_ = t.harness.releaseTurnLease(persistCtx, lease)
 	}()
-	return t.runLeased(ctx, input, RunOptions{TurnID: turnID}, retryUser)
+	opts.TurnID = turnID
+	return t.runLeased(ctx, input, opts, retryUser)
 }
 
 func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, retryUser *sessiontree.Entry) (TurnResult, error) {
@@ -576,6 +599,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	engineOptions.TraceID = runID
 	engineOptions.ProviderName = t.harness.options.ProviderName
 	engineOptions.Model = t.harness.options.Model
+	engineOptions.Labels = opts.Labels
 	engineOptions.ContextPolicy = contextpolicy.Normalize(engineOptions.ContextPolicy)
 	eng, err := engine.New(engine.Config{
 		Provider:     t.harness.options.Provider,
@@ -595,7 +619,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	}
 	projection := &turnProjection{thread: t, ctx: ctx, turnID: turnID, downstream: t.harness.options.Sink}
 	eng.SetSink(projection)
-	result := eng.RunTurn(ctx, engine.RunInput{RunID: runID, SessionID: t.id, TraceID: runID, History: history})
+	result := eng.RunTurn(ctx, engine.RunInput{RunID: runID, SessionID: t.id, TraceID: runID, Labels: opts.Labels, History: history})
 	persistCtx, cancelPersist := turnFinalizationContext(ctx)
 	defer cancelPersist()
 	projection.ctx = persistCtx
@@ -647,7 +671,86 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 		eventType = EventTurnAborted
 	}
 	t.harness.emit(HarnessEvent{Type: eventType, ThreadID: t.id, TurnID: turnID, Status: string(result.Status), Message: result.Output})
+	if result.Err == nil && (result.Status == engine.Completed || result.Status == engine.Waiting) {
+		if err := t.ensureThreadTitle(persistCtx, turnID); err != nil {
+			t.harness.emit(HarnessEvent{Type: EventTitleFailed, ThreadID: t.id, TurnID: turnID, Message: err.Error()})
+		}
+	}
 	return turnResultFromEngine(turnID, result, nil), result.Err
+}
+
+func (t *Thread) ensureThreadTitle(ctx context.Context, turnID string) error {
+	generator := t.harness.options.TitleGenerator
+	if generator == nil {
+		return nil
+	}
+	meta, err := t.harness.options.Repo.Thread(ctx, t.id)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(meta.Title) != "" {
+		return nil
+	}
+	path, err := t.harness.options.Repo.Path(ctx, t.id, meta.LeafID)
+	if err != nil {
+		return err
+	}
+	messages := sessiontree.BuildContext(path, sessiontree.ContextOptions{})
+	result, err := generator.GenerateTitle(ctx, TitleRequest{ThreadID: t.id, TurnID: turnID, Messages: session.CloneMessages(messages)})
+	now := t.harness.now()
+	if err != nil {
+		meta.Title = ""
+		meta.TitleStatus = sessiontree.ThreadTitleFailed
+		meta.TitleSource = ""
+		meta.TitleUpdatedAt = now
+		meta.TitleError = err.Error()
+		if updateErr := updateThreadTitle(ctx, t.harness.options.Repo, meta); updateErr != nil {
+			return updateErr
+		}
+		return err
+	}
+	title := normalizeThreadTitle(result.Title, defaultThreadTitleMaxRunes)
+	if title == "" {
+		err = errors.New("thread title is empty after normalization")
+		meta.Title = ""
+		meta.TitleStatus = sessiontree.ThreadTitleFailed
+		meta.TitleSource = ""
+		meta.TitleUpdatedAt = now
+		meta.TitleError = err.Error()
+		if updateErr := updateThreadTitle(ctx, t.harness.options.Repo, meta); updateErr != nil {
+			return updateErr
+		}
+		return err
+	}
+	source := result.Source
+	if source == "" {
+		source = sessiontree.ThreadTitleSourceProvider
+	}
+	meta.Title = title
+	meta.TitleStatus = sessiontree.ThreadTitleReady
+	meta.TitleSource = source
+	meta.TitleUpdatedAt = now
+	meta.TitleError = ""
+	if err := updateThreadTitle(ctx, t.harness.options.Repo, meta); err != nil {
+		return err
+	}
+	t.harness.emit(HarnessEvent{Type: EventTitleUpdated, ThreadID: t.id, TurnID: turnID, Message: title, Metadata: map[string]string{"source": string(source)}})
+	return nil
+}
+
+func updateThreadTitle(ctx context.Context, repo sessiontree.Repo, meta sessiontree.ThreadMeta) error {
+	current, err := repo.Thread(ctx, meta.ID)
+	if err != nil {
+		return err
+	}
+	meta.LeafID = current.LeafID
+	meta.ParentThreadID = current.ParentThreadID
+	meta.ForkedFromThreadID = current.ForkedFromThreadID
+	meta.ForkedFromEntryID = current.ForkedFromEntryID
+	meta.Archived = current.Archived
+	meta.CreatedAt = current.CreatedAt
+	meta.UpdatedAt = current.UpdatedAt
+	return repo.UpdateThread(ctx, meta)
 }
 
 func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, status engine.Status, err error, diagnostic string) (TurnResult, error) {

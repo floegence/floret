@@ -123,7 +123,8 @@ func TestNewHarnessWithProviderMapsExplicitPoliciesToTurn(t *testing.T) {
 		NoProgressLimit:         8,
 		DuplicateToolLimit:      9,
 	}, scripted, HarnessOptions{
-		Store: sessiontree.NewMemoryRepo(),
+		Store:          sessiontree.NewMemoryRepo(),
+		TitleGenerator: runtimeFixedTitleGenerator{},
 		TurnPolicy: agentharness.TurnPolicy{
 			ContextPolicy: contextpolicy.Policy{
 				ContextWindowTokens: 4096,
@@ -181,8 +182,9 @@ func TestNewHarnessWithProviderEUsesAgentProfilePrompt(t *testing.T) {
 			SystemPrompt: "You are Acme Agent.",
 		},
 	}, scripted, HarnessOptions{
-		Store: sessiontree.NewMemoryRepo(),
-		NewID: deterministicIDs(),
+		Store:          sessiontree.NewMemoryRepo(),
+		TitleGenerator: runtimeFixedTitleGenerator{},
+		NewID:          deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -242,10 +244,11 @@ func TestPublicHostAPICompilesAndRunsWithSQLiteCustomProviderAndTool(t *testing.
 		Model:        "fake-model",
 		SystemPrompt: "test",
 	}, scripted, HarnessOptions{
-		Store:    store,
-		Tools:    registry,
-		NewID:    deterministicIDs(),
-		Approver: allowRuntimeTools,
+		Store:          store,
+		Tools:          registry,
+		TitleGenerator: runtimeFixedTitleGenerator{},
+		NewID:          deterministicIDs(),
+		Approver:       allowRuntimeTools,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -375,8 +378,9 @@ func TestNewHarnessWithProviderERegistersSkillsAndPromptMaterial(t *testing.T) {
 		Model:        "fake-model",
 		SystemPrompt: "base prompt",
 	}, scripted, HarnessOptions{
-		Store: sessiontree.NewMemoryRepo(),
-		Sink:  rec,
+		Store:          sessiontree.NewMemoryRepo(),
+		Sink:           rec,
+		TitleGenerator: runtimeFixedTitleGenerator{},
 		Capability: CapabilityOptions{
 			SkillsEnabled: true,
 			SkillSources:  []skills.Source{{Root: root, Kind: skills.SourceRepo, Enabled: true}},
@@ -456,9 +460,10 @@ func TestNewHarnessWithProviderERegistersMCPToolAsLocalTool(t *testing.T) {
 		Model:        "fake-model",
 		SystemPrompt: "test",
 	}, scripted, HarnessOptions{
-		Store:    sessiontree.NewMemoryRepo(),
-		Sink:     rec,
-		Approver: allowRuntimeTools,
+		Store:          sessiontree.NewMemoryRepo(),
+		Sink:           rec,
+		Approver:       allowRuntimeTools,
+		TitleGenerator: runtimeFixedTitleGenerator{},
 		Capability: CapabilityOptions{MCPServers: []mcp.ServerConfig{{
 			Name:      "docs",
 			Transport: mcp.TransportStreamableHTTP,
@@ -503,6 +508,12 @@ func TestNewHarnessWithProviderERegistersMCPToolAsLocalTool(t *testing.T) {
 
 type runtimeEchoArgs struct {
 	Text string `json:"text"`
+}
+
+type runtimeFixedTitleGenerator struct{}
+
+func (runtimeFixedTitleGenerator) GenerateTitle(context.Context, agentharness.TitleRequest) (agentharness.TitleResult, error) {
+	return agentharness.TitleResult{Title: "Runtime test title", Source: sessiontree.ThreadTitleSourceProvider}, nil
 }
 
 func deterministicIDs() func(string) string {

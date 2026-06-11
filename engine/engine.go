@@ -683,7 +683,13 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			e.emit(opts, event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args, Metadata: map[string]any{"batch_index": i, "batch_size": len(calls)}})
 		}
 		toolStarted := time.Now()
-		results := e.tools.RunBatchWithOptions(ctx, calls, e.approverWithEvents(opts, step), tools.RunOptions{RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Labels: observabilityLabels(opts.Labels)})
+		results := e.tools.RunBatchWithOptions(ctx, calls, e.approverWithEvents(opts, step), tools.RunOptions{
+			RunID:       opts.RunID,
+			SessionID:   opts.SessionID,
+			Step:        step,
+			Labels:      observabilityLabels(opts.Labels),
+			HostContext: opts.Labels.Host,
+		})
 		toolLatency := time.Since(toolStarted).Milliseconds()
 		for i, result := range results {
 			policy := tools.MergeOutputPolicy(e.tools.OutputPolicyFor(result.Name), result.OutputPolicy)

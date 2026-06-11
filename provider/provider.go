@@ -34,6 +34,7 @@ type Request struct {
 	RequestEstimate  contextpolicy.RequestEstimate
 	ContextPressure  contextpolicy.ContextPressure
 	MaxOutputTokens  int64
+	DisableReasoning bool
 	PreviousState    *State
 }
 

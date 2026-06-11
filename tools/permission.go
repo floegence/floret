@@ -39,6 +39,7 @@ type ApprovalRequest struct {
 	Resources     []ResourceRef
 	Effects       []Effect
 	Labels        map[string]string
+	HostContext   map[string]string
 	ReadOnly      bool
 	Destructive   bool
 	OpenWorld     bool

@@ -57,6 +57,91 @@ func TestMemoryRepoAppendUpdatesLeafAndBuildContextFiltersEntries(t *testing.T) 
 	}
 }
 
+func TestMemoryRepoThreadTitleMetadataDoesNotChangeUpdatedAt(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemoryRepo()
+	created := time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC)
+	meta, err := repo.CreateThread(ctx, ThreadMeta{ID: "thread", CreatedAt: created})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.Title = "Plan release checks"
+	meta.TitleStatus = ThreadTitleReady
+	meta.TitleSource = ThreadTitleSourceProvider
+	meta.TitleUpdatedAt = created.Add(time.Minute)
+	if err := repo.UpdateThread(ctx, meta); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.Thread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != meta.Title || got.TitleStatus != ThreadTitleReady || got.TitleSource != ThreadTitleSourceProvider || !got.TitleUpdatedAt.Equal(meta.TitleUpdatedAt) {
+		t.Fatalf("title metadata = %#v", got)
+	}
+	if !got.UpdatedAt.Equal(created) {
+		t.Fatalf("title update should not reorder thread updated_at: %#v", got)
+	}
+}
+
+func TestListThreadsOrdersByCreatedAtWithStableCursor(t *testing.T) {
+	ctx := context.Background()
+	for name, repo := range map[string]Repo{
+		"memory": NewMemoryRepo(),
+		"file":   NewFileRepo(t.TempDir()),
+	} {
+		t.Run(name, func(t *testing.T) {
+			older := time.Date(2026, 6, 5, 9, 0, 0, 0, time.UTC)
+			newer := older.Add(time.Hour)
+			sameNewest := newer.Add(time.Hour)
+			for _, meta := range []ThreadMeta{
+				{ID: "older", CreatedAt: older},
+				{ID: "beta", CreatedAt: sameNewest},
+				{ID: "alpha", CreatedAt: sameNewest},
+				{ID: "newer", CreatedAt: newer},
+				{ID: "archived", CreatedAt: sameNewest.Add(time.Hour), Archived: true},
+			} {
+				if _, err := repo.CreateThread(ctx, meta); err != nil {
+					t.Fatalf("CreateThread(%s): %v", meta.ID, err)
+				}
+			}
+			updatedOlder, err := repo.Thread(ctx, "older")
+			if err != nil {
+				t.Fatal(err)
+			}
+			updatedOlder.UpdatedAt = sameNewest.Add(24 * time.Hour)
+			if err := repo.UpdateThread(ctx, updatedOlder); err != nil {
+				t.Fatal(err)
+			}
+
+			firstPage, err := ListThreads(ctx, repo, ListThreadsOptions{Limit: 2})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := threadIDs(firstPage); !slices.Equal(got, []string{"alpha", "beta"}) {
+				t.Fatalf("first page ids=%v, want stable created_at order", got)
+			}
+			secondPage, err := ListThreads(ctx, repo, ListThreadsOptions{
+				AfterCreatedAt: firstPage[len(firstPage)-1].CreatedAt,
+				AfterID:        firstPage[len(firstPage)-1].ID,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := threadIDs(secondPage); !slices.Equal(got, []string{"newer", "older"}) {
+				t.Fatalf("second page ids=%v, want cursor after created_at/id", got)
+			}
+			withArchived, err := ListThreads(ctx, repo, ListThreadsOptions{IncludeArchived: true, Limit: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := threadIDs(withArchived); !slices.Equal(got, []string{"archived"}) {
+				t.Fatalf("archived ids=%v, want archived included at created_at position", got)
+			}
+		})
+	}
+}
+
 func TestFileRepoReadsLongJSONLEntries(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -590,13 +675,28 @@ func TestFileRepoPersistsThreadLeafEntriesAndFork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	meta, err := repo.Thread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := meta.UpdatedAt
+	meta.Title = "Persist title metadata"
+	meta.TitleStatus = ThreadTitleReady
+	meta.TitleSource = ThreadTitleSourceProvider
+	meta.TitleUpdatedAt = updated.Add(time.Minute)
+	if err := repo.UpdateThread(ctx, meta); err != nil {
+		t.Fatal(err)
+	}
 	reloaded := NewFileRepo(root)
-	meta, err := reloaded.Thread(ctx, "thread")
+	meta, err = reloaded.Thread(ctx, "thread")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if meta.LeafID != user.ID {
 		t.Fatalf("reloaded leaf = %q, want %q", meta.LeafID, user.ID)
+	}
+	if meta.Title != "Persist title metadata" || meta.TitleStatus != ThreadTitleReady || meta.TitleSource != ThreadTitleSourceProvider || !meta.UpdatedAt.Equal(updated) {
+		t.Fatalf("reloaded title metadata = %#v", meta)
 	}
 	path, err := reloaded.Path(ctx, "thread", "")
 	if err != nil {
@@ -823,4 +923,12 @@ func pathContains(path []Entry, id string) bool {
 		}
 	}
 	return false
+}
+
+func threadIDs(threads []ThreadMeta) []string {
+	out := make([]string, 0, len(threads))
+	for _, thread := range threads {
+		out = append(out, thread.ID)
+	}
+	return out
 }

@@ -335,28 +335,58 @@ func TestAskToolIsExposedAndRequiresApprover(t *testing.T) {
 func TestDefinePassesRunSessionStepCWDAndTypedArgs(t *testing.T) {
 	reg := NewRegistry()
 	var seen Invocation[testArgs]
+	var approvalHost map[string]string
+	opts := RunOptions{
+		RunID:       "run",
+		SessionID:   "session",
+		Step:        3,
+		CWD:         "/repo",
+		Labels:      map[string]string{"correlation.turn": "turn-1"},
+		HostContext: map[string]string{"target_id": "env-a", "surface": "desktop"},
+	}
 	if err := reg.Register(Define[testArgs](
-		Definition{Name: "inspect", InputSchema: StrictObject(map[string]any{"value": String("")}, []string{"value"}), Permission: PermissionSpec{Mode: PermissionAllow}},
+		Definition{Name: "inspect", InputSchema: StrictObject(map[string]any{"value": String("")}, []string{"value"}), Permission: PermissionSpec{Mode: PermissionAsk}},
 		nil,
 		func(inv Invocation[testArgs]) ([]ResourceRef, error) {
 			if inv.RunID != "run" || inv.SessionID != "session" || inv.Step != 3 || inv.CWD != "/repo" || inv.Args.Value != "typed" {
 				t.Fatalf("resource invocation = %#v", inv)
 			}
+			if inv.HostContext["target_id"] != "env-a" || inv.Labels["correlation.turn"] != "turn-1" {
+				t.Fatalf("resource invocation context = %#v labels=%#v", inv.HostContext, inv.Labels)
+			}
+			inv.HostContext["target_id"] = "mutated-by-resource"
 			return nil, nil
 		},
 		func(_ context.Context, inv Invocation[testArgs]) (Result, error) {
+			if inv.HostContext["target_id"] != "env-a" || inv.Labels["correlation.turn"] != "turn-1" {
+				t.Fatalf("handler context = %#v labels=%#v", inv.HostContext, inv.Labels)
+			}
 			seen = inv
+			seen.HostContext["target_id"] = "mutated-by-handler"
 			return Result{Text: inv.Args.Value}, nil
 		},
 	)); err != nil {
 		t.Fatal(err)
 	}
-	got := reg.RunWithOptions(context.Background(), provider.ToolCall{ID: "call", Name: "inspect", Args: `{"value":"typed"}`}, nil, RunOptions{RunID: "run", SessionID: "session", Step: 3, CWD: "/repo"})
+	got := reg.RunWithOptions(context.Background(), provider.ToolCall{ID: "call", Name: "inspect", Args: `{"value":"typed"}`}, func(_ context.Context, req ApprovalRequest) (PermissionDecision, error) {
+		approvalHost = req.HostContext
+		if req.HostContext["target_id"] != "env-a" || req.Labels["correlation.turn"] != "turn-1" {
+			t.Fatalf("approval context = %#v labels=%#v", req.HostContext, req.Labels)
+		}
+		req.HostContext["target_id"] = "mutated-by-approval"
+		return PermissionDecisionAllow, nil
+	}, opts)
 	if got.IsError || got.Text != "typed" {
 		t.Fatalf("result = %#v", got)
 	}
 	if seen.CallID != "call" || seen.Name != "inspect" || seen.RawArgs != `{"value":"typed"}` || seen.RunID != "run" || seen.SessionID != "session" || seen.Step != 3 || seen.CWD != "/repo" || seen.Args.Value != "typed" {
 		t.Fatalf("handler invocation = %#v", seen)
+	}
+	if seen.Labels["correlation.turn"] != "turn-1" || approvalHost["target_id"] != "mutated-by-approval" {
+		t.Fatalf("context snapshots were not captured: seen=%#v approval=%#v", seen, approvalHost)
+	}
+	if opts.HostContext["target_id"] != "env-a" {
+		t.Fatalf("handler should not mutate run options host context: %#v", opts.HostContext)
 	}
 }
 

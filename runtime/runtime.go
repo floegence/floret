@@ -30,6 +30,7 @@ type HarnessOptions struct {
 	Approver         tools.Approver
 	StopHook         engine.StopHook
 	CompactionPrompt compaction.PromptOptions
+	TitleGenerator   agentharness.TitleGenerator
 	TurnPolicy       agentharness.TurnPolicy
 	LoopLimits       agentharness.LoopLimits
 	NewID            func(string) string
@@ -132,6 +133,7 @@ func NewHarnessWithProviderE(cfg config.Config, p provider.Provider, opts Harnes
 		Approver:         opts.Approver,
 		StopHook:         opts.StopHook,
 		CompactionPrompt: opts.CompactionPrompt,
+		TitleGenerator:   opts.TitleGenerator,
 		Artifacts:        artifacts,
 		TurnPolicy:       turnPolicy,
 		LoopLimits:       loopLimits,

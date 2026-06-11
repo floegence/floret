@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/floret/agentharness"
 	"github.com/floegence/floret/provider"
 	"github.com/floegence/floret/provider/cache"
 	"github.com/floegence/floret/session"
@@ -84,6 +85,7 @@ func (p *observingProvider) ToolRaw(def cache.ToolDefinition) (string, string, e
 }
 
 func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
+	observeConversation := observeProviderRequest(req)
 	observedRequest := ObservedProviderRequest{
 		RunID:                   req.RunID,
 		SessionID:               observedSessionID(req),
@@ -118,10 +120,12 @@ func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<
 		},
 	}
 	p.mu.Lock()
-	p.reqs = append(p.reqs, observedRequest)
+	if observeConversation {
+		p.reqs = append(p.reqs, observedRequest)
+	}
 	sink := p.sink
 	p.mu.Unlock()
-	if sink != nil {
+	if sink != nil && observeConversation {
 		reqCopy := observedRequest
 		status := contextStatusFromProviderRequest(observedRequest)
 		sink.EmitAgentStream(AgentStreamEvent{
@@ -150,7 +154,9 @@ func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<
 	go func() {
 		defer close(out)
 		for ev := range stream {
-			p.recordEvent(req.RunID, observedRequest.SessionID, req.Step, ev)
+			if observeConversation {
+				p.recordEvent(req.RunID, observedRequest.SessionID, req.Step, ev)
+			}
 			select {
 			case <-ctx.Done():
 				return
@@ -159,6 +165,10 @@ func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<
 		}
 	}()
 	return out, nil
+}
+
+func observeProviderRequest(req provider.Request) bool {
+	return req.LogicalRequestID != agentharness.ThreadTitleLogicalRequestID
 }
 
 func (p *observingProvider) Snapshot() AgentObservation {

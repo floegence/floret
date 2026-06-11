@@ -900,6 +900,9 @@ func TestRunTurnOverridesLabelsAndProviderStateWithoutProviderPromptLeak(t *test
 		nil,
 		nil,
 		func(_ context.Context, inv tools.Invocation[stringArgs]) (tools.Result, error) {
+			if inv.HostContext["surface"] != "desktop" || inv.Labels["host.surface"] != "desktop" || inv.Labels["correlation.turn"] != "turn-value" {
+				t.Fatalf("tool invocation context = %#v labels=%#v", inv.HostContext, inv.Labels)
+			}
 			return tools.Result{Text: "content"}, nil
 		},
 	))

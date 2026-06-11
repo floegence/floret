@@ -78,7 +78,7 @@ function renderSessionRail(sessions, activeSession) {
   const filter = state.sessionFilter.trim().toLowerCase();
   const filtered = (sessions || []).filter((session) => {
     if (!filter) return true;
-    return [session.id, session.status, session.profile?.model, (session.selected_tools || []).join(" ")].join(" ").toLowerCase().includes(filter);
+    return [session.title, session.id, session.status, session.profile?.model, (session.selected_tools || []).join(" ")].join(" ").toLowerCase().includes(filter);
   });
   return `
     <aside class="session-rail">
@@ -100,12 +100,14 @@ function renderSessionRail(sessions, activeSession) {
 function renderSessionRow(session, activeID) {
   const turns = session.turns?.length || 0;
   const exactTime = formatLocalTime(session.updated_at);
+  const title = sessionTitle(session);
   return `
     <article class="session-row ${session.id === activeID ? "active" : ""}">
       <button class="session-select" type="button" data-session-select-id="${escapeHTML(session.id)}">
-        <strong>${escapeHTML(shortID(session.id))}</strong>
+        <strong>${escapeHTML(title)}</strong>
         <span class="row-meta">${escapeHTML(session.status || "idle")} · ${turns} turn${turns === 1 ? "" : "s"} · ${escapeHTML(session.profile?.model || "model")}</span>
         <span class="row-pills">
+          <span class="tiny-pill" title="${escapeHTML(session.id)}">${escapeHTML(shortID(session.id))}</span>
           <span class="tiny-pill">${escapeHTML((session.selected_tools || []).length)} tools</span>
           <span class="tiny-pill" title="${escapeHTML(exactTime)}">${escapeHTML(relativeTime(session.updated_at))}</span>
         </span>
@@ -135,11 +137,12 @@ function renderWorkspace(session, result) {
   const canAppend = session.can_append_message && !state.running;
   const composerDraft = state.composerDrafts[session.id] || "";
   const contextStatus = latestContextStatus(session, result);
+  const title = sessionTitle(session);
   return `
     <section class="workspace">
       <header class="workspace-head">
         <div class="workspace-title">
-          <h1>${escapeHTML(shortID(session.id))}</h1>
+          <h1>${escapeHTML(title)}</h1>
           <p>${escapeHTML(profileLabel(session.profile))} · ${escapeHTML(toolLabelList(session.selected_tools || []))}</p>
         </div>
         <div class="header-meta">
@@ -169,6 +172,11 @@ function renderWorkspace(session, result) {
       </form>
     </section>
   `;
+}
+
+function sessionTitle(session) {
+  const title = (session?.title || "").trim();
+  return title || shortID(session?.id || "");
 }
 
 function renderTimeline(session, result) {

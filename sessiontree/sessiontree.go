@@ -51,6 +51,20 @@ const (
 	TurnAborted   TurnMarkerStatus = "aborted"
 )
 
+type ThreadTitleStatus string
+
+const (
+	ThreadTitleReady  ThreadTitleStatus = "ready"
+	ThreadTitleFailed ThreadTitleStatus = "failed"
+)
+
+type ThreadTitleSource string
+
+const (
+	ThreadTitleSourceProvider ThreadTitleSource = "provider"
+	ThreadTitleSourceHost     ThreadTitleSource = "host"
+)
+
 var (
 	ErrThreadNotFound = errors.New("session tree thread not found")
 	ErrEntryNotFound  = errors.New("session tree entry not found")
@@ -72,14 +86,19 @@ func (e AppendCommittedError) Unwrap() error {
 }
 
 type ThreadMeta struct {
-	ID                 string    `json:"id"`
-	LeafID             string    `json:"leaf_id,omitempty"`
-	ParentThreadID     string    `json:"parent_thread_id,omitempty"`
-	ForkedFromThreadID string    `json:"forked_from_thread_id,omitempty"`
-	ForkedFromEntryID  string    `json:"forked_from_entry_id,omitempty"`
-	Archived           bool      `json:"archived,omitempty"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	ID                 string            `json:"id"`
+	LeafID             string            `json:"leaf_id,omitempty"`
+	ParentThreadID     string            `json:"parent_thread_id,omitempty"`
+	ForkedFromThreadID string            `json:"forked_from_thread_id,omitempty"`
+	ForkedFromEntryID  string            `json:"forked_from_entry_id,omitempty"`
+	Archived           bool              `json:"archived,omitempty"`
+	Title              string            `json:"title,omitempty"`
+	TitleStatus        ThreadTitleStatus `json:"title_status,omitempty"`
+	TitleSource        ThreadTitleSource `json:"title_source,omitempty"`
+	TitleUpdatedAt     time.Time         `json:"title_updated_at,omitempty"`
+	TitleError         string            `json:"title_error,omitempty"`
+	CreatedAt          time.Time         `json:"created_at"`
+	UpdatedAt          time.Time         `json:"updated_at"`
 }
 
 type Entry struct {
@@ -178,6 +197,81 @@ type Repo interface {
 	Path(context.Context, string, string) ([]Entry, error)
 	MoveLeaf(context.Context, string, string) error
 	Fork(context.Context, ForkOptions) (ThreadMeta, error)
+}
+
+type ThreadListRepo interface {
+	ListThreads(context.Context, ListThreadsOptions) ([]ThreadMeta, error)
+}
+
+type ListThreadsOptions struct {
+	IncludeArchived bool
+	Limit           int
+	AfterCreatedAt  time.Time
+	AfterID         string
+}
+
+func ListThreads(ctx context.Context, repo Repo, opts ListThreadsOptions) ([]ThreadMeta, error) {
+	if repo == nil {
+		return nil, errors.New("session tree repo is required")
+	}
+	listRepo, ok := repo.(ThreadListRepo)
+	if !ok {
+		return nil, errors.New("session tree repo does not support thread listing")
+	}
+	threads, err := listRepo.ListThreads(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	return ApplyThreadListOptions(threads, opts), nil
+}
+
+func SortThreadsByCreatedAtDesc(threads []ThreadMeta) {
+	slices.SortStableFunc(threads, func(left, right ThreadMeta) int {
+		switch {
+		case left.CreatedAt.After(right.CreatedAt):
+			return -1
+		case right.CreatedAt.After(left.CreatedAt):
+			return 1
+		case left.ID < right.ID:
+			return -1
+		case left.ID > right.ID:
+			return 1
+		default:
+			return 0
+		}
+	})
+}
+
+func ApplyThreadListOptions(threads []ThreadMeta, opts ListThreadsOptions) []ThreadMeta {
+	SortThreadsByCreatedAtDesc(threads)
+	out := threads[:0]
+	for _, meta := range threads {
+		if meta.Archived && !opts.IncludeArchived {
+			continue
+		}
+		if !threadAfterListCursor(meta, opts) {
+			continue
+		}
+		out = append(out, meta)
+		if opts.Limit > 0 && len(out) >= opts.Limit {
+			break
+		}
+	}
+	return out
+}
+
+func threadAfterListCursor(meta ThreadMeta, opts ListThreadsOptions) bool {
+	afterID := strings.TrimSpace(opts.AfterID)
+	if opts.AfterCreatedAt.IsZero() || afterID == "" {
+		return true
+	}
+	if meta.CreatedAt.Before(opts.AfterCreatedAt) {
+		return true
+	}
+	if meta.CreatedAt.Equal(opts.AfterCreatedAt) && meta.ID > afterID {
+		return true
+	}
+	return false
 }
 
 type TurnLease struct {
@@ -292,6 +386,16 @@ func (r *MemoryRepo) Thread(_ context.Context, threadID string) (ThreadMeta, err
 		return ThreadMeta{}, ErrThreadNotFound
 	}
 	return meta, nil
+}
+
+func (r *MemoryRepo) ListThreads(_ context.Context, opts ListThreadsOptions) ([]ThreadMeta, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]ThreadMeta, 0, len(r.threads))
+	for _, meta := range r.threads {
+		out = append(out, meta)
+	}
+	return ApplyThreadListOptions(out, opts), nil
 }
 
 func (r *MemoryRepo) UpdateThread(_ context.Context, meta ThreadMeta) error {
@@ -620,6 +724,15 @@ func (r *FileRepo) Thread(ctx context.Context, threadID string) (ThreadMeta, err
 		return ThreadMeta{}, err
 	}
 	return r.mem.Thread(ctx, threadID)
+}
+
+func (r *FileRepo) ListThreads(ctx context.Context, opts ListThreadsOptions) ([]ThreadMeta, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.load(ctx); err != nil {
+		return nil, err
+	}
+	return r.mem.ListThreads(ctx, opts)
 }
 
 func (r *FileRepo) UpdateThread(ctx context.Context, meta ThreadMeta) error {

@@ -55,6 +55,22 @@ func TestSQLiteStorePersistsSessionTreeAndForkAfterReopen(t *testing.T) {
 	if meta.LeafID != second.ID {
 		t.Fatalf("leaf = %q, want %q", meta.LeafID, second.ID)
 	}
+	titleUpdatedAt := meta.UpdatedAt.Add(time.Minute)
+	updatedAt := meta.UpdatedAt
+	meta.Title = "Persist title metadata"
+	meta.TitleStatus = sessiontree.ThreadTitleReady
+	meta.TitleSource = sessiontree.ThreadTitleSourceProvider
+	meta.TitleUpdatedAt = titleUpdatedAt
+	if err := store.UpdateThread(ctx, meta); err != nil {
+		t.Fatal(err)
+	}
+	meta, err = store.Thread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Title != "Persist title metadata" || meta.TitleStatus != sessiontree.ThreadTitleReady || meta.TitleSource != sessiontree.ThreadTitleSourceProvider || !meta.TitleUpdatedAt.Equal(titleUpdatedAt) || !meta.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("thread title metadata = %#v", meta)
+	}
 	pathEntries, err := store.Path(ctx, "thread", "")
 	if err != nil {
 		t.Fatal(err)
@@ -130,6 +146,58 @@ func TestSQLiteStoreRejectsDuplicateThreadAndForkIDs(t *testing.T) {
 	}
 	if source.LeafID == "" {
 		t.Fatalf("duplicate create overwrote source leaf: %#v", source)
+	}
+}
+
+func TestSQLiteStoreListThreadsUsesStableCreatedAtOrder(t *testing.T) {
+	ctx := context.Background()
+	store, _ := openSQLiteStoreForTest(t)
+	older := time.Date(2026, 6, 5, 9, 0, 0, 0, time.UTC)
+	newer := older.Add(time.Hour)
+	sameNewest := newer.Add(time.Hour)
+	for _, meta := range []sessiontree.ThreadMeta{
+		{ID: "older", CreatedAt: older},
+		{ID: "beta", CreatedAt: sameNewest},
+		{ID: "alpha", CreatedAt: sameNewest},
+		{ID: "newer", CreatedAt: newer},
+		{ID: "archived", CreatedAt: sameNewest.Add(time.Hour), Archived: true},
+	} {
+		if _, err := store.CreateThread(ctx, meta); err != nil {
+			t.Fatalf("CreateThread(%s): %v", meta.ID, err)
+		}
+	}
+	updatedOlder, err := store.Thread(ctx, "older")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedOlder.UpdatedAt = sameNewest.Add(24 * time.Hour)
+	if err := store.UpdateThread(ctx, updatedOlder); err != nil {
+		t.Fatal(err)
+	}
+
+	firstPage, err := store.ListThreads(ctx, sessiontree.ListThreadsOptions{Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sqliteThreadIDs(firstPage); !slices.Equal(got, []string{"alpha", "beta"}) {
+		t.Fatalf("first page ids=%v, want stable created_at order", got)
+	}
+	secondPage, err := store.ListThreads(ctx, sessiontree.ListThreadsOptions{
+		AfterCreatedAt: firstPage[len(firstPage)-1].CreatedAt,
+		AfterID:        firstPage[len(firstPage)-1].ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sqliteThreadIDs(secondPage); !slices.Equal(got, []string{"newer", "older"}) {
+		t.Fatalf("second page ids=%v, want cursor after created_at/id", got)
+	}
+	withArchived, err := store.ListThreads(ctx, sessiontree.ListThreadsOptions{IncludeArchived: true, Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sqliteThreadIDs(withArchived); !slices.Equal(got, []string{"archived"}) {
+		t.Fatalf("archived ids=%v, want archived included at created_at position", got)
 	}
 }
 
@@ -680,7 +748,7 @@ func TestSQLiteStorePromptCacheConcurrentSessionsAreIsolated(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreMigratesSchemaV1ToV3(t *testing.T) {
+func TestSQLiteStoreMigratesSchemaV1ToV4(t *testing.T) {
 	ctx := context.Background()
 	store, dbPath := openSQLiteStoreForTest(t)
 	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread"}); err != nil {
@@ -704,14 +772,25 @@ func TestSQLiteStoreMigratesSchemaV1ToV3(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != "3" {
-		t.Fatalf("schema version = %q, want 3", version)
+	if version != "4" {
+		t.Fatalf("schema version = %q, want 4", version)
 	}
 	if err := store.AcquireTurnLease(ctx, sessiontree.TurnLease{ThreadID: "thread", TurnID: "turn", OwnerID: "owner"}); err != nil {
 		t.Fatalf("migrated store should support turn leases: %v", err)
 	}
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO entries(thread_id, id, ordinal, type, created_at, kept_user_entry_ids_json) VALUES('thread', 'entry', 1, 'compaction', 'now', '["u1"]')`); err != nil {
 		t.Fatalf("migrated store should support kept user ids column: %v", err)
+	}
+	meta, err := store.Thread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.Title = "Migrated title"
+	meta.TitleStatus = sessiontree.ThreadTitleReady
+	meta.TitleSource = sessiontree.ThreadTitleSourceProvider
+	meta.TitleUpdatedAt = time.Now().UTC()
+	if err := store.UpdateThread(ctx, meta); err != nil {
+		t.Fatalf("migrated store should support title columns: %v", err)
 	}
 }
 
@@ -856,6 +935,14 @@ func pathContainsID(entries []sessiontree.Entry, id string) bool {
 	return slices.ContainsFunc(entries, func(entry sessiontree.Entry) bool {
 		return entry.ID == id
 	})
+}
+
+func sqliteThreadIDs(threads []sessiontree.ThreadMeta) []string {
+	out := make([]string, 0, len(threads))
+	for _, thread := range threads {
+		out = append(out, thread.ID)
+	}
+	return out
 }
 
 func writeJSONLines(path string, values ...any) error {

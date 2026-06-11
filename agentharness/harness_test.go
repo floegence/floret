@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/floegence/floret/engine"
 	"github.com/floegence/floret/event"
@@ -60,6 +61,173 @@ func TestThreadRunPersistsTurnEntriesAndContext(t *testing.T) {
 	}
 	if len(snap.Context) != 2 || snap.Context[0].Content != "do it" || snap.Context[1].Content != "done text" || snap.Context[1].ToolName != "" {
 		t.Fatalf("provider-visible context = %#v", snap.Context)
+	}
+}
+
+func TestThreadRunPassesHostLabelsToLocalTools(t *testing.T) {
+	ctx := context.Background()
+	p := scriptharness.NewScriptedProvider(
+		scriptharness.Step(scriptharness.Tool("target-1", "target_echo", `{"value":"inspect"}`), scriptharness.DoneReason("tool_calls")),
+		scriptharness.Step(scriptharness.Text("done text"), scriptharness.Done()),
+	)
+	h := newTestHarness(p, sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
+	mustRegister(h.options.Tools, tools.Define[stringArgs](
+		tools.Definition{
+			Name:        "target_echo",
+			InputSchema: tools.StrictObject(map[string]any{"value": tools.String("test value")}, []string{"value"}),
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+		},
+		nil,
+		nil,
+		func(_ context.Context, inv tools.Invocation[stringArgs]) (tools.Result, error) {
+			if inv.HostContext["target_id"] != "target-123" || inv.Labels["host.target_id"] != "target-123" || inv.Labels["correlation.message_id"] != "message-456" {
+				t.Fatalf("tool invocation context = %#v labels=%#v", inv.HostContext, inv.Labels)
+			}
+			return tools.Result{Text: inv.Args.Value + ":" + inv.HostContext["target_id"]}, nil
+		},
+	))
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := thread.Run(ctx, "do it", RunOptions{
+		TurnID: "turn-1",
+		Labels: engine.RunLabels{
+			Correlation: map[string]string{"message_id": "message-456"},
+			Host:        map[string]string{"target_id": "target-123", "surface": "desktop"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != engine.Completed || result.Output != "done text" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestThreadRunGeneratesTitleMetadataAfterSuccessfulTurn(t *testing.T) {
+	ctx := context.Background()
+	rec := &HarnessRecorder{}
+	p := scriptharness.NewScriptedProvider(
+		scriptharness.Step(scriptharness.Text("Use a focused test plan for every tool."), scriptharness.Done()),
+		scriptharness.Step(scriptharness.Text("Streaming and tool-call validation"), scriptharness.Done()),
+	)
+	h := New(Options{
+		Provider:     p,
+		ProviderName: "fake",
+		Model:        "fake-model",
+		SystemPrompt: "You are Floret.",
+		Tools:        tools.NewRegistry(),
+		Repo:         sessiontree.NewMemoryRepo(),
+		PromptStore:  cache.NewMemoryStore(),
+		LoopLimits: LoopLimits{
+			MaxEmptyProviderRetries: 1,
+			NoProgressLimit:         2,
+			DuplicateToolLimit:      3,
+		},
+	})
+	h.options.HarnessSink = rec
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := thread.Run(ctx, "Verify streaming output and tool calls", RunOptions{TurnID: "turn-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != engine.Completed {
+		t.Fatalf("result = %#v", result)
+	}
+	snap, err := thread.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.TitleStatus != string(sessiontree.ThreadTitleReady) || snap.TitleSource != string(sessiontree.ThreadTitleSourceProvider) {
+		t.Fatalf("snapshot title = %#v", snap)
+	}
+	if snap.Title == "" || utf8.RuneCountInString(snap.Title) > defaultThreadTitleMaxRunes {
+		t.Fatalf("snapshot title %q should be non-empty and at most %d runes", snap.Title, defaultThreadTitleMaxRunes)
+	}
+	if len(p.Requests) != 2 || p.Requests[1].LogicalRequestID != "thread_title" || p.Requests[1].RunID != "turn-1:thread-title" || !p.Requests[1].DisableReasoning {
+		t.Fatalf("title provider request missing: %#v", p.Requests)
+	}
+	if len(p.Requests[1].Messages) != 2 || !strings.Contains(p.Requests[1].Messages[1].Content, "Verify streaming output and tool calls") {
+		t.Fatalf("title provider prompt = %#v", p.Requests[1].Messages)
+	}
+	meta, err := h.options.Repo.Thread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Title != snap.Title || meta.TitleUpdatedAt.IsZero() || meta.UpdatedAt.Equal(meta.TitleUpdatedAt) {
+		t.Fatalf("thread title meta = %#v", meta)
+	}
+	if !slices.ContainsFunc(rec.Snapshot(), func(ev HarnessEvent) bool {
+		return ev.Type == EventTitleUpdated && ev.ThreadID == "thread" && ev.TurnID == "turn-1" && ev.Message == snap.Title
+	}) {
+		t.Fatalf("title update event missing: %#v", rec.Snapshot())
+	}
+}
+
+func TestThreadRunRecordsTitleGenerationFailureWithoutFailingTurn(t *testing.T) {
+	ctx := context.Background()
+	rec := &HarnessRecorder{}
+	p := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done text"), scriptharness.Done()))
+	h := newTestHarness(p, sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
+	h.options.HarnessSink = rec
+	h.options.TitleGenerator = failingTitleGenerator{err: errors.New("summary provider unavailable")}
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := thread.Run(ctx, "do it", RunOptions{TurnID: "turn-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != engine.Completed {
+		t.Fatalf("result = %#v", result)
+	}
+	meta, err := h.options.Repo.Thread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Title != "" || meta.TitleStatus != sessiontree.ThreadTitleFailed || !strings.Contains(meta.TitleError, "summary provider unavailable") {
+		t.Fatalf("failed title metadata = %#v", meta)
+	}
+	if !slices.ContainsFunc(rec.Snapshot(), func(ev HarnessEvent) bool {
+		return ev.Type == EventTitleFailed && strings.Contains(ev.Message, "summary provider unavailable")
+	}) {
+		t.Fatalf("title failure event missing: %#v", rec.Snapshot())
+	}
+}
+
+func TestThreadRunDoesNotOverwriteExistingTitle(t *testing.T) {
+	ctx := context.Background()
+	p := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done text"), scriptharness.Done()))
+	h := newTestHarness(p, sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err := h.options.Repo.Thread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.Title = "Host selected title"
+	meta.TitleStatus = sessiontree.ThreadTitleReady
+	meta.TitleSource = sessiontree.ThreadTitleSourceHost
+	meta.TitleUpdatedAt = meta.CreatedAt.Add(time.Minute)
+	if err := h.options.Repo.UpdateThread(ctx, meta); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := thread.Run(ctx, "do it", RunOptions{TurnID: "turn-1"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := h.options.Repo.Thread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "Host selected title" || got.TitleSource != sessiontree.ThreadTitleSourceHost {
+		t.Fatalf("existing title should be preserved: %#v", got)
 	}
 }
 
@@ -240,6 +408,9 @@ func TestHarnessOwnsEngineIdentityAndToolDefinitions(t *testing.T) {
 		Tools:        tools.NewRegistry(),
 		Repo:         sessiontree.NewMemoryRepo(),
 		PromptStore:  cache.NewMemoryStore(),
+		TitleGenerator: fixedTitleGenerator{
+			title: "Test thread title",
+		},
 		LoopLimits: LoopLimits{
 			MaxEmptyProviderRetries:  1,
 			NoProgressLimit:          2,
@@ -562,7 +733,10 @@ func TestRetryAfterInterruptedTurnUsesRealtimeToolSavePoint(t *testing.T) {
 		Tools:        registry,
 		Repo:         repo,
 		PromptStore:  promptStore,
-		LoopLimits:   LoopLimits{MaxEmptyProviderRetries: 1, NoProgressLimit: 2, DuplicateToolLimit: 3},
+		TitleGenerator: fixedTitleGenerator{
+			title: "Test thread title",
+		},
+		LoopLimits: LoopLimits{MaxEmptyProviderRetries: 1, NoProgressLimit: 2, DuplicateToolLimit: 3},
 	})
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
@@ -1218,7 +1392,10 @@ func TestToolProjectionDoesNotDuplicateMultiToolBatches(t *testing.T) {
 		Tools:        registry,
 		Repo:         repo,
 		PromptStore:  promptStore,
-		LoopLimits:   LoopLimits{MaxEmptyProviderRetries: 1, NoProgressLimit: 2, DuplicateToolLimit: 3},
+		TitleGenerator: fixedTitleGenerator{
+			title: "Test thread title",
+		},
+		LoopLimits: LoopLimits{MaxEmptyProviderRetries: 1, NoProgressLimit: 2, DuplicateToolLimit: 3},
 	})
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
@@ -1503,14 +1680,15 @@ func newTestHarness(p provider.Provider, repo sessiontree.Repo, promptStore cach
 	rec := &event.Recorder{}
 	registry := tools.NewRegistry()
 	return New(Options{
-		Provider:     p,
-		ProviderName: "fake",
-		Model:        "fake-model",
-		SystemPrompt: "You are Floret.",
-		Tools:        registry,
-		Repo:         repo,
-		PromptStore:  promptStore,
-		Sink:         rec,
+		Provider:       p,
+		ProviderName:   "fake",
+		Model:          "fake-model",
+		SystemPrompt:   "You are Floret.",
+		Tools:          registry,
+		Repo:           repo,
+		PromptStore:    promptStore,
+		Sink:           rec,
+		TitleGenerator: fixedTitleGenerator{title: "Test thread title"},
 		LoopLimits: LoopLimits{
 			MaxEmptyProviderRetries: 1,
 			NoProgressLimit:         2,
@@ -1527,6 +1705,22 @@ func mustRegister(registry *tools.Registry, tool tools.Tool) {
 
 type stringArgs struct {
 	Value string `json:"value"`
+}
+
+type failingTitleGenerator struct {
+	err error
+}
+
+func (g failingTitleGenerator) GenerateTitle(context.Context, TitleRequest) (TitleResult, error) {
+	return TitleResult{}, g.err
+}
+
+type fixedTitleGenerator struct {
+	title string
+}
+
+func (g fixedTitleGenerator) GenerateTitle(context.Context, TitleRequest) (TitleResult, error) {
+	return TitleResult{Title: g.title, Source: sessiontree.ThreadTitleSourceProvider}, nil
 }
 
 func stringTool(name string, handler func(context.Context, string) (string, error)) tools.Tool {

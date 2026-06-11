@@ -521,6 +521,11 @@ type ObservedSessionEntry struct {
 
 type AgentSessionSnapshot struct {
 	ID                      string                          `json:"id"`
+	Title                   string                          `json:"title,omitempty"`
+	TitleStatus             string                          `json:"title_status,omitempty"`
+	TitleSource             string                          `json:"title_source,omitempty"`
+	TitleUpdatedAt          time.Time                       `json:"title_updated_at,omitempty"`
+	TitleError              string                          `json:"title_error,omitempty"`
 	Status                  string                          `json:"status"`
 	Phase                   string                          `json:"phase"`
 	LeafID                  string                          `json:"leaf_id,omitempty"`
