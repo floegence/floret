@@ -33,16 +33,17 @@ type ProjectedTurnOptions struct {
 // run. Execution identity fields are required and are not inferred from each
 // other.
 type ProjectedTurnRequest struct {
-	RunID         RunID
-	ThreadID      ThreadID
-	TurnID        TurnID
-	TraceID       TraceID
-	PromptScopeID PromptScopeID
-	History       []TranscriptMessage
-	Labels        RunLabels
-	Completion    TurnCompletionPolicy
-	Signals       TurnSignalSpec
-	Limits        TurnLimits
+	RunID                 RunID
+	ThreadID              ThreadID
+	TurnID                TurnID
+	TraceID               TraceID
+	PromptScopeID         PromptScopeID
+	History               []TranscriptMessage
+	Labels                RunLabels
+	PreviousProviderState *ModelState
+	Completion            TurnCompletionPolicy
+	Signals               TurnSignalSpec
+	Limits                TurnLimits
 }
 
 // ProjectedTurnResult is the host-safe outcome of RunProjectedTurn.
@@ -271,6 +272,7 @@ func RunProjectedTurn(ctx context.Context, opts ProjectedTurnOptions, req Projec
 	if err != nil {
 		return ProjectedTurnResult{}, err
 	}
+	previousProviderState := providerState(req.PreviousProviderState)
 	loopLimits := projectedLoopLimits(cfg, opts.LoopLimits, req.Limits)
 	eng, err := engine.New(engine.Config{
 		Provider:     modelProvider,
@@ -303,19 +305,21 @@ func RunProjectedTurn(ctx context.Context, opts ProjectedTurnOptions, req Projec
 			MaxStopHookContinuations: loopLimits.MaxStopHookContinuations,
 			CompletionPolicy:         completionPolicy,
 			ControlSpec:              signalSpec,
+			PreviousProviderState:    previousProviderState,
 		},
 	})
 	if err != nil {
 		return ProjectedTurnResult{}, err
 	}
 	result := eng.RunTurn(ctx, engine.RunInput{
-		RunID:         ids.runID,
-		ThreadID:      ids.threadID,
-		TurnID:        ids.turnID,
-		TraceID:       ids.traceID,
-		PromptScopeID: ids.promptScopeID,
-		Labels:        engineLabels(req.Labels),
-		History:       history,
+		RunID:                 ids.runID,
+		ThreadID:              ids.threadID,
+		TurnID:                ids.turnID,
+		TraceID:               ids.traceID,
+		PromptScopeID:         ids.promptScopeID,
+		Labels:                engineLabels(req.Labels),
+		PreviousProviderState: previousProviderState,
+		History:               history,
 	})
 	return projectedTurnResult(ids, result), result.Err
 }

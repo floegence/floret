@@ -72,6 +72,12 @@ func TestRunProjectedTurnWithPublicModelGateway(t *testing.T) {
 
 	var sawSystem bool
 	var sawTool bool
+	var sawPreviousState bool
+	previousState := &runtime.ModelState{
+		Kind:       "openai_responses",
+		ID:         "resp_prev",
+		Attributes: map[string]string{"cursor": "one"},
+	}
 	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
 		if req.RunID != "run-gateway" || req.ThreadID != "thread-gateway" || req.TurnID != "turn-gateway" || req.TraceID != "trace-gateway" || req.PromptScopeID != "thread-gateway" {
 			t.Fatalf("request identity = %#v", req)
@@ -79,6 +85,11 @@ func TestRunProjectedTurnWithPublicModelGateway(t *testing.T) {
 		if req.Labels.Correlation["message_id"] != "msg-gateway" || req.Labels.Host["workspace_id"] != "ws-gateway" {
 			t.Fatalf("request labels = %#v", req.Labels)
 		}
+		if req.PreviousState == nil || req.PreviousState.Kind != "openai_responses" || req.PreviousState.ID != "resp_prev" || req.PreviousState.Attributes["cursor"] != "one" {
+			t.Fatalf("request previous state = %#v", req.PreviousState)
+		}
+		req.PreviousState.Attributes["cursor"] = "mutated"
+		sawPreviousState = true
 		for _, msg := range req.Messages {
 			if msg.Role == "system" && strings.Contains(msg.Content, "gateway system") {
 				sawSystem = true
@@ -123,12 +134,16 @@ func TestRunProjectedTurnWithPublicModelGateway(t *testing.T) {
 			Correlation: map[string]string{"message_id": "msg-gateway"},
 			Host:        map[string]string{"workspace_id": "ws-gateway"},
 		},
+		PreviousProviderState: previousState,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sawSystem || !sawTool {
-		t.Fatalf("gateway saw system=%v tool=%v", sawSystem, sawTool)
+	if !sawSystem || !sawTool || !sawPreviousState {
+		t.Fatalf("gateway saw system=%v tool=%v previous_state=%v", sawSystem, sawTool, sawPreviousState)
+	}
+	if previousState.Attributes["cursor"] != "one" {
+		t.Fatalf("previous state was aliased: %#v", previousState)
 	}
 	if result.Output != "gateway ok" || result.Metrics.ProviderUsage.InputTokens != 2 || result.Metrics.ProviderUsage.OutputTokens != 3 {
 		t.Fatalf("result = %#v", result)
