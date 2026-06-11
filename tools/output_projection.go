@@ -7,8 +7,6 @@ import (
 	"errors"
 	"strings"
 	"unicode/utf8"
-
-	"github.com/floegence/floret/session/artifact"
 )
 
 const (
@@ -16,6 +14,8 @@ const (
 	DefaultToolVisibleMaxLines = 0
 	DefaultToolOutputStrategy  = OutputTail
 	DefaultPreserveFull        = true
+	DefaultArtifactKind        = "tool_output"
+	DefaultArtifactMIME        = "text/plain; charset=utf-8"
 )
 
 type OutputStrategy string
@@ -44,7 +44,7 @@ type OutputProjection struct {
 	VisibleLines  int
 	Strategy      OutputStrategy
 	ContentSHA256 string
-	FullOutput    *artifact.Ref
+	FullOutput    *ArtifactRef
 }
 
 func DefaultOutputPolicy() OutputPolicy {
@@ -54,8 +54,8 @@ func DefaultOutputPolicy() OutputPolicy {
 		Strategy:        DefaultToolOutputStrategy,
 		PreserveFull:    DefaultPreserveFull,
 		PreserveFullSet: true,
-		ArtifactKind:    artifact.DefaultKind,
-		ArtifactMIME:    artifact.DefaultMIME,
+		ArtifactKind:    DefaultArtifactKind,
+		ArtifactMIME:    DefaultArtifactMIME,
 	}
 }
 
@@ -78,10 +78,10 @@ func NormalizeOutputPolicy(policy OutputPolicy) OutputPolicy {
 		policy.PreserveFull = DefaultPreserveFull
 	}
 	if policy.ArtifactKind == "" {
-		policy.ArtifactKind = artifact.DefaultKind
+		policy.ArtifactKind = DefaultArtifactKind
 	}
 	if policy.ArtifactMIME == "" {
-		policy.ArtifactMIME = artifact.DefaultMIME
+		policy.ArtifactMIME = DefaultArtifactMIME
 	}
 	return policy
 }
@@ -113,7 +113,7 @@ func MergeOutputPolicy(base OutputPolicy, override *OutputPolicy) OutputPolicy {
 	return NormalizeOutputPolicy(out)
 }
 
-func BuildOutputProjection(ctx context.Context, result Result, policy OutputPolicy, store artifact.Store) (OutputProjection, error) {
+func BuildOutputProjection(ctx context.Context, result Result, policy OutputPolicy, store ArtifactStore) (OutputProjection, error) {
 	policy = NormalizeOutputPolicy(policy)
 	text := result.Text
 	limited := text
@@ -150,7 +150,7 @@ func BuildOutputProjection(ctx context.Context, result Result, policy OutputPoli
 		if store == nil {
 			return OutputProjection{}, errors.New("artifact store is required to preserve truncated tool output")
 		}
-		ref, err := store.PutToolOutput(ctx, artifact.ToolOutputArtifact{
+		ref, err := store.PutToolOutput(ctx, ToolOutputArtifact{
 			RunID:         result.MetadataString("run_id"),
 			ThreadID:      result.MetadataString("thread_id"),
 			TurnID:        result.MetadataString("turn_id"),

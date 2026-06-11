@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/provider"
+	"github.com/floegence/floret/internal/provider"
 )
 
 type blockingTestProvider struct {

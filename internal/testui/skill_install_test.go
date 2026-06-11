@@ -15,10 +15,10 @@ import (
 	"testing"
 
 	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/event"
-	"github.com/floegence/floret/provider"
-	"github.com/floegence/floret/testing/harness"
-	"github.com/floegence/floret/tools/builtin"
+	"github.com/floegence/floret/internal/event"
+	"github.com/floegence/floret/internal/provider"
+	"github.com/floegence/floret/internal/testing/harness"
+	"github.com/floegence/floret/internal/tools/builtin"
 )
 
 func TestParseGitHubSkillURL(t *testing.T) {

@@ -1,10 +1,10 @@
 package sessionlifecycle
 
 import (
-	"github.com/floegence/floret/engine"
+	"github.com/floegence/floret/internal/engine"
 	"github.com/floegence/floret/internal/control"
-	"github.com/floegence/floret/provider"
-	"github.com/floegence/floret/sessiontree"
+	"github.com/floegence/floret/internal/provider"
+	"github.com/floegence/floret/internal/sessiontree"
 )
 
 type status string

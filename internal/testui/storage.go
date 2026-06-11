@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/floegence/floret/provider/cache"
-	floretstorage "github.com/floegence/floret/runtime/storage"
-	"github.com/floegence/floret/runtime/storage/sqlite"
-	"github.com/floegence/floret/sessiontree"
+	"github.com/floegence/floret/internal/provider/cache"
+	floretstorage "github.com/floegence/floret/internal/storage"
+	"github.com/floegence/floret/internal/storage/sqlite"
+	"github.com/floegence/floret/internal/sessiontree"
 )
 
 const (

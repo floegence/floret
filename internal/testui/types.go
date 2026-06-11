@@ -3,18 +3,18 @@ package testui
 import (
 	"time"
 
-	"github.com/floegence/floret/agentharness"
 	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/engine"
-	"github.com/floegence/floret/event"
+	"github.com/floegence/floret/internal/agentharness"
+	"github.com/floegence/floret/internal/engine"
+	"github.com/floegence/floret/internal/event"
+	"github.com/floegence/floret/internal/provider"
+	"github.com/floegence/floret/internal/provider/cache"
+	"github.com/floegence/floret/internal/provider/catalog"
 	"github.com/floegence/floret/internal/searchcap"
+	"github.com/floegence/floret/internal/session/contextpolicy"
+	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/internal/testing/eval"
 	"github.com/floegence/floret/observation"
-	"github.com/floegence/floret/provider"
-	"github.com/floegence/floret/provider/cache"
-	"github.com/floegence/floret/provider/catalog"
-	"github.com/floegence/floret/session/contextpolicy"
-	"github.com/floegence/floret/sessiontree"
-	"github.com/floegence/floret/testing/eval"
 )
 
 type ConfigInfo struct {
@@ -93,7 +93,7 @@ type ConfigState struct {
 	AgentProfile          config.AgentProfile   `json:"agent_profile"`
 	PromptIdentity        config.PromptIdentity `json:"prompt_identity"`
 	Catalog               []CatalogProvider     `json:"catalog"`
-	ContextPolicyDefaults contextpolicy.Policy  `json:"context_policy_defaults"`
+	ContextPolicyDefaults config.ContextPolicy  `json:"context_policy_defaults"`
 	Tools                 []AgentToolOption     `json:"tools"`
 	SearchWireShapes      []SearchWireShape     `json:"search_wire_shapes"`
 	SearchProvider        SearchProviderInfo    `json:"search_provider"`
@@ -241,7 +241,7 @@ type AgentRunRequest struct {
 	Message        string                `json:"message"`
 	SystemPrompt   string                `json:"system_prompt"`
 	SelectedTools  []string              `json:"selected_tools,omitempty"`
-	ContextPolicy  contextpolicy.Policy  `json:"context_policy,omitempty"`
+	ContextPolicy  config.ContextPolicy  `json:"context_policy,omitempty"`
 }
 
 type AgentTurnRequest struct {
@@ -299,7 +299,7 @@ type AgentToolsUpdateRequest struct {
 type AgentInterfaceProbeRequest struct {
 	ProfileID     string               `json:"profile_id,omitempty"`
 	SelectedTools []string             `json:"selected_tools,omitempty"`
-	ContextPolicy contextpolicy.Policy `json:"context_policy,omitempty"`
+	ContextPolicy config.ContextPolicy `json:"context_policy,omitempty"`
 }
 
 type AgentRunResponse struct {
@@ -539,7 +539,7 @@ type AgentSessionSnapshot struct {
 	HostedTools             []provider.HostedToolDefinition `json:"hosted_tools,omitempty"`
 	UnavailableCapabilities []string                        `json:"unavailable_capabilities,omitempty"`
 	Capabilities            CapabilityState                 `json:"capabilities"`
-	ContextPolicy           contextpolicy.Policy            `json:"context_policy"`
+	ContextPolicy           config.ContextPolicy            `json:"context_policy"`
 	LatestTurnID            string                          `json:"latest_turn_id,omitempty"`
 	WaitingPrompt           string                          `json:"waiting_prompt,omitempty"`
 	Recoverable             bool                            `json:"recoverable,omitempty"`

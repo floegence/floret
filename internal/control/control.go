@@ -7,8 +7,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/floegence/floret/provider"
-	"github.com/floegence/floret/session"
+	"github.com/floegence/floret/internal/provider"
+	"github.com/floegence/floret/internal/session"
 	"github.com/floegence/floret/tools"
 )
 

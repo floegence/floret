@@ -14,14 +14,14 @@ import (
 	"time"
 
 	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/engine"
-	"github.com/floegence/floret/event"
+	"github.com/floegence/floret/internal/engine"
+	"github.com/floegence/floret/internal/event"
 	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/internal/sessionlifecycle"
-	"github.com/floegence/floret/provider"
-	"github.com/floegence/floret/provider/catalog"
-	"github.com/floegence/floret/session/contextpolicy"
-	"github.com/floegence/floret/testing/harness"
+	"github.com/floegence/floret/internal/provider"
+	"github.com/floegence/floret/internal/provider/catalog"
+	"github.com/floegence/floret/internal/session/contextpolicy"
+	"github.com/floegence/floret/internal/testing/harness"
 )
 
 func serveInitialAgentSessionTurn(t *testing.T, handler http.Handler, createBody string) *httptest.ResponseRecorder {

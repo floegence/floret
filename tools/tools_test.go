@@ -5,8 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-
-	"github.com/floegence/floret/provider"
 )
 
 type testArgs struct {
@@ -43,7 +41,7 @@ func TestRegisterRejectsDuplicateName(t *testing.T) {
 	})); !errors.Is(err, ErrDuplicate) {
 		t.Fatalf("err = %v, want duplicate", err)
 	}
-	got := reg.Run(context.Background(), provider.ToolCall{Name: "read", Args: `{"value":""}`}, nil)
+	got := reg.Run(context.Background(), ToolCall{Name: "read", Args: `{"value":""}`}, nil)
 	if got.Text != "" {
 		t.Fatalf("duplicate registration overwrote original handler")
 	}
@@ -56,7 +54,7 @@ func TestRegisterRejectsInvalidTool(t *testing.T) {
 }
 
 func TestUnknownToolFailsClearly(t *testing.T) {
-	got := NewRegistry().Run(context.Background(), provider.ToolCall{Name: "missing"}, nil)
+	got := NewRegistry().Run(context.Background(), ToolCall{Name: "missing"}, nil)
 	if !got.IsError || got.Text != `unknown tool "missing"` {
 		t.Fatalf("result = %#v, want unknown tool name", got)
 	}
@@ -84,7 +82,7 @@ func TestSchemaErrorDoesNotCallResourceApproverOrHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := reg.Run(context.Background(), provider.ToolCall{Name: "read", Args: `{"extra":1}`}, func(context.Context, ApprovalRequest) (PermissionDecision, error) {
+	got := reg.Run(context.Background(), ToolCall{Name: "read", Args: `{"extra":1}`}, func(context.Context, ApprovalRequest) (PermissionDecision, error) {
 		called = true
 		return PermissionDecisionAllow, nil
 	})
@@ -103,7 +101,7 @@ func TestToolPanicRecovered(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	got := reg.Run(context.Background(), provider.ToolCall{Name: "panic", Args: `{"value":"x"}`}, nil)
+	got := reg.Run(context.Background(), ToolCall{Name: "panic", Args: `{"value":"x"}`}, nil)
 	if !got.IsError || got.Text != `tool "panic" panicked: boom` {
 		t.Fatalf("result = %#v, want recovered panic", got)
 	}
@@ -129,7 +127,7 @@ func TestApprovalGrantedExecutesExactRequest(t *testing.T) {
 	)); err != nil {
 		t.Fatal(err)
 	}
-	got := reg.Run(context.Background(), provider.ToolCall{ID: "1", Name: "write", Args: `{"value":"original"}`}, func(_ context.Context, req ApprovalRequest) (PermissionDecision, error) {
+	got := reg.Run(context.Background(), ToolCall{ID: "1", Name: "write", Args: `{"value":"original"}`}, func(_ context.Context, req ApprovalRequest) (PermissionDecision, error) {
 		if req.Args != `{"value":"original"}` || len(req.Resources) != 1 || req.Resources[0].Value != "original" {
 			t.Fatalf("approval request = %#v", req)
 		}
@@ -164,10 +162,10 @@ func TestPermissionDenyDoesNotCallResourcesApproverOrHandler(t *testing.T) {
 	)); err != nil {
 		t.Fatal(err)
 	}
-	got := reg.RunWithOptions(context.Background(), provider.ToolCall{ID: "call", Name: "blocked", Args: `{"value":"x"}`}, func(context.Context, ApprovalRequest) (PermissionDecision, error) {
+	got := reg.RunWithOptions(context.Background(), ToolCall{ID: "call", Name: "blocked", Args: `{"value":"x"}`}, func(context.Context, ApprovalRequest) (PermissionDecision, error) {
 		called = true
 		return PermissionDecisionAllow, nil
-	}, RunOptions{RunID: "run", ThreadID: "session", Step: 7, CWD: "/tmp"})
+	}, RunOptions{RunID: "run", ThreadID: "session", Step: 7})
 	if !got.IsError || got.Text != ErrRejected.Error() {
 		t.Fatalf("result = %#v", got)
 	}
@@ -209,7 +207,7 @@ func TestReadOnlyToolDefaultsToAllowAndExposesDefinition(t *testing.T) {
 	if len(defs) != 1 || defs[0].Name != "inspect" {
 		t.Fatalf("provider definitions = %#v", defs)
 	}
-	got := reg.Run(context.Background(), provider.ToolCall{Name: "inspect", Args: `{"value":"ok"}`}, nil)
+	got := reg.Run(context.Background(), ToolCall{Name: "inspect", Args: `{"value":"ok"}`}, nil)
 	if got.IsError || got.Text != "ok" {
 		t.Fatalf("result = %#v", got)
 	}
@@ -326,29 +324,30 @@ func TestAskToolIsExposedAndRequiresApprover(t *testing.T) {
 	if len(defs) != 1 || defs[0].Name != "write" {
 		t.Fatalf("ask tool should be exposed: %#v", defs)
 	}
-	got := reg.Run(context.Background(), provider.ToolCall{ID: "call", Name: "write", Args: `{"value":"x"}`}, nil)
+	got := reg.Run(context.Background(), ToolCall{ID: "call", Name: "write", Args: `{"value":"x"}`}, nil)
 	if !got.IsError || got.Text != ErrRejected.Error() {
 		t.Fatalf("result = %#v, want rejected without approver", got)
 	}
 }
 
-func TestDefinePassesRunSessionStepCWDAndTypedArgs(t *testing.T) {
+func TestDefinePassesRunThreadTurnStepAndTypedArgs(t *testing.T) {
 	reg := NewRegistry()
 	var seen Invocation[testArgs]
 	var approvalHost map[string]string
 	opts := RunOptions{
-		RunID:       "run",
-		ThreadID:   "session",
-		Step:        3,
-		CWD:         "/repo",
-		Labels:      map[string]string{"correlation.turn": "turn-1"},
-		HostContext: map[string]string{"target_id": "env-a", "surface": "desktop"},
+		RunID:         "run",
+		ThreadID:      "thread",
+		TurnID:        "turn",
+		PromptScopeID: "thread",
+		Step:          3,
+		Labels:        map[string]string{"correlation.turn": "turn-1"},
+		HostContext:   map[string]string{"target_id": "env-a", "surface": "desktop"},
 	}
 	if err := reg.Register(Define[testArgs](
 		Definition{Name: "inspect", InputSchema: StrictObject(map[string]any{"value": String("")}, []string{"value"}), Permission: PermissionSpec{Mode: PermissionAsk}},
 		nil,
 		func(inv Invocation[testArgs]) ([]ResourceRef, error) {
-			if inv.RunID != "run" || inv.ThreadID != "session" || inv.Step != 3 || inv.CWD != "/repo" || inv.Args.Value != "typed" {
+			if inv.RunID != "run" || inv.ThreadID != "thread" || inv.TurnID != "turn" || inv.PromptScopeID != "thread" || inv.Step != 3 || inv.Args.Value != "typed" {
 				t.Fatalf("resource invocation = %#v", inv)
 			}
 			if inv.HostContext["target_id"] != "env-a" || inv.Labels["correlation.turn"] != "turn-1" {
@@ -368,7 +367,7 @@ func TestDefinePassesRunSessionStepCWDAndTypedArgs(t *testing.T) {
 	)); err != nil {
 		t.Fatal(err)
 	}
-	got := reg.RunWithOptions(context.Background(), provider.ToolCall{ID: "call", Name: "inspect", Args: `{"value":"typed"}`}, func(_ context.Context, req ApprovalRequest) (PermissionDecision, error) {
+	got := reg.RunWithOptions(context.Background(), ToolCall{ID: "call", Name: "inspect", Args: `{"value":"typed"}`}, func(_ context.Context, req ApprovalRequest) (PermissionDecision, error) {
 		approvalHost = req.HostContext
 		if req.HostContext["target_id"] != "env-a" || req.Labels["correlation.turn"] != "turn-1" {
 			t.Fatalf("approval context = %#v labels=%#v", req.HostContext, req.Labels)
@@ -379,7 +378,7 @@ func TestDefinePassesRunSessionStepCWDAndTypedArgs(t *testing.T) {
 	if got.IsError || got.Text != "typed" {
 		t.Fatalf("result = %#v", got)
 	}
-	if seen.CallID != "call" || seen.Name != "inspect" || seen.RawArgs != `{"value":"typed"}` || seen.RunID != "run" || seen.ThreadID != "session" || seen.Step != 3 || seen.CWD != "/repo" || seen.Args.Value != "typed" {
+	if seen.CallID != "call" || seen.Name != "inspect" || seen.RawArgs != `{"value":"typed"}` || seen.RunID != "run" || seen.ThreadID != "thread" || seen.TurnID != "turn" || seen.PromptScopeID != "thread" || seen.Step != 3 || seen.Args.Value != "typed" {
 		t.Fatalf("handler invocation = %#v", seen)
 	}
 	if seen.Labels["correlation.turn"] != "turn-1" || approvalHost["target_id"] != "mutated-by-approval" {
@@ -408,7 +407,7 @@ func TestOutputSchemaViolationReturnsStableError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := reg.Run(context.Background(), provider.ToolCall{Name: "structured", Args: `{"value":"x"}`}, nil)
+	got := reg.Run(context.Background(), ToolCall{Name: "structured", Args: `{"value":"x"}`}, nil)
 	if !got.IsError || !contains(got.Text, "invalid structured output") {
 		t.Fatalf("result = %#v", got)
 	}
@@ -489,7 +488,7 @@ func TestRunBatchUsesParallelSafeFlagForParallelWaves(t *testing.T) {
 	}
 	done := make(chan []Result, 1)
 	go func() {
-		done <- reg.RunBatch(context.Background(), []provider.ToolCall{
+		done <- reg.RunBatch(context.Background(), []ToolCall{
 			{ID: "a", Name: "read", Args: `{"value":"a"}`},
 			{ID: "b", Name: "read", Args: `{"value":"b"}`},
 			{ID: "c", Name: "write", Args: `{"value":"c"}`},

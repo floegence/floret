@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/floegence/floret/config"
+	"github.com/floegence/floret/internal/configbridge"
+	"github.com/floegence/floret/internal/provider/catalog"
 	"github.com/floegence/floret/internal/searchcap"
-	"github.com/floegence/floret/provider/catalog"
-	"github.com/floegence/floret/session/contextpolicy"
 )
 
 const (
@@ -379,11 +379,11 @@ func activeProfileForCatalog(profiles []ProviderProfile, activeID string) Provid
 	return ProviderProfile{Provider: config.ProviderFake, Model: "fake-model"}
 }
 
-func contextPolicyDefaultsForProfile(profile ProviderProfile) contextpolicy.Policy {
-	return catalog.ContextPolicy(profile.Provider, profile.Model)
+func contextPolicyDefaultsForProfile(profile ProviderProfile) config.ContextPolicy {
+	return configbridge.PublicContextPolicy(catalog.ContextPolicy(profile.Provider, profile.Model))
 }
 
-func modelRiskDiagnostics(profile ProviderProfile, policy contextpolicy.Policy) []CapabilityDiagnostic {
+func modelRiskDiagnostics(profile ProviderProfile, policy config.ContextPolicy) []CapabilityDiagnostic {
 	diagnostics := []CapabilityDiagnostic{}
 	if _, ok := catalog.FindModel(profile.Provider, profile.Model); !ok {
 		diagnostics = append(diagnostics, CapabilityDiagnostic{
@@ -393,18 +393,18 @@ func modelRiskDiagnostics(profile ProviderProfile, policy contextpolicy.Policy) 
 			NextAction: "You can still use it, but verify the model's context window and output limit with the provider.",
 		})
 	}
-	if policy.ContextWindowTokens > 0 && policy.ContextWindowTokens < contextpolicy.MinSupportedContextWindowTokens {
+	if policy.ContextWindowTokens > 0 && policy.ContextWindowTokens < config.MinSupportedContextWindowTokens {
 		diagnostics = append(diagnostics, CapabilityDiagnostic{
 			Kind:       "context_window_below_recommended",
 			Capability: "context_policy",
-			Message:    fmt.Sprintf("Context window %d is below Floret's recommended %d-token baseline and may behave poorly on long tasks.", policy.ContextWindowTokens, contextpolicy.MinSupportedContextWindowTokens),
+			Message:    fmt.Sprintf("Context window %d is below Floret's recommended %d-token baseline and may behave poorly on long tasks.", policy.ContextWindowTokens, config.MinSupportedContextWindowTokens),
 			NextAction: "You can continue, but use a larger context window when the model supports it.",
 		})
 	}
 	return diagnostics
 }
 
-func modelRiskDiagnosticMap(profile ProviderProfile, policy contextpolicy.Policy) map[string]string {
+func modelRiskDiagnosticMap(profile ProviderProfile, policy config.ContextPolicy) map[string]string {
 	diagnostics := modelRiskDiagnostics(profile, policy)
 	if len(diagnostics) == 0 {
 		return nil

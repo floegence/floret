@@ -13,12 +13,11 @@ import (
 	"time"
 
 	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/engine"
+	"github.com/floegence/floret/internal/engine"
+	"github.com/floegence/floret/internal/provider"
 	"github.com/floegence/floret/internal/searchcap"
-	"github.com/floegence/floret/provider"
-	"github.com/floegence/floret/session/contextpolicy"
-	"github.com/floegence/floret/testing/harness"
-	"github.com/floegence/floret/tools/builtin"
+	"github.com/floegence/floret/internal/testing/harness"
+	"github.com/floegence/floret/internal/tools/builtin"
 )
 
 type runOptions struct {
@@ -852,8 +851,8 @@ func appendDotEnvValue(path, key, value string) error {
 	return err
 }
 
-func scenarioContextPolicy() contextpolicy.Policy {
-	return contextpolicy.Policy{
+func scenarioContextPolicy() config.ContextPolicy {
+	return config.ContextPolicy{
 		ContextWindowTokens: 128000,
 		MaxOutputTokens:     2048,
 		RecentTailTokens:    4096,

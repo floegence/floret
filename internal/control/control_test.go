@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/floegence/floret/provider"
+	"github.com/floegence/floret/internal/provider"
 )
 
 func TestProjectValidatesControlToolArgsStrictly(t *testing.T) {

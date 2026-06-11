@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
-	"github.com/floegence/floret/session/artifact"
+	"github.com/floegence/floret/internal/session/artifact"
 )
 
 type toolOutputArtifactStore struct {
@@ -78,4 +79,19 @@ func (s *toolOutputArtifactStore) PutToolOutput(_ context.Context, output artifa
 		SizeBytes: int64(len(output.Text)),
 		SHA256:    hash,
 	}, nil
+}
+
+func (s *toolOutputArtifactStore) DeleteThreadArtifacts(_ context.Context, threadID string) error {
+	if s == nil || s.root == "" {
+		return fmt.Errorf("test UI artifact store root is required")
+	}
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return fmt.Errorf("thread id is required")
+	}
+	dir := toolOutputArtifactSessionDir(s.root, threadID)
+	if err := ensurePathInsideRoot(s.root, dir); err != nil {
+		return err
+	}
+	return os.RemoveAll(dir)
 }

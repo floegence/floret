@@ -5,12 +5,44 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
-
-	"github.com/floegence/floret/session/artifact"
 )
 
+type memoryArtifactStore struct {
+	items map[string]ToolOutputArtifact
+}
+
+func newMemoryArtifactStore() *memoryArtifactStore {
+	return &memoryArtifactStore{items: map[string]ToolOutputArtifact{}}
+}
+
+func (s *memoryArtifactStore) PutToolOutput(_ context.Context, output ToolOutputArtifact) (ArtifactRef, error) {
+	if output.MIME == "" {
+		output.MIME = DefaultArtifactMIME
+	}
+	if output.Kind == "" {
+		output.Kind = DefaultArtifactKind
+	}
+	id := output.ToolName + "-output"
+	ref := ArtifactRef{
+		ID:        id,
+		SafeLabel: output.ToolName + "-output.log",
+		URL:       "/artifacts/" + id,
+		Kind:      output.Kind,
+		MIME:      output.MIME,
+		SizeBytes: int64(len(output.Text)),
+		SHA256:    stableTextHash(output.Text),
+	}
+	s.items[id] = output
+	return ref, nil
+}
+
+func (s *memoryArtifactStore) Text(id string) (string, bool) {
+	item, ok := s.items[id]
+	return item.Text, ok
+}
+
 func TestBuildOutputProjectionIsUTF8Safe(t *testing.T) {
-	store := artifact.NewMemoryStore()
+	store := newMemoryArtifactStore()
 	got, err := BuildOutputProjection(context.Background(), Result{Name: "demo", Text: "alpha 世界 omega"}, OutputPolicy{VisibleMaxBytes: 9, Strategy: OutputTail, PreserveFull: true}, store)
 	if err != nil {
 		t.Fatal(err)
@@ -24,7 +56,7 @@ func TestBuildOutputProjectionIsUTF8Safe(t *testing.T) {
 }
 
 func TestBuildOutputProjectionHeadTailByBytesAndLines(t *testing.T) {
-	store := artifact.NewMemoryStore()
+	store := newMemoryArtifactStore()
 	text := "one\ntwo\nthree\nfour"
 	head, err := BuildOutputProjection(context.Background(), Result{Name: "demo", Text: text}, OutputPolicy{VisibleMaxLines: 2, Strategy: OutputHead, PreserveFull: true}, store)
 	if err != nil {
@@ -50,7 +82,7 @@ func TestBuildOutputProjectionHeadTailByBytesAndLines(t *testing.T) {
 }
 
 func TestBuildOutputProjectionWritesArtifactWhenTruncated(t *testing.T) {
-	store := artifact.NewMemoryStore()
+	store := newMemoryArtifactStore()
 	got, err := BuildOutputProjection(context.Background(), Result{CallID: "call-1", Name: "demo", Text: "0123456789"}, OutputPolicy{VisibleMaxBytes: 4, Strategy: OutputTail}, store)
 	if err != nil {
 		t.Fatal(err)

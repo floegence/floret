@@ -6,10 +6,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/floegence/floret/agentharness"
-	"github.com/floegence/floret/engine"
-	"github.com/floegence/floret/event"
-	"github.com/floegence/floret/sessiontree"
+	"github.com/floegence/floret/internal/agentharness"
+	"github.com/floegence/floret/internal/engine"
+	"github.com/floegence/floret/internal/event"
+	"github.com/floegence/floret/internal/sessiontree"
 )
 
 type agentStream struct {

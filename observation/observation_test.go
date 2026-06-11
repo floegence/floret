@@ -4,11 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/engine"
-	"github.com/floegence/floret/event"
-	"github.com/floegence/floret/provider"
-	"github.com/floegence/floret/session/compaction"
-	"github.com/floegence/floret/session/contextpolicy"
+	"github.com/floegence/floret/config"
 )
 
 func TestContextStatusFromRequestUsesProjectedPressure(t *testing.T) {
@@ -22,20 +18,20 @@ func TestContextStatusFromRequestUsesProjectedPressure(t *testing.T) {
 		Provider:         "fake",
 		Model:            "fake-model",
 		ObservedAt:       time.Unix(10, 0),
-		RequestEstimate: contextpolicy.RequestEstimate{
+		RequestEstimate: config.RequestEstimate{
 			EstimatedInputTokens: 910,
 			Source:               "test_estimator",
-			Method:               contextpolicy.EstimateMethodProviderRenderedPayload,
-			Confidence:           contextpolicy.EstimateApproximate,
+			Method:               config.EstimateMethodProviderRenderedPayload,
+			Confidence:           config.EstimateApproximate,
 		},
-		ProjectedPressure: contextpolicy.ContextPressure{
+		ProjectedPressure: config.ContextPressure{
 			ProjectedInputTokens: 910,
 			ContextWindowTokens:  1000,
 			ThresholdTokens:      800,
 			RequestSafeLimit:     900,
 			HardLimitExceeded:    true,
-			Source:               contextpolicy.PressureSourceFullRequestEstimate,
-			Signal:               contextpolicy.PressureSignalProjected,
+			Source:               config.PressureSourceFullRequestEstimate,
+			Signal:               config.PressureSignalProjected,
 		},
 		CompactionGeneration: 3,
 		CompactionWindowID:   "window-3",
@@ -45,7 +41,7 @@ func TestContextStatusFromRequestUsesProjectedPressure(t *testing.T) {
 		status.RequestID != "turn-1:req:2" ||
 		status.LogicalRequestID != "logical-1" ||
 		status.Attempt != 2 ||
-		status.Status != engine.ContextStatusHardLimit ||
+		status.Status != ContextStatusHardLimit ||
 		status.UsedRatio != 0.91 ||
 		status.ThresholdRatio != 0.8 ||
 		status.CompactionGeneration != 3 ||
@@ -66,40 +62,40 @@ func TestContextStatusFromRequestKeepsExplicitRequestID(t *testing.T) {
 }
 
 func TestContextStatusFromFinalProviderUsageEvent(t *testing.T) {
-	ev := event.Event{
-		Type:      event.ProviderUsage,
-		RunID:     "turn-1",
-		ThreadID:  "thread-1",
-		TurnID:    "turn-1",
-		Step:      1,
-		Provider:  "fake",
-		Model:     "fake-model",
-		Timestamp: time.Unix(20, 0),
-		Metadata: engine.ProviderUsageContextStatus{
-			Phase:            engine.ProviderUsagePhaseFinalContextStatus,
-			RequestID:        "turn-1:req:1",
-			LogicalRequestID: "logical-1",
-			Attempt:          1,
-			Usage: provider.Usage{
+	ev := Event{
+		Type:       EventTypeProviderUsage,
+		RunID:      "turn-1",
+		ThreadID:   "thread-1",
+		TurnID:     "turn-1",
+		Step:       1,
+		Provider:   "fake",
+		Model:      "fake-model",
+		ObservedAt: time.Unix(20, 0),
+		Metadata: map[string]any{
+			"phase":              ProviderUsagePhaseFinalContextStatus,
+			"request_id":         "turn-1:req:1",
+			"logical_request_id": "logical-1",
+			"attempt":            1,
+			"usage": ProviderUsage{
 				InputTokens:       400,
 				WindowInputTokens: 420,
 				OutputTokens:      30,
-				Source:            provider.UsageNative,
+				Source:            "native",
 				Available:         true,
 			},
-			RequestEstimate: contextpolicy.RequestEstimate{EstimatedInputTokens: 390},
-			ContextPressure: contextpolicy.ContextPressure{
+			"request_estimate": config.RequestEstimate{EstimatedInputTokens: 390},
+			"context_pressure": config.ContextPressure{
 				WindowInputTokens:   420,
 				ContextWindowTokens: 1000,
 				ThresholdTokens:     800,
-				Source:              contextpolicy.PressureSourceProviderUsage,
-				Signal:              contextpolicy.PressureSignalNativeUsage,
+				Source:              config.PressureSourceProviderUsage,
+				Signal:              config.PressureSignalNativeUsage,
 			},
-			UsedRatio:            0.42,
-			ThresholdRatio:       0.8,
-			Status:               engine.ContextStatusStable,
-			CompactionGeneration: 1,
-			CompactionWindowID:   "window-1",
+			"used_ratio":            0.42,
+			"threshold_ratio":       0.8,
+			"status":                ContextStatusStable,
+			"compaction_generation": 1,
+			"compaction_window_id":  "window-1",
 		},
 	}
 
@@ -115,21 +111,16 @@ func TestContextStatusFromFinalProviderUsageEvent(t *testing.T) {
 		status.ContextPressure.WindowInputTokens != 420 ||
 		status.UsedRatio != 0.42 ||
 		status.ThresholdRatio != 0.8 ||
-		status.Status != engine.ContextStatusStable ||
+		status.Status != ContextStatusStable ||
 		status.CompactionGeneration != 1 ||
 		status.CompactionWindowID != "window-1" {
 		t.Fatalf("status = %#v", status)
 	}
 
 	streamUsage := ev
-	streamUsage.Metadata = map[string]any{"phase": engine.ProviderUsagePhaseStreamUsage}
+	streamUsage.Metadata = map[string]any{"phase": ProviderUsagePhaseStreamUsage}
 	if _, ok := ContextStatusFromProviderUsageEvent(streamUsage); ok {
 		t.Fatalf("map-shaped stream usage phase should not become a final context status")
-	}
-	typedStreamUsage := ev
-	typedStreamUsage.Metadata = engine.ProviderUsageContextStatus{Phase: engine.ProviderUsagePhaseStreamUsage}
-	if _, ok := ContextStatusFromProviderUsageEvent(typedStreamUsage); ok {
-		t.Fatalf("typed stream usage phase should not become a final context status")
 	}
 	wrappedStatus := ev
 	wrappedStatus.Metadata = map[string]any{"details": ev.Metadata}
@@ -152,12 +143,12 @@ func TestContextStatusesFromObservations(t *testing.T) {
 		Model:                "fake-model",
 		CompactionGeneration: 2,
 		CompactionWindowID:   "window-2",
-		RequestEstimate:      contextpolicy.RequestEstimate{EstimatedInputTokens: 320},
-		ProjectedPressure: contextpolicy.ContextPressure{
+		RequestEstimate:      config.RequestEstimate{EstimatedInputTokens: 320},
+		ProjectedPressure: config.ContextPressure{
 			ProjectedInputTokens: 320,
 			ContextWindowTokens:  1000,
 			ThresholdTokens:      800,
-			Source:               contextpolicy.PressureSourceFullRequestEstimate,
+			Source:               config.PressureSourceFullRequestEstimate,
 		},
 		ObservedAt: created,
 	}}, []ProviderUsageObservation{{
@@ -170,9 +161,9 @@ func TestContextStatusesFromObservations(t *testing.T) {
 		Attempt:              1,
 		Provider:             "fake",
 		Model:                "fake-model",
-		Usage:                provider.Usage{WindowInputTokens: 420, InputTokens: 400, OutputTokens: 30, Source: provider.UsageNative, Available: true},
-		RequestEstimate:      contextpolicy.RequestEstimate{EstimatedInputTokens: 320},
-		ContextPressure:      contextpolicy.ContextPressure{WindowInputTokens: 420, ContextWindowTokens: 1000, ThresholdTokens: 800, Source: contextpolicy.PressureSourceProviderUsage},
+		Usage:                ProviderUsage{WindowInputTokens: 420, InputTokens: 400, OutputTokens: 30, Source: "native", Available: true},
+		RequestEstimate:      config.RequestEstimate{EstimatedInputTokens: 320},
+		ContextPressure:      config.ContextPressure{WindowInputTokens: 420, ContextWindowTokens: 1000, ThresholdTokens: 800, Source: config.PressureSourceProviderUsage},
 		CompactionGeneration: 2,
 		CompactionWindowID:   "window-2",
 		ObservedAt:           created.Add(time.Second),
@@ -209,12 +200,12 @@ func TestContextStatusesFromObservationsSkipProviderUsageWithoutPressure(t *test
 		Attempt:          1,
 		Provider:         "fake",
 		Model:            "fake-model",
-		RequestEstimate:  contextpolicy.RequestEstimate{EstimatedInputTokens: 320},
-		ProjectedPressure: contextpolicy.ContextPressure{
+		RequestEstimate:  config.RequestEstimate{EstimatedInputTokens: 320},
+		ProjectedPressure: config.ContextPressure{
 			ProjectedInputTokens: 320,
 			ContextWindowTokens:  1000,
 			ThresholdTokens:      800,
-			Source:               contextpolicy.PressureSourceFullRequestEstimate,
+			Source:               config.PressureSourceFullRequestEstimate,
 		},
 		ObservedAt: created,
 	}}, []ProviderUsageObservation{{
@@ -232,83 +223,82 @@ func TestContextStatusesFromObservationsSkipProviderUsageWithoutPressure(t *test
 	}
 }
 
-func TestCompactionEventFromEngineEvents(t *testing.T) {
-	start := event.Event{
-		Type:      event.ContextCompact,
-		RunID:     "turn-1",
-		ThreadID:  "thread-1",
-		TurnID:    "turn-1",
-		Step:      2,
-		Timestamp: time.Unix(30, 0),
+func TestCompactionEventFromEvents(t *testing.T) {
+	start := Event{
+		Type:       EventTypeContextCompact,
+		RunID:      "turn-1",
+		ThreadID:   "thread-1",
+		TurnID:     "turn-1",
+		Step:       2,
+		ObservedAt: time.Unix(30, 0),
 		Metadata: map[string]any{
-			"phase":                  engine.ContextCompactPhaseStart,
-			"trigger":                compaction.TriggerPostResponse,
-			"reason":                 compaction.ReasonThreshold,
-			"before_pressure":        contextpolicy.ContextPressure{WindowInputTokens: 850},
-			"message_context_before": contextpolicy.Usage{InputTokens: 850},
+			"phase":                  CompactionPhaseStart,
+			"trigger":                "post_response",
+			"reason":                 "threshold",
+			"before_pressure":        config.ContextPressure{WindowInputTokens: 850},
+			"message_context_before": config.ContextUsage{InputTokens: 850},
 			"tokens_before":          int64(850),
 		},
 	}
-	complete := event.Event{
-		Type:      event.ContextCompact,
-		RunID:     "turn-1",
-		ThreadID:  "thread-1",
-		TurnID:    "turn-1",
-		Step:      2,
-		Message:   "event-message-must-not-be-used",
-		Result:    "summary text with /Users/example/private/path",
-		Timestamp: time.Unix(31, 0),
+	complete := Event{
+		Type:       EventTypeContextCompact,
+		RunID:      "turn-1",
+		ThreadID:   "thread-1",
+		TurnID:     "turn-1",
+		Step:       2,
+		Result:     "summary text with /Users/example/private/path",
+		ObservedAt: time.Unix(31, 0),
 		Metadata: map[string]any{
-			"phase":                      engine.ContextCompactPhaseComplete,
-			"trigger":                    compaction.TriggerPostResponse,
-			"reason":                     compaction.ReasonThreshold,
+			"phase":                      CompactionPhaseComplete,
+			"trigger":                    "post_response",
+			"reason":                     "threshold",
 			"compaction_id":              "compact-1",
 			"compaction_generation":      3,
 			"compaction_window_id":       "window-3",
 			"compacted_through_entry_id": "entry-7",
 			"tokens_before":              int64(850),
 			"tokens_after_estimate":      int64(240),
-			"context_before":             contextpolicy.Usage{InputTokens: 850},
-			"context_after":              contextpolicy.Usage{InputTokens: 240},
+			"context_before":             config.ContextUsage{InputTokens: 850},
+			"context_after":              config.ContextUsage{InputTokens: 240},
 		},
 	}
-	failed := event.Event{
-		Type:      event.ContextCompact,
-		RunID:     "turn-1",
-		ThreadID:  "thread-1",
-		TurnID:    "turn-1",
-		Step:      3,
-		Err:       "summary failed",
-		Timestamp: time.Unix(32, 0),
+	failed := Event{
+		Type:       EventTypeContextCompact,
+		RunID:      "turn-1",
+		ThreadID:   "thread-1",
+		TurnID:     "turn-1",
+		Step:       3,
+		Error:      "summary failed",
+		ObservedAt: time.Unix(32, 0),
 		Metadata: map[string]any{
-			"phase":                  engine.ContextCompactPhaseFailed,
-			"trigger":                compaction.TriggerOverflow,
-			"reason":                 compaction.ReasonProviderOverflow,
-			"before_pressure":        contextpolicy.ContextPressure{WindowInputTokens: 990},
-			"message_context_before": contextpolicy.Usage{InputTokens: 990},
+			"phase":                  CompactionPhaseFailed,
+			"trigger":                "provider_overflow",
+			"reason":                 "provider_overflow",
+			"before_pressure":        config.ContextPressure{WindowInputTokens: 990},
+			"message_context_before": config.ContextUsage{InputTokens: 990},
 			"tokens_before":          int64(990),
 		},
 	}
 
-	started, ok := CompactionEventFromEngineEvent(start)
+	started, ok := CompactionEventFromEvent(start)
 	if !ok {
 		t.Fatalf("start event was not converted")
 	}
-	if started.Phase != engine.ContextCompactPhaseStart ||
+	if started.Phase != CompactionPhaseStart ||
 		started.Status != CompactionStatusRunning ||
-		started.Trigger != string(compaction.TriggerPostResponse) ||
-		started.Reason != string(compaction.ReasonThreshold) ||
+		started.Trigger != string("post_response") ||
+		started.Reason != string("threshold") ||
 		started.TokensBefore != 850 ||
 		started.BeforePressure.WindowInputTokens != 850 ||
 		started.TurnID != "turn-1" {
 		t.Fatalf("start compaction = %#v", started)
 	}
 
-	done, ok := CompactionEventFromEngineEvent(complete)
+	done, ok := CompactionEventFromEvent(complete)
 	if !ok {
 		t.Fatalf("complete event was not converted")
 	}
-	if done.Phase != engine.ContextCompactPhaseComplete ||
+	if done.Phase != CompactionPhaseComplete ||
 		done.Status != CompactionStatusCompacted ||
 		done.CompactionID != "compact-1" ||
 		done.CompactionGeneration != 3 ||
@@ -318,40 +308,40 @@ func TestCompactionEventFromEngineEvents(t *testing.T) {
 		t.Fatalf("complete compaction = %#v", done)
 	}
 
-	failedEvent, ok := CompactionEventFromEngineEvent(failed)
+	failedEvent, ok := CompactionEventFromEvent(failed)
 	if !ok {
 		t.Fatalf("failed event was not converted")
 	}
-	if failedEvent.Phase != engine.ContextCompactPhaseFailed ||
+	if failedEvent.Phase != CompactionPhaseFailed ||
 		failedEvent.Status != CompactionStatusFailed ||
 		failedEvent.Error != "summary failed" ||
-		failedEvent.Trigger != string(compaction.TriggerOverflow) ||
+		failedEvent.Trigger != string("provider_overflow") ||
 		failedEvent.TokensBefore != 990 ||
 		failedEvent.BeforePressure.WindowInputTokens != 990 {
 		t.Fatalf("failed compaction = %#v", failedEvent)
 	}
 
 	malformed := start
-	malformed.Metadata = map[string]any{"trigger": compaction.TriggerPostResponse}
-	if _, ok := CompactionEventFromEngineEvent(malformed); ok {
+	malformed.Metadata = map[string]any{"trigger": "post_response"}
+	if _, ok := CompactionEventFromEvent(malformed); ok {
 		t.Fatalf("ContextCompact event without explicit phase should not become a DTO")
 	}
 	conflictingError := complete
-	conflictingError.Err = "complete cannot also be failed"
-	if _, ok := CompactionEventFromEngineEvent(conflictingError); ok {
+	conflictingError.Error = "complete cannot also be failed"
+	if _, ok := CompactionEventFromEvent(conflictingError); ok {
 		t.Fatalf("ContextCompact event with non-failed phase and error should not become a DTO")
 	}
 	unknownPhase := complete
 	unknownPhase.Metadata = map[string]any{"phase": "retrying"}
-	if _, ok := CompactionEventFromEngineEvent(unknownPhase); ok {
+	if _, ok := CompactionEventFromEvent(unknownPhase); ok {
 		t.Fatalf("ContextCompact event with unknown phase should not become a DTO")
 	}
 
 	missingID := complete
 	missingID.Metadata = map[string]any{
-		"phase": engine.ContextCompactPhaseComplete,
+		"phase": CompactionPhaseComplete,
 	}
-	noID, ok := CompactionEventFromEngineEvent(missingID)
+	noID, ok := CompactionEventFromEvent(missingID)
 	if !ok {
 		t.Fatalf("complete compaction without id should still convert")
 	}

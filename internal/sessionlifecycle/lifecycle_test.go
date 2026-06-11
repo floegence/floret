@@ -3,8 +3,8 @@ package sessionlifecycle
 import (
 	"testing"
 
-	"github.com/floegence/floret/session"
-	"github.com/floegence/floret/sessiontree"
+	"github.com/floegence/floret/internal/session"
+	"github.com/floegence/floret/internal/sessiontree"
 )
 
 func TestDeriveLifecycleTable(t *testing.T) {

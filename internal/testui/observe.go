@@ -6,12 +6,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/agentharness"
-	"github.com/floegence/floret/provider"
-	"github.com/floegence/floret/provider/cache"
-	"github.com/floegence/floret/session"
-	"github.com/floegence/floret/session/artifact"
-	"github.com/floegence/floret/sessiontree"
+	"github.com/floegence/floret/internal/agentharness"
+	"github.com/floegence/floret/internal/provider"
+	"github.com/floegence/floret/internal/provider/cache"
+	"github.com/floegence/floret/internal/session"
+	"github.com/floegence/floret/internal/session/artifact"
+	"github.com/floegence/floret/internal/sessiontree"
 )
 
 const maxObservedRawSegmentBytes = 16 * 1024

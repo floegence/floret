@@ -2,75 +2,119 @@ package observation
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"time"
 
-	"github.com/floegence/floret/engine"
-	"github.com/floegence/floret/event"
-	"github.com/floegence/floret/provider"
-	"github.com/floegence/floret/session/contextpolicy"
+	"github.com/floegence/floret/config"
 )
 
 const (
 	ContextPhaseProjectedRequest = "projected_request"
 	ContextPhaseProviderUsage    = "provider_usage"
+
+	ContextStatusStable        = "stable"
+	ContextStatusNearThreshold = "near_threshold"
+	ContextStatusWillCompact   = "will_compact"
+	ContextStatusHardLimit     = "hard_limit"
+	ContextStatusEstimated     = "estimated"
+
+	ProviderUsagePhaseStreamUsage        = "stream_usage"
+	ProviderUsagePhaseFinalContextStatus = "final_context_status"
 )
 
+type Event struct {
+	Type       string         `json:"type"`
+	RunID      string         `json:"run_id,omitempty"`
+	ThreadID   string         `json:"thread_id,omitempty"`
+	TurnID     string         `json:"turn_id,omitempty"`
+	Step       int            `json:"step,omitempty"`
+	Provider   string         `json:"provider,omitempty"`
+	Model      string         `json:"model,omitempty"`
+	Result     string         `json:"result,omitempty"`
+	Error      string         `json:"error,omitempty"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
+	ObservedAt time.Time      `json:"observed_at"`
+}
+
+type ProviderUsage struct {
+	InputTokens       int64   `json:"input_tokens,omitempty"`
+	OutputTokens      int64   `json:"output_tokens,omitempty"`
+	ReasoningTokens   int64   `json:"reasoning_tokens,omitempty"`
+	CacheReadTokens   int64   `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens  int64   `json:"cache_write_tokens,omitempty"`
+	TotalTokens       int64   `json:"total_tokens,omitempty"`
+	WindowInputTokens int64   `json:"window_input_tokens,omitempty"`
+	CostUSD           float64 `json:"cost_usd,omitempty"`
+	Source            string  `json:"source,omitempty"`
+	Available         bool    `json:"available,omitempty"`
+}
+
+func (u ProviderUsage) Normalized() ProviderUsage {
+	if u.WindowInputTokens <= 0 {
+		u.WindowInputTokens = u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens
+	}
+	if u.TotalTokens <= 0 {
+		u.TotalTokens = u.InputTokens + u.OutputTokens + u.ReasoningTokens + u.CacheReadTokens + u.CacheWriteTokens
+	}
+	return u
+}
+
 type RequestObservation struct {
-	RunID                string                        `json:"run_id,omitempty"`
-	ThreadID             string                        `json:"thread_id,omitempty"`
-	TurnID               string                        `json:"turn_id,omitempty"`
-	Step                 int                           `json:"step"`
-	RequestID            string                        `json:"request_id,omitempty"`
-	LogicalRequestID     string                        `json:"logical_request_id,omitempty"`
-	Attempt              int                           `json:"attempt,omitempty"`
-	Provider             string                        `json:"provider"`
-	Model                string                        `json:"model"`
-	ObservedAt           time.Time                     `json:"observed_at"`
-	RequestEstimate      contextpolicy.RequestEstimate `json:"request_estimate,omitempty"`
-	ProjectedPressure    contextpolicy.ContextPressure `json:"projected_context_pressure,omitempty"`
-	CompactionGeneration int                           `json:"compaction_generation,omitempty"`
-	CompactionWindowID   string                        `json:"compaction_window_id,omitempty"`
+	RunID                string                 `json:"run_id,omitempty"`
+	ThreadID             string                 `json:"thread_id,omitempty"`
+	TurnID               string                 `json:"turn_id,omitempty"`
+	Step                 int                    `json:"step"`
+	RequestID            string                 `json:"request_id,omitempty"`
+	LogicalRequestID     string                 `json:"logical_request_id,omitempty"`
+	Attempt              int                    `json:"attempt,omitempty"`
+	Provider             string                 `json:"provider"`
+	Model                string                 `json:"model"`
+	ObservedAt           time.Time              `json:"observed_at"`
+	RequestEstimate      config.RequestEstimate `json:"request_estimate,omitempty"`
+	ProjectedPressure    config.ContextPressure `json:"projected_context_pressure,omitempty"`
+	CompactionGeneration int                    `json:"compaction_generation,omitempty"`
+	CompactionWindowID   string                 `json:"compaction_window_id,omitempty"`
 }
 
 type ProviderUsageObservation struct {
-	RunID                string                        `json:"run_id,omitempty"`
-	ThreadID             string                        `json:"thread_id,omitempty"`
-	TurnID               string                        `json:"turn_id,omitempty"`
-	Step                 int                           `json:"step,omitempty"`
-	RequestID            string                        `json:"request_id,omitempty"`
-	LogicalRequestID     string                        `json:"logical_request_id,omitempty"`
-	Attempt              int                           `json:"attempt,omitempty"`
-	Provider             string                        `json:"provider,omitempty"`
-	Model                string                        `json:"model,omitempty"`
-	ObservedAt           time.Time                     `json:"observed_at"`
-	Usage                provider.Usage                `json:"usage,omitempty"`
-	RequestEstimate      contextpolicy.RequestEstimate `json:"request_estimate,omitempty"`
-	ContextPressure      contextpolicy.ContextPressure `json:"context_pressure,omitempty"`
-	CompactionGeneration int                           `json:"compaction_generation,omitempty"`
-	CompactionWindowID   string                        `json:"compaction_window_id,omitempty"`
+	RunID                string                 `json:"run_id,omitempty"`
+	ThreadID             string                 `json:"thread_id,omitempty"`
+	TurnID               string                 `json:"turn_id,omitempty"`
+	Step                 int                    `json:"step,omitempty"`
+	RequestID            string                 `json:"request_id,omitempty"`
+	LogicalRequestID     string                 `json:"logical_request_id,omitempty"`
+	Attempt              int                    `json:"attempt,omitempty"`
+	Provider             string                 `json:"provider,omitempty"`
+	Model                string                 `json:"model,omitempty"`
+	ObservedAt           time.Time              `json:"observed_at"`
+	Usage                ProviderUsage          `json:"usage,omitempty"`
+	RequestEstimate      config.RequestEstimate `json:"request_estimate,omitempty"`
+	ContextPressure      config.ContextPressure `json:"context_pressure,omitempty"`
+	CompactionGeneration int                    `json:"compaction_generation,omitempty"`
+	CompactionWindowID   string                 `json:"compaction_window_id,omitempty"`
 }
 
 type ContextStatus struct {
-	RunID                string                        `json:"run_id,omitempty"`
-	ThreadID             string                        `json:"thread_id,omitempty"`
-	TurnID               string                        `json:"turn_id,omitempty"`
-	Step                 int                           `json:"step,omitempty"`
-	RequestID            string                        `json:"request_id,omitempty"`
-	LogicalRequestID     string                        `json:"logical_request_id,omitempty"`
-	Attempt              int                           `json:"attempt,omitempty"`
-	Phase                string                        `json:"phase"`
-	Provider             string                        `json:"provider,omitempty"`
-	Model                string                        `json:"model,omitempty"`
-	ObservedAt           time.Time                     `json:"observed_at"`
-	Usage                provider.Usage                `json:"usage,omitempty"`
-	RequestEstimate      contextpolicy.RequestEstimate `json:"request_estimate,omitempty"`
-	ContextPressure      contextpolicy.ContextPressure `json:"context_pressure,omitempty"`
-	UsedRatio            float64                       `json:"used_ratio,omitempty"`
-	ThresholdRatio       float64                       `json:"threshold_ratio,omitempty"`
-	Status               string                        `json:"status"`
-	CompactionGeneration int                           `json:"compaction_generation,omitempty"`
-	CompactionWindowID   string                        `json:"compaction_window_id,omitempty"`
+	RunID                string                 `json:"run_id,omitempty"`
+	ThreadID             string                 `json:"thread_id,omitempty"`
+	TurnID               string                 `json:"turn_id,omitempty"`
+	Step                 int                    `json:"step,omitempty"`
+	RequestID            string                 `json:"request_id,omitempty"`
+	LogicalRequestID     string                 `json:"logical_request_id,omitempty"`
+	Attempt              int                    `json:"attempt,omitempty"`
+	Phase                string                 `json:"phase"`
+	Provider             string                 `json:"provider,omitempty"`
+	Model                string                 `json:"model,omitempty"`
+	ObservedAt           time.Time              `json:"observed_at"`
+	Usage                ProviderUsage          `json:"usage,omitempty"`
+	RequestEstimate      config.RequestEstimate `json:"request_estimate,omitempty"`
+	ContextPressure      config.ContextPressure `json:"context_pressure,omitempty"`
+	UsedRatio            float64                `json:"used_ratio,omitempty"`
+	ThresholdRatio       float64                `json:"threshold_ratio,omitempty"`
+	Status               string                 `json:"status"`
+	CompactionGeneration int                    `json:"compaction_generation,omitempty"`
+	CompactionWindowID   string                 `json:"compaction_window_id,omitempty"`
 }
 
 func ContextStatusFromRequest(req RequestObservation) ContextStatus {
@@ -88,9 +132,9 @@ func ContextStatusFromRequest(req RequestObservation) ContextStatus {
 		ObservedAt:           req.ObservedAt,
 		RequestEstimate:      req.RequestEstimate,
 		ContextPressure:      req.ProjectedPressure,
-		UsedRatio:            engine.ContextPressureUsedRatio(req.ProjectedPressure),
-		ThresholdRatio:       engine.ContextPressureThresholdRatio(req.ProjectedPressure),
-		Status:               engine.ContextPressureDisplayStatus(req.ProjectedPressure),
+		UsedRatio:            ContextPressureUsedRatio(req.ProjectedPressure),
+		ThresholdRatio:       ContextPressureThresholdRatio(req.ProjectedPressure),
+		Status:               ContextPressureDisplayStatus(req.ProjectedPressure),
 		CompactionGeneration: req.CompactionGeneration,
 		CompactionWindowID:   req.CompactionWindowID,
 	}
@@ -115,20 +159,20 @@ func ContextStatusFromProviderUsage(usage ProviderUsageObservation) (ContextStat
 		Usage:                usage.Usage.Normalized(),
 		RequestEstimate:      usage.RequestEstimate,
 		ContextPressure:      usage.ContextPressure,
-		UsedRatio:            engine.ContextPressureUsedRatio(usage.ContextPressure),
-		ThresholdRatio:       engine.ContextPressureThresholdRatio(usage.ContextPressure),
-		Status:               engine.ContextPressureDisplayStatus(usage.ContextPressure),
+		UsedRatio:            ContextPressureUsedRatio(usage.ContextPressure),
+		ThresholdRatio:       ContextPressureThresholdRatio(usage.ContextPressure),
+		Status:               ContextPressureDisplayStatus(usage.ContextPressure),
 		CompactionGeneration: usage.CompactionGeneration,
 		CompactionWindowID:   usage.CompactionWindowID,
 	}, true
 }
 
-func ContextStatusFromProviderUsageEvent(ev event.Event) (ContextStatus, bool) {
-	if ev.Type != event.ProviderUsage {
+func ContextStatusFromProviderUsageEvent(ev Event) (ContextStatus, bool) {
+	if ev.Type != EventTypeProviderUsage {
 		return ContextStatus{}, false
 	}
 	status, ok := providerUsageContextStatusFromMetadata(ev.Metadata)
-	if !ok || status.Phase != engine.ProviderUsagePhaseFinalContextStatus {
+	if !ok || status.Phase != ProviderUsagePhaseFinalContextStatus {
 		return ContextStatus{}, false
 	}
 	return ContextStatusFromProviderUsage(ProviderUsageObservation{
@@ -141,7 +185,7 @@ func ContextStatusFromProviderUsageEvent(ev event.Event) (ContextStatus, bool) {
 		Attempt:              status.Attempt,
 		Provider:             ev.Provider,
 		Model:                ev.Model,
-		ObservedAt:           ev.Timestamp,
+		ObservedAt:           ev.ObservedAt,
 		Usage:                status.Usage,
 		RequestEstimate:      status.RequestEstimate,
 		ContextPressure:      status.ContextPressure,
@@ -150,11 +194,11 @@ func ContextStatusFromProviderUsageEvent(ev event.Event) (ContextStatus, bool) {
 	})
 }
 
-func ContextStatusesFromRequests(requests []RequestObservation, events []event.Event) []ContextStatus {
+func ContextStatusesFromRequests(requests []RequestObservation, events []Event) []ContextStatus {
 	return ContextStatusesFromObservations(requests, nil, events)
 }
 
-func ContextStatusesFromObservations(requests []RequestObservation, usages []ProviderUsageObservation, events []event.Event) []ContextStatus {
+func ContextStatusesFromObservations(requests []RequestObservation, usages []ProviderUsageObservation, events []Event) []ContextStatus {
 	out := make([]ContextStatus, 0, len(requests)+len(usages)+len(events))
 	for _, req := range requests {
 		out = append(out, ContextStatusFromRequest(req))
@@ -206,28 +250,77 @@ func RequestID(runID string, step int) string {
 	return fmt.Sprintf("%s:req:%d", runID, step)
 }
 
-func requestIDOrDefault(requestID, runID string, step int) string {
-	if requestID != "" {
-		return requestID
+func ContextPressureDisplayStatus(pressure config.ContextPressure) string {
+	if pressure.HardLimitExceeded {
+		return ContextStatusHardLimit
 	}
-	return RequestID(runID, step)
+	if pressure.CompactionNeeded {
+		return ContextStatusWillCompact
+	}
+	if pressure.Source == config.PressureSourceMissingNativeUsage {
+		return ContextStatusEstimated
+	}
+	used := ContextPressureUsedRatio(pressure)
+	threshold := ContextPressureThresholdRatio(pressure)
+	if used > 0 && threshold > 0 && used >= threshold*0.9 {
+		return ContextStatusNearThreshold
+	}
+	return ContextStatusStable
 }
 
-func providerUsageContextStatusFromMetadata(value any) (engine.ProviderUsageContextStatus, bool) {
-	switch v := value.(type) {
-	case engine.ProviderUsageContextStatus:
-		return v, true
-	case *engine.ProviderUsageContextStatus:
-		if v == nil {
-			return engine.ProviderUsageContextStatus{}, false
-		}
-		return *v, true
-	default:
-		return engine.ProviderUsageContextStatus{}, false
+func ContextPressureUsedRatio(pressure config.ContextPressure) float64 {
+	if pressure.ContextWindowTokens <= 0 {
+		return 0
 	}
+	used := pressure.WindowInputTokens
+	if used <= 0 {
+		used = pressure.ProjectedInputTokens
+	}
+	return cleanRatio(float64(used) / float64(pressure.ContextWindowTokens))
 }
 
-func hasContextPressure(pressure contextpolicy.ContextPressure) bool {
+func ContextPressureThresholdRatio(pressure config.ContextPressure) float64 {
+	if pressure.ContextWindowTokens <= 0 || pressure.ThresholdTokens <= 0 {
+		return 0
+	}
+	return cleanRatio(float64(pressure.ThresholdTokens) / float64(pressure.ContextWindowTokens))
+}
+
+type providerUsageContextStatus struct {
+	Phase                string
+	RequestID            string
+	LogicalRequestID     string
+	Attempt              int
+	Usage                ProviderUsage
+	RequestEstimate      config.RequestEstimate
+	ContextPressure      config.ContextPressure
+	CompactionGeneration int
+	CompactionWindowID   string
+}
+
+func providerUsageContextStatusFromMetadata(meta map[string]any) (providerUsageContextStatus, bool) {
+	if len(meta) == 0 {
+		return providerUsageContextStatus{}, false
+	}
+	pressure, _ := contextPressureFromAny(meta["context_pressure"])
+	phase := stringFromAny(meta["phase"])
+	if phase == "" {
+		return providerUsageContextStatus{}, false
+	}
+	return providerUsageContextStatus{
+		Phase:                phase,
+		RequestID:            stringFromAny(meta["request_id"]),
+		LogicalRequestID:     stringFromAny(meta["logical_request_id"]),
+		Attempt:              intFromAny(meta["attempt"], 0),
+		Usage:                providerUsageFromAny(meta["usage"]),
+		RequestEstimate:      requestEstimateFromAny(meta["request_estimate"]),
+		ContextPressure:      pressure,
+		CompactionGeneration: intFromAny(meta["compaction_generation"], 0),
+		CompactionWindowID:   stringFromAny(meta["compaction_window_id"]),
+	}, true
+}
+
+func hasContextPressure(pressure config.ContextPressure) bool {
 	return pressure.ContextWindowTokens > 0 ||
 		pressure.ThresholdTokens > 0 ||
 		pressure.ProjectedInputTokens > 0 ||
@@ -236,4 +329,18 @@ func hasContextPressure(pressure contextpolicy.ContextPressure) bool {
 		pressure.OutputHeadroomTokens > 0 ||
 		pressure.Source != "" ||
 		pressure.Signal != ""
+}
+
+func cleanRatio(value float64) float64 {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+		return 0
+	}
+	return value
+}
+
+func requestIDOrDefault(requestID, runID string, step int) string {
+	if requestID != "" {
+		return requestID
+	}
+	return RequestID(runID, step)
 }

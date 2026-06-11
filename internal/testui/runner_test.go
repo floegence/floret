@@ -15,21 +15,21 @@ import (
 	"time"
 
 	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/engine"
-	"github.com/floegence/floret/event"
+	"github.com/floegence/floret/internal/engine"
+	"github.com/floegence/floret/internal/event"
+	"github.com/floegence/floret/internal/provider"
+	"github.com/floegence/floret/internal/provider/cache"
+	"github.com/floegence/floret/internal/provider/catalog"
 	"github.com/floegence/floret/internal/searchcap"
+	"github.com/floegence/floret/internal/session"
+	"github.com/floegence/floret/internal/session/compaction"
+	"github.com/floegence/floret/internal/session/contextpolicy"
 	"github.com/floegence/floret/internal/sessionlifecycle"
+	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/internal/storage/sqlite"
+	"github.com/floegence/floret/internal/testing/harness"
+	"github.com/floegence/floret/internal/tools/mcp"
 	"github.com/floegence/floret/observation"
-	"github.com/floegence/floret/provider"
-	"github.com/floegence/floret/provider/cache"
-	"github.com/floegence/floret/provider/catalog"
-	"github.com/floegence/floret/runtime/storage/sqlite"
-	"github.com/floegence/floret/session"
-	"github.com/floegence/floret/session/compaction"
-	"github.com/floegence/floret/session/contextpolicy"
-	"github.com/floegence/floret/sessiontree"
-	"github.com/floegence/floret/testing/harness"
-	"github.com/floegence/floret/tools/mcp"
 )
 
 func TestRunnerParsesGoTestJSON(t *testing.T) {
@@ -39,11 +39,11 @@ func TestRunnerParsesGoTestJSON(t *testing.T) {
 	runner.Now = fixedClock()
 	runner.Exec = func(context.Context, string, []string, string, []string) ([]byte, int) {
 		return []byte(strings.Join([]string{
-			`{"Action":"run","Package":"github.com/floegence/floret/engine","Test":"TestOne"}`,
-			`{"Action":"pass","Package":"github.com/floegence/floret/engine","Test":"TestOne","Elapsed":0.01}`,
-			`{"Action":"run","Package":"github.com/floegence/floret/engine","Test":"TestSkip"}`,
-			`{"Action":"skip","Package":"github.com/floegence/floret/engine","Test":"TestSkip","Elapsed":0.01}`,
-			`{"Action":"pass","Package":"github.com/floegence/floret/engine","Elapsed":0.03}`,
+			`{"Action":"run","Package":"github.com/floegence/floret/internal/engine","Test":"TestOne"}`,
+			`{"Action":"pass","Package":"github.com/floegence/floret/internal/engine","Test":"TestOne","Elapsed":0.01}`,
+			`{"Action":"run","Package":"github.com/floegence/floret/internal/engine","Test":"TestSkip"}`,
+			`{"Action":"skip","Package":"github.com/floegence/floret/internal/engine","Test":"TestSkip","Elapsed":0.01}`,
+			`{"Action":"pass","Package":"github.com/floegence/floret/internal/engine","Elapsed":0.03}`,
 		}, "\n")), 0
 	}
 
@@ -65,7 +65,7 @@ func TestRunnerReportsFailedCommand(t *testing.T) {
 	runner := NewRunner(root)
 	runner.Now = fixedClock()
 	runner.Exec = func(context.Context, string, []string, string, []string) ([]byte, int) {
-		return []byte(`{"Action":"fail","Package":"github.com/floegence/floret/engine","Elapsed":0.01}`), 1
+		return []byte(`{"Action":"fail","Package":"github.com/floegence/floret/internal/engine","Elapsed":0.01}`), 1
 	}
 
 	result := runner.Run(context.Background(), TargetRace)
@@ -1178,7 +1178,7 @@ func TestRunnerRestoresLongSessionEntryAndKeepsSelectedTools(t *testing.T) {
 		Message:       "store a long answer",
 		SystemPrompt:  "test",
 		SelectedTools: []string{"grep", "shell"},
-		ContextPolicy: contextpolicy.Policy{
+		ContextPolicy: config.ContextPolicy{
 			ContextWindowTokens:   1_000_000,
 			MaxOutputTokens:       4096,
 			RecentTailTokens:      4096,
@@ -2764,7 +2764,7 @@ func TestAgentObservationMergesPromptCacheContextStatusesWithLiveObservation(t *
 		Provider:             "fake",
 		Model:                "fake-model",
 		ObservedAt:           time.Unix(11, 0),
-		ContextPressure:      contextpolicy.ContextPressure{WindowInputTokens: 650, ContextWindowTokens: 1000, ThresholdTokens: 800},
+		ContextPressure:      config.ContextPressure{WindowInputTokens: 650, ContextWindowTokens: 1000, ThresholdTokens: 800},
 		UsedRatio:            0.65,
 		ThresholdRatio:       0.8,
 		Status:               engine.ContextStatusStable,
@@ -3190,8 +3190,8 @@ func fixedClock() func() time.Time {
 	}
 }
 
-func contextPolicyForTest(window int64) contextpolicy.Policy {
-	return contextpolicy.Policy{
+func contextPolicyForTest(window int64) config.ContextPolicy {
+	return config.ContextPolicy{
 		ContextWindowTokens:   window,
 		MaxOutputTokens:       32,
 		ReservedOutputTokens:  32,

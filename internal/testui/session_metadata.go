@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/provider"
-	"github.com/floegence/floret/session/contextpolicy"
+	"github.com/floegence/floret/internal/configbridge"
+	"github.com/floegence/floret/internal/provider"
 )
 
 const agentSessionMetadataVersion = 1
@@ -29,7 +29,7 @@ type agentSessionMetadata struct {
 	PromptIdentity config.PromptIdentity `json:"prompt_identity,omitempty"`
 	SystemPrompt   string                `json:"system_prompt"`
 	SelectedTools  []string              `json:"selected_tools"`
-	ContextPolicy  contextpolicy.Policy  `json:"context_policy"`
+	ContextPolicy  config.ContextPolicy  `json:"context_policy"`
 	Engine         agentSessionEngine    `json:"engine"`
 	Turns          []AgentTurnSummary    `json:"turns"`
 	APIKeyRequired bool                  `json:"api_key_required,omitempty"`
@@ -164,7 +164,7 @@ func (r Runner) normalizeAgentSessionMetadata(sessionID string, meta agentSessio
 		return agentSessionMetadata{}, err
 	}
 	meta.SelectedTools = cloneSelectedTools(selected)
-	meta.ContextPolicy = contextpolicy.Normalize(meta.ContextPolicy)
+	meta.ContextPolicy = configbridge.NormalizeContextPolicy(meta.ContextPolicy)
 	promptCfg := promptConfigFromSessionMetadata(meta)
 	meta.SystemPrompt = promptCfg.SystemPrompt
 	meta.AgentProfile = promptCfg.AgentProfile

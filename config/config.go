@@ -8,16 +8,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/floegence/floret/provider/cache"
-	"github.com/floegence/floret/provider/catalog"
-	"github.com/floegence/floret/session/contextpolicy"
+	"github.com/floegence/floret/internal/provider/cache"
+	"github.com/floegence/floret/internal/provider/catalog"
+	"github.com/floegence/floret/internal/session/contextpolicy"
 )
 
 const (
 	DefaultEnvFile = ".env.local"
 
-	ProviderFake             = catalog.ProviderFake
-	ProviderOpenAICompatible = catalog.ProviderOpenAICompatible
+	ProviderFake             = "fake"
+	ProviderOpenAICompatible = "openai-compatible"
 
 	DefaultAgentProfileID     = "floret"
 	DefaultFloretSystemPrompt = "You are Floret."
@@ -56,6 +56,7 @@ type Config struct {
 	FakeResponse string
 
 	RunID                   string
+	PromptScopeID           string
 	PromptCacheDir          string
 	PromptCacheRetention    string
 	SystemPrompt            string
@@ -64,7 +65,7 @@ type Config struct {
 	SkillsEnabled           bool
 	SkillSources            []string
 	SkillPromptBudgetBytes  int
-	ContextPolicy           contextpolicy.Policy
+	ContextPolicy           ContextPolicy
 	MaxOutputTokensSet      bool
 	MaxEmptyProviderRetries int
 	NoProgressLimit         int
@@ -122,7 +123,7 @@ func fromValues(values map[string]string) (Config, error) {
 		defaultModel = model.ID
 	}
 	modelName := get(values, "FLORET_MODEL", defaultModel)
-	defaultPolicy := catalog.ContextPolicy(providerName, modelName)
+	defaultPolicy := contextPolicyFromInternal(catalog.ContextPolicy(providerName, modelName))
 	cfg := Config{
 		Provider:                providerName,
 		Model:                   modelName,
@@ -147,7 +148,7 @@ func fromValues(values map[string]string) (Config, error) {
 			cfg.envSystemPrompt = cfg.SystemPrompt
 		}
 	}
-	policyOverrides := contextpolicy.Policy{MaxOutputTokens: defaultPolicy.MaxOutputTokens}
+	policyOverrides := ContextPolicy{MaxOutputTokens: defaultPolicy.MaxOutputTokens}
 	var err error
 	if value, ok, err := getOptionalInt64(values, "FLORET_CONTEXT_WINDOW_TOKENS"); err != nil {
 		return Config{}, err
@@ -185,7 +186,7 @@ func fromValues(values map[string]string) (Config, error) {
 	} else if ok {
 		policyOverrides.MaxCompactionFailures = value
 	}
-	cfg.ContextPolicy = contextpolicy.MergeDefaults(policyOverrides, defaultPolicy)
+	cfg.ContextPolicy = contextPolicyFromInternal(contextpolicy.MergeDefaults(policyOverrides.internal(), defaultPolicy.internal()))
 	if cfg.MaxOutputTokensSet {
 		cfg.ContextPolicy.MaxOutputTokens = policyOverrides.MaxOutputTokens
 	}
@@ -241,8 +242,8 @@ func Resolve(cfg Config, environ map[string]string) (Config, error) {
 	if cfg.SkillPromptBudgetBytes <= 0 {
 		cfg.SkillPromptBudgetBytes = 16 * 1024
 	}
-	defaultPolicy := catalog.ContextPolicy(cfg.Provider, cfg.Model)
-	contextPolicyProvided := contextpolicy.HasValues(cfg.ContextPolicy)
+	defaultPolicy := contextPolicyFromInternal(catalog.ContextPolicy(cfg.Provider, cfg.Model))
+	contextPolicyProvided := contextpolicy.HasValues(cfg.ContextPolicy.internal())
 	if cfg.ContextPolicy.ContextWindowTokens <= 0 {
 		cfg.ContextPolicy.ContextWindowTokens = defaultPolicy.ContextWindowTokens
 	}
@@ -476,16 +477,16 @@ func validate(cfg Config) (Config, error) {
 	if _, err := normalizePromptCacheRetention(cfg.PromptCacheRetention); err != nil {
 		return Config{}, err
 	}
-	cfg.ContextPolicy = contextpolicy.Normalize(cfg.ContextPolicy)
+	cfg.ContextPolicy = contextPolicyFromInternal(contextpolicy.Normalize(cfg.ContextPolicy.internal()))
 	return cfg, nil
 }
 
-func PromptCacheRetention(cfg Config) cache.Retention {
+func PromptCacheRetention(cfg Config) string {
 	retention, err := normalizePromptCacheRetention(cfg.PromptCacheRetention)
 	if err != nil {
-		return cache.RetentionInMemory
+		return string(cache.RetentionInMemory)
 	}
-	return retention
+	return string(retention)
 }
 
 func normalizePromptCacheRetention(value string) (cache.Retention, error) {

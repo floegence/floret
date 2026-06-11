@@ -6,9 +6,9 @@ import (
 	"strings"
 
 	"github.com/floegence/floret/internal/searchcap"
-	"github.com/floegence/floret/provider"
+	"github.com/floegence/floret/internal/provider"
 	"github.com/floegence/floret/tools"
-	"github.com/floegence/floret/tools/builtin"
+	"github.com/floegence/floret/internal/tools/builtin"
 )
 
 type AgentToolOption struct {

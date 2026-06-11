@@ -10,8 +10,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-
-	"github.com/floegence/floret/provider"
 )
 
 var ErrRejected = errors.New("tool call rejected")
@@ -47,7 +45,6 @@ type RunOptions struct {
 	TurnID        string
 	PromptScopeID string
 	Step          int
-	CWD           string
 	Labels        map[string]string
 	HostContext   map[string]string
 }
@@ -62,7 +59,6 @@ type erasedInvocation struct {
 	TurnID        string
 	PromptScopeID string
 	Step          int
-	CWD           string
 	Labels        map[string]string
 	HostContext   map[string]string
 }
@@ -113,7 +109,6 @@ func Define[T any](
 				TurnID:        inv.TurnID,
 				PromptScopeID: inv.PromptScopeID,
 				Step:          inv.Step,
-				CWD:           inv.CWD,
 				Labels:        cloneStringMap(inv.Labels),
 				HostContext:   cloneStringMap(inv.HostContext),
 			})
@@ -133,7 +128,6 @@ func Define[T any](
 				TurnID:        inv.TurnID,
 				PromptScopeID: inv.PromptScopeID,
 				Step:          inv.Step,
-				CWD:           inv.CWD,
 				Labels:        cloneStringMap(inv.Labels),
 				HostContext:   cloneStringMap(inv.HostContext),
 			})
@@ -293,14 +287,14 @@ func (r *Registry) Definition(name string) (Definition, bool) {
 	return cloneDefinition(t.Definition), true
 }
 
-func (r *Registry) Definitions() []provider.ToolDefinition {
+func (r *Registry) Definitions() []ToolDefinition {
 	return r.ExposedDefinitions()
 }
 
-func (r *Registry) ExposedDefinitions() []provider.ToolDefinition {
+func (r *Registry) ExposedDefinitions() []ToolDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	defs := make([]provider.ToolDefinition, 0, len(r.tools))
+	defs := make([]ToolDefinition, 0, len(r.tools))
 	for _, tool := range r.tools {
 		if tool.Definition.Permission.Mode == PermissionDeny {
 			continue
@@ -311,7 +305,7 @@ func (r *Registry) ExposedDefinitions() []provider.ToolDefinition {
 		annotations["destructive"] = tool.Definition.Destructive
 		annotations["open_world"] = tool.Definition.OpenWorld
 		annotations["parallel_safe"] = tool.Definition.ParallelSafe
-		defs = append(defs, provider.ToolDefinition{
+		defs = append(defs, ToolDefinition{
 			Name:         tool.Definition.Name,
 			Title:        tool.Definition.Title,
 			Description:  tool.Definition.Description,
@@ -321,7 +315,7 @@ func (r *Registry) ExposedDefinitions() []provider.ToolDefinition {
 			Annotations:  annotations,
 		})
 	}
-	slices.SortFunc(defs, func(a, b provider.ToolDefinition) int {
+	slices.SortFunc(defs, func(a, b ToolDefinition) int {
 		return strings.Compare(a.Name, b.Name)
 	})
 	return defs
@@ -336,15 +330,15 @@ func cloneDefinition(def Definition) Definition {
 	return def
 }
 
-func (r *Registry) Run(ctx context.Context, call provider.ToolCall, approver Approver) Result {
+func (r *Registry) Run(ctx context.Context, call ToolCall, approver Approver) Result {
 	return r.RunWithOptions(ctx, call, approver, RunOptions{})
 }
 
-func (r *Registry) RunWithOptions(ctx context.Context, call provider.ToolCall, approver Approver, opts RunOptions) Result {
+func (r *Registry) RunWithOptions(ctx context.Context, call ToolCall, approver Approver, opts RunOptions) Result {
 	return r.run(ctx, call, approver, opts)
 }
 
-func (r *Registry) run(ctx context.Context, call provider.ToolCall, approver Approver, opts RunOptions) (result Result) {
+func (r *Registry) run(ctx context.Context, call ToolCall, approver Approver, opts RunOptions) (result Result) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			result = ErrorResult(call.ID, call.Name, fmt.Sprintf("tool %q panicked: %v", call.Name, recovered))
@@ -367,7 +361,7 @@ func (r *Registry) run(ctx context.Context, call provider.ToolCall, approver App
 	if err != nil {
 		return ErrorResult(call.ID, call.Name, InvalidArgumentsText(call.Name, err))
 	}
-	inv := erasedInvocation{CallID: call.ID, Name: call.Name, RawArgs: raw, Args: args, RunID: opts.RunID, ThreadID: opts.ThreadID, TurnID: opts.TurnID, PromptScopeID: opts.PromptScopeID, Step: opts.Step, CWD: opts.CWD, Labels: cloneStringMap(opts.Labels), HostContext: cloneStringMap(opts.HostContext)}
+	inv := erasedInvocation{CallID: call.ID, Name: call.Name, RawArgs: raw, Args: args, RunID: opts.RunID, ThreadID: opts.ThreadID, TurnID: opts.TurnID, PromptScopeID: opts.PromptScopeID, Step: opts.Step, Labels: cloneStringMap(opts.Labels), HostContext: cloneStringMap(opts.HostContext)}
 	if t.Definition.Permission.Mode == PermissionDeny {
 		return ErrorResult(call.ID, call.Name, ErrRejected.Error())
 	}
@@ -391,7 +385,7 @@ func (r *Registry) run(ctx context.Context, call provider.ToolCall, approver App
 	return result
 }
 
-func (r *Registry) permissionDenied(ctx context.Context, def Definition, call provider.ToolCall, args any, resources []ResourceRef, opts RunOptions, approver Approver) string {
+func (r *Registry) permissionDenied(ctx context.Context, def Definition, call ToolCall, args any, resources []ResourceRef, opts RunOptions, approver Approver) string {
 	switch def.Permission.Mode {
 	case PermissionDeny:
 		return ErrRejected.Error()
@@ -415,7 +409,6 @@ func (r *Registry) permissionDenied(ctx context.Context, def Definition, call pr
 			ReadOnly:      def.ReadOnly,
 			Destructive:   def.Destructive,
 			OpenWorld:     def.OpenWorld,
-			CWD:           opts.CWD,
 		})
 		if err != nil {
 			return err.Error()
@@ -432,7 +425,7 @@ func (r *Registry) permissionDenied(ctx context.Context, def Definition, call pr
 	return ""
 }
 
-func approvalID(call provider.ToolCall) string {
+func approvalID(call ToolCall) string {
 	if id := strings.TrimSpace(call.ID); id != "" {
 		return id
 	}
@@ -462,11 +455,11 @@ func cloneStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-func (r *Registry) RunBatch(ctx context.Context, calls []provider.ToolCall, approver Approver) []Result {
+func (r *Registry) RunBatch(ctx context.Context, calls []ToolCall, approver Approver) []Result {
 	return r.RunBatchWithOptions(ctx, calls, approver, RunOptions{})
 }
 
-func (r *Registry) RunBatchWithOptions(ctx context.Context, calls []provider.ToolCall, approver Approver, opts RunOptions) []Result {
+func (r *Registry) RunBatchWithOptions(ctx context.Context, calls []ToolCall, approver Approver, opts RunOptions) []Result {
 	results := make([]Result, len(calls))
 	for i := 0; i < len(calls); {
 		j := i

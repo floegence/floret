@@ -17,29 +17,29 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/floret/agentharness"
 	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/engine"
-	"github.com/floegence/floret/event"
+	"github.com/floegence/floret/internal/agentharness"
+	"github.com/floegence/floret/internal/configbridge"
 	"github.com/floegence/floret/internal/control"
+	"github.com/floegence/floret/internal/engine"
+	"github.com/floegence/floret/internal/event"
+	"github.com/floegence/floret/internal/provider"
+	"github.com/floegence/floret/internal/provider/adapters"
+	"github.com/floegence/floret/internal/provider/cache"
+	"github.com/floegence/floret/internal/provider/catalog"
 	"github.com/floegence/floret/internal/searchcap"
+	"github.com/floegence/floret/internal/session"
+	"github.com/floegence/floret/internal/session/artifact"
+	"github.com/floegence/floret/internal/session/compaction"
 	"github.com/floegence/floret/internal/sessionlifecycle"
-	"github.com/floegence/floret/provider"
-	"github.com/floegence/floret/provider/adapters"
-	"github.com/floegence/floret/provider/cache"
-	"github.com/floegence/floret/provider/catalog"
-	"github.com/floegence/floret/runtime/storage/sqlite"
-	"github.com/floegence/floret/session"
-	"github.com/floegence/floret/session/artifact"
-	"github.com/floegence/floret/session/compaction"
-	"github.com/floegence/floret/session/contextpolicy"
-	"github.com/floegence/floret/sessiontree"
-	"github.com/floegence/floret/testing/eval"
-	"github.com/floegence/floret/testing/harness"
+	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/internal/storage/sqlite"
+	"github.com/floegence/floret/internal/testing/eval"
+	"github.com/floegence/floret/internal/testing/harness"
+	"github.com/floegence/floret/internal/tools/builtin"
+	"github.com/floegence/floret/internal/tools/mcp"
+	"github.com/floegence/floret/internal/tools/skills"
 	"github.com/floegence/floret/tools"
-	"github.com/floegence/floret/tools/builtin"
-	"github.com/floegence/floret/tools/mcp"
-	"github.com/floegence/floret/tools/skills"
 )
 
 const (
@@ -104,7 +104,7 @@ type agentSession struct {
 	unavailableCapabilities []string
 	capabilities            CapabilityState
 	mcpManager              *mcp.Manager
-	contextPolicy           contextpolicy.Policy
+	contextPolicy           config.ContextPolicy
 	cfg                     config.Config
 	provider                *observingProvider
 	recorder                agentEventRecorder
@@ -704,8 +704,8 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 		Approver:       testUIToolApprover,
 		TitleGenerator: titleGenerator,
 		TurnPolicy: agentharness.TurnPolicy{
-			CacheRetention:        config.PromptCacheRetention(sess.cfg),
-			ContextPolicy:         sess.contextPolicy,
+			CacheRetention:        configbridge.CacheRetention(config.PromptCacheRetention(sess.cfg)),
+			ContextPolicy:         configbridge.ContextPolicy(sess.contextPolicy),
 			HostedToolDefinitions: hostedTools,
 		},
 		LoopLimits: agentharness.LoopLimits{
@@ -826,7 +826,7 @@ type agentSessionBuildOptions struct {
 	PromptIdentity config.PromptIdentity
 	SystemPrompt   string
 	SelectedTools  []string
-	ContextPolicy  contextpolicy.Policy
+	ContextPolicy  config.ContextPolicy
 	Config         config.Config
 	Turns          []AgentTurnSummary
 	Start          bool
@@ -890,8 +890,8 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 		Approver:       testUIToolApprover,
 		TitleGenerator: titleGenerator,
 		TurnPolicy: agentharness.TurnPolicy{
-			CacheRetention:        config.PromptCacheRetention(cfg),
-			ContextPolicy:         cfg.ContextPolicy,
+			CacheRetention:        configbridge.CacheRetention(config.PromptCacheRetention(cfg)),
+			ContextPolicy:         configbridge.ContextPolicy(cfg.ContextPolicy),
 			HostedToolDefinitions: hostedTools,
 		},
 		LoopLimits: agentharness.LoopLimits{
@@ -2554,12 +2554,12 @@ func (r Runner) runProviderSmoke(ctx context.Context, resp RunResponse) RunRespo
 			RunID:                   cfg.RunID,
 			ThreadID:                cfg.RunID,
 			TurnID:                  cfg.RunID,
-			PromptScopeID:           cfg.RunID,
+			PromptScopeID:           cfg.PromptScopeID,
 			TraceID:                 cfg.RunID,
 			ProviderName:            cfg.Provider,
 			Model:                   cfg.Model,
-			CacheRetention:          config.PromptCacheRetention(cfg),
-			ContextPolicy:           cfg.ContextPolicy,
+			CacheRetention:          configbridge.CacheRetention(config.PromptCacheRetention(cfg)),
+			ContextPolicy:           configbridge.ContextPolicy(cfg.ContextPolicy),
 			MaxEmptyProviderRetries: cfg.MaxEmptyProviderRetries,
 			NoProgressLimit:         cfg.NoProgressLimit,
 			DuplicateToolLimit:      cfg.DuplicateToolLimit,

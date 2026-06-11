@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/engine"
-	"github.com/floegence/floret/event"
+	"github.com/floegence/floret/config"
+	"github.com/floegence/floret/internal/configbridge"
+	"github.com/floegence/floret/internal/engine"
+	"github.com/floegence/floret/internal/event"
+	"github.com/floegence/floret/internal/provider"
+	"github.com/floegence/floret/internal/provider/cache"
+	"github.com/floegence/floret/internal/sessiontree"
 	"github.com/floegence/floret/observation"
-	"github.com/floegence/floret/provider"
-	"github.com/floegence/floret/provider/cache"
-	"github.com/floegence/floret/sessiontree"
 )
 
 func contextStatusFromProviderRequest(req ObservedProviderRequest) ObservedContextStatus {
@@ -17,11 +19,11 @@ func contextStatusFromProviderRequest(req ObservedProviderRequest) ObservedConte
 }
 
 func contextStatusFromEngineEvent(ev event.Event) (ObservedContextStatus, bool) {
-	return observation.ContextStatusFromProviderUsageEvent(ev)
+	return observation.ContextStatusFromProviderUsageEvent(observationEvent(ev))
 }
 
 func compactionEventFromEngineEvent(ev event.Event) (ObservedCompactionEvent, bool) {
-	compact, ok := observation.CompactionEventFromEngineEvent(ev)
+	compact, ok := observation.CompactionEventFromEvent(observationEvent(ev))
 	if !ok {
 		return ObservedCompactionEvent{}, false
 	}
@@ -41,7 +43,7 @@ func compactionEventFromEntry(entry ObservedSessionEntry) (ObservedCompactionEve
 		CompactionEvent: observation.CompactionEvent{
 			ThreadID:                entry.ThreadID,
 			TurnID:                  entry.TurnID,
-			Phase:                   engine.ContextCompactPhaseComplete,
+			Phase:                   observation.CompactionPhaseComplete,
 			Status:                  observation.CompactionStatusCompacted,
 			Trigger:                 entry.CompactionTrigger,
 			Reason:                  entry.CompactionReason,
@@ -51,8 +53,8 @@ func compactionEventFromEntry(entry ObservedSessionEntry) (ObservedCompactionEve
 			CompactedThroughEntryID: entry.CompactedThroughEntryID,
 			TokensBefore:            entry.TokensBefore,
 			TokensAfterEstimate:     entry.TokensAfterEstimate,
-			ContextBefore:           entry.ContextUsageBefore,
-			ContextAfter:            entry.ContextUsageAfter,
+			ContextBefore:           configbridge.PublicContextUsage(entry.ContextUsageBefore),
+			ContextAfter:            configbridge.PublicContextUsage(entry.ContextUsageAfter),
 			Error:                   entry.Error,
 			ObservedAt:              entry.CreatedAt,
 		},
@@ -135,7 +137,7 @@ func compactionEventsForObservation(entries []ObservedSessionEntry, events []eve
 	}
 	seenComplete := map[string]struct{}{}
 	for _, existing := range out {
-		if existing.CompactionID != "" && existing.Phase == engine.ContextCompactPhaseComplete {
+		if existing.CompactionID != "" && existing.Phase == observation.CompactionPhaseComplete {
 			seenComplete[existing.CompactionID] = struct{}{}
 		}
 	}
@@ -170,8 +172,8 @@ func requestObservation(req ObservedProviderRequest) observation.RequestObservat
 		Provider:             req.Provider,
 		Model:                req.Model,
 		ObservedAt:           req.ObservedAt,
-		RequestEstimate:      req.RequestEstimate,
-		ProjectedPressure:    req.ProjectedPressure,
+		RequestEstimate:      configbridge.RequestEstimate(req.RequestEstimate),
+		ProjectedPressure:    configbridge.PublicContextPressure(req.ProjectedPressure),
 		CompactionGeneration: req.CacheSummary.CompactionGeneration,
 		CompactionWindowID:   req.CacheSummary.CompactionWindowID,
 	}
@@ -189,8 +191,8 @@ func requestObservationFromPromptRecord(req cache.ProviderRequestRecord) observa
 		Provider:             req.Provider,
 		Model:                req.Model,
 		ObservedAt:           req.CreatedAt,
-		RequestEstimate:      req.RequestEstimate,
-		ProjectedPressure:    req.ProjectedPressure,
+		RequestEstimate:      configbridge.RequestEstimate(req.RequestEstimate),
+		ProjectedPressure:    configbridge.PublicContextPressure(req.ProjectedPressure),
 		CompactionGeneration: req.CompactionGeneration,
 		CompactionWindowID:   req.CompactionWindowID,
 	}
@@ -204,7 +206,7 @@ func providerUsageObservationFromPromptResponse(resp cache.ProviderResponseRecor
 		RequestID:       resp.RequestID,
 		ObservedAt:      resp.CreatedAt,
 		Usage:           providerUsageFromPromptResponse(resp),
-		ContextPressure: resp.NativePressure,
+		ContextPressure: configbridge.PublicContextPressure(resp.NativePressure),
 	}
 	if hasRequest {
 		observed.ThreadID = req.ThreadID
@@ -227,8 +229,8 @@ func providerUsageObservationFromPromptResponse(resp cache.ProviderResponseRecor
 	return observed
 }
 
-func providerUsageFromPromptResponse(resp cache.ProviderResponseRecord) provider.Usage {
-	return provider.Usage{
+func providerUsageFromPromptResponse(resp cache.ProviderResponseRecord) observation.ProviderUsage {
+	return providerUsage(provider.Usage{
 		InputTokens:       resp.InputTokens,
 		OutputTokens:      resp.OutputTokens,
 		ReasoningTokens:   resp.ReasoningTokens,
@@ -238,7 +240,82 @@ func providerUsageFromPromptResponse(resp cache.ProviderResponseRecord) provider
 		Source:            provider.UsageSource(resp.UsageSource),
 		Available:         resp.UsageAvailable,
 		WindowInputTokens: resp.WindowInputTokens,
-	}.Normalized()
+	})
+}
+
+func observationEvent(ev event.Event) observation.Event {
+	return observation.Event{
+		Type:       string(ev.Type),
+		RunID:      ev.RunID,
+		ThreadID:   ev.ThreadID,
+		TurnID:     ev.TurnID,
+		Step:       ev.Step,
+		Provider:   ev.Provider,
+		Model:      ev.Model,
+		Result:     ev.Result,
+		Error:      ev.Err,
+		Metadata:   observationMetadata(ev.Metadata),
+		ObservedAt: ev.Timestamp,
+	}
+}
+
+func observationMetadata(value any) map[string]any {
+	switch v := value.(type) {
+	case nil:
+		return nil
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			out[key] = observationMetadataValue(item)
+		}
+		return out
+	case engine.ProviderUsageContextStatus:
+		return map[string]any{
+			"phase":                 v.Phase,
+			"request_id":            v.RequestID,
+			"logical_request_id":    v.LogicalRequestID,
+			"attempt":               v.Attempt,
+			"usage":                 providerUsage(v.Usage),
+			"request_estimate":      configbridge.RequestEstimate(v.RequestEstimate),
+			"context_pressure":      configbridge.PublicContextPressure(v.ContextPressure),
+			"used_ratio":            v.UsedRatio,
+			"threshold_ratio":       v.ThresholdRatio,
+			"status":                v.Status,
+			"compaction_generation": v.CompactionGeneration,
+			"compaction_window_id":  v.CompactionWindowID,
+		}
+	default:
+		return nil
+	}
+}
+
+func observationMetadataValue(value any) any {
+	switch v := value.(type) {
+	case provider.Usage:
+		return providerUsage(v)
+	case config.ContextPressure, config.ContextUsage, config.RequestEstimate:
+		return v
+	case engine.ProviderUsageContextStatus:
+		return observationMetadata(v)
+	default:
+		return v
+	}
+}
+
+func providerUsage(usage provider.Usage) observation.ProviderUsage {
+	usage = usage.Normalized()
+	return observation.ProviderUsage{
+		InputTokens:       usage.InputTokens,
+		OutputTokens:      usage.OutputTokens,
+		ReasoningTokens:   usage.ReasoningTokens,
+		CacheReadTokens:   usage.CacheReadTokens,
+		CacheWriteTokens:  usage.CacheWriteTokens,
+		TotalTokens:       usage.TotalTokens,
+		WindowInputTokens: usage.WindowInputTokens,
+		CostUSD:           usage.CostUSD,
+		Source:            string(usage.Source),
+		Available:         usage.Available,
+	}
 }
 
 func previewOneLine(value string, limit int) string {

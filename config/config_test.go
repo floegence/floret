@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/session/contextpolicy"
+	"github.com/floegence/floret/internal/session/contextpolicy"
 )
 
 func TestLoadDefaultsToFakeProvider(t *testing.T) {
@@ -275,7 +275,7 @@ func TestLoadExplicitZeroMaxOutputTokensOverridesCatalog(t *testing.T) {
 	if cfg.ContextPolicy.ReservedOutputTokens != contextpolicy.DefaultReservedOutputTokens {
 		t.Fatalf("reserved output tokens = %d, want budget default", cfg.ContextPolicy.ReservedOutputTokens)
 	}
-	usage := contextpolicy.EstimateMessageContext("", nil, cfg.ContextPolicy)
+	usage := contextpolicy.EstimateMessageContext("", nil, cfg.ContextPolicy.internal())
 	if usage.OutputHeadroom != contextpolicy.DefaultReservedOutputTokens {
 		t.Fatalf("output headroom = %d, want reserved output", usage.OutputHeadroom)
 	}
@@ -298,7 +298,7 @@ func TestLoadScalesDefaultCompactionBudgetsAfterContextWindowOverride(t *testing
 	if cfg.ContextPolicy.RecentUserTokens != 2048 {
 		t.Fatalf("recent users = %d, want small-window default", cfg.ContextPolicy.RecentUserTokens)
 	}
-	if got := contextpolicy.Threshold(cfg.ContextPolicy); got != 1 {
+	if got := contextpolicy.Threshold(cfg.ContextPolicy.internal()); got != 1 {
 		t.Fatalf("threshold = %d, want self-consistent small-window threshold", got)
 	}
 }
@@ -331,7 +331,7 @@ func TestResolveKeepsExplicitZeroOnlyMaxOutputTokens(t *testing.T) {
 		Provider:           "openai",
 		Model:              "gpt-5.4",
 		APIKey:             "token",
-		ContextPolicy:      contextpolicy.Policy{MaxOutputTokens: 0},
+		ContextPolicy:      ContextPolicy{MaxOutputTokens: 0},
 		MaxOutputTokensSet: true,
 	}, nil)
 	if err != nil {
@@ -354,7 +354,7 @@ func TestResolveUsesCatalogMaxOutputWhenPolicyOmitted(t *testing.T) {
 	if cfg.ContextPolicy.MaxOutputTokens != 128000 {
 		t.Fatalf("max output tokens = %d, want catalog model max", cfg.ContextPolicy.MaxOutputTokens)
 	}
-	usage := contextpolicy.EstimateMessageContext("", nil, cfg.ContextPolicy)
+	usage := contextpolicy.EstimateMessageContext("", nil, cfg.ContextPolicy.internal())
 	if usage.ThresholdTokens != 922000 || usage.OutputHeadroom != 128000 {
 		t.Fatalf("catalog max output should shape threshold/headroom: %#v", usage)
 	}

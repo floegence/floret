@@ -13,81 +13,39 @@ import (
 
 const modulePath = "github.com/floegence/floret"
 
-func TestImportBoundaries(t *testing.T) {
-	for _, rule := range []struct {
-		name      string
-		dir       string
-		recursive bool
-		forbidden []string
-	}{
-		{name: "tools", dir: "tools", forbidden: []string{modulePath + "/engine", modulePath + "/event", modulePath + "/provider/cache", modulePath + "/sessiontree", modulePath + "/tools/builtin", modulePath + "/tools/mcp", modulePath + "/tools/skills", modulePath + "/internal/testui"}},
-		{name: "tools/builtin", dir: filepath.Join("tools", "builtin"), recursive: true, forbidden: []string{modulePath + "/engine", modulePath + "/provider/adapters", modulePath + "/provider/cache", modulePath + "/sessiontree", modulePath + "/internal/testui"}},
-		{name: "tools/mcp", dir: filepath.Join("tools", "mcp"), recursive: true, forbidden: []string{modulePath + "/engine", modulePath + "/agentharness", modulePath + "/sessiontree", modulePath + "/internal/testui"}},
-		{name: "tools/skills", dir: filepath.Join("tools", "skills"), recursive: true, forbidden: []string{modulePath + "/engine", modulePath + "/agentharness", modulePath + "/sessiontree", modulePath + "/internal/testui"}},
-		{name: "engine", dir: "engine", forbidden: []string{modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/sessiontree", modulePath + "/tools/builtin", modulePath + "/tools/mcp", modulePath + "/tools/skills", modulePath + "/internal/sessionlifecycle", modulePath + "/internal/testui"}},
-		{name: "engine/compaction", dir: filepath.Join("engine", "compaction"), recursive: true, forbidden: []string{modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/sessiontree", modulePath + "/tools/builtin", modulePath + "/tools/mcp", modulePath + "/tools/skills", modulePath + "/internal/testui"}},
-		{name: "session/compaction", dir: filepath.Join("session", "compaction"), recursive: true, forbidden: []string{modulePath + "/provider", modulePath + "/engine", modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/sessiontree", modulePath + "/tools"}},
-		{name: "agentharness", dir: "agentharness", forbidden: []string{modulePath + "/runtime", modulePath + "/tools/builtin", modulePath + "/tools/mcp", modulePath + "/tools/skills", modulePath + "/provider/adapters", modulePath + "/internal/testui"}},
-		{name: "provider", dir: "provider", forbidden: []string{modulePath + "/engine", modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/tools", modulePath + "/sessiontree", modulePath + "/internal/testui"}},
-		{name: "provider/adapters", dir: filepath.Join("provider", "adapters"), recursive: true, forbidden: []string{modulePath + "/engine", modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/tools/builtin", modulePath + "/internal/testui"}},
-		{name: "observation", dir: "observation", forbidden: []string{modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/sessiontree", modulePath + "/internal/testui"}},
-		{name: "sessiontree", dir: "sessiontree", forbidden: []string{modulePath + "/engine", modulePath + "/engine/compaction", modulePath + "/runtime", modulePath + "/internal/sessionlifecycle"}},
-		{name: "runtime/storage", dir: filepath.Join("runtime", "storage"), forbidden: []string{modulePath + "/runtime/storage/sqlite"}},
-	} {
-		t.Run(rule.name, func(t *testing.T) {
-			imports := packageImports(t, rule.dir, rule.recursive, false)
-			for _, forbidden := range rule.forbidden {
-				if imports[forbidden] {
-					t.Fatalf("%s imports forbidden package %s", rule.name, forbidden)
-				}
-			}
-		})
+func TestPublicPackageAllowlist(t *testing.T) {
+	out, err := exec.Command("go", "list", "./...").Output()
+	if err != nil {
+		t.Fatalf("go list ./...: %v", err)
 	}
-}
-
-func TestTransitiveImportBoundaries(t *testing.T) {
-	for _, rule := range []struct {
-		name      string
-		pkg       string
-		forbidden []string
-	}{
-		{name: "provider", pkg: "./provider", forbidden: []string{modulePath + "/engine", modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/tools", modulePath + "/sessiontree", modulePath + "/internal/testui"}},
-		{name: "tools", pkg: "./tools", forbidden: []string{modulePath + "/engine", modulePath + "/event", modulePath + "/sessiontree", modulePath + "/tools/builtin", modulePath + "/tools/mcp", modulePath + "/tools/skills", modulePath + "/internal/testui"}},
-		{name: "engine", pkg: "./engine", forbidden: []string{modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/sessiontree", modulePath + "/tools/builtin", modulePath + "/tools/mcp", modulePath + "/tools/skills", modulePath + "/internal/sessionlifecycle", modulePath + "/internal/testui"}},
-		{name: "sessiontree", pkg: "./sessiontree", forbidden: []string{modulePath + "/engine", modulePath + "/engine/compaction", modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/internal/sessionlifecycle", modulePath + "/internal/testui"}},
-		{name: "session/compaction", pkg: "./session/compaction", forbidden: []string{modulePath + "/provider", modulePath + "/engine", modulePath + "/runtime", modulePath + "/agentharness", modulePath + "/sessiontree", modulePath + "/tools"}},
-	} {
-		t.Run(rule.name, func(t *testing.T) {
-			deps := packageDeps(t, rule.pkg)
-			for _, forbidden := range rule.forbidden {
-				for dep := range deps {
-					if dep == forbidden || strings.HasPrefix(dep, forbidden+"/") {
-						t.Fatalf("%s transitively depends on forbidden package %s via %s", rule.name, forbidden, dep)
-					}
-				}
-			}
-		})
+	allowed := map[string]bool{
+		modulePath:                  true,
+		modulePath + "/config":      true,
+		modulePath + "/runtime":     true,
+		modulePath + "/tools":       true,
+		modulePath + "/observation": true,
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		pkg := strings.TrimSpace(line)
+		if pkg == "" || strings.Contains(pkg, "/internal/") || strings.HasPrefix(pkg, modulePath+"/cmd/") {
+			continue
+		}
+		if !allowed[pkg] {
+			t.Fatalf("unexpected public package %s", pkg)
+		}
 	}
 }
 
 func TestTopLevelPackageLayoutIsConstrained(t *testing.T) {
 	allowed := map[string]bool{
-		".githooks":    true,
-		"agentharness": true,
-		"cmd":          true,
-		"config":       true,
-		"docs":         true,
-		"engine":       true,
-		"event":        true,
-		"internal":     true,
-		"observation":  true,
-		"provider":     true,
-		"runtime":      true,
-		"scripts":      true,
-		"session":      true,
-		"sessiontree":  true,
-		"testing":      true,
-		"tools":        true,
+		".githooks":   true,
+		"cmd":         true,
+		"config":      true,
+		"internal":    true,
+		"observation": true,
+		"runtime":     true,
+		"scripts":     true,
+		"tools":       true,
 	}
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -102,103 +60,187 @@ func TestTopLevelPackageLayoutIsConstrained(t *testing.T) {
 			continue
 		}
 		if !allowed[name] {
-			t.Fatalf("unexpected top-level directory %q; add public packages under an existing domain package", name)
+			t.Fatalf("unexpected top-level directory %q", name)
 		}
 	}
 }
 
-func TestDeprecatedRootPackagesAreRemoved(t *testing.T) {
-	for _, dir := range deprecatedRootPackages() {
+func TestImplementationPackagesAreInternalOnly(t *testing.T) {
+	for _, dir := range []string{
+		"agentharness",
+		"engine",
+		"event",
+		"provider",
+		"session",
+		"sessiontree",
+		filepath.Join("runtime", "storage"),
+		"testing",
+	} {
 		if _, err := os.Stat(dir); err == nil {
-			t.Fatalf("deprecated root package directory still exists: %s", dir)
+			t.Fatalf("implementation package must live under internal, found root %s", dir)
 		} else if !os.IsNotExist(err) {
 			t.Fatal(err)
 		}
 	}
+	for _, dir := range []string{
+		filepath.Join("internal", "agentharness"),
+		filepath.Join("internal", "engine"),
+		filepath.Join("internal", "event"),
+		filepath.Join("internal", "provider"),
+		filepath.Join("internal", "session"),
+		filepath.Join("internal", "sessiontree"),
+		filepath.Join("internal", "storage"),
+		filepath.Join("internal", "testing"),
+		filepath.Join("internal", "tools", "builtin"),
+		filepath.Join("internal", "tools", "mcp"),
+		filepath.Join("internal", "tools", "skills"),
+	} {
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			t.Fatalf("internal implementation package missing: %s", dir)
+		}
+	}
 }
 
-func TestNoDeprecatedRootImportPaths(t *testing.T) {
-	files := textFiles(t, ".")
-	for _, file := range files {
-		data, err := os.ReadFile(file)
+func TestPublicPackagesDoNotExposeInternalContracts(t *testing.T) {
+	for _, pkg := range []string{".", "./config", "./runtime", "./tools", "./observation"} {
+		out, err := exec.Command("go", "doc", "-all", pkg).CombinedOutput()
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("go doc -all %s: %v\n%s", pkg, err, out)
 		}
-		text := string(data)
-		for _, dir := range deprecatedRootPackages() {
-			oldPath := modulePath + "/" + dir
-			if strings.Contains(text, oldPath) {
-				if !allowedDeprecatedImportMapping(file, text, oldPath) {
-					t.Fatalf("%s still references deprecated import path %s", file, oldPath)
+		text := string(out)
+		for _, forbidden := range []string{
+			"/internal/",
+			"agentharness.",
+			"artifact.",
+			"builtin.",
+			"cache.",
+			"contextpolicy.",
+			"engine.",
+			"event.",
+			"mcp.",
+			"provider.",
+			"session.",
+			"sessiontree.",
+			"skills.",
+			"storage.",
+		} {
+			if strings.Contains(text, forbidden) {
+				t.Fatalf("%s public docs expose internal contract %q", pkg, forbidden)
+			}
+		}
+	}
+}
+
+func TestRootPackageStaysLightweight(t *testing.T) {
+	text := readTextFile(t, "floret.go")
+	for _, want := range []string{"const Version", "type ThreadID = runtime.ThreadID", "type PromptScopeID = runtime.PromptScopeID"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("root package missing lightweight export %q", want)
+		}
+	}
+	for _, forbidden := range []string{"func New", "type Host", "type Store", "internal/"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("root package must remain lightweight, found %q", forbidden)
+		}
+	}
+}
+
+func TestPublicPackagesDoNotImportForbiddenImplementationPackages(t *testing.T) {
+	for _, rule := range []struct {
+		dir       string
+		forbidden []string
+	}{
+		{dir: "tools", forbidden: []string{modulePath + "/internal/provider", modulePath + "/internal/engine", modulePath + "/internal/sessiontree", modulePath + "/internal/storage", modulePath + "/internal/testui"}},
+		{dir: "observation", forbidden: []string{modulePath + "/internal/", modulePath + "/runtime"}},
+		{dir: "runtime", forbidden: []string{modulePath + "/internal/testui", modulePath + "/cmd/"}},
+	} {
+		imports := packageImports(t, rule.dir, false, false)
+		for _, forbidden := range rule.forbidden {
+			for imp := range imports {
+				if imp == forbidden || strings.HasPrefix(imp, forbidden+"/") || strings.HasPrefix(imp, forbidden) && strings.HasSuffix(forbidden, "/") {
+					t.Fatalf("%s imports forbidden package %s", rule.dir, imp)
 				}
 			}
 		}
 	}
 }
 
-func TestReadmeDoesNotAdvertiseDeprecatedRootPackages(t *testing.T) {
-	data, err := os.ReadFile("README.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(data)
-	for _, dir := range deprecatedRootPackages() {
-		token := "`" + dir + "`"
-		if strings.Contains(text, token) {
-			t.Fatalf("README still advertises deprecated root package %s", token)
+func TestReadmeOnlyDocumentsStableDownstreamAPI(t *testing.T) {
+	text := readTextFile(t, "README.md")
+	for _, want := range []string{"runtime.NewHost", "runtime.NewMemoryStore", "runtime.OpenSQLiteStore", "tools.Registry", "observation"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("README missing stable downstream API %q", want)
 		}
 	}
-	for _, want := range []string{
-		"`provider/adapters`",
-		"`provider/cache`",
-		"`provider/catalog`",
-		"`observation`",
-		"`runtime/storage`",
-		"`runtime/storage/sqlite`",
-		"`session/compaction`",
-		"`session/contextpolicy`",
-		"`testing/eval`",
-		"`testing/harness`",
-		"`tools/builtin`",
-		"`tools/mcp`",
-		"`tools/skills`",
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("README missing new package path %s", want)
+	for _, forbidden := range publicDocsDenylist() {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("README advertises internal/downstream-forbidden API %q", forbidden)
 		}
 	}
 }
 
-func TestEngineConfigKeepsMemoryInternal(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("engine", "engine.go"))
-	if err != nil {
-		t.Fatal(err)
+func TestDocumentationDoesNotTeachForbiddenDownstreamImports(t *testing.T) {
+	for _, file := range textFiles(t, ".") {
+		if file == "architecture_test.go" {
+			continue
+		}
+		if strings.HasPrefix(file, filepath.Join("internal", "testui", "static")+string(filepath.Separator)) {
+			continue
+		}
+		text := readTextFile(t, file)
+		for _, forbidden := range forbiddenDownstreamImportPaths() {
+			if strings.Contains(text, forbidden) {
+				t.Fatalf("%s references forbidden downstream import %s", file, forbidden)
+			}
+		}
 	}
-	text := string(data)
-	if !strings.Contains(text, "SystemPrompt string") {
-		t.Fatalf("engine.Config should expose SystemPrompt instead of memory.Manager")
+}
+
+func TestProviderSDKImportsStayInInternalAdapters(t *testing.T) {
+	for _, file := range goFiles(t, ".") {
+		if file == "architecture_test.go" {
+			continue
+		}
+		if strings.HasPrefix(file, filepath.Join("internal", "provider", "adapters")+string(filepath.Separator)) {
+			continue
+		}
+		text := readTextFile(t, file)
+		for _, marker := range []string{
+			"github.com/openai/openai-go",
+			"github.com/anthropics/anthropic-sdk-go",
+			"google.golang.org/genai",
+		} {
+			if strings.Contains(text, marker) {
+				t.Fatalf("provider SDK import %q outside internal/provider/adapters: %s", marker, file)
+			}
+		}
 	}
-	for _, forbidden := range []string{"Memory *memory.Manager", modulePath + "/memory"} {
-		if strings.Contains(text, forbidden) {
-			t.Fatalf("engine.Config must not expose deprecated memory API: %s", forbidden)
+}
+
+func TestSQLiteDriverImportsStayInInternalStorage(t *testing.T) {
+	for _, file := range goFiles(t, ".") {
+		if file == "architecture_test.go" {
+			continue
+		}
+		if strings.HasPrefix(file, filepath.Join("internal", "storage", "sqlite")+string(filepath.Separator)) {
+			continue
+		}
+		if strings.Contains(readTextFile(t, file), "github.com/mattn/go-sqlite3") {
+			t.Fatalf("sqlite driver import outside internal/storage/sqlite: %s", file)
 		}
 	}
 }
 
 func TestKernelBoundaryFilesAvoidHostProductConcepts(t *testing.T) {
 	for _, file := range []string{
-		filepath.Join("engine", "control.go"),
-		filepath.Join("engine", "engine.go"),
-		filepath.Join("event", "event.go"),
-		filepath.Join("provider", "provider.go"),
+		filepath.Join("internal", "engine", "control.go"),
+		filepath.Join("internal", "engine", "engine.go"),
+		filepath.Join("internal", "event", "event.go"),
+		filepath.Join("internal", "provider", "provider.go"),
 		filepath.Join("tools", "invocation.go"),
 		filepath.Join("tools", "permission.go"),
 	} {
-		data, err := os.ReadFile(file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		text := strings.ToLower(string(data))
+		text := strings.ToLower(readTextFile(t, file))
 		for _, forbidden := range []string{
 			"flower",
 			"redeven",
@@ -218,61 +260,111 @@ func TestKernelBoundaryFilesAvoidHostProductConcepts(t *testing.T) {
 	}
 }
 
-func TestSessionLifecycleBoundaryIsEnforced(t *testing.T) {
-	lifecycle, err := os.ReadFile(filepath.Join("internal", "sessionlifecycle", "lifecycle.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	lifecycleText := string(lifecycle)
-	if !strings.Contains(lifecycleText, "IMPORTANT: SessionLifecycle is the only host/UI boundary") {
-		t.Fatalf("session lifecycle boundary must be protected by an IMPORTANT comment")
-	}
-	for _, forbidden := range []string{"type status string", "const (\n\tstatusIdle", "func Derive("} {
-		if !strings.Contains(lifecycleText, forbidden) {
-			t.Fatalf("session lifecycle package missing expected constrained construct %q", forbidden)
+func TestCoreIdentityDoesNotUseHostSessionID(t *testing.T) {
+	for _, file := range goFiles(t, ".") {
+		if file == "architecture_test.go" {
+			continue
 		}
-	}
-
-	testUIRunner, err := os.ReadFile(filepath.Join("internal", "testui", "runner.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	testUIText := string(testUIRunner)
-	for _, forbidden := range []string{
-		"latestSessionStatus",
-		"status == string(engine.Waiting)",
-		"status == string(engine.Completed)",
-		"status == \"idle\"",
-		"Status == \"running\"",
-		"Phase == \"turn\"",
-	} {
-		if strings.Contains(testUIText, forbidden) {
-			t.Fatalf("test UI must derive lifecycle decisions through internal/sessionlifecycle, found %q", forbidden)
+		if strings.HasPrefix(file, filepath.Join("internal", "testui")+string(filepath.Separator)) {
+			continue
 		}
-	}
-
-	agents, err := os.ReadFile("AGENTS.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	agentsText := string(agents)
-	for _, want := range []string{
-		"## IMPORTANT Design Constraints",
-		"`IMPORTANT:` comments mark product, security, or interaction invariants",
-		"Do not work around an `IMPORTANT:` constraint with hidden substitute behavior",
-	} {
-		if !strings.Contains(agentsText, want) {
-			t.Fatalf("AGENTS.md missing IMPORTANT constraint rule %q", want)
+		text := readTextFile(t, file)
+		for _, forbidden := range []string{"Session" + "ID", `json:"session_` + `id"`} {
+			if strings.Contains(text, forbidden) {
+				t.Fatalf("%s uses host session identity %q outside test UI", file, forbidden)
+			}
 		}
 	}
 }
 
-func TestConceptVocabularyIsDocumented(t *testing.T) {
-	data, err := os.ReadFile("AGENTS.md")
-	if err != nil {
-		t.Fatal(err)
+func TestPromptCacheIdentityUsesPromptScope(t *testing.T) {
+	cacheText := readTextFile(t, filepath.Join("internal", "provider", "cache", "promptcache.go"))
+	for _, want := range []string{"PromptScopeID", `json:"prompt_scope_id"`, "CreatedByRunID", "CreatedByTurnID", "DeletePromptScopes"} {
+		if !strings.Contains(cacheText, want) {
+			t.Fatalf("prompt cache contract missing %q", want)
+		}
 	}
-	text := string(data)
+	for _, forbidden := range []string{"DeleteRuns", "runIDFromRequest", "cacheScopeID"} {
+		if strings.Contains(cacheText, forbidden) {
+			t.Fatalf("prompt cache still contains removed scope helper %q", forbidden)
+		}
+	}
+
+	sqliteText := readTextFile(t, filepath.Join("internal", "storage", "sqlite", "sqlitestore.go"))
+	for _, want := range []string{"prompt_scope_id TEXT NOT NULL", "DeletePromptScopes", "DeleteThreadData"} {
+		if !strings.Contains(sqliteText, want) {
+			t.Fatalf("sqlite storage contract missing %q", want)
+		}
+	}
+	if strings.Contains(sqliteText, "run_id TEXT NOT NULL") || strings.Contains(sqliteText, "DeleteRuns") || strings.Contains(sqliteText, "DeleteSession") {
+		t.Fatalf("sqlite storage still uses removed run/session cache ownership")
+	}
+}
+
+func TestWebSearchCapabilityBoundaryIsEnforced(t *testing.T) {
+	text := readTextFile(t, filepath.Join("internal", "searchcap", "searchcap.go"))
+	if !strings.Contains(text, "IMPORTANT: Web search source selection must be derived from provider profile") {
+		t.Fatalf("web search capability resolver must be protected by an IMPORTANT comment")
+	}
+	for _, forbidden := range []string{"ProviderDeepSeek", "ProviderOpenAI", "ProviderOpenRouter", "ProviderGoogle", "ProviderQwen", "ProviderMoonshot"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("web search capability resolver must not special-case provider names, found %q", forbidden)
+		}
+	}
+	testUI := readTextFile(t, filepath.Join("internal", "testui", "tool_selection.go"))
+	for _, want := range []string{"resolved.Available", "resolved.Source == searchcap.WebSearchProviderHosted", "removeToolName(localSelected, builtin.ToolWebSearch)"} {
+		if !strings.Contains(testUI, want) {
+			t.Fatalf("test UI tool selection missing single-source search guard %q", want)
+		}
+	}
+}
+
+func TestNoBuiltInWebFetchBoundaryIsEnforced(t *testing.T) {
+	builtins := readTextFile(t, filepath.Join("internal", "tools", "builtin", "common.go"))
+	testUI := readTextFile(t, filepath.Join("internal", "testui", "tool_selection.go"))
+	staticMatrix := readTextFile(t, filepath.Join("internal", "testui", "static", "components", "toolMatrix.js"))
+	for path, text := range map[string]string{
+		"internal/tools/builtin/common.go":                builtins,
+		"internal/testui/tool_selection.go":               testUI,
+		"internal/testui/static/components/toolMatrix.js": staticMatrix,
+	} {
+		if strings.Contains(text, "web_fetch") || strings.Contains(text, "ToolWebFetch") || strings.Contains(text, "RegisterNetwork") {
+			t.Fatalf("%s must not expose built-in web_fetch", path)
+		}
+	}
+	if !strings.Contains(testUI, "IMPORTANT: Floret core does not expose a built-in URL fetch/browser-lite") {
+		t.Fatalf("web fetch boundary must be protected by an IMPORTANT comment")
+	}
+}
+
+func TestSessionLifecycleBoundaryIsEnforced(t *testing.T) {
+	lifecycleText := readTextFile(t, filepath.Join("internal", "sessionlifecycle", "lifecycle.go"))
+	if !strings.Contains(lifecycleText, "IMPORTANT: SessionLifecycle is the only host/UI boundary") {
+		t.Fatalf("session lifecycle boundary must be protected by an IMPORTANT comment")
+	}
+	for _, want := range []string{"type status string", "const (\n\tstatusIdle", "func Derive("} {
+		if !strings.Contains(lifecycleText, want) {
+			t.Fatalf("session lifecycle package missing expected constrained construct %q", want)
+		}
+	}
+
+	testUIText := readTextFile(t, filepath.Join("internal", "testui", "runner.go"))
+	for _, forbidden := range []string{"latestSessionStatus", "status == string(engine.Waiting)", "status == string(engine.Completed)", "status == \"idle\"", "Status == \"running\"", "Phase == \"turn\""} {
+		if strings.Contains(testUIText, forbidden) {
+			t.Fatalf("test UI must derive lifecycle decisions through internal/sessionlifecycle, found %q", forbidden)
+		}
+	}
+}
+
+func TestTurnFinalizationInvariantIsDocumented(t *testing.T) {
+	harness := readTextFile(t, filepath.Join("internal", "agentharness", "harness.go"))
+	if !strings.Contains(harness, "IMPORTANT: Turn finalization must outlive caller cancellation") {
+		t.Fatalf("turn finalization cancellation boundary must be protected by an IMPORTANT comment")
+	}
+}
+
+func TestConceptVocabularyIsDocumented(t *testing.T) {
+	text := readTextFile(t, "AGENTS.md")
 	for _, want := range []string{
 		"## Concept Vocabulary and Identity Rules",
 		"`ThreadID` identifies a durable conversation journal",
@@ -291,187 +383,25 @@ func TestConceptVocabularyIsDocumented(t *testing.T) {
 	}
 }
 
-func TestCoreIdentityDoesNotUseHostSessionID(t *testing.T) {
-	for _, file := range goFiles(t, ".") {
+func TestRemovedCompatibilityShapesDoNotReturn(t *testing.T) {
+	for _, file := range append(goFiles(t, "."), textFiles(t, ".")...) {
 		if file == "architecture_test.go" {
 			continue
 		}
-		if strings.HasPrefix(file, filepath.Join("internal", "testui")+string(filepath.Separator)) {
+		if strings.HasPrefix(file, filepath.Join("internal", "testui", "static")+string(filepath.Separator)) {
 			continue
 		}
-		data, err := os.ReadFile(file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		text := string(data)
-		for _, forbidden := range []string{"Session" + "ID", `json:"session_` + `id"`} {
+		text := strings.ToLower(readTextFile(t, file))
+		for _, forbidden := range []string{"legacy shape", "compatibility fallback", "backward compatibility", "old contract", "old shape fallback"} {
 			if strings.Contains(text, forbidden) {
-				t.Fatalf("%s uses host session identity %q outside test UI", file, forbidden)
+				t.Fatalf("%s contains removed compatibility marker %q", file, forbidden)
 			}
 		}
 	}
 }
 
-func TestPromptCacheIdentityUsesPromptScope(t *testing.T) {
-	cacheText := readTextFile(t, filepath.Join("provider", "cache", "promptcache.go"))
-	for _, want := range []string{
-		"PromptScopeID",
-		`json:"prompt_scope_id"`,
-		"CreatedByRunID",
-		"CreatedByTurnID",
-		"DeletePromptScopes",
-	} {
-		if !strings.Contains(cacheText, want) {
-			t.Fatalf("prompt cache contract missing %q", want)
-		}
-	}
-	for _, forbidden := range []string{"DeleteRuns", "runIDFromRequest", "cacheScopeID"} {
-		if strings.Contains(cacheText, forbidden) {
-			t.Fatalf("prompt cache still contains removed scope helper %q", forbidden)
-		}
-	}
-
-	sqliteText := readTextFile(t, filepath.Join("runtime", "storage", "sqlite", "sqlitestore.go"))
-	for _, want := range []string{"prompt_scope_id TEXT NOT NULL", "DeletePromptScopes", "DeleteThreadData"} {
-		if !strings.Contains(sqliteText, want) {
-			t.Fatalf("sqlite storage contract missing %q", want)
-		}
-	}
-	if strings.Contains(sqliteText, "run_id TEXT NOT NULL") || strings.Contains(sqliteText, "DeleteRuns") || strings.Contains(sqliteText, "DeleteSession") {
-		t.Fatalf("sqlite storage still uses removed run/session cache ownership")
-	}
-}
-
-func TestWebSearchCapabilityBoundaryIsEnforced(t *testing.T) {
-	searchCap, err := os.ReadFile(filepath.Join("internal", "searchcap", "searchcap.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(searchCap)
-	if !strings.Contains(text, "IMPORTANT: Web search source selection must be derived from provider profile") {
-		t.Fatalf("web search capability resolver must be protected by an IMPORTANT comment")
-	}
-	for _, forbidden := range []string{
-		"ProviderDeepSeek",
-		"ProviderOpenAI",
-		"ProviderOpenRouter",
-		"ProviderGoogle",
-		"ProviderQwen",
-		"ProviderMoonshot",
-	} {
-		if strings.Contains(text, forbidden) {
-			t.Fatalf("web search capability resolver must not special-case provider names, found %q", forbidden)
-		}
-	}
-	testUI, err := os.ReadFile(filepath.Join("internal", "testui", "tool_selection.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	testUIText := string(testUI)
-	for _, want := range []string{"resolved.Available", "resolved.Source == searchcap.WebSearchProviderHosted", "removeToolName(localSelected, builtin.ToolWebSearch)"} {
-		if !strings.Contains(testUIText, want) {
-			t.Fatalf("test UI tool selection missing single-source search guard %q", want)
-		}
-	}
-}
-
-func readTextFile(t *testing.T, file string) string {
-	t.Helper()
-	data, err := os.ReadFile(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(data)
-}
-
-func TestNoBuiltInWebFetchBoundaryIsEnforced(t *testing.T) {
-	builtins, err := os.ReadFile(filepath.Join("tools", "builtin", "common.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	testUI, err := os.ReadFile(filepath.Join("internal", "testui", "tool_selection.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	staticMatrix, err := os.ReadFile(filepath.Join("internal", "testui", "static", "components", "toolMatrix.js"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for path, text := range map[string]string{
-		"tools/builtin/common.go":                         string(builtins),
-		"internal/testui/tool_selection.go":               string(testUI),
-		"internal/testui/static/components/toolMatrix.js": string(staticMatrix),
-	} {
-		if strings.Contains(text, "web_fetch") || strings.Contains(text, "ToolWebFetch") || strings.Contains(text, "RegisterNetwork") {
-			t.Fatalf("%s must not expose built-in web_fetch", path)
-		}
-	}
-	if !strings.Contains(string(testUI), "IMPORTANT: Floret core does not expose a built-in URL fetch/browser-lite") {
-		t.Fatalf("web fetch boundary must be protected by an IMPORTANT comment")
-	}
-}
-
-func TestTestUIDoesNotDefaultAgentTurnsToWallTime(t *testing.T) {
-	for _, file := range []string{
-		filepath.Join("internal", "testui", "runner.go"),
-		filepath.Join("internal", "testui", "session_metadata.go"),
-	} {
-		data, err := os.ReadFile(file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		text := string(data)
-		if strings.Contains(text, "WallTime:                60 * time.Second") || strings.Contains(text, "cfg.WallTime = 60 * time.Second") {
-			t.Fatalf("%s must not default ordinary agent sessions to a 60s wall-time", file)
-		}
-	}
-}
-
-func TestPreCommitQualityGateIsEnforced(t *testing.T) {
-	hook, err := os.ReadFile(filepath.Join(".githooks", "pre-commit"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	hookText := string(hook)
-	if !strings.Contains(hookText, "exec scripts/pre-commit.sh") {
-		t.Fatalf("committed pre-commit hook must delegate to scripts/pre-commit.sh")
-	}
-	script, err := os.ReadFile(filepath.Join("scripts", "pre-commit.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	scriptText := string(script)
-	for _, want := range []string{
-		"go test ./...",
-		"TestServerStreamsAgentTurnEventsBeforeCompletion",
-		"TestServerAgentSessionTurnIgnoresServerTimeout",
-		"TestRunnerRunningSnapshotUsesRealTurnID",
-		"go test ./testing/eval -run TestCleanCommandEnvRemovesHookRepositoryVariables -count=1",
-		"node --check internal/testui/static/*.js internal/testui/static/views/*.js internal/testui/static/components/*.js",
-		"git diff --check",
-	} {
-		if !strings.Contains(scriptText, want) {
-			t.Fatalf("pre-commit quality gate missing %q", want)
-		}
-	}
-}
-
-func TestTurnFinalizationInvariantIsDocumented(t *testing.T) {
-	harness, err := os.ReadFile(filepath.Join("agentharness", "harness.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(harness), "IMPORTANT: Turn finalization must outlive caller cancellation") {
-		t.Fatalf("turn finalization cancellation boundary must be protected by an IMPORTANT comment")
-	}
-}
-
 func TestRemovedToolHandlerOrHostedDispatchDoesNotReturn(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("tools", "tools.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(data)
+	text := readTextFile(t, filepath.Join("tools", "tools.go"))
 	for _, forbidden := range []string{"type Handler func(context.Context, string)", "RequiresApproval bool"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("removed tool contract returned: %s", forbidden)
@@ -483,23 +413,19 @@ func TestRemovedToolHandlerOrHostedDispatchDoesNotReturn(t *testing.T) {
 }
 
 func TestNoDirectEngineLiteralConstructionOutsideTests(t *testing.T) {
-	files := goFiles(t, ".")
-	for _, file := range files {
+	for _, file := range goFiles(t, ".") {
 		if strings.HasSuffix(file, "_test.go") {
 			continue
 		}
-		data, err := os.ReadFile(file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(string(data), "&engine.Engine{") || strings.Contains(string(data), "new(engine.Engine)") {
+		text := readTextFile(t, file)
+		if strings.Contains(text, "&engine.Engine{") || strings.Contains(text, "new(engine.Engine)") {
 			t.Fatalf("%s must construct engines through engine.New(engine.Config)", file)
 		}
 	}
 }
 
 func TestNoGoWorkFilesInRepository(t *testing.T) {
-	for _, file := range goFilesAndWorkspaces(t, ".") {
+	for _, file := range walkAllFiles(t, ".") {
 		if filepath.Base(file) == "go.work" || filepath.Base(file) == "go.work.sum" {
 			t.Fatalf("repository must not introduce %s", file)
 		}
@@ -519,7 +445,7 @@ func packageImports(t *testing.T, dir string, recursive, includeTests bool) map[
 			t.Fatal(err)
 		}
 		for _, imp := range file.Imports {
-			out[strings.Trim(imp.Path.Value, `"`)] = true
+			out[strings.Trim(imp.Path.Value, "\"")] = true
 		}
 	}
 	return out
@@ -541,49 +467,19 @@ func goFilesInDir(t *testing.T, dir string, recursive bool) []string {
 		}
 		return files
 	}
-	files, err := walkFiles(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return slices.DeleteFunc(files, func(file string) bool {
-		return !strings.HasSuffix(file, ".go")
-	})
-}
-
-func packageDeps(t *testing.T, pkg string) map[string]bool {
-	t.Helper()
-	cmd := exec.Command("go", "list", "-deps", pkg)
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("go list -deps %s: %v", pkg, err)
-	}
-	deps := map[string]bool{}
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			deps[line] = true
-		}
-	}
-	return deps
+	files := walkAllFiles(t, dir)
+	return slices.DeleteFunc(files, func(file string) bool { return !strings.HasSuffix(file, ".go") })
 }
 
 func goFiles(t *testing.T, root string) []string {
 	t.Helper()
-	files, err := walkFiles(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return slices.DeleteFunc(files, func(file string) bool {
-		return !strings.HasSuffix(file, ".go")
-	})
+	files := walkAllFiles(t, root)
+	return slices.DeleteFunc(files, func(file string) bool { return !strings.HasSuffix(file, ".go") })
 }
 
 func textFiles(t *testing.T, root string) []string {
 	t.Helper()
-	files, err := walkFiles(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	files := walkAllFiles(t, root)
 	return slices.DeleteFunc(files, func(file string) bool {
 		switch filepath.Ext(file) {
 		case ".go", ".md", ".sh", ".js":
@@ -594,55 +490,8 @@ func textFiles(t *testing.T, root string) []string {
 	})
 }
 
-func deprecatedRootPackages() []string {
-	return []string{
-		"adapters",
-		"builtintools",
-		"compaction",
-		"contextpolicy",
-		"control",
-		"eval",
-		"harness",
-		"mcpclient",
-		"memory",
-		"modelcatalog",
-		"promptcache",
-		"skills",
-		"sqlitestore",
-		"storage",
-	}
-}
-
-func allowedDeprecatedImportMapping(file, text, oldPath string) bool {
-	if file != "README.md" {
-		return false
-	}
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.Contains(line, oldPath) {
-			continue
-		}
-		if !strings.Contains(line, " -> "+modulePath+"/") {
-			return false
-		}
-		if strings.Contains(line, "`") {
-			return false
-		}
-		return true
-	}
-	return false
-}
-
-func goFilesAndWorkspaces(t *testing.T, root string) []string {
+func walkAllFiles(t *testing.T, root string) []string {
 	t.Helper()
-	files, err := walkFiles(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return files
-}
-
-func walkFiles(root string) ([]string, error) {
 	var files []string
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
@@ -658,5 +507,50 @@ func walkFiles(root string) ([]string, error) {
 		files = append(files, path)
 		return nil
 	})
-	return files, err
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+func readTextFile(t *testing.T, file string) string {
+	t.Helper()
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func forbiddenDownstreamImportPaths() []string {
+	return []string{
+		modulePath + "/agentharness",
+		modulePath + "/engine",
+		modulePath + "/event",
+		modulePath + "/provider",
+		modulePath + "/session",
+		modulePath + "/sessiontree",
+		modulePath + "/runtime/storage",
+		modulePath + "/testing",
+		modulePath + "/tools/builtin",
+		modulePath + "/tools/mcp",
+		modulePath + "/tools/skills",
+	}
+}
+
+func publicDocsDenylist() []string {
+	return []string{
+		"agentharness",
+		"engine.Engine",
+		"engine.New",
+		"provider.Provider",
+		"provider/cache",
+		"provider/adapters",
+		"provider/catalog",
+		"sessiontree",
+		"runtime/storage",
+		"tools/builtin",
+		"tools/mcp",
+		"tools/skills",
+	}
 }

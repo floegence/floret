@@ -2,219 +2,132 @@ package runtime
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
-	"time"
 
-	"github.com/floegence/floret/agentharness"
 	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/engine"
-	"github.com/floegence/floret/event"
-	"github.com/floegence/floret/provider"
-	"github.com/floegence/floret/provider/cache"
-	storagesqlite "github.com/floegence/floret/runtime/storage/sqlite"
-	"github.com/floegence/floret/session"
-	"github.com/floegence/floret/session/contextpolicy"
-	"github.com/floegence/floret/sessiontree"
-	"github.com/floegence/floret/testing/harness"
+	"github.com/floegence/floret/internal/agentharness"
+	"github.com/floegence/floret/internal/engine"
+	"github.com/floegence/floret/internal/provider"
+	"github.com/floegence/floret/internal/session"
+	"github.com/floegence/floret/internal/session/artifact"
+	"github.com/floegence/floret/internal/session/contextpolicy"
+	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/internal/testing/harness"
 	"github.com/floegence/floret/tools"
-	"github.com/floegence/floret/tools/mcp"
-	"github.com/floegence/floret/tools/skills"
 )
 
-func TestNewEngineFromConfigRunsFakeProvider(t *testing.T) {
-	e, err := NewEngine(config.Config{
-		Provider:     config.ProviderFake,
-		Model:        "fake-model",
-		FakeResponse: "configured",
-		RunID:        "run",
-		SystemPrompt: "test",
-	}, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result := e.Run(context.Background(), "hello")
-	if result.Status != engine.Completed || result.Output != "configured" {
-		t.Fatalf("result = %#v", result)
-	}
-}
-
-func TestNewEngineUsesConfiguredPromptCacheDir(t *testing.T) {
-	dir := t.TempDir()
-	e, err := NewEngine(config.Config{
-		Provider:             config.ProviderFake,
-		Model:                "fake-model",
-		FakeResponse:         "configured",
-		RunID:                "run",
-		PromptCacheDir:       dir,
-		PromptCacheRetention: "in_memory",
-		SystemPrompt:         "test",
-	}, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result := e.Run(context.Background(), "hello")
-	if result.Status != engine.Completed {
-		t.Fatalf("result = %#v", result)
-	}
-	if _, err := os.Stat(filepath.Join(dir, promptCachePathForTest("run"), "raw_segments.jsonl")); err != nil {
-		t.Fatalf("prompt cache raw segment file missing: %v", err)
-	}
-}
-
-func TestNewHarnessRunsDurableThreadWithExplicitPolicies(t *testing.T) {
+func TestHostRunsFakeProviderThread(t *testing.T) {
 	ctx := context.Background()
-	repo := sessiontree.NewMemoryRepo()
-	h, err := NewHarness(config.Config{
-		Provider:                config.ProviderFake,
-		Model:                   "fake-model",
-		FakeResponse:            "configured",
-		SystemPrompt:            "test",
-		MaxEmptyProviderRetries: 7,
-		NoProgressLimit:         8,
-		DuplicateToolLimit:      9,
-	}, HarnessOptions{
-		Store: repo,
-		LoopLimits: agentharness.LoopLimits{
-			WallTime: 250 * time.Millisecond,
+	rec := &runtimeEventRecorder{}
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "configured",
+			SystemPrompt: "test",
 		},
-		NewID: deterministicIDs(),
+		Sink:        rec,
+		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	thread, err := h.StartThread(ctx, agentharness.StartThreadOptions{ThreadID: "thread"})
+	defer host.Close()
+
+	started, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := thread.Run(ctx, "hello", agentharness.RunOptions{TurnID: "turn-1"})
+	if started.ID != "thread" || !started.CanAppendMessage {
+		t.Fatalf("started thread = %#v", started)
+	}
+	result, err := host.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != engine.Completed || result.Output != "configured" {
+	if result.Status != TurnStatusCompleted || result.Output != "configured" {
 		t.Fatalf("result = %#v", result)
 	}
-	snap, err := thread.Read(ctx)
+	snapshot, err := host.ReadThread(ctx, "thread")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snap.ID != "thread" || snap.Status != string(engine.Completed) || !snap.CanAppendMessage ||
-		len(snap.Messages) != 2 || snap.Messages[0].Content != "hello" || snap.Messages[1].Content != "configured" {
-		t.Fatalf("durable thread snapshot = %#v", snap)
+	if snapshot.Status != ThreadStatusCompleted ||
+		len(snapshot.Messages) != 2 ||
+		snapshot.Messages[0].Role != string(session.User) ||
+		snapshot.Messages[0].Content != "hello" ||
+		snapshot.Messages[1].Content != "configured" {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	if !slices.ContainsFunc(rec.events, func(ev Event) bool {
+		return ev.Type == "provider_delta" && ev.ThreadID == "thread" && ev.RunID == "turn-1"
+	}) {
+		t.Fatalf("runtime events missing provider delta: %#v", rec.events)
 	}
 }
 
-func TestNewHarnessWithProviderMapsExplicitPoliciesToTurn(t *testing.T) {
+func TestHostSQLiteStorePersistsThreadBehindOpaqueStore(t *testing.T) {
 	ctx := context.Background()
-	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("configured"), harness.Done()))
-	h := NewHarnessWithProvider(config.Config{
-		Provider:                config.ProviderFake,
-		Model:                   "fake-model",
-		SystemPrompt:            "test",
-		MaxEmptyProviderRetries: 7,
-		NoProgressLimit:         8,
-		DuplicateToolLimit:      9,
-	}, scripted, HarnessOptions{
-		Store:          sessiontree.NewMemoryRepo(),
-		TitleGenerator: runtimeFixedTitleGenerator{},
-		TurnPolicy: agentharness.TurnPolicy{
-			ContextPolicy: contextpolicy.Policy{
-				ContextWindowTokens: 4096,
-				MaxOutputTokens:     123,
-				RecentTailTokens:    512,
-				RecentUserTokens:    321,
-			},
-			CacheRetention:        cache.RetentionLong,
-			HostedToolDefinitions: []provider.HostedToolDefinition{{Name: "web_search", Type: "web_search"}},
-		},
-		LoopLimits: agentharness.LoopLimits{
-			MaxEmptyProviderRetries: 3,
-			NoProgressLimit:         4,
-			DuplicateToolLimit:      5,
-			WallTime:                250 * time.Millisecond,
-		},
-		NewID: deterministicIDs(),
-	})
-	thread, err := h.StartThread(ctx, agentharness.StartThreadOptions{ThreadID: "thread"})
+	path := filepath.Join(t.TempDir(), "floret.db")
+	store, err := OpenSQLiteStore(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := thread.Run(ctx, "hello", agentharness.RunOptions{TurnID: "turn-1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Status != engine.Completed || result.Output != "configured" {
-		t.Fatalf("result = %#v", result)
-	}
-	if len(scripted.Requests) != 1 {
-		t.Fatalf("provider requests = %#v", scripted.Requests)
-	}
-	req := scripted.Requests[0]
-	if req.MaxOutputTokens != 123 || req.ContextPolicy.ContextWindowTokens != 4096 || req.ContextPolicy.RecentUserTokens != 321 {
-		t.Fatalf("context policy not mapped into request: %#v", req.ContextPolicy)
-	}
-	if req.Cache.Retention != cache.RetentionLong {
-		t.Fatalf("cache retention = %q, want long", req.Cache.Retention)
-	}
-	if len(req.HostedTools) != 1 || req.HostedTools[0].Name != "web_search" {
-		t.Fatalf("hosted tools = %#v", req.HostedTools)
-	}
-}
-
-func TestNewHarnessWithProviderEUsesAgentProfilePrompt(t *testing.T) {
-	ctx := context.Background()
-	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("configured"), harness.Done()))
-	h, err := NewHarnessWithProviderE(config.Config{
-		Provider: config.ProviderFake,
-		Model:    "fake-model",
-		AgentProfile: config.AgentProfile{
-			ID:           "acme-agent",
-			Name:         "Acme Agent",
-			Description:  "Acme workflow assistant.",
-			SystemPrompt: "You are Acme Agent.",
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "persisted",
+			SystemPrompt: "test",
 		},
-	}, scripted, HarnessOptions{
-		Store:          sessiontree.NewMemoryRepo(),
-		TitleGenerator: runtimeFixedTitleGenerator{},
-		NewID:          deterministicIDs(),
+		Store:       store,
+		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	thread, err := h.StartThread(ctx, agentharness.StartThreadOptions{ThreadID: "thread"})
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn-1", Input: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenSQLiteStore(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := thread.Run(ctx, "hello", agentharness.RunOptions{TurnID: "turn-1"})
+	defer reopened.Close()
+	host, err = NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "ok",
+			SystemPrompt: "test",
+		},
+		Store:       reopened,
+		IDGenerator: deterministicIDs(),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != engine.Completed || result.Output != "configured" {
-		t.Fatalf("result = %#v", result)
+	snapshot, err := host.ReadThread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(scripted.Requests) != 1 || len(scripted.Requests[0].Messages) == 0 {
-		t.Fatalf("provider requests = %#v", scripted.Requests)
-	}
-	if scripted.Requests[0].Messages[0].Role != session.System || scripted.Requests[0].Messages[0].Content != "You are Acme Agent." {
-		t.Fatalf("system message = %#v", scripted.Requests[0].Messages[0])
+	if len(snapshot.Messages) != 2 || snapshot.Messages[1].Content != "persisted" {
+		t.Fatalf("reopened snapshot = %#v", snapshot)
 	}
 }
 
-func TestPublicHostAPICompilesAndRunsWithSQLiteCustomProviderAndTool(t *testing.T) {
+func TestHarnessHelperRunsCustomToolWithoutPublicProviderAPI(t *testing.T) {
 	ctx := context.Background()
-	store, err := storagesqlite.Open(filepath.Join(t.TempDir(), "floret.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
 	registry := tools.NewRegistry()
 	if err := registry.Register(tools.Define[runtimeEchoArgs](
 		tools.Definition{
@@ -239,16 +152,16 @@ func TestPublicHostAPICompilesAndRunsWithSQLiteCustomProviderAndTool(t *testing.
 		harness.Step(harness.Tool("echo-1", "echo", `{"text":"from tool"}`), harness.DoneReason("tool_calls")),
 		harness.Step(harness.Text("done"), harness.Done()),
 	)
-	h, err := NewHarnessWithProviderE(config.Config{
+	h, err := newHarnessWithProvider(config.Config{
 		Provider:     config.ProviderFake,
 		Model:        "fake-model",
 		SystemPrompt: "test",
-	}, scripted, HarnessOptions{
-		Store:          store,
-		Tools:          registry,
-		TitleGenerator: runtimeFixedTitleGenerator{},
-		NewID:          deterministicIDs(),
-		Approver:       allowRuntimeTools,
+	}, scripted, harnessOptions{
+		Store:    NewMemoryStore(),
+		Tools:    registry,
+		Title:    fixedTitleGenerator{},
+		NewID:    deterministicIDs(),
+		Approver: allowRuntimeTools,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -267,47 +180,28 @@ func TestPublicHostAPICompilesAndRunsWithSQLiteCustomProviderAndTool(t *testing.
 	if len(scripted.Requests) != 2 {
 		t.Fatalf("requests = %#v", scripted.Requests)
 	}
+	if !slices.ContainsFunc(scripted.Requests[0].Tools, func(def provider.ToolDefinition) bool { return def.Name == "echo" }) {
+		t.Fatalf("custom tool not exposed internally: %#v", scripted.Requests[0].Tools)
+	}
 	if !slices.ContainsFunc(scripted.Requests[1].Messages, func(msg session.Message) bool {
 		return msg.Role == session.Tool && msg.ToolName == "echo" && msg.Content == "89abcdef"
 	}) {
-		t.Fatalf("follow-up request should only contain projected tool output: %#v", scripted.Requests[1].Messages)
-	}
-	if !slices.ContainsFunc(scripted.Requests[0].Tools, func(def provider.ToolDefinition) bool { return def.Name == "echo" }) {
-		t.Fatalf("custom tool not exposed: %#v", scripted.Requests[0].Tools)
-	}
-	reopened, err := storagesqlite.Open(store.DBPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reopened.Close()
-	path, err := reopened.Path(ctx, "thread", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.ContainsFunc(path, func(entry sessiontree.Entry) bool {
-		return entry.Type == sessiontree.EntryToolResult &&
-			entry.Message.Role == session.Tool &&
-			entry.Message.ToolName == "echo" &&
-			entry.Message.Content == "89abcdef" &&
-			entry.Message.ToolResult != nil &&
-			entry.Message.ToolResult.FullOutput != nil &&
-			entry.Message.ToolResult.FullOutput.SizeBytes > int64(len(entry.Message.Content))
-	}) {
-		t.Fatalf("SQLite-backed public API run did not persist tool result: %#v", path)
+		t.Fatalf("follow-up request should contain projected tool output: %#v", scripted.Requests[1].Messages)
 	}
 }
 
-func TestNewEngineWithProviderKeepsProvidedZeroMaxOutputTokens(t *testing.T) {
+func TestEngineHelperPreservesExplicitZeroMaxOutputTokens(t *testing.T) {
 	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
-	e, err := NewEngineWithProvider(config.Config{
+	e, err := newEngineWithProvider(config.Config{
 		Provider:     "openai",
 		Model:        "gpt-5.4",
 		SystemPrompt: "test",
 		RunID:        "run",
-		ContextPolicy: contextpolicy.Policy{
-			ContextWindowTokens: contextpolicy.DefaultContextWindowTokens,
+		ContextPolicy: config.ContextPolicy{
+			ContextWindowTokens: config.DefaultContextWindowTokens,
 			MaxOutputTokens:     0,
 		},
+		MaxOutputTokensSet:      true,
 		MaxEmptyProviderRetries: 1,
 		NoProgressLimit:         2,
 		DuplicateToolLimit:      3,
@@ -329,180 +223,65 @@ func TestNewEngineWithProviderKeepsProvidedZeroMaxOutputTokens(t *testing.T) {
 	if req.ContextPolicy.ReservedOutputTokens != contextpolicy.DefaultReservedOutputTokens {
 		t.Fatalf("reserved output = %d, want default budget", req.ContextPolicy.ReservedOutputTokens)
 	}
-	if req.ContextPressure.OutputHeadroomTokens != contextpolicy.DefaultReservedOutputTokens {
-		t.Fatalf("output headroom = %d, want reserved output", req.ContextPressure.OutputHeadroomTokens)
-	}
 }
 
-func TestNewEngineWithProviderUsesCatalogMaxOutputWhenPolicyOmitted(t *testing.T) {
-	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
-	cfg, err := config.Resolve(config.Config{
-		Provider: "openai",
-		Model:    "gpt-5.4",
-		APIKey:   "token",
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	e, err := NewEngineWithProvider(cfg, scripted, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result := e.Run(context.Background(), "hello")
-	if result.Status != engine.Completed {
-		t.Fatalf("result = %#v", result)
-	}
-	if len(scripted.Requests) != 1 {
-		t.Fatalf("provider requests = %#v", scripted.Requests)
-	}
-	req := scripted.Requests[0]
-	if req.MaxOutputTokens != 128000 || req.ContextPolicy.MaxOutputTokens != 128000 {
-		t.Fatalf("max output should use catalog max: max=%d policy=%#v", req.MaxOutputTokens, req.ContextPolicy)
-	}
-	if req.ContextPressure.ThresholdTokens != 922000 || req.ContextPressure.OutputHeadroomTokens != 128000 || req.ContextPressure.RequestSafeLimit != 922000 {
-		t.Fatalf("catalog max output should shape request context pressure: %#v", req.ContextPressure)
-	}
-}
-
-func TestNewHarnessWithProviderERegistersSkillsAndPromptMaterial(t *testing.T) {
+func TestHostDeleteThreadUsesStoreBoundary(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
-	writeRuntimeSkill(t, root, "review", "---\nname: review\ndescription: Review code.\n---\n# Review\nCheck behavior.\n")
-	scripted := harness.NewScriptedProvider(
-		harness.Step(provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "skill-1", Name: "skill", Args: `{"name":"review"}`}}}, harness.DoneReason("tool_calls")),
-		harness.Step(harness.Text("loaded"), harness.Done()),
-	)
-	rec := &event.Recorder{}
-	h, err := NewHarnessWithProviderE(config.Config{
-		Provider:     config.ProviderFake,
-		Model:        "fake-model",
-		SystemPrompt: "base prompt",
-	}, scripted, HarnessOptions{
-		Store:          sessiontree.NewMemoryRepo(),
-		Sink:           rec,
-		TitleGenerator: runtimeFixedTitleGenerator{},
-		Capability: CapabilityOptions{
-			SkillsEnabled: true,
-			SkillSources:  []skills.Source{{Root: root, Kind: skills.SourceRepo, Enabled: true}},
+	store := NewMemoryStore()
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "ok",
+			SystemPrompt: "test",
 		},
-		NewID: deterministicIDs(),
+		Store:       store,
+		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	thread, err := h.StartThread(ctx, agentharness.StartThreadOptions{ThreadID: "thread"})
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	thread, err := host.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := thread.Run(ctx, "use review", agentharness.RunOptions{TurnID: "turn-1"})
-	if err != nil {
-		t.Fatal(err)
+	if thread.Status != TurnStatusCompleted {
+		t.Fatalf("turn result = %#v", thread)
 	}
-	if result.Status != engine.Completed || result.Output != "loaded" {
-		t.Fatalf("result = %#v", result)
+	if requests, err := store.prompt.ProviderRequests(ctx, "thread"); err != nil || len(requests) == 0 {
+		t.Fatalf("prompt ledger before delete = %#v, %v", requests, err)
 	}
-	if len(scripted.Requests) != 2 {
-		t.Fatalf("requests = %#v", scripted.Requests)
-	}
-	first := scripted.Requests[0]
-	if !slices.ContainsFunc(first.Tools, func(def provider.ToolDefinition) bool { return def.Name == "skill" }) {
-		t.Fatalf("skill tool not exposed: %#v", first.Tools)
-	}
-	if !slices.ContainsFunc(first.Messages, func(msg session.Message) bool {
-		return msg.Role == session.System && strings.Contains(msg.Content, "<available_skills>") && strings.Contains(msg.Content, "name: review")
-	}) {
-		t.Fatalf("available skills prompt missing: %#v", first.Messages)
-	}
-	second := scripted.Requests[1]
-	if !slices.ContainsFunc(second.Messages, func(msg session.Message) bool {
-		return msg.Role == session.Tool && msg.ToolName == "skill" && strings.Contains(msg.Content, "# Review")
-	}) {
-		t.Fatalf("skill tool result missing in second request: %#v", second.Messages)
-	}
-	events := rec.Snapshot()
-	if !slices.ContainsFunc(events, func(ev event.Event) bool { return ev.Type == "skill_detected" }) ||
-		!slices.ContainsFunc(events, func(ev event.Event) bool { return ev.Type == "skill_disclosure_applied" }) ||
-		!slices.ContainsFunc(events, func(ev event.Event) bool { return ev.Type == "skill_loaded" }) {
-		t.Fatalf("skill events missing: %#v", events)
-	}
-}
-
-func TestNewHarnessWithProviderERegistersMCPToolAsLocalTool(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatal(err)
-		}
-		id := req["id"]
-		switch req["method"] {
-		case "initialize", "notifications/initialized":
-			writeRuntimeRPC(w, id, map[string]any{"protocolVersion": mcp.ProtocolVersion})
-		case "tools/list":
-			writeRuntimeRPC(w, id, map[string]any{"tools": []map[string]any{{
-				"name":        "lookup",
-				"description": "Lookup a value.",
-				"inputSchema": tools.StrictObject(map[string]any{"query": tools.String("Query")}, []string{"query"}),
-			}}})
-		case "tools/call":
-			writeRuntimeRPC(w, id, map[string]any{"content": []map[string]any{{"type": "text", "text": "mcp lookup ok"}}})
-		default:
-			writeRuntimeRPC(w, id, map[string]any{})
-		}
-	}))
-	defer server.Close()
-	scripted := harness.NewScriptedProvider(
-		harness.Step(provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "mcp-1", Name: "mcp__docs__lookup", Args: `{"query":"floret"}`}}}, harness.DoneReason("tool_calls")),
-		harness.Step(harness.Text("done"), harness.Done()),
-	)
-	rec := &event.Recorder{}
-	h, err := NewHarnessWithProviderE(config.Config{
-		Provider:     config.ProviderFake,
-		Model:        "fake-model",
-		SystemPrompt: "test",
-	}, scripted, HarnessOptions{
-		Store:          sessiontree.NewMemoryRepo(),
-		Sink:           rec,
-		Approver:       allowRuntimeTools,
-		TitleGenerator: runtimeFixedTitleGenerator{},
-		Capability: CapabilityOptions{MCPServers: []mcp.ServerConfig{{
-			Name:      "docs",
-			Transport: mcp.TransportStreamableHTTP,
-			URL:       server.URL,
-			Enabled:   true,
-		}}},
-		NewID: deterministicIDs(),
+	ref, err := store.artifacts.PutToolOutput(ctx, artifact.ToolOutputArtifact{
+		ThreadID:      "thread",
+		TurnID:        "turn-1",
+		RunID:         "turn-1",
+		PromptScopeID: "thread",
+		Step:          1,
+		CallID:        "call-1",
+		ToolName:      "echo",
+		Text:          "full output",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	thread, err := h.StartThread(context.Background(), agentharness.StartThreadOptions{ThreadID: "thread"})
-	if err != nil {
+	artifacts := store.artifacts.(*artifact.MemoryStore)
+	if _, exists := artifacts.Ref(ref.ID); !exists {
+		t.Fatalf("artifact should exist before delete")
+	}
+	if err := host.DeleteThread(ctx, "thread"); err != nil {
 		t.Fatal(err)
 	}
-	result, err := thread.Run(context.Background(), "use mcp", agentharness.RunOptions{TurnID: "turn-1"})
-	if err != nil {
-		t.Fatal(err)
+	if _, err := host.ReadThread(ctx, "thread"); err == nil {
+		t.Fatalf("deleted thread should not be readable")
 	}
-	if result.Status != engine.Completed || result.Output != "done" {
-		t.Fatalf("result = %#v", result)
+	if requests, err := store.prompt.ProviderRequests(ctx, "thread"); err != nil || len(requests) != 0 {
+		t.Fatalf("prompt ledger after delete = %#v, %v", requests, err)
 	}
-	if len(scripted.Requests) != 2 {
-		t.Fatalf("requests = %#v", scripted.Requests)
-	}
-	if !slices.ContainsFunc(scripted.Requests[0].Tools, func(def provider.ToolDefinition) bool {
-		return def.Name == "mcp__docs__lookup" && def.Annotations["source"] == "mcp" && def.Annotations["open_world"] == true
-	}) {
-		t.Fatalf("MCP tool not exposed as local tool: %#v", scripted.Requests[0].Tools)
-	}
-	if !slices.ContainsFunc(scripted.Requests[1].Messages, func(msg session.Message) bool {
-		return msg.Role == session.Tool && msg.ToolName == "mcp__docs__lookup" && msg.Content == "mcp lookup ok"
-	}) {
-		t.Fatalf("MCP result missing from second request: %#v", scripted.Requests[1].Messages)
-	}
-	events := rec.Snapshot()
-	if !slices.ContainsFunc(events, func(ev event.Event) bool { return ev.Type == event.MCPServerReady }) ||
-		!slices.ContainsFunc(events, func(ev event.Event) bool { return ev.Type == event.MCPToolsListed }) {
-		t.Fatalf("MCP events missing: %#v", events)
+	if _, exists := artifacts.Ref(ref.ID); exists {
+		t.Fatalf("thread artifact should be deleted")
 	}
 }
 
@@ -510,10 +289,18 @@ type runtimeEchoArgs struct {
 	Text string `json:"text"`
 }
 
-type runtimeFixedTitleGenerator struct{}
+type fixedTitleGenerator struct{}
 
-func (runtimeFixedTitleGenerator) GenerateTitle(context.Context, agentharness.TitleRequest) (agentharness.TitleResult, error) {
+func (fixedTitleGenerator) GenerateTitle(context.Context, agentharness.TitleRequest) (agentharness.TitleResult, error) {
 	return agentharness.TitleResult{Title: "Runtime test title", Source: sessiontree.ThreadTitleSourceProvider}, nil
+}
+
+type runtimeEventRecorder struct {
+	events []Event
+}
+
+func (r *runtimeEventRecorder) EmitEvent(ev Event) {
+	r.events = append(r.events, ev)
 }
 
 func deterministicIDs() func(string) string {
@@ -522,26 +309,6 @@ func deterministicIDs() func(string) string {
 		seq++
 		return fmt.Sprintf("%s-deterministic-%d", prefix, seq)
 	}
-}
-
-func promptCachePathForTest(value string) string {
-	return "id_" + base64.RawURLEncoding.EncodeToString([]byte(value))
-}
-
-func writeRuntimeSkill(t *testing.T, root, name, content string) {
-	t.Helper()
-	dir := filepath.Join(root, name)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func writeRuntimeRPC(w http.ResponseWriter, id any, result map[string]any) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
 }
 
 func allowRuntimeTools(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {

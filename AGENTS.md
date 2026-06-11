@@ -260,8 +260,8 @@ invent near-synonyms when a concept below already fits.
   records, and session-tree entries.
 - `Artifact` is durable tool or run output. Artifact ownership must use explicit
   `ThreadID`, `TurnID`, `RunID`, and `TraceID` fields where applicable.
-- `runtime/storage` defines storage contracts. `runtime/storage/sqlite` is one
-  implementation. Storage APIs must name the domain object they delete or load,
+- `internal/storage` defines storage contracts. `internal/storage/sqlite` is one
+  implementation. Public storage creation goes through `runtime.Store`. Storage APIs must name the domain object they delete or load,
   such as thread data, prompt scopes, metadata, or transcripts.
 
 ### Profiles and Capabilities

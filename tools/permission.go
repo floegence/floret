@@ -43,7 +43,6 @@ type ApprovalRequest struct {
 	ReadOnly      bool
 	Destructive   bool
 	OpenWorld     bool
-	CWD           string
 }
 
 type PermissionDecisionState string

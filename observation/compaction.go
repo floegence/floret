@@ -4,49 +4,52 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/floegence/floret/engine"
-	"github.com/floegence/floret/event"
-	"github.com/floegence/floret/session/contextpolicy"
+	"github.com/floegence/floret/config"
 )
 
 const (
+	EventTypeProviderUsage    = "provider_usage"
+	EventTypeContextCompact   = "context_compact"
+	CompactionPhaseStart      = "start"
+	CompactionPhaseComplete   = "complete"
+	CompactionPhaseFailed     = "failed"
 	CompactionStatusRunning   = "running"
 	CompactionStatusCompacted = "compacted"
 	CompactionStatusFailed    = "failed"
 )
 
 type CompactionEvent struct {
-	RunID                   string                        `json:"run_id,omitempty"`
-	ThreadID                string                        `json:"thread_id,omitempty"`
-	TurnID                  string                        `json:"turn_id,omitempty"`
-	Step                    int                           `json:"step,omitempty"`
-	Phase                   string                        `json:"phase"`
-	Status                  string                        `json:"status"`
-	Trigger                 string                        `json:"trigger,omitempty"`
-	Reason                  string                        `json:"reason,omitempty"`
-	CompactionID            string                        `json:"compaction_id,omitempty"`
-	CompactionGeneration    int                           `json:"compaction_generation,omitempty"`
-	CompactionWindowID      string                        `json:"compaction_window_id,omitempty"`
-	CompactedThroughEntryID string                        `json:"compacted_through_entry_id,omitempty"`
-	TokensBefore            int64                         `json:"tokens_before,omitempty"`
-	TokensAfterEstimate     int64                         `json:"tokens_after_estimate,omitempty"`
-	BeforePressure          contextpolicy.ContextPressure `json:"before_pressure,omitempty"`
-	ContextBefore           contextpolicy.Usage           `json:"context_before,omitempty"`
-	ContextAfter            contextpolicy.Usage           `json:"context_after,omitempty"`
-	Error                   string                        `json:"error,omitempty"`
-	ObservedAt              time.Time                     `json:"observed_at"`
+	RunID                   string                 `json:"run_id,omitempty"`
+	ThreadID                string                 `json:"thread_id,omitempty"`
+	TurnID                  string                 `json:"turn_id,omitempty"`
+	Step                    int                    `json:"step,omitempty"`
+	Phase                   string                 `json:"phase"`
+	Status                  string                 `json:"status"`
+	Trigger                 string                 `json:"trigger,omitempty"`
+	Reason                  string                 `json:"reason,omitempty"`
+	CompactionID            string                 `json:"compaction_id,omitempty"`
+	CompactionGeneration    int                    `json:"compaction_generation,omitempty"`
+	CompactionWindowID      string                 `json:"compaction_window_id,omitempty"`
+	CompactedThroughEntryID string                 `json:"compacted_through_entry_id,omitempty"`
+	TokensBefore            int64                  `json:"tokens_before,omitempty"`
+	TokensAfterEstimate     int64                  `json:"tokens_after_estimate,omitempty"`
+	BeforePressure          config.ContextPressure `json:"before_pressure,omitempty"`
+	ContextBefore           config.ContextUsage    `json:"context_before,omitempty"`
+	ContextAfter            config.ContextUsage    `json:"context_after,omitempty"`
+	Error                   string                 `json:"error,omitempty"`
+	ObservedAt              time.Time              `json:"observed_at"`
 }
 
-func CompactionEventFromEngineEvent(ev event.Event) (CompactionEvent, bool) {
-	if ev.Type != event.ContextCompact {
+func CompactionEventFromEvent(ev Event) (CompactionEvent, bool) {
+	if ev.Type != EventTypeContextCompact {
 		return CompactionEvent{}, false
 	}
-	meta, _ := ev.Metadata.(map[string]any)
+	meta := ev.Metadata
 	phase := stringFromAny(meta["phase"])
 	if phase == "" {
 		return CompactionEvent{}, false
 	}
-	if ev.Err != "" && phase != engine.ContextCompactPhaseFailed {
+	if ev.Error != "" && phase != CompactionPhaseFailed {
 		return CompactionEvent{}, false
 	}
 	out := CompactionEvent{
@@ -58,23 +61,23 @@ func CompactionEventFromEngineEvent(ev event.Event) (CompactionEvent, bool) {
 		Status:     CompactionStatusRunning,
 		Trigger:    stringFromAny(meta["trigger"]),
 		Reason:     stringFromAny(meta["reason"]),
-		ObservedAt: ev.Timestamp,
-		Error:      ev.Err,
+		ObservedAt: ev.ObservedAt,
+		Error:      ev.Error,
 	}
-	if usage, ok := meta["message_context_before"].(contextpolicy.Usage); ok {
+	if usage, ok := contextUsageFromAny(meta["message_context_before"]); ok {
 		out.ContextBefore = usage
 		out.TokensBefore = usage.InputTokens
 	}
-	if pressure, ok := meta["before_pressure"].(contextpolicy.ContextPressure); ok {
+	if pressure, ok := contextPressureFromAny(meta["before_pressure"]); ok {
 		out.BeforePressure = pressure
 	}
-	if usage, ok := meta["context_before"].(contextpolicy.Usage); ok {
+	if usage, ok := contextUsageFromAny(meta["context_before"]); ok {
 		out.ContextBefore = usage
 		if out.TokensBefore == 0 {
 			out.TokensBefore = usage.InputTokens
 		}
 	}
-	if usage, ok := meta["context_after"].(contextpolicy.Usage); ok {
+	if usage, ok := contextUsageFromAny(meta["context_after"]); ok {
 		out.ContextAfter = usage
 	}
 	out.CompactionID = stringFromAny(meta["compaction_id"])
@@ -84,11 +87,11 @@ func CompactionEventFromEngineEvent(ev event.Event) (CompactionEvent, bool) {
 	out.TokensBefore = int64FromAny(meta["tokens_before"], out.TokensBefore)
 	out.TokensAfterEstimate = int64FromAny(meta["tokens_after_estimate"], out.TokensAfterEstimate)
 	switch out.Phase {
-	case engine.ContextCompactPhaseStart:
+	case CompactionPhaseStart:
 		out.Status = CompactionStatusRunning
-	case engine.ContextCompactPhaseComplete:
+	case CompactionPhaseComplete:
 		out.Status = CompactionStatusCompacted
-	case engine.ContextCompactPhaseFailed:
+	case CompactionPhaseFailed:
 		out.Status = CompactionStatusFailed
 	default:
 		return CompactionEvent{}, false
@@ -96,10 +99,10 @@ func CompactionEventFromEngineEvent(ev event.Event) (CompactionEvent, bool) {
 	return out, true
 }
 
-func CompactionEventsFromEngineEvents(events []event.Event) []CompactionEvent {
+func CompactionEventsFromEvents(events []Event) []CompactionEvent {
 	out := []CompactionEvent{}
 	for _, ev := range events {
-		if compact, ok := CompactionEventFromEngineEvent(ev); ok {
+		if compact, ok := CompactionEventFromEvent(ev); ok {
 			out = append(out, compact)
 		}
 	}
