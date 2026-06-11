@@ -18,7 +18,10 @@ var ErrStreamNotClosedAfterTerminal = errors.New("provider stream did not close 
 
 type Request struct {
 	RunID            string
-	SessionID        string
+	ThreadID         string
+	TurnID           string
+	PromptScopeID    string
+	TraceID          string
 	Step             int
 	LogicalRequestID string
 	Attempt          int

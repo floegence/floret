@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -23,7 +22,6 @@ import (
 
 const (
 	schemaVersion     = "4"
-	initialSchema     = "1"
 	rawEncoderVersion = "1"
 	driverName        = "sqlite"
 )
@@ -35,14 +33,6 @@ type options struct{}
 type Store struct {
 	db   *sql.DB
 	path string
-}
-
-type ImportSummary struct {
-	Threads    int
-	Metadata   int
-	PromptRuns int
-	Skipped    int
-	Conflicts  int
 }
 
 type sqlRunner interface {
@@ -141,24 +131,6 @@ func (s *Store) init(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if current == initialSchema {
-		if err := s.migrateV1ToV2(ctx); err != nil {
-			return err
-		}
-		current = "2"
-	}
-	if current == "2" {
-		if err := s.migrateV2ToV3(ctx); err != nil {
-			return err
-		}
-		current = "3"
-	}
-	if current == "3" {
-		if err := s.migrateV3ToV4(ctx); err != nil {
-			return err
-		}
-		current = schemaVersion
-	}
 	if current != schemaVersion {
 		return fmt.Errorf("unsupported sqlite store schema version %q", current)
 	}
@@ -170,46 +142,6 @@ func (s *Store) init(ctx context.Context) error {
 		return fmt.Errorf("unsupported sqlite store raw encoder version %q", rawVersion)
 	}
 	return nil
-}
-
-func (s *Store) migrateV1ToV2(ctx context.Context) error {
-	return s.withImmediate(ctx, func(tx sqlRunner) error {
-		if _, err := tx.ExecContext(ctx, activeTurnLeasesSQL); err != nil {
-			return err
-		}
-		_, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = '2' WHERE key = 'schema_version'`)
-		return err
-	})
-}
-
-func (s *Store) migrateV2ToV3(ctx context.Context) error {
-	return s.withImmediate(ctx, func(tx sqlRunner) error {
-		if _, err := tx.ExecContext(ctx, `ALTER TABLE entries ADD COLUMN kept_user_entry_ids_json TEXT NOT NULL DEFAULT '[]'`); err != nil {
-			if !strings.Contains(err.Error(), "duplicate column name") {
-				return err
-			}
-		}
-		_, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = '3' WHERE key = 'schema_version'`)
-		return err
-	})
-}
-
-func (s *Store) migrateV3ToV4(ctx context.Context) error {
-	return s.withImmediate(ctx, func(tx sqlRunner) error {
-		for _, stmt := range []string{
-			`ALTER TABLE threads ADD COLUMN title TEXT NOT NULL DEFAULT ''`,
-			`ALTER TABLE threads ADD COLUMN title_status TEXT NOT NULL DEFAULT ''`,
-			`ALTER TABLE threads ADD COLUMN title_source TEXT NOT NULL DEFAULT ''`,
-			`ALTER TABLE threads ADD COLUMN title_updated_at TEXT NOT NULL DEFAULT ''`,
-			`ALTER TABLE threads ADD COLUMN title_error TEXT NOT NULL DEFAULT ''`,
-		} {
-			if _, err := tx.ExecContext(ctx, stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-				return err
-			}
-		}
-		_, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_version'`, schemaVersion)
-		return err
-	})
 }
 
 func (s *Store) metaValue(ctx context.Context, key string) (string, error) {
@@ -638,9 +570,9 @@ func (s *Store) AppendSegment(ctx context.Context, seg cache.Segment) error {
 	})
 }
 
-func (s *Store) Segments(ctx context.Context, runID, provider, model string) ([]cache.Segment, error) {
+func (s *Store) Segments(ctx context.Context, promptScopeID, provider, model string) ([]cache.Segment, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT data_json FROM prompt_segments
-		WHERE run_id = ? AND provider = ? AND model = ? ORDER BY rowid`, runID, provider, model)
+		WHERE prompt_scope_id = ? AND provider = ? AND model = ? ORDER BY rowid`, promptScopeID, provider, model)
 	if err != nil {
 		return nil, err
 	}
@@ -666,10 +598,10 @@ func (s *Store) AppendToolset(ctx context.Context, snap cache.ToolsetSnapshot) e
 	})
 }
 
-func (s *Store) ActiveToolset(ctx context.Context, runID, provider, model string) (cache.ToolsetSnapshot, bool, error) {
+func (s *Store) ActiveToolset(ctx context.Context, promptScopeID, provider, model string) (cache.ToolsetSnapshot, bool, error) {
 	var raw string
 	err := s.db.QueryRowContext(ctx, `SELECT data_json FROM prompt_toolsets
-		WHERE run_id = ? AND provider = ? AND model = ? ORDER BY rowid DESC LIMIT 1`, runID, provider, model).Scan(&raw)
+		WHERE prompt_scope_id = ? AND provider = ? AND model = ? ORDER BY rowid DESC LIMIT 1`, promptScopeID, provider, model).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return cache.ToolsetSnapshot{}, false, nil
 	}
@@ -689,8 +621,8 @@ func (s *Store) AppendProviderRequest(ctx context.Context, req cache.ProviderReq
 	})
 }
 
-func (s *Store) ProviderRequests(ctx context.Context, runID string) ([]cache.ProviderRequestRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT data_json FROM prompt_requests WHERE run_id = ? ORDER BY rowid`, runID)
+func (s *Store) ProviderRequests(ctx context.Context, promptScopeID string) ([]cache.ProviderRequestRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT data_json FROM prompt_requests WHERE prompt_scope_id = ? ORDER BY rowid`, promptScopeID)
 	if err != nil {
 		return nil, err
 	}
@@ -716,8 +648,8 @@ func (s *Store) AppendProviderResponse(ctx context.Context, resp cache.ProviderR
 	})
 }
 
-func (s *Store) ProviderResponses(ctx context.Context, runID string) ([]cache.ProviderResponseRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT data_json FROM prompt_responses WHERE run_id = ? ORDER BY rowid`, runID)
+func (s *Store) ProviderResponses(ctx context.Context, promptScopeID string) ([]cache.ProviderResponseRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT data_json FROM prompt_responses WHERE prompt_scope_id = ? ORDER BY rowid`, promptScopeID)
 	if err != nil {
 		return nil, err
 	}
@@ -737,7 +669,7 @@ func (s *Store) ProviderResponses(ctx context.Context, runID string) ([]cache.Pr
 	return out, rows.Err()
 }
 
-func (s *Store) LatestPressureAnchor(ctx context.Context, sessionID, providerName, model string) (cache.PressureAnchorState, bool, error) {
+func (s *Store) LatestPressureAnchor(ctx context.Context, promptScopeID, providerName, model string) (cache.PressureAnchorState, bool, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT data_json FROM prompt_responses ORDER BY rowid DESC`)
 	if err != nil {
 		return cache.PressureAnchorState{}, false, err
@@ -756,7 +688,7 @@ func (s *Store) LatestPressureAnchor(ctx context.Context, sessionID, providerNam
 		if anchor.WindowInputTokens <= 0 {
 			continue
 		}
-		if sessionID != "" && anchor.SessionID != sessionID && anchor.ThreadID != sessionID {
+		if promptScopeID != "" && anchor.PromptScopeID != promptScopeID {
 			continue
 		}
 		if providerName != "" && anchor.Provider != providerName {
@@ -770,15 +702,15 @@ func (s *Store) LatestPressureAnchor(ctx context.Context, sessionID, providerNam
 	return cache.PressureAnchorState{}, false, rows.Err()
 }
 
-func (s *Store) DeleteRuns(ctx context.Context, runIDs ...string) error {
-	clean := cleanIDs(runIDs)
+func (s *Store) DeletePromptScopes(ctx context.Context, promptScopeIDs ...string) error {
+	clean := cleanIDs(promptScopeIDs)
 	if len(clean) == 0 {
 		return nil
 	}
 	return s.withImmediate(ctx, func(tx sqlRunner) error {
-		for _, runID := range clean {
+		for _, promptScopeID := range clean {
 			for _, table := range []string{"prompt_segments", "prompt_toolsets", "prompt_requests", "prompt_responses"} {
-				if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE run_id = ?`, runID); err != nil {
+				if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE prompt_scope_id = ?`, promptScopeID); err != nil {
 					return err
 				}
 			}
@@ -858,330 +790,37 @@ func (s *Store) DeleteMetadata(ctx context.Context, namespace, id string) error 
 	})
 }
 
-func (s *Store) DeleteSession(ctx context.Context, req storage.DeleteSessionRequest) error {
-	sessionID := strings.TrimSpace(req.SessionID)
-	if sessionID == "" {
-		return errors.New("session id is required")
+func (s *Store) DeleteThreadData(ctx context.Context, req storage.DeleteThreadDataRequest) error {
+	threadID := strings.TrimSpace(req.ThreadID)
+	if threadID == "" {
+		return errors.New("thread id is required")
 	}
-	runIDs := cleanIDs(append([]string{sessionID}, req.PromptScopeIDs...))
+	promptScopeIDs := cleanIDs(append([]string{threadID}, req.PromptScopeIDs...))
 	namespaces := cleanIDs(req.MetadataNamespaces)
 	return s.withImmediate(ctx, func(tx sqlRunner) error {
 		if len(namespaces) == 0 {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM metadata_records WHERE namespace = '' AND id = ?`, sessionID); err != nil {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM metadata_records WHERE namespace = '' AND id = ?`, threadID); err != nil {
 				return err
 			}
 		} else {
 			for _, namespace := range namespaces {
-				if _, err := tx.ExecContext(ctx, `DELETE FROM metadata_records WHERE namespace = ? AND id = ?`, namespace, sessionID); err != nil {
+				if _, err := tx.ExecContext(ctx, `DELETE FROM metadata_records WHERE namespace = ? AND id = ?`, namespace, threadID); err != nil {
 					return err
 				}
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM threads WHERE id = ?`, sessionID); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM threads WHERE id = ?`, threadID); err != nil {
 			return err
 		}
-		for _, runID := range runIDs {
+		for _, promptScopeID := range promptScopeIDs {
 			for _, table := range []string{"prompt_segments", "prompt_toolsets", "prompt_requests", "prompt_responses"} {
-				if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE run_id = ?`, runID); err != nil {
+				if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE prompt_scope_id = ?`, promptScopeID); err != nil {
 					return err
 				}
 			}
 		}
 		return nil
 	})
-}
-
-func (s *Store) ImportSessionTree(ctx context.Context, root string) (ImportSummary, error) {
-	var summary ImportSummary
-	paths, err := filepath.Glob(filepath.Join(root, "*", "thread.json"))
-	if err != nil {
-		return summary, err
-	}
-	for _, path := range paths {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			summary.Skipped++
-			continue
-		}
-		var meta sessiontree.ThreadMeta
-		if err := json.Unmarshal(data, &meta); err != nil || meta.ID == "" {
-			summary.Skipped++
-			continue
-		}
-		entries, err := readLegacyEntries(filepath.Join(filepath.Dir(path), "entries.jsonl"))
-		if err != nil {
-			summary.Skipped++
-			continue
-		}
-		if len(entries) > 0 {
-			last := entries[len(entries)-1]
-			if meta.LeafID == "" || !entryIDInSlice(entries, meta.LeafID) {
-				if newest, ok := newestRootReachableEntry(entries); ok {
-					meta.LeafID = newest.ID
-					meta.UpdatedAt = newest.CreatedAt
-				}
-			} else if meta.LeafID != last.ID {
-				if reachable := reachableEntryIDs(entries, meta.LeafID); reachable[last.ParentID] {
-					meta.LeafID = last.ID
-					meta.UpdatedAt = last.CreatedAt
-				}
-			}
-		}
-		if err := s.importThread(ctx, meta, entries); err != nil {
-			summary.Conflicts++
-			continue
-		}
-		summary.Threads++
-	}
-	return summary, nil
-}
-
-func (s *Store) ImportPromptCache(ctx context.Context, root string) (ImportSummary, error) {
-	var summary ImportSummary
-	entries, err := os.ReadDir(root)
-	if errors.Is(err, os.ErrNotExist) {
-		return summary, nil
-	}
-	if err != nil {
-		return summary, err
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		dir := filepath.Join(root, entry.Name())
-		if err := s.importPromptRun(ctx, dir); err != nil {
-			summary.Skipped++
-			continue
-		}
-		summary.PromptRuns++
-	}
-	return summary, nil
-}
-
-func (s *Store) importPromptRun(ctx context.Context, dir string) error {
-	segments, err := readPromptFile[cache.Segment](ctx, dir, "raw_segments.jsonl")
-	if err != nil {
-		return err
-	}
-	toolsets, err := readPromptFile[cache.ToolsetSnapshot](ctx, dir, "toolsets.jsonl")
-	if err != nil {
-		return err
-	}
-	requests, err := readPromptFile[cache.ProviderRequestRecord](ctx, dir, "requests.jsonl")
-	if err != nil {
-		return err
-	}
-	responses, err := readPromptFile[cache.ProviderResponseRecord](ctx, dir, "responses.jsonl")
-	if err != nil {
-		return err
-	}
-	return s.withImmediate(ctx, func(tx sqlRunner) error {
-		imported, err := promptRunAlreadyImported(ctx, tx, segments, toolsets, requests, responses)
-		if err != nil || imported {
-			return err
-		}
-		for _, seg := range segments {
-			if err := insertSegment(ctx, tx, seg); err != nil {
-				return err
-			}
-		}
-		for _, snap := range toolsets {
-			if err := insertToolset(ctx, tx, snap); err != nil {
-				return err
-			}
-		}
-		for _, req := range requests {
-			if err := insertProviderRequest(ctx, tx, req); err != nil {
-				return err
-			}
-		}
-		for _, resp := range responses {
-			if err := insertProviderResponse(ctx, tx, resp); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-func (s *Store) ImportMetadataDir(ctx context.Context, namespace, root string) (ImportSummary, error) {
-	var summary ImportSummary
-	paths, err := filepath.Glob(filepath.Join(root, "*.json"))
-	if err != nil {
-		return summary, err
-	}
-	for _, path := range paths {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			summary.Skipped++
-			continue
-		}
-		var header struct {
-			ID        string    `json:"id"`
-			CreatedAt time.Time `json:"created_at"`
-			UpdatedAt time.Time `json:"updated_at"`
-		}
-		if err := json.Unmarshal(data, &header); err != nil || header.ID == "" {
-			summary.Skipped++
-			continue
-		}
-		if err := s.PutMetadata(ctx, storage.MetadataRecord{
-			Namespace: namespace,
-			ID:        header.ID,
-			CreatedAt: header.CreatedAt,
-			UpdatedAt: header.UpdatedAt,
-			Data:      append([]byte(nil), data...),
-		}); err != nil {
-			summary.Conflicts++
-			continue
-		}
-		summary.Metadata++
-	}
-	return summary, nil
-}
-
-func (s *Store) importThread(ctx context.Context, meta sessiontree.ThreadMeta, entries []sessiontree.Entry) error {
-	entries = normalizeLegacyEntries(meta.ID, entries)
-	return s.withImmediate(ctx, func(tx sqlRunner) error {
-		exists, err := threadExists(ctx, tx, meta.ID)
-		if err != nil {
-			return err
-		}
-		if exists {
-			current, err := loadEntries(ctx, tx, meta.ID)
-			if err != nil {
-				return err
-			}
-			if len(current) != len(entries) {
-				return errors.New("legacy thread conflicts with existing sqlite thread")
-			}
-			for i := range current {
-				if current[i].ID != entries[i].ID || current[i].RawHash != entries[i].RawHash {
-					return errors.New("legacy thread conflicts with existing sqlite thread")
-				}
-			}
-			return nil
-		}
-		if err := insertThread(ctx, tx, meta); err != nil {
-			return err
-		}
-		for i, entry := range entries {
-			if err := insertEntry(ctx, tx, entry, int64(i+1), true); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-func promptRunAlreadyImported(ctx context.Context, tx sqlRunner, segments []cache.Segment, toolsets []cache.ToolsetSnapshot, requests []cache.ProviderRequestRecord, responses []cache.ProviderResponseRecord) (bool, error) {
-	runIDs := promptRunIDs(segments, toolsets, requests, responses)
-	if len(runIDs) == 0 {
-		return false, nil
-	}
-	checked := false
-	matched := false
-	check := func(table string, expected []string) error {
-		existing, err := promptRowsForRunIDs(ctx, tx, table, runIDs)
-		if err != nil {
-			return err
-		}
-		if len(existing) == 0 {
-			if len(expected) == 0 {
-				return nil
-			}
-			if checked {
-				return errors.New("legacy prompt run conflicts with existing sqlite prompt rows")
-			}
-			return nil
-		}
-		checked = true
-		if !slices.Equal(existing, expected) {
-			return errors.New("legacy prompt run conflicts with existing sqlite prompt rows")
-		}
-		matched = true
-		return nil
-	}
-	if err := check("prompt_segments", promptJSONRows(segments)); err != nil {
-		return false, err
-	}
-	if err := check("prompt_toolsets", promptJSONRows(toolsets)); err != nil {
-		return false, err
-	}
-	if err := check("prompt_requests", promptJSONRows(requests)); err != nil {
-		return false, err
-	}
-	if err := check("prompt_responses", promptJSONRows(responses)); err != nil {
-		return false, err
-	}
-	return matched, nil
-}
-
-func promptRunIDs(segments []cache.Segment, toolsets []cache.ToolsetSnapshot, requests []cache.ProviderRequestRecord, responses []cache.ProviderResponseRecord) []string {
-	var ids []string
-	for _, seg := range segments {
-		ids = append(ids, seg.RunID)
-	}
-	for _, snap := range toolsets {
-		ids = append(ids, snap.RunID)
-	}
-	for _, req := range requests {
-		ids = append(ids, req.RunID)
-	}
-	for _, resp := range responses {
-		runID := resp.RunID
-		if runID == "" {
-			runID = runIDFromRequest(resp.RequestID)
-		}
-		ids = append(ids, runID)
-	}
-	return cleanIDs(ids)
-}
-
-func promptJSONRows[T any](values []T) []string {
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		data, _ := json.Marshal(value)
-		out = append(out, string(data))
-	}
-	return out
-}
-
-func promptRowsForRunIDs(ctx context.Context, tx sqlRunner, table string, runIDs []string) ([]string, error) {
-	var out []string
-	for _, runID := range runIDs {
-		rows, err := tx.QueryContext(ctx, `SELECT data_json FROM `+table+` WHERE run_id = ? ORDER BY rowid`, runID)
-		if err != nil {
-			return nil, err
-		}
-		for rows.Next() {
-			var raw string
-			if err := rows.Scan(&raw); err != nil {
-				_ = rows.Close()
-				return nil, err
-			}
-			out = append(out, raw)
-		}
-		if err := rows.Close(); err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
-}
-
-func normalizeLegacyEntries(threadID string, entries []sessiontree.Entry) []sessiontree.Entry {
-	out := make([]sessiontree.Entry, 0, len(entries))
-	for _, entry := range entries {
-		if entry.ThreadID == "" {
-			entry.ThreadID = threadID
-		}
-		if entry.Raw == "" || entry.RawHash == "" {
-			entry = sessiontree.PrepareEntry(entry)
-		}
-		out = append(out, entry)
-	}
-	return out
 }
 
 func insertThread(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta) error {
@@ -1304,8 +943,8 @@ func insertSegment(ctx context.Context, tx sqlRunner, seg cache.Segment) error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO prompt_segments(id, run_id, provider, model, sequence, created_at, data_json)
-		VALUES(?, ?, ?, ?, ?, ?, ?)`, seg.ID, seg.RunID, seg.Provider, seg.Model, seg.Sequence, formatTime(seg.CreatedAt), string(data))
+	_, err = tx.ExecContext(ctx, `INSERT INTO prompt_segments(id, prompt_scope_id, provider, model, sequence, created_at, data_json)
+		VALUES(?, ?, ?, ?, ?, ?, ?)`, seg.ID, seg.PromptScopeID, seg.Provider, seg.Model, seg.Sequence, formatTime(seg.CreatedAt), string(data))
 	return err
 }
 
@@ -1314,8 +953,8 @@ func insertToolset(ctx context.Context, tx sqlRunner, snap cache.ToolsetSnapshot
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO prompt_toolsets(id, run_id, provider, model, epoch, created_at, data_json)
-		VALUES(?, ?, ?, ?, ?, ?, ?)`, snap.ID, snap.RunID, snap.Provider, snap.Model, snap.Epoch, formatTime(snap.CreatedAt), string(data))
+	_, err = tx.ExecContext(ctx, `INSERT INTO prompt_toolsets(id, prompt_scope_id, provider, model, epoch, created_at, data_json)
+		VALUES(?, ?, ?, ?, ?, ?, ?)`, snap.ID, snap.PromptScopeID, snap.Provider, snap.Model, snap.Epoch, formatTime(snap.CreatedAt), string(data))
 	return err
 }
 
@@ -1324,25 +963,21 @@ func insertProviderRequest(ctx context.Context, tx sqlRunner, req cache.Provider
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO prompt_requests(id, run_id, provider, model, created_at, data_json)
-		VALUES(?, ?, ?, ?, ?, ?)`, req.ID, req.RunID, req.Provider, req.Model, formatTime(req.CreatedAt), string(data))
+	_, err = tx.ExecContext(ctx, `INSERT INTO prompt_requests(id, prompt_scope_id, provider, model, created_at, data_json)
+		VALUES(?, ?, ?, ?, ?, ?)`, req.ID, req.PromptScopeID, req.Provider, req.Model, formatTime(req.CreatedAt), string(data))
 	return err
 }
 
 func insertProviderResponse(ctx context.Context, tx sqlRunner, resp cache.ProviderResponseRecord) error {
-	runID := resp.RunID
-	if runID == "" {
-		runID = runIDFromRequest(resp.RequestID)
-	}
-	if runID == "" {
-		return errors.New("cache response must include run id")
+	if strings.TrimSpace(resp.PromptScopeID) == "" {
+		return errors.New("cache response must include prompt scope id")
 	}
 	data, err := json.Marshal(resp)
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO prompt_responses(request_id, run_id, created_at, data_json)
-		VALUES(?, ?, ?, ?)`, resp.RequestID, runID, formatTime(resp.CreatedAt), string(data))
+	_, err = tx.ExecContext(ctx, `INSERT INTO prompt_responses(request_id, prompt_scope_id, created_at, data_json)
+		VALUES(?, ?, ?, ?)`, resp.RequestID, resp.PromptScopeID, formatTime(resp.CreatedAt), string(data))
 	return err
 }
 
@@ -1527,54 +1162,6 @@ func nextOrdinal(ctx context.Context, q sqlRunner, threadID string) (int64, erro
 	return ordinal.Int64 + 1, nil
 }
 
-func readLegacyEntries(path string) ([]sessiontree.Entry, error) {
-	f, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	var entries []sessiontree.Entry
-	dec := json.NewDecoder(f)
-	for {
-		var entry sessiontree.Entry
-		if err := dec.Decode(&entry); errors.Is(err, io.EOF) {
-			return entries, nil
-		} else if err != nil {
-			return nil, err
-		}
-		entries = append(entries, entry)
-	}
-}
-
-func readPromptFile[T any](ctx context.Context, dir, name string) ([]T, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	data, err := os.ReadFile(filepath.Join(dir, name))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var out []T
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		var value T
-		if err := json.Unmarshal([]byte(line), &value); err != nil {
-			return nil, err
-		}
-		out = append(out, value)
-	}
-	return out, nil
-}
-
 func cleanIDs(values []string) []string {
 	seen := map[string]struct{}{}
 	var out []string
@@ -1590,35 +1177,6 @@ func cleanIDs(values []string) []string {
 		out = append(out, value)
 	}
 	return out
-}
-
-func entryIDInSlice(entries []sessiontree.Entry, id string) bool {
-	return slices.ContainsFunc(entries, func(entry sessiontree.Entry) bool { return entry.ID == id })
-}
-
-func newestRootReachableEntry(entries []sessiontree.Entry) (sessiontree.Entry, bool) {
-	reachable := map[string]bool{"": true}
-	var newest sessiontree.Entry
-	found := false
-	for _, entry := range entries {
-		if !reachable[entry.ParentID] {
-			continue
-		}
-		reachable[entry.ID] = true
-		newest = entry
-		found = true
-	}
-	return newest, found
-}
-
-func reachableEntryIDs(entries []sessiontree.Entry, leafID string) map[string]bool {
-	reachable := map[string]bool{"": leafID == ""}
-	for _, entry := range entries {
-		if leafID == "" || entry.ID == leafID || reachable[entry.ParentID] {
-			reachable[entry.ID] = true
-		}
-	}
-	return reachable
 }
 
 func cloneEntry(entry sessiontree.Entry) sessiontree.Entry {
@@ -1647,22 +1205,6 @@ func rewriteEntryIDs(ids []string, oldToNew map[string]string) []string {
 		}
 	}
 	return out
-}
-
-func runIDFromRequest(requestID string) string {
-	if idx := strings.Index(requestID, ":req:"); idx >= 0 {
-		return requestID[:idx]
-	}
-	if idx := strings.Index(requestID, ":request:"); idx >= 0 {
-		return requestID[:idx]
-	}
-	if idx := strings.Index(requestID, ":resp:"); idx >= 0 {
-		return requestID[:idx]
-	}
-	if idx := strings.Index(requestID, ":response:"); idx >= 0 {
-		return requestID[:idx]
-	}
-	return ""
 }
 
 func boolInt(value bool) int {
@@ -1764,7 +1306,7 @@ CREATE INDEX IF NOT EXISTS threads_updated_at_idx ON threads(updated_at);
 CREATE TABLE IF NOT EXISTS prompt_segments (
 	rowid INTEGER PRIMARY KEY AUTOINCREMENT,
 	id TEXT NOT NULL,
-	run_id TEXT NOT NULL,
+	prompt_scope_id TEXT NOT NULL,
 	provider TEXT NOT NULL,
 	model TEXT NOT NULL,
 	sequence INTEGER NOT NULL DEFAULT 0,
@@ -1772,12 +1314,12 @@ CREATE TABLE IF NOT EXISTS prompt_segments (
 	data_json TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS prompt_segments_lookup_idx ON prompt_segments(run_id, provider, model, rowid);
+CREATE INDEX IF NOT EXISTS prompt_segments_lookup_idx ON prompt_segments(prompt_scope_id, provider, model, rowid);
 
 CREATE TABLE IF NOT EXISTS prompt_toolsets (
 	rowid INTEGER PRIMARY KEY AUTOINCREMENT,
 	id TEXT NOT NULL,
-	run_id TEXT NOT NULL,
+	prompt_scope_id TEXT NOT NULL,
 	provider TEXT NOT NULL,
 	model TEXT NOT NULL,
 	epoch INTEGER NOT NULL DEFAULT 0,
@@ -1785,29 +1327,29 @@ CREATE TABLE IF NOT EXISTS prompt_toolsets (
 	data_json TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS prompt_toolsets_lookup_idx ON prompt_toolsets(run_id, provider, model, rowid);
+CREATE INDEX IF NOT EXISTS prompt_toolsets_lookup_idx ON prompt_toolsets(prompt_scope_id, provider, model, rowid);
 
 CREATE TABLE IF NOT EXISTS prompt_requests (
 	rowid INTEGER PRIMARY KEY AUTOINCREMENT,
 	id TEXT NOT NULL,
-	run_id TEXT NOT NULL,
+	prompt_scope_id TEXT NOT NULL,
 	provider TEXT NOT NULL,
 	model TEXT NOT NULL,
 	created_at TEXT NOT NULL,
 	data_json TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS prompt_requests_run_idx ON prompt_requests(run_id, rowid);
+CREATE INDEX IF NOT EXISTS prompt_requests_scope_idx ON prompt_requests(prompt_scope_id, rowid);
 
 CREATE TABLE IF NOT EXISTS prompt_responses (
 	rowid INTEGER PRIMARY KEY AUTOINCREMENT,
 	request_id TEXT NOT NULL,
-	run_id TEXT NOT NULL,
+	prompt_scope_id TEXT NOT NULL,
 	created_at TEXT NOT NULL,
 	data_json TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS prompt_responses_run_idx ON prompt_responses(run_id, rowid);
+CREATE INDEX IF NOT EXISTS prompt_responses_scope_idx ON prompt_responses(prompt_scope_id, rowid);
 
 CREATE TABLE IF NOT EXISTS metadata_records (
 	namespace TEXT NOT NULL,

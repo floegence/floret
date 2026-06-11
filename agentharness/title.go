@@ -55,7 +55,10 @@ func (g ProviderTitleGenerator) GenerateTitle(ctx context.Context, req TitleRequ
 	}
 	stream, err := g.Provider.Stream(ctx, provider.Request{
 		RunID:            threadTitleRunID(req.TurnID),
-		SessionID:        strings.TrimSpace(req.ThreadID),
+		ThreadID:         strings.TrimSpace(req.ThreadID),
+		TurnID:           strings.TrimSpace(req.TurnID),
+		PromptScopeID:    strings.TrimSpace(req.ThreadID),
+		TraceID:          threadTitleRunID(req.TurnID),
 		LogicalRequestID: ThreadTitleLogicalRequestID,
 		Provider:         strings.TrimSpace(g.ProviderName),
 		Model:            strings.TrimSpace(g.Model),

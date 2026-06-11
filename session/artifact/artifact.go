@@ -31,15 +31,17 @@ type Store interface {
 }
 
 type ToolOutputArtifact struct {
-	RunID     string         `json:"run_id,omitempty"`
-	SessionID string         `json:"session_id,omitempty"`
-	Step      int            `json:"step,omitempty"`
-	CallID    string         `json:"call_id,omitempty"`
-	ToolName  string         `json:"tool_name,omitempty"`
-	Text      string         `json:"text,omitempty"`
-	MIME      string         `json:"mime,omitempty"`
-	Kind      string         `json:"kind,omitempty"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
+	RunID         string         `json:"run_id,omitempty"`
+	ThreadID      string         `json:"thread_id,omitempty"`
+	TurnID        string         `json:"turn_id,omitempty"`
+	PromptScopeID string         `json:"prompt_scope_id,omitempty"`
+	Step          int            `json:"step,omitempty"`
+	CallID        string         `json:"call_id,omitempty"`
+	ToolName      string         `json:"tool_name,omitempty"`
+	Text          string         `json:"text,omitempty"`
+	MIME          string         `json:"mime,omitempty"`
+	Kind          string         `json:"kind,omitempty"`
+	Metadata      map[string]any `json:"metadata,omitempty"`
 }
 
 type MemoryStore struct {

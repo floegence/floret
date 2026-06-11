@@ -17,14 +17,14 @@ type RequestShapeHashes = cache.RequestShapeHashes
 type PressureAnchorState = cache.PressureAnchorState
 
 type ContextPressureTracker struct {
-	sessionID         string
+	promptScopeID     string
 	anchor            PressureAnchorState
 	pendingCompaction bool
 	pendingPressure   contextpolicy.ContextPressure
 }
 
-func NewContextPressureTracker(sessionID string) *ContextPressureTracker {
-	return &ContextPressureTracker{sessionID: sessionID}
+func NewContextPressureTracker(promptScopeID string) *ContextPressureTracker {
+	return &ContextPressureTracker{promptScopeID: promptScopeID}
 }
 
 func (t *ContextPressureTracker) SetAnchor(anchor PressureAnchorState) {
@@ -96,7 +96,7 @@ func validPressureAnchor(anchor PressureAnchorState, req provider.Request, histo
 	if anchor.WindowInputTokens <= 0 {
 		return false
 	}
-	if anchor.SessionID != "" && anchor.SessionID != req.SessionID {
+	if anchor.PromptScopeID != "" && anchor.PromptScopeID != req.PromptScopeID {
 		return false
 	}
 	if anchor.Provider != "" && anchor.Provider != req.Provider {
@@ -143,8 +143,8 @@ func pressureAnchorForRequest(req provider.Request, history []session.Message, u
 		return PressureAnchorState{}
 	}
 	return PressureAnchorState{
-		SessionID:            req.SessionID,
-		ThreadID:             req.SessionID,
+		PromptScopeID:        req.PromptScopeID,
+		ThreadID:             req.ThreadID,
 		Provider:             req.Provider,
 		Model:                req.Model,
 		AdapterVersion:       req.RawPlan.Version,

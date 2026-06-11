@@ -1,7 +1,6 @@
 package contextpolicy
 
 import (
-	"encoding/json"
 	"strings"
 	"unicode/utf8"
 
@@ -172,75 +171,25 @@ type Policy struct {
 // Usage is the compaction-internal message-context budget. It intentionally
 // excludes request tool schemas, native usage, projected pressure, and triggers.
 type Usage struct {
-	PrefixTokens        int64              `json:"prefix_tokens,omitempty"`
-	MessageTokens       int64              `json:"message_tokens,omitempty"`
-	InputTokens         int64              `json:"input_tokens,omitempty"`
-	ContextWindow       int64              `json:"context_window,omitempty"`
-	ThresholdTokens     int64              `json:"threshold_tokens,omitempty"`
-	RatioLimitTokens    int64              `json:"ratio_limit_tokens,omitempty"`
-	RequestSafeLimit    int64              `json:"request_safe_limit_tokens,omitempty"`
-	MaxOutputTokens     int64              `json:"max_output_tokens,omitempty"`
-	ReservedOutput      int64              `json:"reserved_output,omitempty"`
-	ReservedSummary     int64              `json:"reserved_summary,omitempty"`
-	OutputHeadroom      int64              `json:"output_headroom_tokens,omitempty"`
-	AutoCompactRatio    int64              `json:"auto_compact_ratio_pct,omitempty"`
-	RecentTailTokens    int64              `json:"recent_tail_tokens,omitempty"`
-	RecentUserTokens    int64              `json:"recent_user_tokens,omitempty"`
-	Source              string             `json:"source,omitempty"`
-	Method              EstimateMethod     `json:"method,omitempty"`
-	Confidence          EstimateConfidence `json:"confidence,omitempty"`
-	CompactionNeeded    bool               `json:"compaction_needed,omitempty"`
-	HardLimitExceeded   bool               `json:"hard_limit_exceeded,omitempty"`
-	legacyActiveTokens  int64
-	legacyHistoryTokens int64
-	legacyToolTokens    int64
-}
-
-func (u *Usage) UnmarshalJSON(data []byte) error {
-	type usageAlias Usage
-	var raw struct {
-		usageAlias
-		EstimatedInputTokens int64  `json:"estimated_input_tokens,omitempty"`
-		HistoryTokens        int64  `json:"history_tokens,omitempty"`
-		ActiveTokens         int64  `json:"active_tokens,omitempty"`
-		ToolTokens           int64  `json:"tool_tokens,omitempty"`
-		EstimatorSource      string `json:"estimator_source,omitempty"`
-		EstimatorMethod      string `json:"estimator_method,omitempty"`
-		EstimatorConfidence  string `json:"estimator_confidence,omitempty"`
-		TokenPressureHigh    bool   `json:"token_pressure_high,omitempty"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	*u = Usage(raw.usageAlias)
-	if u.MessageTokens == 0 {
-		u.MessageTokens = raw.HistoryTokens
-	}
-	if u.InputTokens == 0 && raw.EstimatedInputTokens != 0 {
-		u.InputTokens = raw.EstimatedInputTokens
-	}
-	if u.InputTokens == 0 && (u.PrefixTokens != 0 || u.MessageTokens != 0 || raw.ToolTokens != 0) {
-		u.InputTokens = u.PrefixTokens + u.MessageTokens + raw.ToolTokens
-	}
-	if u.Source == "" {
-		u.Source = raw.EstimatorSource
-	}
-	if u.Method == "" && raw.EstimatorMethod != "" {
-		u.Method = EstimateMethod(raw.EstimatorMethod)
-	}
-	if u.Method == "" {
-		u.Method = MethodForEstimateSource(u.Source, EstimateMethodMessageContext)
-	}
-	if u.Confidence == "" && raw.EstimatorConfidence != "" {
-		u.Confidence = EstimateConfidence(raw.EstimatorConfidence)
-	}
-	u.legacyActiveTokens = raw.ActiveTokens
-	u.legacyHistoryTokens = raw.HistoryTokens
-	u.legacyToolTokens = raw.ToolTokens
-	if raw.TokenPressureHigh {
-		u.HardLimitExceeded = true
-	}
-	return nil
+	PrefixTokens      int64              `json:"prefix_tokens,omitempty"`
+	MessageTokens     int64              `json:"message_tokens,omitempty"`
+	InputTokens       int64              `json:"input_tokens,omitempty"`
+	ContextWindow     int64              `json:"context_window,omitempty"`
+	ThresholdTokens   int64              `json:"threshold_tokens,omitempty"`
+	RatioLimitTokens  int64              `json:"ratio_limit_tokens,omitempty"`
+	RequestSafeLimit  int64              `json:"request_safe_limit_tokens,omitempty"`
+	MaxOutputTokens   int64              `json:"max_output_tokens,omitempty"`
+	ReservedOutput    int64              `json:"reserved_output,omitempty"`
+	ReservedSummary   int64              `json:"reserved_summary,omitempty"`
+	OutputHeadroom    int64              `json:"output_headroom_tokens,omitempty"`
+	AutoCompactRatio  int64              `json:"auto_compact_ratio_pct,omitempty"`
+	RecentTailTokens  int64              `json:"recent_tail_tokens,omitempty"`
+	RecentUserTokens  int64              `json:"recent_user_tokens,omitempty"`
+	Source            string             `json:"source,omitempty"`
+	Method            EstimateMethod     `json:"method,omitempty"`
+	Confidence        EstimateConfidence `json:"confidence,omitempty"`
+	CompactionNeeded  bool               `json:"compaction_needed,omitempty"`
+	HardLimitExceeded bool               `json:"hard_limit_exceeded,omitempty"`
 }
 
 func HasValues(policy Policy) bool {
@@ -475,11 +424,11 @@ func EstimateMessageContext(systemPrompt string, history []session.Message, poli
 	return UsageFromMessageContextEstimate(estimate, policy)
 }
 
-func MethodForEstimateSource(source string, fallback EstimateMethod) EstimateMethod {
+func MethodForEstimateSource(source string, defaultMethod EstimateMethod) EstimateMethod {
 	source = strings.TrimSpace(source)
 	if source == "" {
-		if fallback != "" {
-			return fallback
+		if defaultMethod != "" {
+			return defaultMethod
 		}
 		return EstimateMethodUnknown
 	}
@@ -490,8 +439,8 @@ func MethodForEstimateSource(source string, fallback EstimateMethod) EstimateMet
 	case "generic_request_json":
 		return EstimateMethodGenericPayload
 	case "generic_conservative", "message_context_test":
-		if fallback != "" {
-			return fallback
+		if defaultMethod != "" {
+			return defaultMethod
 		}
 		return EstimateMethodMessageContext
 	case "official_preflight_count":
@@ -539,9 +488,9 @@ func basePressure(policy Policy) ContextPressure {
 	}
 }
 
-func defaultWindowBudget(value, fallback, contextWindow int64) int64 {
+func defaultWindowBudget(value, defaultValue, contextWindow int64) int64 {
 	if value <= 0 {
-		value = fallback
+		value = defaultValue
 	}
 	if contextWindow <= 0 {
 		return value

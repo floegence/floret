@@ -3,16 +3,18 @@ package tools
 import "github.com/floegence/floret/session/artifact"
 
 type Invocation[T any] struct {
-	CallID      string
-	Name        string
-	RawArgs     string
-	Args        T
-	RunID       string
-	SessionID   string
-	Step        int
-	CWD         string
-	Labels      map[string]string
-	HostContext map[string]string
+	CallID        string
+	Name          string
+	RawArgs       string
+	Args          T
+	RunID         string
+	ThreadID      string
+	TurnID        string
+	PromptScopeID string
+	Step          int
+	CWD           string
+	Labels        map[string]string
+	HostContext   map[string]string
 }
 
 type Result struct {

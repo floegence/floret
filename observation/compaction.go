@@ -17,7 +17,7 @@ const (
 
 type CompactionEvent struct {
 	RunID                   string                        `json:"run_id,omitempty"`
-	SessionID               string                        `json:"session_id,omitempty"`
+	ThreadID                string                        `json:"thread_id,omitempty"`
 	TurnID                  string                        `json:"turn_id,omitempty"`
 	Step                    int                           `json:"step,omitempty"`
 	Phase                   string                        `json:"phase"`
@@ -51,8 +51,8 @@ func CompactionEventFromEngineEvent(ev event.Event) (CompactionEvent, bool) {
 	}
 	out := CompactionEvent{
 		RunID:      ev.RunID,
-		SessionID:  ev.SessionID,
-		TurnID:     ev.RunID,
+		ThreadID:   ev.ThreadID,
+		TurnID:     ev.TurnID,
 		Step:       ev.Step,
 		Phase:      phase,
 		Status:     CompactionStatusRunning,
@@ -120,7 +120,7 @@ func stringFromAny(value any) string {
 	}
 }
 
-func int64FromAny(value any, fallback int64) int64 {
+func int64FromAny(value any, defaultValue int64) int64 {
 	switch v := value.(type) {
 	case int:
 		return int64(v)
@@ -133,11 +133,11 @@ func int64FromAny(value any, fallback int64) int64 {
 	case float32:
 		return int64(v)
 	default:
-		return fallback
+		return defaultValue
 	}
 }
 
-func intFromAny(value any, fallback int) int {
+func intFromAny(value any, defaultValue int) int {
 	switch v := value.(type) {
 	case int:
 		return v
@@ -150,6 +150,6 @@ func intFromAny(value any, fallback int) int {
 	case float32:
 		return int(v)
 	default:
-		return fallback
+		return defaultValue
 	}
 }

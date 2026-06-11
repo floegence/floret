@@ -728,7 +728,7 @@ func providerRequestExposesLocalTool(requests []ObservedProviderRequest, name st
 
 func liveWeatherScenarioTools(profile ProviderProfile, envFile string) ([]string, error) {
 	tools := []string{builtin.ToolWebSearch, builtin.ToolShell}
-	selected, err := normalizeAgentSessionToolsForProfile(tools, "", profile, envFile)
+	selected, err := normalizeAgentSessionToolsForProfile(tools, profile, envFile)
 	if err != nil {
 		return nil, err
 	}

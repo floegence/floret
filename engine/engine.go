@@ -71,10 +71,13 @@ const (
 type StopHook func(context.Context, StopHookContext) (StopHookResult, error)
 
 type StopHookContext struct {
-	RunID           string
-	SessionID       string
-	TraceID         string
-	Step            int
+	RunID         string
+	ThreadID      string
+	TurnID        string
+	TraceID       string
+	PromptScopeID string
+	Step          int
+
 	LastAssistant   session.Message
 	Messages        []session.Message
 	FinishReason    provider.FinishReason
@@ -89,10 +92,20 @@ type StopHookResult struct {
 	Reason   string
 }
 
+type ExecutionIdentity struct {
+	RunID         string
+	ThreadID      string
+	TurnID        string
+	TraceID       string
+	PromptScopeID string
+}
+
 type Options struct {
 	RunID                    string
-	SessionID                string
+	ThreadID                 string
+	TurnID                   string
 	TraceID                  string
+	PromptScopeID            string
 	ProviderName             string
 	Model                    string
 	Labels                   RunLabels
@@ -163,8 +176,10 @@ type StepOutput struct {
 
 type RunInput struct {
 	RunID                 string
-	SessionID             string
+	ThreadID              string
+	TurnID                string
 	TraceID               string
+	PromptScopeID         string
 	Labels                RunLabels
 	PreviousProviderState *provider.State
 	History               []session.Message
@@ -176,8 +191,10 @@ type CompactionManager interface {
 
 type CompactionRequest struct {
 	RunID                string
-	SessionID            string
+	ThreadID             string
+	TurnID               string
 	TraceID              string
+	PromptScopeID        string
 	Step                 int
 	History              []session.Message
 	Policy               contextpolicy.Policy
@@ -196,7 +213,7 @@ type CompactionRequest struct {
 type Engine struct {
 	provider  provider.Provider
 	tools     *tools.Registry
-	store     session.Store
+	store     session.TranscriptStore
 	prompt    cache.Store
 	artifacts artifact.Store
 	memory    *memory.Manager
@@ -214,7 +231,7 @@ type turnState struct {
 type Config struct {
 	Provider provider.Provider
 	Tools    *tools.Registry
-	Store    session.Store
+	Store    session.TranscriptStore
 	Prompt   cache.Store
 	// Artifacts is required when a tool output policy preserves truncated full
 	// output. Runtime and harness callers provide a default store; direct engine
@@ -356,11 +373,17 @@ func (e *Engine) RunTurn(ctx context.Context, input RunInput) Result {
 	if input.RunID != "" {
 		opts.RunID = input.RunID
 	}
-	if input.SessionID != "" {
-		opts.SessionID = input.SessionID
+	if input.ThreadID != "" {
+		opts.ThreadID = input.ThreadID
+	}
+	if input.TurnID != "" {
+		opts.TurnID = input.TurnID
 	}
 	if input.TraceID != "" {
 		opts.TraceID = input.TraceID
+	}
+	if input.PromptScopeID != "" {
+		opts.PromptScopeID = input.PromptScopeID
 	}
 	if !input.Labels.isZero() {
 		opts.Labels = cloneRunLabels(input.Labels)
@@ -374,7 +397,7 @@ func (e *Engine) RunTurn(ctx context.Context, input RunInput) Result {
 		for i, msg := range input.History {
 			history[i] = stableMessageAt(opts.RunID, i, msg)
 		}
-		if err := store.Append(opts.RunID, history...); err != nil {
+		if err := store.AppendTranscript(opts.RunID, history...); err != nil {
 			return Result{Status: Failed, Err: err}
 		}
 	}
@@ -385,7 +408,7 @@ func (e *Engine) RunTurn(ctx context.Context, input RunInput) Result {
 	return runner.run(ctx, "")
 }
 
-func (e *Engine) runner(store session.Store, opts Options) (*Engine, error) {
+func (e *Engine) runner(store session.TranscriptStore, opts Options) (*Engine, error) {
 	if e.provider == nil {
 		return nil, errors.New("provider is required")
 	}
@@ -445,7 +468,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 	latestProviderState := provider.CloneState(opts.PreviousProviderState)
 	if userText != "" {
 		msg := e.stableMessage(opts.RunID, session.Message{Role: session.User, Content: userText})
-		if err := e.store.Append(opts.RunID, msg); err != nil {
+		if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
 			return Result{Status: Failed, Err: err}
 		}
 	}
@@ -459,13 +482,13 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 	duplicateCount := 0
 	started := time.Now()
 	metrics := RunMetrics{}
-	activeHistory, err := e.store.Messages(opts.RunID)
+	activeHistory, err := e.store.Transcript(opts.RunID)
 	if err != nil {
 		return Result{Status: Failed, Err: err}
 	}
 	state.activeMessages = append([]session.Message(nil), activeHistory...)
-	pressureTracker := NewContextPressureTracker(opts.SessionID)
-	if anchor, ok, err := e.prompt.LatestPressureAnchor(ctx, opts.SessionID, opts.ProviderName, opts.Model); err != nil {
+	pressureTracker := NewContextPressureTracker(opts.PromptScopeID)
+	if anchor, ok, err := e.prompt.LatestPressureAnchor(ctx, opts.PromptScopeID, opts.ProviderName, opts.Model); err != nil {
 		return Result{Status: Failed, Err: err}
 	} else if ok {
 		pressureTracker.SetAnchor(anchor)
@@ -476,7 +499,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			return e.end(state, opts, step, Cancelled, output, ctx.Err(), metrics, started, RunDecision{ProviderState: latestProviderState})
 		}
 		metrics.Steps = step
-		e.emit(opts, event.Event{Type: event.StepStart, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model})
+		e.emit(opts, event.Event{Type: event.StepStart, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model})
 		req, preparedHistory, compacted, err := e.prepareOrdinaryRequest(ctx, opts, step, activeHistory, pressureTracker, &metrics, &compactionFailures)
 		if err != nil {
 			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
@@ -510,9 +533,10 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		nativePressure, pressureAnchor := pressureTracker.ObserveSuccess(req, activeHistory, usage)
 		_ = e.prompt.AppendProviderResponse(ctx, cache.ProviderResponseRecord{
 			RequestID:          fmt.Sprintf("%s:req:%d", opts.RunID, step),
+			PromptScopeID:      opts.PromptScopeID,
 			RunID:              opts.RunID,
-			ThreadID:           opts.SessionID,
-			TurnID:             opts.RunID,
+			ThreadID:           opts.ThreadID,
+			TurnID:             opts.TurnID,
 			ProviderResponseID: stepOutput.ResponseID,
 			InputTokens:        normalizedUsage.InputTokens,
 			WindowInputTokens:  normalizedUsage.WindowInputTokens,
@@ -527,13 +551,13 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			PressureAnchor:     pressureAnchor,
 			CreatedAt:          time.Now(),
 		})
-		e.emit(opts, event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: normalizedUsage, Metadata: providerUsageContextStatus(req, normalizedUsage, nativePressure)})
+		e.emit(opts, event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: normalizedUsage, Metadata: providerUsageContextStatus(req, normalizedUsage, nativePressure)})
 		if stepOutput.ResponseState != nil {
 			latestProviderState = provider.CloneState(stepOutput.ResponseState)
 		}
 		decision := RunDecision{FinishReason: stepOutput.FinishReason, RawFinishReason: stepOutput.RawFinishReason, FinishInferred: stepOutput.FinishInferred, ProviderState: provider.CloneState(latestProviderState)}
 		if stepOutput.FinishReason != "" {
-			e.emit(opts, event.Event{Type: event.ProviderFinish, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, FinishReason: string(stepOutput.FinishReason), RawFinishReason: stepOutput.RawFinishReason, FinishInferred: stepOutput.FinishInferred})
+			e.emit(opts, event.Event{Type: event.ProviderFinish, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, FinishReason: string(stepOutput.FinishReason), RawFinishReason: stepOutput.RawFinishReason, FinishInferred: stepOutput.FinishInferred})
 		}
 		if budgetErr := e.checkBudget(opts, metrics, step); budgetErr != nil {
 			return e.end(state, opts, step, Failed, output, budgetErr, metrics, started, decision)
@@ -552,7 +576,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			output += stepText
 			noProgress = 0
 			msg := e.stableMessage(opts.RunID, session.Message{Role: session.Assistant, Content: stepText, Reasoning: stepReasoning})
-			if err := e.store.Append(opts.RunID, msg); err != nil {
+			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
 				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 			}
 			activeHistory = append(activeHistory, msg)
@@ -574,7 +598,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				return e.end(state, opts, step, Failed, output, errors.New("provider returned empty output"), metrics, started, decision)
 			}
 			metrics.Retries++
-			e.emit(opts, event.Event{Type: event.ProviderRetry, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: "empty provider output"})
+			e.emit(opts, event.Event{Type: event.ProviderRetry, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: "empty provider output"})
 			decision.ContinuationReason = ContinueRetryEmpty
 			e.emitStepEnd(opts, step, providerLatency, 0, usage, len(calls), decision)
 			continue
@@ -603,14 +627,14 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 						prompt = "Continue the task and address the remaining pending work."
 					}
 					msg := e.stableMessage(opts.RunID, session.Message{Role: session.User, Content: prompt})
-					if err := e.store.Append(opts.RunID, msg); err != nil {
+					if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
 						return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 					}
 					activeHistory = append(activeHistory, msg)
 					state.activeMessages = append([]session.Message(nil), activeHistory...)
 					decision.ContinuationReason = ContinueHook
 					decision.Detail = strings.TrimSpace(hook.Reason)
-					e.emit(opts, event.Event{Type: event.ContextContinue, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: prompt, ContinuationReason: string(ContinueHook), Result: decision.Detail})
+					e.emit(opts, event.Event{Type: event.ContextContinue, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: prompt, ContinuationReason: string(ContinueHook), Result: decision.Detail})
 					e.emitStepEnd(opts, step, providerLatency, 0, usage, 0, decision)
 					continue
 				}
@@ -631,7 +655,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				reasoning = stepReasoning
 			}
 			msg := e.stableMessage(opts.RunID, session.Message{Role: session.Assistant, Content: "tool_call", Reasoning: reasoning, ToolCallID: call.ID, ToolName: call.Name, ToolArgs: call.Args})
-			if err := e.store.Append(opts.RunID, msg); err != nil {
+			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
 				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 			}
 			activeHistory = append(activeHistory, msg)
@@ -665,7 +689,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				return e.end(state, opts, step, Waiting, signal.OutputText, nil, metrics, started, decision)
 			case ControlContinue:
 				msg := e.stableMessage(opts.RunID, session.Message{Role: session.Tool, Content: signal.OutputText, ToolCallID: signal.CallID, ToolName: signal.Name})
-				if err := e.store.Append(opts.RunID, msg); err != nil {
+				if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
 					return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 				}
 				activeHistory = append(activeHistory, msg)
@@ -680,22 +704,24 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			return e.end(state, opts, step, Failed, output, budgetErr, metrics, started, decision)
 		}
 		for i, call := range calls {
-			e.emit(opts, event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args, Metadata: map[string]any{"batch_index": i, "batch_size": len(calls)}})
+			e.emit(opts, event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args, Metadata: map[string]any{"batch_index": i, "batch_size": len(calls)}})
 		}
 		toolStarted := time.Now()
 		results := e.tools.RunBatchWithOptions(ctx, calls, e.approverWithEvents(opts, step), tools.RunOptions{
-			RunID:       opts.RunID,
-			SessionID:   opts.SessionID,
-			Step:        step,
-			Labels:      observabilityLabels(opts.Labels),
-			HostContext: opts.Labels.Host,
+			RunID:         opts.RunID,
+			ThreadID:      opts.ThreadID,
+			TurnID:        opts.TurnID,
+			PromptScopeID: opts.PromptScopeID,
+			Step:          step,
+			Labels:        observabilityLabels(opts.Labels),
+			HostContext:   opts.Labels.Host,
 		})
 		toolLatency := time.Since(toolStarted).Milliseconds()
 		for i, result := range results {
 			policy := tools.MergeOutputPolicy(e.tools.OutputPolicyFor(result.Name), result.OutputPolicy)
 			projection, err := tools.BuildOutputProjection(ctx, toolOutputArtifactResult(result, opts, step), policy, e.artifacts)
 			if err != nil {
-				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: toolLatency, Metadata: mergeToolResultMetadata(result.Metadata, i, len(results))})
+				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: toolLatency, Metadata: mergeToolResultMetadata(result.Metadata, i, len(results))})
 				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 			}
 			text := projection.VisibleText
@@ -705,9 +731,9 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				text = "ERROR: " + text
 			}
 			metadata := mergeToolResultMetadata(toolProjectionMetadata(result.Metadata, projection), i, len(results))
-			e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: toolLatency, Metadata: metadata, Artifacts: eventArtifacts(projection, result.Artifacts)})
+			e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: toolLatency, Metadata: metadata, Artifacts: eventArtifacts(projection, result.Artifacts)})
 			msg := e.stableMessage(opts.RunID, session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: toolResultView(projection)})
-			if err := e.store.Append(opts.RunID, msg); err != nil {
+			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
 				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 			}
 			activeHistory = append(activeHistory, msg)
@@ -835,14 +861,21 @@ func normalizeOptions(o Options) Options {
 	if o.RunID == "" {
 		o.RunID = "default"
 	}
-	if o.SessionID == "" {
-		o.SessionID = o.RunID
+	if o.TurnID == "" {
+		o.TurnID = o.RunID
+	}
+	if o.PromptScopeID == "" {
+		if o.ThreadID != "" {
+			o.PromptScopeID = o.ThreadID
+		} else {
+			o.PromptScopeID = o.RunID
+		}
 	}
 	if o.TraceID == "" {
 		o.TraceID = o.RunID
 	}
 	if o.CacheNamespace == "" {
-		o.CacheNamespace = cache.DefaultNamespace(o.SessionID, o.ProviderName, o.Model)
+		o.CacheNamespace = cache.DefaultNamespace(o.PromptScopeID, o.ProviderName, o.Model)
 	}
 	o.ContextPolicy = contextpolicy.Normalize(o.ContextPolicy)
 	if o.MaxEmptyProviderRetries <= 0 {
@@ -873,14 +906,16 @@ func (e *Engine) applyStopHook(ctx context.Context, opts Options, step int, last
 	if e.stopHook == nil {
 		return StopHookResult{}, nil
 	}
-	messages, err := e.store.Messages(opts.RunID)
+	messages, err := e.store.Transcript(opts.RunID)
 	if err != nil {
 		return StopHookResult{}, err
 	}
 	return e.stopHook(ctx, StopHookContext{
 		RunID:           opts.RunID,
-		SessionID:       opts.SessionID,
+		ThreadID:        opts.ThreadID,
+		TurnID:          opts.TurnID,
 		TraceID:         opts.TraceID,
+		PromptScopeID:   opts.PromptScopeID,
 		Step:            step,
 		LastAssistant:   lastAssistant,
 		Messages:        messages,
@@ -897,7 +932,7 @@ func (e *Engine) stableMessage(runID string, msg session.Message) session.Messag
 	}
 	index := 0
 	if e != nil && e.store != nil {
-		if messages, err := e.store.Messages(runID); err == nil {
+		if messages, err := e.store.Transcript(runID); err == nil {
 			index = len(messages)
 		}
 	}
@@ -932,13 +967,15 @@ func stableMessageEntryID(runID string, index int, msg session.Message) string {
 }
 
 func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, history []session.Message) (provider.Request, error) {
-	toolset, _, err := cache.EnsureCurrentToolsetWithOptions(ctx, e.prompt, opts.RunID, opts.SessionID, opts.ProviderName, opts.Model, convertToolDefinitions(opts.toolDefinitions), convertHostedToolDefinitions(opts.HostedToolDefinitions), time.Now(), cache.ToolsetOptions{AllowControlTools: true})
+	toolset, _, err := cache.EnsureCurrentToolsetWithOptions(ctx, e.prompt, opts.PromptScopeID, opts.RunID, opts.ThreadID, opts.TurnID, opts.ProviderName, opts.Model, convertToolDefinitions(opts.toolDefinitions), convertHostedToolDefinitions(opts.HostedToolDefinitions), time.Now(), cache.ToolsetOptions{AllowControlTools: true})
 	if err != nil {
 		return provider.Request{}, err
 	}
 	plan, messages, err := cache.BuildPlan(ctx, e.prompt, cache.BuildInput{
+		PromptScopeID:  opts.PromptScopeID,
 		RunID:          opts.RunID,
-		SessionID:      opts.SessionID,
+		ThreadID:       opts.ThreadID,
+		TurnID:         opts.TurnID,
 		Provider:       opts.ProviderName,
 		Model:          opts.Model,
 		AdapterVersion: cache.Version,
@@ -980,7 +1017,10 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 	}
 	req := provider.Request{
 		RunID:           opts.RunID,
-		SessionID:       opts.SessionID,
+		ThreadID:        opts.ThreadID,
+		TurnID:          opts.TurnID,
+		PromptScopeID:   opts.PromptScopeID,
+		TraceID:         opts.TraceID,
 		Step:            step,
 		Provider:        opts.ProviderName,
 		Model:           opts.Model,
@@ -1160,7 +1200,7 @@ func (e *Engine) sendProviderAttempt(ctx context.Context, opts Options, step int
 	if metrics != nil {
 		metrics.LLMRequests++
 	}
-	e.emit(opts, event.Event{Type: event.ProviderRequest, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: fmt.Sprintf("%d messages, %d raw segments, %d local tools, %d hosted tools, prefix %s", len(req.Messages), len(req.RawPlan.Segments), len(req.Tools), len(req.HostedTools), shortHash(req.RawPlan.PrefixHash)), Metadata: providerRequestMetadata(req)})
+	e.emit(opts, event.Event{Type: event.ProviderRequest, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: fmt.Sprintf("%d messages, %d raw segments, %d local tools, %d hosted tools, prefix %s", len(req.Messages), len(req.RawPlan.Segments), len(req.Tools), len(req.HostedTools), shortHash(req.RawPlan.PrefixHash)), Metadata: providerRequestMetadata(req)})
 	started := time.Now()
 	stream, err := e.provider.Stream(ctx, req)
 	latency := time.Since(started).Milliseconds()
@@ -1192,8 +1232,10 @@ func (e *Engine) compactForPressure(ctx context.Context, opts Options, step int,
 
 func providerRequestSnapshot(req provider.Request) cache.ProviderRequestSnapshot {
 	return cache.ProviderRequestSnapshot{
+		PromptScopeID:    req.PromptScopeID,
 		RunID:            req.RunID,
-		SessionID:        req.SessionID,
+		ThreadID:         req.ThreadID,
+		TurnID:           req.TurnID,
 		Step:             req.Step,
 		LogicalRequestID: req.LogicalRequestID,
 		Attempt:          req.Attempt,
@@ -1240,34 +1282,38 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		return nil, errors.New("compaction manager is required when context exceeds policy")
 	}
 	e.emit(opts, event.Event{
-		Type:      event.ContextCompact,
-		TraceID:   opts.TraceID,
-		RunID:     opts.RunID,
-		SessionID: opts.SessionID,
-		Step:      step,
-		Provider:  opts.ProviderName,
-		Model:     opts.Model,
-		Message:   fmt.Sprintf("%s/%s", trigger, reason),
-		Metrics:   usage,
-		Metadata:  compactionStartMetadata(trigger, reason, beforePressure, usage),
+		Type:     event.ContextCompact,
+		TraceID:  opts.TraceID,
+		RunID:    opts.RunID,
+		ThreadID: opts.ThreadID,
+		Step:     step,
+		Provider: opts.ProviderName,
+		Model:    opts.Model,
+		Message:  fmt.Sprintf("%s/%s", trigger, reason),
+		Metrics:  usage,
+		Metadata: compactionStartMetadata(trigger, reason, beforePressure, usage),
 	})
 	result, active, err := manager.Compact(ctx, CompactionRequest{
-		RunID:        opts.RunID,
-		SessionID:    opts.SessionID,
-		TraceID:      opts.TraceID,
-		Step:         step,
-		History:      history,
-		Policy:       compactionPolicyForUsage(opts.ContextPolicy, usage),
-		Trigger:      trigger,
-		Reason:       reason,
-		Phase:        compaction.PhaseGenerate,
-		Provider:     e.provider,
-		ProviderName: opts.ProviderName,
-		Model:        opts.Model,
-		ContextUsage: usage,
+		RunID:         opts.RunID,
+		ThreadID:      opts.ThreadID,
+		TurnID:        opts.TurnID,
+		TraceID:       opts.TraceID,
+		PromptScopeID: opts.PromptScopeID,
+		Step:          step,
+		History:       history,
+		Policy:        compactionPolicyForUsage(opts.ContextPolicy, usage),
+		Trigger:       trigger,
+		Reason:        reason,
+		Phase:         compaction.PhaseGenerate,
+		Provider:      e.provider,
+		ProviderName:  opts.ProviderName,
+		Model:         opts.Model,
+		ContextUsage:  usage,
 		Details: map[string]string{
 			"run_id":                 opts.RunID,
-			"session_id":             opts.SessionID,
+			"thread_id":              opts.ThreadID,
+			"turn_id":                opts.TurnID,
+			"prompt_scope_id":        opts.PromptScopeID,
 			"context_window":         fmt.Sprintf("%d", usage.ContextWindow),
 			"threshold_tokens":       fmt.Sprintf("%d", usage.ThresholdTokens),
 			"max_output_tokens":      fmt.Sprintf("%d", usage.MaxOutputTokens),
@@ -1282,17 +1328,17 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 			*failures++
 		}
 		e.emit(opts, event.Event{
-			Type:      event.ContextCompact,
-			TraceID:   opts.TraceID,
-			RunID:     opts.RunID,
-			SessionID: opts.SessionID,
-			Step:      step,
-			Provider:  opts.ProviderName,
-			Model:     opts.Model,
-			Message:   fmt.Sprintf("%s/%s", trigger, reason),
-			Err:       err.Error(),
-			Metrics:   usage,
-			Metadata:  compactionFailedMetadata(trigger, reason, beforePressure, usage),
+			Type:     event.ContextCompact,
+			TraceID:  opts.TraceID,
+			RunID:    opts.RunID,
+			ThreadID: opts.ThreadID,
+			Step:     step,
+			Provider: opts.ProviderName,
+			Model:    opts.Model,
+			Message:  fmt.Sprintf("%s/%s", trigger, reason),
+			Err:      err.Error(),
+			Metrics:  usage,
+			Metadata: compactionFailedMetadata(trigger, reason, beforePressure, usage),
 		})
 		return nil, err
 	}
@@ -1300,17 +1346,17 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		*failures = 0
 	}
 	e.emit(opts, event.Event{
-		Type:      event.ContextCompact,
-		TraceID:   opts.TraceID,
-		RunID:     opts.RunID,
-		SessionID: opts.SessionID,
-		Step:      step,
-		Provider:  opts.ProviderName,
-		Model:     opts.Model,
-		Message:   result.CompactionID,
-		Result:    result.Summary,
-		Metrics:   result,
-		Metadata:  compactionCompleteMetadata(result),
+		Type:     event.ContextCompact,
+		TraceID:  opts.TraceID,
+		RunID:    opts.RunID,
+		ThreadID: opts.ThreadID,
+		Step:     step,
+		Provider: opts.ProviderName,
+		Model:    opts.Model,
+		Message:  result.CompactionID,
+		Result:   result.Summary,
+		Metrics:  result,
+		Metadata: compactionCompleteMetadata(result),
 	})
 	return active, nil
 }
@@ -1392,25 +1438,25 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 			switch ev.Type {
 			case provider.Delta:
 				out.Text += ev.Text
-				e.emit(opts, event.Event{Type: event.ProviderDelta, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
+				e.emit(opts, event.Event{Type: event.ProviderDelta, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
 			case provider.Reasoning:
 				out.Reasoning += ev.Text
-				e.emit(opts, event.Event{Type: event.ProviderReasoning, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
+				e.emit(opts, event.Event{Type: event.ProviderReasoning, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
 			case provider.ToolCalls:
 				out.Calls = append(out.Calls, ev.ToolCalls...)
 			case provider.HostedToolCall:
 				if err := validateHostedToolEvent(ev.ToolCall, hostedTools); err != nil {
 					return out, err
 				}
-				e.emit(opts, event.Event{Type: event.HostedToolCall, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Args: ev.ToolCall.Args})
+				e.emit(opts, event.Event{Type: event.HostedToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Args: ev.ToolCall.Args})
 			case provider.HostedToolResult:
 				if err := validateHostedToolEvent(ev.ToolCall, hostedTools); err != nil {
 					return out, err
 				}
-				e.emit(opts, event.Event{Type: event.HostedToolResult, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Result: hostedToolResultText(ev), Metadata: hostedToolResultMetadata(ev.HostedResult)})
+				e.emit(opts, event.Event{Type: event.HostedToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCall.ID, ToolName: ev.ToolCall.Name, ToolKind: "hosted", Result: hostedToolResultText(ev), Metadata: hostedToolResultMetadata(ev.HostedResult)})
 			case provider.UsageEvent:
 				out.Usage = out.Usage.Add(ev.Usage)
-				e.emit(opts, event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: ev.Usage.Normalized(), Metadata: streamUsageMetadata()})
+				e.emit(opts, event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: ev.Usage.Normalized(), Metadata: streamUsageMetadata()})
 			case provider.Empty:
 				out.Retry = true
 				out.FinishReason, out.FinishInferred = provider.NormalizeFinishReason(out.RawFinishReason, false, false, false)
@@ -1627,21 +1673,21 @@ func (e *Engine) approverWithEvents(opts Options, step int) tools.Approver {
 
 func (e *Engine) emitApprovalEvent(opts Options, step int, typ event.Type, req tools.ApprovalRequest, reason string, result string) {
 	e.emit(opts, event.Event{
-		Type:      typ,
-		TraceID:   opts.TraceID,
-		RunID:     opts.RunID,
-		SessionID: opts.SessionID,
-		Step:      step,
-		Provider:  opts.ProviderName,
-		Model:     opts.Model,
-		ToolID:    req.ID,
-		ToolName:  req.Name,
-		ToolKind:  "local",
-		Args:      req.Args,
-		ArgsHash:  req.ArgsHash,
-		Result:    result,
-		Err:       reason,
-		Metadata:  approvalEventMetadata(req, reason),
+		Type:     typ,
+		TraceID:  opts.TraceID,
+		RunID:    opts.RunID,
+		ThreadID: opts.ThreadID,
+		Step:     step,
+		Provider: opts.ProviderName,
+		Model:    opts.Model,
+		ToolID:   req.ID,
+		ToolName: req.Name,
+		ToolKind: "local",
+		Args:     req.Args,
+		ArgsHash: req.ArgsHash,
+		Result:   result,
+		Err:      reason,
+		Metadata: approvalEventMetadata(req, reason),
 	})
 }
 
@@ -1824,14 +1870,16 @@ func toolOutputArtifactResult(result tools.Result, opts Options, step int) tools
 	if result.Metadata == nil {
 		result.Metadata = map[string]any{}
 	} else {
-		metadata := make(map[string]any, len(result.Metadata)+3)
+		metadata := make(map[string]any, len(result.Metadata)+5)
 		for key, value := range result.Metadata {
 			metadata[key] = value
 		}
 		result.Metadata = metadata
 	}
 	result.Metadata["run_id"] = opts.RunID
-	result.Metadata["session_id"] = opts.SessionID
+	result.Metadata["thread_id"] = opts.ThreadID
+	result.Metadata["turn_id"] = opts.TurnID
+	result.Metadata["prompt_scope_id"] = opts.PromptScopeID
 	result.Metadata["step"] = step
 	return result
 }
@@ -1859,7 +1907,7 @@ func (e *Engine) emitStepEnd(opts Options, step int, providerLatency, toolLatenc
 		Type:               event.StepEnd,
 		TraceID:            opts.TraceID,
 		RunID:              opts.RunID,
-		SessionID:          opts.SessionID,
+		ThreadID:           opts.ThreadID,
 		Step:               step,
 		Provider:           opts.ProviderName,
 		Model:              opts.Model,
@@ -1893,12 +1941,12 @@ func (e *Engine) end(state *turnState, opts Options, step int, status Status, ou
 		errText = err.Error()
 	}
 	metrics.WallTimeMS = time.Since(started).Milliseconds()
-	e.emit(opts, event.Event{Type: event.RunEnd, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: string(status), Result: output, Err: errText, FinishReason: string(decision.FinishReason), RawFinishReason: decision.RawFinishReason, FinishInferred: decision.FinishInferred, CompletionReason: string(decision.CompletionReason), ContinuationReason: string(decision.ContinuationReason), Metrics: metrics})
+	e.emit(opts, event.Event{Type: event.RunEnd, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: string(status), Result: output, Err: errText, FinishReason: string(decision.FinishReason), RawFinishReason: decision.RawFinishReason, FinishInferred: decision.FinishInferred, CompletionReason: string(decision.CompletionReason), ContinuationReason: string(decision.ContinuationReason), Metrics: metrics})
 	var messages []session.Message
 	if len(state.activeMessages) > 0 {
 		messages = append([]session.Message(nil), state.activeMessages...)
 	} else if e.store != nil {
-		messages, _ = e.store.Messages(opts.RunID)
+		messages, _ = e.store.Transcript(opts.RunID)
 	}
 	return Result{Status: status, Output: output, Err: err, Metrics: metrics, Messages: messages, CompletionReason: decision.CompletionReason, ContinuationReason: decision.ContinuationReason, FinishReason: decision.FinishReason, RawFinishReason: decision.RawFinishReason, FinishInferred: decision.FinishInferred, ControlSignal: cloneControlSignal(decision.ControlSignal), ProviderState: provider.CloneState(decision.ProviderState)}
 }
@@ -1906,6 +1954,21 @@ func (e *Engine) end(state *turnState, opts Options, step int, status Status, ou
 func (e *Engine) emit(opts Options, ev event.Event) {
 	if e.sink == nil {
 		return
+	}
+	if ev.TraceID == "" {
+		ev.TraceID = opts.TraceID
+	}
+	if ev.RunID == "" {
+		ev.RunID = opts.RunID
+	}
+	if ev.ThreadID == "" {
+		ev.ThreadID = opts.ThreadID
+	}
+	if ev.TurnID == "" {
+		ev.TurnID = opts.TurnID
+	}
+	if ev.PromptScopeID == "" {
+		ev.PromptScopeID = opts.PromptScopeID
 	}
 	ev.Metadata = eventMetadata(opts, ev.Metadata)
 	ev.Timestamp = time.Now()
@@ -1919,15 +1982,15 @@ func (e *Engine) checkBudget(opts Options, metrics RunMetrics, step int) error {
 	case opts.MaxTotalTokens > 0 && metrics.Usage.Normalized().TotalTokens > opts.MaxTotalTokens:
 		err = fmt.Errorf("token budget exceeded")
 		message = fmt.Sprintf("total tokens %d exceeded limit %d", metrics.Usage.Normalized().TotalTokens, opts.MaxTotalTokens)
-		e.emit(opts, event.Event{Type: event.BudgetExceeded, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: message, Metrics: BudgetMetrics{Type: "tokens", Used: float64(metrics.Usage.Normalized().TotalTokens), Limit: float64(opts.MaxTotalTokens), Run: metrics}})
+		e.emit(opts, event.Event{Type: event.BudgetExceeded, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: message, Metrics: BudgetMetrics{Type: "tokens", Used: float64(metrics.Usage.Normalized().TotalTokens), Limit: float64(opts.MaxTotalTokens), Run: metrics}})
 	case opts.MaxCostUSD > 0 && metrics.Usage.CostUSD > opts.MaxCostUSD:
 		err = fmt.Errorf("cost budget exceeded")
 		message = fmt.Sprintf("cost %.6f exceeded limit %.6f", metrics.Usage.CostUSD, opts.MaxCostUSD)
-		e.emit(opts, event.Event{Type: event.BudgetExceeded, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: message, Metrics: BudgetMetrics{Type: "cost", Used: metrics.Usage.CostUSD, Limit: opts.MaxCostUSD, Run: metrics}})
+		e.emit(opts, event.Event{Type: event.BudgetExceeded, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: message, Metrics: BudgetMetrics{Type: "cost", Used: metrics.Usage.CostUSD, Limit: opts.MaxCostUSD, Run: metrics}})
 	case opts.MaxToolCalls > 0 && metrics.ToolCalls > opts.MaxToolCalls:
 		err = fmt.Errorf("tool call budget exceeded")
 		message = fmt.Sprintf("tool calls %d exceeded limit %d", metrics.ToolCalls, opts.MaxToolCalls)
-		e.emit(opts, event.Event{Type: event.BudgetExceeded, TraceID: opts.TraceID, RunID: opts.RunID, SessionID: opts.SessionID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: message, Metrics: BudgetMetrics{Type: "tool_calls", Used: float64(metrics.ToolCalls), Limit: float64(opts.MaxToolCalls), Run: metrics}})
+		e.emit(opts, event.Event{Type: event.BudgetExceeded, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: message, Metrics: BudgetMetrics{Type: "tool_calls", Used: float64(metrics.ToolCalls), Limit: float64(opts.MaxToolCalls), Run: metrics}})
 	}
 	return err
 }
@@ -1947,6 +2010,11 @@ func eventMetadata(opts Options, base any) map[string]any {
 	if labels := observabilityLabels(opts.Labels); len(labels) > 0 {
 		out["labels"] = labels
 	}
+	out["run_id"] = opts.RunID
+	out["thread_id"] = opts.ThreadID
+	out["turn_id"] = opts.TurnID
+	out["trace_id"] = opts.TraceID
+	out["prompt_scope_id"] = opts.PromptScopeID
 	out["schema_version"] = "event.v1"
 	return out
 }

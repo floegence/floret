@@ -367,9 +367,9 @@ func splitLimit(text string, limit int) []string {
 	return lines
 }
 
-func valueOr(ptr *int, fallback int) int {
+func valueOr(ptr *int, defaultValue int) int {
 	if ptr == nil {
-		return fallback
+		return defaultValue
 	}
 	return *ptr
 }

@@ -336,8 +336,8 @@ Config.SystemPrompt
   > DefaultFloretAgentProfile().SystemPrompt
 ```
 
-`SystemPrompt` is kept for compatibility and direct session-level overrides. When
-it is set, Floret marks the resolved identity as a custom session agent. Skills,
+`SystemPrompt` is the direct run/session prompt override. When it is set,
+Floret marks the resolved identity as a custom session agent. Skills,
 MCP tools, and other capability disclosures are appended to the resolved base
 identity prompt; they do not replace or mutate the configured agent profile.
 Public session snapshots expose profile id/name/source/hash metadata, but not the
@@ -364,8 +364,8 @@ instead of isolated runs. It supports:
 The harness stores entries in a `sessiontree.Repo` and projects the active path into
 engine context for each turn. `Thread.Read()` returns a host-safe snapshot with lifecycle
 state and display messages. Raw session-tree data is available through `Thread.Journal()`
-for tests, debug consoles, migrations, and admin tooling. This keeps thread operations
-separate from provider and tool execution.
+for tests, debug consoles, and admin tooling. This keeps thread operations separate from
+provider and tool execution.
 
 ## Tools
 

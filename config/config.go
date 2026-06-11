@@ -598,17 +598,17 @@ func processEnviron() map[string]string {
 	return values
 }
 
-func get(values map[string]string, key string, fallback string) string {
+func get(values map[string]string, key string, defaultValue string) string {
 	if value, ok := values[key]; ok {
 		return value
 	}
-	return fallback
+	return defaultValue
 }
 
-func getInt(values map[string]string, key string, fallback int) (int, error) {
+func getInt(values map[string]string, key string, defaultValue int) (int, error) {
 	value, ok := values[key]
 	if !ok || value == "" {
-		return fallback, nil
+		return defaultValue, nil
 	}
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
@@ -635,10 +635,10 @@ func getOptionalInt(values map[string]string, key string) (int, bool, error) {
 	return parsed, true, nil
 }
 
-func getInt64(values map[string]string, key string, fallback int64) (int64, error) {
+func getInt64(values map[string]string, key string, defaultValue int64) (int64, error) {
 	value, ok := values[key]
 	if !ok || value == "" {
-		return fallback, nil
+		return defaultValue, nil
 	}
 	return parseNonNegativeInt64(key, value)
 }
@@ -666,10 +666,10 @@ func parseNonNegativeInt64(key, value string) (int64, error) {
 	return parsed, nil
 }
 
-func getDuration(values map[string]string, key string, fallback time.Duration) (time.Duration, error) {
+func getDuration(values map[string]string, key string, defaultValue time.Duration) (time.Duration, error) {
 	value, ok := values[key]
 	if !ok || value == "" {
-		return fallback, nil
+		return defaultValue, nil
 	}
 	parsed, err := time.ParseDuration(value)
 	if err != nil {
@@ -681,10 +681,10 @@ func getDuration(values map[string]string, key string, fallback time.Duration) (
 	return parsed, nil
 }
 
-func getBool(values map[string]string, key string, fallback bool) (bool, error) {
+func getBool(values map[string]string, key string, defaultValue bool) (bool, error) {
 	value, ok := values[key]
 	if !ok || value == "" {
-		return fallback, nil
+		return defaultValue, nil
 	}
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "1", "true", "yes", "on":

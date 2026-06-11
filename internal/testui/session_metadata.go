@@ -29,7 +29,6 @@ type agentSessionMetadata struct {
 	PromptIdentity config.PromptIdentity `json:"prompt_identity,omitempty"`
 	SystemPrompt   string                `json:"system_prompt"`
 	SelectedTools  []string              `json:"selected_tools"`
-	ToolMode       string                `json:"tool_mode,omitempty"`
 	ContextPolicy  contextpolicy.Policy  `json:"context_policy"`
 	Engine         agentSessionEngine    `json:"engine"`
 	Turns          []AgentTurnSummary    `json:"turns"`
@@ -149,20 +148,22 @@ func (r Runner) loadAgentSessionMetadataFile(sessionID string) (agentSessionMeta
 
 func (r Runner) normalizeAgentSessionMetadata(sessionID string, meta agentSessionMetadata) (agentSessionMetadata, error) {
 	if meta.ID == "" {
-		meta.ID = sessionID
+		return agentSessionMetadata{}, errors.New("agent session metadata id is required")
 	}
-	if meta.Version != 0 && meta.Version != agentSessionMetadataVersion {
+	if meta.ID != sessionID {
+		return agentSessionMetadata{}, errors.New("agent session metadata id does not match requested session")
+	}
+	if meta.Version != agentSessionMetadataVersion {
 		return agentSessionMetadata{}, errors.New("unsupported agent session metadata version")
 	}
 	meta.Profile = normalizeProfile(meta.Profile, 0)
 	meta.Profile.APIKey = ""
 	meta.Profile.APIKeySet = meta.APIKeyRequired || meta.Profile.APIKeySet
-	selected, err := normalizeAgentSessionTools(meta.SelectedTools, meta.ToolMode)
+	selected, err := normalizeAgentSessionTools(meta.SelectedTools)
 	if err != nil {
 		return agentSessionMetadata{}, err
 	}
 	meta.SelectedTools = cloneSelectedTools(selected)
-	meta.ToolMode = ""
 	meta.ContextPolicy = contextpolicy.Normalize(meta.ContextPolicy)
 	promptCfg := promptConfigFromSessionMetadata(meta)
 	meta.SystemPrompt = promptCfg.SystemPrompt

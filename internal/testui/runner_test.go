@@ -35,6 +35,7 @@ import (
 func TestRunnerParsesGoTestJSON(t *testing.T) {
 	root := t.TempDir()
 	runner := NewRunner(root)
+	runner.StorageMode = StorageModeFile
 	runner.Now = fixedClock()
 	runner.Exec = func(context.Context, string, []string, string, []string) ([]byte, int) {
 		return []byte(strings.Join([]string{
@@ -1133,7 +1134,7 @@ func TestRunnerAgentSessionToolPatchPersistsAcrossRestore(t *testing.T) {
 		t.Fatalf("patched tools missing after restore: %#v", second.Observation.ProviderRequests[0].Tools)
 	}
 	if hasStrictTool(second.Observation.ProviderRequests[0].Tools, "grep") {
-		t.Fatalf("old tool still exposed after restore: %#v", second.Observation.ProviderRequests[0].Tools)
+		t.Fatalf("previous tool still exposed after restore: %#v", second.Observation.ProviderRequests[0].Tools)
 	}
 	if !slices.ContainsFunc(second.Session.PathEntries, func(entry ObservedSessionEntry) bool {
 		return entry.Type == "active_tools_change" &&
@@ -1215,23 +1216,6 @@ func TestRunnerRestoresLongSessionEntryAndKeepsSelectedTools(t *testing.T) {
 	}
 	if !hasStrictTool(second.Observation.ProviderRequests[0].Tools, "grep") || !hasStrictTool(second.Observation.ProviderRequests[0].Tools, "shell") {
 		t.Fatalf("restored selected tools missing from provider request: %#v", second.Observation.ProviderRequests[0].Tools)
-	}
-}
-
-func TestRunnerAgentSessionMigratesLegacyToolMode(t *testing.T) {
-	runner := NewRunner(t.TempDir())
-	runner.Now = fixedClock()
-	result := runner.RunAgent(context.Background(), AgentRunRequest{
-		Profile:      ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "ok"},
-		Message:      "hello",
-		SystemPrompt: "test",
-		ToolMode:     "read_only",
-	})
-	if result.Status != "completed" {
-		t.Fatalf("result = %#v", result)
-	}
-	if !slices.Equal(result.Session.SelectedTools, []string{"read", "list", "glob", "grep"}) {
-		t.Fatalf("selected tools = %#v", result.Session.SelectedTools)
 	}
 }
 
@@ -1521,55 +1505,51 @@ func TestRunnerRestoredSessionRehydratesSavedAPIKeyWithoutPersistingSecret(t *te
 	}
 }
 
-func TestRunnerUpgradesLegacySessionMetadataPromptIdentity(t *testing.T) {
+func TestRunnerRejectsMalformedAgentSessionMetadata(t *testing.T) {
 	runner := NewRunner(t.TempDir())
-	runner.Now = fixedClock()
-	sessionID := "testui-session-legacy-prompt"
-	created := runner.now()
-	if err := runner.saveAgentSessionMetadata(agentSessionMetadata{
-		ID:            sessionID,
-		CreatedAt:     created,
-		UpdatedAt:     created,
-		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
-		SystemPrompt:  "You are Legacy Agent.",
-		SelectedTools: []string{"grep"},
-		ContextPolicy: contextPolicyForTest(8192),
-		Engine: agentSessionEngine{
-			MaxEmptyProviderRetries: 1,
-			NoProgressLimit:         2,
-			DuplicateToolLimit:      3,
+	for _, tt := range []struct {
+		name      string
+		sessionID string
+		meta      agentSessionMetadata
+		wantErr   string
+	}{
+		{
+			name:      "missing id",
+			sessionID: "session-a",
+			meta:      agentSessionMetadata{Version: agentSessionMetadataVersion},
+			wantErr:   "metadata id is required",
 		},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	upgraded, err := runner.loadAgentSessionMetadata(sessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if upgraded.AgentProfile.ID != "custom" || upgraded.AgentProfile.SystemPrompt != "You are Legacy Agent." {
-		t.Fatalf("agent profile = %#v", upgraded.AgentProfile)
-	}
-	if upgraded.PromptIdentity.Source != config.PromptSourceSessionSnapshot || upgraded.PromptIdentity.SystemPromptHash == "" {
-		t.Fatalf("prompt identity = %#v", upgraded.PromptIdentity)
-	}
-
-	store, err := runner.sessionStorage(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	stored, err := store.loadMetadata(context.Background(), sessionID, runner.loadAgentSessionMetadataFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored.AgentProfile.SystemPrompt != "You are Legacy Agent." || stored.PromptIdentity.Source != config.PromptSourceSessionSnapshot {
-		t.Fatalf("stored metadata was not upgraded: %#v", stored)
+		{
+			name:      "mismatched id",
+			sessionID: "session-a",
+			meta:      agentSessionMetadata{Version: agentSessionMetadataVersion, ID: "session-b"},
+			wantErr:   "does not match requested session",
+		},
+		{
+			name:      "zero version",
+			sessionID: "session-a",
+			meta:      agentSessionMetadata{ID: "session-a"},
+			wantErr:   "unsupported agent session metadata version",
+		},
+		{
+			name:      "future version",
+			sessionID: "session-a",
+			meta:      agentSessionMetadata{Version: agentSessionMetadataVersion + 1, ID: "session-a"},
+			wantErr:   "unsupported agent session metadata version",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := runner.normalizeAgentSessionMetadata(tt.sessionID, tt.meta); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 
 func TestRunnerPersistedInterruptedTurnSnapshotsAsInterrupted(t *testing.T) {
 	root := t.TempDir()
 	runner := NewRunner(root)
+	runner.StorageMode = StorageModeFile
 	runner.Now = fixedClock()
 	sessionID := "testui-session-interrupted"
 	turnID := "turn-1"
@@ -1607,6 +1587,7 @@ func TestRunnerPersistedInterruptedTurnSnapshotsAsInterrupted(t *testing.T) {
 	}
 
 	restored := NewRunner(root)
+	restored.StorageMode = StorageModeFile
 	restored.Now = fixedClock()
 	sessions := restored.AgentSessions(context.Background())
 	if len(sessions) != 1 || sessions[0].Status != "interrupted" || !sessions[0].Recoverable || sessions[0].CanAppendMessage {
@@ -1628,6 +1609,7 @@ func TestRunnerPersistedInterruptedTurnSnapshotsAsInterrupted(t *testing.T) {
 func TestRunnerPersistedAbortedTurnSnapshotsAsCancelled(t *testing.T) {
 	root := t.TempDir()
 	runner := NewRunner(root)
+	runner.StorageMode = StorageModeFile
 	runner.Now = fixedClock()
 	sessionID := "testui-session-cancelled"
 	turnID := "turn-1"
@@ -1665,6 +1647,7 @@ func TestRunnerPersistedAbortedTurnSnapshotsAsCancelled(t *testing.T) {
 	}
 
 	restored := NewRunner(root)
+	restored.StorageMode = StorageModeFile
 	snapshot, err := restored.AgentSession(context.Background(), sessionID)
 	if err != nil {
 		t.Fatal(err)
@@ -1677,6 +1660,7 @@ func TestRunnerPersistedAbortedTurnSnapshotsAsCancelled(t *testing.T) {
 func TestRunnerRepairsStaleThreadLeafAndMetadataTurnsFromJournal(t *testing.T) {
 	root := t.TempDir()
 	runner := NewRunner(root)
+	runner.StorageMode = StorageModeFile
 	runner.Now = fixedClock()
 	sessionID := "testui-session-stale-leaf"
 	turnID := "turn-1"
@@ -1728,6 +1712,7 @@ func TestRunnerRepairsStaleThreadLeafAndMetadataTurnsFromJournal(t *testing.T) {
 	}
 
 	restored := NewRunner(root)
+	restored.StorageMode = StorageModeFile
 	restored.Now = fixedClock()
 	sessions := restored.AgentSessions(context.Background())
 	if len(sessions) != 1 || sessions[0].Status != string(engine.Completed) || !sessions[0].CanAppendMessage || len(sessions[0].Turns) != 1 {
@@ -1819,8 +1804,6 @@ func TestRunnerDeleteAgentSessionRemovesMetadataTreeAndPromptCache(t *testing.T)
 		runner.agentSessionMetadataPath(first.SessionID),
 		filepath.Join(runner.agentSessionTreeRoot(), safeSessionFileName(first.SessionID)),
 		filepath.Join(root, ".floret-test-ui", "prompt-cache", safeSessionFileName(first.SessionID)),
-		filepath.Join(root, ".floret-test-ui", "prompt-cache", safeSessionFileName(first.TurnID)),
-		filepath.Join(root, ".floret-test-ui", "prompt-cache", safeSessionFileName(second.TurnID)),
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected persisted session artifact %s: %v", path, err)
@@ -1840,8 +1823,6 @@ func TestRunnerDeleteAgentSessionRemovesMetadataTreeAndPromptCache(t *testing.T)
 		runner.agentSessionMetadataPath(first.SessionID),
 		filepath.Join(runner.agentSessionTreeRoot(), safeSessionFileName(first.SessionID)),
 		filepath.Join(root, ".floret-test-ui", "prompt-cache", safeSessionFileName(first.SessionID)),
-		filepath.Join(root, ".floret-test-ui", "prompt-cache", safeSessionFileName(first.TurnID)),
-		filepath.Join(root, ".floret-test-ui", "prompt-cache", safeSessionFileName(second.TurnID)),
 	} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("artifact %s still exists or returned unexpected err: %v", path, err)
@@ -1888,8 +1869,6 @@ func TestRunnerDeleteRestoredAgentSessionRemovesPromptCacheWithoutProvider(t *te
 		restored.agentSessionMetadataPath(first.SessionID),
 		filepath.Join(restored.agentSessionTreeRoot(), safeSessionFileName(first.SessionID)),
 		filepath.Join(root, ".floret-test-ui", "prompt-cache", safeSessionFileName(first.SessionID)),
-		filepath.Join(root, ".floret-test-ui", "prompt-cache", safeSessionFileName(first.TurnID)),
-		filepath.Join(root, ".floret-test-ui", "prompt-cache", safeSessionFileName(second.TurnID)),
 	} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("artifact %s still exists or returned unexpected err: %v", path, err)
@@ -1952,86 +1931,6 @@ func TestRunnerDefaultSQLitePersistsListsRestoresAndDeletesSession(t *testing.T)
 	}
 	if _, err := secondRunner.AgentSession(context.Background(), first.SessionID); err == nil || !isMissingAgentSessionError(err) {
 		t.Fatalf("AgentSession after delete err = %v", err)
-	}
-}
-
-func TestRunnerSQLiteImportsLegacyFileStorageOnce(t *testing.T) {
-	root := t.TempDir()
-	legacyRunner := NewRunner(root)
-	legacyRunner.StorageMode = StorageModeFile
-	legacyRunner.Now = fixedClock()
-	legacyRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
-		return harness.NewScriptedProvider(harness.Step(harness.Text("legacy done"), harness.Done())), nil
-	}
-	legacy := legacyRunner.CreateAgentSession(context.Background(), AgentRunRequest{
-		Profile:      ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
-		Message:      "legacy",
-		SystemPrompt: "test",
-	})
-	if legacy.Status != "completed" {
-		t.Fatalf("legacy = %#v", legacy)
-	}
-	if _, err := os.Stat(legacyRunner.agentSessionMetadataPath(legacy.SessionID)); err != nil {
-		t.Fatalf("legacy metadata file missing: %v", err)
-	}
-
-	sqliteRunner := NewRunner(root)
-	sqliteRunner.Now = fixedClock()
-	sessions := sqliteRunner.AgentSessions(context.Background())
-	if len(sessions) != 1 || sessions[0].ID != legacy.SessionID || sessions[0].Status != "completed" {
-		t.Fatalf("imported sessions = %#v", sessions)
-	}
-	status := sqliteRunner.storageStatus(context.Background())
-	if status.Mode != StorageModeSQLite || status.SchemaVersion != "4" || !strings.Contains(status.LegacyImport, "threads=1") || !strings.Contains(status.LegacyImport, "metadata=1") {
-		t.Fatalf("storage status = %#v", status)
-	}
-	restarted := NewRunner(root)
-	restarted.Now = fixedClock()
-	if sessions := restarted.AgentSessions(context.Background()); len(sessions) != 1 || sessions[0].ID != legacy.SessionID {
-		t.Fatalf("restarted imported sessions = %#v", sessions)
-	}
-}
-
-func TestRunnerSQLiteSkipsMalformedLegacySessionWithoutHidingValidSession(t *testing.T) {
-	root := t.TempDir()
-	validRunner := NewRunner(root)
-	validRunner.StorageMode = StorageModeFile
-	validRunner.Now = fixedClock()
-	validRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
-		return harness.NewScriptedProvider(harness.Step(harness.Text("valid done"), harness.Done())), nil
-	}
-	valid := validRunner.CreateAgentSession(context.Background(), AgentRunRequest{
-		Profile:      ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
-		Message:      "valid",
-		SystemPrompt: "test",
-	})
-	if valid.Status != "completed" {
-		t.Fatalf("valid = %#v", valid)
-	}
-	badDir := filepath.Join(validRunner.agentSessionTreeRoot(), "bad")
-	if err := os.MkdirAll(badDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(badDir, "thread.json"), []byte(`{"id":"bad","leaf_id":"bad-entry"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(badDir, "entries.jsonl"), []byte("{bad json\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	metaDir := validRunner.agentSessionMetadataRoot()
-	if err := os.WriteFile(filepath.Join(metaDir, "bad.json"), []byte("{bad json\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	sqliteRunner := NewRunner(root)
-	sqliteRunner.Now = fixedClock()
-	sessions := sqliteRunner.AgentSessions(context.Background())
-	if len(sessions) != 1 || sessions[0].ID != valid.SessionID {
-		t.Fatalf("valid session should survive malformed legacy data: %#v", sessions)
-	}
-	status := sqliteRunner.storageStatus(context.Background())
-	if !strings.Contains(status.LegacyImport, "skipped=2") {
-		t.Fatalf("legacy skipped summary missing: %#v", status)
 	}
 }
 
@@ -2486,9 +2385,9 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 	if !slices.ContainsFunc(result.Observation.ProviderRequests, func(request ObservedProviderRequest) bool {
 		return slices.ContainsFunc(request.RawSegments, func(segment ObservedRawSegment) bool {
 			return segment.Kind == "compaction" &&
-				segment.RunID != "" &&
-				segment.SessionID == result.SessionID &&
-				segment.TurnID == result.TurnID &&
+				segment.PromptScopeID == result.SessionID &&
+				segment.CreatedByRunID != "" &&
+				segment.CreatedByTurnID == result.TurnID &&
 				segment.EntryID != "" &&
 				segment.CompactionGeneration > 0 &&
 				segment.CompactionWindowID != ""
@@ -2498,7 +2397,7 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 	}
 	if !slices.ContainsFunc(result.Session.ContextStatuses, func(status ObservedContextStatus) bool {
 		return status.Phase == observation.ContextPhaseProjectedRequest &&
-			status.SessionID == result.SessionID &&
+			status.ThreadID == result.SessionID &&
 			status.TurnID == result.TurnID &&
 			status.RequestID != "" &&
 			status.ContextPressure.ContextWindowTokens == 1800
@@ -2507,7 +2406,7 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 	}
 	if !slices.ContainsFunc(result.Session.ContextStatuses, func(status ObservedContextStatus) bool {
 		return status.Phase == observation.ContextPhaseProviderUsage &&
-			status.SessionID == result.SessionID &&
+			status.ThreadID == result.SessionID &&
 			status.TurnID == result.TurnID &&
 			status.RequestID != "" &&
 			status.ContextPressure.ContextWindowTokens == 1800
@@ -2537,7 +2436,7 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 	}
 	if !slices.ContainsFunc(snapshot.ContextStatuses, func(status ObservedContextStatus) bool {
 		return status.Phase == observation.ContextPhaseProjectedRequest &&
-			status.SessionID == result.SessionID &&
+			status.ThreadID == result.SessionID &&
 			status.TurnID == result.TurnID &&
 			status.RequestID != "" &&
 			status.ContextPressure.ContextWindowTokens == 1800
@@ -2546,7 +2445,7 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 	}
 	if !slices.ContainsFunc(snapshot.ContextStatuses, func(status ObservedContextStatus) bool {
 		return status.Phase == observation.ContextPhaseProviderUsage &&
-			status.SessionID == result.SessionID &&
+			status.ThreadID == result.SessionID &&
 			status.TurnID == result.TurnID &&
 			status.RequestID != "" &&
 			status.ContextPressure.ContextWindowTokens == 1800
@@ -2554,14 +2453,15 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 		t.Fatalf("reopened snapshot missing provider usage context status: %#v", snapshot.ContextStatuses)
 	}
 	if !slices.ContainsFunc(snapshot.Observation.ProviderRequests, func(request ObservedProviderRequest) bool {
-		return request.SessionID == result.SessionID &&
+		return request.ThreadID == result.SessionID &&
+			request.PromptScopeID == result.SessionID &&
 			request.TurnID == result.TurnID &&
 			request.RequestEstimate.EstimatedInputTokens > 0 &&
 			request.ProjectedPressure.ContextWindowTokens == 1800 &&
 			slices.ContainsFunc(request.RawSegments, func(segment ObservedRawSegment) bool {
 				return segment.Kind == "compaction" &&
-					segment.SessionID == result.SessionID &&
-					segment.TurnID == result.TurnID &&
+					segment.PromptScopeID == result.SessionID &&
+					segment.CreatedByTurnID == result.TurnID &&
 					segment.CompactionGeneration == compactionEntry.CompactionGeneration &&
 					segment.CompactionWindowID == compactionEntry.CompactionWindowID
 			})
@@ -2686,7 +2586,8 @@ func TestObservingProviderRuntimeOnlyExposesExistingEstimator(t *testing.T) {
 func TestContextStatusFromProviderRequestUsesProjectedPressure(t *testing.T) {
 	req := ObservedProviderRequest{
 		RunID:            "turn-1",
-		SessionID:        "thread-1",
+		ThreadID:         "thread-1",
+		PromptScopeID:    "thread-1",
 		TurnID:           "turn-1",
 		Step:             2,
 		LogicalRequestID: "logical-1",
@@ -2734,7 +2635,8 @@ func TestContextStatusFromFinalProviderUsageEvent(t *testing.T) {
 	ev := event.Event{
 		Type:      event.ProviderUsage,
 		RunID:     "turn-1",
-		SessionID: "thread-1",
+		ThreadID:  "thread-1",
+		TurnID:    "turn-1",
 		Step:      1,
 		Provider:  "fake",
 		Model:     "fake-model",
@@ -2792,12 +2694,13 @@ func TestContextStatusFromFinalProviderUsageEvent(t *testing.T) {
 	}
 }
 
-func TestContextStatusesFromPromptRecordsSkipLegacyResponseWithoutPressure(t *testing.T) {
+func TestContextStatusesFromPromptRecordsSkipResponseWithoutPressure(t *testing.T) {
 	created := time.Unix(25, 0)
 	statuses := contextStatusesFromPromptRecords([]cache.ProviderRequestRecord{{
 		ID:               "turn-1:req:1",
+		PromptScopeID:    "thread-1",
 		RunID:            "turn-1",
-		SessionID:        "thread-1",
+		ThreadID:         "thread-1",
 		TurnID:           "turn-1",
 		Step:             1,
 		LogicalRequestID: "logical-1",
@@ -2823,19 +2726,20 @@ func TestContextStatusesFromPromptRecordsSkipLegacyResponseWithoutPressure(t *te
 	if len(statuses) != 1 ||
 		statuses[0].Phase != observation.ContextPhaseProjectedRequest ||
 		statuses[0].RequestID != "turn-1:req:1" {
-		t.Fatalf("legacy response without pressure should only keep projected status: %#v", statuses)
+		t.Fatalf("response without pressure should only keep projected status: %#v", statuses)
 	}
 }
 
 func TestAgentObservationMergesPromptCacheContextStatusesWithLiveObservation(t *testing.T) {
 	req := ObservedProviderRequest{
-		RunID:      "turn-1",
-		SessionID:  "thread-1",
-		TurnID:     "turn-1",
-		Step:       1,
-		Provider:   "fake",
-		Model:      "fake-model",
-		ObservedAt: time.Unix(10, 0),
+		RunID:         "turn-1",
+		ThreadID:      "thread-1",
+		PromptScopeID: "thread-1",
+		TurnID:        "turn-1",
+		Step:          1,
+		Provider:      "fake",
+		Model:         "fake-model",
+		ObservedAt:    time.Unix(10, 0),
 		CacheSummary: ObservedCacheSummary{
 			CompactionGeneration: 2,
 			CompactionWindowID:   "window-2",
@@ -2852,7 +2756,7 @@ func TestAgentObservationMergesPromptCacheContextStatusesWithLiveObservation(t *
 	projected := contextStatusFromProviderRequest(promptCacheReq)
 	finalUsage := ObservedContextStatus{
 		RunID:                "turn-1",
-		SessionID:            "thread-1",
+		ThreadID:             "thread-1",
 		TurnID:               "turn-1",
 		Step:                 1,
 		RequestID:            "turn-1:req:1",
@@ -2892,15 +2796,15 @@ func TestAgentObservationMergesPromptCacheContextStatusesWithLiveObservation(t *
 	}
 }
 
-func TestPromptCacheObservationFiltersSharedTurnRunIDsBySession(t *testing.T) {
+func TestPromptCacheObservationReadsOnlySelectedPromptScope(t *testing.T) {
 	ctx := context.Background()
 	store := cache.NewMemoryStore()
 	created := time.Unix(26, 0)
 	foreignReq := cache.ProviderRequestRecord{
 		ID:               "turn-1:req:1",
+		PromptScopeID:    "thread-b",
 		RunID:            "turn-1",
-		SessionID:        "session-b",
-		ThreadID:         "session-b",
+		ThreadID:         "thread-b",
 		TurnID:           "turn-1",
 		Step:             1,
 		LogicalRequestID: "turn-1:logical:1",
@@ -2920,8 +2824,9 @@ func TestPromptCacheObservationFiltersSharedTurnRunIDsBySession(t *testing.T) {
 	}
 	if err := store.AppendProviderResponse(ctx, cache.ProviderResponseRecord{
 		RequestID:         foreignReq.ID,
+		PromptScopeID:     foreignReq.PromptScopeID,
 		RunID:             foreignReq.RunID,
-		ThreadID:          foreignReq.SessionID,
+		ThreadID:          foreignReq.ThreadID,
 		TurnID:            foreignReq.TurnID,
 		WindowInputTokens: 308,
 		UsageSource:       string(provider.UsageUnavailable),
@@ -2933,10 +2838,10 @@ func TestPromptCacheObservationFiltersSharedTurnRunIDsBySession(t *testing.T) {
 	}
 
 	runner := NewRunner(t.TempDir())
-	observation := runner.observationFromPromptCache(ctx, store, "session-a", []AgentTurnSummary{{ID: "turn-1"}}, nil)
+	observation := runner.observationFromPromptCache(ctx, store, "thread-a")
 
 	if len(observation.ProviderRequests) != 0 || len(observation.ContextStatuses) != 0 {
-		t.Fatalf("foreign prompt cache observations leaked into session-a: %#v", observation)
+		t.Fatalf("foreign prompt cache observations leaked into thread-a: %#v", observation)
 	}
 }
 
@@ -2944,7 +2849,8 @@ func TestCompactionEventsFromEngineEventsAndEntries(t *testing.T) {
 	start := event.Event{
 		Type:      event.ContextCompact,
 		RunID:     "turn-1",
-		SessionID: "thread-1",
+		ThreadID:  "thread-1",
+		TurnID:    "turn-1",
 		Step:      2,
 		Timestamp: time.Unix(30, 0),
 		Metadata: map[string]any{
@@ -2958,7 +2864,8 @@ func TestCompactionEventsFromEngineEventsAndEntries(t *testing.T) {
 	complete := event.Event{
 		Type:      event.ContextCompact,
 		RunID:     "turn-1",
-		SessionID: "thread-1",
+		ThreadID:  "thread-1",
+		TurnID:    "turn-1",
 		Step:      2,
 		Message:   "compact-1",
 		Result:    "summary text",
@@ -2980,7 +2887,8 @@ func TestCompactionEventsFromEngineEventsAndEntries(t *testing.T) {
 	failed := event.Event{
 		Type:      event.ContextCompact,
 		RunID:     "turn-1",
-		SessionID: "thread-1",
+		ThreadID:  "thread-1",
+		TurnID:    "turn-1",
 		Step:      3,
 		Err:       "summary failed",
 		Timestamp: time.Unix(32, 0),
@@ -3074,11 +2982,13 @@ func TestObservingProviderStreamsProjectedContextStatus(t *testing.T) {
 	observed.SetStreamSink(stream)
 
 	providerStream, err := observed.Stream(context.Background(), provider.Request{
-		RunID:     "turn-1",
-		SessionID: "thread-1",
-		Step:      1,
-		Provider:  "fake",
-		Model:     "fake-model",
+		RunID:         "turn-1",
+		ThreadID:      "thread-1",
+		TurnID:        "turn-1",
+		PromptScopeID: "thread-1",
+		Step:          1,
+		Provider:      "fake",
+		Model:         "fake-model",
 		RequestEstimate: contextpolicy.RequestEstimate{
 			EstimatedInputTokens: 500,
 			Source:               "test_estimator",
@@ -3107,7 +3017,7 @@ func TestObservingProviderStreamsProjectedContextStatus(t *testing.T) {
 		t.Fatalf("second stream event = %#v", second)
 	}
 	if second.ContextStatus.Phase != observation.ContextPhaseProjectedRequest ||
-		second.ContextStatus.SessionID != "thread-1" ||
+		second.ContextStatus.ThreadID != "thread-1" ||
 		second.ContextStatus.TurnID != "turn-1" ||
 		second.ContextStatus.RequestID != "turn-1:req:1" ||
 		second.ContextStatus.UsedRatio != 0.5 {
@@ -3122,7 +3032,8 @@ func TestStreamingEventRecorderStreamsFinalContextStatusAndCompaction(t *testing
 	finalUsage := event.Event{
 		Type:      event.ProviderUsage,
 		RunID:     "turn-1",
-		SessionID: "thread-1",
+		ThreadID:  "thread-1",
+		TurnID:    "turn-1",
 		Step:      1,
 		Timestamp: time.Unix(40, 0),
 		Metadata: engine.ProviderUsageContextStatus{
@@ -3137,7 +3048,8 @@ func TestStreamingEventRecorderStreamsFinalContextStatusAndCompaction(t *testing
 	compactionEvent := event.Event{
 		Type:      event.ContextCompact,
 		RunID:     "turn-1",
-		SessionID: "thread-1",
+		ThreadID:  "thread-1",
+		TurnID:    "turn-1",
 		Step:      2,
 		Timestamp: time.Unix(41, 0),
 		Result:    "summary",
@@ -3182,7 +3094,8 @@ func TestStreamingEventRecorderStreamsFailedCompaction(t *testing.T) {
 	rec.Emit(event.Event{
 		Type:      event.ContextCompact,
 		RunID:     "turn-1",
-		SessionID: "thread-1",
+		ThreadID:  "thread-1",
+		TurnID:    "turn-1",
 		Step:      2,
 		Timestamp: time.Unix(42, 0),
 		Err:       "summary failed",

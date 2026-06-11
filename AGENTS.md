@@ -172,11 +172,123 @@ Rules:
 - Keep provider, context, tool runtime, session storage, and host UI concerns separated.
 - Important intent and policy decisions must be observable through events or testable state.
 
+## Concept Vocabulary and Identity Rules
+
+Floret concepts are intentionally small and strict. Use these names exactly; do not
+invent near-synonyms when a concept below already fits.
+
+### Runtime Actors
+
+- `Agent` is the configured assistant persona plus capabilities exposed to a run or
+  thread. It is not a process, provider client, or durable conversation.
+- `Engine` is the lower-level single-run executor. It owns provider loop control,
+  tool invocation, compaction decisions, prompt-cache requests, and event emission.
+- `AgentHarness` is the durable host-facing conversation layer. It owns threads,
+  turn lifecycle, retries, forks, titles, and the projection of a thread path into
+  one engine execution.
+- `TestingHarness` means deterministic scripted providers and test helpers. It must
+  stay outside production control flow.
+
+### Execution Identity
+
+- `ThreadID` identifies a durable conversation journal. It is the identity used by
+  `agentharness`, `sessiontree`, and host UIs that persist conversation state.
+- `TurnID` identifies one user-facing turn in a thread. A turn has lifecycle state
+  such as idle, running, waiting, completed, failed, interrupted, or cancelled.
+- `RunID` identifies one engine/provider execution. A standalone engine run uses a
+  `RunID` without a durable `ThreadID`; a normal harness turn usually sets
+  `RunID == TurnID`, but code must never rely on that equality.
+- `PromptScopeID` identifies the reuse boundary for prompt-cache segments, toolset
+  snapshots, provider request ledgers, and provider response ledgers. Durable threads
+  normally use `PromptScopeID == ThreadID`; standalone runs use `PromptScopeID == RunID`.
+- `TraceID` correlates events across a logical execution trace. It is for observation,
+  not storage ownership.
+- `LogicalRequestID` may identify a user-visible request spanning retries or transport
+  attempts. It must not replace `RunID`, `TurnID`, or `TraceID`.
+- `SessionID` and `session_id` are not core execution identities. They are allowed
+  only inside host/test UI API and view-state types where the product resource is an
+  "agent session"; code crossing into engine, provider, cache, observation, storage,
+  or tools must convert that value to `ThreadID` and/or `PromptScopeID`.
+
+### Conversation Storage
+
+- `Entry` is one immutable journal entry in a `sessiontree.Repo`.
+- `Journal` is the ordered set of entries for a thread.
+- `Path` is the active branch projection from root to leaf.
+- `Leaf` is the current active entry pointer for a thread.
+- `Fork` creates a new thread or branch from an existing entry.
+- `TranscriptMessage` is the provider-visible message projection. It is not the same
+  thing as a journal entry, tool event, or UI display row.
+- `TranscriptStore` stores engine-level transcript messages for isolated runs. It
+  must not pretend to be durable thread storage.
+
+### Tools, Permissions, and Effects
+
+- `ToolDefinition` is the provider-visible local tool schema.
+- `HostedToolDefinition` is a provider-native capability and must not be dispatched
+  by the local tool runtime.
+- `ToolInvocation` is one validated local tool execution.
+- `ToolResult` is the structured outcome returned to the provider and observation
+  layers.
+- `Permission`, `Approval`, `Effect`, and `ResourceRef` describe whether a tool may
+  run, who approved it, what side effects it can cause, and which files, commands,
+  URLs, or other resources it touches.
+- `ControlSignal` is engine-owned loop control such as completion or user input. It
+  is not a normal host command and must remain observable.
+
+### Messages, Context, and Prompt Cache
+
+- User, assistant, system, tool-call, tool-result, compaction-summary, and control
+  messages are distinct categories. Do not encode these distinctions only in free
+  text.
+- `ContextPolicy` is configuration. `Usage` is message-context budget state.
+  `RequestEstimate` is provider-request size estimation. `ContextPressure` is the
+  decision signal derived from native usage, estimates, or provider overflow.
+- Prompt-cache rows and JSON must use `prompt_scope_id` / `PromptScopeID`, not
+  `run_id` as the reuse boundary. Segment authorship may record
+  `CreatedByRunID` and `CreatedByTurnID`, but those fields do not define reuse.
+- Provider raw plans are provider-specific rendered fragments. If raw fragments are
+  missing, malformed, or for the wrong adapter, fail explicitly instead of rebuilding
+  them from higher-level request data.
+
+### Events, Observation, Artifacts, and Storage
+
+- `Event` is the engine/harness event stream. Important decisions, policy boundaries,
+  retries, compactions, approvals, provider requests, and tool outcomes must be
+  observable through events or testable state.
+- `Observation` is a sanitized host/test projection of events, context, prompt-cache
+  records, and session-tree entries.
+- `Artifact` is durable tool or run output. Artifact ownership must use explicit
+  `ThreadID`, `TurnID`, `RunID`, and `TraceID` fields where applicable.
+- `runtime/storage` defines storage contracts. `runtime/storage/sqlite` is one
+  implementation. Storage APIs must name the domain object they delete or load,
+  such as thread data, prompt scopes, metadata, or transcripts.
+
+### Profiles and Capabilities
+
+- `ProviderProfile` is the host/test UI provider configuration.
+- `AgentProfile` is persona metadata plus the base system prompt.
+- `PromptIdentity` is the hashable identity of the resolved prompt source.
+- `Capability` describes what the host/provider can expose. Skills and MCP servers
+  are capability sources, not core engine identities.
+
+### Visibility and Go Naming
+
+- Export a type, method, or field only when it is part of a package contract.
+  Package-local helper concepts stay unexported.
+- Cross-package data structures must carry explicit identity fields; they must not
+  infer `ThreadID`, `TurnID`, `RunID`, or `PromptScopeID` from each other.
+- Do not use vague names such as `session`, `context`, `request`, `state`, or `id`
+  for package contracts when the narrower concept is known. Prefer names such as
+  `ThreadID`, `TurnID`, `PromptScopeID`, `ProviderRequest`, `ContextPressure`, or
+  `TranscriptStore`.
+- Project code must not keep unsupported contract parsing, transitional shape paths, silent substitutes, or comments explaining removed shapes. Floret has not launched; when a shape is wrong, reject it or delete it completely.
+
 ## IMPORTANT Design Constraints
 
 - `IMPORTANT:` comments mark product, security, or interaction invariants that must stay rare, intentional, and backed by code or tests where practical.
 - If a change would remove, bypass, weaken, or contradict an `IMPORTANT:` comment, discuss the design impact with the user and receive explicit confirmation before implementing that change.
-- Do not work around an `IMPORTANT:` constraint with hidden fallback behavior, alternate entry points, or silent compatibility paths.
+- Do not work around an `IMPORTANT:` constraint with hidden substitute behavior, alternate entry points, or silent unsupported-contract paths.
 - When adding a new `IMPORTANT:` comment, keep it concise, explain the invariant rather than the implementation detail, and add focused test coverage or another enforceable guard whenever possible.
 
 ## Language Policy

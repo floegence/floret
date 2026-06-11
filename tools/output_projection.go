@@ -151,15 +151,17 @@ func BuildOutputProjection(ctx context.Context, result Result, policy OutputPoli
 			return OutputProjection{}, errors.New("artifact store is required to preserve truncated tool output")
 		}
 		ref, err := store.PutToolOutput(ctx, artifact.ToolOutputArtifact{
-			RunID:     result.MetadataString("run_id"),
-			SessionID: result.MetadataString("session_id"),
-			Step:      result.MetadataInt("step"),
-			CallID:    result.CallID,
-			ToolName:  result.Name,
-			Text:      text,
-			MIME:      policy.ArtifactMIME,
-			Kind:      policy.ArtifactKind,
-			Metadata:  result.Metadata,
+			RunID:         result.MetadataString("run_id"),
+			ThreadID:      result.MetadataString("thread_id"),
+			TurnID:        result.MetadataString("turn_id"),
+			PromptScopeID: result.MetadataString("prompt_scope_id"),
+			Step:          result.MetadataInt("step"),
+			CallID:        result.CallID,
+			ToolName:      result.Name,
+			Text:          text,
+			MIME:          policy.ArtifactMIME,
+			Kind:          policy.ArtifactKind,
+			Metadata:      result.Metadata,
 		})
 		if err != nil {
 			return OutputProjection{}, err

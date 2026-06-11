@@ -52,7 +52,9 @@ type Event struct {
 	Type               Type       `json:"type"`
 	TraceID            string     `json:"trace_id,omitempty"`
 	RunID              string     `json:"run_id"`
-	SessionID          string     `json:"session_id,omitempty"`
+	ThreadID           string     `json:"thread_id,omitempty"`
+	TurnID             string     `json:"turn_id,omitempty"`
+	PromptScopeID      string     `json:"prompt_scope_id,omitempty"`
 	Step               int        `json:"step,omitempty"`
 	Provider           string     `json:"provider,omitempty"`
 	Model              string     `json:"model,omitempty"`

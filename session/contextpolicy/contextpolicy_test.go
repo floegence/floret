@@ -65,8 +65,8 @@ func TestNormalizeScalesDefaultCompactionBudgetsForSmallWindows(t *testing.T) {
 	}
 }
 
-func TestMergeDefaultsUsesFallbackMaxOutputOnlyWhenPolicyOmitted(t *testing.T) {
-	fallback := Policy{
+func TestMergeDefaultsUsesBaseMaxOutputOnlyWhenPolicyOmitted(t *testing.T) {
+	basePolicy := Policy{
 		ContextWindowTokens:   128000,
 		MaxOutputTokens:       64000,
 		ReservedOutputTokens:  DefaultReservedOutputTokens,
@@ -76,24 +76,24 @@ func TestMergeDefaultsUsesFallbackMaxOutputOnlyWhenPolicyOmitted(t *testing.T) {
 		EstimatorSource:       "catalog",
 		MaxCompactionFailures: 2,
 	}
-	empty := MergeDefaults(Policy{}, fallback)
+	empty := MergeDefaults(Policy{}, basePolicy)
 	if empty.MaxOutputTokens != 64000 || empty.ContextWindowTokens != 128000 {
-		t.Fatalf("empty policy should inherit fallback: %#v", empty)
+		t.Fatalf("empty policy should inherit base defaults: %#v", empty)
 	}
 
-	explicit := MergeDefaults(Policy{ReservedOutputTokens: 1024}, fallback)
+	explicit := MergeDefaults(Policy{ReservedOutputTokens: 1024}, basePolicy)
 	if explicit.MaxOutputTokens != 0 || explicit.ReservedOutputTokens != 1024 || explicit.ContextWindowTokens != 128000 {
 		t.Fatalf("explicit partial policy should keep ordinary max output unset and inherit missing defaults: %#v", explicit)
 	}
 
-	smallWindow := MergeDefaults(Policy{ContextWindowTokens: 8192, MaxOutputTokens: 1024, RecentTailTokens: 1024}, fallback)
+	smallWindow := MergeDefaults(Policy{ContextWindowTokens: 8192, MaxOutputTokens: 1024, RecentTailTokens: 1024}, basePolicy)
 	if smallWindow.ReservedSummaryTokens != 2048 || smallWindow.RecentUserTokens != 2048 || smallWindow.RecentTailTokens != 1024 {
 		t.Fatalf("small-window defaults should scale missing compaction budgets while preserving explicit values: %#v", smallWindow)
 	}
 
 	expanded := MergeDefaults(Policy{ContextWindowTokens: 128000}, Policy{ContextWindowTokens: 8192})
 	if expanded.ReservedSummaryTokens != DefaultReservedSummaryTokens || expanded.RecentTailTokens != DefaultRecentTailTokens || expanded.RecentUserTokens != DefaultRecentUserTokens {
-		t.Fatalf("raw fallback defaults should be derived against the target window: %#v", expanded)
+		t.Fatalf("raw base defaults should be derived against the target window: %#v", expanded)
 	}
 }
 
@@ -229,7 +229,7 @@ func TestPressureFromNativeUsageFallsBackToInputAndCacheBuckets(t *testing.T) {
 	}, Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100})
 
 	if pressure.WindowInputTokens != 150 {
-		t.Fatalf("window input fallback = %d, want input + cache buckets", pressure.WindowInputTokens)
+		t.Fatalf("window input tokens = %d, want input + cache buckets", pressure.WindowInputTokens)
 	}
 }
 
@@ -336,7 +336,7 @@ func TestMethodForEstimateSourceKeepsUnknownSourcesObservable(t *testing.T) {
 	if got := MethodForEstimateSource("anthropic_rendered_json", ""); got != EstimateMethodProviderRenderedPayload {
 		t.Fatalf("rendered source method = %q", got)
 	}
-	if got := MethodForEstimateSource("legacy_surprise", EstimateMethodGenericPayload); got != EstimateMethodUnknown {
+	if got := MethodForEstimateSource("unexpected_source", EstimateMethodGenericPayload); got != EstimateMethodUnknown {
 		t.Fatalf("unknown source method = %q, want observable unknown", got)
 	}
 }

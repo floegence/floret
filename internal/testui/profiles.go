@@ -68,10 +68,7 @@ func (r *Runner) ConfigState() (ConfigState, error) {
 		state.Tools = agentToolCatalog(activeProfile, r.EnvFile)
 		return state, nil
 	}
-	profile, err := r.legacyProfile()
-	if err != nil {
-		return state, err
-	}
+	profile := defaultTestUIProfile()
 	state.Profiles = []ProviderProfile{stripProfileSecret(profile)}
 	state.ActiveProfileID = profile.ID
 	state.ContextPolicyDefaults = contextPolicyDefaultsForProfile(profile)
@@ -171,11 +168,7 @@ func (r Runner) loadRawProfiles() ([]ProviderProfile, error) {
 	if raw := fileValues[profilesKey]; raw != "" {
 		return decodeProfiles(raw)
 	}
-	profile, err := r.legacyProfile()
-	if err != nil {
-		return nil, err
-	}
-	return []ProviderProfile{profile}, nil
+	return []ProviderProfile{defaultTestUIProfile()}, nil
 }
 
 func (r Runner) activeProfileIDFromEnv(profiles []ProviderProfile) (string, error) {
@@ -190,31 +183,14 @@ func (r Runner) activeProfileIDFromEnv(profiles []ProviderProfile) (string, erro
 	return id, nil
 }
 
-func (r Runner) legacyProfile() (ProviderProfile, error) {
-	values, err := readDotEnv(r.EnvFile)
-	if err != nil && !os.IsNotExist(err) {
-		return ProviderProfile{}, err
-	}
-	providerName := catalog.NormalizeProvider(getEnvValue(values, "FLORET_PROVIDER", config.ProviderFake))
-	model := getEnvValue(values, "FLORET_MODEL", "")
-	if model == "" {
-		if defaultModel, ok := catalog.DefaultModel(providerName); ok {
-			model = defaultModel.ID
-		} else {
-			model = "fake-model"
-		}
-	}
-	name := providerName + " / " + model
+func defaultTestUIProfile() ProviderProfile {
 	return normalizeProfile(ProviderProfile{
 		ID:           "local",
-		Name:         name,
-		Provider:     providerName,
-		Model:        model,
-		BaseURL:      getEnvValue(values, "FLORET_BASE_URL", catalog.DefaultBaseURL(providerName)),
-		APIKey:       values["FLORET_API_KEY"],
-		APIKeySet:    values["FLORET_API_KEY"] != "",
-		FakeResponse: getEnvValue(values, "FLORET_FAKE_RESPONSE", "ok"),
-	}, 0), nil
+		Name:         "Fake / fake-model",
+		Provider:     config.ProviderFake,
+		Model:        "fake-model",
+		FakeResponse: "ok",
+	}, 0)
 }
 
 func normalizeProfile(profile ProviderProfile, index int) ProviderProfile {
@@ -442,13 +418,6 @@ func modelRiskDiagnosticMap(profile ProviderProfile, policy contextpolicy.Policy
 		out[diagnostic.Kind] = value
 	}
 	return out
-}
-
-func getEnvValue(values map[string]string, key string, fallback string) string {
-	if value, ok := values[key]; ok && value != "" {
-		return value
-	}
-	return fallback
 }
 
 func readDotEnv(path string) (map[string]string, error) {

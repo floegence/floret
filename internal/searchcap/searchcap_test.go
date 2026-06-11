@@ -236,45 +236,25 @@ func TestNormalizeCapabilityCanonicalizesSingleSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if strings.Contains(text, "enabled") || strings.Contains(text, `"client"`) || strings.Contains(text, `"provider_hosted":`) || strings.Contains(text, `"disabled":`) {
-		t.Fatalf("canonical json still contains legacy enabled fields: %s", text)
+	if !strings.Contains(text, `"source":"external_brave"`) || !strings.Contains(text, `"brave"`) {
+		t.Fatalf("canonical json missing explicit source or brave config: %s", text)
 	}
 }
 
-func TestCapabilityRejectsLegacyShape(t *testing.T) {
-	tests := []struct {
-		name string
-		raw  string
-	}{
-		{
-			name: "legacy hosted",
-			raw:  `{"provider_hosted":{"enabled":true,"wire_shape":"legacy_shape","supported_wire_shapes":["legacy_shape"]},"client":{"enabled":false,"provider":"brave"}}`,
-		},
-		{
-			name: "legacy external search shape",
-			raw:  `{"client":{"enabled":true,"provider":"brave"}}`,
-		},
-		{
-			name: "legacy disabled",
-			raw:  `{"disabled":true,"client":{"provider":"brave"}}`,
-		},
-		{
-			name: "canonical cannot mix legacy",
-			raw:  `{"source":"provider_hosted","hosted":{"wire_shape":"legacy_shape"},"client":{"enabled":true,"provider":"brave"}}`,
-		},
-		{
-			name: "unknown key",
-			raw:  `{"source":"disabled","unexpected":true}`,
-		},
+func TestCapabilityUnmarshalUsesCanonicalFields(t *testing.T) {
+	var capability Capability
+	if err := json.Unmarshal([]byte(`{"source":"external_brave","brave":{"provider":"brave"}}`), &capability); err != nil {
+		t.Fatal(err)
+	}
+	if capability.Source != WebSearchExternalBrave || capability.Brave.Provider != ExternalProviderBrave || capability.Hosted.WireShape != "" {
+		t.Fatalf("capability = %#v", capability)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var capability Capability
-			err := json.Unmarshal([]byte(tt.raw), &capability)
-			if err == nil {
-				t.Fatalf("legacy shape should be rejected, got %#v", capability)
-			}
-		})
+	var nullCapability Capability
+	if err := json.Unmarshal([]byte(`null`), &nullCapability); err != nil {
+		t.Fatal(err)
+	}
+	if nullCapability != (Capability{}) {
+		t.Fatalf("null capability = %#v", nullCapability)
 	}
 }

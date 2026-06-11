@@ -141,7 +141,7 @@ func TestOpenAICompatibleProviderMaxOutputTokensAreOptional(t *testing.T) {
 	}{
 		{name: "unset omits max_tokens"},
 		{name: "request override", reqMax: 123, policyMax: 456, wantSet: true, wantMax: 123},
-		{name: "context policy fallback", policyMax: 456, wantSet: true, wantMax: 456},
+		{name: "context policy default", policyMax: 456, wantSet: true, wantMax: 456},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -244,8 +244,8 @@ func TestAnthropicProviderMaxOutputTokensPriorityAndRequiredError(t *testing.T) 
 		wantErr   string
 	}{
 		{name: "request override", reqMax: 123, policyMax: 456, modelMax: 789, wantMax: 123},
-		{name: "context policy fallback", policyMax: 456, modelMax: 789, wantMax: 456},
-		{name: "provider model fallback", modelMax: 789, wantMax: 789},
+		{name: "context policy default", policyMax: 456, modelMax: 789, wantMax: 456},
+		{name: "provider model default", modelMax: 789, wantMax: 789},
 		{name: "missing cap errors", wantErr: "max output tokens are required"},
 	}
 	for _, tt := range tests {
@@ -426,32 +426,27 @@ func TestOpenAICompatibleProviderBuildsPayloadFromRawPlanSnapshots(t *testing.T)
 	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
 	_, err := p.Stream(context.Background(), provider.Request{
 		RunID:    "r",
-		Messages: []session.Message{{Role: session.User, Content: "from fallback"}},
+		Messages: []session.Message{{Role: session.User, Content: "from request"}},
 		RawPlan: cache.RawPlan{Segments: []cache.Segment{{
 			Kind:         cache.SegmentUserMessage,
 			FragmentType: cache.FragmentOpenAIMessage,
-			Raw:          `{"role":"user","content":"from stale raw"}`,
+			Raw:          `{"role":"user","content":"from raw"}`,
 			Message:      cache.MessageSnapshot{Role: "user", Content: "from snapshot"},
 		}}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(body.Messages) != 1 || body.Messages[0].Content != "from snapshot" {
-		t.Fatalf("provider payload was not built from raw plan snapshot: %#v", body.Messages)
+	if len(body.Messages) != 1 || body.Messages[0].Content != "from raw" {
+		t.Fatalf("provider payload was not built from raw plan fragment: %#v", body.Messages)
 	}
 }
 
-func TestOpenAICompatibleProviderFallsBackToRawPlanMessageSnapshots(t *testing.T) {
-	var body struct {
-		Messages []chatMessage `json:"messages"`
-	}
+func TestOpenAICompatibleProviderRejectsRawPlanWithoutProviderFragments(t *testing.T) {
+	called := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatal(err)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+		called = true
+		http.Error(w, "should not be called", http.StatusInternalServerError)
 	}))
 	defer server.Close()
 	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
@@ -474,11 +469,79 @@ func TestOpenAICompatibleProviderFallsBackToRawPlanMessageSnapshots(t *testing.T
 			},
 		}},
 	})
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || !strings.Contains(err.Error(), "unsupported fragment type") {
+		t.Fatalf("err = %v", err)
 	}
-	if len(body.Messages) != 2 || body.Messages[0].Role != "system" || body.Messages[1].Role != "user" || body.Messages[1].Content != "hello" {
-		t.Fatalf("raw plan message snapshots did not render into chat messages: %#v", body.Messages)
+	if called {
+		t.Fatalf("provider should not be called for non-provider raw plan fragments")
+	}
+}
+
+func TestOpenAICompatibleProviderRejectsRawToolsetFromWrongAdapter(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		http.Error(w, "should not be called", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
+	req := provider.Request{
+		RunID: "r",
+		RawPlan: cache.RawPlan{Segments: []cache.Segment{
+			{
+				Kind:         cache.SegmentUserMessage,
+				FragmentType: cache.FragmentOpenAIMessage,
+				Raw:          `{"role":"user","content":"hello"}`,
+			},
+			{
+				ID:           "tools",
+				Kind:         cache.SegmentToolset,
+				FragmentType: cache.FragmentAnthropicTool,
+				Raw:          `{"name":"read","input_schema":{"type":"object"}}`,
+			},
+		}},
+	}
+	if _, err := p.PayloadHash(req); err == nil || !strings.Contains(err.Error(), "unsupported fragment type") {
+		t.Fatalf("payload hash err = %v", err)
+	}
+	if _, err := p.Stream(context.Background(), req); err == nil || !strings.Contains(err.Error(), "unsupported fragment type") {
+		t.Fatalf("stream err = %v", err)
+	}
+	if called {
+		t.Fatalf("provider should not be called for wrong-adapter raw tool fragments")
+	}
+}
+
+func TestOpenAICompatibleProviderRejectsRawPlanMissingRequestedLocalTools(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		http.Error(w, "should not be called", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	p := OpenAICompatibleProvider{Endpoint: server.URL, APIKey: "secret", Model: "remote-model", HTTPClient: server.Client()}
+	req := provider.Request{
+		RunID: "r",
+		Tools: []provider.ToolDefinition{{
+			Name: "read",
+			InputSchema: map[string]any{
+				"type": "object",
+			},
+		}},
+		RawPlan: cache.RawPlan{Segments: []cache.Segment{{
+			Kind:         cache.SegmentUserMessage,
+			FragmentType: cache.FragmentOpenAIMessage,
+			Raw:          `{"role":"user","content":"hello"}`,
+		}}},
+	}
+	if _, err := p.PayloadHash(req); err == nil || !strings.Contains(err.Error(), "toolset segments") {
+		t.Fatalf("payload hash err = %v", err)
+	}
+	if _, err := p.Stream(context.Background(), req); err == nil || !strings.Contains(err.Error(), "toolset segments") {
+		t.Fatalf("stream err = %v", err)
+	}
+	if called {
+		t.Fatalf("provider should not be called when raw plan omits requested local tools")
 	}
 }
 
@@ -655,13 +718,24 @@ func TestAnthropicRawPlanToolsKeepHostedTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	messageRaw, err := cache.CanonicalJSON(anthropicMessage{Role: "user", Content: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	req := provider.Request{
 		RunID: "r",
-		RawPlan: cache.RawPlan{Segments: []cache.Segment{{
-			Kind:         cache.SegmentToolset,
-			FragmentType: fragment,
-			Raw:          rawTool,
-		}}},
+		RawPlan: cache.RawPlan{Segments: []cache.Segment{
+			{
+				Kind:         cache.SegmentToolset,
+				FragmentType: fragment,
+				Raw:          rawTool,
+			},
+			{
+				Kind:         cache.SegmentUserMessage,
+				FragmentType: cache.FragmentAnthropicMessage,
+				Raw:          messageRaw,
+			},
+		}},
 		HostedTools: []provider.HostedToolDefinition{{
 			Name:    searchcap.ToolWebSearch,
 			Type:    searchcap.ToolWebSearch,
@@ -730,7 +804,7 @@ func TestAnthropicProviderBuildsPayloadFromRawPlanFragments(t *testing.T) {
 	}
 	_, err = p.Stream(context.Background(), provider.Request{
 		RunID:    "r",
-		Messages: []session.Message{{Role: session.System, Content: "fallback system"}, {Role: session.User, Content: "fallback user"}},
+		Messages: []session.Message{{Role: session.System, Content: "request system"}, {Role: session.User, Content: "request user"}},
 		Cache:    cache.CachePolicy{Enabled: true, Retention: cache.RetentionShort},
 		RawPlan: cache.RawPlan{Segments: []cache.Segment{
 			{Kind: cache.SegmentSystem, FragmentType: cache.FragmentAnthropicSystem, Raw: systemRaw},
@@ -745,6 +819,109 @@ func TestAnthropicProviderBuildsPayloadFromRawPlanFragments(t *testing.T) {
 	}
 	if len(body.Messages) != 1 || body.Messages[0].Content != "raw user" {
 		t.Fatalf("messages were not built from raw fragment: %#v", body.Messages)
+	}
+}
+
+func TestAnthropicProviderRejectsRawSystemFromWrongAdapter(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		http.Error(w, "should not be called", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	p := AnthropicProvider{Endpoint: server.URL, APIKey: "secret", Model: "claude", MaxTokens: 4096, HTTPClient: server.Client()}
+	req := provider.Request{
+		RunID: "r",
+		RawPlan: cache.RawPlan{Segments: []cache.Segment{
+			{
+				ID:           "system",
+				Kind:         cache.SegmentSystem,
+				FragmentType: cache.FragmentOpenAIMessage,
+				Raw:          `{"role":"system","content":"system"}`,
+			},
+			{
+				Kind:         cache.SegmentUserMessage,
+				FragmentType: cache.FragmentAnthropicMessage,
+				Raw:          `{"role":"user","content":"hello"}`,
+			},
+		}},
+	}
+	if _, err := p.PayloadHash(req); err == nil || !strings.Contains(err.Error(), "unsupported fragment type") {
+		t.Fatalf("payload hash err = %v", err)
+	}
+	if _, err := p.Stream(context.Background(), req); err == nil || !strings.Contains(err.Error(), "unsupported fragment type") {
+		t.Fatalf("stream err = %v", err)
+	}
+	if called {
+		t.Fatalf("provider should not be called for wrong-adapter raw system fragments")
+	}
+}
+
+func TestAnthropicProviderRejectsRawToolsetFromWrongAdapter(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		http.Error(w, "should not be called", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	p := AnthropicProvider{Endpoint: server.URL, APIKey: "secret", Model: "claude", MaxTokens: 4096, HTTPClient: server.Client()}
+	req := provider.Request{
+		RunID: "r",
+		RawPlan: cache.RawPlan{Segments: []cache.Segment{
+			{
+				Kind:         cache.SegmentUserMessage,
+				FragmentType: cache.FragmentAnthropicMessage,
+				Raw:          `{"role":"user","content":"hello"}`,
+			},
+			{
+				ID:           "tools",
+				Kind:         cache.SegmentToolset,
+				FragmentType: cache.FragmentOpenAITool,
+				Raw:          `{"type":"function","function":{"name":"read"}}`,
+			},
+		}},
+	}
+	if _, err := p.PayloadHash(req); err == nil || !strings.Contains(err.Error(), "unsupported fragment type") {
+		t.Fatalf("payload hash err = %v", err)
+	}
+	if _, err := p.Stream(context.Background(), req); err == nil || !strings.Contains(err.Error(), "unsupported fragment type") {
+		t.Fatalf("stream err = %v", err)
+	}
+	if called {
+		t.Fatalf("provider should not be called for wrong-adapter raw tool fragments")
+	}
+}
+
+func TestAnthropicProviderRejectsRawPlanMissingRequestedLocalTools(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		http.Error(w, "should not be called", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	p := AnthropicProvider{Endpoint: server.URL, APIKey: "secret", Model: "claude", MaxTokens: 4096, HTTPClient: server.Client()}
+	req := provider.Request{
+		RunID: "r",
+		Tools: []provider.ToolDefinition{{
+			Name: "read",
+			InputSchema: map[string]any{
+				"type": "object",
+			},
+		}},
+		RawPlan: cache.RawPlan{Segments: []cache.Segment{{
+			Kind:         cache.SegmentUserMessage,
+			FragmentType: cache.FragmentAnthropicMessage,
+			Raw:          `{"role":"user","content":"hello"}`,
+		}}},
+	}
+	if _, err := p.PayloadHash(req); err == nil || !strings.Contains(err.Error(), "toolset segments") {
+		t.Fatalf("payload hash err = %v", err)
+	}
+	if _, err := p.Stream(context.Background(), req); err == nil || !strings.Contains(err.Error(), "toolset segments") {
+		t.Fatalf("stream err = %v", err)
+	}
+	if called {
+		t.Fatalf("provider should not be called when raw plan omits requested local tools")
 	}
 }
 
@@ -1385,7 +1562,7 @@ func TestOpenAICompatibleProviderMergesRawPlanAssistantToolCalls(t *testing.T) {
 		{Role: session.Tool, Content: "result a", ToolCallID: "search-1", ToolName: "web_search"},
 		{Role: session.Tool, Content: "result b", ToolCallID: "search-2", ToolName: "web_search"},
 	}
-	segments := make([]cache.Segment, 0, len(messages))
+	segments := []cache.Segment{rawOpenAIToolSegmentForAdapterTest(t, "web_search")}
 	for _, msg := range messages {
 		segments = append(segments, rawMessage(msg))
 	}
@@ -1453,7 +1630,7 @@ func TestOpenAICompatibleProviderReordersRawPlanToolResults(t *testing.T) {
 		{Role: session.Tool, Content: "result b", ToolCallID: "search-2", ToolName: "web_search"},
 		{Role: session.Tool, Content: "result a", ToolCallID: "search-1", ToolName: "web_search"},
 	}
-	segments := make([]cache.Segment, 0, len(messages))
+	segments := []cache.Segment{rawOpenAIToolSegmentForAdapterTest(t, "web_search")}
 	for _, msg := range messages {
 		segments = append(segments, rawMessage(msg))
 	}
@@ -1483,6 +1660,7 @@ func TestOpenAICompatibleProviderRejectsRawPlanPartialAssistantToolCallBatch(t *
 	}))
 	defer server.Close()
 	segments := []cache.Segment{
+		rawOpenAIToolSegmentForAdapterTest(t, "shell"),
 		rawSegmentForAdapterTest(t, session.Message{Role: session.User, Content: "weather"}),
 		rawSegmentForAdapterTest(t, session.Message{Role: session.Assistant, Content: "tool_call", ToolCallID: "call-01", ToolName: "shell", ToolArgs: `{"command":"printf b","workdir":null,"timeout_ms":1000,"max_output_bytes":2000}`}),
 		rawSegmentForAdapterTest(t, session.Message{Role: session.Tool, Content: "result a", ToolCallID: "call-00", ToolName: "shell"}),
@@ -1525,7 +1703,7 @@ func TestOpenAICompatibleProviderDoesNotMergeSeparateToolBatches(t *testing.T) {
 		{Role: session.Assistant, Content: "tool_call", Reasoning: "second", ToolCallID: "call-b", ToolName: "shell", ToolArgs: `{"command":"printf b","workdir":null,"timeout_ms":1000,"max_output_bytes":2000}`},
 		{Role: session.Tool, Content: "result b", ToolCallID: "call-b", ToolName: "shell"},
 	}
-	segments := make([]cache.Segment, 0, len(messages))
+	segments := []cache.Segment{rawOpenAIToolSegmentForAdapterTest(t, "shell")}
 	for _, msg := range messages {
 		segments = append(segments, rawSegmentForAdapterTest(t, msg))
 	}
@@ -1586,6 +1764,25 @@ func rawSegmentForAdapterTest(t *testing.T, msg session.Message) cache.Segment {
 			ToolName:   msg.ToolName,
 			ToolArgs:   msg.ToolArgs,
 		},
+	}
+}
+
+func rawOpenAIToolSegmentForAdapterTest(t *testing.T, name string) cache.Segment {
+	t.Helper()
+	raw, err := cache.CanonicalJSON(map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name":       name,
+			"parameters": map[string]any{"type": "object"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cache.Segment{
+		Kind:         cache.SegmentToolset,
+		FragmentType: cache.FragmentOpenAITool,
+		Raw:          raw,
 	}
 }
 

@@ -343,7 +343,7 @@ func (h *AgentHarness) emit(ev HarnessEvent) {
 		h.options.HarnessSink.EmitHarness(ev)
 	}
 	if h.options.Sink != nil {
-		h.options.Sink.Emit(event.Sanitize(event.Event{Type: event.Type(ev.Type), RunID: ev.TurnID, SessionID: ev.ThreadID, Message: ev.Message, Timestamp: ev.Timestamp}))
+		h.options.Sink.Emit(event.Sanitize(event.Event{Type: event.Type(ev.Type), RunID: ev.TurnID, ThreadID: ev.ThreadID, Message: ev.Message, Timestamp: ev.Timestamp}))
 	}
 }
 
@@ -595,8 +595,10 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	runID := turnID
 	engineOptions := t.harness.engineOptions()
 	engineOptions.RunID = runID
-	engineOptions.SessionID = t.id
+	engineOptions.ThreadID = t.id
+	engineOptions.TurnID = turnID
 	engineOptions.TraceID = runID
+	engineOptions.PromptScopeID = t.id
 	engineOptions.ProviderName = t.harness.options.ProviderName
 	engineOptions.Model = t.harness.options.Model
 	engineOptions.Labels = opts.Labels
@@ -619,7 +621,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	}
 	projection := &turnProjection{thread: t, ctx: ctx, turnID: turnID, downstream: t.harness.options.Sink}
 	eng.SetSink(projection)
-	result := eng.RunTurn(ctx, engine.RunInput{RunID: runID, SessionID: t.id, TraceID: runID, Labels: opts.Labels, History: history})
+	result := eng.RunTurn(ctx, engine.RunInput{RunID: runID, ThreadID: t.id, TurnID: turnID, TraceID: runID, PromptScopeID: t.id, Labels: opts.Labels, History: history})
 	persistCtx, cancelPersist := turnFinalizationContext(ctx)
 	defer cancelPersist()
 	projection.ctx = persistCtx

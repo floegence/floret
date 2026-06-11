@@ -259,11 +259,86 @@ func TestSessionLifecycleBoundaryIsEnforced(t *testing.T) {
 	for _, want := range []string{
 		"## IMPORTANT Design Constraints",
 		"`IMPORTANT:` comments mark product, security, or interaction invariants",
-		"Do not work around an `IMPORTANT:` constraint with hidden fallback behavior",
+		"Do not work around an `IMPORTANT:` constraint with hidden substitute behavior",
 	} {
 		if !strings.Contains(agentsText, want) {
 			t.Fatalf("AGENTS.md missing IMPORTANT constraint rule %q", want)
 		}
+	}
+}
+
+func TestConceptVocabularyIsDocumented(t *testing.T) {
+	data, err := os.ReadFile("AGENTS.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"## Concept Vocabulary and Identity Rules",
+		"`ThreadID` identifies a durable conversation journal",
+		"`TurnID` identifies one user-facing turn",
+		"`RunID` identifies one engine/provider execution",
+		"`PromptScopeID` identifies the reuse boundary",
+		"`SessionID` and `session_id` are not core execution identities",
+		"`TranscriptStore` stores engine-level transcript messages",
+		"Prompt-cache rows and JSON must use `prompt_scope_id` / `PromptScopeID`",
+		"Provider raw plans are provider-specific rendered fragments",
+		"Floret has not launched",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("AGENTS.md missing concept rule %q", want)
+		}
+	}
+}
+
+func TestCoreIdentityDoesNotUseHostSessionID(t *testing.T) {
+	for _, file := range goFiles(t, ".") {
+		if file == "architecture_test.go" {
+			continue
+		}
+		if strings.HasPrefix(file, filepath.Join("internal", "testui")+string(filepath.Separator)) {
+			continue
+		}
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		for _, forbidden := range []string{"Session" + "ID", `json:"session_` + `id"`} {
+			if strings.Contains(text, forbidden) {
+				t.Fatalf("%s uses host session identity %q outside test UI", file, forbidden)
+			}
+		}
+	}
+}
+
+func TestPromptCacheIdentityUsesPromptScope(t *testing.T) {
+	cacheText := readTextFile(t, filepath.Join("provider", "cache", "promptcache.go"))
+	for _, want := range []string{
+		"PromptScopeID",
+		`json:"prompt_scope_id"`,
+		"CreatedByRunID",
+		"CreatedByTurnID",
+		"DeletePromptScopes",
+	} {
+		if !strings.Contains(cacheText, want) {
+			t.Fatalf("prompt cache contract missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"DeleteRuns", "runIDFromRequest", "cacheScopeID"} {
+		if strings.Contains(cacheText, forbidden) {
+			t.Fatalf("prompt cache still contains removed scope helper %q", forbidden)
+		}
+	}
+
+	sqliteText := readTextFile(t, filepath.Join("runtime", "storage", "sqlite", "sqlitestore.go"))
+	for _, want := range []string{"prompt_scope_id TEXT NOT NULL", "DeletePromptScopes", "DeleteThreadData"} {
+		if !strings.Contains(sqliteText, want) {
+			t.Fatalf("sqlite storage contract missing %q", want)
+		}
+	}
+	if strings.Contains(sqliteText, "run_id TEXT NOT NULL") || strings.Contains(sqliteText, "DeleteRuns") || strings.Contains(sqliteText, "DeleteSession") {
+		t.Fatalf("sqlite storage still uses removed run/session cache ownership")
 	}
 }
 
@@ -298,6 +373,15 @@ func TestWebSearchCapabilityBoundaryIsEnforced(t *testing.T) {
 			t.Fatalf("test UI tool selection missing single-source search guard %q", want)
 		}
 	}
+}
+
+func readTextFile(t *testing.T, file string) string {
+	t.Helper()
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
 
 func TestNoBuiltInWebFetchBoundaryIsEnforced(t *testing.T) {
@@ -382,7 +466,7 @@ func TestTurnFinalizationInvariantIsDocumented(t *testing.T) {
 	}
 }
 
-func TestNoLegacyToolHandlerOrHostedDispatchInLocalTools(t *testing.T) {
+func TestRemovedToolHandlerOrHostedDispatchDoesNotReturn(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("tools", "tools.go"))
 	if err != nil {
 		t.Fatal(err)
@@ -390,7 +474,7 @@ func TestNoLegacyToolHandlerOrHostedDispatchInLocalTools(t *testing.T) {
 	text := string(data)
 	for _, forbidden := range []string{"type Handler func(context.Context, string)", "RequiresApproval bool"} {
 		if strings.Contains(text, forbidden) {
-			t.Fatalf("legacy tool contract still present: %s", forbidden)
+			t.Fatalf("removed tool contract returned: %s", forbidden)
 		}
 	}
 	if strings.Contains(text, "HostedToolDefinition") || strings.Contains(text, "HostedTools") {

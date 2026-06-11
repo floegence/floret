@@ -77,8 +77,8 @@ func (r *streamingEventRecorder) Emit(ev event.Event) {
 		if status, ok := contextStatusFromEngineEvent(ev); ok {
 			sink.EmitAgentStream(AgentStreamEvent{
 				Type:          AgentStreamContextStatus,
-				SessionID:     ev.SessionID,
-				TurnID:        ev.RunID,
+				SessionID:     ev.ThreadID,
+				TurnID:        ev.TurnID,
 				Step:          ev.Step,
 				At:            ev.Timestamp,
 				ContextStatus: &status,
@@ -91,8 +91,8 @@ func (r *streamingEventRecorder) Emit(ev event.Event) {
 		if compact, ok := compactionEventFromEngineEvent(ev); ok {
 			sink.EmitAgentStream(AgentStreamEvent{
 				Type:        AgentStreamContextCompaction,
-				SessionID:   ev.SessionID,
-				TurnID:      ev.RunID,
+				SessionID:   ev.ThreadID,
+				TurnID:      ev.TurnID,
 				Step:        ev.Step,
 				At:          ev.Timestamp,
 				Compaction:  &compact,
@@ -206,8 +206,8 @@ func emitEngineStreamEvent(sink AgentStreamSink, typ AgentStreamEventType, ev ev
 	evCopy := ev
 	stream := AgentStreamEvent{
 		Type:        typ,
-		SessionID:   ev.SessionID,
-		TurnID:      ev.RunID,
+		SessionID:   ev.ThreadID,
+		TurnID:      ev.TurnID,
 		Step:        ev.Step,
 		At:          ev.Timestamp,
 		EngineEvent: &evCopy,

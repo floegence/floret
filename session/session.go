@@ -50,10 +50,10 @@ type Message struct {
 	CompactionWindowID   string
 }
 
-type Store interface {
-	Append(runID string, messages ...Message) error
-	Messages(runID string) ([]Message, error)
-	Replace(runID string, messages []Message) error
+type TranscriptStore interface {
+	AppendTranscript(runID string, messages ...Message) error
+	Transcript(runID string) ([]Message, error)
+	ReplaceTranscript(runID string, messages []Message) error
 }
 
 type MemoryStore struct {
@@ -65,7 +65,7 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{runs: map[string][]Message{}}
 }
 
-func (s *MemoryStore) Append(runID string, messages ...Message) error {
+func (s *MemoryStore) AppendTranscript(runID string, messages ...Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, msg := range messages {
@@ -74,13 +74,13 @@ func (s *MemoryStore) Append(runID string, messages ...Message) error {
 	return nil
 }
 
-func (s *MemoryStore) Messages(runID string) ([]Message, error) {
+func (s *MemoryStore) Transcript(runID string) ([]Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return CloneMessages(s.runs[runID]), nil
 }
 
-func (s *MemoryStore) Replace(runID string, messages []Message) error {
+func (s *MemoryStore) ReplaceTranscript(runID string, messages []Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.runs[runID] = CloneMessages(messages)

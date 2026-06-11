@@ -14,7 +14,7 @@ import (
 func TestContextStatusFromRequestUsesProjectedPressure(t *testing.T) {
 	status := ContextStatusFromRequest(RequestObservation{
 		RunID:            "turn-1",
-		SessionID:        "thread-1",
+		ThreadID:         "thread-1",
 		TurnID:           "turn-1",
 		Step:             2,
 		LogicalRequestID: "logical-1",
@@ -69,7 +69,8 @@ func TestContextStatusFromFinalProviderUsageEvent(t *testing.T) {
 	ev := event.Event{
 		Type:      event.ProviderUsage,
 		RunID:     "turn-1",
-		SessionID: "thread-1",
+		ThreadID:  "thread-1",
+		TurnID:    "turn-1",
 		Step:      1,
 		Provider:  "fake",
 		Model:     "fake-model",
@@ -142,7 +143,7 @@ func TestContextStatusesFromObservations(t *testing.T) {
 	statuses := ContextStatusesFromObservations([]RequestObservation{{
 		RequestID:            "turn-1:req:1",
 		RunID:                "turn-1",
-		SessionID:            "thread-1",
+		ThreadID:             "thread-1",
 		TurnID:               "turn-1",
 		Step:                 1,
 		LogicalRequestID:     "logical-1",
@@ -162,7 +163,7 @@ func TestContextStatusesFromObservations(t *testing.T) {
 	}}, []ProviderUsageObservation{{
 		RequestID:            "turn-1:req:1",
 		RunID:                "turn-1",
-		SessionID:            "thread-1",
+		ThreadID:             "thread-1",
 		TurnID:               "turn-1",
 		Step:                 1,
 		LogicalRequestID:     "logical-1",
@@ -201,7 +202,7 @@ func TestContextStatusesFromObservationsSkipProviderUsageWithoutPressure(t *test
 	statuses := ContextStatusesFromObservations([]RequestObservation{{
 		RequestID:        "turn-1:req:1",
 		RunID:            "turn-1",
-		SessionID:        "thread-1",
+		ThreadID:         "thread-1",
 		TurnID:           "turn-1",
 		Step:             1,
 		LogicalRequestID: "logical-1",
@@ -219,7 +220,7 @@ func TestContextStatusesFromObservationsSkipProviderUsageWithoutPressure(t *test
 	}}, []ProviderUsageObservation{{
 		RequestID:  "turn-1:req:1",
 		RunID:      "turn-1",
-		SessionID:  "thread-1",
+		ThreadID:   "thread-1",
 		TurnID:     "turn-1",
 		ObservedAt: created.Add(time.Second),
 	}}, nil)
@@ -235,7 +236,8 @@ func TestCompactionEventFromEngineEvents(t *testing.T) {
 	start := event.Event{
 		Type:      event.ContextCompact,
 		RunID:     "turn-1",
-		SessionID: "thread-1",
+		ThreadID:  "thread-1",
+		TurnID:    "turn-1",
 		Step:      2,
 		Timestamp: time.Unix(30, 0),
 		Metadata: map[string]any{
@@ -250,9 +252,10 @@ func TestCompactionEventFromEngineEvents(t *testing.T) {
 	complete := event.Event{
 		Type:      event.ContextCompact,
 		RunID:     "turn-1",
-		SessionID: "thread-1",
+		ThreadID:  "thread-1",
+		TurnID:    "turn-1",
 		Step:      2,
-		Message:   "message-fallback-must-not-be-used",
+		Message:   "event-message-must-not-be-used",
 		Result:    "summary text with /Users/example/private/path",
 		Timestamp: time.Unix(31, 0),
 		Metadata: map[string]any{
@@ -272,7 +275,8 @@ func TestCompactionEventFromEngineEvents(t *testing.T) {
 	failed := event.Event{
 		Type:      event.ContextCompact,
 		RunID:     "turn-1",
-		SessionID: "thread-1",
+		ThreadID:  "thread-1",
+		TurnID:    "turn-1",
 		Step:      3,
 		Err:       "summary failed",
 		Timestamp: time.Unix(32, 0),

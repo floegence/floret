@@ -4,11 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/floegence/floret/provider/cache"
 	floretstorage "github.com/floegence/floret/runtime/storage"
@@ -28,7 +26,6 @@ type storageStatus struct {
 	Mode          string `json:"mode"`
 	Path          string `json:"path,omitempty"`
 	SchemaVersion string `json:"schema_version,omitempty"`
-	LegacyImport  string `json:"legacy_import,omitempty"`
 	Error         string `json:"error,omitempty"`
 }
 
@@ -91,45 +88,8 @@ func (r *Runner) sessionStorage(ctx context.Context) (*testUIStorage, error) {
 	if err != nil {
 		return nil, err
 	}
-	if r.StorageImportLegacy {
-		if err := r.importLegacyStorage(ctx, store); err != nil {
-			_ = store.Close()
-			return nil, err
-		}
-	}
 	r.storageSQLite = store
 	return &testUIStorage{mode: mode, path: store.DBPath(), sqlite: store}, nil
-}
-
-func (r *Runner) importLegacyStorage(ctx context.Context, store *sqlite.Store) error {
-	if _, err := store.MetaValue(ctx, "legacy_testui_imported_at"); err == nil {
-		return nil
-	} else if !errors.Is(err, floretstorage.ErrMetadataNotFound) {
-		return err
-	}
-	treeSummary, err := store.ImportSessionTree(ctx, r.agentSessionTreeRoot())
-	if err != nil {
-		return err
-	}
-	metaSummary, err := store.ImportMetadataDir(ctx, agentSessionMetadataNamespace, r.agentSessionMetadataRoot())
-	if err != nil {
-		return err
-	}
-	promptSummary, err := store.ImportPromptCache(ctx, filepath.Join(r.Root, ".floret-test-ui", "prompt-cache"))
-	if err != nil {
-		return err
-	}
-	summary := fmt.Sprintf("threads=%d metadata=%d prompt_runs=%d skipped=%d conflicts=%d",
-		treeSummary.Threads,
-		metaSummary.Metadata,
-		promptSummary.PromptRuns,
-		treeSummary.Skipped+metaSummary.Skipped+promptSummary.Skipped,
-		treeSummary.Conflicts+metaSummary.Conflicts+promptSummary.Conflicts,
-	)
-	if err := store.PutMetaValue(ctx, "legacy_testui_import_summary", summary); err != nil {
-		return err
-	}
-	return store.PutMetaValue(ctx, "legacy_testui_imported_at", time.Now().UTC().Format(time.RFC3339Nano))
 }
 
 func (r *Runner) storageStatus(ctx context.Context) storageStatus {
@@ -141,9 +101,6 @@ func (r *Runner) storageStatus(ctx context.Context) storageStatus {
 	if store.sqlite != nil {
 		if version, err := store.sqlite.SchemaVersion(ctx); err == nil {
 			status.SchemaVersion = version
-		}
-		if summary, err := store.sqlite.MetaValue(ctx, "legacy_testui_import_summary"); err == nil {
-			status.LegacyImport = summary
 		}
 	}
 	return status
@@ -171,7 +128,7 @@ func (s *testUIStorage) prompt(root string) cache.Store {
 	}
 }
 
-func (s *testUIStorage) saveMetadata(ctx context.Context, meta agentSessionMetadata, fallback func(agentSessionMetadata) error) error {
+func (s *testUIStorage) saveMetadata(ctx context.Context, meta agentSessionMetadata, fileStore func(agentSessionMetadata) error) error {
 	switch s.mode {
 	case StorageModeSQLite:
 		data, err := json.Marshal(meta)
@@ -189,11 +146,11 @@ func (s *testUIStorage) saveMetadata(ctx context.Context, meta agentSessionMetad
 		s.memory.metadata[meta.ID] = meta
 		return nil
 	default:
-		return fallback(meta)
+		return fileStore(meta)
 	}
 }
 
-func (s *testUIStorage) loadMetadata(ctx context.Context, id string, fallback func(string) (agentSessionMetadata, error)) (agentSessionMetadata, error) {
+func (s *testUIStorage) loadMetadata(ctx context.Context, id string, fileStore func(string) (agentSessionMetadata, error)) (agentSessionMetadata, error) {
 	switch s.mode {
 	case StorageModeSQLite:
 		rec, err := s.sqlite.Metadata(ctx, agentSessionMetadataNamespace, id)
@@ -215,11 +172,11 @@ func (s *testUIStorage) loadMetadata(ctx context.Context, id string, fallback fu
 		}
 		return meta, nil
 	default:
-		return fallback(id)
+		return fileStore(id)
 	}
 }
 
-func (s *testUIStorage) listMetadata(ctx context.Context, fallback func() ([]agentSessionMetadata, error)) ([]agentSessionMetadata, error) {
+func (s *testUIStorage) listMetadata(ctx context.Context, fileStore func() ([]agentSessionMetadata, error)) ([]agentSessionMetadata, error) {
 	switch s.mode {
 	case StorageModeSQLite:
 		records, err := s.sqlite.ListMetadata(ctx, agentSessionMetadataNamespace)
@@ -242,24 +199,24 @@ func (s *testUIStorage) listMetadata(ctx context.Context, fallback func() ([]age
 		}
 		return out, nil
 	default:
-		return fallback()
+		return fileStore()
 	}
 }
 
-func (s *testUIStorage) deleteSession(ctx context.Context, root string, sessionID string, runIDs []string, fallback func() error) error {
+func (s *testUIStorage) deleteSession(ctx context.Context, root string, sessionID string, fileStore func() error) error {
 	switch s.mode {
 	case StorageModeSQLite:
-		return s.sqlite.DeleteSession(ctx, floretstorage.DeleteSessionRequest{
-			SessionID:          sessionID,
-			PromptScopeIDs:     runIDs,
+		return s.sqlite.DeleteThreadData(ctx, floretstorage.DeleteThreadDataRequest{
+			ThreadID:           sessionID,
+			PromptScopeIDs:     []string{sessionID},
 			MetadataNamespaces: []string{agentSessionMetadataNamespace},
 		})
 	case StorageModeMemory:
 		_ = s.memory.repo.DeleteThread(ctx, sessionID)
-		_ = s.memory.prompt.DeleteRuns(ctx, runIDs...)
+		_ = s.memory.prompt.DeletePromptScopes(ctx, sessionID)
 		delete(s.memory.metadata, sessionID)
 		return nil
 	default:
-		return fallback()
+		return fileStore()
 	}
 }

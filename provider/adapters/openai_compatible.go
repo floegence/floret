@@ -323,9 +323,17 @@ func (p OpenAICompatibleProvider) contextChatRequest(req provider.Request) (chat
 	renderedMessages := renderMessages(messages)
 	renderedTools := renderTools(req.Tools)
 	if len(req.RawPlan.Segments) > 0 {
-		renderedMessages = renderMessagesFromRawPlan(req.RawPlan, renderedMessages)
-		renderedTools = renderToolsFromRawPlan(req.RawPlan, renderedTools)
+		var err error
+		renderedMessages, err = renderMessagesFromRawPlan(req.RawPlan)
+		if err != nil {
+			return chatRequest{}, err
+		}
+		renderedTools, err = renderToolsFromRawPlan(req.RawPlan, len(req.Tools))
+		if err != nil {
+			return chatRequest{}, err
+		}
 	}
+	renderedMessages = mergeAdjacentAssistantToolCalls(renderedMessages)
 	renderedMessages = normalizeChatToolResults(renderedMessages)
 	if err := validateChatToolAdjacency(renderedMessages); err != nil {
 		return chatRequest{}, err
@@ -581,6 +589,30 @@ func validateChatToolAdjacency(messages []chatMessage) error {
 	return nil
 }
 
+func mergeAdjacentAssistantToolCalls(messages []chatMessage) []chatMessage {
+	out := make([]chatMessage, 0, len(messages))
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			out = append(out, msg)
+			continue
+		}
+		merged := msg
+		for i+1 < len(messages) && messages[i+1].Role == "assistant" && len(messages[i+1].ToolCalls) > 0 {
+			i++
+			next := messages[i]
+			merged.ToolCalls = append(merged.ToolCalls, next.ToolCalls...)
+			if merged.ReasoningContent == "" {
+				merged.ReasoningContent = next.ReasoningContent
+			} else if next.ReasoningContent != "" && next.ReasoningContent != merged.ReasoningContent {
+				merged.ReasoningContent += "\n" + next.ReasoningContent
+			}
+		}
+		out = append(out, merged)
+	}
+	return out
+}
+
 func normalizeChatToolResults(messages []chatMessage) []chatMessage {
 	out := make([]chatMessage, 0, len(messages))
 	for i := 0; i < len(messages); i++ {
@@ -637,30 +669,25 @@ func reorderToolBatch(ids []string, toolBatch []chatMessage) ([]chatMessage, boo
 	return reordered, true
 }
 
-func renderMessagesFromRawPlan(plan cache.RawPlan, fallback []chatMessage) []chatMessage {
-	var sessionMessages []session.Message
+func renderMessagesFromRawPlan(plan cache.RawPlan) ([]chatMessage, error) {
+	var out []chatMessage
 	for _, segment := range plan.Segments {
 		if segment.Kind == cache.SegmentToolset {
 			continue
 		}
-		msg := session.Message{
-			Role:       session.Role(segment.Message.Role),
-			Content:    segment.Message.Content,
-			Reasoning:  segment.Message.Reasoning,
-			ToolCallID: segment.Message.ToolCallID,
-			ToolName:   segment.Message.ToolName,
-			ToolArgs:   segment.Message.ToolArgs,
+		if segment.FragmentType != cache.FragmentOpenAIMessage {
+			return nil, fmt.Errorf("openai-compatible raw plan segment %q uses unsupported fragment type %q", segment.ID, segment.FragmentType)
 		}
-		if msg.Role == "" {
-			continue
+		var msg chatMessage
+		if err := json.Unmarshal([]byte(segment.Raw), &msg); err != nil {
+			return nil, fmt.Errorf("decode openai-compatible raw message segment %q: %w", segment.ID, err)
 		}
-		sessionMessages = append(sessionMessages, msg)
+		out = append(out, msg)
 	}
-	out := renderMessages(sessionMessages)
 	if len(out) == 0 {
-		return fallback
+		return nil, fmt.Errorf("openai-compatible raw plan has no message segments")
 	}
-	return out
+	return out, nil
 }
 
 func renderTools(defs []provider.ToolDefinition) []chatTool {
@@ -695,21 +722,25 @@ func hostedToolNames(defs []provider.HostedToolDefinition) string {
 	return strings.Join(names, ", ")
 }
 
-func renderToolsFromRawPlan(plan cache.RawPlan, fallback []chatTool) []chatTool {
+func renderToolsFromRawPlan(plan cache.RawPlan, expectedLocalTools int) ([]chatTool, error) {
 	var out []chatTool
 	for _, segment := range plan.Segments {
-		if segment.FragmentType != cache.FragmentOpenAITool {
+		if segment.Kind != cache.SegmentToolset {
 			continue
 		}
-		var tool chatTool
-		if err := json.Unmarshal([]byte(segment.Raw), &tool); err == nil {
-			out = append(out, tool)
+		if segment.FragmentType != cache.FragmentOpenAITool {
+			return nil, fmt.Errorf("openai-compatible raw toolset segment %q uses unsupported fragment type %q", segment.ID, segment.FragmentType)
 		}
+		var tool chatTool
+		if err := json.Unmarshal([]byte(segment.Raw), &tool); err != nil {
+			return nil, fmt.Errorf("decode openai-compatible raw tool segment %q: %w", segment.ID, err)
+		}
+		out = append(out, tool)
 	}
-	if len(out) == 0 {
-		return fallback
+	if expectedLocalTools > 0 && len(out) != expectedLocalTools {
+		return nil, fmt.Errorf("openai-compatible raw plan has %d toolset segments for %d requested local tools", len(out), expectedLocalTools)
 	}
-	return out
+	return out, nil
 }
 
 func looksLikeContextOverflow(body []byte) bool {

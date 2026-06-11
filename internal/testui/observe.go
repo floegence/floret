@@ -88,9 +88,9 @@ func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<
 	observeConversation := observeProviderRequest(req)
 	observedRequest := ObservedProviderRequest{
 		RunID:                   req.RunID,
-		SessionID:               observedSessionID(req),
-		ThreadID:                observedThreadID(req),
-		TurnID:                  observedTurnID(req),
+		ThreadID:                req.ThreadID,
+		TurnID:                  req.TurnID,
+		PromptScopeID:           req.PromptScopeID,
 		Step:                    req.Step,
 		LogicalRequestID:        req.LogicalRequestID,
 		Attempt:                 req.Attempt,
@@ -130,7 +130,7 @@ func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<
 		status := contextStatusFromProviderRequest(observedRequest)
 		sink.EmitAgentStream(AgentStreamEvent{
 			Type:            AgentStreamProviderRequest,
-			SessionID:       observedRequest.SessionID,
+			SessionID:       observedRequest.ThreadID,
 			TurnID:          observedRequest.TurnID,
 			Step:            observedRequest.Step,
 			At:              observedRequest.ObservedAt,
@@ -138,7 +138,7 @@ func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<
 		})
 		sink.EmitAgentStream(AgentStreamEvent{
 			Type:          AgentStreamContextStatus,
-			SessionID:     observedRequest.SessionID,
+			SessionID:     observedRequest.ThreadID,
 			TurnID:        observedRequest.TurnID,
 			Step:          observedRequest.Step,
 			At:            observedRequest.ObservedAt,
@@ -155,7 +155,7 @@ func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<
 		defer close(out)
 		for ev := range stream {
 			if observeConversation {
-				p.recordEvent(req.RunID, observedRequest.SessionID, req.Step, ev)
+				p.recordEvent(req.RunID, observedRequest.ThreadID, observedRequest.TurnID, req.Step, ev)
 			}
 			select {
 			case <-ctx.Done():
@@ -180,11 +180,12 @@ func (p *observingProvider) Snapshot() AgentObservation {
 	}
 }
 
-func (p *observingProvider) recordEvent(runID string, sessionID string, step int, ev provider.StreamEvent) {
+func (p *observingProvider) recordEvent(runID string, threadID string, turnID string, step int, ev provider.StreamEvent) {
 	hostedResult := observedHostedResult(ev.HostedResult)
 	observed := ObservedProviderEvent{
 		RunID:        runID,
-		SessionID:    sessionID,
+		ThreadID:     threadID,
+		TurnID:       turnID,
 		Step:         step,
 		Type:         ev.Type,
 		ObservedAt:   time.Now(),
@@ -282,33 +283,6 @@ func reasoningText(ev provider.StreamEvent) string {
 	return out
 }
 
-func observedSessionID(req provider.Request) string {
-	for _, seg := range req.RawPlan.Segments {
-		if seg.SessionID != "" {
-			return seg.SessionID
-		}
-	}
-	return req.SessionID
-}
-
-func observedThreadID(req provider.Request) string {
-	for _, seg := range req.RawPlan.Segments {
-		if seg.ThreadID != "" {
-			return seg.ThreadID
-		}
-	}
-	return observedSessionID(req)
-}
-
-func observedTurnID(req provider.Request) string {
-	for _, seg := range req.RawPlan.Segments {
-		if seg.TurnID != "" {
-			return seg.TurnID
-		}
-	}
-	return req.RunID
-}
-
 func observeRawSegments(plan cache.RawPlan) []ObservedRawSegment {
 	out := make([]ObservedRawSegment, 0, len(plan.Segments))
 	for i, seg := range plan.Segments {
@@ -319,10 +293,10 @@ func observeRawSegments(plan cache.RawPlan) []ObservedRawSegment {
 		raw, truncated := boundedRaw(seg.Raw, maxObservedRawSegmentBytes)
 		out = append(out, ObservedRawSegment{
 			ID:                   seg.ID,
-			RunID:                seg.RunID,
-			SessionID:            seg.SessionID,
+			PromptScopeID:        seg.PromptScopeID,
+			CreatedByRunID:       seg.CreatedByRunID,
+			CreatedByTurnID:      seg.CreatedByTurnID,
 			ThreadID:             seg.ThreadID,
-			TurnID:               seg.TurnID,
 			EntryID:              seg.EntryID,
 			ParentEntryID:        seg.ParentEntryID,
 			Kind:                 seg.Kind,

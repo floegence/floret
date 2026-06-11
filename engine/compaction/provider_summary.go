@@ -82,6 +82,10 @@ func (g ProviderSummaryGenerator) generateProviderSummaryAttempt(ctx context.Con
 	promptInputTokens := contextpolicy.EstimateMessageContext("", messages, policy).InputTokens
 	stream, err := g.Provider.Stream(ctx, provider.Request{
 		RunID:           prep.Request.CompactionID,
+		ThreadID:        prep.Request.Details["thread_id"],
+		TurnID:          prep.Request.Details["turn_id"],
+		PromptScopeID:   prep.Request.Details["prompt_scope_id"],
+		TraceID:         prep.Request.Details["run_id"],
 		Step:            prep.Request.Step,
 		Provider:        g.ProviderName,
 		Model:           g.Model,

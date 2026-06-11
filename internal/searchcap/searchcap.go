@@ -1,8 +1,6 @@
 package searchcap
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -51,33 +49,6 @@ type Capability struct {
 	Brave  BraveConfig     `json:"brave,omitempty"`
 }
 
-func (c *Capability) UnmarshalJSON(data []byte) error {
-	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
-		*c = Capability{}
-		return nil
-	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	for key := range raw {
-		switch key {
-		case "source", "hosted", "brave":
-		case "provider_hosted", "client", "disabled":
-			return fmt.Errorf("legacy web_search configuration key %q is unsupported; use source, hosted, and brave", key)
-		default:
-			return fmt.Errorf("unsupported web_search configuration key %q", key)
-		}
-	}
-	type capabilityJSON Capability
-	var decoded capabilityJSON
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		return err
-	}
-	*c = Capability(decoded)
-	return nil
-}
-
 type ResolveInput struct {
 	Provider       string
 	Capability     Capability
@@ -114,7 +85,7 @@ func SupportedWireShapes(providerID string) []HostedWireShape {
 
 // IMPORTANT: Web search source selection must be derived from provider profile
 // capability plus explicit wire shape support. Do not add provider-name special
-// cases, hidden fallback, or runtime probing here; callers must surface
+// cases, substitute unrequested sources, or probe at runtime here; callers must surface
 // unavailable capability state instead of exposing guaranteed-failing tools.
 func Resolve(input ResolveInput) (Resolved, error) {
 	if err := ValidateCapability(input.Provider, input.Capability); err != nil {

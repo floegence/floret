@@ -16,6 +16,5 @@
 //
 // Thread.Read returns the host-facing snapshot: lifecycle status, appendability,
 // retry availability, and display messages. Thread.Journal is the explicit
-// raw session-tree inspection API for tests, debug consoles, migrations, and
-// admin tooling.
+// raw session-tree inspection API for tests, debug consoles, and admin tooling.
 package agentharness

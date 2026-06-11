@@ -71,9 +71,9 @@ func agentToolCatalog(profile ProviderProfile, envFile string) []AgentToolOption
 	return out
 }
 
-func normalizeAgentSessionTools(selected []string, legacyMode string) ([]string, error) {
+func normalizeAgentSessionTools(selected []string) ([]string, error) {
 	if selected == nil {
-		return selectedToolsForLegacyMode(legacyMode), nil
+		return nil, nil
 	}
 	names := trimToolNames(selected)
 	out := make([]string, 0, len(names))
@@ -92,8 +92,8 @@ func normalizeAgentSessionTools(selected []string, legacyMode string) ([]string,
 	return out, nil
 }
 
-func normalizeAgentSessionToolsForProfile(selected []string, legacyMode string, profile ProviderProfile, envFile string) ([]string, error) {
-	tools, err := normalizeAgentSessionTools(selected, legacyMode)
+func normalizeAgentSessionToolsForProfile(selected []string, profile ProviderProfile, envFile string) ([]string, error) {
+	tools, err := normalizeAgentSessionTools(selected)
 	if err != nil {
 		return nil, err
 	}
@@ -110,25 +110,8 @@ func normalizeAgentSessionToolsForProfile(selected []string, legacyMode string, 
 	return tools, nil
 }
 
-func selectedToolsForLegacyMode(mode string) []string {
-	switch strings.TrimSpace(mode) {
-	case "", "chat":
-		return nil
-	case "read_only":
-		return []string{builtin.ToolRead, builtin.ToolList, builtin.ToolGlob, builtin.ToolGrep}
-	case "coding":
-		return []string{builtin.ToolRead, builtin.ToolList, builtin.ToolGlob, builtin.ToolGrep, builtin.ToolApplyPatch, builtin.ToolWrite}
-	case "coding_shell":
-		return []string{builtin.ToolRead, builtin.ToolList, builtin.ToolGlob, builtin.ToolGrep, builtin.ToolApplyPatch, builtin.ToolWrite, builtin.ToolShell}
-	case "network":
-		return []string{builtin.ToolRead, builtin.ToolList, builtin.ToolGlob, builtin.ToolGrep, builtin.ToolApplyPatch, builtin.ToolWrite, builtin.ToolShell, builtin.ToolWebSearch}
-	default:
-		return nil
-	}
-}
-
 func registerAgentSessionTools(registry *tools.Registry, root string, envFile string, selected []string, profile ProviderProfile) ([]provider.HostedToolDefinition, []string, error) {
-	selected, err := normalizeAgentSessionToolsForProfile(selected, "", profile, envFile)
+	selected, err := normalizeAgentSessionToolsForProfile(selected, profile, envFile)
 	if err != nil {
 		return nil, nil, err
 	}

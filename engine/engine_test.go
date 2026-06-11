@@ -43,7 +43,7 @@ func TestRunDirectAnswerCompletesThroughNaturalStop(t *testing.T) {
 	if got.CompletionReason != engine.CompletionReasonNaturalStop || got.FinishReason != provider.FinishStop {
 		t.Fatalf("completion metadata = %#v", got)
 	}
-	messages, err := e.Store.Messages("run")
+	messages, err := e.Store.Transcript("run")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestTaskCompleteOnlyCompletesWhenExplicitSignalPolicyIsEnabled(t *testing.T
 	got := e.Run(context.Background(), "do the thing")
 
 	if got.Status != engine.Completed || got.Output != "done" || got.CompletionReason != engine.CompletionReasonToolSignal {
-		t.Fatalf("result = %#v, want legacy tool-signal completion", got)
+		t.Fatalf("result = %#v, want explicit tool-signal completion", got)
 	}
 }
 
@@ -220,16 +220,16 @@ func TestRunTurnUsesCallerSuppliedHistoryWithoutAppendingUserText(t *testing.T) 
 	p := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
 	e := newTestEngine(p, &event.Recorder{})
 	originalStore := session.NewMemoryStore()
-	if err := originalStore.Append("run", session.Message{Role: session.User, Content: "existing"}); err != nil {
+	if err := originalStore.AppendTranscript("run", session.Message{Role: session.User, Content: "existing"}); err != nil {
 		t.Fatal(err)
 	}
 	e.Store = originalStore
 	e.Options.RunID = "original-run"
-	e.Options.SessionID = "original-session"
+	e.Options.ThreadID = "original-session"
 	result := e.RunTurn(context.Background(), engine.RunInput{
-		RunID:     "turn",
-		SessionID: "thread",
-		TraceID:   "turn",
+		RunID:    "turn",
+		ThreadID: "thread",
+		TraceID:  "turn",
 		History: []session.Message{
 			{Role: session.User, Content: "caller-owned user"},
 			{Role: session.Assistant, Content: "previous"},
@@ -250,10 +250,10 @@ func TestRunTurnUsesCallerSuppliedHistoryWithoutAppendingUserText(t *testing.T) 
 	if e.Store != originalStore {
 		t.Fatalf("RunTurn did not restore original store")
 	}
-	if e.Options.RunID != "original-run" || e.Options.SessionID != "original-session" {
+	if e.Options.RunID != "original-run" || e.Options.ThreadID != "original-session" {
 		t.Fatalf("RunTurn did not restore options: %#v", e.Options)
 	}
-	originalMessages, err := originalStore.Messages("run")
+	originalMessages, err := originalStore.Transcript("run")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,13 +266,13 @@ func TestRunTurnConcurrentSameEngineIsolatesTurnState(t *testing.T) {
 	p := newBarrierProvider(2)
 	e := newTestEngine(p, &event.Recorder{})
 	e.Options.RunID = "base-run"
-	e.Options.SessionID = "base-session"
+	e.Options.ThreadID = "base-session"
 
 	var wg sync.WaitGroup
 	results := make([]engine.Result, 2)
 	inputs := []engine.RunInput{
-		{RunID: "turn-a", SessionID: "thread-a", TraceID: "turn-a", History: []session.Message{{Role: session.User, Content: "alpha"}}},
-		{RunID: "turn-b", SessionID: "thread-b", TraceID: "turn-b", History: []session.Message{{Role: session.User, Content: "beta"}}},
+		{RunID: "turn-a", ThreadID: "thread-a", TraceID: "turn-a", History: []session.Message{{Role: session.User, Content: "alpha"}}},
+		{RunID: "turn-b", ThreadID: "thread-b", TraceID: "turn-b", History: []session.Message{{Role: session.User, Content: "beta"}}},
 	}
 	for i := range inputs {
 		wg.Add(1)
@@ -287,7 +287,7 @@ func TestRunTurnConcurrentSameEngineIsolatesTurnState(t *testing.T) {
 		if result.Status != engine.Completed || result.Output == "" {
 			t.Fatalf("result %d = %#v", i, result)
 		}
-		if e.Options.RunID != "base-run" || e.Options.SessionID != "base-session" {
+		if e.Options.RunID != "base-run" || e.Options.ThreadID != "base-session" {
 			t.Fatalf("RunTurn mutated receiver options: %#v", e.Options)
 		}
 	}
@@ -322,7 +322,7 @@ func TestRunTurnConcurrentSameEngineIsolatesTurnState(t *testing.T) {
 	}
 }
 
-func TestLegacyTaskCompleteSignalIsProviderSafeWhenRunContinues(t *testing.T) {
+func TestExplicitTaskCompleteSignalIsProviderSafeWhenRunContinues(t *testing.T) {
 	store := session.NewMemoryStore()
 	promptStore := cache.NewMemoryStore()
 	p1 := harness.NewScriptedProvider(harness.Step(harness.Tool("done", "task_complete", `{"output":"first done"}`), harness.DoneReason("tool_calls")))
@@ -353,7 +353,7 @@ func TestLegacyTaskCompleteSignalIsProviderSafeWhenRunContinues(t *testing.T) {
 	}) {
 		t.Fatalf("continued run missing provider-safe task_complete text: %#v", p2.Requests[0].RawPlan.Segments)
 	}
-	messages, err := store.Messages("run")
+	messages, err := store.Transcript("run")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -506,7 +506,7 @@ func TestPromptCacheActivatesNewToolsetOnNextTurnWhenRegistryChanges(t *testing.
 	first.Prompt = promptStore
 	first.Tools = reg
 	first.Options.RunID = "turn-1"
-	first.Options.SessionID = "thread"
+	first.Options.ThreadID = "thread"
 	if got := first.Run(context.Background(), "first"); got.Status != engine.Completed {
 		t.Fatalf("first = %#v", got)
 	}
@@ -519,7 +519,7 @@ func TestPromptCacheActivatesNewToolsetOnNextTurnWhenRegistryChanges(t *testing.
 	second.Prompt = promptStore
 	second.Tools = reg
 	second.Options.RunID = "turn-2"
-	second.Options.SessionID = "thread"
+	second.Options.ThreadID = "thread"
 	if got := second.Run(context.Background(), "second"); got.Status != engine.Completed {
 		t.Fatalf("second = %#v", got)
 	}
@@ -536,7 +536,7 @@ func TestPromptCacheActivatesNewToolsetOnNextTurnWhenRegistryChanges(t *testing.
 	third.Prompt = promptStore
 	third.Tools = reg
 	third.Options.RunID = "turn-3"
-	third.Options.SessionID = "thread"
+	third.Options.ThreadID = "thread"
 	if got := third.Run(context.Background(), "third"); got.Status != engine.Completed {
 		t.Fatalf("third = %#v", got)
 	}
@@ -638,21 +638,21 @@ func TestProviderRequestAndResponseRecordsCarryThreadAndTurnIDs(t *testing.T) {
 	e := newTestEngine(p, &event.Recorder{})
 	e.Prompt = promptStore
 	e.Options.RunID = "turn"
-	e.Options.SessionID = "thread"
+	e.Options.ThreadID = "thread"
 
 	got := e.Run(context.Background(), "hello")
 
 	if got.Status != engine.Completed {
 		t.Fatalf("result = %#v", got)
 	}
-	requests, err := promptStore.ProviderRequests(context.Background(), "turn")
+	requests, err := promptStore.ProviderRequests(context.Background(), "thread")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(requests) != 1 || requests[0].ThreadID != "thread" || requests[0].TurnID != "turn" {
 		t.Fatalf("request thread/turn linkage missing: %#v", requests)
 	}
-	responses, err := promptStore.ProviderResponses(context.Background(), "turn")
+	responses, err := promptStore.ProviderResponses(context.Background(), "thread")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -673,7 +673,7 @@ func TestProviderUsageEventsSeparateStreamUsageAndFinalContextStatus(t *testing.
 	))
 	e := newTestEngine(p, rec)
 	e.Options.RunID = "turn"
-	e.Options.SessionID = "thread"
+	e.Options.ThreadID = "thread"
 	e.Options.ProviderName = "fake"
 	e.Options.Model = "fake-model"
 	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100}
@@ -720,7 +720,7 @@ func TestProviderUsageFinalContextStatusMarksMissingNativeUsageEstimated(t *test
 	))
 	e := newTestEngine(p, rec)
 	e.Options.RunID = "turn"
-	e.Options.SessionID = "thread"
+	e.Options.ThreadID = "thread"
 	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100}
 
 	got := e.Run(context.Background(), "hello")
@@ -911,7 +911,7 @@ func TestRunTurnOverridesLabelsAndProviderStateWithoutProviderPromptLeak(t *test
 	e.Options.Labels = engine.RunLabels{Correlation: map[string]string{"base": "base-value"}}
 	result := e.RunTurn(context.Background(), engine.RunInput{
 		RunID:                 "turn",
-		SessionID:             "thread",
+		ThreadID:              "thread",
 		TraceID:               "trace",
 		PreviousProviderState: previous,
 		Labels: engine.RunLabels{
@@ -1147,7 +1147,7 @@ func TestAskUserSignalReturnsWaitingWithoutExecutingTool(t *testing.T) {
 	if hasEvent(rec.Events, event.ToolCall) {
 		t.Fatalf("ask_user should be an interrupt signal, not a normal tool call")
 	}
-	messages, err := e.Store.Messages("run")
+	messages, err := e.Store.Transcript("run")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1199,7 +1199,7 @@ func TestCustomControlSpecWaitingSignalCarriesOpaquePayload(t *testing.T) {
 	if hasEvent(rec.Events, event.ToolCall) {
 		t.Fatalf("control signal should not be emitted as ordinary tool call: %#v", rec.Events)
 	}
-	messages, err := e.Store.Messages("run")
+	messages, err := e.Store.Transcript("run")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1360,7 +1360,7 @@ func TestCustomControlToolMixedWithOrdinaryToolFails(t *testing.T) {
 	if got.Status != engine.Failed || !errors.Is(got.Err, engine.ErrMixedControlTools) {
 		t.Fatalf("result = %#v, want mixed-control failure", got)
 	}
-	messages, err := e.Store.Messages("run")
+	messages, err := e.Store.Transcript("run")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1427,7 +1427,7 @@ func TestMixedControlAndOrdinaryToolsFailBeforePersistingOrphans(t *testing.T) {
 	if got.Status != engine.Failed || !errors.Is(got.Err, engine.ErrMixedControlTools) {
 		t.Fatalf("result = %#v", got)
 	}
-	messages, err := e.Store.Messages("run")
+	messages, err := e.Store.Transcript("run")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1728,7 +1728,7 @@ func TestToolOutputProjectionAppliesBeforeHistoryAndNextProviderRequest(t *testi
 	}) {
 		t.Fatalf("second request did not receive truncated tool result: %#v", p.Requests[1].Messages)
 	}
-	messages, err := e.Store.Messages("run")
+	messages, err := e.Store.Transcript("run")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1813,7 +1813,7 @@ func TestErrorToolOutputProjectionPreservesErrorPrefixMetadataAndArtifacts(t *te
 	if got.Status != engine.Completed || got.Output != "recovered" {
 		t.Fatalf("result = %#v", got)
 	}
-	messages, err := e.Store.Messages("run")
+	messages, err := e.Store.Transcript("run")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1869,7 +1869,7 @@ func TestHostedToolsAreSentToProviderButNeverEnterLocalRunBatch(t *testing.T) {
 	if len(p.Requests) != 1 || len(p.Requests[0].HostedTools) != 1 || p.Requests[0].HostedTools[0].Name != "web_search" {
 		t.Fatalf("hosted tools missing from request: %#v", p.Requests)
 	}
-	messages, err := e.Store.Messages("run")
+	messages, err := e.Store.Transcript("run")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2174,7 +2174,7 @@ func TestProviderContextOverflowCompactsAndRetries(t *testing.T) {
 	)
 	p.Errs[1] = provider.ErrContextOverflow
 	store := session.NewMemoryStore()
-	if err := store.Append("run", session.Message{Role: session.User, Content: "older"}, session.Message{Role: session.User, Content: "newer"}); err != nil {
+	if err := store.AppendTranscript("run", session.Message{Role: session.User, Content: "older"}, session.Message{Role: session.User, Content: "newer"}); err != nil {
 		t.Fatal(err)
 	}
 	e := newTestEngine(p, rec)
@@ -2272,7 +2272,7 @@ func TestPreRequestThresholdCompactsWithoutReplacingStore(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
 	store := &replaceCountingStore{inner: session.NewMemoryStore()}
-	if err := store.Append("run",
+	if err := store.AppendTranscript("run",
 		session.Message{Role: session.User, Content: strings.Repeat("old ", 1200)},
 		session.Message{Role: session.User, Content: "new"},
 	); err != nil {
@@ -2322,7 +2322,7 @@ func TestRequestEstimateTriggersPreRequestCompaction(t *testing.T) {
 		},
 	}
 	store := &replaceCountingStore{inner: session.NewMemoryStore()}
-	if err := store.Append("run",
+	if err := store.AppendTranscript("run",
 		session.Message{Role: session.User, Content: "old request", EntryID: "u1"},
 		session.Message{Role: session.Assistant, Content: "old answer", EntryID: "a1"},
 		session.Message{Role: session.User, Content: "new", EntryID: "u2"},
@@ -2374,7 +2374,7 @@ func TestCompactionPolicyUsesMessageContextPrefixBudget(t *testing.T) {
 		},
 	}
 	store := session.NewMemoryStore()
-	if err := store.Append("run", session.Message{Role: session.User, Content: "old", EntryID: "u1"}); err != nil {
+	if err := store.AppendTranscript("run", session.Message{Role: session.User, Content: "old", EntryID: "u1"}); err != nil {
 		t.Fatal(err)
 	}
 	compactor := &policyRecordingCompactor{}
@@ -2457,7 +2457,7 @@ func TestPreRequestThresholdUsesMaxOutputHeadroom(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
 	store := session.NewMemoryStore()
-	if err := store.Append("run",
+	if err := store.AppendTranscript("run",
 		session.Message{Role: session.User, Content: strings.Repeat("old ", 620000)},
 		session.Message{Role: session.User, Content: "new"},
 	); err != nil {
@@ -2495,7 +2495,7 @@ func TestPreRequestThresholdUsesMaxOutputHeadroom(t *testing.T) {
 func TestPreRequestThresholdRequiresExplicitCompactor(t *testing.T) {
 	p := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
 	store := session.NewMemoryStore()
-	if err := store.Append("run",
+	if err := store.AppendTranscript("run",
 		session.Message{Role: session.User, Content: strings.Repeat("old ", 1200)},
 		session.Message{Role: session.User, Content: "new"},
 	); err != nil {
@@ -2533,17 +2533,17 @@ type replaceCountingStore struct {
 	replaceCalls int
 }
 
-func (s *replaceCountingStore) Append(runID string, messages ...session.Message) error {
-	return s.inner.Append(runID, messages...)
+func (s *replaceCountingStore) AppendTranscript(runID string, messages ...session.Message) error {
+	return s.inner.AppendTranscript(runID, messages...)
 }
 
-func (s *replaceCountingStore) Messages(runID string) ([]session.Message, error) {
-	return s.inner.Messages(runID)
+func (s *replaceCountingStore) Transcript(runID string) ([]session.Message, error) {
+	return s.inner.Transcript(runID)
 }
 
-func (s *replaceCountingStore) Replace(runID string, messages []session.Message) error {
+func (s *replaceCountingStore) ReplaceTranscript(runID string, messages []session.Message) error {
 	s.replaceCalls++
-	return s.inner.Replace(runID, messages)
+	return s.inner.ReplaceTranscript(runID, messages)
 }
 
 func TestTruncatedProviderOutputContinuesWithoutFullCompactWhenInputPressureIsLow(t *testing.T) {
@@ -2567,7 +2567,7 @@ func TestTruncatedProviderOutputContinuesWithoutFullCompactWhenInputPressureIsLo
 	if hasEvent(rec.Events, event.ContextCompact) {
 		t.Fatalf("low-pressure truncation should not full compact: %#v", rec.Events)
 	}
-	messages, err := e.Store.Messages("run")
+	messages, err := e.Store.Transcript("run")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2826,7 +2826,7 @@ func (c *policyRecordingCompactor) Compact(_ context.Context, req engine.Compact
 
 type testEngine struct {
 	Provider     provider.Provider
-	Store        session.Store
+	Store        session.TranscriptStore
 	Prompt       cache.Store
 	Artifacts    artifact.Store
 	SystemPrompt string
@@ -2924,22 +2924,31 @@ func buildProviderRequestForTest(ctx context.Context, e *testEngine, step int, h
 	if opts.RunID == "" {
 		opts.RunID = "run"
 	}
-	if opts.SessionID == "" {
-		opts.SessionID = opts.RunID
+	if opts.TurnID == "" {
+		opts.TurnID = opts.RunID
+	}
+	if opts.PromptScopeID == "" {
+		if opts.ThreadID != "" {
+			opts.PromptScopeID = opts.ThreadID
+		} else {
+			opts.PromptScopeID = opts.RunID
+		}
 	}
 	if opts.TraceID == "" {
 		opts.TraceID = opts.RunID
 	}
 	if opts.CacheNamespace == "" {
-		opts.CacheNamespace = cache.DefaultNamespace(opts.SessionID, opts.ProviderName, opts.Model)
+		opts.CacheNamespace = cache.DefaultNamespace(opts.PromptScopeID, opts.ProviderName, opts.Model)
 	}
-	toolset, _, err := cache.EnsureToolset(ctx, e.Prompt, opts.RunID, opts.SessionID, opts.ProviderName, opts.Model, nil, nil, time.Now())
+	toolset, _, err := cache.EnsureToolset(ctx, e.Prompt, opts.PromptScopeID, opts.RunID, opts.ThreadID, opts.TurnID, opts.ProviderName, opts.Model, nil, nil, time.Now())
 	if err != nil {
 		return provider.Request{}, err
 	}
 	plan, messages, err := cache.BuildPlan(ctx, e.Prompt, cache.BuildInput{
+		PromptScopeID:  opts.PromptScopeID,
 		RunID:          opts.RunID,
-		SessionID:      opts.SessionID,
+		ThreadID:       opts.ThreadID,
+		TurnID:         opts.TurnID,
 		Provider:       opts.ProviderName,
 		Model:          opts.Model,
 		AdapterVersion: cache.Version,
@@ -2951,7 +2960,7 @@ func buildProviderRequestForTest(ctx context.Context, e *testEngine, step int, h
 	if err != nil {
 		return provider.Request{}, err
 	}
-	return provider.Request{RunID: opts.RunID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Messages: messages, RawPlan: plan}, nil
+	return provider.Request{RunID: opts.RunID, ThreadID: opts.ThreadID, TurnID: opts.TurnID, PromptScopeID: opts.PromptScopeID, TraceID: opts.TraceID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Messages: messages, RawPlan: plan}, nil
 }
 
 func mustRegister(t *testing.T, reg *tools.Registry, tool tools.Tool) {

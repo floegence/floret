@@ -434,7 +434,7 @@ func TestHarnessOwnsEngineIdentityAndToolDefinitions(t *testing.T) {
 		t.Fatalf("requests = %#v", p.Requests)
 	}
 	req := p.Requests[0]
-	if req.RunID != "turn-1" || req.RawPlan.Segments[0].SessionID != "thread" || req.Provider != "fake" || req.Model != "fake-model" {
+	if req.RunID != "turn-1" || req.RawPlan.Segments[0].ThreadID != "thread" || req.Provider != "fake" || req.Model != "fake-model" {
 		t.Fatalf("harness did not own identity/provider/model: %#v", req)
 	}
 	controlTools := 0
@@ -648,10 +648,11 @@ func TestRetryDoesNotDuplicateUserMessageAndKeepsPrefixStable(t *testing.T) {
 	if err == nil || result.Status != engine.Failed {
 		t.Fatalf("failed result = %#v err=%v", result, err)
 	}
-	failedRequests, err := promptStore.ProviderRequests(ctx, "turn-fail")
+	threadRequests, err := promptStore.ProviderRequests(ctx, "thread")
 	if err != nil {
 		t.Fatal(err)
 	}
+	failedRequests := providerRequestsForRun(threadRequests, "turn-fail")
 	if len(failedRequests) != 2 {
 		t.Fatalf("failed request records = %#v", failedRequests)
 	}
@@ -684,10 +685,11 @@ func TestRetryDoesNotDuplicateUserMessageAndKeepsPrefixStable(t *testing.T) {
 	}) {
 		t.Fatalf("failed branch should remain readable by old leaf: %#v", failedPath)
 	}
-	retryRequests, err := promptStore.ProviderRequests(ctx, result.ID)
+	threadRequests, err = promptStore.ProviderRequests(ctx, "thread")
 	if err != nil {
 		t.Fatal(err)
 	}
+	retryRequests := providerRequestsForRun(threadRequests, result.ID)
 	if len(retryRequests) != 1 {
 		t.Fatalf("retry request records = %#v", retryRequests)
 	}
@@ -2018,4 +2020,14 @@ func (p *concurrentProvider) MaxConcurrent() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.maxActive
+}
+
+func providerRequestsForRun(records []cache.ProviderRequestRecord, runID string) []cache.ProviderRequestRecord {
+	out := make([]cache.ProviderRequestRecord, 0, len(records))
+	for _, record := range records {
+		if record.RunID == runID {
+			out = append(out, record)
+		}
+	}
+	return out
 }

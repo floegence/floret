@@ -70,7 +70,7 @@ func TestStaticConsoleToolSelectionSemanticsStayAuditable(t *testing.T) {
 	}
 	for _, stale := range []string{"ToolEdit", `Name: "edit"`, "Replace exact text in a file.", "read/grep/list/edit/write/apply_patch"} {
 		if strings.Contains(toolSelection+shellTool, stale) {
-			t.Fatalf("old edit tool surface should not remain: %q", stale)
+			t.Fatalf("unsupported edit tool surface should not remain: %q", stale)
 		}
 	}
 	for _, want := range []string{`ToolApplyPatch, Title: "Apply patch"`, `Risk: "writes files", Permission: "ask"`, `ToolWrite, Title: "Write"`, `Risk: "overwrites files", Permission: "ask"`} {
@@ -79,7 +79,7 @@ func TestStaticConsoleToolSelectionSemanticsStayAuditable(t *testing.T) {
 		}
 	}
 	if !strings.Contains(readStaticTestFile(t, "components", "toolMatrix.js"), "tool.permission_mode || tool.annotations?.permission_mode") {
-		t.Fatalf("tool matrix should prefer explicit catalog permission_mode before fallback")
+		t.Fatalf("tool matrix should prefer explicit catalog permission_mode before annotation default")
 	}
 }
 
@@ -170,8 +170,16 @@ func TestStaticConsoleCreatesSessionBeforeRunningInitialTurn(t *testing.T) {
 			t.Fatalf("app missing create-before-run flow %q", want)
 		}
 	}
-	if !strings.Contains(apiJS, `requestJSON("/api/agent/sessions"`) || !strings.Contains(apiJS, `requestJSON("/api/agent/sessions/run"`) {
-		t.Fatalf("api should expose create-only and compatibility create-and-run paths")
+	for _, want := range []string{
+		`createSession(payload)`,
+		`requestJSON("/api/agent/sessions", { method: "POST"`,
+		`appendTurn(id, payload)`,
+		"`/api/agent/sessions/${encodeURIComponent(id)}/turns`",
+		"`/api/agent/sessions/${encodeURIComponent(id)}/turns/stream`",
+	} {
+		if !strings.Contains(apiJS, want) {
+			t.Fatalf("api missing current session/turn contract %q", want)
+		}
 	}
 	createStart := strings.Index(appJS, "async function createSession")
 	createEnd := strings.Index(appJS[createStart:], "async function queueInitialTurn")
@@ -181,9 +189,6 @@ func TestStaticConsoleCreatesSessionBeforeRunningInitialTurn(t *testing.T) {
 	createBody := appJS[createStart : createStart+createEnd]
 	if strings.Contains(createBody, "await api.appendTurn") {
 		t.Fatalf("create session should not await the initial agent turn")
-	}
-	if strings.Contains(createBody, "api.createAndRunSession") {
-		t.Fatalf("frontend should not use compatibility create-and-run path")
 	}
 }
 
@@ -272,7 +277,7 @@ func TestStaticConsoleNewSessionDefaultsFollowBackendAndProviderCatalog(t *testi
 		}
 	}
 	if !strings.Contains(stateJS, "const baseDefaults = baseContextPolicyDefaults()") {
-		t.Fatalf("state.js should use base context defaults for selected-profile max output fallback")
+		t.Fatalf("state.js should use base context defaults for selected-profile max output default")
 	}
 	if strings.Contains(stateJS, "Math.min(maxOutput") {
 		t.Fatalf("reserved output budget should not be derived from ordinary max output cap")
@@ -312,7 +317,7 @@ func TestStaticConsoleInspectorShowsContextStatusAndDebugBreakdown(t *testing.T)
 	}
 	for _, forbidden := range []string{"est tokens", "estimator_source", "estimator_confidence", "estimator "} {
 		if strings.Contains(inspector, forbidden) {
-			t.Fatalf("inspector should not expose old provider request wording %q", forbidden)
+			t.Fatalf("inspector should not expose unsupported provider request wording %q", forbidden)
 		}
 	}
 }
@@ -1207,43 +1212,6 @@ func TestStaticConsoleSettingsSavesSearchProviderContract(t *testing.T) {
 			t.Fatalf("settings persistent error/provider switch flow missing %q", want)
 		}
 	}
-	for _, stale := range []string{`client: { enabled`, `provider_hosted: {`, `"Client search via Brave"`, "preferred when enabled"} {
-		if strings.Contains(settings, stale) {
-			t.Fatalf("settings view should not submit or describe legacy web search shape %q", stale)
-		}
-	}
-}
-
-func TestStaticConsoleSettingsDoesNotRenderLegacyUnsupportedHostedWireShape(t *testing.T) {
-	script := `
-import assert from "node:assert/strict";
-import { renderSettings } from "./static/views/settings.js";
-import { state } from "./static/state.js";
-
-const legacyShape = "openai_chat_" + "web_search_" + "options";
-state.config = {
-  active_profile_id: "legacy-openai",
-  catalog: [
-    { id: "openai", name: "OpenAI", default_model: "gpt-5.4", web_search: {} },
-    { id: "anthropic", name: "Anthropic", default_model: "claude", web_search: { default_source: "provider_hosted", hosted_wire_shape: "anthropic_server_web_search", hosted_wire_shapes: ["anthropic_server_web_search"] } },
-  ],
-  profiles: [{
-    id: "legacy-openai",
-    name: "Legacy OpenAI",
-    provider: "openai",
-    model: "gpt-5.4",
-    web_search: { source: "provider_hosted", hosted: { wire_shape: legacyShape } },
-  }],
-  search_provider: {},
-};
-state.settingsDraft = null;
-state.settingsError = null;
-const html = renderSettings();
-assert.ok(html.includes("Provider-hosted web search (unsupported)"));
-assert.ok(html.includes("No provider-hosted search wire shape"));
-assert.ok(!html.includes(legacyShape));
-`
-	runNodeStaticScript(t, script)
 }
 
 func TestStaticConsoleExposesSavedToolScenarioChecks(t *testing.T) {

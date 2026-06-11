@@ -245,18 +245,21 @@ func anthropicSearchItemsResult(items []anthropicWebSearchResultItem) provider.H
 	return result
 }
 
-func (p AnthropicProvider) buildAnthropicRequest(req provider.Request, maxTokens int64) anthropicRequest {
-	anthropicReq := p.contextAnthropicRequestWithCacheControl(req, anthropicCacheControlFor(req, p.Cache))
+func (p AnthropicProvider) buildAnthropicRequest(req provider.Request, maxTokens int64) (anthropicRequest, error) {
+	anthropicReq, err := p.contextAnthropicRequestWithCacheControl(req, anthropicCacheControlFor(req, p.Cache))
+	if err != nil {
+		return anthropicRequest{}, err
+	}
 	anthropicReq.Model = p.Model
 	anthropicReq.MaxTokens = maxTokens
-	return anthropicReq
+	return anthropicReq, nil
 }
 
 func (p AnthropicProvider) contextAnthropicRequest(req provider.Request) (anthropicRequest, error) {
-	return p.contextAnthropicRequestWithCacheControl(req, nil), nil
+	return p.contextAnthropicRequestWithCacheControl(req, nil)
 }
 
-func (p AnthropicProvider) contextAnthropicRequestWithCacheControl(req provider.Request, cacheControl *anthropicCacheControl) anthropicRequest {
+func (p AnthropicProvider) contextAnthropicRequestWithCacheControl(req provider.Request, cacheControl *anthropicCacheControl) (anthropicRequest, error) {
 	messages := req.Messages
 	if len(req.RawPlan.Segments) > 0 {
 		messages = nil
@@ -265,15 +268,25 @@ func (p AnthropicProvider) contextAnthropicRequestWithCacheControl(req provider.
 	renderedMessages := renderAnthropicMessages(messages, cacheControl)
 	renderedTools := append(renderAnthropicTools(req.Tools, cacheControl), renderAnthropicHostedTools(req.HostedTools)...)
 	if len(req.RawPlan.Segments) > 0 {
-		system = renderAnthropicSystemFromRawPlan(req.RawPlan, cacheControl, system)
-		renderedMessages = renderAnthropicMessagesFromRawPlan(req.RawPlan, renderedMessages)
-		renderedTools = renderAnthropicToolsFromRawPlan(req.RawPlan, cacheControl, renderedTools)
+		var err error
+		system, err = renderAnthropicSystemFromRawPlan(req.RawPlan, cacheControl)
+		if err != nil {
+			return anthropicRequest{}, err
+		}
+		renderedMessages, err = renderAnthropicMessagesFromRawPlan(req.RawPlan)
+		if err != nil {
+			return anthropicRequest{}, err
+		}
+		renderedTools, err = renderAnthropicToolsFromRawPlan(req.RawPlan, len(req.Tools), cacheControl, renderAnthropicHostedTools(req.HostedTools))
+		if err != nil {
+			return anthropicRequest{}, err
+		}
 	}
 	return anthropicRequest{
 		System:   system,
 		Messages: renderedMessages,
 		Tools:    renderedTools,
-	}
+	}, nil
 }
 
 func (p AnthropicProvider) NormalizeCachePolicy(policy cache.CachePolicy) (cache.CachePolicy, error) {
@@ -351,7 +364,11 @@ func (p AnthropicProvider) anthropicRequestBody(req provider.Request) ([]byte, e
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(p.buildAnthropicRequest(req, maxTokens))
+	anthropicReq, err := p.buildAnthropicRequest(req, maxTokens)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(anthropicReq)
 }
 
 func (p AnthropicProvider) MessageRaw(kind cache.SegmentKind, msg session.Message) (string, string, error) {
@@ -419,28 +436,32 @@ func renderAnthropicSystem(messages []session.Message, cacheControl *anthropicCa
 	return blocks
 }
 
-func renderAnthropicSystemFromRawPlan(plan cache.RawPlan, cacheControl *anthropicCacheControl, fallback any) any {
+func renderAnthropicSystemFromRawPlan(plan cache.RawPlan, cacheControl *anthropicCacheControl) (any, error) {
 	var blocks []anthropicContentBlock
 	for _, segment := range plan.Segments {
-		if segment.FragmentType != cache.FragmentAnthropicSystem {
+		if segment.Kind != cache.SegmentSystem {
 			continue
 		}
-		var block anthropicContentBlock
-		if err := json.Unmarshal([]byte(segment.Raw), &block); err == nil {
-			blocks = append(blocks, block)
+		if segment.FragmentType != cache.FragmentAnthropicSystem {
+			return nil, fmt.Errorf("anthropic raw system segment %q uses unsupported fragment type %q", segment.ID, segment.FragmentType)
 		}
+		var block anthropicContentBlock
+		if err := json.Unmarshal([]byte(segment.Raw), &block); err != nil {
+			return nil, fmt.Errorf("decode anthropic raw system segment %q: %w", segment.ID, err)
+		}
+		blocks = append(blocks, block)
 	}
 	if len(blocks) == 0 {
-		return fallback
+		return nil, nil
 	}
 	if cacheControl != nil {
 		blocks[len(blocks)-1].CacheControl = cacheControl
-		return blocks
+		return blocks, nil
 	}
 	if len(blocks) == 1 {
-		return blocks[0].Text
+		return blocks[0].Text, nil
 	}
-	return blocks
+	return blocks, nil
 }
 
 func renderAnthropicMessages(messages []session.Message, _ *anthropicCacheControl) []anthropicMessage {
@@ -478,21 +499,25 @@ func renderAnthropicMessages(messages []session.Message, _ *anthropicCacheContro
 	return out
 }
 
-func renderAnthropicMessagesFromRawPlan(plan cache.RawPlan, fallback []anthropicMessage) []anthropicMessage {
+func renderAnthropicMessagesFromRawPlan(plan cache.RawPlan) ([]anthropicMessage, error) {
 	var out []anthropicMessage
 	for _, segment := range plan.Segments {
-		if segment.FragmentType != cache.FragmentAnthropicMessage {
+		if segment.Kind == cache.SegmentSystem || segment.Kind == cache.SegmentToolset {
 			continue
 		}
-		var msg anthropicMessage
-		if err := json.Unmarshal([]byte(segment.Raw), &msg); err == nil {
-			out = append(out, msg)
+		if segment.FragmentType != cache.FragmentAnthropicMessage {
+			return nil, fmt.Errorf("anthropic raw plan segment %q uses unsupported fragment type %q", segment.ID, segment.FragmentType)
 		}
+		var msg anthropicMessage
+		if err := json.Unmarshal([]byte(segment.Raw), &msg); err != nil {
+			return nil, fmt.Errorf("decode anthropic raw message segment %q: %w", segment.ID, err)
+		}
+		out = append(out, msg)
 	}
 	if len(out) == 0 {
-		return fallback
+		return nil, fmt.Errorf("anthropic raw plan has no message segments")
 	}
-	return out
+	return out, nil
 }
 
 func renderAnthropicTools(defs []provider.ToolDefinition, cacheControl *anthropicCacheControl) []anthropicTool {
@@ -555,26 +580,25 @@ func renderAnthropicHostedTools(defs []provider.HostedToolDefinition) []anthropi
 	return out
 }
 
-func renderAnthropicToolsFromRawPlan(plan cache.RawPlan, cacheControl *anthropicCacheControl, fallback []anthropicTool) []anthropicTool {
+func renderAnthropicToolsFromRawPlan(plan cache.RawPlan, expectedLocalTools int, cacheControl *anthropicCacheControl, hostedTools []anthropicTool) ([]anthropicTool, error) {
 	var out []anthropicTool
 	for _, segment := range plan.Segments {
-		if segment.FragmentType != cache.FragmentAnthropicTool {
+		if segment.Kind != cache.SegmentToolset {
 			continue
+		}
+		if segment.FragmentType != cache.FragmentAnthropicTool {
+			return nil, fmt.Errorf("anthropic raw toolset segment %q uses unsupported fragment type %q", segment.ID, segment.FragmentType)
 		}
 		var tool anthropicTool
-		if err := json.Unmarshal([]byte(segment.Raw), &tool); err == nil {
-			out = append(out, tool)
-		}
-	}
-	if len(out) == 0 {
-		return fallback
-	}
-	for _, tool := range fallback {
-		if tool.Type == "" {
-			continue
+		if err := json.Unmarshal([]byte(segment.Raw), &tool); err != nil {
+			return nil, fmt.Errorf("decode anthropic raw tool segment %q: %w", segment.ID, err)
 		}
 		out = append(out, tool)
 	}
+	if expectedLocalTools > 0 && len(out) != expectedLocalTools {
+		return nil, fmt.Errorf("anthropic raw plan has %d toolset segments for %d requested local tools", len(out), expectedLocalTools)
+	}
+	out = append(out, hostedTools...)
 	if cacheControl != nil {
 		for i := len(out) - 1; i >= 0; i-- {
 			if out[i].Type == "" {
@@ -583,7 +607,7 @@ func renderAnthropicToolsFromRawPlan(plan cache.RawPlan, cacheControl *anthropic
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 func anthropicCacheControlFor(req provider.Request, capability catalog.CacheCapability) *anthropicCacheControl {

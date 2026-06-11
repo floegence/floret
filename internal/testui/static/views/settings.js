@@ -162,7 +162,6 @@ function renderStorageStatus() {
   const mode = storage.mode || "sqlite";
   const detail = storage.path || "in-memory";
   const schema = storage.schema_version ? `schema ${storage.schema_version}` : "";
-  const imported = storage.legacy_import || "no legacy import recorded";
   const error = storage.error ? `error: ${storage.error}` : "";
   return `
     <h2>Session Storage</h2>
@@ -177,7 +176,7 @@ function renderStorageStatus() {
       </div>
       <div>
         <strong>Status</strong>
-        <span>${escapeHTML([error, schema, imported].filter(Boolean).join(" · "))}</span>
+        <span>${escapeHTML([error, schema || "ready"].filter(Boolean).join(" · "))}</span>
       </div>
     </div>
   `;

@@ -18,7 +18,7 @@ const (
 
 type RequestObservation struct {
 	RunID                string                        `json:"run_id,omitempty"`
-	SessionID            string                        `json:"session_id,omitempty"`
+	ThreadID             string                        `json:"thread_id,omitempty"`
 	TurnID               string                        `json:"turn_id,omitempty"`
 	Step                 int                           `json:"step"`
 	RequestID            string                        `json:"request_id,omitempty"`
@@ -35,7 +35,7 @@ type RequestObservation struct {
 
 type ProviderUsageObservation struct {
 	RunID                string                        `json:"run_id,omitempty"`
-	SessionID            string                        `json:"session_id,omitempty"`
+	ThreadID             string                        `json:"thread_id,omitempty"`
 	TurnID               string                        `json:"turn_id,omitempty"`
 	Step                 int                           `json:"step,omitempty"`
 	RequestID            string                        `json:"request_id,omitempty"`
@@ -53,7 +53,7 @@ type ProviderUsageObservation struct {
 
 type ContextStatus struct {
 	RunID                string                        `json:"run_id,omitempty"`
-	SessionID            string                        `json:"session_id,omitempty"`
+	ThreadID             string                        `json:"thread_id,omitempty"`
 	TurnID               string                        `json:"turn_id,omitempty"`
 	Step                 int                           `json:"step,omitempty"`
 	RequestID            string                        `json:"request_id,omitempty"`
@@ -76,7 +76,7 @@ type ContextStatus struct {
 func ContextStatusFromRequest(req RequestObservation) ContextStatus {
 	return ContextStatus{
 		RunID:                req.RunID,
-		SessionID:            req.SessionID,
+		ThreadID:             req.ThreadID,
 		TurnID:               req.TurnID,
 		Step:                 req.Step,
 		RequestID:            requestIDOrDefault(req.RequestID, req.RunID, req.Step),
@@ -102,7 +102,7 @@ func ContextStatusFromProviderUsage(usage ProviderUsageObservation) (ContextStat
 	}
 	return ContextStatus{
 		RunID:                usage.RunID,
-		SessionID:            usage.SessionID,
+		ThreadID:             usage.ThreadID,
 		TurnID:               usage.TurnID,
 		Step:                 usage.Step,
 		RequestID:            usage.RequestID,
@@ -133,8 +133,8 @@ func ContextStatusFromProviderUsageEvent(ev event.Event) (ContextStatus, bool) {
 	}
 	return ContextStatusFromProviderUsage(ProviderUsageObservation{
 		RunID:                ev.RunID,
-		SessionID:            ev.SessionID,
-		TurnID:               ev.RunID,
+		ThreadID:             ev.ThreadID,
+		TurnID:               ev.TurnID,
 		Step:                 ev.Step,
 		RequestID:            status.RequestID,
 		LogicalRequestID:     status.LogicalRequestID,

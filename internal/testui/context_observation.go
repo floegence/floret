@@ -39,7 +39,7 @@ func compactionEventFromEntry(entry ObservedSessionEntry) (ObservedCompactionEve
 	}
 	return ObservedCompactionEvent{
 		CompactionEvent: observation.CompactionEvent{
-			SessionID:               entry.ThreadID,
+			ThreadID:                entry.ThreadID,
 			TurnID:                  entry.TurnID,
 			Phase:                   engine.ContextCompactPhaseComplete,
 			Status:                  observation.CompactionStatusCompacted,
@@ -162,7 +162,7 @@ func requestID(runID string, step int) string {
 func requestObservation(req ObservedProviderRequest) observation.RequestObservation {
 	return observation.RequestObservation{
 		RunID:                req.RunID,
-		SessionID:            req.SessionID,
+		ThreadID:             req.ThreadID,
 		TurnID:               req.TurnID,
 		Step:                 req.Step,
 		LogicalRequestID:     req.LogicalRequestID,
@@ -180,7 +180,7 @@ func requestObservation(req ObservedProviderRequest) observation.RequestObservat
 func requestObservationFromPromptRecord(req cache.ProviderRequestRecord) observation.RequestObservation {
 	return observation.RequestObservation{
 		RunID:                req.RunID,
-		SessionID:            req.SessionID,
+		ThreadID:             req.ThreadID,
 		TurnID:               req.TurnID,
 		Step:                 req.Step,
 		RequestID:            req.ID,
@@ -199,7 +199,7 @@ func requestObservationFromPromptRecord(req cache.ProviderRequestRecord) observa
 func providerUsageObservationFromPromptResponse(resp cache.ProviderResponseRecord, req observation.RequestObservation, hasRequest bool) observation.ProviderUsageObservation {
 	observed := observation.ProviderUsageObservation{
 		RunID:           resp.RunID,
-		SessionID:       resp.ThreadID,
+		ThreadID:        resp.ThreadID,
 		TurnID:          resp.TurnID,
 		RequestID:       resp.RequestID,
 		ObservedAt:      resp.CreatedAt,
@@ -207,7 +207,7 @@ func providerUsageObservationFromPromptResponse(resp cache.ProviderResponseRecor
 		ContextPressure: resp.NativePressure,
 	}
 	if hasRequest {
-		observed.SessionID = req.SessionID
+		observed.ThreadID = req.ThreadID
 		observed.TurnID = req.TurnID
 		observed.Step = req.Step
 		observed.LogicalRequestID = req.LogicalRequestID
@@ -218,8 +218,8 @@ func providerUsageObservationFromPromptResponse(resp cache.ProviderResponseRecor
 		observed.CompactionGeneration = req.CompactionGeneration
 		observed.CompactionWindowID = req.CompactionWindowID
 	}
-	if observed.SessionID == "" {
-		observed.SessionID = resp.ThreadID
+	if observed.ThreadID == "" {
+		observed.ThreadID = resp.ThreadID
 	}
 	if observed.TurnID == "" {
 		observed.TurnID = resp.TurnID

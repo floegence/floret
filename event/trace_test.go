@@ -16,7 +16,7 @@ func TestTraceWriterWritesParseableRedactedJSONL(t *testing.T) {
 		Type:      ToolCall,
 		TraceID:   "trace",
 		RunID:     "run",
-		SessionID: "session",
+		ThreadID: "session",
 		Step:      1,
 		Args:      `{"api_key":"secret-token","path":"a.go"}`,
 		Timestamp: time.Unix(1, 0),
@@ -25,7 +25,7 @@ func TestTraceWriterWritesParseableRedactedJSONL(t *testing.T) {
 	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &decoded); err != nil {
 		t.Fatalf("trace is not JSONL: %v\n%s", err, buf.String())
 	}
-	if decoded.TraceID != "trace" || decoded.SessionID != "session" || decoded.Step != 1 {
+	if decoded.TraceID != "trace" || decoded.ThreadID != "session" || decoded.Step != 1 {
 		t.Fatalf("decoded event missing correlation fields: %#v", decoded)
 	}
 	if decoded.ArgsHash == "" || decoded.ArgsHash != StableHash(`{"api_key":"secret-token","path":"a.go"}`) {

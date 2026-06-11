@@ -69,21 +69,19 @@ type Runner struct {
 	Sessions             *agentSessionRegistry
 	StorageMode          string
 	StoragePath          string
-	StorageImportLegacy  bool
 	storageSQLite        *sqlite.Store
 	storageMemory        *memoryStorage
 }
 
 func NewRunner(root string) Runner {
 	return Runner{
-		Root:                root,
-		EnvFile:             filepath.Join(root, config.DefaultEnvFile),
-		Now:                 time.Now,
-		Exec:                execCommand,
-		ProviderFactory:     adapters.NewProvider,
-		Sessions:            newAgentSessionRegistry(),
-		StorageMode:         StorageModeSQLite,
-		StorageImportLegacy: true,
+		Root:            root,
+		EnvFile:         filepath.Join(root, config.DefaultEnvFile),
+		Now:             time.Now,
+		Exec:            execCommand,
+		ProviderFactory: adapters.NewProvider,
+		Sessions:        newAgentSessionRegistry(),
+		StorageMode:     StorageModeSQLite,
 	}
 }
 
@@ -244,7 +242,7 @@ func (r *Runner) CreateIdleAgentSession(ctx context.Context, req AgentRunRequest
 	sessionID := fmt.Sprintf("testui-session-%d", started.UnixNano())
 	cfg.RunID = sessionID
 	resolvedProfile := resolvedProfileFromConfig(profile, cfg, cfg.APIKey != "" || profile.APIKeySet)
-	selectedTools, err := normalizeAgentSessionToolsForProfile(req.SelectedTools, req.ToolMode, resolvedProfile, r.EnvFile)
+	selectedTools, err := normalizeAgentSessionToolsForProfile(req.SelectedTools, resolvedProfile, r.EnvFile)
 	if err != nil {
 		return AgentSessionSnapshot{}, fmt.Errorf("%w: %v", errAgentSessionInput, err)
 	}
@@ -288,7 +286,7 @@ func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeR
 	if err != nil {
 		return localInspectionAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusBadRequest, err))
 	}
-	selectedTools, err := normalizeAgentSessionToolsForProfile(req.SelectedTools, "", profile, r.EnvFile)
+	selectedTools, err := normalizeAgentSessionToolsForProfile(req.SelectedTools, profile, r.EnvFile)
 	if err != nil {
 		return localInspectionAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusBadRequest, err))
 	}
@@ -400,7 +398,7 @@ func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) Ag
 	cfg.RunID = sessionID
 	resolvedProfile := resolvedProfileFromConfig(profile, cfg, cfg.APIKey != "" || profile.APIKeySet)
 	resp.Profile = stripProfileSecret(resolvedProfile)
-	selectedTools, err := normalizeAgentSessionToolsForProfile(req.SelectedTools, req.ToolMode, resolvedProfile, r.EnvFile)
+	selectedTools, err := normalizeAgentSessionToolsForProfile(req.SelectedTools, resolvedProfile, r.EnvFile)
 	if err != nil {
 		return localInspectionAgentRunResponse(r.failAgentRunWithStatus(resp, http.StatusBadRequest, err))
 	}
@@ -517,7 +515,7 @@ func (r *Runner) UpdateAgentSessionTools(ctx context.Context, sessionID string, 
 			return AgentSessionSnapshot{}, err
 		}
 	}
-	selectedTools, err := normalizeAgentSessionToolsForProfile(*req.SelectedTools, "", sess.profile, r.EnvFile)
+	selectedTools, err := normalizeAgentSessionToolsForProfile(*req.SelectedTools, sess.profile, r.EnvFile)
 	if err != nil {
 		return AgentSessionSnapshot{}, fmt.Errorf("%w: %v", errAgentSessionInput, err)
 	}
@@ -576,7 +574,6 @@ func (r *Runner) DeleteAgentSession(ctx context.Context, sessionID string) error
 		return fmt.Errorf("%w: session id is required", errAgentSessionInput)
 	}
 	registry := r.sessionRegistry()
-	runIDs := []string{sessionID}
 	store, err := r.sessionStorage(ctx)
 	if err != nil {
 		return err
@@ -599,7 +596,6 @@ func (r *Runner) DeleteAgentSession(ctx context.Context, sessionID string) error
 			registry.mu.Unlock()
 			return fmt.Errorf("%w: %s", errAgentSessionBusy, sessionID)
 		}
-		runIDs = agentSessionPromptCacheRunIDs(sessionID, sess.turns, snap.PathEntries)
 		delete(registry.sessions, sessionID)
 		registry.order = removeSessionID(registry.order, sessionID)
 		if sess.mcpManager != nil {
@@ -624,23 +620,20 @@ func (r *Runner) DeleteAgentSession(ctx context.Context, sessionID string) error
 		if snapshotIsRunning(snap) {
 			return fmt.Errorf("%w: %s", errAgentSessionBusy, sessionID)
 		}
-		runIDs = agentSessionPromptCacheRunIDs(sessionID, meta.Turns, snap.PathEntries)
 		registry.mu.Lock()
 		delete(registry.sessions, sessionID)
 		registry.order = removeSessionID(registry.order, sessionID)
 		registry.mu.Unlock()
 	}
-	if err := store.deleteSession(ctx, r.Root, sessionID, runIDs, func() error {
+	if err := store.deleteSession(ctx, r.Root, sessionID, func() error {
 		if err := os.Remove(r.agentSessionMetadataPath(sessionID)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		if err := os.RemoveAll(filepath.Join(r.agentSessionTreeRoot(), safeSessionFileName(sessionID))); err != nil {
 			return err
 		}
-		for _, runID := range runIDs {
-			if err := os.RemoveAll(filepath.Join(r.Root, ".floret-test-ui", "prompt-cache", safeSessionFileName(runID))); err != nil {
-				return err
-			}
+		if err := os.RemoveAll(filepath.Join(r.Root, ".floret-test-ui", "prompt-cache", safeSessionFileName(sessionID))); err != nil {
+			return err
 		}
 		return nil
 	}); err != nil {
@@ -866,7 +859,7 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 	}
 	rec := &streamingEventRecorder{}
 	harnessRec := &streamingHarnessRecorder{repo: repo, threadID: opts.ID}
-	selectedTools, err := normalizeAgentSessionToolsForProfile(opts.SelectedTools, "", opts.Profile, r.EnvFile)
+	selectedTools, err := normalizeAgentSessionToolsForProfile(opts.SelectedTools, opts.Profile, r.EnvFile)
 	if err != nil {
 		return nil, err
 	}
@@ -1375,7 +1368,7 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 		meta.UpdatedAt = updatedAt
 		_ = r.saveAgentSessionMetadata(meta)
 	}
-	promptObservation := r.observationFromPromptCache(ctx, store.prompt(r.Root), meta.ID, turns, pathEntries)
+	promptObservation := r.observationFromPromptCache(ctx, store.prompt(r.Root), meta.ID)
 	compactionEvents := compactionEventsForObservation(pathEntries, nil)
 	return AgentSessionSnapshot{
 		ID:                      meta.ID,
@@ -1493,15 +1486,16 @@ func (r *Runner) runAgentTurnLocked(ctx context.Context, sess *agentSession, res
 	snapshot, snapErr := r.sessionSnapshotLocked(finalCtx, sess)
 	if snapErr != nil {
 		resp.Diagnostics = withDiagnostic(resp.Diagnostics, "final_snapshot_error", snapErr.Error())
-		snapshot = r.fallbackAgentSessionSnapshot(sess, turn.Status)
-	} else {
-		sess.updatedAt = snapshot.UpdatedAt
-		if snap, err := sess.thread.Journal(finalCtx); err == nil {
-			sess.turns = summariesFromEntries(snap.Entries, sess.turns)
-		}
-		snapshot.Turns = append([]AgentTurnSummary(nil), sess.turns...)
-		snapshot.AggregateMetrics = aggregateTurnMetrics(snapshot.Turns)
+		failed := r.failAgentRun(resp, fmt.Errorf("final agent session snapshot: %w", snapErr))
+		failed.Diagnostics = cloneStringMap(resp.Diagnostics)
+		return failed
 	}
+	sess.updatedAt = snapshot.UpdatedAt
+	if snap, err := sess.thread.Journal(finalCtx); err == nil {
+		sess.turns = summariesFromEntries(snap.Entries, sess.turns)
+	}
+	snapshot.Turns = append([]AgentTurnSummary(nil), sess.turns...)
+	snapshot.AggregateMetrics = aggregateTurnMetrics(snapshot.Turns)
 	if turn.Diagnostics != nil {
 		resp.Diagnostics = withDiagnostics(resp.Diagnostics, turn.Diagnostics)
 	}
@@ -1525,34 +1519,6 @@ func (r *Runner) runAgentTurnLocked(ctx context.Context, sess *agentSession, res
 	resp.DurationMS = resp.FinishedAt.Sub(resp.StartedAt).Milliseconds()
 	storeAgentSessionSnapshot(sess, resp.Session)
 	return resp
-}
-
-func (r *Runner) fallbackAgentSessionSnapshot(sess *agentSession, status engine.Status) AgentSessionSnapshot {
-	snapshot := loadAgentSessionSnapshot(sess)
-	if snapshot.ID == "" {
-		snapshot = AgentSessionSnapshot{
-			ID:                      sess.id,
-			CreatedAt:               sess.createdAt,
-			Profile:                 sess.profile,
-			AgentProfile:            sess.agentProfile,
-			PromptIdentity:          sess.promptIdentity,
-			SystemPrompt:            sess.systemPrompt,
-			SelectedTools:           cloneSelectedTools(sess.selectedTools),
-			HostedTools:             append([]provider.HostedToolDefinition(nil), sess.hostedTools...),
-			UnavailableCapabilities: append([]string(nil), sess.unavailableCapabilities...),
-			Capabilities:            sess.capabilities,
-			ContextPolicy:           sess.contextPolicy,
-		}
-	}
-	restoreInternalSnapshotIdentity(&snapshot, sess)
-	snapshot.Status = string(status)
-	snapshot.Phase = sessionlifecycle.PhaseIdle
-	snapshot.UpdatedAt = sess.updatedAt
-	snapshot.Turns = append([]AgentTurnSummary(nil), sess.turns...)
-	snapshot.AggregateMetrics = aggregateTurnMetrics(snapshot.Turns)
-	snapshot.CanAppendMessage = status == engine.Waiting || status == engine.Completed
-	snapshot.Recoverable = false
-	return snapshot
 }
 
 func lockAgentSessionForTurn(ctx context.Context, sess *agentSession) error {
@@ -1643,30 +1609,6 @@ func snapshotIsRunning(snapshot AgentSessionSnapshot) bool {
 	return sessionlifecycle.IsRunningStatus(snapshot.Status, snapshot.Phase)
 }
 
-func agentSessionPromptCacheRunIDs(sessionID string, turns []AgentTurnSummary, entries []ObservedSessionEntry) []string {
-	seen := map[string]struct{}{}
-	out := []string{}
-	add := func(id string) {
-		id = strings.TrimSpace(id)
-		if id == "" {
-			return
-		}
-		if _, ok := seen[id]; ok {
-			return
-		}
-		seen[id] = struct{}{}
-		out = append(out, id)
-	}
-	add(sessionID)
-	for _, turn := range turns {
-		add(turn.ID)
-	}
-	for _, entry := range entries {
-		add(entry.TurnID)
-	}
-	return out
-}
-
 func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) (AgentSessionSnapshot, error) {
 	snap, err := sess.thread.Journal(ctx)
 	if err != nil {
@@ -1711,7 +1653,7 @@ func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) 
 		AggregateMetrics:        aggregateTurnMetrics(turns),
 		Compactions:             countCompactions(snap.Path),
 	}
-	promptObservation := r.observationFromPromptCache(ctx, sess.promptStore, sess.id, turns, pathEntries)
+	promptObservation := r.observationFromPromptCache(ctx, sess.promptStore, sess.id)
 	snapshot.ContextStatuses = promptObservation.ContextStatuses
 	snapshot.CompactionEvents = compactionEventsForObservation(pathEntries, nil)
 	snapshot.Observation.ProviderRequests = promptObservation.ProviderRequests
@@ -1831,7 +1773,7 @@ func (r *Runner) refreshRunningSnapshotFromThread(ctx context.Context, sess *age
 	snapshot.PathEntries = observeEntries(snap.Path)
 	snapshot.AllEntries = observeEntries(snap.Entries)
 	snapshot.Compactions = countCompactions(snap.Path)
-	promptObservation := r.observationFromPromptCache(ctx, sess.promptStore, sess.id, snapshot.Turns, snapshot.PathEntries)
+	promptObservation := r.observationFromPromptCache(ctx, sess.promptStore, sess.id)
 	snapshot.ContextStatuses = promptObservation.ContextStatuses
 	snapshot.CompactionEvents = compactionEventsForObservation(snapshot.PathEntries, nil)
 	snapshot.Observation.ProviderRequests = promptObservation.ProviderRequests
@@ -1887,84 +1829,22 @@ type promptCacheObservation struct {
 	ContextStatuses  []ObservedContextStatus
 }
 
-func (r *Runner) observationFromPromptCache(ctx context.Context, promptStore cache.Store, sessionID string, turns []AgentTurnSummary, entries []ObservedSessionEntry) promptCacheObservation {
+func (r *Runner) observationFromPromptCache(ctx context.Context, promptStore cache.Store, sessionID string) promptCacheObservation {
 	if promptStore == nil {
 		return promptCacheObservation{}
 	}
-	runIDs := agentSessionPromptCacheRunIDs(sessionID, turns, entries)
-	var requests []cache.ProviderRequestRecord
-	var responses []cache.ProviderResponseRecord
-	for _, runID := range runIDs {
-		reqs, reqErr := promptStore.ProviderRequests(ctx, runID)
-		resps, respErr := promptStore.ProviderResponses(ctx, runID)
-		if reqErr == nil {
-			requests = append(requests, reqs...)
-		}
-		if respErr == nil {
-			responses = append(responses, resps...)
-		}
+	requests, reqErr := promptStore.ProviderRequests(ctx, sessionID)
+	responses, respErr := promptStore.ProviderResponses(ctx, sessionID)
+	if reqErr != nil {
+		requests = nil
 	}
-	requests = filterPromptCacheRequestsForSession(sessionID, requests)
-	responses = filterPromptCacheResponsesForSession(sessionID, responses, requests)
+	if respErr != nil {
+		responses = nil
+	}
 	return promptCacheObservation{
 		ProviderRequests: observedProviderRequestsFromPromptCache(ctx, promptStore, requests),
 		ContextStatuses:  contextStatusesFromPromptRecords(requests, responses),
 	}
-}
-
-func filterPromptCacheRequestsForSession(sessionID string, records []cache.ProviderRequestRecord) []cache.ProviderRequestRecord {
-	if sessionID == "" {
-		return records
-	}
-	out := make([]cache.ProviderRequestRecord, 0, len(records))
-	for _, record := range records {
-		if promptCacheRequestBelongsToSession(sessionID, record) {
-			out = append(out, record)
-		}
-	}
-	return out
-}
-
-func promptCacheRequestBelongsToSession(sessionID string, record cache.ProviderRequestRecord) bool {
-	if record.SessionID != "" {
-		return record.SessionID == sessionID
-	}
-	if record.ThreadID != "" {
-		return record.ThreadID == sessionID
-	}
-	return record.RunID == sessionID
-}
-
-func filterPromptCacheResponsesForSession(sessionID string, records []cache.ProviderResponseRecord, requests []cache.ProviderRequestRecord) []cache.ProviderResponseRecord {
-	if sessionID == "" {
-		return records
-	}
-	allowedRequests := make(map[string]struct{}, len(requests)*2)
-	for _, req := range requests {
-		if req.ID != "" {
-			allowedRequests[req.ID] = struct{}{}
-		}
-		if id := requestID(req.RunID, req.Step); id != "" {
-			allowedRequests[id] = struct{}{}
-		}
-	}
-	out := make([]cache.ProviderResponseRecord, 0, len(records))
-	for _, record := range records {
-		if promptCacheResponseBelongsToSession(sessionID, record, allowedRequests) {
-			out = append(out, record)
-		}
-	}
-	return out
-}
-
-func promptCacheResponseBelongsToSession(sessionID string, record cache.ProviderResponseRecord, allowedRequests map[string]struct{}) bool {
-	if record.ThreadID != "" {
-		return record.ThreadID == sessionID
-	}
-	if _, ok := allowedRequests[record.RequestID]; ok {
-		return true
-	}
-	return record.RunID == sessionID
 }
 
 func observedProviderRequestsFromPromptCache(ctx context.Context, promptStore cache.Store, records []cache.ProviderRequestRecord) []ObservedProviderRequest {
@@ -1999,13 +1879,7 @@ func promptSegmentsForRequest(ctx context.Context, promptStore cache.Store, reco
 }
 
 func promptScopeIDForRequest(record cache.ProviderRequestRecord) string {
-	if record.SessionID != "" {
-		return record.SessionID
-	}
-	if record.ThreadID != "" {
-		return record.ThreadID
-	}
-	return record.RunID
+	return record.PromptScopeID
 }
 
 func observedProviderRequestFromPromptRecord(record cache.ProviderRequestRecord, segments []cache.Segment, toolset cache.ToolsetSnapshot) ObservedProviderRequest {
@@ -2029,9 +1903,9 @@ func observedProviderRequestFromPromptRecord(record cache.ProviderRequestRecord,
 	}
 	return ObservedProviderRequest{
 		RunID:             record.RunID,
-		SessionID:         record.SessionID,
 		ThreadID:          record.ThreadID,
 		TurnID:            record.TurnID,
+		PromptScopeID:     record.PromptScopeID,
 		Step:              record.Step,
 		LogicalRequestID:  record.LogicalRequestID,
 		Attempt:           record.Attempt,
@@ -2592,7 +2466,9 @@ func (r Runner) runEvalDemo(ctx context.Context, resp RunResponse) RunResponse {
 		},
 		Options: engine.Options{
 			RunID:              "testui-eval-demo",
-			SessionID:          "testui-eval-demo",
+			ThreadID:           "testui-eval-demo",
+			TurnID:             "testui-eval-demo",
+			PromptScopeID:      "testui-eval-demo",
 			TraceID:            "testui-eval-demo",
 			ProviderName:       "scripted",
 			Model:              "scripted-eval",
@@ -2676,7 +2552,9 @@ func (r Runner) runProviderSmoke(ctx context.Context, resp RunResponse) RunRespo
 		Sink:         rec,
 		Options: engine.Options{
 			RunID:                   cfg.RunID,
-			SessionID:               cfg.RunID,
+			ThreadID:                cfg.RunID,
+			TurnID:                  cfg.RunID,
+			PromptScopeID:           cfg.RunID,
 			TraceID:                 cfg.RunID,
 			ProviderName:            cfg.Provider,
 			Model:                   cfg.Model,

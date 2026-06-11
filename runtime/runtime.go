@@ -45,7 +45,7 @@ type CapabilityOptions struct {
 	MCPManager             *mcp.Manager
 }
 
-func NewEngine(cfg config.Config, store session.Store, registry *tools.Registry) (*engine.Engine, error) {
+func NewEngine(cfg config.Config, store session.TranscriptStore, registry *tools.Registry) (*engine.Engine, error) {
 	resolved, err := config.Resolve(cfg, nil)
 	if err != nil {
 		return nil, err
@@ -273,7 +273,7 @@ func (s mcpEventSink) EmitMCP(diag mcp.Diagnostic) {
 	})
 }
 
-func NewEngineWithProvider(cfg config.Config, p provider.Provider, store session.Store, registry *tools.Registry) (*engine.Engine, error) {
+func NewEngineWithProvider(cfg config.Config, p provider.Provider, store session.TranscriptStore, registry *tools.Registry) (*engine.Engine, error) {
 	cfg = config.ResolvePrompt(cfg)
 	if store == nil {
 		store = session.NewMemoryStore()
@@ -294,8 +294,8 @@ func NewEngineWithProvider(cfg config.Config, p provider.Provider, store session
 		Tools:        registry,
 		Options: engine.Options{
 			RunID:                   cfg.RunID,
-			SessionID:               cfg.RunID,
 			TraceID:                 cfg.RunID,
+			PromptScopeID:           cfg.RunID,
 			ProviderName:            cfg.Provider,
 			Model:                   cfg.Model,
 			CacheRetention:          config.PromptCacheRetention(cfg),

@@ -167,7 +167,7 @@ func TestPermissionDenyDoesNotCallResourcesApproverOrHandler(t *testing.T) {
 	got := reg.RunWithOptions(context.Background(), provider.ToolCall{ID: "call", Name: "blocked", Args: `{"value":"x"}`}, func(context.Context, ApprovalRequest) (PermissionDecision, error) {
 		called = true
 		return PermissionDecisionAllow, nil
-	}, RunOptions{RunID: "run", SessionID: "session", Step: 7, CWD: "/tmp"})
+	}, RunOptions{RunID: "run", ThreadID: "session", Step: 7, CWD: "/tmp"})
 	if !got.IsError || got.Text != ErrRejected.Error() {
 		t.Fatalf("result = %#v", got)
 	}
@@ -338,7 +338,7 @@ func TestDefinePassesRunSessionStepCWDAndTypedArgs(t *testing.T) {
 	var approvalHost map[string]string
 	opts := RunOptions{
 		RunID:       "run",
-		SessionID:   "session",
+		ThreadID:   "session",
 		Step:        3,
 		CWD:         "/repo",
 		Labels:      map[string]string{"correlation.turn": "turn-1"},
@@ -348,7 +348,7 @@ func TestDefinePassesRunSessionStepCWDAndTypedArgs(t *testing.T) {
 		Definition{Name: "inspect", InputSchema: StrictObject(map[string]any{"value": String("")}, []string{"value"}), Permission: PermissionSpec{Mode: PermissionAsk}},
 		nil,
 		func(inv Invocation[testArgs]) ([]ResourceRef, error) {
-			if inv.RunID != "run" || inv.SessionID != "session" || inv.Step != 3 || inv.CWD != "/repo" || inv.Args.Value != "typed" {
+			if inv.RunID != "run" || inv.ThreadID != "session" || inv.Step != 3 || inv.CWD != "/repo" || inv.Args.Value != "typed" {
 				t.Fatalf("resource invocation = %#v", inv)
 			}
 			if inv.HostContext["target_id"] != "env-a" || inv.Labels["correlation.turn"] != "turn-1" {
@@ -379,7 +379,7 @@ func TestDefinePassesRunSessionStepCWDAndTypedArgs(t *testing.T) {
 	if got.IsError || got.Text != "typed" {
 		t.Fatalf("result = %#v", got)
 	}
-	if seen.CallID != "call" || seen.Name != "inspect" || seen.RawArgs != `{"value":"typed"}` || seen.RunID != "run" || seen.SessionID != "session" || seen.Step != 3 || seen.CWD != "/repo" || seen.Args.Value != "typed" {
+	if seen.CallID != "call" || seen.Name != "inspect" || seen.RawArgs != `{"value":"typed"}` || seen.RunID != "run" || seen.ThreadID != "session" || seen.Step != 3 || seen.CWD != "/repo" || seen.Args.Value != "typed" {
 		t.Fatalf("handler invocation = %#v", seen)
 	}
 	if seen.Labels["correlation.turn"] != "turn-1" || approvalHost["target_id"] != "mutated-by-approval" {

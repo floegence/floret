@@ -241,7 +241,6 @@ type AgentRunRequest struct {
 	Message        string                `json:"message"`
 	SystemPrompt   string                `json:"system_prompt"`
 	SelectedTools  []string              `json:"selected_tools,omitempty"`
-	ToolMode       string                `json:"tool_mode,omitempty"`
 	ContextPolicy  contextpolicy.Policy  `json:"context_policy,omitempty"`
 }
 
@@ -355,9 +354,9 @@ type ObservedCompactionEvent struct {
 
 type ObservedProviderRequest struct {
 	RunID                   string                          `json:"run_id,omitempty"`
-	SessionID               string                          `json:"session_id,omitempty"`
 	ThreadID                string                          `json:"thread_id,omitempty"`
 	TurnID                  string                          `json:"turn_id,omitempty"`
+	PromptScopeID           string                          `json:"prompt_scope_id,omitempty"`
 	Step                    int                             `json:"step"`
 	LogicalRequestID        string                          `json:"logical_request_id,omitempty"`
 	Attempt                 int                             `json:"attempt,omitempty"`
@@ -393,10 +392,10 @@ type ObservedCacheSummary struct {
 
 type ObservedRawSegment struct {
 	ID                   string            `json:"id"`
-	RunID                string            `json:"run_id,omitempty"`
-	SessionID            string            `json:"session_id,omitempty"`
+	PromptScopeID        string            `json:"prompt_scope_id,omitempty"`
+	CreatedByRunID       string            `json:"created_by_run_id,omitempty"`
+	CreatedByTurnID      string            `json:"created_by_turn_id,omitempty"`
 	ThreadID             string            `json:"thread_id,omitempty"`
-	TurnID               string            `json:"turn_id,omitempty"`
 	EntryID              string            `json:"entry_id,omitempty"`
 	ParentEntryID        string            `json:"parent_entry_id,omitempty"`
 	Kind                 cache.SegmentKind `json:"kind"`
@@ -421,7 +420,8 @@ type ObservedRawSegment struct {
 
 type ObservedProviderEvent struct {
 	RunID        string                         `json:"run_id,omitempty"`
-	SessionID    string                         `json:"session_id,omitempty"`
+	ThreadID     string                         `json:"thread_id,omitempty"`
+	TurnID       string                         `json:"turn_id,omitempty"`
 	Step         int                            `json:"step"`
 	Type         provider.EventType             `json:"type"`
 	ObservedAt   time.Time                      `json:"observed_at"`

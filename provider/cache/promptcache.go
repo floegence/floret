@@ -60,6 +60,26 @@ type CachePolicy struct {
 	PreferContinuation bool      `json:"prefer_continuation,omitempty"`
 }
 
+type PromptScopeRef struct {
+	PromptScopeID string
+	RunID         string
+	ThreadID      string
+	TurnID        string
+}
+
+func (r PromptScopeRef) validate() error {
+	if strings.TrimSpace(r.PromptScopeID) == "" {
+		return errors.New("prompt scope id is required")
+	}
+	if strings.TrimSpace(r.RunID) == "" {
+		return errors.New("run id is required")
+	}
+	if strings.TrimSpace(r.TurnID) == "" {
+		return errors.New("turn id is required")
+	}
+	return nil
+}
+
 type RawPlan struct {
 	Version              string                        `json:"version"`
 	SegmentIDs           []string                      `json:"segment_ids"`
@@ -84,10 +104,10 @@ type RawPlan struct {
 
 type Segment struct {
 	ID                   string          `json:"id"`
-	RunID                string          `json:"run_id"`
-	SessionID            string          `json:"session_id,omitempty"`
+	PromptScopeID        string          `json:"prompt_scope_id"`
+	CreatedByRunID       string          `json:"created_by_run_id,omitempty"`
+	CreatedByTurnID      string          `json:"created_by_turn_id,omitempty"`
 	ThreadID             string          `json:"thread_id,omitempty"`
-	TurnID               string          `json:"turn_id,omitempty"`
 	EntryID              string          `json:"entry_id,omitempty"`
 	ParentEntryID        string          `json:"parent_entry_id,omitempty"`
 	Provider             string          `json:"provider"`
@@ -144,25 +164,25 @@ type ToolsetOptions struct {
 }
 
 type ToolsetSnapshot struct {
-	ID           string                 `json:"id"`
-	RunID        string                 `json:"run_id"`
-	SessionID    string                 `json:"session_id,omitempty"`
-	ThreadID     string                 `json:"thread_id,omitempty"`
-	TurnID       string                 `json:"turn_id,omitempty"`
-	Provider     string                 `json:"provider"`
-	Model        string                 `json:"model"`
-	Epoch        int                    `json:"epoch"`
-	Tools        []ToolDefinition       `json:"tools"`
-	HostedTools  []HostedToolDefinition `json:"hosted_tools,omitempty"`
-	RawSegmentID string                 `json:"raw_segment_id"`
-	Fingerprint  string                 `json:"fingerprint"`
-	CreatedAt    time.Time              `json:"created_at"`
+	ID              string                 `json:"id"`
+	PromptScopeID   string                 `json:"prompt_scope_id"`
+	CreatedByRunID  string                 `json:"created_by_run_id,omitempty"`
+	CreatedByTurnID string                 `json:"created_by_turn_id,omitempty"`
+	ThreadID        string                 `json:"thread_id,omitempty"`
+	Provider        string                 `json:"provider"`
+	Model           string                 `json:"model"`
+	Epoch           int                    `json:"epoch"`
+	Tools           []ToolDefinition       `json:"tools"`
+	HostedTools     []HostedToolDefinition `json:"hosted_tools,omitempty"`
+	RawSegmentID    string                 `json:"raw_segment_id"`
+	Fingerprint     string                 `json:"fingerprint"`
+	CreatedAt       time.Time              `json:"created_at"`
 }
 
 type ProviderRequestRecord struct {
 	ID                   string                        `json:"id"`
+	PromptScopeID        string                        `json:"prompt_scope_id"`
 	RunID                string                        `json:"run_id"`
-	SessionID            string                        `json:"session_id,omitempty"`
 	ThreadID             string                        `json:"thread_id,omitempty"`
 	TurnID               string                        `json:"turn_id,omitempty"`
 	Step                 int                           `json:"step"`
@@ -186,27 +206,9 @@ type ProviderRequestRecord struct {
 	CreatedAt            time.Time                     `json:"created_at"`
 }
 
-func (r *ProviderRequestRecord) UnmarshalJSON(data []byte) error {
-	type recordAlias ProviderRequestRecord
-	var raw struct {
-		recordAlias
-		ContextUsage legacyContextUsage `json:"context_usage,omitempty"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	*r = ProviderRequestRecord(raw.recordAlias)
-	if r.RequestEstimate == (contextpolicy.RequestEstimate{}) && raw.ContextUsage.hasValues() {
-		r.RequestEstimate = raw.ContextUsage.requestEstimate()
-	}
-	if r.ProjectedPressure == (contextpolicy.ContextPressure{}) && raw.ContextUsage.hasValues() {
-		r.ProjectedPressure = raw.ContextUsage.projectedPressure()
-	}
-	return nil
-}
-
 type ProviderResponseRecord struct {
 	RequestID          string                        `json:"request_id"`
+	PromptScopeID      string                        `json:"prompt_scope_id"`
 	RunID              string                        `json:"run_id,omitempty"`
 	ThreadID           string                        `json:"thread_id,omitempty"`
 	TurnID             string                        `json:"turn_id,omitempty"`
@@ -226,29 +228,6 @@ type ProviderResponseRecord struct {
 	CreatedAt          time.Time                     `json:"created_at"`
 }
 
-func (r *ProviderResponseRecord) UnmarshalJSON(data []byte) error {
-	type recordAlias ProviderResponseRecord
-	var raw struct {
-		recordAlias
-		EstimatedInputTokens int64 `json:"estimated_input_tokens,omitempty"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	*r = ProviderResponseRecord(raw.recordAlias)
-	if r.InputTokens == 0 && raw.EstimatedInputTokens != 0 {
-		r.InputTokens = raw.EstimatedInputTokens
-	}
-	if r.WindowInputTokens == 0 && raw.EstimatedInputTokens != 0 {
-		r.WindowInputTokens = raw.EstimatedInputTokens
-	}
-	if r.UsageSource == "" && (r.InputTokens != 0 || r.OutputTokens != 0 || r.WindowInputTokens != 0 || r.TotalTokens != 0) {
-		r.UsageSource = "native"
-		r.UsageAvailable = true
-	}
-	return nil
-}
-
 type RequestShapeHashes struct {
 	SystemPrefixHash    string `json:"system_prefix_hash,omitempty"`
 	MessagePayloadHash  string `json:"message_payload_hash,omitempty"`
@@ -259,7 +238,7 @@ type RequestShapeHashes struct {
 }
 
 type PressureAnchorState struct {
-	SessionID            string                           `json:"session_id,omitempty"`
+	PromptScopeID        string                           `json:"prompt_scope_id,omitempty"`
 	ThreadID             string                           `json:"thread_id,omitempty"`
 	Provider             string                           `json:"provider,omitempty"`
 	Model                string                           `json:"model,omitempty"`
@@ -297,7 +276,7 @@ type Store interface {
 }
 
 type Deleter interface {
-	DeleteRuns(context.Context, ...string) error
+	DeletePromptScopes(context.Context, ...string) error
 }
 
 type MemoryStore struct {
@@ -319,10 +298,10 @@ func (s *MemoryStore) AppendSegment(_ context.Context, seg Segment) error {
 	return nil
 }
 
-func (s *MemoryStore) Segments(_ context.Context, runID, provider, model string) ([]Segment, error) {
+func (s *MemoryStore) Segments(_ context.Context, promptScopeID, provider, model string) ([]Segment, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return filterSegments(s.segments, runID, provider, model), nil
+	return filterSegments(s.segments, promptScopeID, provider, model), nil
 }
 
 func (s *MemoryStore) AppendToolset(_ context.Context, snap ToolsetSnapshot) error {
@@ -332,12 +311,12 @@ func (s *MemoryStore) AppendToolset(_ context.Context, snap ToolsetSnapshot) err
 	return nil
 }
 
-func (s *MemoryStore) ActiveToolset(_ context.Context, runID, provider, model string) (ToolsetSnapshot, bool, error) {
+func (s *MemoryStore) ActiveToolset(_ context.Context, promptScopeID, provider, model string) (ToolsetSnapshot, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := len(s.toolsets) - 1; i >= 0; i-- {
 		item := s.toolsets[i]
-		if item.RunID == runID && item.Provider == provider && item.Model == model {
+		if item.PromptScopeID == promptScopeID && item.Provider == provider && item.Model == model {
 			return cloneToolset(item), true, nil
 		}
 	}
@@ -351,12 +330,12 @@ func (s *MemoryStore) AppendProviderRequest(_ context.Context, req ProviderReque
 	return nil
 }
 
-func (s *MemoryStore) ProviderRequests(_ context.Context, runID string) ([]ProviderRequestRecord, error) {
+func (s *MemoryStore) ProviderRequests(_ context.Context, promptScopeID string) ([]ProviderRequestRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []ProviderRequestRecord
 	for _, req := range s.requests {
-		if req.RunID == runID {
+		if req.PromptScopeID == promptScopeID {
 			out = append(out, req)
 		}
 	}
@@ -370,60 +349,56 @@ func (s *MemoryStore) AppendProviderResponse(_ context.Context, resp ProviderRes
 	return nil
 }
 
-func (s *MemoryStore) ProviderResponses(_ context.Context, runID string) ([]ProviderResponseRecord, error) {
+func (s *MemoryStore) ProviderResponses(_ context.Context, promptScopeID string) ([]ProviderResponseRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []ProviderResponseRecord
 	for _, resp := range s.responses {
-		if resp.RunID == runID {
+		if resp.PromptScopeID == promptScopeID {
 			out = append(out, resp)
 		}
 	}
 	return out, nil
 }
 
-func (s *MemoryStore) LatestPressureAnchor(_ context.Context, sessionID, providerName, model string) (PressureAnchorState, bool, error) {
+func (s *MemoryStore) LatestPressureAnchor(_ context.Context, promptScopeID, providerName, model string) (PressureAnchorState, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := len(s.responses) - 1; i >= 0; i-- {
 		anchor := s.responses[i].PressureAnchor
-		if pressureAnchorMatches(anchor, sessionID, providerName, model) {
+		if pressureAnchorMatches(anchor, promptScopeID, providerName, model) {
 			return anchor, true, nil
 		}
 	}
 	return PressureAnchorState{}, false, nil
 }
 
-func (s *MemoryStore) DeleteRuns(_ context.Context, runIDs ...string) error {
+func (s *MemoryStore) DeletePromptScopes(_ context.Context, promptScopeIDs ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	remove := map[string]struct{}{}
-	for _, runID := range runIDs {
-		if runID = strings.TrimSpace(runID); runID != "" {
-			remove[runID] = struct{}{}
+	for _, promptScopeID := range promptScopeIDs {
+		if promptScopeID = strings.TrimSpace(promptScopeID); promptScopeID != "" {
+			remove[promptScopeID] = struct{}{}
 		}
 	}
 	if len(remove) == 0 {
 		return nil
 	}
 	s.segments = slices.DeleteFunc(s.segments, func(seg Segment) bool {
-		_, ok := remove[seg.RunID]
+		_, ok := remove[seg.PromptScopeID]
 		return ok
 	})
 	s.toolsets = slices.DeleteFunc(s.toolsets, func(snap ToolsetSnapshot) bool {
-		_, ok := remove[snap.RunID]
+		_, ok := remove[snap.PromptScopeID]
 		return ok
 	})
 	s.requests = slices.DeleteFunc(s.requests, func(req ProviderRequestRecord) bool {
-		_, ok := remove[req.RunID]
+		_, ok := remove[req.PromptScopeID]
 		return ok
 	})
 	s.responses = slices.DeleteFunc(s.responses, func(resp ProviderResponseRecord) bool {
-		runID := resp.RunID
-		if runID == "" {
-			runID = runIDFromRequest(resp.RequestID)
-		}
-		_, ok := remove[runID]
+		_, ok := remove[resp.PromptScopeID]
 		return ok
 	})
 	return nil
@@ -439,29 +414,29 @@ func NewFileStore(root string) *FileStore {
 }
 
 func (s *FileStore) AppendSegment(ctx context.Context, seg Segment) error {
-	return s.append(ctx, seg.RunID, "raw_segments.jsonl", seg)
+	return s.append(ctx, seg.PromptScopeID, "raw_segments.jsonl", seg)
 }
 
-func (s *FileStore) Segments(ctx context.Context, runID, provider, model string) ([]Segment, error) {
+func (s *FileStore) Segments(ctx context.Context, promptScopeID, provider, model string) ([]Segment, error) {
 	var all []Segment
-	if err := s.read(ctx, runID, "raw_segments.jsonl", &all); err != nil {
+	if err := s.read(ctx, promptScopeID, "raw_segments.jsonl", &all); err != nil {
 		return nil, err
 	}
-	return filterSegments(all, runID, provider, model), nil
+	return filterSegments(all, promptScopeID, provider, model), nil
 }
 
 func (s *FileStore) AppendToolset(ctx context.Context, snap ToolsetSnapshot) error {
-	return s.append(ctx, snap.RunID, "toolsets.jsonl", snap)
+	return s.append(ctx, snap.PromptScopeID, "toolsets.jsonl", snap)
 }
 
-func (s *FileStore) ActiveToolset(ctx context.Context, runID, provider, model string) (ToolsetSnapshot, bool, error) {
+func (s *FileStore) ActiveToolset(ctx context.Context, promptScopeID, provider, model string) (ToolsetSnapshot, bool, error) {
 	var all []ToolsetSnapshot
-	if err := s.read(ctx, runID, "toolsets.jsonl", &all); err != nil {
+	if err := s.read(ctx, promptScopeID, "toolsets.jsonl", &all); err != nil {
 		return ToolsetSnapshot{}, false, err
 	}
 	for i := len(all) - 1; i >= 0; i-- {
 		item := all[i]
-		if item.RunID == runID && item.Provider == provider && item.Model == model {
+		if item.PromptScopeID == promptScopeID && item.Provider == provider && item.Model == model {
 			return cloneToolset(item), true, nil
 		}
 	}
@@ -469,37 +444,33 @@ func (s *FileStore) ActiveToolset(ctx context.Context, runID, provider, model st
 }
 
 func (s *FileStore) AppendProviderRequest(ctx context.Context, req ProviderRequestRecord) error {
-	return s.append(ctx, req.RunID, "requests.jsonl", req)
+	return s.append(ctx, req.PromptScopeID, "requests.jsonl", req)
 }
 
-func (s *FileStore) ProviderRequests(ctx context.Context, runID string) ([]ProviderRequestRecord, error) {
+func (s *FileStore) ProviderRequests(ctx context.Context, promptScopeID string) ([]ProviderRequestRecord, error) {
 	var all []ProviderRequestRecord
-	if err := s.read(ctx, runID, "requests.jsonl", &all); err != nil {
+	if err := s.read(ctx, promptScopeID, "requests.jsonl", &all); err != nil {
 		return nil, err
 	}
 	return all, nil
 }
 
 func (s *FileStore) AppendProviderResponse(ctx context.Context, resp ProviderResponseRecord) error {
-	runID := resp.RunID
-	if runID == "" {
-		runID = runIDFromRequest(resp.RequestID)
+	if strings.TrimSpace(resp.PromptScopeID) == "" {
+		return errors.New("cache response must include prompt scope id")
 	}
-	if runID == "" {
-		return errors.New("cache response must include run id")
-	}
-	return s.append(ctx, runID, "responses.jsonl", resp)
+	return s.append(ctx, resp.PromptScopeID, "responses.jsonl", resp)
 }
 
-func (s *FileStore) ProviderResponses(ctx context.Context, runID string) ([]ProviderResponseRecord, error) {
+func (s *FileStore) ProviderResponses(ctx context.Context, promptScopeID string) ([]ProviderResponseRecord, error) {
 	var all []ProviderResponseRecord
-	if err := s.read(ctx, runID, "responses.jsonl", &all); err != nil {
+	if err := s.read(ctx, promptScopeID, "responses.jsonl", &all); err != nil {
 		return nil, err
 	}
 	return all, nil
 }
 
-func (s *FileStore) LatestPressureAnchor(ctx context.Context, sessionID, providerName, model string) (PressureAnchorState, bool, error) {
+func (s *FileStore) LatestPressureAnchor(ctx context.Context, promptScopeID, providerName, model string) (PressureAnchorState, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return PressureAnchorState{}, false, err
 	}
@@ -534,7 +505,7 @@ func (s *FileStore) LatestPressureAnchor(ctx context.Context, sessionID, provide
 				return PressureAnchorState{}, false, err
 			}
 			anchor := resp.PressureAnchor
-			if !pressureAnchorMatches(anchor, sessionID, providerName, model) {
+			if !pressureAnchorMatches(anchor, promptScopeID, providerName, model) {
 				continue
 			}
 			if !found || latest.CreatedAt.IsZero() || anchor.CreatedAt.After(latest.CreatedAt) {
@@ -546,31 +517,31 @@ func (s *FileStore) LatestPressureAnchor(ctx context.Context, sessionID, provide
 	return latest, found, nil
 }
 
-func (s *FileStore) DeleteRuns(ctx context.Context, runIDs ...string) error {
+func (s *FileStore) DeletePromptScopes(ctx context.Context, promptScopeIDs ...string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, runID := range runIDs {
-		runID = strings.TrimSpace(runID)
-		if runID == "" {
+	for _, promptScopeID := range promptScopeIDs {
+		promptScopeID = strings.TrimSpace(promptScopeID)
+		if promptScopeID == "" {
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(s.root, safePath(runID))); err != nil {
+		if err := os.RemoveAll(filepath.Join(s.root, safePath(promptScopeID))); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *FileStore) append(ctx context.Context, runID, name string, value any) error {
+func (s *FileStore) append(ctx context.Context, promptScopeID, name string, value any) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	dir := filepath.Join(s.root, safePath(runID))
+	dir := filepath.Join(s.root, safePath(promptScopeID))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
@@ -589,13 +560,13 @@ func (s *FileStore) append(ctx context.Context, runID, name string, value any) e
 	return f.Sync()
 }
 
-func (s *FileStore) read(ctx context.Context, runID, name string, target any) error {
+func (s *FileStore) read(ctx context.Context, promptScopeID, name string, target any) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	path := filepath.Join(s.root, safePath(runID), name)
+	path := filepath.Join(s.root, safePath(promptScopeID), name)
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil
@@ -656,8 +627,8 @@ func (s *FileStore) read(ctx context.Context, runID, name string, target any) er
 }
 
 type BuildInput struct {
+	PromptScopeID  string
 	RunID          string
-	SessionID      string
 	ThreadID       string
 	TurnID         string
 	Provider       string
@@ -684,17 +655,18 @@ func BuildPlan(ctx context.Context, store Store, input BuildInput) (RawPlan, []s
 	if input.AdapterVersion == "" {
 		input.AdapterVersion = Version
 	}
-	if input.ThreadID == "" {
-		input.ThreadID = input.SessionID
-	}
-	if input.TurnID == "" {
-		input.TurnID = input.RunID
+	if err := (PromptScopeRef{
+		PromptScopeID: input.PromptScopeID,
+		RunID:         input.RunID,
+		ThreadID:      input.ThreadID,
+		TurnID:        input.TurnID,
+	}).validate(); err != nil {
+		return RawPlan{}, nil, err
 	}
 	if input.Now.IsZero() {
 		input.Now = time.Now()
 	}
-	scopeID := cacheScopeID(input.RunID, input.SessionID)
-	existing, err := store.Segments(ctx, scopeID, input.Provider, input.Model)
+	existing, err := store.Segments(ctx, input.PromptScopeID, input.Provider, input.Model)
 	if err != nil {
 		return RawPlan{}, nil, err
 	}
@@ -800,28 +772,30 @@ func BuildPlan(ctx context.Context, store Store, input BuildInput) (RawPlan, []s
 func segmentForCurrentRef(existing, current Segment) Segment {
 	existing.EntryID = current.EntryID
 	existing.ParentEntryID = current.ParentEntryID
-	existing.TurnID = current.TurnID
 	existing.CompactionGeneration = current.CompactionGeneration
 	existing.CompactionWindowID = current.CompactionWindowID
 	existing.CompactionEntryID = current.CompactionEntryID
 	return existing
 }
 
-func EnsureToolset(ctx context.Context, store Store, runID, sessionID, provider, model string, defs []ToolDefinition, hosted []HostedToolDefinition, now time.Time) (ToolsetSnapshot, bool, error) {
-	return EnsureToolsetWithOptions(ctx, store, runID, sessionID, provider, model, defs, hosted, now, ToolsetOptions{})
+func EnsureToolset(ctx context.Context, store Store, promptScopeID, runID, threadID, turnID, provider, model string, defs []ToolDefinition, hosted []HostedToolDefinition, now time.Time) (ToolsetSnapshot, bool, error) {
+	return EnsureToolsetWithOptions(ctx, store, promptScopeID, runID, threadID, turnID, provider, model, defs, hosted, now, ToolsetOptions{})
 }
 
-func EnsureToolsetWithOptions(ctx context.Context, store Store, runID, sessionID, provider, model string, defs []ToolDefinition, hosted []HostedToolDefinition, now time.Time, options ToolsetOptions) (ToolsetSnapshot, bool, error) {
+func EnsureToolsetWithOptions(ctx context.Context, store Store, promptScopeID, runID, threadID, turnID, provider, model string, defs []ToolDefinition, hosted []HostedToolDefinition, now time.Time, options ToolsetOptions) (ToolsetSnapshot, bool, error) {
 	if store == nil {
 		store = NewMemoryStore()
+	}
+	ref := PromptScopeRef{PromptScopeID: promptScopeID, RunID: runID, ThreadID: threadID, TurnID: turnID}
+	if err := ref.validate(); err != nil {
+		return ToolsetSnapshot{}, false, err
 	}
 	var err error
 	defs, hosted, err = NormalizeToolsetChecked(defs, hosted, options)
 	if err != nil {
 		return ToolsetSnapshot{}, false, err
 	}
-	scopeID := cacheScopeID(runID, sessionID)
-	if snap, ok, err := store.ActiveToolset(ctx, scopeID, provider, model); ok || err != nil {
+	if snap, ok, err := store.ActiveToolset(ctx, ref.PromptScopeID, provider, model); ok || err != nil {
 		return snap, false, err
 	}
 	if now.IsZero() {
@@ -830,79 +804,86 @@ func EnsureToolsetWithOptions(ctx context.Context, store Store, runID, sessionID
 	raw := mustCanonical(map[string]any{"hosted_tools": hosted, "kind": SegmentToolset, "tools": defs})
 	fingerprint := StableHash(raw)
 	seg := Segment{
-		ID:             fmt.Sprintf("%s:%s:%s", scopeID, SegmentToolset, fingerprint[:12]),
-		RunID:          scopeID,
-		SessionID:      sessionID,
-		ThreadID:       sessionID,
-		TurnID:         runID,
-		Provider:       provider,
-		Model:          model,
-		AdapterVersion: Version,
-		SchemaVersion:  Version,
-		Kind:           SegmentToolset,
-		Epoch:          1,
-		Sequence:       1,
-		Fingerprint:    fingerprint,
-		Raw:            raw,
-		SHA256:         fingerprint,
-		ByteLength:     len(raw),
-		CreatedAt:      now,
+		ID:              fmt.Sprintf("%s:%s:%s", ref.PromptScopeID, SegmentToolset, fingerprint[:12]),
+		PromptScopeID:   ref.PromptScopeID,
+		CreatedByRunID:  ref.RunID,
+		CreatedByTurnID: ref.TurnID,
+		ThreadID:        ref.ThreadID,
+		Provider:        provider,
+		Model:           model,
+		AdapterVersion:  Version,
+		SchemaVersion:   Version,
+		Kind:            SegmentToolset,
+		Epoch:           1,
+		Sequence:        1,
+		Fingerprint:     fingerprint,
+		Raw:             raw,
+		SHA256:          fingerprint,
+		ByteLength:      len(raw),
+		CreatedAt:       now,
 	}
 	if err := store.AppendSegment(ctx, seg); err != nil {
 		return ToolsetSnapshot{}, false, err
 	}
 	snap := ToolsetSnapshot{
-		ID:           fmt.Sprintf("%s:toolset:1", scopeID),
-		RunID:        scopeID,
-		SessionID:    sessionID,
-		ThreadID:     sessionID,
-		TurnID:       runID,
-		Provider:     provider,
-		Model:        model,
-		Epoch:        1,
-		Tools:        defs,
-		HostedTools:  hosted,
-		RawSegmentID: seg.ID,
-		Fingerprint:  fingerprint,
-		CreatedAt:    now,
+		ID:              fmt.Sprintf("%s:toolset:1", ref.PromptScopeID),
+		PromptScopeID:   ref.PromptScopeID,
+		CreatedByRunID:  ref.RunID,
+		CreatedByTurnID: ref.TurnID,
+		ThreadID:        ref.ThreadID,
+		Provider:        provider,
+		Model:           model,
+		Epoch:           1,
+		Tools:           defs,
+		HostedTools:     hosted,
+		RawSegmentID:    seg.ID,
+		Fingerprint:     fingerprint,
+		CreatedAt:       now,
 	}
 	return snap, true, store.AppendToolset(ctx, snap)
 }
 
-func EnsureCurrentToolset(ctx context.Context, store Store, runID, sessionID, provider, model string, defs []ToolDefinition, hosted []HostedToolDefinition, now time.Time) (ToolsetSnapshot, bool, error) {
-	return EnsureCurrentToolsetWithOptions(ctx, store, runID, sessionID, provider, model, defs, hosted, now, ToolsetOptions{})
+func EnsureCurrentToolset(ctx context.Context, store Store, promptScopeID, runID, threadID, turnID, provider, model string, defs []ToolDefinition, hosted []HostedToolDefinition, now time.Time) (ToolsetSnapshot, bool, error) {
+	return EnsureCurrentToolsetWithOptions(ctx, store, promptScopeID, runID, threadID, turnID, provider, model, defs, hosted, now, ToolsetOptions{})
 }
 
-func EnsureCurrentToolsetWithOptions(ctx context.Context, store Store, runID, sessionID, provider, model string, defs []ToolDefinition, hosted []HostedToolDefinition, now time.Time, options ToolsetOptions) (ToolsetSnapshot, bool, error) {
+func EnsureCurrentToolsetWithOptions(ctx context.Context, store Store, promptScopeID, runID, threadID, turnID, provider, model string, defs []ToolDefinition, hosted []HostedToolDefinition, now time.Time, options ToolsetOptions) (ToolsetSnapshot, bool, error) {
 	if store == nil {
 		store = NewMemoryStore()
+	}
+	ref := PromptScopeRef{PromptScopeID: promptScopeID, RunID: runID, ThreadID: threadID, TurnID: turnID}
+	if err := ref.validate(); err != nil {
+		return ToolsetSnapshot{}, false, err
 	}
 	var err error
 	defs, hosted, err = NormalizeToolsetChecked(defs, hosted, options)
 	if err != nil {
 		return ToolsetSnapshot{}, false, err
 	}
-	scopeID := cacheScopeID(runID, sessionID)
 	raw := mustCanonical(map[string]any{"hosted_tools": hosted, "kind": SegmentToolset, "tools": defs})
 	fingerprint := StableHash(raw)
-	if active, ok, err := store.ActiveToolset(ctx, scopeID, provider, model); err != nil {
+	if active, ok, err := store.ActiveToolset(ctx, ref.PromptScopeID, provider, model); err != nil {
 		return ToolsetSnapshot{}, false, err
 	} else if ok && active.Fingerprint == fingerprint {
 		return active, false, nil
 	} else if ok {
-		snap, err := ActivateToolsetWithOptions(ctx, store, runID, sessionID, provider, model, defs, hosted, now, options)
+		snap, err := ActivateToolsetWithOptions(ctx, store, promptScopeID, runID, threadID, turnID, provider, model, defs, hosted, now, options)
 		return snap, true, err
 	}
-	return EnsureToolsetWithOptions(ctx, store, runID, sessionID, provider, model, defs, hosted, now, options)
+	return EnsureToolsetWithOptions(ctx, store, promptScopeID, runID, threadID, turnID, provider, model, defs, hosted, now, options)
 }
 
-func ActivateToolset(ctx context.Context, store Store, runID, sessionID, provider, model string, defs []ToolDefinition, hosted []HostedToolDefinition, now time.Time) (ToolsetSnapshot, error) {
-	return ActivateToolsetWithOptions(ctx, store, runID, sessionID, provider, model, defs, hosted, now, ToolsetOptions{})
+func ActivateToolset(ctx context.Context, store Store, promptScopeID, runID, threadID, turnID, provider, model string, defs []ToolDefinition, hosted []HostedToolDefinition, now time.Time) (ToolsetSnapshot, error) {
+	return ActivateToolsetWithOptions(ctx, store, promptScopeID, runID, threadID, turnID, provider, model, defs, hosted, now, ToolsetOptions{})
 }
 
-func ActivateToolsetWithOptions(ctx context.Context, store Store, runID, sessionID, provider, model string, defs []ToolDefinition, hosted []HostedToolDefinition, now time.Time, options ToolsetOptions) (ToolsetSnapshot, error) {
+func ActivateToolsetWithOptions(ctx context.Context, store Store, promptScopeID, runID, threadID, turnID, provider, model string, defs []ToolDefinition, hosted []HostedToolDefinition, now time.Time, options ToolsetOptions) (ToolsetSnapshot, error) {
 	if store == nil {
 		store = NewMemoryStore()
+	}
+	ref := PromptScopeRef{PromptScopeID: promptScopeID, RunID: runID, ThreadID: threadID, TurnID: turnID}
+	if err := ref.validate(); err != nil {
+		return ToolsetSnapshot{}, err
 	}
 	var err error
 	defs, hosted, err = NormalizeToolsetChecked(defs, hosted, options)
@@ -912,9 +893,8 @@ func ActivateToolsetWithOptions(ctx context.Context, store Store, runID, session
 	if now.IsZero() {
 		now = time.Now()
 	}
-	scopeID := cacheScopeID(runID, sessionID)
 	epoch := 1
-	if active, ok, err := store.ActiveToolset(ctx, scopeID, provider, model); err != nil {
+	if active, ok, err := store.ActiveToolset(ctx, ref.PromptScopeID, provider, model); err != nil {
 		return ToolsetSnapshot{}, err
 	} else if ok {
 		epoch = active.Epoch + 1
@@ -922,41 +902,41 @@ func ActivateToolsetWithOptions(ctx context.Context, store Store, runID, session
 	raw := mustCanonical(map[string]any{"hosted_tools": hosted, "kind": SegmentToolset, "tools": defs})
 	fingerprint := StableHash(raw)
 	seg := Segment{
-		ID:             fmt.Sprintf("%s:%s:%d:%s", scopeID, SegmentToolset, epoch, fingerprint[:12]),
-		RunID:          scopeID,
-		SessionID:      sessionID,
-		ThreadID:       sessionID,
-		TurnID:         runID,
-		Provider:       provider,
-		Model:          model,
-		AdapterVersion: Version,
-		SchemaVersion:  Version,
-		Kind:           SegmentToolset,
-		Epoch:          epoch,
-		Sequence:       int64(epoch),
-		Fingerprint:    fingerprint,
-		Raw:            raw,
-		SHA256:         fingerprint,
-		ByteLength:     len(raw),
-		CreatedAt:      now,
+		ID:              fmt.Sprintf("%s:%s:%d:%s", ref.PromptScopeID, SegmentToolset, epoch, fingerprint[:12]),
+		PromptScopeID:   ref.PromptScopeID,
+		CreatedByRunID:  ref.RunID,
+		CreatedByTurnID: ref.TurnID,
+		ThreadID:        ref.ThreadID,
+		Provider:        provider,
+		Model:           model,
+		AdapterVersion:  Version,
+		SchemaVersion:   Version,
+		Kind:            SegmentToolset,
+		Epoch:           epoch,
+		Sequence:        int64(epoch),
+		Fingerprint:     fingerprint,
+		Raw:             raw,
+		SHA256:          fingerprint,
+		ByteLength:      len(raw),
+		CreatedAt:       now,
 	}
 	if err := store.AppendSegment(ctx, seg); err != nil {
 		return ToolsetSnapshot{}, err
 	}
 	snap := ToolsetSnapshot{
-		ID:           fmt.Sprintf("%s:toolset:%d", scopeID, epoch),
-		RunID:        scopeID,
-		SessionID:    sessionID,
-		ThreadID:     sessionID,
-		TurnID:       runID,
-		Provider:     provider,
-		Model:        model,
-		Epoch:        epoch,
-		Tools:        defs,
-		HostedTools:  hosted,
-		RawSegmentID: seg.ID,
-		Fingerprint:  fingerprint,
-		CreatedAt:    now,
+		ID:              fmt.Sprintf("%s:toolset:%d", ref.PromptScopeID, epoch),
+		PromptScopeID:   ref.PromptScopeID,
+		CreatedByRunID:  ref.RunID,
+		CreatedByTurnID: ref.TurnID,
+		ThreadID:        ref.ThreadID,
+		Provider:        provider,
+		Model:           model,
+		Epoch:           epoch,
+		Tools:           defs,
+		HostedTools:     hosted,
+		RawSegmentID:    seg.ID,
+		Fingerprint:     fingerprint,
+		CreatedAt:       now,
 	}
 	return snap, store.AppendToolset(ctx, snap)
 }
@@ -1114,25 +1094,21 @@ func CanonicalJSON(value any) (string, error) {
 	return string(data), nil
 }
 
-func DefaultNamespace(runID, provider, model string) string {
-	raw := strings.Join([]string{"floret", Version, runID, provider, model}, ":")
+func DefaultNamespace(promptScopeID, provider, model string) string {
+	raw := strings.Join([]string{"floret", Version, promptScopeID, provider, model}, ":")
 	return "floret:v1:" + StableHash(raw)[:24]
 }
 
-func cacheScopeID(runID, sessionID string) string {
-	if sessionID != "" {
-		return sessionID
+func RecordRequest(ctx context.Context, store Store, ref PromptScopeRef, step int, providerName, model string, policy CachePolicy, plan RawPlan) (ProviderRequestRecord, error) {
+	if err := ref.validate(); err != nil {
+		return ProviderRequestRecord{}, err
 	}
-	return runID
-}
-
-func RecordRequest(ctx context.Context, store Store, runID, sessionID string, step int, providerName, model string, policy CachePolicy, plan RawPlan) (ProviderRequestRecord, error) {
 	record := ProviderRequestRecord{
-		ID:                   fmt.Sprintf("%s:req:%d", runID, step),
-		RunID:                runID,
-		SessionID:            sessionID,
-		ThreadID:             sessionID,
-		TurnID:               runID,
+		ID:                   fmt.Sprintf("%s:req:%d", ref.RunID, step),
+		PromptScopeID:        ref.PromptScopeID,
+		RunID:                ref.RunID,
+		ThreadID:             ref.ThreadID,
+		TurnID:               ref.TurnID,
 		Step:                 step,
 		Provider:             providerName,
 		Model:                model,
@@ -1157,8 +1133,10 @@ func RecordRequest(ctx context.Context, store Store, runID, sessionID string, st
 }
 
 type ProviderRequestSnapshot struct {
+	PromptScopeID    string
 	RunID            string
-	SessionID        string
+	ThreadID         string
+	TurnID           string
 	Step             int
 	LogicalRequestID string
 	Attempt          int
@@ -1173,12 +1151,16 @@ func RecordProviderRequest(ctx context.Context, store Store, req ProviderRequest
 	if req.Attempt <= 0 {
 		req.Attempt = 1
 	}
+	ref := PromptScopeRef{PromptScopeID: req.PromptScopeID, RunID: req.RunID, ThreadID: req.ThreadID, TurnID: req.TurnID}
+	if err := ref.validate(); err != nil {
+		return ProviderRequestRecord{}, err
+	}
 	record := ProviderRequestRecord{
-		ID:                   fmt.Sprintf("%s:req:%d", req.RunID, req.Step),
-		RunID:                req.RunID,
-		SessionID:            req.SessionID,
-		ThreadID:             req.SessionID,
-		TurnID:               req.RunID,
+		ID:                   fmt.Sprintf("%s:req:%d", ref.RunID, req.Step),
+		PromptScopeID:        ref.PromptScopeID,
+		RunID:                ref.RunID,
+		ThreadID:             ref.ThreadID,
+		TurnID:               ref.TurnID,
 		Step:                 req.Step,
 		LogicalRequestID:     req.LogicalRequestID,
 		Attempt:              req.Attempt,
@@ -1260,13 +1242,12 @@ func newMessageSegment(input BuildInput, kind SegmentKind, msg session.Message, 
 		})
 	}
 	fingerprint := StableHash(raw)
-	scopeID := cacheScopeID(input.RunID, input.SessionID)
 	return Segment{
-		ID:                   fmt.Sprintf("%s:%s:%s", scopeID, kind, fingerprint[:12]),
-		RunID:                scopeID,
-		SessionID:            input.SessionID,
+		ID:                   fmt.Sprintf("%s:%s:%s", input.PromptScopeID, kind, fingerprint[:12]),
+		PromptScopeID:        input.PromptScopeID,
+		CreatedByRunID:       input.RunID,
+		CreatedByTurnID:      input.TurnID,
 		ThreadID:             input.ThreadID,
-		TurnID:               input.TurnID,
 		EntryID:              entryID,
 		ParentEntryID:        parentEntryID,
 		Provider:             input.Provider,
@@ -1302,13 +1283,12 @@ func newRenderedToolSegment(input BuildInput, toolset ToolsetSnapshot, tool Tool
 		fragmentType = FragmentGenericToolset
 	}
 	fingerprint := StableHash(raw)
-	scopeID := cacheScopeID(input.RunID, input.SessionID)
 	return Segment{
-		ID:              fmt.Sprintf("%s:%s:%s:%s", scopeID, SegmentToolset, tool.Name, fingerprint[:12]),
-		RunID:           scopeID,
-		SessionID:       input.SessionID,
+		ID:              fmt.Sprintf("%s:%s:%s:%s", input.PromptScopeID, SegmentToolset, tool.Name, fingerprint[:12]),
+		PromptScopeID:   input.PromptScopeID,
+		CreatedByRunID:  input.RunID,
+		CreatedByTurnID: input.TurnID,
 		ThreadID:        input.ThreadID,
-		TurnID:          input.TurnID,
 		Provider:        input.Provider,
 		Model:           input.Model,
 		AdapterVersion:  input.AdapterVersion,
@@ -1381,10 +1361,10 @@ func findSegmentByID(segments []Segment, id string) (Segment, bool) {
 	return Segment{}, false
 }
 
-func filterSegments(segments []Segment, runID, providerName, model string) []Segment {
+func filterSegments(segments []Segment, promptScopeID, providerName, model string) []Segment {
 	out := make([]Segment, 0, len(segments))
 	for _, seg := range segments {
-		if seg.RunID != runID {
+		if seg.PromptScopeID != promptScopeID {
 			continue
 		}
 		if providerName != "" && seg.Provider != providerName {
@@ -1432,122 +1412,11 @@ func mustCanonical(value any) string {
 	return raw
 }
 
-func runIDFromRequest(id string) string {
-	parts := strings.Split(id, ":req:")
-	if len(parts) == 2 {
-		return parts[0]
-	}
-	return ""
-}
-
-type legacyContextUsage struct {
-	PrefixTokens         int64  `json:"prefix_tokens,omitempty"`
-	MessageTokens        int64  `json:"message_tokens,omitempty"`
-	HistoryTokens        int64  `json:"history_tokens,omitempty"`
-	ToolDefinitionTokens int64  `json:"tool_definition_tokens,omitempty"`
-	ToolTokens           int64  `json:"tool_tokens,omitempty"`
-	InputTokens          int64  `json:"input_tokens,omitempty"`
-	EstimatedInputTokens int64  `json:"estimated_input_tokens,omitempty"`
-	ContextWindow        int64  `json:"context_window,omitempty"`
-	ThresholdTokens      int64  `json:"threshold_tokens,omitempty"`
-	RequestSafeLimit     int64  `json:"request_safe_limit_tokens,omitempty"`
-	OutputHeadroom       int64  `json:"output_headroom_tokens,omitempty"`
-	CompactionNeeded     bool   `json:"compaction_needed,omitempty"`
-	HardLimitExceeded    bool   `json:"hard_limit_exceeded,omitempty"`
-	Source               string `json:"source,omitempty"`
-	EstimatorSource      string `json:"estimator_source,omitempty"`
-	Method               string `json:"method,omitempty"`
-	EstimatorMethod      string `json:"estimator_method,omitempty"`
-	Confidence           string `json:"confidence,omitempty"`
-	EstimatorConfidence  string `json:"estimator_confidence,omitempty"`
-}
-
-func (u legacyContextUsage) hasValues() bool {
-	return u.PrefixTokens != 0 ||
-		u.MessageTokens != 0 ||
-		u.HistoryTokens != 0 ||
-		u.ToolDefinitionTokens != 0 ||
-		u.ToolTokens != 0 ||
-		u.InputTokens != 0 ||
-		u.EstimatedInputTokens != 0 ||
-		u.ContextWindow != 0 ||
-		u.ThresholdTokens != 0 ||
-		u.RequestSafeLimit != 0 ||
-		u.OutputHeadroom != 0 ||
-		u.CompactionNeeded ||
-		u.HardLimitExceeded ||
-		u.Source != "" ||
-		u.EstimatorSource != "" ||
-		u.Method != "" ||
-		u.EstimatorMethod != "" ||
-		u.Confidence != "" ||
-		u.EstimatorConfidence != ""
-}
-
-func (u legacyContextUsage) requestEstimate() contextpolicy.RequestEstimate {
-	messageTokens := u.MessageTokens
-	if messageTokens == 0 {
-		messageTokens = u.HistoryTokens
-	}
-	toolTokens := u.ToolDefinitionTokens
-	if toolTokens == 0 {
-		toolTokens = u.ToolTokens
-	}
-	total := u.EstimatedInputTokens
-	if total == 0 {
-		total = u.InputTokens
-	}
-	if total == 0 {
-		total = u.PrefixTokens + messageTokens + toolTokens
-	}
-	source := u.Source
-	if source == "" {
-		source = u.EstimatorSource
-	}
-	method := u.Method
-	if method == "" {
-		method = u.EstimatorMethod
-	}
-	if method == "" {
-		method = string(contextpolicy.MethodForEstimateSource(source, contextpolicy.EstimateMethodGenericPayload))
-	}
-	confidence := u.Confidence
-	if confidence == "" {
-		confidence = u.EstimatorConfidence
-	}
-	return contextpolicy.RequestEstimate{
-		PrefixTokens:         u.PrefixTokens,
-		MessageTokens:        messageTokens,
-		ToolDefinitionTokens: toolTokens,
-		EstimatedInputTokens: total,
-		Source:               source,
-		Method:               contextpolicy.EstimateMethod(method),
-		Confidence:           contextpolicy.EstimateConfidence(confidence),
-	}
-}
-
-func (u legacyContextUsage) projectedPressure() contextpolicy.ContextPressure {
-	estimate := u.requestEstimate()
-	return contextpolicy.ContextPressure{
-		ProjectedInputTokens: estimate.EstimatedInputTokens,
-		ContextWindowTokens:  u.ContextWindow,
-		ThresholdTokens:      u.ThresholdTokens,
-		RequestSafeLimit:     u.RequestSafeLimit,
-		OutputHeadroomTokens: u.OutputHeadroom,
-		Signal:               contextpolicy.PressureSignalProjected,
-		Source:               contextpolicy.PressureSourceFullRequestEstimate,
-		EstimateMethod:       estimate.Method,
-		Confidence:           estimate.Confidence,
-		CompactionNeeded:     u.CompactionNeeded,
-		HardLimitExceeded:    u.HardLimitExceeded,
-	}
-}
-
-func pressureAnchorMatches(anchor PressureAnchorState, sessionID, providerName, model string) bool {
+func pressureAnchorMatches(anchor PressureAnchorState, promptScopeID, providerName, model string) bool {
 	if anchor.WindowInputTokens <= 0 {
 		return false
 	}
-	if sessionID != "" && anchor.SessionID != sessionID && anchor.ThreadID != sessionID {
+	if promptScopeID != "" && anchor.PromptScopeID != promptScopeID {
 		return false
 	}
 	if providerName != "" && anchor.Provider != providerName {

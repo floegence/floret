@@ -42,25 +42,29 @@ type Definition struct {
 }
 
 type RunOptions struct {
-	RunID       string
-	SessionID   string
-	Step        int
-	CWD         string
-	Labels      map[string]string
-	HostContext map[string]string
+	RunID         string
+	ThreadID      string
+	TurnID        string
+	PromptScopeID string
+	Step          int
+	CWD           string
+	Labels        map[string]string
+	HostContext   map[string]string
 }
 
 type erasedInvocation struct {
-	CallID      string
-	Name        string
-	RawArgs     string
-	Args        any
-	RunID       string
-	SessionID   string
-	Step        int
-	CWD         string
-	Labels      map[string]string
-	HostContext map[string]string
+	CallID        string
+	Name          string
+	RawArgs       string
+	Args          any
+	RunID         string
+	ThreadID      string
+	TurnID        string
+	PromptScopeID string
+	Step          int
+	CWD           string
+	Labels        map[string]string
+	HostContext   map[string]string
 }
 
 type Tool struct {
@@ -100,16 +104,18 @@ func Define[T any](
 				return nil, fmt.Errorf("tool %q decoded unexpected args type", inv.Name)
 			}
 			return resources(Invocation[T]{
-				CallID:      inv.CallID,
-				Name:        inv.Name,
-				RawArgs:     inv.RawArgs,
-				Args:        args,
-				RunID:       inv.RunID,
-				SessionID:   inv.SessionID,
-				Step:        inv.Step,
-				CWD:         inv.CWD,
-				Labels:      cloneStringMap(inv.Labels),
-				HostContext: cloneStringMap(inv.HostContext),
+				CallID:        inv.CallID,
+				Name:          inv.Name,
+				RawArgs:       inv.RawArgs,
+				Args:          args,
+				RunID:         inv.RunID,
+				ThreadID:      inv.ThreadID,
+				TurnID:        inv.TurnID,
+				PromptScopeID: inv.PromptScopeID,
+				Step:          inv.Step,
+				CWD:           inv.CWD,
+				Labels:        cloneStringMap(inv.Labels),
+				HostContext:   cloneStringMap(inv.HostContext),
 			})
 		},
 		handler: func(ctx context.Context, inv erasedInvocation) (Result, error) {
@@ -118,16 +124,18 @@ func Define[T any](
 				return Result{}, fmt.Errorf("tool %q decoded unexpected args type", inv.Name)
 			}
 			return handler(ctx, Invocation[T]{
-				CallID:      inv.CallID,
-				Name:        inv.Name,
-				RawArgs:     inv.RawArgs,
-				Args:        args,
-				RunID:       inv.RunID,
-				SessionID:   inv.SessionID,
-				Step:        inv.Step,
-				CWD:         inv.CWD,
-				Labels:      cloneStringMap(inv.Labels),
-				HostContext: cloneStringMap(inv.HostContext),
+				CallID:        inv.CallID,
+				Name:          inv.Name,
+				RawArgs:       inv.RawArgs,
+				Args:          args,
+				RunID:         inv.RunID,
+				ThreadID:      inv.ThreadID,
+				TurnID:        inv.TurnID,
+				PromptScopeID: inv.PromptScopeID,
+				Step:          inv.Step,
+				CWD:           inv.CWD,
+				Labels:        cloneStringMap(inv.Labels),
+				HostContext:   cloneStringMap(inv.HostContext),
 			})
 		},
 	}
@@ -359,7 +367,7 @@ func (r *Registry) run(ctx context.Context, call provider.ToolCall, approver App
 	if err != nil {
 		return ErrorResult(call.ID, call.Name, InvalidArgumentsText(call.Name, err))
 	}
-	inv := erasedInvocation{CallID: call.ID, Name: call.Name, RawArgs: raw, Args: args, RunID: opts.RunID, SessionID: opts.SessionID, Step: opts.Step, CWD: opts.CWD, Labels: cloneStringMap(opts.Labels), HostContext: cloneStringMap(opts.HostContext)}
+	inv := erasedInvocation{CallID: call.ID, Name: call.Name, RawArgs: raw, Args: args, RunID: opts.RunID, ThreadID: opts.ThreadID, TurnID: opts.TurnID, PromptScopeID: opts.PromptScopeID, Step: opts.Step, CWD: opts.CWD, Labels: cloneStringMap(opts.Labels), HostContext: cloneStringMap(opts.HostContext)}
 	if t.Definition.Permission.Mode == PermissionDeny {
 		return ErrorResult(call.ID, call.Name, ErrRejected.Error())
 	}

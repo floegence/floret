@@ -41,7 +41,7 @@ func (s *toolOutputArtifactStore) PutToolOutput(_ context.Context, output artifa
 	}
 	sum := sha256.Sum256([]byte(output.Text))
 	hash := hex.EncodeToString(sum[:])
-	sessionID := artifact.SafeLabel(output.SessionID, artifact.DefaultSafeLabelMaxChars)
+	sessionID := artifact.SafeLabel(output.ThreadID, artifact.DefaultSafeLabelMaxChars)
 	runID := artifact.SafeLabel(output.RunID, artifact.DefaultSafeLabelMaxChars)
 	toolName := artifact.SafeLabel(output.ToolName, 32)
 	callID := artifact.SafeLabel(output.CallID, 48)
