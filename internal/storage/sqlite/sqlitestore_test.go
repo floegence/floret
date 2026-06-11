@@ -12,11 +12,12 @@ import (
 	"time"
 
 	"github.com/floegence/floret/internal/provider/cache"
-	"github.com/floegence/floret/internal/storage"
 	"github.com/floegence/floret/internal/session"
+	"github.com/floegence/floret/internal/session/artifact"
 	"github.com/floegence/floret/internal/session/compaction"
 	"github.com/floegence/floret/internal/session/contextpolicy"
 	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/internal/storage"
 )
 
 func TestSQLiteStorePersistsSessionTreeAndForkAfterReopen(t *testing.T) {
@@ -443,6 +444,19 @@ func TestSQLiteStorePromptMetadataDeleteThreadDataAndSchemaGuard(t *testing.T) {
 	if err := store.PutMetadata(ctx, storage.MetadataRecord{Namespace: "other", ID: "thread", CreatedAt: created, UpdatedAt: now, Data: []byte(`{"keep":true}`)}); err != nil {
 		t.Fatal(err)
 	}
+	artifactRef, err := store.PutToolOutput(ctx, artifact.ToolOutputArtifact{
+		ThreadID:      "thread",
+		TurnID:        "turn-1",
+		RunID:         "turn-1",
+		PromptScopeID: "thread",
+		Step:          1,
+		CallID:        "call-1",
+		ToolName:      "read",
+		Text:          "full durable tool output",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	metadata, err := store.Metadata(ctx, "ns", "thread")
 	if err != nil {
 		t.Fatal(err)
@@ -494,7 +508,10 @@ func TestSQLiteStorePromptMetadataDeleteThreadDataAndSchemaGuard(t *testing.T) {
 	if responses[0].InputTokens != 100 || responses[0].OutputTokens != 20 || responses[0].ReasoningTokens != 3 || responses[0].CacheReadTokens != 10 || responses[0].CacheWriteTokens != 5 || responses[0].TotalTokens != 138 || responses[0].UsageSource != "native" {
 		t.Fatalf("provider response usage did not round trip: %#v", responses[0])
 	}
-	if err := store.DeleteThreadData(ctx, storage.DeleteThreadDataRequest{ThreadID: "thread", PromptScopeIDs: []string{"thread"}, MetadataNamespaces: []string{"ns"}}); err != nil {
+	if text, ok, err := store.artifactText(ctx, artifactRef.ID); err != nil || !ok || text != "full durable tool output" {
+		t.Fatalf("reopened artifact text=%q ok=%v err=%v", text, ok, err)
+	}
+	if err := store.DeleteThreadData(ctx, storage.DeleteThreadDataRequest{ThreadID: "thread", PromptScopeIDs: []string{"thread"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Thread(ctx, "thread"); !errors.Is(err, sessiontree.ErrThreadNotFound) {
@@ -503,8 +520,8 @@ func TestSQLiteStorePromptMetadataDeleteThreadDataAndSchemaGuard(t *testing.T) {
 	if _, err := store.Metadata(ctx, "ns", "thread"); !errors.Is(err, storage.ErrMetadataNotFound) {
 		t.Fatalf("metadata after delete err = %v", err)
 	}
-	if kept, err := store.Metadata(ctx, "other", "thread"); err != nil || string(kept.Data) != `{"keep":true}` {
-		t.Fatalf("other namespace metadata should survive delete: kept=%#v err=%v", kept, err)
+	if _, err := store.Metadata(ctx, "other", "thread"); !errors.Is(err, storage.ErrMetadataNotFound) {
+		t.Fatalf("other namespace metadata after delete err = %v", err)
 	}
 	if segments, err := store.Segments(ctx, "thread", "openai", "model"); err != nil || len(segments) != 0 {
 		t.Fatalf("segments after delete = %#v err=%v", segments, err)
@@ -512,7 +529,13 @@ func TestSQLiteStorePromptMetadataDeleteThreadDataAndSchemaGuard(t *testing.T) {
 	if requests, err := store.ProviderRequests(ctx, "thread"); err != nil || len(requests) != 0 {
 		t.Fatalf("requests after delete = %#v err=%v", requests, err)
 	}
-	if err := store.PutMetaValue(ctx, "schema_version", "999"); err != nil {
+	if text, ok, err := store.artifactText(ctx, artifactRef.ID); err != nil || ok || text != "" {
+		t.Fatalf("artifact after delete text=%q ok=%v err=%v", text, ok, err)
+	}
+	if err := store.DeleteThreadData(ctx, storage.DeleteThreadDataRequest{ThreadID: "thread"}); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+		t.Fatalf("second delete err = %v, want ErrThreadNotFound", err)
+	}
+	if err := store.putMetaValue(ctx, "schema_version", "999"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -528,7 +551,7 @@ func TestSQLiteStoreLatestPressureAnchorRoundTrip(t *testing.T) {
 	store, _ := openSQLiteStoreForTest(t)
 	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
 	old := cache.PressureAnchorState{
-		PromptScopeID:     "thread",
+		PromptScopeID:      "thread",
 		ThreadID:           "thread",
 		Provider:           "openai",
 		Model:              "model",
@@ -621,10 +644,10 @@ func TestSQLiteStorePromptCacheConcurrentThreadsAreIsolated(t *testing.T) {
 		}
 	}
 	for _, item := range []struct {
-		runID     string
+		runID    string
 		threadID string
-		toolName  string
-		content   string
+		toolName string
+		content  string
 	}{
 		{"turn-a", "thread-a", "read_a", "message a"},
 		{"turn-b", "thread-b", "read_b", "message b"},
@@ -664,7 +687,7 @@ func TestSQLiteStorePromptCacheConcurrentThreadsAreIsolated(t *testing.T) {
 func TestSQLiteStoreFailsClosedOnRawEncoderVersionMismatch(t *testing.T) {
 	ctx := context.Background()
 	store, dbPath := openSQLiteStoreForTest(t)
-	if err := store.PutMetaValue(ctx, "raw_encoder_version", "999"); err != nil {
+	if err := store.putMetaValue(ctx, "raw_encoder_version", "999"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {

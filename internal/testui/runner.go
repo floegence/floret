@@ -230,7 +230,6 @@ func (r *Runner) CreateIdleAgentSession(ctx context.Context, req AgentRunRequest
 	cfg.BaseURL = profile.BaseURL
 	cfg.APIKey = profile.APIKey
 	cfg.FakeResponse = profile.FakeResponse
-	cfg.RunID = fmt.Sprintf("testui-agent-%d", started.UnixNano())
 	cfg.ContextPolicy = req.ContextPolicy
 	cfg.MaxEmptyProviderRetries = 1
 	cfg.NoProgressLimit = 2
@@ -240,7 +239,6 @@ func (r *Runner) CreateIdleAgentSession(ctx context.Context, req AgentRunRequest
 		return AgentSessionSnapshot{}, err
 	}
 	sessionID := fmt.Sprintf("testui-session-%d", started.UnixNano())
-	cfg.RunID = sessionID
 	resolvedProfile := resolvedProfileFromConfig(profile, cfg, cfg.APIKey != "" || profile.APIKeySet)
 	selectedTools, err := normalizeAgentSessionToolsForProfile(req.SelectedTools, resolvedProfile, r.EnvFile)
 	if err != nil {
@@ -318,7 +316,6 @@ func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeR
 	cfg := config.Config{
 		Provider:                config.ProviderFake,
 		Model:                   "fake-model",
-		RunID:                   "testui-probe-" + resp.ID,
 		SystemPrompt:            "You are Floret's deterministic test UI interface probe. Exercise only the scripted low-risk probe behavior.",
 		ContextPolicy:           req.ContextPolicy,
 		MaxEmptyProviderRetries: 1,
@@ -331,7 +328,6 @@ func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeR
 		return localInspectionAgentRunResponse(r.failAgentRun(resp, err))
 	}
 	sessionID := "testui-probe-" + resp.ID
-	cfg.RunID = sessionID
 	sess, err := probe.buildAgentSession(ctx, agentSessionBuildOptions{
 		ID:            sessionID,
 		Transient:     true,
@@ -385,7 +381,6 @@ func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) Ag
 	cfg.BaseURL = profile.BaseURL
 	cfg.APIKey = profile.APIKey
 	cfg.FakeResponse = profile.FakeResponse
-	cfg.RunID = "testui-agent-" + resp.ID
 	cfg.ContextPolicy = req.ContextPolicy
 	cfg.MaxEmptyProviderRetries = 1
 	cfg.NoProgressLimit = 2
@@ -395,7 +390,6 @@ func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) Ag
 		return localInspectionAgentRunResponse(r.failAgentRun(resp, err))
 	}
 	sessionID := "testui-session-" + resp.ID
-	cfg.RunID = sessionID
 	resolvedProfile := resolvedProfileFromConfig(profile, cfg, cfg.APIKey != "" || profile.APIKeySet)
 	resp.Profile = stripProfileSecret(resolvedProfile)
 	selectedTools, err := normalizeAgentSessionToolsForProfile(req.SelectedTools, resolvedProfile, r.EnvFile)
@@ -689,6 +683,10 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 	}
 	systemPrompt := appendCapabilityPrompt(sess.systemPrompt, skillPrompt)
 	idGenerator := r.agentSessionIDGenerator(ctx, sess.repo, sess.id)
+	cacheRetention, err := config.PromptCacheRetention(sess.cfg)
+	if err != nil {
+		return agentSessionRuntime{}, err
+	}
 	h := agentharness.New(agentharness.Options{
 		Provider:       observedProviderRuntime(observed),
 		ProviderName:   sess.cfg.Provider,
@@ -704,7 +702,7 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 		Approver:       testUIToolApprover,
 		TitleGenerator: titleGenerator,
 		TurnPolicy: agentharness.TurnPolicy{
-			CacheRetention:        configbridge.CacheRetention(config.PromptCacheRetention(sess.cfg)),
+			CacheRetention:        configbridge.CacheRetention(cacheRetention),
 			ContextPolicy:         configbridge.ContextPolicy(sess.contextPolicy),
 			HostedToolDefinitions: hostedTools,
 		},
@@ -834,7 +832,6 @@ type agentSessionBuildOptions struct {
 
 func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOptions) (*agentSession, error) {
 	cfg := config.ResolvePrompt(agentSessionPromptConfig(opts))
-	cfg.RunID = opts.ID
 	p, err := r.providerFactory()(cfg)
 	if err != nil {
 		return nil, err
@@ -875,6 +872,10 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 	capabilities.Diagnostics = append(capabilities.Diagnostics, modelRiskDiagnostics(opts.Profile, cfg.ContextPolicy)...)
 	systemPrompt := appendCapabilityPrompt(cfg.SystemPrompt, skillPrompt)
 	idGenerator := r.agentSessionIDGenerator(ctx, repo, opts.ID)
+	cacheRetention, err := config.PromptCacheRetention(cfg)
+	if err != nil {
+		return nil, err
+	}
 	h := agentharness.New(agentharness.Options{
 		Provider:       observedProviderRuntime(observed),
 		ProviderName:   cfg.Provider,
@@ -890,7 +891,7 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 		Approver:       testUIToolApprover,
 		TitleGenerator: titleGenerator,
 		TurnPolicy: agentharness.TurnPolicy{
-			CacheRetention:        configbridge.CacheRetention(config.PromptCacheRetention(cfg)),
+			CacheRetention:        configbridge.CacheRetention(cacheRetention),
 			ContextPolicy:         configbridge.ContextPolicy(cfg.ContextPolicy),
 			HostedToolDefinitions: hostedTools,
 		},
@@ -1335,7 +1336,10 @@ func (r *Runner) restoreAgentSession(ctx context.Context, sessionID string) (*ag
 }
 
 func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSessionMetadata) (AgentSessionSnapshot, error) {
-	promptCfg := promptConfigFromSessionMetadata(meta)
+	promptCfg, err := promptConfigFromSessionMetadata(meta)
+	if err != nil {
+		return AgentSessionSnapshot{}, err
+	}
 	store, err := r.sessionStorage(ctx)
 	if err != nil {
 		return AgentSessionSnapshot{}, err
@@ -2527,7 +2531,7 @@ func (r Runner) runProviderSmoke(ctx context.Context, resp RunResponse) RunRespo
 	if err != nil {
 		return r.failAgent(resp, err)
 	}
-	cfg.RunID = fmt.Sprintf("testui-provider-%d", r.now().UnixNano())
+	runID := fmt.Sprintf("testui-provider-%d", r.now().UnixNano())
 	if cfg.WallTime == 0 {
 		cfg.WallTime = 45 * time.Second
 	}
@@ -2542,6 +2546,10 @@ func (r Runner) runProviderSmoke(ctx context.Context, resp RunResponse) RunRespo
 		return r.failAgent(resp, err)
 	}
 	promptStore := store.prompt(r.Root)
+	cacheRetention, err := config.PromptCacheRetention(cfg)
+	if err != nil {
+		return r.failAgent(resp, err)
+	}
 	eng, err := engine.New(engine.Config{
 		Provider:     p,
 		Store:        session.NewMemoryStore(),
@@ -2551,14 +2559,14 @@ func (r Runner) runProviderSmoke(ctx context.Context, resp RunResponse) RunRespo
 		Tools:        registry,
 		Sink:         rec,
 		Options: engine.Options{
-			RunID:                   cfg.RunID,
-			ThreadID:                cfg.RunID,
-			TurnID:                  cfg.RunID,
-			PromptScopeID:           cfg.PromptScopeID,
-			TraceID:                 cfg.RunID,
+			RunID:                   runID,
+			ThreadID:                runID,
+			TurnID:                  runID,
+			PromptScopeID:           runID,
+			TraceID:                 runID,
 			ProviderName:            cfg.Provider,
 			Model:                   cfg.Model,
-			CacheRetention:          configbridge.CacheRetention(config.PromptCacheRetention(cfg)),
+			CacheRetention:          configbridge.CacheRetention(cacheRetention),
 			ContextPolicy:           configbridge.ContextPolicy(cfg.ContextPolicy),
 			MaxEmptyProviderRetries: cfg.MaxEmptyProviderRetries,
 			NoProgressLimit:         cfg.NoProgressLimit,

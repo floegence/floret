@@ -165,7 +165,10 @@ func (r Runner) normalizeAgentSessionMetadata(sessionID string, meta agentSessio
 	}
 	meta.SelectedTools = cloneSelectedTools(selected)
 	meta.ContextPolicy = configbridge.NormalizeContextPolicy(meta.ContextPolicy)
-	promptCfg := promptConfigFromSessionMetadata(meta)
+	promptCfg, err := promptConfigFromSessionMetadata(meta)
+	if err != nil {
+		return agentSessionMetadata{}, err
+	}
 	meta.SystemPrompt = promptCfg.SystemPrompt
 	meta.AgentProfile = promptCfg.AgentProfile
 	meta.PromptIdentity = promptCfg.PromptIdentity
@@ -287,14 +290,16 @@ func (r Runner) cfgFromSessionMetadata(meta agentSessionMetadata) (config.Config
 		}
 		profile.APIKeySet = saved.APIKey != "" || saved.APIKeySet || meta.APIKeyRequired
 	}
-	promptCfg := promptConfigFromSessionMetadata(meta)
+	promptCfg, err := promptConfigFromSessionMetadata(meta)
+	if err != nil {
+		return config.Config{}, ProviderProfile{}, err
+	}
 	cfg := config.Config{
 		Provider:                profile.Provider,
 		Model:                   profile.Model,
 		BaseURL:                 profile.BaseURL,
 		APIKey:                  profile.APIKey,
 		FakeResponse:            profile.FakeResponse,
-		RunID:                   meta.ID,
 		SystemPrompt:            promptCfg.SystemPrompt,
 		AgentProfile:            promptCfg.AgentProfile,
 		PromptIdentity:          promptCfg.PromptIdentity,
@@ -313,7 +318,7 @@ func (r Runner) cfgFromSessionMetadata(meta agentSessionMetadata) (config.Config
 	if cfg.DuplicateToolLimit <= 0 {
 		cfg.DuplicateToolLimit = 3
 	}
-	cfg, err := config.Resolve(cfg, nil)
+	cfg, err = config.Resolve(cfg, nil)
 	if err != nil {
 		return config.Config{}, ProviderProfile{}, err
 	}
@@ -321,16 +326,16 @@ func (r Runner) cfgFromSessionMetadata(meta agentSessionMetadata) (config.Config
 	return cfg, resolved, nil
 }
 
-func promptConfigFromSessionMetadata(meta agentSessionMetadata) config.Config {
+func promptConfigFromSessionMetadata(meta agentSessionMetadata) (config.Config, error) {
 	cfg := config.Config{
 		SystemPrompt:   meta.SystemPrompt,
 		AgentProfile:   meta.AgentProfile,
 		PromptIdentity: meta.PromptIdentity,
 	}
 	if cfg.PromptIdentity.Source == "" {
-		cfg.PromptIdentity.Source = config.PromptSourceSessionSnapshot
+		return config.Config{}, errors.New("agent session metadata prompt identity source is required")
 	}
-	return config.ResolvePrompt(cfg)
+	return config.ResolvePrompt(cfg), nil
 }
 
 func safeSessionFileName(value string) string {

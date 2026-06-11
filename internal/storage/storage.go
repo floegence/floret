@@ -28,9 +28,8 @@ type MetadataStore interface {
 }
 
 type DeleteThreadDataRequest struct {
-	ThreadID           string
-	PromptScopeIDs     []string
-	MetadataNamespaces []string
+	ThreadID       string
+	PromptScopeIDs []string
 }
 
 type Store interface {

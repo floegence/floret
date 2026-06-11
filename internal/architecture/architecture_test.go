@@ -13,13 +13,42 @@ import (
 
 const modulePath = "github.com/floegence/floret"
 
+func TestMain(m *testing.M) {
+	root, err := findRepoRoot()
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		panic(err)
+	}
+	os.Exit(m.Run())
+}
+
+func findRepoRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		next := filepath.Dir(dir)
+		if next == dir {
+			return "", os.ErrNotExist
+		}
+		dir = next
+	}
+}
+
 func TestPublicPackageAllowlist(t *testing.T) {
 	out, err := exec.Command("go", "list", "./...").Output()
 	if err != nil {
 		t.Fatalf("go list ./...: %v", err)
 	}
 	allowed := map[string]bool{
-		modulePath:                  true,
 		modulePath + "/config":      true,
 		modulePath + "/runtime":     true,
 		modulePath + "/tools":       true,
@@ -101,8 +130,23 @@ func TestImplementationPackagesAreInternalOnly(t *testing.T) {
 	}
 }
 
+func TestCommandPackagesRemainCommands(t *testing.T) {
+	for _, dir := range []string{filepath.Join("cmd", "floret-test-ui")} {
+		fset := token.NewFileSet()
+		for _, file := range goFilesInDir(t, dir, false) {
+			parsed, err := parser.ParseFile(fset, file, nil, parser.PackageClauseOnly)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if parsed.Name.Name != "main" {
+				t.Fatalf("%s must remain package main, got package %s", file, parsed.Name.Name)
+			}
+		}
+	}
+}
+
 func TestPublicPackagesDoNotExposeInternalContracts(t *testing.T) {
-	for _, pkg := range []string{".", "./config", "./runtime", "./tools", "./observation"} {
+	for _, pkg := range []string{"./config", "./runtime", "./tools", "./observation"} {
 		out, err := exec.Command("go", "doc", "-all", pkg).CombinedOutput()
 		if err != nil {
 			t.Fatalf("go doc -all %s: %v\n%s", pkg, err, out)
@@ -131,17 +175,20 @@ func TestPublicPackagesDoNotExposeInternalContracts(t *testing.T) {
 	}
 }
 
-func TestRootPackageStaysLightweight(t *testing.T) {
-	text := readTextFile(t, "floret.go")
-	for _, want := range []string{"const Version", "type ThreadID = runtime.ThreadID", "type PromptScopeID = runtime.PromptScopeID"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("root package missing lightweight export %q", want)
+func TestPublicConfigDoesNotExposeExecutionStorageWiring(t *testing.T) {
+	text := readTextFile(t, filepath.Join("config", "config.go"))
+	for _, forbidden := range []string{"RunID", "PromptScopeID", "PromptCacheDir", "FLORET_RUN_ID", "FLORET_PROMPT_CACHE_DIR"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("config package exposes runtime/storage wiring %q", forbidden)
 		}
 	}
-	for _, forbidden := range []string{"func New", "type Host", "type Store", "internal/"} {
-		if strings.Contains(text, forbidden) {
-			t.Fatalf("root package must remain lightweight, found %q", forbidden)
-		}
+}
+
+func TestRootPackageIsNotPublicAPI(t *testing.T) {
+	if _, err := os.Stat("floret.go"); err == nil {
+		t.Fatalf("root package must not expose public downstream API")
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
 	}
 }
 
@@ -181,7 +228,7 @@ func TestReadmeOnlyDocumentsStableDownstreamAPI(t *testing.T) {
 
 func TestDocumentationDoesNotTeachForbiddenDownstreamImports(t *testing.T) {
 	for _, file := range textFiles(t, ".") {
-		if file == "architecture_test.go" {
+		if isArchitectureTest(file) {
 			continue
 		}
 		if strings.HasPrefix(file, filepath.Join("internal", "testui", "static")+string(filepath.Separator)) {
@@ -198,7 +245,7 @@ func TestDocumentationDoesNotTeachForbiddenDownstreamImports(t *testing.T) {
 
 func TestProviderSDKImportsStayInInternalAdapters(t *testing.T) {
 	for _, file := range goFiles(t, ".") {
-		if file == "architecture_test.go" {
+		if isArchitectureTest(file) {
 			continue
 		}
 		if strings.HasPrefix(file, filepath.Join("internal", "provider", "adapters")+string(filepath.Separator)) {
@@ -219,14 +266,20 @@ func TestProviderSDKImportsStayInInternalAdapters(t *testing.T) {
 
 func TestSQLiteDriverImportsStayInInternalStorage(t *testing.T) {
 	for _, file := range goFiles(t, ".") {
-		if file == "architecture_test.go" {
+		if isArchitectureTest(file) {
 			continue
 		}
 		if strings.HasPrefix(file, filepath.Join("internal", "storage", "sqlite")+string(filepath.Separator)) {
 			continue
 		}
-		if strings.Contains(readTextFile(t, file), "github.com/mattn/go-sqlite3") {
-			t.Fatalf("sqlite driver import outside internal/storage/sqlite: %s", file)
+		text := readTextFile(t, file)
+		for _, marker := range []string{
+			"github.com/mattn/go-sqlite3",
+			"modernc.org/sqlite",
+		} {
+			if strings.Contains(text, marker) {
+				t.Fatalf("sqlite driver import %q outside internal/storage/sqlite: %s", marker, file)
+			}
 		}
 	}
 }
@@ -262,7 +315,7 @@ func TestKernelBoundaryFilesAvoidHostProductConcepts(t *testing.T) {
 
 func TestCoreIdentityDoesNotUseHostSessionID(t *testing.T) {
 	for _, file := range goFiles(t, ".") {
-		if file == "architecture_test.go" {
+		if isArchitectureTest(file) {
 			continue
 		}
 		if strings.HasPrefix(file, filepath.Join("internal", "testui")+string(filepath.Separator)) {
@@ -296,7 +349,12 @@ func TestPromptCacheIdentityUsesPromptScope(t *testing.T) {
 			t.Fatalf("sqlite storage contract missing %q", want)
 		}
 	}
-	if strings.Contains(sqliteText, "run_id TEXT NOT NULL") || strings.Contains(sqliteText, "DeleteRuns") || strings.Contains(sqliteText, "DeleteSession") {
+	for _, table := range []string{"prompt_segments", "prompt_toolsets", "prompt_requests", "prompt_responses"} {
+		if strings.Contains(sqlTableDDL(t, sqliteText, table), "run_id") {
+			t.Fatalf("prompt cache table %s still stores run-owned cache identity", table)
+		}
+	}
+	if strings.Contains(sqliteText, "DeleteRuns") || strings.Contains(sqliteText, "DeleteSession") {
 		t.Fatalf("sqlite storage still uses removed run/session cache ownership")
 	}
 }
@@ -385,7 +443,7 @@ func TestConceptVocabularyIsDocumented(t *testing.T) {
 
 func TestRemovedCompatibilityShapesDoNotReturn(t *testing.T) {
 	for _, file := range append(goFiles(t, "."), textFiles(t, ".")...) {
-		if file == "architecture_test.go" {
+		if isArchitectureTest(file) {
 			continue
 		}
 		if strings.HasPrefix(file, filepath.Join("internal", "testui", "static")+string(filepath.Separator)) {
@@ -482,12 +540,31 @@ func textFiles(t *testing.T, root string) []string {
 	files := walkAllFiles(t, root)
 	return slices.DeleteFunc(files, func(file string) bool {
 		switch filepath.Ext(file) {
-		case ".go", ".md", ".sh", ".js":
+		case ".md", ".sh", ".js":
 			return false
 		default:
 			return true
 		}
 	})
+}
+
+func sqlTableDDL(t *testing.T, text, table string) string {
+	t.Helper()
+	startMarker := "CREATE TABLE IF NOT EXISTS " + table + " ("
+	start := strings.Index(text, startMarker)
+	if start < 0 {
+		t.Fatalf("sqlite schema missing table %s", table)
+	}
+	rest := text[start:]
+	end := strings.Index(rest, ");")
+	if end < 0 {
+		t.Fatalf("sqlite schema table %s is not closed", table)
+	}
+	return rest[:end]
+}
+
+func isArchitectureTest(file string) bool {
+	return filepath.Clean(file) == filepath.Join("internal", "architecture", "architecture_test.go")
 }
 
 func walkAllFiles(t *testing.T, root string) []string {
@@ -535,6 +612,17 @@ func forbiddenDownstreamImportPaths() []string {
 		modulePath + "/tools/builtin",
 		modulePath + "/tools/mcp",
 		modulePath + "/tools/skills",
+		modulePath + "/internal/agentharness",
+		modulePath + "/internal/engine",
+		modulePath + "/internal/event",
+		modulePath + "/internal/provider",
+		modulePath + "/internal/session",
+		modulePath + "/internal/sessiontree",
+		modulePath + "/internal/storage",
+		modulePath + "/internal/testing",
+		modulePath + "/internal/tools/builtin",
+		modulePath + "/internal/tools/mcp",
+		modulePath + "/internal/tools/skills",
 	}
 }
 

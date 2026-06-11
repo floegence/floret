@@ -30,7 +30,6 @@ const (
 	PromptSourceAgentProfile         PromptSource = "agent_profile"
 	PromptSourceEnv                  PromptSource = "env"
 	PromptSourceDefaultFloret        PromptSource = "default_floret"
-	PromptSourceSessionSnapshot      PromptSource = "session_snapshot"
 )
 
 type AgentProfile struct {
@@ -55,9 +54,6 @@ type Config struct {
 
 	FakeResponse string
 
-	RunID                   string
-	PromptScopeID           string
-	PromptCacheDir          string
 	PromptCacheRetention    string
 	SystemPrompt            string
 	AgentProfile            AgentProfile
@@ -130,8 +126,6 @@ func fromValues(values map[string]string) (Config, error) {
 		BaseURL:                 get(values, "FLORET_BASE_URL", catalog.DefaultBaseURL(providerName)),
 		APIKey:                  firstConfiguredAPIKey(values, providerName),
 		FakeResponse:            get(values, "FLORET_FAKE_RESPONSE", "ok"),
-		RunID:                   get(values, "FLORET_RUN_ID", "default"),
-		PromptCacheDir:          get(values, "FLORET_PROMPT_CACHE_DIR", ".floret/sessions"),
 		PromptCacheRetention:    get(values, "FLORET_PROMPT_CACHE_RETENTION", defaultPromptCacheRetention(providerName)),
 		SkillSources:            splitList(get(values, "FLORET_SKILLS_PATHS", "")),
 		SkillPromptBudgetBytes:  16 * 1024,
@@ -318,12 +312,6 @@ func resolveAgentProfile(profile AgentProfile, systemPrompt string, source Promp
 			if out.Description == "" {
 				out.Description = "Agent prompt loaded from FLORET_SYSTEM_PROMPT."
 			}
-		case PromptSourceSessionSnapshot:
-			if prompt == defaultProfile.SystemPrompt && out.ID == "" && out.Name == "" && out.Description == "" {
-				out = defaultProfile
-			} else if out.ID == "" {
-				out.ID = "custom"
-			}
 		default:
 			source = PromptSourceSystemPromptOverride
 			out.ID = "custom"
@@ -382,9 +370,6 @@ func resolvePromptProfile(cfg Config, source PromptSource) Config {
 }
 
 func promptSourceForConfig(cfg Config) PromptSource {
-	if cfg.PromptIdentity.Source == PromptSourceSessionSnapshot {
-		return PromptSourceSessionSnapshot
-	}
 	systemPrompt := strings.TrimSpace(cfg.SystemPrompt)
 	if systemPrompt != "" && cfg.promptSource == PromptSourceEnv && cfg.envSystemPrompt != "" && systemPrompt == cfg.envSystemPrompt {
 		if strings.TrimSpace(cfg.AgentProfile.SystemPrompt) != "" && !sameAgentProfile(cfg.AgentProfile, envAgentProfile(systemPrompt)) {
@@ -419,7 +404,7 @@ func promptSourceForPromptInputs(profile AgentProfile, systemPrompt string) Prom
 
 func normalizePromptSource(source PromptSource, profile, defaultProfile AgentProfile) PromptSource {
 	switch source {
-	case PromptSourceSystemPromptOverride, PromptSourceAgentProfile, PromptSourceEnv, PromptSourceDefaultFloret, PromptSourceSessionSnapshot:
+	case PromptSourceSystemPromptOverride, PromptSourceAgentProfile, PromptSourceEnv, PromptSourceDefaultFloret:
 		return source
 	default:
 		if profile.ID == defaultProfile.ID && profile.SystemPrompt == defaultProfile.SystemPrompt {
@@ -481,12 +466,12 @@ func validate(cfg Config) (Config, error) {
 	return cfg, nil
 }
 
-func PromptCacheRetention(cfg Config) string {
+func PromptCacheRetention(cfg Config) (string, error) {
 	retention, err := normalizePromptCacheRetention(cfg.PromptCacheRetention)
 	if err != nil {
-		return string(cache.RetentionInMemory)
+		return "", err
 	}
-	return string(retention)
+	return string(retention), nil
 }
 
 func normalizePromptCacheRetention(value string) (cache.Retention, error) {

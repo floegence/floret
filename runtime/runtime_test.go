@@ -2,9 +2,11 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/floegence/floret/config"
@@ -126,6 +128,56 @@ func TestHostSQLiteStorePersistsThreadBehindOpaqueStore(t *testing.T) {
 	}
 }
 
+func TestHostRejectsZeroValueStore(t *testing.T) {
+	_, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "ok",
+			SystemPrompt: "test",
+		},
+		Store: &Store{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "runtime store must be created") {
+		t.Fatalf("err = %v, want zero store rejection", err)
+	}
+}
+
+func TestHostDeleteMissingThreadUsesConsistentStoreBoundary(t *testing.T) {
+	ctx := context.Background()
+	sqliteStore, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "floret.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqliteStore.Close() })
+	for _, tc := range []struct {
+		name  string
+		store *Store
+	}{
+		{name: "memory", store: NewMemoryStore()},
+		{name: "sqlite", store: sqliteStore},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host, err := NewHost(HostOptions{
+				Config: config.Config{
+					Provider:     config.ProviderFake,
+					Model:        "fake-model",
+					FakeResponse: "ok",
+					SystemPrompt: "test",
+				},
+				Store:       tc.store,
+				IDGenerator: deterministicIDs(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := host.DeleteThread(ctx, "missing"); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+				t.Fatalf("DeleteThread err = %v, want ErrThreadNotFound", err)
+			}
+		})
+	}
+}
+
 func TestHarnessHelperRunsCustomToolWithoutPublicProviderAPI(t *testing.T) {
 	ctx := context.Background()
 	registry := tools.NewRegistry()
@@ -196,7 +248,6 @@ func TestEngineHelperPreservesExplicitZeroMaxOutputTokens(t *testing.T) {
 		Provider:     "openai",
 		Model:        "gpt-5.4",
 		SystemPrompt: "test",
-		RunID:        "run",
 		ContextPolicy: config.ContextPolicy{
 			ContextWindowTokens: config.DefaultContextWindowTokens,
 			MaxOutputTokens:     0,
@@ -205,7 +256,7 @@ func TestEngineHelperPreservesExplicitZeroMaxOutputTokens(t *testing.T) {
 		MaxEmptyProviderRetries: 1,
 		NoProgressLimit:         2,
 		DuplicateToolLimit:      3,
-	}, scripted, nil, nil)
+	}, scripted, nil, nil, engineHelperOptions{RunID: "run", PromptScopeID: "run"})
 	if err != nil {
 		t.Fatal(err)
 	}

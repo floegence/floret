@@ -2,7 +2,9 @@ package sqlite
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,14 +16,15 @@ import (
 	"time"
 
 	"github.com/floegence/floret/internal/provider/cache"
-	"github.com/floegence/floret/internal/storage"
 	"github.com/floegence/floret/internal/session"
+	"github.com/floegence/floret/internal/session/artifact"
 	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/internal/storage"
 	_ "modernc.org/sqlite"
 )
 
 const (
-	schemaVersion     = "4"
+	schemaVersion     = "5"
 	rawEncoderVersion = "1"
 	driverName        = "sqlite"
 )
@@ -75,10 +78,6 @@ func Open(path string, opts ...Option) (*Store, error) {
 	return store, nil
 }
 
-func OpenMemory(opts ...Option) (*Store, error) {
-	return Open(":memory:", opts...)
-}
-
 func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
@@ -94,11 +93,7 @@ func (s *Store) SchemaVersion(ctx context.Context) (string, error) {
 	return s.metaValue(ctx, "schema_version")
 }
 
-func (s *Store) MetaValue(ctx context.Context, key string) (string, error) {
-	return s.metaValue(ctx, key)
-}
-
-func (s *Store) PutMetaValue(ctx context.Context, key, value string) error {
+func (s *Store) putMetaValue(ctx context.Context, key, value string) error {
 	return s.withImmediate(ctx, func(tx sqlRunner) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO schema_meta(key, value) VALUES(?, ?)
 			ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
@@ -796,18 +791,19 @@ func (s *Store) DeleteThreadData(ctx context.Context, req storage.DeleteThreadDa
 		return errors.New("thread id is required")
 	}
 	promptScopeIDs := cleanIDs(append([]string{threadID}, req.PromptScopeIDs...))
-	namespaces := cleanIDs(req.MetadataNamespaces)
 	return s.withImmediate(ctx, func(tx sqlRunner) error {
-		if len(namespaces) == 0 {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM metadata_records WHERE namespace = '' AND id = ?`, threadID); err != nil {
-				return err
-			}
-		} else {
-			for _, namespace := range namespaces {
-				if _, err := tx.ExecContext(ctx, `DELETE FROM metadata_records WHERE namespace = ? AND id = ?`, namespace, threadID); err != nil {
-					return err
-				}
-			}
+		ok, err := threadExists(ctx, tx, threadID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return sessiontree.ErrThreadNotFound
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM metadata_records WHERE id = ?`, threadID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM tool_output_artifacts WHERE thread_id = ?`, threadID); err != nil {
+			return err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM threads WHERE id = ?`, threadID); err != nil {
 			return err
@@ -821,6 +817,85 @@ func (s *Store) DeleteThreadData(ctx context.Context, req storage.DeleteThreadDa
 		}
 		return nil
 	})
+}
+
+func (s *Store) PutToolOutput(ctx context.Context, output artifact.ToolOutputArtifact) (artifact.Ref, error) {
+	if s == nil {
+		return artifact.Ref{}, errors.New("sqlite artifact store is nil")
+	}
+	threadID := strings.TrimSpace(output.ThreadID)
+	if threadID == "" {
+		return artifact.Ref{}, errors.New("thread id is required")
+	}
+	if output.MIME == "" {
+		output.MIME = artifact.DefaultMIME
+	}
+	if output.Kind == "" {
+		output.Kind = artifact.DefaultKind
+	}
+	metadata, err := json.Marshal(output.Metadata)
+	if err != nil {
+		return artifact.Ref{}, err
+	}
+	if string(metadata) == "null" {
+		metadata = []byte("{}")
+	}
+	sum := sha256.Sum256([]byte(output.Text))
+	hash := hex.EncodeToString(sum[:])
+	now := time.Now()
+	var ref artifact.Ref
+	err = s.withImmediate(ctx, func(tx sqlRunner) error {
+		if ok, err := threadExists(ctx, tx, threadID); err != nil {
+			return err
+		} else if !ok {
+			return sessiontree.ErrThreadNotFound
+		}
+		var next int64
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(rowid), 0) + 1 FROM tool_output_artifacts`).Scan(&next); err != nil {
+			return err
+		}
+		toolName := artifact.SafeLabel(output.ToolName, 32)
+		ref = artifact.Ref{
+			ID:        artifact.SafeLabel(fmt.Sprintf("%s-%06d-%s", toolName, next, hash[:12]), artifact.DefaultSafeLabelMaxChars),
+			SafeLabel: artifact.SafeLabel(fmt.Sprintf("%s-output-%06d.log", output.ToolName, next), artifact.DefaultSafeLabelMaxChars),
+			URL:       "/api/artifacts/" + artifact.SafeLabel(fmt.Sprintf("%s-%06d-%s", toolName, next, hash[:12]), artifact.DefaultSafeLabelMaxChars),
+			Kind:      output.Kind,
+			MIME:      output.MIME,
+			SizeBytes: int64(len(output.Text)),
+			SHA256:    hash,
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO tool_output_artifacts(
+			id, run_id, thread_id, turn_id, prompt_scope_id, step, call_id, tool_name,
+			kind, mime, safe_label, url, size_bytes, sha256, text, metadata_json, created_at
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ref.ID, output.RunID, threadID, output.TurnID, output.PromptScopeID, output.Step, output.CallID, output.ToolName,
+			ref.Kind, ref.MIME, ref.SafeLabel, ref.URL, ref.SizeBytes, ref.SHA256, output.Text, string(metadata), formatTime(now))
+		return err
+	})
+	if err != nil {
+		return artifact.Ref{}, err
+	}
+	return ref, nil
+}
+
+func (s *Store) DeleteThreadArtifacts(ctx context.Context, threadID string) error {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return errors.New("thread id is required")
+	}
+	return s.withImmediate(ctx, func(tx sqlRunner) error {
+		_, err := tx.ExecContext(ctx, `DELETE FROM tool_output_artifacts WHERE thread_id = ?`, threadID)
+		return err
+	})
+}
+
+func (s *Store) artifactText(ctx context.Context, id string) (string, bool, error) {
+	var text string
+	err := s.db.QueryRowContext(ctx, `SELECT text FROM tool_output_artifacts WHERE id = ?`, id).Scan(&text)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return text, err == nil, err
 }
 
 func insertThread(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta) error {
@@ -1351,6 +1426,30 @@ CREATE TABLE IF NOT EXISTS prompt_responses (
 
 CREATE INDEX IF NOT EXISTS prompt_responses_scope_idx ON prompt_responses(prompt_scope_id, rowid);
 
+CREATE TABLE IF NOT EXISTS tool_output_artifacts (
+	rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+	id TEXT NOT NULL UNIQUE,
+	run_id TEXT NOT NULL DEFAULT '',
+	thread_id TEXT NOT NULL,
+	turn_id TEXT NOT NULL DEFAULT '',
+	prompt_scope_id TEXT NOT NULL DEFAULT '',
+	step INTEGER NOT NULL DEFAULT 0,
+	call_id TEXT NOT NULL DEFAULT '',
+	tool_name TEXT NOT NULL DEFAULT '',
+	kind TEXT NOT NULL,
+	mime TEXT NOT NULL,
+	safe_label TEXT NOT NULL,
+	url TEXT NOT NULL,
+	size_bytes INTEGER NOT NULL DEFAULT 0,
+	sha256 TEXT NOT NULL,
+	text TEXT NOT NULL,
+	metadata_json TEXT NOT NULL DEFAULT '{}',
+	created_at TEXT NOT NULL,
+	FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS tool_output_artifacts_thread_idx ON tool_output_artifacts(thread_id, rowid);
+
 CREATE TABLE IF NOT EXISTS metadata_records (
 	namespace TEXT NOT NULL,
 	id TEXT NOT NULL,
@@ -1374,5 +1473,6 @@ CREATE TABLE IF NOT EXISTS active_turn_leases (
 `
 
 var _ storage.Store = (*Store)(nil)
+var _ artifact.Store = (*Store)(nil)
 var _ sessiontree.Repo = (*Store)(nil)
 var _ sessiontree.TurnLeaseRepo = (*Store)(nil)

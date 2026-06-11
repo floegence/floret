@@ -4,14 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/floegence/floret/internal/provider/cache"
+	"github.com/floegence/floret/internal/sessiontree"
 	floretstorage "github.com/floegence/floret/internal/storage"
 	"github.com/floegence/floret/internal/storage/sqlite"
-	"github.com/floegence/floret/internal/sessiontree"
 )
 
 const (
@@ -42,20 +43,21 @@ type memoryStorage struct {
 	metadata map[string]agentSessionMetadata
 }
 
-func normalizeStorageMode(mode string) string {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
+func normalizeStorageMode(mode string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(mode))
+	switch normalized {
 	case "", StorageModeSQLite:
-		return StorageModeSQLite
+		return StorageModeSQLite, nil
 	case StorageModeFile:
-		return StorageModeFile
+		return StorageModeFile, nil
 	case StorageModeMemory:
-		return StorageModeMemory
+		return StorageModeMemory, nil
 	default:
-		return StorageModeSQLite
+		return "", fmt.Errorf("unsupported storage mode %q; want sqlite, file, or memory", mode)
 	}
 }
 
-func (r Runner) storageMode() string {
+func (r Runner) storageMode() (string, error) {
 	return normalizeStorageMode(r.StorageMode)
 }
 
@@ -67,7 +69,10 @@ func (r Runner) storagePath() string {
 }
 
 func (r *Runner) sessionStorage(ctx context.Context) (*testUIStorage, error) {
-	mode := r.storageMode()
+	mode, err := r.storageMode()
+	if err != nil {
+		return nil, err
+	}
 	if mode == StorageModeMemory {
 		if r.storageMemory == nil {
 			r.storageMemory = &memoryStorage{
@@ -93,9 +98,13 @@ func (r *Runner) sessionStorage(ctx context.Context) (*testUIStorage, error) {
 }
 
 func (r *Runner) storageStatus(ctx context.Context) storageStatus {
+	mode, modeErr := r.storageMode()
+	if modeErr != nil {
+		return storageStatus{Mode: strings.ToLower(strings.TrimSpace(r.StorageMode)), Path: r.storagePath(), Error: modeErr.Error()}
+	}
 	store, err := r.sessionStorage(ctx)
 	if err != nil {
-		return storageStatus{Mode: r.storageMode(), Path: r.storagePath(), Error: err.Error()}
+		return storageStatus{Mode: mode, Path: r.storagePath(), Error: err.Error()}
 	}
 	status := storageStatus{Mode: store.mode, Path: store.path}
 	if store.sqlite != nil {
@@ -207,9 +216,8 @@ func (s *testUIStorage) deleteSession(ctx context.Context, root string, sessionI
 	switch s.mode {
 	case StorageModeSQLite:
 		return s.sqlite.DeleteThreadData(ctx, floretstorage.DeleteThreadDataRequest{
-			ThreadID:           sessionID,
-			PromptScopeIDs:     []string{sessionID},
-			MetadataNamespaces: []string{agentSessionMetadataNamespace},
+			ThreadID:       sessionID,
+			PromptScopeIDs: []string{sessionID},
 		})
 	case StorageModeMemory:
 		_ = s.memory.repo.DeleteThread(ctx, sessionID)

@@ -47,16 +47,15 @@ func TestLoadReadsEnvLocalAndAllowsEnvironmentOverride(t *testing.T) {
 	}
 }
 
-func TestLoadReadsPromptCacheConfiguration(t *testing.T) {
+func TestLoadReadsPromptCacheRetention(t *testing.T) {
 	cfg, err := Load(WithPath(""), WithEnviron(map[string]string{
 		"FLORET_PROVIDER":               "fake",
-		"FLORET_PROMPT_CACHE_DIR":       "/tmp/floret-cache",
 		"FLORET_PROMPT_CACHE_RETENTION": "24h",
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.PromptCacheDir != "/tmp/floret-cache" || cfg.PromptCacheRetention != "24h" {
+	if cfg.PromptCacheRetention != "24h" {
 		t.Fatalf("cfg = %#v", cfg)
 	}
 }
@@ -211,21 +210,6 @@ func TestResolveEmptyAgentProfilePromptFallsBackToDefaultFloret(t *testing.T) {
 	}
 }
 
-func TestResolveSessionSnapshotDefaultPromptKeepsFloretProfile(t *testing.T) {
-	cfg := ResolvePrompt(Config{
-		SystemPrompt: DefaultFloretSystemPrompt,
-		PromptIdentity: PromptIdentity{
-			Source: PromptSourceSessionSnapshot,
-		},
-	})
-	if cfg.AgentProfile.ID != DefaultAgentProfileID || cfg.AgentProfile.Name != "Floret default assistant" {
-		t.Fatalf("agent profile = %#v", cfg.AgentProfile)
-	}
-	if cfg.PromptIdentity.Source != PromptSourceSessionSnapshot {
-		t.Fatalf("prompt identity = %#v", cfg.PromptIdentity)
-	}
-}
-
 func TestLoadReadsSkillConfiguration(t *testing.T) {
 	cfg, err := Load(WithPath(""), WithEnviron(map[string]string{
 		"FLORET_PROVIDER":                  "fake",
@@ -367,6 +351,9 @@ func TestLoadRejectsUnknownPromptCacheRetention(t *testing.T) {
 	}))
 	if err == nil || !strings.Contains(err.Error(), "FLORET_PROMPT_CACHE_RETENTION") {
 		t.Fatalf("err = %v, want prompt cache retention error", err)
+	}
+	if _, err := PromptCacheRetention(Config{PromptCacheRetention: "forever"}); err == nil || !strings.Contains(err.Error(), "FLORET_PROMPT_CACHE_RETENTION") {
+		t.Fatalf("helper err = %v, want prompt cache retention error", err)
 	}
 }
 

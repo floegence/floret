@@ -77,7 +77,6 @@ type RunTurnRequest struct {
 
 type RetryTurnRequest struct {
 	ThreadID ThreadID
-	TurnID   TurnID
 	Reason   string
 	Labels   RunLabels
 }
@@ -212,16 +211,12 @@ func OpenSQLiteStore(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	artifacts := artifact.NewMemoryStore()
 	return &Store{
 		repo:      sqliteStore,
 		prompt:    sqliteStore,
-		artifacts: artifacts,
+		artifacts: sqliteStore,
 		deleteData: func(ctx context.Context, threadID string) error {
-			if err := sqliteStore.DeleteThreadData(ctx, storage.DeleteThreadDataRequest{ThreadID: threadID, PromptScopeIDs: []string{threadID}}); err != nil {
-				return err
-			}
-			return artifacts.DeleteThreadArtifacts(ctx, threadID)
+			return sqliteStore.DeleteThreadData(ctx, storage.DeleteThreadDataRequest{ThreadID: threadID, PromptScopeIDs: []string{threadID}})
 		},
 		close: sqliteStore.Close,
 	}, nil
@@ -234,12 +229,19 @@ func (s *Store) Close() error {
 	return s.close()
 }
 
-func (s *Store) deleteThreadData(ctx context.Context, threadID string) error {
+func (s *Store) validate() error {
 	if s == nil {
 		return errors.New("runtime store is required")
 	}
-	if s.deleteData == nil {
-		return errors.New("runtime store delete boundary is required")
+	if s.repo == nil || s.prompt == nil || s.artifacts == nil || s.deleteData == nil {
+		return errors.New("runtime store must be created with runtime.NewMemoryStore or runtime.OpenSQLiteStore")
+	}
+	return nil
+}
+
+func (s *Store) deleteThreadData(ctx context.Context, threadID string) error {
+	if err := s.validate(); err != nil {
+		return err
 	}
 	return s.deleteData(ctx, threadID)
 }
@@ -262,6 +264,9 @@ func NewHost(opts HostOptions) (Host, error) {
 	store := opts.Store
 	if store == nil {
 		store = NewMemoryStore()
+	}
+	if err := store.validate(); err != nil {
+		return nil, err
 	}
 	harness, err := newHarnessWithProvider(cfg, provider, harnessOptions{
 		Store:        store,
@@ -424,9 +429,13 @@ func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harness
 	if err != nil {
 		return nil, err
 	}
+	cacheRetention, err := config.PromptCacheRetention(cfg)
+	if err != nil {
+		return nil, err
+	}
 	turnPolicy := agentharness.TurnPolicy{
 		ContextPolicy:  configbridge.ContextPolicy(cfg.ContextPolicy),
-		CacheRetention: configbridge.CacheRetention(config.PromptCacheRetention(cfg)),
+		CacheRetention: configbridge.CacheRetention(cacheRetention),
 	}
 	loopLimits := agentharness.LoopLimits{
 		MaxEmptyProviderRetries: cfg.MaxEmptyProviderRetries,
@@ -633,7 +642,13 @@ func cloneStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-func newEngineWithProvider(cfg config.Config, p provider.Provider, store session.TranscriptStore, registry *tools.Registry) (*engine.Engine, error) {
+type engineHelperOptions struct {
+	RunID         string
+	PromptScopeID string
+	PromptStore   cache.Store
+}
+
+func newEngineWithProvider(cfg config.Config, p provider.Provider, store session.TranscriptStore, registry *tools.Registry, opts engineHelperOptions) (*engine.Engine, error) {
 	cfg = config.ResolvePrompt(cfg)
 	if store == nil {
 		store = session.NewMemoryStore()
@@ -641,9 +656,13 @@ func newEngineWithProvider(cfg config.Config, p provider.Provider, store session
 	if registry == nil {
 		registry = tools.NewRegistry()
 	}
-	promptStore := cache.Store(cache.NewMemoryStore())
-	if cfg.PromptCacheDir != "" {
-		promptStore = cache.NewFileStore(cfg.PromptCacheDir)
+	promptStore := opts.PromptStore
+	if promptStore == nil {
+		promptStore = cache.NewMemoryStore()
+	}
+	cacheRetention, err := config.PromptCacheRetention(cfg)
+	if err != nil {
+		return nil, err
 	}
 	return engine.New(engine.Config{
 		Provider:     p,
@@ -653,12 +672,12 @@ func newEngineWithProvider(cfg config.Config, p provider.Provider, store session
 		SystemPrompt: cfg.SystemPrompt,
 		Tools:        registry,
 		Options: engine.Options{
-			RunID:                   cfg.RunID,
-			TraceID:                 cfg.RunID,
-			PromptScopeID:           cfg.PromptScopeID,
+			RunID:                   opts.RunID,
+			TraceID:                 opts.RunID,
+			PromptScopeID:           opts.PromptScopeID,
 			ProviderName:            cfg.Provider,
 			Model:                   cfg.Model,
-			CacheRetention:          configbridge.CacheRetention(config.PromptCacheRetention(cfg)),
+			CacheRetention:          configbridge.CacheRetention(cacheRetention),
 			ContextPolicy:           configbridge.ContextPolicy(cfg.ContextPolicy),
 			MaxEmptyProviderRetries: cfg.MaxEmptyProviderRetries,
 			NoProgressLimit:         cfg.NoProgressLimit,

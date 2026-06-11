@@ -1,10 +1,77 @@
 # Floret
 
-Floret is a Go runtime for building interactive, tool-using AI agents. It owns the agent loop, provider adapters, durable thread runtime, context pressure, compaction, tool dispatch, runtime storage, and sanitized observation. A downstream application owns product UI, users, workspaces, permission policy, secrets, and domain tool implementations.
+<p align="center">
+  <strong>A Go runtime for interactive, tool-using AI agents.</strong><br />
+  <sub>Floret owns the agent loop, durable thread runtime, context pressure, tool dispatch, and sanitized observation. Your product owns the UI, users, permissions, secrets, and domain tools.</sub>
+</p>
 
-Floret is not a graph workflow framework and not a multi-agent orchestration framework. The intended integration path is a small host facade: configure a host, register tools, start a thread, run turns, render snapshots and observations.
+<p align="center">
+  <a href="https://pkg.go.dev/github.com/floegence/floret/runtime">
+    <img alt="Go Reference" src="https://pkg.go.dev/badge/github.com/floegence/floret/runtime.svg" />
+  </a>
+  <a href="./LICENSE">
+    <img alt="License" src="https://img.shields.io/badge/license-MIT-16a34a" />
+  </a>
+  <img alt="Go Version" src="https://img.shields.io/badge/Go-1.22-00ADD8?logo=go" />
+</p>
 
-## Stable Downstream API
+<p align="center">
+  <img alt="Runtime host" src="https://img.shields.io/badge/Runtime-Host-0f766e?style=for-the-badge" />
+  <img alt="Bring your UI" src="https://img.shields.io/badge/Bring-Your%20UI-1d4ed8?style=for-the-badge" />
+  <img alt="Fake providers" src="https://img.shields.io/badge/Fake-Providers-7c2d12?style=for-the-badge" />
+</p>
+
+<p align="center">
+  <a href="#-why-floret">Why Floret</a> ·
+  <a href="#-at-a-glance">At a glance</a> ·
+  <a href="#-quick-start">Quick Start</a> ·
+  <a href="#-responsibility-boundary">Boundaries</a> ·
+  <a href="#-runtime-flow">Runtime Flow</a> ·
+  <a href="#-quality-gate">Quality Gate</a> ·
+  <a href="#-license">License</a>
+</p>
+
+Floret is a reusable Go runtime for applications that need interactive agent
+conversations without rebuilding the same provider loop, durable thread state,
+tool execution, context management, compaction, and event projection in every
+host. It is not a graph workflow framework and not a multi-agent orchestration
+framework. The intended integration path is a small host facade: configure a
+host, register tools, start a thread, run turns, and render snapshots or
+observations.
+
+## ✨ Why Floret
+
+Most agent products end up with the same hard plumbing: provider request shaping,
+stream parsing, tool-call validation, approval hooks, durable conversation state,
+long-context pressure, retries, usage metrics, and UI-friendly runtime events.
+Floret packages those concerns behind a compact public API so product code can
+stay focused on product behavior.
+
+- **Agent loop**: continue after tool calls, enforce loop limits, track finish
+  reasons, and return clear turn results.
+- **Durable threads**: start, read, retry, and delete hosted conversations through
+  `runtime.Host`.
+- **Tools**: register strict schemas with `tools.Registry`, declare effects, ask
+  for approval, and dispatch domain handlers.
+- **Storage**: choose `runtime.NewMemoryStore` for tests or
+  `runtime.OpenSQLiteStore` for Floret-managed durable runtime storage.
+- **Observation**: stream sanitized `runtime.EventSink` records and use
+  `observation` DTOs for context and compaction UI.
+- **Deterministic tests**: use the fake provider path to test host flows without
+  real model calls.
+
+## 🧭 At a glance
+
+| You need to... | Use... |
+| --- | --- |
+| Configure a provider and agent persona | `config.Config` or `config.Load` |
+| Build a durable conversation host | `runtime.NewHost` |
+| Keep Floret runtime data in memory | `runtime.NewMemoryStore` |
+| Keep Floret runtime data in SQLite | `runtime.OpenSQLiteStore` |
+| Expose product-specific actions | `tools.Registry` and typed tool handlers |
+| Render progress and diagnostics | `runtime.EventSink` plus `observation` DTOs |
+
+## 📦 Stable downstream API
 
 Production downstream projects should import only these packages:
 
@@ -15,23 +82,23 @@ github.com/floegence/floret/tools
 github.com/floegence/floret/observation
 ```
 
-Everything under `internal/` is Floret implementation. Downstream projects should not construct provider requests, call model SDKs for an agent turn, manage Floret journal tables, or parse prompt-cache/provider-ledger records directly.
+Everything under `internal/` is Floret implementation. Downstream applications
+should not construct model requests for an agent turn, call model SDKs directly
+inside the Floret loop, manage Floret journal tables, or parse prompt-cache and
+provider-ledger records. Product data such as owners, workspaces, pinned state,
+read watermarks, and billing metadata belongs in the host database keyed by
+`runtime.ThreadID`. Any package outside the stable list above is contributor or
+runtime implementation, not a downstream contract.
 
-## Responsibilities
+## 🚀 Quick Start
 
-| Area | Floret owns | Host application owns |
-| --- | --- | --- |
-| Agent execution | provider loop, tool continuation, loop limits, finish reasons | choosing when a user can start or retry work |
-| Provider access | provider adapters, request shape, stream parsing, usage, continuation state | user-level provider profile, secret source, allowed model policy |
-| Storage | thread journal, prompt material, provider ledger, artifacts, runtime metadata | product metadata keyed by `runtime.ThreadID` |
-| Tools | schema validation, generic effects, approval hook, dispatch, result projection | domain handlers and final product permission checks |
-| UI | sanitized events, snapshots, observation DTOs | layout, workflows, interaction states, recovery actions |
-
-## Quick Start
+Install Floret:
 
 ```bash
-go get github.com/floegence/floret
+go get github.com/floegence/floret/config github.com/floegence/floret/runtime github.com/floegence/floret/tools github.com/floegence/floret/observation
 ```
+
+Create a host with the fake provider:
 
 ```go
 package main
@@ -113,11 +180,14 @@ func main() {
 }
 ```
 
-Use `runtime.OpenSQLiteStore(path)` when the host wants Floret-managed durable runtime storage. Treat `runtime.Store` as an opaque handle. Product data such as owners, workspaces, pinned state, and read watermarks belongs in the host database.
+Use `runtime.OpenSQLiteStore(path)` when the host wants Floret-managed durable
+runtime storage. Treat `runtime.Store` as an opaque handle; do not reach into its
+tables or implementation details from downstream code.
 
-## Configuration
+## ⚙️ Configuration
 
-`config.Load` reads `.env.local` and environment variables. A host may also build `config.Config` directly.
+`config.Load` reads `.env.local` and environment variables. A host may also build
+`config.Config` directly in code.
 
 ```bash
 FLORET_PROVIDER=fake
@@ -137,24 +207,54 @@ FLORET_BASE_URL=https://api.example.com/v1
 FLORET_API_KEY=your-api-key
 ```
 
-Provider secrets should be resolved by the host configuration path and passed to Floret configuration. Floret events, snapshots, and observation DTOs must not be used as secret stores.
+Provider secrets should be resolved by the host configuration path and passed to
+Floret configuration. Events, snapshots, and observation DTOs must not be used as
+secret stores.
 
-## Tools
+## 🛠️ Tools
 
-Hosts register domain tools with `tools.Registry`. Floret validates JSON arguments, extracts generic resource/effect information, asks the configured approver when required, dispatches the handler, shapes output, and records runtime facts. Tool handlers still enforce product-specific permissions such as user, tenant, workspace, environment, and target ownership.
+Hosts register domain tools with `tools.Registry`. Floret validates JSON
+arguments, extracts generic resource and effect information, asks the configured
+approver when required, dispatches the handler, shapes output, and records
+runtime facts. Tool handlers still enforce product-specific permissions such as
+user, tenant, workspace, environment, and target ownership.
+
+| Tool concern | Floret handles | Host handles |
+| --- | --- | --- |
+| Schema | strict provider-visible JSON shape | domain argument meaning |
+| Permission | generic approval hook and effect metadata | product authorization policy |
+| Execution | scheduling, panic recovery, result projection | the actual domain action |
+| Output | model/UI projection and artifact references | product-specific display choices |
 
 Important tool rules:
 
-- Read-only tools may run in parallel only when `ParallelSafe` is explicitly valid.
-- Mutating, shell, network, destructive, or open-world tools must declare permission behavior.
-- Provider-native hosted capabilities are not local tools and are not dispatched by `tools.Registry`.
-- Tool outputs are projected before being shown to a model or UI; full outputs should be represented by artifact references when needed.
+- Read-only tools may run in parallel only when `ParallelSafe` is explicitly
+  valid.
+- Mutating, shell, network, destructive, or open-world tools must declare
+  permission behavior.
+- Provider-native hosted capabilities are not local tools and are not dispatched
+  by `tools.Registry`.
+- Large outputs should be represented by artifact references when the model or UI
+  does not need full inline content.
 
-## Observation
+## 🧱 Responsibility boundary
 
-Use `runtime.EventSink` to receive sanitized runtime events from a host. Use `observation` DTOs for context pressure and compaction state when building UI surfaces. Observation records are not raw provider payloads and should not contain prompt text, tool arguments, tool results, local paths, or secrets.
+| Area | Floret owns | Host application owns |
+| --- | --- | --- |
+| Agent execution | provider loop, tool continuation, loop limits, finish reasons | choosing when a user can start, retry, or cancel work |
+| Provider access | adapters, request shape, stream parsing, usage, continuation state | user-level provider profile, secret source, allowed model policy |
+| Storage | thread journal, prompt material, provider ledger, artifacts, runtime metadata | product metadata keyed by `runtime.ThreadID` |
+| Tools | schema validation, generic effects, approval hook, dispatch, result projection | domain handlers and final product permission checks |
+| UI | sanitized events, snapshots, observation DTOs | layout, workflows, interaction states, recovery actions |
 
-## Runtime Flow
+## 👁️ Observation
+
+Use `runtime.EventSink` to receive sanitized runtime events from a host. Use
+`observation` DTOs for context pressure and compaction state when building UI
+surfaces. Observation records are not raw provider payloads and should not
+contain prompt text, tool arguments, tool results, local paths, or secrets.
+
+## 🔁 Runtime Flow
 
 ```text
 Host UI/API
@@ -163,18 +263,22 @@ Host UI/API
   v
 runtime.Host
   |
-  | owns provider loop, journal projection, tool dispatch, context pressure
+  | owns loop control, journal projection, tool dispatch, context pressure
   v
-Floret internal runtime
+Floret runtime implementation
   |
   +--> tools.Registry for local domain tools
   +--> runtime.Store for Floret-owned runtime data
   +--> runtime.EventSink and observation DTOs for host rendering
 ```
 
-A normal hosted conversation uses `runtime.ThreadID` as the durable journal identity. `runtime.TurnID` identifies one user-visible turn. `runtime.RunID` identifies one provider execution. `runtime.PromptScopeID` is the prompt cache and provider-ledger reuse boundary. Code must not rely on those identities being equal.
+A normal hosted conversation uses `runtime.ThreadID` as the durable journal
+identity. `runtime.TurnID` identifies one user-visible turn. `runtime.RunID`
+identifies one provider execution. `runtime.PromptScopeID` is the prompt-cache
+and provider-ledger reuse boundary. Code must not rely on those identities being
+equal.
 
-## Local Test Console
+## 🧪 Contributor Test Console
 
 Floret includes a local test console for contributor inspection:
 
@@ -182,16 +286,21 @@ Floret includes a local test console for contributor inspection:
 go run ./cmd/floret-test-ui
 ```
 
-The console can run fake-provider sessions, inspect sanitized events, run provider smoke checks, and exercise tool scenarios. It is not the downstream integration contract.
+The console can run fake-provider sessions, inspect sanitized events, run
+provider smoke checks, and exercise tool scenarios. It is not the downstream
+integration contract.
 
-## Quality Gate
+## ✅ Quality Gate
 
 ```bash
 go test ./...
 ```
 
-The test suite covers host facade behavior, provider stream contracts, tool validation and permissions, context pressure, compaction, prompt-scope ownership, storage cleanup, and architecture boundaries that keep Floret internals out of downstream APIs.
+The test suite covers host facade behavior, Floret-owned provider stream
+contracts, tool validation and permissions, context pressure, compaction,
+prompt-scope ownership, storage cleanup, and architecture boundaries that keep
+Floret internals out of downstream APIs.
 
-## License
+## 📄 License
 
 Floret is licensed under the [MIT License](LICENSE).

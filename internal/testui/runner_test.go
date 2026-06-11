@@ -78,6 +78,19 @@ func TestRunnerReportsFailedCommand(t *testing.T) {
 	}
 }
 
+func TestRunnerRejectsUnknownStorageMode(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.StorageMode = "bogus"
+
+	if _, err := runner.sessionStorage(context.Background()); err == nil || !strings.Contains(err.Error(), "unsupported storage mode") {
+		t.Fatalf("sessionStorage err = %v, want storage mode error", err)
+	}
+	status := runner.storageStatus(context.Background())
+	if status.Error == "" || !strings.Contains(status.Error, "unsupported storage mode") {
+		t.Fatalf("storage status = %#v, want storage mode error", status)
+	}
+}
+
 func TestRunnerAgentSessionDefaultsDoNotSetWallTime(t *testing.T) {
 	runner := NewRunner(t.TempDir())
 	runner.Now = fixedClock()
@@ -1554,6 +1567,7 @@ func TestRunnerPersistedInterruptedTurnSnapshotsAsInterrupted(t *testing.T) {
 	sessionID := "testui-session-interrupted"
 	turnID := "turn-1"
 	started := runner.now()
+	agentProfile, promptIdentity := promptMetadataForTest("test")
 	repo := sessiontree.NewFileRepo(runner.agentSessionTreeRoot())
 	if _, err := repo.CreateThread(context.Background(), sessiontree.ThreadMeta{ID: sessionID, CreatedAt: started, UpdatedAt: started}); err != nil {
 		t.Fatal(err)
@@ -1565,12 +1579,14 @@ func TestRunnerPersistedInterruptedTurnSnapshotsAsInterrupted(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := runner.saveAgentSessionMetadata(agentSessionMetadata{
-		ID:            sessionID,
-		CreatedAt:     started,
-		UpdatedAt:     started,
-		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
-		SystemPrompt:  "test",
-		ContextPolicy: contextPolicyForTest(8192),
+		ID:             sessionID,
+		CreatedAt:      started,
+		UpdatedAt:      started,
+		Profile:        ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		AgentProfile:   agentProfile,
+		PromptIdentity: promptIdentity,
+		SystemPrompt:   "test",
+		ContextPolicy:  contextPolicyForTest(8192),
 		Engine: agentSessionEngine{
 			MaxEmptyProviderRetries: 1,
 			NoProgressLimit:         2,
@@ -1614,6 +1630,7 @@ func TestRunnerPersistedAbortedTurnSnapshotsAsCancelled(t *testing.T) {
 	sessionID := "testui-session-cancelled"
 	turnID := "turn-1"
 	started := runner.now()
+	agentProfile, promptIdentity := promptMetadataForTest("test")
 	repo := sessiontree.NewFileRepo(runner.agentSessionTreeRoot())
 	if _, err := repo.CreateThread(context.Background(), sessiontree.ThreadMeta{ID: sessionID, CreatedAt: started, UpdatedAt: started}); err != nil {
 		t.Fatal(err)
@@ -1625,12 +1642,14 @@ func TestRunnerPersistedAbortedTurnSnapshotsAsCancelled(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := runner.saveAgentSessionMetadata(agentSessionMetadata{
-		ID:            sessionID,
-		CreatedAt:     started,
-		UpdatedAt:     started,
-		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
-		SystemPrompt:  "test",
-		ContextPolicy: contextPolicyForTest(8192),
+		ID:             sessionID,
+		CreatedAt:      started,
+		UpdatedAt:      started,
+		Profile:        ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		AgentProfile:   agentProfile,
+		PromptIdentity: promptIdentity,
+		SystemPrompt:   "test",
+		ContextPolicy:  contextPolicyForTest(8192),
 		Engine: agentSessionEngine{
 			MaxEmptyProviderRetries: 1,
 			NoProgressLimit:         2,
@@ -1665,6 +1684,7 @@ func TestRunnerRepairsStaleThreadLeafAndMetadataTurnsFromJournal(t *testing.T) {
 	sessionID := "testui-session-stale-leaf"
 	turnID := "turn-1"
 	started := runner.now()
+	agentProfile, promptIdentity := promptMetadataForTest("test")
 	repo := sessiontree.NewFileRepo(runner.agentSessionTreeRoot())
 	if _, err := repo.CreateThread(context.Background(), sessiontree.ThreadMeta{ID: sessionID, CreatedAt: started, UpdatedAt: started}); err != nil {
 		t.Fatal(err)
@@ -1695,12 +1715,14 @@ func TestRunnerRepairsStaleThreadLeafAndMetadataTurnsFromJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := runner.saveAgentSessionMetadata(agentSessionMetadata{
-		ID:            sessionID,
-		CreatedAt:     started,
-		UpdatedAt:     started,
-		Profile:       ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
-		SystemPrompt:  "test",
-		ContextPolicy: contextPolicyForTest(8192),
+		ID:             sessionID,
+		CreatedAt:      started,
+		UpdatedAt:      started,
+		Profile:        ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		AgentProfile:   agentProfile,
+		PromptIdentity: promptIdentity,
+		SystemPrompt:   "test",
+		ContextPolicy:  contextPolicyForTest(8192),
 		Engine: agentSessionEngine{
 			MaxEmptyProviderRetries: 1,
 			NoProgressLimit:         2,
@@ -3198,6 +3220,11 @@ func contextPolicyForTest(window int64) config.ContextPolicy {
 		ReservedSummaryTokens: 32,
 		RecentTailTokens:      32,
 	}
+}
+
+func promptMetadataForTest(systemPrompt string) (config.AgentProfile, config.PromptIdentity) {
+	cfg := config.ResolvePrompt(config.Config{SystemPrompt: systemPrompt})
+	return cfg.AgentProfile, cfg.PromptIdentity
 }
 
 func toolSelection(names ...string) *[]string {
