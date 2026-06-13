@@ -333,7 +333,7 @@ func TestStaticConsoleStreamsTurnsIncrementally(t *testing.T) {
 			t.Fatalf("api missing streaming turn support %q", want)
 		}
 	}
-	for _, want := range []string{"createLiveTurn", "applyStreamEvent", "state.liveTurn", "assistant_delta", "provider_requests", "context_statuses", "compaction_events", "context_status", "context_compaction", "session_snapshot", "delete state.composerDrafts[sessionID]", "api.streamTurn(sessionID, { message: trimmed }"} {
+	for _, want := range []string{"createLiveTurn", "applyStreamEvent", "state.liveTurn", "assistant_delta", "provider_requests", "context_statuses", "compaction_events", "activity_timeline", "context_status", "context_compaction", "activity", "session_snapshot", "delete state.composerDrafts[sessionID]", "api.streamTurn(sessionID, { message: trimmed }"} {
 		if !strings.Contains(appJS, want) {
 			t.Fatalf("app missing streaming reducer behavior %q", want)
 		}
@@ -346,9 +346,9 @@ func TestStaticConsoleStreamsTurnsIncrementally(t *testing.T) {
 			t.Fatalf("workspace missing live turn rendering %q", want)
 		}
 	}
-	for _, want := range []string{"mergeTimelineEntries", "timelineEntryKey", "live.entries", "tool_call", "tool_result", "renderToolActivity", "tool-activity", "tool-summary-preview"} {
+	for _, want := range []string{"mergeTimelineEntries", "timelineEntryKey", "live.entries", "renderActivityPanel", "activityTimelineForSession", "activity-digest", "activity-summary-preview"} {
 		if !strings.Contains(workspace+css, want) {
-			t.Fatalf("workspace missing live tool timeline rendering %q", want)
+			t.Fatalf("workspace missing live activity timeline rendering %q", want)
 		}
 	}
 }
@@ -1034,9 +1034,14 @@ func TestStaticConsoleSessionToolRunsUseLocalInspectionByDefault(t *testing.T) {
 	if !strings.Contains(stateJS+appJS, "deferredRender") {
 		t.Fatalf("session UI missing selection-safe deferred render state")
 	}
-	for _, want := range []string{"timelineItems", "renderTimelineItem", "renderToolRun", "toolRunKey", "tool run", "Arguments", "Result", "No arguments were captured", "Waiting for tool result", "No result body was captured", "renderMetadataBlock", "tool-detail-section metadata", "Metadata", "tool-detail-section empty"} {
+	for _, want := range []string{"renderTimelineItem", "renderActivityPanel", "activityTimelineForSession", "renderActivityItem", "activityCopyPayload", "activityCountsLabel", "activity-digest", "activity-panel", "activity-count-grid", "activity-items"} {
 		if !strings.Contains(workspace+css, want) {
-			t.Fatalf("workspace should merge and expose tool run details: missing %q", want)
+			t.Fatalf("workspace should render compact activity digest: missing %q", want)
+		}
+	}
+	for _, stale := range []string{"renderToolActivity", "renderToolRun", "tool-activity", "tool-summary-main", "tool-detail-section", "parseJSONMaybe", "isLikelyJSON", "formatStructuredBody", "renderMessageBody"} {
+		if strings.Contains(workspace+css, stale) {
+			t.Fatalf("workspace should not keep old tool detail timeline UI %q", stale)
 		}
 	}
 }
@@ -1144,9 +1149,9 @@ func TestStaticConsoleTimelineLongMessagesCollapseAndCopy(t *testing.T) {
 			t.Fatalf("timeline/session operation styles missing %q", want)
 		}
 	}
-	for _, want := range []string{"renderToolActivity", "toolActivityStatus", "toolPreview", "tool_call", "tool_result", "tool-activity", "tool-summary-main", "tool-summary-preview", "tool-activity-body"} {
+	for _, want := range []string{"renderActivityPanel", "renderActivityItem", "activityKindLabel", "activity-status", "activity-digest", "activity-summary-main", "activity-summary-preview", "activity-body"} {
 		if !strings.Contains(workspace+css, want) {
-			t.Fatalf("timeline tool call/result collapse rendering missing %q", want)
+			t.Fatalf("timeline activity digest rendering missing %q", want)
 		}
 	}
 	if strings.Contains(workspace, "data-copy-text") {
@@ -1184,13 +1189,13 @@ func TestStaticConsolePrioritizesAssistantFinalOverReasoning(t *testing.T) {
 	}
 }
 
-func TestStaticConsoleTimelineToolActivityIsCompactAndExpandable(t *testing.T) {
+func TestStaticConsoleTimelineActivityDigestIsCompactAndExpandable(t *testing.T) {
 	workspace := readStaticTestFile(t, "views", "sessionWorkspace.js")
 	css := readStaticTestFile(t, "styles.css")
 
-	for _, want := range []string{"renderToolActivity", "toolActivityStatus", "toolPreview", "tool_call", "tool_result", "tool-activity", "tool-summary-main", "tool-summary-preview", "tool-activity-body"} {
+	for _, want := range []string{"renderActivityPanel", "activityTimelineForSession", "renderActivityItem", "activityCopyPayload", "activity-digest", "activity-panel", "activity-summary-main", "activity-summary-preview", "activity-body"} {
 		if !strings.Contains(workspace+css, want) {
-			t.Fatalf("timeline tool call/result collapse rendering missing %q", want)
+			t.Fatalf("timeline activity digest rendering missing %q", want)
 		}
 	}
 	if strings.Contains(workspace, "data-copy-text") {
@@ -1325,7 +1330,7 @@ if (html.includes('data-expand-key="' + key + '" open')) {
 	}
 }
 
-func TestStaticConsoleRendersToolProjectionAndArtifactLink(t *testing.T) {
+func TestStaticConsoleRendersActivityDigestWithoutToolPayloads(t *testing.T) {
 	script := `
 import assert from "node:assert/strict";
 import { state } from "./static/state.js";
@@ -1339,67 +1344,121 @@ const session = {
   selected_tools: ["shell"],
   profile: { name: "Fake", model: "fake-model" },
   aggregate_metrics: { usage: {} },
-  path_entries: [
-    {
-      id: "call-entry",
-      thread_id: "session-1",
-      turn_id: "turn-1",
-      type: "tool_call",
-      message: {
-        role: "assistant",
-        content: "tool_call",
-        tool_name: "shell",
-        tool_call_id: "shell-1",
-        tool_args: "{\"command\":\"printf test\"}",
-      },
+  activity_timeline: {
+    schema_version: 1,
+    run_id: "turn-1",
+    thread_id: "session-1",
+    turn_id: "turn-1",
+    summary: {
+      status: "waiting",
+      severity: "blocking",
+      needs_attention: true,
+      attention_reasons: ["waiting", "approval"],
+      total_items: 2,
+      counts: { success: 1, waiting: 1, approval: 1 },
+      duration_ms: 1200,
     },
-    {
-      id: "result-entry",
-      thread_id: "session-1",
-      turn_id: "turn-1",
-      type: "tool_result",
-      message: {
-        role: "tool",
-        content: "89abcdef",
-        tool_name: "shell",
-        tool_call_id: "shell-1",
-        tool_result: {
-          truncated: true,
-          original_bytes: 16,
-          visible_bytes: 8,
-          original_lines: 1,
-          visible_lines: 1,
-          strategy: "tail",
-          content_sha256: "abcdef1234567890abcdef1234567890",
-          full_output: {
-            id: "artifact-1",
-            safe_label: "shell-output-000001.log",
-            url: "/artifacts/session-1/shell-output-000001.log",
-            kind: "tool_output",
-            mime: "text/plain; charset=utf-8",
-            size_bytes: 16,
-            sha256: "abcdef1234567890abcdef1234567890",
-          },
-        },
+    items: [
+      {
+        item_id: "tool:search-1",
+        tool_id: "search-1",
+        tool_name: "web_search",
+        kind: "hosted_tool",
+        status: "success",
+        severity: "normal",
+        metadata: { result_count: "15", visible_bytes: "128" },
       },
-      metadata: { truncated: true, original_bytes: 16, visible_bytes: 8 },
-    },
-  ],
+      {
+        item_id: "approval:abc",
+        tool_id: "write-1",
+        tool_name: "write_file",
+        kind: "approval",
+        status: "waiting",
+        severity: "blocking",
+        needs_attention: true,
+        attention_reasons: ["waiting", "approval"],
+        requires_approval: true,
+        approval_state: "requested",
+        metadata: { approval_id_hash: "abcdef123456", args_hash: "aabbccddeeff" },
+      },
+    ],
+  },
+  path_entries: [],
 };
 state.activeSession = session;
 const html = renderSessionWorkspace({ sessions: [session], activeSession: session, result: null, tools: [], inspectorTab: "tools" });
-assert.ok(html.includes("Model-visible output"));
-assert.ok(html.includes("Projection"));
-assert.ok(html.includes("truncated"));
-assert.ok(html.includes("Strategy"));
-assert.ok(html.includes("tail"));
-assert.ok(html.includes("Visible"));
-assert.ok(html.includes("8 B"));
-assert.ok(html.includes("Original"));
-assert.ok(html.includes("16 B"));
-assert.ok(html.includes("shell-output-000001.log"));
-assert.ok(html.includes('href="/artifacts/session-1/shell-output-000001.log"'));
-assert.ok(html.includes("Open artifact"));
+assert.ok(html.includes("activity-digest"));
+assert.ok(html.includes("waiting"));
+assert.ok(html.includes("2 items"));
+assert.ok(html.includes("web_search"));
+assert.ok(html.includes("write_file"));
+assert.ok(html.includes("15 results"));
+assert.ok(html.includes("requested"));
+assert.ok(!html.includes("printf test"));
+assert.ok(!html.includes("89abcdef"));
+assert.ok(!html.includes("shell-output-000001.log"));
+`
+	runNodeStaticScript(t, script)
+}
+
+func TestStaticConsoleActivityDigestOpenStateFollowsAttentionStatus(t *testing.T) {
+	script := `
+import assert from "node:assert/strict";
+import { state } from "./static/state.js";
+import { renderSessionWorkspace } from "./static/views/sessionWorkspace.js";
+
+const baseSession = {
+  id: "session-1",
+  status: "running",
+  can_append_message: true,
+  turns: [{ id: "turn-1" }],
+  selected_tools: ["list"],
+  profile: { name: "Fake", model: "fake-model" },
+  aggregate_metrics: { usage: {} },
+  path_entries: [],
+};
+const timeline = (status, needsAttention) => ({
+  schema_version: 1,
+  run_id: "turn-1",
+  thread_id: "session-1",
+  turn_id: "turn-1",
+  summary: {
+    status,
+    severity: needsAttention ? "warning" : "normal",
+    needs_attention: needsAttention,
+    attention_reasons: needsAttention ? [status] : [],
+    total_items: 1,
+    counts: { [status]: 1 },
+  },
+  items: [{
+    item_id: "tool:list-1",
+    tool_id: "list-1",
+    tool_name: "list",
+    kind: "tool",
+    status,
+    severity: needsAttention ? "warning" : "normal",
+    needs_attention: needsAttention,
+  }],
+});
+
+state.timelineExpanded = {};
+let session = { ...baseSession, activity_timeline: timeline("running", true) };
+state.activeSession = session;
+let html = renderSessionWorkspace({ sessions: [session], activeSession: session, result: null, tools: [], inspectorTab: "tools" });
+const runningKey = "session:session-1:activity:turn-1:running:final";
+assert.ok(html.includes('data-expand-key="' + runningKey + '" open'));
+
+state.timelineExpanded[runningKey] = true;
+session = { ...baseSession, status: "completed", activity_timeline: timeline("success", false) };
+state.activeSession = session;
+html = renderSessionWorkspace({ sessions: [session], activeSession: session, result: null, tools: [], inspectorTab: "tools" });
+const successKey = "session:session-1:activity:turn-1:success:final";
+assert.ok(html.includes('data-expand-key="' + successKey + '"'));
+assert.ok(!html.includes('data-expand-key="' + successKey + '" open'));
+
+state.timelineExpanded[successKey] = true;
+html = renderSessionWorkspace({ sessions: [session], activeSession: session, result: null, tools: [], inspectorTab: "tools" });
+assert.ok(html.includes('data-expand-key="' + successKey + '" open'));
 `
 	runNodeStaticScript(t, script)
 }

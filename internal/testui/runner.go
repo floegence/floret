@@ -39,6 +39,7 @@ import (
 	"github.com/floegence/floret/internal/tools/builtin"
 	"github.com/floegence/floret/internal/tools/mcp"
 	"github.com/floegence/floret/internal/tools/skills"
+	obs "github.com/floegence/floret/observation"
 	"github.com/floegence/floret/tools"
 )
 
@@ -1516,8 +1517,11 @@ func (r *Runner) runAgentTurnLocked(ctx context.Context, sess *agentSession, res
 	resp.WaitingPrompt = snapshot.WaitingPrompt
 	resp.Observation = r.agentObservationLocked(sess, snapshot, result, turn.ID)
 	resp.Observation.Diagnostics = cloneStringMap(resp.Diagnostics)
+	resp.ActivityTimeline = resp.Observation.ActivityTimeline
+	resp.Session.ActivityTimeline = resp.Observation.ActivityTimeline
 	resp.Session.ContextStatuses = append([]ObservedContextStatus(nil), resp.Observation.ContextStatuses...)
 	resp.Session.CompactionEvents = append([]ObservedCompactionEvent(nil), resp.Observation.CompactionEvents...)
+	resp.Session.Observation = resp.Observation
 	resp.Summary = agentSummary(result)
 	resp.FinishedAt = finished
 	resp.DurationMS = resp.FinishedAt.Sub(resp.StartedAt).Milliseconds()
@@ -1660,9 +1664,11 @@ func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) 
 	promptObservation := r.observationFromPromptCache(ctx, sess.promptStore, sess.id)
 	snapshot.ContextStatuses = promptObservation.ContextStatuses
 	snapshot.CompactionEvents = compactionEventsForObservation(pathEntries, nil)
+	snapshot.ActivityTimeline = activityTimelineForObservation(obs.ActivityRunMeta{RunID: snapshot.LatestTurnID, ThreadID: sess.id, TurnID: snapshot.LatestTurnID}, eventsForRun(sess.recorder.Snapshot(), snapshot.LatestTurnID), r.now())
 	snapshot.Observation.ProviderRequests = promptObservation.ProviderRequests
 	snapshot.Observation.ContextStatuses = promptObservation.ContextStatuses
 	snapshot.Observation.CompactionEvents = snapshot.CompactionEvents
+	snapshot.Observation.ActivityTimeline = snapshot.ActivityTimeline
 	snapshot.Observation.SessionMessages = sessionMessagesFromEntries(pathEntries)
 	snapshot.Observation.ActiveContext = active
 	snapshot.Observation.ContextProjection = projection
@@ -1734,6 +1740,7 @@ func (r *Runner) runningAgentSessionSnapshot(ctx context.Context, sess *agentSes
 	snapshot.Observation = r.runningAgentObservation(sess, snapshot)
 	snapshot.ContextStatuses = append([]ObservedContextStatus(nil), snapshot.Observation.ContextStatuses...)
 	snapshot.CompactionEvents = append([]ObservedCompactionEvent(nil), snapshot.Observation.CompactionEvents...)
+	snapshot.ActivityTimeline = snapshot.Observation.ActivityTimeline
 	return snapshot
 }
 
@@ -1783,6 +1790,7 @@ func (r *Runner) refreshRunningSnapshotFromThread(ctx context.Context, sess *age
 	snapshot.Observation.ProviderRequests = promptObservation.ProviderRequests
 	snapshot.Observation.ContextStatuses = promptObservation.ContextStatuses
 	snapshot.Observation.CompactionEvents = snapshot.CompactionEvents
+	snapshot.Observation.ActivityTimeline = snapshot.ActivityTimeline
 	snapshot.Observation.SessionMessages = sessionMessagesFromEntries(snapshot.PathEntries)
 	snapshot.Observation.ActiveContext = snapshot.ActiveContext
 	snapshot.Observation.ContextProjection = snapshot.ContextProjection
@@ -1811,6 +1819,7 @@ func (r *Runner) agentObservationLocked(sess *agentSession, snapshot AgentSessio
 	events := eventsForRun(sess.recorder.Snapshot(), turnID)
 	observation.ContextStatuses = mergeContextStatuses(snapshot.ContextStatuses, contextStatusesForObservation(observation.ProviderRequests, events))
 	observation.CompactionEvents = compactionEventsForObservation(snapshot.PathEntries, events)
+	observation.ActivityTimeline = activityTimelineForObservation(obs.ActivityRunMeta{RunID: turnID, ThreadID: sess.id, TurnID: turnID}, events, r.now())
 	observation.Transitions = buildTransitions(events, result)
 	return observation
 }
@@ -1824,6 +1833,7 @@ func (r *Runner) runningAgentObservation(sess *agentSession, snapshot AgentSessi
 	events := eventsForRun(sess.recorder.Snapshot(), snapshot.LatestTurnID)
 	observation.ContextStatuses = mergeContextStatuses(snapshot.ContextStatuses, contextStatusesForObservation(observation.ProviderRequests, events))
 	observation.CompactionEvents = compactionEventsForObservation(snapshot.PathEntries, events)
+	observation.ActivityTimeline = activityTimelineForObservation(obs.ActivityRunMeta{RunID: snapshot.LatestTurnID, ThreadID: sess.id, TurnID: snapshot.LatestTurnID}, events, r.now())
 	observation.Transitions = buildRunningTransitions(events)
 	return observation
 }

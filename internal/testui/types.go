@@ -257,6 +257,7 @@ const (
 	AgentStreamProviderDelta            AgentStreamEventType = "provider_delta"
 	AgentStreamContextStatus            AgentStreamEventType = "context_status"
 	AgentStreamContextCompaction        AgentStreamEventType = "context_compaction"
+	AgentStreamActivity                 AgentStreamEventType = "activity"
 	AgentStreamAssistantMessageAppended AgentStreamEventType = "assistant_message_appended"
 	AgentStreamToolCall                 AgentStreamEventType = "tool_call"
 	AgentStreamToolResult               AgentStreamEventType = "tool_result"
@@ -267,24 +268,25 @@ const (
 )
 
 type AgentStreamEvent struct {
-	Sequence        int64                    `json:"sequence"`
-	Type            AgentStreamEventType     `json:"type"`
-	SessionID       string                   `json:"session_id,omitempty"`
-	TurnID          string                   `json:"turn_id,omitempty"`
-	EntryID         string                   `json:"entry_id,omitempty"`
-	Step            int                      `json:"step,omitempty"`
-	At              time.Time                `json:"at"`
-	Entry           *ObservedSessionEntry    `json:"entry,omitempty"`
-	ProviderRequest *ObservedProviderRequest `json:"provider_request,omitempty"`
-	ProviderEvent   *ObservedProviderEvent   `json:"provider_event,omitempty"`
-	ContextStatus   *ObservedContextStatus   `json:"context_status,omitempty"`
-	Compaction      *ObservedCompactionEvent `json:"compaction,omitempty"`
-	EngineEvent     *event.Event             `json:"engine_event,omitempty"`
-	Snapshot        *AgentSessionSnapshot    `json:"session_snapshot,omitempty"`
-	Result          *AgentRunResponse        `json:"result,omitempty"`
-	Message         string                   `json:"message,omitempty"`
-	Error           string                   `json:"error,omitempty"`
-	Metadata        map[string]string        `json:"metadata,omitempty"`
+	Sequence         int64                         `json:"sequence"`
+	Type             AgentStreamEventType          `json:"type"`
+	SessionID        string                        `json:"session_id,omitempty"`
+	TurnID           string                        `json:"turn_id,omitempty"`
+	EntryID          string                        `json:"entry_id,omitempty"`
+	Step             int                           `json:"step,omitempty"`
+	At               time.Time                     `json:"at"`
+	Entry            *ObservedSessionEntry         `json:"entry,omitempty"`
+	ProviderRequest  *ObservedProviderRequest      `json:"provider_request,omitempty"`
+	ProviderEvent    *ObservedProviderEvent        `json:"provider_event,omitempty"`
+	ContextStatus    *ObservedContextStatus        `json:"context_status,omitempty"`
+	Compaction       *ObservedCompactionEvent      `json:"compaction,omitempty"`
+	ActivityTimeline *observation.ActivityTimeline `json:"activity_timeline,omitempty"`
+	EngineEvent      *event.Event                  `json:"engine_event,omitempty"`
+	Snapshot         *AgentSessionSnapshot         `json:"session_snapshot,omitempty"`
+	Result           *AgentRunResponse             `json:"result,omitempty"`
+	Message          string                        `json:"message,omitempty"`
+	Error            string                        `json:"error,omitempty"`
+	Metadata         map[string]string             `json:"metadata,omitempty"`
 }
 
 type AgentStreamSink interface {
@@ -303,45 +305,47 @@ type AgentInterfaceProbeRequest struct {
 }
 
 type AgentRunResponse struct {
-	StatusCode         int                         `json:"-"`
-	ID                 string                      `json:"id"`
-	Probe              bool                        `json:"probe,omitempty"`
-	SessionID          string                      `json:"session_id"`
-	TurnID             string                      `json:"turn_id"`
-	Status             string                      `json:"status"`
-	StartedAt          time.Time                   `json:"started_at"`
-	FinishedAt         time.Time                   `json:"finished_at"`
-	DurationMS         int64                       `json:"duration_ms"`
-	Summary            string                      `json:"summary"`
-	Output             string                      `json:"output"`
-	Error              string                      `json:"error,omitempty"`
-	Profile            ProviderProfile             `json:"profile"`
-	Metrics            engine.RunMetrics           `json:"metrics"`
-	Events             []event.Event               `json:"events"`
-	HarnessEvents      []agentharness.HarnessEvent `json:"harness_events,omitempty"`
-	CompletionReason   string                      `json:"completion_reason,omitempty"`
-	ContinuationReason string                      `json:"continuation_reason,omitempty"`
-	FinishReason       string                      `json:"finish_reason,omitempty"`
-	RawFinishReason    string                      `json:"raw_finish_reason,omitempty"`
-	FinishInferred     bool                        `json:"finish_inferred,omitempty"`
-	Diagnostics        map[string]string           `json:"diagnostics,omitempty"`
-	CanAppendMessage   bool                        `json:"can_append_message"`
-	WaitingPrompt      string                      `json:"waiting_prompt,omitempty"`
-	Session            AgentSessionSnapshot        `json:"session"`
-	Observation        AgentObservation            `json:"observation"`
+	StatusCode         int                          `json:"-"`
+	ID                 string                       `json:"id"`
+	Probe              bool                         `json:"probe,omitempty"`
+	SessionID          string                       `json:"session_id"`
+	TurnID             string                       `json:"turn_id"`
+	Status             string                       `json:"status"`
+	StartedAt          time.Time                    `json:"started_at"`
+	FinishedAt         time.Time                    `json:"finished_at"`
+	DurationMS         int64                        `json:"duration_ms"`
+	Summary            string                       `json:"summary"`
+	Output             string                       `json:"output"`
+	Error              string                       `json:"error,omitempty"`
+	Profile            ProviderProfile              `json:"profile"`
+	Metrics            engine.RunMetrics            `json:"metrics"`
+	Events             []event.Event                `json:"events"`
+	HarnessEvents      []agentharness.HarnessEvent  `json:"harness_events,omitempty"`
+	CompletionReason   string                       `json:"completion_reason,omitempty"`
+	ContinuationReason string                       `json:"continuation_reason,omitempty"`
+	FinishReason       string                       `json:"finish_reason,omitempty"`
+	RawFinishReason    string                       `json:"raw_finish_reason,omitempty"`
+	FinishInferred     bool                         `json:"finish_inferred,omitempty"`
+	Diagnostics        map[string]string            `json:"diagnostics,omitempty"`
+	CanAppendMessage   bool                         `json:"can_append_message"`
+	WaitingPrompt      string                       `json:"waiting_prompt,omitempty"`
+	ActivityTimeline   observation.ActivityTimeline `json:"activity_timeline"`
+	Session            AgentSessionSnapshot         `json:"session"`
+	Observation        AgentObservation             `json:"observation"`
 }
 
 type AgentObservation struct {
-	ProviderRequests  []ObservedProviderRequest `json:"provider_requests"`
-	ProviderEvents    []ObservedProviderEvent   `json:"provider_events"`
-	ContextStatuses   []ObservedContextStatus   `json:"context_statuses,omitempty"`
-	CompactionEvents  []ObservedCompactionEvent `json:"compaction_events,omitempty"`
-	SessionMessages   []ObservedSessionMessage  `json:"session_messages"`
-	ActiveContext     []ObservedSessionMessage  `json:"active_context"`
-	ContextProjection ObservedContextProjection `json:"context_projection,omitempty"`
-	PathEntries       []ObservedSessionEntry    `json:"path_entries"`
-	Transitions       []StateTransition         `json:"transitions"`
-	Diagnostics       map[string]string         `json:"diagnostics,omitempty"`
+	ProviderRequests  []ObservedProviderRequest    `json:"provider_requests"`
+	ProviderEvents    []ObservedProviderEvent      `json:"provider_events"`
+	ContextStatuses   []ObservedContextStatus      `json:"context_statuses,omitempty"`
+	CompactionEvents  []ObservedCompactionEvent    `json:"compaction_events,omitempty"`
+	ActivityTimeline  observation.ActivityTimeline `json:"activity_timeline"`
+	SessionMessages   []ObservedSessionMessage     `json:"session_messages"`
+	ActiveContext     []ObservedSessionMessage     `json:"active_context"`
+	ContextProjection ObservedContextProjection    `json:"context_projection,omitempty"`
+	PathEntries       []ObservedSessionEntry       `json:"path_entries"`
+	Transitions       []StateTransition            `json:"transitions"`
+	Diagnostics       map[string]string            `json:"diagnostics,omitempty"`
 }
 
 type ObservedContextStatus = observation.ContextStatus
@@ -553,6 +557,7 @@ type AgentSessionSnapshot struct {
 	Compactions             int                             `json:"compactions"`
 	ContextStatuses         []ObservedContextStatus         `json:"context_statuses,omitempty"`
 	CompactionEvents        []ObservedCompactionEvent       `json:"compaction_events,omitempty"`
+	ActivityTimeline        observation.ActivityTimeline    `json:"activity_timeline"`
 	Observation             AgentObservation                `json:"observation,omitempty"`
 }
 

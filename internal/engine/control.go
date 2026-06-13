@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/floegence/floret/internal/event"
 	"github.com/floegence/floret/internal/control"
+	"github.com/floegence/floret/internal/event"
 	"github.com/floegence/floret/internal/provider"
 )
 

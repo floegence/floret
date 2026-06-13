@@ -3,6 +3,7 @@ package testui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/internal/configbridge"
@@ -245,18 +246,34 @@ func providerUsageFromPromptResponse(resp cache.ProviderResponseRecord) observat
 
 func observationEvent(ev event.Event) observation.Event {
 	return observation.Event{
-		Type:       string(ev.Type),
-		RunID:      ev.RunID,
-		ThreadID:   ev.ThreadID,
-		TurnID:     ev.TurnID,
-		Step:       ev.Step,
-		Provider:   ev.Provider,
-		Model:      ev.Model,
-		Result:     ev.Result,
-		Error:      ev.Err,
-		Metadata:   observationMetadata(ev.Metadata),
-		ObservedAt: ev.Timestamp,
+		Type:         string(ev.Type),
+		TraceID:      ev.TraceID,
+		RunID:        ev.RunID,
+		ThreadID:     ev.ThreadID,
+		TurnID:       ev.TurnID,
+		Step:         ev.Step,
+		Provider:     ev.Provider,
+		Model:        ev.Model,
+		Message:      ev.Message,
+		Result:       ev.Result,
+		Error:        ev.Err,
+		ToolID:       ev.ToolID,
+		ToolName:     ev.ToolName,
+		ToolKind:     ev.ToolKind,
+		ArgsHash:     ev.ArgsHash,
+		DurationMS:   ev.Duration,
+		FinishReason: ev.FinishReason,
+		Metadata:     observationMetadata(ev.Metadata),
+		ObservedAt:   ev.Timestamp,
 	}
+}
+
+func activityTimelineForObservation(meta observation.ActivityRunMeta, events []event.Event, now time.Time) observation.ActivityTimeline {
+	observed := make([]observation.Event, 0, len(events))
+	for _, ev := range events {
+		observed = append(observed, observationEvent(event.Sanitize(ev)))
+	}
+	return observation.BuildActivityTimeline(meta, observed, now.UnixMilli())
 }
 
 func observationMetadata(value any) map[string]any {

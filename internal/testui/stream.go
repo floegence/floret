@@ -10,6 +10,7 @@ import (
 	"github.com/floegence/floret/internal/engine"
 	"github.com/floegence/floret/internal/event"
 	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/observation"
 )
 
 type agentStream struct {
@@ -65,11 +66,13 @@ func (r *streamingEventRecorder) SetStreamSink(sink AgentStreamSink) {
 func (r *streamingEventRecorder) Emit(ev event.Event) {
 	r.mu.Lock()
 	r.events = append(r.events, ev)
+	events := append([]event.Event(nil), r.events...)
 	sink := r.sink
 	r.mu.Unlock()
 	if sink == nil {
 		return
 	}
+	activity := activityTimelineForObservation(observation.ActivityRunMeta{RunID: ev.RunID, ThreadID: ev.ThreadID, TurnID: ev.TurnID, TraceID: ev.TraceID}, eventsForRun(events, ev.RunID), time.Now())
 	switch ev.Type {
 	case event.ProviderDelta:
 		emitEngineStreamEvent(sink, AgentStreamProviderDelta, ev)
@@ -102,9 +105,11 @@ func (r *streamingEventRecorder) Emit(ev event.Event) {
 			})
 		}
 	case event.ToolCall, event.HostedToolCall:
-		emitEngineStreamEvent(sink, AgentStreamToolCall, ev)
+		emitEngineStreamEvent(sink, AgentStreamToolCall, ev, activity)
 	case event.ToolResult, event.HostedToolResult:
-		emitEngineStreamEvent(sink, AgentStreamToolResult, ev)
+		emitEngineStreamEvent(sink, AgentStreamToolResult, ev, activity)
+	case event.ToolApprovalRequested, event.ToolApprovalApproved, event.ToolApprovalRejected, event.ToolApprovalTimedOut, event.ToolApprovalCanceled, event.BudgetExceeded, event.RunEnd:
+		emitEngineStreamEvent(sink, AgentStreamActivity, ev, activity)
 	}
 }
 
@@ -199,7 +204,7 @@ func streamEntryAppended(ctx context.Context, sink AgentStreamSink, repo session
 	})
 }
 
-func emitEngineStreamEvent(sink AgentStreamSink, typ AgentStreamEventType, ev event.Event) {
+func emitEngineStreamEvent(sink AgentStreamSink, typ AgentStreamEventType, ev event.Event, activity ...observation.ActivityTimeline) {
 	if sink == nil {
 		return
 	}
@@ -213,6 +218,9 @@ func emitEngineStreamEvent(sink AgentStreamSink, typ AgentStreamEventType, ev ev
 		EngineEvent: &evCopy,
 		Message:     evCopy.Message,
 		Error:       evCopy.Err,
+	}
+	if len(activity) > 0 {
+		stream.ActivityTimeline = &activity[0]
 	}
 	if ev.Type == event.ToolResult || ev.Type == event.HostedToolResult {
 		stream.Message = evCopy.Result

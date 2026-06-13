@@ -100,6 +100,8 @@ const (
 	SensitivityRaw    Sensitivity = "raw"
 )
 
+const sanitizedErrorPresentMetadataKey = "error_present"
+
 type Redactor func(string) string
 
 type SinkPolicy struct {
@@ -139,6 +141,7 @@ func sanitize(e Event, policy SinkPolicy) Event {
 	case ToolCall, HostedToolCall:
 		e.Args = ""
 	case ToolResult, HostedToolResult, ToolApprovalRequested, ToolApprovalApproved, ToolApprovalRejected, ToolApprovalTimedOut, ToolApprovalCanceled:
+		e.Metadata = withSanitizedMetadataBool(e.Metadata, sanitizedErrorPresentMetadataKey, strings.TrimSpace(e.Err) != "")
 		e.Result = ""
 		e.Err = ""
 	case ContextCompact:
@@ -317,6 +320,35 @@ func sanitizeMetadata(value any) any {
 			return "[redacted]"
 		}
 		return safeStringLabel(string(data))
+	}
+}
+
+func withSanitizedMetadataBool(value any, key string, enabled bool) any {
+	if !enabled {
+		return value
+	}
+	switch v := value.(type) {
+	case nil:
+		return map[string]any{key: true}
+	case map[string]any:
+		out := make(map[string]any, len(v)+1)
+		for itemKey, item := range v {
+			out[itemKey] = item
+		}
+		out[key] = true
+		return out
+	case map[string]string:
+		out := make(map[string]any, len(v)+1)
+		for itemKey, item := range v {
+			out[itemKey] = item
+		}
+		out[key] = true
+		return out
+	default:
+		return map[string]any{
+			"details": sanitizeMetadata(value),
+			key:       true,
+		}
 	}
 }
 

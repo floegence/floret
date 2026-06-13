@@ -508,7 +508,7 @@ a {
 .message-fold summary,
 .answer-expand summary,
 .reasoning-fold summary,
-.tool-activity summary,
+.activity-panel summary,
 .event-row summary {
   color: var(--muted);
   font-size: 12px;
@@ -517,14 +517,14 @@ a {
 
 .answer-expand,
 .reasoning-fold,
-.tool-activity,
+.activity-panel,
 .event-row {
   min-width: 0;
 }
 
 .answer-expand summary,
 .reasoning-fold summary,
-.tool-activity summary,
+.activity-panel summary,
 .event-row summary {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
@@ -583,19 +583,14 @@ a {
   color: var(--blue);
 }
 
-.tool-activity {
-  display: grid;
-  gap: 8px;
-}
-
-.tool-activity summary,
+.activity-panel summary,
 .event-row summary {
   grid-template-columns: minmax(0, 1.1fr) minmax(140px, 1fr) auto;
   min-height: 34px;
   padding: 8px 0;
 }
 
-.tool-summary-main,
+.activity-summary-main,
 .event-summary-main {
   display: flex;
   flex-wrap: wrap;
@@ -618,7 +613,7 @@ a {
   color: var(--violet);
 }
 
-.tool-summary-preview,
+.activity-summary-preview,
 .event-summary-preview {
   min-width: 0;
   overflow: hidden;
@@ -627,7 +622,7 @@ a {
   white-space: nowrap;
 }
 
-.tool-activity-body,
+.activity-body,
 .event-row-body {
   display: grid;
   gap: 10px;
@@ -635,47 +630,140 @@ a {
   border-top: 1px solid var(--line);
 }
 
-.tool-detail-section {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
+.activity-digest {
+  border-left-color: var(--blue);
+  background: #f9fbfd;
 }
 
-.tool-detail-section strong {
-  color: var(--muted);
+.activity-digest.needs-attention {
+  border-left-color: var(--red);
+  background: #fffafa;
+}
+
+.activity-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.activity-status {
+  padding: 2px 6px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--blue);
   font-size: 11px;
   font-weight: 900;
   text-transform: uppercase;
 }
 
-.tool-detail-section.empty {
-  padding: 8px 10px;
-  border: 1px dashed var(--line);
-  background: var(--panel);
+.activity-status.error,
+.activity-status.waiting {
+  color: var(--red);
 }
 
-.tool-projection-grid {
+.activity-count-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.activity-count-grid span {
+  display: inline-grid;
+  grid-template-columns: auto auto;
+  gap: 4px;
+  align-items: baseline;
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.activity-count-grid strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.activity-items {
   display: grid;
   gap: 6px;
 }
 
-.artifact-link-row {
-  display: flex;
-  min-width: 0;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
+.activity-item {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto auto minmax(80px, auto);
   gap: 8px;
-  padding: 8px 10px;
+  align-items: center;
+  min-height: 34px;
+  padding: 7px 8px;
   border: 1px solid var(--line);
-  background: var(--panel);
+  background: var(--surface);
 }
 
-.artifact-link-row span {
+.activity-item.needs-attention {
+  border-color: rgba(182, 64, 61, 0.28);
+}
+
+.activity-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--muted);
+}
+
+.activity-item-main {
+  display: grid;
   min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--muted);
+  gap: 2px;
+}
+
+.activity-item-main strong,
+.activity-item-main span,
+.activity-item-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-item-main strong {
   font-size: 12px;
+}
+
+.activity-item-main span,
+.activity-item-meta {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.severity-quiet {
+  color: var(--muted);
+}
+
+.severity-normal,
+.activity-dot.severity-normal {
+  color: var(--blue);
+  background: var(--blue);
+}
+
+.severity-warning,
+.activity-dot.severity-warning {
+  color: #9a6b00;
+  background: #b98100;
+}
+
+.severity-error,
+.activity-dot.severity-error {
+  color: var(--red);
+  background: var(--red);
+}
+
+.severity-blocking,
+.activity-dot.severity-blocking {
+  color: var(--red);
+  background: var(--red);
 }
 
 .tool-error {
@@ -1763,6 +1851,22 @@ button.small {
 
   .context-event-row {
     grid-template-columns: 1fr;
+  }
+
+  .activity-panel summary {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .activity-panel summary .activity-summary-preview {
+    grid-column: 1 / -1;
+  }
+
+  .activity-item {
+    grid-template-columns: 10px minmax(0, 1fr) auto;
+  }
+
+  .activity-item-meta {
+    grid-column: 2 / -1;
   }
 
   .session-list {

@@ -16,7 +16,7 @@ func TestTraceWriterWritesParseableRedactedJSONL(t *testing.T) {
 		Type:      ToolCall,
 		TraceID:   "trace",
 		RunID:     "run",
-		ThreadID: "session",
+		ThreadID:  "session",
 		Step:      1,
 		Args:      `{"api_key":"secret-token","path":"a.go"}`,
 		Timestamp: time.Unix(1, 0),
@@ -190,6 +190,9 @@ func TestSanitizeApprovalLifecycleEvents(t *testing.T) {
 		}
 		if meta["approval_id"] != "approval-1" {
 			t.Fatalf("%s approval id should remain readable: %#v", typ, meta)
+		}
+		if meta["error_present"] != true {
+			t.Fatalf("%s error signal should remain readable: %#v", typ, meta)
 		}
 		if strings.Contains(fmt.Sprint(meta), "/private") || strings.Contains(fmt.Sprint(meta), "secret-value") {
 			t.Fatalf("%s metadata leaked path/secret: %#v", typ, meta)

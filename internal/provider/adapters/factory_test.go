@@ -14,10 +14,10 @@ import (
 
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/internal/engine"
-	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/internal/provider"
 	"github.com/floegence/floret/internal/provider/cache"
 	"github.com/floegence/floret/internal/provider/catalog"
+	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/internal/session"
 	"github.com/floegence/floret/internal/session/contextpolicy"
 	"github.com/floegence/floret/tools"

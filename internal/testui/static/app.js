@@ -414,6 +414,7 @@ function createLiveTurn(sessionID, message) {
     provider_requests: [],
     context_statuses: [],
     compactions: [],
+    activity_timeline: null,
     entries: [],
     result: null,
     failed: false,
@@ -425,8 +426,15 @@ function applyStreamEvent(event) {
   if (Number(event.sequence || 0) <= Number(state.liveTurn.sequence || 0)) return;
   state.liveTurn.sequence = Number(event.sequence || 0);
   if (event.turn_id) state.liveTurn.turn_id = event.turn_id;
+  if (event.activity_timeline) {
+    state.liveTurn.activity_timeline = event.activity_timeline;
+  }
   state.liveTurn.events.push(event);
   ensureStreamingResult();
+  if (event.activity_timeline) {
+    state.liveTurn.result.activity_timeline = event.activity_timeline;
+    state.liveTurn.result.observation.activity_timeline = event.activity_timeline;
+  }
   switch (event.type) {
     case "session_snapshot":
       if (event.session_snapshot) {
@@ -462,6 +470,7 @@ function applyStreamEvent(event) {
       break;
     case "tool_call":
     case "tool_result":
+    case "activity":
     case "assistant_message_appended":
     case "user_message_appended":
     case "turn_save_point":
@@ -483,6 +492,7 @@ function applyStreamEvent(event) {
         state.liveTurn.result = event.result;
         state.lastResult = event.result;
         if (event.result.session) setActiveSessionSnapshot(event.result.session);
+        if (event.result.activity_timeline) state.liveTurn.activity_timeline = event.result.activity_timeline;
       }
       if (event.entry) {
         upsertLiveEntry(event.entry);
@@ -513,8 +523,10 @@ function ensureStreamingResult() {
         provider_events: state.liveTurn.provider_events,
         context_statuses: state.liveTurn.context_statuses,
         compaction_events: state.liveTurn.compactions,
+        activity_timeline: state.liveTurn.activity_timeline,
         path_entries: state.liveTurn.entries,
       },
+      activity_timeline: state.liveTurn.activity_timeline,
       session: state.activeSession,
     };
   }
@@ -525,6 +537,8 @@ function ensureStreamingResult() {
   state.liveTurn.result.observation.provider_events = state.liveTurn.provider_events;
   state.liveTurn.result.observation.context_statuses = state.liveTurn.context_statuses;
   state.liveTurn.result.observation.compaction_events = state.liveTurn.compactions;
+  state.liveTurn.result.observation.activity_timeline = state.liveTurn.activity_timeline;
+  state.liveTurn.result.activity_timeline = state.liveTurn.activity_timeline;
   state.liveTurn.result.observation.path_entries = state.liveTurn.entries;
 }
 

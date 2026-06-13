@@ -16,12 +16,13 @@ import (
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/internal/engine"
 	"github.com/floegence/floret/internal/event"
-	"github.com/floegence/floret/internal/searchcap"
-	"github.com/floegence/floret/internal/sessionlifecycle"
 	"github.com/floegence/floret/internal/provider"
 	"github.com/floegence/floret/internal/provider/catalog"
+	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/internal/session/contextpolicy"
+	"github.com/floegence/floret/internal/sessionlifecycle"
 	"github.com/floegence/floret/internal/testing/harness"
+	"github.com/floegence/floret/observation"
 )
 
 func serveInitialAgentSessionTurn(t *testing.T, handler http.Handler, createBody string) *httptest.ResponseRecorder {
@@ -528,6 +529,15 @@ func TestServerStreamsAgentTurnEventsBeforeCompletion(t *testing.T) {
 	if toolCall.Entry == nil || toolCall.Entry.Type != "tool_call" || toolCall.Entry.Message.ToolName != "list" || toolCall.Entry.Message.ToolCallID != "list-1" || toolCall.Entry.ID == "" {
 		t.Fatalf("tool call stream event missing observed entry payload: %#v", toolCall)
 	}
+	if !slices.ContainsFunc(events, func(ev AgentStreamEvent) bool {
+		return ev.Type == AgentStreamToolCall &&
+			ev.ActivityTimeline != nil &&
+			ev.ActivityTimeline.Summary.TotalItems > 0 &&
+			len(ev.ActivityTimeline.Items) > 0 &&
+			ev.ActivityTimeline.Items[0].ToolName == "list"
+	}) {
+		t.Fatalf("tool call stream events missing activity timeline: %#v", events)
+	}
 	toolResult := events[toolResultIndex]
 	if toolResult.Entry == nil || toolResult.Entry.Type != "tool_result" || toolResult.Entry.Message.ToolName != "list" || toolResult.Entry.Message.ToolCallID != "list-1" {
 		t.Fatalf("tool result stream event missing observed entry payload: %#v", toolResult)
@@ -535,9 +545,21 @@ func TestServerStreamsAgentTurnEventsBeforeCompletion(t *testing.T) {
 	if toolResult.Entry.Message.Content == "" {
 		t.Fatalf("tool result stream event should expose local inspection result content: %#v", toolResult)
 	}
+	if !slices.ContainsFunc(events, func(ev AgentStreamEvent) bool {
+		return ev.Type == AgentStreamToolResult &&
+			ev.ActivityTimeline != nil &&
+			ev.ActivityTimeline.Summary.Status == observation.ActivityStatusSuccess
+	}) {
+		t.Fatalf("tool result stream events should include completed activity timeline: %#v", events)
+	}
 	completed := events[completedIndex]
 	if completed.Result == nil || completed.Result.Status != "completed" || completed.Result.Session.ID != snapshot.ID {
 		t.Fatalf("completion event missing final result: %#v", completed)
+	}
+	if completed.Result.ActivityTimeline.Summary.Status != observation.ActivityStatusSuccess ||
+		completed.Result.Session.ActivityTimeline.Summary.TotalItems == 0 ||
+		completed.Result.Observation.ActivityTimeline.Summary.TotalItems == 0 {
+		t.Fatalf("completion result missing activity timeline: %#v", completed.Result)
 	}
 }
 
@@ -682,6 +704,20 @@ func TestServerStreamExposesLocalInspectionEventsByDefault(t *testing.T) {
 			strings.Contains(ev.EngineEvent.Result, "PRIVATE_OUTPUT_X")
 	}) {
 		t.Fatalf("SSE engine event should expose tool result by default: %#v", events)
+	}
+	for _, ev := range events {
+		if ev.ActivityTimeline == nil {
+			continue
+		}
+		data, err := json.Marshal(ev.ActivityTimeline)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, forbidden := range []string{"PRIVATE_OUTPUT_X", `\"path\":null`, "secret reasoning token=abc"} {
+			if strings.Contains(string(data), forbidden) {
+				t.Fatalf("activity timeline leaked raw inspection payload %q: %s", forbidden, data)
+			}
+		}
 	}
 }
 

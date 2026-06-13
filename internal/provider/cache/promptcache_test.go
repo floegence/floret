@@ -193,7 +193,7 @@ func TestLatestPressureAnchorAcrossMemoryAndFileStores(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			now := time.Date(2026, 6, 2, 1, 2, 3, 0, time.UTC)
 			old := PressureAnchorState{
-				PromptScopeID:     "thread",
+				PromptScopeID:      "thread",
 				ThreadID:           "thread",
 				Provider:           "openai",
 				Model:              "model",
@@ -587,10 +587,10 @@ func TestConcurrentBuildPlanRecordRequestAcrossSessionsIsIsolated(t *testing.T) 
 		}
 	}
 	for _, item := range []struct {
-		runID     string
+		runID    string
 		threadID string
-		toolName  string
-		content   string
+		toolName string
+		content  string
 	}{
 		{"turn-a", "thread-a", "read_a", "message a"},
 		{"turn-b", "thread-b", "read_b", "message b"},

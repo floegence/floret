@@ -8,10 +8,10 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/internal/provider"
 	"github.com/floegence/floret/internal/provider/cache"
 	"github.com/floegence/floret/internal/provider/catalog"
+	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/internal/session"
 )
 

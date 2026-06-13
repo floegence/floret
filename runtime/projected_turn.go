@@ -13,6 +13,7 @@ import (
 	"github.com/floegence/floret/internal/provider"
 	"github.com/floegence/floret/internal/provider/adapters"
 	"github.com/floegence/floret/internal/session"
+	"github.com/floegence/floret/observation"
 	"github.com/floegence/floret/tools"
 )
 
@@ -48,20 +49,21 @@ type ProjectedTurnRequest struct {
 
 // ProjectedTurnResult is the host-safe outcome of RunProjectedTurn.
 type ProjectedTurnResult struct {
-	RunID              RunID               `json:"run_id,omitempty"`
-	ThreadID           ThreadID            `json:"thread_id,omitempty"`
-	TurnID             TurnID              `json:"turn_id,omitempty"`
-	Status             TurnStatus          `json:"status"`
-	Output             string              `json:"output,omitempty"`
-	Error              string              `json:"error,omitempty"`
-	Metrics            RunMetrics          `json:"metrics"`
-	Transcript         []TranscriptMessage `json:"transcript,omitempty"`
-	CompletionReason   string              `json:"completion_reason,omitempty"`
-	ContinuationReason string              `json:"continuation_reason,omitempty"`
-	FinishReason       string              `json:"finish_reason,omitempty"`
-	RawFinishReason    string              `json:"raw_finish_reason,omitempty"`
-	FinishInferred     bool                `json:"finish_inferred,omitempty"`
-	Signal             *TurnSignal         `json:"signal,omitempty"`
+	RunID              RunID                        `json:"run_id,omitempty"`
+	ThreadID           ThreadID                     `json:"thread_id,omitempty"`
+	TurnID             TurnID                       `json:"turn_id,omitempty"`
+	Status             TurnStatus                   `json:"status"`
+	Output             string                       `json:"output,omitempty"`
+	Error              string                       `json:"error,omitempty"`
+	Metrics            RunMetrics                   `json:"metrics"`
+	Transcript         []TranscriptMessage          `json:"transcript,omitempty"`
+	CompletionReason   string                       `json:"completion_reason,omitempty"`
+	ContinuationReason string                       `json:"continuation_reason,omitempty"`
+	FinishReason       string                       `json:"finish_reason,omitempty"`
+	RawFinishReason    string                       `json:"raw_finish_reason,omitempty"`
+	FinishInferred     bool                         `json:"finish_inferred,omitempty"`
+	Signal             *TurnSignal                  `json:"signal,omitempty"`
+	ActivityTimeline   observation.ActivityTimeline `json:"activity_timeline"`
 }
 
 // TranscriptMessage is the small message shape accepted by RunProjectedTurn.
@@ -258,9 +260,9 @@ func RunProjectedTurn(ctx context.Context, opts ProjectedTurnOptions, req Projec
 	if registry == nil {
 		registry = tools.NewRegistry()
 	}
-	sink := runtimeEventSink{sink: opts.Sink}
+	activityRecorder := &runtimeActivityEventRecorder{sink: runtimeEventSink{sink: opts.Sink}}
 	capabilities := mergeCapabilityOptions(cfg, opts.Capabilities)
-	effectivePrompt, err := applyCapabilities(registry, cfg.SystemPrompt, capabilities, sink)
+	effectivePrompt, err := applyCapabilities(registry, cfg.SystemPrompt, capabilities, activityRecorder)
 	if err != nil {
 		return ProjectedTurnResult{}, err
 	}
@@ -281,7 +283,7 @@ func RunProjectedTurn(ctx context.Context, opts ProjectedTurnOptions, req Projec
 		Artifacts:    store.artifacts,
 		SystemPrompt: effectivePrompt,
 		Tools:        registry,
-		Sink:         sink,
+		Sink:         activityRecorder,
 		Approver:     opts.Approver,
 		Options: engine.Options{
 			RunID:                    ids.runID,
@@ -321,7 +323,7 @@ func RunProjectedTurn(ctx context.Context, opts ProjectedTurnOptions, req Projec
 		PreviousProviderState: previousProviderState,
 		History:               history,
 	})
-	return projectedTurnResult(ids, result), result.Err
+	return projectedTurnResult(ids, result, activityRecorder.Snapshot(), time.Now().UnixMilli()), result.Err
 }
 
 func projectedModelProvider(cfg config.Config, gateway ModelGateway) (provider.Provider, error) {
@@ -586,7 +588,7 @@ func providerUsage(in ProviderUsage) provider.Usage {
 	}
 }
 
-func projectedTurnResult(ids projectedIDs, in engine.Result) ProjectedTurnResult {
+func projectedTurnResult(ids projectedIDs, in engine.Result, events []observation.Event, nowUnixMS int64) ProjectedTurnResult {
 	out := ProjectedTurnResult{
 		RunID:              RunID(ids.runID),
 		ThreadID:           ThreadID(ids.threadID),
@@ -601,6 +603,12 @@ func projectedTurnResult(ids projectedIDs, in engine.Result) ProjectedTurnResult
 		RawFinishReason:    in.RawFinishReason,
 		FinishInferred:     in.FinishInferred,
 		Signal:             runtimeTurnSignal(in.ControlSignal),
+		ActivityTimeline: observation.BuildActivityTimeline(observation.ActivityRunMeta{
+			RunID:    ids.runID,
+			ThreadID: ids.threadID,
+			TurnID:   ids.turnID,
+			TraceID:  ids.traceID,
+		}, events, nowUnixMS),
 	}
 	if in.Err != nil {
 		out.Error = in.Err.Error()

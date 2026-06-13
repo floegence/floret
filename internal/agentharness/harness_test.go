@@ -15,13 +15,13 @@ import (
 
 	"github.com/floegence/floret/internal/engine"
 	"github.com/floegence/floret/internal/event"
-	"github.com/floegence/floret/internal/sessionlifecycle"
 	"github.com/floegence/floret/internal/provider"
 	"github.com/floegence/floret/internal/provider/cache"
-	"github.com/floegence/floret/internal/storage/sqlite"
 	"github.com/floegence/floret/internal/session"
 	"github.com/floegence/floret/internal/session/compaction"
+	"github.com/floegence/floret/internal/sessionlifecycle"
 	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/internal/storage/sqlite"
 	scriptharness "github.com/floegence/floret/internal/testing/harness"
 	"github.com/floegence/floret/tools"
 )

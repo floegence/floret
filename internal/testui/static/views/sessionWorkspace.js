@@ -11,9 +11,6 @@ import {
 import { bindInspector, renderInspector } from "./inspector.js";
 
 const copyPayloads = new Map();
-const emptyToolArguments = "No arguments were captured for this tool call.";
-const emptyToolResult = "No result body was captured for this tool run.";
-const pendingToolResult = "Waiting for tool result...";
 
 export function renderSessionWorkspace({ sessions, activeSession, result, tools, inspectorTab }) {
   copyPayloads.clear();
@@ -182,11 +179,12 @@ function sessionTitle(session) {
 function renderTimeline(session, result) {
   const entries = mergeTimelineEntries(session);
   const compactions = compactionEventsFor(session, result);
-  if (!entries.length && !compactions.length && !activeLiveTurn(session)) return `<div class="message entry"><div class="message-text muted">No durable messages yet.</div></div>`;
+  const hasActivity = Boolean(activityTimelineForSession(session, result));
+  if (!entries.length && !compactions.length && !hasActivity && !activeLiveTurn(session)) return `<div class="message entry"><div class="message-text muted">No durable messages yet.</div></div>`;
   const visibleEntries = entries.filter((entry) => {
-    return ["user_message", "assistant_message", "tool_call", "tool_result", "active_tools_change", "run_failure", "turn_marker"].includes(entry.type);
+    return ["user_message", "assistant_message", "active_tools_change", "run_failure", "turn_marker"].includes(entry.type);
   });
-  return `${timelineItems(timelineRows(visibleEntries, compactions)).map(renderTimelineItem).join("")}${renderLiveTurn(session)}`;
+  return `${timelineRows(visibleEntries, compactions).map(renderTimelineItem).join("")}${renderActivityPanel(session, result)}${renderLiveTurn(session)}`;
 }
 
 function timelineRows(entries, compactions) {
@@ -202,41 +200,9 @@ function timelineRows(entries, compactions) {
   });
 }
 
-function timelineItems(rows) {
-  const items = [];
-  const pendingToolRuns = new Map();
-  for (const row of rows) {
-    if (row.type === "compaction") {
-      items.push(row);
-      continue;
-    }
-    const entry = row.entry || row;
-    if (entry.type !== "tool_call" && entry.type !== "tool_result") {
-      items.push({ type: "entry", entry });
-      continue;
-    }
-    const key = toolRunKey(entry);
-    if (!key) {
-      items.push({ type: "entry", entry });
-      continue;
-    }
-    const existing = pendingToolRuns.get(key);
-    if (existing) {
-      if (entry.type === "tool_call") existing.call = entry;
-      if (entry.type === "tool_result") existing.result = entry;
-      continue;
-    }
-    const run = { type: "tool_run", key, call: entry.type === "tool_call" ? entry : null, result: entry.type === "tool_result" ? entry : null };
-    pendingToolRuns.set(key, run);
-    items.push(run);
-  }
-  return items;
-}
-
 function renderTimelineItem(item) {
-  if (item.type === "tool_run") return renderToolRun(item);
   if (item.type === "compaction") return renderCompactionTimelineItem(item.compaction);
-  return renderEntry(item.entry);
+  return renderEntry(item.entry || item);
 }
 
 function renderCompactionTimelineItem(compaction) {
@@ -260,12 +226,6 @@ function renderCompactionTimelineItem(compaction) {
       ${renderCompactionEventRow(compaction)}
     </article>
   `;
-}
-
-function toolRunKey(entry) {
-  const msg = entry.message || {};
-  if (!msg.tool_call_id) return "";
-  return `${entry.turn_id || ""}:${msg.tool_call_id}`;
 }
 
 function mergeTimelineEntries(session) {
@@ -314,11 +274,143 @@ function renderLiveTurn(session) {
       ${renderReasoningBlock(live.reasoning_delta, "live", liveExpandKey(session, live, "reasoning"))}
     </article>
   ` : "";
-  const visibleLiveEntries = (live.entries || []).filter((entry) => ["user_message", "assistant_message", "tool_call", "tool_result", "run_failure", "turn_marker"].includes(entry.type)).length;
+  const visibleLiveEntries = (live.entries || []).filter((entry) => ["user_message", "assistant_message", "run_failure", "turn_marker"].includes(entry.type)).length;
   const activityLabel = visibleLiveEntries ? `${visibleLiveEntries} timeline update${visibleLiveEntries === 1 ? "" : "s"}` : `${live.events?.length || 0} event${live.events?.length === 1 ? "" : "s"}`;
   const liveContext = renderLiveContextActivity(session, live);
+  const liveActivity = renderActivityPanel(session, state.liveTurn?.result, { live: true });
   const activity = live.events?.length ? `<div class="stream-status">Live turn · ${activityLabel}</div>` : `<div class="stream-status">Live turn started</div>`;
-  return `${userEcho}${assistant}${liveContext}${activity}`;
+  return `${userEcho}${assistant}${liveContext}${liveActivity}${activity}`;
+}
+
+function renderActivityPanel(session, result, options = {}) {
+  const timeline = activityTimelineForSession(session, result, options.live);
+  if (!timeline || Number(timeline.schema_version || 0) !== 1 || !timeline.summary) return "";
+  const total = Number(timeline.summary.total_items || 0);
+  if (!total && !timeline.summary.needs_attention) return "";
+  const key = activityExpandKey(session, timeline, options.live);
+  const defaultOpen = Boolean(timeline.summary.needs_attention);
+  const status = String(timeline.summary.status || "pending");
+  const severity = String(timeline.summary.severity || "quiet");
+  const items = Array.isArray(timeline.items) ? timeline.items : [];
+  const reasons = (timeline.summary.attention_reasons || []).join(", ");
+  const copyPayload = activityCopyPayload(timeline);
+  return `
+    <article class="message entry activity-digest ${timeline.summary.needs_attention ? "needs-attention" : ""}">
+      <details class="activity-panel"${detailStateAttributes(key, defaultOpen)}>
+        <summary>
+          <span class="activity-summary-main">
+            <span class="tool-kind">activity</span>
+            <span class="activity-status ${escapeHTML(status)}">${escapeHTML(status)}</span>
+            <span class="tiny-pill">${total} item${total === 1 ? "" : "s"}</span>
+            ${timeline.summary.duration_ms ? `<span class="tiny-pill">${escapeHTML(formatDuration(timeline.summary.duration_ms))}</span>` : ""}
+            <span class="tiny-pill severity-${escapeHTML(severity)}">${escapeHTML(severity)}</span>
+          </span>
+          <span class="activity-summary-preview">${escapeHTML(reasons || activityCountsLabel(timeline.summary.counts || {}))}</span>
+          ${copyButton(copyPayload, "Copy", "Activity copied")}
+        </summary>
+        <div class="activity-body">
+          <div class="activity-count-grid">
+            ${activityCountCells(timeline.summary.counts || {})}
+          </div>
+          <div class="activity-items">
+            ${items.map(renderActivityItem).join("")}
+          </div>
+        </div>
+      </details>
+    </article>
+  `;
+}
+
+function activityTimelineForSession(session, result, liveOnly = false) {
+  const live = activeLiveTurn(session);
+  if (liveOnly) return live?.activity_timeline || live?.result?.activity_timeline || live?.result?.observation?.activity_timeline || null;
+  if (result?.session_id === session?.id && result?.activity_timeline) return result.activity_timeline;
+  if (result?.session_id === session?.id && result?.observation?.activity_timeline) return result.observation.activity_timeline;
+  return session?.activity_timeline || session?.observation?.activity_timeline || null;
+}
+
+function renderActivityItem(item) {
+  const status = String(item?.status || "pending");
+  const severity = String(item?.severity || "quiet");
+  const name = item?.tool_name || activityKindLabel(item?.kind || "");
+  const meta = activityItemMeta(item);
+  return `
+    <div class="activity-item ${item?.needs_attention ? "needs-attention" : ""}">
+      <span class="activity-dot severity-${escapeHTML(severity)}" aria-hidden="true"></span>
+      <span class="activity-item-main">
+        <strong>${escapeHTML(name || "activity")}</strong>
+        <span>${escapeHTML(activityKindLabel(item?.kind || ""))}</span>
+      </span>
+      <span class="tiny-pill ${status === "error" ? "danger-pill" : ""}">${escapeHTML(status)}</span>
+      ${item?.requires_approval ? `<span class="tiny-pill severity-blocking">${escapeHTML(item.approval_state || "approval")}</span>` : ""}
+      ${meta ? `<span class="activity-item-meta">${escapeHTML(meta)}</span>` : ""}
+    </div>
+  `;
+}
+
+function activityItemMeta(item) {
+  const meta = item?.metadata || {};
+  const parts = [
+    meta.duration_ms ? formatDuration(meta.duration_ms) : "",
+    meta.result_count ? `${meta.result_count} results` : "",
+    meta.visible_bytes ? `${formatBytes(meta.visible_bytes)} visible` : "",
+    meta.batch_size && meta.batch_size !== "1" ? `batch ${Number(meta.batch_index || 0) + 1}/${meta.batch_size}` : "",
+  ];
+  return parts.filter(Boolean).join(" · ");
+}
+
+function activityCountCells(counts) {
+  const cells = [
+    ["running", counts.running],
+    ["waiting", counts.waiting],
+    ["success", counts.success],
+    ["error", counts.error],
+    ["approval", counts.approval],
+  ].filter(([, value]) => Number(value || 0) > 0);
+  return cells.length ? cells.map(([label, value]) => `<span><strong>${escapeHTML(value)}</strong>${escapeHTML(label)}</span>`).join("") : `<span><strong>0</strong>items</span>`;
+}
+
+function activityCountsLabel(counts) {
+  return [
+    counts.running ? `${counts.running} running` : "",
+    counts.waiting ? `${counts.waiting} waiting` : "",
+    counts.success ? `${counts.success} completed` : "",
+    counts.error ? `${counts.error} failed` : "",
+    counts.approval ? `${counts.approval} approval` : "",
+  ].filter(Boolean).join(" · ") || "no activity";
+}
+
+function activityCopyPayload(timeline) {
+  const summary = timeline.summary || {};
+  const lines = [
+    `activity: ${summary.status || "pending"}`,
+    `items: ${summary.total_items || 0}`,
+    `attention: ${summary.needs_attention ? "yes" : "no"}`,
+    summary.attention_reasons?.length ? `reasons: ${summary.attention_reasons.join(", ")}` : "",
+    ...(timeline.items || []).map((item) => `${item.status || "pending"} · ${item.tool_name || activityKindLabel(item.kind || "")} · ${item.kind || "activity"}`),
+  ];
+  return lines.filter(Boolean).join("\n");
+}
+
+function activityKindLabel(kind) {
+  switch (kind) {
+    case "hosted_tool":
+      return "hosted tool";
+    case "approval":
+      return "approval";
+    case "control":
+      return "control";
+    case "budget":
+      return "budget";
+    default:
+      return "tool";
+  }
+}
+
+function activityExpandKey(session, timeline, live) {
+  const runID = timeline?.run_id || timeline?.turn_id || (live ? state.liveTurn?.turn_id : "") || "latest";
+  const status = timeline?.summary?.status || "pending";
+  return `session:${session?.id || state.activeSession?.id || "unknown"}:activity:${runID}:${status}:${live ? "live" : "final"}`;
 }
 
 function renderLiveContextActivity(session, live) {
@@ -368,7 +460,6 @@ function renderEntry(entry) {
   }
   const msg = entry.message || {};
   if (entry.type === "assistant_message") return renderAssistantMessage(entry, msg);
-  if (entry.type === "tool_call" || entry.type === "tool_result") return renderToolActivity(entry, msg);
   const role = msg.role || "entry";
   const title = role;
   const body = msg.content || "";
@@ -377,48 +468,6 @@ function renderEntry(entry) {
     <article class="message ${escapeHTML(role)}">
       <div class="message-head"><span>${escapeHTML(title)}</span><span>${escapeHTML(entry.turn_id || "")}</span>${copyButton(copyPayload)}</div>
       ${renderExpandableBody(body, { label: title, mode: role === "user" ? "user" : "audit", expandKey: entryExpandKey(entry, "body") })}
-    </article>
-  `;
-}
-
-function renderToolRun(run) {
-  const call = run.call;
-  const result = run.result;
-  const sourceEntry = call || result || {};
-  const callMsg = call?.message || {};
-  const resultMsg = result?.message || {};
-  const toolName = callMsg.tool_name || resultMsg.tool_name || "tool";
-  const callID = callMsg.tool_call_id || resultMsg.tool_call_id || "";
-  const args = callMsg.tool_args || (callMsg.content && callMsg.content !== "tool_call" ? callMsg.content : "");
-  const output = resultMsg.content || "";
-  const status = result ? toolActivityStatus(result, resultMsg) : "called";
-  const preview = toolRunPreview(args, output, status);
-  const copyPayload = toolRunCopyPayload({ toolName, callID, args, output, status });
-  const metadata = toolRunMetadata(call, result);
-  const projection = renderToolProjection(resultMsg);
-  return `
-    <article class="message tool ${status === "error" ? "tool-error" : ""}">
-      <details class="tool-activity"${detailStateAttributes(entryExpandKey(sourceEntry, "activity"), false)}>
-        <summary>
-          <span class="tool-summary-main">
-            <span class="tool-kind">tool run</span>
-            <span class="tool-name-pill">${escapeHTML(toolName)}</span>
-            <span class="tiny-pill">${escapeHTML(sourceEntry.turn_id || "turn")}</span>
-            <span class="tiny-pill ${status === "error" ? "danger-pill" : ""}">${escapeHTML(status)}</span>
-            ${toolRunMetrics(call, result)}
-          </span>
-          <span class="tool-summary-preview">${escapeHTML(preview)}</span>
-          ${copyButton(copyPayload)}
-        </summary>
-        <div class="tool-activity-body">
-          ${renderReasoningBlock(callMsg.reasoning || resultMsg.reasoning, "tool", entryExpandKey(sourceEntry, "reasoning"))}
-          ${callID ? `<div class="key-value"><span>Call ID</span><span>${escapeHTML(callID)}</span></div>` : ""}
-          ${renderToolDetailSection("Arguments", args, emptyToolArguments)}
-          ${renderToolDetailSection("Result", output, result ? emptyToolResult : pendingToolResult)}
-          ${projection}
-          ${metadata}
-        </div>
-      </details>
     </article>
   `;
 }
@@ -450,141 +499,6 @@ function renderReasoningBlock(reasoning, scope, expandKey = "") {
   `;
 }
 
-function renderToolActivity(entry, msg) {
-  const isResult = entry.type === "tool_result";
-  const title = `${isResult ? "tool result" : "tool call"} · ${msg.tool_name || "tool"}`;
-  const body = isResult ? msg.content || "" : msg.tool_args || msg.content || "";
-  const status = toolActivityStatus(entry, msg);
-  const preview = toolPreview(body, msg, isResult);
-  const copyPayload = body || structuredEntryCopy(entry, title, msg);
-  const metadata = renderMetadataBlock(entry.metadata);
-  const projection = renderToolProjection(msg);
-  return `
-    <article class="message tool ${status === "error" ? "tool-error" : ""}">
-      <details class="tool-activity"${detailStateAttributes(entryExpandKey(entry, "activity"), false)}>
-        <summary>
-          <span class="tool-summary-main">
-            <span class="tool-kind">${escapeHTML(isResult ? "tool result" : "tool call")}</span>
-            <span class="tool-name-pill">${escapeHTML(msg.tool_name || "tool")}</span>
-            <span class="tiny-pill">${escapeHTML(entry.turn_id || "turn")}</span>
-            <span class="tiny-pill ${status === "error" ? "danger-pill" : ""}">${escapeHTML(status)}</span>
-            ${toolActivityMetrics(entry)}
-          </span>
-          <span class="tool-summary-preview">${escapeHTML(preview)}</span>
-          ${copyButton(copyPayload)}
-        </summary>
-        <div class="tool-activity-body">
-          ${renderReasoningBlock(msg.reasoning, "tool", entryExpandKey(entry, "reasoning"))}
-          ${msg.tool_call_id ? `<div class="key-value"><span>Call ID</span><span>${escapeHTML(msg.tool_call_id)}</span></div>` : ""}
-          ${renderExpandableBody(body, { label: isResult ? "Tool result" : "Tool arguments", mode: "tool", forceOpen: true })}
-          ${projection}
-          ${metadata}
-        </div>
-      </details>
-    </article>
-  `;
-}
-
-function renderToolDetailSection(label, body, emptyText) {
-  if (String(body || "").trim()) {
-    return `
-      <div class="tool-detail-section">
-        <strong>${escapeHTML(label)}</strong>
-        ${renderExpandableBody(body, { label, mode: "tool", forceOpen: true })}
-      </div>
-    `;
-  }
-  return `
-    <div class="tool-detail-section empty">
-      <strong>${escapeHTML(label)}</strong>
-      <p class="muted">${escapeHTML(emptyText)}</p>
-    </div>
-  `;
-}
-
-function renderToolProjection(msg) {
-  const view = msg?.tool_result;
-  if (!view) return "";
-  const ref = view.full_output;
-  const rows = [
-    ["Projection", view.truncated ? "truncated" : "full"],
-    ["Strategy", view.strategy || ""],
-    ["Visible", formatBytes(view.visible_bytes)],
-    ["Original", formatBytes(view.original_bytes)],
-    ["Hash", shortHash(view.content_sha256 || "")],
-  ].filter(([, value]) => value || value === 0);
-  return `
-    <div class="tool-detail-section">
-      <strong>Model-visible output</strong>
-      <div class="tool-projection-grid">
-        ${rows.map(([key, value]) => `<div class="key-value"><span>${escapeHTML(key)}</span><span>${escapeHTML(value)}</span></div>`).join("")}
-      </div>
-      ${ref ? `
-        <div class="artifact-link-row">
-          <span>${escapeHTML(ref.safe_label || ref.id || "tool output artifact")} · ${escapeHTML(formatBytes(ref.size_bytes))}</span>
-          <a class="button small ghost" href="${escapeHTML(ref.url || "#")}" target="_blank" rel="noreferrer">Open artifact</a>
-        </div>
-      ` : ""}
-    </div>
-  `;
-}
-
-function renderMetadataBlock(metadata) {
-  if (!metadata || !Object.keys(metadata).length) return "";
-  return `
-    <div class="tool-detail-section metadata">
-      <strong>Metadata</strong>
-      <pre class="json-block">${escapeHTML(JSON.stringify(metadata, null, 2))}</pre>
-    </div>
-  `;
-}
-
-function toolRunMetadata(...entries) {
-  const merged = {};
-  for (const entry of entries) {
-    for (const [key, value] of Object.entries(entry?.metadata || {})) {
-      merged[key] = value;
-    }
-  }
-  return renderMetadataBlock(merged);
-}
-
-function toolRunMetrics(...entries) {
-  const merged = {};
-  for (const entry of entries) {
-    Object.assign(merged, entry?.metadata || {});
-  }
-  return toolActivityMetrics({ metadata: merged });
-}
-
-function toolRunPreview(args, output, status) {
-  const text = args || output;
-  if (text) return toolPreview(text, { tool_args: args, content: output }, !args);
-  return status === "called" ? "waiting for result" : "no result body captured";
-}
-
-function toolRunCopyPayload({ toolName, callID, args, output, status }) {
-  const parts = [
-    `tool: ${toolName || "-"}`,
-    `status: ${status || "-"}`,
-    callID ? `call_id: ${callID}` : "",
-    args ? `arguments:\n${formatStructuredBody(args)}` : `arguments: ${emptyToolArguments}`,
-    output ? `result:\n${formatStructuredBody(output)}` : `result: ${status === "called" ? pendingToolResult : emptyToolResult}`,
-  ];
-  return parts.filter(Boolean).join("\n\n");
-}
-
-function toolActivityMetrics(entry) {
-  const meta = entry.metadata || {};
-  const parts = [
-    meta.duration_ms ? `${meta.duration_ms} ms` : "",
-    meta.byte_length ? `${meta.byte_length} bytes` : "",
-    meta.bytes ? `${meta.bytes} bytes` : "",
-    meta.output_bytes ? `${meta.output_bytes} bytes` : "",
-  ].filter(Boolean);
-  return parts.map((part) => `<span class="tiny-pill">${escapeHTML(part)}</span>`).join("");
-}
-
 function formatBytes(value) {
 	const n = Number(value || 0);
 	if (!n) return "";
@@ -593,59 +507,12 @@ function formatBytes(value) {
 	return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function shortHash(value) {
-  const text = String(value || "");
-  if (!text) return "";
-  if (text.length <= 16) return text;
-  return `${text.slice(0, 8)}...${text.slice(-6)}`;
-}
-
-function toolActivityStatus(entry, msg) {
-  const text = `${entry.error || ""}\n${msg.content || ""}`.trim();
-  if (entry.error || /^ERROR:/i.test(text)) return "error";
-  if (entry.type === "tool_call") return "called";
-  return "success";
-}
-
-function toolPreview(body, msg, isResult) {
-  if (!isResult && msg.tool_args) {
-    const parsed = parseJSONMaybe(msg.tool_args);
-    if (parsed && typeof parsed === "object") {
-      if (parsed.patch) return truncateOneLine(`patch: ${patchOperationPreview(parsed.patch)}`, 120);
-      for (const key of ["query", "command", "url", "path", "pattern"]) {
-        if (parsed[key]) return truncateOneLine(`${key}: ${JSON.stringify(parsed[key])}`, 120);
-      }
-    }
-  }
-  const text = String(body || msg.content || "").split("\n").find((line) => line.trim()) || (isResult ? "result captured" : "arguments captured");
-  return truncateOneLine(text, 120);
-}
-
-function patchOperationPreview(patch) {
-  const ops = String(patch || "").split("\n").map((line) => line.trim()).filter((line) => {
-    return line.startsWith("*** Add File:") || line.startsWith("*** Update File:") || line.startsWith("*** Delete File:") || line.startsWith("*** Move to:");
-  });
-  return ops.length ? ops.join(" · ") : "structured patch";
-}
-
-function parseJSONMaybe(value) {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
-}
-
-function isLikelyJSON(value) {
-  const text = String(value || "").trim();
-  if (!text) return false;
-  return (text.startsWith("{") && text.endsWith("}")) || (text.startsWith("[") && text.endsWith("]"));
-}
-
-function formatStructuredBody(value) {
-  const text = String(value || "");
-  const parsed = parseJSONMaybe(text);
-  return parsed ? JSON.stringify(parsed, null, 2) : text;
+function formatDuration(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  if (n < 1000) return `${Math.round(n)} ms`;
+  if (n < 60000) return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)} s`;
+  return `${Math.floor(n / 60000)}m ${Math.round((n % 60000) / 1000)}s`;
 }
 
 function truncateOneLine(value, limit) {
@@ -682,7 +549,7 @@ function renderExpandableBody(body, options = {}) {
   const text = String(body || "");
   const lines = lineCount(text);
   const long = text.length > 1200 || lines > 12;
-  const escaped = escapeHTML(mode === "tool" && isLikelyJSON(text) ? formatStructuredBody(text) : text);
+  const escaped = escapeHTML(text);
   if (mode === "final-answer" || mode === "streaming-answer") {
     if (mode === "streaming-answer") {
       return `<div class="message-text final-answer">${escaped}${caret ? `<span class="stream-caret" aria-hidden="true"></span>` : ""}</div>`;
@@ -703,7 +570,7 @@ function renderExpandableBody(body, options = {}) {
     return `<div class="message-text">${escaped}</div>`;
   }
   if (forceOpen) {
-    return `<pre class="${isLikelyJSON(text) ? "json-block" : "code-block"}">${escaped}</pre>`;
+    return `<pre class="code-block">${escaped}</pre>`;
   }
   const preview = previewText(text);
   return `
@@ -729,10 +596,6 @@ function entryExpandKey(entry, part) {
 function liveExpandKey(session, live, part) {
   const stable = live.turn_id || live.sequence || "pending";
   return `session:${session?.id || live.session_id || "unknown"}:live:${stable}:${part}`;
-}
-
-function renderMessageBody(body, label) {
-  return renderExpandableBody(body, { label, mode: "audit" });
 }
 
 function lineCount(text) {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/floegence/floret/config"
@@ -22,6 +23,7 @@ import (
 	"github.com/floegence/floret/internal/storage"
 	"github.com/floegence/floret/internal/storage/sqlite"
 	"github.com/floegence/floret/internal/tools/skills"
+	"github.com/floegence/floret/observation"
 	"github.com/floegence/floret/tools"
 )
 
@@ -145,6 +147,7 @@ type Event struct {
 	ToolName     string         `json:"tool_name,omitempty"`
 	ToolKind     string         `json:"tool_kind,omitempty"`
 	ArgsHash     string         `json:"args_hash,omitempty"`
+	DurationMS   int64          `json:"duration_ms,omitempty"`
 	FinishReason string         `json:"finish_reason,omitempty"`
 	Metadata     map[string]any `json:"metadata,omitempty"`
 	Timestamp    time.Time      `json:"timestamp,omitempty"`
@@ -602,10 +605,57 @@ func runtimeEvent(ev event.Event) Event {
 		ToolName:     ev.ToolName,
 		ToolKind:     ev.ToolKind,
 		ArgsHash:     ev.ArgsHash,
+		DurationMS:   ev.Duration,
 		FinishReason: ev.FinishReason,
 		Metadata:     safeMetadata(ev.Metadata),
 		Timestamp:    ev.Timestamp,
 	}
+}
+
+func runtimeObservationEvent(ev event.Event) observation.Event {
+	sanitized := event.Sanitize(ev)
+	return observation.Event{
+		Type:         string(sanitized.Type),
+		TraceID:      sanitized.TraceID,
+		RunID:        sanitized.RunID,
+		ThreadID:     sanitized.ThreadID,
+		TurnID:       sanitized.TurnID,
+		Step:         sanitized.Step,
+		Provider:     sanitized.Provider,
+		Model:        sanitized.Model,
+		Message:      sanitized.Message,
+		Result:       sanitized.Result,
+		Error:        sanitized.Err,
+		ToolID:       sanitized.ToolID,
+		ToolName:     sanitized.ToolName,
+		ToolKind:     sanitized.ToolKind,
+		ArgsHash:     sanitized.ArgsHash,
+		DurationMS:   sanitized.Duration,
+		FinishReason: sanitized.FinishReason,
+		Metadata:     safeMetadata(sanitized.Metadata),
+		ObservedAt:   sanitized.Timestamp,
+	}
+}
+
+type runtimeActivityEventRecorder struct {
+	mu     sync.Mutex
+	events []observation.Event
+	sink   event.Sink
+}
+
+func (r *runtimeActivityEventRecorder) Emit(ev event.Event) {
+	r.mu.Lock()
+	r.events = append(r.events, runtimeObservationEvent(ev))
+	r.mu.Unlock()
+	if r.sink != nil {
+		r.sink.Emit(ev)
+	}
+}
+
+func (r *runtimeActivityEventRecorder) Snapshot() []observation.Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]observation.Event(nil), r.events...)
 }
 
 func safeMetadata(in any) map[string]any {

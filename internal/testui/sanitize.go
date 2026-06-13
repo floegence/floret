@@ -573,6 +573,10 @@ func localInspectionAgentStreamEvent(ev AgentStreamEvent) AgentStreamEvent {
 		compaction := pathSafeCompactionEvents([]ObservedCompactionEvent{*ev.Compaction})[0]
 		ev.Compaction = &compaction
 	}
+	if ev.ActivityTimeline != nil {
+		timeline := *ev.ActivityTimeline
+		ev.ActivityTimeline = &timeline
+	}
 	if ev.EngineEvent != nil {
 		engineEvent := event.SanitizePathRefs(*ev.EngineEvent)
 		ev.EngineEvent = &engineEvent
