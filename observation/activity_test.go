@@ -262,6 +262,153 @@ func TestBuildActivityTimelineDurationIgnoresNonActivityEvents(t *testing.T) {
 	}
 }
 
+func TestBuildActivityTimelineDeterministicForParallelOutOfOrderEvents(t *testing.T) {
+	start := time.UnixMilli(8_000)
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-parallel"}, []Event{
+		{Type: EventTypeToolResult, RunID: "run-parallel", Step: 2, ToolID: "b", ToolName: "write_file", ToolKind: "local", DurationMS: 30, ObservedAt: start.Add(70 * time.Millisecond)},
+		{Type: EventTypeToolResult, RunID: "run-parallel", Step: 3, ToolID: "orphan", ToolName: "shell", ToolKind: "local", DurationMS: 15, ObservedAt: start.Add(20 * time.Millisecond)},
+		{Type: EventTypeToolCall, RunID: "run-parallel", Step: 1, ToolID: "a", ToolName: "read_file", ToolKind: "local", ObservedAt: start.Add(10 * time.Millisecond)},
+		{Type: EventTypeToolCall, RunID: "run-parallel", Step: 2, ToolID: "b", ToolName: "write_file", ToolKind: "local", ObservedAt: start.Add(40 * time.Millisecond)},
+		{Type: EventTypeToolResult, RunID: "run-parallel", Step: 1, ToolID: "a", ToolName: "read_file", ToolKind: "local", ObservedAt: start.Add(30 * time.Millisecond)},
+		{Type: EventTypeToolResult, RunID: "run-parallel", Step: 1, ToolID: "a", ToolName: "read_file", ToolKind: "local", ObservedAt: start.Add(35 * time.Millisecond)},
+	}, start.Add(time.Second).UnixMilli())
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("timeline should validate: %v", err)
+	}
+	if timeline.Summary.Status != ActivityStatusSuccess || timeline.Summary.Counts.Success != 3 || timeline.Summary.TotalItems != 3 {
+		t.Fatalf("summary mismatch: %#v", timeline.Summary)
+	}
+	gotOrder := []string{}
+	for _, item := range timeline.Items {
+		gotOrder = append(gotOrder, item.ItemID)
+		if item.Status != ActivityStatusSuccess {
+			t.Fatalf("item should be successful: %#v", item)
+		}
+	}
+	wantOrder := []string{"tool:orphan", "tool:a", "tool:b"}
+	if strings.Join(gotOrder, ",") != strings.Join(wantOrder, ",") {
+		t.Fatalf("item order = %v, want %v; items=%#v", gotOrder, wantOrder, timeline.Items)
+	}
+	if timeline.Items[0].StartedAtUnixMS != start.Add(5*time.Millisecond).UnixMilli() {
+		t.Fatalf("result without call should derive start from duration: %#v", timeline.Items[0])
+	}
+	if timeline.Items[1].StartedAtUnixMS != start.Add(10*time.Millisecond).UnixMilli() ||
+		timeline.Items[1].EndedAtUnixMS != start.Add(35*time.Millisecond).UnixMilli() {
+		t.Fatalf("duplicate results should keep deterministic latest end time: %#v", timeline.Items[1])
+	}
+	if timeline.Items[2].StartedAtUnixMS != start.Add(40*time.Millisecond).UnixMilli() {
+		t.Fatalf("out-of-order call/result should keep the call start time: %#v", timeline.Items[2])
+	}
+}
+
+func TestBuildActivityTimelineDoesNotAssumeRunAndTurnIdentity(t *testing.T) {
+	start := time.UnixMilli(9_000)
+	standalone := BuildActivityTimeline(ActivityRunMeta{RunID: "standalone-run"}, []Event{
+		{Type: EventTypeRunEnd, RunID: "standalone-run", Message: "completed", ObservedAt: start},
+	}, start.Add(time.Second).UnixMilli())
+	if standalone.RunID != "standalone-run" || standalone.ThreadID != "" || standalone.TurnID != "" {
+		t.Fatalf("standalone identity mismatch: %#v", standalone)
+	}
+	harness := BuildActivityTimeline(ActivityRunMeta{RunID: "engine-run-7", ThreadID: "thread-7", TurnID: "turn-7", TraceID: "trace-7"}, []Event{
+		{Type: EventTypeToolCall, RunID: "engine-run-7", ThreadID: "thread-7", TurnID: "turn-7", TraceID: "trace-7", Step: 1, ToolID: "tool-1", ToolName: "read", ToolKind: "local", ObservedAt: start},
+	}, start.Add(time.Second).UnixMilli())
+	if harness.RunID != "engine-run-7" || harness.ThreadID != "thread-7" || harness.TurnID != "turn-7" || harness.TraceID != "trace-7" {
+		t.Fatalf("harness identity mismatch: %#v", harness)
+	}
+	if harness.RunID == harness.TurnID {
+		t.Fatalf("test requires distinct run_id and turn_id: %#v", harness)
+	}
+}
+
+func TestActivityTimelineJSONWireShapeIsSnakeCase(t *testing.T) {
+	timeline := ActivityTimeline{
+		SchemaVersion: ActivityTimelineSchemaVersion,
+		RunID:         "run-json",
+		ThreadID:      "thread-json",
+		TurnID:        "turn-json",
+		TraceID:       "trace-json",
+		Summary: ActivitySummary{
+			Status:           ActivityStatusWaiting,
+			Severity:         ActivitySeverityBlocking,
+			NeedsAttention:   true,
+			AttentionReasons: []ActivityAttentionReason{ActivityAttentionWaiting, ActivityAttentionApproval},
+			TotalItems:       1,
+			Counts:           ActivityCounts{Waiting: 1, Approval: 1},
+			DurationMS:       123,
+		},
+		Items: []ActivityItem{{
+			ItemID:           "approval:abc12345",
+			ToolID:           "tool-1",
+			ToolName:         "write_file",
+			Kind:             ActivityKindApproval,
+			Status:           ActivityStatusWaiting,
+			Severity:         ActivitySeverityBlocking,
+			NeedsAttention:   true,
+			AttentionReasons: []ActivityAttentionReason{ActivityAttentionWaiting, ActivityAttentionApproval},
+			RequiresApproval: true,
+			ApprovalState:    "requested",
+			StartedAtUnixMS:  10,
+			EndedAtUnixMS:    20,
+			Metadata:         map[string]string{"args_hash": "abcdef1234567890", "effects": "write"},
+		}},
+	}
+	data, err := json.Marshal(timeline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"schema_version":1,"run_id":"run-json","thread_id":"thread-json","turn_id":"turn-json","trace_id":"trace-json","summary":{"status":"waiting","severity":"blocking","needs_attention":true,"attention_reasons":["waiting","approval"],"total_items":1,"counts":{"waiting":1,"approval":1},"duration_ms":123},"items":[{"item_id":"approval:abc12345","tool_id":"tool-1","tool_name":"write_file","kind":"approval","status":"waiting","severity":"blocking","needs_attention":true,"attention_reasons":["waiting","approval"],"requires_approval":true,"approval_state":"requested","started_at_unix_ms":10,"ended_at_unix_ms":20,"metadata":{"args_hash":"abcdef1234567890","effects":"write"}}]}`
+	if string(data) != want {
+		t.Fatalf("activity timeline JSON mismatch:\n got: %s\nwant: %s", data, want)
+	}
+}
+
+func TestBuildActivityTimelineJSONDoesNotLeakRuntimePayloads(t *testing.T) {
+	start := time.UnixMilli(10_000)
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-leak"}, []Event{
+		{
+			Type:       EventTypeToolCall,
+			RunID:      "run-leak",
+			Step:       1,
+			ToolID:     "tool-1",
+			ToolName:   "shell",
+			ToolKind:   "local",
+			ArgsHash:   "abcdef1234567890",
+			Result:     "PRIVATE_RESULT /Users/alice/secret.txt",
+			Error:      "token secret-value",
+			Metadata:   map[string]any{"prompt": "private prompt", "path": "/Users/alice/work", "approval_id": "approval-secret-token", "visible_bytes": 42},
+			ObservedAt: start,
+		},
+		{
+			Type:       EventTypeToolResult,
+			RunID:      "run-leak",
+			Step:       1,
+			ToolID:     "tool-1",
+			ToolName:   "shell",
+			ToolKind:   "local",
+			Result:     "PRIVATE_RESULT /Users/alice/secret.txt",
+			Error:      "token secret-value",
+			Metadata:   map[string]any{"error_present": true, "result": "PRIVATE_RESULT", "visible_bytes": 42},
+			ObservedAt: start.Add(25 * time.Millisecond),
+		},
+	}, start.Add(time.Second).UnixMilli())
+	data, err := json.Marshal(timeline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertActivityTimelineDoesNotContain(t, string(data),
+		"PRIVATE_RESULT",
+		"/Users/alice",
+		"secret.txt",
+		"secret-value",
+		"private prompt",
+		"approval-secret-token",
+		`"prompt"`,
+		`"path"`,
+		`"result"`,
+		`"error_present"`,
+	)
+}
+
 func TestValidateActivityTimelineRejectsUnknownWireValues(t *testing.T) {
 	timeline := ActivityTimeline{
 		SchemaVersion: ActivityTimelineSchemaVersion,
@@ -288,5 +435,65 @@ func TestValidateActivityTimelineRejectsUnknownWireValues(t *testing.T) {
 	timeline.Items[0].Metadata = map[string]string{"args_hash": "raw path /secret"}
 	if err := ValidateActivityTimeline(timeline); err == nil {
 		t.Fatal("expected unsafe metadata value to fail validation")
+	}
+}
+
+func TestValidateActivityTimelineRejectsAllUnknownEnums(t *testing.T) {
+	base := ActivityTimeline{
+		SchemaVersion: ActivityTimelineSchemaVersion,
+		Summary: ActivitySummary{
+			Status:   ActivityStatusSuccess,
+			Severity: ActivitySeverityNormal,
+		},
+		Items: []ActivityItem{{
+			ItemID:           "approval:abc12345",
+			Kind:             ActivityKindApproval,
+			Status:           ActivityStatusWaiting,
+			Severity:         ActivitySeverityBlocking,
+			ApprovalState:    "requested",
+			RequiresApproval: true,
+			AttentionReasons: []ActivityAttentionReason{
+				ActivityAttentionWaiting,
+				ActivityAttentionApproval,
+			},
+		}},
+	}
+	cases := []struct {
+		name   string
+		mutate func(*ActivityTimeline)
+	}{
+		{name: "summary status", mutate: func(timeline *ActivityTimeline) { timeline.Summary.Status = ActivityStatus("done-ish") }},
+		{name: "summary severity", mutate: func(timeline *ActivityTimeline) { timeline.Summary.Severity = ActivitySeverity("fatal") }},
+		{name: "summary attention reason", mutate: func(timeline *ActivityTimeline) {
+			timeline.Summary.AttentionReasons = []ActivityAttentionReason{"blocked"}
+		}},
+		{name: "item kind", mutate: func(timeline *ActivityTimeline) { timeline.Items[0].Kind = ActivityKind("run") }},
+		{name: "item status", mutate: func(timeline *ActivityTimeline) { timeline.Items[0].Status = ActivityStatus("done-ish") }},
+		{name: "item severity", mutate: func(timeline *ActivityTimeline) { timeline.Items[0].Severity = ActivitySeverity("fatal") }},
+		{name: "item attention reason", mutate: func(timeline *ActivityTimeline) {
+			timeline.Items[0].AttentionReasons = []ActivityAttentionReason{"blocked"}
+		}},
+		{name: "approval state", mutate: func(timeline *ActivityTimeline) { timeline.Items[0].ApprovalState = "required" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			timeline := base
+			timeline.Summary.AttentionReasons = append([]ActivityAttentionReason(nil), base.Summary.AttentionReasons...)
+			timeline.Items = append([]ActivityItem(nil), base.Items...)
+			timeline.Items[0].AttentionReasons = append([]ActivityAttentionReason(nil), base.Items[0].AttentionReasons...)
+			tc.mutate(&timeline)
+			if err := ValidateActivityTimeline(timeline); err == nil {
+				t.Fatalf("expected validation to reject unknown %s", tc.name)
+			}
+		})
+	}
+}
+
+func assertActivityTimelineDoesNotContain(t *testing.T, data string, forbidden ...string) {
+	t.Helper()
+	for _, value := range forbidden {
+		if strings.Contains(data, value) {
+			t.Fatalf("activity timeline leaked %q: %s", value, data)
+		}
 	}
 }
