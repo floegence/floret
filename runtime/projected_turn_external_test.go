@@ -2,10 +2,12 @@ package runtime_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/floegence/floret/config"
+	"github.com/floegence/floret/observation"
 	"github.com/floegence/floret/runtime"
 	"github.com/floegence/floret/tools"
 )
@@ -147,5 +149,101 @@ func TestRunProjectedTurnWithPublicModelGateway(t *testing.T) {
 	}
 	if result.Output != "gateway ok" || result.Metrics.ProviderUsage.InputTokens != 2 || result.Metrics.ProviderUsage.OutputTokens != 3 {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestRunProjectedTurnProjectsPublicControlSignalActivity(t *testing.T) {
+	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
+		var sawControlTool bool
+		for _, def := range req.Tools {
+			if def.Name == "host_wait" && def.Annotations["kind"] == "control" {
+				sawControlTool = true
+			}
+		}
+		if !sawControlTool {
+			t.Fatalf("tools missing host_wait control definition: %#v", req.Tools)
+		}
+		events := make(chan runtime.ModelEvent, 2)
+		events <- runtime.ModelEvent{
+			Type: runtime.ModelEventToolCalls,
+			ToolCalls: []tools.ToolCall{{
+				ID:   "control-call-1",
+				Name: "host_wait",
+				Args: `{"prompt_id":"p1","question":"Pick a file","secret":"token abc"}`,
+			}},
+			Reason: "tool_calls",
+		}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "tool_calls"}
+		close(events)
+		return events, nil
+	})
+
+	result, err := runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+		},
+		ModelGateway: gateway,
+		Store:        runtime.NewMemoryStore(),
+	}, runtime.ProjectedTurnRequest{
+		RunID:         "run-control",
+		ThreadID:      "thread-control",
+		TurnID:        "turn-control",
+		TraceID:       "trace-control",
+		PromptScopeID: "thread-control",
+		History:       []runtime.TranscriptMessage{{Role: "user", Content: "hello"}},
+		Signals: runtime.TurnSignalSpec{
+			Definitions: []tools.ToolDefinition{{
+				Name:        "host_wait",
+				Title:       "Host wait",
+				Description: "Wait for host input.",
+				InputSchema: tools.StrictObject(map[string]any{
+					"prompt_id": tools.String("prompt id"),
+					"question":  tools.String("question"),
+					"secret":    tools.String("secret"),
+				}, []string{"prompt_id", "question"}),
+				Strict:      true,
+				Annotations: map[string]any{"kind": "control"},
+			}},
+			Project: func(call tools.ToolCall) (runtime.TurnSignal, bool, error) {
+				return runtime.TurnSignal{
+					Disposition: runtime.SignalWaiting,
+					Name:        call.Name,
+					CallID:      call.ID,
+					OutputText:  "Pick a file",
+					Payload:     map[string]any{"prompt_id": "p1"},
+				}, true, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != runtime.TurnStatusWaiting || result.Signal == nil || result.Signal.Name != "host_wait" {
+		t.Fatalf("result = %#v", result)
+	}
+	timeline := result.ActivityTimeline
+	if timeline.Summary.Status != observation.ActivityStatusWaiting || !timeline.Summary.NeedsAttention {
+		t.Fatalf("timeline summary = %#v", timeline.Summary)
+	}
+	if len(timeline.Items) != 1 {
+		t.Fatalf("timeline items = %#v", timeline.Items)
+	}
+	item := timeline.Items[0]
+	if item.Kind != observation.ActivityKindControl || item.ToolName != "host_wait" || item.ToolID != "control-call-1" {
+		t.Fatalf("control item = %#v", item)
+	}
+	if item.Status != observation.ActivityStatusWaiting || item.Metadata["control_disposition"] != "waiting" || item.Metadata["args_hash"] == "" {
+		t.Fatalf("control item status/metadata = %#v", item)
+	}
+	data, err := json.Marshal(timeline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"Pick a file", "token abc", "question"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("timeline leaked %q: %s", forbidden, data)
+		}
 	}
 }

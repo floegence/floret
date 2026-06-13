@@ -193,6 +193,75 @@ func TestBuildActivityTimelineProjectsWaitingRunEndAsControlItem(t *testing.T) {
 	}
 }
 
+func TestBuildActivityTimelineProjectsCustomControlSignal(t *testing.T) {
+	start := time.UnixMilli(6_000)
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-control", ThreadID: "thread-control", TurnID: "turn-control"}, []Event{
+		{
+			Type:       EventTypeControlSignal,
+			RunID:      "run-control",
+			ThreadID:   "thread-control",
+			TurnID:     "turn-control",
+			Step:       1,
+			ToolID:     "control-call-1",
+			ToolName:   "host_wait",
+			ToolKind:   "control",
+			ArgsHash:   "abcdef1234567890",
+			Result:     "Pick a file with secret-value",
+			Metadata:   map[string]any{"control_disposition": "waiting", "prompt": "Which file?", "secret": "token abc"},
+			ObservedAt: start,
+		},
+		{
+			Type:       EventTypeRunEnd,
+			RunID:      "run-control",
+			ThreadID:   "thread-control",
+			TurnID:     "turn-control",
+			Step:       1,
+			Message:    "waiting",
+			Result:     "Pick a file with secret-value",
+			ObservedAt: start.Add(25 * time.Millisecond),
+		},
+	}, start.Add(time.Second).UnixMilli())
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("timeline should validate: %v", err)
+	}
+	if len(timeline.Items) != 1 {
+		t.Fatalf("items = %d, want 1: %#v", len(timeline.Items), timeline.Items)
+	}
+	item := timeline.Items[0]
+	if item.Kind != ActivityKindControl || item.ToolName != "host_wait" || item.ToolID != "control-call-1" {
+		t.Fatalf("control identity mismatch: %#v", item)
+	}
+	if item.Status != ActivityStatusWaiting || item.Severity != ActivitySeverityBlocking || !item.NeedsAttention {
+		t.Fatalf("control attention mismatch: %#v", item)
+	}
+	if item.Metadata["args_hash"] != "abcdef1234567890" || item.Metadata["control_disposition"] != "waiting" {
+		t.Fatalf("control metadata mismatch: %#v", item.Metadata)
+	}
+	data, err := json.Marshal(timeline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"Pick a file", "Which file", "secret-value", "token abc"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("timeline leaked control payload %q: %s", forbidden, data)
+		}
+	}
+}
+
+func TestBuildActivityTimelineDurationIgnoresNonActivityEvents(t *testing.T) {
+	start := time.UnixMilli(7_000)
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-duration"}, []Event{
+		{Type: "skill_detected", RunID: "run-duration", ObservedAt: start},
+		{Type: EventTypeToolCall, RunID: "run-duration", Step: 1, ToolID: "tool-1", ToolName: "read", ToolKind: "local", ObservedAt: start.Add(10 * time.Second)},
+		{Type: EventTypeToolResult, RunID: "run-duration", Step: 1, ToolID: "tool-1", ToolName: "read", ToolKind: "local", ObservedAt: start.Add(10*time.Second + 50*time.Millisecond)},
+		{Type: "provider_usage", RunID: "run-duration", ObservedAt: start.Add(20 * time.Second)},
+		{Type: EventTypeRunEnd, RunID: "run-duration", Message: "completed", ObservedAt: start.Add(10*time.Second + 75*time.Millisecond)},
+	}, start.Add(30*time.Second).UnixMilli())
+	if timeline.Summary.DurationMS != 75 {
+		t.Fatalf("duration = %d, want 75; timeline=%#v", timeline.Summary.DurationMS, timeline)
+	}
+}
+
 func TestValidateActivityTimelineRejectsUnknownWireValues(t *testing.T) {
 	timeline := ActivityTimeline{
 		SchemaVersion: ActivityTimelineSchemaVersion,

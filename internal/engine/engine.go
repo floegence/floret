@@ -678,6 +678,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				signal.Labels = observabilityLabels(opts.Labels)
 			}
 			decision.ControlSignal = signal
+			e.emitControlSignal(opts, step, signal)
 			switch signal.Disposition {
 			case ControlTerminal:
 				decision.CompletionReason = CompletionReasonToolSignal
@@ -2106,6 +2107,29 @@ func eventMetadata(opts Options, base any) map[string]any {
 	out["prompt_scope_id"] = opts.PromptScopeID
 	out["schema_version"] = "event.v1"
 	return out
+}
+
+func (e *Engine) emitControlSignal(opts Options, step int, signal *ControlSignal) {
+	if signal == nil {
+		return
+	}
+	e.emit(opts, event.Event{
+		Type:     event.ControlSignal,
+		TraceID:  opts.TraceID,
+		RunID:    opts.RunID,
+		ThreadID: opts.ThreadID,
+		TurnID:   opts.TurnID,
+		Step:     step,
+		Provider: opts.ProviderName,
+		Model:    opts.Model,
+		ToolID:   strings.TrimSpace(signal.CallID),
+		ToolName: strings.TrimSpace(signal.Name),
+		ToolKind: "control",
+		ArgsHash: strings.TrimSpace(signal.ArgsHash),
+		Metadata: map[string]any{
+			"control_disposition": string(signal.Disposition),
+		},
+	})
 }
 
 func controlSignal(spec ControlSpec, calls []provider.ToolCall) (*ControlSignal, bool, error) {

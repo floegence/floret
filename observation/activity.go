@@ -23,6 +23,7 @@ const (
 	EventTypeToolApprovalCanceled  = "tool_approval_canceled"
 	EventTypeHostedToolCall        = "hosted_tool_call"
 	EventTypeHostedToolResult      = "hosted_tool_result"
+	EventTypeControlSignal         = "control_signal"
 	EventTypeBudgetExceeded        = "budget_exceeded"
 	EventTypeRunEnd                = "run_end"
 
@@ -149,6 +150,7 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 	var runEnd *Event
 	var firstAt int64
 	var lastAt int64
+	hasExplicitControlActivity := false
 	for index, ev := range events {
 		if timeline.RunID == "" {
 			timeline.RunID = strings.TrimSpace(ev.RunID)
@@ -163,16 +165,9 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			timeline.TraceID = strings.TrimSpace(ev.TraceID)
 		}
 		observedAt := eventUnixMS(ev, nowUnixMS)
-		if observedAt > 0 {
-			if firstAt == 0 || observedAt < firstAt {
-				firstAt = observedAt
-			}
-			if observedAt > lastAt {
-				lastAt = observedAt
-			}
-		}
 		switch ev.Type {
 		case EventTypeToolCall, EventTypeHostedToolCall:
+			noteActivityTime(observedAt, &firstAt, &lastAt)
 			key := activityToolKey(ev, index)
 			state := ensureActivityItem(items, &order, key, len(order), func() ActivityItem {
 				return ActivityItem{
@@ -198,6 +193,7 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
 			state.lastSeen = observedAt
 		case EventTypeToolResult, EventTypeHostedToolResult:
+			noteActivityTime(observedAt, &firstAt, &lastAt)
 			key := activityToolKey(ev, index)
 			state := ensureActivityItem(items, &order, key, len(order), func() ActivityItem {
 				startedAt := int64(0)
@@ -231,6 +227,7 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
 			state.lastSeen = observedAt
 		case EventTypeToolApprovalRequested:
+			noteActivityTime(observedAt, &firstAt, &lastAt)
 			state := ensureActivityItem(items, &order, activityApprovalKey(ev, index), len(order), func() ActivityItem {
 				return ActivityItem{
 					ItemID:           activityApprovalKey(ev, index),
@@ -252,6 +249,7 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
 			state.lastSeen = observedAt
 		case EventTypeToolApprovalApproved, EventTypeToolApprovalRejected, EventTypeToolApprovalTimedOut, EventTypeToolApprovalCanceled:
+			noteActivityTime(observedAt, &firstAt, &lastAt)
 			key := activityApprovalKey(ev, index)
 			state := ensureActivityItem(items, &order, key, len(order), func() ActivityItem {
 				return ActivityItem{
@@ -287,7 +285,34 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			}
 			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
 			state.lastSeen = observedAt
+		case EventTypeControlSignal:
+			hasExplicitControlActivity = true
+			noteActivityTime(observedAt, &firstAt, &lastAt)
+			key := activityControlKey(ev, index)
+			state := ensureActivityItem(items, &order, key, len(order), func() ActivityItem {
+				return ActivityItem{
+					ItemID:          key,
+					ToolID:          strings.TrimSpace(ev.ToolID),
+					ToolName:        strings.TrimSpace(ev.ToolName),
+					Kind:            ActivityKindControl,
+					Status:          activityControlStatus(ev),
+					Severity:        activityControlSeverity(ev),
+					StartedAtUnixMS: observedAt,
+					EndedAtUnixMS:   observedAt,
+					Metadata:        activityMetadata(ev),
+				}
+			})
+			state.item.ToolID = firstNonEmpty(state.item.ToolID, strings.TrimSpace(ev.ToolID))
+			state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
+			state.item.Kind = ActivityKindControl
+			state.item.Status = activityControlStatus(ev)
+			state.item.Severity = activityControlSeverity(ev)
+			state.item.StartedAtUnixMS = observedAt
+			state.item.EndedAtUnixMS = observedAt
+			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
+			state.lastSeen = observedAt
 		case EventTypeBudgetExceeded:
+			noteActivityTime(observedAt, &firstAt, &lastAt)
 			key := fmt.Sprintf("budget:%d:%d", ev.Step, index)
 			state := ensureActivityItem(items, &order, key, len(order), func() ActivityItem {
 				return ActivityItem{
@@ -305,7 +330,8 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 		case EventTypeRunEnd:
 			evCopy := ev
 			runEnd = &evCopy
-			if item, ok := activityRunEndControlItem(ev, index, observedAt); ok {
+			if item, ok := activityRunEndControlItem(ev, index, observedAt); ok && !hasExplicitControlActivity {
+				noteActivityTime(observedAt, &firstAt, &lastAt)
 				key := item.ItemID
 				state := ensureActivityItem(items, &order, key, len(order), func() ActivityItem {
 					return item
@@ -441,8 +467,18 @@ func activityApprovalKey(ev Event, index int) string {
 	return fmt.Sprintf("approval:%d:%d", ev.Step, index)
 }
 
+func activityControlKey(ev Event, index int) string {
+	if ev.ToolID != "" {
+		return "control:" + ev.ToolID
+	}
+	if ev.ToolName != "" {
+		return fmt.Sprintf("control:%s:%d:%d", ev.ToolName, ev.Step, index)
+	}
+	return fmt.Sprintf("control:%d:%d", ev.Step, index)
+}
+
 func activityToolKind(ev Event) ActivityKind {
-	if activityIsControlTool(ev.ToolName) || ev.ToolKind == "control" {
+	if ev.ToolKind == "control" {
 		return ActivityKindControl
 	}
 	if ev.Type == EventTypeHostedToolCall || ev.Type == EventTypeHostedToolResult || ev.ToolKind == "hosted" {
@@ -490,12 +526,28 @@ func activityRunEndControlItem(ev Event, index int, observedAt int64) (ActivityI
 	}
 }
 
-func activityIsControlTool(name string) bool {
-	switch strings.TrimSpace(name) {
-	case "ask_user", "task_complete":
-		return true
+func activityControlStatus(ev Event) ActivityStatus {
+	switch activityMetadataValue(ev, "control_disposition") {
+	case "waiting":
+		return ActivityStatusWaiting
+	case "terminal", "continue":
+		return ActivityStatusSuccess
 	default:
-		return false
+		if activityEventHasError(ev) {
+			return ActivityStatusError
+		}
+		return ActivityStatusSuccess
+	}
+}
+
+func activityControlSeverity(ev Event) ActivitySeverity {
+	switch activityControlStatus(ev) {
+	case ActivityStatusWaiting:
+		return ActivitySeverityBlocking
+	case ActivityStatusError:
+		return ActivitySeverityError
+	default:
+		return ActivitySeverityNormal
 	}
 }
 
@@ -532,6 +584,7 @@ var activityMetadataKeys = []string{
 	"batch_index",
 	"batch_size",
 	"content_sha256",
+	"control_disposition",
 	"destructive",
 	"duration_ms",
 	"effects",
@@ -626,6 +679,12 @@ func activityNormalizeMetadataValue(key string, value any) string {
 			"error":          {},
 			"cancelled":      {},
 			"canceled":       {},
+		})
+	case "control_disposition":
+		return activityEnumMetadataValue(value, map[string]struct{}{
+			"continue": {},
+			"waiting":  {},
+			"terminal": {},
 		})
 	case "strategy":
 		return activityEnumMetadataValue(value, map[string]struct{}{
@@ -860,7 +919,7 @@ func activitySummary(items []ActivityItem, runEnd *Event, firstAt, lastAt, nowUn
 		summary.Severity = maxActivitySeverity(summary.Severity, item.Severity)
 	}
 	if runEnd != nil {
-		if strings.TrimSpace(runEnd.Error) != "" {
+		if activityEventHasError(*runEnd) {
 			summary.Status = ActivityStatusError
 			summary.Severity = maxActivitySeverity(summary.Severity, ActivitySeverityError)
 			summary.AttentionReasons = append(summary.AttentionReasons, ActivityAttentionError)
@@ -925,6 +984,18 @@ func activitySummary(items []ActivityItem, runEnd *Event, firstAt, lastAt, nowUn
 		}
 	}
 	return summary
+}
+
+func noteActivityTime(observedAt int64, firstAt *int64, lastAt *int64) {
+	if observedAt <= 0 {
+		return
+	}
+	if firstAt != nil && (*firstAt == 0 || observedAt < *firstAt) {
+		*firstAt = observedAt
+	}
+	if lastAt != nil && observedAt > *lastAt {
+		*lastAt = observedAt
+	}
 }
 
 func uniqueActivityReasons(in []ActivityAttentionReason) []ActivityAttentionReason {

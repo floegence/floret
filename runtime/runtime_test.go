@@ -361,7 +361,7 @@ func TestRunProjectedTurnRejectsUnsupportedCompletionPolicy(t *testing.T) {
 		TurnID:        "turn-1",
 		TraceID:       "trace-1",
 		PromptScopeID: "thread-1",
-		Completion:    TurnCompletionPolicy("legacy_auto"),
+		Completion:    TurnCompletionPolicy("unsupported_auto"),
 		History: []TranscriptMessage{{
 			Role:    "user",
 			Content: "hello",
