@@ -99,6 +99,8 @@ type ThreadMeta struct {
 	TitleError         string            `json:"title_error,omitempty"`
 	CreatedAt          time.Time         `json:"created_at"`
 	UpdatedAt          time.Time         `json:"updated_at"`
+	Status             string            `json:"status,omitempty"`
+	LastViewedAt       time.Time         `json:"last_viewed_at,omitempty"`
 }
 
 type Entry struct {
