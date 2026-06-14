@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	engineevent "github.com/floegence/floret/internal/event"
 )
 
 func TestBuildActivityTimelineProjectsToolAndApprovalState(t *testing.T) {
@@ -58,6 +56,71 @@ func TestBuildActivityTimelineProjectsToolAndApprovalState(t *testing.T) {
 	}
 }
 
+func TestBuildActivityTimelineMergesExplicitActivityPresentation(t *testing.T) {
+	start := time.UnixMilli(1_700_000_010_000)
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-present"}, []Event{
+		{
+			Type:     EventTypeToolCall,
+			RunID:    "run-present",
+			Step:     1,
+			ToolID:   "exec-1",
+			ToolName: "terminal.exec",
+			ToolKind: "local",
+			Activity: &ActivityPresentation{
+				Label:    "npm run build --workspace internal/flower_ui",
+				Renderer: ActivityRendererTerminal,
+				Chips:    []ActivityChip{{Kind: "effect", Label: "shell", Tone: "neutral"}},
+				TargetRefs: []ActivityTargetRef{{
+					Kind:  "workspace",
+					Label: "flower_ui",
+					Path:  "internal/flower_ui",
+				}},
+				Payload: map[string]any{
+					"command": "npm run build --workspace internal/flower_ui",
+					"cwd":     "internal/flower_ui",
+				},
+			},
+			ObservedAt: start,
+		},
+		{
+			Type:       EventTypeToolResult,
+			RunID:      "run-present",
+			Step:       1,
+			ToolID:     "exec-1",
+			ToolName:   "terminal.exec",
+			ToolKind:   "local",
+			DurationMS: 42,
+			Activity: &ActivityPresentation{
+				Description: "Command completed",
+				Payload: map[string]any{
+					"exit_code":   0,
+					"duration_ms": 42,
+					"stdout":      "done",
+				},
+			},
+			ObservedAt: start.Add(42 * time.Millisecond),
+		},
+	}, start.Add(time.Second).UnixMilli())
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("timeline should validate: %v", err)
+	}
+	if len(timeline.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(timeline.Items))
+	}
+	item := timeline.Items[0]
+	if item.Label != "npm run build --workspace internal/flower_ui" ||
+		item.Description != "Command completed" ||
+		item.Renderer != ActivityRendererTerminal {
+		t.Fatalf("presentation mismatch: %#v", item)
+	}
+	if len(item.Chips) != 1 || item.Chips[0].Label != "shell" {
+		t.Fatalf("chips mismatch: %#v", item.Chips)
+	}
+	if item.Payload["command"] != "npm run build --workspace internal/flower_ui" || item.Payload["stdout"] != "done" || item.Payload["exit_code"] != 0 {
+		t.Fatalf("payload mismatch: %#v", item.Payload)
+	}
+}
+
 func TestBuildActivityTimelineSummarizesErrorsAndHostedResults(t *testing.T) {
 	start := time.UnixMilli(2_000)
 	timeline := BuildActivityTimeline(ActivityRunMeta{}, []Event{
@@ -84,39 +147,67 @@ func TestBuildActivityTimelineSummarizesErrorsAndHostedResults(t *testing.T) {
 	}
 }
 
+func TestValidateActivityTimelineRejectsInvalidPresentation(t *testing.T) {
+	base := ActivityTimeline{
+		SchemaVersion: ActivityTimelineSchemaVersion,
+		Summary: ActivitySummary{
+			Status:   ActivityStatusSuccess,
+			Severity: ActivitySeverityNormal,
+		},
+		Items: []ActivityItem{{
+			ItemID:   "tool-1",
+			Kind:     ActivityKindTool,
+			Status:   ActivityStatusSuccess,
+			Severity: ActivitySeverityNormal,
+			Renderer: ActivityRendererTerminal,
+			Chips:    []ActivityChip{{Kind: "status", Label: "ok"}},
+			TargetRefs: []ActivityTargetRef{{
+				Kind:  "file",
+				Label: "README.md",
+				URI:   "https://example.test/readme",
+			}},
+			Payload: map[string]any{"command": "pwd"},
+		}},
+	}
+	if err := ValidateActivityTimeline(base); err != nil {
+		t.Fatalf("base timeline should validate: %v", err)
+	}
+	cases := []struct {
+		name   string
+		mutate func(*ActivityTimeline)
+	}{
+		{name: "renderer", mutate: func(timeline *ActivityTimeline) { timeline.Items[0].Renderer = ActivityRenderer("terminal/v2") }},
+		{name: "chip kind", mutate: func(timeline *ActivityTimeline) { timeline.Items[0].Chips[0].Kind = "bad kind" }},
+		{name: "target uri", mutate: func(timeline *ActivityTimeline) { timeline.Items[0].TargetRefs[0].URI = "file:///secret" }},
+		{name: "payload key", mutate: func(timeline *ActivityTimeline) { timeline.Items[0].Payload = map[string]any{"bad key": "x"} }},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			timeline := base
+			timeline.Items = append([]ActivityItem(nil), base.Items...)
+			timeline.Items[0].Chips = append([]ActivityChip(nil), base.Items[0].Chips...)
+			timeline.Items[0].TargetRefs = append([]ActivityTargetRef(nil), base.Items[0].TargetRefs...)
+			timeline.Items[0].Payload = cloneActivityPayload(base.Items[0].Payload)
+			tt.mutate(&timeline)
+			if err := ValidateActivityTimeline(timeline); err == nil {
+				t.Fatalf("ValidateActivityTimeline should reject %s", tt.name)
+			}
+		})
+	}
+}
+
 func TestBuildActivityTimelineKeepsSanitizedToolErrorSignal(t *testing.T) {
 	start := time.UnixMilli(3_000)
-	raw := engineevent.Event{
-		Type:      engineevent.ToolResult,
-		RunID:     "run-3",
-		Step:      1,
-		ToolID:    "tool-1",
-		ToolName:  "shell",
-		ToolKind:  "local",
-		Result:    "raw result",
-		Err:       "failed with secret token",
-		Metadata:  map[string]any{"visible_bytes": 10},
-		Timestamp: start,
-	}
-	sanitized := engineevent.Sanitize(raw)
-	if sanitized.Err != "" {
-		t.Fatalf("sanitized event should not expose error text: %#v", sanitized)
-	}
-	meta, ok := sanitized.Metadata.(map[string]any)
-	if !ok || meta["error_present"] != true {
-		t.Fatalf("sanitized event should preserve only an error signal: %#v", sanitized.Metadata)
-	}
+	meta := map[string]any{"visible_bytes": 10, "error_present": true}
 	timeline := BuildActivityTimeline(ActivityRunMeta{}, []Event{{
-		Type:       string(sanitized.Type),
-		RunID:      sanitized.RunID,
-		Step:       sanitized.Step,
-		ToolID:     sanitized.ToolID,
-		ToolName:   sanitized.ToolName,
-		ToolKind:   sanitized.ToolKind,
-		DurationMS: sanitized.Duration,
-		Error:      sanitized.Err,
+		Type:       EventTypeToolResult,
+		RunID:      "run-3",
+		Step:       1,
+		ToolID:     "tool-1",
+		ToolName:   "shell",
+		ToolKind:   "local",
 		Metadata:   meta,
-		ObservedAt: sanitized.Timestamp,
+		ObservedAt: start,
 	}}, start.Add(time.Second).UnixMilli())
 	if timeline.Summary.Status != ActivityStatusError || len(timeline.Items) != 1 || timeline.Items[0].Status != ActivityStatusError {
 		t.Fatalf("timeline should surface sanitized tool failure: %#v", timeline)

@@ -206,13 +206,14 @@ const (
 
 // TurnSignal is a host-safe projection of a signal tool call.
 type TurnSignal struct {
-	Disposition SignalDisposition `json:"disposition"`
-	Name        string            `json:"name"`
-	CallID      string            `json:"call_id,omitempty"`
-	Payload     map[string]any    `json:"payload,omitempty"`
-	OutputText  string            `json:"output_text,omitempty"`
-	ArgsHash    string            `json:"args_hash,omitempty"`
-	Labels      map[string]string `json:"labels,omitempty"`
+	Disposition SignalDisposition                 `json:"disposition"`
+	Name        string                            `json:"name"`
+	CallID      string                            `json:"call_id,omitempty"`
+	Payload     map[string]any                    `json:"payload,omitempty"`
+	Activity    *observation.ActivityPresentation `json:"activity,omitempty"`
+	OutputText  string                            `json:"output_text,omitempty"`
+	ArgsHash    string                            `json:"args_hash,omitempty"`
+	Labels      map[string]string                 `json:"labels,omitempty"`
 }
 
 // TurnSignalSpec lets a host declare provider-visible signal tools without
@@ -732,6 +733,7 @@ func engineTurnSignalSpec(spec TurnSignalSpec, policy engine.CompletionPolicy) (
 				Name:        signal.Name,
 				CallID:      signal.CallID,
 				Payload:     cloneAnyMap(signal.Payload),
+				Activity:    cloneActivityPresentation(signal.Activity),
 				OutputText:  signal.OutputText,
 				ArgsHash:    signal.ArgsHash,
 				Labels:      cloneStringMap(signal.Labels),

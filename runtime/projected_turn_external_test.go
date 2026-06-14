@@ -212,7 +212,16 @@ func TestRunProjectedTurnProjectsPublicControlSignalActivity(t *testing.T) {
 					Name:        call.Name,
 					CallID:      call.ID,
 					OutputText:  "Pick a file",
-					Payload:     map[string]any{"prompt_id": "p1"},
+					Payload:     map[string]any{"prompt_id": "p1", "secret": "token abc"},
+					Activity: &observation.ActivityPresentation{
+						Label:       "Waiting for host input",
+						Description: "Pick a file",
+						Renderer:    observation.ActivityRendererQuestion,
+						Payload: map[string]any{
+							"prompt_id": "p1",
+							"mode":      "select",
+						},
+					},
 				}, true, nil
 			},
 		},
@@ -237,11 +246,17 @@ func TestRunProjectedTurnProjectsPublicControlSignalActivity(t *testing.T) {
 	if item.Status != observation.ActivityStatusWaiting || item.Metadata["control_disposition"] != "waiting" || item.Metadata["args_hash"] == "" {
 		t.Fatalf("control item status/metadata = %#v", item)
 	}
+	if item.Label != "Waiting for host input" || item.Description != "Pick a file" || item.Renderer != observation.ActivityRendererQuestion {
+		t.Fatalf("control presentation = %#v", item)
+	}
+	if item.Payload["prompt_id"] != "p1" || item.Payload["mode"] != "select" {
+		t.Fatalf("control payload = %#v", item.Payload)
+	}
 	data, err := json.Marshal(timeline)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"Pick a file", "token abc", "question"} {
+	for _, forbidden := range []string{"token abc"} {
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("timeline leaked %q: %s", forbidden, data)
 		}

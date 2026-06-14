@@ -75,6 +75,43 @@ type ActivityRunMeta struct {
 	TraceID  string `json:"trace_id,omitempty"`
 }
 
+type ActivityRenderer string
+
+const (
+	ActivityRendererStructured ActivityRenderer = "structured"
+	ActivityRendererTerminal   ActivityRenderer = "terminal"
+	ActivityRendererFile       ActivityRenderer = "file"
+	ActivityRendererPatch      ActivityRenderer = "patch"
+	ActivityRendererWebSearch  ActivityRenderer = "web_search"
+	ActivityRendererTodos      ActivityRenderer = "todos"
+	ActivityRendererQuestion   ActivityRenderer = "question"
+	ActivityRendererCompletion ActivityRenderer = "completion"
+)
+
+type ActivityChip struct {
+	Kind  string `json:"kind"`
+	Label string `json:"label"`
+	Value string `json:"value,omitempty"`
+	Tone  string `json:"tone,omitempty"`
+}
+
+type ActivityTargetRef struct {
+	Kind  string `json:"kind"`
+	Label string `json:"label"`
+	URI   string `json:"uri,omitempty"`
+	Path  string `json:"path,omitempty"`
+	Line  int    `json:"line,omitempty"`
+}
+
+type ActivityPresentation struct {
+	Label       string              `json:"label,omitempty"`
+	Description string              `json:"description,omitempty"`
+	Renderer    ActivityRenderer    `json:"renderer,omitempty"`
+	Chips       []ActivityChip      `json:"chips,omitempty"`
+	TargetRefs  []ActivityTargetRef `json:"target_refs,omitempty"`
+	Payload     map[string]any      `json:"payload,omitempty"`
+}
+
 type ActivityItem struct {
 	ItemID           string                    `json:"item_id"`
 	ToolID           string                    `json:"tool_id,omitempty"`
@@ -88,6 +125,12 @@ type ActivityItem struct {
 	ApprovalState    string                    `json:"approval_state,omitempty"`
 	StartedAtUnixMS  int64                     `json:"started_at_unix_ms,omitempty"`
 	EndedAtUnixMS    int64                     `json:"ended_at_unix_ms,omitempty"`
+	Label            string                    `json:"label,omitempty"`
+	Description      string                    `json:"description,omitempty"`
+	Renderer         ActivityRenderer          `json:"renderer,omitempty"`
+	Chips            []ActivityChip            `json:"chips,omitempty"`
+	TargetRefs       []ActivityTargetRef       `json:"target_refs,omitempty"`
+	Payload          map[string]any            `json:"payload,omitempty"`
 	Metadata         map[string]string         `json:"metadata,omitempty"`
 }
 
@@ -127,9 +170,9 @@ type activityItemState struct {
 	lastSeen int64
 }
 
-// BuildActivityTimeline projects sanitized runtime events into a stable,
-// presentation-neutral activity summary. It intentionally ignores raw tool
-// arguments, tool results, provider deltas, and arbitrary metadata.
+// BuildActivityTimeline projects sanitized runtime events into a stable
+// activity summary. Tool-facing display details enter the timeline only through
+// an explicit ActivityPresentation that has already crossed the event sanitizer.
 func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64) ActivityTimeline {
 	timeline := ActivityTimeline{
 		SchemaVersion: ActivityTimelineSchemaVersion,
@@ -190,6 +233,7 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			if state.item.Status == ActivityStatusPending {
 				state.item.Status = ActivityStatusRunning
 			}
+			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
 			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
 			state.lastSeen = observedAt
 		case EventTypeToolResult, EventTypeHostedToolResult:
@@ -224,6 +268,7 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 				state.item.Status = ActivityStatusSuccess
 				state.item.Severity = ActivitySeverityNormal
 			}
+			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
 			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
 			state.lastSeen = observedAt
 		case EventTypeToolApprovalRequested:
@@ -246,6 +291,7 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			state.item.Severity = ActivitySeverityBlocking
 			state.item.RequiresApproval = true
 			state.item.ApprovalState = "requested"
+			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
 			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
 			state.lastSeen = observedAt
 		case EventTypeToolApprovalApproved, EventTypeToolApprovalRejected, EventTypeToolApprovalTimedOut, EventTypeToolApprovalCanceled:
@@ -283,6 +329,7 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 				state.item.Severity = ActivitySeverityWarning
 				state.item.ApprovalState = "canceled"
 			}
+			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
 			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
 			state.lastSeen = observedAt
 		case EventTypeControlSignal:
@@ -309,6 +356,7 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			state.item.Severity = activityControlSeverity(ev)
 			state.item.StartedAtUnixMS = observedAt
 			state.item.EndedAtUnixMS = observedAt
+			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
 			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
 			state.lastSeen = observedAt
 		case EventTypeBudgetExceeded:
@@ -340,6 +388,7 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 				state.item.Severity = item.Severity
 				state.item.StartedAtUnixMS = item.StartedAtUnixMS
 				state.item.EndedAtUnixMS = item.EndedAtUnixMS
+				mergeActivityPresentationIntoItem(&state.item, ev.Activity)
 				state.lastSeen = observedAt
 			}
 		}
@@ -417,11 +466,38 @@ func ValidateActivityTimeline(timeline ActivityTimeline) error {
 				return fmt.Errorf("item %q approval state: %w", item.ItemID, err)
 			}
 		}
+		if err := validateActivityItemPresentation(item); err != nil {
+			return fmt.Errorf("item %q presentation: %w", item.ItemID, err)
+		}
 		if err := validateActivityItemMetadata(item.Metadata); err != nil {
 			return fmt.Errorf("item %q metadata: %w", item.ItemID, err)
 		}
 	}
 	return nil
+}
+
+func mergeActivityPresentationIntoItem(item *ActivityItem, presentation *ActivityPresentation) {
+	if item == nil || presentation == nil {
+		return
+	}
+	if value := strings.TrimSpace(presentation.Label); value != "" {
+		item.Label = value
+	}
+	if value := strings.TrimSpace(presentation.Description); value != "" {
+		item.Description = value
+	}
+	if presentation.Renderer != "" {
+		item.Renderer = presentation.Renderer
+	}
+	if len(presentation.Chips) > 0 {
+		item.Chips = cloneActivityChips(presentation.Chips)
+	}
+	if len(presentation.TargetRefs) > 0 {
+		item.TargetRefs = cloneActivityTargetRefs(presentation.TargetRefs)
+	}
+	if len(presentation.Payload) > 0 {
+		item.Payload = mergeActivityPayload(item.Payload, presentation.Payload)
+	}
 }
 
 func ensureActivityItem(items map[string]*activityItemState, order *[]string, key string, index int, create func() ActivityItem) *activityItemState {
@@ -851,6 +927,146 @@ func validateActivityItemMetadata(metadata map[string]string) error {
 	return nil
 }
 
+func validateActivityItemPresentation(item ActivityItem) error {
+	if len([]rune(strings.TrimSpace(item.Label))) > 200 {
+		return errors.New("label is too long")
+	}
+	if len([]rune(strings.TrimSpace(item.Description))) > 500 {
+		return errors.New("description is too long")
+	}
+	if item.Renderer != "" {
+		if err := validateActivityRenderer(item.Renderer); err != nil {
+			return fmt.Errorf("renderer: %w", err)
+		}
+	}
+	for i, chip := range item.Chips {
+		if err := validateActivityChip(chip); err != nil {
+			return fmt.Errorf("chip %d: %w", i, err)
+		}
+	}
+	for i, ref := range item.TargetRefs {
+		if err := validateActivityTargetRef(ref); err != nil {
+			return fmt.Errorf("target ref %d: %w", i, err)
+		}
+	}
+	if err := validateActivityPayload(item.Payload, 0); err != nil {
+		return fmt.Errorf("payload: %w", err)
+	}
+	return nil
+}
+
+func validateActivityRenderer(value ActivityRenderer) error {
+	switch value {
+	case ActivityRendererStructured,
+		ActivityRendererTerminal,
+		ActivityRendererFile,
+		ActivityRendererPatch,
+		ActivityRendererWebSearch,
+		ActivityRendererTodos,
+		ActivityRendererQuestion,
+		ActivityRendererCompletion:
+		return nil
+	default:
+		return fmt.Errorf("%q is not supported", value)
+	}
+}
+
+func validateActivityChip(chip ActivityChip) error {
+	if !activityTokenIsValid(chip.Kind, 64) {
+		return errors.New("kind is required")
+	}
+	if strings.TrimSpace(chip.Label) == "" || len([]rune(strings.TrimSpace(chip.Label))) > 120 {
+		return errors.New("label is required")
+	}
+	if len([]rune(strings.TrimSpace(chip.Value))) > 120 {
+		return errors.New("value is too long")
+	}
+	if chip.Tone != "" && !activityTokenIsValid(chip.Tone, 32) {
+		return errors.New("tone is invalid")
+	}
+	return nil
+}
+
+func validateActivityTargetRef(ref ActivityTargetRef) error {
+	if !activityTokenIsValid(ref.Kind, 64) {
+		return errors.New("kind is required")
+	}
+	if strings.TrimSpace(ref.Label) == "" || len([]rune(strings.TrimSpace(ref.Label))) > 240 {
+		return errors.New("label is required")
+	}
+	if ref.Line < 0 {
+		return errors.New("line must be non-negative")
+	}
+	if ref.URI != "" && !activityURIIsValid(ref.URI) {
+		return errors.New("uri is invalid")
+	}
+	if len([]rune(strings.TrimSpace(ref.Path))) > 500 {
+		return errors.New("path is too long")
+	}
+	return nil
+}
+
+func validateActivityPayload(value any, depth int) error {
+	if value == nil {
+		return nil
+	}
+	if depth > 5 {
+		return errors.New("too deeply nested")
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, item := range typed {
+			if !activityTokenIsValid(key, 80) {
+				return fmt.Errorf("key %q is invalid", key)
+			}
+			if err := validateActivityPayload(item, depth+1); err != nil {
+				return fmt.Errorf("%s: %w", key, err)
+			}
+		}
+	case []any:
+		for i, item := range typed {
+			if err := validateActivityPayload(item, depth+1); err != nil {
+				return fmt.Errorf("[%d]: %w", i, err)
+			}
+		}
+	case string:
+		if len([]rune(typed)) > 8000 {
+			return errors.New("string is too long")
+		}
+	case bool, float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return nil
+	default:
+		return fmt.Errorf("%T is unsupported", value)
+	}
+	return nil
+}
+
+func activityTokenIsValid(value string, limit int) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len([]rune(value)) > limit {
+		return false
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '_', '-', '.', ':':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func activityURIIsValid(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.HasPrefix(value, "http://") ||
+		strings.HasPrefix(value, "https://") ||
+		strings.HasPrefix(value, "artifact://")
+}
+
 func mergeActivityMetadata(left, right map[string]string) map[string]string {
 	if len(left) == 0 {
 		return cloneActivityMetadata(right)
@@ -873,6 +1089,63 @@ func cloneActivityMetadata(in map[string]string) map[string]string {
 		out[key] = value
 	}
 	return out
+}
+
+func cloneActivityChips(in []ActivityChip) []ActivityChip {
+	if len(in) == 0 {
+		return nil
+	}
+	return append([]ActivityChip(nil), in...)
+}
+
+func cloneActivityTargetRefs(in []ActivityTargetRef) []ActivityTargetRef {
+	if len(in) == 0 {
+		return nil
+	}
+	return append([]ActivityTargetRef(nil), in...)
+}
+
+func cloneActivityPayload(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = cloneActivityPayloadValue(value)
+	}
+	return out
+}
+
+func mergeActivityPayload(left, right map[string]any) map[string]any {
+	if len(left) == 0 {
+		return cloneActivityPayload(right)
+	}
+	out := cloneActivityPayload(left)
+	for key, value := range right {
+		out[key] = cloneActivityPayloadValue(value)
+	}
+	return out
+}
+
+func cloneActivityPayloadValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneActivityPayload(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneActivityPayloadValue(item)
+		}
+		return out
+	case []string:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = item
+		}
+		return out
+	default:
+		return typed
+	}
 }
 
 func activityItemAttentionReasons(item ActivityItem) []ActivityAttentionReason {

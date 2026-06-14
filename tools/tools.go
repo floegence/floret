@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+
+	"github.com/floegence/floret/observation"
 )
 
 var ErrRejected = errors.New("tool call rejected")
@@ -27,6 +29,7 @@ type Definition struct {
 	Description  string
 	InputSchema  map[string]any
 	OutputSchema map[string]any
+	Activity     func(Invocation[any]) (*observation.ActivityPresentation, error)
 
 	Effects      []Effect
 	ReadOnly     bool
@@ -336,6 +339,39 @@ func (r *Registry) Run(ctx context.Context, call ToolCall, approver Approver) Re
 
 func (r *Registry) RunWithOptions(ctx context.Context, call ToolCall, approver Approver, opts RunOptions) Result {
 	return r.run(ctx, call, approver, opts)
+}
+
+func (r *Registry) ActivityForCall(call ToolCall, opts RunOptions) (*observation.ActivityPresentation, error) {
+	r.mu.RLock()
+	t, ok := r.tools[call.Name]
+	r.mu.RUnlock()
+	if !ok || t.Definition.Activity == nil {
+		return nil, nil
+	}
+	raw := strings.TrimSpace(call.Args)
+	if raw == "" {
+		raw = "{}"
+	}
+	if _, err := Validate(t.Definition.InputSchema, []byte(raw)); err != nil {
+		return nil, err
+	}
+	args, err := t.decode([]byte(raw))
+	if err != nil {
+		return nil, err
+	}
+	return t.Definition.Activity(Invocation[any]{
+		CallID:        call.ID,
+		Name:          call.Name,
+		RawArgs:       raw,
+		Args:          args,
+		RunID:         opts.RunID,
+		ThreadID:      opts.ThreadID,
+		TurnID:        opts.TurnID,
+		PromptScopeID: opts.PromptScopeID,
+		Step:          opts.Step,
+		Labels:        cloneStringMap(opts.Labels),
+		HostContext:   cloneStringMap(opts.HostContext),
+	})
 }
 
 func (r *Registry) run(ctx context.Context, call ToolCall, approver Approver, opts RunOptions) (result Result) {

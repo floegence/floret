@@ -25,6 +25,7 @@ import (
 	"github.com/floegence/floret/internal/session/compaction"
 	"github.com/floegence/floret/internal/session/contextpolicy"
 	"github.com/floegence/floret/internal/testing/harness"
+	"github.com/floegence/floret/observation"
 	"github.com/floegence/floret/tools"
 )
 
@@ -1736,6 +1737,72 @@ func TestToolOutputProjectionAppliesBeforeHistoryAndNextProviderRequest(t *testi
 		return msg.Role == session.Tool && msg.ToolCallID == "read-1" && msg.Content == "89abcdef"
 	}) {
 		t.Fatalf("history did not store truncated tool result: %#v", messages)
+	}
+}
+
+func TestToolActivityPresentationEmitsForCallAndResult(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("exec-1", "shell", `{"value":"npm test"}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	reg := tools.NewRegistry()
+	mustRegister(t, reg, tools.Define[stringArgs](
+		tools.Definition{
+			Name:        "shell",
+			InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+			ReadOnly:    true,
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+			Activity: func(inv tools.Invocation[any]) (*observation.ActivityPresentation, error) {
+				args, ok := inv.Args.(stringArgs)
+				if !ok {
+					t.Fatalf("args=%T, want stringArgs", inv.Args)
+				}
+				return &observation.ActivityPresentation{
+					Label:    args.Value,
+					Renderer: observation.ActivityRendererTerminal,
+					Payload:  map[string]any{"command": args.Value},
+				}, nil
+			},
+		},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
+			return tools.Result{
+				Text: "ok",
+				Activity: &observation.ActivityPresentation{
+					Description: "Command completed",
+					Payload:     map[string]any{"exit_code": 0, "stdout": "ok"},
+				},
+			}, nil
+		},
+	))
+	e := newTestEngine(p, rec)
+	e.Tools = reg
+
+	got := e.Run(context.Background(), "run")
+
+	if got.Status != engine.Completed {
+		t.Fatalf("result = %#v", got)
+	}
+	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
+		return ev.Type == event.ToolCall &&
+			ev.ToolID == "exec-1" &&
+			ev.Activity != nil &&
+			ev.Activity.Label == "npm test" &&
+			ev.Activity.Renderer == observation.ActivityRendererTerminal &&
+			ev.Activity.Payload["command"] == "npm test"
+	}) {
+		t.Fatalf("tool call activity missing: %#v", rec.Events)
+	}
+	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
+		return ev.Type == event.ToolResult &&
+			ev.ToolID == "exec-1" &&
+			ev.Activity != nil &&
+			ev.Activity.Description == "Command completed" &&
+			ev.Activity.Payload["stdout"] == "ok"
+	}) {
+		t.Fatalf("tool result activity missing: %#v", rec.Events)
 	}
 }
 

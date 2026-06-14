@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/floegence/floret/observation"
 )
 
 type Type string
@@ -50,33 +52,34 @@ const (
 )
 
 type Event struct {
-	Type               Type       `json:"type"`
-	TraceID            string     `json:"trace_id,omitempty"`
-	RunID              string     `json:"run_id"`
-	ThreadID           string     `json:"thread_id,omitempty"`
-	TurnID             string     `json:"turn_id,omitempty"`
-	PromptScopeID      string     `json:"prompt_scope_id,omitempty"`
-	Step               int        `json:"step,omitempty"`
-	Provider           string     `json:"provider,omitempty"`
-	Model              string     `json:"model,omitempty"`
-	Message            string     `json:"message,omitempty"`
-	ToolID             string     `json:"tool_id,omitempty"`
-	ToolName           string     `json:"tool_name,omitempty"`
-	ToolKind           string     `json:"tool_kind,omitempty"`
-	Args               string     `json:"args,omitempty"`
-	ArgsHash           string     `json:"args_hash,omitempty"`
-	Result             string     `json:"result,omitempty"`
-	Err                string     `json:"err,omitempty"`
-	FinishReason       string     `json:"finish_reason,omitempty"`
-	RawFinishReason    string     `json:"raw_finish_reason,omitempty"`
-	FinishInferred     bool       `json:"finish_inferred,omitempty"`
-	CompletionReason   string     `json:"completion_reason,omitempty"`
-	ContinuationReason string     `json:"continuation_reason,omitempty"`
-	Duration           int64      `json:"duration_ms,omitempty"`
-	Metrics            any        `json:"metrics,omitempty"`
-	Metadata           any        `json:"metadata,omitempty"`
-	Artifacts          []Artifact `json:"artifacts,omitempty"`
-	Timestamp          time.Time  `json:"timestamp"`
+	Type               Type                              `json:"type"`
+	TraceID            string                            `json:"trace_id,omitempty"`
+	RunID              string                            `json:"run_id"`
+	ThreadID           string                            `json:"thread_id,omitempty"`
+	TurnID             string                            `json:"turn_id,omitempty"`
+	PromptScopeID      string                            `json:"prompt_scope_id,omitempty"`
+	Step               int                               `json:"step,omitempty"`
+	Provider           string                            `json:"provider,omitempty"`
+	Model              string                            `json:"model,omitempty"`
+	Message            string                            `json:"message,omitempty"`
+	ToolID             string                            `json:"tool_id,omitempty"`
+	ToolName           string                            `json:"tool_name,omitempty"`
+	ToolKind           string                            `json:"tool_kind,omitempty"`
+	Args               string                            `json:"args,omitempty"`
+	ArgsHash           string                            `json:"args_hash,omitempty"`
+	Result             string                            `json:"result,omitempty"`
+	Err                string                            `json:"err,omitempty"`
+	FinishReason       string                            `json:"finish_reason,omitempty"`
+	RawFinishReason    string                            `json:"raw_finish_reason,omitempty"`
+	FinishInferred     bool                              `json:"finish_inferred,omitempty"`
+	CompletionReason   string                            `json:"completion_reason,omitempty"`
+	ContinuationReason string                            `json:"continuation_reason,omitempty"`
+	Duration           int64                             `json:"duration_ms,omitempty"`
+	Metrics            any                               `json:"metrics,omitempty"`
+	Metadata           any                               `json:"metadata,omitempty"`
+	Activity           *observation.ActivityPresentation `json:"activity,omitempty"`
+	Artifacts          []Artifact                        `json:"artifacts,omitempty"`
+	Timestamp          time.Time                         `json:"timestamp"`
 }
 
 type Artifact struct {
@@ -131,6 +134,7 @@ func sanitize(e Event, policy SinkPolicy) Event {
 			e.Result = policy.Redactor(e.Result)
 			e.Err = policy.Redactor(e.Err)
 		}
+		e.Activity = sanitizeActivityPresentation(e.Activity)
 		return e
 	}
 	if e.ArgsHash == "" && e.Args != "" {
@@ -156,6 +160,7 @@ func sanitize(e Event, policy SinkPolicy) Event {
 	e.Args = ""
 	e.Result = Redact(e.Result)
 	e.Metadata = sanitizeMetadata(e.Metadata)
+	e.Activity = sanitizeActivityPresentation(e.Activity)
 	return e
 }
 
@@ -165,12 +170,229 @@ func sanitizePathRefs(e Event) Event {
 	e.Result = SafePathRefsText(e.Result)
 	e.Err = SafePathRefsText(e.Err)
 	e.Metadata = sanitizePathMetadata(e.Metadata)
+	e.Activity = sanitizeActivityPresentation(e.Activity)
 	for i := range e.Artifacts {
 		if e.Artifacts[i].Path != "" {
 			e.Artifacts[i].Path = SafePathLabel(e.Artifacts[i].Path)
 		}
 	}
 	return e
+}
+
+func sanitizeActivityPresentation(in *observation.ActivityPresentation) *observation.ActivityPresentation {
+	if in == nil {
+		return nil
+	}
+	out := &observation.ActivityPresentation{
+		Label:       safeActivityText(in.Label, 200),
+		Description: safeActivityText(in.Description, 500),
+		Renderer:    in.Renderer,
+		Chips:       sanitizeActivityChips(in.Chips),
+		TargetRefs:  sanitizeActivityTargetRefs(in.TargetRefs),
+		Payload:     sanitizeActivityPayload(in.Payload, 0),
+	}
+	if out.Label == "" &&
+		out.Description == "" &&
+		out.Renderer == "" &&
+		len(out.Chips) == 0 &&
+		len(out.TargetRefs) == 0 &&
+		len(out.Payload) == 0 {
+		return nil
+	}
+	return out
+}
+
+func safeActivityText(value string, limit int) string {
+	value = strings.TrimSpace(SafePathRefsText(value))
+	if value == "" {
+		return ""
+	}
+	if limit > 0 && len([]rune(value)) > limit {
+		runes := []rune(value)
+		value = string(runes[:limit])
+	}
+	return Redact(value)
+}
+
+func sanitizeActivityChips(in []observation.ActivityChip) []observation.ActivityChip {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]observation.ActivityChip, 0, len(in))
+	for _, chip := range in {
+		item := observation.ActivityChip{
+			Kind:  safeActivityToken(chip.Kind, 64),
+			Label: safeActivityText(chip.Label, 120),
+			Value: safeActivityText(chip.Value, 120),
+			Tone:  safeActivityToken(chip.Tone, 32),
+		}
+		if item.Kind == "" || item.Label == "" {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func sanitizeActivityTargetRefs(in []observation.ActivityTargetRef) []observation.ActivityTargetRef {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]observation.ActivityTargetRef, 0, len(in))
+	for _, ref := range in {
+		item := observation.ActivityTargetRef{
+			Kind:  safeActivityToken(ref.Kind, 64),
+			Label: safeActivityText(ref.Label, 240),
+			URI:   safeActivityURI(ref.URI),
+			Path:  safeActivityPath(ref.Path),
+			Line:  ref.Line,
+		}
+		if item.Line < 0 {
+			item.Line = 0
+		}
+		if item.Kind == "" || item.Label == "" {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func sanitizeActivityPayload(in map[string]any, depth int) map[string]any {
+	if len(in) == 0 || depth > 4 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		key = safeActivityToken(key, 80)
+		if key == "" {
+			continue
+		}
+		if sanitized, ok := sanitizeActivityValue(key, value, depth+1); ok {
+			out[key] = sanitized
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func sanitizeActivityValue(key string, value any, depth int) (any, bool) {
+	switch v := value.(type) {
+	case nil:
+		return nil, true
+	case string:
+		return safeActivityPayloadString(key, v), true
+	case bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		return v, true
+	case map[string]string:
+		if depth > 4 {
+			return nil, false
+		}
+		out := map[string]any{}
+		for itemKey, itemValue := range v {
+			itemKey = safeActivityToken(itemKey, 80)
+			if itemKey == "" {
+				continue
+			}
+			out[itemKey] = safeActivityPayloadString(itemKey, itemValue)
+		}
+		return out, true
+	case map[string]any:
+		return sanitizeActivityPayload(v, depth), true
+	case []string:
+		out := make([]any, 0, len(v))
+		for _, item := range v {
+			out = append(out, safeActivityPayloadString(key, item))
+		}
+		return out, true
+	case []map[string]any:
+		if depth > 4 {
+			return nil, false
+		}
+		out := make([]any, 0, len(v))
+		for _, item := range v {
+			out = append(out, sanitizeActivityPayload(item, depth))
+		}
+		return out, true
+	case []any:
+		if depth > 4 {
+			return nil, false
+		}
+		out := make([]any, 0, len(v))
+		for _, item := range v {
+			if sanitized, ok := sanitizeActivityValue(key, item, depth+1); ok {
+				out = append(out, sanitized)
+			}
+		}
+		return out, true
+	default:
+		data, err := json.Marshal(v)
+		if err != nil {
+			return "[redacted]", true
+		}
+		return safeActivityPayloadString(key, string(data)), true
+	}
+}
+
+func safeActivityPayloadString(key string, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if metadataKeyIsPath(key) {
+		value = SafePathLabel(value)
+	} else {
+		value = SafePathRefsText(value)
+	}
+	value = Redact(value)
+	const limit = 8000
+	if len([]rune(value)) <= limit {
+		return value
+	}
+	runes := []rune(value)
+	return string(runes[:limit])
+}
+
+func safeActivityToken(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len([]rune(value)) > limit {
+		return ""
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '_', '-', '.', ':':
+			continue
+		default:
+			return ""
+		}
+	}
+	return value
+}
+
+func safeActivityURI(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len([]rune(value)) > 1000 {
+		return ""
+	}
+	if strings.HasPrefix(value, "http://") ||
+		strings.HasPrefix(value, "https://") ||
+		strings.HasPrefix(value, "artifact://") {
+		return Redact(value)
+	}
+	return ""
+}
+
+func safeActivityPath(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return SafePathLabel(value)
 }
 
 type SerialSink struct {

@@ -7,6 +7,7 @@ import (
 	"github.com/floegence/floret/internal/control"
 	"github.com/floegence/floret/internal/event"
 	"github.com/floegence/floret/internal/provider"
+	"github.com/floegence/floret/observation"
 )
 
 type ControlDisposition string
@@ -24,6 +25,7 @@ type ControlSignal struct {
 	Name        string
 	CallID      string
 	Payload     map[string]any
+	Activity    *observation.ActivityPresentation
 	// OutputText is the human-readable control result. For ControlContinue it is
 	// provider-visible; host-only details must stay in Payload.
 	OutputText string

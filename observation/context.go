@@ -24,25 +24,26 @@ const (
 )
 
 type Event struct {
-	Type         string         `json:"type"`
-	TraceID      string         `json:"trace_id,omitempty"`
-	RunID        string         `json:"run_id,omitempty"`
-	ThreadID     string         `json:"thread_id,omitempty"`
-	TurnID       string         `json:"turn_id,omitempty"`
-	Step         int            `json:"step,omitempty"`
-	Provider     string         `json:"provider,omitempty"`
-	Model        string         `json:"model,omitempty"`
-	Message      string         `json:"message,omitempty"`
-	Result       string         `json:"result,omitempty"`
-	Error        string         `json:"error,omitempty"`
-	ToolID       string         `json:"tool_id,omitempty"`
-	ToolName     string         `json:"tool_name,omitempty"`
-	ToolKind     string         `json:"tool_kind,omitempty"`
-	ArgsHash     string         `json:"args_hash,omitempty"`
-	DurationMS   int64          `json:"duration_ms,omitempty"`
-	FinishReason string         `json:"finish_reason,omitempty"`
-	Metadata     map[string]any `json:"metadata,omitempty"`
-	ObservedAt   time.Time      `json:"observed_at"`
+	Type         string                `json:"type"`
+	TraceID      string                `json:"trace_id,omitempty"`
+	RunID        string                `json:"run_id,omitempty"`
+	ThreadID     string                `json:"thread_id,omitempty"`
+	TurnID       string                `json:"turn_id,omitempty"`
+	Step         int                   `json:"step,omitempty"`
+	Provider     string                `json:"provider,omitempty"`
+	Model        string                `json:"model,omitempty"`
+	Message      string                `json:"message,omitempty"`
+	Result       string                `json:"result,omitempty"`
+	Error        string                `json:"error,omitempty"`
+	ToolID       string                `json:"tool_id,omitempty"`
+	ToolName     string                `json:"tool_name,omitempty"`
+	ToolKind     string                `json:"tool_kind,omitempty"`
+	ArgsHash     string                `json:"args_hash,omitempty"`
+	DurationMS   int64                 `json:"duration_ms,omitempty"`
+	FinishReason string                `json:"finish_reason,omitempty"`
+	Activity     *ActivityPresentation `json:"activity,omitempty"`
+	Metadata     map[string]any        `json:"metadata,omitempty"`
+	ObservedAt   time.Time             `json:"observed_at"`
 }
 
 type ProviderUsage struct {

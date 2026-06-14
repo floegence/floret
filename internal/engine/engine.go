@@ -16,6 +16,7 @@ import (
 	"github.com/floegence/floret/internal/session/artifact"
 	"github.com/floegence/floret/internal/session/compaction"
 	"github.com/floegence/floret/internal/session/contextpolicy"
+	"github.com/floegence/floret/observation"
 	"github.com/floegence/floret/tools"
 )
 
@@ -704,11 +705,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		if budgetErr := e.checkBudget(opts, metrics, step); budgetErr != nil {
 			return e.end(state, opts, step, Failed, output, budgetErr, metrics, started, decision)
 		}
-		for i, call := range calls {
-			e.emit(opts, event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args, Metadata: map[string]any{"batch_index": i, "batch_size": len(calls)}})
-		}
-		toolStarted := time.Now()
-		results := e.tools.RunBatchWithOptions(ctx, toolCalls(calls), e.approverWithEvents(opts, step), tools.RunOptions{
+		toolRunOptions := tools.RunOptions{
 			RunID:         opts.RunID,
 			ThreadID:      opts.ThreadID,
 			TurnID:        opts.TurnID,
@@ -716,13 +713,22 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			Step:          step,
 			Labels:        observabilityLabels(opts.Labels),
 			HostContext:   opts.Labels.Host,
-		})
+		}
+		for i, call := range calls {
+			activity, activityErr := e.tools.ActivityForCall(toolCall(call), toolRunOptions)
+			if activityErr != nil {
+				activity = nil
+			}
+			e.emit(opts, event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args, Activity: activity, Metadata: map[string]any{"batch_index": i, "batch_size": len(calls)}})
+		}
+		toolStarted := time.Now()
+		results := e.tools.RunBatchWithOptions(ctx, toolCalls(calls), e.approverWithEvents(opts, step), toolRunOptions)
 		toolLatency := time.Since(toolStarted).Milliseconds()
 		for i, result := range results {
 			policy := tools.MergeOutputPolicy(e.tools.OutputPolicyFor(result.Name), result.OutputPolicy)
 			projection, err := tools.BuildOutputProjection(ctx, toolOutputArtifactResult(result, opts, step), policy, toolArtifactStoreFor(e.artifacts))
 			if err != nil {
-				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: toolLatency, Metadata: mergeToolResultMetadata(result.Metadata, i, len(results))})
+				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: toolLatency, Activity: result.Activity, Metadata: mergeToolResultMetadata(result.Metadata, i, len(results))})
 				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 			}
 			text := projection.VisibleText
@@ -732,7 +738,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				text = "ERROR: " + text
 			}
 			metadata := mergeToolResultMetadata(toolProjectionMetadata(result.Metadata, projection), i, len(results))
-			e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: toolLatency, Metadata: metadata, Artifacts: eventArtifacts(projection, result.Artifacts)})
+			e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: toolLatency, Activity: result.Activity, Metadata: metadata, Artifacts: eventArtifacts(projection, result.Artifacts)})
 			msg := e.stableMessage(opts.RunID, session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: toolResultView(projection)})
 			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
 				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
@@ -863,6 +869,17 @@ func cloneAny(value any) any {
 	default:
 		return value
 	}
+}
+
+func cloneActivityPresentation(in *observation.ActivityPresentation) *observation.ActivityPresentation {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.Chips = append([]observation.ActivityChip(nil), in.Chips...)
+	out.TargetRefs = append([]observation.ActivityTargetRef(nil), in.TargetRefs...)
+	out.Payload = cloneAnyMap(in.Payload)
+	return &out
 }
 
 func normalizeOptions(o Options) Options {
@@ -1792,14 +1809,18 @@ func convertHostedToolDefinitions(defs []provider.HostedToolDefinition) []cache.
 func toolCalls(calls []provider.ToolCall) []tools.ToolCall {
 	out := make([]tools.ToolCall, 0, len(calls))
 	for _, call := range calls {
-		out = append(out, tools.ToolCall{
-			ID:        call.ID,
-			Name:      call.Name,
-			Args:      call.Args,
-			Reasoning: call.Reasoning,
-		})
+		out = append(out, toolCall(call))
 	}
 	return out
+}
+
+func toolCall(call provider.ToolCall) tools.ToolCall {
+	return tools.ToolCall{
+		ID:        call.ID,
+		Name:      call.Name,
+		Args:      call.Args,
+		Reasoning: call.Reasoning,
+	}
 }
 
 func providerToolDefinitions(defs []cache.ToolDefinition) []provider.ToolDefinition {
@@ -2126,6 +2147,7 @@ func (e *Engine) emitControlSignal(opts Options, step int, signal *ControlSignal
 		ToolName: strings.TrimSpace(signal.Name),
 		ToolKind: "control",
 		ArgsHash: strings.TrimSpace(signal.ArgsHash),
+		Activity: signal.Activity,
 		Metadata: map[string]any{
 			"control_disposition": string(signal.Disposition),
 		},
@@ -2151,6 +2173,7 @@ func cloneControlSignal(in *ControlSignal) *ControlSignal {
 	}
 	out := *in
 	out.Payload = cloneAnyMap(in.Payload)
+	out.Activity = cloneActivityPresentation(in.Activity)
 	out.Labels = cloneStringMap(in.Labels)
 	return &out
 }

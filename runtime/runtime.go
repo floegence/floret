@@ -132,25 +132,26 @@ type EventSink interface {
 }
 
 type Event struct {
-	Type         string         `json:"type"`
-	TraceID      TraceID        `json:"trace_id,omitempty"`
-	RunID        RunID          `json:"run_id,omitempty"`
-	ThreadID     ThreadID       `json:"thread_id,omitempty"`
-	TurnID       TurnID         `json:"turn_id,omitempty"`
-	Step         int            `json:"step,omitempty"`
-	Provider     string         `json:"provider,omitempty"`
-	Model        string         `json:"model,omitempty"`
-	Message      string         `json:"message,omitempty"`
-	Result       string         `json:"result,omitempty"`
-	Error        string         `json:"error,omitempty"`
-	ToolID       string         `json:"tool_id,omitempty"`
-	ToolName     string         `json:"tool_name,omitempty"`
-	ToolKind     string         `json:"tool_kind,omitempty"`
-	ArgsHash     string         `json:"args_hash,omitempty"`
-	DurationMS   int64          `json:"duration_ms,omitempty"`
-	FinishReason string         `json:"finish_reason,omitempty"`
-	Metadata     map[string]any `json:"metadata,omitempty"`
-	Timestamp    time.Time      `json:"timestamp,omitempty"`
+	Type         string                            `json:"type"`
+	TraceID      TraceID                           `json:"trace_id,omitempty"`
+	RunID        RunID                             `json:"run_id,omitempty"`
+	ThreadID     ThreadID                          `json:"thread_id,omitempty"`
+	TurnID       TurnID                            `json:"turn_id,omitempty"`
+	Step         int                               `json:"step,omitempty"`
+	Provider     string                            `json:"provider,omitempty"`
+	Model        string                            `json:"model,omitempty"`
+	Message      string                            `json:"message,omitempty"`
+	Result       string                            `json:"result,omitempty"`
+	Error        string                            `json:"error,omitempty"`
+	ToolID       string                            `json:"tool_id,omitempty"`
+	ToolName     string                            `json:"tool_name,omitempty"`
+	ToolKind     string                            `json:"tool_kind,omitempty"`
+	ArgsHash     string                            `json:"args_hash,omitempty"`
+	DurationMS   int64                             `json:"duration_ms,omitempty"`
+	FinishReason string                            `json:"finish_reason,omitempty"`
+	Activity     *observation.ActivityPresentation `json:"activity,omitempty"`
+	Metadata     map[string]any                    `json:"metadata,omitempty"`
+	Timestamp    time.Time                         `json:"timestamp,omitempty"`
 }
 
 type ThreadStatus string
@@ -607,6 +608,7 @@ func runtimeEvent(ev event.Event) Event {
 		ArgsHash:     ev.ArgsHash,
 		DurationMS:   ev.Duration,
 		FinishReason: ev.FinishReason,
+		Activity:     cloneActivityPresentation(ev.Activity),
 		Metadata:     safeMetadata(ev.Metadata),
 		Timestamp:    ev.Timestamp,
 	}
@@ -632,9 +634,21 @@ func runtimeObservationEvent(ev event.Event) observation.Event {
 		ArgsHash:     sanitized.ArgsHash,
 		DurationMS:   sanitized.Duration,
 		FinishReason: sanitized.FinishReason,
+		Activity:     cloneActivityPresentation(sanitized.Activity),
 		Metadata:     safeMetadata(sanitized.Metadata),
 		ObservedAt:   sanitized.Timestamp,
 	}
+}
+
+func cloneActivityPresentation(in *observation.ActivityPresentation) *observation.ActivityPresentation {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.Chips = append([]observation.ActivityChip(nil), in.Chips...)
+	out.TargetRefs = append([]observation.ActivityTargetRef(nil), in.TargetRefs...)
+	out.Payload = cloneAnyMap(in.Payload)
+	return &out
 }
 
 type runtimeActivityEventRecorder struct {

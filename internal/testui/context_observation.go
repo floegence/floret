@@ -263,6 +263,7 @@ func observationEvent(ev event.Event) observation.Event {
 		ArgsHash:     ev.ArgsHash,
 		DurationMS:   ev.Duration,
 		FinishReason: ev.FinishReason,
+		Activity:     ev.Activity,
 		Metadata:     observationMetadata(ev.Metadata),
 		ObservedAt:   ev.Timestamp,
 	}

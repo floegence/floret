@@ -1,6 +1,10 @@
 package tools
 
-import "context"
+import (
+	"context"
+
+	"github.com/floegence/floret/observation"
+)
 
 type ToolCall struct {
 	ID        string
@@ -68,6 +72,7 @@ type Result struct {
 	Text         string
 	Structured   map[string]any
 	Metadata     map[string]any
+	Activity     *observation.ActivityPresentation
 	Artifacts    []ArtifactRef
 	OutputPolicy *OutputPolicy
 	IsError      bool
