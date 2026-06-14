@@ -184,6 +184,7 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			Status:   ActivityStatusPending,
 			Severity: ActivitySeverityQuiet,
 		},
+		Items: []ActivityItem{},
 	}
 	if nowUnixMS <= 0 {
 		nowUnixMS = time.Now().UnixMilli()

@@ -147,6 +147,29 @@ func TestBuildActivityTimelineSummarizesErrorsAndHostedResults(t *testing.T) {
 	}
 }
 
+func TestBuildActivityTimelineSerializesEmptyItemsAsArray(t *testing.T) {
+	start := time.UnixMilli(3_000)
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-empty"}, []Event{{
+		Type:       EventTypeRunEnd,
+		RunID:      "run-empty",
+		Message:    string(ActivityStatusSuccess),
+		ObservedAt: start,
+	}}, start.UnixMilli())
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("timeline should validate: %v", err)
+	}
+	if timeline.Summary.TotalItems != 0 || len(timeline.Items) != 0 {
+		t.Fatalf("timeline should have no items: %#v", timeline)
+	}
+	data, err := json.Marshal(timeline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"items":[]`) {
+		t.Fatalf("empty activity items must serialize as an array: %s", data)
+	}
+}
+
 func TestValidateActivityTimelineRejectsInvalidPresentation(t *testing.T) {
 	base := ActivityTimeline{
 		SchemaVersion: ActivityTimelineSchemaVersion,
