@@ -24,7 +24,6 @@ var (
 	ErrNoProgress           = errors.New("agent loop made no progress")
 	ErrDuplicateTools       = errors.New("agent loop repeated identical tool calls")
 	ErrDuplicateToolCallID  = errors.New("provider returned duplicate tool call id")
-	ErrMixedControlTools    = errors.New("provider returned control signal with ordinary tool calls")
 	ErrProviderTruncated    = errors.New("provider output was truncated")
 	ErrContentFiltered      = errors.New("provider output was content filtered")
 	ErrProviderFinishError  = errors.New("provider returned error finish reason")
@@ -159,6 +158,7 @@ type RunDecision struct {
 	Detail             string
 	ControlSignal      *ControlSignal
 	ProviderState      *provider.State
+	Metadata           map[string]any
 }
 
 type StepOutput struct {
@@ -647,8 +647,16 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			e.emitStepEnd(opts, step, providerLatency, 0, usage, 0, decision)
 			continue
 		}
-		if err := validateToolCalls(opts.ControlSpec, calls); err != nil {
+		if err := validateToolCalls(calls); err != nil {
 			return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+		}
+		classifiedCalls := classifyToolCalls(opts.ControlSpec, calls)
+		controlCalls := classifiedCalls.Control
+		if len(classifiedCalls.Ordinary) > 0 {
+			calls = classifiedCalls.Ordinary
+			if len(controlCalls) > 0 {
+				decision.Metadata = deferredControlMetadata(controlCalls)
+			}
 		}
 		for _, call := range calls {
 			reasoning := call.Reasoning
@@ -672,33 +680,35 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			lastToolSig = sig
 			duplicateCount = 0
 		}
-		if signal, ok, err := controlSignal(opts.ControlSpec, calls); err != nil {
-			return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
-		} else if ok {
-			if len(signal.Labels) == 0 {
-				signal.Labels = observabilityLabels(opts.Labels)
-			}
-			decision.ControlSignal = signal
-			e.emitControlSignal(opts, step, signal)
-			switch signal.Disposition {
-			case ControlTerminal:
-				decision.CompletionReason = CompletionReasonToolSignal
-				e.emitStepEnd(opts, step, providerLatency, 0, usage, len(calls), decision)
-				return e.end(state, opts, step, Completed, signal.OutputText, nil, metrics, started, decision)
-			case ControlWaiting:
-				decision.CompletionReason = CompletionReasonToolSignal
-				e.emitStepEnd(opts, step, providerLatency, 0, usage, len(calls), decision)
-				return e.end(state, opts, step, Waiting, signal.OutputText, nil, metrics, started, decision)
-			case ControlContinue:
-				msg := e.stableMessage(opts.RunID, session.Message{Role: session.Tool, Content: signal.OutputText, ToolCallID: signal.CallID, ToolName: signal.Name})
-				if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
-					return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+		if len(classifiedCalls.Ordinary) == 0 {
+			if signal, ok, err := controlSignal(opts.ControlSpec, controlCalls); err != nil {
+				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+			} else if ok {
+				if len(signal.Labels) == 0 {
+					signal.Labels = observabilityLabels(opts.Labels)
 				}
-				activeHistory = append(activeHistory, msg)
-				state.activeMessages = append([]session.Message(nil), activeHistory...)
-				decision.ContinuationReason = ContinueToolResults
-				e.emitStepEnd(opts, step, providerLatency, 0, usage, len(calls), decision)
-				continue
+				decision.ControlSignal = signal
+				e.emitControlSignal(opts, step, signal)
+				switch signal.Disposition {
+				case ControlTerminal:
+					decision.CompletionReason = CompletionReasonToolSignal
+					e.emitStepEnd(opts, step, providerLatency, 0, usage, len(controlCalls), decision)
+					return e.end(state, opts, step, Completed, signal.OutputText, nil, metrics, started, decision)
+				case ControlWaiting:
+					decision.CompletionReason = CompletionReasonToolSignal
+					e.emitStepEnd(opts, step, providerLatency, 0, usage, len(controlCalls), decision)
+					return e.end(state, opts, step, Waiting, signal.OutputText, nil, metrics, started, decision)
+				case ControlContinue:
+					msg := e.stableMessage(opts.RunID, session.Message{Role: session.Tool, Content: signal.OutputText, ToolCallID: signal.CallID, ToolName: signal.Name})
+					if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
+						return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+					}
+					activeHistory = append(activeHistory, msg)
+					state.activeMessages = append([]session.Message(nil), activeHistory...)
+					decision.ContinuationReason = ContinueToolResults
+					e.emitStepEnd(opts, step, providerLatency, 0, usage, len(controlCalls), decision)
+					continue
+				}
 			}
 		}
 		metrics.ToolCalls += len(calls)
@@ -2029,6 +2039,7 @@ func (e *Engine) emitStepEnd(opts Options, step int, providerLatency, toolLatenc
 		CompletionReason:   string(decision.CompletionReason),
 		ContinuationReason: string(decision.ContinuationReason),
 		Message:            decision.Detail,
+		Metadata:           decision.Metadata,
 		Metrics: StepMetrics{
 			Step:               step,
 			Provider:           opts.ProviderName,
@@ -2178,16 +2189,46 @@ func cloneControlSignal(in *ControlSignal) *ControlSignal {
 	return &out
 }
 
-func validateToolCalls(spec ControlSpec, calls []provider.ToolCall) error {
-	seen := map[string]struct{}{}
-	controlCalls := 0
-	ordinaryCalls := 0
+type toolCallBatch struct {
+	Ordinary []provider.ToolCall
+	Control  []provider.ToolCall
+}
+
+func classifyToolCalls(spec ControlSpec, calls []provider.ToolCall) toolCallBatch {
+	var batch toolCallBatch
 	for _, call := range calls {
 		if spec.isControlTool(call.Name) {
-			controlCalls++
-		} else {
-			ordinaryCalls++
+			batch.Control = append(batch.Control, call)
+			continue
 		}
+		batch.Ordinary = append(batch.Ordinary, call)
+	}
+	return batch
+}
+
+func deferredControlMetadata(calls []provider.ToolCall) map[string]any {
+	items := make([]map[string]any, 0, len(calls))
+	for _, call := range calls {
+		item := map[string]any{
+			"tool_name": strings.TrimSpace(call.Name),
+		}
+		if id := strings.TrimSpace(call.ID); id != "" {
+			item["tool_id"] = id
+		}
+		if hash := providerStableHash(call.Args); hash != "" {
+			item["args_hash"] = hash
+		}
+		items = append(items, item)
+	}
+	return map[string]any{
+		"deferred_control_tool_count": len(calls),
+		"deferred_control_tools":      items,
+	}
+}
+
+func validateToolCalls(calls []provider.ToolCall) error {
+	seen := map[string]struct{}{}
+	for _, call := range calls {
 		if call.ID == "" {
 			continue
 		}
@@ -2195,9 +2236,6 @@ func validateToolCalls(spec ControlSpec, calls []provider.ToolCall) error {
 			return ErrDuplicateToolCallID
 		}
 		seen[call.ID] = struct{}{}
-	}
-	if controlCalls > 0 && ordinaryCalls > 0 {
-		return ErrMixedControlTools
 	}
 	return nil
 }

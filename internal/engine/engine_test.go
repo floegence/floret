@@ -1335,7 +1335,8 @@ func TestDeclaredControlToolMustProjectSignal(t *testing.T) {
 	}
 }
 
-func TestCustomControlToolMixedWithOrdinaryToolFails(t *testing.T) {
+func TestCustomControlToolMixedWithOrdinaryToolDefersControlAndRunsOrdinaryTool(t *testing.T) {
+	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
 		harness.Step(
 			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
@@ -1344,10 +1345,11 @@ func TestCustomControlToolMixedWithOrdinaryToolFails(t *testing.T) {
 			}},
 			harness.DoneReason("tool_calls"),
 		),
+		harness.Step(harness.Text("read done"), harness.Done()),
 	)
 	reg := tools.NewRegistry()
 	mustRegister(t, reg, stringTool("read", "Read", true, tools.PermissionSpec{}, func(context.Context, string) (string, error) { return "ok", nil }))
-	e := newTestEngine(p, &event.Recorder{})
+	e := newTestEngine(p, rec)
 	e.Tools = reg
 	e.Options.ControlSpec = engine.ControlSpec{
 		Definitions: []provider.ToolDefinition{{Name: "host_wait", Description: "Wait", InputSchema: tools.StrictObject(map[string]any{"question": tools.String("question")}, []string{"question"}), Annotations: map[string]any{"kind": "control"}}},
@@ -1358,15 +1360,30 @@ func TestCustomControlToolMixedWithOrdinaryToolFails(t *testing.T) {
 
 	got := e.Run(context.Background(), "work")
 
-	if got.Status != engine.Failed || !errors.Is(got.Err, engine.ErrMixedControlTools) {
-		t.Fatalf("result = %#v, want mixed-control failure", got)
+	if got.Status != engine.Completed || got.Output != "read done" {
+		t.Fatalf("result = %#v, want ordinary tool recovery completion", got)
 	}
 	messages, err := e.Store.Transcript("run")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if slices.ContainsFunc(messages, func(msg session.Message) bool { return msg.ToolName == "host_wait" || msg.ToolName == "read" }) {
-		t.Fatalf("mixed control batch should not persist orphan tool calls: %#v", messages)
+	if slices.ContainsFunc(messages, func(msg session.Message) bool { return msg.ToolName == "host_wait" }) {
+		t.Fatalf("deferred control call should not be persisted as an orphan: %#v", messages)
+	}
+	if !slices.ContainsFunc(messages, func(msg session.Message) bool { return msg.ToolName == "read" }) {
+		t.Fatalf("ordinary tool call should be persisted and executed: %#v", messages)
+	}
+	if hasEvent(rec.Events, event.ControlSignal) {
+		t.Fatalf("deferred control call should not emit a control signal: %#v", rec.Events)
+	}
+	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
+		if ev.Type != event.StepEnd {
+			return false
+		}
+		meta, ok := ev.Metadata.(map[string]any)
+		return ok && meta["deferred_control_tool_count"] == 1
+	}) {
+		t.Fatalf("step end missing deferred control metadata: %#v", rec.Events)
 	}
 }
 
@@ -1408,7 +1425,8 @@ func TestProviderSafeHistoryProjectsCustomControlSignals(t *testing.T) {
 	}
 }
 
-func TestMixedControlAndOrdinaryToolsFailBeforePersistingOrphans(t *testing.T) {
+func TestMixedControlAndOrdinaryToolsDefersWaitingSignal(t *testing.T) {
+	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
 		[]provider.StreamEvent{
 			{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
@@ -1417,25 +1435,49 @@ func TestMixedControlAndOrdinaryToolsFailBeforePersistingOrphans(t *testing.T) {
 			}},
 			{Type: provider.Done, Reason: "tool_calls"},
 		},
+		harness.Step(harness.Tool("ask-next", "ask_user", `{"question":"Which file?"}`), harness.DoneReason("tool_calls")),
 	)
 	reg := tools.NewRegistry()
 	mustRegister(t, reg, stringTool("read", "Read", false, tools.PermissionSpec{}, func(context.Context, string) (string, error) { return "ok", nil }))
-	e := newTestEngine(p, &event.Recorder{})
+	e := newTestEngine(p, rec)
 	e.Tools = reg
 
 	got := e.Run(context.Background(), "continue")
 
-	if got.Status != engine.Failed || !errors.Is(got.Err, engine.ErrMixedControlTools) {
-		t.Fatalf("result = %#v", got)
+	if got.Status != engine.Waiting || got.Output != "Which file?" {
+		t.Fatalf("result = %#v, want waiting after ordinary tool recovery", got)
 	}
 	messages, err := e.Store.Transcript("run")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if slices.ContainsFunc(messages, func(msg session.Message) bool {
-		return msg.ToolName == "read" || msg.ToolName == "ask_user"
+		return msg.ToolName == "ask_user" && msg.ToolCallID == "ask"
 	}) {
-		t.Fatalf("mixed control tools should not persist orphan calls: %#v", messages)
+		t.Fatalf("deferred ask_user call should not be persisted as an orphan: %#v", messages)
+	}
+	if !slices.ContainsFunc(messages, func(msg session.Message) bool {
+		return msg.ToolName == "read"
+	}) {
+		t.Fatalf("ordinary tool should run before waiting control is reconsidered: %#v", messages)
+	}
+	if !slices.ContainsFunc(messages, func(msg session.Message) bool {
+		return msg.ToolName == "ask_user" && msg.ToolCallID == "ask-next"
+	}) {
+		t.Fatalf("next pure ask_user control should be persisted: %#v", messages)
+	}
+	controlSignals := 0
+	for _, ev := range rec.Events {
+		if ev.Type != event.ControlSignal {
+			continue
+		}
+		controlSignals++
+		if ev.ToolID != "ask-next" {
+			t.Fatalf("unexpected control signal event: %#v", ev)
+		}
+	}
+	if controlSignals != 1 {
+		t.Fatalf("control signal events = %d, want 1: %#v", controlSignals, rec.Events)
 	}
 }
 
