@@ -685,6 +685,8 @@ func publicMetadataStringKey(key string) bool {
 		return true
 	case "approval_id", "state", "kind", "effect", "effects":
 		return true
+	case "pending_handle", "pending_state":
+		return true
 	case "pressure_signal", "pressure_source", "confidence", "estimate_source", "estimate_method", "compaction_trigger", "trigger", "reason", "source":
 		return true
 	default:

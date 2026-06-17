@@ -256,6 +256,21 @@ Important tool rules:
 - Large outputs should be represented by artifact references when the model or UI
   does not need full inline content.
 
+### Host-owned pending tool results
+
+Some tools start work whose lifecycle belongs to the host application, such as a
+terminal process, watcher, or remote task. Those handlers can return
+`tools.Result{Pending: ...}` after the host has started the work. Floret records a
+normal provider-visible tool result containing `<pending_tool_result>`, marks the
+activity as running, and exposes pending metadata for observation. It does not
+own the process, poll the handle, store a task registry, or decide cancellation.
+
+When the host observes completion, failure, or cancellation, it calls
+`runtime.Host.CompletePendingTool`. Floret appends a host-authored user follow-up
+turn containing `<pending_tool_completion>` and runs the normal agent loop. The
+completion is not a second `role=tool` message for the original tool call; the
+initial pending result already satisfied that provider tool-call pairing.
+
 ## 🧱 Responsibility boundary
 
 | Area | Floret owns | Host application owns |
@@ -264,6 +279,7 @@ Important tool rules:
 | Provider access | adapters, request shape, stream parsing, usage, continuation state | user-level provider profile, secret source, allowed model policy |
 | Storage | thread journal, prompt material, provider ledger, artifacts, runtime metadata | product metadata keyed by `runtime.ThreadID` |
 | Tools | schema validation, generic effects, approval hook, dispatch, result projection | domain handlers and final product permission checks |
+| Pending tool work | pending result projection, running activity, host completion turn | handle ownership, process lifecycle, progress, cancellation, final artifacts |
 | UI | sanitized events, snapshots, observation DTOs | layout, workflows, interaction states, recovery actions |
 
 ## 👁️ Observation
@@ -278,7 +294,7 @@ contain prompt text, tool arguments, tool results, local paths, or secrets.
 ```text
 Host UI/API
   |
-  | StartThread / RunTurn / RetryTurn / DeleteThread
+  | StartThread / RunTurn / RetryTurn / CompletePendingTool / DeleteThread
   v
 runtime.Host
   |

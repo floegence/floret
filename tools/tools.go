@@ -413,6 +413,13 @@ func (r *Registry) run(ctx context.Context, call ToolCall, approver Approver, op
 		return ErrorResult(call.ID, call.Name, err.Error())
 	}
 	result = result.withCall(call.ID, call.Name)
+	if result.Pending != nil {
+		pending := result.Pending.normalized()
+		if err := pending.Validate(); err != nil {
+			return ErrorResult(call.ID, call.Name, err.Error())
+		}
+		result.Pending = &pending
+	}
 	if t.Definition.OutputSchema != nil && result.Structured != nil {
 		if err := ValidateStructured(t.Definition.OutputSchema, result.Structured); err != nil {
 			return ErrorResult(call.ID, call.Name, fmt.Sprintf("tool %q returned invalid structured output: %v", call.Name, err))

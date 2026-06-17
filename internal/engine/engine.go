@@ -735,11 +735,16 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		results := e.tools.RunBatchWithOptions(ctx, toolCalls(calls), e.approverWithEvents(opts, step), toolRunOptions)
 		toolLatency := time.Since(toolStarted).Milliseconds()
 		for i, result := range results {
-			policy := tools.MergeOutputPolicy(e.tools.OutputPolicyFor(result.Name), result.OutputPolicy)
-			projection, err := tools.BuildOutputProjection(ctx, toolOutputArtifactResult(result, opts, step), policy, toolArtifactStoreFor(e.artifacts))
-			if err != nil {
-				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: toolLatency, Activity: result.Activity, Metadata: mergeToolResultMetadata(result.Metadata, i, len(results))})
-				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+			result = preparePendingToolResult(result)
+			projection := exactToolOutputProjection(result.Text)
+			if result.Pending == nil {
+				policy := tools.MergeOutputPolicy(e.tools.OutputPolicyFor(result.Name), result.OutputPolicy)
+				var err error
+				projection, err = tools.BuildOutputProjection(ctx, toolOutputArtifactResult(result, opts, step), policy, toolArtifactStoreFor(e.artifacts))
+				if err != nil {
+					e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: toolLatency, Activity: result.Activity, Metadata: mergeToolResultMetadata(result.Metadata, i, len(results))})
+					return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+				}
 			}
 			text := projection.VisibleText
 			errText := ""
@@ -747,9 +752,14 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				errText = text
 				text = "ERROR: " + text
 			}
-			metadata := mergeToolResultMetadata(toolProjectionMetadata(result.Metadata, projection), i, len(results))
+			metadata := mergeToolResultMetadata(result.Metadata, i, len(results))
+			resultView := (*session.ToolResultView)(nil)
+			if result.Pending == nil {
+				metadata = mergeToolResultMetadata(toolProjectionMetadata(result.Metadata, projection), i, len(results))
+				resultView = toolResultView(projection)
+			}
 			e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: toolLatency, Activity: result.Activity, Metadata: metadata, Artifacts: eventArtifacts(projection, result.Artifacts)})
-			msg := e.stableMessage(opts.RunID, session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: toolResultView(projection)})
+			msg := e.stableMessage(opts.RunID, session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: resultView})
 			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
 				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 			}
@@ -760,6 +770,23 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		decision.ContinuationReason = ContinueToolResults
 		e.emitStepEnd(opts, step, providerLatency, toolLatency, usage, len(calls), decision)
 	}
+}
+
+func exactToolOutputProjection(text string) tools.OutputProjection {
+	return tools.OutputProjection{
+		VisibleText: text,
+	}
+}
+
+func preparePendingToolResult(result tools.Result) tools.Result {
+	if result.Pending == nil || result.IsError {
+		return result
+	}
+	pending := *result.Pending
+	result.Text = tools.PendingToolResultText(pending)
+	result.Metadata = mergeAnyMetadata(result.Metadata, tools.PendingToolResultMetadata(pending))
+	result.Activity = tools.PendingToolActivity(pending, result.Activity)
+	return result
 }
 
 func cloneOptions(o Options) Options {
@@ -1968,6 +1995,27 @@ func toolProjectionMetadata(base map[string]any, projection tools.OutputProjecti
 		metadata["artifact_sha256"] = projection.FullOutput.SHA256
 	}
 	return metadata
+}
+
+func mergeAnyMetadata(left, right map[string]any) map[string]any {
+	if len(left) == 0 {
+		if len(right) == 0 {
+			return nil
+		}
+		out := make(map[string]any, len(right))
+		for key, value := range right {
+			out[key] = value
+		}
+		return out
+	}
+	out := make(map[string]any, len(left)+len(right))
+	for key, value := range left {
+		out[key] = value
+	}
+	for key, value := range right {
+		out[key] = value
+	}
+	return out
 }
 
 func toolResultView(projection tools.OutputProjection) *session.ToolResultView {

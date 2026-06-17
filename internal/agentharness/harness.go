@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"slices"
 	"strconv"
 	"strings"
@@ -143,6 +144,26 @@ type RunOptions struct {
 type RetryOptions struct {
 	Reason string
 	Labels engine.RunLabels
+}
+
+type PendingToolCompletionStatus string
+
+const (
+	PendingToolCompleted PendingToolCompletionStatus = "completed"
+	PendingToolFailed    PendingToolCompletionStatus = "failed"
+	PendingToolCanceled  PendingToolCompletionStatus = "canceled"
+)
+
+type PendingToolCompletion struct {
+	TurnID     string
+	RunID      string
+	ToolCallID string
+	ToolName   string
+	Handle     string
+	Status     PendingToolCompletionStatus
+	Summary    string
+	Output     string
+	Labels     engine.RunLabels
 }
 
 type ThreadSnapshot struct {
@@ -497,6 +518,14 @@ func (t *Thread) Retry(ctx context.Context, opts RetryOptions) (TurnResult, erro
 	return t.runLeased(ctx, "", RunOptions{TurnID: turnID, Labels: opts.Labels}, &target.Entry)
 }
 
+func (t *Thread) CompletePendingTool(ctx context.Context, completion PendingToolCompletion) (TurnResult, error) {
+	input, err := pendingToolCompletionInput(completion)
+	if err != nil {
+		return TurnResult{}, err
+	}
+	return t.run(ctx, input, RunOptions{TurnID: completion.TurnID, Labels: completion.Labels}, nil)
+}
+
 func (t *Thread) MoveTo(ctx context.Context, entryID string, opts MoveOptions) error {
 	release, err := t.enterMutation(ctx, t.harness.nextID("mutation"))
 	if err != nil {
@@ -515,6 +544,65 @@ func (t *Thread) MoveTo(ctx context.Context, entryID string, opts MoveOptions) e
 	}
 	t.harness.emit(HarnessEvent{Type: EventLeafMoved, ThreadID: t.id, EntryID: entryID})
 	return nil
+}
+
+func pendingToolCompletionInput(completion PendingToolCompletion) (string, error) {
+	handle := strings.TrimSpace(completion.Handle)
+	if handle == "" {
+		return "", errors.New("pending tool completion requires handle")
+	}
+	if !pendingToolCompletionPublicToken(handle) {
+		return "", errors.New("pending tool completion requires token-safe handle")
+	}
+	status := completion.Status
+	switch status {
+	case PendingToolCompleted, PendingToolFailed, PendingToolCanceled:
+	default:
+		return "", fmt.Errorf("pending tool completion returned invalid status %q", status)
+	}
+	summary := strings.TrimSpace(completion.Summary)
+	if summary == "" {
+		return "", errors.New("pending tool completion requires summary")
+	}
+	lines := []string{
+		"<pending_tool_completion>",
+		"<status>" + string(status) + "</status>",
+		"<summary>" + html.EscapeString(summary) + "</summary>",
+		"<handle>" + html.EscapeString(handle) + "</handle>",
+	}
+	if toolName := strings.TrimSpace(completion.ToolName); toolName != "" {
+		lines = append(lines, "<tool_name>"+html.EscapeString(toolName)+"</tool_name>")
+	}
+	if toolCallID := strings.TrimSpace(completion.ToolCallID); toolCallID != "" {
+		lines = append(lines, "<tool_call_id>"+html.EscapeString(toolCallID)+"</tool_call_id>")
+	}
+	if runID := strings.TrimSpace(completion.RunID); runID != "" {
+		lines = append(lines, "<run_id>"+html.EscapeString(runID)+"</run_id>")
+	}
+	if output := strings.TrimSpace(completion.Output); output != "" {
+		lines = append(lines, "<output>", html.EscapeString(output), "</output>")
+	}
+	lines = append(lines, "</pending_tool_completion>")
+	return strings.Join(lines, "\n"), nil
+}
+
+func pendingToolCompletionPublicToken(value string) bool {
+	text := strings.TrimSpace(value)
+	if text == "" || len(text) > 240 {
+		return false
+	}
+	for _, r := range text {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '_', '-', '.', ':', '/', '@':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func (t *Thread) Compact(ctx context.Context, summary, firstKeptEntryID string) (sessiontree.Entry, error) {

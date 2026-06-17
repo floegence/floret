@@ -265,6 +265,10 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			if activityEventHasError(ev) {
 				state.item.Status = ActivityStatusError
 				state.item.Severity = ActivitySeverityError
+			} else if activityMetadataBool(ev.Metadata, "pending_tool_result") {
+				state.item.Status = ActivityStatusRunning
+				state.item.Severity = ActivitySeverityWarning
+				state.item.EndedAtUnixMS = 0
 			} else {
 				state.item.Status = ActivityStatusSuccess
 				state.item.Severity = ActivitySeverityNormal
@@ -669,6 +673,9 @@ var activityMetadataKeys = []string{
 	"open_world",
 	"original_bytes",
 	"original_lines",
+	"pending_handle",
+	"pending_state",
+	"pending_tool_result",
 	"read_only",
 	"result_count",
 	"strategy",
@@ -742,7 +749,7 @@ func activityNormalizeMetadataValue(key string, value any) string {
 		return activityHashMetadataValue(value)
 	case "artifact_count", "batch_index", "batch_size", "duration_ms", "original_bytes", "original_lines", "result_count", "visible_bytes", "visible_lines":
 		return activityIntegerMetadataValue(value)
-	case "destructive", "open_world", "read_only", "truncated":
+	case "destructive", "open_world", "pending_tool_result", "read_only", "truncated":
 		return activityBooleanMetadataValue(value)
 	case "effects":
 		return activityEffectsMetadataValue(value)
@@ -768,9 +775,34 @@ func activityNormalizeMetadataValue(key string, value any) string {
 			"head": {},
 			"tail": {},
 		})
+	case "pending_state":
+		return activityEnumMetadataValue(value, map[string]struct{}{
+			"running": {},
+		})
+	case "pending_handle":
+		return activityPublicTokenMetadataValue(value)
 	default:
 		return ""
 	}
+}
+
+func activityPublicTokenMetadataValue(value any) string {
+	text := strings.TrimSpace(activityScalarString(value))
+	if text == "" || len(text) > 240 {
+		return ""
+	}
+	for _, r := range text {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '_', '-', '.', ':', '/', '@':
+			continue
+		default:
+			return ""
+		}
+	}
+	return text
 }
 
 func activityHashMetadataValue(value any) string {

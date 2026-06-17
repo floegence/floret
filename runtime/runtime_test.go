@@ -178,6 +178,92 @@ func TestHostDeleteMissingThreadUsesConsistentStoreBoundary(t *testing.T) {
 	}
 }
 
+func TestHostCompletePendingToolRunsFollowUpTurnThroughPublicFacade(t *testing.T) {
+	ctx := context.Background()
+	rec := &runtimeEventRecorder{}
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "completion handled",
+			SystemPrompt: "test",
+		},
+		Sink:        rec,
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{
+		ThreadID:   "thread",
+		TurnID:     "turn-complete",
+		RunID:      "turn-start",
+		ToolCallID: "exec-1",
+		ToolName:   "terminal_exec",
+		Handle:     "terminal:job:123",
+		Status:     PendingToolCompletionCompleted,
+		Summary:    "background job finished",
+		Output:     "exit 0",
+		Labels: RunLabels{
+			Correlation: map[string]string{"message_id": "msg-1"},
+			Host:        map[string]string{"workspace_id": "ws-1"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != TurnStatusCompleted || result.Output != "completion handled" {
+		t.Fatalf("result = %#v", result)
+	}
+	snapshot, err := host.ReadThread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.LatestTurnID != "turn-complete" || len(snapshot.Messages) != 2 {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	if snapshot.Messages[0].Role != string(session.User) || !strings.Contains(snapshot.Messages[0].Content, "<pending_tool_completion>") {
+		t.Fatalf("completion message missing: %#v", snapshot.Messages)
+	}
+	if len(rec.events) == 0 {
+		t.Fatalf("expected runtime events")
+	}
+}
+
+func TestHostCompletePendingToolRejectsInvalidRequest(t *testing.T) {
+	ctx := context.Background()
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "ok",
+			SystemPrompt: "test",
+		},
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{}); err == nil || !strings.Contains(err.Error(), "thread id is required") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{ThreadID: "missing", Status: PendingToolCompletionCompleted, Summary: "done", Handle: "terminal:job:123"}); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+		t.Fatalf("err = %v, want ErrThreadNotFound", err)
+	}
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{ThreadID: "thread", Status: PendingToolCompletionStatus("bogus"), Summary: "done", Handle: "terminal:job:123"}); err == nil || !strings.Contains(err.Error(), "invalid status") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestHarnessHelperRunsCustomToolWithoutPublicProviderAPI(t *testing.T) {
 	ctx := context.Background()
 	registry := tools.NewRegistry()

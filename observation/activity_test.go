@@ -56,6 +56,31 @@ func TestBuildActivityTimelineProjectsToolAndApprovalState(t *testing.T) {
 	}
 }
 
+func TestBuildActivityTimelineProjectsPendingToolResultAsRunning(t *testing.T) {
+	start := time.UnixMilli(1_700_000_001_000)
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-pending", ThreadID: "thread-pending", TurnID: "turn-pending"}, []Event{
+		{Type: EventTypeToolCall, RunID: "run-pending", ThreadID: "thread-pending", TurnID: "turn-pending", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", ObservedAt: start},
+		{Type: EventTypeToolResult, RunID: "run-pending", ThreadID: "thread-pending", TurnID: "turn-pending", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Metadata: map[string]any{"pending_tool_result": true, "pending_handle": "terminal:job:123", "pending_state": "running"}, ObservedAt: start.Add(100 * time.Millisecond)},
+	}, start.Add(time.Second).UnixMilli())
+
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("timeline should validate: %v", err)
+	}
+	if timeline.Summary.Status != ActivityStatusRunning || !timeline.Summary.NeedsAttention || timeline.Summary.Counts.Running != 1 {
+		t.Fatalf("summary should show running pending tool: %#v", timeline.Summary)
+	}
+	if len(timeline.Items) != 1 {
+		t.Fatalf("items = %#v", timeline.Items)
+	}
+	item := timeline.Items[0]
+	if item.Status != ActivityStatusRunning || item.Severity != ActivitySeverityWarning || item.EndedAtUnixMS != 0 {
+		t.Fatalf("pending item mismatch: %#v", item)
+	}
+	if item.Metadata["pending_handle"] != "terminal:job:123" || item.Metadata["pending_state"] != "running" || item.Metadata["pending_tool_result"] != "true" {
+		t.Fatalf("pending metadata mismatch: %#v", item.Metadata)
+	}
+}
+
 func TestBuildActivityTimelineMergesExplicitActivityPresentation(t *testing.T) {
 	start := time.UnixMilli(1_700_000_010_000)
 	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-present"}, []Event{

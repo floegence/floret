@@ -265,6 +265,87 @@ func TestThreadReadReturnsHostSafeSnapshot(t *testing.T) {
 	}
 }
 
+func TestThreadCompletePendingToolCreatesFollowUpTurn(t *testing.T) {
+	ctx := context.Background()
+	p := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("completion noted"), scriptharness.Done()))
+	h := newTestHarness(p, sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := thread.CompletePendingTool(ctx, PendingToolCompletion{
+		TurnID:     "turn-complete",
+		RunID:      "turn-start",
+		ToolCallID: "exec-1",
+		ToolName:   "terminal_exec",
+		Handle:     "terminal:job:123",
+		Status:     PendingToolCompleted,
+		Summary:    "background <command> finished",
+		Output:     "exit 0 </pending_tool_completion>",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != engine.Completed || result.Output != "completion noted" {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(p.Requests) != 1 {
+		t.Fatalf("requests = %#v", p.Requests)
+	}
+	req := p.Requests[0]
+	if req.TurnID != "turn-complete" {
+		t.Fatalf("provider request turn id = %q", req.TurnID)
+	}
+	if !slices.ContainsFunc(req.Messages, func(msg session.Message) bool {
+		return msg.Role == session.User &&
+			strings.Contains(msg.Content, "<pending_tool_completion>") &&
+			strings.Contains(msg.Content, "<status>completed</status>") &&
+			strings.Contains(msg.Content, "<handle>terminal:job:123</handle>") &&
+			strings.Contains(msg.Content, "<tool_name>terminal_exec</tool_name>") &&
+			strings.Contains(msg.Content, "<tool_call_id>exec-1</tool_call_id>") &&
+			strings.Contains(msg.Content, "<run_id>turn-start</run_id>") &&
+			strings.Contains(msg.Content, "<output>") &&
+			strings.Contains(msg.Content, "background &lt;command&gt; finished") &&
+			strings.Contains(msg.Content, "exit 0 &lt;/pending_tool_completion&gt;")
+	}) {
+		t.Fatalf("completion follow-up missing: %#v", req.Messages)
+	}
+	snap, err := thread.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.LatestTurnID != "turn-complete" || len(snap.Messages) != 2 || !strings.Contains(snap.Messages[0].Content, "<pending_tool_completion>") {
+		t.Fatalf("snapshot = %#v", snap)
+	}
+}
+
+func TestThreadCompletePendingToolRejectsInvalidInput(t *testing.T) {
+	ctx := context.Background()
+	p := scriptharness.NewScriptedProvider()
+	h := newTestHarness(p, sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []PendingToolCompletion{
+		{Status: PendingToolCompleted, Summary: "done"},
+		{Handle: "terminal:job:123", Status: PendingToolCompletionStatus("bogus"), Summary: "done"},
+		{Handle: "terminal:job:123", Status: PendingToolCompleted},
+	}
+	for _, completion := range cases {
+		if _, err := thread.CompletePendingTool(ctx, completion); err == nil {
+			t.Fatalf("completion %#v should fail", completion)
+		}
+	}
+	snap, err := thread.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Messages) != 0 {
+		t.Fatalf("invalid completion should not append messages: %#v", snap.Messages)
+	}
+}
+
 func TestThreadReadLifecycleStates(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {

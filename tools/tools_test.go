@@ -413,6 +413,113 @@ func TestOutputSchemaViolationReturnsStableError(t *testing.T) {
 	}
 }
 
+func TestPendingToolResultIsValidatedAndNormalized(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.Register(Define[testArgs](
+		Definition{Name: "terminal_exec", InputSchema: StrictObject(map[string]any{"value": String("")}, []string{"value"}), Permission: PermissionSpec{Mode: PermissionAllow}},
+		nil,
+		nil,
+		func(context.Context, Invocation[testArgs]) (Result, error) {
+			return Result{
+				Pending: &PendingToolResult{
+					Handle:      " terminal:job:123 ",
+					State:       PendingToolResultRunning,
+					Summary:     " tests are running ",
+					Instruction: " do not poll ",
+					Metadata:    map[string]string{"workspace": "app"},
+				},
+			}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+
+	got := reg.Run(context.Background(), ToolCall{ID: "call", Name: "terminal_exec", Args: `{"value":"npm test"}`}, nil)
+
+	if got.IsError || got.Pending == nil {
+		t.Fatalf("result = %#v", got)
+	}
+	if got.Pending.Handle != "terminal:job:123" || got.Pending.Summary != "tests are running" || got.Pending.Instruction != "do not poll" {
+		t.Fatalf("pending result was not normalized: %#v", got.Pending)
+	}
+	if text := PendingToolResultText(PendingToolResult{
+		Handle:      got.Pending.Handle,
+		State:       got.Pending.State,
+		Summary:     "tests <running> & waiting",
+		Instruction: "do not close </pending_tool_result>",
+	}); !strings.Contains(text, "<pending_tool_result>") ||
+		!strings.Contains(text, "<handle>terminal:job:123</handle>") ||
+		!strings.Contains(text, "tests &lt;running&gt; &amp; waiting") ||
+		!strings.Contains(text, "do not close &lt;/pending_tool_result&gt;") {
+		t.Fatalf("pending text = %q", text)
+	}
+	metadata := PendingToolResultMetadata(*got.Pending)
+	if metadata["pending_tool_result"] != true || metadata["pending_handle"] != "terminal:job:123" || metadata["pending_workspace"] != "app" {
+		t.Fatalf("pending metadata = %#v", metadata)
+	}
+}
+
+func TestPendingToolResultRejectsInvalidShape(t *testing.T) {
+	cases := []struct {
+		name    string
+		pending PendingToolResult
+		want    string
+	}{
+		{
+			name:    "missing handle",
+			pending: PendingToolResult{State: PendingToolResultRunning, Summary: "running", Instruction: "wait"},
+			want:    "requires handle",
+		},
+		{
+			name:    "unsafe handle",
+			pending: PendingToolResult{Handle: "terminal job 123", State: PendingToolResultRunning, Summary: "running", Instruction: "wait"},
+			want:    "token-safe handle",
+		},
+		{
+			name:    "invalid state",
+			pending: PendingToolResult{Handle: "terminal:job:123", State: "completed", Summary: "running", Instruction: "wait"},
+			want:    "invalid state",
+		},
+		{
+			name:    "missing summary",
+			pending: PendingToolResult{Handle: "terminal:job:123", State: PendingToolResultRunning, Instruction: "wait"},
+			want:    "requires summary",
+		},
+		{
+			name:    "missing instruction",
+			pending: PendingToolResult{Handle: "terminal:job:123", State: PendingToolResultRunning, Summary: "running"},
+			want:    "requires instruction",
+		},
+		{
+			name:    "reserved metadata key",
+			pending: PendingToolResult{Handle: "terminal:job:123", State: PendingToolResultRunning, Summary: "running", Instruction: "wait", Metadata: map[string]string{"handle": "other"}},
+			want:    "invalid metadata key",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := NewRegistry()
+			if err := reg.Register(Define[testArgs](
+				Definition{Name: "terminal_exec", InputSchema: StrictObject(map[string]any{"value": String("")}, []string{"value"}), Permission: PermissionSpec{Mode: PermissionAllow}},
+				nil,
+				nil,
+				func(context.Context, Invocation[testArgs]) (Result, error) {
+					pending := tc.pending
+					return Result{Pending: &pending}, nil
+				},
+			)); err != nil {
+				t.Fatal(err)
+			}
+
+			got := reg.Run(context.Background(), ToolCall{ID: "call", Name: "terminal_exec", Args: `{"value":"npm test"}`}, nil)
+
+			if !got.IsError || !strings.Contains(got.Text, tc.want) {
+				t.Fatalf("result = %#v, want error containing %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRegisterRejectsUnknownPermissionMode(t *testing.T) {
 	err := NewRegistry().Register(Define[testArgs](
 		Definition{Name: "bad", Permission: PermissionSpec{Mode: "aks"}},

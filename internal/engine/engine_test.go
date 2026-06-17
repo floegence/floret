@@ -409,6 +409,122 @@ func TestRunToolLoopFeedsResultIntoNextProviderRequest(t *testing.T) {
 	assertEventOrder(t, rec.Events, event.StepStart, event.ProviderRequest, event.ToolCall, event.ToolResult, event.StepEnd, event.StepStart, event.ProviderRequest, event.RunEnd)
 }
 
+func TestPendingToolResultFeedsProviderVisiblePendingMessage(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("exec-1", "terminal_exec", `{"value":"npm test"}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Text("continuing"), harness.Done()),
+	)
+	reg := tools.NewRegistry()
+	mustRegister(t, reg, tools.Define[stringArgs](
+		tools.Definition{
+			Name:        "terminal_exec",
+			InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+		},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
+			return tools.Result{Pending: &tools.PendingToolResult{
+				Handle:      "terminal:job:123",
+				State:       tools.PendingToolResultRunning,
+				Summary:     "Command is running",
+				Instruction: "Do not poll. Continue only with non-overlapping work.",
+			}}, nil
+		},
+	))
+	e := newTestEngine(p, rec)
+	e.Tools = reg
+
+	got := e.Run(context.Background(), "run tests")
+
+	if got.Status != engine.Completed || got.Output != "continuing" {
+		t.Fatalf("result = %#v", got)
+	}
+	if len(p.Requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(p.Requests))
+	}
+	if !slices.ContainsFunc(p.Requests[1].Messages, func(msg session.Message) bool {
+		return msg.Role == session.Tool &&
+			msg.ToolCallID == "exec-1" &&
+			msg.ToolName == "terminal_exec" &&
+			strings.Contains(msg.Content, "<pending_tool_result>") &&
+			strings.Contains(msg.Content, "<handle>terminal:job:123</handle>")
+	}) {
+		t.Fatalf("second provider request missing pending tool result: %#v", p.Requests[1].Messages)
+	}
+	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
+		values, _ := ev.Metadata.(map[string]any)
+		return ev.Type == event.ToolResult &&
+			ev.ToolID == "exec-1" &&
+			values["pending_tool_result"] == true &&
+			values["pending_handle"] == "terminal:job:123"
+	}) {
+		t.Fatalf("pending tool result event missing: %#v", rec.Events)
+	}
+}
+
+func TestPendingToolResultBypassesTruncationProjection(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("exec-1", "terminal_exec", `{"value":"npm test"}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	reg := tools.NewRegistry()
+	mustRegister(t, reg, tools.Define[stringArgs](
+		tools.Definition{
+			Name:        "terminal_exec",
+			InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+			OutputPolicy: tools.OutputPolicy{
+				VisibleMaxBytes: 8,
+				Strategy:        tools.OutputHead,
+				PreserveFull:    true,
+			},
+		},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
+			return tools.Result{Pending: &tools.PendingToolResult{
+				Handle:      "terminal:job:123",
+				State:       tools.PendingToolResultRunning,
+				Summary:     "Command is running",
+				Instruction: "Do not poll.",
+				Metadata:    map[string]string{"workflow": "background"},
+			}, Text: "this text should not be projected"}, nil
+		},
+	))
+	e := newTestEngine(p, rec)
+	e.Tools = reg
+
+	got := e.Run(context.Background(), "run tests")
+
+	if got.Status != engine.Completed || got.Output != "done" {
+		t.Fatalf("result = %#v", got)
+	}
+	if len(p.Requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(p.Requests))
+	}
+	second := p.Requests[1].Messages
+	if !slices.ContainsFunc(second, func(msg session.Message) bool {
+		return msg.Role == session.Tool &&
+			msg.ToolCallID == "exec-1" &&
+			msg.ToolName == "terminal_exec" &&
+			msg.Content == "<pending_tool_result>\n<summary>Command is running</summary>\n<instruction>Do not poll.</instruction>\n<handle>terminal:job:123</handle>\n</pending_tool_result>"
+	}) {
+		t.Fatalf("pending tool result should bypass truncation: %#v", second)
+	}
+	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
+		values, _ := ev.Metadata.(map[string]any)
+		return ev.Type == event.ToolResult &&
+			values["pending_tool_result"] == true &&
+			values["strategy"] == nil &&
+			values["visible_bytes"] == nil
+	}) {
+		t.Fatalf("pending tool result event should not carry projection metadata: %#v", rec.Events)
+	}
+}
+
 func TestRunMultipleToolCallsFeedAllResultsIntoNextProviderRequest(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(

@@ -75,6 +75,7 @@ type Result struct {
 	Activity     *observation.ActivityPresentation
 	Artifacts    []ArtifactRef
 	OutputPolicy *OutputPolicy
+	Pending      *PendingToolResult
 	IsError      bool
 }
 

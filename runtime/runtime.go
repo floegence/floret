@@ -38,6 +38,7 @@ type Host interface {
 	ReadThread(context.Context, ThreadID) (ThreadSnapshot, error)
 	RunTurn(context.Context, RunTurnRequest) (TurnResult, error)
 	RetryTurn(context.Context, RetryTurnRequest) (TurnResult, error)
+	CompletePendingTool(context.Context, PendingToolCompletionRequest) (TurnResult, error)
 	DeleteThread(context.Context, ThreadID) error
 	Close() error
 }
@@ -81,6 +82,31 @@ type RetryTurnRequest struct {
 	ThreadID ThreadID
 	Reason   string
 	Labels   RunLabels
+}
+
+// PendingToolCompletionStatus describes the observed outcome of host-owned work
+// that was previously exposed to the agent as a pending tool result.
+type PendingToolCompletionStatus string
+
+const (
+	PendingToolCompletionCompleted PendingToolCompletionStatus = "completed"
+	PendingToolCompletionFailed    PendingToolCompletionStatus = "failed"
+	PendingToolCompletionCanceled  PendingToolCompletionStatus = "canceled"
+)
+
+// PendingToolCompletionRequest asks Floret to append a host-authored follow-up
+// turn for work whose lifecycle was owned outside Floret.
+type PendingToolCompletionRequest struct {
+	ThreadID   ThreadID
+	TurnID     TurnID
+	RunID      RunID
+	ToolCallID string
+	ToolName   string
+	Handle     string
+	Status     PendingToolCompletionStatus
+	Summary    string
+	Output     string
+	Labels     RunLabels
 }
 
 type RunLabels struct {
@@ -339,6 +365,31 @@ func (h *host) RetryTurn(ctx context.Context, req RetryTurnRequest) (TurnResult,
 	return turnResult(result), runErr
 }
 
+func (h *host) CompletePendingTool(ctx context.Context, req PendingToolCompletionRequest) (TurnResult, error) {
+	if strings.TrimSpace(string(req.ThreadID)) == "" {
+		return TurnResult{}, errors.New("thread id is required")
+	}
+	thread, err := h.harness.ResumeThread(ctx, string(req.ThreadID), agentharness.ResumeOptions{})
+	if err != nil {
+		return TurnResult{}, err
+	}
+	result, runErr := thread.CompletePendingTool(ctx, agentharness.PendingToolCompletion{
+		TurnID:     string(req.TurnID),
+		RunID:      string(req.RunID),
+		ToolCallID: req.ToolCallID,
+		ToolName:   req.ToolName,
+		Handle:     req.Handle,
+		Status:     pendingToolCompletionStatus(req.Status),
+		Summary:    req.Summary,
+		Output:     req.Output,
+		Labels: engine.RunLabels{
+			Correlation: cloneStringMap(req.Labels.Correlation),
+			Host:        cloneStringMap(req.Labels.Host),
+		},
+	})
+	return turnResult(result), runErr
+}
+
 func (h *host) DeleteThread(ctx context.Context, threadID ThreadID) error {
 	id := strings.TrimSpace(string(threadID))
 	if id == "" {
@@ -349,6 +400,19 @@ func (h *host) DeleteThread(ctx context.Context, threadID ThreadID) error {
 
 func (h *host) Close() error {
 	return h.store.Close()
+}
+
+func pendingToolCompletionStatus(status PendingToolCompletionStatus) agentharness.PendingToolCompletionStatus {
+	switch status {
+	case PendingToolCompletionCompleted:
+		return agentharness.PendingToolCompleted
+	case PendingToolCompletionFailed:
+		return agentharness.PendingToolFailed
+	case PendingToolCompletionCanceled:
+		return agentharness.PendingToolCanceled
+	default:
+		return agentharness.PendingToolCompletionStatus(status)
+	}
 }
 
 func readThread(ctx context.Context, thread *agentharness.Thread) (ThreadSnapshot, error) {
