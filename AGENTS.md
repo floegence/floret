@@ -172,6 +172,28 @@ Rules:
 - Keep provider, context, tool runtime, session storage, and host UI concerns separated.
 - Important intent and policy decisions must be observable through events or testable state.
 
+## Host Integration Boundary
+
+Floret is the reusable agent engine. It owns provider loop execution, tool
+dispatch, permission/resource/approval lifecycle, runtime observation, core
+control signal contracts, and opaque model state lifecycle.
+
+Floret must not import or encode downstream product concerns such as UI blocks,
+timeline reducers, Desktop or Env App adapters, durable product thread stores,
+session grants, filesystem scope policy, target routing, approval UI, provider
+credentials, provider profile persistence, or product-specific modes.
+
+Downstream hosts must integrate through Floret public packages such as
+`config`, `runtime`, `tools`, and `observation`; they must not depend on Floret
+`internal/*`. New host-facing boundary capabilities must be exposed as general
+public API with tests and documentation.
+
+General capabilities may move into Floret only when they are product-neutral
+agent-engine contracts. Product policy and UI semantics stay in the host. If a
+future design intentionally changes this boundary, update the relevant
+repository rules, public API documentation, tests, and release notes before a
+downstream host consumes the change.
+
 ## Concept Vocabulary and Identity Rules
 
 Floret concepts are intentionally small and strict. Use these names exactly; do not

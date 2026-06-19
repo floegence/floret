@@ -3,6 +3,7 @@ package runtime_test
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -152,6 +153,162 @@ func TestRunProjectedTurnWithPublicModelGateway(t *testing.T) {
 	}
 }
 
+type collectingEventSink struct {
+	events []runtime.Event
+}
+
+func (s *collectingEventSink) EmitEvent(ev runtime.Event) {
+	s.events = append(s.events, ev)
+}
+
+func TestRunProjectedTurnEmitsPublicStreamObservations(t *testing.T) {
+	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
+		events := make(chan runtime.ModelEvent, 4)
+		events <- runtime.ModelEvent{Type: runtime.ModelEventReasoning, Text: "hidden chain"}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDelta, Text: "visible "}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDelta, Text: "answer"}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "stop"}
+		close(events)
+		return events, nil
+	})
+	sink := &collectingEventSink{}
+	result, err := runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+		},
+		ModelGateway: gateway,
+		Store:        runtime.NewMemoryStore(),
+		Sink:         sink,
+	}, runtime.ProjectedTurnRequest{
+		RunID:         "run-stream",
+		ThreadID:      "thread-stream",
+		TurnID:        "turn-stream",
+		TraceID:       "trace-stream",
+		PromptScopeID: "thread-stream",
+		History:       []runtime.TranscriptMessage{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "visible answer" {
+		t.Fatalf("output = %q", result.Output)
+	}
+	var got []runtime.StreamObservationType
+	var text strings.Builder
+	var reasoning strings.Builder
+	for _, ev := range sink.events {
+		if ev.Stream == nil {
+			continue
+		}
+		got = append(got, ev.Stream.Type)
+		switch ev.Stream.Type {
+		case runtime.StreamObservationAssistantDelta:
+			text.WriteString(ev.Stream.Text)
+		case runtime.StreamObservationReasoningDelta:
+			reasoning.WriteString(ev.Stream.Text)
+		case runtime.StreamObservationModelStreamDone:
+			if ev.Stream.FinishReason != "stop" {
+				t.Fatalf("finish stream = %#v", ev.Stream)
+			}
+		}
+		if ev.Message != "" && (strings.Contains(ev.Message, "visible") || strings.Contains(ev.Message, "hidden chain")) {
+			t.Fatalf("sanitized event message leaked stream text: %#v", ev)
+		}
+	}
+	want := []runtime.StreamObservationType{
+		runtime.StreamObservationReasoningDelta,
+		runtime.StreamObservationAssistantDelta,
+		runtime.StreamObservationAssistantDelta,
+		runtime.StreamObservationModelStreamDone,
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("stream types = %#v, want %#v; events=%#v", got, want, sink.events)
+	}
+	if text.String() != "visible answer" || reasoning.String() != "hidden chain" {
+		t.Fatalf("stream text=%q reasoning=%q", text.String(), reasoning.String())
+	}
+}
+
+func TestRunProjectedTurnEmitsRetryAndAbortStreamObservations(t *testing.T) {
+	retryGateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
+		events := make(chan runtime.ModelEvent, 1)
+		if req.Step == 1 {
+			events <- runtime.ModelEvent{Type: runtime.ModelEventEmpty}
+		} else {
+			events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "stop"}
+		}
+		close(events)
+		return events, nil
+	})
+	retrySink := &collectingEventSink{}
+	_, err := runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:                config.ProviderFake,
+			Model:                   "fake-model",
+			SystemPrompt:            "test",
+			MaxEmptyProviderRetries: 1,
+		},
+		ModelGateway: retryGateway,
+		Store:        runtime.NewMemoryStore(),
+		Sink:         retrySink,
+	}, runtime.ProjectedTurnRequest{
+		RunID:         "run-retry",
+		ThreadID:      "thread-retry",
+		TurnID:        "turn-retry",
+		TraceID:       "trace-retry",
+		PromptScopeID: "thread-retry",
+		History:       []runtime.TranscriptMessage{{Role: "user", Content: "hello"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "no progress") {
+		t.Fatalf("retry result err = %v", err)
+	}
+	if !hasStreamType(retrySink.events, runtime.StreamObservationModelRetry) {
+		t.Fatalf("retry stream missing: %#v", retrySink.events)
+	}
+	if !hasStreamType(retrySink.events, runtime.StreamObservationModelStreamAbort) {
+		t.Fatalf("abort stream missing after failed retry: %#v", retrySink.events)
+	}
+
+	cancelGateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
+		events := make(chan runtime.ModelEvent, 1)
+		events <- runtime.ModelEvent{Type: runtime.ModelEventError, Err: context.Canceled, Reason: "cancelled"}
+		close(events)
+		return events, nil
+	})
+	cancelSink := &collectingEventSink{}
+	_, err = runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+		},
+		ModelGateway: cancelGateway,
+		Store:        runtime.NewMemoryStore(),
+		Sink:         cancelSink,
+	}, runtime.ProjectedTurnRequest{
+		RunID:         "run-cancel",
+		ThreadID:      "thread-cancel",
+		TurnID:        "turn-cancel",
+		TraceID:       "trace-cancel",
+		PromptScopeID: "thread-cancel",
+		History:       []runtime.TranscriptMessage{{Role: "user", Content: "hello"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "canceled") {
+		t.Fatalf("cancel result err = %v", err)
+	}
+	if !hasStreamType(cancelSink.events, runtime.StreamObservationModelStreamAbort) {
+		t.Fatalf("cancel abort stream missing: %#v", cancelSink.events)
+	}
+}
+
+func hasStreamType(events []runtime.Event, typ runtime.StreamObservationType) bool {
+	return slices.ContainsFunc(events, func(ev runtime.Event) bool {
+		return ev.Stream != nil && ev.Stream.Type == typ
+	})
+}
+
 func TestRunProjectedTurnProjectsPublicControlSignalActivity(t *testing.T) {
 	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
 		var sawControlTool bool
@@ -260,5 +417,145 @@ func TestRunProjectedTurnProjectsPublicControlSignalActivity(t *testing.T) {
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("timeline leaked %q: %s", forbidden, data)
 		}
+	}
+}
+
+func TestCoreControlHelpersProjectAskUserAndTaskComplete(t *testing.T) {
+	defs := runtime.CoreControlDefinitions(true)
+	if len(defs) != 2 || defs[0].Name != runtime.CoreControlAskUser || defs[1].Name != runtime.CoreControlTaskComplete {
+		t.Fatalf("core control definitions = %#v", defs)
+	}
+	if defs[0].Annotations["kind"] != "control" || !defs[0].Strict {
+		t.Fatalf("ask_user definition = %#v", defs[0])
+	}
+	ask, ok, err := runtime.ProjectCoreControlSignal(tools.ToolCall{
+		ID:   "ask-1",
+		Name: runtime.CoreControlAskUser,
+		Args: `{"question":"Which file?"}`,
+	})
+	if err != nil || !ok || ask.Disposition != runtime.SignalWaiting || ask.OutputText != "Which file?" || ask.Payload["question"] != "Which file?" {
+		t.Fatalf("ask signal = %#v ok=%v err=%v", ask, ok, err)
+	}
+	if got := runtime.ProviderSafeCoreControlText(ask); got != "Agent requested user input: Which file?" {
+		t.Fatalf("ask provider text = %q", got)
+	}
+	done, ok, err := runtime.ProjectCoreControlSignal(tools.ToolCall{
+		ID:   "done-1",
+		Name: runtime.CoreControlTaskComplete,
+		Args: `{"output":"All done."}`,
+	})
+	if err != nil || !ok || done.Disposition != runtime.SignalTerminal || done.OutputText != "All done." || done.Payload["output"] != "All done." {
+		t.Fatalf("done signal = %#v ok=%v err=%v", done, ok, err)
+	}
+	if got := runtime.ProviderSafeCoreControlText(done); got != "Agent completed the task: All done." {
+		t.Fatalf("done provider text = %q", got)
+	}
+	_, ok, err = runtime.ProjectCoreControlSignal(tools.ToolCall{
+		ID:   "bad-ask",
+		Name: runtime.CoreControlAskUser,
+		Args: `{}`,
+	})
+	if !ok || err == nil || !strings.Contains(err.Error(), "question is required") {
+		t.Fatalf("invalid ask projection ok=%v err=%v", ok, err)
+	}
+}
+
+func TestRunProjectedTurnUsesPublicPermissionResourcesAndApprover(t *testing.T) {
+	registry := tools.NewRegistry()
+	err := registry.Register(tools.Define[map[string]any](
+		tools.Definition{
+			Name:        "write_note",
+			Title:       "Write note",
+			Description: "Write a note.",
+			InputSchema: tools.StrictObject(map[string]any{
+				"path": tools.String("path"),
+				"text": tools.String("text"),
+			}, []string{"path", "text"}),
+			Effects:     []tools.Effect{tools.EffectWrite},
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAsk, ResourceKinds: []string{"file"}},
+			Destructive: true,
+		},
+		nil,
+		func(inv tools.Invocation[map[string]any]) ([]tools.ResourceRef, error) {
+			return []tools.ResourceRef{{Kind: "file", Value: strings.TrimSpace(inv.Args["path"].(string))}}, nil
+		},
+		func(context.Context, tools.Invocation[map[string]any]) (tools.Result, error) {
+			return tools.Result{Text: "wrote note"}, nil
+		},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
+		events := make(chan runtime.ModelEvent, 3)
+		if req.Step == 1 {
+			events <- runtime.ModelEvent{
+				Type: runtime.ModelEventToolCalls,
+				ToolCalls: []tools.ToolCall{{
+					ID:   "write-1",
+					Name: "write_note",
+					Args: `{"path":"notes/today.md","text":"hello"}`,
+				}},
+				Reason: "tool_calls",
+			}
+			events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "tool_calls"}
+		} else {
+			events <- runtime.ModelEvent{Type: runtime.ModelEventDelta, Text: "done"}
+			events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "stop"}
+		}
+		close(events)
+		return events, nil
+	})
+	var approval tools.ApprovalRequest
+	sink := &collectingEventSink{}
+	result, err := runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+		},
+		ModelGateway: gateway,
+		Store:        runtime.NewMemoryStore(),
+		Tools:        registry,
+		Approver: func(_ context.Context, req tools.ApprovalRequest) (tools.PermissionDecision, error) {
+			approval = req
+			return tools.PermissionDecisionAllow, nil
+		},
+		Sink: sink,
+	}, runtime.ProjectedTurnRequest{
+		RunID:         "run-approval",
+		ThreadID:      "thread-approval",
+		TurnID:        "turn-approval",
+		TraceID:       "trace-approval",
+		PromptScopeID: "thread-approval",
+		History:       []runtime.TranscriptMessage{{Role: "user", Content: "write"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != runtime.TurnStatusCompleted || result.Metrics.ToolCalls != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	if approval.Name != "write_note" || approval.ID != "write-1" || !approval.Destructive || len(approval.Resources) != 1 || approval.Resources[0].Value != "notes/today.md" {
+		t.Fatalf("approval request = %#v", approval)
+	}
+	var approvalEvents []string
+	for _, ev := range sink.events {
+		switch ev.Type {
+		case "tool_approval_requested", "tool_approval_approved":
+			approvalEvents = append(approvalEvents, ev.Type)
+			if _, ok := ev.Metadata["approval_id"]; ok {
+				t.Fatalf("approval metadata should be sanitized in public event: %#v", ev.Metadata)
+			}
+			if _, ok := ev.Metadata["resources"]; ok {
+				t.Fatalf("approval resources should be sanitized in public event: %#v", ev.Metadata)
+			}
+			if ev.Metadata["approval_id_hash"] == "" || ev.ArgsHash == "" {
+				t.Fatalf("approval public event missing hashes: args=%q metadata=%#v", ev.ArgsHash, ev.Metadata)
+			}
+		}
+	}
+	if !slices.Equal(approvalEvents, []string{"tool_approval_requested", "tool_approval_approved"}) {
+		t.Fatalf("approval events = %#v; all=%#v", approvalEvents, sink.events)
 	}
 }

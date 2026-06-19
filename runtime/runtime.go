@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -176,8 +178,32 @@ type Event struct {
 	DurationMS   int64                             `json:"duration_ms,omitempty"`
 	FinishReason string                            `json:"finish_reason,omitempty"`
 	Activity     *observation.ActivityPresentation `json:"activity,omitempty"`
+	Stream       *StreamObservation                `json:"stream,omitempty"`
 	Metadata     map[string]any                    `json:"metadata,omitempty"`
 	Timestamp    time.Time                         `json:"timestamp,omitempty"`
+}
+
+type StreamObservationType string
+
+const (
+	StreamObservationAssistantDelta   StreamObservationType = "assistant_delta"
+	StreamObservationReasoningDelta   StreamObservationType = "reasoning_delta"
+	StreamObservationModelRetry       StreamObservationType = "model_retry"
+	StreamObservationModelStreamDone  StreamObservationType = "model_stream_done"
+	StreamObservationModelStreamAbort StreamObservationType = "model_stream_abort"
+)
+
+// StreamObservation is a provider-neutral, engine-confirmed streaming fact for
+// hosts that render live assistant output from Floret runtime events.
+type StreamObservation struct {
+	Type            StreamObservationType `json:"type"`
+	Text            string                `json:"text,omitempty"`
+	Reason          string                `json:"reason,omitempty"`
+	FinishReason    string                `json:"finish_reason,omitempty"`
+	RawFinishReason string                `json:"raw_finish_reason,omitempty"`
+	FinishInferred  bool                  `json:"finish_inferred,omitempty"`
+	Attempt         int                   `json:"attempt,omitempty"`
+	Labels          RunLabels             `json:"labels,omitempty"`
 }
 
 type ThreadStatus string
@@ -650,10 +676,12 @@ func (s runtimeEventSink) Emit(ev event.Event) {
 	if s.sink == nil {
 		return
 	}
-	s.sink.EmitEvent(runtimeEvent(event.Sanitize(ev)))
+	s.sink.EmitEvent(runtimeEvent(ev))
 }
 
 func runtimeEvent(ev event.Event) Event {
+	stream := runtimeStreamObservation(ev)
+	ev = event.Sanitize(ev)
 	return Event{
 		Type:         string(ev.Type),
 		TraceID:      TraceID(ev.TraceID),
@@ -673,9 +701,107 @@ func runtimeEvent(ev event.Event) Event {
 		DurationMS:   ev.Duration,
 		FinishReason: ev.FinishReason,
 		Activity:     cloneActivityPresentation(ev.Activity),
+		Stream:       stream,
 		Metadata:     safeMetadata(ev.Metadata),
 		Timestamp:    ev.Timestamp,
 	}
+}
+
+func runtimeStreamObservation(ev event.Event) *StreamObservation {
+	var streamType StreamObservationType
+	var text string
+	var reason string
+	switch ev.Type {
+	case event.ProviderDelta:
+		streamType = StreamObservationAssistantDelta
+		text = ev.Message
+	case event.ProviderReasoning:
+		streamType = StreamObservationReasoningDelta
+		text = ev.Message
+	case event.ProviderRetry:
+		streamType = StreamObservationModelRetry
+		reason = ev.Message
+	case event.ProviderFinish:
+		streamType = StreamObservationModelStreamDone
+		reason = ev.Message
+	case event.RunEnd:
+		switch ev.Message {
+		case string(engine.Failed), string(engine.Cancelled):
+			streamType = StreamObservationModelStreamAbort
+			reason = ev.Err
+		default:
+			return nil
+		}
+	default:
+		return nil
+	}
+	out := &StreamObservation{
+		Type:            streamType,
+		Text:            text,
+		Reason:          reason,
+		FinishReason:    ev.FinishReason,
+		RawFinishReason: ev.RawFinishReason,
+		FinishInferred:  ev.FinishInferred,
+		Attempt:         streamAttemptFromMetadata(ev.Metadata),
+		Labels:          streamLabelsFromMetadata(ev.Metadata),
+	}
+	if out.Reason == "" && ev.Err != "" {
+		out.Reason = ev.Err
+	}
+	return out
+}
+
+func streamAttemptFromMetadata(metadata any) int {
+	values, ok := metadata.(map[string]any)
+	if !ok {
+		return 0
+	}
+	switch v := values["attempt"].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		return 0
+	}
+}
+
+func streamLabelsFromMetadata(metadata any) RunLabels {
+	values, ok := metadata.(map[string]any)
+	if !ok {
+		return RunLabels{}
+	}
+	rawLabels, ok := values["labels"]
+	if !ok {
+		return RunLabels{}
+	}
+	labels, ok := rawLabels.(map[string]string)
+	if !ok {
+		return RunLabels{}
+	}
+	out := RunLabels{}
+	for key, value := range labels {
+		switch {
+		case strings.HasPrefix(key, "correlation."):
+			if out.Correlation == nil {
+				out.Correlation = map[string]string{}
+			}
+			out.Correlation[strings.TrimPrefix(key, "correlation.")] = value
+		case strings.HasPrefix(key, "host."):
+			if out.Host == nil {
+				out.Host = map[string]string{}
+			}
+			out.Host[strings.TrimPrefix(key, "host.")] = value
+		default:
+			if out.Correlation == nil {
+				out.Correlation = map[string]string{}
+			}
+			out.Correlation[key] = value
+		}
+	}
+	return out
 }
 
 func runtimeObservationEvent(ev event.Event) observation.Event {
@@ -743,9 +869,31 @@ func safeMetadata(in any) map[string]any {
 	}
 	out := make(map[string]any, len(values))
 	for key, value := range values {
+		switch key {
+		case "approval_id":
+			if hash := stableRuntimeMetadataHash(value); hash != "" {
+				out["approval_id_hash"] = hash
+			}
+			continue
+		case "resources":
+			continue
+		}
 		out[key] = safeMetadataValue(value)
 	}
 	return out
+}
+
+func stableRuntimeMetadataHash(value any) string {
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 func safeMetadataValue(value any) any {
