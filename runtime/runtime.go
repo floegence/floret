@@ -179,6 +179,7 @@ type Event struct {
 	FinishReason string                            `json:"finish_reason,omitempty"`
 	Activity     *observation.ActivityPresentation `json:"activity,omitempty"`
 	Stream       *StreamObservation                `json:"stream,omitempty"`
+	Sources      []SourceRef                       `json:"sources,omitempty"`
 	Metadata     map[string]any                    `json:"metadata,omitempty"`
 	Timestamp    time.Time                         `json:"timestamp,omitempty"`
 }
@@ -703,6 +704,7 @@ func runtimeEvent(ev event.Event) Event {
 		FinishReason: ev.FinishReason,
 		Activity:     cloneActivityPresentation(ev.Activity),
 		Stream:       stream,
+		Sources:      runtimeSourceRefs(ev.Sources),
 		Metadata:     safeMetadata(ev.Metadata),
 		Timestamp:    ev.Timestamp,
 	}
@@ -748,6 +750,20 @@ func runtimeStreamObservation(ev event.Event, safeMetadata any) *StreamObservati
 	}
 	if out.Reason == "" && ev.Err != "" {
 		out.Reason = ev.Err
+	}
+	return out
+}
+
+func runtimeSourceRefs(in []event.SourceRef) []SourceRef {
+	out := make([]SourceRef, 0, len(in))
+	for _, ref := range in {
+		if strings.TrimSpace(ref.Title) == "" && strings.TrimSpace(ref.URL) == "" {
+			continue
+		}
+		out = append(out, SourceRef{
+			Title: strings.TrimSpace(ref.Title),
+			URL:   strings.TrimSpace(ref.URL),
+		})
 	}
 	return out
 }

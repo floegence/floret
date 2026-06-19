@@ -21,6 +21,7 @@ const (
 	ProviderDelta          Type = "provider_delta"
 	ProviderReasoning      Type = "provider_reasoning"
 	ProviderUsage          Type = "provider_usage"
+	ProviderSources        Type = "provider_sources"
 	ProviderFinish         Type = "provider_finish"
 	ProviderRetry          Type = "provider_retry"
 	ToolCall               Type = "tool_call"
@@ -79,7 +80,13 @@ type Event struct {
 	Metadata           any                               `json:"metadata,omitempty"`
 	Activity           *observation.ActivityPresentation `json:"activity,omitempty"`
 	Artifacts          []Artifact                        `json:"artifacts,omitempty"`
+	Sources            []SourceRef                       `json:"sources,omitempty"`
 	Timestamp          time.Time                         `json:"timestamp"`
+}
+
+type SourceRef struct {
+	Title string `json:"title,omitempty"`
+	URL   string `json:"url,omitempty"`
 }
 
 type Artifact struct {
@@ -161,6 +168,7 @@ func sanitize(e Event, policy SinkPolicy) Event {
 	e.Result = Redact(e.Result)
 	e.Metadata = sanitizeMetadata(e.Metadata)
 	e.Activity = sanitizeActivityPresentation(e.Activity)
+	e.Sources = sanitizeSourceRefs(e.Sources)
 	return e
 }
 
@@ -171,12 +179,41 @@ func sanitizePathRefs(e Event) Event {
 	e.Err = SafePathRefsText(e.Err)
 	e.Metadata = sanitizePathMetadata(e.Metadata)
 	e.Activity = sanitizeActivityPresentation(e.Activity)
+	e.Sources = sanitizeSourceRefs(e.Sources)
 	for i := range e.Artifacts {
 		if e.Artifacts[i].Path != "" {
 			e.Artifacts[i].Path = SafePathLabel(e.Artifacts[i].Path)
 		}
 	}
 	return e
+}
+
+func sanitizeSourceRefs(in []SourceRef) []SourceRef {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]SourceRef, 0, len(in))
+	for _, ref := range in {
+		title := safeActivityText(ref.Title, 240)
+		url := safeSourceURL(ref.URL)
+		if title == "" && url == "" {
+			continue
+		}
+		out = append(out, SourceRef{Title: title, URL: url})
+	}
+	return out
+}
+
+func safeSourceURL(value string) string {
+	value = strings.TrimSpace(SafePathRefsText(value))
+	if value == "" {
+		return ""
+	}
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		return Redact(value)
+	}
+	return safeActivityText(value, 500)
 }
 
 func sanitizeActivityPresentation(in *observation.ActivityPresentation) *observation.ActivityPresentation {

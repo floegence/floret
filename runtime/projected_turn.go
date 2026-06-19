@@ -131,6 +131,7 @@ const (
 	ModelEventReasoning ModelEventType = "reasoning"
 	ModelEventToolCalls ModelEventType = "tool_calls"
 	ModelEventUsage     ModelEventType = "usage"
+	ModelEventSources   ModelEventType = "sources"
 	ModelEventDone      ModelEventType = "done"
 	ModelEventEmpty     ModelEventType = "empty"
 	ModelEventTruncated ModelEventType = "truncated"
@@ -142,11 +143,17 @@ type ModelEvent struct {
 	Type          ModelEventType   `json:"type"`
 	Text          string           `json:"text,omitempty"`
 	ToolCalls     []tools.ToolCall `json:"tool_calls,omitempty"`
+	Sources       []SourceRef      `json:"sources,omitempty"`
 	Reason        string           `json:"reason,omitempty"`
 	Usage         ProviderUsage    `json:"usage,omitempty"`
 	ResponseID    string           `json:"response_id,omitempty"`
 	ResponseState *ModelState      `json:"response_state,omitempty"`
 	Err           error            `json:"-"`
+}
+
+type SourceRef struct {
+	Title string `json:"title,omitempty"`
+	URL   string `json:"url,omitempty"`
 }
 
 // RunMetrics summarizes the observable work completed by a run.
@@ -530,6 +537,7 @@ func providerStreamEvent(ev ModelEvent) provider.StreamEvent {
 		Type:          provider.EventType(ev.Type),
 		Text:          ev.Text,
 		ToolCalls:     providerToolCalls(ev.ToolCalls),
+		Sources:       providerSourceRefs(ev.Sources),
 		Reason:        ev.Reason,
 		Usage:         providerUsage(ev.Usage),
 		ResponseID:    ev.ResponseID,
@@ -542,6 +550,20 @@ func providerToolCalls(calls []tools.ToolCall) []provider.ToolCall {
 	out := make([]provider.ToolCall, 0, len(calls))
 	for _, call := range calls {
 		out = append(out, providerToolCall(call))
+	}
+	return out
+}
+
+func providerSourceRefs(in []SourceRef) []provider.SourceRef {
+	out := make([]provider.SourceRef, 0, len(in))
+	for _, ref := range in {
+		if strings.TrimSpace(ref.Title) == "" && strings.TrimSpace(ref.URL) == "" {
+			continue
+		}
+		out = append(out, provider.SourceRef{
+			Title: strings.TrimSpace(ref.Title),
+			URL:   strings.TrimSpace(ref.URL),
+		})
 	}
 	return out
 }

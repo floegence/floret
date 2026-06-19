@@ -271,6 +271,54 @@ func TestRunProjectedTurnEmitsPublicStreamObservations(t *testing.T) {
 	}
 }
 
+func TestRunProjectedTurnEmitsPublicSourceObservations(t *testing.T) {
+	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
+		events := make(chan runtime.ModelEvent, 3)
+		events <- runtime.ModelEvent{Type: runtime.ModelEventSources, Sources: []runtime.SourceRef{{
+			Title: "Example docs",
+			URL:   "https://example.test/docs",
+		}}}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDelta, Text: "answer"}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "stop"}
+		close(events)
+		return events, nil
+	})
+	sink := &collectingEventSink{}
+	result, err := runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+		},
+		ModelGateway: gateway,
+		Store:        runtime.NewMemoryStore(),
+		Sink:         sink,
+	}, runtime.ProjectedTurnRequest{
+		RunID:         "run-sources",
+		ThreadID:      "thread-sources",
+		TurnID:        "turn-sources",
+		TraceID:       "trace-sources",
+		PromptScopeID: "thread-sources",
+		History:       []runtime.TranscriptMessage{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "answer" {
+		t.Fatalf("output = %q", result.Output)
+	}
+	var sources []runtime.SourceRef
+	for _, ev := range sink.events {
+		sources = append(sources, ev.Sources...)
+		if ev.Stream != nil && ev.Stream.Type == runtime.StreamObservationAssistantDelta && ev.Stream.Text == "Example docs" {
+			t.Fatalf("source title leaked as stream text: %#v", ev)
+		}
+	}
+	if len(sources) != 1 || sources[0].Title != "Example docs" || sources[0].URL != "https://example.test/docs" {
+		t.Fatalf("sources = %#v", sources)
+	}
+}
+
 func TestRunProjectedTurnStreamObservationLabelsStayPublic(t *testing.T) {
 	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
 		events := make(chan runtime.ModelEvent, 2)

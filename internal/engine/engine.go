@@ -1520,6 +1520,8 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 			case provider.UsageEvent:
 				out.Usage = out.Usage.Add(ev.Usage)
 				e.emit(opts, event.Event{Type: event.ProviderUsage, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Metrics: ev.Usage.Normalized(), Metadata: streamUsageMetadata()})
+			case provider.SourcesEvent:
+				e.emit(opts, event.Event{Type: event.ProviderSources, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Sources: eventSourceRefs(ev.Sources)})
 			case provider.Empty:
 				out.Retry = true
 				out.FinishReason, out.FinishInferred = provider.NormalizeFinishReason(out.RawFinishReason, false, false, false)
@@ -1557,6 +1559,17 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 			}
 		}
 	}
+}
+
+func eventSourceRefs(in []provider.SourceRef) []event.SourceRef {
+	out := make([]event.SourceRef, 0, len(in))
+	for _, ref := range in {
+		if strings.TrimSpace(ref.Title) == "" && strings.TrimSpace(ref.URL) == "" {
+			continue
+		}
+		out = append(out, event.SourceRef{Title: strings.TrimSpace(ref.Title), URL: strings.TrimSpace(ref.URL)})
+	}
+	return out
 }
 
 func looksLikeProviderOverflowReason(value string) bool {

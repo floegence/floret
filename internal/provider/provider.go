@@ -82,6 +82,7 @@ const (
 	Truncated        EventType = "truncated"
 	Error            EventType = "error"
 	UsageEvent       EventType = "usage"
+	SourcesEvent     EventType = "sources"
 	HostedToolCall   EventType = "hosted_tool_call"
 	HostedToolResult EventType = "hosted_tool_result"
 )
@@ -212,11 +213,17 @@ type StreamEvent struct {
 	ToolCalls     []ToolCall
 	ToolCall      ToolCall
 	HostedResult  HostedToolResultData
+	Sources       []SourceRef
 	Reason        string
 	Usage         Usage
 	ResponseID    string
 	ResponseState *State
 	Err           error
+}
+
+type SourceRef struct {
+	Title string
+	URL   string
 }
 
 func CloneState(in *State) *State {
@@ -250,7 +257,7 @@ func (v *StreamValidator) Observe(ev StreamEvent) error {
 		return fmt.Errorf("provider emitted %q after terminal event", ev.Type)
 	}
 	switch ev.Type {
-	case Delta, Reasoning, UsageEvent:
+	case Delta, Reasoning, UsageEvent, SourcesEvent:
 		return nil
 	case ToolCalls:
 		if v.toolIDs == nil {
