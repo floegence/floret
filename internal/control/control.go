@@ -1,10 +1,7 @@
 package control
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/floegence/floret/internal/provider"
@@ -26,9 +23,10 @@ const (
 )
 
 type Signal struct {
-	Kind   SignalKind
-	Prompt string
-	Output string
+	Kind    SignalKind
+	Prompt  string
+	Output  string
+	Payload map[string]any
 }
 
 func ToolDefinitions(includeTaskComplete bool) []provider.ToolDefinition {
@@ -65,35 +63,25 @@ func IsControlTool(name string) bool {
 func Project(call provider.ToolCall) (Signal, bool, error) {
 	switch strings.TrimSpace(call.Name) {
 	case AskUserTool:
-		raw, err := validateControlArgs(AskUserTool, call.Args, askUserInputSchema())
+		payload, err := tools.Validate(askUserInputSchema(), []byte(strings.TrimSpace(call.Args)))
 		if err != nil {
-			return Signal{}, true, err
+			return Signal{}, true, fmt.Errorf("%s", tools.InvalidArgumentsText(AskUserTool, err))
 		}
-		var payload struct {
-			Question *string `json:"question"`
+		question := firstNonEmptyString(controlString(payload["question"]), firstQuestionText(payload["questions"]))
+		if question == "" {
+			return Signal{}, true, fmt.Errorf("question or questions[0].question is required")
 		}
-		if err := decodeControlArgs(raw, &payload); err != nil {
-			return Signal{}, true, err
-		}
-		if payload.Question == nil {
-			return Signal{}, true, fmt.Errorf("question is required")
-		}
-		return Signal{Kind: SignalAskUser, Prompt: *payload.Question}, true, nil
+		return Signal{Kind: SignalAskUser, Prompt: question, Payload: cloneControlMap(payload)}, true, nil
 	case TaskCompleteTool:
-		raw, err := validateControlArgs(TaskCompleteTool, call.Args, taskCompleteInputSchema())
+		payload, err := tools.Validate(taskCompleteInputSchema(), []byte(strings.TrimSpace(call.Args)))
 		if err != nil {
-			return Signal{}, true, err
+			return Signal{}, true, fmt.Errorf("%s", tools.InvalidArgumentsText(TaskCompleteTool, err))
 		}
-		var payload struct {
-			Output *string `json:"output"`
+		output := firstNonEmptyString(controlString(payload["output"]), controlString(payload["result"]))
+		if output == "" {
+			return Signal{}, true, fmt.Errorf("output or result is required")
 		}
-		if err := decodeControlArgs(raw, &payload); err != nil {
-			return Signal{}, true, err
-		}
-		if payload.Output == nil {
-			return Signal{}, true, fmt.Errorf("output is required")
-		}
-		return Signal{Kind: SignalTaskComplete, Output: *payload.Output}, true, nil
+		return Signal{Kind: SignalTaskComplete, Output: output, Payload: cloneControlMap(payload)}, true, nil
 	default:
 		return Signal{}, false, nil
 	}
@@ -163,40 +151,82 @@ func AskUser(calls []provider.ToolCall) (Signal, bool) {
 	return Signal{}, false
 }
 
-func validateControlArgs(name, raw string, schema map[string]any) (string, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		raw = "{}"
-	}
-	if _, err := tools.Validate(schema, []byte(raw)); err != nil {
-		return "", fmt.Errorf("%s", tools.InvalidArgumentsText(name, err))
-	}
-	return raw, nil
-}
-
-func decodeControlArgs(raw string, target any) error {
-	if strings.TrimSpace(raw) == "" {
-		raw = "{}"
-	}
-	dec := json.NewDecoder(bytes.NewReader([]byte(raw)))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(target); err != nil {
-		return err
-	}
-	if err := dec.Decode(&struct{}{}); err != io.EOF {
-		return fmt.Errorf("expected exactly one JSON object")
-	}
-	return nil
-}
-
 func askUserInputSchema() map[string]any {
+	questionItem := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"question": tools.String("Question text."),
+		},
+		"required":             []string{"question"},
+		"additionalProperties": true,
+	}
 	return tools.StrictObject(map[string]any{
-		"question": tools.String("The concise question to ask the user."),
-	}, []string{"question"})
+		"question":           tools.String("The concise question to ask the user."),
+		"questions":          tools.Array(questionItem, "Structured user-input questions."),
+		"reason_code":        tools.String("Product-neutral reason code for why input is needed."),
+		"required_from_user": tools.Array(tools.String("Required user input."), "Concrete user inputs or decisions needed to proceed."),
+		"evidence_refs":      tools.Array(tools.String("Evidence reference."), "Relevant evidence references."),
+	}, []string{})
 }
 
 func taskCompleteInputSchema() map[string]any {
 	return tools.StrictObject(map[string]any{
-		"output": tools.String("Final answer or completion summary."),
-	}, []string{"output"})
+		"output":          tools.String("Final answer or completion summary."),
+		"result":          tools.String("Final answer or completion summary."),
+		"evidence_refs":   tools.Array(tools.String("Evidence reference."), "Relevant evidence references."),
+		"remaining_risks": tools.Array(tools.String("Remaining risk."), "Remaining risks."),
+		"next_actions":    tools.Array(tools.String("Next action."), "Suggested next actions."),
+	}, []string{})
+}
+
+func controlString(value any) string {
+	text, _ := value.(string)
+	return strings.TrimSpace(text)
+}
+
+func firstQuestionText(value any) string {
+	items, ok := value.([]any)
+	if !ok || len(items) == 0 {
+		return ""
+	}
+	item, ok := items[0].(map[string]any)
+	if !ok {
+		return ""
+	}
+	return controlString(item["question"])
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func cloneControlMap(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = cloneControlAny(value)
+	}
+	return out
+}
+
+func cloneControlAny(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneControlMap(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneControlAny(item)
+		}
+		return out
+	default:
+		return value
+	}
 }

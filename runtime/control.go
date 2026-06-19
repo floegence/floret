@@ -48,20 +48,30 @@ func ProjectCoreControlSignal(call tools.ToolCall) (TurnSignal, bool, error) {
 	}
 	switch signal.Kind {
 	case control.SignalAskUser:
+		payload := cloneAnyMap(signal.Payload)
+		if payload == nil {
+			payload = map[string]any{}
+		}
+		payload["question"] = strings.TrimSpace(signal.Prompt)
 		return TurnSignal{
 			Disposition: SignalWaiting,
 			Name:        control.AskUserTool,
 			CallID:      call.ID,
 			OutputText:  strings.TrimSpace(signal.Prompt),
-			Payload:     map[string]any{"question": strings.TrimSpace(signal.Prompt)},
+			Payload:     payload,
 		}, true, nil
 	case control.SignalTaskComplete:
+		payload := cloneAnyMap(signal.Payload)
+		if payload == nil {
+			payload = map[string]any{}
+		}
+		payload["output"] = strings.TrimSpace(signal.Output)
 		return TurnSignal{
 			Disposition: SignalTerminal,
 			Name:        control.TaskCompleteTool,
 			CallID:      call.ID,
 			OutputText:  strings.TrimSpace(signal.Output),
-			Payload:     map[string]any{"output": strings.TrimSpace(signal.Output)},
+			Payload:     payload,
 		}, true, nil
 	default:
 		return TurnSignal{}, false, nil
