@@ -680,8 +680,9 @@ func (s runtimeEventSink) Emit(ev event.Event) {
 }
 
 func runtimeEvent(ev event.Event) Event {
-	stream := runtimeStreamObservation(ev)
-	ev = event.Sanitize(ev)
+	sanitized := event.Sanitize(ev)
+	stream := runtimeStreamObservation(ev, sanitized.Metadata)
+	ev = sanitized
 	return Event{
 		Type:         string(ev.Type),
 		TraceID:      TraceID(ev.TraceID),
@@ -707,7 +708,7 @@ func runtimeEvent(ev event.Event) Event {
 	}
 }
 
-func runtimeStreamObservation(ev event.Event) *StreamObservation {
+func runtimeStreamObservation(ev event.Event, safeMetadata any) *StreamObservation {
 	var streamType StreamObservationType
 	var text string
 	var reason string
@@ -742,8 +743,8 @@ func runtimeStreamObservation(ev event.Event) *StreamObservation {
 		FinishReason:    ev.FinishReason,
 		RawFinishReason: ev.RawFinishReason,
 		FinishInferred:  ev.FinishInferred,
-		Attempt:         streamAttemptFromMetadata(ev.Metadata),
-		Labels:          streamLabelsFromMetadata(ev.Metadata),
+		Attempt:         streamAttemptFromMetadata(safeMetadata),
+		Labels:          streamLabelsFromMetadata(safeMetadata),
 	}
 	if out.Reason == "" && ev.Err != "" {
 		out.Reason = ev.Err
@@ -777,31 +778,38 @@ func streamLabelsFromMetadata(metadata any) RunLabels {
 	if !ok {
 		return RunLabels{}
 	}
-	labels, ok := rawLabels.(map[string]string)
-	if !ok {
+	labels := metadataStringMap(rawLabels)
+	if len(labels) == 0 {
 		return RunLabels{}
 	}
 	out := RunLabels{}
 	for key, value := range labels {
-		switch {
-		case strings.HasPrefix(key, "correlation."):
+		if strings.HasPrefix(key, "correlation.") {
 			if out.Correlation == nil {
 				out.Correlation = map[string]string{}
 			}
 			out.Correlation[strings.TrimPrefix(key, "correlation.")] = value
-		case strings.HasPrefix(key, "host."):
-			if out.Host == nil {
-				out.Host = map[string]string{}
-			}
-			out.Host[strings.TrimPrefix(key, "host.")] = value
-		default:
-			if out.Correlation == nil {
-				out.Correlation = map[string]string{}
-			}
-			out.Correlation[key] = value
 		}
 	}
 	return out
+}
+
+func metadataStringMap(value any) map[string]string {
+	switch v := value.(type) {
+	case map[string]string:
+		return v
+	case map[string]any:
+		out := make(map[string]string, len(v))
+		for key, item := range v {
+			text, ok := item.(string)
+			if ok {
+				out[key] = text
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func runtimeObservationEvent(ev event.Event) observation.Event {

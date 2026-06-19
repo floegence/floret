@@ -112,7 +112,11 @@ func TestRunProjectedTurnWithPublicModelGateway(t *testing.T) {
 				OutputTokens: 3,
 			},
 		}
-		events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "stop"}
+		events <- runtime.ModelEvent{
+			Type:          runtime.ModelEventDone,
+			Reason:        "stop",
+			ResponseState: &runtime.ModelState{Kind: "openai_responses", ID: "resp_next", Attributes: map[string]string{"cursor": "two"}},
+		}
 		close(events)
 		return events, nil
 	})
@@ -150,6 +154,42 @@ func TestRunProjectedTurnWithPublicModelGateway(t *testing.T) {
 	}
 	if result.Output != "gateway ok" || result.Metrics.ProviderUsage.InputTokens != 2 || result.Metrics.ProviderUsage.OutputTokens != 3 {
 		t.Fatalf("result = %#v", result)
+	}
+	if result.ProviderState == nil || result.ProviderState.Kind != "openai_responses" || result.ProviderState.ID != "resp_next" || result.ProviderState.Attributes["cursor"] != "two" {
+		t.Fatalf("result provider state = %#v", result.ProviderState)
+	}
+	result.ProviderState.Attributes["cursor"] = "mutated-result"
+	second, err := runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "gateway system",
+		},
+		ModelGateway: publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
+			if req.PreviousState == nil || req.PreviousState.Attributes["cursor"] != "mutated-result" {
+				t.Fatalf("second request previous state = %#v", req.PreviousState)
+			}
+			events := make(chan runtime.ModelEvent, 2)
+			events <- runtime.ModelEvent{Type: runtime.ModelEventDelta, Text: "second ok"}
+			events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "stop"}
+			close(events)
+			return events, nil
+		}),
+		Store: runtime.NewMemoryStore(),
+	}, runtime.ProjectedTurnRequest{
+		RunID:                 "run-gateway-2",
+		ThreadID:              "thread-gateway",
+		TurnID:                "turn-gateway-2",
+		TraceID:               "trace-gateway-2",
+		PromptScopeID:         "thread-gateway",
+		History:               []runtime.TranscriptMessage{{Role: "user", Content: "hello again"}},
+		PreviousProviderState: result.ProviderState,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Status != runtime.TurnStatusCompleted {
+		t.Fatalf("second result = %#v", second)
 	}
 }
 
@@ -229,6 +269,68 @@ func TestRunProjectedTurnEmitsPublicStreamObservations(t *testing.T) {
 	if text.String() != "visible answer" || reasoning.String() != "hidden chain" {
 		t.Fatalf("stream text=%q reasoning=%q", text.String(), reasoning.String())
 	}
+}
+
+func TestRunProjectedTurnStreamObservationLabelsStayPublic(t *testing.T) {
+	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
+		events := make(chan runtime.ModelEvent, 2)
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDelta, Text: "ok"}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "stop"}
+		close(events)
+		return events, nil
+	})
+	sink := &collectingEventSink{}
+	_, err := runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+		},
+		ModelGateway: gateway,
+		Store:        runtime.NewMemoryStore(),
+		Sink:         sink,
+	}, runtime.ProjectedTurnRequest{
+		RunID:         "run-stream-labels",
+		ThreadID:      "thread-stream-labels",
+		TurnID:        "turn-stream-labels",
+		TraceID:       "trace-stream-labels",
+		PromptScopeID: "thread-stream-labels",
+		Labels: runtime.RunLabels{
+			Correlation: map[string]string{"turn": "turn-stream-labels"},
+			Host:        map[string]string{"secret": "token secret-value"},
+		},
+		History: []runtime.TranscriptMessage{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawStream bool
+	for _, ev := range sink.events {
+		if ev.Stream == nil {
+			continue
+		}
+		sawStream = true
+		if ev.Stream.Labels.Correlation["turn"] != "turn-stream-labels" {
+			t.Fatalf("stream correlation labels = %#v", ev.Stream.Labels.Correlation)
+		}
+		if len(ev.Stream.Labels.Host) != 0 {
+			t.Fatalf("stream should not expose host labels: %#v", ev.Stream.Labels.Host)
+		}
+		if strings.Contains(strings.Join(mapsValues(ev.Stream.Labels.Correlation), " "), "secret-value") {
+			t.Fatalf("stream labels leaked host secret: %#v", ev.Stream.Labels)
+		}
+	}
+	if !sawStream {
+		t.Fatalf("missing stream observations: %#v", sink.events)
+	}
+}
+
+func mapsValues(values map[string]string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, value)
+	}
+	return out
 }
 
 func TestRunProjectedTurnEmitsRetryAndAbortStreamObservations(t *testing.T) {

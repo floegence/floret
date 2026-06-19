@@ -62,6 +62,7 @@ type ProjectedTurnResult struct {
 	FinishReason       string                       `json:"finish_reason,omitempty"`
 	RawFinishReason    string                       `json:"raw_finish_reason,omitempty"`
 	FinishInferred     bool                         `json:"finish_inferred,omitempty"`
+	ProviderState      *ModelState                  `json:"provider_state,omitempty"`
 	Signal             *TurnSignal                  `json:"signal,omitempty"`
 	ActivityTimeline   observation.ActivityTimeline `json:"activity_timeline"`
 }
@@ -113,7 +114,9 @@ type ModelMessage struct {
 	ToolArgs   string `json:"tool_args,omitempty"`
 }
 
-// ModelState is opaque model continuation state owned by Floret runtime data.
+// ModelState is opaque provider continuation state. Floret carries it through
+// the run lifecycle and returns the latest state; hosts and model gateways own
+// provider-specific interpretation and cross-turn persistence.
 type ModelState struct {
 	Kind       string            `json:"kind,omitempty"`
 	ID         string            `json:"id,omitempty"`
@@ -603,6 +606,7 @@ func projectedTurnResult(ids projectedIDs, in engine.Result, events []observatio
 		FinishReason:       string(in.FinishReason),
 		RawFinishReason:    in.RawFinishReason,
 		FinishInferred:     in.FinishInferred,
+		ProviderState:      modelState(in.ProviderState),
 		Signal:             runtimeTurnSignal(in.ControlSignal),
 		ActivityTimeline: observation.BuildActivityTimeline(observation.ActivityRunMeta{
 			RunID:    ids.runID,
