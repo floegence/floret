@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -59,6 +60,24 @@ func TestNormalizeInputSchemaRejectsNonObjectAndOpenObject(t *testing.T) {
 	}
 	if got, err := NormalizeInputSchema(map[string]any{"type": "object", "additionalProperties": false}); err != nil || got["properties"] == nil {
 		t.Fatalf("closed object without properties should normalize: got=%#v err=%v", got, err)
+	}
+}
+
+func TestStrictObjectEmptyRequiredMarshalsAsArray(t *testing.T) {
+	schema := StrictObject(map[string]any{"question": String("question")}, []string{})
+	normalized, err := NormalizeInputSchema(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(normalized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"required":null`) {
+		t.Fatalf("required must marshal as an empty array, got %s", raw)
+	}
+	if !strings.Contains(string(raw), `"required":[]`) {
+		t.Fatalf("required array missing from schema: %s", raw)
 	}
 }
 

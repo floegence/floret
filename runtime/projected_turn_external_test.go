@@ -578,6 +578,7 @@ func TestCoreControlHelpersProjectAskUserAndTaskComplete(t *testing.T) {
 	if defs[0].Annotations["kind"] != "control" || !defs[0].Strict {
 		t.Fatalf("ask_user definition = %#v", defs[0])
 	}
+	assertObjectRequiredArrays(t, "ask_user", defs[0].InputSchema)
 	ask, ok, err := runtime.ProjectCoreControlSignal(tools.ToolCall{
 		ID:   "ask-1",
 		Name: runtime.CoreControlAskUser,
@@ -607,6 +608,42 @@ func TestCoreControlHelpersProjectAskUserAndTaskComplete(t *testing.T) {
 	})
 	if !ok || err == nil || !strings.Contains(err.Error(), "question is required") {
 		t.Fatalf("invalid ask projection ok=%v err=%v", ok, err)
+	}
+}
+
+func assertObjectRequiredArrays(t *testing.T, path string, schema map[string]any) {
+	t.Helper()
+	if typ, _ := schema["type"].(string); typ == "object" {
+		switch required := schema["required"].(type) {
+		case []any:
+			for _, item := range required {
+				if _, ok := item.(string); !ok {
+					t.Fatalf("%s required item = %#v, want string", path, item)
+				}
+			}
+		case []string:
+		default:
+			t.Fatalf("%s required = %#v, want array", path, schema["required"])
+		}
+		raw, err := json.Marshal(schema)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", path, err)
+		}
+		if strings.Contains(string(raw), `"required":null`) {
+			t.Fatalf("%s required must not marshal as null: %s", path, raw)
+		}
+		if !strings.Contains(string(raw), `"required":[`) {
+			t.Fatalf("%s required array missing: %s", path, raw)
+		}
+	}
+	properties, _ := schema["properties"].(map[string]any)
+	for name, raw := range properties {
+		if child, ok := raw.(map[string]any); ok {
+			assertObjectRequiredArrays(t, path+"."+name, child)
+		}
+	}
+	if items, ok := schema["items"].(map[string]any); ok {
+		assertObjectRequiredArrays(t, path+"[]", items)
 	}
 }
 

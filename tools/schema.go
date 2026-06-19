@@ -23,7 +23,7 @@ func StrictObject(properties map[string]any, required []string) map[string]any {
 			required = append(required, name)
 		}
 	}
-	required = append([]string(nil), required...)
+	required = append([]string{}, required...)
 	slices.Sort(required)
 	return map[string]any{
 		"type":                 "object",
@@ -160,7 +160,10 @@ func cloneAny(value any) any {
 		}
 		return out
 	case []string:
-		out := make([]any, len(v))
+		out := []any{}
+		if len(v) > 0 {
+			out = make([]any, len(v))
+		}
 		for i, item := range v {
 			out[i] = item
 		}

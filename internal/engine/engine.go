@@ -902,7 +902,11 @@ func cloneAny(value any) any {
 		}
 		return out
 	case []string:
-		return append([]string(nil), v...)
+		out := []string{}
+		if len(v) > 0 {
+			out = append(out, v...)
+		}
+		return out
 	default:
 		return value
 	}
