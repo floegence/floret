@@ -24,6 +24,22 @@ type PermissionSpec struct {
 	ResourceKinds []string
 }
 
+type PermissionRequest struct {
+	CallID        string
+	Name          string
+	RawArgs       string
+	Args          any
+	RunID         string
+	ThreadID      string
+	TurnID        string
+	PromptScopeID string
+	Step          int
+	Labels        map[string]string
+	HostContext   map[string]string
+}
+
+type PermissionResolver func(PermissionRequest) (PermissionSpec, error)
+
 type ResourceRef struct {
 	Kind  string
 	Value string

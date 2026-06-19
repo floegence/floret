@@ -141,6 +141,82 @@ func TestApprovalGrantedExecutesExactRequest(t *testing.T) {
 	}
 }
 
+func TestPermissionResolverCanAllowSafeInvocationWithoutApprover(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.Register(Define[testArgs](
+		Definition{
+			Name:        "shell",
+			InputSchema: StrictObject(map[string]any{"value": String("")}, []string{"value"}),
+			Effects:     []Effect{EffectShell},
+			OpenWorld:   true,
+			Permission:  PermissionSpec{Mode: PermissionAsk, ResourceKinds: []string{"command"}},
+			PermissionFor: func(req PermissionRequest) (PermissionSpec, error) {
+				if req.Name != "shell" || req.RawArgs != `{"value":"ls"}` {
+					t.Fatalf("permission request = %#v", req)
+				}
+				return PermissionSpec{Mode: PermissionAllow, ResourceKinds: []string{"command"}}, nil
+			},
+		},
+		nil,
+		nil,
+		func(context.Context, Invocation[testArgs]) (Result, error) {
+			return Result{Text: "ok"}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	calledApprover := false
+	got := reg.Run(context.Background(), ToolCall{ID: "call", Name: "shell", Args: `{"value":"ls"}`}, func(context.Context, ApprovalRequest) (PermissionDecision, error) {
+		calledApprover = true
+		return PermissionDecisionDeny, nil
+	})
+	if got.IsError || got.Text != "ok" {
+		t.Fatalf("result = %#v", got)
+	}
+	if calledApprover {
+		t.Fatalf("allow permission resolver should not call approver")
+	}
+}
+
+func TestPermissionResolverCanRequireApprovalForRiskyInvocation(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.Register(Define[testArgs](
+		Definition{
+			Name:        "shell",
+			InputSchema: StrictObject(map[string]any{"value": String("")}, []string{"value"}),
+			Effects:     []Effect{EffectShell},
+			OpenWorld:   true,
+			Permission:  PermissionSpec{Mode: PermissionAsk, ResourceKinds: []string{"command"}},
+			PermissionFor: func(req PermissionRequest) (PermissionSpec, error) {
+				if req.Args.(testArgs).Value == "cat README.md" {
+					return PermissionSpec{Mode: PermissionAllow, ResourceKinds: []string{"command"}}, nil
+				}
+				return PermissionSpec{Mode: PermissionAsk, ResourceKinds: []string{"command"}}, nil
+			},
+		},
+		nil,
+		func(inv Invocation[testArgs]) ([]ResourceRef, error) {
+			return []ResourceRef{{Kind: "command", Value: inv.Args.Value}}, nil
+		},
+		func(context.Context, Invocation[testArgs]) (Result, error) {
+			return Result{Text: "ok"}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	var approval ApprovalRequest
+	got := reg.RunWithOptions(context.Background(), ToolCall{ID: "call", Name: "shell", Args: `{"value":"rm file"}`}, func(_ context.Context, req ApprovalRequest) (PermissionDecision, error) {
+		approval = req
+		return PermissionDecisionAllow, nil
+	}, RunOptions{RunID: "run", ThreadID: "thread", TurnID: "turn", Step: 2, Labels: map[string]string{"correlation.turn": "turn"}})
+	if got.IsError || got.Text != "ok" {
+		t.Fatalf("result = %#v", got)
+	}
+	if approval.ID != "call" || len(approval.Resources) != 1 || approval.Resources[0].Value != "rm file" || approval.Labels["correlation.turn"] != "turn" {
+		t.Fatalf("approval = %#v", approval)
+	}
+}
+
 func TestPermissionDenyDoesNotCallResourcesApproverOrHandler(t *testing.T) {
 	reg := NewRegistry()
 	called := false

@@ -37,9 +37,10 @@ type Definition struct {
 	OpenWorld    bool
 	ParallelSafe bool
 
-	Permission   PermissionSpec
-	OutputPolicy OutputPolicy
-	Annotations  map[string]any
+	Permission    PermissionSpec
+	PermissionFor PermissionResolver
+	OutputPolicy  OutputPolicy
+	Annotations   map[string]any
 }
 
 type RunOptions struct {
@@ -330,6 +331,7 @@ func cloneDefinition(def Definition) Definition {
 	def.Annotations = cloneSchema(def.Annotations)
 	def.Effects = append([]Effect(nil), def.Effects...)
 	def.Permission.ResourceKinds = append([]string(nil), def.Permission.ResourceKinds...)
+	def.PermissionFor = nil
 	return def
 }
 
@@ -405,7 +407,11 @@ func (r *Registry) run(ctx context.Context, call ToolCall, approver Approver, op
 	if err != nil {
 		return ErrorResult(call.ID, call.Name, fmt.Sprintf("tool %q resource extraction failed: %v", call.Name, err))
 	}
-	if denied := r.permissionDenied(ctx, t.Definition, call, args, resources, opts, approver); denied != "" {
+	permission, err := invocationPermission(t.Definition, inv)
+	if err != nil {
+		return ErrorResult(call.ID, call.Name, fmt.Sprintf("tool %q permission resolution failed: %v", call.Name, err))
+	}
+	if denied := r.permissionDenied(ctx, t.Definition, permission, call, args, resources, opts, approver); denied != "" {
 		return ErrorResult(call.ID, call.Name, denied)
 	}
 	result, err = t.handler(ctx, inv)
@@ -428,8 +434,42 @@ func (r *Registry) run(ctx context.Context, call ToolCall, approver Approver, op
 	return result
 }
 
-func (r *Registry) permissionDenied(ctx context.Context, def Definition, call ToolCall, args any, resources []ResourceRef, opts RunOptions, approver Approver) string {
-	switch def.Permission.Mode {
+func invocationPermission(def Definition, inv erasedInvocation) (PermissionSpec, error) {
+	permission := def.Permission
+	if def.PermissionFor != nil {
+		next, err := def.PermissionFor(PermissionRequest{
+			CallID:        inv.CallID,
+			Name:          inv.Name,
+			RawArgs:       inv.RawArgs,
+			Args:          inv.Args,
+			RunID:         inv.RunID,
+			ThreadID:      inv.ThreadID,
+			TurnID:        inv.TurnID,
+			PromptScopeID: inv.PromptScopeID,
+			Step:          inv.Step,
+			Labels:        cloneStringMap(inv.Labels),
+			HostContext:   cloneStringMap(inv.HostContext),
+		})
+		if err != nil {
+			return PermissionSpec{}, err
+		}
+		if next.Mode != "" {
+			permission.Mode = next.Mode
+		}
+		if next.ResourceKinds != nil {
+			permission.ResourceKinds = append([]string(nil), next.ResourceKinds...)
+		}
+	}
+	switch permission.Mode {
+	case PermissionAllow, PermissionAsk, PermissionDeny:
+	default:
+		return PermissionSpec{}, fmt.Errorf("unknown permission mode %q", permission.Mode)
+	}
+	return permission, nil
+}
+
+func (r *Registry) permissionDenied(ctx context.Context, def Definition, permission PermissionSpec, call ToolCall, args any, resources []ResourceRef, opts RunOptions, approver Approver) string {
+	switch permission.Mode {
 	case PermissionDeny:
 		return ErrRejected.Error()
 	case PermissionAllow:
