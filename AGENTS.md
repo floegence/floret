@@ -172,6 +172,31 @@ Rules:
 - Keep provider, context, tool runtime, session storage, and host UI concerns separated.
 - Important intent and policy decisions must be observable through events or testable state.
 
+## OKF Project Knowledge Bundle
+
+- `okf/` is this repository's OKF v0.1 project knowledge bundle. It is maintained
+  for humans and agents that need to understand Floret quickly.
+- `okf/` is documentation only. It is not a runtime feature, public Go API, host
+  integration surface, storage contract, provider capability, or tool protocol.
+- When a change affects important architecture, public API, execution identity,
+  maintainer workflow, or durable design decisions, evaluate whether `okf/` must
+  be updated in the same change.
+- OKF content must follow the repository language policy: English is the default
+  for committed project documentation.
+- Every non-reserved `.md` file under `okf/` is an OKF concept document and must
+  include YAML frontmatter with a non-empty `type` field.
+- `index.md` and `log.md` are OKF reserved filenames. Directory `index.md` files
+  provide progressive disclosure; `log.md` records knowledge-bundle updates.
+- Only the root `okf/index.md` may declare `okf_version: "0.1"` frontmatter.
+  Other `index.md` files must not use frontmatter.
+- OKF documents must stay agent-readable, link-rich, and diffable. Prefer concise
+  explanations with links to source files over copied source or generated API
+  dumps.
+- OKF documents may explain internal implementation concepts for contributors,
+  but must not teach downstream applications to import or depend on `internal/*`.
+- Changes that touch `okf/` must pass the OKF conformance tests and the repository
+  quality gate.
+
 ## Host Integration Boundary
 
 Floret is the reusable agent engine. It owns provider loop execution, tool
@@ -326,3 +351,6 @@ Run before integration:
 ```bash
 go test ./...
 ```
+
+Changes that add or update `okf/` content must also satisfy the repository OKF
+conformance tests, which are part of `go test ./...`.

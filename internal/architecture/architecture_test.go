@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -72,6 +73,7 @@ func TestTopLevelPackageLayoutIsConstrained(t *testing.T) {
 		"config":      true,
 		"internal":    true,
 		"observation": true,
+		"okf":         true,
 		"runtime":     true,
 		"scripts":     true,
 		"tools":       true,
@@ -258,6 +260,118 @@ func TestDocumentationDoesNotTeachForbiddenDownstreamImports(t *testing.T) {
 			if strings.Contains(text, forbidden) {
 				t.Fatalf("%s references forbidden downstream import %s", file, forbidden)
 			}
+		}
+	}
+}
+
+func TestOKFProjectKnowledgeBundleConforms(t *testing.T) {
+	root := "okf"
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		t.Fatalf("OKF bundle missing: %s", root)
+	}
+
+	requiredFiles := []string{
+		"index.md",
+		"log.md",
+		"project.md",
+		filepath.Join("architecture", "index.md"),
+		filepath.Join("architecture", "boundaries.md"),
+		filepath.Join("architecture", "identities.md"),
+		filepath.Join("architecture", "runtime-layers.md"),
+		filepath.Join("architecture", "tools-permissions.md"),
+		filepath.Join("architecture", "observation-events.md"),
+		filepath.Join("api", "index.md"),
+		filepath.Join("api", "config.md"),
+		filepath.Join("api", "runtime.md"),
+		filepath.Join("api", "tools.md"),
+		filepath.Join("api", "observation.md"),
+		filepath.Join("workflows", "index.md"),
+		filepath.Join("workflows", "change-public-api.md"),
+		filepath.Join("workflows", "add-tool.md"),
+		filepath.Join("workflows", "add-provider.md"),
+		filepath.Join("workflows", "quality-gate.md"),
+		filepath.Join("decisions", "index.md"),
+		filepath.Join("decisions", "public-api-boundary.md"),
+		filepath.Join("decisions", "prompt-scope-identity.md"),
+		filepath.Join("decisions", "no-host-product-concerns.md"),
+	}
+	for _, rel := range requiredFiles {
+		if _, err := os.Stat(filepath.Join(root, rel)); err != nil {
+			t.Fatalf("OKF required file missing %s: %v", rel, err)
+		}
+	}
+
+	rootIndex := filepath.Join(root, "index.md")
+	rootMeta, rootBody, _ := parseOKFFrontmatter(t, rootIndex, true)
+	if got := rootMeta["okf_version"]; got != "0.1" {
+		t.Fatalf("%s okf_version = %q, want 0.1", rootIndex, got)
+	}
+	if strings.TrimSpace(rootBody) == "" {
+		t.Fatalf("%s must contain an index body", rootIndex)
+	}
+
+	concepts := 0
+	logs := 0
+	for _, file := range walkAllFiles(t, root) {
+		if filepath.Ext(file) != ".md" {
+			continue
+		}
+		text := readTextFile(t, file)
+		for _, forbidden := range forbiddenDownstreamImportPaths() {
+			if strings.Contains(text, forbidden) {
+				t.Fatalf("%s references forbidden downstream import %s", file, forbidden)
+			}
+		}
+
+		switch filepath.Base(file) {
+		case "index.md":
+			if filepath.Clean(file) == filepath.Clean(rootIndex) {
+				continue
+			}
+			if hasOKFFrontmatter(text) {
+				t.Fatalf("%s must not contain frontmatter", file)
+			}
+		case "log.md":
+			logs++
+			if hasOKFFrontmatter(text) {
+				t.Fatalf("%s must not contain frontmatter", file)
+			}
+			assertOKFLogDates(t, file, text)
+		default:
+			meta, body, _ := parseOKFFrontmatter(t, file, true)
+			if strings.TrimSpace(meta["type"]) == "" {
+				t.Fatalf("%s missing required OKF type", file)
+			}
+			if _, ok := meta["okf_version"]; ok {
+				t.Fatalf("%s must not declare okf_version", file)
+			}
+			if strings.TrimSpace(body) == "" {
+				t.Fatalf("%s must contain a body", file)
+			}
+			concepts++
+		}
+	}
+	if concepts == 0 {
+		t.Fatalf("OKF bundle must include concept documents")
+	}
+	if logs == 0 {
+		t.Fatalf("OKF bundle must include log.md")
+	}
+}
+
+func TestAGENTSDocumentsOKFMaintenanceRules(t *testing.T) {
+	text := readTextFile(t, "AGENTS.md")
+	for _, want := range []string{
+		"## OKF Project Knowledge Bundle",
+		"`okf/` is this repository's OKF v0.1 project knowledge bundle",
+		"`okf/` is documentation only",
+		"Every non-reserved `.md` file under `okf/`",
+		"Only the root `okf/index.md` may declare `okf_version: \"0.1\"`",
+		"must not teach downstream applications to import or depend on `internal/*`",
+		"OKF conformance tests",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("AGENTS.md missing OKF rule %q", want)
 		}
 	}
 }
@@ -616,6 +730,65 @@ func readTextFile(t *testing.T, file string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func hasOKFFrontmatter(text string) bool {
+	trimmed := strings.TrimLeft(text, "\ufeff\r\n\t ")
+	return strings.HasPrefix(trimmed, "---\n") || strings.HasPrefix(trimmed, "---\r\n")
+}
+
+func parseOKFFrontmatter(t *testing.T, file string, required bool) (map[string]string, string, bool) {
+	t.Helper()
+	text := strings.TrimLeft(readTextFile(t, file), "\ufeff\r\n\t ")
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	if !strings.HasPrefix(text, "---\n") {
+		if required {
+			t.Fatalf("%s missing OKF frontmatter", file)
+		}
+		return nil, text, false
+	}
+	lines := strings.Split(text, "\n")
+	meta := map[string]string{}
+	for i := 1; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if line == "---" {
+			return meta, strings.Join(lines[i+1:], "\n"), true
+		}
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			t.Fatalf("%s has invalid OKF frontmatter line %q", file, line)
+		}
+		key = strings.TrimSpace(key)
+		value = strings.Trim(strings.TrimSpace(value), `"'`)
+		if key == "" {
+			t.Fatalf("%s has empty OKF frontmatter key", file)
+		}
+		meta[key] = value
+	}
+	t.Fatalf("%s has unterminated OKF frontmatter", file)
+	return nil, "", false
+}
+
+func assertOKFLogDates(t *testing.T, file, text string) {
+	t.Helper()
+	dateHeading := regexp.MustCompile(`^## [0-9]{4}-[0-9]{2}-[0-9]{2}$`)
+	seen := false
+	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "## ") {
+			continue
+		}
+		seen = true
+		if !dateHeading.MatchString(line) {
+			t.Fatalf("%s has non-ISO OKF log date heading %q", file, line)
+		}
+	}
+	if !seen {
+		t.Fatalf("%s must include at least one OKF log date heading", file)
+	}
 }
 
 func forbiddenDownstreamImportPaths() []string {
