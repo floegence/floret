@@ -22,12 +22,20 @@ loop over a transcript projection.
 * `RunProjectedTurn` executes one run from host-owned transcript projection.
 * `ModelGateway` lets a host supply model transport while Floret owns loop
   control, tool dispatch, and ledgers.
+* `ModelEventToolCallStart`, `ModelEventToolCallDelta`, and
+  `ModelEventToolCallEnd` expose model tool-call streaming as provider-neutral
+  public runtime events. They identify the call being generated without carrying
+  argument text; `ModelEventToolCalls` remains the final executable batch.
 
 # Boundaries
 
 The host should treat `runtime.Store` as opaque. Product data such as owners,
 workspace metadata, pinned state, billing, and read watermarks belongs in the
 host database keyed by `runtime.ThreadID`.
+
+`StreamObservation` is for host rendering and diagnostics. It is not raw
+provider wire data and must not carry prompt text, tool arguments, tool results,
+local paths, or secrets.
 
 # Key Source Files
 

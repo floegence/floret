@@ -408,9 +408,11 @@ func (p OpenAICompatibleProvider) streamResponse(httpResp *http.Response) (<-cha
 		defer httpResp.Body.Close()
 		defer close(ch)
 		type partialTool struct {
-			id   string
-			name string
-			args string
+			id      string
+			name    string
+			args    string
+			started bool
+			ended   bool
 		}
 		tools := map[int]partialTool{}
 		var reasoning strings.Builder
@@ -461,6 +463,14 @@ func (p OpenAICompatibleProvider) streamResponse(httpResp *http.Response) (<-cha
 						item.name = call.Function.Name
 					}
 					item.args += call.Function.Arguments
+					if item.id != "" && item.name != "" {
+						stream := provider.ToolCallStream{ID: item.id, Name: item.name}
+						if !item.started {
+							ch <- provider.StreamEvent{Type: provider.ToolCallStart, ToolCallStream: stream}
+							item.started = true
+						}
+						ch <- provider.StreamEvent{Type: provider.ToolCallDelta, ToolCallStream: stream}
+					}
 					tools[call.Index] = item
 				}
 				switch choice.FinishReason {
@@ -470,6 +480,11 @@ func (p OpenAICompatibleProvider) streamResponse(httpResp *http.Response) (<-cha
 						item, ok := tools[i]
 						if !ok {
 							continue
+						}
+						if item.id != "" && item.name != "" && !item.ended {
+							ch <- provider.StreamEvent{Type: provider.ToolCallEnd, ToolCallStream: provider.ToolCallStream{ID: item.id, Name: item.name}}
+							item.ended = true
+							tools[i] = item
 						}
 						calls = append(calls, provider.ToolCall{ID: item.id, Name: item.name, Args: item.args, Reasoning: reasoning.String()})
 					}

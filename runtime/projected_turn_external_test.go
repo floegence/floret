@@ -319,6 +319,160 @@ func TestRunProjectedTurnEmitsPublicSourceObservations(t *testing.T) {
 	}
 }
 
+func TestRunProjectedTurnEmitsPublicToolCallStreamObservations(t *testing.T) {
+	requests := 0
+	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
+		events := make(chan runtime.ModelEvent, 6)
+		requests++
+		if requests > 1 {
+			events <- runtime.ModelEvent{Type: runtime.ModelEventDelta, Text: "done"}
+			events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "stop"}
+			close(events)
+			return events, nil
+		}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventToolCallStart, ToolCallStream: &runtime.ModelToolCallStream{ID: "call-1", Name: "read"}}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventToolCallDelta, ToolCallStream: &runtime.ModelToolCallStream{ID: "call-1", Name: "read"}}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventToolCallEnd, ToolCallStream: &runtime.ModelToolCallStream{ID: "call-1", Name: "read"}}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventToolCalls, ToolCalls: []tools.ToolCall{{
+			ID:   "call-1",
+			Name: "read",
+			Args: `{"path":"secret.txt"}`,
+		}}}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "tool_calls"}
+		close(events)
+		return events, nil
+	})
+	registry := readToolRegistry(t)
+	sink := &collectingEventSink{}
+	_, err := runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+		},
+		ModelGateway: gateway,
+		Store:        runtime.NewMemoryStore(),
+		Tools:        registry,
+		Sink:         sink,
+	}, runtime.ProjectedTurnRequest{
+		RunID:         "run-tool-stream",
+		ThreadID:      "thread-tool-stream",
+		TurnID:        "turn-tool-stream",
+		TraceID:       "trace-tool-stream",
+		PromptScopeID: "thread-tool-stream",
+		History:       []runtime.TranscriptMessage{{Role: "user", Content: "read"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []runtime.StreamObservationType
+	for _, ev := range sink.events {
+		if ev.Stream == nil {
+			continue
+		}
+		got = append(got, ev.Stream.Type)
+		switch ev.Stream.Type {
+		case runtime.StreamObservationToolCallStart, runtime.StreamObservationToolCallDelta, runtime.StreamObservationToolCallEnd:
+			if ev.Stream.ToolCallStream == nil || ev.Stream.ToolCallStream.ID != "call-1" || ev.Stream.ToolCallStream.Name != "read" {
+				t.Fatalf("tool stream = %#v", ev.Stream.ToolCallStream)
+			}
+			if ev.Stream.Text != "" || ev.Message != "" {
+				t.Fatalf("tool stream leaked text: %#v", ev)
+			}
+		}
+	}
+	want := []runtime.StreamObservationType{
+		runtime.StreamObservationToolCallStart,
+		runtime.StreamObservationToolCallDelta,
+		runtime.StreamObservationToolCallEnd,
+		runtime.StreamObservationModelStreamDone,
+		runtime.StreamObservationAssistantDelta,
+		runtime.StreamObservationModelStreamDone,
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("stream types = %#v, want %#v; events=%#v", got, want, sink.events)
+	}
+}
+
+func TestRunProjectedTurnEmitsToolCallObservationForBatchToolCalls(t *testing.T) {
+	requests := 0
+	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
+		events := make(chan runtime.ModelEvent, 3)
+		requests++
+		if requests > 1 {
+			events <- runtime.ModelEvent{Type: runtime.ModelEventDelta, Text: "done"}
+			events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "stop"}
+			close(events)
+			return events, nil
+		}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventToolCalls, ToolCalls: []tools.ToolCall{{
+			ID:   "call-batch",
+			Name: "read",
+			Args: `{"path":"secret.txt"}`,
+		}}}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "tool_calls"}
+		close(events)
+		return events, nil
+	})
+	registry := readToolRegistry(t)
+	sink := &collectingEventSink{}
+	_, err := runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+		},
+		ModelGateway: gateway,
+		Store:        runtime.NewMemoryStore(),
+		Tools:        registry,
+		Sink:         sink,
+	}, runtime.ProjectedTurnRequest{
+		RunID:         "run-tool-batch",
+		ThreadID:      "thread-tool-batch",
+		TurnID:        "turn-tool-batch",
+		TraceID:       "trace-tool-batch",
+		PromptScopeID: "thread-tool-batch",
+		History:       []runtime.TranscriptMessage{{Role: "user", Content: "read"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range sink.events {
+		if ev.Stream == nil || ev.Stream.Type != runtime.StreamObservationToolCallEnd {
+			continue
+		}
+		if ev.Stream.ToolCallStream == nil || ev.Stream.ToolCallStream.ID != "call-batch" || ev.Stream.ToolCallStream.Name != "read" {
+			t.Fatalf("batch tool stream = %#v", ev.Stream.ToolCallStream)
+		}
+		return
+	}
+	t.Fatalf("missing batch tool call stream observation: %#v", sink.events)
+}
+
+func readToolRegistry(t *testing.T) *tools.Registry {
+	t.Helper()
+	registry := tools.NewRegistry()
+	err := registry.Register(tools.Define[map[string]any](
+		tools.Definition{
+			Name:        "read",
+			Description: "read",
+			InputSchema: tools.StrictObject(map[string]any{
+				"path": map[string]any{"type": "string"},
+			}, []string{"path"}),
+			ReadOnly: true,
+		},
+		nil,
+		nil,
+		func(ctx context.Context, inv tools.Invocation[map[string]any]) (tools.Result, error) {
+			return tools.Result{CallID: inv.CallID, Name: inv.Name, Text: "ok"}, nil
+		},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return registry
+}
+
 func TestRunProjectedTurnStreamObservationLabelsStayPublic(t *testing.T) {
 	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
 		events := make(chan runtime.ModelEvent, 2)

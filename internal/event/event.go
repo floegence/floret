@@ -20,6 +20,9 @@ const (
 	ProviderRequest        Type = "provider_request"
 	ProviderDelta          Type = "provider_delta"
 	ProviderReasoning      Type = "provider_reasoning"
+	ProviderToolCallStart  Type = "provider_tool_call_start"
+	ProviderToolCallDelta  Type = "provider_tool_call_delta"
+	ProviderToolCallEnd    Type = "provider_tool_call_end"
 	ProviderUsage          Type = "provider_usage"
 	ProviderSources        Type = "provider_sources"
 	ProviderFinish         Type = "provider_finish"
@@ -150,6 +153,8 @@ func sanitize(e Event, policy SinkPolicy) Event {
 	switch e.Type {
 	case ProviderDelta, ProviderReasoning:
 		e.Message = ""
+	case ProviderToolCallStart, ProviderToolCallDelta, ProviderToolCallEnd:
+		e.Args = ""
 	case ToolCall, HostedToolCall:
 		e.Args = ""
 	case ToolResult, HostedToolResult, ToolApprovalRequested, ToolApprovalApproved, ToolApprovalRejected, ToolApprovalTimedOut, ToolApprovalCanceled:

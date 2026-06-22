@@ -289,6 +289,13 @@ Use `runtime.EventSink` to receive sanitized runtime events from a host. Use
 surfaces. Observation records are not raw provider payloads and should not
 contain prompt text, tool arguments, tool results, local paths, or secrets.
 
+`runtime.StreamObservation` carries provider-neutral streaming facts for host
+rendering. It includes assistant text deltas, reasoning deltas, model retry and
+finish facts, and model tool-call stream facts. `ModelEventToolCallStart`,
+`ModelEventToolCallDelta`, and `ModelEventToolCallEnd` identify the tool call
+the model is generating without exposing argument text; the final executable
+batch still arrives separately as `ModelEventToolCalls`.
+
 ## 🔁 Runtime Flow
 
 ```text

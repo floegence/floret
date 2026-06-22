@@ -76,6 +76,9 @@ type EventType string
 const (
 	Delta            EventType = "delta"
 	Reasoning        EventType = "reasoning"
+	ToolCallStart    EventType = "tool_call_start"
+	ToolCallDelta    EventType = "tool_call_delta"
+	ToolCallEnd      EventType = "tool_call_end"
 	ToolCalls        EventType = "tool_calls"
 	Done             EventType = "done"
 	Empty            EventType = "empty"
@@ -143,6 +146,11 @@ type ToolCall struct {
 	Reasoning string
 }
 
+type ToolCallStream struct {
+	ID   string
+	Name string
+}
+
 type HostedToolResultData struct {
 	Text     string                 `json:"text,omitempty"`
 	Results  []HostedToolResultItem `json:"results,omitempty"`
@@ -208,17 +216,18 @@ func (r HostedToolResultData) SummaryText() string {
 }
 
 type StreamEvent struct {
-	Type          EventType
-	Text          string
-	ToolCalls     []ToolCall
-	ToolCall      ToolCall
-	HostedResult  HostedToolResultData
-	Sources       []SourceRef
-	Reason        string
-	Usage         Usage
-	ResponseID    string
-	ResponseState *State
-	Err           error
+	Type           EventType
+	Text           string
+	ToolCallStream ToolCallStream
+	ToolCalls      []ToolCall
+	ToolCall       ToolCall
+	HostedResult   HostedToolResultData
+	Sources        []SourceRef
+	Reason         string
+	Usage          Usage
+	ResponseID     string
+	ResponseState  *State
+	Err            error
 }
 
 type SourceRef struct {
@@ -258,6 +267,11 @@ func (v *StreamValidator) Observe(ev StreamEvent) error {
 	}
 	switch ev.Type {
 	case Delta, Reasoning, UsageEvent, SourcesEvent:
+		return nil
+	case ToolCallStart, ToolCallDelta, ToolCallEnd:
+		if err := ValidateToolCallStream(ev.ToolCallStream); err != nil {
+			return err
+		}
 		return nil
 	case ToolCalls:
 		if v.toolIDs == nil {
@@ -327,6 +341,16 @@ func ValidateToolCall(call ToolCall) error {
 	}
 	if strings.TrimSpace(call.Name) == "" {
 		return errors.New("provider tool call name is required")
+	}
+	return nil
+}
+
+func ValidateToolCallStream(call ToolCallStream) error {
+	if strings.TrimSpace(call.ID) == "" {
+		return errors.New("provider tool call stream id is required")
+	}
+	if strings.TrimSpace(call.Name) == "" {
+		return errors.New("provider tool call stream name is required")
 	}
 	return nil
 }

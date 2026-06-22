@@ -189,6 +189,9 @@ type StreamObservationType string
 const (
 	StreamObservationAssistantDelta   StreamObservationType = "assistant_delta"
 	StreamObservationReasoningDelta   StreamObservationType = "reasoning_delta"
+	StreamObservationToolCallStart    StreamObservationType = "tool_call_start"
+	StreamObservationToolCallDelta    StreamObservationType = "tool_call_delta"
+	StreamObservationToolCallEnd      StreamObservationType = "tool_call_end"
 	StreamObservationModelRetry       StreamObservationType = "model_retry"
 	StreamObservationModelStreamDone  StreamObservationType = "model_stream_done"
 	StreamObservationModelStreamAbort StreamObservationType = "model_stream_abort"
@@ -199,6 +202,7 @@ const (
 type StreamObservation struct {
 	Type            StreamObservationType `json:"type"`
 	Text            string                `json:"text,omitempty"`
+	ToolCallStream  *ModelToolCallStream  `json:"tool_call_stream,omitempty"`
 	Reason          string                `json:"reason,omitempty"`
 	FinishReason    string                `json:"finish_reason,omitempty"`
 	RawFinishReason string                `json:"raw_finish_reason,omitempty"`
@@ -714,6 +718,7 @@ func runtimeStreamObservation(ev event.Event, safeMetadata any) *StreamObservati
 	var streamType StreamObservationType
 	var text string
 	var reason string
+	var toolCallStream *ModelToolCallStream
 	switch ev.Type {
 	case event.ProviderDelta:
 		streamType = StreamObservationAssistantDelta
@@ -721,6 +726,15 @@ func runtimeStreamObservation(ev event.Event, safeMetadata any) *StreamObservati
 	case event.ProviderReasoning:
 		streamType = StreamObservationReasoningDelta
 		text = ev.Message
+	case event.ProviderToolCallStart:
+		streamType = StreamObservationToolCallStart
+		toolCallStream = runtimeModelToolCallStream(ev)
+	case event.ProviderToolCallDelta:
+		streamType = StreamObservationToolCallDelta
+		toolCallStream = runtimeModelToolCallStream(ev)
+	case event.ProviderToolCallEnd:
+		streamType = StreamObservationToolCallEnd
+		toolCallStream = runtimeModelToolCallStream(ev)
 	case event.ProviderRetry:
 		streamType = StreamObservationModelRetry
 		reason = ev.Message
@@ -741,6 +755,7 @@ func runtimeStreamObservation(ev event.Event, safeMetadata any) *StreamObservati
 	out := &StreamObservation{
 		Type:            streamType,
 		Text:            text,
+		ToolCallStream:  toolCallStream,
 		Reason:          reason,
 		FinishReason:    ev.FinishReason,
 		RawFinishReason: ev.RawFinishReason,
@@ -752,6 +767,18 @@ func runtimeStreamObservation(ev event.Event, safeMetadata any) *StreamObservati
 		out.Reason = ev.Err
 	}
 	return out
+}
+
+func runtimeModelToolCallStream(ev event.Event) *ModelToolCallStream {
+	id := strings.TrimSpace(ev.ToolID)
+	name := strings.TrimSpace(ev.ToolName)
+	if id == "" && name == "" {
+		return nil
+	}
+	return &ModelToolCallStream{
+		ID:   id,
+		Name: name,
+	}
 }
 
 func runtimeSourceRefs(in []event.SourceRef) []SourceRef {

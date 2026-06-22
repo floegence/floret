@@ -23,6 +23,11 @@ reasoning, tool arguments, tool results, and local paths.
 
 * Activity timelines summarize tool, hosted-tool, approval, control, and budget
   state.
+* Runtime stream observations expose provider-neutral model output facts,
+  including text deltas, reasoning deltas, retry/finish signals, and model
+  tool-call stream start/delta/end facts. Model tool-call stream facts identify
+  the call but do not expose argument text; local tool execution remains a
+  separate activity timeline concern.
 * Context statuses show projected and provider-reported context pressure.
 * Compaction events expose context compaction lifecycle.
 

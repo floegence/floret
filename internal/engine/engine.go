@@ -1471,6 +1471,7 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 		}
 	}
 	validator := provider.StreamValidator{}
+	streamedToolCallEnds := map[string]struct{}{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -1509,8 +1510,22 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 			case provider.Reasoning:
 				out.Reasoning += ev.Text
 				e.emit(opts, event.Event{Type: event.ProviderReasoning, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: ev.Text})
+			case provider.ToolCallStart:
+				e.emit(opts, event.Event{Type: event.ProviderToolCallStart, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCallStream.ID, ToolName: ev.ToolCallStream.Name})
+			case provider.ToolCallDelta:
+				e.emit(opts, event.Event{Type: event.ProviderToolCallDelta, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCallStream.ID, ToolName: ev.ToolCallStream.Name})
+			case provider.ToolCallEnd:
+				e.emit(opts, event.Event{Type: event.ProviderToolCallEnd, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: ev.ToolCallStream.ID, ToolName: ev.ToolCallStream.Name})
+				streamedToolCallEnds[ev.ToolCallStream.ID] = struct{}{}
 			case provider.ToolCalls:
 				out.Calls = append(out.Calls, ev.ToolCalls...)
+				for _, call := range ev.ToolCalls {
+					if _, ok := streamedToolCallEnds[call.ID]; ok {
+						continue
+					}
+					e.emit(opts, event.Event{Type: event.ProviderToolCallEnd, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name})
+					streamedToolCallEnds[call.ID] = struct{}{}
+				}
 			case provider.HostedToolCall:
 				if err := validateHostedToolEvent(ev.ToolCall, hostedTools); err != nil {
 					return out, err

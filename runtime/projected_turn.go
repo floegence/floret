@@ -127,28 +127,40 @@ type ModelState struct {
 type ModelEventType string
 
 const (
-	ModelEventDelta     ModelEventType = "delta"
-	ModelEventReasoning ModelEventType = "reasoning"
-	ModelEventToolCalls ModelEventType = "tool_calls"
-	ModelEventUsage     ModelEventType = "usage"
-	ModelEventSources   ModelEventType = "sources"
-	ModelEventDone      ModelEventType = "done"
-	ModelEventEmpty     ModelEventType = "empty"
-	ModelEventTruncated ModelEventType = "truncated"
-	ModelEventError     ModelEventType = "error"
+	ModelEventDelta         ModelEventType = "delta"
+	ModelEventReasoning     ModelEventType = "reasoning"
+	ModelEventToolCallStart ModelEventType = "tool_call_start"
+	ModelEventToolCallDelta ModelEventType = "tool_call_delta"
+	ModelEventToolCallEnd   ModelEventType = "tool_call_end"
+	ModelEventToolCalls     ModelEventType = "tool_calls"
+	ModelEventUsage         ModelEventType = "usage"
+	ModelEventSources       ModelEventType = "sources"
+	ModelEventDone          ModelEventType = "done"
+	ModelEventEmpty         ModelEventType = "empty"
+	ModelEventTruncated     ModelEventType = "truncated"
+	ModelEventError         ModelEventType = "error"
 )
+
+// ModelToolCallStream identifies a tool call while the model is still
+// generating it. The final executable tool calls are delivered separately by
+// ModelEventToolCalls.
+type ModelToolCallStream struct {
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name,omitempty"`
+}
 
 // ModelEvent carries streamed model output.
 type ModelEvent struct {
-	Type          ModelEventType   `json:"type"`
-	Text          string           `json:"text,omitempty"`
-	ToolCalls     []tools.ToolCall `json:"tool_calls,omitempty"`
-	Sources       []SourceRef      `json:"sources,omitempty"`
-	Reason        string           `json:"reason,omitempty"`
-	Usage         ProviderUsage    `json:"usage,omitempty"`
-	ResponseID    string           `json:"response_id,omitempty"`
-	ResponseState *ModelState      `json:"response_state,omitempty"`
-	Err           error            `json:"-"`
+	Type           ModelEventType       `json:"type"`
+	Text           string               `json:"text,omitempty"`
+	ToolCallStream *ModelToolCallStream `json:"tool_call_stream,omitempty"`
+	ToolCalls      []tools.ToolCall     `json:"tool_calls,omitempty"`
+	Sources        []SourceRef          `json:"sources,omitempty"`
+	Reason         string               `json:"reason,omitempty"`
+	Usage          ProviderUsage        `json:"usage,omitempty"`
+	ResponseID     string               `json:"response_id,omitempty"`
+	ResponseState  *ModelState          `json:"response_state,omitempty"`
+	Err            error                `json:"-"`
 }
 
 type SourceRef struct {
@@ -534,15 +546,26 @@ func runtimeToolDefinitions(defs []provider.ToolDefinition) []tools.ToolDefiniti
 
 func providerStreamEvent(ev ModelEvent) provider.StreamEvent {
 	return provider.StreamEvent{
-		Type:          provider.EventType(ev.Type),
-		Text:          ev.Text,
-		ToolCalls:     providerToolCalls(ev.ToolCalls),
-		Sources:       providerSourceRefs(ev.Sources),
-		Reason:        ev.Reason,
-		Usage:         providerUsage(ev.Usage),
-		ResponseID:    ev.ResponseID,
-		ResponseState: providerState(ev.ResponseState),
-		Err:           ev.Err,
+		Type:           provider.EventType(ev.Type),
+		Text:           ev.Text,
+		ToolCallStream: providerToolCallStream(ev.ToolCallStream),
+		ToolCalls:      providerToolCalls(ev.ToolCalls),
+		Sources:        providerSourceRefs(ev.Sources),
+		Reason:         ev.Reason,
+		Usage:          providerUsage(ev.Usage),
+		ResponseID:     ev.ResponseID,
+		ResponseState:  providerState(ev.ResponseState),
+		Err:            ev.Err,
+	}
+}
+
+func providerToolCallStream(call *ModelToolCallStream) provider.ToolCallStream {
+	if call == nil {
+		return provider.ToolCallStream{}
+	}
+	return provider.ToolCallStream{
+		ID:   call.ID,
+		Name: call.Name,
 	}
 }
 
