@@ -2424,9 +2424,16 @@ func TestProviderContextOverflowCompactsAndRetries(t *testing.T) {
 	if len(compactions) != 2 {
 		t.Fatalf("context compaction should emit start and complete events: %#v", compactions)
 	}
+	startMeta, ok := compactions[0].Metadata.(map[string]any)
+	if !ok {
+		t.Fatalf("context compact start metadata = %#v", compactions[0].Metadata)
+	}
 	completeMeta, ok := compactions[1].Metadata.(map[string]any)
 	if !ok {
 		t.Fatalf("context compact complete metadata = %#v", compactions[1].Metadata)
+	}
+	if startMeta["operation_id"] == "" || startMeta["operation_id"] != completeMeta["operation_id"] {
+		t.Fatalf("context compact operation id should link start and complete: start=%#v complete=%#v", startMeta, completeMeta)
 	}
 	if completeMeta["phase"] != engine.ContextCompactPhaseComplete ||
 		completeMeta["trigger"] != compaction.TriggerOverflow ||
@@ -2620,9 +2627,16 @@ func TestCompactionPolicyUsesMessageContextPrefixBudget(t *testing.T) {
 	if len(compactions) != 2 {
 		t.Fatalf("failed compaction should emit start and failed events: %#v", compactions)
 	}
+	startMeta, ok := compactions[0].Metadata.(map[string]any)
+	if !ok {
+		t.Fatalf("start compaction metadata = %#v", compactions[0].Metadata)
+	}
 	failedMeta, ok := compactions[1].Metadata.(map[string]any)
 	if !ok {
 		t.Fatalf("failed compaction metadata = %#v", compactions[1].Metadata)
+	}
+	if startMeta["operation_id"] == "" || startMeta["operation_id"] != failedMeta["operation_id"] {
+		t.Fatalf("failed compaction operation id should link start and failed: start=%#v failed=%#v", startMeta, failedMeta)
 	}
 	if failedMeta["phase"] != engine.ContextCompactPhaseFailed ||
 		compactions[1].Err != "stop after recording policy" ||

@@ -13,6 +13,7 @@ import (
 	"github.com/floegence/floret/internal/provider"
 	"github.com/floegence/floret/internal/provider/adapters"
 	"github.com/floegence/floret/internal/session"
+	"github.com/floegence/floret/internal/session/compaction"
 	"github.com/floegence/floret/observation"
 	"github.com/floegence/floret/tools"
 )
@@ -20,14 +21,15 @@ import (
 // ProjectedTurnOptions configures one Floret-managed run over a host-owned
 // transcript projection.
 type ProjectedTurnOptions struct {
-	Config       config.Config
-	ModelGateway ModelGateway
-	Store        *Store
-	Tools        *tools.Registry
-	Approver     tools.Approver
-	Sink         EventSink
-	LoopLimits   LoopLimits
-	Capabilities CapabilityOptions
+	Config               config.Config
+	ModelGateway         ModelGateway
+	Store                *Store
+	Tools                *tools.Registry
+	Approver             tools.Approver
+	Sink                 EventSink
+	LoopLimits           LoopLimits
+	Capabilities         CapabilityOptions
+	CompactionSummarizer ProjectedTurnCompactionSummarizer
 }
 
 // ProjectedTurnRequest is the provider-visible transcript projection for one
@@ -78,6 +80,39 @@ type TranscriptMessage struct {
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	ToolName   string `json:"tool_name,omitempty"`
 	ToolArgs   string `json:"tool_args,omitempty"`
+}
+
+// ProjectedTurnCompactionSummarizer lets a host provide only the summary text
+// for a projected-turn compaction. Floret still owns cut-point selection,
+// checkpoint message construction, generation/window metadata, and lifecycle
+// events.
+type ProjectedTurnCompactionSummarizer interface {
+	GenerateCompactionSummary(context.Context, ProjectedCompactionSummaryRequest) (ProjectedCompactionSummaryResult, error)
+}
+
+type ProjectedCompactionSummaryRequest struct {
+	RunID                RunID                `json:"run_id,omitempty"`
+	ThreadID             ThreadID             `json:"thread_id,omitempty"`
+	TurnID               TurnID               `json:"turn_id,omitempty"`
+	TraceID              TraceID              `json:"trace_id,omitempty"`
+	PromptScopeID        PromptScopeID        `json:"prompt_scope_id,omitempty"`
+	Step                 int                  `json:"step,omitempty"`
+	History              []TranscriptMessage  `json:"history,omitempty"`
+	CompactedHead        []TranscriptMessage  `json:"compacted_head,omitempty"`
+	RetainedTail         []TranscriptMessage  `json:"retained_tail,omitempty"`
+	Policy               config.ContextPolicy `json:"policy,omitempty"`
+	Trigger              string               `json:"trigger,omitempty"`
+	Reason               string               `json:"reason,omitempty"`
+	Phase                string               `json:"phase,omitempty"`
+	PreviousCompactionID string               `json:"previous_compaction_id,omitempty"`
+	PreviousSummary      string               `json:"previous_summary,omitempty"`
+	ContextUsage         config.ContextUsage  `json:"context_usage,omitempty"`
+	Details              map[string]string    `json:"details,omitempty"`
+}
+
+type ProjectedCompactionSummaryResult struct {
+	Summary string            `json:"summary"`
+	Details map[string]string `json:"details,omitempty"`
 }
 
 // ModelGateway lets a host supply model access while Floret still owns the
@@ -309,6 +344,7 @@ func RunProjectedTurn(ctx context.Context, opts ProjectedTurnOptions, req Projec
 		Tools:        registry,
 		Sink:         activityRecorder,
 		Approver:     opts.Approver,
+		Compactor:    projectedCompactionManager(opts.CompactionSummarizer),
 		Options: engine.Options{
 			RunID:                    ids.runID,
 			ThreadID:                 ids.threadID,
@@ -349,6 +385,58 @@ func RunProjectedTurn(ctx context.Context, opts ProjectedTurnOptions, req Projec
 		History:               history,
 	})
 	return projectedTurnResult(ids, result, activityRecorder.Snapshot(), time.Now().UnixMilli()), result.Err
+}
+
+func projectedCompactionManager(summarizer ProjectedTurnCompactionSummarizer) engine.CompactionManager {
+	if summarizer == nil {
+		return nil
+	}
+	return engine.LocalCompactionManager{Generator: projectedCompactionSummaryGenerator{summarizer: summarizer}}
+}
+
+type projectedCompactionSummaryGenerator struct {
+	summarizer ProjectedTurnCompactionSummarizer
+}
+
+func (g projectedCompactionSummaryGenerator) GenerateSummary(ctx context.Context, prep compaction.Preparation) (string, error) {
+	if g.summarizer == nil {
+		return "", errors.New("projected compaction summarizer is required")
+	}
+	result, err := g.summarizer.GenerateCompactionSummary(ctx, ProjectedCompactionSummaryRequest{
+		RunID:                RunID(prep.Request.Details["run_id"]),
+		ThreadID:             ThreadID(prep.Request.Details["thread_id"]),
+		TurnID:               TurnID(prep.Request.Details["turn_id"]),
+		TraceID:              TraceID(prep.Request.Details["trace_id"]),
+		PromptScopeID:        PromptScopeID(prep.Request.Details["prompt_scope_id"]),
+		Step:                 prep.Request.Step,
+		History:              runtimeMessages(prep.Request.History),
+		CompactedHead:        runtimeMessages(prep.CompactedHead),
+		RetainedTail:         runtimeMessages(prep.RetainedTail),
+		Policy:               configbridge.PublicContextPolicy(prep.Request.Policy),
+		Trigger:              string(prep.Request.Trigger),
+		Reason:               string(prep.Request.Reason),
+		Phase:                string(prep.Request.Phase),
+		PreviousCompactionID: prep.Request.PreviousCompactionID,
+		PreviousSummary:      prep.Request.PreviousSummary,
+		ContextUsage:         configbridge.PublicContextUsage(prep.Result.UsageBefore),
+		Details:              cloneStringMap(prep.Request.Details),
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(result.Details) > 0 {
+		if prep.Result.Details == nil {
+			prep.Result.Details = map[string]string{}
+		}
+		for key, value := range result.Details {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			prep.Result.Details["host."+key] = value
+		}
+	}
+	return strings.TrimSpace(result.Summary), nil
 }
 
 func projectedModelProvider(cfg config.Config, gateway ModelGateway) (provider.Provider, error) {

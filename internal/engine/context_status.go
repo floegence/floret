@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"math"
 
 	"github.com/floegence/floret/internal/provider"
@@ -103,9 +104,14 @@ func cleanRatio(value float64) float64 {
 	return value
 }
 
-func compactionStartMetadata(trigger compaction.Trigger, reason compaction.Reason, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage) map[string]any {
+func compactionOperationID(runID string, step int, trigger compaction.Trigger, reason compaction.Reason) string {
+	return fmt.Sprintf("%s:compact:%d:%s:%s", runID, step, trigger, reason)
+}
+
+func compactionStartMetadata(operationID string, trigger compaction.Trigger, reason compaction.Reason, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage) map[string]any {
 	return map[string]any{
 		"phase":                  ContextCompactPhaseStart,
+		"operation_id":           operationID,
 		"trigger":                trigger,
 		"reason":                 reason,
 		"before_pressure":        beforePressure,
@@ -114,9 +120,10 @@ func compactionStartMetadata(trigger compaction.Trigger, reason compaction.Reaso
 	}
 }
 
-func compactionFailedMetadata(trigger compaction.Trigger, reason compaction.Reason, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage) map[string]any {
+func compactionFailedMetadata(operationID string, trigger compaction.Trigger, reason compaction.Reason, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage) map[string]any {
 	return map[string]any{
 		"phase":                  ContextCompactPhaseFailed,
+		"operation_id":           operationID,
 		"trigger":                trigger,
 		"reason":                 reason,
 		"before_pressure":        beforePressure,
@@ -125,9 +132,10 @@ func compactionFailedMetadata(trigger compaction.Trigger, reason compaction.Reas
 	}
 }
 
-func compactionCompleteMetadata(result compaction.Result) map[string]any {
+func compactionCompleteMetadata(operationID string, result compaction.Result) map[string]any {
 	return map[string]any{
 		"phase":                      ContextCompactPhaseComplete,
+		"operation_id":               operationID,
 		"trigger":                    result.Trigger,
 		"reason":                     result.Reason,
 		"compaction_id":              result.CompactionID,

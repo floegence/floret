@@ -21,6 +21,7 @@ import (
 	"github.com/floegence/floret/internal/session"
 	"github.com/floegence/floret/internal/session/artifact"
 	"github.com/floegence/floret/internal/session/compaction"
+	"github.com/floegence/floret/internal/session/contextpolicy"
 	"github.com/floegence/floret/internal/sessiontree"
 	"github.com/floegence/floret/internal/storage"
 	"github.com/floegence/floret/internal/storage/sqlite"
@@ -241,28 +242,30 @@ type EventSink interface {
 }
 
 type Event struct {
-	Type         string                            `json:"type"`
-	TraceID      TraceID                           `json:"trace_id,omitempty"`
-	RunID        RunID                             `json:"run_id,omitempty"`
-	ThreadID     ThreadID                          `json:"thread_id,omitempty"`
-	TurnID       TurnID                            `json:"turn_id,omitempty"`
-	Step         int                               `json:"step,omitempty"`
-	Provider     string                            `json:"provider,omitempty"`
-	Model        string                            `json:"model,omitempty"`
-	Message      string                            `json:"message,omitempty"`
-	Result       string                            `json:"result,omitempty"`
-	Error        string                            `json:"error,omitempty"`
-	ToolID       string                            `json:"tool_id,omitempty"`
-	ToolName     string                            `json:"tool_name,omitempty"`
-	ToolKind     string                            `json:"tool_kind,omitempty"`
-	ArgsHash     string                            `json:"args_hash,omitempty"`
-	DurationMS   int64                             `json:"duration_ms,omitempty"`
-	FinishReason string                            `json:"finish_reason,omitempty"`
-	Activity     *observation.ActivityPresentation `json:"activity,omitempty"`
-	Stream       *StreamObservation                `json:"stream,omitempty"`
-	Sources      []SourceRef                       `json:"sources,omitempty"`
-	Metadata     map[string]any                    `json:"metadata,omitempty"`
-	Timestamp    time.Time                         `json:"timestamp,omitempty"`
+	Type          string                            `json:"type"`
+	TraceID       TraceID                           `json:"trace_id,omitempty"`
+	RunID         RunID                             `json:"run_id,omitempty"`
+	ThreadID      ThreadID                          `json:"thread_id,omitempty"`
+	TurnID        TurnID                            `json:"turn_id,omitempty"`
+	Step          int                               `json:"step,omitempty"`
+	Provider      string                            `json:"provider,omitempty"`
+	Model         string                            `json:"model,omitempty"`
+	Message       string                            `json:"message,omitempty"`
+	Result        string                            `json:"result,omitempty"`
+	Error         string                            `json:"error,omitempty"`
+	ToolID        string                            `json:"tool_id,omitempty"`
+	ToolName      string                            `json:"tool_name,omitempty"`
+	ToolKind      string                            `json:"tool_kind,omitempty"`
+	ArgsHash      string                            `json:"args_hash,omitempty"`
+	DurationMS    int64                             `json:"duration_ms,omitempty"`
+	FinishReason  string                            `json:"finish_reason,omitempty"`
+	Activity      *observation.ActivityPresentation `json:"activity,omitempty"`
+	Stream        *StreamObservation                `json:"stream,omitempty"`
+	ContextStatus *observation.ContextStatus        `json:"context_status,omitempty"`
+	Compaction    *observation.CompactionEvent      `json:"compaction,omitempty"`
+	Sources       []SourceRef                       `json:"sources,omitempty"`
+	Metadata      map[string]any                    `json:"metadata,omitempty"`
+	Timestamp     time.Time                         `json:"timestamp,omitempty"`
 }
 
 type StreamObservationType string
@@ -873,32 +876,172 @@ func (s runtimeEventSink) Emit(ev event.Event) {
 }
 
 func runtimeEvent(ev event.Event) Event {
+	contextStatus := runtimeContextStatus(ev)
+	compactionEvent := runtimeCompactionEvent(ev)
 	sanitized := event.Sanitize(ev)
 	stream := runtimeStreamObservation(ev, sanitized.Metadata)
 	ev = sanitized
 	return Event{
-		Type:         string(ev.Type),
-		TraceID:      TraceID(ev.TraceID),
-		RunID:        RunID(ev.RunID),
-		ThreadID:     ThreadID(ev.ThreadID),
-		TurnID:       TurnID(ev.TurnID),
-		Step:         ev.Step,
-		Provider:     ev.Provider,
-		Model:        ev.Model,
-		Message:      ev.Message,
-		Result:       ev.Result,
-		Error:        ev.Err,
-		ToolID:       ev.ToolID,
-		ToolName:     ev.ToolName,
-		ToolKind:     ev.ToolKind,
-		ArgsHash:     ev.ArgsHash,
-		DurationMS:   ev.Duration,
-		FinishReason: ev.FinishReason,
-		Activity:     cloneActivityPresentation(ev.Activity),
-		Stream:       stream,
-		Sources:      runtimeSourceRefs(ev.Sources),
-		Metadata:     safeMetadata(ev.Metadata),
-		Timestamp:    ev.Timestamp,
+		Type:          string(ev.Type),
+		TraceID:       TraceID(ev.TraceID),
+		RunID:         RunID(ev.RunID),
+		ThreadID:      ThreadID(ev.ThreadID),
+		TurnID:        TurnID(ev.TurnID),
+		Step:          ev.Step,
+		Provider:      ev.Provider,
+		Model:         ev.Model,
+		Message:       ev.Message,
+		Result:        ev.Result,
+		Error:         ev.Err,
+		ToolID:        ev.ToolID,
+		ToolName:      ev.ToolName,
+		ToolKind:      ev.ToolKind,
+		ArgsHash:      ev.ArgsHash,
+		DurationMS:    ev.Duration,
+		FinishReason:  ev.FinishReason,
+		Activity:      cloneActivityPresentation(ev.Activity),
+		Stream:        stream,
+		ContextStatus: contextStatus,
+		Compaction:    compactionEvent,
+		Sources:       runtimeSourceRefs(ev.Sources),
+		Metadata:      safeMetadata(ev.Metadata),
+		Timestamp:     ev.Timestamp,
+	}
+}
+
+func runtimeContextStatus(ev event.Event) *observation.ContextStatus {
+	switch ev.Type {
+	case event.ProviderRequest:
+		meta, ok := ev.Metadata.(map[string]any)
+		if !ok {
+			return nil
+		}
+		pressure, ok := meta["context_pressure"].(contextpolicy.ContextPressure)
+		if !ok {
+			return nil
+		}
+		estimate, _ := meta["request_estimate"].(contextpolicy.RequestEstimate)
+		status := observation.ContextStatusFromRequest(observation.RequestObservation{
+			RunID:                ev.RunID,
+			ThreadID:             ev.ThreadID,
+			TurnID:               ev.TurnID,
+			Step:                 ev.Step,
+			RequestID:            stringFromMetadata(meta, "request_id"),
+			LogicalRequestID:     stringFromMetadata(meta, "logical_request_id"),
+			Attempt:              intFromMetadata(meta, "attempt"),
+			Provider:             ev.Provider,
+			Model:                ev.Model,
+			ObservedAt:           ev.Timestamp,
+			RequestEstimate:      configbridge.RequestEstimate(estimate),
+			ProjectedPressure:    configbridge.PublicContextPressure(pressure),
+			CompactionGeneration: intFromMetadata(meta, "compaction_generation"),
+			CompactionWindowID:   stringFromMetadata(meta, "compaction_window_id"),
+		})
+		return &status
+	case event.ProviderUsage:
+		status, ok := ev.Metadata.(engine.ProviderUsageContextStatus)
+		if !ok || status.Phase != engine.ProviderUsagePhaseFinalContextStatus {
+			return nil
+		}
+		out, ok := observation.ContextStatusFromProviderUsage(observation.ProviderUsageObservation{
+			RunID:                ev.RunID,
+			ThreadID:             ev.ThreadID,
+			TurnID:               ev.TurnID,
+			Step:                 ev.Step,
+			RequestID:            status.RequestID,
+			LogicalRequestID:     status.LogicalRequestID,
+			Attempt:              status.Attempt,
+			Provider:             ev.Provider,
+			Model:                ev.Model,
+			ObservedAt:           ev.Timestamp,
+			Usage:                observationProviderUsage(status.Usage),
+			RequestEstimate:      configbridge.RequestEstimate(status.RequestEstimate),
+			ContextPressure:      configbridge.PublicContextPressure(status.ContextPressure),
+			CompactionGeneration: status.CompactionGeneration,
+			CompactionWindowID:   status.CompactionWindowID,
+		})
+		if !ok {
+			return nil
+		}
+		return &out
+	default:
+		return nil
+	}
+}
+
+func runtimeCompactionEvent(ev event.Event) *observation.CompactionEvent {
+	if ev.Type != event.ContextCompact {
+		return nil
+	}
+	meta, ok := ev.Metadata.(map[string]any)
+	if !ok {
+		return nil
+	}
+	phase := stringFromMetadata(meta, "phase")
+	if phase == "" || (ev.Err != "" && phase != observation.CompactionPhaseFailed) {
+		return nil
+	}
+	out := observation.CompactionEvent{
+		RunID:                   ev.RunID,
+		ThreadID:                ev.ThreadID,
+		TurnID:                  ev.TurnID,
+		Step:                    ev.Step,
+		OperationID:             stringFromMetadata(meta, "operation_id"),
+		Phase:                   phase,
+		Status:                  observation.CompactionStatusRunning,
+		Trigger:                 stringFromMetadata(meta, "trigger"),
+		Reason:                  stringFromMetadata(meta, "reason"),
+		CompactionID:            stringFromMetadata(meta, "compaction_id"),
+		CompactionGeneration:    intFromMetadata(meta, "compaction_generation"),
+		CompactionWindowID:      stringFromMetadata(meta, "compaction_window_id"),
+		CompactedThroughEntryID: stringFromMetadata(meta, "compacted_through_entry_id"),
+		TokensBefore:            int64FromMetadata(meta, "tokens_before"),
+		TokensAfterEstimate:     int64FromMetadata(meta, "tokens_after_estimate"),
+		Error:                   ev.Err,
+		ObservedAt:              ev.Timestamp,
+	}
+	switch phase {
+	case observation.CompactionPhaseStart:
+		out.Status = observation.CompactionStatusRunning
+	case observation.CompactionPhaseComplete:
+		out.Status = observation.CompactionStatusCompacted
+	case observation.CompactionPhaseFailed:
+		out.Status = observation.CompactionStatusFailed
+	default:
+		return nil
+	}
+	if pressure, ok := meta["before_pressure"].(contextpolicy.ContextPressure); ok {
+		out.BeforePressure = configbridge.PublicContextPressure(pressure)
+	}
+	if usage, ok := meta["message_context_before"].(contextpolicy.Usage); ok {
+		out.ContextBefore = configbridge.PublicContextUsage(usage)
+		out.TokensBefore = usage.InputTokens
+	}
+	if usage, ok := meta["context_before"].(contextpolicy.Usage); ok {
+		out.ContextBefore = configbridge.PublicContextUsage(usage)
+		if out.TokensBefore == 0 {
+			out.TokensBefore = usage.InputTokens
+		}
+	}
+	if usage, ok := meta["context_after"].(contextpolicy.Usage); ok {
+		out.ContextAfter = configbridge.PublicContextUsage(usage)
+	}
+	return &out
+}
+
+func observationProviderUsage(in provider.Usage) observation.ProviderUsage {
+	in = in.Normalized()
+	return observation.ProviderUsage{
+		InputTokens:       in.InputTokens,
+		OutputTokens:      in.OutputTokens,
+		ReasoningTokens:   in.ReasoningTokens,
+		CacheReadTokens:   in.CacheReadTokens,
+		CacheWriteTokens:  in.CacheWriteTokens,
+		TotalTokens:       in.TotalTokens,
+		WindowInputTokens: in.WindowInputTokens,
+		CostUSD:           in.CostUSD,
+		Source:            string(in.Source),
+		Available:         in.Available,
 	}
 }
 
@@ -1040,6 +1183,54 @@ func metadataStringMap(value any) map[string]string {
 		return out
 	default:
 		return nil
+	}
+}
+
+func stringFromMetadata(meta map[string]any, key string) string {
+	switch v := meta[key].(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case fmt.Stringer:
+		return strings.TrimSpace(v.String())
+	default:
+		if v == nil {
+			return ""
+		}
+		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	}
+}
+
+func intFromMetadata(meta map[string]any, key string) int {
+	switch v := meta[key].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case int32:
+		return int(v)
+	case float64:
+		return int(v)
+	case float32:
+		return int(v)
+	default:
+		return 0
+	}
+}
+
+func int64FromMetadata(meta map[string]any, key string) int64 {
+	switch v := meta[key].(type) {
+	case int:
+		return int64(v)
+	case int64:
+		return v
+	case int32:
+		return int64(v)
+	case float64:
+		return int64(v)
+	case float32:
+		return int64(v)
+	default:
+		return 0
 	}
 }
 

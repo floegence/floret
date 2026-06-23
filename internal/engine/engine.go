@@ -1164,6 +1164,13 @@ func providerRequestMetadata(req provider.Request) map[string]any {
 	estimate := req.RequestEstimate.Normalized(req.ContextPolicy)
 	pressure := req.ContextPressure
 	return map[string]any{
+		"request_id":             requestID(req.RunID, req.Step),
+		"logical_request_id":     req.LogicalRequestID,
+		"attempt":                req.Attempt,
+		"request_estimate":       estimate,
+		"context_pressure":       pressure,
+		"compaction_generation":  req.RawPlan.CompactionGeneration,
+		"compaction_window_id":   req.RawPlan.CompactionWindowID,
 		"message_count":          len(req.Messages),
 		"raw_segment_count":      len(req.RawPlan.Segments),
 		"local_tool_count":       len(req.Tools),
@@ -1351,6 +1358,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 	if manager == nil {
 		return nil, errors.New("compaction manager is required when context exceeds policy")
 	}
+	operationID := compactionOperationID(opts.RunID, step, trigger, reason)
 	e.emit(opts, event.Event{
 		Type:     event.ContextCompact,
 		TraceID:  opts.TraceID,
@@ -1361,7 +1369,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		Model:    opts.Model,
 		Message:  fmt.Sprintf("%s/%s", trigger, reason),
 		Metrics:  usage,
-		Metadata: compactionStartMetadata(trigger, reason, beforePressure, usage),
+		Metadata: compactionStartMetadata(operationID, trigger, reason, beforePressure, usage),
 	})
 	result, active, err := manager.Compact(ctx, CompactionRequest{
 		RunID:         opts.RunID,
@@ -1383,7 +1391,9 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 			"run_id":                 opts.RunID,
 			"thread_id":              opts.ThreadID,
 			"turn_id":                opts.TurnID,
+			"trace_id":               opts.TraceID,
 			"prompt_scope_id":        opts.PromptScopeID,
+			"operation_id":           operationID,
 			"context_window":         fmt.Sprintf("%d", usage.ContextWindow),
 			"threshold_tokens":       fmt.Sprintf("%d", usage.ThresholdTokens),
 			"max_output_tokens":      fmt.Sprintf("%d", usage.MaxOutputTokens),
@@ -1408,7 +1418,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 			Message:  fmt.Sprintf("%s/%s", trigger, reason),
 			Err:      err.Error(),
 			Metrics:  usage,
-			Metadata: compactionFailedMetadata(trigger, reason, beforePressure, usage),
+			Metadata: compactionFailedMetadata(operationID, trigger, reason, beforePressure, usage),
 		})
 		return nil, err
 	}
@@ -1426,7 +1436,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		Message:  result.CompactionID,
 		Result:   result.Summary,
 		Metrics:  result,
-		Metadata: compactionCompleteMetadata(result),
+		Metadata: compactionCompleteMetadata(operationID, result),
 	})
 	return active, nil
 }

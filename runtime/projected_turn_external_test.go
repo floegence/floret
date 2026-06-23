@@ -3,6 +3,7 @@ package runtime_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -17,6 +18,152 @@ type publicModelGateway func(context.Context, runtime.ModelRequest) (<-chan runt
 
 func (f publicModelGateway) StreamModel(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
 	return f(ctx, req)
+}
+
+type publicCompactionSummarizer struct {
+	requests []runtime.ProjectedCompactionSummaryRequest
+	err      error
+}
+
+func (s *publicCompactionSummarizer) GenerateCompactionSummary(_ context.Context, req runtime.ProjectedCompactionSummaryRequest) (runtime.ProjectedCompactionSummaryResult, error) {
+	s.requests = append(s.requests, req)
+	if s.err != nil {
+		return runtime.ProjectedCompactionSummaryResult{}, s.err
+	}
+	return runtime.ProjectedCompactionSummaryResult{
+		Summary: "Older context was compacted for the next provider request.",
+		Details: map[string]string{
+			"summary_source": "test",
+		},
+	}, nil
+}
+
+func TestRunProjectedTurnUsesPublicCompactionSummarizer(t *testing.T) {
+	summarizer := &publicCompactionSummarizer{}
+	sink := &collectingEventSink{}
+	result, err := runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "after compaction",
+			SystemPrompt: "test",
+			ContextPolicy: config.ContextPolicy{
+				ContextWindowTokens:   1000,
+				ReservedOutputTokens:  100,
+				ReservedSummaryTokens: 80,
+				RecentTailTokens:      20,
+				RecentUserTokens:      20,
+			},
+		},
+		Store:                runtime.NewMemoryStore(),
+		Sink:                 sink,
+		CompactionSummarizer: summarizer,
+	}, runtime.ProjectedTurnRequest{
+		RunID:         "run-compact",
+		ThreadID:      "thread-compact",
+		TurnID:        "turn-compact",
+		TraceID:       "trace-compact",
+		PromptScopeID: "thread-compact",
+		History: []runtime.TranscriptMessage{
+			{Role: "user", Content: strings.Repeat("old context ", 200)},
+			{Role: "assistant", Content: strings.Repeat("old answer ", 120)},
+			{Role: "user", Content: "continue from here"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != runtime.TurnStatusCompleted || result.Output != "after compaction" || result.Metrics.Compactions != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(summarizer.requests) != 1 {
+		t.Fatalf("summarizer requests = %#v", summarizer.requests)
+	}
+	req := summarizer.requests[0]
+	if req.RunID != "run-compact" || req.ThreadID != "thread-compact" || req.TurnID != "turn-compact" || req.TraceID != "trace-compact" || req.PromptScopeID != "thread-compact" {
+		t.Fatalf("summary request identity = %#v", req)
+	}
+	if len(req.CompactedHead) == 0 || len(req.RetainedTail) == 0 || req.ContextUsage.InputTokens == 0 || req.Policy.ContextWindowTokens == 0 {
+		t.Fatalf("summary request missing compaction context = %#v", req)
+	}
+	var compactions []observation.CompactionEvent
+	var statuses []observation.ContextStatus
+	for _, ev := range sink.events {
+		if ev.ContextStatus != nil {
+			statuses = append(statuses, *ev.ContextStatus)
+		}
+		if ev.Compaction != nil {
+			compactions = append(compactions, *ev.Compaction)
+		}
+	}
+	if len(statuses) == 0 {
+		t.Fatalf("missing public context status events: %#v", sink.events)
+	}
+	if len(compactions) != 2 {
+		t.Fatalf("compaction events = %#v", compactions)
+	}
+	if compactions[0].Phase != observation.CompactionPhaseStart || compactions[1].Phase != observation.CompactionPhaseComplete {
+		t.Fatalf("compaction phases = %#v", compactions)
+	}
+	if compactions[0].OperationID == "" || compactions[0].OperationID != compactions[1].OperationID {
+		t.Fatalf("operation ids should link start and complete: %#v", compactions)
+	}
+	if compactions[1].CompactionID == "" || compactions[1].CompactionGeneration == 0 || compactions[1].CompactionWindowID == "" {
+		t.Fatalf("complete event missing durable compaction fields: %#v", compactions[1])
+	}
+}
+
+func TestRunProjectedTurnEmitsFailedPublicCompactionObservation(t *testing.T) {
+	summarizer := &publicCompactionSummarizer{err: errors.New("summary unavailable")}
+	sink := &collectingEventSink{}
+	result, err := runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "unused",
+			SystemPrompt: "test",
+			ContextPolicy: config.ContextPolicy{
+				ContextWindowTokens:   1000,
+				ReservedOutputTokens:  100,
+				ReservedSummaryTokens: 80,
+				RecentTailTokens:      20,
+			},
+		},
+		Store:                runtime.NewMemoryStore(),
+		Sink:                 sink,
+		CompactionSummarizer: summarizer,
+	}, runtime.ProjectedTurnRequest{
+		RunID:         "run-compact-fail",
+		ThreadID:      "thread-compact-fail",
+		TurnID:        "turn-compact-fail",
+		TraceID:       "trace-compact-fail",
+		PromptScopeID: "thread-compact-fail",
+		History: []runtime.TranscriptMessage{
+			{Role: "user", Content: strings.Repeat("old context ", 200)},
+			{Role: "user", Content: "continue"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "summary unavailable") {
+		t.Fatalf("err = %v", err)
+	}
+	if result.Status != runtime.TurnStatusFailed {
+		t.Fatalf("result = %#v", result)
+	}
+	var compactions []observation.CompactionEvent
+	for _, ev := range sink.events {
+		if ev.Compaction != nil {
+			compactions = append(compactions, *ev.Compaction)
+		}
+	}
+	if len(compactions) != 2 {
+		t.Fatalf("compaction events = %#v", compactions)
+	}
+	if compactions[0].Phase != observation.CompactionPhaseStart || compactions[1].Phase != observation.CompactionPhaseFailed {
+		t.Fatalf("compaction phases = %#v", compactions)
+	}
+	if compactions[0].OperationID == "" || compactions[0].OperationID != compactions[1].OperationID || compactions[1].Error != "summary unavailable" {
+		t.Fatalf("failed compaction should keep operation id and error: %#v", compactions)
+	}
 }
 
 func TestRunProjectedTurnFromPublicPackages(t *testing.T) {

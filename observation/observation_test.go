@@ -233,6 +233,7 @@ func TestCompactionEventFromEvents(t *testing.T) {
 		ObservedAt: time.Unix(30, 0),
 		Metadata: map[string]any{
 			"phase":                  CompactionPhaseStart,
+			"operation_id":           "op-1",
 			"trigger":                "post_response",
 			"reason":                 "threshold",
 			"before_pressure":        config.ContextPressure{WindowInputTokens: 850},
@@ -250,6 +251,7 @@ func TestCompactionEventFromEvents(t *testing.T) {
 		ObservedAt: time.Unix(31, 0),
 		Metadata: map[string]any{
 			"phase":                      CompactionPhaseComplete,
+			"operation_id":               "op-1",
 			"trigger":                    "post_response",
 			"reason":                     "threshold",
 			"compaction_id":              "compact-1",
@@ -272,6 +274,7 @@ func TestCompactionEventFromEvents(t *testing.T) {
 		ObservedAt: time.Unix(32, 0),
 		Metadata: map[string]any{
 			"phase":                  CompactionPhaseFailed,
+			"operation_id":           "op-2",
 			"trigger":                "provider_overflow",
 			"reason":                 "provider_overflow",
 			"before_pressure":        config.ContextPressure{WindowInputTokens: 990},
@@ -286,6 +289,7 @@ func TestCompactionEventFromEvents(t *testing.T) {
 	}
 	if started.Phase != CompactionPhaseStart ||
 		started.Status != CompactionStatusRunning ||
+		started.OperationID != "op-1" ||
 		started.Trigger != string("post_response") ||
 		started.Reason != string("threshold") ||
 		started.TokensBefore != 850 ||
@@ -300,6 +304,7 @@ func TestCompactionEventFromEvents(t *testing.T) {
 	}
 	if done.Phase != CompactionPhaseComplete ||
 		done.Status != CompactionStatusCompacted ||
+		done.OperationID != "op-1" ||
 		done.CompactionID != "compact-1" ||
 		done.CompactionGeneration != 3 ||
 		done.CompactionWindowID != "window-3" ||
@@ -314,6 +319,7 @@ func TestCompactionEventFromEvents(t *testing.T) {
 	}
 	if failedEvent.Phase != CompactionPhaseFailed ||
 		failedEvent.Status != CompactionStatusFailed ||
+		failedEvent.OperationID != "op-2" ||
 		failedEvent.Error != "summary failed" ||
 		failedEvent.Trigger != string("provider_overflow") ||
 		failedEvent.TokensBefore != 990 ||

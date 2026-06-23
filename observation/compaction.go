@@ -23,6 +23,7 @@ type CompactionEvent struct {
 	ThreadID                string                 `json:"thread_id,omitempty"`
 	TurnID                  string                 `json:"turn_id,omitempty"`
 	Step                    int                    `json:"step,omitempty"`
+	OperationID             string                 `json:"operation_id,omitempty"`
 	Phase                   string                 `json:"phase"`
 	Status                  string                 `json:"status"`
 	Trigger                 string                 `json:"trigger,omitempty"`
@@ -53,16 +54,17 @@ func CompactionEventFromEvent(ev Event) (CompactionEvent, bool) {
 		return CompactionEvent{}, false
 	}
 	out := CompactionEvent{
-		RunID:      ev.RunID,
-		ThreadID:   ev.ThreadID,
-		TurnID:     ev.TurnID,
-		Step:       ev.Step,
-		Phase:      phase,
-		Status:     CompactionStatusRunning,
-		Trigger:    stringFromAny(meta["trigger"]),
-		Reason:     stringFromAny(meta["reason"]),
-		ObservedAt: ev.ObservedAt,
-		Error:      ev.Error,
+		RunID:       ev.RunID,
+		ThreadID:    ev.ThreadID,
+		TurnID:      ev.TurnID,
+		Step:        ev.Step,
+		OperationID: stringFromAny(meta["operation_id"]),
+		Phase:       phase,
+		Status:      CompactionStatusRunning,
+		Trigger:     stringFromAny(meta["trigger"]),
+		Reason:      stringFromAny(meta["reason"]),
+		ObservedAt:  ev.ObservedAt,
+		Error:       ev.Error,
 	}
 	if usage, ok := contextUsageFromAny(meta["message_context_before"]); ok {
 		out.ContextBefore = usage
