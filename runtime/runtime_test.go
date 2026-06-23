@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -69,6 +70,114 @@ func TestHostRunsFakeProviderThread(t *testing.T) {
 		return ev.Type == "provider_delta" && ev.ThreadID == "thread" && ev.RunID == "turn-1"
 	}) {
 		t.Fatalf("runtime events missing provider delta: %#v", rec.events)
+	}
+}
+
+func TestHostRunsThreadThroughModelGateway(t *testing.T) {
+	ctx := context.Background()
+	var mu sync.Mutex
+	var requests []ModelRequest
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		mu.Lock()
+		requests = append(requests, req)
+		mu.Unlock()
+		return runtimeGatewayEvents("gateway hosted thread"), nil
+	})
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "gateway system",
+		},
+		ModelGateway: gateway,
+		IDGenerator:  deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := host.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != TurnStatusCompleted || result.Output != "gateway hosted thread" {
+		t.Fatalf("result = %#v", result)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	req, ok := findRuntimeModelRequest(requests, "thread", "turn-1", 1)
+	if !ok {
+		t.Fatalf("gateway requests = %#v", requests)
+	}
+	if req.ThreadID != "thread" || req.TurnID != "turn-1" || req.PromptScopeID != "thread" {
+		t.Fatalf("gateway request identity = %#v", req)
+	}
+	if req.Provider != string(config.ProviderFake) || req.Model != "fake-model" {
+		t.Fatalf("gateway request provider/model = %#v", req)
+	}
+}
+
+func TestHostSubAgentsInheritModelGatewayWithChildPromptScope(t *testing.T) {
+	ctx := context.Background()
+	var mu sync.Mutex
+	var requests []ModelRequest
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		mu.Lock()
+		requests = append(requests, req)
+		mu.Unlock()
+		return runtimeGatewayEvents("gateway child done"), nil
+	})
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "gateway system",
+		},
+		ModelGateway: gateway,
+		IDGenerator:  deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+		ParentThreadID: "parent",
+		ParentTurnID:   "parent-turn",
+		ThreadID:       "child",
+		TaskName:       "Review API",
+		Message:        "review the runtime API",
+		HostProfileRef: "reviewer",
+		ForkMode:       SubAgentForkNone,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{
+		ParentThreadID: "parent",
+		ChildThreadIDs: []ThreadID{"child"},
+		Timeout:        2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waited.TimedOut || len(waited.Snapshots) != 1 || waited.Snapshots[0].LastMessage != "gateway child done" {
+		t.Fatalf("waited = %#v", waited)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	req, ok := findRuntimeModelRequest(requests, "child", "", 1)
+	if !ok {
+		t.Fatalf("gateway requests = %#v", requests)
+	}
+	if req.ThreadID != "child" || req.PromptScopeID != "child" {
+		t.Fatalf("child gateway request should use child identity and prompt scope: %#v", req)
 	}
 }
 
@@ -729,4 +838,31 @@ func deterministicIDs() func(string) string {
 
 func allowRuntimeTools(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {
 	return tools.PermissionDecisionAllow, nil
+}
+
+type runtimeModelGateway func(context.Context, ModelRequest) (<-chan ModelEvent, error)
+
+func (f runtimeModelGateway) StreamModel(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+	return f(ctx, req)
+}
+
+func runtimeGatewayEvents(text string) <-chan ModelEvent {
+	events := make(chan ModelEvent, 2)
+	events <- ModelEvent{Type: ModelEventDelta, Text: text}
+	events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+	close(events)
+	return events
+}
+
+func findRuntimeModelRequest(requests []ModelRequest, threadID, turnID string, step int) (ModelRequest, bool) {
+	for _, req := range requests {
+		if string(req.ThreadID) != threadID || req.Step != step {
+			continue
+		}
+		if turnID != "" && string(req.TurnID) != turnID {
+			continue
+		}
+		return req, true
+	}
+	return ModelRequest{}, false
 }

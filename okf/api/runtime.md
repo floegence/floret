@@ -22,8 +22,9 @@ loop over a transcript projection.
 * `RunProjectedTurn` executes one run from host-owned transcript projection.
 * `SpawnSubAgent`, `SendSubAgentInput`, `WaitSubAgents`, `ListSubAgents`, and
   `CloseSubAgent` manage durable child threads under a hosted parent thread.
-* `ModelGateway` lets a host supply model transport while Floret owns loop
-  control, tool dispatch, and ledgers.
+* `ModelGateway` lets a host supply model transport through
+  `HostOptions.ModelGateway` or `ProjectedTurnOptions.ModelGateway` while
+  Floret owns loop control, tool dispatch, and ledgers.
 * `ModelEventToolCallStart`, `ModelEventToolCallDelta`, and
   `ModelEventToolCallEnd` expose model tool-call streaming as provider-neutral
   public runtime events. They identify the call being generated without carrying
@@ -39,6 +40,11 @@ Subagents are parent-managed child threads, not a graph workflow framework and
 not host-owned pending tool work. Each child uses its own durable `ThreadID` and
 prompt scope; host products own agent profiles, permission policy, UI, and
 orchestration prompts.
+
+When `HostOptions.ModelGateway` is set, hosted parent turns, hosted child turns,
+and hosted title generation all use the supplied model transport. The gateway is
+still invoked with the concrete runtime identity for each request, so a child
+turn uses the child `ThreadID` and prompt scope.
 
 Child `ThreadID` is the lifecycle target for spawn, send, wait, list, and close.
 Task names and agent paths are reference metadata and may repeat. Queued child

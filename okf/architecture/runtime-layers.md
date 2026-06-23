@@ -18,6 +18,11 @@ provider execution.
 runs turns, retries, completes pending tool work, manages durable child threads,
 deletes thread data, and returns host-safe snapshots.
 
+`HostOptions.ModelGateway` lets a host route hosted parent turns, child turns,
+and hosted title generation through product-owned model transport while Floret
+still owns request construction, provider loop control, ledgers, tool dispatch,
+and runtime events.
+
 `AgentHarness` is the internal durable conversation layer. It owns threads,
 parent-child thread lifecycle, turn lifecycle, retries, forks, titles, and
 projection of an active journal path into one engine execution.
@@ -30,7 +35,9 @@ emission.
 
 `runtime.RunProjectedTurn` supports hosts that already own durable conversation
 rows. The host supplies a provider-visible transcript projection, while Floret
-still owns the loop, local tools, context pressure, ledgers, and events.
+still owns the loop, local tools, context pressure, ledgers, and events. It uses
+the same `runtime.ModelGateway` contract as hosted threads when the host supplies
+one.
 
 # Child Threads
 

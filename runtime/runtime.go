@@ -16,7 +16,6 @@ import (
 	"github.com/floegence/floret/internal/engine"
 	"github.com/floegence/floret/internal/event"
 	"github.com/floegence/floret/internal/provider"
-	"github.com/floegence/floret/internal/provider/adapters"
 	"github.com/floegence/floret/internal/provider/cache"
 	"github.com/floegence/floret/internal/session"
 	"github.com/floegence/floret/internal/session/artifact"
@@ -52,6 +51,7 @@ type Host interface {
 
 type HostOptions struct {
 	Config       config.Config
+	ModelGateway ModelGateway
 	Store        *Store
 	Tools        *tools.Registry
 	Approver     tools.Approver
@@ -398,7 +398,7 @@ func NewHost(opts HostOptions) (Host, error) {
 	if err != nil {
 		return nil, err
 	}
-	provider, err := adapters.NewProvider(cfg)
+	provider, err := projectedModelProvider(cfg, opts.ModelGateway)
 	if err != nil {
 		return nil, err
 	}

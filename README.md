@@ -90,11 +90,13 @@ Everything under `internal/` is Floret implementation. Downstream applications
 should not bypass the `runtime` facade to build turn requests, call Floret
 implementation contracts, manage Floret journal tables, or parse prompt-cache
 and provider-ledger records. If the product owns model transport, implement
-`runtime.ModelGateway` and let Floret construct the turn request, own the loop,
-dispatch tools, and record runtime facts. Product data such as owners,
-workspaces, pinned state, read watermarks, and billing metadata belongs in the
-host database keyed by `runtime.ThreadID`. Any package outside the stable list
-above is contributor or runtime implementation, not a downstream contract.
+`runtime.ModelGateway` through either `runtime.HostOptions.ModelGateway` or
+`runtime.ProjectedTurnOptions.ModelGateway` and let Floret construct the turn
+request, own the loop, dispatch tools, and record runtime facts. Product data
+such as owners, workspaces, pinned state, read watermarks, and billing metadata
+belongs in the host database keyed by `runtime.ThreadID`. Any package outside
+the stable list above is contributor or runtime implementation, not a downstream
+contract.
 
 ## 🚀 Quick Start
 
@@ -161,8 +163,9 @@ func main() {
 	store := runtime.NewMemoryStore()
 	host, err := runtime.NewHost(runtime.HostOptions{
 		Config: cfg,
-		Store:  store,
-		Tools:  registry,
+		// Set ModelGateway when the host owns model transport.
+		Store: store,
+		Tools: registry,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -199,6 +202,10 @@ management. Each child has its own `ThreadID`, turn lifecycle, prompt-cache
 scope, provider ledger, and journal. The parent relationship is durable
 metadata, while product policy, UI labels, permissions, and orchestration prompts
 remain host-owned.
+
+When `HostOptions.ModelGateway` is set, parent turns, child turns, and internal
+hosted model work such as title generation use the same host-owned model
+transport. Child turns still carry their own child `ThreadID` and prompt scope.
 
 Lifecycle operations target child `ThreadID`s. Task names and agent paths are
 display/reference metadata and may repeat under the same parent. Inputs queued
