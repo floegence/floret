@@ -31,6 +31,12 @@ A normal harness turn may use the same string for `RunID` and `TurnID`, but code
 must not rely on that equality. Prompt-cache rows and JSON use
 `prompt_scope_id`, not `run_id`, as the reuse boundary.
 
+Parent-managed child threads use the child `ThreadID` as the durable
+conversation identity. `AgentPath` and task names are references for hosts,
+models, and test UI surfaces; they must not replace `ThreadID` in storage,
+prompt-cache, provider ledger, or lifecycle APIs. A child thread normally uses
+`PromptScopeID == child ThreadID`, so parent and child ledgers remain isolated.
+
 # Key Source Files
 
 * [Repository Guide](/AGENTS.md)

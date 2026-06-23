@@ -89,8 +89,13 @@ type ThreadMeta struct {
 	ID                 string            `json:"id"`
 	LeafID             string            `json:"leaf_id,omitempty"`
 	ParentThreadID     string            `json:"parent_thread_id,omitempty"`
+	ParentTurnID       string            `json:"parent_turn_id,omitempty"`
 	ForkedFromThreadID string            `json:"forked_from_thread_id,omitempty"`
 	ForkedFromEntryID  string            `json:"forked_from_entry_id,omitempty"`
+	TaskName           string            `json:"task_name,omitempty"`
+	AgentPath          string            `json:"agent_path,omitempty"`
+	HostProfileRef     string            `json:"host_profile_ref,omitempty"`
+	Closed             bool              `json:"closed,omitempty"`
 	Archived           bool              `json:"archived,omitempty"`
 	Title              string            `json:"title,omitempty"`
 	TitleStatus        ThreadTitleStatus `json:"title_status,omitempty"`

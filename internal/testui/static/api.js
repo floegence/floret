@@ -64,6 +64,21 @@ export const api = {
   updateTools(id, payload) {
     return requestJSON(`/api/agent/sessions/${encodeURIComponent(id)}/tools`, { method: "PATCH", body: JSON.stringify(payload) });
   },
+  subagents(id) {
+    return requestJSON(`/api/agent/sessions/${encodeURIComponent(id)}/subagents`, { headers: {} });
+  },
+  spawnSubagent(id, payload) {
+    return requestJSON(`/api/agent/sessions/${encodeURIComponent(id)}/subagents`, { method: "POST", body: JSON.stringify(payload) });
+  },
+  waitSubagents(id, payload) {
+    return requestJSON(`/api/agent/sessions/${encodeURIComponent(id)}/subagents/wait`, { method: "POST", body: JSON.stringify(payload) });
+  },
+  sendSubagentInput(id, target, payload) {
+    return requestJSON(`/api/agent/sessions/${encodeURIComponent(id)}/subagents/${encodeURIComponent(target)}/input`, { method: "POST", body: JSON.stringify(payload) });
+  },
+  closeSubagent(id, target) {
+    return requestJSON(`/api/agent/sessions/${encodeURIComponent(id)}/subagents/${encodeURIComponent(target)}`, { method: "DELETE" });
+  },
   deleteSession(id) {
     return requestJSON(`/api/agent/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
   },

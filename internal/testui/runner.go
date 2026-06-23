@@ -661,6 +661,185 @@ func (r *Runner) AgentSession(ctx context.Context, sessionID string) (AgentSessi
 	return localInspectionAgentSessionSnapshot(snapshot), nil
 }
 
+func (r *Runner) AgentSessionSubAgents(ctx context.Context, sessionID string) (AgentSubAgentListResponse, error) {
+	sess, err := r.lockedAgentSession(ctx, sessionID)
+	if err != nil {
+		return AgentSubAgentListResponse{}, err
+	}
+	defer sess.mu.Unlock()
+	subagents, err := r.subAgentsLocked(ctx, sess)
+	if err != nil {
+		return AgentSubAgentListResponse{}, err
+	}
+	return AgentSubAgentListResponse{SubAgents: pathSafeSubAgentSnapshots(subagents)}, nil
+}
+
+func (r *Runner) SpawnAgentSessionSubAgent(ctx context.Context, sessionID string, req AgentSubAgentSpawnRequest) (AgentSubAgentActionResponse, error) {
+	sess, err := r.lockedAgentSession(ctx, sessionID)
+	if err != nil {
+		return AgentSubAgentActionResponse{}, err
+	}
+	defer sess.mu.Unlock()
+	snapshot, err := sess.harness.SpawnSubAgent(ctx, agentharness.SpawnSubAgentOptions{
+		ParentThreadID: sess.id,
+		ParentTurnID:   strings.TrimSpace(req.ParentTurnID),
+		ThreadID:       strings.TrimSpace(req.ThreadID),
+		TaskName:       req.TaskName,
+		Message:        req.Message,
+		HostProfileRef: req.HostProfileRef,
+		ForkMode:       req.ForkMode,
+	})
+	if err != nil {
+		return AgentSubAgentActionResponse{}, err
+	}
+	return r.subAgentActionResponseLocked(ctx, sess, snapshot)
+}
+
+func (r *Runner) SendAgentSessionSubAgentInput(ctx context.Context, sessionID, target string, req AgentSubAgentInputRequest) (AgentSubAgentActionResponse, error) {
+	sess, err := r.lockedAgentSession(ctx, sessionID)
+	if err != nil {
+		return AgentSubAgentActionResponse{}, err
+	}
+	defer sess.mu.Unlock()
+	snapshot, err := sess.harness.SendSubAgentInput(ctx, agentharness.SendSubAgentInputOptions{
+		ParentThreadID: sess.id,
+		ChildThreadID:  target,
+		Message:        req.Message,
+		Interrupt:      req.Interrupt,
+	})
+	if err != nil {
+		return AgentSubAgentActionResponse{}, err
+	}
+	return r.subAgentActionResponseLocked(ctx, sess, snapshot)
+}
+
+func (r *Runner) WaitAgentSessionSubAgents(ctx context.Context, sessionID string, req AgentSubAgentWaitRequest) (AgentSubAgentWaitResponse, error) {
+	sess, err := r.restoreAgentSession(ctx, sessionID)
+	if err != nil {
+		return AgentSubAgentWaitResponse{}, err
+	}
+	result, err := sess.harness.WaitSubAgents(ctx, agentharness.WaitSubAgentsOptions{
+		ParentThreadID: sess.id,
+		ChildThreadIDs: req.ThreadIDs,
+		Timeout:        time.Duration(req.TimeoutMS) * time.Millisecond,
+	})
+	if err != nil {
+		return AgentSubAgentWaitResponse{}, err
+	}
+	if !sess.mu.TryLock() {
+		return AgentSubAgentWaitResponse{}, fmt.Errorf("%w: %s", errAgentSessionBusy, sessionID)
+	}
+	defer sess.mu.Unlock()
+	subagents, err := r.subAgentsLocked(ctx, sess)
+	if err != nil {
+		return AgentSubAgentWaitResponse{}, err
+	}
+	session, err := r.sessionSnapshotLocked(ctx, sess)
+	if err != nil {
+		return AgentSubAgentWaitResponse{}, err
+	}
+	return AgentSubAgentWaitResponse{
+		Result:    pathSafeWaitSubAgentsResult(result),
+		SubAgents: pathSafeSubAgentSnapshots(subagents),
+		Session:   localInspectionAgentSessionSnapshot(session),
+	}, nil
+}
+
+func (r *Runner) CloseAgentSessionSubAgent(ctx context.Context, sessionID, target string) (AgentSubAgentActionResponse, error) {
+	sess, err := r.lockedAgentSession(ctx, sessionID)
+	if err != nil {
+		return AgentSubAgentActionResponse{}, err
+	}
+	defer sess.mu.Unlock()
+	snapshot, err := sess.harness.CloseSubAgent(ctx, agentharness.CloseSubAgentOptions{ParentThreadID: sess.id, ChildThreadID: target})
+	if err != nil {
+		return AgentSubAgentActionResponse{}, err
+	}
+	return r.subAgentActionResponseLocked(ctx, sess, snapshot)
+}
+
+func (r *Runner) lockedAgentSession(ctx context.Context, sessionID string) (*agentSession, error) {
+	sess, err := r.restoreAgentSession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !sess.mu.TryLock() {
+		return nil, fmt.Errorf("%w: %s", errAgentSessionBusy, sessionID)
+	}
+	return sess, nil
+}
+
+func (r *Runner) subAgentActionResponseLocked(ctx context.Context, sess *agentSession, snapshot agentharness.SubAgentSnapshot) (AgentSubAgentActionResponse, error) {
+	subagents, err := r.subAgentsLocked(ctx, sess)
+	if err != nil {
+		return AgentSubAgentActionResponse{}, err
+	}
+	session, err := r.sessionSnapshotLocked(ctx, sess)
+	if err != nil {
+		return AgentSubAgentActionResponse{}, err
+	}
+	return AgentSubAgentActionResponse{
+		SubAgent:  pathSafeSubAgentSnapshot(snapshot),
+		SubAgents: pathSafeSubAgentSnapshots(subagents),
+		Session:   localInspectionAgentSessionSnapshot(session),
+	}, nil
+}
+
+func (r *Runner) subAgentsLocked(ctx context.Context, sess *agentSession) ([]agentharness.SubAgentSnapshot, error) {
+	if sess == nil || sess.harness == nil {
+		return nil, nil
+	}
+	return sess.harness.ListSubAgents(ctx, sess.id)
+}
+
+func subAgentSnapshotsFromRepo(ctx context.Context, repo sessiontree.Repo, parentThreadID string) []agentharness.SubAgentSnapshot {
+	listRepo, ok := repo.(sessiontree.ThreadListRepo)
+	if !ok {
+		return nil
+	}
+	metas, err := listRepo.ListThreads(ctx, sessiontree.ListThreadsOptions{IncludeArchived: true})
+	if err != nil {
+		return nil
+	}
+	out := make([]agentharness.SubAgentSnapshot, 0)
+	for _, meta := range metas {
+		if meta.ParentThreadID != parentThreadID || strings.TrimSpace(meta.AgentPath) == "" {
+			continue
+		}
+		status := agentharness.SubAgentStatus(meta.Status)
+		if status == "" {
+			status = agentharness.SubAgentStatusIdle
+		}
+		if meta.Closed {
+			status = agentharness.SubAgentStatusClosed
+		}
+		out = append(out, agentharness.SubAgentSnapshot{
+			ThreadID:       meta.ID,
+			Path:           meta.AgentPath,
+			TaskName:       meta.TaskName,
+			ParentThreadID: meta.ParentThreadID,
+			ParentTurnID:   meta.ParentTurnID,
+			HostProfileRef: meta.HostProfileRef,
+			Status:         status,
+			CreatedAt:      meta.CreatedAt,
+			UpdatedAt:      meta.UpdatedAt,
+			Closed:         meta.Closed,
+			CanSendInput:   !meta.Closed,
+			CanClose:       !meta.Closed,
+		})
+	}
+	slices.SortFunc(out, func(a, b agentharness.SubAgentSnapshot) int {
+		if a.CreatedAt.Equal(b.CreatedAt) {
+			return strings.Compare(a.Path, b.Path)
+		}
+		if a.CreatedAt.Before(b.CreatedAt) {
+			return -1
+		}
+		return 1
+	})
+	return out
+}
+
 func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selectedTools []string) (agentSessionRuntime, error) {
 	p, err := r.providerFactory()(sess.cfg)
 	if err != nil {
@@ -1375,6 +1554,7 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 	}
 	promptObservation := r.observationFromPromptCache(ctx, store.prompt(r.Root), meta.ID)
 	compactionEvents := compactionEventsForObservation(pathEntries, nil)
+	subagents := subAgentSnapshotsFromRepo(ctx, repo, meta.ID)
 	return AgentSessionSnapshot{
 		ID:                      meta.ID,
 		Title:                   thread.Title,
@@ -1409,6 +1589,7 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 		Compactions:             countCompactions(path),
 		ContextStatuses:         promptObservation.ContextStatuses,
 		CompactionEvents:        compactionEvents,
+		SubAgents:               pathSafeSubAgentSnapshots(subagents),
 		Observation: AgentObservation{
 			ProviderRequests:  promptObservation.ProviderRequests,
 			ContextStatuses:   promptObservation.ContextStatuses,
@@ -1673,6 +1854,9 @@ func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) 
 	snapshot.Observation.ActiveContext = active
 	snapshot.Observation.ContextProjection = projection
 	snapshot.Observation.PathEntries = pathEntries
+	if subagents, err := r.subAgentsLocked(ctx, sess); err == nil {
+		snapshot.SubAgents = pathSafeSubAgentSnapshots(subagents)
+	}
 	storeAgentSessionSnapshot(sess, snapshot)
 	return snapshot, nil
 }
@@ -1741,6 +1925,9 @@ func (r *Runner) runningAgentSessionSnapshot(ctx context.Context, sess *agentSes
 	snapshot.ContextStatuses = append([]ObservedContextStatus(nil), snapshot.Observation.ContextStatuses...)
 	snapshot.CompactionEvents = append([]ObservedCompactionEvent(nil), snapshot.Observation.CompactionEvents...)
 	snapshot.ActivityTimeline = snapshot.Observation.ActivityTimeline
+	if subagents, err := r.subAgentsLocked(ctx, sess); err == nil {
+		snapshot.SubAgents = pathSafeSubAgentSnapshots(subagents)
+	}
 	return snapshot
 }
 

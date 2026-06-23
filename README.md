@@ -50,8 +50,8 @@ stay focused on product behavior.
 
 - **Agent loop**: continue after tool calls, enforce loop limits, track finish
   reasons, and return clear turn results.
-- **Durable threads**: start, read, retry, and delete hosted conversations through
-  `runtime.Host`.
+- **Durable threads**: start, read, retry, delete, and manage parent-owned child
+  threads through `runtime.Host`.
 - **Tools**: register strict schemas with `tools.Registry`, declare effects, ask
   for approval, and dispatch domain handlers.
 - **Storage**: choose `runtime.NewMemoryStore` for tests or
@@ -67,6 +67,7 @@ stay focused on product behavior.
 | --- | --- |
 | Configure a provider and agent persona | `config.Config` or `config.Load` |
 | Build a durable conversation host | `runtime.NewHost` |
+| Manage child threads under a hosted conversation | `runtime.Host` subagent methods |
 | Run one turn from a host-owned transcript projection | `runtime.RunProjectedTurn` |
 | Supply product-owned model transport | `runtime.ModelGateway` |
 | Keep Floret runtime data in memory | `runtime.NewMemoryStore` |
@@ -188,6 +189,29 @@ func main() {
 Use `runtime.OpenSQLiteStore(path)` when the host wants Floret-managed durable
 runtime storage. Treat `runtime.Store` as an opaque handle; do not reach into its
 tables or implementation details from downstream code.
+
+## 🌿 Parent-managed child threads
+
+`runtime.Host` can manage product-neutral subagents as durable child threads.
+Use `SpawnSubAgent`, `SendSubAgentInput`, `WaitSubAgents`, `ListSubAgents`, and
+`CloseSubAgent` when a parent conversation needs Floret-owned child lifecycle
+management. Each child has its own `ThreadID`, turn lifecycle, prompt-cache
+scope, provider ledger, and journal. The parent relationship is durable
+metadata, while product policy, UI labels, permissions, and orchestration prompts
+remain host-owned.
+
+Lifecycle operations target child `ThreadID`s. Task names and agent paths are
+display/reference metadata and may repeat under the same parent. Inputs queued
+for a child are stored in that child's journal, so waiting, closing, and
+restarted hosts observe the same pending work instead of process-local state.
+`WaitSubAgents` returns when every target is settled for parent control:
+completed, waiting for input, failed, cancelled, interrupted, or closed, with no
+queued child input remaining.
+
+Subagents are not a graph workflow framework and are not host-owned pending tool
+work. Pending tool results still represent work whose lifecycle belongs to the
+host application. Child threads represent Floret-owned durable conversations
+that a parent thread can create, steer, wait for, list, and close.
 
 ## 🔀 Projected Turns
 
@@ -329,8 +353,9 @@ go run ./cmd/floret-test-ui
 ```
 
 The console can run fake-provider sessions, inspect sanitized events, run
-provider smoke checks, and exercise tool scenarios. It is not the downstream
-integration contract.
+provider smoke checks, exercise tool scenarios, and manually operate hosted
+subagents from the session workspace. It is not the downstream integration
+contract.
 
 ## ✅ Quality Gate
 

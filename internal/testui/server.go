@@ -11,6 +11,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/floegence/floret/internal/agentharness"
 )
 
 //go:embed static/*
@@ -159,6 +161,10 @@ func (s *Server) handleAgentSessionRoute(w http.ResponseWriter, r *http.Request)
 		s.handleAgentSessionTurnStream(w, r, sessionID)
 		return
 	}
+	if len(parts) >= 2 && parts[1] == "subagents" {
+		s.handleAgentSessionSubAgents(w, r, sessionID, parts[2:])
+		return
+	}
 	if r.Method == http.MethodPatch && len(parts) == 2 && parts[1] == "tools" {
 		s.handleAgentSessionTools(w, r, sessionID)
 		return
@@ -168,6 +174,88 @@ func (s *Server) handleAgentSessionRoute(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	http.NotFound(w, r)
+}
+
+func (s *Server) handleAgentSessionSubAgents(w http.ResponseWriter, r *http.Request, sessionID string, parts []string) {
+	if r.Method == http.MethodGet && len(parts) == 0 {
+		resp, err := s.Runner.AgentSessionSubAgents(r.Context(), sessionID)
+		if err != nil {
+			writeJSON(w, agentSubAgentHTTPStatus(err), map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	if r.Method == http.MethodPost && len(parts) == 0 {
+		defer r.Body.Close()
+		var req AgentSubAgentSpawnRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON request"})
+			return
+		}
+		resp, err := s.Runner.SpawnAgentSessionSubAgent(r.Context(), sessionID, req)
+		if err != nil {
+			writeJSON(w, agentSubAgentHTTPStatus(err), map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	if r.Method == http.MethodPost && len(parts) == 1 && parts[0] == "wait" {
+		defer r.Body.Close()
+		var req AgentSubAgentWaitRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON request"})
+			return
+		}
+		resp, err := s.Runner.WaitAgentSessionSubAgents(r.Context(), sessionID, req)
+		if err != nil {
+			writeJSON(w, agentSubAgentHTTPStatus(err), map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	if r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "input" {
+		defer r.Body.Close()
+		var req AgentSubAgentInputRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON request"})
+			return
+		}
+		resp, err := s.Runner.SendAgentSessionSubAgentInput(r.Context(), sessionID, parts[0], req)
+		if err != nil {
+			writeJSON(w, agentSubAgentHTTPStatus(err), map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	if r.Method == http.MethodDelete && len(parts) == 1 {
+		resp, err := s.Runner.CloseAgentSessionSubAgent(r.Context(), sessionID, parts[0])
+		if err != nil {
+			writeJSON(w, agentSubAgentHTTPStatus(err), map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	http.NotFound(w, r)
+}
+
+func agentSubAgentHTTPStatus(err error) int {
+	switch {
+	case err == nil:
+		return http.StatusOK
+	case isMissingAgentSessionError(err), errors.Is(err, agentharness.ErrSubAgentNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, errAgentSessionBusy):
+		return http.StatusConflict
+	case errors.Is(err, agentharness.ErrSubAgentClosed), isAgentSessionInputError(err):
+		return http.StatusBadRequest
+	default:
+		return http.StatusInternalServerError
+	}
 }
 
 func (s *Server) handleAgentSessionDelete(w http.ResponseWriter, r *http.Request, sessionID string) {

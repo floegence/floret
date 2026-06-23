@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -111,6 +112,158 @@ func TestSQLiteStorePersistsSessionTreeAndForkAfterReopen(t *testing.T) {
 	}
 	if fork.ForkedFromThreadID != "thread" || fork.ForkedFromEntryID != branch.ID {
 		t.Fatalf("fork metadata = %#v", fork)
+	}
+}
+
+func TestSQLiteStorePersistsSubAgentThreadMetadata(t *testing.T) {
+	ctx := context.Background()
+	store, path := openSQLiteStoreForTest(t)
+	now := time.Date(2026, 6, 23, 9, 0, 0, 0, time.UTC)
+	child := sessiontree.ThreadMeta{
+		ID:             "child",
+		ParentThreadID: "parent",
+		ParentTurnID:   "turn-parent",
+		TaskName:       "review_api",
+		AgentPath:      "/root/review_api",
+		HostProfileRef: "reviewer",
+		Closed:         true,
+		CreatedAt:      now,
+		UpdatedAt:      now.Add(time.Minute),
+		Status:         "closed",
+	}
+	if _, err := store.CreateThread(ctx, child); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	got, err := reopened.Thread(ctx, "child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ParentThreadID != child.ParentThreadID ||
+		got.ParentTurnID != child.ParentTurnID ||
+		got.TaskName != child.TaskName ||
+		got.AgentPath != child.AgentPath ||
+		got.HostProfileRef != child.HostProfileRef ||
+		!got.Closed ||
+		got.Status != child.Status {
+		t.Fatalf("subagent metadata = %#v", got)
+	}
+	listed, err := reopened.ListThreads(ctx, sessiontree.ListThreadsOptions{IncludeArchived: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].AgentPath != child.AgentPath || !listed[0].Closed {
+		t.Fatalf("listed threads = %#v", listed)
+	}
+}
+
+func TestSQLiteStoreMigratesV6SubAgentMetadataColumns(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "floret.db")
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.ExecContext(ctx, `
+CREATE TABLE schema_meta (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);
+INSERT INTO schema_meta(key, value) VALUES
+	('schema_version', '6'),
+	('raw_encoder_version', '1');
+CREATE TABLE threads (
+	id TEXT PRIMARY KEY,
+	leaf_id TEXT NOT NULL DEFAULT '',
+	parent_thread_id TEXT NOT NULL DEFAULT '',
+	forked_from_thread_id TEXT NOT NULL DEFAULT '',
+	forked_from_entry_id TEXT NOT NULL DEFAULT '',
+	archived INTEGER NOT NULL DEFAULT 0,
+	title TEXT NOT NULL DEFAULT '',
+	title_status TEXT NOT NULL DEFAULT '',
+	title_source TEXT NOT NULL DEFAULT '',
+	title_updated_at TEXT NOT NULL DEFAULT '',
+	title_error TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	status TEXT NOT NULL DEFAULT '',
+	last_viewed_at TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO threads(id, created_at, updated_at, status) VALUES('legacy', '2026-06-23T09:00:00Z', '2026-06-23T09:00:00Z', 'completed');
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	version, err := store.SchemaVersion(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != schemaVersion {
+		t.Fatalf("schema version = %q, want %q", version, schemaVersion)
+	}
+	meta, err := store.Thread(ctx, "legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.ParentTurnID != "" || meta.TaskName != "" || meta.AgentPath != "" || meta.HostProfileRef != "" || meta.Closed {
+		t.Fatalf("legacy subagent defaults = %#v", meta)
+	}
+}
+
+func TestSQLiteStoreAllowsDuplicateSubAgentPathWithDistinctThreadIDs(t *testing.T) {
+	ctx := context.Background()
+	store, _ := openSQLiteStoreForTest(t)
+	now := time.Date(2026, 6, 23, 9, 0, 0, 0, time.UTC)
+	first := sessiontree.ThreadMeta{
+		ID:             "child-a",
+		ParentThreadID: "parent",
+		TaskName:       "review",
+		AgentPath:      "/root/review",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if _, err := store.CreateThread(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{
+		ID:             "child-b",
+		ParentThreadID: "parent",
+		TaskName:       "review",
+		AgentPath:      "/root/review",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("duplicate subagent path should be allowed: %v", err)
+	}
+	listed, err := store.ListThreads(ctx, sessiontree.ListThreadsOptions{IncludeArchived: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, meta := range listed {
+		if meta.ParentThreadID == "parent" && meta.AgentPath == "/root/review" {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Fatalf("duplicate subagent paths count = %d in %#v", count, listed)
 	}
 }
 

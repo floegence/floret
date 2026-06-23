@@ -201,6 +201,12 @@ function render(options = {}) {
         },
         onSelect: selectSession,
         onAppend: appendTurn,
+        onSubagentSpawn: spawnSubagent,
+        onSubagentInput: sendSubagentInput,
+        onSubagentWait: waitSubagent,
+        onSubagentClose: closeSubagent,
+        onSubagentSpawnDraft: updateSubagentSpawnDraft,
+        onSubagentInputDraft: updateSubagentInputDraft,
         onCopy: copyText,
         onDelete: deleteSession,
         onComposerDraft: updateComposerDraft,
@@ -399,6 +405,87 @@ async function updateSessionTools(selectedTools, reason) {
     await refreshSessionsNonBlocking(token);
     return true;
   });
+}
+
+function updateSubagentSpawnDraft(sessionID, draft) {
+  if (!sessionID) return;
+  state.subagentSpawnDrafts[sessionID] = { ...(state.subagentSpawnDrafts[sessionID] || {}), ...(draft || {}) };
+}
+
+function updateSubagentInputDraft(sessionID, target, draft) {
+  if (!sessionID || !target) return;
+  const key = `${sessionID}\u0000${target}`;
+  state.subagentInputDrafts[key] = { ...(state.subagentInputDrafts[key] || {}), ...(draft || {}) };
+}
+
+async function spawnSubagent(payload) {
+  if (!state.activeSession?.id) return;
+  const sessionID = state.activeSession.id;
+  updateSubagentSpawnDraft(sessionID, payload);
+  const token = ++state.mutationToken;
+  await runWithStatus({ status: "running", action: "subagent-spawn", target: sessionID, successMessage: "Subagent started" }, async () => {
+    const response = await api.spawnSubagent(sessionID, payload);
+    if (token !== state.mutationToken) return false;
+    applySubagentResponse(sessionID, response);
+    delete state.subagentSpawnDrafts[sessionID];
+    await refreshSessionsNonBlocking(token);
+    return true;
+  });
+}
+
+async function sendSubagentInput(target, payload) {
+  if (!state.activeSession?.id || !target) return;
+  const sessionID = state.activeSession.id;
+  updateSubagentInputDraft(sessionID, target, payload);
+  const token = ++state.mutationToken;
+  await runWithStatus({ status: "running", action: "subagent-input", target, successMessage: payload.interrupt ? "Subagent interrupted" : "Input sent to subagent" }, async () => {
+    const response = await api.sendSubagentInput(sessionID, target, payload);
+    if (token !== state.mutationToken) return false;
+    applySubagentResponse(sessionID, response);
+    delete state.subagentInputDrafts[`${sessionID}\u0000${target}`];
+    await refreshSessionsNonBlocking(token);
+    return true;
+  });
+}
+
+async function waitSubagent(target) {
+  if (!state.activeSession?.id || !target) return;
+  const sessionID = state.activeSession.id;
+  const token = ++state.mutationToken;
+  await runWithStatus({ status: "loading", action: "subagent-wait", target, successMessage: "Subagent wait finished" }, async () => {
+    const response = await api.waitSubagents(sessionID, { thread_ids: [target], timeout_ms: 60000 });
+    if (token !== state.mutationToken) return false;
+    applySubagentResponse(sessionID, response);
+    if (response?.result?.timed_out) addToast("error", "Subagent wait timed out");
+    await refreshSessionsNonBlocking(token);
+    return !response?.result?.timed_out;
+  });
+}
+
+async function closeSubagent(target) {
+  if (!state.activeSession?.id || !target) return;
+  const confirmed = window.confirm(`Close subagent ${target}? Active work for this child thread will be cancelled.`);
+  if (!confirmed) return;
+  const sessionID = state.activeSession.id;
+  const token = ++state.mutationToken;
+  await runWithStatus({ status: "loading", action: "subagent-close", target, successMessage: "Subagent closed" }, async () => {
+    const response = await api.closeSubagent(sessionID, target);
+    if (token !== state.mutationToken) return false;
+    applySubagentResponse(sessionID, response);
+    await refreshSessionsNonBlocking(token);
+    return true;
+  });
+}
+
+function applySubagentResponse(sessionID, response) {
+  if (state.activeSession?.id !== sessionID && state.route.id !== sessionID) return;
+  if (response?.session) {
+    setActiveSessionSnapshot(response.session, { force: true });
+  } else if (Array.isArray(response?.subagents) && state.activeSession?.id === sessionID) {
+    setActiveSessionSnapshot({ ...state.activeSession, subagents: response.subagents }, { force: true });
+  }
+  state.inspectorTab = "subagents";
+  state.lastResult = null;
 }
 
 function createLiveTurn(sessionID, message) {
@@ -996,6 +1083,14 @@ function actionLabel(action) {
       return "saving";
     case "update-tools":
       return "updating tools";
+    case "subagent-spawn":
+      return "starting subagent";
+    case "subagent-input":
+      return "steering subagent";
+    case "subagent-wait":
+      return "waiting for subagent";
+    case "subagent-close":
+      return "closing subagent";
     case "run-probe":
       return "validating";
     case "run-check":
@@ -1022,9 +1117,13 @@ function scheduleAutoRefresh() {
     state.imeComposition.pendingRefresh = true;
     return;
   }
-  if (state.activeSession.status !== "running" && state.activeSession.phase !== "turn") return;
+  if (state.activeSession.status !== "running" && state.activeSession.phase !== "turn" && !hasRunningSubagent(state.activeSession)) return;
   const delay = 1000;
   autoRefreshTimer = window.setTimeout(refreshActiveSessionSnapshot, delay);
+}
+
+function hasRunningSubagent(session) {
+  return (session?.subagents || []).some((item) => ["running", "waiting"].includes(String(item?.status || "")));
 }
 
 async function refreshActiveSessionSnapshot() {

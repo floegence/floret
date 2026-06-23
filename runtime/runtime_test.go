@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/internal/agentharness"
@@ -68,6 +69,80 @@ func TestHostRunsFakeProviderThread(t *testing.T) {
 		return ev.Type == "provider_delta" && ev.ThreadID == "thread" && ev.RunID == "turn-1"
 	}) {
 		t.Fatalf("runtime events missing provider delta: %#v", rec.events)
+	}
+}
+
+func TestHostManagesSubAgentLifecycle(t *testing.T) {
+	ctx := context.Background()
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "child done",
+			SystemPrompt: "test",
+		},
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+
+	spawned, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+		ParentThreadID: "parent",
+		ParentTurnID:   "parent-turn",
+		ThreadID:       "child",
+		TaskName:       "Review API",
+		Message:        "review the runtime API",
+		HostProfileRef: "reviewer",
+		ForkMode:       SubAgentForkNone,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spawned.ThreadID != "child" || spawned.ParentThreadID != "parent" || spawned.Path != "/root/review_api" {
+		t.Fatalf("spawned = %#v", spawned)
+	}
+
+	waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{
+		ParentThreadID: "parent",
+		ChildThreadIDs: []ThreadID{"child"},
+		Timeout:        2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waited.TimedOut || len(waited.Snapshots) != 1 || waited.Snapshots[0].Status != SubAgentStatusCompleted {
+		t.Fatalf("waited = %#v", waited)
+	}
+	listed, err := host.ListSubAgents(ctx, "parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].HostProfileRef != "reviewer" || listed[0].LastMessage != "child done" {
+		t.Fatalf("listed = %#v", listed)
+	}
+
+	sent, err := host.SendSubAgentInput(ctx, SendSubAgentInputRequest{
+		ParentThreadID: "parent",
+		ChildThreadID:  "child",
+		Message:        "one more check",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sent.ThreadID != "child" || !sent.CanSendInput {
+		t.Fatalf("sent = %#v", sent)
+	}
+	closed, err := host.CloseSubAgent(ctx, CloseSubAgentRequest{ParentThreadID: "parent", ChildThreadID: "child"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closed.Status != SubAgentStatusClosed || closed.CanSendInput || closed.CanClose {
+		t.Fatalf("closed = %#v", closed)
 	}
 }
 

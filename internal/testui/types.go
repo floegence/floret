@@ -248,6 +248,41 @@ type AgentTurnRequest struct {
 	Message string `json:"message"`
 }
 
+type AgentSubAgentSpawnRequest struct {
+	ThreadID       string                        `json:"thread_id,omitempty"`
+	TaskName       string                        `json:"task_name"`
+	Message        string                        `json:"message"`
+	HostProfileRef string                        `json:"host_profile_ref,omitempty"`
+	ForkMode       agentharness.SubAgentForkMode `json:"fork_mode,omitempty"`
+	ParentTurnID   string                        `json:"parent_turn_id,omitempty"`
+}
+
+type AgentSubAgentInputRequest struct {
+	Message   string `json:"message"`
+	Interrupt bool   `json:"interrupt,omitempty"`
+}
+
+type AgentSubAgentWaitRequest struct {
+	ThreadIDs []string `json:"thread_ids"`
+	TimeoutMS int64    `json:"timeout_ms,omitempty"`
+}
+
+type AgentSubAgentListResponse struct {
+	SubAgents []agentharness.SubAgentSnapshot `json:"subagents"`
+}
+
+type AgentSubAgentActionResponse struct {
+	SubAgent  agentharness.SubAgentSnapshot   `json:"subagent"`
+	SubAgents []agentharness.SubAgentSnapshot `json:"subagents"`
+	Session   AgentSessionSnapshot            `json:"session"`
+}
+
+type AgentSubAgentWaitResponse struct {
+	Result    agentharness.WaitSubAgentsResult `json:"result"`
+	SubAgents []agentharness.SubAgentSnapshot  `json:"subagents"`
+	Session   AgentSessionSnapshot             `json:"session"`
+}
+
 type AgentStreamEventType string
 
 const (
@@ -558,6 +593,7 @@ type AgentSessionSnapshot struct {
 	ContextStatuses         []ObservedContextStatus         `json:"context_statuses,omitempty"`
 	CompactionEvents        []ObservedCompactionEvent       `json:"compaction_events,omitempty"`
 	ActivityTimeline        observation.ActivityTimeline    `json:"activity_timeline"`
+	SubAgents               []agentharness.SubAgentSnapshot `json:"subagents,omitempty"`
 	Observation             AgentObservation                `json:"observation,omitempty"`
 }
 

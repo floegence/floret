@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	schemaVersion     = "6"
+	schemaVersion     = "7"
 	rawEncoderVersion = "1"
 	driverName        = "sqlite"
 )
@@ -121,25 +121,21 @@ func (s *Store) init(ctx context.Context) error {
 			('schema_version', ?), ('raw_encoder_version', ?)`, schemaVersion, rawEncoderVersion); err != nil {
 			return err
 		}
-		return nil
+		return dropSubAgentPathIndex(ctx, s.db)
 	}
 	if err != nil {
 		return err
 	}
 	if current != schemaVersion {
-		if current == "5" {
-			if _, err := s.db.ExecContext(ctx, `ALTER TABLE threads ADD COLUMN status TEXT NOT NULL DEFAULT ''`); err != nil {
-				return fmt.Errorf("migrate v5→v6 add status column: %w", err)
-			}
-			if _, err := s.db.ExecContext(ctx, `ALTER TABLE threads ADD COLUMN last_viewed_at TEXT NOT NULL DEFAULT ''`); err != nil {
-				return fmt.Errorf("migrate v5→v6 add last_viewed_at column: %w", err)
-			}
-			if _, err := s.db.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_version'`, schemaVersion); err != nil {
-				return fmt.Errorf("migrate v5→v6 update schema_version: %w", err)
-			}
-		} else {
+		if current != "5" && current != "6" {
 			return fmt.Errorf("unsupported sqlite store schema version %q", current)
 		}
+		if err := s.migrate(ctx, current); err != nil {
+			return err
+		}
+	}
+	if err := dropSubAgentPathIndex(ctx, s.db); err != nil {
+		return err
 	}
 	rawVersion, err := s.metaValue(ctx, "raw_encoder_version")
 	if err != nil {
@@ -149,6 +145,81 @@ func (s *Store) init(ctx context.Context) error {
 		return fmt.Errorf("unsupported sqlite store raw encoder version %q", rawVersion)
 	}
 	return nil
+}
+
+func (s *Store) migrate(ctx context.Context, current string) error {
+	return s.withImmediate(ctx, func(tx sqlRunner) error {
+		if current == "5" {
+			if err := addColumnIfMissing(ctx, tx, "threads", "status", `ALTER TABLE threads ADD COLUMN status TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("migrate v5→v6 add status column: %w", err)
+			}
+			if err := addColumnIfMissing(ctx, tx, "threads", "last_viewed_at", `ALTER TABLE threads ADD COLUMN last_viewed_at TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("migrate v5→v6 add last_viewed_at column: %w", err)
+			}
+			current = "6"
+		}
+		if current == "6" {
+			for _, column := range []struct {
+				name string
+				stmt string
+			}{
+				{name: "parent_turn_id", stmt: `ALTER TABLE threads ADD COLUMN parent_turn_id TEXT NOT NULL DEFAULT ''`},
+				{name: "task_name", stmt: `ALTER TABLE threads ADD COLUMN task_name TEXT NOT NULL DEFAULT ''`},
+				{name: "agent_path", stmt: `ALTER TABLE threads ADD COLUMN agent_path TEXT NOT NULL DEFAULT ''`},
+				{name: "host_profile_ref", stmt: `ALTER TABLE threads ADD COLUMN host_profile_ref TEXT NOT NULL DEFAULT ''`},
+				{name: "closed", stmt: `ALTER TABLE threads ADD COLUMN closed INTEGER NOT NULL DEFAULT 0`},
+			} {
+				if err := addColumnIfMissing(ctx, tx, "threads", column.name, column.stmt); err != nil {
+					return fmt.Errorf("migrate v6→v7 add %s column: %w", column.name, err)
+				}
+			}
+			if err := dropSubAgentPathIndex(ctx, tx); err != nil {
+				return fmt.Errorf("migrate v6→v7 drop subagent path index: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_version'`, schemaVersion); err != nil {
+				return fmt.Errorf("migrate v6→v7 update schema_version: %w", err)
+			}
+			return nil
+		}
+		return fmt.Errorf("unsupported sqlite store schema version %q", current)
+	})
+}
+
+func addColumnIfMissing(ctx context.Context, q sqlRunner, table, column, stmt string) error {
+	ok, err := columnExists(ctx, q, table, column)
+	if err != nil {
+		return err
+	}
+	if ok {
+		return nil
+	}
+	_, err = q.ExecContext(ctx, stmt)
+	return err
+}
+
+func dropSubAgentPathIndex(ctx context.Context, q sqlRunner) error {
+	_, err := q.ExecContext(ctx, `DROP INDEX IF EXISTS threads_subagent_path_unique`)
+	return err
+}
+
+func columnExists(ctx context.Context, q sqlRunner, table, column string) (bool, error) {
+	rows, err := q.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, typ string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func (s *Store) metaValue(ctx context.Context, key string) (string, error) {
@@ -301,10 +372,11 @@ func (s *Store) ListThreads(ctx context.Context, opts sessiontree.ListThreadsOpt
 		where = append(where, "archived = 0")
 	}
 	query := `SELECT
-		id, leaf_id, parent_thread_id, forked_from_thread_id, forked_from_entry_id, archived,
-		title, title_status, title_source, title_updated_at, title_error,
-		created_at, updated_at, status, last_viewed_at
-		FROM threads`
+			id, leaf_id, parent_thread_id, parent_turn_id, forked_from_thread_id, forked_from_entry_id,
+			task_name, agent_path, host_profile_ref, closed, archived,
+			title, title_status, title_source, title_updated_at, title_error,
+			created_at, updated_at, status, last_viewed_at
+			FROM threads`
 	if len(where) > 0 {
 		query += ` WHERE ` + strings.Join(where, ` AND `)
 	}
@@ -912,11 +984,13 @@ func (s *Store) artifactText(ctx context.Context, id string) (string, bool, erro
 
 func insertThread(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO threads(
-		id, leaf_id, parent_thread_id, forked_from_thread_id, forked_from_entry_id, archived,
+		id, leaf_id, parent_thread_id, parent_turn_id, forked_from_thread_id, forked_from_entry_id,
+		task_name, agent_path, host_profile_ref, closed, archived,
 		title, title_status, title_source, title_updated_at, title_error,
 		created_at, updated_at, status, last_viewed_at
-	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		meta.ID, meta.LeafID, meta.ParentThreadID, meta.ForkedFromThreadID, meta.ForkedFromEntryID, boolInt(meta.Archived),
+	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		meta.ID, meta.LeafID, meta.ParentThreadID, meta.ParentTurnID, meta.ForkedFromThreadID, meta.ForkedFromEntryID,
+		meta.TaskName, meta.AgentPath, meta.HostProfileRef, boolInt(meta.Closed), boolInt(meta.Archived),
 		meta.Title, string(meta.TitleStatus), string(meta.TitleSource), formatTime(meta.TitleUpdatedAt), meta.TitleError,
 		formatTime(meta.CreatedAt), formatTime(meta.UpdatedAt), meta.Status, formatTime(meta.LastViewedAt))
 	return err
@@ -939,11 +1013,13 @@ func loadTurnLease(ctx context.Context, q sqlRunner, threadID string) (sessiontr
 
 func updateThread(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta) error {
 	_, err := tx.ExecContext(ctx, `UPDATE threads SET
-		leaf_id = ?, parent_thread_id = ?, forked_from_thread_id = ?, forked_from_entry_id = ?, archived = ?,
+		leaf_id = ?, parent_thread_id = ?, parent_turn_id = ?, forked_from_thread_id = ?, forked_from_entry_id = ?,
+		task_name = ?, agent_path = ?, host_profile_ref = ?, closed = ?, archived = ?,
 		title = ?, title_status = ?, title_source = ?, title_updated_at = ?, title_error = ?,
 		created_at = ?, updated_at = ?, status = ?, last_viewed_at = ?
 		WHERE id = ?`,
-		meta.LeafID, meta.ParentThreadID, meta.ForkedFromThreadID, meta.ForkedFromEntryID, boolInt(meta.Archived),
+		meta.LeafID, meta.ParentThreadID, meta.ParentTurnID, meta.ForkedFromThreadID, meta.ForkedFromEntryID,
+		meta.TaskName, meta.AgentPath, meta.HostProfileRef, boolInt(meta.Closed), boolInt(meta.Archived),
 		meta.Title, string(meta.TitleStatus), string(meta.TitleSource), formatTime(meta.TitleUpdatedAt), meta.TitleError,
 		formatTime(meta.CreatedAt), formatTime(meta.UpdatedAt), meta.Status, formatTime(meta.LastViewedAt), meta.ID)
 	return err
@@ -951,7 +1027,8 @@ func updateThread(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta
 
 func loadThread(ctx context.Context, q sqlRunner, threadID string) (sessiontree.ThreadMeta, error) {
 	meta, err := scanThreadMeta(q.QueryRowContext(ctx, `SELECT
-		id, leaf_id, parent_thread_id, forked_from_thread_id, forked_from_entry_id, archived,
+		id, leaf_id, parent_thread_id, parent_turn_id, forked_from_thread_id, forked_from_entry_id,
+		task_name, agent_path, host_profile_ref, closed, archived,
 		title, title_status, title_source, title_updated_at, title_error,
 		created_at, updated_at, status, last_viewed_at
 		FROM threads WHERE id = ?`, threadID))
@@ -963,16 +1040,18 @@ func loadThread(ctx context.Context, q sqlRunner, threadID string) (sessiontree.
 
 func scanThreadMeta(scanner rowScanner) (sessiontree.ThreadMeta, error) {
 	var meta sessiontree.ThreadMeta
-	var archived int
+	var archived, closed int
 	var titleStatus, titleSource, titleUpdated, created, updated, status, lastViewed string
 	err := scanner.Scan(
-		&meta.ID, &meta.LeafID, &meta.ParentThreadID, &meta.ForkedFromThreadID, &meta.ForkedFromEntryID, &archived,
+		&meta.ID, &meta.LeafID, &meta.ParentThreadID, &meta.ParentTurnID, &meta.ForkedFromThreadID, &meta.ForkedFromEntryID,
+		&meta.TaskName, &meta.AgentPath, &meta.HostProfileRef, &closed, &archived,
 		&meta.Title, &titleStatus, &titleSource, &titleUpdated, &meta.TitleError,
 		&created, &updated, &status, &lastViewed,
 	)
 	if err != nil {
 		return sessiontree.ThreadMeta{}, err
 	}
+	meta.Closed = closed != 0
 	meta.Archived = archived != 0
 	meta.TitleStatus = sessiontree.ThreadTitleStatus(titleStatus)
 	meta.TitleSource = sessiontree.ThreadTitleSource(titleSource)
@@ -1332,14 +1411,19 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 	value TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS threads (
-	id TEXT PRIMARY KEY,
-	leaf_id TEXT NOT NULL DEFAULT '',
-	parent_thread_id TEXT NOT NULL DEFAULT '',
-	forked_from_thread_id TEXT NOT NULL DEFAULT '',
-	forked_from_entry_id TEXT NOT NULL DEFAULT '',
-	archived INTEGER NOT NULL DEFAULT 0,
-	title TEXT NOT NULL DEFAULT '',
+	CREATE TABLE IF NOT EXISTS threads (
+		id TEXT PRIMARY KEY,
+		leaf_id TEXT NOT NULL DEFAULT '',
+		parent_thread_id TEXT NOT NULL DEFAULT '',
+		parent_turn_id TEXT NOT NULL DEFAULT '',
+		forked_from_thread_id TEXT NOT NULL DEFAULT '',
+		forked_from_entry_id TEXT NOT NULL DEFAULT '',
+		task_name TEXT NOT NULL DEFAULT '',
+		agent_path TEXT NOT NULL DEFAULT '',
+		host_profile_ref TEXT NOT NULL DEFAULT '',
+		closed INTEGER NOT NULL DEFAULT 0,
+		archived INTEGER NOT NULL DEFAULT 0,
+		title TEXT NOT NULL DEFAULT '',
 	title_status TEXT NOT NULL DEFAULT '',
 	title_source TEXT NOT NULL DEFAULT '',
 	title_updated_at TEXT NOT NULL DEFAULT '',

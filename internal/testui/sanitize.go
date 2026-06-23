@@ -107,8 +107,31 @@ func localInspectionAgentSessionSnapshot(snapshot AgentSessionSnapshot) AgentSes
 	for i := range snapshot.AllEntries {
 		snapshot.AllEntries[i] = pathSafeObservedEntry(snapshot.AllEntries[i])
 	}
+	snapshot.SubAgents = pathSafeSubAgentSnapshots(snapshot.SubAgents)
 	snapshot.Observation = localInspectionAgentObservation(snapshot.Observation)
 	return snapshot
+}
+
+func pathSafeSubAgentSnapshots(snapshots []agentharness.SubAgentSnapshot) []agentharness.SubAgentSnapshot {
+	out := append([]agentharness.SubAgentSnapshot(nil), snapshots...)
+	for i := range out {
+		out[i] = pathSafeSubAgentSnapshot(out[i])
+	}
+	return out
+}
+
+func pathSafeSubAgentSnapshot(snapshot agentharness.SubAgentSnapshot) agentharness.SubAgentSnapshot {
+	snapshot.Path = event.SafePathRefsText(snapshot.Path)
+	snapshot.TaskName = event.SafePathRefsText(snapshot.TaskName)
+	snapshot.HostProfileRef = event.SafePathRefsText(snapshot.HostProfileRef)
+	snapshot.LastMessage = event.SafePathRefsText(snapshot.LastMessage)
+	snapshot.WaitingPrompt = event.SafePathRefsText(snapshot.WaitingPrompt)
+	return snapshot
+}
+
+func pathSafeWaitSubAgentsResult(result agentharness.WaitSubAgentsResult) agentharness.WaitSubAgentsResult {
+	result.Snapshots = pathSafeSubAgentSnapshots(result.Snapshots)
+	return result
 }
 
 func localInspectionAgentObservation(observation AgentObservation) AgentObservation {

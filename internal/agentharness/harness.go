@@ -40,18 +40,22 @@ const (
 type HarnessEventType string
 
 const (
-	EventThreadStarted HarnessEventType = "thread_started"
-	EventThreadResumed HarnessEventType = "thread_resumed"
-	EventThreadForked  HarnessEventType = "thread_forked"
-	EventLeafMoved     HarnessEventType = "leaf_moved"
-	EventTurnStarted   HarnessEventType = "turn_started"
-	EventTurnCompleted HarnessEventType = "turn_completed"
-	EventTurnFailed    HarnessEventType = "turn_failed"
-	EventTurnAborted   HarnessEventType = "turn_aborted"
-	EventEntryAppended HarnessEventType = "entry_appended"
-	EventRetryStarted  HarnessEventType = "retry_started"
-	EventTitleUpdated  HarnessEventType = "thread_title_updated"
-	EventTitleFailed   HarnessEventType = "thread_title_failed"
+	EventThreadStarted     HarnessEventType = "thread_started"
+	EventThreadResumed     HarnessEventType = "thread_resumed"
+	EventThreadForked      HarnessEventType = "thread_forked"
+	EventLeafMoved         HarnessEventType = "leaf_moved"
+	EventTurnStarted       HarnessEventType = "turn_started"
+	EventTurnCompleted     HarnessEventType = "turn_completed"
+	EventTurnFailed        HarnessEventType = "turn_failed"
+	EventTurnAborted       HarnessEventType = "turn_aborted"
+	EventEntryAppended     HarnessEventType = "entry_appended"
+	EventRetryStarted      HarnessEventType = "retry_started"
+	EventTitleUpdated      HarnessEventType = "thread_title_updated"
+	EventTitleFailed       HarnessEventType = "thread_title_failed"
+	EventSubAgentSpawned   HarnessEventType = "subagent_spawned"
+	EventSubAgentInput     HarnessEventType = "subagent_input"
+	EventSubAgentClosed    HarnessEventType = "subagent_closed"
+	EventSubAgentCompleted HarnessEventType = "subagent_completed"
 )
 
 type HarnessEvent struct {
@@ -113,10 +117,13 @@ type LoopLimits struct {
 }
 
 type AgentHarness struct {
-	mu      sync.Mutex
-	options Options
-	threads map[string]*Thread
-	seq     int64
+	mu              sync.Mutex
+	subagentSpawnMu sync.Mutex
+	options         Options
+	threads         map[string]*Thread
+	subagents       map[string]*subagentController
+	subagentUpdates chan struct{}
+	seq             int64
 }
 
 type StartThreadOptions struct {
@@ -245,7 +252,12 @@ func New(options Options) *AgentHarness {
 	if options.Now == nil {
 		options.Now = time.Now
 	}
-	return &AgentHarness{options: options, threads: map[string]*Thread{}}
+	return &AgentHarness{
+		options:         options,
+		threads:         map[string]*Thread{},
+		subagents:       map[string]*subagentController{},
+		subagentUpdates: make(chan struct{}),
+	}
 }
 
 func (h *AgentHarness) StartThread(ctx context.Context, opts StartThreadOptions) (*Thread, error) {
@@ -835,8 +847,13 @@ func updateThreadTitle(ctx context.Context, repo sessiontree.Repo, meta sessiont
 	}
 	meta.LeafID = current.LeafID
 	meta.ParentThreadID = current.ParentThreadID
+	meta.ParentTurnID = current.ParentTurnID
 	meta.ForkedFromThreadID = current.ForkedFromThreadID
 	meta.ForkedFromEntryID = current.ForkedFromEntryID
+	meta.TaskName = current.TaskName
+	meta.AgentPath = current.AgentPath
+	meta.HostProfileRef = current.HostProfileRef
+	meta.Closed = current.Closed
 	meta.Archived = current.Archived
 	meta.CreatedAt = current.CreatedAt
 	meta.UpdatedAt = current.UpdatedAt

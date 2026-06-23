@@ -58,6 +58,61 @@ export function bindSessionWorkspace(root, handlers) {
     if (event.isComposing) return;
     handlers.onComposerDraft(state.activeSession?.id || "", event.target.value);
   });
+  root.querySelector("[data-subagent-spawn-form]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const payload = {
+      task_name: form.elements.task_name.value.trim(),
+      host_profile_ref: form.elements.host_profile_ref.value.trim(),
+      fork_mode: form.elements.fork_mode.value,
+      message: form.elements.message.value.trim(),
+    };
+    handlers.onSubagentSpawnDraft(state.activeSession?.id || "", payload);
+    if (payload.task_name && payload.message) handlers.onSubagentSpawn(payload);
+  });
+  root.querySelector("[data-subagent-spawn-form]")?.addEventListener("input", (event) => {
+    if (event.isComposing) return;
+    const form = event.currentTarget;
+    handlers.onSubagentSpawnDraft(state.activeSession?.id || "", {
+      task_name: form.elements.task_name.value,
+      host_profile_ref: form.elements.host_profile_ref.value,
+      fork_mode: form.elements.fork_mode.value,
+      message: form.elements.message.value,
+    });
+  });
+  root.querySelectorAll("[data-subagent-input-form]").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const target = form.dataset.subagentInputForm || "";
+      const payload = {
+        message: form.elements.message.value.trim(),
+        interrupt: Boolean(form.elements.interrupt?.checked),
+      };
+      handlers.onSubagentInputDraft(state.activeSession?.id || "", target, payload);
+      if (target && payload.message) handlers.onSubagentInput(target, payload);
+    });
+    form.addEventListener("input", (event) => {
+      if (event.isComposing) return;
+      const target = form.dataset.subagentInputForm || "";
+      handlers.onSubagentInputDraft(state.activeSession?.id || "", target, {
+        message: form.elements.message.value,
+        interrupt: Boolean(form.elements.interrupt?.checked),
+      });
+    });
+    form.addEventListener("change", () => {
+      const target = form.dataset.subagentInputForm || "";
+      handlers.onSubagentInputDraft(state.activeSession?.id || "", target, {
+        message: form.elements.message.value,
+        interrupt: Boolean(form.elements.interrupt?.checked),
+      });
+    });
+  });
+  root.querySelectorAll("[data-subagent-wait]").forEach((button) => {
+    button.addEventListener("click", () => handlers.onSubagentWait(button.dataset.subagentWait || ""));
+  });
+  root.querySelectorAll("[data-subagent-close]").forEach((button) => {
+    button.addEventListener("click", () => handlers.onSubagentClose(button.dataset.subagentClose || ""));
+  });
   root.querySelectorAll(".conversation details[data-expand-key]").forEach((details) => {
     details.addEventListener("toggle", () => {
       state.timelineExpanded[details.dataset.expandKey || ""] = details.open;
@@ -157,6 +212,7 @@ function renderWorkspace(session, result) {
           ${renderContextMeter(contextStatus)}
         </div>
       </header>
+      ${renderSubagentPanel(session)}
       <div class="conversation" data-session-id="${escapeHTML(session.id)}">
         ${renderTimeline(session, result)}
       </div>
@@ -174,6 +230,91 @@ function renderWorkspace(session, result) {
 function sessionTitle(session) {
   const title = (session?.title || "").trim();
   return title || shortID(session?.id || "");
+}
+
+function renderSubagentPanel(session) {
+  const subagents = session.subagents || [];
+  const spawnDraft = state.subagentSpawnDrafts[session.id] || {};
+  const isSpawning = state.action === "subagent-spawn" && state.actionTarget === session.id;
+  const busy = subagentActionBusy(session);
+  return `
+    <section class="subagent-panel" aria-label="Subagents">
+      <div class="subagent-panel-head">
+        <div>
+          <h2>Subagents</h2>
+          <p>${subagents.length ? `${subagents.length} child thread${subagents.length === 1 ? "" : "s"}` : "No child threads yet"}</p>
+        </div>
+        <span class="tiny-pill">${subagents.filter((item) => ["running", "waiting"].includes(String(item.status || ""))).length} active</span>
+      </div>
+      <form class="subagent-spawn-form" data-subagent-spawn-form>
+        <input name="task_name" placeholder="task name" value="${escapeHTML(spawnDraft.task_name || "")}" ${busy ? "disabled" : ""} />
+        <select name="host_profile_ref" ${busy ? "disabled" : ""}>
+          ${["host-ref:explore", "host-ref:work", "host-ref:review"].map((ref) => `<option value="${ref}" ${String(spawnDraft.host_profile_ref || "host-ref:work") === ref ? "selected" : ""}>${ref}</option>`).join("")}
+        </select>
+        <select name="fork_mode" ${busy ? "disabled" : ""}>
+          ${["full_path", "none"].map((mode) => `<option value="${mode}" ${String(spawnDraft.fork_mode || "full_path") === mode ? "selected" : ""}>${mode}</option>`).join("")}
+        </select>
+        <textarea name="message" placeholder="Give the child thread a concrete task" ${busy ? "disabled" : ""}>${escapeHTML(spawnDraft.message || "")}</textarea>
+        <button class="primary ${isSpawning ? "is-pending" : ""}" type="submit" ${busy ? "disabled" : ""}>${isSpawning ? "Starting..." : "Start"}</button>
+      </form>
+      <div class="subagent-list">
+        ${subagents.length ? subagents.map((item) => renderSubagentCard(session, item)).join("") : `<div class="subagent-empty">Start a child thread to inspect lifecycle, prompt scope, and handoff behavior.</div>`}
+      </div>
+    </section>
+  `;
+}
+
+function renderSubagentCard(session, item) {
+  const target = item.thread_id || "";
+  const draft = state.subagentInputDrafts[`${session.id}\u0000${target}`] || {};
+  const status = String(item.status || "idle");
+  const running = ["running", "waiting"].includes(status);
+  const canSend = Boolean(item.can_send_input);
+  const isWaiting = state.action === "subagent-wait" && state.actionTarget === target;
+  const isInput = state.action === "subagent-input" && state.actionTarget === target;
+  const isClosing = state.action === "subagent-close" && state.actionTarget === target;
+  const busy = subagentActionBusy(session);
+  const payload = [
+    `subagent: ${item.path || item.task_name || item.thread_id || ""}`,
+    `thread_id: ${item.thread_id || ""}`,
+    `status: ${status}`,
+    item.host_profile_ref ? `host_profile_ref: ${item.host_profile_ref}` : "",
+    item.latest_turn_id ? `latest_turn_id: ${item.latest_turn_id}` : "",
+    item.waiting_prompt ? `waiting_prompt:\n${item.waiting_prompt}` : "",
+    item.last_message ? `last_message:\n${item.last_message}` : "",
+  ].filter(Boolean).join("\n");
+  return `
+    <article class="subagent-card ${running ? "active" : ""}">
+      <div class="subagent-card-main">
+        <div>
+          <strong>${escapeHTML(item.task_name || item.path || "subagent")}</strong>
+          <span>${escapeHTML(item.path || item.thread_id || "")}</span>
+        </div>
+        <div class="subagent-pills">
+          <span class="status-pill ${escapeHTML(status)}">${escapeHTML(status)}</span>
+          ${item.host_profile_ref ? `<span class="tiny-pill">host ${escapeHTML(item.host_profile_ref)}</span>` : ""}
+          ${item.queued_inputs ? `<span class="tiny-pill">${escapeHTML(item.queued_inputs)} queued</span>` : ""}
+          ${item.latest_turn_id ? `<span class="tiny-pill">${escapeHTML(shortID(item.latest_turn_id))}</span>` : ""}
+          ${copyButton(payload, "Copy", "Subagent copied", "copy-inline subtle-copy")}
+        </div>
+      </div>
+      ${item.waiting_prompt ? `<div class="subagent-last waiting">${escapeHTML(item.waiting_prompt)}</div>` : ""}
+      ${item.last_message ? `<div class="subagent-last">${escapeHTML(item.last_message)}</div>` : ""}
+      <form class="subagent-input-form" data-subagent-input-form="${escapeHTML(target)}">
+        <input name="message" placeholder="${canSend ? "send input to child thread" : "child thread is closed"}" value="${escapeHTML(draft.message || "")}" ${target && canSend && !busy ? "" : "disabled"} />
+        <label class="inline-check"><input type="checkbox" name="interrupt" ${draft.interrupt ? "checked" : ""} ${target && canSend && !busy ? "" : "disabled"} /> interrupt</label>
+        <button class="${isInput ? "is-pending" : ""}" type="submit" ${target && canSend && !busy ? "" : "disabled"}>${isInput ? "Sending..." : "Send"}</button>
+      </form>
+      <div class="subagent-actions">
+        <button class="small ${isWaiting ? "is-pending" : ""}" type="button" data-subagent-wait="${escapeHTML(target)}" ${target && !busy ? "" : "disabled"}>${isWaiting ? "Waiting..." : "Wait"}</button>
+        <button class="small danger ${isClosing ? "is-pending" : ""}" type="button" data-subagent-close="${escapeHTML(target)}" ${target && item.can_close && !busy ? "" : "disabled"}>${isClosing ? "Closing..." : "Close"}</button>
+      </div>
+    </article>
+  `;
+}
+
+function subagentActionBusy(session) {
+  return Boolean(state.running || session?.status === "running" || session?.phase === "turn");
 }
 
 function renderTimeline(session, result) {

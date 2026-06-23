@@ -837,6 +837,46 @@ func TestStaticConsoleActionLifecycleAndToastFeedback(t *testing.T) {
 	}
 }
 
+func TestStaticConsoleSubAgentControlsUseThreadIdentity(t *testing.T) {
+	appJS := readStaticTestFile(t, "app.js")
+	workspace := readStaticTestFile(t, "views", "sessionWorkspace.js")
+	inspector := readStaticTestFile(t, "views", "inspector.js")
+	css := readStaticTestFile(t, "styles.css")
+
+	for _, want := range []string{
+		"thread_ids: [target]",
+		"host_profile_ref: form.elements.host_profile_ref.value.trim()",
+		"const target = item.thread_id || \"\"",
+		"data-subagent-input-form=\"${escapeHTML(target)}\"",
+		"subagentActionBusy(session)",
+		"item.waiting_prompt",
+	} {
+		if !strings.Contains(appJS+"\n"+workspace, want) {
+			t.Fatalf("subagent static contract missing %q", want)
+		}
+	}
+	for _, banned := range []string{
+		"const target = item.task_name",
+		"item.agent_profile",
+		"name=\"agent_profile\"",
+		"targets: [target]",
+	} {
+		if strings.Contains(appJS+"\n"+workspace+"\n"+inspector, banned) {
+			t.Fatalf("subagent static contract should not contain %q", banned)
+		}
+	}
+	for _, want := range []string{"item.host_profile_ref", "thread ${escapeHTML(item.thread_id || \"\")"} {
+		if !strings.Contains(inspector, want) {
+			t.Fatalf("subagent inspector missing %q", want)
+		}
+	}
+	for _, want := range []string{"select:disabled", "label:has(input[type=\"checkbox\"]:disabled)"} {
+		if !strings.Contains(css, want) {
+			t.Fatalf("subagent disabled affordance missing %q", want)
+		}
+	}
+}
+
 func TestStaticConsolePreservesDraftsAndSeparatesRefreshFailures(t *testing.T) {
 	appJS := readStaticTestFile(t, "app.js")
 	newSession := readStaticTestFile(t, "views", "newSession.js")
@@ -897,7 +937,7 @@ func TestStaticConsoleSessionsUseIndependentScrollRegions(t *testing.T) {
 		".session-rail,\n.inspector",
 		"flex-direction: column",
 		".workspace",
-		"grid-template-rows: auto minmax(0, 1fr) auto",
+		"grid-template-rows: auto auto minmax(0, 1fr) auto",
 		".conversation",
 		"overflow: auto",
 		".session-list",

@@ -378,6 +378,84 @@ func TestServerCreatesIdleAgentSessionBeforeInitialTurn(t *testing.T) {
 	}
 }
 
+func TestServerManagesAgentSessionSubAgents(t *testing.T) {
+	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("child done"), harness.Done()))
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return scripted, nil
+	}
+	server, err := NewServer(runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"unused"},"message":"","system_prompt":"test"}`
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody)))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var created AgentSessionSnapshot
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	spawnBody := `{"thread_id":"child","task_name":"Review API","host_profile_ref":"reviewer","fork_mode":"none","message":"review the API"}`
+	spawnRec := httptest.NewRecorder()
+	handler.ServeHTTP(spawnRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+created.ID+"/subagents", strings.NewReader(spawnBody)))
+	if spawnRec.Code != http.StatusOK {
+		t.Fatalf("spawn status = %d, body = %s", spawnRec.Code, spawnRec.Body.String())
+	}
+	var spawned AgentSubAgentActionResponse
+	if err := json.Unmarshal(spawnRec.Body.Bytes(), &spawned); err != nil {
+		t.Fatal(err)
+	}
+	if spawned.SubAgent.ThreadID != "child" || spawned.SubAgent.ParentThreadID != created.ID || spawned.SubAgent.TaskName != "review_api" || !strings.Contains(spawned.SubAgent.Path, "review_api") {
+		t.Fatalf("spawned = %#v", spawned.SubAgent)
+	}
+
+	waitRec := httptest.NewRecorder()
+	handler.ServeHTTP(waitRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+created.ID+"/subagents/wait", strings.NewReader(`{"thread_ids":["child"],"timeout_ms":2000}`)))
+	if waitRec.Code != http.StatusOK {
+		t.Fatalf("wait status = %d, body = %s", waitRec.Code, waitRec.Body.String())
+	}
+	var waited AgentSubAgentWaitResponse
+	if err := json.Unmarshal(waitRec.Body.Bytes(), &waited); err != nil {
+		t.Fatal(err)
+	}
+	if waited.Result.TimedOut || len(waited.Result.Snapshots) != 1 || waited.Result.Snapshots[0].Status != "completed" {
+		t.Fatalf("waited = %#v", waited)
+	}
+
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+created.ID+"/subagents", nil))
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", listRec.Code, listRec.Body.String())
+	}
+	var listed AgentSubAgentListResponse
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.SubAgents) != 1 || listed.SubAgents[0].LastMessage != "child done" {
+		t.Fatalf("listed = %#v", listed)
+	}
+
+	closeRec := httptest.NewRecorder()
+	handler.ServeHTTP(closeRec, httptest.NewRequest(http.MethodDelete, "/api/agent/sessions/"+created.ID+"/subagents/child", nil))
+	if closeRec.Code != http.StatusOK {
+		t.Fatalf("close status = %d, body = %s", closeRec.Code, closeRec.Body.String())
+	}
+	var closed AgentSubAgentActionResponse
+	if err := json.Unmarshal(closeRec.Body.Bytes(), &closed); err != nil {
+		t.Fatal(err)
+	}
+	if closed.SubAgent.Status != "closed" || closed.SubAgent.CanSendInput || closed.SubAgent.CanClose {
+		t.Fatalf("closed = %#v", closed.SubAgent)
+	}
+}
+
 func TestServerAgentSessionTurnExposesToolDetailsByDefault(t *testing.T) {
 	scripted := harness.NewScriptedProvider(
 		harness.Step(

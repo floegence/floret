@@ -32,6 +32,8 @@ export const state = {
   settingsDraft: null,
   settingsError: null,
   toolEditDrafts: {},
+  subagentSpawnDrafts: {},
+  subagentInputDrafts: {},
 };
 
 export function currentProfile() {

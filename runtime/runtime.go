@@ -41,6 +41,11 @@ type Host interface {
 	RunTurn(context.Context, RunTurnRequest) (TurnResult, error)
 	RetryTurn(context.Context, RetryTurnRequest) (TurnResult, error)
 	CompletePendingTool(context.Context, PendingToolCompletionRequest) (TurnResult, error)
+	SpawnSubAgent(context.Context, SpawnSubAgentRequest) (SubAgentSnapshot, error)
+	SendSubAgentInput(context.Context, SendSubAgentInputRequest) (SubAgentSnapshot, error)
+	WaitSubAgents(context.Context, WaitSubAgentsRequest) (WaitSubAgentsResult, error)
+	ListSubAgents(context.Context, ThreadID) ([]SubAgentSnapshot, error)
+	CloseSubAgent(context.Context, CloseSubAgentRequest) (SubAgentSnapshot, error)
 	DeleteThread(context.Context, ThreadID) error
 	Close() error
 }
@@ -109,6 +114,81 @@ type PendingToolCompletionRequest struct {
 	Summary    string
 	Output     string
 	Labels     RunLabels
+}
+
+type SubAgentStatus string
+
+const (
+	SubAgentStatusIdle        SubAgentStatus = "idle"
+	SubAgentStatusRunning     SubAgentStatus = "running"
+	SubAgentStatusWaiting     SubAgentStatus = "waiting"
+	SubAgentStatusCompleted   SubAgentStatus = "completed"
+	SubAgentStatusFailed      SubAgentStatus = "failed"
+	SubAgentStatusCancelled   SubAgentStatus = "cancelled"
+	SubAgentStatusInterrupted SubAgentStatus = "interrupted"
+	SubAgentStatusClosed      SubAgentStatus = "closed"
+)
+
+type SubAgentForkMode string
+
+const (
+	SubAgentForkNone     SubAgentForkMode = "none"
+	SubAgentForkFullPath SubAgentForkMode = "full_path"
+)
+
+type SpawnSubAgentRequest struct {
+	ParentThreadID ThreadID
+	ParentTurnID   TurnID
+	ThreadID       ThreadID
+	TaskName       string
+	Message        string
+	HostProfileRef string
+	ForkMode       SubAgentForkMode
+	Labels         RunLabels
+}
+
+type SendSubAgentInputRequest struct {
+	ParentThreadID ThreadID
+	ChildThreadID  ThreadID
+	Message        string
+	Interrupt      bool
+	Labels         RunLabels
+}
+
+type WaitSubAgentsRequest struct {
+	ParentThreadID ThreadID
+	ChildThreadIDs []ThreadID
+	Timeout        time.Duration
+}
+
+type CloseSubAgentRequest struct {
+	ParentThreadID ThreadID
+	ChildThreadID  ThreadID
+}
+
+type SubAgentSnapshot struct {
+	ThreadID       ThreadID       `json:"thread_id"`
+	Path           string         `json:"path"`
+	TaskName       string         `json:"task_name"`
+	ParentThreadID ThreadID       `json:"parent_thread_id"`
+	ParentTurnID   TurnID         `json:"parent_turn_id,omitempty"`
+	HostProfileRef string         `json:"host_profile_ref,omitempty"`
+	Status         SubAgentStatus `json:"status"`
+	LatestTurnID   TurnID         `json:"latest_turn_id,omitempty"`
+	LastMessage    string         `json:"last_message,omitempty"`
+	WaitingPrompt  string         `json:"waiting_prompt,omitempty"`
+	QueuedInputs   int            `json:"queued_inputs,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
+	Closed         bool           `json:"closed,omitempty"`
+	CanSendInput   bool           `json:"can_send_input"`
+	CanInterrupt   bool           `json:"can_interrupt"`
+	CanClose       bool           `json:"can_close"`
+}
+
+type WaitSubAgentsResult struct {
+	Snapshots []SubAgentSnapshot `json:"snapshots"`
+	TimedOut  bool               `json:"timed_out,omitempty"`
 }
 
 type RunLabels struct {
@@ -421,6 +501,72 @@ func (h *host) CompletePendingTool(ctx context.Context, req PendingToolCompletio
 	return turnResult(result), runErr
 }
 
+func (h *host) SpawnSubAgent(ctx context.Context, req SpawnSubAgentRequest) (SubAgentSnapshot, error) {
+	snapshot, err := h.harness.SpawnSubAgent(ctx, agentharness.SpawnSubAgentOptions{
+		ParentThreadID: string(req.ParentThreadID),
+		ParentTurnID:   string(req.ParentTurnID),
+		ThreadID:       string(req.ThreadID),
+		TaskName:       req.TaskName,
+		Message:        req.Message,
+		HostProfileRef: req.HostProfileRef,
+		ForkMode:       agentharness.SubAgentForkMode(req.ForkMode),
+		Labels:         engineLabels(req.Labels),
+	})
+	if err != nil {
+		return SubAgentSnapshot{}, err
+	}
+	return subAgentSnapshot(snapshot), nil
+}
+
+func (h *host) SendSubAgentInput(ctx context.Context, req SendSubAgentInputRequest) (SubAgentSnapshot, error) {
+	snapshot, err := h.harness.SendSubAgentInput(ctx, agentharness.SendSubAgentInputOptions{
+		ParentThreadID: string(req.ParentThreadID),
+		ChildThreadID:  string(req.ChildThreadID),
+		Message:        req.Message,
+		Interrupt:      req.Interrupt,
+		Labels:         engineLabels(req.Labels),
+	})
+	if err != nil {
+		return SubAgentSnapshot{}, err
+	}
+	return subAgentSnapshot(snapshot), nil
+}
+
+func (h *host) WaitSubAgents(ctx context.Context, req WaitSubAgentsRequest) (WaitSubAgentsResult, error) {
+	result, err := h.harness.WaitSubAgents(ctx, agentharness.WaitSubAgentsOptions{
+		ParentThreadID: string(req.ParentThreadID),
+		ChildThreadIDs: threadIDStrings(req.ChildThreadIDs),
+		Timeout:        req.Timeout,
+	})
+	if err != nil {
+		return WaitSubAgentsResult{}, err
+	}
+	return waitSubAgentsResult(result), nil
+}
+
+func (h *host) ListSubAgents(ctx context.Context, parentThreadID ThreadID) ([]SubAgentSnapshot, error) {
+	snapshots, err := h.harness.ListSubAgents(ctx, string(parentThreadID))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SubAgentSnapshot, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		out = append(out, subAgentSnapshot(snapshot))
+	}
+	return out, nil
+}
+
+func (h *host) CloseSubAgent(ctx context.Context, req CloseSubAgentRequest) (SubAgentSnapshot, error) {
+	snapshot, err := h.harness.CloseSubAgent(ctx, agentharness.CloseSubAgentOptions{
+		ParentThreadID: string(req.ParentThreadID),
+		ChildThreadID:  string(req.ChildThreadID),
+	})
+	if err != nil {
+		return SubAgentSnapshot{}, err
+	}
+	return subAgentSnapshot(snapshot), nil
+}
+
 func (h *host) DeleteThread(ctx context.Context, threadID ThreadID) error {
 	id := strings.TrimSpace(string(threadID))
 	if id == "" {
@@ -498,6 +644,44 @@ func turnResult(in agentharness.TurnResult) TurnResult {
 	}
 	if in.Err != nil {
 		out.Error = in.Err.Error()
+	}
+	return out
+}
+
+func waitSubAgentsResult(in agentharness.WaitSubAgentsResult) WaitSubAgentsResult {
+	out := WaitSubAgentsResult{TimedOut: in.TimedOut, Snapshots: make([]SubAgentSnapshot, 0, len(in.Snapshots))}
+	for _, snapshot := range in.Snapshots {
+		out.Snapshots = append(out.Snapshots, subAgentSnapshot(snapshot))
+	}
+	return out
+}
+
+func subAgentSnapshot(in agentharness.SubAgentSnapshot) SubAgentSnapshot {
+	return SubAgentSnapshot{
+		ThreadID:       ThreadID(in.ThreadID),
+		Path:           in.Path,
+		TaskName:       in.TaskName,
+		ParentThreadID: ThreadID(in.ParentThreadID),
+		ParentTurnID:   TurnID(in.ParentTurnID),
+		HostProfileRef: in.HostProfileRef,
+		Status:         SubAgentStatus(in.Status),
+		LatestTurnID:   TurnID(in.LatestTurnID),
+		LastMessage:    in.LastMessage,
+		WaitingPrompt:  in.WaitingPrompt,
+		QueuedInputs:   in.QueuedInputs,
+		CreatedAt:      in.CreatedAt,
+		UpdatedAt:      in.UpdatedAt,
+		Closed:         in.Closed,
+		CanSendInput:   in.CanSendInput,
+		CanInterrupt:   in.CanInterrupt,
+		CanClose:       in.CanClose,
+	}
+}
+
+func threadIDStrings(ids []ThreadID) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, string(id))
 	}
 	return out
 }

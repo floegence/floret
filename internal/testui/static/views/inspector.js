@@ -28,7 +28,7 @@ export function renderInspector({ session, result, tools, tab }) {
         <span class="tiny-pill">${escapeHTML(toolLabelList(session.selected_tools || []))}</span>
       </div>
       <div class="inspector-tabs" role="tablist" aria-label="Inspector">
-        ${["tools", "requests", "outputs", "events", "context", "raw"].map((item) => `<button type="button" data-inspector-tab="${item}" class="${activeTab === item ? "active" : ""}">${label(item)}</button>`).join("")}
+        ${["tools", "subagents", "requests", "outputs", "events", "context", "raw"].map((item) => `<button type="button" data-inspector-tab="${item}" class="${activeTab === item ? "active" : ""}">${label(item)}</button>`).join("")}
       </div>
       <div class="inspector-body">
         ${renderTab(activeTab, session, observation, result, tools)}
@@ -61,6 +61,8 @@ function renderTab(tab, session, observation, result, tools) {
   switch (tab) {
     case "requests":
       return renderRequests(observation.provider_requests || [], contextStatusesFor(session, result));
+    case "subagents":
+      return renderSubagents(session);
     case "outputs":
       return renderOutputs(session);
     case "events":
@@ -73,6 +75,27 @@ function renderTab(tab, session, observation, result, tools) {
     default:
       return renderTools(session, tools, observation);
   }
+}
+
+function renderSubagents(session) {
+  const subagents = session.subagents || [];
+  if (!subagents.length) return `<p class="muted">No subagents for this session.</p>`;
+  return `
+    <div class="event-list">
+      ${subagents.map((item) => `
+        <div class="event-item subagent-inspector-row">
+          <strong>${escapeHTML(item.task_name || item.path || item.thread_id || "subagent")}</strong>
+          <span class="muted">${escapeHTML(item.status || "idle")} · host ref ${escapeHTML(item.host_profile_ref || "n/a")}</span>
+          <span class="muted">${escapeHTML(item.path || "")}</span>
+          <span class="muted">thread ${escapeHTML(item.thread_id || "")}</span>
+          ${item.latest_turn_id ? `<span class="muted">turn ${escapeHTML(item.latest_turn_id)}</span>` : ""}
+          ${item.waiting_prompt ? `<pre class="mini-pre">${escapeHTML(item.waiting_prompt)}</pre>` : ""}
+          ${item.last_message ? `<pre class="mini-pre">${escapeHTML(item.last_message)}</pre>` : ""}
+        </div>
+      `).join("")}
+    </div>
+    <pre class="json-block">${escapeHTML(JSON.stringify(subagents, null, 2))}</pre>
+  `;
 }
 
 function renderTools(session, tools, observation) {
@@ -511,6 +534,8 @@ function label(tab) {
   switch (tab) {
     case "tools":
       return "Tools";
+    case "subagents":
+      return "Subagents";
     case "requests":
       return "Requests";
     case "outputs":

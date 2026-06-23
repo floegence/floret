@@ -52,9 +52,15 @@ input[type="checkbox"] {
 
 button:disabled,
 input:disabled,
+select:disabled,
 textarea:disabled {
-  cursor: not-allowed;
-  opacity: 0.56;
+	cursor: not-allowed;
+	opacity: 0.56;
+}
+
+label:has(input[type="checkbox"]:disabled) {
+	cursor: not-allowed;
+	opacity: 0.56;
 }
 
 button:focus-visible,
@@ -391,7 +397,7 @@ a {
 
 .workspace {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   height: 100%;
   min-height: 0;
   min-width: 0;
@@ -428,6 +434,133 @@ a {
 .workspace-context-meter {
   flex: 1 0 100%;
   min-width: 0;
+}
+
+.subagent-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: #eef3ef;
+}
+
+.subagent-panel-head,
+.subagent-card-main,
+.subagent-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.subagent-panel-head h2 {
+  font-size: 15px;
+}
+
+.subagent-panel-head p,
+.subagent-card-main span,
+.subagent-last {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.subagent-spawn-form,
+.subagent-input-form {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(96px, 0.55fr) minmax(96px, 0.55fr) minmax(180px, 1.6fr) auto;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.subagent-spawn-form input,
+.subagent-spawn-form select,
+.subagent-spawn-form textarea,
+.subagent-input-form input {
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.subagent-spawn-form textarea {
+  min-height: 38px;
+  max-height: 88px;
+  resize: vertical;
+}
+
+.subagent-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 10px;
+}
+
+.subagent-empty,
+.subagent-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.subagent-empty {
+  padding: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.subagent-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.subagent-card.active {
+  border-color: rgba(31, 122, 77, 0.42);
+  box-shadow: inset 3px 0 0 var(--green);
+}
+
+.subagent-card-main strong,
+.subagent-card-main span,
+.subagent-last {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.subagent-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.subagent-input-form {
+  grid-template-columns: minmax(160px, 1fr) auto auto;
+}
+
+.inline-check {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.subagent-actions {
+  justify-content: flex-end;
+}
+
+.subagent-inspector-row {
+  overflow-wrap: anywhere;
+}
+
+.mini-pre {
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .conversation {
@@ -1851,6 +1984,21 @@ button.small {
 
   .context-event-row {
     grid-template-columns: 1fr;
+  }
+
+  .subagent-spawn-form,
+  .subagent-input-form {
+    grid-template-columns: 1fr;
+  }
+
+  .subagent-card-main,
+  .subagent-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .subagent-pills {
+    justify-content: flex-start;
   }
 
   .activity-panel summary {

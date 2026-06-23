@@ -233,6 +233,9 @@ invent near-synonyms when a concept below already fits.
 - `AgentHarness` is the durable host-facing conversation layer. It owns threads,
   turn lifecycle, retries, forks, titles, and the projection of a thread path into
   one engine execution.
+- `SubAgent` is a parent-managed durable child thread exposed through the runtime
+  host facade. It is not a graph workflow node, swarm participant, or host-owned
+  pending tool process.
 - `TestingHarness` means deterministic scripted providers and test helpers. It must
   stay outside production control flow.
 
@@ -240,6 +243,8 @@ invent near-synonyms when a concept below already fits.
 
 - `ThreadID` identifies a durable conversation journal. It is the identity used by
   `agentharness`, `sessiontree`, and host UIs that persist conversation state.
+  Child threads also use `ThreadID` as their durable identity; agent paths and
+  task names are references, not storage ownership.
 - `TurnID` identifies one user-facing turn in a thread. A turn has lifecycle state
   such as idle, running, waiting, completed, failed, interrupted, or cancelled.
 - `RunID` identifies one engine/provider execution. A standalone engine run uses a
