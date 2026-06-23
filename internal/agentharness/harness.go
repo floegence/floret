@@ -91,6 +91,7 @@ type Options struct {
 	CompactionPrompt    compaction.PromptOptions
 	TitleGenerator      TitleGenerator
 	Artifacts           artifact.Store
+	Reasoning           provider.ReasoningCapability
 	TurnPolicy          TurnPolicy
 	LoopLimits          LoopLimits
 	NewID               func(string) string
@@ -99,6 +100,7 @@ type Options struct {
 
 type TurnPolicy struct {
 	ContextPolicy         contextpolicy.Policy
+	Reasoning             provider.ReasoningSelection
 	CacheRetention        cache.Retention
 	HostedToolDefinitions []provider.HostedToolDefinition
 	CompletionPolicy      engine.CompletionPolicy
@@ -247,6 +249,7 @@ func New(options Options) *AgentHarness {
 			Provider:     options.Provider,
 			ProviderName: options.ProviderName,
 			Model:        options.Model,
+			Reasoning:    options.Reasoning,
 		}
 	}
 	if options.Now == nil {
@@ -916,6 +919,9 @@ func (h *AgentHarness) engineOptions() engine.Options {
 	if policy.CacheRetention != "" {
 		engineOptions.CacheRetention = policy.CacheRetention
 	}
+	if !policy.Reasoning.IsZero() {
+		engineOptions.Reasoning = policy.Reasoning
+	}
 	if len(policy.HostedToolDefinitions) > 0 {
 		engineOptions.HostedToolDefinitions = append([]provider.HostedToolDefinition(nil), policy.HostedToolDefinitions...)
 	}
@@ -1215,6 +1221,7 @@ func (m *durableCompactionManager) Compact(ctx context.Context, req engine.Compa
 			Provider:      req.Provider,
 			ProviderName:  req.ProviderName,
 			Model:         req.Model,
+			Reasoning:     m.thread.harness.options.Reasoning,
 			Policy:        req.Policy,
 			PromptOptions: m.thread.harness.options.CompactionPrompt,
 		}

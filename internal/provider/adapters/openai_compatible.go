@@ -27,14 +27,35 @@ type OpenAICompatibleProvider struct {
 }
 
 type chatRequest struct {
-	Model                string        `json:"model"`
-	Messages             []chatMessage `json:"messages"`
-	Stream               bool          `json:"stream"`
-	MaxTokens            int64         `json:"max_tokens,omitempty"`
-	Tools                []chatTool    `json:"tools,omitempty"`
-	ToolChoice           string        `json:"tool_choice,omitempty"`
-	PromptCacheKey       string        `json:"prompt_cache_key,omitempty"`
-	PromptCacheRetention string        `json:"prompt_cache_retention,omitempty"`
+	Model                string         `json:"model"`
+	Messages             []chatMessage  `json:"messages"`
+	Stream               bool           `json:"stream"`
+	MaxTokens            int64          `json:"max_tokens,omitempty"`
+	ReasoningEffort      string         `json:"reasoning_effort,omitempty"`
+	Tools                []chatTool     `json:"tools,omitempty"`
+	ToolChoice           string         `json:"tool_choice,omitempty"`
+	PromptCacheKey       string         `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention string         `json:"prompt_cache_retention,omitempty"`
+	ExtraFields          map[string]any `json:"-"`
+}
+
+func (r chatRequest) MarshalJSON() ([]byte, error) {
+	type alias chatRequest
+	fields := map[string]any{}
+	raw, err := json.Marshal(alias(r))
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	delete(fields, "ExtraFields")
+	for key, value := range r.ExtraFields {
+		if strings.TrimSpace(key) != "" && value != nil {
+			fields[key] = value
+		}
+	}
+	return json.Marshal(fields)
 }
 
 type usagePayload struct {
@@ -312,7 +333,95 @@ func (p OpenAICompatibleProvider) chatRequestBody(req provider.Request) ([]byte,
 	if req.Cache.Enabled && p.Cache.PromptCacheRetention {
 		chatReq.PromptCacheRetention = string(req.Cache.Retention)
 	}
+	if err := p.applyChatReasoning(&chatReq, req); err != nil {
+		return nil, err
+	}
 	return json.Marshal(chatReq)
+}
+
+func (p OpenAICompatibleProvider) applyChatReasoning(chatReq *chatRequest, req provider.Request) error {
+	if chatReq == nil {
+		return nil
+	}
+	selection := provider.NormalizeReasoningSelection(req.Reasoning)
+	if selection.IsZero() || selection.Level == provider.ReasoningLevelDefault && selection.BudgetTokens == 0 {
+		return nil
+	}
+	capability := p.CostModel.Reasoning
+	if err := capability.ValidateSelection(selection); err != nil {
+		return err
+	}
+	switch capability.WireShape {
+	case "":
+		return fmt.Errorf("model %q has no reasoning wire shape", p.Model)
+	case "openai_chat_reasoning_effort":
+		chatReq.ReasoningEffort = openAICompatibleReasoningEffort(selection.Level)
+	case "kimi_thinking_type":
+		chatReq.ExtraFields = mergeExtraFields(chatReq.ExtraFields, map[string]any{"thinking": map[string]any{"type": thinkingType(selection)}})
+	case "deepseek_reasoning_effort":
+		if selection.Level == provider.ReasoningLevelOff {
+			chatReq.ExtraFields = mergeExtraFields(chatReq.ExtraFields, map[string]any{"thinking": map[string]any{"type": "disabled"}})
+			return nil
+		}
+		chatReq.ReasoningEffort = string(selection.Level)
+	case "qwen_enable_thinking":
+		extra := map[string]any{"enable_thinking": selection.Level != provider.ReasoningLevelOff}
+		if selection.BudgetTokens > 0 {
+			extra["thinking_budget"] = selection.BudgetTokens
+		}
+		chatReq.ExtraFields = mergeExtraFields(chatReq.ExtraFields, extra)
+	case "gemini_openai_thinking_budget":
+		if selection.Level == provider.ReasoningLevelOff {
+			chatReq.ExtraFields = mergeExtraFields(chatReq.ExtraFields, map[string]any{"reasoning_effort": "none"})
+			return nil
+		}
+		if selection.BudgetTokens > 0 {
+			chatReq.ExtraFields = mergeExtraFields(chatReq.ExtraFields, map[string]any{"extra_body": map[string]any{"google": map[string]any{"thinking_config": map[string]any{"thinking_budget": selection.BudgetTokens}}}})
+		}
+	case "glm_thinking_type":
+		chatReq.ExtraFields = mergeExtraFields(chatReq.ExtraFields, map[string]any{"thinking": map[string]any{"type": thinkingType(selection)}})
+	case "glm_reasoning_effort":
+		chatReq.ReasoningEffort = openAICompatibleReasoningEffort(selection.Level)
+	case "openrouter_reasoning_metadata":
+		chatReq.ExtraFields = mergeExtraFields(chatReq.ExtraFields, map[string]any{"reasoning": map[string]any{"effort": openAICompatibleReasoningEffort(selection.Level)}})
+	case "ollama_model_family_think":
+		if selection.Level == provider.ReasoningLevelOff {
+			chatReq.ReasoningEffort = "none"
+			return nil
+		}
+		chatReq.ReasoningEffort = openAICompatibleReasoningEffort(selection.Level)
+	default:
+		return fmt.Errorf("unsupported reasoning wire shape %q", capability.WireShape)
+	}
+	return nil
+}
+
+func openAICompatibleReasoningEffort(level provider.ReasoningLevel) string {
+	if level == provider.ReasoningLevelOff {
+		return "none"
+	}
+	return string(level)
+}
+
+func thinkingType(selection provider.ReasoningSelection) string {
+	if selection.Level == provider.ReasoningLevelOff {
+		return "disabled"
+	}
+	return "enabled"
+}
+
+func mergeExtraFields(base map[string]any, next map[string]any) map[string]any {
+	if len(next) == 0 {
+		return base
+	}
+	out := map[string]any{}
+	for key, value := range base {
+		out[key] = value
+	}
+	for key, value := range next {
+		out[key] = value
+	}
+	return out
 }
 
 func (p OpenAICompatibleProvider) contextChatRequest(req provider.Request) (chatRequest, error) {

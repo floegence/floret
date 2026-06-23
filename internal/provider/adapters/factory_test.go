@@ -180,6 +180,260 @@ func TestOpenAICompatibleProviderMaxOutputTokensAreOptional(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleProviderReasoningPayloads(t *testing.T) {
+	tests := []struct {
+		name      string
+		cap       provider.ReasoningCapability
+		selection provider.ReasoningSelection
+		want      map[string]any
+	}{
+		{
+			name: "openai effort",
+			cap: provider.ReasoningCapability{
+				Kind:            provider.ReasoningKindEffort,
+				SupportedLevels: []provider.ReasoningLevel{provider.ReasoningLevelLow, provider.ReasoningLevelMedium, provider.ReasoningLevelHigh},
+				WireShape:       "openai_chat_reasoning_effort",
+			},
+			selection: provider.ReasoningSelection{Level: provider.ReasoningLevelHigh},
+			want:      map[string]any{"reasoning_effort": "high"},
+		},
+		{
+			name: "kimi disabled",
+			cap: provider.ReasoningCapability{
+				Kind:             provider.ReasoningKindToggle,
+				DisableSupported: true,
+				WireShape:        "kimi_thinking_type",
+			},
+			selection: provider.ReasoningSelection{Level: provider.ReasoningLevelOff},
+			want:      map[string]any{"thinking": map[string]any{"type": "disabled"}},
+		},
+		{
+			name: "deepseek max",
+			cap: provider.ReasoningCapability{
+				Kind:            provider.ReasoningKindEffort,
+				SupportedLevels: []provider.ReasoningLevel{provider.ReasoningLevelHigh, provider.ReasoningLevelMax},
+				WireShape:       "deepseek_reasoning_effort",
+			},
+			selection: provider.ReasoningSelection{Level: provider.ReasoningLevelMax},
+			want:      map[string]any{"reasoning_effort": "max"},
+		},
+		{
+			name: "qwen budget",
+			cap: provider.ReasoningCapability{
+				Kind:      provider.ReasoningKindToggleBudget,
+				WireShape: "qwen_enable_thinking",
+				Budget:    provider.ReasoningBudget{MinTokens: 1, MaxTokens: 24576},
+			},
+			selection: provider.ReasoningSelection{Level: provider.ReasoningLevelDefault, BudgetTokens: 4096},
+			want:      map[string]any{"enable_thinking": true, "thinking_budget": float64(4096)},
+		},
+		{
+			name: "qwen disabled",
+			cap: provider.ReasoningCapability{
+				Kind:             provider.ReasoningKindToggleBudget,
+				DisableSupported: true,
+				WireShape:        "qwen_enable_thinking",
+			},
+			selection: provider.ReasoningSelection{Level: provider.ReasoningLevelOff},
+			want:      map[string]any{"enable_thinking": false},
+		},
+		{
+			name: "gemini budget",
+			cap: provider.ReasoningCapability{
+				Kind:      provider.ReasoningKindBudget,
+				WireShape: "gemini_openai_thinking_budget",
+				Budget:    provider.ReasoningBudget{MinTokens: 128, MaxTokens: 32768},
+			},
+			selection: provider.ReasoningSelection{Level: provider.ReasoningLevelDefault, BudgetTokens: 1024},
+			want:      map[string]any{"extra_body": map[string]any{"google": map[string]any{"thinking_config": map[string]any{"thinking_budget": float64(1024)}}}},
+		},
+		{
+			name: "gemini flash disabled",
+			cap: provider.ReasoningCapability{
+				Kind:             provider.ReasoningKindToggleBudget,
+				DisableSupported: true,
+				WireShape:        "gemini_openai_thinking_budget",
+			},
+			selection: provider.ReasoningSelection{Level: provider.ReasoningLevelOff},
+			want:      map[string]any{"reasoning_effort": "none"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := OpenAICompatibleProvider{Model: "model", CostModel: catalog.Model{Reasoning: tt.cap}}
+			body, err := p.chatRequestBody(provider.Request{
+				Messages:  []session.Message{{Role: session.User, Content: "hello"}},
+				Reasoning: tt.selection,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(body, &got); err != nil {
+				t.Fatal(err)
+			}
+			for key, want := range tt.want {
+				if fmt.Sprint(got[key]) != fmt.Sprint(want) {
+					t.Fatalf("%s = %#v, want %#v; body=%s", key, got[key], want, body)
+				}
+			}
+		})
+	}
+}
+
+func TestOpenAICompatibleProviderBuiltInReasoningPayloads(t *testing.T) {
+	tests := []struct {
+		name      string
+		provider  string
+		model     string
+		selection provider.ReasoningSelection
+		want      map[string]any
+	}{
+		{
+			name:      "qwen off",
+			provider:  catalog.ProviderQwen,
+			model:     "qwen3.6-plus",
+			selection: provider.ReasoningSelection{Level: provider.ReasoningLevelOff},
+			want:      map[string]any{"enable_thinking": false},
+		},
+		{
+			name:      "gemini 3 high",
+			provider:  catalog.ProviderGoogle,
+			model:     "gemini-3.1-pro-preview",
+			selection: provider.ReasoningSelection{Level: provider.ReasoningLevelHigh},
+			want:      map[string]any{"reasoning_effort": "high"},
+		},
+		{
+			name:      "gemini 2.5 pro budget",
+			provider:  catalog.ProviderGoogle,
+			model:     "gemini-2.5-pro",
+			selection: provider.ReasoningSelection{Level: provider.ReasoningLevelDefault, BudgetTokens: 1024},
+			want:      map[string]any{"extra_body": map[string]any{"google": map[string]any{"thinking_config": map[string]any{"thinking_budget": float64(1024)}}}},
+		},
+		{
+			name:      "gemini 2.5 flash off",
+			provider:  catalog.ProviderGoogle,
+			model:     "gemini-2.5-flash",
+			selection: provider.ReasoningSelection{Level: provider.ReasoningLevelOff},
+			want:      map[string]any{"reasoning_effort": "none"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model, ok := catalog.FindModel(tt.provider, tt.model)
+			if !ok {
+				t.Fatalf("missing model %s/%s", tt.provider, tt.model)
+			}
+			p := OpenAICompatibleProvider{Model: tt.model, CostModel: model}
+			body, err := p.chatRequestBody(provider.Request{
+				Messages:  []session.Message{{Role: session.User, Content: "hello"}},
+				Reasoning: tt.selection,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(body, &got); err != nil {
+				t.Fatal(err)
+			}
+			for key, want := range tt.want {
+				if fmt.Sprint(got[key]) != fmt.Sprint(want) {
+					t.Fatalf("%s = %#v, want %#v; body=%s", key, got[key], want, body)
+				}
+			}
+		})
+	}
+}
+
+func TestOpenAICompatibleProviderRejectsUnsupportedReasoningLevel(t *testing.T) {
+	p := OpenAICompatibleProvider{Model: "model", CostModel: catalog.Model{Reasoning: provider.ReasoningCapability{
+		Kind:            provider.ReasoningKindEffort,
+		SupportedLevels: []provider.ReasoningLevel{provider.ReasoningLevelOff, provider.ReasoningLevelDefault},
+		WireShape:       "openai_chat_reasoning_effort",
+	}}}
+	_, err := p.chatRequestBody(provider.Request{
+		Messages:  []session.Message{{Role: session.User, Content: "hello"}},
+		Reasoning: provider.ReasoningSelection{Level: provider.ReasoningLevelLow},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("err = %v, want unsupported reasoning level", err)
+	}
+}
+
+func TestOpenAICompatibleProviderRejectsUnsupportedReasoningBudget(t *testing.T) {
+	p := OpenAICompatibleProvider{Model: "model", CostModel: catalog.Model{Reasoning: provider.ReasoningCapability{
+		Kind:            provider.ReasoningKindEffort,
+		SupportedLevels: []provider.ReasoningLevel{provider.ReasoningLevelLow},
+		WireShape:       "openai_chat_reasoning_effort",
+	}}}
+	_, err := p.chatRequestBody(provider.Request{
+		Messages:  []session.Message{{Role: session.User, Content: "hello"}},
+		Reasoning: provider.ReasoningSelection{Level: provider.ReasoningLevelLow, BudgetTokens: 1024},
+	})
+	if err == nil || !strings.Contains(err.Error(), "budget is unsupported") {
+		t.Fatalf("err = %v, want unsupported budget", err)
+	}
+}
+
+func TestOpenAICompatibleProviderRejectsOpenRouterWithoutDynamicMetadata(t *testing.T) {
+	model, ok := catalog.FindModel(catalog.ProviderOpenRouter, "openai/gpt-5.4")
+	if !ok {
+		t.Fatal("missing openrouter model")
+	}
+	p := OpenAICompatibleProvider{Model: model.OpenAIModelID, CostModel: model}
+	_, err := p.chatRequestBody(provider.Request{
+		Messages:  []session.Message{{Role: session.User, Content: "hello"}},
+		Reasoning: provider.ReasoningSelection{Level: provider.ReasoningLevelLow},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("err = %v, want unsupported dynamic metadata selection", err)
+	}
+}
+
+func TestAnthropicProviderReasoningPayloads(t *testing.T) {
+	capability := provider.ReasoningCapability{
+		Kind:             provider.ReasoningKindEffortBudget,
+		SupportedLevels:  []provider.ReasoningLevel{provider.ReasoningLevelLow, provider.ReasoningLevelMedium, provider.ReasoningLevelHigh, provider.ReasoningLevelXHigh, provider.ReasoningLevelMax},
+		DisableSupported: true,
+		Budget:           provider.ReasoningBudget{MinTokens: 1024},
+		WireShape:        "anthropic_output_config_effort",
+	}
+	p := AnthropicProvider{Model: "claude", MaxTokens: 8192, CostModel: catalog.Model{Reasoning: capability}}
+	body, err := p.anthropicRequestBody(provider.Request{
+		Messages:  []session.Message{{Role: session.User, Content: "hello"}},
+		Reasoning: provider.ReasoningSelection{Level: provider.ReasoningLevelHigh, BudgetTokens: 2048},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(got["thinking"]) != fmt.Sprint(map[string]any{"type": "enabled", "budget_tokens": float64(2048)}) {
+		t.Fatalf("thinking = %#v; body=%s", got["thinking"], body)
+	}
+	if fmt.Sprint(got["output_config"]) != fmt.Sprint(map[string]any{"effort": "high"}) {
+		t.Fatalf("output_config = %#v; body=%s", got["output_config"], body)
+	}
+}
+
+func TestAnthropicProviderRejectsOversizedReasoningBudget(t *testing.T) {
+	p := AnthropicProvider{Model: "claude", MaxTokens: 2048, CostModel: catalog.Model{Reasoning: provider.ReasoningCapability{
+		Kind:            provider.ReasoningKindEffortBudget,
+		SupportedLevels: []provider.ReasoningLevel{provider.ReasoningLevelHigh},
+		Budget:          provider.ReasoningBudget{MinTokens: 1024},
+		WireShape:       "anthropic_output_config_effort",
+	}}}
+	_, err := p.anthropicRequestBody(provider.Request{
+		Messages:  []session.Message{{Role: session.User, Content: "hello"}},
+		Reasoning: provider.ReasoningSelection{Level: provider.ReasoningLevelHigh, BudgetTokens: 2048},
+	})
+	if err == nil || !strings.Contains(err.Error(), "must be less than max_tokens") {
+		t.Fatalf("err = %v, want budget/max_tokens error", err)
+	}
+}
+
 func TestOpenAICompatibleProviderNormalizesUsage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

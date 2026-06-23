@@ -41,6 +41,7 @@ type ProviderTitleGenerator struct {
 	Provider        provider.Provider
 	ProviderName    string
 	Model           string
+	Reasoning       provider.ReasoningCapability
 	MaxRunes        int
 	MaxOutputTokens int64
 }
@@ -64,7 +65,7 @@ func (g ProviderTitleGenerator) GenerateTitle(ctx context.Context, req TitleRequ
 		Model:            strings.TrimSpace(g.Model),
 		Messages:         prompt,
 		MaxOutputTokens:  g.maxOutputTokens(),
-		DisableReasoning: true,
+		Reasoning:        provider.ShortRequestReasoningSelection(g.Reasoning),
 	})
 	if err != nil {
 		return TitleResult{}, err

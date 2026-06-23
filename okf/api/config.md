@@ -20,7 +20,16 @@ to read environment-backed defaults.
 * Resolve agent profile and prompt identity.
 * Normalize prompt-cache retention.
 * Normalize context policy defaults.
+* Normalize provider-neutral reasoning selection from `Config.Reasoning`,
+  `FLORET_REASONING_LEVEL`, and `FLORET_REASONING_BUDGET_TOKENS`.
 * Validate required provider settings.
+
+# Reasoning Selection
+
+`Config.Reasoning` is the default reasoning request intent for Floret-managed
+runs. It carries a provider-neutral level and optional budget tokens. Provider
+adapters validate that intent against the selected model capability before
+rendering provider-specific request fields.
 
 # Use With
 

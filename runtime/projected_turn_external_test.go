@@ -193,6 +193,69 @@ func TestRunProjectedTurnWithPublicModelGateway(t *testing.T) {
 	}
 }
 
+func TestRunProjectedTurnPassesReasoningSelectionToModelGateway(t *testing.T) {
+	var got []runtime.ReasoningSelection
+	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
+		got = append(got, req.Reasoning)
+		events := make(chan runtime.ModelEvent, 2)
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDelta, Text: "ok"}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "stop"}
+		close(events)
+		return events, nil
+	})
+
+	_, err := runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "gateway system",
+			Reasoning:    config.ReasoningSelection{Level: config.ReasoningLevelMedium},
+		},
+		ModelGateway: gateway,
+		Store:        runtime.NewMemoryStore(),
+	}, runtime.ProjectedTurnRequest{
+		RunID:         "run-reasoning-default",
+		ThreadID:      "thread-reasoning",
+		TurnID:        "turn-reasoning-default",
+		TraceID:       "trace-reasoning-default",
+		PromptScopeID: "thread-reasoning",
+		History:       []runtime.TranscriptMessage{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "gateway system",
+			Reasoning:    config.ReasoningSelection{Level: config.ReasoningLevelMedium},
+		},
+		ModelGateway: gateway,
+		Store:        runtime.NewMemoryStore(),
+	}, runtime.ProjectedTurnRequest{
+		RunID:         "run-reasoning-override",
+		ThreadID:      "thread-reasoning",
+		TurnID:        "turn-reasoning-override",
+		TraceID:       "trace-reasoning-override",
+		PromptScopeID: "thread-reasoning",
+		History:       []runtime.TranscriptMessage{{Role: "user", Content: "hello"}},
+		Reasoning:     runtime.ReasoningSelection{Level: runtime.ReasoningLevelHigh, BudgetTokens: 4096},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("requests = %#v", got)
+	}
+	if got[0].Level != runtime.ReasoningLevelMedium || got[0].BudgetTokens != 0 {
+		t.Fatalf("default reasoning = %#v", got[0])
+	}
+	if got[1].Level != runtime.ReasoningLevelHigh || got[1].BudgetTokens != 4096 {
+		t.Fatalf("override reasoning = %#v", got[1])
+	}
+}
+
 type collectingEventSink struct {
 	events []runtime.Event
 }

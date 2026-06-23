@@ -178,10 +178,12 @@ func (r *Runner) titleGenerator(cfg config.Config) (agentharness.TitleGenerator,
 	if err != nil {
 		return nil, err
 	}
+	model, _ := catalog.FindModel(cfg.Provider, cfg.Model)
 	return agentharness.ProviderTitleGenerator{
 		Provider:     p,
 		ProviderName: cfg.Provider,
 		Model:        cfg.Model,
+		Reasoning:    model.Reasoning,
 	}, nil
 }
 
@@ -867,6 +869,7 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 	if err != nil {
 		return agentSessionRuntime{}, err
 	}
+	model, _ := catalog.FindModel(sess.cfg.Provider, sess.cfg.Model)
 	h := agentharness.New(agentharness.Options{
 		Provider:       observedProviderRuntime(observed),
 		ProviderName:   sess.cfg.Provider,
@@ -881,9 +884,11 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 		HarnessSink:    harnessRec,
 		Approver:       testUIToolApprover,
 		TitleGenerator: titleGenerator,
+		Reasoning:      model.Reasoning,
 		TurnPolicy: agentharness.TurnPolicy{
 			CacheRetention:        configbridge.CacheRetention(cacheRetention),
 			ContextPolicy:         configbridge.ContextPolicy(sess.contextPolicy),
+			Reasoning:             configbridge.ReasoningSelection(sess.cfg.Reasoning),
 			HostedToolDefinitions: hostedTools,
 		},
 		LoopLimits: agentharness.LoopLimits{
@@ -1056,6 +1061,7 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 	if err != nil {
 		return nil, err
 	}
+	model, _ := catalog.FindModel(cfg.Provider, cfg.Model)
 	h := agentharness.New(agentharness.Options{
 		Provider:       observedProviderRuntime(observed),
 		ProviderName:   cfg.Provider,
@@ -1070,9 +1076,11 @@ func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOp
 		HarnessSink:    harnessRec,
 		Approver:       testUIToolApprover,
 		TitleGenerator: titleGenerator,
+		Reasoning:      model.Reasoning,
 		TurnPolicy: agentharness.TurnPolicy{
 			CacheRetention:        configbridge.CacheRetention(cacheRetention),
 			ContextPolicy:         configbridge.ContextPolicy(cfg.ContextPolicy),
+			Reasoning:             configbridge.ReasoningSelection(cfg.Reasoning),
 			HostedToolDefinitions: hostedTools,
 		},
 		LoopLimits: agentharness.LoopLimits{

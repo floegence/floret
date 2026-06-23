@@ -25,6 +25,9 @@ loop over a transcript projection.
 * `ModelGateway` lets a host supply model transport through
   `HostOptions.ModelGateway` or `ProjectedTurnOptions.ModelGateway` while
   Floret owns loop control, tool dispatch, and ledgers.
+* `ReasoningSelection` carries provider-neutral reasoning intent for a run.
+  `RunProjectedTurn` accepts it as an override, and `ModelRequest` forwards the
+  effective selection to host-owned model gateways.
 * `ModelEventToolCallStart`, `ModelEventToolCallDelta`, and
   `ModelEventToolCallEnd` expose model tool-call streaming as provider-neutral
   public runtime events. They identify the call being generated without carrying
@@ -54,6 +57,12 @@ backends preserve pending work, cancellation, and consumption state.
 `StreamObservation` is for host rendering and diagnostics. It is not raw
 provider wire data and must not carry prompt text, tool arguments, tool results,
 local paths, or secrets.
+
+Reasoning selection is request intent, not provider wire data. Floret normalizes
+the public selection and provider adapters translate only values supported by the
+selected model capability. Hosts that own model transport through `ModelGateway`
+receive the effective selection and must render provider-specific payloads
+outside Floret.
 
 # Key Source Files
 

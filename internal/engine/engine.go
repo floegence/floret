@@ -112,6 +112,7 @@ type Options struct {
 	CacheNamespace           string
 	CacheRetention           cache.Retention
 	ContextPolicy            contextpolicy.Policy
+	Reasoning                provider.ReasoningSelection
 	MaxEmptyProviderRetries  int
 	NoProgressLimit          int
 	DuplicateToolLimit       int
@@ -793,6 +794,7 @@ func cloneOptions(o Options) Options {
 	o.toolDefinitions = cloneProviderToolDefinitions(o.toolDefinitions)
 	o.HostedToolDefinitions = cloneHostedToolDefinitions(o.HostedToolDefinitions)
 	o.ContextPolicy = contextpolicy.Normalize(o.ContextPolicy)
+	o.Reasoning = provider.NormalizeReasoningSelection(o.Reasoning)
 	o.ControlSpec = cloneControlSpec(o.ControlSpec)
 	o.Labels = cloneRunLabels(o.Labels)
 	o.PreviousProviderState = provider.CloneState(o.PreviousProviderState)
@@ -1097,6 +1099,7 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		Cache:           cachePolicy,
 		ContextPolicy:   opts.ContextPolicy,
 		MaxOutputTokens: opts.ContextPolicy.MaxOutputTokens,
+		Reasoning:       opts.Reasoning,
 		PreviousState:   provider.CloneState(opts.PreviousProviderState),
 		Labels:          providerRequestLabels(opts.Labels),
 	}

@@ -62,6 +62,7 @@ type Config struct {
 	SkillSources            []string
 	SkillPromptBudgetBytes  int
 	ContextPolicy           ContextPolicy
+	Reasoning               ReasoningSelection
 	MaxOutputTokensSet      bool
 	MaxEmptyProviderRetries int
 	NoProgressLimit         int
@@ -196,6 +197,14 @@ func fromValues(values map[string]string) (Config, error) {
 	if cfg.WallTime, err = getDuration(values, "FLORET_WALL_TIME", 0); err != nil {
 		return Config{}, err
 	}
+	if value := strings.TrimSpace(values["FLORET_REASONING_LEVEL"]); value != "" {
+		cfg.Reasoning.Level = ReasoningLevel(value)
+	}
+	if value, ok, err := getOptionalInt64(values, "FLORET_REASONING_BUDGET_TOKENS"); err != nil {
+		return Config{}, err
+	} else if ok {
+		cfg.Reasoning.BudgetTokens = value
+	}
 	if cfg.SkillsEnabled, err = getBool(values, "FLORET_SKILLS_ENABLED", false); err != nil {
 		return Config{}, err
 	}
@@ -236,6 +245,7 @@ func Resolve(cfg Config, environ map[string]string) (Config, error) {
 	if cfg.SkillPromptBudgetBytes <= 0 {
 		cfg.SkillPromptBudgetBytes = 16 * 1024
 	}
+	cfg.Reasoning = NormalizeReasoningSelection(cfg.Reasoning)
 	defaultPolicy := contextPolicyFromInternal(catalog.ContextPolicy(cfg.Provider, cfg.Model))
 	contextPolicyProvided := contextpolicy.HasValues(cfg.ContextPolicy.internal())
 	if cfg.ContextPolicy.ContextWindowTokens <= 0 {
@@ -461,6 +471,10 @@ func validate(cfg Config) (Config, error) {
 	}
 	if _, err := normalizePromptCacheRetention(cfg.PromptCacheRetention); err != nil {
 		return Config{}, err
+	}
+	cfg.Reasoning = NormalizeReasoningSelection(cfg.Reasoning)
+	if !ValidateReasoningLevel(cfg.Reasoning.Level) {
+		return Config{}, fmt.Errorf("unsupported reasoning level %q", cfg.Reasoning.Level)
 	}
 	cfg.ContextPolicy = contextPolicyFromInternal(contextpolicy.Normalize(cfg.ContextPolicy.internal()))
 	return cfg, nil

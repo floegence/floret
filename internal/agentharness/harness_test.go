@@ -120,6 +120,10 @@ func TestThreadRunGeneratesTitleMetadataAfterSuccessfulTurn(t *testing.T) {
 		Tools:        tools.NewRegistry(),
 		Repo:         sessiontree.NewMemoryRepo(),
 		PromptStore:  cache.NewMemoryStore(),
+		Reasoning: provider.ReasoningCapability{
+			Kind:             provider.ReasoningKindEffort,
+			DisableSupported: true,
+		},
 		LoopLimits: LoopLimits{
 			MaxEmptyProviderRetries: 1,
 			NoProgressLimit:         2,
@@ -148,7 +152,7 @@ func TestThreadRunGeneratesTitleMetadataAfterSuccessfulTurn(t *testing.T) {
 	if snap.Title == "" || utf8.RuneCountInString(snap.Title) > defaultThreadTitleMaxRunes {
 		t.Fatalf("snapshot title %q should be non-empty and at most %d runes", snap.Title, defaultThreadTitleMaxRunes)
 	}
-	if len(p.Requests) != 2 || p.Requests[1].LogicalRequestID != "thread_title" || p.Requests[1].RunID != "turn-1:thread-title" || !p.Requests[1].DisableReasoning {
+	if len(p.Requests) != 2 || p.Requests[1].LogicalRequestID != "thread_title" || p.Requests[1].RunID != "turn-1:thread-title" || p.Requests[1].Reasoning.Level != provider.ReasoningLevelOff {
 		t.Fatalf("title provider request missing: %#v", p.Requests)
 	}
 	if len(p.Requests[1].Messages) != 2 || !strings.Contains(p.Requests[1].Messages[1].Content, "Verify streaming output and tool calls") {

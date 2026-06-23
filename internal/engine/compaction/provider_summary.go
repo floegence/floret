@@ -20,6 +20,7 @@ type ProviderSummaryGenerator struct {
 	Provider      provider.Provider
 	ProviderName  string
 	Model         string
+	Reasoning     provider.ReasoningCapability
 	Policy        contextpolicy.Policy
 	PromptOptions sessioncompaction.PromptOptions
 }
@@ -92,6 +93,7 @@ func (g ProviderSummaryGenerator) generateProviderSummaryAttempt(ctx context.Con
 		Messages:        messages,
 		ContextPolicy:   policy,
 		MaxOutputTokens: outputCap,
+		Reasoning:       provider.ShortRequestReasoningSelection(g.Reasoning),
 	})
 	if err != nil {
 		return providerSummaryAttempt{}, err

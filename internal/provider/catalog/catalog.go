@@ -50,19 +50,19 @@ type WebSearchCapability struct {
 }
 
 type Model struct {
-	ID             string          `json:"id"`
-	Name           string          `json:"name"`
-	Provider       string          `json:"provider"`
-	API            string          `json:"api"`
-	ContextWindow  int64           `json:"context_window,omitempty"`
-	MaxTokens      int64           `json:"max_tokens,omitempty"`
-	Input          []string        `json:"input"`
-	Reasoning      bool            `json:"reasoning"`
-	Cost           Cost            `json:"cost,omitempty"`
-	Cache          CacheCapability `json:"cache,omitempty"`
-	Default        bool            `json:"default,omitempty"`
-	OpenAIModelID  string          `json:"openai_model_id,omitempty"`
-	AnthropicModel string          `json:"anthropic_model,omitempty"`
+	ID             string                       `json:"id"`
+	Name           string                       `json:"name"`
+	Provider       string                       `json:"provider"`
+	API            string                       `json:"api"`
+	ContextWindow  int64                        `json:"context_window,omitempty"`
+	MaxTokens      int64                        `json:"max_tokens,omitempty"`
+	Input          []string                     `json:"input"`
+	Reasoning      provider.ReasoningCapability `json:"reasoning,omitempty"`
+	Cost           Cost                         `json:"cost,omitempty"`
+	Cache          CacheCapability              `json:"cache,omitempty"`
+	Default        bool                         `json:"default,omitempty"`
+	OpenAIModelID  string                       `json:"openai_model_id,omitempty"`
+	AnthropicModel string                       `json:"anthropic_model,omitempty"`
 }
 
 type Provider struct {

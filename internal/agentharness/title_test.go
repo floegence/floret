@@ -28,6 +28,7 @@ func TestProviderTitleGeneratorUsesShortNonReasoningRequest(t *testing.T) {
 		Provider:     recorder,
 		ProviderName: "fake",
 		Model:        "fake-model",
+		Reasoning:    provider.ReasoningCapability{Kind: provider.ReasoningKindEffort, SupportedLevels: []provider.ReasoningLevel{provider.ReasoningLevelOff, provider.ReasoningLevelLow}},
 	}
 
 	result, err := generator.GenerateTitle(context.Background(), TitleRequest{
@@ -51,10 +52,33 @@ func TestProviderTitleGeneratorUsesShortNonReasoningRequest(t *testing.T) {
 	if req.MaxOutputTokens > 96 {
 		t.Fatalf("MaxOutputTokens=%d, want compact title request budget", req.MaxOutputTokens)
 	}
-	if !req.DisableReasoning {
-		t.Fatalf("DisableReasoning=false, want true")
+	if req.Reasoning.Level != provider.ReasoningLevelOff {
+		t.Fatalf("Reasoning=%#v, want off", req.Reasoning)
 	}
 	if got := req.LogicalRequestID; got != ThreadTitleLogicalRequestID {
 		t.Fatalf("LogicalRequestID=%q, want %q", got, ThreadTitleLogicalRequestID)
+	}
+}
+
+func TestProviderTitleGeneratorOmitsReasoningForModelsWithoutShortSelection(t *testing.T) {
+	recorder := &recordingTitleProvider{}
+	generator := ProviderTitleGenerator{
+		Provider:     recorder,
+		ProviderName: "fake",
+		Model:        "fake-model",
+	}
+
+	if _, err := generator.GenerateTitle(context.Background(), TitleRequest{
+		ThreadID: "thread",
+		TurnID:   "turn-1",
+		Messages: []session.Message{{Role: session.User, Content: "Summarize this conversation."}},
+	}); err != nil {
+		t.Fatalf("GenerateTitle: %v", err)
+	}
+	if len(recorder.requests) != 1 {
+		t.Fatalf("requests=%d, want 1", len(recorder.requests))
+	}
+	if got := recorder.requests[0].Reasoning; !got.IsZero() {
+		t.Fatalf("Reasoning=%#v, want omitted", got)
 	}
 }

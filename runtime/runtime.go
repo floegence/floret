@@ -17,6 +17,7 @@ import (
 	"github.com/floegence/floret/internal/event"
 	"github.com/floegence/floret/internal/provider"
 	"github.com/floegence/floret/internal/provider/cache"
+	"github.com/floegence/floret/internal/provider/catalog"
 	"github.com/floegence/floret/internal/session"
 	"github.com/floegence/floret/internal/session/artifact"
 	"github.com/floegence/floret/internal/session/compaction"
@@ -718,6 +719,7 @@ func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harness
 	}
 	turnPolicy := agentharness.TurnPolicy{
 		ContextPolicy:  configbridge.ContextPolicy(cfg.ContextPolicy),
+		Reasoning:      configbridge.ReasoningSelection(cfg.Reasoning),
 		CacheRetention: configbridge.CacheRetention(cacheRetention),
 	}
 	loopLimits := agentharness.LoopLimits{
@@ -738,6 +740,7 @@ func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harness
 	if opts.LoopLimits.WallTime > 0 {
 		loopLimits.WallTime = opts.LoopLimits.WallTime
 	}
+	model, _ := catalog.FindModel(cfg.Provider, cfg.Model)
 	return agentharness.New(agentharness.Options{
 		Provider:         p,
 		ProviderName:     cfg.Provider,
@@ -751,6 +754,7 @@ func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harness
 		TitleGenerator:   opts.Title,
 		CompactionPrompt: compaction.PromptOptions{},
 		Artifacts:        store.artifacts,
+		Reasoning:        model.Reasoning,
 		TurnPolicy:       turnPolicy,
 		LoopLimits:       loopLimits,
 		NewID:            opts.NewID,
@@ -1190,6 +1194,7 @@ func newEngineWithProvider(cfg config.Config, p provider.Provider, store session
 			Model:                   cfg.Model,
 			CacheRetention:          configbridge.CacheRetention(cacheRetention),
 			ContextPolicy:           configbridge.ContextPolicy(cfg.ContextPolicy),
+			Reasoning:               configbridge.ReasoningSelection(cfg.Reasoning),
 			MaxEmptyProviderRetries: cfg.MaxEmptyProviderRetries,
 			NoProgressLimit:         cfg.NoProgressLimit,
 			DuplicateToolLimit:      cfg.DuplicateToolLimit,

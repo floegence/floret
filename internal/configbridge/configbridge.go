@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/floegence/floret/config"
+	"github.com/floegence/floret/internal/provider"
 	"github.com/floegence/floret/internal/provider/cache"
 	"github.com/floegence/floret/internal/session/contextpolicy"
 )
@@ -38,6 +39,22 @@ func PublicContextPolicy(policy contextpolicy.Policy) config.ContextPolicy {
 
 func NormalizeContextPolicy(policy config.ContextPolicy) config.ContextPolicy {
 	return PublicContextPolicy(contextpolicy.Normalize(ContextPolicy(policy)))
+}
+
+func ReasoningSelection(selection config.ReasoningSelection) provider.ReasoningSelection {
+	selection = config.NormalizeReasoningSelection(selection)
+	return provider.ReasoningSelection{
+		Level:        provider.ReasoningLevel(selection.Level),
+		BudgetTokens: selection.BudgetTokens,
+	}
+}
+
+func PublicReasoningSelection(selection provider.ReasoningSelection) config.ReasoningSelection {
+	selection = provider.NormalizeReasoningSelection(selection)
+	return config.ReasoningSelection{
+		Level:        config.ReasoningLevel(selection.Level),
+		BudgetTokens: selection.BudgetTokens,
+	}
 }
 
 func RequestEstimate(estimate contextpolicy.RequestEstimate) config.RequestEstimate {

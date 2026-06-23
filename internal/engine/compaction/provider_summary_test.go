@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/floegence/floret/internal/provider"
 	"github.com/floegence/floret/internal/session"
 	sessioncompaction "github.com/floegence/floret/internal/session/compaction"
 	"github.com/floegence/floret/internal/session/contextpolicy"
@@ -79,6 +80,38 @@ func TestProviderSummaryUsesReservedSummaryTokensOutputCap(t *testing.T) {
 	promptInput := contextpolicy.EstimateMessageContext("", scripted.Requests[0].Messages, policy).InputTokens
 	if details["summary_prompt_input_tokens"] != int64String(promptInput) || details["summary_request_budget_tokens"] != int64String(promptInput+policy.ReservedSummaryTokens) {
 		t.Fatalf("summary request budget details = prompt %q request %q, want %d/%d; details=%#v", details["summary_prompt_input_tokens"], details["summary_request_budget_tokens"], promptInput, promptInput+policy.ReservedSummaryTokens, details)
+	}
+}
+
+func TestProviderSummaryUsesCapabilityShortReasoningSelection(t *testing.T) {
+	policy := contextpolicy.Policy{ContextWindowTokens: 100000, ReservedOutputTokens: 1000, ReservedSummaryTokens: 20, RecentTailTokens: 8, RecentUserTokens: 20}
+	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("summary ok"), harness.Done()))
+	_, err := sessioncompaction.Prepare(context.Background(), sessioncompaction.Request{
+		CompactionID: "c1",
+		History: []session.Message{
+			{Role: session.User, Content: "old request", EntryID: "u1"},
+			{Role: session.Assistant, Content: "old answer", EntryID: "a1"},
+			{Role: session.User, Content: "latest", EntryID: "u2"},
+		},
+		Policy: policy,
+	}, ProviderSummaryGenerator{
+		Provider:     scripted,
+		ProviderName: "fake",
+		Model:        "fake-model",
+		Reasoning: provider.ReasoningCapability{
+			Kind:            provider.ReasoningKindEffort,
+			SupportedLevels: []provider.ReasoningLevel{provider.ReasoningLevelMinimal, provider.ReasoningLevelLow},
+		},
+		Policy: policy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scripted.Requests) != 1 {
+		t.Fatalf("provider requests = %#v", scripted.Requests)
+	}
+	if got := scripted.Requests[0].Reasoning.Level; got != provider.ReasoningLevelMinimal {
+		t.Fatalf("reasoning level = %q, want minimal", got)
 	}
 }
 

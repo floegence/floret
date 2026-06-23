@@ -37,7 +37,7 @@ type Request struct {
 	RequestEstimate  contextpolicy.RequestEstimate
 	ContextPressure  contextpolicy.ContextPressure
 	MaxOutputTokens  int64
-	DisableReasoning bool
+	Reasoning        ReasoningSelection
 	PreviousState    *State
 	Labels           RequestLabels
 }

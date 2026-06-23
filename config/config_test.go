@@ -244,6 +244,30 @@ func TestLoadReadsRecentUserTokens(t *testing.T) {
 	}
 }
 
+func TestLoadReadsReasoningSelection(t *testing.T) {
+	cfg, err := Load(WithPath(""), WithEnviron(map[string]string{
+		"FLORET_PROVIDER":                "fake",
+		"FLORET_REASONING_LEVEL":         "HIGH",
+		"FLORET_REASONING_BUDGET_TOKENS": "4096",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Reasoning.Level != ReasoningLevelHigh || cfg.Reasoning.BudgetTokens != 4096 {
+		t.Fatalf("reasoning = %#v, want high/4096", cfg.Reasoning)
+	}
+}
+
+func TestLoadRejectsUnsupportedReasoningLevel(t *testing.T) {
+	_, err := Load(WithPath(""), WithEnviron(map[string]string{
+		"FLORET_PROVIDER":        "fake",
+		"FLORET_REASONING_LEVEL": "turbo",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "unsupported reasoning level") {
+		t.Fatalf("err = %v, want unsupported reasoning level", err)
+	}
+}
+
 func TestLoadExplicitZeroMaxOutputTokensOverridesCatalog(t *testing.T) {
 	cfg, err := Load(WithPath(""), WithEnviron(map[string]string{
 		"FLORET_PROVIDER":          "openai",

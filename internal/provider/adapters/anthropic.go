@@ -26,11 +26,22 @@ type AnthropicProvider struct {
 }
 
 type anthropicRequest struct {
-	Model     string             `json:"model"`
-	MaxTokens int64              `json:"max_tokens"`
-	System    any                `json:"system,omitempty"`
-	Messages  []anthropicMessage `json:"messages"`
-	Tools     []anthropicTool    `json:"tools,omitempty"`
+	Model        string                 `json:"model"`
+	MaxTokens    int64                  `json:"max_tokens"`
+	System       any                    `json:"system,omitempty"`
+	Messages     []anthropicMessage     `json:"messages"`
+	Tools        []anthropicTool        `json:"tools,omitempty"`
+	Thinking     *anthropicThinking     `json:"thinking,omitempty"`
+	OutputConfig *anthropicOutputConfig `json:"output_config,omitempty"`
+}
+
+type anthropicThinking struct {
+	Type         string `json:"type"`
+	BudgetTokens int64  `json:"budget_tokens,omitempty"`
+}
+
+type anthropicOutputConfig struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 type anthropicMessage struct {
@@ -252,7 +263,38 @@ func (p AnthropicProvider) buildAnthropicRequest(req provider.Request, maxTokens
 	}
 	anthropicReq.Model = p.Model
 	anthropicReq.MaxTokens = maxTokens
+	if err := p.applyAnthropicReasoning(&anthropicReq, req, maxTokens); err != nil {
+		return anthropicRequest{}, err
+	}
 	return anthropicReq, nil
+}
+
+func (p AnthropicProvider) applyAnthropicReasoning(out *anthropicRequest, req provider.Request, maxTokens int64) error {
+	if out == nil {
+		return nil
+	}
+	selection := provider.NormalizeReasoningSelection(req.Reasoning)
+	if selection.IsZero() || selection.Level == provider.ReasoningLevelDefault && selection.BudgetTokens == 0 {
+		return nil
+	}
+	capability := p.CostModel.Reasoning
+	if err := capability.ValidateSelection(selection); err != nil {
+		return err
+	}
+	if selection.Level == provider.ReasoningLevelOff {
+		out.Thinking = &anthropicThinking{Type: "disabled"}
+		return nil
+	}
+	if selection.BudgetTokens > 0 {
+		if selection.BudgetTokens >= maxTokens {
+			return fmt.Errorf("anthropic reasoning budget %d must be less than max_tokens %d", selection.BudgetTokens, maxTokens)
+		}
+		out.Thinking = &anthropicThinking{Type: "enabled", BudgetTokens: selection.BudgetTokens}
+	}
+	if selection.Level != "" && selection.Level != provider.ReasoningLevelDefault {
+		out.OutputConfig = &anthropicOutputConfig{Effort: string(selection.Level)}
+	}
+	return nil
 }
 
 func (p AnthropicProvider) contextAnthropicRequest(req provider.Request) (anthropicRequest, error) {

@@ -2,6 +2,8 @@ package catalog
 
 import (
 	"math"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/floegence/floret/internal/provider"
@@ -20,6 +22,53 @@ func TestCatalogContainsFlowerProvidersAndPiStyleMetadata(t *testing.T) {
 		if _, ok := DefaultModel(id); !ok {
 			t.Fatalf("provider %q default model not found", id)
 		}
+	}
+}
+
+func TestReasoningCapabilitiesHaveOfficialProvenance(t *testing.T) {
+	for _, p := range Providers() {
+		for _, model := range p.Models {
+			capability := model.Reasoning
+			if capability.Kind == "" {
+				continue
+			}
+			if strings.TrimSpace(capability.WireShape) == "" {
+				t.Fatalf("%s/%s reasoning capability missing wire shape", p.ID, model.ID)
+			}
+			if strings.TrimSpace(capability.Fixture) == "" {
+				t.Fatalf("%s/%s reasoning capability missing fixture", p.ID, model.ID)
+			}
+			if capability.SourceCheckedAt != "2026-06-23" {
+				t.Fatalf("%s/%s source_checked_at = %q", p.ID, model.ID, capability.SourceCheckedAt)
+			}
+			if len(capability.SourceURLs) == 0 {
+				t.Fatalf("%s/%s missing source urls", p.ID, model.ID)
+			}
+			for _, url := range capability.SourceURLs {
+				if !strings.HasPrefix(url, "https://") {
+					t.Fatalf("%s/%s source URL %q is not official https URL", p.ID, model.ID, url)
+				}
+			}
+		}
+	}
+}
+
+func TestReasoningCapabilitiesUseProviderSpecificValues(t *testing.T) {
+	openAI, _ := FindModel(ProviderOpenAI, "gpt-5.4")
+	if openAI.Reasoning.WireShape != "openai_chat_reasoning_effort" || !slices.Contains(openAI.Reasoning.SupportedLevels, provider.ReasoningLevelXHigh) {
+		t.Fatalf("openai reasoning capability = %#v", openAI.Reasoning)
+	}
+	deepSeek, _ := FindModel(ProviderDeepSeek, "deepseek-v4-pro")
+	if !slices.Equal(deepSeek.Reasoning.SupportedLevels, []provider.ReasoningLevel{provider.ReasoningLevelHigh, provider.ReasoningLevelMax}) {
+		t.Fatalf("deepseek reasoning levels = %#v", deepSeek.Reasoning.SupportedLevels)
+	}
+	qwen, _ := FindModel(ProviderQwen, "qwen3.6-plus")
+	if qwen.Reasoning.Kind != provider.ReasoningKindToggleBudget || !qwen.Reasoning.DisableSupported || len(qwen.Reasoning.SupportedLevels) != 0 {
+		t.Fatalf("qwen reasoning capability = %#v", qwen.Reasoning)
+	}
+	openRouter, _ := FindModel(ProviderOpenRouter, "openai/gpt-5.4")
+	if !openRouter.Reasoning.DynamicProviderMetadata {
+		t.Fatalf("openrouter reasoning capability should be dynamic: %#v", openRouter.Reasoning)
 	}
 }
 
