@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-06-24
+* **Update**: Documented parent-scoped subagent detail APIs, bounded wait
+  semantics, child run timeout behavior, and close-as-stop lifecycle rules.
+
 ## 2026-06-23
 * **Update**: Documented provider-neutral reasoning selection in the public
   config and runtime APIs.

@@ -304,6 +304,23 @@ turn containing `<pending_tool_completion>` and runs the normal agent loop. The
 completion is not a second `role=tool` message for the original tool call; the
 initial pending result already satisfied that provider tool-call pairing.
 
+### Subagent detail inspection
+
+Hosted subagents are parent-managed durable child threads. The parent uses
+`SpawnSubAgent`, `SendSubAgentInput`, `WaitSubAgents`, `ListSubAgents`, and
+`CloseSubAgent` for lifecycle control. `WaitSubAgents` is deliberately bounded:
+it defaults to five minutes, caps requests at twenty minutes, and returns child
+snapshots rather than a full child transcript.
+
+Use `ReadSubAgentDetail` or `ListSubAgentDetailEvents` when a host UI needs to
+inspect a child thread's persisted journal. Detail reads are scoped by both
+parent and child `ThreadID`, are paginated by ordinal, and expose durable child
+facts such as delegated input, messages, tool calls, tool results, approvals,
+turn markers, compaction checkpoints, and run failures. Raw message content,
+reasoning, tool arguments, and tool result content are omitted by default; set
+`IncludeRaw` only for an explicitly authorized human/debug surface. Do not use
+raw subagent detail responses as model-facing `wait` or `inspect` tool output.
+
 ## 🧱 Responsibility boundary
 
 | Area | Floret owns | Host application owns |

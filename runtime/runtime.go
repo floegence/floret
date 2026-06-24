@@ -47,20 +47,23 @@ type Host interface {
 	WaitSubAgents(context.Context, WaitSubAgentsRequest) (WaitSubAgentsResult, error)
 	ListSubAgents(context.Context, ThreadID) ([]SubAgentSnapshot, error)
 	CloseSubAgent(context.Context, CloseSubAgentRequest) (SubAgentSnapshot, error)
+	ReadSubAgentDetail(context.Context, ReadSubAgentDetailRequest) (SubAgentDetail, error)
+	ListSubAgentDetailEvents(context.Context, ListSubAgentDetailEventsRequest) (SubAgentDetailEvents, error)
 	DeleteThread(context.Context, ThreadID) error
 	Close() error
 }
 
 type HostOptions struct {
-	Config       config.Config
-	ModelGateway ModelGateway
-	Store        *Store
-	Tools        *tools.Registry
-	Approver     tools.Approver
-	Sink         EventSink
-	IDGenerator  func(string) string
-	LoopLimits   LoopLimits
-	Capabilities CapabilityOptions
+	Config             config.Config
+	ModelGateway       ModelGateway
+	Store              *Store
+	Tools              *tools.Registry
+	Approver           tools.Approver
+	Sink               EventSink
+	IDGenerator        func(string) string
+	LoopLimits         LoopLimits
+	SubAgentRunTimeout time.Duration
+	Capabilities       CapabilityOptions
 }
 
 type LoopLimits struct {
@@ -168,6 +171,22 @@ type CloseSubAgentRequest struct {
 	ChildThreadID  ThreadID
 }
 
+type ReadSubAgentDetailRequest struct {
+	ParentThreadID ThreadID
+	ChildThreadID  ThreadID
+	AfterOrdinal   int64
+	Limit          int
+	IncludeRaw     bool
+}
+
+type ListSubAgentDetailEventsRequest struct {
+	ParentThreadID ThreadID
+	ChildThreadID  ThreadID
+	AfterOrdinal   int64
+	Limit          int
+	IncludeRaw     bool
+}
+
 type SubAgentSnapshot struct {
 	ThreadID       ThreadID       `json:"thread_id"`
 	Path           string         `json:"path"`
@@ -191,6 +210,128 @@ type SubAgentSnapshot struct {
 type WaitSubAgentsResult struct {
 	Snapshots []SubAgentSnapshot `json:"snapshots"`
 	TimedOut  bool               `json:"timed_out,omitempty"`
+}
+
+type SubAgentDetail struct {
+	Snapshot     SubAgentSnapshot      `json:"snapshot"`
+	Events       []SubAgentDetailEvent `json:"events"`
+	NextOrdinal  int64                 `json:"next_ordinal,omitempty"`
+	HasMore      bool                  `json:"has_more,omitempty"`
+	RetainedFrom int64                 `json:"retained_from,omitempty"`
+	GeneratedAt  time.Time             `json:"generated_at"`
+}
+
+type SubAgentDetailEvents struct {
+	Events       []SubAgentDetailEvent `json:"events"`
+	NextOrdinal  int64                 `json:"next_ordinal,omitempty"`
+	HasMore      bool                  `json:"has_more,omitempty"`
+	RetainedFrom int64                 `json:"retained_from,omitempty"`
+	GeneratedAt  time.Time             `json:"generated_at"`
+}
+
+type SubAgentDetailEventKind string
+
+const (
+	SubAgentDetailEventUserMessage      SubAgentDetailEventKind = "user_message"
+	SubAgentDetailEventAssistantMessage SubAgentDetailEventKind = "assistant_message"
+	SubAgentDetailEventToolCall         SubAgentDetailEventKind = "tool_call"
+	SubAgentDetailEventToolResult       SubAgentDetailEventKind = "tool_result"
+	SubAgentDetailEventTurnMarker       SubAgentDetailEventKind = "turn_marker"
+	SubAgentDetailEventCompaction       SubAgentDetailEventKind = "compaction"
+	SubAgentDetailEventError            SubAgentDetailEventKind = "error"
+	SubAgentDetailEventApproval         SubAgentDetailEventKind = "approval"
+	SubAgentDetailEventInput            SubAgentDetailEventKind = "input"
+	SubAgentDetailEventCustom           SubAgentDetailEventKind = "custom"
+)
+
+type SubAgentDetailEvent struct {
+	ID        string                  `json:"id"`
+	Ordinal   int64                   `json:"ordinal"`
+	ParentID  string                  `json:"parent_id,omitempty"`
+	ThreadID  ThreadID                `json:"thread_id"`
+	TurnID    TurnID                  `json:"turn_id,omitempty"`
+	Kind      SubAgentDetailEventKind `json:"kind"`
+	Type      string                  `json:"type,omitempty"`
+	CreatedAt time.Time               `json:"created_at"`
+
+	Message    *SubAgentDetailMessage    `json:"message,omitempty"`
+	ToolCall   *SubAgentDetailToolCall   `json:"tool_call,omitempty"`
+	ToolResult *SubAgentDetailToolResult `json:"tool_result,omitempty"`
+	Approval   *SubAgentDetailApproval   `json:"approval,omitempty"`
+	TurnMarker *SubAgentDetailTurnMarker `json:"turn_marker,omitempty"`
+	Compaction *SubAgentDetailCompaction `json:"compaction,omitempty"`
+	Error      string                    `json:"error,omitempty"`
+	Metadata   map[string]string         `json:"metadata,omitempty"`
+}
+
+type SubAgentDetailMessage struct {
+	Role      string `json:"role,omitempty"`
+	Content   string `json:"content,omitempty"`
+	Reasoning string `json:"reasoning,omitempty"`
+}
+
+type SubAgentDetailToolCall struct {
+	ID       string `json:"id,omitempty"`
+	Name     string `json:"name,omitempty"`
+	ArgsJSON string `json:"args_json,omitempty"`
+	ArgsHash string `json:"args_hash,omitempty"`
+}
+
+type SubAgentDetailToolResult struct {
+	CallID        string       `json:"call_id,omitempty"`
+	ToolName      string       `json:"tool_name,omitempty"`
+	Content       string       `json:"content,omitempty"`
+	Truncated     bool         `json:"truncated,omitempty"`
+	OriginalBytes int          `json:"original_bytes,omitempty"`
+	VisibleBytes  int          `json:"visible_bytes,omitempty"`
+	OriginalLines int          `json:"original_lines,omitempty"`
+	VisibleLines  int          `json:"visible_lines,omitempty"`
+	Strategy      string       `json:"strategy,omitempty"`
+	ContentSHA256 string       `json:"content_sha256,omitempty"`
+	FullOutput    *ArtifactRef `json:"full_output,omitempty"`
+}
+
+type SubAgentDetailApproval struct {
+	State    string            `json:"state,omitempty"`
+	ToolID   string            `json:"tool_id,omitempty"`
+	ToolName string            `json:"tool_name,omitempty"`
+	ToolKind string            `json:"tool_kind,omitempty"`
+	ArgsHash string            `json:"args_hash,omitempty"`
+	Reason   string            `json:"reason,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+type SubAgentDetailTurnMarker struct {
+	Status   string            `json:"status,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+type SubAgentDetailCompaction struct {
+	CompactionID            string            `json:"compaction_id,omitempty"`
+	PreviousCompactionID    string            `json:"previous_compaction_id,omitempty"`
+	CompactedThroughEntryID string            `json:"compacted_through_entry_id,omitempty"`
+	SummarySchemaVersion    string            `json:"summary_schema_version,omitempty"`
+	CompactionGeneration    int               `json:"compaction_generation,omitempty"`
+	CompactionWindowID      string            `json:"compaction_window_id,omitempty"`
+	FirstKeptEntryID        string            `json:"first_kept_entry_id,omitempty"`
+	KeptUserEntryIDs        []string          `json:"kept_user_entry_ids,omitempty"`
+	Summary                 string            `json:"summary,omitempty"`
+	Trigger                 string            `json:"trigger,omitempty"`
+	Reason                  string            `json:"reason,omitempty"`
+	Phase                   string            `json:"phase,omitempty"`
+	TokensBefore            int64             `json:"tokens_before,omitempty"`
+	TokensAfterEstimate     int64             `json:"tokens_after_estimate,omitempty"`
+	Metadata                map[string]string `json:"metadata,omitempty"`
+}
+
+type ArtifactRef struct {
+	ID        string `json:"id,omitempty"`
+	SafeLabel string `json:"safe_label,omitempty"`
+	URL       string `json:"url,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	MIME      string `json:"mime,omitempty"`
+	SizeBytes int64  `json:"size_bytes,omitempty"`
+	SHA256    string `json:"sha256,omitempty"`
 }
 
 type RunLabels struct {
@@ -414,13 +555,14 @@ func NewHost(opts HostOptions) (Host, error) {
 		return nil, err
 	}
 	harness, err := newHarnessWithProvider(cfg, provider, harnessOptions{
-		Store:        store,
-		Tools:        opts.Tools,
-		Approver:     opts.Approver,
-		Sink:         runtimeEventSink{sink: opts.Sink},
-		NewID:        opts.IDGenerator,
-		LoopLimits:   opts.LoopLimits,
-		Capabilities: opts.Capabilities,
+		Store:              store,
+		Tools:              opts.Tools,
+		Approver:           opts.Approver,
+		Sink:               runtimeEventSink{sink: opts.Sink},
+		NewID:              opts.IDGenerator,
+		LoopLimits:         opts.LoopLimits,
+		SubAgentRunTimeout: opts.SubAgentRunTimeout,
+		Capabilities:       opts.Capabilities,
 	})
 	if err != nil {
 		return nil, err
@@ -571,6 +713,40 @@ func (h *host) CloseSubAgent(ctx context.Context, req CloseSubAgentRequest) (Sub
 	return subAgentSnapshot(snapshot), nil
 }
 
+func (h *host) ReadSubAgentDetail(ctx context.Context, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
+	detail, err := h.harness.ReadSubAgentDetail(ctx, agentharness.ReadSubAgentDetailOptions{
+		ParentThreadID: string(req.ParentThreadID),
+		ChildThreadID:  string(req.ChildThreadID),
+		AfterOrdinal:   req.AfterOrdinal,
+		Limit:          req.Limit,
+		IncludeRaw:     req.IncludeRaw,
+	})
+	if err != nil {
+		return SubAgentDetail{}, err
+	}
+	return subAgentDetail(detail), nil
+}
+
+func (h *host) ListSubAgentDetailEvents(ctx context.Context, req ListSubAgentDetailEventsRequest) (SubAgentDetailEvents, error) {
+	detail, err := h.harness.ReadSubAgentDetail(ctx, agentharness.ReadSubAgentDetailOptions{
+		ParentThreadID: string(req.ParentThreadID),
+		ChildThreadID:  string(req.ChildThreadID),
+		AfterOrdinal:   req.AfterOrdinal,
+		Limit:          req.Limit,
+		IncludeRaw:     req.IncludeRaw,
+	})
+	if err != nil {
+		return SubAgentDetailEvents{}, err
+	}
+	return SubAgentDetailEvents{
+		Events:       subAgentDetailEvents(detail.Events),
+		NextOrdinal:  detail.NextOrdinal,
+		HasMore:      detail.HasMore,
+		RetainedFrom: detail.RetainedFrom,
+		GeneratedAt:  detail.GeneratedAt,
+	}, nil
+}
+
 func (h *host) DeleteThread(ctx context.Context, threadID ThreadID) error {
 	id := strings.TrimSpace(string(threadID))
 	if id == "" {
@@ -682,6 +858,135 @@ func subAgentSnapshot(in agentharness.SubAgentSnapshot) SubAgentSnapshot {
 	}
 }
 
+func subAgentDetail(in agentharness.SubAgentDetail) SubAgentDetail {
+	return SubAgentDetail{
+		Snapshot:     subAgentSnapshot(in.Snapshot),
+		Events:       subAgentDetailEvents(in.Events),
+		NextOrdinal:  in.NextOrdinal,
+		HasMore:      in.HasMore,
+		RetainedFrom: in.RetainedFrom,
+		GeneratedAt:  in.GeneratedAt,
+	}
+}
+
+func subAgentDetailEvents(in []agentharness.SubAgentDetailEvent) []SubAgentDetailEvent {
+	out := make([]SubAgentDetailEvent, 0, len(in))
+	for _, ev := range in {
+		out = append(out, subAgentDetailEvent(ev))
+	}
+	return out
+}
+
+func subAgentDetailEvent(in agentharness.SubAgentDetailEvent) SubAgentDetailEvent {
+	return SubAgentDetailEvent{
+		ID:         in.ID,
+		Ordinal:    in.Ordinal,
+		ParentID:   in.ParentID,
+		ThreadID:   ThreadID(in.ThreadID),
+		TurnID:     TurnID(in.TurnID),
+		Kind:       SubAgentDetailEventKind(in.Kind),
+		Type:       in.Type,
+		CreatedAt:  in.CreatedAt,
+		Message:    subAgentDetailMessage(in.Message),
+		ToolCall:   subAgentDetailToolCall(in.ToolCall),
+		ToolResult: subAgentDetailToolResult(in.ToolResult),
+		Approval:   subAgentDetailApproval(in.Approval),
+		TurnMarker: subAgentDetailTurnMarker(in.TurnMarker),
+		Compaction: subAgentDetailCompaction(in.Compaction),
+		Error:      in.Error,
+		Metadata:   cloneStringMap(in.Metadata),
+	}
+}
+
+func subAgentDetailMessage(in *agentharness.SubAgentDetailMessage) *SubAgentDetailMessage {
+	if in == nil {
+		return nil
+	}
+	return &SubAgentDetailMessage{Role: in.Role, Content: in.Content, Reasoning: in.Reasoning}
+}
+
+func subAgentDetailToolCall(in *agentharness.SubAgentDetailToolCall) *SubAgentDetailToolCall {
+	if in == nil {
+		return nil
+	}
+	return &SubAgentDetailToolCall{ID: in.ID, Name: in.Name, ArgsJSON: in.ArgsJSON, ArgsHash: in.ArgsHash}
+}
+
+func subAgentDetailToolResult(in *agentharness.SubAgentDetailToolResult) *SubAgentDetailToolResult {
+	if in == nil {
+		return nil
+	}
+	out := &SubAgentDetailToolResult{
+		CallID:        in.CallID,
+		ToolName:      in.ToolName,
+		Content:       in.Content,
+		Truncated:     in.Truncated,
+		OriginalBytes: in.OriginalBytes,
+		VisibleBytes:  in.VisibleBytes,
+		OriginalLines: in.OriginalLines,
+		VisibleLines:  in.VisibleLines,
+		Strategy:      in.Strategy,
+		ContentSHA256: in.ContentSHA256,
+	}
+	if in.FullOutput != nil {
+		out.FullOutput = &ArtifactRef{
+			ID:        in.FullOutput.ID,
+			SafeLabel: in.FullOutput.SafeLabel,
+			URL:       in.FullOutput.URL,
+			Kind:      in.FullOutput.Kind,
+			MIME:      in.FullOutput.MIME,
+			SizeBytes: in.FullOutput.SizeBytes,
+			SHA256:    in.FullOutput.SHA256,
+		}
+	}
+	return out
+}
+
+func subAgentDetailApproval(in *agentharness.SubAgentDetailApproval) *SubAgentDetailApproval {
+	if in == nil {
+		return nil
+	}
+	return &SubAgentDetailApproval{
+		State:    in.State,
+		ToolID:   in.ToolID,
+		ToolName: in.ToolName,
+		ToolKind: in.ToolKind,
+		ArgsHash: in.ArgsHash,
+		Reason:   in.Reason,
+		Metadata: cloneStringMap(in.Metadata),
+	}
+}
+
+func subAgentDetailTurnMarker(in *agentharness.SubAgentDetailTurnMarker) *SubAgentDetailTurnMarker {
+	if in == nil {
+		return nil
+	}
+	return &SubAgentDetailTurnMarker{Status: in.Status, Metadata: cloneStringMap(in.Metadata)}
+}
+
+func subAgentDetailCompaction(in *agentharness.SubAgentDetailCompaction) *SubAgentDetailCompaction {
+	if in == nil {
+		return nil
+	}
+	return &SubAgentDetailCompaction{
+		CompactionID:            in.CompactionID,
+		PreviousCompactionID:    in.PreviousCompactionID,
+		CompactedThroughEntryID: in.CompactedThroughEntryID,
+		SummarySchemaVersion:    in.SummarySchemaVersion,
+		CompactionGeneration:    in.CompactionGeneration,
+		CompactionWindowID:      in.CompactionWindowID,
+		FirstKeptEntryID:        in.FirstKeptEntryID,
+		KeptUserEntryIDs:        append([]string(nil), in.KeptUserEntryIDs...),
+		Summary:                 in.Summary,
+		Trigger:                 in.Trigger,
+		Reason:                  in.Reason,
+		Phase:                   in.Phase,
+		TokensBefore:            in.TokensBefore,
+		TokensAfterEstimate:     in.TokensAfterEstimate,
+		Metadata:                cloneStringMap(in.Metadata),
+	}
+}
+
 func threadIDStrings(ids []ThreadID) []string {
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
@@ -691,14 +996,15 @@ func threadIDStrings(ids []ThreadID) []string {
 }
 
 type harnessOptions struct {
-	Store        *Store
-	Tools        *tools.Registry
-	Approver     tools.Approver
-	Sink         event.Sink
-	Title        agentharness.TitleGenerator
-	NewID        func(string) string
-	LoopLimits   LoopLimits
-	Capabilities CapabilityOptions
+	Store              *Store
+	Tools              *tools.Registry
+	Approver           tools.Approver
+	Sink               event.Sink
+	Title              agentharness.TitleGenerator
+	NewID              func(string) string
+	LoopLimits         LoopLimits
+	SubAgentRunTimeout time.Duration
+	Capabilities       CapabilityOptions
 }
 
 func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harnessOptions) (*agentharness.AgentHarness, error) {
@@ -745,22 +1051,23 @@ func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harness
 	}
 	model, _ := catalog.FindModel(cfg.Provider, cfg.Model)
 	return agentharness.New(agentharness.Options{
-		Provider:         p,
-		ProviderName:     cfg.Provider,
-		Model:            cfg.Model,
-		SystemPrompt:     effectivePrompt,
-		Tools:            registry,
-		PromptStore:      store.prompt,
-		Repo:             store.repo,
-		Sink:             opts.Sink,
-		Approver:         opts.Approver,
-		TitleGenerator:   opts.Title,
-		CompactionPrompt: compaction.PromptOptions{},
-		Artifacts:        store.artifacts,
-		Reasoning:        model.Reasoning,
-		TurnPolicy:       turnPolicy,
-		LoopLimits:       loopLimits,
-		NewID:            opts.NewID,
+		Provider:           p,
+		ProviderName:       cfg.Provider,
+		Model:              cfg.Model,
+		SystemPrompt:       effectivePrompt,
+		Tools:              registry,
+		PromptStore:        store.prompt,
+		Repo:               store.repo,
+		Sink:               opts.Sink,
+		Approver:           opts.Approver,
+		TitleGenerator:     opts.Title,
+		CompactionPrompt:   compaction.PromptOptions{},
+		Artifacts:          store.artifacts,
+		Reasoning:          model.Reasoning,
+		TurnPolicy:         turnPolicy,
+		LoopLimits:         loopLimits,
+		SubAgentRunTimeout: opts.SubAgentRunTimeout,
+		NewID:              opts.NewID,
 	}), nil
 }
 

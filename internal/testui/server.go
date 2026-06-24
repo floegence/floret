@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -231,6 +232,16 @@ func (s *Server) handleAgentSessionSubAgents(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
+	if r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "detail" {
+		afterOrdinal, limit, includeRaw := subAgentDetailQuery(r)
+		resp, err := s.Runner.AgentSessionSubAgentDetail(r.Context(), sessionID, parts[0], afterOrdinal, limit, includeRaw)
+		if err != nil {
+			writeJSON(w, agentSubAgentHTTPStatus(err), map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
 	if r.Method == http.MethodDelete && len(parts) == 1 {
 		resp, err := s.Runner.CloseAgentSessionSubAgent(r.Context(), sessionID, parts[0])
 		if err != nil {
@@ -241,6 +252,14 @@ func (s *Server) handleAgentSessionSubAgents(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	http.NotFound(w, r)
+}
+
+func subAgentDetailQuery(r *http.Request) (int64, int, bool) {
+	query := r.URL.Query()
+	after, _ := strconv.ParseInt(strings.TrimSpace(query.Get("after_ordinal")), 10, 64)
+	limit64, _ := strconv.ParseInt(strings.TrimSpace(query.Get("limit")), 10, 64)
+	includeRaw := strings.EqualFold(strings.TrimSpace(query.Get("include_raw")), "true") || strings.TrimSpace(query.Get("include_raw")) == "1"
+	return after, int(limit64), includeRaw
 }
 
 func agentSubAgentHTTPStatus(err error) int {

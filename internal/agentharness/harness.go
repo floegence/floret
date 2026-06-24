@@ -94,6 +94,7 @@ type Options struct {
 	Reasoning           provider.ReasoningCapability
 	TurnPolicy          TurnPolicy
 	LoopLimits          LoopLimits
+	SubAgentRunTimeout  time.Duration
 	NewID               func(string) string
 	Now                 func() time.Time
 }
@@ -146,8 +147,10 @@ type MoveOptions struct {
 }
 
 type RunOptions struct {
-	TurnID string
-	Labels engine.RunLabels
+	TurnID           string
+	Labels           engine.RunLabels
+	TerminalMetadata map[string]string
+	DeadlineMetadata map[string]string
 }
 
 type RetryOptions struct {
@@ -755,6 +758,10 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 		}
 	}
 	terminalMetadata := markerMetadata(runID, result)
+	mergeTerminalMetadata(terminalMetadata, opts.TerminalMetadata)
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		mergeTerminalMetadata(terminalMetadata, opts.DeadlineMetadata)
+	}
 	if result.Err != nil {
 		terminalMetadata["failure_reason"] = result.Err.Error()
 	}
@@ -782,6 +789,16 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 		}
 	}
 	return turnResultFromEngine(turnID, result, nil), result.Err
+}
+
+func mergeTerminalMetadata(dst, src map[string]string) {
+	for key, value := range src {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key != "" && value != "" {
+			dst[key] = value
+		}
+	}
 }
 
 func (t *Thread) ensureThreadTitle(ctx context.Context, turnID string) error {
@@ -1137,6 +1154,89 @@ func (t *Thread) appendMessage(ctx context.Context, turnID string, msg session.M
 	return nil
 }
 
+func (t *Thread) appendApprovalEvent(ctx context.Context, turnID string, ev event.Event) error {
+	metadata := map[string]string{
+		subAgentDetailKindKey:     subAgentApprovalEntryKind,
+		subAgentDetailTypeKey:     string(ev.Type),
+		subAgentApprovalStateKey:  approvalStateForEvent(ev.Type),
+		subAgentApprovalToolIDKey: strings.TrimSpace(ev.ToolID),
+		subAgentApprovalNameKey:   strings.TrimSpace(ev.ToolName),
+		subAgentApprovalKindKey:   strings.TrimSpace(ev.ToolKind),
+		subAgentApprovalArgsKey:   strings.TrimSpace(ev.ArgsHash),
+	}
+	if strings.TrimSpace(ev.Err) != "" {
+		metadata[subAgentApprovalReasonKey] = strings.TrimSpace(ev.Err)
+	}
+	if values, ok := event.Sanitize(ev).Metadata.(map[string]any); ok {
+		for key, value := range values {
+			switch key {
+			case "approval_id_hash", "effects", "read_only", "destructive", "open_world", "error_present":
+				if text := safeApprovalMetadataValue(value); text != "" {
+					metadata[key] = text
+				}
+			}
+		}
+	}
+	entry, err := t.harness.options.Repo.Append(ctx, sessiontree.Entry{
+		ThreadID: t.id,
+		TurnID:   turnID,
+		Type:     sessiontree.EntryCustom,
+		Metadata: metadata,
+	}, sessiontree.AppendOptions{})
+	if err != nil {
+		return err
+	}
+	t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: string(ev.Type)})
+	return nil
+}
+
+func approvalStateForEvent(typ event.Type) string {
+	switch typ {
+	case event.ToolApprovalRequested:
+		return "requested"
+	case event.ToolApprovalApproved:
+		return "approved"
+	case event.ToolApprovalRejected:
+		return "rejected"
+	case event.ToolApprovalTimedOut:
+		return "timed_out"
+	case event.ToolApprovalCanceled:
+		return "canceled"
+	default:
+		return string(typ)
+	}
+}
+
+func safeApprovalMetadataValue(value any) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case bool:
+		return strconv.FormatBool(v)
+	case int:
+		return strconv.Itoa(v)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case float64:
+		if v == float64(int64(v)) {
+			return strconv.FormatInt(int64(v), 10)
+		}
+		return fmt.Sprintf("%g", v)
+	case []any:
+		parts := make([]string, 0, len(v))
+		for _, item := range v {
+			if text := safeApprovalMetadataValue(item); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, ",")
+	case []string:
+		return strings.Join(v, ",")
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	}
+}
+
 func sharedMessagePrefix(a, b []session.Message) int {
 	n := min(len(a), len(b))
 	for i := 0; i < n; i++ {
@@ -1381,6 +1481,20 @@ func (p *turnProjection) Emit(ev event.Event) {
 			p.err = err
 			return
 		}
+	case event.ToolApprovalRequested, event.ToolApprovalApproved, event.ToolApprovalRejected, event.ToolApprovalTimedOut, event.ToolApprovalCanceled:
+		if err := p.flushPendingToolBatch(false); err != nil {
+			p.err = err
+			return
+		}
+		if p.text != "" {
+			p.err = p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Assistant, Content: p.text, Reasoning: p.reasoning})
+			p.text = ""
+			p.reasoning = ""
+			if p.err != nil {
+				return
+			}
+		}
+		p.err = p.thread.appendApprovalEvent(p.ctx, p.turnID, ev)
 	case event.ContextContinue:
 		if err := p.flushPendingToolBatch(false); err != nil {
 			p.err = err

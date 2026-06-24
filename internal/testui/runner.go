@@ -747,6 +747,24 @@ func (r *Runner) WaitAgentSessionSubAgents(ctx context.Context, sessionID string
 	}, nil
 }
 
+func (r *Runner) AgentSessionSubAgentDetail(ctx context.Context, sessionID, target string, afterOrdinal int64, limit int, includeRaw bool) (AgentSubAgentDetailResponse, error) {
+	sess, err := r.restoreAgentSession(ctx, sessionID)
+	if err != nil {
+		return AgentSubAgentDetailResponse{}, err
+	}
+	detail, err := sess.harness.ReadSubAgentDetail(ctx, agentharness.ReadSubAgentDetailOptions{
+		ParentThreadID: sess.id,
+		ChildThreadID:  target,
+		AfterOrdinal:   afterOrdinal,
+		Limit:          limit,
+		IncludeRaw:     includeRaw,
+	})
+	if err != nil {
+		return AgentSubAgentDetailResponse{}, err
+	}
+	return AgentSubAgentDetailResponse{Detail: pathSafeSubAgentDetail(detail)}, nil
+}
+
 func (r *Runner) CloseAgentSessionSubAgent(ctx context.Context, sessionID, target string) (AgentSubAgentActionResponse, error) {
 	sess, err := r.lockedAgentSession(ctx, sessionID)
 	if err != nil {

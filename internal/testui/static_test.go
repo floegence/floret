@@ -839,6 +839,7 @@ func TestStaticConsoleActionLifecycleAndToastFeedback(t *testing.T) {
 
 func TestStaticConsoleSubAgentControlsUseThreadIdentity(t *testing.T) {
 	appJS := readStaticTestFile(t, "app.js")
+	apiJS := readStaticTestFile(t, "api.js")
 	workspace := readStaticTestFile(t, "views", "sessionWorkspace.js")
 	inspector := readStaticTestFile(t, "views", "inspector.js")
 	css := readStaticTestFile(t, "styles.css")
@@ -848,10 +849,17 @@ func TestStaticConsoleSubAgentControlsUseThreadIdentity(t *testing.T) {
 		"host_profile_ref: form.elements.host_profile_ref.value.trim()",
 		"const target = item.thread_id || \"\"",
 		"data-subagent-input-form=\"${escapeHTML(target)}\"",
+		"data-subagent-detail=\"${escapeHTML(target)}\"",
+		"data-subagent-detail=\"${escapeHTML(target)}\" ${target ? \"\" : \"disabled\"}",
+		"onSubagentDetail: loadSubagentDetail",
+		"api.subagentDetail(sessionID, target, { limit: 250, include_raw: true })",
+		"query.set(\"include_raw\", \"true\")",
+		"renderSubagentDetail(session, target, detail)",
+		"subagentDetailBody(event)",
 		"subagentActionBusy(session)",
 		"item.waiting_prompt",
 	} {
-		if !strings.Contains(appJS+"\n"+workspace, want) {
+		if !strings.Contains(appJS+"\n"+apiJS+"\n"+workspace, want) {
 			t.Fatalf("subagent static contract missing %q", want)
 		}
 	}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/config"
+	"github.com/floegence/floret/internal/agentharness"
 	"github.com/floegence/floret/internal/engine"
 	"github.com/floegence/floret/internal/event"
 	"github.com/floegence/floret/internal/provider"
@@ -379,7 +380,11 @@ func TestServerCreatesIdleAgentSessionBeforeInitialTurn(t *testing.T) {
 }
 
 func TestServerManagesAgentSessionSubAgents(t *testing.T) {
-	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("child done"), harness.Done()))
+	scripted := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("list-1", "list", `{"path":null,"limit":2}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Tool("write-1", "write", `{"path":"blocked.txt","content":"nope"}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Text("child done"), harness.Done()),
+	)
 	runner := NewRunner(t.TempDir())
 	runner.Now = fixedClock()
 	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
@@ -391,7 +396,7 @@ func TestServerManagesAgentSessionSubAgents(t *testing.T) {
 	}
 	handler := server.Handler()
 
-	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"unused"},"message":"","system_prompt":"test"}`
+	createBody := `{"profile":{"id":"fake","name":"Fake","provider":"fake","model":"fake-model","fake_response":"unused"},"message":"","system_prompt":"test","selected_tools":["list","write"]}`
 	createRec := httptest.NewRecorder()
 	handler.ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions", strings.NewReader(createBody)))
 	if createRec.Code != http.StatusOK {
@@ -427,6 +432,41 @@ func TestServerManagesAgentSessionSubAgents(t *testing.T) {
 	}
 	if waited.Result.TimedOut || len(waited.Result.Snapshots) != 1 || waited.Result.Snapshots[0].Status != "completed" {
 		t.Fatalf("waited = %#v", waited)
+	}
+
+	detailRec := httptest.NewRecorder()
+	handler.ServeHTTP(detailRec, httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+created.ID+"/subagents/child/detail?limit=20", nil))
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, body = %s", detailRec.Code, detailRec.Body.String())
+	}
+	var defaultDetail AgentSubAgentDetailResponse
+	if err := json.Unmarshal(detailRec.Body.Bytes(), &defaultDetail); err != nil {
+		t.Fatal(err)
+	}
+	if got := firstSubAgentDetailEvent(defaultDetail.Detail.Events, agentharness.SubAgentDetailEventToolCall); got.ToolCall == nil || got.ToolCall.ArgsJSON != "" || got.ToolCall.ArgsHash == "" {
+		t.Fatalf("default detail should omit raw args: %#v", got)
+	}
+	if got := firstSubAgentDetailEvent(defaultDetail.Detail.Events, agentharness.SubAgentDetailEventToolResult); got.ToolResult == nil || got.ToolResult.Content != "" || got.ToolResult.ContentSHA256 == "" {
+		t.Fatalf("default detail should omit raw result: %#v", got)
+	}
+
+	rawDetailRec := httptest.NewRecorder()
+	handler.ServeHTTP(rawDetailRec, httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+created.ID+"/subagents/child/detail?limit=20&include_raw=true", nil))
+	if rawDetailRec.Code != http.StatusOK {
+		t.Fatalf("raw detail status = %d, body = %s", rawDetailRec.Code, rawDetailRec.Body.String())
+	}
+	var rawDetail AgentSubAgentDetailResponse
+	if err := json.Unmarshal(rawDetailRec.Body.Bytes(), &rawDetail); err != nil {
+		t.Fatal(err)
+	}
+	if got := firstSubAgentDetailEvent(rawDetail.Detail.Events, agentharness.SubAgentDetailEventToolCall); got.ToolCall == nil || !strings.Contains(got.ToolCall.ArgsJSON, "limit") {
+		t.Fatalf("raw detail should expose tool args for test UI detail: %#v", got)
+	}
+	if got := firstSubAgentDetailEvent(rawDetail.Detail.Events, agentharness.SubAgentDetailEventToolResult); got.ToolResult == nil || got.ToolResult.Content == "" {
+		t.Fatalf("raw detail should expose tool result for test UI detail: %#v", got)
+	}
+	if got := firstSubAgentDetailEvent(rawDetail.Detail.Events, agentharness.SubAgentDetailEventApproval); got.Approval == nil || got.Approval.State != "requested" || got.Approval.ToolName != "write" {
+		t.Fatalf("raw detail should expose approval block: %#v", got)
 	}
 
 	listRec := httptest.NewRecorder()
@@ -2397,6 +2437,15 @@ func hasProviderTool(defs []provider.ToolDefinition, name string) bool {
 	return slices.ContainsFunc(defs, func(def provider.ToolDefinition) bool {
 		return def.Name == name
 	})
+}
+
+func firstSubAgentDetailEvent(events []agentharness.SubAgentDetailEvent, kind agentharness.SubAgentDetailEventKind) agentharness.SubAgentDetailEvent {
+	for _, event := range events {
+		if event.Kind == kind {
+			return event
+		}
+	}
+	return agentharness.SubAgentDetailEvent{}
 }
 
 func assertProviderToolRequiredFields(t *testing.T, defs []provider.ToolDefinition, name string, want ...string) {

@@ -14,6 +14,7 @@ import (
 	"github.com/floegence/floret/internal/provider"
 	"github.com/floegence/floret/internal/session"
 	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/observation"
 )
 
 func publicRunResponse(resp RunResponse) RunResponse {
@@ -127,6 +128,64 @@ func pathSafeSubAgentSnapshot(snapshot agentharness.SubAgentSnapshot) agentharne
 	snapshot.LastMessage = event.SafePathRefsText(snapshot.LastMessage)
 	snapshot.WaitingPrompt = event.SafePathRefsText(snapshot.WaitingPrompt)
 	return snapshot
+}
+
+func pathSafeSubAgentDetail(detail agentharness.SubAgentDetail) agentharness.SubAgentDetail {
+	detail.Snapshot = pathSafeSubAgentSnapshot(detail.Snapshot)
+	for i := range detail.Events {
+		detail.Events[i] = pathSafeSubAgentDetailEvent(detail.Events[i])
+	}
+	return detail
+}
+
+func pathSafeSubAgentDetailEvent(ev agentharness.SubAgentDetailEvent) agentharness.SubAgentDetailEvent {
+	if ev.Message != nil {
+		ev.Message.Content = event.SafePathRefsText(ev.Message.Content)
+		ev.Message.Reasoning = event.SafePathRefsText(ev.Message.Reasoning)
+	}
+	if ev.ToolCall != nil {
+		ev.ToolCall.ArgsJSON = event.SafePathRefsText(ev.ToolCall.ArgsJSON)
+	}
+	if ev.ToolResult != nil {
+		ev.ToolResult.Content = event.SafePathRefsText(ev.ToolResult.Content)
+	}
+	if ev.Approval != nil {
+		ev.Approval.Reason = event.SafePathRefsText(ev.Approval.Reason)
+		ev.Approval.Metadata = pathSafeMetadata(ev.Approval.Metadata)
+	}
+	if ev.Compaction != nil {
+		ev.Compaction.Summary = event.SafePathRefsText(ev.Compaction.Summary)
+		ev.Compaction.Reason = event.SafePathRefsText(ev.Compaction.Reason)
+		ev.Compaction.Metadata = pathSafeMetadata(ev.Compaction.Metadata)
+	}
+	ev.Error = event.SafePathRefsText(ev.Error)
+	ev.Metadata = pathSafeMetadata(ev.Metadata)
+	if ev.TurnMarker != nil {
+		ev.TurnMarker.Metadata = pathSafeMetadata(ev.TurnMarker.Metadata)
+	}
+	return ev
+}
+
+func pathSafeActivityPresentation(in *observation.ActivityPresentation) *observation.ActivityPresentation {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.Label = event.SafePathRefsText(out.Label)
+	out.Description = event.SafePathRefsText(out.Description)
+	out.Chips = append([]observation.ActivityChip(nil), in.Chips...)
+	for i := range out.Chips {
+		out.Chips[i].Label = event.SafePathRefsText(out.Chips[i].Label)
+		out.Chips[i].Value = event.SafePathRefsText(out.Chips[i].Value)
+	}
+	out.TargetRefs = append([]observation.ActivityTargetRef(nil), in.TargetRefs...)
+	for i := range out.TargetRefs {
+		out.TargetRefs[i].Label = event.SafePathRefsText(out.TargetRefs[i].Label)
+		out.TargetRefs[i].URI = event.SafePathRefsText(out.TargetRefs[i].URI)
+		out.TargetRefs[i].Path = event.SafePathLabel(out.TargetRefs[i].Path)
+	}
+	out.Payload = pathSafeAnyMap(in.Payload)
+	return &out
 }
 
 func pathSafeWaitSubAgentsResult(result agentharness.WaitSubAgentsResult) agentharness.WaitSubAgentsResult {

@@ -34,6 +34,7 @@ export const state = {
   toolEditDrafts: {},
   subagentSpawnDrafts: {},
   subagentInputDrafts: {},
+  subagentDetails: {},
 };
 
 export function currentProfile() {

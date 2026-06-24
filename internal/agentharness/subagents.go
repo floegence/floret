@@ -14,6 +14,7 @@ import (
 
 	"github.com/floegence/floret/internal/engine"
 	"github.com/floegence/floret/internal/session"
+	"github.com/floegence/floret/internal/session/artifact"
 	"github.com/floegence/floret/internal/sessiontree"
 )
 
@@ -36,6 +37,14 @@ const (
 )
 
 const (
+	DefaultSubAgentWaitTimeout = 5 * time.Minute
+	MaxSubAgentWaitTimeout     = 20 * time.Minute
+	DefaultSubAgentRunTimeout  = 20 * time.Minute
+	DefaultSubAgentDetailLimit = 200
+	MaxSubAgentDetailLimit     = 500
+)
+
+const (
 	subAgentInputEntryKind      = "subagent_input"
 	subAgentInputStatePending   = "pending"
 	subAgentInputStateConsumed  = "consumed"
@@ -49,6 +58,20 @@ const (
 	subAgentInputTurnIDKey      = "turn_id"
 	subAgentInputLabelHostKey   = "labels_host_json"
 	subAgentInputLabelCorrKey   = "labels_correlation_json"
+
+	subAgentApprovalEntryKind = "subagent_approval"
+	subAgentDetailKindKey     = "kind"
+	subAgentDetailTypeKey     = "type"
+	subAgentApprovalStateKey  = "state"
+	subAgentApprovalToolIDKey = "tool_id"
+	subAgentApprovalNameKey   = "tool_name"
+	subAgentApprovalKindKey   = "tool_kind"
+	subAgentApprovalArgsKey   = "args_hash"
+	subAgentApprovalReasonKey = "reason"
+
+	subAgentTerminalReasonKey = "terminal_reason"
+	subAgentRunTimeoutReason  = "child_run_timeout"
+	subAgentDetailRawOmitted  = "raw_omitted"
 )
 
 type SubAgentForkMode string
@@ -88,6 +111,14 @@ type CloseSubAgentOptions struct {
 	ChildThreadID  string
 }
 
+type ReadSubAgentDetailOptions struct {
+	ParentThreadID string
+	ChildThreadID  string
+	AfterOrdinal   int64
+	Limit          int
+	IncludeRaw     bool
+}
+
 type SubAgentSnapshot struct {
 	ThreadID       string         `json:"thread_id"`
 	Path           string         `json:"path"`
@@ -111,6 +142,110 @@ type SubAgentSnapshot struct {
 type WaitSubAgentsResult struct {
 	Snapshots []SubAgentSnapshot `json:"snapshots"`
 	TimedOut  bool               `json:"timed_out,omitempty"`
+}
+
+type SubAgentDetail struct {
+	Snapshot     SubAgentSnapshot      `json:"snapshot"`
+	Events       []SubAgentDetailEvent `json:"events"`
+	NextOrdinal  int64                 `json:"next_ordinal,omitempty"`
+	HasMore      bool                  `json:"has_more,omitempty"`
+	RetainedFrom int64                 `json:"retained_from,omitempty"`
+	GeneratedAt  time.Time             `json:"generated_at"`
+}
+
+type SubAgentDetailEventKind string
+
+const (
+	SubAgentDetailEventUserMessage      SubAgentDetailEventKind = "user_message"
+	SubAgentDetailEventAssistantMessage SubAgentDetailEventKind = "assistant_message"
+	SubAgentDetailEventToolCall         SubAgentDetailEventKind = "tool_call"
+	SubAgentDetailEventToolResult       SubAgentDetailEventKind = "tool_result"
+	SubAgentDetailEventTurnMarker       SubAgentDetailEventKind = "turn_marker"
+	SubAgentDetailEventCompaction       SubAgentDetailEventKind = "compaction"
+	SubAgentDetailEventError            SubAgentDetailEventKind = "error"
+	SubAgentDetailEventApproval         SubAgentDetailEventKind = "approval"
+	SubAgentDetailEventInput            SubAgentDetailEventKind = "input"
+	SubAgentDetailEventCustom           SubAgentDetailEventKind = "custom"
+)
+
+type SubAgentDetailEvent struct {
+	ID        string                  `json:"id"`
+	Ordinal   int64                   `json:"ordinal"`
+	ParentID  string                  `json:"parent_id,omitempty"`
+	ThreadID  string                  `json:"thread_id"`
+	TurnID    string                  `json:"turn_id,omitempty"`
+	Kind      SubAgentDetailEventKind `json:"kind"`
+	Type      string                  `json:"type,omitempty"`
+	CreatedAt time.Time               `json:"created_at"`
+
+	Message    *SubAgentDetailMessage    `json:"message,omitempty"`
+	ToolCall   *SubAgentDetailToolCall   `json:"tool_call,omitempty"`
+	ToolResult *SubAgentDetailToolResult `json:"tool_result,omitempty"`
+	Approval   *SubAgentDetailApproval   `json:"approval,omitempty"`
+	TurnMarker *SubAgentDetailTurnMarker `json:"turn_marker,omitempty"`
+	Compaction *SubAgentDetailCompaction `json:"compaction,omitempty"`
+	Error      string                    `json:"error,omitempty"`
+	Metadata   map[string]string         `json:"metadata,omitempty"`
+}
+
+type SubAgentDetailMessage struct {
+	Role      string `json:"role,omitempty"`
+	Content   string `json:"content,omitempty"`
+	Reasoning string `json:"reasoning,omitempty"`
+}
+
+type SubAgentDetailToolCall struct {
+	ID       string `json:"id,omitempty"`
+	Name     string `json:"name,omitempty"`
+	ArgsJSON string `json:"args_json,omitempty"`
+	ArgsHash string `json:"args_hash,omitempty"`
+}
+
+type SubAgentDetailToolResult struct {
+	CallID        string        `json:"call_id,omitempty"`
+	ToolName      string        `json:"tool_name,omitempty"`
+	Content       string        `json:"content,omitempty"`
+	Truncated     bool          `json:"truncated,omitempty"`
+	OriginalBytes int           `json:"original_bytes,omitempty"`
+	VisibleBytes  int           `json:"visible_bytes,omitempty"`
+	OriginalLines int           `json:"original_lines,omitempty"`
+	VisibleLines  int           `json:"visible_lines,omitempty"`
+	Strategy      string        `json:"strategy,omitempty"`
+	ContentSHA256 string        `json:"content_sha256,omitempty"`
+	FullOutput    *artifact.Ref `json:"full_output,omitempty"`
+}
+
+type SubAgentDetailApproval struct {
+	State    string            `json:"state,omitempty"`
+	ToolID   string            `json:"tool_id,omitempty"`
+	ToolName string            `json:"tool_name,omitempty"`
+	ToolKind string            `json:"tool_kind,omitempty"`
+	ArgsHash string            `json:"args_hash,omitempty"`
+	Reason   string            `json:"reason,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+type SubAgentDetailTurnMarker struct {
+	Status   string            `json:"status,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+type SubAgentDetailCompaction struct {
+	CompactionID            string            `json:"compaction_id,omitempty"`
+	PreviousCompactionID    string            `json:"previous_compaction_id,omitempty"`
+	CompactedThroughEntryID string            `json:"compacted_through_entry_id,omitempty"`
+	SummarySchemaVersion    string            `json:"summary_schema_version,omitempty"`
+	CompactionGeneration    int               `json:"compaction_generation,omitempty"`
+	CompactionWindowID      string            `json:"compaction_window_id,omitempty"`
+	FirstKeptEntryID        string            `json:"first_kept_entry_id,omitempty"`
+	KeptUserEntryIDs        []string          `json:"kept_user_entry_ids,omitempty"`
+	Summary                 string            `json:"summary,omitempty"`
+	Trigger                 string            `json:"trigger,omitempty"`
+	Reason                  string            `json:"reason,omitempty"`
+	Phase                   string            `json:"phase,omitempty"`
+	TokensBefore            int64             `json:"tokens_before,omitempty"`
+	TokensAfterEstimate     int64             `json:"tokens_after_estimate,omitempty"`
+	Metadata                map[string]string `json:"metadata,omitempty"`
 }
 
 type subagentInput struct {
@@ -296,7 +431,10 @@ func (h *AgentHarness) WaitSubAgents(ctx context.Context, opts WaitSubAgentsOpti
 	}
 	timeout := opts.Timeout
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = DefaultSubAgentWaitTimeout
+	}
+	if timeout > MaxSubAgentWaitTimeout {
+		timeout = MaxSubAgentWaitTimeout
 	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -316,6 +454,278 @@ func (h *AgentHarness) WaitSubAgents(ctx context.Context, opts WaitSubAgentsOpti
 		case <-h.subAgentUpdateChannel():
 		}
 	}
+}
+
+func (h *AgentHarness) ReadSubAgentDetail(ctx context.Context, opts ReadSubAgentDetailOptions) (SubAgentDetail, error) {
+	if h == nil {
+		return SubAgentDetail{}, errors.New("agent harness is nil")
+	}
+	if opts.Limit < 0 {
+		return SubAgentDetail{}, errors.New("subagent detail limit must be non-negative")
+	}
+	limit := opts.Limit
+	if limit == 0 {
+		limit = DefaultSubAgentDetailLimit
+	}
+	if limit > MaxSubAgentDetailLimit {
+		limit = MaxSubAgentDetailLimit
+	}
+	meta, err := h.resolveSubAgentMeta(ctx, opts.ParentThreadID, opts.ChildThreadID)
+	if err != nil {
+		return SubAgentDetail{}, err
+	}
+	snapshot, err := h.subAgentSnapshotFromMeta(ctx, meta)
+	if err != nil {
+		return SubAgentDetail{}, err
+	}
+	thread := h.cacheThread(meta.ID)
+	journal, err := thread.Journal(ctx)
+	if err != nil {
+		return SubAgentDetail{}, err
+	}
+	entries := journal.Path
+	retainedFrom := subAgentDetailRetainedFrom(entries)
+	events := make([]SubAgentDetailEvent, 0, len(entries))
+	var nextOrdinal int64
+	var hasMore bool
+	for index, entry := range entries {
+		ordinal := int64(index + 1)
+		if ordinal < retainedFrom || ordinal <= opts.AfterOrdinal {
+			continue
+		}
+		event, ok := h.subAgentDetailEvent(entry, ordinal, opts.IncludeRaw)
+		if !ok {
+			continue
+		}
+		if len(events) >= limit {
+			hasMore = true
+			break
+		}
+		events = append(events, event)
+		nextOrdinal = ordinal
+	}
+	return SubAgentDetail{
+		Snapshot:     snapshot,
+		Events:       events,
+		NextOrdinal:  nextOrdinal,
+		HasMore:      hasMore,
+		RetainedFrom: retainedFrom,
+		GeneratedAt:  h.now(),
+	}, nil
+}
+
+func subAgentDetailRetainedFrom(entries []sessiontree.Entry) int64 {
+	for index, entry := range entries {
+		if entry.Type == sessiontree.EntryCustom &&
+			entry.Metadata[subAgentInputKindKey] == subAgentInputEntryKind &&
+			entry.Metadata[subAgentInputStateKey] == subAgentInputStatePending {
+			return int64(index + 1)
+		}
+	}
+	if len(entries) == 0 {
+		return 0
+	}
+	return 1
+}
+
+func (h *AgentHarness) subAgentDetailEvent(entry sessiontree.Entry, ordinal int64, includeRaw bool) (SubAgentDetailEvent, bool) {
+	event := SubAgentDetailEvent{
+		ID:        entry.ID,
+		Ordinal:   ordinal,
+		ParentID:  entry.ParentID,
+		ThreadID:  entry.ThreadID,
+		TurnID:    entry.TurnID,
+		CreatedAt: entry.CreatedAt,
+	}
+	switch entry.Type {
+	case sessiontree.EntryUserMessage:
+		event.Kind = SubAgentDetailEventUserMessage
+		event.Type = string(sessiontree.EntryUserMessage)
+		event.Message = subAgentDetailMessage(entry.Message, includeRaw)
+	case sessiontree.EntryAssistantMessage:
+		event.Kind = SubAgentDetailEventAssistantMessage
+		event.Type = string(sessiontree.EntryAssistantMessage)
+		event.Message = subAgentDetailMessage(entry.Message, includeRaw)
+	case sessiontree.EntryToolCall:
+		event.Kind = SubAgentDetailEventToolCall
+		event.Type = string(sessiontree.EntryToolCall)
+		event.Message = subAgentDetailMessage(entry.Message, includeRaw)
+		event.ToolCall = subAgentDetailToolCall(entry.Message, includeRaw)
+	case sessiontree.EntryToolResult:
+		event.Kind = SubAgentDetailEventToolResult
+		event.Type = string(sessiontree.EntryToolResult)
+		event.Message = subAgentDetailMessage(entry.Message, includeRaw)
+		event.ToolResult = subAgentDetailToolResult(entry.Message, includeRaw)
+	case sessiontree.EntryTurnMarker:
+		event.Kind = SubAgentDetailEventTurnMarker
+		event.Type = string(sessiontree.EntryTurnMarker)
+		event.TurnMarker = &SubAgentDetailTurnMarker{
+			Status:   string(entry.TurnStatus),
+			Metadata: cloneStringMap(entry.Metadata),
+		}
+	case sessiontree.EntryCompaction:
+		event.Kind = SubAgentDetailEventCompaction
+		event.Type = string(sessiontree.EntryCompaction)
+		event.Compaction = subAgentDetailCompaction(entry)
+	case sessiontree.EntryRunFailure:
+		event.Kind = SubAgentDetailEventError
+		event.Type = string(sessiontree.EntryRunFailure)
+		event.Error = entry.Error
+	case sessiontree.EntryCustom:
+		event.Kind = SubAgentDetailEventCustom
+		event.Type = entry.Metadata[subAgentDetailTypeKey]
+		switch entry.Metadata[subAgentDetailKindKey] {
+		case subAgentInputEntryKind:
+			event.Kind = SubAgentDetailEventInput
+			if event.Type == "" {
+				event.Type = subAgentInputEntryKind
+			}
+			if includeRaw && strings.TrimSpace(entry.Message.Content) != "" {
+				event.Message = &SubAgentDetailMessage{Role: string(session.User), Content: entry.Message.Content}
+			}
+		case subAgentApprovalEntryKind:
+			event.Kind = SubAgentDetailEventApproval
+			if event.Type == "" {
+				event.Type = subAgentApprovalEntryKind
+			}
+			event.Approval = subAgentDetailApproval(entry.Metadata)
+		}
+		event.Metadata = cloneStringMap(entry.Metadata)
+	default:
+		return SubAgentDetailEvent{}, false
+	}
+	if event.Metadata == nil && entry.Type != sessiontree.EntryTurnMarker {
+		event.Metadata = cloneStringMap(entry.Metadata)
+	}
+	if !includeRaw && subAgentDetailRawAvailable(event) {
+		if event.Metadata == nil {
+			event.Metadata = map[string]string{}
+		}
+		event.Metadata[subAgentDetailRawOmitted] = "true"
+	}
+	return event, true
+}
+
+func subAgentDetailRawAvailable(event SubAgentDetailEvent) bool {
+	switch event.Kind {
+	case SubAgentDetailEventInput, SubAgentDetailEventUserMessage, SubAgentDetailEventAssistantMessage, SubAgentDetailEventToolCall, SubAgentDetailEventToolResult:
+		return true
+	default:
+		return false
+	}
+}
+
+func subAgentDetailApproval(metadata map[string]string) *SubAgentDetailApproval {
+	if len(metadata) == 0 {
+		return nil
+	}
+	return &SubAgentDetailApproval{
+		State:    metadata[subAgentApprovalStateKey],
+		ToolID:   metadata[subAgentApprovalToolIDKey],
+		ToolName: metadata[subAgentApprovalNameKey],
+		ToolKind: metadata[subAgentApprovalKindKey],
+		ArgsHash: metadata[subAgentApprovalArgsKey],
+		Reason:   metadata[subAgentApprovalReasonKey],
+		Metadata: cloneStringMap(metadata),
+	}
+}
+
+func subAgentDetailMessage(msg session.Message, includeRaw bool) *SubAgentDetailMessage {
+	if msg.Role == "" && msg.Content == "" && msg.Reasoning == "" {
+		return nil
+	}
+	out := &SubAgentDetailMessage{Role: string(msg.Role)}
+	if includeRaw {
+		out.Content = msg.Content
+		out.Reasoning = msg.Reasoning
+	}
+	return out
+}
+
+func subAgentDetailToolCall(msg session.Message, includeRaw bool) *SubAgentDetailToolCall {
+	if msg.ToolCallID == "" && msg.ToolName == "" && msg.ToolArgs == "" {
+		return nil
+	}
+	args := strings.TrimSpace(msg.ToolArgs)
+	out := &SubAgentDetailToolCall{
+		ID:       msg.ToolCallID,
+		Name:     msg.ToolName,
+		ArgsHash: stableSubAgentDetailHash(args),
+	}
+	if includeRaw {
+		out.ArgsJSON = args
+	}
+	return out
+}
+
+func subAgentDetailToolResult(msg session.Message, includeRaw bool) *SubAgentDetailToolResult {
+	if msg.ToolCallID == "" && msg.ToolName == "" && msg.Content == "" && msg.ToolResult == nil {
+		return nil
+	}
+	out := &SubAgentDetailToolResult{
+		CallID:   msg.ToolCallID,
+		ToolName: msg.ToolName,
+	}
+	if includeRaw {
+		out.Content = msg.Content
+	}
+	if view := msg.ToolResult; view != nil {
+		out.Truncated = view.Truncated
+		out.OriginalBytes = view.OriginalBytes
+		out.VisibleBytes = view.VisibleBytes
+		out.OriginalLines = view.OriginalLines
+		out.VisibleLines = view.VisibleLines
+		out.Strategy = view.Strategy
+		out.ContentSHA256 = view.ContentSHA256
+		if view.FullOutput != nil {
+			ref := *view.FullOutput
+			out.FullOutput = &ref
+		}
+	}
+	if out.ContentSHA256 == "" {
+		out.ContentSHA256 = stableSubAgentDetailHash(msg.Content)
+	}
+	return out
+}
+
+func subAgentDetailCompaction(entry sessiontree.Entry) *SubAgentDetailCompaction {
+	return &SubAgentDetailCompaction{
+		CompactionID:            entry.CompactionID,
+		PreviousCompactionID:    entry.PreviousCompactionID,
+		CompactedThroughEntryID: entry.CompactedThroughEntryID,
+		SummarySchemaVersion:    entry.SummarySchemaVersion,
+		CompactionGeneration:    entry.CompactionGeneration,
+		CompactionWindowID:      entry.CompactionWindowID,
+		FirstKeptEntryID:        entry.FirstKeptEntryID,
+		KeptUserEntryIDs:        append([]string(nil), entry.KeptUserEntryIDs...),
+		Summary:                 entry.Summary,
+		Trigger:                 entry.CompactionTrigger,
+		Reason:                  entry.CompactionReason,
+		Phase:                   entry.CompactionPhase,
+		TokensBefore:            entry.TokensBefore,
+		TokensAfterEstimate:     entry.TokensAfterEstimate,
+		Metadata:                cloneStringMap(entry.Metadata),
+	}
+}
+
+func stableSubAgentDetailHash(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func (h *AgentHarness) ListSubAgents(ctx context.Context, parentThreadID string) ([]SubAgentSnapshot, error) {
@@ -442,7 +852,7 @@ func (h *AgentHarness) startNextSubAgentTurn(ctrl *subagentController) {
 	}
 	input := ctrl.queue[0]
 	ctrl.queue = ctrl.queue[1:]
-	runCtx, cancel := context.WithCancel(context.Background())
+	runCtx, cancel := h.subAgentRunContext()
 	ctrl.running = true
 	ctrl.turnID = turnID
 	ctrl.cancel = cancel
@@ -487,7 +897,14 @@ func (h *AgentHarness) startNextSubAgentTurn(ctrl *subagentController) {
 	}
 	h.notifySubAgentUpdate()
 	go func() {
-		result, err := thread.Run(runCtx, input.message, RunOptions{TurnID: turnID, Labels: input.labels})
+		result, err := thread.Run(runCtx, input.message, RunOptions{
+			TurnID: turnID,
+			Labels: input.labels,
+			DeadlineMetadata: map[string]string{
+				subAgentTerminalReasonKey: subAgentRunTimeoutReason,
+			},
+		})
+		timeout := errors.Is(err, context.DeadlineExceeded)
 		cancel()
 		status := string(result.Status)
 		if err != nil && status == "" {
@@ -505,6 +922,9 @@ func (h *AgentHarness) startNextSubAgentTurn(ctrl *subagentController) {
 		if !closed && isSettledSubAgentStatus(SubAgentStatus(status)) {
 			_, _ = h.updateSubAgentMeta(context.Background(), ctrl.threadID, func(current *sessiontree.ThreadMeta) {
 				current.Status = status
+				if timeout {
+					current.Status = string(SubAgentStatusCancelled)
+				}
 			})
 		}
 		if done != nil {
@@ -525,6 +945,22 @@ func (h *AgentHarness) startNextSubAgentTurn(ctrl *subagentController) {
 			h.startNextSubAgentTurn(ctrl)
 		}
 	}()
+}
+
+func (h *AgentHarness) subAgentRunContext() (context.Context, context.CancelFunc) {
+	base, baseCancel := context.WithCancel(context.Background())
+	timeout := DefaultSubAgentRunTimeout
+	if h != nil && h.options.SubAgentRunTimeout > 0 {
+		timeout = h.options.SubAgentRunTimeout
+	}
+	if timeout <= 0 {
+		return base, baseCancel
+	}
+	ctx, timeoutCancel := context.WithTimeout(base, timeout)
+	return ctx, func() {
+		timeoutCancel()
+		baseCancel()
+	}
 }
 
 func (h *AgentHarness) subAgentCanStartQueuedInput(ctx context.Context, thread *Thread) bool {

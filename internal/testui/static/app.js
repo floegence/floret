@@ -204,6 +204,7 @@ function render(options = {}) {
         onSubagentSpawn: spawnSubagent,
         onSubagentInput: sendSubagentInput,
         onSubagentWait: waitSubagent,
+        onSubagentDetail: loadSubagentDetail,
         onSubagentClose: closeSubagent,
         onSubagentSpawnDraft: updateSubagentSpawnDraft,
         onSubagentInputDraft: updateSubagentInputDraft,
@@ -459,6 +460,21 @@ async function waitSubagent(target) {
     if (response?.result?.timed_out) addToast("error", "Subagent wait timed out");
     await refreshSessionsNonBlocking(token);
     return !response?.result?.timed_out;
+  });
+}
+
+async function loadSubagentDetail(target) {
+  if (!state.activeSession?.id || !target) return;
+  const sessionID = state.activeSession.id;
+  const token = ++state.mutationToken;
+  await runWithStatus({ status: "loading", action: "subagent-detail", target, successMessage: "Subagent detail loaded" }, async () => {
+    const response = await api.subagentDetail(sessionID, target, { limit: 250, include_raw: true });
+    if (token !== state.mutationToken) return false;
+    state.subagentDetails[`${sessionID}\u0000${target}`] = response?.detail || null;
+    state.inspectorTab = "subagents";
+    state.lastResult = null;
+    render();
+    return true;
   });
 }
 
@@ -1089,6 +1105,8 @@ function actionLabel(action) {
       return "steering subagent";
     case "subagent-wait":
       return "waiting for subagent";
+    case "subagent-detail":
+      return "loading subagent detail";
     case "subagent-close":
       return "closing subagent";
     case "run-probe":

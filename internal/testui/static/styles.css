@@ -555,6 +555,98 @@ a {
   overflow-wrap: anywhere;
 }
 
+.subagent-detail {
+  display: grid;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.subagent-detail-head,
+.subagent-detail-event-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.subagent-detail-head strong,
+.subagent-detail-head span,
+.subagent-detail-event-head span {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.subagent-detail-head span,
+.subagent-detail-event-head {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.subagent-detail-timeline {
+  display: grid;
+  gap: 8px;
+  max-height: 460px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.subagent-detail-empty,
+.subagent-detail-event {
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: #f8faf8;
+}
+
+.subagent-detail-empty {
+  padding: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.subagent-detail-event {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.subagent-detail-event.kind-tool_call,
+.subagent-detail-event.kind-tool_result {
+  border-left: 3px solid var(--green);
+}
+
+.subagent-detail-event.kind-approval,
+.subagent-detail-event.kind-error {
+  border-left: 3px solid var(--danger);
+}
+
+.subagent-detail-event-head {
+  color: var(--text);
+}
+
+.subagent-detail-event-head > span:nth-child(2) {
+  color: var(--muted);
+  text-align: right;
+}
+
+.subagent-detail-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.subagent-detail-facts span {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .mini-pre {
   max-height: 180px;
   margin: 0;
@@ -1992,9 +2084,15 @@ button.small {
   }
 
   .subagent-card-main,
+  .subagent-detail-head,
+  .subagent-detail-event-head,
   .subagent-actions {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .subagent-detail-event-head > span:nth-child(2) {
+    text-align: left;
   }
 
   .subagent-pills {

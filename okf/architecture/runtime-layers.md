@@ -49,6 +49,17 @@ Queued input is represented in that journal as Floret lifecycle state, not as an
 in-memory host queue, so restart recovery, wait semantics, and close semantics
 derive from the same durable source.
 
+Waiting for child threads is intentionally separate from reading child detail.
+`WaitSubAgents` returns bounded snapshots and timeout state; it does not return
+the child transcript, tool outputs, or detail timeline. `ReadSubAgentDetail` and
+`ListSubAgentDetailEvents` are separate public host APIs for parent-scoped,
+paginated inspection of the child journal. They let a product UI show complete
+child execution detail while keeping parent model context small.
+
+Closing a subagent stops current child execution and queued work. It preserves
+the child thread and journal so the host can still read detail after close,
+timeout, restart, or terminal completion.
+
 This layer does not define product roles such as reviewer or worker beyond
 opaque labels. Hosts own prompt policy, permissions, UI, and product workflow.
 

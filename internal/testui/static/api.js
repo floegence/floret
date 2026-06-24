@@ -73,6 +73,14 @@ export const api = {
   waitSubagents(id, payload) {
     return requestJSON(`/api/agent/sessions/${encodeURIComponent(id)}/subagents/wait`, { method: "POST", body: JSON.stringify(payload) });
   },
+  subagentDetail(id, target, params = {}) {
+    const query = new URLSearchParams();
+    if (params.after_ordinal) query.set("after_ordinal", String(params.after_ordinal));
+    if (params.limit) query.set("limit", String(params.limit));
+    if (params.include_raw) query.set("include_raw", "true");
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return requestJSON(`/api/agent/sessions/${encodeURIComponent(id)}/subagents/${encodeURIComponent(target)}/detail${suffix}`, { headers: {} });
+  },
   sendSubagentInput(id, target, payload) {
     return requestJSON(`/api/agent/sessions/${encodeURIComponent(id)}/subagents/${encodeURIComponent(target)}/input`, { method: "POST", body: JSON.stringify(payload) });
   },

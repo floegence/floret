@@ -28,6 +28,11 @@ reasoning, tool arguments, tool results, and local paths.
   tool-call stream start/delta/end facts. Model tool-call stream facts identify
   the call but do not expose argument text; local tool execution remains a
   separate activity timeline concern.
+* Subagent detail events expose parent-scoped child journal facts for host UI and
+  audit readers. They include persisted messages, tool call/result records,
+  approval state, turn markers, compaction checkpoints, and run failures in
+  journal ordinal order. This detail projection is separate from model-facing
+  wait results and does not make raw provider wire records public.
 * Context statuses show projected and provider-reported context pressure.
 * Compaction events expose context compaction lifecycle.
 

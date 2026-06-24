@@ -110,6 +110,9 @@ export function bindSessionWorkspace(root, handlers) {
   root.querySelectorAll("[data-subagent-wait]").forEach((button) => {
     button.addEventListener("click", () => handlers.onSubagentWait(button.dataset.subagentWait || ""));
   });
+  root.querySelectorAll("[data-subagent-detail]").forEach((button) => {
+    button.addEventListener("click", () => handlers.onSubagentDetail(button.dataset.subagentDetail || ""));
+  });
   root.querySelectorAll("[data-subagent-close]").forEach((button) => {
     button.addEventListener("click", () => handlers.onSubagentClose(button.dataset.subagentClose || ""));
   });
@@ -271,9 +274,11 @@ function renderSubagentCard(session, item) {
   const running = ["running", "waiting"].includes(status);
   const canSend = Boolean(item.can_send_input);
   const isWaiting = state.action === "subagent-wait" && state.actionTarget === target;
+  const isDetail = state.action === "subagent-detail" && state.actionTarget === target;
   const isInput = state.action === "subagent-input" && state.actionTarget === target;
   const isClosing = state.action === "subagent-close" && state.actionTarget === target;
   const busy = subagentActionBusy(session);
+  const detail = state.subagentDetails[`${session.id}\u0000${target}`] || null;
   const payload = [
     `subagent: ${item.path || item.task_name || item.thread_id || ""}`,
     `thread_id: ${item.thread_id || ""}`,
@@ -306,15 +311,157 @@ function renderSubagentCard(session, item) {
         <button class="${isInput ? "is-pending" : ""}" type="submit" ${target && canSend && !busy ? "" : "disabled"}>${isInput ? "Sending..." : "Send"}</button>
       </form>
       <div class="subagent-actions">
+        <button class="small ${isDetail ? "is-pending" : ""}" type="button" data-subagent-detail="${escapeHTML(target)}" ${target ? "" : "disabled"}>${isDetail ? "Loading..." : "Detail"}</button>
         <button class="small ${isWaiting ? "is-pending" : ""}" type="button" data-subagent-wait="${escapeHTML(target)}" ${target && !busy ? "" : "disabled"}>${isWaiting ? "Waiting..." : "Wait"}</button>
         <button class="small danger ${isClosing ? "is-pending" : ""}" type="button" data-subagent-close="${escapeHTML(target)}" ${target && item.can_close && !busy ? "" : "disabled"}>${isClosing ? "Closing..." : "Close"}</button>
       </div>
+      ${detail ? renderSubagentDetail(session, target, detail) : ""}
     </article>
   `;
 }
 
 function subagentActionBusy(session) {
   return Boolean(state.running || session?.status === "running" || session?.phase === "turn");
+}
+
+function renderSubagentDetail(session, target, detail) {
+  const snapshot = detail.snapshot || {};
+  const events = Array.isArray(detail.events) ? detail.events : [];
+  const generated = detail.generated_at ? formatLocalTime(detail.generated_at) : "";
+  return `
+    <section class="subagent-detail" aria-label="Subagent detail">
+      <div class="subagent-detail-head">
+        <div>
+          <strong>${escapeHTML(snapshot.task_name || snapshot.path || target || "subagent")}</strong>
+          <span>${escapeHTML(snapshot.thread_id || target)} · ${events.length} event${events.length === 1 ? "" : "s"}</span>
+        </div>
+        <span class="tiny-pill" title="${escapeHTML(generated)}">ordinal ${escapeHTML(detail.next_ordinal || 0)}</span>
+      </div>
+      <div class="subagent-detail-timeline">
+        ${events.length ? events.map((event) => renderSubagentDetailEvent(session, event)).join("") : `<div class="subagent-detail-empty">No detail events are available for this child thread yet.</div>`}
+      </div>
+    </section>
+  `;
+}
+
+function renderSubagentDetailEvent(session, event) {
+  const kind = String(event?.kind || event?.type || "event");
+  const title = subagentDetailTitle(event);
+  const meta = [
+    event?.ordinal ? `#${event.ordinal}` : "",
+    event?.turn_id ? shortID(event.turn_id) : "",
+    event?.created_at ? formatLocalTime(event.created_at) : "",
+  ].filter(Boolean).join(" · ");
+  const body = subagentDetailBody(event);
+  const copyPayload = subagentDetailCopyPayload(event, title, body);
+  const expandKey = `session:${session?.id || "unknown"}:subagent:${event?.thread_id || "unknown"}:${event?.ordinal || event?.id || title}:body`;
+  return `
+    <article class="subagent-detail-event kind-${escapeHTML(kind)}">
+      <div class="subagent-detail-event-head">
+        <span>${escapeHTML(title)}</span>
+        <span>${escapeHTML(meta)}</span>
+        ${copyButton(copyPayload, "Copy", "Subagent event copied", "copy-inline subtle-copy")}
+      </div>
+      ${body ? renderExpandableBody(body, { label: title, mode: kind === "error" ? "error" : "audit", expandKey }) : renderSubagentDetailFacts(event)}
+    </article>
+  `;
+}
+
+function subagentDetailTitle(event) {
+  switch (event?.kind) {
+    case "input":
+      return "delegated input";
+    case "user_message":
+      return "user";
+    case "assistant_message":
+      return "assistant";
+    case "tool_call":
+      return `tool call ${event.tool_call?.name || ""}`.trim();
+    case "tool_result":
+      return `tool result ${event.tool_result?.tool_name || ""}`.trim();
+    case "approval":
+      return `approval ${event.approval?.state || ""}`.trim();
+    case "turn_marker":
+      return `turn ${event.turn_marker?.status || ""}`.trim();
+    case "compaction":
+      return "context compaction";
+    case "error":
+      return "run failure";
+    default:
+      return event?.type || event?.kind || "event";
+  }
+}
+
+function subagentDetailBody(event) {
+  switch (event?.kind) {
+    case "input":
+    case "user_message":
+    case "assistant_message":
+      return [event.message?.content || "", event.message?.reasoning ? `\nReasoning:\n${event.message.reasoning}` : ""].join("").trim();
+    case "tool_call":
+      return [
+        event.tool_call?.name ? `tool: ${event.tool_call.name}` : "",
+        event.tool_call?.id ? `call_id: ${event.tool_call.id}` : "",
+        event.tool_call?.args_hash ? `args_hash: ${event.tool_call.args_hash}` : "",
+        event.tool_call?.args_json ? `args:\n${event.tool_call.args_json}` : "",
+      ].filter(Boolean).join("\n");
+    case "tool_result": {
+      const result = event.tool_result || {};
+      return [
+        result.tool_name ? `tool: ${result.tool_name}` : "",
+        result.call_id ? `call_id: ${result.call_id}` : "",
+        result.truncated ? `truncated: ${result.visible_bytes || 0}/${result.original_bytes || 0} bytes` : "",
+        result.content_sha256 ? `sha256: ${result.content_sha256}` : "",
+        result.content ? `content:\n${result.content}` : "",
+      ].filter(Boolean).join("\n");
+    }
+    case "approval": {
+      const approval = event.approval || {};
+      return [
+        approval.state ? `state: ${approval.state}` : "",
+        approval.tool_name ? `tool: ${approval.tool_name}` : "",
+        approval.tool_id ? `tool_id: ${approval.tool_id}` : "",
+        approval.args_hash ? `args_hash: ${approval.args_hash}` : "",
+        approval.reason ? `reason: ${approval.reason}` : "",
+      ].filter(Boolean).join("\n");
+    }
+    case "turn_marker":
+      return event.turn_marker?.status || "";
+    case "compaction": {
+      const compaction = event.compaction || {};
+      return [
+        compaction.phase ? `phase: ${compaction.phase}` : "",
+        compaction.trigger ? `trigger: ${compaction.trigger}` : "",
+        compaction.reason ? `reason: ${compaction.reason}` : "",
+        compaction.summary ? `summary:\n${compaction.summary}` : "",
+      ].filter(Boolean).join("\n");
+    }
+    case "error":
+      return event.error || "";
+    default:
+      return event.message?.content || event.error || "";
+  }
+}
+
+function renderSubagentDetailFacts(event) {
+  const facts = [
+    event?.type ? ["type", event.type] : null,
+    event?.thread_id ? ["thread", shortID(event.thread_id)] : null,
+    event?.parent_id ? ["parent", shortID(event.parent_id)] : null,
+  ].filter(Boolean);
+  if (!facts.length) return "";
+  return `<div class="subagent-detail-facts">${facts.map(([key, value]) => `<span><strong>${escapeHTML(key)}</strong>${escapeHTML(value)}</span>`).join("")}</div>`;
+}
+
+function subagentDetailCopyPayload(event, title, body) {
+  return [
+    title,
+    `kind: ${event?.kind || "-"}`,
+    `type: ${event?.type || "-"}`,
+    `ordinal: ${event?.ordinal || 0}`,
+    event?.turn_id ? `turn_id: ${event.turn_id}` : "",
+    body,
+  ].filter(Boolean).join("\n");
 }
 
 function renderTimeline(session, result) {

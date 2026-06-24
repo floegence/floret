@@ -283,6 +283,10 @@ type AgentSubAgentWaitResponse struct {
 	Session   AgentSessionSnapshot             `json:"session"`
 }
 
+type AgentSubAgentDetailResponse struct {
+	Detail agentharness.SubAgentDetail `json:"detail"`
+}
+
 type AgentStreamEventType string
 
 const (
