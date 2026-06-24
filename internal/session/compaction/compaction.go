@@ -697,27 +697,25 @@ func repairToolBoundary(history []session.Message, start int) int {
 	if start <= 0 || start >= len(history) {
 		return start
 	}
-	needed := map[string]struct{}{}
-	for _, msg := range history[start:] {
-		if msg.Role == session.Tool && msg.ToolCallID != "" {
-			needed[msg.ToolCallID] = struct{}{}
-		}
-	}
-	for id := range needed {
-		if hasAssistantToolCall(history[start:], id) {
-			continue
-		}
-		for i := start - 1; i >= 0; i-- {
-			if history[i].Role == session.Assistant && history[i].ToolCallID == id {
-				start = i
-				break
+	for {
+		next := start
+		for i := start; i < len(history); i++ {
+			msg := history[i]
+			if msg.Role != session.Tool || msg.ToolCallID == "" || hasAssistantToolCall(history[start:], msg.ToolCallID) {
+				continue
+			}
+			if callIndex := lastAssistantToolCallIndexBefore(history, start, msg.ToolCallID); callIndex >= 0 && callIndex < next {
+				next = callIndex
 			}
 		}
+		for next > 0 && history[next].Role == session.Tool && history[next].ToolCallID != "" {
+			next--
+		}
+		if next == start {
+			return start
+		}
+		start = next
 	}
-	for start > 0 && history[start].Role == session.Tool && history[start].ToolCallID != "" {
-		start--
-	}
-	return start
 }
 
 func hasAssistantToolCall(messages []session.Message, id string) bool {
@@ -727,6 +725,15 @@ func hasAssistantToolCall(messages []session.Message, id string) bool {
 		}
 	}
 	return false
+}
+
+func lastAssistantToolCallIndexBefore(history []session.Message, start int, id string) int {
+	for i := start - 1; i >= 0; i-- {
+		if history[i].Role == session.Assistant && history[i].ToolCallID == id {
+			return i
+		}
+	}
+	return -1
 }
 
 func keptUserEntryIDs(messages []session.Message) []string {

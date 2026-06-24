@@ -62,6 +62,39 @@ func TestPrepareProducesStableCutpointAndPreservesToolPair(t *testing.T) {
 	}
 }
 
+func TestPrepareKeepsMultiToolBatchBoundary(t *testing.T) {
+	history := []session.Message{
+		{Role: session.User, Content: "old goal", EntryID: "u1"},
+		{Role: session.Assistant, Content: "calling first tool", ToolCallID: "call-1", ToolName: "read", ToolArgs: "1", EntryID: "a1"},
+		{Role: session.Assistant, Content: "calling second tool", ToolCallID: "call-2", ToolName: "read", ToolArgs: "2", EntryID: "a2"},
+		{Role: session.Tool, Content: strings.Repeat("first result ", 1400), ToolCallID: "call-1", ToolName: "read", EntryID: "t1"},
+		{Role: session.Tool, Content: strings.Repeat("second result ", 1400), ToolCallID: "call-2", ToolName: "read", EntryID: "t2"},
+	}
+	prep, err := Prepare(context.Background(), Request{
+		History: history,
+		Policy: contextpolicy.Policy{
+			ContextWindowTokens:   200000,
+			ReservedOutputTokens:  1000,
+			ReservedSummaryTokens: 1000,
+			RecentTailTokens:      1500,
+		},
+	}, ExtractiveSummaryGenerator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"call-1", "call-2"} {
+		if !hasAssistantCall(prep.ActiveMessages, id) {
+			t.Fatalf("active messages missing assistant tool call %q: %#v", id, prep.ActiveMessages)
+		}
+		if !hasToolResult(prep.ActiveMessages, id) {
+			t.Fatalf("active messages missing tool result %q: %#v", id, prep.ActiveMessages)
+		}
+	}
+	if got, want := prep.Result.FirstKeptEntryID, "a1"; got != want {
+		t.Fatalf("first kept entry id = %q, want start of multi-tool batch %q; tail=%#v", got, want, prep.RetainedTail)
+	}
+}
+
 func TestPrepareUpdatesPreviousSummaryWithoutStackingOldSummaryMessages(t *testing.T) {
 	previous := BuildCheckpointMessage("S1 old summary", []session.Message{{Role: session.User, Content: "original user preserved in checkpoint", EntryID: "e1"}}, nil)
 	previous.CompactionID = "c1"
@@ -776,6 +809,15 @@ func TestPrepareRecordsContextBudgetDetails(t *testing.T) {
 func hasAssistantCall(messages []session.Message, id string) bool {
 	for _, msg := range messages {
 		if msg.Role == session.Assistant && msg.ToolCallID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func hasToolResult(messages []session.Message, id string) bool {
+	for _, msg := range messages {
+		if msg.Role == session.Tool && msg.ToolCallID == id {
 			return true
 		}
 	}
