@@ -1349,23 +1349,34 @@ func (m *durableCompactionManager) Compact(ctx context.Context, req engine.Compa
 	if prep.Result.PreviousCompactionID == "" {
 		prep.Result.PreviousCompactionID = previousID
 	}
-	entry, err := sessiontree.AppendCompaction(ctx, m.thread.harness.options.Repo, m.thread.id, m.turnID, prep.Result)
+	return prep.Result, prep.ActiveMessages, nil
+}
+
+func (m *durableCompactionManager) CommitCompaction(ctx context.Context, req engine.CompactionCommitRequest) (compaction.Result, []session.Message, error) {
+	if m == nil || m.thread == nil {
+		return compaction.Result{}, nil, errors.New("durable compaction manager requires thread")
+	}
+	entry, err := sessiontree.AppendCompaction(ctx, m.thread.harness.options.Repo, m.thread.id, m.turnID, req.Result)
 	if err != nil {
 		return compaction.Result{}, nil, err
 	}
-	prep.Result.CompactionID = entry.CompactionID
-	for i := range prep.ActiveMessages {
-		if prep.ActiveMessages[i].Kind != session.MessageKindCompactionSummary {
+	result := req.Result
+	result.CompactionID = entry.CompactionID
+	result.CompactionGeneration = entry.CompactionGeneration
+	result.CompactionWindowID = entry.CompactionWindowID
+	active := append([]session.Message(nil), req.ActiveMessages...)
+	for i := range active {
+		if active[i].Kind != session.MessageKindCompactionSummary {
 			continue
 		}
-		prep.ActiveMessages[i].EntryID = entry.ID
-		prep.ActiveMessages[i].ParentEntryID = entry.ParentID
-		prep.ActiveMessages[i].CompactionID = entry.CompactionID
-		prep.ActiveMessages[i].CompactionGeneration = entry.CompactionGeneration
-		prep.ActiveMessages[i].CompactionWindowID = entry.CompactionWindowID
+		active[i].EntryID = entry.ID
+		active[i].ParentEntryID = entry.ParentID
+		active[i].CompactionID = entry.CompactionID
+		active[i].CompactionGeneration = entry.CompactionGeneration
+		active[i].CompactionWindowID = entry.CompactionWindowID
 	}
 	m.thread.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: m.thread.id, TurnID: m.turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: "compaction"})
-	return prep.Result, prep.ActiveMessages, nil
+	return result, active, nil
 }
 
 func latestCompactionEntry(path []sessiontree.Entry) sessiontree.Entry {

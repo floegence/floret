@@ -37,7 +37,9 @@ reasoning, tool arguments, tool results, and local paths.
 * Compaction events expose context compaction lifecycle. A complete compaction
   event means the compacted active context has been rebuilt into a full provider
   request and validated against context pressure; failed compactions do not emit
-  a complete event.
+  a complete event. Entry-derived compaction observations are projected only
+  from committed durable checkpoints, so a stored compaction entry also means
+  the checkpoint passed full provider request validation before installation.
 
 # Key Source Files
 

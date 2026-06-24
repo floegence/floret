@@ -26,6 +26,9 @@ and runtime events.
 `AgentHarness` is the internal durable conversation layer. It owns threads,
 parent-child thread lifecycle, turn lifecycle, retries, forks, titles, and
 projection of an active journal path into one engine execution.
+Durable compaction entries are committed only after `Engine` has rebuilt and
+validated the compacted provider request, so a journal checkpoint is an
+installed continuation boundary rather than a candidate summary.
 
 `Engine` is the prompt-first single-run executor. It owns provider loop control,
 tool invocation, compaction decisions, prompt-cache requests, metrics, and event

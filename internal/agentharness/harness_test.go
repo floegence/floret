@@ -991,6 +991,108 @@ func TestEngineCompactionIsProjectedAsSessionTreeCompactionEntry(t *testing.T) {
 	}
 }
 
+func TestFailedEngineCompactionDoesNotAppendSessionTreeCompactionEntry(t *testing.T) {
+	ctx := context.Background()
+	repo := sessiontree.NewMemoryRepo()
+	p := &estimatingHarnessProvider{
+		Provider: scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("never sent"), scriptharness.Done())),
+		estimates: []provider.TokenEstimate{
+			{PrefixTokens: 800, MessageTokens: 300, ToolDefinitionTokens: 200, EstimatedInputTokens: 1300, Source: "harness_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
+			{PrefixTokens: 800, MessageTokens: 10, ToolDefinitionTokens: 200, EstimatedInputTokens: 1010, Source: "harness_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
+		},
+	}
+	h := newTestHarness(p, repo, cache.NewMemoryStore())
+	h.options.TurnPolicy.ContextPolicy.ContextWindowTokens = 1000
+	h.options.TurnPolicy.ContextPolicy.ReservedOutputTokens = 100
+	h.options.TurnPolicy.ContextPolicy.ReservedSummaryTokens = 80
+	h.options.TurnPolicy.ContextPolicy.RecentTailTokens = 20
+	h.options.TurnPolicy.ContextPolicy.RecentUserTokens = 20
+	h.options.CompactionGenerator = compaction.ExtractiveSummaryGenerator{}
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, repo, "thread", "seed", session.Message{Role: session.User, Content: "old", EntryID: "u1"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = thread.Run(ctx, "new", RunOptions{TurnID: "turn-compact"})
+	if !errors.Is(err, engine.ErrFixedContextOverBudget) {
+		t.Fatalf("err = %v, want fixed overhead failure", err)
+	}
+	snap, err := thread.Journal(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countEntries(snap.Entries, sessiontree.EntryCompaction); got != 0 {
+		t.Fatalf("failed compaction must not append durable compaction entries, got %d: %#v", got, snap.Entries)
+	}
+	if got := countMessagesByKind(snap.Context, session.MessageKindCompactionSummary); got != 0 {
+		t.Fatalf("failed compaction must not expose active checkpoint, got %d: %#v", got, snap.Context)
+	}
+	if len(p.Provider.(*scriptharness.ScriptedProvider).Requests) != 0 {
+		t.Fatalf("provider should not receive unvalidated request after failed compaction: %#v", p.Provider.(*scriptharness.ScriptedProvider).Requests)
+	}
+}
+
+func TestEngineCompactionAppendsOnlyValidatedConvergedSessionTreeEntry(t *testing.T) {
+	ctx := context.Background()
+	repo := sessiontree.NewMemoryRepo()
+	scripted := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("ok"), scriptharness.Done()))
+	p := &estimatingHarnessProvider{
+		Provider: scripted,
+		estimates: []provider.TokenEstimate{
+			{PrefixTokens: 100, MessageTokens: 900, ToolDefinitionTokens: 100, EstimatedInputTokens: 1100, Source: "harness_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
+			{PrefixTokens: 100, MessageTokens: 780, ToolDefinitionTokens: 100, EstimatedInputTokens: 980, Source: "harness_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
+			{PrefixTokens: 100, MessageTokens: 200, ToolDefinitionTokens: 100, EstimatedInputTokens: 400, Source: "harness_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
+		},
+	}
+	h := newTestHarness(p, repo, cache.NewMemoryStore())
+	h.options.TurnPolicy.ContextPolicy.ContextWindowTokens = 1000
+	h.options.TurnPolicy.ContextPolicy.ReservedOutputTokens = 100
+	h.options.TurnPolicy.ContextPolicy.ReservedSummaryTokens = 80
+	h.options.TurnPolicy.ContextPolicy.RecentTailTokens = 80
+	h.options.TurnPolicy.ContextPolicy.RecentUserTokens = 60
+	h.options.CompactionGenerator = compaction.ExtractiveSummaryGenerator{}
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, repo, "thread", "seed", session.Message{Role: session.User, Content: "older " + strings.Repeat("x ", 300), EntryID: "u1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, repo, "thread", "seed", session.Message{Role: session.Assistant, Content: "answer " + strings.Repeat("y ", 100), EntryID: "a1"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := thread.Run(ctx, "new", RunOptions{TurnID: "turn-compact"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != engine.Completed || result.Output != "ok" {
+		t.Fatalf("result = %#v", result)
+	}
+	snap, err := thread.Journal(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countEntries(snap.Entries, sessiontree.EntryCompaction); got != 1 {
+		t.Fatalf("converged compaction should append exactly one durable entry, got %d: %#v", got, snap.Entries)
+	}
+	entry := latestEntry(snap.Entries, sessiontree.EntryCompaction)
+	if entry.CompactionID == "" || entry.CompactionGeneration != 1 || entry.CompactionWindowID == "" {
+		t.Fatalf("validated compaction entry missing identity: %#v", entry)
+	}
+	checkpoint, ok := firstMessageByKind(snap.Context, session.MessageKindCompactionSummary)
+	if !ok {
+		t.Fatalf("validated compaction should expose active checkpoint: %#v", snap.Context)
+	}
+	if checkpoint.EntryID != entry.ID || checkpoint.CompactionID != entry.CompactionID || checkpoint.CompactionWindowID != entry.CompactionWindowID {
+		t.Fatalf("active checkpoint should be tied to committed entry: checkpoint=%#v entry=%#v", checkpoint, entry)
+	}
+	if len(scripted.Requests) != 1 {
+		t.Fatalf("provider should receive only the validated compacted request: %#v", scripted.Requests)
+	}
+}
+
 func TestDefaultProviderCompactionUsesConfiguredPromptOptions(t *testing.T) {
 	ctx := context.Background()
 	repo := sessiontree.NewMemoryRepo()
@@ -1808,6 +1910,24 @@ type fixedTitleGenerator struct {
 
 func (g fixedTitleGenerator) GenerateTitle(context.Context, TitleRequest) (TitleResult, error) {
 	return TitleResult{Title: g.title, Source: sessiontree.ThreadTitleSourceProvider}, nil
+}
+
+type estimatingHarnessProvider struct {
+	provider.Provider
+	estimates []provider.TokenEstimate
+	err       error
+}
+
+func (p *estimatingHarnessProvider) EstimateTokens(context.Context, provider.Request) (provider.TokenEstimate, error) {
+	if p.err != nil {
+		return provider.TokenEstimate{}, p.err
+	}
+	if len(p.estimates) > 0 {
+		next := p.estimates[0]
+		p.estimates = p.estimates[1:]
+		return next, nil
+	}
+	return provider.TokenEstimate{}, nil
 }
 
 func stringTool(name string, handler func(context.Context, string) (string, error)) tools.Tool {

@@ -215,6 +215,21 @@ type CompactionManager interface {
 	Compact(context.Context, CompactionRequest) (compaction.Result, []session.Message, error)
 }
 
+type CompactionCommitter interface {
+	CommitCompaction(context.Context, CompactionCommitRequest) (compaction.Result, []session.Message, error)
+}
+
+type CompactionCommitRequest struct {
+	CompactionRequest
+	Result         compaction.Result
+	ActiveMessages []session.Message
+}
+
+type committedCompaction struct {
+	Result         compaction.Result
+	ActiveMessages []session.Message
+}
+
 type CompactionRequest struct {
 	RunID                string
 	ThreadID             string
@@ -1463,6 +1478,50 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		})
 		return nil, provider.Request{}, err
 	}
+	committed, err := e.commitValidatedCompaction(ctx, manager, CompactionCommitRequest{
+		CompactionRequest: CompactionRequest{
+			RunID:         opts.RunID,
+			ThreadID:      opts.ThreadID,
+			TurnID:        opts.TurnID,
+			TraceID:       opts.TraceID,
+			PromptScopeID: opts.PromptScopeID,
+			Step:          step,
+			History:       history,
+			Policy:        policy,
+			Trigger:       trigger,
+			Reason:        reason,
+			Phase:         compaction.PhaseInstall,
+			Provider:      e.provider,
+			ProviderName:  opts.ProviderName,
+			Model:         opts.Model,
+			ContextUsage:  usage,
+			Details:       cloneStringMap(baseDetails),
+		},
+		Result:         result,
+		ActiveMessages: active,
+	})
+	if err != nil {
+		if failures != nil {
+			*failures++
+		}
+		e.emit(opts, event.Event{
+			Type:     event.ContextCompact,
+			TraceID:  opts.TraceID,
+			RunID:    opts.RunID,
+			ThreadID: opts.ThreadID,
+			Step:     step,
+			Provider: opts.ProviderName,
+			Model:    opts.Model,
+			Message:  fmt.Sprintf("%s/%s", trigger, reason),
+			Err:      err.Error(),
+			Metrics:  usage,
+			Metadata: compactionFailedMetadata(operationID, trigger, reason, beforePressure, usage),
+		})
+		return nil, provider.Request{}, err
+	}
+	result = committed.Result
+	active = committed.ActiveMessages
+	req = providerRequestWithCommittedCompaction(req, committed)
 	if failures != nil {
 		*failures = 0
 	}
@@ -1480,6 +1539,67 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		Metadata: compactionCompleteMetadata(operationID, result, validation),
 	})
 	return active, req, nil
+}
+
+func (e *Engine) commitValidatedCompaction(ctx context.Context, manager CompactionManager, req CompactionCommitRequest) (committedCompaction, error) {
+	committer, ok := manager.(CompactionCommitter)
+	if !ok {
+		return committedCompaction{Result: req.Result, ActiveMessages: req.ActiveMessages}, nil
+	}
+	result, active, err := committer.CommitCompaction(ctx, req)
+	if err != nil {
+		return committedCompaction{}, err
+	}
+	return committedCompaction{Result: result, ActiveMessages: active}, nil
+}
+
+func providerRequestWithCommittedCompaction(req provider.Request, committed committedCompaction) provider.Request {
+	result := committed.Result
+	checkpoint := committedCompactionSummary(committed.ActiveMessages)
+	for i := range req.Messages {
+		if req.Messages[i].Kind != session.MessageKindCompactionSummary {
+			continue
+		}
+		if checkpoint.EntryID != "" {
+			req.Messages[i].EntryID = checkpoint.EntryID
+		}
+		if checkpoint.ParentEntryID != "" {
+			req.Messages[i].ParentEntryID = checkpoint.ParentEntryID
+		}
+		req.Messages[i].CompactionID = result.CompactionID
+		req.Messages[i].CompactionGeneration = result.CompactionGeneration
+		req.Messages[i].CompactionWindowID = result.CompactionWindowID
+	}
+	for i := range req.RawPlan.Segments {
+		if req.RawPlan.Segments[i].Kind != cache.SegmentCompaction {
+			continue
+		}
+		if checkpoint.EntryID != "" {
+			req.RawPlan.Segments[i].EntryID = checkpoint.EntryID
+		}
+		if checkpoint.ParentEntryID != "" {
+			req.RawPlan.Segments[i].ParentEntryID = checkpoint.ParentEntryID
+		}
+		req.RawPlan.Segments[i].CompactionGeneration = result.CompactionGeneration
+		req.RawPlan.Segments[i].CompactionWindowID = result.CompactionWindowID
+		req.RawPlan.Segments[i].CompactionEntryID = result.CompactionID
+	}
+	req.RawPlan.CompactionGeneration = result.CompactionGeneration
+	req.RawPlan.CompactionWindowID = result.CompactionWindowID
+	req.RawPlan.CompactionEntryID = result.CompactionID
+	req.RawPlan.RequestEstimate = req.RequestEstimate
+	req.RawPlan.ProjectedPressure = req.ContextPressure
+	req.RawPlan.RequestShape = requestShapeHashes(req)
+	return req
+}
+
+func committedCompactionSummary(messages []session.Message) session.Message {
+	for _, msg := range messages {
+		if msg.Kind == session.MessageKindCompactionSummary {
+			return msg
+		}
+	}
+	return session.Message{}
 }
 
 func compactionPolicyForUsage(policy contextpolicy.Policy, usage contextpolicy.Usage) contextpolicy.Policy {
