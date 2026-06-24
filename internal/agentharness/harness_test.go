@@ -1093,6 +1093,55 @@ func TestEngineCompactionAppendsOnlyValidatedConvergedSessionTreeEntry(t *testin
 	}
 }
 
+func TestCommittedCompactionAppendErrorContinuesWithDurableEntry(t *testing.T) {
+	ctx := context.Background()
+	repo := &committedCompactionAppendRepo{MemoryRepo: sessiontree.NewMemoryRepo()}
+	p := scriptharness.NewScriptedProvider(nil, scriptharness.Step(scriptharness.Text("ok"), scriptharness.Done()))
+	p.Errs[1] = provider.ErrContextOverflow
+	h := newTestHarness(p, repo, cache.NewMemoryStore())
+	h.options.TurnPolicy.ContextPolicy.ContextWindowTokens = 8000
+	h.options.TurnPolicy.ContextPolicy.ReservedOutputTokens = 512
+	h.options.TurnPolicy.ContextPolicy.ReservedSummaryTokens = 512
+	h.options.TurnPolicy.ContextPolicy.RecentTailTokens = 256
+	h.options.CompactionGenerator = compaction.ExtractiveSummaryGenerator{}
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, repo, "thread", "seed", session.Message{Role: session.User, Content: "old"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, repo, "thread", "seed", session.Message{Role: session.User, Content: "kept"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := thread.Run(ctx, "new", RunOptions{TurnID: "turn-compact"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != engine.Completed || result.Output != "ok" {
+		t.Fatalf("result = %#v", result)
+	}
+	if repo.compactionCommittedErrors != 1 {
+		t.Fatalf("committed compaction append errors = %d, want 1", repo.compactionCommittedErrors)
+	}
+	snap, err := thread.Journal(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countEntries(snap.Entries, sessiontree.EntryCompaction); got != 1 {
+		t.Fatalf("committed append error should still leave one durable compaction, got %d: %#v", got, snap.Entries)
+	}
+	if got := countMessagesByKind(snap.Context, session.MessageKindCompactionSummary); got != 1 {
+		t.Fatalf("committed append error should expose committed checkpoint, got %d: %#v", got, snap.Context)
+	}
+	if len(p.Requests) != 2 {
+		t.Fatalf("provider should receive original overflow request and compacted retry: %#v", p.Requests)
+	}
+	if got := countMessagesByKind(p.Requests[1].Messages, session.MessageKindCompactionSummary); got != 1 {
+		t.Fatalf("compacted retry should carry checkpoint, got %d: %#v", got, p.Requests[1].Messages)
+	}
+}
+
 func TestDefaultProviderCompactionUsesConfiguredPromptOptions(t *testing.T) {
 	ctx := context.Background()
 	repo := sessiontree.NewMemoryRepo()
@@ -2158,6 +2207,23 @@ func (r *blockingAppendRepo) Append(ctx context.Context, entry sessiontree.Entry
 		}
 	}
 	return r.MemoryRepo.Append(ctx, entry, opts)
+}
+
+type committedCompactionAppendRepo struct {
+	*sessiontree.MemoryRepo
+	compactionCommittedErrors int
+}
+
+func (r *committedCompactionAppendRepo) Append(ctx context.Context, entry sessiontree.Entry, opts sessiontree.AppendOptions) (sessiontree.Entry, error) {
+	committed, err := r.MemoryRepo.Append(ctx, entry, opts)
+	if err != nil {
+		return committed, err
+	}
+	if entry.Type != sessiontree.EntryCompaction || r.compactionCommittedErrors > 0 {
+		return committed, nil
+	}
+	r.compactionCommittedErrors++
+	return committed, sessiontree.AppendCommittedError{Err: errors.New("thread snapshot save failed after compaction append")}
 }
 
 func newBlockingProvider() *blockingProvider {

@@ -1335,7 +1335,7 @@ func (m *durableCompactionManager) Compact(ctx context.Context, req engine.Compa
 		Policy:               req.Policy,
 		Trigger:              req.Trigger,
 		Reason:               req.Reason,
-		Phase:                compaction.PhaseInstall,
+		Phase:                req.Phase,
 		Step:                 req.Step,
 		Details:              req.Details,
 		Now:                  m.thread.harness.now(),
@@ -1358,9 +1358,13 @@ func (m *durableCompactionManager) CommitCompaction(ctx context.Context, req eng
 	}
 	entry, err := sessiontree.AppendCompaction(ctx, m.thread.harness.options.Repo, m.thread.id, m.turnID, req.Result)
 	if err != nil {
-		return compaction.Result{}, nil, err
+		var committed sessiontree.AppendCommittedError
+		if !errors.As(err, &committed) {
+			return compaction.Result{}, nil, err
+		}
 	}
 	result := req.Result
+	result.Phase = req.Phase
 	result.CompactionID = entry.CompactionID
 	result.CompactionGeneration = entry.CompactionGeneration
 	result.CompactionWindowID = entry.CompactionWindowID
