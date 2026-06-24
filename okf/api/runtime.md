@@ -67,17 +67,18 @@ Subagent detail reads are scoped by both parent and child `ThreadID`; a host
 must prove parent ownership before a child timeline can be read. Detail events
 are projected from the child thread's current journal path in ordinal order and
 cover delegated input, messages, tool calls, tool results, approvals, turn
-markers, compaction checkpoints, and run failures. This API is for host UI and
-audit inspection. Hosts should keep model-facing subagent tool results bounded
-and should not inject the full detail timeline into a parent model context by
-default.
+markers, lifecycle stops, compaction checkpoints, and run failures. This API is
+for host UI and audit inspection. Hosts should keep model-facing subagent tool
+results bounded and should not inject the full detail timeline into a parent
+model context by default.
 
 Detail pagination is bounded by a default and maximum limit and returns
-`HasMore` plus `NextOrdinal`. By default, raw message content, reasoning, tool
-arguments, and tool result content are omitted from detail events; hashes,
-metadata, truncation facts, and artifact references remain available. A host may
-set `IncludeRaw` only for explicitly authorized human/debug inspection surfaces,
-and should not reuse that raw response as model-facing tool output.
+`HasMore` plus `NextOrdinal`. By default, detail events expose bounded,
+sanitized previews plus hashes, metadata, truncation facts, and artifact
+references. Raw message content, reasoning, tool arguments, and full tool result
+content are omitted unless a host sets `IncludeRaw` for an explicitly authorized
+human/debug inspection surface, and hosts should not reuse that raw response as
+model-facing tool output.
 
 `StreamObservation` is for host rendering and diagnostics. It is not raw
 provider wire data and must not carry prompt text, tool arguments, tool results,

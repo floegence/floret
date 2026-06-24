@@ -316,10 +316,12 @@ Use `ReadSubAgentDetail` or `ListSubAgentDetailEvents` when a host UI needs to
 inspect a child thread's persisted journal. Detail reads are scoped by both
 parent and child `ThreadID`, are paginated by ordinal, and expose durable child
 facts such as delegated input, messages, tool calls, tool results, approvals,
-turn markers, compaction checkpoints, and run failures. Raw message content,
-reasoning, tool arguments, and tool result content are omitted by default; set
-`IncludeRaw` only for an explicitly authorized human/debug surface. Do not use
-raw subagent detail responses as model-facing `wait` or `inspect` tool output.
+turn markers, compaction checkpoints, lifecycle stops, and run failures. Detail
+events include bounded, sanitized previews plus hashes and truncation metadata
+by default. Raw message content, reasoning, tool arguments, and full tool result
+content are omitted unless `IncludeRaw` is set for an explicitly authorized
+human/debug surface. Do not use raw subagent detail responses as model-facing
+`wait` or `inspect` tool output.
 
 ## 🧱 Responsibility boundary
 

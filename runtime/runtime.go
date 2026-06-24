@@ -266,20 +266,23 @@ type SubAgentDetailEvent struct {
 
 type SubAgentDetailMessage struct {
 	Role      string `json:"role,omitempty"`
+	Preview   string `json:"preview,omitempty"`
 	Content   string `json:"content,omitempty"`
 	Reasoning string `json:"reasoning,omitempty"`
 }
 
 type SubAgentDetailToolCall struct {
-	ID       string `json:"id,omitempty"`
-	Name     string `json:"name,omitempty"`
-	ArgsJSON string `json:"args_json,omitempty"`
-	ArgsHash string `json:"args_hash,omitempty"`
+	ID          string `json:"id,omitempty"`
+	Name        string `json:"name,omitempty"`
+	ArgsPreview string `json:"args_preview,omitempty"`
+	ArgsJSON    string `json:"args_json,omitempty"`
+	ArgsHash    string `json:"args_hash,omitempty"`
 }
 
 type SubAgentDetailToolResult struct {
 	CallID        string       `json:"call_id,omitempty"`
 	ToolName      string       `json:"tool_name,omitempty"`
+	Preview       string       `json:"preview,omitempty"`
 	Content       string       `json:"content,omitempty"`
 	Truncated     bool         `json:"truncated,omitempty"`
 	OriginalBytes int          `json:"original_bytes,omitempty"`
@@ -902,14 +905,14 @@ func subAgentDetailMessage(in *agentharness.SubAgentDetailMessage) *SubAgentDeta
 	if in == nil {
 		return nil
 	}
-	return &SubAgentDetailMessage{Role: in.Role, Content: in.Content, Reasoning: in.Reasoning}
+	return &SubAgentDetailMessage{Role: in.Role, Preview: in.Preview, Content: in.Content, Reasoning: in.Reasoning}
 }
 
 func subAgentDetailToolCall(in *agentharness.SubAgentDetailToolCall) *SubAgentDetailToolCall {
 	if in == nil {
 		return nil
 	}
-	return &SubAgentDetailToolCall{ID: in.ID, Name: in.Name, ArgsJSON: in.ArgsJSON, ArgsHash: in.ArgsHash}
+	return &SubAgentDetailToolCall{ID: in.ID, Name: in.Name, ArgsPreview: in.ArgsPreview, ArgsJSON: in.ArgsJSON, ArgsHash: in.ArgsHash}
 }
 
 func subAgentDetailToolResult(in *agentharness.SubAgentDetailToolResult) *SubAgentDetailToolResult {
@@ -919,6 +922,7 @@ func subAgentDetailToolResult(in *agentharness.SubAgentDetailToolResult) *SubAge
 	out := &SubAgentDetailToolResult{
 		CallID:        in.CallID,
 		ToolName:      in.ToolName,
+		Preview:       in.Preview,
 		Content:       in.Content,
 		Truncated:     in.Truncated,
 		OriginalBytes: in.OriginalBytes,

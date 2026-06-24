@@ -852,7 +852,11 @@ func TestStaticConsoleSubAgentControlsUseThreadIdentity(t *testing.T) {
 		"data-subagent-detail=\"${escapeHTML(target)}\"",
 		"data-subagent-detail=\"${escapeHTML(target)}\" ${target ? \"\" : \"disabled\"}",
 		"onSubagentDetail: loadSubagentDetail",
-		"api.subagentDetail(sessionID, target, { limit: 250, include_raw: true })",
+		"onSubagentDetailMore: loadMoreSubagentDetail",
+		"api.subagentDetail(sessionID, target, { limit: 250 })",
+		"api.subagentDetail(sessionID, target, { limit: 250, after_ordinal: afterOrdinal })",
+		"data-subagent-detail-more=\"${escapeHTML(target)}\"",
+		"Load more",
 		"query.set(\"include_raw\", \"true\")",
 		"renderSubagentDetail(session, target, detail)",
 		"subagentDetailBody(event)",
@@ -868,6 +872,8 @@ func TestStaticConsoleSubAgentControlsUseThreadIdentity(t *testing.T) {
 		"item.agent_profile",
 		"name=\"agent_profile\"",
 		"targets: [target]",
+		"timeout_ms: 60000",
+		"api.subagentDetail(sessionID, target, { limit: 250, include_raw: true })",
 	} {
 		if strings.Contains(appJS+"\n"+workspace+"\n"+inspector, banned) {
 			t.Fatalf("subagent static contract should not contain %q", banned)

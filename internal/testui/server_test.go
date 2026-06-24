@@ -443,11 +443,11 @@ func TestServerManagesAgentSessionSubAgents(t *testing.T) {
 	if err := json.Unmarshal(detailRec.Body.Bytes(), &defaultDetail); err != nil {
 		t.Fatal(err)
 	}
-	if got := firstSubAgentDetailEvent(defaultDetail.Detail.Events, agentharness.SubAgentDetailEventToolCall); got.ToolCall == nil || got.ToolCall.ArgsJSON != "" || got.ToolCall.ArgsHash == "" {
-		t.Fatalf("default detail should omit raw args: %#v", got)
+	if got := firstSubAgentDetailEvent(defaultDetail.Detail.Events, agentharness.SubAgentDetailEventToolCall); got.ToolCall == nil || got.ToolCall.ArgsJSON != "" || got.ToolCall.ArgsPreview == "" || got.ToolCall.ArgsHash == "" {
+		t.Fatalf("default detail should expose only safe args preview: %#v", got)
 	}
-	if got := firstSubAgentDetailEvent(defaultDetail.Detail.Events, agentharness.SubAgentDetailEventToolResult); got.ToolResult == nil || got.ToolResult.Content != "" || got.ToolResult.ContentSHA256 == "" {
-		t.Fatalf("default detail should omit raw result: %#v", got)
+	if got := firstSubAgentDetailEvent(defaultDetail.Detail.Events, agentharness.SubAgentDetailEventToolResult); got.ToolResult == nil || got.ToolResult.Content != "" || got.ToolResult.Preview == "" || got.ToolResult.ContentSHA256 == "" {
+		t.Fatalf("default detail should expose only safe result preview: %#v", got)
 	}
 
 	rawDetailRec := httptest.NewRecorder()

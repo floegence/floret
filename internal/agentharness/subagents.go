@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/internal/engine"
+	"github.com/floegence/floret/internal/event"
 	"github.com/floegence/floret/internal/session"
 	"github.com/floegence/floret/internal/session/artifact"
 	"github.com/floegence/floret/internal/sessiontree"
@@ -40,6 +41,7 @@ const (
 	DefaultSubAgentWaitTimeout = 5 * time.Minute
 	MaxSubAgentWaitTimeout     = 20 * time.Minute
 	DefaultSubAgentRunTimeout  = 20 * time.Minute
+	MaxSubAgentRunTimeout      = 20 * time.Minute
 	DefaultSubAgentDetailLimit = 200
 	MaxSubAgentDetailLimit     = 500
 )
@@ -68,6 +70,10 @@ const (
 	subAgentApprovalKindKey   = "tool_kind"
 	subAgentApprovalArgsKey   = "args_hash"
 	subAgentApprovalReasonKey = "reason"
+
+	subAgentLifecycleEntryKind = "subagent_lifecycle"
+	subAgentLifecycleActionKey = "action"
+	subAgentLifecycleReasonKey = "reason"
 
 	subAgentTerminalReasonKey = "terminal_reason"
 	subAgentRunTimeoutReason  = "child_run_timeout"
@@ -190,20 +196,23 @@ type SubAgentDetailEvent struct {
 
 type SubAgentDetailMessage struct {
 	Role      string `json:"role,omitempty"`
+	Preview   string `json:"preview,omitempty"`
 	Content   string `json:"content,omitempty"`
 	Reasoning string `json:"reasoning,omitempty"`
 }
 
 type SubAgentDetailToolCall struct {
-	ID       string `json:"id,omitempty"`
-	Name     string `json:"name,omitempty"`
-	ArgsJSON string `json:"args_json,omitempty"`
-	ArgsHash string `json:"args_hash,omitempty"`
+	ID          string `json:"id,omitempty"`
+	Name        string `json:"name,omitempty"`
+	ArgsPreview string `json:"args_preview,omitempty"`
+	ArgsJSON    string `json:"args_json,omitempty"`
+	ArgsHash    string `json:"args_hash,omitempty"`
 }
 
 type SubAgentDetailToolResult struct {
 	CallID        string        `json:"call_id,omitempty"`
 	ToolName      string        `json:"tool_name,omitempty"`
+	Preview       string        `json:"preview,omitempty"`
 	Content       string        `json:"content,omitempty"`
 	Truncated     bool          `json:"truncated,omitempty"`
 	OriginalBytes int           `json:"original_bytes,omitempty"`
@@ -580,8 +589,8 @@ func (h *AgentHarness) subAgentDetailEvent(entry sessiontree.Entry, ordinal int6
 			if event.Type == "" {
 				event.Type = subAgentInputEntryKind
 			}
-			if includeRaw && strings.TrimSpace(entry.Message.Content) != "" {
-				event.Message = &SubAgentDetailMessage{Role: string(session.User), Content: entry.Message.Content}
+			if strings.TrimSpace(entry.Message.Content) != "" {
+				event.Message = subAgentDetailMessage(session.Message{Role: session.User, Content: entry.Message.Content}, includeRaw)
 			}
 		case subAgentApprovalEntryKind:
 			event.Kind = SubAgentDetailEventApproval
@@ -589,6 +598,11 @@ func (h *AgentHarness) subAgentDetailEvent(entry sessiontree.Entry, ordinal int6
 				event.Type = subAgentApprovalEntryKind
 			}
 			event.Approval = subAgentDetailApproval(entry.Metadata)
+		case subAgentLifecycleEntryKind:
+			event.Kind = SubAgentDetailEventCustom
+			if event.Type == "" {
+				event.Type = subAgentLifecycleEntryKind
+			}
 		}
 		event.Metadata = cloneStringMap(entry.Metadata)
 	default:
@@ -634,7 +648,10 @@ func subAgentDetailMessage(msg session.Message, includeRaw bool) *SubAgentDetail
 	if msg.Role == "" && msg.Content == "" && msg.Reasoning == "" {
 		return nil
 	}
-	out := &SubAgentDetailMessage{Role: string(msg.Role)}
+	out := &SubAgentDetailMessage{
+		Role:    string(msg.Role),
+		Preview: safeSubAgentDetailPreview(msg.Content, 500),
+	}
 	if includeRaw {
 		out.Content = msg.Content
 		out.Reasoning = msg.Reasoning
@@ -648,9 +665,10 @@ func subAgentDetailToolCall(msg session.Message, includeRaw bool) *SubAgentDetai
 	}
 	args := strings.TrimSpace(msg.ToolArgs)
 	out := &SubAgentDetailToolCall{
-		ID:       msg.ToolCallID,
-		Name:     msg.ToolName,
-		ArgsHash: stableSubAgentDetailHash(args),
+		ID:          msg.ToolCallID,
+		Name:        msg.ToolName,
+		ArgsPreview: safeSubAgentDetailPreview(args, 500),
+		ArgsHash:    stableSubAgentDetailHash(args),
 	}
 	if includeRaw {
 		out.ArgsJSON = args
@@ -665,6 +683,7 @@ func subAgentDetailToolResult(msg session.Message, includeRaw bool) *SubAgentDet
 	out := &SubAgentDetailToolResult{
 		CallID:   msg.ToolCallID,
 		ToolName: msg.ToolName,
+		Preview:  safeSubAgentDetailPreview(msg.Content, 800),
 	}
 	if includeRaw {
 		out.Content = msg.Content
@@ -715,6 +734,18 @@ func stableSubAgentDetailHash(value string) string {
 	}
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
+}
+
+func safeSubAgentDetailPreview(value string, limit int) string {
+	value = strings.TrimSpace(event.SafePathRefsText(value))
+	if value == "" {
+		return ""
+	}
+	runes := []rune(value)
+	if limit > 0 && len(runes) > limit {
+		return string(runes[:limit]) + "..."
+	}
+	return event.Redact(value)
 }
 
 func cloneStringMap(in map[string]string) map[string]string {
@@ -794,6 +825,13 @@ func (h *AgentHarness) CloseSubAgent(ctx context.Context, opts CloseSubAgentOpti
 		current.Status = string(SubAgentStatusClosed)
 	})
 	if err != nil {
+		return SubAgentSnapshot{}, err
+	}
+	if err := h.appendSubAgentLifecycleEvent(ctx, meta.ID, map[string]string{
+		subAgentLifecycleActionKey: "closed",
+		subAgentLifecycleReasonKey: "parent_close",
+		"parent_thread_id":         strings.TrimSpace(opts.ParentThreadID),
+	}); err != nil {
 		return SubAgentSnapshot{}, err
 	}
 	h.emit(HarnessEvent{
@@ -953,6 +991,9 @@ func (h *AgentHarness) subAgentRunContext() (context.Context, context.CancelFunc
 	if h != nil && h.options.SubAgentRunTimeout > 0 {
 		timeout = h.options.SubAgentRunTimeout
 	}
+	if timeout > MaxSubAgentRunTimeout {
+		timeout = MaxSubAgentRunTimeout
+	}
 	if timeout <= 0 {
 		return base, baseCancel
 	}
@@ -975,6 +1016,28 @@ func (h *AgentHarness) subAgentCanStartQueuedInput(ctx context.Context, thread *
 		return false
 	}
 	return read.CanAppendMessage
+}
+
+func (h *AgentHarness) appendSubAgentLifecycleEvent(ctx context.Context, threadID string, metadata map[string]string) error {
+	if h == nil || h.options.Repo == nil {
+		return nil
+	}
+	meta := cloneStringMap(metadata)
+	if meta == nil {
+		meta = map[string]string{}
+	}
+	meta[subAgentDetailKindKey] = subAgentLifecycleEntryKind
+	meta[subAgentDetailTypeKey] = subAgentLifecycleEntryKind
+	entry, err := h.options.Repo.Append(ctx, sessiontree.Entry{
+		ThreadID: threadID,
+		Type:     sessiontree.EntryCustom,
+		Metadata: meta,
+	}, sessiontree.AppendOptions{})
+	if err != nil {
+		return err
+	}
+	h.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: threadID, EntryID: entry.ID, ParentID: entry.ParentID, Message: subAgentLifecycleEntryKind})
+	return nil
 }
 
 func (h *AgentHarness) ensureSubAgentController(ctx context.Context, meta sessiontree.ThreadMeta, thread *Thread) (*subagentController, error) {

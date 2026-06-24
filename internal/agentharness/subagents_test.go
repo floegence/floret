@@ -343,8 +343,8 @@ func TestReadSubAgentDetailEnforcesOwnershipAndPagination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := firstSubAgentDetailEvent(defaultDetail.Events, SubAgentDetailEventInput); got.Message != nil || got.Metadata[subAgentDetailRawOmitted] != "true" {
-		t.Fatalf("default detail should omit raw input content: %#v", got)
+	if got := firstSubAgentDetailEvent(defaultDetail.Events, SubAgentDetailEventInput); got.Message == nil || got.Message.Content != "" || got.Message.Preview != "work" || got.Metadata[subAgentDetailRawOmitted] != "true" {
+		t.Fatalf("default detail should expose only safe input preview: %#v", got)
 	}
 	first, err := h.ReadSubAgentDetail(ctx, ReadSubAgentDetailOptions{ParentThreadID: "parent", ChildThreadID: "child", Limit: 1, IncludeRaw: true})
 	if err != nil {
@@ -359,6 +359,21 @@ func TestReadSubAgentDetailEnforcesOwnershipAndPagination(t *testing.T) {
 	}
 	if len(second.Events) != 1 || second.Events[0].Ordinal <= first.NextOrdinal {
 		t.Fatalf("second page skipped or repeated event: first=%#v second=%#v", first, second)
+	}
+}
+
+func TestSubAgentRunTimeoutClampsToMaximum(t *testing.T) {
+	h := newTestHarness(scriptharness.NewScriptedProvider(), sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
+	h.options.SubAgentRunTimeout = MaxSubAgentWaitTimeout + time.Hour
+	ctx, cancel := h.subAgentRunContext()
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("subagent run context should have a deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 || remaining > MaxSubAgentWaitTimeout {
+		t.Fatalf("subagent run timeout was not clamped: %s", remaining)
 	}
 }
 
@@ -405,6 +420,46 @@ func TestSubAgentRunTimeoutStopsExecutionAndKeepsDetailReadable(t *testing.T) {
 	marker := lastSubAgentDetailEvent(detail.Events, SubAgentDetailEventTurnMarker)
 	if marker.TurnMarker == nil || marker.TurnMarker.Status == "" || marker.TurnMarker.Metadata[subAgentTerminalReasonKey] != subAgentRunTimeoutReason {
 		t.Fatalf("timeout detail should retain terminal marker: %#v", detail.Events)
+	}
+}
+
+func TestCloseSubAgentRecordsLifecycleDetail(t *testing.T) {
+	ctx := context.Background()
+	provider := scriptharness.NewScriptedProvider(
+		scriptharness.Step(scriptharness.Text("done"), scriptharness.Done()),
+	)
+	h := newTestHarness(provider, sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
+	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+		ParentThreadID: "parent",
+		ThreadID:       "child",
+		TaskName:       "worker",
+		Message:        "work",
+		ForkMode:       SubAgentForkNone,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.WaitSubAgents(ctx, WaitSubAgentsOptions{ParentThreadID: "parent", ChildThreadIDs: []string{"child"}, Timeout: 2 * time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.CloseSubAgent(ctx, CloseSubAgentOptions{ParentThreadID: "parent", ChildThreadID: "child"}); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := h.ReadSubAgentDetail(ctx, ReadSubAgentDetailOptions{ParentThreadID: "parent", ChildThreadID: "child"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, ev := range detail.Events {
+		if ev.Type == subAgentLifecycleEntryKind && ev.Metadata[subAgentLifecycleActionKey] == "closed" && ev.Metadata[subAgentLifecycleReasonKey] == "parent_close" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("close lifecycle detail missing: %#v", detail.Events)
 	}
 }
 

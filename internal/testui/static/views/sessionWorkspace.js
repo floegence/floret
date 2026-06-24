@@ -113,6 +113,9 @@ export function bindSessionWorkspace(root, handlers) {
   root.querySelectorAll("[data-subagent-detail]").forEach((button) => {
     button.addEventListener("click", () => handlers.onSubagentDetail(button.dataset.subagentDetail || ""));
   });
+  root.querySelectorAll("[data-subagent-detail-more]").forEach((button) => {
+    button.addEventListener("click", () => handlers.onSubagentDetailMore?.(button.dataset.subagentDetailMore || ""));
+  });
   root.querySelectorAll("[data-subagent-close]").forEach((button) => {
     button.addEventListener("click", () => handlers.onSubagentClose(button.dataset.subagentClose || ""));
   });
@@ -328,6 +331,8 @@ function renderSubagentDetail(session, target, detail) {
   const snapshot = detail.snapshot || {};
   const events = Array.isArray(detail.events) ? detail.events : [];
   const generated = detail.generated_at ? formatLocalTime(detail.generated_at) : "";
+  const hasMore = Boolean(detail.has_more);
+  const isLoadingMore = state.action === "subagent-detail" && state.actionTarget === target;
   return `
     <section class="subagent-detail" aria-label="Subagent detail">
       <div class="subagent-detail-head">
@@ -340,6 +345,7 @@ function renderSubagentDetail(session, target, detail) {
       <div class="subagent-detail-timeline">
         ${events.length ? events.map((event) => renderSubagentDetailEvent(session, event)).join("") : `<div class="subagent-detail-empty">No detail events are available for this child thread yet.</div>`}
       </div>
+      ${hasMore ? `<div class="subagent-detail-more"><button class="small" type="button" data-subagent-detail-more="${escapeHTML(target)}" ${isLoadingMore ? "disabled" : ""}>${isLoadingMore ? "Loading..." : "Load more"}</button></div>` : ""}
     </section>
   `;
 }
@@ -397,12 +403,13 @@ function subagentDetailBody(event) {
     case "input":
     case "user_message":
     case "assistant_message":
-      return [event.message?.content || "", event.message?.reasoning ? `\nReasoning:\n${event.message.reasoning}` : ""].join("").trim();
+      return [event.message?.content || event.message?.preview || "", event.message?.reasoning ? `\nReasoning:\n${event.message.reasoning}` : ""].join("").trim();
     case "tool_call":
       return [
         event.tool_call?.name ? `tool: ${event.tool_call.name}` : "",
         event.tool_call?.id ? `call_id: ${event.tool_call.id}` : "",
         event.tool_call?.args_hash ? `args_hash: ${event.tool_call.args_hash}` : "",
+        event.tool_call?.args_preview && !event.tool_call?.args_json ? `args_preview:\n${event.tool_call.args_preview}` : "",
         event.tool_call?.args_json ? `args:\n${event.tool_call.args_json}` : "",
       ].filter(Boolean).join("\n");
     case "tool_result": {
@@ -413,6 +420,7 @@ function subagentDetailBody(event) {
         result.truncated ? `truncated: ${result.visible_bytes || 0}/${result.original_bytes || 0} bytes` : "",
         result.content_sha256 ? `sha256: ${result.content_sha256}` : "",
         result.content ? `content:\n${result.content}` : "",
+        !result.content && result.preview ? `preview:\n${result.preview}` : "",
       ].filter(Boolean).join("\n");
     }
     case "approval": {
@@ -439,7 +447,7 @@ function subagentDetailBody(event) {
     case "error":
       return event.error || "";
     default:
-      return event.message?.content || event.error || "";
+      return event.message?.content || event.message?.preview || event.error || "";
   }
 }
 

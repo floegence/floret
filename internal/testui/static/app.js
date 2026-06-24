@@ -205,6 +205,7 @@ function render(options = {}) {
         onSubagentInput: sendSubagentInput,
         onSubagentWait: waitSubagent,
         onSubagentDetail: loadSubagentDetail,
+        onSubagentDetailMore: loadMoreSubagentDetail,
         onSubagentClose: closeSubagent,
         onSubagentSpawnDraft: updateSubagentSpawnDraft,
         onSubagentInputDraft: updateSubagentInputDraft,
@@ -454,7 +455,7 @@ async function waitSubagent(target) {
   const sessionID = state.activeSession.id;
   const token = ++state.mutationToken;
   await runWithStatus({ status: "loading", action: "subagent-wait", target, successMessage: "Subagent wait finished" }, async () => {
-    const response = await api.waitSubagents(sessionID, { thread_ids: [target], timeout_ms: 60000 });
+    const response = await api.waitSubagents(sessionID, { thread_ids: [target] });
     if (token !== state.mutationToken) return false;
     applySubagentResponse(sessionID, response);
     if (response?.result?.timed_out) addToast("error", "Subagent wait timed out");
@@ -468,9 +469,37 @@ async function loadSubagentDetail(target) {
   const sessionID = state.activeSession.id;
   const token = ++state.mutationToken;
   await runWithStatus({ status: "loading", action: "subagent-detail", target, successMessage: "Subagent detail loaded" }, async () => {
-    const response = await api.subagentDetail(sessionID, target, { limit: 250, include_raw: true });
+    const response = await api.subagentDetail(sessionID, target, { limit: 250 });
     if (token !== state.mutationToken) return false;
     state.subagentDetails[`${sessionID}\u0000${target}`] = response?.detail || null;
+    state.inspectorTab = "subagents";
+    state.lastResult = null;
+    render();
+    return true;
+  });
+}
+
+async function loadMoreSubagentDetail(target) {
+  if (!state.activeSession?.id || !target) return;
+  const sessionID = state.activeSession.id;
+  const key = `${sessionID}\u0000${target}`;
+  const current = state.subagentDetails[key] || null;
+  const afterOrdinal = Number(current?.next_ordinal || 0);
+  if (!afterOrdinal) return;
+  const token = ++state.mutationToken;
+  await runWithStatus({ status: "loading", action: "subagent-detail", target, successMessage: "Subagent detail loaded" }, async () => {
+    const response = await api.subagentDetail(sessionID, target, { limit: 250, after_ordinal: afterOrdinal });
+    if (token !== state.mutationToken) return false;
+    const next = response?.detail || null;
+    if (next) {
+      state.subagentDetails[key] = {
+        ...next,
+        events: [
+          ...(Array.isArray(current?.events) ? current.events : []),
+          ...(Array.isArray(next.events) ? next.events : []),
+        ],
+      };
+    }
     state.inspectorTab = "subagents";
     state.lastResult = null;
     render();
