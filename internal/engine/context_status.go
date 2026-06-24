@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/floegence/floret/internal/provider"
 	"github.com/floegence/floret/internal/session/compaction"
@@ -104,12 +105,15 @@ func cleanRatio(value float64) float64 {
 	return value
 }
 
-func compactionOperationID(runID string, step int, trigger compaction.Trigger, reason compaction.Reason) string {
+func compactionOperationID(runID string, step int, trigger compaction.Trigger, reason compaction.Reason, manual ManualCompactionRequest) string {
+	if requestID := strings.TrimSpace(manual.RequestID); requestID != "" {
+		return fmt.Sprintf("%s:compact:%d:%s:%s:%s", runID, step, trigger, reason, requestID)
+	}
 	return fmt.Sprintf("%s:compact:%d:%s:%s", runID, step, trigger, reason)
 }
 
-func compactionStartMetadata(operationID string, trigger compaction.Trigger, reason compaction.Reason, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage) map[string]any {
-	return map[string]any{
+func compactionStartMetadata(operationID string, trigger compaction.Trigger, reason compaction.Reason, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage, manual ManualCompactionRequest) map[string]any {
+	return withManualCompactionMetadata(map[string]any{
 		"phase":                  ContextCompactPhaseStart,
 		"operation_id":           operationID,
 		"trigger":                trigger,
@@ -117,11 +121,11 @@ func compactionStartMetadata(operationID string, trigger compaction.Trigger, rea
 		"before_pressure":        beforePressure,
 		"message_context_before": usage,
 		"tokens_before":          usage.InputTokens,
-	}
+	}, manual)
 }
 
-func compactionFailedMetadata(operationID string, trigger compaction.Trigger, reason compaction.Reason, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage) map[string]any {
-	return map[string]any{
+func compactionFailedMetadata(operationID string, trigger compaction.Trigger, reason compaction.Reason, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage, manual ManualCompactionRequest) map[string]any {
+	return withManualCompactionMetadata(map[string]any{
 		"phase":                  ContextCompactPhaseFailed,
 		"operation_id":           operationID,
 		"trigger":                trigger,
@@ -129,11 +133,11 @@ func compactionFailedMetadata(operationID string, trigger compaction.Trigger, re
 		"before_pressure":        beforePressure,
 		"message_context_before": usage,
 		"tokens_before":          usage.InputTokens,
-	}
+	}, manual)
 }
 
-func compactionCompleteMetadata(operationID string, result compaction.Result, validation compactedRequestValidation) map[string]any {
-	return map[string]any{
+func compactionCompleteMetadata(operationID string, result compaction.Result, validation compactedRequestValidation, manual ManualCompactionRequest) map[string]any {
+	return withManualCompactionMetadata(map[string]any{
 		"phase":                      ContextCompactPhaseComplete,
 		"operation_id":               operationID,
 		"trigger":                    result.Trigger,
@@ -156,5 +160,15 @@ func compactionCompleteMetadata(operationID string, result compaction.Result, va
 		"fixed_input_tokens":         validation.FixedInputTokens,
 		"reducible_input_tokens":     validation.ReducibleInputTokens,
 		"request_safe_limit":         validation.RequestSafeLimit,
+	}, manual)
+}
+
+func withManualCompactionMetadata(meta map[string]any, manual ManualCompactionRequest) map[string]any {
+	if requestID := strings.TrimSpace(manual.RequestID); requestID != "" {
+		meta["request_id"] = requestID
 	}
+	if source := strings.TrimSpace(manual.Source); source != "" {
+		meta["source"] = source
+	}
+	return meta
 }

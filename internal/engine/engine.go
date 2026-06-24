@@ -132,6 +132,7 @@ type Options struct {
 	PreviousProviderState    *provider.State
 	MaxLengthContinuations   int
 	MaxStopHookContinuations int
+	ManualCompactions        ManualCompactionSource
 
 	toolDefinitions []provider.ToolDefinition
 }
@@ -172,6 +173,15 @@ type Result struct {
 	FinishInferred     bool
 	ControlSignal      *ControlSignal
 	ProviderState      *provider.State
+}
+
+type ContextCompactionResult struct {
+	Status        Status
+	Err           error
+	Metrics       RunMetrics
+	Messages      []session.Message
+	Compaction    compaction.Result
+	ProviderState *provider.State
 }
 
 type RunDecision struct {
@@ -249,6 +259,24 @@ type CompactionRequest struct {
 	PreviousSummary      string
 	ContextUsage         contextpolicy.Usage
 	Details              map[string]string
+}
+
+type ManualCompactionSource interface {
+	PollManualCompaction(context.Context, ManualCompactionPollRequest) (ManualCompactionRequest, bool, error)
+}
+
+type ManualCompactionPollRequest struct {
+	RunID         string
+	ThreadID      string
+	TurnID        string
+	TraceID       string
+	PromptScopeID string
+	Step          int
+}
+
+type ManualCompactionRequest struct {
+	RequestID string
+	Source    string
 }
 
 type Engine struct {
@@ -447,6 +475,47 @@ func (e *Engine) RunTurn(ctx context.Context, input RunInput) Result {
 		return Result{Status: Failed, Err: err}
 	}
 	return runner.run(ctx, "")
+}
+
+func (e *Engine) CompactContext(ctx context.Context, input RunInput, manual ManualCompactionRequest) ContextCompactionResult {
+	store := session.NewMemoryStore()
+	opts := e.options
+	if input.RunID != "" {
+		opts.RunID = input.RunID
+	}
+	if input.ThreadID != "" {
+		opts.ThreadID = input.ThreadID
+	}
+	if input.TurnID != "" {
+		opts.TurnID = input.TurnID
+	}
+	if input.TraceID != "" {
+		opts.TraceID = input.TraceID
+	}
+	if input.PromptScopeID != "" {
+		opts.PromptScopeID = input.PromptScopeID
+	}
+	if !input.Labels.isZero() {
+		opts.Labels = cloneRunLabels(input.Labels)
+	}
+	if input.PreviousProviderState != nil {
+		opts.PreviousProviderState = provider.CloneState(input.PreviousProviderState)
+	}
+	opts = normalizeOptions(opts)
+	if len(input.History) > 0 {
+		history := make([]session.Message, len(input.History))
+		for i, msg := range input.History {
+			history[i] = stableMessageAt(opts.RunID, i, msg)
+		}
+		if err := store.AppendTranscript(opts.RunID, history...); err != nil {
+			return ContextCompactionResult{Status: Failed, Err: err}
+		}
+	}
+	runner, err := e.runner(store, opts)
+	if err != nil {
+		return ContextCompactionResult{Status: Failed, Err: err}
+	}
+	return runner.compactContext(ctx, manual)
 }
 
 func (e *Engine) runner(store session.TranscriptStore, opts Options) (*Engine, error) {
@@ -810,6 +879,45 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		decision.ContinuationReason = ContinueToolResults
 		e.emitStepEnd(opts, step, providerLatency, toolLatency, usage, len(calls), decision)
 	}
+}
+
+func (e *Engine) compactContext(ctx context.Context, manual ManualCompactionRequest) ContextCompactionResult {
+	opts := normalizeOptions(e.options)
+	if len(opts.toolDefinitions) == 0 && e.tools != nil {
+		opts.toolDefinitions = providerToolDefinitionsFromTools(e.tools.Definitions())
+	}
+	if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, false); err != nil {
+		return ContextCompactionResult{Status: Failed, Err: err}
+	}
+	opts.toolDefinitions = appendControlToolDefinitions(opts.toolDefinitions, opts.ControlSpec)
+	if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, true); err != nil {
+		return ContextCompactionResult{Status: Failed, Err: err}
+	}
+	manual.RequestID = strings.TrimSpace(manual.RequestID)
+	manual.Source = strings.TrimSpace(manual.Source)
+	if manual.RequestID == "" {
+		return ContextCompactionResult{Status: Failed, Err: errors.New("manual compaction request id is required")}
+	}
+	step := 1
+	metrics := RunMetrics{Steps: step}
+	activeHistory, err := e.store.Transcript(opts.RunID)
+	if err != nil {
+		return ContextCompactionResult{Status: Failed, Err: err}
+	}
+	tracker := NewContextPressureTracker(opts.PromptScopeID)
+	if anchor, ok, err := e.prompt.LatestPressureAnchor(ctx, opts.PromptScopeID, opts.ProviderName, opts.Model); err != nil {
+		return ContextCompactionResult{Status: Failed, Err: err}
+	} else if ok {
+		tracker.SetAnchor(anchor)
+	}
+	usage := contextpolicy.EstimateMessageContext(e.memory.SystemPrompt, activeHistory, opts.ContextPolicy)
+	pressure := contextpolicy.PressureFromManual(usage, opts.ContextPolicy)
+	active, _, compacted, err := e.runCompaction(ctx, opts, step, activeHistory, tracker, 1, false, compaction.TriggerManual, compaction.ReasonManual, usage, nil, pressure, manual)
+	if err != nil {
+		return ContextCompactionResult{Status: Failed, Err: err, Metrics: metrics, Messages: append([]session.Message(nil), activeHistory...), ProviderState: provider.CloneState(opts.PreviousProviderState)}
+	}
+	metrics.Compactions = 1
+	return ContextCompactionResult{Status: Completed, Metrics: metrics, Messages: active, Compaction: compacted, ProviderState: provider.CloneState(opts.PreviousProviderState)}
 }
 
 func exactToolOutputProjection(text string) tools.OutputProjection {
@@ -1235,6 +1343,19 @@ func providerRequestMetadata(req provider.Request) map[string]any {
 
 func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, metrics *RunMetrics, failures *int) (provider.Request, []session.Message, bool, error) {
 	compacted := false
+	if manual, ok, err := pollManualCompaction(ctx, opts, step); err != nil {
+		return provider.Request{}, history, false, err
+	} else if ok {
+		usage := contextpolicy.EstimateMessageContext(e.memory.SystemPrompt, history, opts.ContextPolicy)
+		pressure := contextpolicy.PressureFromManual(usage, opts.ContextPolicy)
+		next, req, _, err := e.runCompaction(ctx, opts, step, history, tracker, 1, false, compaction.TriggerManual, compaction.ReasonManual, usage, nil, pressure, manual)
+		if err == nil {
+			if metrics != nil {
+				metrics.Compactions++
+			}
+			return req, next, true, nil
+		}
+	}
 	if pressure, ok := tracker.ConsumePendingCompaction(); ok {
 		next, req, err := e.compactForPressure(ctx, opts, step, history, tracker, 1, false, compaction.TriggerPostResponse, compaction.ReasonFollowUpPressure, pressure, metrics, failures)
 		if err != nil {
@@ -1319,7 +1440,7 @@ func (e *Engine) sendProviderAttempt(ctx context.Context, opts Options, step int
 
 func (e *Engine) compactForPressure(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool, trigger compaction.Trigger, reason compaction.Reason, pressure contextpolicy.ContextPressure, metrics *RunMetrics, failures *int) ([]session.Message, provider.Request, error) {
 	usage := contextpolicy.EstimateMessageContext(e.memory.SystemPrompt, history, opts.ContextPolicy)
-	next, req, err := e.runCompaction(ctx, opts, step, history, tracker, attempt, overflowRetried, trigger, reason, usage, failures, pressure)
+	next, req, _, err := e.runCompaction(ctx, opts, step, history, tracker, attempt, overflowRetried, trigger, reason, usage, failures, pressure, ManualCompactionRequest{})
 	if err != nil {
 		return history, provider.Request{}, err
 	}
@@ -1327,6 +1448,30 @@ func (e *Engine) compactForPressure(ctx context.Context, opts Options, step int,
 		metrics.Compactions++
 	}
 	return next, req, nil
+}
+
+func pollManualCompaction(ctx context.Context, opts Options, step int) (ManualCompactionRequest, bool, error) {
+	source := opts.ManualCompactions
+	if source == nil {
+		return ManualCompactionRequest{}, false, nil
+	}
+	request, ok, err := source.PollManualCompaction(ctx, ManualCompactionPollRequest{
+		RunID:         opts.RunID,
+		ThreadID:      opts.ThreadID,
+		TurnID:        opts.TurnID,
+		TraceID:       opts.TraceID,
+		PromptScopeID: opts.PromptScopeID,
+		Step:          step,
+	})
+	if err != nil || !ok {
+		return ManualCompactionRequest{}, ok, err
+	}
+	request.RequestID = strings.TrimSpace(request.RequestID)
+	request.Source = strings.TrimSpace(request.Source)
+	if request.RequestID == "" {
+		return ManualCompactionRequest{}, false, errors.New("manual compaction request id is required")
+	}
+	return request, true, nil
 }
 
 func providerRequestSnapshot(req provider.Request) cache.ProviderRequestSnapshot {
@@ -1372,15 +1517,15 @@ func validateConfiguredTools(local []provider.ToolDefinition, hosted []provider.
 	return err
 }
 
-func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool, trigger compaction.Trigger, reason compaction.Reason, usage contextpolicy.Usage, failures *int, beforePressure contextpolicy.ContextPressure) ([]session.Message, provider.Request, error) {
+func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool, trigger compaction.Trigger, reason compaction.Reason, usage contextpolicy.Usage, failures *int, beforePressure contextpolicy.ContextPressure, manual ManualCompactionRequest) ([]session.Message, provider.Request, compaction.Result, error) {
 	if failures != nil && *failures >= opts.ContextPolicy.MaxCompactionFailures {
-		return nil, provider.Request{}, fmt.Errorf("compaction failure circuit breaker reached after %d failures", *failures)
+		return nil, provider.Request{}, compaction.Result{}, fmt.Errorf("compaction failure circuit breaker reached after %d failures", *failures)
 	}
 	manager := e.compactor
 	if manager == nil {
-		return nil, provider.Request{}, errors.New("compaction manager is required when context exceeds policy")
+		return nil, provider.Request{}, compaction.Result{}, errors.New("compaction manager is required when context exceeds policy")
 	}
-	operationID := compactionOperationID(opts.RunID, step, trigger, reason)
+	operationID := compactionOperationID(opts.RunID, step, trigger, reason, manual)
 	e.emit(opts, event.Event{
 		Type:     event.ContextCompact,
 		TraceID:  opts.TraceID,
@@ -1391,7 +1536,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		Model:    opts.Model,
 		Message:  fmt.Sprintf("%s/%s", trigger, reason),
 		Metrics:  usage,
-		Metadata: compactionStartMetadata(operationID, trigger, reason, beforePressure, usage),
+		Metadata: compactionStartMetadata(operationID, trigger, reason, beforePressure, usage, manual),
 	})
 	baseDetails := map[string]string{
 		"run_id":                 opts.RunID,
@@ -1407,6 +1552,12 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		"auto_compact_ratio_pct": fmt.Sprintf("%d", usage.AutoCompactRatio),
 		"tokens_before":          fmt.Sprintf("%d", usage.InputTokens),
 		"consecutive_failures":   fmt.Sprintf("%d", derefInt(failures)),
+	}
+	if manual.RequestID != "" {
+		baseDetails["manual_request_id"] = manual.RequestID
+	}
+	if manual.Source != "" {
+		baseDetails["manual_source"] = manual.Source
 	}
 	policy := compactionPolicyForUsage(opts.ContextPolicy, usage)
 	var result compaction.Result
@@ -1474,9 +1625,9 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 			Message:  fmt.Sprintf("%s/%s", trigger, reason),
 			Err:      err.Error(),
 			Metrics:  usage,
-			Metadata: compactionFailedMetadata(operationID, trigger, reason, beforePressure, usage),
+			Metadata: compactionFailedMetadata(operationID, trigger, reason, beforePressure, usage, manual),
 		})
-		return nil, provider.Request{}, err
+		return nil, provider.Request{}, compaction.Result{}, err
 	}
 	committed, err := e.commitValidatedCompaction(ctx, manager, CompactionCommitRequest{
 		CompactionRequest: CompactionRequest{
@@ -1515,9 +1666,9 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 			Message:  fmt.Sprintf("%s/%s", trigger, reason),
 			Err:      err.Error(),
 			Metrics:  usage,
-			Metadata: compactionFailedMetadata(operationID, trigger, reason, beforePressure, usage),
+			Metadata: compactionFailedMetadata(operationID, trigger, reason, beforePressure, usage, manual),
 		})
-		return nil, provider.Request{}, err
+		return nil, provider.Request{}, compaction.Result{}, err
 	}
 	result = committed.Result
 	active = committed.ActiveMessages
@@ -1536,9 +1687,9 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		Message:  result.CompactionID,
 		Result:   result.Summary,
 		Metrics:  result,
-		Metadata: compactionCompleteMetadata(operationID, result, validation),
+		Metadata: compactionCompleteMetadata(operationID, result, validation, manual),
 	})
-	return active, req, nil
+	return active, req, result, nil
 }
 
 func (e *Engine) commitValidatedCompaction(ctx context.Context, manager CompactionManager, req CompactionCommitRequest) (committedCompaction, error) {

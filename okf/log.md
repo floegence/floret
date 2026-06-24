@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-06-25
+* **Update**: Documented projected manual context compaction, including active
+  safe-point polling, idle compaction-only checkpoint results, and observation
+  request correlation.
+
 ## 2026-06-24
 * **Update**: Documented compacted context targets and the requirement that a
   complete compaction event follows full provider request validation.

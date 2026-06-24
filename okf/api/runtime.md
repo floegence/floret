@@ -20,6 +20,12 @@ loop over a transcript projection.
 * `NewMemoryStore` creates an in-memory runtime store for tests or ephemeral use.
 * `OpenSQLiteStore` creates Floret-managed durable runtime storage.
 * `RunProjectedTurn` executes one run from host-owned transcript projection.
+* `ProjectedTurnOptions.ManualCompactions` lets a host request manual context
+  compaction for an active projected run. Floret polls it at provider-loop safe
+  points, emits compaction lifecycle events, and continues the same run.
+* `CompactProjectedContext` runs a compaction-only maintenance operation for a
+  host-owned transcript projection and returns compacted active transcript
+  checkpoint metadata without creating natural assistant output.
 * `SpawnSubAgent`, `SendSubAgentInput`, `WaitSubAgents`, `ListSubAgents`, and
   `CloseSubAgent` manage durable child threads under a hosted parent thread.
 * `ReadSubAgentDetail` and `ListSubAgentDetailEvents` let a host read a
@@ -89,6 +95,22 @@ the public selection and provider adapters translate only values supported by th
 selected model capability. Hosts that own model transport through `ModelGateway`
 receive the effective selection and must render provider-specific payloads
 outside Floret.
+
+Projected manual compaction is a control surface, not a transcript message.
+Hosts pass active-run requests through `ManualCompactionSource`; Floret decides
+the safe point, runs the same compaction pipeline as automatic pressure
+compaction with `manual/manual` trigger and reason, includes request correlation
+in start/complete/failed observations, and then continues the provider loop. A
+failed manual compaction is observable but does not by itself end the active
+run.
+
+For idle host-owned threads, `CompactProjectedContext` is the public
+compaction-only entry point. The result `ActiveTranscript` begins with a
+`compaction_summary` checkpoint and preserves compaction id, generation, and
+window metadata. Downstream hosts that own durable thread storage should persist
+that active transcript or an equivalent checkpoint as their next projected
+history source; opaque provider continuation state is carry-through state, not a
+substitute for a thread-level checkpoint.
 
 # Key Source Files
 

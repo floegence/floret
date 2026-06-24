@@ -42,6 +42,17 @@ still owns the loop, local tools, context pressure, ledgers, and events. It uses
 the same `runtime.ModelGateway` contract as hosted threads when the host supplies
 one.
 
+Active manual compaction in projected turns flows through
+`ProjectedTurnOptions.ManualCompactions`. The host owns the user-facing command
+or policy that creates a request; `Engine` owns polling at safe provider-loop
+points, summary generation, checkpoint installation, and continuation of the
+same run.
+
+Idle projected compaction uses `runtime.CompactProjectedContext` instead of
+pretending to be a user turn. It runs the compaction pipeline once and returns
+the compacted active transcript plus lifecycle observations so the host can
+persist a thread-level checkpoint in its own store.
+
 # Child Threads
 
 Hosted subagents are durable child threads managed by `AgentHarness` and exposed

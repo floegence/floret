@@ -384,6 +384,21 @@ func PressureFromOverflow(policy Policy) ContextPressure {
 	return pressure
 }
 
+func PressureFromManual(usage Usage, policy Policy) ContextPressure {
+	policy = Normalize(policy)
+	pressure := basePressure(policy)
+	pressure.Signal = PressureSignalManual
+	pressure.Source = PressureSourceManual
+	pressure.Confidence = EstimateExact
+	if usage.InputTokens > 0 {
+		pressure.WindowInputTokens = usage.InputTokens
+		pressure.ProjectedInputTokens = usage.InputTokens
+	}
+	pressure.CompactionNeeded = true
+	pressure.HardLimitExceeded = pressure.ProjectedInputTokens >= pressure.RequestSafeLimit && pressure.ProjectedInputTokens > 0
+	return pressure
+}
+
 func UsageFromMessageContextEstimate(estimate MessageContextEstimate, policy Policy) Usage {
 	policy = Normalize(policy)
 	estimate = estimate.Normalized(policy)

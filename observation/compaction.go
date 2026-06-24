@@ -24,10 +24,12 @@ type CompactionEvent struct {
 	TurnID                  string                 `json:"turn_id,omitempty"`
 	Step                    int                    `json:"step,omitempty"`
 	OperationID             string                 `json:"operation_id,omitempty"`
+	RequestID               string                 `json:"request_id,omitempty"`
 	Phase                   string                 `json:"phase"`
 	Status                  string                 `json:"status"`
 	Trigger                 string                 `json:"trigger,omitempty"`
 	Reason                  string                 `json:"reason,omitempty"`
+	Source                  string                 `json:"source,omitempty"`
 	CompactionID            string                 `json:"compaction_id,omitempty"`
 	CompactionGeneration    int                    `json:"compaction_generation,omitempty"`
 	CompactionWindowID      string                 `json:"compaction_window_id,omitempty"`
@@ -59,10 +61,12 @@ func CompactionEventFromEvent(ev Event) (CompactionEvent, bool) {
 		TurnID:      ev.TurnID,
 		Step:        ev.Step,
 		OperationID: stringFromAny(meta["operation_id"]),
+		RequestID:   stringFromAny(meta["request_id"]),
 		Phase:       phase,
 		Status:      CompactionStatusRunning,
 		Trigger:     stringFromAny(meta["trigger"]),
 		Reason:      stringFromAny(meta["reason"]),
+		Source:      stringFromAny(meta["source"]),
 		ObservedAt:  ev.ObservedAt,
 		Error:       ev.Error,
 	}

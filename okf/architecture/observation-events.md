@@ -40,6 +40,10 @@ reasoning, tool arguments, tool results, and local paths.
   a complete event. Entry-derived compaction observations are projected only
   from committed durable checkpoints, so a stored compaction entry also means
   the checkpoint passed full provider request validation before installation.
+  Manual compaction uses the same lifecycle with `manual/manual` trigger and
+  reason. The request correlation is carried through start, complete, and failed
+  observations; active-run manual compaction failures are observable lifecycle
+  facts and the provider loop may continue after them.
 
 # Key Source Files
 

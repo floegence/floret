@@ -38,6 +38,21 @@ func (s *publicCompactionSummarizer) GenerateCompactionSummary(_ context.Context
 	}, nil
 }
 
+type singleManualCompactionSource struct {
+	request runtime.ManualCompactionRequest
+	polls   []runtime.ManualCompactionPollRequest
+	used    bool
+}
+
+func (s *singleManualCompactionSource) PollManualCompaction(_ context.Context, req runtime.ManualCompactionPollRequest) (runtime.ManualCompactionRequest, bool, error) {
+	s.polls = append(s.polls, req)
+	if s.used {
+		return runtime.ManualCompactionRequest{}, false, nil
+	}
+	s.used = true
+	return s.request, true, nil
+}
+
 func TestRunProjectedTurnUsesPublicCompactionSummarizer(t *testing.T) {
 	summarizer := &publicCompactionSummarizer{}
 	sink := &collectingEventSink{}
@@ -110,6 +125,218 @@ func TestRunProjectedTurnUsesPublicCompactionSummarizer(t *testing.T) {
 	}
 	if compactions[1].CompactionID == "" || compactions[1].CompactionGeneration == 0 || compactions[1].CompactionWindowID == "" {
 		t.Fatalf("complete event missing durable compaction fields: %#v", compactions[1])
+	}
+}
+
+func TestRunProjectedTurnManualCompactionTriggersBelowThresholdAndContinues(t *testing.T) {
+	summarizer := &publicCompactionSummarizer{}
+	manual := &singleManualCompactionSource{request: runtime.ManualCompactionRequest{RequestID: "manual-1", Source: "slash_command"}}
+	sink := &collectingEventSink{}
+	var requests []runtime.ModelRequest
+	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
+		requests = append(requests, req)
+		events := make(chan runtime.ModelEvent, 2)
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDelta, Text: "continued after manual compact"}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "stop"}
+		close(events)
+		return events, nil
+	})
+
+	result, err := runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+			ContextPolicy: config.ContextPolicy{
+				ContextWindowTokens:   10000,
+				ReservedOutputTokens:  1000,
+				ReservedSummaryTokens: 200,
+				RecentTailTokens:      100,
+				RecentUserTokens:      100,
+			},
+		},
+		ModelGateway:         gateway,
+		Store:                runtime.NewMemoryStore(),
+		Sink:                 sink,
+		CompactionSummarizer: summarizer,
+		ManualCompactions:    manual,
+	}, runtime.ProjectedTurnRequest{
+		RunID:         "run-manual",
+		ThreadID:      "thread-manual",
+		TurnID:        "turn-manual",
+		TraceID:       "trace-manual",
+		PromptScopeID: "thread-manual",
+		History: []runtime.TranscriptMessage{
+			{Role: "user", Content: "older context"},
+			{Role: "assistant", Content: "older answer"},
+			{Role: "user", Content: "continue"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != runtime.TurnStatusCompleted || result.Output != "continued after manual compact" || result.Metrics.Compactions != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(manual.polls) == 0 || manual.polls[0].RunID != "run-manual" || manual.polls[0].Step != 1 {
+		t.Fatalf("manual polls = %#v", manual.polls)
+	}
+	if len(requests) != 1 || !slices.ContainsFunc(requests[0].Messages, func(message runtime.ModelMessage) bool {
+		return message.Role == "user" && strings.Contains(message.Content, "<compaction_summary")
+	}) {
+		t.Fatalf("provider should receive compacted active context, requests=%#v", requests)
+	}
+	if len(summarizer.requests) != 1 || summarizer.requests[0].Trigger != "manual" || summarizer.requests[0].Reason != "manual" {
+		t.Fatalf("summary requests = %#v", summarizer.requests)
+	}
+	var compactions []observation.CompactionEvent
+	for _, ev := range sink.events {
+		if ev.Compaction != nil {
+			compactions = append(compactions, *ev.Compaction)
+		}
+	}
+	if len(compactions) != 2 {
+		t.Fatalf("compactions = %#v", compactions)
+	}
+	if compactions[0].RequestID != "manual-1" || compactions[0].Source != "slash_command" || compactions[0].OperationID != compactions[1].OperationID {
+		t.Fatalf("manual compaction correlation = %#v", compactions)
+	}
+	if !strings.Contains(compactions[0].OperationID, "manual-1") {
+		t.Fatalf("manual request id should participate in operation id: %#v", compactions)
+	}
+	if compactions[1].Trigger != "manual" || compactions[1].Reason != "manual" || compactions[1].Status != observation.CompactionStatusCompacted {
+		t.Fatalf("complete compaction = %#v", compactions[1])
+	}
+}
+
+func TestRunProjectedTurnManualCompactionFailureDoesNotEndActiveRun(t *testing.T) {
+	manual := &singleManualCompactionSource{request: runtime.ManualCompactionRequest{RequestID: "manual-fail", Source: "slash_command"}}
+	sink := &collectingEventSink{}
+	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
+		events := make(chan runtime.ModelEvent, 2)
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDelta, Text: "continued despite compact failure"}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "stop"}
+		close(events)
+		return events, nil
+	})
+
+	result, err := runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:      config.ProviderFake,
+			Model:         "fake-model",
+			SystemPrompt:  "test",
+			ContextPolicy: config.ContextPolicy{ContextWindowTokens: 10000, ReservedOutputTokens: 1000},
+		},
+		ModelGateway: gateway,
+		Store:        runtime.NewMemoryStore(),
+		Sink:         sink,
+		CompactionSummarizer: &publicCompactionSummarizer{
+			err: errors.New("manual summary unavailable"),
+		},
+		ManualCompactions: manual,
+	}, runtime.ProjectedTurnRequest{
+		RunID:         "run-manual-fail",
+		ThreadID:      "thread-manual-fail",
+		TurnID:        "turn-manual-fail",
+		TraceID:       "trace-manual-fail",
+		PromptScopeID: "thread-manual-fail",
+		History: []runtime.TranscriptMessage{
+			{Role: "user", Content: "older context"},
+			{Role: "assistant", Content: "older answer"},
+			{Role: "user", Content: "continue"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != runtime.TurnStatusCompleted || result.Output != "continued despite compact failure" || result.Metrics.Compactions != 0 {
+		t.Fatalf("result = %#v", result)
+	}
+	var compactions []observation.CompactionEvent
+	for _, ev := range sink.events {
+		if ev.Compaction != nil {
+			compactions = append(compactions, *ev.Compaction)
+		}
+	}
+	if len(compactions) != 2 {
+		t.Fatalf("compactions = %#v", compactions)
+	}
+	if compactions[0].Phase != observation.CompactionPhaseStart ||
+		compactions[1].Phase != observation.CompactionPhaseFailed ||
+		compactions[1].RequestID != "manual-fail" ||
+		compactions[1].Error != "manual summary unavailable" {
+		t.Fatalf("manual failure compaction = %#v", compactions)
+	}
+}
+
+func TestCompactProjectedContextReturnsCheckpointAndMetadata(t *testing.T) {
+	summarizer := &publicCompactionSummarizer{}
+	sink := &collectingEventSink{}
+	state := &runtime.ModelState{Kind: "responses", ID: "resp-prev", Attributes: map[string]string{"cursor": "one"}}
+	result, err := runtime.CompactProjectedContext(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+			ContextPolicy: config.ContextPolicy{
+				ContextWindowTokens:   10000,
+				ReservedOutputTokens:  1000,
+				ReservedSummaryTokens: 200,
+				RecentTailTokens:      100,
+				RecentUserTokens:      100,
+			},
+		},
+		Store:                runtime.NewMemoryStore(),
+		Sink:                 sink,
+		CompactionSummarizer: summarizer,
+	}, runtime.ProjectedContextCompactionRequest{
+		RunID:                 "run-idle-compact",
+		ThreadID:              "thread-idle-compact",
+		TurnID:                "turn-idle-compact",
+		TraceID:               "trace-idle-compact",
+		PromptScopeID:         "thread-idle-compact",
+		PreviousProviderState: state,
+		ManualCompaction:      runtime.ManualCompactionRequest{RequestID: "manual-idle", Source: "slash_command"},
+		History: []runtime.TranscriptMessage{
+			{Role: "user", Content: "older context"},
+			{Role: "assistant", Content: "older answer"},
+			{Role: "user", Content: "continue later"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "completed" || result.Metrics.Compactions != 1 || result.Compaction == nil {
+		t.Fatalf("result = %#v", result)
+	}
+	if result.Compaction.RequestID != "manual-idle" ||
+		result.Compaction.Source != "slash_command" ||
+		result.Compaction.Trigger != "manual" ||
+		result.Compaction.Reason != "manual" ||
+		result.Compaction.CompactionID == "" ||
+		result.Compaction.CompactionGeneration == 0 ||
+		result.Compaction.CompactionWindowID == "" {
+		t.Fatalf("compaction metadata = %#v", result.Compaction)
+	}
+	if len(result.ActiveTranscript) == 0 || result.ActiveTranscript[0].Kind != runtime.TranscriptMessageKindCompactionSummary {
+		t.Fatalf("active transcript = %#v", result.ActiveTranscript)
+	}
+	if result.ActiveTranscript[0].CompactionID != result.Compaction.CompactionID ||
+		result.ActiveTranscript[0].CompactionGeneration != result.Compaction.CompactionGeneration ||
+		result.ActiveTranscript[0].CompactionWindowID != result.Compaction.CompactionWindowID {
+		t.Fatalf("checkpoint metadata mismatch: active=%#v compaction=%#v", result.ActiveTranscript[0], result.Compaction)
+	}
+	if result.ProviderState == nil || result.ProviderState.Attributes["cursor"] != "one" {
+		t.Fatalf("provider state = %#v", result.ProviderState)
+	}
+	var compactions []observation.CompactionEvent
+	for _, ev := range sink.events {
+		if ev.Compaction != nil {
+			compactions = append(compactions, *ev.Compaction)
+		}
+	}
+	if len(compactions) != 2 || compactions[0].RequestID != "manual-idle" || compactions[1].Status != observation.CompactionStatusCompacted {
+		t.Fatalf("events = %#v", compactions)
 	}
 }
 

@@ -20,6 +20,12 @@ summaries without parsing assistant text or depending on implementation types.
   and event-derived context status.
 * `CompactionEventsFromEvents` extracts compaction lifecycle facts.
 
+`CompactionEvent` carries `OperationID` for one compaction attempt and optional
+`RequestID` / `Source` when a downstream host requested manual compaction. Start,
+complete, and failed observations for the same manual request keep the same
+operation and request correlation so host UIs can update one progress item
+instead of guessing from trigger text.
+
 # Boundary
 
 Observation records are not raw debug traces. They intentionally omit local

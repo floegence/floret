@@ -30,6 +30,7 @@ type ProjectedTurnOptions struct {
 	LoopLimits           LoopLimits
 	Capabilities         CapabilityOptions
 	CompactionSummarizer ProjectedTurnCompactionSummarizer
+	ManualCompactions    ManualCompactionSource
 }
 
 // ProjectedTurnRequest is the provider-visible transcript projection for one
@@ -74,13 +75,21 @@ type ProjectedTurnResult struct {
 // Supported roles are user, assistant, and tool. System instructions belong in
 // config.Config rather than host-projected transcript history.
 type TranscriptMessage struct {
-	Role       string `json:"role"`
-	Content    string `json:"content,omitempty"`
-	Reasoning  string `json:"reasoning,omitempty"`
-	ToolCallID string `json:"tool_call_id,omitempty"`
-	ToolName   string `json:"tool_name,omitempty"`
-	ToolArgs   string `json:"tool_args,omitempty"`
+	Role                 string `json:"role"`
+	Content              string `json:"content,omitempty"`
+	Reasoning            string `json:"reasoning,omitempty"`
+	ToolCallID           string `json:"tool_call_id,omitempty"`
+	ToolName             string `json:"tool_name,omitempty"`
+	ToolArgs             string `json:"tool_args,omitempty"`
+	Kind                 string `json:"kind,omitempty"`
+	EntryID              string `json:"entry_id,omitempty"`
+	ParentEntryID        string `json:"parent_entry_id,omitempty"`
+	CompactionID         string `json:"compaction_id,omitempty"`
+	CompactionGeneration int    `json:"compaction_generation,omitempty"`
+	CompactionWindowID   string `json:"compaction_window_id,omitempty"`
 }
+
+const TranscriptMessageKindCompactionSummary = "compaction_summary"
 
 // ProjectedTurnCompactionSummarizer lets a host provide only the summary text
 // for a projected-turn compaction. Floret still owns cut-point selection,
@@ -113,6 +122,75 @@ type ProjectedCompactionSummaryRequest struct {
 type ProjectedCompactionSummaryResult struct {
 	Summary string            `json:"summary"`
 	Details map[string]string `json:"details,omitempty"`
+}
+
+type ManualCompactionPollRequest struct {
+	RunID         RunID         `json:"run_id,omitempty"`
+	ThreadID      ThreadID      `json:"thread_id,omitempty"`
+	TurnID        TurnID        `json:"turn_id,omitempty"`
+	TraceID       TraceID       `json:"trace_id,omitempty"`
+	PromptScopeID PromptScopeID `json:"prompt_scope_id,omitempty"`
+	Step          int           `json:"step,omitempty"`
+}
+
+type ManualCompactionRequest struct {
+	RequestID   string    `json:"request_id"`
+	Source      string    `json:"source,omitempty"`
+	RequestedAt time.Time `json:"requested_at,omitempty"`
+}
+
+type ManualCompactionSource interface {
+	PollManualCompaction(context.Context, ManualCompactionPollRequest) (ManualCompactionRequest, bool, error)
+}
+
+type ProjectedContextCompactionRequest struct {
+	RunID                 RunID
+	ThreadID              ThreadID
+	TurnID                TurnID
+	TraceID               TraceID
+	PromptScopeID         PromptScopeID
+	History               []TranscriptMessage
+	Labels                RunLabels
+	PreviousProviderState *ModelState
+	Reasoning             ReasoningSelection
+	ManualCompaction      ManualCompactionRequest
+}
+
+type ProjectedContextCompactionResult struct {
+	RunID            RunID                        `json:"run_id,omitempty"`
+	ThreadID         ThreadID                     `json:"thread_id,omitempty"`
+	TurnID           TurnID                       `json:"turn_id,omitempty"`
+	Status           string                       `json:"status"`
+	Error            string                       `json:"error,omitempty"`
+	Metrics          RunMetrics                   `json:"metrics"`
+	ActiveTranscript []TranscriptMessage          `json:"active_transcript,omitempty"`
+	Compaction       *ProjectedContextCompaction  `json:"compaction,omitempty"`
+	ProviderState    *ModelState                  `json:"provider_state,omitempty"`
+	ActivityTimeline observation.ActivityTimeline `json:"activity_timeline"`
+}
+
+type ProjectedContextCompaction struct {
+	OperationID             string              `json:"operation_id,omitempty"`
+	RequestID               string              `json:"request_id,omitempty"`
+	Source                  string              `json:"source,omitempty"`
+	CompactionID            string              `json:"compaction_id,omitempty"`
+	PreviousCompactionID    string              `json:"previous_compaction_id,omitempty"`
+	CompactionGeneration    int                 `json:"compaction_generation,omitempty"`
+	CompactionWindowID      string              `json:"compaction_window_id,omitempty"`
+	FirstKeptEntryID        string              `json:"first_kept_entry_id,omitempty"`
+	KeptUserEntryIDs        []string            `json:"kept_user_entry_ids,omitempty"`
+	CompactedThroughEntryID string              `json:"compacted_through_entry_id,omitempty"`
+	Summary                 string              `json:"summary,omitempty"`
+	SummarySchemaVersion    string              `json:"summary_schema_version,omitempty"`
+	Trigger                 string              `json:"trigger,omitempty"`
+	Reason                  string              `json:"reason,omitempty"`
+	Phase                   string              `json:"phase,omitempty"`
+	TokensBefore            int64               `json:"tokens_before,omitempty"`
+	TokensAfterEstimate     int64               `json:"tokens_after_estimate,omitempty"`
+	UsageBefore             config.ContextUsage `json:"usage_before,omitempty"`
+	UsageAfter              config.ContextUsage `json:"usage_after,omitempty"`
+	Details                 map[string]string   `json:"details,omitempty"`
+	CreatedAt               time.Time           `json:"created_at,omitempty"`
 }
 
 // ModelGateway lets a host supply model access while Floret still owns the
@@ -369,6 +447,7 @@ func RunProjectedTurn(ctx context.Context, opts ProjectedTurnOptions, req Projec
 			CompletionPolicy:         completionPolicy,
 			ControlSpec:              signalSpec,
 			PreviousProviderState:    previousProviderState,
+			ManualCompactions:        projectedManualCompactionSource(opts.ManualCompactions),
 		},
 	})
 	if err != nil {
@@ -387,11 +466,140 @@ func RunProjectedTurn(ctx context.Context, opts ProjectedTurnOptions, req Projec
 	return projectedTurnResult(ids, result, activityRecorder.Snapshot(), time.Now().UnixMilli()), result.Err
 }
 
+func CompactProjectedContext(ctx context.Context, opts ProjectedTurnOptions, req ProjectedContextCompactionRequest) (ProjectedContextCompactionResult, error) {
+	cfg, err := config.Resolve(opts.Config, nil)
+	if err != nil {
+		return ProjectedContextCompactionResult{}, err
+	}
+	ids, err := projectedContextCompactionIdentity(req)
+	if err != nil {
+		return ProjectedContextCompactionResult{}, err
+	}
+	modelProvider, err := projectedModelProvider(cfg, opts.ModelGateway)
+	if err != nil {
+		return ProjectedContextCompactionResult{}, err
+	}
+	store := opts.Store
+	if store == nil {
+		store = NewMemoryStore()
+	}
+	if err := store.validate(); err != nil {
+		return ProjectedContextCompactionResult{}, err
+	}
+	registry := opts.Tools
+	if registry == nil {
+		registry = tools.NewRegistry()
+	}
+	activityRecorder := &runtimeActivityEventRecorder{sink: runtimeEventSink{sink: opts.Sink}}
+	capabilities := mergeCapabilityOptions(cfg, opts.Capabilities)
+	effectivePrompt, err := applyCapabilities(registry, cfg.SystemPrompt, capabilities, activityRecorder)
+	if err != nil {
+		return ProjectedContextCompactionResult{}, err
+	}
+	cacheRetention, err := config.PromptCacheRetention(cfg)
+	if err != nil {
+		return ProjectedContextCompactionResult{}, err
+	}
+	history, err := projectedHistory(req.History)
+	if err != nil {
+		return ProjectedContextCompactionResult{}, err
+	}
+	previousProviderState := providerState(req.PreviousProviderState)
+	loopLimits := projectedLoopLimits(cfg, opts.LoopLimits, TurnLimits{})
+	eng, err := engine.New(engine.Config{
+		Provider:     modelProvider,
+		Store:        session.NewMemoryStore(),
+		Prompt:       store.prompt,
+		Artifacts:    store.artifacts,
+		SystemPrompt: effectivePrompt,
+		Tools:        registry,
+		Sink:         activityRecorder,
+		Approver:     opts.Approver,
+		Compactor:    projectedCompactionManager(opts.CompactionSummarizer),
+		Options: engine.Options{
+			RunID:                   ids.runID,
+			ThreadID:                ids.threadID,
+			TurnID:                  ids.turnID,
+			TraceID:                 ids.traceID,
+			PromptScopeID:           ids.promptScopeID,
+			ProviderName:            cfg.Provider,
+			Model:                   cfg.Model,
+			Labels:                  engineLabels(req.Labels),
+			CacheRetention:          configbridge.CacheRetention(cacheRetention),
+			ContextPolicy:           configbridge.ContextPolicy(cfg.ContextPolicy),
+			Reasoning:               projectedReasoningSelection(req.Reasoning, cfg.Reasoning),
+			MaxEmptyProviderRetries: loopLimits.MaxEmptyProviderRetries,
+			NoProgressLimit:         loopLimits.NoProgressLimit,
+			DuplicateToolLimit:      loopLimits.DuplicateToolLimit,
+			WallTime:                loopLimits.WallTime,
+			CompletionPolicy:        engine.CompletionNaturalStop,
+			ControlSpec: engine.ControlSpec{
+				Definitions: []provider.ToolDefinition{},
+				Project: func(provider.ToolCall) (engine.ControlSignal, bool, error) {
+					return engine.ControlSignal{}, false, nil
+				},
+			},
+			PreviousProviderState: previousProviderState,
+		},
+	})
+	if err != nil {
+		return ProjectedContextCompactionResult{}, err
+	}
+	result := eng.CompactContext(ctx, engine.RunInput{
+		RunID:                 ids.runID,
+		ThreadID:              ids.threadID,
+		TurnID:                ids.turnID,
+		TraceID:               ids.traceID,
+		PromptScopeID:         ids.promptScopeID,
+		Labels:                engineLabels(req.Labels),
+		PreviousProviderState: previousProviderState,
+		History:               history,
+	}, engineManualCompactionRequest(req.ManualCompaction))
+	out := projectedContextCompactionResult(ids, result, activityRecorder.Snapshot(), time.Now().UnixMilli())
+	return out, result.Err
+}
+
 func projectedCompactionManager(summarizer ProjectedTurnCompactionSummarizer) engine.CompactionManager {
 	if summarizer == nil {
 		return nil
 	}
 	return engine.LocalCompactionManager{Generator: projectedCompactionSummaryGenerator{summarizer: summarizer}}
+}
+
+type manualCompactionSourceAdapter struct {
+	source ManualCompactionSource
+}
+
+func projectedManualCompactionSource(source ManualCompactionSource) engine.ManualCompactionSource {
+	if source == nil {
+		return nil
+	}
+	return manualCompactionSourceAdapter{source: source}
+}
+
+func (s manualCompactionSourceAdapter) PollManualCompaction(ctx context.Context, req engine.ManualCompactionPollRequest) (engine.ManualCompactionRequest, bool, error) {
+	if s.source == nil {
+		return engine.ManualCompactionRequest{}, false, nil
+	}
+	manual, ok, err := s.source.PollManualCompaction(ctx, ManualCompactionPollRequest{
+		RunID:         RunID(req.RunID),
+		ThreadID:      ThreadID(req.ThreadID),
+		TurnID:        TurnID(req.TurnID),
+		TraceID:       TraceID(req.TraceID),
+		PromptScopeID: PromptScopeID(req.PromptScopeID),
+		Step:          req.Step,
+	})
+	if err != nil || !ok {
+		return engine.ManualCompactionRequest{}, ok, err
+	}
+	return engineManualCompactionRequest(manual), true, nil
+}
+
+func engineManualCompactionRequest(manual ManualCompactionRequest) engine.ManualCompactionRequest {
+	return engine.ManualCompactionRequest{
+		RequestID: strings.TrimSpace(manual.RequestID),
+		Source:    strings.TrimSpace(manual.Source),
+	}
 }
 
 type projectedCompactionSummaryGenerator struct {
@@ -542,6 +750,35 @@ func projectedTurnIdentity(req ProjectedTurnRequest) (projectedIDs, error) {
 	}, nil
 }
 
+func projectedContextCompactionIdentity(req ProjectedContextCompactionRequest) (projectedIDs, error) {
+	runID := strings.TrimSpace(string(req.RunID))
+	threadID := strings.TrimSpace(string(req.ThreadID))
+	turnID := strings.TrimSpace(string(req.TurnID))
+	traceID := strings.TrimSpace(string(req.TraceID))
+	promptScopeID := strings.TrimSpace(string(req.PromptScopeID))
+	switch {
+	case runID == "":
+		return projectedIDs{}, errors.New("run id is required")
+	case threadID == "":
+		return projectedIDs{}, errors.New("thread id is required")
+	case turnID == "":
+		return projectedIDs{}, errors.New("turn id is required")
+	case traceID == "":
+		return projectedIDs{}, errors.New("trace id is required")
+	case promptScopeID == "":
+		return projectedIDs{}, errors.New("prompt scope id is required")
+	case strings.TrimSpace(req.ManualCompaction.RequestID) == "":
+		return projectedIDs{}, errors.New("manual compaction request id is required")
+	}
+	return projectedIDs{
+		runID:         runID,
+		threadID:      threadID,
+		turnID:        turnID,
+		traceID:       traceID,
+		promptScopeID: promptScopeID,
+	}, nil
+}
+
 func projectedLoopLimits(cfg config.Config, opts LoopLimits, req TurnLimits) projectedLimits {
 	out := projectedLimits{
 		MaxEmptyProviderRetries: cfg.MaxEmptyProviderRetries,
@@ -585,12 +822,18 @@ func projectedHistory(messages []TranscriptMessage) ([]session.Message, error) {
 			return nil, fmt.Errorf("transcript message %d has unsupported role %q", i, msg.Role)
 		}
 		out = append(out, session.Message{
-			Role:       sessionRole,
-			Content:    strings.TrimSpace(msg.Content),
-			Reasoning:  strings.TrimSpace(msg.Reasoning),
-			ToolCallID: strings.TrimSpace(msg.ToolCallID),
-			ToolName:   strings.TrimSpace(msg.ToolName),
-			ToolArgs:   strings.TrimSpace(msg.ToolArgs),
+			Role:                 sessionRole,
+			Content:              strings.TrimSpace(msg.Content),
+			Reasoning:            strings.TrimSpace(msg.Reasoning),
+			ToolCallID:           strings.TrimSpace(msg.ToolCallID),
+			ToolName:             strings.TrimSpace(msg.ToolName),
+			ToolArgs:             strings.TrimSpace(msg.ToolArgs),
+			Kind:                 session.MessageKind(strings.TrimSpace(msg.Kind)),
+			EntryID:              strings.TrimSpace(msg.EntryID),
+			ParentEntryID:        strings.TrimSpace(msg.ParentEntryID),
+			CompactionID:         strings.TrimSpace(msg.CompactionID),
+			CompactionGeneration: msg.CompactionGeneration,
+			CompactionWindowID:   strings.TrimSpace(msg.CompactionWindowID),
 		})
 	}
 	return out, nil
@@ -600,12 +843,18 @@ func runtimeMessages(messages []session.Message) []TranscriptMessage {
 	out := make([]TranscriptMessage, 0, len(messages))
 	for _, msg := range messages {
 		out = append(out, TranscriptMessage{
-			Role:       string(msg.Role),
-			Content:    msg.Content,
-			Reasoning:  msg.Reasoning,
-			ToolCallID: msg.ToolCallID,
-			ToolName:   msg.ToolName,
-			ToolArgs:   msg.ToolArgs,
+			Role:                 string(msg.Role),
+			Content:              msg.Content,
+			Reasoning:            msg.Reasoning,
+			ToolCallID:           msg.ToolCallID,
+			ToolName:             msg.ToolName,
+			ToolArgs:             msg.ToolArgs,
+			Kind:                 string(msg.Kind),
+			EntryID:              msg.EntryID,
+			ParentEntryID:        msg.ParentEntryID,
+			CompactionID:         msg.CompactionID,
+			CompactionGeneration: msg.CompactionGeneration,
+			CompactionWindowID:   msg.CompactionWindowID,
 		})
 	}
 	return out
@@ -760,6 +1009,123 @@ func projectedTurnResult(ids projectedIDs, in engine.Result, events []observatio
 	}
 	if in.Err != nil {
 		out.Error = in.Err.Error()
+	}
+	return out
+}
+
+func projectedContextCompactionResult(ids projectedIDs, in engine.ContextCompactionResult, events []observation.Event, nowUnixMS int64) ProjectedContextCompactionResult {
+	out := ProjectedContextCompactionResult{
+		RunID:            RunID(ids.runID),
+		ThreadID:         ThreadID(ids.threadID),
+		TurnID:           TurnID(ids.turnID),
+		Status:           string(in.Status),
+		Metrics:          runtimeMetrics(in.Metrics),
+		ActiveTranscript: runtimeMessages(in.Messages),
+		ProviderState:    modelState(in.ProviderState),
+		ActivityTimeline: observation.BuildActivityTimeline(observation.ActivityRunMeta{
+			RunID:    ids.runID,
+			ThreadID: ids.threadID,
+			TurnID:   ids.turnID,
+			TraceID:  ids.traceID,
+		}, events, nowUnixMS),
+	}
+	if in.Err != nil {
+		out.Error = in.Err.Error()
+	}
+	out.Compaction = projectedContextCompactionFromResult(in.Compaction)
+	if out.Compaction != nil {
+		if complete := projectedContextCompactionFromEvents(events); complete != nil {
+			out.Compaction.OperationID = complete.OperationID
+			out.Compaction.RequestID = complete.RequestID
+			out.Compaction.Source = complete.Source
+		}
+	}
+	return out
+}
+
+func projectedContextCompactionFromResult(result compaction.Result) *ProjectedContextCompaction {
+	if strings.TrimSpace(result.CompactionID) == "" {
+		return nil
+	}
+	return &ProjectedContextCompaction{
+		OperationID:             strings.TrimSpace(result.Details["operation_id"]),
+		RequestID:               strings.TrimSpace(result.Details["manual_request_id"]),
+		Source:                  strings.TrimSpace(result.Details["manual_source"]),
+		CompactionID:            strings.TrimSpace(result.CompactionID),
+		PreviousCompactionID:    strings.TrimSpace(result.PreviousCompactionID),
+		CompactionGeneration:    result.CompactionGeneration,
+		CompactionWindowID:      strings.TrimSpace(result.CompactionWindowID),
+		FirstKeptEntryID:        strings.TrimSpace(result.FirstKeptEntryID),
+		KeptUserEntryIDs:        append([]string(nil), result.KeptUserEntryIDs...),
+		CompactedThroughEntryID: strings.TrimSpace(result.CompactedThroughEntryID),
+		Summary:                 strings.TrimSpace(result.Summary),
+		SummarySchemaVersion:    strings.TrimSpace(result.SummarySchemaVersion),
+		Trigger:                 string(result.Trigger),
+		Reason:                  string(result.Reason),
+		Phase:                   string(result.Phase),
+		TokensBefore:            result.TokensBefore,
+		TokensAfterEstimate:     result.TokensAfterEstimate,
+		UsageBefore:             configbridge.PublicContextUsage(result.UsageBefore),
+		UsageAfter:              configbridge.PublicContextUsage(result.UsageAfter),
+		Details:                 cloneStringMap(result.Details),
+		CreatedAt:               result.CreatedAt,
+	}
+}
+
+func projectedContextCompactionFromEvents(events []observation.Event) *ProjectedContextCompaction {
+	var out *ProjectedContextCompaction
+	for _, ev := range events {
+		if ev.Type != observation.EventTypeContextCompact {
+			continue
+		}
+		compact, ok := observation.CompactionEventFromEvent(ev)
+		if !ok || compact.Phase != observation.CompactionPhaseComplete {
+			continue
+		}
+		meta := ev.Metadata
+		out = &ProjectedContextCompaction{
+			OperationID:             compact.OperationID,
+			RequestID:               compact.RequestID,
+			Source:                  compact.Source,
+			CompactionID:            compact.CompactionID,
+			PreviousCompactionID:    stringFromMetadata(meta, "previous_compaction_id"),
+			CompactionGeneration:    compact.CompactionGeneration,
+			CompactionWindowID:      compact.CompactionWindowID,
+			FirstKeptEntryID:        stringFromMetadata(meta, "first_kept_entry_id"),
+			CompactedThroughEntryID: compact.CompactedThroughEntryID,
+			Summary:                 strings.TrimSpace(ev.Result),
+			SummarySchemaVersion:    stringFromMetadata(meta, "summary_schema_version"),
+			Trigger:                 compact.Trigger,
+			Reason:                  compact.Reason,
+			Phase:                   stringFromMetadata(meta, "compaction_phase"),
+			TokensBefore:            compact.TokensBefore,
+			TokensAfterEstimate:     compact.TokensAfterEstimate,
+			UsageBefore:             compact.ContextBefore,
+			UsageAfter:              compact.ContextAfter,
+			Details:                 stringDetailsFromMetadata(meta),
+			CreatedAt:               compact.ObservedAt,
+		}
+	}
+	return out
+}
+
+func stringDetailsFromMetadata(meta map[string]any) map[string]string {
+	if len(meta) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for key, value := range meta {
+		text, ok := value.(string)
+		if !ok {
+			continue
+		}
+		text = strings.TrimSpace(text)
+		if text != "" {
+			out[key] = text
+		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
