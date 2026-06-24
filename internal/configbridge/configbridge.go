@@ -11,29 +11,31 @@ import (
 
 func ContextPolicy(policy config.ContextPolicy) contextpolicy.Policy {
 	return contextpolicy.Policy{
-		ContextWindowTokens:   policy.ContextWindowTokens,
-		MaxOutputTokens:       policy.MaxOutputTokens,
-		ReservedOutputTokens:  policy.ReservedOutputTokens,
-		ReservedSummaryTokens: policy.ReservedSummaryTokens,
-		RecentTailTokens:      policy.RecentTailTokens,
-		RecentUserTokens:      policy.RecentUserTokens,
-		EstimatorSource:       policy.EstimatorSource,
-		EstimatorMethod:       contextpolicy.EstimateMethod(policy.EstimatorMethod),
-		MaxCompactionFailures: policy.MaxCompactionFailures,
+		ContextWindowTokens:          policy.ContextWindowTokens,
+		MaxOutputTokens:              policy.MaxOutputTokens,
+		ReservedOutputTokens:         policy.ReservedOutputTokens,
+		ReservedSummaryTokens:        policy.ReservedSummaryTokens,
+		RecentTailTokens:             policy.RecentTailTokens,
+		RecentUserTokens:             policy.RecentUserTokens,
+		CompactedContextTargetTokens: policy.CompactedContextTargetTokens,
+		EstimatorSource:              policy.EstimatorSource,
+		EstimatorMethod:              contextpolicy.EstimateMethod(policy.EstimatorMethod),
+		MaxCompactionFailures:        policy.MaxCompactionFailures,
 	}
 }
 
 func PublicContextPolicy(policy contextpolicy.Policy) config.ContextPolicy {
 	return config.ContextPolicy{
-		ContextWindowTokens:   policy.ContextWindowTokens,
-		MaxOutputTokens:       policy.MaxOutputTokens,
-		ReservedOutputTokens:  policy.ReservedOutputTokens,
-		ReservedSummaryTokens: policy.ReservedSummaryTokens,
-		RecentTailTokens:      policy.RecentTailTokens,
-		RecentUserTokens:      policy.RecentUserTokens,
-		EstimatorSource:       policy.EstimatorSource,
-		EstimatorMethod:       config.EstimateMethod(policy.EstimatorMethod),
-		MaxCompactionFailures: policy.MaxCompactionFailures,
+		ContextWindowTokens:          policy.ContextWindowTokens,
+		MaxOutputTokens:              policy.MaxOutputTokens,
+		ReservedOutputTokens:         policy.ReservedOutputTokens,
+		ReservedSummaryTokens:        policy.ReservedSummaryTokens,
+		RecentTailTokens:             policy.RecentTailTokens,
+		RecentUserTokens:             policy.RecentUserTokens,
+		CompactedContextTargetTokens: policy.CompactedContextTargetTokens,
+		EstimatorSource:              policy.EstimatorSource,
+		EstimatorMethod:              config.EstimateMethod(policy.EstimatorMethod),
+		MaxCompactionFailures:        policy.MaxCompactionFailures,
 	}
 }
 

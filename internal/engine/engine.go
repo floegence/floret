@@ -21,14 +21,16 @@ import (
 )
 
 var (
-	ErrNoProgress           = errors.New("agent loop made no progress")
-	ErrDuplicateTools       = errors.New("agent loop repeated identical tool calls")
-	ErrDuplicateToolCallID  = errors.New("provider returned duplicate tool call id")
-	ErrProviderTruncated    = errors.New("provider output was truncated")
-	ErrContentFiltered      = errors.New("provider output was content filtered")
-	ErrProviderFinishError  = errors.New("provider returned error finish reason")
-	ErrStopHookLoop         = errors.New("stop hook requested too many continuations")
-	ErrInvalidTokenEstimate = errors.New("provider token estimate missing source or method")
+	ErrNoProgress                 = errors.New("agent loop made no progress")
+	ErrDuplicateTools             = errors.New("agent loop repeated identical tool calls")
+	ErrDuplicateToolCallID        = errors.New("provider returned duplicate tool call id")
+	ErrProviderTruncated          = errors.New("provider output was truncated")
+	ErrContentFiltered            = errors.New("provider output was content filtered")
+	ErrProviderFinishError        = errors.New("provider returned error finish reason")
+	ErrStopHookLoop               = errors.New("stop hook requested too many continuations")
+	ErrInvalidTokenEstimate       = errors.New("provider token estimate missing source or method")
+	ErrCompactedRequestOverBudget = errors.New("compacted provider request still exceeds context budget")
+	ErrFixedContextOverBudget     = errors.New("provider request fixed context overhead exceeds context budget")
 )
 
 type Status string
@@ -47,7 +49,11 @@ const (
 	CompletionExplicitSignal CompletionPolicy = "explicit_signal"
 )
 
-const terminalCloseGrace = 250 * time.Millisecond
+const (
+	terminalCloseGrace                = 250 * time.Millisecond
+	maxCompactionConvergenceAttempts  = 4
+	compactionConvergenceSafetyTokens = 256
+)
 
 type CompletionReason string
 
@@ -133,6 +139,24 @@ type Options struct {
 type RunLabels struct {
 	Correlation map[string]string
 	Host        map[string]string
+}
+
+type compactedRequestValidation struct {
+	RequestEstimate      contextpolicy.RequestEstimate
+	ContextPressure      contextpolicy.ContextPressure
+	MessageContextUsage  contextpolicy.Usage
+	FixedInputTokens     int64
+	ReducibleInputTokens int64
+	RequestSafeLimit     int64
+}
+
+type compactionBudgetPlan struct {
+	SummaryTokens     int64
+	RecentTailTokens  int64
+	RecentUserTokens  int64
+	RequestSafeLimit  int64
+	FixedInputTokens  int64
+	TargetInputTokens int64
 }
 
 type Result struct {
@@ -1197,12 +1221,12 @@ func providerRequestMetadata(req provider.Request) map[string]any {
 func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, metrics *RunMetrics, failures *int) (provider.Request, []session.Message, bool, error) {
 	compacted := false
 	if pressure, ok := tracker.ConsumePendingCompaction(); ok {
-		next, err := e.compactForPressure(ctx, opts, step, history, compaction.TriggerPostResponse, compaction.ReasonFollowUpPressure, pressure, metrics, failures)
+		next, req, err := e.compactForPressure(ctx, opts, step, history, tracker, 1, false, compaction.TriggerPostResponse, compaction.ReasonFollowUpPressure, pressure, metrics, failures)
 		if err != nil {
 			return provider.Request{}, history, false, err
 		}
 		history = next
-		compacted = true
+		return req, history, true, nil
 	}
 
 	req, err := e.buildProjectedProviderRequest(ctx, opts, step, history, tracker, 1, false)
@@ -1213,21 +1237,11 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 		return req, history, compacted, nil
 	}
 
-	next, err := e.compactForPressure(ctx, opts, step, history, compaction.TriggerPreRequest, compaction.ReasonThreshold, req.ContextPressure, metrics, failures)
+	next, req, err := e.compactForPressure(ctx, opts, step, history, tracker, 1, false, compaction.TriggerPreRequest, compaction.ReasonThreshold, req.ContextPressure, metrics, failures)
 	if err != nil {
 		return provider.Request{}, history, compacted, err
 	}
-	history = next
-	compacted = true
-
-	req, err = e.buildProjectedProviderRequest(ctx, opts, step, history, tracker, 1, false)
-	if err != nil {
-		return provider.Request{}, history, compacted, err
-	}
-	if req.ContextPressure.HardLimitExceeded {
-		return provider.Request{}, history, compacted, ErrContextWouldOverflow
-	}
-	return req, history, compacted, nil
+	return req, next, true, nil
 }
 
 func (e *Engine) buildProjectedProviderRequest(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool) (provider.Request, error) {
@@ -1250,18 +1264,11 @@ func (e *Engine) sendOrdinaryProviderRequest(ctx context.Context, opts Options, 
 		return req, history, stepOutput, latency, false, err
 	}
 	pressure := tracker.Overflow(opts.ContextPolicy)
-	next, compactErr := e.compactForPressure(ctx, opts, step, history, compaction.TriggerOverflow, compaction.ReasonProviderOverflow, pressure, metrics, failures)
+	next, retryReq, compactErr := e.compactForPressure(ctx, opts, step, history, tracker, 2, true, compaction.TriggerOverflow, compaction.ReasonProviderOverflow, pressure, metrics, failures)
 	if compactErr != nil {
 		return req, history, StepOutput{}, latency, false, compactErr
 	}
 	history = next
-	retryReq, err := e.buildProjectedProviderRequest(ctx, opts, step, history, tracker, 2, true)
-	if err != nil {
-		return req, history, StepOutput{}, latency, true, err
-	}
-	if retryReq.ContextPressure.HardLimitExceeded {
-		return retryReq, history, StepOutput{}, latency, true, ErrContextWouldOverflow
-	}
 	stepOutput, retryLatency, overflow, err := e.sendProviderAttempt(ctx, opts, step, retryReq, metrics)
 	latency += retryLatency
 	if overflow {
@@ -1295,16 +1302,16 @@ func (e *Engine) sendProviderAttempt(ctx context.Context, opts Options, step int
 	return out, latency, false, err
 }
 
-func (e *Engine) compactForPressure(ctx context.Context, opts Options, step int, history []session.Message, trigger compaction.Trigger, reason compaction.Reason, pressure contextpolicy.ContextPressure, metrics *RunMetrics, failures *int) ([]session.Message, error) {
+func (e *Engine) compactForPressure(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool, trigger compaction.Trigger, reason compaction.Reason, pressure contextpolicy.ContextPressure, metrics *RunMetrics, failures *int) ([]session.Message, provider.Request, error) {
 	usage := contextpolicy.EstimateMessageContext(e.memory.SystemPrompt, history, opts.ContextPolicy)
-	next, err := e.runCompaction(ctx, opts, step, history, trigger, reason, usage, failures, pressure)
+	next, req, err := e.runCompaction(ctx, opts, step, history, tracker, attempt, overflowRetried, trigger, reason, usage, failures, pressure)
 	if err != nil {
-		return history, err
+		return history, provider.Request{}, err
 	}
 	if metrics != nil {
 		metrics.Compactions++
 	}
-	return next, nil
+	return next, req, nil
 }
 
 func providerRequestSnapshot(req provider.Request) cache.ProviderRequestSnapshot {
@@ -1350,13 +1357,13 @@ func validateConfiguredTools(local []provider.ToolDefinition, hosted []provider.
 	return err
 }
 
-func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, history []session.Message, trigger compaction.Trigger, reason compaction.Reason, usage contextpolicy.Usage, failures *int, beforePressure contextpolicy.ContextPressure) ([]session.Message, error) {
+func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool, trigger compaction.Trigger, reason compaction.Reason, usage contextpolicy.Usage, failures *int, beforePressure contextpolicy.ContextPressure) ([]session.Message, provider.Request, error) {
 	if failures != nil && *failures >= opts.ContextPolicy.MaxCompactionFailures {
-		return nil, fmt.Errorf("compaction failure circuit breaker reached after %d failures", *failures)
+		return nil, provider.Request{}, fmt.Errorf("compaction failure circuit breaker reached after %d failures", *failures)
 	}
 	manager := e.compactor
 	if manager == nil {
-		return nil, errors.New("compaction manager is required when context exceeds policy")
+		return nil, provider.Request{}, errors.New("compaction manager is required when context exceeds policy")
 	}
 	operationID := compactionOperationID(opts.RunID, step, trigger, reason)
 	e.emit(opts, event.Event{
@@ -1371,38 +1378,72 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		Metrics:  usage,
 		Metadata: compactionStartMetadata(operationID, trigger, reason, beforePressure, usage),
 	})
-	result, active, err := manager.Compact(ctx, CompactionRequest{
-		RunID:         opts.RunID,
-		ThreadID:      opts.ThreadID,
-		TurnID:        opts.TurnID,
-		TraceID:       opts.TraceID,
-		PromptScopeID: opts.PromptScopeID,
-		Step:          step,
-		History:       history,
-		Policy:        compactionPolicyForUsage(opts.ContextPolicy, usage),
-		Trigger:       trigger,
-		Reason:        reason,
-		Phase:         compaction.PhaseGenerate,
-		Provider:      e.provider,
-		ProviderName:  opts.ProviderName,
-		Model:         opts.Model,
-		ContextUsage:  usage,
-		Details: map[string]string{
-			"run_id":                 opts.RunID,
-			"thread_id":              opts.ThreadID,
-			"turn_id":                opts.TurnID,
-			"trace_id":               opts.TraceID,
-			"prompt_scope_id":        opts.PromptScopeID,
-			"operation_id":           operationID,
-			"context_window":         fmt.Sprintf("%d", usage.ContextWindow),
-			"threshold_tokens":       fmt.Sprintf("%d", usage.ThresholdTokens),
-			"max_output_tokens":      fmt.Sprintf("%d", usage.MaxOutputTokens),
-			"output_headroom_tokens": fmt.Sprintf("%d", usage.OutputHeadroom),
-			"auto_compact_ratio_pct": fmt.Sprintf("%d", usage.AutoCompactRatio),
-			"tokens_before":          fmt.Sprintf("%d", usage.InputTokens),
-			"consecutive_failures":   fmt.Sprintf("%d", derefInt(failures)),
-		},
-	})
+	baseDetails := map[string]string{
+		"run_id":                 opts.RunID,
+		"thread_id":              opts.ThreadID,
+		"turn_id":                opts.TurnID,
+		"trace_id":               opts.TraceID,
+		"prompt_scope_id":        opts.PromptScopeID,
+		"operation_id":           operationID,
+		"context_window":         fmt.Sprintf("%d", usage.ContextWindow),
+		"threshold_tokens":       fmt.Sprintf("%d", usage.ThresholdTokens),
+		"max_output_tokens":      fmt.Sprintf("%d", usage.MaxOutputTokens),
+		"output_headroom_tokens": fmt.Sprintf("%d", usage.OutputHeadroom),
+		"auto_compact_ratio_pct": fmt.Sprintf("%d", usage.AutoCompactRatio),
+		"tokens_before":          fmt.Sprintf("%d", usage.InputTokens),
+		"consecutive_failures":   fmt.Sprintf("%d", derefInt(failures)),
+	}
+	policy := compactionPolicyForUsage(opts.ContextPolicy, usage)
+	var result compaction.Result
+	var active []session.Message
+	var req provider.Request
+	var validation compactedRequestValidation
+	var err error
+	for compactAttempt := 1; compactAttempt <= maxCompactionConvergenceAttempts; compactAttempt++ {
+		details := cloneStringMap(baseDetails)
+		details["compaction_convergence_attempt"] = fmt.Sprintf("%d", compactAttempt)
+		result, active, err = manager.Compact(ctx, CompactionRequest{
+			RunID:         opts.RunID,
+			ThreadID:      opts.ThreadID,
+			TurnID:        opts.TurnID,
+			TraceID:       opts.TraceID,
+			PromptScopeID: opts.PromptScopeID,
+			Step:          step,
+			History:       history,
+			Policy:        policy,
+			Trigger:       trigger,
+			Reason:        reason,
+			Phase:         compaction.PhaseGenerate,
+			Provider:      e.provider,
+			ProviderName:  opts.ProviderName,
+			Model:         opts.Model,
+			ContextUsage:  usage,
+			Details:       details,
+		})
+		if err != nil {
+			break
+		}
+		req, err = e.buildProjectedProviderRequest(ctx, opts, step, active, tracker, attempt, overflowRetried)
+		if err != nil {
+			break
+		}
+		validation = compactedRequestValidationForRequest(req)
+		if !validation.ContextPressure.HardLimitExceeded {
+			err = nil
+			break
+		}
+		nextPolicy, ok := nextCompactionPolicyForValidation(policy, validation)
+		if !ok {
+			err = fmt.Errorf("%w: projected_input_tokens=%d request_safe_limit=%d fixed_input_tokens=%d", ErrFixedContextOverBudget, validation.ContextPressure.ProjectedInputTokens, validation.RequestSafeLimit, validation.FixedInputTokens)
+			break
+		}
+		if sameCompactionBudget(policy, nextPolicy) {
+			err = fmt.Errorf("%w: projected_input_tokens=%d request_safe_limit=%d compacted_context_target_tokens=%d", ErrCompactedRequestOverBudget, validation.ContextPressure.ProjectedInputTokens, validation.RequestSafeLimit, policy.CompactedContextTargetTokens)
+			break
+		}
+		policy = nextPolicy
+		err = fmt.Errorf("%w: projected_input_tokens=%d request_safe_limit=%d", ErrCompactedRequestOverBudget, validation.ContextPressure.ProjectedInputTokens, validation.RequestSafeLimit)
+	}
 	if err != nil {
 		if failures != nil {
 			*failures++
@@ -1420,7 +1461,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 			Metrics:  usage,
 			Metadata: compactionFailedMetadata(operationID, trigger, reason, beforePressure, usage),
 		})
-		return nil, err
+		return nil, provider.Request{}, err
 	}
 	if failures != nil {
 		*failures = 0
@@ -1436,9 +1477,9 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		Message:  result.CompactionID,
 		Result:   result.Summary,
 		Metrics:  result,
-		Metadata: compactionCompleteMetadata(operationID, result),
+		Metadata: compactionCompleteMetadata(operationID, result, validation),
 	})
-	return active, nil
+	return active, req, nil
 }
 
 func compactionPolicyForUsage(policy contextpolicy.Policy, usage contextpolicy.Usage) contextpolicy.Policy {
@@ -1453,6 +1494,159 @@ func compactionPolicyForUsage(policy contextpolicy.Policy, usage contextpolicy.U
 		policy.ContextWindowTokens = 1
 	}
 	return contextpolicy.Normalize(policy)
+}
+
+func compactedRequestValidationForRequest(req provider.Request) compactedRequestValidation {
+	estimate := req.RequestEstimate.Normalized(req.ContextPolicy)
+	messageUsage := contextpolicy.EstimateMessageContext("", providerRequestHistoryMessages(req.Messages), req.ContextPolicy)
+	fixed := fixedInputTokens(estimate)
+	if estimate.MessageTokens <= 0 && estimate.EstimatedInputTokens > 0 && messageUsage.InputTokens > 0 {
+		renderedFixed := estimate.EstimatedInputTokens - messageUsage.InputTokens
+		if renderedFixed > fixed {
+			fixed = renderedFixed
+		}
+	}
+	if fixed < 0 {
+		fixed = 0
+	}
+	if estimate.EstimatedInputTokens > 0 && fixed > estimate.EstimatedInputTokens {
+		fixed = estimate.EstimatedInputTokens
+	}
+	reducible := estimate.EstimatedInputTokens - fixed
+	if reducible < 0 {
+		reducible = 0
+	}
+	requestSafeLimit := req.ContextPressure.RequestSafeLimit
+	if requestSafeLimit <= 0 {
+		requestSafeLimit = contextpolicy.RequestSafeLimitTokens(req.ContextPolicy)
+	}
+	return compactedRequestValidation{
+		RequestEstimate:      estimate,
+		ContextPressure:      req.ContextPressure,
+		MessageContextUsage:  messageUsage,
+		FixedInputTokens:     fixed,
+		ReducibleInputTokens: reducible,
+		RequestSafeLimit:     requestSafeLimit,
+	}
+}
+
+func providerRequestHistoryMessages(messages []session.Message) []session.Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	out := make([]session.Message, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role == session.System {
+			continue
+		}
+		out = append(out, msg)
+	}
+	return out
+}
+
+func fixedInputTokens(estimate contextpolicy.RequestEstimate) int64 {
+	fixed := estimate.PrefixTokens + estimate.ToolDefinitionTokens
+	if estimate.MessageTokens > 0 {
+		renderedFixed := estimate.EstimatedInputTokens - estimate.MessageTokens
+		if renderedFixed > fixed {
+			fixed = renderedFixed
+		}
+	}
+	if fixed < 0 {
+		return 0
+	}
+	return fixed
+}
+
+func nextCompactionPolicyForValidation(policy contextpolicy.Policy, validation compactedRequestValidation) (contextpolicy.Policy, bool) {
+	policy = contextpolicy.Normalize(policy)
+	plan, ok := compactionBudgetPlanForValidation(policy, validation)
+	if !ok {
+		return contextpolicy.Policy{}, false
+	}
+	next := policy
+	next.CompactedContextTargetTokens = plan.TargetInputTokens
+	next.ReservedSummaryTokens = plan.SummaryTokens
+	next.RecentTailTokens = plan.RecentTailTokens
+	next.RecentUserTokens = plan.RecentUserTokens
+	return contextpolicy.Normalize(next), true
+}
+
+func compactionBudgetPlanForValidation(policy contextpolicy.Policy, validation compactedRequestValidation) (compactionBudgetPlan, bool) {
+	requestSafeLimit := validation.RequestSafeLimit
+	if requestSafeLimit <= 0 {
+		return compactionBudgetPlan{}, false
+	}
+	target := requestSafeLimit - validation.FixedInputTokens - compactionConvergenceSafetyTokens
+	if target <= 0 {
+		return compactionBudgetPlan{}, false
+	}
+	if validation.ReducibleInputTokens > 1 && target >= validation.ReducibleInputTokens {
+		target = validation.ReducibleInputTokens - 1
+	}
+	if validation.MessageContextUsage.InputTokens > 1 && target >= validation.MessageContextUsage.InputTokens {
+		target = validation.MessageContextUsage.InputTokens - 1
+	}
+	currentTarget := contextpolicy.Normalize(policy).CompactedContextTargetTokens
+	if currentTarget > 1 && target >= currentTarget {
+		target = currentTarget * 3 / 4
+	}
+	if target < 6 {
+		return compactionBudgetPlan{}, false
+	}
+	messageBudget := target
+	if messageBudget > contextpolicy.DefaultCheckpointOverheadTokens+6 {
+		messageBudget -= contextpolicy.DefaultCheckpointOverheadTokens
+	}
+	if messageBudget < 6 {
+		return compactionBudgetPlan{}, false
+	}
+	summary, tail, users := splitCompactionMessageBudget(messageBudget)
+	return compactionBudgetPlan{
+		SummaryTokens:     summary,
+		RecentTailTokens:  tail,
+		RecentUserTokens:  users,
+		RequestSafeLimit:  requestSafeLimit,
+		FixedInputTokens:  validation.FixedInputTokens,
+		TargetInputTokens: target,
+	}, true
+}
+
+func splitCompactionMessageBudget(total int64) (summary, tail, users int64) {
+	summary = total * 45 / 100
+	tail = total * 35 / 100
+	users = total - summary - tail
+	if summary < 1 {
+		summary = 1
+	}
+	if tail < 1 {
+		tail = 1
+	}
+	if users < 1 {
+		users = 1
+	}
+	for summary+tail+users > total {
+		switch {
+		case tail > 1:
+			tail--
+		case users > 1:
+			users--
+		case summary > 1:
+			summary--
+		default:
+			return summary, tail, users
+		}
+	}
+	return summary, tail, users
+}
+
+func sameCompactionBudget(left, right contextpolicy.Policy) bool {
+	left = contextpolicy.Normalize(left)
+	right = contextpolicy.Normalize(right)
+	return left.CompactedContextTargetTokens == right.CompactedContextTargetTokens &&
+		left.ReservedSummaryTokens == right.ReservedSummaryTokens &&
+		left.RecentTailTokens == right.RecentTailTokens &&
+		left.RecentUserTokens == right.RecentUserTokens
 }
 
 func derefInt(value *int) int {

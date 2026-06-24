@@ -157,15 +157,16 @@ type NativeUsage struct {
 }
 
 type Policy struct {
-	ContextWindowTokens   int64          `json:"context_window_tokens,omitempty"`
-	MaxOutputTokens       int64          `json:"max_output_tokens,omitempty"`
-	ReservedOutputTokens  int64          `json:"reserved_output_tokens,omitempty"`
-	ReservedSummaryTokens int64          `json:"reserved_summary_tokens,omitempty"`
-	RecentTailTokens      int64          `json:"recent_tail_tokens,omitempty"`
-	RecentUserTokens      int64          `json:"recent_user_tokens,omitempty"`
-	EstimatorSource       string         `json:"estimator_source,omitempty"`
-	EstimatorMethod       EstimateMethod `json:"estimator_method,omitempty"`
-	MaxCompactionFailures int            `json:"max_compaction_failures,omitempty"`
+	ContextWindowTokens          int64          `json:"context_window_tokens,omitempty"`
+	MaxOutputTokens              int64          `json:"max_output_tokens,omitempty"`
+	ReservedOutputTokens         int64          `json:"reserved_output_tokens,omitempty"`
+	ReservedSummaryTokens        int64          `json:"reserved_summary_tokens,omitempty"`
+	RecentTailTokens             int64          `json:"recent_tail_tokens,omitempty"`
+	RecentUserTokens             int64          `json:"recent_user_tokens,omitempty"`
+	CompactedContextTargetTokens int64          `json:"compacted_context_target_tokens,omitempty"`
+	EstimatorSource              string         `json:"estimator_source,omitempty"`
+	EstimatorMethod              EstimateMethod `json:"estimator_method,omitempty"`
+	MaxCompactionFailures        int            `json:"max_compaction_failures,omitempty"`
 }
 
 // Usage is the compaction-internal message-context budget. It intentionally
@@ -199,6 +200,7 @@ func HasValues(policy Policy) bool {
 		policy.ReservedSummaryTokens > 0 ||
 		policy.RecentTailTokens > 0 ||
 		policy.RecentUserTokens > 0 ||
+		policy.CompactedContextTargetTokens > 0 ||
 		policy.EstimatorSource != "" ||
 		policy.EstimatorMethod != "" ||
 		policy.MaxCompactionFailures > 0
@@ -232,6 +234,9 @@ func MergeDefaults(policy, defaults Policy) Policy {
 	}
 	if policy.RecentUserTokens <= 0 {
 		policy.RecentUserTokens = defaultWindowBudget(defaults.RecentUserTokens, DefaultRecentUserTokens, policy.ContextWindowTokens)
+	}
+	if policy.CompactedContextTargetTokens <= 0 {
+		policy.CompactedContextTargetTokens = defaults.CompactedContextTargetTokens
 	}
 	if policy.EstimatorSource == "" {
 		policy.EstimatorSource = defaults.EstimatorSource
@@ -272,6 +277,9 @@ func Normalize(policy Policy) Policy {
 	}
 	if policy.RecentUserTokens <= 0 {
 		policy.RecentUserTokens = defaultWindowBudget(DefaultRecentUserTokens, DefaultRecentUserTokens, policy.ContextWindowTokens)
+	}
+	if policy.CompactedContextTargetTokens <= 0 {
+		policy.CompactedContextTargetTokens = DefaultCompactedContextTargetTokens
 	}
 	if policy.EstimatorSource == "" {
 		policy.EstimatorSource = DefaultEstimatorSource

@@ -2592,6 +2592,196 @@ func TestRequestEstimateTriggersPreRequestCompaction(t *testing.T) {
 	}
 }
 
+func TestCompactionConvergesBeforeEmittingComplete(t *testing.T) {
+	rec := &event.Recorder{}
+	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
+	p := &estimatingProvider{
+		Provider: scripted,
+		estimates: []provider.TokenEstimate{
+			{PrefixTokens: 100, MessageTokens: 900, ToolDefinitionTokens: 100, EstimatedInputTokens: 1100, Source: "request_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
+			{PrefixTokens: 100, MessageTokens: 780, ToolDefinitionTokens: 100, EstimatedInputTokens: 980, Source: "request_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
+			{PrefixTokens: 100, MessageTokens: 200, ToolDefinitionTokens: 100, EstimatedInputTokens: 400, Source: "request_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
+		},
+	}
+	store := session.NewMemoryStore()
+	if err := store.AppendTranscript("run",
+		session.Message{Role: session.User, Content: "older " + strings.Repeat("x ", 300), EntryID: "u1"},
+		session.Message{Role: session.Assistant, Content: "answer " + strings.Repeat("y ", 100), EntryID: "a1"},
+		session.Message{Role: session.User, Content: "new", EntryID: "u2"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	compactor := &countingLocalCompactor{manager: engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}}
+	e := newTestEngine(p, rec)
+	e.Store = store
+	e.Compactor = compactor
+	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100, ReservedSummaryTokens: 80, RecentTailTokens: 80, RecentUserTokens: 60}
+
+	got := e.Run(context.Background(), "")
+
+	if got.Status != engine.Completed || got.Output != "ok" {
+		t.Fatalf("result = %#v err=%v", got, got.Err)
+	}
+	if got.Metrics.Compactions != 1 || compactor.calls != 2 {
+		t.Fatalf("compactions=%d compactor calls=%d, want one logical compaction with two convergence attempts", got.Metrics.Compactions, compactor.calls)
+	}
+	if len(scripted.Requests) != 1 {
+		t.Fatalf("provider should receive only validated compacted request: %#v", scripted.Requests)
+	}
+	compactions := eventsOfType(rec.Events, event.ContextCompact)
+	if len(compactions) != 2 {
+		t.Fatalf("context compaction should emit only start and complete: %#v", compactions)
+	}
+	completeMeta, ok := compactions[1].Metadata.(map[string]any)
+	if !ok {
+		t.Fatalf("complete metadata = %#v", compactions[1].Metadata)
+	}
+	pressure, ok := completeMeta["validated_context_pressure"].(contextpolicy.ContextPressure)
+	if !ok || pressure.HardLimitExceeded || pressure.ProjectedInputTokens != 400 {
+		t.Fatalf("complete must carry validated in-budget request pressure: %#v", completeMeta)
+	}
+	assertEventOrder(t, rec.Events, event.ContextCompact, event.ContextCompact, event.ProviderRequest, event.ProviderDelta, event.ProviderFinish, event.RunEnd)
+}
+
+func TestCompactionFailureDoesNotEmitCompleteWhenFixedRequestOverBudget(t *testing.T) {
+	rec := &event.Recorder{}
+	p := &estimatingProvider{
+		Provider: harness.NewScriptedProvider(harness.Step(harness.Text("never sent"), harness.Done())),
+		estimates: []provider.TokenEstimate{
+			{PrefixTokens: 800, MessageTokens: 300, ToolDefinitionTokens: 200, EstimatedInputTokens: 1300, Source: "request_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
+			{PrefixTokens: 800, MessageTokens: 10, ToolDefinitionTokens: 200, EstimatedInputTokens: 1010, Source: "request_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
+		},
+	}
+	store := session.NewMemoryStore()
+	if err := store.AppendTranscript("run",
+		session.Message{Role: session.User, Content: "old", EntryID: "u1"},
+		session.Message{Role: session.User, Content: "new", EntryID: "u2"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	e := newTestEngine(p, rec)
+	e.Store = store
+	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100, ReservedSummaryTokens: 80, RecentTailTokens: 20, RecentUserTokens: 20}
+
+	got := e.Run(context.Background(), "")
+
+	if got.Status != engine.Failed || !errors.Is(got.Err, engine.ErrFixedContextOverBudget) {
+		t.Fatalf("result = %#v, want fixed overhead failure", got)
+	}
+	if len(p.Provider.(*harness.ScriptedProvider).Requests) != 0 {
+		t.Fatalf("provider should not receive unvalidated request after failed compaction: %#v", p.Provider.(*harness.ScriptedProvider).Requests)
+	}
+	compactions := eventsOfType(rec.Events, event.ContextCompact)
+	if len(compactions) != 2 {
+		t.Fatalf("failed compaction should emit start and failed only: %#v", compactions)
+	}
+	failedMeta, ok := compactions[1].Metadata.(map[string]any)
+	if !ok || failedMeta["phase"] != engine.ContextCompactPhaseFailed || compactions[1].Result != "" {
+		t.Fatalf("failed compaction event = %#v meta=%#v", compactions[1], failedMeta)
+	}
+	if slices.ContainsFunc(compactions, func(ev event.Event) bool {
+		meta, _ := ev.Metadata.(map[string]any)
+		return meta["phase"] == engine.ContextCompactPhaseComplete
+	}) {
+		t.Fatalf("failed compaction must not emit complete: %#v", compactions)
+	}
+}
+
+func TestPostResponsePressureCompactsNextRequestAndContinues(t *testing.T) {
+	rec := &event.Recorder{}
+	scripted := harness.NewScriptedProvider(
+		harness.Step(
+			harness.Usage(provider.Usage{InputTokens: 950, WindowInputTokens: 950, OutputTokens: 10, Source: provider.UsageNative, Available: true}),
+			harness.Tool("read-1", "read", `{"value":"large"}`),
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	p := &estimatingProvider{
+		Provider: scripted,
+		estimates: []provider.TokenEstimate{
+			{PrefixTokens: 40, MessageTokens: 120, ToolDefinitionTokens: 20, EstimatedInputTokens: 180, Source: "request_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
+			{PrefixTokens: 40, MessageTokens: 1000, ToolDefinitionTokens: 20, EstimatedInputTokens: 1060, Source: "request_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
+			{PrefixTokens: 40, MessageTokens: 220, ToolDefinitionTokens: 20, EstimatedInputTokens: 280, Source: "request_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
+		},
+	}
+	e := newTestEngine(p, rec)
+	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100, ReservedSummaryTokens: 80, RecentTailTokens: 60, RecentUserTokens: 40}
+	mustRegister(t, e.Tools, stringTool("read", "read large output", true, tools.PermissionSpec{Mode: tools.PermissionAllow}, func(context.Context, string) (string, error) {
+		return strings.Repeat("large output ", 300), nil
+	}))
+
+	got := e.Run(context.Background(), "read it")
+
+	if got.Status != engine.Completed || got.Output != "done" {
+		t.Fatalf("result = %#v", got)
+	}
+	if got.Metrics.Compactions != 1 || len(scripted.Requests) != 2 {
+		t.Fatalf("run should compact before second provider request and continue: result=%#v requests=%d", got, len(scripted.Requests))
+	}
+	compactions := eventsOfType(rec.Events, event.ContextCompact)
+	if len(compactions) != 2 {
+		t.Fatalf("context compaction should emit start and complete: %#v", compactions)
+	}
+	completeMeta, ok := compactions[1].Metadata.(map[string]any)
+	if !ok || completeMeta["trigger"] != compaction.TriggerPostResponse || completeMeta["reason"] != compaction.ReasonFollowUpPressure {
+		t.Fatalf("post-response compaction metadata = %#v", completeMeta)
+	}
+	if got.ContinuationReason != "" {
+		t.Fatalf("compaction should not be a terminal continuation reason: %#v", got)
+	}
+	assertEventOrder(t, rec.Events, event.ProviderUsage, event.ToolResult, event.StepEnd, event.ContextCompact, event.ContextCompact, event.ProviderRequest, event.RunEnd)
+}
+
+func TestOverflowRetryCompactionConvergesBeforeRetry(t *testing.T) {
+	rec := &event.Recorder{}
+	scripted := harness.NewScriptedProvider(
+		nil,
+		harness.Step(harness.Text("after retry"), harness.Done()),
+	)
+	scripted.Errs[1] = provider.ErrContextOverflow
+	p := &estimatingProvider{
+		Provider: scripted,
+		estimates: []provider.TokenEstimate{
+			{PrefixTokens: 80, MessageTokens: 120, ToolDefinitionTokens: 40, EstimatedInputTokens: 240, Source: "request_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
+			{PrefixTokens: 80, MessageTokens: 900, ToolDefinitionTokens: 40, EstimatedInputTokens: 1020, Source: "request_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
+			{PrefixTokens: 80, MessageTokens: 200, ToolDefinitionTokens: 40, EstimatedInputTokens: 320, Source: "request_estimator_test", Method: provider.TokenEstimateProviderRenderedPayload, Confidence: provider.EstimateConservative},
+		},
+	}
+	store := session.NewMemoryStore()
+	if err := store.AppendTranscript("run",
+		session.Message{Role: session.User, Content: "older " + strings.Repeat("x ", 300), EntryID: "u1"},
+		session.Message{Role: session.User, Content: "newer", EntryID: "u2"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	compactor := &countingLocalCompactor{manager: engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}}
+	e := newTestEngine(p, rec)
+	e.Store = store
+	e.Compactor = compactor
+	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 1000, ReservedOutputTokens: 100, ReservedSummaryTokens: 80, RecentTailTokens: 80, RecentUserTokens: 40}
+
+	got := e.Run(context.Background(), "")
+
+	if got.Status != engine.Completed || got.Output != "after retry" {
+		t.Fatalf("result = %#v err=%v", got, got.Err)
+	}
+	if got.Metrics.Compactions != 1 || compactor.calls != 2 || len(scripted.Requests) != 2 {
+		t.Fatalf("overflow retry should converge inside one logical compaction: result=%#v calls=%d requests=%d", got, compactor.calls, len(scripted.Requests))
+	}
+	compactions := eventsOfType(rec.Events, event.ContextCompact)
+	if len(compactions) != 2 {
+		t.Fatalf("context compaction should emit start and complete: %#v", compactions)
+	}
+	completeMeta, ok := compactions[1].Metadata.(map[string]any)
+	if !ok || completeMeta["trigger"] != compaction.TriggerOverflow || completeMeta["reason"] != compaction.ReasonProviderOverflow {
+		t.Fatalf("overflow compaction metadata = %#v", completeMeta)
+	}
+	assertEventOrder(t, rec.Events, event.ProviderRequest, event.ContextCompact, event.ContextCompact, event.ProviderRequest, event.RunEnd)
+}
+
 func TestCompactionPolicyUsesMessageContextPrefixBudget(t *testing.T) {
 	p := &estimatingProvider{
 		Provider: harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done())),
@@ -3061,6 +3251,16 @@ type policyRecordingCompactor struct {
 func (c *policyRecordingCompactor) Compact(_ context.Context, req engine.CompactionRequest) (compaction.Result, []session.Message, error) {
 	c.policy = req.Policy
 	return compaction.Result{}, nil, errors.New("stop after recording policy")
+}
+
+type countingLocalCompactor struct {
+	manager engine.CompactionManager
+	calls   int
+}
+
+func (c *countingLocalCompactor) Compact(ctx context.Context, req engine.CompactionRequest) (compaction.Result, []session.Message, error) {
+	c.calls++
+	return c.manager.Compact(ctx, req)
 }
 
 type testEngine struct {

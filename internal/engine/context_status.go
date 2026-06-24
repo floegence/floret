@@ -132,7 +132,7 @@ func compactionFailedMetadata(operationID string, trigger compaction.Trigger, re
 	}
 }
 
-func compactionCompleteMetadata(operationID string, result compaction.Result) map[string]any {
+func compactionCompleteMetadata(operationID string, result compaction.Result, validation compactedRequestValidation) map[string]any {
 	return map[string]any{
 		"phase":                      ContextCompactPhaseComplete,
 		"operation_id":               operationID,
@@ -150,5 +150,11 @@ func compactionCompleteMetadata(operationID string, result compaction.Result) ma
 		"tokens_after_estimate":      result.TokensAfterEstimate,
 		"context_before":             result.UsageBefore,
 		"context_after":              result.UsageAfter,
+		"validated_request_estimate": validation.RequestEstimate,
+		"validated_context_pressure": validation.ContextPressure,
+		"validated_message_context":  validation.MessageContextUsage,
+		"fixed_input_tokens":         validation.FixedInputTokens,
+		"reducible_input_tokens":     validation.ReducibleInputTokens,
+		"request_safe_limit":         validation.RequestSafeLimit,
 	}
 }

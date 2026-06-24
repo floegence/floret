@@ -34,7 +34,10 @@ reasoning, tool arguments, tool results, and local paths.
   journal ordinal order. This detail projection is separate from model-facing
   wait results and does not make raw provider wire records public.
 * Context statuses show projected and provider-reported context pressure.
-* Compaction events expose context compaction lifecycle.
+* Compaction events expose context compaction lifecycle. A complete compaction
+  event means the compacted active context has been rebuilt into a full provider
+  request and validated against context pressure; failed compactions do not emit
+  a complete event.
 
 # Key Source Files
 

@@ -33,7 +33,6 @@ const (
 
 var (
 	ErrNoCutPoint       = errors.New("compaction has no safe cut point")
-	ErrStillOverBudget  = errors.New("compacted context still exceeds token threshold")
 	ErrInvalidReference = errors.New("compaction reference is invalid")
 )
 
@@ -265,9 +264,6 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	prep.Result.TokensAfterEstimate = usageAfter.InputTokens
 	prep.Result.UsageAfter = usageAfter
 	recordUsageAfterDetails(&prep.Result, usageAfter, req.Policy)
-	if usageAfter.InputTokens >= usageAfter.ThresholdTokens {
-		return Preparation{}, ErrStillOverBudget
-	}
 	return prep, nil
 }
 
@@ -616,7 +612,10 @@ func fitTailStartForCompactedContext(history []session.Message, start int, keptU
 
 func compactedContextTarget(policy contextpolicy.Policy) int64 {
 	policy = contextpolicy.Normalize(policy)
-	target := contextpolicy.DefaultCompactedContextTargetTokens
+	target := policy.CompactedContextTargetTokens
+	if target <= 0 {
+		target = contextpolicy.DefaultCompactedContextTargetTokens
+	}
 	threshold := contextpolicy.Threshold(policy)
 	if threshold < target {
 		return threshold

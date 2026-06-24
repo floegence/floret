@@ -36,15 +36,16 @@ const (
 )
 
 type ContextPolicy struct {
-	ContextWindowTokens   int64          `json:"context_window_tokens,omitempty"`
-	MaxOutputTokens       int64          `json:"max_output_tokens,omitempty"`
-	ReservedOutputTokens  int64          `json:"reserved_output_tokens,omitempty"`
-	ReservedSummaryTokens int64          `json:"reserved_summary_tokens,omitempty"`
-	RecentTailTokens      int64          `json:"recent_tail_tokens,omitempty"`
-	RecentUserTokens      int64          `json:"recent_user_tokens,omitempty"`
-	EstimatorSource       string         `json:"estimator_source,omitempty"`
-	EstimatorMethod       EstimateMethod `json:"estimator_method,omitempty"`
-	MaxCompactionFailures int            `json:"max_compaction_failures,omitempty"`
+	ContextWindowTokens          int64          `json:"context_window_tokens,omitempty"`
+	MaxOutputTokens              int64          `json:"max_output_tokens,omitempty"`
+	ReservedOutputTokens         int64          `json:"reserved_output_tokens,omitempty"`
+	ReservedSummaryTokens        int64          `json:"reserved_summary_tokens,omitempty"`
+	RecentTailTokens             int64          `json:"recent_tail_tokens,omitempty"`
+	RecentUserTokens             int64          `json:"recent_user_tokens,omitempty"`
+	CompactedContextTargetTokens int64          `json:"compacted_context_target_tokens,omitempty"`
+	EstimatorSource              string         `json:"estimator_source,omitempty"`
+	EstimatorMethod              EstimateMethod `json:"estimator_method,omitempty"`
+	MaxCompactionFailures        int            `json:"max_compaction_failures,omitempty"`
 }
 
 type RequestEstimate struct {
@@ -115,28 +116,30 @@ type ContextUsage struct {
 
 func (p ContextPolicy) internal() contextpolicy.Policy {
 	return contextpolicy.Policy{
-		ContextWindowTokens:   p.ContextWindowTokens,
-		MaxOutputTokens:       p.MaxOutputTokens,
-		ReservedOutputTokens:  p.ReservedOutputTokens,
-		ReservedSummaryTokens: p.ReservedSummaryTokens,
-		RecentTailTokens:      p.RecentTailTokens,
-		RecentUserTokens:      p.RecentUserTokens,
-		EstimatorSource:       p.EstimatorSource,
-		EstimatorMethod:       contextpolicy.EstimateMethod(p.EstimatorMethod),
-		MaxCompactionFailures: p.MaxCompactionFailures,
+		ContextWindowTokens:          p.ContextWindowTokens,
+		MaxOutputTokens:              p.MaxOutputTokens,
+		ReservedOutputTokens:         p.ReservedOutputTokens,
+		ReservedSummaryTokens:        p.ReservedSummaryTokens,
+		RecentTailTokens:             p.RecentTailTokens,
+		RecentUserTokens:             p.RecentUserTokens,
+		CompactedContextTargetTokens: p.CompactedContextTargetTokens,
+		EstimatorSource:              p.EstimatorSource,
+		EstimatorMethod:              contextpolicy.EstimateMethod(p.EstimatorMethod),
+		MaxCompactionFailures:        p.MaxCompactionFailures,
 	}
 }
 
 func contextPolicyFromInternal(p contextpolicy.Policy) ContextPolicy {
 	return ContextPolicy{
-		ContextWindowTokens:   p.ContextWindowTokens,
-		MaxOutputTokens:       p.MaxOutputTokens,
-		ReservedOutputTokens:  p.ReservedOutputTokens,
-		ReservedSummaryTokens: p.ReservedSummaryTokens,
-		RecentTailTokens:      p.RecentTailTokens,
-		RecentUserTokens:      p.RecentUserTokens,
-		EstimatorSource:       p.EstimatorSource,
-		EstimatorMethod:       EstimateMethod(p.EstimatorMethod),
-		MaxCompactionFailures: p.MaxCompactionFailures,
+		ContextWindowTokens:          p.ContextWindowTokens,
+		MaxOutputTokens:              p.MaxOutputTokens,
+		ReservedOutputTokens:         p.ReservedOutputTokens,
+		ReservedSummaryTokens:        p.ReservedSummaryTokens,
+		RecentTailTokens:             p.RecentTailTokens,
+		RecentUserTokens:             p.RecentUserTokens,
+		CompactedContextTargetTokens: p.CompactedContextTargetTokens,
+		EstimatorSource:              p.EstimatorSource,
+		EstimatorMethod:              EstimateMethod(p.EstimatorMethod),
+		MaxCompactionFailures:        p.MaxCompactionFailures,
 	}
 }

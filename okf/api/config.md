@@ -22,6 +22,8 @@ to read environment-backed defaults.
 * Normalize context policy defaults.
 * Normalize provider-neutral reasoning selection from `Config.Reasoning`,
   `FLORET_REASONING_LEVEL`, and `FLORET_REASONING_BUDGET_TOKENS`.
+* Carry context compaction budgets, including the compacted message-context
+  target used before the engine validates the full provider request.
 * Validate required provider settings.
 
 # Reasoning Selection
@@ -30,6 +32,14 @@ to read environment-backed defaults.
 runs. It carries a provider-neutral level and optional budget tokens. Provider
 adapters validate that intent against the selected model capability before
 rendering provider-specific request fields.
+
+# Context Policy
+
+`Config.ContextPolicy` controls context window, output headroom, automatic
+compaction threshold, retained summary/tail/user-message budgets, and
+`CompactedContextTargetTokens`. The target is the message-context budget passed
+to compaction; the engine still rebuilds and validates the full provider request
+before treating compaction as complete.
 
 # Use With
 

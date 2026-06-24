@@ -1,6 +1,8 @@
 # Floret OKF Update Log
 
 ## 2026-06-24
+* **Update**: Documented compacted context targets and the requirement that a
+  complete compaction event follows full provider request validation.
 * **Update**: Documented parent-scoped subagent detail APIs, bounded wait
   semantics, child run timeout behavior, and close-as-stop lifecycle rules.
 
