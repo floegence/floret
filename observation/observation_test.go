@@ -355,3 +355,72 @@ func TestCompactionEventFromEvents(t *testing.T) {
 		t.Fatalf("CompactionID = %q, want empty without explicit metadata", noID.CompactionID)
 	}
 }
+
+func TestCompactionDebugEventFromEvents(t *testing.T) {
+	debug := Event{
+		Type:       EventTypeContextCompactDebug,
+		RunID:      "turn-1",
+		ThreadID:   "thread-1",
+		TurnID:     "turn-1",
+		Step:       2,
+		ObservedAt: time.Unix(40, 0),
+		Metadata: map[string]any{
+			"stage":                          CompactionDebugStageRequestValidation,
+			"status":                         CompactionDebugStatusRetrying,
+			"operation_id":                   "op-1",
+			"request_id":                     "manual-1",
+			"trigger":                        "manual",
+			"reason":                         "manual",
+			"compaction_convergence_attempt": 2,
+			"history_message_count":          5,
+			"active_message_count":           3,
+			"tokens_before":                  int64(910),
+			"tokens_after_estimate":          int64(240),
+			"context_before": config.ContextUsage{
+				InputTokens:     910,
+				ContextWindow:   1000,
+				ThresholdTokens: 800,
+			},
+			"validated_context_pressure": config.ContextPressure{
+				ProjectedInputTokens: 910,
+				ContextWindowTokens:  1000,
+				ThresholdTokens:      800,
+				RequestSafeLimit:     900,
+				HardLimitExceeded:    true,
+			},
+			"request_estimate":                     config.RequestEstimate{EstimatedInputTokens: 760},
+			"fixed_input_tokens":                   int64(120),
+			"reducible_input_tokens":               int64(680),
+			"request_safe_limit":                   int64(900),
+			"compacted_context_target_tokens":      int64(260),
+			"next_compacted_context_target_tokens": int64(220),
+			"consecutive_failures":                 1,
+			"duration_ms":                          int64(33),
+		},
+	}
+
+	out, ok := CompactionDebugEventFromEvent(debug)
+	if !ok {
+		t.Fatalf("debug event was not converted")
+	}
+	if out.Stage != CompactionDebugStageRequestValidation ||
+		out.Status != CompactionDebugStatusRetrying ||
+		out.OperationID != "op-1" ||
+		out.RequestID != "manual-1" ||
+		out.CompactionConvergenceAttempt != 2 ||
+		out.HistoryMessageCount != 5 ||
+		out.ActiveMessageCount != 3 ||
+		out.TokensBefore != 910 ||
+		out.TokensAfterEstimate != 240 ||
+		out.RequestEstimate.EstimatedInputTokens != 760 ||
+		out.ValidatedContextPressure.RequestSafeLimit != 900 ||
+		out.FixedInputTokens != 120 ||
+		out.ReducibleInputTokens != 680 ||
+		out.RequestSafeLimit != 900 ||
+		out.CompactedContextTargetTokens != 260 ||
+		out.NextCompactedContextTargetTokens != 220 ||
+		out.ConsecutiveFailures != 1 ||
+		out.DurationMS != 33 {
+		t.Fatalf("debug event = %#v", out)
+	}
+}

@@ -44,6 +44,9 @@ type CompactionEvent struct {
 }
 
 func CompactionEventFromEvent(ev Event) (CompactionEvent, bool) {
+	if ev.Compaction != nil {
+		return *ev.Compaction, true
+	}
 	if ev.Type != EventTypeContextCompact {
 		return CompactionEvent{}, false
 	}

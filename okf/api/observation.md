@@ -4,7 +4,7 @@ title: observation Package
 description: The observation package provides host-facing DTOs derived from sanitized runtime events.
 resource: /observation/doc.go
 tags: [api, observation]
-timestamp: 2026-06-20T00:00:00Z
+timestamp: 2026-06-25T00:00:00Z
 ---
 
 # Summary
@@ -19,12 +19,20 @@ summaries without parsing assistant text or depending on implementation types.
 * `ContextStatusesFromObservations` combines projected request, provider usage,
   and event-derived context status.
 * `CompactionEventsFromEvents` extracts compaction lifecycle facts.
+* `CompactionDebugEventsFromEvents` extracts safe compaction diagnostic facts.
 
 `CompactionEvent` carries `OperationID` for one compaction attempt and optional
 `RequestID` / `Source` when a downstream host requested manual compaction. Start,
 complete, and failed observations for the same manual request keep the same
 operation and request correlation so host UIs can update one progress item
 instead of guessing from trigger text.
+
+`CompactionDebugEvent` carries the same `OperationID` / `RequestID` correlation
+plus stage and status values for the compaction pipeline. Stages identify
+generation attempts, projected request rebuilds, request validation, and
+installation. Debug observations may include token pressure, message counts,
+duration, provider-state kind, and error text, but they do not include prompt
+text or generated summary content.
 
 # Boundary
 
@@ -37,3 +45,4 @@ paths, tool arguments, tool results, provider payloads, and reasoning.
 * [Activity Timeline](/observation/activity.go)
 * [Context Status](/observation/context.go)
 * [Compaction Events](/observation/compaction.go)
+* [Compaction Debug Events](/observation/compaction_debug.go)

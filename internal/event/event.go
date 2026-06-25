@@ -48,6 +48,7 @@ const (
 	SkillInstallRequired   Type = "skill_install_required"
 	SkillDisclosureApplied Type = "skill_disclosure_applied"
 	ContextCompact         Type = "context_compact"
+	ContextCompactDebug    Type = "context_compact_debug"
 	ContextContinue        Type = "context_continue"
 	ControlSignal          Type = "control_signal"
 	BudgetExceeded         Type = "budget_exceeded"
@@ -730,6 +731,8 @@ func publicMetadataStringKey(key string) bool {
 	case "pending_handle", "pending_state":
 		return true
 	case "pressure_signal", "pressure_source", "confidence", "estimate_source", "estimate_method", "compaction_trigger", "trigger", "reason", "source":
+		return true
+	case "operation_id", "request_id", "stage", "phase", "compaction_id", "compaction_window_id", "previous_compaction_id", "provider_state_kind":
 		return true
 	default:
 		return false

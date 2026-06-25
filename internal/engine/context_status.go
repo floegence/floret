@@ -23,6 +23,20 @@ const (
 	ContextCompactPhaseStart    = "start"
 	ContextCompactPhaseComplete = "complete"
 	ContextCompactPhaseFailed   = "failed"
+
+	ContextCompactDebugStageBegin                   = "begin"
+	ContextCompactDebugStageGenerateAttemptStart    = "generate_attempt_start"
+	ContextCompactDebugStageGenerateAttemptComplete = "generate_attempt_complete"
+	ContextCompactDebugStageRequestRebuildStart     = "request_rebuild_start"
+	ContextCompactDebugStageRequestRebuildComplete  = "request_rebuild_complete"
+	ContextCompactDebugStageRequestValidation       = "request_validation"
+	ContextCompactDebugStageInstallStart            = "install_start"
+	ContextCompactDebugStageInstallComplete         = "install_complete"
+
+	ContextCompactDebugStatusRunning  = "running"
+	ContextCompactDebugStatusOK       = "ok"
+	ContextCompactDebugStatusRetrying = "retrying"
+	ContextCompactDebugStatusFailed   = "failed"
 )
 
 type ProviderUsageContextStatus struct {
@@ -160,6 +174,20 @@ func compactionCompleteMetadata(operationID string, result compaction.Result, va
 		"fixed_input_tokens":         validation.FixedInputTokens,
 		"reducible_input_tokens":     validation.ReducibleInputTokens,
 		"request_safe_limit":         validation.RequestSafeLimit,
+	}, manual)
+}
+
+func compactionDebugMetadata(operationID string, stage string, status string, trigger compaction.Trigger, reason compaction.Reason, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage, manual ManualCompactionRequest) map[string]any {
+	return withManualCompactionMetadata(map[string]any{
+		"stage":                  stage,
+		"status":                 status,
+		"operation_id":           operationID,
+		"trigger":                trigger,
+		"reason":                 reason,
+		"before_pressure":        beforePressure,
+		"context_before":         usage,
+		"message_context_before": usage,
+		"tokens_before":          usage.InputTokens,
 	}, manual)
 }
 

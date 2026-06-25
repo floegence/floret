@@ -386,30 +386,31 @@ type EventSink interface {
 }
 
 type Event struct {
-	Type          string                            `json:"type"`
-	TraceID       TraceID                           `json:"trace_id,omitempty"`
-	RunID         RunID                             `json:"run_id,omitempty"`
-	ThreadID      ThreadID                          `json:"thread_id,omitempty"`
-	TurnID        TurnID                            `json:"turn_id,omitempty"`
-	Step          int                               `json:"step,omitempty"`
-	Provider      string                            `json:"provider,omitempty"`
-	Model         string                            `json:"model,omitempty"`
-	Message       string                            `json:"message,omitempty"`
-	Result        string                            `json:"result,omitempty"`
-	Error         string                            `json:"error,omitempty"`
-	ToolID        string                            `json:"tool_id,omitempty"`
-	ToolName      string                            `json:"tool_name,omitempty"`
-	ToolKind      string                            `json:"tool_kind,omitempty"`
-	ArgsHash      string                            `json:"args_hash,omitempty"`
-	DurationMS    int64                             `json:"duration_ms,omitempty"`
-	FinishReason  string                            `json:"finish_reason,omitempty"`
-	Activity      *observation.ActivityPresentation `json:"activity,omitempty"`
-	Stream        *StreamObservation                `json:"stream,omitempty"`
-	ContextStatus *observation.ContextStatus        `json:"context_status,omitempty"`
-	Compaction    *observation.CompactionEvent      `json:"compaction,omitempty"`
-	Sources       []SourceRef                       `json:"sources,omitempty"`
-	Metadata      map[string]any                    `json:"metadata,omitempty"`
-	Timestamp     time.Time                         `json:"timestamp,omitempty"`
+	Type            string                            `json:"type"`
+	TraceID         TraceID                           `json:"trace_id,omitempty"`
+	RunID           RunID                             `json:"run_id,omitempty"`
+	ThreadID        ThreadID                          `json:"thread_id,omitempty"`
+	TurnID          TurnID                            `json:"turn_id,omitempty"`
+	Step            int                               `json:"step,omitempty"`
+	Provider        string                            `json:"provider,omitempty"`
+	Model           string                            `json:"model,omitempty"`
+	Message         string                            `json:"message,omitempty"`
+	Result          string                            `json:"result,omitempty"`
+	Error           string                            `json:"error,omitempty"`
+	ToolID          string                            `json:"tool_id,omitempty"`
+	ToolName        string                            `json:"tool_name,omitempty"`
+	ToolKind        string                            `json:"tool_kind,omitempty"`
+	ArgsHash        string                            `json:"args_hash,omitempty"`
+	DurationMS      int64                             `json:"duration_ms,omitempty"`
+	FinishReason    string                            `json:"finish_reason,omitempty"`
+	Activity        *observation.ActivityPresentation `json:"activity,omitempty"`
+	Stream          *StreamObservation                `json:"stream,omitempty"`
+	ContextStatus   *observation.ContextStatus        `json:"context_status,omitempty"`
+	Compaction      *observation.CompactionEvent      `json:"compaction,omitempty"`
+	CompactionDebug *observation.CompactionDebugEvent `json:"compaction_debug,omitempty"`
+	Sources         []SourceRef                       `json:"sources,omitempty"`
+	Metadata        map[string]any                    `json:"metadata,omitempty"`
+	Timestamp       time.Time                         `json:"timestamp,omitempty"`
 }
 
 type StreamObservationType string
@@ -1189,34 +1190,36 @@ func (s runtimeEventSink) Emit(ev event.Event) {
 func runtimeEvent(ev event.Event) Event {
 	contextStatus := runtimeContextStatus(ev)
 	compactionEvent := runtimeCompactionEvent(ev)
+	compactionDebugEvent := runtimeCompactionDebugEvent(ev)
 	sanitized := event.Sanitize(ev)
 	stream := runtimeStreamObservation(ev, sanitized.Metadata)
 	ev = sanitized
 	return Event{
-		Type:          string(ev.Type),
-		TraceID:       TraceID(ev.TraceID),
-		RunID:         RunID(ev.RunID),
-		ThreadID:      ThreadID(ev.ThreadID),
-		TurnID:        TurnID(ev.TurnID),
-		Step:          ev.Step,
-		Provider:      ev.Provider,
-		Model:         ev.Model,
-		Message:       ev.Message,
-		Result:        ev.Result,
-		Error:         ev.Err,
-		ToolID:        ev.ToolID,
-		ToolName:      ev.ToolName,
-		ToolKind:      ev.ToolKind,
-		ArgsHash:      ev.ArgsHash,
-		DurationMS:    ev.Duration,
-		FinishReason:  ev.FinishReason,
-		Activity:      cloneActivityPresentation(ev.Activity),
-		Stream:        stream,
-		ContextStatus: contextStatus,
-		Compaction:    compactionEvent,
-		Sources:       runtimeSourceRefs(ev.Sources),
-		Metadata:      safeMetadata(ev.Metadata),
-		Timestamp:     ev.Timestamp,
+		Type:            string(ev.Type),
+		TraceID:         TraceID(ev.TraceID),
+		RunID:           RunID(ev.RunID),
+		ThreadID:        ThreadID(ev.ThreadID),
+		TurnID:          TurnID(ev.TurnID),
+		Step:            ev.Step,
+		Provider:        ev.Provider,
+		Model:           ev.Model,
+		Message:         ev.Message,
+		Result:          ev.Result,
+		Error:           ev.Err,
+		ToolID:          ev.ToolID,
+		ToolName:        ev.ToolName,
+		ToolKind:        ev.ToolKind,
+		ArgsHash:        ev.ArgsHash,
+		DurationMS:      ev.Duration,
+		FinishReason:    ev.FinishReason,
+		Activity:        cloneActivityPresentation(ev.Activity),
+		Stream:          stream,
+		ContextStatus:   contextStatus,
+		Compaction:      compactionEvent,
+		CompactionDebug: compactionDebugEvent,
+		Sources:         runtimeSourceRefs(ev.Sources),
+		Metadata:        safeMetadata(ev.Metadata),
+		Timestamp:       ev.Timestamp,
 	}
 }
 
@@ -1331,6 +1334,84 @@ func runtimeCompactionEvent(ev event.Event) *observation.CompactionEvent {
 		out.TokensBefore = usage.InputTokens
 	}
 	if usage, ok := meta["context_before"].(contextpolicy.Usage); ok {
+		out.ContextBefore = configbridge.PublicContextUsage(usage)
+		if out.TokensBefore == 0 {
+			out.TokensBefore = usage.InputTokens
+		}
+	}
+	if usage, ok := meta["context_after"].(contextpolicy.Usage); ok {
+		out.ContextAfter = configbridge.PublicContextUsage(usage)
+	}
+	return &out
+}
+
+func runtimeCompactionDebugEvent(ev event.Event) *observation.CompactionDebugEvent {
+	if ev.Type != event.ContextCompactDebug {
+		return nil
+	}
+	meta, ok := ev.Metadata.(map[string]any)
+	if !ok {
+		return nil
+	}
+	stage := stringFromMetadata(meta, "stage")
+	status := stringFromMetadata(meta, "status")
+	if stage == "" || status == "" {
+		return nil
+	}
+	out := observation.CompactionDebugEvent{
+		RunID:                            ev.RunID,
+		ThreadID:                         ev.ThreadID,
+		TurnID:                           ev.TurnID,
+		Step:                             ev.Step,
+		OperationID:                      stringFromMetadata(meta, "operation_id"),
+		RequestID:                        stringFromMetadata(meta, "request_id"),
+		Stage:                            stage,
+		Status:                           status,
+		Trigger:                          stringFromMetadata(meta, "trigger"),
+		Reason:                           stringFromMetadata(meta, "reason"),
+		Source:                           stringFromMetadata(meta, "source"),
+		CompactionConvergenceAttempt:     intFromMetadata(meta, "compaction_convergence_attempt"),
+		HistoryMessageCount:              intFromMetadata(meta, "history_message_count"),
+		ActiveMessageCount:               intFromMetadata(meta, "active_message_count"),
+		CompactionID:                     stringFromMetadata(meta, "compaction_id"),
+		CompactionGeneration:             intFromMetadata(meta, "compaction_generation"),
+		CompactionWindowID:               stringFromMetadata(meta, "compaction_window_id"),
+		TokensBefore:                     int64FromMetadata(meta, "tokens_before"),
+		TokensAfterEstimate:              int64FromMetadata(meta, "tokens_after_estimate"),
+		HardLimitExceeded:                boolFromAnyMetadata(meta, "hard_limit_exceeded"),
+		FixedInputTokens:                 int64FromMetadata(meta, "fixed_input_tokens"),
+		ReducibleInputTokens:             int64FromMetadata(meta, "reducible_input_tokens"),
+		RequestSafeLimit:                 int64FromMetadata(meta, "request_safe_limit"),
+		CompactedContextTargetTokens:     int64FromMetadata(meta, "compacted_context_target_tokens"),
+		NextCompactedContextTargetTokens: int64FromMetadata(meta, "next_compacted_context_target_tokens"),
+		ConsecutiveFailures:              intFromMetadata(meta, "consecutive_failures"),
+		DurationMS:                       ev.Duration,
+		ProviderStateKind:                stringFromMetadata(meta, "provider_state_kind"),
+		Error:                            ev.Err,
+		ObservedAt:                       ev.Timestamp,
+	}
+	if duration := int64FromMetadata(meta, "duration_ms"); duration > 0 {
+		out.DurationMS = duration
+	}
+	if pressure, ok := meta["before_pressure"].(contextpolicy.ContextPressure); ok {
+		out.BeforePressure = configbridge.PublicContextPressure(pressure)
+	}
+	if pressure, ok := meta["validated_context_pressure"].(contextpolicy.ContextPressure); ok {
+		out.ValidatedContextPressure = configbridge.PublicContextPressure(pressure)
+		if !out.HardLimitExceeded {
+			out.HardLimitExceeded = pressure.HardLimitExceeded
+		}
+	}
+	if estimate, ok := meta["request_estimate"].(contextpolicy.RequestEstimate); ok {
+		out.RequestEstimate = configbridge.RequestEstimate(estimate)
+	}
+	if usage, ok := meta["context_before"].(contextpolicy.Usage); ok {
+		out.ContextBefore = configbridge.PublicContextUsage(usage)
+		if out.TokensBefore == 0 {
+			out.TokensBefore = usage.InputTokens
+		}
+	}
+	if usage, ok := meta["message_context_before"].(contextpolicy.Usage); ok {
 		out.ContextBefore = configbridge.PublicContextUsage(usage)
 		if out.TokensBefore == 0 {
 			out.TokensBefore = usage.InputTokens
@@ -1547,29 +1628,42 @@ func int64FromMetadata(meta map[string]any, key string) int64 {
 	}
 }
 
+func boolFromAnyMetadata(meta map[string]any, key string) bool {
+	switch v := meta[key].(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true")
+	default:
+		return false
+	}
+}
+
 func runtimeObservationEvent(ev event.Event) observation.Event {
 	sanitized := event.Sanitize(ev)
 	return observation.Event{
-		Type:         string(sanitized.Type),
-		TraceID:      sanitized.TraceID,
-		RunID:        sanitized.RunID,
-		ThreadID:     sanitized.ThreadID,
-		TurnID:       sanitized.TurnID,
-		Step:         sanitized.Step,
-		Provider:     sanitized.Provider,
-		Model:        sanitized.Model,
-		Message:      sanitized.Message,
-		Result:       sanitized.Result,
-		Error:        sanitized.Err,
-		ToolID:       sanitized.ToolID,
-		ToolName:     sanitized.ToolName,
-		ToolKind:     sanitized.ToolKind,
-		ArgsHash:     sanitized.ArgsHash,
-		DurationMS:   sanitized.Duration,
-		FinishReason: sanitized.FinishReason,
-		Activity:     cloneActivityPresentation(sanitized.Activity),
-		Metadata:     safeMetadata(sanitized.Metadata),
-		ObservedAt:   sanitized.Timestamp,
+		Type:            string(sanitized.Type),
+		TraceID:         sanitized.TraceID,
+		RunID:           sanitized.RunID,
+		ThreadID:        sanitized.ThreadID,
+		TurnID:          sanitized.TurnID,
+		Step:            sanitized.Step,
+		Provider:        sanitized.Provider,
+		Model:           sanitized.Model,
+		Message:         sanitized.Message,
+		Result:          sanitized.Result,
+		Error:           sanitized.Err,
+		ToolID:          sanitized.ToolID,
+		ToolName:        sanitized.ToolName,
+		ToolKind:        sanitized.ToolKind,
+		ArgsHash:        sanitized.ArgsHash,
+		DurationMS:      sanitized.Duration,
+		FinishReason:    sanitized.FinishReason,
+		Activity:        cloneActivityPresentation(sanitized.Activity),
+		Compaction:      runtimeCompactionEvent(ev),
+		CompactionDebug: runtimeCompactionDebugEvent(ev),
+		Metadata:        safeMetadata(sanitized.Metadata),
+		ObservedAt:      sanitized.Timestamp,
 	}
 }
 

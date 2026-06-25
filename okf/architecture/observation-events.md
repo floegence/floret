@@ -4,7 +4,7 @@ title: Observation and Events
 description: Floret emits presentation-neutral runtime events and exposes sanitized observation DTOs for hosts.
 resource: /observation/doc.go
 tags: [architecture, observation, events]
-timestamp: 2026-06-20T00:00:00Z
+timestamp: 2026-06-25T00:00:00Z
 ---
 
 # Summary
@@ -44,10 +44,17 @@ reasoning, tool arguments, tool results, and local paths.
   reason. The request correlation is carried through start, complete, and failed
   observations; active-run manual compaction failures are observable lifecycle
   facts and the provider loop may continue after them.
+* Compaction debug observations expose product-neutral pipeline stages for
+  diagnostics: begin, generation attempt, projected request rebuild, validation,
+  and installation. They share lifecycle operation/request correlation and carry
+  safe counts, token pressure, durations, provider-state kind, and error text.
+  They intentionally omit prompt text, generated summaries, tool arguments,
+  tool results, and provider payloads.
 
 # Key Source Files
 
 * [Observation Package](/observation/doc.go)
 * [Activity Timeline](/observation/activity.go)
 * [Context Observation](/observation/context.go)
+* [Compaction Debug Observation](/observation/compaction_debug.go)
 * [Event Sanitization](/internal/event/event.go)

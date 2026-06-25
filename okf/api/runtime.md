@@ -104,6 +104,11 @@ in start/complete/failed observations, and then continues the provider loop. A
 failed manual compaction is observable but does not by itself end the active
 run.
 
+Projected compactions also emit `runtime.Event.CompactionDebug` diagnostics.
+Those events identify safe pipeline stages and include operation/request
+correlation, token pressure, message counts, durations, provider-state kind, and
+errors without exposing prompt text, tool payloads, or generated summaries.
+
 For idle host-owned threads, `CompactProjectedContext` is the public
 compaction-only entry point. The result `ActiveTranscript` begins with a
 `compaction_summary` checkpoint and preserves compaction id, generation, and

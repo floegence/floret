@@ -2640,6 +2640,25 @@ func TestCompactionConvergesBeforeEmittingComplete(t *testing.T) {
 	if !ok || pressure.HardLimitExceeded || pressure.ProjectedInputTokens != 400 {
 		t.Fatalf("complete must carry validated in-budget request pressure: %#v", completeMeta)
 	}
+	debugEvents := eventsOfType(rec.Events, event.ContextCompactDebug)
+	if len(debugEvents) == 0 {
+		t.Fatalf("missing compaction debug events: %#v", rec.Events)
+	}
+	if debugMeta, ok := debugEvents[0].Metadata.(map[string]any); !ok || debugMeta["stage"] != "begin" || debugMeta["status"] != "running" {
+		t.Fatalf("begin debug metadata = %#v", debugEvents[0].Metadata)
+	}
+	if !slices.ContainsFunc(debugEvents, func(ev event.Event) bool {
+		meta, _ := ev.Metadata.(map[string]any)
+		return meta["stage"] == "request_validation" && meta["status"] == "retrying"
+	}) {
+		t.Fatalf("missing retrying request-validation debug event: %#v", debugEvents)
+	}
+	if !slices.ContainsFunc(debugEvents, func(ev event.Event) bool {
+		meta, _ := ev.Metadata.(map[string]any)
+		return meta["stage"] == "install_complete" && meta["status"] == "ok"
+	}) {
+		t.Fatalf("missing install completion debug event: %#v", debugEvents)
+	}
 	assertEventOrder(t, rec.Events, event.ContextCompact, event.ContextCompact, event.ProviderRequest, event.ProviderDelta, event.ProviderFinish, event.RunEnd)
 }
 
@@ -2679,6 +2698,13 @@ func TestCompactionFailureDoesNotEmitCompleteWhenFixedRequestOverBudget(t *testi
 	failedMeta, ok := compactions[1].Metadata.(map[string]any)
 	if !ok || failedMeta["phase"] != engine.ContextCompactPhaseFailed || compactions[1].Result != "" {
 		t.Fatalf("failed compaction event = %#v meta=%#v", compactions[1], failedMeta)
+	}
+	debugEvents := eventsOfType(rec.Events, event.ContextCompactDebug)
+	if !slices.ContainsFunc(debugEvents, func(ev event.Event) bool {
+		meta, _ := ev.Metadata.(map[string]any)
+		return meta["stage"] == "request_validation" && meta["status"] == "failed"
+	}) {
+		t.Fatalf("failed compaction should emit failed validation debug event: %#v", debugEvents)
 	}
 	if slices.ContainsFunc(compactions, func(ev event.Event) bool {
 		meta, _ := ev.Metadata.(map[string]any)

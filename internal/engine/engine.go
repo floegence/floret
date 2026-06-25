@@ -1559,6 +1559,14 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 	if manual.Source != "" {
 		baseDetails["manual_source"] = manual.Source
 	}
+	beginDebug := map[string]any{
+		"history_message_count": len(history),
+		"consecutive_failures":  derefInt(failures),
+	}
+	if opts.PreviousProviderState != nil {
+		beginDebug["provider_state_kind"] = strings.TrimSpace(opts.PreviousProviderState.Kind)
+	}
+	e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageBegin, ContextCompactDebugStatusRunning, trigger, reason, beforePressure, usage, manual, beginDebug, nil, time.Time{})
 	policy := compactionPolicyForUsage(opts.ContextPolicy, usage)
 	var result compaction.Result
 	var active []session.Message
@@ -1566,8 +1574,17 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 	var validation compactedRequestValidation
 	var err error
 	for compactAttempt := 1; compactAttempt <= maxCompactionConvergenceAttempts; compactAttempt++ {
+		attemptStarted := time.Now()
 		details := cloneStringMap(baseDetails)
 		details["compaction_convergence_attempt"] = fmt.Sprintf("%d", compactAttempt)
+		attemptDebug := map[string]any{
+			"compaction_convergence_attempt":  compactAttempt,
+			"history_message_count":           len(history),
+			"compacted_context_target_tokens": policy.CompactedContextTargetTokens,
+			"recent_tail_tokens":              policy.RecentTailTokens,
+			"recent_user_tokens":              policy.RecentUserTokens,
+		}
+		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageGenerateAttemptStart, ContextCompactDebugStatusRunning, trigger, reason, beforePressure, usage, manual, attemptDebug, nil, time.Time{})
 		result, active, err = manager.Compact(ctx, CompactionRequest{
 			RunID:         opts.RunID,
 			ThreadID:      opts.ThreadID,
@@ -1587,26 +1604,65 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 			Details:       details,
 		})
 		if err != nil {
+			e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageGenerateAttemptComplete, ContextCompactDebugStatusFailed, trigger, reason, beforePressure, usage, manual, attemptDebug, err, attemptStarted)
 			break
 		}
+		attemptDoneDebug := cloneAnyMap(attemptDebug)
+		attemptDoneDebug["active_message_count"] = len(active)
+		attemptDoneDebug["compaction_id"] = result.CompactionID
+		attemptDoneDebug["compaction_generation"] = result.CompactionGeneration
+		attemptDoneDebug["compaction_window_id"] = result.CompactionWindowID
+		attemptDoneDebug["tokens_after_estimate"] = result.TokensAfterEstimate
+		attemptDoneDebug["context_after"] = result.UsageAfter
+		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageGenerateAttemptComplete, ContextCompactDebugStatusOK, trigger, reason, beforePressure, usage, manual, attemptDoneDebug, nil, attemptStarted)
+		rebuildStarted := time.Now()
+		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestRebuildStart, ContextCompactDebugStatusRunning, trigger, reason, beforePressure, usage, manual, map[string]any{
+			"compaction_convergence_attempt": compactAttempt,
+			"active_message_count":           len(active),
+			"compaction_id":                  result.CompactionID,
+			"compaction_generation":          result.CompactionGeneration,
+			"compaction_window_id":           result.CompactionWindowID,
+		}, nil, time.Time{})
 		req, err = e.buildProjectedProviderRequest(ctx, opts, step, active, tracker, attempt, overflowRetried)
 		if err != nil {
+			e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestRebuildComplete, ContextCompactDebugStatusFailed, trigger, reason, beforePressure, usage, manual, map[string]any{
+				"compaction_convergence_attempt": compactAttempt,
+				"active_message_count":           len(active),
+				"compaction_id":                  result.CompactionID,
+				"compaction_generation":          result.CompactionGeneration,
+				"compaction_window_id":           result.CompactionWindowID,
+			}, err, rebuildStarted)
 			break
 		}
+		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestRebuildComplete, ContextCompactDebugStatusOK, trigger, reason, beforePressure, usage, manual, map[string]any{
+			"compaction_convergence_attempt": compactAttempt,
+			"active_message_count":           len(active),
+			"compaction_id":                  result.CompactionID,
+			"compaction_generation":          result.CompactionGeneration,
+			"compaction_window_id":           result.CompactionWindowID,
+			"request_estimate":               req.RequestEstimate.Normalized(req.ContextPolicy),
+			"validated_context_pressure":     req.ContextPressure,
+			"message_count":                  len(req.Messages),
+			"raw_segment_count":              len(req.RawPlan.Segments),
+		}, nil, rebuildStarted)
 		validation = compactedRequestValidationForRequest(req)
 		if !validation.ContextPressure.HardLimitExceeded {
+			e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestValidation, ContextCompactDebugStatusOK, trigger, reason, beforePressure, usage, manual, compactionValidationDebugMetadata(compactAttempt, result, validation, policy.CompactedContextTargetTokens, 0), nil, time.Time{})
 			err = nil
 			break
 		}
 		nextPolicy, ok := nextCompactionPolicyForValidation(policy, validation)
 		if !ok {
 			err = fmt.Errorf("%w: projected_input_tokens=%d request_safe_limit=%d fixed_input_tokens=%d", ErrFixedContextOverBudget, validation.ContextPressure.ProjectedInputTokens, validation.RequestSafeLimit, validation.FixedInputTokens)
+			e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestValidation, ContextCompactDebugStatusFailed, trigger, reason, beforePressure, usage, manual, compactionValidationDebugMetadata(compactAttempt, result, validation, policy.CompactedContextTargetTokens, 0), err, time.Time{})
 			break
 		}
 		if sameCompactionBudget(policy, nextPolicy) {
 			err = fmt.Errorf("%w: projected_input_tokens=%d request_safe_limit=%d compacted_context_target_tokens=%d", ErrCompactedRequestOverBudget, validation.ContextPressure.ProjectedInputTokens, validation.RequestSafeLimit, policy.CompactedContextTargetTokens)
+			e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestValidation, ContextCompactDebugStatusFailed, trigger, reason, beforePressure, usage, manual, compactionValidationDebugMetadata(compactAttempt, result, validation, policy.CompactedContextTargetTokens, nextPolicy.CompactedContextTargetTokens), err, time.Time{})
 			break
 		}
+		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestValidation, ContextCompactDebugStatusRetrying, trigger, reason, beforePressure, usage, manual, compactionValidationDebugMetadata(compactAttempt, result, validation, policy.CompactedContextTargetTokens, nextPolicy.CompactedContextTargetTokens), nil, time.Time{})
 		policy = nextPolicy
 		err = fmt.Errorf("%w: projected_input_tokens=%d request_safe_limit=%d", ErrCompactedRequestOverBudget, validation.ContextPressure.ProjectedInputTokens, validation.RequestSafeLimit)
 	}
@@ -1629,6 +1685,10 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		})
 		return nil, provider.Request{}, compaction.Result{}, err
 	}
+	installDebug := compactionValidationDebugMetadata(0, result, validation, 0, 0)
+	installDebug["active_message_count"] = len(active)
+	e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageInstallStart, ContextCompactDebugStatusRunning, trigger, reason, beforePressure, usage, manual, installDebug, nil, time.Time{})
+	installStarted := time.Now()
 	committed, err := e.commitValidatedCompaction(ctx, manager, CompactionCommitRequest{
 		CompactionRequest: CompactionRequest{
 			RunID:         opts.RunID,
@@ -1655,6 +1715,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		if failures != nil {
 			*failures++
 		}
+		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageInstallComplete, ContextCompactDebugStatusFailed, trigger, reason, beforePressure, usage, manual, installDebug, err, installStarted)
 		e.emit(opts, event.Event{
 			Type:     event.ContextCompact,
 			TraceID:  opts.TraceID,
@@ -1673,6 +1734,10 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 	result = committed.Result
 	active = committed.ActiveMessages
 	req = providerRequestWithCommittedCompaction(req, committed)
+	installDoneDebug := compactionValidationDebugMetadata(0, result, validation, 0, 0)
+	installDoneDebug["active_message_count"] = len(active)
+	installDoneDebug["context_after"] = result.UsageAfter
+	e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageInstallComplete, ContextCompactDebugStatusOK, trigger, reason, beforePressure, usage, manual, installDoneDebug, nil, installStarted)
 	if failures != nil {
 		*failures = 0
 	}
@@ -1690,6 +1755,60 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		Metadata: compactionCompleteMetadata(operationID, result, validation, manual),
 	})
 	return active, req, result, nil
+}
+
+func (e *Engine) emitCompactionDebug(opts Options, step int, operationID string, stage string, status string, trigger compaction.Trigger, reason compaction.Reason, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage, manual ManualCompactionRequest, extra map[string]any, err error, started time.Time) {
+	meta := compactionDebugMetadata(operationID, stage, status, trigger, reason, beforePressure, usage, manual)
+	for key, value := range extra {
+		meta[key] = value
+	}
+	var durationMS int64
+	if !started.IsZero() {
+		durationMS = time.Since(started).Milliseconds()
+		meta["duration_ms"] = durationMS
+	}
+	errText := ""
+	if err != nil {
+		errText = err.Error()
+	}
+	e.emit(opts, event.Event{
+		Type:     event.ContextCompactDebug,
+		TraceID:  opts.TraceID,
+		RunID:    opts.RunID,
+		ThreadID: opts.ThreadID,
+		Step:     step,
+		Provider: opts.ProviderName,
+		Model:    opts.Model,
+		Message:  fmt.Sprintf("%s/%s/%s", trigger, reason, stage),
+		Err:      errText,
+		Duration: durationMS,
+		Metrics:  usage,
+		Metadata: meta,
+	})
+}
+
+func compactionValidationDebugMetadata(compactAttempt int, result compaction.Result, validation compactedRequestValidation, compactedTargetTokens int64, nextTargetTokens int64) map[string]any {
+	out := map[string]any{
+		"compaction_convergence_attempt": compactAttempt,
+		"compaction_id":                  result.CompactionID,
+		"compaction_generation":          result.CompactionGeneration,
+		"compaction_window_id":           result.CompactionWindowID,
+		"tokens_after_estimate":          result.TokensAfterEstimate,
+		"context_after":                  result.UsageAfter,
+		"request_estimate":               validation.RequestEstimate,
+		"validated_context_pressure":     validation.ContextPressure,
+		"hard_limit_exceeded":            validation.ContextPressure.HardLimitExceeded,
+		"fixed_input_tokens":             validation.FixedInputTokens,
+		"reducible_input_tokens":         validation.ReducibleInputTokens,
+		"request_safe_limit":             validation.RequestSafeLimit,
+	}
+	if compactedTargetTokens > 0 {
+		out["compacted_context_target_tokens"] = compactedTargetTokens
+	}
+	if nextTargetTokens > 0 {
+		out["next_compacted_context_target_tokens"] = nextTargetTokens
+	}
+	return out
 }
 
 func (e *Engine) commitValidatedCompaction(ctx context.Context, manager CompactionManager, req CompactionCommitRequest) (committedCompaction, error) {

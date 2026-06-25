@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-06-25
+* **Update**: Documented public compaction debug observations for safe
+  diagnostics across generation, projected request rebuild, validation, and
+  installation stages.
 * **Update**: Documented projected manual context compaction, including active
   safe-point polling, idle compaction-only checkpoint results, and observation
   request correlation.

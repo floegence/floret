@@ -102,6 +102,7 @@ func TestRunProjectedTurnUsesPublicCompactionSummarizer(t *testing.T) {
 		t.Fatalf("summary request missing compaction context = %#v", req)
 	}
 	var compactions []observation.CompactionEvent
+	var debugEvents []observation.CompactionDebugEvent
 	var statuses []observation.ContextStatus
 	for _, ev := range sink.events {
 		if ev.ContextStatus != nil {
@@ -109,6 +110,9 @@ func TestRunProjectedTurnUsesPublicCompactionSummarizer(t *testing.T) {
 		}
 		if ev.Compaction != nil {
 			compactions = append(compactions, *ev.Compaction)
+		}
+		if ev.CompactionDebug != nil {
+			debugEvents = append(debugEvents, *ev.CompactionDebug)
 		}
 	}
 	if len(statuses) == 0 {
@@ -125,6 +129,14 @@ func TestRunProjectedTurnUsesPublicCompactionSummarizer(t *testing.T) {
 	}
 	if compactions[1].CompactionID == "" || compactions[1].CompactionGeneration == 0 || compactions[1].CompactionWindowID == "" {
 		t.Fatalf("complete event missing durable compaction fields: %#v", compactions[1])
+	}
+	if len(debugEvents) == 0 || debugEvents[0].Stage != observation.CompactionDebugStageBegin {
+		t.Fatalf("debug events = %#v", debugEvents)
+	}
+	if !slices.ContainsFunc(debugEvents, func(debug observation.CompactionDebugEvent) bool {
+		return debug.Stage == observation.CompactionDebugStageInstallComplete && debug.Status == observation.CompactionDebugStatusOK
+	}) {
+		t.Fatalf("debug events missing install completion: %#v", debugEvents)
 	}
 }
 
@@ -190,9 +202,13 @@ func TestRunProjectedTurnManualCompactionTriggersBelowThresholdAndContinues(t *t
 		t.Fatalf("summary requests = %#v", summarizer.requests)
 	}
 	var compactions []observation.CompactionEvent
+	var debugEvents []observation.CompactionDebugEvent
 	for _, ev := range sink.events {
 		if ev.Compaction != nil {
 			compactions = append(compactions, *ev.Compaction)
+		}
+		if ev.CompactionDebug != nil {
+			debugEvents = append(debugEvents, *ev.CompactionDebug)
 		}
 	}
 	if len(compactions) != 2 {
@@ -206,6 +222,11 @@ func TestRunProjectedTurnManualCompactionTriggersBelowThresholdAndContinues(t *t
 	}
 	if compactions[1].Trigger != "manual" || compactions[1].Reason != "manual" || compactions[1].Status != observation.CompactionStatusCompacted {
 		t.Fatalf("complete compaction = %#v", compactions[1])
+	}
+	if !slices.ContainsFunc(debugEvents, func(debug observation.CompactionDebugEvent) bool {
+		return debug.Stage == observation.CompactionDebugStageRequestValidation && debug.Status == observation.CompactionDebugStatusOK
+	}) {
+		t.Fatalf("manual compaction debug events = %#v", debugEvents)
 	}
 }
 
@@ -253,9 +274,13 @@ func TestRunProjectedTurnManualCompactionFailureDoesNotEndActiveRun(t *testing.T
 		t.Fatalf("result = %#v", result)
 	}
 	var compactions []observation.CompactionEvent
+	var debugEvents []observation.CompactionDebugEvent
 	for _, ev := range sink.events {
 		if ev.Compaction != nil {
 			compactions = append(compactions, *ev.Compaction)
+		}
+		if ev.CompactionDebug != nil {
+			debugEvents = append(debugEvents, *ev.CompactionDebug)
 		}
 	}
 	if len(compactions) != 2 {
@@ -266,6 +291,11 @@ func TestRunProjectedTurnManualCompactionFailureDoesNotEndActiveRun(t *testing.T
 		compactions[1].RequestID != "manual-fail" ||
 		compactions[1].Error != "manual summary unavailable" {
 		t.Fatalf("manual failure compaction = %#v", compactions)
+	}
+	if !slices.ContainsFunc(debugEvents, func(debug observation.CompactionDebugEvent) bool {
+		return debug.Stage == observation.CompactionDebugStageGenerateAttemptComplete && debug.Status == observation.CompactionDebugStatusFailed
+	}) {
+		t.Fatalf("manual failure debug events = %#v", debugEvents)
 	}
 }
 
