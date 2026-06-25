@@ -101,12 +101,14 @@ Hosts pass active-run requests through `ManualCompactionSource`; Floret decides
 the safe point, runs the same compaction pipeline as automatic pressure
 compaction with `manual/manual` trigger and reason, includes request correlation
 in start/complete/failed/cancelled observations, and then continues the provider
-loop. `ManualCompactionOperationID` exposes the public operation identity for a
+loop when the manual compaction failed without cancellation. `ManualCompactionOperationID` exposes the public operation identity for a
 known run id, provider-loop step, and manual request id so hosts can correlate
 accepted manual work with later Floret observations without depending on
 internal engine formatting. A failed manual compaction is observable but does not
-by itself end the active run; a manual source poll failure is emitted as a safe
-debug observation and the provider request continues.
+by itself end the active run; a non-cancellation manual source poll failure is
+emitted as a safe debug observation and the provider request continues.
+Cancellation during manual polling or compaction is terminal for that projected
+turn and does not continue to a provider request.
 
 Projected compactions also emit `runtime.Event.CompactionDebug` diagnostics.
 Those events identify safe pipeline stages and include operation/request
@@ -115,8 +117,11 @@ the next action without exposing local paths, secrets, prompt text, tool
 payloads, or generated summaries. Compaction attempts emit begin diagnostics
 before preflight checks and a terminal `preflight` failure when configuration or
 circuit-breaker checks stop the operation before summary generation. Manual poll
-errors use the `poll` stage. Cancelled compactions use cancelled lifecycle and
-debug statuses, preserving operation/request correlation.
+errors use the `poll` stage; non-cancellation poll errors continue to the
+provider request, while cancellation poll errors use terminal `fail_turn`
+semantics. Cancelled compactions use cancelled lifecycle and debug statuses,
+preserving operation/request correlation without exposing raw request strings in
+public runtime events.
 
 For idle host-owned threads, `CompactProjectedContext` is the public
 compaction-only entry point. The result `ActiveTranscript` begins with a

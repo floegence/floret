@@ -839,6 +839,45 @@ func TestServerStreamExposesLocalInspectionEventsByDefault(t *testing.T) {
 	}
 }
 
+func TestLocalInspectionAgentStreamEventSanitizesActivityTimeline(t *testing.T) {
+	ev := localInspectionAgentStreamEvent(AgentStreamEvent{
+		Type: AgentStreamActivity,
+		ActivityTimeline: &observation.ActivityTimeline{
+			SchemaVersion: 1,
+			Items: []observation.ActivityItem{{
+				ItemID:      "tool-1",
+				ToolName:    "read",
+				Label:       "Read /Users/alice/project/secret.txt",
+				Description: "Inspect /tmp/api-key.txt",
+				TargetRefs: []observation.ActivityTargetRef{{
+					Kind:  "file",
+					Label: "/Users/alice/project/secret.txt",
+					URI:   "file:///Users/alice/project/secret.txt",
+					Path:  "/Users/alice/project/secret.txt",
+				}},
+				Payload: map[string]any{
+					"path":   "/Users/alice/project/secret.txt",
+					"secret": "sk-test-secret",
+				},
+				Metadata: map[string]string{
+					"path":   "/Users/alice/project/secret.txt",
+					"detail": "token sk-test-secret",
+				},
+			}},
+		},
+	})
+	data, err := json.Marshal(ev.ActivityTimeline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, forbidden := range []string{"/Users/alice", "/tmp/api-key.txt", "sk-test-secret", "file:///Users/alice"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("activity timeline leaked %q: %s", forbidden, text)
+		}
+	}
+}
+
 func TestServerAgentSessionExposesToolArgsByDefault(t *testing.T) {
 	scripted := harness.NewScriptedProvider(
 		harness.Step(

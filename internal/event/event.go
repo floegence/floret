@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -708,15 +709,36 @@ func sanitizeMetadataWithKey(key string, value any) any {
 		}
 		return out
 	default:
+		if value, ok := metadataUnderlyingString(value); ok {
+			return sanitizeMetadataString(key, value)
+		}
 		return sanitizeMetadata(value)
 	}
 }
 
+func metadataUnderlyingString(value any) (string, bool) {
+	if value == nil {
+		return "", false
+	}
+	rv := reflect.ValueOf(value)
+	if !rv.IsValid() || rv.Kind() != reflect.String {
+		return "", false
+	}
+	return rv.String(), true
+}
+
 func sanitizeMetadataString(key, value string) string {
+	if publicMetadataTextKey(key) && safeMetadataText(value) && Redact(value) == value {
+		return value
+	}
 	if publicMetadataStringKey(key) && safeMetadataToken(value) && Redact(value) == value {
 		return value
 	}
 	return safeStringLabel(value)
+}
+
+func publicMetadataTextKey(key string) bool {
+	return key == "next_action"
 }
 
 func publicMetadataStringKey(key string) bool {
@@ -739,6 +761,24 @@ func publicMetadataStringKey(key string) bool {
 	}
 }
 
+func safeMetadataText(value string) bool {
+	if len(value) > 240 {
+		return false
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '_', '-', '.', ':', ',', ' ', '(', ')':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func safeMetadataToken(value string) bool {
 	if len(value) > 240 {
 		return false
@@ -748,7 +788,7 @@ func safeMetadataToken(value string) bool {
 			continue
 		}
 		switch r {
-		case '_', '-', '.', ':', ',', '/', ' ', '(', ')':
+		case '_', '-', '.', ':', ',':
 			continue
 		default:
 			return false

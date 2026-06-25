@@ -33,10 +33,10 @@ poll, begin, preflight, generation attempts, projected request rebuilds, request
 validation, and installation. Status may be running, ok, retrying, failed, or
 cancelled. Debug observations may include token pressure, message counts,
 duration, provider-state kind, the next action, and sanitized error text, but
-they do not include prompt text or generated summary content. A failed compaction
-that stops before summary generation still emits a terminal `preflight` debug
-observation so hosts can distinguish configuration or circuit breaker failures
-from provider and validation failures.
+they do not include prompt text, generated summary content, local paths, or raw
+manual request strings. A failed compaction that stops before summary generation
+still emits a terminal `preflight` debug observation so hosts can distinguish
+configuration or circuit breaker failures from provider and validation failures.
 
 # Boundary
 

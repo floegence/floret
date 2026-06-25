@@ -88,12 +88,16 @@ func localInspectionAgentSessionSnapshot(snapshot AgentSessionSnapshot) AgentSes
 	snapshot.Profile = stripProfileSecret(snapshot.Profile)
 	snapshot.SystemPrompt = ""
 	snapshot.AgentProfile.SystemPrompt = ""
+	snapshot.SelectedTools = cloneSlice(snapshot.SelectedTools)
+	snapshot.UnavailableCapabilities = cloneSlice(snapshot.UnavailableCapabilities)
 	snapshot.WaitingPrompt = event.SafePathRefsText(snapshot.WaitingPrompt)
+	snapshot.HostedTools = cloneSlice(snapshot.HostedTools)
 	for i := range snapshot.HostedTools {
 		snapshot.HostedTools[i].Parameters = pathSafeAnyMap(snapshot.HostedTools[i].Parameters)
 		snapshot.HostedTools[i].Options = pathSafeAnyMap(snapshot.HostedTools[i].Options)
 	}
 	snapshot.Capabilities = pathSafeCapabilityState(snapshot.Capabilities)
+	snapshot.Turns = cloneSlice(snapshot.Turns)
 	for i := range snapshot.Turns {
 		snapshot.Turns[i].Output = event.SafePathRefsText(snapshot.Turns[i].Output)
 		snapshot.Turns[i].Error = event.SafePathRefsText(snapshot.Turns[i].Error)
@@ -103,19 +107,22 @@ func localInspectionAgentSessionSnapshot(snapshot AgentSessionSnapshot) AgentSes
 	snapshot.ContextStatuses = pathSafeContextStatuses(snapshot.ContextStatuses)
 	snapshot.CompactionEvents = pathSafeCompactionEvents(snapshot.CompactionEvents)
 	snapshot.CompactionDebugs = pathSafeCompactionDebugEvents(snapshot.CompactionDebugs)
+	snapshot.PathEntries = cloneSlice(snapshot.PathEntries)
 	for i := range snapshot.PathEntries {
 		snapshot.PathEntries[i] = pathSafeObservedEntry(snapshot.PathEntries[i])
 	}
+	snapshot.AllEntries = cloneSlice(snapshot.AllEntries)
 	for i := range snapshot.AllEntries {
 		snapshot.AllEntries[i] = pathSafeObservedEntry(snapshot.AllEntries[i])
 	}
+	snapshot.ActivityTimeline = pathSafeActivityTimeline(snapshot.ActivityTimeline)
 	snapshot.SubAgents = pathSafeSubAgentSnapshots(snapshot.SubAgents)
 	snapshot.Observation = localInspectionAgentObservation(snapshot.Observation)
 	return snapshot
 }
 
 func pathSafeSubAgentSnapshots(snapshots []agentharness.SubAgentSnapshot) []agentharness.SubAgentSnapshot {
-	out := append([]agentharness.SubAgentSnapshot(nil), snapshots...)
+	out := cloneSlice(snapshots)
 	for i := range out {
 		out[i] = pathSafeSubAgentSnapshot(out[i])
 	}
@@ -133,6 +140,7 @@ func pathSafeSubAgentSnapshot(snapshot agentharness.SubAgentSnapshot) agentharne
 
 func pathSafeSubAgentDetail(detail agentharness.SubAgentDetail) agentharness.SubAgentDetail {
 	detail.Snapshot = pathSafeSubAgentSnapshot(detail.Snapshot)
+	detail.Events = cloneSlice(detail.Events)
 	for i := range detail.Events {
 		detail.Events[i] = pathSafeSubAgentDetailEvent(detail.Events[i])
 	}
@@ -174,19 +182,48 @@ func pathSafeActivityPresentation(in *observation.ActivityPresentation) *observa
 	out := *in
 	out.Label = event.SafePathRefsText(out.Label)
 	out.Description = event.SafePathRefsText(out.Description)
-	out.Chips = append([]observation.ActivityChip(nil), in.Chips...)
+	out.Chips = cloneSlice(in.Chips)
 	for i := range out.Chips {
 		out.Chips[i].Label = event.SafePathRefsText(out.Chips[i].Label)
 		out.Chips[i].Value = event.SafePathRefsText(out.Chips[i].Value)
 	}
-	out.TargetRefs = append([]observation.ActivityTargetRef(nil), in.TargetRefs...)
+	out.TargetRefs = cloneSlice(in.TargetRefs)
 	for i := range out.TargetRefs {
 		out.TargetRefs[i].Label = event.SafePathRefsText(out.TargetRefs[i].Label)
 		out.TargetRefs[i].URI = event.SafePathRefsText(out.TargetRefs[i].URI)
 		out.TargetRefs[i].Path = event.SafePathLabel(out.TargetRefs[i].Path)
 	}
-	out.Payload = pathSafeAnyMap(in.Payload)
+	out.Payload = pathSafeActivityPayload(in.Payload)
 	return &out
+}
+
+func pathSafeActivityTimeline(timeline observation.ActivityTimeline) observation.ActivityTimeline {
+	timeline.Summary.AttentionReasons = cloneSlice(timeline.Summary.AttentionReasons)
+	timeline.Items = cloneSlice(timeline.Items)
+	for i := range timeline.Items {
+		timeline.Items[i] = pathSafeActivityItem(timeline.Items[i])
+	}
+	return timeline
+}
+
+func pathSafeActivityItem(item observation.ActivityItem) observation.ActivityItem {
+	item.AttentionReasons = cloneSlice(item.AttentionReasons)
+	item.Label = event.SafePathRefsText(item.Label)
+	item.Description = event.SafePathRefsText(item.Description)
+	item.Chips = cloneSlice(item.Chips)
+	for i := range item.Chips {
+		item.Chips[i].Label = event.SafePathRefsText(item.Chips[i].Label)
+		item.Chips[i].Value = event.SafePathRefsText(item.Chips[i].Value)
+	}
+	item.TargetRefs = cloneSlice(item.TargetRefs)
+	for i := range item.TargetRefs {
+		item.TargetRefs[i].Label = event.SafePathRefsText(item.TargetRefs[i].Label)
+		item.TargetRefs[i].URI = event.SafePathRefsText(item.TargetRefs[i].URI)
+		item.TargetRefs[i].Path = event.SafePathLabel(item.TargetRefs[i].Path)
+	}
+	item.Payload = pathSafeActivityPayload(item.Payload)
+	item.Metadata = pathSafeActivityMetadata(item.Metadata)
+	return item
 }
 
 func pathSafeWaitSubAgentsResult(result agentharness.WaitSubAgentsResult) agentharness.WaitSubAgentsResult {
@@ -195,21 +232,26 @@ func pathSafeWaitSubAgentsResult(result agentharness.WaitSubAgentsResult) agenth
 }
 
 func localInspectionAgentObservation(observation AgentObservation) AgentObservation {
+	observation.ProviderRequests = cloneSlice(observation.ProviderRequests)
 	for i := range observation.ProviderRequests {
 		observation.ProviderRequests[i] = pathSafeObservedProviderRequest(observation.ProviderRequests[i])
 	}
+	observation.ProviderEvents = cloneSlice(observation.ProviderEvents)
 	for i := range observation.ProviderEvents {
 		observation.ProviderEvents[i] = pathSafeObservedProviderEvent(observation.ProviderEvents[i])
 	}
 	observation.ContextStatuses = pathSafeContextStatuses(observation.ContextStatuses)
 	observation.CompactionEvents = pathSafeCompactionEvents(observation.CompactionEvents)
 	observation.CompactionDebugs = pathSafeCompactionDebugEvents(observation.CompactionDebugs)
+	observation.ActivityTimeline = pathSafeActivityTimeline(observation.ActivityTimeline)
 	observation.SessionMessages = pathSafeObservedMessages(observation.SessionMessages)
 	observation.ActiveContext = pathSafeObservedMessages(observation.ActiveContext)
 	observation.ContextProjection = pathSafeObservedContextProjection(observation.ContextProjection)
+	observation.PathEntries = cloneSlice(observation.PathEntries)
 	for i := range observation.PathEntries {
 		observation.PathEntries[i] = pathSafeObservedEntry(observation.PathEntries[i])
 	}
+	observation.Transitions = cloneSlice(observation.Transitions)
 	for i := range observation.Transitions {
 		observation.Transitions[i].Details = event.SafePathRefsText(observation.Transitions[i].Details)
 	}
@@ -219,23 +261,30 @@ func localInspectionAgentObservation(observation AgentObservation) AgentObservat
 
 func pathSafeObservedProviderRequest(req ObservedProviderRequest) ObservedProviderRequest {
 	req.Messages = pathSafeObservedMessages(req.Messages)
+	req.RawSegments = cloneSlice(req.RawSegments)
 	for i := range req.RawSegments {
 		req.RawSegments[i].Raw = event.SafePathRefsText(req.RawSegments[i].Raw)
 		req.RawSegments[i].RawPreview = event.SafePathRefsText(req.RawSegments[i].RawPreview)
 	}
+	req.Tools = cloneSlice(req.Tools)
 	for i := range req.Tools {
+		req.Tools[i].InputSchema = cloneAnyMap(req.Tools[i].InputSchema)
+		req.Tools[i].OutputSchema = cloneAnyMap(req.Tools[i].OutputSchema)
 		req.Tools[i].Annotations = pathSafeAnyMap(req.Tools[i].Annotations)
 	}
+	req.HostedTools = cloneSlice(req.HostedTools)
 	for i := range req.HostedTools {
 		req.HostedTools[i].Parameters = pathSafeAnyMap(req.HostedTools[i].Parameters)
 		req.HostedTools[i].Options = pathSafeAnyMap(req.HostedTools[i].Options)
 	}
+	req.UnavailableCapabilities = cloneSlice(req.UnavailableCapabilities)
 	return req
 }
 
 func pathSafeObservedProviderEvent(ev ObservedProviderEvent) ObservedProviderEvent {
 	ev.Text = event.SafePathRefsText(ev.Text)
 	ev.Reasoning = event.SafePathRefsText(ev.Reasoning)
+	ev.ToolCalls = cloneSlice(ev.ToolCalls)
 	for i := range ev.ToolCalls {
 		ev.ToolCalls[i].Args = event.SafePathRefsText(ev.ToolCalls[i].Args)
 		ev.ToolCalls[i].Reasoning = event.SafePathRefsText(ev.ToolCalls[i].Reasoning)
@@ -250,7 +299,7 @@ func pathSafeObservedProviderEvent(ev ObservedProviderEvent) ObservedProviderEve
 }
 
 func pathSafeContextStatuses(statuses []ObservedContextStatus) []ObservedContextStatus {
-	out := append([]ObservedContextStatus(nil), statuses...)
+	out := cloneSlice(statuses)
 	for i := range out {
 		out[i].CompactionWindowID = event.SafePathRefsText(out[i].CompactionWindowID)
 	}
@@ -258,7 +307,7 @@ func pathSafeContextStatuses(statuses []ObservedContextStatus) []ObservedContext
 }
 
 func pathSafeCompactionEvents(compactions []ObservedCompactionEvent) []ObservedCompactionEvent {
-	out := append([]ObservedCompactionEvent(nil), compactions...)
+	out := cloneSlice(compactions)
 	for i := range out {
 		out[i].Reason = event.SafePathRefsText(out[i].Reason)
 		out[i].SummaryPreview = event.SafePathRefsText(out[i].SummaryPreview)
@@ -269,7 +318,7 @@ func pathSafeCompactionEvents(compactions []ObservedCompactionEvent) []ObservedC
 }
 
 func pathSafeCompactionDebugEvents(debugs []ObservedCompactionDebugEvent) []ObservedCompactionDebugEvent {
-	out := append([]ObservedCompactionDebugEvent(nil), debugs...)
+	out := cloneSlice(debugs)
 	for i := range out {
 		out[i].OperationID = event.SafePathRefsText(out[i].OperationID)
 		out[i].RequestID = event.SafePathRefsText(out[i].RequestID)
@@ -285,6 +334,7 @@ func pathSafeCompactionDebugEvents(debugs []ObservedCompactionDebugEvent) []Obse
 
 func pathSafeHostedToolResult(result provider.HostedToolResultData) provider.HostedToolResultData {
 	result.Text = event.SafePathRefsText(result.Text)
+	result.Results = cloneSlice(result.Results)
 	for i := range result.Results {
 		result.Results[i].Title = event.SafePathRefsText(result.Results[i].Title)
 		result.Results[i].URL = event.SafePathRefsText(result.Results[i].URL)
@@ -300,6 +350,10 @@ func pathSafeHostedToolResult(result provider.HostedToolResultData) provider.Hos
 }
 
 func pathSafeCapabilityState(state CapabilityState) CapabilityState {
+	state.MCPServers = cloneSlice(state.MCPServers)
+	state.SkillSources = cloneSlice(state.SkillSources)
+	state.Skills = cloneSlice(state.Skills)
+	state.Diagnostics = cloneSlice(state.Diagnostics)
 	for i := range state.SkillSources {
 		state.SkillSources[i].Root = event.SafePathLabel(state.SkillSources[i].Root)
 	}
@@ -315,13 +369,16 @@ func pathSafeCapabilityState(state CapabilityState) CapabilityState {
 
 func publicObservedProviderRequest(req ObservedProviderRequest) ObservedProviderRequest {
 	req.Messages = publicObservedMessages(req.Messages)
+	req.RawSegments = cloneSlice(req.RawSegments)
 	for i := range req.RawSegments {
 		req.RawSegments[i].Raw = ""
 		req.RawSegments[i].RawPreview = ""
 	}
+	req.Tools = cloneSlice(req.Tools)
 	for i := range req.Tools {
 		req.Tools[i] = publicToolDefinition(req.Tools[i])
 	}
+	req.HostedTools = cloneSlice(req.HostedTools)
 	for i := range req.HostedTools {
 		req.HostedTools[i].Parameters = nil
 		req.HostedTools[i].Options = nil
@@ -375,7 +432,7 @@ func publicProviderToolCalls(calls []provider.ToolCall) []provider.ToolCall {
 }
 
 func publicObservedEntries(entries []ObservedSessionEntry) []ObservedSessionEntry {
-	out := append([]ObservedSessionEntry(nil), entries...)
+	out := cloneSlice(entries)
 	for i := range out {
 		out[i].Message = publicObservedMessage(out[i].Message)
 		if out[i].Type == sessiontree.EntryRunFailure {
@@ -390,7 +447,7 @@ func publicObservedEntries(entries []ObservedSessionEntry) []ObservedSessionEntr
 }
 
 func publicObservedMessages(messages []ObservedSessionMessage) []ObservedSessionMessage {
-	out := append([]ObservedSessionMessage(nil), messages...)
+	out := cloneSlice(messages)
 	for i := range out {
 		out[i] = publicObservedMessage(out[i])
 	}
@@ -399,6 +456,7 @@ func publicObservedMessages(messages []ObservedSessionMessage) []ObservedSession
 
 func publicObservedContextProjection(projection ObservedContextProjection) ObservedContextProjection {
 	projection.Messages = publicObservedMessages(projection.Messages)
+	projection.Segments = cloneSlice(projection.Segments)
 	for i := range projection.Segments {
 		if projection.Segments[i].MessageIndex >= 0 && projection.Segments[i].MessageIndex < len(projection.Messages) {
 			msg := projection.Messages[projection.Segments[i].MessageIndex]
@@ -415,7 +473,7 @@ func publicObservedContextProjection(projection ObservedContextProjection) Obser
 }
 
 func pathSafeObservedEntries(entries []ObservedSessionEntry) []ObservedSessionEntry {
-	out := append([]ObservedSessionEntry(nil), entries...)
+	out := cloneSlice(entries)
 	for i := range out {
 		out[i] = pathSafeObservedEntry(out[i])
 	}
@@ -424,6 +482,7 @@ func pathSafeObservedEntries(entries []ObservedSessionEntry) []ObservedSessionEn
 
 func pathSafeObservedEntry(entry ObservedSessionEntry) ObservedSessionEntry {
 	entry.Message = pathSafeObservedMessage(entry.Message)
+	entry.KeptUserEntryIDs = cloneSlice(entry.KeptUserEntryIDs)
 	entry.Summary = event.SafePathRefsText(entry.Summary)
 	entry.Error = event.SafePathRefsText(entry.Error)
 	entry.CompactionReason = event.SafePathRefsText(entry.CompactionReason)
@@ -432,7 +491,7 @@ func pathSafeObservedEntry(entry ObservedSessionEntry) ObservedSessionEntry {
 }
 
 func pathSafeObservedMessages(messages []ObservedSessionMessage) []ObservedSessionMessage {
-	out := append([]ObservedSessionMessage(nil), messages...)
+	out := cloneSlice(messages)
 	for i := range out {
 		out[i] = pathSafeObservedMessage(out[i])
 	}
@@ -441,7 +500,9 @@ func pathSafeObservedMessages(messages []ObservedSessionMessage) []ObservedSessi
 
 func pathSafeObservedContextProjection(projection ObservedContextProjection) ObservedContextProjection {
 	projection.Messages = pathSafeObservedMessages(projection.Messages)
+	projection.Segments = cloneSlice(projection.Segments)
 	for i := range projection.Segments {
+		projection.Segments[i].ArtifactRefs = cloneSlice(projection.Segments[i].ArtifactRefs)
 		projection.Segments[i].UIPreview = event.SafePathRefsText(projection.Segments[i].UIPreview)
 	}
 	return projection
@@ -540,6 +601,126 @@ func pathSafeAnyMap(in map[string]any) map[string]any {
 	return out
 }
 
+func pathSafeActivityMetadata(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = pathSafeActivityString(key, value)
+	}
+	return out
+}
+
+func pathSafeActivityPayload(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	return pathSafeActivityAnyMap(in, 0)
+}
+
+func pathSafeActivityAnyMap(in map[string]any, depth int) map[string]any {
+	if len(in) == 0 || depth > 4 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = pathSafeActivityAnyValue(key, value, depth+1)
+	}
+	return out
+}
+
+func pathSafeActivityAnyValue(key string, value any, depth int) any {
+	switch typed := value.(type) {
+	case string:
+		return pathSafeActivityString(key, typed)
+	case map[string]string:
+		return pathSafeActivityMetadata(typed)
+	case map[string]any:
+		return pathSafeActivityAnyMap(typed, depth)
+	case []string:
+		out := make([]string, len(typed))
+		for i, item := range typed {
+			out[i] = pathSafeActivityString(key, item)
+		}
+		return out
+	case []any:
+		if depth > 4 {
+			return nil
+		}
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = pathSafeActivityAnyValue(key, item, depth+1)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func pathSafeActivityString(key string, value string) string {
+	if value == "" {
+		return ""
+	}
+	if metadataKeyIsSensitive(key) {
+		return publicMetadataRedactedLabel(value)
+	}
+	if metadataKeyIsPath(key) {
+		value = event.SafePathLabel(value)
+	} else {
+		value = event.SafePathRefsText(value)
+	}
+	return event.Redact(value)
+}
+
+func metadataKeyIsSensitive(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	return key == "api_key" ||
+		key == "apikey" ||
+		key == "authorization" ||
+		key == "password" ||
+		key == "token" ||
+		key == "secret" ||
+		key == "credential" ||
+		key == "credentials" ||
+		strings.HasSuffix(key, "_api_key") ||
+		strings.HasSuffix(key, "_token") ||
+		strings.HasSuffix(key, "_secret") ||
+		strings.HasSuffix(key, "_password") ||
+		strings.HasSuffix(key, "_credential") ||
+		strings.HasSuffix(key, "_credentials")
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = cloneAnyValue(value)
+	}
+	return out
+}
+
+func cloneAnyValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneAnyMap(typed)
+	case map[string]string:
+		return cloneStringMap(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneAnyValue(item)
+		}
+		return out
+	case []string:
+		return cloneSlice(typed)
+	default:
+		return value
+	}
+}
+
 func pathSafeAnyValue(key string, value any) any {
 	switch typed := value.(type) {
 	case string:
@@ -552,7 +733,7 @@ func pathSafeAnyValue(key string, value any) any {
 	case map[string]any:
 		return pathSafeAnyMap(typed)
 	case []string:
-		out := make([]string, len(typed))
+		out := cloneSlice(typed)
 		for i, item := range typed {
 			if metadataKeyIsPath(key) {
 				out[i] = event.SafePathLabel(item)
@@ -642,7 +823,7 @@ func pathSafeEngineEvents(events []event.Event) []event.Event {
 }
 
 func pathSafeHarnessEvents(events []agentharness.HarnessEvent) []agentharness.HarnessEvent {
-	out := append([]agentharness.HarnessEvent(nil), events...)
+	out := cloneSlice(events)
 	for i := range out {
 		out[i].Message = event.SafePathRefsText(out[i].Message)
 		out[i].Status = event.SafePathRefsText(out[i].Status)
@@ -677,7 +858,7 @@ func localInspectionAgentStreamEvent(ev AgentStreamEvent) AgentStreamEvent {
 		ev.CompactionDebug = &debug
 	}
 	if ev.ActivityTimeline != nil {
-		timeline := *ev.ActivityTimeline
+		timeline := pathSafeActivityTimeline(*ev.ActivityTimeline)
 		ev.ActivityTimeline = &timeline
 	}
 	if ev.EngineEvent != nil {
@@ -700,6 +881,15 @@ func localInspectionAgentStreamEvent(ev AgentStreamEvent) AgentStreamEvent {
 
 func pathSafeFreeformText(value string) string {
 	return event.SafePathRefsText(value)
+}
+
+func cloneSlice[T any](in []T) []T {
+	if in == nil {
+		return nil
+	}
+	out := make([]T, len(in))
+	copy(out, in)
+	return out
 }
 
 func stableHashAny(value any) string {

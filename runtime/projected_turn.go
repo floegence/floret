@@ -404,7 +404,7 @@ func RunProjectedTurn(ctx context.Context, opts ProjectedTurnOptions, req Projec
 	if registry == nil {
 		registry = tools.NewRegistry()
 	}
-	activityRecorder := &runtimeActivityEventRecorder{sink: runtimeEventSink{sink: opts.Sink}}
+	activityRecorder := &runtimeActivityEventRecorder{sink: newRuntimeEventSink(opts.Sink)}
 	capabilities := mergeCapabilityOptions(cfg, opts.Capabilities)
 	effectivePrompt, err := applyCapabilities(registry, cfg.SystemPrompt, capabilities, activityRecorder)
 	if err != nil {
@@ -497,7 +497,7 @@ func CompactProjectedContext(ctx context.Context, opts ProjectedTurnOptions, req
 	if registry == nil {
 		registry = tools.NewRegistry()
 	}
-	activityRecorder := &runtimeActivityEventRecorder{sink: runtimeEventSink{sink: opts.Sink}}
+	activityRecorder := &runtimeActivityEventRecorder{sink: newRuntimeEventSink(opts.Sink)}
 	capabilities := mergeCapabilityOptions(cfg, opts.Capabilities)
 	effectivePrompt, err := applyCapabilities(registry, cfg.SystemPrompt, capabilities, activityRecorder)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/floegence/floret/config"
@@ -371,6 +372,56 @@ func TestRunProjectedTurnManualCompactionPollErrorIsObservedAndContinues(t *test
 	}
 }
 
+func TestRunProjectedTurnManualCompactionPollCancellationStopsBeforeProvider(t *testing.T) {
+	manual := &singleManualCompactionSource{err: context.Canceled}
+	sink := &collectingEventSink{}
+	streamCalls := 0
+	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
+		streamCalls++
+		return nil, errors.New("unexpected provider request")
+	})
+
+	result, err := runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:      config.ProviderFake,
+			Model:         "fake-model",
+			SystemPrompt:  "test",
+			ContextPolicy: config.ContextPolicy{ContextWindowTokens: 10000, ReservedOutputTokens: 1000},
+		},
+		ModelGateway:      gateway,
+		Store:             runtime.NewMemoryStore(),
+		Sink:              sink,
+		ManualCompactions: manual,
+	}, runtime.ProjectedTurnRequest{
+		RunID:         "run-manual-poll-cancel",
+		ThreadID:      "thread-manual-poll-cancel",
+		TurnID:        "turn-manual-poll-cancel",
+		TraceID:       "trace-manual-poll-cancel",
+		PromptScopeID: "thread-manual-poll-cancel",
+		History:       []runtime.TranscriptMessage{{Role: "user", Content: "continue"}},
+	})
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	if result.Status != runtime.TurnStatusCancelled || streamCalls != 0 {
+		t.Fatalf("result=%#v stream_calls=%d", result, streamCalls)
+	}
+	var debugEvents []observation.CompactionDebugEvent
+	for _, ev := range sink.events {
+		if ev.CompactionDebug != nil {
+			debugEvents = append(debugEvents, *ev.CompactionDebug)
+		}
+	}
+	if !slices.ContainsFunc(debugEvents, func(debug observation.CompactionDebugEvent) bool {
+		return debug.Stage == observation.CompactionDebugStagePoll &&
+			debug.Status == observation.CompactionDebugStatusCancelled &&
+			debug.NextAction == "fail_turn" &&
+			debug.Error == context.Canceled.Error()
+	}) {
+		t.Fatalf("missing cancelled poll debug event: %#v", debugEvents)
+	}
+}
+
 func TestRunProjectedTurnManualCompactionFailureDoesNotEndActiveRun(t *testing.T) {
 	manual := &singleManualCompactionSource{request: runtime.ManualCompactionRequest{RequestID: "manual-fail", Source: "slash_command"}}
 	sink := &collectingEventSink{}
@@ -455,6 +506,86 @@ func TestRunProjectedTurnManualCompactionFailureDoesNotEndActiveRun(t *testing.T
 			debug.NextAction == "provider_request"
 	}) {
 		t.Fatalf("manual failure debug events missing provider-loop continuation: %#v", debugEvents)
+	}
+}
+
+func TestRunProjectedTurnManualCompactionCancellationStopsBeforeProvider(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	manual := &singleManualCompactionSource{request: runtime.ManualCompactionRequest{RequestID: "manual-cancel-active", Source: "slash_command"}}
+	sink := &collectingEventSink{}
+	streamCalls := 0
+	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
+		streamCalls++
+		return nil, errors.New("unexpected provider request")
+	})
+	done := make(chan struct {
+		result runtime.ProjectedTurnResult
+		err    error
+	}, 1)
+
+	go func() {
+		result, err := runtime.RunProjectedTurn(ctx, runtime.ProjectedTurnOptions{
+			Config: config.Config{
+				Provider:      config.ProviderFake,
+				Model:         "fake-model",
+				SystemPrompt:  "test",
+				ContextPolicy: config.ContextPolicy{ContextWindowTokens: 10000, ReservedOutputTokens: 1000},
+			},
+			ModelGateway:         gateway,
+			Store:                runtime.NewMemoryStore(),
+			Sink:                 sink,
+			CompactionSummarizer: blockingCompactionSummarizer{started: started},
+			ManualCompactions:    manual,
+		}, runtime.ProjectedTurnRequest{
+			RunID:         "run-manual-active-cancel",
+			ThreadID:      "thread-manual-active-cancel",
+			TurnID:        "turn-manual-active-cancel",
+			TraceID:       "trace-manual-active-cancel",
+			PromptScopeID: "thread-manual-active-cancel",
+			History: []runtime.TranscriptMessage{
+				{Role: "user", Content: "older context"},
+				{Role: "assistant", Content: "older answer"},
+				{Role: "user", Content: "continue"},
+			},
+		})
+		done <- struct {
+			result runtime.ProjectedTurnResult
+			err    error
+		}{result: result, err: err}
+	}()
+	<-started
+	cancel()
+	out := <-done
+	if out.err == nil || !errors.Is(out.err, context.Canceled) {
+		t.Fatalf("err = %v", out.err)
+	}
+	if out.result.Status != runtime.TurnStatusCancelled || streamCalls != 0 {
+		t.Fatalf("result=%#v stream_calls=%d", out.result, streamCalls)
+	}
+	var compactions []observation.CompactionEvent
+	var debugEvents []observation.CompactionDebugEvent
+	for _, ev := range sink.events {
+		if ev.Compaction != nil {
+			compactions = append(compactions, *ev.Compaction)
+		}
+		if ev.CompactionDebug != nil {
+			debugEvents = append(debugEvents, *ev.CompactionDebug)
+		}
+	}
+	if !slices.ContainsFunc(compactions, func(compaction observation.CompactionEvent) bool {
+		return compaction.Phase == observation.CompactionPhaseCancelled &&
+			compaction.Status == observation.CompactionStatusCancelled &&
+			compaction.RequestID == "manual-cancel-active"
+	}) {
+		t.Fatalf("missing cancelled compaction event: %#v", compactions)
+	}
+	if !slices.ContainsFunc(debugEvents, func(debug observation.CompactionDebugEvent) bool {
+		return debug.Status == observation.CompactionDebugStatusCancelled &&
+			debug.NextAction == "fail_turn" &&
+			debug.Error == context.Canceled.Error()
+	}) {
+		t.Fatalf("missing cancelled debug event: %#v", debugEvents)
 	}
 }
 
@@ -543,6 +674,88 @@ func TestCompactProjectedContextReturnsCheckpointAndMetadata(t *testing.T) {
 			debug.NextAction == "return_compacted_context"
 	}) {
 		t.Fatalf("compact-only debug events missing return next action: %#v", debugEvents)
+	}
+}
+
+func TestRunProjectedTurnManualCompactionObservationsSanitizeCorrelation(t *testing.T) {
+	rawRequestID := "/Users/alice/workspace/secret.txt-sk-test-secret"
+	rawSource := "/tmp/secret-provider-key.txt"
+	summarizer := &publicCompactionSummarizer{}
+	manual := &singleManualCompactionSource{request: runtime.ManualCompactionRequest{RequestID: rawRequestID, Source: rawSource}}
+	sink := &collectingEventSink{}
+	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
+		events := make(chan runtime.ModelEvent, 2)
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDelta, Text: "ok"}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "stop"}
+		close(events)
+		return events, nil
+	})
+
+	result, err := runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:      config.ProviderFake,
+			Model:         "fake-model",
+			SystemPrompt:  "test",
+			ContextPolicy: config.ContextPolicy{ContextWindowTokens: 10000, ReservedOutputTokens: 1000},
+		},
+		ModelGateway:         gateway,
+		Store:                runtime.NewMemoryStore(),
+		Sink:                 sink,
+		CompactionSummarizer: summarizer,
+		ManualCompactions:    manual,
+	}, runtime.ProjectedTurnRequest{
+		RunID:         "run-manual-sanitize",
+		ThreadID:      "thread-manual-sanitize",
+		TurnID:        "turn-manual-sanitize",
+		TraceID:       "trace-manual-sanitize",
+		PromptScopeID: "thread-manual-sanitize",
+		History: []runtime.TranscriptMessage{
+			{Role: "user", Content: "older context"},
+			{Role: "assistant", Content: "older answer"},
+			{Role: "user", Content: "continue"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != runtime.TurnStatusCompleted {
+		t.Fatalf("result = %#v", result)
+	}
+	publicJSON, err := json.Marshal(sink.events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicText := string(publicJSON)
+	for _, leaked := range []string{rawRequestID, rawSource, "/Users/alice", "/tmp/secret-provider-key.txt", "sk-test-secret"} {
+		if strings.Contains(publicText, leaked) {
+			t.Fatalf("public runtime events leaked %q in %s", leaked, publicText)
+		}
+	}
+	for _, ev := range sink.events {
+		if ev.Compaction != nil {
+			if strings.TrimSpace(ev.Compaction.OperationID) == "" || strings.TrimSpace(ev.Compaction.RequestID) == "" {
+				t.Fatalf("sanitized compaction lost correlation: %#v", ev.Compaction)
+			}
+			if ev.Compaction.Phase == observation.CompactionPhaseStart {
+				if ev.Compaction.BeforePressure.RequestSafeLimit == 0 || ev.Compaction.ContextBefore.InputTokens == 0 {
+					t.Fatalf("sanitized compaction lost structured context fields: %#v", ev.Compaction)
+				}
+			}
+		}
+		if ev.CompactionDebug != nil {
+			if strings.TrimSpace(ev.CompactionDebug.OperationID) == "" || strings.TrimSpace(ev.CompactionDebug.RequestID) == "" {
+				t.Fatalf("sanitized debug lost correlation: %#v", ev.CompactionDebug)
+			}
+			if ev.CompactionDebug.Stage == observation.CompactionDebugStageRequestRebuildComplete &&
+				ev.CompactionDebug.Status == observation.CompactionDebugStatusOK {
+				if ev.CompactionDebug.BeforePressure.RequestSafeLimit == 0 ||
+					ev.CompactionDebug.ContextBefore.InputTokens == 0 ||
+					ev.CompactionDebug.RequestEstimate.EstimatedInputTokens == 0 ||
+					ev.CompactionDebug.ValidatedContextPressure.RequestSafeLimit == 0 {
+					t.Fatalf("sanitized debug lost structured context fields: %#v", ev.CompactionDebug)
+				}
+			}
+		}
 	}
 }
 
@@ -648,7 +861,7 @@ func TestCompactProjectedContextCancelDuringSummaryReturnsCancelled(t *testing.T
 	}
 	if !slices.ContainsFunc(debugEvents, func(debug observation.CompactionDebugEvent) bool {
 		return debug.Status == observation.CompactionDebugStatusCancelled &&
-			debug.NextAction == "return_compacted_context" &&
+			debug.NextAction == "fail_turn" &&
 			debug.Error == context.Canceled.Error()
 	}) {
 		t.Fatalf("missing cancelled debug event: %#v", debugEvents)
@@ -1011,11 +1224,20 @@ func TestRunProjectedTurnPassesReasoningSelectionToModelGateway(t *testing.T) {
 }
 
 type collectingEventSink struct {
+	mu     sync.Mutex
 	events []runtime.Event
 }
 
 func (s *collectingEventSink) EmitEvent(ev runtime.Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.events = append(s.events, ev)
+}
+
+func (s *collectingEventSink) Events() []runtime.Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]runtime.Event(nil), s.events...)
 }
 
 func TestRunProjectedTurnEmitsPublicStreamObservations(t *testing.T) {

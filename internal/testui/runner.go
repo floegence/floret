@@ -2823,7 +2823,7 @@ func (r Runner) runProjectedCompactCancelScenario(ctx context.Context) RunRespon
 	if !slices.ContainsFunc(compactions, func(ev obs.CompactionEvent) bool {
 		return ev.Phase == obs.CompactionPhaseCancelled && ev.Status == obs.CompactionStatusCancelled
 	}) || !slices.ContainsFunc(debugs, func(ev obs.CompactionDebugEvent) bool {
-		return ev.Status == obs.CompactionDebugStatusCancelled && ev.NextAction == engine.ContextCompactDebugNextActionReturnCompactedContext
+		return ev.Status == obs.CompactionDebugStatusCancelled && ev.NextAction == engine.ContextCompactDebugNextActionFailTurn
 	}) {
 		return finishRunResponse(r, resp, "fail", fmt.Sprintf("missing cancel observations compactions=%#v debugs=%#v", compactions, debugs))
 	}

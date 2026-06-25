@@ -562,7 +562,7 @@ func NewHost(opts HostOptions) (Host, error) {
 		Store:              store,
 		Tools:              opts.Tools,
 		Approver:           opts.Approver,
-		Sink:               runtimeEventSink{sink: opts.Sink},
+		Sink:               newRuntimeEventSink(opts.Sink),
 		NewID:              opts.IDGenerator,
 		LoopLimits:         opts.LoopLimits,
 		SubAgentRunTimeout: opts.SubAgentRunTimeout,
@@ -1177,12 +1177,24 @@ func emitSkillEvent(sink event.Sink, typ event.Type, metadata map[string]any) {
 }
 
 type runtimeEventSink struct {
+	mu   *sync.Mutex
 	sink EventSink
+}
+
+func newRuntimeEventSink(sink EventSink) runtimeEventSink {
+	if sink == nil {
+		return runtimeEventSink{}
+	}
+	return runtimeEventSink{mu: &sync.Mutex{}, sink: sink}
 }
 
 func (s runtimeEventSink) Emit(ev event.Event) {
 	if s.sink == nil {
 		return
+	}
+	if s.mu != nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
 	}
 	s.sink.EmitEvent(runtimeEvent(ev))
 }
@@ -1190,8 +1202,8 @@ func (s runtimeEventSink) Emit(ev event.Event) {
 func runtimeEvent(ev event.Event) Event {
 	contextStatus := runtimeContextStatus(ev)
 	sanitized := event.Sanitize(ev)
-	compactionEvent := runtimeCompactionEventWithError(ev, sanitized.Err)
-	compactionDebugEvent := runtimeCompactionDebugEventWithError(ev, sanitized.Err)
+	compactionEvent := runtimeCompactionEventWithError(ev, sanitized, sanitized.Err)
+	compactionDebugEvent := runtimeCompactionDebugEventWithError(ev, sanitized, sanitized.Err)
 	stream := runtimeStreamObservation(ev, sanitized.Metadata)
 	ev = sanitized
 	return Event{
@@ -1284,26 +1296,28 @@ func runtimeContextStatus(ev event.Event) *observation.ContextStatus {
 }
 
 func runtimeCompactionEvent(ev event.Event) *observation.CompactionEvent {
-	return runtimeCompactionEventWithError(ev, event.Sanitize(ev).Err)
+	sanitized := event.Sanitize(ev)
+	return runtimeCompactionEventWithError(ev, sanitized, sanitized.Err)
 }
 
-func runtimeCompactionEventWithError(ev event.Event, sanitizedError string) *observation.CompactionEvent {
-	if ev.Type != event.ContextCompact {
+func runtimeCompactionEventWithError(raw, sanitized event.Event, sanitizedError string) *observation.CompactionEvent {
+	if sanitized.Type != event.ContextCompact {
 		return nil
 	}
-	meta, ok := ev.Metadata.(map[string]any)
+	meta, ok := sanitized.Metadata.(map[string]any)
 	if !ok {
 		return nil
 	}
+	rawMeta, _ := raw.Metadata.(map[string]any)
 	phase := stringFromMetadata(meta, "phase")
 	if phase == "" || (sanitizedError != "" && phase != observation.CompactionPhaseFailed && phase != observation.CompactionPhaseCancelled) {
 		return nil
 	}
 	out := observation.CompactionEvent{
-		RunID:                   ev.RunID,
-		ThreadID:                ev.ThreadID,
-		TurnID:                  ev.TurnID,
-		Step:                    ev.Step,
+		RunID:                   sanitized.RunID,
+		ThreadID:                sanitized.ThreadID,
+		TurnID:                  sanitized.TurnID,
+		Step:                    sanitized.Step,
 		OperationID:             stringFromMetadata(meta, "operation_id"),
 		RequestID:               stringFromMetadata(meta, "request_id"),
 		Phase:                   phase,
@@ -1318,7 +1332,7 @@ func runtimeCompactionEventWithError(ev event.Event, sanitizedError string) *obs
 		TokensBefore:            int64FromMetadata(meta, "tokens_before"),
 		TokensAfterEstimate:     int64FromMetadata(meta, "tokens_after_estimate"),
 		Error:                   sanitizedError,
-		ObservedAt:              ev.Timestamp,
+		ObservedAt:              sanitized.Timestamp,
 	}
 	switch phase {
 	case observation.CompactionPhaseStart:
@@ -1332,47 +1346,49 @@ func runtimeCompactionEventWithError(ev event.Event, sanitizedError string) *obs
 	default:
 		return nil
 	}
-	if pressure, ok := meta["before_pressure"].(contextpolicy.ContextPressure); ok {
+	if pressure, ok := rawMeta["before_pressure"].(contextpolicy.ContextPressure); ok {
 		out.BeforePressure = configbridge.PublicContextPressure(pressure)
 	}
-	if usage, ok := meta["message_context_before"].(contextpolicy.Usage); ok {
+	if usage, ok := rawMeta["message_context_before"].(contextpolicy.Usage); ok {
 		out.ContextBefore = configbridge.PublicContextUsage(usage)
 		out.TokensBefore = usage.InputTokens
 	}
-	if usage, ok := meta["context_before"].(contextpolicy.Usage); ok {
+	if usage, ok := rawMeta["context_before"].(contextpolicy.Usage); ok {
 		out.ContextBefore = configbridge.PublicContextUsage(usage)
 		if out.TokensBefore == 0 {
 			out.TokensBefore = usage.InputTokens
 		}
 	}
-	if usage, ok := meta["context_after"].(contextpolicy.Usage); ok {
+	if usage, ok := rawMeta["context_after"].(contextpolicy.Usage); ok {
 		out.ContextAfter = configbridge.PublicContextUsage(usage)
 	}
 	return &out
 }
 
 func runtimeCompactionDebugEvent(ev event.Event) *observation.CompactionDebugEvent {
-	return runtimeCompactionDebugEventWithError(ev, event.Sanitize(ev).Err)
+	sanitized := event.Sanitize(ev)
+	return runtimeCompactionDebugEventWithError(ev, sanitized, sanitized.Err)
 }
 
-func runtimeCompactionDebugEventWithError(ev event.Event, sanitizedError string) *observation.CompactionDebugEvent {
-	if ev.Type != event.ContextCompactDebug {
+func runtimeCompactionDebugEventWithError(raw, sanitized event.Event, sanitizedError string) *observation.CompactionDebugEvent {
+	if sanitized.Type != event.ContextCompactDebug {
 		return nil
 	}
-	meta, ok := ev.Metadata.(map[string]any)
+	meta, ok := sanitized.Metadata.(map[string]any)
 	if !ok {
 		return nil
 	}
+	rawMeta, _ := raw.Metadata.(map[string]any)
 	stage := stringFromMetadata(meta, "stage")
 	status := stringFromMetadata(meta, "status")
 	if stage == "" || status == "" {
 		return nil
 	}
 	out := observation.CompactionDebugEvent{
-		RunID:                            ev.RunID,
-		ThreadID:                         ev.ThreadID,
-		TurnID:                           ev.TurnID,
-		Step:                             ev.Step,
+		RunID:                            sanitized.RunID,
+		ThreadID:                         sanitized.ThreadID,
+		TurnID:                           sanitized.TurnID,
+		Step:                             sanitized.Step,
 		OperationID:                      stringFromMetadata(meta, "operation_id"),
 		RequestID:                        stringFromMetadata(meta, "request_id"),
 		Stage:                            stage,
@@ -1395,40 +1411,40 @@ func runtimeCompactionDebugEventWithError(ev event.Event, sanitizedError string)
 		CompactedContextTargetTokens:     int64FromMetadata(meta, "compacted_context_target_tokens"),
 		NextCompactedContextTargetTokens: int64FromMetadata(meta, "next_compacted_context_target_tokens"),
 		ConsecutiveFailures:              intFromMetadata(meta, "consecutive_failures"),
-		DurationMS:                       ev.Duration,
+		DurationMS:                       sanitized.Duration,
 		ProviderStateKind:                stringFromMetadata(meta, "provider_state_kind"),
 		NextAction:                       stringFromMetadata(meta, "next_action"),
 		Error:                            sanitizedError,
-		ObservedAt:                       ev.Timestamp,
+		ObservedAt:                       sanitized.Timestamp,
 	}
 	if duration := int64FromMetadata(meta, "duration_ms"); duration > 0 {
 		out.DurationMS = duration
 	}
-	if pressure, ok := meta["before_pressure"].(contextpolicy.ContextPressure); ok {
+	if pressure, ok := rawMeta["before_pressure"].(contextpolicy.ContextPressure); ok {
 		out.BeforePressure = configbridge.PublicContextPressure(pressure)
 	}
-	if pressure, ok := meta["validated_context_pressure"].(contextpolicy.ContextPressure); ok {
+	if pressure, ok := rawMeta["validated_context_pressure"].(contextpolicy.ContextPressure); ok {
 		out.ValidatedContextPressure = configbridge.PublicContextPressure(pressure)
 		if !out.HardLimitExceeded {
 			out.HardLimitExceeded = pressure.HardLimitExceeded
 		}
 	}
-	if estimate, ok := meta["request_estimate"].(contextpolicy.RequestEstimate); ok {
+	if estimate, ok := rawMeta["request_estimate"].(contextpolicy.RequestEstimate); ok {
 		out.RequestEstimate = configbridge.RequestEstimate(estimate)
 	}
-	if usage, ok := meta["context_before"].(contextpolicy.Usage); ok {
+	if usage, ok := rawMeta["context_before"].(contextpolicy.Usage); ok {
 		out.ContextBefore = configbridge.PublicContextUsage(usage)
 		if out.TokensBefore == 0 {
 			out.TokensBefore = usage.InputTokens
 		}
 	}
-	if usage, ok := meta["message_context_before"].(contextpolicy.Usage); ok {
+	if usage, ok := rawMeta["message_context_before"].(contextpolicy.Usage); ok {
 		out.ContextBefore = configbridge.PublicContextUsage(usage)
 		if out.TokensBefore == 0 {
 			out.TokensBefore = usage.InputTokens
 		}
 	}
-	if usage, ok := meta["context_after"].(contextpolicy.Usage); ok {
+	if usage, ok := rawMeta["context_after"].(contextpolicy.Usage); ok {
 		out.ContextAfter = configbridge.PublicContextUsage(usage)
 	}
 	return &out
@@ -1671,8 +1687,8 @@ func runtimeObservationEvent(ev event.Event) observation.Event {
 		DurationMS:      sanitized.Duration,
 		FinishReason:    sanitized.FinishReason,
 		Activity:        cloneActivityPresentation(sanitized.Activity),
-		Compaction:      runtimeCompactionEventWithError(ev, sanitized.Err),
-		CompactionDebug: runtimeCompactionDebugEventWithError(ev, sanitized.Err),
+		Compaction:      runtimeCompactionEventWithError(ev, sanitized, sanitized.Err),
+		CompactionDebug: runtimeCompactionDebugEventWithError(ev, sanitized, sanitized.Err),
 		Metadata:        safeMetadata(sanitized.Metadata),
 		ObservedAt:      sanitized.Timestamp,
 	}
