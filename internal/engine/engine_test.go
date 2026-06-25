@@ -2655,7 +2655,9 @@ func TestCompactionConvergesBeforeEmittingComplete(t *testing.T) {
 	}
 	if !slices.ContainsFunc(debugEvents, func(ev event.Event) bool {
 		meta, _ := ev.Metadata.(map[string]any)
-		return meta["stage"] == "install_complete" && meta["status"] == "ok"
+		return meta["stage"] == "install_complete" &&
+			meta["status"] == "ok" &&
+			meta["next_action"] == engine.ContextCompactDebugNextActionProviderRequest
 	}) {
 		t.Fatalf("missing install completion debug event: %#v", debugEvents)
 	}

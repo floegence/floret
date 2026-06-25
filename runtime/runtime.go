@@ -1395,6 +1395,7 @@ func runtimeCompactionDebugEventWithError(ev event.Event, sanitizedError string)
 		ConsecutiveFailures:              intFromMetadata(meta, "consecutive_failures"),
 		DurationMS:                       ev.Duration,
 		ProviderStateKind:                stringFromMetadata(meta, "provider_state_kind"),
+		NextAction:                       stringFromMetadata(meta, "next_action"),
 		Error:                            sanitizedError,
 		ObservedAt:                       ev.Timestamp,
 	}

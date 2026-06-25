@@ -59,6 +59,7 @@ type CompactionDebugEvent struct {
 	ConsecutiveFailures              int                    `json:"consecutive_failures,omitempty"`
 	DurationMS                       int64                  `json:"duration_ms,omitempty"`
 	ProviderStateKind                string                 `json:"provider_state_kind,omitempty"`
+	NextAction                       string                 `json:"next_action,omitempty"`
 	Error                            string                 `json:"error,omitempty"`
 	ObservedAt                       time.Time              `json:"observed_at"`
 }
@@ -105,6 +106,7 @@ func CompactionDebugEventFromEvent(ev Event) (CompactionDebugEvent, bool) {
 		ConsecutiveFailures:              intFromAny(meta["consecutive_failures"], 0),
 		DurationMS:                       int64FromAny(meta["duration_ms"], ev.DurationMS),
 		ProviderStateKind:                stringFromAny(meta["provider_state_kind"]),
+		NextAction:                       stringFromAny(meta["next_action"]),
 		Error:                            ev.Error,
 		ObservedAt:                       ev.ObservedAt,
 	}

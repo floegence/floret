@@ -912,7 +912,7 @@ func (e *Engine) compactContext(ctx context.Context, manual ManualCompactionRequ
 	}
 	usage := contextpolicy.EstimateMessageContext(e.memory.SystemPrompt, activeHistory, opts.ContextPolicy)
 	pressure := contextpolicy.PressureFromManual(usage, opts.ContextPolicy)
-	active, _, compacted, err := e.runCompaction(ctx, opts, step, activeHistory, tracker, 1, false, compaction.TriggerManual, compaction.ReasonManual, usage, nil, pressure, manual)
+	active, _, compacted, err := e.runCompaction(ctx, opts, step, activeHistory, tracker, 1, false, compaction.TriggerManual, compaction.ReasonManual, usage, nil, pressure, manual, ContextCompactDebugNextActionReturnCompactedContext)
 	if err != nil {
 		return ContextCompactionResult{Status: Failed, Err: err, Metrics: metrics, Messages: append([]session.Message(nil), activeHistory...), ProviderState: provider.CloneState(opts.PreviousProviderState)}
 	}
@@ -1348,7 +1348,7 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 	} else if ok {
 		usage := contextpolicy.EstimateMessageContext(e.memory.SystemPrompt, history, opts.ContextPolicy)
 		pressure := contextpolicy.PressureFromManual(usage, opts.ContextPolicy)
-		next, req, _, err := e.runCompaction(ctx, opts, step, history, tracker, 1, false, compaction.TriggerManual, compaction.ReasonManual, usage, nil, pressure, manual)
+		next, req, _, err := e.runCompaction(ctx, opts, step, history, tracker, 1, false, compaction.TriggerManual, compaction.ReasonManual, usage, nil, pressure, manual, ContextCompactDebugNextActionProviderRequest)
 		if err == nil {
 			if metrics != nil {
 				metrics.Compactions++
@@ -1440,7 +1440,7 @@ func (e *Engine) sendProviderAttempt(ctx context.Context, opts Options, step int
 
 func (e *Engine) compactForPressure(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool, trigger compaction.Trigger, reason compaction.Reason, pressure contextpolicy.ContextPressure, metrics *RunMetrics, failures *int) ([]session.Message, provider.Request, error) {
 	usage := contextpolicy.EstimateMessageContext(e.memory.SystemPrompt, history, opts.ContextPolicy)
-	next, req, _, err := e.runCompaction(ctx, opts, step, history, tracker, attempt, overflowRetried, trigger, reason, usage, failures, pressure, ManualCompactionRequest{})
+	next, req, _, err := e.runCompaction(ctx, opts, step, history, tracker, attempt, overflowRetried, trigger, reason, usage, failures, pressure, ManualCompactionRequest{}, ContextCompactDebugNextActionProviderRequest)
 	if err != nil {
 		return history, provider.Request{}, err
 	}
@@ -1517,7 +1517,7 @@ func validateConfiguredTools(local []provider.ToolDefinition, hosted []provider.
 	return err
 }
 
-func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool, trigger compaction.Trigger, reason compaction.Reason, usage contextpolicy.Usage, failures *int, beforePressure contextpolicy.ContextPressure, manual ManualCompactionRequest) ([]session.Message, provider.Request, compaction.Result, error) {
+func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool, trigger compaction.Trigger, reason compaction.Reason, usage contextpolicy.Usage, failures *int, beforePressure contextpolicy.ContextPressure, manual ManualCompactionRequest, nextAction string) ([]session.Message, provider.Request, compaction.Result, error) {
 	operationID := compactionOperationID(opts.RunID, step, trigger, reason, manual)
 	e.emit(opts, event.Event{
 		Type:     event.ContextCompact,
@@ -1720,6 +1720,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 	installDoneDebug := compactionValidationDebugMetadata(0, result, validation, 0, 0)
 	installDoneDebug["active_message_count"] = len(active)
 	installDoneDebug["context_after"] = result.UsageAfter
+	installDoneDebug["next_action"] = strings.TrimSpace(nextAction)
 	e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageInstallComplete, ContextCompactDebugStatusOK, trigger, reason, beforePressure, usage, manual, installDoneDebug, nil, installStarted)
 	if failures != nil {
 		*failures = 0

@@ -38,6 +38,9 @@ const (
 	ContextCompactDebugStatusOK       = "ok"
 	ContextCompactDebugStatusRetrying = "retrying"
 	ContextCompactDebugStatusFailed   = "failed"
+
+	ContextCompactDebugNextActionProviderRequest        = "provider_request"
+	ContextCompactDebugNextActionReturnCompactedContext = "return_compacted_context"
 )
 
 type ProviderUsageContextStatus struct {

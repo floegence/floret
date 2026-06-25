@@ -134,7 +134,9 @@ func TestRunProjectedTurnUsesPublicCompactionSummarizer(t *testing.T) {
 		t.Fatalf("debug events = %#v", debugEvents)
 	}
 	if !slices.ContainsFunc(debugEvents, func(debug observation.CompactionDebugEvent) bool {
-		return debug.Stage == observation.CompactionDebugStageInstallComplete && debug.Status == observation.CompactionDebugStatusOK
+		return debug.Stage == observation.CompactionDebugStageInstallComplete &&
+			debug.Status == observation.CompactionDebugStatusOK &&
+			debug.NextAction == "provider_request"
 	}) {
 		t.Fatalf("debug events missing install completion: %#v", debugEvents)
 	}
@@ -227,6 +229,13 @@ func TestRunProjectedTurnManualCompactionTriggersBelowThresholdAndContinues(t *t
 		return debug.Stage == observation.CompactionDebugStageRequestValidation && debug.Status == observation.CompactionDebugStatusOK
 	}) {
 		t.Fatalf("manual compaction debug events = %#v", debugEvents)
+	}
+	if !slices.ContainsFunc(debugEvents, func(debug observation.CompactionDebugEvent) bool {
+		return debug.Stage == observation.CompactionDebugStageInstallComplete &&
+			debug.Status == observation.CompactionDebugStatusOK &&
+			debug.NextAction == "provider_request"
+	}) {
+		t.Fatalf("manual compaction debug events missing provider-loop continuation: %#v", debugEvents)
 	}
 }
 
@@ -379,6 +388,19 @@ func TestCompactProjectedContextReturnsCheckpointAndMetadata(t *testing.T) {
 	}
 	if len(compactions) != 2 || compactions[0].RequestID != "manual-idle" || compactions[1].Status != observation.CompactionStatusCompacted {
 		t.Fatalf("events = %#v", compactions)
+	}
+	var debugEvents []observation.CompactionDebugEvent
+	for _, ev := range sink.events {
+		if ev.CompactionDebug != nil {
+			debugEvents = append(debugEvents, *ev.CompactionDebug)
+		}
+	}
+	if !slices.ContainsFunc(debugEvents, func(debug observation.CompactionDebugEvent) bool {
+		return debug.Stage == observation.CompactionDebugStageInstallComplete &&
+			debug.Status == observation.CompactionDebugStatusOK &&
+			debug.NextAction == "return_compacted_context"
+	}) {
+		t.Fatalf("compact-only debug events missing return next action: %#v", debugEvents)
 	}
 }
 
