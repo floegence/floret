@@ -2988,6 +2988,9 @@ func TestPreRequestThresholdRequiresExplicitCompactor(t *testing.T) {
 	if meta, _ := debugEvents[0].Metadata.(map[string]any); meta["stage"] != engine.ContextCompactDebugStageBegin || meta["status"] != engine.ContextCompactDebugStatusRunning {
 		t.Fatalf("begin debug metadata = %#v", debugEvents[0].Metadata)
 	}
+	if debugEvents[0].TurnID != "run" || debugEvents[1].TurnID != "run" {
+		t.Fatalf("debug turn ids = %q, %q; want run correlation", debugEvents[0].TurnID, debugEvents[1].TurnID)
+	}
 	if meta, _ := debugEvents[1].Metadata.(map[string]any); meta["stage"] != engine.ContextCompactDebugStagePreflight ||
 		meta["status"] != engine.ContextCompactDebugStatusFailed ||
 		meta["operation_id"] != startMeta["operation_id"] {
