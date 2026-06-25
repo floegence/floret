@@ -25,6 +25,7 @@ const (
 	ContextCompactPhaseFailed   = "failed"
 
 	ContextCompactDebugStageBegin                   = "begin"
+	ContextCompactDebugStagePreflight               = "preflight"
 	ContextCompactDebugStageGenerateAttemptStart    = "generate_attempt_start"
 	ContextCompactDebugStageGenerateAttemptComplete = "generate_attempt_complete"
 	ContextCompactDebugStageRequestRebuildStart     = "request_rebuild_start"

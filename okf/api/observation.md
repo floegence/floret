@@ -29,10 +29,13 @@ instead of guessing from trigger text.
 
 `CompactionDebugEvent` carries the same `OperationID` / `RequestID` correlation
 plus stage and status values for the compaction pipeline. Stages identify
-generation attempts, projected request rebuilds, request validation, and
-installation. Debug observations may include token pressure, message counts,
-duration, provider-state kind, and sanitized error text, but they do not include prompt
-text or generated summary content.
+begin, preflight, generation attempts, projected request rebuilds, request
+validation, and installation. Debug observations may include token pressure,
+message counts, duration, provider-state kind, and sanitized error text, but
+they do not include prompt text or generated summary content. A failed
+compaction that stops before summary generation still emits a terminal
+`preflight` debug observation so hosts can distinguish configuration or circuit
+breaker failures from provider and validation failures.
 
 # Boundary
 

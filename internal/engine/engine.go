@@ -1518,13 +1518,6 @@ func validateConfiguredTools(local []provider.ToolDefinition, hosted []provider.
 }
 
 func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool, trigger compaction.Trigger, reason compaction.Reason, usage contextpolicy.Usage, failures *int, beforePressure contextpolicy.ContextPressure, manual ManualCompactionRequest) ([]session.Message, provider.Request, compaction.Result, error) {
-	if failures != nil && *failures >= opts.ContextPolicy.MaxCompactionFailures {
-		return nil, provider.Request{}, compaction.Result{}, fmt.Errorf("compaction failure circuit breaker reached after %d failures", *failures)
-	}
-	manager := e.compactor
-	if manager == nil {
-		return nil, provider.Request{}, compaction.Result{}, errors.New("compaction manager is required when context exceeds policy")
-	}
 	operationID := compactionOperationID(opts.RunID, step, trigger, reason, manual)
 	e.emit(opts, event.Event{
 		Type:     event.ContextCompact,
@@ -1538,6 +1531,28 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		Metrics:  usage,
 		Metadata: compactionStartMetadata(operationID, trigger, reason, beforePressure, usage, manual),
 	})
+	beginDebug := map[string]any{
+		"history_message_count": len(history),
+		"consecutive_failures":  derefInt(failures),
+	}
+	if opts.PreviousProviderState != nil {
+		beginDebug["provider_state_kind"] = strings.TrimSpace(opts.PreviousProviderState.Kind)
+	}
+	e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageBegin, ContextCompactDebugStatusRunning, trigger, reason, beforePressure, usage, manual, beginDebug, nil, time.Time{})
+	if failures != nil && *failures >= opts.ContextPolicy.MaxCompactionFailures {
+		err := fmt.Errorf("compaction failure circuit breaker reached after %d failures", *failures)
+		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStagePreflight, ContextCompactDebugStatusFailed, trigger, reason, beforePressure, usage, manual, beginDebug, err, time.Time{})
+		e.emitCompactionFailed(opts, step, operationID, trigger, reason, beforePressure, usage, manual, err)
+		return nil, provider.Request{}, compaction.Result{}, err
+	}
+	manager := e.compactor
+	if manager == nil {
+		err := errors.New("compaction manager is required when context exceeds policy")
+		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStagePreflight, ContextCompactDebugStatusFailed, trigger, reason, beforePressure, usage, manual, beginDebug, err, time.Time{})
+		e.emitCompactionFailed(opts, step, operationID, trigger, reason, beforePressure, usage, manual, err)
+		return nil, provider.Request{}, compaction.Result{}, err
+	}
+	e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStagePreflight, ContextCompactDebugStatusOK, trigger, reason, beforePressure, usage, manual, beginDebug, nil, time.Time{})
 	baseDetails := map[string]string{
 		"run_id":                 opts.RunID,
 		"thread_id":              opts.ThreadID,
@@ -1559,14 +1574,6 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 	if manual.Source != "" {
 		baseDetails["manual_source"] = manual.Source
 	}
-	beginDebug := map[string]any{
-		"history_message_count": len(history),
-		"consecutive_failures":  derefInt(failures),
-	}
-	if opts.PreviousProviderState != nil {
-		beginDebug["provider_state_kind"] = strings.TrimSpace(opts.PreviousProviderState.Kind)
-	}
-	e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageBegin, ContextCompactDebugStatusRunning, trigger, reason, beforePressure, usage, manual, beginDebug, nil, time.Time{})
 	policy := compactionPolicyForUsage(opts.ContextPolicy, usage)
 	var result compaction.Result
 	var active []session.Message
@@ -1670,19 +1677,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		if failures != nil {
 			*failures++
 		}
-		e.emit(opts, event.Event{
-			Type:     event.ContextCompact,
-			TraceID:  opts.TraceID,
-			RunID:    opts.RunID,
-			ThreadID: opts.ThreadID,
-			Step:     step,
-			Provider: opts.ProviderName,
-			Model:    opts.Model,
-			Message:  fmt.Sprintf("%s/%s", trigger, reason),
-			Err:      err.Error(),
-			Metrics:  usage,
-			Metadata: compactionFailedMetadata(operationID, trigger, reason, beforePressure, usage, manual),
-		})
+		e.emitCompactionFailed(opts, step, operationID, trigger, reason, beforePressure, usage, manual, err)
 		return nil, provider.Request{}, compaction.Result{}, err
 	}
 	installDebug := compactionValidationDebugMetadata(0, result, validation, 0, 0)
@@ -1716,19 +1711,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 			*failures++
 		}
 		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageInstallComplete, ContextCompactDebugStatusFailed, trigger, reason, beforePressure, usage, manual, installDebug, err, installStarted)
-		e.emit(opts, event.Event{
-			Type:     event.ContextCompact,
-			TraceID:  opts.TraceID,
-			RunID:    opts.RunID,
-			ThreadID: opts.ThreadID,
-			Step:     step,
-			Provider: opts.ProviderName,
-			Model:    opts.Model,
-			Message:  fmt.Sprintf("%s/%s", trigger, reason),
-			Err:      err.Error(),
-			Metrics:  usage,
-			Metadata: compactionFailedMetadata(operationID, trigger, reason, beforePressure, usage, manual),
-		})
+		e.emitCompactionFailed(opts, step, operationID, trigger, reason, beforePressure, usage, manual, err)
 		return nil, provider.Request{}, compaction.Result{}, err
 	}
 	result = committed.Result
@@ -1755,6 +1738,26 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		Metadata: compactionCompleteMetadata(operationID, result, validation, manual),
 	})
 	return active, req, result, nil
+}
+
+func (e *Engine) emitCompactionFailed(opts Options, step int, operationID string, trigger compaction.Trigger, reason compaction.Reason, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage, manual ManualCompactionRequest, err error) {
+	errText := ""
+	if err != nil {
+		errText = err.Error()
+	}
+	e.emit(opts, event.Event{
+		Type:     event.ContextCompact,
+		TraceID:  opts.TraceID,
+		RunID:    opts.RunID,
+		ThreadID: opts.ThreadID,
+		Step:     step,
+		Provider: opts.ProviderName,
+		Model:    opts.Model,
+		Message:  fmt.Sprintf("%s/%s", trigger, reason),
+		Err:      errText,
+		Metrics:  usage,
+		Metadata: compactionFailedMetadata(operationID, trigger, reason, beforePressure, usage, manual),
+	})
 }
 
 func (e *Engine) emitCompactionDebug(opts Options, step int, operationID string, stage string, status string, trigger compaction.Trigger, reason compaction.Reason, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage, manual ManualCompactionRequest, extra map[string]any, err error, started time.Time) {

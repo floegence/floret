@@ -10,6 +10,7 @@ const (
 	EventTypeContextCompactDebug = "context_compact_debug"
 
 	CompactionDebugStageBegin                   = "begin"
+	CompactionDebugStagePreflight               = "preflight"
 	CompactionDebugStageGenerateAttemptStart    = "generate_attempt_start"
 	CompactionDebugStageGenerateAttemptComplete = "generate_attempt_complete"
 	CompactionDebugStageRequestRebuildStart     = "request_rebuild_start"

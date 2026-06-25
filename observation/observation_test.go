@@ -365,7 +365,7 @@ func TestCompactionDebugEventFromEvents(t *testing.T) {
 		Step:       2,
 		ObservedAt: time.Unix(40, 0),
 		Metadata: map[string]any{
-			"stage":                          CompactionDebugStageRequestValidation,
+			"stage":                          CompactionDebugStagePreflight,
 			"status":                         CompactionDebugStatusRetrying,
 			"operation_id":                   "op-1",
 			"request_id":                     "manual-1",
@@ -403,7 +403,7 @@ func TestCompactionDebugEventFromEvents(t *testing.T) {
 	if !ok {
 		t.Fatalf("debug event was not converted")
 	}
-	if out.Stage != CompactionDebugStageRequestValidation ||
+	if out.Stage != CompactionDebugStagePreflight ||
 		out.Status != CompactionDebugStatusRetrying ||
 		out.OperationID != "op-1" ||
 		out.RequestID != "manual-1" ||

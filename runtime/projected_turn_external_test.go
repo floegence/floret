@@ -382,6 +382,71 @@ func TestCompactProjectedContextReturnsCheckpointAndMetadata(t *testing.T) {
 	}
 }
 
+func TestCompactProjectedContextEmitsPreflightDebugWhenSummarizerMissing(t *testing.T) {
+	sink := &collectingEventSink{}
+	result, err := runtime.CompactProjectedContext(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+			ContextPolicy: config.ContextPolicy{
+				ContextWindowTokens:   10000,
+				ReservedOutputTokens:  1000,
+				ReservedSummaryTokens: 200,
+				RecentTailTokens:      100,
+				RecentUserTokens:      100,
+			},
+		},
+		Store: runtime.NewMemoryStore(),
+		Sink:  sink,
+	}, runtime.ProjectedContextCompactionRequest{
+		RunID:            "run-idle-preflight",
+		ThreadID:         "thread-idle-preflight",
+		TurnID:           "turn-idle-preflight",
+		TraceID:          "trace-idle-preflight",
+		PromptScopeID:    "thread-idle-preflight",
+		ManualCompaction: runtime.ManualCompactionRequest{RequestID: "manual-preflight", Source: "slash_command"},
+		History: []runtime.TranscriptMessage{
+			{Role: "user", Content: "older context"},
+			{Role: "assistant", Content: "older answer"},
+			{Role: "user", Content: "continue later"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "compaction manager is required when context exceeds policy") {
+		t.Fatalf("err = %v", err)
+	}
+	if result.Status != "failed" {
+		t.Fatalf("result = %#v", result)
+	}
+	var compactions []observation.CompactionEvent
+	var debugEvents []observation.CompactionDebugEvent
+	for _, ev := range sink.events {
+		if ev.Compaction != nil {
+			compactions = append(compactions, *ev.Compaction)
+		}
+		if ev.CompactionDebug != nil {
+			debugEvents = append(debugEvents, *ev.CompactionDebug)
+		}
+	}
+	if len(compactions) != 2 ||
+		compactions[0].Phase != observation.CompactionPhaseStart ||
+		compactions[1].Phase != observation.CompactionPhaseFailed ||
+		compactions[0].OperationID == "" ||
+		compactions[0].OperationID != compactions[1].OperationID ||
+		compactions[1].RequestID != "manual-preflight" {
+		t.Fatalf("compaction lifecycle = %#v", compactions)
+	}
+	if !slices.ContainsFunc(debugEvents, func(debug observation.CompactionDebugEvent) bool {
+		return debug.Stage == observation.CompactionDebugStagePreflight &&
+			debug.Status == observation.CompactionDebugStatusFailed &&
+			debug.OperationID == compactions[0].OperationID &&
+			debug.RequestID == "manual-preflight" &&
+			debug.Error == "compaction manager is required when context exceeds policy"
+	}) {
+		t.Fatalf("missing preflight failed debug event: %#v", debugEvents)
+	}
+}
+
 func TestRunProjectedTurnEmitsFailedPublicCompactionObservation(t *testing.T) {
 	summarizer := &publicCompactionSummarizer{err: errors.New("summary unavailable")}
 	sink := &collectingEventSink{}

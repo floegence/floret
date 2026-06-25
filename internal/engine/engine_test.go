@@ -2948,6 +2948,7 @@ func TestPreRequestThresholdUsesMaxOutputHeadroom(t *testing.T) {
 }
 
 func TestPreRequestThresholdRequiresExplicitCompactor(t *testing.T) {
+	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
 	store := session.NewMemoryStore()
 	if err := store.AppendTranscript("run",
@@ -2956,7 +2957,7 @@ func TestPreRequestThresholdRequiresExplicitCompactor(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	e := newTestEngine(p, &event.Recorder{})
+	e := newTestEngine(p, rec)
 	e.Store = store
 	e.Options.ContextPolicy = contextpolicy.Policy{ContextWindowTokens: 900, ReservedOutputTokens: 80, ReservedSummaryTokens: 80, RecentTailTokens: 20}
 
@@ -2967,6 +2968,30 @@ func TestPreRequestThresholdRequiresExplicitCompactor(t *testing.T) {
 	}
 	if len(p.Requests) != 0 {
 		t.Fatalf("provider should not receive request after missing compactor: %#v", p.Requests)
+	}
+	compactions := eventsOfType(rec.Events, event.ContextCompact)
+	if len(compactions) != 2 {
+		t.Fatalf("missing compaction lifecycle events: %#v", rec.Events)
+	}
+	startMeta, _ := compactions[0].Metadata.(map[string]any)
+	failedMeta, _ := compactions[1].Metadata.(map[string]any)
+	if startMeta["phase"] != engine.ContextCompactPhaseStart ||
+		failedMeta["phase"] != engine.ContextCompactPhaseFailed ||
+		startMeta["operation_id"] == "" ||
+		startMeta["operation_id"] != failedMeta["operation_id"] {
+		t.Fatalf("preflight compaction lifecycle = start %#v failed %#v", startMeta, failedMeta)
+	}
+	debugEvents := eventsOfType(rec.Events, event.ContextCompactDebug)
+	if len(debugEvents) != 2 {
+		t.Fatalf("preflight failure should emit begin and terminal debug events: %#v", debugEvents)
+	}
+	if meta, _ := debugEvents[0].Metadata.(map[string]any); meta["stage"] != engine.ContextCompactDebugStageBegin || meta["status"] != engine.ContextCompactDebugStatusRunning {
+		t.Fatalf("begin debug metadata = %#v", debugEvents[0].Metadata)
+	}
+	if meta, _ := debugEvents[1].Metadata.(map[string]any); meta["stage"] != engine.ContextCompactDebugStagePreflight ||
+		meta["status"] != engine.ContextCompactDebugStatusFailed ||
+		meta["operation_id"] != startMeta["operation_id"] {
+		t.Fatalf("preflight failed debug metadata = %#v", debugEvents[1].Metadata)
 	}
 }
 
