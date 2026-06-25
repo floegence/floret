@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-06-25
+* **Update**: Documented public manual compaction operation identity, cancelled
+  lifecycle observations, poll-stage diagnostics, and the Test UI context
+  compaction scenario check.
 * **Update**: Documented public compaction debug observations for safe
   diagnostics across generation, projected request rebuild, validation, and
   installation stages.

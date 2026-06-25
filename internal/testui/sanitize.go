@@ -102,6 +102,7 @@ func localInspectionAgentSessionSnapshot(snapshot AgentSessionSnapshot) AgentSes
 	snapshot.ContextProjection = pathSafeObservedContextProjection(snapshot.ContextProjection)
 	snapshot.ContextStatuses = pathSafeContextStatuses(snapshot.ContextStatuses)
 	snapshot.CompactionEvents = pathSafeCompactionEvents(snapshot.CompactionEvents)
+	snapshot.CompactionDebugs = pathSafeCompactionDebugEvents(snapshot.CompactionDebugs)
 	for i := range snapshot.PathEntries {
 		snapshot.PathEntries[i] = pathSafeObservedEntry(snapshot.PathEntries[i])
 	}
@@ -202,6 +203,7 @@ func localInspectionAgentObservation(observation AgentObservation) AgentObservat
 	}
 	observation.ContextStatuses = pathSafeContextStatuses(observation.ContextStatuses)
 	observation.CompactionEvents = pathSafeCompactionEvents(observation.CompactionEvents)
+	observation.CompactionDebugs = pathSafeCompactionDebugEvents(observation.CompactionDebugs)
 	observation.SessionMessages = pathSafeObservedMessages(observation.SessionMessages)
 	observation.ActiveContext = pathSafeObservedMessages(observation.ActiveContext)
 	observation.ContextProjection = pathSafeObservedContextProjection(observation.ContextProjection)
@@ -261,6 +263,21 @@ func pathSafeCompactionEvents(compactions []ObservedCompactionEvent) []ObservedC
 		out[i].Reason = event.SafePathRefsText(out[i].Reason)
 		out[i].SummaryPreview = event.SafePathRefsText(out[i].SummaryPreview)
 		out[i].Summary = event.SafePathRefsText(out[i].Summary)
+		out[i].Error = event.SafePathRefsText(out[i].Error)
+	}
+	return out
+}
+
+func pathSafeCompactionDebugEvents(debugs []ObservedCompactionDebugEvent) []ObservedCompactionDebugEvent {
+	out := append([]ObservedCompactionDebugEvent(nil), debugs...)
+	for i := range out {
+		out[i].OperationID = event.SafePathRefsText(out[i].OperationID)
+		out[i].RequestID = event.SafePathRefsText(out[i].RequestID)
+		out[i].Source = event.SafePathRefsText(out[i].Source)
+		out[i].CompactionID = event.SafePathRefsText(out[i].CompactionID)
+		out[i].CompactionWindowID = event.SafePathRefsText(out[i].CompactionWindowID)
+		out[i].ProviderStateKind = event.SafePathRefsText(out[i].ProviderStateKind)
+		out[i].NextAction = event.SafePathRefsText(out[i].NextAction)
 		out[i].Error = event.SafePathRefsText(out[i].Error)
 	}
 	return out
@@ -654,6 +671,10 @@ func localInspectionAgentStreamEvent(ev AgentStreamEvent) AgentStreamEvent {
 	if ev.Compaction != nil {
 		compaction := pathSafeCompactionEvents([]ObservedCompactionEvent{*ev.Compaction})[0]
 		ev.Compaction = &compaction
+	}
+	if ev.CompactionDebug != nil {
+		debug := pathSafeCompactionDebugEvents([]ObservedCompactionDebugEvent{*ev.CompactionDebug})[0]
+		ev.CompactionDebug = &debug
 	}
 	if ev.ActivityTimeline != nil {
 		timeline := *ev.ActivityTimeline

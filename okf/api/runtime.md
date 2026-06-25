@@ -100,18 +100,23 @@ Projected manual compaction is a control surface, not a transcript message.
 Hosts pass active-run requests through `ManualCompactionSource`; Floret decides
 the safe point, runs the same compaction pipeline as automatic pressure
 compaction with `manual/manual` trigger and reason, includes request correlation
-in start/complete/failed observations, and then continues the provider loop. A
-failed manual compaction is observable but does not by itself end the active
-run.
+in start/complete/failed/cancelled observations, and then continues the provider
+loop. `ManualCompactionOperationID` exposes the public operation identity for a
+known run id, provider-loop step, and manual request id so hosts can correlate
+accepted manual work with later Floret observations without depending on
+internal engine formatting. A failed manual compaction is observable but does not
+by itself end the active run; a manual source poll failure is emitted as a safe
+debug observation and the provider request continues.
 
 Projected compactions also emit `runtime.Event.CompactionDebug` diagnostics.
 Those events identify safe pipeline stages and include operation/request
 correlation, token pressure, message counts, durations, provider-state kind, and
-the post-install next action without exposing local paths, secrets, prompt text,
-tool payloads, or generated summaries. Compaction attempts emit begin
-diagnostics before preflight checks and a terminal `preflight` failure when
-configuration or circuit-breaker checks stop the operation before summary
-generation.
+the next action without exposing local paths, secrets, prompt text, tool
+payloads, or generated summaries. Compaction attempts emit begin diagnostics
+before preflight checks and a terminal `preflight` failure when configuration or
+circuit-breaker checks stop the operation before summary generation. Manual poll
+errors use the `poll` stage. Cancelled compactions use cancelled lifecycle and
+debug statuses, preserving operation/request correlation.
 
 For idle host-owned threads, `CompactProjectedContext` is the public
 compaction-only entry point. The result `ActiveTranscript` begins with a

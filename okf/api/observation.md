@@ -23,19 +23,20 @@ summaries without parsing assistant text or depending on implementation types.
 
 `CompactionEvent` carries `OperationID` for one compaction attempt and optional
 `RequestID` / `Source` when a downstream host requested manual compaction. Start,
-complete, and failed observations for the same manual request keep the same
-operation and request correlation so host UIs can update one progress item
+complete, failed, and cancelled observations for the same manual request keep the
+same operation and request correlation so host UIs can update one progress item
 instead of guessing from trigger text.
 
 `CompactionDebugEvent` carries the same `OperationID` / `RequestID` correlation
 plus stage and status values for the compaction pipeline. Stages identify
-begin, preflight, generation attempts, projected request rebuilds, request
-validation, and installation. Debug observations may include token pressure,
-message counts, duration, provider-state kind, the post-install next action, and
-sanitized error text, but they do not include prompt text or generated summary
-content. A failed compaction that stops before summary generation still emits a
-terminal `preflight` debug observation so hosts can distinguish configuration or
-circuit breaker failures from provider and validation failures.
+poll, begin, preflight, generation attempts, projected request rebuilds, request
+validation, and installation. Status may be running, ok, retrying, failed, or
+cancelled. Debug observations may include token pressure, message counts,
+duration, provider-state kind, the next action, and sanitized error text, but
+they do not include prompt text or generated summary content. A failed compaction
+that stops before summary generation still emits a terminal `preflight` debug
+observation so hosts can distinguish configuration or circuit breaker failures
+from provider and validation failures.
 
 # Boundary
 

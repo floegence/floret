@@ -296,6 +296,7 @@ const (
 	AgentStreamProviderDelta            AgentStreamEventType = "provider_delta"
 	AgentStreamContextStatus            AgentStreamEventType = "context_status"
 	AgentStreamContextCompaction        AgentStreamEventType = "context_compaction"
+	AgentStreamContextCompactionDebug   AgentStreamEventType = "context_compaction_debug"
 	AgentStreamActivity                 AgentStreamEventType = "activity"
 	AgentStreamAssistantMessageAppended AgentStreamEventType = "assistant_message_appended"
 	AgentStreamToolCall                 AgentStreamEventType = "tool_call"
@@ -319,6 +320,7 @@ type AgentStreamEvent struct {
 	ProviderEvent    *ObservedProviderEvent        `json:"provider_event,omitempty"`
 	ContextStatus    *ObservedContextStatus        `json:"context_status,omitempty"`
 	Compaction       *ObservedCompactionEvent      `json:"compaction,omitempty"`
+	CompactionDebug  *ObservedCompactionDebugEvent `json:"compaction_debug,omitempty"`
 	ActivityTimeline *observation.ActivityTimeline `json:"activity_timeline,omitempty"`
 	EngineEvent      *event.Event                  `json:"engine_event,omitempty"`
 	Snapshot         *AgentSessionSnapshot         `json:"session_snapshot,omitempty"`
@@ -374,17 +376,18 @@ type AgentRunResponse struct {
 }
 
 type AgentObservation struct {
-	ProviderRequests  []ObservedProviderRequest    `json:"provider_requests"`
-	ProviderEvents    []ObservedProviderEvent      `json:"provider_events"`
-	ContextStatuses   []ObservedContextStatus      `json:"context_statuses,omitempty"`
-	CompactionEvents  []ObservedCompactionEvent    `json:"compaction_events,omitempty"`
-	ActivityTimeline  observation.ActivityTimeline `json:"activity_timeline"`
-	SessionMessages   []ObservedSessionMessage     `json:"session_messages"`
-	ActiveContext     []ObservedSessionMessage     `json:"active_context"`
-	ContextProjection ObservedContextProjection    `json:"context_projection,omitempty"`
-	PathEntries       []ObservedSessionEntry       `json:"path_entries"`
-	Transitions       []StateTransition            `json:"transitions"`
-	Diagnostics       map[string]string            `json:"diagnostics,omitempty"`
+	ProviderRequests  []ObservedProviderRequest      `json:"provider_requests"`
+	ProviderEvents    []ObservedProviderEvent        `json:"provider_events"`
+	ContextStatuses   []ObservedContextStatus        `json:"context_statuses,omitempty"`
+	CompactionEvents  []ObservedCompactionEvent      `json:"compaction_events,omitempty"`
+	CompactionDebugs  []ObservedCompactionDebugEvent `json:"compaction_debugs,omitempty"`
+	ActivityTimeline  observation.ActivityTimeline   `json:"activity_timeline"`
+	SessionMessages   []ObservedSessionMessage       `json:"session_messages"`
+	ActiveContext     []ObservedSessionMessage       `json:"active_context"`
+	ContextProjection ObservedContextProjection      `json:"context_projection,omitempty"`
+	PathEntries       []ObservedSessionEntry         `json:"path_entries"`
+	Transitions       []StateTransition              `json:"transitions"`
+	Diagnostics       map[string]string              `json:"diagnostics,omitempty"`
 }
 
 type ObservedContextStatus = observation.ContextStatus
@@ -394,6 +397,8 @@ type ObservedCompactionEvent struct {
 	SummaryPreview string `json:"summary_preview,omitempty"`
 	Summary        string `json:"summary,omitempty"`
 }
+
+type ObservedCompactionDebugEvent = observation.CompactionDebugEvent
 
 type ObservedProviderRequest struct {
 	RunID                   string                          `json:"run_id,omitempty"`
@@ -596,6 +601,7 @@ type AgentSessionSnapshot struct {
 	Compactions             int                             `json:"compactions"`
 	ContextStatuses         []ObservedContextStatus         `json:"context_statuses,omitempty"`
 	CompactionEvents        []ObservedCompactionEvent       `json:"compaction_events,omitempty"`
+	CompactionDebugs        []ObservedCompactionDebugEvent  `json:"compaction_debugs,omitempty"`
 	ActivityTimeline        observation.ActivityTimeline    `json:"activity_timeline"`
 	SubAgents               []agentharness.SubAgentSnapshot `json:"subagents,omitempty"`
 	Observation             AgentObservation                `json:"observation,omitempty"`

@@ -13,9 +13,11 @@ const (
 	CompactionPhaseStart      = "start"
 	CompactionPhaseComplete   = "complete"
 	CompactionPhaseFailed     = "failed"
+	CompactionPhaseCancelled  = "cancelled"
 	CompactionStatusRunning   = "running"
 	CompactionStatusCompacted = "compacted"
 	CompactionStatusFailed    = "failed"
+	CompactionStatusCancelled = "cancelled"
 )
 
 type CompactionEvent struct {
@@ -55,7 +57,7 @@ func CompactionEventFromEvent(ev Event) (CompactionEvent, bool) {
 	if phase == "" {
 		return CompactionEvent{}, false
 	}
-	if ev.Error != "" && phase != CompactionPhaseFailed {
+	if ev.Error != "" && phase != CompactionPhaseFailed && phase != CompactionPhaseCancelled {
 		return CompactionEvent{}, false
 	}
 	out := CompactionEvent{
@@ -102,6 +104,8 @@ func CompactionEventFromEvent(ev Event) (CompactionEvent, bool) {
 		out.Status = CompactionStatusCompacted
 	case CompactionPhaseFailed:
 		out.Status = CompactionStatusFailed
+	case CompactionPhaseCancelled:
+		out.Status = CompactionStatusCancelled
 	default:
 		return CompactionEvent{}, false
 	}

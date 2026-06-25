@@ -40,17 +40,19 @@ import (
 	"github.com/floegence/floret/internal/tools/mcp"
 	"github.com/floegence/floret/internal/tools/skills"
 	obs "github.com/floegence/floret/observation"
+	flruntime "github.com/floegence/floret/runtime"
 	"github.com/floegence/floret/tools"
 )
 
 const (
-	TargetUnit              = "unit"
-	TargetRace              = "race"
-	TargetEvalDemo          = "eval-demo"
-	TargetProviderSmoke     = "provider-smoke"
-	TargetToolScenarios     = "tool-scenarios"
-	TargetLiveToolScenarios = "live-tool-scenarios"
-	TargetAll               = "all"
+	TargetUnit                       = "unit"
+	TargetRace                       = "race"
+	TargetEvalDemo                   = "eval-demo"
+	TargetProviderSmoke              = "provider-smoke"
+	TargetToolScenarios              = "tool-scenarios"
+	TargetLiveToolScenarios          = "live-tool-scenarios"
+	TargetContextCompactionScenarios = "context-compaction-scenarios"
+	TargetAll                        = "all"
 )
 
 var (
@@ -1580,6 +1582,7 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 	}
 	promptObservation := r.observationFromPromptCache(ctx, store.prompt(r.Root), meta.ID)
 	compactionEvents := compactionEventsForObservation(pathEntries, nil)
+	compactionDebugs := compactionDebugEventsForObservation(nil)
 	subagents := subAgentSnapshotsFromRepo(ctx, repo, meta.ID)
 	return AgentSessionSnapshot{
 		ID:                      meta.ID,
@@ -1615,11 +1618,13 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 		Compactions:             countCompactions(path),
 		ContextStatuses:         promptObservation.ContextStatuses,
 		CompactionEvents:        compactionEvents,
+		CompactionDebugs:        compactionDebugs,
 		SubAgents:               pathSafeSubAgentSnapshots(subagents),
 		Observation: AgentObservation{
 			ProviderRequests:  promptObservation.ProviderRequests,
 			ContextStatuses:   promptObservation.ContextStatuses,
 			CompactionEvents:  compactionEvents,
+			CompactionDebugs:  compactionDebugs,
 			SessionMessages:   sessionMessagesFromEntries(pathEntries),
 			ActiveContext:     active,
 			ContextProjection: projection,
@@ -2032,6 +2037,7 @@ func (r *Runner) agentObservationLocked(sess *agentSession, snapshot AgentSessio
 	events := eventsForRun(sess.recorder.Snapshot(), turnID)
 	observation.ContextStatuses = mergeContextStatuses(snapshot.ContextStatuses, contextStatusesForObservation(observation.ProviderRequests, events))
 	observation.CompactionEvents = compactionEventsForObservation(snapshot.PathEntries, events)
+	observation.CompactionDebugs = compactionDebugEventsForObservation(events)
 	observation.ActivityTimeline = activityTimelineForObservation(obs.ActivityRunMeta{RunID: turnID, ThreadID: sess.id, TurnID: turnID}, events, r.now())
 	observation.Transitions = buildTransitions(events, result)
 	return observation
@@ -2046,6 +2052,7 @@ func (r *Runner) runningAgentObservation(sess *agentSession, snapshot AgentSessi
 	events := eventsForRun(sess.recorder.Snapshot(), snapshot.LatestTurnID)
 	observation.ContextStatuses = mergeContextStatuses(snapshot.ContextStatuses, contextStatusesForObservation(observation.ProviderRequests, events))
 	observation.CompactionEvents = compactionEventsForObservation(snapshot.PathEntries, events)
+	observation.CompactionDebugs = compactionDebugEventsForObservation(events)
 	observation.ActivityTimeline = activityTimelineForObservation(obs.ActivityRunMeta{RunID: snapshot.LatestTurnID, ThreadID: sess.id, TurnID: snapshot.LatestTurnID}, events, r.now())
 	observation.Transitions = buildRunningTransitions(events)
 	return observation
@@ -2594,6 +2601,8 @@ func (r Runner) RunWithOptions(ctx context.Context, target string, opts runOptio
 		resp = r.runToolScenarioSuite(ctx, resp)
 	case TargetLiveToolScenarios:
 		resp = r.runLiveToolScenarios(ctx, resp, opts)
+	case TargetContextCompactionScenarios:
+		resp = r.runContextCompactionScenarioSuite(ctx, resp)
 	case TargetAll:
 		resp.Title = "Full local suite"
 		resp.Kind = "suite"
@@ -2609,7 +2618,7 @@ func (r Runner) RunWithOptions(ctx context.Context, target string, opts runOptio
 }
 
 func (r Runner) runAll(ctx context.Context, resp RunResponse) RunResponse {
-	targets := []string{TargetUnit, TargetRace, TargetEvalDemo, TargetToolScenarios}
+	targets := []string{TargetUnit, TargetRace, TargetEvalDemo, TargetToolScenarios, TargetContextCompactionScenarios}
 	cfg := r.ConfigInfo()
 	if cfg.LiveProvider || cfg.Provider == config.ProviderFake {
 		targets = append(targets, TargetProviderSmoke)
@@ -2626,6 +2635,348 @@ func (r Runner) runAll(ctx context.Context, resp RunResponse) RunResponse {
 	resp.FinishedAt = r.now()
 	resp.DurationMS = resp.FinishedAt.Sub(resp.StartedAt).Milliseconds()
 	resp.Summary = fmt.Sprintf("%d checks finished, status %s.", len(resp.Parts), status)
+	return resp
+}
+
+func (r Runner) runContextCompactionScenarioSuite(ctx context.Context, resp RunResponse) RunResponse {
+	resp.Title = "Context compaction scenarios"
+	resp.Kind = "suite"
+	scenarios := []struct {
+		title string
+		run   func(context.Context) RunResponse
+	}{
+		{title: "manual active compaction continues", run: r.runProjectedManualCompactionScenario},
+		{title: "manual poll error is observable", run: r.runProjectedManualPollErrorScenario},
+		{title: "compact-only returns checkpoint", run: r.runProjectedCompactOnlyScenario},
+		{title: "compact-only cancel is observable", run: r.runProjectedCompactCancelScenario},
+	}
+	status := "pass"
+	for _, scenario := range scenarios {
+		part := scenario.run(ctx)
+		if strings.TrimSpace(part.Title) == "" {
+			part.Title = scenario.title
+		}
+		resp.Parts = append(resp.Parts, part)
+		if part.Status != "pass" && status == "pass" {
+			status = part.Status
+		}
+	}
+	resp.Status = status
+	resp.FinishedAt = r.now()
+	resp.DurationMS = resp.FinishedAt.Sub(resp.StartedAt).Milliseconds()
+	resp.Summary = fmt.Sprintf("%d context compaction scenarios finished, status %s.", len(resp.Parts), status)
+	return resp
+}
+
+func (r Runner) runProjectedManualCompactionScenario(ctx context.Context) RunResponse {
+	resp := RunResponse{ID: fmt.Sprintf("%d", r.now().UnixNano()), Target: TargetContextCompactionScenarios, Title: "Manual active compaction continues", Kind: "agent", StartedAt: r.now()}
+	sink := &runtimeEventSink{}
+	manual := &testManualCompactionSource{request: flruntime.ManualCompactionRequest{RequestID: "testui-manual-active", Source: "test_ui"}}
+	result, err := flruntime.RunProjectedTurn(ctx, flruntime.ProjectedTurnOptions{
+		Config:               testuiProjectedCompactionConfig(10000),
+		ModelGateway:         testModelGateway("continued after compact"),
+		Store:                flruntime.NewMemoryStore(),
+		Sink:                 sink,
+		CompactionSummarizer: testCompactionSummarizer{},
+		ManualCompactions:    manual,
+	}, flruntime.ProjectedTurnRequest{
+		RunID:         "testui-manual-active",
+		ThreadID:      "testui-manual-active",
+		TurnID:        "testui-manual-active",
+		TraceID:       "testui-manual-active",
+		PromptScopeID: "testui-manual-active",
+		History:       testuiCompactionHistory(),
+	})
+	resp.Agent = testuiRuntimeAgentRun(result, sink.events)
+	if err != nil {
+		return finishRunResponse(r, resp, "fail", err.Error())
+	}
+	if result.Status != flruntime.TurnStatusCompleted || result.Output != "continued after compact" || result.Metrics.Compactions != 1 {
+		return finishRunResponse(r, resp, "fail", fmt.Sprintf("unexpected result %#v", result))
+	}
+	compactions, debugs := testuiRuntimeCompactionObservations(sink.events)
+	wantOperation := flruntime.ManualCompactionOperationID("testui-manual-active", 1, "testui-manual-active")
+	if !slices.ContainsFunc(compactions, func(ev obs.CompactionEvent) bool {
+		return ev.Phase == obs.CompactionPhaseComplete && ev.OperationID == wantOperation
+	}) {
+		return finishRunResponse(r, resp, "fail", fmt.Sprintf("missing complete compaction operation %q in %#v", wantOperation, compactions))
+	}
+	if !slices.ContainsFunc(debugs, func(ev obs.CompactionDebugEvent) bool {
+		return ev.NextAction == engine.ContextCompactDebugNextActionProviderRequest && ev.Status == obs.CompactionDebugStatusOK
+	}) {
+		return finishRunResponse(r, resp, "fail", fmt.Sprintf("missing provider_request debug in %#v", debugs))
+	}
+	return finishRunResponse(r, resp, "pass", "Manual compaction completed and the projected turn continued.")
+}
+
+func (r Runner) runProjectedManualPollErrorScenario(ctx context.Context) RunResponse {
+	resp := RunResponse{ID: fmt.Sprintf("%d", r.now().UnixNano()), Target: TargetContextCompactionScenarios, Title: "Manual poll error is observable", Kind: "agent", StartedAt: r.now()}
+	sink := &runtimeEventSink{}
+	result, err := flruntime.RunProjectedTurn(ctx, flruntime.ProjectedTurnOptions{
+		Config:            testuiProjectedCompactionConfig(10000),
+		ModelGateway:      testModelGateway("continued after poll error"),
+		Store:             flruntime.NewMemoryStore(),
+		Sink:              sink,
+		ManualCompactions: &testManualCompactionSource{err: errors.New("manual source offline")},
+	}, flruntime.ProjectedTurnRequest{
+		RunID:         "testui-manual-poll-error",
+		ThreadID:      "testui-manual-poll-error",
+		TurnID:        "testui-manual-poll-error",
+		TraceID:       "testui-manual-poll-error",
+		PromptScopeID: "testui-manual-poll-error",
+		History:       []flruntime.TranscriptMessage{{Role: "user", Content: "continue"}},
+	})
+	resp.Agent = testuiRuntimeAgentRun(result, sink.events)
+	if err != nil {
+		return finishRunResponse(r, resp, "fail", err.Error())
+	}
+	_, debugs := testuiRuntimeCompactionObservations(sink.events)
+	if result.Status != flruntime.TurnStatusCompleted || result.Output != "continued after poll error" ||
+		!slices.ContainsFunc(debugs, func(ev obs.CompactionDebugEvent) bool {
+			return ev.Stage == obs.CompactionDebugStagePoll && ev.Status == obs.CompactionDebugStatusFailed && ev.NextAction == engine.ContextCompactDebugNextActionProviderRequest
+		}) {
+		return finishRunResponse(r, resp, "fail", fmt.Sprintf("unexpected result=%#v debugs=%#v", result, debugs))
+	}
+	return finishRunResponse(r, resp, "pass", "Manual poll failure was observed and the provider request continued.")
+}
+
+func (r Runner) runProjectedCompactOnlyScenario(ctx context.Context) RunResponse {
+	resp := RunResponse{ID: fmt.Sprintf("%d", r.now().UnixNano()), Target: TargetContextCompactionScenarios, Title: "Compact-only returns checkpoint", Kind: "agent", StartedAt: r.now()}
+	sink := &runtimeEventSink{}
+	result, err := flruntime.CompactProjectedContext(ctx, flruntime.ProjectedTurnOptions{
+		Config:               testuiProjectedCompactionConfig(10000),
+		ModelGateway:         testModelGateway("must not stream"),
+		Store:                flruntime.NewMemoryStore(),
+		Sink:                 sink,
+		CompactionSummarizer: testCompactionSummarizer{},
+	}, flruntime.ProjectedContextCompactionRequest{
+		RunID:            "testui-compact-only",
+		ThreadID:         "testui-compact-only",
+		TurnID:           "testui-compact-only",
+		TraceID:          "testui-compact-only",
+		PromptScopeID:    "testui-compact-only",
+		ManualCompaction: flruntime.ManualCompactionRequest{RequestID: "testui-compact-only", Source: "test_ui"},
+		History:          testuiCompactionHistory(),
+	})
+	resp.Agent = testuiRuntimeContextCompactionRun(result, sink.events)
+	if err != nil {
+		return finishRunResponse(r, resp, "fail", err.Error())
+	}
+	if result.Status != string(flruntime.TurnStatusCompleted) || result.Compaction == nil || len(result.ActiveTranscript) == 0 || result.ActiveTranscript[0].Kind != flruntime.TranscriptMessageKindCompactionSummary {
+		return finishRunResponse(r, resp, "fail", fmt.Sprintf("unexpected result %#v", result))
+	}
+	for _, ev := range sink.events {
+		if ev.Type == "provider_request" {
+			return finishRunResponse(r, resp, "fail", "compact-only emitted a provider request")
+		}
+	}
+	_, debugs := testuiRuntimeCompactionObservations(sink.events)
+	if !slices.ContainsFunc(debugs, func(ev obs.CompactionDebugEvent) bool {
+		return ev.NextAction == engine.ContextCompactDebugNextActionReturnCompactedContext
+	}) {
+		return finishRunResponse(r, resp, "fail", fmt.Sprintf("missing return_compacted_context debug in %#v", debugs))
+	}
+	return finishRunResponse(r, resp, "pass", "Compact-only returned a checkpoint without streaming a provider request.")
+}
+
+func (r Runner) runProjectedCompactCancelScenario(ctx context.Context) RunResponse {
+	resp := RunResponse{ID: fmt.Sprintf("%d", r.now().UnixNano()), Target: TargetContextCompactionScenarios, Title: "Compact-only cancel is observable", Kind: "agent", StartedAt: r.now()}
+	ctx, cancel := context.WithCancel(ctx)
+	started := make(chan struct{})
+	sink := &runtimeEventSink{}
+	done := make(chan struct {
+		result flruntime.ProjectedContextCompactionResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := flruntime.CompactProjectedContext(ctx, flruntime.ProjectedTurnOptions{
+			Config:               testuiProjectedCompactionConfig(10000),
+			Store:                flruntime.NewMemoryStore(),
+			Sink:                 sink,
+			CompactionSummarizer: blockingTestCompactionSummarizer{started: started},
+		}, flruntime.ProjectedContextCompactionRequest{
+			RunID:            "testui-compact-cancel",
+			ThreadID:         "testui-compact-cancel",
+			TurnID:           "testui-compact-cancel",
+			TraceID:          "testui-compact-cancel",
+			PromptScopeID:    "testui-compact-cancel",
+			ManualCompaction: flruntime.ManualCompactionRequest{RequestID: "testui-compact-cancel", Source: "test_ui"},
+			History:          testuiCompactionHistory(),
+		})
+		done <- struct {
+			result flruntime.ProjectedContextCompactionResult
+			err    error
+		}{result: result, err: err}
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		return finishRunResponse(r, resp, "error", ctx.Err().Error())
+	}
+	cancel()
+	out := <-done
+	resp.Agent = testuiRuntimeContextCompactionRun(out.result, sink.events)
+	if out.err == nil || !errors.Is(out.err, context.Canceled) || out.result.Status != string(flruntime.TurnStatusCancelled) {
+		return finishRunResponse(r, resp, "fail", fmt.Sprintf("unexpected cancel result=%#v err=%v", out.result, out.err))
+	}
+	compactions, debugs := testuiRuntimeCompactionObservations(sink.events)
+	if !slices.ContainsFunc(compactions, func(ev obs.CompactionEvent) bool {
+		return ev.Phase == obs.CompactionPhaseCancelled && ev.Status == obs.CompactionStatusCancelled
+	}) || !slices.ContainsFunc(debugs, func(ev obs.CompactionDebugEvent) bool {
+		return ev.Status == obs.CompactionDebugStatusCancelled && ev.NextAction == engine.ContextCompactDebugNextActionReturnCompactedContext
+	}) {
+		return finishRunResponse(r, resp, "fail", fmt.Sprintf("missing cancel observations compactions=%#v debugs=%#v", compactions, debugs))
+	}
+	return finishRunResponse(r, resp, "pass", "Compact cancellation emitted terminal cancelled observations.")
+}
+
+type runtimeEventSink struct {
+	events []flruntime.Event
+}
+
+func (s *runtimeEventSink) EmitEvent(ev flruntime.Event) {
+	s.events = append(s.events, ev)
+}
+
+type testCompactionSummarizer struct{}
+
+func (testCompactionSummarizer) GenerateCompactionSummary(ctx context.Context, req flruntime.ProjectedCompactionSummaryRequest) (flruntime.ProjectedCompactionSummaryResult, error) {
+	if err := ctx.Err(); err != nil {
+		return flruntime.ProjectedCompactionSummaryResult{}, err
+	}
+	return flruntime.ProjectedCompactionSummaryResult{Summary: "Older context was compacted by the test UI scenario."}, nil
+}
+
+type blockingTestCompactionSummarizer struct {
+	started chan struct{}
+}
+
+func (s blockingTestCompactionSummarizer) GenerateCompactionSummary(ctx context.Context, req flruntime.ProjectedCompactionSummaryRequest) (flruntime.ProjectedCompactionSummaryResult, error) {
+	if s.started != nil {
+		close(s.started)
+	}
+	<-ctx.Done()
+	return flruntime.ProjectedCompactionSummaryResult{}, ctx.Err()
+}
+
+type testManualCompactionSource struct {
+	request flruntime.ManualCompactionRequest
+	err     error
+	used    bool
+}
+
+func (s *testManualCompactionSource) PollManualCompaction(ctx context.Context, req flruntime.ManualCompactionPollRequest) (flruntime.ManualCompactionRequest, bool, error) {
+	if s.err != nil {
+		return flruntime.ManualCompactionRequest{}, false, s.err
+	}
+	if s.used {
+		return flruntime.ManualCompactionRequest{}, false, nil
+	}
+	s.used = true
+	return s.request, true, nil
+}
+
+type testModelGateway string
+
+func (g testModelGateway) StreamModel(ctx context.Context, req flruntime.ModelRequest) (<-chan flruntime.ModelEvent, error) {
+	events := make(chan flruntime.ModelEvent, 2)
+	events <- flruntime.ModelEvent{Type: flruntime.ModelEventDelta, Text: string(g)}
+	events <- flruntime.ModelEvent{Type: flruntime.ModelEventDone, Reason: "stop"}
+	close(events)
+	return events, nil
+}
+
+func testuiProjectedCompactionConfig(window int64) config.Config {
+	return config.Config{
+		Provider:     config.ProviderFake,
+		Model:        "fake-model",
+		SystemPrompt: "test ui compaction scenario",
+		ContextPolicy: config.ContextPolicy{
+			ContextWindowTokens:   window,
+			ReservedOutputTokens:  window / 10,
+			ReservedSummaryTokens: 160,
+			RecentTailTokens:      80,
+			RecentUserTokens:      80,
+		},
+	}
+}
+
+func testuiCompactionHistory() []flruntime.TranscriptMessage {
+	return []flruntime.TranscriptMessage{
+		{Role: "user", Content: strings.Repeat("older context ", 100)},
+		{Role: "assistant", Content: strings.Repeat("older answer ", 80)},
+		{Role: "user", Content: "continue after compaction"},
+	}
+}
+
+func testuiRuntimeAgentRun(result flruntime.ProjectedTurnResult, events []flruntime.Event) *AgentRun {
+	return &AgentRun{
+		EngineStatus: string(result.Status),
+		Output:       result.Output,
+		Metrics: engine.RunMetrics{
+			Steps:       result.Metrics.Steps,
+			LLMRequests: result.Metrics.LLMRequests,
+			Compactions: result.Metrics.Compactions,
+		},
+		Events: runtimeEventsAsEngineEvents(events),
+	}
+}
+
+func testuiRuntimeContextCompactionRun(result flruntime.ProjectedContextCompactionResult, events []flruntime.Event) *AgentRun {
+	return &AgentRun{
+		EngineStatus: result.Status,
+		Output:       result.Error,
+		Metrics: engine.RunMetrics{
+			Steps:       result.Metrics.Steps,
+			LLMRequests: result.Metrics.LLMRequests,
+			Compactions: result.Metrics.Compactions,
+		},
+		Events: runtimeEventsAsEngineEvents(events),
+	}
+}
+
+func runtimeEventsAsEngineEvents(events []flruntime.Event) []event.Event {
+	out := make([]event.Event, 0, len(events))
+	for _, ev := range events {
+		out = append(out, event.Event{
+			Type:      event.Type(ev.Type),
+			RunID:     string(ev.RunID),
+			ThreadID:  string(ev.ThreadID),
+			TurnID:    string(ev.TurnID),
+			Step:      ev.Step,
+			Message:   ev.Message,
+			Result:    ev.Result,
+			Err:       ev.Error,
+			Duration:  ev.DurationMS,
+			Metadata:  ev.Metadata,
+			Timestamp: ev.Timestamp,
+		})
+	}
+	return out
+}
+
+func testuiRuntimeCompactionObservations(events []flruntime.Event) ([]obs.CompactionEvent, []obs.CompactionDebugEvent) {
+	compactions := []obs.CompactionEvent{}
+	debugs := []obs.CompactionDebugEvent{}
+	for _, ev := range events {
+		if ev.Compaction != nil {
+			compactions = append(compactions, *ev.Compaction)
+		}
+		if ev.CompactionDebug != nil {
+			debugs = append(debugs, *ev.CompactionDebug)
+		}
+	}
+	return compactions, debugs
+}
+
+func finishRunResponse(r Runner, resp RunResponse, status string, summary string) RunResponse {
+	resp.Status = status
+	resp.Summary = summary
+	if status != "pass" {
+		resp.Error = summary
+	}
+	resp.FinishedAt = r.now()
+	resp.DurationMS = resp.FinishedAt.Sub(resp.StartedAt).Milliseconds()
 	return resp
 }
 

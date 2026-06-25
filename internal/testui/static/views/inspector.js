@@ -1,9 +1,11 @@
 import { escapeHTML, formatDuration, formatLocalTime, state, toolLabelList } from "../state.js";
 import {
+  compactionDebugEventsFor,
   compactionEventsFor,
   contextStatusForRequest,
   contextStatusesFor,
   latestContextStatus,
+  renderCompactionDebugRow,
   renderCompactionEventRow,
   renderContextMeter,
   renderContextStatusRow,
@@ -471,6 +473,7 @@ function renderContext(session, result) {
   }));
   const statuses = contextStatusesFor(session, result);
   const compactions = compactionEventsFor(session, result);
+  const debugRows = compactionDebugEventsFor(session, result);
   const current = latestContextStatus(session, result);
   const statusPanel = `
     <section class="section context-current">
@@ -479,10 +482,11 @@ function renderContext(session, result) {
     </section>
     <section class="section">
       <h3>Recent Context Events</h3>
-      ${statuses.length || compactions.length ? `
+      ${statuses.length || compactions.length || debugRows.length ? `
         <div class="context-event-list">
           ${statuses.slice(-8).map(renderContextStatusRow).join("")}
           ${compactions.slice(-6).map(renderCompactionEventRow).join("")}
+          ${debugRows.slice(-8).map(renderCompactionDebugRow).join("")}
         </div>
       ` : `<p class="muted">No provider context status has been captured yet.</p>`}
     </section>

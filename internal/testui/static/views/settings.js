@@ -120,6 +120,7 @@ export function renderSettings() {
           <div class="form-actions">
             ${renderCheckButton("tool-scenarios", "tool scenarios")}
             ${renderCheckButton("live-tool-scenarios", "live tool scenarios")}
+            ${renderCheckButton("context-compaction-scenarios", "context compaction")}
           </div>
           <pre id="checkOutput" class="code-block">${escapeHTML(state.checkResult || "No check has run in this browser session.")}</pre>
         </section>

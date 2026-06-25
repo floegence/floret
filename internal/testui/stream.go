@@ -104,6 +104,20 @@ func (r *streamingEventRecorder) Emit(ev event.Event) {
 				Error:       compact.Error,
 			})
 		}
+	case event.ContextCompactDebug:
+		if debug, ok := compactionDebugEventFromEngineEvent(ev); ok {
+			sink.EmitAgentStream(AgentStreamEvent{
+				Type:            AgentStreamContextCompactionDebug,
+				SessionID:       ev.ThreadID,
+				TurnID:          ev.TurnID,
+				Step:            ev.Step,
+				At:              ev.Timestamp,
+				CompactionDebug: &debug,
+				EngineEvent:     &ev,
+				Message:         debug.Stage,
+				Error:           debug.Error,
+			})
+		}
 	case event.ToolCall, event.HostedToolCall:
 		emitEngineStreamEvent(sink, AgentStreamToolCall, ev, activity)
 	case event.ToolResult, event.HostedToolResult:

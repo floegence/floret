@@ -10,6 +10,7 @@ const (
 	EventTypeContextCompactDebug = "context_compact_debug"
 
 	CompactionDebugStageBegin                   = "begin"
+	CompactionDebugStagePoll                    = "poll"
 	CompactionDebugStagePreflight               = "preflight"
 	CompactionDebugStageGenerateAttemptStart    = "generate_attempt_start"
 	CompactionDebugStageGenerateAttemptComplete = "generate_attempt_complete"
@@ -19,10 +20,11 @@ const (
 	CompactionDebugStageInstallStart            = "install_start"
 	CompactionDebugStageInstallComplete         = "install_complete"
 
-	CompactionDebugStatusRunning  = "running"
-	CompactionDebugStatusOK       = "ok"
-	CompactionDebugStatusRetrying = "retrying"
-	CompactionDebugStatusFailed   = "failed"
+	CompactionDebugStatusRunning   = "running"
+	CompactionDebugStatusOK        = "ok"
+	CompactionDebugStatusRetrying  = "retrying"
+	CompactionDebugStatusFailed    = "failed"
+	CompactionDebugStatusCancelled = "cancelled"
 )
 
 type CompactionDebugEvent struct {
@@ -138,7 +140,8 @@ func CompactionDebugEventFromEvent(ev Event) (CompactionDebugEvent, bool) {
 	if out.Status != CompactionDebugStatusRunning &&
 		out.Status != CompactionDebugStatusOK &&
 		out.Status != CompactionDebugStatusRetrying &&
-		out.Status != CompactionDebugStatusFailed {
+		out.Status != CompactionDebugStatusFailed &&
+		out.Status != CompactionDebugStatusCancelled {
 		return CompactionDebugEvent{}, false
 	}
 	return out, true

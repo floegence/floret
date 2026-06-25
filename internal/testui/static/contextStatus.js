@@ -74,7 +74,9 @@ export function renderContextStatusRow(status) {
 
 export function renderCompactionEventRow(compaction) {
   if (!compaction) return "";
-  const label = compaction.status === "failed" || compaction.phase === "failed"
+  const label = compaction.status === "cancelled" || compaction.phase === "cancelled"
+    ? "compaction cancelled"
+    : compaction.status === "failed" || compaction.phase === "failed"
     ? "compaction failed"
     : compaction.phase === "complete" ? "compaction complete" : "compaction started";
   const tokenText = compactionTokenLabel(compaction);
@@ -85,6 +87,29 @@ export function renderCompactionEventRow(compaction) {
       <strong>${escapeHTML(label)}</strong>
       <span>${escapeHTML(tokenText)}</span>
       <span>${escapeHTML([reason, preview].filter(Boolean).join(" · ") || compaction.status || "compaction")}</span>
+    </div>
+  `;
+}
+
+export function renderCompactionDebugRow(debug) {
+  if (!debug) return "";
+  const title = [
+    debug.operation_id ? `operation ${debug.operation_id}` : "",
+    debug.request_id ? `request ${debug.request_id}` : "",
+    debug.error ? `error: ${debug.error}` : "",
+  ].filter(Boolean).join("\n");
+  const detail = [
+    debug.next_action ? `next ${debug.next_action}` : "",
+    debug.compaction_convergence_attempt ? `attempt ${debug.compaction_convergence_attempt}` : "",
+    debug.compaction_id ? `compaction ${debug.compaction_id}` : "",
+    debug.provider_state_kind ? `state ${debug.provider_state_kind}` : "",
+    debug.error || "",
+  ].filter(Boolean).join(" · ");
+  return `
+    <div class="context-event-row context-compact-debug" title="${escapeHTML(title || "compaction debug")}">
+      <strong>${escapeHTML(`debug ${debug.stage || "stage"} · ${debug.status || "status"}`)}</strong>
+      <span>${escapeHTML(debugTokenLabel(debug))}</span>
+      <span>${escapeHTML(detail || debug.operation_id || debug.request_id || "debug")}</span>
     </div>
   `;
 }
@@ -100,6 +125,17 @@ export function compactionEventsFor(session, result) {
   return dedupeCompactions(out);
 }
 
+export function compactionDebugEventsFor(session, result) {
+  const live = stateLiveFor(session);
+  const out = [
+    ...(session?.compaction_debugs || []),
+    ...(session?.observation?.compaction_debugs || []),
+    ...(result?.session_id === session?.id ? result?.observation?.compaction_debugs || [] : []),
+    ...(live?.compaction_debugs || []),
+  ];
+  return dedupeCompactionDebugs(out);
+}
+
 export function compactionEventKey(compaction) {
   const id = compaction?.compaction_id || "";
   if (id) return ["id", id, compaction?.phase || ""].join(":");
@@ -108,6 +144,18 @@ export function compactionEventKey(compaction) {
     compaction?.phase || "",
     compaction?.step || "",
     compaction?.observed_at || "",
+  ].join(":");
+}
+
+export function compactionDebugEventKey(debug) {
+  return [
+    debug?.operation_id || "",
+    debug?.request_id || "",
+    debug?.stage || "",
+    debug?.status || "",
+    debug?.compaction_convergence_attempt || "",
+    debug?.step || "",
+    debug?.observed_at || "",
   ].join(":");
 }
 
@@ -252,6 +300,30 @@ function dedupeCompactions(compactions) {
     out.push(item);
   }
   return out.sort((a, b) => Date.parse(a.observed_at || "") - Date.parse(b.observed_at || ""));
+}
+
+function dedupeCompactionDebugs(debugs) {
+  const seen = new Set();
+  const out = [];
+  for (const item of debugs || []) {
+    if (!item) continue;
+    const key = compactionDebugEventKey(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out.sort((a, b) => Date.parse(a.observed_at || "") - Date.parse(b.observed_at || ""));
+}
+
+function debugTokenLabel(debug) {
+  const before = Number(debug?.tokens_before || 0);
+  const after = Number(debug?.tokens_after_estimate || 0);
+  if (before > 0 && after > 0) return `${formatContextCount(before)} -> ${formatContextCount(after)} tokens`;
+  if (before > 0) return `${formatContextCount(before)} tokens`;
+  const pressure = debug?.before_pressure || {};
+  const projected = Number(pressure.projected_input_tokens || pressure.ProjectedInputTokens || 0);
+  if (projected > 0) return `${formatContextCount(projected)} projected`;
+  return "tokens n/a";
 }
 
 function compareContextStatus(a, b) {

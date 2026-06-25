@@ -36,6 +36,10 @@ func compactionEventFromEngineEvent(ev event.Event) (ObservedCompactionEvent, bo
 	return out, true
 }
 
+func compactionDebugEventFromEngineEvent(ev event.Event) (ObservedCompactionDebugEvent, bool) {
+	return observation.CompactionDebugEventFromEvent(observationEvent(ev))
+}
+
 func compactionEventFromEntry(entry ObservedSessionEntry) (ObservedCompactionEvent, bool) {
 	if entry.Type != sessiontree.EntryCompaction {
 		return ObservedCompactionEvent{}, false
@@ -156,6 +160,36 @@ func compactionEventsForObservation(entries []ObservedSessionEntry, events []eve
 		out = append(out, compact)
 	}
 	return out
+}
+
+func compactionDebugEventsForObservation(events []event.Event) []ObservedCompactionDebugEvent {
+	out := []ObservedCompactionDebugEvent{}
+	seen := map[string]struct{}{}
+	for _, ev := range events {
+		debug, ok := compactionDebugEventFromEngineEvent(ev)
+		if !ok {
+			continue
+		}
+		key := compactionDebugEventKey(debug)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, debug)
+	}
+	return out
+}
+
+func compactionDebugEventKey(debug ObservedCompactionDebugEvent) string {
+	return strings.Join([]string{
+		debug.OperationID,
+		debug.RequestID,
+		debug.Stage,
+		debug.Status,
+		fmt.Sprintf("%d", debug.CompactionConvergenceAttempt),
+		fmt.Sprintf("%d", debug.Step),
+		fmt.Sprintf("%d", debug.ObservedAt.UTC().UnixNano()),
+	}, "\x00")
 }
 
 func requestID(runID string, step int) string {

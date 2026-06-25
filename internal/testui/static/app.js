@@ -546,6 +546,7 @@ function createLiveTurn(sessionID, message) {
     provider_requests: [],
     context_statuses: [],
     compactions: [],
+    compaction_debugs: [],
     activity_timeline: null,
     entries: [],
     result: null,
@@ -596,6 +597,14 @@ function applyStreamEvent(event) {
         state.liveTurn.result.events.push(event.engine_event);
       }
       if (event.error) state.liveTurn.failed = true;
+      break;
+    case "context_compaction_debug":
+      if (event.compaction_debug) {
+        upsertLiveCompactionDebug(event.compaction_debug);
+      }
+      if (event.engine_event) {
+        state.liveTurn.result.events.push(event.engine_event);
+      }
       break;
     case "provider_delta":
       applyProviderDelta(event);
@@ -655,6 +664,7 @@ function ensureStreamingResult() {
         provider_events: state.liveTurn.provider_events,
         context_statuses: state.liveTurn.context_statuses,
         compaction_events: state.liveTurn.compactions,
+        compaction_debugs: state.liveTurn.compaction_debugs,
         activity_timeline: state.liveTurn.activity_timeline,
         path_entries: state.liveTurn.entries,
       },
@@ -669,6 +679,7 @@ function ensureStreamingResult() {
   state.liveTurn.result.observation.provider_events = state.liveTurn.provider_events;
   state.liveTurn.result.observation.context_statuses = state.liveTurn.context_statuses;
   state.liveTurn.result.observation.compaction_events = state.liveTurn.compactions;
+  state.liveTurn.result.observation.compaction_debugs = state.liveTurn.compaction_debugs;
   state.liveTurn.result.observation.activity_timeline = state.liveTurn.activity_timeline;
   state.liveTurn.result.activity_timeline = state.liveTurn.activity_timeline;
   state.liveTurn.result.observation.path_entries = state.liveTurn.entries;
@@ -713,7 +724,16 @@ function upsertLiveCompaction(compaction) {
   });
 }
 
-function overlayActiveSessionContext({ contextStatuses, compactions }) {
+function upsertLiveCompactionDebug(debug) {
+  const next = upsertByKey(state.liveTurn.compaction_debugs, debug, compactionDebugKey);
+  state.liveTurn.compaction_debugs = next;
+  state.liveTurn.result.observation.compaction_debugs = next;
+  overlayActiveSessionContext({
+    compactionDebugs: next,
+  });
+}
+
+function overlayActiveSessionContext({ contextStatuses, compactions, compactionDebugs }) {
   if (state.activeSession?.id !== state.liveTurn?.session_id) return;
   const observation = { ...(state.activeSession.observation || {}) };
   const patch = {
@@ -729,6 +749,9 @@ function overlayActiveSessionContext({ contextStatuses, compactions }) {
   if (compactions) {
     patch.compaction_events = mergeByKey(state.activeSession.compaction_events, compactions, compactionKey);
     observation.compaction_events = mergeByKey(observation.compaction_events, compactions, compactionKey);
+  }
+  if (compactionDebugs) {
+    observation.compaction_debugs = mergeByKey(observation.compaction_debugs, compactionDebugs, compactionDebugKey);
   }
   setActiveSessionSnapshot(patch, { allowRunningOverlay: true });
   state.liveTurn.result.session = state.activeSession;
@@ -766,6 +789,18 @@ function contextStatusKey(status) {
 
 function compactionKey(compaction) {
   return compactionEventKey(compaction);
+}
+
+function compactionDebugKey(debug) {
+  return [
+    debug?.operation_id || "",
+    debug?.request_id || "",
+    debug?.stage || "",
+    debug?.status || "",
+    debug?.compaction_convergence_attempt || "",
+    debug?.step || "",
+    debug?.observed_at || "",
+  ].join(":");
 }
 
 function upsertLiveEntry(entry) {

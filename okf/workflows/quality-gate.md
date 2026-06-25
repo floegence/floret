@@ -15,6 +15,15 @@ Run before integration:
 go test ./...
 ```
 
+For context compaction runtime, observation, or Test UI changes, also exercise
+the focused scenario target:
+
+```bash
+go test ./runtime ./internal/testui
+go run ./cmd/floret-test-ui -addr 127.0.0.1:8765
+# In the Test UI, run the "context compaction" check.
+```
+
 # What It Protects
 
 The test suite includes unit behavior, provider contracts, storage behavior,

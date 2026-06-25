@@ -4,6 +4,7 @@ import {
   compactionTitle,
   compactionTokenLabel,
   latestContextStatus,
+  renderCompactionDebugRow,
   renderCompactionEventRow,
   renderContextMeter,
   renderContextStatusRow,
@@ -712,13 +713,15 @@ function activityExpandKey(session, timeline, live) {
 function renderLiveContextActivity(session, live) {
   const statuses = (live.context_statuses || []).slice(-4);
   const compactions = (live.compactions || []).slice(-3);
-  if (!statuses.length && !compactions.length) return "";
+  const debugs = (live.compaction_debugs || []).slice(-3);
+  if (!statuses.length && !compactions.length && !debugs.length) return "";
   return `
     <article class="message entry context-live-item">
       <div class="message-head"><span>context</span><span>live</span></div>
       <div class="context-event-list">
         ${statuses.map(renderContextStatusRow).join("")}
         ${compactions.map(renderCompactionEventRow).join("")}
+        ${debugs.map(renderCompactionDebugRow).join("")}
       </div>
     </article>
   `;

@@ -1278,7 +1278,7 @@ func TestStaticConsoleExposesSavedToolScenarioChecks(t *testing.T) {
 	apiJS := readStaticTestFile(t, "api.js")
 	settings := readStaticTestFile(t, "views", "settings.js")
 
-	for _, want := range []string{"Tool Scenario Checks", "tool-scenarios", "live-tool-scenarios", "multi-tool, multi-turn", "saved active provider profile"} {
+	for _, want := range []string{"Tool Scenario Checks", "tool-scenarios", "live-tool-scenarios", "context-compaction-scenarios", "multi-tool, multi-turn", "saved active provider profile"} {
 		if !strings.Contains(settings, want) {
 			t.Fatalf("settings view missing tool scenario check copy %q", want)
 		}

@@ -139,6 +139,13 @@ type ManualCompactionRequest struct {
 	RequestedAt time.Time `json:"requested_at,omitempty"`
 }
 
+// ManualCompactionOperationID returns the Floret operation identity that links
+// the start, debug, complete, and failed observations for a projected manual
+// compaction at the given provider-loop step.
+func ManualCompactionOperationID(runID RunID, step int, requestID string) string {
+	return engine.CompactionOperationID(string(runID), step, compaction.TriggerManual, compaction.ReasonManual, requestID)
+}
+
 type ManualCompactionSource interface {
 	PollManualCompaction(context.Context, ManualCompactionPollRequest) (ManualCompactionRequest, bool, error)
 }

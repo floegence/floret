@@ -25,8 +25,11 @@ type publicCompactionSummarizer struct {
 	err      error
 }
 
-func (s *publicCompactionSummarizer) GenerateCompactionSummary(_ context.Context, req runtime.ProjectedCompactionSummaryRequest) (runtime.ProjectedCompactionSummaryResult, error) {
+func (s *publicCompactionSummarizer) GenerateCompactionSummary(ctx context.Context, req runtime.ProjectedCompactionSummaryRequest) (runtime.ProjectedCompactionSummaryResult, error) {
 	s.requests = append(s.requests, req)
+	if err := ctx.Err(); err != nil {
+		return runtime.ProjectedCompactionSummaryResult{}, err
+	}
 	if s.err != nil {
 		return runtime.ProjectedCompactionSummaryResult{}, s.err
 	}
@@ -38,14 +41,30 @@ func (s *publicCompactionSummarizer) GenerateCompactionSummary(_ context.Context
 	}, nil
 }
 
+type blockingCompactionSummarizer struct {
+	started chan struct{}
+}
+
+func (s blockingCompactionSummarizer) GenerateCompactionSummary(ctx context.Context, req runtime.ProjectedCompactionSummaryRequest) (runtime.ProjectedCompactionSummaryResult, error) {
+	if s.started != nil {
+		close(s.started)
+	}
+	<-ctx.Done()
+	return runtime.ProjectedCompactionSummaryResult{}, ctx.Err()
+}
+
 type singleManualCompactionSource struct {
 	request runtime.ManualCompactionRequest
 	polls   []runtime.ManualCompactionPollRequest
 	used    bool
+	err     error
 }
 
 func (s *singleManualCompactionSource) PollManualCompaction(_ context.Context, req runtime.ManualCompactionPollRequest) (runtime.ManualCompactionRequest, bool, error) {
 	s.polls = append(s.polls, req)
+	if s.err != nil {
+		return runtime.ManualCompactionRequest{}, false, s.err
+	}
 	if s.used {
 		return runtime.ManualCompactionRequest{}, false, nil
 	}
@@ -239,6 +258,119 @@ func TestRunProjectedTurnManualCompactionTriggersBelowThresholdAndContinues(t *t
 	}
 }
 
+func TestManualCompactionOperationIDMatchesProjectedEvents(t *testing.T) {
+	summarizer := &publicCompactionSummarizer{}
+	manual := &singleManualCompactionSource{request: runtime.ManualCompactionRequest{RequestID: "manual-operation", Source: "slash_command"}}
+	sink := &collectingEventSink{}
+	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
+		events := make(chan runtime.ModelEvent, 2)
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDelta, Text: "ok"}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "stop"}
+		close(events)
+		return events, nil
+	})
+
+	result, err := runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:      config.ProviderFake,
+			Model:         "fake-model",
+			SystemPrompt:  "test",
+			ContextPolicy: config.ContextPolicy{ContextWindowTokens: 10000, ReservedOutputTokens: 1000},
+		},
+		ModelGateway:         gateway,
+		Store:                runtime.NewMemoryStore(),
+		Sink:                 sink,
+		CompactionSummarizer: summarizer,
+		ManualCompactions:    manual,
+	}, runtime.ProjectedTurnRequest{
+		RunID:         "run-operation",
+		ThreadID:      "thread-operation",
+		TurnID:        "turn-operation",
+		TraceID:       "trace-operation",
+		PromptScopeID: "thread-operation",
+		History: []runtime.TranscriptMessage{
+			{Role: "user", Content: "older context"},
+			{Role: "assistant", Content: "older answer"},
+			{Role: "user", Content: "continue"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != runtime.TurnStatusCompleted {
+		t.Fatalf("result = %#v", result)
+	}
+	want := runtime.ManualCompactionOperationID("run-operation", 1, "manual-operation")
+	var compactions []observation.CompactionEvent
+	for _, ev := range sink.events {
+		if ev.Compaction != nil {
+			compactions = append(compactions, *ev.Compaction)
+		}
+	}
+	if len(compactions) != 2 || compactions[0].OperationID != want || compactions[1].OperationID != want {
+		t.Fatalf("compactions=%#v want operation %q", compactions, want)
+	}
+}
+
+func TestRunProjectedTurnManualCompactionPollErrorIsObservedAndContinues(t *testing.T) {
+	manual := &singleManualCompactionSource{err: errors.New("manual source offline")}
+	sink := &collectingEventSink{}
+	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
+		events := make(chan runtime.ModelEvent, 2)
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDelta, Text: "continued after poll error"}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "stop"}
+		close(events)
+		return events, nil
+	})
+
+	result, err := runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:      config.ProviderFake,
+			Model:         "fake-model",
+			SystemPrompt:  "test",
+			ContextPolicy: config.ContextPolicy{ContextWindowTokens: 10000, ReservedOutputTokens: 1000},
+		},
+		ModelGateway:      gateway,
+		Store:             runtime.NewMemoryStore(),
+		Sink:              sink,
+		ManualCompactions: manual,
+	}, runtime.ProjectedTurnRequest{
+		RunID:         "run-manual-poll-error",
+		ThreadID:      "thread-manual-poll-error",
+		TurnID:        "turn-manual-poll-error",
+		TraceID:       "trace-manual-poll-error",
+		PromptScopeID: "thread-manual-poll-error",
+		History:       []runtime.TranscriptMessage{{Role: "user", Content: "continue"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != runtime.TurnStatusCompleted || result.Output != "continued after poll error" {
+		t.Fatalf("result = %#v", result)
+	}
+	var compactions []observation.CompactionEvent
+	var debugEvents []observation.CompactionDebugEvent
+	for _, ev := range sink.events {
+		if ev.Compaction != nil {
+			compactions = append(compactions, *ev.Compaction)
+		}
+		if ev.CompactionDebug != nil {
+			debugEvents = append(debugEvents, *ev.CompactionDebug)
+		}
+	}
+	if len(compactions) != 0 {
+		t.Fatalf("poll errors must not create a compaction lifecycle: %#v", compactions)
+	}
+	if !slices.ContainsFunc(debugEvents, func(debug observation.CompactionDebugEvent) bool {
+		return debug.Stage == observation.CompactionDebugStagePoll &&
+			debug.Status == observation.CompactionDebugStatusFailed &&
+			debug.NextAction == "provider_request" &&
+			debug.Error == "manual source offline"
+	}) {
+		t.Fatalf("missing manual poll debug event: %#v", debugEvents)
+	}
+}
+
 func TestRunProjectedTurnManualCompactionFailureDoesNotEndActiveRun(t *testing.T) {
 	manual := &singleManualCompactionSource{request: runtime.ManualCompactionRequest{RequestID: "manual-fail", Source: "slash_command"}}
 	sink := &collectingEventSink{}
@@ -318,6 +450,12 @@ func TestRunProjectedTurnManualCompactionFailureDoesNotEndActiveRun(t *testing.T
 		strings.Contains(debugEvents[failedDebugIndex].Error, rawSecret) {
 		t.Fatalf("manual failure debug error leaked sensitive content: %#v", debugEvents[failedDebugIndex])
 	}
+	if !slices.ContainsFunc(debugEvents, func(debug observation.CompactionDebugEvent) bool {
+		return debug.Status == observation.CompactionDebugStatusFailed &&
+			debug.NextAction == "provider_request"
+	}) {
+		t.Fatalf("manual failure debug events missing provider-loop continuation: %#v", debugEvents)
+	}
 }
 
 func TestCompactProjectedContextReturnsCheckpointAndMetadata(t *testing.T) {
@@ -389,6 +527,10 @@ func TestCompactProjectedContextReturnsCheckpointAndMetadata(t *testing.T) {
 	if len(compactions) != 2 || compactions[0].RequestID != "manual-idle" || compactions[1].Status != observation.CompactionStatusCompacted {
 		t.Fatalf("events = %#v", compactions)
 	}
+	wantOperation := runtime.ManualCompactionOperationID("run-idle-compact", 1, "manual-idle")
+	if result.Compaction.OperationID != wantOperation || compactions[0].OperationID != wantOperation || compactions[1].OperationID != wantOperation {
+		t.Fatalf("operation correlation result=%#v events=%#v want=%q", result.Compaction, compactions, wantOperation)
+	}
 	var debugEvents []observation.CompactionDebugEvent
 	for _, ev := range sink.events {
 		if ev.CompactionDebug != nil {
@@ -401,6 +543,115 @@ func TestCompactProjectedContextReturnsCheckpointAndMetadata(t *testing.T) {
 			debug.NextAction == "return_compacted_context"
 	}) {
 		t.Fatalf("compact-only debug events missing return next action: %#v", debugEvents)
+	}
+}
+
+func TestCompactProjectedContextDoesNotCallModelGateway(t *testing.T) {
+	summarizer := &publicCompactionSummarizer{}
+	sink := &collectingEventSink{}
+	streamCalls := 0
+	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
+		streamCalls++
+		return nil, errors.New("unexpected model stream")
+	})
+	result, err := runtime.CompactProjectedContext(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:      config.ProviderFake,
+			Model:         "fake-model",
+			SystemPrompt:  "test",
+			ContextPolicy: config.ContextPolicy{ContextWindowTokens: 10000, ReservedOutputTokens: 1000},
+		},
+		ModelGateway:         gateway,
+		Store:                runtime.NewMemoryStore(),
+		Sink:                 sink,
+		CompactionSummarizer: summarizer,
+	}, runtime.ProjectedContextCompactionRequest{
+		RunID:            "run-idle-no-stream",
+		ThreadID:         "thread-idle-no-stream",
+		TurnID:           "turn-idle-no-stream",
+		TraceID:          "trace-idle-no-stream",
+		PromptScopeID:    "thread-idle-no-stream",
+		ManualCompaction: runtime.ManualCompactionRequest{RequestID: "manual-no-stream", Source: "slash_command"},
+		History: []runtime.TranscriptMessage{
+			{Role: "user", Content: "older context"},
+			{Role: "assistant", Content: "older answer"},
+			{Role: "user", Content: "continue later"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "completed" || result.Compaction == nil {
+		t.Fatalf("result = %#v", result)
+	}
+	if streamCalls != 0 {
+		t.Fatalf("CompactProjectedContext called ModelGateway.StreamModel %d times", streamCalls)
+	}
+	for _, ev := range sink.events {
+		if ev.Type == "provider_request" {
+			t.Fatalf("CompactProjectedContext emitted provider request event: %#v", sink.events)
+		}
+	}
+}
+
+func TestCompactProjectedContextCancelDuringSummaryReturnsCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	sink := &collectingEventSink{}
+	done := make(chan struct {
+		result runtime.ProjectedContextCompactionResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := runtime.CompactProjectedContext(ctx, runtime.ProjectedTurnOptions{
+			Config: config.Config{
+				Provider:      config.ProviderFake,
+				Model:         "fake-model",
+				SystemPrompt:  "test",
+				ContextPolicy: config.ContextPolicy{ContextWindowTokens: 10000, ReservedOutputTokens: 1000},
+			},
+			Store:                runtime.NewMemoryStore(),
+			Sink:                 sink,
+			CompactionSummarizer: blockingCompactionSummarizer{started: started},
+		}, runtime.ProjectedContextCompactionRequest{
+			RunID:            "run-idle-cancel",
+			ThreadID:         "thread-idle-cancel",
+			TurnID:           "turn-idle-cancel",
+			TraceID:          "trace-idle-cancel",
+			PromptScopeID:    "thread-idle-cancel",
+			ManualCompaction: runtime.ManualCompactionRequest{RequestID: "manual-cancel", Source: "slash_command"},
+			History: []runtime.TranscriptMessage{
+				{Role: "user", Content: "older context"},
+				{Role: "assistant", Content: "older answer"},
+				{Role: "user", Content: "continue later"},
+			},
+		})
+		done <- struct {
+			result runtime.ProjectedContextCompactionResult
+			err    error
+		}{result: result, err: err}
+	}()
+	<-started
+	cancel()
+	out := <-done
+	if out.err == nil || !errors.Is(out.err, context.Canceled) {
+		t.Fatalf("err = %v", out.err)
+	}
+	if out.result.Status != string(runtime.TurnStatusCancelled) {
+		t.Fatalf("result = %#v", out.result)
+	}
+	var debugEvents []observation.CompactionDebugEvent
+	for _, ev := range sink.events {
+		if ev.CompactionDebug != nil {
+			debugEvents = append(debugEvents, *ev.CompactionDebug)
+		}
+	}
+	if !slices.ContainsFunc(debugEvents, func(debug observation.CompactionDebugEvent) bool {
+		return debug.Status == observation.CompactionDebugStatusCancelled &&
+			debug.NextAction == "return_compacted_context" &&
+			debug.Error == context.Canceled.Error()
+	}) {
+		t.Fatalf("missing cancelled debug event: %#v", debugEvents)
 	}
 }
 

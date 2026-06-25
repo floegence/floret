@@ -287,8 +287,8 @@ func TestRunnerFullSuiteAggregatesParts(t *testing.T) {
 	if result.Status != "pass" {
 		t.Fatalf("result = %#v", result)
 	}
-	if len(result.Parts) != 5 {
-		t.Fatalf("parts = %d, want unit, race, eval, tool scenarios, provider smoke", len(result.Parts))
+	if len(result.Parts) != 6 {
+		t.Fatalf("parts = %d, want unit, race, eval, tool scenarios, context compaction scenarios, provider smoke", len(result.Parts))
 	}
 }
 
@@ -307,6 +307,22 @@ func TestRunnerToolScenarioSuitePassesAndPersistsCoverage(t *testing.T) {
 		}
 		if part.Agent.Metrics.ToolCalls == 0 {
 			t.Fatalf("scenario %s did not execute tools: %#v", part.Title, part.Agent.Metrics)
+		}
+	}
+}
+
+func TestRunnerContextCompactionScenarioSuitePasses(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+
+	result := runner.Run(context.Background(), TargetContextCompactionScenarios)
+
+	if result.Status != "pass" || len(result.Parts) != 4 {
+		t.Fatalf("result = %#v", result)
+	}
+	for _, part := range result.Parts {
+		if part.Agent == nil || part.Agent.EngineStatus == "" {
+			t.Fatalf("scenario part missing agent evidence: %#v", part)
 		}
 	}
 }

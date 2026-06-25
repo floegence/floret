@@ -41,15 +41,16 @@ reasoning, tool arguments, tool results, and local paths.
   from committed durable checkpoints, so a stored compaction entry also means
   the checkpoint passed full provider request validation before installation.
   Manual compaction uses the same lifecycle with `manual/manual` trigger and
-  reason. The request correlation is carried through start, complete, and failed
-  observations; active-run manual compaction failures are observable lifecycle
-  facts and the provider loop may continue after them.
+  reason. The request correlation is carried through start, complete, failed,
+  and cancelled observations; active-run manual compaction failures are
+  observable lifecycle facts and the provider loop may continue after them.
 * Compaction debug observations expose product-neutral pipeline stages for
-  diagnostics: begin, generation attempt, projected request rebuild, validation,
-  and installation. They share lifecycle operation/request correlation and carry
-  safe counts, token pressure, durations, provider-state kind, and sanitized
-  error text. They intentionally omit local paths, secrets, prompt text,
-  generated summaries, tool arguments, tool results, and provider payloads.
+  diagnostics: poll, begin, generation attempt, projected request rebuild,
+  validation, and installation. They share lifecycle operation/request
+  correlation and carry safe counts, token pressure, durations,
+  provider-state kind, next action, cancelled status, and sanitized error text.
+  They intentionally omit local paths, secrets, prompt text, generated
+  summaries, tool arguments, tool results, and provider payloads.
 
 # Key Source Files
 

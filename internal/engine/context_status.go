@@ -20,11 +20,13 @@ const (
 	ContextStatusHardLimit     = "hard_limit"
 	ContextStatusEstimated     = "estimated"
 
-	ContextCompactPhaseStart    = "start"
-	ContextCompactPhaseComplete = "complete"
-	ContextCompactPhaseFailed   = "failed"
+	ContextCompactPhaseStart     = "start"
+	ContextCompactPhaseComplete  = "complete"
+	ContextCompactPhaseFailed    = "failed"
+	ContextCompactPhaseCancelled = "cancelled"
 
 	ContextCompactDebugStageBegin                   = "begin"
+	ContextCompactDebugStagePoll                    = "poll"
 	ContextCompactDebugStagePreflight               = "preflight"
 	ContextCompactDebugStageGenerateAttemptStart    = "generate_attempt_start"
 	ContextCompactDebugStageGenerateAttemptComplete = "generate_attempt_complete"
@@ -34,13 +36,15 @@ const (
 	ContextCompactDebugStageInstallStart            = "install_start"
 	ContextCompactDebugStageInstallComplete         = "install_complete"
 
-	ContextCompactDebugStatusRunning  = "running"
-	ContextCompactDebugStatusOK       = "ok"
-	ContextCompactDebugStatusRetrying = "retrying"
-	ContextCompactDebugStatusFailed   = "failed"
+	ContextCompactDebugStatusRunning   = "running"
+	ContextCompactDebugStatusOK        = "ok"
+	ContextCompactDebugStatusRetrying  = "retrying"
+	ContextCompactDebugStatusFailed    = "failed"
+	ContextCompactDebugStatusCancelled = "cancelled"
 
 	ContextCompactDebugNextActionProviderRequest        = "provider_request"
 	ContextCompactDebugNextActionReturnCompactedContext = "return_compacted_context"
+	ContextCompactDebugNextActionFailTurn               = "fail_turn"
 )
 
 type ProviderUsageContextStatus struct {
@@ -123,11 +127,19 @@ func cleanRatio(value float64) float64 {
 	return value
 }
 
-func compactionOperationID(runID string, step int, trigger compaction.Trigger, reason compaction.Reason, manual ManualCompactionRequest) string {
-	if requestID := strings.TrimSpace(manual.RequestID); requestID != "" {
+// CompactionOperationID returns the engine identity used to correlate one
+// logical compaction lifecycle across start, debug, complete, and failed events.
+func CompactionOperationID(runID string, step int, trigger compaction.Trigger, reason compaction.Reason, requestID string) string {
+	runID = strings.TrimSpace(runID)
+	requestID = strings.TrimSpace(requestID)
+	if requestID != "" {
 		return fmt.Sprintf("%s:compact:%d:%s:%s:%s", runID, step, trigger, reason, requestID)
 	}
 	return fmt.Sprintf("%s:compact:%d:%s:%s", runID, step, trigger, reason)
+}
+
+func compactionOperationID(runID string, step int, trigger compaction.Trigger, reason compaction.Reason, manual ManualCompactionRequest) string {
+	return CompactionOperationID(runID, step, trigger, reason, manual.RequestID)
 }
 
 func compactionStartMetadata(operationID string, trigger compaction.Trigger, reason compaction.Reason, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage, manual ManualCompactionRequest) map[string]any {
@@ -145,6 +157,18 @@ func compactionStartMetadata(operationID string, trigger compaction.Trigger, rea
 func compactionFailedMetadata(operationID string, trigger compaction.Trigger, reason compaction.Reason, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage, manual ManualCompactionRequest) map[string]any {
 	return withManualCompactionMetadata(map[string]any{
 		"phase":                  ContextCompactPhaseFailed,
+		"operation_id":           operationID,
+		"trigger":                trigger,
+		"reason":                 reason,
+		"before_pressure":        beforePressure,
+		"message_context_before": usage,
+		"tokens_before":          usage.InputTokens,
+	}, manual)
+}
+
+func compactionCancelledMetadata(operationID string, trigger compaction.Trigger, reason compaction.Reason, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage, manual ManualCompactionRequest) map[string]any {
+	return withManualCompactionMetadata(map[string]any{
+		"phase":                  ContextCompactPhaseCancelled,
 		"operation_id":           operationID,
 		"trigger":                trigger,
 		"reason":                 reason,

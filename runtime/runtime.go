@@ -1296,7 +1296,7 @@ func runtimeCompactionEventWithError(ev event.Event, sanitizedError string) *obs
 		return nil
 	}
 	phase := stringFromMetadata(meta, "phase")
-	if phase == "" || (sanitizedError != "" && phase != observation.CompactionPhaseFailed) {
+	if phase == "" || (sanitizedError != "" && phase != observation.CompactionPhaseFailed && phase != observation.CompactionPhaseCancelled) {
 		return nil
 	}
 	out := observation.CompactionEvent{
@@ -1327,6 +1327,8 @@ func runtimeCompactionEventWithError(ev event.Event, sanitizedError string) *obs
 		out.Status = observation.CompactionStatusCompacted
 	case observation.CompactionPhaseFailed:
 		out.Status = observation.CompactionStatusFailed
+	case observation.CompactionPhaseCancelled:
+		out.Status = observation.CompactionStatusCancelled
 	default:
 		return nil
 	}
