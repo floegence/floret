@@ -233,6 +233,9 @@ func TestRunProjectedTurnManualCompactionTriggersBelowThresholdAndContinues(t *t
 func TestRunProjectedTurnManualCompactionFailureDoesNotEndActiveRun(t *testing.T) {
 	manual := &singleManualCompactionSource{request: runtime.ManualCompactionRequest{RequestID: "manual-fail", Source: "slash_command"}}
 	sink := &collectingEventSink{}
+	rawPath := "/Users/alice/work/floret/secret.txt"
+	rawSecret := "sk-test-secret"
+	rawError := "manual summary unavailable at " + rawPath + " token " + rawSecret
 	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
 		events := make(chan runtime.ModelEvent, 2)
 		events <- runtime.ModelEvent{Type: runtime.ModelEventDelta, Text: "continued despite compact failure"}
@@ -252,7 +255,7 @@ func TestRunProjectedTurnManualCompactionFailureDoesNotEndActiveRun(t *testing.T
 		Store:        runtime.NewMemoryStore(),
 		Sink:         sink,
 		CompactionSummarizer: &publicCompactionSummarizer{
-			err: errors.New("manual summary unavailable"),
+			err: errors.New(rawError),
 		},
 		ManualCompactions: manual,
 	}, runtime.ProjectedTurnRequest{
@@ -289,13 +292,22 @@ func TestRunProjectedTurnManualCompactionFailureDoesNotEndActiveRun(t *testing.T
 	if compactions[0].Phase != observation.CompactionPhaseStart ||
 		compactions[1].Phase != observation.CompactionPhaseFailed ||
 		compactions[1].RequestID != "manual-fail" ||
-		compactions[1].Error != "manual summary unavailable" {
+		compactions[1].Error == "" {
 		t.Fatalf("manual failure compaction = %#v", compactions)
 	}
-	if !slices.ContainsFunc(debugEvents, func(debug observation.CompactionDebugEvent) bool {
+	if strings.Contains(compactions[1].Error, rawPath) || strings.Contains(compactions[1].Error, rawSecret) {
+		t.Fatalf("compaction error leaked sensitive content: %q", compactions[1].Error)
+	}
+	failedDebugIndex := slices.IndexFunc(debugEvents, func(debug observation.CompactionDebugEvent) bool {
 		return debug.Stage == observation.CompactionDebugStageGenerateAttemptComplete && debug.Status == observation.CompactionDebugStatusFailed
-	}) {
+	})
+	if failedDebugIndex < 0 {
 		t.Fatalf("manual failure debug events = %#v", debugEvents)
+	}
+	if debugEvents[failedDebugIndex].Error == "" ||
+		strings.Contains(debugEvents[failedDebugIndex].Error, rawPath) ||
+		strings.Contains(debugEvents[failedDebugIndex].Error, rawSecret) {
+		t.Fatalf("manual failure debug error leaked sensitive content: %#v", debugEvents[failedDebugIndex])
 	}
 }
 

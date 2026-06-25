@@ -47,9 +47,9 @@ reasoning, tool arguments, tool results, and local paths.
 * Compaction debug observations expose product-neutral pipeline stages for
   diagnostics: begin, generation attempt, projected request rebuild, validation,
   and installation. They share lifecycle operation/request correlation and carry
-  safe counts, token pressure, durations, provider-state kind, and error text.
-  They intentionally omit prompt text, generated summaries, tool arguments,
-  tool results, and provider payloads.
+  safe counts, token pressure, durations, provider-state kind, and sanitized
+  error text. They intentionally omit local paths, secrets, prompt text,
+  generated summaries, tool arguments, tool results, and provider payloads.
 
 # Key Source Files
 

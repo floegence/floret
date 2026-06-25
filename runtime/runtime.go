@@ -1189,9 +1189,9 @@ func (s runtimeEventSink) Emit(ev event.Event) {
 
 func runtimeEvent(ev event.Event) Event {
 	contextStatus := runtimeContextStatus(ev)
-	compactionEvent := runtimeCompactionEvent(ev)
-	compactionDebugEvent := runtimeCompactionDebugEvent(ev)
 	sanitized := event.Sanitize(ev)
+	compactionEvent := runtimeCompactionEventWithError(ev, sanitized.Err)
+	compactionDebugEvent := runtimeCompactionDebugEventWithError(ev, sanitized.Err)
 	stream := runtimeStreamObservation(ev, sanitized.Metadata)
 	ev = sanitized
 	return Event{
@@ -1284,6 +1284,10 @@ func runtimeContextStatus(ev event.Event) *observation.ContextStatus {
 }
 
 func runtimeCompactionEvent(ev event.Event) *observation.CompactionEvent {
+	return runtimeCompactionEventWithError(ev, event.Sanitize(ev).Err)
+}
+
+func runtimeCompactionEventWithError(ev event.Event, sanitizedError string) *observation.CompactionEvent {
 	if ev.Type != event.ContextCompact {
 		return nil
 	}
@@ -1292,7 +1296,7 @@ func runtimeCompactionEvent(ev event.Event) *observation.CompactionEvent {
 		return nil
 	}
 	phase := stringFromMetadata(meta, "phase")
-	if phase == "" || (ev.Err != "" && phase != observation.CompactionPhaseFailed) {
+	if phase == "" || (sanitizedError != "" && phase != observation.CompactionPhaseFailed) {
 		return nil
 	}
 	out := observation.CompactionEvent{
@@ -1313,7 +1317,7 @@ func runtimeCompactionEvent(ev event.Event) *observation.CompactionEvent {
 		CompactedThroughEntryID: stringFromMetadata(meta, "compacted_through_entry_id"),
 		TokensBefore:            int64FromMetadata(meta, "tokens_before"),
 		TokensAfterEstimate:     int64FromMetadata(meta, "tokens_after_estimate"),
-		Error:                   ev.Err,
+		Error:                   sanitizedError,
 		ObservedAt:              ev.Timestamp,
 	}
 	switch phase {
@@ -1346,6 +1350,10 @@ func runtimeCompactionEvent(ev event.Event) *observation.CompactionEvent {
 }
 
 func runtimeCompactionDebugEvent(ev event.Event) *observation.CompactionDebugEvent {
+	return runtimeCompactionDebugEventWithError(ev, event.Sanitize(ev).Err)
+}
+
+func runtimeCompactionDebugEventWithError(ev event.Event, sanitizedError string) *observation.CompactionDebugEvent {
 	if ev.Type != event.ContextCompactDebug {
 		return nil
 	}
@@ -1387,7 +1395,7 @@ func runtimeCompactionDebugEvent(ev event.Event) *observation.CompactionDebugEve
 		ConsecutiveFailures:              intFromMetadata(meta, "consecutive_failures"),
 		DurationMS:                       ev.Duration,
 		ProviderStateKind:                stringFromMetadata(meta, "provider_state_kind"),
-		Error:                            ev.Err,
+		Error:                            sanitizedError,
 		ObservedAt:                       ev.Timestamp,
 	}
 	if duration := int64FromMetadata(meta, "duration_ms"); duration > 0 {
@@ -1660,8 +1668,8 @@ func runtimeObservationEvent(ev event.Event) observation.Event {
 		DurationMS:      sanitized.Duration,
 		FinishReason:    sanitized.FinishReason,
 		Activity:        cloneActivityPresentation(sanitized.Activity),
-		Compaction:      runtimeCompactionEvent(ev),
-		CompactionDebug: runtimeCompactionDebugEvent(ev),
+		Compaction:      runtimeCompactionEventWithError(ev, sanitized.Err),
+		CompactionDebug: runtimeCompactionDebugEventWithError(ev, sanitized.Err),
 		Metadata:        safeMetadata(sanitized.Metadata),
 		ObservedAt:      sanitized.Timestamp,
 	}

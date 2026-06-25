@@ -345,8 +345,8 @@ Compaction emits both lifecycle and diagnostic observations. Lifecycle events
 (`runtime.Event.Compaction`) describe one user-visible operation as start,
 complete, or failed. Diagnostic events (`runtime.Event.CompactionDebug`) expose
 safe stage facts such as generation attempts, projected request rebuild,
-context validation, installation, token pressure, counts, durations, and error
-text. They are intended for logs and operator diagnostics, not transcript
+context validation, installation, token pressure, counts, durations, and
+sanitized error text. They are intended for logs and operator diagnostics, not transcript
 rendering, and never include prompt text or generated summaries.
 
 `runtime.StreamObservation` carries provider-neutral streaming facts for host

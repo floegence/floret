@@ -31,13 +31,13 @@ instead of guessing from trigger text.
 plus stage and status values for the compaction pipeline. Stages identify
 generation attempts, projected request rebuilds, request validation, and
 installation. Debug observations may include token pressure, message counts,
-duration, provider-state kind, and error text, but they do not include prompt
+duration, provider-state kind, and sanitized error text, but they do not include prompt
 text or generated summary content.
 
 # Boundary
 
 Observation records are not raw debug traces. They intentionally omit local
-paths, tool arguments, tool results, provider payloads, and reasoning.
+paths, secrets, tool arguments, tool results, provider payloads, and reasoning.
 
 # Key Source Files
 

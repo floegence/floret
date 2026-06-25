@@ -107,7 +107,8 @@ run.
 Projected compactions also emit `runtime.Event.CompactionDebug` diagnostics.
 Those events identify safe pipeline stages and include operation/request
 correlation, token pressure, message counts, durations, provider-state kind, and
-errors without exposing prompt text, tool payloads, or generated summaries.
+sanitized errors without exposing local paths, secrets, prompt text, tool
+payloads, or generated summaries.
 
 For idle host-owned threads, `CompactProjectedContext` is the public
 compaction-only entry point. The result `ActiveTranscript` begins with a
