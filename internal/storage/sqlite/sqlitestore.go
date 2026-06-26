@@ -112,11 +112,14 @@ func (s *Store) init(ctx context.Context) error {
 			return err
 		}
 	}
-	if _, err := s.db.ExecContext(ctx, schemaSQL); err != nil {
+	if _, err := s.db.ExecContext(ctx, schemaMetaSQL); err != nil {
 		return err
 	}
 	current, err := s.metaValue(ctx, "schema_version")
 	if errors.Is(err, storage.ErrMetadataNotFound) {
+		if _, err := s.db.ExecContext(ctx, schemaSQL); err != nil {
+			return err
+		}
 		if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_meta(key, value) VALUES
 			('schema_version', ?), ('raw_encoder_version', ?)`, schemaVersion, rawEncoderVersion); err != nil {
 			return err
@@ -127,12 +130,15 @@ func (s *Store) init(ctx context.Context) error {
 		return err
 	}
 	if current != schemaVersion {
-		if current != "5" && current != "6" {
+		if current != "3" && current != "4" && current != "5" && current != "6" {
 			return fmt.Errorf("unsupported sqlite store schema version %q", current)
 		}
 		if err := s.migrate(ctx, current); err != nil {
 			return err
 		}
+	}
+	if _, err := s.db.ExecContext(ctx, schemaSQL); err != nil {
+		return err
 	}
 	if err := dropSubAgentPathIndex(ctx, s.db); err != nil {
 		return err
@@ -149,6 +155,20 @@ func (s *Store) init(ctx context.Context) error {
 
 func (s *Store) migrate(ctx context.Context, current string) error {
 	return s.withImmediate(ctx, func(tx sqlRunner) error {
+		if current == "3" || current == "4" {
+			if err := migrateThreadTitleColumns(ctx, tx, current); err != nil {
+				return err
+			}
+			if err := migratePromptCacheScopeColumns(ctx, tx); err != nil {
+				return fmt.Errorf("migrate v%s→v5 prompt cache scope columns: %w", current, err)
+			}
+			if current == "3" {
+				if err := addColumnIfMissing(ctx, tx, "entries", "kept_user_entry_ids_json", `ALTER TABLE entries ADD COLUMN kept_user_entry_ids_json TEXT NOT NULL DEFAULT '[]'`); err != nil {
+					return fmt.Errorf("migrate v3→v5 add kept user entry ids column: %w", err)
+				}
+			}
+			current = "5"
+		}
 		if current == "5" {
 			if err := addColumnIfMissing(ctx, tx, "threads", "status", `ALTER TABLE threads ADD COLUMN status TEXT NOT NULL DEFAULT ''`); err != nil {
 				return fmt.Errorf("migrate v5→v6 add status column: %w", err)
@@ -183,6 +203,85 @@ func (s *Store) migrate(ctx context.Context, current string) error {
 		}
 		return fmt.Errorf("unsupported sqlite store schema version %q", current)
 	})
+}
+
+func migrateThreadTitleColumns(ctx context.Context, q sqlRunner, current string) error {
+	for _, column := range []struct {
+		name string
+		stmt string
+	}{
+		{name: "title", stmt: `ALTER TABLE threads ADD COLUMN title TEXT NOT NULL DEFAULT ''`},
+		{name: "title_status", stmt: `ALTER TABLE threads ADD COLUMN title_status TEXT NOT NULL DEFAULT ''`},
+		{name: "title_source", stmt: `ALTER TABLE threads ADD COLUMN title_source TEXT NOT NULL DEFAULT ''`},
+		{name: "title_updated_at", stmt: `ALTER TABLE threads ADD COLUMN title_updated_at TEXT NOT NULL DEFAULT ''`},
+		{name: "title_error", stmt: `ALTER TABLE threads ADD COLUMN title_error TEXT NOT NULL DEFAULT ''`},
+	} {
+		if err := addColumnIfMissing(ctx, q, "threads", column.name, column.stmt); err != nil {
+			return fmt.Errorf("migrate v%s→v5 add %s column: %w", current, column.name, err)
+		}
+	}
+	return nil
+}
+
+func migratePromptCacheScopeColumns(ctx context.Context, q sqlRunner) error {
+	tables := []struct {
+		name       string
+		oldIndex   string
+		newIndex   string
+		createStmt string
+	}{
+		{
+			name:       "prompt_segments",
+			oldIndex:   "prompt_segments_lookup_idx",
+			newIndex:   "prompt_segments_lookup_idx",
+			createStmt: `CREATE INDEX IF NOT EXISTS prompt_segments_lookup_idx ON prompt_segments(prompt_scope_id, provider, model, rowid)`,
+		},
+		{
+			name:       "prompt_toolsets",
+			oldIndex:   "prompt_toolsets_lookup_idx",
+			newIndex:   "prompt_toolsets_lookup_idx",
+			createStmt: `CREATE INDEX IF NOT EXISTS prompt_toolsets_lookup_idx ON prompt_toolsets(prompt_scope_id, provider, model, rowid)`,
+		},
+		{
+			name:       "prompt_requests",
+			oldIndex:   "prompt_requests_run_idx",
+			newIndex:   "prompt_requests_scope_idx",
+			createStmt: `CREATE INDEX IF NOT EXISTS prompt_requests_scope_idx ON prompt_requests(prompt_scope_id, rowid)`,
+		},
+		{
+			name:       "prompt_responses",
+			oldIndex:   "prompt_responses_run_idx",
+			newIndex:   "prompt_responses_scope_idx",
+			createStmt: `CREATE INDEX IF NOT EXISTS prompt_responses_scope_idx ON prompt_responses(prompt_scope_id, rowid)`,
+		},
+	}
+	for _, table := range tables {
+		hasScope, err := columnExists(ctx, q, table.name, "prompt_scope_id")
+		if err != nil {
+			return err
+		}
+		if !hasScope {
+			hasRunID, err := columnExists(ctx, q, table.name, "run_id")
+			if err != nil {
+				return err
+			}
+			if !hasRunID {
+				return fmt.Errorf("%s has neither prompt_scope_id nor run_id", table.name)
+			}
+			if _, err := q.ExecContext(ctx, `ALTER TABLE `+table.name+` RENAME COLUMN run_id TO prompt_scope_id`); err != nil {
+				return err
+			}
+		}
+		for _, index := range []string{table.oldIndex, table.newIndex} {
+			if _, err := q.ExecContext(ctx, `DROP INDEX IF EXISTS `+index); err != nil {
+				return err
+			}
+		}
+		if _, err := q.ExecContext(ctx, table.createStmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func addColumnIfMissing(ctx context.Context, q sqlRunner, table, column, stmt string) error {
@@ -1405,11 +1504,14 @@ const entryColumns = `thread_id, id, parent_id, type, turn_id, created_at,
 	compaction_reason, compaction_phase, tokens_before, tokens_after_estimate,
 	context_usage_before_json, context_usage_after_json, error, metadata_json`
 
-const schemaSQL = `
+const schemaMetaSQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
 	key TEXT PRIMARY KEY,
 	value TEXT NOT NULL
 );
+`
+
+const schemaSQL = schemaMetaSQL + `
 
 	CREATE TABLE IF NOT EXISTS threads (
 		id TEXT PRIMARY KEY,

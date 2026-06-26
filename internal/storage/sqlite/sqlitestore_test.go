@@ -227,6 +227,200 @@ INSERT INTO threads(id, created_at, updated_at, status) VALUES('legacy', '2026-0
 	}
 }
 
+func TestSQLiteStoreMigratesV3PromptCacheScopeColumns(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "floret.db")
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.ExecContext(ctx, `
+CREATE TABLE schema_meta (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);
+INSERT INTO schema_meta(key, value) VALUES
+	('schema_version', '3'),
+	('raw_encoder_version', '1');
+CREATE TABLE threads (
+	id TEXT PRIMARY KEY,
+	leaf_id TEXT NOT NULL DEFAULT '',
+	parent_thread_id TEXT NOT NULL DEFAULT '',
+	forked_from_thread_id TEXT NOT NULL DEFAULT '',
+	forked_from_entry_id TEXT NOT NULL DEFAULT '',
+	archived INTEGER NOT NULL DEFAULT 0,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+INSERT INTO threads(id, created_at, updated_at) VALUES('thread', '2026-06-05T01:00:00Z', '2026-06-05T01:00:00Z');
+CREATE TABLE entries (
+	thread_id TEXT NOT NULL,
+	id TEXT NOT NULL,
+	ordinal INTEGER NOT NULL,
+	parent_id TEXT NOT NULL DEFAULT '',
+	type TEXT NOT NULL,
+	turn_id TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	message_json TEXT NOT NULL DEFAULT '{}',
+	raw TEXT NOT NULL DEFAULT '',
+	raw_hash TEXT NOT NULL DEFAULT '',
+	raw_encoder_version INTEGER NOT NULL DEFAULT 1,
+	turn_status TEXT NOT NULL DEFAULT '',
+	provider TEXT NOT NULL DEFAULT '',
+	model TEXT NOT NULL DEFAULT '',
+	compaction_id TEXT NOT NULL DEFAULT '',
+	previous_compaction_id TEXT NOT NULL DEFAULT '',
+	compacted_through_entry_id TEXT NOT NULL DEFAULT '',
+	summary_schema_version TEXT NOT NULL DEFAULT '',
+	compaction_generation INTEGER NOT NULL DEFAULT 0,
+	compaction_window_id TEXT NOT NULL DEFAULT '',
+	first_kept_entry_id TEXT NOT NULL DEFAULT '',
+	summary TEXT NOT NULL DEFAULT '',
+	compaction_trigger TEXT NOT NULL DEFAULT '',
+	compaction_reason TEXT NOT NULL DEFAULT '',
+	compaction_phase TEXT NOT NULL DEFAULT '',
+	tokens_before INTEGER NOT NULL DEFAULT 0,
+	tokens_after_estimate INTEGER NOT NULL DEFAULT 0,
+	context_usage_before_json TEXT NOT NULL DEFAULT '{}',
+	context_usage_after_json TEXT NOT NULL DEFAULT '{}',
+	error TEXT NOT NULL DEFAULT '',
+	metadata_json TEXT NOT NULL DEFAULT '{}',
+	PRIMARY KEY (thread_id, id),
+	UNIQUE (thread_id, ordinal),
+	FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
+);
+CREATE TABLE active_turn_leases (
+	thread_id TEXT PRIMARY KEY,
+	turn_id TEXT NOT NULL DEFAULT '',
+	owner_id TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
+);
+CREATE TABLE prompt_segments (
+	rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+	id TEXT NOT NULL,
+	run_id TEXT NOT NULL,
+	provider TEXT NOT NULL,
+	model TEXT NOT NULL,
+	sequence INTEGER NOT NULL DEFAULT 0,
+	created_at TEXT NOT NULL,
+	data_json TEXT NOT NULL
+);
+CREATE INDEX prompt_segments_lookup_idx ON prompt_segments(run_id, provider, model, rowid);
+CREATE TABLE prompt_toolsets (
+	rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+	id TEXT NOT NULL,
+	run_id TEXT NOT NULL,
+	provider TEXT NOT NULL,
+	model TEXT NOT NULL,
+	epoch INTEGER NOT NULL DEFAULT 0,
+	created_at TEXT NOT NULL,
+	data_json TEXT NOT NULL
+);
+CREATE INDEX prompt_toolsets_lookup_idx ON prompt_toolsets(run_id, provider, model, rowid);
+CREATE TABLE prompt_requests (
+	rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+	id TEXT NOT NULL,
+	run_id TEXT NOT NULL,
+	provider TEXT NOT NULL,
+	model TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	data_json TEXT NOT NULL
+);
+CREATE INDEX prompt_requests_run_idx ON prompt_requests(run_id, rowid);
+CREATE TABLE prompt_responses (
+	rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+	request_id TEXT NOT NULL,
+	run_id TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	data_json TEXT NOT NULL
+);
+CREATE INDEX prompt_responses_run_idx ON prompt_responses(run_id, rowid);
+CREATE TABLE metadata_records (
+	namespace TEXT NOT NULL,
+	id TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	data_json TEXT NOT NULL,
+	PRIMARY KEY(namespace, id)
+);
+INSERT INTO prompt_segments(id, run_id, provider, model, sequence, created_at, data_json)
+VALUES('seg-1', 'thread', 'openai', 'model', 1, '2026-06-05T01:00:00Z', '{"id":"seg-1","prompt_scope_id":"thread","provider":"openai","model":"model","kind":"system","raw":"system","created_at":"2026-06-05T01:00:00Z"}');
+INSERT INTO prompt_toolsets(id, run_id, provider, model, epoch, created_at, data_json)
+VALUES('toolset-1', 'thread', 'openai', 'model', 1, '2026-06-05T01:00:00Z', '{"id":"toolset-1","prompt_scope_id":"thread","provider":"openai","model":"model","epoch":1,"created_at":"2026-06-05T01:00:00Z"}');
+INSERT INTO prompt_requests(id, run_id, provider, model, created_at, data_json)
+VALUES('req-1', 'thread', 'openai', 'model', '2026-06-05T01:00:00Z', '{"id":"req-1","prompt_scope_id":"thread","run_id":"turn-1","provider":"openai","model":"model","created_at":"2026-06-05T01:00:00Z"}');
+INSERT INTO prompt_responses(request_id, run_id, created_at, data_json)
+VALUES('req-1', 'thread', '2026-06-05T01:00:00Z', '{"request_id":"req-1","prompt_scope_id":"thread","run_id":"turn-1","created_at":"2026-06-05T01:00:00Z"}');
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	version, err := store.SchemaVersion(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != schemaVersion {
+		t.Fatalf("schema version = %q, want %q", version, schemaVersion)
+	}
+	for _, table := range []string{"prompt_segments", "prompt_toolsets", "prompt_requests", "prompt_responses"} {
+		if ok, err := columnExists(ctx, store.db, table, "prompt_scope_id"); err != nil {
+			t.Fatal(err)
+		} else if !ok {
+			t.Fatalf("%s prompt_scope_id column missing after migration", table)
+		}
+		if ok, err := columnExists(ctx, store.db, table, "run_id"); err != nil {
+			t.Fatal(err)
+		} else if ok {
+			t.Fatalf("%s still has legacy run_id column", table)
+		}
+	}
+	meta, err := store.Thread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Title != "" || meta.Status != "" || meta.ParentTurnID != "" || meta.TaskName != "" || meta.AgentPath != "" || meta.HostProfileRef != "" || meta.Closed {
+		t.Fatalf("legacy thread defaults = %#v", meta)
+	}
+	segments, err := store.Segments(ctx, "thread", "openai", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segments) != 1 || segments[0].ID != "seg-1" {
+		t.Fatalf("segments after migration = %#v", segments)
+	}
+	toolset, ok, err := store.ActiveToolset(ctx, "thread", "openai", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || toolset.ID != "toolset-1" {
+		t.Fatalf("toolset after migration = %#v ok=%v", toolset, ok)
+	}
+	requests, err := store.ProviderRequests(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 1 || requests[0].ID != "req-1" {
+		t.Fatalf("requests after migration = %#v", requests)
+	}
+	responses, err := store.ProviderResponses(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(responses) != 1 || responses[0].RequestID != "req-1" {
+		t.Fatalf("responses after migration = %#v", responses)
+	}
+}
+
 func TestSQLiteStoreAllowsDuplicateSubAgentPathWithDistinctThreadIDs(t *testing.T) {
 	ctx := context.Background()
 	store, _ := openSQLiteStoreForTest(t)
