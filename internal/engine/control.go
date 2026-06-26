@@ -38,6 +38,10 @@ type ControlSpec struct {
 	Project     func(provider.ToolCall) (ControlSignal, bool, error)
 }
 
+type controlProjectionContext struct {
+	StepText string
+}
+
 func DefaultControlSpec(policy CompletionPolicy) ControlSpec {
 	return ControlSpec{
 		Definitions: control.ToolDefinitions(policy == CompletionExplicitSignal),
@@ -105,7 +109,7 @@ func (s ControlSpec) isControlTool(name string) bool {
 	return ok
 }
 
-func (s ControlSpec) project(call provider.ToolCall) (ControlSignal, bool, error) {
+func (s ControlSpec) project(call provider.ToolCall, ctx controlProjectionContext) (ControlSignal, bool, error) {
 	if !s.isControlTool(call.Name) {
 		return ControlSignal{}, false, nil
 	}
@@ -135,7 +139,15 @@ func (s ControlSpec) project(call provider.ToolCall) (ControlSignal, bool, error
 			return ControlSignal{}, true, fmt.Errorf("control signal %q continue disposition requires provider-visible output text", signal.Name)
 		}
 		return signal, true, nil
-	case ControlWaiting, ControlTerminal:
+	case ControlWaiting:
+		return signal, true, nil
+	case ControlTerminal:
+		if strings.TrimSpace(signal.OutputText) == "" {
+			signal.OutputText = strings.TrimSpace(ctx.StepText)
+		}
+		if strings.TrimSpace(signal.OutputText) == "" {
+			return ControlSignal{}, true, fmt.Errorf("control signal %q terminal disposition requires output text or assistant text", signal.Name)
+		}
 		return signal, true, nil
 	default:
 		return ControlSignal{}, true, fmt.Errorf("control signal %q returned invalid disposition %q", signal.Name, signal.Disposition)

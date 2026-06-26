@@ -16,7 +16,6 @@ func TestProjectValidatesControlToolArgsStrictly(t *testing.T) {
 		{name: "ask missing question", call: provider.ToolCall{Name: AskUserTool, Args: `{}`}, want: "question or questions[0].question is required"},
 		{name: "ask unknown field", call: provider.ToolCall{Name: AskUserTool, Args: `{"question":"Need file?","extra":true}`}, want: "$.extra is not allowed"},
 		{name: "ask trailing json", call: provider.ToolCall{Name: AskUserTool, Args: `{"question":"Need file?"} {"question":"again"}`}, want: "expected exactly one JSON value"},
-		{name: "complete missing output", call: provider.ToolCall{Name: TaskCompleteTool, Args: `{}`}, want: "output or result is required"},
 		{name: "complete wrong type", call: provider.ToolCall{Name: TaskCompleteTool, Args: `{"output":1}`}, want: "$.output must be a string"},
 	}
 	for _, tc := range cases {
@@ -41,6 +40,10 @@ func TestProjectReturnsSignalsForValidControlToolArgs(t *testing.T) {
 	done, ok, err := Project(provider.ToolCall{Name: TaskCompleteTool, Args: `{"output":"done"}`})
 	if err != nil || !ok || done.Kind != SignalTaskComplete || done.Output != "done" {
 		t.Fatalf("done signal = %#v ok=%v err=%v", done, ok, err)
+	}
+	emptyDone, ok, err := Project(provider.ToolCall{Name: TaskCompleteTool, Args: `{}`})
+	if err != nil || !ok || emptyDone.Kind != SignalTaskComplete || emptyDone.Output != "" {
+		t.Fatalf("empty done signal = %#v ok=%v err=%v", emptyDone, ok, err)
 	}
 	resultDone, ok, err := Project(provider.ToolCall{Name: TaskCompleteTool, Args: `{"result":"done","evidence_refs":["https://example.test"]}`})
 	if err != nil || !ok || resultDone.Kind != SignalTaskComplete || resultDone.Output != "done" || resultDone.Payload["result"] != "done" {

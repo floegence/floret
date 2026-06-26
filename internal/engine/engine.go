@@ -793,7 +793,9 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			duplicateCount = 0
 		}
 		if len(classifiedCalls.Ordinary) == 0 {
-			if signal, ok, err := controlSignal(opts.ControlSpec, controlCalls); err != nil {
+			if signal, ok, err := controlSignal(opts.ControlSpec, controlCalls, controlProjectionContext{
+				StepText: stepText,
+			}); err != nil {
 				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 			} else if ok {
 				if len(signal.Labels) == 0 {
@@ -2387,9 +2389,8 @@ func providerSafeHistory(history []session.Message, spec ControlSpec) []session.
 }
 
 func providerSafeControlMessage(msg session.Message, spec ControlSpec) session.Message {
-	signal, ok, err := projectProviderSafeControlSignal(msg, spec)
-	content := fmt.Sprintf("Agent control signal %q was emitted.", msg.ToolName)
-	if err == nil && ok {
+	content := providerSafeControlText(ControlSignal{Name: strings.TrimSpace(msg.ToolName)})
+	if signal, ok, err := projectProviderSafeControlSignal(msg, spec); err == nil && ok {
 		content = providerSafeControlText(signal)
 	}
 	return session.Message{
@@ -2403,7 +2404,7 @@ func providerSafeControlMessage(msg session.Message, spec ControlSpec) session.M
 
 func projectProviderSafeControlSignal(msg session.Message, spec ControlSpec) (ControlSignal, bool, error) {
 	call := provider.ToolCall{ID: msg.ToolCallID, Name: msg.ToolName, Args: msg.ToolArgs}
-	return spec.project(call)
+	return spec.project(call, controlProjectionContext{})
 }
 
 func providerSafeControlText(signal ControlSignal) string {
@@ -2938,9 +2939,9 @@ func (e *Engine) emitControlSignal(opts Options, step int, signal *ControlSignal
 	})
 }
 
-func controlSignal(spec ControlSpec, calls []provider.ToolCall) (*ControlSignal, bool, error) {
+func controlSignal(spec ControlSpec, calls []provider.ToolCall, ctx controlProjectionContext) (*ControlSignal, bool, error) {
 	for _, call := range calls {
-		signal, ok, err := spec.project(call)
+		signal, ok, err := spec.project(call, ctx)
 		if err != nil {
 			return nil, false, err
 		}

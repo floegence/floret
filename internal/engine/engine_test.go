@@ -204,6 +204,65 @@ func TestTaskCompleteOnlyCompletesWhenExplicitSignalPolicyIsEnabled(t *testing.T
 	}
 }
 
+func TestTaskCompleteUsesSameStepAssistantTextWhenArgumentsAreEmpty(t *testing.T) {
+	p := harness.NewScriptedProvider(
+		harness.Step(
+			harness.Text("OK, work can continue."),
+			harness.Tool("done", "task_complete", `{}`),
+			harness.DoneReason("tool_calls"),
+		),
+	)
+	e := newTestEngine(p, &event.Recorder{})
+	e.Options.CompletionPolicy = engine.CompletionExplicitSignal
+
+	got := e.Run(context.Background(), "verify")
+
+	if got.Status != engine.Completed || got.Output != "OK, work can continue." || got.CompletionReason != engine.CompletionReasonToolSignal {
+		t.Fatalf("result = %#v, want terminal control completion from same-step assistant text", got)
+	}
+	if got.ControlSignal == nil || got.ControlSignal.OutputText != "OK, work can continue." {
+		t.Fatalf("control signal = %#v, want assistant text output", got.ControlSignal)
+	}
+}
+
+func TestTaskCompleteWithoutArgumentsOrAssistantTextFails(t *testing.T) {
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("done", "task_complete", `{}`), harness.DoneReason("tool_calls")),
+	)
+	e := newTestEngine(p, &event.Recorder{})
+	e.Options.CompletionPolicy = engine.CompletionExplicitSignal
+
+	got := e.Run(context.Background(), "verify")
+
+	if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), "terminal disposition requires output text or assistant text") {
+		t.Fatalf("result = %#v, want missing terminal output failure", got)
+	}
+}
+
+func TestTaskCompleteWithoutArgumentsDoesNotReusePriorStepAssistantText(t *testing.T) {
+	p := harness.NewScriptedProvider(
+		harness.Step(
+			harness.Text("Earlier progress."),
+			harness.Tool("read-1", "read", `{"value":"README.md"}`),
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(harness.Tool("done", "task_complete", `{}`), harness.DoneReason("tool_calls")),
+	)
+	reg := tools.NewRegistry()
+	mustRegister(t, reg, stringTool("read", "Read", true, tools.PermissionSpec{}, func(context.Context, string) (string, error) {
+		return "file contents", nil
+	}))
+	e := newTestEngine(p, &event.Recorder{})
+	e.Tools = reg
+	e.Options.CompletionPolicy = engine.CompletionExplicitSignal
+
+	got := e.Run(context.Background(), "verify")
+
+	if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), "terminal disposition requires output text or assistant text") {
+		t.Fatalf("result = %#v, want missing same-step terminal output failure", got)
+	}
+}
+
 func TestTaskCompleteIsNormalToolUnderNaturalStopPolicy(t *testing.T) {
 	p := harness.NewScriptedProvider(
 		harness.Step(harness.Tool("done", "task_complete", `{"output":"done"}`), harness.DoneReason("tool_calls")),
@@ -362,6 +421,44 @@ func TestExplicitTaskCompleteSignalIsProviderSafeWhenRunContinues(t *testing.T) 
 		return msg.Role == session.Assistant && msg.ToolName == "task_complete" && msg.ToolCallID == "done"
 	}) {
 		t.Fatalf("raw session should still retain signal tool call for audit: %#v", messages)
+	}
+}
+
+func TestEmptyTaskCompleteSignalIsProviderSafeWhenRunContinues(t *testing.T) {
+	store := session.NewMemoryStore()
+	promptStore := cache.NewMemoryStore()
+	p1 := harness.NewScriptedProvider(harness.Step(
+		harness.Text("First run done."),
+		harness.Tool("done", "task_complete", `{}`),
+		harness.DoneReason("tool_calls"),
+	))
+	e1 := newTestEngine(p1, &event.Recorder{})
+	e1.Store = store
+	e1.Prompt = promptStore
+	e1.Options.CompletionPolicy = engine.CompletionExplicitSignal
+	got := e1.Run(context.Background(), "finish")
+	if got.Status != engine.Completed {
+		t.Fatalf("first result = %#v", got)
+	}
+
+	p2 := harness.NewScriptedProvider(harness.Step(harness.Text("second done"), harness.Done()))
+	e2 := newTestEngine(p2, &event.Recorder{})
+	e2.Store = store
+	e2.Prompt = promptStore
+	e2.Options.CompletionPolicy = engine.CompletionExplicitSignal
+	got = e2.Run(context.Background(), "continue anyway")
+	if got.Status != engine.Completed {
+		t.Fatalf("second result = %#v", got)
+	}
+	if !slices.ContainsFunc(p2.Requests[0].RawPlan.Segments, func(seg cache.Segment) bool {
+		return seg.Kind == cache.SegmentAssistant && seg.Message.Content == "Agent completed the task."
+	}) {
+		t.Fatalf("continued run missing provider-safe empty task_complete text: %#v", p2.Requests[0].RawPlan.Segments)
+	}
+	if slices.ContainsFunc(p2.Requests[0].RawPlan.Segments, func(seg cache.Segment) bool {
+		return strings.Contains(seg.Message.Content, "Agent control signal")
+	}) {
+		t.Fatalf("continued run used generic control fallback: %#v", p2.Requests[0].RawPlan.Segments)
 	}
 }
 

@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-06-26
+* **Update**: Documented terminal control-signal output normalization from
+  signal payloads or same-step assistant text.
+
 ## 2026-06-25
 * **Update**: Documented public manual compaction operation identity, cancelled
   lifecycle observations, poll-stage diagnostics, and the Test UI context

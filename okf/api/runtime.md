@@ -90,6 +90,13 @@ model-facing tool output.
 provider wire data and must not carry prompt text, tool arguments, tool results,
 local paths, or secrets.
 
+Projected control signals are declared through `TurnSignalSpec`. Waiting
+signals interrupt the turn with their projected prompt. Terminal signals complete
+the turn with a human-visible output. A terminal signal may supply that output in
+the signal payload, or it may rely on assistant text produced earlier in the
+same provider step; if neither exists, the turn fails with a control-contract
+error instead of inventing a completion.
+
 Reasoning selection is request intent, not provider wire data. Floret normalizes
 the public selection and provider adapters translate only values supported by the
 selected model capability. Hosts that own model transport through `ModelGateway`

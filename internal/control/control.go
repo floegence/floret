@@ -44,7 +44,7 @@ func ToolDefinitions(includeTaskComplete bool) []provider.ToolDefinition {
 		defs = append(defs, provider.ToolDefinition{
 			Name:        TaskCompleteTool,
 			Title:       "Task complete",
-			Description: "Signal that the requested task is complete.",
+			Description: "Signal that the requested task is complete. Include output or result when the same assistant response does not already contain the final answer.",
 			InputSchema: taskCompleteInputSchema(),
 			Strict:      true,
 			Annotations: map[string]any{
@@ -78,9 +78,6 @@ func Project(call provider.ToolCall) (Signal, bool, error) {
 			return Signal{}, true, fmt.Errorf("%s", tools.InvalidArgumentsText(TaskCompleteTool, err))
 		}
 		output := firstNonEmptyString(controlString(payload["output"]), controlString(payload["result"]))
-		if output == "" {
-			return Signal{}, true, fmt.Errorf("output or result is required")
-		}
 		return Signal{Kind: SignalTaskComplete, Output: output, Payload: cloneControlMap(payload)}, true, nil
 	default:
 		return Signal{}, false, nil
@@ -171,8 +168,8 @@ func askUserInputSchema() map[string]any {
 
 func taskCompleteInputSchema() map[string]any {
 	return tools.StrictObject(map[string]any{
-		"output":          tools.String("Final answer or completion summary."),
-		"result":          tools.String("Final answer or completion summary."),
+		"output":          tools.String("Final answer or completion summary when not already present in the same assistant response."),
+		"result":          tools.String("Final answer or completion summary when not already present in the same assistant response."),
 		"evidence_refs":   tools.Array(tools.String("Evidence reference."), "Relevant evidence references."),
 		"remaining_risks": tools.Array(tools.String("Remaining risk."), "Remaining risks."),
 		"next_actions":    tools.Array(tools.String("Next action."), "Suggested next actions."),

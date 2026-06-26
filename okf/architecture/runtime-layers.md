@@ -33,6 +33,10 @@ installed continuation boundary rather than a candidate summary.
 `Engine` is the prompt-first single-run executor. It owns provider loop control,
 tool invocation, compaction decisions, prompt-cache requests, metrics, and event
 emission.
+For terminal control signals, `Engine` normalizes the visible completion output
+from the signal itself or from assistant text produced in the same provider
+step. A terminal control signal with neither source is a contract error, so the
+engine never fabricates a successful completion.
 
 # Projected Turns
 

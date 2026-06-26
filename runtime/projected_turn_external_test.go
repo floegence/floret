@@ -1794,6 +1794,9 @@ func TestCoreControlHelpersProjectAskUserAndTaskComplete(t *testing.T) {
 	if got := runtime.ProviderSafeCoreControlText(done); got != "Agent completed the task: All done." {
 		t.Fatalf("done provider text = %q", got)
 	}
+	if strings.TrimSpace(defs[1].Description) == "" {
+		t.Fatalf("task_complete description is empty: %#v", defs[1])
+	}
 	_, ok, err = runtime.ProjectCoreControlSignal(tools.ToolCall{
 		ID:   "bad-ask",
 		Name: runtime.CoreControlAskUser,
@@ -1801,6 +1804,108 @@ func TestCoreControlHelpersProjectAskUserAndTaskComplete(t *testing.T) {
 	})
 	if !ok || err == nil || !strings.Contains(err.Error(), "question is required") {
 		t.Fatalf("invalid ask projection ok=%v err=%v", ok, err)
+	}
+}
+
+func TestRunProjectedTurnTaskCompleteUsesSameStepAssistantText(t *testing.T) {
+	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
+		events := make(chan runtime.ModelEvent, 3)
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDelta, Text: "OK, continuing works."}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventToolCalls, ToolCalls: []tools.ToolCall{{
+			ID:   "done",
+			Name: runtime.CoreControlTaskComplete,
+			Args: `{}`,
+		}}}
+		events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "tool_calls"}
+		close(events)
+		return events, nil
+	})
+
+	result, err := runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake",
+			SystemPrompt: "system",
+		},
+		ModelGateway: gateway,
+	}, runtime.ProjectedTurnRequest{
+		RunID:         "run-task-complete-text",
+		ThreadID:      "thread-task-complete-text",
+		TurnID:        "turn-task-complete-text",
+		TraceID:       "trace-task-complete-text",
+		PromptScopeID: "scope-task-complete-text",
+		Completion:    runtime.TurnCompletionExplicitSignal,
+		Signals: runtime.TurnSignalSpec{
+			Definitions: runtime.CoreControlDefinitions(true),
+			Project: func(call tools.ToolCall) (runtime.TurnSignal, bool, error) {
+				return runtime.ProjectCoreControlSignal(call)
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunProjectedTurn: %v", err)
+	}
+	if result.Status != runtime.TurnStatusCompleted || result.Output != "OK, continuing works." {
+		t.Fatalf("result = %#v, want completed with assistant text output", result)
+	}
+	if result.Signal == nil || result.Signal.OutputText != "OK, continuing works." {
+		t.Fatalf("signal = %#v, want assistant text output", result.Signal)
+	}
+}
+
+func TestRunProjectedTurnTaskCompleteWithoutArgumentsDoesNotReusePriorStepText(t *testing.T) {
+	requests := 0
+	gateway := publicModelGateway(func(ctx context.Context, req runtime.ModelRequest) (<-chan runtime.ModelEvent, error) {
+		requests++
+		events := make(chan runtime.ModelEvent, 3)
+		switch requests {
+		case 1:
+			events <- runtime.ModelEvent{Type: runtime.ModelEventDelta, Text: "Earlier progress."}
+			events <- runtime.ModelEvent{Type: runtime.ModelEventToolCalls, ToolCalls: []tools.ToolCall{{
+				ID:   "read-1",
+				Name: "read",
+				Args: `{"path":"README.md"}`,
+			}}}
+			events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "tool_calls"}
+		default:
+			events <- runtime.ModelEvent{Type: runtime.ModelEventToolCalls, ToolCalls: []tools.ToolCall{{
+				ID:   "done",
+				Name: runtime.CoreControlTaskComplete,
+				Args: `{}`,
+			}}}
+			events <- runtime.ModelEvent{Type: runtime.ModelEventDone, Reason: "tool_calls"}
+		}
+		close(events)
+		return events, nil
+	})
+
+	result, err := runtime.RunProjectedTurn(context.Background(), runtime.ProjectedTurnOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake",
+			SystemPrompt: "system",
+		},
+		ModelGateway: gateway,
+		Tools:        readToolRegistry(t),
+	}, runtime.ProjectedTurnRequest{
+		RunID:         "run-task-complete-prior-text",
+		ThreadID:      "thread-task-complete-prior-text",
+		TurnID:        "turn-task-complete-prior-text",
+		TraceID:       "trace-task-complete-prior-text",
+		PromptScopeID: "scope-task-complete-prior-text",
+		Completion:    runtime.TurnCompletionExplicitSignal,
+		Signals: runtime.TurnSignalSpec{
+			Definitions: runtime.CoreControlDefinitions(true),
+			Project: func(call tools.ToolCall) (runtime.TurnSignal, bool, error) {
+				return runtime.ProjectCoreControlSignal(call)
+			},
+		},
+	})
+	if err == nil {
+		t.Fatalf("RunProjectedTurn result=%#v, want empty task_complete without same-step text to fail", result)
+	}
+	if !strings.Contains(err.Error(), "terminal disposition requires output text or assistant text") {
+		t.Fatalf("RunProjectedTurn err=%v, want terminal output contract error", err)
 	}
 }
 
