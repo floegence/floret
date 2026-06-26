@@ -42,9 +42,6 @@ type CompactionDebugEvent struct {
 	CompactionConvergenceAttempt     int                    `json:"compaction_convergence_attempt,omitempty"`
 	HistoryMessageCount              int                    `json:"history_message_count,omitempty"`
 	ActiveMessageCount               int                    `json:"active_message_count,omitempty"`
-	CompactionID                     string                 `json:"compaction_id,omitempty"`
-	CompactionGeneration             int                    `json:"compaction_generation,omitempty"`
-	CompactionWindowID               string                 `json:"compaction_window_id,omitempty"`
 	TokensBefore                     int64                  `json:"tokens_before,omitempty"`
 	TokensAfterEstimate              int64                  `json:"tokens_after_estimate,omitempty"`
 	ContextBefore                    config.ContextUsage    `json:"context_before,omitempty"`
@@ -94,9 +91,6 @@ func CompactionDebugEventFromEvent(ev Event) (CompactionDebugEvent, bool) {
 		CompactionConvergenceAttempt:     intFromAny(meta["compaction_convergence_attempt"], 0),
 		HistoryMessageCount:              intFromAny(meta["history_message_count"], 0),
 		ActiveMessageCount:               intFromAny(meta["active_message_count"], 0),
-		CompactionID:                     stringFromAny(meta["compaction_id"]),
-		CompactionGeneration:             intFromAny(meta["compaction_generation"], 0),
-		CompactionWindowID:               stringFromAny(meta["compaction_window_id"]),
 		TokensBefore:                     int64FromAny(meta["tokens_before"], 0),
 		TokensAfterEstimate:              int64FromAny(meta["tokens_after_estimate"], 0),
 		HardLimitExceeded:                boolFromAny(meta["hard_limit_exceeded"], false),

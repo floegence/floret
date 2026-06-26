@@ -2672,20 +2672,19 @@ func (r Runner) runProjectedManualCompactionScenario(ctx context.Context) RunRes
 	resp := RunResponse{ID: fmt.Sprintf("%d", r.now().UnixNano()), Target: TargetContextCompactionScenarios, Title: "Manual active compaction continues", Kind: "agent", StartedAt: r.now()}
 	sink := &runtimeEventSink{}
 	manual := &testManualCompactionSource{request: flruntime.ManualCompactionRequest{RequestID: "testui-manual-active", Source: "test_ui"}}
-	result, err := flruntime.RunProjectedTurn(ctx, flruntime.ProjectedTurnOptions{
-		Config:               testuiProjectedCompactionConfig(10000),
-		ModelGateway:         testModelGateway("continued after compact"),
-		Store:                flruntime.NewMemoryStore(),
-		Sink:                 sink,
-		CompactionSummarizer: testCompactionSummarizer{},
-		ManualCompactions:    manual,
-	}, flruntime.ProjectedTurnRequest{
-		RunID:         "testui-manual-active",
-		ThreadID:      "testui-manual-active",
-		TurnID:        "testui-manual-active",
-		TraceID:       "testui-manual-active",
-		PromptScopeID: "testui-manual-active",
-		History:       testuiCompactionHistory(),
+	host, err := testuiCompactionHost(sink, testModelGateway("continued after compact"))
+	if err != nil {
+		return finishRunResponse(r, resp, "error", err.Error())
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, flruntime.StartThreadRequest{ThreadID: "testui-manual-active"}); err != nil {
+		return finishRunResponse(r, resp, "error", err.Error())
+	}
+	result, err := host.RunTurn(ctx, flruntime.RunTurnRequest{
+		ThreadID:          "testui-manual-active",
+		TurnID:            "testui-manual-active-turn",
+		Input:             testuiCompactionInput(),
+		ManualCompactions: manual,
 	})
 	resp.Agent = testuiRuntimeAgentRun(result, sink.events)
 	if err != nil {
@@ -2695,7 +2694,7 @@ func (r Runner) runProjectedManualCompactionScenario(ctx context.Context) RunRes
 		return finishRunResponse(r, resp, "fail", fmt.Sprintf("unexpected result %#v", result))
 	}
 	compactions, debugs := testuiRuntimeCompactionObservations(sink.events)
-	wantOperation := flruntime.ManualCompactionOperationID("testui-manual-active", 1, "testui-manual-active")
+	wantOperation := flruntime.ManualCompactionOperationID("testui-manual-active-turn", 1, "testui-manual-active")
 	if !slices.ContainsFunc(compactions, func(ev obs.CompactionEvent) bool {
 		return ev.Phase == obs.CompactionPhaseComplete && ev.OperationID == wantOperation
 	}) {
@@ -2712,19 +2711,19 @@ func (r Runner) runProjectedManualCompactionScenario(ctx context.Context) RunRes
 func (r Runner) runProjectedManualPollErrorScenario(ctx context.Context) RunResponse {
 	resp := RunResponse{ID: fmt.Sprintf("%d", r.now().UnixNano()), Target: TargetContextCompactionScenarios, Title: "Manual poll error is observable", Kind: "agent", StartedAt: r.now()}
 	sink := &runtimeEventSink{}
-	result, err := flruntime.RunProjectedTurn(ctx, flruntime.ProjectedTurnOptions{
-		Config:            testuiProjectedCompactionConfig(10000),
-		ModelGateway:      testModelGateway("continued after poll error"),
-		Store:             flruntime.NewMemoryStore(),
-		Sink:              sink,
+	host, err := testuiCompactionHost(sink, testModelGateway("continued after poll error"))
+	if err != nil {
+		return finishRunResponse(r, resp, "error", err.Error())
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, flruntime.StartThreadRequest{ThreadID: "testui-manual-poll-error"}); err != nil {
+		return finishRunResponse(r, resp, "error", err.Error())
+	}
+	result, err := host.RunTurn(ctx, flruntime.RunTurnRequest{
+		ThreadID:          "testui-manual-poll-error",
+		TurnID:            "testui-manual-poll-error-turn",
+		Input:             "continue",
 		ManualCompactions: &testManualCompactionSource{err: errors.New("manual source offline")},
-	}, flruntime.ProjectedTurnRequest{
-		RunID:         "testui-manual-poll-error",
-		ThreadID:      "testui-manual-poll-error",
-		TurnID:        "testui-manual-poll-error",
-		TraceID:       "testui-manual-poll-error",
-		PromptScopeID: "testui-manual-poll-error",
-		History:       []flruntime.TranscriptMessage{{Role: "user", Content: "continue"}},
 	})
 	resp.Agent = testuiRuntimeAgentRun(result, sink.events)
 	if err != nil {
@@ -2743,40 +2742,46 @@ func (r Runner) runProjectedManualPollErrorScenario(ctx context.Context) RunResp
 func (r Runner) runProjectedCompactOnlyScenario(ctx context.Context) RunResponse {
 	resp := RunResponse{ID: fmt.Sprintf("%d", r.now().UnixNano()), Target: TargetContextCompactionScenarios, Title: "Compact-only returns checkpoint", Kind: "agent", StartedAt: r.now()}
 	sink := &runtimeEventSink{}
-	result, err := flruntime.CompactProjectedContext(ctx, flruntime.ProjectedTurnOptions{
-		Config:               testuiProjectedCompactionConfig(10000),
-		ModelGateway:         testModelGateway("must not stream"),
-		Store:                flruntime.NewMemoryStore(),
-		Sink:                 sink,
-		CompactionSummarizer: testCompactionSummarizer{},
-	}, flruntime.ProjectedContextCompactionRequest{
-		RunID:            "testui-compact-only",
-		ThreadID:         "testui-compact-only",
-		TurnID:           "testui-compact-only",
-		TraceID:          "testui-compact-only",
-		PromptScopeID:    "testui-compact-only",
-		ManualCompaction: flruntime.ManualCompactionRequest{RequestID: "testui-compact-only", Source: "test_ui"},
-		History:          testuiCompactionHistory(),
+	host, err := testuiCompactionHost(sink, testModelGateway("seed answer"))
+	if err != nil {
+		return finishRunResponse(r, resp, "error", err.Error())
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, flruntime.StartThreadRequest{ThreadID: "testui-compact-only"}); err != nil {
+		return finishRunResponse(r, resp, "error", err.Error())
+	}
+	if _, err := host.RunTurn(ctx, flruntime.RunTurnRequest{ThreadID: "testui-compact-only", TurnID: "testui-compact-seed", Input: testuiCompactionInput()}); err != nil {
+		return finishRunResponse(r, resp, "error", err.Error())
+	}
+	result, err := host.CompactThread(ctx, flruntime.CompactThreadRequest{
+		ThreadID:  "testui-compact-only",
+		RequestID: "testui-compact-only",
+		Source:    "test_ui",
 	})
 	resp.Agent = testuiRuntimeContextCompactionRun(result, sink.events)
 	if err != nil {
 		return finishRunResponse(r, resp, "fail", err.Error())
 	}
-	if result.Status != string(flruntime.TurnStatusCompleted) || result.Compaction == nil || len(result.ActiveTranscript) == 0 || result.ActiveTranscript[0].Kind != flruntime.TranscriptMessageKindCompactionSummary {
+	if result.Status != string(flruntime.TurnStatusCompleted) || result.Metrics.Compactions != 1 {
 		return finishRunResponse(r, resp, "fail", fmt.Sprintf("unexpected result %#v", result))
 	}
-	for _, ev := range sink.events {
-		if ev.Type == "provider_request" {
-			return finishRunResponse(r, resp, "fail", "compact-only emitted a provider request")
-		}
+	compactions, debugs := testuiRuntimeCompactionObservations(sink.events)
+	if !slices.ContainsFunc(compactions, func(ev obs.CompactionEvent) bool {
+		return ev.Phase == obs.CompactionPhaseComplete && ev.Status == obs.CompactionStatusCompacted
+	}) {
+		return finishRunResponse(r, resp, "fail", fmt.Sprintf("missing compact-only terminal event in %#v", compactions))
 	}
-	_, debugs := testuiRuntimeCompactionObservations(sink.events)
+	if !slices.ContainsFunc(debugs, func(ev obs.CompactionDebugEvent) bool {
+		return ev.Stage == obs.CompactionDebugStageGenerateAttemptComplete && ev.Status == obs.CompactionDebugStatusOK
+	}) {
+		return finishRunResponse(r, resp, "fail", fmt.Sprintf("missing compact-only summary generation debug in %#v", debugs))
+	}
 	if !slices.ContainsFunc(debugs, func(ev obs.CompactionDebugEvent) bool {
 		return ev.NextAction == engine.ContextCompactDebugNextActionReturnCompactedContext
 	}) {
 		return finishRunResponse(r, resp, "fail", fmt.Sprintf("missing return_compacted_context debug in %#v", debugs))
 	}
-	return finishRunResponse(r, resp, "pass", "Compact-only returned a checkpoint without streaming a provider request.")
+	return finishRunResponse(r, resp, "pass", "Compact-only used Floret-owned summary generation and returned a compact result.")
 }
 
 func (r Runner) runProjectedCompactCancelScenario(ctx context.Context) RunResponse {
@@ -2784,27 +2789,29 @@ func (r Runner) runProjectedCompactCancelScenario(ctx context.Context) RunRespon
 	ctx, cancel := context.WithCancel(ctx)
 	started := make(chan struct{})
 	sink := &runtimeEventSink{}
+	host, err := testuiCompactionHost(sink, &seedThenBlockingTestModelGateway{started: started})
+	if err != nil {
+		return finishRunResponse(r, resp, "error", err.Error())
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, flruntime.StartThreadRequest{ThreadID: "testui-compact-cancel"}); err != nil {
+		return finishRunResponse(r, resp, "error", err.Error())
+	}
+	if _, err := host.RunTurn(context.Background(), flruntime.RunTurnRequest{ThreadID: "testui-compact-cancel", TurnID: "testui-compact-cancel-seed", Input: testuiCompactionInput()}); err != nil {
+		return finishRunResponse(r, resp, "error", err.Error())
+	}
 	done := make(chan struct {
-		result flruntime.ProjectedContextCompactionResult
+		result flruntime.CompactThreadResult
 		err    error
 	}, 1)
 	go func() {
-		result, err := flruntime.CompactProjectedContext(ctx, flruntime.ProjectedTurnOptions{
-			Config:               testuiProjectedCompactionConfig(10000),
-			Store:                flruntime.NewMemoryStore(),
-			Sink:                 sink,
-			CompactionSummarizer: blockingTestCompactionSummarizer{started: started},
-		}, flruntime.ProjectedContextCompactionRequest{
-			RunID:            "testui-compact-cancel",
-			ThreadID:         "testui-compact-cancel",
-			TurnID:           "testui-compact-cancel",
-			TraceID:          "testui-compact-cancel",
-			PromptScopeID:    "testui-compact-cancel",
-			ManualCompaction: flruntime.ManualCompactionRequest{RequestID: "testui-compact-cancel", Source: "test_ui"},
-			History:          testuiCompactionHistory(),
+		result, err := host.CompactThread(ctx, flruntime.CompactThreadRequest{
+			ThreadID:  "testui-compact-cancel",
+			RequestID: "testui-compact-cancel",
+			Source:    "test_ui",
 		})
 		done <- struct {
-			result flruntime.ProjectedContextCompactionResult
+			result flruntime.CompactThreadResult
 			err    error
 		}{result: result, err: err}
 	}()
@@ -2838,27 +2845,6 @@ func (s *runtimeEventSink) EmitEvent(ev flruntime.Event) {
 	s.events = append(s.events, ev)
 }
 
-type testCompactionSummarizer struct{}
-
-func (testCompactionSummarizer) GenerateCompactionSummary(ctx context.Context, req flruntime.ProjectedCompactionSummaryRequest) (flruntime.ProjectedCompactionSummaryResult, error) {
-	if err := ctx.Err(); err != nil {
-		return flruntime.ProjectedCompactionSummaryResult{}, err
-	}
-	return flruntime.ProjectedCompactionSummaryResult{Summary: "Older context was compacted by the test UI scenario."}, nil
-}
-
-type blockingTestCompactionSummarizer struct {
-	started chan struct{}
-}
-
-func (s blockingTestCompactionSummarizer) GenerateCompactionSummary(ctx context.Context, req flruntime.ProjectedCompactionSummaryRequest) (flruntime.ProjectedCompactionSummaryResult, error) {
-	if s.started != nil {
-		close(s.started)
-	}
-	<-ctx.Done()
-	return flruntime.ProjectedCompactionSummaryResult{}, ctx.Err()
-}
-
 type testManualCompactionSource struct {
 	request flruntime.ManualCompactionRequest
 	err     error
@@ -2886,6 +2872,44 @@ func (g testModelGateway) StreamModel(ctx context.Context, req flruntime.ModelRe
 	return events, nil
 }
 
+type blockingTestModelGateway struct {
+	started chan struct{}
+}
+
+func (g blockingTestModelGateway) StreamModel(ctx context.Context, req flruntime.ModelRequest) (<-chan flruntime.ModelEvent, error) {
+	if g.started != nil {
+		close(g.started)
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+type seedThenBlockingTestModelGateway struct {
+	mu      sync.Mutex
+	calls   int
+	started chan struct{}
+}
+
+func (g *seedThenBlockingTestModelGateway) StreamModel(ctx context.Context, req flruntime.ModelRequest) (<-chan flruntime.ModelEvent, error) {
+	g.mu.Lock()
+	g.calls++
+	call := g.calls
+	g.mu.Unlock()
+	if call == 1 {
+		return testModelGateway("seed answer").StreamModel(ctx, req)
+	}
+	return blockingTestModelGateway{started: g.started}.StreamModel(ctx, req)
+}
+
+func testuiCompactionHost(sink flruntime.EventSink, gateway flruntime.ModelGateway) (flruntime.Host, error) {
+	return flruntime.NewHost(flruntime.HostOptions{
+		Config:       testuiProjectedCompactionConfig(10000),
+		ModelGateway: gateway,
+		Store:        flruntime.NewMemoryStore(),
+		Sink:         sink,
+	})
+}
+
 func testuiProjectedCompactionConfig(window int64) config.Config {
 	return config.Config{
 		Provider:     config.ProviderFake,
@@ -2901,15 +2925,11 @@ func testuiProjectedCompactionConfig(window int64) config.Config {
 	}
 }
 
-func testuiCompactionHistory() []flruntime.TranscriptMessage {
-	return []flruntime.TranscriptMessage{
-		{Role: "user", Content: strings.Repeat("older context ", 100)},
-		{Role: "assistant", Content: strings.Repeat("older answer ", 80)},
-		{Role: "user", Content: "continue after compaction"},
-	}
+func testuiCompactionInput() string {
+	return strings.Repeat("older context ", 100) + "\n\n" + strings.Repeat("older answer ", 80) + "\n\ncontinue after compaction"
 }
 
-func testuiRuntimeAgentRun(result flruntime.ProjectedTurnResult, events []flruntime.Event) *AgentRun {
+func testuiRuntimeAgentRun(result flruntime.TurnResult, events []flruntime.Event) *AgentRun {
 	return &AgentRun{
 		EngineStatus: string(result.Status),
 		Output:       result.Output,
@@ -2922,7 +2942,7 @@ func testuiRuntimeAgentRun(result flruntime.ProjectedTurnResult, events []flrunt
 	}
 }
 
-func testuiRuntimeContextCompactionRun(result flruntime.ProjectedContextCompactionResult, events []flruntime.Event) *AgentRun {
+func testuiRuntimeContextCompactionRun(result flruntime.CompactThreadResult, events []flruntime.Event) *AgentRun {
 	return &AgentRun{
 		EngineStatus: result.Status,
 		Output:       result.Error,

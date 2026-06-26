@@ -299,11 +299,7 @@ func pathSafeObservedProviderEvent(ev ObservedProviderEvent) ObservedProviderEve
 }
 
 func pathSafeContextStatuses(statuses []ObservedContextStatus) []ObservedContextStatus {
-	out := cloneSlice(statuses)
-	for i := range out {
-		out[i].CompactionWindowID = event.SafePathRefsText(out[i].CompactionWindowID)
-	}
-	return out
+	return cloneSlice(statuses)
 }
 
 func pathSafeCompactionEvents(compactions []ObservedCompactionEvent) []ObservedCompactionEvent {
@@ -323,8 +319,6 @@ func pathSafeCompactionDebugEvents(debugs []ObservedCompactionDebugEvent) []Obse
 		out[i].OperationID = event.SafePathRefsText(out[i].OperationID)
 		out[i].RequestID = event.SafePathRefsText(out[i].RequestID)
 		out[i].Source = event.SafePathRefsText(out[i].Source)
-		out[i].CompactionID = event.SafePathRefsText(out[i].CompactionID)
-		out[i].CompactionWindowID = event.SafePathRefsText(out[i].CompactionWindowID)
 		out[i].ProviderStateKind = event.SafePathRefsText(out[i].ProviderStateKind)
 		out[i].NextAction = event.SafePathRefsText(out[i].NextAction)
 		out[i].Error = event.SafePathRefsText(out[i].Error)

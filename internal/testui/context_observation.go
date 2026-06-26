@@ -46,22 +46,18 @@ func compactionEventFromEntry(entry ObservedSessionEntry) (ObservedCompactionEve
 	}
 	return ObservedCompactionEvent{
 		CompactionEvent: observation.CompactionEvent{
-			ThreadID:                entry.ThreadID,
-			TurnID:                  entry.TurnID,
-			Phase:                   observation.CompactionPhaseComplete,
-			Status:                  observation.CompactionStatusCompacted,
-			Trigger:                 entry.CompactionTrigger,
-			Reason:                  entry.CompactionReason,
-			CompactionID:            entry.CompactionID,
-			CompactionGeneration:    entry.CompactionGeneration,
-			CompactionWindowID:      entry.CompactionWindowID,
-			CompactedThroughEntryID: entry.CompactedThroughEntryID,
-			TokensBefore:            entry.TokensBefore,
-			TokensAfterEstimate:     entry.TokensAfterEstimate,
-			ContextBefore:           configbridge.PublicContextUsage(entry.ContextUsageBefore),
-			ContextAfter:            configbridge.PublicContextUsage(entry.ContextUsageAfter),
-			Error:                   entry.Error,
-			ObservedAt:              entry.CreatedAt,
+			ThreadID:            entry.ThreadID,
+			TurnID:              entry.TurnID,
+			Phase:               observation.CompactionPhaseComplete,
+			Status:              observation.CompactionStatusCompacted,
+			Trigger:             entry.CompactionTrigger,
+			Reason:              entry.CompactionReason,
+			TokensBefore:        entry.TokensBefore,
+			TokensAfterEstimate: entry.TokensAfterEstimate,
+			ContextBefore:       configbridge.PublicContextUsage(entry.ContextUsageBefore),
+			ContextAfter:        configbridge.PublicContextUsage(entry.ContextUsageAfter),
+			Error:               entry.Error,
+			ObservedAt:          entry.CreatedAt,
 		},
 		SummaryPreview: previewOneLine(entry.Summary, 160),
 		Summary:        entry.Summary,
@@ -142,8 +138,8 @@ func compactionEventsForObservation(entries []ObservedSessionEntry, events []eve
 	}
 	seenComplete := map[string]struct{}{}
 	for _, existing := range out {
-		if existing.CompactionID != "" && existing.Phase == observation.CompactionPhaseComplete {
-			seenComplete[existing.CompactionID] = struct{}{}
+		if existing.Phase == observation.CompactionPhaseComplete {
+			seenComplete[compactionEventKey(existing)] = struct{}{}
 		}
 	}
 	for _, entry := range entries {
@@ -151,15 +147,29 @@ func compactionEventsForObservation(entries []ObservedSessionEntry, events []eve
 		if !ok {
 			continue
 		}
-		if compact.CompactionID != "" {
-			if _, ok := seenComplete[compact.CompactionID]; ok {
-				continue
-			}
-			seenComplete[compact.CompactionID] = struct{}{}
+		key := compactionEventKey(compact)
+		if _, ok := seenComplete[key]; ok {
+			continue
 		}
+		seenComplete[key] = struct{}{}
 		out = append(out, compact)
 	}
 	return out
+}
+
+func compactionEventKey(compact ObservedCompactionEvent) string {
+	return strings.Join([]string{
+		compact.OperationID,
+		compact.RequestID,
+		compact.ThreadID,
+		compact.TurnID,
+		compact.Phase,
+		compact.Trigger,
+		compact.Reason,
+		fmt.Sprintf("%d", compact.TokensBefore),
+		fmt.Sprintf("%d", compact.TokensAfterEstimate),
+		fmt.Sprintf("%d", compact.ObservedAt.UTC().UnixNano()),
+	}, "\x00")
 }
 
 func compactionDebugEventsForObservation(events []event.Event) []ObservedCompactionDebugEvent {
@@ -198,38 +208,34 @@ func requestID(runID string, step int) string {
 
 func requestObservation(req ObservedProviderRequest) observation.RequestObservation {
 	return observation.RequestObservation{
-		RunID:                req.RunID,
-		ThreadID:             req.ThreadID,
-		TurnID:               req.TurnID,
-		Step:                 req.Step,
-		LogicalRequestID:     req.LogicalRequestID,
-		Attempt:              req.Attempt,
-		Provider:             req.Provider,
-		Model:                req.Model,
-		ObservedAt:           req.ObservedAt,
-		RequestEstimate:      configbridge.RequestEstimate(req.RequestEstimate),
-		ProjectedPressure:    configbridge.PublicContextPressure(req.ProjectedPressure),
-		CompactionGeneration: req.CacheSummary.CompactionGeneration,
-		CompactionWindowID:   req.CacheSummary.CompactionWindowID,
+		RunID:             req.RunID,
+		ThreadID:          req.ThreadID,
+		TurnID:            req.TurnID,
+		Step:              req.Step,
+		LogicalRequestID:  req.LogicalRequestID,
+		Attempt:           req.Attempt,
+		Provider:          req.Provider,
+		Model:             req.Model,
+		ObservedAt:        req.ObservedAt,
+		RequestEstimate:   configbridge.RequestEstimate(req.RequestEstimate),
+		ProjectedPressure: configbridge.PublicContextPressure(req.ProjectedPressure),
 	}
 }
 
 func requestObservationFromPromptRecord(req cache.ProviderRequestRecord) observation.RequestObservation {
 	return observation.RequestObservation{
-		RunID:                req.RunID,
-		ThreadID:             req.ThreadID,
-		TurnID:               req.TurnID,
-		Step:                 req.Step,
-		RequestID:            req.ID,
-		LogicalRequestID:     req.LogicalRequestID,
-		Attempt:              req.Attempt,
-		Provider:             req.Provider,
-		Model:                req.Model,
-		ObservedAt:           req.CreatedAt,
-		RequestEstimate:      configbridge.RequestEstimate(req.RequestEstimate),
-		ProjectedPressure:    configbridge.PublicContextPressure(req.ProjectedPressure),
-		CompactionGeneration: req.CompactionGeneration,
-		CompactionWindowID:   req.CompactionWindowID,
+		RunID:             req.RunID,
+		ThreadID:          req.ThreadID,
+		TurnID:            req.TurnID,
+		Step:              req.Step,
+		RequestID:         req.ID,
+		LogicalRequestID:  req.LogicalRequestID,
+		Attempt:           req.Attempt,
+		Provider:          req.Provider,
+		Model:             req.Model,
+		ObservedAt:        req.CreatedAt,
+		RequestEstimate:   configbridge.RequestEstimate(req.RequestEstimate),
+		ProjectedPressure: configbridge.PublicContextPressure(req.ProjectedPressure),
 	}
 }
 
@@ -252,8 +258,6 @@ func providerUsageObservationFromPromptResponse(resp cache.ProviderResponseRecor
 		observed.Provider = req.Provider
 		observed.Model = req.Model
 		observed.RequestEstimate = req.RequestEstimate
-		observed.CompactionGeneration = req.CompactionGeneration
-		observed.CompactionWindowID = req.CompactionWindowID
 	}
 	if observed.ThreadID == "" {
 		observed.ThreadID = resp.ThreadID
@@ -323,18 +327,16 @@ func observationMetadata(value any) map[string]any {
 		return out
 	case engine.ProviderUsageContextStatus:
 		return map[string]any{
-			"phase":                 v.Phase,
-			"request_id":            v.RequestID,
-			"logical_request_id":    v.LogicalRequestID,
-			"attempt":               v.Attempt,
-			"usage":                 providerUsage(v.Usage),
-			"request_estimate":      configbridge.RequestEstimate(v.RequestEstimate),
-			"context_pressure":      configbridge.PublicContextPressure(v.ContextPressure),
-			"used_ratio":            v.UsedRatio,
-			"threshold_ratio":       v.ThresholdRatio,
-			"status":                v.Status,
-			"compaction_generation": v.CompactionGeneration,
-			"compaction_window_id":  v.CompactionWindowID,
+			"phase":              v.Phase,
+			"request_id":         v.RequestID,
+			"logical_request_id": v.LogicalRequestID,
+			"attempt":            v.Attempt,
+			"usage":              providerUsage(v.Usage),
+			"request_estimate":   configbridge.RequestEstimate(v.RequestEstimate),
+			"context_pressure":   configbridge.PublicContextPressure(v.ContextPressure),
+			"used_ratio":         v.UsedRatio,
+			"threshold_ratio":    v.ThresholdRatio,
+			"status":             v.Status,
 		}
 	default:
 		return nil

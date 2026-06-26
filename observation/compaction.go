@@ -21,28 +21,24 @@ const (
 )
 
 type CompactionEvent struct {
-	RunID                   string                 `json:"run_id,omitempty"`
-	ThreadID                string                 `json:"thread_id,omitempty"`
-	TurnID                  string                 `json:"turn_id,omitempty"`
-	Step                    int                    `json:"step,omitempty"`
-	OperationID             string                 `json:"operation_id,omitempty"`
-	RequestID               string                 `json:"request_id,omitempty"`
-	Phase                   string                 `json:"phase"`
-	Status                  string                 `json:"status"`
-	Trigger                 string                 `json:"trigger,omitempty"`
-	Reason                  string                 `json:"reason,omitempty"`
-	Source                  string                 `json:"source,omitempty"`
-	CompactionID            string                 `json:"compaction_id,omitempty"`
-	CompactionGeneration    int                    `json:"compaction_generation,omitempty"`
-	CompactionWindowID      string                 `json:"compaction_window_id,omitempty"`
-	CompactedThroughEntryID string                 `json:"compacted_through_entry_id,omitempty"`
-	TokensBefore            int64                  `json:"tokens_before,omitempty"`
-	TokensAfterEstimate     int64                  `json:"tokens_after_estimate,omitempty"`
-	BeforePressure          config.ContextPressure `json:"before_pressure,omitempty"`
-	ContextBefore           config.ContextUsage    `json:"context_before,omitempty"`
-	ContextAfter            config.ContextUsage    `json:"context_after,omitempty"`
-	Error                   string                 `json:"error,omitempty"`
-	ObservedAt              time.Time              `json:"observed_at"`
+	RunID               string                 `json:"run_id,omitempty"`
+	ThreadID            string                 `json:"thread_id,omitempty"`
+	TurnID              string                 `json:"turn_id,omitempty"`
+	Step                int                    `json:"step,omitempty"`
+	OperationID         string                 `json:"operation_id,omitempty"`
+	RequestID           string                 `json:"request_id,omitempty"`
+	Phase               string                 `json:"phase"`
+	Status              string                 `json:"status"`
+	Trigger             string                 `json:"trigger,omitempty"`
+	Reason              string                 `json:"reason,omitempty"`
+	Source              string                 `json:"source,omitempty"`
+	TokensBefore        int64                  `json:"tokens_before,omitempty"`
+	TokensAfterEstimate int64                  `json:"tokens_after_estimate,omitempty"`
+	BeforePressure      config.ContextPressure `json:"before_pressure,omitempty"`
+	ContextBefore       config.ContextUsage    `json:"context_before,omitempty"`
+	ContextAfter        config.ContextUsage    `json:"context_after,omitempty"`
+	Error               string                 `json:"error,omitempty"`
+	ObservedAt          time.Time              `json:"observed_at"`
 }
 
 func CompactionEventFromEvent(ev Event) (CompactionEvent, bool) {
@@ -91,10 +87,6 @@ func CompactionEventFromEvent(ev Event) (CompactionEvent, bool) {
 	if usage, ok := contextUsageFromAny(meta["context_after"]); ok {
 		out.ContextAfter = usage
 	}
-	out.CompactionID = stringFromAny(meta["compaction_id"])
-	out.CompactionGeneration = intFromAny(meta["compaction_generation"], out.CompactionGeneration)
-	out.CompactionWindowID = stringFromAny(meta["compaction_window_id"])
-	out.CompactedThroughEntryID = stringFromAny(meta["compacted_through_entry_id"])
 	out.TokensBefore = int64FromAny(meta["tokens_before"], out.TokensBefore)
 	out.TokensAfterEstimate = int64FromAny(meta["tokens_after_estimate"], out.TokensAfterEstimate)
 	switch out.Phase {

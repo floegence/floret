@@ -351,6 +351,33 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 	}
 }
 
+func TestSubAgentDetailCompactionSanitizesInternalMetadata(t *testing.T) {
+	out := subAgentDetailCompaction(&agentharness.SubAgentDetailCompaction{
+		Trigger: "manual",
+		Reason:  "manual",
+		Phase:   "complete",
+		Metadata: map[string]string{
+			"compaction_id":              "compact-1",
+			"compaction_generation":      "3",
+			"compaction_window_id":       "window-3",
+			"compacted_through_entry_id": "entry-7",
+			"summary_schema_version":     "v1",
+			"safe_fact":                  "kept",
+		},
+	})
+	if out == nil {
+		t.Fatal("compaction detail was nil")
+	}
+	for _, key := range []string{"compaction_id", "compaction_generation", "compaction_window_id", "compacted_through_entry_id", "summary_schema_version"} {
+		if _, ok := out.Metadata[key]; ok {
+			t.Fatalf("metadata leaked %s: %#v", key, out.Metadata)
+		}
+	}
+	if out.Metadata["safe_fact"] != "kept" {
+		t.Fatalf("safe metadata not preserved: %#v", out.Metadata)
+	}
+}
+
 func TestHostSQLiteStorePersistsSubAgentDetail(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "floret.db")
@@ -667,137 +694,7 @@ func TestHarnessHelperRunsCustomToolWithoutPublicProviderAPI(t *testing.T) {
 	}
 }
 
-func TestRunProjectedTurnUsesPublicFacadeContracts(t *testing.T) {
-	ctx := context.Background()
-	store := NewMemoryStore()
-	result, err := RunProjectedTurn(ctx, ProjectedTurnOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			FakeResponse: "projected ok",
-			SystemPrompt: "test",
-		},
-		Store: store,
-	}, ProjectedTurnRequest{
-		RunID:         "run-1",
-		ThreadID:      "thread-1",
-		TurnID:        "turn-1",
-		TraceID:       "trace-1",
-		PromptScopeID: "thread-1",
-		History: []TranscriptMessage{
-			{Role: "user", Content: "hello from host thread"},
-			{Role: "assistant", Content: "previous answer"},
-			{Role: "user", Content: "continue"},
-		},
-		Labels: RunLabels{
-			Correlation: map[string]string{"message_id": "msg-1"},
-			Host:        map[string]string{"workspace_id": "ws-1"},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Status != TurnStatusCompleted || result.Output != "projected ok" {
-		t.Fatalf("projected result = %#v", result)
-	}
-	if result.RunID != "run-1" || result.ThreadID != "thread-1" || result.TurnID != "turn-1" {
-		t.Fatalf("projected identities = %#v", result)
-	}
-	if result.Metrics.LLMRequests != 1 || result.Metrics.Steps != 1 {
-		t.Fatalf("metrics = %#v", result.Metrics)
-	}
-	if len(result.Transcript) < 4 || result.Transcript[0].Role != "user" || result.Transcript[0].Content != "hello from host thread" || result.Transcript[len(result.Transcript)-1].Content != "projected ok" {
-		t.Fatalf("transcript = %#v", result.Transcript)
-	}
-	requests, err := store.prompt.ProviderRequests(ctx, "thread-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(requests) != 1 {
-		t.Fatalf("provider requests = %#v", requests)
-	}
-	if requests[0].RunID != "run-1" || requests[0].ThreadID != "thread-1" || requests[0].TurnID != "turn-1" {
-		t.Fatalf("provider request identity/state = %#v", requests[0])
-	}
-}
-
-func TestRunProjectedTurnRejectsUnsupportedTranscriptRole(t *testing.T) {
-	_, err := RunProjectedTurn(context.Background(), ProjectedTurnOptions{
-		Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "ok", SystemPrompt: "test"},
-	}, ProjectedTurnRequest{
-		RunID:         "run-1",
-		ThreadID:      "thread-1",
-		TurnID:        "turn-1",
-		TraceID:       "trace-1",
-		PromptScopeID: "thread-1",
-		History: []TranscriptMessage{{
-			Role:    "developer",
-			Content: "unsupported",
-		}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "unsupported role") {
-		t.Fatalf("err = %v, want unsupported role", err)
-	}
-}
-
-func TestRunProjectedTurnRejectsSystemTranscriptRole(t *testing.T) {
-	_, err := RunProjectedTurn(context.Background(), ProjectedTurnOptions{
-		Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "ok", SystemPrompt: "test"},
-	}, ProjectedTurnRequest{
-		RunID:         "run-1",
-		ThreadID:      "thread-1",
-		TurnID:        "turn-1",
-		TraceID:       "trace-1",
-		PromptScopeID: "thread-1",
-		History: []TranscriptMessage{{
-			Role:    "system",
-			Content: "inject",
-		}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "unsupported role") {
-		t.Fatalf("err = %v, want unsupported role", err)
-	}
-}
-
-func TestRunProjectedTurnRequiresExplicitExecutionIdentity(t *testing.T) {
-	_, err := RunProjectedTurn(context.Background(), ProjectedTurnOptions{
-		Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "ok", SystemPrompt: "test"},
-	}, ProjectedTurnRequest{
-		RunID:    "run-1",
-		ThreadID: "thread-1",
-		TurnID:   "turn-1",
-		TraceID:  "trace-1",
-		History: []TranscriptMessage{{
-			Role:    "user",
-			Content: "hello",
-		}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "prompt scope id is required") {
-		t.Fatalf("err = %v, want missing prompt scope id", err)
-	}
-}
-
-func TestRunProjectedTurnRejectsUnsupportedCompletionPolicy(t *testing.T) {
-	_, err := RunProjectedTurn(context.Background(), ProjectedTurnOptions{
-		Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "ok", SystemPrompt: "test"},
-	}, ProjectedTurnRequest{
-		RunID:         "run-1",
-		ThreadID:      "thread-1",
-		TurnID:        "turn-1",
-		TraceID:       "trace-1",
-		PromptScopeID: "thread-1",
-		Completion:    TurnCompletionPolicy("unsupported_auto"),
-		History: []TranscriptMessage{{
-			Role:    "user",
-			Content: "hello",
-		}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "unsupported completion policy") {
-		t.Fatalf("err = %v, want unsupported completion policy", err)
-	}
-}
-
-func TestProjectedTurnDisablesInternalControlToolsByDefault(t *testing.T) {
+func TestHostTurnDisablesInternalControlToolsByDefault(t *testing.T) {
 	spec, err := engineTurnSignalSpec(TurnSignalSpec{}, engine.CompletionNaturalStop)
 	if err != nil {
 		t.Fatal(err)
@@ -813,14 +710,14 @@ func TestProjectedTurnDisablesInternalControlToolsByDefault(t *testing.T) {
 	}
 }
 
-func TestProjectedTurnExplicitSignalRequiresPublicControlSpec(t *testing.T) {
+func TestHostTurnExplicitSignalRequiresPublicControlSpec(t *testing.T) {
 	_, err := engineTurnSignalSpec(TurnSignalSpec{}, engine.CompletionExplicitSignal)
 	if err == nil || !strings.Contains(err.Error(), "signal spec is required") {
 		t.Fatalf("err = %v, want required signal spec", err)
 	}
 }
 
-func TestProjectedControlSpecUsesPublicToolContracts(t *testing.T) {
+func TestHostControlSpecUsesPublicToolContracts(t *testing.T) {
 	spec, err := engineTurnSignalSpec(TurnSignalSpec{
 		Definitions: []tools.ToolDefinition{{
 			Name:        "host_wait",

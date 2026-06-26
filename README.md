@@ -79,7 +79,7 @@ stay focused on product behavior.
 | Configure a provider and agent persona | `config.Config` or `config.Load` |
 | Build a durable conversation host | `runtime.NewHost` |
 | Manage child threads under a hosted conversation | `runtime.Host` subagent methods |
-| Run one turn from a host-owned transcript projection | `runtime.RunProjectedTurn` |
+| Run turns and request context compaction | `runtime.Host` and `runtime.CompactThreadRequest` |
 | Supply product-owned model transport | `runtime.ModelGateway` |
 | Keep Floret runtime data in memory | `runtime.NewMemoryStore` |
 | Keep Floret runtime data in SQLite | `runtime.OpenSQLiteStore` |
@@ -101,13 +101,12 @@ Everything under `internal/` is Floret implementation. Downstream applications
 should not bypass the `runtime` facade to build turn requests, call Floret
 implementation contracts, manage Floret journal tables, or parse prompt-cache
 and provider-ledger records. If the product owns model transport, implement
-`runtime.ModelGateway` through either `runtime.HostOptions.ModelGateway` or
-`runtime.ProjectedTurnOptions.ModelGateway` and let Floret construct the turn
-request, own the loop, dispatch tools, and record runtime facts. Product data
-such as owners, workspaces, pinned state, read watermarks, and billing metadata
-belongs in the host database keyed by `runtime.ThreadID`. Any package outside
-the stable list above is contributor or runtime implementation, not a downstream
-contract.
+`runtime.ModelGateway` through `runtime.HostOptions.ModelGateway` and let
+Floret construct provider requests, own context lifecycle, dispatch tools, and
+record runtime facts. Product data such as owners, workspaces, pinned state,
+read watermarks, and billing metadata belongs in the host database keyed by
+`runtime.ThreadID`. Any package outside the stable list above is contributor or
+runtime implementation, not a downstream contract.
 
 ## 🚀 Quick Start
 
@@ -231,19 +230,21 @@ work. Pending tool results still represent work whose lifecycle belongs to the
 host application. Child threads represent Floret-owned durable conversations
 that a parent thread can create, steer, wait for, list, and close.
 
-## 🔀 Projected Turns
+## 🔀 Hosted Context Lifecycle
 
-Use `runtime.RunProjectedTurn` only when the product already owns conversation
-rows and needs Floret to execute one turn from a host-built transcript
-projection. Durable Floret-managed conversations should use `runtime.Host`.
+Use `runtime.Host` for durable turns, child threads, active manual compaction,
+and idle compaction maintenance. Hosts send product input and control signals
+through the facade; Floret owns provider-visible context assembly, trimming,
+summary generation, checkpoint installation, continuation state, and lifecycle
+observations.
 
-Projected turn requests must carry explicit `RunID`, `ThreadID`, `TurnID`,
-`TraceID`, and `PromptScopeID`. `History` accepts only `user`, `assistant`, and
-`tool` messages; system instructions belong in `config.Config`. The returned
-`Transcript` is the provider-visible projection for the next turn, not a
-sanitized UI display row. When `ProjectedTurnOptions.ModelGateway` is set,
-Floret passes a `runtime.ModelRequest` to the host-owned model transport and
-continues to own tool dispatch, loop control, ledgers, and events.
+Manual compaction is requested through `runtime.RunTurnRequest.ManualCompactions`
+for an active turn or `runtime.Host.CompactThread` with
+`runtime.CompactThreadRequest` for an idle thread. `observation.ContextStatus`
+reports usage and pressure. `observation.CompactionEvent` is the only
+user-visible context compaction lifecycle event. Hosts may persist returned
+provider state envelopes, but must treat them as opaque carry-through state
+rather than transcript or summary data.
 
 ## ⚙️ Configuration
 

@@ -2454,9 +2454,6 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 	if !slices.ContainsFunc(result.Session.CompactionEvents, func(event ObservedCompactionEvent) bool {
 		return event.Phase == engine.ContextCompactPhaseComplete &&
 			event.Status == observation.CompactionStatusCompacted &&
-			event.CompactionID == compactionEntry.CompactionID &&
-			event.CompactionGeneration == compactionEntry.CompactionGeneration &&
-			event.CompactionWindowID == compactionEntry.CompactionWindowID &&
 			event.TokensBefore == compactionEntry.TokensBefore &&
 			event.TokensAfterEstimate == compactionEntry.TokensAfterEstimate
 	}) {
@@ -2509,9 +2506,6 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 	if !slices.ContainsFunc(snapshot.CompactionEvents, func(event ObservedCompactionEvent) bool {
 		return event.Phase == engine.ContextCompactPhaseComplete &&
 			event.Status == observation.CompactionStatusCompacted &&
-			event.CompactionID == compactionEntry.CompactionID &&
-			event.CompactionGeneration == compactionEntry.CompactionGeneration &&
-			event.CompactionWindowID == compactionEntry.CompactionWindowID &&
 			event.TokensBefore == compactionEntry.TokensBefore &&
 			event.TokensAfterEstimate == compactionEntry.TokensAfterEstimate
 	}) {
@@ -2662,9 +2656,7 @@ func TestContextStatusFromProviderRequestUsesProjectedPressure(t *testing.T) {
 		status.Attempt != 2 ||
 		status.Status != engine.ContextStatusHardLimit ||
 		status.UsedRatio != 0.91 ||
-		status.ThresholdRatio != 0.8 ||
-		status.CompactionGeneration != 3 ||
-		status.CompactionWindowID != "window-3" {
+		status.ThresholdRatio != 0.8 {
 		t.Fatalf("context status = %#v", status)
 	}
 }
@@ -2699,11 +2691,9 @@ func TestContextStatusFromFinalProviderUsageEvent(t *testing.T) {
 				Source:              contextpolicy.PressureSourceProviderUsage,
 				Signal:              contextpolicy.PressureSignalNativeUsage,
 			},
-			UsedRatio:            0.42,
-			ThresholdRatio:       0.8,
-			Status:               engine.ContextStatusStable,
-			CompactionGeneration: 1,
-			CompactionWindowID:   "window-1",
+			UsedRatio:      0.42,
+			ThresholdRatio: 0.8,
+			Status:         engine.ContextStatusStable,
 		},
 	}
 
@@ -2720,9 +2710,7 @@ func TestContextStatusFromFinalProviderUsageEvent(t *testing.T) {
 		status.ContextPressure.WindowInputTokens != 420 ||
 		status.UsedRatio != 0.42 ||
 		status.ThresholdRatio != 0.8 ||
-		status.Status != engine.ContextStatusStable ||
-		status.CompactionGeneration != 1 ||
-		status.CompactionWindowID != "window-1" {
+		status.Status != engine.ContextStatusStable {
 		t.Fatalf("status = %#v", status)
 	}
 	streamUsage := ev
@@ -2793,21 +2781,19 @@ func TestAgentObservationMergesPromptCacheContextStatusesWithLiveObservation(t *
 	promptCacheReq.ObservedAt = time.Unix(9, 0)
 	projected := contextStatusFromProviderRequest(promptCacheReq)
 	finalUsage := ObservedContextStatus{
-		RunID:                "turn-1",
-		ThreadID:             "thread-1",
-		TurnID:               "turn-1",
-		Step:                 1,
-		RequestID:            "turn-1:req:1",
-		Phase:                observation.ContextPhaseProviderUsage,
-		Provider:             "fake",
-		Model:                "fake-model",
-		ObservedAt:           time.Unix(11, 0),
-		ContextPressure:      config.ContextPressure{WindowInputTokens: 650, ContextWindowTokens: 1000, ThresholdTokens: 800},
-		UsedRatio:            0.65,
-		ThresholdRatio:       0.8,
-		Status:               engine.ContextStatusStable,
-		CompactionGeneration: 2,
-		CompactionWindowID:   "window-2",
+		RunID:           "turn-1",
+		ThreadID:        "thread-1",
+		TurnID:          "turn-1",
+		Step:            1,
+		RequestID:       "turn-1:req:1",
+		Phase:           observation.ContextPhaseProviderUsage,
+		Provider:        "fake",
+		Model:           "fake-model",
+		ObservedAt:      time.Unix(11, 0),
+		ContextPressure: config.ContextPressure{WindowInputTokens: 650, ContextWindowTokens: 1000, ThresholdTokens: 800},
+		UsedRatio:       0.65,
+		ThresholdRatio:  0.8,
+		Status:          engine.ContextStatusStable,
 	}
 
 	runner := NewRunner(t.TempDir())
@@ -2958,10 +2944,6 @@ func TestCompactionEventsFromEngineEventsAndEntries(t *testing.T) {
 	}
 	if done.Phase != engine.ContextCompactPhaseComplete ||
 		done.Status != observation.CompactionStatusCompacted ||
-		done.CompactionID != "compact-1" ||
-		done.CompactionGeneration != 3 ||
-		done.CompactionWindowID != "window-3" ||
-		done.CompactedThroughEntryID != "entry-7" ||
 		done.TokensAfterEstimate != 240 ||
 		done.SummaryPreview != "summary text" {
 		t.Fatalf("complete compaction = %#v", done)
@@ -3003,8 +2985,6 @@ func TestCompactionEventsFromEngineEventsAndEntries(t *testing.T) {
 		t.Fatalf("compaction entry was not converted")
 	}
 	if entryDone.Status != observation.CompactionStatusCompacted ||
-		entryDone.CompactionGeneration != 4 ||
-		entryDone.CompactionWindowID != "window-4" ||
 		entryDone.Trigger != string(compaction.TriggerOverflow) ||
 		entryDone.Reason != string(compaction.ReasonProviderOverflow) ||
 		entryDone.TokensBefore != 990 ||
@@ -3093,11 +3073,9 @@ func TestStreamingEventRecorderStreamsFinalContextStatusAndCompaction(t *testing
 		Result:    "summary",
 		Metadata: map[string]any{
 			"phase":                 engine.ContextCompactPhaseComplete,
+			"operation_id":          "op-1",
 			"trigger":               compaction.TriggerPostResponse,
 			"reason":                compaction.ReasonThreshold,
-			"compaction_id":         "compact-1",
-			"compaction_generation": int64(2),
-			"compaction_window_id":  "window-2",
 			"tokens_before":         int64(850),
 			"tokens_after_estimate": int64(240),
 		},
@@ -3116,9 +3094,7 @@ func TestStreamingEventRecorderStreamsFinalContextStatusAndCompaction(t *testing
 	}
 	if compactEvent.Type != AgentStreamContextCompaction ||
 		compactEvent.Compaction == nil ||
-		compactEvent.Compaction.CompactionID != "compact-1" ||
-		compactEvent.Compaction.CompactionGeneration != 2 ||
-		compactEvent.Compaction.CompactionWindowID != "window-2" ||
+		compactEvent.Compaction.OperationID != "op-1" ||
 		compactEvent.Compaction.Status != observation.CompactionStatusCompacted ||
 		compactEvent.Compaction.TokensAfterEstimate != 240 {
 		t.Fatalf("compaction stream event = %#v", compactEvent)

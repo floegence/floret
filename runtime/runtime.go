@@ -41,6 +41,7 @@ type Host interface {
 	ReadThread(context.Context, ThreadID) (ThreadSnapshot, error)
 	RunTurn(context.Context, RunTurnRequest) (TurnResult, error)
 	RetryTurn(context.Context, RetryTurnRequest) (TurnResult, error)
+	CompactThread(context.Context, CompactThreadRequest) (CompactThreadResult, error)
 	CompletePendingTool(context.Context, PendingToolCompletionRequest) (TurnResult, error)
 	SpawnSubAgent(context.Context, SpawnSubAgentRequest) (SubAgentSnapshot, error)
 	SendSubAgentInput(context.Context, SendSubAgentInputRequest) (SubAgentSnapshot, error)
@@ -84,16 +85,32 @@ type StartThreadRequest struct {
 }
 
 type RunTurnRequest struct {
-	ThreadID ThreadID
-	TurnID   TurnID
-	Input    string
-	Labels   RunLabels
+	ThreadID              ThreadID
+	TurnID                TurnID
+	Input                 string
+	Labels                RunLabels
+	PreviousProviderState *ModelState
+	Completion            TurnCompletionPolicy
+	Signals               TurnSignalSpec
+	Limits                TurnLimits
+	Reasoning             ReasoningSelection
+	ManualCompactions     ManualCompactionSource
 }
 
 type RetryTurnRequest struct {
 	ThreadID ThreadID
 	Reason   string
 	Labels   RunLabels
+}
+
+type CompactThreadRequest struct {
+	ThreadID              ThreadID
+	RequestID             string
+	Source                string
+	Labels                RunLabels
+	PreviousProviderState *ModelState
+	Limits                TurnLimits
+	Reasoning             ReasoningSelection
 }
 
 // PendingToolCompletionStatus describes the observed outcome of host-owned work
@@ -310,21 +327,12 @@ type SubAgentDetailTurnMarker struct {
 }
 
 type SubAgentDetailCompaction struct {
-	CompactionID            string            `json:"compaction_id,omitempty"`
-	PreviousCompactionID    string            `json:"previous_compaction_id,omitempty"`
-	CompactedThroughEntryID string            `json:"compacted_through_entry_id,omitempty"`
-	SummarySchemaVersion    string            `json:"summary_schema_version,omitempty"`
-	CompactionGeneration    int               `json:"compaction_generation,omitempty"`
-	CompactionWindowID      string            `json:"compaction_window_id,omitempty"`
-	FirstKeptEntryID        string            `json:"first_kept_entry_id,omitempty"`
-	KeptUserEntryIDs        []string          `json:"kept_user_entry_ids,omitempty"`
-	Summary                 string            `json:"summary,omitempty"`
-	Trigger                 string            `json:"trigger,omitempty"`
-	Reason                  string            `json:"reason,omitempty"`
-	Phase                   string            `json:"phase,omitempty"`
-	TokensBefore            int64             `json:"tokens_before,omitempty"`
-	TokensAfterEstimate     int64             `json:"tokens_after_estimate,omitempty"`
-	Metadata                map[string]string `json:"metadata,omitempty"`
+	Trigger             string            `json:"trigger,omitempty"`
+	Reason              string            `json:"reason,omitempty"`
+	Phase               string            `json:"phase,omitempty"`
+	TokensBefore        int64             `json:"tokens_before,omitempty"`
+	TokensAfterEstimate int64             `json:"tokens_after_estimate,omitempty"`
+	Metadata            map[string]string `json:"metadata,omitempty"`
 }
 
 type ArtifactRef struct {
@@ -369,16 +377,30 @@ type ThreadMessage struct {
 }
 
 type TurnResult struct {
-	ID                 TurnID            `json:"id"`
-	Status             TurnStatus        `json:"status"`
-	Output             string            `json:"output,omitempty"`
-	Error              string            `json:"error,omitempty"`
-	Diagnostics        map[string]string `json:"diagnostics,omitempty"`
-	CompletionReason   string            `json:"completion_reason,omitempty"`
-	ContinuationReason string            `json:"continuation_reason,omitempty"`
-	FinishReason       string            `json:"finish_reason,omitempty"`
-	RawFinishReason    string            `json:"raw_finish_reason,omitempty"`
-	FinishInferred     bool              `json:"finish_inferred,omitempty"`
+	ID                 TurnID                       `json:"id"`
+	Status             TurnStatus                   `json:"status"`
+	Output             string                       `json:"output,omitempty"`
+	Error              string                       `json:"error,omitempty"`
+	Diagnostics        map[string]string            `json:"diagnostics,omitempty"`
+	Metrics            RunMetrics                   `json:"metrics"`
+	CompletionReason   string                       `json:"completion_reason,omitempty"`
+	ContinuationReason string                       `json:"continuation_reason,omitempty"`
+	FinishReason       string                       `json:"finish_reason,omitempty"`
+	RawFinishReason    string                       `json:"raw_finish_reason,omitempty"`
+	FinishInferred     bool                         `json:"finish_inferred,omitempty"`
+	ProviderState      *ModelState                  `json:"provider_state,omitempty"`
+	Signal             *TurnSignal                  `json:"signal,omitempty"`
+	ActivityTimeline   observation.ActivityTimeline `json:"activity_timeline"`
+}
+
+type CompactThreadResult struct {
+	ThreadID         ThreadID                     `json:"thread_id,omitempty"`
+	Status           string                       `json:"status"`
+	Error            string                       `json:"error,omitempty"`
+	Diagnostics      map[string]string            `json:"diagnostics,omitempty"`
+	Metrics          RunMetrics                   `json:"metrics"`
+	ProviderState    *ModelState                  `json:"provider_state,omitempty"`
+	ActivityTimeline observation.ActivityTimeline `json:"activity_timeline"`
 }
 
 type EventSink interface {
@@ -539,6 +561,7 @@ func (s *Store) deleteThreadData(ctx context.Context, threadID string) error {
 type host struct {
 	cfg     config.Config
 	store   *Store
+	sink    EventSink
 	harness *agentharness.AgentHarness
 }
 
@@ -571,7 +594,7 @@ func NewHost(opts HostOptions) (Host, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &host{cfg: cfg, store: store, harness: harness}, nil
+	return &host{cfg: cfg, store: store, sink: opts.Sink, harness: harness}, nil
 }
 
 func (h *host) StartThread(ctx context.Context, req StartThreadRequest) (ThreadSnapshot, error) {
@@ -594,18 +617,38 @@ func (h *host) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, err
 	if strings.TrimSpace(string(req.ThreadID)) == "" {
 		return TurnResult{}, errors.New("thread id is required")
 	}
+	completionPolicy, err := engineTurnCompletionPolicy(req.Completion)
+	if err != nil {
+		return TurnResult{}, err
+	}
+	signalSpec, err := engineTurnSignalSpec(req.Signals, completionPolicy)
+	if err != nil {
+		return TurnResult{}, err
+	}
 	thread, err := h.harness.ResumeThread(ctx, string(req.ThreadID), agentharness.ResumeOptions{})
 	if err != nil {
 		return TurnResult{}, err
 	}
+	activityRecorder := &runtimeActivityEventRecorder{sink: newRuntimeEventSink(h.sink)}
 	result, runErr := thread.Run(ctx, req.Input, agentharness.RunOptions{
 		TurnID: string(req.TurnID),
 		Labels: engine.RunLabels{
 			Correlation: cloneStringMap(req.Labels.Correlation),
 			Host:        cloneStringMap(req.Labels.Host),
 		},
+		CompletionPolicy:         completionPolicy,
+		ControlSpec:              signalSpec,
+		Reasoning:                projectedReasoningSelection(req.Reasoning, h.cfg.Reasoning),
+		MaxTotalTokens:           req.Limits.MaxTotalTokens,
+		MaxCostUSD:               req.Limits.MaxCostUSD,
+		MaxToolCalls:             req.Limits.MaxToolCalls,
+		MaxLengthContinuations:   req.Limits.MaxLengthContinuations,
+		MaxStopHookContinuations: req.Limits.MaxStopHookContinuations,
+		PreviousProviderState:    providerState(req.PreviousProviderState),
+		ManualCompactions:        projectedManualCompactionSource(req.ManualCompactions),
+		Sink:                     activityRecorder,
 	})
-	return turnResult(result), runErr
+	return turnResult(result, activityRecorder.Snapshot(), time.Now().UnixMilli()), runErr
 }
 
 func (h *host) RetryTurn(ctx context.Context, req RetryTurnRequest) (TurnResult, error) {
@@ -623,7 +666,47 @@ func (h *host) RetryTurn(ctx context.Context, req RetryTurnRequest) (TurnResult,
 			Host:        cloneStringMap(req.Labels.Host),
 		},
 	})
-	return turnResult(result), runErr
+	return turnResult(result, nil, time.Now().UnixMilli()), runErr
+}
+
+func (h *host) CompactThread(ctx context.Context, req CompactThreadRequest) (CompactThreadResult, error) {
+	if strings.TrimSpace(string(req.ThreadID)) == "" {
+		return CompactThreadResult{}, errors.New("thread id is required")
+	}
+	thread, err := h.harness.ResumeThread(ctx, string(req.ThreadID), agentharness.ResumeOptions{})
+	if err != nil {
+		return CompactThreadResult{}, err
+	}
+	activityRecorder := &runtimeActivityEventRecorder{sink: newRuntimeEventSink(h.sink)}
+	result, compactErr := thread.Compact(ctx, agentharness.CompactOptions{
+		RequestID:              req.RequestID,
+		Source:                 req.Source,
+		Labels:                 engineLabels(req.Labels),
+		Reasoning:              projectedReasoningSelection(req.Reasoning, h.cfg.Reasoning),
+		MaxTotalTokens:         req.Limits.MaxTotalTokens,
+		MaxCostUSD:             req.Limits.MaxCostUSD,
+		MaxToolCalls:           req.Limits.MaxToolCalls,
+		MaxLengthContinuations: req.Limits.MaxLengthContinuations,
+		PreviousProviderState:  providerState(req.PreviousProviderState),
+		Sink:                   activityRecorder,
+	})
+	out := CompactThreadResult{
+		ThreadID:      req.ThreadID,
+		Status:        string(result.Status),
+		Diagnostics:   cloneStringMap(result.Diagnostics),
+		Metrics:       runtimeMetrics(result.Metrics),
+		ProviderState: modelState(result.ProviderState),
+		ActivityTimeline: observation.BuildActivityTimeline(observation.ActivityRunMeta{
+			RunID:    "",
+			ThreadID: string(req.ThreadID),
+			TurnID:   "",
+			TraceID:  "",
+		}, activityRecorder.Snapshot(), time.Now().UnixMilli()),
+	}
+	if result.Err != nil {
+		out.Error = result.Err.Error()
+	}
+	return out, compactErr
 }
 
 func (h *host) CompletePendingTool(ctx context.Context, req PendingToolCompletionRequest) (TurnResult, error) {
@@ -648,7 +731,7 @@ func (h *host) CompletePendingTool(ctx context.Context, req PendingToolCompletio
 			Host:        cloneStringMap(req.Labels.Host),
 		},
 	})
-	return turnResult(result), runErr
+	return turnResult(result, nil, time.Now().UnixMilli()), runErr
 }
 
 func (h *host) SpawnSubAgent(ctx context.Context, req SpawnSubAgentRequest) (SubAgentSnapshot, error) {
@@ -814,17 +897,26 @@ func threadSnapshot(in agentharness.ThreadSnapshot) ThreadSnapshot {
 	return out
 }
 
-func turnResult(in agentharness.TurnResult) TurnResult {
+func turnResult(in agentharness.TurnResult, events []observation.Event, nowUnixMS int64) TurnResult {
 	out := TurnResult{
 		ID:                 TurnID(in.ID),
 		Status:             TurnStatus(in.Status),
 		Output:             in.Output,
 		Diagnostics:        cloneStringMap(in.Diagnostics),
+		Metrics:            runtimeMetrics(in.Metrics),
 		CompletionReason:   string(in.CompletionReason),
 		ContinuationReason: string(in.ContinuationReason),
 		FinishReason:       string(in.FinishReason),
 		RawFinishReason:    in.RawFinishReason,
 		FinishInferred:     in.FinishInferred,
+		ProviderState:      modelState(in.ProviderState),
+		Signal:             runtimeTurnSignal(in.ControlSignal),
+		ActivityTimeline: observation.BuildActivityTimeline(observation.ActivityRunMeta{
+			RunID:    in.ID,
+			ThreadID: "",
+			TurnID:   in.ID,
+			TraceID:  in.ID,
+		}, events, nowUnixMS),
 	}
 	if in.Err != nil {
 		out.Error = in.Err.Error()
@@ -974,21 +1066,12 @@ func subAgentDetailCompaction(in *agentharness.SubAgentDetailCompaction) *SubAge
 		return nil
 	}
 	return &SubAgentDetailCompaction{
-		CompactionID:            in.CompactionID,
-		PreviousCompactionID:    in.PreviousCompactionID,
-		CompactedThroughEntryID: in.CompactedThroughEntryID,
-		SummarySchemaVersion:    in.SummarySchemaVersion,
-		CompactionGeneration:    in.CompactionGeneration,
-		CompactionWindowID:      in.CompactionWindowID,
-		FirstKeptEntryID:        in.FirstKeptEntryID,
-		KeptUserEntryIDs:        append([]string(nil), in.KeptUserEntryIDs...),
-		Summary:                 in.Summary,
-		Trigger:                 in.Trigger,
-		Reason:                  in.Reason,
-		Phase:                   in.Phase,
-		TokensBefore:            in.TokensBefore,
-		TokensAfterEstimate:     in.TokensAfterEstimate,
-		Metadata:                cloneStringMap(in.Metadata),
+		Trigger:             in.Trigger,
+		Reason:              in.Reason,
+		Phase:               in.Phase,
+		TokensBefore:        in.TokensBefore,
+		TokensAfterEstimate: in.TokensAfterEstimate,
+		Metadata:            safeStringMetadata(in.Metadata),
 	}
 }
 
@@ -1248,20 +1331,18 @@ func runtimeContextStatus(ev event.Event) *observation.ContextStatus {
 		}
 		estimate, _ := meta["request_estimate"].(contextpolicy.RequestEstimate)
 		status := observation.ContextStatusFromRequest(observation.RequestObservation{
-			RunID:                ev.RunID,
-			ThreadID:             ev.ThreadID,
-			TurnID:               ev.TurnID,
-			Step:                 ev.Step,
-			RequestID:            stringFromMetadata(meta, "request_id"),
-			LogicalRequestID:     stringFromMetadata(meta, "logical_request_id"),
-			Attempt:              intFromMetadata(meta, "attempt"),
-			Provider:             ev.Provider,
-			Model:                ev.Model,
-			ObservedAt:           ev.Timestamp,
-			RequestEstimate:      configbridge.RequestEstimate(estimate),
-			ProjectedPressure:    configbridge.PublicContextPressure(pressure),
-			CompactionGeneration: intFromMetadata(meta, "compaction_generation"),
-			CompactionWindowID:   stringFromMetadata(meta, "compaction_window_id"),
+			RunID:             ev.RunID,
+			ThreadID:          ev.ThreadID,
+			TurnID:            ev.TurnID,
+			Step:              ev.Step,
+			RequestID:         stringFromMetadata(meta, "request_id"),
+			LogicalRequestID:  stringFromMetadata(meta, "logical_request_id"),
+			Attempt:           intFromMetadata(meta, "attempt"),
+			Provider:          ev.Provider,
+			Model:             ev.Model,
+			ObservedAt:        ev.Timestamp,
+			RequestEstimate:   configbridge.RequestEstimate(estimate),
+			ProjectedPressure: configbridge.PublicContextPressure(pressure),
 		})
 		return &status
 	case event.ProviderUsage:
@@ -1270,21 +1351,19 @@ func runtimeContextStatus(ev event.Event) *observation.ContextStatus {
 			return nil
 		}
 		out, ok := observation.ContextStatusFromProviderUsage(observation.ProviderUsageObservation{
-			RunID:                ev.RunID,
-			ThreadID:             ev.ThreadID,
-			TurnID:               ev.TurnID,
-			Step:                 ev.Step,
-			RequestID:            status.RequestID,
-			LogicalRequestID:     status.LogicalRequestID,
-			Attempt:              status.Attempt,
-			Provider:             ev.Provider,
-			Model:                ev.Model,
-			ObservedAt:           ev.Timestamp,
-			Usage:                observationProviderUsage(status.Usage),
-			RequestEstimate:      configbridge.RequestEstimate(status.RequestEstimate),
-			ContextPressure:      configbridge.PublicContextPressure(status.ContextPressure),
-			CompactionGeneration: status.CompactionGeneration,
-			CompactionWindowID:   status.CompactionWindowID,
+			RunID:            ev.RunID,
+			ThreadID:         ev.ThreadID,
+			TurnID:           ev.TurnID,
+			Step:             ev.Step,
+			RequestID:        status.RequestID,
+			LogicalRequestID: status.LogicalRequestID,
+			Attempt:          status.Attempt,
+			Provider:         ev.Provider,
+			Model:            ev.Model,
+			ObservedAt:       ev.Timestamp,
+			Usage:            observationProviderUsage(status.Usage),
+			RequestEstimate:  configbridge.RequestEstimate(status.RequestEstimate),
+			ContextPressure:  configbridge.PublicContextPressure(status.ContextPressure),
 		})
 		if !ok {
 			return nil
@@ -1314,25 +1393,21 @@ func runtimeCompactionEventWithError(raw, sanitized event.Event, sanitizedError 
 		return nil
 	}
 	out := observation.CompactionEvent{
-		RunID:                   sanitized.RunID,
-		ThreadID:                sanitized.ThreadID,
-		TurnID:                  sanitized.TurnID,
-		Step:                    sanitized.Step,
-		OperationID:             stringFromMetadata(meta, "operation_id"),
-		RequestID:               stringFromMetadata(meta, "request_id"),
-		Phase:                   phase,
-		Status:                  observation.CompactionStatusRunning,
-		Trigger:                 stringFromMetadata(meta, "trigger"),
-		Reason:                  stringFromMetadata(meta, "reason"),
-		Source:                  stringFromMetadata(meta, "source"),
-		CompactionID:            stringFromMetadata(meta, "compaction_id"),
-		CompactionGeneration:    intFromMetadata(meta, "compaction_generation"),
-		CompactionWindowID:      stringFromMetadata(meta, "compaction_window_id"),
-		CompactedThroughEntryID: stringFromMetadata(meta, "compacted_through_entry_id"),
-		TokensBefore:            int64FromMetadata(meta, "tokens_before"),
-		TokensAfterEstimate:     int64FromMetadata(meta, "tokens_after_estimate"),
-		Error:                   sanitizedError,
-		ObservedAt:              sanitized.Timestamp,
+		RunID:               sanitized.RunID,
+		ThreadID:            sanitized.ThreadID,
+		TurnID:              sanitized.TurnID,
+		Step:                sanitized.Step,
+		OperationID:         stringFromMetadata(meta, "operation_id"),
+		RequestID:           stringFromMetadata(meta, "request_id"),
+		Phase:               phase,
+		Status:              observation.CompactionStatusRunning,
+		Trigger:             stringFromMetadata(meta, "trigger"),
+		Reason:              stringFromMetadata(meta, "reason"),
+		Source:              stringFromMetadata(meta, "source"),
+		TokensBefore:        int64FromMetadata(meta, "tokens_before"),
+		TokensAfterEstimate: int64FromMetadata(meta, "tokens_after_estimate"),
+		Error:               sanitizedError,
+		ObservedAt:          sanitized.Timestamp,
 	}
 	switch phase {
 	case observation.CompactionPhaseStart:
@@ -1399,9 +1474,6 @@ func runtimeCompactionDebugEventWithError(raw, sanitized event.Event, sanitizedE
 		CompactionConvergenceAttempt:     intFromMetadata(meta, "compaction_convergence_attempt"),
 		HistoryMessageCount:              intFromMetadata(meta, "history_message_count"),
 		ActiveMessageCount:               intFromMetadata(meta, "active_message_count"),
-		CompactionID:                     stringFromMetadata(meta, "compaction_id"),
-		CompactionGeneration:             intFromMetadata(meta, "compaction_generation"),
-		CompactionWindowID:               stringFromMetadata(meta, "compaction_window_id"),
 		TokensBefore:                     int64FromMetadata(meta, "tokens_before"),
 		TokensAfterEstimate:              int64FromMetadata(meta, "tokens_after_estimate"),
 		HardLimitExceeded:                boolFromAnyMetadata(meta, "hard_limit_exceeded"),
@@ -1739,10 +1811,57 @@ func safeMetadata(in any) map[string]any {
 				out["approval_id_hash"] = hash
 			}
 			continue
-		case "resources":
+		case "resources",
+			"compaction_id",
+			"previous_compaction_id",
+			"compaction_generation",
+			"compaction_window_id",
+			"first_kept_entry_id",
+			"kept_user_entry_ids",
+			"compacted_through_entry_id",
+			"summary_schema_version",
+			"compaction_phase",
+			"provider_ledger_key",
+			"provider_request_ledger_key",
+			"prompt_cache_segment_key",
+			"checkpoint_pointer":
 			continue
 		}
 		out[key] = safeMetadataValue(value)
+	}
+	return out
+}
+
+func safeStringMetadata(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		switch key {
+		case "compaction_id",
+			"previous_compaction_id",
+			"compaction_generation",
+			"compaction_window_id",
+			"first_kept_entry_id",
+			"kept_user_entry_ids",
+			"compacted_through_entry_id",
+			"summary_schema_version",
+			"compaction_phase",
+			"provider_ledger_key",
+			"provider_request_ledger_key",
+			"provider_response_ledger_key",
+			"prompt_cache_key",
+			"prompt_cache_segment_id",
+			"checkpoint_payload",
+			"checkpoint_pointer":
+			continue
+		default:
+			out[key] = event.SafePathRefsText(value)
+		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

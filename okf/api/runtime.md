@@ -1,7 +1,7 @@
 ---
 type: Public API
 title: runtime Package
-description: The runtime package is the main public facade for hosted threads, child threads, projected turns, stores, events, and control signals.
+description: The runtime package is the main public facade for hosted threads, child threads, stores, events, control signals, and Floret-owned context lifecycle.
 resource: /runtime/runtime.go
 tags: [api, runtime]
 timestamp: 2026-06-20T00:00:00Z
@@ -10,32 +10,33 @@ timestamp: 2026-06-20T00:00:00Z
 # Summary
 
 `runtime` is the primary downstream integration package. Use `runtime.NewHost`
-for Floret-managed durable conversations. Use `runtime.RunProjectedTurn` when a
-host already owns conversation rows and wants Floret to execute one provider
-loop over a transcript projection.
+for durable conversations. Hosts provide product input, tools, permissions, and
+optional model transport; Floret owns provider loop execution, provider-visible
+context assembly, trimming, summary generation, compaction checkpoints,
+continuation state, and lifecycle observations.
 
 # Main Entry Points
 
 * `NewHost` creates a durable conversation host.
 * `NewMemoryStore` creates an in-memory runtime store for tests or ephemeral use.
 * `OpenSQLiteStore` creates Floret-managed durable runtime storage.
-* `RunProjectedTurn` executes one run from host-owned transcript projection.
-* `ProjectedTurnOptions.ManualCompactions` lets a host request manual context
-  compaction for an active projected run. Floret polls it at provider-loop safe
+* `Host.RunTurn` executes one hosted user-facing turn.
+* `RunTurnRequest.ManualCompactions` lets a host request manual context
+  compaction for an active hosted run. Floret polls it at provider-loop safe
   points, emits compaction lifecycle events, and continues the same run.
-* `CompactProjectedContext` runs a compaction-only maintenance operation for a
-  host-owned transcript projection and returns compacted active transcript
-  checkpoint metadata without creating natural assistant output.
+* `Host.CompactThread` runs a compaction-only maintenance operation for an idle
+  hosted thread through `CompactThreadRequest` without creating natural
+  assistant output.
 * `SpawnSubAgent`, `SendSubAgentInput`, `WaitSubAgents`, `ListSubAgents`, and
   `CloseSubAgent` manage durable child threads under a hosted parent thread.
 * `ReadSubAgentDetail` and `ListSubAgentDetailEvents` let a host read a
   parent-scoped, paginated child-thread execution timeline for human UI or
   audit surfaces without expanding `WaitSubAgents` payloads.
 * `ModelGateway` lets a host supply model transport through
-  `HostOptions.ModelGateway` or `ProjectedTurnOptions.ModelGateway` while
-  Floret owns loop control, tool dispatch, and ledgers.
+  `HostOptions.ModelGateway` while Floret owns loop control, tool dispatch,
+  context lifecycle, and ledgers.
 * `ReasoningSelection` carries provider-neutral reasoning intent for a run.
-  `RunProjectedTurn` accepts it as an override, and `ModelRequest` forwards the
+  `RunTurnRequest` carries it as turn intent, and `ModelRequest` forwards the
   effective selection to host-owned model gateways.
 * `ModelEventToolCallStart`, `ModelEventToolCallDelta`, and
   `ModelEventToolCallEnd` expose model tool-call streaming as provider-neutral
@@ -103,21 +104,22 @@ selected model capability. Hosts that own model transport through `ModelGateway`
 receive the effective selection and must render provider-specific payloads
 outside Floret.
 
-Projected manual compaction is a control surface, not a transcript message.
-Hosts pass active-run requests through `ManualCompactionSource`; Floret decides
-the safe point, runs the same compaction pipeline as automatic pressure
-compaction with `manual/manual` trigger and reason, includes request correlation
-in start/complete/failed/cancelled observations, and then continues the provider
-loop when the manual compaction failed without cancellation. `ManualCompactionOperationID` exposes the public operation identity for a
-known run id, provider-loop step, and manual request id so hosts can correlate
+Manual compaction is a control surface, not a transcript message. Hosts pass
+active-run requests through `ManualCompactionSource`; Floret decides the safe
+point, runs the same compaction pipeline as automatic pressure compaction with
+`manual/manual` trigger and reason, includes request correlation in
+start/complete/failed/cancelled observations, and then continues the provider
+loop when the manual compaction failed without cancellation.
+`ManualCompactionOperationID` exposes the public operation identity for a known
+run id, provider-loop step, and manual request id so hosts can correlate
 accepted manual work with later Floret observations without depending on
-internal engine formatting. A failed manual compaction is observable but does not
-by itself end the active run; a non-cancellation manual source poll failure is
-emitted as a safe debug observation and the provider request continues.
-Cancellation during manual polling or compaction is terminal for that projected
+internal engine formatting. A failed manual compaction is observable but does
+not by itself end the active run; a non-cancellation manual source poll failure
+is emitted as a safe debug observation and the provider request continues.
+Cancellation during manual polling or compaction is terminal for that hosted
 turn and does not continue to a provider request.
 
-Projected compactions also emit `runtime.Event.CompactionDebug` diagnostics.
+Hosted compactions also emit `runtime.Event.CompactionDebug` diagnostics.
 Those events identify safe pipeline stages and include operation/request
 correlation, token pressure, message counts, durations, provider-state kind, and
 the next action without exposing local paths, secrets, prompt text, tool
@@ -130,13 +132,12 @@ semantics. Cancelled compactions use cancelled lifecycle and debug statuses,
 preserving operation/request correlation without exposing raw request strings in
 public runtime events.
 
-For idle host-owned threads, `CompactProjectedContext` is the public
-compaction-only entry point. The result `ActiveTranscript` begins with a
-`compaction_summary` checkpoint and preserves compaction id, generation, and
-window metadata. Downstream hosts that own durable thread storage should persist
-that active transcript or an equivalent checkpoint as their next projected
-history source; opaque provider continuation state is carry-through state, not a
-substitute for a thread-level checkpoint.
+For idle hosted threads, `Host.CompactThread` is the public compaction-only
+entry point. The result reports status, metrics, safe lifecycle observations,
+activity timeline, and opaque provider state. Hosts may persist opaque provider
+state envelopes and pass them back unchanged, but they must not parse them,
+rebuild provider-visible history, or treat context assembly reports as input for
+the next turn.
 
 # Key Source Files
 

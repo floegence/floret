@@ -502,6 +502,9 @@ func (e *Engine) CompactContext(ctx context.Context, input RunInput, manual Manu
 		opts.PreviousProviderState = provider.CloneState(input.PreviousProviderState)
 	}
 	opts = normalizeOptions(opts)
+	if input.TurnID == "" {
+		opts.TurnID = ""
+	}
 	if len(input.History) > 0 {
 		history := make([]session.Message, len(input.History))
 		for i, msg := range input.History {

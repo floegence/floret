@@ -216,7 +216,7 @@ func TestPublicPackagesDoNotImportForbiddenImplementationPackages(t *testing.T) 
 
 func TestReadmeOnlyDocumentsStableDownstreamAPI(t *testing.T) {
 	text := readTextFile(t, "README.md")
-	for _, want := range []string{"runtime.NewHost", "runtime.RunProjectedTurn", "runtime.ModelGateway", "runtime.NewMemoryStore", "runtime.OpenSQLiteStore", "tools.Registry", "observation"} {
+	for _, want := range []string{"runtime.NewHost", "runtime.Host", "runtime.CompactThreadRequest", "runtime.ModelGateway", "runtime.NewMemoryStore", "runtime.OpenSQLiteStore", "tools.Registry", "observation"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("README missing stable downstream API %q", want)
 		}
@@ -224,6 +224,45 @@ func TestReadmeOnlyDocumentsStableDownstreamAPI(t *testing.T) {
 	for _, forbidden := range publicDocsDenylist() {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("README advertises internal/downstream-forbidden API %q", forbidden)
+		}
+	}
+}
+
+func TestRuntimePublicAPIDoesNotExposeContextLifecycleBackdoors(t *testing.T) {
+	text := readTextFile(t, filepath.Join("runtime", "projected_turn.go")) + "\n" + readTextFile(t, filepath.Join("runtime", "runtime.go"))
+	for _, forbidden := range []string{
+		"RunProjectedTurn",
+		"ProjectedTurnOptions",
+		"ProjectedTurnRequest",
+		"ProjectedTurnResult",
+		"TranscriptMessage",
+		"ProjectedContextCompaction",
+		"CompactProjectedContext",
+		"ProjectedCompactionSummary",
+		"ActiveTranscript",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("runtime public API exposes context lifecycle backdoor %q", forbidden)
+		}
+	}
+}
+
+func TestObservationPublicAPIDoesNotExposeCompactionInternals(t *testing.T) {
+	text := readTextFile(t, filepath.Join("observation", "context.go")) + "\n" +
+		readTextFile(t, filepath.Join("observation", "compaction.go")) + "\n" +
+		readTextFile(t, filepath.Join("observation", "compaction_debug.go"))
+	for _, forbidden := range []string{
+		"CompactionID",
+		"CompactionGeneration",
+		"CompactionWindowID",
+		"CompactedThroughEntryID",
+		"FirstKeptEntryID",
+		"KeptUserEntryIDs",
+		"SummarySchemaVersion",
+		"ActiveTranscript",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("observation public API exposes compaction internal %q", forbidden)
 		}
 	}
 }
@@ -832,5 +871,13 @@ func publicDocsDenylist() []string {
 		"tools/builtin",
 		"tools/mcp",
 		"tools/skills",
+		"RunProjectedTurn",
+		"ProjectedTurnOptions",
+		"ProjectedTurnRequest",
+		"TranscriptMessage",
+		"ProjectedContextCompaction",
+		"CompactProjectedContext",
+		"ProjectedCompactionSummary",
+		"ActiveTranscript",
 	}
 }

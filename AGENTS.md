@@ -269,8 +269,8 @@ invent near-synonyms when a concept below already fits.
 - `Path` is the active branch projection from root to leaf.
 - `Leaf` is the current active entry pointer for a thread.
 - `Fork` creates a new thread or branch from an existing entry.
-- `TranscriptMessage` is the provider-visible message projection. It is not the same
-  thing as a journal entry, tool event, or UI display row.
+- Provider-visible message projection is Floret internal context assembly state.
+  Hosts must not build, persist, or replay it as a public runtime contract.
 - `TranscriptStore` stores engine-level transcript messages for isolated runs. It
   must not pretend to be durable thread storage.
 

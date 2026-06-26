@@ -38,24 +38,24 @@ from the signal itself or from assistant text produced in the same provider
 step. A terminal control signal with neither source is a contract error, so the
 engine never fabricates a successful completion.
 
-# Projected Turns
+# Hosted Context Lifecycle
 
-`runtime.RunProjectedTurn` supports hosts that already own durable conversation
-rows. The host supplies a provider-visible transcript projection, while Floret
-still owns the loop, local tools, context pressure, ledgers, and events. It uses
-the same `runtime.ModelGateway` contract as hosted threads when the host supplies
-one.
+`runtime.Host` is the public facade for durable turns and context lifecycle.
+The host supplies product input, tools, permissions, and optional model
+transport; Floret owns provider-visible context assembly, trimming, summary
+generation, checkpoint installation, provider continuation state, prompt-cache
+ledgers, and lifecycle events.
 
-Active manual compaction in projected turns flows through
-`ProjectedTurnOptions.ManualCompactions`. The host owns the user-facing command
-or policy that creates a request; `Engine` owns polling at safe provider-loop
-points, summary generation, checkpoint installation, and continuation of the
-same run.
+Active manual compaction flows through `RunTurnRequest.ManualCompactions`. The
+host owns the user-facing command or policy that creates a request; `Engine`
+owns polling at safe provider-loop points, summary generation, checkpoint
+installation, and continuation of the same run.
 
-Idle projected compaction uses `runtime.CompactProjectedContext` instead of
-pretending to be a user turn. It runs the compaction pipeline once and returns
-the compacted active transcript plus lifecycle observations so the host can
-persist a thread-level checkpoint in its own store.
+Idle compaction uses `Host.CompactThread` instead of pretending to be a user
+turn. It runs the compaction pipeline once and returns status, metrics, safe
+observations, activity timeline, and opaque provider state. The host persists
+opaque envelopes unchanged and must not rebuild provider-visible history from
+product messages, debug reports, or checkpoint internals.
 
 # Child Threads
 

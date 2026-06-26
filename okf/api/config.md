@@ -43,8 +43,7 @@ before treating compaction as complete.
 
 # Use With
 
-* [runtime](runtime.md) when constructing `runtime.Host` or calling
-  `runtime.RunProjectedTurn`.
+* [runtime](runtime.md) when constructing `runtime.Host`.
 * [Observation](observation.md) when interpreting context pressure DTOs.
 
 # Key Source Files

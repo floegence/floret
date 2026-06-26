@@ -1450,6 +1450,7 @@ func TestManualCompactHoldsActiveTurnGuardDuringMutation(t *testing.T) {
 	ctx := context.Background()
 	repo := &blockingAppendRepo{MemoryRepo: sessiontree.NewMemoryRepo(), entered: make(chan struct{}), release: make(chan struct{})}
 	h := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done"), scriptharness.Done())), repo, cache.NewMemoryStore())
+	h.options.CompactionGenerator = compaction.ExtractiveSummaryGenerator{}
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
 		t.Fatal(err)
@@ -1459,7 +1460,7 @@ func TestManualCompactHoldsActiveTurnGuardDuringMutation(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := thread.Compact(ctx, "manual summary", "")
+		_, err := thread.Compact(ctx, CompactOptions{RequestID: "manual-1"})
 		done <- err
 	}()
 	<-repo.entered

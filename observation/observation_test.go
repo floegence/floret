@@ -33,8 +33,6 @@ func TestContextStatusFromRequestUsesProjectedPressure(t *testing.T) {
 			Source:               config.PressureSourceFullRequestEstimate,
 			Signal:               config.PressureSignalProjected,
 		},
-		CompactionGeneration: 3,
-		CompactionWindowID:   "window-3",
 	})
 
 	if status.Phase != ContextPhaseProjectedRequest ||
@@ -43,9 +41,7 @@ func TestContextStatusFromRequestUsesProjectedPressure(t *testing.T) {
 		status.Attempt != 2 ||
 		status.Status != ContextStatusHardLimit ||
 		status.UsedRatio != 0.91 ||
-		status.ThresholdRatio != 0.8 ||
-		status.CompactionGeneration != 3 ||
-		status.CompactionWindowID != "window-3" {
+		status.ThresholdRatio != 0.8 {
 		t.Fatalf("context status = %#v", status)
 	}
 }
@@ -111,9 +107,7 @@ func TestContextStatusFromFinalProviderUsageEvent(t *testing.T) {
 		status.ContextPressure.WindowInputTokens != 420 ||
 		status.UsedRatio != 0.42 ||
 		status.ThresholdRatio != 0.8 ||
-		status.Status != ContextStatusStable ||
-		status.CompactionGeneration != 1 ||
-		status.CompactionWindowID != "window-1" {
+		status.Status != ContextStatusStable {
 		t.Fatalf("status = %#v", status)
 	}
 
@@ -132,18 +126,16 @@ func TestContextStatusFromFinalProviderUsageEvent(t *testing.T) {
 func TestContextStatusesFromObservations(t *testing.T) {
 	created := time.Unix(25, 0)
 	statuses := ContextStatusesFromObservations([]RequestObservation{{
-		RequestID:            "turn-1:req:1",
-		RunID:                "turn-1",
-		ThreadID:             "thread-1",
-		TurnID:               "turn-1",
-		Step:                 1,
-		LogicalRequestID:     "logical-1",
-		Attempt:              1,
-		Provider:             "fake",
-		Model:                "fake-model",
-		CompactionGeneration: 2,
-		CompactionWindowID:   "window-2",
-		RequestEstimate:      config.RequestEstimate{EstimatedInputTokens: 320},
+		RequestID:        "turn-1:req:1",
+		RunID:            "turn-1",
+		ThreadID:         "thread-1",
+		TurnID:           "turn-1",
+		Step:             1,
+		LogicalRequestID: "logical-1",
+		Attempt:          1,
+		Provider:         "fake",
+		Model:            "fake-model",
+		RequestEstimate:  config.RequestEstimate{EstimatedInputTokens: 320},
 		ProjectedPressure: config.ContextPressure{
 			ProjectedInputTokens: 320,
 			ContextWindowTokens:  1000,
@@ -152,21 +144,19 @@ func TestContextStatusesFromObservations(t *testing.T) {
 		},
 		ObservedAt: created,
 	}}, []ProviderUsageObservation{{
-		RequestID:            "turn-1:req:1",
-		RunID:                "turn-1",
-		ThreadID:             "thread-1",
-		TurnID:               "turn-1",
-		Step:                 1,
-		LogicalRequestID:     "logical-1",
-		Attempt:              1,
-		Provider:             "fake",
-		Model:                "fake-model",
-		Usage:                ProviderUsage{WindowInputTokens: 420, InputTokens: 400, OutputTokens: 30, Source: "native", Available: true},
-		RequestEstimate:      config.RequestEstimate{EstimatedInputTokens: 320},
-		ContextPressure:      config.ContextPressure{WindowInputTokens: 420, ContextWindowTokens: 1000, ThresholdTokens: 800, Source: config.PressureSourceProviderUsage},
-		CompactionGeneration: 2,
-		CompactionWindowID:   "window-2",
-		ObservedAt:           created.Add(time.Second),
+		RequestID:        "turn-1:req:1",
+		RunID:            "turn-1",
+		ThreadID:         "thread-1",
+		TurnID:           "turn-1",
+		Step:             1,
+		LogicalRequestID: "logical-1",
+		Attempt:          1,
+		Provider:         "fake",
+		Model:            "fake-model",
+		Usage:            ProviderUsage{WindowInputTokens: 420, InputTokens: 400, OutputTokens: 30, Source: "native", Available: true},
+		RequestEstimate:  config.RequestEstimate{EstimatedInputTokens: 320},
+		ContextPressure:  config.ContextPressure{WindowInputTokens: 420, ContextWindowTokens: 1000, ThresholdTokens: 800, Source: config.PressureSourceProviderUsage},
+		ObservedAt:       created.Add(time.Second),
 	}}, nil)
 
 	if len(statuses) != 2 {
@@ -181,9 +171,7 @@ func TestContextStatusesFromObservations(t *testing.T) {
 		statuses[1].Attempt != 1 ||
 		statuses[1].Provider != "fake" ||
 		statuses[1].Model != "fake-model" ||
-		statuses[1].Usage.WindowInputTokens != 420 ||
-		statuses[1].CompactionGeneration != 2 ||
-		statuses[1].CompactionWindowID != "window-2" {
+		statuses[1].Usage.WindowInputTokens != 420 {
 		t.Fatalf("provider usage status = %#v", statuses[1])
 	}
 }
@@ -305,10 +293,6 @@ func TestCompactionEventFromEvents(t *testing.T) {
 	if done.Phase != CompactionPhaseComplete ||
 		done.Status != CompactionStatusCompacted ||
 		done.OperationID != "op-1" ||
-		done.CompactionID != "compact-1" ||
-		done.CompactionGeneration != 3 ||
-		done.CompactionWindowID != "window-3" ||
-		done.CompactedThroughEntryID != "entry-7" ||
 		done.TokensAfterEstimate != 240 {
 		t.Fatalf("complete compaction = %#v", done)
 	}
@@ -347,12 +331,8 @@ func TestCompactionEventFromEvents(t *testing.T) {
 	missingID.Metadata = map[string]any{
 		"phase": CompactionPhaseComplete,
 	}
-	noID, ok := CompactionEventFromEvent(missingID)
-	if !ok {
+	if _, ok := CompactionEventFromEvent(missingID); !ok {
 		t.Fatalf("complete compaction without id should still convert")
-	}
-	if noID.CompactionID != "" {
-		t.Fatalf("CompactionID = %q, want empty without explicit metadata", noID.CompactionID)
 	}
 }
 

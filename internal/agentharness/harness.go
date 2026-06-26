@@ -147,10 +147,34 @@ type MoveOptions struct {
 }
 
 type RunOptions struct {
-	TurnID           string
-	Labels           engine.RunLabels
-	TerminalMetadata map[string]string
-	DeadlineMetadata map[string]string
+	TurnID                   string
+	Labels                   engine.RunLabels
+	TerminalMetadata         map[string]string
+	DeadlineMetadata         map[string]string
+	CompletionPolicy         engine.CompletionPolicy
+	ControlSpec              engine.ControlSpec
+	Reasoning                provider.ReasoningSelection
+	MaxTotalTokens           int64
+	MaxCostUSD               float64
+	MaxToolCalls             int
+	MaxLengthContinuations   int
+	MaxStopHookContinuations int
+	PreviousProviderState    *provider.State
+	ManualCompactions        engine.ManualCompactionSource
+	Sink                     event.Sink
+}
+
+type CompactOptions struct {
+	RequestID              string
+	Source                 string
+	Labels                 engine.RunLabels
+	Reasoning              provider.ReasoningSelection
+	MaxTotalTokens         int64
+	MaxCostUSD             float64
+	MaxToolCalls           int
+	MaxLengthContinuations int
+	PreviousProviderState  *provider.State
+	Sink                   event.Sink
 }
 
 type RetryOptions struct {
@@ -224,6 +248,16 @@ type TurnResult struct {
 	FinishReason       provider.FinishReason
 	RawFinishReason    string
 	FinishInferred     bool
+	ControlSignal      *engine.ControlSignal
+	ProviderState      *provider.State
+}
+
+type CompactResult struct {
+	Status        engine.Status
+	Err           error
+	Diagnostics   map[string]string
+	Metrics       engine.RunMetrics
+	ProviderState *provider.State
 }
 
 type Thread struct {
@@ -623,28 +657,77 @@ func pendingToolCompletionPublicToken(value string) bool {
 	return true
 }
 
-func (t *Thread) Compact(ctx context.Context, summary, firstKeptEntryID string) (sessiontree.Entry, error) {
-	release, err := t.enterMutation(ctx, t.harness.nextID("compact"))
+func (t *Thread) Compact(ctx context.Context, opts CompactOptions) (CompactResult, error) {
+	requestID := strings.TrimSpace(opts.RequestID)
+	if requestID == "" {
+		return CompactResult{}, errors.New("manual compaction request id is required")
+	}
+	runID := t.harness.nextID("compact")
+	release, err := t.enterMutation(ctx, runID)
 	if err != nil {
-		return sessiontree.Entry{}, err
+		return CompactResult{}, err
 	}
 	defer release()
-	result := compaction.Result{
-		CompactionID:         t.harness.nextID("compaction"),
-		FirstKeptEntryID:     firstKeptEntryID,
-		Summary:              summary,
-		SummarySchemaVersion: compaction.SummarySchemaVersion,
-		Trigger:              compaction.TriggerManual,
-		Reason:               compaction.ReasonManual,
-		Phase:                compaction.PhaseInstall,
-		CreatedAt:            t.harness.now(),
-	}
-	entry, err := sessiontree.AppendCompaction(ctx, t.harness.options.Repo, t.id, "", result)
+	snap, err := t.Journal(ctx)
 	if err != nil {
-		return sessiontree.Entry{}, err
+		return CompactResult{Status: engine.Failed, Err: err, Diagnostics: map[string]string{"diagnostic": "snapshot_error"}}, err
 	}
-	t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, EntryID: entry.ID, ParentID: entry.ParentID, Message: "compaction"})
-	return entry, nil
+	history := sessiontree.BuildContext(snap.Path, sessiontree.ContextOptions{})
+	engineOptions := t.harness.engineOptions()
+	engineOptions.RunID = runID
+	engineOptions.ThreadID = t.id
+	engineOptions.TurnID = ""
+	engineOptions.TraceID = runID
+	engineOptions.PromptScopeID = t.id
+	engineOptions.ProviderName = t.harness.options.ProviderName
+	engineOptions.Model = t.harness.options.Model
+	engineOptions.Labels = opts.Labels
+	engineOptions.ContextPolicy = contextpolicy.Normalize(engineOptions.ContextPolicy)
+	applyCompactOptions(&engineOptions, opts)
+	eng, err := engine.New(engine.Config{
+		Provider:     t.harness.options.Provider,
+		Tools:        t.harness.options.Tools,
+		Prompt:       t.harness.options.PromptStore,
+		SystemPrompt: t.harness.options.SystemPrompt,
+		Approver:     t.harness.options.Approver,
+		StopHook:     t.harness.options.StopHook,
+		Compactor:    &durableCompactionManager{thread: t},
+		Artifacts:    t.harness.options.Artifacts,
+		Options:      engineOptions,
+	})
+	if err != nil {
+		return CompactResult{Status: engine.Failed, Err: err, Diagnostics: map[string]string{"diagnostic": "engine_config_error"}}, err
+	}
+	downstream := t.harness.options.Sink
+	if opts.Sink != nil {
+		downstream = opts.Sink
+	}
+	projection := &turnProjection{thread: t, ctx: ctx, downstream: downstream}
+	eng.SetSink(projection)
+	result := eng.CompactContext(ctx, engine.RunInput{
+		RunID:                 runID,
+		ThreadID:              t.id,
+		TraceID:               runID,
+		PromptScopeID:         t.id,
+		Labels:                opts.Labels,
+		PreviousProviderState: provider.CloneState(opts.PreviousProviderState),
+		History:               history,
+	}, engine.ManualCompactionRequest{RequestID: requestID, Source: strings.TrimSpace(opts.Source)})
+	persistCtx, cancelPersist := turnFinalizationContext(ctx)
+	defer cancelPersist()
+	projection.ctx = persistCtx
+	if projection.err != nil {
+		return CompactResult{Status: engine.Failed, Err: projection.err, Metrics: result.Metrics, Diagnostics: map[string]string{"diagnostic": "projection_error"}}, projection.err
+	}
+	if err := projection.Flush(); err != nil {
+		return CompactResult{Status: engine.Failed, Err: err, Metrics: result.Metrics, Diagnostics: map[string]string{"diagnostic": "projection_flush_error"}}, err
+	}
+	return CompactResult{
+		Status:        result.Status,
+		Err:           result.Err,
+		Metrics:       result.Metrics,
+		ProviderState: provider.CloneState(result.ProviderState),
+	}, result.Err
 }
 
 func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retryUser *sessiontree.Entry) (TurnResult, error) {
@@ -709,6 +792,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	engineOptions.Model = t.harness.options.Model
 	engineOptions.Labels = opts.Labels
 	engineOptions.ContextPolicy = contextpolicy.Normalize(engineOptions.ContextPolicy)
+	applyRunOptions(&engineOptions, opts)
 	eng, err := engine.New(engine.Config{
 		Provider:     t.harness.options.Provider,
 		Tools:        t.harness.options.Tools,
@@ -725,7 +809,11 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 		defer cancelPersist()
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, err, "engine_config_error")
 	}
-	projection := &turnProjection{thread: t, ctx: ctx, turnID: turnID, downstream: t.harness.options.Sink}
+	downstream := t.harness.options.Sink
+	if opts.Sink != nil {
+		downstream = opts.Sink
+	}
+	projection := &turnProjection{thread: t, ctx: ctx, turnID: turnID, downstream: downstream}
 	eng.SetSink(projection)
 	result := eng.RunTurn(ctx, engine.RunInput{RunID: runID, ThreadID: t.id, TurnID: turnID, TraceID: runID, PromptScopeID: t.id, Labels: opts.Labels, History: history})
 	persistCtx, cancelPersist := turnFinalizationContext(ctx)
@@ -975,6 +1063,66 @@ func (h *AgentHarness) engineOptions() engine.Options {
 	return engineOptions
 }
 
+func applyRunOptions(dst *engine.Options, opts RunOptions) {
+	if dst == nil {
+		return
+	}
+	if opts.CompletionPolicy != "" {
+		dst.CompletionPolicy = opts.CompletionPolicy
+	}
+	if len(opts.ControlSpec.Definitions) > 0 || opts.ControlSpec.Project != nil {
+		dst.ControlSpec = opts.ControlSpec
+	}
+	if !opts.Reasoning.IsZero() {
+		dst.Reasoning = opts.Reasoning
+	}
+	if opts.MaxTotalTokens > 0 {
+		dst.MaxTotalTokens = opts.MaxTotalTokens
+	}
+	if opts.MaxCostUSD > 0 {
+		dst.MaxCostUSD = opts.MaxCostUSD
+	}
+	if opts.MaxToolCalls > 0 {
+		dst.MaxToolCalls = opts.MaxToolCalls
+	}
+	if opts.MaxLengthContinuations > 0 {
+		dst.MaxLengthContinuations = opts.MaxLengthContinuations
+	}
+	if opts.MaxStopHookContinuations > 0 {
+		dst.MaxStopHookContinuations = opts.MaxStopHookContinuations
+	}
+	if opts.PreviousProviderState != nil {
+		dst.PreviousProviderState = provider.CloneState(opts.PreviousProviderState)
+	}
+	if opts.ManualCompactions != nil {
+		dst.ManualCompactions = opts.ManualCompactions
+	}
+}
+
+func applyCompactOptions(dst *engine.Options, opts CompactOptions) {
+	if dst == nil {
+		return
+	}
+	if !opts.Reasoning.IsZero() {
+		dst.Reasoning = opts.Reasoning
+	}
+	if opts.MaxTotalTokens > 0 {
+		dst.MaxTotalTokens = opts.MaxTotalTokens
+	}
+	if opts.MaxCostUSD > 0 {
+		dst.MaxCostUSD = opts.MaxCostUSD
+	}
+	if opts.MaxToolCalls > 0 {
+		dst.MaxToolCalls = opts.MaxToolCalls
+	}
+	if opts.MaxLengthContinuations > 0 {
+		dst.MaxLengthContinuations = opts.MaxLengthContinuations
+	}
+	if opts.PreviousProviderState != nil {
+		dst.PreviousProviderState = provider.CloneState(opts.PreviousProviderState)
+	}
+}
+
 func turnResultFromEngine(turnID string, result engine.Result, diagnostics map[string]string) TurnResult {
 	return TurnResult{
 		ID:                 turnID,
@@ -988,6 +1136,52 @@ func turnResultFromEngine(turnID string, result engine.Result, diagnostics map[s
 		FinishReason:       result.FinishReason,
 		RawFinishReason:    result.RawFinishReason,
 		FinishInferred:     result.FinishInferred,
+		ControlSignal:      cloneEngineControlSignal(result.ControlSignal),
+		ProviderState:      provider.CloneState(result.ProviderState),
+	}
+}
+
+func cloneEngineControlSignal(in *engine.ControlSignal) *engine.ControlSignal {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.Payload = cloneAnyMap(in.Payload)
+	out.Labels = cloneStringMap(in.Labels)
+	if in.Activity != nil {
+		activity := *in.Activity
+		out.Activity = &activity
+	}
+	return &out
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = cloneAny(value)
+	}
+	return out
+}
+
+func cloneAny(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		return cloneAnyMap(v)
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = cloneAny(item)
+		}
+		return out
+	case []string:
+		return append([]string(nil), v...)
+	case map[string]string:
+		return cloneStringMap(v)
+	default:
+		return value
 	}
 }
 

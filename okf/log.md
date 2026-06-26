@@ -1,6 +1,8 @@
 # Floret OKF Update Log
 
 ## 2026-06-26
+* **Update**: Documented the hosted context lifecycle boundary and removed the
+  old projected transcript integration path from public runtime guidance.
 * **Update**: Documented terminal control-signal output normalization from
   signal payloads or same-step assistant text.
 
