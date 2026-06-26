@@ -35,9 +35,20 @@
 Floret is a reusable Go runtime for applications that need interactive agent
 conversations without rebuilding the same provider loop, durable thread state,
 tool execution, context management, compaction, and event projection in every
-host. It is not a graph workflow framework and not a multi-agent orchestration
-framework. The intended integration path is a small host facade: configure a
-host, register tools, start a thread, run turns, and render snapshots or
+host.
+
+![Floret AI agent app runtime](okf/assets/readme/floret-agent-app-whiteboard.png)
+
+Your product remains the place where users, permissions, approval UX,
+credentials, billing, and domain data live. Floret sits behind that product UI
+as the runtime layer: it starts threads, runs turns, loops through model and tool
+calls, records runtime facts, and emits host-safe events for rendering. The host
+connects Floret to model transport, product tools, storage, and observability
+through the public `config`, `runtime`, `tools`, and `observation` packages.
+
+Floret is not a graph workflow framework and not a multi-agent orchestration
+framework. The intended integration path is compact: configure an agent,
+register domain tools, start a thread, run turns, and render snapshots or
 observations.
 
 ## ✨ Why Floret
