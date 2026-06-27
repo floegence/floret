@@ -55,16 +55,17 @@ type Host interface {
 }
 
 type HostOptions struct {
-	Config             config.Config
-	ModelGateway       ModelGateway
-	Store              *Store
-	Tools              *tools.Registry
-	Approver           tools.Approver
-	Sink               EventSink
-	IDGenerator        func(string) string
-	LoopLimits         LoopLimits
-	SubAgentRunTimeout time.Duration
-	Capabilities       CapabilityOptions
+	Config              config.Config
+	ModelGateway        ModelGateway
+	Store               *Store
+	Tools               *tools.Registry
+	Approver            tools.Approver
+	Sink                EventSink
+	ToolSurfaceProvider ToolSurfaceProvider
+	IDGenerator         func(string) string
+	LoopLimits          LoopLimits
+	SubAgentRunTimeout  time.Duration
+	Capabilities        CapabilityOptions
 }
 
 type LoopLimits struct {
@@ -95,6 +96,7 @@ type RunTurnRequest struct {
 	Limits                TurnLimits
 	Reasoning             ReasoningSelection
 	ManualCompactions     ManualCompactionSource
+	ToolSurfaceProvider   ToolSurfaceProvider
 }
 
 type RetryTurnRequest struct {
@@ -582,14 +584,15 @@ func NewHost(opts HostOptions) (Host, error) {
 		return nil, err
 	}
 	harness, err := newHarnessWithProvider(cfg, provider, harnessOptions{
-		Store:              store,
-		Tools:              opts.Tools,
-		Approver:           opts.Approver,
-		Sink:               newRuntimeEventSink(opts.Sink),
-		NewID:              opts.IDGenerator,
-		LoopLimits:         opts.LoopLimits,
-		SubAgentRunTimeout: opts.SubAgentRunTimeout,
-		Capabilities:       opts.Capabilities,
+		Store:               store,
+		Tools:               opts.Tools,
+		Approver:            opts.Approver,
+		Sink:                newRuntimeEventSink(opts.Sink),
+		ToolSurfaceProvider: runtimeToolSurfaceProvider(opts.ToolSurfaceProvider),
+		NewID:               opts.IDGenerator,
+		LoopLimits:          opts.LoopLimits,
+		SubAgentRunTimeout:  opts.SubAgentRunTimeout,
+		Capabilities:        opts.Capabilities,
 	})
 	if err != nil {
 		return nil, err
@@ -646,6 +649,7 @@ func (h *host) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, err
 		MaxStopHookContinuations: req.Limits.MaxStopHookContinuations,
 		PreviousProviderState:    providerState(req.PreviousProviderState),
 		ManualCompactions:        projectedManualCompactionSource(req.ManualCompactions),
+		ToolSurfaceProvider:      runtimeToolSurfaceProvider(req.ToolSurfaceProvider),
 		Sink:                     activityRecorder,
 	})
 	return turnResult(result, activityRecorder.Snapshot(), time.Now().UnixMilli()), runErr
@@ -1084,15 +1088,16 @@ func threadIDStrings(ids []ThreadID) []string {
 }
 
 type harnessOptions struct {
-	Store              *Store
-	Tools              *tools.Registry
-	Approver           tools.Approver
-	Sink               event.Sink
-	Title              agentharness.TitleGenerator
-	NewID              func(string) string
-	LoopLimits         LoopLimits
-	SubAgentRunTimeout time.Duration
-	Capabilities       CapabilityOptions
+	Store               *Store
+	Tools               *tools.Registry
+	Approver            tools.Approver
+	Sink                event.Sink
+	Title               agentharness.TitleGenerator
+	NewID               func(string) string
+	LoopLimits          LoopLimits
+	SubAgentRunTimeout  time.Duration
+	Capabilities        CapabilityOptions
+	ToolSurfaceProvider engine.ToolSurfaceProvider
 }
 
 func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harnessOptions) (*agentharness.AgentHarness, error) {
@@ -1139,23 +1144,24 @@ func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harness
 	}
 	model, _ := catalog.FindModel(cfg.Provider, cfg.Model)
 	return agentharness.New(agentharness.Options{
-		Provider:           p,
-		ProviderName:       cfg.Provider,
-		Model:              cfg.Model,
-		SystemPrompt:       effectivePrompt,
-		Tools:              registry,
-		PromptStore:        store.prompt,
-		Repo:               store.repo,
-		Sink:               opts.Sink,
-		Approver:           opts.Approver,
-		TitleGenerator:     opts.Title,
-		CompactionPrompt:   compaction.PromptOptions{},
-		Artifacts:          store.artifacts,
-		Reasoning:          model.Reasoning,
-		TurnPolicy:         turnPolicy,
-		LoopLimits:         loopLimits,
-		SubAgentRunTimeout: opts.SubAgentRunTimeout,
-		NewID:              opts.NewID,
+		Provider:            p,
+		ProviderName:        cfg.Provider,
+		Model:               cfg.Model,
+		SystemPrompt:        effectivePrompt,
+		Tools:               registry,
+		PromptStore:         store.prompt,
+		Repo:                store.repo,
+		Sink:                opts.Sink,
+		Approver:            opts.Approver,
+		ToolSurfaceProvider: opts.ToolSurfaceProvider,
+		TitleGenerator:      opts.Title,
+		CompactionPrompt:    compaction.PromptOptions{},
+		Artifacts:           store.artifacts,
+		Reasoning:           model.Reasoning,
+		TurnPolicy:          turnPolicy,
+		LoopLimits:          loopLimits,
+		SubAgentRunTimeout:  opts.SubAgentRunTimeout,
+		NewID:               opts.NewID,
 	}), nil
 }
 

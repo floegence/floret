@@ -44,6 +44,36 @@ type ManualCompactionSource interface {
 	PollManualCompaction(context.Context, ManualCompactionPollRequest) (ManualCompactionRequest, bool, error)
 }
 
+// ToolSurfaceRequest identifies the run phase asking for the current host tool
+// surface. Hosts may use it to refresh tool visibility, hosted tools, prompt
+// instructions, and host context between provider requests and tool dispatch.
+type ToolSurfaceRequest struct {
+	RunID         RunID
+	ThreadID      ThreadID
+	TurnID        TurnID
+	TraceID       TraceID
+	PromptScopeID PromptScopeID
+	Step          int
+	Phase         string
+	Labels        RunLabels
+	HostContext   map[string]string
+}
+
+// ToolSurface is the host-supplied tool view for the current run phase. It is
+// product-neutral: hosts own policy names and may project them into tools,
+// prompt text, or host context without Floret interpreting them.
+type ToolSurface struct {
+	Tools                 *tools.Registry
+	ToolDefinitions       []tools.ToolDefinition
+	HostedToolDefinitions []HostedToolDefinition
+	SystemPrompt          string
+	HostContext           map[string]string
+	Epoch                 string
+	Reason                string
+}
+
+type ToolSurfaceProvider func(context.Context, ToolSurfaceRequest) (ToolSurface, error)
+
 // ModelGateway lets a host supply model access while Floret still owns the
 // agent loop, tool dispatch, context pressure, and runtime ledgers.
 type ModelGateway interface {
@@ -62,6 +92,7 @@ type ModelRequest struct {
 	Model           string
 	Messages        []ModelMessage
 	Tools           []tools.ToolDefinition
+	HostedTools     []HostedToolDefinition
 	MaxOutputTokens int64
 	Reasoning       ReasoningSelection
 	PreviousState   *ModelState
@@ -131,6 +162,14 @@ type ModelEvent struct {
 type SourceRef struct {
 	Title string `json:"title,omitempty"`
 	URL   string `json:"url,omitempty"`
+}
+
+type HostedToolDefinition struct {
+	Name        string         `json:"name"`
+	Type        string         `json:"type"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
+	Options     map[string]any `json:"options,omitempty"`
 }
 
 // RunMetrics summarizes the observable work completed by a run.
@@ -280,6 +319,7 @@ func (p modelGatewayProvider) Stream(ctx context.Context, req provider.Request) 
 		Model:           req.Model,
 		Messages:        runtimeModelMessages(req.Messages),
 		Tools:           runtimeToolDefinitions(req.Tools),
+		HostedTools:     runtimeHostedToolDefinitions(req.HostedTools),
 		MaxOutputTokens: req.MaxOutputTokens,
 		Reasoning:       configbridge.PublicReasoningSelection(req.Reasoning),
 		PreviousState:   modelState(req.PreviousState),
@@ -328,6 +368,20 @@ func runtimeToolDefinitions(defs []provider.ToolDefinition) []tools.ToolDefiniti
 			OutputSchema: cloneAnyMap(def.OutputSchema),
 			Strict:       def.Strict,
 			Annotations:  cloneAnyMap(def.Annotations),
+		})
+	}
+	return out
+}
+
+func runtimeHostedToolDefinitions(defs []provider.HostedToolDefinition) []HostedToolDefinition {
+	out := make([]HostedToolDefinition, 0, len(defs))
+	for _, def := range defs {
+		out = append(out, HostedToolDefinition{
+			Name:        def.Name,
+			Type:        def.Type,
+			Description: def.Description,
+			Parameters:  cloneAnyMap(def.Parameters),
+			Options:     cloneAnyMap(def.Options),
 		})
 	}
 	return out
@@ -482,6 +536,88 @@ func providerRequestLabels(in provider.RequestLabels) RunLabels {
 		Correlation: cloneStringMap(in.Correlation),
 		Host:        cloneStringMap(in.Host),
 	}
+}
+
+func runtimeToolSurfaceProvider(provider ToolSurfaceProvider) engine.ToolSurfaceProvider {
+	if provider == nil {
+		return nil
+	}
+	return func(ctx context.Context, req engine.ToolSurfaceRequest) (engine.ToolSurface, error) {
+		surface, err := provider(ctx, ToolSurfaceRequest{
+			RunID:         RunID(req.RunID),
+			ThreadID:      ThreadID(req.ThreadID),
+			TurnID:        TurnID(req.TurnID),
+			TraceID:       TraceID(req.TraceID),
+			PromptScopeID: PromptScopeID(req.PromptScopeID),
+			Step:          req.Step,
+			Phase:         strings.TrimSpace(req.Phase),
+			Labels:        publicRunLabels(req.Labels),
+			HostContext:   cloneStringMap(req.HostContext),
+		})
+		if err != nil {
+			return engine.ToolSurface{}, err
+		}
+		return engine.ToolSurface{
+			Tools:                 surface.Tools,
+			ToolDefinitions:       providerToolDefinitionsFromRuntime(surface.ToolDefinitions),
+			HostedToolDefinitions: providerHostedToolDefinitions(surface.HostedToolDefinitions),
+			SystemPrompt:          surface.SystemPrompt,
+			HostContext:           cloneStringMap(surface.HostContext),
+			Epoch:                 strings.TrimSpace(surface.Epoch),
+			Reason:                strings.TrimSpace(surface.Reason),
+		}, nil
+	}
+}
+
+func publicRunLabels(in engine.RunLabels) RunLabels {
+	return RunLabels{
+		Correlation: cloneStringMap(in.Correlation),
+		Host:        cloneStringMap(in.Host),
+	}
+}
+
+func providerToolDefinitionsFromRuntime(defs []tools.ToolDefinition) []provider.ToolDefinition {
+	if defs == nil {
+		return nil
+	}
+	out := make([]provider.ToolDefinition, 0, len(defs))
+	for _, def := range defs {
+		name := strings.TrimSpace(def.Name)
+		if name == "" {
+			continue
+		}
+		out = append(out, provider.ToolDefinition{
+			Name:         name,
+			Title:        strings.TrimSpace(def.Title),
+			Description:  strings.TrimSpace(def.Description),
+			InputSchema:  cloneAnyMap(def.InputSchema),
+			OutputSchema: cloneAnyMap(def.OutputSchema),
+			Strict:       def.Strict,
+			Annotations:  cloneAnyMap(def.Annotations),
+		})
+	}
+	return out
+}
+
+func providerHostedToolDefinitions(defs []HostedToolDefinition) []provider.HostedToolDefinition {
+	if defs == nil {
+		return nil
+	}
+	out := make([]provider.HostedToolDefinition, 0, len(defs))
+	for _, def := range defs {
+		typ := strings.TrimSpace(def.Type)
+		if typ == "" {
+			continue
+		}
+		out = append(out, provider.HostedToolDefinition{
+			Name:        strings.TrimSpace(def.Name),
+			Type:        typ,
+			Description: strings.TrimSpace(def.Description),
+			Parameters:  cloneAnyMap(def.Parameters),
+			Options:     cloneAnyMap(def.Options),
+		})
+	}
+	return out
 }
 
 func engineTurnCompletionPolicy(policy TurnCompletionPolicy) (engine.CompletionPolicy, error) {

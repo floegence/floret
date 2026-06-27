@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-06-26
+* **Update**: Documented `runtime.ToolSurfaceProvider` as the product-neutral
+  dynamic tool surface hook for refreshing tools, hosted tools, prompts, and
+  host context at provider-loop safe points.
 * **Update**: Documented the hosted context lifecycle boundary and removed the
   old projected transcript integration path from public runtime guidance.
 * **Update**: Documented terminal control-signal output normalization from

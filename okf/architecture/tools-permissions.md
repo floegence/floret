@@ -33,6 +33,21 @@ declarations.
 Hosted provider tools are provider-native capabilities. They are not dispatched
 by the local tool runtime and must not be treated as ordinary local handlers.
 
+# Dynamic Tool Surfaces
+
+`runtime.ToolSurfaceProvider` is the public host hook for changing the active
+tool surface during a run. The hook returns product-neutral data: a registry or
+explicit local tool definitions, hosted tool definitions, system prompt text,
+host context, and audit metadata. Floret refreshes that surface before provider
+requests and again before local tool dispatch, so provider-visible capabilities
+and executable local capabilities converge at safe points.
+
+Product permission modes stay in the host. Floret only sees the projected
+registry, tool definitions, hosted tools, and prompt/context text. A stale model
+tool call cannot bypass a newer host policy because dispatch uses the refreshed
+registry and the same resource, effect, permission, and approver lifecycle as
+ordinary tool calls.
+
 # Pending Tool Work
 
 A tool may return a pending result when the host starts work whose lifecycle

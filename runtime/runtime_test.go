@@ -121,6 +121,115 @@ func TestHostRunsThreadThroughModelGateway(t *testing.T) {
 	}
 }
 
+func TestHostToolSurfaceProviderRefreshesGatewayRequests(t *testing.T) {
+	var requests []ModelRequest
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		requests = append(requests, req)
+		events := make(chan ModelEvent, 3)
+		switch req.Step {
+		case 1:
+			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "read-1", Name: "read", Args: `{"value":"README.md"}`}}}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+		default:
+			events <- ModelEvent{Type: ModelEventDelta, Text: "done"}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+		}
+		close(events)
+		return events, nil
+	})
+	readOnly := tools.NewRegistry()
+	if err := readOnly.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{Name: "read", InputSchema: runtimeEchoSchema(), Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			return tools.Result{Text: "read"}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	full := tools.NewRegistry()
+	if err := full.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{Name: "read", InputSchema: runtimeEchoSchema(), Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			return tools.Result{Text: "read"}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	if err := full.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{Name: "write", InputSchema: runtimeEchoSchema(), Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			return tools.Result{Text: "write"}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "base",
+		},
+		ModelGateway: gateway,
+		ToolSurfaceProvider: func(_ context.Context, req ToolSurfaceRequest) (ToolSurface, error) {
+			if req.Step >= 2 && req.Phase == "provider_request" {
+				return ToolSurface{
+					Tools:        full,
+					SystemPrompt: "full surface",
+					Epoch:        "full",
+					HostedToolDefinitions: []HostedToolDefinition{{
+						Name:    "hosted_search",
+						Type:    "web_search",
+						Options: map[string]any{"limit": float64(5)},
+					}},
+				}, nil
+			}
+			return ToolSurface{Tools: readOnly, SystemPrompt: "read surface", Epoch: "read"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewHost: %v", err)
+	}
+	if _, err := host.StartThread(context.Background(), StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatalf("StartThread: %v", err)
+	}
+	result, err := host.RunTurn(context.Background(), RunTurnRequest{ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if result.Status != TurnStatusCompleted || result.Output != "done" {
+		t.Fatalf("result = %#v", result)
+	}
+	first, ok := findRuntimeModelRequest(requests, "thread", "turn-1", 1)
+	if !ok {
+		t.Fatalf("missing first turn request: %#v", requests)
+	}
+	second, ok := findRuntimeModelRequest(requests, "thread", "turn-1", 2)
+	if !ok {
+		t.Fatalf("missing second turn request: %#v", requests)
+	}
+	if names := runtimeToolNames(first.Tools); !slices.Contains(names, "read") || slices.Contains(names, "write") {
+		t.Fatalf("first request tools = %v, want read without write", names)
+	}
+	if names := runtimeToolNames(second.Tools); !slices.Contains(names, "read") || !slices.Contains(names, "write") {
+		t.Fatalf("second request tools = %v, want read/write", names)
+	}
+	if first.Messages[0].Content != "read surface" || second.Messages[0].Content != "full surface" {
+		t.Fatalf("dynamic prompts were not forwarded: %#v", requests)
+	}
+	if len(first.HostedTools) != 0 {
+		t.Fatalf("first request hosted tools = %#v, want none", first.HostedTools)
+	}
+	if len(second.HostedTools) != 1 || second.HostedTools[0].Name != "hosted_search" || second.HostedTools[0].Type != "web_search" || second.HostedTools[0].Options["limit"] != float64(5) {
+		t.Fatalf("second request hosted tools = %#v", second.HostedTools)
+	}
+}
+
 func TestHostSubAgentsInheritModelGatewayWithChildPromptScope(t *testing.T) {
 	ctx := context.Background()
 	var mu sync.Mutex
@@ -864,6 +973,21 @@ func TestHostDeleteThreadUsesStoreBoundary(t *testing.T) {
 
 type runtimeEchoArgs struct {
 	Text string `json:"text"`
+}
+
+func runtimeEchoSchema() map[string]any {
+	return tools.StrictObject(map[string]any{"text": tools.String("text")}, []string{"text"})
+}
+
+func runtimeToolNames(defs []tools.ToolDefinition) []string {
+	out := make([]string, 0, len(defs))
+	for _, def := range defs {
+		if name := strings.TrimSpace(def.Name); name != "" {
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 type fixedTitleGenerator struct{}

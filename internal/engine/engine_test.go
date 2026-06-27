@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -704,6 +705,123 @@ func TestPromptCacheFreezesToolsetWhenRegistryChanges(t *testing.T) {
 	}
 	if p.Requests[0].RawPlan.ToolsetID != p.Requests[1].RawPlan.ToolsetID || p.Requests[1].RawPlan.ToolsetEpoch != 1 {
 		t.Fatalf("toolset snapshot was not reused: first=%#v second=%#v", p.Requests[0].RawPlan, p.Requests[1].RawPlan)
+	}
+}
+
+func TestDynamicToolSurfaceRefreshesProviderRequests(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("read-1", "read", `{"value":"README.md"}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	readOnly := tools.NewRegistry()
+	mustRegister(t, readOnly, stringTool("read", "Read", true, tools.PermissionSpec{Mode: tools.PermissionAllow}, func(context.Context, string) (string, error) {
+		return "content", nil
+	}))
+	writeEnabled := tools.NewRegistry()
+	mustRegister(t, writeEnabled, stringTool("read", "Read", true, tools.PermissionSpec{Mode: tools.PermissionAllow}, func(context.Context, string) (string, error) {
+		return "content", nil
+	}))
+	mustRegister(t, writeEnabled, stringTool("write", "Write", false, tools.PermissionSpec{Mode: tools.PermissionAllow}, func(context.Context, string) (string, error) {
+		return "written", nil
+	}))
+	e := newTestEngine(p, rec)
+	e.Options.HostedToolDefinitions = []provider.HostedToolDefinition{{
+		Name: "default_search",
+		Type: "web_search",
+	}}
+	e.Options.ToolSurfaceProvider = func(_ context.Context, req engine.ToolSurfaceRequest) (engine.ToolSurface, error) {
+		if req.Step >= 2 && req.Phase == "provider_request" {
+			return engine.ToolSurface{
+				Tools: writeEnabled,
+				HostedToolDefinitions: []provider.HostedToolDefinition{{
+					Name: "hosted_search",
+					Type: "web_search",
+				}},
+				SystemPrompt: "write tools are available",
+				Epoch:        "write",
+				Reason:       "test_switch",
+			}, nil
+		}
+		return engine.ToolSurface{
+			Tools:                 readOnly,
+			HostedToolDefinitions: []provider.HostedToolDefinition{},
+			SystemPrompt:          "read only tools are available",
+			Epoch:                 "read",
+			Reason:                "test_switch",
+		}, nil
+	}
+
+	got := e.Run(context.Background(), "inspect")
+
+	if got.Status != engine.Completed || got.Output != "done" {
+		t.Fatalf("result = %#v", got)
+	}
+	if len(p.Requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(p.Requests))
+	}
+	if names := providerToolNames(p.Requests[0].Tools); !slices.Contains(names, "read") || slices.Contains(names, "write") {
+		t.Fatalf("first request tools = %v, want read without write", names)
+	}
+	if names := providerToolNames(p.Requests[1].Tools); !slices.Contains(names, "read") || !slices.Contains(names, "write") {
+		t.Fatalf("second request tools = %v, want read/write", names)
+	}
+	if len(p.Requests[0].HostedTools) != 0 {
+		t.Fatalf("first request hosted tools = %#v, want none", p.Requests[0].HostedTools)
+	}
+	if len(p.Requests[1].HostedTools) != 1 || p.Requests[1].HostedTools[0].Name != "hosted_search" {
+		t.Fatalf("second request hosted tools = %#v", p.Requests[1].HostedTools)
+	}
+	if first := p.Requests[0].Messages[0].Content; first != "read only tools are available" {
+		t.Fatalf("first system prompt = %q", first)
+	}
+	if second := p.Requests[1].Messages[0].Content; second != "write tools are available" {
+		t.Fatalf("second system prompt = %q", second)
+	}
+	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
+		meta, _ := ev.Metadata.(map[string]any)
+		return ev.Type == event.ProviderRequest && ev.Step == 2 && meta["tool_surface_epoch"] == "write"
+	}) {
+		t.Fatalf("provider request should include dynamic surface metadata: %#v", rec.Events)
+	}
+}
+
+func TestDynamicToolSurfaceRefreshesBeforeDispatch(t *testing.T) {
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("write-1", "write", `{"value":"danger"}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	writeEnabled := tools.NewRegistry()
+	writeRan := false
+	mustRegister(t, writeEnabled, stringTool("write", "Write", false, tools.PermissionSpec{Mode: tools.PermissionAllow}, func(context.Context, string) (string, error) {
+		writeRan = true
+		return "written", nil
+	}))
+	readOnly := tools.NewRegistry()
+	e := newTestEngine(p, &event.Recorder{})
+	e.Options.ToolSurfaceProvider = func(_ context.Context, req engine.ToolSurfaceRequest) (engine.ToolSurface, error) {
+		if req.Phase == "tool_dispatch" {
+			return engine.ToolSurface{Tools: readOnly, Epoch: "read", Reason: "downgrade"}, nil
+		}
+		return engine.ToolSurface{Tools: writeEnabled, Epoch: "write", Reason: "initial"}, nil
+	}
+
+	got := e.Run(context.Background(), "inspect")
+
+	if got.Status != engine.Completed || got.Output != "done" {
+		t.Fatalf("result = %#v", got)
+	}
+	if writeRan {
+		t.Fatalf("stale write tool should not run after dispatch-time surface refresh")
+	}
+	messages, err := e.Store.Transcript("run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(messages, func(msg session.Message) bool {
+		return msg.Role == session.Tool && msg.ToolName == "write" && strings.Contains(msg.Content, `unknown tool "write"`)
+	}) {
+		t.Fatalf("stale tool call should be rejected in transcript: %#v", messages)
 	}
 }
 
@@ -3660,6 +3778,17 @@ func mustRegister(t *testing.T, reg *tools.Registry, tool tools.Tool) {
 	if err := reg.Register(tool); err != nil {
 		t.Fatalf("register %s: %v", tool.Definition.Name, err)
 	}
+}
+
+func providerToolNames(defs []provider.ToolDefinition) []string {
+	out := make([]string, 0, len(defs))
+	for _, def := range defs {
+		if name := strings.TrimSpace(def.Name); name != "" {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 type stringArgs struct {

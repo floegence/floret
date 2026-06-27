@@ -35,6 +35,9 @@ continuation state, and lifecycle observations.
 * `ModelGateway` lets a host supply model transport through
   `HostOptions.ModelGateway` while Floret owns loop control, tool dispatch,
   context lifecycle, and ledgers.
+* `ToolSurfaceProvider` lets a host refresh the provider-visible local tools,
+  hosted tools, system prompt, and host context at provider-loop safe points
+  without adding product-specific policy concepts to Floret.
 * `ReasoningSelection` carries provider-neutral reasoning intent for a run.
   `RunTurnRequest` carries it as turn intent, and `ModelRequest` forwards the
   effective selection to host-owned model gateways.
@@ -103,6 +106,22 @@ the public selection and provider adapters translate only values supported by th
 selected model capability. Hosts that own model transport through `ModelGateway`
 receive the effective selection and must render provider-specific payloads
 outside Floret.
+
+Dynamic tool surfaces are host-owned policy projection points. A host may set
+`HostOptions.ToolSurfaceProvider` for a durable host or
+`RunTurnRequest.ToolSurfaceProvider` for one turn. Floret invokes it before
+provider requests, before ordinary local tool dispatch, and before compact-only
+provider request rebuilds. The returned `ToolSurface` can supply a current
+`tools.Registry`, explicit local tool definitions, provider-hosted tools, system
+prompt text, host context, and optional epoch/reason metadata.
+
+Floret does not interpret product modes or authorization labels inside that
+surface. If a provider returns a local tool call that was visible in an older
+request but is no longer in the refreshed registry, the normal Floret tool
+permission and dispatch lifecycle rejects or gates it at dispatch time. Provider
+requests and observations include the current toolset, hosted toolset, prompt
+hash, epoch, and reason metadata so hosts can audit surface changes without
+reading internal provider-cache records.
 
 Manual compaction is a control surface, not a transcript message. Hosts pass
 active-run requests through `ManualCompactionSource`; Floret decides the safe

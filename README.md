@@ -65,6 +65,9 @@ stay focused on product behavior.
   threads through `runtime.Host`.
 - **Tools**: register strict schemas with `tools.Registry`, declare effects, ask
   for approval, and dispatch domain handlers.
+- **Dynamic tool surfaces**: refresh exposed tools, hosted tools, host context,
+  and prompt instructions at provider-loop safe points without encoding product
+  policy in Floret.
 - **Storage**: choose `runtime.NewMemoryStore` for tests or
   `runtime.OpenSQLiteStore` for Floret-managed durable runtime storage.
 - **Observation**: stream sanitized `runtime.EventSink` records and use
@@ -81,6 +84,7 @@ stay focused on product behavior.
 | Manage child threads under a hosted conversation | `runtime.Host` subagent methods |
 | Run turns and request context compaction | `runtime.Host` and `runtime.CompactThreadRequest` |
 | Supply product-owned model transport | `runtime.ModelGateway` |
+| Refresh tool exposure during a run | `runtime.ToolSurfaceProvider` |
 | Keep Floret runtime data in memory | `runtime.NewMemoryStore` |
 | Keep Floret runtime data in SQLite | `runtime.OpenSQLiteStore` |
 | Expose product-specific actions | `tools.Registry` and typed tool handlers |
@@ -300,6 +304,25 @@ Important tool rules:
   by `tools.Registry`.
 - Large outputs should be represented by artifact references when the model or UI
   does not need full inline content.
+
+### Dynamic tool surfaces
+
+Hosts that need run-time capability changes can set
+`runtime.HostOptions.ToolSurfaceProvider` or
+`runtime.RunTurnRequest.ToolSurfaceProvider`. Floret calls the provider before
+model requests, before local tool dispatch, and before compact-only provider
+request rebuilds. The returned `runtime.ToolSurface` may replace the active
+`tools.Registry`, provider-visible tool definitions, hosted tool definitions,
+system prompt, and host context for that safe point.
+
+Floret treats this as a product-neutral engine surface. It does not interpret
+policy names such as read-only, approval-required, or full-access modes. The
+host owns those policies and projects the current state into a tool registry,
+hosted tools, prompt text, and host context. If a model produced a tool call
+against an older surface, Floret refreshes the surface before local dispatch, so
+stale calls are checked against the latest registry and approval lifecycle.
+`ToolSurface.Epoch` and `ToolSurface.Reason` are emitted as observation
+metadata together with stable prompt and toolset hashes for audit and debugging.
 
 ### Host-owned pending tool results
 

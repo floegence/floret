@@ -86,6 +86,7 @@ type Options struct {
 	SinkPolicy          event.SinkPolicy
 	HarnessSink         HarnessSink
 	Approver            tools.Approver
+	ToolSurfaceProvider engine.ToolSurfaceProvider
 	StopHook            engine.StopHook
 	CompactionGenerator compaction.SummaryGenerator
 	CompactionPrompt    compaction.PromptOptions
@@ -161,6 +162,7 @@ type RunOptions struct {
 	MaxStopHookContinuations int
 	PreviousProviderState    *provider.State
 	ManualCompactions        engine.ManualCompactionSource
+	ToolSurfaceProvider      engine.ToolSurfaceProvider
 	Sink                     event.Sink
 }
 
@@ -1060,6 +1062,9 @@ func (h *AgentHarness) engineOptions() engine.Options {
 	if limits.MaxStopHookContinuations > 0 {
 		engineOptions.MaxStopHookContinuations = limits.MaxStopHookContinuations
 	}
+	if h.options.ToolSurfaceProvider != nil {
+		engineOptions.ToolSurfaceProvider = h.options.ToolSurfaceProvider
+	}
 	return engineOptions
 }
 
@@ -1096,6 +1101,9 @@ func applyRunOptions(dst *engine.Options, opts RunOptions) {
 	}
 	if opts.ManualCompactions != nil {
 		dst.ManualCompactions = opts.ManualCompactions
+	}
+	if opts.ToolSurfaceProvider != nil {
+		dst.ToolSurfaceProvider = opts.ToolSurfaceProvider
 	}
 }
 

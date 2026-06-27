@@ -99,6 +99,30 @@ type StopHookResult struct {
 	Reason   string
 }
 
+type ToolSurfaceRequest struct {
+	RunID         string
+	ThreadID      string
+	TurnID        string
+	TraceID       string
+	PromptScopeID string
+	Step          int
+	Phase         string
+	Labels        RunLabels
+	HostContext   map[string]string
+}
+
+type ToolSurface struct {
+	Tools                 *tools.Registry
+	ToolDefinitions       []provider.ToolDefinition
+	HostedToolDefinitions []provider.HostedToolDefinition
+	SystemPrompt          string
+	HostContext           map[string]string
+	Epoch                 string
+	Reason                string
+}
+
+type ToolSurfaceProvider func(context.Context, ToolSurfaceRequest) (ToolSurface, error)
+
 type ExecutionIdentity struct {
 	RunID         string
 	ThreadID      string
@@ -134,8 +158,20 @@ type Options struct {
 	MaxLengthContinuations   int
 	MaxStopHookContinuations int
 	ManualCompactions        ManualCompactionSource
+	ToolSurfaceProvider      ToolSurfaceProvider
 
 	toolDefinitions []provider.ToolDefinition
+	toolSurface     resolvedToolSurface
+}
+
+type resolvedToolSurface struct {
+	tools                 *tools.Registry
+	toolDefinitions       []provider.ToolDefinition
+	hostedToolDefinitions []provider.HostedToolDefinition
+	systemPrompt          string
+	hostContext           map[string]string
+	epoch                 string
+	reason                string
 }
 
 type RunLabels struct {
@@ -569,14 +605,12 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		ctx, cancel = context.WithTimeout(ctx, opts.WallTime)
 		defer cancel()
 	}
-	if len(opts.toolDefinitions) == 0 && e.tools != nil {
-		opts.toolDefinitions = providerToolDefinitionsFromTools(e.tools.Definitions())
-	}
-	if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, false); err != nil {
+	var err error
+	opts, err = e.resolveToolSurface(ctx, opts, 0, "init")
+	if err != nil {
 		return Result{Status: Failed, Err: err}
 	}
-	opts.toolDefinitions = appendControlToolDefinitions(opts.toolDefinitions, opts.ControlSpec)
-	if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, true); err != nil {
+	if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, false); err != nil {
 		return Result{Status: Failed, Err: err}
 	}
 	latestProviderState := provider.CloneState(opts.PreviousProviderState)
@@ -614,6 +648,13 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		}
 		metrics.Steps = step
 		e.emit(opts, event.Event{Type: event.StepStart, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model})
+		opts, err = e.resolveToolSurface(ctx, opts, step, "provider_request")
+		if err != nil {
+			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
+		}
+		if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, false); err != nil {
+			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
+		}
 		req, preparedHistory, compacted, err := e.prepareOrdinaryRequest(ctx, opts, step, activeHistory, pressureTracker, &metrics, &compactionFailures)
 		if err != nil {
 			if isContextCancellation(err) {
@@ -833,6 +874,20 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		if budgetErr := e.checkBudget(opts, metrics, step); budgetErr != nil {
 			return e.end(state, opts, step, Failed, output, budgetErr, metrics, started, decision)
 		}
+		opts, err = e.resolveToolSurface(ctx, opts, step, "tool_dispatch")
+		if err != nil {
+			return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+		}
+		if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, false); err != nil {
+			return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+		}
+		activeToolRegistry := opts.toolSurface.tools
+		if activeToolRegistry == nil {
+			activeToolRegistry = e.tools
+		}
+		if activeToolRegistry == nil {
+			activeToolRegistry = tools.NewRegistry()
+		}
 		toolRunOptions := tools.RunOptions{
 			RunID:         opts.RunID,
 			ThreadID:      opts.ThreadID,
@@ -840,23 +895,23 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			PromptScopeID: opts.PromptScopeID,
 			Step:          step,
 			Labels:        observabilityLabels(opts.Labels),
-			HostContext:   opts.Labels.Host,
+			HostContext:   opts.toolSurface.hostContext,
 		}
 		for i, call := range calls {
-			activity, activityErr := e.tools.ActivityForCall(toolCall(call), toolRunOptions)
+			activity, activityErr := activeToolRegistry.ActivityForCall(toolCall(call), toolRunOptions)
 			if activityErr != nil {
 				activity = nil
 			}
 			e.emit(opts, event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args, Activity: activity, Metadata: map[string]any{"batch_index": i, "batch_size": len(calls)}})
 		}
 		toolStarted := time.Now()
-		results := e.tools.RunBatchWithOptions(ctx, toolCalls(calls), e.approverWithEvents(opts, step), toolRunOptions)
+		results := activeToolRegistry.RunBatchWithOptions(ctx, toolCalls(calls), e.approverWithEvents(opts, step), toolRunOptions)
 		toolLatency := time.Since(toolStarted).Milliseconds()
 		for i, result := range results {
 			result = preparePendingToolResult(result)
 			projection := exactToolOutputProjection(result.Text)
 			if result.Pending == nil {
-				policy := tools.MergeOutputPolicy(e.tools.OutputPolicyFor(result.Name), result.OutputPolicy)
+				policy := tools.MergeOutputPolicy(activeToolRegistry.OutputPolicyFor(result.Name), result.OutputPolicy)
 				var err error
 				projection, err = tools.BuildOutputProjection(ctx, toolOutputArtifactResult(result, opts, step), policy, toolArtifactStoreFor(e.artifacts))
 				if err != nil {
@@ -892,14 +947,13 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 
 func (e *Engine) compactContext(ctx context.Context, manual ManualCompactionRequest) ContextCompactionResult {
 	opts := normalizeOptions(e.options)
-	if len(opts.toolDefinitions) == 0 && e.tools != nil {
-		opts.toolDefinitions = providerToolDefinitionsFromTools(e.tools.Definitions())
-	}
-	if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, false); err != nil {
+	step := 1
+	var err error
+	opts, err = e.resolveToolSurface(ctx, opts, step, "compact")
+	if err != nil {
 		return ContextCompactionResult{Status: Failed, Err: err}
 	}
-	opts.toolDefinitions = appendControlToolDefinitions(opts.toolDefinitions, opts.ControlSpec)
-	if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, true); err != nil {
+	if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, false); err != nil {
 		return ContextCompactionResult{Status: Failed, Err: err}
 	}
 	manual.RequestID = strings.TrimSpace(manual.RequestID)
@@ -907,7 +961,6 @@ func (e *Engine) compactContext(ctx context.Context, manual ManualCompactionRequ
 	if manual.RequestID == "" {
 		return ContextCompactionResult{Status: Failed, Err: errors.New("manual compaction request id is required")}
 	}
-	step := 1
 	metrics := RunMetrics{Steps: step}
 	activeHistory, err := e.store.Transcript(opts.RunID)
 	if err != nil {
@@ -919,7 +972,7 @@ func (e *Engine) compactContext(ctx context.Context, manual ManualCompactionRequ
 	} else if ok {
 		tracker.SetAnchor(anchor)
 	}
-	usage := contextpolicy.EstimateMessageContext(e.memory.SystemPrompt, activeHistory, opts.ContextPolicy)
+	usage := contextpolicy.EstimateMessageContext(systemPromptForOptions(e, opts), activeHistory, opts.ContextPolicy)
 	pressure := contextpolicy.PressureFromManual(usage, opts.ContextPolicy)
 	active, _, compacted, err := e.runCompaction(ctx, opts, step, activeHistory, tracker, 1, false, compaction.TriggerManual, compaction.ReasonManual, usage, nil, pressure, manual, ContextCompactDebugNextActionReturnCompactedContext)
 	if err != nil {
@@ -960,7 +1013,152 @@ func cloneOptions(o Options) Options {
 	o.ControlSpec = cloneControlSpec(o.ControlSpec)
 	o.Labels = cloneRunLabels(o.Labels)
 	o.PreviousProviderState = provider.CloneState(o.PreviousProviderState)
+	o.toolSurface = cloneResolvedToolSurface(o.toolSurface)
 	return o
+}
+
+func cloneResolvedToolSurface(surface resolvedToolSurface) resolvedToolSurface {
+	return resolvedToolSurface{
+		tools:                 surface.tools,
+		toolDefinitions:       cloneProviderToolDefinitions(surface.toolDefinitions),
+		hostedToolDefinitions: cloneHostedToolDefinitions(surface.hostedToolDefinitions),
+		systemPrompt:          surface.systemPrompt,
+		hostContext:           cloneStringMap(surface.hostContext),
+		epoch:                 strings.TrimSpace(surface.epoch),
+		reason:                strings.TrimSpace(surface.reason),
+	}
+}
+
+func (e *Engine) resolveToolSurface(ctx context.Context, opts Options, step int, phase string) (Options, error) {
+	opts = cloneOptions(opts)
+	baseTools := e.tools
+	if opts.toolSurface.tools != nil {
+		baseTools = opts.toolSurface.tools
+	}
+	if baseTools == nil {
+		baseTools = tools.NewRegistry()
+	}
+	if len(opts.toolDefinitions) == 0 {
+		opts.toolDefinitions = providerToolDefinitionsFromTools(baseTools.Definitions())
+	}
+	if len(opts.toolSurface.hostedToolDefinitions) > 0 {
+		opts.HostedToolDefinitions = cloneHostedToolDefinitions(opts.toolSurface.hostedToolDefinitions)
+	}
+	if opts.ToolSurfaceProvider == nil {
+		opts.toolSurface = resolvedToolSurface{
+			tools:                 baseTools,
+			toolDefinitions:       cloneProviderToolDefinitions(opts.toolDefinitions),
+			hostedToolDefinitions: cloneHostedToolDefinitions(opts.HostedToolDefinitions),
+			systemPrompt:          e.memory.SystemPrompt,
+			hostContext:           cloneStringMap(opts.Labels.Host),
+			epoch:                 opts.toolSurface.epoch,
+			reason:                opts.toolSurface.reason,
+		}
+		return opts, nil
+	}
+	surface, err := opts.ToolSurfaceProvider(ctx, ToolSurfaceRequest{
+		RunID:         opts.RunID,
+		ThreadID:      opts.ThreadID,
+		TurnID:        opts.TurnID,
+		TraceID:       opts.TraceID,
+		PromptScopeID: opts.PromptScopeID,
+		Step:          step,
+		Phase:         strings.TrimSpace(phase),
+		Labels:        cloneRunLabels(opts.Labels),
+		HostContext:   cloneStringMap(opts.Labels.Host),
+	})
+	if err != nil {
+		return Options{}, err
+	}
+	surfaceTools := surface.Tools
+	if surfaceTools == nil {
+		surfaceTools = baseTools
+	}
+	toolDefs := cloneProviderToolDefinitions(surface.ToolDefinitions)
+	if toolDefs == nil {
+		toolDefs = providerToolDefinitionsFromTools(surfaceTools.Definitions())
+	}
+	hostedDefs := cloneHostedToolDefinitions(surface.HostedToolDefinitions)
+	if hostedDefs == nil {
+		hostedDefs = cloneHostedToolDefinitions(opts.HostedToolDefinitions)
+	}
+	systemPrompt := surface.SystemPrompt
+	if systemPrompt == "" {
+		if opts.toolSurface.systemPrompt != "" {
+			systemPrompt = opts.toolSurface.systemPrompt
+		} else {
+			systemPrompt = e.memory.SystemPrompt
+		}
+	}
+	hostContext := cloneStringMap(opts.Labels.Host)
+	if surface.HostContext != nil {
+		hostContext = cloneStringMap(surface.HostContext)
+	}
+	opts.toolDefinitions = toolDefs
+	opts.HostedToolDefinitions = hostedDefs
+	opts.toolSurface = resolvedToolSurface{
+		tools:                 surfaceTools,
+		toolDefinitions:       cloneProviderToolDefinitions(toolDefs),
+		hostedToolDefinitions: cloneHostedToolDefinitions(hostedDefs),
+		systemPrompt:          systemPrompt,
+		hostContext:           hostContext,
+		epoch:                 strings.TrimSpace(surface.Epoch),
+		reason:                strings.TrimSpace(surface.Reason),
+	}
+	return opts, nil
+}
+
+func toolSurfaceMetadata(opts Options) map[string]any {
+	meta := map[string]any{}
+	if epoch := strings.TrimSpace(opts.toolSurface.epoch); epoch != "" {
+		meta["tool_surface_epoch"] = epoch
+	}
+	if reason := strings.TrimSpace(opts.toolSurface.reason); reason != "" {
+		meta["tool_surface_reason"] = reason
+	}
+	if promptHash := stableTextHash(opts.toolSurface.systemPrompt); promptHash != "" {
+		meta["tool_surface_prompt_hash"] = promptHash
+	}
+	if toolHash := stableProviderToolDefinitionsHash(opts.toolDefinitions); toolHash != "" {
+		meta["tool_surface_tool_hash"] = toolHash
+	}
+	if hostedHash := stableHostedToolDefinitionsHash(opts.HostedToolDefinitions); hostedHash != "" {
+		meta["tool_surface_hosted_hash"] = hostedHash
+	}
+	if len(meta) == 0 {
+		return nil
+	}
+	return meta
+}
+
+func stableTextHash(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return cache.StableHash(value)
+}
+
+func stableProviderToolDefinitionsHash(defs []provider.ToolDefinition) string {
+	if len(defs) == 0 {
+		return ""
+	}
+	raw, err := cache.CanonicalJSON(convertToolDefinitions(defs))
+	if err != nil {
+		return ""
+	}
+	return cache.StableHash(raw)
+}
+
+func stableHostedToolDefinitionsHash(defs []provider.HostedToolDefinition) string {
+	if len(defs) == 0 {
+		return ""
+	}
+	raw, err := cache.CanonicalJSON(convertHostedToolDefinitions(defs))
+	if err != nil {
+		return ""
+	}
+	return cache.StableHash(raw)
 }
 
 func (l RunLabels) isZero() bool {
@@ -1197,7 +1395,15 @@ func stableMessageEntryID(runID string, index int, msg session.Message) string {
 }
 
 func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, history []session.Message) (provider.Request, error) {
-	toolset, _, err := cache.EnsureCurrentToolsetWithOptions(ctx, e.prompt, opts.PromptScopeID, opts.RunID, opts.ThreadID, opts.TurnID, opts.ProviderName, opts.Model, convertToolDefinitions(opts.toolDefinitions), convertHostedToolDefinitions(opts.HostedToolDefinitions), time.Now(), cache.ToolsetOptions{AllowControlTools: true})
+	toolDefinitions := appendControlToolDefinitions(opts.toolDefinitions, opts.ControlSpec)
+	if err := validateConfiguredTools(toolDefinitions, opts.HostedToolDefinitions, true); err != nil {
+		return provider.Request{}, err
+	}
+	systemPrompt := opts.toolSurface.systemPrompt
+	if systemPrompt == "" {
+		systemPrompt = e.memory.SystemPrompt
+	}
+	toolset, _, err := cache.EnsureCurrentToolsetWithOptions(ctx, e.prompt, opts.PromptScopeID, opts.RunID, opts.ThreadID, opts.TurnID, opts.ProviderName, opts.Model, convertToolDefinitions(toolDefinitions), convertHostedToolDefinitions(opts.HostedToolDefinitions), time.Now(), cache.ToolsetOptions{AllowControlTools: true})
 	if err != nil {
 		return provider.Request{}, err
 	}
@@ -1210,8 +1416,8 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		Model:          opts.Model,
 		AdapterVersion: cache.Version,
 		CacheNamespace: opts.CacheNamespace,
-		SystemPrompt:   e.memory.SystemPrompt,
-		History:        providerSafeHistory(e.memory.Assemble(history)[systemOffset(e.memory):], opts.ControlSpec),
+		SystemPrompt:   systemPrompt,
+		History:        providerSafeHistory(assembleMessages(systemPrompt, history)[systemOffsetForPrompt(systemPrompt):], opts.ControlSpec),
 		Toolset:        toolset,
 		HostedTools:    convertHostedToolDefinitions(opts.HostedToolDefinitions),
 		Renderer:       rendererForProvider(e.provider),
@@ -1280,6 +1486,33 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 	}
 	req.RawPlan.RequestShape = requestShapeHashes(req)
 	return req, nil
+}
+
+func assembleMessages(systemPrompt string, history []session.Message) []session.Message {
+	if strings.TrimSpace(systemPrompt) == "" {
+		return append([]session.Message(nil), history...)
+	}
+	messages := make([]session.Message, 0, len(history)+1)
+	messages = append(messages, session.Message{Role: session.System, Content: systemPrompt})
+	messages = append(messages, history...)
+	return messages
+}
+
+func systemPromptForOptions(e *Engine, opts Options) string {
+	if strings.TrimSpace(opts.toolSurface.systemPrompt) != "" {
+		return opts.toolSurface.systemPrompt
+	}
+	if e == nil || e.memory == nil {
+		return ""
+	}
+	return e.memory.SystemPrompt
+}
+
+func systemOffsetForPrompt(systemPrompt string) int {
+	if strings.TrimSpace(systemPrompt) == "" {
+		return 0
+	}
+	return 1
 }
 
 func (e *Engine) estimateRequestTokens(ctx context.Context, req provider.Request) (contextpolicy.RequestEstimate, error) {
@@ -1359,14 +1592,14 @@ func providerRequestMetadata(req provider.Request) map[string]any {
 func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, metrics *RunMetrics, failures *int) (provider.Request, []session.Message, bool, error) {
 	compacted := false
 	if manual, ok, err := pollManualCompaction(ctx, opts, step); err != nil {
-		usage := contextpolicy.EstimateMessageContext(e.memory.SystemPrompt, history, opts.ContextPolicy)
+		usage := contextpolicy.EstimateMessageContext(systemPromptForOptions(e, opts), history, opts.ContextPolicy)
 		pressure := contextpolicy.PressureFromManual(usage, opts.ContextPolicy)
 		e.emitManualCompactionPollDebug(opts, step, usage, pressure, err)
 		if isContextCancellation(err) {
 			return provider.Request{}, history, false, err
 		}
 	} else if ok {
-		usage := contextpolicy.EstimateMessageContext(e.memory.SystemPrompt, history, opts.ContextPolicy)
+		usage := contextpolicy.EstimateMessageContext(systemPromptForOptions(e, opts), history, opts.ContextPolicy)
 		pressure := contextpolicy.PressureFromManual(usage, opts.ContextPolicy)
 		next, req, _, err := e.runCompaction(ctx, opts, step, history, tracker, 1, false, compaction.TriggerManual, compaction.ReasonManual, usage, nil, pressure, manual, ContextCompactDebugNextActionProviderRequest)
 		if err == nil {
@@ -1460,7 +1693,7 @@ func (e *Engine) sendProviderAttempt(ctx context.Context, opts Options, step int
 	if metrics != nil {
 		metrics.LLMRequests++
 	}
-	e.emit(opts, event.Event{Type: event.ProviderRequest, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: fmt.Sprintf("%d messages, %d raw segments, %d local tools, %d hosted tools, prefix %s", len(req.Messages), len(req.RawPlan.Segments), len(req.Tools), len(req.HostedTools), shortHash(req.RawPlan.PrefixHash)), Metadata: providerRequestMetadata(req)})
+	e.emit(opts, event.Event{Type: event.ProviderRequest, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: fmt.Sprintf("%d messages, %d raw segments, %d local tools, %d hosted tools, prefix %s", len(req.Messages), len(req.RawPlan.Segments), len(req.Tools), len(req.HostedTools), shortHash(req.RawPlan.PrefixHash)), Metadata: mergeAnyMetadata(providerRequestMetadata(req), toolSurfaceMetadata(opts))})
 	started := time.Now()
 	stream, err := e.provider.Stream(ctx, req)
 	latency := time.Since(started).Milliseconds()
@@ -1493,7 +1726,7 @@ func compactionErrorNextAction(trigger compaction.Trigger, reason compaction.Rea
 }
 
 func (e *Engine) compactForPressure(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool, trigger compaction.Trigger, reason compaction.Reason, pressure contextpolicy.ContextPressure, metrics *RunMetrics, failures *int) ([]session.Message, provider.Request, error) {
-	usage := contextpolicy.EstimateMessageContext(e.memory.SystemPrompt, history, opts.ContextPolicy)
+	usage := contextpolicy.EstimateMessageContext(systemPromptForOptions(e, opts), history, opts.ContextPolicy)
 	next, req, _, err := e.runCompaction(ctx, opts, step, history, tracker, attempt, overflowRetried, trigger, reason, usage, failures, pressure, ManualCompactionRequest{}, ContextCompactDebugNextActionProviderRequest)
 	if err != nil {
 		return history, provider.Request{}, err
