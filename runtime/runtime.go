@@ -588,6 +588,7 @@ func NewHost(opts HostOptions) (Host, error) {
 		Tools:               opts.Tools,
 		Approver:            opts.Approver,
 		Sink:                newRuntimeEventSink(opts.Sink),
+		SinkPolicy:          runtimeHarnessSinkPolicy(),
 		ToolSurfaceProvider: runtimeToolSurfaceProvider(opts.ToolSurfaceProvider),
 		NewID:               opts.IDGenerator,
 		LoopLimits:          opts.LoopLimits,
@@ -598,6 +599,10 @@ func NewHost(opts HostOptions) (Host, error) {
 		return nil, err
 	}
 	return &host{cfg: cfg, store: store, sink: opts.Sink, harness: harness}, nil
+}
+
+func runtimeHarnessSinkPolicy() event.SinkPolicy {
+	return event.SinkPolicy{AllowRaw: true, Redactor: event.SafePathRefsText}
 }
 
 func (h *host) StartThread(ctx context.Context, req StartThreadRequest) (ThreadSnapshot, error) {
@@ -1092,6 +1097,7 @@ type harnessOptions struct {
 	Tools               *tools.Registry
 	Approver            tools.Approver
 	Sink                event.Sink
+	SinkPolicy          event.SinkPolicy
 	Title               agentharness.TitleGenerator
 	NewID               func(string) string
 	LoopLimits          LoopLimits
@@ -1152,6 +1158,7 @@ func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harness
 		PromptStore:         store.prompt,
 		Repo:                store.repo,
 		Sink:                opts.Sink,
+		SinkPolicy:          opts.SinkPolicy,
 		Approver:            opts.Approver,
 		ToolSurfaceProvider: opts.ToolSurfaceProvider,
 		TitleGenerator:      opts.Title,

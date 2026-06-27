@@ -20,6 +20,7 @@ import (
 	"github.com/floegence/floret/internal/session/contextpolicy"
 	"github.com/floegence/floret/internal/sessiontree"
 	"github.com/floegence/floret/internal/testing/harness"
+	"github.com/floegence/floret/observation"
 	"github.com/floegence/floret/tools"
 )
 
@@ -118,6 +119,64 @@ func TestHostRunsThreadThroughModelGateway(t *testing.T) {
 	}
 	if req.Provider != string(config.ProviderFake) || req.Model != "fake-model" {
 		t.Fatalf("gateway request provider/model = %#v", req)
+	}
+}
+
+func TestHostStreamsProjectedContextStatus(t *testing.T) {
+	ctx := context.Background()
+	rec := &runtimeEventRecorder{}
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		return runtimeGatewayEvents("gateway hosted thread"), nil
+	})
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "gateway system",
+			ContextPolicy: config.ContextPolicy{
+				ContextWindowTokens: config.DefaultContextWindowTokens,
+				MaxOutputTokens:     1024,
+			},
+		},
+		ModelGateway: gateway,
+		Sink:         rec,
+		IDGenerator:  deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := host.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != TurnStatusCompleted {
+		t.Fatalf("result = %#v", result)
+	}
+
+	var status *observation.ContextStatus
+	for _, ev := range rec.events {
+		if ev.Type == "provider_request" && ev.ContextStatus != nil {
+			status = ev.ContextStatus
+			break
+		}
+	}
+	if status == nil {
+		t.Fatalf("runtime events missing projected context status: %#v", rec.events)
+	}
+	if status.Phase != observation.ContextPhaseProjectedRequest ||
+		status.ThreadID != "thread" ||
+		status.TurnID != "turn-1" ||
+		status.Step != 1 ||
+		status.ContextPressure.ContextWindowTokens != config.DefaultContextWindowTokens ||
+		status.ContextPressure.ProjectedInputTokens <= 0 ||
+		status.UsedRatio <= 0 ||
+		strings.TrimSpace(status.Status) == "" {
+		t.Fatalf("context status = %#v", status)
 	}
 }
 
