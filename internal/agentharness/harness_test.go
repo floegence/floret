@@ -1449,13 +1449,26 @@ func TestMoveToHoldsActiveTurnGuardDuringMutation(t *testing.T) {
 func TestManualCompactHoldsActiveTurnGuardDuringMutation(t *testing.T) {
 	ctx := context.Background()
 	repo := &blockingAppendRepo{MemoryRepo: sessiontree.NewMemoryRepo(), entered: make(chan struct{}), release: make(chan struct{})}
-	h := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done"), scriptharness.Done())), repo, cache.NewMemoryStore())
+	h := newTestHarness(scriptharness.NewScriptedProvider(
+		scriptharness.Step(scriptharness.Text("seeded"), scriptharness.Done()),
+		scriptharness.Step(scriptharness.Text("tailed"), scriptharness.Done()),
+		scriptharness.Step(scriptharness.Text("done"), scriptharness.Done()),
+	), repo, cache.NewMemoryStore())
 	h.options.CompactionGenerator = compaction.ExtractiveSummaryGenerator{}
+	h.options.TurnPolicy.ContextPolicy.ContextWindowTokens = 256000
+	h.options.TurnPolicy.ContextPolicy.ReservedOutputTokens = 64000
+	h.options.TurnPolicy.ContextPolicy.ReservedSummaryTokens = 40
+	h.options.TurnPolicy.ContextPolicy.RecentTailTokens = 20
+	h.options.TurnPolicy.ContextPolicy.RecentUserTokens = 20
+	h.options.TurnPolicy.ContextPolicy.CompactedContextTargetTokens = 100
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := thread.Run(ctx, "first", RunOptions{TurnID: "turn-1"}); err != nil {
+	if _, err := thread.Run(ctx, strings.Repeat("old context ", 6000), RunOptions{TurnID: "turn-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := thread.Run(ctx, "latest tail", RunOptions{TurnID: "turn-2"}); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)

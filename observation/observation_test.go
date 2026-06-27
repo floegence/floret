@@ -270,6 +270,24 @@ func TestCompactionEventFromEvents(t *testing.T) {
 			"tokens_before":          int64(990),
 		},
 	}
+	noop := Event{
+		Type:       EventTypeContextCompact,
+		RunID:      "turn-1",
+		ThreadID:   "thread-1",
+		TurnID:     "turn-1",
+		Step:       4,
+		ObservedAt: time.Unix(33, 0),
+		Metadata: map[string]any{
+			"phase":                  CompactionPhaseNoop,
+			"operation_id":           "op-3",
+			"request_id":             "manual-1",
+			"trigger":                "manual",
+			"reason":                 "context_too_small",
+			"before_pressure":        config.ContextPressure{WindowInputTokens: 1200},
+			"message_context_before": config.ContextUsage{InputTokens: 1200},
+			"tokens_before":          int64(1200),
+		},
+	}
 
 	started, ok := CompactionEventFromEvent(start)
 	if !ok {
@@ -309,6 +327,19 @@ func TestCompactionEventFromEvents(t *testing.T) {
 		failedEvent.TokensBefore != 990 ||
 		failedEvent.BeforePressure.WindowInputTokens != 990 {
 		t.Fatalf("failed compaction = %#v", failedEvent)
+	}
+
+	noopEvent, ok := CompactionEventFromEvent(noop)
+	if !ok {
+		t.Fatalf("noop event was not converted")
+	}
+	if noopEvent.Phase != CompactionPhaseNoop ||
+		noopEvent.Status != CompactionStatusNoop ||
+		noopEvent.OperationID != "op-3" ||
+		noopEvent.RequestID != "manual-1" ||
+		noopEvent.Reason != "context_too_small" ||
+		noopEvent.TokensBefore != 1200 {
+		t.Fatalf("noop compaction = %#v", noopEvent)
 	}
 
 	malformed := start

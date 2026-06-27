@@ -31,6 +31,7 @@ var (
 	ErrInvalidTokenEstimate       = errors.New("provider token estimate missing source or method")
 	ErrCompactedRequestOverBudget = errors.New("compacted provider request still exceeds context budget")
 	ErrFixedContextOverBudget     = errors.New("provider request fixed context overhead exceeds context budget")
+	ErrCompactionNoop             = errors.New("context compaction is not needed")
 )
 
 type Status string
@@ -922,6 +923,9 @@ func (e *Engine) compactContext(ctx context.Context, manual ManualCompactionRequ
 	pressure := contextpolicy.PressureFromManual(usage, opts.ContextPolicy)
 	active, _, compacted, err := e.runCompaction(ctx, opts, step, activeHistory, tracker, 1, false, compaction.TriggerManual, compaction.ReasonManual, usage, nil, pressure, manual, ContextCompactDebugNextActionReturnCompactedContext)
 	if err != nil {
+		if errors.Is(err, ErrCompactionNoop) {
+			return ContextCompactionResult{Status: Completed, Metrics: metrics, Messages: append([]session.Message(nil), activeHistory...), ProviderState: provider.CloneState(opts.PreviousProviderState)}
+		}
 		if isContextCancellation(err) {
 			return ContextCompactionResult{Status: Cancelled, Err: err, Metrics: metrics, Messages: append([]session.Message(nil), activeHistory...), ProviderState: provider.CloneState(opts.PreviousProviderState)}
 		}
@@ -1371,7 +1375,9 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 			}
 			return req, next, true, nil
 		}
-		if isContextCancellation(err) {
+		if errors.Is(err, ErrCompactionNoop) {
+			history = next
+		} else if isContextCancellation(err) {
 			return provider.Request{}, history, false, err
 		}
 	}
@@ -1587,6 +1593,14 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		beginDebug["provider_state_kind"] = strings.TrimSpace(opts.PreviousProviderState.Kind)
 	}
 	e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageBegin, ContextCompactDebugStatusRunning, trigger, reason, beforePressure, usage, manual, beginDebug, nil, time.Time{})
+	policy := compactionPolicyForUsage(opts.ContextPolicy, usage)
+	if noop, noopReason := manualCompactionNoopReason(policy, usage, history, trigger, reason); noop {
+		meta := withCompactionNextAction(cloneAnyMap(beginDebug), strings.TrimSpace(nextAction))
+		meta["noop_reason"] = noopReason
+		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStagePreflight, ContextCompactDebugStatusOK, trigger, reason, beforePressure, usage, manual, meta, nil, time.Time{})
+		e.emitCompactionNoop(opts, step, operationID, trigger, noopReason, beforePressure, usage, manual)
+		return append([]session.Message(nil), history...), provider.Request{}, compaction.Result{}, ErrCompactionNoop
+	}
 	if failures != nil && *failures >= opts.ContextPolicy.MaxCompactionFailures {
 		err := fmt.Errorf("compaction failure circuit breaker reached after %d failures", *failures)
 		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStagePreflight, ContextCompactDebugStatusFailed, trigger, reason, beforePressure, usage, manual, withCompactionNextAction(beginDebug, compactionErrorNextAction(trigger, reason, nextAction, err)), err, time.Time{})
@@ -1622,7 +1636,6 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 	if manual.Source != "" {
 		baseDetails["manual_source"] = manual.Source
 	}
-	policy := compactionPolicyForOperation(opts.ContextPolicy, usage, trigger, reason)
 	var result compaction.Result
 	var active []session.Message
 	var req provider.Request
@@ -1664,6 +1677,10 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 				status = ContextCompactDebugStatusCancelled
 			}
 			e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageGenerateAttemptComplete, status, trigger, reason, beforePressure, usage, manual, withCompactionNextAction(attemptDebug, compactionErrorNextAction(trigger, reason, nextAction, err)), err, attemptStarted)
+			if manualCompactionNoopError(err, trigger, reason) {
+				e.emitCompactionNoop(opts, step, operationID, trigger, "no_compactable_context", beforePressure, usage, manual)
+				return append([]session.Message(nil), history...), provider.Request{}, compaction.Result{}, ErrCompactionNoop
+			}
 			break
 		}
 		attemptDoneDebug := cloneAnyMap(attemptDebug)
@@ -1674,6 +1691,13 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		attemptDoneDebug["tokens_after_estimate"] = result.TokensAfterEstimate
 		attemptDoneDebug["context_after"] = result.UsageAfter
 		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageGenerateAttemptComplete, ContextCompactDebugStatusOK, trigger, reason, beforePressure, usage, manual, attemptDoneDebug, nil, attemptStarted)
+		if manualCompactionResultHasInsufficientSavings(result, trigger, reason) {
+			noopMeta := withCompactionNextAction(cloneAnyMap(attemptDoneDebug), strings.TrimSpace(nextAction))
+			noopMeta["noop_reason"] = "insufficient_savings"
+			e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestValidation, ContextCompactDebugStatusOK, trigger, reason, beforePressure, usage, manual, noopMeta, nil, time.Time{})
+			e.emitCompactionNoop(opts, step, operationID, trigger, "insufficient_savings", beforePressure, usage, manual)
+			return append([]session.Message(nil), history...), provider.Request{}, compaction.Result{}, ErrCompactionNoop
+		}
 		rebuildStarted := time.Now()
 		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestRebuildStart, ContextCompactDebugStatusRunning, trigger, reason, beforePressure, usage, manual, map[string]any{
 			"compaction_convergence_attempt": compactAttempt,
@@ -1826,6 +1850,21 @@ func (e *Engine) emitCompactionFailed(opts Options, step int, operationID string
 		Err:      errText,
 		Metrics:  usage,
 		Metadata: compactionFailedMetadata(operationID, trigger, reason, beforePressure, usage, manual),
+	})
+}
+
+func (e *Engine) emitCompactionNoop(opts Options, step int, operationID string, trigger compaction.Trigger, noopReason string, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage, manual ManualCompactionRequest) {
+	e.emit(opts, event.Event{
+		Type:     event.ContextCompact,
+		TraceID:  opts.TraceID,
+		RunID:    opts.RunID,
+		ThreadID: opts.ThreadID,
+		Step:     step,
+		Provider: opts.ProviderName,
+		Model:    opts.Model,
+		Message:  fmt.Sprintf("%s/%s", trigger, noopReason),
+		Metrics:  usage,
+		Metadata: compactionNoopMetadata(operationID, trigger, noopReason, beforePressure, usage, manual),
 	})
 }
 
@@ -1987,50 +2026,32 @@ func compactionPolicyForUsage(policy contextpolicy.Policy, usage contextpolicy.U
 	return contextpolicy.Normalize(policy)
 }
 
-func compactionPolicyForOperation(policy contextpolicy.Policy, usage contextpolicy.Usage, trigger compaction.Trigger, reason compaction.Reason) contextpolicy.Policy {
-	policy = compactionPolicyForUsage(policy, usage)
-	if trigger == compaction.TriggerManual && reason == compaction.ReasonManual {
-		return manualCompactionPolicyForUsage(policy, usage)
+func manualCompactionNoopReason(policy contextpolicy.Policy, usage contextpolicy.Usage, history []session.Message, trigger compaction.Trigger, reason compaction.Reason) (bool, string) {
+	if trigger != compaction.TriggerManual || reason != compaction.ReasonManual {
+		return false, ""
 	}
-	return policy
+	policy = contextpolicy.Normalize(policy)
+	target := policy.CompactedContextTargetTokens
+	if target > 0 && usage.InputTokens < target {
+		return true, "context_too_small"
+	}
+	if len(history) < 2 {
+		return true, "no_compactable_context"
+	}
+	return false, ""
 }
 
-func manualCompactionPolicyForUsage(policy contextpolicy.Policy, usage contextpolicy.Usage) contextpolicy.Policy {
-	policy = contextpolicy.Normalize(policy)
-	current := usage.InputTokens
-	if current <= 6 {
-		return policy
-	}
-	target := policy.CompactedContextTargetTokens
-	threshold := contextpolicy.Threshold(policy)
-	if threshold > 0 && threshold < target {
-		target = threshold
-	}
-	if target <= 0 || target >= current {
-		target = current * 60 / 100
-	}
-	if target >= current {
-		target = current - 1
-	}
-	if target < 6 {
-		target = 6
-	}
-	if target >= current {
-		return policy
-	}
-	messageBudget := target
-	if messageBudget > contextpolicy.DefaultCheckpointOverheadTokens+6 {
-		messageBudget -= contextpolicy.DefaultCheckpointOverheadTokens
-	}
-	if messageBudget < 6 {
-		messageBudget = 6
-	}
-	summary, tail, users := splitCompactionMessageBudget(messageBudget)
-	policy.CompactedContextTargetTokens = target
-	policy.ReservedSummaryTokens = summary
-	policy.RecentTailTokens = tail
-	policy.RecentUserTokens = users
-	return contextpolicy.Normalize(policy)
+func manualCompactionNoopError(err error, trigger compaction.Trigger, reason compaction.Reason) bool {
+	return trigger == compaction.TriggerManual &&
+		reason == compaction.ReasonManual &&
+		errors.Is(err, compaction.ErrNoCutPoint)
+}
+
+func manualCompactionResultHasInsufficientSavings(result compaction.Result, trigger compaction.Trigger, reason compaction.Reason) bool {
+	return trigger == compaction.TriggerManual &&
+		reason == compaction.ReasonManual &&
+		result.TokensBefore > 0 &&
+		result.TokensAfterEstimate >= result.TokensBefore
 }
 
 func compactedRequestValidationForRequest(req provider.Request) compactedRequestValidation {

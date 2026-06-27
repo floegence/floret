@@ -24,6 +24,7 @@ const (
 	ContextCompactPhaseComplete  = "complete"
 	ContextCompactPhaseFailed    = "failed"
 	ContextCompactPhaseCancelled = "cancelled"
+	ContextCompactPhaseNoop      = "noop"
 
 	ContextCompactDebugStageBegin                   = "begin"
 	ContextCompactDebugStagePoll                    = "poll"
@@ -172,6 +173,18 @@ func compactionCancelledMetadata(operationID string, trigger compaction.Trigger,
 		"operation_id":           operationID,
 		"trigger":                trigger,
 		"reason":                 reason,
+		"before_pressure":        beforePressure,
+		"message_context_before": usage,
+		"tokens_before":          usage.InputTokens,
+	}, manual)
+}
+
+func compactionNoopMetadata(operationID string, trigger compaction.Trigger, noopReason string, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage, manual ManualCompactionRequest) map[string]any {
+	return withManualCompactionMetadata(map[string]any{
+		"phase":                  ContextCompactPhaseNoop,
+		"operation_id":           operationID,
+		"trigger":                trigger,
+		"reason":                 strings.TrimSpace(noopReason),
 		"before_pressure":        beforePressure,
 		"message_context_before": usage,
 		"tokens_before":          usage.InputTokens,

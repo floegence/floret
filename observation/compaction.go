@@ -14,10 +14,12 @@ const (
 	CompactionPhaseComplete   = "complete"
 	CompactionPhaseFailed     = "failed"
 	CompactionPhaseCancelled  = "cancelled"
+	CompactionPhaseNoop       = "noop"
 	CompactionStatusRunning   = "running"
 	CompactionStatusCompacted = "compacted"
 	CompactionStatusFailed    = "failed"
 	CompactionStatusCancelled = "cancelled"
+	CompactionStatusNoop      = "noop"
 )
 
 type CompactionEvent struct {
@@ -98,6 +100,8 @@ func CompactionEventFromEvent(ev Event) (CompactionEvent, bool) {
 		out.Status = CompactionStatusFailed
 	case CompactionPhaseCancelled:
 		out.Status = CompactionStatusCancelled
+	case CompactionPhaseNoop:
+		out.Status = CompactionStatusNoop
 	default:
 		return CompactionEvent{}, false
 	}

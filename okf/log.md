@@ -5,9 +5,9 @@
   old projected transcript integration path from public runtime guidance.
 * **Update**: Documented terminal control-signal output normalization from
   signal payloads or same-step assistant text.
-* **Update**: Documented that manual compaction can create Floret-owned durable
-  checkpoints below automatic pressure thresholds without host-provided context
-  targets, history ranges, summaries, or policy.
+* **Update**: Documented Floret-owned manual compaction admission and terminal
+  `noop` observations for contexts that are too small, lack a safe cut point,
+  or would not shrink enough to justify checkpoint creation.
 
 ## 2026-06-25
 * **Update**: Documented public manual compaction operation identity, cancelled

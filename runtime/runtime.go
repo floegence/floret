@@ -1418,6 +1418,8 @@ func runtimeCompactionEventWithError(raw, sanitized event.Event, sanitizedError 
 		out.Status = observation.CompactionStatusFailed
 	case observation.CompactionPhaseCancelled:
 		out.Status = observation.CompactionStatusCancelled
+	case observation.CompactionPhaseNoop:
+		out.Status = observation.CompactionStatusNoop
 	default:
 		return nil
 	}

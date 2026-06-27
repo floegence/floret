@@ -49,10 +49,12 @@ ledgers, and lifecycle events.
 Active manual compaction flows through `RunTurnRequest.ManualCompactions`. The
 host owns the user-facing command or policy that creates a request; `Engine`
 owns polling at safe provider-loop points, summary generation, checkpoint
-installation, and continuation of the same run. When manual compaction is
-requested below the automatic pressure threshold, `Engine` still owns the
-manual checkpoint budget and derives it from current context usage instead of
-letting the host provide target tokens, history ranges, or summary policy.
+installation, and continuation of the same run. `Engine` also owns manual
+compaction admission. If the current context is too small, has no safe cut
+point, or would not shrink after checkpoint overhead, the manual request ends
+with a `noop` observation rather than a checkpoint or a run failure. Hosts must
+not provide target tokens, history ranges, or summary policy to override that
+decision.
 
 Idle compaction uses `Host.CompactThread` instead of pretending to be a user
 turn. It runs the compaction pipeline once and returns status, metrics, safe

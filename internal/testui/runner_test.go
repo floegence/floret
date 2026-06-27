@@ -317,7 +317,7 @@ func TestRunnerContextCompactionScenarioSuitePasses(t *testing.T) {
 
 	result := runner.Run(context.Background(), TargetContextCompactionScenarios)
 
-	if result.Status != "pass" || len(result.Parts) != 4 {
+	if result.Status != "pass" || len(result.Parts) != 5 {
 		t.Fatalf("result = %#v", result)
 	}
 	for _, part := range result.Parts {

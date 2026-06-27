@@ -2646,6 +2646,7 @@ func (r Runner) runContextCompactionScenarioSuite(ctx context.Context, resp RunR
 		run   func(context.Context) RunResponse
 	}{
 		{title: "manual active compaction continues", run: r.runProjectedManualCompactionScenario},
+		{title: "manual compact noops for short context", run: r.runProjectedManualNoopScenario},
 		{title: "manual poll error is observable", run: r.runProjectedManualPollErrorScenario},
 		{title: "compact-only returns checkpoint", run: r.runProjectedCompactOnlyScenario},
 		{title: "compact-only cancel is observable", run: r.runProjectedCompactCancelScenario},
@@ -2680,10 +2681,17 @@ func (r Runner) runProjectedManualCompactionScenario(ctx context.Context) RunRes
 	if _, err := host.StartThread(ctx, flruntime.StartThreadRequest{ThreadID: "testui-manual-active"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
+	if _, err := host.RunTurn(ctx, flruntime.RunTurnRequest{
+		ThreadID: "testui-manual-active",
+		TurnID:   "testui-manual-active-seed",
+		Input:    testuiLargeCompactionInput(),
+	}); err != nil {
+		return finishRunResponse(r, resp, "error", err.Error())
+	}
 	result, err := host.RunTurn(ctx, flruntime.RunTurnRequest{
 		ThreadID:          "testui-manual-active",
 		TurnID:            "testui-manual-active-turn",
-		Input:             testuiCompactionInput(),
+		Input:             "continue after compacting prior context",
 		ManualCompactions: manual,
 	})
 	resp.Agent = testuiRuntimeAgentRun(result, sink.events)
@@ -2706,6 +2714,44 @@ func (r Runner) runProjectedManualCompactionScenario(ctx context.Context) RunRes
 		return finishRunResponse(r, resp, "fail", fmt.Sprintf("missing provider_request debug in %#v", debugs))
 	}
 	return finishRunResponse(r, resp, "pass", "Manual compaction completed and the projected turn continued.")
+}
+
+func (r Runner) runProjectedManualNoopScenario(ctx context.Context) RunResponse {
+	resp := RunResponse{ID: fmt.Sprintf("%d", r.now().UnixNano()), Target: TargetContextCompactionScenarios, Title: "Manual compact noops for short context", Kind: "agent", StartedAt: r.now()}
+	sink := &runtimeEventSink{}
+	host, err := testuiCompactionNoopHost(sink, testModelGateway("short context seed"))
+	if err != nil {
+		return finishRunResponse(r, resp, "error", err.Error())
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, flruntime.StartThreadRequest{ThreadID: "testui-manual-noop"}); err != nil {
+		return finishRunResponse(r, resp, "error", err.Error())
+	}
+	if _, err := host.RunTurn(ctx, flruntime.RunTurnRequest{ThreadID: "testui-manual-noop", TurnID: "testui-manual-noop-seed", Input: "short context"}); err != nil {
+		return finishRunResponse(r, resp, "error", err.Error())
+	}
+	result, err := host.CompactThread(ctx, flruntime.CompactThreadRequest{
+		ThreadID:  "testui-manual-noop",
+		RequestID: "testui-manual-noop",
+		Source:    "test_ui",
+	})
+	resp.Agent = testuiRuntimeContextCompactionRun(result, sink.events)
+	if err != nil {
+		return finishRunResponse(r, resp, "fail", err.Error())
+	}
+	if result.Status != string(flruntime.TurnStatusCompleted) || result.Metrics.Compactions != 0 || result.ProviderState != nil {
+		return finishRunResponse(r, resp, "fail", fmt.Sprintf("unexpected noop result %#v", result))
+	}
+	compactions, _ := testuiRuntimeCompactionObservations(sink.events)
+	if !slices.ContainsFunc(compactions, func(ev obs.CompactionEvent) bool {
+		return ev.Phase == obs.CompactionPhaseNoop &&
+			ev.Status == obs.CompactionStatusNoop &&
+			ev.RequestID == "testui-manual-noop" &&
+			ev.Reason == "context_too_small"
+	}) {
+		return finishRunResponse(r, resp, "fail", fmt.Sprintf("missing noop compaction event in %#v", compactions))
+	}
+	return finishRunResponse(r, resp, "pass", "Manual compaction no-op preserved the existing context without checkpointing.")
 }
 
 func (r Runner) runProjectedManualPollErrorScenario(ctx context.Context) RunResponse {
@@ -2750,7 +2796,10 @@ func (r Runner) runProjectedCompactOnlyScenario(ctx context.Context) RunResponse
 	if _, err := host.StartThread(ctx, flruntime.StartThreadRequest{ThreadID: "testui-compact-only"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
-	if _, err := host.RunTurn(ctx, flruntime.RunTurnRequest{ThreadID: "testui-compact-only", TurnID: "testui-compact-seed", Input: testuiCompactionInput()}); err != nil {
+	if _, err := host.RunTurn(ctx, flruntime.RunTurnRequest{ThreadID: "testui-compact-only", TurnID: "testui-compact-seed", Input: testuiLargeCompactionInput()}); err != nil {
+		return finishRunResponse(r, resp, "error", err.Error())
+	}
+	if _, err := host.RunTurn(ctx, flruntime.RunTurnRequest{ThreadID: "testui-compact-only", TurnID: "testui-compact-tail", Input: "latest small tail"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
 	result, err := host.CompactThread(ctx, flruntime.CompactThreadRequest{
@@ -2763,7 +2812,8 @@ func (r Runner) runProjectedCompactOnlyScenario(ctx context.Context) RunResponse
 		return finishRunResponse(r, resp, "fail", err.Error())
 	}
 	if result.Status != string(flruntime.TurnStatusCompleted) || result.Metrics.Compactions != 1 {
-		return finishRunResponse(r, resp, "fail", fmt.Sprintf("unexpected result %#v", result))
+		compactions, debugs := testuiRuntimeCompactionObservations(sink.events)
+		return finishRunResponse(r, resp, "fail", fmt.Sprintf("unexpected result %#v compactions=%#v debugs=%#v", result, compactions, debugs))
 	}
 	compactions, debugs := testuiRuntimeCompactionObservations(sink.events)
 	if !slices.ContainsFunc(compactions, func(ev obs.CompactionEvent) bool {
@@ -2797,7 +2847,7 @@ func (r Runner) runProjectedCompactCancelScenario(ctx context.Context) RunRespon
 	if _, err := host.StartThread(ctx, flruntime.StartThreadRequest{ThreadID: "testui-compact-cancel"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
-	if _, err := host.RunTurn(context.Background(), flruntime.RunTurnRequest{ThreadID: "testui-compact-cancel", TurnID: "testui-compact-cancel-seed", Input: testuiCompactionInput()}); err != nil {
+	if _, err := host.RunTurn(context.Background(), flruntime.RunTurnRequest{ThreadID: "testui-compact-cancel", TurnID: "testui-compact-cancel-seed", Input: testuiLargeCompactionInput()}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
 	done := make(chan struct {
@@ -2903,30 +2953,48 @@ func (g *seedThenBlockingTestModelGateway) StreamModel(ctx context.Context, req 
 
 func testuiCompactionHost(sink flruntime.EventSink, gateway flruntime.ModelGateway) (flruntime.Host, error) {
 	return flruntime.NewHost(flruntime.HostOptions{
-		Config:       testuiProjectedCompactionConfig(10000),
+		Config:       testuiProjectedCompactionConfig(256000, 100, true),
 		ModelGateway: gateway,
 		Store:        flruntime.NewMemoryStore(),
 		Sink:         sink,
 	})
 }
 
-func testuiProjectedCompactionConfig(window int64) config.Config {
+func testuiCompactionNoopHost(sink flruntime.EventSink, gateway flruntime.ModelGateway) (flruntime.Host, error) {
+	return flruntime.NewHost(flruntime.HostOptions{
+		Config:       testuiProjectedCompactionConfig(256000, 0, false),
+		ModelGateway: gateway,
+		Store:        flruntime.NewMemoryStore(),
+		Sink:         sink,
+	})
+}
+
+func testuiProjectedCompactionConfig(window int64, compactTarget int64, compactAggressively bool) config.Config {
+	summaryTokens := int64(160)
+	tailTokens := int64(80)
+	userTokens := int64(80)
+	if compactAggressively {
+		summaryTokens = 40
+		tailTokens = 20
+		userTokens = 20
+	}
 	return config.Config{
 		Provider:     config.ProviderFake,
 		Model:        "fake-model",
 		SystemPrompt: "test ui compaction scenario",
 		ContextPolicy: config.ContextPolicy{
-			ContextWindowTokens:   window,
-			ReservedOutputTokens:  window / 10,
-			ReservedSummaryTokens: 160,
-			RecentTailTokens:      80,
-			RecentUserTokens:      80,
+			ContextWindowTokens:          window,
+			ReservedOutputTokens:         window / 10,
+			ReservedSummaryTokens:        summaryTokens,
+			RecentTailTokens:             tailTokens,
+			RecentUserTokens:             userTokens,
+			CompactedContextTargetTokens: compactTarget,
 		},
 	}
 }
 
-func testuiCompactionInput() string {
-	return strings.Repeat("older context ", 100) + "\n\n" + strings.Repeat("older answer ", 80) + "\n\ncontinue after compaction"
+func testuiLargeCompactionInput() string {
+	return strings.Repeat("older context ", 6000) + "\n\n" + strings.Repeat("older answer ", 4500) + "\n\ncontinue after compaction"
 }
 
 func testuiRuntimeAgentRun(result flruntime.TurnResult, events []flruntime.Event) *AgentRun {
