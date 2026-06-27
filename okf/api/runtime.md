@@ -101,6 +101,10 @@ must not read Floret's store schema or rebuild execution ordering from separate
 audit tables. Pagination uses `AfterOrdinal`, `Limit`, `HasMore`, and
 `NextOrdinal`; raw content follows the same explicit `IncludeRaw` opt-in rule as
 subagent detail reads.
+For provider continuations such as length truncation recovery, the detail stream
+records the durable live prefix and any final suffix in ordinal order. It does
+not expose a duplicated accumulated assistant snapshot as a separate transcript
+fact.
 
 `StreamObservation` is for host rendering and diagnostics. It is not raw
 provider wire data and must not carry prompt text, tool arguments, tool results,

@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-06-28
+* **Update**: Documented that provider continuation recovery preserves the
+  Floret ordered transcript by committing live assistant prefixes and
+  backfilling only uncommitted suffixes.
 * **Update**: Documented ordered hosted thread detail events and committed
   thread-entry observations as Floret's public durable execution transcript
   read model for downstream hosts.

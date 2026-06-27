@@ -26,6 +26,11 @@ and runtime events.
 `AgentHarness` is the internal durable conversation layer. It owns threads,
 parent-child thread lifecycle, turn lifecycle, retries, forks, titles, and
 projection of an active journal path into one engine execution.
+Realtime turn projection and final engine-result backfill share one durable
+journal. When a provider continuation appends more assistant text to the same
+turn, the harness commits the live prefix at continuation boundaries and only
+backfills the uncommitted suffix, preserving the ordered execution transcript
+without duplicating accumulated provider output.
 Durable compaction entries are committed only after `Engine` has rebuilt and
 validated the compacted provider request, so a journal checkpoint is an
 installed continuation boundary rather than a candidate summary.

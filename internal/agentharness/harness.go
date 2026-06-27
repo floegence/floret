@@ -891,13 +891,11 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	if err := projection.Flush(); err != nil {
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, err, "projection_flush_error")
 	}
-	deltaBase := history
 	current, err := t.Journal(persistCtx)
 	if err != nil {
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "snapshot_error")
 	}
-	deltaBase = current.Context
-	if err := t.appendDelta(persistCtx, turnID, deltaBase, result.Messages, current.Path); err != nil {
+	if err := t.appendDelta(persistCtx, turnID, history, result.Messages, current.Path); err != nil {
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "append_delta_error")
 	}
 	status := markerForStatus(result.Status)
@@ -1331,6 +1329,12 @@ func (t *Thread) appendDelta(ctx context.Context, turnID string, before, after [
 		if nonDurableProjection(msg) {
 			continue
 		}
+		if suffix, ok := persisted.assistantSuffix(msg); ok {
+			if strings.TrimSpace(suffix.Content) == "" && strings.TrimSpace(suffix.Reasoning) == "" {
+				continue
+			}
+			msg = suffix
+		}
 		// IMPORTANT: Realtime turn projection and appendDelta share the durable
 		// journal for one turn. appendDelta may only backfill messages that were
 		// not already persisted by projection; hiding duplicates in the UI or
@@ -1395,6 +1399,38 @@ func (c *durableMessageCounter) record(msg session.Message) {
 		return
 	}
 	c.counts[durableSignature(msg)]++
+}
+
+func (c *durableMessageCounter) assistantSuffix(msg session.Message) (session.Message, bool) {
+	if c == nil || msg.Role != session.Assistant || msg.ToolCallID != "" || msg.ToolName != "" || msg.ToolArgs != "" || msg.ToolResult != nil || msg.Kind != "" {
+		return session.Message{}, false
+	}
+	content := msg.Content
+	reasoning := msg.Reasoning
+	for signature, count := range c.counts {
+		if count <= 0 || signature.Role != session.Assistant || signature.ToolCallID != "" || signature.ToolName != "" || signature.ToolArgs != "" || signature.ToolResult != "" || signature.Kind != "" {
+			continue
+		}
+		if signature.Content != "" {
+			if !strings.HasPrefix(content, signature.Content) {
+				continue
+			}
+			content = strings.TrimPrefix(content, signature.Content)
+		}
+		if signature.Reasoning != "" {
+			if !strings.HasPrefix(reasoning, signature.Reasoning) {
+				continue
+			}
+			reasoning = strings.TrimPrefix(reasoning, signature.Reasoning)
+		}
+	}
+	if content == msg.Content && reasoning == msg.Reasoning {
+		return session.Message{}, false
+	}
+	suffix := msg
+	suffix.Content = content
+	suffix.Reasoning = reasoning
+	return suffix, true
 }
 
 func durableSignature(msg session.Message) durableMessageSignature {
@@ -1747,25 +1783,18 @@ func (p *turnProjection) Emit(ev event.Event) {
 	case event.ProviderReasoning:
 		p.reasoning += ev.Message
 	case event.ToolCall:
-		if p.text != "" {
-			p.err = p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Assistant, Content: p.text, Reasoning: p.reasoning})
-			p.text = ""
-			if p.err != nil {
-				return
-			}
+		if err := p.flushPendingAssistantText(false); err != nil {
+			p.err = err
+			return
 		}
 		p.pendingCalls = append(p.pendingCalls, session.Message{Role: session.Assistant, Content: "tool_call", Reasoning: p.reasoning, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolArgs: ev.Args})
 		if size := eventBatchSize(ev.Metadata); size > p.pendingBatchSize {
 			p.pendingBatchSize = size
 		}
 	case event.ToolResult:
-		if p.text != "" {
-			p.err = p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Assistant, Content: p.text, Reasoning: p.reasoning})
-			p.text = ""
-			p.reasoning = ""
-			if p.err != nil {
-				return
-			}
+		if err := p.flushPendingAssistantText(true); err != nil {
+			p.err = err
+			return
 		}
 		p.pendingResults = append(p.pendingResults, session.Message{Role: session.Tool, Content: ev.Result, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolResult: toolResultViewFromEvent(ev)})
 		if size := eventBatchSize(ev.Metadata); size > p.pendingBatchSize {
@@ -1780,13 +1809,9 @@ func (p *turnProjection) Emit(ev event.Event) {
 			p.err = err
 			return
 		}
-		if p.text != "" {
-			p.err = p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Assistant, Content: p.text, Reasoning: p.reasoning})
-			p.text = ""
-			p.reasoning = ""
-			if p.err != nil {
-				return
-			}
+		if err := p.flushPendingAssistantText(true); err != nil {
+			p.err = err
+			return
 		}
 		p.err = p.thread.appendApprovalEvent(p.ctx, p.turnID, ev)
 	case event.ContextContinue:
@@ -1794,13 +1819,9 @@ func (p *turnProjection) Emit(ev event.Event) {
 			p.err = err
 			return
 		}
-		if p.text != "" {
-			p.err = p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Assistant, Content: p.text, Reasoning: p.reasoning})
-			p.text = ""
-			p.reasoning = ""
-			if p.err != nil {
-				return
-			}
+		if err := p.flushPendingAssistantText(true); err != nil {
+			p.err = err
+			return
 		}
 		p.err = p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.User, Content: ev.Message})
 		if p.err != nil {
@@ -1815,6 +1836,13 @@ func (p *turnProjection) Emit(ev event.Event) {
 		if p.err == nil {
 			p.thread.harness.emitEntryCommitted(entry)
 		}
+	case event.StepEnd:
+		if ev.ContinuationReason != "" {
+			if err := p.flushPendingAssistantText(true); err != nil {
+				p.err = err
+				return
+			}
+		}
 	}
 }
 
@@ -1828,12 +1856,25 @@ func (p *turnProjection) Flush() error {
 		p.err = err
 		return err
 	}
-	if p.text != "" {
-		if err := p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Assistant, Content: p.text, Reasoning: p.reasoning}); err != nil {
-			p.err = err
-			return err
+	if err := p.flushPendingAssistantText(true); err != nil {
+		p.err = err
+		return err
+	}
+	return nil
+}
+
+func (p *turnProjection) flushPendingAssistantText(resetReasoning bool) error {
+	if p.text == "" {
+		if resetReasoning {
+			p.reasoning = ""
 		}
-		p.text = ""
+		return nil
+	}
+	if err := p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Assistant, Content: p.text, Reasoning: p.reasoning}); err != nil {
+		return err
+	}
+	p.text = ""
+	if resetReasoning {
 		p.reasoning = ""
 	}
 	return nil

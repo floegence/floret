@@ -542,6 +542,41 @@ func TestHarnessOwnsEngineIdentityAndToolDefinitions(t *testing.T) {
 	}
 }
 
+func TestThreadRunStoresLengthContinuationAsDelta(t *testing.T) {
+	ctx := context.Background()
+	p := scriptharness.NewScriptedProvider(
+		[]provider.StreamEvent{scriptharness.Text("partial "), {Type: provider.Truncated}},
+		scriptharness.Step(scriptharness.Text("retried"), scriptharness.Done()),
+	)
+	h := newTestHarness(p, sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := thread.Run(ctx, "do it", RunOptions{TurnID: "turn-1", MaxLengthContinuations: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != engine.Completed || result.Output != "partial retried" {
+		t.Fatalf("result = %#v", result)
+	}
+
+	snap, err := thread.Journal(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var assistant []string
+	for _, entry := range snap.Entries {
+		if entry.TurnID == "turn-1" && entry.Type == sessiontree.EntryAssistantMessage {
+			assistant = append(assistant, entry.Message.Content)
+		}
+	}
+	if !slices.Equal(assistant, []string{"partial ", "retried"}) {
+		t.Fatalf("assistant entries = %#v, want length-continuation delta", assistant)
+	}
+}
+
 func TestThreadRunStopHookContinuationIsPersistedAndMetadataStaysOutOfPrompt(t *testing.T) {
 	ctx := context.Background()
 	repo := sessiontree.NewMemoryRepo()
