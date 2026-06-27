@@ -44,6 +44,9 @@ const (
 	MaxSubAgentRunTimeout      = 20 * time.Minute
 	DefaultSubAgentDetailLimit = 200
 	MaxSubAgentDetailLimit     = 500
+
+	DefaultThreadDetailEventLimit = DefaultSubAgentDetailLimit
+	MaxThreadDetailEventLimit     = MaxSubAgentDetailLimit
 )
 
 const (
@@ -125,6 +128,13 @@ type ReadSubAgentDetailOptions struct {
 	IncludeRaw     bool
 }
 
+type ListThreadDetailEventsOptions struct {
+	ThreadID     string
+	AfterOrdinal int64
+	Limit        int
+	IncludeRaw   bool
+}
+
 type SubAgentSnapshot struct {
 	ThreadID       string         `json:"thread_id"`
 	Path           string         `json:"path"`
@@ -152,6 +162,14 @@ type WaitSubAgentsResult struct {
 
 type SubAgentDetail struct {
 	Snapshot     SubAgentSnapshot      `json:"snapshot"`
+	Events       []SubAgentDetailEvent `json:"events"`
+	NextOrdinal  int64                 `json:"next_ordinal,omitempty"`
+	HasMore      bool                  `json:"has_more,omitempty"`
+	RetainedFrom int64                 `json:"retained_from,omitempty"`
+	GeneratedAt  time.Time             `json:"generated_at"`
+}
+
+type ThreadDetailEvents struct {
 	Events       []SubAgentDetailEvent `json:"events"`
 	NextOrdinal  int64                 `json:"next_ordinal,omitempty"`
 	HasMore      bool                  `json:"has_more,omitempty"`
@@ -521,6 +539,65 @@ func (h *AgentHarness) ReadSubAgentDetail(ctx context.Context, opts ReadSubAgent
 		RetainedFrom: retainedFrom,
 		GeneratedAt:  h.now(),
 	}, nil
+}
+
+func (h *AgentHarness) ListThreadDetailEvents(ctx context.Context, opts ListThreadDetailEventsOptions) (ThreadDetailEvents, error) {
+	if h == nil {
+		return ThreadDetailEvents{}, errors.New("agent harness is nil")
+	}
+	if strings.TrimSpace(opts.ThreadID) == "" {
+		return ThreadDetailEvents{}, errors.New("thread id is required")
+	}
+	if opts.Limit < 0 {
+		return ThreadDetailEvents{}, errors.New("thread detail event limit must be non-negative")
+	}
+	limit := opts.Limit
+	if limit == 0 {
+		limit = DefaultThreadDetailEventLimit
+	}
+	if limit > MaxThreadDetailEventLimit {
+		limit = MaxThreadDetailEventLimit
+	}
+	thread := h.cacheThread(opts.ThreadID)
+	journal, err := thread.Journal(ctx)
+	if err != nil {
+		return ThreadDetailEvents{}, err
+	}
+	entries := journal.Path
+	retainedFrom := threadDetailRetainedFrom(entries)
+	events := make([]SubAgentDetailEvent, 0, len(entries))
+	var nextOrdinal int64
+	var hasMore bool
+	for index, entry := range entries {
+		ordinal := int64(index + 1)
+		if ordinal < retainedFrom || ordinal <= opts.AfterOrdinal {
+			continue
+		}
+		event, ok := h.subAgentDetailEvent(entry, ordinal, opts.IncludeRaw)
+		if !ok {
+			continue
+		}
+		if len(events) >= limit {
+			hasMore = true
+			break
+		}
+		events = append(events, event)
+		nextOrdinal = ordinal
+	}
+	return ThreadDetailEvents{
+		Events:       events,
+		NextOrdinal:  nextOrdinal,
+		HasMore:      hasMore,
+		RetainedFrom: retainedFrom,
+		GeneratedAt:  h.now(),
+	}, nil
+}
+
+func threadDetailRetainedFrom(entries []sessiontree.Entry) int64 {
+	if len(entries) == 0 {
+		return 0
+	}
+	return 1
 }
 
 func subAgentDetailRetainedFrom(entries []sessiontree.Entry) int64 {

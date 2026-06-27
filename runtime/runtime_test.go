@@ -180,6 +180,91 @@ func TestHostStreamsProjectedContextStatus(t *testing.T) {
 	}
 }
 
+func TestHostModelGatewayPreservesTextAroundToolCalls(t *testing.T) {
+	ctx := context.Background()
+	rec := &runtimeEventRecorder{}
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		events := make(chan ModelEvent, 6)
+		switch req.Step {
+		case 1:
+			events <- ModelEvent{Type: ModelEventDelta, Text: "I will inspect first. "}
+			events <- ModelEvent{Type: ModelEventToolCallStart, ToolCallStream: &ModelToolCallStream{ID: "read-1", Name: "read"}}
+			events <- ModelEvent{Type: ModelEventToolCallDelta, ToolCallStream: &ModelToolCallStream{ID: "read-1", Name: "read"}}
+			events <- ModelEvent{Type: ModelEventToolCallEnd, ToolCallStream: &ModelToolCallStream{ID: "read-1", Name: "read"}}
+			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "read-1", Name: "read", Args: `{"text":"alpha"}`}}}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+		default:
+			events <- ModelEvent{Type: ModelEventDelta, Text: "Read returned alpha."}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+		}
+		close(events)
+		return events, nil
+	})
+	reg := tools.NewRegistry()
+	if err := reg.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{Name: "read", InputSchema: runtimeEchoSchema(), Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			return tools.Result{Text: "alpha"}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "gateway system",
+		},
+		ModelGateway: gateway,
+		Tools:        reg,
+		Sink:         rec,
+		IDGenerator:  deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := host.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != TurnStatusCompleted || result.Output != "I will inspect first. Read returned alpha." {
+		t.Fatalf("result = %#v", result)
+	}
+	var streamOrder []StreamObservationType
+	var texts []string
+	for _, ev := range rec.events {
+		if ev.Stream == nil {
+			continue
+		}
+		streamOrder = append(streamOrder, ev.Stream.Type)
+		if ev.Stream.Text != "" {
+			texts = append(texts, ev.Stream.Text)
+		}
+	}
+	wantOrder := []StreamObservationType{
+		StreamObservationAssistantDelta,
+		StreamObservationToolCallStart,
+		StreamObservationToolCallDelta,
+		StreamObservationToolCallEnd,
+		StreamObservationModelStreamDone,
+		StreamObservationAssistantDelta,
+		StreamObservationModelStreamDone,
+	}
+	if !slices.Equal(streamOrder, wantOrder) {
+		t.Fatalf("stream order = %#v, want %#v", streamOrder, wantOrder)
+	}
+	if !slices.Equal(texts, []string{"I will inspect first. ", "Read returned alpha."}) {
+		t.Fatalf("stream texts = %#v", texts)
+	}
+}
+
 func TestHostToolSurfaceProviderRefreshesGatewayRequests(t *testing.T) {
 	var requests []ModelRequest
 	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
@@ -859,6 +944,223 @@ func TestHarnessHelperRunsCustomToolWithoutPublicProviderAPI(t *testing.T) {
 		return msg.Role == session.Tool && msg.ToolName == "echo" && msg.Content == "89abcdef"
 	}) {
 		t.Fatalf("follow-up request should contain projected tool output: %#v", scripted.Requests[1].Messages)
+	}
+}
+
+func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
+	ctx := context.Background()
+	registry := tools.NewRegistry()
+	if err := registry.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{
+			Name:         "echo",
+			Title:        "Echo",
+			Description:  "Return the supplied text.",
+			InputSchema:  runtimeEchoSchema(),
+			ReadOnly:     true,
+			OutputPolicy: tools.OutputPolicy{VisibleMaxBytes: 1024, Strategy: tools.OutputHead, PreserveFull: true},
+		},
+		nil,
+		nil,
+		func(_ context.Context, inv tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			return tools.Result{Text: inv.Args.Text + " result"}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var requests []ModelRequest
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		mu.Lock()
+		requests = append(requests, req)
+		step := len(requests)
+		mu.Unlock()
+		events := make(chan ModelEvent, 3)
+		switch step {
+		case 1:
+			events <- ModelEvent{Type: ModelEventDelta, Text: "Before first tool."}
+			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "call-1", Name: "echo", Args: `{"text":"first"}`}}}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+		case 2:
+			events <- ModelEvent{Type: ModelEventDelta, Text: "After first tool, before second tool."}
+			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "call-2", Name: "echo", Args: `{"text":"second"}`}}}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+		default:
+			events <- ModelEvent{Type: ModelEventDelta, Text: "Final answer."}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+		}
+		close(events)
+		return events, nil
+	})
+	rec := &runtimeEventRecorder{}
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+		},
+		ModelGateway: gateway,
+		Store:        NewMemoryStore(),
+		Tools:        registry,
+		Approver:     allowRuntimeTools,
+		Sink:         rec,
+		IDGenerator:  deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := host.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn-1", Input: "run tools"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != TurnStatusCompleted || result.Output != "Before first tool.After first tool, before second tool.Final answer." {
+		t.Fatalf("result = %#v", result)
+	}
+	detail, err := host.ListThreadDetailEvents(ctx, ListThreadDetailEventsRequest{ThreadID: "thread", IncludeRaw: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, ev := range detail.Events {
+		switch ev.Kind {
+		case ThreadDetailEventAssistantMessage:
+			got = append(got, "assistant:"+ev.Message.Content)
+		case ThreadDetailEventToolCall:
+			got = append(got, "tool_call:"+ev.ToolCall.ID)
+		case ThreadDetailEventToolResult:
+			got = append(got, "tool_result:"+ev.ToolResult.CallID)
+		}
+	}
+	want := []string{
+		"assistant:Before first tool.",
+		"tool_call:call-1",
+		"tool_result:call-1",
+		"assistant:After first tool, before second tool.",
+		"tool_call:call-2",
+		"tool_result:call-2",
+		"assistant:Final answer.",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("detail order = %#v, want %#v", got, want)
+	}
+
+	var committed []string
+	for _, ev := range rec.events {
+		if ev.Committed == nil {
+			continue
+		}
+		switch ev.Committed.Kind {
+		case ThreadDetailEventAssistantMessage:
+			committed = append(committed, "assistant:"+ev.Committed.Message.Content)
+		case ThreadDetailEventToolCall:
+			committed = append(committed, "tool_call:"+ev.Committed.ToolCall.ID)
+		case ThreadDetailEventToolResult:
+			committed = append(committed, "tool_result:"+ev.Committed.ToolResult.CallID)
+		}
+	}
+	if !slices.Equal(committed, want) {
+		t.Fatalf("committed order = %#v, want %#v", committed, want)
+	}
+	if !slices.ContainsFunc(rec.events, func(ev Event) bool {
+		return ev.Committed != nil &&
+			ev.Committed.Kind == ThreadDetailEventToolCall &&
+			ev.Committed.ToolCall != nil &&
+			ev.Committed.ToolCall.ID == "call-1" &&
+			ev.Committed.ToolCall.ArgsJSON == "" &&
+			ev.Committed.ToolCall.ArgsHash != ""
+	}) {
+		t.Fatalf("committed tool call should expose preview/hash without raw args: %#v", rec.events)
+	}
+	if !slices.ContainsFunc(rec.events, func(ev Event) bool {
+		return ev.Committed != nil &&
+			ev.Committed.Kind == ThreadDetailEventToolResult &&
+			ev.Committed.ToolResult != nil &&
+			ev.Committed.ToolResult.CallID == "call-1" &&
+			ev.Committed.ToolResult.Content == "" &&
+			ev.Committed.ToolResult.ContentSHA256 != ""
+	}) {
+		t.Fatalf("committed tool result should expose preview/hash without raw result: %#v", rec.events)
+	}
+}
+
+func TestHostThreadDetailEventsOmitRawUnlessRequested(t *testing.T) {
+	ctx := context.Background()
+	rec := &runtimeEventRecorder{}
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "private answer",
+			SystemPrompt: "test",
+		},
+		Store:       NewMemoryStore(),
+		Sink:        rec,
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn-1", Input: "private input"}); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := host.ListThreadDetailEvents(ctx, ListThreadDetailEventsRequest{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var assistantPreview ThreadDetailEvent
+	for _, ev := range preview.Events {
+		if ev.Kind == ThreadDetailEventAssistantMessage {
+			assistantPreview = ev
+			break
+		}
+	}
+	if assistantPreview.Message == nil || assistantPreview.Message.Preview != "private answer" || assistantPreview.Message.Content != "" {
+		t.Fatalf("preview assistant event = %#v", assistantPreview)
+	}
+	if assistantPreview.Metadata["raw_omitted"] != "true" {
+		t.Fatalf("preview metadata = %#v", assistantPreview.Metadata)
+	}
+
+	raw, err := host.ListThreadDetailEvents(ctx, ListThreadDetailEventsRequest{ThreadID: "thread", IncludeRaw: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var assistantRaw ThreadDetailEvent
+	for _, ev := range raw.Events {
+		if ev.Kind == ThreadDetailEventAssistantMessage {
+			assistantRaw = ev
+			break
+		}
+	}
+	if assistantRaw.Message == nil || assistantRaw.Message.Content != "private answer" {
+		t.Fatalf("raw assistant event = %#v", assistantRaw)
+	}
+	if _, ok := assistantRaw.Metadata["raw_omitted"]; ok {
+		t.Fatalf("raw metadata marked omitted: %#v", assistantRaw.Metadata)
+	}
+
+	if !slices.ContainsFunc(rec.events, func(ev Event) bool {
+		if ev.Committed == nil || ev.Committed.Kind != ThreadDetailEventAssistantMessage || ev.Committed.Message == nil {
+			return false
+		}
+		if ev.Committed.Message.Content != "private answer" {
+			return false
+		}
+		if ev.Metadata == nil {
+			return true
+		}
+		_, hasDetail := ev.Metadata["detail"]
+		return !hasDetail && !strings.Contains(fmt.Sprint(ev.Metadata), "private answer")
+	}) {
+		t.Fatalf("committed event did not expose raw only through Committed: %#v", rec.events)
 	}
 }
 

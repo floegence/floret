@@ -84,6 +84,60 @@ func TestSanitizeRemovesProviderDeltaAndReasoning(t *testing.T) {
 	}
 }
 
+func TestSanitizeRemovesThreadEntryCommittedDetail(t *testing.T) {
+	got := Sanitize(Event{
+		Type:    ThreadEntryCommitted,
+		RunID:   "run",
+		Message: "raw assistant text",
+		Args:    `{"token":"secret-value"}`,
+		Result:  "raw tool result",
+		Err:     "authorization bearer-secret failed",
+		Metadata: map[string]any{
+			"entry_id": "entry-1",
+			"ordinal":  3,
+			"detail":   map[string]any{"message": "raw assistant text"},
+		},
+	})
+	if got.Message != "" || got.Args != "" || got.Result != "" || got.Err != "" {
+		t.Fatalf("committed event exposed raw fields: %#v", got)
+	}
+	meta, ok := got.Metadata.(map[string]any)
+	if !ok {
+		t.Fatalf("metadata = %#v", got.Metadata)
+	}
+	if meta["ordinal"] != 3 {
+		t.Fatalf("safe metadata missing: %#v", meta)
+	}
+	if _, ok := meta["detail"]; ok || strings.Contains(fmt.Sprint(meta), "raw assistant text") || strings.Contains(fmt.Sprint(meta), "entry-1") {
+		t.Fatalf("detail leaked through metadata: %#v", meta)
+	}
+}
+
+func TestSanitizeRawThreadEntryCommittedKeepsPayloadOutOfJSON(t *testing.T) {
+	got := SanitizeWithPolicy(Event{
+		Type: ThreadEntryCommitted,
+		Metadata: map[string]any{
+			"entry_id": "entry-1",
+			"detail":   map[string]any{"message": "/private/workspace/secret.txt"},
+		},
+		Payload: map[string]any{"message": "/private/workspace/secret.txt"},
+	}, SinkPolicy{AllowRaw: true, Redactor: SafePathRefsText})
+	meta, ok := got.Metadata.(map[string]any)
+	if !ok {
+		t.Fatalf("metadata = %#v", got.Metadata)
+	}
+	if _, ok := meta["detail"]; ok {
+		t.Fatalf("detail leaked through raw metadata: %#v", meta)
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "/private/workspace") || strings.Contains(string(encoded), "secret.txt") {
+		t.Fatalf("payload leaked through JSON: %s", encoded)
+	}
+}
+
 func TestSanitizeKeepsSafeCapabilityMetadataReadable(t *testing.T) {
 	got := Sanitize(Event{
 		Type:  MCPServerFailed,

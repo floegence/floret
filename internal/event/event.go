@@ -51,6 +51,7 @@ const (
 	ContextCompact         Type = "context_compact"
 	ContextCompactDebug    Type = "context_compact_debug"
 	ContextContinue        Type = "context_continue"
+	ThreadEntryCommitted   Type = "thread_entry_committed"
 	ControlSignal          Type = "control_signal"
 	BudgetExceeded         Type = "budget_exceeded"
 	StepEnd                Type = "step_end"
@@ -86,6 +87,7 @@ type Event struct {
 	Activity           *observation.ActivityPresentation `json:"activity,omitempty"`
 	Artifacts          []Artifact                        `json:"artifacts,omitempty"`
 	Sources            []SourceRef                       `json:"sources,omitempty"`
+	Payload            any                               `json:"-"`
 	Timestamp          time.Time                         `json:"timestamp"`
 }
 
@@ -146,6 +148,9 @@ func sanitize(e Event, policy SinkPolicy) Event {
 			e.Result = policy.Redactor(e.Result)
 			e.Err = policy.Redactor(e.Err)
 		}
+		if e.Type == ThreadEntryCommitted {
+			e.Metadata = withoutMetadataKey(e.Metadata, "detail")
+		}
 		e.Activity = sanitizeActivityPresentation(e.Activity)
 		return e
 	}
@@ -168,15 +173,51 @@ func sanitize(e Event, policy SinkPolicy) Event {
 		e.Err = ""
 	case ContextCompact:
 		e.Result = ""
+	case ThreadEntryCommitted:
+		e.Message = ""
+		e.Args = ""
+		e.Result = ""
+		e.Err = ""
+		e.Metadata = withoutMetadataKey(e.Metadata, "detail")
 	}
 	e.Err = Redact(e.Err)
 	e.Message = Redact(e.Message)
 	e.Args = ""
 	e.Result = Redact(e.Result)
 	e.Metadata = sanitizeMetadata(e.Metadata)
+	e.Payload = nil
 	e.Activity = sanitizeActivityPresentation(e.Activity)
 	e.Sources = sanitizeSourceRefs(e.Sources)
 	return e
+}
+
+func withoutMetadataKey(value any, key string) any {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return value
+	}
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for itemKey, item := range v {
+			if itemKey == key {
+				continue
+			}
+			out[itemKey] = item
+		}
+		return out
+	case map[string]string:
+		out := make(map[string]string, len(v))
+		for itemKey, item := range v {
+			if itemKey == key {
+				continue
+			}
+			out[itemKey] = item
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 func sanitizePathRefs(e Event) Event {

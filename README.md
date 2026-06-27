@@ -358,6 +358,22 @@ content are omitted unless `IncludeRaw` is set for an explicitly authorized
 human/debug surface. Do not use raw subagent detail responses as model-facing
 `wait` or `inspect` tool output.
 
+### Thread detail inspection
+
+Use `ListThreadDetailEvents` when a host UI needs the Floret-owned ordered
+execution transcript for a hosted thread. The API projects the thread journal in
+entry ordinal order and covers user messages, assistant messages, tool calls,
+tool results, turn markers, compaction checkpoints, approvals, custom entries,
+and run failures. It is the public read model for durable execution facts; hosts
+should derive their product display caches from these events instead of reading
+Floret storage internals or reconstructing assistant/tool order themselves.
+
+Thread detail events are paginated by ordinal and default to bounded,
+sanitized previews plus hashes, truncation metadata, and artifact references.
+Raw message content, reasoning, tool arguments, and full tool result content are
+omitted unless `IncludeRaw` is set for an explicitly authorized human/debug
+surface.
+
 ## 🧱 Responsibility boundary
 
 | Area | Floret owns | Host application owns |
@@ -391,6 +407,11 @@ finish facts, and model tool-call stream facts. `ModelEventToolCallStart`,
 `ModelEventToolCallDelta`, and `ModelEventToolCallEnd` identify the tool call
 the model is generating without exposing argument text; the final executable
 batch still arrives separately as `ModelEventToolCalls`.
+
+When Floret commits a thread journal entry, `runtime.Event.Committed` carries
+the corresponding `ThreadDetailEvent` after the entry is durable. Hosts can use
+stream observations for temporary live token rendering, then reconcile durable
+display order from committed thread events or `ListThreadDetailEvents`.
 
 ## 🔁 Runtime Flow
 

@@ -32,6 +32,8 @@ continuation state, and lifecycle observations.
 * `ReadSubAgentDetail` and `ListSubAgentDetailEvents` let a host read a
   parent-scoped, paginated child-thread execution timeline for human UI or
   audit surfaces without expanding `WaitSubAgents` payloads.
+* `ListThreadDetailEvents` lets a host read the Floret-owned ordered execution
+  transcript for a hosted thread without reading Floret storage internals.
 * `ModelGateway` lets a host supply model transport through
   `HostOptions.ModelGateway` while Floret owns loop control, tool dispatch,
   context lifecycle, and ledgers.
@@ -90,9 +92,25 @@ content are omitted unless a host sets `IncludeRaw` for an explicitly authorized
 human/debug inspection surface, and hosts should not reuse that raw response as
 model-facing tool output.
 
+Thread detail reads expose the current hosted thread journal path in entry
+ordinal order. They cover user messages, assistant messages, tool calls, tool
+results, turn markers, compaction checkpoints, approvals, custom entries, and
+run failures. This is Floret's public read model for durable execution
+transcript facts; downstream hosts may derive product UI caches from it, but
+must not read Floret's store schema or rebuild execution ordering from separate
+audit tables. Pagination uses `AfterOrdinal`, `Limit`, `HasMore`, and
+`NextOrdinal`; raw content follows the same explicit `IncludeRaw` opt-in rule as
+subagent detail reads.
+
 `StreamObservation` is for host rendering and diagnostics. It is not raw
 provider wire data and must not carry prompt text, tool arguments, tool results,
 local paths, or secrets.
+
+`runtime.Event.Committed` carries a `ThreadDetailEvent` after Floret has
+successfully appended the corresponding journal entry. Hosts can render provider
+text deltas as temporary live output, but durable display reconciliation should
+use committed thread events or `ListThreadDetailEvents` so visible ordering
+matches Floret's stored transcript.
 
 Projected control signals are declared through `TurnSignalSpec`. Waiting
 signals interrupt the turn with their projected prompt. Terminal signals complete

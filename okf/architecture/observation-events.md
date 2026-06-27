@@ -33,6 +33,12 @@ reasoning, tool arguments, tool results, and local paths.
   approval state, turn markers, compaction checkpoints, and run failures in
   journal ordinal order. This detail projection is separate from model-facing
   wait results and does not make raw provider wire records public.
+* Thread detail events expose the hosted thread journal path in Floret entry
+  ordinal order. `ListThreadDetailEvents` is the durable read model, while
+  `runtime.Event.Committed` announces each entry after it is successfully
+  appended. Hosts can use streaming observations for temporary live rendering,
+  then reconcile durable display order from committed thread events or the read
+  model without reading Floret storage internals.
 * Context statuses show projected and provider-reported context pressure.
 * Compaction events expose context compaction lifecycle. A complete compaction
   event means the compacted active context has been rebuilt into a full provider

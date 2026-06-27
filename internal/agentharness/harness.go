@@ -422,6 +422,67 @@ func (h *AgentHarness) emit(ev HarnessEvent) {
 	}
 }
 
+func (h *AgentHarness) emitEntryCommitted(entry sessiontree.Entry) {
+	if h == nil || h.options.Sink == nil || strings.TrimSpace(entry.ID) == "" {
+		return
+	}
+	ordinal := h.threadEntryOrdinal(entry)
+	detail, ok := h.subAgentDetailEvent(entry, ordinal, false)
+	if !ok {
+		return
+	}
+	if detail.Kind == SubAgentDetailEventAssistantMessage && detail.Message != nil {
+		detail.Message.Content = entry.Message.Content
+		detail.Message.Reasoning = entry.Message.Reasoning
+		if detail.Metadata != nil {
+			delete(detail.Metadata, subAgentDetailRawOmitted)
+		}
+	}
+	metadata := map[string]any{
+		"entry_id":   entry.ID,
+		"parent_id":  entry.ParentID,
+		"entry_type": string(entry.Type),
+		"created_at": entry.CreatedAt.Format(time.RFC3339Nano),
+	}
+	if ordinal > 0 {
+		metadata["ordinal"] = ordinal
+	}
+	if entry.TurnStatus != "" {
+		metadata["turn_status"] = string(entry.TurnStatus)
+	}
+	h.options.Sink.Emit(event.SanitizeWithPolicy(event.Event{
+		Type:      event.ThreadEntryCommitted,
+		RunID:     entry.TurnID,
+		ThreadID:  entry.ThreadID,
+		TurnID:    entry.TurnID,
+		Message:   entry.Message.Content,
+		ToolID:    entry.Message.ToolCallID,
+		ToolName:  entry.Message.ToolName,
+		Args:      entry.Message.ToolArgs,
+		Result:    entry.Message.Content,
+		Err:       entry.Error,
+		Metadata:  metadata,
+		Payload:   detail,
+		Timestamp: entry.CreatedAt,
+	}, h.options.SinkPolicy))
+}
+
+func (h *AgentHarness) threadEntryOrdinal(entry sessiontree.Entry) int64 {
+	if h == nil || h.options.Repo == nil || strings.TrimSpace(entry.ThreadID) == "" || strings.TrimSpace(entry.ID) == "" {
+		return 0
+	}
+	entries, err := h.options.Repo.Entries(context.Background(), entry.ThreadID)
+	if err != nil {
+		return 0
+	}
+	for index, candidate := range entries {
+		if candidate.ID == entry.ID {
+			return int64(index + 1)
+		}
+	}
+	return 0
+}
+
 func (h *AgentHarness) activeTurnLease(ctx context.Context, threadID string) (sessiontree.TurnLease, bool, error) {
 	repo, ok := h.options.Repo.(sessiontree.TurnLeaseRepo)
 	if !ok {
@@ -763,8 +824,10 @@ func (t *Thread) runEntered(ctx context.Context, input string, opts RunOptions, 
 
 func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, retryUser *sessiontree.Entry) (TurnResult, error) {
 	turnID := opts.TurnID
-	if _, err := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, sessiontree.TurnStarted, nil); err != nil {
+	if entry, err := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, sessiontree.TurnStarted, nil); err != nil {
 		return TurnResult{}, err
+	} else {
+		t.harness.emitEntryCommitted(entry)
 	}
 	t.harness.emit(HarnessEvent{Type: EventTurnStarted, ThreadID: t.id, TurnID: turnID})
 	if retryUser == nil {
@@ -774,6 +837,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 			defer cancelPersist()
 			return t.finalizeFailedTurn(persistCtx, turnID, turnID, statusForError(err), err, "append_user_error")
 		}
+		t.harness.emitEntryCommitted(entry)
 		t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID})
 	}
 	snap, err := t.Journal(ctx)
@@ -839,12 +903,16 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	status := markerForStatus(result.Status)
 	savePointMetadata := markerMetadata(runID, result)
 	savePointMetadata["reason"] = "run_result"
-	if _, err := sessiontree.AppendTurnMarker(persistCtx, t.harness.options.Repo, t.id, turnID, sessiontree.TurnSavePoint, savePointMetadata); err != nil {
+	if entry, err := sessiontree.AppendTurnMarker(persistCtx, t.harness.options.Repo, t.id, turnID, sessiontree.TurnSavePoint, savePointMetadata); err != nil {
 		return TurnResult{}, err
+	} else {
+		t.harness.emitEntryCommitted(entry)
 	}
 	if result.Err != nil {
-		if _, err := sessiontree.AppendFailure(persistCtx, t.harness.options.Repo, t.id, turnID, result.Err.Error()); err != nil {
+		if entry, err := sessiontree.AppendFailure(persistCtx, t.harness.options.Repo, t.id, turnID, result.Err.Error()); err != nil {
 			return TurnResult{}, err
+		} else {
+			t.harness.emitEntryCommitted(entry)
 		}
 	}
 	terminalMetadata := markerMetadata(runID, result)
@@ -858,12 +926,14 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	if result.Status == engine.Waiting {
 		terminalMetadata["interrupt_reason"] = "ask_user"
 	}
-	if _, err := sessiontree.AppendTurnMarker(persistCtx, t.harness.options.Repo, t.id, turnID, status, terminalMetadata); err != nil {
+	if entry, err := sessiontree.AppendTurnMarker(persistCtx, t.harness.options.Repo, t.id, turnID, status, terminalMetadata); err != nil {
 		var committed sessiontree.AppendCommittedError
 		if errors.As(err, &committed) {
 			return turnResultFromEngine(turnID, result, map[string]string{"terminal_persistence_error": err.Error()}), result.Err
 		}
 		return TurnResult{}, err
+	} else {
+		t.harness.emitEntryCommitted(entry)
 	}
 	eventType := EventTurnCompleted
 	if result.Status == engine.Failed {
@@ -976,8 +1046,10 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 	}
 	result := engine.Result{Status: status, Err: err}
 	if err != nil {
-		if _, appendErr := sessiontree.AppendFailure(ctx, t.harness.options.Repo, t.id, turnID, err.Error()); appendErr != nil {
+		if entry, appendErr := sessiontree.AppendFailure(ctx, t.harness.options.Repo, t.id, turnID, err.Error()); appendErr != nil {
 			return TurnResult{}, appendErr
+		} else {
+			t.harness.emitEntryCommitted(entry)
 		}
 	}
 	metadata := markerMetadata(runID, result)
@@ -987,12 +1059,14 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 	if diagnostic != "" {
 		metadata["diagnostic"] = diagnostic
 	}
-	if _, appendErr := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, markerForStatus(status), metadata); appendErr != nil {
+	if entry, appendErr := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, markerForStatus(status), metadata); appendErr != nil {
 		var committed sessiontree.AppendCommittedError
 		if errors.As(appendErr, &committed) {
 			return turnResultFromEngine(turnID, result, map[string]string{"terminal_persistence_error": appendErr.Error(), "diagnostic": diagnostic}), err
 		}
 		return TurnResult{}, appendErr
+	} else {
+		t.harness.emitEntryCommitted(entry)
 	}
 	eventType := EventTurnFailed
 	if status == engine.Cancelled {
@@ -1352,6 +1426,7 @@ func (t *Thread) appendMessage(ctx context.Context, turnID string, msg session.M
 	if err != nil {
 		return err
 	}
+	t.harness.emitEntryCommitted(entry)
 	t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID})
 	return nil
 }
@@ -1388,6 +1463,7 @@ func (t *Thread) appendApprovalEvent(ctx context.Context, turnID string, ev even
 	if err != nil {
 		return err
 	}
+	t.harness.emitEntryCommitted(entry)
 	t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: string(ev.Type)})
 	return nil
 }
@@ -1565,6 +1641,7 @@ func (m *durableCompactionManager) CommitCompaction(ctx context.Context, req eng
 			return compaction.Result{}, nil, err
 		}
 	}
+	m.thread.harness.emitEntryCommitted(entry)
 	result := req.Result
 	result.Phase = req.Phase
 	result.CompactionID = entry.CompactionID
@@ -1733,7 +1810,11 @@ func (p *turnProjection) Emit(ev event.Event) {
 		if ev.Result != "" {
 			metadata["hook_reason"] = ev.Result
 		}
-		_, p.err = sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, sessiontree.TurnSavePoint, metadata)
+		var entry sessiontree.Entry
+		entry, p.err = sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, sessiontree.TurnSavePoint, metadata)
+		if p.err == nil {
+			p.thread.harness.emitEntryCommitted(entry)
+		}
 	}
 }
 
@@ -1796,8 +1877,10 @@ func (p *turnProjection) flushPendingToolBatch(force bool) error {
 			return err
 		}
 	}
-	if _, err := sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, sessiontree.TurnSavePoint, map[string]string{"reason": "tool_result_batch"}); err != nil {
+	if entry, err := sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, sessiontree.TurnSavePoint, map[string]string{"reason": "tool_result_batch"}); err != nil {
 		return err
+	} else {
+		p.thread.harness.emitEntryCommitted(entry)
 	}
 	p.pendingCalls = nil
 	p.pendingResults = nil

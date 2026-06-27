@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-06-28
+* **Update**: Documented ordered hosted thread detail events and committed
+  thread-entry observations as Floret's public durable execution transcript
+  read model for downstream hosts.
+
 ## 2026-06-26
 * **Update**: Documented `runtime.ToolSurfaceProvider` as the product-neutral
   dynamic tool surface hook for refreshing tools, hosted tools, prompts, and
