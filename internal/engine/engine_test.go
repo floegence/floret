@@ -2641,6 +2641,57 @@ func TestPreRequestThresholdCompactsWithoutReplacingStore(t *testing.T) {
 	}
 }
 
+func TestManualCompactBelowThresholdCreatesCheckpoint(t *testing.T) {
+	rec := &event.Recorder{}
+	e := newTestEngine(harness.NewScriptedProvider(), rec)
+	e.Compactor = engine.LocalCompactionManager{Generator: compaction.ExtractiveSummaryGenerator{}}
+	policy := contextpolicy.Normalize(e.Options.ContextPolicy)
+	history := []session.Message{
+		{Role: session.User, Content: "first request " + strings.Repeat("alpha ", 500), EntryID: "u1"},
+		{Role: session.Assistant, Content: "first answer " + strings.Repeat("bravo ", 500), EntryID: "a1"},
+		{Role: session.User, Content: "second request " + strings.Repeat("charlie ", 500), EntryID: "u2"},
+		{Role: session.Assistant, Content: "second answer " + strings.Repeat("delta ", 500), EntryID: "a2"},
+		{Role: session.User, Content: "third request " + strings.Repeat("echo ", 500), EntryID: "u3"},
+		{Role: session.Assistant, Content: "third answer " + strings.Repeat("foxtrot ", 500), EntryID: "a3"},
+	}
+	usage := contextpolicy.EstimateMessageContext(e.SystemPrompt, history, policy)
+	if usage.InputTokens >= contextpolicy.Threshold(policy) {
+		t.Fatalf("test history should stay below automatic threshold: usage=%#v threshold=%d", usage, contextpolicy.Threshold(policy))
+	}
+
+	got := e.build(t).CompactContext(context.Background(), engine.RunInput{
+		RunID:   "manual-below-threshold",
+		History: history,
+	}, engine.ManualCompactionRequest{RequestID: "manual-below-threshold", Source: "unit_test"})
+
+	if got.Status != engine.Completed || got.Err != nil || got.Metrics.Compactions != 1 {
+		t.Fatalf("manual compact below threshold = %#v", got)
+	}
+	if got.Compaction.TokensBefore <= 0 ||
+		got.Compaction.TokensAfterEstimate <= 0 ||
+		got.Compaction.TokensAfterEstimate >= got.Compaction.TokensBefore {
+		t.Fatalf("manual compact should reduce context even below threshold: %#v", got.Compaction)
+	}
+	if got.Compaction.Details["compacted_context_target_tokens"] == "" {
+		t.Fatalf("manual compact should record an explicit compact target: %#v", got.Compaction.Details)
+	}
+	if countMessagesByKind(got.Messages, session.MessageKindCompactionSummary) != 1 {
+		t.Fatalf("manual compact result should expose one checkpoint: %#v", got.Messages)
+	}
+	compactions := eventsOfType(rec.Events, event.ContextCompact)
+	if len(compactions) != 2 {
+		t.Fatalf("manual compact should emit start and complete events: %#v", compactions)
+	}
+	completeMeta, ok := compactions[1].Metadata.(map[string]any)
+	if !ok ||
+		completeMeta["trigger"] != compaction.TriggerManual ||
+		completeMeta["reason"] != compaction.ReasonManual ||
+		completeMeta["request_id"] != "manual-below-threshold" ||
+		completeMeta["source"] != "unit_test" {
+		t.Fatalf("manual compact complete metadata = %#v", completeMeta)
+	}
+}
+
 func TestRequestEstimateTriggersPreRequestCompaction(t *testing.T) {
 	rec := &event.Recorder{}
 	p := &estimatingProvider{

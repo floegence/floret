@@ -110,6 +110,11 @@ point, runs the same compaction pipeline as automatic pressure compaction with
 `manual/manual` trigger and reason, includes request correlation in
 start/complete/failed/cancelled observations, and then continues the provider
 loop when the manual compaction failed without cancellation.
+Manual compaction does not require the active context to have crossed the
+automatic pressure threshold. For a valid manual request below that threshold,
+Floret derives a manual checkpoint budget from the current Floret-owned context
+size and installs a durable checkpoint without accepting host-provided token
+targets, message ranges, summaries, or history policy.
 `ManualCompactionOperationID` exposes the public operation identity for a known
 run id, provider-loop step, and manual request id so hosts can correlate
 accepted manual work with later Floret observations without depending on

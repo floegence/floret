@@ -1622,7 +1622,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 	if manual.Source != "" {
 		baseDetails["manual_source"] = manual.Source
 	}
-	policy := compactionPolicyForUsage(opts.ContextPolicy, usage)
+	policy := compactionPolicyForOperation(opts.ContextPolicy, usage, trigger, reason)
 	var result compaction.Result
 	var active []session.Message
 	var req provider.Request
@@ -1984,6 +1984,52 @@ func compactionPolicyForUsage(policy contextpolicy.Policy, usage contextpolicy.U
 	} else {
 		policy.ContextWindowTokens = 1
 	}
+	return contextpolicy.Normalize(policy)
+}
+
+func compactionPolicyForOperation(policy contextpolicy.Policy, usage contextpolicy.Usage, trigger compaction.Trigger, reason compaction.Reason) contextpolicy.Policy {
+	policy = compactionPolicyForUsage(policy, usage)
+	if trigger == compaction.TriggerManual && reason == compaction.ReasonManual {
+		return manualCompactionPolicyForUsage(policy, usage)
+	}
+	return policy
+}
+
+func manualCompactionPolicyForUsage(policy contextpolicy.Policy, usage contextpolicy.Usage) contextpolicy.Policy {
+	policy = contextpolicy.Normalize(policy)
+	current := usage.InputTokens
+	if current <= 6 {
+		return policy
+	}
+	target := policy.CompactedContextTargetTokens
+	threshold := contextpolicy.Threshold(policy)
+	if threshold > 0 && threshold < target {
+		target = threshold
+	}
+	if target <= 0 || target >= current {
+		target = current * 60 / 100
+	}
+	if target >= current {
+		target = current - 1
+	}
+	if target < 6 {
+		target = 6
+	}
+	if target >= current {
+		return policy
+	}
+	messageBudget := target
+	if messageBudget > contextpolicy.DefaultCheckpointOverheadTokens+6 {
+		messageBudget -= contextpolicy.DefaultCheckpointOverheadTokens
+	}
+	if messageBudget < 6 {
+		messageBudget = 6
+	}
+	summary, tail, users := splitCompactionMessageBudget(messageBudget)
+	policy.CompactedContextTargetTokens = target
+	policy.ReservedSummaryTokens = summary
+	policy.RecentTailTokens = tail
+	policy.RecentUserTokens = users
 	return contextpolicy.Normalize(policy)
 }
 
