@@ -51,6 +51,7 @@ type Host interface {
 	WaitSubAgents(context.Context, WaitSubAgentsRequest) (WaitSubAgentsResult, error)
 	ListSubAgents(context.Context, ThreadID) ([]SubAgentSnapshot, error)
 	CloseSubAgent(context.Context, CloseSubAgentRequest) (SubAgentSnapshot, error)
+	CloseSubAgents(context.Context, CloseSubAgentsRequest) (CloseSubAgentsResult, error)
 	ListSubAgentActivityTimeline(context.Context, ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error)
 	ReadSubAgentDetail(context.Context, ReadSubAgentDetailRequest) (SubAgentDetail, error)
 	ListSubAgentDetailEvents(context.Context, ListSubAgentDetailEventsRequest) (SubAgentDetailEvents, error)
@@ -196,6 +197,12 @@ type WaitSubAgentsRequest struct {
 type CloseSubAgentRequest struct {
 	ParentThreadID ThreadID
 	ChildThreadID  ThreadID
+	Reason         string
+}
+
+type CloseSubAgentsRequest struct {
+	ParentThreadID ThreadID
+	Reason         string
 }
 
 type ReadSubAgentDetailRequest struct {
@@ -227,28 +234,34 @@ type ListThreadDetailEventsRequest struct {
 }
 
 type SubAgentSnapshot struct {
-	ThreadID       ThreadID       `json:"thread_id"`
-	Path           string         `json:"path"`
-	TaskName       string         `json:"task_name"`
-	ParentThreadID ThreadID       `json:"parent_thread_id"`
-	ParentTurnID   TurnID         `json:"parent_turn_id,omitempty"`
-	HostProfileRef string         `json:"host_profile_ref,omitempty"`
-	Status         SubAgentStatus `json:"status"`
-	LatestTurnID   TurnID         `json:"latest_turn_id,omitempty"`
-	LastMessage    string         `json:"last_message,omitempty"`
-	WaitingPrompt  string         `json:"waiting_prompt,omitempty"`
-	QueuedInputs   int            `json:"queued_inputs,omitempty"`
-	CreatedAt      time.Time      `json:"created_at"`
-	UpdatedAt      time.Time      `json:"updated_at"`
-	Closed         bool           `json:"closed,omitempty"`
-	CanSendInput   bool           `json:"can_send_input"`
-	CanInterrupt   bool           `json:"can_interrupt"`
-	CanClose       bool           `json:"can_close"`
+	ThreadID       ThreadID         `json:"thread_id"`
+	Path           string           `json:"path"`
+	TaskName       string           `json:"task_name"`
+	ParentThreadID ThreadID         `json:"parent_thread_id"`
+	ParentTurnID   TurnID           `json:"parent_turn_id,omitempty"`
+	HostProfileRef string           `json:"host_profile_ref,omitempty"`
+	ForkMode       SubAgentForkMode `json:"fork_mode,omitempty"`
+	Status         SubAgentStatus   `json:"status"`
+	LatestTurnID   TurnID           `json:"latest_turn_id,omitempty"`
+	LastMessage    string           `json:"last_message,omitempty"`
+	WaitingPrompt  string           `json:"waiting_prompt,omitempty"`
+	QueuedInputs   int              `json:"queued_inputs,omitempty"`
+	CreatedAt      time.Time        `json:"created_at"`
+	UpdatedAt      time.Time        `json:"updated_at"`
+	Closed         bool             `json:"closed,omitempty"`
+	CanSendInput   bool             `json:"can_send_input"`
+	CanInterrupt   bool             `json:"can_interrupt"`
+	CanClose       bool             `json:"can_close"`
 }
 
 type WaitSubAgentsResult struct {
 	Snapshots []SubAgentSnapshot `json:"snapshots"`
 	TimedOut  bool               `json:"timed_out,omitempty"`
+}
+
+type CloseSubAgentsResult struct {
+	Snapshots []SubAgentSnapshot `json:"snapshots"`
+	Closed    int                `json:"closed,omitempty"`
 }
 
 type SubAgentDetail struct {
@@ -707,7 +720,55 @@ func (s *Store) deleteThreadData(ctx context.Context, threadID string) error {
 	if err := s.validate(); err != nil {
 		return err
 	}
-	return s.deleteData(ctx, threadID)
+	threadIDs, err := s.threadTreeIDs(ctx, threadID)
+	if err != nil {
+		return err
+	}
+	for i := len(threadIDs) - 1; i >= 0; i-- {
+		if err := s.deleteData(ctx, threadIDs[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) threadTreeIDs(ctx context.Context, threadID string) ([]string, error) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return nil, errors.New("thread id is required")
+	}
+	if _, err := s.repo.Thread(ctx, threadID); err != nil {
+		return nil, err
+	}
+	threads, err := sessiontree.ListThreads(ctx, s.repo, sessiontree.ListThreadsOptions{IncludeArchived: true})
+	if err != nil {
+		return nil, err
+	}
+	children := map[string][]string{}
+	for _, meta := range threads {
+		parentID := strings.TrimSpace(meta.ParentThreadID)
+		id := strings.TrimSpace(meta.ID)
+		if parentID == "" || id == "" {
+			continue
+		}
+		children[parentID] = append(children[parentID], id)
+	}
+	out := []string{}
+	seen := map[string]bool{}
+	var walk func(string)
+	walk = func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		out = append(out, id)
+		for _, childID := range children[id] {
+			walk(childID)
+		}
+	}
+	walk(threadID)
+	return out, nil
 }
 
 type host struct {
@@ -979,11 +1040,27 @@ func (h *host) CloseSubAgent(ctx context.Context, req CloseSubAgentRequest) (Sub
 	snapshot, err := h.harness.CloseSubAgent(ctx, agentharness.CloseSubAgentOptions{
 		ParentThreadID: string(req.ParentThreadID),
 		ChildThreadID:  string(req.ChildThreadID),
+		Reason:         req.Reason,
 	})
 	if err != nil {
 		return SubAgentSnapshot{}, err
 	}
 	return subAgentSnapshot(snapshot), nil
+}
+
+func (h *host) CloseSubAgents(ctx context.Context, req CloseSubAgentsRequest) (CloseSubAgentsResult, error) {
+	result, err := h.harness.CloseSubAgents(ctx, agentharness.CloseSubAgentsOptions{
+		ParentThreadID: string(req.ParentThreadID),
+		Reason:         req.Reason,
+	})
+	if err != nil {
+		return CloseSubAgentsResult{}, err
+	}
+	out := CloseSubAgentsResult{Closed: result.Closed, Snapshots: make([]SubAgentSnapshot, 0, len(result.Snapshots))}
+	for _, snapshot := range result.Snapshots {
+		out.Snapshots = append(out.Snapshots, subAgentSnapshot(snapshot))
+	}
+	return out, nil
 }
 
 func (h *host) ListSubAgentActivityTimeline(ctx context.Context, req ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error) {
@@ -1158,6 +1235,7 @@ func subAgentSnapshot(in agentharness.SubAgentSnapshot) SubAgentSnapshot {
 		ParentThreadID: ThreadID(in.ParentThreadID),
 		ParentTurnID:   TurnID(in.ParentTurnID),
 		HostProfileRef: in.HostProfileRef,
+		ForkMode:       SubAgentForkMode(in.ForkMode),
 		Status:         SubAgentStatus(in.Status),
 		LatestTurnID:   TurnID(in.LatestTurnID),
 		LastMessage:    in.LastMessage,
@@ -1262,6 +1340,7 @@ func subAgentActivityPayload(snapshot agentharness.SubAgentSnapshot) map[string]
 		"task_name":        strings.TrimSpace(snapshot.TaskName),
 		"title":            title,
 		"host_profile_ref": strings.TrimSpace(snapshot.HostProfileRef),
+		"fork_mode":        strings.TrimSpace(string(snapshot.ForkMode)),
 		"status":           strings.TrimSpace(string(snapshot.Status)),
 		"last_message":     strings.TrimSpace(snapshot.LastMessage),
 		"waiting_prompt":   strings.TrimSpace(snapshot.WaitingPrompt),

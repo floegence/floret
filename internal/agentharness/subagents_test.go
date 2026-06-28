@@ -162,6 +162,71 @@ func TestCloseSubAgentCancelsChildAndRejectsFurtherInput(t *testing.T) {
 	}
 }
 
+func TestCloseSubAgentsStopsUnfinishedChildrenAndKeepsCompletedHistory(t *testing.T) {
+	ctx := context.Background()
+	provider := scriptharness.NewScriptedProvider(
+		scriptharness.Step(scriptharness.Text("done"), scriptharness.Done()),
+		scriptharness.Step(scriptharness.Hang()),
+	)
+	h := newTestHarness(provider, sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
+	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+		ParentThreadID: "parent",
+		ThreadID:       "completed",
+		TaskName:       "completed",
+		Message:        "finish",
+		ForkMode:       SubAgentForkNone,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if waited, err := h.WaitSubAgents(ctx, WaitSubAgentsOptions{ParentThreadID: "parent", ChildThreadIDs: []string{"completed"}, Timeout: 2 * time.Second}); err != nil || waited.TimedOut {
+		t.Fatalf("completed wait=%#v err=%v", waited, err)
+	}
+	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+		ParentThreadID: "parent",
+		ThreadID:       "running",
+		TaskName:       "running",
+		Message:        "hang",
+		ForkMode:       SubAgentForkNone,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := h.CloseSubAgents(ctx, CloseSubAgentsOptions{ParentThreadID: "parent", Reason: "parent_stop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Closed != 1 || len(result.Snapshots) != 2 {
+		t.Fatalf("close result = %#v", result)
+	}
+	byID := map[string]SubAgentSnapshot{}
+	for _, snapshot := range result.Snapshots {
+		byID[snapshot.ThreadID] = snapshot
+	}
+	if byID["completed"].Status != SubAgentStatusCompleted || byID["completed"].Closed {
+		t.Fatalf("completed child should remain completed history: %#v", byID["completed"])
+	}
+	if byID["running"].Status != SubAgentStatusClosed || !byID["running"].Closed || byID["running"].CanClose {
+		t.Fatalf("running child should be closed: %#v", byID["running"])
+	}
+	detail, err := h.ReadSubAgentDetail(ctx, ReadSubAgentDetailOptions{ParentThreadID: "parent", ChildThreadID: "running"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, ev := range detail.Events {
+		if ev.Type == subAgentLifecycleEntryKind && ev.Metadata[subAgentLifecycleReasonKey] == "parent_stop" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("running detail missing parent_stop lifecycle: %#v", detail.Events)
+	}
+}
+
 func TestWaitSubAgentsDoesNotCompleteWhileFollowUpInputIsQueued(t *testing.T) {
 	ctx := context.Background()
 	provider := scriptharness.NewScriptedProvider(

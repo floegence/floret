@@ -95,6 +95,7 @@ type ThreadMeta struct {
 	TaskName           string            `json:"task_name,omitempty"`
 	AgentPath          string            `json:"agent_path,omitempty"`
 	HostProfileRef     string            `json:"host_profile_ref,omitempty"`
+	ForkMode           string            `json:"fork_mode,omitempty"`
 	Closed             bool              `json:"closed,omitempty"`
 	Archived           bool              `json:"archived,omitempty"`
 	Title              string            `json:"title,omitempty"`

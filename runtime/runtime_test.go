@@ -568,6 +568,9 @@ func TestHostManagesSubAgentLifecycle(t *testing.T) {
 	if spawned.ThreadID != "child" || spawned.ParentThreadID != "parent" || spawned.Path != "/root/review_api" {
 		t.Fatalf("spawned = %#v", spawned)
 	}
+	if spawned.ForkMode != SubAgentForkNone {
+		t.Fatalf("spawned fork mode = %q, want %q", spawned.ForkMode, SubAgentForkNone)
+	}
 
 	waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{
 		ParentThreadID: "parent",
@@ -586,6 +589,16 @@ func TestHostManagesSubAgentLifecycle(t *testing.T) {
 	}
 	if len(listed) != 1 || listed[0].HostProfileRef != "reviewer" || listed[0].LastMessage != "child done" {
 		t.Fatalf("listed = %#v", listed)
+	}
+	if listed[0].ForkMode != SubAgentForkNone {
+		t.Fatalf("listed fork mode = %q, want %q", listed[0].ForkMode, SubAgentForkNone)
+	}
+	timeline, err := host.ListSubAgentActivityTimeline(ctx, ListSubAgentActivityTimelineRequest{ParentThreadID: "parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(timeline.Timeline.Items) != 1 || timeline.Timeline.Items[0].Payload["fork_mode"] != string(SubAgentForkNone) {
+		t.Fatalf("activity timeline fork mode missing: %#v", timeline.Timeline.Items)
 	}
 
 	sent, err := host.SendSubAgentInput(ctx, SendSubAgentInputRequest{
@@ -785,8 +798,69 @@ func TestHostSQLiteStorePersistsSubAgentDetail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if detail.Snapshot.ForkMode != SubAgentForkNone {
+		t.Fatalf("reopened fork mode = %q, want %q", detail.Snapshot.ForkMode, SubAgentForkNone)
+	}
 	if got := firstRuntimeSubAgentDetailEvent(detail.Events, SubAgentDetailEventAssistantMessage); got.Message == nil || got.Message.Content != "persisted child" {
 		t.Fatalf("reopened detail = %#v", detail.Events)
+	}
+}
+
+func TestHostCloseSubAgentsStopsUnfinishedChildren(t *testing.T) {
+	ctx := context.Background()
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		if req.ThreadID == "completed" {
+			return runtimeGatewayEvents("completed child"), nil
+		}
+		events := make(chan ModelEvent)
+		go func() {
+			defer close(events)
+			<-ctx.Done()
+		}()
+		return events, nil
+	})
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+		},
+		ModelGateway: gateway,
+		IDGenerator:  deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{ParentThreadID: "parent", ThreadID: "completed", TaskName: "completed", Message: "finish", ForkMode: SubAgentForkNone}); err != nil {
+		t.Fatal(err)
+	}
+	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"completed"}, Timeout: 2 * time.Second}); err != nil || waited.TimedOut {
+		t.Fatalf("completed wait=%#v err=%v", waited, err)
+	}
+	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{ParentThreadID: "parent", ThreadID: "running", TaskName: "running", Message: "hang", ForkMode: SubAgentForkNone}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := host.CloseSubAgents(ctx, CloseSubAgentsRequest{ParentThreadID: "parent", Reason: "parent_stop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Closed != 1 || len(result.Snapshots) != 2 {
+		t.Fatalf("close result = %#v", result)
+	}
+	byID := map[ThreadID]SubAgentSnapshot{}
+	for _, snapshot := range result.Snapshots {
+		byID[snapshot.ThreadID] = snapshot
+	}
+	if byID["completed"].Status != SubAgentStatusCompleted || byID["completed"].Closed {
+		t.Fatalf("completed snapshot = %#v", byID["completed"])
+	}
+	if byID["running"].Status != SubAgentStatusClosed || !byID["running"].Closed || byID["running"].CanClose {
+		t.Fatalf("running snapshot = %#v", byID["running"])
 	}
 }
 
@@ -1429,6 +1503,75 @@ func TestHostDeleteThreadUsesStoreBoundary(t *testing.T) {
 	}
 	if _, exists := artifacts.Ref(ref.ID); exists {
 		t.Fatalf("thread artifact should be deleted")
+	}
+}
+
+func TestHostDeleteThreadCascadesEngineThreadTree(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "child done",
+			SystemPrompt: "test",
+		},
+		Store:       store,
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+		ParentThreadID: "parent",
+		ThreadID:       "child",
+		TaskName:       "worker",
+		Message:        "work",
+		ForkMode:       SubAgentForkNone,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"child"}, Timeout: 2 * time.Second}); err != nil || waited.TimedOut {
+		t.Fatalf("waited=%#v err=%v", waited, err)
+	}
+	if requests, err := store.prompt.ProviderRequests(ctx, "child"); err != nil || len(requests) == 0 {
+		t.Fatalf("child prompt ledger before delete = %#v, %v", requests, err)
+	}
+	ref, err := store.artifacts.PutToolOutput(ctx, artifact.ToolOutputArtifact{
+		ThreadID:      "child",
+		TurnID:        "child-turn-1",
+		RunID:         "child-turn-1",
+		PromptScopeID: "child",
+		Step:          1,
+		CallID:        "call-child",
+		ToolName:      "echo",
+		Text:          "child artifact",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts := store.artifacts.(*artifact.MemoryStore)
+	if _, exists := artifacts.Ref(ref.ID); !exists {
+		t.Fatalf("child artifact should exist before delete")
+	}
+
+	if err := host.DeleteThread(ctx, "parent"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.ReadThread(ctx, "parent"); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+		t.Fatalf("parent read err=%v, want ErrThreadNotFound", err)
+	}
+	if _, err := host.ReadThread(ctx, "child"); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+		t.Fatalf("child read err=%v, want ErrThreadNotFound", err)
+	}
+	if requests, err := store.prompt.ProviderRequests(ctx, "child"); err != nil || len(requests) != 0 {
+		t.Fatalf("child prompt ledger after delete = %#v, %v", requests, err)
+	}
+	if _, exists := artifacts.Ref(ref.ID); exists {
+		t.Fatalf("child artifact should be deleted")
 	}
 }
 

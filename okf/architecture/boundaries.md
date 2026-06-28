@@ -24,7 +24,9 @@ Floret owns:
 * permission, resource, and approval lifecycle;
 * runtime observation;
 * control signal contracts;
-* opaque model state lifecycle.
+* opaque model state lifecycle;
+* engine thread-tree lifecycle, including child-thread fork mode, stop/close,
+  prompt cache retention, and engine-data deletion.
 
 The host owns:
 
@@ -39,6 +41,11 @@ The host owns:
 When a change adds a new host-facing capability, expose it as general public API
 with tests and documentation. Do not move product-specific policy into Floret
 core to make one downstream integration easier.
+
+Hosts may choose when product actions stop or delete work, but they should
+express those choices through Floret runtime APIs. Stop-style product actions
+close unfinished Floret subagents and keep history; delete-style product actions
+delete Floret-owned thread trees through `runtime.Host.DeleteThread`.
 
 # Key Source Files
 

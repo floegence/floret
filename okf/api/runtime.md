@@ -29,8 +29,9 @@ continuation state, and lifecycle observations.
 * `Host.CompactThread` runs a compaction-only maintenance operation for an idle
   hosted thread through `CompactThreadRequest` without creating natural
   assistant output.
-* `SpawnSubAgent`, `SendSubAgentInput`, `WaitSubAgents`, `ListSubAgents`, and
-  `CloseSubAgent` manage durable child threads under a hosted parent thread.
+* `SpawnSubAgent`, `SendSubAgentInput`, `WaitSubAgents`, `ListSubAgents`,
+  `CloseSubAgent`, and `CloseSubAgents` manage durable child threads under a
+  hosted parent thread.
 * `ListSubAgentActivityTimeline` returns a parent-scoped,
   product-neutral `observation.ActivityTimeline` for hosted child lifecycle
   status without exposing child transcripts.
@@ -39,6 +40,8 @@ continuation state, and lifecycle observations.
   audit surfaces without expanding `WaitSubAgents` payloads.
 * `ListThreadDetailEvents` lets a host read the Floret-owned ordered execution
   transcript for a hosted thread without reading Floret storage internals.
+* `DeleteThread` removes a Floret-owned thread tree from the engine store,
+  including child threads, prompt cache scopes, and artifacts.
 * `ModelGateway` lets a host supply model transport through
   `HostOptions.ModelGateway` while Floret owns loop control, tool dispatch,
   context lifecycle, and ledgers.
@@ -74,11 +77,23 @@ Task names and agent paths are reference metadata and may repeat. Queued child
 inputs are journal entries in the child thread, so host restart and storage
 backends preserve pending work, cancellation, and consumption state.
 
+`SubAgentSnapshot.ForkMode` is the engine-owned fork contract for a child
+thread. `none` starts the child with only the delegated mission, while
+`full_path` forks the parent thread path into the child thread. Hosts may map
+this to product UI terms, but should not persist a second engine fork state.
+
 `WaitSubAgents` is a bounded lifecycle wait. Its default wait is five minutes
 and requests are capped at twenty minutes. Timeout returns snapshots and
 `TimedOut=true`; it does not close, delete, or hide child detail. Child run
 execution also has a configurable host timeout, defaulting to twenty minutes, so
 a stuck child turn can be stopped while preserving its thread and journal.
+
+Stopping a parent run is an execution lifecycle decision, not a data retention
+decision. Hosts that stop parent work should call `CloseSubAgents` for the
+parent thread. Floret cancels unfinished child turns, cancels queued child
+inputs, marks affected children closed, writes lifecycle detail, and keeps the
+child histories readable. Completed, failed, cancelled, or already closed
+children remain historical records.
 
 Subagent detail reads are scoped by both parent and child `ThreadID`; a host
 must prove parent ownership before a child timeline can be read. Detail events
@@ -110,6 +125,11 @@ For provider continuations such as length truncation recovery, the detail stream
 records the durable live prefix and any final suffix in ordinal order. It does
 not expose a duplicated accumulated assistant snapshot as a separate transcript
 fact.
+
+Deleting a thread is a data lifecycle operation. `DeleteThread` deletes the
+target thread and Floret-managed descendant child threads, plus their prompt
+cache records and thread artifacts. Hosts should use this public API instead of
+querying or mutating Floret storage tables directly.
 
 `StreamObservation` is for host rendering and diagnostics. It is not raw
 provider wire data and must not carry prompt text, tool arguments, tool results,

@@ -118,6 +118,17 @@ type WaitSubAgentsOptions struct {
 type CloseSubAgentOptions struct {
 	ParentThreadID string
 	ChildThreadID  string
+	Reason         string
+}
+
+type CloseSubAgentsOptions struct {
+	ParentThreadID string
+	Reason         string
+}
+
+type CloseSubAgentsResult struct {
+	Snapshots []SubAgentSnapshot `json:"snapshots"`
+	Closed    int                `json:"closed,omitempty"`
 }
 
 type ReadSubAgentDetailOptions struct {
@@ -136,23 +147,24 @@ type ListThreadDetailEventsOptions struct {
 }
 
 type SubAgentSnapshot struct {
-	ThreadID       string         `json:"thread_id"`
-	Path           string         `json:"path"`
-	TaskName       string         `json:"task_name"`
-	ParentThreadID string         `json:"parent_thread_id"`
-	ParentTurnID   string         `json:"parent_turn_id,omitempty"`
-	HostProfileRef string         `json:"host_profile_ref,omitempty"`
-	Status         SubAgentStatus `json:"status"`
-	LatestTurnID   string         `json:"latest_turn_id,omitempty"`
-	LastMessage    string         `json:"last_message,omitempty"`
-	WaitingPrompt  string         `json:"waiting_prompt,omitempty"`
-	QueuedInputs   int            `json:"queued_inputs,omitempty"`
-	CreatedAt      time.Time      `json:"created_at"`
-	UpdatedAt      time.Time      `json:"updated_at"`
-	Closed         bool           `json:"closed,omitempty"`
-	CanSendInput   bool           `json:"can_send_input"`
-	CanInterrupt   bool           `json:"can_interrupt"`
-	CanClose       bool           `json:"can_close"`
+	ThreadID       string           `json:"thread_id"`
+	Path           string           `json:"path"`
+	TaskName       string           `json:"task_name"`
+	ParentThreadID string           `json:"parent_thread_id"`
+	ParentTurnID   string           `json:"parent_turn_id,omitempty"`
+	HostProfileRef string           `json:"host_profile_ref,omitempty"`
+	ForkMode       SubAgentForkMode `json:"fork_mode,omitempty"`
+	Status         SubAgentStatus   `json:"status"`
+	LatestTurnID   string           `json:"latest_turn_id,omitempty"`
+	LastMessage    string           `json:"last_message,omitempty"`
+	WaitingPrompt  string           `json:"waiting_prompt,omitempty"`
+	QueuedInputs   int              `json:"queued_inputs,omitempty"`
+	CreatedAt      time.Time        `json:"created_at"`
+	UpdatedAt      time.Time        `json:"updated_at"`
+	Closed         bool             `json:"closed,omitempty"`
+	CanSendInput   bool             `json:"can_send_input"`
+	CanInterrupt   bool             `json:"can_interrupt"`
+	CanClose       bool             `json:"can_close"`
 }
 
 type WaitSubAgentsResult struct {
@@ -342,6 +354,7 @@ func (h *AgentHarness) SpawnSubAgent(ctx context.Context, opts SpawnSubAgentOpti
 			TaskName:       taskName,
 			AgentPath:      path,
 			HostProfileRef: strings.TrimSpace(opts.HostProfileRef),
+			ForkMode:       string(forkMode),
 			CreatedAt:      now,
 			UpdatedAt:      now,
 		}
@@ -367,6 +380,7 @@ func (h *AgentHarness) SpawnSubAgent(ctx context.Context, opts SpawnSubAgentOpti
 		meta.TaskName = taskName
 		meta.AgentPath = path
 		meta.HostProfileRef = strings.TrimSpace(opts.HostProfileRef)
+		meta.ForkMode = string(forkMode)
 		meta.Status = ""
 		meta.UpdatedAt = now
 		if err := h.options.Repo.UpdateThread(ctx, meta); err != nil {
@@ -906,7 +920,7 @@ func (h *AgentHarness) CloseSubAgent(ctx context.Context, opts CloseSubAgentOpti
 	}
 	if err := h.appendSubAgentLifecycleEvent(ctx, meta.ID, map[string]string{
 		subAgentLifecycleActionKey: "closed",
-		subAgentLifecycleReasonKey: "parent_close",
+		subAgentLifecycleReasonKey: closeSubAgentReason(opts.Reason),
 		"parent_thread_id":         strings.TrimSpace(opts.ParentThreadID),
 	}); err != nil {
 		return SubAgentSnapshot{}, err
@@ -921,6 +935,40 @@ func (h *AgentHarness) CloseSubAgent(ctx context.Context, opts CloseSubAgentOpti
 	})
 	h.notifySubAgentUpdate()
 	return h.subAgentSnapshot(ctx, meta.ID)
+}
+
+func (h *AgentHarness) CloseSubAgents(ctx context.Context, opts CloseSubAgentsOptions) (CloseSubAgentsResult, error) {
+	if h == nil {
+		return CloseSubAgentsResult{}, errors.New("agent harness is nil")
+	}
+	parentThreadID := strings.TrimSpace(opts.ParentThreadID)
+	if parentThreadID == "" {
+		return CloseSubAgentsResult{}, errors.New("parent thread id is required")
+	}
+	metas, err := h.childThreadMetas(ctx, parentThreadID)
+	if err != nil {
+		return CloseSubAgentsResult{}, err
+	}
+	result := CloseSubAgentsResult{Snapshots: make([]SubAgentSnapshot, 0, len(metas))}
+	for _, meta := range metas {
+		snapshot, err := h.subAgentSnapshotFromMeta(ctx, meta)
+		if err != nil {
+			return CloseSubAgentsResult{}, err
+		}
+		if shouldCloseSubAgentForParentStop(snapshot) {
+			snapshot, err = h.CloseSubAgent(ctx, CloseSubAgentOptions{
+				ParentThreadID: parentThreadID,
+				ChildThreadID:  snapshot.ThreadID,
+				Reason:         opts.Reason,
+			})
+			if err != nil {
+				return CloseSubAgentsResult{}, err
+			}
+			result.Closed++
+		}
+		result.Snapshots = append(result.Snapshots, snapshot)
+	}
+	return result, nil
 }
 
 func (h *AgentHarness) enqueueSubAgentInput(ctx context.Context, ctrl *subagentController, input subagentInput, interrupt bool) error {
@@ -1256,6 +1304,7 @@ func (h *AgentHarness) subAgentSnapshotFromMeta(ctx context.Context, meta sessio
 			ParentThreadID: meta.ParentThreadID,
 			ParentTurnID:   meta.ParentTurnID,
 			HostProfileRef: meta.HostProfileRef,
+			ForkMode:       SubAgentForkMode(meta.ForkMode),
 			Status:         status,
 			LatestTurnID:   read.LatestTurnID,
 			LastMessage:    latestSubAgentMessage(read.Messages),
@@ -1276,6 +1325,7 @@ func (h *AgentHarness) subAgentSnapshotFromMeta(ctx context.Context, meta sessio
 		ParentThreadID: meta.ParentThreadID,
 		ParentTurnID:   meta.ParentTurnID,
 		HostProfileRef: meta.HostProfileRef,
+		ForkMode:       SubAgentForkMode(meta.ForkMode),
 		Status:         status,
 		QueuedInputs:   queued,
 		CreatedAt:      meta.CreatedAt,
@@ -1306,6 +1356,26 @@ func subAgentStatusFromMeta(meta sessiontree.ThreadMeta) SubAgentStatus {
 		return SubAgentStatusInterrupted
 	default:
 		return SubAgentStatusIdle
+	}
+}
+
+func closeSubAgentReason(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return "parent_close"
+	}
+	return reason
+}
+
+func shouldCloseSubAgentForParentStop(snapshot SubAgentSnapshot) bool {
+	if !snapshot.CanClose || snapshot.Closed {
+		return false
+	}
+	switch snapshot.Status {
+	case SubAgentStatusCompleted, SubAgentStatusFailed, SubAgentStatusCancelled, SubAgentStatusClosed:
+		return false
+	default:
+		return true
 	}
 }
 

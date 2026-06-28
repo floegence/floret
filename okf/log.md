@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-06-28
+* **Update**: Documented parent stop versus thread delete lifecycle boundaries
+  for subagents, including public `CloseSubAgents`, cascading
+  `DeleteThread`, and engine-owned subagent fork mode.
 * **Update**: Documented transcript-free thread summary recovery and
   parent-scoped subagent activity timelines for host UI integration.
 * **Update**: Documented that provider continuation recovery preserves the
