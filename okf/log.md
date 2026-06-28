@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-06-28
+* **Update**: Documented `ThreadTurnProjection` as the Floret-owned display
+  projection for hosted turns, including control-signal segments and the rule
+  that hosts must not synthesize main-thread activity timelines.
 * **Update**: Documented Floret-owned row activity timelines and structured tool
   result status for thread and subagent detail APIs, so hosts do not rebuild
   activity from raw content or audit tables.

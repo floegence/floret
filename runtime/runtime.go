@@ -412,6 +412,7 @@ type ThreadDetailEvent struct {
 
 type ThreadDetailMessage struct {
 	Role      string `json:"role,omitempty"`
+	Kind      string `json:"kind,omitempty"`
 	Preview   string `json:"preview,omitempty"`
 	Content   string `json:"content,omitempty"`
 	Reasoning string `json:"reasoning,omitempty"`
@@ -476,6 +477,7 @@ type ThreadDetailCompaction struct {
 
 type SubAgentDetailMessage struct {
 	Role      string `json:"role,omitempty"`
+	Kind      string `json:"kind,omitempty"`
 	Preview   string `json:"preview,omitempty"`
 	Content   string `json:"content,omitempty"`
 	Reasoning string `json:"reasoning,omitempty"`
@@ -604,6 +606,7 @@ type TurnResult struct {
 	ProviderState      *ModelState                  `json:"provider_state,omitempty"`
 	Signal             *TurnSignal                  `json:"signal,omitempty"`
 	ActivityTimeline   observation.ActivityTimeline `json:"activity_timeline"`
+	Projection         ThreadTurnProjection         `json:"projection,omitempty"`
 	PendingApprovals   []PendingApproval            `json:"pending_approvals,omitempty"`
 }
 
@@ -960,7 +963,12 @@ func (h *host) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, err
 		ToolSurfaceProvider:      runtimeToolSurfaceProvider(req.ToolSurfaceProvider),
 		Sink:                     activityRecorder,
 	})
-	return turnResult(result, string(req.ThreadID), activityRecorder.Snapshot(), time.Now().UnixMilli()), runErr
+	out := turnResult(result, string(req.ThreadID), activityRecorder.Snapshot(), time.Now().UnixMilli())
+	projectionErr := h.attachThreadTurnProjection(ctx, string(req.ThreadID), &out)
+	if runErr == nil && projectionErr != nil {
+		runErr = projectionErr
+	}
+	return out, runErr
 }
 
 func (h *host) RetryTurn(ctx context.Context, req RetryTurnRequest) (TurnResult, error) {
@@ -978,7 +986,12 @@ func (h *host) RetryTurn(ctx context.Context, req RetryTurnRequest) (TurnResult,
 			Host:        cloneStringMap(req.Labels.Host),
 		},
 	})
-	return turnResult(result, string(req.ThreadID), nil, time.Now().UnixMilli()), runErr
+	out := turnResult(result, string(req.ThreadID), nil, time.Now().UnixMilli())
+	projectionErr := h.attachThreadTurnProjection(ctx, string(req.ThreadID), &out)
+	if runErr == nil && projectionErr != nil {
+		runErr = projectionErr
+	}
+	return out, runErr
 }
 
 func (h *host) CompactThread(ctx context.Context, req CompactThreadRequest) (CompactThreadResult, error) {
@@ -1046,7 +1059,12 @@ func (h *host) CompletePendingTool(ctx context.Context, req PendingToolCompletio
 			Host:        cloneStringMap(req.Labels.Host),
 		},
 	})
-	return turnResult(result, string(req.ThreadID), nil, time.Now().UnixMilli()), runErr
+	out := turnResult(result, string(req.ThreadID), nil, time.Now().UnixMilli())
+	projectionErr := h.attachThreadTurnProjection(ctx, string(req.ThreadID), &out)
+	if runErr == nil && projectionErr != nil {
+		runErr = projectionErr
+	}
+	return out, runErr
 }
 
 func (h *host) SpawnSubAgent(ctx context.Context, req SpawnSubAgentRequest) (SubAgentSnapshot, error) {
@@ -1344,6 +1362,53 @@ func turnResult(in agentharness.TurnResult, threadID string, events []observatio
 		out.Error = in.Err.Error()
 	}
 	return out
+}
+
+func (h *host) attachThreadTurnProjection(ctx context.Context, threadID string, result *TurnResult) error {
+	if h == nil || result == nil || strings.TrimSpace(threadID) == "" || strings.TrimSpace(string(result.ID)) == "" {
+		return nil
+	}
+	events, err := h.listThreadDetailEventsForTurn(ctx, threadID, string(result.ID))
+	if err != nil {
+		return err
+	}
+	result.Projection = ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID:         ThreadID(threadID),
+		TurnID:           result.ID,
+		RunID:            result.RunID,
+		TraceID:          TraceID(result.RunID),
+		Events:           events,
+		ActivityTimeline: result.ActivityTimeline,
+	})
+	return nil
+}
+
+func (h *host) listThreadDetailEventsForTurn(ctx context.Context, threadID string, turnID string) ([]ThreadDetailEvent, error) {
+	var out []ThreadDetailEvent
+	var afterOrdinal int64
+	for {
+		detail, err := h.harness.ListThreadDetailEvents(ctx, agentharness.ListThreadDetailEventsOptions{
+			ThreadID:     threadID,
+			AfterOrdinal: afterOrdinal,
+			Limit:        agentharness.MaxThreadDetailEventLimit,
+			IncludeRaw:   false,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, ev := range threadDetailEvents(detail.Events) {
+			if strings.TrimSpace(string(ev.TurnID)) == strings.TrimSpace(turnID) {
+				out = append(out, ev)
+			}
+		}
+		if !detail.HasMore {
+			return out, nil
+		}
+		if detail.NextOrdinal <= afterOrdinal {
+			return nil, fmt.Errorf("thread detail pagination did not advance after ordinal %d", afterOrdinal)
+		}
+		afterOrdinal = detail.NextOrdinal
+	}
 }
 
 func waitSubAgentsResult(in agentharness.WaitSubAgentsResult) WaitSubAgentsResult {
@@ -1654,7 +1719,7 @@ func threadDetailMessage(in *agentharness.SubAgentDetailMessage) *ThreadDetailMe
 	if in == nil {
 		return nil
 	}
-	return &ThreadDetailMessage{Role: in.Role, Preview: in.Preview, Content: in.Content, Reasoning: in.Reasoning}
+	return &ThreadDetailMessage{Role: in.Role, Kind: in.Kind, Preview: in.Preview, Content: in.Content, Reasoning: in.Reasoning}
 }
 
 func threadDetailToolCall(in *agentharness.SubAgentDetailToolCall) *ThreadDetailToolCall {
@@ -1745,7 +1810,7 @@ func subAgentDetailMessage(in *agentharness.SubAgentDetailMessage) *SubAgentDeta
 	if in == nil {
 		return nil
 	}
-	return &SubAgentDetailMessage{Role: in.Role, Preview: in.Preview, Content: in.Content, Reasoning: in.Reasoning}
+	return &SubAgentDetailMessage{Role: in.Role, Kind: in.Kind, Preview: in.Preview, Content: in.Content, Reasoning: in.Reasoning}
 }
 
 func subAgentDetailToolCall(in *agentharness.SubAgentDetailToolCall) *SubAgentDetailToolCall {

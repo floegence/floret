@@ -43,6 +43,9 @@ continuation state, and lifecycle observations.
   audit surfaces without expanding `WaitSubAgents` payloads.
 * `ListThreadDetailEvents` lets a host read the Floret-owned ordered execution
   transcript for a hosted thread without reading Floret storage internals.
+* `ProjectThreadTurn` and `TurnResult.Projection` expose the product-neutral
+  ordered assistant text, activity timeline, and control-signal segments for a
+  hosted turn.
 * `ListPendingApprovals` returns the current product-neutral tool approvals
   waiting for a host decision on a thread.
 * `CompletePendingTool` requires the public completion `RunID` and uses it as
@@ -126,9 +129,13 @@ Thread detail reads expose the current hosted thread journal path in entry
 ordinal order. They cover user messages, assistant messages, tool calls, tool
 results, turn markers, compaction checkpoints, approvals, custom entries, and
 run failures. This is Floret's public read model for durable execution
-transcript facts; downstream hosts may derive product UI caches from it, but
-must not read Floret's store schema or rebuild execution ordering from separate
-audit tables. Pagination uses `AfterOrdinal`, `Limit`, `HasMore`, and
+transcript facts. `ThreadTurnProjection` is the public display projection over
+those facts: `RunTurn`, `RetryTurn`, and `CompletePendingTool` return it on
+`TurnResult`, and hosts with live committed events may call `ProjectThreadTurn`.
+Downstream hosts may map those product-neutral segments to their own UI blocks,
+but must not read Floret's store schema, rebuild execution ordering from
+separate audit tables, or call `observation.BuildActivityTimeline` to create the
+main thread activity surface. Pagination uses `AfterOrdinal`, `Limit`, `HasMore`, and
 `NextOrdinal`; raw content follows the same explicit `IncludeRaw` opt-in rule as
 subagent detail reads. Thread detail events share the same row-level
 `ActivityTimeline` projection and structured tool result `status` contract as
@@ -167,7 +174,9 @@ signals interrupt the turn with their projected prompt. Terminal signals complet
 the turn with a human-visible output. A terminal signal may supply that output in
 the signal payload, or it may rely on assistant text produced earlier in the
 same provider step; if neither exists, the turn fails with a control-contract
-error instead of inventing a completion.
+error instead of inventing a completion. Control signals are projected as control
+activity and control-signal display segments; they are not ordinary local tool
+execution records.
 
 Reasoning selection is request intent, not provider wire data. Floret normalizes
 the public selection and provider adapters translate only values supported by the

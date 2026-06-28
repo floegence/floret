@@ -229,6 +229,7 @@ type SubAgentDetailEvent struct {
 
 type SubAgentDetailMessage struct {
 	Role      string `json:"role,omitempty"`
+	Kind      string `json:"kind,omitempty"`
 	Preview   string `json:"preview,omitempty"`
 	Content   string `json:"content,omitempty"`
 	Reasoning string `json:"reasoning,omitempty"`
@@ -784,10 +785,16 @@ func subAgentDetailObservationEvent(detail SubAgentDetailEvent, entry sessiontre
 		if detail.ToolCall == nil || activityContext.hasResult(detail.ToolCall.ID) {
 			return observation.Event{}, false
 		}
-		base.Type = observation.EventTypeToolCall
+		if detail.Message != nil && detail.Message.Kind == string(session.MessageKindControlSignal) {
+			base.Type = observation.EventTypeControlSignal
+			base.ToolKind = "control"
+			base.Metadata = map[string]any{"control_disposition": "terminal"}
+		} else {
+			base.Type = observation.EventTypeToolCall
+			base.ToolKind = "local"
+		}
 		base.ToolID = detail.ToolCall.ID
 		base.ToolName = detail.ToolCall.Name
-		base.ToolKind = "local"
 		base.Activity = observationActivityPresentation(entry.Message.Activity)
 		return base, true
 	case SubAgentDetailEventToolResult:
@@ -1012,11 +1019,12 @@ func subAgentDetailApproval(metadata map[string]string) *SubAgentDetailApproval 
 }
 
 func subAgentDetailMessage(msg session.Message, includeRaw bool) *SubAgentDetailMessage {
-	if msg.Role == "" && msg.Content == "" && msg.Reasoning == "" {
+	if msg.Role == "" && msg.Kind == "" && msg.Content == "" && msg.Reasoning == "" {
 		return nil
 	}
 	out := &SubAgentDetailMessage{
 		Role:    string(msg.Role),
+		Kind:    string(msg.Kind),
 		Preview: safeSubAgentDetailPreview(msg.Content, 500),
 	}
 	if includeRaw {

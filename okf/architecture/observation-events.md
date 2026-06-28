@@ -22,7 +22,9 @@ reasoning, tool arguments, tool results, and local paths.
 # Main Projections
 
 * Activity timelines summarize tool, hosted-tool, approval, control, and budget
-  state.
+  state. Floret builds the activity projection for hosted turns; host
+  applications must not call `observation.BuildActivityTimeline` to synthesize a
+  main-thread UI activity surface.
 * Runtime stream observations expose provider-neutral model output facts,
   including text deltas, reasoning deltas, retry/finish signals, and model
   tool-call stream start/delta/end facts. Model tool-call stream facts identify
@@ -40,9 +42,10 @@ reasoning, tool arguments, tool results, and local paths.
   ordinal order. `ListThreadDetailEvents` is the durable read model, while
   `runtime.Event.Committed` announces each entry after it is successfully
   appended. Hosts can use streaming observations for temporary live rendering,
-  then reconcile durable display order from committed thread events or the read
-  model without reading Floret storage internals. The read model carries the
-  same Floret-owned row activity projection as subagent detail reads.
+  then reconcile durable display order from `TurnResult.Projection` or
+  `ProjectThreadTurn` without reading Floret storage internals or rebuilding
+  activity from host audit records. The read model carries the same Floret-owned
+  row activity projection as subagent detail reads.
 * Context statuses show projected and provider-reported context pressure.
 * Compaction events expose context compaction lifecycle. A complete compaction
   event means the compacted active context has been rebuilt into a full provider

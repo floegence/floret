@@ -855,7 +855,11 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			if reasoning == "" {
 				reasoning = stepReasoning
 			}
-			msg := e.stableMessage(opts.RunID, session.Message{Role: session.Assistant, Content: "tool_call", Reasoning: reasoning, ToolCallID: call.ID, ToolName: call.Name, ToolArgs: call.Args, Activity: sessionActivityPresentation(callActivities[call.ID])})
+			kind := session.MessageKindNormal
+			if opts.ControlSpec.isControlTool(call.Name) {
+				kind = session.MessageKindControlSignal
+			}
+			msg := e.stableMessage(opts.RunID, session.Message{Role: session.Assistant, Kind: kind, Content: "tool_call", Reasoning: reasoning, ToolCallID: call.ID, ToolName: call.Name, ToolArgs: call.Args, Activity: sessionActivityPresentation(callActivities[call.ID])})
 			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
 				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 			}

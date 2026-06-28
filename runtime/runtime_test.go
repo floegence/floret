@@ -1634,6 +1634,20 @@ func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
 	if result.Status != TurnStatusCompleted || result.Output != "Before first tool.After first tool, before second tool.Final answer." {
 		t.Fatalf("result = %#v", result)
 	}
+	if got := runtimeProjectionSegmentKinds(result.Projection.Segments); !slices.Equal(got, []ThreadTurnProjectionSegmentKind{
+		ThreadTurnProjectionSegmentAssistantText,
+		ThreadTurnProjectionSegmentActivityTimeline,
+		ThreadTurnProjectionSegmentAssistantText,
+		ThreadTurnProjectionSegmentActivityTimeline,
+		ThreadTurnProjectionSegmentAssistantText,
+	}) {
+		t.Fatalf("projection segments = %#v", result.Projection.Segments)
+	}
+	if result.Projection.Segments[1].ActivityTimeline == nil ||
+		len(result.Projection.Segments[1].ActivityTimeline.Items) != 1 ||
+		result.Projection.Segments[1].ActivityTimeline.Items[0].ToolID != "call-1" {
+		t.Fatalf("first projection activity = %#v", result.Projection.Segments[1])
+	}
 	detail, err := host.ListThreadDetailEvents(ctx, ListThreadDetailEventsRequest{ThreadID: "thread", IncludeRaw: true})
 	if err != nil {
 		t.Fatal(err)
@@ -1999,6 +2013,80 @@ func TestHostControlSpecUsesPublicToolContracts(t *testing.T) {
 	}
 }
 
+func TestHostProjectionTreatsCoreControlSignalAsControl(t *testing.T) {
+	ctx := context.Background()
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		events := make(chan ModelEvent, 2)
+		events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{
+			ID:   "done",
+			Name: "task_complete",
+			Args: `{"result":"all done"}`,
+		}}}
+		events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+		close(events)
+		return events, nil
+	})
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+		},
+		ModelGateway: gateway,
+		Store:        NewMemoryStore(),
+		IDGenerator:  deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := host.RunTurn(ctx, RunTurnRequest{
+		RunID:      "run-1",
+		ThreadID:   "thread",
+		TurnID:     "turn-1",
+		Input:      "finish",
+		Completion: TurnCompletionExplicitSignal,
+		Signals: TurnSignalSpec{
+			Definitions: CoreControlDefinitions(true),
+			Project:     ProjectCoreControlSignal,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != TurnStatusCompleted || result.Signal == nil || result.Signal.Name != "task_complete" {
+		t.Fatalf("result = %#v", result)
+	}
+	if got := runtimeProjectionSegmentKinds(result.Projection.Segments); !slices.Equal(got, []ThreadTurnProjectionSegmentKind{
+		ThreadTurnProjectionSegmentControlSignal,
+		ThreadTurnProjectionSegmentActivityTimeline,
+	}) {
+		t.Fatalf("projection segments = %#v", result.Projection.Segments)
+	}
+	if result.Projection.Segments[1].ActivityTimeline == nil ||
+		len(result.Projection.Segments[1].ActivityTimeline.Items) != 1 ||
+		result.Projection.Segments[1].ActivityTimeline.Items[0].Kind != observation.ActivityKindControl ||
+		result.Projection.Segments[1].ActivityTimeline.Items[0].ToolName != "task_complete" {
+		t.Fatalf("control activity = %#v", result.Projection.Segments[1])
+	}
+	detail, err := host.ListThreadDetailEvents(ctx, ListThreadDetailEventsRequest{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := firstRuntimeThreadDetailEvent(detail.Events, ThreadDetailEventToolCall)
+	if call.Message == nil || call.Message.Kind != "control_signal" {
+		t.Fatalf("control call detail = %#v", call)
+	}
+	if call.ActivityTimeline == nil ||
+		len(call.ActivityTimeline.Items) != 1 ||
+		call.ActivityTimeline.Items[0].Kind != observation.ActivityKindControl {
+		t.Fatalf("control detail activity = %#v", call.ActivityTimeline)
+	}
+}
+
 func TestEngineHelperPreservesExplicitZeroMaxOutputTokens(t *testing.T) {
 	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done()))
 	e, err := newEngineWithProvider(config.Config{
@@ -2214,6 +2302,23 @@ func firstRuntimeSubAgentDetailEvent(events []SubAgentDetailEvent, kind SubAgent
 		}
 	}
 	return SubAgentDetailEvent{}
+}
+
+func firstRuntimeThreadDetailEvent(events []ThreadDetailEvent, kind ThreadDetailEventKind) ThreadDetailEvent {
+	for _, event := range events {
+		if event.Kind == kind {
+			return event
+		}
+	}
+	return ThreadDetailEvent{}
+}
+
+func runtimeProjectionSegmentKinds(segments []ThreadTurnProjectionSegment) []ThreadTurnProjectionSegmentKind {
+	out := make([]ThreadTurnProjectionSegmentKind, 0, len(segments))
+	for _, segment := range segments {
+		out = append(out, segment.Kind)
+	}
+	return out
 }
 
 func allowRuntimeTools(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {

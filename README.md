@@ -378,7 +378,7 @@ execution transcript for a hosted thread. The API projects the thread journal in
 entry ordinal order and covers user messages, assistant messages, tool calls,
 tool results, turn markers, compaction checkpoints, approvals, custom entries,
 and run failures. It is the public read model for durable execution facts; hosts
-should derive their product display caches from these events instead of reading
+should use `ThreadTurnProjection` for product display caches instead of reading
 Floret storage internals or reconstructing assistant/tool order themselves.
 
 Thread detail events are paginated by ordinal and default to bounded,
@@ -387,6 +387,15 @@ Raw message content, reasoning, tool arguments, and full tool result content are
 omitted unless `IncludeRaw` is set for an explicitly authorized human/debug
 surface. The same row-level `activity_timeline` and tool result `status`
 contract is available here for host UI rendering.
+
+`RunTurn`, `RetryTurn`, and `CompletePendingTool` return a
+`ThreadTurnProjection` for the completed turn. Hosts that already hold committed
+thread events, such as a live UI reacting to `runtime.Event.Committed`, can call
+`ProjectThreadTurn` with those events and the latest Floret-owned activity
+timeline. The projection returns product-neutral ordered segments such as
+assistant text, activity timelines, and control signals; host applications own
+only the final UI block mapping. Do not call `observation.BuildActivityTimeline`
+in host applications to build the main thread activity surface.
 
 ### Pending approval snapshots
 
@@ -411,7 +420,7 @@ ordered history.
 | Tools | schema validation, generic effects, approval hook, dispatch, result projection | domain handlers and final product permission checks |
 | Tool approvals | approval request state and current pending snapshots | user-facing approval UX, summaries, product mode policy, decision ownership |
 | Pending tool work | pending result projection, running activity, host completion turn | handle ownership, process lifecycle, progress, cancellation, final artifacts |
-| UI | sanitized events, snapshots, observation DTOs | layout, workflows, interaction states, recovery actions |
+| UI | sanitized events, snapshots, observation DTOs, thread-turn projection | layout, workflows, interaction states, recovery actions |
 
 ## 👁️ Observation
 
@@ -439,7 +448,8 @@ batch still arrives separately as `ModelEventToolCalls`.
 When Floret commits a thread journal entry, `runtime.Event.Committed` carries
 the corresponding `ThreadDetailEvent` after the entry is durable. Hosts can use
 stream observations for temporary live token rendering, then reconcile durable
-display order from committed thread events or `ListThreadDetailEvents`.
+display order through `ProjectThreadTurn` or the `TurnResult.Projection` returned
+by the host facade.
 
 ## 🔁 Runtime Flow
 
