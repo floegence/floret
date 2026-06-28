@@ -127,6 +127,7 @@ type AgentHarness struct {
 	threads         map[string]*Thread
 	subagents       map[string]*subagentController
 	subagentUpdates chan struct{}
+	approvals       map[string]map[string]PendingApproval
 	seq             int64
 }
 
@@ -270,6 +271,7 @@ type TurnResult struct {
 	FinishInferred     bool
 	ControlSignal      *engine.ControlSignal
 	ProviderState      *provider.State
+	PendingApprovals   []PendingApproval
 }
 
 type CompactResult struct {
@@ -278,6 +280,46 @@ type CompactResult struct {
 	Diagnostics   map[string]string
 	Metrics       engine.RunMetrics
 	ProviderState *provider.State
+}
+
+type ListPendingApprovalsOptions struct {
+	ThreadID string
+}
+
+type PendingApprovals struct {
+	ThreadID    string            `json:"thread_id"`
+	Approvals   []PendingApproval `json:"approvals"`
+	GeneratedAt time.Time         `json:"generated_at"`
+}
+
+type PendingApprovalResource struct {
+	Kind  string `json:"kind,omitempty"`
+	Value string `json:"value,omitempty"`
+}
+
+type PendingApproval struct {
+	ApprovalID  string                    `json:"approval_id,omitempty"`
+	ToolCallID  string                    `json:"tool_call_id,omitempty"`
+	ToolName    string                    `json:"tool_name,omitempty"`
+	ToolKind    string                    `json:"tool_kind,omitempty"`
+	RunID       string                    `json:"run_id,omitempty"`
+	ThreadID    string                    `json:"thread_id,omitempty"`
+	TurnID      string                    `json:"turn_id,omitempty"`
+	Step        int                       `json:"step,omitempty"`
+	State       string                    `json:"state,omitempty"`
+	Revision    int64                     `json:"revision,omitempty"`
+	Epoch       int64                     `json:"epoch,omitempty"`
+	RequestedAt time.Time                 `json:"requested_at,omitempty"`
+	ResolvedAt  time.Time                 `json:"resolved_at,omitempty"`
+	ArgsHash    string                    `json:"args_hash,omitempty"`
+	Resources   []PendingApprovalResource `json:"resources,omitempty"`
+	Effects     []string                  `json:"effects,omitempty"`
+	Labels      map[string]string         `json:"labels,omitempty"`
+	HostContext map[string]string         `json:"host_context,omitempty"`
+	ReadOnly    bool                      `json:"read_only,omitempty"`
+	Destructive bool                      `json:"destructive,omitempty"`
+	OpenWorld   bool                      `json:"open_world,omitempty"`
+	Reason      string                    `json:"reason,omitempty"`
 }
 
 type Thread struct {
@@ -317,6 +359,7 @@ func New(options Options) *AgentHarness {
 		threads:         map[string]*Thread{},
 		subagents:       map[string]*subagentController{},
 		subagentUpdates: make(chan struct{}),
+		approvals:       map[string]map[string]PendingApproval{},
 	}
 }
 
@@ -987,7 +1030,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	if entry, err := sessiontree.AppendTurnMarker(persistCtx, t.harness.options.Repo, t.id, turnID, status, terminalMetadata); err != nil {
 		var committed sessiontree.AppendCommittedError
 		if errors.As(err, &committed) {
-			return turnResultFromEngine(turnID, result, map[string]string{"terminal_persistence_error": err.Error()}), result.Err
+			return t.turnResultFromEngine(turnID, result, map[string]string{"terminal_persistence_error": err.Error()}), result.Err
 		}
 		return TurnResult{}, err
 	} else {
@@ -1006,7 +1049,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 			t.harness.emit(HarnessEvent{Type: EventTitleFailed, ThreadID: t.id, TurnID: turnID, Message: err.Error()})
 		}
 	}
-	return turnResultFromEngine(turnID, result, nil), result.Err
+	return t.turnResultFromEngine(turnID, result, nil), result.Err
 }
 
 func mergeTerminalMetadata(dst, src map[string]string) {
@@ -1120,7 +1163,7 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 	if entry, appendErr := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, markerForStatus(status), metadata); appendErr != nil {
 		var committed sessiontree.AppendCommittedError
 		if errors.As(appendErr, &committed) {
-			return turnResultFromEngine(turnID, result, map[string]string{"terminal_persistence_error": appendErr.Error(), "diagnostic": diagnostic}), err
+			return t.turnResultFromEngine(turnID, result, map[string]string{"terminal_persistence_error": appendErr.Error(), "diagnostic": diagnostic}), err
 		}
 		return TurnResult{}, appendErr
 	} else {
@@ -1131,7 +1174,7 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 		eventType = EventTurnAborted
 	}
 	t.harness.emit(HarnessEvent{Type: eventType, ThreadID: t.id, TurnID: turnID, Status: string(status)})
-	return turnResultFromEngine(turnID, result, map[string]string{"diagnostic": diagnostic}), err
+	return t.turnResultFromEngine(turnID, result, map[string]string{"diagnostic": diagnostic}), err
 }
 
 func statusForError(err error) engine.Status {
@@ -1279,6 +1322,14 @@ func turnResultFromEngine(turnID string, result engine.Result, diagnostics map[s
 		ControlSignal:      cloneEngineControlSignal(result.ControlSignal),
 		ProviderState:      provider.CloneState(result.ProviderState),
 	}
+}
+
+func (t *Thread) turnResultFromEngine(turnID string, result engine.Result, diagnostics map[string]string) TurnResult {
+	out := turnResultFromEngine(turnID, result, diagnostics)
+	if t != nil && t.harness != nil {
+		out.PendingApprovals = t.harness.snapshotPendingApprovals(t.id)
+	}
+	return out
 }
 
 func cloneEngineControlSignal(in *engine.ControlSignal) *engine.ControlSignal {
@@ -1825,6 +1876,9 @@ type turnProjection struct {
 }
 
 func (p *turnProjection) Emit(ev event.Event) {
+	if isApprovalEvent(ev.Type) {
+		p.thread.harness.updatePendingApproval(ev)
+	}
 	if p.downstream != nil {
 		p.downstream.Emit(event.SanitizeWithPolicy(ev, p.thread.harness.options.SinkPolicy))
 	}

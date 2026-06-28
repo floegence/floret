@@ -48,6 +48,18 @@ tool call cannot bypass a newer host policy because dispatch uses the refreshed
 registry and the same resource, effect, permission, and approver lifecycle as
 ordinary tool calls.
 
+# Tool Approval State
+
+Floret owns the generic approval lifecycle for local tool dispatch. Approval
+events update both the durable thread detail audit trail and a current pending
+approval snapshot that hosts can read through `runtime.ListPendingApprovals`.
+The snapshot carries product-neutral ids, tool names, effects, resources,
+labels, host context, state, timing, and revision metadata.
+
+Hosts own the product authorization policy and user-facing approval experience.
+They should translate the generic snapshot into product copy and controls
+without moving product modes or UI semantics into Floret.
+
 # Pending Tool Work
 
 A tool may return a pending result when the host starts work whose lifecycle

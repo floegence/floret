@@ -42,6 +42,7 @@ type Host interface {
 	EnsureThread(context.Context, EnsureThreadRequest) (ThreadSummary, error)
 	ReadThread(context.Context, ThreadID) (ThreadSnapshot, error)
 	ListThreadDetailEvents(context.Context, ListThreadDetailEventsRequest) (ThreadDetailEvents, error)
+	ListPendingApprovals(context.Context, ListPendingApprovalsRequest) (PendingApprovals, error)
 	RunTurn(context.Context, RunTurnRequest) (TurnResult, error)
 	RetryTurn(context.Context, RetryTurnRequest) (TurnResult, error)
 	CompactThread(context.Context, CompactThreadRequest) (CompactThreadResult, error)
@@ -233,6 +234,10 @@ type ListThreadDetailEventsRequest struct {
 	IncludeRaw   bool
 }
 
+type ListPendingApprovalsRequest struct {
+	ThreadID ThreadID
+}
+
 type SubAgentSnapshot struct {
 	ThreadID       ThreadID         `json:"thread_id"`
 	Path           string           `json:"path"`
@@ -292,6 +297,42 @@ type ThreadDetailEvents struct {
 	HasMore      bool                `json:"has_more,omitempty"`
 	RetainedFrom int64               `json:"retained_from,omitempty"`
 	GeneratedAt  time.Time           `json:"generated_at"`
+}
+
+type PendingApprovals struct {
+	ThreadID    ThreadID          `json:"thread_id"`
+	Approvals   []PendingApproval `json:"approvals"`
+	GeneratedAt time.Time         `json:"generated_at"`
+}
+
+type PendingApprovalResource struct {
+	Kind  string `json:"kind,omitempty"`
+	Value string `json:"value,omitempty"`
+}
+
+type PendingApproval struct {
+	ApprovalID  string                    `json:"approval_id,omitempty"`
+	ToolCallID  string                    `json:"tool_call_id,omitempty"`
+	ToolName    string                    `json:"tool_name,omitempty"`
+	ToolKind    string                    `json:"tool_kind,omitempty"`
+	RunID       RunID                     `json:"run_id,omitempty"`
+	ThreadID    ThreadID                  `json:"thread_id,omitempty"`
+	TurnID      TurnID                    `json:"turn_id,omitempty"`
+	Step        int                       `json:"step,omitempty"`
+	State       string                    `json:"state,omitempty"`
+	Revision    int64                     `json:"revision,omitempty"`
+	Epoch       int64                     `json:"epoch,omitempty"`
+	RequestedAt time.Time                 `json:"requested_at,omitempty"`
+	ResolvedAt  time.Time                 `json:"resolved_at,omitempty"`
+	ArgsHash    string                    `json:"args_hash,omitempty"`
+	Resources   []PendingApprovalResource `json:"resources,omitempty"`
+	Effects     []string                  `json:"effects,omitempty"`
+	Labels      map[string]string         `json:"labels,omitempty"`
+	HostContext map[string]string         `json:"host_context,omitempty"`
+	ReadOnly    bool                      `json:"read_only,omitempty"`
+	Destructive bool                      `json:"destructive,omitempty"`
+	OpenWorld   bool                      `json:"open_world,omitempty"`
+	Reason      string                    `json:"reason,omitempty"`
 }
 
 type SubAgentDetailEventKind string
@@ -555,6 +596,7 @@ type TurnResult struct {
 	ProviderState      *ModelState                  `json:"provider_state,omitempty"`
 	Signal             *TurnSignal                  `json:"signal,omitempty"`
 	ActivityTimeline   observation.ActivityTimeline `json:"activity_timeline"`
+	PendingApprovals   []PendingApproval            `json:"pending_approvals,omitempty"`
 }
 
 type CompactThreadResult struct {
@@ -857,6 +899,14 @@ func (h *host) ListThreadDetailEvents(ctx context.Context, req ListThreadDetailE
 		RetainedFrom: detail.RetainedFrom,
 		GeneratedAt:  detail.GeneratedAt,
 	}, nil
+}
+
+func (h *host) ListPendingApprovals(ctx context.Context, req ListPendingApprovalsRequest) (PendingApprovals, error) {
+	result, err := h.harness.ListPendingApprovals(ctx, agentharness.ListPendingApprovalsOptions{ThreadID: string(req.ThreadID)})
+	if err != nil {
+		return PendingApprovals{}, err
+	}
+	return pendingApprovals(result), nil
 }
 
 func (h *host) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, error) {
@@ -1192,6 +1242,63 @@ func threadSummary(in agentharness.ThreadSummary) ThreadSummary {
 	}
 }
 
+func pendingApprovals(in agentharness.PendingApprovals) PendingApprovals {
+	return PendingApprovals{
+		ThreadID:    ThreadID(in.ThreadID),
+		Approvals:   pendingApprovalList(in.Approvals),
+		GeneratedAt: in.GeneratedAt,
+	}
+}
+
+func pendingApprovalList(in []agentharness.PendingApproval) []PendingApproval {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]PendingApproval, 0, len(in))
+	for _, approval := range in {
+		out = append(out, pendingApproval(approval))
+	}
+	return out
+}
+
+func pendingApproval(in agentharness.PendingApproval) PendingApproval {
+	return PendingApproval{
+		ApprovalID:  in.ApprovalID,
+		ToolCallID:  in.ToolCallID,
+		ToolName:    in.ToolName,
+		ToolKind:    in.ToolKind,
+		RunID:       RunID(in.RunID),
+		ThreadID:    ThreadID(in.ThreadID),
+		TurnID:      TurnID(in.TurnID),
+		Step:        in.Step,
+		State:       in.State,
+		Revision:    in.Revision,
+		Epoch:       in.Epoch,
+		RequestedAt: in.RequestedAt,
+		ResolvedAt:  in.ResolvedAt,
+		ArgsHash:    in.ArgsHash,
+		Resources:   pendingApprovalResources(in.Resources),
+		Effects:     append([]string(nil), in.Effects...),
+		Labels:      cloneStringMap(in.Labels),
+		HostContext: cloneStringMap(in.HostContext),
+		ReadOnly:    in.ReadOnly,
+		Destructive: in.Destructive,
+		OpenWorld:   in.OpenWorld,
+		Reason:      in.Reason,
+	}
+}
+
+func pendingApprovalResources(in []agentharness.PendingApprovalResource) []PendingApprovalResource {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]PendingApprovalResource, 0, len(in))
+	for _, resource := range in {
+		out = append(out, PendingApprovalResource{Kind: resource.Kind, Value: resource.Value})
+	}
+	return out
+}
+
 func turnResult(in agentharness.TurnResult, events []observation.Event, nowUnixMS int64) TurnResult {
 	out := TurnResult{
 		ID:                 TurnID(in.ID),
@@ -1212,6 +1319,7 @@ func turnResult(in agentharness.TurnResult, events []observation.Event, nowUnixM
 			TurnID:   in.ID,
 			TraceID:  in.ID,
 		}, events, nowUnixMS),
+		PendingApprovals: pendingApprovalList(in.PendingApprovals),
 	}
 	if in.Err != nil {
 		out.Error = in.Err.Error()

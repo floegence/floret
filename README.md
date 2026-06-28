@@ -384,6 +384,19 @@ Raw message content, reasoning, tool arguments, and full tool result content are
 omitted unless `IncludeRaw` is set for an explicitly authorized human/debug
 surface.
 
+### Pending approval snapshots
+
+Use `ListPendingApprovals` when a host UI needs the current tool approvals that
+are waiting for a decision. The snapshot is product-neutral: it exposes the
+approval id, tool call id, tool name, generic effects, resources, labels, host
+context, state, and timing metadata from Floret's approval lifecycle. Hosts own
+the product permission policy, user-facing summary, approval controls, and any
+thread-list or composer presentation.
+
+Pending approval snapshots are a current-state read model, not the durable audit
+timeline. Continue to use thread detail events and observations when you need
+ordered history.
+
 ## 🧱 Responsibility boundary
 
 | Area | Floret owns | Host application owns |
@@ -392,6 +405,7 @@ surface.
 | Provider access | adapters, request shape, stream parsing, usage, continuation state | user-level provider profile, secret source, allowed model policy |
 | Storage | thread journal, prompt material, provider ledger, artifacts, runtime metadata | product metadata keyed by `runtime.ThreadID` |
 | Tools | schema validation, generic effects, approval hook, dispatch, result projection | domain handlers and final product permission checks |
+| Tool approvals | approval request state and current pending snapshots | user-facing approval UX, summaries, product mode policy, decision ownership |
 | Pending tool work | pending result projection, running activity, host completion turn | handle ownership, process lifecycle, progress, cancellation, final artifacts |
 | UI | sanitized events, snapshots, observation DTOs | layout, workflows, interaction states, recovery actions |
 

@@ -22,6 +22,7 @@ Floret owns:
 * provider loop execution;
 * local tool dispatch;
 * permission, resource, and approval lifecycle;
+* product-neutral pending approval snapshots;
 * runtime observation;
 * control signal contracts;
 * opaque model state lifecycle;
@@ -34,7 +35,7 @@ The host owns:
 * credentials and provider profile persistence;
 * durable product metadata;
 * workspace-specific resource policy;
-* domain tools and approval UI.
+* domain tools, approval UI, and product approval summaries.
 
 # Maintenance Notes
 

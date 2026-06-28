@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-06-28
+* **Update**: Documented product-neutral pending approval snapshots as the
+  current-state companion to approval detail events, while keeping approval UI
+  and product policy in downstream hosts.
 * **Update**: Documented parent stop versus thread delete lifecycle boundaries
   for subagents, including public `CloseSubAgents`, cascading
   `DeleteThread`, and engine-owned subagent fork mode.

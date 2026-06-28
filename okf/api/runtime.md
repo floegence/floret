@@ -40,6 +40,8 @@ continuation state, and lifecycle observations.
   audit surfaces without expanding `WaitSubAgents` payloads.
 * `ListThreadDetailEvents` lets a host read the Floret-owned ordered execution
   transcript for a hosted thread without reading Floret storage internals.
+* `ListPendingApprovals` returns the current product-neutral tool approvals
+  waiting for a host decision on a thread.
 * `DeleteThread` removes a Floret-owned thread tree from the engine store,
   including child threads, prompt cache scopes, and artifacts.
 * `ModelGateway` lets a host supply model transport through
@@ -121,6 +123,15 @@ must not read Floret's store schema or rebuild execution ordering from separate
 audit tables. Pagination uses `AfterOrdinal`, `Limit`, `HasMore`, and
 `NextOrdinal`; raw content follows the same explicit `IncludeRaw` opt-in rule as
 subagent detail reads.
+
+Pending approval snapshots are the current-state companion to the durable
+approval audit trail. `ListPendingApprovals` can be called while a turn is active
+and returns approval ids, tool call ids, tool names, effects, resources, labels,
+host context, state, timing, and revision metadata from Floret's generic
+approval lifecycle. Hosts own product modes, approval copy, UI placement,
+authorization policy, and decision routing; Floret does not encode those
+product concepts in the snapshot.
+
 For provider continuations such as length truncation recovery, the detail stream
 records the durable live prefix and any final suffix in ordinal order. It does
 not expose a duplicated accumulated assistant snapshot as a separate transcript

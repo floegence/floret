@@ -2798,6 +2798,9 @@ func approvalEventMetadata(req tools.ApprovalRequest, reason string) map[string]
 	if len(req.Labels) > 0 {
 		metadata["labels"] = cloneStringMap(req.Labels)
 	}
+	if len(req.HostContext) > 0 {
+		metadata["host_context"] = cloneStringMap(req.HostContext)
+	}
 	return metadata
 }
 

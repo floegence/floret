@@ -230,6 +230,10 @@ func TestSanitizeApprovalLifecycleEvents(t *testing.T) {
 					"correlation.turn": "turn-1",
 					"host.secret":      "token secret-value",
 				},
+				"host_context": map[string]string{
+					"target": "desktop",
+					"secret": "token secret-value",
+				},
 			},
 		})
 		if got.Args != "" || got.Result != "" || got.Err != "" {
@@ -254,6 +258,10 @@ func TestSanitizeApprovalLifecycleEvents(t *testing.T) {
 		labels, ok := meta["labels"].(map[string]string)
 		if !ok || labels["correlation.turn"] != "turn-1" || strings.Contains(labels["host.secret"], "secret-value") {
 			t.Fatalf("%s labels not sanitized/readable as expected: %#v", typ, meta["labels"])
+		}
+		hostContext, ok := meta["host_context"].(map[string]string)
+		if !ok || strings.Contains(fmt.Sprint(hostContext), "secret-value") {
+			t.Fatalf("%s host context not sanitized/readable as expected: %#v", typ, meta["host_context"])
 		}
 	}
 }

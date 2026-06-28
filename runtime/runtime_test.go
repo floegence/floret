@@ -1261,6 +1261,135 @@ func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
 	}
 }
 
+func TestHostListPendingApprovalsDuringActiveRun(t *testing.T) {
+	ctx := context.Background()
+	registry := tools.NewRegistry()
+	if err := registry.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{
+			Name:        "write_note",
+			Title:       "Write note",
+			InputSchema: runtimeEchoSchema(),
+			Effects:     []tools.Effect{tools.EffectWrite, tools.EffectShell},
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAsk},
+			Destructive: true,
+			OpenWorld:   true,
+		},
+		nil,
+		func(inv tools.Invocation[runtimeEchoArgs]) ([]tools.ResourceRef, error) {
+			return []tools.ResourceRef{{Kind: "file", Value: inv.Args.Text}}, nil
+		},
+		func(_ context.Context, inv tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			return tools.Result{Text: "wrote " + inv.Args.Text}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		events := make(chan ModelEvent, 3)
+		if req.Step == 1 {
+			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "call-1", Name: "write_note", Args: `{"text":"notes.md"}`}}}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+		} else {
+			events <- ModelEvent{Type: ModelEventDelta, Text: "done"}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+		}
+		close(events)
+		return events, nil
+	})
+	requested := make(chan struct{})
+	release := make(chan struct{})
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+		},
+		ModelGateway: gateway,
+		Store:        NewMemoryStore(),
+		Tools:        registry,
+		Approver: func(ctx context.Context, req tools.ApprovalRequest) (tools.PermissionDecision, error) {
+			if req.ApprovalID != "call-1" || req.HostContext["target"] != "runtime-test" || req.Labels["host.target"] != "runtime-test" {
+				t.Errorf("approval request = %#v", req)
+			}
+			close(requested)
+			select {
+			case <-release:
+				return tools.PermissionDecisionAllow, nil
+			case <-ctx.Done():
+				return tools.PermissionDecision{}, ctx.Err()
+			}
+		},
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	runErr := make(chan error, 1)
+	go func() {
+		_, err := host.RunTurn(ctx, RunTurnRequest{
+			ThreadID: "thread",
+			TurnID:   "turn-1",
+			Input:    "write",
+			Labels: RunLabels{
+				Host: map[string]string{"target": "runtime-test"},
+			},
+		})
+		runErr <- err
+	}()
+	select {
+	case <-requested:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for approval request")
+	}
+	pending, err := host.ListPendingApprovals(ctx, ListPendingApprovalsRequest{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending.ThreadID != "thread" || len(pending.Approvals) != 1 {
+		t.Fatalf("pending approvals = %#v", pending)
+	}
+	approval := pending.Approvals[0]
+	if approval.ApprovalID != "call-1" ||
+		approval.ToolCallID != "call-1" ||
+		approval.ToolName != "write_note" ||
+		approval.RunID != "turn-1" ||
+		approval.TurnID != "turn-1" ||
+		approval.State != "requested" ||
+		approval.ArgsHash == "" ||
+		approval.Labels["host.target"] != "runtime-test" ||
+		approval.HostContext["target"] != "runtime-test" ||
+		!approval.Destructive ||
+		!approval.OpenWorld {
+		t.Fatalf("approval snapshot = %#v", approval)
+	}
+	if got := approval.Effects; !slices.Equal(got, []string{"write", "shell"}) {
+		t.Fatalf("effects = %#v", got)
+	}
+	if len(approval.Resources) != 1 || approval.Resources[0].Kind != "file" || approval.Resources[0].Value != "notes.md" {
+		t.Fatalf("resources = %#v", approval.Resources)
+	}
+	close(release)
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for run")
+	}
+	pending, err = host.ListPendingApprovals(ctx, ListPendingApprovalsRequest{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending.Approvals) != 0 {
+		t.Fatalf("resolved approval should not remain pending: %#v", pending)
+	}
+}
+
 func TestHostThreadDetailEventsOmitRawUnlessRequested(t *testing.T) {
 	ctx := context.Background()
 	rec := &runtimeEventRecorder{}
