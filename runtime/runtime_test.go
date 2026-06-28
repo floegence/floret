@@ -173,6 +173,113 @@ func TestHostRunsThreadThroughModelGateway(t *testing.T) {
 	}
 }
 
+func TestHostForwardsTurnModelReasoningAndOpaqueProviderState(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	var mu sync.Mutex
+	var requests []ModelRequest
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		mu.Lock()
+		requests = append(requests, req)
+		mu.Unlock()
+		events := make(chan ModelEvent, 2)
+		events <- ModelEvent{Type: ModelEventDelta, Text: "ok " + string(req.TurnID)}
+		events <- ModelEvent{
+			Type:          ModelEventDone,
+			Reason:        "stop",
+			ResponseState: &ModelState{Kind: "responses", ID: "state-" + string(req.TurnID), Attributes: map[string]string{"cursor": string(req.TurnID), "model": req.Model}},
+		}
+		close(events)
+		return events, nil
+	})
+	newHost := func(model string) Host {
+		t.Helper()
+		host, err := NewHost(HostOptions{
+			Config: config.Config{
+				Provider:     config.ProviderFake,
+				Model:        model,
+				SystemPrompt: "gateway system",
+			},
+			ModelGateway: gateway,
+			Store:        store,
+			IDGenerator:  deterministicIDs(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return host
+	}
+	firstHost := newHost("model-a")
+	defer firstHost.Close()
+	if _, err := firstHost.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := firstHost.RunTurn(ctx, RunTurnRequest{
+		RunID:     "run-1",
+		ThreadID:  "thread",
+		TurnID:    "turn-1",
+		Input:     "first",
+		Reasoning: ReasoningSelection{Level: ReasoningLevelHigh},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != TurnStatusCompleted || first.ProviderState == nil || first.ProviderState.ID != "state-turn-1" {
+		t.Fatalf("first turn result = %#v", first)
+	}
+
+	secondHost := newHost("model-b")
+	defer secondHost.Close()
+	previous := &ModelState{Kind: "responses", ID: "state-turn-1", Attributes: map[string]string{"cursor": "turn-1", "custom": "keep"}}
+	second, err := secondHost.RunTurn(ctx, RunTurnRequest{
+		RunID:                 "run-2",
+		ThreadID:              "thread",
+		TurnID:                "turn-2",
+		Input:                 "second",
+		Reasoning:             ReasoningSelection{Level: ReasoningLevelLow},
+		PreviousProviderState: previous,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Status != TurnStatusCompleted || second.ProviderState == nil || second.ProviderState.ID != "state-turn-2" || second.ProviderState.Attributes["model"] != "model-b" {
+		t.Fatalf("second turn result = %#v", second)
+	}
+	previous.Attributes["cursor"] = "mutated"
+	second.ProviderState.Attributes["model"] = "mutated"
+
+	if _, err := secondHost.RunTurn(ctx, RunTurnRequest{RunID: "run-3", ThreadID: "thread", TurnID: "turn-3", Input: "third"}); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	firstReq, ok := findRuntimeModelRequest(requests, "thread", "turn-1", 1)
+	if !ok {
+		t.Fatalf("missing first gateway request: %#v", requests)
+	}
+	secondReq, ok := findRuntimeModelRequest(requests, "thread", "turn-2", 1)
+	if !ok {
+		t.Fatalf("missing second gateway request: %#v", requests)
+	}
+	thirdReq, ok := findRuntimeModelRequest(requests, "thread", "turn-3", 1)
+	if !ok {
+		t.Fatalf("missing third gateway request: %#v", requests)
+	}
+	if firstReq.Model != "model-a" || firstReq.Reasoning.Level != ReasoningLevelHigh || firstReq.PreviousState != nil {
+		t.Fatalf("first gateway request = %#v", firstReq)
+	}
+	if secondReq.Model != "model-b" || secondReq.Reasoning.Level != ReasoningLevelLow {
+		t.Fatalf("second gateway request model/reasoning = %#v", secondReq)
+	}
+	if secondReq.PreviousState == nil || secondReq.PreviousState.Kind != "responses" || secondReq.PreviousState.ID != "state-turn-1" || secondReq.PreviousState.Attributes["cursor"] != "turn-1" || secondReq.PreviousState.Attributes["custom"] != "keep" {
+		t.Fatalf("second gateway request previous state = %#v", secondReq.PreviousState)
+	}
+	if thirdReq.PreviousState != nil {
+		t.Fatalf("runtime should not persist provider state across turns: %#v", thirdReq.PreviousState)
+	}
+}
+
 func TestHostStreamsProjectedContextStatus(t *testing.T) {
 	ctx := context.Background()
 	rec := &runtimeEventRecorder{}
