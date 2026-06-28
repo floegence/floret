@@ -223,6 +223,24 @@ type ThreadSnapshot struct {
 	Messages         []ThreadMessage `json:"messages"`
 }
 
+type ThreadSummary struct {
+	ID               string    `json:"id"`
+	Title            string    `json:"title,omitempty"`
+	TitleStatus      string    `json:"title_status,omitempty"`
+	TitleSource      string    `json:"title_source,omitempty"`
+	TitleUpdatedAt   time.Time `json:"title_updated_at,omitempty"`
+	TitleError       string    `json:"title_error,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	Phase            string    `json:"phase"`
+	Status           string    `json:"status"`
+	LatestTurnID     string    `json:"latest_turn_id,omitempty"`
+	WaitingPrompt    string    `json:"waiting_prompt,omitempty"`
+	Recoverable      bool      `json:"recoverable"`
+	CanAppendMessage bool      `json:"can_append_message"`
+	CanRetry         bool      `json:"can_retry"`
+}
+
 type ThreadMessage struct {
 	Role      session.Role `json:"role"`
 	Content   string       `json:"content"`
@@ -310,6 +328,16 @@ func (h *AgentHarness) StartThread(ctx context.Context, opts StartThreadOptions)
 	thread := h.cacheThread(meta.ID)
 	h.emit(HarnessEvent{Type: EventThreadStarted, ThreadID: meta.ID})
 	return thread, nil
+}
+
+func (h *AgentHarness) EnsureThread(ctx context.Context, opts StartThreadOptions) (ThreadSummary, error) {
+	thread, err := h.StartThread(ctx, opts)
+	if errors.Is(err, sessiontree.ErrThreadExists) {
+		thread = h.cacheThread(strings.TrimSpace(opts.ThreadID))
+	} else if err != nil {
+		return ThreadSummary{}, err
+	}
+	return thread.Summary(ctx)
 }
 
 func (h *AgentHarness) ResumeThread(ctx context.Context, id string, _ ResumeOptions) (*Thread, error) {
@@ -552,6 +580,38 @@ func (t *Thread) Read(ctx context.Context) (ThreadSnapshot, error) {
 		CanAppendMessage: lifecycle.CanAppendMessage(),
 		CanRetry:         retryTarget(journal.Path).Entry.ID != "",
 		Messages:         threadMessages(journal.Path),
+	}, nil
+}
+
+func (t *Thread) Summary(ctx context.Context) (ThreadSummary, error) {
+	meta, err := t.harness.options.Repo.Thread(ctx, t.id)
+	if err != nil {
+		return ThreadSummary{}, err
+	}
+	path, err := t.harness.options.Repo.Path(ctx, t.id, meta.LeafID)
+	if err != nil {
+		return ThreadSummary{}, err
+	}
+	t.mu.Lock()
+	phase := t.phase
+	t.mu.Unlock()
+	lifecycle := sessionlifecycle.Derive(path, phase)
+	return ThreadSummary{
+		ID:               meta.ID,
+		Title:            meta.Title,
+		TitleStatus:      string(meta.TitleStatus),
+		TitleSource:      string(meta.TitleSource),
+		TitleUpdatedAt:   meta.TitleUpdatedAt,
+		TitleError:       meta.TitleError,
+		CreatedAt:        meta.CreatedAt,
+		UpdatedAt:        meta.UpdatedAt,
+		Phase:            lifecycle.Phase(),
+		Status:           lifecycle.Status(),
+		LatestTurnID:     lifecycle.LatestTurnID(),
+		WaitingPrompt:    lifecycle.WaitingPrompt(),
+		Recoverable:      lifecycle.Recoverable(),
+		CanAppendMessage: lifecycle.CanAppendMessage(),
+		CanRetry:         retryTarget(path).Entry.ID != "",
 	}, nil
 }
 

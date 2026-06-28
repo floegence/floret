@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,7 @@ type TraceID string
 
 type Host interface {
 	StartThread(context.Context, StartThreadRequest) (ThreadSnapshot, error)
+	EnsureThread(context.Context, EnsureThreadRequest) (ThreadSummary, error)
 	ReadThread(context.Context, ThreadID) (ThreadSnapshot, error)
 	ListThreadDetailEvents(context.Context, ListThreadDetailEventsRequest) (ThreadDetailEvents, error)
 	RunTurn(context.Context, RunTurnRequest) (TurnResult, error)
@@ -49,6 +51,7 @@ type Host interface {
 	WaitSubAgents(context.Context, WaitSubAgentsRequest) (WaitSubAgentsResult, error)
 	ListSubAgents(context.Context, ThreadID) ([]SubAgentSnapshot, error)
 	CloseSubAgent(context.Context, CloseSubAgentRequest) (SubAgentSnapshot, error)
+	ListSubAgentActivityTimeline(context.Context, ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error)
 	ReadSubAgentDetail(context.Context, ReadSubAgentDetailRequest) (SubAgentDetail, error)
 	ListSubAgentDetailEvents(context.Context, ListSubAgentDetailEventsRequest) (SubAgentDetailEvents, error)
 	DeleteThread(context.Context, ThreadID) error
@@ -83,6 +86,10 @@ type CapabilityOptions struct {
 }
 
 type StartThreadRequest struct {
+	ThreadID ThreadID
+}
+
+type EnsureThreadRequest struct {
 	ThreadID ThreadID
 }
 
@@ -207,6 +214,11 @@ type ListSubAgentDetailEventsRequest struct {
 	IncludeRaw     bool
 }
 
+type ListSubAgentActivityTimelineRequest struct {
+	ParentThreadID ThreadID
+	Meta           observation.ActivityRunMeta
+}
+
 type ListThreadDetailEventsRequest struct {
 	ThreadID     ThreadID
 	AfterOrdinal int64
@@ -254,6 +266,11 @@ type SubAgentDetailEvents struct {
 	HasMore      bool                  `json:"has_more,omitempty"`
 	RetainedFrom int64                 `json:"retained_from,omitempty"`
 	GeneratedAt  time.Time             `json:"generated_at"`
+}
+
+type SubAgentActivityTimelineResult struct {
+	Timeline    observation.ActivityTimeline `json:"activity_timeline"`
+	GeneratedAt time.Time                    `json:"generated_at"`
 }
 
 type ThreadDetailEvents struct {
@@ -483,6 +500,24 @@ type ThreadSnapshot struct {
 	CanAppendMessage bool            `json:"can_append_message"`
 	CanRetry         bool            `json:"can_retry"`
 	Messages         []ThreadMessage `json:"messages"`
+}
+
+type ThreadSummary struct {
+	ID               ThreadID     `json:"id"`
+	Title            string       `json:"title,omitempty"`
+	TitleStatus      string       `json:"title_status,omitempty"`
+	TitleSource      string       `json:"title_source,omitempty"`
+	TitleUpdatedAt   time.Time    `json:"title_updated_at,omitempty"`
+	TitleError       string       `json:"title_error,omitempty"`
+	CreatedAt        time.Time    `json:"created_at"`
+	UpdatedAt        time.Time    `json:"updated_at"`
+	Phase            ThreadPhase  `json:"phase"`
+	Status           ThreadStatus `json:"status"`
+	LatestTurnID     TurnID       `json:"latest_turn_id,omitempty"`
+	WaitingPrompt    string       `json:"waiting_prompt,omitempty"`
+	Recoverable      bool         `json:"recoverable"`
+	CanAppendMessage bool         `json:"can_append_message"`
+	CanRetry         bool         `json:"can_retry"`
 }
 
 type ThreadMessage struct {
@@ -728,6 +763,14 @@ func (h *host) StartThread(ctx context.Context, req StartThreadRequest) (ThreadS
 	return readThread(ctx, thread)
 }
 
+func (h *host) EnsureThread(ctx context.Context, req EnsureThreadRequest) (ThreadSummary, error) {
+	summary, err := h.harness.EnsureThread(ctx, agentharness.StartThreadOptions{ThreadID: string(req.ThreadID)})
+	if err != nil {
+		return ThreadSummary{}, err
+	}
+	return threadSummary(summary), nil
+}
+
 func (h *host) ReadThread(ctx context.Context, threadID ThreadID) (ThreadSnapshot, error) {
 	thread, err := h.harness.ResumeThread(ctx, string(threadID), agentharness.ResumeOptions{})
 	if err != nil {
@@ -943,6 +986,18 @@ func (h *host) CloseSubAgent(ctx context.Context, req CloseSubAgentRequest) (Sub
 	return subAgentSnapshot(snapshot), nil
 }
 
+func (h *host) ListSubAgentActivityTimeline(ctx context.Context, req ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error) {
+	snapshots, err := h.harness.ListSubAgents(ctx, string(req.ParentThreadID))
+	if err != nil {
+		return SubAgentActivityTimelineResult{}, err
+	}
+	generatedAt := time.Now()
+	return SubAgentActivityTimelineResult{
+		Timeline:    subAgentActivityTimeline(req.Meta, snapshots, generatedAt),
+		GeneratedAt: generatedAt,
+	}, nil
+}
+
 func (h *host) ReadSubAgentDetail(ctx context.Context, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
 	detail, err := h.harness.ReadSubAgentDetail(ctx, agentharness.ReadSubAgentDetailOptions{
 		ParentThreadID: string(req.ParentThreadID),
@@ -1040,6 +1095,26 @@ func threadSnapshot(in agentharness.ThreadSnapshot) ThreadSnapshot {
 	return out
 }
 
+func threadSummary(in agentharness.ThreadSummary) ThreadSummary {
+	return ThreadSummary{
+		ID:               ThreadID(in.ID),
+		Title:            in.Title,
+		TitleStatus:      in.TitleStatus,
+		TitleSource:      in.TitleSource,
+		TitleUpdatedAt:   in.TitleUpdatedAt,
+		TitleError:       in.TitleError,
+		CreatedAt:        in.CreatedAt,
+		UpdatedAt:        in.UpdatedAt,
+		Phase:            ThreadPhase(in.Phase),
+		Status:           ThreadStatus(in.Status),
+		LatestTurnID:     TurnID(in.LatestTurnID),
+		WaitingPrompt:    in.WaitingPrompt,
+		Recoverable:      in.Recoverable,
+		CanAppendMessage: in.CanAppendMessage,
+		CanRetry:         in.CanRetry,
+	}
+}
+
 func turnResult(in agentharness.TurnResult, events []observation.Event, nowUnixMS int64) TurnResult {
 	out := TurnResult{
 		ID:                 TurnID(in.ID),
@@ -1095,6 +1170,205 @@ func subAgentSnapshot(in agentharness.SubAgentSnapshot) SubAgentSnapshot {
 		CanInterrupt:   in.CanInterrupt,
 		CanClose:       in.CanClose,
 	}
+}
+
+func subAgentActivityTimeline(meta observation.ActivityRunMeta, snapshots []agentharness.SubAgentSnapshot, generatedAt time.Time) observation.ActivityTimeline {
+	timeline := observation.ActivityTimeline{
+		SchemaVersion: observation.ActivityTimelineSchemaVersion,
+		RunID:         strings.TrimSpace(meta.RunID),
+		ThreadID:      strings.TrimSpace(meta.ThreadID),
+		TurnID:        strings.TrimSpace(meta.TurnID),
+		TraceID:       strings.TrimSpace(meta.TraceID),
+		Summary: observation.ActivitySummary{
+			Status:   observation.ActivityStatusSuccess,
+			Severity: observation.ActivitySeverityQuiet,
+		},
+		Items: []observation.ActivityItem{},
+	}
+	if timeline.ThreadID == "" {
+		timeline.ThreadID = strings.TrimSpace(string(metaThreadID(meta, snapshots)))
+	}
+	items := make([]agentharness.SubAgentSnapshot, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		if strings.TrimSpace(snapshot.ThreadID) == "" {
+			continue
+		}
+		items = append(items, snapshot)
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		leftTerminal := subAgentActivityTerminal(items[i].Status)
+		rightTerminal := subAgentActivityTerminal(items[j].Status)
+		if leftTerminal != rightTerminal {
+			return !leftTerminal
+		}
+		if !items[i].UpdatedAt.Equal(items[j].UpdatedAt) {
+			return items[i].UpdatedAt.After(items[j].UpdatedAt)
+		}
+		return strings.TrimSpace(items[i].ThreadID) < strings.TrimSpace(items[j].ThreadID)
+	})
+	counts := observation.ActivityCounts{}
+	nowMS := generatedAt.UnixMilli()
+	for _, snapshot := range items {
+		status, severity, attention := subAgentActivityState(snapshot.Status)
+		noteSubAgentActivityCount(&counts, status)
+		startedAt := activityTimeUnixMS(snapshot.CreatedAt, nowMS)
+		endedAt := int64(0)
+		if subAgentActivityTerminal(snapshot.Status) {
+			endedAt = activityTimeUnixMS(snapshot.UpdatedAt, nowMS)
+		}
+		title := firstRuntimeNonEmpty(strings.TrimSpace(snapshot.TaskName), strings.TrimSpace(snapshot.Path), strings.TrimSpace(snapshot.ThreadID), "Subagent")
+		description := firstRuntimeNonEmpty(strings.TrimSpace(snapshot.LastMessage), strings.TrimSpace(string(snapshot.Status)))
+		timeline.Items = append(timeline.Items, observation.ActivityItem{
+			ItemID:           "subagent:" + stableSubAgentActivityHash(snapshot.ThreadID),
+			ToolID:           "subagents",
+			ToolName:         "subagents",
+			Kind:             observation.ActivityKindControl,
+			Status:           status,
+			Severity:         severity,
+			NeedsAttention:   len(attention) > 0,
+			AttentionReasons: attention,
+			RequiresApproval: false,
+			StartedAtUnixMS:  startedAt,
+			EndedAtUnixMS:    endedAt,
+			Label:            title,
+			Description:      description,
+			Payload:          subAgentActivityPayload(snapshot),
+		})
+	}
+	timeline.Summary.TotalItems = len(timeline.Items)
+	timeline.Summary.Counts = counts
+	timeline.Summary.Status, timeline.Summary.Severity, timeline.Summary.NeedsAttention, timeline.Summary.AttentionReasons = subAgentActivitySummaryState(counts)
+	return timeline
+}
+
+func metaThreadID(meta observation.ActivityRunMeta, snapshots []agentharness.SubAgentSnapshot) ThreadID {
+	if strings.TrimSpace(meta.ThreadID) != "" {
+		return ThreadID(meta.ThreadID)
+	}
+	for _, snapshot := range snapshots {
+		if strings.TrimSpace(snapshot.ParentThreadID) != "" {
+			return ThreadID(snapshot.ParentThreadID)
+		}
+	}
+	return ""
+}
+
+func subAgentActivityPayload(snapshot agentharness.SubAgentSnapshot) map[string]any {
+	title := firstRuntimeNonEmpty(strings.TrimSpace(snapshot.TaskName), strings.TrimSpace(snapshot.Path), strings.TrimSpace(snapshot.ThreadID))
+	return map[string]any{
+		"subagent_id":      strings.TrimSpace(snapshot.ThreadID),
+		"thread_id":        strings.TrimSpace(snapshot.ThreadID),
+		"path":             strings.TrimSpace(snapshot.Path),
+		"task_name":        strings.TrimSpace(snapshot.TaskName),
+		"title":            title,
+		"host_profile_ref": strings.TrimSpace(snapshot.HostProfileRef),
+		"status":           strings.TrimSpace(string(snapshot.Status)),
+		"last_message":     strings.TrimSpace(snapshot.LastMessage),
+		"waiting_prompt":   strings.TrimSpace(snapshot.WaitingPrompt),
+		"queued_inputs":    snapshot.QueuedInputs,
+		"parent_thread_id": strings.TrimSpace(snapshot.ParentThreadID),
+		"parent_turn_id":   strings.TrimSpace(snapshot.ParentTurnID),
+		"latest_turn_id":   strings.TrimSpace(snapshot.LatestTurnID),
+		"created_at_ms":    activityTimeUnixMS(snapshot.CreatedAt, 0),
+		"updated_at_ms":    activityTimeUnixMS(snapshot.UpdatedAt, 0),
+		"closed":           snapshot.Closed,
+		"can_send_input":   snapshot.CanSendInput,
+		"can_interrupt":    snapshot.CanInterrupt,
+		"can_close":        snapshot.CanClose,
+	}
+}
+
+func subAgentActivityState(status agentharness.SubAgentStatus) (observation.ActivityStatus, observation.ActivitySeverity, []observation.ActivityAttentionReason) {
+	switch status {
+	case agentharness.SubAgentStatusIdle:
+		return observation.ActivityStatusPending, observation.ActivitySeverityQuiet, nil
+	case agentharness.SubAgentStatusRunning:
+		return observation.ActivityStatusRunning, observation.ActivitySeverityNormal, []observation.ActivityAttentionReason{observation.ActivityAttentionRunning}
+	case agentharness.SubAgentStatusWaiting, agentharness.SubAgentStatusInterrupted:
+		return observation.ActivityStatusWaiting, observation.ActivitySeverityBlocking, []observation.ActivityAttentionReason{observation.ActivityAttentionWaiting}
+	case agentharness.SubAgentStatusCompleted:
+		return observation.ActivityStatusSuccess, observation.ActivitySeverityNormal, nil
+	case agentharness.SubAgentStatusFailed:
+		return observation.ActivityStatusError, observation.ActivitySeverityError, []observation.ActivityAttentionReason{observation.ActivityAttentionError}
+	case agentharness.SubAgentStatusCancelled, agentharness.SubAgentStatusClosed:
+		return observation.ActivityStatusCanceled, observation.ActivitySeverityWarning, nil
+	default:
+		return observation.ActivityStatusPending, observation.ActivitySeverityQuiet, nil
+	}
+}
+
+func noteSubAgentActivityCount(counts *observation.ActivityCounts, status observation.ActivityStatus) {
+	if counts == nil {
+		return
+	}
+	switch status {
+	case observation.ActivityStatusPending:
+		counts.Pending++
+	case observation.ActivityStatusRunning:
+		counts.Running++
+	case observation.ActivityStatusWaiting:
+		counts.Waiting++
+	case observation.ActivityStatusSuccess:
+		counts.Success++
+	case observation.ActivityStatusError:
+		counts.Error++
+	case observation.ActivityStatusCanceled:
+		counts.Canceled++
+	}
+}
+
+func subAgentActivitySummaryState(counts observation.ActivityCounts) (observation.ActivityStatus, observation.ActivitySeverity, bool, []observation.ActivityAttentionReason) {
+	if counts.Error > 0 {
+		return observation.ActivityStatusError, observation.ActivitySeverityError, true, []observation.ActivityAttentionReason{observation.ActivityAttentionError}
+	}
+	if counts.Waiting > 0 {
+		return observation.ActivityStatusWaiting, observation.ActivitySeverityBlocking, true, []observation.ActivityAttentionReason{observation.ActivityAttentionWaiting}
+	}
+	if counts.Running > 0 {
+		return observation.ActivityStatusRunning, observation.ActivitySeverityNormal, true, []observation.ActivityAttentionReason{observation.ActivityAttentionRunning}
+	}
+	if counts.Pending > 0 {
+		return observation.ActivityStatusPending, observation.ActivitySeverityQuiet, false, nil
+	}
+	if counts.Canceled > 0 && counts.Success == 0 {
+		return observation.ActivityStatusCanceled, observation.ActivitySeverityWarning, false, nil
+	}
+	return observation.ActivityStatusSuccess, observation.ActivitySeverityNormal, false, nil
+}
+
+func subAgentActivityTerminal(status agentharness.SubAgentStatus) bool {
+	switch status {
+	case agentharness.SubAgentStatusCompleted, agentharness.SubAgentStatusFailed, agentharness.SubAgentStatusCancelled, agentharness.SubAgentStatusClosed:
+		return true
+	default:
+		return false
+	}
+}
+
+func activityTimeUnixMS(value time.Time, fallback int64) int64 {
+	if value.IsZero() {
+		return fallback
+	}
+	return value.UnixMilli()
+}
+
+func stableSubAgentActivityHash(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
+func firstRuntimeNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func subAgentDetail(in agentharness.SubAgentDetail) SubAgentDetail {

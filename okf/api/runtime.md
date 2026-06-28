@@ -20,6 +20,8 @@ continuation state, and lifecycle observations.
 * `NewHost` creates a durable conversation host.
 * `NewMemoryStore` creates an in-memory runtime store for tests or ephemeral use.
 * `OpenSQLiteStore` creates Floret-managed durable runtime storage.
+* `Host.EnsureThread` creates or recovers a hosted thread and returns
+  transcript-free `ThreadSummary` lifecycle metadata.
 * `Host.RunTurn` executes one hosted user-facing turn.
 * `RunTurnRequest.ManualCompactions` lets a host request manual context
   compaction for an active hosted run. Floret polls it at provider-loop safe
@@ -29,6 +31,9 @@ continuation state, and lifecycle observations.
   assistant output.
 * `SpawnSubAgent`, `SendSubAgentInput`, `WaitSubAgents`, `ListSubAgents`, and
   `CloseSubAgent` manage durable child threads under a hosted parent thread.
+* `ListSubAgentActivityTimeline` returns a parent-scoped,
+  product-neutral `observation.ActivityTimeline` for hosted child lifecycle
+  status without exposing child transcripts.
 * `ReadSubAgentDetail` and `ListSubAgentDetailEvents` let a host read a
   parent-scoped, paginated child-thread execution timeline for human UI or
   audit surfaces without expanding `WaitSubAgents` payloads.

@@ -1,6 +1,8 @@
 # Floret OKF Update Log
 
 ## 2026-06-28
+* **Update**: Documented transcript-free thread summary recovery and
+  parent-scoped subagent activity timelines for host UI integration.
 * **Update**: Documented that provider continuation recovery preserves the
   Floret ordered transcript by committing live assistant prefixes and
   backfilling only uncommitted suffixes.

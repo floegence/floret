@@ -207,6 +207,11 @@ Use `runtime.OpenSQLiteStore(path)` when the host wants Floret-managed durable
 runtime storage. Treat `runtime.Store` as an opaque handle; do not reach into its
 tables or implementation details from downstream code.
 
+Use `EnsureThread` when a host needs to initialize or recover a thread by
+identity without reading its transcript. It returns `ThreadSummary`, the
+thread's lifecycle and metadata view without `messages`; reserve `ReadThread`
+for compatibility or explicitly transcript-oriented tools.
+
 ## 🌿 Parent-managed child threads
 
 `runtime.Host` can manage product-neutral subagents as durable child threads.
@@ -346,6 +351,11 @@ Hosted subagents are parent-managed durable child threads. The parent uses
 `CloseSubAgent` for lifecycle control. `WaitSubAgents` is deliberately bounded:
 it defaults to five minutes, caps requests at twenty minutes, and returns child
 snapshots rather than a full child transcript.
+
+Use `ListSubAgentActivityTimeline` when a host UI needs a parent-scoped activity
+summary for all child threads. The returned `observation.ActivityTimeline` is
+derived from Floret child snapshots and contains product-neutral child-thread
+facts; hosts may wrap those facts in their own display actions and routing.
 
 Use `ReadSubAgentDetail` or `ListSubAgentDetailEvents` when a host UI needs to
 inspect a child thread's persisted journal. Detail reads are scoped by both

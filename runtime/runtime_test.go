@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -71,6 +72,55 @@ func TestHostRunsFakeProviderThread(t *testing.T) {
 		return ev.Type == "provider_delta" && ev.ThreadID == "thread" && ev.RunID == "turn-1"
 	}) {
 		t.Fatalf("runtime events missing provider delta: %#v", rec.events)
+	}
+}
+
+func TestHostEnsureThreadReturnsSummaryWithoutMessages(t *testing.T) {
+	ctx := context.Background()
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "configured",
+			SystemPrompt: "test",
+		},
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+
+	started, err := host.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.ID != "thread" || !started.CanAppendMessage {
+		t.Fatalf("started summary = %#v", started)
+	}
+	if _, err := host.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn-1", Input: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	ensured, err := host.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ensured.ID != "thread" || ensured.Status != ThreadStatusCompleted || ensured.LatestTurnID != "turn-1" {
+		t.Fatalf("ensured summary = %#v", ensured)
+	}
+	data, err := json.Marshal(ensured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "messages") || strings.Contains(string(data), "content") {
+		t.Fatalf("thread summary leaked transcript data: %s", string(data))
+	}
+	snapshot, err := host.ReadThread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Messages) == 0 {
+		t.Fatalf("test setup did not create transcript messages: %#v", snapshot)
 	}
 }
 
@@ -371,6 +421,56 @@ func TestHostToolSurfaceProviderRefreshesGatewayRequests(t *testing.T) {
 	}
 	if len(second.HostedTools) != 1 || second.HostedTools[0].Name != "hosted_search" || second.HostedTools[0].Type != "web_search" || second.HostedTools[0].Options["limit"] != float64(5) {
 		t.Fatalf("second request hosted tools = %#v", second.HostedTools)
+	}
+}
+
+func TestSubAgentActivityTimelineProjectsStatusSummary(t *testing.T) {
+	base := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	snapshots := []agentharness.SubAgentSnapshot{
+		{ThreadID: "completed", TaskName: "completed task", ParentThreadID: "parent", Status: agentharness.SubAgentStatusCompleted, LastMessage: "done", CreatedAt: base.Add(-8 * time.Minute), UpdatedAt: base.Add(-7 * time.Minute)},
+		{ThreadID: "running", TaskName: "running task", ParentThreadID: "parent", Status: agentharness.SubAgentStatusRunning, LastMessage: "working", CreatedAt: base.Add(-6 * time.Minute), UpdatedAt: base.Add(-1 * time.Minute)},
+		{ThreadID: "waiting", TaskName: "waiting task", ParentThreadID: "parent", Status: agentharness.SubAgentStatusWaiting, WaitingPrompt: "need input", CreatedAt: base.Add(-5 * time.Minute), UpdatedAt: base.Add(-2 * time.Minute)},
+		{ThreadID: "failed", TaskName: "failed task", ParentThreadID: "parent", Status: agentharness.SubAgentStatusFailed, LastMessage: "failed", CreatedAt: base.Add(-4 * time.Minute), UpdatedAt: base.Add(-3 * time.Minute)},
+		{ThreadID: "cancelled", TaskName: "cancelled task", ParentThreadID: "parent", Status: agentharness.SubAgentStatusCancelled, CreatedAt: base.Add(-3 * time.Minute), UpdatedAt: base.Add(-4 * time.Minute)},
+		{ThreadID: "idle", TaskName: "idle task", ParentThreadID: "parent", Status: agentharness.SubAgentStatusIdle, CreatedAt: base.Add(-2 * time.Minute), UpdatedAt: base.Add(-5 * time.Minute)},
+		{ThreadID: "interrupted", TaskName: "interrupted task", ParentThreadID: "parent", Status: agentharness.SubAgentStatusInterrupted, CreatedAt: base.Add(-90 * time.Second), UpdatedAt: base},
+		{ThreadID: "closed", TaskName: "closed task", ParentThreadID: "parent", Status: agentharness.SubAgentStatusClosed, CreatedAt: base.Add(-30 * time.Second), UpdatedAt: base.Add(-6 * time.Minute), Closed: true},
+	}
+	timeline := subAgentActivityTimeline(observation.ActivityRunMeta{
+		RunID:    "parent-run",
+		ThreadID: "parent",
+		TurnID:   "parent-turn",
+		TraceID:  "parent-trace",
+	}, snapshots, base)
+	if err := observation.ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("ValidateActivityTimeline: %v", err)
+	}
+	if len(timeline.Items) != len(snapshots) {
+		t.Fatalf("items=%d, want %d", len(timeline.Items), len(snapshots))
+	}
+	if timeline.Summary.Status != observation.ActivityStatusError || timeline.Summary.Severity != observation.ActivitySeverityError || !timeline.Summary.NeedsAttention {
+		t.Fatalf("summary=%#v, want error with attention", timeline.Summary)
+	}
+	counts := timeline.Summary.Counts
+	if counts.Pending != 1 || counts.Running != 1 || counts.Waiting != 2 || counts.Success != 1 || counts.Error != 1 || counts.Canceled != 2 {
+		t.Fatalf("counts=%#v", counts)
+	}
+	if timeline.Items[0].ToolName != "subagents" || timeline.Items[0].Payload["subagent_id"] != "interrupted" {
+		t.Fatalf("first item=%#v, want newest active subagent", timeline.Items[0])
+	}
+	if timeline.Items[0].Status != observation.ActivityStatusWaiting {
+		t.Fatalf("interrupted status=%q, want waiting", timeline.Items[0].Status)
+	}
+	for _, item := range timeline.Items {
+		if _, ok := item.Payload["operation"]; ok {
+			t.Fatalf("floret subagent activity payload must not include product operation: %#v", item.Payload)
+		}
+		if _, ok := item.Payload["action"]; ok {
+			t.Fatalf("floret subagent activity payload must not include product action: %#v", item.Payload)
+		}
+		if _, ok := item.Payload["delegation_runtime"]; ok {
+			t.Fatalf("floret subagent activity payload must not include product runtime label: %#v", item.Payload)
+		}
 	}
 }
 

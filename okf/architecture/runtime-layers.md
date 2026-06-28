@@ -79,10 +79,17 @@ derive from the same durable source.
 
 Waiting for child threads is intentionally separate from reading child detail.
 `WaitSubAgents` returns bounded snapshots and timeout state; it does not return
-the child transcript, tool outputs, or detail timeline. `ReadSubAgentDetail` and
-`ListSubAgentDetailEvents` are separate public host APIs for parent-scoped,
-paginated inspection of the child journal. They let a product UI show complete
-child execution detail while keeping parent model context small.
+the child transcript, tool outputs, or detail timeline.
+`ListSubAgentActivityTimeline` gives host UIs a parent-scoped activity summary
+derived from child snapshots without exposing the child transcript.
+`ReadSubAgentDetail` and `ListSubAgentDetailEvents` are separate public host
+APIs for parent-scoped, paginated inspection of the child journal. They let a
+product UI show complete child execution detail while keeping parent model
+context small.
+
+Hosts that only need thread lifecycle metadata should use `EnsureThread` and
+`ThreadSummary`. `ReadThread` exposes transcript messages and should not be the
+default integration point for UI bootstrapping or subagent inspection.
 
 Closing a subagent stops current child execution and queued work. It preserves
 the child thread and journal so the host can still read detail after close,
