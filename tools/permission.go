@@ -52,6 +52,11 @@ type ApprovalRequest struct {
 	Args          string
 	ArgsHash      string
 	ValidatedArgs any
+	RunID         string
+	ThreadID      string
+	TurnID        string
+	PromptScopeID string
+	Step          int
 	Resources     []ResourceRef
 	Effects       []Effect
 	Labels        map[string]string

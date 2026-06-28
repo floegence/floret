@@ -150,6 +150,7 @@ type MoveOptions struct {
 }
 
 type RunOptions struct {
+	RunID                    string
 	TurnID                   string
 	Labels                   engine.RunLabels
 	TerminalMetadata         map[string]string
@@ -260,6 +261,7 @@ type ThreadJournalSnapshot struct {
 
 type TurnResult struct {
 	ID                 string
+	RunID              string
 	Status             engine.Status
 	Output             string
 	Err                error
@@ -494,9 +496,13 @@ func (h *AgentHarness) emit(ev HarnessEvent) {
 	}
 }
 
-func (h *AgentHarness) emitEntryCommitted(entry sessiontree.Entry) {
+func (h *AgentHarness) emitEntryCommitted(entry sessiontree.Entry, runID string) {
 	if h == nil || h.options.Sink == nil || strings.TrimSpace(entry.ID) == "" {
 		return
+	}
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		runID = strings.TrimSpace(entry.Metadata["run_id"])
 	}
 	ordinal := h.threadEntryOrdinal(entry)
 	detail, ok := h.subAgentDetailEvent(entry, ordinal, false, subAgentDetailActivityContext{})
@@ -524,7 +530,7 @@ func (h *AgentHarness) emitEntryCommitted(entry sessiontree.Entry) {
 	}
 	h.options.Sink.Emit(event.SanitizeWithPolicy(event.Event{
 		Type:      event.ThreadEntryCommitted,
-		RunID:     entry.TurnID,
+		RunID:     runID,
 		ThreadID:  entry.ThreadID,
 		TurnID:    entry.TurnID,
 		Message:   entry.Message.Content,
@@ -734,7 +740,7 @@ func (t *Thread) Retry(ctx context.Context, opts RetryOptions) (TurnResult, erro
 		return TurnResult{}, err
 	}
 	t.harness.emit(HarnessEvent{Type: EventRetryStarted, ThreadID: t.id, EntryID: target.Entry.ID, Metadata: map[string]string{"reason": opts.Reason, "source": target.Source}})
-	return t.runLeased(ctx, "", RunOptions{TurnID: turnID, Labels: opts.Labels}, &target.Entry)
+	return t.runLeased(ctx, "", RunOptions{RunID: t.harness.nextID("run"), TurnID: turnID, Labels: opts.Labels}, &target.Entry)
 }
 
 func (t *Thread) CompletePendingTool(ctx context.Context, completion PendingToolCompletion) (TurnResult, error) {
@@ -742,7 +748,7 @@ func (t *Thread) CompletePendingTool(ctx context.Context, completion PendingTool
 	if err != nil {
 		return TurnResult{}, err
 	}
-	return t.run(ctx, input, RunOptions{TurnID: completion.TurnID, Labels: completion.Labels}, nil)
+	return t.run(ctx, input, RunOptions{RunID: completion.RunID, TurnID: completion.TurnID, Labels: completion.Labels}, nil)
 }
 
 func (t *Thread) MoveTo(ctx context.Context, entryID string, opts MoveOptions) error {
@@ -869,7 +875,7 @@ func (t *Thread) Compact(ctx context.Context, opts CompactOptions) (CompactResul
 	if opts.Sink != nil {
 		downstream = opts.Sink
 	}
-	projection := &turnProjection{thread: t, ctx: ctx, downstream: downstream}
+	projection := &turnProjection{thread: t, ctx: ctx, runID: runID, downstream: downstream}
 	eng.SetSink(projection)
 	result := eng.CompactContext(ctx, engine.RunInput{
 		RunID:                 runID,
@@ -928,10 +934,14 @@ func (t *Thread) runEntered(ctx context.Context, input string, opts RunOptions, 
 
 func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, retryUser *sessiontree.Entry) (TurnResult, error) {
 	turnID := opts.TurnID
+	runID := strings.TrimSpace(opts.RunID)
+	if runID == "" {
+		runID = t.harness.nextID("run")
+	}
 	if entry, err := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, sessiontree.TurnStarted, nil); err != nil {
 		return TurnResult{}, err
 	} else {
-		t.harness.emitEntryCommitted(entry)
+		t.harness.emitEntryCommitted(entry, runID)
 	}
 	t.harness.emit(HarnessEvent{Type: EventTurnStarted, ThreadID: t.id, TurnID: turnID})
 	if retryUser == nil {
@@ -939,19 +949,18 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 		if err != nil {
 			persistCtx, cancelPersist := turnFinalizationContext(ctx)
 			defer cancelPersist()
-			return t.finalizeFailedTurn(persistCtx, turnID, turnID, statusForError(err), err, "append_user_error")
+			return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "append_user_error")
 		}
-		t.harness.emitEntryCommitted(entry)
+		t.harness.emitEntryCommitted(entry, runID)
 		t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID})
 	}
 	snap, err := t.Journal(ctx)
 	if err != nil {
 		persistCtx, cancelPersist := turnFinalizationContext(ctx)
 		defer cancelPersist()
-		return t.finalizeFailedTurn(persistCtx, turnID, turnID, statusForError(err), err, "snapshot_error")
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "snapshot_error")
 	}
 	history := sessiontree.BuildContext(snap.Path, sessiontree.ContextOptions{})
-	runID := turnID
 	engineOptions := t.harness.engineOptions()
 	engineOptions.RunID = runID
 	engineOptions.ThreadID = t.id
@@ -983,7 +992,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	if opts.Sink != nil {
 		downstream = opts.Sink
 	}
-	projection := &turnProjection{thread: t, ctx: ctx, turnID: turnID, downstream: downstream}
+	projection := &turnProjection{thread: t, ctx: ctx, turnID: turnID, runID: runID, downstream: downstream}
 	eng.SetSink(projection)
 	result := eng.RunTurn(ctx, engine.RunInput{RunID: runID, ThreadID: t.id, TurnID: turnID, TraceID: runID, PromptScopeID: t.id, Labels: opts.Labels, History: history})
 	persistCtx, cancelPersist := turnFinalizationContext(ctx)
@@ -999,7 +1008,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	if err != nil {
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "snapshot_error")
 	}
-	if err := t.appendDelta(persistCtx, turnID, history, result.Messages, current.Path); err != nil {
+	if err := t.appendDelta(persistCtx, turnID, runID, history, result.Messages, current.Path); err != nil {
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "append_delta_error")
 	}
 	status := markerForStatus(result.Status)
@@ -1008,13 +1017,13 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	if entry, err := sessiontree.AppendTurnMarker(persistCtx, t.harness.options.Repo, t.id, turnID, sessiontree.TurnSavePoint, savePointMetadata); err != nil {
 		return TurnResult{}, err
 	} else {
-		t.harness.emitEntryCommitted(entry)
+		t.harness.emitEntryCommitted(entry, runID)
 	}
 	if result.Err != nil {
 		if entry, err := sessiontree.AppendFailure(persistCtx, t.harness.options.Repo, t.id, turnID, result.Err.Error()); err != nil {
 			return TurnResult{}, err
 		} else {
-			t.harness.emitEntryCommitted(entry)
+			t.harness.emitEntryCommitted(entry, runID)
 		}
 	}
 	terminalMetadata := markerMetadata(runID, result)
@@ -1031,11 +1040,11 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	if entry, err := sessiontree.AppendTurnMarker(persistCtx, t.harness.options.Repo, t.id, turnID, status, terminalMetadata); err != nil {
 		var committed sessiontree.AppendCommittedError
 		if errors.As(err, &committed) {
-			return t.turnResultFromEngine(turnID, result, map[string]string{"terminal_persistence_error": err.Error()}), result.Err
+			return t.turnResultFromEngine(turnID, runID, result, map[string]string{"terminal_persistence_error": err.Error()}), result.Err
 		}
 		return TurnResult{}, err
 	} else {
-		t.harness.emitEntryCommitted(entry)
+		t.harness.emitEntryCommitted(entry, runID)
 	}
 	eventType := EventTurnCompleted
 	if result.Status == engine.Failed {
@@ -1050,7 +1059,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 			t.harness.emit(HarnessEvent{Type: EventTitleFailed, ThreadID: t.id, TurnID: turnID, Message: err.Error()})
 		}
 	}
-	return t.turnResultFromEngine(turnID, result, nil), result.Err
+	return t.turnResultFromEngine(turnID, runID, result, nil), result.Err
 }
 
 func mergeTerminalMetadata(dst, src map[string]string) {
@@ -1151,7 +1160,7 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 		if entry, appendErr := sessiontree.AppendFailure(ctx, t.harness.options.Repo, t.id, turnID, err.Error()); appendErr != nil {
 			return TurnResult{}, appendErr
 		} else {
-			t.harness.emitEntryCommitted(entry)
+			t.harness.emitEntryCommitted(entry, runID)
 		}
 	}
 	metadata := markerMetadata(runID, result)
@@ -1164,18 +1173,18 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 	if entry, appendErr := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, markerForStatus(status), metadata); appendErr != nil {
 		var committed sessiontree.AppendCommittedError
 		if errors.As(appendErr, &committed) {
-			return t.turnResultFromEngine(turnID, result, map[string]string{"terminal_persistence_error": appendErr.Error(), "diagnostic": diagnostic}), err
+			return t.turnResultFromEngine(turnID, runID, result, map[string]string{"terminal_persistence_error": appendErr.Error(), "diagnostic": diagnostic}), err
 		}
 		return TurnResult{}, appendErr
 	} else {
-		t.harness.emitEntryCommitted(entry)
+		t.harness.emitEntryCommitted(entry, runID)
 	}
 	eventType := EventTurnFailed
 	if status == engine.Cancelled {
 		eventType = EventTurnAborted
 	}
 	t.harness.emit(HarnessEvent{Type: eventType, ThreadID: t.id, TurnID: turnID, Status: string(status)})
-	return t.turnResultFromEngine(turnID, result, map[string]string{"diagnostic": diagnostic}), err
+	return t.turnResultFromEngine(turnID, runID, result, map[string]string{"diagnostic": diagnostic}), err
 }
 
 func statusForError(err error) engine.Status {
@@ -1307,9 +1316,10 @@ func applyCompactOptions(dst *engine.Options, opts CompactOptions) {
 	}
 }
 
-func turnResultFromEngine(turnID string, result engine.Result, diagnostics map[string]string) TurnResult {
+func turnResultFromEngine(turnID string, runID string, result engine.Result, diagnostics map[string]string) TurnResult {
 	return TurnResult{
 		ID:                 turnID,
+		RunID:              runID,
 		Status:             result.Status,
 		Output:             result.Output,
 		Err:                result.Err,
@@ -1325,8 +1335,8 @@ func turnResultFromEngine(turnID string, result engine.Result, diagnostics map[s
 	}
 }
 
-func (t *Thread) turnResultFromEngine(turnID string, result engine.Result, diagnostics map[string]string) TurnResult {
-	out := turnResultFromEngine(turnID, result, diagnostics)
+func (t *Thread) turnResultFromEngine(turnID string, runID string, result engine.Result, diagnostics map[string]string) TurnResult {
+	out := turnResultFromEngine(turnID, runID, result, diagnostics)
 	if t != nil && t.harness != nil {
 		out.PendingApprovals = t.harness.snapshotPendingApprovals(t.id)
 	}
@@ -1434,7 +1444,7 @@ func (t *Thread) leaveTurn() {
 	t.phase = threadPhaseIdle
 }
 
-func (t *Thread) appendDelta(ctx context.Context, turnID string, before, after []session.Message, currentPath []sessiontree.Entry) error {
+func (t *Thread) appendDelta(ctx context.Context, turnID string, runID string, before, after []session.Message, currentPath []sessiontree.Entry) error {
 	start := sharedMessagePrefix(before, after)
 	persisted := persistedTurnMessages(currentPath, turnID)
 	for _, msg := range after[start:] {
@@ -1454,7 +1464,7 @@ func (t *Thread) appendDelta(ctx context.Context, turnID string, before, after [
 		if persisted.skip(msg) {
 			continue
 		}
-		if err := t.appendMessage(ctx, turnID, msg); err != nil {
+		if err := t.appendMessage(ctx, turnID, runID, msg); err != nil {
 			return err
 		}
 		persisted.record(msg)
@@ -1567,19 +1577,19 @@ func nonDurableProjection(msg session.Message) bool {
 	return msg.Kind == session.MessageKindCompactionSummary
 }
 
-func (t *Thread) appendMessage(ctx context.Context, turnID string, msg session.Message) error {
+func (t *Thread) appendMessage(ctx context.Context, turnID string, runID string, msg session.Message) error {
 	msg.EntryID = ""
 	msg.ParentEntryID = ""
 	entry, err := sessiontree.AppendMessage(ctx, t.harness.options.Repo, t.id, turnID, msg)
 	if err != nil {
 		return err
 	}
-	t.harness.emitEntryCommitted(entry)
+	t.harness.emitEntryCommitted(entry, runID)
 	t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID})
 	return nil
 }
 
-func (t *Thread) appendApprovalEvent(ctx context.Context, turnID string, ev event.Event) error {
+func (t *Thread) appendApprovalEvent(ctx context.Context, turnID string, runID string, ev event.Event) error {
 	metadata := map[string]string{
 		subAgentDetailKindKey:     subAgentApprovalEntryKind,
 		subAgentDetailTypeKey:     string(ev.Type),
@@ -1611,7 +1621,7 @@ func (t *Thread) appendApprovalEvent(ctx context.Context, turnID string, ev even
 	if err != nil {
 		return err
 	}
-	t.harness.emitEntryCommitted(entry)
+	t.harness.emitEntryCommitted(entry, runID)
 	t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: string(ev.Type)})
 	return nil
 }
@@ -1789,7 +1799,7 @@ func (m *durableCompactionManager) CommitCompaction(ctx context.Context, req eng
 			return compaction.Result{}, nil, err
 		}
 	}
-	m.thread.harness.emitEntryCommitted(entry)
+	m.thread.harness.emitEntryCommitted(entry, req.RunID)
 	result := req.Result
 	result.Phase = req.Phase
 	result.CompactionID = entry.CompactionID
@@ -1866,6 +1876,7 @@ type turnProjection struct {
 	thread           *Thread
 	ctx              context.Context
 	turnID           string
+	runID            string
 	downstream       event.Sink
 	mu               sync.Mutex
 	text             string
@@ -1928,7 +1939,7 @@ func (p *turnProjection) Emit(ev event.Event) {
 			p.err = err
 			return
 		}
-		p.err = p.thread.appendApprovalEvent(p.ctx, p.turnID, ev)
+		p.err = p.thread.appendApprovalEvent(p.ctx, p.turnID, p.runID, ev)
 	case event.ContextContinue:
 		if err := p.flushPendingToolBatch(false); err != nil {
 			p.err = err
@@ -1938,7 +1949,7 @@ func (p *turnProjection) Emit(ev event.Event) {
 			p.err = err
 			return
 		}
-		p.err = p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.User, Content: ev.Message})
+		p.err = p.thread.appendMessage(p.ctx, p.turnID, p.runID, session.Message{Role: session.User, Content: ev.Message})
 		if p.err != nil {
 			return
 		}
@@ -1949,7 +1960,7 @@ func (p *turnProjection) Emit(ev event.Event) {
 		var entry sessiontree.Entry
 		entry, p.err = sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, sessiontree.TurnSavePoint, metadata)
 		if p.err == nil {
-			p.thread.harness.emitEntryCommitted(entry)
+			p.thread.harness.emitEntryCommitted(entry, p.runID)
 		}
 	case event.StepEnd:
 		if ev.ContinuationReason != "" {
@@ -1985,7 +1996,7 @@ func (p *turnProjection) flushPendingAssistantText(resetReasoning bool) error {
 		}
 		return nil
 	}
-	if err := p.thread.appendMessage(p.ctx, p.turnID, session.Message{Role: session.Assistant, Content: p.text, Reasoning: p.reasoning}); err != nil {
+	if err := p.thread.appendMessage(p.ctx, p.turnID, p.runID, session.Message{Role: session.Assistant, Content: p.text, Reasoning: p.reasoning}); err != nil {
 		return err
 	}
 	p.text = ""
@@ -2020,7 +2031,7 @@ func (p *turnProjection) flushPendingToolBatch(force bool) error {
 		byID[result.ToolCallID] = result
 	}
 	for _, call := range p.pendingCalls {
-		if err := p.thread.appendMessage(p.ctx, p.turnID, call); err != nil {
+		if err := p.thread.appendMessage(p.ctx, p.turnID, p.runID, call); err != nil {
 			return err
 		}
 	}
@@ -2029,14 +2040,14 @@ func (p *turnProjection) flushPendingToolBatch(force bool) error {
 		if !ok {
 			return fmt.Errorf("tool result batch missing result for %q", call.ToolCallID)
 		}
-		if err := p.thread.appendMessage(p.ctx, p.turnID, result); err != nil {
+		if err := p.thread.appendMessage(p.ctx, p.turnID, p.runID, result); err != nil {
 			return err
 		}
 	}
 	if entry, err := sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, sessiontree.TurnSavePoint, map[string]string{"reason": "tool_result_batch"}); err != nil {
 		return err
 	} else {
-		p.thread.harness.emitEntryCommitted(entry)
+		p.thread.harness.emitEntryCommitted(entry, p.runID)
 	}
 	p.pendingCalls = nil
 	p.pendingResults = nil

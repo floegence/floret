@@ -2211,7 +2211,7 @@ func eventsForRun(events []event.Event, runID string) []event.Event {
 	}
 	out := make([]event.Event, 0, len(events))
 	for _, ev := range events {
-		if ev.RunID == runID {
+		if ev.RunID == runID || ev.TurnID == runID {
 			out = append(out, ev)
 		}
 	}
@@ -2682,6 +2682,7 @@ func (r Runner) runProjectedManualCompactionScenario(ctx context.Context) RunRes
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
 	if _, err := host.RunTurn(ctx, flruntime.RunTurnRequest{
+		RunID:    "testui-manual-active-seed",
 		ThreadID: "testui-manual-active",
 		TurnID:   "testui-manual-active-seed",
 		Input:    testuiLargeCompactionInput(),
@@ -2689,6 +2690,7 @@ func (r Runner) runProjectedManualCompactionScenario(ctx context.Context) RunRes
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
 	result, err := host.RunTurn(ctx, flruntime.RunTurnRequest{
+		RunID:             "testui-manual-active-turn",
 		ThreadID:          "testui-manual-active",
 		TurnID:            "testui-manual-active-turn",
 		Input:             "continue after compacting prior context",
@@ -2727,7 +2729,7 @@ func (r Runner) runProjectedManualNoopScenario(ctx context.Context) RunResponse 
 	if _, err := host.StartThread(ctx, flruntime.StartThreadRequest{ThreadID: "testui-manual-noop"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
-	if _, err := host.RunTurn(ctx, flruntime.RunTurnRequest{ThreadID: "testui-manual-noop", TurnID: "testui-manual-noop-seed", Input: "short context"}); err != nil {
+	if _, err := host.RunTurn(ctx, flruntime.RunTurnRequest{RunID: "testui-manual-noop-seed", ThreadID: "testui-manual-noop", TurnID: "testui-manual-noop-seed", Input: "short context"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
 	result, err := host.CompactThread(ctx, flruntime.CompactThreadRequest{
@@ -2766,6 +2768,7 @@ func (r Runner) runProjectedManualPollErrorScenario(ctx context.Context) RunResp
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
 	result, err := host.RunTurn(ctx, flruntime.RunTurnRequest{
+		RunID:             "testui-manual-poll-error-turn",
 		ThreadID:          "testui-manual-poll-error",
 		TurnID:            "testui-manual-poll-error-turn",
 		Input:             "continue",
@@ -2796,10 +2799,10 @@ func (r Runner) runProjectedCompactOnlyScenario(ctx context.Context) RunResponse
 	if _, err := host.StartThread(ctx, flruntime.StartThreadRequest{ThreadID: "testui-compact-only"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
-	if _, err := host.RunTurn(ctx, flruntime.RunTurnRequest{ThreadID: "testui-compact-only", TurnID: "testui-compact-seed", Input: testuiLargeCompactionInput()}); err != nil {
+	if _, err := host.RunTurn(ctx, flruntime.RunTurnRequest{RunID: "testui-compact-seed", ThreadID: "testui-compact-only", TurnID: "testui-compact-seed", Input: testuiLargeCompactionInput()}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
-	if _, err := host.RunTurn(ctx, flruntime.RunTurnRequest{ThreadID: "testui-compact-only", TurnID: "testui-compact-tail", Input: "latest small tail"}); err != nil {
+	if _, err := host.RunTurn(ctx, flruntime.RunTurnRequest{RunID: "testui-compact-tail", ThreadID: "testui-compact-only", TurnID: "testui-compact-tail", Input: "latest small tail"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
 	result, err := host.CompactThread(ctx, flruntime.CompactThreadRequest{
@@ -2847,7 +2850,7 @@ func (r Runner) runProjectedCompactCancelScenario(ctx context.Context) RunRespon
 	if _, err := host.StartThread(ctx, flruntime.StartThreadRequest{ThreadID: "testui-compact-cancel"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
-	if _, err := host.RunTurn(context.Background(), flruntime.RunTurnRequest{ThreadID: "testui-compact-cancel", TurnID: "testui-compact-cancel-seed", Input: testuiLargeCompactionInput()}); err != nil {
+	if _, err := host.RunTurn(context.Background(), flruntime.RunTurnRequest{RunID: "testui-compact-cancel-seed", ThreadID: "testui-compact-cancel", TurnID: "testui-compact-cancel-seed", Input: testuiLargeCompactionInput()}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
 	done := make(chan struct {

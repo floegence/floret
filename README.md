@@ -192,6 +192,7 @@ func main() {
 	}
 
 	result, err := host.RunTurn(ctx, runtime.RunTurnRequest{
+		RunID:    "run-1",
 		ThreadID: thread.ID,
 		TurnID:   "turn-1",
 		Input:    "Say hello in one short sentence.",
@@ -461,8 +462,9 @@ Floret runtime implementation
 A normal hosted conversation uses `runtime.ThreadID` as the durable journal
 identity. `runtime.TurnID` identifies one user-visible turn. `runtime.RunID`
 identifies one provider execution. `runtime.PromptScopeID` is the prompt-cache
-and provider-ledger reuse boundary. Code must not rely on those identities being
-equal.
+and provider-ledger reuse boundary. `runtime.RunTurnRequest.RunID` is required;
+hosts must pass the concrete execution identity instead of deriving it from a
+turn or thread ID. Code must not rely on those identities being equal.
 
 ## 🧪 Contributor Test Console
 

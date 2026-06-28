@@ -519,8 +519,11 @@ func TestHarnessOwnsEngineIdentityAndToolDefinitions(t *testing.T) {
 		t.Fatalf("requests = %#v", p.Requests)
 	}
 	req := p.Requests[0]
-	if req.RunID != "turn-1" || req.RawPlan.Segments[0].ThreadID != "thread" || req.Provider != "fake" || req.Model != "fake-model" {
+	if req.RunID == "" || req.RunID == "turn-1" || req.TurnID != "turn-1" || result.RunID != req.RunID || req.RawPlan.Segments[0].ThreadID != "thread" || req.Provider != "fake" || req.Model != "fake-model" {
 		t.Fatalf("harness did not own identity/provider/model: %#v", req)
+	}
+	if req.RawPlan.Segments[0].CreatedByRunID != req.RunID || req.RawPlan.Segments[0].CreatedByTurnID != "turn-1" {
+		t.Fatalf("prompt segments did not preserve run/turn identity: %#v", req.RawPlan.Segments[0])
 	}
 	controlTools := 0
 	for _, def := range req.Tools {
@@ -772,7 +775,7 @@ func TestRetryDoesNotDuplicateUserMessageAndKeepsPrefixStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	failedRequests := providerRequestsForRun(threadRequests, "turn-fail")
+	failedRequests := providerRequestsForRun(threadRequests, result.RunID)
 	if len(failedRequests) != 2 {
 		t.Fatalf("failed request records = %#v", failedRequests)
 	}
@@ -809,7 +812,7 @@ func TestRetryDoesNotDuplicateUserMessageAndKeepsPrefixStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	retryRequests := providerRequestsForRun(threadRequests, result.ID)
+	retryRequests := providerRequestsForRun(threadRequests, result.RunID)
 	if len(retryRequests) != 1 {
 		t.Fatalf("retry request records = %#v", retryRequests)
 	}
@@ -1742,14 +1745,14 @@ func TestAppendDeltaSkipsProjectedAssistantFinalButKeepsSeparateTurns(t *testing
 		t.Fatal(err)
 	}
 	projected := session.Message{Role: session.Assistant, Content: "final answer", Reasoning: "done reasoning"}
-	if err := thread.appendMessage(ctx, "turn-1", projected); err != nil {
+	if err := thread.appendMessage(ctx, "turn-1", "run-1", projected); err != nil {
 		t.Fatal(err)
 	}
 	snap, err := thread.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := thread.appendDelta(ctx, "turn-1", nil, []session.Message{projected}, snap.Path); err != nil {
+	if err := thread.appendDelta(ctx, "turn-1", "run-1", nil, []session.Message{projected}, snap.Path); err != nil {
 		t.Fatal(err)
 	}
 	snap, err = thread.Journal(ctx)
@@ -1759,7 +1762,7 @@ func TestAppendDeltaSkipsProjectedAssistantFinalButKeepsSeparateTurns(t *testing
 	if got := countEntriesWithContent(snap.Entries, sessiontree.EntryAssistantMessage, "final answer"); got != 1 {
 		t.Fatalf("projected assistant final should not be backfilled again: count=%d entries=%#v", got, snap.Entries)
 	}
-	if err := thread.appendDelta(ctx, "turn-2", nil, []session.Message{projected}, snap.Path); err != nil {
+	if err := thread.appendDelta(ctx, "turn-2", "run-2", nil, []session.Message{projected}, snap.Path); err != nil {
 		t.Fatal(err)
 	}
 	snap, err = thread.Journal(ctx)

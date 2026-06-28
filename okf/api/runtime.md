@@ -23,6 +23,9 @@ continuation state, and lifecycle observations.
 * `Host.EnsureThread` creates or recovers a hosted thread and returns
   transcript-free `ThreadSummary` lifecycle metadata.
 * `Host.RunTurn` executes one hosted user-facing turn.
+* `RunTurnRequest.RunID`, `ThreadID`, and `TurnID` are required. `RunID`
+  identifies the concrete engine/provider execution and must be supplied
+  explicitly rather than inferred from the turn identity.
 * `RunTurnRequest.ManualCompactions` lets a host request manual context
   compaction for an active hosted run. Floret polls it at provider-loop safe
   points, emits compaction lifecycle events, and continues the same run.
@@ -42,6 +45,8 @@ continuation state, and lifecycle observations.
   transcript for a hosted thread without reading Floret storage internals.
 * `ListPendingApprovals` returns the current product-neutral tool approvals
   waiting for a host decision on a thread.
+* `CompletePendingTool` requires the public completion `RunID` and uses it as
+  the follow-up execution identity.
 * `DeleteThread` removes a Floret-owned thread tree from the engine store,
   including child threads, prompt cache scopes, and artifacts.
 * `ModelGateway` lets a host supply model transport through

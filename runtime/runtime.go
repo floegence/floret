@@ -96,6 +96,7 @@ type EnsureThreadRequest struct {
 }
 
 type RunTurnRequest struct {
+	RunID                 RunID
 	ThreadID              ThreadID
 	TurnID                TurnID
 	Input                 string
@@ -589,6 +590,7 @@ type ThreadMessage struct {
 
 type TurnResult struct {
 	ID                 TurnID                       `json:"id"`
+	RunID              RunID                        `json:"run_id,omitempty"`
 	Status             TurnStatus                   `json:"status"`
 	Output             string                       `json:"output,omitempty"`
 	Error              string                       `json:"error,omitempty"`
@@ -916,8 +918,14 @@ func (h *host) ListPendingApprovals(ctx context.Context, req ListPendingApproval
 }
 
 func (h *host) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, error) {
+	if strings.TrimSpace(string(req.RunID)) == "" {
+		return TurnResult{}, errors.New("run id is required")
+	}
 	if strings.TrimSpace(string(req.ThreadID)) == "" {
 		return TurnResult{}, errors.New("thread id is required")
+	}
+	if strings.TrimSpace(string(req.TurnID)) == "" {
+		return TurnResult{}, errors.New("turn id is required")
 	}
 	completionPolicy, err := engineTurnCompletionPolicy(req.Completion)
 	if err != nil {
@@ -933,6 +941,7 @@ func (h *host) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, err
 	}
 	activityRecorder := &runtimeActivityEventRecorder{sink: newRuntimeEventSink(h.sink)}
 	result, runErr := thread.Run(ctx, req.Input, agentharness.RunOptions{
+		RunID:  string(req.RunID),
 		TurnID: string(req.TurnID),
 		Labels: engine.RunLabels{
 			Correlation: cloneStringMap(req.Labels.Correlation),
@@ -951,7 +960,7 @@ func (h *host) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, err
 		ToolSurfaceProvider:      runtimeToolSurfaceProvider(req.ToolSurfaceProvider),
 		Sink:                     activityRecorder,
 	})
-	return turnResult(result, activityRecorder.Snapshot(), time.Now().UnixMilli()), runErr
+	return turnResult(result, string(req.ThreadID), activityRecorder.Snapshot(), time.Now().UnixMilli()), runErr
 }
 
 func (h *host) RetryTurn(ctx context.Context, req RetryTurnRequest) (TurnResult, error) {
@@ -969,7 +978,7 @@ func (h *host) RetryTurn(ctx context.Context, req RetryTurnRequest) (TurnResult,
 			Host:        cloneStringMap(req.Labels.Host),
 		},
 	})
-	return turnResult(result, nil, time.Now().UnixMilli()), runErr
+	return turnResult(result, string(req.ThreadID), nil, time.Now().UnixMilli()), runErr
 }
 
 func (h *host) CompactThread(ctx context.Context, req CompactThreadRequest) (CompactThreadResult, error) {
@@ -1016,6 +1025,9 @@ func (h *host) CompletePendingTool(ctx context.Context, req PendingToolCompletio
 	if strings.TrimSpace(string(req.ThreadID)) == "" {
 		return TurnResult{}, errors.New("thread id is required")
 	}
+	if strings.TrimSpace(string(req.RunID)) == "" {
+		return TurnResult{}, errors.New("run id is required")
+	}
 	thread, err := h.harness.ResumeThread(ctx, string(req.ThreadID), agentharness.ResumeOptions{})
 	if err != nil {
 		return TurnResult{}, err
@@ -1034,7 +1046,7 @@ func (h *host) CompletePendingTool(ctx context.Context, req PendingToolCompletio
 			Host:        cloneStringMap(req.Labels.Host),
 		},
 	})
-	return turnResult(result, nil, time.Now().UnixMilli()), runErr
+	return turnResult(result, string(req.ThreadID), nil, time.Now().UnixMilli()), runErr
 }
 
 func (h *host) SpawnSubAgent(ctx context.Context, req SpawnSubAgentRequest) (SubAgentSnapshot, error) {
@@ -1305,9 +1317,10 @@ func pendingApprovalResources(in []agentharness.PendingApprovalResource) []Pendi
 	return out
 }
 
-func turnResult(in agentharness.TurnResult, events []observation.Event, nowUnixMS int64) TurnResult {
+func turnResult(in agentharness.TurnResult, threadID string, events []observation.Event, nowUnixMS int64) TurnResult {
 	out := TurnResult{
 		ID:                 TurnID(in.ID),
+		RunID:              RunID(in.RunID),
 		Status:             TurnStatus(in.Status),
 		Output:             in.Output,
 		Diagnostics:        cloneStringMap(in.Diagnostics),
@@ -1320,10 +1333,10 @@ func turnResult(in agentharness.TurnResult, events []observation.Event, nowUnixM
 		ProviderState:      modelState(in.ProviderState),
 		Signal:             runtimeTurnSignal(in.ControlSignal),
 		ActivityTimeline: observation.BuildActivityTimeline(observation.ActivityRunMeta{
-			RunID:    in.ID,
-			ThreadID: "",
+			RunID:    in.RunID,
+			ThreadID: threadID,
 			TurnID:   in.ID,
-			TraceID:  in.ID,
+			TraceID:  in.RunID,
 		}, events, nowUnixMS),
 		PendingApprovals: pendingApprovalList(in.PendingApprovals),
 	}

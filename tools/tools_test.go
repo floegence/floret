@@ -212,7 +212,14 @@ func TestPermissionResolverCanRequireApprovalForRiskyInvocation(t *testing.T) {
 	if got.IsError || got.Text != "ok" {
 		t.Fatalf("result = %#v", got)
 	}
-	if approval.ID != "call" || len(approval.Resources) != 1 || approval.Resources[0].Value != "rm file" || approval.Labels["correlation.turn"] != "turn" {
+	if approval.ID != "call" ||
+		approval.RunID != "run" ||
+		approval.ThreadID != "thread" ||
+		approval.TurnID != "turn" ||
+		approval.Step != 2 ||
+		len(approval.Resources) != 1 ||
+		approval.Resources[0].Value != "rm file" ||
+		approval.Labels["correlation.turn"] != "turn" {
 		t.Fatalf("approval = %#v", approval)
 	}
 }

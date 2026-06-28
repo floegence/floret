@@ -16,6 +16,7 @@ import (
 	"github.com/floegence/floret/internal/agentharness"
 	"github.com/floegence/floret/internal/engine"
 	"github.com/floegence/floret/internal/provider"
+	"github.com/floegence/floret/internal/provider/cache"
 	"github.com/floegence/floret/internal/session"
 	"github.com/floegence/floret/internal/session/artifact"
 	"github.com/floegence/floret/internal/session/contextpolicy"
@@ -50,7 +51,7 @@ func TestHostRunsFakeProviderThread(t *testing.T) {
 	if started.ID != "thread" || !started.CanAppendMessage {
 		t.Fatalf("started thread = %#v", started)
 	}
-	result, err := host.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +99,7 @@ func TestHostEnsureThreadReturnsSummaryWithoutMessages(t *testing.T) {
 	if started.ID != "thread" || !started.CanAppendMessage {
 		t.Fatalf("started summary = %#v", started)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn-1", Input: "hello"}); err != nil {
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"}); err != nil {
 		t.Fatal(err)
 	}
 	ensured, err := host.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "thread"})
@@ -151,7 +152,7 @@ func TestHostRunsThreadThroughModelGateway(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := host.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +201,7 @@ func TestHostStreamsProjectedContextStatus(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := host.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +281,7 @@ func TestHostModelGatewayPreservesTextAroundToolCalls(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := host.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +393,7 @@ func TestHostToolSurfaceProviderRefreshesGatewayRequests(t *testing.T) {
 	if _, err := host.StartThread(context.Background(), StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatalf("StartThread: %v", err)
 	}
-	result, err := host.RunTurn(context.Background(), RunTurnRequest{ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	result, err := host.RunTurn(context.Background(), RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
 	if err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
@@ -421,6 +422,176 @@ func TestHostToolSurfaceProviderRefreshesGatewayRequests(t *testing.T) {
 	}
 	if len(second.HostedTools) != 1 || second.HostedTools[0].Name != "hosted_search" || second.HostedTools[0].Type != "web_search" || second.HostedTools[0].Options["limit"] != float64(5) {
 		t.Fatalf("second request hosted tools = %#v", second.HostedTools)
+	}
+}
+
+func TestHostRunTurnPreservesDistinctRunAndTurnIdentity(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	var modelRequests []ModelRequest
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		modelRequests = append(modelRequests, req)
+		events := make(chan ModelEvent, 3)
+		switch req.Step {
+		case 1:
+			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "write-1", Name: "write_note", Args: `{"text":"notes.md"}`}}}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+		default:
+			events <- ModelEvent{Type: ModelEventDelta, Text: "done"}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+		}
+		close(events)
+		return events, nil
+	})
+	var permission tools.PermissionRequest
+	var invocation tools.Invocation[runtimeEchoArgs]
+	registry := tools.NewRegistry()
+	if err := registry.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{
+			Name:        "write_note",
+			InputSchema: runtimeEchoSchema(),
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAsk},
+			PermissionFor: func(req tools.PermissionRequest) (tools.PermissionSpec, error) {
+				permission = req
+				return tools.PermissionSpec{Mode: tools.PermissionAsk, ResourceKinds: []string{"file"}}, nil
+			},
+		},
+		nil,
+		func(inv tools.Invocation[runtimeEchoArgs]) ([]tools.ResourceRef, error) {
+			return []tools.ResourceRef{{Kind: "file", Value: inv.Args.Text}}, nil
+		},
+		func(_ context.Context, inv tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			invocation = inv
+			return tools.Result{Text: "wrote " + inv.Args.Text}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	var surfaceRequests []ToolSurfaceRequest
+	var approval tools.ApprovalRequest
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+		},
+		ModelGateway: gateway,
+		Store:        store,
+		ToolSurfaceProvider: func(_ context.Context, req ToolSurfaceRequest) (ToolSurface, error) {
+			surfaceRequests = append(surfaceRequests, req)
+			return ToolSurface{
+				Tools:       registry,
+				HostContext: map[string]string{"surface": "runtime-test"},
+			}, nil
+		},
+		Approver: func(_ context.Context, req tools.ApprovalRequest) (tools.PermissionDecision, error) {
+			approval = req
+			return tools.PermissionDecisionAllow, nil
+		},
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := host.RunTurn(ctx, RunTurnRequest{
+		RunID:    "run-parent",
+		ThreadID: "thread",
+		TurnID:   "turn-msg",
+		Input:    "write",
+		Labels: RunLabels{
+			Correlation: map[string]string{"message_id": "turn-msg"},
+			Host:        map[string]string{"product_run_id": "run-parent"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ID != "turn-msg" || result.RunID != "run-parent" || result.Status != TurnStatusCompleted {
+		t.Fatalf("result = %#v", result)
+	}
+	if result.ActivityTimeline.RunID != "run-parent" ||
+		result.ActivityTimeline.ThreadID != "thread" ||
+		result.ActivityTimeline.TurnID != "turn-msg" ||
+		result.ActivityTimeline.TraceID != "run-parent" {
+		t.Fatalf("activity timeline identity = %#v", result.ActivityTimeline)
+	}
+	var turnModelRequests []ModelRequest
+	for _, req := range modelRequests {
+		if req.Step <= 0 {
+			continue
+		}
+		turnModelRequests = append(turnModelRequests, req)
+		if req.RunID != "run-parent" ||
+			req.ThreadID != "thread" ||
+			req.TurnID != "turn-msg" ||
+			req.TraceID != "run-parent" ||
+			req.PromptScopeID != "thread" {
+			t.Fatalf("model request identity = %#v", req)
+		}
+	}
+	if len(turnModelRequests) != 2 {
+		t.Fatalf("model requests = %#v", modelRequests)
+	}
+	if len(surfaceRequests) == 0 {
+		t.Fatalf("missing tool surface requests")
+	}
+	for _, req := range surfaceRequests {
+		if req.RunID != "run-parent" ||
+			req.ThreadID != "thread" ||
+			req.TurnID != "turn-msg" ||
+			req.TraceID != "run-parent" ||
+			req.PromptScopeID != "thread" {
+			t.Fatalf("tool surface request identity = %#v", req)
+		}
+	}
+	if permission.RunID != "run-parent" ||
+		permission.ThreadID != "thread" ||
+		permission.TurnID != "turn-msg" ||
+		permission.PromptScopeID != "thread" ||
+		permission.Step != 1 {
+		t.Fatalf("permission request identity = %#v", permission)
+	}
+	if invocation.RunID != "run-parent" ||
+		invocation.ThreadID != "thread" ||
+		invocation.TurnID != "turn-msg" ||
+		invocation.PromptScopeID != "thread" ||
+		invocation.Step != 1 ||
+		invocation.HostContext["surface"] != "runtime-test" {
+		t.Fatalf("tool invocation identity = %#v", invocation)
+	}
+	if approval.RunID != "run-parent" ||
+		approval.ThreadID != "thread" ||
+		approval.TurnID != "turn-msg" ||
+		approval.PromptScopeID != "thread" ||
+		approval.Step != 1 ||
+		approval.HostContext["surface"] != "runtime-test" {
+		t.Fatalf("approval request identity = %#v", approval)
+	}
+	records, err := store.prompt.ProviderRequests(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var turnRecords []cache.ProviderRequestRecord
+	for _, record := range records {
+		if record.RunID == "run-parent" {
+			turnRecords = append(turnRecords, record)
+		}
+	}
+	if len(turnRecords) != 2 {
+		t.Fatalf("provider request records = %#v", records)
+	}
+	for _, record := range turnRecords {
+		if record.RunID != "run-parent" ||
+			record.ThreadID != "thread" ||
+			record.TurnID != "turn-msg" ||
+			record.PromptScopeID != "thread" ||
+			!strings.HasPrefix(record.ID, "run-parent:req:") {
+			t.Fatalf("provider request record identity = %#v", record)
+		}
 	}
 }
 
@@ -476,6 +647,7 @@ func TestSubAgentActivityTimelineProjectsStatusSummary(t *testing.T) {
 
 func TestHostSubAgentsInheritModelGatewayWithChildPromptScope(t *testing.T) {
 	ctx := context.Background()
+	store := NewMemoryStore()
 	var mu sync.Mutex
 	var requests []ModelRequest
 	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
@@ -491,6 +663,7 @@ func TestHostSubAgentsInheritModelGatewayWithChildPromptScope(t *testing.T) {
 			SystemPrompt: "gateway system",
 		},
 		ModelGateway: gateway,
+		Store:        store,
 		IDGenerator:  deterministicIDs(),
 	})
 	if err != nil {
@@ -531,6 +704,31 @@ func TestHostSubAgentsInheritModelGatewayWithChildPromptScope(t *testing.T) {
 	}
 	if req.ThreadID != "child" || req.PromptScopeID != "child" {
 		t.Fatalf("child gateway request should use child identity and prompt scope: %#v", req)
+	}
+	if req.RunID == "" || req.TurnID == "" {
+		t.Fatalf("child execution identity should be populated: %#v", req)
+	}
+	if req.RunID == "child" || string(req.RunID) == string(req.TurnID) || !strings.HasPrefix(string(req.RunID), "run-") {
+		t.Fatalf("child execution run id should be generated independently from child thread/turn: %#v", req)
+	}
+	records, err := store.prompt.ProviderRequests(ctx, "child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var childExecutionRecords []cache.ProviderRequestRecord
+	for _, record := range records {
+		if record.Step > 0 {
+			childExecutionRecords = append(childExecutionRecords, record)
+		}
+	}
+	if len(childExecutionRecords) != 1 {
+		t.Fatalf("child prompt records = %#v", records)
+	}
+	if childExecutionRecords[0].RunID != string(req.RunID) ||
+		childExecutionRecords[0].TurnID != string(req.TurnID) ||
+		childExecutionRecords[0].ThreadID != "child" ||
+		!strings.HasPrefix(childExecutionRecords[0].ID, string(req.RunID)+":req:") {
+		t.Fatalf("child prompt record identity = %#v, request=%#v", childExecutionRecords[0], req)
 	}
 }
 
@@ -1016,7 +1214,7 @@ func TestHostSQLiteStorePersistsThreadBehindOpaqueStore(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn-1", Input: "hello"}); err != nil {
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := host.Close(); err != nil {
@@ -1142,6 +1340,9 @@ func TestHostCompletePendingToolRunsFollowUpTurnThroughPublicFacade(t *testing.T
 	if result.Status != TurnStatusCompleted || result.Output != "completion handled" {
 		t.Fatalf("result = %#v", result)
 	}
+	if result.RunID != "turn-start" || result.ID != "turn-complete" {
+		t.Fatalf("completion execution identity = %#v", result)
+	}
 	snapshot, err := host.ReadThread(ctx, "thread")
 	if err != nil {
 		t.Fatal(err)
@@ -1175,13 +1376,16 @@ func TestHostCompletePendingToolRejectsInvalidRequest(t *testing.T) {
 	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{}); err == nil || !strings.Contains(err.Error(), "thread id is required") {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{ThreadID: "missing", Status: PendingToolCompletionCompleted, Summary: "done", Handle: "terminal:job:123"}); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{ThreadID: "thread", Status: PendingToolCompletionCompleted, Summary: "done", Handle: "terminal:job:123"}); err == nil || !strings.Contains(err.Error(), "run id is required") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{ThreadID: "missing", RunID: "pending-run", Status: PendingToolCompletionCompleted, Summary: "done", Handle: "terminal:job:123"}); !errors.Is(err, sessiontree.ErrThreadNotFound) {
 		t.Fatalf("err = %v, want ErrThreadNotFound", err)
 	}
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{ThreadID: "thread", Status: PendingToolCompletionStatus("bogus"), Summary: "done", Handle: "terminal:job:123"}); err == nil || !strings.Contains(err.Error(), "invalid status") {
+	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{ThreadID: "thread", RunID: "pending-run", Status: PendingToolCompletionStatus("bogus"), Summary: "done", Handle: "terminal:job:123"}); err == nil || !strings.Contains(err.Error(), "invalid status") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -1316,7 +1520,7 @@ func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := host.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn-1", Input: "run tools"})
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "run tools"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1477,6 +1681,7 @@ func TestHostListPendingApprovalsDuringActiveRun(t *testing.T) {
 	runErr := make(chan error, 1)
 	go func() {
 		_, err := host.RunTurn(ctx, RunTurnRequest{
+			RunID:    "turn-1",
 			ThreadID: "thread",
 			TurnID:   "turn-1",
 			Input:    "write",
@@ -1557,7 +1762,7 @@ func TestHostThreadDetailEventsOmitRawUnlessRequested(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn-1", Input: "private input"}); err != nil {
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "private input"}); err != nil {
 		t.Fatal(err)
 	}
 	preview, err := host.ListThreadDetailEvents(ctx, ListThreadDetailEventsRequest{ThreadID: "thread"})
@@ -1740,7 +1945,7 @@ func TestHostDeleteThreadUsesStoreBoundary(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	thread, err := host.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	thread, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
 	if err != nil {
 		t.Fatal(err)
 	}
