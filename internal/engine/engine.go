@@ -815,12 +815,47 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				decision.Metadata = deferredControlMetadata(controlCalls)
 			}
 		}
+		var activeToolRegistry *tools.Registry
+		var toolRunOptions tools.RunOptions
+		callActivities := map[string]*observation.ActivityPresentation{}
+		if len(classifiedCalls.Ordinary) > 0 {
+			opts, err = e.resolveToolSurface(ctx, opts, step, "tool_dispatch")
+			if err != nil {
+				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+			}
+			if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, false); err != nil {
+				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+			}
+			activeToolRegistry = opts.toolSurface.tools
+			if activeToolRegistry == nil {
+				activeToolRegistry = e.tools
+			}
+			if activeToolRegistry == nil {
+				activeToolRegistry = tools.NewRegistry()
+			}
+			toolRunOptions = tools.RunOptions{
+				RunID:         opts.RunID,
+				ThreadID:      opts.ThreadID,
+				TurnID:        opts.TurnID,
+				PromptScopeID: opts.PromptScopeID,
+				Step:          step,
+				Labels:        observabilityLabels(opts.Labels),
+				HostContext:   opts.toolSurface.hostContext,
+			}
+			for _, call := range calls {
+				activity, activityErr := activeToolRegistry.ActivityForCall(toolCall(call), toolRunOptions)
+				if activityErr != nil {
+					activity = nil
+				}
+				callActivities[call.ID] = sanitizeActivityPresentation(activity)
+			}
+		}
 		for _, call := range calls {
 			reasoning := call.Reasoning
 			if reasoning == "" {
 				reasoning = stepReasoning
 			}
-			msg := e.stableMessage(opts.RunID, session.Message{Role: session.Assistant, Content: "tool_call", Reasoning: reasoning, ToolCallID: call.ID, ToolName: call.Name, ToolArgs: call.Args})
+			msg := e.stableMessage(opts.RunID, session.Message{Role: session.Assistant, Content: "tool_call", Reasoning: reasoning, ToolCallID: call.ID, ToolName: call.Name, ToolArgs: call.Args, Activity: sessionActivityPresentation(callActivities[call.ID])})
 			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
 				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 			}
@@ -874,34 +909,8 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		if budgetErr := e.checkBudget(opts, metrics, step); budgetErr != nil {
 			return e.end(state, opts, step, Failed, output, budgetErr, metrics, started, decision)
 		}
-		opts, err = e.resolveToolSurface(ctx, opts, step, "tool_dispatch")
-		if err != nil {
-			return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
-		}
-		if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, false); err != nil {
-			return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
-		}
-		activeToolRegistry := opts.toolSurface.tools
-		if activeToolRegistry == nil {
-			activeToolRegistry = e.tools
-		}
-		if activeToolRegistry == nil {
-			activeToolRegistry = tools.NewRegistry()
-		}
-		toolRunOptions := tools.RunOptions{
-			RunID:         opts.RunID,
-			ThreadID:      opts.ThreadID,
-			TurnID:        opts.TurnID,
-			PromptScopeID: opts.PromptScopeID,
-			Step:          step,
-			Labels:        observabilityLabels(opts.Labels),
-			HostContext:   opts.toolSurface.hostContext,
-		}
 		for i, call := range calls {
-			activity, activityErr := activeToolRegistry.ActivityForCall(toolCall(call), toolRunOptions)
-			if activityErr != nil {
-				activity = nil
-			}
+			activity := callActivities[call.ID]
 			e.emit(opts, event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args, Activity: activity, Metadata: map[string]any{"batch_index": i, "batch_size": len(calls)}})
 		}
 		toolStarted := time.Now()
@@ -909,6 +918,8 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		toolLatency := time.Since(toolStarted).Milliseconds()
 		for i, result := range results {
 			result = preparePendingToolResult(result)
+			result.Activity = sanitizeActivityPresentation(result.Activity)
+			resultStatus := toolResultStatus(result)
 			projection := exactToolOutputProjection(result.Text)
 			if result.Pending == nil {
 				policy := tools.MergeOutputPolicy(activeToolRegistry.OutputPolicyFor(result.Name), result.OutputPolicy)
@@ -931,8 +942,12 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				metadata = mergeToolResultMetadata(toolProjectionMetadata(result.Metadata, projection), i, len(results))
 				resultView = toolResultView(projection)
 			}
+			if resultView == nil {
+				resultView = &session.ToolResultView{}
+			}
+			resultView.Status = resultStatus
 			e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: toolLatency, Activity: result.Activity, Metadata: metadata, Artifacts: eventArtifacts(projection, result.Artifacts)})
-			msg := e.stableMessage(opts.RunID, session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: resultView})
+			msg := e.stableMessage(opts.RunID, session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: resultView, Activity: sessionActivityPresentation(result.Activity)})
 			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
 				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 			}
@@ -1003,6 +1018,80 @@ func preparePendingToolResult(result tools.Result) tools.Result {
 	result.Metadata = mergeAnyMetadata(result.Metadata, tools.PendingToolResultMetadata(pending))
 	result.Activity = tools.PendingToolActivity(pending, result.Activity)
 	return result
+}
+
+func sanitizeActivityPresentation(activity *observation.ActivityPresentation) *observation.ActivityPresentation {
+	return event.Sanitize(event.Event{Activity: activity}).Activity
+}
+
+func sessionActivityPresentation(in *observation.ActivityPresentation) *session.ActivityPresentation {
+	if in == nil {
+		return nil
+	}
+	out := &session.ActivityPresentation{
+		Label:       in.Label,
+		Description: in.Description,
+		Renderer:    string(in.Renderer),
+		Chips:       make([]session.ActivityChip, 0, len(in.Chips)),
+		TargetRefs:  make([]session.ActivityTargetRef, 0, len(in.TargetRefs)),
+		Payload:     cloneActivityPayload(in.Payload),
+	}
+	for _, chip := range in.Chips {
+		out.Chips = append(out.Chips, session.ActivityChip{
+			Kind:  chip.Kind,
+			Label: chip.Label,
+			Value: chip.Value,
+			Tone:  chip.Tone,
+		})
+	}
+	for _, ref := range in.TargetRefs {
+		out.TargetRefs = append(out.TargetRefs, session.ActivityTargetRef{
+			Kind:  ref.Kind,
+			Label: ref.Label,
+			URI:   ref.URI,
+			Path:  ref.Path,
+			Line:  ref.Line,
+		})
+	}
+	return out
+}
+
+func cloneActivityPayload(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = cloneActivityPayloadValue(value)
+	}
+	return out
+}
+
+func cloneActivityPayloadValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneActivityPayload(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneActivityPayloadValue(item)
+		}
+		return out
+	case []string:
+		return append([]string(nil), typed...)
+	default:
+		return typed
+	}
+}
+
+func toolResultStatus(result tools.Result) string {
+	if result.Pending != nil && !result.IsError {
+		return string(observation.ActivityStatusRunning)
+	}
+	if result.IsError {
+		return string(observation.ActivityStatusError)
+	}
+	return string(observation.ActivityStatusSuccess)
 }
 
 func cloneOptions(o Options) Options {
@@ -2686,6 +2775,7 @@ func providerSafeHistory(history []session.Message, spec ControlSpec) []session.
 			out = append(out, providerSafeControlMessage(msg, spec))
 			continue
 		}
+		msg.Activity = nil
 		out = append(out, msg)
 	}
 	return out

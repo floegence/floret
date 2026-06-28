@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-06-28
+* **Update**: Documented Floret-owned row activity timelines and structured tool
+  result status for thread and subagent detail APIs, so hosts do not rebuild
+  activity from raw content or audit tables.
 * **Update**: Documented product-neutral pending approval snapshots as the
   current-state companion to approval detail events, while keeping approval UI
   and product policy in downstream hosts.

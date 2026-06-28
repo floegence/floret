@@ -17,6 +17,7 @@ import (
 	"github.com/floegence/floret/internal/session"
 	"github.com/floegence/floret/internal/session/artifact"
 	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/observation"
 )
 
 var (
@@ -222,6 +223,8 @@ type SubAgentDetailEvent struct {
 	Compaction *SubAgentDetailCompaction `json:"compaction,omitempty"`
 	Error      string                    `json:"error,omitempty"`
 	Metadata   map[string]string         `json:"metadata,omitempty"`
+
+	ActivityTimeline *observation.ActivityTimeline `json:"activity_timeline,omitempty"`
 }
 
 type SubAgentDetailMessage struct {
@@ -242,6 +245,7 @@ type SubAgentDetailToolCall struct {
 type SubAgentDetailToolResult struct {
 	CallID        string        `json:"call_id,omitempty"`
 	ToolName      string        `json:"tool_name,omitempty"`
+	Status        string        `json:"status,omitempty"`
 	Preview       string        `json:"preview,omitempty"`
 	Content       string        `json:"content,omitempty"`
 	Truncated     bool          `json:"truncated,omitempty"`
@@ -526,6 +530,7 @@ func (h *AgentHarness) ReadSubAgentDetail(ctx context.Context, opts ReadSubAgent
 	}
 	entries := journal.Path
 	retainedFrom := subAgentDetailRetainedFrom(entries)
+	activityContext := subAgentDetailActivityContext{resultCallIDs: subAgentDetailResultCallIDs(entries)}
 	events := make([]SubAgentDetailEvent, 0, len(entries))
 	var nextOrdinal int64
 	var hasMore bool
@@ -534,7 +539,7 @@ func (h *AgentHarness) ReadSubAgentDetail(ctx context.Context, opts ReadSubAgent
 		if ordinal < retainedFrom || ordinal <= opts.AfterOrdinal {
 			continue
 		}
-		event, ok := h.subAgentDetailEvent(entry, ordinal, opts.IncludeRaw)
+		event, ok := h.subAgentDetailEvent(entry, ordinal, opts.IncludeRaw, activityContext)
 		if !ok {
 			continue
 		}
@@ -579,6 +584,7 @@ func (h *AgentHarness) ListThreadDetailEvents(ctx context.Context, opts ListThre
 	}
 	entries := journal.Path
 	retainedFrom := threadDetailRetainedFrom(entries)
+	activityContext := subAgentDetailActivityContext{resultCallIDs: subAgentDetailResultCallIDs(entries)}
 	events := make([]SubAgentDetailEvent, 0, len(entries))
 	var nextOrdinal int64
 	var hasMore bool
@@ -587,7 +593,7 @@ func (h *AgentHarness) ListThreadDetailEvents(ctx context.Context, opts ListThre
 		if ordinal < retainedFrom || ordinal <= opts.AfterOrdinal {
 			continue
 		}
-		event, ok := h.subAgentDetailEvent(entry, ordinal, opts.IncludeRaw)
+		event, ok := h.subAgentDetailEvent(entry, ordinal, opts.IncludeRaw, activityContext)
 		if !ok {
 			continue
 		}
@@ -628,7 +634,7 @@ func subAgentDetailRetainedFrom(entries []sessiontree.Entry) int64 {
 	return 1
 }
 
-func (h *AgentHarness) subAgentDetailEvent(entry sessiontree.Entry, ordinal int64, includeRaw bool) (SubAgentDetailEvent, bool) {
+func (h *AgentHarness) subAgentDetailEvent(entry sessiontree.Entry, ordinal int64, includeRaw bool, activityContext subAgentDetailActivityContext) (SubAgentDetailEvent, bool) {
 	event := SubAgentDetailEvent{
 		ID:        entry.ID,
 		Ordinal:   ordinal,
@@ -708,6 +714,7 @@ func (h *AgentHarness) subAgentDetailEvent(entry sessiontree.Entry, ordinal int6
 		}
 		event.Metadata[subAgentDetailRawOmitted] = "true"
 	}
+	event.ActivityTimeline = subAgentDetailActivityTimeline(event, entry, activityContext)
 	return event, true
 }
 
@@ -718,6 +725,275 @@ func subAgentDetailRawAvailable(event SubAgentDetailEvent) bool {
 	default:
 		return false
 	}
+}
+
+type subAgentDetailActivityContext struct {
+	resultCallIDs map[string]struct{}
+}
+
+func (c subAgentDetailActivityContext) hasResult(callID string) bool {
+	callID = strings.TrimSpace(callID)
+	if callID == "" || len(c.resultCallIDs) == 0 {
+		return false
+	}
+	_, ok := c.resultCallIDs[callID]
+	return ok
+}
+
+func subAgentDetailResultCallIDs(entries []sessiontree.Entry) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, entry := range entries {
+		if entry.Type != sessiontree.EntryToolResult {
+			continue
+		}
+		callID := strings.TrimSpace(entry.Message.ToolCallID)
+		if callID == "" {
+			continue
+		}
+		out[callID] = struct{}{}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func subAgentDetailActivityTimeline(detail SubAgentDetailEvent, entry sessiontree.Entry, activityContext subAgentDetailActivityContext) *observation.ActivityTimeline {
+	observed, ok := subAgentDetailObservationEvent(detail, entry, activityContext)
+	if !ok {
+		return nil
+	}
+	timeline := observation.BuildActivityTimeline(observation.ActivityRunMeta{
+		RunID:    detail.TurnID,
+		ThreadID: detail.ThreadID,
+		TurnID:   detail.TurnID,
+	}, []observation.Event{observed}, entry.CreatedAt.UnixMilli())
+	return &timeline
+}
+
+func subAgentDetailObservationEvent(detail SubAgentDetailEvent, entry sessiontree.Entry, activityContext subAgentDetailActivityContext) (observation.Event, bool) {
+	base := observation.Event{
+		RunID:      detail.TurnID,
+		ThreadID:   detail.ThreadID,
+		TurnID:     detail.TurnID,
+		Step:       int(detail.Ordinal),
+		ObservedAt: entry.CreatedAt,
+	}
+	switch detail.Kind {
+	case SubAgentDetailEventToolCall:
+		if detail.ToolCall == nil || activityContext.hasResult(detail.ToolCall.ID) {
+			return observation.Event{}, false
+		}
+		base.Type = observation.EventTypeToolCall
+		base.ToolID = detail.ToolCall.ID
+		base.ToolName = detail.ToolCall.Name
+		base.ToolKind = "local"
+		base.Activity = observationActivityPresentation(entry.Message.Activity)
+		return base, true
+	case SubAgentDetailEventToolResult:
+		if detail.ToolResult == nil {
+			return observation.Event{}, false
+		}
+		base.Type = observation.EventTypeToolResult
+		base.ToolID = detail.ToolResult.CallID
+		base.ToolName = detail.ToolResult.ToolName
+		base.ToolKind = "local"
+		base.Activity = observationActivityPresentation(entry.Message.Activity)
+		base.Metadata = subAgentDetailToolResultActivityMetadata(detail.ToolResult)
+		if detail.ToolResult.Status == string(observation.ActivityStatusError) {
+			base.Error = "tool_result_error"
+		}
+		return base, true
+	case SubAgentDetailEventApproval:
+		if detail.Approval == nil {
+			return observation.Event{}, false
+		}
+		base.Type = subAgentDetailApprovalActivityType(detail.Approval.State)
+		base.ToolID = detail.Approval.ToolID
+		base.ToolName = detail.Approval.ToolName
+		base.ToolKind = firstSubAgentDetailNonEmpty(detail.Approval.ToolKind, "local")
+		base.ArgsHash = detail.Approval.ArgsHash
+		base.Activity = subAgentDetailActivityPresentation("Tool approval", detail.Approval.State)
+		base.Metadata = subAgentDetailApprovalActivityMetadata(detail.Approval.Metadata)
+		if detail.Approval.State == "rejected" || detail.Approval.State == "timed_out" {
+			base.Error = "tool_approval_" + detail.Approval.State
+		}
+		return base, true
+	case SubAgentDetailEventInput:
+		base.Type = observation.EventTypeControlSignal
+		base.ToolID = "subagent_input"
+		base.ToolName = "subagent_input"
+		base.ToolKind = "control"
+		base.Activity = subAgentDetailActivityPresentation("Subagent input", "queued")
+		base.Metadata = map[string]any{"control_disposition": "continue"}
+		return base, true
+	case SubAgentDetailEventTurnMarker:
+		if detail.TurnMarker == nil {
+			return observation.Event{}, false
+		}
+		status := strings.TrimSpace(detail.TurnMarker.Status)
+		if status == "" {
+			return observation.Event{}, false
+		}
+		base.Type = observation.EventTypeControlSignal
+		base.ToolID = "turn"
+		base.ToolName = "turn"
+		base.ToolKind = "control"
+		base.Activity = subAgentDetailActivityPresentation("Turn "+status, status)
+		base.Metadata = subAgentDetailTurnMarkerActivityMetadata(status)
+		if status == string(sessiontree.TurnFailed) || status == string(sessiontree.TurnAborted) {
+			base.Error = "turn_" + status
+		}
+		return base, true
+	case SubAgentDetailEventCustom:
+		if detail.Type != subAgentLifecycleEntryKind {
+			return observation.Event{}, false
+		}
+		base.Type = observation.EventTypeControlSignal
+		base.ToolID = "subagent_lifecycle"
+		base.ToolName = "subagent_lifecycle"
+		base.ToolKind = "control"
+		action := firstSubAgentDetailNonEmpty(detail.Metadata[subAgentLifecycleActionKey], "updated")
+		base.Activity = subAgentDetailActivityPresentation("Subagent "+action, action)
+		base.Metadata = map[string]any{"control_disposition": "terminal"}
+		return base, true
+	default:
+		return observation.Event{}, false
+	}
+}
+
+func subAgentDetailToolResultActivityMetadata(result *SubAgentDetailToolResult) map[string]any {
+	if result == nil {
+		return nil
+	}
+	metadata := map[string]any{}
+	switch result.Status {
+	case string(observation.ActivityStatusError):
+		metadata["error_present"] = true
+	case string(observation.ActivityStatusRunning):
+		metadata["pending_tool_result"] = true
+		metadata["pending_state"] = string(observation.ActivityStatusRunning)
+	}
+	if result.Truncated {
+		metadata["truncated"] = true
+	}
+	if result.OriginalBytes > 0 {
+		metadata["original_bytes"] = result.OriginalBytes
+	}
+	if result.VisibleBytes > 0 {
+		metadata["visible_bytes"] = result.VisibleBytes
+	}
+	if result.OriginalLines > 0 {
+		metadata["original_lines"] = result.OriginalLines
+	}
+	if result.VisibleLines > 0 {
+		metadata["visible_lines"] = result.VisibleLines
+	}
+	if strings.TrimSpace(result.Strategy) != "" {
+		metadata["strategy"] = strings.TrimSpace(result.Strategy)
+	}
+	if strings.TrimSpace(result.ContentSHA256) != "" {
+		metadata["content_sha256"] = strings.TrimSpace(result.ContentSHA256)
+	}
+	if result.FullOutput != nil && strings.TrimSpace(result.FullOutput.SHA256) != "" {
+		metadata["artifact_sha256"] = strings.TrimSpace(result.FullOutput.SHA256)
+	}
+	if len(metadata) == 0 {
+		return nil
+	}
+	return metadata
+}
+
+func subAgentDetailApprovalActivityType(state string) string {
+	switch strings.TrimSpace(state) {
+	case "approved":
+		return observation.EventTypeToolApprovalApproved
+	case "rejected":
+		return observation.EventTypeToolApprovalRejected
+	case "timed_out":
+		return observation.EventTypeToolApprovalTimedOut
+	case "canceled":
+		return observation.EventTypeToolApprovalCanceled
+	default:
+		return observation.EventTypeToolApprovalRequested
+	}
+}
+
+func subAgentDetailApprovalActivityMetadata(metadata map[string]string) map[string]any {
+	if len(metadata) == 0 {
+		return nil
+	}
+	out := map[string]any{}
+	for _, key := range []string{"approval_id_hash", "effects", "read_only", "destructive", "open_world", "error_present"} {
+		if value := strings.TrimSpace(metadata[key]); value != "" {
+			out[key] = value
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func subAgentDetailTurnMarkerActivityMetadata(status string) map[string]any {
+	switch sessiontree.TurnMarkerStatus(status) {
+	case sessiontree.TurnWaiting:
+		return map[string]any{"control_disposition": "waiting"}
+	case sessiontree.TurnFailed, sessiontree.TurnAborted:
+		return map[string]any{"control_disposition": "terminal", "error_present": true}
+	default:
+		return map[string]any{"control_disposition": "terminal"}
+	}
+}
+
+func subAgentDetailActivityPresentation(label, description string) *observation.ActivityPresentation {
+	return &observation.ActivityPresentation{
+		Label:       strings.TrimSpace(label),
+		Description: strings.TrimSpace(description),
+		Renderer:    observation.ActivityRendererStructured,
+	}
+}
+
+func observationActivityPresentation(in *session.ActivityPresentation) *observation.ActivityPresentation {
+	if in == nil {
+		return nil
+	}
+	out := &observation.ActivityPresentation{
+		Label:       in.Label,
+		Description: in.Description,
+		Renderer:    observation.ActivityRenderer(in.Renderer),
+		Chips:       make([]observation.ActivityChip, 0, len(in.Chips)),
+		TargetRefs:  make([]observation.ActivityTargetRef, 0, len(in.TargetRefs)),
+		Payload:     cloneActivityPayload(in.Payload),
+	}
+	for _, chip := range in.Chips {
+		out.Chips = append(out.Chips, observation.ActivityChip{
+			Kind:  chip.Kind,
+			Label: chip.Label,
+			Value: chip.Value,
+			Tone:  chip.Tone,
+		})
+	}
+	for _, ref := range in.TargetRefs {
+		out.TargetRefs = append(out.TargetRefs, observation.ActivityTargetRef{
+			Kind:  ref.Kind,
+			Label: ref.Label,
+			URI:   ref.URI,
+			Path:  ref.Path,
+			Line:  ref.Line,
+		})
+	}
+	return out
+}
+
+func firstSubAgentDetailNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func subAgentDetailApproval(metadata map[string]string) *SubAgentDetailApproval {
@@ -780,6 +1056,7 @@ func subAgentDetailToolResult(msg session.Message, includeRaw bool) *SubAgentDet
 		out.Content = msg.Content
 	}
 	if view := msg.ToolResult; view != nil {
+		out.Status = view.Status
 		out.Truncated = view.Truncated
 		out.OriginalBytes = view.OriginalBytes
 		out.VisibleBytes = view.VisibleBytes

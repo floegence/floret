@@ -164,6 +164,42 @@ type ActivityTimeline struct {
 	Items         []ActivityItem  `json:"items"`
 }
 
+func CloneActivityPresentation(in *ActivityPresentation) *ActivityPresentation {
+	if in == nil {
+		return nil
+	}
+	return &ActivityPresentation{
+		Label:       in.Label,
+		Description: in.Description,
+		Renderer:    in.Renderer,
+		Chips:       cloneActivityChips(in.Chips),
+		TargetRefs:  cloneActivityTargetRefs(in.TargetRefs),
+		Payload:     cloneActivityPayload(in.Payload),
+	}
+}
+
+func CloneActivityTimeline(in *ActivityTimeline) *ActivityTimeline {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.Summary.AttentionReasons = append([]ActivityAttentionReason(nil), in.Summary.AttentionReasons...)
+	out.Items = make([]ActivityItem, len(in.Items))
+	for i, item := range in.Items {
+		out.Items[i] = cloneActivityItem(item)
+	}
+	return &out
+}
+
+func cloneActivityItem(in ActivityItem) ActivityItem {
+	in.AttentionReasons = append([]ActivityAttentionReason(nil), in.AttentionReasons...)
+	in.Chips = cloneActivityChips(in.Chips)
+	in.TargetRefs = cloneActivityTargetRefs(in.TargetRefs)
+	in.Payload = cloneActivityPayload(in.Payload)
+	in.Metadata = cloneActivityMetadata(in.Metadata)
+	return in
+}
+
 type activityItemState struct {
 	item     ActivityItem
 	order    int

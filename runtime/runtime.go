@@ -383,6 +383,8 @@ type SubAgentDetailEvent struct {
 	Compaction *SubAgentDetailCompaction `json:"compaction,omitempty"`
 	Error      string                    `json:"error,omitempty"`
 	Metadata   map[string]string         `json:"metadata,omitempty"`
+
+	ActivityTimeline *observation.ActivityTimeline `json:"activity_timeline,omitempty"`
 }
 
 type ThreadDetailEvent struct {
@@ -403,6 +405,8 @@ type ThreadDetailEvent struct {
 	Compaction *ThreadDetailCompaction `json:"compaction,omitempty"`
 	Error      string                  `json:"error,omitempty"`
 	Metadata   map[string]string       `json:"metadata,omitempty"`
+
+	ActivityTimeline *observation.ActivityTimeline `json:"activity_timeline,omitempty"`
 }
 
 type ThreadDetailMessage struct {
@@ -423,6 +427,7 @@ type ThreadDetailToolCall struct {
 type ThreadDetailToolResult struct {
 	CallID        string       `json:"call_id,omitempty"`
 	ToolName      string       `json:"tool_name,omitempty"`
+	Status        string       `json:"status,omitempty"`
 	Preview       string       `json:"preview,omitempty"`
 	Content       string       `json:"content,omitempty"`
 	Truncated     bool         `json:"truncated,omitempty"`
@@ -486,6 +491,7 @@ type SubAgentDetailToolCall struct {
 type SubAgentDetailToolResult struct {
 	CallID        string       `json:"call_id,omitempty"`
 	ToolName      string       `json:"tool_name,omitempty"`
+	Status        string       `json:"status,omitempty"`
 	Preview       string       `json:"preview,omitempty"`
 	Content       string       `json:"content,omitempty"`
 	Truncated     bool         `json:"truncated,omitempty"`
@@ -1603,6 +1609,8 @@ func subAgentDetailEvent(in agentharness.SubAgentDetailEvent) SubAgentDetailEven
 		Compaction: subAgentDetailCompaction(in.Compaction),
 		Error:      in.Error,
 		Metadata:   cloneStringMap(in.Metadata),
+
+		ActivityTimeline: observation.CloneActivityTimeline(in.ActivityTimeline),
 	}
 }
 
@@ -1624,6 +1632,8 @@ func threadDetailEvent(in agentharness.SubAgentDetailEvent) ThreadDetailEvent {
 		Compaction: threadDetailCompaction(in.Compaction),
 		Error:      in.Error,
 		Metadata:   cloneStringMap(in.Metadata),
+
+		ActivityTimeline: observation.CloneActivityTimeline(in.ActivityTimeline),
 	}
 }
 
@@ -1648,6 +1658,7 @@ func threadDetailToolResult(in *agentharness.SubAgentDetailToolResult) *ThreadDe
 	out := &ThreadDetailToolResult{
 		CallID:        in.CallID,
 		ToolName:      in.ToolName,
+		Status:        in.Status,
 		Preview:       in.Preview,
 		Content:       in.Content,
 		Truncated:     in.Truncated,
@@ -1738,6 +1749,7 @@ func subAgentDetailToolResult(in *agentharness.SubAgentDetailToolResult) *SubAge
 	out := &SubAgentDetailToolResult{
 		CallID:        in.CallID,
 		ToolName:      in.ToolName,
+		Status:        in.Status,
 		Preview:       in.Preview,
 		Content:       in.Content,
 		Truncated:     in.Truncated,

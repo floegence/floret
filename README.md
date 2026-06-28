@@ -366,7 +366,9 @@ events include bounded, sanitized previews plus hashes and truncation metadata
 by default. Raw message content, reasoning, tool arguments, and full tool result
 content are omitted unless `IncludeRaw` is set for an explicitly authorized
 human/debug surface. Do not use raw subagent detail responses as model-facing
-`wait` or `inspect` tool output.
+`wait` or `inspect` tool output. When a row has product-neutral activity, Floret
+returns it as `activity_timeline`; tool result rows also expose a structured
+`status`, so hosts do not need to infer result state from preview text.
 
 ### Thread detail inspection
 
@@ -382,7 +384,8 @@ Thread detail events are paginated by ordinal and default to bounded,
 sanitized previews plus hashes, truncation metadata, and artifact references.
 Raw message content, reasoning, tool arguments, and full tool result content are
 omitted unless `IncludeRaw` is set for an explicitly authorized human/debug
-surface.
+surface. The same row-level `activity_timeline` and tool result `status`
+contract is available here for host UI rendering.
 
 ### Pending approval snapshots
 

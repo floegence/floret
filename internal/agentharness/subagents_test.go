@@ -14,6 +14,7 @@ import (
 	"github.com/floegence/floret/internal/session"
 	"github.com/floegence/floret/internal/sessiontree"
 	scriptharness "github.com/floegence/floret/internal/testing/harness"
+	"github.com/floegence/floret/observation"
 	"github.com/floegence/floret/tools"
 )
 
@@ -360,20 +361,47 @@ func TestReadSubAgentDetailProjectsToolAndApprovalEvents(t *testing.T) {
 	if len(detail.Events) == 0 || detail.Events[0].Kind != SubAgentDetailEventInput || detail.Events[0].Message.Content != "attempt write" {
 		t.Fatalf("detail should start at delegated input: %#v", detail.Events)
 	}
+	if detail.Events[0].ActivityTimeline == nil {
+		t.Fatalf("input detail should have activity timeline: %#v", detail.Events[0])
+	}
+	if err := observation.ValidateActivityTimeline(*detail.Events[0].ActivityTimeline); err != nil {
+		t.Fatalf("input activity timeline invalid: %v", err)
+	}
 	call := firstSubAgentDetailEvent(detail.Events, SubAgentDetailEventToolCall)
 	if call.ToolCall == nil || call.Type != string(sessiontree.EntryToolCall) || call.ToolCall.Name != "write_file" || call.ToolCall.ArgsHash == "" {
 		t.Fatalf("tool call detail = %#v", call)
+	}
+	if call.ActivityTimeline != nil {
+		t.Fatalf("completed tool call row should not duplicate result activity: %#v", call.ActivityTimeline)
 	}
 	approval := firstSubAgentDetailEvent(detail.Events, SubAgentDetailEventApproval)
 	if approval.Approval == nil || approval.Type != "tool_approval_requested" || approval.Approval.State != "requested" || approval.Approval.ToolName != "write_file" || approval.Approval.ArgsHash == "" {
 		t.Fatalf("approval detail = %#v", approval)
 	}
+	if approval.ActivityTimeline == nil {
+		t.Fatalf("approval detail should have activity timeline: %#v", approval)
+	}
+	if err := observation.ValidateActivityTimeline(*approval.ActivityTimeline); err != nil {
+		t.Fatalf("approval activity timeline invalid: %v", err)
+	}
+	if len(approval.ActivityTimeline.Items) != 1 || approval.ActivityTimeline.Items[0].Status != observation.ActivityStatusWaiting {
+		t.Fatalf("approval activity timeline = %#v", approval.ActivityTimeline)
+	}
 	if _, ok := approval.Approval.Metadata["resources"]; ok {
 		t.Fatalf("approval detail must not expose raw resources: %#v", approval.Approval.Metadata)
 	}
 	result := firstSubAgentDetailEvent(detail.Events, SubAgentDetailEventToolResult)
-	if result.ToolResult == nil || !strings.Contains(result.ToolResult.Content, "ERROR:") {
+	if result.ToolResult == nil || !strings.Contains(result.ToolResult.Content, "ERROR:") || result.ToolResult.Status != string(observation.ActivityStatusError) {
 		t.Fatalf("tool result detail = %#v", result)
+	}
+	if result.ActivityTimeline == nil {
+		t.Fatalf("tool result detail should have activity timeline: %#v", result)
+	}
+	if err := observation.ValidateActivityTimeline(*result.ActivityTimeline); err != nil {
+		t.Fatalf("tool result activity timeline invalid: %v", err)
+	}
+	if len(result.ActivityTimeline.Items) != 1 || result.ActivityTimeline.Items[0].Status != observation.ActivityStatusError {
+		t.Fatalf("tool result activity timeline = %#v", result.ActivityTimeline)
 	}
 }
 

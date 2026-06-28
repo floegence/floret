@@ -560,6 +560,14 @@ func TestPendingToolResultFeedsProviderVisiblePendingMessage(t *testing.T) {
 	}) {
 		t.Fatalf("pending tool result event missing: %#v", rec.Events)
 	}
+	if !slices.ContainsFunc(got.Messages, func(msg session.Message) bool {
+		return msg.Role == session.Tool &&
+			msg.ToolCallID == "exec-1" &&
+			msg.ToolResult != nil &&
+			msg.ToolResult.Status == string(observation.ActivityStatusRunning)
+	}) {
+		t.Fatalf("pending tool result status was not persisted: %#v", got.Messages)
+	}
 }
 
 func TestPendingToolResultBypassesTruncationProjection(t *testing.T) {
@@ -2176,6 +2184,33 @@ func TestToolActivityPresentationEmitsForCallAndResult(t *testing.T) {
 			ev.Activity.Payload["stdout"] == "ok"
 	}) {
 		t.Fatalf("tool result activity missing: %#v", rec.Events)
+	}
+	if !slices.ContainsFunc(got.Messages, func(msg session.Message) bool {
+		return msg.Role == session.Assistant &&
+			msg.ToolCallID == "exec-1" &&
+			msg.Activity != nil &&
+			msg.Activity.Label == "npm test" &&
+			msg.Activity.Renderer == string(observation.ActivityRendererTerminal)
+	}) {
+		t.Fatalf("tool call activity was not persisted: %#v", got.Messages)
+	}
+	if !slices.ContainsFunc(got.Messages, func(msg session.Message) bool {
+		return msg.Role == session.Tool &&
+			msg.ToolCallID == "exec-1" &&
+			msg.ToolResult != nil &&
+			msg.ToolResult.Status == string(observation.ActivityStatusSuccess) &&
+			msg.Activity != nil &&
+			msg.Activity.Description == "Command completed"
+	}) {
+		t.Fatalf("tool result activity/status was not persisted: %#v", got.Messages)
+	}
+	if len(p.Requests) < 2 {
+		t.Fatalf("provider requests = %d, want at least 2", len(p.Requests))
+	}
+	if slices.ContainsFunc(p.Requests[1].Messages, func(msg session.Message) bool {
+		return msg.Activity != nil
+	}) {
+		t.Fatalf("provider-visible messages must not include activity: %#v", p.Requests[1].Messages)
 	}
 }
 

@@ -1135,6 +1135,7 @@ func appendProviderVisible(messages []session.Message, entry Entry) []session.Me
 			}
 			msg.EntryID = entry.ID
 			msg.ParentEntryID = entry.ParentID
+			msg.Activity = nil
 			messages = append(messages, msg)
 		}
 	case EntryBranchSummary:

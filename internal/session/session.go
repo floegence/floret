@@ -24,6 +24,7 @@ const (
 )
 
 type ToolResultView struct {
+	Status        string        `json:"status,omitempty"`
 	Truncated     bool          `json:"truncated,omitempty"`
 	OriginalBytes int           `json:"original_bytes,omitempty"`
 	VisibleBytes  int           `json:"visible_bytes,omitempty"`
@@ -32,6 +33,30 @@ type ToolResultView struct {
 	Strategy      string        `json:"strategy,omitempty"`
 	ContentSHA256 string        `json:"content_sha256,omitempty"`
 	FullOutput    *artifact.Ref `json:"full_output,omitempty"`
+}
+
+type ActivityChip struct {
+	Kind  string `json:"kind"`
+	Label string `json:"label"`
+	Value string `json:"value,omitempty"`
+	Tone  string `json:"tone,omitempty"`
+}
+
+type ActivityTargetRef struct {
+	Kind  string `json:"kind"`
+	Label string `json:"label"`
+	URI   string `json:"uri,omitempty"`
+	Path  string `json:"path,omitempty"`
+	Line  int    `json:"line,omitempty"`
+}
+
+type ActivityPresentation struct {
+	Label       string              `json:"label,omitempty"`
+	Description string              `json:"description,omitempty"`
+	Renderer    string              `json:"renderer,omitempty"`
+	Chips       []ActivityChip      `json:"chips,omitempty"`
+	TargetRefs  []ActivityTargetRef `json:"target_refs,omitempty"`
+	Payload     map[string]any      `json:"payload,omitempty"`
 }
 
 type Message struct {
@@ -45,6 +70,7 @@ type Message struct {
 	ParentEntryID        string
 	Kind                 MessageKind
 	ToolResult           *ToolResultView
+	Activity             *ActivityPresentation `json:"activity,omitempty"`
 	CompactionID         string
 	CompactionGeneration int
 	CompactionWindowID   string
@@ -107,5 +133,48 @@ func CloneMessage(msg Message) Message {
 		}
 		msg.ToolResult = &view
 	}
+	msg.Activity = CloneActivityPresentation(msg.Activity)
 	return msg
+}
+
+func CloneActivityPresentation(in *ActivityPresentation) *ActivityPresentation {
+	if in == nil {
+		return nil
+	}
+	return &ActivityPresentation{
+		Label:       in.Label,
+		Description: in.Description,
+		Renderer:    in.Renderer,
+		Chips:       append([]ActivityChip(nil), in.Chips...),
+		TargetRefs:  append([]ActivityTargetRef(nil), in.TargetRefs...),
+		Payload:     cloneActivityPayload(in.Payload),
+	}
+}
+
+func cloneActivityPayload(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = cloneActivityPayloadValue(value)
+	}
+	return out
+}
+
+func cloneActivityPayloadValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneActivityPayload(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneActivityPayloadValue(item)
+		}
+		return out
+	case []string:
+		return append([]string(nil), typed...)
+	default:
+		return typed
+	}
 }

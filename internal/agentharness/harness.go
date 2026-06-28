@@ -23,6 +23,7 @@ import (
 	"github.com/floegence/floret/internal/session/contextpolicy"
 	"github.com/floegence/floret/internal/sessionlifecycle"
 	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/observation"
 	"github.com/floegence/floret/tools"
 )
 
@@ -498,7 +499,7 @@ func (h *AgentHarness) emitEntryCommitted(entry sessiontree.Entry) {
 		return
 	}
 	ordinal := h.threadEntryOrdinal(entry)
-	detail, ok := h.subAgentDetailEvent(entry, ordinal, false)
+	detail, ok := h.subAgentDetailEvent(entry, ordinal, false, subAgentDetailActivityContext{})
 	if !ok {
 		return
 	}
@@ -1901,7 +1902,7 @@ func (p *turnProjection) Emit(ev event.Event) {
 			p.err = err
 			return
 		}
-		p.pendingCalls = append(p.pendingCalls, session.Message{Role: session.Assistant, Content: "tool_call", Reasoning: p.reasoning, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolArgs: ev.Args})
+		p.pendingCalls = append(p.pendingCalls, session.Message{Role: session.Assistant, Content: "tool_call", Reasoning: p.reasoning, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolArgs: ev.Args, Activity: sessionActivityPresentation(sanitizeActivityPresentation(ev.Activity))})
 		if size := eventBatchSize(ev.Metadata); size > p.pendingBatchSize {
 			p.pendingBatchSize = size
 		}
@@ -1910,7 +1911,7 @@ func (p *turnProjection) Emit(ev event.Event) {
 			p.err = err
 			return
 		}
-		p.pendingResults = append(p.pendingResults, session.Message{Role: session.Tool, Content: ev.Result, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolResult: toolResultViewFromEvent(ev)})
+		p.pendingResults = append(p.pendingResults, session.Message{Role: session.Tool, Content: ev.Result, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolResult: toolResultViewFromEvent(ev), Activity: sessionActivityPresentation(sanitizeActivityPresentation(ev.Activity))})
 		if size := eventBatchSize(ev.Metadata); size > p.pendingBatchSize {
 			p.pendingBatchSize = size
 		}
@@ -2063,10 +2064,12 @@ func eventBatchSize(metadata any) int {
 
 func toolResultViewFromEvent(ev event.Event) *session.ToolResultView {
 	values, _ := ev.Metadata.(map[string]any)
-	if len(values) == 0 && len(ev.Artifacts) == 0 {
+	status := toolResultStatusFromEvent(ev, values)
+	if len(values) == 0 && len(ev.Artifacts) == 0 && status == "" {
 		return nil
 	}
 	view := &session.ToolResultView{
+		Status:        status,
 		Truncated:     metadataBool(values, "truncated"),
 		OriginalBytes: metadataInt(values, "original_bytes"),
 		VisibleBytes:  metadataInt(values, "visible_bytes"),
@@ -2095,7 +2098,8 @@ func toolResultViewFromEvent(ev event.Event) *session.ToolResultView {
 
 func emptyToolResultView(view *session.ToolResultView) bool {
 	return view == nil ||
-		(!view.Truncated &&
+		(view.Status == "" &&
+			!view.Truncated &&
 			view.OriginalBytes == 0 &&
 			view.VisibleBytes == 0 &&
 			view.OriginalLines == 0 &&
@@ -2103,6 +2107,80 @@ func emptyToolResultView(view *session.ToolResultView) bool {
 			view.Strategy == "" &&
 			view.ContentSHA256 == "" &&
 			view.FullOutput == nil)
+}
+
+func toolResultStatusFromEvent(ev event.Event, values map[string]any) string {
+	if metadataBool(values, "pending_tool_result") {
+		return string(observation.ActivityStatusRunning)
+	}
+	if strings.TrimSpace(ev.Err) != "" || metadataBool(values, "error_present") {
+		return string(observation.ActivityStatusError)
+	}
+	return string(observation.ActivityStatusSuccess)
+}
+
+func sanitizeActivityPresentation(activity *observation.ActivityPresentation) *observation.ActivityPresentation {
+	return event.Sanitize(event.Event{Activity: activity}).Activity
+}
+
+func sessionActivityPresentation(in *observation.ActivityPresentation) *session.ActivityPresentation {
+	if in == nil {
+		return nil
+	}
+	out := &session.ActivityPresentation{
+		Label:       in.Label,
+		Description: in.Description,
+		Renderer:    string(in.Renderer),
+		Chips:       make([]session.ActivityChip, 0, len(in.Chips)),
+		TargetRefs:  make([]session.ActivityTargetRef, 0, len(in.TargetRefs)),
+		Payload:     cloneActivityPayload(in.Payload),
+	}
+	for _, chip := range in.Chips {
+		out.Chips = append(out.Chips, session.ActivityChip{
+			Kind:  chip.Kind,
+			Label: chip.Label,
+			Value: chip.Value,
+			Tone:  chip.Tone,
+		})
+	}
+	for _, ref := range in.TargetRefs {
+		out.TargetRefs = append(out.TargetRefs, session.ActivityTargetRef{
+			Kind:  ref.Kind,
+			Label: ref.Label,
+			URI:   ref.URI,
+			Path:  ref.Path,
+			Line:  ref.Line,
+		})
+	}
+	return out
+}
+
+func cloneActivityPayload(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = cloneActivityPayloadValue(value)
+	}
+	return out
+}
+
+func cloneActivityPayloadValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneActivityPayload(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneActivityPayloadValue(item)
+		}
+		return out
+	case []string:
+		return append([]string(nil), typed...)
+	default:
+		return typed
+	}
 }
 
 func artifactRefFromEvent(in event.Artifact) artifact.Ref {

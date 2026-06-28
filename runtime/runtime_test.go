@@ -647,11 +647,22 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 			Name:        "read",
 			InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
 			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+			Activity: func(inv tools.Invocation[any]) (*observation.ActivityPresentation, error) {
+				args, ok := inv.Args.(stringArgs)
+				if !ok {
+					t.Fatalf("args=%T, want stringArgs", inv.Args)
+				}
+				return &observation.ActivityPresentation{
+					Label:    "Read " + args.Value,
+					Renderer: observation.ActivityRendererFile,
+					Payload:  map[string]any{"path": args.Value},
+				}, nil
+			},
 		},
 		nil,
 		nil,
 		func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
-			return tools.Result{Text: "file content"}, nil
+			return tools.Result{Text: "file content", Activity: &observation.ActivityPresentation{Description: "Read completed"}}, nil
 		},
 	)); err != nil {
 		t.Fatal(err)
@@ -692,8 +703,17 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 	if got := firstRuntimeSubAgentDetailEvent(defaultDetail.Events, SubAgentDetailEventToolCall); got.ToolCall == nil || got.ToolCall.ArgsJSON != "" || got.ToolCall.ArgsPreview == "" || got.ToolCall.ArgsHash == "" {
 		t.Fatalf("default detail should expose only safe args preview and keep hash: %#v", got)
 	}
-	if got := firstRuntimeSubAgentDetailEvent(defaultDetail.Events, SubAgentDetailEventToolResult); got.ToolResult == nil || got.ToolResult.Content != "" || got.ToolResult.Preview != "file content" || got.ToolResult.ContentSHA256 == "" {
+	if got := firstRuntimeSubAgentDetailEvent(defaultDetail.Events, SubAgentDetailEventToolCall); got.ActivityTimeline != nil {
+		t.Fatalf("completed tool call row should not duplicate result activity: %#v", got.ActivityTimeline)
+	}
+	if got := firstRuntimeSubAgentDetailEvent(defaultDetail.Events, SubAgentDetailEventToolResult); got.ToolResult == nil || got.ToolResult.Content != "" || got.ToolResult.Preview != "file content" || got.ToolResult.ContentSHA256 == "" || got.ToolResult.Status != string(observation.ActivityStatusSuccess) {
 		t.Fatalf("default detail should expose only safe tool result preview and keep hash: %#v", got)
+	} else if got.ActivityTimeline == nil {
+		t.Fatalf("default detail should expose activity without raw: %#v", got)
+	} else if err := observation.ValidateActivityTimeline(*got.ActivityTimeline); err != nil {
+		t.Fatalf("activity timeline invalid: %v", err)
+	} else if len(got.ActivityTimeline.Items) != 1 || got.ActivityTimeline.Items[0].Status != observation.ActivityStatusSuccess || got.ActivityTimeline.Items[0].Description != "Read completed" {
+		t.Fatalf("activity timeline = %#v", got.ActivityTimeline)
 	}
 	detail, err := host.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "child", IncludeRaw: true})
 	if err != nil {
@@ -803,6 +823,115 @@ func TestHostSQLiteStorePersistsSubAgentDetail(t *testing.T) {
 	}
 	if got := firstRuntimeSubAgentDetailEvent(detail.Events, SubAgentDetailEventAssistantMessage); got.Message == nil || got.Message.Content != "persisted child" {
 		t.Fatalf("reopened detail = %#v", detail.Events)
+	}
+}
+
+func TestHostSQLiteStorePersistsSubAgentDetailActivity(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "floret.db")
+	store, err := OpenSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := 0
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		requests++
+		events := make(chan ModelEvent, 2)
+		if requests == 1 {
+			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "read-1", Name: "read", Args: `{"value":"README.md"}`}}}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+		} else {
+			events <- ModelEvent{Type: ModelEventDelta, Text: "done"}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+		}
+		close(events)
+		return events, nil
+	})
+	registry := tools.NewRegistry()
+	if err := registry.Register(tools.Define[stringArgs](
+		tools.Definition{
+			Name:        "read",
+			InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+			Activity: func(inv tools.Invocation[any]) (*observation.ActivityPresentation, error) {
+				args, ok := inv.Args.(stringArgs)
+				if !ok {
+					t.Fatalf("args=%T, want stringArgs", inv.Args)
+				}
+				return &observation.ActivityPresentation{Label: "Read " + args.Value, Renderer: observation.ActivityRendererFile}, nil
+			},
+		},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
+			return tools.Result{Text: "file content", Activity: &observation.ActivityPresentation{Description: "Read persisted"}}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+		},
+		Store:        store,
+		ModelGateway: gateway,
+		Tools:        registry,
+		Approver:     allowRuntimeTools,
+		IDGenerator:  deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{ParentThreadID: "parent", ThreadID: "child", TaskName: "Persist", Message: "work", ForkMode: SubAgentForkNone}); err != nil {
+		t.Fatal(err)
+	}
+	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"child"}, Timeout: 2 * time.Second}); err != nil || waited.TimedOut {
+		t.Fatalf("waited=%#v err=%v", waited, err)
+	}
+	if err := host.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopenedStore, err := OpenSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+		},
+		Store: reopenedStore,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	detail, err := reopened.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "child"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := firstRuntimeSubAgentDetailEvent(detail.Events, SubAgentDetailEventToolResult)
+	if result.ToolResult == nil || result.ToolResult.Status != string(observation.ActivityStatusSuccess) {
+		t.Fatalf("reopened result detail = %#v", result)
+	}
+	if result.ActivityTimeline == nil {
+		t.Fatalf("reopened detail missing activity timeline: %#v", detail.Events)
+	}
+	if err := observation.ValidateActivityTimeline(*result.ActivityTimeline); err != nil {
+		t.Fatalf("activity timeline invalid after reopen: %v", err)
+	}
+	if len(result.ActivityTimeline.Items) != 1 || result.ActivityTimeline.Items[0].Description != "Read persisted" {
+		t.Fatalf("reopened activity timeline = %#v", result.ActivityTimeline)
+	}
+	if call := firstRuntimeSubAgentDetailEvent(detail.Events, SubAgentDetailEventToolCall); call.ActivityTimeline != nil {
+		t.Fatalf("reopened completed call row duplicated activity: %#v", call.ActivityTimeline)
 	}
 }
 
@@ -1220,6 +1349,23 @@ func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("detail order = %#v, want %#v", got, want)
+	}
+	for _, ev := range detail.Events {
+		if ev.Kind == ThreadDetailEventToolCall && ev.ToolCall != nil && ev.ToolCall.ID == "call-1" && ev.ActivityTimeline != nil {
+			t.Fatalf("thread detail completed call row should not duplicate result activity: %#v", ev.ActivityTimeline)
+		}
+		if ev.Kind != ThreadDetailEventToolResult || ev.ToolResult == nil || ev.ToolResult.CallID != "call-1" {
+			continue
+		}
+		if ev.ToolResult.Status != string(observation.ActivityStatusSuccess) {
+			t.Fatalf("thread detail tool result status = %#v", ev.ToolResult)
+		}
+		if ev.ActivityTimeline == nil {
+			t.Fatalf("thread detail tool result should include activity timeline: %#v", ev)
+		}
+		if err := observation.ValidateActivityTimeline(*ev.ActivityTimeline); err != nil {
+			t.Fatalf("thread detail activity timeline invalid: %v", err)
+		}
 	}
 
 	var committed []string
