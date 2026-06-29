@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-06-29
+* **Update**: Documented public runtime not-found sentinels for host facade
+  integrations so downstream products can use `errors.Is` without parsing error
+  strings or importing internal packages.
+
 ## 2026-06-28
 * **Update**: Documented `ThreadTurnProjection` as the Floret-owned display
   projection for hosted turns, including control-signal segments and the rule

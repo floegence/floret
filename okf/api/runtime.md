@@ -52,6 +52,8 @@ continuation state, and lifecycle observations.
   the follow-up execution identity.
 * `DeleteThread` removes a Floret-owned thread tree from the engine store,
   including child threads, prompt cache scopes, and artifacts.
+* `ErrThreadNotFound` and `ErrSubAgentNotFound` are public sentinel errors for
+  `errors.Is` checks on Host facade not-found responses.
 * `ModelGateway` lets a host supply model transport through
   `HostOptions.ModelGateway` while Floret owns loop control, tool dispatch,
   context lifecycle, and ledgers.
@@ -158,6 +160,10 @@ Deleting a thread is a data lifecycle operation. `DeleteThread` deletes the
 target thread and Floret-managed descendant child threads, plus their prompt
 cache records and thread artifacts. Hosts should use this public API instead of
 querying or mutating Floret storage tables directly.
+
+Host facade not-found responses should be handled with `errors.Is` against
+`runtime.ErrThreadNotFound` or `runtime.ErrSubAgentNotFound`. Hosts should not
+parse error strings or import Floret internal package sentinels.
 
 `StreamObservation` is for host rendering and diagnostics. It is not raw
 provider wire data and must not carry prompt text, tool arguments, tool results,

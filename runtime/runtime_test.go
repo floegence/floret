@@ -1398,10 +1398,52 @@ func TestHostDeleteMissingThreadUsesConsistentStoreBoundary(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := host.DeleteThread(ctx, "missing"); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+			if err := host.DeleteThread(ctx, "missing"); !errors.Is(err, ErrThreadNotFound) {
 				t.Fatalf("DeleteThread err = %v, want ErrThreadNotFound", err)
 			}
 		})
+	}
+}
+
+func TestHostPublicNotFoundErrors(t *testing.T) {
+	ctx := context.Background()
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "ok",
+			SystemPrompt: "test",
+		},
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+
+	if _, err := host.ReadThread(ctx, "missing"); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("ReadThread err = %v, want ErrThreadNotFound", err)
+	}
+	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{
+		ThreadID: "missing",
+		RunID:    "pending-run",
+		Status:   PendingToolCompletionCompleted,
+		Summary:  "done",
+		Handle:   "terminal:job:123",
+	}); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("CompletePendingTool err = %v, want ErrThreadNotFound", err)
+	}
+	if _, err := host.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{
+		ParentThreadID: "parent",
+		ChildThreadID:  "missing-child",
+	}); !errors.Is(err, ErrSubAgentNotFound) {
+		t.Fatalf("ReadSubAgentDetail err = %v, want ErrSubAgentNotFound", err)
+	}
+	if _, err := host.ListSubAgentDetailEvents(ctx, ListSubAgentDetailEventsRequest{
+		ParentThreadID: "parent",
+		ChildThreadID:  "missing-child",
+	}); !errors.Is(err, ErrSubAgentNotFound) {
+		t.Fatalf("ListSubAgentDetailEvents err = %v, want ErrSubAgentNotFound", err)
 	}
 }
 
@@ -1486,7 +1528,7 @@ func TestHostCompletePendingToolRejectsInvalidRequest(t *testing.T) {
 	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{ThreadID: "thread", Status: PendingToolCompletionCompleted, Summary: "done", Handle: "terminal:job:123"}); err == nil || !strings.Contains(err.Error(), "run id is required") {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{ThreadID: "missing", RunID: "pending-run", Status: PendingToolCompletionCompleted, Summary: "done", Handle: "terminal:job:123"}); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{ThreadID: "missing", RunID: "pending-run", Status: PendingToolCompletionCompleted, Summary: "done", Handle: "terminal:job:123"}); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("err = %v, want ErrThreadNotFound", err)
 	}
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
@@ -2236,10 +2278,10 @@ func TestHostDeleteThreadCascadesEngineThreadTree(t *testing.T) {
 	if err := host.DeleteThread(ctx, "parent"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.ReadThread(ctx, "parent"); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+	if _, err := host.ReadThread(ctx, "parent"); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("parent read err=%v, want ErrThreadNotFound", err)
 	}
-	if _, err := host.ReadThread(ctx, "child"); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+	if _, err := host.ReadThread(ctx, "child"); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("child read err=%v, want ErrThreadNotFound", err)
 	}
 	if requests, err := store.prompt.ProviderRequests(ctx, "child"); err != nil || len(requests) != 0 {
