@@ -1147,7 +1147,11 @@ func appendProviderVisible(messages []session.Message, entry Entry) []session.Me
 }
 
 func AppendMessage(ctx context.Context, repo Repo, threadID, turnID string, msg session.Message) (Entry, error) {
-	return repo.Append(ctx, Entry{ThreadID: threadID, TurnID: turnID, Type: typeForMessage(msg), Message: msg}, AppendOptions{})
+	return AppendMessageAt(ctx, repo, threadID, turnID, msg, time.Time{})
+}
+
+func AppendMessageAt(ctx context.Context, repo Repo, threadID, turnID string, msg session.Message, observedAt time.Time) (Entry, error) {
+	return repo.Append(ctx, Entry{ThreadID: threadID, TurnID: turnID, Type: typeForMessage(msg), Message: msg}, AppendOptions{Now: observedAt})
 }
 
 func AppendCompaction(ctx context.Context, repo Repo, threadID, turnID string, result compaction.Result) (Entry, error) {

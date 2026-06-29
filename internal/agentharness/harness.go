@@ -1705,9 +1705,13 @@ func nonDurableProjection(msg session.Message) bool {
 }
 
 func (t *Thread) appendMessage(ctx context.Context, turnID string, runID string, msg session.Message) error {
+	return t.appendMessageAt(ctx, turnID, runID, msg, time.Time{})
+}
+
+func (t *Thread) appendMessageAt(ctx context.Context, turnID string, runID string, msg session.Message, observedAt time.Time) error {
 	msg.EntryID = ""
 	msg.ParentEntryID = ""
-	entry, err := sessiontree.AppendMessage(ctx, t.harness.options.Repo, t.id, turnID, msg)
+	entry, err := sessiontree.AppendMessageAt(ctx, t.harness.options.Repo, t.id, turnID, msg, observedAt)
 	if err != nil {
 		return err
 	}
@@ -2062,10 +2066,15 @@ type turnProjection struct {
 	mu               sync.Mutex
 	text             string
 	reasoning        string
-	pendingCalls     []session.Message
-	pendingResults   []session.Message
+	pendingCalls     []pendingToolMessage
+	pendingResults   []pendingToolMessage
 	pendingBatchSize int
 	err              error
+}
+
+type pendingToolMessage struct {
+	message    session.Message
+	observedAt time.Time
 }
 
 func (p *turnProjection) Emit(ev event.Event) {
@@ -2094,7 +2103,10 @@ func (p *turnProjection) Emit(ev event.Event) {
 			p.err = err
 			return
 		}
-		p.pendingCalls = append(p.pendingCalls, session.Message{Role: session.Assistant, Content: "tool_call", Reasoning: p.reasoning, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolArgs: ev.Args, Activity: sessionActivityPresentation(sanitizeActivityPresentation(ev.Activity))})
+		p.pendingCalls = append(p.pendingCalls, pendingToolMessage{
+			message:    session.Message{Role: session.Assistant, Content: "tool_call", Reasoning: p.reasoning, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolArgs: ev.Args, Activity: sessionActivityPresentation(sanitizeActivityPresentation(ev.Activity))},
+			observedAt: ev.Timestamp,
+		})
 		if size := eventBatchSize(ev.Metadata); size > p.pendingBatchSize {
 			p.pendingBatchSize = size
 		}
@@ -2103,7 +2115,10 @@ func (p *turnProjection) Emit(ev event.Event) {
 			p.err = err
 			return
 		}
-		p.pendingResults = append(p.pendingResults, session.Message{Role: session.Tool, Content: ev.Result, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolResult: toolResultViewFromEvent(ev), Activity: sessionActivityPresentation(sanitizeActivityPresentation(ev.Activity))})
+		p.pendingResults = append(p.pendingResults, pendingToolMessage{
+			message:    session.Message{Role: session.Tool, Content: ev.Result, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolResult: toolResultViewFromEvent(ev), Activity: sessionActivityPresentation(sanitizeActivityPresentation(ev.Activity))},
+			observedAt: ev.Timestamp,
+		})
 		if size := eventBatchSize(ev.Metadata); size > p.pendingBatchSize {
 			p.pendingBatchSize = size
 		}
@@ -2201,27 +2216,27 @@ func (p *turnProjection) flushPendingToolBatch(force bool) error {
 	if len(p.pendingCalls) != len(p.pendingResults) {
 		return fmt.Errorf("incomplete tool result batch: %d calls, %d results", len(p.pendingCalls), len(p.pendingResults))
 	}
-	byID := make(map[string]session.Message, len(p.pendingResults))
+	byID := make(map[string]pendingToolMessage, len(p.pendingResults))
 	for _, result := range p.pendingResults {
-		if result.ToolCallID == "" {
+		if result.message.ToolCallID == "" {
 			return errors.New("tool result batch contains empty tool_call_id")
 		}
-		if _, ok := byID[result.ToolCallID]; ok {
-			return fmt.Errorf("tool result batch contains duplicate tool_call_id %q", result.ToolCallID)
+		if _, ok := byID[result.message.ToolCallID]; ok {
+			return fmt.Errorf("tool result batch contains duplicate tool_call_id %q", result.message.ToolCallID)
 		}
-		byID[result.ToolCallID] = result
+		byID[result.message.ToolCallID] = result
 	}
 	for _, call := range p.pendingCalls {
-		if err := p.thread.appendMessage(p.ctx, p.turnID, p.runID, call); err != nil {
+		if err := p.thread.appendMessageAt(p.ctx, p.turnID, p.runID, call.message, call.observedAt); err != nil {
 			return err
 		}
 	}
 	for _, call := range p.pendingCalls {
-		result, ok := byID[call.ToolCallID]
+		result, ok := byID[call.message.ToolCallID]
 		if !ok {
-			return fmt.Errorf("tool result batch missing result for %q", call.ToolCallID)
+			return fmt.Errorf("tool result batch missing result for %q", call.message.ToolCallID)
 		}
-		if err := p.thread.appendMessage(p.ctx, p.turnID, p.runID, result); err != nil {
+		if err := p.thread.appendMessageAt(p.ctx, p.turnID, p.runID, result.message, result.observedAt); err != nil {
 			return err
 		}
 	}

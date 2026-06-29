@@ -31,6 +31,13 @@ Terminal tool-result settlements remove running-only pending metadata, payload
 fields, and chips so downstream hosts do not carry stale active state into
 terminal UI.
 
+Tool result duration is part of the activity lifecycle fact. When a terminal
+tool result carries a positive duration and the current item start is missing or
+later than `ended_at - duration`, `BuildActivityTimeline` expands the interval
+back to that duration-derived start. Activity validation rejects items whose
+`ended_at_unix_ms` is earlier than `started_at_unix_ms`, so hosts never receive
+negative or append-time-only execution intervals as valid activity facts.
+
 `CompactionEvent` carries `OperationID` for one compaction attempt and optional
 `RequestID` / `Source` when a downstream host requested manual compaction. Start,
 complete, failed, and cancelled observations for the same manual request keep the

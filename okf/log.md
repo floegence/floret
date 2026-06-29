@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-06-29
+* **Update**: Documented live `runtime.Event.ActivityTimeline`, event-time tool
+  detail projection, and duration-consistent activity validation for tool
+  lifecycle rows.
 * **Update**: Documented `SettlePendingTool` as the detail-only counterpart to
   `CompletePendingTool`, including the rule that successful turns leave
   host-owned pending activity running until an explicit settlement arrives.

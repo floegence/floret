@@ -101,6 +101,72 @@ func TestProjectThreadTurnOrdersTextActivityAndControlSegments(t *testing.T) {
 	}
 }
 
+func TestProjectThreadTurnMergesToolInvocationAndResultPresentation(t *testing.T) {
+	start := time.UnixMilli(1_700_000_100_000)
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID: "thread-terminal",
+		TurnID:   "turn-terminal",
+		RunID:    "run-terminal",
+		TraceID:  "run-terminal",
+		Events: []ThreadDetailEvent{
+			{
+				ID:        "call-row",
+				Ordinal:   1,
+				ThreadID:  "thread-terminal",
+				TurnID:    "turn-terminal",
+				Kind:      ThreadDetailEventToolCall,
+				CreatedAt: start,
+				Message: &ThreadDetailMessage{Role: "assistant", Activity: &observation.ActivityPresentation{
+					Label:    "sleep 10s",
+					Renderer: observation.ActivityRendererTerminal,
+					Payload:  map[string]any{"command": "sleep 10s"},
+				}},
+				ToolCall: &ThreadDetailToolCall{ID: "exec-1", Name: "terminal.exec"},
+			},
+			{
+				ID:        "result-row",
+				Ordinal:   2,
+				ThreadID:  "thread-terminal",
+				TurnID:    "turn-terminal",
+				Kind:      ThreadDetailEventToolResult,
+				CreatedAt: start.Add(10 * time.Second),
+				Message: &ThreadDetailMessage{Role: "tool", Activity: &observation.ActivityPresentation{
+					Description: "Command completed",
+					Chips:       []observation.ActivityChip{{Kind: "duration_ms", Label: "duration", Value: "10000 ms", Tone: "neutral"}},
+					Payload: map[string]any{
+						"duration_ms": int64(10_000),
+						"exit_code":   0,
+						"status":      "success",
+					},
+				}},
+				ToolResult: &ThreadDetailToolResult{
+					CallID:   "exec-1",
+					ToolName: "terminal.exec",
+					Status:   string(observation.ActivityStatusSuccess),
+				},
+			},
+		},
+	})
+	if len(projection.Segments) != 1 || projection.Segments[0].ActivityTimeline == nil {
+		t.Fatalf("segments = %#v", projection.Segments)
+	}
+	timeline := projection.Segments[0].ActivityTimeline
+	if err := observation.ValidateActivityTimeline(*timeline); err != nil {
+		t.Fatalf("activity invalid: %v", err)
+	}
+	if len(timeline.Items) != 1 {
+		t.Fatalf("items = %#v", timeline.Items)
+	}
+	item := timeline.Items[0]
+	if item.Label != "sleep 10s" ||
+		item.Description != "Command completed" ||
+		item.Payload["command"] != "sleep 10s" ||
+		item.Payload["exit_code"] != 0 ||
+		item.EndedAtUnixMS-item.StartedAtUnixMS != 10_000 {
+		t.Fatalf("item = %#v", item)
+	}
+}
+
 func TestProjectThreadTurnPreservesActivityAttentionSummary(t *testing.T) {
 	now := time.Unix(200, 0)
 	projection := ProjectThreadTurn(ProjectThreadTurnRequest{

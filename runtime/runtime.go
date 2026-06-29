@@ -452,11 +452,12 @@ type ThreadDetailEvent struct {
 }
 
 type ThreadDetailMessage struct {
-	Role      string `json:"role,omitempty"`
-	Kind      string `json:"kind,omitempty"`
-	Preview   string `json:"preview,omitempty"`
-	Content   string `json:"content,omitempty"`
-	Reasoning string `json:"reasoning,omitempty"`
+	Role      string                            `json:"role,omitempty"`
+	Kind      string                            `json:"kind,omitempty"`
+	Preview   string                            `json:"preview,omitempty"`
+	Content   string                            `json:"content,omitempty"`
+	Reasoning string                            `json:"reasoning,omitempty"`
+	Activity  *observation.ActivityPresentation `json:"activity,omitempty"`
 }
 
 type ThreadDetailToolCall struct {
@@ -666,32 +667,33 @@ type EventSink interface {
 }
 
 type Event struct {
-	Type            string                            `json:"type"`
-	TraceID         TraceID                           `json:"trace_id,omitempty"`
-	RunID           RunID                             `json:"run_id,omitempty"`
-	ThreadID        ThreadID                          `json:"thread_id,omitempty"`
-	TurnID          TurnID                            `json:"turn_id,omitempty"`
-	Step            int                               `json:"step,omitempty"`
-	Provider        string                            `json:"provider,omitempty"`
-	Model           string                            `json:"model,omitempty"`
-	Message         string                            `json:"message,omitempty"`
-	Result          string                            `json:"result,omitempty"`
-	Error           string                            `json:"error,omitempty"`
-	ToolID          string                            `json:"tool_id,omitempty"`
-	ToolName        string                            `json:"tool_name,omitempty"`
-	ToolKind        string                            `json:"tool_kind,omitempty"`
-	ArgsHash        string                            `json:"args_hash,omitempty"`
-	DurationMS      int64                             `json:"duration_ms,omitempty"`
-	FinishReason    string                            `json:"finish_reason,omitempty"`
-	Activity        *observation.ActivityPresentation `json:"activity,omitempty"`
-	Stream          *StreamObservation                `json:"stream,omitempty"`
-	Committed       *ThreadDetailEvent                `json:"committed,omitempty"`
-	ContextStatus   *observation.ContextStatus        `json:"context_status,omitempty"`
-	Compaction      *observation.CompactionEvent      `json:"compaction,omitempty"`
-	CompactionDebug *observation.CompactionDebugEvent `json:"compaction_debug,omitempty"`
-	Sources         []SourceRef                       `json:"sources,omitempty"`
-	Metadata        map[string]any                    `json:"metadata,omitempty"`
-	Timestamp       time.Time                         `json:"timestamp,omitempty"`
+	Type             string                            `json:"type"`
+	TraceID          TraceID                           `json:"trace_id,omitempty"`
+	RunID            RunID                             `json:"run_id,omitempty"`
+	ThreadID         ThreadID                          `json:"thread_id,omitempty"`
+	TurnID           TurnID                            `json:"turn_id,omitempty"`
+	Step             int                               `json:"step,omitempty"`
+	Provider         string                            `json:"provider,omitempty"`
+	Model            string                            `json:"model,omitempty"`
+	Message          string                            `json:"message,omitempty"`
+	Result           string                            `json:"result,omitempty"`
+	Error            string                            `json:"error,omitempty"`
+	ToolID           string                            `json:"tool_id,omitempty"`
+	ToolName         string                            `json:"tool_name,omitempty"`
+	ToolKind         string                            `json:"tool_kind,omitempty"`
+	ArgsHash         string                            `json:"args_hash,omitempty"`
+	DurationMS       int64                             `json:"duration_ms,omitempty"`
+	FinishReason     string                            `json:"finish_reason,omitempty"`
+	Activity         *observation.ActivityPresentation `json:"activity,omitempty"`
+	ActivityTimeline *observation.ActivityTimeline     `json:"activity_timeline,omitempty"`
+	Stream           *StreamObservation                `json:"stream,omitempty"`
+	Committed        *ThreadDetailEvent                `json:"committed,omitempty"`
+	ContextStatus    *observation.ContextStatus        `json:"context_status,omitempty"`
+	Compaction       *observation.CompactionEvent      `json:"compaction,omitempty"`
+	CompactionDebug  *observation.CompactionDebugEvent `json:"compaction_debug,omitempty"`
+	Sources          []SourceRef                       `json:"sources,omitempty"`
+	Metadata         map[string]any                    `json:"metadata,omitempty"`
+	Timestamp        time.Time                         `json:"timestamp,omitempty"`
 }
 
 type StreamObservationType string
@@ -1614,6 +1616,9 @@ func subAgentActivityTimeline(meta observation.ActivityRunMeta, snapshots []agen
 		endedAt := int64(0)
 		if subAgentActivityTerminal(snapshot.Status) {
 			endedAt = activityTimeUnixMS(snapshot.UpdatedAt, nowMS)
+			if endedAt < startedAt {
+				endedAt = startedAt
+			}
 		}
 		title := firstRuntimeNonEmpty(strings.TrimSpace(snapshot.TaskName), strings.TrimSpace(snapshot.Path), strings.TrimSpace(snapshot.ThreadID), "Subagent")
 		description := firstRuntimeNonEmpty(strings.TrimSpace(snapshot.LastMessage), strings.TrimSpace(string(snapshot.Status)))
@@ -1848,7 +1853,14 @@ func threadDetailMessage(in *agentharness.SubAgentDetailMessage) *ThreadDetailMe
 	if in == nil {
 		return nil
 	}
-	return &ThreadDetailMessage{Role: in.Role, Kind: in.Kind, Preview: in.Preview, Content: in.Content, Reasoning: in.Reasoning}
+	return &ThreadDetailMessage{
+		Role:      in.Role,
+		Kind:      in.Kind,
+		Preview:   in.Preview,
+		Content:   in.Content,
+		Reasoning: in.Reasoning,
+		Activity:  cloneActivityPresentation(in.Activity),
+	}
 }
 
 func threadDetailToolCall(in *agentharness.SubAgentDetailToolCall) *ThreadDetailToolCall {
@@ -2218,6 +2230,10 @@ func newRuntimeEventSink(sink EventSink) runtimeEventSink {
 }
 
 func (s runtimeEventSink) Emit(ev event.Event) {
+	s.EmitWithActivityTimeline(ev, nil)
+}
+
+func (s runtimeEventSink) EmitWithActivityTimeline(ev event.Event, timeline *observation.ActivityTimeline) {
 	if s.sink == nil {
 		return
 	}
@@ -2225,7 +2241,9 @@ func (s runtimeEventSink) Emit(ev event.Event) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 	}
-	s.sink.EmitEvent(runtimeEvent(ev))
+	out := runtimeEvent(ev)
+	out.ActivityTimeline = observation.CloneActivityTimeline(timeline)
+	s.sink.EmitEvent(out)
 }
 
 func runtimeEvent(ev event.Event) Event {
@@ -2749,22 +2767,53 @@ func cloneActivityPresentation(in *observation.ActivityPresentation) *observatio
 type runtimeActivityEventRecorder struct {
 	mu     sync.Mutex
 	events []observation.Event
-	sink   event.Sink
+	sink   runtimeEventSink
 }
 
 func (r *runtimeActivityEventRecorder) Emit(ev event.Event) {
+	observed := runtimeObservationEvent(ev)
+	var timeline *observation.ActivityTimeline
 	r.mu.Lock()
-	r.events = append(r.events, runtimeObservationEvent(ev))
-	r.mu.Unlock()
-	if r.sink != nil {
-		r.sink.Emit(ev)
+	r.events = append(r.events, observed)
+	if runtimeActivityTimelineEvent(ev.Type) {
+		built := observation.BuildActivityTimeline(observation.ActivityRunMeta{
+			RunID:    observed.RunID,
+			ThreadID: observed.ThreadID,
+			TurnID:   observed.TurnID,
+			TraceID:  observed.TraceID,
+		}, r.events, time.Now().UnixMilli())
+		if len(built.Items) > 0 {
+			timeline = &built
+		}
 	}
+	r.mu.Unlock()
+	r.sink.EmitWithActivityTimeline(ev, timeline)
 }
 
 func (r *runtimeActivityEventRecorder) Snapshot() []observation.Event {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]observation.Event(nil), r.events...)
+}
+
+func runtimeActivityTimelineEvent(typ event.Type) bool {
+	switch typ {
+	case event.ToolCall,
+		event.ToolResult,
+		event.ToolApprovalRequested,
+		event.ToolApprovalApproved,
+		event.ToolApprovalRejected,
+		event.ToolApprovalTimedOut,
+		event.ToolApprovalCanceled,
+		event.HostedToolCall,
+		event.HostedToolResult,
+		event.ControlSignal,
+		event.BudgetExceeded,
+		event.RunEnd:
+		return true
+	default:
+		return false
+	}
 }
 
 func safeMetadata(in any) map[string]any {

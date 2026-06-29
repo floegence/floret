@@ -298,8 +298,11 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
 			state.item.Kind = firstNonEmptyActivityKind(state.item.Kind, activityToolKind(ev))
 			state.item.EndedAtUnixMS = observedAt
-			if state.item.StartedAtUnixMS == 0 && ev.DurationMS > 0 && observedAt > ev.DurationMS {
-				state.item.StartedAtUnixMS = observedAt - ev.DurationMS
+			if ev.DurationMS > 0 && observedAt > ev.DurationMS {
+				durationStart := observedAt - ev.DurationMS
+				if state.item.StartedAtUnixMS == 0 || state.item.StartedAtUnixMS > durationStart {
+					state.item.StartedAtUnixMS = durationStart
+				}
 			}
 			resultStatus := activityMetadataValue(ev, "tool_result_status")
 			if activityEventHasError(ev) || resultStatus == string(ActivityStatusError) {
@@ -504,6 +507,9 @@ func ValidateActivityTimeline(timeline ActivityTimeline) error {
 		}
 		if err := validateActivitySeverity(item.Severity); err != nil {
 			return fmt.Errorf("item %q severity: %w", item.ItemID, err)
+		}
+		if item.StartedAtUnixMS > 0 && item.EndedAtUnixMS > 0 && item.EndedAtUnixMS < item.StartedAtUnixMS {
+			return fmt.Errorf("item %q ended_at_unix_ms must not be before started_at_unix_ms", item.ItemID)
 		}
 		for _, reason := range item.AttentionReasons {
 			if err := validateActivityAttentionReason(reason); err != nil {

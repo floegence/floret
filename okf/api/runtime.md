@@ -160,6 +160,18 @@ provider turn until the host reports a terminal outcome through
 projected as a `tool_result` detail event, so it updates activity without
 entering provider-visible history.
 
+`runtime.Event.ActivityTimeline` is Floret's live projection for tool,
+approval, control, budget, and run-end lifecycle facts. It is generated from the
+same sanitized observation events used for terminal `TurnResult` activity, so a
+host can render a running tool row before the tool result arrives and then
+replace that row with the terminal projection. Tool call and tool result detail
+entries preserve the original lifecycle event time rather than the later batch
+append time; `ProjectThreadTurn` uses those event times plus result duration
+facts to keep final item intervals consistent. Invocation presentation stored
+on a tool call message is merged with result presentation for the same tool id,
+so final rows keep command labels and payload while adding terminal result
+chips and payload fields.
+
 Terminal turn results, including cancelled turns, still return a bounded
 `ThreadTurnProjection`. Cancelled or failed terminal markers settle unresolved
 tool and approval activity in Floret's projection before the result is returned,

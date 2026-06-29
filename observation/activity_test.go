@@ -338,6 +338,69 @@ func TestBuildActivityTimelineMergesExplicitActivityPresentation(t *testing.T) {
 	}
 }
 
+func TestBuildActivityTimelineUsesResultDurationWhenCallTimestampIsLate(t *testing.T) {
+	end := time.UnixMilli(1_700_000_020_000)
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-late-call"}, []Event{
+		{
+			Type:       EventTypeToolCall,
+			RunID:      "run-late-call",
+			ToolID:     "exec-1",
+			ToolName:   "terminal.exec",
+			ToolKind:   "local",
+			ObservedAt: end.Add(-2 * time.Millisecond),
+			Activity: &ActivityPresentation{
+				Label:    "sleep 10s",
+				Renderer: ActivityRendererTerminal,
+				Payload:  map[string]any{"command": "sleep 10s"},
+			},
+		},
+		{
+			Type:       EventTypeToolResult,
+			RunID:      "run-late-call",
+			ToolID:     "exec-1",
+			ToolName:   "terminal.exec",
+			ToolKind:   "local",
+			DurationMS: 10_039,
+			Metadata:   map[string]any{"tool_result_status": string(ActivityStatusSuccess)},
+			ObservedAt: end,
+		},
+	}, end.UnixMilli())
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("timeline should validate: %v", err)
+	}
+	item := activityTestItemByToolID(timeline, "exec-1")
+	if item.Label != "sleep 10s" || item.Payload["command"] != "sleep 10s" {
+		t.Fatalf("presentation = %#v", item)
+	}
+	if got := item.EndedAtUnixMS - item.StartedAtUnixMS; got != 10_039 {
+		t.Fatalf("duration = %d, want 10039: %#v", got, item)
+	}
+}
+
+func TestValidateActivityTimelineRejectsEndedBeforeStarted(t *testing.T) {
+	timeline := ActivityTimeline{
+		SchemaVersion: ActivityTimelineSchemaVersion,
+		Summary: ActivitySummary{
+			Status:   ActivityStatusError,
+			Severity: ActivitySeverityError,
+			Counts:   ActivityCounts{Error: 1},
+		},
+		Items: []ActivityItem{{
+			ItemID:          "tool:exec-1",
+			ToolID:          "exec-1",
+			ToolName:        "terminal.exec",
+			Kind:            ActivityKindTool,
+			Status:          ActivityStatusError,
+			Severity:        ActivitySeverityError,
+			StartedAtUnixMS: 1_700_000_010_000,
+			EndedAtUnixMS:   1_700_000_009_999,
+		}},
+	}
+	if err := ValidateActivityTimeline(timeline); err == nil {
+		t.Fatal("ValidateActivityTimeline should reject ended_at before started_at")
+	}
+}
+
 func TestBuildActivityTimelineSummarizesErrorsAndHostedResults(t *testing.T) {
 	start := time.UnixMilli(2_000)
 	timeline := BuildActivityTimeline(ActivityRunMeta{}, []Event{

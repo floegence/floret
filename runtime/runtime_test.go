@@ -423,6 +423,162 @@ func TestHostModelGatewayPreservesTextAroundToolCalls(t *testing.T) {
 	}
 }
 
+func TestHostEmitsActivityTimelineForToolLifecycle(t *testing.T) {
+	ctx := context.Background()
+	rec := &runtimeEventRecorder{}
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		events := make(chan ModelEvent, 3)
+		switch req.Step {
+		case 1:
+			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{
+				ID:   "exec-1",
+				Name: "terminal.exec",
+				Args: `{"text":"sleep 10s"}`,
+			}}}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+		default:
+			events <- ModelEvent{Type: ModelEventDelta, Text: "done"}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+		}
+		close(events)
+		return events, nil
+	})
+	reg := tools.NewRegistry()
+	if err := reg.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{
+			Name:        "terminal.exec",
+			InputSchema: runtimeEchoSchema(),
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+			Activity: func(inv tools.Invocation[any]) (*observation.ActivityPresentation, error) {
+				args, ok := inv.Args.(runtimeEchoArgs)
+				if !ok {
+					return nil, fmt.Errorf("unexpected args type %T", inv.Args)
+				}
+				return &observation.ActivityPresentation{
+					Label:    args.Text,
+					Renderer: observation.ActivityRendererTerminal,
+					Payload:  map[string]any{"command": args.Text},
+				}, nil
+			},
+		},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			time.Sleep(25 * time.Millisecond)
+			return tools.Result{
+				Text: "ok",
+				Activity: &observation.ActivityPresentation{
+					Description: "Command completed",
+					Payload: map[string]any{
+						"exit_code":   0,
+						"duration_ms": int64(25),
+					},
+				},
+			}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+		},
+		ModelGateway: gateway,
+		Tools:        reg,
+		Sink:         rec,
+		IDGenerator:  deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: "run"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runningIndex, successIndex := -1, -1
+	var runningItem, successItem observation.ActivityItem
+	for index, ev := range rec.events {
+		if ev.ActivityTimeline == nil || len(ev.ActivityTimeline.Items) == 0 {
+			continue
+		}
+		item := ev.ActivityTimeline.Items[0]
+		if item.ToolID != "exec-1" {
+			continue
+		}
+		switch item.Status {
+		case observation.ActivityStatusRunning:
+			if runningIndex < 0 {
+				runningIndex = index
+				runningItem = item
+			}
+		case observation.ActivityStatusSuccess:
+			successIndex = index
+			successItem = item
+		}
+	}
+	if runningIndex < 0 || successIndex < 0 || runningIndex >= successIndex {
+		t.Fatalf("activity timeline event order running=%d success=%d events=%#v", runningIndex, successIndex, rec.events)
+	}
+	if runningItem.Label != "sleep 10s" || runningItem.Payload["command"] != "sleep 10s" || runningItem.EndedAtUnixMS != 0 {
+		t.Fatalf("running item = %#v", runningItem)
+	}
+	if successItem.Label != "sleep 10s" ||
+		successItem.Payload["command"] != "sleep 10s" ||
+		successItem.Payload["exit_code"] != 0 ||
+		successItem.EndedAtUnixMS < successItem.StartedAtUnixMS {
+		t.Fatalf("success item = %#v", successItem)
+	}
+
+	detail, err := host.ListThreadDetailEvents(ctx, ListThreadDetailEventsRequest{ThreadID: "thread", IncludeRaw: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var callDetail, resultDetail *ThreadDetailEvent
+	for i := range detail.Events {
+		ev := &detail.Events[i]
+		switch ev.Kind {
+		case ThreadDetailEventToolCall:
+			callDetail = ev
+		case ThreadDetailEventToolResult:
+			resultDetail = ev
+		}
+	}
+	if callDetail == nil || resultDetail == nil {
+		t.Fatalf("detail events missing tool call/result: %#v", detail.Events)
+	}
+	if resultDetail.CreatedAt.Sub(callDetail.CreatedAt) < 10*time.Millisecond {
+		t.Fatalf("detail timestamps did not preserve tool runtime: call=%s result=%s", callDetail.CreatedAt, resultDetail.CreatedAt)
+	}
+	if callDetail.Message == nil || callDetail.Message.Activity == nil || callDetail.Message.Activity.Payload["command"] != "sleep 10s" {
+		t.Fatalf("call detail activity = %#v", callDetail.Message)
+	}
+
+	var projected *observation.ActivityTimeline
+	for i := range result.Projection.Segments {
+		if result.Projection.Segments[i].ActivityTimeline != nil {
+			projected = result.Projection.Segments[i].ActivityTimeline
+			break
+		}
+	}
+	if projected == nil || len(projected.Items) != 1 {
+		t.Fatalf("projection activity = %#v", result.Projection)
+	}
+	projectedItem := projected.Items[0]
+	if projectedItem.Label != "sleep 10s" ||
+		projectedItem.Payload["command"] != "sleep 10s" ||
+		projectedItem.EndedAtUnixMS-projectedItem.StartedAtUnixMS < 10 {
+		t.Fatalf("projected item = %#v", projectedItem)
+	}
+}
+
 func TestHostToolSurfaceProviderRefreshesGatewayRequests(t *testing.T) {
 	var requests []ModelRequest
 	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {

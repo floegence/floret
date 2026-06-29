@@ -236,11 +236,12 @@ type SubAgentDetailEvent struct {
 }
 
 type SubAgentDetailMessage struct {
-	Role      string `json:"role,omitempty"`
-	Kind      string `json:"kind,omitempty"`
-	Preview   string `json:"preview,omitempty"`
-	Content   string `json:"content,omitempty"`
-	Reasoning string `json:"reasoning,omitempty"`
+	Role      string                            `json:"role,omitempty"`
+	Kind      string                            `json:"kind,omitempty"`
+	Preview   string                            `json:"preview,omitempty"`
+	Content   string                            `json:"content,omitempty"`
+	Reasoning string                            `json:"reasoning,omitempty"`
+	Activity  *observation.ActivityPresentation `json:"activity,omitempty"`
 }
 
 type SubAgentDetailToolCall struct {
@@ -1048,13 +1049,15 @@ func subAgentDetailApproval(metadata map[string]string) *SubAgentDetailApproval 
 }
 
 func subAgentDetailMessage(msg session.Message, includeRaw bool) *SubAgentDetailMessage {
-	if msg.Role == "" && msg.Kind == "" && msg.Content == "" && msg.Reasoning == "" {
+	activity := observationActivityPresentation(msg.Activity)
+	if msg.Role == "" && msg.Kind == "" && msg.Content == "" && msg.Reasoning == "" && activity == nil {
 		return nil
 	}
 	out := &SubAgentDetailMessage{
-		Role:    string(msg.Role),
-		Kind:    string(msg.Kind),
-		Preview: safeSubAgentDetailPreview(msg.Content, 500),
+		Role:     string(msg.Role),
+		Kind:     string(msg.Kind),
+		Preview:  safeSubAgentDetailPreview(msg.Content, 500),
+		Activity: activity,
 	}
 	if includeRaw {
 		out.Content = msg.Content

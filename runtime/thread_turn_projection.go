@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"sort"
 	"strings"
 	"time"
@@ -451,6 +452,9 @@ func threadTurnProjectionObservationEvent(meta observation.ActivityRunMeta, deta
 		base.ToolID = strings.TrimSpace(detail.ToolCall.ID)
 		base.ToolName = strings.TrimSpace(detail.ToolCall.Name)
 		base.ToolKind = "local"
+		if detail.Message != nil {
+			base.Activity = threadTurnProjectionMergeActivityPresentation(base.Activity, detail.Message.Activity)
+		}
 		if detail.Message != nil && strings.TrimSpace(detail.Message.Kind) == "control_signal" {
 			base.Type = observation.EventTypeControlSignal
 			base.ToolKind = "control"
@@ -467,6 +471,10 @@ func threadTurnProjectionObservationEvent(meta observation.ActivityRunMeta, deta
 		base.ToolName = strings.TrimSpace(detail.ToolResult.ToolName)
 		base.ToolKind = "local"
 		base.Error = strings.TrimSpace(detail.Error)
+		if detail.Message != nil {
+			base.Activity = threadTurnProjectionMergeActivityPresentation(base.Activity, detail.Message.Activity)
+		}
+		base.DurationMS = threadTurnProjectionActivityDurationMS(base.Activity)
 		if base.Error == "" && strings.TrimSpace(detail.ToolResult.Status) == string(observation.ActivityStatusError) {
 			base.Error = "tool_result_error"
 		}
@@ -571,6 +579,74 @@ func threadTurnProjectionActivityPresentationFromItem(item observation.ActivityI
 		TargetRefs:  append([]observation.ActivityTargetRef(nil), item.TargetRefs...),
 		Payload:     cloneProjectionActivityPayload(item.Payload),
 	}
+}
+
+func threadTurnProjectionMergeActivityPresentation(left, right *observation.ActivityPresentation) *observation.ActivityPresentation {
+	if left == nil {
+		return cloneActivityPresentation(right)
+	}
+	if right == nil {
+		return cloneActivityPresentation(left)
+	}
+	out := cloneActivityPresentation(left)
+	if value := strings.TrimSpace(right.Label); value != "" {
+		out.Label = value
+	}
+	if value := strings.TrimSpace(right.Description); value != "" {
+		out.Description = value
+	}
+	if right.Renderer != "" {
+		out.Renderer = right.Renderer
+	}
+	if len(right.Chips) > 0 {
+		out.Chips = append([]observation.ActivityChip(nil), right.Chips...)
+	}
+	if len(right.TargetRefs) > 0 {
+		out.TargetRefs = append([]observation.ActivityTargetRef(nil), right.TargetRefs...)
+	}
+	if len(right.Payload) > 0 {
+		payload := cloneProjectionActivityPayload(out.Payload)
+		if payload == nil {
+			payload = map[string]any{}
+		}
+		for key, value := range right.Payload {
+			if strings.TrimSpace(key) != "" && value != nil {
+				payload[key] = value
+			}
+		}
+		out.Payload = payload
+	}
+	return out
+}
+
+func threadTurnProjectionActivityDurationMS(activity *observation.ActivityPresentation) int64 {
+	if activity == nil || len(activity.Payload) == 0 {
+		return 0
+	}
+	value, ok := activity.Payload["duration_ms"]
+	if !ok {
+		return 0
+	}
+	switch typed := value.(type) {
+	case int:
+		if typed > 0 {
+			return int64(typed)
+		}
+	case int64:
+		if typed > 0 {
+			return typed
+		}
+	case float64:
+		if typed > 0 {
+			return int64(typed)
+		}
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return 0
 }
 
 func threadTurnProjectionAnyMetadata(in map[string]string) map[string]any {
