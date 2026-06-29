@@ -53,6 +53,9 @@ continuation state, and lifecycle observations.
 * `SettlePendingTool` records a host-owned pending tool outcome as a
   detail/activity event for the original turn without creating provider-visible
   context or running another model turn.
+* `tools.PendingToolResult.Handle` is the provider-visible continuation token.
+  Pending metadata remains observation-only and is not rendered as a model-facing
+  tool result field.
 * `DeleteThread` removes a Floret-owned thread tree from the engine store,
   including child threads, prompt cache scopes, and artifacts.
 * `ErrThreadNotFound` and `ErrSubAgentNotFound` are public sentinel errors for

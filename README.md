@@ -338,6 +338,9 @@ terminal process, watcher, or remote task. Those handlers can return
 normal provider-visible tool result containing `<pending_tool_result>`, marks the
 activity as running, and exposes pending metadata for observation. It does not
 own the process, poll the handle, store a task registry, or decide cancellation.
+`PendingToolResult.Handle` is the only continuation token rendered in that
+provider-visible result. Metadata is observation-only; if the model should pass a
+token to a later host tool call, the host must make that token the handle.
 
 When the host observes completion, failure, or cancellation, it calls
 `runtime.Host.CompletePendingTool`. Floret appends a host-authored user follow-up

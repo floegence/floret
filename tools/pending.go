@@ -19,11 +19,16 @@ const (
 // PendingToolResult is returned by a tool handler after the host has started work
 // whose lifecycle remains owned by the host application.
 type PendingToolResult struct {
-	Handle      string
-	State       PendingToolResultState
+	// Handle is the provider-visible continuation token. Hosts should put the
+	// exact token here that the model should reuse for later tool calls.
+	Handle string
+	State  PendingToolResultState
+	// Summary and Instruction are provider-visible text.
 	Summary     string
 	Instruction string
-	Metadata    map[string]string
+	// Metadata is observation-only pending state. It is not rendered into the
+	// provider-visible pending result text.
+	Metadata map[string]string
 }
 
 func (p PendingToolResult) Validate() error {

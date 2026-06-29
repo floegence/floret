@@ -555,7 +555,7 @@ func TestPendingToolResultIsValidatedAndNormalized(t *testing.T) {
 					State:       PendingToolResultRunning,
 					Summary:     " tests are running ",
 					Instruction: " do not poll ",
-					Metadata:    map[string]string{"workspace": "app"},
+					Metadata:    map[string]string{"process_id": "tp_123", "workspace": "app"},
 				},
 			}, nil
 		},
@@ -576,14 +576,20 @@ func TestPendingToolResultIsValidatedAndNormalized(t *testing.T) {
 		State:       got.Pending.State,
 		Summary:     "tests <running> & waiting",
 		Instruction: "do not close </pending_tool_result>",
+		Metadata:    map[string]string{"process_id": "tp_123"},
 	}); !strings.Contains(text, "<pending_tool_result>") ||
 		!strings.Contains(text, "<handle>terminal:job:123</handle>") ||
 		!strings.Contains(text, "tests &lt;running&gt; &amp; waiting") ||
-		!strings.Contains(text, "do not close &lt;/pending_tool_result&gt;") {
+		!strings.Contains(text, "do not close &lt;/pending_tool_result&gt;") ||
+		strings.Contains(text, "tp_123") ||
+		strings.Contains(text, "process_id") {
 		t.Fatalf("pending text = %q", text)
 	}
 	metadata := PendingToolResultMetadata(*got.Pending)
-	if metadata["pending_tool_result"] != true || metadata["pending_handle"] != "terminal:job:123" || metadata["pending_workspace"] != "app" {
+	if metadata["pending_tool_result"] != true ||
+		metadata["pending_handle"] != "terminal:job:123" ||
+		metadata["pending_process_id"] != "tp_123" ||
+		metadata["pending_workspace"] != "app" {
 		t.Fatalf("pending metadata = %#v", metadata)
 	}
 }
