@@ -215,10 +215,10 @@ func TestProjectThreadTurnKeepsRequestedApprovalWaitingAfterSuccessfulTurnMarker
 				CreatedAt: now,
 				Approval:  &ThreadDetailApproval{State: "requested", ToolID: "exec-1", ToolName: "terminal.exec"},
 				ActivityTimeline: projectionSingleItemTimeline("run-waiting-approval", "thread-waiting-approval", "turn-waiting-approval", observation.ActivityItem{
-					ItemID:           "approval:exec-1",
+					ItemID:           "tool:exec-1",
 					ToolID:           "exec-1",
 					ToolName:         "terminal.exec",
-					Kind:             observation.ActivityKindApproval,
+					Kind:             observation.ActivityKindTool,
 					Status:           observation.ActivityStatusWaiting,
 					Severity:         observation.ActivitySeverityBlocking,
 					RequiresApproval: true,
@@ -283,10 +283,10 @@ func TestProjectThreadTurnSettlesApprovalAndToolFromDetailEvents(t *testing.T) {
 				CreatedAt: now,
 				Approval:  &ThreadDetailApproval{State: "requested", ToolID: "call-1", ToolName: "terminal.exec"},
 				ActivityTimeline: projectionSingleItemTimeline("run-settled", "thread-settled", "turn-settled", observation.ActivityItem{
-					ItemID:           "approval:call-1",
+					ItemID:           "tool:call-1",
 					ToolID:           "call-1",
 					ToolName:         "terminal.exec",
-					Kind:             observation.ActivityKindApproval,
+					Kind:             observation.ActivityKindTool,
 					Status:           observation.ActivityStatusWaiting,
 					Severity:         observation.ActivitySeverityBlocking,
 					RequiresApproval: true,
@@ -346,13 +346,14 @@ func TestProjectThreadTurnSettlesApprovalAndToolFromDetailEvents(t *testing.T) {
 		t.Fatalf("projection segments = %#v", projection.Segments)
 	}
 	timeline := projection.Segments[0].ActivityTimeline
-	if timeline == nil || len(timeline.Items) != 2 {
+	if timeline == nil || len(timeline.Items) != 1 {
 		t.Fatalf("activity segment = %#v", projection.Segments[0])
 	}
 	if timeline.Summary.Status != observation.ActivityStatusSuccess ||
 		timeline.Summary.Counts.Waiting != 0 ||
 		timeline.Summary.Counts.Running != 0 ||
-		timeline.Summary.Counts.Success != 2 {
+		timeline.Summary.Counts.Success != 1 ||
+		timeline.Summary.Counts.Approval != 1 {
 		t.Fatalf("activity summary = %#v", timeline.Summary)
 	}
 	for _, item := range timeline.Items {
@@ -361,6 +362,9 @@ func TestProjectThreadTurnSettlesApprovalAndToolFromDetailEvents(t *testing.T) {
 		}
 		if item.Label != "curl -s https://example.test" {
 			t.Fatalf("item label=%q, want command label: %#v", item.Label, item)
+		}
+		if item.ItemID != "tool:call-1" || item.ApprovalState != "approved" || !item.RequiresApproval {
+			t.Fatalf("item should keep approval lifecycle on the tool row: %#v", item)
 		}
 	}
 	if err := observation.ValidateActivityTimeline(*timeline); err != nil {
@@ -387,10 +391,10 @@ func TestProjectThreadTurnSettlesWaitingApprovalOnFailedTurn(t *testing.T) {
 				CreatedAt: now,
 				Approval:  &ThreadDetailApproval{State: "requested", ToolID: "call-1", ToolName: "terminal.exec"},
 				ActivityTimeline: projectionSingleItemTimeline("run-failed", "thread-failed", "turn-failed", observation.ActivityItem{
-					ItemID:           "approval:call-1",
+					ItemID:           "tool:call-1",
 					ToolID:           "call-1",
 					ToolName:         "terminal.exec",
-					Kind:             observation.ActivityKindApproval,
+					Kind:             observation.ActivityKindTool,
 					Status:           observation.ActivityStatusWaiting,
 					Severity:         observation.ActivitySeverityBlocking,
 					RequiresApproval: true,

@@ -61,9 +61,12 @@ They should translate the generic snapshot into product copy and controls
 without moving product modes or UI semantics into Floret. If a host tool
 definition supplies an `ActivityPresentation`, Floret carries the sanitized
 presentation through approval requested/resolved observations and durable detail
-events so the approval activity row has the same product-projected label as the
-tool invocation. Floret still treats that presentation as opaque display data;
-tool-specific labels, renderers, and payload fields remain host-owned.
+events so the tool activity item keeps the same product-projected label while it
+moves through requested, approved, denied, and tool-result states. Ordinary tool
+approvals do not create a second visible activity row; approval is part of the
+tool invocation lifecycle. Floret still treats that presentation as opaque
+display data; tool-specific labels, renderers, and payload fields remain
+host-owned.
 
 # Pending Tool Work
 

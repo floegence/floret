@@ -27,6 +27,11 @@ items. When a sanitized `run_end` observation is present, cancelled runs produce
 successful run end leaves host-owned `pending_tool_result` activity running
 until a later terminal tool-result settlement arrives, and leaves requested
 tool approvals in `waiting` until an explicit approval resolution arrives.
+Tool approval events are lifecycle updates on the tool activity item itself:
+`tool_call`, approval request/resolution, and `tool_result` for the same tool id
+collapse into one item instead of a separate approval row. A requested approval
+therefore keeps the tool item `waiting`, blocking, and attention-worthy; approval
+or denial then advances that same item.
 Terminal tool-result settlements remove running-only pending metadata, payload
 fields, and chips so downstream hosts do not carry stale active state into
 terminal UI.

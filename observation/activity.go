@@ -29,11 +29,10 @@ const (
 
 	ActivityTimelineSchemaVersion = 1
 
-	ActivityKindTool     ActivityKind = "tool"
-	ActivityKindHosted   ActivityKind = "hosted_tool"
-	ActivityKindApproval ActivityKind = "approval"
-	ActivityKindControl  ActivityKind = "control"
-	ActivityKindBudget   ActivityKind = "budget"
+	ActivityKindTool    ActivityKind = "tool"
+	ActivityKindHosted  ActivityKind = "hosted_tool"
+	ActivityKindControl ActivityKind = "control"
+	ActivityKindBudget  ActivityKind = "budget"
 )
 
 type ActivityKind string
@@ -332,12 +331,13 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			state.lastSeen = observedAt
 		case EventTypeToolApprovalRequested:
 			noteActivityTime(observedAt, &firstAt, &lastAt)
-			state := ensureActivityItem(items, &order, activityApprovalKey(ev, index), len(order), func() ActivityItem {
+			key := activityToolKey(ev, index)
+			state := ensureActivityItem(items, &order, key, len(order), func() ActivityItem {
 				return ActivityItem{
-					ItemID:           activityApprovalKey(ev, index),
+					ItemID:           key,
 					ToolID:           strings.TrimSpace(ev.ToolID),
 					ToolName:         strings.TrimSpace(ev.ToolName),
-					Kind:             ActivityKindApproval,
+					Kind:             activityToolKind(ev),
 					Status:           ActivityStatusWaiting,
 					Severity:         ActivitySeverityBlocking,
 					RequiresApproval: true,
@@ -346,6 +346,12 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 					Metadata:         activityMetadata(ev),
 				}
 			})
+			state.item.ToolID = firstNonEmpty(state.item.ToolID, strings.TrimSpace(ev.ToolID))
+			state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
+			state.item.Kind = firstNonEmptyActivityKind(state.item.Kind, activityToolKind(ev))
+			if state.item.StartedAtUnixMS == 0 {
+				state.item.StartedAtUnixMS = observedAt
+			}
 			state.item.Status = ActivityStatusWaiting
 			state.item.Severity = ActivitySeverityBlocking
 			state.item.RequiresApproval = true
@@ -356,38 +362,47 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			state.lastSeen = observedAt
 		case EventTypeToolApprovalApproved, EventTypeToolApprovalRejected, EventTypeToolApprovalTimedOut, EventTypeToolApprovalCanceled:
 			noteActivityTime(observedAt, &firstAt, &lastAt)
-			key := activityApprovalKey(ev, index)
+			key := activityToolKey(ev, index)
 			state := ensureActivityItem(items, &order, key, len(order), func() ActivityItem {
 				return ActivityItem{
 					ItemID:           key,
 					ToolID:           strings.TrimSpace(ev.ToolID),
 					ToolName:         strings.TrimSpace(ev.ToolName),
-					Kind:             ActivityKindApproval,
+					Kind:             activityToolKind(ev),
 					Status:           ActivityStatusPending,
 					Severity:         ActivitySeverityNormal,
 					RequiresApproval: true,
 					StartedAtUnixMS:  observedAt,
 				}
 			})
-			state.item.EndedAtUnixMS = observedAt
+			state.item.ToolID = firstNonEmpty(state.item.ToolID, strings.TrimSpace(ev.ToolID))
+			state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
+			state.item.Kind = firstNonEmptyActivityKind(state.item.Kind, activityToolKind(ev))
+			if state.item.StartedAtUnixMS == 0 {
+				state.item.StartedAtUnixMS = observedAt
+			}
 			state.item.RequiresApproval = true
 			switch ev.Type {
 			case EventTypeToolApprovalApproved:
-				state.item.Status = ActivityStatusSuccess
+				state.item.Status = ActivityStatusRunning
 				state.item.Severity = ActivitySeverityNormal
 				state.item.ApprovalState = "approved"
+				state.item.EndedAtUnixMS = 0
 			case EventTypeToolApprovalRejected:
 				state.item.Status = ActivityStatusError
 				state.item.Severity = ActivitySeverityError
 				state.item.ApprovalState = "rejected"
+				state.item.EndedAtUnixMS = observedAt
 			case EventTypeToolApprovalTimedOut:
 				state.item.Status = ActivityStatusError
 				state.item.Severity = ActivitySeverityBlocking
 				state.item.ApprovalState = "timed_out"
+				state.item.EndedAtUnixMS = observedAt
 			case EventTypeToolApprovalCanceled:
 				state.item.Status = ActivityStatusCanceled
 				state.item.Severity = ActivitySeverityWarning
 				state.item.ApprovalState = "canceled"
+				state.item.EndedAtUnixMS = observedAt
 			}
 			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
 			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
@@ -518,6 +533,9 @@ func ValidateActivityTimeline(timeline ActivityTimeline) error {
 				return fmt.Errorf("item %q attention reason: %w", item.ItemID, err)
 			}
 		}
+		if item.RequiresApproval && strings.TrimSpace(item.ApprovalState) == "" {
+			return fmt.Errorf("item %q approval state is required when requires_approval is true", item.ItemID)
+		}
 		if item.ApprovalState != "" {
 			if err := validateActivityApprovalState(item.ApprovalState); err != nil {
 				return fmt.Errorf("item %q approval state: %w", item.ItemID, err)
@@ -588,19 +606,6 @@ func activityToolKey(ev Event, index int) string {
 		return fmt.Sprintf("tool:%s:%d:%d", ev.ToolName, ev.Step, index)
 	}
 	return fmt.Sprintf("tool:%d:%d", ev.Step, index)
-}
-
-func activityApprovalKey(ev Event, index int) string {
-	if id := activityMetadataValue(ev, "approval_id_hash"); id != "" {
-		return "approval:" + id
-	}
-	if id := activityRawMetadataString(ev.Metadata, "approval_id"); id != "" {
-		return "approval:" + hashActivityToken(id)
-	}
-	if ev.ToolID != "" {
-		return "approval:" + ev.ToolID
-	}
-	return fmt.Sprintf("approval:%d:%d", ev.Step, index)
 }
 
 func activityControlKey(ev Event, index int) string {
@@ -1574,7 +1579,7 @@ func validateActivityStatus(status ActivityStatus) error {
 
 func validateActivityKind(kind ActivityKind) error {
 	switch kind {
-	case ActivityKindTool, ActivityKindHosted, ActivityKindApproval, ActivityKindControl, ActivityKindBudget:
+	case ActivityKindTool, ActivityKindHosted, ActivityKindControl, ActivityKindBudget:
 		return nil
 	default:
 		return errors.New("unknown activity kind")
@@ -1609,20 +1614,30 @@ func validateActivityApprovalState(state string) error {
 }
 
 func validateActivityItemApprovalLifecycle(item ActivityItem) error {
-	if item.Kind != ActivityKindApproval {
-		return errors.New("approval_state is only valid on approval items")
+	if !item.RequiresApproval {
+		return errors.New("approval_state requires requires_approval")
+	}
+	switch item.Kind {
+	case ActivityKindTool, ActivityKindHosted:
+	default:
+		return errors.New("approval_state is only valid on tool activity items")
 	}
 	switch item.ApprovalState {
 	case "requested":
 		if item.Status != ActivityStatusWaiting {
 			return fmt.Errorf("requested approval status is %q, want %q", item.Status, ActivityStatusWaiting)
 		}
+		if item.Severity != ActivitySeverityBlocking {
+			return fmt.Errorf("requested approval severity is %q, want %q", item.Severity, ActivitySeverityBlocking)
+		}
 		if item.EndedAtUnixMS != 0 {
 			return errors.New("requested approval must not be ended")
 		}
 	case "approved":
-		if item.Status != ActivityStatusSuccess {
-			return fmt.Errorf("approved approval status is %q, want %q", item.Status, ActivityStatusSuccess)
+		switch item.Status {
+		case ActivityStatusRunning, ActivityStatusSuccess, ActivityStatusError, ActivityStatusCanceled:
+		default:
+			return fmt.Errorf("approved approval status is %q, want running or terminal tool status", item.Status)
 		}
 	case "rejected", "timed_out":
 		if item.Status != ActivityStatusError {

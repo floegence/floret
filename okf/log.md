@@ -1,6 +1,8 @@
 # Floret OKF Update Log
 
 ## 2026-06-29
+* **Update**: Documented tool approval activity as a lifecycle state on the tool
+  item itself, preventing duplicate tool and approval rows for one invocation.
 * **Update**: Documented live `runtime.Event.ActivityTimeline`, event-time tool
   detail projection, and duration-consistent activity validation for tool
   lifecycle rows.

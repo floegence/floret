@@ -24,26 +24,27 @@ func TestBuildActivityTimelineProjectsToolAndApprovalState(t *testing.T) {
 	if timeline.Summary.Status != ActivityStatusWaiting || !timeline.Summary.NeedsAttention {
 		t.Fatalf("summary should wait for approval: %#v", timeline.Summary)
 	}
-	if timeline.Summary.Counts.Success != 1 || timeline.Summary.Counts.Running != 1 || timeline.Summary.Counts.Waiting != 1 || timeline.Summary.Counts.Approval != 1 {
+	if timeline.Summary.Counts.Success != 1 || timeline.Summary.Counts.Running != 0 || timeline.Summary.Counts.Waiting != 1 || timeline.Summary.Counts.Approval != 1 {
 		t.Fatalf("counts mismatch: %#v", timeline.Summary.Counts)
 	}
-	if len(timeline.Items) != 3 {
-		t.Fatalf("items = %d, want 3: %#v", len(timeline.Items), timeline.Items)
+	if len(timeline.Items) != 2 {
+		t.Fatalf("items = %d, want 2: %#v", len(timeline.Items), timeline.Items)
 	}
 	read := timeline.Items[0]
 	if read.Status != ActivityStatusSuccess || read.Metadata["args_hash"] != "aabbccddeeff0011" || read.Metadata["content_sha256"] != "abcdef123456" {
 		t.Fatalf("read item mismatch: %#v", read)
 	}
 	write := timeline.Items[1]
-	if write.Status != ActivityStatusRunning || !write.NeedsAttention {
-		t.Fatalf("write item should still be running while approval waits: %#v", write)
+	if write.Kind != ActivityKindTool ||
+		write.Status != ActivityStatusWaiting ||
+		write.Severity != ActivitySeverityBlocking ||
+		write.ApprovalState != "requested" ||
+		!write.RequiresApproval ||
+		!write.NeedsAttention {
+		t.Fatalf("write item should be the waiting approval tool: %#v", write)
 	}
-	approval := timeline.Items[2]
-	if approval.Status != ActivityStatusWaiting || approval.ApprovalState != "requested" || !approval.RequiresApproval {
-		t.Fatalf("approval item mismatch: %#v", approval)
-	}
-	if approval.Metadata["resources"] != "" || approval.Metadata["approval_id"] != "" || approval.Metadata["approval_id_hash"] == "" {
-		t.Fatalf("approval metadata should be allowlisted only: %#v", approval.Metadata)
+	if write.Metadata["resources"] != "" || write.Metadata["approval_id"] != "" || write.Metadata["approval_id_hash"] == "" {
+		t.Fatalf("approval metadata should be allowlisted only: %#v", write.Metadata)
 	}
 	data, err := json.Marshal(timeline)
 	if err != nil {
@@ -217,13 +218,15 @@ func TestBuildActivityTimelineKeepsRequestedApprovalWaitingAtSuccessfulRunEnd(t 
 		timeline.Summary.Counts.Approval != 1 {
 		t.Fatalf("summary should keep waiting approval: %#v", timeline.Summary)
 	}
-	approval := activityTestItemByKind(timeline, ActivityKindApproval)
-	if approval.Status != ActivityStatusWaiting ||
-		approval.Severity != ActivitySeverityBlocking ||
-		approval.ApprovalState != "requested" ||
-		approval.EndedAtUnixMS != 0 ||
-		!approval.NeedsAttention {
-		t.Fatalf("approval item should remain requested and waiting: %#v", approval)
+	item := activityTestItemByToolID(timeline, "exec-1")
+	if item.Kind != ActivityKindTool ||
+		item.Status != ActivityStatusWaiting ||
+		item.Severity != ActivitySeverityBlocking ||
+		item.ApprovalState != "requested" ||
+		item.EndedAtUnixMS != 0 ||
+		!item.RequiresApproval ||
+		!item.NeedsAttention {
+		t.Fatalf("approval tool item should remain requested and waiting: %#v", item)
 	}
 }
 
@@ -240,13 +243,15 @@ func TestBuildActivityTimelineCancelsUnresolvedApprovalAtRunEnd(t *testing.T) {
 	if timeline.Summary.Status != ActivityStatusCanceled || timeline.Summary.Counts.Waiting != 0 || timeline.Summary.Counts.Approval != 1 {
 		t.Fatalf("summary should show canceled terminal approval state: %#v", timeline.Summary)
 	}
-	approval := activityTestItemByKind(timeline, ActivityKindApproval)
-	if approval.Status != ActivityStatusCanceled ||
-		approval.Severity != ActivitySeverityWarning ||
-		approval.ApprovalState != "canceled" ||
-		approval.EndedAtUnixMS == 0 ||
-		approval.NeedsAttention {
-		t.Fatalf("approval item mismatch: %#v", approval)
+	item := activityTestItemByToolID(timeline, "exec-1")
+	if item.Kind != ActivityKindTool ||
+		item.Status != ActivityStatusCanceled ||
+		item.Severity != ActivitySeverityWarning ||
+		item.ApprovalState != "canceled" ||
+		item.EndedAtUnixMS == 0 ||
+		!item.RequiresApproval ||
+		item.NeedsAttention {
+		t.Fatalf("approval tool item mismatch: %#v", item)
 	}
 }
 
@@ -263,13 +268,83 @@ func TestBuildActivityTimelineFailsUnresolvedApprovalAtRunEnd(t *testing.T) {
 	if timeline.Summary.Status != ActivityStatusError || timeline.Summary.Counts.Waiting != 0 || timeline.Summary.Counts.Approval != 1 {
 		t.Fatalf("summary should show failed terminal approval state: %#v", timeline.Summary)
 	}
-	approval := activityTestItemByKind(timeline, ActivityKindApproval)
-	if approval.Status != ActivityStatusError ||
-		approval.Severity != ActivitySeverityError ||
-		approval.ApprovalState != "timed_out" ||
-		approval.EndedAtUnixMS == 0 ||
-		!approval.NeedsAttention {
-		t.Fatalf("approval item mismatch: %#v", approval)
+	item := activityTestItemByToolID(timeline, "exec-1")
+	if item.Kind != ActivityKindTool ||
+		item.Status != ActivityStatusError ||
+		item.Severity != ActivitySeverityError ||
+		item.ApprovalState != "timed_out" ||
+		item.EndedAtUnixMS == 0 ||
+		!item.RequiresApproval ||
+		!item.NeedsAttention {
+		t.Fatalf("approval tool item mismatch: %#v", item)
+	}
+}
+
+func TestBuildActivityTimelineKeepsApprovalLifecycleOnToolItem(t *testing.T) {
+	start := time.UnixMilli(1_700_000_002_000)
+	command := "curl -s https://example.test"
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-approved", ThreadID: "thread-approved", TurnID: "turn-approved"}, []Event{
+		{Type: EventTypeToolCall, RunID: "run-approved", ThreadID: "thread-approved", TurnID: "turn-approved", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: &ActivityPresentation{Label: command, Renderer: ActivityRendererTerminal, Payload: map[string]any{"command": command}}, ObservedAt: start},
+		{Type: EventTypeToolApprovalRequested, RunID: "run-approved", ThreadID: "thread-approved", TurnID: "turn-approved", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Metadata: map[string]any{"approval_id": "approval-1"}, ObservedAt: start.Add(10 * time.Millisecond)},
+		{Type: EventTypeToolApprovalApproved, RunID: "run-approved", ThreadID: "thread-approved", TurnID: "turn-approved", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", ObservedAt: start.Add(100 * time.Millisecond)},
+		{Type: EventTypeToolResult, RunID: "run-approved", ThreadID: "thread-approved", TurnID: "turn-approved", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", DurationMS: 500, Metadata: map[string]any{"tool_result_status": string(ActivityStatusSuccess)}, Activity: &ActivityPresentation{Description: "Command completed", Payload: map[string]any{"exit_code": 0}}, ObservedAt: start.Add(500 * time.Millisecond)},
+	}, start.Add(time.Second).UnixMilli())
+
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("timeline should validate: %v", err)
+	}
+	if len(timeline.Items) != 1 || timeline.Summary.Counts.Success != 1 || timeline.Summary.Counts.Approval != 1 {
+		t.Fatalf("timeline should contain one approved tool item: %#v", timeline)
+	}
+	item := timeline.Items[0]
+	if item.ItemID != "tool:exec-1" ||
+		item.Kind != ActivityKindTool ||
+		item.Status != ActivityStatusSuccess ||
+		item.ApprovalState != "approved" ||
+		!item.RequiresApproval ||
+		item.Label != command ||
+		item.Payload["command"] != command ||
+		item.Payload["exit_code"] != 0 ||
+		item.EndedAtUnixMS-item.StartedAtUnixMS != 500 {
+		t.Fatalf("approved tool item mismatch: %#v", item)
+	}
+}
+
+func TestBuildActivityTimelineProjectsApprovalDenialAsSingleToolItem(t *testing.T) {
+	start := time.UnixMilli(1_700_000_003_000)
+	tests := []struct {
+		name       string
+		eventType  string
+		wantStatus ActivityStatus
+		wantState  string
+	}{
+		{name: "rejected", eventType: EventTypeToolApprovalRejected, wantStatus: ActivityStatusError, wantState: "rejected"},
+		{name: "timed out", eventType: EventTypeToolApprovalTimedOut, wantStatus: ActivityStatusError, wantState: "timed_out"},
+		{name: "canceled", eventType: EventTypeToolApprovalCanceled, wantStatus: ActivityStatusCanceled, wantState: "canceled"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-denied"}, []Event{
+				{Type: EventTypeToolCall, RunID: "run-denied", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", ObservedAt: start},
+				{Type: EventTypeToolApprovalRequested, RunID: "run-denied", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", ObservedAt: start.Add(10 * time.Millisecond)},
+				{Type: tt.eventType, RunID: "run-denied", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", ObservedAt: start.Add(20 * time.Millisecond)},
+			}, start.Add(time.Second).UnixMilli())
+
+			if err := ValidateActivityTimeline(timeline); err != nil {
+				t.Fatalf("timeline should validate: %v", err)
+			}
+			if len(timeline.Items) != 1 {
+				t.Fatalf("items = %#v", timeline.Items)
+			}
+			item := timeline.Items[0]
+			if item.Kind != ActivityKindTool ||
+				item.Status != tt.wantStatus ||
+				item.ApprovalState != tt.wantState ||
+				!item.RequiresApproval ||
+				item.EndedAtUnixMS == 0 {
+				t.Fatalf("denied approval item mismatch: %#v", item)
+			}
+		})
 	}
 }
 
@@ -732,10 +807,10 @@ func TestActivityTimelineJSONWireShapeIsSnakeCase(t *testing.T) {
 			DurationMS:       123,
 		},
 		Items: []ActivityItem{{
-			ItemID:           "approval:abc12345",
+			ItemID:           "tool:tool-1",
 			ToolID:           "tool-1",
 			ToolName:         "write_file",
-			Kind:             ActivityKindApproval,
+			Kind:             ActivityKindTool,
 			Status:           ActivityStatusWaiting,
 			Severity:         ActivitySeverityBlocking,
 			NeedsAttention:   true,
@@ -750,7 +825,7 @@ func TestActivityTimelineJSONWireShapeIsSnakeCase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"schema_version":1,"run_id":"run-json","thread_id":"thread-json","turn_id":"turn-json","trace_id":"trace-json","summary":{"status":"waiting","severity":"blocking","needs_attention":true,"attention_reasons":["waiting","approval"],"total_items":1,"counts":{"waiting":1,"approval":1},"duration_ms":123},"items":[{"item_id":"approval:abc12345","tool_id":"tool-1","tool_name":"write_file","kind":"approval","status":"waiting","severity":"blocking","needs_attention":true,"attention_reasons":["waiting","approval"],"requires_approval":true,"approval_state":"requested","started_at_unix_ms":10,"metadata":{"args_hash":"abcdef1234567890","effects":"write"}}]}`
+	want := `{"schema_version":1,"run_id":"run-json","thread_id":"thread-json","turn_id":"turn-json","trace_id":"trace-json","summary":{"status":"waiting","severity":"blocking","needs_attention":true,"attention_reasons":["waiting","approval"],"total_items":1,"counts":{"waiting":1,"approval":1},"duration_ms":123},"items":[{"item_id":"tool:tool-1","tool_id":"tool-1","tool_name":"write_file","kind":"tool","status":"waiting","severity":"blocking","needs_attention":true,"attention_reasons":["waiting","approval"],"requires_approval":true,"approval_state":"requested","started_at_unix_ms":10,"metadata":{"args_hash":"abcdef1234567890","effects":"write"}}]}`
 	if string(data) != want {
 		t.Fatalf("activity timeline JSON mismatch:\n got: %s\nwant: %s", data, want)
 	}
@@ -766,10 +841,10 @@ func TestValidateActivityTimelineRejectsInconsistentApprovalLifecycle(t *testing
 			Counts:     ActivityCounts{Approval: 1, Waiting: 1},
 		},
 		Items: []ActivityItem{{
-			ItemID:           "approval:exec-1",
+			ItemID:           "tool:exec-1",
 			ToolID:           "exec-1",
 			ToolName:         "terminal.exec",
-			Kind:             ActivityKindApproval,
+			Kind:             ActivityKindTool,
 			Status:           ActivityStatusWaiting,
 			Severity:         ActivitySeverityBlocking,
 			RequiresApproval: true,
@@ -790,7 +865,8 @@ func TestValidateActivityTimelineRejectsInconsistentApprovalLifecycle(t *testing
 		{name: "approved waiting", mutate: func(item *ActivityItem) { item.ApprovalState = "approved" }},
 		{name: "rejected waiting", mutate: func(item *ActivityItem) { item.ApprovalState = "rejected" }},
 		{name: "canceled waiting", mutate: func(item *ActivityItem) { item.ApprovalState = "canceled" }},
-		{name: "wrong kind", mutate: func(item *ActivityItem) { item.Kind = ActivityKindTool }},
+		{name: "missing requires approval", mutate: func(item *ActivityItem) { item.RequiresApproval = false }},
+		{name: "wrong kind", mutate: func(item *ActivityItem) { item.Kind = ActivityKindControl }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -801,6 +877,42 @@ func TestValidateActivityTimelineRejectsInconsistentApprovalLifecycle(t *testing
 				t.Fatalf("ValidateActivityTimeline should reject %#v", timeline.Items[0])
 			}
 		})
+	}
+}
+
+func TestValidateActivityTimelineRejectsLegacyToolApprovalDuplicate(t *testing.T) {
+	timeline := ActivityTimeline{
+		SchemaVersion: ActivityTimelineSchemaVersion,
+		Summary: ActivitySummary{
+			Status:   ActivityStatusWaiting,
+			Severity: ActivitySeverityBlocking,
+		},
+		Items: []ActivityItem{
+			{
+				ItemID:          "tool:exec-1",
+				ToolID:          "exec-1",
+				ToolName:        "terminal.exec",
+				Kind:            ActivityKindTool,
+				Status:          ActivityStatusRunning,
+				Severity:        ActivitySeverityNormal,
+				StartedAtUnixMS: 10,
+			},
+			{
+				ItemID:           "approval:exec-1",
+				ToolID:           "exec-1",
+				ToolName:         "terminal.exec",
+				Kind:             ActivityKind("approval"),
+				Status:           ActivityStatusWaiting,
+				Severity:         ActivitySeverityBlocking,
+				RequiresApproval: true,
+				ApprovalState:    "requested",
+				StartedAtUnixMS:  20,
+			},
+		},
+	}
+
+	if err := ValidateActivityTimeline(timeline); err == nil {
+		t.Fatal("ValidateActivityTimeline should reject legacy tool/approval duplicate rows")
 	}
 }
 
@@ -888,8 +1000,9 @@ func TestValidateActivityTimelineRejectsAllUnknownEnums(t *testing.T) {
 			Severity: ActivitySeverityNormal,
 		},
 		Items: []ActivityItem{{
-			ItemID:           "approval:abc12345",
-			Kind:             ActivityKindApproval,
+			ItemID:           "tool:abc12345",
+			ToolID:           "abc12345",
+			Kind:             ActivityKindTool,
 			Status:           ActivityStatusWaiting,
 			Severity:         ActivitySeverityBlocking,
 			ApprovalState:    "requested",
