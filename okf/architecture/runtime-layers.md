@@ -44,6 +44,12 @@ installed continuation boundary rather than a candidate summary.
 `Engine` is the prompt-first single-run executor. It owns provider loop control,
 tool invocation, compaction decisions, prompt-cache requests, metrics, and event
 emission.
+Parallel-safe tool batches may emit each tool result as soon as that individual
+tool finishes, so hosts can observe a pending tool result without waiting for a
+slower sibling in the same provider tool-call batch. Durable harness save points
+remain provider-safe boundaries: the harness commits the tool calls first, may
+commit partial results for live observation, and writes the tool-result batch
+save point only after all calls in that batch have matching results.
 For terminal control signals, `Engine` normalizes the visible completion output
 from the signal itself or from assistant text produced in the same provider
 step. A terminal control signal with neither source is a contract error, so the

@@ -22,11 +22,14 @@ summaries without parsing assistant text or depending on implementation types.
 * `CompactionDebugEventsFromEvents` extracts safe compaction diagnostic facts.
 
 `BuildActivityTimeline` owns the product-neutral terminal semantics for activity
-items. When a sanitized `run_end` observation is present, cancelled runs produce
-`canceled` unresolved items and failed runs produce `error` unresolved items. A
-successful run end leaves host-owned `pending_tool_result` activity running
-until a later terminal tool-result settlement arrives, and leaves requested
-tool approvals in `waiting` until an explicit approval resolution arrives.
+items within one sanitized observation group. When a sanitized `run_end`
+observation is present, cancelled runs produce `canceled` unresolved items and
+failed runs produce `error` unresolved items. `runtime.ProjectThreadTurn`
+applies terminal turn markers across all activity timeline segments for the
+turn, so completed, failed, and cancelled terminal projections do not leave
+pending or running activity behind. Host-owned pending work that finishes later
+must be reported through the runtime `SettlePendingTool` API, which updates the
+original activity item instead of creating a separate UI row.
 Tool approval events are lifecycle updates on the tool activity item itself:
 `tool_call`, approval request/resolution, and `tool_result` for the same tool id
 collapse into one item instead of a separate approval row. A requested approval

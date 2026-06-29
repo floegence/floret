@@ -2069,6 +2069,7 @@ type turnProjection struct {
 	pendingCalls     []pendingToolMessage
 	pendingResults   []pendingToolMessage
 	pendingBatchSize int
+	pendingCallsSent bool
 	err              error
 }
 
@@ -2210,11 +2211,33 @@ func (p *turnProjection) flushPendingToolBatch(force bool) error {
 	if size <= 0 {
 		size = len(p.pendingCalls)
 	}
-	if !force && (len(p.pendingCalls) < size || len(p.pendingResults) < size) {
-		return nil
+	if !p.pendingCallsSent {
+		if len(p.pendingCalls) < size {
+			if force {
+				return fmt.Errorf("incomplete tool call batch: %d calls, want %d", len(p.pendingCalls), size)
+			}
+			return nil
+		}
+		seenCalls := make(map[string]struct{}, len(p.pendingCalls))
+		for _, call := range p.pendingCalls {
+			if call.message.ToolCallID == "" {
+				return errors.New("tool call batch contains empty tool_call_id")
+			}
+			if _, ok := seenCalls[call.message.ToolCallID]; ok {
+				return fmt.Errorf("tool call batch contains duplicate tool_call_id %q", call.message.ToolCallID)
+			}
+			seenCalls[call.message.ToolCallID] = struct{}{}
+		}
+		for _, call := range p.pendingCalls {
+			if err := p.thread.appendMessageAt(p.ctx, p.turnID, p.runID, call.message, call.observedAt); err != nil {
+				return err
+			}
+		}
+		p.pendingCallsSent = true
+		p.reasoning = ""
 	}
-	if len(p.pendingCalls) != len(p.pendingResults) {
-		return fmt.Errorf("incomplete tool result batch: %d calls, %d results", len(p.pendingCalls), len(p.pendingResults))
+	if len(p.pendingResults) == 0 {
+		return nil
 	}
 	byID := make(map[string]pendingToolMessage, len(p.pendingResults))
 	for _, result := range p.pendingResults {
@@ -2226,29 +2249,39 @@ func (p *turnProjection) flushPendingToolBatch(force bool) error {
 		}
 		byID[result.message.ToolCallID] = result
 	}
-	for _, call := range p.pendingCalls {
-		if err := p.thread.appendMessageAt(p.ctx, p.turnID, p.runID, call.message, call.observedAt); err != nil {
-			return err
-		}
-	}
+	remainingCalls := p.pendingCalls[:0]
+	appendedResult := false
 	for _, call := range p.pendingCalls {
 		result, ok := byID[call.message.ToolCallID]
 		if !ok {
-			return fmt.Errorf("tool result batch missing result for %q", call.message.ToolCallID)
+			remainingCalls = append(remainingCalls, call)
+			continue
 		}
 		if err := p.thread.appendMessageAt(p.ctx, p.turnID, p.runID, result.message, result.observedAt); err != nil {
 			return err
 		}
+		delete(byID, call.message.ToolCallID)
+		appendedResult = true
 	}
-	if entry, err := sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, sessiontree.TurnSavePoint, map[string]string{"reason": "tool_result_batch"}); err != nil {
-		return err
-	} else {
-		p.thread.harness.emitEntryCommitted(entry, p.runID)
+	for id := range byID {
+		return fmt.Errorf("tool result batch references unknown tool_call_id %q", id)
 	}
-	p.pendingCalls = nil
+	if force && len(remainingCalls) > 0 {
+		return fmt.Errorf("incomplete tool result batch: %d calls, %d results", len(remainingCalls), 0)
+	}
+	if appendedResult && len(remainingCalls) == 0 {
+		if entry, err := sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, sessiontree.TurnSavePoint, map[string]string{"reason": "tool_result_batch"}); err != nil {
+			return err
+		} else {
+			p.thread.harness.emitEntryCommitted(entry, p.runID)
+		}
+	}
+	p.pendingCalls = remainingCalls
 	p.pendingResults = nil
-	p.pendingBatchSize = 0
-	p.reasoning = ""
+	if len(p.pendingCalls) == 0 {
+		p.pendingBatchSize = 0
+		p.pendingCallsSent = false
+	}
 	return nil
 }
 

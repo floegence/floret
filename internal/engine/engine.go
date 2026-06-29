@@ -918,20 +918,19 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			e.emit(opts, event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args, Activity: activity, Metadata: map[string]any{"batch_index": i, "batch_size": len(calls)}})
 		}
 		toolStarted := time.Now()
-		results := activeToolRegistry.RunBatchWithOptions(ctx, toolCalls(calls), e.approverWithEvents(opts, step), toolRunOptions)
-		toolLatency := time.Since(toolStarted).Milliseconds()
-		for i, result := range results {
+		processToolResult := func(i int, result tools.Result) error {
 			result = preparePendingToolResult(result)
 			result.Activity = sanitizeActivityPresentation(result.Activity)
 			resultStatus := toolResultStatus(result)
 			projection := exactToolOutputProjection(result.Text)
+			resultLatency := time.Since(toolStarted).Milliseconds()
 			if result.Pending == nil {
 				policy := tools.MergeOutputPolicy(activeToolRegistry.OutputPolicyFor(result.Name), result.OutputPolicy)
 				var err error
 				projection, err = tools.BuildOutputProjection(ctx, toolOutputArtifactResult(result, opts, step), policy, toolArtifactStoreFor(e.artifacts))
 				if err != nil {
-					e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: toolLatency, Activity: result.Activity, Metadata: mergeToolResultMetadata(result.Metadata, i, len(results))})
-					return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+					e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: resultLatency, Activity: result.Activity, Metadata: mergeToolResultMetadata(result.Metadata, i, len(calls))})
+					return err
 				}
 			}
 			text := projection.VisibleText
@@ -940,24 +939,29 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				errText = text
 				text = "ERROR: " + text
 			}
-			metadata := mergeToolResultMetadata(result.Metadata, i, len(results))
+			metadata := mergeToolResultMetadata(result.Metadata, i, len(calls))
 			resultView := (*session.ToolResultView)(nil)
 			if result.Pending == nil {
-				metadata = mergeToolResultMetadata(toolProjectionMetadata(result.Metadata, projection), i, len(results))
+				metadata = mergeToolResultMetadata(toolProjectionMetadata(result.Metadata, projection), i, len(calls))
 				resultView = toolResultView(projection)
 			}
 			if resultView == nil {
 				resultView = &session.ToolResultView{}
 			}
 			resultView.Status = resultStatus
-			e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: toolLatency, Activity: result.Activity, Metadata: metadata, Artifacts: eventArtifacts(projection, result.Artifacts)})
+			e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: resultLatency, Activity: result.Activity, Metadata: metadata, Artifacts: eventArtifacts(projection, result.Artifacts)})
 			msg := e.stableMessage(opts.RunID, session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: resultView, Activity: sessionActivityPresentation(result.Activity)})
 			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
-				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+				return err
 			}
 			activeHistory = append(activeHistory, msg)
 			state.activeMessages = append([]session.Message(nil), activeHistory...)
+			return nil
 		}
+		if _, err := runToolBatchWithObserver(ctx, activeToolRegistry, toolCalls(calls), e.approverWithEvents(opts, step), toolRunOptions, processToolResult); err != nil {
+			return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+		}
+		toolLatency := time.Since(toolStarted).Milliseconds()
 		state.activeMessages = append([]session.Message(nil), activeHistory...)
 		decision.ContinuationReason = ContinueToolResults
 		e.emitStepEnd(opts, step, providerLatency, toolLatency, usage, len(calls), decision)
@@ -1011,6 +1015,54 @@ func exactToolOutputProjection(text string) tools.OutputProjection {
 	return tools.OutputProjection{
 		VisibleText: text,
 	}
+}
+
+type observedToolResult struct {
+	index  int
+	result tools.Result
+}
+
+func runToolBatchWithObserver(ctx context.Context, registry *tools.Registry, calls []tools.ToolCall, approver tools.Approver, opts tools.RunOptions, observe func(int, tools.Result) error) ([]tools.Result, error) {
+	results := make([]tools.Result, len(calls))
+	for i := 0; i < len(calls); {
+		j := i
+		for j < len(calls) && registry.IsParallelSafe(calls[j].Name) {
+			j++
+		}
+		if j > i {
+			done := make(chan observedToolResult, j-i)
+			for k := i; k < j; k++ {
+				go func(idx int) {
+					done <- observedToolResult{
+						index:  idx,
+						result: registry.RunWithOptions(ctx, calls[idx], approver, opts),
+					}
+				}(k)
+			}
+			var observeErr error
+			for received := i; received < j; received++ {
+				item := <-done
+				results[item.index] = item.result
+				if observeErr == nil && observe != nil {
+					observeErr = observe(item.index, item.result)
+				}
+			}
+			if observeErr != nil {
+				return results, observeErr
+			}
+			i = j
+			continue
+		}
+		result := registry.RunWithOptions(ctx, calls[i], approver, opts)
+		results[i] = result
+		if observe != nil {
+			if err := observe(i, result); err != nil {
+				return results, err
+			}
+		}
+		i++
+	}
+	return results, nil
 }
 
 func preparePendingToolResult(result tools.Result) tools.Result {

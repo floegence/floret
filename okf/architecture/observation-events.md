@@ -24,12 +24,16 @@ reasoning, tool arguments, tool results, and local paths.
 * Activity timelines summarize tool, hosted-tool, approval, control, and budget
   state. Floret builds the activity projection for hosted turns; host
   applications must not call `observation.BuildActivityTimeline` to synthesize a
-  main-thread UI activity surface. Run-end facts settle unresolved pending,
-  running, and approval-waiting activity inside Floret: failed turns make open
-  items terminal errors, cancelled turns make them cancelled, and explicit
-  approval resolution events remain authoritative when present. Run-end failed
-  or cancelled markers are lifecycle facts for settlement and summary; waiting
-  run-end markers are the visible control item for host/user input.
+  main-thread UI activity surface. Runtime turn projection applies terminal
+  markers across all activity segments in the turn: completed turns settle open
+  pending/running items to success, failed turns make them terminal errors, and
+  cancelled turns make them cancelled. Save-point markers remain journal
+  checkpoints and do not settle activity. Host-owned pending work that finishes
+  after the provider turn is closed through `SettlePendingTool`; that settlement
+  updates the original tool item by id and remains outside provider-visible
+  history. Explicit approval resolution events remain authoritative when
+  present. Waiting run-end markers are the visible control item for host/user
+  input.
 * Runtime stream observations expose provider-neutral model output facts,
   including text deltas, reasoning deltas, retry/finish signals, and model
   tool-call stream start/delta/end facts. Model tool-call stream facts identify
@@ -51,8 +55,10 @@ reasoning, tool arguments, tool results, and local paths.
   `ProjectThreadTurn` without reading Floret storage internals or rebuilding
   activity from host audit records. `ProjectThreadTurn` reduces the ordered
   detail events for a turn; it does not allow a stale aggregate activity
-  timeline to override later detail facts. The read model carries the same
-  Floret-owned row activity projection as subagent detail reads.
+  timeline to override later detail facts. Terminal and pending-settlement
+  projections remove running-only metadata such as pending handles and running
+  pending state before hosts receive terminal activity. The read model carries
+  the same Floret-owned row activity projection as subagent detail reads.
 * Context statuses show projected and provider-reported context pressure.
 * Compaction events expose context compaction lifecycle. A complete compaction
   event means the compacted active context has been rebuilt into a full provider

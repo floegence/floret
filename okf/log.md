@@ -1,14 +1,19 @@
 # Floret OKF Update Log
 
 ## 2026-06-29
+* **Update**: Documented terminal turn projection as the canonical cross-segment
+  activity settlement source and `SettlePendingTool` as the public host-owned
+  pending-work settlement API.
+* **Update**: Documented parallel-safe tool result observation before slower
+  sibling completion while preserving provider-safe durable save points.
 * **Update**: Documented tool approval activity as a lifecycle state on the tool
   item itself, preventing duplicate tool and approval rows for one invocation.
 * **Update**: Documented live `runtime.Event.ActivityTimeline`, event-time tool
   detail projection, and duration-consistent activity validation for tool
   lifecycle rows.
 * **Update**: Documented `SettlePendingTool` as the detail-only counterpart to
-  `CompletePendingTool`, including the rule that successful turns leave
-  host-owned pending activity running until an explicit settlement arrives.
+  `CompletePendingTool`, including the rule that host-owned pending outcomes
+  update the original tool activity without adding provider-visible context.
 * **Update**: Documented terminal activity settlement for cancelled and failed
   turns, including the rule that hosts consume Floret terminal projections
   instead of synthesizing final tool state.

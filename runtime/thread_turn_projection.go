@@ -67,6 +67,7 @@ func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 	var activityEvents []ThreadDetailEvent
 	seenToolActivity := map[string]struct{}{}
 	var deferredSettlements []ThreadDetailEvent
+	var terminalSettlements []ThreadDetailEvent
 	flushText := func() {
 		content := text.String()
 		if strings.TrimSpace(content) == "" {
@@ -159,11 +160,15 @@ func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 					}
 				}
 			}
+			if _, _, ok := threadTurnProjectionTerminalSettlementStatus(ev); ok {
+				terminalSettlements = append(terminalSettlements, ev)
+			}
 			addActivity(ev)
 		}
 	}
 	flushText()
 	flushActivity()
+	threadTurnProjectionApplyTerminalSettlements(&projection, terminalSettlements)
 	threadTurnProjectionApplyDeferredSettlements(&projection, deferredSettlements)
 	return projection
 }
@@ -213,9 +218,6 @@ func threadTurnProjectionApplyDeferredSettlements(projection *ThreadTurnProjecti
 				if strings.TrimSpace(item.ToolID) != toolID {
 					continue
 				}
-				if item.Status != observation.ActivityStatusRunning && item.Status != observation.ActivityStatusPending {
-					continue
-				}
 				threadTurnProjectionApplySettlementItem(item, settlement, status, severity)
 				settled = true
 			}
@@ -223,6 +225,129 @@ func threadTurnProjectionApplyDeferredSettlements(projection *ThreadTurnProjecti
 				timeline.Summary = threadTurnProjectionActivitySummary(timeline.Items)
 			}
 		}
+	}
+}
+
+func threadTurnProjectionApplyTerminalSettlements(projection *ThreadTurnProjection, terminals []ThreadDetailEvent) {
+	if projection == nil || len(terminals) == 0 {
+		return
+	}
+	for _, terminal := range terminals {
+		status, severity, ok := threadTurnProjectionTerminalSettlementStatus(terminal)
+		if !ok {
+			continue
+		}
+		for segmentIndex := range projection.Segments {
+			timeline := projection.Segments[segmentIndex].ActivityTimeline
+			if timeline == nil {
+				continue
+			}
+			settled := false
+			for itemIndex := range timeline.Items {
+				item := &timeline.Items[itemIndex]
+				if !threadTurnProjectionNeedsTerminalSettlement(*item, status) {
+					continue
+				}
+				threadTurnProjectionApplyTerminalSettlementItem(item, terminal, status, severity)
+				settled = true
+			}
+			if settled {
+				timeline.Summary = threadTurnProjectionActivitySummary(timeline.Items)
+				if status == observation.ActivityStatusCanceled &&
+					timeline.Summary.Counts.Canceled > 0 &&
+					timeline.Summary.Counts.Error == 0 &&
+					timeline.Summary.Counts.Pending == 0 &&
+					timeline.Summary.Counts.Running == 0 &&
+					timeline.Summary.Counts.Waiting == 0 {
+					timeline.Summary.Status = observation.ActivityStatusCanceled
+				}
+			}
+		}
+	}
+}
+
+func threadTurnProjectionTerminalSettlementStatus(ev ThreadDetailEvent) (observation.ActivityStatus, observation.ActivitySeverity, bool) {
+	switch ev.Kind {
+	case ThreadDetailEventError:
+		return observation.ActivityStatusError, observation.ActivitySeverityError, true
+	case ThreadDetailEventTurnMarker:
+		if ev.TurnMarker == nil {
+			return "", "", false
+		}
+		switch strings.TrimSpace(ev.TurnMarker.Status) {
+		case "aborted", string(observation.ActivityStatusCanceled), "cancelled":
+			return observation.ActivityStatusCanceled, observation.ActivitySeverityWarning, true
+		case "failed", string(observation.ActivityStatusError):
+			return observation.ActivityStatusError, observation.ActivitySeverityError, true
+		default:
+			return "", "", false
+		}
+	default:
+		return "", "", false
+	}
+}
+
+func threadTurnProjectionNeedsTerminalSettlement(item observation.ActivityItem, status observation.ActivityStatus) bool {
+	switch item.Status {
+	case observation.ActivityStatusPending, observation.ActivityStatusRunning:
+		return true
+	case observation.ActivityStatusWaiting:
+		return item.RequiresApproval && status != observation.ActivityStatusSuccess
+	default:
+		return false
+	}
+}
+
+func threadTurnProjectionApplyTerminalSettlementItem(item *observation.ActivityItem, terminal ThreadDetailEvent, status observation.ActivityStatus, severity observation.ActivitySeverity) {
+	if item == nil {
+		return
+	}
+	item.Status = status
+	item.Severity = severity
+	item.EndedAtUnixMS = threadTurnProjectionTerminalEndedAtUnixMS(*item, terminal.CreatedAt)
+	item.Metadata = threadTurnProjectionTerminalMetadata(item.Metadata)
+	item.Payload = threadTurnProjectionTerminalPayload(item.Payload)
+	item.Chips = threadTurnProjectionTerminalChips(item.Chips)
+	if item.RequiresApproval && status != observation.ActivityStatusSuccess {
+		item.ApprovalState = threadTurnProjectionTerminalApprovalState(status, item.ApprovalState)
+	}
+	item.AttentionReasons = threadTurnProjectionAttentionReasons(*item)
+	item.NeedsAttention = len(item.AttentionReasons) > 0
+}
+
+func threadTurnProjectionTerminalEndedAtUnixMS(item observation.ActivityItem, at time.Time) int64 {
+	endedAt := int64(0)
+	if !at.IsZero() {
+		endedAt = at.UnixMilli()
+	}
+	if endedAt <= 0 {
+		endedAt = item.EndedAtUnixMS
+	}
+	if endedAt <= 0 {
+		endedAt = item.StartedAtUnixMS
+	}
+	if endedAt <= 0 {
+		endedAt = time.Now().UnixMilli()
+	}
+	if item.StartedAtUnixMS > 0 && endedAt < item.StartedAtUnixMS {
+		endedAt = item.StartedAtUnixMS
+	}
+	return endedAt
+}
+
+func threadTurnProjectionTerminalApprovalState(status observation.ActivityStatus, current string) string {
+	current = strings.TrimSpace(current)
+	switch current {
+	case "approved", "rejected", "timed_out", "canceled":
+		return current
+	}
+	switch status {
+	case observation.ActivityStatusCanceled:
+		return "canceled"
+	case observation.ActivityStatusError:
+		return "timed_out"
+	default:
+		return current
 	}
 }
 
@@ -245,7 +370,7 @@ func threadTurnProjectionApplySettlementItem(item *observation.ActivityItem, set
 	}
 	item.Status = status
 	item.Severity = severity
-	item.EndedAtUnixMS = settlement.CreatedAt.UnixMilli()
+	item.EndedAtUnixMS = threadTurnProjectionTerminalEndedAtUnixMS(*item, settlement.CreatedAt)
 	if settlement.ActivityTimeline != nil && len(settlement.ActivityTimeline.Items) > 0 {
 		threadTurnProjectionMergeActivityItem(item, settlement.ActivityTimeline.Items[0])
 	}
@@ -508,6 +633,9 @@ func threadTurnProjectionObservationEvent(meta observation.ActivityRunMeta, deta
 			return observation.Event{}, false
 		}
 		status := strings.TrimSpace(detail.TurnMarker.Status)
+		if status == "save_point" {
+			return observation.Event{}, false
+		}
 		base.Type = observation.EventTypeRunEnd
 		base.Message = threadTurnProjectionRunEndStatus(status)
 		base.Metadata = threadTurnProjectionAnyMetadata(detail.TurnMarker.Metadata)
@@ -531,6 +659,10 @@ func threadTurnProjectionRunEndStatus(status string) string {
 	switch strings.TrimSpace(status) {
 	case "aborted", "cancelled":
 		return string(observation.ActivityStatusCanceled)
+	case "completed":
+		return string(observation.ActivityStatusSuccess)
+	case "failed":
+		return string(observation.ActivityStatusError)
 	default:
 		return strings.TrimSpace(status)
 	}

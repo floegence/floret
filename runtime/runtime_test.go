@@ -579,6 +579,131 @@ func TestHostEmitsActivityTimelineForToolLifecycle(t *testing.T) {
 	}
 }
 
+func TestHostPersistsPendingToolResultBeforeSlowParallelSiblingFinishes(t *testing.T) {
+	ctx := context.Background()
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		events := make(chan ModelEvent, 3)
+		switch req.Step {
+		case 1:
+			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{
+				{ID: "exec-1", Name: "terminal_exec", Args: `{"text":"curl https://example.test"}`},
+				{ID: "read-1", Name: "slow_read", Args: `{"text":"wait"}`},
+			}}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+		default:
+			events <- ModelEvent{Type: ModelEventDelta, Text: "done"}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+		}
+		close(events)
+		return events, nil
+	})
+	registry := tools.NewRegistry()
+	if err := registry.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{
+			Name:         "terminal_exec",
+			InputSchema:  runtimeEchoSchema(),
+			ReadOnly:     true,
+			ParallelSafe: true,
+			Permission:   tools.PermissionSpec{Mode: tools.PermissionAllow},
+			Activity: func(inv tools.Invocation[any]) (*observation.ActivityPresentation, error) {
+				args, ok := inv.Args.(runtimeEchoArgs)
+				if !ok {
+					return nil, fmt.Errorf("unexpected args type %T", inv.Args)
+				}
+				return &observation.ActivityPresentation{
+					Label:    args.Text,
+					Renderer: observation.ActivityRendererTerminal,
+					Payload:  map[string]any{"command": args.Text},
+				}, nil
+			},
+		},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			return tools.Result{
+				Activity: &observation.ActivityPresentation{
+					Label:    "curl https://example.test",
+					Renderer: observation.ActivityRendererTerminal,
+					Payload:  map[string]any{"command": "curl https://example.test"},
+				},
+				Pending: &tools.PendingToolResult{
+					Handle:      "terminal:process:tp_fast",
+					State:       tools.PendingToolResultRunning,
+					Summary:     "Terminal process is running",
+					Instruction: "Read it later.",
+				},
+			}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	slowStarted := make(chan struct{})
+	releaseSlow := make(chan struct{})
+	if err := registry.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{
+			Name:         "slow_read",
+			InputSchema:  runtimeEchoSchema(),
+			ReadOnly:     true,
+			ParallelSafe: true,
+			Permission:   tools.PermissionSpec{Mode: tools.PermissionAllow},
+		},
+		nil,
+		nil,
+		func(ctx context.Context, inv tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			close(slowStarted)
+			select {
+			case <-releaseSlow:
+				return tools.Result{Text: inv.Args.Text}, nil
+			case <-ctx.Done():
+				return tools.Result{}, ctx.Err()
+			}
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+		},
+		ModelGateway: gateway,
+		Store:        NewMemoryStore(),
+		Tools:        registry,
+		IDGenerator:  deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: "run"})
+		done <- err
+	}()
+	select {
+	case <-slowStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for slow sibling")
+	}
+	if !eventuallyThreadDetailToolResult(ctx, t, host, "thread", "exec-1", observation.ActivityStatusRunning) {
+		close(releaseSlow)
+		t.Fatal("pending tool result was not persisted before slow sibling finished")
+	}
+	close(releaseSlow)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for run")
+	}
+}
+
 func TestHostToolSurfaceProviderRefreshesGatewayRequests(t *testing.T) {
 	var requests []ModelRequest
 	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
@@ -1919,7 +2044,7 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 		t.Fatalf("run = %#v", run)
 	}
 	if item := runtimeProjectionToolItem(run.Projection, "exec-1"); item.Status != observation.ActivityStatusRunning {
-		t.Fatalf("pending item should remain running after successful turn: %#v", item)
+		t.Fatalf("pending item should remain running before explicit settlement: %#v", item)
 	}
 
 	settled, err := host.SettlePendingTool(ctx, PendingToolSettlementRequest{
@@ -2796,6 +2921,27 @@ func runtimeProjectionToolItem(projection ThreadTurnProjection, toolID string) o
 		}
 	}
 	return observation.ActivityItem{}
+}
+
+func eventuallyThreadDetailToolResult(ctx context.Context, t *testing.T, host Host, threadID string, toolID string, status observation.ActivityStatus) bool {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		detail, err := host.ListThreadDetailEvents(ctx, ListThreadDetailEventsRequest{ThreadID: ThreadID(threadID), IncludeRaw: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range detail.Events {
+			if event.Kind != ThreadDetailEventToolResult || event.ToolResult == nil {
+				continue
+			}
+			if event.ToolResult.CallID == toolID && event.ToolResult.Status == string(status) {
+				return true
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
 }
 
 func allowRuntimeTools(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {

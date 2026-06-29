@@ -2214,6 +2214,89 @@ func TestToolActivityPresentationEmitsForCallAndResult(t *testing.T) {
 	}
 }
 
+func TestParallelPendingToolResultEmitsBeforeSlowSiblingFinishes(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(
+		harness.Step(
+			harness.Tool("pending-1", "pending_shell", `{"value":"curl https://example.test"}`),
+			harness.Tool("slow-1", "slow_read", `{"value":"wait"}`),
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	reg := tools.NewRegistry()
+	mustRegister(t, reg, tools.Define[stringArgs](
+		tools.Definition{
+			Name:         "pending_shell",
+			InputSchema:  tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+			ReadOnly:     true,
+			ParallelSafe: true,
+			Permission:   tools.PermissionSpec{Mode: tools.PermissionAllow},
+		},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
+			return tools.Result{
+				Pending: &tools.PendingToolResult{
+					Handle:      "terminal:process:tp_fast",
+					State:       tools.PendingToolResultRunning,
+					Summary:     "Command is running",
+					Instruction: "Wait for completion.",
+				},
+			}, nil
+		},
+	))
+	slowStarted := make(chan struct{})
+	releaseSlow := make(chan struct{})
+	mustRegister(t, reg, tools.Define[stringArgs](
+		tools.Definition{
+			Name:         "slow_read",
+			InputSchema:  tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+			ReadOnly:     true,
+			ParallelSafe: true,
+			Permission:   tools.PermissionSpec{Mode: tools.PermissionAllow},
+		},
+		nil,
+		nil,
+		func(ctx context.Context, inv tools.Invocation[stringArgs]) (tools.Result, error) {
+			close(slowStarted)
+			select {
+			case <-releaseSlow:
+				return tools.Result{Text: inv.Args.Value}, nil
+			case <-ctx.Done():
+				return tools.Result{}, ctx.Err()
+			}
+		},
+	))
+	e := newTestEngine(p, rec)
+	e.Tools = reg
+	done := make(chan engine.Result, 1)
+	go func() {
+		done <- e.Run(context.Background(), "run parallel tools")
+	}()
+	select {
+	case <-slowStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for slow sibling to start")
+	}
+	if !eventuallyToolResult(rec, "pending-1", func(ev event.Event) bool {
+		values, _ := ev.Metadata.(map[string]any)
+		return values["pending_tool_result"] == true
+	}) {
+		close(releaseSlow)
+		t.Fatal("pending tool result was not emitted before slow sibling finished")
+	}
+	close(releaseSlow)
+	select {
+	case got := <-done:
+		if got.Status != engine.Completed {
+			t.Fatalf("result = %#v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for run")
+	}
+}
+
 func TestToolOutputProjectionFailsWhenPreservingWithoutArtifactStore(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
@@ -3871,6 +3954,19 @@ func assertEventOrder(t *testing.T, events []event.Event, want ...event.Type) {
 	if pos != len(want) {
 		t.Fatalf("events = %v, want subsequence %v", got, want)
 	}
+}
+
+func eventuallyToolResult(rec *event.Recorder, toolID string, match func(event.Event) bool) bool {
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, ev := range rec.Snapshot() {
+			if ev.Type == event.ToolResult && ev.ToolID == toolID && (match == nil || match(ev)) {
+				return true
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
 }
 
 func hasEvent(events []event.Event, typ event.Type) bool {

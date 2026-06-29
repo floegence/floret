@@ -449,6 +449,7 @@ func TestProjectThreadTurnSettlesUnresolvedToolOnTerminalTurn(t *testing.T) {
 		wantAttention bool
 	}{
 		{name: "success", turnStatus: string(observation.ActivityStatusSuccess), wantStatus: observation.ActivityStatusRunning, wantSeverity: observation.ActivitySeverityWarning, wantSummary: observation.ActivityStatusRunning, wantAttention: true},
+		{name: "completed", turnStatus: "completed", wantStatus: observation.ActivityStatusRunning, wantSeverity: observation.ActivitySeverityWarning, wantSummary: observation.ActivityStatusRunning, wantAttention: true},
 		{name: "canceled", turnStatus: string(observation.ActivityStatusCanceled), wantStatus: observation.ActivityStatusCanceled, wantSeverity: observation.ActivitySeverityWarning, wantSummary: observation.ActivityStatusCanceled},
 		{name: "cancelled spelling", turnStatus: "cancelled", wantStatus: observation.ActivityStatusCanceled, wantSeverity: observation.ActivitySeverityWarning, wantSummary: observation.ActivityStatusCanceled},
 		{name: "failed", turnStatus: "failed", error: "provider failed", wantStatus: observation.ActivityStatusError, wantSeverity: observation.ActivitySeverityError, wantSummary: observation.ActivityStatusError, wantAttention: true},
@@ -547,6 +548,253 @@ func TestProjectThreadTurnSettlesUnresolvedToolOnTerminalTurn(t *testing.T) {
 	}
 }
 
+func TestProjectThreadTurnTerminalMarkerSettlesEarlierActivitySegments(t *testing.T) {
+	start := time.UnixMilli(1_700_010_000_000)
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID: "thread-terminal-segments",
+		TurnID:   "turn-terminal-segments",
+		RunID:    "run-terminal-segments",
+		TraceID:  "run-terminal-segments",
+		Events: []ThreadDetailEvent{
+			{
+				ID:        "exec-call",
+				Ordinal:   1,
+				ThreadID:  "thread-terminal-segments",
+				TurnID:    "turn-terminal-segments",
+				Kind:      ThreadDetailEventToolCall,
+				CreatedAt: start,
+				ToolCall:  &ThreadDetailToolCall{ID: "exec-1", Name: "terminal.exec"},
+				ActivityTimeline: projectionSingleItemTimeline("run-terminal-segments", "thread-terminal-segments", "turn-terminal-segments", observation.ActivityItem{
+					ItemID:          "tool:exec-1",
+					ToolID:          "exec-1",
+					ToolName:        "terminal.exec",
+					Kind:            observation.ActivityKindTool,
+					Status:          observation.ActivityStatusRunning,
+					Severity:        observation.ActivitySeverityNormal,
+					Renderer:        observation.ActivityRendererTerminal,
+					Payload:         map[string]any{"command": "npm test", "pending_result": "terminal"},
+					Metadata:        map[string]string{"pending_tool_result": "true", "pending_state": "running", "pending_handle": "terminal:job:123"},
+					StartedAtUnixMS: start.Add(2 * time.Second).UnixMilli(),
+				}),
+			},
+			{
+				ID:        "assistant-text",
+				Ordinal:   2,
+				ThreadID:  "thread-terminal-segments",
+				TurnID:    "turn-terminal-segments",
+				Kind:      ThreadDetailEventAssistantMessage,
+				CreatedAt: start.Add(500 * time.Millisecond),
+				Message:   &ThreadDetailMessage{Role: "assistant", Content: "The command is still running."},
+			},
+			{
+				ID:        "read-call",
+				Ordinal:   3,
+				ThreadID:  "thread-terminal-segments",
+				TurnID:    "turn-terminal-segments",
+				Kind:      ThreadDetailEventToolCall,
+				CreatedAt: start.Add(time.Second),
+				ToolCall:  &ThreadDetailToolCall{ID: "read-1", Name: "read"},
+			},
+			{
+				ID:        "read-result",
+				Ordinal:   4,
+				ThreadID:  "thread-terminal-segments",
+				TurnID:    "turn-terminal-segments",
+				Kind:      ThreadDetailEventToolResult,
+				CreatedAt: start.Add(1500 * time.Millisecond),
+				ToolResult: &ThreadDetailToolResult{
+					CallID:   "read-1",
+					ToolName: "read",
+					Status:   string(observation.ActivityStatusSuccess),
+				},
+			},
+			{
+				ID:        "turn-canceled",
+				Ordinal:   5,
+				ThreadID:  "thread-terminal-segments",
+				TurnID:    "turn-terminal-segments",
+				Kind:      ThreadDetailEventTurnMarker,
+				CreatedAt: start.Add(time.Second),
+				TurnMarker: &ThreadDetailTurnMarker{
+					Status: "aborted",
+				},
+			},
+		},
+	})
+
+	item := projectionToolItem(t, projection, "exec-1")
+	if item.Status != observation.ActivityStatusCanceled ||
+		item.Severity != observation.ActivitySeverityWarning ||
+		item.EndedAtUnixMS < item.StartedAtUnixMS {
+		t.Fatalf("exec item should be canceled with clamped end time: %#v", item)
+	}
+	if item.Payload["pending_result"] != nil {
+		t.Fatalf("terminal item retained pending payload: %#v", item.Payload)
+	}
+	for _, key := range []string{"pending_tool_result", "pending_handle", "pending_state"} {
+		if _, ok := item.Metadata[key]; ok {
+			t.Fatalf("terminal item retained %q metadata: %#v", key, item.Metadata)
+		}
+	}
+	for _, segment := range projection.Segments {
+		if segment.ActivityTimeline == nil {
+			continue
+		}
+		if err := observation.ValidateActivityTimeline(*segment.ActivityTimeline); err != nil {
+			t.Fatalf("activity timeline invalid: %v; timeline=%#v", err, segment.ActivityTimeline)
+		}
+		for _, activity := range segment.ActivityTimeline.Items {
+			if activity.Status == observation.ActivityStatusRunning || activity.Status == observation.ActivityStatusPending {
+				t.Fatalf("terminal projection retained non-terminal item: %#v", activity)
+			}
+		}
+	}
+}
+
+func TestProjectThreadTurnSavePointDoesNotSettleActivity(t *testing.T) {
+	now := time.Unix(600, 0)
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID: "thread-save-point",
+		TurnID:   "turn-save-point",
+		RunID:    "run-save-point",
+		TraceID:  "run-save-point",
+		Events: []ThreadDetailEvent{
+			{
+				ID:        "tool-call",
+				Ordinal:   1,
+				ThreadID:  "thread-save-point",
+				TurnID:    "turn-save-point",
+				Kind:      ThreadDetailEventToolCall,
+				CreatedAt: now,
+				ToolCall:  &ThreadDetailToolCall{ID: "exec-1", Name: "terminal.exec"},
+				ActivityTimeline: projectionSingleItemTimeline("run-save-point", "thread-save-point", "turn-save-point", observation.ActivityItem{
+					ItemID:          "tool:exec-1",
+					ToolID:          "exec-1",
+					ToolName:        "terminal.exec",
+					Kind:            observation.ActivityKindTool,
+					Status:          observation.ActivityStatusRunning,
+					Severity:        observation.ActivitySeverityNormal,
+					StartedAtUnixMS: now.UnixMilli(),
+					Metadata:        map[string]string{"pending_state": "running"},
+				}),
+			},
+			{
+				ID:        "save-point",
+				Ordinal:   2,
+				ThreadID:  "thread-save-point",
+				TurnID:    "turn-save-point",
+				Kind:      ThreadDetailEventTurnMarker,
+				CreatedAt: now.Add(time.Second),
+				TurnMarker: &ThreadDetailTurnMarker{
+					Status: "save_point",
+				},
+			},
+		},
+	})
+
+	item := projectionToolItem(t, projection, "exec-1")
+	if item.Status != observation.ActivityStatusRunning || item.EndedAtUnixMS != 0 {
+		t.Fatalf("save point should not settle item: %#v", item)
+	}
+	if _, ok := item.Metadata["pending_state"]; !ok {
+		t.Fatalf("save point should preserve pending metadata: %#v", item.Metadata)
+	}
+}
+
+func TestProjectThreadTurnPendingSettlementOverridesTerminalProjectionAcrossSegments(t *testing.T) {
+	start := time.UnixMilli(1_700_020_000_000)
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID: "thread-settlement-segments",
+		TurnID:   "turn-settlement-segments",
+		RunID:    "run-settlement-segments",
+		TraceID:  "run-settlement-segments",
+		Events: []ThreadDetailEvent{
+			{
+				ID:        "exec-call",
+				Ordinal:   1,
+				ThreadID:  "thread-settlement-segments",
+				TurnID:    "turn-settlement-segments",
+				Kind:      ThreadDetailEventToolCall,
+				CreatedAt: start,
+				ToolCall:  &ThreadDetailToolCall{ID: "exec-1", Name: "terminal.exec"},
+				ActivityTimeline: projectionSingleItemTimeline("run-settlement-segments", "thread-settlement-segments", "turn-settlement-segments", observation.ActivityItem{
+					ItemID:          "tool:exec-1",
+					ToolID:          "exec-1",
+					ToolName:        "terminal.exec",
+					Kind:            observation.ActivityKindTool,
+					Status:          observation.ActivityStatusRunning,
+					Severity:        observation.ActivitySeverityNormal,
+					Renderer:        observation.ActivityRendererTerminal,
+					Payload:         map[string]any{"command": "npm test"},
+					Metadata:        map[string]string{"pending_tool_result": "true", "pending_state": "running"},
+					StartedAtUnixMS: start.UnixMilli(),
+				}),
+			},
+			{
+				ID:        "assistant-text",
+				Ordinal:   2,
+				ThreadID:  "thread-settlement-segments",
+				TurnID:    "turn-settlement-segments",
+				Kind:      ThreadDetailEventAssistantMessage,
+				CreatedAt: start.Add(time.Second),
+				Message:   &ThreadDetailMessage{Role: "assistant", Content: "Waiting for terminal output."},
+			},
+			{
+				ID:        "turn-completed",
+				Ordinal:   3,
+				ThreadID:  "thread-settlement-segments",
+				TurnID:    "turn-settlement-segments",
+				Kind:      ThreadDetailEventTurnMarker,
+				CreatedAt: start.Add(2 * time.Second),
+				TurnMarker: &ThreadDetailTurnMarker{
+					Status: "completed",
+				},
+			},
+			{
+				ID:        "settlement",
+				Ordinal:   4,
+				ThreadID:  "thread-settlement-segments",
+				TurnID:    "turn-settlement-segments",
+				Kind:      ThreadDetailEventToolResult,
+				Type:      threadTurnProjectionPendingToolSettlementType,
+				CreatedAt: start.Add(5 * time.Second),
+				ToolResult: &ThreadDetailToolResult{
+					CallID:   "exec-1",
+					ToolName: "terminal.exec",
+					Status:   string(observation.ActivityStatusCanceled),
+				},
+				ActivityTimeline: projectionSingleItemTimeline("run-settlement-segments", "thread-settlement-segments", "turn-settlement-segments", observation.ActivityItem{
+					ItemID:      "tool:exec-1",
+					ToolID:      "exec-1",
+					ToolName:    "terminal.exec",
+					Kind:        observation.ActivityKindTool,
+					Status:      observation.ActivityStatusCanceled,
+					Severity:    observation.ActivitySeverityWarning,
+					Description: "Command canceled",
+					Renderer:    observation.ActivityRendererTerminal,
+					Payload:     map[string]any{"exit_code": -1},
+				}),
+			},
+		},
+	})
+
+	if count := projectionToolItemCount(projection, "exec-1"); count != 1 {
+		t.Fatalf("settlement should update original item without duplication; count=%d projection=%#v", count, projection)
+	}
+	item := projectionToolItem(t, projection, "exec-1")
+	if item.Status != observation.ActivityStatusCanceled ||
+		item.Description != "Command canceled" ||
+		item.Payload["exit_code"] != -1 ||
+		item.EndedAtUnixMS-start.UnixMilli() != 5_000 {
+		t.Fatalf("settlement should override terminal projection: %#v", item)
+	}
+	for _, key := range []string{"pending_tool_result", "pending_state"} {
+		if _, ok := item.Metadata[key]; ok {
+			t.Fatalf("settled item retained %q metadata: %#v", key, item.Metadata)
+		}
+	}
+}
+
 func projectionSingleItemTimeline(runID, threadID, turnID string, item observation.ActivityItem) *observation.ActivityTimeline {
 	timeline := observation.ActivityTimeline{
 		SchemaVersion: observation.ActivityTimelineSchemaVersion,
@@ -558,4 +806,35 @@ func projectionSingleItemTimeline(runID, threadID, turnID string, item observati
 	}
 	timeline.Summary = threadTurnProjectionActivitySummary(timeline.Items)
 	return &timeline
+}
+
+func projectionToolItem(t *testing.T, projection ThreadTurnProjection, toolID string) observation.ActivityItem {
+	t.Helper()
+	for _, segment := range projection.Segments {
+		if segment.ActivityTimeline == nil {
+			continue
+		}
+		for _, item := range segment.ActivityTimeline.Items {
+			if item.ToolID == toolID {
+				return item
+			}
+		}
+	}
+	t.Fatalf("tool item %q not found in projection %#v", toolID, projection)
+	return observation.ActivityItem{}
+}
+
+func projectionToolItemCount(projection ThreadTurnProjection, toolID string) int {
+	count := 0
+	for _, segment := range projection.Segments {
+		if segment.ActivityTimeline == nil {
+			continue
+		}
+		for _, item := range segment.ActivityTimeline.Items {
+			if item.ToolID == toolID {
+				count++
+			}
+		}
+	}
+	return count
 }

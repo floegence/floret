@@ -336,17 +336,23 @@ Some tools start work whose lifecycle belongs to the host application, such as a
 terminal process, watcher, or remote task. Those handlers can return
 `tools.Result{Pending: ...}` after the host has started the work. Floret records a
 normal provider-visible tool result containing `<pending_tool_result>`, marks the
-activity as running, and exposes pending metadata for observation. It does not
-own the process, poll the handle, store a task registry, or decide cancellation.
+live activity as running during the provider turn, and exposes pending metadata
+for observation. Terminal turn projections settle unresolved pending/running
+activity so downstream products do not persist stale active rows after a
+completed, failed, or cancelled turn. Floret does not own the process, poll the
+handle, store a task registry, or decide cancellation.
 `PendingToolResult.Handle` is the only continuation token rendered in that
 provider-visible result. Metadata is observation-only; if the model should pass a
 token to a later host tool call, the host must make that token the handle.
 
 When the host observes completion, failure, or cancellation, it calls
-`runtime.Host.CompletePendingTool`. Floret appends a host-authored user follow-up
-turn containing `<pending_tool_completion>` and runs the normal agent loop. The
-completion is not a second `role=tool` message for the original tool call; the
-initial pending result already satisfied that provider tool-call pairing.
+`runtime.Host.SettlePendingTool` to update the original activity item without
+adding provider-visible context. If the agent should reason over the completed
+work, the host can call `runtime.Host.CompletePendingTool`; Floret then appends a
+host-authored user follow-up turn containing `<pending_tool_completion>` and
+runs the normal agent loop. Neither path creates a second `role=tool` message
+for the original tool call; the initial pending result already satisfied that
+provider tool-call pairing.
 
 ### Subagent detail inspection
 
@@ -422,7 +428,7 @@ ordered history.
 | Storage | thread journal, prompt material, provider ledger, artifacts, runtime metadata | product metadata keyed by `runtime.ThreadID` |
 | Tools | schema validation, generic effects, approval hook, dispatch, result projection | domain handlers and final product permission checks |
 | Tool approvals | approval request state and current pending snapshots | user-facing approval UX, summaries, product mode policy, decision ownership |
-| Pending tool work | pending result projection, running activity, host completion turn | handle ownership, process lifecycle, progress, cancellation, final artifacts |
+| Pending tool work | pending result projection, terminal activity settlement, host settlement/completion APIs | handle ownership, process lifecycle, progress, cancellation, final artifacts |
 | UI | sanitized events, snapshots, observation DTOs, thread-turn projection | layout, workflows, interaction states, recovery actions |
 
 ## 👁️ Observation
