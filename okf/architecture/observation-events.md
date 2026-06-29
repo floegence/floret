@@ -24,7 +24,12 @@ reasoning, tool arguments, tool results, and local paths.
 * Activity timelines summarize tool, hosted-tool, approval, control, and budget
   state. Floret builds the activity projection for hosted turns; host
   applications must not call `observation.BuildActivityTimeline` to synthesize a
-  main-thread UI activity surface.
+  main-thread UI activity surface. Run-end facts settle unresolved pending,
+  running, and approval-waiting activity inside Floret: failed turns make open
+  items terminal errors, cancelled turns make them cancelled, and explicit
+  approval resolution events remain authoritative when present. Run-end failed
+  or cancelled markers are lifecycle facts for settlement and summary; waiting
+  run-end markers are the visible control item for host/user input.
 * Runtime stream observations expose provider-neutral model output facts,
   including text deltas, reasoning deltas, retry/finish signals, and model
   tool-call stream start/delta/end facts. Model tool-call stream facts identify
@@ -44,8 +49,10 @@ reasoning, tool arguments, tool results, and local paths.
   appended. Hosts can use streaming observations for temporary live rendering,
   then reconcile durable display order from `TurnResult.Projection` or
   `ProjectThreadTurn` without reading Floret storage internals or rebuilding
-  activity from host audit records. The read model carries the same Floret-owned
-  row activity projection as subagent detail reads.
+  activity from host audit records. `ProjectThreadTurn` reduces the ordered
+  detail events for a turn; it does not allow a stale aggregate activity
+  timeline to override later detail facts. The read model carries the same
+  Floret-owned row activity projection as subagent detail reads.
 * Context statuses show projected and provider-reported context pressure.
 * Compaction events expose context compaction lifecycle. A complete compaction
   event means the compacted active context has been rebuilt into a full provider

@@ -9,42 +9,11 @@ import (
 
 func TestProjectThreadTurnOrdersTextActivityAndControlSegments(t *testing.T) {
 	now := time.Unix(100, 0)
-	canonical := observation.ActivityTimeline{
-		SchemaVersion: observation.ActivityTimelineSchemaVersion,
-		RunID:         "run-1",
-		ThreadID:      "thread-1",
-		TurnID:        "turn-1",
-		TraceID:       "run-1",
-		Items: []observation.ActivityItem{
-			{
-				ItemID:          "tool:call-1",
-				ToolID:          "call-1",
-				ToolName:        "read",
-				Kind:            observation.ActivityKindTool,
-				Status:          observation.ActivityStatusSuccess,
-				Severity:        observation.ActivitySeverityNormal,
-				StartedAtUnixMS: now.UnixMilli(),
-				EndedAtUnixMS:   now.Add(time.Second).UnixMilli(),
-			},
-			{
-				ItemID:          "control:done",
-				ToolID:          "done",
-				ToolName:        "task_complete",
-				Kind:            observation.ActivityKindControl,
-				Status:          observation.ActivityStatusSuccess,
-				Severity:        observation.ActivitySeverityNormal,
-				StartedAtUnixMS: now.Add(2 * time.Second).UnixMilli(),
-				EndedAtUnixMS:   now.Add(2 * time.Second).UnixMilli(),
-			},
-		},
-	}
-	canonical.Summary = threadTurnProjectionActivitySummary(canonical.Items)
 	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
-		ThreadID:         "thread-1",
-		TurnID:           "turn-1",
-		RunID:            "run-1",
-		TraceID:          "run-1",
-		ActivityTimeline: canonical,
+		ThreadID: "thread-1",
+		TurnID:   "turn-1",
+		RunID:    "run-1",
+		TraceID:  "run-1",
 		Events: []ThreadDetailEvent{
 			{
 				ID:        "text-1",
@@ -134,33 +103,11 @@ func TestProjectThreadTurnOrdersTextActivityAndControlSegments(t *testing.T) {
 
 func TestProjectThreadTurnPreservesActivityAttentionSummary(t *testing.T) {
 	now := time.Unix(200, 0)
-	canonical := observation.ActivityTimeline{
-		SchemaVersion: observation.ActivityTimelineSchemaVersion,
-		RunID:         "run-attention",
-		ThreadID:      "thread-attention",
-		TurnID:        "turn-attention",
-		TraceID:       "run-attention",
-		Items: []observation.ActivityItem{{
-			ItemID:           "tool:approval-1",
-			ToolID:           "approval-1",
-			ToolName:         "terminal.exec",
-			Kind:             observation.ActivityKindApproval,
-			Status:           observation.ActivityStatusWaiting,
-			Severity:         observation.ActivitySeverityBlocking,
-			NeedsAttention:   true,
-			AttentionReasons: []observation.ActivityAttentionReason{observation.ActivityAttentionWaiting, observation.ActivityAttentionApproval},
-			RequiresApproval: true,
-			StartedAtUnixMS:  now.UnixMilli(),
-		}},
-	}
-	canonical.Summary = threadTurnProjectionActivitySummary(canonical.Items)
-
 	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
-		ThreadID:         "thread-attention",
-		TurnID:           "turn-attention",
-		RunID:            "run-attention",
-		TraceID:          "run-attention",
-		ActivityTimeline: canonical,
+		ThreadID: "thread-attention",
+		TurnID:   "turn-attention",
+		RunID:    "run-attention",
+		TraceID:  "run-attention",
 		Events: []ThreadDetailEvent{{
 			ID:        "approval-row",
 			Ordinal:   1,
@@ -168,7 +115,7 @@ func TestProjectThreadTurnPreservesActivityAttentionSummary(t *testing.T) {
 			TurnID:    "turn-attention",
 			Kind:      ThreadDetailEventApproval,
 			CreatedAt: now,
-			Approval:  &ThreadDetailApproval{ToolID: "approval-1", ToolName: "terminal.exec"},
+			Approval:  &ThreadDetailApproval{State: "requested", ToolID: "approval-1", ToolName: "terminal.exec"},
 		}},
 	})
 	if len(projection.Segments) != 1 || projection.Segments[0].ActivityTimeline == nil {
@@ -184,43 +131,184 @@ func TestProjectThreadTurnPreservesActivityAttentionSummary(t *testing.T) {
 	}
 }
 
-func TestProjectThreadTurnUsesCanonicalActivityWithoutDetailEvents(t *testing.T) {
+func TestProjectThreadTurnSettlesApprovalAndToolFromDetailEvents(t *testing.T) {
 	now := time.Unix(300, 0)
-	canonical := observation.ActivityTimeline{
-		SchemaVersion: observation.ActivityTimelineSchemaVersion,
-		RunID:         "run-canceled",
-		ThreadID:      "thread-canceled",
-		TurnID:        "turn-canceled",
-		TraceID:       "run-canceled",
-		Items: []observation.ActivityItem{{
-			ItemID:          "tool:call-1",
-			ToolID:          "call-1",
-			ToolName:        "terminal.exec",
-			Kind:            observation.ActivityKindTool,
-			Status:          observation.ActivityStatusCanceled,
-			Severity:        observation.ActivitySeverityWarning,
-			StartedAtUnixMS: now.UnixMilli(),
-			EndedAtUnixMS:   now.Add(time.Second).UnixMilli(),
-		}},
-	}
-	canonical.Summary = threadTurnProjectionActivitySummary(canonical.Items)
 
 	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
-		ThreadID:         "thread-canceled",
-		TurnID:           "turn-canceled",
-		RunID:            "run-canceled",
-		TraceID:          "run-canceled",
-		ActivityTimeline: canonical,
+		ThreadID: "thread-settled",
+		TurnID:   "turn-settled",
+		RunID:    "run-settled",
+		TraceID:  "run-settled",
+		Events: []ThreadDetailEvent{
+			{
+				ID:        "approval-requested",
+				Ordinal:   1,
+				ThreadID:  "thread-settled",
+				TurnID:    "turn-settled",
+				Kind:      ThreadDetailEventApproval,
+				Type:      observation.EventTypeToolApprovalRequested,
+				CreatedAt: now,
+				Approval:  &ThreadDetailApproval{State: "requested", ToolID: "call-1", ToolName: "terminal.exec"},
+				ActivityTimeline: projectionSingleItemTimeline("run-settled", "thread-settled", "turn-settled", observation.ActivityItem{
+					ItemID:           "approval:call-1",
+					ToolID:           "call-1",
+					ToolName:         "terminal.exec",
+					Kind:             observation.ActivityKindApproval,
+					Status:           observation.ActivityStatusWaiting,
+					Severity:         observation.ActivitySeverityBlocking,
+					RequiresApproval: true,
+					ApprovalState:    "requested",
+					Label:            "curl -s https://example.test",
+					Renderer:         observation.ActivityRendererTerminal,
+					Payload:          map[string]any{"command": "curl -s https://example.test"},
+				}),
+			},
+			{
+				ID:        "approval-approved",
+				Ordinal:   2,
+				ThreadID:  "thread-settled",
+				TurnID:    "turn-settled",
+				Kind:      ThreadDetailEventApproval,
+				Type:      observation.EventTypeToolApprovalApproved,
+				CreatedAt: now.Add(time.Second),
+				Approval:  &ThreadDetailApproval{State: "approved", ToolID: "call-1", ToolName: "terminal.exec"},
+			},
+			{
+				ID:        "tool-call",
+				Ordinal:   3,
+				ThreadID:  "thread-settled",
+				TurnID:    "turn-settled",
+				Kind:      ThreadDetailEventToolCall,
+				CreatedAt: now.Add(2 * time.Second),
+				ToolCall:  &ThreadDetailToolCall{ID: "call-1", Name: "terminal.exec"},
+				ActivityTimeline: projectionSingleItemTimeline("run-settled", "thread-settled", "turn-settled", observation.ActivityItem{
+					ItemID:   "tool:call-1",
+					ToolID:   "call-1",
+					ToolName: "terminal.exec",
+					Kind:     observation.ActivityKindTool,
+					Status:   observation.ActivityStatusRunning,
+					Severity: observation.ActivitySeverityNormal,
+					Label:    "curl -s https://example.test",
+					Renderer: observation.ActivityRendererTerminal,
+					Payload:  map[string]any{"command": "curl -s https://example.test"},
+				}),
+			},
+			{
+				ID:        "tool-result",
+				Ordinal:   4,
+				ThreadID:  "thread-settled",
+				TurnID:    "turn-settled",
+				Kind:      ThreadDetailEventToolResult,
+				CreatedAt: now.Add(3 * time.Second),
+				ToolResult: &ThreadDetailToolResult{
+					CallID:   "call-1",
+					ToolName: "terminal.exec",
+					Status:   string(observation.ActivityStatusSuccess),
+				},
+			},
+		},
 	})
 
 	if len(projection.Segments) != 1 || projection.Segments[0].Kind != ThreadTurnProjectionSegmentActivityTimeline {
 		t.Fatalf("projection segments = %#v", projection.Segments)
 	}
 	timeline := projection.Segments[0].ActivityTimeline
-	if timeline == nil || len(timeline.Items) != 1 || timeline.Items[0].Status != observation.ActivityStatusCanceled {
+	if timeline == nil || len(timeline.Items) != 2 {
 		t.Fatalf("activity segment = %#v", projection.Segments[0])
 	}
-	if timeline.Summary.Status != observation.ActivityStatusCanceled || timeline.Summary.Counts.Canceled != 1 || timeline.Summary.Counts.Running != 0 {
+	if timeline.Summary.Status != observation.ActivityStatusSuccess ||
+		timeline.Summary.Counts.Waiting != 0 ||
+		timeline.Summary.Counts.Running != 0 ||
+		timeline.Summary.Counts.Success != 2 {
 		t.Fatalf("activity summary = %#v", timeline.Summary)
 	}
+	for _, item := range timeline.Items {
+		if item.Status != observation.ActivityStatusSuccess {
+			t.Fatalf("item should be settled: %#v", item)
+		}
+		if item.Label != "curl -s https://example.test" {
+			t.Fatalf("item label=%q, want command label: %#v", item.Label, item)
+		}
+	}
+	if err := observation.ValidateActivityTimeline(*timeline); err != nil {
+		t.Fatalf("activity timeline invalid: %v", err)
+	}
+}
+
+func TestProjectThreadTurnSettlesWaitingApprovalOnFailedTurn(t *testing.T) {
+	now := time.Unix(400, 0)
+
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID: "thread-failed",
+		TurnID:   "turn-failed",
+		RunID:    "run-failed",
+		TraceID:  "run-failed",
+		Events: []ThreadDetailEvent{
+			{
+				ID:        "approval-requested",
+				Ordinal:   1,
+				ThreadID:  "thread-failed",
+				TurnID:    "turn-failed",
+				Kind:      ThreadDetailEventApproval,
+				Type:      observation.EventTypeToolApprovalRequested,
+				CreatedAt: now,
+				Approval:  &ThreadDetailApproval{State: "requested", ToolID: "call-1", ToolName: "terminal.exec"},
+				ActivityTimeline: projectionSingleItemTimeline("run-failed", "thread-failed", "turn-failed", observation.ActivityItem{
+					ItemID:           "approval:call-1",
+					ToolID:           "call-1",
+					ToolName:         "terminal.exec",
+					Kind:             observation.ActivityKindApproval,
+					Status:           observation.ActivityStatusWaiting,
+					Severity:         observation.ActivitySeverityBlocking,
+					RequiresApproval: true,
+					ApprovalState:    "requested",
+					Label:            "curl -s https://example.test",
+					Renderer:         observation.ActivityRendererTerminal,
+					Payload:          map[string]any{"command": "curl -s https://example.test"},
+				}),
+			},
+			{
+				ID:        "turn-failed",
+				Ordinal:   2,
+				ThreadID:  "thread-failed",
+				TurnID:    "turn-failed",
+				Kind:      ThreadDetailEventTurnMarker,
+				CreatedAt: now.Add(time.Second),
+				Error:     "provider failed",
+				TurnMarker: &ThreadDetailTurnMarker{
+					Status: "failed",
+				},
+			},
+		},
+	})
+
+	if len(projection.Segments) != 1 || projection.Segments[0].Kind != ThreadTurnProjectionSegmentActivityTimeline {
+		t.Fatalf("projection segments = %#v", projection.Segments)
+	}
+	timeline := projection.Segments[0].ActivityTimeline
+	if timeline == nil || len(timeline.Items) != 1 {
+		t.Fatalf("activity segment = %#v", projection.Segments[0])
+	}
+	item := timeline.Items[0]
+	if item.Status != observation.ActivityStatusError ||
+		item.ApprovalState != "timed_out" ||
+		item.Label != "curl -s https://example.test" ||
+		!item.RequiresApproval ||
+		timeline.Summary.Counts.Waiting != 0 ||
+		timeline.Summary.Status != observation.ActivityStatusError {
+		t.Fatalf("approval should settle from failed turn: item=%#v summary=%#v", item, timeline.Summary)
+	}
+}
+
+func projectionSingleItemTimeline(runID, threadID, turnID string, item observation.ActivityItem) *observation.ActivityTimeline {
+	timeline := observation.ActivityTimeline{
+		SchemaVersion: observation.ActivityTimelineSchemaVersion,
+		RunID:         runID,
+		ThreadID:      threadID,
+		TurnID:        turnID,
+		TraceID:       runID,
+		Items:         []observation.ActivityItem{item},
+	}
+	timeline.Summary = threadTurnProjectionActivitySummary(timeline.Items)
+	return &timeline
 }

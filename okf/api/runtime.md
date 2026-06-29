@@ -134,21 +134,29 @@ run failures. This is Floret's public read model for durable execution
 transcript facts. `ThreadTurnProjection` is the public display projection over
 those facts: `RunTurn`, `RetryTurn`, and `CompletePendingTool` return it on
 `TurnResult`, and hosts with live committed events may call `ProjectThreadTurn`.
-Downstream hosts may map those product-neutral segments to their own UI blocks,
-but must not read Floret's store schema, rebuild execution ordering from
-separate audit tables, or call `observation.BuildActivityTimeline` to create the
-main thread activity surface. Pagination uses `AfterOrdinal`, `Limit`, `HasMore`, and
-`NextOrdinal`; raw content follows the same explicit `IncludeRaw` opt-in rule as
-subagent detail reads. Thread detail events share the same row-level
-`ActivityTimeline` projection and structured tool result `status` contract as
-subagent detail events.
+`ProjectThreadTurn` derives assistant text, control-signal segments, and turn
+activity only from the ordered `ThreadDetailEvent` stream for the target turn.
+It does not accept or merge an older aggregate activity timeline as an input.
+Row-level `ActivityTimeline` values are treated only as already-sanitized
+presentation metadata for their corresponding detail event; the final activity
+state is re-reduced from ordered tool call, tool result, approval, turn marker,
+and run-failure facts. Downstream hosts may map those product-neutral segments
+to their own UI blocks, but must not read Floret's store schema, rebuild
+execution ordering from separate audit tables, or call
+`observation.BuildActivityTimeline` to create the main thread activity surface.
+Pagination uses `AfterOrdinal`, `Limit`, `HasMore`, and `NextOrdinal`; raw
+content follows the same explicit `IncludeRaw` opt-in rule as subagent detail
+reads. Thread detail events share the same row-level `ActivityTimeline`
+projection and structured tool result `status` contract as subagent detail
+events.
 
 Terminal turn results, including cancelled turns, still return a bounded
-`ThreadTurnProjection`. If the durable detail stream has no rows for an
-otherwise valid runtime activity timeline, the projection includes that canonical
-activity timeline directly. Downstream hosts should consume this projection to
-replace their product UI for the turn instead of synthesizing final tool status
-from local audit records or live stream leftovers.
+`ThreadTurnProjection`. Terminal markers and run failures settle unresolved
+tool and approval activity in Floret's projection before the result is returned,
+so open running, pending, or waiting rows do not remain decisionable after the
+turn has failed or been cancelled. Downstream hosts should consume this
+projection to replace their product UI for the turn instead of synthesizing
+final tool status from local audit records or live stream leftovers.
 
 Pending approval snapshots are the current-state companion to the durable
 approval audit trail. `ListPendingApprovals` can be called while a turn is active

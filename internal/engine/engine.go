@@ -2871,6 +2871,7 @@ func (e *Engine) emitApprovalEvent(opts Options, step int, typ event.Type, req t
 		ToolKind: "local",
 		Args:     req.Args,
 		ArgsHash: req.ArgsHash,
+		Activity: req.Activity,
 		Result:   result,
 		Err:      reason,
 		Metadata: approvalEventMetadata(req, reason),

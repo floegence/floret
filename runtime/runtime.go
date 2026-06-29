@@ -1399,12 +1399,11 @@ func (h *host) attachThreadTurnProjection(ctx context.Context, threadID string, 
 		return err
 	}
 	result.Projection = ProjectThreadTurn(ProjectThreadTurnRequest{
-		ThreadID:         ThreadID(threadID),
-		TurnID:           result.ID,
-		RunID:            result.RunID,
-		TraceID:          TraceID(result.RunID),
-		Events:           events,
-		ActivityTimeline: result.ActivityTimeline,
+		ThreadID: ThreadID(threadID),
+		TurnID:   result.ID,
+		RunID:    result.RunID,
+		TraceID:  TraceID(result.RunID),
+		Events:   events,
 	})
 	return nil
 }

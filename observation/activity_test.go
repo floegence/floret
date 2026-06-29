@@ -124,6 +124,52 @@ func TestBuildActivityTimelineFailsUnresolvedToolAtRunEnd(t *testing.T) {
 	}
 }
 
+func TestBuildActivityTimelineCancelsUnresolvedApprovalAtRunEnd(t *testing.T) {
+	start := time.UnixMilli(1_700_000_001_000)
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-canceled", ThreadID: "thread-canceled", TurnID: "turn-canceled"}, []Event{
+		{Type: EventTypeToolApprovalRequested, RunID: "run-canceled", ThreadID: "thread-canceled", TurnID: "turn-canceled", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Metadata: map[string]any{"approval_id": "approval-1"}, ObservedAt: start},
+		{Type: EventTypeRunEnd, RunID: "run-canceled", ThreadID: "thread-canceled", TurnID: "turn-canceled", Step: 2, Message: string(ActivityStatusCanceled), ObservedAt: start.Add(250 * time.Millisecond)},
+	}, start.Add(time.Second).UnixMilli())
+
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("timeline should validate: %v", err)
+	}
+	if timeline.Summary.Status != ActivityStatusCanceled || timeline.Summary.Counts.Waiting != 0 || timeline.Summary.Counts.Approval != 1 {
+		t.Fatalf("summary should show canceled terminal approval state: %#v", timeline.Summary)
+	}
+	approval := activityTestItemByKind(timeline, ActivityKindApproval)
+	if approval.Status != ActivityStatusCanceled ||
+		approval.Severity != ActivitySeverityWarning ||
+		approval.ApprovalState != "canceled" ||
+		approval.EndedAtUnixMS == 0 ||
+		approval.NeedsAttention {
+		t.Fatalf("approval item mismatch: %#v", approval)
+	}
+}
+
+func TestBuildActivityTimelineFailsUnresolvedApprovalAtRunEnd(t *testing.T) {
+	start := time.UnixMilli(1_700_000_001_000)
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-failed", ThreadID: "thread-failed", TurnID: "turn-failed"}, []Event{
+		{Type: EventTypeToolApprovalRequested, RunID: "run-failed", ThreadID: "thread-failed", TurnID: "turn-failed", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Metadata: map[string]any{"approval_id": "approval-1"}, ObservedAt: start},
+		{Type: EventTypeRunEnd, RunID: "run-failed", ThreadID: "thread-failed", TurnID: "turn-failed", Step: 2, Message: "failed", Error: "provider failed", ObservedAt: start.Add(250 * time.Millisecond)},
+	}, start.Add(time.Second).UnixMilli())
+
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("timeline should validate: %v", err)
+	}
+	if timeline.Summary.Status != ActivityStatusError || timeline.Summary.Counts.Waiting != 0 || timeline.Summary.Counts.Approval != 1 {
+		t.Fatalf("summary should show failed terminal approval state: %#v", timeline.Summary)
+	}
+	approval := activityTestItemByKind(timeline, ActivityKindApproval)
+	if approval.Status != ActivityStatusError ||
+		approval.Severity != ActivitySeverityError ||
+		approval.ApprovalState != "timed_out" ||
+		approval.EndedAtUnixMS == 0 ||
+		!approval.NeedsAttention {
+		t.Fatalf("approval item mismatch: %#v", approval)
+	}
+}
+
 func TestBuildActivityTimelineMergesExplicitActivityPresentation(t *testing.T) {
 	start := time.UnixMilli(1_700_000_010_000)
 	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-present"}, []Event{
@@ -683,6 +729,15 @@ func assertActivityTimelineDoesNotContain(t *testing.T, data string, forbidden .
 func activityTestItemByToolID(timeline ActivityTimeline, toolID string) ActivityItem {
 	for _, item := range timeline.Items {
 		if item.ToolID == toolID {
+			return item
+		}
+	}
+	return ActivityItem{}
+}
+
+func activityTestItemByKind(timeline ActivityTimeline, kind ActivityKind) ActivityItem {
+	for _, item := range timeline.Items {
+		if item.Kind == kind {
 			return item
 		}
 	}

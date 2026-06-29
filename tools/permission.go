@@ -1,6 +1,10 @@
 package tools
 
-import "context"
+import (
+	"context"
+
+	"github.com/floegence/floret/observation"
+)
 
 type Effect string
 
@@ -52,6 +56,7 @@ type ApprovalRequest struct {
 	Args          string
 	ArgsHash      string
 	ValidatedArgs any
+	Activity      *observation.ActivityPresentation
 	RunID         string
 	ThreadID      string
 	TurnID        string

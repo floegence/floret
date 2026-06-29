@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/floegence/floret/observation"
 )
 
 type testArgs struct {
@@ -138,6 +140,50 @@ func TestApprovalGrantedExecutesExactRequest(t *testing.T) {
 	}
 	if seen != `{"value":"original"}` {
 		t.Fatalf("handler saw %q, want exact approved args", seen)
+	}
+}
+
+func TestApprovalRequestIncludesActivityPresentation(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.Register(Define[testArgs](
+		Definition{
+			Name:        "shell",
+			InputSchema: StrictObject(map[string]any{"value": String("")}, []string{"value"}),
+			Effects:     []Effect{EffectShell},
+			Permission:  PermissionSpec{Mode: PermissionAsk, ResourceKinds: []string{"command"}},
+			Activity: func(inv Invocation[any]) (*observation.ActivityPresentation, error) {
+				args, ok := inv.Args.(testArgs)
+				if !ok {
+					t.Fatalf("activity args type = %T", inv.Args)
+				}
+				return &observation.ActivityPresentation{
+					Label:    args.Value,
+					Renderer: observation.ActivityRendererTerminal,
+					Payload:  map[string]any{"command": args.Value},
+				}, nil
+			},
+		},
+		nil,
+		func(inv Invocation[testArgs]) ([]ResourceRef, error) {
+			return []ResourceRef{{Kind: "command", Value: inv.Args.Value}}, nil
+		},
+		func(context.Context, Invocation[testArgs]) (Result, error) {
+			return Result{Text: "ok"}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	got := reg.Run(context.Background(), ToolCall{ID: "call", Name: "shell", Args: `{"value":"curl https://example.test"}`}, func(_ context.Context, req ApprovalRequest) (PermissionDecision, error) {
+		if req.Activity == nil ||
+			req.Activity.Label != "curl https://example.test" ||
+			req.Activity.Renderer != observation.ActivityRendererTerminal ||
+			req.Activity.Payload["command"] != "curl https://example.test" {
+			t.Fatalf("approval activity = %#v", req.Activity)
+		}
+		return PermissionDecisionAllow, nil
+	})
+	if got.IsError || got.Text != "ok" {
+		t.Fatalf("result = %#v", got)
 	}
 }
 

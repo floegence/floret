@@ -601,29 +601,6 @@ func activityToolKind(ev Event) ActivityKind {
 func activityRunEndControlItem(ev Event, index int, observedAt int64) (ActivityItem, bool) {
 	status := strings.TrimSpace(ev.Message)
 	switch status {
-	case string(ActivityStatusCanceled), "cancelled":
-		return ActivityItem{
-			ItemID:          fmt.Sprintf("control:canceled:%d:%d", ev.Step, index),
-			Kind:            ActivityKindControl,
-			Status:          ActivityStatusCanceled,
-			Severity:        ActivitySeverityWarning,
-			StartedAtUnixMS: observedAt,
-			EndedAtUnixMS:   observedAt,
-			Metadata:        activityMetadata(ev),
-		}, true
-	}
-	if activityEventHasError(ev) {
-		return ActivityItem{
-			ItemID:          fmt.Sprintf("control:error:%d:%d", ev.Step, index),
-			Kind:            ActivityKindControl,
-			Status:          ActivityStatusError,
-			Severity:        ActivitySeverityError,
-			StartedAtUnixMS: observedAt,
-			EndedAtUnixMS:   observedAt,
-			Metadata:        activityMetadata(ev),
-		}, true
-	}
-	switch status {
 	case string(ActivityStatusWaiting):
 		return ActivityItem{
 			ItemID:          fmt.Sprintf("control:waiting:%d:%d", ev.Step, index),
@@ -645,6 +622,10 @@ func settleUnresolvedActivityItemAtRunEnd(item *ActivityItem, runEnd Event, nowU
 	}
 	switch item.Status {
 	case ActivityStatusPending, ActivityStatusRunning:
+	case ActivityStatusWaiting:
+		if !item.RequiresApproval {
+			return
+		}
 	default:
 		return
 	}
@@ -661,6 +642,9 @@ func settleUnresolvedActivityItemAtRunEnd(item *ActivityItem, runEnd Event, nowU
 	if pending {
 		item.Label = ""
 		item.Description = ""
+	}
+	if item.RequiresApproval {
+		item.ApprovalState = approvalTerminalStateForRunEnd(runEnd, item.ApprovalState)
 	}
 }
 
@@ -682,6 +666,21 @@ func activityRunEndIsCanceled(ev Event) bool {
 	default:
 		return false
 	}
+}
+
+func approvalTerminalStateForRunEnd(ev Event, current string) string {
+	current = strings.TrimSpace(current)
+	switch current {
+	case "approved", "rejected", "timed_out", "canceled":
+		return current
+	}
+	if activityRunEndIsCanceled(ev) {
+		return "canceled"
+	}
+	if activityEventHasError(ev) {
+		return "timed_out"
+	}
+	return current
 }
 
 func activityTerminalMetadata(metadata map[string]string) map[string]string {

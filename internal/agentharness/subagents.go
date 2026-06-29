@@ -820,7 +820,10 @@ func subAgentDetailObservationEvent(detail SubAgentDetailEvent, entry sessiontre
 		base.ToolName = detail.Approval.ToolName
 		base.ToolKind = firstSubAgentDetailNonEmpty(detail.Approval.ToolKind, "local")
 		base.ArgsHash = detail.Approval.ArgsHash
-		base.Activity = subAgentDetailActivityPresentation("Tool approval", detail.Approval.State)
+		base.Activity = observationActivityPresentation(entry.Message.Activity)
+		if base.Activity == nil {
+			base.Activity = subAgentDetailActivityPresentation("Tool approval", detail.Approval.State)
+		}
 		base.Metadata = subAgentDetailApprovalActivityMetadata(detail.Approval.Metadata)
 		if detail.Approval.State == "rejected" || detail.Approval.State == "timed_out" {
 			base.Error = "tool_approval_" + detail.Approval.State

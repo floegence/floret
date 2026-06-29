@@ -478,6 +478,7 @@ func (r *Registry) permissionDenied(ctx context.Context, def Definition, permiss
 		if approver == nil {
 			return ErrRejected.Error()
 		}
+		activity := activityForApprovalRequest(def, call, args, opts)
 		decision, err := approver(ctx, ApprovalRequest{
 			ApprovalID:    approvalID(call),
 			ID:            call.ID,
@@ -485,6 +486,7 @@ func (r *Registry) permissionDenied(ctx context.Context, def Definition, permiss
 			Args:          call.Args,
 			ArgsHash:      stableApprovalArgsHash(call.Args),
 			ValidatedArgs: args,
+			Activity:      activity,
 			RunID:         opts.RunID,
 			ThreadID:      opts.ThreadID,
 			TurnID:        opts.TurnID,
@@ -511,6 +513,33 @@ func (r *Registry) permissionDenied(ctx context.Context, def Definition, permiss
 		return ErrRejected.Error()
 	}
 	return ""
+}
+
+func activityForApprovalRequest(def Definition, call ToolCall, args any, opts RunOptions) *observation.ActivityPresentation {
+	if def.Activity == nil {
+		return nil
+	}
+	raw := strings.TrimSpace(call.Args)
+	if raw == "" {
+		raw = "{}"
+	}
+	activity, err := def.Activity(Invocation[any]{
+		CallID:        call.ID,
+		Name:          call.Name,
+		RawArgs:       raw,
+		Args:          args,
+		RunID:         opts.RunID,
+		ThreadID:      opts.ThreadID,
+		TurnID:        opts.TurnID,
+		PromptScopeID: opts.PromptScopeID,
+		Step:          opts.Step,
+		Labels:        cloneStringMap(opts.Labels),
+		HostContext:   cloneStringMap(opts.HostContext),
+	})
+	if err != nil {
+		return nil
+	}
+	return activity
 }
 
 func approvalID(call ToolCall) string {

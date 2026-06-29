@@ -58,7 +58,12 @@ labels, host context, state, timing, and revision metadata.
 
 Hosts own the product authorization policy and user-facing approval experience.
 They should translate the generic snapshot into product copy and controls
-without moving product modes or UI semantics into Floret.
+without moving product modes or UI semantics into Floret. If a host tool
+definition supplies an `ActivityPresentation`, Floret carries the sanitized
+presentation through approval requested/resolved observations and durable detail
+events so the approval activity row has the same product-projected label as the
+tool invocation. Floret still treats that presentation as opaque display data;
+tool-specific labels, renderers, and payload fields remain host-owned.
 
 # Pending Tool Work
 

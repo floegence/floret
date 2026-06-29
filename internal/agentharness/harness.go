@@ -1616,6 +1616,7 @@ func (t *Thread) appendApprovalEvent(ctx context.Context, turnID string, runID s
 		ThreadID: t.id,
 		TurnID:   turnID,
 		Type:     sessiontree.EntryCustom,
+		Message:  session.Message{Activity: sessionActivityPresentation(sanitizeActivityPresentation(ev.Activity))},
 		Metadata: metadata,
 	}, sessiontree.AppendOptions{})
 	if err != nil {
