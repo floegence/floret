@@ -144,6 +144,8 @@ and run-failure facts. Downstream hosts may map those product-neutral segments
 to their own UI blocks, but must not read Floret's store schema, rebuild
 execution ordering from separate audit tables, or call
 `observation.BuildActivityTimeline` to create the main thread activity surface.
+Host live protocols, cursors, replacement snapshots, and product timeline
+reducers remain downstream concerns; they are not Floret runtime contracts.
 Pagination uses `AfterOrdinal`, `Limit`, `HasMore`, and `NextOrdinal`; raw
 content follows the same explicit `IncludeRaw` opt-in rule as subagent detail
 reads. Thread detail events share the same row-level `ActivityTimeline`
