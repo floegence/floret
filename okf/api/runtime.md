@@ -161,13 +161,14 @@ projected as a `tool_result` detail event, so it updates activity without
 entering provider-visible history.
 
 Terminal turn results, including cancelled turns, still return a bounded
-`ThreadTurnProjection`. Terminal markers and run failures settle unresolved
+`ThreadTurnProjection`. Cancelled or failed terminal markers settle unresolved
 tool and approval activity in Floret's projection before the result is returned,
 so open running, pending, or waiting rows do not remain decisionable after the
 turn has failed or been cancelled. A successful turn does not imply completion
-of host-owned pending work. Downstream hosts should consume Floret projections
-and settlement results to replace their product UI for the turn instead of
-synthesizing final tool status from local audit records or live stream
+of host-owned pending work or requested tool approvals. Downstream hosts should
+consume Floret projections and settlement results to replace their product UI
+for the turn instead of synthesizing final tool status from local audit records
+or live stream
 leftovers.
 
 Pending approval snapshots are the current-state companion to the durable

@@ -345,6 +345,7 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			state.item.Severity = ActivitySeverityBlocking
 			state.item.RequiresApproval = true
 			state.item.ApprovalState = "requested"
+			state.item.EndedAtUnixMS = 0
 			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
 			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
 			state.lastSeen = observedAt
@@ -513,6 +514,9 @@ func ValidateActivityTimeline(timeline ActivityTimeline) error {
 			if err := validateActivityApprovalState(item.ApprovalState); err != nil {
 				return fmt.Errorf("item %q approval state: %w", item.ItemID, err)
 			}
+			if err := validateActivityItemApprovalLifecycle(item); err != nil {
+				return fmt.Errorf("item %q approval lifecycle: %w", item.ItemID, err)
+			}
 		}
 		if err := validateActivityItemPresentation(item); err != nil {
 			return fmt.Errorf("item %q presentation: %w", item.ItemID, err)
@@ -636,6 +640,9 @@ func settleUnresolvedActivityItemAtRunEnd(item *ActivityItem, runEnd Event, nowU
 	if (activityHasPendingMetadata(item.Metadata) || activityHasPendingPayload(item.Payload)) &&
 		!activityRunEndIsCanceled(runEnd) &&
 		!activityEventHasError(runEnd) {
+		return
+	}
+	if item.RequiresApproval && !activityRunEndIsCanceled(runEnd) && !activityEventHasError(runEnd) {
 		return
 	}
 	switch item.Status {
@@ -1591,6 +1598,34 @@ func validateActivityApprovalState(state string) error {
 	default:
 		return errors.New("unknown activity approval state")
 	}
+}
+
+func validateActivityItemApprovalLifecycle(item ActivityItem) error {
+	if item.Kind != ActivityKindApproval {
+		return errors.New("approval_state is only valid on approval items")
+	}
+	switch item.ApprovalState {
+	case "requested":
+		if item.Status != ActivityStatusWaiting {
+			return fmt.Errorf("requested approval status is %q, want %q", item.Status, ActivityStatusWaiting)
+		}
+		if item.EndedAtUnixMS != 0 {
+			return errors.New("requested approval must not be ended")
+		}
+	case "approved":
+		if item.Status != ActivityStatusSuccess {
+			return fmt.Errorf("approved approval status is %q, want %q", item.Status, ActivityStatusSuccess)
+		}
+	case "rejected", "timed_out":
+		if item.Status != ActivityStatusError {
+			return fmt.Errorf("%s approval status is %q, want %q", item.ApprovalState, item.Status, ActivityStatusError)
+		}
+	case "canceled":
+		if item.Status != ActivityStatusCanceled {
+			return fmt.Errorf("canceled approval status is %q, want %q", item.Status, ActivityStatusCanceled)
+		}
+	}
+	return nil
 }
 
 func hashActivityToken(value string) string {

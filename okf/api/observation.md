@@ -25,9 +25,11 @@ summaries without parsing assistant text or depending on implementation types.
 items. When a sanitized `run_end` observation is present, cancelled runs produce
 `canceled` unresolved items and failed runs produce `error` unresolved items. A
 successful run end leaves host-owned `pending_tool_result` activity running
-until a later terminal tool-result settlement arrives. Terminal tool-result
-settlements remove running-only pending metadata, payload fields, and chips so
-downstream hosts do not carry stale active state into terminal UI.
+until a later terminal tool-result settlement arrives, and leaves requested
+tool approvals in `waiting` until an explicit approval resolution arrives.
+Terminal tool-result settlements remove running-only pending metadata, payload
+fields, and chips so downstream hosts do not carry stale active state into
+terminal UI.
 
 `CompactionEvent` carries `OperationID` for one compaction attempt and optional
 `RequestID` / `Source` when a downstream host requested manual compaction. Start,

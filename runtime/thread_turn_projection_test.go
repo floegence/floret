@@ -131,6 +131,73 @@ func TestProjectThreadTurnPreservesActivityAttentionSummary(t *testing.T) {
 	}
 }
 
+func TestProjectThreadTurnKeepsRequestedApprovalWaitingAfterSuccessfulTurnMarker(t *testing.T) {
+	now := time.Unix(250, 0)
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID: "thread-waiting-approval",
+		TurnID:   "turn-waiting-approval",
+		RunID:    "run-waiting-approval",
+		TraceID:  "run-waiting-approval",
+		Events: []ThreadDetailEvent{
+			{
+				ID:        "approval-row",
+				Ordinal:   1,
+				ThreadID:  "thread-waiting-approval",
+				TurnID:    "turn-waiting-approval",
+				Kind:      ThreadDetailEventApproval,
+				Type:      observation.EventTypeToolApprovalRequested,
+				CreatedAt: now,
+				Approval:  &ThreadDetailApproval{State: "requested", ToolID: "exec-1", ToolName: "terminal.exec"},
+				ActivityTimeline: projectionSingleItemTimeline("run-waiting-approval", "thread-waiting-approval", "turn-waiting-approval", observation.ActivityItem{
+					ItemID:           "approval:exec-1",
+					ToolID:           "exec-1",
+					ToolName:         "terminal.exec",
+					Kind:             observation.ActivityKindApproval,
+					Status:           observation.ActivityStatusWaiting,
+					Severity:         observation.ActivitySeverityBlocking,
+					RequiresApproval: true,
+					ApprovalState:    "requested",
+					Label:            "curl -s https://example.test",
+					Renderer:         observation.ActivityRendererTerminal,
+					Payload:          map[string]any{"command": "curl -s https://example.test"},
+				}),
+			},
+			{
+				ID:        "turn-success",
+				Ordinal:   2,
+				ThreadID:  "thread-waiting-approval",
+				TurnID:    "turn-waiting-approval",
+				Kind:      ThreadDetailEventTurnMarker,
+				CreatedAt: now.Add(time.Second),
+				TurnMarker: &ThreadDetailTurnMarker{
+					Status: string(observation.ActivityStatusSuccess),
+				},
+			},
+		},
+	})
+
+	if len(projection.Segments) != 1 || projection.Segments[0].ActivityTimeline == nil {
+		t.Fatalf("projection segments = %#v", projection.Segments)
+	}
+	timeline := projection.Segments[0].ActivityTimeline
+	if timeline.Summary.Status != observation.ActivityStatusWaiting ||
+		timeline.Summary.Counts.Waiting != 1 ||
+		timeline.Summary.Counts.Success != 0 ||
+		!timeline.Summary.NeedsAttention {
+		t.Fatalf("summary should keep waiting approval: %#v", timeline.Summary)
+	}
+	item := timeline.Items[0]
+	if item.Status != observation.ActivityStatusWaiting ||
+		item.ApprovalState != "requested" ||
+		item.EndedAtUnixMS != 0 ||
+		item.Label != "curl -s https://example.test" {
+		t.Fatalf("approval item should remain requested: %#v", item)
+	}
+	if err := observation.ValidateActivityTimeline(*timeline); err != nil {
+		t.Fatalf("projection should validate: %v", err)
+	}
+}
+
 func TestProjectThreadTurnSettlesApprovalAndToolFromDetailEvents(t *testing.T) {
 	now := time.Unix(300, 0)
 
