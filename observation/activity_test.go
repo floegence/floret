@@ -281,20 +281,20 @@ func TestBuildActivityTimelineMergesExplicitActivityPresentation(t *testing.T) {
 			RunID:    "run-present",
 			Step:     1,
 			ToolID:   "exec-1",
-			ToolName: "terminal.exec",
+			ToolName: "workspace.inspect",
 			ToolKind: "local",
 			Activity: &ActivityPresentation{
-				Label:    "npm run build --workspace internal/flower_ui",
-				Renderer: ActivityRendererTerminal,
-				Chips:    []ActivityChip{{Kind: "effect", Label: "shell", Tone: "neutral"}},
+				Label:    "Inspect workspace",
+				Renderer: ActivityRendererStructured,
+				Chips:    []ActivityChip{{Kind: "effect", Label: "inspect", Tone: "neutral"}},
 				TargetRefs: []ActivityTargetRef{{
 					Kind:  "workspace",
 					Label: "flower_ui",
 					Path:  "internal/flower_ui",
 				}},
 				Payload: map[string]any{
-					"command": "npm run build --workspace internal/flower_ui",
-					"cwd":     "internal/flower_ui",
+					"operation":    "inspect",
+					"display_name": "flower_ui",
 				},
 			},
 			ObservedAt: start,
@@ -304,15 +304,15 @@ func TestBuildActivityTimelineMergesExplicitActivityPresentation(t *testing.T) {
 			RunID:      "run-present",
 			Step:       1,
 			ToolID:     "exec-1",
-			ToolName:   "terminal.exec",
+			ToolName:   "workspace.inspect",
 			ToolKind:   "local",
 			DurationMS: 42,
 			Activity: &ActivityPresentation{
-				Description: "Command completed",
+				Description: "Inspection completed",
 				Payload: map[string]any{
-					"exit_code":   0,
+					"status":      "ok",
 					"duration_ms": 42,
-					"stdout":      "done",
+					"summary":     "done",
 				},
 			},
 			ObservedAt: start.Add(42 * time.Millisecond),
@@ -325,15 +325,16 @@ func TestBuildActivityTimelineMergesExplicitActivityPresentation(t *testing.T) {
 		t.Fatalf("items = %d, want 1", len(timeline.Items))
 	}
 	item := timeline.Items[0]
-	if item.Label != "npm run build --workspace internal/flower_ui" ||
-		item.Description != "Command completed" ||
-		item.Renderer != ActivityRendererTerminal {
+	if item.Label != "Inspect workspace" ||
+		item.Description != "Inspection completed" ||
+		item.Renderer != ActivityRendererStructured {
 		t.Fatalf("presentation mismatch: %#v", item)
 	}
-	if len(item.Chips) != 1 || item.Chips[0].Label != "shell" {
+	if len(item.Chips) != 1 || item.Chips[0].Label != "inspect" {
 		t.Fatalf("chips mismatch: %#v", item.Chips)
 	}
-	if item.Payload["command"] != "npm run build --workspace internal/flower_ui" || item.Payload["stdout"] != "done" || item.Payload["exit_code"] != 0 {
+	if item.Payload["operation"] != "inspect" || item.Payload["display_name"] != "flower_ui" ||
+		item.Payload["summary"] != "done" || item.Payload["status"] != "ok" {
 		t.Fatalf("payload mismatch: %#v", item.Payload)
 	}
 }

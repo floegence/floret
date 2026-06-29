@@ -109,7 +109,9 @@ type ActivityPresentation struct {
 	Renderer    ActivityRenderer    `json:"renderer,omitempty"`
 	Chips       []ActivityChip      `json:"chips,omitempty"`
 	TargetRefs  []ActivityTargetRef `json:"target_refs,omitempty"`
-	Payload     map[string]any      `json:"payload,omitempty"`
+	// Payload is host-supplied public display data. Floret preserves the generic
+	// activity shape and lifecycle, but product field policy belongs to the host.
+	Payload map[string]any `json:"payload,omitempty"`
 }
 
 type ActivityItem struct {
