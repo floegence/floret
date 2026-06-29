@@ -984,7 +984,9 @@ func (h *host) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, err
 		Sink:                     activityRecorder,
 	})
 	out := turnResult(result, string(req.ThreadID), activityRecorder.Snapshot(), time.Now().UnixMilli())
-	projectionErr := h.attachThreadTurnProjection(ctx, string(req.ThreadID), &out)
+	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
+	defer cancelProjection()
+	projectionErr := h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out)
 	if runErr == nil && projectionErr != nil {
 		runErr = projectionErr
 	}
@@ -1007,7 +1009,9 @@ func (h *host) RetryTurn(ctx context.Context, req RetryTurnRequest) (TurnResult,
 		},
 	})
 	out := turnResult(result, string(req.ThreadID), nil, time.Now().UnixMilli())
-	projectionErr := h.attachThreadTurnProjection(ctx, string(req.ThreadID), &out)
+	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
+	defer cancelProjection()
+	projectionErr := h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out)
 	if runErr == nil && projectionErr != nil {
 		runErr = projectionErr
 	}
@@ -1080,7 +1084,9 @@ func (h *host) CompletePendingTool(ctx context.Context, req PendingToolCompletio
 		},
 	})
 	out := turnResult(result, string(req.ThreadID), nil, time.Now().UnixMilli())
-	projectionErr := h.attachThreadTurnProjection(ctx, string(req.ThreadID), &out)
+	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
+	defer cancelProjection()
+	projectionErr := h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out)
 	if runErr == nil && projectionErr != nil {
 		runErr = projectionErr
 	}
@@ -1401,6 +1407,13 @@ func (h *host) attachThreadTurnProjection(ctx context.Context, threadID string, 
 		ActivityTimeline: result.ActivityTimeline,
 	})
 	return nil
+}
+
+func runtimeTerminalProjectionContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 }
 
 func (h *host) listThreadDetailEventsForTurn(ctx context.Context, threadID string, turnID string) ([]ThreadDetailEvent, error) {

@@ -183,3 +183,44 @@ func TestProjectThreadTurnPreservesActivityAttentionSummary(t *testing.T) {
 		t.Fatalf("summary = %#v, want waiting attention summary", summary)
 	}
 }
+
+func TestProjectThreadTurnUsesCanonicalActivityWithoutDetailEvents(t *testing.T) {
+	now := time.Unix(300, 0)
+	canonical := observation.ActivityTimeline{
+		SchemaVersion: observation.ActivityTimelineSchemaVersion,
+		RunID:         "run-canceled",
+		ThreadID:      "thread-canceled",
+		TurnID:        "turn-canceled",
+		TraceID:       "run-canceled",
+		Items: []observation.ActivityItem{{
+			ItemID:          "tool:call-1",
+			ToolID:          "call-1",
+			ToolName:        "terminal.exec",
+			Kind:            observation.ActivityKindTool,
+			Status:          observation.ActivityStatusCanceled,
+			Severity:        observation.ActivitySeverityWarning,
+			StartedAtUnixMS: now.UnixMilli(),
+			EndedAtUnixMS:   now.Add(time.Second).UnixMilli(),
+		}},
+	}
+	canonical.Summary = threadTurnProjectionActivitySummary(canonical.Items)
+
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID:         "thread-canceled",
+		TurnID:           "turn-canceled",
+		RunID:            "run-canceled",
+		TraceID:          "run-canceled",
+		ActivityTimeline: canonical,
+	})
+
+	if len(projection.Segments) != 1 || projection.Segments[0].Kind != ThreadTurnProjectionSegmentActivityTimeline {
+		t.Fatalf("projection segments = %#v", projection.Segments)
+	}
+	timeline := projection.Segments[0].ActivityTimeline
+	if timeline == nil || len(timeline.Items) != 1 || timeline.Items[0].Status != observation.ActivityStatusCanceled {
+		t.Fatalf("activity segment = %#v", projection.Segments[0])
+	}
+	if timeline.Summary.Status != observation.ActivityStatusCanceled || timeline.Summary.Counts.Canceled != 1 || timeline.Summary.Counts.Running != 0 {
+		t.Fatalf("activity summary = %#v", timeline.Summary)
+	}
+}

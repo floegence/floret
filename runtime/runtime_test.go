@@ -702,6 +702,132 @@ func TestHostRunTurnPreservesDistinctRunAndTurnIdentity(t *testing.T) {
 	}
 }
 
+func TestHostRunTurnCanceledProjectionSettlesPendingActivity(t *testing.T) {
+	registry := tools.NewRegistry()
+	if err := registry.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{
+			Name:        "terminal_exec",
+			InputSchema: runtimeEchoSchema(),
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+		},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			return tools.Result{Pending: &tools.PendingToolResult{
+				Handle:      "terminal:job:123",
+				State:       tools.PendingToolResultRunning,
+				Summary:     "Command is running",
+				Instruction: "Wait for completion before reusing this handle.",
+			}}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	requests := 0
+	secondRequestStarted := make(chan struct{})
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		mu.Lock()
+		requests++
+		step := requests
+		mu.Unlock()
+		switch step {
+		case 1:
+			events := make(chan ModelEvent, 2)
+			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "exec-1", Name: "terminal_exec", Args: `{"text":"npm test"}`}}}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+			close(events)
+			return events, nil
+		default:
+			events := make(chan ModelEvent)
+			close(secondRequestStarted)
+			go func() {
+				<-ctx.Done()
+				close(events)
+			}()
+			return events, nil
+		}
+	})
+
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+		},
+		ModelGateway: gateway,
+		Store:        NewMemoryStore(),
+		Tools:        registry,
+		Approver:     allowRuntimeTools,
+		IDGenerator:  deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(context.Background(), StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	type runOutcome struct {
+		result TurnResult
+		err    error
+	}
+	done := make(chan runOutcome, 1)
+	go func() {
+		result, err := host.RunTurn(runCtx, RunTurnRequest{RunID: "run-canceled", ThreadID: "thread", TurnID: "turn-canceled", Input: "run pending work"})
+		done <- runOutcome{result: result, err: err}
+	}()
+
+	select {
+	case <-secondRequestStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second provider request did not start")
+	}
+	cancelRun()
+
+	var outcome runOutcome
+	select {
+	case outcome = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunTurn did not return after cancellation")
+	}
+	if !errors.Is(outcome.err, context.Canceled) {
+		t.Fatalf("RunTurn err = %v, want context.Canceled", outcome.err)
+	}
+	if outcome.result.Status != TurnStatusCancelled {
+		t.Fatalf("result status = %s, want cancelled; result=%#v", outcome.result.Status, outcome.result)
+	}
+	var toolItem observation.ActivityItem
+	for _, segment := range outcome.result.Projection.Segments {
+		if segment.ActivityTimeline == nil {
+			continue
+		}
+		for _, item := range segment.ActivityTimeline.Items {
+			if item.Status == observation.ActivityStatusRunning || item.Status == observation.ActivityStatusPending {
+				t.Fatalf("projection retained non-terminal item: %#v", item)
+			}
+			if item.ToolID == "exec-1" {
+				toolItem = item
+			}
+		}
+	}
+	if toolItem.ToolID == "" {
+		t.Fatalf("projection missing pending tool item: %#v", outcome.result.Projection)
+	}
+	if toolItem.Status != observation.ActivityStatusCanceled || toolItem.EndedAtUnixMS == 0 {
+		t.Fatalf("tool item = %#v, want canceled terminal item", toolItem)
+	}
+	for _, key := range []string{"pending_tool_result", "pending_handle", "pending_state"} {
+		if _, ok := toolItem.Metadata[key]; ok {
+			t.Fatalf("tool item retained pending metadata %q: %#v", key, toolItem.Metadata)
+		}
+	}
+}
+
 func TestSubAgentActivityTimelineProjectsStatusSummary(t *testing.T) {
 	base := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
 	snapshots := []agentharness.SubAgentSnapshot{

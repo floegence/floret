@@ -436,17 +436,11 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 	}
 	for _, key := range order {
 		state := items[key]
+		if runEnd != nil {
+			settleUnresolvedActivityItemAtRunEnd(&state.item, *runEnd, nowUnixMS)
+		}
 		state.item.AttentionReasons = activityItemAttentionReasons(state.item)
 		state.item.NeedsAttention = len(state.item.AttentionReasons) > 0
-		if state.item.Status == ActivityStatusRunning && runEnd != nil && !activityEventHasError(*runEnd) {
-			state.item.Status = ActivityStatusSuccess
-			state.item.Severity = ActivitySeverityNormal
-			if state.item.EndedAtUnixMS == 0 {
-				state.item.EndedAtUnixMS = eventUnixMS(*runEnd, nowUnixMS)
-			}
-			state.item.AttentionReasons = activityItemAttentionReasons(state.item)
-			state.item.NeedsAttention = len(state.item.AttentionReasons) > 0
-		}
 		timeline.Items = append(timeline.Items, state.item)
 	}
 	sort.SliceStable(timeline.Items, func(i, j int) bool {
@@ -606,6 +600,18 @@ func activityToolKind(ev Event) ActivityKind {
 
 func activityRunEndControlItem(ev Event, index int, observedAt int64) (ActivityItem, bool) {
 	status := strings.TrimSpace(ev.Message)
+	switch status {
+	case string(ActivityStatusCanceled), "cancelled":
+		return ActivityItem{
+			ItemID:          fmt.Sprintf("control:canceled:%d:%d", ev.Step, index),
+			Kind:            ActivityKindControl,
+			Status:          ActivityStatusCanceled,
+			Severity:        ActivitySeverityWarning,
+			StartedAtUnixMS: observedAt,
+			EndedAtUnixMS:   observedAt,
+			Metadata:        activityMetadata(ev),
+		}, true
+	}
 	if activityEventHasError(ev) {
 		return ActivityItem{
 			ItemID:          fmt.Sprintf("control:error:%d:%d", ev.Step, index),
@@ -628,19 +634,129 @@ func activityRunEndControlItem(ev Event, index int, observedAt int64) (ActivityI
 			EndedAtUnixMS:   observedAt,
 			Metadata:        activityMetadata(ev),
 		}, true
-	case string(ActivityStatusCanceled), "cancelled":
-		return ActivityItem{
-			ItemID:          fmt.Sprintf("control:canceled:%d:%d", ev.Step, index),
-			Kind:            ActivityKindControl,
-			Status:          ActivityStatusCanceled,
-			Severity:        ActivitySeverityWarning,
-			StartedAtUnixMS: observedAt,
-			EndedAtUnixMS:   observedAt,
-			Metadata:        activityMetadata(ev),
-		}, true
 	default:
 		return ActivityItem{}, false
 	}
+}
+
+func settleUnresolvedActivityItemAtRunEnd(item *ActivityItem, runEnd Event, nowUnixMS int64) {
+	if item == nil {
+		return
+	}
+	switch item.Status {
+	case ActivityStatusPending, ActivityStatusRunning:
+	default:
+		return
+	}
+	status, severity := activityRunEndSettlement(runEnd)
+	item.Status = status
+	item.Severity = severity
+	if item.EndedAtUnixMS == 0 {
+		item.EndedAtUnixMS = eventUnixMS(runEnd, nowUnixMS)
+	}
+	pending := activityHasPendingMetadata(item.Metadata) || activityHasPendingPayload(item.Payload)
+	item.Metadata = activityTerminalMetadata(item.Metadata)
+	item.Payload = activityTerminalPayload(item.Payload)
+	item.Chips = activityTerminalChips(item.Chips, pending)
+	if pending {
+		item.Label = ""
+		item.Description = ""
+	}
+}
+
+func activityRunEndSettlement(ev Event) (ActivityStatus, ActivitySeverity) {
+	switch {
+	case activityRunEndIsCanceled(ev):
+		return ActivityStatusCanceled, ActivitySeverityWarning
+	case activityEventHasError(ev):
+		return ActivityStatusError, ActivitySeverityError
+	default:
+		return ActivityStatusSuccess, ActivitySeverityNormal
+	}
+}
+
+func activityRunEndIsCanceled(ev Event) bool {
+	switch strings.TrimSpace(ev.Message) {
+	case string(ActivityStatusCanceled), "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func activityTerminalMetadata(metadata map[string]string) map[string]string {
+	if len(metadata) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(metadata))
+	for key, value := range metadata {
+		if strings.HasPrefix(key, "pending_") {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func activityTerminalPayload(payload map[string]any) map[string]any {
+	if len(payload) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(payload))
+	for key, value := range payload {
+		if strings.HasPrefix(key, "pending_") {
+			continue
+		}
+		out[key] = cloneActivityPayloadValue(value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func activityTerminalChips(chips []ActivityChip, pending bool) []ActivityChip {
+	if len(chips) == 0 {
+		return nil
+	}
+	out := make([]ActivityChip, 0, len(chips))
+	for _, chip := range chips {
+		if pending && activityPendingChip(chip) {
+			continue
+		}
+		out = append(out, chip)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func activityPendingChip(chip ActivityChip) bool {
+	kind := strings.TrimSpace(chip.Kind)
+	value := strings.TrimSpace(chip.Value)
+	return kind == "handle" || kind == "state" && value == string(ActivityStatusRunning)
+}
+
+func activityHasPendingMetadata(metadata map[string]string) bool {
+	for key := range metadata {
+		if strings.HasPrefix(key, "pending_") {
+			return true
+		}
+	}
+	return false
+}
+
+func activityHasPendingPayload(payload map[string]any) bool {
+	for key := range payload {
+		if strings.HasPrefix(key, "pending_") {
+			return true
+		}
+	}
+	return false
 }
 
 func activityControlStatus(ev Event) ActivityStatus {
@@ -1261,7 +1377,9 @@ func activitySummary(items []ActivityItem, runEnd *Event, firstAt, lastAt, nowUn
 		summary.Severity = maxActivitySeverity(summary.Severity, item.Severity)
 	}
 	if runEnd != nil {
-		if activityEventHasError(*runEnd) {
+		if activityRunEndIsCanceled(*runEnd) {
+			summary.Status = ActivityStatusCanceled
+		} else if activityEventHasError(*runEnd) {
 			summary.Status = ActivityStatusError
 			summary.Severity = maxActivitySeverity(summary.Severity, ActivitySeverityError)
 			summary.AttentionReasons = append(summary.AttentionReasons, ActivityAttentionError)
@@ -1271,8 +1389,6 @@ func activitySummary(items []ActivityItem, runEnd *Event, firstAt, lastAt, nowUn
 				summary.Status = ActivityStatusWaiting
 				summary.Severity = maxActivitySeverity(summary.Severity, ActivitySeverityBlocking)
 				summary.AttentionReasons = append(summary.AttentionReasons, ActivityAttentionWaiting)
-			case string(ActivityStatusCanceled), "cancelled":
-				summary.Status = ActivityStatusCanceled
 			default:
 				if summary.TotalItems == 0 || summary.Counts.Error == 0 && summary.Counts.Waiting == 0 && summary.Counts.Running == 0 && summary.Counts.Pending == 0 {
 					summary.Status = ActivityStatusSuccess

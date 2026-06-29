@@ -58,6 +58,14 @@ func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 	}
 	events := threadTurnProjectionEvents(req.Events, req.TurnID)
 	if len(events) == 0 {
+		if len(req.ActivityTimeline.Items) > 0 {
+			timeline := *observation.CloneActivityTimeline(&req.ActivityTimeline)
+			timeline.Summary = threadTurnProjectionActivitySummary(timeline.Items)
+			projection.Segments = append(projection.Segments, ThreadTurnProjectionSegment{
+				Kind:             ThreadTurnProjectionSegmentActivityTimeline,
+				ActivityTimeline: &timeline,
+			})
+		}
 		return projection
 	}
 

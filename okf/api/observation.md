@@ -21,6 +21,14 @@ summaries without parsing assistant text or depending on implementation types.
 * `CompactionEventsFromEvents` extracts compaction lifecycle facts.
 * `CompactionDebugEventsFromEvents` extracts safe compaction diagnostic facts.
 
+`BuildActivityTimeline` owns the product-neutral terminal semantics for activity
+items. When a sanitized `run_end` observation is present, unresolved pending or
+running tool activity is settled by that run outcome: cancelled runs produce
+`canceled` items, failed runs produce `error` items, and completed runs produce
+`success` items. Running-only pending metadata, payload fields, and chips are
+removed during that settlement so downstream hosts do not carry stale active
+state into terminal UI.
+
 `CompactionEvent` carries `OperationID` for one compaction attempt and optional
 `RequestID` / `Source` when a downstream host requested manual compaction. Start,
 complete, failed, and cancelled observations for the same manual request keep the

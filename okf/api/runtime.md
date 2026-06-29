@@ -143,6 +143,13 @@ subagent detail reads. Thread detail events share the same row-level
 `ActivityTimeline` projection and structured tool result `status` contract as
 subagent detail events.
 
+Terminal turn results, including cancelled turns, still return a bounded
+`ThreadTurnProjection`. If the durable detail stream has no rows for an
+otherwise valid runtime activity timeline, the projection includes that canonical
+activity timeline directly. Downstream hosts should consume this projection to
+replace their product UI for the turn instead of synthesizing final tool status
+from local audit records or live stream leftovers.
+
 Pending approval snapshots are the current-state companion to the durable
 approval audit trail. `ListPendingApprovals` can be called while a turn is active
 and returns approval ids, tool call ids, tool names, effects, resources, labels,

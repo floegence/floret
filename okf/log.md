@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-06-29
+* **Update**: Documented terminal activity settlement for cancelled and failed
+  turns, including the rule that hosts consume Floret terminal projections
+  instead of synthesizing final tool state.
 * **Update**: Documented public runtime not-found sentinels for host facade
   integrations so downstream products can use `errors.Is` without parsing error
   strings or importing internal packages.

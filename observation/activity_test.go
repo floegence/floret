@@ -81,6 +81,49 @@ func TestBuildActivityTimelineProjectsPendingToolResultAsRunning(t *testing.T) {
 	}
 }
 
+func TestBuildActivityTimelineCancelsUnresolvedToolAtRunEnd(t *testing.T) {
+	start := time.UnixMilli(1_700_000_001_000)
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-canceled", ThreadID: "thread-canceled", TurnID: "turn-canceled"}, []Event{
+		{Type: EventTypeToolCall, RunID: "run-canceled", ThreadID: "thread-canceled", TurnID: "turn-canceled", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Metadata: map[string]any{"pending_tool_result": true, "pending_handle": "terminal:job:123", "pending_state": "running"}, ObservedAt: start},
+		{Type: EventTypeRunEnd, RunID: "run-canceled", ThreadID: "thread-canceled", TurnID: "turn-canceled", Step: 1, Message: string(ActivityStatusCanceled), ObservedAt: start.Add(250 * time.Millisecond)},
+	}, start.Add(time.Second).UnixMilli())
+
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("timeline should validate: %v", err)
+	}
+	if timeline.Summary.Status != ActivityStatusCanceled || timeline.Summary.Counts.Running != 0 || timeline.Summary.Counts.Pending != 0 {
+		t.Fatalf("summary should show canceled terminal state: %#v", timeline.Summary)
+	}
+	tool := activityTestItemByToolID(timeline, "exec-1")
+	if tool.Status != ActivityStatusCanceled || tool.Severity != ActivitySeverityWarning || tool.EndedAtUnixMS == 0 {
+		t.Fatalf("tool item mismatch: %#v", tool)
+	}
+	for _, key := range []string{"pending_tool_result", "pending_handle", "pending_state"} {
+		if _, ok := tool.Metadata[key]; ok {
+			t.Fatalf("terminal tool metadata retained %q: %#v", key, tool.Metadata)
+		}
+	}
+}
+
+func TestBuildActivityTimelineFailsUnresolvedToolAtRunEnd(t *testing.T) {
+	start := time.UnixMilli(1_700_000_001_000)
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-failed", ThreadID: "thread-failed", TurnID: "turn-failed"}, []Event{
+		{Type: EventTypeToolCall, RunID: "run-failed", ThreadID: "thread-failed", TurnID: "turn-failed", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", ObservedAt: start},
+		{Type: EventTypeRunEnd, RunID: "run-failed", ThreadID: "thread-failed", TurnID: "turn-failed", Step: 1, Message: "failed", Error: "interrupted", ObservedAt: start.Add(250 * time.Millisecond)},
+	}, start.Add(time.Second).UnixMilli())
+
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("timeline should validate: %v", err)
+	}
+	if timeline.Summary.Status != ActivityStatusError || timeline.Summary.Counts.Running != 0 || timeline.Summary.Counts.Pending != 0 {
+		t.Fatalf("summary should show failed terminal state: %#v", timeline.Summary)
+	}
+	tool := activityTestItemByToolID(timeline, "exec-1")
+	if tool.Status != ActivityStatusError || tool.Severity != ActivitySeverityError || tool.EndedAtUnixMS == 0 {
+		t.Fatalf("tool item mismatch: %#v", tool)
+	}
+}
+
 func TestBuildActivityTimelineMergesExplicitActivityPresentation(t *testing.T) {
 	start := time.UnixMilli(1_700_000_010_000)
 	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-present"}, []Event{
@@ -635,4 +678,13 @@ func assertActivityTimelineDoesNotContain(t *testing.T, data string, forbidden .
 			t.Fatalf("activity timeline leaked %q: %s", value, data)
 		}
 	}
+}
+
+func activityTestItemByToolID(timeline ActivityTimeline, toolID string) ActivityItem {
+	for _, item := range timeline.Items {
+		if item.ToolID == toolID {
+			return item
+		}
+	}
+	return ActivityItem{}
 }
