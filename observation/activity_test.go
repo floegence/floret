@@ -61,6 +61,7 @@ func TestBuildActivityTimelineProjectsPendingToolResultAsRunning(t *testing.T) {
 	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-pending", ThreadID: "thread-pending", TurnID: "turn-pending"}, []Event{
 		{Type: EventTypeToolCall, RunID: "run-pending", ThreadID: "thread-pending", TurnID: "turn-pending", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", ObservedAt: start},
 		{Type: EventTypeToolResult, RunID: "run-pending", ThreadID: "thread-pending", TurnID: "turn-pending", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Metadata: map[string]any{"pending_tool_result": true, "pending_handle": "terminal:job:123", "pending_state": "running"}, ObservedAt: start.Add(100 * time.Millisecond)},
+		{Type: EventTypeRunEnd, RunID: "run-pending", ThreadID: "thread-pending", TurnID: "turn-pending", Step: 2, Message: string(ActivityStatusSuccess), ObservedAt: start.Add(200 * time.Millisecond)},
 	}, start.Add(time.Second).UnixMilli())
 
 	if err := ValidateActivityTimeline(timeline); err != nil {
@@ -78,6 +79,60 @@ func TestBuildActivityTimelineProjectsPendingToolResultAsRunning(t *testing.T) {
 	}
 	if item.Metadata["pending_handle"] != "terminal:job:123" || item.Metadata["pending_state"] != "running" || item.Metadata["pending_tool_result"] != "true" {
 		t.Fatalf("pending metadata mismatch: %#v", item.Metadata)
+	}
+}
+
+func TestBuildActivityTimelineSettlesPendingToolResult(t *testing.T) {
+	start := time.UnixMilli(1_700_000_001_000)
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-pending", ThreadID: "thread-pending", TurnID: "turn-pending"}, []Event{
+		{
+			Type:       EventTypeToolResult,
+			RunID:      "run-pending",
+			ThreadID:   "thread-pending",
+			TurnID:     "turn-pending",
+			Step:       1,
+			ToolID:     "exec-1",
+			ToolName:   "terminal.exec",
+			ToolKind:   "local",
+			Metadata:   map[string]any{"pending_tool_result": true, "pending_handle": "terminal:job:123", "pending_state": "running"},
+			Activity:   &ActivityPresentation{Label: "Command is running", Payload: map[string]any{"pending_handle": "terminal:job:123"}},
+			ObservedAt: start,
+		},
+		{
+			Type:       EventTypeToolResult,
+			RunID:      "run-pending",
+			ThreadID:   "thread-pending",
+			TurnID:     "turn-pending",
+			Step:       2,
+			ToolID:     "exec-1",
+			ToolName:   "terminal.exec",
+			ToolKind:   "local",
+			Metadata:   map[string]any{"tool_result_status": string(ActivityStatusSuccess)},
+			Activity:   &ActivityPresentation{Label: "Command completed", Payload: map[string]any{"exit_code": 0}},
+			ObservedAt: start.Add(time.Second),
+		},
+	}, start.Add(2*time.Second).UnixMilli())
+
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("timeline should validate: %v", err)
+	}
+	if timeline.Summary.Status != ActivityStatusSuccess || timeline.Summary.Counts.Success != 1 || timeline.Summary.Counts.Running != 0 {
+		t.Fatalf("summary should show settled tool: %#v", timeline.Summary)
+	}
+	tool := activityTestItemByToolID(timeline, "exec-1")
+	if tool.Status != ActivityStatusSuccess || tool.Severity != ActivitySeverityNormal || tool.Label != "Command completed" || tool.EndedAtUnixMS == 0 {
+		t.Fatalf("settled tool mismatch: %#v", tool)
+	}
+	for _, key := range []string{"pending_tool_result", "pending_handle", "pending_state"} {
+		if _, ok := tool.Metadata[key]; ok {
+			t.Fatalf("settled tool metadata retained %q: %#v", key, tool.Metadata)
+		}
+		if _, ok := tool.Payload[key]; ok {
+			t.Fatalf("settled tool payload retained %q: %#v", key, tool.Payload)
+		}
+	}
+	if tool.Payload["exit_code"] != 0 {
+		t.Fatalf("settled payload mismatch: %#v", tool.Payload)
 	}
 }
 

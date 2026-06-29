@@ -16,6 +16,8 @@ const (
 	ThreadTurnProjectionSegmentControlSignal    ThreadTurnProjectionSegmentKind = "control_signal"
 )
 
+const threadTurnProjectionPendingToolSettlementType = "pending_tool_settlement"
+
 type ProjectThreadTurnRequest struct {
 	ThreadID ThreadID
 	TurnID   TurnID
@@ -62,6 +64,8 @@ func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 
 	var text strings.Builder
 	var activityEvents []ThreadDetailEvent
+	seenToolActivity := map[string]struct{}{}
+	var deferredSettlements []ThreadDetailEvent
 	flushText := func() {
 		content := text.String()
 		if strings.TrimSpace(content) == "" {
@@ -76,6 +80,9 @@ func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 	}
 	addActivity := func(ev ThreadDetailEvent) {
 		activityEvents = append(activityEvents, ev)
+		if toolID := threadTurnProjectionToolID(ev); toolID != "" {
+			seenToolActivity[toolID] = struct{}{}
+		}
 	}
 	flushActivity := func() {
 		if len(activityEvents) == 0 {
@@ -143,12 +150,228 @@ func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 			addActivity(ev)
 		case ThreadDetailEventToolResult, ThreadDetailEventApproval, ThreadDetailEventTurnMarker, ThreadDetailEventError:
 			flushText()
+			if ev.Kind == ThreadDetailEventToolResult && ev.Type == threadTurnProjectionPendingToolSettlementType {
+				if toolID := threadTurnProjectionToolID(ev); toolID != "" {
+					if _, ok := seenToolActivity[toolID]; ok {
+						deferredSettlements = append(deferredSettlements, ev)
+						continue
+					}
+				}
+			}
 			addActivity(ev)
 		}
 	}
 	flushText()
 	flushActivity()
+	threadTurnProjectionApplyDeferredSettlements(&projection, deferredSettlements)
 	return projection
+}
+
+func threadTurnProjectionToolID(ev ThreadDetailEvent) string {
+	switch ev.Kind {
+	case ThreadDetailEventToolCall:
+		if ev.ToolCall != nil {
+			return strings.TrimSpace(ev.ToolCall.ID)
+		}
+	case ThreadDetailEventToolResult:
+		if ev.ToolResult != nil {
+			return strings.TrimSpace(ev.ToolResult.CallID)
+		}
+	case ThreadDetailEventApproval:
+		if ev.Approval != nil {
+			return strings.TrimSpace(ev.Approval.ToolID)
+		}
+	}
+	return ""
+}
+
+func threadTurnProjectionApplyDeferredSettlements(projection *ThreadTurnProjection, settlements []ThreadDetailEvent) {
+	if projection == nil || len(settlements) == 0 {
+		return
+	}
+	for _, settlement := range settlements {
+		if settlement.ToolResult == nil {
+			continue
+		}
+		toolID := strings.TrimSpace(settlement.ToolResult.CallID)
+		if toolID == "" {
+			continue
+		}
+		status, severity, ok := threadTurnProjectionSettlementStatus(settlement.ToolResult.Status)
+		if !ok {
+			continue
+		}
+		for segmentIndex := range projection.Segments {
+			timeline := projection.Segments[segmentIndex].ActivityTimeline
+			if timeline == nil {
+				continue
+			}
+			settled := false
+			for itemIndex := range timeline.Items {
+				item := &timeline.Items[itemIndex]
+				if strings.TrimSpace(item.ToolID) != toolID {
+					continue
+				}
+				if item.Status != observation.ActivityStatusRunning && item.Status != observation.ActivityStatusPending {
+					continue
+				}
+				threadTurnProjectionApplySettlementItem(item, settlement, status, severity)
+				settled = true
+			}
+			if settled {
+				timeline.Summary = threadTurnProjectionActivitySummary(timeline.Items)
+			}
+		}
+	}
+}
+
+func threadTurnProjectionSettlementStatus(status string) (observation.ActivityStatus, observation.ActivitySeverity, bool) {
+	switch strings.TrimSpace(status) {
+	case string(observation.ActivityStatusSuccess):
+		return observation.ActivityStatusSuccess, observation.ActivitySeverityNormal, true
+	case string(observation.ActivityStatusError):
+		return observation.ActivityStatusError, observation.ActivitySeverityError, true
+	case string(observation.ActivityStatusCanceled):
+		return observation.ActivityStatusCanceled, observation.ActivitySeverityWarning, true
+	default:
+		return "", "", false
+	}
+}
+
+func threadTurnProjectionApplySettlementItem(item *observation.ActivityItem, settlement ThreadDetailEvent, status observation.ActivityStatus, severity observation.ActivitySeverity) {
+	if item == nil {
+		return
+	}
+	item.Status = status
+	item.Severity = severity
+	item.EndedAtUnixMS = settlement.CreatedAt.UnixMilli()
+	if settlement.ActivityTimeline != nil && len(settlement.ActivityTimeline.Items) > 0 {
+		threadTurnProjectionMergeActivityItem(item, settlement.ActivityTimeline.Items[0])
+	}
+	item.Metadata = threadTurnProjectionTerminalMetadata(item.Metadata)
+	item.Payload = threadTurnProjectionTerminalPayload(item.Payload)
+	item.Chips = threadTurnProjectionTerminalChips(item.Chips)
+	item.AttentionReasons = threadTurnProjectionAttentionReasons(*item)
+	item.NeedsAttention = len(item.AttentionReasons) > 0
+}
+
+func threadTurnProjectionMergeActivityItem(item *observation.ActivityItem, settlement observation.ActivityItem) {
+	if strings.TrimSpace(settlement.Label) != "" {
+		item.Label = settlement.Label
+	}
+	if strings.TrimSpace(settlement.Description) != "" {
+		item.Description = settlement.Description
+	}
+	if settlement.Renderer != "" {
+		item.Renderer = settlement.Renderer
+	}
+	if len(settlement.Chips) > 0 {
+		item.Chips = append([]observation.ActivityChip(nil), settlement.Chips...)
+	}
+	if len(settlement.TargetRefs) > 0 {
+		item.TargetRefs = append([]observation.ActivityTargetRef(nil), settlement.TargetRefs...)
+	}
+	if len(settlement.Payload) > 0 {
+		item.Payload = threadTurnProjectionMergePayload(item.Payload, settlement.Payload)
+	}
+	if len(settlement.Metadata) > 0 {
+		item.Metadata = threadTurnProjectionMergeStringMetadata(item.Metadata, settlement.Metadata)
+	}
+}
+
+func threadTurnProjectionMergePayload(left, right map[string]any) map[string]any {
+	if len(left) == 0 {
+		return cloneProjectionAnyMap(right)
+	}
+	out := cloneProjectionAnyMap(left)
+	for key, value := range right {
+		if strings.TrimSpace(key) != "" && value != nil {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func threadTurnProjectionMergeStringMetadata(left, right map[string]string) map[string]string {
+	if len(left) == 0 {
+		return cloneProjectionStringMap(right)
+	}
+	out := cloneProjectionStringMap(left)
+	for key, value := range right {
+		if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
+			out[key] = strings.TrimSpace(value)
+		}
+	}
+	return out
+}
+
+func threadTurnProjectionTerminalMetadata(metadata map[string]string) map[string]string {
+	if len(metadata) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for key, value := range metadata {
+		if strings.HasPrefix(key, "pending_") {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func threadTurnProjectionTerminalPayload(payload map[string]any) map[string]any {
+	if len(payload) == 0 {
+		return nil
+	}
+	out := map[string]any{}
+	for key, value := range payload {
+		if strings.HasPrefix(key, "pending_") {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func threadTurnProjectionTerminalChips(chips []observation.ActivityChip) []observation.ActivityChip {
+	if len(chips) == 0 {
+		return nil
+	}
+	out := make([]observation.ActivityChip, 0, len(chips))
+	for _, chip := range chips {
+		kind := strings.TrimSpace(chip.Kind)
+		value := strings.TrimSpace(chip.Value)
+		if kind == "handle" || kind == "state" && value == string(observation.ActivityStatusRunning) {
+			continue
+		}
+		out = append(out, chip)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func threadTurnProjectionAttentionReasons(item observation.ActivityItem) []observation.ActivityAttentionReason {
+	var reasons []observation.ActivityAttentionReason
+	if item.RequiresApproval {
+		reasons = append(reasons, observation.ActivityAttentionApproval)
+	}
+	switch item.Status {
+	case observation.ActivityStatusRunning:
+		reasons = append(reasons, observation.ActivityAttentionRunning)
+	case observation.ActivityStatusWaiting:
+		reasons = append(reasons, observation.ActivityAttentionWaiting)
+	case observation.ActivityStatusError:
+		reasons = append(reasons, observation.ActivityAttentionError)
+	}
+	return reasons
 }
 
 func threadTurnProjectionEvents(events []ThreadDetailEvent, turnID TurnID) []ThreadDetailEvent {
@@ -248,8 +471,11 @@ func threadTurnProjectionObservationEvent(meta observation.ActivityRunMeta, deta
 			base.Error = "tool_result_error"
 		}
 		base.Metadata = threadTurnProjectionMergeAnyMetadata(threadTurnProjectionAnyMetadata(detail.Metadata), base.Metadata)
-		if strings.TrimSpace(detail.ToolResult.Status) == string(observation.ActivityStatusRunning) {
+		switch strings.TrimSpace(detail.ToolResult.Status) {
+		case string(observation.ActivityStatusRunning):
 			base.Metadata = threadTurnProjectionMergeAnyMetadata(base.Metadata, map[string]any{"pending_tool_result": true, "pending_state": string(observation.ActivityStatusRunning)})
+		case string(observation.ActivityStatusSuccess), string(observation.ActivityStatusError), string(observation.ActivityStatusCanceled):
+			base.Metadata = threadTurnProjectionMergeAnyMetadata(base.Metadata, map[string]any{"tool_result_status": strings.TrimSpace(detail.ToolResult.Status)})
 		}
 		return base, true
 	case ThreadDetailEventApproval:
@@ -405,6 +631,17 @@ func cloneProjectionAnyMap(in map[string]any) map[string]any {
 		return nil
 	}
 	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func cloneProjectionStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
 	for key, value := range in {
 		out[key] = value
 	}

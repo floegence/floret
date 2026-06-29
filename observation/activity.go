@@ -272,6 +272,9 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			}
 			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
 			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
+			if activityMetadataBool(ev.Metadata, "pending_tool_result") {
+				state.item.Severity = ActivitySeverityWarning
+			}
 			state.lastSeen = observedAt
 		case EventTypeToolResult, EventTypeHostedToolResult:
 			noteActivityTime(observedAt, &firstAt, &lastAt)
@@ -298,19 +301,29 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			if state.item.StartedAtUnixMS == 0 && ev.DurationMS > 0 && observedAt > ev.DurationMS {
 				state.item.StartedAtUnixMS = observedAt - ev.DurationMS
 			}
-			if activityEventHasError(ev) {
+			resultStatus := activityMetadataValue(ev, "tool_result_status")
+			if activityEventHasError(ev) || resultStatus == string(ActivityStatusError) {
 				state.item.Status = ActivityStatusError
 				state.item.Severity = ActivitySeverityError
 			} else if activityMetadataBool(ev.Metadata, "pending_tool_result") {
 				state.item.Status = ActivityStatusRunning
 				state.item.Severity = ActivitySeverityWarning
 				state.item.EndedAtUnixMS = 0
+			} else if resultStatus == string(ActivityStatusCanceled) {
+				state.item.Status = ActivityStatusCanceled
+				state.item.Severity = ActivitySeverityWarning
 			} else {
 				state.item.Status = ActivityStatusSuccess
 				state.item.Severity = ActivitySeverityNormal
 			}
 			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
 			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
+			if state.item.Status != ActivityStatusRunning {
+				pending := activityHasPendingMetadata(state.item.Metadata) || activityHasPendingPayload(state.item.Payload)
+				state.item.Metadata = activityTerminalMetadata(state.item.Metadata)
+				state.item.Payload = activityTerminalPayload(state.item.Payload)
+				state.item.Chips = activityTerminalChips(state.item.Chips, pending)
+			}
 			state.lastSeen = observedAt
 		case EventTypeToolApprovalRequested:
 			noteActivityTime(observedAt, &firstAt, &lastAt)
@@ -620,6 +633,11 @@ func settleUnresolvedActivityItemAtRunEnd(item *ActivityItem, runEnd Event, nowU
 	if item == nil {
 		return
 	}
+	if (activityHasPendingMetadata(item.Metadata) || activityHasPendingPayload(item.Payload)) &&
+		!activityRunEndIsCanceled(runEnd) &&
+		!activityEventHasError(runEnd) {
+		return
+	}
 	switch item.Status {
 	case ActivityStatusPending, ActivityStatusRunning:
 	case ActivityStatusWaiting:
@@ -830,6 +848,7 @@ var activityMetadataKeys = []string{
 	"read_only",
 	"result_count",
 	"strategy",
+	"tool_result_status",
 	"truncated",
 	"visible_bytes",
 	"visible_lines",
@@ -932,6 +951,12 @@ func activityNormalizeMetadataValue(key string, value any) string {
 		})
 	case "pending_handle":
 		return activityPublicTokenMetadataValue(value)
+	case "tool_result_status":
+		return activityEnumMetadataValue(value, map[string]struct{}{
+			"success":  {},
+			"error":    {},
+			"canceled": {},
+		})
 	default:
 		return ""
 	}

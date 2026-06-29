@@ -54,6 +54,7 @@ type Host interface {
 	RetryTurn(context.Context, RetryTurnRequest) (TurnResult, error)
 	CompactThread(context.Context, CompactThreadRequest) (CompactThreadResult, error)
 	CompletePendingTool(context.Context, PendingToolCompletionRequest) (TurnResult, error)
+	SettlePendingTool(context.Context, PendingToolSettlementRequest) (PendingToolSettlementResult, error)
 	SpawnSubAgent(context.Context, SpawnSubAgentRequest) (SubAgentSnapshot, error)
 	SendSubAgentInput(context.Context, SendSubAgentInputRequest) (SubAgentSnapshot, error)
 	WaitSubAgents(context.Context, WaitSubAgentsRequest) (WaitSubAgentsResult, error)
@@ -156,6 +157,31 @@ type PendingToolCompletionRequest struct {
 	Summary    string
 	Output     string
 	Labels     RunLabels
+}
+
+// PendingToolSettlementStatus describes a host-owned pending tool outcome that
+// should update Floret activity without adding provider-visible context.
+type PendingToolSettlementStatus string
+
+const (
+	PendingToolSettlementCompleted PendingToolSettlementStatus = "completed"
+	PendingToolSettlementFailed    PendingToolSettlementStatus = "failed"
+	PendingToolSettlementCanceled  PendingToolSettlementStatus = "canceled"
+)
+
+// PendingToolSettlementRequest records a host-owned pending tool outcome as a
+// detail/activity event only. It does not resume the provider loop.
+type PendingToolSettlementRequest struct {
+	ThreadID   ThreadID
+	TurnID     TurnID
+	RunID      RunID
+	ToolCallID string
+	ToolName   string
+	Handle     string
+	Status     PendingToolSettlementStatus
+	Summary    string
+	Output     string
+	Activity   *observation.ActivityPresentation
 }
 
 type SubAgentStatus string
@@ -311,6 +337,14 @@ type PendingApprovals struct {
 	ThreadID    ThreadID          `json:"thread_id"`
 	Approvals   []PendingApproval `json:"approvals"`
 	GeneratedAt time.Time         `json:"generated_at"`
+}
+
+type PendingToolSettlementResult struct {
+	ThreadID   ThreadID             `json:"thread_id"`
+	TurnID     TurnID               `json:"turn_id"`
+	RunID      RunID                `json:"run_id,omitempty"`
+	Event      ThreadDetailEvent    `json:"event"`
+	Projection ThreadTurnProjection `json:"projection"`
 }
 
 type PendingApprovalResource struct {
@@ -1093,6 +1127,56 @@ func (h *host) CompletePendingTool(ctx context.Context, req PendingToolCompletio
 	return out, runtimeHostError(runErr)
 }
 
+func (h *host) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+	if strings.TrimSpace(string(req.ThreadID)) == "" {
+		return PendingToolSettlementResult{}, errors.New("thread id is required")
+	}
+	if strings.TrimSpace(string(req.TurnID)) == "" {
+		return PendingToolSettlementResult{}, errors.New("turn id is required")
+	}
+	if strings.TrimSpace(string(req.RunID)) == "" {
+		return PendingToolSettlementResult{}, errors.New("run id is required")
+	}
+	thread, err := h.harness.ResumeThread(ctx, string(req.ThreadID), agentharness.ResumeOptions{})
+	if err != nil {
+		return PendingToolSettlementResult{}, runtimeHostError(err)
+	}
+	event, err := thread.SettlePendingTool(ctx, agentharness.PendingToolSettlement{
+		TurnID:     string(req.TurnID),
+		RunID:      string(req.RunID),
+		ToolCallID: req.ToolCallID,
+		ToolName:   req.ToolName,
+		Handle:     req.Handle,
+		Status:     pendingToolSettlementStatus(req.Status),
+		Summary:    req.Summary,
+		Output:     req.Output,
+		Activity:   observation.CloneActivityPresentation(req.Activity),
+	})
+	if err != nil {
+		return PendingToolSettlementResult{}, runtimeHostError(err)
+	}
+	out := PendingToolSettlementResult{
+		ThreadID: req.ThreadID,
+		TurnID:   req.TurnID,
+		RunID:    req.RunID,
+		Event:    threadDetailEvent(event),
+	}
+	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
+	defer cancelProjection()
+	events, err := h.listThreadDetailEventsForTurn(projectionCtx, string(req.ThreadID), string(req.TurnID))
+	if err != nil {
+		return PendingToolSettlementResult{}, runtimeHostError(err)
+	}
+	out.Projection = ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID: req.ThreadID,
+		TurnID:   req.TurnID,
+		RunID:    req.RunID,
+		TraceID:  TraceID(req.RunID),
+		Events:   events,
+	})
+	return out, nil
+}
+
 func (h *host) SpawnSubAgent(ctx context.Context, req SpawnSubAgentRequest) (SubAgentSnapshot, error) {
 	snapshot, err := h.harness.SpawnSubAgent(ctx, agentharness.SpawnSubAgentOptions{
 		ParentThreadID: string(req.ParentThreadID),
@@ -1243,6 +1327,19 @@ func pendingToolCompletionStatus(status PendingToolCompletionStatus) agentharnes
 		return agentharness.PendingToolCanceled
 	default:
 		return agentharness.PendingToolCompletionStatus(status)
+	}
+}
+
+func pendingToolSettlementStatus(status PendingToolSettlementStatus) agentharness.PendingToolSettlementStatus {
+	switch status {
+	case PendingToolSettlementCompleted:
+		return agentharness.PendingToolSettledCompleted
+	case PendingToolSettlementFailed:
+		return agentharness.PendingToolSettledFailed
+	case PendingToolSettlementCanceled:
+		return agentharness.PendingToolSettledCanceled
+	default:
+		return agentharness.PendingToolSettlementStatus(status)
 	}
 }
 

@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-06-29
+* **Update**: Documented `SettlePendingTool` as the detail-only counterpart to
+  `CompletePendingTool`, including the rule that successful turns leave
+  host-owned pending activity running until an explicit settlement arrives.
 * **Update**: Documented terminal activity settlement for cancelled and failed
   turns, including the rule that hosts consume Floret terminal projections
   instead of synthesizing final tool state.

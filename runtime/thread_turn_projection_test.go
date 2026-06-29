@@ -311,7 +311,7 @@ func TestProjectThreadTurnSettlesUnresolvedToolOnTerminalTurn(t *testing.T) {
 		wantSummary   observation.ActivityStatus
 		wantAttention bool
 	}{
-		{name: "success", turnStatus: string(observation.ActivityStatusSuccess), wantStatus: observation.ActivityStatusSuccess, wantSeverity: observation.ActivitySeverityNormal, wantSummary: observation.ActivityStatusSuccess},
+		{name: "success", turnStatus: string(observation.ActivityStatusSuccess), wantStatus: observation.ActivityStatusRunning, wantSeverity: observation.ActivitySeverityWarning, wantSummary: observation.ActivityStatusRunning, wantAttention: true},
 		{name: "canceled", turnStatus: string(observation.ActivityStatusCanceled), wantStatus: observation.ActivityStatusCanceled, wantSeverity: observation.ActivitySeverityWarning, wantSummary: observation.ActivityStatusCanceled},
 		{name: "cancelled spelling", turnStatus: "cancelled", wantStatus: observation.ActivityStatusCanceled, wantSeverity: observation.ActivitySeverityWarning, wantSummary: observation.ActivityStatusCanceled},
 		{name: "failed", turnStatus: "failed", error: "provider failed", wantStatus: observation.ActivityStatusError, wantSeverity: observation.ActivitySeverityError, wantSummary: observation.ActivityStatusError, wantAttention: true},
@@ -368,18 +368,39 @@ func TestProjectThreadTurnSettlesUnresolvedToolOnTerminalTurn(t *testing.T) {
 				t.Fatalf("activity segment = %#v", projection.Segments[0])
 			}
 			item := timeline.Items[0]
-			if item.Status != tt.wantStatus || item.Severity != tt.wantSeverity || item.EndedAtUnixMS == 0 {
-				t.Fatalf("item = %#v, want status=%s severity=%s ended", item, tt.wantStatus, tt.wantSeverity)
+			if item.Status != tt.wantStatus || item.Severity != tt.wantSeverity {
+				t.Fatalf("item = %#v, want status=%s severity=%s", item, tt.wantStatus, tt.wantSeverity)
 			}
-			if timeline.Summary.Status != tt.wantSummary || timeline.Summary.Counts.Running != 0 || timeline.Summary.Counts.Pending != 0 {
+			if tt.wantStatus == observation.ActivityStatusRunning {
+				if item.EndedAtUnixMS != 0 {
+					t.Fatalf("running item should not be ended: %#v", item)
+				}
+			} else if item.EndedAtUnixMS == 0 {
+				t.Fatalf("terminal item should be ended: %#v", item)
+			}
+			if timeline.Summary.Status != tt.wantSummary || timeline.Summary.Counts.Pending != 0 {
 				t.Fatalf("summary = %#v, want terminal %s", timeline.Summary, tt.wantSummary)
+			}
+			if tt.wantStatus == observation.ActivityStatusRunning && timeline.Summary.Counts.Running != 1 {
+				t.Fatalf("summary should retain one running item: %#v", timeline.Summary)
+			}
+			if tt.wantStatus != observation.ActivityStatusRunning && timeline.Summary.Counts.Running != 0 {
+				t.Fatalf("summary should have no running terminal items: %#v", timeline.Summary)
 			}
 			if item.NeedsAttention != tt.wantAttention {
 				t.Fatalf("needs_attention=%v, want %v; item=%#v", item.NeedsAttention, tt.wantAttention, item)
 			}
-			for _, key := range []string{"pending_tool_result", "pending_handle", "pending_state"} {
-				if _, ok := item.Metadata[key]; ok {
-					t.Fatalf("terminal item retained %q metadata: %#v", key, item.Metadata)
+			if tt.wantStatus == observation.ActivityStatusRunning {
+				for _, key := range []string{"pending_tool_result", "pending_handle", "pending_state"} {
+					if _, ok := item.Metadata[key]; !ok {
+						t.Fatalf("running item lost %q metadata: %#v", key, item.Metadata)
+					}
+				}
+			} else {
+				for _, key := range []string{"pending_tool_result", "pending_handle", "pending_state"} {
+					if _, ok := item.Metadata[key]; ok {
+						t.Fatalf("terminal item retained %q metadata: %#v", key, item.Metadata)
+					}
 				}
 			}
 			if err := observation.ValidateActivityTimeline(*timeline); err != nil {

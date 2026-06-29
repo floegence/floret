@@ -207,6 +207,26 @@ type PendingToolCompletion struct {
 	Labels     engine.RunLabels
 }
 
+type PendingToolSettlementStatus string
+
+const (
+	PendingToolSettledCompleted PendingToolSettlementStatus = "completed"
+	PendingToolSettledFailed    PendingToolSettlementStatus = "failed"
+	PendingToolSettledCanceled  PendingToolSettlementStatus = "canceled"
+)
+
+type PendingToolSettlement struct {
+	TurnID     string
+	RunID      string
+	ToolCallID string
+	ToolName   string
+	Handle     string
+	Status     PendingToolSettlementStatus
+	Summary    string
+	Output     string
+	Activity   *observation.ActivityPresentation
+}
+
 type ThreadSnapshot struct {
 	ID               string          `json:"id"`
 	Title            string          `json:"title,omitempty"`
@@ -751,6 +771,33 @@ func (t *Thread) CompletePendingTool(ctx context.Context, completion PendingTool
 	return t.run(ctx, input, RunOptions{RunID: completion.RunID, TurnID: completion.TurnID, Labels: completion.Labels}, nil)
 }
 
+func (t *Thread) SettlePendingTool(ctx context.Context, settlement PendingToolSettlement) (SubAgentDetailEvent, error) {
+	if t == nil || t.harness == nil || t.harness.options.Repo == nil {
+		return SubAgentDetailEvent{}, errors.New("thread is not initialized")
+	}
+	normalized, err := normalizePendingToolSettlement(settlement)
+	if err != nil {
+		return SubAgentDetailEvent{}, err
+	}
+	journal, err := t.Journal(ctx)
+	if err != nil {
+		return SubAgentDetailEvent{}, err
+	}
+	if err := validatePendingToolSettlementTarget(journal.Path, normalized); err != nil {
+		return SubAgentDetailEvent{}, err
+	}
+	entry, err := t.appendPendingToolSettlement(ctx, normalized)
+	if err != nil {
+		return SubAgentDetailEvent{}, err
+	}
+	activityContext := subAgentDetailActivityContext{resultCallIDs: subAgentDetailResultCallIDs(append(journal.Path, entry))}
+	event, ok := t.harness.subAgentDetailEvent(entry, t.harness.threadEntryOrdinal(entry), true, activityContext)
+	if !ok {
+		return SubAgentDetailEvent{}, errors.New("pending tool settlement did not project")
+	}
+	return event, nil
+}
+
 func (t *Thread) MoveTo(ctx context.Context, entryID string, opts MoveOptions) error {
 	release, err := t.enterMutation(ctx, t.harness.nextID("mutation"))
 	if err != nil {
@@ -828,6 +875,86 @@ func pendingToolCompletionPublicToken(value string) bool {
 		}
 	}
 	return true
+}
+
+func normalizePendingToolSettlement(settlement PendingToolSettlement) (PendingToolSettlement, error) {
+	settlement.TurnID = strings.TrimSpace(settlement.TurnID)
+	if settlement.TurnID == "" {
+		return PendingToolSettlement{}, errors.New("pending tool settlement requires turn id")
+	}
+	settlement.RunID = strings.TrimSpace(settlement.RunID)
+	if settlement.RunID == "" {
+		return PendingToolSettlement{}, errors.New("pending tool settlement requires run id")
+	}
+	settlement.ToolCallID = strings.TrimSpace(settlement.ToolCallID)
+	if settlement.ToolCallID == "" {
+		return PendingToolSettlement{}, errors.New("pending tool settlement requires tool call id")
+	}
+	settlement.ToolName = strings.TrimSpace(settlement.ToolName)
+	if settlement.ToolName == "" {
+		return PendingToolSettlement{}, errors.New("pending tool settlement requires tool name")
+	}
+	settlement.Handle = strings.TrimSpace(settlement.Handle)
+	if settlement.Handle == "" {
+		return PendingToolSettlement{}, errors.New("pending tool settlement requires handle")
+	}
+	if !pendingToolCompletionPublicToken(settlement.Handle) {
+		return PendingToolSettlement{}, errors.New("pending tool settlement requires token-safe handle")
+	}
+	switch settlement.Status {
+	case PendingToolSettledCompleted, PendingToolSettledFailed, PendingToolSettledCanceled:
+	default:
+		return PendingToolSettlement{}, fmt.Errorf("pending tool settlement returned invalid status %q", settlement.Status)
+	}
+	settlement.Summary = strings.TrimSpace(settlement.Summary)
+	if settlement.Summary == "" {
+		return PendingToolSettlement{}, errors.New("pending tool settlement requires summary")
+	}
+	return settlement, nil
+}
+
+func validatePendingToolSettlementTarget(path []sessiontree.Entry, settlement PendingToolSettlement) error {
+	turnFound := false
+	callFound := false
+	for _, entry := range path {
+		if strings.TrimSpace(entry.TurnID) != settlement.TurnID {
+			continue
+		}
+		turnFound = true
+		if entry.Type != sessiontree.EntryToolResult {
+			continue
+		}
+		if strings.TrimSpace(entry.Message.ToolCallID) != settlement.ToolCallID ||
+			strings.TrimSpace(entry.Message.ToolName) != settlement.ToolName {
+			continue
+		}
+		callFound = true
+		if entry.Message.ToolResult == nil ||
+			strings.TrimSpace(entry.Message.ToolResult.Status) != string(observation.ActivityStatusRunning) {
+			continue
+		}
+		if pendingHandleFromSessionActivity(entry.Message.Activity) == settlement.Handle {
+			return nil
+		}
+	}
+	if !turnFound {
+		return errors.New("pending tool settlement target turn was not found")
+	}
+	if !callFound {
+		return errors.New("pending tool settlement target tool call was not found")
+	}
+	return errors.New("pending tool settlement target is not an active pending tool result")
+}
+
+func pendingHandleFromSessionActivity(activity *session.ActivityPresentation) string {
+	if activity == nil || activity.Payload == nil {
+		return ""
+	}
+	value, ok := activity.Payload["pending_handle"]
+	if !ok || value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 func (t *Thread) Compact(ctx context.Context, opts CompactOptions) (CompactResult, error) {
@@ -1625,6 +1752,59 @@ func (t *Thread) appendApprovalEvent(ctx context.Context, turnID string, runID s
 	t.harness.emitEntryCommitted(entry, runID)
 	t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: string(ev.Type)})
 	return nil
+}
+
+func (t *Thread) appendPendingToolSettlement(ctx context.Context, settlement PendingToolSettlement) (sessiontree.Entry, error) {
+	status := pendingToolSettlementActivityStatus(settlement.Status)
+	metadata := map[string]string{
+		subAgentDetailKindKey:           pendingToolSettlementEntryKind,
+		subAgentDetailTypeKey:           pendingToolSettlementEntryKind,
+		pendingToolSettlementStateKey:   string(settlement.Status),
+		pendingToolSettlementToolIDKey:  settlement.ToolCallID,
+		pendingToolSettlementNameKey:    settlement.ToolName,
+		pendingToolSettlementHandleKey:  settlement.Handle,
+		pendingToolSettlementRunIDKey:   settlement.RunID,
+		pendingToolSettlementSummaryKey: settlement.Summary,
+	}
+	if status == string(observation.ActivityStatusCanceled) {
+		metadata["tool_result_status"] = string(observation.ActivityStatusCanceled)
+	}
+	activity := settlement.Activity
+	if activity == nil {
+		activity = &observation.ActivityPresentation{Label: settlement.Summary}
+	}
+	entry, err := t.harness.options.Repo.Append(ctx, sessiontree.Entry{
+		ThreadID: t.id,
+		TurnID:   settlement.TurnID,
+		Type:     sessiontree.EntryCustom,
+		Message: session.Message{
+			Content:    settlement.Output,
+			ToolCallID: settlement.ToolCallID,
+			ToolName:   settlement.ToolName,
+			ToolResult: &session.ToolResultView{Status: status},
+			Activity:   sessionActivityPresentation(sanitizeActivityPresentation(activity)),
+		},
+		Metadata: metadata,
+	}, sessiontree.AppendOptions{})
+	if err != nil {
+		return sessiontree.Entry{}, err
+	}
+	t.harness.emitEntryCommitted(entry, settlement.RunID)
+	t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, TurnID: settlement.TurnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: pendingToolSettlementEntryKind})
+	return entry, nil
+}
+
+func pendingToolSettlementActivityStatus(status PendingToolSettlementStatus) string {
+	switch status {
+	case PendingToolSettledCompleted:
+		return string(observation.ActivityStatusSuccess)
+	case PendingToolSettledFailed:
+		return string(observation.ActivityStatusError)
+	case PendingToolSettledCanceled:
+		return string(observation.ActivityStatusCanceled)
+	default:
+		return string(status)
+	}
 }
 
 func approvalStateForEvent(typ event.Type) string {

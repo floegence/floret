@@ -50,6 +50,9 @@ continuation state, and lifecycle observations.
   waiting for a host decision on a thread.
 * `CompletePendingTool` requires the public completion `RunID` and uses it as
   the follow-up execution identity.
+* `SettlePendingTool` records a host-owned pending tool outcome as a
+  detail/activity event for the original turn without creating provider-visible
+  context or running another model turn.
 * `DeleteThread` removes a Floret-owned thread tree from the engine store,
   including child threads, prompt cache scopes, and artifacts.
 * `ErrThreadNotFound` and `ErrSubAgentNotFound` are public sentinel errors for
@@ -133,7 +136,8 @@ results, turn markers, compaction checkpoints, approvals, custom entries, and
 run failures. This is Floret's public read model for durable execution
 transcript facts. `ThreadTurnProjection` is the public display projection over
 those facts: `RunTurn`, `RetryTurn`, and `CompletePendingTool` return it on
-`TurnResult`, and hosts with live committed events may call `ProjectThreadTurn`.
+`TurnResult`, `SettlePendingTool` returns it on `PendingToolSettlementResult`,
+and hosts with live committed events may call `ProjectThreadTurn`.
 `ProjectThreadTurn` derives assistant text, control-signal segments, and turn
 activity only from the ordered `ThreadDetailEvent` stream for the target turn.
 It does not accept or merge an older aggregate activity timeline as an input.
@@ -150,15 +154,21 @@ Pagination uses `AfterOrdinal`, `Limit`, `HasMore`, and `NextOrdinal`; raw
 content follows the same explicit `IncludeRaw` opt-in rule as subagent detail
 reads. Thread detail events share the same row-level `ActivityTimeline`
 projection and structured tool result `status` contract as subagent detail
-events.
+events. Host-owned pending tool results remain running after a successful
+provider turn until the host reports a terminal outcome through
+`SettlePendingTool`; that settlement is stored as a custom journal entry
+projected as a `tool_result` detail event, so it updates activity without
+entering provider-visible history.
 
 Terminal turn results, including cancelled turns, still return a bounded
 `ThreadTurnProjection`. Terminal markers and run failures settle unresolved
 tool and approval activity in Floret's projection before the result is returned,
 so open running, pending, or waiting rows do not remain decisionable after the
-turn has failed or been cancelled. Downstream hosts should consume this
-projection to replace their product UI for the turn instead of synthesizing
-final tool status from local audit records or live stream leftovers.
+turn has failed or been cancelled. A successful turn does not imply completion
+of host-owned pending work. Downstream hosts should consume Floret projections
+and settlement results to replace their product UI for the turn instead of
+synthesizing final tool status from local audit records or live stream
+leftovers.
 
 Pending approval snapshots are the current-state companion to the durable
 approval audit trail. `ListPendingApprovals` can be called while a turn is active

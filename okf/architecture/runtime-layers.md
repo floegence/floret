@@ -15,8 +15,14 @@ provider execution.
 # Layer Responsibilities
 
 `runtime.Host` is the public durable conversation facade. It starts threads,
-runs turns, retries, completes pending tool work, manages durable child threads,
-deletes thread data, and returns host-safe snapshots.
+runs turns, retries, completes or settles pending tool work, manages durable
+child threads, deletes thread data, and returns host-safe snapshots.
+
+Pending tool completion and pending tool settlement are intentionally separate.
+`CompletePendingTool` creates a provider-visible follow-up turn when the model
+should reason over a host-owned completion. `SettlePendingTool` appends only a
+detail/activity event for the original turn when the host needs to update UI
+state without resuming the provider loop.
 
 `HostOptions.ModelGateway` lets a host route hosted parent turns, child turns,
 and hosted title generation through product-owned model transport while Floret

@@ -23,6 +23,7 @@ import (
 	"github.com/floegence/floret/internal/sessiontree"
 	"github.com/floegence/floret/internal/storage/sqlite"
 	scriptharness "github.com/floegence/floret/internal/testing/harness"
+	"github.com/floegence/floret/observation"
 	"github.com/floegence/floret/tools"
 )
 
@@ -347,6 +348,94 @@ func TestThreadCompletePendingToolRejectsInvalidInput(t *testing.T) {
 	}
 	if len(snap.Messages) != 0 {
 		t.Fatalf("invalid completion should not append messages: %#v", snap.Messages)
+	}
+}
+
+func TestThreadSettlePendingToolAppendsDetailOnlyEvent(t *testing.T) {
+	ctx := context.Background()
+	p := scriptharness.NewScriptedProvider()
+	repo := sessiontree.NewMemoryRepo()
+	h := newTestHarness(p, repo, cache.NewMemoryStore())
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendPendingToolResultFixture(t, ctx, repo, "thread", "turn-1")
+	before, err := thread.Journal(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeContext := sessiontree.BuildContext(before.Path, sessiontree.ContextOptions{})
+
+	event, err := thread.SettlePendingTool(ctx, PendingToolSettlement{
+		TurnID:     "turn-1",
+		RunID:      "run-1",
+		ToolCallID: "exec-1",
+		ToolName:   "terminal.exec",
+		Handle:     "terminal:job:123",
+		Status:     PendingToolSettledCompleted,
+		Summary:    "command completed",
+		Output:     "exit 0",
+		Activity:   &observation.ActivityPresentation{Label: "command completed", Payload: map[string]any{"exit_code": 0}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Kind != SubAgentDetailEventToolResult || event.Type != pendingToolSettlementEntryKind {
+		t.Fatalf("settlement event = %#v", event)
+	}
+	if event.ToolResult == nil ||
+		event.ToolResult.CallID != "exec-1" ||
+		event.ToolResult.ToolName != "terminal.exec" ||
+		event.ToolResult.Status != string(observation.ActivityStatusSuccess) ||
+		event.ToolResult.Content != "exit 0" {
+		t.Fatalf("settlement tool result = %#v", event.ToolResult)
+	}
+	if event.ActivityTimeline == nil || len(event.ActivityTimeline.Items) != 1 ||
+		event.ActivityTimeline.Items[0].Status != observation.ActivityStatusSuccess {
+		t.Fatalf("settlement activity = %#v", event.ActivityTimeline)
+	}
+
+	after, err := thread.Journal(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterContext := sessiontree.BuildContext(after.Path, sessiontree.ContextOptions{})
+	if !slices.EqualFunc(beforeContext, afterContext, func(left, right session.Message) bool {
+		return durableSignature(left) == durableSignature(right)
+	}) {
+		t.Fatalf("settlement changed provider-visible context:\nbefore=%#v\nafter=%#v", beforeContext, afterContext)
+	}
+	if slices.ContainsFunc(afterContext, func(msg session.Message) bool { return strings.Contains(msg.Content, "exit 0") }) {
+		t.Fatalf("settlement output leaked into provider context: %#v", afterContext)
+	}
+}
+
+func TestThreadSettlePendingToolRejectsInvalidTarget(t *testing.T) {
+	ctx := context.Background()
+	p := scriptharness.NewScriptedProvider()
+	repo := sessiontree.NewMemoryRepo()
+	h := newTestHarness(p, repo, cache.NewMemoryStore())
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendPendingToolResultFixture(t, ctx, repo, "thread", "turn-1")
+
+	if _, err := thread.SettlePendingTool(ctx, PendingToolSettlement{}); err == nil || !strings.Contains(err.Error(), "requires turn id") {
+		t.Fatalf("empty settlement err = %v", err)
+	}
+	_, err = thread.SettlePendingTool(ctx, PendingToolSettlement{
+		TurnID:     "turn-1",
+		RunID:      "run-1",
+		ToolCallID: "exec-1",
+		ToolName:   "terminal.exec",
+		Handle:     "terminal:job:missing",
+		Status:     PendingToolSettledCompleted,
+		Summary:    "done",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not an active pending tool result") {
+		t.Fatalf("wrong handle err = %v", err)
 	}
 }
 
@@ -1990,6 +2079,52 @@ func newTestHarness(p provider.Provider, repo sessiontree.Repo, promptStore cach
 func mustRegister(registry *tools.Registry, tool tools.Tool) {
 	if err := registry.Register(tool); err != nil {
 		panic(err)
+	}
+}
+
+func appendPendingToolResultFixture(t *testing.T, ctx context.Context, repo sessiontree.Repo, threadID string, turnID string) {
+	t.Helper()
+	if _, err := sessiontree.AppendTurnMarker(ctx, repo, threadID, turnID, sessiontree.TurnStarted, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, repo, threadID, turnID, session.Message{Role: session.User, Content: "run command"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, repo, threadID, turnID, session.Message{
+		Role:       session.Assistant,
+		Content:    "tool_call",
+		ToolCallID: "exec-1",
+		ToolName:   "terminal.exec",
+		ToolArgs:   `{"command":"npm test"}`,
+		Activity: &session.ActivityPresentation{
+			Label:    "npm test",
+			Renderer: string(observation.ActivityRendererTerminal),
+			Payload:  map[string]any{"command": "npm test"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, repo, threadID, turnID, session.Message{
+		Role:       session.Tool,
+		Content:    "<pending_tool_result>\n<summary>Command is running</summary>\n<instruction>wait</instruction>\n<handle>terminal:job:123</handle>\n</pending_tool_result>",
+		ToolCallID: "exec-1",
+		ToolName:   "terminal.exec",
+		ToolResult: &session.ToolResultView{Status: string(observation.ActivityStatusRunning)},
+		Activity: &session.ActivityPresentation{
+			Label:       "npm test",
+			Description: "Command is running",
+			Renderer:    string(observation.ActivityRendererTerminal),
+			Chips: []session.ActivityChip{
+				{Kind: "state", Label: "State", Value: string(observation.ActivityStatusRunning), Tone: "running"},
+				{Kind: "handle", Label: "Handle", Value: "terminal:job:123", Tone: "quiet"},
+			},
+			Payload: map[string]any{"command": "npm test", "pending_handle": "terminal:job:123", "pending_state": string(observation.ActivityStatusRunning)},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendTurnMarker(ctx, repo, threadID, turnID, sessiontree.TurnCompleted, map[string]string{"run_id": "run-1"}); err != nil {
+		t.Fatal(err)
 	}
 }
 

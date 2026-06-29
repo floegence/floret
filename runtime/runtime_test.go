@@ -1559,6 +1559,18 @@ func TestHostPublicNotFoundErrors(t *testing.T) {
 	}); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("CompletePendingTool err = %v, want ErrThreadNotFound", err)
 	}
+	if _, err := host.SettlePendingTool(ctx, PendingToolSettlementRequest{
+		ThreadID:   "missing",
+		TurnID:     "turn-1",
+		RunID:      "run-1",
+		ToolCallID: "exec-1",
+		ToolName:   "terminal.exec",
+		Handle:     "terminal:job:123",
+		Status:     PendingToolSettlementCompleted,
+		Summary:    "done",
+	}); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("SettlePendingTool err = %v, want ErrThreadNotFound", err)
+	}
 	if _, err := host.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{
 		ParentThreadID: "parent",
 		ChildThreadID:  "missing-child",
@@ -1662,6 +1674,133 @@ func TestHostCompletePendingToolRejectsInvalidRequest(t *testing.T) {
 	}
 	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{ThreadID: "thread", RunID: "pending-run", Status: PendingToolCompletionStatus("bogus"), Summary: "done", Handle: "terminal:job:123"}); err == nil || !strings.Contains(err.Error(), "invalid status") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
+	ctx := context.Background()
+	registry := tools.NewRegistry()
+	if err := registry.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{
+			Name:        "terminal_exec",
+			InputSchema: runtimeEchoSchema(),
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+		},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			return tools.Result{
+				Activity: &observation.ActivityPresentation{
+					Label:    "npm test",
+					Renderer: observation.ActivityRendererTerminal,
+					Payload:  map[string]any{"command": "npm test"},
+				},
+				Pending: &tools.PendingToolResult{
+					Handle:      "terminal:job:123",
+					State:       tools.PendingToolResultRunning,
+					Summary:     "Command is running",
+					Instruction: "Wait for completion.",
+				},
+			}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	requests := 0
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		if strings.Contains(string(req.RunID), "thread-title") {
+			events := make(chan ModelEvent, 2)
+			events <- ModelEvent{Type: ModelEventDelta, Text: "Pending command"}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			close(events)
+			return events, nil
+		}
+		mu.Lock()
+		requests++
+		step := requests
+		mu.Unlock()
+		events := make(chan ModelEvent, 2)
+		switch step {
+		case 1:
+			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "exec-1", Name: "terminal_exec", Args: `{"text":"npm test"}`}}}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+		case 2:
+			events <- ModelEvent{Type: ModelEventDelta, Text: "command started"}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+		default:
+			t.Fatalf("unexpected provider request after settlement: %#v", req)
+		}
+		close(events)
+		return events, nil
+	})
+
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			SystemPrompt: "test",
+		},
+		ModelGateway: gateway,
+		Store:        NewMemoryStore(),
+		Tools:        registry,
+		Approver:     allowRuntimeTools,
+		IDGenerator:  deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: "run pending command"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != TurnStatusCompleted || run.Output != "command started" {
+		t.Fatalf("run = %#v", run)
+	}
+	if item := runtimeProjectionToolItem(run.Projection, "exec-1"); item.Status != observation.ActivityStatusRunning {
+		t.Fatalf("pending item should remain running after successful turn: %#v", item)
+	}
+
+	settled, err := host.SettlePendingTool(ctx, PendingToolSettlementRequest{
+		ThreadID:   "thread",
+		TurnID:     "turn-1",
+		RunID:      "run-1",
+		ToolCallID: "exec-1",
+		ToolName:   "terminal_exec",
+		Handle:     "terminal:job:123",
+		Status:     PendingToolSettlementCompleted,
+		Summary:    "command completed",
+		Output:     "exit 0",
+		Activity:   &observation.ActivityPresentation{Label: "command completed", Renderer: observation.ActivityRendererTerminal, Payload: map[string]any{"exit_code": 0}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settled.Event.Kind != ThreadDetailEventToolResult ||
+		settled.Event.ToolResult == nil ||
+		settled.Event.ToolResult.Status != string(observation.ActivityStatusSuccess) ||
+		settled.Event.ToolResult.Content != "exit 0" {
+		t.Fatalf("settlement event = %#v", settled.Event)
+	}
+	item := runtimeProjectionToolItem(settled.Projection, "exec-1")
+	if item.Status != observation.ActivityStatusSuccess || item.Label != "command completed" || item.Payload["exit_code"] != 0 {
+		t.Fatalf("settled projection item = %#v", item)
+	}
+	for _, key := range []string{"pending_tool_result", "pending_handle", "pending_state"} {
+		if _, ok := item.Metadata[key]; ok {
+			t.Fatalf("settled projection retained %q metadata: %#v", key, item.Metadata)
+		}
+	}
+	mu.Lock()
+	gotRequests := requests
+	mu.Unlock()
+	if gotRequests != 2 {
+		t.Fatalf("provider requests = %d, want only original run requests", gotRequests)
 	}
 }
 
@@ -2487,6 +2626,20 @@ func runtimeProjectionSegmentKinds(segments []ThreadTurnProjectionSegment) []Thr
 		out = append(out, segment.Kind)
 	}
 	return out
+}
+
+func runtimeProjectionToolItem(projection ThreadTurnProjection, toolID string) observation.ActivityItem {
+	for _, segment := range projection.Segments {
+		if segment.ActivityTimeline == nil {
+			continue
+		}
+		for _, item := range segment.ActivityTimeline.Items {
+			if item.ToolID == toolID {
+				return item
+			}
+		}
+	}
+	return observation.ActivityItem{}
 }
 
 func allowRuntimeTools(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {

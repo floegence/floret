@@ -75,6 +75,14 @@ const (
 	subAgentApprovalArgsKey   = "args_hash"
 	subAgentApprovalReasonKey = "reason"
 
+	pendingToolSettlementEntryKind  = "pending_tool_settlement"
+	pendingToolSettlementStateKey   = "state"
+	pendingToolSettlementToolIDKey  = "tool_id"
+	pendingToolSettlementNameKey    = "tool_name"
+	pendingToolSettlementHandleKey  = "handle"
+	pendingToolSettlementRunIDKey   = "run_id"
+	pendingToolSettlementSummaryKey = "summary"
+
 	subAgentLifecycleEntryKind = "subagent_lifecycle"
 	subAgentLifecycleActionKey = "action"
 	subAgentLifecycleReasonKey = "reason"
@@ -696,6 +704,13 @@ func (h *AgentHarness) subAgentDetailEvent(entry sessiontree.Entry, ordinal int6
 				event.Type = subAgentApprovalEntryKind
 			}
 			event.Approval = subAgentDetailApproval(entry.Metadata)
+		case pendingToolSettlementEntryKind:
+			event.Kind = SubAgentDetailEventToolResult
+			if event.Type == "" {
+				event.Type = pendingToolSettlementEntryKind
+			}
+			event.Message = subAgentDetailMessage(entry.Message, includeRaw)
+			event.ToolResult = subAgentDetailToolResult(entry.Message, includeRaw)
 		case subAgentLifecycleEntryKind:
 			event.Kind = SubAgentDetailEventCustom
 			if event.Type == "" {
@@ -744,6 +759,12 @@ func (c subAgentDetailActivityContext) hasResult(callID string) bool {
 func subAgentDetailResultCallIDs(entries []sessiontree.Entry) map[string]struct{} {
 	out := map[string]struct{}{}
 	for _, entry := range entries {
+		if entry.Type == sessiontree.EntryCustom && entry.Metadata[subAgentDetailKindKey] == pendingToolSettlementEntryKind {
+			if callID := strings.TrimSpace(entry.Metadata[pendingToolSettlementToolIDKey]); callID != "" {
+				out[callID] = struct{}{}
+			}
+			continue
+		}
 		if entry.Type != sessiontree.EntryToolResult {
 			continue
 		}
@@ -880,6 +901,11 @@ func subAgentDetailToolResultActivityMetadata(result *SubAgentDetailToolResult) 
 	switch result.Status {
 	case string(observation.ActivityStatusError):
 		metadata["error_present"] = true
+		metadata["tool_result_status"] = string(observation.ActivityStatusError)
+	case string(observation.ActivityStatusCanceled):
+		metadata["tool_result_status"] = string(observation.ActivityStatusCanceled)
+	case string(observation.ActivityStatusSuccess):
+		metadata["tool_result_status"] = string(observation.ActivityStatusSuccess)
 	case string(observation.ActivityStatusRunning):
 		metadata["pending_tool_result"] = true
 		metadata["pending_state"] = string(observation.ActivityStatusRunning)
