@@ -1,9 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-06-29
-* **Update**: Documented terminal turn projection as the canonical cross-segment
-  activity settlement source and `SettlePendingTool` as the public host-owned
-  pending-work settlement API.
+* **Update**: Documented failed/cancelled terminal turn projection as the
+  cross-segment unavailable-state settlement source and `SettlePendingTool` as
+  the public host-owned pending-work settlement API.
 * **Update**: Documented parallel-safe tool result observation before slower
   sibling completion while preserving provider-safe durable save points.
 * **Update**: Documented tool approval activity as a lifecycle state on the tool

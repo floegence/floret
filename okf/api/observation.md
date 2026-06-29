@@ -25,11 +25,11 @@ summaries without parsing assistant text or depending on implementation types.
 items within one sanitized observation group. When a sanitized `run_end`
 observation is present, cancelled runs produce `canceled` unresolved items and
 failed runs produce `error` unresolved items. `runtime.ProjectThreadTurn`
-applies terminal turn markers across all activity timeline segments for the
-turn, so completed, failed, and cancelled terminal projections do not leave
-pending or running activity behind. Host-owned pending work that finishes later
-must be reported through the runtime `SettlePendingTool` API, which updates the
-original activity item instead of creating a separate UI row.
+applies failed and cancelled terminal markers across all activity timeline
+segments for the turn. Successful turns keep host-owned pending work running
+until the host reports the observed outcome through the runtime
+`SettlePendingTool` API, which updates the original activity item instead of
+creating a separate UI row.
 Tool approval events are lifecycle updates on the tool activity item itself:
 `tool_call`, approval request/resolution, and `tool_result` for the same tool id
 collapse into one item instead of a separate approval row. A requested approval

@@ -337,10 +337,11 @@ terminal process, watcher, or remote task. Those handlers can return
 `tools.Result{Pending: ...}` after the host has started the work. Floret records a
 normal provider-visible tool result containing `<pending_tool_result>`, marks the
 live activity as running during the provider turn, and exposes pending metadata
-for observation. Terminal turn projections settle unresolved pending/running
-activity so downstream products do not persist stale active rows after a
-completed, failed, or cancelled turn. Floret does not own the process, poll the
-handle, store a task registry, or decide cancellation.
+for observation. A successful provider turn does not complete that host-owned
+work; the activity remains running until the host reports the observed outcome.
+Failed or cancelled turns settle unresolved pending work to an unavailable
+terminal state. Floret does not own the process, poll the handle, store a task
+registry, or decide cancellation.
 `PendingToolResult.Handle` is the only continuation token rendered in that
 provider-visible result. Metadata is observation-only; if the model should pass a
 token to a later host tool call, the host must make that token the handle.

@@ -24,16 +24,15 @@ reasoning, tool arguments, tool results, and local paths.
 * Activity timelines summarize tool, hosted-tool, approval, control, and budget
   state. Floret builds the activity projection for hosted turns; host
   applications must not call `observation.BuildActivityTimeline` to synthesize a
-  main-thread UI activity surface. Runtime turn projection applies terminal
-  markers across all activity segments in the turn: completed turns settle open
-  pending/running items to success, failed turns make them terminal errors, and
-  cancelled turns make them cancelled. Save-point markers remain journal
-  checkpoints and do not settle activity. Host-owned pending work that finishes
-  after the provider turn is closed through `SettlePendingTool`; that settlement
-  updates the original tool item by id and remains outside provider-visible
-  history. Explicit approval resolution events remain authoritative when
-  present. Waiting run-end markers are the visible control item for host/user
-  input.
+  main-thread UI activity surface. Runtime turn projection applies failed and
+  cancelled terminal markers across all activity segments in the turn, but a
+  successful turn does not complete host-owned pending work. Save-point markers
+  remain journal checkpoints and do not settle activity. Host-owned pending work
+  that finishes after the provider turn is closed through `SettlePendingTool`;
+  that settlement updates the original tool item by id and remains outside
+  provider-visible history. Explicit approval resolution events remain
+  authoritative when present. Waiting run-end markers are the visible control
+  item for host/user input.
 * Runtime stream observations expose provider-neutral model output facts,
   including text deltas, reasoning deltas, retry/finish signals, and model
   tool-call stream start/delta/end facts. Model tool-call stream facts identify

@@ -148,23 +148,24 @@ Row-level `ActivityTimeline` values are treated only as already-sanitized
 presentation metadata for their corresponding detail event; the final activity
 state is re-reduced from ordered tool call, tool result, approval, turn marker,
 and run-failure facts. Terminal turn markers apply across all activity timeline
-segments in the turn: completed turns settle unresolved pending/running items to
-`success`, cancelled turns settle them to `canceled`, and failed turns settle
-them to `error`. Save-point markers remain checkpoint facts and do not settle
-activity. Downstream hosts may map those product-neutral segments to their own
-UI blocks, but must not read Floret's store schema, rebuild execution ordering
-from separate audit tables, or call `observation.BuildActivityTimeline` to
-create the main thread activity surface. Host live protocols, cursors,
-replacement snapshots, and product timeline reducers remain downstream
-concerns; they are not Floret runtime contracts. Pagination uses
-`AfterOrdinal`, `Limit`, `HasMore`, and `NextOrdinal`; raw content follows the
-same explicit `IncludeRaw` opt-in rule as subagent detail reads. Thread detail
-events share the same row-level `ActivityTimeline` projection and structured
-tool result `status` contract as subagent detail events. Host-owned pending tool
-outcomes after a provider turn must be reported through `SettlePendingTool`;
-that settlement is stored as a custom journal entry projected as a `tool_result`
-detail event, updates the original activity item for the same tool id, removes
-running-only metadata, and does not enter provider-visible history.
+segments in the turn: cancelled turns settle unresolved pending/running items to
+`canceled`, and failed turns settle them to `error`. Successful or completed
+turns do not imply completion of host-owned pending work. Save-point markers
+remain checkpoint facts and do not settle activity. Downstream hosts may map
+those product-neutral segments to their own UI blocks, but must not read
+Floret's store schema, rebuild execution ordering from separate audit tables,
+or call `observation.BuildActivityTimeline` to create the main thread activity
+surface. Host live protocols, cursors, replacement snapshots, and product
+timeline reducers remain downstream concerns; they are not Floret runtime
+contracts. Pagination uses `AfterOrdinal`, `Limit`, `HasMore`, and
+`NextOrdinal`; raw content follows the same explicit `IncludeRaw` opt-in rule as
+subagent detail reads. Thread detail events share the same row-level
+`ActivityTimeline` projection and structured tool result `status` contract as
+subagent detail events. Host-owned pending tool outcomes after a provider turn
+must be reported through `SettlePendingTool`; that settlement is stored as a
+custom journal entry projected as a `tool_result` detail event, updates the
+original activity item for the same tool id, removes running-only metadata, and
+does not enter provider-visible history.
 
 `runtime.Event.ActivityTimeline` is Floret's live projection for tool,
 approval, control, budget, and run-end lifecycle facts. It is generated from the
@@ -179,14 +180,15 @@ so final rows keep command labels and payload while adding terminal result
 chips and payload fields.
 
 Terminal turn results, including cancelled turns, still return a bounded
-`ThreadTurnProjection`. Terminal markers settle unresolved tool and approval
-activity in Floret's projection before the result is returned, so open running
-or pending rows do not remain after completed, failed, or cancelled turns. A
-later host-owned pending settlement remains authoritative for that tool id and
-updates the same projected activity item rather than adding a duplicate row.
-Downstream hosts should consume Floret projections and settlement results to
-replace their product UI for the turn instead of synthesizing final tool status
-from local audit records or live stream leftovers.
+`ThreadTurnProjection`. Failed and cancelled terminal markers settle unresolved
+tool and approval activity in Floret's projection before the result is returned,
+so impossible-to-continue rows do not remain decisionable. Successful turns keep
+host-owned pending work running until the host reports a terminal outcome
+through `SettlePendingTool`. That settlement remains authoritative for the tool
+id and updates the same projected activity item rather than adding a duplicate
+row. Downstream hosts should consume Floret projections and settlement results
+to replace their product UI for the turn instead of synthesizing final tool
+status from local audit records or live stream leftovers.
 
 Pending approval snapshots are the current-state companion to the durable
 approval audit trail. `ListPendingApprovals` can be called while a turn is active
