@@ -75,6 +75,12 @@ const (
 	subAgentApprovalArgsKey   = "args_hash"
 	subAgentApprovalReasonKey = "reason"
 
+	toolDispatchEntryKind = "tool_dispatch"
+	toolDispatchToolIDKey = "tool_id"
+	toolDispatchNameKey   = "tool_name"
+	toolDispatchKindKey   = "tool_kind"
+	toolDispatchArgsKey   = "args_hash"
+
 	pendingToolSettlementEntryKind  = "pending_tool_settlement"
 	pendingToolSettlementStateKey   = "state"
 	pendingToolSettlementToolIDKey  = "tool_id"
@@ -204,6 +210,7 @@ const (
 	SubAgentDetailEventUserMessage      SubAgentDetailEventKind = "user_message"
 	SubAgentDetailEventAssistantMessage SubAgentDetailEventKind = "assistant_message"
 	SubAgentDetailEventToolCall         SubAgentDetailEventKind = "tool_call"
+	SubAgentDetailEventToolDispatch     SubAgentDetailEventKind = "tool_dispatch"
 	SubAgentDetailEventToolResult       SubAgentDetailEventKind = "tool_result"
 	SubAgentDetailEventTurnMarker       SubAgentDetailEventKind = "turn_marker"
 	SubAgentDetailEventCompaction       SubAgentDetailEventKind = "compaction"
@@ -705,6 +712,13 @@ func (h *AgentHarness) subAgentDetailEvent(entry sessiontree.Entry, ordinal int6
 				event.Type = subAgentApprovalEntryKind
 			}
 			event.Approval = subAgentDetailApproval(entry.Metadata)
+		case toolDispatchEntryKind:
+			event.Kind = SubAgentDetailEventToolDispatch
+			if event.Type == "" {
+				event.Type = observation.EventTypeToolDispatchStarted
+			}
+			event.Message = subAgentDetailMessage(entry.Message, includeRaw)
+			event.ToolCall = subAgentDetailToolDispatch(entry)
 		case pendingToolSettlementEntryKind:
 			event.Kind = SubAgentDetailEventToolResult
 			if event.Type == "" {
@@ -737,7 +751,7 @@ func (h *AgentHarness) subAgentDetailEvent(entry sessiontree.Entry, ordinal int6
 
 func subAgentDetailRawAvailable(event SubAgentDetailEvent) bool {
 	switch event.Kind {
-	case SubAgentDetailEventInput, SubAgentDetailEventUserMessage, SubAgentDetailEventAssistantMessage, SubAgentDetailEventToolCall, SubAgentDetailEventToolResult:
+	case SubAgentDetailEventInput, SubAgentDetailEventUserMessage, SubAgentDetailEventAssistantMessage, SubAgentDetailEventToolCall, SubAgentDetailEventToolDispatch, SubAgentDetailEventToolResult:
 		return true
 	default:
 		return false
@@ -832,6 +846,19 @@ func subAgentDetailObservationEvent(detail SubAgentDetailEvent, entry sessiontre
 		if detail.ToolResult.Status == string(observation.ActivityStatusError) {
 			base.Error = "tool_result_error"
 		}
+		return base, true
+	case SubAgentDetailEventToolDispatch:
+		if detail.ToolCall == nil {
+			return observation.Event{}, false
+		}
+		base.Type = observation.EventTypeToolDispatchStarted
+		base.ToolID = detail.ToolCall.ID
+		base.ToolName = detail.ToolCall.Name
+		base.ToolKind = "local"
+		if detail.Message != nil {
+			base.Activity = observationActivityPresentation(entry.Message.Activity)
+		}
+		base.Metadata = subAgentDetailToolDispatchActivityMetadata(detail.Metadata)
 		return base, true
 	case SubAgentDetailEventApproval:
 		if detail.Approval == nil {
@@ -939,6 +966,35 @@ func subAgentDetailToolResultActivityMetadata(result *SubAgentDetailToolResult) 
 		return nil
 	}
 	return metadata
+}
+
+func subAgentDetailToolDispatch(entry sessiontree.Entry) *SubAgentDetailToolCall {
+	id := firstSubAgentDetailNonEmpty(strings.TrimSpace(entry.Message.ToolCallID), strings.TrimSpace(entry.Metadata[toolDispatchToolIDKey]))
+	name := firstSubAgentDetailNonEmpty(strings.TrimSpace(entry.Message.ToolName), strings.TrimSpace(entry.Metadata[toolDispatchNameKey]))
+	if id == "" && name == "" {
+		return nil
+	}
+	return &SubAgentDetailToolCall{
+		ID:       id,
+		Name:     name,
+		ArgsHash: strings.TrimSpace(entry.Metadata[toolDispatchArgsKey]),
+	}
+}
+
+func subAgentDetailToolDispatchActivityMetadata(metadata map[string]string) map[string]any {
+	if len(metadata) == 0 {
+		return nil
+	}
+	out := map[string]any{}
+	for _, key := range []string{"batch_index", "batch_size", "error_present"} {
+		if value := strings.TrimSpace(metadata[key]); value != "" {
+			out[key] = value
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func subAgentDetailApprovalActivityType(state string) string {

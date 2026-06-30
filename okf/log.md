@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-06-30
+* **Update**: Documented queued local tool calls and
+  `tool_dispatch_started` as separate lifecycle facts, so pending batched
+  siblings remain pending until permission, approval, and dispatch gates pass.
+
 ## 2026-06-29
 * **Update**: Documented failed/cancelled terminal turn projection as the
   cross-segment unavailable-state settlement source and `SettlePendingTool` as

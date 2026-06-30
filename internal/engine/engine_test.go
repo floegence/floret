@@ -504,7 +504,7 @@ func TestRunToolLoopFeedsResultIntoNextProviderRequest(t *testing.T) {
 	}) {
 		t.Fatalf("second provider request did not include bound tool result: %#v", second)
 	}
-	assertEventOrder(t, rec.Events, event.StepStart, event.ProviderRequest, event.ToolCall, event.ToolResult, event.StepEnd, event.StepStart, event.ProviderRequest, event.RunEnd)
+	assertEventOrder(t, rec.Events, event.StepStart, event.ProviderRequest, event.ToolCall, event.ToolDispatchStarted, event.ToolResult, event.StepEnd, event.StepStart, event.ProviderRequest, event.RunEnd)
 }
 
 func TestPendingToolResultFeedsProviderVisiblePendingMessage(t *testing.T) {
@@ -1951,7 +1951,7 @@ func TestApprovalApprovedLifecycleExecutesTool(t *testing.T) {
 	if !called {
 		t.Fatalf("approved tool handler did not run")
 	}
-	assertEventOrder(t, rec.Events, event.ToolCall, event.ToolApprovalRequested, event.ToolApprovalApproved, event.ToolResult)
+	assertEventOrder(t, rec.Events, event.ToolCall, event.ToolApprovalRequested, event.ToolApprovalApproved, event.ToolDispatchStarted, event.ToolResult)
 	requested := firstEvent(rec.Events, event.ToolApprovalRequested)
 	if requested.ArgsHash == "" || requested.Args != `{"value":"safe"}` {
 		t.Fatalf("approval requested event should include raw args for raw sink and stable hash: %#v", requested)

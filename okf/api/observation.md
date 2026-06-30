@@ -38,14 +38,19 @@ Tool approval events are lifecycle updates on the tool activity item itself:
 collapse into one item instead of a separate approval row. A requested approval
 therefore keeps the tool item `waiting`, blocking, and attention-worthy; approval
 or denial then advances that same item.
+For local tools, `tool_call` is the queued model request and remains `pending`
+until `tool_dispatch_started` records that Floret has passed validation,
+permission, and approval gates and is about to invoke the handler. Batched
+sibling calls that have not reached dispatch therefore stay pending while an
+earlier sibling waits for approval.
 Terminal tool-result settlements remove running-only pending metadata, payload
 fields, and chips so downstream hosts do not carry stale active state into
 terminal UI.
 
 Tool result duration is part of the activity lifecycle fact. When a terminal
-tool result carries a positive duration and the current item start is missing or
-later than `ended_at - duration`, `BuildActivityTimeline` expands the interval
-back to that duration-derived start. Activity validation rejects items whose
+tool result carries a positive duration, `BuildActivityTimeline` uses
+`ended_at - duration` as the execution start instead of including queued or
+approval wait time. Activity validation rejects items whose
 `ended_at_unix_ms` is earlier than `started_at_unix_ms`, so hosts never receive
 negative or append-time-only execution intervals as valid activity facts.
 

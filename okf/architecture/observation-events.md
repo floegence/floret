@@ -33,6 +33,11 @@ reasoning, tool arguments, tool results, and local paths.
   provider-visible history. Explicit approval resolution events remain
   authoritative when present. Waiting run-end markers are the visible control
   item for host/user input.
+  Local `tool_call` observations are queued/pending activity facts. A local tool
+  item becomes running only when the ordered `tool_dispatch_started` observation
+  is emitted after permission and approval gates pass. Hosted provider tools are
+  separate provider-native activity and may be running when their hosted call is
+  observed.
 * Runtime stream observations expose provider-neutral model output facts,
   including text deltas, reasoning deltas, retry/finish signals, and model
   tool-call stream start/delta/end facts. Model tool-call stream facts identify

@@ -383,6 +383,7 @@ const (
 	SubAgentDetailEventUserMessage      SubAgentDetailEventKind = "user_message"
 	SubAgentDetailEventAssistantMessage SubAgentDetailEventKind = "assistant_message"
 	SubAgentDetailEventToolCall         SubAgentDetailEventKind = "tool_call"
+	SubAgentDetailEventToolDispatch     SubAgentDetailEventKind = "tool_dispatch"
 	SubAgentDetailEventToolResult       SubAgentDetailEventKind = "tool_result"
 	SubAgentDetailEventTurnMarker       SubAgentDetailEventKind = "turn_marker"
 	SubAgentDetailEventCompaction       SubAgentDetailEventKind = "compaction"
@@ -398,6 +399,7 @@ const (
 	ThreadDetailEventUserMessage      ThreadDetailEventKind = "user_message"
 	ThreadDetailEventAssistantMessage ThreadDetailEventKind = "assistant_message"
 	ThreadDetailEventToolCall         ThreadDetailEventKind = "tool_call"
+	ThreadDetailEventToolDispatch     ThreadDetailEventKind = "tool_dispatch"
 	ThreadDetailEventToolResult       ThreadDetailEventKind = "tool_result"
 	ThreadDetailEventTurnMarker       ThreadDetailEventKind = "turn_marker"
 	ThreadDetailEventCompaction       ThreadDetailEventKind = "compaction"
@@ -2799,6 +2801,7 @@ func (r *runtimeActivityEventRecorder) Snapshot() []observation.Event {
 func runtimeActivityTimelineEvent(typ event.Type) bool {
 	switch typ {
 	case event.ToolCall,
+		event.ToolDispatchStarted,
 		event.ToolResult,
 		event.ToolApprovalRequested,
 		event.ToolApprovalApproved,

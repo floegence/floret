@@ -818,6 +818,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		var activeToolRegistry *tools.Registry
 		var toolRunOptions tools.RunOptions
 		callActivities := map[string]*observation.ActivityPresentation{}
+		callBatchMetadata := map[string]map[string]any{}
 		if len(classifiedCalls.Ordinary) > 0 {
 			opts, err = e.resolveToolSurface(ctx, opts, step, "tool_dispatch")
 			if err != nil {
@@ -841,13 +842,31 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				Step:          step,
 				Labels:        observabilityLabels(opts.Labels),
 				HostContext:   opts.toolSurface.hostContext,
+				DispatchStarted: func(start tools.DispatchStart) {
+					e.emit(opts, event.Event{
+						Type:     event.ToolDispatchStarted,
+						TraceID:  opts.TraceID,
+						RunID:    opts.RunID,
+						ThreadID: opts.ThreadID,
+						Step:     step,
+						Provider: opts.ProviderName,
+						Model:    opts.Model,
+						ToolID:   start.CallID,
+						ToolName: start.Name,
+						ToolKind: "local",
+						Args:     start.RawArgs,
+						Activity: callActivities[start.CallID],
+						Metadata: callBatchMetadata[start.CallID],
+					})
+				},
 			}
-			for _, call := range calls {
+			for i, call := range calls {
 				activity, activityErr := activeToolRegistry.ActivityForCall(toolCall(call), toolRunOptions)
 				if activityErr != nil {
 					activity = nil
 				}
 				callActivities[call.ID] = sanitizeActivityPresentation(activity)
+				callBatchMetadata[call.ID] = map[string]any{"batch_index": i, "batch_size": len(calls)}
 			}
 		}
 		for _, call := range calls {
@@ -915,7 +934,11 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		}
 		for i, call := range calls {
 			activity := callActivities[call.ID]
-			e.emit(opts, event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args, Activity: activity, Metadata: map[string]any{"batch_index": i, "batch_size": len(calls)}})
+			metadata := callBatchMetadata[call.ID]
+			if metadata == nil {
+				metadata = map[string]any{"batch_index": i, "batch_size": len(calls)}
+			}
+			e.emit(opts, event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args, Activity: activity, Metadata: metadata})
 		}
 		toolStarted := time.Now()
 		processToolResult := func(i int, result tools.Result) error {

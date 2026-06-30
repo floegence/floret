@@ -338,9 +338,10 @@ func TestProjectThreadTurnIgnoresStartedMarkerBeforeApprovalActivity(t *testing.
 	}
 	if timeline.Summary.Status != observation.ActivityStatusWaiting ||
 		timeline.Summary.Counts.Waiting != 1 ||
-		timeline.Summary.Counts.Running != 1 ||
+		timeline.Summary.Counts.Pending != 1 ||
+		timeline.Summary.Counts.Running != 0 ||
 		timeline.Summary.Counts.Approval != 1 {
-		t.Fatalf("summary should contain one waiting approval and one running tool: %#v", timeline.Summary)
+		t.Fatalf("summary should contain one waiting approval and one queued tool: %#v", timeline.Summary)
 	}
 	waiting := projectionToolItem(t, projection, "call-newsapi")
 	if waiting.Status != observation.ActivityStatusWaiting ||
@@ -350,12 +351,70 @@ func TestProjectThreadTurnIgnoresStartedMarkerBeforeApprovalActivity(t *testing.
 		waiting.Label != "curl -s https://newsapi.example.test" {
 		t.Fatalf("approval tool item mismatch: %#v", waiting)
 	}
-	running := projectionToolItem(t, projection, "call-search")
-	if running.Status != observation.ActivityStatusRunning ||
-		running.RequiresApproval ||
-		running.EndedAtUnixMS != 0 ||
-		running.Label != "curl -sL https://search.example.test" {
-		t.Fatalf("second tool item mismatch: %#v", running)
+	queued := projectionToolItem(t, projection, "call-search")
+	if queued.Status != observation.ActivityStatusPending ||
+		queued.RequiresApproval ||
+		queued.EndedAtUnixMS != 0 ||
+		queued.Label != "curl -sL https://search.example.test" {
+		t.Fatalf("second tool item mismatch: %#v", queued)
+	}
+}
+
+func TestProjectThreadTurnPromotesToolDispatchToRunning(t *testing.T) {
+	now := time.UnixMilli(1_700_031_000_000)
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID: "thread-dispatch",
+		TurnID:   "turn-dispatch",
+		RunID:    "run-dispatch",
+		TraceID:  "run-dispatch",
+		Events: []ThreadDetailEvent{
+			{
+				ID:        "tool-call",
+				Ordinal:   1,
+				ThreadID:  "thread-dispatch",
+				TurnID:    "turn-dispatch",
+				Kind:      ThreadDetailEventToolCall,
+				CreatedAt: now,
+				Message: &ThreadDetailMessage{Role: "assistant", Activity: &observation.ActivityPresentation{
+					Label:    "curl -s https://example.test",
+					Renderer: observation.ActivityRendererTerminal,
+					Payload:  map[string]any{"command": "curl -s https://example.test"},
+				}},
+				ToolCall: &ThreadDetailToolCall{ID: "call-1", Name: "terminal.exec"},
+			},
+			{
+				ID:        "tool-dispatch",
+				Ordinal:   2,
+				ThreadID:  "thread-dispatch",
+				TurnID:    "turn-dispatch",
+				Kind:      ThreadDetailEventToolDispatch,
+				Type:      observation.EventTypeToolDispatchStarted,
+				CreatedAt: now.Add(25 * time.Millisecond),
+				Message: &ThreadDetailMessage{Activity: &observation.ActivityPresentation{
+					Label:    "curl -s https://example.test",
+					Renderer: observation.ActivityRendererTerminal,
+					Payload:  map[string]any{"command": "curl -s https://example.test"},
+				}},
+				ToolCall: &ThreadDetailToolCall{ID: "call-1", Name: "terminal.exec"},
+			},
+		},
+	})
+
+	if len(projection.Segments) != 1 || projection.Segments[0].ActivityTimeline == nil {
+		t.Fatalf("projection segments = %#v", projection.Segments)
+	}
+	timeline := projection.Segments[0].ActivityTimeline
+	if err := observation.ValidateActivityTimeline(*timeline); err != nil {
+		t.Fatalf("projection should validate: %v; timeline=%#v", err, timeline)
+	}
+	item := projectionToolItem(t, projection, "call-1")
+	if item.Status != observation.ActivityStatusRunning ||
+		item.Label != "curl -s https://example.test" ||
+		item.EndedAtUnixMS != 0 {
+		t.Fatalf("dispatch item mismatch: %#v", item)
+	}
+	if timeline.Summary.Counts.Running != 1 || timeline.Summary.Counts.Pending != 0 {
+		t.Fatalf("summary should show running dispatch: %#v", timeline.Summary)
 	}
 }
 
@@ -770,7 +829,7 @@ func TestProjectThreadTurnSavePointDoesNotSettleActivity(t *testing.T) {
 					Status:          observation.ActivityStatusRunning,
 					Severity:        observation.ActivitySeverityNormal,
 					StartedAtUnixMS: now.UnixMilli(),
-					Metadata:        map[string]string{"pending_state": "running"},
+					Metadata:        map[string]string{"pending_tool_result": "true", "pending_state": "running"},
 				}),
 			},
 			{
@@ -791,8 +850,10 @@ func TestProjectThreadTurnSavePointDoesNotSettleActivity(t *testing.T) {
 	if item.Status != observation.ActivityStatusRunning || item.EndedAtUnixMS != 0 {
 		t.Fatalf("save point should not settle item: %#v", item)
 	}
-	if _, ok := item.Metadata["pending_state"]; !ok {
-		t.Fatalf("save point should preserve pending metadata: %#v", item.Metadata)
+	for _, key := range []string{"pending_tool_result", "pending_state"} {
+		if _, ok := item.Metadata[key]; !ok {
+			t.Fatalf("save point should preserve pending metadata %q: %#v", key, item.Metadata)
+		}
 	}
 }
 

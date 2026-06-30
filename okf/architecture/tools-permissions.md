@@ -48,6 +48,21 @@ tool call cannot bypass a newer host policy because dispatch uses the refreshed
 registry and the same resource, effect, permission, and approver lifecycle as
 ordinary tool calls.
 
+# Tool Activity Lifecycle
+
+Floret separates model-observed tool calls from local dispatch. A `tool_call`
+activity fact means the provider has requested a local tool and the invocation
+is queued for Floret-owned permission, approval, and dispatch handling. It is a
+`pending` activity item, not evidence that a handler is running. A
+`tool_dispatch_started` fact is emitted only after validation, permission, and
+approval gates pass and immediately before the handler is invoked; that fact
+promotes the same tool item to `running`.
+
+This split keeps batched tool calls honest: if the first sibling blocks on
+approval, later siblings can remain visible as pending work without pretending
+that they have started execution. Tool results and pending external results
+continue to update the same tool item.
+
 # Tool Approval State
 
 Floret owns the generic approval lifecycle for local tool dispatch. Approval

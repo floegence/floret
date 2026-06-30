@@ -51,6 +51,21 @@ type RunOptions struct {
 	Step          int
 	Labels        map[string]string
 	HostContext   map[string]string
+
+	DispatchStarted func(DispatchStart)
+}
+
+type DispatchStart struct {
+	CallID        string
+	Name          string
+	RawArgs       string
+	RunID         string
+	ThreadID      string
+	TurnID        string
+	PromptScopeID string
+	Step          int
+	Labels        map[string]string
+	HostContext   map[string]string
 }
 
 type erasedInvocation struct {
@@ -413,6 +428,20 @@ func (r *Registry) run(ctx context.Context, call ToolCall, approver Approver, op
 	}
 	if denied := r.permissionDenied(ctx, t.Definition, permission, call, args, resources, opts, approver); denied != "" {
 		return ErrorResult(call.ID, call.Name, denied)
+	}
+	if opts.DispatchStarted != nil {
+		opts.DispatchStarted(DispatchStart{
+			CallID:        call.ID,
+			Name:          call.Name,
+			RawArgs:       raw,
+			RunID:         opts.RunID,
+			ThreadID:      opts.ThreadID,
+			TurnID:        opts.TurnID,
+			PromptScopeID: opts.PromptScopeID,
+			Step:          opts.Step,
+			Labels:        cloneStringMap(opts.Labels),
+			HostContext:   cloneStringMap(opts.HostContext),
+		})
 	}
 	result, err = t.handler(ctx, inv)
 	if err != nil {

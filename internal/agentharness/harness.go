@@ -1758,6 +1758,44 @@ func (t *Thread) appendApprovalEvent(ctx context.Context, turnID string, runID s
 	return nil
 }
 
+func (t *Thread) appendToolDispatchEvent(ctx context.Context, turnID string, runID string, ev event.Event) error {
+	metadata := map[string]string{
+		subAgentDetailKindKey: toolDispatchEntryKind,
+		subAgentDetailTypeKey: string(event.ToolDispatchStarted),
+		toolDispatchToolIDKey: strings.TrimSpace(ev.ToolID),
+		toolDispatchNameKey:   strings.TrimSpace(ev.ToolName),
+		toolDispatchKindKey:   strings.TrimSpace(ev.ToolKind),
+		toolDispatchArgsKey:   strings.TrimSpace(ev.ArgsHash),
+	}
+	if values, ok := event.Sanitize(ev).Metadata.(map[string]any); ok {
+		for key, value := range values {
+			switch key {
+			case "batch_index", "batch_size", "error_present":
+				if text := safeApprovalMetadataValue(value); text != "" {
+					metadata[key] = text
+				}
+			}
+		}
+	}
+	entry, err := t.harness.options.Repo.Append(ctx, sessiontree.Entry{
+		ThreadID: t.id,
+		TurnID:   turnID,
+		Type:     sessiontree.EntryCustom,
+		Message: session.Message{
+			ToolCallID: strings.TrimSpace(ev.ToolID),
+			ToolName:   strings.TrimSpace(ev.ToolName),
+			Activity:   sessionActivityPresentation(sanitizeActivityPresentation(ev.Activity)),
+		},
+		Metadata: metadata,
+	}, sessiontree.AppendOptions{})
+	if err != nil {
+		return err
+	}
+	t.harness.emitEntryCommitted(entry, runID)
+	t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: string(event.ToolDispatchStarted)})
+	return nil
+}
+
 func (t *Thread) appendPendingToolSettlement(ctx context.Context, settlement PendingToolSettlement) (sessiontree.Entry, error) {
 	status := pendingToolSettlementActivityStatus(settlement.Status)
 	metadata := map[string]string{
@@ -2111,6 +2149,16 @@ func (p *turnProjection) Emit(ev event.Event) {
 		if size := eventBatchSize(ev.Metadata); size > p.pendingBatchSize {
 			p.pendingBatchSize = size
 		}
+	case event.ToolDispatchStarted:
+		if err := p.flushPendingToolBatch(false); err != nil {
+			p.err = err
+			return
+		}
+		if err := p.flushPendingAssistantText(true); err != nil {
+			p.err = err
+			return
+		}
+		p.err = p.thread.appendToolDispatchEvent(p.ctx, p.turnID, p.runID, ev)
 	case event.ToolResult:
 		if err := p.flushPendingAssistantText(true); err != nil {
 			p.err = err

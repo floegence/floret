@@ -15,6 +15,7 @@ import (
 
 const (
 	EventTypeToolCall              = "tool_call"
+	EventTypeToolDispatchStarted   = "tool_dispatch_started"
 	EventTypeToolResult            = "tool_result"
 	EventTypeToolApprovalRequested = "tool_approval_requested"
 	EventTypeToolApprovalApproved  = "tool_approval_approved"
@@ -250,6 +251,40 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 		case EventTypeToolCall, EventTypeHostedToolCall:
 			noteActivityTime(observedAt, &firstAt, &lastAt)
 			key := activityToolKey(ev, index)
+			initialStatus := ActivityStatusPending
+			initialSeverity := ActivitySeverityQuiet
+			if ev.Type == EventTypeHostedToolCall {
+				initialStatus = ActivityStatusRunning
+				initialSeverity = ActivitySeverityNormal
+			}
+			state := ensureActivityItem(items, &order, key, len(order), func() ActivityItem {
+				return ActivityItem{
+					ItemID:          key,
+					ToolID:          strings.TrimSpace(ev.ToolID),
+					ToolName:        strings.TrimSpace(ev.ToolName),
+					Kind:            activityToolKind(ev),
+					Status:          initialStatus,
+					Severity:        initialSeverity,
+					StartedAtUnixMS: observedAt,
+					Metadata:        activityMetadata(ev),
+				}
+			})
+			state.item.ToolID = firstNonEmpty(state.item.ToolID, strings.TrimSpace(ev.ToolID))
+			state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
+			state.item.Kind = firstNonEmptyActivityKind(state.item.Kind, activityToolKind(ev))
+			if state.item.StartedAtUnixMS == 0 {
+				state.item.StartedAtUnixMS = observedAt
+			}
+			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
+			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
+			if activityMetadataBool(ev.Metadata, "pending_tool_result") {
+				state.item.Status = ActivityStatusRunning
+				state.item.Severity = ActivitySeverityWarning
+			}
+			state.lastSeen = observedAt
+		case EventTypeToolDispatchStarted:
+			noteActivityTime(observedAt, &firstAt, &lastAt)
+			key := activityToolKey(ev, index)
 			state := ensureActivityItem(items, &order, key, len(order), func() ActivityItem {
 				return ActivityItem{
 					ItemID:          key,
@@ -265,17 +300,12 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			state.item.ToolID = firstNonEmpty(state.item.ToolID, strings.TrimSpace(ev.ToolID))
 			state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
 			state.item.Kind = firstNonEmptyActivityKind(state.item.Kind, activityToolKind(ev))
-			if state.item.StartedAtUnixMS == 0 {
-				state.item.StartedAtUnixMS = observedAt
-			}
-			if state.item.Status == ActivityStatusPending {
-				state.item.Status = ActivityStatusRunning
-			}
+			state.item.StartedAtUnixMS = observedAt
+			state.item.Status = ActivityStatusRunning
+			state.item.Severity = ActivitySeverityNormal
+			state.item.EndedAtUnixMS = 0
 			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
 			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
-			if activityMetadataBool(ev.Metadata, "pending_tool_result") {
-				state.item.Severity = ActivitySeverityWarning
-			}
 			state.lastSeen = observedAt
 		case EventTypeToolResult, EventTypeHostedToolResult:
 			noteActivityTime(observedAt, &firstAt, &lastAt)
@@ -301,9 +331,7 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			state.item.EndedAtUnixMS = observedAt
 			if ev.DurationMS > 0 && observedAt > ev.DurationMS {
 				durationStart := observedAt - ev.DurationMS
-				if state.item.StartedAtUnixMS == 0 || state.item.StartedAtUnixMS > durationStart {
-					state.item.StartedAtUnixMS = durationStart
-				}
+				state.item.StartedAtUnixMS = durationStart
 			}
 			resultStatus := activityMetadataValue(ev, "tool_result_status")
 			if activityEventHasError(ev) || resultStatus == string(ActivityStatusError) {
@@ -384,7 +412,7 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			state.item.RequiresApproval = true
 			switch ev.Type {
 			case EventTypeToolApprovalApproved:
-				state.item.Status = ActivityStatusRunning
+				state.item.Status = ActivityStatusPending
 				state.item.Severity = ActivitySeverityNormal
 				state.item.ApprovalState = "approved"
 				state.item.EndedAtUnixMS = 0

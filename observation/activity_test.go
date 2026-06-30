@@ -83,6 +83,50 @@ func TestBuildActivityTimelineProjectsPendingToolResultAsRunning(t *testing.T) {
 	}
 }
 
+func TestBuildActivityTimelineKeepsToolCallPendingUntilDispatchStarts(t *testing.T) {
+	start := time.UnixMilli(1_700_000_001_500)
+	command := "curl -s https://example.test"
+	toolCall := Event{Type: EventTypeToolCall, RunID: "run-queued", ThreadID: "thread-queued", TurnID: "turn-queued", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: &ActivityPresentation{Label: command, Renderer: ActivityRendererTerminal, Payload: map[string]any{"command": command}}, ObservedAt: start}
+
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-queued", ThreadID: "thread-queued", TurnID: "turn-queued"}, []Event{toolCall}, start.Add(time.Second).UnixMilli())
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("timeline should validate: %v; timeline=%#v", err, timeline)
+	}
+	item := activityTestItemByToolID(timeline, "exec-1")
+	if item.Status != ActivityStatusPending ||
+		item.Severity != ActivitySeverityQuiet ||
+		item.Label != command ||
+		item.EndedAtUnixMS != 0 {
+		t.Fatalf("queued tool item mismatch: %#v", item)
+	}
+	if timeline.Summary.Status != ActivityStatusPending ||
+		timeline.Summary.Counts.Pending != 1 ||
+		timeline.Summary.Counts.Running != 0 {
+		t.Fatalf("summary should show one pending tool: %#v", timeline.Summary)
+	}
+
+	timeline = BuildActivityTimeline(ActivityRunMeta{RunID: "run-queued", ThreadID: "thread-queued", TurnID: "turn-queued"}, []Event{
+		toolCall,
+		{Type: EventTypeToolDispatchStarted, RunID: "run-queued", ThreadID: "thread-queued", TurnID: "turn-queued", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: &ActivityPresentation{Label: command, Renderer: ActivityRendererTerminal, Payload: map[string]any{"command": command}}, ObservedAt: start.Add(25 * time.Millisecond)},
+	}, start.Add(time.Second).UnixMilli())
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("dispatched timeline should validate: %v; timeline=%#v", err, timeline)
+	}
+	item = activityTestItemByToolID(timeline, "exec-1")
+	if item.Status != ActivityStatusRunning ||
+		item.Severity != ActivitySeverityNormal ||
+		item.Label != command ||
+		item.StartedAtUnixMS != start.Add(25*time.Millisecond).UnixMilli() ||
+		item.EndedAtUnixMS != 0 {
+		t.Fatalf("dispatched tool item mismatch: %#v", item)
+	}
+	if timeline.Summary.Status != ActivityStatusRunning ||
+		timeline.Summary.Counts.Pending != 0 ||
+		timeline.Summary.Counts.Running != 1 {
+		t.Fatalf("summary should show one running tool: %#v", timeline.Summary)
+	}
+}
+
 func TestBuildActivityTimelineSettlesPendingToolResult(t *testing.T) {
 	start := time.UnixMilli(1_700_000_001_000)
 	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-pending", ThreadID: "thread-pending", TurnID: "turn-pending"}, []Event{
@@ -238,9 +282,9 @@ func TestBuildActivityTimelineDoesNotSettleToolsForNonTerminalRunEnd(t *testing.
 		wantSummary     ActivityStatus
 		wantControlItem bool
 	}{
-		{name: "started", runEndMessage: "started", wantSummary: ActivityStatusRunning},
+		{name: "started", runEndMessage: "started", wantSummary: ActivityStatusPending},
 		{name: "waiting", runEndMessage: string(ActivityStatusWaiting), wantSummary: ActivityStatusWaiting, wantControlItem: true},
-		{name: "unknown", runEndMessage: "queued", wantSummary: ActivityStatusRunning},
+		{name: "unknown", runEndMessage: "queued", wantSummary: ActivityStatusPending},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -271,14 +315,14 @@ func TestBuildActivityTimelineDoesNotSettleToolsForNonTerminalRunEnd(t *testing.
 				t.Fatalf("timeline should validate: %v; timeline=%#v", err, timeline)
 			}
 			tool := activityTestItemByToolID(timeline, "exec-1")
-			if tool.Status != ActivityStatusRunning ||
+			if tool.Status != ActivityStatusPending ||
 				tool.EndedAtUnixMS != 0 ||
 				tool.StartedAtUnixMS != start.Add(5*time.Millisecond).UnixMilli() {
-				t.Fatalf("tool should stay running: %#v", tool)
+				t.Fatalf("tool should stay pending: %#v", tool)
 			}
 			if timeline.Summary.Status != tt.wantSummary ||
 				timeline.Summary.Counts.Success != 0 ||
-				timeline.Summary.Counts.Running != 1 {
+				timeline.Summary.Counts.Pending != 1 {
 				t.Fatalf("summary mismatch: %#v", timeline.Summary)
 			}
 			controlItems := 0
@@ -354,8 +398,9 @@ func TestBuildActivityTimelineKeepsApprovalLifecycleOnToolItem(t *testing.T) {
 		{Type: EventTypeToolCall, RunID: "run-approved", ThreadID: "thread-approved", TurnID: "turn-approved", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: &ActivityPresentation{Label: command, Renderer: ActivityRendererTerminal, Payload: map[string]any{"command": command}}, ObservedAt: start},
 		{Type: EventTypeToolApprovalRequested, RunID: "run-approved", ThreadID: "thread-approved", TurnID: "turn-approved", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Metadata: map[string]any{"approval_id": "approval-1"}, ObservedAt: start.Add(10 * time.Millisecond)},
 		{Type: EventTypeToolApprovalApproved, RunID: "run-approved", ThreadID: "thread-approved", TurnID: "turn-approved", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", ObservedAt: start.Add(100 * time.Millisecond)},
-		{Type: EventTypeToolResult, RunID: "run-approved", ThreadID: "thread-approved", TurnID: "turn-approved", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", DurationMS: 500, Metadata: map[string]any{"tool_result_status": string(ActivityStatusSuccess)}, Activity: &ActivityPresentation{Description: "Command completed", Payload: map[string]any{"exit_code": 0}}, ObservedAt: start.Add(500 * time.Millisecond)},
-	}, start.Add(time.Second).UnixMilli())
+		{Type: EventTypeToolDispatchStarted, RunID: "run-approved", ThreadID: "thread-approved", TurnID: "turn-approved", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: &ActivityPresentation{Label: command, Renderer: ActivityRendererTerminal, Payload: map[string]any{"command": command}}, ObservedAt: start.Add(10 * time.Second)},
+		{Type: EventTypeToolResult, RunID: "run-approved", ThreadID: "thread-approved", TurnID: "turn-approved", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", DurationMS: 500, Metadata: map[string]any{"tool_result_status": string(ActivityStatusSuccess)}, Activity: &ActivityPresentation{Description: "Command completed", Payload: map[string]any{"exit_code": 0}}, ObservedAt: start.Add(10500 * time.Millisecond)},
+	}, start.Add(11*time.Second).UnixMilli())
 
 	if err := ValidateActivityTimeline(timeline); err != nil {
 		t.Fatalf("timeline should validate: %v", err)
