@@ -40,6 +40,10 @@ type TraceID string
 var (
 	// ErrThreadNotFound reports that a durable thread requested through Host was not found.
 	ErrThreadNotFound = errors.New("floret thread not found")
+	// ErrTurnNotFound reports that a durable turn requested through Host was not found.
+	ErrTurnNotFound = errors.New("floret turn not found")
+	// ErrRunNotFound reports that a durable run requested through Host was not found.
+	ErrRunNotFound = errors.New("floret run not found")
 	// ErrSubAgentNotFound reports that a parent-scoped child thread requested through Host was not found.
 	ErrSubAgentNotFound = errors.New("floret subagent not found")
 )
@@ -50,6 +54,7 @@ type Host interface {
 	ReadThread(context.Context, ThreadID) (ThreadSnapshot, error)
 	ListThreadDetailEvents(context.Context, ListThreadDetailEventsRequest) (ThreadDetailEvents, error)
 	ListPendingApprovals(context.Context, ListPendingApprovalsRequest) (PendingApprovals, error)
+	ReadTurnProjection(context.Context, ReadTurnProjectionRequest) (ThreadTurnProjection, error)
 	RunTurn(context.Context, RunTurnRequest) (TurnResult, error)
 	RetryTurn(context.Context, RetryTurnRequest) (TurnResult, error)
 	CompactThread(context.Context, CompactThreadRequest) (CompactThreadResult, error)
@@ -68,6 +73,14 @@ type Host interface {
 	Close() error
 }
 
+// LifecycleHost exposes provider-free thread lifecycle operations over a Floret store.
+type LifecycleHost interface {
+	EnsureThread(context.Context, EnsureThreadRequest) (ThreadSummary, error)
+	CloseSubAgents(context.Context, CloseSubAgentsRequest) (CloseSubAgentsResult, error)
+	DeleteThread(context.Context, ThreadID) error
+	Close() error
+}
+
 type HostOptions struct {
 	Config              config.Config
 	ModelGateway        ModelGateway
@@ -80,6 +93,12 @@ type HostOptions struct {
 	LoopLimits          LoopLimits
 	SubAgentRunTimeout  time.Duration
 	Capabilities        CapabilityOptions
+}
+
+// LifecycleHostOptions configures NewLifecycleHost. If Store is nil, the host uses an ephemeral memory store.
+type LifecycleHostOptions struct {
+	Store *Store
+	Sink  EventSink
 }
 
 type LoopLimits struct {
@@ -132,6 +151,14 @@ type CompactThreadRequest struct {
 	PreviousProviderState *ModelState
 	Limits                TurnLimits
 	Reasoning             ReasoningSelection
+}
+
+// ReadTurnProjectionRequest identifies a durable hosted turn projection to rebuild from Floret detail.
+// RunID is required and must match the execution identity recorded for the turn.
+type ReadTurnProjectionRequest struct {
+	ThreadID ThreadID
+	TurnID   TurnID
+	RunID    RunID
 }
 
 // PendingToolCompletionStatus describes the observed outcome of host-owned work
@@ -912,6 +939,26 @@ func NewHost(opts HostOptions) (Host, error) {
 	return &host{cfg: cfg, store: store, sink: opts.Sink, harness: harness}, nil
 }
 
+// NewLifecycleHost creates a provider-free host for thread lifecycle maintenance.
+// It does not configure model transport, tools, or provider loop execution.
+func NewLifecycleHost(opts LifecycleHostOptions) (LifecycleHost, error) {
+	store := opts.Store
+	if store == nil {
+		store = NewMemoryStore()
+	}
+	if err := store.validate(); err != nil {
+		return nil, err
+	}
+	harness := agentharness.New(agentharness.Options{
+		Repo:        store.repo,
+		PromptStore: store.prompt,
+		Artifacts:   store.artifacts,
+		Sink:        newRuntimeEventSink(opts.Sink),
+		SinkPolicy:  runtimeHarnessSinkPolicy(),
+	})
+	return &host{store: store, sink: opts.Sink, harness: harness}, nil
+}
+
 func runtimeHarnessSinkPolicy() event.SinkPolicy {
 	return event.SinkPolicy{AllowRaw: true, Redactor: event.SafePathRefsText}
 }
@@ -978,6 +1025,35 @@ func (h *host) ListPendingApprovals(ctx context.Context, req ListPendingApproval
 		return PendingApprovals{}, runtimeHostError(err)
 	}
 	return pendingApprovals(result), nil
+}
+
+func (h *host) ReadTurnProjection(ctx context.Context, req ReadTurnProjectionRequest) (ThreadTurnProjection, error) {
+	if strings.TrimSpace(string(req.ThreadID)) == "" {
+		return ThreadTurnProjection{}, errors.New("thread id is required")
+	}
+	if strings.TrimSpace(string(req.TurnID)) == "" {
+		return ThreadTurnProjection{}, errors.New("turn id is required")
+	}
+	if strings.TrimSpace(string(req.RunID)) == "" {
+		return ThreadTurnProjection{}, errors.New("run id is required")
+	}
+	events, err := h.listRawThreadDetailEventsForTurn(ctx, string(req.ThreadID), string(req.TurnID))
+	if err != nil {
+		return ThreadTurnProjection{}, runtimeHostError(err)
+	}
+	if len(events) == 0 {
+		return ThreadTurnProjection{}, ErrTurnNotFound
+	}
+	if !threadDetailEventsContainRunID(events, req.RunID) {
+		return ThreadTurnProjection{}, fmt.Errorf("%w: %s", ErrRunNotFound, req.RunID)
+	}
+	return ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID: req.ThreadID,
+		TurnID:   req.TurnID,
+		RunID:    req.RunID,
+		TraceID:  TraceID(req.RunID),
+		Events:   events,
+	}), nil
 }
 
 func (h *host) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, error) {
@@ -1544,6 +1620,40 @@ func (h *host) listRawThreadDetailEventsForTurn(ctx context.Context, threadID st
 		}
 		afterOrdinal = detail.NextOrdinal
 	}
+}
+
+func threadDetailEventsContainRunID(events []ThreadDetailEvent, runID RunID) bool {
+	want := strings.TrimSpace(string(runID))
+	if want == "" {
+		return false
+	}
+	for _, ev := range events {
+		for _, got := range []string{
+			threadDetailMetadataRunID(ev.Metadata),
+			threadDetailTurnMarkerRunID(ev.TurnMarker),
+		} {
+			if strings.TrimSpace(got) == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func threadDetailMetadataRunID(metadata map[string]string) string {
+	for _, key := range []string{"run_id", "pending_tool_settlement_run_id"} {
+		if value := strings.TrimSpace(metadata[key]); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func threadDetailTurnMarkerRunID(marker *ThreadDetailTurnMarker) string {
+	if marker == nil {
+		return ""
+	}
+	return strings.TrimSpace(marker.Metadata["run_id"])
 }
 
 func waitSubAgentsResult(in agentharness.WaitSubAgentsResult) WaitSubAgentsResult {

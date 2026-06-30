@@ -18,6 +18,8 @@ continuation state, and lifecycle observations.
 # Main Entry Points
 
 * `NewHost` creates a durable conversation host.
+* `NewLifecycleHost` creates a provider-free lifecycle host for thread summary,
+  child close, and thread deletion operations that do not run the model loop.
 * `NewMemoryStore` creates an in-memory runtime store for tests or ephemeral use.
 * `OpenSQLiteStore` creates Floret-managed durable runtime storage.
 * `Host.EnsureThread` creates or recovers a hosted thread and returns
@@ -43,9 +45,9 @@ continuation state, and lifecycle observations.
   audit surfaces without expanding `WaitSubAgents` payloads.
 * `ListThreadDetailEvents` lets a host read the Floret-owned ordered execution
   transcript for a hosted thread without reading Floret storage internals.
-* `ProjectThreadTurn` and `TurnResult.Projection` expose the product-neutral
-  ordered assistant text, activity timeline, and control-signal segments for a
-  hosted turn.
+* `ProjectThreadTurn`, `ReadTurnProjection`, and `TurnResult.Projection` expose
+  the product-neutral ordered assistant text, activity timeline, and
+  control-signal segments for a hosted turn.
 * `ListPendingApprovals` returns the current product-neutral tool approvals
   waiting for a host decision on a thread.
 * `CompletePendingTool` requires the public completion `RunID` and uses it as
@@ -58,8 +60,9 @@ continuation state, and lifecycle observations.
   tool result field.
 * `DeleteThread` removes a Floret-owned thread tree from the engine store,
   including child threads, prompt cache scopes, and artifacts.
-* `ErrThreadNotFound` and `ErrSubAgentNotFound` are public sentinel errors for
-  `errors.Is` checks on Host facade not-found responses.
+* `ErrThreadNotFound`, `ErrTurnNotFound`, `ErrRunNotFound`, and
+  `ErrSubAgentNotFound` are public sentinel errors for `errors.Is` checks on
+  Host facade not-found responses.
 * `ModelGateway` lets a host supply model transport through
   `HostOptions.ModelGateway` while Floret owns loop control, tool dispatch,
   context lifecycle, and ledgers.
@@ -140,11 +143,19 @@ run failures. This is Floret's public read model for durable execution
 transcript facts. `ThreadTurnProjection` is the public display projection over
 those facts: `RunTurn`, `RetryTurn`, and `CompletePendingTool` return it on
 `TurnResult`, `SettlePendingTool` returns it on `PendingToolSettlementResult`,
-and hosts with live committed events may call `ProjectThreadTurn`. Runtime
-turn-result and pending-settlement projections are canonical current-turn
-display projections built by the Floret host from raw-capable journal facts; the
-default preview-only detail read model is for listing and inspection, not for
-authoritative assistant markdown.
+hosts with live committed events may call `ProjectThreadTurn`, and hosts with a
+known `ThreadID`, `TurnID`, and `RunID` may call `ReadTurnProjection` to rebuild
+the turn display projection from durable Floret detail after reload. Runtime
+turn-result, pending-settlement, and read-back projections are canonical
+current-turn display projections built by the Floret host from raw-capable
+journal facts; the default preview-only detail read model is for listing and
+inspection, not for authoritative assistant markdown.
+`ReadTurnProjection` requires explicit `RunID` input instead of inferring it
+from stored rows, because `RunID` is execution identity and not the thread or
+turn storage identity. A missing thread is reported with `ErrThreadNotFound`; a
+known thread with no matching turn detail is reported with `ErrTurnNotFound`;
+and a turn whose durable detail does not record the requested run is reported
+with `ErrRunNotFound`.
 `ProjectThreadTurn` derives assistant text, control-signal segments, and turn
 activity only from the ordered `ThreadDetailEvent` stream for the target turn.
 It does not accept or merge an older aggregate activity timeline as an input.
@@ -215,9 +226,18 @@ target thread and Floret-managed descendant child threads, plus their prompt
 cache records and thread artifacts. Hosts should use this public API instead of
 querying or mutating Floret storage tables directly.
 
+`NewLifecycleHost` is the provider-free constructor for lifecycle-only
+processes that share a Floret `Store` but do not need provider configuration.
+It exposes `EnsureThread`, `CloseSubAgents`, `DeleteThread`, and `Close` without
+accepting fake providers, model gateways, tools, or host UI options. It exists
+so cleanup and deletion code can stay on the public runtime facade without
+pretending to be a model-running host.
+
 Host facade not-found responses should be handled with `errors.Is` against
-`runtime.ErrThreadNotFound` or `runtime.ErrSubAgentNotFound`. Hosts should not
-parse error strings or import Floret internal package sentinels.
+`runtime.ErrThreadNotFound`, `runtime.ErrTurnNotFound`,
+`runtime.ErrRunNotFound`, or
+`runtime.ErrSubAgentNotFound`. Hosts should not parse error strings or import
+Floret internal package sentinels.
 
 `StreamObservation` is for host rendering and diagnostics. It is not raw
 provider wire data and must not carry prompt text, tool arguments, tool results,

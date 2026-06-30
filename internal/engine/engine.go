@@ -958,6 +958,8 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			e.emit(opts, event.Event{Type: event.ToolCall, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: call.ID, ToolName: call.Name, ToolKind: "local", Args: call.Args, Activity: activity, Metadata: metadata})
 		}
 		toolStarted := time.Now()
+		toolMessages := make([]session.Message, len(calls))
+		toolMessageSet := make([]bool, len(calls))
 		processToolResult := func(i int, result tools.Result) error {
 			result = preparePendingToolResult(result)
 			result.Activity = sanitizeActivityPresentation(result.Activity)
@@ -990,12 +992,8 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			}
 			resultView.Status = resultStatus
 			e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: resultLatency, Activity: result.Activity, Metadata: metadata, Artifacts: eventArtifacts(projection, result.Artifacts)})
-			msg := e.stableMessage(opts.RunID, session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: resultView, Activity: sessionActivityPresentation(result.Activity)})
-			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
-				return err
-			}
-			activeHistory = append(activeHistory, msg)
-			state.activeMessages = append([]session.Message(nil), activeHistory...)
+			toolMessages[i] = e.stableMessage(opts.RunID, session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: resultView, Activity: sessionActivityPresentation(result.Activity)})
+			toolMessageSet[i] = true
 			return nil
 		}
 		if _, err := runToolBatchWithObserver(ctx, activeToolRegistry, toolCalls(calls), e.approverWithEvents(opts, step), toolRunOptions, processToolResult); err != nil {
@@ -1003,6 +1001,15 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				return e.end(state, opts, step, Cancelled, output, err, metrics, started, decision)
 			}
 			return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+		}
+		for i, msg := range toolMessages {
+			if !toolMessageSet[i] {
+				return e.end(state, opts, step, Failed, output, fmt.Errorf("tool result %d was not recorded", i), metrics, started, decision)
+			}
+			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
+				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+			}
+			activeHistory = append(activeHistory, msg)
 		}
 		toolLatency := time.Since(toolStarted).Milliseconds()
 		state.activeMessages = append([]session.Message(nil), activeHistory...)

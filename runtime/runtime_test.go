@@ -579,15 +579,15 @@ func TestHostEmitsActivityTimelineForToolLifecycle(t *testing.T) {
 	}
 }
 
-func TestHostPersistsPendingToolResultBeforeSlowParallelSiblingFinishes(t *testing.T) {
+func TestHostEmitsParallelToolResultBeforeSlowSiblingAndPersistsDetailInCallOrder(t *testing.T) {
 	ctx := context.Background()
 	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
 		events := make(chan ModelEvent, 3)
 		switch req.Step {
 		case 1:
 			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{
-				{ID: "exec-1", Name: "terminal_exec", Args: `{"text":"curl https://example.test"}`},
 				{ID: "read-1", Name: "slow_read", Args: `{"text":"wait"}`},
+				{ID: "exec-1", Name: "terminal_exec", Args: `{"text":"curl https://example.test"}`},
 			}}
 			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
 		default:
@@ -661,6 +661,7 @@ func TestHostPersistsPendingToolResultBeforeSlowParallelSiblingFinishes(t *testi
 	)); err != nil {
 		t.Fatal(err)
 	}
+	rec := &runtimeEventRecorder{}
 	host, err := NewHost(HostOptions{
 		Config: config.Config{
 			Provider:     config.ProviderFake,
@@ -670,6 +671,7 @@ func TestHostPersistsPendingToolResultBeforeSlowParallelSiblingFinishes(t *testi
 		ModelGateway: gateway,
 		Store:        NewMemoryStore(),
 		Tools:        registry,
+		Sink:         rec,
 		IDGenerator:  deterministicIDs(),
 	})
 	if err != nil {
@@ -689,9 +691,9 @@ func TestHostPersistsPendingToolResultBeforeSlowParallelSiblingFinishes(t *testi
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for slow sibling")
 	}
-	if !eventuallyThreadDetailToolResult(ctx, t, host, "thread", "exec-1", observation.ActivityStatusRunning) {
+	if !eventuallyRuntimeToolResult(rec, "exec-1") {
 		close(releaseSlow)
-		t.Fatal("pending tool result was not persisted before slow sibling finished")
+		t.Fatal("pending tool result event was not emitted before slow sibling finished")
 	}
 	close(releaseSlow)
 	select {
@@ -701,6 +703,19 @@ func TestHostPersistsPendingToolResultBeforeSlowParallelSiblingFinishes(t *testi
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for run")
+	}
+	detail, err := host.ListThreadDetailEvents(ctx, ListThreadDetailEventsRequest{ThreadID: "thread", IncludeRaw: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var toolResults []string
+	for _, ev := range detail.Events {
+		if ev.Kind == ThreadDetailEventToolResult && ev.ToolResult != nil {
+			toolResults = append(toolResults, ev.ToolResult.CallID)
+		}
+	}
+	if !slices.Equal(toolResults, []string{"read-1", "exec-1"}) {
+		t.Fatalf("durable tool result order = %v, want call order", toolResults)
 	}
 }
 
@@ -1831,6 +1846,9 @@ func TestHostPublicNotFoundErrors(t *testing.T) {
 	if _, err := host.ReadThread(ctx, "missing"); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("ReadThread err = %v, want ErrThreadNotFound", err)
 	}
+	if _, err := host.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "missing", TurnID: "turn-1", RunID: "run-1"}); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("ReadTurnProjection err = %v, want ErrThreadNotFound", err)
+	}
 	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{
 		ThreadID: "missing",
 		RunID:    "pending-run",
@@ -1863,6 +1881,53 @@ func TestHostPublicNotFoundErrors(t *testing.T) {
 		ChildThreadID:  "missing-child",
 	}); !errors.Is(err, ErrSubAgentNotFound) {
 		t.Fatalf("ListSubAgentDetailEvents err = %v, want ErrSubAgentNotFound", err)
+	}
+}
+
+func TestHostReadTurnProjectionFromDurableDetail(t *testing.T) {
+	ctx := context.Background()
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "projected answer",
+			SystemPrompt: "test",
+		},
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := host.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "thread", TurnID: "turn-1", RunID: "run-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.ThreadID != "thread" || projection.TurnID != "turn-1" || projection.RunID != "run-1" {
+		t.Fatalf("projection identity = %#v", projection)
+	}
+	if runtimeProjectionAssistantText(projection) != "projected answer" {
+		t.Fatalf("projection text = %q", runtimeProjectionAssistantText(projection))
+	}
+	if runtimeProjectionAssistantText(result.Projection) != runtimeProjectionAssistantText(projection) {
+		t.Fatalf("read projection differs from turn result: result=%#v read=%#v", result.Projection, projection)
+	}
+	if _, err := host.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "thread", TurnID: "missing-turn", RunID: "run-missing"}); !errors.Is(err, ErrTurnNotFound) {
+		t.Fatalf("ReadTurnProjection err = %v, want ErrTurnNotFound", err)
+	}
+	if _, err := host.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "thread", TurnID: "turn-1", RunID: "wrong-run"}); !errors.Is(err, ErrRunNotFound) {
+		t.Fatalf("ReadTurnProjection wrong run err = %v, want ErrRunNotFound", err)
+	}
+	if _, err := host.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "thread", TurnID: "turn-1"}); err == nil || !strings.Contains(err.Error(), "run id is required") {
+		t.Fatalf("ReadTurnProjection without run id err = %v, want required run id", err)
 	}
 }
 
@@ -2239,6 +2304,16 @@ func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
 		len(result.Projection.Segments[1].ActivityTimeline.Items) != 1 ||
 		result.Projection.Segments[1].ActivityTimeline.Items[0].ToolID != "call-1" {
 		t.Fatalf("first projection activity = %#v", result.Projection.Segments[1])
+	}
+	readProjection, err := host.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "thread", TurnID: "turn-1", RunID: "turn-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := runtimeProjectionSegmentKinds(readProjection.Segments); !slices.Equal(got, runtimeProjectionSegmentKinds(result.Projection.Segments)) {
+		t.Fatalf("read projection segments = %#v, want %#v", got, runtimeProjectionSegmentKinds(result.Projection.Segments))
+	}
+	if item := runtimeProjectionToolItem(readProjection, "call-2"); item.ToolID != "call-2" || item.Status != observation.ActivityStatusSuccess {
+		t.Fatalf("read projection call-2 item = %#v", item)
 	}
 	detail, err := host.ListThreadDetailEvents(ctx, ListThreadDetailEventsRequest{ThreadID: "thread", IncludeRaw: true})
 	if err != nil {
@@ -2906,6 +2981,63 @@ func TestHostDeleteThreadCascadesEngineThreadTree(t *testing.T) {
 	}
 }
 
+func TestLifecycleHostDeletesThreadTreeWithoutProviderConfig(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "child done",
+			SystemPrompt: "test",
+		},
+		Store:       store,
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+		ParentThreadID: "parent",
+		ThreadID:       "child",
+		TaskName:       "worker",
+		Message:        "work",
+		ForkMode:       SubAgentForkNone,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"child"}, Timeout: 2 * time.Second}); err != nil || waited.TimedOut {
+		t.Fatalf("waited=%#v err=%v", waited, err)
+	}
+	if err := host.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	lifecycle, err := NewLifecycleHost(LifecycleHostOptions{Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lifecycle.Close()
+	if summary, err := lifecycle.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "parent"}); err != nil || summary.ID != "parent" {
+		t.Fatalf("EnsureThread summary=%#v err=%v", summary, err)
+	}
+	if closed, err := lifecycle.CloseSubAgents(ctx, CloseSubAgentsRequest{ParentThreadID: "parent", Reason: "cleanup"}); err != nil || len(closed.Snapshots) != 1 {
+		t.Fatalf("CloseSubAgents result=%#v err=%v", closed, err)
+	}
+	if err := lifecycle.DeleteThread(ctx, "parent"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.ReadThread(ctx, "parent"); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("ReadThread(parent) err = %v, want ErrThreadNotFound", err)
+	}
+	if _, err := host.ReadThread(ctx, "child"); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("ReadThread(child) err = %v, want ErrThreadNotFound", err)
+	}
+}
+
 type runtimeEchoArgs struct {
 	Text string `json:"text"`
 }
@@ -2932,11 +3064,20 @@ func (fixedTitleGenerator) GenerateTitle(context.Context, agentharness.TitleRequ
 }
 
 type runtimeEventRecorder struct {
+	mu     sync.Mutex
 	events []Event
 }
 
 func (r *runtimeEventRecorder) EmitEvent(ev Event) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.events = append(r.events, ev)
+}
+
+func (r *runtimeEventRecorder) snapshot() []Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.events)
 }
 
 func deterministicIDs() func(string) string {
@@ -2999,6 +3140,20 @@ func runtimeProjectionToolItem(projection ThreadTurnProjection, toolID string) o
 		}
 	}
 	return observation.ActivityItem{}
+}
+
+func eventuallyRuntimeToolResult(rec *runtimeEventRecorder, toolID string) bool {
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, ev := range rec.snapshot() {
+			if ev.Type != "tool_result" || ev.ToolID != toolID {
+				continue
+			}
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
 }
 
 func eventuallyThreadDetailToolResult(ctx context.Context, t *testing.T, host Host, threadID string, toolID string, status observation.ActivityStatus) bool {

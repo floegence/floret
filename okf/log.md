@@ -1,6 +1,15 @@
 # Floret OKF Update Log
 
 ## 2026-06-30
+* **Update**: Documented `NewLifecycleHost` as the provider-free public facade
+  for lifecycle-only thread summary, child close, and thread-tree deletion
+  paths.
+* **Update**: Documented `ReadTurnProjection`, `ErrTurnNotFound`, and
+  `ErrRunNotFound` for durable hosted-turn projection reloads that require
+  explicit `ThreadID`, `TurnID`, and `RunID`.
+* **Update**: Clarified that parallel tool observations may arrive by completion
+  order while provider-visible tool result transcript messages are appended in
+  original tool-call order.
 * **Update**: Documented `tool_activity_updated` and
   `Invocation.UpdateActivity` as product-neutral running activity presentation
   updates that merge into the original tool item without completing it.

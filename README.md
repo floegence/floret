@@ -81,6 +81,7 @@ stay focused on product behavior.
 | --- | --- |
 | Configure a provider and agent persona | `config.Config` or `config.Load` |
 | Build a durable conversation host | `runtime.NewHost` |
+| Run provider-free thread lifecycle operations | `runtime.NewLifecycleHost` |
 | Manage child threads under a hosted conversation | `runtime.Host` subagent methods |
 | Run turns and request context compaction | `runtime.Host` and `runtime.CompactThreadRequest` |
 | Supply product-owned model transport | `runtime.ModelGateway` |
@@ -212,6 +213,13 @@ Use `EnsureThread` when a host needs to initialize or recover a thread by
 identity without reading its transcript. It returns `ThreadSummary`, the
 thread's lifecycle and metadata view without `messages`; reserve `ReadThread`
 for compatibility or explicitly transcript-oriented tools.
+
+Use `NewLifecycleHost` when a process only needs provider-free thread lifecycle
+operations such as ensuring a thread summary, closing child threads, or deleting
+a Floret-owned thread tree. It accepts the same opaque `runtime.Store` handle as
+`NewHost`, but no provider, model, fake response, gateway, tools, or product UI
+configuration. Hosts should choose this constructor for cleanup and lifecycle
+maintenance paths that must not be coupled to provider-loop configuration.
 
 ## 🌿 Parent-managed child threads
 
@@ -406,6 +414,15 @@ timeline. The projection returns product-neutral ordered segments such as
 assistant text, activity timelines, and control signals; host applications own
 only the final UI block mapping. Do not call `observation.BuildActivityTimeline`
 in host applications to build the main thread activity surface.
+
+Use `ReadTurnProjection` when a host needs to reload the current display
+projection for a known thread turn from durable Floret detail. The request
+requires `ThreadID`, `TurnID`, and the concrete `RunID`; Floret does not infer
+execution identity from storage rows or substitute an empty projection for a
+missing turn. A missing thread returns `ErrThreadNotFound`, and a missing turn
+returns `ErrTurnNotFound`. If the supplied run id is not recorded for that
+turn, Floret returns `ErrRunNotFound`. Hosts can handle reload errors with
+`errors.Is` without reading Floret storage internals.
 
 ### Pending approval snapshots
 

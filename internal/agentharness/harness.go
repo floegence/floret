@@ -1065,7 +1065,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	if runID == "" {
 		runID = t.harness.nextID("run")
 	}
-	if entry, err := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, sessiontree.TurnStarted, nil); err != nil {
+	if entry, err := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, sessiontree.TurnStarted, map[string]string{"run_id": runID}); err != nil {
 		return TurnResult{}, err
 	} else {
 		t.harness.emitEntryCommitted(entry, runID)
@@ -2243,7 +2243,7 @@ func (p *turnProjection) Emit(ev event.Event) {
 		if p.err != nil {
 			return
 		}
-		metadata := map[string]string{"reason": "context_continue", "continuation_reason": ev.ContinuationReason}
+		metadata := map[string]string{"reason": "context_continue", "continuation_reason": ev.ContinuationReason, "run_id": p.runID}
 		if ev.Result != "" {
 			metadata["hook_reason"] = ev.Result
 		}
@@ -2342,38 +2342,58 @@ func (p *turnProjection) flushPendingToolBatch(force bool) error {
 		}
 		byID[result.message.ToolCallID] = result
 	}
-	remainingCalls := p.pendingCalls[:0]
 	appendedResult := false
+	appendedIDs := map[string]struct{}{}
+	appendable := 0
 	for _, call := range p.pendingCalls {
 		result, ok := byID[call.message.ToolCallID]
 		if !ok {
-			remainingCalls = append(remainingCalls, call)
-			continue
+			break
 		}
 		if err := p.thread.appendMessageAt(p.ctx, p.turnID, p.runID, result.message, result.observedAt); err != nil {
 			return err
 		}
 		delete(byID, call.message.ToolCallID)
+		appendedIDs[call.message.ToolCallID] = struct{}{}
 		appendedResult = true
+		appendable++
 	}
 	for id := range byID {
-		return fmt.Errorf("tool result batch references unknown tool_call_id %q", id)
+		known := false
+		for _, call := range p.pendingCalls[appendable:] {
+			if call.message.ToolCallID == id {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return fmt.Errorf("tool result batch references unknown tool_call_id %q", id)
+		}
 	}
+	remainingCalls := p.pendingCalls[appendable:]
 	if force && len(remainingCalls) > 0 {
-		return fmt.Errorf("incomplete tool result batch: %d calls, %d results", len(remainingCalls), 0)
+		return fmt.Errorf("incomplete tool result batch: %d calls, %d results", len(remainingCalls), len(byID))
 	}
 	if appendedResult && len(remainingCalls) == 0 {
-		if entry, err := sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, sessiontree.TurnSavePoint, map[string]string{"reason": "tool_result_batch"}); err != nil {
+		if entry, err := sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, sessiontree.TurnSavePoint, map[string]string{"reason": "tool_result_batch", "run_id": p.runID}); err != nil {
 			return err
 		} else {
 			p.thread.harness.emitEntryCommitted(entry, p.runID)
 		}
 	}
 	p.pendingCalls = remainingCalls
-	p.pendingResults = nil
+	remainingResults := p.pendingResults[:0]
+	for _, result := range p.pendingResults {
+		if _, ok := appendedIDs[result.message.ToolCallID]; ok {
+			continue
+		}
+		remainingResults = append(remainingResults, result)
+	}
+	p.pendingResults = remainingResults
 	if len(p.pendingCalls) == 0 {
 		p.pendingBatchSize = 0
 		p.pendingCallsSent = false
+		p.pendingResults = nil
 	}
 	return nil
 }

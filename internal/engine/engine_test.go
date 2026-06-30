@@ -2361,6 +2361,74 @@ func TestParallelPendingToolResultEmitsBeforeSlowSiblingFinishes(t *testing.T) {
 	}
 }
 
+func TestParallelToolResultsAppendTranscriptInCallOrder(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(
+		harness.Step(
+			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
+				{ID: "slow-1", Name: "slow_read", Args: `{"value":"slow"}`},
+				{ID: "fast-1", Name: "fast_read", Args: `{"value":"fast"}`},
+			}},
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	reg := tools.NewRegistry()
+	slowStarted := make(chan struct{})
+	releaseSlow := make(chan struct{})
+	var closeSlowStarted sync.Once
+	mustRegister(t, reg, stringTool("slow_read", "Slow read", true, tools.PermissionSpec{}, func(ctx context.Context, value string) (string, error) {
+		closeSlowStarted.Do(func() { close(slowStarted) })
+		select {
+		case <-releaseSlow:
+			return value, nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}))
+	mustRegister(t, reg, stringTool("fast_read", "Fast read", true, tools.PermissionSpec{}, func(context.Context, string) (string, error) {
+		return "fast", nil
+	}))
+	e := newTestEngine(p, rec)
+	e.Tools = reg
+	done := make(chan engine.Result, 1)
+	go func() {
+		done <- e.Run(context.Background(), "run parallel reads")
+	}()
+	select {
+	case <-slowStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for slow tool to start")
+	}
+	if !eventuallyToolResult(rec, "fast-1", func(ev event.Event) bool {
+		return ev.Result == "fast"
+	}) {
+		close(releaseSlow)
+		t.Fatal("fast tool result was not emitted before slow sibling finished")
+	}
+	close(releaseSlow)
+	select {
+	case got := <-done:
+		if got.Status != engine.Completed {
+			t.Fatalf("result = %#v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for run")
+	}
+	if len(p.Requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(p.Requests))
+	}
+	var toolResultIDs []string
+	for _, msg := range p.Requests[1].Messages {
+		if msg.Role == session.Tool {
+			toolResultIDs = append(toolResultIDs, msg.ToolCallID)
+		}
+	}
+	if !slices.Equal(toolResultIDs, []string{"slow-1", "fast-1"}) {
+		t.Fatalf("provider-visible tool result order = %v, want call order", toolResultIDs)
+	}
+}
+
 func TestToolOutputProjectionFailsWhenPreservingWithoutArtifactStore(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(

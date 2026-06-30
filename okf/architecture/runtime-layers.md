@@ -17,6 +17,11 @@ provider execution.
 `runtime.Host` is the public durable conversation facade. It starts threads,
 runs turns, retries, completes or settles pending tool work, manages durable
 child threads, deletes thread data, and returns host-safe snapshots.
+`runtime.NewLifecycleHost` is the provider-free variant for lifecycle-only
+processes that share a Floret store but do not run provider turns. It exposes
+thread summary recovery, parent child-thread closing, and thread-tree deletion
+without accepting provider, model, fake response, gateway, tools, or host UI
+configuration.
 
 Pending tool completion and pending tool settlement are intentionally separate.
 `CompletePendingTool` creates a provider-visible follow-up turn when the model
@@ -50,6 +55,9 @@ slower sibling in the same provider tool-call batch. Durable harness save points
 remain provider-safe boundaries: the harness commits the tool calls first, may
 commit partial results for live observation, and writes the tool-result batch
 save point only after all calls in that batch have matching results.
+Provider-visible transcript messages for the batch are appended in the original
+tool-call order after all sibling results are available, even though observation
+events may arrive in completion order.
 For terminal control signals, `Engine` normalizes the visible completion output
 from the signal itself or from assistant text produced in the same provider
 step. A terminal control signal with neither source is a contract error, so the
@@ -102,6 +110,10 @@ context small.
 Hosts that only need thread lifecycle metadata should use `EnsureThread` and
 `ThreadSummary`. `ReadThread` exposes transcript messages and should not be the
 default integration point for UI bootstrapping or subagent inspection.
+Hosts that need to reload the display projection for a known hosted turn should
+use `ReadTurnProjection` with explicit `ThreadID`, `TurnID`, and `RunID`. This
+keeps execution identity host-supplied while Floret rebuilds assistant text,
+control-signal segments, and activity timelines from durable detail.
 
 Closing a subagent stops current child execution and queued work. It preserves
 the child thread and journal so the host can still read detail after close,
