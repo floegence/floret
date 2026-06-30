@@ -151,9 +151,10 @@ and run-failure facts. Terminal turn markers apply across all activity timeline
 segments in the turn: cancelled turns settle unresolved pending/running items to
 `canceled`, and failed turns settle them to `error`. Successful or completed
 turns do not imply completion of host-owned pending work. Save-point markers
-remain checkpoint facts and do not settle activity. Downstream hosts may map
-those product-neutral segments to their own UI blocks, but must not read
-Floret's store schema, rebuild execution ordering from separate audit tables,
+and other non-terminal turn markers such as `started`, `waiting`, or unknown
+queued states remain lifecycle facts and do not settle activity. Downstream
+hosts may map those product-neutral segments to their own UI blocks, but must
+not read Floret's store schema, rebuild execution ordering from separate audit tables,
 or call `observation.BuildActivityTimeline` to create the main thread activity
 surface. Host live protocols, cursors, replacement snapshots, and product
 timeline reducers remain downstream concerns; they are not Floret runtime

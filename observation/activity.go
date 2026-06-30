@@ -650,6 +650,9 @@ func settleUnresolvedActivityItemAtRunEnd(item *ActivityItem, runEnd Event, nowU
 	if item == nil {
 		return
 	}
+	if !activityRunEndIsTerminal(runEnd) {
+		return
+	}
 	if (activityHasPendingMetadata(item.Metadata) || activityHasPendingPayload(item.Payload)) &&
 		!activityRunEndIsCanceled(runEnd) &&
 		!activityEventHasError(runEnd) {
@@ -667,7 +670,10 @@ func settleUnresolvedActivityItemAtRunEnd(item *ActivityItem, runEnd Event, nowU
 	default:
 		return
 	}
-	status, severity := activityRunEndSettlement(runEnd)
+	status, severity, ok := activityRunEndSettlement(runEnd)
+	if !ok {
+		return
+	}
 	item.Status = status
 	item.Severity = severity
 	if item.EndedAtUnixMS == 0 {
@@ -686,20 +692,43 @@ func settleUnresolvedActivityItemAtRunEnd(item *ActivityItem, runEnd Event, nowU
 	}
 }
 
-func activityRunEndSettlement(ev Event) (ActivityStatus, ActivitySeverity) {
+func activityRunEndSettlement(ev Event) (ActivityStatus, ActivitySeverity, bool) {
 	switch {
 	case activityRunEndIsCanceled(ev):
-		return ActivityStatusCanceled, ActivitySeverityWarning
+		return ActivityStatusCanceled, ActivitySeverityWarning, true
 	case activityEventHasError(ev):
-		return ActivityStatusError, ActivitySeverityError
+		return ActivityStatusError, ActivitySeverityError, true
+	case activityRunEndIsSuccess(ev):
+		return ActivityStatusSuccess, ActivitySeverityNormal, true
 	default:
-		return ActivityStatusSuccess, ActivitySeverityNormal
+		return "", "", false
+	}
+}
+
+func activityRunEndIsTerminal(ev Event) bool {
+	if activityRunEndIsCanceled(ev) || activityEventHasError(ev) || activityRunEndIsSuccess(ev) {
+		return true
+	}
+	switch strings.TrimSpace(ev.Message) {
+	case "failed", string(ActivityStatusError):
+		return true
+	default:
+		return false
+	}
+}
+
+func activityRunEndIsSuccess(ev Event) bool {
+	switch strings.TrimSpace(ev.Message) {
+	case "completed", string(ActivityStatusSuccess):
+		return true
+	default:
+		return false
 	}
 }
 
 func activityRunEndIsCanceled(ev Event) bool {
 	switch strings.TrimSpace(ev.Message) {
-	case string(ActivityStatusCanceled), "cancelled":
+	case "aborted", string(ActivityStatusCanceled), "cancelled":
 		return true
 	default:
 		return false
@@ -1421,8 +1450,21 @@ func activitySummary(items []ActivityItem, runEnd *Event, firstAt, lastAt, nowUn
 		summary.Severity = maxActivitySeverity(summary.Severity, item.Severity)
 	}
 	if runEnd != nil {
-		if activityRunEndIsCanceled(*runEnd) {
-			summary.Status = ActivityStatusCanceled
+		if status, severity, ok := activityRunEndSettlement(*runEnd); ok {
+			switch status {
+			case ActivityStatusCanceled:
+				summary.Status = ActivityStatusCanceled
+				summary.Severity = maxActivitySeverity(summary.Severity, severity)
+			case ActivityStatusError:
+				summary.Status = ActivityStatusError
+				summary.Severity = maxActivitySeverity(summary.Severity, severity)
+				summary.AttentionReasons = append(summary.AttentionReasons, ActivityAttentionError)
+			case ActivityStatusSuccess:
+				if summary.TotalItems == 0 || summary.Counts.Error == 0 && summary.Counts.Waiting == 0 && summary.Counts.Running == 0 && summary.Counts.Pending == 0 {
+					summary.Status = ActivityStatusSuccess
+					summary.Severity = maxActivitySeverity(summary.Severity, severity)
+				}
+			}
 		} else if activityEventHasError(*runEnd) {
 			summary.Status = ActivityStatusError
 			summary.Severity = maxActivitySeverity(summary.Severity, ActivitySeverityError)
@@ -1433,10 +1475,6 @@ func activitySummary(items []ActivityItem, runEnd *Event, firstAt, lastAt, nowUn
 				summary.Status = ActivityStatusWaiting
 				summary.Severity = maxActivitySeverity(summary.Severity, ActivitySeverityBlocking)
 				summary.AttentionReasons = append(summary.AttentionReasons, ActivityAttentionWaiting)
-			default:
-				if summary.TotalItems == 0 || summary.Counts.Error == 0 && summary.Counts.Waiting == 0 && summary.Counts.Running == 0 && summary.Counts.Pending == 0 {
-					summary.Status = ActivityStatusSuccess
-				}
 			}
 		}
 	} else {

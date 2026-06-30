@@ -230,6 +230,73 @@ func TestBuildActivityTimelineKeepsRequestedApprovalWaitingAtSuccessfulRunEnd(t 
 	}
 }
 
+func TestBuildActivityTimelineDoesNotSettleToolsForNonTerminalRunEnd(t *testing.T) {
+	start := time.UnixMilli(1_700_000_001_000)
+	tests := []struct {
+		name            string
+		runEndMessage   string
+		wantSummary     ActivityStatus
+		wantControlItem bool
+	}{
+		{name: "started", runEndMessage: "started", wantSummary: ActivityStatusRunning},
+		{name: "waiting", runEndMessage: string(ActivityStatusWaiting), wantSummary: ActivityStatusWaiting, wantControlItem: true},
+		{name: "unknown", runEndMessage: "queued", wantSummary: ActivityStatusRunning},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-non-terminal", ThreadID: "thread-non-terminal", TurnID: "turn-non-terminal"}, []Event{
+				{
+					Type:       EventTypeRunEnd,
+					RunID:      "run-non-terminal",
+					ThreadID:   "thread-non-terminal",
+					TurnID:     "turn-non-terminal",
+					Step:       0,
+					Message:    tt.runEndMessage,
+					ObservedAt: start,
+				},
+				{
+					Type:       EventTypeToolCall,
+					RunID:      "run-non-terminal",
+					ThreadID:   "thread-non-terminal",
+					TurnID:     "turn-non-terminal",
+					Step:       1,
+					ToolID:     "exec-1",
+					ToolName:   "terminal.exec",
+					ToolKind:   "local",
+					ObservedAt: start.Add(5 * time.Millisecond),
+				},
+			}, start.Add(time.Second).UnixMilli())
+
+			if err := ValidateActivityTimeline(timeline); err != nil {
+				t.Fatalf("timeline should validate: %v; timeline=%#v", err, timeline)
+			}
+			tool := activityTestItemByToolID(timeline, "exec-1")
+			if tool.Status != ActivityStatusRunning ||
+				tool.EndedAtUnixMS != 0 ||
+				tool.StartedAtUnixMS != start.Add(5*time.Millisecond).UnixMilli() {
+				t.Fatalf("tool should stay running: %#v", tool)
+			}
+			if timeline.Summary.Status != tt.wantSummary ||
+				timeline.Summary.Counts.Success != 0 ||
+				timeline.Summary.Counts.Running != 1 {
+				t.Fatalf("summary mismatch: %#v", timeline.Summary)
+			}
+			controlItems := 0
+			for _, item := range timeline.Items {
+				if item.Kind == ActivityKindControl {
+					controlItems++
+				}
+			}
+			if tt.wantControlItem && controlItems != 1 {
+				t.Fatalf("control item count = %d, want 1: %#v", controlItems, timeline.Items)
+			}
+			if !tt.wantControlItem && controlItems != 0 {
+				t.Fatalf("control item count = %d, want 0: %#v", controlItems, timeline.Items)
+			}
+		})
+	}
+}
+
 func TestBuildActivityTimelineCancelsUnresolvedApprovalAtRunEnd(t *testing.T) {
 	start := time.UnixMilli(1_700_000_001_000)
 	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-canceled", ThreadID: "thread-canceled", TurnID: "turn-canceled"}, []Event{

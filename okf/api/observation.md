@@ -22,9 +22,12 @@ summaries without parsing assistant text or depending on implementation types.
 * `CompactionDebugEventsFromEvents` extracts safe compaction diagnostic facts.
 
 `BuildActivityTimeline` owns the product-neutral terminal semantics for activity
-items within one sanitized observation group. When a sanitized `run_end`
-observation is present, cancelled runs produce `canceled` unresolved items and
-failed runs produce `error` unresolved items. `runtime.ProjectThreadTurn`
+items within one sanitized observation group. Only explicit terminal `run_end`
+observations settle unresolved items: cancelled runs produce `canceled`
+unresolved items, failed runs produce `error` unresolved items, and successful
+runs settle only work that is not host-owned pending work or unresolved
+approval. Waiting, started, queued, checkpoint, or otherwise non-terminal
+lifecycle observations do not imply tool completion. `runtime.ProjectThreadTurn`
 applies failed and cancelled terminal markers across all activity timeline
 segments for the turn. Successful turns keep host-owned pending work running
 until the host reports the observed outcome through the runtime

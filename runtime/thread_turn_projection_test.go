@@ -264,6 +264,101 @@ func TestProjectThreadTurnKeepsRequestedApprovalWaitingAfterSuccessfulTurnMarker
 	}
 }
 
+func TestProjectThreadTurnIgnoresStartedMarkerBeforeApprovalActivity(t *testing.T) {
+	now := time.UnixMilli(1_700_030_000_000)
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID: "thread-started-approval",
+		TurnID:   "turn-started-approval",
+		RunID:    "run-started-approval",
+		TraceID:  "run-started-approval",
+		Events: []ThreadDetailEvent{
+			{
+				ID:        "turn-started",
+				Ordinal:   1,
+				ThreadID:  "thread-started-approval",
+				TurnID:    "turn-started-approval",
+				Kind:      ThreadDetailEventTurnMarker,
+				CreatedAt: now,
+				TurnMarker: &ThreadDetailTurnMarker{
+					Status: "started",
+				},
+			},
+			{
+				ID:        "exec-newsapi",
+				Ordinal:   2,
+				ThreadID:  "thread-started-approval",
+				TurnID:    "turn-started-approval",
+				Kind:      ThreadDetailEventToolCall,
+				CreatedAt: now.Add(3 * time.Second),
+				Message: &ThreadDetailMessage{Role: "assistant", Activity: &observation.ActivityPresentation{
+					Label:    "curl -s https://newsapi.example.test",
+					Renderer: observation.ActivityRendererTerminal,
+					Payload:  map[string]any{"command": "curl -s https://newsapi.example.test"},
+				}},
+				ToolCall: &ThreadDetailToolCall{ID: "call-newsapi", Name: "terminal.exec"},
+			},
+			{
+				ID:        "exec-search",
+				Ordinal:   3,
+				ThreadID:  "thread-started-approval",
+				TurnID:    "turn-started-approval",
+				Kind:      ThreadDetailEventToolCall,
+				CreatedAt: now.Add(3*time.Second + time.Millisecond),
+				Message: &ThreadDetailMessage{Role: "assistant", Activity: &observation.ActivityPresentation{
+					Label:    "curl -sL https://search.example.test",
+					Renderer: observation.ActivityRendererTerminal,
+					Payload:  map[string]any{"command": "curl -sL https://search.example.test"},
+				}},
+				ToolCall: &ThreadDetailToolCall{ID: "call-search", Name: "terminal.exec"},
+			},
+			{
+				ID:        "approval-newsapi",
+				Ordinal:   4,
+				ThreadID:  "thread-started-approval",
+				TurnID:    "turn-started-approval",
+				Kind:      ThreadDetailEventApproval,
+				Type:      observation.EventTypeToolApprovalRequested,
+				CreatedAt: now.Add(3*time.Second + 5*time.Millisecond),
+				Approval: &ThreadDetailApproval{
+					State:    "requested",
+					ToolID:   "call-newsapi",
+					ToolName: "terminal.exec",
+					ToolKind: "local",
+				},
+			},
+		},
+	})
+
+	if len(projection.Segments) != 1 || projection.Segments[0].ActivityTimeline == nil {
+		t.Fatalf("projection segments = %#v", projection.Segments)
+	}
+	timeline := projection.Segments[0].ActivityTimeline
+	if err := observation.ValidateActivityTimeline(*timeline); err != nil {
+		t.Fatalf("projection should validate: %v; timeline=%#v", err, timeline)
+	}
+	if timeline.Summary.Status != observation.ActivityStatusWaiting ||
+		timeline.Summary.Counts.Waiting != 1 ||
+		timeline.Summary.Counts.Running != 1 ||
+		timeline.Summary.Counts.Approval != 1 {
+		t.Fatalf("summary should contain one waiting approval and one running tool: %#v", timeline.Summary)
+	}
+	waiting := projectionToolItem(t, projection, "call-newsapi")
+	if waiting.Status != observation.ActivityStatusWaiting ||
+		waiting.ApprovalState != "requested" ||
+		!waiting.RequiresApproval ||
+		waiting.EndedAtUnixMS != 0 ||
+		waiting.Label != "curl -s https://newsapi.example.test" {
+		t.Fatalf("approval tool item mismatch: %#v", waiting)
+	}
+	running := projectionToolItem(t, projection, "call-search")
+	if running.Status != observation.ActivityStatusRunning ||
+		running.RequiresApproval ||
+		running.EndedAtUnixMS != 0 ||
+		running.Label != "curl -sL https://search.example.test" {
+		t.Fatalf("second tool item mismatch: %#v", running)
+	}
+}
+
 func TestProjectThreadTurnSettlesApprovalAndToolFromDetailEvents(t *testing.T) {
 	now := time.Unix(300, 0)
 

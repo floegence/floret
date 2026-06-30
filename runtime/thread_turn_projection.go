@@ -633,7 +633,7 @@ func threadTurnProjectionObservationEvent(meta observation.ActivityRunMeta, deta
 			return observation.Event{}, false
 		}
 		status := strings.TrimSpace(detail.TurnMarker.Status)
-		if status == "save_point" {
+		if !threadTurnProjectionTurnMarkerIsRunEnd(status, detail.Error) {
 			return observation.Event{}, false
 		}
 		base.Type = observation.EventTypeRunEnd
@@ -652,6 +652,25 @@ func threadTurnProjectionObservationEvent(meta observation.ActivityRunMeta, deta
 		return base, true
 	default:
 		return observation.Event{}, false
+	}
+}
+
+func threadTurnProjectionTurnMarkerIsRunEnd(status string, errText string) bool {
+	status = strings.TrimSpace(status)
+	if strings.TrimSpace(errText) != "" {
+		return true
+	}
+	switch status {
+	case string(observation.ActivityStatusSuccess),
+		"completed",
+		"failed",
+		string(observation.ActivityStatusError),
+		"aborted",
+		string(observation.ActivityStatusCanceled),
+		"cancelled":
+		return true
+	default:
+		return false
 	}
 }
 
