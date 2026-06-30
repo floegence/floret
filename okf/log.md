@@ -4,6 +4,9 @@
 * **Update**: Documented queued local tool calls and
   `tool_dispatch_started` as separate lifecycle facts, so pending batched
   siblings remain pending until permission, approval, and dispatch gates pass.
+* **Update**: Documented runtime turn-result projections as canonical
+  current-turn display projections built from raw-capable journal facts, while
+  default detail reads remain preview-only inspection surfaces.
 
 ## 2026-06-29
 * **Update**: Documented failed/cancelled terminal turn projection as the

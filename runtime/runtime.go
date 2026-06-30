@@ -1167,7 +1167,7 @@ func (h *host) SettlePendingTool(ctx context.Context, req PendingToolSettlementR
 	}
 	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
 	defer cancelProjection()
-	events, err := h.listThreadDetailEventsForTurn(projectionCtx, string(req.ThreadID), string(req.TurnID))
+	events, err := h.listRawThreadDetailEventsForTurn(projectionCtx, string(req.ThreadID), string(req.TurnID))
 	if err != nil {
 		return PendingToolSettlementResult{}, runtimeHostError(err)
 	}
@@ -1495,7 +1495,7 @@ func (h *host) attachThreadTurnProjection(ctx context.Context, threadID string, 
 	if h == nil || result == nil || strings.TrimSpace(threadID) == "" || strings.TrimSpace(string(result.ID)) == "" {
 		return nil
 	}
-	events, err := h.listThreadDetailEventsForTurn(ctx, threadID, string(result.ID))
+	events, err := h.listRawThreadDetailEventsForTurn(ctx, threadID, string(result.ID))
 	if err != nil {
 		return err
 	}
@@ -1516,7 +1516,7 @@ func runtimeTerminalProjectionContext(ctx context.Context) (context.Context, con
 	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 }
 
-func (h *host) listThreadDetailEventsForTurn(ctx context.Context, threadID string, turnID string) ([]ThreadDetailEvent, error) {
+func (h *host) listRawThreadDetailEventsForTurn(ctx context.Context, threadID string, turnID string) ([]ThreadDetailEvent, error) {
 	var out []ThreadDetailEvent
 	var afterOrdinal int64
 	for {
@@ -1524,7 +1524,7 @@ func (h *host) listThreadDetailEventsForTurn(ctx context.Context, threadID strin
 			ThreadID:     threadID,
 			AfterOrdinal: afterOrdinal,
 			Limit:        agentharness.MaxThreadDetailEventLimit,
-			IncludeRaw:   false,
+			IncludeRaw:   true,
 		})
 		if err != nil {
 			return nil, err

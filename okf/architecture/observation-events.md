@@ -57,7 +57,10 @@ reasoning, tool arguments, tool results, and local paths.
   appended. Hosts can use streaming observations for temporary live rendering,
   then reconcile durable display order from `TurnResult.Projection` or
   `ProjectThreadTurn` without reading Floret storage internals or rebuilding
-  activity from host audit records. `ProjectThreadTurn` reduces the ordered
+  activity from host audit records. `TurnResult.Projection` and pending
+  settlement projections are built inside the runtime host from raw-capable
+  current-turn facts, while default detail reads remain bounded previews for
+  inspection surfaces. `ProjectThreadTurn` reduces the ordered
   detail events for a turn; it does not allow a stale aggregate activity
   timeline to override later detail facts. Terminal and pending-settlement
   projections remove running-only metadata such as pending handles and running

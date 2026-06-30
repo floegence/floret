@@ -522,6 +522,9 @@ func SafePathLabel(path string) string {
 		return ""
 	}
 	base := filepath.Base(path)
+	if index := strings.LastIndex(base, `\`); index >= 0 && index+1 < len(base) {
+		base = base[index+1:]
+	}
 	if base == "." || base == string(filepath.Separator) || base == "" {
 		base = "artifact"
 	}
@@ -529,7 +532,7 @@ func SafePathLabel(path string) string {
 	return base + "#" + hex.EncodeToString(sum[:])[:12]
 }
 
-var pathRefPattern = regexp.MustCompile(`(?:/[^\s,"'<>]+|[A-Za-z]:\\[^\s,"'<>]+)`)
+var pathRefPattern = regexp.MustCompile(`(?:~/[^\s,"'<>]+|/[^\s,"'<>]+|[A-Za-z]:\\[^\s,"'<>]+)`)
 
 func SafePathRefsText(value string) string {
 	if value == "" {
@@ -547,7 +550,7 @@ func SafePathRefsText(value string) string {
 		if preservePathRef(value, start, text) {
 			continue
 		}
-		path := strings.TrimRight(text, ".,;:!?)")
+		path := strings.TrimRight(text, ".,;:!?)`]}*")
 		if path == "" {
 			continue
 		}
@@ -567,6 +570,9 @@ func preservePathRef(value string, start int, text string) bool {
 	if strings.HasPrefix(text, "/artifacts/") {
 		return true
 	}
+	if !pathRefStartsAtBoundary(value, start) {
+		return true
+	}
 	if start > 0 && value[start-1] == ':' {
 		schemeStart := start - 1
 		for schemeStart > 0 {
@@ -583,6 +589,22 @@ func preservePathRef(value string, start int, text string) bool {
 		}
 	}
 	return false
+}
+
+func pathRefStartsAtBoundary(value string, start int) bool {
+	if start <= 0 || start > len(value) {
+		return true
+	}
+	prev := value[start-1]
+	if (prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') || (prev >= '0' && prev <= '9') {
+		return false
+	}
+	switch prev {
+	case '_', '-', '.':
+		return false
+	default:
+		return true
+	}
 }
 
 func sanitizeMetadata(value any) any {

@@ -1990,6 +1990,7 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 
 	var mu sync.Mutex
 	requests := 0
+	longAssistantAfterPending := "command started " + strings.Repeat("after pending settlement keeps full assistant text ", 12) + "final settlement sentence."
 	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
 		if strings.Contains(string(req.RunID), "thread-title") {
 			events := make(chan ModelEvent, 2)
@@ -2008,7 +2009,7 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "exec-1", Name: "terminal_exec", Args: `{"text":"npm test"}`}}}
 			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
 		case 2:
-			events <- ModelEvent{Type: ModelEventDelta, Text: "command started"}
+			events <- ModelEvent{Type: ModelEventDelta, Text: longAssistantAfterPending}
 			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
 		default:
 			t.Fatalf("unexpected provider request after settlement: %#v", req)
@@ -2040,7 +2041,7 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.Status != TurnStatusCompleted || run.Output != "command started" {
+	if run.Status != TurnStatusCompleted || run.Output != longAssistantAfterPending {
 		t.Fatalf("run = %#v", run)
 	}
 	if item := runtimeProjectionToolItem(run.Projection, "exec-1"); item.Status != observation.ActivityStatusRunning {
@@ -2071,6 +2072,9 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	item := runtimeProjectionToolItem(settled.Projection, "exec-1")
 	if item.Status != observation.ActivityStatusSuccess || item.Label != "command completed" || item.Payload["exit_code"] != 0 {
 		t.Fatalf("settled projection item = %#v", item)
+	}
+	if got := runtimeProjectionAssistantText(settled.Projection); got != longAssistantAfterPending {
+		t.Fatalf("settled projection assistant text length=%d, want full %d\ntext=%q", len([]rune(got)), len([]rune(longAssistantAfterPending)), got)
 	}
 	for _, key := range []string{"pending_tool_result", "pending_handle", "pending_state"} {
 		if _, ok := item.Metadata[key]; ok {
@@ -2527,6 +2531,70 @@ func TestHostThreadDetailEventsOmitRawUnlessRequested(t *testing.T) {
 	}
 }
 
+func TestHostRunTurnProjectionUsesRawAssistantContent(t *testing.T) {
+	ctx := context.Background()
+	fullAnswer := "Here are browser desktop options:\n\n" +
+		"### 1. **HeyPuter/puter**\n" +
+		"### 2. **linuxserver/docker-webtop**\n" +
+		"The Webtop image can be based on Ubuntu/Alpine/Arch/Fedora and still stay readable in the final answer.\n\n" +
+		strings.Repeat("This sentence keeps the answer longer than the preview budget. ", 12) +
+		"Final sentence that must survive the canonical turn projection."
+	if len([]rune(fullAnswer)) <= 500 {
+		t.Fatalf("test fixture must exceed preview budget, got %d runes", len([]rune(fullAnswer)))
+	}
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: fullAnswer,
+			SystemPrompt: "test",
+		},
+		Store:       NewMemoryStore(),
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "find options"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected := runtimeProjectionAssistantText(result.Projection)
+	if projected != fullAnswer {
+		t.Fatalf("projection assistant text length=%d, want full %d\ntext=%q", len([]rune(projected)), len([]rune(fullAnswer)), projected)
+	}
+	if strings.Contains(projected, "HeyPuterputer") ||
+		strings.Contains(projected, "linuxserverdocker-webtop") ||
+		strings.Contains(projected, "UbuntuFedora") {
+		t.Fatalf("projection assistant text was path-redacted: %q", projected)
+	}
+
+	preview, err := host.ListThreadDetailEvents(ctx, ListThreadDetailEventsRequest{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assistantPreview := firstRuntimeThreadDetailEvent(preview.Events, ThreadDetailEventAssistantMessage)
+	if assistantPreview.Message == nil || assistantPreview.Message.Content != "" || assistantPreview.Metadata["raw_omitted"] != "true" {
+		t.Fatalf("preview detail event = %#v", assistantPreview)
+	}
+	if len([]rune(assistantPreview.Message.Preview)) >= len([]rune(fullAnswer)) {
+		t.Fatalf("preview detail should remain bounded: %d >= %d", len([]rune(assistantPreview.Message.Preview)), len([]rune(fullAnswer)))
+	}
+
+	raw, err := host.ListThreadDetailEvents(ctx, ListThreadDetailEventsRequest{ThreadID: "thread", IncludeRaw: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assistantRaw := firstRuntimeThreadDetailEvent(raw.Events, ThreadDetailEventAssistantMessage)
+	if assistantRaw.Message == nil || assistantRaw.Message.Content != fullAnswer {
+		t.Fatalf("raw detail event = %#v", assistantRaw)
+	}
+}
+
 func TestHostTurnDisablesInternalControlToolsByDefault(t *testing.T) {
 	spec, err := engineTurnSignalSpec(TurnSignalSpec{}, engine.CompletionNaturalStop)
 	if err != nil {
@@ -2907,6 +2975,16 @@ func runtimeProjectionSegmentKinds(segments []ThreadTurnProjectionSegment) []Thr
 		out = append(out, segment.Kind)
 	}
 	return out
+}
+
+func runtimeProjectionAssistantText(projection ThreadTurnProjection) string {
+	var out strings.Builder
+	for _, segment := range projection.Segments {
+		if segment.Kind == ThreadTurnProjectionSegmentAssistantText {
+			out.WriteString(segment.Text)
+		}
+	}
+	return out.String()
 }
 
 func runtimeProjectionToolItem(projection ThreadTurnProjection, toolID string) observation.ActivityItem {

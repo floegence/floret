@@ -140,7 +140,11 @@ run failures. This is Floret's public read model for durable execution
 transcript facts. `ThreadTurnProjection` is the public display projection over
 those facts: `RunTurn`, `RetryTurn`, and `CompletePendingTool` return it on
 `TurnResult`, `SettlePendingTool` returns it on `PendingToolSettlementResult`,
-and hosts with live committed events may call `ProjectThreadTurn`.
+and hosts with live committed events may call `ProjectThreadTurn`. Runtime
+turn-result and pending-settlement projections are canonical current-turn
+display projections built by the Floret host from raw-capable journal facts; the
+default preview-only detail read model is for listing and inspection, not for
+authoritative assistant markdown.
 `ProjectThreadTurn` derives assistant text, control-signal segments, and turn
 activity only from the ordered `ThreadDetailEvent` stream for the target turn.
 It does not accept or merge an older aggregate activity timeline as an input.

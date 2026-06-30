@@ -9,18 +9,33 @@ import (
 
 func TestSafePathRefsTextSanitizesLocalPathsAndKeepsURLs(t *testing.T) {
 	path := "/Users/alice/work/floret/secret.txt"
-	got := SafePathRefsText("read " + path + " then open https://example.com/docs/path and /artifacts/session/run/output.txt")
+	homePath := "~/work/floret/secret.txt"
+	windowsPath := `C:\Users\alice\work\secret.txt`
+	got := SafePathRefsText("read " + path + " and " + homePath + " and " + windowsPath + " then open https://example.com/docs/path and /artifacts/session/run/output.txt")
 	if strings.Contains(got, path) {
 		t.Fatalf("local path was not sanitized: %q", got)
 	}
 	if !strings.Contains(got, SafePathLabel(path)) {
 		t.Fatalf("safe label missing from sanitized text: %q", got)
 	}
+	if strings.Contains(got, homePath) || !strings.Contains(got, SafePathLabel(homePath)) {
+		t.Fatalf("home path was not sanitized: %q", got)
+	}
+	if strings.Contains(got, windowsPath) || !strings.Contains(got, SafePathLabel(windowsPath)) {
+		t.Fatalf("windows path was not sanitized: %q", got)
+	}
 	if !strings.Contains(got, "https://example.com/docs/path") {
 		t.Fatalf("URL should remain inspectable: %q", got)
 	}
 	if !strings.Contains(got, "/artifacts/session/run/output.txt") {
 		t.Fatalf("artifact route should remain usable: %q", got)
+	}
+}
+
+func TestSafePathRefsTextKeepsRepositoryNamesAndSlashSeparatedText(t *testing.T) {
+	input := "Compare HeyPuter/puter, linuxserver/docker-webtop, and Ubuntu/Alpine/Arch/Fedora."
+	if got := SafePathRefsText(input); got != input {
+		t.Fatalf("SafePathRefsText(%q) = %q, want unchanged", input, got)
 	}
 }
 
