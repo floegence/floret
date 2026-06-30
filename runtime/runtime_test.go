@@ -2083,6 +2083,7 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 		return events, nil
 	})
 
+	store := NewMemoryStore()
 	host, err := NewHost(HostOptions{
 		Config: config.Config{
 			Provider:     config.ProviderFake,
@@ -2090,7 +2091,7 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 			SystemPrompt: "test",
 		},
 		ModelGateway: gateway,
-		Store:        NewMemoryStore(),
+		Store:        store,
 		Tools:        registry,
 		Approver:     allowRuntimeTools,
 		IDGenerator:  deterministicIDs(),
@@ -2098,7 +2099,6 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
@@ -2113,7 +2113,13 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 		t.Fatalf("pending item should remain running before explicit settlement: %#v", item)
 	}
 
-	settled, err := host.SettlePendingTool(ctx, PendingToolSettlementRequest{
+	lifecycle, err := NewLifecycleHost(LifecycleHostOptions{Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lifecycle.Close()
+
+	settled, err := lifecycle.SettlePendingTool(ctx, PendingToolSettlementRequest{
 		ThreadID:   "thread",
 		TurnID:     "turn-1",
 		RunID:      "run-1",
@@ -2140,6 +2146,13 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	}
 	if got := runtimeProjectionAssistantText(settled.Projection); got != longAssistantAfterPending {
 		t.Fatalf("settled projection assistant text length=%d, want full %d\ntext=%q", len([]rune(got)), len([]rune(longAssistantAfterPending)), got)
+	}
+	readProjection, err := lifecycle.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "thread", TurnID: "turn-1", RunID: "run-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item := runtimeProjectionToolItem(readProjection, "exec-1"); item.Status != observation.ActivityStatusSuccess || item.Label != "command completed" {
+		t.Fatalf("read projection item = %#v", item)
 	}
 	for _, key := range []string{"pending_tool_result", "pending_handle", "pending_state"} {
 		if _, ok := item.Metadata[key]; ok {

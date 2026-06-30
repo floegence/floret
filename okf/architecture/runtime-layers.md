@@ -19,9 +19,9 @@ runs turns, retries, completes or settles pending tool work, manages durable
 child threads, deletes thread data, and returns host-safe snapshots.
 `runtime.NewLifecycleHost` is the provider-free variant for lifecycle-only
 processes that share a Floret store but do not run provider turns. It exposes
-thread summary recovery, parent child-thread closing, and thread-tree deletion
-without accepting provider, model, fake response, gateway, tools, or host UI
-configuration.
+thread summary recovery, turn projection read-back, pending tool settlement,
+parent child-thread closing, and thread-tree deletion without accepting
+provider, model, fake response, gateway, tools, or host UI configuration.
 
 Pending tool completion and pending tool settlement are intentionally separate.
 `CompletePendingTool` creates a provider-visible follow-up turn when the model

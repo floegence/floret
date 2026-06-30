@@ -73,9 +73,11 @@ type Host interface {
 	Close() error
 }
 
-// LifecycleHost exposes provider-free thread lifecycle operations over a Floret store.
+// LifecycleHost exposes provider-free thread lifecycle and pending-work operations over a Floret store.
 type LifecycleHost interface {
 	EnsureThread(context.Context, EnsureThreadRequest) (ThreadSummary, error)
+	ReadTurnProjection(context.Context, ReadTurnProjectionRequest) (ThreadTurnProjection, error)
+	SettlePendingTool(context.Context, PendingToolSettlementRequest) (PendingToolSettlementResult, error)
 	CloseSubAgents(context.Context, CloseSubAgentsRequest) (CloseSubAgentsResult, error)
 	DeleteThread(context.Context, ThreadID) error
 	Close() error

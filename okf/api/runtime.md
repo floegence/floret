@@ -19,7 +19,8 @@ continuation state, and lifecycle observations.
 
 * `NewHost` creates a durable conversation host.
 * `NewLifecycleHost` creates a provider-free lifecycle host for thread summary,
-  child close, and thread deletion operations that do not run the model loop.
+  turn projection read-back, pending tool settlement, child close, and thread
+  deletion operations that do not run the model loop.
 * `NewMemoryStore` creates an in-memory runtime store for tests or ephemeral use.
 * `OpenSQLiteStore` creates Floret-managed durable runtime storage.
 * `Host.EnsureThread` creates or recovers a hosted thread and returns
@@ -228,10 +229,11 @@ querying or mutating Floret storage tables directly.
 
 `NewLifecycleHost` is the provider-free constructor for lifecycle-only
 processes that share a Floret `Store` but do not need provider configuration.
-It exposes `EnsureThread`, `CloseSubAgents`, `DeleteThread`, and `Close` without
-accepting fake providers, model gateways, tools, or host UI options. It exists
-so cleanup and deletion code can stay on the public runtime facade without
-pretending to be a model-running host.
+It exposes `EnsureThread`, `ReadTurnProjection`, `SettlePendingTool`,
+`CloseSubAgents`, `DeleteThread`, and `Close` without accepting fake providers,
+model gateways, tools, or host UI options. It exists so reload, pending-work
+settlement, cleanup, and deletion code can stay on the public runtime facade
+without pretending to be a model-running host.
 
 Host facade not-found responses should be handled with `errors.Is` against
 `runtime.ErrThreadNotFound`, `runtime.ErrTurnNotFound`,

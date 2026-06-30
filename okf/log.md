@@ -2,8 +2,8 @@
 
 ## 2026-06-30
 * **Update**: Documented `NewLifecycleHost` as the provider-free public facade
-  for lifecycle-only thread summary, child close, and thread-tree deletion
-  paths.
+  for lifecycle-only thread summary, turn projection read-back, pending tool
+  settlement, child close, and thread-tree deletion paths.
 * **Update**: Documented `ReadTurnProjection`, `ErrTurnNotFound`, and
   `ErrRunNotFound` for durable hosted-turn projection reloads that require
   explicit `ThreadID`, `TurnID`, and `RunID`.

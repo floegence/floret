@@ -215,11 +215,13 @@ thread's lifecycle and metadata view without `messages`; reserve `ReadThread`
 for compatibility or explicitly transcript-oriented tools.
 
 Use `NewLifecycleHost` when a process only needs provider-free thread lifecycle
-operations such as ensuring a thread summary, closing child threads, or deleting
-a Floret-owned thread tree. It accepts the same opaque `runtime.Store` handle as
-`NewHost`, but no provider, model, fake response, gateway, tools, or product UI
-configuration. Hosts should choose this constructor for cleanup and lifecycle
-maintenance paths that must not be coupled to provider-loop configuration.
+and pending-work operations such as ensuring a thread summary, reading a turn
+projection, settling host-owned pending tool work, closing child threads, or
+deleting a Floret-owned thread tree. It accepts the same opaque `runtime.Store`
+handle as `NewHost`, but no provider, model, fake response, gateway, tools, or
+product UI configuration. Hosts should choose this constructor for cleanup,
+reload, settlement, and lifecycle maintenance paths that must not be coupled to
+provider-loop configuration.
 
 ## 🌿 Parent-managed child threads
 
