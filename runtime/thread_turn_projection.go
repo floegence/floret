@@ -150,7 +150,7 @@ func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 				})
 			}
 			addActivity(ev)
-		case ThreadDetailEventToolDispatch, ThreadDetailEventToolResult, ThreadDetailEventApproval, ThreadDetailEventTurnMarker, ThreadDetailEventError:
+		case ThreadDetailEventToolDispatch, ThreadDetailEventToolActivity, ThreadDetailEventToolResult, ThreadDetailEventApproval, ThreadDetailEventTurnMarker, ThreadDetailEventError:
 			flushText()
 			if ev.Kind == ThreadDetailEventToolResult && ev.Type == threadTurnProjectionPendingToolSettlementType {
 				if toolID := threadTurnProjectionToolID(ev); toolID != "" {
@@ -180,6 +180,10 @@ func threadTurnProjectionToolID(ev ThreadDetailEvent) string {
 			return strings.TrimSpace(ev.ToolCall.ID)
 		}
 	case ThreadDetailEventToolDispatch:
+		if ev.ToolCall != nil {
+			return strings.TrimSpace(ev.ToolCall.ID)
+		}
+	case ThreadDetailEventToolActivity:
 		if ev.ToolCall != nil {
 			return strings.TrimSpace(ev.ToolCall.ID)
 		}
@@ -596,6 +600,19 @@ func threadTurnProjectionObservationEvent(meta observation.ActivityRunMeta, deta
 			return observation.Event{}, false
 		}
 		base.Type = observation.EventTypeToolDispatchStarted
+		base.ToolID = strings.TrimSpace(detail.ToolCall.ID)
+		base.ToolName = strings.TrimSpace(detail.ToolCall.Name)
+		base.ToolKind = "local"
+		base.Metadata = threadTurnProjectionMergeAnyMetadata(threadTurnProjectionAnyMetadata(detail.Metadata), base.Metadata)
+		if detail.Message != nil {
+			base.Activity = threadTurnProjectionMergeActivityPresentation(base.Activity, detail.Message.Activity)
+		}
+		return base, true
+	case ThreadDetailEventToolActivity:
+		if detail.ToolCall == nil {
+			return observation.Event{}, false
+		}
+		base.Type = observation.EventTypeToolActivityUpdated
 		base.ToolID = strings.TrimSpace(detail.ToolCall.ID)
 		base.ToolName = strings.TrimSpace(detail.ToolCall.Name)
 		base.ToolKind = "local"

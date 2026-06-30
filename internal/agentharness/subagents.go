@@ -81,6 +81,12 @@ const (
 	toolDispatchKindKey   = "tool_kind"
 	toolDispatchArgsKey   = "args_hash"
 
+	toolActivityEntryKind = "tool_activity"
+	toolActivityToolIDKey = "tool_id"
+	toolActivityNameKey   = "tool_name"
+	toolActivityKindKey   = "tool_kind"
+	toolActivityArgsKey   = "args_hash"
+
 	pendingToolSettlementEntryKind  = "pending_tool_settlement"
 	pendingToolSettlementStateKey   = "state"
 	pendingToolSettlementToolIDKey  = "tool_id"
@@ -211,6 +217,7 @@ const (
 	SubAgentDetailEventAssistantMessage SubAgentDetailEventKind = "assistant_message"
 	SubAgentDetailEventToolCall         SubAgentDetailEventKind = "tool_call"
 	SubAgentDetailEventToolDispatch     SubAgentDetailEventKind = "tool_dispatch"
+	SubAgentDetailEventToolActivity     SubAgentDetailEventKind = "tool_activity"
 	SubAgentDetailEventToolResult       SubAgentDetailEventKind = "tool_result"
 	SubAgentDetailEventTurnMarker       SubAgentDetailEventKind = "turn_marker"
 	SubAgentDetailEventCompaction       SubAgentDetailEventKind = "compaction"
@@ -719,6 +726,13 @@ func (h *AgentHarness) subAgentDetailEvent(entry sessiontree.Entry, ordinal int6
 			}
 			event.Message = subAgentDetailMessage(entry.Message, includeRaw)
 			event.ToolCall = subAgentDetailToolDispatch(entry)
+		case toolActivityEntryKind:
+			event.Kind = SubAgentDetailEventToolActivity
+			if event.Type == "" {
+				event.Type = observation.EventTypeToolActivityUpdated
+			}
+			event.Message = subAgentDetailMessage(entry.Message, includeRaw)
+			event.ToolCall = subAgentDetailToolActivity(entry)
 		case pendingToolSettlementEntryKind:
 			event.Kind = SubAgentDetailEventToolResult
 			if event.Type == "" {
@@ -751,7 +765,7 @@ func (h *AgentHarness) subAgentDetailEvent(entry sessiontree.Entry, ordinal int6
 
 func subAgentDetailRawAvailable(event SubAgentDetailEvent) bool {
 	switch event.Kind {
-	case SubAgentDetailEventInput, SubAgentDetailEventUserMessage, SubAgentDetailEventAssistantMessage, SubAgentDetailEventToolCall, SubAgentDetailEventToolDispatch, SubAgentDetailEventToolResult:
+	case SubAgentDetailEventInput, SubAgentDetailEventUserMessage, SubAgentDetailEventAssistantMessage, SubAgentDetailEventToolCall, SubAgentDetailEventToolDispatch, SubAgentDetailEventToolActivity, SubAgentDetailEventToolResult:
 		return true
 	default:
 		return false
@@ -859,6 +873,19 @@ func subAgentDetailObservationEvent(detail SubAgentDetailEvent, entry sessiontre
 			base.Activity = observationActivityPresentation(entry.Message.Activity)
 		}
 		base.Metadata = subAgentDetailToolDispatchActivityMetadata(detail.Metadata)
+		return base, true
+	case SubAgentDetailEventToolActivity:
+		if detail.ToolCall == nil {
+			return observation.Event{}, false
+		}
+		base.Type = observation.EventTypeToolActivityUpdated
+		base.ToolID = detail.ToolCall.ID
+		base.ToolName = detail.ToolCall.Name
+		base.ToolKind = "local"
+		if detail.Message != nil {
+			base.Activity = observationActivityPresentation(entry.Message.Activity)
+		}
+		base.Metadata = subAgentDetailToolActivityMetadata(detail.Metadata)
 		return base, true
 	case SubAgentDetailEventApproval:
 		if detail.Approval == nil {
@@ -981,6 +1008,19 @@ func subAgentDetailToolDispatch(entry sessiontree.Entry) *SubAgentDetailToolCall
 	}
 }
 
+func subAgentDetailToolActivity(entry sessiontree.Entry) *SubAgentDetailToolCall {
+	id := firstSubAgentDetailNonEmpty(strings.TrimSpace(entry.Message.ToolCallID), strings.TrimSpace(entry.Metadata[toolActivityToolIDKey]))
+	name := firstSubAgentDetailNonEmpty(strings.TrimSpace(entry.Message.ToolName), strings.TrimSpace(entry.Metadata[toolActivityNameKey]))
+	if id == "" && name == "" {
+		return nil
+	}
+	return &SubAgentDetailToolCall{
+		ID:       id,
+		Name:     name,
+		ArgsHash: strings.TrimSpace(entry.Metadata[toolActivityArgsKey]),
+	}
+}
+
 func subAgentDetailToolDispatchActivityMetadata(metadata map[string]string) map[string]any {
 	if len(metadata) == 0 {
 		return nil
@@ -988,6 +1028,26 @@ func subAgentDetailToolDispatchActivityMetadata(metadata map[string]string) map[
 	out := map[string]any{}
 	for _, key := range []string{"batch_index", "batch_size", "error_present"} {
 		if value := strings.TrimSpace(metadata[key]); value != "" {
+			out[key] = value
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func subAgentDetailToolActivityMetadata(metadata map[string]string) map[string]any {
+	if len(metadata) == 0 {
+		return nil
+	}
+	out := map[string]any{}
+	for key, value := range metadata {
+		switch key {
+		case subAgentDetailKindKey, subAgentDetailTypeKey, toolActivityToolIDKey, toolActivityNameKey, toolActivityKindKey, toolActivityArgsKey:
+			continue
+		}
+		if value = strings.TrimSpace(value); value != "" {
 			out[key] = value
 		}
 	}

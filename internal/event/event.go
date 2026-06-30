@@ -30,6 +30,7 @@ const (
 	ProviderRetry          Type = "provider_retry"
 	ToolCall               Type = "tool_call"
 	ToolDispatchStarted    Type = "tool_dispatch_started"
+	ToolActivityUpdated    Type = "tool_activity_updated"
 	ToolResult             Type = "tool_result"
 	ToolApprovalRequested  Type = "tool_approval_requested"
 	ToolApprovalApproved   Type = "tool_approval_approved"
@@ -163,7 +164,7 @@ func sanitize(e Event, policy SinkPolicy) Event {
 		e.Message = ""
 	case ProviderToolCallStart, ProviderToolCallDelta, ProviderToolCallEnd:
 		e.Args = ""
-	case ToolCall, ToolDispatchStarted, HostedToolCall:
+	case ToolCall, ToolDispatchStarted, ToolActivityUpdated, HostedToolCall:
 		e.Args = ""
 	case ToolResult, HostedToolResult, ToolApprovalRequested, ToolApprovalApproved, ToolApprovalRejected, ToolApprovalTimedOut, ToolApprovalCanceled:
 		e.Metadata = withSanitizedMetadataBool(e.Metadata, sanitizedErrorPresentMetadataKey, strings.TrimSpace(e.Err) != "")

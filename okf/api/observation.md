@@ -48,6 +48,12 @@ until `tool_dispatch_started` records that Floret has passed validation,
 permission, and approval gates and is about to invoke the handler. Batched
 sibling calls that have not reached dispatch therefore stay pending while an
 earlier sibling waits for approval.
+While a dispatched local tool is still running, `tool_activity_updated` may
+refresh the same item with sanitized public presentation payload and metadata.
+Those updates preserve the item identity, start time, approval lifecycle, and
+command label, and they never turn a terminal item back into running. The
+terminal lifecycle fact remains `tool_result` or an explicit terminal run
+settlement.
 Terminal tool-result settlements remove running-only pending metadata, payload
 fields, and chips so downstream hosts do not carry stale active state into
 terminal UI.

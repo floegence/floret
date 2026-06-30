@@ -859,6 +859,23 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 						Metadata: callBatchMetadata[start.CallID],
 					})
 				},
+				ActivityUpdated: func(update tools.ToolActivityUpdate) {
+					e.emit(opts, event.Event{
+						Type:     event.ToolActivityUpdated,
+						TraceID:  opts.TraceID,
+						RunID:    opts.RunID,
+						ThreadID: opts.ThreadID,
+						Step:     step,
+						Provider: opts.ProviderName,
+						Model:    opts.Model,
+						ToolID:   update.CallID,
+						ToolName: update.Name,
+						ToolKind: "local",
+						Args:     update.RawArgs,
+						Activity: update.Activity,
+						Metadata: mergeAnyMetadata(callBatchMetadata[update.CallID], update.Metadata),
+					})
+				},
 			}
 			for i, call := range calls {
 				activity, activityErr := activeToolRegistry.ActivityForCall(toolCall(call), toolRunOptions)

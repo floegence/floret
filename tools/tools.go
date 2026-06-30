@@ -53,6 +53,7 @@ type RunOptions struct {
 	HostContext   map[string]string
 
 	DispatchStarted func(DispatchStart)
+	ActivityUpdated func(ToolActivityUpdate)
 }
 
 type DispatchStart struct {
@@ -68,11 +69,10 @@ type DispatchStart struct {
 	HostContext   map[string]string
 }
 
-type erasedInvocation struct {
+type ToolActivityUpdate struct {
 	CallID        string
 	Name          string
 	RawArgs       string
-	Args          any
 	RunID         string
 	ThreadID      string
 	TurnID        string
@@ -80,6 +80,23 @@ type erasedInvocation struct {
 	Step          int
 	Labels        map[string]string
 	HostContext   map[string]string
+	Activity      *observation.ActivityPresentation
+	Metadata      map[string]any
+}
+
+type erasedInvocation struct {
+	CallID          string
+	Name            string
+	RawArgs         string
+	Args            any
+	RunID           string
+	ThreadID        string
+	TurnID          string
+	PromptScopeID   string
+	Step            int
+	Labels          map[string]string
+	HostContext     map[string]string
+	ActivityUpdater func(ActivityUpdate)
 }
 
 type Tool struct {
@@ -119,17 +136,18 @@ func Define[T any](
 				return nil, fmt.Errorf("tool %q decoded unexpected args type", inv.Name)
 			}
 			return resources(Invocation[T]{
-				CallID:        inv.CallID,
-				Name:          inv.Name,
-				RawArgs:       inv.RawArgs,
-				Args:          args,
-				RunID:         inv.RunID,
-				ThreadID:      inv.ThreadID,
-				TurnID:        inv.TurnID,
-				PromptScopeID: inv.PromptScopeID,
-				Step:          inv.Step,
-				Labels:        cloneStringMap(inv.Labels),
-				HostContext:   cloneStringMap(inv.HostContext),
+				CallID:          inv.CallID,
+				Name:            inv.Name,
+				RawArgs:         inv.RawArgs,
+				Args:            args,
+				RunID:           inv.RunID,
+				ThreadID:        inv.ThreadID,
+				TurnID:          inv.TurnID,
+				PromptScopeID:   inv.PromptScopeID,
+				Step:            inv.Step,
+				Labels:          cloneStringMap(inv.Labels),
+				HostContext:     cloneStringMap(inv.HostContext),
+				ActivityUpdater: inv.ActivityUpdater,
 			})
 		},
 		handler: func(ctx context.Context, inv erasedInvocation) (Result, error) {
@@ -138,17 +156,18 @@ func Define[T any](
 				return Result{}, fmt.Errorf("tool %q decoded unexpected args type", inv.Name)
 			}
 			return handler(ctx, Invocation[T]{
-				CallID:        inv.CallID,
-				Name:          inv.Name,
-				RawArgs:       inv.RawArgs,
-				Args:          args,
-				RunID:         inv.RunID,
-				ThreadID:      inv.ThreadID,
-				TurnID:        inv.TurnID,
-				PromptScopeID: inv.PromptScopeID,
-				Step:          inv.Step,
-				Labels:        cloneStringMap(inv.Labels),
-				HostContext:   cloneStringMap(inv.HostContext),
+				CallID:          inv.CallID,
+				Name:            inv.Name,
+				RawArgs:         inv.RawArgs,
+				Args:            args,
+				RunID:           inv.RunID,
+				ThreadID:        inv.ThreadID,
+				TurnID:          inv.TurnID,
+				PromptScopeID:   inv.PromptScopeID,
+				Step:            inv.Step,
+				Labels:          cloneStringMap(inv.Labels),
+				HostContext:     cloneStringMap(inv.HostContext),
+				ActivityUpdater: inv.ActivityUpdater,
 			})
 		},
 	}
@@ -443,6 +462,24 @@ func (r *Registry) run(ctx context.Context, call ToolCall, approver Approver, op
 			HostContext:   cloneStringMap(opts.HostContext),
 		})
 	}
+	if opts.ActivityUpdated != nil {
+		inv.ActivityUpdater = func(update ActivityUpdate) {
+			opts.ActivityUpdated(ToolActivityUpdate{
+				CallID:        call.ID,
+				Name:          call.Name,
+				RawArgs:       raw,
+				RunID:         opts.RunID,
+				ThreadID:      opts.ThreadID,
+				TurnID:        opts.TurnID,
+				PromptScopeID: opts.PromptScopeID,
+				Step:          opts.Step,
+				Labels:        cloneStringMap(opts.Labels),
+				HostContext:   cloneStringMap(opts.HostContext),
+				Activity:      observation.CloneActivityPresentation(update.Activity),
+				Metadata:      cloneAnyMap(update.Metadata),
+			})
+		}
+	}
 	result, err = t.handler(ctx, inv)
 	if err != nil {
 		return ErrorResult(call.ID, call.Name, err.Error())
@@ -597,6 +634,17 @@ func cloneStringMap(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
 	for key, value := range in {
 		out[key] = value
+	}
+	return out
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = cloneAny(value)
 	}
 	return out
 }

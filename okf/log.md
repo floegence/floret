@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-06-30
+* **Update**: Documented `tool_activity_updated` and
+  `Invocation.UpdateActivity` as product-neutral running activity presentation
+  updates that merge into the original tool item without completing it.
 * **Update**: Clarified that activity renderer payloads are host-supplied public
   display data that Floret validates and preserves without defining downstream
   UI layout or product field priority.

@@ -1796,6 +1796,41 @@ func (t *Thread) appendToolDispatchEvent(ctx context.Context, turnID string, run
 	return nil
 }
 
+func (t *Thread) appendToolActivityEvent(ctx context.Context, turnID string, runID string, ev event.Event) error {
+	metadata := map[string]string{
+		subAgentDetailKindKey: toolActivityEntryKind,
+		subAgentDetailTypeKey: string(event.ToolActivityUpdated),
+		toolActivityToolIDKey: strings.TrimSpace(ev.ToolID),
+		toolActivityNameKey:   strings.TrimSpace(ev.ToolName),
+		toolActivityKindKey:   strings.TrimSpace(ev.ToolKind),
+		toolActivityArgsKey:   strings.TrimSpace(ev.ArgsHash),
+	}
+	if values, ok := event.Sanitize(ev).Metadata.(map[string]any); ok {
+		for key, value := range values {
+			if text := safeApprovalMetadataValue(value); text != "" {
+				metadata[key] = text
+			}
+		}
+	}
+	entry, err := t.harness.options.Repo.Append(ctx, sessiontree.Entry{
+		ThreadID: t.id,
+		TurnID:   turnID,
+		Type:     sessiontree.EntryCustom,
+		Message: session.Message{
+			ToolCallID: strings.TrimSpace(ev.ToolID),
+			ToolName:   strings.TrimSpace(ev.ToolName),
+			Activity:   sessionActivityPresentation(sanitizeActivityPresentation(ev.Activity)),
+		},
+		Metadata: metadata,
+	}, sessiontree.AppendOptions{})
+	if err != nil {
+		return err
+	}
+	t.harness.emitEntryCommitted(entry, runID)
+	t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: string(event.ToolActivityUpdated)})
+	return nil
+}
+
 func (t *Thread) appendPendingToolSettlement(ctx context.Context, settlement PendingToolSettlement) (sessiontree.Entry, error) {
 	status := pendingToolSettlementActivityStatus(settlement.Status)
 	metadata := map[string]string{
@@ -2159,6 +2194,16 @@ func (p *turnProjection) Emit(ev event.Event) {
 			return
 		}
 		p.err = p.thread.appendToolDispatchEvent(p.ctx, p.turnID, p.runID, ev)
+	case event.ToolActivityUpdated:
+		if err := p.flushPendingToolBatch(false); err != nil {
+			p.err = err
+			return
+		}
+		if err := p.flushPendingAssistantText(true); err != nil {
+			p.err = err
+			return
+		}
+		p.err = p.thread.appendToolActivityEvent(p.ctx, p.turnID, p.runID, ev)
 	case event.ToolResult:
 		if err := p.flushPendingAssistantText(true); err != nil {
 			p.err = err

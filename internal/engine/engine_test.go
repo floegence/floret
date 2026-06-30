@@ -2214,6 +2214,70 @@ func TestToolActivityPresentationEmitsForCallAndResult(t *testing.T) {
 	}
 }
 
+func TestToolActivityUpdateEmitsRunningPresentation(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("exec-1", "shell", `{"value":"sleep 10"}`), harness.DoneReason("tool_calls")),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	reg := tools.NewRegistry()
+	mustRegister(t, reg, tools.Define[stringArgs](
+		tools.Definition{
+			Name:        "shell",
+			InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+			ReadOnly:    true,
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+			Activity: func(inv tools.Invocation[any]) (*observation.ActivityPresentation, error) {
+				args := inv.Args.(stringArgs)
+				return &observation.ActivityPresentation{
+					Label:    args.Value,
+					Renderer: observation.ActivityRendererTerminal,
+					Payload:  map[string]any{"command": args.Value},
+				}, nil
+			},
+		},
+		nil,
+		nil,
+		func(ctx context.Context, inv tools.Invocation[stringArgs]) (tools.Result, error) {
+			inv.UpdateActivity(tools.ActivityUpdate{
+				Activity: &observation.ActivityPresentation{
+					Renderer: observation.ActivityRendererTerminal,
+					Payload: map[string]any{
+						"command":            inv.Args.Value,
+						"status":             "running",
+						"process_id":         "tp_live",
+						"latest_output":      "tick 1\n",
+						"last_seq":           1,
+						"execution_location": "local_runtime",
+					},
+				},
+				Metadata: map[string]any{"phase": "process_started"},
+			})
+			return tools.Result{Text: "ok"}, nil
+		},
+	))
+	e := newTestEngine(p, rec)
+	e.Tools = reg
+
+	got := e.Run(context.Background(), "run")
+
+	if got.Status != engine.Completed {
+		t.Fatalf("result = %#v", got)
+	}
+	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
+		metadata, _ := ev.Metadata.(map[string]any)
+		return ev.Type == event.ToolActivityUpdated &&
+			ev.ToolID == "exec-1" &&
+			ev.ToolName == "shell" &&
+			ev.Activity != nil &&
+			ev.Activity.Renderer == observation.ActivityRendererTerminal &&
+			ev.Activity.Payload["process_id"] == "tp_live" &&
+			metadata["phase"] == "process_started"
+	}) {
+		t.Fatalf("tool activity update missing: %#v", rec.Events)
+	}
+}
+
 func TestParallelPendingToolResultEmitsBeforeSlowSiblingFinishes(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(

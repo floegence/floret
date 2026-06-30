@@ -127,6 +127,63 @@ func TestBuildActivityTimelineKeepsToolCallPendingUntilDispatchStarts(t *testing
 	}
 }
 
+func TestBuildActivityTimelineMergesToolActivityUpdateIntoRunningTool(t *testing.T) {
+	start := time.UnixMilli(1_700_000_001_500)
+	command := `for i in $(seq 1 10); do date; sleep 1; done`
+	events := []Event{
+		{Type: EventTypeToolCall, RunID: "run-terminal", ThreadID: "thread-terminal", TurnID: "turn-terminal", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: &ActivityPresentation{Label: command, Renderer: ActivityRendererTerminal, Payload: map[string]any{"command": command}}, ObservedAt: start},
+		{Type: EventTypeToolDispatchStarted, RunID: "run-terminal", ThreadID: "thread-terminal", TurnID: "turn-terminal", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: &ActivityPresentation{Label: command, Renderer: ActivityRendererTerminal, Payload: map[string]any{"command": command}}, ObservedAt: start.Add(10 * time.Millisecond)},
+		{Type: EventTypeToolActivityUpdated, RunID: "run-terminal", ThreadID: "thread-terminal", TurnID: "turn-terminal", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: &ActivityPresentation{Renderer: ActivityRendererTerminal, Payload: map[string]any{
+			"command":            command,
+			"status":             "running",
+			"process_id":         "tp_live",
+			"latest_output":      "tick 1\n",
+			"last_seq":           1,
+			"total_bytes":        7,
+			"execution_location": "local_runtime",
+		}}, ObservedAt: start.Add(20 * time.Millisecond)},
+	}
+
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-terminal", ThreadID: "thread-terminal", TurnID: "turn-terminal"}, events, start.Add(time.Second).UnixMilli())
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("timeline should validate: %v; timeline=%#v", err, timeline)
+	}
+	if len(timeline.Items) != 1 {
+		t.Fatalf("items=%#v, want single terminal tool item", timeline.Items)
+	}
+	item := activityTestItemByToolID(timeline, "exec-1")
+	if item.Status != ActivityStatusRunning || item.EndedAtUnixMS != 0 {
+		t.Fatalf("item status mismatch: %#v", item)
+	}
+	if item.Payload["process_id"] != "tp_live" || item.Payload["latest_output"] != "tick 1\n" {
+		t.Fatalf("live payload was not merged: %#v", item.Payload)
+	}
+	if timeline.Summary.Counts.Running != 1 || timeline.Summary.Counts.Success != 0 {
+		t.Fatalf("summary mismatch: %#v", timeline.Summary)
+	}
+}
+
+func TestBuildActivityTimelineDoesNotReopenTerminalToolAfterResult(t *testing.T) {
+	start := time.UnixMilli(1_700_000_001_500)
+	events := []Event{
+		{Type: EventTypeToolDispatchStarted, RunID: "run-terminal", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", ObservedAt: start},
+		{Type: EventTypeToolResult, RunID: "run-terminal", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", DurationMS: 1000, Metadata: map[string]any{"tool_result_status": string(ActivityStatusSuccess)}, Activity: &ActivityPresentation{Payload: map[string]any{"output": "done\n", "process_id": "tp_live"}}, ObservedAt: start.Add(time.Second)},
+		{Type: EventTypeToolActivityUpdated, RunID: "run-terminal", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: &ActivityPresentation{Payload: map[string]any{"latest_output": "late\n", "process_id": "tp_live"}}, ObservedAt: start.Add(1100 * time.Millisecond)},
+	}
+
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-terminal"}, events, start.Add(2*time.Second).UnixMilli())
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("timeline should validate: %v; timeline=%#v", err, timeline)
+	}
+	item := activityTestItemByToolID(timeline, "exec-1")
+	if item.Status != ActivityStatusSuccess || item.EndedAtUnixMS == 0 {
+		t.Fatalf("terminal item was reopened: %#v", item)
+	}
+	if item.Payload["process_id"] != "tp_live" || item.Payload["output"] != "done\n" {
+		t.Fatalf("terminal payload mismatch: %#v", item.Payload)
+	}
+}
+
 func TestBuildActivityTimelineSettlesPendingToolResult(t *testing.T) {
 	start := time.UnixMilli(1_700_000_001_000)
 	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-pending", ThreadID: "thread-pending", TurnID: "turn-pending"}, []Event{

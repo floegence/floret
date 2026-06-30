@@ -384,6 +384,7 @@ const (
 	SubAgentDetailEventAssistantMessage SubAgentDetailEventKind = "assistant_message"
 	SubAgentDetailEventToolCall         SubAgentDetailEventKind = "tool_call"
 	SubAgentDetailEventToolDispatch     SubAgentDetailEventKind = "tool_dispatch"
+	SubAgentDetailEventToolActivity     SubAgentDetailEventKind = "tool_activity"
 	SubAgentDetailEventToolResult       SubAgentDetailEventKind = "tool_result"
 	SubAgentDetailEventTurnMarker       SubAgentDetailEventKind = "turn_marker"
 	SubAgentDetailEventCompaction       SubAgentDetailEventKind = "compaction"
@@ -400,6 +401,7 @@ const (
 	ThreadDetailEventAssistantMessage ThreadDetailEventKind = "assistant_message"
 	ThreadDetailEventToolCall         ThreadDetailEventKind = "tool_call"
 	ThreadDetailEventToolDispatch     ThreadDetailEventKind = "tool_dispatch"
+	ThreadDetailEventToolActivity     ThreadDetailEventKind = "tool_activity"
 	ThreadDetailEventToolResult       ThreadDetailEventKind = "tool_result"
 	ThreadDetailEventTurnMarker       ThreadDetailEventKind = "turn_marker"
 	ThreadDetailEventCompaction       ThreadDetailEventKind = "compaction"
@@ -2802,6 +2804,7 @@ func runtimeActivityTimelineEvent(typ event.Type) bool {
 	switch typ {
 	case event.ToolCall,
 		event.ToolDispatchStarted,
+		event.ToolActivityUpdated,
 		event.ToolResult,
 		event.ToolApprovalRequested,
 		event.ToolApprovalApproved,

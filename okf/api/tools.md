@@ -35,6 +35,17 @@ handler is invoked and carries only the tool call identity, raw arguments for th
 engine sanitizer, run/thread context, labels, and host context already available
 to the local tool runtime.
 
+# Activity Updates
+
+`Invocation.UpdateActivity` lets a running tool publish sanitized presentation
+updates for its own activity item without returning a tool result. The engine
+emits those updates as ordered `tool_activity_updated` observations through
+`tools.RunOptions.ActivityUpdated`; projections merge them into the existing
+`tool:<tool_id>` item. This is for product-neutral public display payloads such
+as a host-owned read handle, byte counters, or latest visible output. It does
+not create a second activity row, change approval decisions, or complete the
+tool invocation.
+
 # Key Source Files
 
 * [Tools Package](/tools/tools.go)

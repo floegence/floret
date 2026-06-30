@@ -16,6 +16,7 @@ import (
 const (
 	EventTypeToolCall              = "tool_call"
 	EventTypeToolDispatchStarted   = "tool_dispatch_started"
+	EventTypeToolActivityUpdated   = "tool_activity_updated"
 	EventTypeToolResult            = "tool_result"
 	EventTypeToolApprovalRequested = "tool_approval_requested"
 	EventTypeToolApprovalApproved  = "tool_approval_approved"
@@ -304,6 +305,35 @@ func BuildActivityTimeline(meta ActivityRunMeta, events []Event, nowUnixMS int64
 			state.item.Status = ActivityStatusRunning
 			state.item.Severity = ActivitySeverityNormal
 			state.item.EndedAtUnixMS = 0
+			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
+			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
+			state.lastSeen = observedAt
+		case EventTypeToolActivityUpdated:
+			noteActivityTime(observedAt, &firstAt, &lastAt)
+			key := activityToolKey(ev, index)
+			state := ensureActivityItem(items, &order, key, len(order), func() ActivityItem {
+				return ActivityItem{
+					ItemID:          key,
+					ToolID:          strings.TrimSpace(ev.ToolID),
+					ToolName:        strings.TrimSpace(ev.ToolName),
+					Kind:            activityToolKind(ev),
+					Status:          ActivityStatusRunning,
+					Severity:        ActivitySeverityNormal,
+					StartedAtUnixMS: observedAt,
+					Metadata:        activityMetadata(ev),
+				}
+			})
+			state.item.ToolID = firstNonEmpty(state.item.ToolID, strings.TrimSpace(ev.ToolID))
+			state.item.ToolName = firstNonEmpty(state.item.ToolName, strings.TrimSpace(ev.ToolName))
+			state.item.Kind = firstNonEmptyActivityKind(state.item.Kind, activityToolKind(ev))
+			if state.item.StartedAtUnixMS == 0 {
+				state.item.StartedAtUnixMS = observedAt
+			}
+			if !activityStatusIsTerminal(state.item.Status) && state.item.Status != ActivityStatusWaiting {
+				state.item.Status = ActivityStatusRunning
+				state.item.Severity = ActivitySeverityNormal
+				state.item.EndedAtUnixMS = 0
+			}
 			mergeActivityPresentationIntoItem(&state.item, ev.Activity)
 			state.item.Metadata = mergeActivityMetadata(state.item.Metadata, activityMetadata(ev))
 			state.lastSeen = observedAt
@@ -654,6 +684,15 @@ func activityToolKind(ev Event) ActivityKind {
 		return ActivityKindHosted
 	}
 	return ActivityKindTool
+}
+
+func activityStatusIsTerminal(status ActivityStatus) bool {
+	switch status {
+	case ActivityStatusSuccess, ActivityStatusError, ActivityStatusCanceled:
+		return true
+	default:
+		return false
+	}
 }
 
 func activityRunEndControlItem(ev Event, index int, observedAt int64) (ActivityItem, bool) {

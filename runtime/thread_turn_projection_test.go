@@ -418,6 +418,75 @@ func TestProjectThreadTurnPromotesToolDispatchToRunning(t *testing.T) {
 	}
 }
 
+func TestProjectThreadTurnMergesToolActivityUpdate(t *testing.T) {
+	now := time.UnixMilli(1_700_031_000_000)
+	command := "sleep 10"
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID: "thread-terminal-live",
+		TurnID:   "turn-terminal-live",
+		RunID:    "run-terminal-live",
+		TraceID:  "run-terminal-live",
+		Events: []ThreadDetailEvent{
+			{
+				ID:        "tool-call",
+				Ordinal:   1,
+				ThreadID:  "thread-terminal-live",
+				TurnID:    "turn-terminal-live",
+				Kind:      ThreadDetailEventToolCall,
+				CreatedAt: now,
+				Message: &ThreadDetailMessage{Role: "assistant", Activity: &observation.ActivityPresentation{
+					Label:    command,
+					Renderer: observation.ActivityRendererTerminal,
+					Payload:  map[string]any{"command": command},
+				}},
+				ToolCall: &ThreadDetailToolCall{ID: "call-1", Name: "terminal.exec"},
+			},
+			{
+				ID:        "tool-dispatch",
+				Ordinal:   2,
+				ThreadID:  "thread-terminal-live",
+				TurnID:    "turn-terminal-live",
+				Kind:      ThreadDetailEventToolDispatch,
+				Type:      observation.EventTypeToolDispatchStarted,
+				CreatedAt: now.Add(10 * time.Millisecond),
+				ToolCall:  &ThreadDetailToolCall{ID: "call-1", Name: "terminal.exec"},
+			},
+			{
+				ID:        "tool-activity",
+				Ordinal:   3,
+				ThreadID:  "thread-terminal-live",
+				TurnID:    "turn-terminal-live",
+				Kind:      ThreadDetailEventToolActivity,
+				Type:      observation.EventTypeToolActivityUpdated,
+				CreatedAt: now.Add(20 * time.Millisecond),
+				Message: &ThreadDetailMessage{Activity: &observation.ActivityPresentation{
+					Renderer: observation.ActivityRendererTerminal,
+					Payload: map[string]any{
+						"command":            command,
+						"status":             "running",
+						"process_id":         "tp_live",
+						"latest_output":      "tick 1\n",
+						"last_seq":           1,
+						"execution_location": "local_runtime",
+					},
+				}},
+				ToolCall: &ThreadDetailToolCall{ID: "call-1", Name: "terminal.exec"},
+			},
+		},
+	})
+
+	if len(projection.Segments) != 1 || projection.Segments[0].ActivityTimeline == nil {
+		t.Fatalf("projection segments = %#v", projection.Segments)
+	}
+	item := projectionToolItem(t, projection, "call-1")
+	if item.Status != observation.ActivityStatusRunning || item.Payload["process_id"] != "tp_live" || item.Payload["latest_output"] != "tick 1\n" {
+		t.Fatalf("activity update was not merged: %#v", item)
+	}
+	if err := observation.ValidateActivityTimeline(*projection.Segments[0].ActivityTimeline); err != nil {
+		t.Fatalf("projection should validate: %v", err)
+	}
+}
+
 func TestProjectThreadTurnSettlesApprovalAndToolFromDetailEvents(t *testing.T) {
 	now := time.Unix(300, 0)
 

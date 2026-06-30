@@ -37,7 +37,10 @@ reasoning, tool arguments, tool results, and local paths.
   item becomes running only when the ordered `tool_dispatch_started` observation
   is emitted after permission and approval gates pass. Hosted provider tools are
   separate provider-native activity and may be running when their hosted call is
-  observed.
+  observed. A running local tool can later emit `tool_activity_updated` to merge
+  public presentation payload changes into the same activity item, for example
+  a host-owned read handle or latest output summary. This observation is not a
+  result and cannot reopen a terminal item.
 * Runtime stream observations expose provider-neutral model output facts,
   including text deltas, reasoning deltas, retry/finish signals, and model
   tool-call stream start/delta/end facts. Model tool-call stream facts identify

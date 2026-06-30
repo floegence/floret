@@ -52,17 +52,30 @@ type ArtifactStore interface {
 }
 
 type Invocation[T any] struct {
-	CallID        string
-	Name          string
-	RawArgs       string
-	Args          T
-	RunID         string
-	ThreadID      string
-	TurnID        string
-	PromptScopeID string
-	Step          int
-	Labels        map[string]string
-	HostContext   map[string]string
+	CallID          string
+	Name            string
+	RawArgs         string
+	Args            T
+	RunID           string
+	ThreadID        string
+	TurnID          string
+	PromptScopeID   string
+	Step            int
+	Labels          map[string]string
+	HostContext     map[string]string
+	ActivityUpdater func(ActivityUpdate)
+}
+
+type ActivityUpdate struct {
+	Activity *observation.ActivityPresentation
+	Metadata map[string]any
+}
+
+func (i Invocation[T]) UpdateActivity(update ActivityUpdate) {
+	if i.ActivityUpdater == nil {
+		return
+	}
+	i.ActivityUpdater(update)
 }
 
 type Result struct {
