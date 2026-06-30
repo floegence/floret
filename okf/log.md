@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-06-30
+* **Update**: Clarified that approved tool activity may remain pending before
+  dispatch starts, and that `requires_approval` is lifecycle history rather than
+  an active decision-needed flag.
 * **Update**: Clarified that caller cancellation during runtime projection or
   turn finalization remains a cancelled terminal fact, preserving canceled
   activity settlement after a host stops a run.

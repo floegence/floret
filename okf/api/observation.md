@@ -37,7 +37,12 @@ Tool approval events are lifecycle updates on the tool activity item itself:
 `tool_call`, approval request/resolution, and `tool_result` for the same tool id
 collapse into one item instead of a separate approval row. A requested approval
 therefore keeps the tool item `waiting`, blocking, and attention-worthy; approval
-or denial then advances that same item.
+or denial then advances that same item. `requires_approval` records that the
+tool invocation passed through approval; it is not the current decision-needed
+flag. Only `approval_state=requested` with `status=waiting` means the item is
+currently waiting for a decision. After approval, the item may be `pending`
+before dispatch starts, then `running` or terminal when later lifecycle facts
+arrive.
 For local tools, `tool_call` is the queued model request and remains `pending`
 until `tool_dispatch_started` records that Floret has passed validation,
 permission, and approval gates and is about to invoke the handler. Batched

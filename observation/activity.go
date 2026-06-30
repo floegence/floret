@@ -1701,9 +1701,9 @@ func validateActivityItemApprovalLifecycle(item ActivityItem) error {
 		}
 	case "approved":
 		switch item.Status {
-		case ActivityStatusRunning, ActivityStatusSuccess, ActivityStatusError, ActivityStatusCanceled:
+		case ActivityStatusPending, ActivityStatusRunning, ActivityStatusSuccess, ActivityStatusError, ActivityStatusCanceled:
 		default:
-			return fmt.Errorf("approved approval status is %q, want running or terminal tool status", item.Status)
+			return fmt.Errorf("approved approval status is %q, want pending, running, or terminal tool status", item.Status)
 		}
 	case "rejected", "timed_out":
 		if item.Status != ActivityStatusError {

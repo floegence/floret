@@ -422,6 +422,34 @@ func TestBuildActivityTimelineKeepsApprovalLifecycleOnToolItem(t *testing.T) {
 	}
 }
 
+func TestBuildActivityTimelineAllowsApprovedToolBeforeDispatch(t *testing.T) {
+	start := time.UnixMilli(1_700_000_002_500)
+	command := "curl -s https://example.test"
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-approved-pending", ThreadID: "thread-approved-pending", TurnID: "turn-approved-pending"}, []Event{
+		{Type: EventTypeToolCall, RunID: "run-approved-pending", ThreadID: "thread-approved-pending", TurnID: "turn-approved-pending", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Activity: &ActivityPresentation{Label: command, Renderer: ActivityRendererTerminal, Payload: map[string]any{"command": command}}, ObservedAt: start},
+		{Type: EventTypeToolApprovalRequested, RunID: "run-approved-pending", ThreadID: "thread-approved-pending", TurnID: "turn-approved-pending", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", Metadata: map[string]any{"approval_id": "approval-1"}, ObservedAt: start.Add(10 * time.Millisecond)},
+		{Type: EventTypeToolApprovalApproved, RunID: "run-approved-pending", ThreadID: "thread-approved-pending", TurnID: "turn-approved-pending", Step: 1, ToolID: "exec-1", ToolName: "terminal.exec", ToolKind: "local", ObservedAt: start.Add(100 * time.Millisecond)},
+	}, start.Add(200*time.Millisecond).UnixMilli())
+
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("approved pending timeline should validate: %v", err)
+	}
+	if len(timeline.Items) != 1 || timeline.Summary.Counts.Pending != 1 || timeline.Summary.Counts.Approval != 1 {
+		t.Fatalf("timeline should contain one approved pending tool item: %#v", timeline)
+	}
+	item := timeline.Items[0]
+	if item.ItemID != "tool:exec-1" ||
+		item.Kind != ActivityKindTool ||
+		item.Status != ActivityStatusPending ||
+		item.ApprovalState != "approved" ||
+		!item.RequiresApproval ||
+		item.Label != command ||
+		item.Payload["command"] != command ||
+		item.EndedAtUnixMS != 0 {
+		t.Fatalf("approved pending tool item mismatch: %#v", item)
+	}
+}
+
 func TestBuildActivityTimelineProjectsApprovalDenialAsSingleToolItem(t *testing.T) {
 	start := time.UnixMilli(1_700_000_003_000)
 	tests := []struct {
