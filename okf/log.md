@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-06-30
+* **Update**: Clarified that activity renderer payloads are host-supplied public
+  display data that Floret validates and preserves without defining downstream
+  UI layout or product field priority.
 * **Update**: Clarified that approved tool activity may remain pending before
   dispatch starts, and that `requires_approval` is lifecycle history rather than
   an active decision-needed flag.

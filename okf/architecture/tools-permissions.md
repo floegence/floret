@@ -81,11 +81,13 @@ moves through requested, approved, denied, and tool-result states. Ordinary tool
 approvals do not create a second visible activity row; approval is part of the
 tool invocation lifecycle. Floret still treats that presentation as opaque
 display data; tool-specific labels, renderers, and payload fields remain
-host-owned. `requires_approval` remains true after approval or denial because it
-is lifecycle history, not the current decision-needed state. A host should treat
-only `approval_state=requested` with `status=waiting` as an active pending
-approval. `approval_state=approved` may briefly pair with `status=pending`
-between approval resolution and tool dispatch.
+host-owned. Floret may validate that renderer payloads are safe public data, but
+it must not encode downstream UI layout or decide which payload fields should be
+primary in a product surface. `requires_approval` remains true after approval or
+denial because it is lifecycle history, not the current decision-needed state. A
+host should treat only `approval_state=requested` with `status=waiting` as an
+active pending approval. `approval_state=approved` may briefly pair with
+`status=pending` between approval resolution and tool dispatch.
 
 # Pending Tool Work
 

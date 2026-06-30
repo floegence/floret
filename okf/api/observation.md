@@ -52,6 +52,14 @@ Terminal tool-result settlements remove running-only pending metadata, payload
 fields, and chips so downstream hosts do not carry stale active state into
 terminal UI.
 
+`ActivityPresentation.Payload` is host-supplied public display data attached to
+the product-neutral renderer and lifecycle fact. Floret validates that payload
+shape for safe transport and preserves it through live and durable activity
+projection, but it does not define tool-specific UI layout, copy, grouping, or
+field priority. Downstream hosts remain responsible for interpreting terminal,
+file, patch, web-search, question, completion, todo, and other renderer payloads
+as product presentation.
+
 Tool result duration is part of the activity lifecycle fact. When a terminal
 tool result carries a positive duration, `BuildActivityTimeline` uses
 `ended_at - duration` as the execution start instead of including queued or

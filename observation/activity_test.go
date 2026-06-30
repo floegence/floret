@@ -715,6 +715,186 @@ func TestValidateActivityTimelineRejectsInvalidPresentation(t *testing.T) {
 	}
 }
 
+func TestValidateActivityTimelineAllowsHostPublicDetailPayloads(t *testing.T) {
+	baseItem := ActivityItem{
+		ItemID:   "tool-1",
+		ToolID:   "tool-1",
+		ToolName: "tool",
+		Kind:     ActivityKindTool,
+		Status:   ActivityStatusSuccess,
+		Severity: ActivitySeverityNormal,
+	}
+	cases := []struct {
+		name     string
+		renderer ActivityRenderer
+		payload  map[string]any
+	}{
+		{
+			name:     "terminal",
+			renderer: ActivityRendererTerminal,
+			payload: map[string]any{
+				"command":            `curl -s https://example.test`,
+				"output":             "ok\n",
+				"latest_output":      "ok\n",
+				"process_id":         "tp_123",
+				"exit_code":          0,
+				"duration_ms":        1200,
+				"truncated":          false,
+				"total_bytes":        3,
+				"execution_location": "local_runtime",
+			},
+		},
+		{
+			name:     "file",
+			renderer: ActivityRendererFile,
+			payload: map[string]any{
+				"display_name":   "README.md",
+				"content":        "# Title\n",
+				"line_offset":    1,
+				"line_count":     1,
+				"total_lines":    1,
+				"file_action_id": "file-read-1",
+				"truncated":      false,
+			},
+		},
+		{
+			name:     "patch",
+			renderer: ActivityRendererPatch,
+			payload: map[string]any{
+				"files_changed": 1,
+				"additions":     1,
+				"deletions":     1,
+				"mutations": []any{map[string]any{
+					"display_name": "main.go",
+					"change_type":  "edit",
+					"unified_diff": "@@ -1 +1 @@\n-old\n+new\n",
+					"truncated":    false,
+				}},
+			},
+		},
+		{
+			name:     "web search",
+			renderer: ActivityRendererWebSearch,
+			payload: map[string]any{
+				"query":   "weather changsha",
+				"results": []any{map[string]any{"title": "Weather", "url": "https://example.test/weather"}},
+				"sources": []any{map[string]any{"title": "Source", "url": "https://example.test/source"}},
+			},
+		},
+		{
+			name:     "question",
+			renderer: ActivityRendererQuestion,
+			payload: map[string]any{
+				"reason_code":        "needs_user_choice",
+				"required_from_user": []any{"target"},
+				"questions": []any{map[string]any{
+					"id":       "target",
+					"question": "Which target should I use?",
+					"choices":  []any{map[string]any{"label": "Local"}},
+				}},
+			},
+		},
+		{
+			name:     "completion",
+			renderer: ActivityRendererCompletion,
+			payload: map[string]any{
+				"result":          "done",
+				"evidence_refs":   []any{"test"},
+				"remaining_risks": []any{"none"},
+				"next_actions":    []any{"ship"},
+			},
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			item := baseItem
+			item.ItemID = "tool-" + strings.ReplaceAll(tt.name, " ", "-")
+			item.Renderer = tt.renderer
+			item.Payload = tt.payload
+			timeline := ActivityTimeline{
+				SchemaVersion: ActivityTimelineSchemaVersion,
+				RunID:         "run-detail-payload",
+				Summary: ActivitySummary{
+					Status:     ActivityStatusSuccess,
+					Severity:   ActivitySeverityNormal,
+					TotalItems: 1,
+					Counts:     ActivityCounts{Success: 1},
+				},
+				Items: []ActivityItem{item},
+			}
+			if err := ValidateActivityTimeline(timeline); err != nil {
+				t.Fatalf("ValidateActivityTimeline should allow %s public detail payload: %v", tt.name, err)
+			}
+		})
+	}
+}
+
+func TestBuildActivityTimelinePreservesHostPublicTerminalPayload(t *testing.T) {
+	start := time.UnixMilli(20_000)
+	command := `curl -s https://example.test`
+	timeline := BuildActivityTimeline(ActivityRunMeta{RunID: "run-terminal-detail", ThreadID: "thread-terminal-detail", TurnID: "turn-terminal-detail"}, []Event{
+		{
+			Type:       EventTypeToolCall,
+			RunID:      "run-terminal-detail",
+			ThreadID:   "thread-terminal-detail",
+			TurnID:     "turn-terminal-detail",
+			Step:       1,
+			ToolID:     "exec-1",
+			ToolName:   "terminal.exec",
+			ToolKind:   "local",
+			ObservedAt: start,
+			Activity: &ActivityPresentation{
+				Label:    command,
+				Renderer: ActivityRendererTerminal,
+				Payload:  map[string]any{"command": command, "process_id": "tp_123", "latest_output": "starting\n"},
+			},
+		},
+		{
+			Type:       EventTypeToolResult,
+			RunID:      "run-terminal-detail",
+			ThreadID:   "thread-terminal-detail",
+			TurnID:     "turn-terminal-detail",
+			Step:       1,
+			ToolID:     "exec-1",
+			ToolName:   "terminal.exec",
+			ToolKind:   "local",
+			DurationMS: 1200,
+			ObservedAt: start.Add(1200 * time.Millisecond),
+			Metadata:   map[string]any{"tool_result_status": string(ActivityStatusSuccess)},
+			Activity: &ActivityPresentation{
+				Renderer: ActivityRendererTerminal,
+				Payload:  map[string]any{"output": "ok\n", "exit_code": 0, "duration_ms": 1200, "truncated": false},
+			},
+		},
+	}, start.Add(2*time.Second).UnixMilli())
+	if err := ValidateActivityTimeline(timeline); err != nil {
+		t.Fatalf("timeline should validate: %v", err)
+	}
+	if len(timeline.Items) != 1 {
+		t.Fatalf("items=%d, want 1: %#v", len(timeline.Items), timeline.Items)
+	}
+	item := timeline.Items[0]
+	if item.Renderer != ActivityRendererTerminal || item.Label != command {
+		t.Fatalf("terminal presentation mismatch: %#v", item)
+	}
+	for key, want := range map[string]any{
+		"command":       command,
+		"process_id":    "tp_123",
+		"latest_output": "starting\n",
+		"output":        "ok\n",
+		"exit_code":     0,
+		"duration_ms":   1200,
+		"truncated":     false,
+	} {
+		if got := item.Payload[key]; got != want {
+			t.Fatalf("payload[%s]=%#v, want %#v; payload=%#v", key, got, want, item.Payload)
+		}
+	}
+	if _, ok := item.Payload["layout"]; ok {
+		t.Fatalf("Floret must not add product UI layout fields: %#v", item.Payload)
+	}
+}
+
 func TestBuildActivityTimelineKeepsSanitizedToolErrorSignal(t *testing.T) {
 	start := time.UnixMilli(3_000)
 	meta := map[string]any{"visible_bytes": 10, "error_present": true}
