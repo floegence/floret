@@ -1126,10 +1126,10 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	defer cancelPersist()
 	projection.ctx = persistCtx
 	if projection.err != nil {
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, projection.err, "projection_error")
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(projection.err), projection.err, "projection_error")
 	}
 	if err := projection.Flush(); err != nil {
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, err, "projection_flush_error")
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "projection_flush_error")
 	}
 	current, err := t.Journal(persistCtx)
 	if err != nil {

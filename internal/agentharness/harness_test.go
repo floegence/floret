@@ -2055,6 +2055,81 @@ func TestThreadRunPersistsTerminalMarkerAfterDeadline(t *testing.T) {
 	}
 }
 
+func TestThreadRunProjectionCancellationMarksTurnAborted(t *testing.T) {
+	ctx := context.Background()
+	p := scriptharness.NewScriptedProvider(
+		scriptharness.Step(
+			scriptharness.Tool("read-1", "read", `{"value":"README.md"}`),
+			scriptharness.DoneReason("tool_calls"),
+		),
+	)
+	repo := &blockingToolDispatchRepo{
+		MemoryRepo: sessiontree.NewMemoryRepo(),
+		entered:    make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+	h := newTestHarness(p, repo, cache.NewMemoryStore())
+	mustRegister(h.options.Tools, stringTool("read", func(context.Context, string) (string, error) {
+		return "ok", nil
+	}))
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct {
+		result TurnResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := thread.Run(runCtx, "read", RunOptions{TurnID: "turn-canceled"})
+		done <- struct {
+			result TurnResult
+			err    error
+		}{result: result, err: err}
+	}()
+
+	select {
+	case <-repo.entered:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("tool dispatch projection did not start")
+	}
+	cancel()
+
+	select {
+	case out := <-done:
+		if !errors.Is(out.err, context.Canceled) {
+			t.Fatalf("run err = %v, want context canceled", out.err)
+		}
+		if out.result.Status != engine.Cancelled {
+			t.Fatalf("result status = %s, want cancelled", out.result.Status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("run did not finish after cancellation")
+	}
+	snap, err := thread.Journal(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(snap.Entries, func(entry sessiontree.Entry) bool {
+		return entry.Type == sessiontree.EntryTurnMarker &&
+			entry.TurnID == "turn-canceled" &&
+			entry.TurnStatus == sessiontree.TurnAborted &&
+			entry.Metadata["diagnostic"] == "projection_error"
+	}) {
+		t.Fatalf("projection cancellation should persist aborted terminal marker: %#v", snap.Entries)
+	}
+	if slices.ContainsFunc(snap.Entries, func(entry sessiontree.Entry) bool {
+		return entry.Type == sessiontree.EntryTurnMarker &&
+			entry.TurnID == "turn-canceled" &&
+			entry.TurnStatus == sessiontree.TurnFailed
+	}) {
+		t.Fatalf("projection cancellation persisted failed marker: %#v", snap.Entries)
+	}
+}
+
 func newTestHarness(p provider.Provider, repo sessiontree.Repo, promptStore cache.Store) *AgentHarness {
 	rec := &event.Recorder{}
 	registry := tools.NewRegistry()
@@ -2386,6 +2461,26 @@ type blockingAppendRepo struct {
 
 func (r *blockingAppendRepo) Append(ctx context.Context, entry sessiontree.Entry, opts sessiontree.AppendOptions) (sessiontree.Entry, error) {
 	if entry.Type == sessiontree.EntryCompaction {
+		r.once.Do(func() { close(r.entered) })
+		select {
+		case <-ctx.Done():
+			return sessiontree.Entry{}, ctx.Err()
+		case <-r.release:
+		}
+	}
+	return r.MemoryRepo.Append(ctx, entry, opts)
+}
+
+type blockingToolDispatchRepo struct {
+	*sessiontree.MemoryRepo
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (r *blockingToolDispatchRepo) Append(ctx context.Context, entry sessiontree.Entry, opts sessiontree.AppendOptions) (sessiontree.Entry, error) {
+	if entry.Type == sessiontree.EntryCustom &&
+		entry.Metadata[subAgentDetailKindKey] == toolDispatchEntryKind {
 		r.once.Do(func() { close(r.entered) })
 		select {
 		case <-ctx.Done():

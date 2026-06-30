@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-06-30
+* **Update**: Clarified that caller cancellation during runtime projection or
+  turn finalization remains a cancelled terminal fact, preserving canceled
+  activity settlement after a host stops a run.
 * **Update**: Documented queued local tool calls and
   `tool_dispatch_started` as separate lifecycle facts, so pending batched
   siblings remain pending until permission, approval, and dispatch gates pass.

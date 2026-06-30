@@ -982,6 +982,9 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			return nil
 		}
 		if _, err := runToolBatchWithObserver(ctx, activeToolRegistry, toolCalls(calls), e.approverWithEvents(opts, step), toolRunOptions, processToolResult); err != nil {
+			if isContextCancellation(err) {
+				return e.end(state, opts, step, Cancelled, output, err, metrics, started, decision)
+			}
 			return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
 		}
 		toolLatency := time.Since(toolStarted).Milliseconds()

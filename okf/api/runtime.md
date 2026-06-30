@@ -187,7 +187,9 @@ chips and payload fields.
 Terminal turn results, including cancelled turns, still return a bounded
 `ThreadTurnProjection`. Failed and cancelled terminal markers settle unresolved
 tool and approval activity in Floret's projection before the result is returned,
-so impossible-to-continue rows do not remain decisionable. Successful turns keep
+so impossible-to-continue rows do not remain decisionable. Caller cancellation
+during live projection or turn finalization is still recorded as a cancelled
+terminal fact rather than as a generic failure. Successful turns keep
 host-owned pending work running until the host reports a terminal outcome
 through `SettlePendingTool`. That settlement remains authoritative for the tool
 id and updates the same projected activity item rather than adding a duplicate
