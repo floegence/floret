@@ -46,6 +46,16 @@ as a host-owned read handle, byte counters, or latest visible output. It does
 not create a second activity row, change approval decisions, or complete the
 tool invocation.
 
+# Repeat And Progress Metadata
+
+Local tools are protected by the engine's duplicate-call guard by default. A
+tool that represents idempotent polling may declare
+`tools.AnnotationRepeatPolicy: tools.RepeatPolicyPolling` in its definition
+annotations. The tool result must then include
+`tools.ResultMetadataProgressToken` in `Result.Metadata` whenever the repeated
+call made observable progress. The engine still fails repeated polling calls
+when the progress token does not change.
+
 # Key Source Files
 
 * [Tools Package](/tools/tools.go)

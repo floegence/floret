@@ -23,6 +23,12 @@ const (
 	ControlTaskComplete = "task_complete"
 )
 
+const (
+	AnnotationRepeatPolicy      = "repeat_policy"
+	RepeatPolicyPolling         = "polling"
+	ResultMetadataProgressToken = "progress_token"
+)
+
 type Definition struct {
 	Name         string
 	Title        string

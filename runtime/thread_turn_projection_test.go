@@ -701,7 +701,7 @@ func TestProjectThreadTurnSettlesUnresolvedToolOnTerminalTurn(t *testing.T) {
 							Status:          observation.ActivityStatusRunning,
 							Severity:        observation.ActivitySeverityWarning,
 							Renderer:        observation.ActivityRendererTerminal,
-							Payload:         map[string]any{"command": "npm test"},
+							Payload:         map[string]any{"command": "npm test", "status": string(observation.ActivityStatusRunning)},
 							Metadata:        map[string]string{"pending_tool_result": "true", "pending_handle": "terminal:job:123", "pending_state": "running"},
 							StartedAtUnixMS: now.UnixMilli(),
 						}),
@@ -762,6 +762,9 @@ func TestProjectThreadTurnSettlesUnresolvedToolOnTerminalTurn(t *testing.T) {
 					if _, ok := item.Metadata[key]; ok {
 						t.Fatalf("terminal item retained %q metadata: %#v", key, item.Metadata)
 					}
+				}
+				if got := item.Payload["status"]; got != string(tt.wantStatus) {
+					t.Fatalf("terminal item payload status=%#v, want %s; payload=%#v", got, tt.wantStatus, item.Payload)
 				}
 			}
 			if err := observation.ValidateActivityTimeline(*timeline); err != nil {
@@ -1014,6 +1017,107 @@ func TestProjectThreadTurnPendingSettlementOverridesTerminalProjectionAcrossSegm
 		t.Fatalf("settlement should override terminal projection: %#v", item)
 	}
 	for _, key := range []string{"pending_tool_result", "pending_state"} {
+		if _, ok := item.Metadata[key]; ok {
+			t.Fatalf("settled item retained %q metadata: %#v", key, item.Metadata)
+		}
+	}
+}
+
+func TestProjectThreadTurnPendingSettlementOverridesLaterPendingResult(t *testing.T) {
+	start := time.UnixMilli(1_700_030_000_000)
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID: "thread-settlement-early",
+		TurnID:   "turn-settlement-early",
+		RunID:    "run-settlement-early",
+		TraceID:  "run-settlement-early",
+		Events: []ThreadDetailEvent{
+			{
+				ID:        "exec-call",
+				Ordinal:   1,
+				ThreadID:  "thread-settlement-early",
+				TurnID:    "turn-settlement-early",
+				Kind:      ThreadDetailEventToolCall,
+				CreatedAt: start,
+				ToolCall:  &ThreadDetailToolCall{ID: "exec-1", Name: "terminal.exec"},
+			},
+			{
+				ID:        "settlement",
+				Ordinal:   2,
+				ThreadID:  "thread-settlement-early",
+				TurnID:    "turn-settlement-early",
+				Kind:      ThreadDetailEventToolResult,
+				Type:      threadTurnProjectionPendingToolSettlementType,
+				CreatedAt: start.Add(2 * time.Second),
+				Metadata:  map[string]string{"run_id": "run-settlement-early", "handle": "terminal:job:123"},
+				ToolResult: &ThreadDetailToolResult{
+					CallID:   "exec-1",
+					ToolName: "terminal.exec",
+					Status:   string(observation.ActivityStatusSuccess),
+				},
+				ActivityTimeline: projectionSingleItemTimeline("run-settlement-early", "thread-settlement-early", "turn-settlement-early", observation.ActivityItem{
+					ItemID:      "tool:exec-1",
+					ToolID:      "exec-1",
+					ToolName:    "terminal.exec",
+					Kind:        observation.ActivityKindTool,
+					Status:      observation.ActivityStatusSuccess,
+					Severity:    observation.ActivitySeverityNormal,
+					Description: "Command completed",
+					Renderer:    observation.ActivityRendererTerminal,
+					Payload:     map[string]any{"exit_code": 0, "status": string(observation.ActivityStatusSuccess)},
+				}),
+			},
+			{
+				ID:        "pending-result",
+				Ordinal:   3,
+				ThreadID:  "thread-settlement-early",
+				TurnID:    "turn-settlement-early",
+				Kind:      ThreadDetailEventToolResult,
+				CreatedAt: start.Add(time.Second),
+				ToolResult: &ThreadDetailToolResult{
+					CallID:   "exec-1",
+					ToolName: "terminal.exec",
+					Status:   string(observation.ActivityStatusRunning),
+				},
+				ActivityTimeline: projectionSingleItemTimeline("run-settlement-early", "thread-settlement-early", "turn-settlement-early", observation.ActivityItem{
+					ItemID:          "tool:exec-1",
+					ToolID:          "exec-1",
+					ToolName:        "terminal.exec",
+					Kind:            observation.ActivityKindTool,
+					Status:          observation.ActivityStatusRunning,
+					Severity:        observation.ActivitySeverityWarning,
+					Renderer:        observation.ActivityRendererTerminal,
+					Payload:         map[string]any{"command": "npm test", "status": string(observation.ActivityStatusRunning), "pending_handle": "terminal:job:123"},
+					Metadata:        map[string]string{"pending_tool_result": "true", "pending_handle": "terminal:job:123", "pending_state": "running"},
+					StartedAtUnixMS: start.UnixMilli(),
+				}),
+			},
+			{
+				ID:        "turn-failed",
+				Ordinal:   4,
+				ThreadID:  "thread-settlement-early",
+				TurnID:    "turn-settlement-early",
+				Kind:      ThreadDetailEventTurnMarker,
+				CreatedAt: start.Add(3 * time.Second),
+				Error:     "provider failed",
+				TurnMarker: &ThreadDetailTurnMarker{
+					Status: "failed",
+				},
+			},
+		},
+	})
+
+	if count := projectionToolItemCount(projection, "exec-1"); count != 1 {
+		t.Fatalf("settlement should not duplicate tool item; count=%d projection=%#v", count, projection)
+	}
+	item := projectionToolItem(t, projection, "exec-1")
+	if item.Status != observation.ActivityStatusSuccess ||
+		item.Description != "Command completed" ||
+		item.Payload["status"] != string(observation.ActivityStatusSuccess) ||
+		item.Payload["exit_code"] != 0 ||
+		item.NeedsAttention {
+		t.Fatalf("early settlement should override later pending result and failed marker: %#v", item)
+	}
+	for _, key := range []string{"pending_tool_result", "pending_handle", "pending_state"} {
 		if _, ok := item.Metadata[key]; ok {
 			t.Fatalf("settled item retained %q metadata: %#v", key, item.Metadata)
 		}

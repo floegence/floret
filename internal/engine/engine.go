@@ -628,6 +628,8 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 	stopHookContinuations := 0
 	compactionFailures := 0
 	lastToolSig := ""
+	lastToolProgressSig := ""
+	duplicateProgressSig := ""
 	duplicateCount := 0
 	started := time.Now()
 	metrics := RunMetrics{}
@@ -905,12 +907,22 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		}
 		sig := toolSignature(calls)
 		if sig == lastToolSig {
-			duplicateCount++
+			if toolBatchAllowsProgressRepeat(activeToolRegistry, calls) && lastToolProgressSig != "" {
+				if lastToolProgressSig != duplicateProgressSig {
+					duplicateProgressSig = lastToolProgressSig
+					duplicateCount = 0
+				} else {
+					duplicateCount++
+				}
+			} else {
+				duplicateCount++
+			}
 			if duplicateCount >= opts.DuplicateToolLimit {
 				return e.end(state, opts, step, Failed, output, ErrDuplicateTools, metrics, started, decision)
 			}
 		} else {
 			lastToolSig = sig
+			duplicateProgressSig = lastToolProgressSig
 			duplicateCount = 0
 		}
 		if len(classifiedCalls.Ordinary) == 0 {
@@ -961,6 +973,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		toolStarted := time.Now()
 		toolMessages := make([]session.Message, len(calls))
 		toolMessageSet := make([]bool, len(calls))
+		toolResults := make([]tools.Result, len(calls))
 		var dispatchedMu sync.Mutex
 		dispatchedCalls := map[string]bool{}
 		if toolRunOptions.DispatchStarted != nil {
@@ -975,6 +988,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		processToolResult := func(i int, result tools.Result) error {
 			result = preparePendingToolResult(result)
 			result.Activity = sanitizeActivityPresentation(result.Activity)
+			toolResults[i] = result
 			resultStatus := toolResultStatus(result)
 			projection := exactToolOutputProjection(result.Text)
 			resultLatency := time.Since(toolStarted).Milliseconds()
@@ -1029,6 +1043,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		}
 		toolLatency := time.Since(toolStarted).Milliseconds()
 		state.activeMessages = append([]session.Message(nil), activeHistory...)
+		lastToolProgressSig = toolProgressSignature(activeToolRegistry, calls, toolResults)
 		decision.ContinuationReason = ContinueToolResults
 		e.emitStepEnd(opts, step, providerLatency, toolLatency, usage, len(calls), decision)
 	}
@@ -3600,4 +3615,51 @@ func toolSignature(calls []provider.ToolCall) string {
 		s += c.Name + "\x00" + c.Args + "\x00"
 	}
 	return s
+}
+
+func toolProgressSignature(reg *tools.Registry, calls []provider.ToolCall, results []tools.Result) string {
+	if len(calls) == 0 || len(calls) != len(results) || !toolBatchAllowsProgressRepeat(reg, calls) {
+		return ""
+	}
+	var b strings.Builder
+	for i, call := range calls {
+		token := toolResultProgressToken(results[i])
+		if token == "" {
+			return ""
+		}
+		b.WriteString(call.Name)
+		b.WriteByte(0)
+		b.WriteString(call.Args)
+		b.WriteByte(0)
+		b.WriteString(token)
+		b.WriteByte(0)
+	}
+	return b.String()
+}
+
+func toolBatchAllowsProgressRepeat(reg *tools.Registry, calls []provider.ToolCall) bool {
+	if reg == nil || len(calls) == 0 {
+		return false
+	}
+	for _, call := range calls {
+		def, ok := reg.Definition(call.Name)
+		if !ok {
+			return false
+		}
+		if strings.TrimSpace(fmt.Sprint(def.Annotations[tools.AnnotationRepeatPolicy])) != tools.RepeatPolicyPolling {
+			return false
+		}
+	}
+	return true
+}
+
+func toolResultProgressToken(result tools.Result) string {
+	if len(result.Metadata) == 0 {
+		return ""
+	}
+	value, ok := result.Metadata[tools.ResultMetadataProgressToken]
+	if !ok || value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
 }

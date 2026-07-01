@@ -2260,6 +2260,37 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	if item.Status != observation.ActivityStatusSuccess || item.Label != "command completed" || item.Payload["exit_code"] != 0 {
 		t.Fatalf("settled projection item = %#v", item)
 	}
+	again, err := maintenance.SettlePendingTool(ctx, PendingToolSettlementRequest{
+		ThreadID:   "thread",
+		TurnID:     "turn-1",
+		RunID:      "run-1",
+		ToolCallID: "exec-1",
+		ToolName:   "terminal_exec",
+		Handle:     "terminal:job:123",
+		Status:     PendingToolSettlementCompleted,
+		Summary:    "command completed",
+		Output:     "exit 0",
+		Activity:   &observation.ActivityPresentation{Label: "command completed", Renderer: observation.ActivityRendererTerminal, Payload: map[string]any{"exit_code": 0}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Event.ID != settled.Event.ID {
+		t.Fatalf("idempotent public settlement returned a different event: first=%#v again=%#v", settled.Event, again.Event)
+	}
+	_, err = maintenance.SettlePendingTool(ctx, PendingToolSettlementRequest{
+		ThreadID:   "thread",
+		TurnID:     "turn-1",
+		RunID:      "run-1",
+		ToolCallID: "exec-1",
+		ToolName:   "terminal_exec",
+		Handle:     "terminal:job:123",
+		Status:     PendingToolSettlementFailed,
+		Summary:    "command failed",
+	})
+	if !errors.Is(err, agentharness.ErrPendingToolSettlementConflict) {
+		t.Fatalf("conflicting public settlement err = %v, want conflict", err)
+	}
 	if got := runtimeProjectionAssistantText(settled.Projection); got != longAssistantAfterPending {
 		t.Fatalf("settled projection assistant text length=%d, want full %d\ntext=%q", len([]rune(got)), len([]rune(longAssistantAfterPending)), got)
 	}

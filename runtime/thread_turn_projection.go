@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -65,8 +66,7 @@ func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 
 	var text strings.Builder
 	var activityEvents []ThreadDetailEvent
-	seenToolActivity := map[string]struct{}{}
-	var deferredSettlements []ThreadDetailEvent
+	var pendingSettlements []ThreadDetailEvent
 	var terminalSettlements []ThreadDetailEvent
 	flushText := func() {
 		content := text.String()
@@ -82,9 +82,6 @@ func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 	}
 	addActivity := func(ev ThreadDetailEvent) {
 		activityEvents = append(activityEvents, ev)
-		if toolID := threadTurnProjectionToolID(ev); toolID != "" {
-			seenToolActivity[toolID] = struct{}{}
-		}
 	}
 	flushActivity := func() {
 		if len(activityEvents) == 0 {
@@ -153,12 +150,8 @@ func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 		case ThreadDetailEventToolDispatch, ThreadDetailEventToolActivity, ThreadDetailEventToolResult, ThreadDetailEventApproval, ThreadDetailEventTurnMarker, ThreadDetailEventError:
 			flushText()
 			if ev.Kind == ThreadDetailEventToolResult && ev.Type == threadTurnProjectionPendingToolSettlementType {
-				if toolID := threadTurnProjectionToolID(ev); toolID != "" {
-					if _, ok := seenToolActivity[toolID]; ok {
-						deferredSettlements = append(deferredSettlements, ev)
-						continue
-					}
-				}
+				pendingSettlements = append(pendingSettlements, ev)
+				continue
 			}
 			if _, _, ok := threadTurnProjectionTerminalSettlementStatus(ev); ok {
 				terminalSettlements = append(terminalSettlements, ev)
@@ -168,38 +161,58 @@ func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 	}
 	flushText()
 	flushActivity()
+	threadTurnProjectionApplyPendingSettlements(&projection, pendingSettlements)
 	threadTurnProjectionApplyTerminalSettlements(&projection, terminalSettlements)
-	threadTurnProjectionApplyDeferredSettlements(&projection, deferredSettlements)
 	return projection
 }
 
-func threadTurnProjectionToolID(ev ThreadDetailEvent) string {
-	switch ev.Kind {
-	case ThreadDetailEventToolCall:
-		if ev.ToolCall != nil {
-			return strings.TrimSpace(ev.ToolCall.ID)
+type threadTurnProjectionSettlementTargetInfo struct {
+	toolID   string
+	toolName string
+	handle   string
+}
+
+func threadTurnProjectionSettlementTarget(ev ThreadDetailEvent) threadTurnProjectionSettlementTargetInfo {
+	target := threadTurnProjectionSettlementTargetInfo{}
+	if ev.ToolResult != nil {
+		target.toolID = strings.TrimSpace(ev.ToolResult.CallID)
+		target.toolName = strings.TrimSpace(ev.ToolResult.ToolName)
+	}
+	if len(ev.Metadata) > 0 {
+		target.handle = strings.TrimSpace(ev.Metadata["handle"])
+	}
+	return target
+}
+
+func threadTurnProjectionSettlementMatchesItem(item observation.ActivityItem, target threadTurnProjectionSettlementTargetInfo) bool {
+	if strings.TrimSpace(item.ToolID) != target.toolID {
+		return false
+	}
+	if target.toolName != "" && strings.TrimSpace(item.ToolName) != target.toolName {
+		return false
+	}
+	if target.handle == "" {
+		return true
+	}
+	itemHandle := threadTurnProjectionItemPendingHandle(item)
+	return itemHandle == "" || itemHandle == target.handle
+}
+
+func threadTurnProjectionItemPendingHandle(item observation.ActivityItem) string {
+	if len(item.Metadata) > 0 {
+		if value := strings.TrimSpace(item.Metadata["pending_handle"]); value != "" {
+			return value
 		}
-	case ThreadDetailEventToolDispatch:
-		if ev.ToolCall != nil {
-			return strings.TrimSpace(ev.ToolCall.ID)
-		}
-	case ThreadDetailEventToolActivity:
-		if ev.ToolCall != nil {
-			return strings.TrimSpace(ev.ToolCall.ID)
-		}
-	case ThreadDetailEventToolResult:
-		if ev.ToolResult != nil {
-			return strings.TrimSpace(ev.ToolResult.CallID)
-		}
-	case ThreadDetailEventApproval:
-		if ev.Approval != nil {
-			return strings.TrimSpace(ev.Approval.ToolID)
+	}
+	if len(item.Payload) > 0 {
+		if value, ok := item.Payload["pending_handle"]; ok && value != nil {
+			return strings.TrimSpace(fmt.Sprint(value))
 		}
 	}
 	return ""
 }
 
-func threadTurnProjectionApplyDeferredSettlements(projection *ThreadTurnProjection, settlements []ThreadDetailEvent) {
+func threadTurnProjectionApplyPendingSettlements(projection *ThreadTurnProjection, settlements []ThreadDetailEvent) {
 	if projection == nil || len(settlements) == 0 {
 		return
 	}
@@ -207,8 +220,8 @@ func threadTurnProjectionApplyDeferredSettlements(projection *ThreadTurnProjecti
 		if settlement.ToolResult == nil {
 			continue
 		}
-		toolID := strings.TrimSpace(settlement.ToolResult.CallID)
-		if toolID == "" {
+		target := threadTurnProjectionSettlementTarget(settlement)
+		if target.toolID == "" {
 			continue
 		}
 		status, severity, ok := threadTurnProjectionSettlementStatus(settlement.ToolResult.Status)
@@ -223,7 +236,7 @@ func threadTurnProjectionApplyDeferredSettlements(projection *ThreadTurnProjecti
 			settled := false
 			for itemIndex := range timeline.Items {
 				item := &timeline.Items[itemIndex]
-				if strings.TrimSpace(item.ToolID) != toolID {
+				if !threadTurnProjectionSettlementMatchesItem(*item, target) {
 					continue
 				}
 				threadTurnProjectionApplySettlementItem(item, settlement, status, severity)
@@ -301,9 +314,33 @@ func threadTurnProjectionNeedsTerminalSettlement(item observation.ActivityItem, 
 		return true
 	case observation.ActivityStatusWaiting:
 		return item.RequiresApproval && status != observation.ActivityStatusSuccess
+	case status:
+		return threadTurnProjectionHasRunningPayload(item) || threadTurnProjectionHasPendingPresentation(item)
 	default:
 		return false
 	}
+}
+
+func threadTurnProjectionHasPendingPresentation(item observation.ActivityItem) bool {
+	for key := range item.Metadata {
+		if strings.HasPrefix(key, "pending_") {
+			return true
+		}
+	}
+	for key := range item.Payload {
+		if strings.HasPrefix(key, "pending_") {
+			return true
+		}
+	}
+	return false
+}
+
+func threadTurnProjectionHasRunningPayload(item observation.ActivityItem) bool {
+	if len(item.Payload) == 0 {
+		return false
+	}
+	value, ok := item.Payload["status"]
+	return ok && strings.TrimSpace(fmt.Sprint(value)) == string(observation.ActivityStatusRunning)
 }
 
 func threadTurnProjectionApplyTerminalSettlementItem(item *observation.ActivityItem, terminal ThreadDetailEvent, status observation.ActivityStatus, severity observation.ActivitySeverity) {
@@ -314,7 +351,7 @@ func threadTurnProjectionApplyTerminalSettlementItem(item *observation.ActivityI
 	item.Severity = severity
 	item.EndedAtUnixMS = threadTurnProjectionTerminalEndedAtUnixMS(*item, terminal.CreatedAt)
 	item.Metadata = threadTurnProjectionTerminalMetadata(item.Metadata)
-	item.Payload = threadTurnProjectionTerminalPayload(item.Payload)
+	item.Payload = threadTurnProjectionTerminalPayload(item.Payload, status)
 	item.Chips = threadTurnProjectionTerminalChips(item.Chips)
 	if item.RequiresApproval && status != observation.ActivityStatusSuccess {
 		item.ApprovalState = threadTurnProjectionTerminalApprovalState(status, item.ApprovalState)
@@ -383,7 +420,7 @@ func threadTurnProjectionApplySettlementItem(item *observation.ActivityItem, set
 		threadTurnProjectionMergeActivityItem(item, settlement.ActivityTimeline.Items[0])
 	}
 	item.Metadata = threadTurnProjectionTerminalMetadata(item.Metadata)
-	item.Payload = threadTurnProjectionTerminalPayload(item.Payload)
+	item.Payload = threadTurnProjectionTerminalPayload(item.Payload, status)
 	item.Chips = threadTurnProjectionTerminalChips(item.Chips)
 	item.AttentionReasons = threadTurnProjectionAttentionReasons(*item)
 	item.NeedsAttention = len(item.AttentionReasons) > 0
@@ -456,7 +493,7 @@ func threadTurnProjectionTerminalMetadata(metadata map[string]string) map[string
 	return out
 }
 
-func threadTurnProjectionTerminalPayload(payload map[string]any) map[string]any {
+func threadTurnProjectionTerminalPayload(payload map[string]any, status observation.ActivityStatus) map[string]any {
 	if len(payload) == 0 {
 		return nil
 	}
@@ -466,6 +503,9 @@ func threadTurnProjectionTerminalPayload(payload map[string]any) map[string]any 
 			continue
 		}
 		out[key] = value
+	}
+	if _, ok := out["status"]; ok {
+		out["status"] = string(status)
 	}
 	if len(out) == 0 {
 		return nil

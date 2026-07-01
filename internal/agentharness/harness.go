@@ -34,6 +34,7 @@ var (
 	ErrPendingToolSettlementTargetRunNotFound  = errors.New("pending tool settlement target run was not found")
 	ErrPendingToolSettlementTargetToolNotFound = errors.New("pending tool settlement target tool call was not found")
 	ErrPendingToolSettlementTargetNotActive    = errors.New("pending tool settlement target is not an active pending tool result")
+	ErrPendingToolSettlementConflict           = errors.New("pending tool settlement conflicts with existing settlement")
 )
 
 const (
@@ -788,8 +789,15 @@ func (t *Thread) SettlePendingTool(ctx context.Context, settlement PendingToolSe
 	if err != nil {
 		return SubAgentDetailEvent{}, err
 	}
-	if err := validatePendingToolSettlementTarget(journal.Path, normalized); err != nil {
+	if existing, ok, err := pendingToolSettlementTarget(journal.Path, normalized); err != nil {
 		return SubAgentDetailEvent{}, err
+	} else if ok {
+		activityContext := subAgentDetailActivityContext{resultCallIDs: subAgentDetailResultCallIDs(journal.Path)}
+		event, ok := t.harness.subAgentDetailEvent(existing, t.harness.threadEntryOrdinal(existing), true, activityContext)
+		if !ok {
+			return SubAgentDetailEvent{}, errors.New("pending tool settlement did not project")
+		}
+		return event, nil
 	}
 	entry, err := t.appendPendingToolSettlement(ctx, normalized)
 	if err != nil {
@@ -918,12 +926,15 @@ func normalizePendingToolSettlement(settlement PendingToolSettlement) (PendingTo
 	return settlement, nil
 }
 
-func validatePendingToolSettlementTarget(path []sessiontree.Entry, settlement PendingToolSettlement) error {
+func pendingToolSettlementTarget(path []sessiontree.Entry, settlement PendingToolSettlement) (sessiontree.Entry, bool, error) {
 	turnFound := false
 	runFound := false
 	callFound := false
-	activeFound := false
-	for _, entry := range path {
+	pendingFound := false
+	activeHandleFound := false
+	ordinaryResultFound := false
+	for index := range path {
+		entry := path[index]
 		if strings.TrimSpace(entry.TurnID) != settlement.TurnID {
 			continue
 		}
@@ -933,36 +944,67 @@ func validatePendingToolSettlementTarget(path []sessiontree.Entry, settlement Pe
 			if runID != "" && runID == settlement.RunID {
 				runFound = true
 			}
-		}
-		if entry.Type != sessiontree.EntryToolResult {
 			continue
 		}
-		if strings.TrimSpace(entry.Message.ToolCallID) != settlement.ToolCallID ||
-			strings.TrimSpace(entry.Message.ToolName) != settlement.ToolName {
+		if entry.Type == sessiontree.EntryCustom && entry.Metadata[subAgentDetailKindKey] == pendingToolSettlementEntryKind {
+			if pendingToolSettlementEntryMatches(entry, settlement) {
+				if strings.TrimSpace(entry.Metadata[pendingToolSettlementStateKey]) != string(settlement.Status) {
+					return sessiontree.Entry{}, false, ErrPendingToolSettlementConflict
+				}
+				return entry, true, nil
+			}
+			continue
+		}
+		if !pendingToolSettlementEntryNamesTool(entry, settlement) {
 			continue
 		}
 		callFound = true
-		if entry.Message.ToolResult == nil ||
-			strings.TrimSpace(entry.Message.ToolResult.Status) != string(observation.ActivityStatusRunning) {
+		if entry.Type != sessiontree.EntryToolResult {
 			continue
 		}
+		if entry.Message.ToolResult == nil ||
+			strings.TrimSpace(entry.Message.ToolResult.Status) != string(observation.ActivityStatusRunning) {
+			ordinaryResultFound = true
+			continue
+		}
+		pendingFound = true
 		if pendingHandleFromSessionActivity(entry.Message.Activity) == settlement.Handle {
-			activeFound = true
+			activeHandleFound = true
 		}
 	}
 	if !turnFound {
-		return ErrPendingToolSettlementTargetTurnNotFound
+		return sessiontree.Entry{}, false, ErrPendingToolSettlementTargetTurnNotFound
 	}
 	if !runFound {
-		return ErrPendingToolSettlementTargetRunNotFound
+		return sessiontree.Entry{}, false, ErrPendingToolSettlementTargetRunNotFound
 	}
 	if !callFound {
-		return ErrPendingToolSettlementTargetToolNotFound
+		return sessiontree.Entry{}, false, ErrPendingToolSettlementTargetToolNotFound
 	}
-	if !activeFound {
-		return ErrPendingToolSettlementTargetNotActive
+	if pendingFound && !activeHandleFound {
+		return sessiontree.Entry{}, false, ErrPendingToolSettlementTargetNotActive
 	}
-	return nil
+	if ordinaryResultFound && !pendingFound {
+		return sessiontree.Entry{}, false, ErrPendingToolSettlementTargetNotActive
+	}
+	return sessiontree.Entry{}, false, nil
+}
+
+func pendingToolSettlementEntryNamesTool(entry sessiontree.Entry, settlement PendingToolSettlement) bool {
+	switch entry.Type {
+	case sessiontree.EntryToolCall, sessiontree.EntryToolResult:
+	default:
+		return false
+	}
+	return strings.TrimSpace(entry.Message.ToolCallID) == settlement.ToolCallID &&
+		strings.TrimSpace(entry.Message.ToolName) == settlement.ToolName
+}
+
+func pendingToolSettlementEntryMatches(entry sessiontree.Entry, settlement PendingToolSettlement) bool {
+	return strings.TrimSpace(entry.Metadata[pendingToolSettlementRunIDKey]) == settlement.RunID &&
+		strings.TrimSpace(entry.Metadata[pendingToolSettlementToolIDKey]) == settlement.ToolCallID &&
+		strings.TrimSpace(entry.Metadata[pendingToolSettlementNameKey]) == settlement.ToolName &&
+		strings.TrimSpace(entry.Metadata[pendingToolSettlementHandleKey]) == settlement.Handle
 }
 
 func pendingHandleFromSessionActivity(activity *session.ActivityPresentation) string {

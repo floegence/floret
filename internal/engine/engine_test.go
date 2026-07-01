@@ -3847,6 +3847,90 @@ func TestLoopGuardsDuplicateToolsAndCancellation(t *testing.T) {
 			t.Fatalf("err = %v, want duplicate tools", got.Err)
 		}
 	})
+	t.Run("polling progress resets duplicate guard", func(t *testing.T) {
+		p := harness.NewScriptedProvider(
+			[]provider.StreamEvent{
+				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-1", Name: "poll", Args: `{"value":"same"}`}}},
+				{Type: provider.Done, Reason: "tool_calls"},
+			},
+			[]provider.StreamEvent{
+				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-2", Name: "poll", Args: `{"value":"same"}`}}},
+				{Type: provider.Done, Reason: "tool_calls"},
+			},
+			[]provider.StreamEvent{
+				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-3", Name: "poll", Args: `{"value":"same"}`}}},
+				{Type: provider.Done, Reason: "tool_calls"},
+			},
+			[]provider.StreamEvent{
+				{Type: provider.Delta, Text: "done"},
+				{Type: provider.Done, Reason: "stop"},
+			},
+		)
+		e := newTestEngine(p, &event.Recorder{})
+		e.Options.DuplicateToolLimit = 1
+		polls := 0
+		mustRegister(t, e.Tools, tools.Define[stringArgs](
+			tools.Definition{
+				Name:        "poll",
+				InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+				Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+				Annotations: map[string]any{tools.AnnotationRepeatPolicy: tools.RepeatPolicyPolling},
+			},
+			nil,
+			nil,
+			func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
+				polls++
+				return tools.Result{
+					Text:     fmt.Sprintf("poll %d", polls),
+					Metadata: map[string]any{tools.ResultMetadataProgressToken: fmt.Sprintf("seq:%d", polls)},
+				}, nil
+			},
+		))
+
+		got := e.Run(context.Background(), "loop")
+		if got.Status != engine.Completed || got.Output != "done" || polls != 3 {
+			t.Fatalf("result = %#v polls=%d, want completed after progress polling", got, polls)
+		}
+	})
+	t.Run("polling without progress still fails", func(t *testing.T) {
+		p := harness.NewScriptedProvider(
+			[]provider.StreamEvent{
+				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-1", Name: "poll", Args: `{"value":"same"}`}}},
+				{Type: provider.Done, Reason: "tool_calls"},
+			},
+			[]provider.StreamEvent{
+				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-2", Name: "poll", Args: `{"value":"same"}`}}},
+				{Type: provider.Done, Reason: "tool_calls"},
+			},
+			[]provider.StreamEvent{
+				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-3", Name: "poll", Args: `{"value":"same"}`}}},
+				{Type: provider.Done, Reason: "tool_calls"},
+			},
+		)
+		e := newTestEngine(p, &event.Recorder{})
+		e.Options.DuplicateToolLimit = 1
+		mustRegister(t, e.Tools, tools.Define[stringArgs](
+			tools.Definition{
+				Name:        "poll",
+				InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+				Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+				Annotations: map[string]any{tools.AnnotationRepeatPolicy: tools.RepeatPolicyPolling},
+			},
+			nil,
+			nil,
+			func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
+				return tools.Result{
+					Text:     "same",
+					Metadata: map[string]any{tools.ResultMetadataProgressToken: "seq:same"},
+				}, nil
+			},
+		))
+
+		got := e.Run(context.Background(), "loop")
+		if !errors.Is(got.Err, engine.ErrDuplicateTools) {
+			t.Fatalf("err = %v, want duplicate tools", got.Err)
+		}
+	})
 	t.Run("duplicate call ids", func(t *testing.T) {
 		p := harness.NewScriptedProvider(
 			[]provider.StreamEvent{{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{

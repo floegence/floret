@@ -411,6 +411,92 @@ func TestThreadSettlePendingToolAppendsDetailOnlyEvent(t *testing.T) {
 	}
 }
 
+func TestThreadSettlePendingToolIsIdempotentForSameTarget(t *testing.T) {
+	ctx := context.Background()
+	p := scriptharness.NewScriptedProvider()
+	repo := sessiontree.NewMemoryRepo()
+	h := newTestHarness(p, repo, cache.NewMemoryStore())
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendPendingToolResultFixture(t, ctx, repo, "thread", "turn-1")
+	settlement := PendingToolSettlement{
+		TurnID:     "turn-1",
+		RunID:      "run-1",
+		ToolCallID: "exec-1",
+		ToolName:   "terminal.exec",
+		Handle:     "terminal:job:123",
+		Status:     PendingToolSettledCompleted,
+		Summary:    "command completed",
+		Output:     "exit 0",
+	}
+
+	first, err := thread.SettlePendingTool(ctx, settlement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterFirst, err := thread.Journal(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := thread.SettlePendingTool(ctx, settlement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterSecond, err := thread.Journal(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == "" || second.ID != first.ID {
+		t.Fatalf("idempotent settlement should return existing event: first=%#v second=%#v", first, second)
+	}
+	if countPendingToolSettlementEntries(afterSecond.Path) != countPendingToolSettlementEntries(afterFirst.Path) {
+		t.Fatalf("idempotent settlement appended a duplicate entry: before=%#v after=%#v", afterFirst.Path, afterSecond.Path)
+	}
+	_, err = thread.SettlePendingTool(ctx, PendingToolSettlement{
+		TurnID:     "turn-1",
+		RunID:      "run-1",
+		ToolCallID: "exec-1",
+		ToolName:   "terminal.exec",
+		Handle:     "terminal:job:123",
+		Status:     PendingToolSettledFailed,
+		Summary:    "command failed",
+	})
+	if !errors.Is(err, ErrPendingToolSettlementConflict) {
+		t.Fatalf("conflicting settlement err = %v, want conflict", err)
+	}
+}
+
+func TestThreadSettlePendingToolAcceptsSettlementBeforePendingResult(t *testing.T) {
+	ctx := context.Background()
+	p := scriptharness.NewScriptedProvider()
+	repo := sessiontree.NewMemoryRepo()
+	h := newTestHarness(p, repo, cache.NewMemoryStore())
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendPendingToolCallFixture(t, ctx, repo, "thread", "turn-1")
+
+	event, err := thread.SettlePendingTool(ctx, PendingToolSettlement{
+		TurnID:     "turn-1",
+		RunID:      "run-1",
+		ToolCallID: "exec-1",
+		ToolName:   "terminal.exec",
+		Handle:     "terminal:job:123",
+		Status:     PendingToolSettledCompleted,
+		Summary:    "command completed",
+		Output:     "exit 0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Kind != SubAgentDetailEventToolResult || event.Type != pendingToolSettlementEntryKind {
+		t.Fatalf("early settlement event = %#v", event)
+	}
+}
+
 func TestThreadSettlePendingToolRejectsInvalidTarget(t *testing.T) {
 	ctx := context.Background()
 	p := scriptharness.NewScriptedProvider()
@@ -2171,26 +2257,7 @@ func mustRegister(registry *tools.Registry, tool tools.Tool) {
 
 func appendPendingToolResultFixture(t *testing.T, ctx context.Context, repo sessiontree.Repo, threadID string, turnID string) {
 	t.Helper()
-	if _, err := sessiontree.AppendTurnMarker(ctx, repo, threadID, turnID, sessiontree.TurnStarted, map[string]string{"run_id": "run-1"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sessiontree.AppendMessage(ctx, repo, threadID, turnID, session.Message{Role: session.User, Content: "run command"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sessiontree.AppendMessage(ctx, repo, threadID, turnID, session.Message{
-		Role:       session.Assistant,
-		Content:    "tool_call",
-		ToolCallID: "exec-1",
-		ToolName:   "terminal.exec",
-		ToolArgs:   `{"command":"npm test"}`,
-		Activity: &session.ActivityPresentation{
-			Label:    "npm test",
-			Renderer: string(observation.ActivityRendererTerminal),
-			Payload:  map[string]any{"command": "npm test"},
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	appendPendingToolCallFixture(t, ctx, repo, threadID, turnID)
 	if _, err := sessiontree.AppendMessage(ctx, repo, threadID, turnID, session.Message{
 		Role:       session.Tool,
 		Content:    "<pending_tool_result>\n<summary>Command is running</summary>\n<instruction>wait</instruction>\n<handle>terminal:job:123</handle>\n</pending_tool_result>",
@@ -2213,6 +2280,40 @@ func appendPendingToolResultFixture(t *testing.T, ctx context.Context, repo sess
 	if _, err := sessiontree.AppendTurnMarker(ctx, repo, threadID, turnID, sessiontree.TurnCompleted, nil); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func appendPendingToolCallFixture(t *testing.T, ctx context.Context, repo sessiontree.Repo, threadID string, turnID string) {
+	t.Helper()
+	if _, err := sessiontree.AppendTurnMarker(ctx, repo, threadID, turnID, sessiontree.TurnStarted, map[string]string{"run_id": "run-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, repo, threadID, turnID, session.Message{Role: session.User, Content: "run command"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, repo, threadID, turnID, session.Message{
+		Role:       session.Assistant,
+		Content:    "tool_call",
+		ToolCallID: "exec-1",
+		ToolName:   "terminal.exec",
+		ToolArgs:   `{"command":"npm test"}`,
+		Activity: &session.ActivityPresentation{
+			Label:    "npm test",
+			Renderer: string(observation.ActivityRendererTerminal),
+			Payload:  map[string]any{"command": "npm test"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func countPendingToolSettlementEntries(entries []sessiontree.Entry) int {
+	count := 0
+	for _, entry := range entries {
+		if entry.Type == sessiontree.EntryCustom && entry.Metadata[subAgentDetailKindKey] == pendingToolSettlementEntryKind {
+			count++
+		}
+	}
+	return count
 }
 
 type stringArgs struct {

@@ -4,6 +4,8 @@
 * **Update**: Documented neutral pre-dispatch local tool error activity payloads
   so framework-layer failures still expose sanitized failure reasons in activity
   timelines without adding downstream UI policy to Floret.
+* **Update**: Documented idempotent, out-of-order pending tool settlement and
+  polling progress metadata for duplicate-call guard handling.
 * **Update**: Documented `runtime.Event.Projection` as the live hosted-turn
   display projection emitted on committed thread-entry events, with aggregate
   `ActivityTimeline` retained only for lifecycle observation.

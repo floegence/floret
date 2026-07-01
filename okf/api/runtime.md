@@ -55,7 +55,11 @@ continuation state, and lifecycle observations.
   the follow-up execution identity.
 * `SettlePendingTool` records a host-owned pending tool outcome as a
   detail/activity event for the original turn without creating provider-visible
-  context or running another model turn.
+  context or running another model turn. It is idempotent for the same
+  `TurnID`/`RunID`/tool call/tool name/handle/status target, rejects conflicting
+  status for an already settled target, and may arrive before the original
+  pending tool result row when host-owned work finishes immediately after the
+  tool call is exposed.
 * `tools.PendingToolResult.Handle` is the provider-visible continuation token.
   Pending metadata remains observation-only and is not rendered as a model-facing
   tool result field.
@@ -191,7 +195,9 @@ subagent detail events. Host-owned pending tool outcomes after a provider turn
 must be reported through `SettlePendingTool`; that settlement is stored as a
 custom journal entry projected as a `tool_result` detail event, updates the
 original activity item for the same tool id, removes running-only metadata, and
-does not enter provider-visible history.
+does not enter provider-visible history. Turn projection treats that settlement
+as the authoritative activity lifecycle fact even when run-end markers or the
+original pending tool result are ordered before or after it.
 
 `runtime.Event.ActivityTimeline` remains Floret's live lifecycle observation
 for tool, approval, control, budget, and run-end facts. It is generated from the

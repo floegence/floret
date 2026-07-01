@@ -29,7 +29,10 @@ Pending tool completion and pending tool settlement are intentionally separate.
 `CompletePendingTool` creates a provider-visible follow-up turn when the model
 should reason over a host-owned completion. `SettlePendingTool` appends only a
 detail/activity event for the original turn when the host needs to update UI
-state without resuming the provider loop.
+state without resuming the provider loop. Settlement is keyed by the public
+turn/run/tool/handle identity, is idempotent for the same terminal status, and
+may be recorded before the pending result row when host-owned work finishes
+faster than the provider turn can commit that row.
 
 `HostOptions.ModelGateway` lets a host route hosted parent turns, child turns,
 and hosted title generation through product-owned model transport while Floret
