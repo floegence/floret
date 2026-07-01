@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>A Go runtime for interactive, tool-using AI agents.</strong><br />
-  <sub>Floret owns the agent loop, durable thread runtime, context pressure, tool dispatch, and sanitized observation. Your product owns the UI, users, permissions, secrets, and domain tools.</sub>
+  <sub>Floret owns the agent loop, durable thread runtime, context pressure, tool dispatch, neutral activity, and sanitized observation. Your product owns the UI, users, permissions, secrets, and domain tools.</sub>
 </p>
 
 <p align="center">
@@ -70,8 +70,8 @@ stay focused on product behavior.
   policy in Floret.
 - **Storage**: choose `runtime.NewMemoryStore` for tests or
   `runtime.OpenSQLiteStore` for Floret-managed durable runtime storage.
-- **Observation**: stream sanitized `runtime.EventSink` records and use
-  `observation` DTOs for context and compaction UI.
+- **Observation**: stream sanitized `runtime.EventSink` records, project neutral
+  activity timelines, and use `observation` DTOs for context and compaction UI.
 - **Deterministic tests**: use the fake provider path to test host flows without
   real model calls.
 
@@ -300,16 +300,17 @@ secret stores.
 
 Hosts register domain tools with `tools.Registry`. Floret validates JSON
 arguments, extracts generic resource and effect information, asks the configured
-approver when required, dispatches the handler, shapes output, and records
-runtime facts. Tool handlers still enforce product-specific permissions such as
-user, tenant, workspace, environment, and target ownership.
+approver when required, dispatches the handler, shapes output, records runtime
+facts, and maintains product-neutral activity state. Tool handlers still enforce
+product-specific permissions such as user, tenant, workspace, environment, and
+target ownership.
 
 | Tool concern | Floret handles | Host handles |
 | --- | --- | --- |
 | Schema | strict provider-visible JSON shape | domain argument meaning |
 | Permission | generic approval hook and effect metadata | product authorization policy |
 | Execution | scheduling, panic recovery, result projection | the actual domain action |
-| Output | model/UI projection and artifact references | product-specific display choices |
+| Output | model projection, neutral activity, and artifact references | product-specific display choices |
 
 Important tool rules:
 
@@ -321,6 +322,16 @@ Important tool rules:
   by `tools.Registry`.
 - Large outputs should be represented by artifact references when the model or UI
   does not need full inline content.
+- When tool execution fails before a host handler owns the call, such as invalid
+  arguments, permission denial, resource extraction failure, or panic recovery,
+  Floret emits a neutral failed activity presentation with public error text.
+  This lets host UIs show the user why the tool failed without reading Floret
+  storage internals.
+- Floret does not invent product copy, renderer-specific fields, or
+  domain-specific detail rows. Hosts can attach their own
+  `tools.ActivityPresentation` for successful tools and for product-owned
+  handler failures; Floret preserves that presentation while keeping framework
+  failures observable.
 
 ### Dynamic tool surfaces
 
@@ -458,6 +469,13 @@ Use `runtime.EventSink` to receive sanitized runtime events from a host. Use
 `observation` DTOs for context pressure and compaction state when building UI
 surfaces. Observation records are not raw provider payloads and should not
 contain prompt text, tool arguments, tool results, local paths, or secrets.
+
+Activity timelines are also product-neutral. They expose lifecycle status,
+timing, renderer identity, bounded public payload, and public error messages
+when Floret itself rejects or recovers a tool call before the host handler can
+shape a result. The host application owns the final presentation: labels,
+localized copy, task-specific fields, controls, diagnostics policy, and any
+detail lookup that belongs to product storage or product routing.
 
 Compaction emits both lifecycle and diagnostic observations. Lifecycle events
 (`runtime.Event.Compaction`) describe one user-visible operation as start,
