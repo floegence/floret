@@ -130,7 +130,7 @@ func (s *Store) init(ctx context.Context) error {
 		return err
 	}
 	if current != schemaVersion {
-		if current != "3" && current != "4" && current != "5" && current != "6" && current != "7" {
+		if current != "3" && current != "4" && current != "5" && current != "6" && current != "7" && current != "8" {
 			return fmt.Errorf("unsupported sqlite store schema version %q", current)
 		}
 		if err := s.migrate(ctx, current); err != nil {

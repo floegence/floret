@@ -302,6 +302,78 @@ VALUES('child', 'parent', 'worker', '/root/worker', '2026-06-28T09:00:00Z', '202
 	}
 }
 
+func TestSQLiteStoreMigratesV8TaskDescriptionColumn(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "floret.db")
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.ExecContext(ctx, `
+CREATE TABLE schema_meta (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);
+INSERT INTO schema_meta(key, value) VALUES
+	('schema_version', '8'),
+	('raw_encoder_version', '1');
+CREATE TABLE threads (
+	id TEXT PRIMARY KEY,
+	leaf_id TEXT NOT NULL DEFAULT '',
+	parent_thread_id TEXT NOT NULL DEFAULT '',
+	parent_turn_id TEXT NOT NULL DEFAULT '',
+	forked_from_thread_id TEXT NOT NULL DEFAULT '',
+	forked_from_entry_id TEXT NOT NULL DEFAULT '',
+	task_name TEXT NOT NULL DEFAULT '',
+	agent_path TEXT NOT NULL DEFAULT '',
+	host_profile_ref TEXT NOT NULL DEFAULT '',
+	closed INTEGER NOT NULL DEFAULT 0,
+	archived INTEGER NOT NULL DEFAULT 0,
+	title TEXT NOT NULL DEFAULT '',
+	title_status TEXT NOT NULL DEFAULT '',
+	title_source TEXT NOT NULL DEFAULT '',
+	title_updated_at TEXT NOT NULL DEFAULT '',
+	title_error TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	status TEXT NOT NULL DEFAULT '',
+	last_viewed_at TEXT NOT NULL DEFAULT '',
+	fork_mode TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO threads(id, parent_thread_id, task_name, fork_mode, created_at, updated_at)
+VALUES('child', 'parent', 'worker', 'none', '2026-06-30T09:00:00Z', '2026-06-30T09:00:00Z');
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	version, err := store.SchemaVersion(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != schemaVersion {
+		t.Fatalf("schema version = %q, want %q", version, schemaVersion)
+	}
+	meta, err := store.Thread(ctx, "child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.ForkMode != "none" {
+		t.Fatalf("fork mode = %q, want none", meta.ForkMode)
+	}
+	if meta.TaskDescription != "" {
+		t.Fatalf("legacy task description default = %q, want empty", meta.TaskDescription)
+	}
+}
+
 func TestSQLiteStoreMigratesV3PromptCacheScopeColumns(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "floret.db")
