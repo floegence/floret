@@ -73,8 +73,8 @@ type Host interface {
 	Close() error
 }
 
-// LifecycleHost exposes provider-free thread lifecycle and pending-work operations over a Floret store.
-type LifecycleHost interface {
+// ThreadMaintenanceHost exposes provider-free thread maintenance operations over a Floret store.
+type ThreadMaintenanceHost interface {
 	EnsureThread(context.Context, EnsureThreadRequest) (ThreadSummary, error)
 	ReadTurnProjection(context.Context, ReadTurnProjectionRequest) (ThreadTurnProjection, error)
 	SettlePendingTool(context.Context, PendingToolSettlementRequest) (PendingToolSettlementResult, error)
@@ -84,21 +84,22 @@ type LifecycleHost interface {
 }
 
 type HostOptions struct {
-	Config              config.Config
-	ModelGateway        ModelGateway
-	Store               *Store
-	Tools               *tools.Registry
-	Approver            tools.Approver
-	Sink                EventSink
-	ToolSurfaceProvider ToolSurfaceProvider
-	IDGenerator         func(string) string
-	LoopLimits          LoopLimits
-	SubAgentRunTimeout  time.Duration
-	Capabilities        CapabilityOptions
+	Config               config.Config
+	ModelGateway         ModelGateway
+	ModelGatewayIdentity ModelGatewayIdentity
+	Store                *Store
+	Tools                *tools.Registry
+	Approver             tools.Approver
+	Sink                 EventSink
+	ToolSurfaceProvider  ToolSurfaceProvider
+	IDGenerator          func(string) string
+	LoopLimits           LoopLimits
+	SubAgentRunTimeout   time.Duration
+	Capabilities         CapabilityOptions
 }
 
-// LifecycleHostOptions configures NewLifecycleHost. If Store is nil, the host uses an ephemeral memory store.
-type LifecycleHostOptions struct {
+// ThreadMaintenanceHostOptions configures NewThreadMaintenanceHost.
+type ThreadMaintenanceHostOptions struct {
 	Store *Store
 	Sink  EventSink
 }
@@ -908,11 +909,7 @@ type host struct {
 }
 
 func NewHost(opts HostOptions) (Host, error) {
-	cfg, err := config.Resolve(opts.Config, nil)
-	if err != nil {
-		return nil, err
-	}
-	provider, err := projectedModelProvider(cfg, opts.ModelGateway)
+	cfg, provider, err := resolveHostConfigAndProvider(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -941,12 +938,44 @@ func NewHost(opts HostOptions) (Host, error) {
 	return &host{cfg: cfg, store: store, sink: opts.Sink, harness: harness}, nil
 }
 
-// NewLifecycleHost creates a provider-free host for thread lifecycle maintenance.
+func resolveHostConfigAndProvider(opts HostOptions) (config.Config, provider.Provider, error) {
+	if opts.ModelGateway != nil {
+		identity, err := normalizeModelGatewayIdentity(opts.ModelGatewayIdentity)
+		if err != nil {
+			return config.Config{}, nil, err
+		}
+		cfg, err := resolveModelGatewayHostConfig(opts.Config, identity)
+		if err != nil {
+			return config.Config{}, nil, err
+		}
+		modelProvider, err := projectedModelProvider(cfg, opts.ModelGateway, identity)
+		if err != nil {
+			return config.Config{}, nil, err
+		}
+		return cfg, modelProvider, nil
+	}
+	cfg, err := config.Resolve(opts.Config, nil)
+	if err != nil {
+		return config.Config{}, nil, err
+	}
+	modelProvider, err := projectedModelProvider(cfg, nil, ModelGatewayIdentity{})
+	if err != nil {
+		return config.Config{}, nil, err
+	}
+	return cfg, modelProvider, nil
+}
+
+type threadMaintenanceHost struct {
+	store   *Store
+	harness *agentharness.AgentHarness
+}
+
+// NewThreadMaintenanceHost creates a provider-free host for thread maintenance.
 // It does not configure model transport, tools, or provider loop execution.
-func NewLifecycleHost(opts LifecycleHostOptions) (LifecycleHost, error) {
+func NewThreadMaintenanceHost(opts ThreadMaintenanceHostOptions) (ThreadMaintenanceHost, error) {
 	store := opts.Store
 	if store == nil {
-		store = NewMemoryStore()
+		return nil, errors.New("thread maintenance host store is required")
 	}
 	if err := store.validate(); err != nil {
 		return nil, err
@@ -958,7 +987,7 @@ func NewLifecycleHost(opts LifecycleHostOptions) (LifecycleHost, error) {
 		Sink:        newRuntimeEventSink(opts.Sink),
 		SinkPolicy:  runtimeHarnessSinkPolicy(),
 	})
-	return &host{store: store, sink: opts.Sink, harness: harness}, nil
+	return &threadMaintenanceHost{store: store, harness: harness}, nil
 }
 
 func runtimeHarnessSinkPolicy() event.SinkPolicy {
@@ -969,6 +998,10 @@ func runtimeHostError(err error) error {
 	switch {
 	case err == nil:
 		return nil
+	case errors.Is(err, agentharness.ErrPendingToolSettlementTargetTurnNotFound):
+		return fmt.Errorf("%w: %w", ErrTurnNotFound, err)
+	case errors.Is(err, agentharness.ErrPendingToolSettlementTargetRunNotFound):
+		return fmt.Errorf("%w: %w", ErrRunNotFound, err)
 	case errors.Is(err, agentharness.ErrSubAgentNotFound):
 		return fmt.Errorf("%w: %w", ErrSubAgentNotFound, err)
 	case errors.Is(err, sessiontree.ErrThreadNotFound):
@@ -987,7 +1020,15 @@ func (h *host) StartThread(ctx context.Context, req StartThreadRequest) (ThreadS
 }
 
 func (h *host) EnsureThread(ctx context.Context, req EnsureThreadRequest) (ThreadSummary, error) {
-	summary, err := h.harness.EnsureThread(ctx, agentharness.StartThreadOptions{ThreadID: string(req.ThreadID)})
+	return ensureThread(ctx, h.harness, req)
+}
+
+func (h *threadMaintenanceHost) EnsureThread(ctx context.Context, req EnsureThreadRequest) (ThreadSummary, error) {
+	return ensureThread(ctx, h.harness, req)
+}
+
+func ensureThread(ctx context.Context, harness *agentharness.AgentHarness, req EnsureThreadRequest) (ThreadSummary, error) {
+	summary, err := harness.EnsureThread(ctx, agentharness.StartThreadOptions{ThreadID: string(req.ThreadID)})
 	if err != nil {
 		return ThreadSummary{}, runtimeHostError(err)
 	}
@@ -1030,6 +1071,14 @@ func (h *host) ListPendingApprovals(ctx context.Context, req ListPendingApproval
 }
 
 func (h *host) ReadTurnProjection(ctx context.Context, req ReadTurnProjectionRequest) (ThreadTurnProjection, error) {
+	return readTurnProjection(ctx, h.harness, req)
+}
+
+func (h *threadMaintenanceHost) ReadTurnProjection(ctx context.Context, req ReadTurnProjectionRequest) (ThreadTurnProjection, error) {
+	return readTurnProjection(ctx, h.harness, req)
+}
+
+func readTurnProjection(ctx context.Context, harness *agentharness.AgentHarness, req ReadTurnProjectionRequest) (ThreadTurnProjection, error) {
 	if strings.TrimSpace(string(req.ThreadID)) == "" {
 		return ThreadTurnProjection{}, errors.New("thread id is required")
 	}
@@ -1039,14 +1088,14 @@ func (h *host) ReadTurnProjection(ctx context.Context, req ReadTurnProjectionReq
 	if strings.TrimSpace(string(req.RunID)) == "" {
 		return ThreadTurnProjection{}, errors.New("run id is required")
 	}
-	events, err := h.listRawThreadDetailEventsForTurn(ctx, string(req.ThreadID), string(req.TurnID))
+	events, err := listRawThreadDetailEventsForTurn(ctx, harness, string(req.ThreadID), string(req.TurnID))
 	if err != nil {
 		return ThreadTurnProjection{}, runtimeHostError(err)
 	}
 	if len(events) == 0 {
 		return ThreadTurnProjection{}, ErrTurnNotFound
 	}
-	if !threadDetailEventsContainRunID(events, req.RunID) {
+	if !threadDetailEventsTurnStartedRunIDMatches(events, req.RunID) {
 		return ThreadTurnProjection{}, fmt.Errorf("%w: %s", ErrRunNotFound, req.RunID)
 	}
 	return ProjectThreadTurn(ProjectThreadTurnRequest{
@@ -1212,6 +1261,14 @@ func (h *host) CompletePendingTool(ctx context.Context, req PendingToolCompletio
 }
 
 func (h *host) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+	return settlePendingTool(ctx, h.harness, req)
+}
+
+func (h *threadMaintenanceHost) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+	return settlePendingTool(ctx, h.harness, req)
+}
+
+func settlePendingTool(ctx context.Context, harness *agentharness.AgentHarness, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
 	if strings.TrimSpace(string(req.ThreadID)) == "" {
 		return PendingToolSettlementResult{}, errors.New("thread id is required")
 	}
@@ -1221,7 +1278,7 @@ func (h *host) SettlePendingTool(ctx context.Context, req PendingToolSettlementR
 	if strings.TrimSpace(string(req.RunID)) == "" {
 		return PendingToolSettlementResult{}, errors.New("run id is required")
 	}
-	thread, err := h.harness.ResumeThread(ctx, string(req.ThreadID), agentharness.ResumeOptions{})
+	thread, err := harness.ResumeThread(ctx, string(req.ThreadID), agentharness.ResumeOptions{})
 	if err != nil {
 		return PendingToolSettlementResult{}, runtimeHostError(err)
 	}
@@ -1247,7 +1304,7 @@ func (h *host) SettlePendingTool(ctx context.Context, req PendingToolSettlementR
 	}
 	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
 	defer cancelProjection()
-	events, err := h.listRawThreadDetailEventsForTurn(projectionCtx, string(req.ThreadID), string(req.TurnID))
+	events, err := listRawThreadDetailEventsForTurn(projectionCtx, harness, string(req.ThreadID), string(req.TurnID))
 	if err != nil {
 		return PendingToolSettlementResult{}, runtimeHostError(err)
 	}
@@ -1329,7 +1386,15 @@ func (h *host) CloseSubAgent(ctx context.Context, req CloseSubAgentRequest) (Sub
 }
 
 func (h *host) CloseSubAgents(ctx context.Context, req CloseSubAgentsRequest) (CloseSubAgentsResult, error) {
-	result, err := h.harness.CloseSubAgents(ctx, agentharness.CloseSubAgentsOptions{
+	return closeSubAgents(ctx, h.harness, req)
+}
+
+func (h *threadMaintenanceHost) CloseSubAgents(ctx context.Context, req CloseSubAgentsRequest) (CloseSubAgentsResult, error) {
+	return closeSubAgents(ctx, h.harness, req)
+}
+
+func closeSubAgents(ctx context.Context, harness *agentharness.AgentHarness, req CloseSubAgentsRequest) (CloseSubAgentsResult, error) {
+	result, err := harness.CloseSubAgents(ctx, agentharness.CloseSubAgentsOptions{
 		ParentThreadID: string(req.ParentThreadID),
 		Reason:         req.Reason,
 	})
@@ -1390,14 +1455,26 @@ func (h *host) ListSubAgentDetailEvents(ctx context.Context, req ListSubAgentDet
 }
 
 func (h *host) DeleteThread(ctx context.Context, threadID ThreadID) error {
+	return deleteThread(ctx, h.store, threadID)
+}
+
+func (h *threadMaintenanceHost) DeleteThread(ctx context.Context, threadID ThreadID) error {
+	return deleteThread(ctx, h.store, threadID)
+}
+
+func deleteThread(ctx context.Context, store *Store, threadID ThreadID) error {
 	id := strings.TrimSpace(string(threadID))
 	if id == "" {
 		return errors.New("thread id is required")
 	}
-	return runtimeHostError(h.store.deleteThreadData(ctx, id))
+	return runtimeHostError(store.deleteThreadData(ctx, id))
 }
 
 func (h *host) Close() error {
+	return h.store.Close()
+}
+
+func (h *threadMaintenanceHost) Close() error {
 	return h.store.Close()
 }
 
@@ -1575,7 +1652,7 @@ func (h *host) attachThreadTurnProjection(ctx context.Context, threadID string, 
 	if h == nil || result == nil || strings.TrimSpace(threadID) == "" || strings.TrimSpace(string(result.ID)) == "" {
 		return nil
 	}
-	events, err := h.listRawThreadDetailEventsForTurn(ctx, threadID, string(result.ID))
+	events, err := listRawThreadDetailEventsForTurn(ctx, h.harness, threadID, string(result.ID))
 	if err != nil {
 		return err
 	}
@@ -1596,11 +1673,11 @@ func runtimeTerminalProjectionContext(ctx context.Context) (context.Context, con
 	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 }
 
-func (h *host) listRawThreadDetailEventsForTurn(ctx context.Context, threadID string, turnID string) ([]ThreadDetailEvent, error) {
+func listRawThreadDetailEventsForTurn(ctx context.Context, harness *agentharness.AgentHarness, threadID string, turnID string) ([]ThreadDetailEvent, error) {
 	var out []ThreadDetailEvent
 	var afterOrdinal int64
 	for {
-		detail, err := h.harness.ListThreadDetailEvents(ctx, agentharness.ListThreadDetailEventsOptions{
+		detail, err := harness.ListThreadDetailEvents(ctx, agentharness.ListThreadDetailEventsOptions{
 			ThreadID:     threadID,
 			AfterOrdinal: afterOrdinal,
 			Limit:        agentharness.MaxThreadDetailEventLimit,
@@ -1624,38 +1701,23 @@ func (h *host) listRawThreadDetailEventsForTurn(ctx context.Context, threadID st
 	}
 }
 
-func threadDetailEventsContainRunID(events []ThreadDetailEvent, runID RunID) bool {
+func threadDetailEventsTurnStartedRunIDMatches(events []ThreadDetailEvent, runID RunID) bool {
 	want := strings.TrimSpace(string(runID))
 	if want == "" {
 		return false
 	}
 	for _, ev := range events {
-		for _, got := range []string{
-			threadDetailMetadataRunID(ev.Metadata),
-			threadDetailTurnMarkerRunID(ev.TurnMarker),
-		} {
-			if strings.TrimSpace(got) == want {
-				return true
-			}
+		if ev.TurnMarker == nil {
+			continue
+		}
+		if strings.TrimSpace(ev.TurnMarker.Status) != string(sessiontree.TurnStarted) {
+			continue
+		}
+		if strings.TrimSpace(ev.TurnMarker.Metadata["run_id"]) == want {
+			return true
 		}
 	}
 	return false
-}
-
-func threadDetailMetadataRunID(metadata map[string]string) string {
-	for _, key := range []string{"run_id", "pending_tool_settlement_run_id"} {
-		if value := strings.TrimSpace(metadata[key]); value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func threadDetailTurnMarkerRunID(marker *ThreadDetailTurnMarker) string {
-	if marker == nil {
-		return ""
-	}
-	return strings.TrimSpace(marker.Metadata["run_id"])
 }
 
 func waitSubAgentsResult(in agentharness.WaitSubAgentsResult) WaitSubAgentsResult {

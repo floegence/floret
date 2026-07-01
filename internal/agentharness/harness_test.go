@@ -427,6 +427,18 @@ func TestThreadSettlePendingToolRejectsInvalidTarget(t *testing.T) {
 	}
 	_, err = thread.SettlePendingTool(ctx, PendingToolSettlement{
 		TurnID:     "turn-1",
+		RunID:      "other-run",
+		ToolCallID: "exec-1",
+		ToolName:   "terminal.exec",
+		Handle:     "terminal:job:123",
+		Status:     PendingToolSettledCompleted,
+		Summary:    "done",
+	})
+	if err == nil || !strings.Contains(err.Error(), "target run was not found") {
+		t.Fatalf("wrong run err = %v", err)
+	}
+	_, err = thread.SettlePendingTool(ctx, PendingToolSettlement{
+		TurnID:     "turn-1",
 		RunID:      "run-1",
 		ToolCallID: "exec-1",
 		ToolName:   "terminal.exec",
@@ -2159,7 +2171,7 @@ func mustRegister(registry *tools.Registry, tool tools.Tool) {
 
 func appendPendingToolResultFixture(t *testing.T, ctx context.Context, repo sessiontree.Repo, threadID string, turnID string) {
 	t.Helper()
-	if _, err := sessiontree.AppendTurnMarker(ctx, repo, threadID, turnID, sessiontree.TurnStarted, nil); err != nil {
+	if _, err := sessiontree.AppendTurnMarker(ctx, repo, threadID, turnID, sessiontree.TurnStarted, map[string]string{"run_id": "run-1"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := sessiontree.AppendMessage(ctx, repo, threadID, turnID, session.Message{Role: session.User, Content: "run command"}); err != nil {
@@ -2198,7 +2210,7 @@ func appendPendingToolResultFixture(t *testing.T, ctx context.Context, repo sess
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sessiontree.AppendTurnMarker(ctx, repo, threadID, turnID, sessiontree.TurnCompleted, map[string]string{"run_id": "run-1"}); err != nil {
+	if _, err := sessiontree.AppendTurnMarker(ctx, repo, threadID, turnID, sessiontree.TurnCompleted, nil); err != nil {
 		t.Fatal(err)
 	}
 }

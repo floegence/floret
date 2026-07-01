@@ -80,6 +80,13 @@ type ModelGateway interface {
 	StreamModel(context.Context, ModelRequest) (<-chan ModelEvent, error)
 }
 
+// ModelGatewayIdentity names the host-owned model transport used by a
+// ModelGateway-backed Host.
+type ModelGatewayIdentity struct {
+	Provider string
+	Model    string
+}
+
 // ModelRequest is the host-safe model request shape passed to ModelGateway.
 type ModelRequest struct {
 	RunID           RunID
@@ -285,11 +292,62 @@ func engineManualCompactionRequest(manual ManualCompactionRequest) engine.Manual
 	}
 }
 
-func projectedModelProvider(cfg config.Config, gateway ModelGateway) (provider.Provider, error) {
+func projectedModelProvider(cfg config.Config, gateway ModelGateway, identity ModelGatewayIdentity) (provider.Provider, error) {
 	if gateway != nil {
-		return modelGatewayProvider{gateway: gateway}, nil
+		return modelGatewayProvider{gateway: gateway, identity: identity}, nil
 	}
 	return adapters.NewProvider(cfg)
+}
+
+func resolveModelGatewayHostConfig(cfg config.Config, identity ModelGatewayIdentity) (config.Config, error) {
+	identity, err := normalizeModelGatewayIdentity(identity)
+	if err != nil {
+		return config.Config{}, err
+	}
+	if strings.TrimSpace(cfg.Provider) != "" ||
+		strings.TrimSpace(cfg.Model) != "" ||
+		strings.TrimSpace(cfg.BaseURL) != "" ||
+		strings.TrimSpace(cfg.APIKey) != "" ||
+		strings.TrimSpace(cfg.FakeResponse) != "" {
+		return config.Config{}, errors.New("model gateway host config must not set provider transport fields")
+	}
+	if cfg.ContextPolicy.ContextWindowTokens <= 0 {
+		return config.Config{}, errors.New("model gateway host config requires context policy context window tokens")
+	}
+	cfg.Provider = identity.Provider
+	cfg.Model = identity.Model
+	resolved, err := resolveProviderFreeModelGatewayConfig(cfg)
+	if err != nil {
+		return config.Config{}, err
+	}
+	return resolved, nil
+}
+
+func resolveProviderFreeModelGatewayConfig(cfg config.Config) (config.Config, error) {
+	if cfg.SkillPromptBudgetBytes <= 0 {
+		cfg.SkillPromptBudgetBytes = 16 * 1024
+	}
+	cfg.Reasoning = config.NormalizeReasoningSelection(cfg.Reasoning)
+	if _, err := config.PromptCacheRetention(cfg); err != nil {
+		return config.Config{}, err
+	}
+	if !config.ValidateReasoningLevel(cfg.Reasoning.Level) {
+		return config.Config{}, fmt.Errorf("unsupported reasoning level %q", cfg.Reasoning.Level)
+	}
+	cfg.ContextPolicy = configbridge.NormalizeContextPolicy(cfg.ContextPolicy)
+	return config.ResolvePrompt(cfg), nil
+}
+
+func normalizeModelGatewayIdentity(identity ModelGatewayIdentity) (ModelGatewayIdentity, error) {
+	identity.Provider = strings.TrimSpace(identity.Provider)
+	identity.Model = strings.TrimSpace(identity.Model)
+	if identity.Provider == "" {
+		return ModelGatewayIdentity{}, errors.New("model gateway identity provider is required")
+	}
+	if identity.Model == "" {
+		return ModelGatewayIdentity{}, errors.New("model gateway identity model is required")
+	}
+	return identity, nil
 }
 
 func projectedReasoningSelection(requested ReasoningSelection, fallback ReasoningSelection) provider.ReasoningSelection {
@@ -301,7 +359,8 @@ func projectedReasoningSelection(requested ReasoningSelection, fallback Reasonin
 }
 
 type modelGatewayProvider struct {
-	gateway ModelGateway
+	gateway  ModelGateway
+	identity ModelGatewayIdentity
 }
 
 func (p modelGatewayProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
@@ -315,8 +374,8 @@ func (p modelGatewayProvider) Stream(ctx context.Context, req provider.Request) 
 		TraceID:         TraceID(req.TraceID),
 		PromptScopeID:   PromptScopeID(req.PromptScopeID),
 		Step:            req.Step,
-		Provider:        req.Provider,
-		Model:           req.Model,
+		Provider:        p.identity.Provider,
+		Model:           p.identity.Model,
 		Messages:        runtimeModelMessages(req.Messages),
 		Tools:           runtimeToolDefinitions(req.Tools),
 		HostedTools:     runtimeHostedToolDefinitions(req.HostedTools),

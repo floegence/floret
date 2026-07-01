@@ -28,8 +28,12 @@ import (
 )
 
 var (
-	ErrActiveTurn    = errors.New("thread already has an active turn")
-	ErrNoRetryTarget = errors.New("thread has no retryable turn")
+	ErrActiveTurn                              = errors.New("thread already has an active turn")
+	ErrNoRetryTarget                           = errors.New("thread has no retryable turn")
+	ErrPendingToolSettlementTargetTurnNotFound = errors.New("pending tool settlement target turn was not found")
+	ErrPendingToolSettlementTargetRunNotFound  = errors.New("pending tool settlement target run was not found")
+	ErrPendingToolSettlementTargetToolNotFound = errors.New("pending tool settlement target tool call was not found")
+	ErrPendingToolSettlementTargetNotActive    = errors.New("pending tool settlement target is not an active pending tool result")
 )
 
 const (
@@ -61,6 +65,7 @@ const (
 
 type HarnessEvent struct {
 	Type      HarnessEventType  `json:"type"`
+	RunID     string            `json:"run_id,omitempty"`
 	ThreadID  string            `json:"thread_id,omitempty"`
 	TurnID    string            `json:"turn_id,omitempty"`
 	EntryID   string            `json:"entry_id,omitempty"`
@@ -512,7 +517,7 @@ func (h *AgentHarness) emit(ev HarnessEvent) {
 		h.options.HarnessSink.EmitHarness(ev)
 	}
 	if h.options.Sink != nil {
-		h.options.Sink.Emit(event.Sanitize(event.Event{Type: event.Type(ev.Type), RunID: ev.TurnID, ThreadID: ev.ThreadID, Message: ev.Message, Timestamp: ev.Timestamp}))
+		h.options.Sink.Emit(event.Sanitize(event.Event{Type: event.Type(ev.Type), RunID: ev.RunID, ThreadID: ev.ThreadID, TurnID: ev.TurnID, Message: ev.Message, Timestamp: ev.Timestamp}))
 	}
 }
 
@@ -915,12 +920,20 @@ func normalizePendingToolSettlement(settlement PendingToolSettlement) (PendingTo
 
 func validatePendingToolSettlementTarget(path []sessiontree.Entry, settlement PendingToolSettlement) error {
 	turnFound := false
+	runFound := false
 	callFound := false
+	activeFound := false
 	for _, entry := range path {
 		if strings.TrimSpace(entry.TurnID) != settlement.TurnID {
 			continue
 		}
 		turnFound = true
+		if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnStarted {
+			runID := strings.TrimSpace(entry.Metadata["run_id"])
+			if runID != "" && runID == settlement.RunID {
+				runFound = true
+			}
+		}
 		if entry.Type != sessiontree.EntryToolResult {
 			continue
 		}
@@ -934,16 +947,22 @@ func validatePendingToolSettlementTarget(path []sessiontree.Entry, settlement Pe
 			continue
 		}
 		if pendingHandleFromSessionActivity(entry.Message.Activity) == settlement.Handle {
-			return nil
+			activeFound = true
 		}
 	}
 	if !turnFound {
-		return errors.New("pending tool settlement target turn was not found")
+		return ErrPendingToolSettlementTargetTurnNotFound
+	}
+	if !runFound {
+		return ErrPendingToolSettlementTargetRunNotFound
 	}
 	if !callFound {
-		return errors.New("pending tool settlement target tool call was not found")
+		return ErrPendingToolSettlementTargetToolNotFound
 	}
-	return errors.New("pending tool settlement target is not an active pending tool result")
+	if !activeFound {
+		return ErrPendingToolSettlementTargetNotActive
+	}
+	return nil
 }
 
 func pendingHandleFromSessionActivity(activity *session.ActivityPresentation) string {
@@ -1070,7 +1089,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	} else {
 		t.harness.emitEntryCommitted(entry, runID)
 	}
-	t.harness.emit(HarnessEvent{Type: EventTurnStarted, ThreadID: t.id, TurnID: turnID})
+	t.harness.emit(HarnessEvent{Type: EventTurnStarted, RunID: runID, ThreadID: t.id, TurnID: turnID})
 	if retryUser == nil {
 		entry, err := sessiontree.AppendMessage(ctx, t.harness.options.Repo, t.id, turnID, session.Message{Role: session.User, Content: input})
 		if err != nil {
@@ -1079,7 +1098,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 			return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "append_user_error")
 		}
 		t.harness.emitEntryCommitted(entry, runID)
-		t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID})
+		t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID})
 	}
 	snap, err := t.Journal(ctx)
 	if err != nil {
@@ -1180,7 +1199,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	if result.Status == engine.Cancelled {
 		eventType = EventTurnAborted
 	}
-	t.harness.emit(HarnessEvent{Type: eventType, ThreadID: t.id, TurnID: turnID, Status: string(result.Status), Message: result.Output})
+	t.harness.emit(HarnessEvent{Type: eventType, RunID: runID, ThreadID: t.id, TurnID: turnID, Status: string(result.Status), Message: result.Output})
 	if result.Err == nil && (result.Status == engine.Completed || result.Status == engine.Waiting) {
 		if err := t.ensureThreadTitle(persistCtx, turnID); err != nil {
 			t.harness.emit(HarnessEvent{Type: EventTitleFailed, ThreadID: t.id, TurnID: turnID, Message: err.Error()})
@@ -1310,7 +1329,7 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 	if status == engine.Cancelled {
 		eventType = EventTurnAborted
 	}
-	t.harness.emit(HarnessEvent{Type: eventType, ThreadID: t.id, TurnID: turnID, Status: string(status)})
+	t.harness.emit(HarnessEvent{Type: eventType, RunID: runID, ThreadID: t.id, TurnID: turnID, Status: string(status)})
 	return t.turnResultFromEngine(turnID, runID, result, map[string]string{"diagnostic": diagnostic}), err
 }
 
@@ -1716,7 +1735,7 @@ func (t *Thread) appendMessageAt(ctx context.Context, turnID string, runID strin
 		return err
 	}
 	t.harness.emitEntryCommitted(entry, runID)
-	t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID})
+	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID})
 	return nil
 }
 
@@ -1754,7 +1773,7 @@ func (t *Thread) appendApprovalEvent(ctx context.Context, turnID string, runID s
 		return err
 	}
 	t.harness.emitEntryCommitted(entry, runID)
-	t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: string(ev.Type)})
+	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: string(ev.Type)})
 	return nil
 }
 
@@ -1792,7 +1811,7 @@ func (t *Thread) appendToolDispatchEvent(ctx context.Context, turnID string, run
 		return err
 	}
 	t.harness.emitEntryCommitted(entry, runID)
-	t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: string(event.ToolDispatchStarted)})
+	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: string(event.ToolDispatchStarted)})
 	return nil
 }
 
@@ -1827,7 +1846,7 @@ func (t *Thread) appendToolActivityEvent(ctx context.Context, turnID string, run
 		return err
 	}
 	t.harness.emitEntryCommitted(entry, runID)
-	t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: string(event.ToolActivityUpdated)})
+	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: string(event.ToolActivityUpdated)})
 	return nil
 }
 
@@ -1867,7 +1886,7 @@ func (t *Thread) appendPendingToolSettlement(ctx context.Context, settlement Pen
 		return sessiontree.Entry{}, err
 	}
 	t.harness.emitEntryCommitted(entry, settlement.RunID)
-	t.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: t.id, TurnID: settlement.TurnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: pendingToolSettlementEntryKind})
+	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: settlement.RunID, ThreadID: t.id, TurnID: settlement.TurnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: pendingToolSettlementEntryKind})
 	return entry, nil
 }
 
@@ -2074,7 +2093,7 @@ func (m *durableCompactionManager) CommitCompaction(ctx context.Context, req eng
 		active[i].CompactionGeneration = entry.CompactionGeneration
 		active[i].CompactionWindowID = entry.CompactionWindowID
 	}
-	m.thread.harness.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: m.thread.id, TurnID: m.turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: "compaction"})
+	m.thread.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: req.RunID, ThreadID: m.thread.id, TurnID: m.turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: "compaction"})
 	return result, active, nil
 }
 

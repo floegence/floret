@@ -554,7 +554,10 @@ func (h *AgentHarness) ReadSubAgentDetail(ctx context.Context, opts ReadSubAgent
 	}
 	entries := journal.Path
 	retainedFrom := subAgentDetailRetainedFrom(entries)
-	activityContext := subAgentDetailActivityContext{resultCallIDs: subAgentDetailResultCallIDs(entries)}
+	activityContext := subAgentDetailActivityContext{
+		resultCallIDs: subAgentDetailResultCallIDs(entries),
+		runIDs:        subAgentDetailTurnRunIDs(entries),
+	}
 	events := make([]SubAgentDetailEvent, 0, len(entries))
 	var nextOrdinal int64
 	var hasMore bool
@@ -608,7 +611,10 @@ func (h *AgentHarness) ListThreadDetailEvents(ctx context.Context, opts ListThre
 	}
 	entries := journal.Path
 	retainedFrom := threadDetailRetainedFrom(entries)
-	activityContext := subAgentDetailActivityContext{resultCallIDs: subAgentDetailResultCallIDs(entries)}
+	activityContext := subAgentDetailActivityContext{
+		resultCallIDs: subAgentDetailResultCallIDs(entries),
+		runIDs:        subAgentDetailTurnRunIDs(entries),
+	}
 	events := make([]SubAgentDetailEvent, 0, len(entries))
 	var nextOrdinal int64
 	var hasMore bool
@@ -774,6 +780,7 @@ func subAgentDetailRawAvailable(event SubAgentDetailEvent) bool {
 
 type subAgentDetailActivityContext struct {
 	resultCallIDs map[string]struct{}
+	runIDs        map[string]string
 }
 
 func (c subAgentDetailActivityContext) hasResult(callID string) bool {
@@ -783,6 +790,32 @@ func (c subAgentDetailActivityContext) hasResult(callID string) bool {
 	}
 	_, ok := c.resultCallIDs[callID]
 	return ok
+}
+
+func (c subAgentDetailActivityContext) runIDForTurn(turnID string) string {
+	if len(c.runIDs) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(c.runIDs[strings.TrimSpace(turnID)])
+}
+
+func subAgentDetailTurnRunIDs(entries []sessiontree.Entry) map[string]string {
+	out := map[string]string{}
+	for _, entry := range entries {
+		if entry.Type != sessiontree.EntryTurnMarker || entry.TurnStatus != sessiontree.TurnStarted {
+			continue
+		}
+		turnID := strings.TrimSpace(entry.TurnID)
+		runID := strings.TrimSpace(entry.Metadata["run_id"])
+		if turnID == "" || runID == "" {
+			continue
+		}
+		out[turnID] = runID
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func subAgentDetailResultCallIDs(entries []sessiontree.Entry) map[string]struct{} {
@@ -814,8 +847,9 @@ func subAgentDetailActivityTimeline(detail SubAgentDetailEvent, entry sessiontre
 	if !ok {
 		return nil
 	}
+	runID := subAgentDetailRunID(detail, activityContext)
 	timeline := observation.BuildActivityTimeline(observation.ActivityRunMeta{
-		RunID:    detail.TurnID,
+		RunID:    runID,
 		ThreadID: detail.ThreadID,
 		TurnID:   detail.TurnID,
 	}, []observation.Event{observed}, entry.CreatedAt.UnixMilli())
@@ -824,7 +858,7 @@ func subAgentDetailActivityTimeline(detail SubAgentDetailEvent, entry sessiontre
 
 func subAgentDetailObservationEvent(detail SubAgentDetailEvent, entry sessiontree.Entry, activityContext subAgentDetailActivityContext) (observation.Event, bool) {
 	base := observation.Event{
-		RunID:      detail.TurnID,
+		RunID:      subAgentDetailRunID(detail, activityContext),
 		ThreadID:   detail.ThreadID,
 		TurnID:     detail.TurnID,
 		Step:       int(detail.Ordinal),
@@ -946,6 +980,20 @@ func subAgentDetailObservationEvent(detail SubAgentDetailEvent, entry sessiontre
 	default:
 		return observation.Event{}, false
 	}
+}
+
+func subAgentDetailRunID(detail SubAgentDetailEvent, activityContext subAgentDetailActivityContext) string {
+	if detail.Metadata != nil {
+		if runID := strings.TrimSpace(detail.Metadata["run_id"]); runID != "" {
+			return runID
+		}
+	}
+	if detail.TurnMarker != nil {
+		if runID := strings.TrimSpace(detail.TurnMarker.Metadata["run_id"]); runID != "" {
+			return runID
+		}
+	}
+	return activityContext.runIDForTurn(detail.TurnID)
 }
 
 func subAgentDetailToolResultActivityMetadata(result *SubAgentDetailToolResult) map[string]any {

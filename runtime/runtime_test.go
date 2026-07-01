@@ -136,13 +136,10 @@ func TestHostRunsThreadThroughModelGateway(t *testing.T) {
 		return runtimeGatewayEvents("gateway hosted thread"), nil
 	})
 	host, err := NewHost(HostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			SystemPrompt: "gateway system",
-		},
-		ModelGateway: gateway,
-		IDGenerator:  deterministicIDs(),
+		Config:               runtimeGatewayConfig("gateway system"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -168,8 +165,94 @@ func TestHostRunsThreadThroughModelGateway(t *testing.T) {
 	if req.ThreadID != "thread" || req.TurnID != "turn-1" || req.PromptScopeID != "thread" {
 		t.Fatalf("gateway request identity = %#v", req)
 	}
-	if req.Provider != string(config.ProviderFake) || req.Model != "fake-model" {
+	if req.Provider != "runtime-test-gateway" || req.Model != "fake-model" {
 		t.Fatalf("gateway request provider/model = %#v", req)
+	}
+}
+
+func TestHostModelGatewayRequiresExplicitIdentity(t *testing.T) {
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		return runtimeGatewayEvents("ok"), nil
+	})
+	cases := []struct {
+		name     string
+		config   config.Config
+		identity ModelGatewayIdentity
+		want     string
+	}{
+		{
+			name:     "missing provider identity",
+			config:   runtimeGatewayConfig("gateway system"),
+			identity: ModelGatewayIdentity{Model: "fake-model"},
+			want:     "model gateway identity provider is required",
+		},
+		{
+			name:     "missing model identity",
+			config:   runtimeGatewayConfig("gateway system"),
+			identity: ModelGatewayIdentity{Provider: "runtime-test-gateway"},
+			want:     "model gateway identity model is required",
+		},
+		{
+			name: "provider transport field",
+			config: config.Config{
+				Provider:      config.ProviderFake,
+				SystemPrompt:  "gateway system",
+				ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+			},
+			identity: runtimeGatewayIdentity("fake-model"),
+			want:     "must not set provider transport fields",
+		},
+		{
+			name: "model transport field",
+			config: config.Config{
+				Model:         "fake-model",
+				SystemPrompt:  "gateway system",
+				ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+			},
+			identity: runtimeGatewayIdentity("fake-model"),
+			want:     "must not set provider transport fields",
+		},
+		{
+			name: "base url transport field",
+			config: config.Config{
+				BaseURL:       "https://example.invalid",
+				SystemPrompt:  "gateway system",
+				ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+			},
+			identity: runtimeGatewayIdentity("fake-model"),
+			want:     "must not set provider transport fields",
+		},
+		{
+			name: "api key transport field",
+			config: config.Config{
+				APIKey:        "token",
+				SystemPrompt:  "gateway system",
+				ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+			},
+			identity: runtimeGatewayIdentity("fake-model"),
+			want:     "must not set provider transport fields",
+		},
+		{
+			name: "fake response transport field",
+			config: config.Config{
+				FakeResponse:  "ok",
+				SystemPrompt:  "gateway system",
+				ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens},
+			},
+			identity: runtimeGatewayIdentity("fake-model"),
+			want:     "must not set provider transport fields",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := NewHost(HostOptions{
+				Config:               tc.config,
+				ModelGateway:         gateway,
+				ModelGatewayIdentity: tc.identity,
+			}); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("NewHost err = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -195,14 +278,11 @@ func TestHostForwardsTurnModelReasoningAndOpaqueProviderState(t *testing.T) {
 	newHost := func(model string) Host {
 		t.Helper()
 		host, err := NewHost(HostOptions{
-			Config: config.Config{
-				Provider:     config.ProviderFake,
-				Model:        model,
-				SystemPrompt: "gateway system",
-			},
-			ModelGateway: gateway,
-			Store:        store,
-			IDGenerator:  deterministicIDs(),
+			Config:               runtimeGatewayConfig("gateway system"),
+			ModelGateway:         gateway,
+			ModelGatewayIdentity: runtimeGatewayIdentity(model),
+			Store:                store,
+			IDGenerator:          deterministicIDs(),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -288,17 +368,16 @@ func TestHostStreamsProjectedContextStatus(t *testing.T) {
 	})
 	host, err := NewHost(HostOptions{
 		Config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
 			SystemPrompt: "gateway system",
 			ContextPolicy: config.ContextPolicy{
 				ContextWindowTokens: config.DefaultContextWindowTokens,
 				MaxOutputTokens:     1024,
 			},
 		},
-		ModelGateway: gateway,
-		Sink:         rec,
-		IDGenerator:  deterministicIDs(),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Sink:                 rec,
+		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -370,15 +449,12 @@ func TestHostModelGatewayPreservesTextAroundToolCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	host, err := NewHost(HostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			SystemPrompt: "gateway system",
-		},
-		ModelGateway: gateway,
-		Tools:        reg,
-		Sink:         rec,
-		IDGenerator:  deterministicIDs(),
+		Config:               runtimeGatewayConfig("gateway system"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Tools:                reg,
+		Sink:                 rec,
+		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -480,15 +556,12 @@ func TestHostEmitsActivityTimelineForToolLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	host, err := NewHost(HostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			SystemPrompt: "test",
-		},
-		ModelGateway: gateway,
-		Tools:        reg,
-		Sink:         rec,
-		IDGenerator:  deterministicIDs(),
+		Config:               runtimeGatewayConfig("test"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Tools:                reg,
+		Sink:                 rec,
+		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -559,6 +632,9 @@ func TestHostEmitsActivityTimelineForToolLifecycle(t *testing.T) {
 	}
 	if callDetail.Message == nil || callDetail.Message.Activity == nil || callDetail.Message.Activity.Payload["command"] != "sleep 10s" {
 		t.Fatalf("call detail activity = %#v", callDetail.Message)
+	}
+	if resultDetail.ActivityTimeline == nil || resultDetail.ActivityTimeline.RunID != "run-1" || resultDetail.ActivityTimeline.TurnID != "turn-1" {
+		t.Fatalf("result detail activity identity = %#v", resultDetail.ActivityTimeline)
 	}
 
 	var projected *observation.ActivityTimeline
@@ -663,16 +739,13 @@ func TestHostEmitsParallelToolResultBeforeSlowSiblingAndPersistsDetailInCallOrde
 	}
 	rec := &runtimeEventRecorder{}
 	host, err := NewHost(HostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			SystemPrompt: "test",
-		},
-		ModelGateway: gateway,
-		Store:        NewMemoryStore(),
-		Tools:        registry,
-		Sink:         rec,
-		IDGenerator:  deterministicIDs(),
+		Config:               runtimeGatewayConfig("test"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                NewMemoryStore(),
+		Tools:                registry,
+		Sink:                 rec,
+		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -768,12 +841,9 @@ func TestHostToolSurfaceProviderRefreshesGatewayRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	host, err := NewHost(HostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			SystemPrompt: "base",
-		},
-		ModelGateway: gateway,
+		Config:               runtimeGatewayConfig("base"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
 		ToolSurfaceProvider: func(_ context.Context, req ToolSurfaceRequest) (ToolSurface, error) {
 			if req.Step >= 2 && req.Phase == "provider_request" {
 				return ToolSurface{
@@ -873,13 +943,10 @@ func TestHostRunTurnPreservesDistinctRunAndTurnIdentity(t *testing.T) {
 	var surfaceRequests []ToolSurfaceRequest
 	var approval tools.ApprovalRequest
 	host, err := NewHost(HostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			SystemPrompt: "test",
-		},
-		ModelGateway: gateway,
-		Store:        store,
+		Config:               runtimeGatewayConfig("test"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                store,
 		ToolSurfaceProvider: func(_ context.Context, req ToolSurfaceRequest) (ToolSurface, error) {
 			surfaceRequests = append(surfaceRequests, req)
 			return ToolSurface{
@@ -1047,16 +1114,13 @@ func TestHostRunTurnCanceledProjectionSettlesPendingActivity(t *testing.T) {
 	})
 
 	host, err := NewHost(HostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			SystemPrompt: "test",
-		},
-		ModelGateway: gateway,
-		Store:        NewMemoryStore(),
-		Tools:        registry,
-		Approver:     allowRuntimeTools,
-		IDGenerator:  deterministicIDs(),
+		Config:               runtimeGatewayConfig("test"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                NewMemoryStore(),
+		Tools:                registry,
+		Approver:             allowRuntimeTools,
+		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1186,14 +1250,11 @@ func TestHostSubAgentsInheritModelGatewayWithChildPromptScope(t *testing.T) {
 		return runtimeGatewayEvents("gateway child done"), nil
 	})
 	host, err := NewHost(HostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			SystemPrompt: "gateway system",
-		},
-		ModelGateway: gateway,
-		Store:        store,
-		IDGenerator:  deterministicIDs(),
+		Config:               runtimeGatewayConfig("gateway system"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                store,
+		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1395,14 +1456,11 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	host, err := NewHost(HostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			SystemPrompt: "test",
-		},
-		ModelGateway: gateway,
-		Tools:        registry,
-		IDGenerator:  deterministicIDs(),
+		Config:               runtimeGatewayConfig("test"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Tools:                registry,
+		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1441,6 +1499,8 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 		t.Fatalf("activity timeline invalid: %v", err)
 	} else if len(got.ActivityTimeline.Items) != 1 || got.ActivityTimeline.Items[0].Status != observation.ActivityStatusSuccess || got.ActivityTimeline.Items[0].Description != "Read completed" {
 		t.Fatalf("activity timeline = %#v", got.ActivityTimeline)
+	} else if got.ActivityTimeline.RunID == "" || string(got.ActivityTimeline.RunID) == string(got.TurnID) || !strings.HasPrefix(got.ActivityTimeline.RunID, "run-") {
+		t.Fatalf("activity timeline run identity = %#v event=%#v", got.ActivityTimeline, got)
 	}
 	detail, err := host.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "child", IncludeRaw: true})
 	if err != nil {
@@ -1597,16 +1657,13 @@ func TestHostSQLiteStorePersistsSubAgentDetailActivity(t *testing.T) {
 		t.Fatal(err)
 	}
 	host, err := NewHost(HostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			SystemPrompt: "test",
-		},
-		Store:        store,
-		ModelGateway: gateway,
-		Tools:        registry,
-		Approver:     allowRuntimeTools,
-		IDGenerator:  deterministicIDs(),
+		Config:               runtimeGatewayConfig("test"),
+		Store:                store,
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Tools:                registry,
+		Approver:             allowRuntimeTools,
+		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1676,13 +1733,10 @@ func TestHostCloseSubAgentsStopsUnfinishedChildren(t *testing.T) {
 		return events, nil
 	})
 	host, err := NewHost(HostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			SystemPrompt: "test",
-		},
-		ModelGateway: gateway,
-		IDGenerator:  deterministicIDs(),
+		Config:               runtimeGatewayConfig("test"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2085,16 +2139,13 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 
 	store := NewMemoryStore()
 	host, err := NewHost(HostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			SystemPrompt: "test",
-		},
-		ModelGateway: gateway,
-		Store:        store,
-		Tools:        registry,
-		Approver:     allowRuntimeTools,
-		IDGenerator:  deterministicIDs(),
+		Config:               runtimeGatewayConfig("test"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                store,
+		Tools:                registry,
+		Approver:             allowRuntimeTools,
+		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2113,13 +2164,27 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 		t.Fatalf("pending item should remain running before explicit settlement: %#v", item)
 	}
 
-	lifecycle, err := NewLifecycleHost(LifecycleHostOptions{Store: store})
+	maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lifecycle.Close()
+	defer maintenance.Close()
 
-	settled, err := lifecycle.SettlePendingTool(ctx, PendingToolSettlementRequest{
+	if _, err := maintenance.SettlePendingTool(ctx, PendingToolSettlementRequest{
+		ThreadID:   "thread",
+		TurnID:     "turn-1",
+		RunID:      "other-run",
+		ToolCallID: "exec-1",
+		ToolName:   "terminal_exec",
+		Handle:     "terminal:job:123",
+		Status:     PendingToolSettlementCompleted,
+		Summary:    "wrong run",
+		Output:     "exit 0",
+	}); !errors.Is(err, ErrRunNotFound) {
+		t.Fatalf("wrong-run settlement err = %v, want ErrRunNotFound", err)
+	}
+
+	settled, err := maintenance.SettlePendingTool(ctx, PendingToolSettlementRequest{
 		ThreadID:   "thread",
 		TurnID:     "turn-1",
 		RunID:      "run-1",
@@ -2147,9 +2212,12 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	if got := runtimeProjectionAssistantText(settled.Projection); got != longAssistantAfterPending {
 		t.Fatalf("settled projection assistant text length=%d, want full %d\ntext=%q", len([]rune(got)), len([]rune(longAssistantAfterPending)), got)
 	}
-	readProjection, err := lifecycle.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "thread", TurnID: "turn-1", RunID: "run-1"})
+	readProjection, err := maintenance.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "thread", TurnID: "turn-1", RunID: "run-1"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := maintenance.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "thread", TurnID: "turn-1", RunID: "other-run"}); !errors.Is(err, ErrRunNotFound) {
+		t.Fatalf("ReadTurnProjection wrong run err = %v, want ErrRunNotFound", err)
 	}
 	if item := runtimeProjectionToolItem(readProjection, "exec-1"); item.Status != observation.ActivityStatusSuccess || item.Label != "command completed" {
 		t.Fatalf("read projection item = %#v", item)
@@ -2278,17 +2346,14 @@ func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
 	})
 	rec := &runtimeEventRecorder{}
 	host, err := NewHost(HostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			SystemPrompt: "test",
-		},
-		ModelGateway: gateway,
-		Store:        NewMemoryStore(),
-		Tools:        registry,
-		Approver:     allowRuntimeTools,
-		Sink:         rec,
-		IDGenerator:  deterministicIDs(),
+		Config:               runtimeGatewayConfig("test"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                NewMemoryStore(),
+		Tools:                registry,
+		Approver:             allowRuntimeTools,
+		Sink:                 rec,
+		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2450,14 +2515,11 @@ func TestHostListPendingApprovalsDuringActiveRun(t *testing.T) {
 	requested := make(chan struct{})
 	release := make(chan struct{})
 	host, err := NewHost(HostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			SystemPrompt: "test",
-		},
-		ModelGateway: gateway,
-		Store:        NewMemoryStore(),
-		Tools:        registry,
+		Config:               runtimeGatewayConfig("test"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                NewMemoryStore(),
+		Tools:                registry,
 		Approver: func(ctx context.Context, req tools.ApprovalRequest) (tools.PermissionDecision, error) {
 			if req.ApprovalID != "call-1" || req.HostContext["target"] != "runtime-test" || req.Labels["host.target"] != "runtime-test" {
 				t.Errorf("approval request = %#v", req)
@@ -2771,14 +2833,11 @@ func TestHostProjectionTreatsCoreControlSignalAsControl(t *testing.T) {
 		return events, nil
 	})
 	host, err := NewHost(HostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			SystemPrompt: "test",
-		},
-		ModelGateway: gateway,
-		Store:        NewMemoryStore(),
-		IDGenerator:  deterministicIDs(),
+		Config:               runtimeGatewayConfig("test"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                NewMemoryStore(),
+		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2994,7 +3053,7 @@ func TestHostDeleteThreadCascadesEngineThreadTree(t *testing.T) {
 	}
 }
 
-func TestLifecycleHostDeletesThreadTreeWithoutProviderConfig(t *testing.T) {
+func TestThreadMaintenanceHostDeletesThreadTreeWithoutProviderConfig(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
 	host, err := NewHost(HostOptions{
@@ -3029,18 +3088,21 @@ func TestLifecycleHostDeletesThreadTreeWithoutProviderConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lifecycle, err := NewLifecycleHost(LifecycleHostOptions{Store: store})
+	maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lifecycle.Close()
-	if summary, err := lifecycle.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "parent"}); err != nil || summary.ID != "parent" {
+	defer maintenance.Close()
+	if _, ok := maintenance.(Host); ok {
+		t.Fatalf("ThreadMaintenanceHost must not expose provider execution methods")
+	}
+	if summary, err := maintenance.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "parent"}); err != nil || summary.ID != "parent" {
 		t.Fatalf("EnsureThread summary=%#v err=%v", summary, err)
 	}
-	if closed, err := lifecycle.CloseSubAgents(ctx, CloseSubAgentsRequest{ParentThreadID: "parent", Reason: "cleanup"}); err != nil || len(closed.Snapshots) != 1 {
+	if closed, err := maintenance.CloseSubAgents(ctx, CloseSubAgentsRequest{ParentThreadID: "parent", Reason: "cleanup"}); err != nil || len(closed.Snapshots) != 1 {
 		t.Fatalf("CloseSubAgents result=%#v err=%v", closed, err)
 	}
-	if err := lifecycle.DeleteThread(ctx, "parent"); err != nil {
+	if err := maintenance.DeleteThread(ctx, "parent"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.ReadThread(ctx, "parent"); !errors.Is(err, ErrThreadNotFound) {
@@ -3051,8 +3113,27 @@ func TestLifecycleHostDeletesThreadTreeWithoutProviderConfig(t *testing.T) {
 	}
 }
 
+func TestThreadMaintenanceHostRequiresStore(t *testing.T) {
+	if _, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{}); err == nil || !strings.Contains(err.Error(), "store is required") {
+		t.Fatalf("NewThreadMaintenanceHost err = %v, want store required", err)
+	}
+}
+
 type runtimeEchoArgs struct {
 	Text string `json:"text"`
+}
+
+func runtimeGatewayConfig(systemPrompt string) config.Config {
+	return config.Config{
+		SystemPrompt: strings.TrimSpace(systemPrompt),
+		ContextPolicy: config.ContextPolicy{
+			ContextWindowTokens: config.DefaultContextWindowTokens,
+		},
+	}
+}
+
+func runtimeGatewayIdentity(model string) ModelGatewayIdentity {
+	return ModelGatewayIdentity{Provider: "runtime-test-gateway", Model: strings.TrimSpace(model)}
 }
 
 func runtimeEchoSchema() map[string]any {

@@ -18,9 +18,9 @@ continuation state, and lifecycle observations.
 # Main Entry Points
 
 * `NewHost` creates a durable conversation host.
-* `NewLifecycleHost` creates a provider-free lifecycle host for thread summary,
-  turn projection read-back, pending tool settlement, child close, and thread
-  deletion operations that do not run the model loop.
+* `NewThreadMaintenanceHost` creates a provider-free thread maintenance host for
+  thread summary, turn projection read-back, pending tool settlement, child
+  close, and thread deletion operations that do not run the model loop.
 * `NewMemoryStore` creates an in-memory runtime store for tests or ephemeral use.
 * `OpenSQLiteStore` creates Floret-managed durable runtime storage.
 * `Host.EnsureThread` creates or recovers a hosted thread and returns
@@ -67,6 +67,11 @@ continuation state, and lifecycle observations.
 * `ModelGateway` lets a host supply model transport through
   `HostOptions.ModelGateway` while Floret owns loop control, tool dispatch,
   context lifecycle, and ledgers.
+* `ModelGatewayIdentity` supplies the provider and model names for
+  `ModelGateway` requests and ledgers. Gateway-backed hosts must not set
+  provider transport fields such as provider, model, base URL, API key, or fake
+  response in `HostOptions.Config`; pass the raw non-transport runtime config to
+  `NewHost` and put transport identity only in `HostOptions.ModelGatewayIdentity`.
 * `ToolSurfaceProvider` lets a host refresh the provider-visible local tools,
   hosted tools, system prompt, and host context at provider-loop safe points
   without adding product-specific policy concepts to Floret.
@@ -92,7 +97,10 @@ orchestration prompts.
 When `HostOptions.ModelGateway` is set, hosted parent turns, hosted child turns,
 and hosted title generation all use the supplied model transport. The gateway is
 still invoked with the concrete runtime identity for each request, so a child
-turn uses the child `ThreadID` and prompt scope.
+turn uses the child `ThreadID` and prompt scope. Provider/model identity comes
+from `HostOptions.ModelGatewayIdentity`; gateway-backed hosts pass raw
+non-transport config to `NewHost` and keep provider transport configuration out
+of `HostOptions.Config`.
 
 Child `ThreadID` is the lifecycle target for spawn, send, wait, list, and close.
 Task names and agent paths are reference metadata and may repeat. Queued child
@@ -227,13 +235,16 @@ target thread and Floret-managed descendant child threads, plus their prompt
 cache records and thread artifacts. Hosts should use this public API instead of
 querying or mutating Floret storage tables directly.
 
-`NewLifecycleHost` is the provider-free constructor for lifecycle-only
+`NewThreadMaintenanceHost` is the provider-free constructor for maintenance
 processes that share a Floret `Store` but do not need provider configuration.
 It exposes `EnsureThread`, `ReadTurnProjection`, `SettlePendingTool`,
 `CloseSubAgents`, `DeleteThread`, and `Close` without accepting fake providers,
-model gateways, tools, or host UI options. It exists so reload, pending-work
-settlement, cleanup, and deletion code can stay on the public runtime facade
-without pretending to be a model-running host.
+model gateways, tools, or host UI options. `ThreadMaintenanceHostOptions.Store`
+is required so maintenance code cannot silently operate on an empty ephemeral
+store. The constructor returns an independent `ThreadMaintenanceHost`
+implementation, so reload, pending-work settlement, cleanup, and deletion code
+can stay on the public runtime facade without pretending to be a model-running
+host.
 
 Host facade not-found responses should be handled with `errors.Is` against
 `runtime.ErrThreadNotFound`, `runtime.ErrTurnNotFound`,

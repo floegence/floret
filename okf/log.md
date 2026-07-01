@@ -1,8 +1,15 @@
 # Floret OKF Update Log
 
+## 2026-07-01
+* **Update**: Renamed the provider-free maintenance facade to
+  `NewThreadMaintenanceHost`/`ThreadMaintenanceHost`, documented that it is an
+  independent non-provider host implementation with an explicit required store,
+  and clarified that gateway-backed hosts use `ModelGatewayIdentity` instead of
+  provider transport fields in runtime config.
+
 ## 2026-06-30
-* **Update**: Documented `NewLifecycleHost` as the provider-free public facade
-  for lifecycle-only thread summary, turn projection read-back, pending tool
+* **Update**: Documented the provider-free public facade for thread maintenance
+  summary, turn projection read-back, pending tool
   settlement, child close, and thread-tree deletion paths.
 * **Update**: Documented `ReadTurnProjection`, `ErrTurnNotFound`, and
   `ErrRunNotFound` for durable hosted-turn projection reloads that require

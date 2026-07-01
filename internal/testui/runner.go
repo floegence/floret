@@ -2956,20 +2956,26 @@ func (g *seedThenBlockingTestModelGateway) StreamModel(ctx context.Context, req 
 
 func testuiCompactionHost(sink flruntime.EventSink, gateway flruntime.ModelGateway) (flruntime.Host, error) {
 	return flruntime.NewHost(flruntime.HostOptions{
-		Config:       testuiProjectedCompactionConfig(256000, 100, true),
-		ModelGateway: gateway,
-		Store:        flruntime.NewMemoryStore(),
-		Sink:         sink,
+		Config:               testuiProjectedCompactionConfig(256000, 100, true),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: testuiModelGatewayIdentity(),
+		Store:                flruntime.NewMemoryStore(),
+		Sink:                 sink,
 	})
 }
 
 func testuiCompactionNoopHost(sink flruntime.EventSink, gateway flruntime.ModelGateway) (flruntime.Host, error) {
 	return flruntime.NewHost(flruntime.HostOptions{
-		Config:       testuiProjectedCompactionConfig(256000, 0, false),
-		ModelGateway: gateway,
-		Store:        flruntime.NewMemoryStore(),
-		Sink:         sink,
+		Config:               testuiProjectedCompactionConfig(256000, 0, false),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: testuiModelGatewayIdentity(),
+		Store:                flruntime.NewMemoryStore(),
+		Sink:                 sink,
 	})
+}
+
+func testuiModelGatewayIdentity() flruntime.ModelGatewayIdentity {
+	return flruntime.ModelGatewayIdentity{Provider: "testui-gateway", Model: "testui-model"}
 }
 
 func testuiProjectedCompactionConfig(window int64, compactTarget int64, compactAggressively bool) config.Config {
@@ -2982,8 +2988,6 @@ func testuiProjectedCompactionConfig(window int64, compactTarget int64, compactA
 		userTokens = 20
 	}
 	return config.Config{
-		Provider:     config.ProviderFake,
-		Model:        "fake-model",
 		SystemPrompt: "test ui compaction scenario",
 		ContextPolicy: config.ContextPolicy{
 			ContextWindowTokens:          window,

@@ -564,7 +564,7 @@ func threadTurnProjectionActivityTimeline(meta observation.ActivityRunMeta, deta
 
 func threadTurnProjectionObservationEvent(meta observation.ActivityRunMeta, detail ThreadDetailEvent) (observation.Event, bool) {
 	base := observation.Event{
-		RunID:      firstProjectionNonEmpty(meta.RunID, strings.TrimSpace(string(detail.TurnID))),
+		RunID:      strings.TrimSpace(meta.RunID),
 		ThreadID:   firstProjectionNonEmpty(meta.ThreadID, strings.TrimSpace(string(detail.ThreadID))),
 		TurnID:     firstProjectionNonEmpty(meta.TurnID, strings.TrimSpace(string(detail.TurnID))),
 		TraceID:    strings.TrimSpace(meta.TraceID),

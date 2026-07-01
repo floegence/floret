@@ -17,11 +17,13 @@ provider execution.
 `runtime.Host` is the public durable conversation facade. It starts threads,
 runs turns, retries, completes or settles pending tool work, manages durable
 child threads, deletes thread data, and returns host-safe snapshots.
-`runtime.NewLifecycleHost` is the provider-free variant for lifecycle-only
+`runtime.NewThreadMaintenanceHost` is the provider-free variant for maintenance
 processes that share a Floret store but do not run provider turns. It exposes
 thread summary recovery, turn projection read-back, pending tool settlement,
 parent child-thread closing, and thread-tree deletion without accepting
-provider, model, fake response, gateway, tools, or host UI configuration.
+provider, model, fake response, gateway, tools, or host UI configuration. Its
+store option is required because maintenance paths must target an existing
+Floret store deliberately.
 
 Pending tool completion and pending tool settlement are intentionally separate.
 `CompletePendingTool` creates a provider-visible follow-up turn when the model
@@ -33,6 +35,10 @@ state without resuming the provider loop.
 and hosted title generation through product-owned model transport while Floret
 still owns request construction, provider loop control, ledgers, tool dispatch,
 and runtime events.
+`HostOptions.ModelGatewayIdentity` supplies the provider/model identity for that
+host-owned transport. Gateway-backed hosts keep provider transport settings out
+of `HostOptions.Config`, so fake provider configuration cannot leak into a
+production gateway integration.
 
 `AgentHarness` is the internal durable conversation layer. It owns threads,
 parent-child thread lifecycle, turn lifecycle, retries, forks, titles, and
