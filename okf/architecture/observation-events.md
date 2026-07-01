@@ -57,18 +57,20 @@ reasoning, tool arguments, tool results, and local paths.
 * Thread detail events expose the hosted thread journal path in Floret entry
   ordinal order. `ListThreadDetailEvents` is the durable read model, while
   `runtime.Event.Committed` announces each entry after it is successfully
-  appended. Hosts can use streaming observations for temporary live rendering,
-  then reconcile durable display order from `TurnResult.Projection` or
-  `ProjectThreadTurn` without reading Floret storage internals or rebuilding
-  activity from host audit records. `TurnResult.Projection` and pending
-  settlement projections are built inside the runtime host from raw-capable
+  appended. `runtime.Event.Projection` carries the current hosted-turn display
+  projection on those committed events, so hosts can render live display order
+  without reading Floret storage internals or rebuilding activity from host
+  audit records. `TurnResult.Projection`, pending settlement projections, and
+  live event projections are built inside the runtime host from raw-capable
   current-turn facts, while default detail reads remain bounded previews for
-  inspection surfaces. `ProjectThreadTurn` reduces the ordered
-  detail events for a turn; it does not allow a stale aggregate activity
-  timeline to override later detail facts. Terminal and pending-settlement
-  projections remove running-only metadata such as pending handles and running
-  pending state before hosts receive terminal activity. The read model carries
-  the same Floret-owned row activity projection as subagent detail reads.
+  inspection surfaces. `ProjectThreadTurn` reduces the ordered detail events
+  for a turn; it does not allow a stale aggregate activity timeline to override
+  later detail facts. `runtime.Event.ActivityTimeline` remains lifecycle
+  observation data, not the main display segment-ordering contract. Terminal
+  and pending-settlement projections remove running-only metadata such as
+  pending handles and running pending state before hosts receive terminal
+  activity. The read model carries the same Floret-owned row activity projection
+  as subagent detail reads.
 * Context statuses show projected and provider-reported context pressure.
 * Compaction events expose context compaction lifecycle. A complete compaction
   event means the compacted active context has been rebuilt into a full provider

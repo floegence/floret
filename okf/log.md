@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-07-01
+* **Update**: Documented `runtime.Event.Projection` as the live hosted-turn
+  display projection emitted on committed thread-entry events, with aggregate
+  `ActivityTimeline` retained only for lifecycle observation.
 * **Update**: Extended `ThreadMaintenanceHost` with provider-free subagent list,
   activity timeline, detail, and detail-event read APIs so host UI reload/detail
   paths do not need provider-backed runtime hosts.

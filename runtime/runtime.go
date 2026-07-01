@@ -724,6 +724,7 @@ type Event struct {
 	FinishReason     string                            `json:"finish_reason,omitempty"`
 	Activity         *observation.ActivityPresentation `json:"activity,omitempty"`
 	ActivityTimeline *observation.ActivityTimeline     `json:"activity_timeline,omitempty"`
+	Projection       *ThreadTurnProjection             `json:"projection,omitempty"`
 	Stream           *StreamObservation                `json:"stream,omitempty"`
 	Committed        *ThreadDetailEvent                `json:"committed,omitempty"`
 	ContextStatus    *observation.ContextStatus        `json:"context_status,omitempty"`
@@ -2161,6 +2162,129 @@ func threadDetailCompaction(in *agentharness.SubAgentDetailCompaction) *ThreadDe
 	}
 }
 
+func cloneThreadDetailEvents(in []ThreadDetailEvent) []ThreadDetailEvent {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]ThreadDetailEvent, 0, len(in))
+	for _, ev := range in {
+		out = append(out, cloneThreadDetailEvent(ev))
+	}
+	return out
+}
+
+func cloneThreadDetailEvent(in ThreadDetailEvent) ThreadDetailEvent {
+	return ThreadDetailEvent{
+		ID:               in.ID,
+		Ordinal:          in.Ordinal,
+		ParentID:         in.ParentID,
+		ThreadID:         in.ThreadID,
+		TurnID:           in.TurnID,
+		Kind:             in.Kind,
+		Type:             in.Type,
+		CreatedAt:        in.CreatedAt,
+		Message:          cloneThreadDetailMessage(in.Message),
+		ToolCall:         cloneThreadDetailToolCall(in.ToolCall),
+		ToolResult:       cloneThreadDetailToolResult(in.ToolResult),
+		Approval:         cloneThreadDetailApproval(in.Approval),
+		TurnMarker:       cloneThreadDetailTurnMarker(in.TurnMarker),
+		Compaction:       cloneThreadDetailCompaction(in.Compaction),
+		Error:            in.Error,
+		Metadata:         cloneStringMap(in.Metadata),
+		ActivityTimeline: observation.CloneActivityTimeline(in.ActivityTimeline),
+	}
+}
+
+func cloneThreadDetailMessage(in *ThreadDetailMessage) *ThreadDetailMessage {
+	if in == nil {
+		return nil
+	}
+	return &ThreadDetailMessage{
+		Role:      in.Role,
+		Kind:      in.Kind,
+		Preview:   in.Preview,
+		Content:   in.Content,
+		Reasoning: in.Reasoning,
+		Activity:  cloneActivityPresentation(in.Activity),
+	}
+}
+
+func cloneThreadDetailToolCall(in *ThreadDetailToolCall) *ThreadDetailToolCall {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
+
+func cloneThreadDetailToolResult(in *ThreadDetailToolResult) *ThreadDetailToolResult {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.FullOutput = cloneArtifactRef(in.FullOutput)
+	return &out
+}
+
+func cloneThreadDetailApproval(in *ThreadDetailApproval) *ThreadDetailApproval {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.Metadata = cloneStringMap(in.Metadata)
+	return &out
+}
+
+func cloneThreadDetailTurnMarker(in *ThreadDetailTurnMarker) *ThreadDetailTurnMarker {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.Metadata = cloneStringMap(in.Metadata)
+	return &out
+}
+
+func cloneThreadDetailCompaction(in *ThreadDetailCompaction) *ThreadDetailCompaction {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.KeptUserEntryIDs = append([]string(nil), in.KeptUserEntryIDs...)
+	out.Metadata = cloneStringMap(in.Metadata)
+	return &out
+}
+
+func cloneArtifactRef(in *ArtifactRef) *ArtifactRef {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
+
+func cloneThreadTurnProjectionPtr(in *ThreadTurnProjection) *ThreadTurnProjection {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.Segments = make([]ThreadTurnProjectionSegment, 0, len(in.Segments))
+	for _, segment := range in.Segments {
+		out.Segments = append(out.Segments, cloneThreadTurnProjectionSegment(segment))
+	}
+	return &out
+}
+
+func cloneThreadTurnProjectionSegment(in ThreadTurnProjectionSegment) ThreadTurnProjectionSegment {
+	out := in
+	out.ActivityTimeline = observation.CloneActivityTimeline(in.ActivityTimeline)
+	if in.Signal != nil {
+		signal := *in.Signal
+		out.Signal = &signal
+	}
+	out.EventIDs = append([]string(nil), in.EventIDs...)
+	return out
+}
+
 func subAgentDetailMessage(in *agentharness.SubAgentDetailMessage) *SubAgentDetailMessage {
 	if in == nil {
 		return nil
@@ -2432,15 +2556,20 @@ func emitSkillEvent(sink event.Sink, typ event.Type, metadata map[string]any) {
 }
 
 type runtimeEventSink struct {
-	mu   *sync.Mutex
-	sink EventSink
+	mu         *sync.Mutex
+	sink       EventSink
+	projection *runtimeLiveProjectionRecorder
 }
 
 func newRuntimeEventSink(sink EventSink) runtimeEventSink {
 	if sink == nil {
 		return runtimeEventSink{}
 	}
-	return runtimeEventSink{mu: &sync.Mutex{}, sink: sink}
+	return runtimeEventSink{
+		mu:         &sync.Mutex{},
+		sink:       sink,
+		projection: &runtimeLiveProjectionRecorder{},
+	}
 }
 
 func (s runtimeEventSink) Emit(ev event.Event) {
@@ -2457,6 +2586,9 @@ func (s runtimeEventSink) EmitWithActivityTimeline(ev event.Event, timeline *obs
 	}
 	out := runtimeEvent(ev)
 	out.ActivityTimeline = observation.CloneActivityTimeline(timeline)
+	if s.projection != nil {
+		out.Projection = s.projection.project(out)
+	}
 	s.sink.EmitEvent(out)
 }
 
@@ -2515,6 +2647,40 @@ func runtimeCommittedEvent(raw, sanitized event.Event) *ThreadDetailEvent {
 		out.CreatedAt = sanitized.Timestamp
 	}
 	return &out
+}
+
+type runtimeLiveProjectionRecorder struct {
+	eventsByTurn map[string][]ThreadDetailEvent
+}
+
+func (r *runtimeLiveProjectionRecorder) project(ev Event) *ThreadTurnProjection {
+	if r == nil || ev.Committed == nil {
+		return nil
+	}
+	threadID := strings.TrimSpace(string(ev.ThreadID))
+	turnID := strings.TrimSpace(string(ev.TurnID))
+	runID := strings.TrimSpace(string(ev.RunID))
+	if threadID == "" || turnID == "" || runID == "" {
+		return nil
+	}
+	if r.eventsByTurn == nil {
+		r.eventsByTurn = map[string][]ThreadDetailEvent{}
+	}
+	key := runtimeLiveProjectionTurnKey(threadID, turnID, runID)
+	events := append(r.eventsByTurn[key], cloneThreadDetailEvent(*ev.Committed))
+	r.eventsByTurn[key] = events
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID: ThreadID(threadID),
+		TurnID:   TurnID(turnID),
+		RunID:    RunID(runID),
+		TraceID:  TraceID(runID),
+		Events:   cloneThreadDetailEvents(events),
+	})
+	return cloneThreadTurnProjectionPtr(&projection)
+}
+
+func runtimeLiveProjectionTurnKey(threadID string, turnID string, runID string) string {
+	return threadID + "\x00" + turnID + "\x00" + runID
 }
 
 func runtimeContextStatus(ev event.Event) *observation.ContextStatus {

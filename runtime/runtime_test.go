@@ -1113,6 +1113,7 @@ func TestHostRunTurnCanceledProjectionSettlesPendingActivity(t *testing.T) {
 		}
 	})
 
+	rec := &runtimeEventRecorder{}
 	host, err := NewHost(HostOptions{
 		Config:               runtimeGatewayConfig("test"),
 		ModelGateway:         gateway,
@@ -1120,6 +1121,7 @@ func TestHostRunTurnCanceledProjectionSettlesPendingActivity(t *testing.T) {
 		Store:                NewMemoryStore(),
 		Tools:                registry,
 		Approver:             allowRuntimeTools,
+		Sink:                 rec,
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
@@ -1180,6 +1182,11 @@ func TestHostRunTurnCanceledProjectionSettlesPendingActivity(t *testing.T) {
 	}
 	if toolItem.Status != observation.ActivityStatusCanceled || toolItem.EndedAtUnixMS == 0 {
 		t.Fatalf("tool item = %#v, want canceled terminal item", toolItem)
+	}
+	if item := runtimeLiveProjectionItem(rec.snapshot(), "exec-1"); item.ToolID != "exec-1" ||
+		item.Status != observation.ActivityStatusCanceled ||
+		item.EndedAtUnixMS == 0 {
+		t.Fatalf("live canceled projection item = %#v", item)
 	}
 	for _, key := range []string{"pending_tool_result", "pending_handle", "pending_state"} {
 		if _, ok := toolItem.Metadata[key]; ok {
@@ -2483,10 +2490,17 @@ func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
 	}
 
 	var committed []string
+	committedEvents := 0
+	var liveProjections []ThreadTurnProjection
 	for _, ev := range rec.events {
 		if ev.Committed == nil {
 			continue
 		}
+		committedEvents++
+		if ev.Projection == nil {
+			t.Fatalf("committed event missing live projection: %#v", ev)
+		}
+		liveProjections = append(liveProjections, *ev.Projection)
 		switch ev.Committed.Kind {
 		case ThreadDetailEventAssistantMessage:
 			committed = append(committed, "assistant:"+ev.Committed.Message.Content)
@@ -2498,6 +2512,22 @@ func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
 	}
 	if !slices.Equal(committed, want) {
 		t.Fatalf("committed order = %#v, want %#v", committed, want)
+	}
+	if len(liveProjections) != committedEvents {
+		t.Fatalf("live projections=%d, want one per committed event %d", len(liveProjections), committedEvents)
+	}
+	finalLiveProjection := liveProjections[len(liveProjections)-1]
+	if got := runtimeProjectionSegmentKinds(finalLiveProjection.Segments); !slices.Equal(got, runtimeProjectionSegmentKinds(result.Projection.Segments)) {
+		t.Fatalf("final live projection segments = %#v, want %#v", got, runtimeProjectionSegmentKinds(result.Projection.Segments))
+	}
+	if runtimeProjectionAssistantText(finalLiveProjection) != result.Output {
+		t.Fatalf("final live projection text = %q, want %q", runtimeProjectionAssistantText(finalLiveProjection), result.Output)
+	}
+	if item := runtimeProjectionToolItem(finalLiveProjection, "call-1"); item.ToolID != "call-1" || item.Status != observation.ActivityStatusSuccess {
+		t.Fatalf("final live projection call-1 item = %#v", item)
+	}
+	if item := runtimeProjectionToolItem(finalLiveProjection, "call-2"); item.ToolID != "call-2" || item.Status != observation.ActivityStatusSuccess {
+		t.Fatalf("final live projection call-2 item = %#v", item)
 	}
 	if !slices.ContainsFunc(rec.events, func(ev Event) bool {
 		return ev.Committed != nil &&
@@ -2558,6 +2588,7 @@ func TestHostListPendingApprovalsDuringActiveRun(t *testing.T) {
 	})
 	requested := make(chan struct{})
 	release := make(chan struct{})
+	rec := &runtimeEventRecorder{}
 	host, err := NewHost(HostOptions{
 		Config:               runtimeGatewayConfig("test"),
 		ModelGateway:         gateway,
@@ -2576,6 +2607,7 @@ func TestHostListPendingApprovalsDuringActiveRun(t *testing.T) {
 				return tools.PermissionDecision{}, ctx.Err()
 			}
 		},
+		Sink:        rec,
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -2602,6 +2634,12 @@ func TestHostListPendingApprovalsDuringActiveRun(t *testing.T) {
 	case <-requested:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for approval request")
+	}
+	if item := runtimeLiveProjectionItem(rec.snapshot(), "call-1"); item.ToolID != "call-1" ||
+		item.Status != observation.ActivityStatusWaiting ||
+		!item.RequiresApproval ||
+		item.ApprovalState != "requested" {
+		t.Fatalf("live approval projection item = %#v", item)
 	}
 	pending, err := host.ListPendingApprovals(ctx, ListPendingApprovalsRequest{ThreadID: "thread"})
 	if err != nil {
@@ -3275,6 +3313,18 @@ func runtimeProjectionToolItem(projection ThreadTurnProjection, toolID string) o
 			if item.ToolID == toolID {
 				return item
 			}
+		}
+	}
+	return observation.ActivityItem{}
+}
+
+func runtimeLiveProjectionItem(events []Event, toolID string) observation.ActivityItem {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Projection == nil {
+			continue
+		}
+		if item := runtimeProjectionToolItem(*events[i].Projection, toolID); item.ToolID != "" {
+			return item
 		}
 	}
 	return observation.ActivityItem{}

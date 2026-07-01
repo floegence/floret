@@ -152,13 +152,14 @@ run failures. This is Floret's public read model for durable execution
 transcript facts. `ThreadTurnProjection` is the public display projection over
 those facts: `RunTurn`, `RetryTurn`, and `CompletePendingTool` return it on
 `TurnResult`, `SettlePendingTool` returns it on `PendingToolSettlementResult`,
-hosts with live committed events may call `ProjectThreadTurn`, and hosts with a
-known `ThreadID`, `TurnID`, and `RunID` may call `ReadTurnProjection` to rebuild
-the turn display projection from durable Floret detail after reload. Runtime
-turn-result, pending-settlement, and read-back projections are canonical
-current-turn display projections built by the Floret host from raw-capable
-journal facts; the default preview-only detail read model is for listing and
-inspection, not for authoritative assistant markdown.
+`runtime.Event.Projection` carries the current live projection on committed
+thread-entry events, and hosts with a known `ThreadID`, `TurnID`, and `RunID`
+may call `ReadTurnProjection` to rebuild the turn display projection from
+durable Floret detail after reload. Runtime live, turn-result,
+pending-settlement, and read-back projections are canonical current-turn
+display projections built by the Floret host from raw-capable journal facts;
+the default preview-only detail read model is for listing and inspection, not
+for authoritative assistant markdown.
 `ReadTurnProjection` requires explicit `RunID` input instead of inferring it
 from stored rows, because `RunID` is execution identity and not the thread or
 turn storage identity. A missing thread is reported with `ErrThreadNotFound`; a
@@ -192,17 +193,19 @@ custom journal entry projected as a `tool_result` detail event, updates the
 original activity item for the same tool id, removes running-only metadata, and
 does not enter provider-visible history.
 
-`runtime.Event.ActivityTimeline` is Floret's live projection for tool,
-approval, control, budget, and run-end lifecycle facts. It is generated from the
-same sanitized observation events used for terminal `TurnResult` activity, so a
-host can render a running tool row before the tool result arrives and then
-replace that row with the terminal projection. Tool call and tool result detail
-entries preserve the original lifecycle event time rather than the later batch
-append time; `ProjectThreadTurn` uses those event times plus result duration
-facts to keep final item intervals consistent. Invocation presentation stored
-on a tool call message is merged with result presentation for the same tool id,
-so final rows keep command labels and payload while adding terminal result
-chips and payload fields.
+`runtime.Event.ActivityTimeline` remains Floret's live lifecycle observation
+for tool, approval, control, budget, and run-end facts. It is generated from the
+same sanitized observation events used for terminal `TurnResult` activity, but
+it is not the display segment ordering contract for a hosted turn. Hosts should
+use `runtime.Event.Projection`, terminal `TurnResult.Projection`, settlement
+projections, or `ReadTurnProjection` for the main thread display and treat the
+aggregate live timeline as observation/diagnostic state. Tool call and tool
+result detail entries preserve the original lifecycle event time rather than
+the later batch append time; `ProjectThreadTurn` uses those event times plus
+result duration facts to keep final item intervals consistent. Invocation
+presentation stored on a tool call message is merged with result presentation
+for the same tool id, so final rows keep command labels and payload while
+adding terminal result chips and payload fields.
 
 Terminal turn results, including cancelled turns, still return a bounded
 `ThreadTurnProjection`. Failed and cancelled terminal markers settle unresolved
