@@ -1840,7 +1840,7 @@ func subAgentActivityTimeline(meta observation.ActivityRunMeta, snapshots []agen
 			}
 		}
 		title := firstRuntimeNonEmpty(strings.TrimSpace(snapshot.TaskName), strings.TrimSpace(snapshot.Path), strings.TrimSpace(snapshot.ThreadID), "Subagent")
-		description := firstRuntimeNonEmpty(strings.TrimSpace(snapshot.LastMessage), strings.TrimSpace(string(snapshot.Status)))
+		description := strings.TrimSpace(snapshot.TaskDescription)
 		timeline.Items = append(timeline.Items, observation.ActivityItem{
 			ItemID:           "subagent:" + stableSubAgentActivityHash(snapshot.ThreadID),
 			ToolID:           "subagents",

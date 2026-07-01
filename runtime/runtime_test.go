@@ -1199,7 +1199,7 @@ func TestSubAgentActivityTimelineProjectsStatusSummary(t *testing.T) {
 	base := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
 	snapshots := []agentharness.SubAgentSnapshot{
 		{ThreadID: "completed", TaskName: "completed task", TaskDescription: "Check the completed path.", ParentThreadID: "parent", Status: agentharness.SubAgentStatusCompleted, LastMessage: "done", CreatedAt: base.Add(-8 * time.Minute), UpdatedAt: base.Add(-7 * time.Minute)},
-		{ThreadID: "running", TaskName: "running task", ParentThreadID: "parent", Status: agentharness.SubAgentStatusRunning, LastMessage: "working", CreatedAt: base.Add(-6 * time.Minute), UpdatedAt: base.Add(-1 * time.Minute)},
+		{ThreadID: "running", TaskName: "running task", TaskDescription: "Keep checking the running path.", ParentThreadID: "parent", Status: agentharness.SubAgentStatusRunning, LastMessage: "working", CreatedAt: base.Add(-6 * time.Minute), UpdatedAt: base.Add(-1 * time.Minute)},
 		{ThreadID: "waiting", TaskName: "waiting task", ParentThreadID: "parent", Status: agentharness.SubAgentStatusWaiting, WaitingPrompt: "need input", CreatedAt: base.Add(-5 * time.Minute), UpdatedAt: base.Add(-2 * time.Minute)},
 		{ThreadID: "failed", TaskName: "failed task", ParentThreadID: "parent", Status: agentharness.SubAgentStatusFailed, LastMessage: "failed", CreatedAt: base.Add(-4 * time.Minute), UpdatedAt: base.Add(-3 * time.Minute)},
 		{ThreadID: "cancelled", TaskName: "cancelled task", ParentThreadID: "parent", Status: agentharness.SubAgentStatusCancelled, CreatedAt: base.Add(-3 * time.Minute), UpdatedAt: base.Add(-4 * time.Minute)},
@@ -1232,14 +1232,23 @@ func TestSubAgentActivityTimelineProjectsStatusSummary(t *testing.T) {
 	if timeline.Items[0].Status != observation.ActivityStatusWaiting {
 		t.Fatalf("interrupted status=%q, want waiting", timeline.Items[0].Status)
 	}
+	foundDisplay := false
 	foundDescription := false
 	for _, item := range timeline.Items {
 		if item.Payload["subagent_id"] == "completed" {
 			foundDescription = item.Payload["task_description"] == "Check the completed path."
 		}
+		if item.Payload["subagent_id"] == "running" {
+			foundDisplay = item.Label == "running task" &&
+				item.Description == "Keep checking the running path." &&
+				item.Description != "working"
+		}
 	}
 	if !foundDescription {
 		t.Fatalf("subagent task description missing from payload: %#v", timeline.Items)
+	}
+	if !foundDisplay {
+		t.Fatalf("subagent timeline display did not use task name/description: %#v", timeline.Items)
 	}
 	for _, item := range timeline.Items {
 		if _, ok := item.Payload["operation"]; ok {
@@ -1403,7 +1412,11 @@ func TestHostManagesSubAgentLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(timeline.Timeline.Items) != 1 || timeline.Timeline.Items[0].Payload["fork_mode"] != string(SubAgentForkNone) || timeline.Timeline.Items[0].Payload["task_description"] != "Review the runtime API boundary." {
+	if len(timeline.Timeline.Items) != 1 ||
+		timeline.Timeline.Items[0].Label != "review_api" ||
+		timeline.Timeline.Items[0].Description != "Review the runtime API boundary." ||
+		timeline.Timeline.Items[0].Payload["fork_mode"] != string(SubAgentForkNone) ||
+		timeline.Timeline.Items[0].Payload["task_description"] != "Review the runtime API boundary." {
 		t.Fatalf("activity timeline fork mode missing: %#v", timeline.Timeline.Items)
 	}
 

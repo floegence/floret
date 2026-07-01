@@ -392,6 +392,9 @@ Use `ListSubAgentActivityTimeline` when a host UI needs a parent-scoped activity
 summary for all child threads. The returned `observation.ActivityTimeline` is
 derived from Floret child snapshots and contains product-neutral child-thread
 facts such as task name, task description, status, timing, and lifecycle state.
+Activity item labels use the task name, and descriptions use the task
+description; live progress, final handoff text, and product actions belong in
+the host's detail surface rather than this parent summary.
 Hosts may wrap those facts in their own display actions and routing; Floret does
 not emit product UI actions, window targets, or downstream-specific presentation
 copy.
