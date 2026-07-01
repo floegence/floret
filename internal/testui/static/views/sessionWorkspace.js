@@ -64,6 +64,7 @@ export function bindSessionWorkspace(root, handlers) {
     const form = event.currentTarget;
     const payload = {
       task_name: form.elements.task_name.value.trim(),
+      task_description: form.elements.task_description.value.trim(),
       host_profile_ref: form.elements.host_profile_ref.value.trim(),
       fork_mode: form.elements.fork_mode.value,
       message: form.elements.message.value.trim(),
@@ -76,6 +77,7 @@ export function bindSessionWorkspace(root, handlers) {
     const form = event.currentTarget;
     handlers.onSubagentSpawnDraft(state.activeSession?.id || "", {
       task_name: form.elements.task_name.value,
+      task_description: form.elements.task_description.value,
       host_profile_ref: form.elements.host_profile_ref.value,
       fork_mode: form.elements.fork_mode.value,
       message: form.elements.message.value,
@@ -255,6 +257,7 @@ function renderSubagentPanel(session) {
       </div>
       <form class="subagent-spawn-form" data-subagent-spawn-form>
         <input name="task_name" placeholder="task name" value="${escapeHTML(spawnDraft.task_name || "")}" ${busy ? "disabled" : ""} />
+        <input name="task_description" placeholder="what should this subagent own?" value="${escapeHTML(spawnDraft.task_description || "")}" ${busy ? "disabled" : ""} />
         <select name="host_profile_ref" ${busy ? "disabled" : ""}>
           ${["host-ref:explore", "host-ref:work", "host-ref:review"].map((ref) => `<option value="${ref}" ${String(spawnDraft.host_profile_ref || "host-ref:work") === ref ? "selected" : ""}>${ref}</option>`).join("")}
         </select>
@@ -297,6 +300,7 @@ function renderSubagentCard(session, item) {
       <div class="subagent-card-main">
         <div>
           <strong>${escapeHTML(item.task_name || item.path || "subagent")}</strong>
+          ${item.task_description ? `<span>${escapeHTML(item.task_description)}</span>` : ""}
           <span>${escapeHTML(item.path || item.thread_id || "")}</span>
         </div>
         <div class="subagent-pills">
@@ -339,6 +343,7 @@ function renderSubagentDetail(session, target, detail) {
       <div class="subagent-detail-head">
         <div>
           <strong>${escapeHTML(snapshot.task_name || snapshot.path || target || "subagent")}</strong>
+          ${snapshot.task_description ? `<span>${escapeHTML(snapshot.task_description)}</span>` : ""}
           <span>${escapeHTML(snapshot.thread_id || target)} · ${events.length} event${events.length === 1 ? "" : "s"}</span>
         </div>
         <span class="tiny-pill" title="${escapeHTML(generated)}">ordinal ${escapeHTML(detail.next_ordinal || 0)}</span>

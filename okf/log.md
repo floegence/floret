@@ -1,6 +1,8 @@
 # Floret OKF Update Log
 
 ## 2026-07-01
+* **Update**: Documented neutral subagent task descriptions as durable runtime
+  metadata while keeping product UI routing and presentation outside Floret.
 * **Update**: Documented neutral pre-dispatch local tool error activity payloads
   so framework-layer failures still expose sanitized failure reasons in activity
   timelines without adding downstream UI policy to Floret.

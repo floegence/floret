@@ -685,13 +685,14 @@ func (r *Runner) SpawnAgentSessionSubAgent(ctx context.Context, sessionID string
 	}
 	defer sess.mu.Unlock()
 	snapshot, err := sess.harness.SpawnSubAgent(ctx, agentharness.SpawnSubAgentOptions{
-		ParentThreadID: sess.id,
-		ParentTurnID:   strings.TrimSpace(req.ParentTurnID),
-		ThreadID:       strings.TrimSpace(req.ThreadID),
-		TaskName:       req.TaskName,
-		Message:        req.Message,
-		HostProfileRef: req.HostProfileRef,
-		ForkMode:       req.ForkMode,
+		ParentThreadID:  sess.id,
+		ParentTurnID:    strings.TrimSpace(req.ParentTurnID),
+		ThreadID:        strings.TrimSpace(req.ThreadID),
+		TaskName:        req.TaskName,
+		TaskDescription: req.TaskDescription,
+		Message:         req.Message,
+		HostProfileRef:  req.HostProfileRef,
+		ForkMode:        req.ForkMode,
 	})
 	if err != nil {
 		return AgentSubAgentActionResponse{}, err
@@ -836,18 +837,19 @@ func subAgentSnapshotsFromRepo(ctx context.Context, repo sessiontree.Repo, paren
 			status = agentharness.SubAgentStatusClosed
 		}
 		out = append(out, agentharness.SubAgentSnapshot{
-			ThreadID:       meta.ID,
-			Path:           meta.AgentPath,
-			TaskName:       meta.TaskName,
-			ParentThreadID: meta.ParentThreadID,
-			ParentTurnID:   meta.ParentTurnID,
-			HostProfileRef: meta.HostProfileRef,
-			Status:         status,
-			CreatedAt:      meta.CreatedAt,
-			UpdatedAt:      meta.UpdatedAt,
-			Closed:         meta.Closed,
-			CanSendInput:   !meta.Closed,
-			CanClose:       !meta.Closed,
+			ThreadID:        meta.ID,
+			Path:            meta.AgentPath,
+			TaskName:        meta.TaskName,
+			TaskDescription: meta.TaskDescription,
+			ParentThreadID:  meta.ParentThreadID,
+			ParentTurnID:    meta.ParentTurnID,
+			HostProfileRef:  meta.HostProfileRef,
+			Status:          status,
+			CreatedAt:       meta.CreatedAt,
+			UpdatedAt:       meta.UpdatedAt,
+			Closed:          meta.Closed,
+			CanSendInput:    !meta.Closed,
+			CanClose:        !meta.Closed,
 		})
 	}
 	slices.SortFunc(out, func(a, b agentharness.SubAgentSnapshot) int {

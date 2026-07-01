@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	schemaVersion     = "8"
+	schemaVersion     = "9"
 	rawEncoderVersion = "1"
 	driverName        = "sqlite"
 )
@@ -202,8 +202,14 @@ func (s *Store) migrate(ctx context.Context, current string) error {
 			if err := addColumnIfMissing(ctx, tx, "threads", "fork_mode", `ALTER TABLE threads ADD COLUMN fork_mode TEXT NOT NULL DEFAULT ''`); err != nil {
 				return fmt.Errorf("migrate v7→v8 add fork_mode column: %w", err)
 			}
+			current = "8"
+		}
+		if current == "8" {
+			if err := addColumnIfMissing(ctx, tx, "threads", "task_description", `ALTER TABLE threads ADD COLUMN task_description TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("migrate v8→v9 add task_description column: %w", err)
+			}
 			if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_version'`, schemaVersion); err != nil {
-				return fmt.Errorf("migrate v7→v8 update schema_version: %w", err)
+				return fmt.Errorf("migrate v8→v9 update schema_version: %w", err)
 			}
 			return nil
 		}
@@ -478,7 +484,7 @@ func (s *Store) ListThreads(ctx context.Context, opts sessiontree.ListThreadsOpt
 	}
 	query := `SELECT
 			id, leaf_id, parent_thread_id, parent_turn_id, forked_from_thread_id, forked_from_entry_id,
-			task_name, agent_path, host_profile_ref, fork_mode, closed, archived,
+			task_name, task_description, agent_path, host_profile_ref, fork_mode, closed, archived,
 			title, title_status, title_source, title_updated_at, title_error,
 			created_at, updated_at, status, last_viewed_at
 			FROM threads`
@@ -1090,12 +1096,12 @@ func (s *Store) artifactText(ctx context.Context, id string) (string, bool, erro
 func insertThread(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO threads(
 		id, leaf_id, parent_thread_id, parent_turn_id, forked_from_thread_id, forked_from_entry_id,
-		task_name, agent_path, host_profile_ref, fork_mode, closed, archived,
+		task_name, task_description, agent_path, host_profile_ref, fork_mode, closed, archived,
 		title, title_status, title_source, title_updated_at, title_error,
 		created_at, updated_at, status, last_viewed_at
-	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		meta.ID, meta.LeafID, meta.ParentThreadID, meta.ParentTurnID, meta.ForkedFromThreadID, meta.ForkedFromEntryID,
-		meta.TaskName, meta.AgentPath, meta.HostProfileRef, meta.ForkMode, boolInt(meta.Closed), boolInt(meta.Archived),
+		meta.TaskName, meta.TaskDescription, meta.AgentPath, meta.HostProfileRef, meta.ForkMode, boolInt(meta.Closed), boolInt(meta.Archived),
 		meta.Title, string(meta.TitleStatus), string(meta.TitleSource), formatTime(meta.TitleUpdatedAt), meta.TitleError,
 		formatTime(meta.CreatedAt), formatTime(meta.UpdatedAt), meta.Status, formatTime(meta.LastViewedAt))
 	return err
@@ -1119,12 +1125,12 @@ func loadTurnLease(ctx context.Context, q sqlRunner, threadID string) (sessiontr
 func updateThread(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta) error {
 	_, err := tx.ExecContext(ctx, `UPDATE threads SET
 		leaf_id = ?, parent_thread_id = ?, parent_turn_id = ?, forked_from_thread_id = ?, forked_from_entry_id = ?,
-		task_name = ?, agent_path = ?, host_profile_ref = ?, fork_mode = ?, closed = ?, archived = ?,
+		task_name = ?, task_description = ?, agent_path = ?, host_profile_ref = ?, fork_mode = ?, closed = ?, archived = ?,
 		title = ?, title_status = ?, title_source = ?, title_updated_at = ?, title_error = ?,
 		created_at = ?, updated_at = ?, status = ?, last_viewed_at = ?
 		WHERE id = ?`,
 		meta.LeafID, meta.ParentThreadID, meta.ParentTurnID, meta.ForkedFromThreadID, meta.ForkedFromEntryID,
-		meta.TaskName, meta.AgentPath, meta.HostProfileRef, meta.ForkMode, boolInt(meta.Closed), boolInt(meta.Archived),
+		meta.TaskName, meta.TaskDescription, meta.AgentPath, meta.HostProfileRef, meta.ForkMode, boolInt(meta.Closed), boolInt(meta.Archived),
 		meta.Title, string(meta.TitleStatus), string(meta.TitleSource), formatTime(meta.TitleUpdatedAt), meta.TitleError,
 		formatTime(meta.CreatedAt), formatTime(meta.UpdatedAt), meta.Status, formatTime(meta.LastViewedAt), meta.ID)
 	return err
@@ -1133,7 +1139,7 @@ func updateThread(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta
 func loadThread(ctx context.Context, q sqlRunner, threadID string) (sessiontree.ThreadMeta, error) {
 	meta, err := scanThreadMeta(q.QueryRowContext(ctx, `SELECT
 		id, leaf_id, parent_thread_id, parent_turn_id, forked_from_thread_id, forked_from_entry_id,
-		task_name, agent_path, host_profile_ref, fork_mode, closed, archived,
+		task_name, task_description, agent_path, host_profile_ref, fork_mode, closed, archived,
 		title, title_status, title_source, title_updated_at, title_error,
 		created_at, updated_at, status, last_viewed_at
 		FROM threads WHERE id = ?`, threadID))
@@ -1149,7 +1155,7 @@ func scanThreadMeta(scanner rowScanner) (sessiontree.ThreadMeta, error) {
 	var titleStatus, titleSource, titleUpdated, created, updated, status, lastViewed string
 	err := scanner.Scan(
 		&meta.ID, &meta.LeafID, &meta.ParentThreadID, &meta.ParentTurnID, &meta.ForkedFromThreadID, &meta.ForkedFromEntryID,
-		&meta.TaskName, &meta.AgentPath, &meta.HostProfileRef, &meta.ForkMode, &closed, &archived,
+		&meta.TaskName, &meta.TaskDescription, &meta.AgentPath, &meta.HostProfileRef, &meta.ForkMode, &closed, &archived,
 		&meta.Title, &titleStatus, &titleSource, &titleUpdated, &meta.TitleError,
 		&created, &updated, &status, &lastViewed,
 	)
@@ -1527,6 +1533,7 @@ const schemaSQL = schemaMetaSQL + `
 		forked_from_thread_id TEXT NOT NULL DEFAULT '',
 		forked_from_entry_id TEXT NOT NULL DEFAULT '',
 		task_name TEXT NOT NULL DEFAULT '',
+		task_description TEXT NOT NULL DEFAULT '',
 		agent_path TEXT NOT NULL DEFAULT '',
 		host_profile_ref TEXT NOT NULL DEFAULT '',
 		fork_mode TEXT NOT NULL DEFAULT '',

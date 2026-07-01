@@ -93,6 +93,7 @@ type ThreadMeta struct {
 	ForkedFromThreadID string            `json:"forked_from_thread_id,omitempty"`
 	ForkedFromEntryID  string            `json:"forked_from_entry_id,omitempty"`
 	TaskName           string            `json:"task_name,omitempty"`
+	TaskDescription    string            `json:"task_description,omitempty"`
 	AgentPath          string            `json:"agent_path,omitempty"`
 	HostProfileRef     string            `json:"host_profile_ref,omitempty"`
 	ForkMode           string            `json:"fork_mode,omitempty"`

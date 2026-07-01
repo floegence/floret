@@ -1330,6 +1330,7 @@ func updateThreadTitle(ctx context.Context, repo sessiontree.Repo, meta sessiont
 	meta.ForkedFromThreadID = current.ForkedFromThreadID
 	meta.ForkedFromEntryID = current.ForkedFromEntryID
 	meta.TaskName = current.TaskName
+	meta.TaskDescription = current.TaskDescription
 	meta.AgentPath = current.AgentPath
 	meta.HostProfileRef = current.HostProfileRef
 	meta.Closed = current.Closed

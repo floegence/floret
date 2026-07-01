@@ -112,14 +112,15 @@ const (
 )
 
 type SpawnSubAgentOptions struct {
-	ParentThreadID string
-	ParentTurnID   string
-	ThreadID       string
-	TaskName       string
-	Message        string
-	HostProfileRef string
-	ForkMode       SubAgentForkMode
-	Labels         engine.RunLabels
+	ParentThreadID  string
+	ParentTurnID    string
+	ThreadID        string
+	TaskName        string
+	TaskDescription string
+	Message         string
+	HostProfileRef  string
+	ForkMode        SubAgentForkMode
+	Labels          engine.RunLabels
 }
 
 type SendSubAgentInputOptions struct {
@@ -168,24 +169,25 @@ type ListThreadDetailEventsOptions struct {
 }
 
 type SubAgentSnapshot struct {
-	ThreadID       string           `json:"thread_id"`
-	Path           string           `json:"path"`
-	TaskName       string           `json:"task_name"`
-	ParentThreadID string           `json:"parent_thread_id"`
-	ParentTurnID   string           `json:"parent_turn_id,omitempty"`
-	HostProfileRef string           `json:"host_profile_ref,omitempty"`
-	ForkMode       SubAgentForkMode `json:"fork_mode,omitempty"`
-	Status         SubAgentStatus   `json:"status"`
-	LatestTurnID   string           `json:"latest_turn_id,omitempty"`
-	LastMessage    string           `json:"last_message,omitempty"`
-	WaitingPrompt  string           `json:"waiting_prompt,omitempty"`
-	QueuedInputs   int              `json:"queued_inputs,omitempty"`
-	CreatedAt      time.Time        `json:"created_at"`
-	UpdatedAt      time.Time        `json:"updated_at"`
-	Closed         bool             `json:"closed,omitempty"`
-	CanSendInput   bool             `json:"can_send_input"`
-	CanInterrupt   bool             `json:"can_interrupt"`
-	CanClose       bool             `json:"can_close"`
+	ThreadID        string           `json:"thread_id"`
+	Path            string           `json:"path"`
+	TaskName        string           `json:"task_name"`
+	TaskDescription string           `json:"task_description,omitempty"`
+	ParentThreadID  string           `json:"parent_thread_id"`
+	ParentTurnID    string           `json:"parent_turn_id,omitempty"`
+	HostProfileRef  string           `json:"host_profile_ref,omitempty"`
+	ForkMode        SubAgentForkMode `json:"fork_mode,omitempty"`
+	Status          SubAgentStatus   `json:"status"`
+	LatestTurnID    string           `json:"latest_turn_id,omitempty"`
+	LastMessage     string           `json:"last_message,omitempty"`
+	WaitingPrompt   string           `json:"waiting_prompt,omitempty"`
+	QueuedInputs    int              `json:"queued_inputs,omitempty"`
+	CreatedAt       time.Time        `json:"created_at"`
+	UpdatedAt       time.Time        `json:"updated_at"`
+	Closed          bool             `json:"closed,omitempty"`
+	CanSendInput    bool             `json:"can_send_input"`
+	CanInterrupt    bool             `json:"can_interrupt"`
+	CanClose        bool             `json:"can_close"`
 }
 
 type WaitSubAgentsResult struct {
@@ -355,6 +357,7 @@ func (h *AgentHarness) SpawnSubAgent(ctx context.Context, opts SpawnSubAgentOpti
 	if err != nil {
 		return SubAgentSnapshot{}, err
 	}
+	taskDescription := strings.TrimSpace(opts.TaskDescription)
 	parentMeta, err := h.options.Repo.Thread(ctx, parentID)
 	if err != nil {
 		return SubAgentSnapshot{}, err
@@ -376,15 +379,16 @@ func (h *AgentHarness) SpawnSubAgent(ctx context.Context, opts SpawnSubAgentOpti
 	switch forkMode {
 	case SubAgentForkNone:
 		meta := sessiontree.ThreadMeta{
-			ID:             childID,
-			ParentThreadID: parentID,
-			ParentTurnID:   strings.TrimSpace(opts.ParentTurnID),
-			TaskName:       taskName,
-			AgentPath:      path,
-			HostProfileRef: strings.TrimSpace(opts.HostProfileRef),
-			ForkMode:       string(forkMode),
-			CreatedAt:      now,
-			UpdatedAt:      now,
+			ID:              childID,
+			ParentThreadID:  parentID,
+			ParentTurnID:    strings.TrimSpace(opts.ParentTurnID),
+			TaskName:        taskName,
+			TaskDescription: taskDescription,
+			AgentPath:       path,
+			HostProfileRef:  strings.TrimSpace(opts.HostProfileRef),
+			ForkMode:        string(forkMode),
+			CreatedAt:       now,
+			UpdatedAt:       now,
 		}
 		if _, err := h.options.Repo.CreateThread(ctx, meta); err != nil {
 			return SubAgentSnapshot{}, err
@@ -406,6 +410,7 @@ func (h *AgentHarness) SpawnSubAgent(ctx context.Context, opts SpawnSubAgentOpti
 		meta.ParentThreadID = parentID
 		meta.ParentTurnID = strings.TrimSpace(opts.ParentTurnID)
 		meta.TaskName = taskName
+		meta.TaskDescription = taskDescription
 		meta.AgentPath = path
 		meta.HostProfileRef = strings.TrimSpace(opts.HostProfileRef)
 		meta.ForkMode = string(forkMode)
@@ -418,10 +423,11 @@ func (h *AgentHarness) SpawnSubAgent(ctx context.Context, opts SpawnSubAgentOpti
 		return SubAgentSnapshot{}, fmt.Errorf("unsupported subagent fork mode %q", forkMode)
 	}
 	ctrl, err := h.ensureSubAgentController(ctx, sessiontree.ThreadMeta{
-		ID:             childID,
-		ParentThreadID: parentID,
-		TaskName:       taskName,
-		AgentPath:      path,
+		ID:              childID,
+		ParentThreadID:  parentID,
+		TaskName:        taskName,
+		TaskDescription: taskDescription,
+		AgentPath:       path,
 	}, thread)
 	if err != nil {
 		return SubAgentSnapshot{}, err
@@ -434,6 +440,7 @@ func (h *AgentHarness) SpawnSubAgent(ctx context.Context, opts SpawnSubAgentOpti
 			"subagent_thread_id": childID,
 			"subagent_path":      path,
 			"task_name":          taskName,
+			"task_description":   taskDescription,
 			"host_profile_ref":   strings.TrimSpace(opts.HostProfileRef),
 		},
 	})
@@ -1779,42 +1786,44 @@ func (h *AgentHarness) subAgentSnapshotFromMeta(ctx context.Context, meta sessio
 			}
 		}
 		return SubAgentSnapshot{
-			ThreadID:       meta.ID,
-			Path:           meta.AgentPath,
-			TaskName:       meta.TaskName,
-			ParentThreadID: meta.ParentThreadID,
-			ParentTurnID:   meta.ParentTurnID,
-			HostProfileRef: meta.HostProfileRef,
-			ForkMode:       SubAgentForkMode(meta.ForkMode),
-			Status:         status,
-			LatestTurnID:   read.LatestTurnID,
-			LastMessage:    latestSubAgentMessage(read.Messages),
-			WaitingPrompt:  read.WaitingPrompt,
-			QueuedInputs:   queued,
-			CreatedAt:      meta.CreatedAt,
-			UpdatedAt:      meta.UpdatedAt,
-			Closed:         meta.Closed,
-			CanSendInput:   !meta.Closed,
-			CanInterrupt:   !meta.Closed && status == SubAgentStatusRunning,
-			CanClose:       !meta.Closed,
+			ThreadID:        meta.ID,
+			Path:            meta.AgentPath,
+			TaskName:        meta.TaskName,
+			TaskDescription: meta.TaskDescription,
+			ParentThreadID:  meta.ParentThreadID,
+			ParentTurnID:    meta.ParentTurnID,
+			HostProfileRef:  meta.HostProfileRef,
+			ForkMode:        SubAgentForkMode(meta.ForkMode),
+			Status:          status,
+			LatestTurnID:    read.LatestTurnID,
+			LastMessage:     latestSubAgentMessage(read.Messages),
+			WaitingPrompt:   read.WaitingPrompt,
+			QueuedInputs:    queued,
+			CreatedAt:       meta.CreatedAt,
+			UpdatedAt:       meta.UpdatedAt,
+			Closed:          meta.Closed,
+			CanSendInput:    !meta.Closed,
+			CanInterrupt:    !meta.Closed && status == SubAgentStatusRunning,
+			CanClose:        !meta.Closed,
 		}, nil
 	}
 	return SubAgentSnapshot{
-		ThreadID:       meta.ID,
-		Path:           meta.AgentPath,
-		TaskName:       meta.TaskName,
-		ParentThreadID: meta.ParentThreadID,
-		ParentTurnID:   meta.ParentTurnID,
-		HostProfileRef: meta.HostProfileRef,
-		ForkMode:       SubAgentForkMode(meta.ForkMode),
-		Status:         status,
-		QueuedInputs:   queued,
-		CreatedAt:      meta.CreatedAt,
-		UpdatedAt:      meta.UpdatedAt,
-		Closed:         meta.Closed,
-		CanSendInput:   !meta.Closed,
-		CanInterrupt:   !meta.Closed && status == SubAgentStatusRunning,
-		CanClose:       !meta.Closed,
+		ThreadID:        meta.ID,
+		Path:            meta.AgentPath,
+		TaskName:        meta.TaskName,
+		TaskDescription: meta.TaskDescription,
+		ParentThreadID:  meta.ParentThreadID,
+		ParentTurnID:    meta.ParentTurnID,
+		HostProfileRef:  meta.HostProfileRef,
+		ForkMode:        SubAgentForkMode(meta.ForkMode),
+		Status:          status,
+		QueuedInputs:    queued,
+		CreatedAt:       meta.CreatedAt,
+		UpdatedAt:       meta.UpdatedAt,
+		Closed:          meta.Closed,
+		CanSendInput:    !meta.Closed,
+		CanInterrupt:    !meta.Closed && status == SubAgentStatusRunning,
+		CanClose:        !meta.Closed,
 	}, nil
 }
 

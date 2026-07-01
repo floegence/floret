@@ -120,17 +120,18 @@ func TestSQLiteStorePersistsSubAgentThreadMetadata(t *testing.T) {
 	store, path := openSQLiteStoreForTest(t)
 	now := time.Date(2026, 6, 23, 9, 0, 0, 0, time.UTC)
 	child := sessiontree.ThreadMeta{
-		ID:             "child",
-		ParentThreadID: "parent",
-		ParentTurnID:   "turn-parent",
-		TaskName:       "review_api",
-		AgentPath:      "/root/review_api",
-		HostProfileRef: "reviewer",
-		ForkMode:       "full_path",
-		Closed:         true,
-		CreatedAt:      now,
-		UpdatedAt:      now.Add(time.Minute),
-		Status:         "closed",
+		ID:              "child",
+		ParentThreadID:  "parent",
+		ParentTurnID:    "turn-parent",
+		TaskName:        "review_api",
+		TaskDescription: "Review the runtime API boundary.",
+		AgentPath:       "/root/review_api",
+		HostProfileRef:  "reviewer",
+		ForkMode:        "full_path",
+		Closed:          true,
+		CreatedAt:       now,
+		UpdatedAt:       now.Add(time.Minute),
+		Status:          "closed",
 	}
 	if _, err := store.CreateThread(ctx, child); err != nil {
 		t.Fatal(err)
@@ -151,6 +152,7 @@ func TestSQLiteStorePersistsSubAgentThreadMetadata(t *testing.T) {
 	if got.ParentThreadID != child.ParentThreadID ||
 		got.ParentTurnID != child.ParentTurnID ||
 		got.TaskName != child.TaskName ||
+		got.TaskDescription != child.TaskDescription ||
 		got.AgentPath != child.AgentPath ||
 		got.HostProfileRef != child.HostProfileRef ||
 		got.ForkMode != child.ForkMode ||
@@ -162,7 +164,7 @@ func TestSQLiteStorePersistsSubAgentThreadMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed) != 1 || listed[0].AgentPath != child.AgentPath || !listed[0].Closed {
+	if len(listed) != 1 || listed[0].TaskDescription != child.TaskDescription || listed[0].AgentPath != child.AgentPath || !listed[0].Closed {
 		t.Fatalf("listed threads = %#v", listed)
 	}
 }
@@ -224,7 +226,7 @@ INSERT INTO threads(id, created_at, updated_at, status) VALUES('legacy', '2026-0
 	if err != nil {
 		t.Fatal(err)
 	}
-	if meta.ParentTurnID != "" || meta.TaskName != "" || meta.AgentPath != "" || meta.HostProfileRef != "" || meta.ForkMode != "" || meta.Closed {
+	if meta.ParentTurnID != "" || meta.TaskName != "" || meta.TaskDescription != "" || meta.AgentPath != "" || meta.HostProfileRef != "" || meta.ForkMode != "" || meta.Closed {
 		t.Fatalf("legacy subagent defaults = %#v", meta)
 	}
 }
@@ -294,6 +296,9 @@ VALUES('child', 'parent', 'worker', '/root/worker', '2026-06-28T09:00:00Z', '202
 	}
 	if meta.ForkMode != "" {
 		t.Fatalf("legacy fork mode default = %q, want empty", meta.ForkMode)
+	}
+	if meta.TaskDescription != "" {
+		t.Fatalf("legacy task description default = %q, want empty", meta.TaskDescription)
 	}
 }
 

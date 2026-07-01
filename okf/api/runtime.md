@@ -107,9 +107,12 @@ non-transport config to `NewHost` and keep provider transport configuration out
 of `HostOptions.Config`.
 
 Child `ThreadID` is the lifecycle target for spawn, send, wait, list, and close.
-Task names and agent paths are reference metadata and may repeat. Queued child
-inputs are journal entries in the child thread, so host restart and storage
-backends preserve pending work, cancellation, and consumption state.
+Task names, task descriptions, and agent paths are reference metadata and may
+repeat. `SubAgentSnapshot.TaskDescription` records the parent-authored
+responsibility or objective for the child as neutral lifecycle metadata; product
+UI actions, routing ids, and display copy remain host-owned. Queued child inputs
+are journal entries in the child thread, so host restart and storage backends
+preserve pending work, cancellation, and consumption state.
 
 `SubAgentSnapshot.ForkMode` is the engine-owned fork contract for a child
 thread. `none` starts the child with only the delegated mission, while

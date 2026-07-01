@@ -132,6 +132,7 @@ func pathSafeSubAgentSnapshots(snapshots []agentharness.SubAgentSnapshot) []agen
 func pathSafeSubAgentSnapshot(snapshot agentharness.SubAgentSnapshot) agentharness.SubAgentSnapshot {
 	snapshot.Path = event.SafePathRefsText(snapshot.Path)
 	snapshot.TaskName = event.SafePathRefsText(snapshot.TaskName)
+	snapshot.TaskDescription = event.SafePathRefsText(snapshot.TaskDescription)
 	snapshot.HostProfileRef = event.SafePathRefsText(snapshot.HostProfileRef)
 	snapshot.LastMessage = event.SafePathRefsText(snapshot.LastMessage)
 	snapshot.WaitingPrompt = event.SafePathRefsText(snapshot.WaitingPrompt)

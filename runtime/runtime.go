@@ -239,14 +239,15 @@ const (
 )
 
 type SpawnSubAgentRequest struct {
-	ParentThreadID ThreadID
-	ParentTurnID   TurnID
-	ThreadID       ThreadID
-	TaskName       string
-	Message        string
-	HostProfileRef string
-	ForkMode       SubAgentForkMode
-	Labels         RunLabels
+	ParentThreadID  ThreadID
+	ParentTurnID    TurnID
+	ThreadID        ThreadID
+	TaskName        string
+	TaskDescription string
+	Message         string
+	HostProfileRef  string
+	ForkMode        SubAgentForkMode
+	Labels          RunLabels
 }
 
 type SendSubAgentInputRequest struct {
@@ -307,24 +308,25 @@ type ListPendingApprovalsRequest struct {
 }
 
 type SubAgentSnapshot struct {
-	ThreadID       ThreadID         `json:"thread_id"`
-	Path           string           `json:"path"`
-	TaskName       string           `json:"task_name"`
-	ParentThreadID ThreadID         `json:"parent_thread_id"`
-	ParentTurnID   TurnID           `json:"parent_turn_id,omitempty"`
-	HostProfileRef string           `json:"host_profile_ref,omitempty"`
-	ForkMode       SubAgentForkMode `json:"fork_mode,omitempty"`
-	Status         SubAgentStatus   `json:"status"`
-	LatestTurnID   TurnID           `json:"latest_turn_id,omitempty"`
-	LastMessage    string           `json:"last_message,omitempty"`
-	WaitingPrompt  string           `json:"waiting_prompt,omitempty"`
-	QueuedInputs   int              `json:"queued_inputs,omitempty"`
-	CreatedAt      time.Time        `json:"created_at"`
-	UpdatedAt      time.Time        `json:"updated_at"`
-	Closed         bool             `json:"closed,omitempty"`
-	CanSendInput   bool             `json:"can_send_input"`
-	CanInterrupt   bool             `json:"can_interrupt"`
-	CanClose       bool             `json:"can_close"`
+	ThreadID        ThreadID         `json:"thread_id"`
+	Path            string           `json:"path"`
+	TaskName        string           `json:"task_name"`
+	TaskDescription string           `json:"task_description,omitempty"`
+	ParentThreadID  ThreadID         `json:"parent_thread_id"`
+	ParentTurnID    TurnID           `json:"parent_turn_id,omitempty"`
+	HostProfileRef  string           `json:"host_profile_ref,omitempty"`
+	ForkMode        SubAgentForkMode `json:"fork_mode,omitempty"`
+	Status          SubAgentStatus   `json:"status"`
+	LatestTurnID    TurnID           `json:"latest_turn_id,omitempty"`
+	LastMessage     string           `json:"last_message,omitempty"`
+	WaitingPrompt   string           `json:"waiting_prompt,omitempty"`
+	QueuedInputs    int              `json:"queued_inputs,omitempty"`
+	CreatedAt       time.Time        `json:"created_at"`
+	UpdatedAt       time.Time        `json:"updated_at"`
+	Closed          bool             `json:"closed,omitempty"`
+	CanSendInput    bool             `json:"can_send_input"`
+	CanInterrupt    bool             `json:"can_interrupt"`
+	CanClose        bool             `json:"can_close"`
 }
 
 type WaitSubAgentsResult struct {
@@ -1325,14 +1327,15 @@ func settlePendingTool(ctx context.Context, harness *agentharness.AgentHarness, 
 
 func (h *host) SpawnSubAgent(ctx context.Context, req SpawnSubAgentRequest) (SubAgentSnapshot, error) {
 	snapshot, err := h.harness.SpawnSubAgent(ctx, agentharness.SpawnSubAgentOptions{
-		ParentThreadID: string(req.ParentThreadID),
-		ParentTurnID:   string(req.ParentTurnID),
-		ThreadID:       string(req.ThreadID),
-		TaskName:       req.TaskName,
-		Message:        req.Message,
-		HostProfileRef: req.HostProfileRef,
-		ForkMode:       agentharness.SubAgentForkMode(req.ForkMode),
-		Labels:         engineLabels(req.Labels),
+		ParentThreadID:  string(req.ParentThreadID),
+		ParentTurnID:    string(req.ParentTurnID),
+		ThreadID:        string(req.ThreadID),
+		TaskName:        req.TaskName,
+		TaskDescription: req.TaskDescription,
+		Message:         req.Message,
+		HostProfileRef:  req.HostProfileRef,
+		ForkMode:        agentharness.SubAgentForkMode(req.ForkMode),
+		Labels:          engineLabels(req.Labels),
 	})
 	if err != nil {
 		return SubAgentSnapshot{}, runtimeHostError(err)
@@ -1767,24 +1770,25 @@ func waitSubAgentsResult(in agentharness.WaitSubAgentsResult) WaitSubAgentsResul
 
 func subAgentSnapshot(in agentharness.SubAgentSnapshot) SubAgentSnapshot {
 	return SubAgentSnapshot{
-		ThreadID:       ThreadID(in.ThreadID),
-		Path:           in.Path,
-		TaskName:       in.TaskName,
-		ParentThreadID: ThreadID(in.ParentThreadID),
-		ParentTurnID:   TurnID(in.ParentTurnID),
-		HostProfileRef: in.HostProfileRef,
-		ForkMode:       SubAgentForkMode(in.ForkMode),
-		Status:         SubAgentStatus(in.Status),
-		LatestTurnID:   TurnID(in.LatestTurnID),
-		LastMessage:    in.LastMessage,
-		WaitingPrompt:  in.WaitingPrompt,
-		QueuedInputs:   in.QueuedInputs,
-		CreatedAt:      in.CreatedAt,
-		UpdatedAt:      in.UpdatedAt,
-		Closed:         in.Closed,
-		CanSendInput:   in.CanSendInput,
-		CanInterrupt:   in.CanInterrupt,
-		CanClose:       in.CanClose,
+		ThreadID:        ThreadID(in.ThreadID),
+		Path:            in.Path,
+		TaskName:        in.TaskName,
+		TaskDescription: in.TaskDescription,
+		ParentThreadID:  ThreadID(in.ParentThreadID),
+		ParentTurnID:    TurnID(in.ParentTurnID),
+		HostProfileRef:  in.HostProfileRef,
+		ForkMode:        SubAgentForkMode(in.ForkMode),
+		Status:          SubAgentStatus(in.Status),
+		LatestTurnID:    TurnID(in.LatestTurnID),
+		LastMessage:     in.LastMessage,
+		WaitingPrompt:   in.WaitingPrompt,
+		QueuedInputs:    in.QueuedInputs,
+		CreatedAt:       in.CreatedAt,
+		UpdatedAt:       in.UpdatedAt,
+		Closed:          in.Closed,
+		CanSendInput:    in.CanSendInput,
+		CanInterrupt:    in.CanInterrupt,
+		CanClose:        in.CanClose,
 	}
 }
 
@@ -1879,6 +1883,7 @@ func subAgentActivityPayload(snapshot agentharness.SubAgentSnapshot) map[string]
 		"thread_id":        strings.TrimSpace(snapshot.ThreadID),
 		"path":             strings.TrimSpace(snapshot.Path),
 		"task_name":        strings.TrimSpace(snapshot.TaskName),
+		"task_description": strings.TrimSpace(snapshot.TaskDescription),
 		"title":            title,
 		"host_profile_ref": strings.TrimSpace(snapshot.HostProfileRef),
 		"fork_mode":        strings.TrimSpace(string(snapshot.ForkMode)),

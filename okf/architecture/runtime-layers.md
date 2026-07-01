@@ -102,6 +102,9 @@ Hosted subagents are durable child threads managed by `AgentHarness` and exposed
 through `runtime.Host`. A parent can spawn, send input to, wait for, list, and
 close child threads. The child runs as a normal Floret thread with its own
 `ThreadID`, `TurnID`s, prompt scope, provider request ledger, and journal.
+Floret persists neutral delegated-work metadata such as task name and task
+description with the child lifecycle; downstream products decide how to render
+that description and how to attach UI routing actions.
 Queued input is represented in that journal as Floret lifecycle state, not as an
 in-memory host queue, so restart recovery, wait semantics, and close semantics
 derive from the same durable source.

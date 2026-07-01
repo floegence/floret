@@ -1198,7 +1198,7 @@ func TestHostRunTurnCanceledProjectionSettlesPendingActivity(t *testing.T) {
 func TestSubAgentActivityTimelineProjectsStatusSummary(t *testing.T) {
 	base := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
 	snapshots := []agentharness.SubAgentSnapshot{
-		{ThreadID: "completed", TaskName: "completed task", ParentThreadID: "parent", Status: agentharness.SubAgentStatusCompleted, LastMessage: "done", CreatedAt: base.Add(-8 * time.Minute), UpdatedAt: base.Add(-7 * time.Minute)},
+		{ThreadID: "completed", TaskName: "completed task", TaskDescription: "Check the completed path.", ParentThreadID: "parent", Status: agentharness.SubAgentStatusCompleted, LastMessage: "done", CreatedAt: base.Add(-8 * time.Minute), UpdatedAt: base.Add(-7 * time.Minute)},
 		{ThreadID: "running", TaskName: "running task", ParentThreadID: "parent", Status: agentharness.SubAgentStatusRunning, LastMessage: "working", CreatedAt: base.Add(-6 * time.Minute), UpdatedAt: base.Add(-1 * time.Minute)},
 		{ThreadID: "waiting", TaskName: "waiting task", ParentThreadID: "parent", Status: agentharness.SubAgentStatusWaiting, WaitingPrompt: "need input", CreatedAt: base.Add(-5 * time.Minute), UpdatedAt: base.Add(-2 * time.Minute)},
 		{ThreadID: "failed", TaskName: "failed task", ParentThreadID: "parent", Status: agentharness.SubAgentStatusFailed, LastMessage: "failed", CreatedAt: base.Add(-4 * time.Minute), UpdatedAt: base.Add(-3 * time.Minute)},
@@ -1231,6 +1231,15 @@ func TestSubAgentActivityTimelineProjectsStatusSummary(t *testing.T) {
 	}
 	if timeline.Items[0].Status != observation.ActivityStatusWaiting {
 		t.Fatalf("interrupted status=%q, want waiting", timeline.Items[0].Status)
+	}
+	foundDescription := false
+	for _, item := range timeline.Items {
+		if item.Payload["subagent_id"] == "completed" {
+			foundDescription = item.Payload["task_description"] == "Check the completed path."
+		}
+	}
+	if !foundDescription {
+		t.Fatalf("subagent task description missing from payload: %#v", timeline.Items)
 	}
 	for _, item := range timeline.Items {
 		if _, ok := item.Payload["operation"]; ok {
@@ -1272,13 +1281,14 @@ func TestHostSubAgentsInheritModelGatewayWithChildPromptScope(t *testing.T) {
 	}
 
 	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
-		ParentThreadID: "parent",
-		ParentTurnID:   "parent-turn",
-		ThreadID:       "child",
-		TaskName:       "Review API",
-		Message:        "review the runtime API",
-		HostProfileRef: "reviewer",
-		ForkMode:       SubAgentForkNone,
+		ParentThreadID:  "parent",
+		ParentTurnID:    "parent-turn",
+		ThreadID:        "child",
+		TaskName:        "Review API",
+		TaskDescription: "Review the runtime API boundary.",
+		Message:         "review the runtime API",
+		HostProfileRef:  "reviewer",
+		ForkMode:        SubAgentForkNone,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1349,18 +1359,19 @@ func TestHostManagesSubAgentLifecycle(t *testing.T) {
 	}
 
 	spawned, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
-		ParentThreadID: "parent",
-		ParentTurnID:   "parent-turn",
-		ThreadID:       "child",
-		TaskName:       "Review API",
-		Message:        "review the runtime API",
-		HostProfileRef: "reviewer",
-		ForkMode:       SubAgentForkNone,
+		ParentThreadID:  "parent",
+		ParentTurnID:    "parent-turn",
+		ThreadID:        "child",
+		TaskName:        "Review API",
+		TaskDescription: "Review the runtime API boundary.",
+		Message:         "review the runtime API",
+		HostProfileRef:  "reviewer",
+		ForkMode:        SubAgentForkNone,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spawned.ThreadID != "child" || spawned.ParentThreadID != "parent" || spawned.Path != "/root/review_api" {
+	if spawned.ThreadID != "child" || spawned.ParentThreadID != "parent" || spawned.Path != "/root/review_api" || spawned.TaskDescription != "Review the runtime API boundary." {
 		t.Fatalf("spawned = %#v", spawned)
 	}
 	if spawned.ForkMode != SubAgentForkNone {
@@ -1382,7 +1393,7 @@ func TestHostManagesSubAgentLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed) != 1 || listed[0].HostProfileRef != "reviewer" || listed[0].LastMessage != "child done" {
+	if len(listed) != 1 || listed[0].TaskDescription != "Review the runtime API boundary." || listed[0].HostProfileRef != "reviewer" || listed[0].LastMessage != "child done" {
 		t.Fatalf("listed = %#v", listed)
 	}
 	if listed[0].ForkMode != SubAgentForkNone {
@@ -1392,7 +1403,7 @@ func TestHostManagesSubAgentLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(timeline.Timeline.Items) != 1 || timeline.Timeline.Items[0].Payload["fork_mode"] != string(SubAgentForkNone) {
+	if len(timeline.Timeline.Items) != 1 || timeline.Timeline.Items[0].Payload["fork_mode"] != string(SubAgentForkNone) || timeline.Timeline.Items[0].Payload["task_description"] != "Review the runtime API boundary." {
 		t.Fatalf("activity timeline fork mode missing: %#v", timeline.Timeline.Items)
 	}
 

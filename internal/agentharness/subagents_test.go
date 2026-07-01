@@ -27,18 +27,19 @@ func TestSubAgentLifecycleRunsChildThreadWithIsolatedPromptScope(t *testing.T) {
 	}
 
 	spawned, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
-		ParentThreadID: "parent",
-		ParentTurnID:   "parent-turn",
-		ThreadID:       "child",
-		TaskName:       "Review API",
-		Message:        "review the runtime API",
-		HostProfileRef: "reviewer",
-		ForkMode:       SubAgentForkNone,
+		ParentThreadID:  "parent",
+		ParentTurnID:    "parent-turn",
+		ThreadID:        "child",
+		TaskName:        "Review API",
+		TaskDescription: "Review the runtime API boundary.",
+		Message:         "review the runtime API",
+		HostProfileRef:  "reviewer",
+		ForkMode:        SubAgentForkNone,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spawned.ThreadID != "child" || spawned.ParentThreadID != "parent" || spawned.Path != "/root/review_api" {
+	if spawned.ThreadID != "child" || spawned.ParentThreadID != "parent" || spawned.Path != "/root/review_api" || spawned.TaskDescription != "Review the runtime API boundary." {
 		t.Fatalf("spawned snapshot = %#v", spawned)
 	}
 
@@ -53,7 +54,7 @@ func TestSubAgentLifecycleRunsChildThreadWithIsolatedPromptScope(t *testing.T) {
 	if waited.TimedOut || len(waited.Snapshots) != 1 || waited.Snapshots[0].Status != SubAgentStatusCompleted {
 		t.Fatalf("waited = %#v", waited)
 	}
-	if waited.Snapshots[0].LastMessage != "child done" || waited.Snapshots[0].LatestTurnID == "" {
+	if waited.Snapshots[0].TaskDescription != "Review the runtime API boundary." || waited.Snapshots[0].LastMessage != "child done" || waited.Snapshots[0].LatestTurnID == "" {
 		t.Fatalf("completed snapshot = %#v", waited.Snapshots[0])
 	}
 	if len(provider.Requests) != 1 {
@@ -68,7 +69,7 @@ func TestSubAgentLifecycleRunsChildThreadWithIsolatedPromptScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed) != 1 || listed[0].ThreadID != "child" || listed[0].HostProfileRef != "reviewer" {
+	if len(listed) != 1 || listed[0].ThreadID != "child" || listed[0].TaskDescription != "Review the runtime API boundary." || listed[0].HostProfileRef != "reviewer" {
 		t.Fatalf("listed = %#v", listed)
 	}
 }
@@ -568,13 +569,14 @@ func TestSubAgentSnapshotUsesJournalAfterControllerRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{
-		ID:             "child",
-		ParentThreadID: "parent",
-		TaskName:       "worker",
-		AgentPath:      "/root/worker",
-		Status:         string(SubAgentStatusRunning),
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:              "child",
+		ParentThreadID:  "parent",
+		TaskName:        "worker",
+		TaskDescription: "Continue the worker after restart.",
+		AgentPath:       "/root/worker",
+		Status:          string(SubAgentStatusRunning),
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -605,7 +607,7 @@ func TestSubAgentSnapshotUsesJournalAfterControllerRestart(t *testing.T) {
 	if waited.TimedOut || len(waited.Snapshots) != 1 || waited.Snapshots[0].Status != SubAgentStatusCompleted {
 		t.Fatalf("waited = %#v", waited)
 	}
-	if waited.Snapshots[0].LastMessage != "done after restart" {
+	if waited.Snapshots[0].TaskDescription != "Continue the worker after restart." || waited.Snapshots[0].LastMessage != "done after restart" {
 		t.Fatalf("snapshot = %#v", waited.Snapshots[0])
 	}
 }

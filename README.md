@@ -231,8 +231,11 @@ Use `SpawnSubAgent`, `SendSubAgentInput`, `WaitSubAgents`, `ListSubAgents`, and
 `CloseSubAgent` when a parent conversation needs Floret-owned child lifecycle
 management. Each child has its own `ThreadID`, turn lifecycle, prompt-cache
 scope, provider ledger, and journal. The parent relationship is durable
-metadata, while product policy, UI labels, permissions, and orchestration prompts
-remain host-owned.
+metadata. `TaskName` and `TaskDescription` are neutral delegated-work metadata:
+the name identifies the child in compact lists, while the description records
+the parent-authored responsibility or objective for that child. Product policy,
+UI labels, permissions, routing actions, and orchestration prompts remain
+host-owned.
 
 When `HostOptions.ModelGateway` is set, parent turns, child turns, and internal
 hosted model work such as title generation use the same host-owned model
@@ -388,7 +391,10 @@ snapshots rather than a full child transcript.
 Use `ListSubAgentActivityTimeline` when a host UI needs a parent-scoped activity
 summary for all child threads. The returned `observation.ActivityTimeline` is
 derived from Floret child snapshots and contains product-neutral child-thread
-facts; hosts may wrap those facts in their own display actions and routing.
+facts such as task name, task description, status, timing, and lifecycle state.
+Hosts may wrap those facts in their own display actions and routing; Floret does
+not emit product UI actions, window targets, or downstream-specific presentation
+copy.
 
 Use `ReadSubAgentDetail` or `ListSubAgentDetailEvents` when a host UI needs to
 inspect a child thread's persisted journal. Detail reads are scoped by both
