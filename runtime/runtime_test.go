@@ -1455,10 +1455,12 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 	)); err != nil {
 		t.Fatal(err)
 	}
+	store := NewMemoryStore()
 	host, err := NewHost(HostOptions{
 		Config:               runtimeGatewayConfig("test"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                store,
 		Tools:                registry,
 		IDGenerator:          deterministicIDs(),
 	})
@@ -1521,6 +1523,48 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 	}
 	if len(next.Events) != 1 || next.Events[0].Ordinal <= detail.Events[0].Ordinal || !next.HasMore {
 		t.Fatalf("next detail events = %#v", next)
+	}
+	mu.Lock()
+	requestsBeforeMaintenance := requests
+	mu.Unlock()
+	maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer maintenance.Close()
+	listed, err := maintenance.ListSubAgents(ctx, "parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].ThreadID != "child" || listed[0].LastMessage != "child summary" {
+		t.Fatalf("maintenance list = %#v", listed)
+	}
+	timeline, err := maintenance.ListSubAgentActivityTimeline(ctx, ListSubAgentActivityTimelineRequest{ParentThreadID: "parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(timeline.Timeline.Items) != 1 || timeline.Timeline.Items[0].Payload["thread_id"] != "child" {
+		t.Fatalf("maintenance timeline = %#v", timeline)
+	}
+	maintenanceDetail, err := maintenance.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "child"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(maintenanceDetail.Events) == 0 || maintenanceDetail.Snapshot.ThreadID != "child" {
+		t.Fatalf("maintenance detail = %#v", maintenanceDetail)
+	}
+	maintenanceEvents, err := maintenance.ListSubAgentDetailEvents(ctx, ListSubAgentDetailEventsRequest{ParentThreadID: "parent", ChildThreadID: "child", Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(maintenanceEvents.Events) != 1 || maintenanceEvents.NextOrdinal == 0 {
+		t.Fatalf("maintenance detail events = %#v", maintenanceEvents)
+	}
+	mu.Lock()
+	requestsAfterMaintenance := requests
+	mu.Unlock()
+	if requestsAfterMaintenance != requestsBeforeMaintenance {
+		t.Fatalf("maintenance read triggered provider requests: before=%d after=%d", requestsBeforeMaintenance, requestsAfterMaintenance)
 	}
 }
 

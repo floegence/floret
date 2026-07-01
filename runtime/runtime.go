@@ -78,6 +78,10 @@ type ThreadMaintenanceHost interface {
 	EnsureThread(context.Context, EnsureThreadRequest) (ThreadSummary, error)
 	ReadTurnProjection(context.Context, ReadTurnProjectionRequest) (ThreadTurnProjection, error)
 	SettlePendingTool(context.Context, PendingToolSettlementRequest) (PendingToolSettlementResult, error)
+	ListSubAgents(context.Context, ThreadID) ([]SubAgentSnapshot, error)
+	ListSubAgentActivityTimeline(context.Context, ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error)
+	ReadSubAgentDetail(context.Context, ReadSubAgentDetailRequest) (SubAgentDetail, error)
+	ListSubAgentDetailEvents(context.Context, ListSubAgentDetailEventsRequest) (SubAgentDetailEvents, error)
 	CloseSubAgents(context.Context, CloseSubAgentsRequest) (CloseSubAgentsResult, error)
 	DeleteThread(context.Context, ThreadID) error
 	Close() error
@@ -1362,7 +1366,15 @@ func (h *host) WaitSubAgents(ctx context.Context, req WaitSubAgentsRequest) (Wai
 }
 
 func (h *host) ListSubAgents(ctx context.Context, parentThreadID ThreadID) ([]SubAgentSnapshot, error) {
-	snapshots, err := h.harness.ListSubAgents(ctx, string(parentThreadID))
+	return listSubAgents(ctx, h.harness, parentThreadID)
+}
+
+func (h *threadMaintenanceHost) ListSubAgents(ctx context.Context, parentThreadID ThreadID) ([]SubAgentSnapshot, error) {
+	return listSubAgents(ctx, h.harness, parentThreadID)
+}
+
+func listSubAgents(ctx context.Context, harness *agentharness.AgentHarness, parentThreadID ThreadID) ([]SubAgentSnapshot, error) {
+	snapshots, err := harness.ListSubAgents(ctx, string(parentThreadID))
 	if err != nil {
 		return nil, runtimeHostError(err)
 	}
@@ -1409,7 +1421,15 @@ func closeSubAgents(ctx context.Context, harness *agentharness.AgentHarness, req
 }
 
 func (h *host) ListSubAgentActivityTimeline(ctx context.Context, req ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error) {
-	snapshots, err := h.harness.ListSubAgents(ctx, string(req.ParentThreadID))
+	return listSubAgentActivityTimeline(ctx, h.harness, req)
+}
+
+func (h *threadMaintenanceHost) ListSubAgentActivityTimeline(ctx context.Context, req ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error) {
+	return listSubAgentActivityTimeline(ctx, h.harness, req)
+}
+
+func listSubAgentActivityTimeline(ctx context.Context, harness *agentharness.AgentHarness, req ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error) {
+	snapshots, err := harness.ListSubAgents(ctx, string(req.ParentThreadID))
 	if err != nil {
 		return SubAgentActivityTimelineResult{}, runtimeHostError(err)
 	}
@@ -1421,7 +1441,15 @@ func (h *host) ListSubAgentActivityTimeline(ctx context.Context, req ListSubAgen
 }
 
 func (h *host) ReadSubAgentDetail(ctx context.Context, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
-	detail, err := h.harness.ReadSubAgentDetail(ctx, agentharness.ReadSubAgentDetailOptions{
+	return readSubAgentDetail(ctx, h.harness, req)
+}
+
+func (h *threadMaintenanceHost) ReadSubAgentDetail(ctx context.Context, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
+	return readSubAgentDetail(ctx, h.harness, req)
+}
+
+func readSubAgentDetail(ctx context.Context, harness *agentharness.AgentHarness, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
+	detail, err := harness.ReadSubAgentDetail(ctx, agentharness.ReadSubAgentDetailOptions{
 		ParentThreadID: string(req.ParentThreadID),
 		ChildThreadID:  string(req.ChildThreadID),
 		AfterOrdinal:   req.AfterOrdinal,
@@ -1435,7 +1463,15 @@ func (h *host) ReadSubAgentDetail(ctx context.Context, req ReadSubAgentDetailReq
 }
 
 func (h *host) ListSubAgentDetailEvents(ctx context.Context, req ListSubAgentDetailEventsRequest) (SubAgentDetailEvents, error) {
-	detail, err := h.harness.ReadSubAgentDetail(ctx, agentharness.ReadSubAgentDetailOptions{
+	return listSubAgentDetailEvents(ctx, h.harness, req)
+}
+
+func (h *threadMaintenanceHost) ListSubAgentDetailEvents(ctx context.Context, req ListSubAgentDetailEventsRequest) (SubAgentDetailEvents, error) {
+	return listSubAgentDetailEvents(ctx, h.harness, req)
+}
+
+func listSubAgentDetailEvents(ctx context.Context, harness *agentharness.AgentHarness, req ListSubAgentDetailEventsRequest) (SubAgentDetailEvents, error) {
+	detail, err := harness.ReadSubAgentDetail(ctx, agentharness.ReadSubAgentDetailOptions{
 		ParentThreadID: string(req.ParentThreadID),
 		ChildThreadID:  string(req.ChildThreadID),
 		AfterOrdinal:   req.AfterOrdinal,

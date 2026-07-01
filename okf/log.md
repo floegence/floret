@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-07-01
+* **Update**: Extended `ThreadMaintenanceHost` with provider-free subagent list,
+  activity timeline, detail, and detail-event read APIs so host UI reload/detail
+  paths do not need provider-backed runtime hosts.
 * **Update**: Renamed the provider-free maintenance facade to
   `NewThreadMaintenanceHost`/`ThreadMaintenanceHost`, documented that it is an
   independent non-provider host implementation with an explicit required store,

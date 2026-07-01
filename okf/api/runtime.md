@@ -238,13 +238,14 @@ querying or mutating Floret storage tables directly.
 `NewThreadMaintenanceHost` is the provider-free constructor for maintenance
 processes that share a Floret `Store` but do not need provider configuration.
 It exposes `EnsureThread`, `ReadTurnProjection`, `SettlePendingTool`,
-`CloseSubAgents`, `DeleteThread`, and `Close` without accepting fake providers,
-model gateways, tools, or host UI options. `ThreadMaintenanceHostOptions.Store`
-is required so maintenance code cannot silently operate on an empty ephemeral
-store. The constructor returns an independent `ThreadMaintenanceHost`
-implementation, so reload, pending-work settlement, cleanup, and deletion code
-can stay on the public runtime facade without pretending to be a model-running
-host.
+`ListSubAgents`, `ListSubAgentActivityTimeline`, `ReadSubAgentDetail`,
+`ListSubAgentDetailEvents`, `CloseSubAgents`, `DeleteThread`, and `Close`
+without accepting fake providers, model gateways, tools, or host UI options.
+`ThreadMaintenanceHostOptions.Store` is required so maintenance code cannot
+silently operate on an empty ephemeral store. The constructor returns an
+independent `ThreadMaintenanceHost` implementation, so reload, detail, pending
+work settlement, cleanup, and deletion code can stay on the public runtime
+facade without pretending to be a model-running host.
 
 Host facade not-found responses should be handled with `errors.Is` against
 `runtime.ErrThreadNotFound`, `runtime.ErrTurnNotFound`,
