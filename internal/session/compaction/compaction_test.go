@@ -552,7 +552,11 @@ func TestSingleMessageCompactionCheckpointDoesNotClaimRetainedTail(t *testing.T)
 
 func TestSummaryWriterPromptContract(t *testing.T) {
 	system := SummaryWriterSystemPrompt()
+	if strings.Contains(system, "Floret") {
+		t.Fatalf("summary writer system prompt must stay product-neutral: %q", system)
+	}
 	for _, want := range []string{
+		"context compaction writer",
 		"handoff summary",
 		"another LLM",
 		"Summarize only the conversation history you are given",
@@ -573,7 +577,7 @@ func TestSummaryWriterPromptContract(t *testing.T) {
 		CompactedHead: []session.Message{{Role: session.User, Content: "/tmp/file.go failed with E42", EntryID: "u1"}},
 	}, contextpolicy.Normalize(contextpolicy.Policy{ContextWindowTokens: 2000, ReservedOutputTokens: 100, ReservedSummaryTokens: 200, RecentTailTokens: 100}), 200)
 	for _, want := range []string{
-		"# Floret Compaction Summary",
+		"# Context Compaction Summary",
 		"## Goals",
 		"## Constraints",
 		"## Next Steps",
@@ -600,7 +604,7 @@ func TestCompactionPromptOptionsCustomizeWriterAndTitle(t *testing.T) {
 	prompt := SummaryPromptWithOptions(Preparation{
 		CompactedHead: []session.Message{{Role: session.User, Content: "old request", EntryID: "u1"}},
 	}, contextpolicy.Normalize(contextpolicy.Policy{ContextWindowTokens: 2000, ReservedOutputTokens: 100, ReservedSummaryTokens: 200, RecentTailTokens: 100}), 200, options)
-	if !strings.Contains(prompt, "# Acme Conversation Checkpoint") || strings.Contains(prompt, "# Floret Compaction Summary") {
+	if !strings.Contains(prompt, "# Acme Conversation Checkpoint") || strings.Contains(prompt, "# Context Compaction Summary") {
 		t.Fatalf("custom summary title not applied: %q", prompt)
 	}
 	summary, err := ExtractiveSummaryGenerator{PromptOptions: options}.GenerateSummary(context.Background(), Preparation{
@@ -609,7 +613,7 @@ func TestCompactionPromptOptionsCustomizeWriterAndTitle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(summary, "# Acme Conversation Checkpoint") || strings.Contains(summary, "# Floret Compaction Summary") {
+	if !strings.Contains(summary, "# Acme Conversation Checkpoint") || strings.Contains(summary, "# Context Compaction Summary") {
 		t.Fatalf("extractive custom title not applied: %q", summary)
 	}
 }

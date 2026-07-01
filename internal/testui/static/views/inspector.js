@@ -152,8 +152,8 @@ function renderTools(session, tools, observation) {
 function renderIdentitySummary(session) {
   const profile = session.agent_profile || {};
   const identity = session.prompt_identity || {};
-  const profileID = identity.agent_profile_id || profile.id || "floret";
-  const profileName = identity.agent_profile_name || profile.name || "Floret default assistant";
+  const profileID = identity.agent_profile_id || profile.id || "default";
+  const profileName = identity.agent_profile_name || profile.name || "Default assistant";
   const promptHash = identity.system_prompt_hash || "";
   return `
     <section class="section">
@@ -169,7 +169,7 @@ function renderIdentitySummary(session) {
         </div>
         <div>
           <strong>Prompt source</strong>
-          <span>${escapeHTML(identity.source || "default_floret")}</span>
+          <span>${escapeHTML(identity.source || "default_agent")}</span>
         </div>
         <div>
           <strong>System prompt hash</strong>

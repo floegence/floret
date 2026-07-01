@@ -19,8 +19,8 @@ const (
 	ProviderFake             = "fake"
 	ProviderOpenAICompatible = "openai-compatible"
 
-	DefaultAgentProfileID     = "floret"
-	DefaultFloretSystemPrompt = "You are Floret."
+	DefaultAgentProfileID = "default"
+	DefaultSystemPrompt   = "You are a helpful AI assistant."
 )
 
 type PromptSource string
@@ -29,7 +29,7 @@ const (
 	PromptSourceSystemPromptOverride PromptSource = "system_prompt_override"
 	PromptSourceAgentProfile         PromptSource = "agent_profile"
 	PromptSourceEnv                  PromptSource = "env"
-	PromptSourceDefaultFloret        PromptSource = "default_floret"
+	PromptSourceDefaultAgent         PromptSource = "default_agent"
 )
 
 type AgentProfile struct {
@@ -134,7 +134,7 @@ func fromValues(values map[string]string) (Config, error) {
 		NoProgressLimit:         2,
 		DuplicateToolLimit:      3,
 	}
-	promptSource := PromptSourceDefaultFloret
+	promptSource := PromptSourceDefaultAgent
 	if prompt, ok := values["FLORET_SYSTEM_PROMPT"]; ok {
 		cfg.SystemPrompt = strings.TrimSpace(prompt)
 		if cfg.SystemPrompt != "" {
@@ -258,12 +258,12 @@ func Resolve(cfg Config, environ map[string]string) (Config, error) {
 	return validate(cfg)
 }
 
-func DefaultFloretAgentProfile() AgentProfile {
+func DefaultAgentProfile() AgentProfile {
 	return AgentProfile{
 		ID:           DefaultAgentProfileID,
-		Name:         "Floret default assistant",
-		Description:  "Default interactive Floret agent.",
-		SystemPrompt: DefaultFloretSystemPrompt,
+		Name:         "Default assistant",
+		Description:  "Default interactive agent.",
+		SystemPrompt: DefaultSystemPrompt,
 	}
 }
 
@@ -287,7 +287,7 @@ func ResolvePrompt(cfg Config) Config {
 }
 
 func resolveAgentProfile(profile AgentProfile, systemPrompt string, source PromptSource) (AgentProfile, PromptIdentity) {
-	defaultProfile := DefaultFloretAgentProfile()
+	defaultProfile := DefaultAgentProfile()
 	out := AgentProfile{
 		ID:           strings.TrimSpace(profile.ID),
 		Name:         strings.TrimSpace(profile.Name),
@@ -301,7 +301,7 @@ func resolveAgentProfile(profile AgentProfile, systemPrompt string, source Promp
 			out.ID = "custom"
 			out.Name = "Custom session agent"
 			out.Description = "Session-level system prompt override."
-		case PromptSourceDefaultFloret:
+		case PromptSourceDefaultAgent:
 			if prompt == defaultProfile.SystemPrompt {
 				out.ID = defaultProfile.ID
 				out.Name = defaultProfile.Name
@@ -331,7 +331,7 @@ func resolveAgentProfile(profile AgentProfile, systemPrompt string, source Promp
 	}
 	if out.SystemPrompt == "" {
 		out = defaultProfile
-		source = PromptSourceDefaultFloret
+		source = PromptSourceDefaultAgent
 	}
 	if out.ID == "" {
 		if out.SystemPrompt == defaultProfile.SystemPrompt {
@@ -365,7 +365,7 @@ func resolveAgentProfile(profile AgentProfile, systemPrompt string, source Promp
 
 func resolvePromptProfile(cfg Config, source PromptSource) Config {
 	systemPrompt := cfg.SystemPrompt
-	if source == PromptSourceAgentProfile || source == PromptSourceDefaultFloret {
+	if source == PromptSourceAgentProfile || source == PromptSourceDefaultAgent {
 		systemPrompt = ""
 	}
 	cfg.AgentProfile, cfg.PromptIdentity = resolveAgentProfile(cfg.AgentProfile, systemPrompt, source)
@@ -387,11 +387,11 @@ func promptSourceForConfig(cfg Config) PromptSource {
 		}
 		return PromptSourceEnv
 	}
-	if cfg.promptSource == PromptSourceDefaultFloret && systemPrompt == DefaultFloretSystemPrompt {
-		if strings.TrimSpace(cfg.AgentProfile.SystemPrompt) != "" && !sameAgentProfile(cfg.AgentProfile, DefaultFloretAgentProfile()) {
+	if cfg.promptSource == PromptSourceDefaultAgent && systemPrompt == DefaultSystemPrompt {
+		if strings.TrimSpace(cfg.AgentProfile.SystemPrompt) != "" && !sameAgentProfile(cfg.AgentProfile, DefaultAgentProfile()) {
 			return PromptSourceAgentProfile
 		}
-		return PromptSourceDefaultFloret
+		return PromptSourceDefaultAgent
 	}
 	if cfg.promptSource == PromptSourceAgentProfile && strings.TrimSpace(cfg.AgentProfile.SystemPrompt) != "" && systemPrompt == strings.TrimSpace(cfg.AgentProfile.SystemPrompt) {
 		return PromptSourceAgentProfile
@@ -409,16 +409,16 @@ func promptSourceForPromptInputs(profile AgentProfile, systemPrompt string) Prom
 	if strings.TrimSpace(profile.SystemPrompt) != "" {
 		return PromptSourceAgentProfile
 	}
-	return PromptSourceDefaultFloret
+	return PromptSourceDefaultAgent
 }
 
 func normalizePromptSource(source PromptSource, profile, defaultProfile AgentProfile) PromptSource {
 	switch source {
-	case PromptSourceSystemPromptOverride, PromptSourceAgentProfile, PromptSourceEnv, PromptSourceDefaultFloret:
+	case PromptSourceSystemPromptOverride, PromptSourceAgentProfile, PromptSourceEnv, PromptSourceDefaultAgent:
 		return source
 	default:
 		if profile.ID == defaultProfile.ID && profile.SystemPrompt == defaultProfile.SystemPrompt {
-			return PromptSourceDefaultFloret
+			return PromptSourceDefaultAgent
 		}
 		return PromptSourceAgentProfile
 	}

@@ -17,8 +17,8 @@ import (
 const SummarySchemaVersion = "floret.compaction.summary.v1"
 
 const (
-	DefaultSummaryTitle        = "Floret Compaction Summary"
-	defaultSummaryWriterPrefix = "You are Floret's context compaction writer."
+	DefaultSummaryTitle        = "Context Compaction Summary"
+	defaultSummaryWriterPrefix = "You are a context compaction writer."
 )
 
 const (

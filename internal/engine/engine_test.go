@@ -3904,7 +3904,7 @@ func newTestEngine(p provider.Provider, rec *event.Recorder) *testEngine {
 		Store:        session.NewMemoryStore(),
 		Prompt:       cache.NewMemoryStore(),
 		Artifacts:    artifact.NewMemoryStore(),
-		SystemPrompt: "You are Floret.",
+		SystemPrompt: "You are a test assistant.",
 		Tools:        tools.NewRegistry(),
 		Sink:         rec,
 		Options: engine.Options{

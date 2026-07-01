@@ -42,9 +42,9 @@ export function renderNewSession() {
           <div class="agent-profile-head">
             <div>
               <h2>Agent profile</h2>
-              <p class="muted">${escapeHTML(agentProfile.description || "Default interactive Floret agent.")}</p>
+              <p class="muted">${escapeHTML(agentProfile.description || "Default interactive agent.")}</p>
             </div>
-            <span class="tiny-pill">${escapeHTML(promptIdentity.source || "default_floret")}</span>
+            <span class="tiny-pill">${escapeHTML(promptIdentity.source || "default_agent")}</span>
           </div>
           <div class="agent-profile-grid">
             <div>
@@ -53,7 +53,7 @@ export function renderNewSession() {
             </div>
             <div>
               <strong>Name</strong>
-              <span>${escapeHTML(agentProfile.name || "Floret default assistant")}</span>
+              <span>${escapeHTML(agentProfile.name || "Default assistant")}</span>
             </div>
             <div>
               <strong>Prompt hash</strong>
@@ -155,9 +155,9 @@ function renderCapabilitySummary(capabilities) {
 
 function defaultAgentProfile() {
   return {
-    id: "floret",
-    name: "Floret default assistant",
-    description: "Default interactive Floret agent.",
+    id: "default",
+    name: "Default assistant",
+    description: "Default interactive agent.",
     system_prompt: "",
   };
 }

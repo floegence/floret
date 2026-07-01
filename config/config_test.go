@@ -18,13 +18,13 @@ func TestLoadDefaultsToFakeProvider(t *testing.T) {
 	if cfg.Provider != ProviderFake || cfg.Model != "fake-model" {
 		t.Fatalf("cfg = %#v", cfg)
 	}
-	if cfg.SystemPrompt != DefaultFloretSystemPrompt {
-		t.Fatalf("system prompt = %q, want default Floret prompt", cfg.SystemPrompt)
+	if cfg.SystemPrompt != DefaultSystemPrompt {
+		t.Fatalf("system prompt = %q, want default prompt", cfg.SystemPrompt)
 	}
-	if cfg.AgentProfile.ID != DefaultAgentProfileID || cfg.AgentProfile.Name != "Floret default assistant" || cfg.AgentProfile.SystemPrompt != DefaultFloretSystemPrompt {
+	if cfg.AgentProfile.ID != DefaultAgentProfileID || cfg.AgentProfile.Name != "Default assistant" || cfg.AgentProfile.SystemPrompt != DefaultSystemPrompt {
 		t.Fatalf("agent profile = %#v", cfg.AgentProfile)
 	}
-	if cfg.PromptIdentity.Source != PromptSourceDefaultFloret || cfg.PromptIdentity.AgentProfileID != DefaultAgentProfileID || cfg.PromptIdentity.SystemPromptHash == "" {
+	if cfg.PromptIdentity.Source != PromptSourceDefaultAgent || cfg.PromptIdentity.AgentProfileID != DefaultAgentProfileID || cfg.PromptIdentity.SystemPromptHash == "" {
 		t.Fatalf("prompt identity = %#v", cfg.PromptIdentity)
 	}
 }
@@ -169,7 +169,7 @@ func TestResolveIgnoresStalePromptIdentitySourceForOverride(t *testing.T) {
 func TestResolvePromptPreservesResolvedDefaultIdentity(t *testing.T) {
 	cfg := ResolvePrompt(Config{})
 	cfg = ResolvePrompt(cfg)
-	if cfg.SystemPrompt != DefaultFloretSystemPrompt || cfg.AgentProfile.ID != DefaultAgentProfileID || cfg.PromptIdentity.Source != PromptSourceDefaultFloret {
+	if cfg.SystemPrompt != DefaultSystemPrompt || cfg.AgentProfile.ID != DefaultAgentProfileID || cfg.PromptIdentity.Source != PromptSourceDefaultAgent {
 		t.Fatalf("resolved default identity drifted: %#v", cfg)
 	}
 }
@@ -193,7 +193,7 @@ func TestResolveAgentProfileWinsAfterResolvedDefaultPrompt(t *testing.T) {
 	}
 }
 
-func TestResolveEmptyAgentProfilePromptFallsBackToDefaultFloret(t *testing.T) {
+func TestResolveEmptyAgentProfilePromptFallsBackToDefaultAgent(t *testing.T) {
 	cfg, err := Resolve(Config{
 		Provider:     "fake",
 		Model:        "fake-model",
@@ -202,10 +202,10 @@ func TestResolveEmptyAgentProfilePromptFallsBackToDefaultFloret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.SystemPrompt != DefaultFloretSystemPrompt || cfg.AgentProfile.ID != DefaultAgentProfileID {
+	if cfg.SystemPrompt != DefaultSystemPrompt || cfg.AgentProfile.ID != DefaultAgentProfileID {
 		t.Fatalf("cfg = %#v", cfg)
 	}
-	if cfg.PromptIdentity.Source != PromptSourceDefaultFloret {
+	if cfg.PromptIdentity.Source != PromptSourceDefaultAgent {
 		t.Fatalf("prompt identity = %#v", cfg.PromptIdentity)
 	}
 }

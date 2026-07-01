@@ -129,7 +129,7 @@ func TestRunnerAgentSessionDefaultsDoNotSetWallTime(t *testing.T) {
 	}
 }
 
-func TestRunnerAgentSessionUsesDefaultFloretProfile(t *testing.T) {
+func TestRunnerAgentSessionUsesDefaultAgentProfile(t *testing.T) {
 	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("done"), harness.Done()))
 	runner := NewRunner(t.TempDir())
 	runner.Now = fixedClock()
@@ -148,13 +148,13 @@ func TestRunnerAgentSessionUsesDefaultFloretProfile(t *testing.T) {
 	if len(scripted.Requests) != 1 || len(scripted.Requests[0].Messages) == 0 {
 		t.Fatalf("provider requests = %#v", scripted.Requests)
 	}
-	if scripted.Requests[0].Messages[0].Role != session.System || scripted.Requests[0].Messages[0].Content != config.DefaultFloretSystemPrompt {
+	if scripted.Requests[0].Messages[0].Role != session.System || scripted.Requests[0].Messages[0].Content != config.DefaultSystemPrompt {
 		t.Fatalf("system message = %#v", scripted.Requests[0].Messages[0])
 	}
 	if result.Session.AgentProfile.ID != config.DefaultAgentProfileID || result.Session.AgentProfile.SystemPrompt != "" {
 		t.Fatalf("public agent profile = %#v", result.Session.AgentProfile)
 	}
-	if result.Session.PromptIdentity.Source != config.PromptSourceDefaultFloret || result.Session.PromptIdentity.SystemPromptHash == "" {
+	if result.Session.PromptIdentity.Source != config.PromptSourceDefaultAgent || result.Session.PromptIdentity.SystemPromptHash == "" {
 		t.Fatalf("prompt identity = %#v", result.Session.PromptIdentity)
 	}
 	if result.Session.SystemPrompt != "" {

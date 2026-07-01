@@ -123,7 +123,7 @@ export function landingDemoDraft(tools = state.config?.tools || []) {
   return {
     profile_id: profile.id,
     message: landingDemoPrompt(),
-    system_prompt: "You are Floret. Follow the user's requested tool sequence exactly, use progressive disclosure for Agent Skills, and answer with the artifact URL after the file is written.",
+    system_prompt: "You are a test assistant. Follow the user's requested tool sequence exactly, use progressive disclosure for Agent Skills, and answer with the artifact URL after the file is written.",
     selected_tools: LANDING_DEMO_TOOLS.filter((name) => available.has(name)),
     context_policy: contextPolicyForProfile(profile),
   };
