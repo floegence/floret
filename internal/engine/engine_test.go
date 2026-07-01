@@ -2071,6 +2071,163 @@ func TestSchemaErrorReturnsToolResultAndAllowsModelRecovery(t *testing.T) {
 	}
 }
 
+func TestFrameworkToolErrorsExposeNeutralActivityReason(t *testing.T) {
+	tests := []struct {
+		name          string
+		tool          tools.Tool
+		approver      tools.Approver
+		args          string
+		wantReason    string
+		wantRenderer  observation.ActivityRenderer
+		wantCallLabel string
+	}{
+		{
+			name: "invalid args",
+			tool: stringTool("read", "Read", true, tools.PermissionSpec{Mode: tools.PermissionAllow}, func(context.Context, string) (string, error) {
+				return "unexpected", nil
+			}),
+			args:         `{"bad":true}`,
+			wantReason:   "invalid arguments",
+			wantRenderer: observation.ActivityRendererStructured,
+		},
+		{
+			name: "permission denied",
+			tool: tools.Define[stringArgs](
+				tools.Definition{
+					Name:        "write",
+					InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+					Permission:  tools.PermissionSpec{Mode: tools.PermissionAsk},
+					Activity: func(inv tools.Invocation[any]) (*observation.ActivityPresentation, error) {
+						args, ok := inv.Args.(stringArgs)
+						if !ok {
+							t.Fatalf("args=%T, want stringArgs", inv.Args)
+						}
+						return &observation.ActivityPresentation{
+							Label:    "Write " + args.Value,
+							Renderer: observation.ActivityRendererFile,
+							Payload:  map[string]any{"path": args.Value},
+						}, nil
+					},
+				},
+				nil,
+				nil,
+				func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
+					return tools.Result{Text: "unexpected"}, nil
+				},
+			),
+			approver: func(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {
+				return tools.PermissionDecisionDenied("not allowed by policy"), nil
+			},
+			args:          `{"value":"notes.md"}`,
+			wantReason:    "not allowed by policy",
+			wantRenderer:  observation.ActivityRendererFile,
+			wantCallLabel: "Write notes.md",
+		},
+		{
+			name: "resource panic",
+			tool: tools.Define[stringArgs](
+				tools.Definition{
+					Name:        "shell",
+					InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+					Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+					Activity: func(inv tools.Invocation[any]) (*observation.ActivityPresentation, error) {
+						args, ok := inv.Args.(stringArgs)
+						if !ok {
+							t.Fatalf("args=%T, want stringArgs", inv.Args)
+						}
+						return &observation.ActivityPresentation{
+							Label:    args.Value,
+							Renderer: observation.ActivityRendererTerminal,
+							Payload:  map[string]any{"command": args.Value},
+						}, nil
+					},
+				},
+				nil,
+				func(tools.Invocation[stringArgs]) ([]tools.ResourceRef, error) {
+					panic("boom")
+				},
+				func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
+					return tools.Result{Text: "unexpected"}, nil
+				},
+			),
+			args:          `{"value":"npm test"}`,
+			wantReason:    `tool "shell" panicked: boom`,
+			wantRenderer:  observation.ActivityRendererTerminal,
+			wantCallLabel: "npm test",
+		},
+		{
+			name: "resource extraction failure",
+			tool: tools.Define[stringArgs](
+				tools.Definition{
+					Name:        "todos",
+					InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+					Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+					Activity: func(inv tools.Invocation[any]) (*observation.ActivityPresentation, error) {
+						args, ok := inv.Args.(stringArgs)
+						if !ok {
+							t.Fatalf("args=%T, want stringArgs", inv.Args)
+						}
+						return &observation.ActivityPresentation{
+							Label:    "Update " + args.Value,
+							Renderer: observation.ActivityRendererTodos,
+							Payload:  map[string]any{"operation": "write"},
+						}, nil
+					},
+				},
+				nil,
+				func(tools.Invocation[stringArgs]) ([]tools.ResourceRef, error) {
+					return nil, errors.New("todo state unavailable")
+				},
+				func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
+					return tools.Result{Text: "unexpected"}, nil
+				},
+			),
+			args:          `{"value":"plan"}`,
+			wantReason:    `tool "todos" resource extraction failed: todo state unavailable`,
+			wantRenderer:  observation.ActivityRendererTodos,
+			wantCallLabel: "Update plan",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &event.Recorder{}
+			p := harness.NewScriptedProvider(
+				harness.Step(harness.Tool("tool-1", tt.tool.Definition.Name, tt.args), harness.DoneReason("tool_calls")),
+				harness.Step(harness.Text("recovered"), harness.Done()),
+			)
+			reg := tools.NewRegistry()
+			mustRegister(t, reg, tt.tool)
+			e := newTestEngine(p, rec)
+			e.Tools = reg
+			e.Approver = tt.approver
+
+			got := e.Run(context.Background(), "run")
+
+			if got.Status != engine.Completed || got.Output != "recovered" {
+				t.Fatalf("result = %#v", got)
+			}
+			result := firstToolResultEvent(t, rec.Events, "tool-1")
+			if result.Activity == nil {
+				t.Fatalf("tool result activity missing: %#v", result)
+			}
+			if result.Activity.Renderer != tt.wantRenderer {
+				t.Fatalf("renderer = %q, want %q; activity=%#v", result.Activity.Renderer, tt.wantRenderer, result.Activity)
+			}
+			if tt.wantCallLabel != "" && result.Activity.Label != tt.wantCallLabel {
+				t.Fatalf("label = %q, want %q; activity=%#v", result.Activity.Label, tt.wantCallLabel, result.Activity)
+			}
+			assertActivityErrorReason(t, result.Activity.Payload, tt.wantReason)
+
+			item := firstTimelineToolItem(t, engineTestActivityTimeline(rec.Events), "tool-1")
+			if item.Status != observation.ActivityStatusError {
+				t.Fatalf("timeline item status = %q, want error; item=%#v", item.Status, item)
+			}
+			assertActivityErrorReason(t, item.Payload, tt.wantReason)
+		})
+	}
+}
+
 func TestToolOutputProjectionAppliesBeforeHistoryAndNextProviderRequest(t *testing.T) {
 	p := harness.NewScriptedProvider(
 		harness.Step(harness.Tool("read-1", "read", `{"value":"x"}`), harness.DoneReason("tool_calls")),
@@ -4126,6 +4283,82 @@ func firstEvent(events []event.Event, typ event.Type) event.Event {
 		}
 	}
 	return event.Event{}
+}
+
+func firstToolResultEvent(t *testing.T, events []event.Event, toolID string) event.Event {
+	t.Helper()
+	for _, ev := range events {
+		if ev.Type == event.ToolResult && ev.ToolID == toolID {
+			return ev
+		}
+	}
+	t.Fatalf("tool result %q not found in %#v", toolID, events)
+	return event.Event{}
+}
+
+func engineTestActivityTimeline(events []event.Event) observation.ActivityTimeline {
+	observed := make([]observation.Event, 0, len(events))
+	for _, ev := range events {
+		sanitized := event.Sanitize(ev)
+		observed = append(observed, observation.Event{
+			Type:       string(sanitized.Type),
+			TraceID:    sanitized.TraceID,
+			RunID:      sanitized.RunID,
+			ThreadID:   sanitized.ThreadID,
+			TurnID:     sanitized.TurnID,
+			Step:       sanitized.Step,
+			ToolID:     sanitized.ToolID,
+			ToolName:   sanitized.ToolName,
+			ToolKind:   sanitized.ToolKind,
+			ArgsHash:   sanitized.ArgsHash,
+			DurationMS: sanitized.Duration,
+			Activity:   observation.CloneActivityPresentation(sanitized.Activity),
+			Metadata:   engineTestObservationMetadata(sanitized.Metadata),
+			ObservedAt: sanitized.Timestamp,
+		})
+	}
+	return observation.BuildActivityTimeline(observation.ActivityRunMeta{RunID: "run"}, observed, time.Now().UnixMilli())
+}
+
+func engineTestObservationMetadata(value any) map[string]any {
+	switch v := value.(type) {
+	case map[string]any:
+		return v
+	case map[string]string:
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			out[key] = item
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func firstTimelineToolItem(t *testing.T, timeline observation.ActivityTimeline, toolID string) observation.ActivityItem {
+	t.Helper()
+	for _, item := range timeline.Items {
+		if item.ToolID == toolID {
+			return item
+		}
+	}
+	t.Fatalf("timeline item %q not found in %#v", toolID, timeline)
+	return observation.ActivityItem{}
+}
+
+func assertActivityErrorReason(t *testing.T, payload map[string]any, want string) {
+	t.Helper()
+	if payload["status"] != string(observation.ActivityStatusError) {
+		t.Fatalf("activity status = %#v, want error; payload=%#v", payload["status"], payload)
+	}
+	errorPayload, ok := payload["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("activity error payload missing: %#v", payload)
+	}
+	message, ok := errorPayload["message"].(string)
+	if !ok || !strings.Contains(message, want) {
+		t.Fatalf("activity error message = %#v, want containing %q; payload=%#v", errorPayload["message"], want, payload)
+	}
 }
 
 func eventsOfType(events []event.Event, typ event.Type) []event.Event {

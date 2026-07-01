@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/floegence/floret/internal/control"
@@ -960,6 +961,17 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		toolStarted := time.Now()
 		toolMessages := make([]session.Message, len(calls))
 		toolMessageSet := make([]bool, len(calls))
+		var dispatchedMu sync.Mutex
+		dispatchedCalls := map[string]bool{}
+		if toolRunOptions.DispatchStarted != nil {
+			emitDispatchStarted := toolRunOptions.DispatchStarted
+			toolRunOptions.DispatchStarted = func(start tools.DispatchStart) {
+				dispatchedMu.Lock()
+				dispatchedCalls[start.CallID] = true
+				dispatchedMu.Unlock()
+				emitDispatchStarted(start)
+			}
+		}
 		processToolResult := func(i int, result tools.Result) error {
 			result = preparePendingToolResult(result)
 			result.Activity = sanitizeActivityPresentation(result.Activity)
@@ -981,6 +993,10 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				errText = text
 				text = "ERROR: " + text
 			}
+			dispatchedMu.Lock()
+			wasDispatched := dispatchedCalls[result.CallID]
+			dispatchedMu.Unlock()
+			result.Activity = errorToolResultActivityPresentation(result.Activity, callActivities[result.CallID], resultStatus, errText, !wasDispatched)
 			metadata := mergeToolResultMetadata(result.Metadata, i, len(calls))
 			resultView := (*session.ToolResultView)(nil)
 			if result.Pending == nil {
@@ -1130,6 +1146,47 @@ func sanitizeActivityPresentation(activity *observation.ActivityPresentation) *o
 	return event.Sanitize(event.Event{Activity: activity}).Activity
 }
 
+func errorToolResultActivityPresentation(activity, callActivity *observation.ActivityPresentation, status string, reason string, includeReason bool) *observation.ActivityPresentation {
+	if status != string(observation.ActivityStatusError) {
+		return activity
+	}
+	if !includeReason {
+		return activity
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "tool execution failed"
+	}
+	out := observation.CloneActivityPresentation(activity)
+	if out == nil {
+		out = observation.CloneActivityPresentation(callActivity)
+	}
+	if out == nil {
+		out = &observation.ActivityPresentation{}
+	}
+	if out.Renderer == "" && callActivity != nil && callActivity.Renderer != "" {
+		out.Renderer = callActivity.Renderer
+	}
+	if out.Renderer == "" {
+		out.Renderer = observation.ActivityRendererStructured
+	}
+	out.Payload = cloneActivityPayload(out.Payload)
+	if out.Payload == nil {
+		out.Payload = map[string]any{}
+	}
+	out.Payload["status"] = string(observation.ActivityStatusError)
+	errorPayload, _ := out.Payload["error"].(map[string]any)
+	errorPayload = cloneActivityPayload(errorPayload)
+	if errorPayload == nil {
+		errorPayload = map[string]any{}
+	}
+	if strings.TrimSpace(stringFromAny(errorPayload["message"])) == "" {
+		errorPayload["message"] = reason
+	}
+	out.Payload["error"] = errorPayload
+	return sanitizeActivityPresentation(out)
+}
+
 func sessionActivityPresentation(in *observation.ActivityPresentation) *session.ActivityPresentation {
 	if in == nil {
 		return nil
@@ -1177,6 +1234,12 @@ func cloneActivityPayloadValue(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
 		return cloneActivityPayload(typed)
+	case map[string]string:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			out[key] = item
+		}
+		return out
 	case []any:
 		out := make([]any, len(typed))
 		for i, item := range typed {
@@ -1187,6 +1250,20 @@ func cloneActivityPayloadValue(value any) any {
 		return append([]string(nil), typed...)
 	default:
 		return typed
+	}
+}
+
+func stringFromAny(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case fmt.Stringer:
+		return v.String()
+	default:
+		if v == nil {
+			return ""
+		}
+		return fmt.Sprint(v)
 	}
 }
 

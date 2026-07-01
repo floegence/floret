@@ -40,7 +40,12 @@ reasoning, tool arguments, tool results, and local paths.
   observed. A running local tool can later emit `tool_activity_updated` to merge
   public presentation payload changes into the same activity item, for example
   a host-owned read handle or latest output summary. This observation is not a
-  result and cannot reopen a terminal item.
+  result and cannot reopen a terminal item. Local pre-dispatch framework errors
+  carry a neutral public activity payload with `status=error` and
+  `error.message` when no host result activity already provided one, so
+  framework-layer failures still project a readable activity reason without
+  moving downstream presentation policy into Floret or treating arbitrary tool
+  output as public display copy.
 * Runtime stream observations expose provider-neutral model output facts,
   including text deltas, reasoning deltas, retry/finish signals, and model
   tool-call stream start/delta/end facts. Model tool-call stream facts identify

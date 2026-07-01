@@ -65,6 +65,15 @@ projection, but it does not define tool-specific UI layout, copy, grouping, or
 field priority. Downstream hosts remain responsible for interpreting terminal,
 file, patch, web-search, question, completion, todo, and other renderer payloads
 as product presentation.
+When a local tool fails before handler dispatch and the host/tool handler did
+not provide public result activity, the engine supplies a neutral error payload
+on the result activity: `status=error` and `error.message` contain the sanitized
+provider-visible framework failure reason. The result activity reuses the call
+activity renderer when one was available, otherwise it uses `structured`. This
+keeps framework-layer failures such as invalid arguments, denied approval,
+resource extraction errors, and pre-dispatch panic recovery visible in activity
+timelines without introducing downstream product UI semantics or treating
+arbitrary tool output as public display copy.
 
 Tool result duration is part of the activity lifecycle fact. When a terminal
 tool result carries a positive duration, `BuildActivityTimeline` uses
