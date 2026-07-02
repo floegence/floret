@@ -117,7 +117,9 @@ derived from child snapshots without exposing the child transcript.
 `ReadSubAgentDetail` and `ListSubAgentDetailEvents` are separate public host
 APIs for parent-scoped, paginated inspection of the child journal. They let a
 product UI show complete child execution detail while keeping parent model
-context small.
+context small. Their top-level activity timeline is rebuilt from retained child
+detail events on each read so later tool results and pending-tool settlements
+replace earlier running updates; row events remain the ordered child journal.
 
 Hosts that only need thread lifecycle metadata should use `EnsureThread` and
 `ThreadSummary`. `ReadThread` exposes transcript messages and should not be the

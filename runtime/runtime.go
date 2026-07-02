@@ -340,20 +340,22 @@ type CloseSubAgentsResult struct {
 }
 
 type SubAgentDetail struct {
-	Snapshot     SubAgentSnapshot      `json:"snapshot"`
-	Events       []SubAgentDetailEvent `json:"events"`
-	NextOrdinal  int64                 `json:"next_ordinal,omitempty"`
-	HasMore      bool                  `json:"has_more,omitempty"`
-	RetainedFrom int64                 `json:"retained_from,omitempty"`
-	GeneratedAt  time.Time             `json:"generated_at"`
+	Snapshot         SubAgentSnapshot             `json:"snapshot"`
+	Events           []SubAgentDetailEvent        `json:"events"`
+	ActivityTimeline observation.ActivityTimeline `json:"activity_timeline"`
+	NextOrdinal      int64                        `json:"next_ordinal,omitempty"`
+	HasMore          bool                         `json:"has_more,omitempty"`
+	RetainedFrom     int64                        `json:"retained_from,omitempty"`
+	GeneratedAt      time.Time                    `json:"generated_at"`
 }
 
 type SubAgentDetailEvents struct {
-	Events       []SubAgentDetailEvent `json:"events"`
-	NextOrdinal  int64                 `json:"next_ordinal,omitempty"`
-	HasMore      bool                  `json:"has_more,omitempty"`
-	RetainedFrom int64                 `json:"retained_from,omitempty"`
-	GeneratedAt  time.Time             `json:"generated_at"`
+	Events           []SubAgentDetailEvent        `json:"events"`
+	ActivityTimeline observation.ActivityTimeline `json:"activity_timeline"`
+	NextOrdinal      int64                        `json:"next_ordinal,omitempty"`
+	HasMore          bool                         `json:"has_more,omitempty"`
+	RetainedFrom     int64                        `json:"retained_from,omitempty"`
+	GeneratedAt      time.Time                    `json:"generated_at"`
 }
 
 type SubAgentActivityTimelineResult struct {
@@ -1486,11 +1488,12 @@ func listSubAgentDetailEvents(ctx context.Context, harness *agentharness.AgentHa
 		return SubAgentDetailEvents{}, runtimeHostError(err)
 	}
 	return SubAgentDetailEvents{
-		Events:       subAgentDetailEvents(detail.Events),
-		NextOrdinal:  detail.NextOrdinal,
-		HasMore:      detail.HasMore,
-		RetainedFrom: detail.RetainedFrom,
-		GeneratedAt:  detail.GeneratedAt,
+		Events:           subAgentDetailEvents(detail.Events),
+		ActivityTimeline: cloneRuntimeActivityTimeline(detail.ActivityTimeline),
+		NextOrdinal:      detail.NextOrdinal,
+		HasMore:          detail.HasMore,
+		RetainedFrom:     detail.RetainedFrom,
+		GeneratedAt:      detail.GeneratedAt,
 	}, nil
 }
 
@@ -1998,12 +2001,13 @@ func firstRuntimeNonEmpty(values ...string) string {
 
 func subAgentDetail(in agentharness.SubAgentDetail) SubAgentDetail {
 	return SubAgentDetail{
-		Snapshot:     subAgentSnapshot(in.Snapshot),
-		Events:       subAgentDetailEvents(in.Events),
-		NextOrdinal:  in.NextOrdinal,
-		HasMore:      in.HasMore,
-		RetainedFrom: in.RetainedFrom,
-		GeneratedAt:  in.GeneratedAt,
+		Snapshot:         subAgentSnapshot(in.Snapshot),
+		Events:           subAgentDetailEvents(in.Events),
+		ActivityTimeline: cloneRuntimeActivityTimeline(in.ActivityTimeline),
+		NextOrdinal:      in.NextOrdinal,
+		HasMore:          in.HasMore,
+		RetainedFrom:     in.RetainedFrom,
+		GeneratedAt:      in.GeneratedAt,
 	}
 }
 
@@ -2041,8 +2045,6 @@ func subAgentDetailEvent(in agentharness.SubAgentDetailEvent) SubAgentDetailEven
 		Compaction: subAgentDetailCompaction(in.Compaction),
 		Error:      in.Error,
 		Metadata:   cloneStringMap(in.Metadata),
-
-		ActivityTimeline: observation.CloneActivityTimeline(in.ActivityTimeline),
 	}
 }
 
@@ -3147,6 +3149,14 @@ func cloneActivityPresentation(in *observation.ActivityPresentation) *observatio
 	out.TargetRefs = append([]observation.ActivityTargetRef(nil), in.TargetRefs...)
 	out.Payload = cloneAnyMap(in.Payload)
 	return &out
+}
+
+func cloneRuntimeActivityTimeline(in observation.ActivityTimeline) observation.ActivityTimeline {
+	cloned := observation.CloneActivityTimeline(&in)
+	if cloned == nil {
+		return observation.ActivityTimeline{}
+	}
+	return *cloned
 }
 
 type runtimeActivityEventRecorder struct {

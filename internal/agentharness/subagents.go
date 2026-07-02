@@ -196,12 +196,13 @@ type WaitSubAgentsResult struct {
 }
 
 type SubAgentDetail struct {
-	Snapshot     SubAgentSnapshot      `json:"snapshot"`
-	Events       []SubAgentDetailEvent `json:"events"`
-	NextOrdinal  int64                 `json:"next_ordinal,omitempty"`
-	HasMore      bool                  `json:"has_more,omitempty"`
-	RetainedFrom int64                 `json:"retained_from,omitempty"`
-	GeneratedAt  time.Time             `json:"generated_at"`
+	Snapshot         SubAgentSnapshot             `json:"snapshot"`
+	Events           []SubAgentDetailEvent        `json:"events"`
+	ActivityTimeline observation.ActivityTimeline `json:"activity_timeline"`
+	NextOrdinal      int64                        `json:"next_ordinal,omitempty"`
+	HasMore          bool                         `json:"has_more,omitempty"`
+	RetainedFrom     int64                        `json:"retained_from,omitempty"`
+	GeneratedAt      time.Time                    `json:"generated_at"`
 }
 
 type ThreadDetailEvents struct {
@@ -565,6 +566,8 @@ func (h *AgentHarness) ReadSubAgentDetail(ctx context.Context, opts ReadSubAgent
 		resultCallIDs: subAgentDetailResultCallIDs(entries),
 		runIDs:        subAgentDetailTurnRunIDs(entries),
 	}
+	generatedAt := h.now()
+	activityTimeline := h.subAgentDetailActivityTimeline(entries, retainedFrom, activityContext, generatedAt)
 	events := make([]SubAgentDetailEvent, 0, len(entries))
 	var nextOrdinal int64
 	var hasMore bool
@@ -585,13 +588,34 @@ func (h *AgentHarness) ReadSubAgentDetail(ctx context.Context, opts ReadSubAgent
 		nextOrdinal = ordinal
 	}
 	return SubAgentDetail{
-		Snapshot:     snapshot,
-		Events:       events,
-		NextOrdinal:  nextOrdinal,
-		HasMore:      hasMore,
-		RetainedFrom: retainedFrom,
-		GeneratedAt:  h.now(),
+		Snapshot:         snapshot,
+		Events:           events,
+		ActivityTimeline: activityTimeline,
+		NextOrdinal:      nextOrdinal,
+		HasMore:          hasMore,
+		RetainedFrom:     retainedFrom,
+		GeneratedAt:      generatedAt,
 	}, nil
+}
+
+func (h *AgentHarness) subAgentDetailActivityTimeline(entries []sessiontree.Entry, retainedFrom int64, activityContext subAgentDetailActivityContext, generatedAt time.Time) observation.ActivityTimeline {
+	observed := make([]observation.Event, 0, len(entries))
+	for index, entry := range entries {
+		ordinal := int64(index + 1)
+		if ordinal < retainedFrom {
+			continue
+		}
+		detail, ok := h.subAgentDetailEvent(entry, ordinal, false, activityContext)
+		if !ok {
+			continue
+		}
+		ev, ok := subAgentDetailObservationEvent(detail, entry, activityContext)
+		if !ok {
+			continue
+		}
+		observed = append(observed, ev)
+	}
+	return observation.BuildActivityTimeline(observation.ActivityRunMeta{}, observed, generatedAt.UnixMilli())
 }
 
 func (h *AgentHarness) ListThreadDetailEvents(ctx context.Context, opts ListThreadDetailEventsOptions) (ThreadDetailEvents, error) {

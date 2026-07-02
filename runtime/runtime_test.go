@@ -1480,7 +1480,17 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 		},
 		nil,
 		nil,
-		func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
+		func(_ context.Context, inv tools.Invocation[stringArgs]) (tools.Result, error) {
+			inv.UpdateActivity(tools.ActivityUpdate{
+				Activity: &observation.ActivityPresentation{
+					Label:    "Reading README.md",
+					Renderer: observation.ActivityRendererTerminal,
+					Payload: map[string]any{
+						"latest_output": "reading\n",
+						"status":        "running",
+					},
+				},
+			})
 			return tools.Result{Text: "file content", Activity: &observation.ActivityPresentation{Description: "Read completed"}}, nil
 		},
 	)); err != nil {
@@ -1526,14 +1536,21 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 	}
 	if got := firstRuntimeSubAgentDetailEvent(defaultDetail.Events, SubAgentDetailEventToolResult); got.ToolResult == nil || got.ToolResult.Content != "" || got.ToolResult.Preview != "file content" || got.ToolResult.ContentSHA256 == "" || got.ToolResult.Status != string(observation.ActivityStatusSuccess) {
 		t.Fatalf("default detail should expose only safe tool result preview and keep hash: %#v", got)
-	} else if got.ActivityTimeline == nil {
-		t.Fatalf("default detail should expose activity without raw: %#v", got)
-	} else if err := observation.ValidateActivityTimeline(*got.ActivityTimeline); err != nil {
+	} else if got.ActivityTimeline != nil {
+		t.Fatalf("tool result row should not expose stale per-event activity: %#v", got.ActivityTimeline)
+	}
+	if activity := firstRuntimeSubAgentDetailEvent(defaultDetail.Events, SubAgentDetailEventToolActivity); activity.ActivityTimeline != nil {
+		t.Fatalf("tool activity row should not expose stale per-event activity: %#v", activity.ActivityTimeline)
+	}
+	if err := observation.ValidateActivityTimeline(defaultDetail.ActivityTimeline); err != nil {
 		t.Fatalf("activity timeline invalid: %v", err)
-	} else if len(got.ActivityTimeline.Items) != 1 || got.ActivityTimeline.Items[0].Status != observation.ActivityStatusSuccess || got.ActivityTimeline.Items[0].Description != "Read completed" {
-		t.Fatalf("activity timeline = %#v", got.ActivityTimeline)
-	} else if got.ActivityTimeline.RunID == "" || string(got.ActivityTimeline.RunID) == string(got.TurnID) || !strings.HasPrefix(got.ActivityTimeline.RunID, "run-") {
-		t.Fatalf("activity timeline run identity = %#v event=%#v", got.ActivityTimeline, got)
+	}
+	readItem := runtimeSubAgentActivityItem(defaultDetail.ActivityTimeline, "read-1")
+	if readItem.Status != observation.ActivityStatusSuccess || readItem.Description != "Read completed" || readItem.Payload["latest_output"] != "reading" {
+		t.Fatalf("canonical activity item did not merge running update into success result: %#v", readItem)
+	}
+	if defaultDetail.ActivityTimeline.RunID == "" || !strings.HasPrefix(defaultDetail.ActivityTimeline.RunID, "run-") {
+		t.Fatalf("activity timeline run identity = %#v item=%#v", defaultDetail.ActivityTimeline, readItem)
 	}
 	detail, err := host.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "child", IncludeRaw: true})
 	if err != nil {
@@ -1554,6 +1571,9 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 	}
 	if len(next.Events) != 1 || next.Events[0].Ordinal <= detail.Events[0].Ordinal || !next.HasMore {
 		t.Fatalf("next detail events = %#v", next)
+	}
+	if item := runtimeSubAgentActivityItem(next.ActivityTimeline, "read-1"); item.Status != observation.ActivityStatusSuccess {
+		t.Fatalf("paged detail should still expose canonical activity timeline: %#v", next.ActivityTimeline)
 	}
 	mu.Lock()
 	requestsBeforeMaintenance := requests
@@ -1780,14 +1800,14 @@ func TestHostSQLiteStorePersistsSubAgentDetailActivity(t *testing.T) {
 	if result.ToolResult == nil || result.ToolResult.Status != string(observation.ActivityStatusSuccess) {
 		t.Fatalf("reopened result detail = %#v", result)
 	}
-	if result.ActivityTimeline == nil {
-		t.Fatalf("reopened detail missing activity timeline: %#v", detail.Events)
+	if result.ActivityTimeline != nil {
+		t.Fatalf("reopened result row should not expose per-event activity: %#v", result.ActivityTimeline)
 	}
-	if err := observation.ValidateActivityTimeline(*result.ActivityTimeline); err != nil {
+	if err := observation.ValidateActivityTimeline(detail.ActivityTimeline); err != nil {
 		t.Fatalf("activity timeline invalid after reopen: %v", err)
 	}
-	if len(result.ActivityTimeline.Items) != 1 || result.ActivityTimeline.Items[0].Description != "Read persisted" {
-		t.Fatalf("reopened activity timeline = %#v", result.ActivityTimeline)
+	if item := runtimeSubAgentActivityItem(detail.ActivityTimeline, "read-1"); item.Status != observation.ActivityStatusSuccess || item.Description != "Read persisted" {
+		t.Fatalf("reopened activity timeline = %#v", detail.ActivityTimeline)
 	}
 	if call := firstRuntimeSubAgentDetailEvent(detail.Events, SubAgentDetailEventToolCall); call.ActivityTimeline != nil {
 		t.Fatalf("reopened completed call row duplicated activity: %#v", call.ActivityTimeline)
@@ -3472,6 +3492,15 @@ func firstRuntimeThreadDetailEvent(events []ThreadDetailEvent, kind ThreadDetail
 		}
 	}
 	return ThreadDetailEvent{}
+}
+
+func runtimeSubAgentActivityItem(timeline observation.ActivityTimeline, toolID string) observation.ActivityItem {
+	for _, item := range timeline.Items {
+		if item.ToolID == toolID {
+			return item
+		}
+	}
+	return observation.ActivityItem{}
 }
 
 func runtimeProjectionSegmentKinds(segments []ThreadTurnProjectionSegment) []ThreadTurnProjectionSegmentKind {

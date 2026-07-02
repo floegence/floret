@@ -43,7 +43,10 @@ continuation state, and lifecycle observations.
   status without exposing child transcripts.
 * `ReadSubAgentDetail` and `ListSubAgentDetailEvents` let a host read a
   parent-scoped, paginated child-thread execution timeline for human UI or
-  audit surfaces without expanding `WaitSubAgents` payloads.
+  audit surfaces without expanding `WaitSubAgents` payloads. Their top-level
+  `activity_timeline` is the canonical current activity projection rebuilt from
+  retained child detail events; paginated rows are ordered journal facts rather
+  than live tool-state snapshots.
 * `ListThreadDetailEvents` lets a host read the Floret-owned ordered execution
   transcript for a hosted thread without reading Floret storage internals.
 * `ProjectThreadTurn`, `ReadTurnProjection`, and `TurnResult.Projection` expose

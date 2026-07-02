@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-07-01
+* **Update**: Documented canonical top-level subagent detail activity timelines
+  rebuilt from retained child journal events so stale running row snapshots do
+  not represent current tool state.
 * **Update**: Documented neutral subagent task descriptions as durable runtime
   metadata while keeping product UI routing and presentation outside Floret.
 * **Update**: Documented neutral pre-dispatch local tool error activity payloads

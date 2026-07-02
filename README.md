@@ -416,9 +416,20 @@ events include bounded, sanitized previews plus hashes and truncation metadata
 by default. Raw message content, reasoning, tool arguments, and full tool result
 content are omitted unless `IncludeRaw` is set for an explicitly authorized
 human/debug surface. Do not use raw subagent detail responses as model-facing
-`wait` or `inspect` tool output. When a row has product-neutral activity, Floret
-returns it as `activity_timeline`; tool result rows also expose a structured
+`wait` or `inspect` tool output.
+
+Subagent detail responses also include a top-level `activity_timeline`. This is
+the canonical current tool/activity projection for the retained child journal:
+Floret rebuilds it from persisted child detail events on every read so later
+tool results or `SettlePendingTool` calls replace earlier running updates.
+Paginated event rows are the ordered journal facts; host UIs should render the
+top-level activity timeline for current tool state instead of treating old row
+activity snapshots as live state. Tool result rows still expose a structured
 `status`, so hosts do not need to infer result state from preview text.
+Floret does not manage downstream terminal processes or remote tasks inside a
+subagent. If a host-owned pending tool remains live when a subagent run
+terminates, the host must observe, stop, and settle that work through
+`SettlePendingTool`.
 
 ### Thread detail inspection
 
