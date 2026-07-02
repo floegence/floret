@@ -371,6 +371,14 @@ registry, or decide cancellation.
 provider-visible result. Metadata is observation-only; if the model should pass a
 token to a later host tool call, the host must make that token the handle.
 
+The host application is also responsible for run-scoped cleanup. When a host run
+finishes, fails, is cancelled, or shuts down while it still owns pending work, the
+host must inspect its own live work registry, observe or stop that work, and call
+`runtime.Host.SettlePendingTool` with `completed`, `failed`, or `canceled` for
+each affected pending tool. Floret intentionally does not poll handles, kill
+processes, infer host task status from turn status, or decide which host-owned
+work should continue beyond a run.
+
 When the host observes completion, failure, or cancellation, it calls
 `runtime.Host.SettlePendingTool` to update the original activity item without
 adding provider-visible context. If the agent should reason over the completed

@@ -2341,6 +2341,139 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	}
 }
 
+func TestHostSettlePendingToolOnlyUpdatesExplicitPendingTarget(t *testing.T) {
+	ctx := context.Background()
+	registry := tools.NewRegistry()
+	if err := registry.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{
+			Name:        "terminal_exec",
+			InputSchema: runtimeEchoSchema(),
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+		},
+		nil,
+		nil,
+		func(_ context.Context, inv tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			args := inv.Args
+			command := strings.TrimSpace(args.Text)
+			if command == "" {
+				command = "command"
+			}
+			return tools.Result{
+				Activity: &observation.ActivityPresentation{
+					Label:    command,
+					Renderer: observation.ActivityRendererTerminal,
+					Payload:  map[string]any{"command": command},
+				},
+				Pending: &tools.PendingToolResult{
+					Handle:      "terminal:job:" + strings.ReplaceAll(command, " ", "-"),
+					State:       tools.PendingToolResultRunning,
+					Summary:     "Command is running",
+					Instruction: "Wait for completion.",
+				},
+			}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+
+	var requests int
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		if strings.Contains(string(req.RunID), "thread-title") {
+			events := make(chan ModelEvent, 2)
+			events <- ModelEvent{Type: ModelEventDelta, Text: "Pending commands"}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			close(events)
+			return events, nil
+		}
+		requests++
+		events := make(chan ModelEvent, 3)
+		switch requests {
+		case 1:
+			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{
+				{ID: "exec-a", Name: "terminal_exec", Args: `{"text":"npm test"}`},
+				{ID: "exec-b", Name: "terminal_exec", Args: `{"text":"npm lint"}`},
+			}}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+		case 2:
+			events <- ModelEvent{Type: ModelEventDelta, Text: "Both commands are now running under the host."}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+		default:
+			t.Fatalf("unexpected provider request after pending commands: %#v", req)
+		}
+		close(events)
+		return events, nil
+	})
+
+	store := NewMemoryStore()
+	host, err := NewHost(HostOptions{
+		Config:               runtimeGatewayConfig("test"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                store,
+		Tools:                registry,
+		Approver:             allowRuntimeTools,
+		IDGenerator:          deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: "run commands"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != TurnStatusCompleted {
+		t.Fatalf("run status=%q, want completed", run.Status)
+	}
+	if item := runtimeProjectionToolItem(run.Projection, "exec-a"); item.Status != observation.ActivityStatusRunning {
+		t.Fatalf("exec-a should remain running before settlement: %#v", item)
+	}
+	if item := runtimeProjectionToolItem(run.Projection, "exec-b"); item.Status != observation.ActivityStatusRunning {
+		t.Fatalf("exec-b should remain running before settlement: %#v", item)
+	}
+
+	maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer maintenance.Close()
+
+	settled, err := maintenance.SettlePendingTool(ctx, PendingToolSettlementRequest{
+		ThreadID:   "thread",
+		TurnID:     "turn-1",
+		RunID:      "run-1",
+		ToolCallID: "exec-a",
+		ToolName:   "terminal_exec",
+		Handle:     "terminal:job:npm-test",
+		Status:     PendingToolSettlementCompleted,
+		Summary:    "npm test completed",
+		Output:     "ok",
+		Activity:   &observation.ActivityPresentation{Label: "npm test", Renderer: observation.ActivityRendererTerminal, Payload: map[string]any{"command": "npm test", "exit_code": 0}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item := runtimeProjectionToolItem(settled.Projection, "exec-a"); item.Status != observation.ActivityStatusSuccess {
+		t.Fatalf("exec-a settled item = %#v, want success", item)
+	}
+	if item := runtimeProjectionToolItem(settled.Projection, "exec-b"); item.Status != observation.ActivityStatusRunning {
+		t.Fatalf("exec-b should remain running after exec-a settlement: %#v", item)
+	}
+
+	readProjection, err := maintenance.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "thread", TurnID: "turn-1", RunID: "run-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item := runtimeProjectionToolItem(readProjection, "exec-a"); item.Status != observation.ActivityStatusSuccess {
+		t.Fatalf("read projection exec-a = %#v, want success", item)
+	}
+	if item := runtimeProjectionToolItem(readProjection, "exec-b"); item.Status != observation.ActivityStatusRunning {
+		t.Fatalf("read projection exec-b = %#v, want still running", item)
+	}
+}
+
 func TestHarnessHelperRunsCustomToolWithoutPublicProviderAPI(t *testing.T) {
 	ctx := context.Background()
 	registry := tools.NewRegistry()
