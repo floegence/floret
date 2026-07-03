@@ -120,6 +120,11 @@ product UI show complete child execution detail while keeping parent model
 context small. Their top-level activity timeline is rebuilt from retained child
 detail events on each read so later tool results and pending-tool settlements
 replace earlier running updates; row events remain the ordered child journal.
+Their top-level context block carries neutral model-bound context facts:
+provider/model identity, model-derived context policy, current pressure/usage
+status, and public compaction operations. Fork mode and parent/child thread
+identity affect lookup and journal ownership only; they do not define context
+window size.
 
 Hosts that only need thread lifecycle metadata should use `EnsureThread` and
 `ThreadSummary`. `ReadThread` exposes transcript messages and should not be the

@@ -16,6 +16,7 @@ import (
 	"github.com/floegence/floret/internal/event"
 	"github.com/floegence/floret/internal/session"
 	"github.com/floegence/floret/internal/session/artifact"
+	"github.com/floegence/floret/internal/session/contextpolicy"
 	"github.com/floegence/floret/internal/sessiontree"
 	"github.com/floegence/floret/observation"
 )
@@ -98,6 +99,15 @@ const (
 	subAgentLifecycleEntryKind = "subagent_lifecycle"
 	subAgentLifecycleActionKey = "action"
 	subAgentLifecycleReasonKey = "reason"
+
+	subAgentContextPolicyEntryKind     = "subagent_context_policy"
+	subAgentContextStatusEntryKind     = "subagent_context_status"
+	subAgentContextCompactionEntryKind = "subagent_context_compaction"
+	subAgentContextProviderKey         = "provider"
+	subAgentContextModelKey            = "model"
+	subAgentContextPolicyKey           = "context_policy_json"
+	subAgentContextStatusKey           = "context_status_json"
+	subAgentContextCompactionKey       = "context_compaction_json"
 
 	subAgentTerminalReasonKey = "terminal_reason"
 	subAgentRunTimeoutReason  = "child_run_timeout"
@@ -199,10 +209,48 @@ type SubAgentDetail struct {
 	Snapshot         SubAgentSnapshot             `json:"snapshot"`
 	Events           []SubAgentDetailEvent        `json:"events"`
 	ActivityTimeline observation.ActivityTimeline `json:"activity_timeline"`
+	Context          SubAgentDetailContext        `json:"context,omitempty"`
 	NextOrdinal      int64                        `json:"next_ordinal,omitempty"`
 	HasMore          bool                         `json:"has_more,omitempty"`
 	RetainedFrom     int64                        `json:"retained_from,omitempty"`
 	GeneratedAt      time.Time                    `json:"generated_at"`
+}
+
+type SubAgentDetailContext struct {
+	Model       SubAgentDetailContextModel        `json:"model,omitempty"`
+	Policy      SubAgentDetailContextPolicy       `json:"policy,omitempty"`
+	Usage       *observation.ContextStatus        `json:"usage,omitempty"`
+	Compactions []SubAgentDetailContextCompaction `json:"compactions,omitempty"`
+	UpdatedAt   time.Time                         `json:"updated_at,omitempty"`
+}
+
+type SubAgentDetailContextModel struct {
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+}
+
+type SubAgentDetailContextPolicy struct {
+	ContextWindowTokens  int64 `json:"context_window_tokens,omitempty"`
+	MaxOutputTokens      int64 `json:"max_output_tokens,omitempty"`
+	ReservedOutputTokens int64 `json:"reserved_output_tokens,omitempty"`
+}
+
+type SubAgentDetailContextCompaction struct {
+	RunID               string    `json:"run_id,omitempty"`
+	ThreadID            string    `json:"thread_id,omitempty"`
+	TurnID              string    `json:"turn_id,omitempty"`
+	Step                int       `json:"step,omitempty"`
+	OperationID         string    `json:"operation_id,omitempty"`
+	RequestID           string    `json:"request_id,omitempty"`
+	Phase               string    `json:"phase,omitempty"`
+	Status              string    `json:"status,omitempty"`
+	Trigger             string    `json:"trigger,omitempty"`
+	Reason              string    `json:"reason,omitempty"`
+	Source              string    `json:"source,omitempty"`
+	TokensBefore        int64     `json:"tokens_before,omitempty"`
+	TokensAfterEstimate int64     `json:"tokens_after_estimate,omitempty"`
+	Error               string    `json:"error,omitempty"`
+	ObservedAt          time.Time `json:"observed_at,omitempty"`
 }
 
 type ThreadDetailEvents struct {
@@ -568,6 +616,7 @@ func (h *AgentHarness) ReadSubAgentDetail(ctx context.Context, opts ReadSubAgent
 	}
 	generatedAt := h.now()
 	activityTimeline := h.subAgentDetailActivityTimeline(entries, retainedFrom, activityContext, generatedAt)
+	contextSnapshot := h.subAgentDetailContext(entries, retainedFrom, activityContext, generatedAt)
 	events := make([]SubAgentDetailEvent, 0, len(entries))
 	var nextOrdinal int64
 	var hasMore bool
@@ -591,6 +640,7 @@ func (h *AgentHarness) ReadSubAgentDetail(ctx context.Context, opts ReadSubAgent
 		Snapshot:         snapshot,
 		Events:           events,
 		ActivityTimeline: activityTimeline,
+		Context:          contextSnapshot,
 		NextOrdinal:      nextOrdinal,
 		HasMore:          hasMore,
 		RetainedFrom:     retainedFrom,
@@ -616,6 +666,224 @@ func (h *AgentHarness) subAgentDetailActivityTimeline(entries []sessiontree.Entr
 		observed = append(observed, ev)
 	}
 	return observation.BuildActivityTimeline(observation.ActivityRunMeta{}, observed, generatedAt.UnixMilli())
+}
+
+func (h *AgentHarness) subAgentDetailContext(entries []sessiontree.Entry, retainedFrom int64, activityContext subAgentDetailActivityContext, generatedAt time.Time) SubAgentDetailContext {
+	out := SubAgentDetailContext{}
+	compactions := make([]SubAgentDetailContextCompaction, 0)
+	seenCompactions := map[string]int{}
+	latestContextObservedAt := time.Time{}
+	for index, entry := range entries {
+		ordinal := int64(index + 1)
+		if ordinal < retainedFrom {
+			continue
+		}
+		switch {
+		case entry.Type == sessiontree.EntryCustom && entry.Metadata[subAgentDetailKindKey] == subAgentContextPolicyEntryKind:
+			if provider := strings.TrimSpace(entry.Metadata[subAgentContextProviderKey]); provider != "" {
+				out.Model.Provider = provider
+			}
+			if model := strings.TrimSpace(entry.Metadata[subAgentContextModelKey]); model != "" {
+				out.Model.Model = model
+			}
+			if policy, ok := subAgentDetailContextPolicy(entry.Metadata); ok {
+				out.Policy = policy
+			}
+			latestContextObservedAt = maxTime(latestContextObservedAt, entry.CreatedAt)
+		case entry.Type == sessiontree.EntryCustom && entry.Metadata[subAgentDetailKindKey] == subAgentContextStatusEntryKind:
+			status, ok := subAgentDetailContextStatus(entry.Metadata)
+			if !ok {
+				continue
+			}
+			out.Usage = &status
+			if provider := strings.TrimSpace(status.Provider); provider != "" {
+				out.Model.Provider = provider
+			}
+			if model := strings.TrimSpace(status.Model); model != "" {
+				out.Model.Model = model
+			}
+			if out.Policy.ContextWindowTokens <= 0 {
+				out.Policy = subAgentDetailContextPolicyFromStatus(status)
+			}
+			latestContextObservedAt = maxTime(latestContextObservedAt, nonZeroTime(status.ObservedAt, entry.CreatedAt))
+		case entry.Type == sessiontree.EntryCustom && entry.Metadata[subAgentDetailKindKey] == subAgentContextCompactionEntryKind:
+			compact, ok := subAgentDetailContextCompaction(entry.Metadata)
+			if !ok {
+				continue
+			}
+			compactions = upsertSubAgentDetailCompaction(compactions, seenCompactions, compact)
+			latestContextObservedAt = maxTime(latestContextObservedAt, nonZeroTime(compact.ObservedAt, entry.CreatedAt))
+		case entry.Type == sessiontree.EntryCompaction:
+			compact := subAgentDetailContextCompactionFromEntry(entry, ordinal, activityContext)
+			if compact.OperationID == "" && compact.Status == "" {
+				continue
+			}
+			compactions = upsertSubAgentDetailCompaction(compactions, seenCompactions, compact)
+			latestContextObservedAt = maxTime(latestContextObservedAt, nonZeroTime(compact.ObservedAt, entry.CreatedAt))
+		}
+	}
+	out.Compactions = compactions
+	if !latestContextObservedAt.IsZero() {
+		out.UpdatedAt = latestContextObservedAt
+	} else if !generatedAt.IsZero() && (out.Model.Provider != "" || out.Model.Model != "" || out.Policy.ContextWindowTokens > 0 || out.Usage != nil || len(out.Compactions) > 0) {
+		out.UpdatedAt = generatedAt
+	}
+	return out
+}
+
+func subAgentDetailContextPolicy(metadata map[string]string) (SubAgentDetailContextPolicy, bool) {
+	raw := strings.TrimSpace(metadata[subAgentContextPolicyKey])
+	if raw == "" {
+		return SubAgentDetailContextPolicy{}, false
+	}
+	var policy SubAgentDetailContextPolicy
+	if err := json.Unmarshal([]byte(raw), &policy); err != nil {
+		return SubAgentDetailContextPolicy{}, false
+	}
+	return policy, policy.ContextWindowTokens > 0 || policy.MaxOutputTokens > 0 || policy.ReservedOutputTokens > 0
+}
+
+func subAgentDetailContextStatus(metadata map[string]string) (observation.ContextStatus, bool) {
+	raw := strings.TrimSpace(metadata[subAgentContextStatusKey])
+	if raw == "" {
+		return observation.ContextStatus{}, false
+	}
+	var status observation.ContextStatus
+	if err := json.Unmarshal([]byte(raw), &status); err != nil {
+		return observation.ContextStatus{}, false
+	}
+	return status, status.Phase != "" || status.Status != "" || status.ContextPressure.ContextWindowTokens > 0
+}
+
+func subAgentDetailContextPolicyFromStatus(status observation.ContextStatus) SubAgentDetailContextPolicy {
+	return SubAgentDetailContextPolicy{
+		ContextWindowTokens: status.ContextPressure.ContextWindowTokens,
+	}
+}
+
+func subAgentDetailContextCompaction(metadata map[string]string) (SubAgentDetailContextCompaction, bool) {
+	raw := strings.TrimSpace(metadata[subAgentContextCompactionKey])
+	if raw == "" {
+		return SubAgentDetailContextCompaction{}, false
+	}
+	var compact SubAgentDetailContextCompaction
+	if err := json.Unmarshal([]byte(raw), &compact); err != nil {
+		return SubAgentDetailContextCompaction{}, false
+	}
+	return compact, compact.OperationID != "" || compact.Status != "" || compact.Phase != ""
+}
+
+func subAgentDetailContextCompactionFromEntry(entry sessiontree.Entry, ordinal int64, activityContext subAgentDetailActivityContext) SubAgentDetailContextCompaction {
+	phase := strings.TrimSpace(entry.CompactionPhase)
+	if phase == "" {
+		phase = observation.CompactionPhaseComplete
+	}
+	return SubAgentDetailContextCompaction{
+		RunID:               activityContext.runIDForTurn(entry.TurnID),
+		ThreadID:            entry.ThreadID,
+		TurnID:              entry.TurnID,
+		Step:                int(ordinal),
+		OperationID:         firstSubAgentDetailNonEmpty(entry.Metadata["operation_id"], entry.CompactionID),
+		Phase:               phase,
+		Status:              subAgentDetailContextCompactionStatus(phase),
+		Trigger:             entry.CompactionTrigger,
+		Reason:              entry.CompactionReason,
+		TokensBefore:        entry.TokensBefore,
+		TokensAfterEstimate: entry.TokensAfterEstimate,
+		Error:               entry.Error,
+		ObservedAt:          entry.CreatedAt,
+	}
+}
+
+func subAgentDetailContextCompactionStatus(phase string) string {
+	switch strings.TrimSpace(phase) {
+	case observation.CompactionPhaseStart:
+		return observation.CompactionStatusRunning
+	case observation.CompactionPhaseComplete:
+		return observation.CompactionStatusCompacted
+	case observation.CompactionPhaseFailed:
+		return observation.CompactionStatusFailed
+	case observation.CompactionPhaseCancelled:
+		return observation.CompactionStatusCancelled
+	case observation.CompactionPhaseNoop:
+		return observation.CompactionStatusNoop
+	default:
+		return ""
+	}
+}
+
+func upsertSubAgentDetailCompaction(compactions []SubAgentDetailContextCompaction, seen map[string]int, compact SubAgentDetailContextCompaction) []SubAgentDetailContextCompaction {
+	key := subAgentDetailContextCompactionKey(compact)
+	if key == "" {
+		compactions = append(compactions, compact)
+		return compactions
+	}
+	if index, ok := seen[key]; ok {
+		compactions[index] = compact
+		return compactions
+	}
+	seen[key] = len(compactions)
+	return append(compactions, compact)
+}
+
+func subAgentDetailContextCompactionKey(compact SubAgentDetailContextCompaction) string {
+	if value := strings.TrimSpace(compact.OperationID); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(compact.RequestID); value != "" {
+		return strings.Join([]string{strings.TrimSpace(compact.RunID), "request", value}, ":")
+	}
+	if compact.RunID == "" && compact.TurnID == "" && compact.Step == 0 && compact.Trigger == "" && compact.Reason == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s:%s:%d:%s:%s", strings.TrimSpace(compact.RunID), strings.TrimSpace(compact.TurnID), compact.Step, strings.TrimSpace(compact.Trigger), strings.TrimSpace(compact.Reason))
+}
+
+func subAgentPublicContextPolicy(policy contextpolicy.Policy) SubAgentDetailContextPolicy {
+	normalized := contextpolicy.Normalize(policy)
+	return SubAgentDetailContextPolicy{
+		ContextWindowTokens:  normalized.ContextWindowTokens,
+		MaxOutputTokens:      normalized.MaxOutputTokens,
+		ReservedOutputTokens: normalized.ReservedOutputTokens,
+	}
+}
+
+func subAgentContextPolicyMetadata(providerName, modelName string, policy contextpolicy.Policy) map[string]string {
+	metadata := map[string]string{
+		subAgentDetailKindKey:      subAgentContextPolicyEntryKind,
+		subAgentDetailTypeKey:      subAgentContextPolicyEntryKind,
+		subAgentContextProviderKey: strings.TrimSpace(providerName),
+		subAgentContextModelKey:    strings.TrimSpace(modelName),
+		subAgentContextPolicyKey:   mustSubAgentMetadataJSON(subAgentPublicContextPolicy(policy)),
+	}
+	return metadata
+}
+
+func mustSubAgentMetadataJSON(value any) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func nonZeroTime(values ...time.Time) time.Time {
+	for _, value := range values {
+		if !value.IsZero() {
+			return value
+		}
+	}
+	return time.Time{}
+}
+
+func maxTime(left, right time.Time) time.Time {
+	if left.IsZero() {
+		return right
+	}
+	if right.IsZero() || left.After(right) {
+		return left
+	}
+	return right
 }
 
 func (h *AgentHarness) ListThreadDetailEvents(ctx context.Context, opts ListThreadDetailEventsOptions) (ThreadDetailEvents, error) {
@@ -782,6 +1050,8 @@ func (h *AgentHarness) subAgentDetailEvent(entry sessiontree.Entry, ordinal int6
 			if event.Type == "" {
 				event.Type = subAgentLifecycleEntryKind
 			}
+		case subAgentContextPolicyEntryKind, subAgentContextStatusEntryKind, subAgentContextCompactionEntryKind:
+			return SubAgentDetailEvent{}, false
 		}
 		event.Metadata = cloneStringMap(entry.Metadata)
 	default:

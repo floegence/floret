@@ -426,6 +426,16 @@ Paginated event rows are the ordered journal facts; host UIs should render the
 top-level activity timeline for current tool state instead of treating old row
 activity snapshots as live state. Tool result rows still expose a structured
 `status`, so hosts do not need to infer result state from preview text.
+
+Subagent detail responses include a top-level `context` block for neutral,
+model-bound facts: provider/model identity, model-derived context policy,
+current context pressure/usage status, and public compaction lifecycle
+operations. Context window size is a property of the resolved model capability
+and policy, not of the parent thread, child thread, subagent, or fork mode.
+Parent and child thread IDs scope lookup, ownership, and pagination only. Raw
+provider requests, transcript windows, prompt-cache internals, and trimming
+strategy fields remain internal to Floret. Downstream products decide how to
+present model status lanes, compaction dividers, and other UI affordances.
 Floret does not manage downstream terminal processes or remote tasks inside a
 subagent. If a host-owned pending tool remains live when a subagent run
 terminates, the host must observe, stop, and settle that work through
@@ -486,6 +496,7 @@ ordered history.
 | Agent execution | provider loop, tool continuation, loop limits, finish reasons | choosing when a user can start, retry, or cancel work |
 | Provider access | adapters, request shape, stream parsing, usage, continuation state | user-level provider profile, secret source, allowed model policy |
 | Storage | thread journal, prompt material, provider ledger, artifacts, runtime metadata | product metadata keyed by `runtime.ThreadID` |
+| Context lifecycle | model-bound context policy, pressure/usage observation, compaction lifecycle facts | visual meters, status lanes, divider placement, product copy |
 | Tools | schema validation, generic effects, approval hook, dispatch, result projection | domain handlers and final product permission checks |
 | Tool approvals | approval request state and current pending snapshots | user-facing approval UX, summaries, product mode policy, decision ownership |
 | Pending tool work | pending result projection, terminal activity settlement, host settlement/completion APIs | handle ownership, process lifecycle, progress, cancellation, final artifacts |

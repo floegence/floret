@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/floret/internal/configbridge"
 	"github.com/floegence/floret/internal/engine"
 	enginecompaction "github.com/floegence/floret/internal/engine/compaction"
 	"github.com/floegence/floret/internal/event"
@@ -1160,6 +1161,11 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	engineOptions.Labels = opts.Labels
 	engineOptions.ContextPolicy = contextpolicy.Normalize(engineOptions.ContextPolicy)
 	applyRunOptions(&engineOptions, opts)
+	if err := t.appendContextPolicyEvent(ctx, turnID, runID, engineOptions.ProviderName, engineOptions.Model, engineOptions.ContextPolicy); err != nil {
+		persistCtx, cancelPersist := turnFinalizationContext(ctx)
+		defer cancelPersist()
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "append_context_policy_error")
+	}
 	eng, err := engine.New(engine.Config{
 		Provider:     t.harness.options.Provider,
 		Tools:        t.harness.options.Tools,
@@ -1933,6 +1939,200 @@ func (t *Thread) appendPendingToolSettlement(ctx context.Context, settlement Pen
 	return entry, nil
 }
 
+func (t *Thread) appendContextPolicyEvent(ctx context.Context, turnID string, runID string, providerName string, modelName string, policy contextpolicy.Policy) error {
+	entry, err := t.harness.options.Repo.Append(ctx, sessiontree.Entry{
+		ThreadID: t.id,
+		TurnID:   turnID,
+		Type:     sessiontree.EntryCustom,
+		Metadata: subAgentContextPolicyMetadata(providerName, modelName, policy),
+	}, sessiontree.AppendOptions{})
+	if err != nil {
+		return err
+	}
+	t.harness.emitEntryCommitted(entry, runID)
+	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: subAgentContextPolicyEntryKind})
+	return nil
+}
+
+func (t *Thread) appendContextStatusEvent(ctx context.Context, turnID string, runID string, ev event.Event) error {
+	status, ok := subAgentContextStatusFromEvent(ev)
+	if !ok {
+		return nil
+	}
+	metadata := map[string]string{
+		subAgentDetailKindKey:    subAgentContextStatusEntryKind,
+		subAgentDetailTypeKey:    subAgentContextStatusEntryKind,
+		subAgentContextStatusKey: mustSubAgentMetadataJSON(status),
+	}
+	entry, err := t.harness.options.Repo.Append(ctx, sessiontree.Entry{
+		ThreadID: t.id,
+		TurnID:   turnID,
+		Type:     sessiontree.EntryCustom,
+		Metadata: metadata,
+	}, sessiontree.AppendOptions{Now: status.ObservedAt})
+	if err != nil {
+		return err
+	}
+	t.harness.emitEntryCommitted(entry, runID)
+	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: subAgentContextStatusEntryKind})
+	return nil
+}
+
+func (t *Thread) appendContextCompactionEvent(ctx context.Context, turnID string, runID string, ev event.Event) error {
+	compact, ok := subAgentContextCompactionFromEvent(ev)
+	if !ok {
+		return nil
+	}
+	metadata := map[string]string{
+		subAgentDetailKindKey:        subAgentContextCompactionEntryKind,
+		subAgentDetailTypeKey:        subAgentContextCompactionEntryKind,
+		subAgentContextCompactionKey: mustSubAgentMetadataJSON(compact),
+	}
+	entry, err := t.harness.options.Repo.Append(ctx, sessiontree.Entry{
+		ThreadID: t.id,
+		TurnID:   turnID,
+		Type:     sessiontree.EntryCustom,
+		Metadata: metadata,
+	}, sessiontree.AppendOptions{Now: compact.ObservedAt})
+	if err != nil {
+		return err
+	}
+	t.harness.emitEntryCommitted(entry, runID)
+	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: subAgentContextCompactionEntryKind})
+	return nil
+}
+
+func subAgentContextStatusFromEvent(ev event.Event) (observation.ContextStatus, bool) {
+	switch ev.Type {
+	case event.ProviderRequest:
+		meta, ok := ev.Metadata.(map[string]any)
+		if !ok {
+			return observation.ContextStatus{}, false
+		}
+		estimate, ok := meta["request_estimate"].(contextpolicy.RequestEstimate)
+		if !ok {
+			return observation.ContextStatus{}, false
+		}
+		pressure, ok := meta["context_pressure"].(contextpolicy.ContextPressure)
+		if !ok {
+			return observation.ContextStatus{}, false
+		}
+		return observation.ContextStatusFromRequest(observation.RequestObservation{
+			RunID:             ev.RunID,
+			ThreadID:          ev.ThreadID,
+			TurnID:            ev.TurnID,
+			Step:              ev.Step,
+			RequestID:         stringFromEventMetadata(meta["request_id"]),
+			LogicalRequestID:  stringFromEventMetadata(meta["logical_request_id"]),
+			Attempt:           intFromEventMetadata(meta["attempt"]),
+			Provider:          ev.Provider,
+			Model:             ev.Model,
+			ObservedAt:        nonZeroTime(ev.Timestamp, time.Now()),
+			RequestEstimate:   configbridge.RequestEstimate(estimate),
+			ProjectedPressure: configbridge.PublicContextPressure(pressure),
+		}), true
+	case event.ProviderUsage:
+		status, ok := ev.Metadata.(engine.ProviderUsageContextStatus)
+		if !ok || status.Phase != engine.ProviderUsagePhaseFinalContextStatus {
+			return observation.ContextStatus{}, false
+		}
+		out, ok := observation.ContextStatusFromProviderUsage(observation.ProviderUsageObservation{
+			RunID:            ev.RunID,
+			ThreadID:         ev.ThreadID,
+			TurnID:           ev.TurnID,
+			Step:             ev.Step,
+			RequestID:        status.RequestID,
+			LogicalRequestID: status.LogicalRequestID,
+			Attempt:          status.Attempt,
+			Provider:         ev.Provider,
+			Model:            ev.Model,
+			ObservedAt:       nonZeroTime(ev.Timestamp, time.Now()),
+			Usage:            subAgentObservationProviderUsage(status.Usage),
+			RequestEstimate:  configbridge.RequestEstimate(status.RequestEstimate),
+			ContextPressure:  configbridge.PublicContextPressure(status.ContextPressure),
+		})
+		return out, ok
+	default:
+		return observation.ContextStatus{}, false
+	}
+}
+
+func subAgentContextCompactionFromEvent(ev event.Event) (SubAgentDetailContextCompaction, bool) {
+	if ev.Type != event.ContextCompact {
+		return SubAgentDetailContextCompaction{}, false
+	}
+	meta, ok := ev.Metadata.(map[string]any)
+	if !ok {
+		return SubAgentDetailContextCompaction{}, false
+	}
+	phase := stringFromEventMetadata(meta["phase"])
+	status := subAgentDetailContextCompactionStatus(phase)
+	if phase == "" || status == "" {
+		return SubAgentDetailContextCompaction{}, false
+	}
+	return SubAgentDetailContextCompaction{
+		RunID:               ev.RunID,
+		ThreadID:            ev.ThreadID,
+		TurnID:              ev.TurnID,
+		Step:                ev.Step,
+		OperationID:         stringFromEventMetadata(meta["operation_id"]),
+		RequestID:           stringFromEventMetadata(meta["request_id"]),
+		Phase:               phase,
+		Status:              status,
+		Trigger:             stringFromEventMetadata(meta["trigger"]),
+		Reason:              stringFromEventMetadata(meta["reason"]),
+		Source:              stringFromEventMetadata(meta["source"]),
+		TokensBefore:        int64FromEventMetadata(meta["tokens_before"]),
+		TokensAfterEstimate: int64FromEventMetadata(meta["tokens_after_estimate"]),
+		Error:               strings.TrimSpace(ev.Err),
+		ObservedAt:          nonZeroTime(ev.Timestamp, time.Now()),
+	}, true
+}
+
+func subAgentObservationProviderUsage(in provider.Usage) observation.ProviderUsage {
+	in = in.Normalized()
+	return observation.ProviderUsage{
+		InputTokens:       in.InputTokens,
+		OutputTokens:      in.OutputTokens,
+		ReasoningTokens:   in.ReasoningTokens,
+		CacheReadTokens:   in.CacheReadTokens,
+		CacheWriteTokens:  in.CacheWriteTokens,
+		TotalTokens:       in.TotalTokens,
+		WindowInputTokens: in.WindowInputTokens,
+		CostUSD:           in.CostUSD,
+		Source:            string(in.Source),
+		Available:         in.Available,
+	}
+}
+
+func stringFromEventMetadata(value any) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+func intFromEventMetadata(value any) int {
+	return int(int64FromEventMetadata(value))
+}
+
+func int64FromEventMetadata(value any) int64 {
+	switch v := value.(type) {
+	case int:
+		return int64(v)
+	case int64:
+		return v
+	case int32:
+		return int64(v)
+	case float64:
+		return int64(v)
+	case float32:
+		return int64(v)
+	default:
+		return 0
+	}
+}
+
 func pendingToolSettlementActivityStatus(status PendingToolSettlementStatus) string {
 	switch status {
 	case PendingToolSettledCompleted:
@@ -2226,6 +2426,10 @@ func (p *turnProjection) Emit(ev event.Event) {
 		return
 	}
 	switch ev.Type {
+	case event.ProviderRequest, event.ProviderUsage:
+		p.err = p.thread.appendContextStatusEvent(p.ctx, p.turnID, p.runID, ev)
+	case event.ContextCompact:
+		p.err = p.thread.appendContextCompactionEvent(p.ctx, p.turnID, p.runID, ev)
 	case event.ProviderDelta:
 		if err := p.flushPendingToolBatch(false); err != nil {
 			p.err = err

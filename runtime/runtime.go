@@ -343,6 +343,7 @@ type SubAgentDetail struct {
 	Snapshot         SubAgentSnapshot             `json:"snapshot"`
 	Events           []SubAgentDetailEvent        `json:"events"`
 	ActivityTimeline observation.ActivityTimeline `json:"activity_timeline"`
+	Context          SubAgentDetailContext        `json:"context,omitempty"`
 	NextOrdinal      int64                        `json:"next_ordinal,omitempty"`
 	HasMore          bool                         `json:"has_more,omitempty"`
 	RetainedFrom     int64                        `json:"retained_from,omitempty"`
@@ -352,10 +353,48 @@ type SubAgentDetail struct {
 type SubAgentDetailEvents struct {
 	Events           []SubAgentDetailEvent        `json:"events"`
 	ActivityTimeline observation.ActivityTimeline `json:"activity_timeline"`
+	Context          SubAgentDetailContext        `json:"context,omitempty"`
 	NextOrdinal      int64                        `json:"next_ordinal,omitempty"`
 	HasMore          bool                         `json:"has_more,omitempty"`
 	RetainedFrom     int64                        `json:"retained_from,omitempty"`
 	GeneratedAt      time.Time                    `json:"generated_at"`
+}
+
+type SubAgentDetailContext struct {
+	Model       SubAgentDetailContextModel        `json:"model,omitempty"`
+	Policy      SubAgentDetailContextPolicy       `json:"policy,omitempty"`
+	Usage       *observation.ContextStatus        `json:"usage,omitempty"`
+	Compactions []SubAgentDetailContextCompaction `json:"compactions,omitempty"`
+	UpdatedAt   time.Time                         `json:"updated_at,omitempty"`
+}
+
+type SubAgentDetailContextModel struct {
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+}
+
+type SubAgentDetailContextPolicy struct {
+	ContextWindowTokens  int64 `json:"context_window_tokens,omitempty"`
+	MaxOutputTokens      int64 `json:"max_output_tokens,omitempty"`
+	ReservedOutputTokens int64 `json:"reserved_output_tokens,omitempty"`
+}
+
+type SubAgentDetailContextCompaction struct {
+	RunID               string    `json:"run_id,omitempty"`
+	ThreadID            string    `json:"thread_id,omitempty"`
+	TurnID              string    `json:"turn_id,omitempty"`
+	Step                int       `json:"step,omitempty"`
+	OperationID         string    `json:"operation_id,omitempty"`
+	RequestID           string    `json:"request_id,omitempty"`
+	Phase               string    `json:"phase,omitempty"`
+	Status              string    `json:"status,omitempty"`
+	Trigger             string    `json:"trigger,omitempty"`
+	Reason              string    `json:"reason,omitempty"`
+	Source              string    `json:"source,omitempty"`
+	TokensBefore        int64     `json:"tokens_before,omitempty"`
+	TokensAfterEstimate int64     `json:"tokens_after_estimate,omitempty"`
+	Error               string    `json:"error,omitempty"`
+	ObservedAt          time.Time `json:"observed_at,omitempty"`
 }
 
 type SubAgentActivityTimelineResult struct {
@@ -1490,6 +1529,7 @@ func listSubAgentDetailEvents(ctx context.Context, harness *agentharness.AgentHa
 	return SubAgentDetailEvents{
 		Events:           subAgentDetailEvents(detail.Events),
 		ActivityTimeline: cloneRuntimeActivityTimeline(detail.ActivityTimeline),
+		Context:          subAgentDetailContext(detail.Context),
 		NextOrdinal:      detail.NextOrdinal,
 		HasMore:          detail.HasMore,
 		RetainedFrom:     detail.RetainedFrom,
@@ -2004,11 +2044,64 @@ func subAgentDetail(in agentharness.SubAgentDetail) SubAgentDetail {
 		Snapshot:         subAgentSnapshot(in.Snapshot),
 		Events:           subAgentDetailEvents(in.Events),
 		ActivityTimeline: cloneRuntimeActivityTimeline(in.ActivityTimeline),
+		Context:          subAgentDetailContext(in.Context),
 		NextOrdinal:      in.NextOrdinal,
 		HasMore:          in.HasMore,
 		RetainedFrom:     in.RetainedFrom,
 		GeneratedAt:      in.GeneratedAt,
 	}
+}
+
+func subAgentDetailContext(in agentharness.SubAgentDetailContext) SubAgentDetailContext {
+	return SubAgentDetailContext{
+		Model: SubAgentDetailContextModel{
+			Provider: in.Model.Provider,
+			Model:    in.Model.Model,
+		},
+		Policy: SubAgentDetailContextPolicy{
+			ContextWindowTokens:  in.Policy.ContextWindowTokens,
+			MaxOutputTokens:      in.Policy.MaxOutputTokens,
+			ReservedOutputTokens: in.Policy.ReservedOutputTokens,
+		},
+		Usage:       cloneContextStatus(in.Usage),
+		Compactions: subAgentDetailContextCompactions(in.Compactions),
+		UpdatedAt:   in.UpdatedAt,
+	}
+}
+
+func subAgentDetailContextCompactions(in []agentharness.SubAgentDetailContextCompaction) []SubAgentDetailContextCompaction {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]SubAgentDetailContextCompaction, 0, len(in))
+	for _, compact := range in {
+		out = append(out, SubAgentDetailContextCompaction{
+			RunID:               compact.RunID,
+			ThreadID:            compact.ThreadID,
+			TurnID:              compact.TurnID,
+			Step:                compact.Step,
+			OperationID:         compact.OperationID,
+			RequestID:           compact.RequestID,
+			Phase:               compact.Phase,
+			Status:              compact.Status,
+			Trigger:             compact.Trigger,
+			Reason:              compact.Reason,
+			Source:              compact.Source,
+			TokensBefore:        compact.TokensBefore,
+			TokensAfterEstimate: compact.TokensAfterEstimate,
+			Error:               compact.Error,
+			ObservedAt:          compact.ObservedAt,
+		})
+	}
+	return out
+}
+
+func cloneContextStatus(in *observation.ContextStatus) *observation.ContextStatus {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
 }
 
 func subAgentDetailEvents(in []agentharness.SubAgentDetailEvent) []SubAgentDetailEvent {

@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-07-01
+* **Update**: Documented subagent detail context snapshots as neutral
+  model-bound facts whose context window comes from resolved model capability
+  and policy, not parent/child thread identity or fork mode.
 * **Update**: Documented canonical top-level subagent detail activity timelines
   rebuilt from retained child journal events so stale running row snapshots do
   not represent current tool state.

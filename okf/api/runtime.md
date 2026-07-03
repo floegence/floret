@@ -47,6 +47,11 @@ continuation state, and lifecycle observations.
   `activity_timeline` is the canonical current activity projection rebuilt from
   retained child detail events; paginated rows are ordered journal facts rather
   than live tool-state snapshots.
+  Their top-level `context` block exposes neutral model-bound facts: provider
+  and model identity, model-derived context policy, current context
+  pressure/usage status, and public compaction lifecycle operations. Context
+  window size comes from the resolved model capability and policy, not from
+  parent thread, child thread, subagent, or fork mode.
 * `ListThreadDetailEvents` lets a host read the Floret-owned ordered execution
   transcript for a hosted thread without reading Floret storage internals.
 * `ProjectThreadTurn`, `ReadTurnProjection`, and `TurnResult.Projection` expose
@@ -197,12 +202,15 @@ contracts. Pagination uses `AfterOrdinal`, `Limit`, `HasMore`, and
 `NextOrdinal`; raw content follows the same explicit `IncludeRaw` opt-in rule as
 subagent detail reads. Thread detail events share the same row-level
 `ActivityTimeline` projection and structured tool result `status` contract as
-subagent detail events. Host-owned pending tool outcomes after a provider turn
-must be reported through `SettlePendingTool`; that settlement is stored as a
-custom journal entry projected as a `tool_result` detail event, updates the
-original activity item for the same tool id, removes running-only metadata, and
-does not enter provider-visible history. Turn projection treats that settlement
-as the authoritative activity lifecycle fact even when run-end markers or the
+subagent detail events. Subagent detail context facts are read from Floret's
+public journal projection and sanitized observation DTOs; raw provider requests,
+prompt-cache internals, transcript windows, and trimming strategy fields remain
+internal. Host-owned pending tool outcomes after a provider turn must be
+reported through `SettlePendingTool`; that settlement is stored as a custom
+journal entry projected as a `tool_result` detail event, updates the original
+activity item for the same tool id, removes running-only metadata, and does not
+enter provider-visible history. Turn projection treats that settlement as the
+authoritative activity lifecycle fact even when run-end markers or the
 original pending tool result are ordered before or after it.
 
 `runtime.Event.ActivityTimeline` remains Floret's live lifecycle observation
@@ -256,6 +264,8 @@ It exposes `EnsureThread`, `ReadTurnProjection`, `SettlePendingTool`,
 `ListSubAgents`, `ListSubAgentActivityTimeline`, `ReadSubAgentDetail`,
 `ListSubAgentDetailEvents`, `CloseSubAgents`, `DeleteThread`, and `Close`
 without accepting fake providers, model gateways, tools, or host UI options.
+Subagent detail reads from this facade return the same persisted model/context
+facts as provider-backed hosts.
 `ThreadMaintenanceHostOptions.Store` is required so maintenance code cannot
 silently operate on an empty ephemeral store. The constructor returns an
 independent `ThreadMaintenanceHost` implementation, so reload, detail, pending

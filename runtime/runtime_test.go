@@ -1528,6 +1528,30 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if defaultDetail.Context.Model.Provider != "runtime-test-gateway" || defaultDetail.Context.Model.Model != "fake-model" {
+		t.Fatalf("detail context model = %#v", defaultDetail.Context.Model)
+	}
+	if defaultDetail.Context.Policy.ContextWindowTokens != config.DefaultContextWindowTokens || defaultDetail.Context.Policy.ReservedOutputTokens != config.DefaultReservedOutputTokens {
+		t.Fatalf("detail context policy = %#v", defaultDetail.Context.Policy)
+	}
+	if defaultDetail.Context.Usage == nil || defaultDetail.Context.Usage.ContextPressure.ContextWindowTokens != config.DefaultContextWindowTokens || defaultDetail.Context.Usage.Provider != "runtime-test-gateway" {
+		t.Fatalf("detail context usage = %#v", defaultDetail.Context.Usage)
+	}
+	contextJSON, err := json.Marshal(defaultDetail.Context)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"recent_tail_tokens", "recent_user_tokens", "compacted_context_target_tokens", "compaction_window_id"} {
+		if strings.Contains(string(contextJSON), forbidden) {
+			t.Fatalf("detail context leaked internal field %q: %s", forbidden, string(contextJSON))
+		}
+	}
+	for _, ev := range defaultDetail.Events {
+		switch ev.Type {
+		case "subagent_context_policy", "subagent_context_status", "subagent_context_compaction":
+			t.Fatalf("hidden context entry leaked into detail events: %#v", ev)
+		}
+	}
 	if got := firstRuntimeSubAgentDetailEvent(defaultDetail.Events, SubAgentDetailEventToolCall); got.ToolCall == nil || got.ToolCall.ArgsJSON != "" || got.ToolCall.ArgsPreview == "" || got.ToolCall.ArgsHash == "" {
 		t.Fatalf("default detail should expose only safe args preview and keep hash: %#v", got)
 	}
@@ -1575,6 +1599,9 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 	if item := runtimeSubAgentActivityItem(next.ActivityTimeline, "read-1"); item.Status != observation.ActivityStatusSuccess {
 		t.Fatalf("paged detail should still expose canonical activity timeline: %#v", next.ActivityTimeline)
 	}
+	if next.Context.Policy.ContextWindowTokens != defaultDetail.Context.Policy.ContextWindowTokens || next.Context.Usage == nil {
+		t.Fatalf("paged detail should carry canonical context snapshot: %#v", next.Context)
+	}
 	mu.Lock()
 	requestsBeforeMaintenance := requests
 	mu.Unlock()
@@ -1604,12 +1631,18 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 	if len(maintenanceDetail.Events) == 0 || maintenanceDetail.Snapshot.ThreadID != "child" {
 		t.Fatalf("maintenance detail = %#v", maintenanceDetail)
 	}
+	if maintenanceDetail.Context.Policy.ContextWindowTokens != defaultDetail.Context.Policy.ContextWindowTokens || maintenanceDetail.Context.Usage == nil {
+		t.Fatalf("maintenance detail context = %#v want %#v", maintenanceDetail.Context, defaultDetail.Context)
+	}
 	maintenanceEvents, err := maintenance.ListSubAgentDetailEvents(ctx, ListSubAgentDetailEventsRequest{ParentThreadID: "parent", ChildThreadID: "child", Limit: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(maintenanceEvents.Events) != 1 || maintenanceEvents.NextOrdinal == 0 {
 		t.Fatalf("maintenance detail events = %#v", maintenanceEvents)
+	}
+	if maintenanceEvents.Context.Policy.ContextWindowTokens != defaultDetail.Context.Policy.ContextWindowTokens || maintenanceEvents.Context.Usage == nil {
+		t.Fatalf("maintenance detail events context = %#v", maintenanceEvents.Context)
 	}
 	mu.Lock()
 	requestsAfterMaintenance := requests

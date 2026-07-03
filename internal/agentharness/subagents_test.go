@@ -12,6 +12,7 @@ import (
 	"github.com/floegence/floret/internal/provider"
 	"github.com/floegence/floret/internal/provider/cache"
 	"github.com/floegence/floret/internal/session"
+	"github.com/floegence/floret/internal/session/contextpolicy"
 	"github.com/floegence/floret/internal/sessiontree"
 	scriptharness "github.com/floegence/floret/internal/testing/harness"
 	"github.com/floegence/floret/observation"
@@ -403,6 +404,73 @@ func TestReadSubAgentDetailProjectsToolAndApprovalEvents(t *testing.T) {
 	}
 	if len(result.ActivityTimeline.Items) != 1 || result.ActivityTimeline.Items[0].Status != observation.ActivityStatusError {
 		t.Fatalf("tool result activity timeline = %#v", result.ActivityTimeline)
+	}
+}
+
+func TestReadSubAgentDetailContextWindowComesFromModelPolicyNotForkMode(t *testing.T) {
+	ctx := context.Background()
+	provider := scriptharness.NewScriptedProvider(
+		scriptharness.Step(scriptharness.Text("none done"), scriptharness.Done()),
+		scriptharness.Step(scriptharness.Text("fork done"), scriptharness.Done()),
+		scriptharness.Step(scriptharness.Text("changed done"), scriptharness.Done()),
+	)
+	h := newTestHarness(provider, sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
+	h.options.TurnPolicy.ContextPolicy = contextpolicy.Policy{
+		ContextWindowTokens:  512000,
+		ReservedOutputTokens: 32000,
+	}
+	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		childID  string
+		forkMode SubAgentForkMode
+	}{
+		{childID: "child-none", forkMode: SubAgentForkNone},
+		{childID: "child-fork", forkMode: SubAgentForkFullPath},
+	} {
+		if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+			ParentThreadID: "parent",
+			ThreadID:       tc.childID,
+			TaskName:       tc.childID,
+			Message:        "work",
+			ForkMode:       tc.forkMode,
+		}); err != nil {
+			t.Fatalf("spawn %s: %v", tc.childID, err)
+		}
+		if waited, err := h.WaitSubAgents(ctx, WaitSubAgentsOptions{ParentThreadID: "parent", ChildThreadIDs: []string{tc.childID}, Timeout: 2 * time.Second}); err != nil || waited.TimedOut {
+			t.Fatalf("wait %s: waited=%#v err=%v", tc.childID, waited, err)
+		}
+		detail, err := h.ReadSubAgentDetail(ctx, ReadSubAgentDetailOptions{ParentThreadID: "parent", ChildThreadID: tc.childID})
+		if err != nil {
+			t.Fatalf("detail %s: %v", tc.childID, err)
+		}
+		if detail.Context.Policy.ContextWindowTokens != 512000 || detail.Context.Policy.ReservedOutputTokens != 32000 {
+			t.Fatalf("%s context policy = %#v", tc.childID, detail.Context.Policy)
+		}
+		if detail.Context.Usage == nil || detail.Context.Usage.ContextPressure.ContextWindowTokens != 512000 {
+			t.Fatalf("%s context usage = %#v", tc.childID, detail.Context.Usage)
+		}
+	}
+	h.options.TurnPolicy.ContextPolicy.ContextWindowTokens = 768000
+	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+		ParentThreadID: "parent",
+		ThreadID:       "child-changed",
+		TaskName:       "changed",
+		Message:        "work changed",
+		ForkMode:       SubAgentForkNone,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if waited, err := h.WaitSubAgents(ctx, WaitSubAgentsOptions{ParentThreadID: "parent", ChildThreadIDs: []string{"child-changed"}, Timeout: 2 * time.Second}); err != nil || waited.TimedOut {
+		t.Fatalf("wait changed: waited=%#v err=%v", waited, err)
+	}
+	changed, err := h.ReadSubAgentDetail(ctx, ReadSubAgentDetailOptions{ParentThreadID: "parent", ChildThreadID: "child-changed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Context.Policy.ContextWindowTokens != 768000 {
+		t.Fatalf("changed context policy = %#v", changed.Context.Policy)
 	}
 }
 
