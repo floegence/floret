@@ -2175,6 +2175,7 @@ func TestHostCompletePendingToolRejectsInvalidRequest(t *testing.T) {
 func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	ctx := context.Background()
 	registry := tools.NewRegistry()
+	var invocation tools.Invocation[runtimeEchoArgs]
 	if err := registry.Register(tools.Define[runtimeEchoArgs](
 		tools.Definition{
 			Name:        "terminal_exec",
@@ -2183,7 +2184,8 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 		},
 		nil,
 		nil,
-		func(context.Context, tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+		func(_ context.Context, inv tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			invocation = inv
 			return tools.Result{
 				Activity: &observation.ActivityPresentation{
 					Label:    "npm test",
@@ -2238,9 +2240,17 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
 		Store:                store,
-		Tools:                registry,
-		Approver:             allowRuntimeTools,
-		IDGenerator:          deterministicIDs(),
+		ToolSurfaceProvider: func(_ context.Context, req ToolSurfaceRequest) (ToolSurface, error) {
+			return ToolSurface{
+				Tools: registry,
+				HostContext: map[string]string{
+					"child_run_id": "run_child_audit",
+					"surface":      "runtime-test",
+				},
+			}, nil
+		},
+		Approver:    allowRuntimeTools,
+		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2258,6 +2268,11 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	if item := runtimeProjectionToolItem(run.Projection, "exec-1"); item.Status != observation.ActivityStatusRunning {
 		t.Fatalf("pending item should remain running before explicit settlement: %#v", item)
 	}
+	if invocation.RunID != "run-1" ||
+		invocation.HostContext["child_run_id"] != "run_child_audit" ||
+		invocation.HostContext["child_run_id"] == string(invocation.RunID) {
+		t.Fatalf("invocation identity/host context = %#v", invocation)
+	}
 
 	maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
 	if err != nil {
@@ -2268,15 +2283,20 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	if _, err := maintenance.SettlePendingTool(ctx, PendingToolSettlementRequest{
 		ThreadID:   "thread",
 		TurnID:     "turn-1",
-		RunID:      "other-run",
+		RunID:      "run_child_audit",
 		ToolCallID: "exec-1",
 		ToolName:   "terminal_exec",
 		Handle:     "terminal:job:123",
 		Status:     PendingToolSettlementCompleted,
-		Summary:    "wrong run",
+		Summary:    "wrong host correlation run",
 		Output:     "exit 0",
 	}); !errors.Is(err, ErrRunNotFound) {
-		t.Fatalf("wrong-run settlement err = %v, want ErrRunNotFound", err)
+		t.Fatalf("host-correlation settlement err = %v, want ErrRunNotFound", err)
+	}
+	if readAfterWrong, err := maintenance.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "thread", TurnID: "turn-1", RunID: "run-1"}); err != nil {
+		t.Fatalf("ReadTurnProjection after wrong run settlement: %v", err)
+	} else if item := runtimeProjectionToolItem(readAfterWrong, "exec-1"); item.Status != observation.ActivityStatusRunning {
+		t.Fatalf("wrong host-correlation settlement changed projection: %#v", item)
 	}
 
 	settled, err := maintenance.SettlePendingTool(ctx, PendingToolSettlementRequest{

@@ -552,6 +552,34 @@ and provider-ledger reuse boundary. `runtime.RunTurnRequest.RunID` is required;
 hosts must pass the concrete execution identity instead of deriving it from a
 turn or thread ID. Code must not rely on those identities being equal.
 
+Execution identity is also distinct from host correlation identity. Downstream
+hosts may carry product audit IDs, subagent IDs, child run IDs, UI routing IDs,
+or permission snapshot IDs in labels or `HostContext`, but those values are not
+Floret settlement authority. For example, a subagent host surface may see
+`ToolSurfaceRequest.RunID=run-3` while `HostContext["child_run_id"]` is a
+product audit run such as `run_child_audit`. `ReadTurnProjection` and
+`SettlePendingTool` must use the Floret execution `RunID` (`run-3` in that
+example), not the host correlation ID.
+
+Bad settlement identity sources include host `child_run_id`, product audit run
+IDs, subagent display IDs, tool stdout, elapsed time, process IDs, and
+ActivityTimeline rows. `ActivityTimeline` is a display/lifecycle projection; it
+is not an authority for reconstructing a pending settlement request unless a
+future Floret public contract explicitly issues a settlement target there.
+
+For host-owned pending work, use this lifecycle:
+
+1. The tool returns a pending result and Floret records a running activity item.
+2. The host stores the Floret execution identity (`ThreadID`, `TurnID`,
+   `RunID`) together with the pending tool call ID, tool name, and handle in the
+   host-owned work record.
+3. The host-owned process finishes, fails, or is canceled.
+4. The host calls `SettlePendingTool` with the stored Floret execution identity
+   and pending tool target fields.
+5. The host applies the returned canonical projection.
+6. Only after successful settlement should the host mark its own audit record as
+   acknowledged or complete.
+
 ## 🧪 Contributor Test Console
 
 Floret includes a local test console for contributor inspection:
