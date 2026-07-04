@@ -1975,6 +1975,63 @@ func TestTurnProjectionCanceledTurnClosesUnresolvedToolBatch(t *testing.T) {
 	}
 }
 
+func TestTurnProjectionFailedTurnClosesUnresolvedToolBatch(t *testing.T) {
+	ctx := context.Background()
+	repo := sessiontree.NewMemoryRepo()
+	promptStore := cache.NewMemoryStore()
+	p := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("follow-up"), scriptharness.Done()))
+	h := newTestHarness(p, repo, promptStore)
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendTurnMarker(ctx, repo, "thread", "turn-1", sessiontree.TurnStarted, map[string]string{"run_id": "run-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, repo, "thread", "turn-1", session.Message{Role: session.User, Content: "inspect"}); err != nil {
+		t.Fatal(err)
+	}
+
+	projection := &turnProjection{thread: thread, ctx: ctx, turnID: "turn-1", runID: "run-1"}
+	projection.Emit(event.Event{Type: event.ToolCall, ToolID: "call-1", ToolName: "read", Args: `{"value":"a"}`, Metadata: map[string]any{"batch_size": 2}})
+	projection.Emit(event.Event{Type: event.ToolCall, ToolID: "call-2", ToolName: "read", Args: `{"value":"b"}`, Metadata: map[string]any{"batch_size": 2}})
+	projection.Emit(event.Event{Type: event.ToolResult, ToolID: "call-1", ToolName: "read", Result: "result a", Metadata: map[string]any{"batch_size": 2, "tool_result_status": string(observation.ActivityStatusSuccess)}})
+	cause := errors.New("provider stopped mid-turn")
+	if err := projection.FlushForTurnStatus(engine.Failed, cause); err != nil {
+		t.Fatalf("FlushForTurnStatus: %v", err)
+	}
+	if _, err := sessiontree.AppendFailure(ctx, repo, "thread", "turn-1", cause.Error()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendTurnMarker(ctx, repo, "thread", "turn-1", sessiontree.TurnFailed, map[string]string{"run_id": "run-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	snap, err := thread.Journal(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"call-1", "call-2"} {
+		if got := countToolEntries(snap.Entries, sessiontree.EntryToolCall, id); got != 1 {
+			t.Fatalf("tool call %s count = %d in %#v", id, got, snap.Entries)
+		}
+		if got := countToolEntries(snap.Entries, sessiontree.EntryToolResult, id); got != 1 {
+			t.Fatalf("tool result %s count = %d in %#v", id, got, snap.Entries)
+		}
+	}
+	if status := toolResultStatusForCall(snap.Entries, "call-2"); status != string(observation.ActivityStatusError) {
+		t.Fatalf("call-2 status = %q, want error in %#v", status, snap.Entries)
+	}
+	if err := assertProviderSafeToolHistory(snap.Context); err != nil {
+		t.Fatalf("provider history after failed turn is unsafe: %v", err)
+	}
+
+	second, err := thread.Run(ctx, "continue", RunOptions{TurnID: "turn-2"})
+	if err != nil || second.Status != engine.Completed {
+		t.Fatalf("second = %#v err=%v", second, err)
+	}
+}
+
 func TestAppendDeltaSkipsProjectedAssistantFinalButKeepsSeparateTurns(t *testing.T) {
 	ctx := context.Background()
 	repo := sessiontree.NewMemoryRepo()

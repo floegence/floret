@@ -2020,6 +2020,91 @@ func TestHostCloseSubAgentsStopsUnfinishedChildren(t *testing.T) {
 	}
 }
 
+func TestThreadMaintenanceHostClosesChildrenAfterFailedParentTurn(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		switch req.ThreadID {
+		case "parent":
+			events := make(chan ModelEvent, 2)
+			events <- ModelEvent{Type: ModelEventDelta, Text: "starting children"}
+			events <- ModelEvent{Type: ModelEventError, Err: errors.New("parent failed")}
+			close(events)
+			return events, nil
+		case "completed":
+			return runtimeGatewayEvents("completed child"), nil
+		default:
+			events := make(chan ModelEvent)
+			go func() {
+				defer close(events)
+				<-ctx.Done()
+			}()
+			return events, nil
+		}
+	})
+	host, err := NewHost(HostOptions{
+		Config:               runtimeGatewayConfig("test"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                store,
+		IDGenerator:          deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{ParentThreadID: "parent", ThreadID: "completed", TaskName: "completed", Message: "finish", ForkMode: SubAgentForkNone}); err != nil {
+		t.Fatal(err)
+	}
+	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"completed"}, Timeout: 2 * time.Second}); err != nil || waited.TimedOut {
+		t.Fatalf("completed wait=%#v err=%v", waited, err)
+	}
+	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{ParentThreadID: "parent", ThreadID: "running", TaskName: "running", Message: "hang", ForkMode: SubAgentForkNone}); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-parent-failed", ThreadID: "parent", TurnID: "turn-parent-failed", Input: "coordinate children"})
+	if err == nil || failed.Status != TurnStatusFailed {
+		t.Fatalf("failed parent turn = %#v err=%v, want failed result and error", failed, err)
+	}
+	if err := host.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer maintenance.Close()
+	closed, err := maintenance.CloseSubAgents(ctx, CloseSubAgentsRequest{ParentThreadID: "parent", Reason: "parent_failed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closed.Closed != 1 || len(closed.Snapshots) != 2 {
+		t.Fatalf("CloseSubAgents result=%#v", closed)
+	}
+	byID := map[ThreadID]SubAgentSnapshot{}
+	for _, snapshot := range closed.Snapshots {
+		byID[snapshot.ThreadID] = snapshot
+	}
+	if byID["completed"].Status != SubAgentStatusCompleted || byID["completed"].Closed {
+		t.Fatalf("completed snapshot = %#v", byID["completed"])
+	}
+	if byID["running"].Status != SubAgentStatusClosed || !byID["running"].Closed || byID["running"].CanClose {
+		t.Fatalf("running snapshot = %#v", byID["running"])
+	}
+	detail, err := maintenance.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "running"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(detail.Events, func(ev SubAgentDetailEvent) bool {
+		return ev.Type == "subagent_lifecycle" && ev.Metadata["reason"] == "parent_failed"
+	}) {
+		t.Fatalf("running detail missing parent_failed lifecycle: %#v", detail.Events)
+	}
+}
+
 func TestHostSQLiteStorePersistsThreadBehindOpaqueStore(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "floret.db")
