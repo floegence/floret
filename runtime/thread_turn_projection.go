@@ -18,7 +18,11 @@ const (
 	ThreadTurnProjectionSegmentControlSignal    ThreadTurnProjectionSegmentKind = "control_signal"
 )
 
-const threadTurnProjectionPendingToolSettlementType = "pending_tool_settlement"
+const (
+	threadTurnProjectionPendingToolSettlementType = "pending_tool_settlement"
+	threadTurnProjectionSavePointStatus           = "save_point"
+	threadTurnProjectionToolResultBatchReason     = "tool_result_batch"
+)
 
 type ProjectThreadTurnRequest struct {
 	ThreadID ThreadID
@@ -149,12 +153,19 @@ func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 			addActivity(ev)
 		case ThreadDetailEventToolDispatch, ThreadDetailEventToolActivity, ThreadDetailEventToolResult, ThreadDetailEventApproval, ThreadDetailEventTurnMarker, ThreadDetailEventError:
 			flushText()
+			if threadTurnProjectionIsToolResultBatchSavePoint(ev) {
+				flushActivity()
+				continue
+			}
 			if ev.Kind == ThreadDetailEventToolResult && ev.Type == threadTurnProjectionPendingToolSettlementType {
 				pendingSettlements = append(pendingSettlements, ev)
 				continue
 			}
 			if _, _, ok := threadTurnProjectionTerminalSettlementStatus(ev); ok {
 				terminalSettlements = append(terminalSettlements, ev)
+			}
+			if ev.Kind == ThreadDetailEventTurnMarker {
+				continue
 			}
 			addActivity(ev)
 		}
@@ -163,7 +174,18 @@ func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 	flushActivity()
 	threadTurnProjectionApplyPendingSettlements(&projection, pendingSettlements)
 	threadTurnProjectionApplyTerminalSettlements(&projection, terminalSettlements)
+	threadTurnProjectionMergeDuplicateActivityItems(&projection)
 	return projection
+}
+
+func threadTurnProjectionIsToolResultBatchSavePoint(ev ThreadDetailEvent) bool {
+	if ev.Kind != ThreadDetailEventTurnMarker || ev.TurnMarker == nil {
+		return false
+	}
+	if strings.TrimSpace(ev.TurnMarker.Status) != threadTurnProjectionSavePointStatus {
+		return false
+	}
+	return strings.TrimSpace(ev.TurnMarker.Metadata["reason"]) == threadTurnProjectionToolResultBatchReason
 }
 
 type threadTurnProjectionSettlementTargetInfo struct {
@@ -287,15 +309,155 @@ func threadTurnProjectionApplyTerminalSettlements(projection *ThreadTurnProjecti
 	}
 }
 
+type threadTurnProjectionActivityItemLocation struct {
+	segment int
+	item    int
+}
+
+func threadTurnProjectionMergeDuplicateActivityItems(projection *ThreadTurnProjection) {
+	if projection == nil {
+		return
+	}
+	seen := map[string]threadTurnProjectionActivityItemLocation{}
+	duplicates := map[int]map[int]struct{}{}
+	for segmentIndex := range projection.Segments {
+		timeline := projection.Segments[segmentIndex].ActivityTimeline
+		if timeline == nil || len(timeline.Items) == 0 {
+			continue
+		}
+		for itemIndex := range timeline.Items {
+			item := timeline.Items[itemIndex]
+			key := threadTurnProjectionActivityItemIdentity(item)
+			if key == "" {
+				continue
+			}
+			if loc, ok := seen[key]; ok {
+				targetTimeline := projection.Segments[loc.segment].ActivityTimeline
+				if targetTimeline != nil && loc.item >= 0 && loc.item < len(targetTimeline.Items) {
+					threadTurnProjectionMergeDuplicateActivityItem(&targetTimeline.Items[loc.item], item)
+					targetTimeline.Summary = threadTurnProjectionActivitySummary(targetTimeline.Items)
+					projection.Segments[loc.segment].EventIDs = threadTurnProjectionMergeEventIDs(projection.Segments[loc.segment].EventIDs, projection.Segments[segmentIndex].EventIDs)
+				}
+				if duplicates[segmentIndex] == nil {
+					duplicates[segmentIndex] = map[int]struct{}{}
+				}
+				duplicates[segmentIndex][itemIndex] = struct{}{}
+			} else {
+				seen[key] = threadTurnProjectionActivityItemLocation{segment: segmentIndex, item: itemIndex}
+			}
+		}
+	}
+	segments := projection.Segments[:0]
+	for segmentIndex := range projection.Segments {
+		segment := projection.Segments[segmentIndex]
+		timeline := segment.ActivityTimeline
+		if timeline == nil {
+			segments = append(segments, segment)
+			continue
+		}
+		items := timeline.Items[:0]
+		for itemIndex, item := range timeline.Items {
+			if _, drop := duplicates[segmentIndex][itemIndex]; drop {
+				continue
+			}
+			items = append(items, item)
+		}
+		if len(items) == 0 {
+			continue
+		}
+		timeline.Items = items
+		timeline.Summary = threadTurnProjectionActivitySummary(timeline.Items)
+		segment.ActivityTimeline = timeline
+		segments = append(segments, segment)
+	}
+	projection.Segments = segments
+}
+
+func threadTurnProjectionActivityItemIdentity(item observation.ActivityItem) string {
+	if toolID := strings.TrimSpace(item.ToolID); toolID != "" {
+		return "tool:" + toolID
+	}
+	if itemID := strings.TrimSpace(item.ItemID); itemID != "" {
+		return "item:" + itemID
+	}
+	return ""
+}
+
+func threadTurnProjectionMergeDuplicateActivityItem(item *observation.ActivityItem, duplicate observation.ActivityItem) {
+	if item == nil {
+		return
+	}
+	preserveCanceledTerminal := item.Status == observation.ActivityStatusCanceled && duplicate.Status == observation.ActivityStatusError
+	threadTurnProjectionMergeActivityItem(item, duplicate)
+	if duplicate.Status != "" && !preserveCanceledTerminal {
+		item.Status = duplicate.Status
+	}
+	if duplicate.Severity != "" && !preserveCanceledTerminal {
+		item.Severity = duplicate.Severity
+	}
+	if duplicate.Kind != "" {
+		item.Kind = duplicate.Kind
+	}
+	if duplicate.EndedAtUnixMS > 0 {
+		item.EndedAtUnixMS = duplicate.EndedAtUnixMS
+	}
+	if item.StartedAtUnixMS <= 0 || (duplicate.StartedAtUnixMS > 0 && duplicate.StartedAtUnixMS < item.StartedAtUnixMS) {
+		item.StartedAtUnixMS = duplicate.StartedAtUnixMS
+	}
+	if duplicate.RequiresApproval {
+		item.RequiresApproval = true
+	}
+	if strings.TrimSpace(duplicate.ApprovalState) != "" {
+		item.ApprovalState = duplicate.ApprovalState
+	}
+	item.AttentionReasons = threadTurnProjectionAttentionReasons(*item)
+	item.NeedsAttention = len(item.AttentionReasons) > 0
+}
+
+func threadTurnProjectionMergeEventIDs(left, right []string) []string {
+	if len(right) == 0 {
+		return left
+	}
+	if len(left) == 0 {
+		return append([]string(nil), right...)
+	}
+	seen := make(map[string]struct{}, len(left)+len(right))
+	out := append([]string(nil), left...)
+	for _, id := range left {
+		if id = strings.TrimSpace(id); id != "" {
+			seen[id] = struct{}{}
+		}
+	}
+	for _, id := range right {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
 func threadTurnProjectionTerminalSettlementStatus(ev ThreadDetailEvent) (observation.ActivityStatus, observation.ActivitySeverity, bool) {
 	switch ev.Kind {
 	case ThreadDetailEventError:
+		if threadTurnProjectionCancellationText(ev.Error) {
+			return observation.ActivityStatusCanceled, observation.ActivitySeverityWarning, true
+		}
 		return observation.ActivityStatusError, observation.ActivitySeverityError, true
 	case ThreadDetailEventTurnMarker:
 		if ev.TurnMarker == nil {
 			return "", "", false
 		}
-		switch strings.TrimSpace(ev.TurnMarker.Status) {
+		status := strings.TrimSpace(ev.TurnMarker.Status)
+		if threadTurnProjectionCancellationText(ev.Error) || threadTurnProjectionCancellationText(ev.TurnMarker.Metadata["failure_reason"]) {
+			return observation.ActivityStatusCanceled, observation.ActivitySeverityWarning, true
+		}
+		switch status {
 		case "aborted", string(observation.ActivityStatusCanceled), "cancelled":
 			return observation.ActivityStatusCanceled, observation.ActivitySeverityWarning, true
 		case "failed", string(observation.ActivityStatusError):
@@ -308,7 +470,20 @@ func threadTurnProjectionTerminalSettlementStatus(ev ThreadDetailEvent) (observa
 	}
 }
 
+func threadTurnProjectionCancellationText(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	if text == "" {
+		return false
+	}
+	return strings.Contains(text, "context canceled") ||
+		strings.Contains(text, "context cancelled") ||
+		strings.Contains(text, "deadline exceeded")
+}
+
 func threadTurnProjectionNeedsTerminalSettlement(item observation.ActivityItem, status observation.ActivityStatus) bool {
+	if status != observation.ActivityStatusSuccess && threadTurnProjectionHasPendingPresentation(item) {
+		return true
+	}
 	switch item.Status {
 	case observation.ActivityStatusPending, observation.ActivityStatusRunning:
 		return true

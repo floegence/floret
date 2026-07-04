@@ -929,6 +929,158 @@ func TestProjectThreadTurnSavePointDoesNotSettleActivity(t *testing.T) {
 	}
 }
 
+func TestProjectThreadTurnToolResultBatchSavePointSplitsActivity(t *testing.T) {
+	now := time.Unix(700, 0)
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID: "thread-batch-save-point",
+		TurnID:   "turn-batch-save-point",
+		RunID:    "run-batch-save-point",
+		TraceID:  "run-batch-save-point",
+		Events: []ThreadDetailEvent{
+			{
+				ID:        "todo-call",
+				Ordinal:   1,
+				ThreadID:  "thread-batch-save-point",
+				TurnID:    "turn-batch-save-point",
+				Kind:      ThreadDetailEventToolCall,
+				CreatedAt: now,
+				ToolCall:  &ThreadDetailToolCall{ID: "todo-1", Name: "write_todos"},
+				ActivityTimeline: projectionSingleItemTimeline("run-batch-save-point", "thread-batch-save-point", "turn-batch-save-point", observation.ActivityItem{
+					ItemID:          "tool:todo-1",
+					ToolID:          "todo-1",
+					ToolName:        "write_todos",
+					Kind:            observation.ActivityKindTool,
+					Status:          observation.ActivityStatusSuccess,
+					Severity:        observation.ActivitySeverityQuiet,
+					StartedAtUnixMS: now.UnixMilli(),
+					EndedAtUnixMS:   now.Add(time.Second).UnixMilli(),
+				}),
+			},
+			{
+				ID:        "batch-save-point",
+				Ordinal:   2,
+				ThreadID:  "thread-batch-save-point",
+				TurnID:    "turn-batch-save-point",
+				Kind:      ThreadDetailEventTurnMarker,
+				CreatedAt: now.Add(2 * time.Second),
+				TurnMarker: &ThreadDetailTurnMarker{
+					Status:   "save_point",
+					Metadata: map[string]string{"reason": "tool_result_batch", "run_id": "run-batch-save-point"},
+				},
+			},
+			{
+				ID:        "subagent-call",
+				Ordinal:   3,
+				ThreadID:  "thread-batch-save-point",
+				TurnID:    "turn-batch-save-point",
+				Kind:      ThreadDetailEventToolCall,
+				CreatedAt: now.Add(3 * time.Second),
+				ToolCall:  &ThreadDetailToolCall{ID: "subagent-1", Name: "subagents"},
+				ActivityTimeline: projectionSingleItemTimeline("run-batch-save-point", "thread-batch-save-point", "turn-batch-save-point", observation.ActivityItem{
+					ItemID:          "tool:subagent-1",
+					ToolID:          "subagent-1",
+					ToolName:        "subagents",
+					Kind:            observation.ActivityKindTool,
+					Status:          observation.ActivityStatusSuccess,
+					Severity:        observation.ActivitySeverityQuiet,
+					StartedAtUnixMS: now.Add(3 * time.Second).UnixMilli(),
+					EndedAtUnixMS:   now.Add(4 * time.Second).UnixMilli(),
+				}),
+			},
+		},
+	})
+
+	segments := projectionActivitySegments(projection)
+	if len(segments) != 2 {
+		t.Fatalf("activity segments = %#v, want two", projection.Segments)
+	}
+	if got := segments[0].ActivityTimeline.Items[0].ToolName; got != "write_todos" {
+		t.Fatalf("first segment tool = %q, want write_todos; segment=%#v", got, segments[0])
+	}
+	if got := segments[1].ActivityTimeline.Items[0].ToolName; got != "subagents" {
+		t.Fatalf("second segment tool = %q, want subagents; segment=%#v", got, segments[1])
+	}
+	for _, segment := range segments {
+		if len(segment.EventIDs) != 1 {
+			t.Fatalf("save point should not be retained as an activity event: %#v", segment)
+		}
+		if err := observation.ValidateActivityTimeline(*segment.ActivityTimeline); err != nil {
+			t.Fatalf("activity timeline invalid: %v; segment=%#v", err, segment)
+		}
+	}
+}
+
+func TestProjectThreadTurnGenericSavePointDoesNotSplitActivity(t *testing.T) {
+	now := time.Unix(800, 0)
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID: "thread-generic-save-point",
+		TurnID:   "turn-generic-save-point",
+		RunID:    "run-generic-save-point",
+		TraceID:  "run-generic-save-point",
+		Events: []ThreadDetailEvent{
+			{
+				ID:        "first-call",
+				Ordinal:   1,
+				ThreadID:  "thread-generic-save-point",
+				TurnID:    "turn-generic-save-point",
+				Kind:      ThreadDetailEventToolCall,
+				CreatedAt: now,
+				ToolCall:  &ThreadDetailToolCall{ID: "first-1", Name: "first.tool"},
+				ActivityTimeline: projectionSingleItemTimeline("run-generic-save-point", "thread-generic-save-point", "turn-generic-save-point", observation.ActivityItem{
+					ItemID:          "tool:first-1",
+					ToolID:          "first-1",
+					ToolName:        "first.tool",
+					Kind:            observation.ActivityKindTool,
+					Status:          observation.ActivityStatusSuccess,
+					Severity:        observation.ActivitySeverityQuiet,
+					StartedAtUnixMS: now.UnixMilli(),
+					EndedAtUnixMS:   now.Add(time.Second).UnixMilli(),
+				}),
+			},
+			{
+				ID:        "generic-save-point",
+				Ordinal:   2,
+				ThreadID:  "thread-generic-save-point",
+				TurnID:    "turn-generic-save-point",
+				Kind:      ThreadDetailEventTurnMarker,
+				CreatedAt: now.Add(2 * time.Second),
+				TurnMarker: &ThreadDetailTurnMarker{
+					Status:   "save_point",
+					Metadata: map[string]string{"reason": "manual_checkpoint"},
+				},
+			},
+			{
+				ID:        "second-call",
+				Ordinal:   3,
+				ThreadID:  "thread-generic-save-point",
+				TurnID:    "turn-generic-save-point",
+				Kind:      ThreadDetailEventToolCall,
+				CreatedAt: now.Add(3 * time.Second),
+				ToolCall:  &ThreadDetailToolCall{ID: "second-1", Name: "second.tool"},
+				ActivityTimeline: projectionSingleItemTimeline("run-generic-save-point", "thread-generic-save-point", "turn-generic-save-point", observation.ActivityItem{
+					ItemID:          "tool:second-1",
+					ToolID:          "second-1",
+					ToolName:        "second.tool",
+					Kind:            observation.ActivityKindTool,
+					Status:          observation.ActivityStatusSuccess,
+					Severity:        observation.ActivitySeverityQuiet,
+					StartedAtUnixMS: now.Add(3 * time.Second).UnixMilli(),
+					EndedAtUnixMS:   now.Add(4 * time.Second).UnixMilli(),
+				}),
+			},
+		},
+	})
+
+	segments := projectionActivitySegments(projection)
+	if len(segments) != 1 {
+		t.Fatalf("generic save point should not split activity; segments=%#v", projection.Segments)
+	}
+	items := segments[0].ActivityTimeline.Items
+	if len(items) != 2 || items[0].ToolName != "first.tool" || items[1].ToolName != "second.tool" {
+		t.Fatalf("generic save point should preserve one continuous activity segment: %#v", segments[0])
+	}
+}
+
 func TestProjectThreadTurnPendingSettlementOverridesTerminalProjectionAcrossSegments(t *testing.T) {
 	start := time.UnixMilli(1_700_020_000_000)
 	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
@@ -1166,4 +1318,14 @@ func projectionToolItemCount(projection ThreadTurnProjection, toolID string) int
 		}
 	}
 	return count
+}
+
+func projectionActivitySegments(projection ThreadTurnProjection) []ThreadTurnProjectionSegment {
+	var out []ThreadTurnProjectionSegment
+	for _, segment := range projection.Segments {
+		if segment.Kind == ThreadTurnProjectionSegmentActivityTimeline && segment.ActivityTimeline != nil {
+			out = append(out, segment)
+		}
+	}
+	return out
 }

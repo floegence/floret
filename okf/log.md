@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-07-05
+* **Update**: Documented `tool_result_batch` save points as durable turn
+  activity segment boundaries while keeping repeated facts for one tool
+  invocation merged into the original activity item.
+
 ## 2026-07-01
 * **Update**: Clarified that `ThreadMaintenanceHost.ListSubAgents` is the
   canonical provider-free reload source for parent-scoped child-thread lists

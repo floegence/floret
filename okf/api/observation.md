@@ -32,7 +32,9 @@ applies failed and cancelled terminal markers across all activity timeline
 segments for the turn. Successful turns keep host-owned pending work running
 until the host reports the observed outcome through the runtime
 `SettlePendingTool` API, which updates the original activity item instead of
-creating a separate UI row.
+creating a separate UI row. Durable turn projection also treats
+`tool_result_batch` save points as segment boundaries, not activity items, and
+keeps repeated facts for the same tool invocation merged into one item.
 Tool approval events are lifecycle updates on the tool activity item itself:
 `tool_call`, approval request/resolution, and `tool_result` for the same tool id
 collapse into one item instead of a separate approval row. A requested approval

@@ -74,8 +74,11 @@ reasoning, tool arguments, tool results, and local paths.
   observation data, not the main display segment-ordering contract. Terminal
   and pending-settlement projections remove running-only metadata such as
   pending handles and running pending state before hosts receive terminal
-  activity. The read model carries the same Floret-owned row activity projection
-  as subagent detail reads.
+  activity. `tool_result_batch` save points split durable turn activity into
+  product-neutral segments without creating marker activity rows, and repeated
+  facts for the same tool invocation collapse back into the original item. The
+  read model carries the same Floret-owned row activity projection as subagent
+  detail reads.
 * Context statuses show projected and provider-reported context pressure.
 * Compaction events expose context compaction lifecycle. A complete compaction
   event means the compacted active context has been rebuilt into a full provider
