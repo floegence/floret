@@ -355,6 +355,13 @@ stale calls are checked against the latest registry and approval lifecycle.
 `ToolSurface.Epoch` and `ToolSurface.Reason` are emitted as observation
 metadata together with stable prompt and toolset hashes for audit and debugging.
 
+Floret owns the durable provider-visible tool-call ledger. If a turn is
+cancelled or failed after assistant tool calls have been accepted, Floret closes
+each unresolved provider-visible call with a neutral terminal tool result before
+writing the terminal turn marker. This keeps future provider requests valid
+without asking downstream hosts to edit Floret storage or reconstruct provider
+history from product audit logs.
+
 ### Host-owned pending tool results
 
 Some tools start work whose lifecycle belongs to the host application, such as a

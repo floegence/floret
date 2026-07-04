@@ -1195,7 +1195,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	if projection.err != nil {
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(projection.err), projection.err, "projection_error")
 	}
-	if err := projection.Flush(); err != nil {
+	if err := projection.FlushForTurnStatus(result.Status, result.Err); err != nil {
 		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "projection_flush_error")
 	}
 	current, err := t.Journal(persistCtx)
@@ -2545,6 +2545,28 @@ func (p *turnProjection) Flush() error {
 	return nil
 }
 
+func (p *turnProjection) FlushForTurnStatus(status engine.Status, cause error) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.err != nil {
+		return p.err
+	}
+	if status == engine.Cancelled || status == engine.Failed {
+		if err := p.closePendingToolBatchForTerminalTurn(status, cause); err != nil {
+			p.err = err
+			return err
+		}
+	} else if err := p.flushPendingToolBatch(true); err != nil {
+		p.err = err
+		return err
+	}
+	if err := p.flushPendingAssistantText(true); err != nil {
+		p.err = err
+		return err
+	}
+	return nil
+}
+
 func (p *turnProjection) flushPendingAssistantText(resetReasoning bool) error {
 	if p.text == "" {
 		if resetReasoning {
@@ -2560,6 +2582,115 @@ func (p *turnProjection) flushPendingAssistantText(resetReasoning bool) error {
 		p.reasoning = ""
 	}
 	return nil
+}
+
+func (p *turnProjection) closePendingToolBatchForTerminalTurn(status engine.Status, cause error) error {
+	if len(p.pendingCalls) == 0 && len(p.pendingResults) == 0 {
+		return nil
+	}
+	if !p.pendingCallsSent {
+		seenCalls := make(map[string]struct{}, len(p.pendingCalls))
+		for _, call := range p.pendingCalls {
+			if call.message.ToolCallID == "" {
+				return errors.New("tool call batch contains empty tool_call_id")
+			}
+			if _, ok := seenCalls[call.message.ToolCallID]; ok {
+				return fmt.Errorf("tool call batch contains duplicate tool_call_id %q", call.message.ToolCallID)
+			}
+			seenCalls[call.message.ToolCallID] = struct{}{}
+		}
+		for _, call := range p.pendingCalls {
+			if err := p.thread.appendMessageAt(p.ctx, p.turnID, p.runID, call.message, call.observedAt); err != nil {
+				return err
+			}
+		}
+		p.pendingCallsSent = true
+		p.reasoning = ""
+	}
+
+	byID := make(map[string]pendingToolMessage, len(p.pendingResults))
+	for _, result := range p.pendingResults {
+		if result.message.ToolCallID == "" {
+			return errors.New("tool result batch contains empty tool_call_id")
+		}
+		if _, ok := byID[result.message.ToolCallID]; ok {
+			return fmt.Errorf("tool result batch contains duplicate tool_call_id %q", result.message.ToolCallID)
+		}
+		byID[result.message.ToolCallID] = result
+	}
+
+	appended := false
+	for _, call := range p.pendingCalls {
+		result, ok := byID[call.message.ToolCallID]
+		if !ok {
+			result = pendingToolMessage{
+				message:    terminalTurnClosureToolResult(call.message, status, cause),
+				observedAt: p.thread.harness.now(),
+			}
+		}
+		if err := p.thread.appendMessageAt(p.ctx, p.turnID, p.runID, result.message, result.observedAt); err != nil {
+			return err
+		}
+		delete(byID, call.message.ToolCallID)
+		appended = true
+	}
+	for id := range byID {
+		return fmt.Errorf("tool result batch references unknown tool_call_id %q", id)
+	}
+	if appended {
+		entry, err := sessiontree.AppendTurnMarker(p.ctx, p.thread.harness.options.Repo, p.thread.id, p.turnID, sessiontree.TurnSavePoint, map[string]string{"reason": "tool_result_batch", "run_id": p.runID})
+		if err != nil {
+			return err
+		}
+		p.thread.harness.emitEntryCommitted(entry, p.runID)
+	}
+	p.pendingCalls = nil
+	p.pendingResults = nil
+	p.pendingBatchSize = 0
+	p.pendingCallsSent = false
+	return nil
+}
+
+func terminalTurnClosureToolResult(call session.Message, status engine.Status, cause error) session.Message {
+	resultStatus := string(observation.ActivityStatusCanceled)
+	text := "Tool call was canceled before completion."
+	if status == engine.Failed {
+		resultStatus = string(observation.ActivityStatusError)
+		text = "Tool call did not complete before the turn failed."
+	}
+	if cause != nil && status == engine.Failed {
+		if message := strings.TrimSpace(cause.Error()); message != "" {
+			text = message
+		}
+	}
+	activity := session.CloneActivityPresentation(call.Activity)
+	if activity == nil {
+		activity = &session.ActivityPresentation{}
+	}
+	activity.Payload = cloneSessionActivityPayload(activity.Payload)
+	if activity.Payload == nil {
+		activity.Payload = map[string]any{}
+	}
+	activity.Payload["status"] = resultStatus
+	return session.Message{
+		Role:       session.Tool,
+		Content:    text,
+		ToolCallID: strings.TrimSpace(call.ToolCallID),
+		ToolName:   strings.TrimSpace(call.ToolName),
+		ToolResult: &session.ToolResultView{Status: resultStatus},
+		Activity:   activity,
+	}
+}
+
+func cloneSessionActivityPayload(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func (p *turnProjection) flushPendingToolBatch(force bool) error {
