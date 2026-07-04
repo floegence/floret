@@ -1741,6 +1741,124 @@ func TestHostSQLiteStorePersistsSubAgentDetail(t *testing.T) {
 	}
 }
 
+func TestThreadMaintenanceHostListsSubAgentsAfterHostRestart(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "floret.db")
+	store, err := OpenSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "restart child done",
+			SystemPrompt: "test",
+		},
+		Store:       store,
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+		ParentThreadID:  "parent",
+		ParentTurnID:    "parent-turn",
+		ThreadID:        "child",
+		TaskName:        "Restart Review",
+		TaskDescription: "Verify subagent listing after runtime restart.",
+		Message:         "check restart list",
+		HostProfileRef:  "reviewer",
+		ForkMode:        SubAgentForkNone,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{
+		ParentThreadID: "parent",
+		ChildThreadIDs: []ThreadID{"child"},
+		Timeout:        2 * time.Second,
+	}); err != nil || waited.TimedOut {
+		t.Fatalf("waited=%#v err=%v", waited, err)
+	}
+	if err := host.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopenedStore, err := OpenSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: reopenedStore})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer maintenance.Close()
+	listed, err := maintenance.ListSubAgents(ctx, "parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("maintenance list = %#v", listed)
+	}
+	child := listed[0]
+	if child.ThreadID != "child" ||
+		child.ParentThreadID != "parent" ||
+		child.ParentTurnID != "parent-turn" ||
+		child.TaskName != "restart_review" ||
+		child.TaskDescription != "Verify subagent listing after runtime restart." ||
+		child.HostProfileRef != "reviewer" ||
+		child.ForkMode != SubAgentForkNone ||
+		child.Status != SubAgentStatusCompleted ||
+		child.LastMessage != "restart child done" ||
+		child.CreatedAt.IsZero() ||
+		child.UpdatedAt.IsZero() ||
+		!child.CanSendInput ||
+		child.CanInterrupt ||
+		!child.CanClose {
+		t.Fatalf("maintenance child snapshot = %#v", child)
+	}
+
+	timeline, err := maintenance.ListSubAgentActivityTimeline(ctx, ListSubAgentActivityTimelineRequest{
+		ParentThreadID: "parent",
+		Meta: observation.ActivityRunMeta{
+			RunID:    "parent-run",
+			ThreadID: "parent",
+			TurnID:   "parent-turn",
+			TraceID:  "parent-run",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := observation.ValidateActivityTimeline(timeline.Timeline); err != nil {
+		t.Fatalf("maintenance activity timeline invalid: %v", err)
+	}
+	if len(timeline.Timeline.Items) != 1 {
+		t.Fatalf("maintenance activity timeline = %#v", timeline.Timeline)
+	}
+	item := timeline.Timeline.Items[0]
+	if item.Payload["thread_id"] != "child" ||
+		item.Payload["subagent_id"] != "child" ||
+		item.Payload["parent_thread_id"] != "parent" ||
+		item.Payload["parent_turn_id"] != "parent-turn" ||
+		item.Payload["task_name"] != "restart_review" ||
+		item.Payload["task_description"] != "Verify subagent listing after runtime restart." ||
+		item.Payload["status"] != string(SubAgentStatusCompleted) ||
+		item.Payload["can_send_input"] != true ||
+		item.Payload["can_interrupt"] != false ||
+		item.Payload["can_close"] != true {
+		t.Fatalf("maintenance activity payload = %#v", item.Payload)
+	}
+	for _, key := range []string{"operation", "action", "delegation_runtime"} {
+		if _, ok := item.Payload[key]; ok {
+			t.Fatalf("maintenance activity payload leaked product key %q: %#v", key, item.Payload)
+		}
+	}
+}
+
 func TestHostSQLiteStorePersistsSubAgentDetailActivity(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "floret.db")

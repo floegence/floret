@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-07-01
+* **Update**: Clarified that `ThreadMaintenanceHost.ListSubAgents` is the
+  canonical provider-free reload source for parent-scoped child-thread lists
+  after host restart, while subagent activity timelines continue to expose only
+  product-neutral child identity facts.
 * **Update**: Documented subagent detail context snapshots as neutral
   model-bound facts whose context window comes from resolved model capability
   and policy, not parent/child thread identity or fork mode.

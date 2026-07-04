@@ -40,7 +40,9 @@ continuation state, and lifecycle observations.
   hosted parent thread.
 * `ListSubAgentActivityTimeline` returns a parent-scoped,
   product-neutral `observation.ActivityTimeline` for hosted child lifecycle
-  status without exposing child transcripts.
+  status without exposing child transcripts. Its payload includes durable
+  child-thread identities such as `thread_id` and `subagent_id`, but not
+  downstream product actions, routing targets, or UI runtime labels.
 * `ReadSubAgentDetail` and `ListSubAgentDetailEvents` let a host read a
   parent-scoped, paginated child-thread execution timeline for human UI or
   audit surfaces without expanding `WaitSubAgents` payloads. Their top-level
@@ -121,6 +123,10 @@ responsibility or objective for the child as neutral lifecycle metadata; product
 UI actions, routing ids, and display copy remain host-owned. Queued child inputs
 are journal entries in the child thread, so host restart and storage backends
 preserve pending work, cancellation, and consumption state.
+After a provider-backed host process restarts, `ThreadMaintenanceHost.ListSubAgents`
+is the canonical public reload source for a parent thread's child-thread list;
+hosts must not inspect Floret storage tables or rebuild child identity from
+transcript display projections.
 
 `SubAgentSnapshot.ForkMode` is the engine-owned fork contract for a child
 thread. `none` starts the child with only the delegated mission, while
@@ -264,6 +270,9 @@ It exposes `EnsureThread`, `ReadTurnProjection`, `SettlePendingTool`,
 `ListSubAgents`, `ListSubAgentActivityTimeline`, `ReadSubAgentDetail`,
 `ListSubAgentDetailEvents`, `CloseSubAgents`, `DeleteThread`, and `Close`
 without accepting fake providers, model gateways, tools, or host UI options.
+`ListSubAgents` on this facade returns the same durable parent-scoped child
+snapshots after process restart as a provider-backed host would expose while
+running.
 Subagent detail reads from this facade return the same persisted model/context
 facts as provider-backed hosts.
 `ThreadMaintenanceHostOptions.Store` is required so maintenance code cannot

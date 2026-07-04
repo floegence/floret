@@ -222,7 +222,11 @@ deleting a Floret-owned thread tree. It accepts the same opaque `runtime.Store`
 handle as `NewHost` and requires that store explicitly, but accepts no provider,
 model, fake response, gateway, tools, or product UI configuration. Hosts should
 choose this constructor for cleanup, reload, settlement, detail, and maintenance
-paths that must not be coupled to provider loop configuration.
+paths that must not be coupled to provider loop configuration. After a host
+process restart, `ThreadMaintenanceHost.ListSubAgents` is the canonical public
+source for a parent thread's child-thread list; downstream UIs should use it
+instead of reading Floret storage tables or reconstructing child identity from
+transcript display rows.
 
 ## 🌿 Parent-managed child threads
 
@@ -412,7 +416,8 @@ description; live progress, final handoff text, and product actions belong in
 the host's detail surface rather than this parent summary.
 Hosts may wrap those facts in their own display actions and routing; Floret does
 not emit product UI actions, window targets, or downstream-specific presentation
-copy.
+copy. Payload fields such as `thread_id` and `subagent_id` are durable
+child-thread identities, not UI actions or product routing policies.
 
 Use `ReadSubAgentDetail` or `ListSubAgentDetailEvents` when a host UI needs to
 inspect a child thread's persisted journal. Detail reads are scoped by both
