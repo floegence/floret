@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/floegence/floret/internal/sessiontree"
 	"github.com/floegence/floret/observation"
 )
 
@@ -37,6 +38,7 @@ type ThreadTurnProjection struct {
 	TurnID    TurnID                        `json:"turn_id,omitempty"`
 	RunID     RunID                         `json:"run_id,omitempty"`
 	TraceID   TraceID                       `json:"trace_id,omitempty"`
+	Status    TurnStatus                    `json:"status,omitempty"`
 	Segments  []ThreadTurnProjectionSegment `json:"segments,omitempty"`
 	Projected time.Time                     `json:"projected_at,omitempty"`
 }
@@ -64,6 +66,7 @@ func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 		Projected: time.Now().UTC(),
 	}
 	events := threadTurnProjectionEvents(req.Events, req.TurnID)
+	projection.Status = threadTurnProjectionStatus(events)
 	if len(events) == 0 {
 		return projection
 	}
@@ -176,6 +179,29 @@ func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 	threadTurnProjectionApplyTerminalSettlements(&projection, terminalSettlements)
 	threadTurnProjectionMergeDuplicateActivityItems(&projection)
 	return projection
+}
+
+func threadTurnProjectionStatus(events []ThreadDetailEvent) TurnStatus {
+	var status TurnStatus
+	for _, ev := range events {
+		if ev.Kind == ThreadDetailEventError {
+			status = TurnStatusFailed
+		}
+		if ev.Kind != ThreadDetailEventTurnMarker || ev.TurnMarker == nil {
+			continue
+		}
+		switch strings.TrimSpace(ev.TurnMarker.Status) {
+		case string(sessiontree.TurnCompleted):
+			status = TurnStatusCompleted
+		case string(sessiontree.TurnWaiting):
+			status = TurnStatusWaiting
+		case string(sessiontree.TurnFailed):
+			status = TurnStatusFailed
+		case string(sessiontree.TurnAborted):
+			status = TurnStatusCancelled
+		}
+	}
+	return status
 }
 
 func threadTurnProjectionIsToolResultBatchSavePoint(ev ThreadDetailEvent) bool {

@@ -2163,6 +2163,15 @@ func shouldCloseSubAgentForParentStop(snapshot SubAgentSnapshot) bool {
 	}
 }
 
+func isTerminalSubAgentStatus(status SubAgentStatus) bool {
+	switch status {
+	case SubAgentStatusCompleted, SubAgentStatusFailed, SubAgentStatusCancelled, SubAgentStatusClosed:
+		return true
+	default:
+		return false
+	}
+}
+
 func isSettledSubAgentStatus(status SubAgentStatus) bool {
 	switch status {
 	case SubAgentStatusCompleted, SubAgentStatusWaiting, SubAgentStatusFailed, SubAgentStatusCancelled, SubAgentStatusInterrupted, SubAgentStatusClosed:

@@ -2413,6 +2413,140 @@ func TestHostReadTurnProjectionFromDurableDetail(t *testing.T) {
 	}
 }
 
+func TestThreadMaintenanceHostForkThreadPreservesProjectionWithNewIdentity(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "projected answer",
+			SystemPrompt: "test",
+		},
+		Store:       store,
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "source"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-source", ThreadID: "source", TurnID: "turn-source", Input: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer maintenance.Close()
+
+	forked, err := maintenance.ForkThread(ctx, ForkThreadRequest{SourceThreadID: "source", DestinationThreadID: "fork"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forked.Thread.ID != "fork" || !forked.Thread.CanAppendMessage {
+		t.Fatalf("forked thread = %#v", forked.Thread)
+	}
+	if len(forked.Turns) != 1 {
+		t.Fatalf("forked turns = %#v, want one", forked.Turns)
+	}
+	ref := forked.Turns[0]
+	if ref.SourceTurnID != "turn-source" || ref.SourceRunID != "run-source" {
+		t.Fatalf("source identity = %#v", ref)
+	}
+	if ref.DestinationTurnID == "" || ref.DestinationRunID == "" || ref.DestinationTurnID == ref.SourceTurnID || ref.DestinationRunID == ref.SourceRunID {
+		t.Fatalf("destination identity was not rewritten: %#v", ref)
+	}
+	projection, err := maintenance.ReadTurnProjection(ctx, ReadTurnProjectionRequest{
+		ThreadID: "fork",
+		TurnID:   ref.DestinationTurnID,
+		RunID:    ref.DestinationRunID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.Status != TurnStatusCompleted || runtimeProjectionAssistantText(projection) != "projected answer" {
+		t.Fatalf("fork projection = %#v", projection)
+	}
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-fork-next", ThreadID: "fork", TurnID: "turn-fork-next", Input: "continue"}); err != nil {
+		t.Fatalf("RunTurn on fork: %v", err)
+	}
+}
+
+func TestThreadMaintenanceHostForkThreadClonesTerminalSubAgents(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "child done",
+			SystemPrompt: "test",
+		},
+		Store:       store,
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-parent", ThreadID: "parent", TurnID: "turn-parent", Input: "coordinate"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+		ParentThreadID: "parent",
+		ParentTurnID:   "turn-parent",
+		ThreadID:       "child",
+		TaskName:       "Review API",
+		Message:        "review the runtime API",
+		ForkMode:       SubAgentForkNone,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"child"}, Timeout: 2 * time.Second}); err != nil || waited.TimedOut {
+		t.Fatalf("WaitSubAgents err=%v waited=%#v", err, waited)
+	}
+	maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer maintenance.Close()
+
+	forked, err := maintenance.ForkThread(ctx, ForkThreadRequest{SourceThreadID: "parent", DestinationThreadID: "parent-fork"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(forked.Turns) != 1 || forked.Turns[0].DestinationTurnID == "" {
+		t.Fatalf("forked turns = %#v", forked.Turns)
+	}
+	children, err := maintenance.ListSubAgents(ctx, "parent-fork")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 1 || children[0].ThreadID == "child" || children[0].Status != SubAgentStatusCompleted {
+		t.Fatalf("forked children = %#v", children)
+	}
+	if children[0].ParentTurnID != forked.Turns[0].DestinationTurnID {
+		t.Fatalf("forked child parent turn = %q, want %q", children[0].ParentTurnID, forked.Turns[0].DestinationTurnID)
+	}
+	detail, err := maintenance.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{
+		ParentThreadID: "parent-fork",
+		ChildThreadID:  children[0].ThreadID,
+		IncludeRaw:     true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtimeSubAgentDetailAssistantText(detail) != "child done" {
+		t.Fatalf("forked child detail = %#v", detail.Events)
+	}
+}
+
 func TestHostCompletePendingToolRunsFollowUpTurnThroughPublicFacade(t *testing.T) {
 	ctx := context.Background()
 	rec := &runtimeEventRecorder{}
@@ -3870,6 +4004,17 @@ func runtimeProjectionAssistantText(projection ThreadTurnProjection) string {
 		if segment.Kind == ThreadTurnProjectionSegmentAssistantText {
 			out.WriteString(segment.Text)
 		}
+	}
+	return out.String()
+}
+
+func runtimeSubAgentDetailAssistantText(detail SubAgentDetail) string {
+	var out strings.Builder
+	for _, event := range detail.Events {
+		if event.Kind != SubAgentDetailEventAssistantMessage || event.Message == nil {
+			continue
+		}
+		out.WriteString(event.Message.Content)
 	}
 	return out.String()
 }

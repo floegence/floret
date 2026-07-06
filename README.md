@@ -492,6 +492,15 @@ returns `ErrTurnNotFound`. If the supplied run id is not recorded for that
 turn, Floret returns `ErrRunNotFound`. Hosts can handle reload errors with
 `errors.Is` without reading Floret storage internals.
 
+Use `ForkThread` when a host needs to create a new durable thread from an
+existing thread path. Floret owns the ledger copy, rewrites destination
+`TurnID`/`RunID` execution identities, and returns the public identity mapping
+that hosts need for later `ReadTurnProjection` calls. Hosts should store those
+identity references alongside their product thread metadata, not clone Floret
+rows or materialize Floret display projections into a separate transcript
+store. Provider-free `ThreadMaintenanceHost` exposes the same fork contract for
+restart and UI maintenance paths.
+
 ### Pending approval snapshots
 
 Use `ListPendingApprovals` when a host UI needs the current tool approvals that

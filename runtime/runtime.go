@@ -51,6 +51,7 @@ var (
 type Host interface {
 	StartThread(context.Context, StartThreadRequest) (ThreadSnapshot, error)
 	EnsureThread(context.Context, EnsureThreadRequest) (ThreadSummary, error)
+	ForkThread(context.Context, ForkThreadRequest) (ForkThreadResult, error)
 	ReadThread(context.Context, ThreadID) (ThreadSnapshot, error)
 	ListThreadDetailEvents(context.Context, ListThreadDetailEventsRequest) (ThreadDetailEvents, error)
 	ListPendingApprovals(context.Context, ListPendingApprovalsRequest) (PendingApprovals, error)
@@ -76,6 +77,7 @@ type Host interface {
 // ThreadMaintenanceHost exposes provider-free thread maintenance operations over a Floret store.
 type ThreadMaintenanceHost interface {
 	EnsureThread(context.Context, EnsureThreadRequest) (ThreadSummary, error)
+	ForkThread(context.Context, ForkThreadRequest) (ForkThreadResult, error)
 	ReadTurnProjection(context.Context, ReadTurnProjectionRequest) (ThreadTurnProjection, error)
 	SettlePendingTool(context.Context, PendingToolSettlementRequest) (PendingToolSettlementResult, error)
 	ListSubAgents(context.Context, ThreadID) ([]SubAgentSnapshot, error)
@@ -127,6 +129,24 @@ type StartThreadRequest struct {
 
 type EnsureThreadRequest struct {
 	ThreadID ThreadID
+}
+
+type ForkThreadRequest struct {
+	SourceThreadID      ThreadID
+	DestinationThreadID ThreadID
+}
+
+type ForkThreadResult struct {
+	Thread ThreadSummary   `json:"thread"`
+	Turns  []ForkedTurnRef `json:"turns,omitempty"`
+}
+
+type ForkedTurnRef struct {
+	SourceTurnID      TurnID    `json:"source_turn_id,omitempty"`
+	SourceRunID       RunID     `json:"source_run_id,omitempty"`
+	DestinationTurnID TurnID    `json:"destination_turn_id,omitempty"`
+	DestinationRunID  RunID     `json:"destination_run_id,omitempty"`
+	CreatedAt         time.Time `json:"created_at,omitempty"`
 }
 
 type RunTurnRequest struct {
@@ -1083,6 +1103,36 @@ func ensureThread(ctx context.Context, harness *agentharness.AgentHarness, req E
 	return threadSummary(summary), nil
 }
 
+func (h *host) ForkThread(ctx context.Context, req ForkThreadRequest) (ForkThreadResult, error) {
+	return forkThread(ctx, h.harness, req)
+}
+
+func (h *threadMaintenanceHost) ForkThread(ctx context.Context, req ForkThreadRequest) (ForkThreadResult, error) {
+	return forkThread(ctx, h.harness, req)
+}
+
+func forkThread(ctx context.Context, harness *agentharness.AgentHarness, req ForkThreadRequest) (ForkThreadResult, error) {
+	if strings.TrimSpace(string(req.SourceThreadID)) == "" {
+		return ForkThreadResult{}, errors.New("source thread id is required")
+	}
+	if strings.TrimSpace(string(req.DestinationThreadID)) == "" {
+		return ForkThreadResult{}, errors.New("destination thread id is required")
+	}
+	if strings.TrimSpace(string(req.SourceThreadID)) == strings.TrimSpace(string(req.DestinationThreadID)) {
+		return ForkThreadResult{}, errors.New("fork destination must differ from source")
+	}
+	result, err := harness.ForkThreadWithResult(ctx, agentharness.ForkOptions{
+		SourceThreadID:         string(req.SourceThreadID),
+		NewThreadID:            string(req.DestinationThreadID),
+		RewriteTurnIdentities:  true,
+		CloneTerminalSubAgents: true,
+	})
+	if err != nil {
+		return ForkThreadResult{}, runtimeHostError(err)
+	}
+	return forkThreadResult(result), nil
+}
+
 func (h *host) ReadThread(ctx context.Context, threadID ThreadID) (ThreadSnapshot, error) {
 	thread, err := h.harness.ResumeThread(ctx, string(threadID), agentharness.ResumeOptions{})
 	if err != nil {
@@ -1643,6 +1693,23 @@ func threadSummary(in agentharness.ThreadSummary) ThreadSummary {
 		CanAppendMessage: in.CanAppendMessage,
 		CanRetry:         in.CanRetry,
 	}
+}
+
+func forkThreadResult(in agentharness.ForkResult) ForkThreadResult {
+	out := ForkThreadResult{
+		Thread: threadSummary(in.Summary),
+		Turns:  make([]ForkedTurnRef, 0, len(in.Turns)),
+	}
+	for _, ref := range in.Turns {
+		out.Turns = append(out.Turns, ForkedTurnRef{
+			SourceTurnID:      TurnID(ref.SourceTurnID),
+			SourceRunID:       RunID(ref.SourceRunID),
+			DestinationTurnID: TurnID(ref.DestinationTurnID),
+			DestinationRunID:  RunID(ref.DestinationRunID),
+			CreatedAt:         ref.CreatedAt,
+		})
+	}
+	return out
 }
 
 func pendingApprovals(in agentharness.PendingApprovals) PendingApprovals {

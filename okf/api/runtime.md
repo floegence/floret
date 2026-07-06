@@ -187,6 +187,15 @@ turn storage identity. A missing thread is reported with `ErrThreadNotFound`; a
 known thread with no matching turn detail is reported with `ErrTurnNotFound`;
 and a turn whose durable detail does not record the requested run is reported
 with `ErrRunNotFound`.
+`ForkThread` is the public runtime contract for host-visible conversation forks.
+It copies the Floret-owned durable thread path into a new thread, rewrites
+destination `TurnID` and `RunID` execution identities, and returns the mapping
+needed for later `ReadTurnProjection` calls. Host products may persist those
+public identity references with their own thread metadata, but must not clone
+Floret storage tables or materialize Floret display projections into a host
+shadow transcript. Provider-free `ThreadMaintenanceHost` exposes the same
+contract so UI and restart maintenance can fork thread history without provider
+configuration.
 `ProjectThreadTurn` derives assistant text, control-signal segments, and turn
 activity only from the ordered `ThreadDetailEvent` stream for the target turn.
 It does not accept or merge an older aggregate activity timeline as an input.

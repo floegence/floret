@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-07-06
+* **Update**: Documented `runtime.ForkThread` as the public durable thread fork
+  contract that rewrites destination execution identities and keeps host
+  products from cloning Floret storage or shadowing display projections.
 * **Update**: Documented interrupted-turn restart recovery as an AgentHarness
   durable ledger responsibility that restores provider-safe active history
   without requiring hosts to inspect or edit Floret storage.
