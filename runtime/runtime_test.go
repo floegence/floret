@@ -1652,6 +1652,102 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 	}
 }
 
+func TestHostReadsSubAgentDetailRawMessageContentContract(t *testing.T) {
+	ctx := context.Background()
+	longMission := "inspect the complete delegated output " + strings.Repeat("mission context ", 80) + "mission tail"
+	longAnswer := "complete subagent report " + strings.Repeat("evidence section ", 80) + "https://example.test/full-final-output"
+	store := NewMemoryStore()
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: longAnswer,
+			SystemPrompt: "test",
+		},
+		Store:       store,
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+		ParentThreadID: "parent",
+		ThreadID:       "child",
+		TaskName:       "Raw Contract",
+		Message:        longMission,
+		ForkMode:       SubAgentForkNone,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"child"}, Timeout: 2 * time.Second}); err != nil || waited.TimedOut {
+		t.Fatalf("waited=%#v err=%v", waited, err)
+	}
+
+	previewOnly, err := host.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "child"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputPreview := firstRuntimeSubAgentDetailEvent(previewOnly.Events, SubAgentDetailEventInput)
+	if inputPreview.Message == nil || inputPreview.Message.Content != "" || inputPreview.Message.Preview == "" || !strings.HasSuffix(inputPreview.Message.Preview, "...") {
+		t.Fatalf("preview input should omit raw content and keep bounded preview: %#v", inputPreview)
+	}
+	if strings.Contains(inputPreview.Message.Preview, "mission tail") {
+		t.Fatalf("preview input exposed tail raw content: %q", inputPreview.Message.Preview)
+	}
+	assistantPreview := firstRuntimeSubAgentDetailEvent(previewOnly.Events, SubAgentDetailEventAssistantMessage)
+	if assistantPreview.Message == nil || assistantPreview.Message.Content != "" || assistantPreview.Message.Preview == "" || !strings.HasSuffix(assistantPreview.Message.Preview, "...") {
+		t.Fatalf("preview assistant should omit raw content and keep bounded preview: %#v", assistantPreview)
+	}
+	if strings.Contains(assistantPreview.Message.Preview, "full-final-output") {
+		t.Fatalf("preview assistant exposed tail raw content: %q", assistantPreview.Message.Preview)
+	}
+
+	raw, err := host.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "child", IncludeRaw: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputRaw := firstRuntimeSubAgentDetailEvent(raw.Events, SubAgentDetailEventInput)
+	if inputRaw.Message == nil || inputRaw.Message.Content != longMission || inputRaw.Message.Preview == "" || inputRaw.Message.Preview == inputRaw.Message.Content {
+		t.Fatalf("raw input should keep full content and bounded preview: %#v", inputRaw)
+	}
+	assistantRaw := firstRuntimeSubAgentDetailEvent(raw.Events, SubAgentDetailEventAssistantMessage)
+	if assistantRaw.Message == nil || assistantRaw.Message.Content != longAnswer || assistantRaw.Message.Preview == "" || assistantRaw.Message.Preview == assistantRaw.Message.Content {
+		t.Fatalf("raw assistant should keep full content and bounded preview: %#v", assistantRaw)
+	}
+
+	page, err := host.ListSubAgentDetailEvents(ctx, ListSubAgentDetailEventsRequest{
+		ParentThreadID: "parent",
+		ChildThreadID:  "child",
+		AfterOrdinal:   assistantRaw.Ordinal - 1,
+		Limit:          1,
+		IncludeRaw:     true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 1 || page.Events[0].Kind != SubAgentDetailEventAssistantMessage || page.Events[0].Message == nil || page.Events[0].Message.Content != longAnswer {
+		t.Fatalf("paged raw assistant event = %#v", page.Events)
+	}
+
+	maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer maintenance.Close()
+	maintenanceRaw, err := maintenance.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "child", IncludeRaw: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	maintenanceAssistant := firstRuntimeSubAgentDetailEvent(maintenanceRaw.Events, SubAgentDetailEventAssistantMessage)
+	if maintenanceAssistant.Message == nil || maintenanceAssistant.Message.Content != longAnswer || maintenanceAssistant.Message.Preview == maintenanceAssistant.Message.Content {
+		t.Fatalf("maintenance raw assistant should keep full content and bounded preview: %#v", maintenanceAssistant)
+	}
+}
+
 func TestSubAgentDetailCompactionSanitizesInternalMetadata(t *testing.T) {
 	out := subAgentDetailCompaction(&agentharness.SubAgentDetailCompaction{
 		Trigger: "manual",
@@ -1681,6 +1777,7 @@ func TestSubAgentDetailCompactionSanitizesInternalMetadata(t *testing.T) {
 
 func TestHostSQLiteStorePersistsSubAgentDetail(t *testing.T) {
 	ctx := context.Background()
+	longAnswer := "persisted child report " + strings.Repeat("stored evidence ", 80) + "https://example.test/reopened-full-output"
 	path := filepath.Join(t.TempDir(), "floret.db")
 	store, err := OpenSQLiteStore(path)
 	if err != nil {
@@ -1690,7 +1787,7 @@ func TestHostSQLiteStorePersistsSubAgentDetail(t *testing.T) {
 		Config: config.Config{
 			Provider:     config.ProviderFake,
 			Model:        "fake-model",
-			FakeResponse: "persisted child",
+			FakeResponse: longAnswer,
 			SystemPrompt: "test",
 		},
 		Store:       store,
@@ -1736,7 +1833,7 @@ func TestHostSQLiteStorePersistsSubAgentDetail(t *testing.T) {
 	if detail.Snapshot.ForkMode != SubAgentForkNone {
 		t.Fatalf("reopened fork mode = %q, want %q", detail.Snapshot.ForkMode, SubAgentForkNone)
 	}
-	if got := firstRuntimeSubAgentDetailEvent(detail.Events, SubAgentDetailEventAssistantMessage); got.Message == nil || got.Message.Content != "persisted child" {
+	if got := firstRuntimeSubAgentDetailEvent(detail.Events, SubAgentDetailEventAssistantMessage); got.Message == nil || got.Message.Content != longAnswer || got.Message.Preview == got.Message.Content || !strings.Contains(got.Message.Content, "reopened-full-output") {
 		t.Fatalf("reopened detail = %#v", detail.Events)
 	}
 }

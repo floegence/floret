@@ -407,6 +407,63 @@ func TestReadSubAgentDetailProjectsToolAndApprovalEvents(t *testing.T) {
 	}
 }
 
+func TestReadSubAgentDetailRawMessageContentContract(t *testing.T) {
+	ctx := context.Background()
+	longMission := "inspect the complete handoff output " + strings.Repeat("mission context ", 80) + "mission tail"
+	longAnswer := "complete subagent report " + strings.Repeat("evidence section ", 80) + "https://example.test/full-final-output"
+	provider := scriptharness.NewScriptedProvider(
+		scriptharness.Step(scriptharness.Text(longAnswer), scriptharness.Done()),
+	)
+	h := newTestHarness(provider, sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
+	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+		ParentThreadID: "parent",
+		ThreadID:       "child",
+		TaskName:       "raw contract",
+		Message:        longMission,
+		ForkMode:       SubAgentForkNone,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if waited, err := h.WaitSubAgents(ctx, WaitSubAgentsOptions{ParentThreadID: "parent", ChildThreadIDs: []string{"child"}, Timeout: 2 * time.Second}); err != nil || waited.TimedOut {
+		t.Fatalf("waited=%#v err=%v", waited, err)
+	}
+
+	previewOnly, err := h.ReadSubAgentDetail(ctx, ReadSubAgentDetailOptions{ParentThreadID: "parent", ChildThreadID: "child"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputPreview := firstSubAgentDetailEvent(previewOnly.Events, SubAgentDetailEventInput)
+	if inputPreview.Message == nil || inputPreview.Message.Content != "" || inputPreview.Message.Preview == "" || !strings.HasSuffix(inputPreview.Message.Preview, "...") {
+		t.Fatalf("preview input should omit raw content and keep bounded preview: %#v", inputPreview)
+	}
+	if strings.Contains(inputPreview.Message.Preview, "mission tail") {
+		t.Fatalf("preview input exposed tail raw content: %q", inputPreview.Message.Preview)
+	}
+	assistantPreview := firstSubAgentDetailEvent(previewOnly.Events, SubAgentDetailEventAssistantMessage)
+	if assistantPreview.Message == nil || assistantPreview.Message.Content != "" || assistantPreview.Message.Preview == "" || !strings.HasSuffix(assistantPreview.Message.Preview, "...") {
+		t.Fatalf("preview assistant should omit raw content and keep bounded preview: %#v", assistantPreview)
+	}
+	if strings.Contains(assistantPreview.Message.Preview, "full-final-output") {
+		t.Fatalf("preview assistant exposed tail raw content: %q", assistantPreview.Message.Preview)
+	}
+
+	raw, err := h.ReadSubAgentDetail(ctx, ReadSubAgentDetailOptions{ParentThreadID: "parent", ChildThreadID: "child", IncludeRaw: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputRaw := firstSubAgentDetailEvent(raw.Events, SubAgentDetailEventInput)
+	if inputRaw.Message == nil || inputRaw.Message.Content != longMission || inputRaw.Message.Preview == "" || inputRaw.Message.Preview == inputRaw.Message.Content {
+		t.Fatalf("raw input should keep full content and bounded preview: %#v", inputRaw)
+	}
+	assistantRaw := firstSubAgentDetailEvent(raw.Events, SubAgentDetailEventAssistantMessage)
+	if assistantRaw.Message == nil || assistantRaw.Message.Content != longAnswer || assistantRaw.Message.Preview == "" || assistantRaw.Message.Preview == assistantRaw.Message.Content {
+		t.Fatalf("raw assistant should keep full content and bounded preview: %#v", assistantRaw)
+	}
+}
+
 func TestReadSubAgentDetailContextWindowComesFromModelPolicyNotForkMode(t *testing.T) {
 	ctx := context.Background()
 	provider := scriptharness.NewScriptedProvider(
