@@ -428,6 +428,13 @@ func (h *AgentHarness) ResumeThread(ctx context.Context, id string, _ ResumeOpti
 			return nil, ErrActiveTurn
 		}
 	}
+	if err := h.recoverProviderUnsafeInterruptedPath(ctx, meta.ID); err != nil {
+		return nil, err
+	}
+	meta, err = h.options.Repo.Thread(ctx, meta.ID)
+	if err != nil {
+		return nil, err
+	}
 	if err := h.markInterruptedTurns(ctx, meta); err != nil {
 		return nil, err
 	}
@@ -459,7 +466,10 @@ func (h *AgentHarness) markInterruptedTurns(ctx context.Context, meta sessiontre
 		if terminal[turnID] {
 			continue
 		}
-		if _, err := sessiontree.AppendFailure(ctx, h.options.Repo, meta.ID, turnID, "turn interrupted during previous process"); err != nil {
+		if err := h.closeInterruptedTurnToolCalls(ctx, meta.ID, turnID, path); err != nil {
+			return err
+		}
+		if _, err := sessiontree.AppendFailure(ctx, h.options.Repo, meta.ID, turnID, interruptedTurnFailureMessage); err != nil {
 			return err
 		}
 		if _, err := sessiontree.AppendTurnMarker(ctx, h.options.Repo, meta.ID, turnID, sessiontree.TurnAborted, map[string]string{"recoverable": "true"}); err != nil {
@@ -467,6 +477,185 @@ func (h *AgentHarness) markInterruptedTurns(ctx context.Context, meta sessiontre
 		}
 	}
 	return nil
+}
+
+const interruptedTurnFailureMessage = "turn interrupted during previous process"
+
+func (h *AgentHarness) recoverProviderUnsafeInterruptedPath(ctx context.Context, threadID string) error {
+	for {
+		meta, err := h.options.Repo.Thread(ctx, threadID)
+		if err != nil {
+			return err
+		}
+		path, err := h.options.Repo.Path(ctx, threadID, meta.LeafID)
+		if err != nil {
+			return err
+		}
+		repair, ok := providerUnsafeInterruptedRepair(path)
+		if !ok {
+			return nil
+		}
+		if err := h.options.Repo.MoveLeaf(ctx, threadID, repair.anchorEntryID); err != nil {
+			return err
+		}
+		if err := h.closeInterruptedTurnToolCalls(ctx, threadID, repair.turnID, path[:repair.anchorIndex+1]); err != nil {
+			return err
+		}
+		if _, err := sessiontree.AppendFailure(ctx, h.options.Repo, threadID, repair.turnID, interruptedTurnFailureMessage); err != nil {
+			return err
+		}
+		if _, err := sessiontree.AppendTurnMarker(ctx, h.options.Repo, threadID, repair.turnID, sessiontree.TurnAborted, map[string]string{"recoverable": "true"}); err != nil {
+			return err
+		}
+	}
+}
+
+type interruptedPathRepair struct {
+	turnID        string
+	anchorEntryID string
+	anchorIndex   int
+}
+
+type interruptedToolCall struct {
+	entry sessiontree.Entry
+}
+
+func providerUnsafeInterruptedRepair(path []sessiontree.Entry) (interruptedPathRepair, bool) {
+	pending := map[string]interruptedToolCall{}
+	pendingOrder := []string{}
+	for index, entry := range path {
+		switch entry.Type {
+		case sessiontree.EntryToolCall:
+			if entry.Message.Role == session.Assistant && strings.TrimSpace(entry.Message.ToolCallID) != "" {
+				callID := strings.TrimSpace(entry.Message.ToolCallID)
+				if _, exists := pending[callID]; !exists {
+					pendingOrder = append(pendingOrder, callID)
+				}
+				pending[callID] = interruptedToolCall{entry: entry}
+			}
+		case sessiontree.EntryToolResult:
+			if entry.Message.Role == session.Tool && strings.TrimSpace(entry.Message.ToolCallID) != "" {
+				delete(pending, strings.TrimSpace(entry.Message.ToolCallID))
+			}
+		case sessiontree.EntryRunFailure:
+			if entry.TurnID != "" && hasPendingTurn(pending, entry.TurnID) {
+				return repairBeforeInterruptedTerminal(path, pending, pendingOrder, entry.TurnID, index)
+			}
+		case sessiontree.EntryTurnMarker:
+			if isInterruptedTurnMarker(entry.TurnStatus) && entry.TurnID != "" && hasPendingTurn(pending, entry.TurnID) {
+				return repairBeforeInterruptedTerminal(path, pending, pendingOrder, entry.TurnID, index)
+			}
+		case sessiontree.EntryUserMessage:
+			if len(pending) == 0 {
+				continue
+			}
+			for _, callID := range pendingOrder {
+				call, ok := pending[callID]
+				if !ok {
+					continue
+				}
+				anchorIndex := index - 1
+				if anchorIndex < 0 {
+					anchorIndex = 0
+				}
+				return interruptedPathRepair{
+					turnID:        call.entry.TurnID,
+					anchorEntryID: path[anchorIndex].ID,
+					anchorIndex:   anchorIndex,
+				}, true
+			}
+		}
+	}
+	return interruptedPathRepair{}, false
+}
+
+func repairBeforeInterruptedTerminal(path []sessiontree.Entry, pending map[string]interruptedToolCall, pendingOrder []string, turnID string, terminalIndex int) (interruptedPathRepair, bool) {
+	for _, callID := range pendingOrder {
+		call, ok := pending[callID]
+		if !ok || call.entry.TurnID != turnID {
+			continue
+		}
+		anchorIndex := terminalIndex - 1
+		if anchorIndex < 0 {
+			anchorIndex = 0
+		}
+		return interruptedPathRepair{
+			turnID:        call.entry.TurnID,
+			anchorEntryID: path[anchorIndex].ID,
+			anchorIndex:   anchorIndex,
+		}, true
+	}
+	return interruptedPathRepair{}, false
+}
+
+func hasPendingTurn(pending map[string]interruptedToolCall, turnID string) bool {
+	for _, call := range pending {
+		if call.entry.TurnID == turnID {
+			return true
+		}
+	}
+	return false
+}
+
+func isInterruptedTurnMarker(status sessiontree.TurnMarkerStatus) bool {
+	switch status {
+	case sessiontree.TurnFailed, sessiontree.TurnAborted:
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *AgentHarness) closeInterruptedTurnToolCalls(ctx context.Context, threadID, turnID string, path []sessiontree.Entry) error {
+	calls := unresolvedToolCallsForTurn(path, turnID)
+	if len(calls) == 0 {
+		return nil
+	}
+	for _, call := range calls {
+		if _, err := sessiontree.AppendMessage(ctx, h.options.Repo, threadID, turnID, interruptedTurnClosureToolResult(call.Message)); err != nil {
+			return err
+		}
+	}
+	_, err := sessiontree.AppendTurnMarker(ctx, h.options.Repo, threadID, turnID, sessiontree.TurnSavePoint, map[string]string{"reason": "interrupted_tool_result_batch"})
+	return err
+}
+
+func unresolvedToolCallsForTurn(path []sessiontree.Entry, turnID string) []sessiontree.Entry {
+	results := map[string]struct{}{}
+	for _, entry := range path {
+		if entry.TurnID != turnID || entry.Type != sessiontree.EntryToolResult || entry.Message.Role != session.Tool {
+			continue
+		}
+		if callID := strings.TrimSpace(entry.Message.ToolCallID); callID != "" {
+			results[callID] = struct{}{}
+		}
+	}
+	var calls []sessiontree.Entry
+	seen := map[string]struct{}{}
+	for _, entry := range path {
+		if entry.TurnID != turnID || entry.Type != sessiontree.EntryToolCall || entry.Message.Role != session.Assistant {
+			continue
+		}
+		callID := strings.TrimSpace(entry.Message.ToolCallID)
+		if callID == "" {
+			continue
+		}
+		if _, ok := results[callID]; ok {
+			continue
+		}
+		if _, ok := seen[callID]; ok {
+			continue
+		}
+		seen[callID] = struct{}{}
+		calls = append(calls, entry)
+	}
+	return calls
+}
+
+func interruptedTurnClosureToolResult(call session.Message) session.Message {
+	result := terminalTurnClosureToolResult(call, engine.Cancelled, nil)
+	result.Content = "Tool call did not complete because the turn was interrupted."
+	return result
 }
 
 func (h *AgentHarness) ForkThread(ctx context.Context, opts ForkOptions) (*Thread, error) {

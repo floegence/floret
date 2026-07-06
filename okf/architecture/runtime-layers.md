@@ -54,6 +54,12 @@ without duplicating accumulated provider output.
 Durable compaction entries are committed only after `Engine` has rebuilt and
 validated the compacted provider request, so a journal checkpoint is an
 installed continuation boundary rather than a candidate summary.
+Restart recovery uses the same durable ledger boundary. `ResumeThread` closes
+unresolved provider-visible tool calls for interrupted turns before writing the
+terminal interrupted marker. If a later user message or failure already created
+a provider-unsafe active branch, `AgentHarness` moves the active leaf back to
+the last provider-safe ancestor, writes neutral terminal tool results on a new
+branch, and leaves the old branch readable as historical ledger state.
 
 `Engine` is the prompt-first single-run executor. It owns provider loop control,
 tool invocation, compaction decisions, prompt-cache requests, metrics, and event

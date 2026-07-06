@@ -2103,6 +2103,116 @@ func TestResumeMarksUnfinishedTurnInterrupted(t *testing.T) {
 	}
 }
 
+func TestResumeInterruptedTurnClosesUnresolvedToolCallAndContinues(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		repo sessiontree.Repo
+	}{
+		{name: "memory", repo: sessiontree.NewMemoryRepo()},
+		{name: "sqlite", repo: openSQLiteRepoForHarnessTest(t)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("continued"), scriptharness.Done())), tc.repo, cache.NewMemoryStore())
+			thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			appendInterruptedWaitTurn(t, ctx, tc.repo, "thread", "turn-interrupted")
+
+			resumed, err := h.ResumeThread(ctx, thread.ID(), ResumeOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			snap, err := resumed.Journal(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := countToolEntries(snap.Entries, sessiontree.EntryToolResult, "call-wait"); got != 1 {
+				t.Fatalf("tool result count = %d in %#v", got, snap.Entries)
+			}
+			if status := toolResultStatusForCall(snap.Entries, "call-wait"); status != string(observation.ActivityStatusCanceled) {
+				t.Fatalf("call-wait status = %q, want canceled", status)
+			}
+			if err := assertProviderSafeToolHistory(snap.Context); err != nil {
+				t.Fatalf("provider history after resume is unsafe: %v\n%#v", err, snap.Context)
+			}
+			second, err := resumed.Run(ctx, "continue", RunOptions{TurnID: "turn-continue"})
+			if err != nil || second.Status != engine.Completed {
+				t.Fatalf("second = %#v err=%v", second, err)
+			}
+		})
+	}
+}
+
+func TestResumeRepairsUnsafeInterruptedActiveBranch(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		repo sessiontree.Repo
+	}{
+		{name: "memory", repo: sessiontree.NewMemoryRepo()},
+		{name: "sqlite", repo: openSQLiteRepoForHarnessTest(t)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("continued"), scriptharness.Done())), tc.repo, cache.NewMemoryStore())
+			thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			appendInterruptedWaitTurn(t, ctx, tc.repo, "thread", "turn-interrupted")
+			if _, err := sessiontree.AppendFailure(ctx, tc.repo, "thread", "turn-interrupted", interruptedTurnFailureMessage); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessiontree.AppendTurnMarker(ctx, tc.repo, "thread", "turn-interrupted", sessiontree.TurnAborted, map[string]string{"recoverable": "true"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessiontree.AppendTurnMarker(ctx, tc.repo, "thread", "turn-bad-continue", sessiontree.TurnStarted, nil); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessiontree.AppendMessage(ctx, tc.repo, "thread", "turn-bad-continue", session.Message{Role: session.User, Content: "continue"}); err != nil {
+				t.Fatal(err)
+			}
+			badLeaf, err := tc.repo.Append(ctx, sessiontree.Entry{ThreadID: "thread", TurnID: "turn-bad-continue", Type: sessiontree.EntryRunFailure, Error: "provider history unsafe"}, sessiontree.AppendOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			resumed, err := h.ResumeThread(ctx, thread.ID(), ResumeOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			snap, err := resumed.Journal(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if snap.Meta.LeafID == badLeaf.ID {
+				t.Fatalf("active leaf still points at unsafe branch: %q", snap.Meta.LeafID)
+			}
+			if got := countEntriesWithContent(snap.Path, sessiontree.EntryUserMessage, "continue"); got != 0 {
+				t.Fatalf("active repaired path retained bad continue message: count=%d path=%#v", got, snap.Path)
+			}
+			if got := countToolEntries(snap.Path, sessiontree.EntryToolResult, "call-wait"); got != 1 {
+				t.Fatalf("tool result count = %d in %#v", got, snap.Path)
+			}
+			if err := assertProviderSafeToolHistory(snap.Context); err != nil {
+				t.Fatalf("repaired active context is unsafe: %v\n%#v", err, snap.Context)
+			}
+			oldBranch, err := tc.repo.Path(ctx, "thread", badLeaf.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := countEntriesWithContent(oldBranch, sessiontree.EntryUserMessage, "continue"); got != 1 {
+				t.Fatalf("old unsafe branch should remain readable: count=%d entries=%#v", got, oldBranch)
+			}
+			second, err := resumed.Run(ctx, "continue", RunOptions{TurnID: "turn-continue"})
+			if err != nil || second.Status != engine.Completed {
+				t.Fatalf("second = %#v err=%v", second, err)
+			}
+		})
+	}
+}
+
 func TestActiveTurnBusyGuard(t *testing.T) {
 	ctx := context.Background()
 	p := newBlockingProvider()
@@ -2538,6 +2648,38 @@ func toolResultStatusForCall(entries []sessiontree.Entry, callID string) string 
 		return entry.Message.ToolResult.Status
 	}
 	return ""
+}
+
+func openSQLiteRepoForHarnessTest(t *testing.T) sessiontree.Repo {
+	t.Helper()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "floret.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	return repo
+}
+
+func appendInterruptedWaitTurn(t *testing.T, ctx context.Context, repo sessiontree.Repo, threadID string, turnID string) {
+	t.Helper()
+	if _, err := sessiontree.AppendTurnMarker(ctx, repo, threadID, turnID, sessiontree.TurnStarted, map[string]string{"run_id": "run-interrupted"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, repo, threadID, turnID, session.Message{Role: session.User, Content: "start subagents"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, repo, threadID, turnID, session.Message{Role: session.Assistant, Content: "waiting for delegated work"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, repo, threadID, turnID, session.Message{
+		Role:       session.Assistant,
+		Content:    "tool_call",
+		ToolCallID: "call-wait",
+		ToolName:   "subagents",
+		ToolArgs:   `{"action":"wait","ids":["child"],"timeout_ms":300000}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func savePointEntries(entries []sessiontree.Entry, reason string) []sessiontree.Entry {

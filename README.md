@@ -364,7 +364,11 @@ cancelled or failed after assistant tool calls have been accepted, Floret closes
 each unresolved provider-visible call with a neutral terminal tool result before
 writing the terminal turn marker. This keeps future provider requests valid
 without asking downstream hosts to edit Floret storage or reconstruct provider
-history from product audit logs.
+history from product audit logs. `ResumeThread` applies the same rule for
+interrupted turns after a host restart; if an unsafe active branch was already
+created from the unresolved call, Floret moves the active leaf back to the last
+provider-safe ancestor and records the neutral closure on a new branch while
+preserving the old branch as durable history.
 
 ### Host-owned pending tool results
 
