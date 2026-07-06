@@ -730,9 +730,11 @@ func (s *Store) Fork(ctx context.Context, opts sessiontree.ForkOptions) (session
 			next.ID = nextID
 			next.ThreadID = newID
 			next.ParentID = oldToNew[entry.ParentID]
+			next.TurnID = rewriteForkID(next.TurnID, opts.TurnIDMap)
 			next.FirstKeptEntryID = oldToNew[entry.FirstKeptEntryID]
 			next.CompactedThroughEntryID = oldToNew[entry.CompactedThroughEntryID]
 			next.KeptUserEntryIDs = rewriteEntryIDs(entry.KeptUserEntryIDs, oldToNew)
+			next.Metadata = rewriteForkMetadata(next.Metadata, oldToNew, opts.TurnIDMap, opts.RunIDMap)
 			next.CreatedAt = now
 			next = sessiontree.PrepareEntry(next)
 			ordinal, err := nextOrdinal(ctx, tx, newID)
@@ -1482,6 +1484,37 @@ func rewriteEntryIDs(ids []string, oldToNew map[string]string) []string {
 		if next := oldToNew[id]; next != "" {
 			out = append(out, next)
 		}
+	}
+	return out
+}
+
+func rewriteForkID(value string, ids map[string]string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(ids) == 0 {
+		return value
+	}
+	if next := strings.TrimSpace(ids[value]); next != "" {
+		return next
+	}
+	return value
+}
+
+func rewriteForkMetadata(metadata map[string]string, entryIDs map[string]string, turnIDs map[string]string, runIDs map[string]string) map[string]string {
+	if len(metadata) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(metadata))
+	for key, value := range metadata {
+		next := value
+		switch strings.TrimSpace(key) {
+		case "run_id", "trace_id":
+			next = rewriteForkID(value, runIDs)
+		case "turn_id":
+			next = rewriteForkID(value, turnIDs)
+		case "entry_id", "parent_entry_id", "input_entry_id":
+			next = rewriteForkID(value, entryIDs)
+		}
+		out[key] = next
 	}
 	return out
 }

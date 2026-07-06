@@ -2475,6 +2475,84 @@ func TestThreadMaintenanceHostForkThreadPreservesProjectionWithNewIdentity(t *te
 	}
 }
 
+func TestThreadMaintenanceHostForkThreadPreservesSQLiteProjectionAfterReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "floret.db")
+	store, err := OpenSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "sqlite projected answer",
+			SystemPrompt: "test",
+		},
+		Store:       store,
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "source"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-source", ThreadID: "source", TurnID: "turn-source", Input: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	forkStore, err := OpenSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: forkStore})
+	if err != nil {
+		t.Fatal(err)
+	}
+	forked, err := maintenance.ForkThread(ctx, ForkThreadRequest{SourceThreadID: "source", DestinationThreadID: "fork"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := maintenance.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(forked.Turns) != 1 {
+		t.Fatalf("forked turns = %#v, want one", forked.Turns)
+	}
+	ref := forked.Turns[0]
+	if ref.SourceTurnID != "turn-source" || ref.SourceRunID != "run-source" {
+		t.Fatalf("source identity = %#v", ref)
+	}
+	if ref.DestinationTurnID == "" || ref.DestinationRunID == "" || ref.DestinationTurnID == ref.SourceTurnID || ref.DestinationRunID == ref.SourceRunID {
+		t.Fatalf("destination identity was not rewritten: %#v", ref)
+	}
+
+	reopenedStore, err := OpenSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: reopenedStore})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	projection, err := reopened.ReadTurnProjection(ctx, ReadTurnProjectionRequest{
+		ThreadID: "fork",
+		TurnID:   ref.DestinationTurnID,
+		RunID:    ref.DestinationRunID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.Status != TurnStatusCompleted || runtimeProjectionAssistantText(projection) != "sqlite projected answer" {
+		t.Fatalf("fork projection = %#v", projection)
+	}
+}
+
 func TestThreadMaintenanceHostForkThreadClonesTerminalSubAgents(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()

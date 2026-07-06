@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-07-06
+* **Fix**: Aligned SQLite-backed thread forks with the runtime fork contract by
+  rewriting forked turn/run metadata so reopened `ReadTurnProjection` calls
+  resolve the destination execution identities returned by `ForkThread`.
 * **Update**: Documented `runtime.ForkThread` as the public durable thread fork
   contract that rewrites destination execution identities and keeps host
   products from cloning Floret storage or shadowing display projections.
