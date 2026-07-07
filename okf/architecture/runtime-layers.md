@@ -59,7 +59,11 @@ unresolved provider-visible tool calls for interrupted turns before writing the
 terminal interrupted marker. If a later user message or failure already created
 a provider-unsafe active branch, `AgentHarness` moves the active leaf back to
 the last provider-safe ancestor, writes neutral terminal tool results on a new
-branch, and leaves the old branch readable as historical ledger state.
+branch, and leaves the old branch readable as historical ledger state. Active
+turn lease reconciliation is owned by this layer as well: once durable evidence
+shows that a turn is failed, cancelled, interrupted, or terminal, the harness
+must complete the terminal ledger state and release the lease before admitting
+the next turn.
 
 `Engine` is the prompt-first single-run executor. It owns provider loop control,
 tool invocation, compaction decisions, prompt-cache requests, metrics, and event

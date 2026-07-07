@@ -368,7 +368,10 @@ history from product audit logs. `ResumeThread` applies the same rule for
 interrupted turns after a host restart; if an unsafe active branch was already
 created from the unresolved call, Floret moves the active leaf back to the last
 provider-safe ancestor and records the neutral closure on a new branch while
-preserving the old branch as durable history.
+preserving the old branch as durable history. Active turn leases are part of the
+same durable lifecycle invariant: a recovered failed, cancelled, or otherwise
+terminal turn must not retain an active lease, and hosts must recover through
+the runtime facade rather than clearing lease rows themselves.
 
 ### Host-owned pending tool results
 

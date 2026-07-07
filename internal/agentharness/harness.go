@@ -434,15 +434,8 @@ func (h *AgentHarness) ResumeThread(ctx context.Context, id string, _ ResumeOpti
 	if err != nil {
 		return nil, err
 	}
-	if lease, ok, err := h.activeTurnLease(ctx, meta.ID); err != nil {
+	if err := h.reconcileTurnAdmission(ctx, meta.ID); err != nil {
 		return nil, err
-	} else if ok && lease.TurnID != "" {
-		cutoff := h.now().Add(-staleTurnLeaseTimeout)
-		if cleared, stale, clearErr := h.clearExpiredTurnLease(ctx, meta.ID, cutoff); clearErr != nil {
-			return nil, clearErr
-		} else if !stale || cleared.TurnID != lease.TurnID {
-			return nil, ErrActiveTurn
-		}
 	}
 	if err := h.recoverProviderUnsafeInterruptedPath(ctx, meta.ID); err != nil {
 		return nil, err
@@ -482,13 +475,12 @@ func (h *AgentHarness) markInterruptedTurns(ctx context.Context, meta sessiontre
 		if terminal[turnID] {
 			continue
 		}
-		if err := h.closeInterruptedTurnToolCalls(ctx, meta.ID, turnID, path); err != nil {
-			return err
-		}
-		if _, err := sessiontree.AppendFailure(ctx, h.options.Repo, meta.ID, turnID, interruptedTurnFailureMessage); err != nil {
-			return err
-		}
-		if _, err := sessiontree.AppendTurnMarker(ctx, h.options.Repo, meta.ID, turnID, sessiontree.TurnAborted, map[string]string{"recoverable": "true"}); err != nil {
+		if err := h.finalizeInterruptedTurn(ctx, meta.ID, turnID, path, interruptedTurnFinalization{
+			AppendFailure:  true,
+			FailureMessage: interruptedTurnFailureMessage,
+			Status:         sessiontree.TurnAborted,
+			Metadata:       map[string]string{"recoverable": "true"},
+		}); err != nil {
 			return err
 		}
 	}
@@ -514,16 +506,142 @@ func (h *AgentHarness) recoverProviderUnsafeInterruptedPath(ctx context.Context,
 		if err := h.options.Repo.MoveLeaf(ctx, threadID, repair.anchorEntryID); err != nil {
 			return err
 		}
-		if err := h.closeInterruptedTurnToolCalls(ctx, threadID, repair.turnID, path[:repair.anchorIndex+1]); err != nil {
-			return err
-		}
-		if _, err := sessiontree.AppendFailure(ctx, h.options.Repo, threadID, repair.turnID, interruptedTurnFailureMessage); err != nil {
-			return err
-		}
-		if _, err := sessiontree.AppendTurnMarker(ctx, h.options.Repo, threadID, repair.turnID, sessiontree.TurnAborted, map[string]string{"recoverable": "true"}); err != nil {
+		if err := h.finalizeInterruptedTurn(ctx, threadID, repair.turnID, path[:repair.anchorIndex+1], interruptedTurnFinalization{
+			AppendFailure:  true,
+			FailureMessage: interruptedTurnFailureMessage,
+			Status:         sessiontree.TurnAborted,
+			Metadata:       map[string]string{"recoverable": "true"},
+		}); err != nil {
 			return err
 		}
 	}
+}
+
+type turnRecoveryInfo struct {
+	Started         bool
+	Terminal        bool
+	RunFailure      bool
+	RunFailureError string
+}
+
+type interruptedTurnFinalization struct {
+	AppendFailure  bool
+	FailureMessage string
+	Status         sessiontree.TurnMarkerStatus
+	Metadata       map[string]string
+}
+
+func (h *AgentHarness) reconcileTurnAdmission(ctx context.Context, threadID string) error {
+	lease, ok, err := h.activeTurnLease(ctx, threadID)
+	if err != nil || !ok || lease.TurnID == "" {
+		return err
+	}
+	if err := h.recoverProviderUnsafeInterruptedPath(ctx, threadID); err != nil {
+		return err
+	}
+	meta, err := h.options.Repo.Thread(ctx, threadID)
+	if err != nil {
+		return err
+	}
+	path, err := h.options.Repo.Path(ctx, threadID, meta.LeafID)
+	if err != nil {
+		return err
+	}
+	info := recoveryInfoForTurn(path, lease.TurnID)
+	if info.Terminal {
+		return h.releaseTurnLease(ctx, lease)
+	}
+	if info.RunFailure {
+		status := terminalStatusForRecoveredFailure(info.RunFailureError)
+		metadata := map[string]string{"recoverable": "true"}
+		if info.RunFailureError != "" {
+			metadata["failure_reason"] = info.RunFailureError
+		}
+		if err := h.finalizeInterruptedTurn(ctx, threadID, lease.TurnID, path, interruptedTurnFinalization{
+			Status:   status,
+			Metadata: metadata,
+		}); err != nil {
+			return err
+		}
+		return h.releaseTurnLease(ctx, lease)
+	}
+	cutoff := h.now().Add(-staleTurnLeaseTimeout)
+	cleared, stale, clearErr := h.clearExpiredTurnLease(ctx, threadID, cutoff)
+	if clearErr != nil {
+		return clearErr
+	}
+	if !stale || cleared.TurnID != lease.TurnID {
+		return ErrActiveTurn
+	}
+	return nil
+}
+
+func recoveryInfoForTurn(path []sessiontree.Entry, turnID string) turnRecoveryInfo {
+	var info turnRecoveryInfo
+	for _, entry := range path {
+		if entry.TurnID != turnID {
+			continue
+		}
+		switch entry.Type {
+		case sessiontree.EntryRunFailure:
+			info.RunFailure = true
+			info.RunFailureError = entry.Error
+		case sessiontree.EntryTurnMarker:
+			if entry.TurnStatus == sessiontree.TurnStarted {
+				info.Started = true
+			}
+			if isTerminalTurnMarker(entry.TurnStatus) {
+				info.Terminal = true
+			}
+		}
+	}
+	return info
+}
+
+func isTerminalTurnMarker(status sessiontree.TurnMarkerStatus) bool {
+	switch status {
+	case sessiontree.TurnCompleted, sessiontree.TurnWaiting, sessiontree.TurnFailed, sessiontree.TurnAborted:
+		return true
+	default:
+		return false
+	}
+}
+
+func terminalStatusForRecoveredFailure(message string) sessiontree.TurnMarkerStatus {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	if normalized == "" ||
+		strings.Contains(normalized, strings.ToLower(context.Canceled.Error())) ||
+		strings.Contains(normalized, strings.ToLower(context.DeadlineExceeded.Error())) ||
+		strings.Contains(normalized, "interrupted") ||
+		strings.Contains(normalized, "runtime restarted") {
+		return sessiontree.TurnAborted
+	}
+	return sessiontree.TurnFailed
+}
+
+func (h *AgentHarness) finalizeInterruptedTurn(ctx context.Context, threadID, turnID string, path []sessiontree.Entry, opts interruptedTurnFinalization) error {
+	if err := h.closeInterruptedTurnToolCalls(ctx, threadID, turnID, path); err != nil {
+		return err
+	}
+	if opts.AppendFailure {
+		message := strings.TrimSpace(opts.FailureMessage)
+		if message == "" {
+			message = interruptedTurnFailureMessage
+		}
+		if _, err := sessiontree.AppendFailure(ctx, h.options.Repo, threadID, turnID, message); err != nil {
+			return err
+		}
+	}
+	status := opts.Status
+	if status == "" {
+		status = sessiontree.TurnAborted
+	}
+	metadata := cloneStringMap(opts.Metadata)
+	if len(metadata) == 0 {
+		metadata = map[string]string{"recoverable": "true"}
+	}
+	_, err := sessiontree.AppendTurnMarker(ctx, h.options.Repo, threadID, turnID, status, metadata)
+	return err
 }
 
 type interruptedPathRepair struct {

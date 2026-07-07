@@ -125,6 +125,75 @@ func TestHostEnsureThreadReturnsSummaryWithoutMessages(t *testing.T) {
 	}
 }
 
+func TestHostRunTurnRecoversInterruptedActiveLease(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "continued",
+			SystemPrompt: "test",
+		},
+		Store: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "thread", "turn-interrupted", sessiontree.TurnStarted, map[string]string{"run_id": "run-interrupted"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, store.repo, "thread", "turn-interrupted", session.Message{Role: session.User, Content: "start delegated work"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, store.repo, "thread", "turn-interrupted", session.Message{
+		Role:       session.Assistant,
+		Content:    "tool_call",
+		ToolCallID: "call-wait",
+		ToolName:   "subagents",
+		ToolArgs:   `{"action":"wait","ids":["child"]}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "thread", "turn-interrupted", sessiontree.TurnSavePoint, map[string]string{"reason": "run_result"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendFailure(ctx, store.repo, "thread", "turn-interrupted", context.Canceled.Error()); err != nil {
+		t.Fatal(err)
+	}
+	leaseRepo := store.repo.(sessiontree.TurnLeaseRepo)
+	if err := leaseRepo.AcquireTurnLease(ctx, sessiontree.TurnLease{
+		ThreadID:  "thread",
+		TurnID:    "turn-interrupted",
+		OwnerID:   "dead-owner",
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-continue", ThreadID: "thread", TurnID: "turn-continue", Input: "continue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != TurnStatusCompleted || result.Output != "continued" {
+		t.Fatalf("result = %#v", result)
+	}
+	if _, ok, err := leaseRepo.ActiveTurnLease(ctx, "thread"); err != nil || ok {
+		t.Fatalf("active lease should be released after runtime recovery, ok=%v err=%v", ok, err)
+	}
+	snapshot, err := host.ReadThread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.LatestTurnID != "turn-continue" || snapshot.Status != ThreadStatusCompleted {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+}
+
 func TestHostRunsThreadThroughModelGateway(t *testing.T) {
 	ctx := context.Background()
 	var mu sync.Mutex

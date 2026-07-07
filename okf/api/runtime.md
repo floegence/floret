@@ -255,7 +255,10 @@ terminal fact rather than as a generic failure. Successful turns keep
 host-owned pending work running until the host reports a terminal outcome
 through `SettlePendingTool`. That settlement remains authoritative for the tool
 id and updates the same projected activity item rather than adding a duplicate
-row. Downstream hosts should consume Floret projections and settlement results
+row. Runtime restart recovery also reconciles active turn leases from the same
+durable facts: a turn that already has terminal or interrupted evidence is
+closed through Floret's ledger before the next `RunTurn` is admitted. Downstream
+hosts should consume Floret projections and settlement results
 to replace their product UI for the turn instead of synthesizing final tool
 status from local audit records or live stream leftovers.
 

@@ -1,5 +1,10 @@
 # Floret OKF Update Log
 
+## 2026-07-07
+* **Update**: Documented active turn lease reconciliation as part of Floret's
+  interrupted-turn durable ledger recovery invariant, so terminal or recoverable
+  turns cannot continue to block later `RunTurn` admission.
+
 ## 2026-07-06
 * **Fix**: Aligned SQLite-backed thread forks with the runtime fork contract by
   rewriting forked turn/run metadata so reopened `ReadTurnProjection` calls

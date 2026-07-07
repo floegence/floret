@@ -2145,6 +2145,131 @@ func TestResumeInterruptedTurnClosesUnresolvedToolCallAndContinues(t *testing.T)
 	}
 }
 
+func TestResumeRecoversActiveLeaseWithPersistedRunFailure(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		repo sessiontree.Repo
+	}{
+		{name: "memory", repo: sessiontree.NewMemoryRepo()},
+		{name: "sqlite", repo: openSQLiteRepoForHarnessTest(t)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("continued"), scriptharness.Done())), tc.repo, cache.NewMemoryStore())
+			thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			appendInterruptedWaitTurn(t, ctx, tc.repo, thread.ID(), "turn-interrupted")
+			if _, err := sessiontree.AppendTurnMarker(ctx, tc.repo, thread.ID(), "turn-interrupted", sessiontree.TurnSavePoint, map[string]string{"reason": "run_result"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessiontree.AppendFailure(ctx, tc.repo, thread.ID(), "turn-interrupted", context.Canceled.Error()); err != nil {
+				t.Fatal(err)
+			}
+			leaseRepo := tc.repo.(sessiontree.TurnLeaseRepo)
+			if err := leaseRepo.AcquireTurnLease(ctx, sessiontree.TurnLease{
+				ThreadID:  thread.ID(),
+				TurnID:    "turn-interrupted",
+				OwnerID:   "dead-owner",
+				CreatedAt: time.Now(),
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			resumed, err := h.ResumeThread(ctx, thread.ID(), ResumeOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok, err := leaseRepo.ActiveTurnLease(ctx, thread.ID()); err != nil || ok {
+				t.Fatalf("active lease should be released after persisted failure recovery, ok=%v err=%v", ok, err)
+			}
+			snap, err := resumed.Journal(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := countToolEntries(snap.Entries, sessiontree.EntryToolResult, "call-wait"); got != 1 {
+				t.Fatalf("tool result count = %d in %#v", got, snap.Entries)
+			}
+			if status := toolResultStatusForCall(snap.Entries, "call-wait"); status != string(observation.ActivityStatusCanceled) {
+				t.Fatalf("call-wait status = %q, want canceled", status)
+			}
+			if got := countRunFailuresForTurn(snap.Path, "turn-interrupted"); got != 1 {
+				t.Fatalf("active path run failure count = %d, want one recovered failure: %#v", got, snap.Path)
+			}
+			if got := countTurnMarkersForTurn(snap.Path, "turn-interrupted", sessiontree.TurnAborted); got != 1 {
+				t.Fatalf("active path aborted marker count = %d, want one: %#v", got, snap.Path)
+			}
+			if err := assertProviderSafeToolHistory(snap.Context); err != nil {
+				t.Fatalf("provider history after active lease recovery is unsafe: %v\n%#v", err, snap.Context)
+			}
+			second, err := resumed.Run(ctx, "continue", RunOptions{TurnID: "turn-continue"})
+			if err != nil || second.Status != engine.Completed {
+				t.Fatalf("second = %#v err=%v", second, err)
+			}
+		})
+	}
+}
+
+func TestResumeReleasesActiveLeaseForTerminalTurn(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		repo sessiontree.Repo
+	}{
+		{name: "memory", repo: sessiontree.NewMemoryRepo()},
+		{name: "sqlite", repo: openSQLiteRepoForHarnessTest(t)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("continued"), scriptharness.Done())), tc.repo, cache.NewMemoryStore())
+			thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessiontree.AppendTurnMarker(ctx, tc.repo, thread.ID(), "turn-terminal", sessiontree.TurnStarted, map[string]string{"run_id": "run-terminal"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessiontree.AppendMessage(ctx, tc.repo, thread.ID(), "turn-terminal", session.Message{Role: session.User, Content: "interrupted"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessiontree.AppendFailure(ctx, tc.repo, thread.ID(), "turn-terminal", context.Canceled.Error()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessiontree.AppendTurnMarker(ctx, tc.repo, thread.ID(), "turn-terminal", sessiontree.TurnAborted, map[string]string{"recoverable": "true"}); err != nil {
+				t.Fatal(err)
+			}
+			leaseRepo := tc.repo.(sessiontree.TurnLeaseRepo)
+			if err := leaseRepo.AcquireTurnLease(ctx, sessiontree.TurnLease{
+				ThreadID:  thread.ID(),
+				TurnID:    "turn-terminal",
+				OwnerID:   "dead-owner",
+				CreatedAt: time.Now(),
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			resumed, err := h.ResumeThread(ctx, thread.ID(), ResumeOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok, err := leaseRepo.ActiveTurnLease(ctx, thread.ID()); err != nil || ok {
+				t.Fatalf("terminal turn lease should be released, ok=%v err=%v", ok, err)
+			}
+			snap, err := resumed.Journal(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := countTurnMarkersForTurn(snap.Entries, "turn-terminal", sessiontree.TurnAborted); got != 1 {
+				t.Fatalf("aborted marker count = %d, want no duplicate: %#v", got, snap.Entries)
+			}
+			second, err := resumed.Run(ctx, "continue", RunOptions{TurnID: "turn-continue"})
+			if err != nil || second.Status != engine.Completed {
+				t.Fatalf("second = %#v err=%v", second, err)
+			}
+		})
+	}
+}
+
 func TestResumeRepairsUnsafeInterruptedActiveBranch(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -2634,6 +2759,26 @@ func countToolEntries(entries []sessiontree.Entry, entryType sessiontree.EntryTy
 	count := 0
 	for _, entry := range entries {
 		if entry.Type == entryType && entry.Message.ToolCallID == callID {
+			count++
+		}
+	}
+	return count
+}
+
+func countRunFailuresForTurn(entries []sessiontree.Entry, turnID string) int {
+	count := 0
+	for _, entry := range entries {
+		if entry.Type == sessiontree.EntryRunFailure && entry.TurnID == turnID {
+			count++
+		}
+	}
+	return count
+}
+
+func countTurnMarkersForTurn(entries []sessiontree.Entry, turnID string, status sessiontree.TurnMarkerStatus) int {
+	count := 0
+	for _, entry := range entries {
+		if entry.Type == sessiontree.EntryTurnMarker && entry.TurnID == turnID && entry.TurnStatus == status {
 			count++
 		}
 	}
