@@ -524,6 +524,24 @@ func providerState(in *ModelState) *provider.State {
 	}
 }
 
+func agentHarnessSupplementalContext(in []TurnSupplementalContextItem) []engine.TurnSupplementalContextItem {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]engine.TurnSupplementalContextItem, 0, len(in))
+	for _, item := range in {
+		out = append(out, engine.TurnSupplementalContextItem{
+			Kind:      item.Kind,
+			Title:     item.Title,
+			Text:      item.Text,
+			Metadata:  cloneStringMap(item.Metadata),
+			Sensitive: item.Sensitive,
+			Truncated: item.Truncated,
+		})
+	}
+	return out
+}
+
 func providerUsage(in ProviderUsage) provider.Usage {
 	return provider.Usage{
 		InputTokens:       in.InputTokens,

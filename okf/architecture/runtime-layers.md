@@ -90,6 +90,14 @@ transport; Floret owns provider-visible context assembly, trimming, summary
 generation, checkpoint installation, provider continuation state, prompt-cache
 ledgers, and lifecycle events.
 
+`RunTurnRequest.SupplementalContext` is the host-facing current-turn context
+slot. AgentHarness forwards it to Engine as provider-request projection input,
+and Engine renders it into each provider request for that turn without appending
+it to the durable journal. The field is product-neutral: hosts decide which
+source facts are safe, redacted, and truncated before calling Floret, while
+Floret keeps `Input`, thread history ownership, runtime working directory,
+permissions, approvals, and opaque provider state unchanged.
+
 Active manual compaction flows through `RunTurnRequest.ManualCompactions`. The
 host owns the user-facing command or policy that creates a request; `Engine`
 owns polling at safe provider-loop points, summary generation, checkpoint

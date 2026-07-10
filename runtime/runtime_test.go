@@ -239,6 +239,168 @@ func TestHostRunsThreadThroughModelGateway(t *testing.T) {
 	}
 }
 
+func TestHostRunTurnProjectsSupplementalContextOnlyIntoCurrentProviderRequest(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	var mu sync.Mutex
+	var requests []ModelRequest
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		mu.Lock()
+		requests = append(requests, req)
+		mu.Unlock()
+		return runtimeGatewayEvents("ok " + string(req.TurnID)), nil
+	})
+	host, err := NewHost(HostOptions{
+		Config:               runtimeGatewayConfig("gateway system"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                store,
+		IDGenerator:          deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := host.RunTurn(ctx, RunTurnRequest{
+		RunID:    "run-1",
+		ThreadID: "thread",
+		TurnID:   "turn-1",
+		Input:    "what is this process",
+		SupplementalContext: []TurnSupplementalContextItem{{
+			Kind:      "process_snapshot",
+			Title:     "Codex (Service)",
+			Text:      "Selected from the process monitor.",
+			Sensitive: true,
+			Metadata: map[string]string{
+				"captured_at": "2026-07-10T10:00:00Z",
+				"cpu":         "0.0",
+				"memory":      "549 MiB",
+				"name":        "Codex (Service)",
+				"pid":         "12264",
+				"platform":    "darwin",
+				"username":    "tangjianyin",
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != TurnStatusCompleted {
+		t.Fatalf("first result = %#v", first)
+	}
+	second, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-2", ThreadID: "thread", TurnID: "turn-2", Input: "continue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Status != TurnStatusCompleted {
+		t.Fatalf("second result = %#v", second)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	firstReq, ok := findRuntimeModelRequest(requests, "thread", "turn-1", 1)
+	if !ok {
+		t.Fatalf("missing first gateway request: %#v", requests)
+	}
+	secondReq, ok := findRuntimeModelRequest(requests, "thread", "turn-2", 1)
+	if !ok {
+		t.Fatalf("missing second gateway request: %#v", requests)
+	}
+	inputIndex := -1
+	supplementalIndex := -1
+	supplementalContent := ""
+	inputCount := 0
+	for i, msg := range firstReq.Messages {
+		if msg.Role == "user" && msg.Content == "what is this process" {
+			inputIndex = i
+			inputCount++
+		}
+		if strings.Contains(msg.Content, "Host-provided supplemental context") {
+			supplementalIndex = i
+			supplementalContent = msg.Content
+			if msg.Role != "user" {
+				t.Fatalf("supplemental message role = %q, want user", msg.Role)
+			}
+		}
+	}
+	if inputCount != 1 || inputIndex < 0 {
+		t.Fatalf("user input was not preserved as a distinct message: %#v", firstReq.Messages)
+	}
+	if supplementalIndex <= inputIndex {
+		t.Fatalf("supplemental context should follow the current user input: input=%d supplemental=%d messages=%#v", inputIndex, supplementalIndex, firstReq.Messages)
+	}
+	for _, want := range []string{"process_snapshot", "Codex (Service)", "pid: 12264", "username: tangjianyin", "sensitive: true", "Selected from the process monitor."} {
+		if !strings.Contains(supplementalContent, want) {
+			t.Fatalf("supplemental context missing %q: %s", want, supplementalContent)
+		}
+	}
+	for _, msg := range secondReq.Messages {
+		if strings.Contains(msg.Content, "Host-provided supplemental context") || strings.Contains(msg.Content, "12264") {
+			t.Fatalf("supplemental context leaked into follow-up request: %#v", secondReq.Messages)
+		}
+	}
+	snapshot, err := host.ReadThread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, msg := range snapshot.Messages {
+		if strings.Contains(msg.Content, "Host-provided supplemental context") || strings.Contains(msg.Content, "12264") {
+			t.Fatalf("supplemental context leaked into durable thread snapshot: %#v", snapshot.Messages)
+		}
+	}
+}
+
+func TestHostRunTurnIgnoresEmptySupplementalContext(t *testing.T) {
+	ctx := context.Background()
+	var mu sync.Mutex
+	var requests []ModelRequest
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		mu.Lock()
+		requests = append(requests, req)
+		mu.Unlock()
+		return runtimeGatewayEvents("ok"), nil
+	})
+	host, err := NewHost(HostOptions{
+		Config:               runtimeGatewayConfig("gateway system"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		IDGenerator:          deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.RunTurn(ctx, RunTurnRequest{
+		RunID:    "run-1",
+		ThreadID: "thread",
+		TurnID:   "turn-1",
+		Input:    "hello",
+		SupplementalContext: []TurnSupplementalContextItem{
+			{},
+			{Kind: " ", Title: " ", Text: " ", Metadata: map[string]string{" ": " "}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	req, ok := findRuntimeModelRequest(requests, "thread", "turn-1", 1)
+	if !ok {
+		t.Fatalf("missing gateway request: %#v", requests)
+	}
+	for _, msg := range req.Messages {
+		if strings.Contains(msg.Content, "Host-provided supplemental context") {
+			t.Fatalf("empty supplemental context changed request messages: %#v", req.Messages)
+		}
+	}
+}
+
 func TestHostModelGatewayRequiresExplicitIdentity(t *testing.T) {
 	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
 		return runtimeGatewayEvents("ok"), nil

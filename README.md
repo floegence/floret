@@ -266,6 +266,14 @@ through the facade; Floret owns provider-visible context assembly, trimming,
 summary generation, checkpoint installation, continuation state, and lifecycle
 observations.
 
+`runtime.RunTurnRequest.SupplementalContext` lets a host attach structured
+context items that should be visible to the model for the current user turn
+only. Floret renders those items into the provider request without changing
+`Input`, durable thread history, working directory, permissions, tool approval
+state, or opaque provider continuation state. Hosts remain responsible for
+deciding what data is safe to include and for truncating or redacting product
+content before passing it to Floret.
+
 Manual compaction is requested through `runtime.RunTurnRequest.ManualCompactions`
 for an active turn or `runtime.Host.CompactThread` with
 `runtime.CompactThreadRequest` for an idle thread. `observation.ContextStatus`

@@ -1,5 +1,11 @@
 # Floret OKF Update Log
 
+## 2026-07-10
+* **Update**: Documented `RunTurnRequest.SupplementalContext` as host-provided
+  current-turn context that is rendered into provider requests without changing
+  user input, durable thread history, permissions, approvals, working directory,
+  or opaque provider state.
+
 ## 2026-07-07
 * **Update**: Documented active turn lease reconciliation as part of Floret's
   interrupted-turn durable ledger recovery invariant, so terminal or recoverable

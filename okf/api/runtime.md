@@ -32,6 +32,12 @@ continuation state, and lifecycle observations.
 * `RunTurnRequest.ManualCompactions` lets a host request manual context
   compaction for an active hosted run. Floret polls it at provider-loop safe
   points, emits compaction lifecycle events, and continues the same run.
+* `RunTurnRequest.SupplementalContext` carries host-provided current-turn
+  context items. Floret renders them into provider requests for that turn only
+  without modifying `Input`, durable thread history, working directory,
+  permission state, tool approval state, or opaque provider continuation state.
+  Hosts own source policy, redaction, and truncation before passing those items
+  to Floret.
 * `Host.CompactThread` runs a compaction-only maintenance operation for an idle
   hosted thread through `CompactThreadRequest` without creating natural
   assistant output.

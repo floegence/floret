@@ -149,11 +149,25 @@ type ForkedTurnRef struct {
 	CreatedAt         time.Time `json:"created_at,omitempty"`
 }
 
+// TurnSupplementalContextItem is host-provided context that is visible only to
+// the current model turn. It does not change the user's input text, durable
+// thread history, working directory, permissions, or provider continuation
+// state.
+type TurnSupplementalContextItem struct {
+	Kind      string
+	Title     string
+	Text      string
+	Metadata  map[string]string
+	Sensitive bool
+	Truncated bool
+}
+
 type RunTurnRequest struct {
 	RunID                 RunID
 	ThreadID              ThreadID
 	TurnID                TurnID
 	Input                 string
+	SupplementalContext   []TurnSupplementalContextItem
 	Labels                RunLabels
 	PreviousProviderState *ModelState
 	Completion            TurnCompletionPolicy
@@ -1246,6 +1260,7 @@ func (h *host) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, err
 		PreviousProviderState:    providerState(req.PreviousProviderState),
 		ManualCompactions:        projectedManualCompactionSource(req.ManualCompactions),
 		ToolSurfaceProvider:      runtimeToolSurfaceProvider(req.ToolSurfaceProvider),
+		SupplementalContext:      agentHarnessSupplementalContext(req.SupplementalContext),
 		Sink:                     activityRecorder,
 	})
 	out := turnResult(result, string(req.ThreadID), activityRecorder.Snapshot(), time.Now().UnixMilli())

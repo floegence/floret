@@ -189,6 +189,7 @@ type RunOptions struct {
 	PreviousProviderState    *provider.State
 	ManualCompactions        engine.ManualCompactionSource
 	ToolSurfaceProvider      engine.ToolSurfaceProvider
+	SupplementalContext      []engine.TurnSupplementalContextItem
 	Sink                     event.Sink
 }
 
@@ -1679,7 +1680,16 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	}
 	projection := &turnProjection{thread: t, ctx: ctx, turnID: turnID, runID: runID, downstream: downstream}
 	eng.SetSink(projection)
-	result := eng.RunTurn(ctx, engine.RunInput{RunID: runID, ThreadID: t.id, TurnID: turnID, TraceID: runID, PromptScopeID: t.id, Labels: opts.Labels, History: history})
+	result := eng.RunTurn(ctx, engine.RunInput{
+		RunID:               runID,
+		ThreadID:            t.id,
+		TurnID:              turnID,
+		TraceID:             runID,
+		PromptScopeID:       t.id,
+		Labels:              opts.Labels,
+		History:             history,
+		SupplementalContext: engine.CloneTurnSupplementalContext(opts.SupplementalContext),
+	})
 	persistCtx, cancelPersist := turnFinalizationContext(ctx)
 	defer cancelPersist()
 	projection.ctx = persistCtx

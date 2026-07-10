@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -160,6 +161,7 @@ type Options struct {
 	MaxStopHookContinuations int
 	ManualCompactions        ManualCompactionSource
 	ToolSurfaceProvider      ToolSurfaceProvider
+	SupplementalContext      []TurnSupplementalContextItem
 
 	toolDefinitions []provider.ToolDefinition
 	toolSurface     resolvedToolSurface
@@ -257,6 +259,16 @@ type RunInput struct {
 	Labels                RunLabels
 	PreviousProviderState *provider.State
 	History               []session.Message
+	SupplementalContext   []TurnSupplementalContextItem
+}
+
+type TurnSupplementalContextItem struct {
+	Kind      string
+	Title     string
+	Text      string
+	Metadata  map[string]string
+	Sensitive bool
+	Truncated bool
 }
 
 type CompactionManager interface {
@@ -498,6 +510,9 @@ func (e *Engine) RunTurn(ctx context.Context, input RunInput) Result {
 	if input.PreviousProviderState != nil {
 		opts.PreviousProviderState = provider.CloneState(input.PreviousProviderState)
 	}
+	if len(input.SupplementalContext) > 0 {
+		opts.SupplementalContext = cloneTurnSupplementalContext(input.SupplementalContext)
+	}
 	opts = normalizeOptions(opts)
 	if len(input.History) > 0 {
 		history := make([]session.Message, len(input.History))
@@ -691,7 +706,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		usage := stepOutput.Usage
 		metrics.AddUsage(usage)
 		normalizedUsage := usage.Normalized()
-		nativePressure, pressureAnchor := pressureTracker.ObserveSuccess(req, activeHistory, usage)
+		nativePressure, pressureAnchor := pressureTracker.ObserveSuccess(req, providerRequestHistoryWithSupplemental(opts, activeHistory), usage)
 		_ = e.prompt.AppendProviderResponse(ctx, cache.ProviderResponseRecord{
 			RequestID:          fmt.Sprintf("%s:req:%d", opts.RunID, step),
 			PromptScopeID:      opts.PromptScopeID,
@@ -1300,8 +1315,31 @@ func cloneOptions(o Options) Options {
 	o.ControlSpec = cloneControlSpec(o.ControlSpec)
 	o.Labels = cloneRunLabels(o.Labels)
 	o.PreviousProviderState = provider.CloneState(o.PreviousProviderState)
+	o.SupplementalContext = cloneTurnSupplementalContext(o.SupplementalContext)
 	o.toolSurface = cloneResolvedToolSurface(o.toolSurface)
 	return o
+}
+
+func CloneTurnSupplementalContext(in []TurnSupplementalContextItem) []TurnSupplementalContextItem {
+	return cloneTurnSupplementalContext(in)
+}
+
+func cloneTurnSupplementalContext(in []TurnSupplementalContextItem) []TurnSupplementalContextItem {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]TurnSupplementalContextItem, 0, len(in))
+	for _, item := range in {
+		out = append(out, TurnSupplementalContextItem{
+			Kind:      item.Kind,
+			Title:     item.Title,
+			Text:      item.Text,
+			Metadata:  cloneStringMap(item.Metadata),
+			Sensitive: item.Sensitive,
+			Truncated: item.Truncated,
+		})
+	}
+	return out
 }
 
 func cloneResolvedToolSurface(surface resolvedToolSurface) resolvedToolSurface {
@@ -1614,6 +1652,7 @@ func normalizeOptions(o Options) Options {
 	o.Labels = cloneRunLabels(o.Labels)
 	o.ControlSpec = normalizeControlSpec(o.ControlSpec, o.CompletionPolicy)
 	o.PreviousProviderState = provider.CloneState(o.PreviousProviderState)
+	o.SupplementalContext = cloneTurnSupplementalContext(o.SupplementalContext)
 	return o
 }
 
@@ -1681,6 +1720,122 @@ func stableMessageEntryID(runID string, index int, msg session.Message) string {
 	return fmt.Sprintf("%s:entry:%s", runID, cache.StableHash(raw)[:16])
 }
 
+func providerRequestHistoryWithSupplemental(opts Options, history []session.Message) []session.Message {
+	content := renderTurnSupplementalContext(opts.SupplementalContext)
+	if strings.TrimSpace(content) == "" {
+		return history
+	}
+	msg := session.Message{
+		Role:    session.User,
+		Content: content,
+		EntryID: turnSupplementalContextEntryID(opts.RunID, content),
+	}
+	insertAt := turnSupplementalContextInsertIndex(history)
+	out := make([]session.Message, 0, len(history)+1)
+	out = append(out, history[:insertAt]...)
+	out = append(out, msg)
+	out = append(out, history[insertAt:]...)
+	return out
+}
+
+func turnSupplementalContextEntryID(runID string, content string) string {
+	raw, err := cache.CanonicalJSON(map[string]any{
+		"kind":    "turn_supplemental_context",
+		"run_id":  runID,
+		"content": content,
+	})
+	if err != nil {
+		raw = runID + ":turn_supplemental_context:" + content
+	}
+	return fmt.Sprintf("%s:supplemental_context:%s", runID, cache.StableHash(raw)[:16])
+}
+
+func turnSupplementalContextInsertIndex(history []session.Message) int {
+	for i := len(history) - 1; i >= 0; i-- {
+		msg := history[i]
+		if msg.Role != session.User || msg.ToolCallID != "" || msg.ToolName != "" {
+			continue
+		}
+		if msg.Kind == session.MessageKindCompactionSummary || msg.Kind == session.MessageKindControlSignal {
+			continue
+		}
+		return i + 1
+	}
+	return len(history)
+}
+
+func renderTurnSupplementalContext(items []TurnSupplementalContextItem) string {
+	if len(items) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	count := 0
+	for _, item := range items {
+		kind := strings.TrimSpace(item.Kind)
+		title := strings.TrimSpace(item.Title)
+		text := strings.TrimSpace(item.Text)
+		metadata := normalizedSupplementalMetadata(item.Metadata)
+		if kind == "" && title == "" && text == "" && len(metadata) == 0 {
+			continue
+		}
+		if count == 0 {
+			b.WriteString("Host-provided supplemental context for the current user turn.\n")
+			b.WriteString("Use this material only while answering this turn; it is not durable conversation history.\n")
+		}
+		count++
+		fmt.Fprintf(&b, "\nItem %d:\n", count)
+		if kind != "" {
+			fmt.Fprintf(&b, "kind: %s\n", kind)
+		}
+		if title != "" {
+			fmt.Fprintf(&b, "title: %s\n", title)
+		}
+		if item.Sensitive {
+			b.WriteString("sensitive: true\n")
+		}
+		if item.Truncated {
+			b.WriteString("truncated: true\n")
+		}
+		if len(metadata) > 0 {
+			b.WriteString("metadata:\n")
+			keys := make([]string, 0, len(metadata))
+			for key := range metadata {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				fmt.Fprintf(&b, "- %s: %s\n", key, metadata[key])
+			}
+		}
+		if text != "" {
+			b.WriteString("text:\n")
+			b.WriteString(text)
+			if !strings.HasSuffix(text, "\n") {
+				b.WriteString("\n")
+			}
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func normalizedSupplementalMetadata(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		out[key] = strings.TrimSpace(value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, history []session.Message) (provider.Request, error) {
 	toolDefinitions := appendControlToolDefinitions(opts.toolDefinitions, opts.ControlSpec)
 	if err := validateConfiguredTools(toolDefinitions, opts.HostedToolDefinitions, true); err != nil {
@@ -1694,6 +1849,7 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 	if err != nil {
 		return provider.Request{}, err
 	}
+	requestHistory := providerRequestHistoryWithSupplemental(opts, history)
 	plan, messages, err := cache.BuildPlan(ctx, e.prompt, cache.BuildInput{
 		PromptScopeID:  opts.PromptScopeID,
 		RunID:          opts.RunID,
@@ -1704,7 +1860,7 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		AdapterVersion: cache.Version,
 		CacheNamespace: opts.CacheNamespace,
 		SystemPrompt:   systemPrompt,
-		History:        providerSafeHistory(assembleMessages(systemPrompt, history)[systemOffsetForPrompt(systemPrompt):], opts.ControlSpec),
+		History:        providerSafeHistory(assembleMessages(systemPrompt, requestHistory)[systemOffsetForPrompt(systemPrompt):], opts.ControlSpec),
 		Toolset:        toolset,
 		HostedTools:    convertHostedToolDefinitions(opts.HostedToolDefinitions),
 		Renderer:       rendererForProvider(e.provider),
@@ -1948,7 +2104,7 @@ func (e *Engine) buildProjectedProviderRequest(ctx context.Context, opts Options
 	req.Attempt = attempt
 	req.OverflowRetried = overflowRetried
 	req.LogicalRequestID = fmt.Sprintf("%s:logical:%d", opts.RunID, step)
-	req.ContextPressure = tracker.Project(req, history)
+	req.ContextPressure = tracker.Project(req, providerRequestHistoryWithSupplemental(opts, history))
 	req.RawPlan.ProjectedPressure = req.ContextPressure
 	req.RawPlan.RequestShape = requestShapeHashes(req)
 	return req, nil
