@@ -44,6 +44,8 @@ var (
 	ErrTurnNotFound = errors.New("floret turn not found")
 	// ErrRunNotFound reports that a durable run requested through Host was not found.
 	ErrRunNotFound = errors.New("floret run not found")
+	// ErrTurnProjectionUnavailable reports that a terminal turn result could not be projected from durable detail events.
+	ErrTurnProjectionUnavailable = errors.New("floret turn projection unavailable")
 	// ErrSubAgentNotFound reports that a parent-scoped child thread requested through Host was not found.
 	ErrSubAgentNotFound = errors.New("floret subagent not found")
 )
@@ -1267,8 +1269,8 @@ func (h *host) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, err
 	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
 	defer cancelProjection()
 	projectionErr := h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out)
-	if runErr == nil && projectionErr != nil {
-		runErr = projectionErr
+	if projectionErr != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("%w: %w", ErrTurnProjectionUnavailable, projectionErr))
 	}
 	return out, runtimeHostError(runErr)
 }

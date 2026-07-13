@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -73,6 +74,46 @@ func TestHostRunsFakeProviderThread(t *testing.T) {
 		return ev.Type == "provider_delta" && ev.ThreadID == "thread" && ev.RunID == "turn-1"
 	}) {
 		t.Fatalf("runtime events missing provider delta: %#v", rec.events)
+	}
+}
+
+func TestHostRunTurnReportsTerminalProjectionUnavailableWithoutDiscardingResult(t *testing.T) {
+	ctx := context.Background()
+	repo := &terminalProjectionFailureRepo{MemoryRepo: sessiontree.NewMemoryRepo()}
+	store := NewMemoryStore()
+	store.repo = repo
+	recorder := &terminalProjectionFailureRecorder{repo: repo}
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "configured",
+			SystemPrompt: "test",
+		},
+		Store:       store,
+		Sink:        recorder,
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	if !errors.Is(err, ErrTurnProjectionUnavailable) {
+		t.Fatalf("RunTurn err = %v, want ErrTurnProjectionUnavailable", err)
+	}
+	if result.Status != TurnStatusCompleted || result.Output != "configured" {
+		t.Fatalf("result terminal facts = %#v", result)
+	}
+	if result.ID != "turn-1" || result.RunID != "run-1" || result.Metrics.LLMRequests != 1 {
+		t.Fatalf("result execution facts = %#v", result)
+	}
+	if result.Projection.ThreadID != "" || len(result.Projection.Segments) != 0 {
+		t.Fatalf("projection = %#v, want unavailable zero projection", result.Projection)
 	}
 }
 
@@ -4261,10 +4302,32 @@ func (r *runtimeEventRecorder) snapshot() []Event {
 }
 
 func deterministicIDs() func(string) string {
-	var seq int
+	var seq atomic.Int64
 	return func(prefix string) string {
-		seq++
-		return fmt.Sprintf("%s-deterministic-%d", prefix, seq)
+		return fmt.Sprintf("%s-deterministic-%d", prefix, seq.Add(1))
+	}
+}
+
+type terminalProjectionFailureRepo struct {
+	*sessiontree.MemoryRepo
+	failPath     atomic.Bool
+	postRunPaths atomic.Int64
+}
+
+func (r *terminalProjectionFailureRepo) Path(ctx context.Context, threadID, leafID string) ([]sessiontree.Entry, error) {
+	if r.failPath.Load() && r.postRunPaths.Add(1) > 1 {
+		return nil, errors.New("injected terminal projection read failure")
+	}
+	return r.MemoryRepo.Path(ctx, threadID, leafID)
+}
+
+type terminalProjectionFailureRecorder struct {
+	repo *terminalProjectionFailureRepo
+}
+
+func (r *terminalProjectionFailureRecorder) EmitEvent(ev Event) {
+	if ev.Type == "run_end" {
+		r.repo.failPath.Store(true)
 	}
 }
 
