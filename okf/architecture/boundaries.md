@@ -46,7 +46,9 @@ core to make one downstream integration easier.
 Hosts may choose when product actions stop or delete work, but they should
 express those choices through Floret runtime APIs. Stop-style product actions
 close unfinished Floret subagents and keep history; delete-style product actions
-delete Floret-owned thread trees through `runtime.Host.DeleteThread`.
+delete Floret-owned thread trees through `runtime.Host.DeleteThread`. Floret
+owns the atomic engine-store deletion of the resolved tree; the host remains
+responsible for deleting or retaining its separate product records.
 
 # Key Source Files
 

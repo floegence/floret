@@ -17,6 +17,10 @@ provider execution.
 `runtime.Host` is the public durable conversation facade. It starts threads,
 runs turns, retries, completes or settles pending tool work, manages durable
 child threads, deletes thread data, and returns host-safe snapshots.
+Terminal execution facts and terminal display projection availability are
+separate results. If durable detail cannot be read after a turn terminates,
+`RunTurn` preserves the engine result and wraps the detail failure with
+`ErrTurnProjectionUnavailable` for host recovery.
 `runtime.NewThreadMaintenanceHost` is the provider-free variant for maintenance
 processes that share a Floret store but do not run provider turns. It exposes
 thread summary recovery, turn projection read-back, pending tool settlement,
@@ -24,6 +28,11 @@ parent child-thread closing, and thread-tree deletion without accepting
 provider, model, fake response, gateway, tools, or host UI configuration. Its
 store option is required because maintenance paths must target an existing
 Floret store deliberately.
+Runtime resolves a target thread plus its descendants before submitting one
+tree delete request to storage. The SQLite implementation deletes thread rows,
+journal entries, active leases, metadata, artifacts, prompt scopes, and provider
+ledgers in one immediate transaction; the public schema and `DeleteThread`
+signature remain stable.
 
 Pending tool completion and pending tool settlement are intentionally separate.
 `CompletePendingTool` creates a provider-visible follow-up turn when the model
@@ -68,6 +77,10 @@ the next turn.
 `Engine` is the prompt-first single-run executor. It owns provider loop control,
 tool invocation, compaction decisions, prompt-cache requests, metrics, and event
 emission.
+It checks cumulative `MaxInputTokens` after each provider usage merge before the
+independent cumulative `MaxTotalTokens` limit. Per-request output limits remain
+part of provider request/context policy and are not treated as run-level input
+budget.
 Parallel-safe tool batches may emit each tool result as soon as that individual
 tool finishes, so hosts can observe a pending tool result without waiting for a
 slower sibling in the same provider tool-call batch. Durable harness save points

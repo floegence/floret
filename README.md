@@ -197,6 +197,9 @@ func main() {
 		ThreadID: thread.ID,
 		TurnID:   "turn-1",
 		Input:    "Say hello in one short sentence.",
+		Limits: runtime.TurnLimits{
+			MaxInputTokens: 100_000,
+		},
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -204,6 +207,19 @@ func main() {
 	fmt.Println(result.Output)
 }
 ```
+
+`TurnResult` and the returned error are independent parts of the host contract.
+If a turn reaches a terminal engine state but Floret cannot read the durable
+detail needed for its final display projection, `RunTurn` preserves the terminal
+status, output, metrics, provider state, and control signal while returning an
+error that matches `runtime.ErrTurnProjectionUnavailable`. Hosts should inspect
+both values and may retry `ReadTurnProjection` with the explicit thread, turn,
+and run identities.
+
+`TurnLimits.MaxInputTokens` caps cumulative provider input usage across all
+model requests in one run. `MaxTotalTokens` remains the cumulative input plus
+output limit. Provider/context `MaxOutputTokens` remains a per-request output
+bound and is not converted into either cumulative limit.
 
 Use `runtime.OpenSQLiteStore(path)` when the host wants Floret-managed durable
 runtime storage. Treat `runtime.Store` as an opaque handle; do not reach into its
@@ -227,6 +243,11 @@ process restart, `ThreadMaintenanceHost.ListSubAgents` is the canonical public
 source for a parent thread's child-thread list; downstream UIs should use it
 instead of reading Floret storage tables or reconstructing child identity from
 transcript display rows.
+
+`DeleteThread` resolves the target and all Floret-managed descendants before it
+issues one store deletion. The SQLite store removes journals, active leases,
+metadata, artifacts, prompt scopes, and provider ledgers in one immediate
+transaction, so any deletion failure rolls back the complete tree.
 
 ## 🌿 Parent-managed child threads
 
@@ -494,6 +515,11 @@ assistant text, activity timelines, and control signals; host applications own
 only the final UI block mapping. Do not call `observation.BuildActivityTimeline`
 in host applications to build the main thread activity surface.
 
+When a host changes product-neutral activity items while reconciling a timeline,
+use `observation.RebuildActivitySummary` to recompute counts, approval totals,
+status, severity, and attention reasons. It preserves the existing duration and
+settled run-level error or canceled status when no active item remains.
+
 Use `ReadTurnProjection` when a host needs to reload the current display
 projection for a known thread turn from durable Floret detail. The request
 requires `ThreadID`, `TurnID`, and the concrete `RunID`; Floret does not infer
@@ -551,6 +577,11 @@ when Floret itself rejects or recovers a tool call before the host handler can
 shape a result. The host application owns the final presentation: labels,
 localized copy, task-specific fields, controls, diagnostics policy, and any
 detail lookup that belongs to product storage or product routing.
+
+`observation.RebuildActivitySummary` is the public reducer for a timeline whose
+items have been updated by a host. It shares Floret's internal summary rules, so
+hosts do not need to duplicate status precedence, severity ranking, approval
+counts, or attention-reason deduplication.
 
 Compaction emits both lifecycle and diagnostic observations. Lifecycle events
 (`runtime.Event.Compaction`) describe one user-visible operation as start,

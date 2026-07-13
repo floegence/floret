@@ -16,6 +16,7 @@ summaries without parsing assistant text or depending on implementation types.
 # Main Entry Points
 
 * `BuildActivityTimeline` creates a stable activity summary.
+* `RebuildActivitySummary` recomputes a timeline summary from its current items.
 * `ContextStatusesFromObservations` combines projected request, provider usage,
   and event-derived context status.
 * `CompactionEventsFromEvents` extracts compaction lifecycle facts.
@@ -59,6 +60,14 @@ settlement.
 Terminal tool-result settlements remove running-only pending metadata, payload
 fields, and chips so downstream hosts do not carry stale active state into
 terminal UI.
+
+`RebuildActivitySummary` is the public item reducer for hosts that update or
+merge product-neutral `ActivityItem` values. It recomputes item counts, approval
+count, status, maximum severity, attention reasons, and `NeedsAttention` using
+the same aggregation logic as Floret timeline construction. It preserves the
+existing `DurationMS`. When no item remains pending, running, or waiting, an
+existing run-level `error` or `canceled` summary remains terminal so item repair
+does not erase the run conclusion.
 
 `ActivityPresentation.Payload` is host-supplied public display data attached to
 the product-neutral renderer and lifecycle fact. Floret validates that payload

@@ -26,6 +26,9 @@ continuation state, and lifecycle observations.
 * `Host.EnsureThread` creates or recovers a hosted thread and returns
   transcript-free `ThreadSummary` lifecycle metadata.
 * `Host.RunTurn` executes one hosted user-facing turn.
+* `RunTurnRequest.Limits.MaxInputTokens` caps cumulative provider input tokens
+  across every model request in one run. `MaxTotalTokens` independently caps
+  cumulative total tokens; provider/context output limits remain per request.
 * `RunTurnRequest.RunID`, `ThreadID`, and `TurnID` are required. `RunID`
   identifies the concrete engine/provider execution and must be supplied
   explicitly rather than inferred from the turn identity.
@@ -84,6 +87,9 @@ continuation state, and lifecycle observations.
 * `ErrThreadNotFound`, `ErrTurnNotFound`, `ErrRunNotFound`, and
   `ErrSubAgentNotFound` are public sentinel errors for `errors.Is` checks on
   Host facade not-found responses.
+* `ErrTurnProjectionUnavailable` reports that a terminal turn result exists but
+  its final durable display projection could not be constructed. Callers must
+  still inspect the returned `TurnResult` terminal facts.
 * `ModelGateway` lets a host supply model transport through
   `HostOptions.ModelGateway` while Floret owns loop control, tool dispatch,
   context lifecycle, and ledgers.
@@ -193,6 +199,11 @@ turn storage identity. A missing thread is reported with `ErrThreadNotFound`; a
 known thread with no matching turn detail is reported with `ErrTurnNotFound`;
 and a turn whose durable detail does not record the requested run is reported
 with `ErrRunNotFound`.
+If `RunTurn` reaches terminal engine state but final detail reading or projection
+attachment fails, it returns the terminal `TurnResult` together with an error
+wrapping `ErrTurnProjectionUnavailable`. Status, metrics, provider state, and
+control signal remain engine facts; projection availability is a separate host
+read concern.
 `ForkThread` is the public runtime contract for host-visible conversation forks.
 It copies the Floret-owned durable thread path into a new thread, rewrites
 destination `TurnID` and `RunID` execution identities, and returns the mapping
@@ -283,8 +294,12 @@ fact.
 
 Deleting a thread is a data lifecycle operation. `DeleteThread` deletes the
 target thread and Floret-managed descendant child threads, plus their prompt
-cache records and thread artifacts. Hosts should use this public API instead of
-querying or mutating Floret storage tables directly.
+cache records and thread artifacts. Runtime resolves the complete tree before
+issuing one storage delete operation. SQLite applies threads, entries, active
+leases, metadata, artifacts, prompt segments, toolsets, provider requests, and
+provider responses in one immediate transaction, so a failure rolls back the
+whole tree without changing the public store schema. Hosts should use this
+public API instead of querying or mutating Floret storage tables directly.
 
 `NewThreadMaintenanceHost` is the provider-free constructor for maintenance
 processes that share a Floret `Store` but do not need provider configuration.
@@ -308,6 +323,11 @@ Host facade not-found responses should be handled with `errors.Is` against
 `runtime.ErrRunNotFound`, or
 `runtime.ErrSubAgentNotFound`. Hosts should not parse error strings or import
 Floret internal package sentinels.
+
+Terminal projection failures should be handled with `errors.Is(err,
+runtime.ErrTurnProjectionUnavailable)`. This sentinel does not classify a
+product UI state or imply that the engine run failed; hosts choose their own
+retry and presentation policy while preserving the returned terminal facts.
 
 `StreamObservation` is for host rendering and diagnostics. It is not raw
 provider wire data and must not carry prompt text, tool arguments, tool results,

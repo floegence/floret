@@ -1,5 +1,18 @@
 # Floret OKF Update Log
 
+## 2026-07-13
+* **Fix**: Documented terminal projection failures as a separate recoverable
+  host-read contract that preserves terminal engine facts and is identifiable
+  through `ErrTurnProjectionUnavailable`.
+* **Update**: Documented cumulative run-level `MaxInputTokens` independently
+  from cumulative total-token and per-request output limits.
+* **Fix**: Documented one-operation thread-tree deletion and SQLite transaction
+  rollback across journals, leases, metadata, artifacts, prompt scopes, and
+  provider ledgers.
+* **Update**: Documented `RebuildActivitySummary` as the shared public reducer
+  for item-derived counts, status, severity, approval, attention, duration, and
+  settled run-level terminal preservation.
+
 ## 2026-07-10
 * **Update**: Documented `RunTurnRequest.SupplementalContext` as host-provided
   current-turn context that is rendered into provider requests without changing
