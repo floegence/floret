@@ -150,6 +150,7 @@ type Options struct {
 	NoProgressLimit          int
 	DuplicateToolLimit       int
 	WallTime                 time.Duration
+	MaxInputTokens           int64
 	MaxTotalTokens           int64
 	MaxCostUSD               float64
 	MaxToolCalls             int
@@ -3625,11 +3626,16 @@ func (e *Engine) emit(opts Options, ev event.Event) {
 func (e *Engine) checkBudget(opts Options, metrics RunMetrics, step int) error {
 	var err error
 	message := ""
+	usage := metrics.Usage.Normalized()
 	switch {
-	case opts.MaxTotalTokens > 0 && metrics.Usage.Normalized().TotalTokens > opts.MaxTotalTokens:
+	case opts.MaxInputTokens > 0 && usage.InputTokens > opts.MaxInputTokens:
+		err = fmt.Errorf("input token budget exceeded")
+		message = fmt.Sprintf("input tokens %d exceeded limit %d", usage.InputTokens, opts.MaxInputTokens)
+		e.emit(opts, event.Event{Type: event.BudgetExceeded, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: message, Metrics: BudgetMetrics{Type: "input_tokens", Used: float64(usage.InputTokens), Limit: float64(opts.MaxInputTokens), Run: metrics}})
+	case opts.MaxTotalTokens > 0 && usage.TotalTokens > opts.MaxTotalTokens:
 		err = fmt.Errorf("token budget exceeded")
-		message = fmt.Sprintf("total tokens %d exceeded limit %d", metrics.Usage.Normalized().TotalTokens, opts.MaxTotalTokens)
-		e.emit(opts, event.Event{Type: event.BudgetExceeded, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: message, Metrics: BudgetMetrics{Type: "tokens", Used: float64(metrics.Usage.Normalized().TotalTokens), Limit: float64(opts.MaxTotalTokens), Run: metrics}})
+		message = fmt.Sprintf("total tokens %d exceeded limit %d", usage.TotalTokens, opts.MaxTotalTokens)
+		e.emit(opts, event.Event{Type: event.BudgetExceeded, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: message, Metrics: BudgetMetrics{Type: "tokens", Used: float64(usage.TotalTokens), Limit: float64(opts.MaxTotalTokens), Run: metrics}})
 	case opts.MaxCostUSD > 0 && metrics.Usage.CostUSD > opts.MaxCostUSD:
 		err = fmt.Errorf("cost budget exceeded")
 		message = fmt.Sprintf("cost %.6f exceeded limit %.6f", metrics.Usage.CostUSD, opts.MaxCostUSD)

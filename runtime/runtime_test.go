@@ -280,6 +280,45 @@ func TestHostRunsThreadThroughModelGateway(t *testing.T) {
 	}
 }
 
+func TestHostRunTurnEnforcesCumulativeInputTokenLimit(t *testing.T) {
+	ctx := context.Background()
+	gateway := runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+		events := make(chan ModelEvent, 3)
+		events <- ModelEvent{Type: ModelEventUsage, Usage: ProviderUsage{InputTokens: 101, OutputTokens: 500, TotalTokens: 601, Available: true}}
+		events <- ModelEvent{Type: ModelEventDelta, Text: "over budget"}
+		events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+		close(events)
+		return events, nil
+	})
+	host, err := NewHost(HostOptions{
+		Config:               runtimeGatewayConfig("gateway system"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		IDGenerator:          deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := host.RunTurn(ctx, RunTurnRequest{
+		RunID:    "run-1",
+		ThreadID: "thread",
+		TurnID:   "turn-1",
+		Input:    "hello",
+		Limits:   TurnLimits{MaxInputTokens: 100},
+	})
+	if err == nil || !strings.Contains(err.Error(), "input token budget exceeded") {
+		t.Fatalf("RunTurn err = %v, want input token budget exceeded", err)
+	}
+	if result.Status != TurnStatusFailed || result.Metrics.ProviderUsage.InputTokens != 101 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestHostRunTurnProjectsSupplementalContextOnlyIntoCurrentProviderRequest(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()

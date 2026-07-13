@@ -2963,6 +2963,56 @@ func TestRunAggregatesUsageAcrossMultipleSteps(t *testing.T) {
 }
 
 func TestRunStopsOnTokenCostAndToolBudgets(t *testing.T) {
+	t.Run("input budget exact limit ignores output volume", func(t *testing.T) {
+		p := harness.NewScriptedProvider(harness.Step(harness.Usage(provider.Usage{InputTokens: 100, OutputTokens: 200}), harness.Text("ok"), harness.Done()))
+		e := newTestEngine(p, &event.Recorder{})
+		e.Options.MaxInputTokens = 100
+		got := e.Run(context.Background(), "work")
+		if got.Status != engine.Completed || got.Err != nil {
+			t.Fatalf("result = %#v", got)
+		}
+	})
+	t.Run("input budget takes precedence over total budget", func(t *testing.T) {
+		rec := &event.Recorder{}
+		p := harness.NewScriptedProvider(harness.Step(harness.Usage(provider.Usage{InputTokens: 101}), harness.Text("ok"), harness.Done()))
+		e := newTestEngine(p, rec)
+		e.Options.MaxInputTokens = 100
+		e.Options.MaxTotalTokens = 100
+		got := e.Run(context.Background(), "work")
+		if got.Status != engine.Failed || got.Err == nil || got.Err.Error() != "input token budget exceeded" {
+			t.Fatalf("result = %#v", got)
+		}
+		for _, ev := range rec.Snapshot() {
+			if ev.Type != event.BudgetExceeded {
+				continue
+			}
+			budget, ok := ev.Metrics.(engine.BudgetMetrics)
+			if !ok || budget.Type != "input_tokens" || budget.Used != 101 || budget.Limit != 100 {
+				t.Fatalf("budget payload = %#v", ev.Metrics)
+			}
+			return
+		}
+		t.Fatal("input token budget event missing")
+	})
+	t.Run("input budget accumulates across provider steps", func(t *testing.T) {
+		p := harness.NewScriptedProvider(
+			harness.Step(
+				harness.Usage(provider.Usage{InputTokens: 60, OutputTokens: 1}),
+				harness.Tool("missing-1", "missing", "{}"),
+				harness.DoneReason("tool_calls"),
+			),
+			harness.Step(harness.Usage(provider.Usage{InputTokens: 41, OutputTokens: 1}), harness.Text("ok"), harness.Done()),
+		)
+		e := newTestEngine(p, &event.Recorder{})
+		e.Options.MaxInputTokens = 100
+		got := e.Run(context.Background(), "work")
+		if got.Status != engine.Failed || got.Err == nil || got.Err.Error() != "input token budget exceeded" {
+			t.Fatalf("result = %#v", got)
+		}
+		if got.Metrics.Usage.InputTokens != 101 || got.Metrics.LLMRequests != 2 {
+			t.Fatalf("metrics = %#v", got.Metrics)
+		}
+	})
 	t.Run("token budget", func(t *testing.T) {
 		rec := &event.Recorder{}
 		p := harness.NewScriptedProvider(harness.Step(harness.Usage(provider.Usage{InputTokens: 101}), harness.Text("ok"), harness.Done()))

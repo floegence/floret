@@ -218,6 +218,7 @@ const (
 
 // TurnLimits contains per-run budget and continuation caps.
 type TurnLimits struct {
+	MaxInputTokens           int64
 	MaxTotalTokens           int64
 	MaxCostUSD               float64
 	MaxToolCalls             int

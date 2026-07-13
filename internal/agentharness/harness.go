@@ -121,6 +121,7 @@ type LoopLimits struct {
 	NoProgressLimit          int
 	DuplicateToolLimit       int
 	WallTime                 time.Duration
+	MaxInputTokens           int64
 	MaxTotalTokens           int64
 	MaxCostUSD               float64
 	MaxToolCalls             int
@@ -181,6 +182,7 @@ type RunOptions struct {
 	CompletionPolicy         engine.CompletionPolicy
 	ControlSpec              engine.ControlSpec
 	Reasoning                provider.ReasoningSelection
+	MaxInputTokens           int64
 	MaxTotalTokens           int64
 	MaxCostUSD               float64
 	MaxToolCalls             int
@@ -198,6 +200,7 @@ type CompactOptions struct {
 	Source                 string
 	Labels                 engine.RunLabels
 	Reasoning              provider.ReasoningSelection
+	MaxInputTokens         int64
 	MaxTotalTokens         int64
 	MaxCostUSD             float64
 	MaxToolCalls           int
@@ -1928,6 +1931,9 @@ func (h *AgentHarness) engineOptions() engine.Options {
 	if limits.WallTime > 0 {
 		engineOptions.WallTime = limits.WallTime
 	}
+	if limits.MaxInputTokens > 0 {
+		engineOptions.MaxInputTokens = limits.MaxInputTokens
+	}
 	if limits.MaxTotalTokens > 0 {
 		engineOptions.MaxTotalTokens = limits.MaxTotalTokens
 	}
@@ -1962,6 +1968,9 @@ func applyRunOptions(dst *engine.Options, opts RunOptions) {
 	if !opts.Reasoning.IsZero() {
 		dst.Reasoning = opts.Reasoning
 	}
+	if opts.MaxInputTokens > 0 {
+		dst.MaxInputTokens = opts.MaxInputTokens
+	}
 	if opts.MaxTotalTokens > 0 {
 		dst.MaxTotalTokens = opts.MaxTotalTokens
 	}
@@ -1994,6 +2003,9 @@ func applyCompactOptions(dst *engine.Options, opts CompactOptions) {
 	}
 	if !opts.Reasoning.IsZero() {
 		dst.Reasoning = opts.Reasoning
+	}
+	if opts.MaxInputTokens > 0 {
+		dst.MaxInputTokens = opts.MaxInputTokens
 	}
 	if opts.MaxTotalTokens > 0 {
 		dst.MaxTotalTokens = opts.MaxTotalTokens
