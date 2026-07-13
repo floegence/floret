@@ -516,7 +516,7 @@ func TestPromptCacheIdentityUsesPromptScope(t *testing.T) {
 	}
 
 	sqliteText := readTextFile(t, filepath.Join("internal", "storage", "sqlite", "sqlitestore.go"))
-	for _, want := range []string{"prompt_scope_id TEXT NOT NULL", "DeletePromptScopes", "DeleteThreadData"} {
+	for _, want := range []string{"prompt_scope_id TEXT NOT NULL", "DeletePromptScopes", "DeleteThreadTreeData"} {
 		if !strings.Contains(sqliteText, want) {
 			t.Fatalf("sqlite storage contract missing %q", want)
 		}

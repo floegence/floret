@@ -428,6 +428,7 @@ func (r *MemoryRepo) DeleteThread(_ context.Context, threadID string) error {
 	}
 	delete(r.threads, threadID)
 	delete(r.entries, threadID)
+	delete(r.leases, threadID)
 	return nil
 }
 

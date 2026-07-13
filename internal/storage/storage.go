@@ -27,8 +27,9 @@ type MetadataStore interface {
 	DeleteMetadata(context.Context, string, string) error
 }
 
-type DeleteThreadDataRequest struct {
-	ThreadID       string
+type DeleteThreadTreeDataRequest struct {
+	RootThreadID   string
+	ThreadIDs      []string
 	PromptScopeIDs []string
 }
 
@@ -36,6 +37,6 @@ type Store interface {
 	sessiontree.Repo
 	cache.Store
 	MetadataStore
-	DeleteThreadData(context.Context, DeleteThreadDataRequest) error
+	DeleteThreadTreeData(context.Context, DeleteThreadTreeDataRequest) error
 	Close() error
 }

@@ -873,7 +873,7 @@ type Store struct {
 	repo       sessiontree.Repo
 	prompt     cache.Store
 	artifacts  artifact.Store
-	deleteData func(context.Context, string) error
+	deleteData func(context.Context, storage.DeleteThreadTreeDataRequest) error
 	close      func() error
 }
 
@@ -885,14 +885,22 @@ func NewMemoryStore() *Store {
 		repo:      repo,
 		prompt:    prompt,
 		artifacts: artifacts,
-		deleteData: func(ctx context.Context, threadID string) error {
-			if err := repo.DeleteThread(ctx, threadID); err != nil {
+		deleteData: func(ctx context.Context, req storage.DeleteThreadTreeDataRequest) error {
+			threadIDs := cleanRuntimeIDs(append([]string{req.RootThreadID}, req.ThreadIDs...))
+			for i := len(threadIDs) - 1; i >= 0; i-- {
+				if err := repo.DeleteThread(ctx, threadIDs[i]); err != nil {
+					return err
+				}
+			}
+			if err := prompt.DeletePromptScopes(ctx, req.PromptScopeIDs...); err != nil {
 				return err
 			}
-			if err := prompt.DeletePromptScopes(ctx, threadID); err != nil {
-				return err
+			for _, threadID := range threadIDs {
+				if err := artifacts.DeleteThreadArtifacts(ctx, threadID); err != nil {
+					return err
+				}
 			}
-			return artifacts.DeleteThreadArtifacts(ctx, threadID)
+			return nil
 		},
 	}
 }
@@ -906,8 +914,8 @@ func OpenSQLiteStore(path string) (*Store, error) {
 		repo:      sqliteStore,
 		prompt:    sqliteStore,
 		artifacts: sqliteStore,
-		deleteData: func(ctx context.Context, threadID string) error {
-			return sqliteStore.DeleteThreadData(ctx, storage.DeleteThreadDataRequest{ThreadID: threadID, PromptScopeIDs: []string{threadID}})
+		deleteData: func(ctx context.Context, req storage.DeleteThreadTreeDataRequest) error {
+			return sqliteStore.DeleteThreadTreeData(ctx, req)
 		},
 		close: sqliteStore.Close,
 	}, nil
@@ -938,12 +946,28 @@ func (s *Store) deleteThreadData(ctx context.Context, threadID string) error {
 	if err != nil {
 		return err
 	}
-	for i := len(threadIDs) - 1; i >= 0; i-- {
-		if err := s.deleteData(ctx, threadIDs[i]); err != nil {
-			return err
+	return s.deleteData(ctx, storage.DeleteThreadTreeDataRequest{
+		RootThreadID:   threadID,
+		ThreadIDs:      threadIDs,
+		PromptScopeIDs: append([]string(nil), threadIDs...),
+	})
+}
+
+func cleanRuntimeIDs(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
 		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
 	}
-	return nil
+	return out
 }
 
 func (s *Store) threadTreeIDs(ctx context.Context, threadID string) ([]string, error) {

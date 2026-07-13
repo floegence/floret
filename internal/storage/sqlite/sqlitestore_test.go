@@ -888,7 +888,7 @@ func TestSQLiteStoreForkRewritesCompactionEntryReferences(t *testing.T) {
 	}
 }
 
-func TestSQLiteStorePromptMetadataDeleteThreadDataAndSchemaGuard(t *testing.T) {
+func TestSQLiteStorePromptMetadataDeleteThreadTreeDataAndSchemaGuard(t *testing.T) {
 	ctx := context.Background()
 	store, dbPath := openSQLiteStoreForTest(t)
 	var mode string
@@ -1005,7 +1005,7 @@ func TestSQLiteStorePromptMetadataDeleteThreadDataAndSchemaGuard(t *testing.T) {
 	if text, ok, err := store.artifactText(ctx, artifactRef.ID); err != nil || !ok || text != "full durable tool output" {
 		t.Fatalf("reopened artifact text=%q ok=%v err=%v", text, ok, err)
 	}
-	if err := store.DeleteThreadData(ctx, storage.DeleteThreadDataRequest{ThreadID: "thread", PromptScopeIDs: []string{"thread"}}); err != nil {
+	if err := store.DeleteThreadTreeData(ctx, storage.DeleteThreadTreeDataRequest{RootThreadID: "thread", ThreadIDs: []string{"thread"}, PromptScopeIDs: []string{"thread"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Thread(ctx, "thread"); !errors.Is(err, sessiontree.ErrThreadNotFound) {
@@ -1026,7 +1026,7 @@ func TestSQLiteStorePromptMetadataDeleteThreadDataAndSchemaGuard(t *testing.T) {
 	if text, ok, err := store.artifactText(ctx, artifactRef.ID); err != nil || ok || text != "" {
 		t.Fatalf("artifact after delete text=%q ok=%v err=%v", text, ok, err)
 	}
-	if err := store.DeleteThreadData(ctx, storage.DeleteThreadDataRequest{ThreadID: "thread"}); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+	if err := store.DeleteThreadTreeData(ctx, storage.DeleteThreadTreeDataRequest{RootThreadID: "thread", ThreadIDs: []string{"thread"}}); !errors.Is(err, sessiontree.ErrThreadNotFound) {
 		t.Fatalf("second delete err = %v, want ErrThreadNotFound", err)
 	}
 	if err := store.putMetaValue(ctx, "schema_version", "999"); err != nil {
@@ -1037,6 +1037,64 @@ func TestSQLiteStorePromptMetadataDeleteThreadDataAndSchemaGuard(t *testing.T) {
 	}
 	if _, err := Open(dbPath); err == nil || !strings.Contains(err.Error(), "unsupported sqlite store schema version") {
 		t.Fatalf("unsupported schema open err = %v", err)
+	}
+}
+
+func TestSQLiteStoreDeleteThreadTreeDataDeletesNestedTree(t *testing.T) {
+	ctx := context.Background()
+	store, _ := openSQLiteStoreForTest(t)
+	seedSQLiteThreadTreeData(t, ctx, store, "parent", "")
+	seedSQLiteThreadTreeData(t, ctx, store, "child", "parent")
+	seedSQLiteThreadTreeData(t, ctx, store, "grandchild", "child")
+	seedSQLiteThreadTreeData(t, ctx, store, "survivor", "")
+
+	err := store.DeleteThreadTreeData(ctx, storage.DeleteThreadTreeDataRequest{
+		RootThreadID:   "parent",
+		ThreadIDs:      []string{"parent", "child", "grandchild"},
+		PromptScopeIDs: []string{"parent", "child", "grandchild"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, threadID := range []string{"parent", "child", "grandchild"} {
+		if _, err := store.Thread(ctx, threadID); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+			t.Fatalf("Thread(%q) err = %v, want ErrThreadNotFound", threadID, err)
+		}
+		assertSQLiteThreadTreeDataCount(t, ctx, store, threadID, 0)
+	}
+	if _, err := store.Thread(ctx, "survivor"); err != nil {
+		t.Fatalf("survivor thread err = %v", err)
+	}
+	assertSQLiteThreadTreeDataCount(t, ctx, store, "survivor", 1)
+}
+
+func TestSQLiteStoreDeleteThreadTreeDataRollsBackOnDeleteFailure(t *testing.T) {
+	ctx := context.Background()
+	store, _ := openSQLiteStoreForTest(t)
+	seedSQLiteThreadTreeData(t, ctx, store, "parent", "")
+	seedSQLiteThreadTreeData(t, ctx, store, "child", "parent")
+	seedSQLiteThreadTreeData(t, ctx, store, "grandchild", "child")
+	if _, err := store.db.ExecContext(ctx, `CREATE TRIGGER fail_child_thread_delete
+		BEFORE DELETE ON threads WHEN OLD.id = 'child'
+		BEGIN
+			SELECT RAISE(ABORT, 'injected thread tree delete failure');
+		END`); err != nil {
+		t.Fatal(err)
+	}
+
+	err := store.DeleteThreadTreeData(ctx, storage.DeleteThreadTreeDataRequest{
+		RootThreadID:   "parent",
+		ThreadIDs:      []string{"parent", "child", "grandchild"},
+		PromptScopeIDs: []string{"parent", "child", "grandchild"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected thread tree delete failure") {
+		t.Fatalf("DeleteThreadTreeData err = %v, want injected failure", err)
+	}
+	for _, threadID := range []string{"parent", "child", "grandchild"} {
+		if _, err := store.Thread(ctx, threadID); err != nil {
+			t.Fatalf("Thread(%q) after rollback err = %v", threadID, err)
+		}
+		assertSQLiteThreadTreeDataCount(t, ctx, store, threadID, 1)
 	}
 }
 
@@ -1201,6 +1259,64 @@ func openSQLiteStoreForTest(t *testing.T) (*Store, string) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store, path
+}
+
+func seedSQLiteThreadTreeData(t *testing.T, ctx context.Context, store *Store, threadID, parentThreadID string) {
+	t.Helper()
+	now := time.Date(2026, 7, 13, 10, 0, 0, 0, time.UTC)
+	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: threadID, ParentThreadID: parentThreadID, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, store, threadID, "turn-1", session.Message{Role: session.User, Content: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AcquireTurnLease(ctx, sessiontree.TurnLease{ThreadID: threadID, TurnID: "turn-1", OwnerID: "owner", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutMetadata(ctx, storage.MetadataRecord{Namespace: "thread", ID: threadID, CreatedAt: now, UpdatedAt: now, Data: []byte(`{"title":"thread"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendSegment(ctx, cache.Segment{ID: "segment-" + threadID, PromptScopeID: threadID, ThreadID: threadID, Provider: "openai", Model: "model", Sequence: 1, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendToolset(ctx, cache.ToolsetSnapshot{ID: "toolset-" + threadID, PromptScopeID: threadID, ThreadID: threadID, Provider: "openai", Model: "model", Epoch: 1, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendProviderRequest(ctx, cache.ProviderRequestRecord{ID: "request-" + threadID, PromptScopeID: threadID, RunID: "run-1", ThreadID: threadID, TurnID: "turn-1", Step: 1, Provider: "openai", Model: "model", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendProviderResponse(ctx, cache.ProviderResponseRecord{RequestID: "request-" + threadID, PromptScopeID: threadID, RunID: "run-1", ThreadID: threadID, TurnID: "turn-1", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutToolOutput(ctx, artifact.ToolOutputArtifact{ThreadID: threadID, TurnID: "turn-1", RunID: "run-1", PromptScopeID: threadID, CallID: "call-1", ToolName: "read", Text: "output"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertSQLiteThreadTreeDataCount(t *testing.T, ctx context.Context, store *Store, threadID string, want int) {
+	t.Helper()
+	for _, item := range []struct {
+		table  string
+		column string
+	}{
+		{table: "entries", column: "thread_id"},
+		{table: "active_turn_leases", column: "thread_id"},
+		{table: "metadata_records", column: "id"},
+		{table: "tool_output_artifacts", column: "thread_id"},
+		{table: "prompt_segments", column: "prompt_scope_id"},
+		{table: "prompt_toolsets", column: "prompt_scope_id"},
+		{table: "prompt_requests", column: "prompt_scope_id"},
+		{table: "prompt_responses", column: "prompt_scope_id"},
+	} {
+		var got int
+		query := `SELECT COUNT(*) FROM ` + item.table + ` WHERE ` + item.column + ` = ?`
+		if err := store.db.QueryRowContext(ctx, query, threadID).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("%s rows for %q = %d, want %d", item.table, threadID, got, want)
+		}
+	}
 }
 
 func pathContainsID(entries []sessiontree.Entry, id string) bool {

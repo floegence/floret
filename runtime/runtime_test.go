@@ -22,6 +22,7 @@ import (
 	"github.com/floegence/floret/internal/session/artifact"
 	"github.com/floegence/floret/internal/session/contextpolicy"
 	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/internal/storage"
 	"github.com/floegence/floret/internal/testing/harness"
 	"github.com/floegence/floret/observation"
 	"github.com/floegence/floret/tools"
@@ -4153,6 +4154,14 @@ func TestHostDeleteThreadUsesStoreBoundary(t *testing.T) {
 func TestHostDeleteThreadCascadesEngineThreadTree(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
+	deleteData := store.deleteData
+	var deleteCalls int
+	var deleteRequest storage.DeleteThreadTreeDataRequest
+	store.deleteData = func(ctx context.Context, req storage.DeleteThreadTreeDataRequest) error {
+		deleteCalls++
+		deleteRequest = req
+		return deleteData(ctx, req)
+	}
 	host, err := NewHost(HostOptions{
 		Config: config.Config{
 			Provider:     config.ProviderFake,
@@ -4204,6 +4213,9 @@ func TestHostDeleteThreadCascadesEngineThreadTree(t *testing.T) {
 
 	if err := host.DeleteThread(ctx, "parent"); err != nil {
 		t.Fatal(err)
+	}
+	if deleteCalls != 1 || !slices.Equal(deleteRequest.ThreadIDs, []string{"parent", "child"}) || !slices.Equal(deleteRequest.PromptScopeIDs, []string{"parent", "child"}) {
+		t.Fatalf("delete calls = %d request = %#v", deleteCalls, deleteRequest)
 	}
 	if _, err := host.ReadThread(ctx, "parent"); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("parent read err=%v, want ErrThreadNotFound", err)

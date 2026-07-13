@@ -982,28 +982,33 @@ func (s *Store) DeleteMetadata(ctx context.Context, namespace, id string) error 
 	})
 }
 
-func (s *Store) DeleteThreadData(ctx context.Context, req storage.DeleteThreadDataRequest) error {
-	threadID := strings.TrimSpace(req.ThreadID)
-	if threadID == "" {
-		return errors.New("thread id is required")
+func (s *Store) DeleteThreadTreeData(ctx context.Context, req storage.DeleteThreadTreeDataRequest) error {
+	rootThreadID := strings.TrimSpace(req.RootThreadID)
+	if rootThreadID == "" {
+		return errors.New("root thread id is required")
 	}
-	promptScopeIDs := cleanIDs(append([]string{threadID}, req.PromptScopeIDs...))
+	threadIDs := cleanIDs(append([]string{rootThreadID}, req.ThreadIDs...))
+	promptScopeIDs := cleanIDs(append(append([]string{}, threadIDs...), req.PromptScopeIDs...))
 	return s.withImmediate(ctx, func(tx sqlRunner) error {
-		ok, err := threadExists(ctx, tx, threadID)
+		ok, err := threadExists(ctx, tx, rootThreadID)
 		if err != nil {
 			return err
 		}
 		if !ok {
 			return sessiontree.ErrThreadNotFound
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM metadata_records WHERE id = ?`, threadID); err != nil {
-			return err
+		for _, threadID := range threadIDs {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM metadata_records WHERE id = ?`, threadID); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM tool_output_artifacts WHERE thread_id = ?`, threadID); err != nil {
+				return err
+			}
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM tool_output_artifacts WHERE thread_id = ?`, threadID); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM threads WHERE id = ?`, threadID); err != nil {
-			return err
+		for i := len(threadIDs) - 1; i >= 0; i-- {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM threads WHERE id = ?`, threadIDs[i]); err != nil {
+				return err
+			}
 		}
 		for _, promptScopeID := range promptScopeIDs {
 			for _, table := range []string{"prompt_segments", "prompt_toolsets", "prompt_requests", "prompt_responses"} {

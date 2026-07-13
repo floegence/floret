@@ -215,8 +215,9 @@ func (s *testUIStorage) listMetadata(ctx context.Context, fileStore func() ([]ag
 func (s *testUIStorage) deleteSession(ctx context.Context, root string, sessionID string, fileStore func() error) error {
 	switch s.mode {
 	case StorageModeSQLite:
-		return s.sqlite.DeleteThreadData(ctx, floretstorage.DeleteThreadDataRequest{
-			ThreadID:       sessionID,
+		return s.sqlite.DeleteThreadTreeData(ctx, floretstorage.DeleteThreadTreeDataRequest{
+			RootThreadID:   sessionID,
+			ThreadIDs:      []string{sessionID},
 			PromptScopeIDs: []string{sessionID},
 		})
 	case StorageModeMemory:
