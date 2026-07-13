@@ -66,6 +66,8 @@ func (h *AgentHarness) updatePendingApproval(ev event.Event) {
 		current.ThreadID = threadID
 		current.TurnID = strings.TrimSpace(ev.TurnID)
 		current.Step = ev.Step
+		current.BatchIndex = pendingApprovalInt(ev.Metadata, "batch_index")
+		current.BatchSize = pendingApprovalInt(ev.Metadata, "batch_size")
 		current.State = "requested"
 		current.RequestedAt = pendingApprovalEventTime(ev, now)
 		current.ResolvedAt = time.Time{}
@@ -91,6 +93,8 @@ func (h *AgentHarness) updatePendingApproval(ev event.Event) {
 				ThreadID:    threadID,
 				TurnID:      strings.TrimSpace(ev.TurnID),
 				Step:        ev.Step,
+				BatchIndex:  pendingApprovalInt(ev.Metadata, "batch_index"),
+				BatchSize:   pendingApprovalInt(ev.Metadata, "batch_size"),
 				ArgsHash:    strings.TrimSpace(ev.ArgsHash),
 				Resources:   pendingApprovalResources(ev.Metadata),
 				Effects:     pendingApprovalEffects(ev.Metadata),
@@ -129,6 +133,9 @@ func (h *AgentHarness) snapshotPendingApprovals(threadID string) []PendingApprov
 	sort.SliceStable(out, func(i, j int) bool {
 		left := out[i]
 		right := out[j]
+		if left.RunID == right.RunID && left.Step == right.Step && left.BatchIndex != right.BatchIndex {
+			return left.BatchIndex < right.BatchIndex
+		}
 		if !left.RequestedAt.Equal(right.RequestedAt) {
 			return left.RequestedAt.Before(right.RequestedAt)
 		}
@@ -138,6 +145,27 @@ func (h *AgentHarness) snapshotPendingApprovals(threadID string) []PendingApprov
 		return left.ApprovalID < right.ApprovalID
 	})
 	return out
+}
+
+func pendingApprovalInt(meta any, key string) int {
+	values, ok := meta.(map[string]any)
+	if !ok {
+		return 0
+	}
+	switch value := values[key].(type) {
+	case int:
+		return value
+	case int32:
+		return int(value)
+	case int64:
+		return int(value)
+	case float32:
+		return int(value)
+	case float64:
+		return int(value)
+	default:
+		return 0
+	}
 }
 
 func clonePendingApproval(in PendingApproval) PendingApproval {

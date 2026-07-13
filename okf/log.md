@@ -1,5 +1,12 @@
 # Floret OKF Update Log
 
+## 2026-07-14
+* **Breaking**: Removed tool-declared parallel-safety scheduling. Ordinary calls
+  in one model batch now execute concurrently, while provider-visible results
+  remain in original call order.
+* **Update**: Added product-neutral batch index and batch size metadata to tool
+  approval requests and pending approval snapshots for stable host presentation.
+
 ## 2026-07-13
 * **Fix**: Documented terminal projection failures as a separate recoverable
   host-read contract that preserves terminal engine facts and is identifiable
@@ -103,7 +110,7 @@
 * **Update**: Documented failed/cancelled terminal turn projection as the
   cross-segment unavailable-state settlement source and `SettlePendingTool` as
   the public host-owned pending-work settlement API.
-* **Update**: Documented parallel-safe tool result observation before slower
+* **Update**: Documented concurrent tool result observation before slower
   sibling completion while preserving provider-safe durable save points.
 * **Update**: Documented tool approval activity as a lifecycle state on the tool
   item itself, preventing duplicate tool and approval rows for one invocation.

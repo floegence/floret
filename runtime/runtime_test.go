@@ -988,11 +988,10 @@ func TestHostEmitsParallelToolResultBeforeSlowSiblingAndPersistsDetailInCallOrde
 	registry := tools.NewRegistry()
 	if err := registry.Register(tools.Define[runtimeEchoArgs](
 		tools.Definition{
-			Name:         "terminal_exec",
-			InputSchema:  runtimeEchoSchema(),
-			ReadOnly:     true,
-			ParallelSafe: true,
-			Permission:   tools.PermissionSpec{Mode: tools.PermissionAllow},
+			Name:        "terminal_exec",
+			InputSchema: runtimeEchoSchema(),
+			ReadOnly:    true,
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
 			Activity: func(inv tools.Invocation[any]) (*observation.ActivityPresentation, error) {
 				args, ok := inv.Args.(runtimeEchoArgs)
 				if !ok {
@@ -1029,11 +1028,10 @@ func TestHostEmitsParallelToolResultBeforeSlowSiblingAndPersistsDetailInCallOrde
 	releaseSlow := make(chan struct{})
 	if err := registry.Register(tools.Define[runtimeEchoArgs](
 		tools.Definition{
-			Name:         "slow_read",
-			InputSchema:  runtimeEchoSchema(),
-			ReadOnly:     true,
-			ParallelSafe: true,
-			Permission:   tools.PermissionSpec{Mode: tools.PermissionAllow},
+			Name:        "slow_read",
+			InputSchema: runtimeEchoSchema(),
+			ReadOnly:    true,
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
 		},
 		nil,
 		nil,
@@ -3739,6 +3737,8 @@ func TestHostListPendingApprovalsDuringActiveRun(t *testing.T) {
 		approval.ToolName != "write_note" ||
 		approval.RunID != "turn-1" ||
 		approval.TurnID != "turn-1" ||
+		approval.BatchIndex != 0 ||
+		approval.BatchSize != 1 ||
 		approval.State != "requested" ||
 		approval.ArgsHash == "" ||
 		approval.Labels["host.target"] != "runtime-test" ||
@@ -3768,6 +3768,99 @@ func TestHostListPendingApprovalsDuringActiveRun(t *testing.T) {
 	}
 	if len(pending.Approvals) != 0 {
 		t.Fatalf("resolved approval should not remain pending: %#v", pending)
+	}
+}
+
+func TestHostPendingApprovalSnapshotKeepsModelBatchOrder(t *testing.T) {
+	ctx := context.Background()
+	registry := tools.NewRegistry()
+	if err := registry.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{
+			Name:        "write_note",
+			InputSchema: runtimeEchoSchema(),
+			Effects:     []tools.Effect{tools.EffectWrite},
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAsk},
+		},
+		nil,
+		nil,
+		func(_ context.Context, inv tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			return tools.Result{Text: inv.Args.Text}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		events := make(chan ModelEvent, 3)
+		if req.Step == 1 {
+			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{
+				{ID: "call-a", Name: "write_note", Args: `{"text":"a"}`},
+				{ID: "call-b", Name: "write_note", Args: `{"text":"b"}`},
+			}}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+		} else {
+			events <- ModelEvent{Type: ModelEventDelta, Text: "done"}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+		}
+		close(events)
+		return events, nil
+	})
+	requested := make(chan tools.ApprovalRequest, 2)
+	release := make(chan struct{})
+	host, err := NewHost(HostOptions{
+		Config:               runtimeGatewayConfig("test"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                NewMemoryStore(),
+		Tools:                registry,
+		Approver: func(ctx context.Context, req tools.ApprovalRequest) (tools.PermissionDecision, error) {
+			requested <- req
+			select {
+			case <-release:
+				return tools.PermissionDecisionAllow, nil
+			case <-ctx.Done():
+				return tools.PermissionDecision{}, ctx.Err()
+			}
+		},
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread-batch"}); err != nil {
+		t.Fatal(err)
+	}
+	runErr := make(chan error, 1)
+	go func() {
+		_, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-batch", ThreadID: "thread-batch", TurnID: "turn-batch", Input: "write both"})
+		runErr <- err
+	}()
+	seen := map[string]tools.ApprovalRequest{}
+	for range 2 {
+		select {
+		case req := <-requested:
+			seen[req.ID] = req
+		case <-time.After(2 * time.Second):
+			t.Fatalf("approval requests did not enter concurrently: %#v", seen)
+		}
+	}
+	pending, err := host.ListPendingApprovals(ctx, ListPendingApprovalsRequest{ThreadID: "thread-batch"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending.Approvals) != 2 ||
+		pending.Approvals[0].ToolCallID != "call-a" || pending.Approvals[0].BatchIndex != 0 || pending.Approvals[0].BatchSize != 2 ||
+		pending.Approvals[1].ToolCallID != "call-b" || pending.Approvals[1].BatchIndex != 1 || pending.Approvals[1].BatchSize != 2 {
+		t.Fatalf("pending approvals = %#v", pending.Approvals)
+	}
+	close(release)
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for batch run")
 	}
 }
 

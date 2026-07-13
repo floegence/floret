@@ -24,5 +24,6 @@ Use this workflow when adding or changing a local tool capability.
 
 # Guardrails
 
-Risky tools must not silently default to allowed execution. Parallel-safe tools
-must be strictly read-only.
+Risky tools must not silently default to allowed execution. Calls emitted in the
+same model batch execute concurrently regardless of effect metadata; handlers
+must therefore honor context cancellation and avoid shared-state races.

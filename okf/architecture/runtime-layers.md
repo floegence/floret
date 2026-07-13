@@ -81,10 +81,10 @@ It checks cumulative `MaxInputTokens` after each provider usage merge before the
 independent cumulative `MaxTotalTokens` limit. Per-request output limits remain
 part of provider request/context policy and are not treated as run-level input
 budget.
-Parallel-safe tool batches may emit each tool result as soon as that individual
-tool finishes, so hosts can observe a pending tool result without waiting for a
-slower sibling in the same provider tool-call batch. Durable harness save points
-remain provider-safe boundaries: the harness commits the tool calls first, may
+Ordinary calls in one model tool-call batch execute concurrently and may emit
+each tool result as soon as that individual tool finishes, so hosts can observe
+a pending tool result without waiting for a slower sibling. Durable harness
+save points remain provider-safe boundaries: the harness commits the tool calls first, may
 commit partial results for live observation, and writes the tool-result batch
 save point only after all calls in that batch have matching results.
 Provider-visible transcript messages for the batch are appended in the original

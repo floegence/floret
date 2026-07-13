@@ -222,7 +222,6 @@ func DefineSkillTool(skills []Skill, opts ToolOptions) (tools.Tool, error) {
 			}, []string{"name"}),
 			Effects:      []tools.Effect{tools.EffectRead},
 			ReadOnly:     true,
-			ParallelSafe: true,
 			Permission:   tools.PermissionSpec{Mode: tools.PermissionAllow, ResourceKinds: []string{"skill"}},
 			OutputPolicy: opts.OutputPolicy,
 			Annotations: map[string]any{

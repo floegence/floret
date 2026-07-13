@@ -395,7 +395,7 @@ func publicToolAnnotations(in map[string]any) map[string]any {
 	out := map[string]any{}
 	for key, value := range in {
 		switch key {
-		case "source", "effects", "read_only", "destructive", "open_world", "parallel_safe", "permission_mode", "mcp_server", "mcp_tool", "transport", "read_path":
+		case "source", "effects", "read_only", "destructive", "open_world", "permission_mode", "mcp_server", "mcp_tool", "transport", "read_path":
 			out[key] = value
 		}
 	}

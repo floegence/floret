@@ -1121,45 +1121,27 @@ type observedToolResult struct {
 
 func runToolBatchWithObserver(ctx context.Context, registry *tools.Registry, calls []tools.ToolCall, approver tools.Approver, opts tools.RunOptions, observe func(int, tools.Result) error) ([]tools.Result, error) {
 	results := make([]tools.Result, len(calls))
-	for i := 0; i < len(calls); {
-		j := i
-		for j < len(calls) && registry.IsParallelSafe(calls[j].Name) {
-			j++
-		}
-		if j > i {
-			done := make(chan observedToolResult, j-i)
-			for k := i; k < j; k++ {
-				go func(idx int) {
-					done <- observedToolResult{
-						index:  idx,
-						result: registry.RunWithOptions(ctx, calls[idx], approver, opts),
-					}
-				}(k)
+	done := make(chan observedToolResult, len(calls))
+	for i := range calls {
+		go func(idx int) {
+			callOpts := opts
+			callOpts.BatchIndex = idx
+			callOpts.BatchSize = len(calls)
+			done <- observedToolResult{
+				index:  idx,
+				result: registry.RunWithOptions(ctx, calls[idx], approver, callOpts),
 			}
-			var observeErr error
-			for received := i; received < j; received++ {
-				item := <-done
-				results[item.index] = item.result
-				if observeErr == nil && observe != nil {
-					observeErr = observe(item.index, item.result)
-				}
-			}
-			if observeErr != nil {
-				return results, observeErr
-			}
-			i = j
-			continue
-		}
-		result := registry.RunWithOptions(ctx, calls[i], approver, opts)
-		results[i] = result
-		if observe != nil {
-			if err := observe(i, result); err != nil {
-				return results, err
-			}
-		}
-		i++
+		}(i)
 	}
-	return results, nil
+	var observeErr error
+	for range calls {
+		item := <-done
+		results[item.index] = item.result
+		if observeErr == nil && observe != nil {
+			observeErr = observe(item.index, item.result)
+		}
+	}
+	return results, observeErr
 }
 
 func preparePendingToolResult(result tools.Result) tools.Result {
@@ -3237,6 +3219,8 @@ func approvalEventMetadata(req tools.ApprovalRequest, reason string) map[string]
 		"read_only":   req.ReadOnly,
 		"destructive": req.Destructive,
 		"open_world":  req.OpenWorld,
+		"batch_index": req.BatchIndex,
+		"batch_size":  req.BatchSize,
 	}
 	if strings.TrimSpace(reason) != "" {
 		metadata["reason"] = reason

@@ -282,8 +282,8 @@ status from local audit records or live stream leftovers.
 Pending approval snapshots are the current-state companion to the durable
 approval audit trail. `ListPendingApprovals` can be called while a turn is active
 and returns approval ids, tool call ids, tool names, effects, resources, labels,
-host context, state, timing, and revision metadata from Floret's generic
-approval lifecycle. Hosts own product modes, approval copy, UI placement,
+host context, state, timing, revision, batch index, and batch size metadata from
+Floret's generic approval lifecycle. Hosts own product modes, approval copy, UI placement,
 authorization policy, and decision routing; Floret does not encode those
 product concepts in the snapshot.
 

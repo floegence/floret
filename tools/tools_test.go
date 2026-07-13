@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/floegence/floret/observation"
 )
@@ -329,7 +330,7 @@ func TestReadOnlyToolDefaultsToAllowAndExposesDefinition(t *testing.T) {
 	if !ok {
 		t.Fatalf("definition missing")
 	}
-	if def.Permission.Mode != PermissionAllow || !def.ParallelSafe || len(def.Effects) != 1 || def.Effects[0] != EffectRead {
+	if def.Permission.Mode != PermissionAllow || len(def.Effects) != 1 || def.Effects[0] != EffectRead {
 		t.Fatalf("normalized definition = %#v", def)
 	}
 	defs := reg.Definitions()
@@ -685,7 +686,6 @@ func TestRegisterRejectsContradictoryEffects(t *testing.T) {
 		{Name: "destructive_read", Destructive: true, Effects: []Effect{EffectRead}, Permission: PermissionSpec{Mode: PermissionAsk}},
 		{Name: "open_world_read", OpenWorld: true, Effects: []Effect{EffectRead}, Permission: PermissionSpec{Mode: PermissionAsk}},
 		{Name: "open_world_allow", OpenWorld: true, Effects: []Effect{EffectNetwork}, Permission: PermissionSpec{Mode: PermissionAllow}},
-		{Name: "parallel_shell", ReadOnly: true, ParallelSafe: true, Effects: []Effect{EffectNetwork}, Permission: PermissionSpec{Mode: PermissionAllow}},
 	}
 	for _, def := range cases {
 		err := NewRegistry().Register(Define[testArgs](
@@ -710,40 +710,93 @@ func TestNewRegistryEPropagatesDuplicateConstructorError(t *testing.T) {
 	}
 }
 
-func TestRunBatchUsesParallelSafeFlagForParallelWaves(t *testing.T) {
+func TestRunBatchStartsEveryCallConcurrentlyAndKeepsResultOrder(t *testing.T) {
 	reg := NewRegistry()
-	order := make(chan string, 4)
+	started := make(chan string, 3)
 	release := make(chan struct{})
-	if err := reg.Register(testTool("read", true, func(_ context.Context, inv Invocation[testArgs]) (Result, error) {
-		order <- "read-start-" + inv.Args.Value
-		<-release
-		order <- "read-end-" + inv.Args.Value
-		return Result{Text: inv.Args.Value}, nil
-	})); err != nil {
-		t.Fatal(err)
+	definitions := []Definition{
+		{Name: "read", ReadOnly: true, Effects: []Effect{EffectRead}, Permission: PermissionSpec{Mode: PermissionAllow}},
+		{Name: "write", Effects: []Effect{EffectWrite}, Permission: PermissionSpec{Mode: PermissionAllow}},
+		{Name: "shell", Effects: []Effect{EffectShell}, Permission: PermissionSpec{Mode: PermissionAllow}},
 	}
-	if err := reg.Register(testTool("write", false, func(_ context.Context, inv Invocation[testArgs]) (Result, error) {
-		order <- "write-" + inv.Args.Value
-		return Result{Text: inv.Args.Value}, nil
-	})); err != nil {
-		t.Fatal(err)
+	for _, definition := range definitions {
+		definition.InputSchema = StrictObject(map[string]any{"value": String("test value")}, []string{"value"})
+		if err := reg.Register(Define[testArgs](definition, nil, nil, func(_ context.Context, inv Invocation[testArgs]) (Result, error) {
+			started <- inv.Name
+			<-release
+			return Result{Text: inv.Args.Value}, nil
+		})); err != nil {
+			t.Fatal(err)
+		}
 	}
 	done := make(chan []Result, 1)
 	go func() {
 		done <- reg.RunBatch(context.Background(), []ToolCall{
 			{ID: "a", Name: "read", Args: `{"value":"a"}`},
-			{ID: "b", Name: "read", Args: `{"value":"b"}`},
-			{ID: "c", Name: "write", Args: `{"value":"c"}`},
+			{ID: "b", Name: "write", Args: `{"value":"b"}`},
+			{ID: "c", Name: "shell", Args: `{"value":"c"}`},
 		}, nil)
 	}()
-	first := <-order
-	second := <-order
-	if (first != "read-start-a" && first != "read-start-b") || (second != "read-start-a" && second != "read-start-b") || first == second {
-		t.Fatalf("registry read-only tools did not run as parallel wave: %q %q", first, second)
+	seen := map[string]bool{}
+	for range definitions {
+		select {
+		case name := <-started:
+			seen[name] = true
+		case <-time.After(time.Second):
+			t.Fatalf("tool batch did not start concurrently: started=%v", seen)
+		}
 	}
 	close(release)
 	results := <-done
-	if len(results) != 3 || results[2].Name != "write" {
+	if len(results) != 3 || results[0].CallID != "a" || results[1].CallID != "b" || results[2].CallID != "c" {
+		t.Fatalf("results = %#v", results)
+	}
+}
+
+func TestRunBatchApprovalRequestsStartConcurrentlyWithBatchOrder(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.Register(Define[testArgs](
+		Definition{
+			Name:        "approve",
+			InputSchema: StrictObject(map[string]any{"value": String("test value")}, []string{"value"}),
+			Effects:     []Effect{EffectShell},
+			Permission:  PermissionSpec{Mode: PermissionAsk},
+		},
+		nil,
+		nil,
+		func(_ context.Context, inv Invocation[testArgs]) (Result, error) {
+			return Result{Text: inv.Args.Value}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	requests := make(chan ApprovalRequest, 2)
+	release := make(chan struct{})
+	done := make(chan []Result, 1)
+	go func() {
+		done <- reg.RunBatch(context.Background(), []ToolCall{
+			{ID: "a", Name: "approve", Args: `{"value":"a"}`},
+			{ID: "b", Name: "approve", Args: `{"value":"b"}`},
+		}, func(_ context.Context, req ApprovalRequest) (PermissionDecision, error) {
+			requests <- req
+			<-release
+			return PermissionDecisionAllow, nil
+		})
+	}()
+	byID := map[string]ApprovalRequest{}
+	for range 2 {
+		select {
+		case req := <-requests:
+			byID[req.ID] = req
+		case <-time.After(time.Second):
+			t.Fatalf("approval requests did not start concurrently: %#v", byID)
+		}
+	}
+	if byID["a"].BatchIndex != 0 || byID["a"].BatchSize != 2 || byID["b"].BatchIndex != 1 || byID["b"].BatchSize != 2 {
+		t.Fatalf("approval batch metadata = %#v", byID)
+	}
+	close(release)
+	if results := <-done; len(results) != 2 || results[0].CallID != "a" || results[1].CallID != "b" {
 		t.Fatalf("results = %#v", results)
 	}
 }

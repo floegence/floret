@@ -356,6 +356,8 @@ type PendingApproval struct {
 	ThreadID    string                    `json:"thread_id,omitempty"`
 	TurnID      string                    `json:"turn_id,omitempty"`
 	Step        int                       `json:"step,omitempty"`
+	BatchIndex  int                       `json:"batch_index"`
+	BatchSize   int                       `json:"batch_size"`
 	State       string                    `json:"state,omitempty"`
 	Revision    int64                     `json:"revision,omitempty"`
 	Epoch       int64                     `json:"epoch,omitempty"`

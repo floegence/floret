@@ -350,8 +350,9 @@ target ownership.
 
 Important tool rules:
 
-- Read-only tools may run in parallel only when `ParallelSafe` is explicitly
-  valid.
+- Ordinary local tool calls returned in one model batch execute concurrently.
+  A model expresses a dependency by waiting for the prerequisite result and
+  emitting the dependent call in a later response.
 - Mutating, shell, network, destructive, or open-world tools must declare
   permission behavior.
 - Provider-native hosted capabilities are not local tools and are not dispatched
@@ -543,7 +544,8 @@ restart and UI maintenance paths.
 Use `ListPendingApprovals` when a host UI needs the current tool approvals that
 are waiting for a decision. The snapshot is product-neutral: it exposes the
 approval id, tool call id, tool name, generic effects, resources, labels, host
-context, state, and timing metadata from Floret's approval lifecycle. Hosts own
+context, state, timing, and model-batch order metadata from Floret's approval
+lifecycle. Hosts own
 the product permission policy, user-facing summary, approval controls, and any
 thread-list or composer presentation.
 

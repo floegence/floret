@@ -37,11 +37,10 @@ type Definition struct {
 	OutputSchema map[string]any
 	Activity     func(Invocation[any]) (*observation.ActivityPresentation, error)
 
-	Effects      []Effect
-	ReadOnly     bool
-	Destructive  bool
-	OpenWorld    bool
-	ParallelSafe bool
+	Effects     []Effect
+	ReadOnly    bool
+	Destructive bool
+	OpenWorld   bool
 
 	Permission    PermissionSpec
 	PermissionFor PermissionResolver
@@ -55,6 +54,8 @@ type RunOptions struct {
 	TurnID        string
 	PromptScopeID string
 	Step          int
+	BatchIndex    int
+	BatchSize     int
 	Labels        map[string]string
 	HostContext   map[string]string
 
@@ -279,12 +280,6 @@ func ValidateDefinition(def Definition) (Definition, error) {
 	if def.OpenWorld && def.Permission.Mode == PermissionAllow {
 		return def, fmt.Errorf("%w: open-world tool %q must ask or deny by default", ErrInvalid, def.Name)
 	}
-	if def.ParallelSafe && !deriveParallelSafe(def) {
-		return def, fmt.Errorf("%w: parallel-safe tool %q must be strictly read-only", ErrInvalid, def.Name)
-	}
-	if def.ParallelSafe == false && deriveParallelSafe(def) {
-		def.ParallelSafe = true
-	}
 	return def, nil
 }
 
@@ -300,25 +295,6 @@ func safeReadOnlyDefault(def Definition, effects map[Effect]bool) bool {
 func IsReservedName(name string) bool {
 	name = strings.TrimSpace(name)
 	return name == ControlAskUser || name == ControlTaskComplete
-}
-
-func deriveParallelSafe(def Definition) bool {
-	if !def.ReadOnly || def.Destructive || def.OpenWorld {
-		return false
-	}
-	for _, effect := range def.Effects {
-		if effect != EffectRead {
-			return false
-		}
-	}
-	return true
-}
-
-func (r *Registry) IsParallelSafe(name string) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	t, ok := r.tools[name]
-	return ok && t.Definition.ParallelSafe
 }
 
 func (r *Registry) Definition(name string) (Definition, bool) {
@@ -348,7 +324,6 @@ func (r *Registry) ExposedDefinitions() []ToolDefinition {
 		annotations["read_only"] = tool.Definition.ReadOnly
 		annotations["destructive"] = tool.Definition.Destructive
 		annotations["open_world"] = tool.Definition.OpenWorld
-		annotations["parallel_safe"] = tool.Definition.ParallelSafe
 		defs = append(defs, ToolDefinition{
 			Name:         tool.Definition.Name,
 			Title:        tool.Definition.Title,
@@ -417,6 +392,10 @@ func (r *Registry) ActivityForCall(call ToolCall, opts RunOptions) (*observation
 }
 
 func (r *Registry) run(ctx context.Context, call ToolCall, approver Approver, opts RunOptions) (result Result) {
+	if opts.BatchSize <= 0 {
+		opts.BatchIndex = 0
+		opts.BatchSize = 1
+	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			result = ErrorResult(call.ID, call.Name, fmt.Sprintf("tool %q panicked: %v", call.Name, recovered))
@@ -564,6 +543,8 @@ func (r *Registry) permissionDenied(ctx context.Context, def Definition, permiss
 			TurnID:        opts.TurnID,
 			PromptScopeID: opts.PromptScopeID,
 			Step:          opts.Step,
+			BatchIndex:    opts.BatchIndex,
+			BatchSize:     opts.BatchSize,
 			Resources:     resources,
 			Effects:       append([]Effect(nil), def.Effects...),
 			Labels:        cloneStringMap(opts.Labels),
@@ -661,27 +642,18 @@ func (r *Registry) RunBatch(ctx context.Context, calls []ToolCall, approver Appr
 
 func (r *Registry) RunBatchWithOptions(ctx context.Context, calls []ToolCall, approver Approver, opts RunOptions) []Result {
 	results := make([]Result, len(calls))
-	for i := 0; i < len(calls); {
-		j := i
-		for j < len(calls) && r.IsParallelSafe(calls[j].Name) {
-			j++
-		}
-		if j > i {
-			var wg sync.WaitGroup
-			for k := i; k < j; k++ {
-				wg.Add(1)
-				go func(idx int) {
-					defer wg.Done()
-					results[idx] = r.RunWithOptions(ctx, calls[idx], approver, opts)
-				}(k)
-			}
-			wg.Wait()
-			i = j
-			continue
-		}
-		results[i] = r.RunWithOptions(ctx, calls[i], approver, opts)
-		i++
+	var wg sync.WaitGroup
+	for i := range calls {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			callOpts := opts
+			callOpts.BatchIndex = idx
+			callOpts.BatchSize = len(calls)
+			results[idx] = r.RunWithOptions(ctx, calls[idx], approver, callOpts)
+		}(i)
 	}
+	wg.Wait()
 	return results
 }
 

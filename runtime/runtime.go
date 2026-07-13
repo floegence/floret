@@ -474,6 +474,8 @@ type PendingApproval struct {
 	ThreadID    ThreadID                  `json:"thread_id,omitempty"`
 	TurnID      TurnID                    `json:"turn_id,omitempty"`
 	Step        int                       `json:"step,omitempty"`
+	BatchIndex  int                       `json:"batch_index"`
+	BatchSize   int                       `json:"batch_size"`
 	State       string                    `json:"state,omitempty"`
 	Revision    int64                     `json:"revision,omitempty"`
 	Epoch       int64                     `json:"epoch,omitempty"`
@@ -1784,6 +1786,8 @@ func pendingApproval(in agentharness.PendingApproval) PendingApproval {
 		ThreadID:    ThreadID(in.ThreadID),
 		TurnID:      TurnID(in.TurnID),
 		Step:        in.Step,
+		BatchIndex:  in.BatchIndex,
+		BatchSize:   in.BatchSize,
 		State:       in.State,
 		Revision:    in.Revision,
 		Epoch:       in.Epoch,

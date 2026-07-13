@@ -10,8 +10,8 @@ timestamp: 2026-06-20T00:00:00Z
 # Summary
 
 Local tools are registered through `tools.Registry`. Registration validates
-names, schemas, effects, permission modes, and parallel-safety claims before
-tools are exposed to a provider.
+names, schemas, effects, and permission modes before tools are exposed to a
+provider.
 
 # Local Tool Contracts
 
@@ -63,13 +63,23 @@ approval, later siblings can remain visible as pending work without pretending
 that they have started execution. Tool results and pending external results
 continue to update the same tool item.
 
+Ordinary local calls emitted by the model in one batch start concurrently,
+including calls with different effects or approval requirements. Floret does
+not infer dependencies from tool names, arguments, resources, effects, or
+permissions. The model expresses a dependency by waiting for prerequisite
+results and emitting dependent calls in a later response. Observation events
+may therefore arrive in completion order while provider-visible tool results
+remain in the original model call order.
+
 # Tool Approval State
 
 Floret owns the generic approval lifecycle for local tool dispatch. Approval
 events update both the durable thread detail audit trail and a current pending
 approval snapshot that hosts can read through `runtime.ListPendingApprovals`.
 The snapshot carries product-neutral ids, tool names, effects, resources,
-labels, host context, state, timing, and revision metadata.
+labels, host context, state, timing, revision, batch index, and batch size
+metadata. Batch order helps hosts present multiple approvals stably; it never
+controls execution scheduling.
 
 Hosts own the product authorization policy and user-facing approval experience.
 They should translate the generic snapshot into product copy and controls

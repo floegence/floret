@@ -7,6 +7,6 @@
 // exposed as allowed tools. Mutating, destructive, open-world, shell, and
 // network tools must declare explicit permission behavior. PermissionDeny tools
 // remain callable only as explicit host-side disabled tools and are not exposed
-// to providers. Parallel scheduling is controlled by Definition.ParallelSafe,
-// which is only valid for strictly read-only tools.
+// to providers. Ordinary calls returned in one model batch execute concurrently;
+// the model expresses dependencies by emitting dependent calls in later turns.
 package tools

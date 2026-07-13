@@ -423,19 +423,23 @@ func setupMutationRecoveryScenario(ctx context.Context, workspace string) (toolS
 	}, "\n")
 	prov := harness.NewScriptedProvider(
 		harness.Step(
-			provider.StreamEvent{Type: provider.Reasoning, Text: "Create and then intentionally fail one patch."},
-			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
-				{ID: "write-report", Name: builtin.ToolWrite, Args: `{"path":"reports/weather.md","content":"Status: draft\nCity: Changsha\n"}`},
-				{ID: "patch-missing", Name: builtin.ToolApplyPatch, Args: fmt.Sprintf(`{"patch":%q}`, missingPatch)},
-			}},
+			provider.StreamEvent{Type: provider.Reasoning, Text: "Create the report before editing it."},
+			harness.Tool("write-report", builtin.ToolWrite, `{"path":"reports/weather.md","content":"Status: draft\nCity: Changsha\n"}`),
 			harness.DoneReason("tool_calls"),
 		),
 		harness.Step(
-			provider.StreamEvent{Type: provider.Reasoning, Text: "Recover with a valid patch and read back."},
-			provider.StreamEvent{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{
-				{ID: "patch-report", Name: builtin.ToolApplyPatch, Args: fmt.Sprintf(`{"patch":%q}`, recoveryPatch)},
-				{ID: "read-report", Name: builtin.ToolRead, Args: `{"path":"reports/weather.md","offset":0,"limit":40}`},
-			}},
+			provider.StreamEvent{Type: provider.Reasoning, Text: "Intentionally try the known-missing patch after the file exists."},
+			harness.Tool("patch-missing", builtin.ToolApplyPatch, fmt.Sprintf(`{"patch":%q}`, missingPatch)),
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(
+			provider.StreamEvent{Type: provider.Reasoning, Text: "Recover from the failed patch with the valid edit."},
+			harness.Tool("patch-report", builtin.ToolApplyPatch, fmt.Sprintf(`{"patch":%q}`, recoveryPatch)),
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(
+			provider.StreamEvent{Type: provider.Reasoning, Text: "Read the report only after the recovery patch completes."},
+			harness.Tool("read-report", builtin.ToolRead, `{"path":"reports/weather.md","offset":0,"limit":40}`),
 			harness.DoneReason("tool_calls"),
 		),
 		harness.Step(harness.Text("Recovered from the failed patch and verified the report."), harness.Done()),

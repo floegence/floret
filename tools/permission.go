@@ -62,6 +62,8 @@ type ApprovalRequest struct {
 	TurnID        string
 	PromptScopeID string
 	Step          int
+	BatchIndex    int
+	BatchSize     int
 	Resources     []ResourceRef
 	Effects       []Effect
 	Labels        map[string]string

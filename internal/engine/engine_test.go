@@ -2448,11 +2448,10 @@ func TestParallelPendingToolResultEmitsBeforeSlowSiblingFinishes(t *testing.T) {
 	reg := tools.NewRegistry()
 	mustRegister(t, reg, tools.Define[stringArgs](
 		tools.Definition{
-			Name:         "pending_shell",
-			InputSchema:  tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
-			ReadOnly:     true,
-			ParallelSafe: true,
-			Permission:   tools.PermissionSpec{Mode: tools.PermissionAllow},
+			Name:        "pending_shell",
+			InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+			ReadOnly:    true,
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
 		},
 		nil,
 		nil,
@@ -2471,11 +2470,10 @@ func TestParallelPendingToolResultEmitsBeforeSlowSiblingFinishes(t *testing.T) {
 	releaseSlow := make(chan struct{})
 	mustRegister(t, reg, tools.Define[stringArgs](
 		tools.Definition{
-			Name:         "slow_read",
-			InputSchema:  tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
-			ReadOnly:     true,
-			ParallelSafe: true,
-			Permission:   tools.PermissionSpec{Mode: tools.PermissionAllow},
+			Name:        "slow_read",
+			InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+			ReadOnly:    true,
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
 		},
 		nil,
 		nil,
@@ -2853,37 +2851,63 @@ func TestProviderStreamEventAfterTerminalFails(t *testing.T) {
 	}
 }
 
-func TestReadOnlyToolsRunInParallelAndMutatingToolsKeepOrder(t *testing.T) {
+func TestToolBatchRunsConcurrentlyAndKeepsResultOrder(t *testing.T) {
 	reg := tools.NewRegistry()
-	order := make(chan string, 4)
+	started := make(chan string, 3)
 	release := make(chan struct{})
-	mustRegister(t, reg, stringTool("ro", "Read only", true, tools.PermissionSpec{}, func(_ context.Context, arg string) (string, error) {
-		order <- "start-" + arg
-		<-release
-		order <- "end-" + arg
-		return arg, nil
-	}))
-	mustRegister(t, reg, stringTool("mut", "Mutating", false, tools.PermissionSpec{}, func(_ context.Context, arg string) (string, error) {
-		order <- "mut-" + arg
-		return arg, nil
-	}))
+	for _, name := range []string{"first", "second", "third"} {
+		mustRegister(t, reg, stringTool(name, name, false, tools.PermissionSpec{}, func(_ context.Context, arg string) (string, error) {
+			started <- arg
+			<-release
+			return arg, nil
+		}))
+	}
 	done := make(chan []tools.Result, 1)
 	go func() {
 		done <- reg.RunBatch(context.Background(), []tools.ToolCall{
-			{ID: "a", Name: "ro", Args: `{"value":"a"}`},
-			{ID: "b", Name: "ro", Args: `{"value":"b"}`},
-			{ID: "c", Name: "mut", Args: `{"value":"c"}`},
+			{ID: "a", Name: "first", Args: `{"value":"a"}`},
+			{ID: "b", Name: "second", Args: `{"value":"b"}`},
+			{ID: "c", Name: "third", Args: `{"value":"c"}`},
 		}, nil)
 	}()
-	first := <-order
-	second := <-order
-	if !sameSet([]string{first, second}, []string{"start-a", "start-b"}) {
-		t.Fatalf("read-only tools did not both start before release: %q %q", first, second)
+	seen := map[string]bool{}
+	for range 3 {
+		select {
+		case value := <-started:
+			seen[value] = true
+		case <-time.After(time.Second):
+			t.Fatalf("tool batch did not start concurrently: %v", seen)
+		}
 	}
 	close(release)
 	results := <-done
-	if len(results) != 3 || results[2].CallID != "c" {
+	if len(results) != 3 || results[0].CallID != "a" || results[1].CallID != "b" || results[2].CallID != "c" {
 		t.Fatalf("results are not in call order: %#v", results)
+	}
+}
+
+func TestSingleToolRunUsesSingleItemBatchMetadata(t *testing.T) {
+	reg := tools.NewRegistry()
+	mustRegister(t, reg, tools.Define[stringArgs](
+		tools.Definition{
+			Name:        "approve_one",
+			InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+			Effects:     []tools.Effect{tools.EffectShell},
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAsk},
+		},
+		nil,
+		nil,
+		func(_ context.Context, inv tools.Invocation[stringArgs]) (tools.Result, error) {
+			return tools.Result{Text: inv.Args.Value}, nil
+		},
+	))
+	var approval tools.ApprovalRequest
+	result := reg.Run(context.Background(), tools.ToolCall{ID: "a", Name: "approve_one", Args: `{"value":"a"}`}, func(_ context.Context, req tools.ApprovalRequest) (tools.PermissionDecision, error) {
+		approval = req
+		return tools.PermissionDecisionAllow, nil
+	})
+	if result.IsError || approval.BatchIndex != 0 || approval.BatchSize != 1 {
+		t.Fatalf("result=%#v approval=%#v", result, approval)
 	}
 }
 

@@ -46,6 +46,15 @@ as a host-owned read handle, byte counters, or latest visible output. It does
 not create a second activity row, change approval decisions, or complete the
 tool invocation.
 
+# Batch Execution
+
+`Registry.RunBatchWithOptions` starts every ordinary call in the supplied model
+batch concurrently. `RunOptions.BatchIndex` and `BatchSize` identify each call's
+original position for approval and observation metadata; they do not gate
+dispatch. Result slices remain in call order even when live observations arrive
+in completion order. A dependent call belongs in a later model response after
+its prerequisite result is available.
+
 # Repeat And Progress Metadata
 
 Local tools are protected by the engine's duplicate-call guard by default. A
