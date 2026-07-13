@@ -2,10 +2,99 @@ package observation
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestRebuildActivitySummaryUsesItemsAndPreservesDuration(t *testing.T) {
+	timeline := ActivityTimeline{
+		Summary: ActivitySummary{
+			Status:           ActivityStatusSuccess,
+			Severity:         ActivitySeverityQuiet,
+			NeedsAttention:   false,
+			AttentionReasons: []ActivityAttentionReason{ActivityAttentionApproval},
+			TotalItems:       99,
+			Counts:           ActivityCounts{Success: 99},
+			DurationMS:       4321,
+		},
+		Items: []ActivityItem{
+			{ItemID: "pending", Status: ActivityStatusPending, Severity: ActivitySeverityNormal},
+			{ItemID: "running", Status: ActivityStatusRunning, Severity: ActivitySeverityWarning},
+			{ItemID: "waiting", Status: ActivityStatusWaiting, Severity: ActivitySeverityBlocking, RequiresApproval: true},
+			{ItemID: "success", Status: ActivityStatusSuccess, Severity: ActivitySeverityNormal},
+			{ItemID: "error", Status: ActivityStatusError, Severity: ActivitySeverityError},
+			{ItemID: "canceled", Status: ActivityStatusCanceled, Severity: ActivitySeverityWarning},
+		},
+	}
+
+	got := RebuildActivitySummary(timeline)
+	if got.Status != ActivityStatusWaiting || got.Severity != ActivitySeverityBlocking || !got.NeedsAttention {
+		t.Fatalf("summary state = %#v", got)
+	}
+	if got.TotalItems != 6 || got.DurationMS != 4321 || got.Counts != (ActivityCounts{Pending: 1, Running: 1, Waiting: 1, Success: 1, Error: 1, Canceled: 1, Approval: 1}) {
+		t.Fatalf("summary counts = %#v", got)
+	}
+	wantReasons := []ActivityAttentionReason{ActivityAttentionRunning, ActivityAttentionWaiting, ActivityAttentionApproval, ActivityAttentionError}
+	if !slices.Equal(got.AttentionReasons, wantReasons) {
+		t.Fatalf("attention reasons = %#v, want %#v", got.AttentionReasons, wantReasons)
+	}
+}
+
+func TestRebuildActivitySummaryPreservesSettledRunStatusWithoutActiveItems(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		original ActivitySummary
+		want     ActivitySummary
+	}{
+		{
+			name:     "error",
+			original: ActivitySummary{Status: ActivityStatusError, Severity: ActivitySeverityError, DurationMS: 250},
+			want: ActivitySummary{
+				Status:           ActivityStatusError,
+				Severity:         ActivitySeverityError,
+				NeedsAttention:   true,
+				AttentionReasons: []ActivityAttentionReason{ActivityAttentionError},
+				TotalItems:       1,
+				Counts:           ActivityCounts{Success: 1},
+				DurationMS:       250,
+			},
+		},
+		{
+			name:     "canceled",
+			original: ActivitySummary{Status: ActivityStatusCanceled, Severity: ActivitySeverityWarning, DurationMS: 400},
+			want: ActivitySummary{
+				Status:     ActivityStatusCanceled,
+				Severity:   ActivitySeverityWarning,
+				TotalItems: 1,
+				Counts:     ActivityCounts{Success: 1},
+				DurationMS: 400,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			timeline := ActivityTimeline{
+				Summary: tc.original,
+				Items:   []ActivityItem{{ItemID: "done", Status: ActivityStatusSuccess, Severity: ActivitySeverityNormal}},
+			}
+			got := RebuildActivitySummary(timeline)
+			if got.Status != tc.want.Status || got.Severity != tc.want.Severity || got.NeedsAttention != tc.want.NeedsAttention || got.TotalItems != tc.want.TotalItems || got.Counts != tc.want.Counts || got.DurationMS != tc.want.DurationMS || !slices.Equal(got.AttentionReasons, tc.want.AttentionReasons) {
+				t.Fatalf("summary = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRebuildActivitySummaryDoesNotPreserveRunTerminalStatusOverActiveItems(t *testing.T) {
+	got := RebuildActivitySummary(ActivityTimeline{
+		Summary: ActivitySummary{Status: ActivityStatusError, Severity: ActivitySeverityError, DurationMS: 10},
+		Items:   []ActivityItem{{ItemID: "running", Status: ActivityStatusRunning, Severity: ActivitySeverityNormal}},
+	})
+	if got.Status != ActivityStatusRunning || got.Severity != ActivitySeverityNormal || !slices.Equal(got.AttentionReasons, []ActivityAttentionReason{ActivityAttentionRunning}) {
+		t.Fatalf("summary = %#v", got)
+	}
+}
 
 func TestBuildActivityTimelineProjectsToolAndApprovalState(t *testing.T) {
 	start := time.UnixMilli(1_700_000_000_000)

@@ -194,6 +194,35 @@ func CloneActivityTimeline(in *ActivityTimeline) *ActivityTimeline {
 	return &out
 }
 
+// RebuildActivitySummary recomputes item-derived summary state while preserving
+// the timeline duration and settled run-level error or canceled status.
+func RebuildActivitySummary(timeline ActivityTimeline) ActivitySummary {
+	summary := activityItemSummary(timeline.Items)
+	original := timeline.Summary
+	if !activitySummaryHasActiveItems(summary) {
+		switch original.Status {
+		case ActivityStatusError:
+			summary.Status = ActivityStatusError
+			severity := original.Severity
+			if severity == "" {
+				severity = ActivitySeverityError
+			}
+			summary.Severity = maxActivitySeverity(summary.Severity, severity)
+			summary.AttentionReasons = append(summary.AttentionReasons, ActivityAttentionError)
+		case ActivityStatusCanceled:
+			summary.Status = ActivityStatusCanceled
+			severity := original.Severity
+			if severity == "" {
+				severity = ActivitySeverityWarning
+			}
+			summary.Severity = maxActivitySeverity(summary.Severity, severity)
+		}
+	}
+	summary.DurationMS = original.DurationMS
+	finalizeActivitySummary(&summary)
+	return summary
+}
+
 func cloneActivityItem(in ActivityItem) ActivityItem {
 	in.AttentionReasons = append([]ActivityAttentionReason(nil), in.AttentionReasons...)
 	in.Chips = cloneActivityChips(in.Chips)
@@ -1490,6 +1519,54 @@ func activityItemAttentionReasons(item ActivityItem) []ActivityAttentionReason {
 }
 
 func activitySummary(items []ActivityItem, runEnd *Event, firstAt, lastAt, nowUnixMS int64) ActivitySummary {
+	summary := activityItemSummary(items)
+	summary.AttentionReasons = append([]ActivityAttentionReason(nil), summary.AttentionReasons...)
+	if runEnd != nil {
+		if status, severity, ok := activityRunEndSettlement(*runEnd); ok {
+			switch status {
+			case ActivityStatusCanceled:
+				summary.Status = ActivityStatusCanceled
+				summary.Severity = maxActivitySeverity(summary.Severity, severity)
+			case ActivityStatusError:
+				summary.Status = ActivityStatusError
+				summary.Severity = maxActivitySeverity(summary.Severity, severity)
+				summary.AttentionReasons = append(summary.AttentionReasons, ActivityAttentionError)
+			case ActivityStatusSuccess:
+				if summary.TotalItems == 0 || summary.Counts.Error == 0 && !activitySummaryHasActiveItems(summary) {
+					summary.Status = ActivityStatusSuccess
+					summary.Severity = maxActivitySeverity(summary.Severity, severity)
+				}
+			}
+		} else if activityEventHasError(*runEnd) {
+			summary.Status = ActivityStatusError
+			summary.Severity = maxActivitySeverity(summary.Severity, ActivitySeverityError)
+			summary.AttentionReasons = append(summary.AttentionReasons, ActivityAttentionError)
+		} else if strings.TrimSpace(runEnd.Message) == string(ActivityStatusWaiting) {
+			summary.Status = ActivityStatusWaiting
+			summary.Severity = maxActivitySeverity(summary.Severity, ActivitySeverityBlocking)
+			summary.AttentionReasons = append(summary.AttentionReasons, ActivityAttentionWaiting)
+		}
+	}
+	if summary.Counts.Error > 0 && summary.Status != ActivityStatusWaiting {
+		summary.Status = ActivityStatusError
+	}
+	finalizeActivitySummary(&summary)
+	if firstAt > 0 {
+		end := lastAt
+		if runEnd != nil {
+			end = eventUnixMS(*runEnd, nowUnixMS)
+		}
+		if end == 0 && (summary.Status == ActivityStatusRunning || summary.Status == ActivityStatusWaiting || summary.Status == ActivityStatusPending) {
+			end = nowUnixMS
+		}
+		if end > firstAt {
+			summary.DurationMS = end - firstAt
+		}
+	}
+	return summary
+}
+
+func activityItemSummary(items []ActivityItem) ActivitySummary {
 	summary := ActivitySummary{
 		Status:     ActivityStatusPending,
 		Severity:   ActivitySeverityQuiet,
@@ -1513,84 +1590,40 @@ func activitySummary(items []ActivityItem, runEnd *Event, firstAt, lastAt, nowUn
 		if item.RequiresApproval {
 			summary.Counts.Approval++
 		}
-		summary.AttentionReasons = append(summary.AttentionReasons, item.AttentionReasons...)
+		summary.AttentionReasons = append(summary.AttentionReasons, activityItemAttentionReasons(item)...)
 		summary.Severity = maxActivitySeverity(summary.Severity, item.Severity)
 	}
-	if runEnd != nil {
-		if status, severity, ok := activityRunEndSettlement(*runEnd); ok {
-			switch status {
-			case ActivityStatusCanceled:
-				summary.Status = ActivityStatusCanceled
-				summary.Severity = maxActivitySeverity(summary.Severity, severity)
-			case ActivityStatusError:
-				summary.Status = ActivityStatusError
-				summary.Severity = maxActivitySeverity(summary.Severity, severity)
-				summary.AttentionReasons = append(summary.AttentionReasons, ActivityAttentionError)
-			case ActivityStatusSuccess:
-				if summary.TotalItems == 0 || summary.Counts.Error == 0 && summary.Counts.Waiting == 0 && summary.Counts.Running == 0 && summary.Counts.Pending == 0 {
-					summary.Status = ActivityStatusSuccess
-					summary.Severity = maxActivitySeverity(summary.Severity, severity)
-				}
-			}
-		} else if activityEventHasError(*runEnd) {
-			summary.Status = ActivityStatusError
-			summary.Severity = maxActivitySeverity(summary.Severity, ActivitySeverityError)
-			summary.AttentionReasons = append(summary.AttentionReasons, ActivityAttentionError)
-		} else {
-			switch strings.TrimSpace(runEnd.Message) {
-			case string(ActivityStatusWaiting):
-				summary.Status = ActivityStatusWaiting
-				summary.Severity = maxActivitySeverity(summary.Severity, ActivitySeverityBlocking)
-				summary.AttentionReasons = append(summary.AttentionReasons, ActivityAttentionWaiting)
-			}
-		}
-	} else {
-		switch {
-		case summary.Counts.Waiting > 0:
-			summary.Status = ActivityStatusWaiting
-		case summary.Counts.Running > 0:
-			summary.Status = ActivityStatusRunning
-		case summary.Counts.Pending > 0:
-			summary.Status = ActivityStatusPending
-		}
-	}
-	if summary.Status == ActivityStatusPending {
-		switch {
-		case summary.Counts.Error > 0:
-			summary.Status = ActivityStatusError
-		case summary.Counts.Waiting > 0:
-			summary.Status = ActivityStatusWaiting
-		case summary.Counts.Running > 0:
-			summary.Status = ActivityStatusRunning
-		case summary.Counts.Pending > 0:
-			summary.Status = ActivityStatusPending
-		case summary.Counts.Canceled > 0 && summary.Counts.Success == 0:
-			summary.Status = ActivityStatusCanceled
-		case summary.TotalItems > 0:
-			summary.Status = ActivityStatusSuccess
-		}
-	}
-	if summary.Counts.Error > 0 && summary.Status != ActivityStatusWaiting {
+	switch {
+	case summary.Counts.Waiting > 0:
+		summary.Status = ActivityStatusWaiting
+	case summary.Counts.Error > 0:
 		summary.Status = ActivityStatusError
+	case summary.Counts.Running > 0:
+		summary.Status = ActivityStatusRunning
+	case summary.Counts.Pending > 0:
+		summary.Status = ActivityStatusPending
+	case summary.Counts.Canceled > 0 && summary.Counts.Success == 0:
+		summary.Status = ActivityStatusCanceled
+	case summary.TotalItems > 0:
+		summary.Status = ActivityStatusSuccess
+	}
+	finalizeActivitySummary(&summary)
+	return summary
+}
+
+func activitySummaryHasActiveItems(summary ActivitySummary) bool {
+	return summary.Counts.Pending > 0 || summary.Counts.Running > 0 || summary.Counts.Waiting > 0
+}
+
+func finalizeActivitySummary(summary *ActivitySummary) {
+	if summary == nil {
+		return
 	}
 	summary.AttentionReasons = uniqueActivityReasons(summary.AttentionReasons)
 	summary.NeedsAttention = len(summary.AttentionReasons) > 0
 	if summary.NeedsAttention && summary.Severity == ActivitySeverityQuiet {
 		summary.Severity = ActivitySeverityWarning
 	}
-	if firstAt > 0 {
-		end := lastAt
-		if runEnd != nil {
-			end = eventUnixMS(*runEnd, nowUnixMS)
-		}
-		if end == 0 && (summary.Status == ActivityStatusRunning || summary.Status == ActivityStatusWaiting || summary.Status == ActivityStatusPending) {
-			end = nowUnixMS
-		}
-		if end > firstAt {
-			summary.DurationMS = end - firstAt
-		}
-	}
-	return summary
 }
 
 func noteActivityTime(observedAt int64, firstAt *int64, lastAt *int64) {
