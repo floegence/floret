@@ -8,19 +8,40 @@ import (
 )
 
 const (
-	EventTypeProviderUsage    = "provider_usage"
-	EventTypeContextCompact   = "context_compact"
-	CompactionPhaseStart      = "start"
-	CompactionPhaseComplete   = "complete"
-	CompactionPhaseFailed     = "failed"
-	CompactionPhaseCancelled  = "cancelled"
-	CompactionPhaseNoop       = "noop"
-	CompactionStatusRunning   = "running"
-	CompactionStatusCompacted = "compacted"
-	CompactionStatusFailed    = "failed"
-	CompactionStatusCancelled = "cancelled"
-	CompactionStatusNoop      = "noop"
+	CompactionPhaseStart     CompactionPhase = "start"
+	CompactionPhaseComplete  CompactionPhase = "complete"
+	CompactionPhaseFailed    CompactionPhase = "failed"
+	CompactionPhaseCancelled CompactionPhase = "cancelled"
+	CompactionPhaseNoop      CompactionPhase = "noop"
+
+	CompactionStatusRunning   CompactionStatus = "running"
+	CompactionStatusCompacted CompactionStatus = "compacted"
+	CompactionStatusFailed    CompactionStatus = "failed"
+	CompactionStatusCancelled CompactionStatus = "cancelled"
+	CompactionStatusNoop      CompactionStatus = "noop"
 )
+
+type CompactionPhase string
+
+func (p CompactionPhase) Valid() bool {
+	switch p {
+	case CompactionPhaseStart, CompactionPhaseComplete, CompactionPhaseFailed, CompactionPhaseCancelled, CompactionPhaseNoop:
+		return true
+	default:
+		return false
+	}
+}
+
+type CompactionStatus string
+
+func (s CompactionStatus) Valid() bool {
+	switch s {
+	case CompactionStatusRunning, CompactionStatusCompacted, CompactionStatusFailed, CompactionStatusCancelled, CompactionStatusNoop:
+		return true
+	default:
+		return false
+	}
+}
 
 type CompactionEvent struct {
 	RunID               string                 `json:"run_id,omitempty"`
@@ -29,8 +50,8 @@ type CompactionEvent struct {
 	Step                int                    `json:"step,omitempty"`
 	OperationID         string                 `json:"operation_id,omitempty"`
 	RequestID           string                 `json:"request_id,omitempty"`
-	Phase               string                 `json:"phase"`
-	Status              string                 `json:"status"`
+	Phase               CompactionPhase        `json:"phase"`
+	Status              CompactionStatus       `json:"status"`
 	Trigger             string                 `json:"trigger,omitempty"`
 	Reason              string                 `json:"reason,omitempty"`
 	Source              string                 `json:"source,omitempty"`
@@ -43,16 +64,36 @@ type CompactionEvent struct {
 	ObservedAt          time.Time              `json:"observed_at"`
 }
 
+func (e CompactionEvent) Validate() error {
+	if !e.Phase.Valid() {
+		return fmt.Errorf("unsupported compaction phase %q", e.Phase)
+	}
+	if !e.Status.Valid() {
+		return fmt.Errorf("unsupported compaction status %q", e.Status)
+	}
+	want := map[CompactionPhase]CompactionStatus{
+		CompactionPhaseStart:     CompactionStatusRunning,
+		CompactionPhaseComplete:  CompactionStatusCompacted,
+		CompactionPhaseFailed:    CompactionStatusFailed,
+		CompactionPhaseCancelled: CompactionStatusCancelled,
+		CompactionPhaseNoop:      CompactionStatusNoop,
+	}[e.Phase]
+	if e.Status != want {
+		return fmt.Errorf("compaction phase %q requires status %q, got %q", e.Phase, want, e.Status)
+	}
+	return nil
+}
+
 func CompactionEventFromEvent(ev Event) (CompactionEvent, bool) {
 	if ev.Compaction != nil {
-		return *ev.Compaction, true
+		return *ev.Compaction, ev.Compaction.Validate() == nil
 	}
 	if ev.Type != EventTypeContextCompact {
 		return CompactionEvent{}, false
 	}
 	meta := ev.Metadata
-	phase := stringFromAny(meta["phase"])
-	if phase == "" {
+	phase := CompactionPhase(stringFromAny(meta["phase"]))
+	if !phase.Valid() {
 		return CompactionEvent{}, false
 	}
 	if ev.Error != "" && phase != CompactionPhaseFailed && phase != CompactionPhaseCancelled {

@@ -776,7 +776,7 @@ func subAgentDetailContextCompaction(metadata map[string]string) (SubAgentDetail
 func subAgentDetailContextCompactionFromEntry(entry sessiontree.Entry, ordinal int64, activityContext subAgentDetailActivityContext) SubAgentDetailContextCompaction {
 	phase := strings.TrimSpace(entry.CompactionPhase)
 	if phase == "" {
-		phase = observation.CompactionPhaseComplete
+		phase = string(observation.CompactionPhaseComplete)
 	}
 	return SubAgentDetailContextCompaction{
 		RunID:               activityContext.runIDForTurn(entry.TurnID),
@@ -797,16 +797,16 @@ func subAgentDetailContextCompactionFromEntry(entry sessiontree.Entry, ordinal i
 
 func subAgentDetailContextCompactionStatus(phase string) string {
 	switch strings.TrimSpace(phase) {
-	case observation.CompactionPhaseStart:
-		return observation.CompactionStatusRunning
-	case observation.CompactionPhaseComplete:
-		return observation.CompactionStatusCompacted
-	case observation.CompactionPhaseFailed:
-		return observation.CompactionStatusFailed
-	case observation.CompactionPhaseCancelled:
-		return observation.CompactionStatusCancelled
-	case observation.CompactionPhaseNoop:
-		return observation.CompactionStatusNoop
+	case string(observation.CompactionPhaseStart):
+		return string(observation.CompactionStatusRunning)
+	case string(observation.CompactionPhaseComplete):
+		return string(observation.CompactionStatusCompacted)
+	case string(observation.CompactionPhaseFailed):
+		return string(observation.CompactionStatusFailed)
+	case string(observation.CompactionPhaseCancelled):
+		return string(observation.CompactionStatusCancelled)
+	case string(observation.CompactionPhaseNoop):
+		return string(observation.CompactionStatusNoop)
 	default:
 		return ""
 	}
@@ -1027,14 +1027,14 @@ func (h *AgentHarness) subAgentDetailEvent(entry sessiontree.Entry, ordinal int6
 		case toolDispatchEntryKind:
 			event.Kind = SubAgentDetailEventToolDispatch
 			if event.Type == "" {
-				event.Type = observation.EventTypeToolDispatchStarted
+				event.Type = string(observation.EventTypeToolDispatchStarted)
 			}
 			event.Message = subAgentDetailMessage(entry.Message, includeRaw)
 			event.ToolCall = subAgentDetailToolDispatch(entry)
 		case toolActivityEntryKind:
 			event.Kind = SubAgentDetailEventToolActivity
 			if event.Type == "" {
-				event.Type = observation.EventTypeToolActivityUpdated
+				event.Type = string(observation.EventTypeToolActivityUpdated)
 			}
 			event.Message = subAgentDetailMessage(entry.Message, includeRaw)
 			event.ToolCall = subAgentDetailToolActivity(entry)
@@ -1406,7 +1406,7 @@ func subAgentDetailToolActivityMetadata(metadata map[string]string) map[string]a
 	return out
 }
 
-func subAgentDetailApprovalActivityType(state string) string {
+func subAgentDetailApprovalActivityType(state string) observation.EventType {
 	switch strings.TrimSpace(state) {
 	case "approved":
 		return observation.EventTypeToolApprovalApproved

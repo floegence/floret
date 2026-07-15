@@ -3,6 +3,8 @@
 ## 2026-07-15
 * **Fix**: Added durable monotonic `ThroughOrdinal` versioning to every hosted
   turn projection and clarified that `ProjectedAt` is not an ordering key.
+* **Breaking**: Replaced public string event/context/compaction states with
+  finite typed contracts and explicit validation.
 
 ## 2026-07-14
 * **Breaking**: Removed tool-declared parallel-safety scheduling. Ordinary calls

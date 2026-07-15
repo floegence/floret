@@ -14,50 +14,50 @@ import (
 	"github.com/floegence/floret/observation"
 )
 
-type Type string
+type Type = observation.EventType
 
 const (
-	StepStart              Type = "step_start"
-	ProviderRequest        Type = "provider_request"
-	ProviderDelta          Type = "provider_delta"
-	ProviderReasoning      Type = "provider_reasoning"
-	ProviderToolCallStart  Type = "provider_tool_call_start"
-	ProviderToolCallDelta  Type = "provider_tool_call_delta"
-	ProviderToolCallEnd    Type = "provider_tool_call_end"
-	ProviderUsage          Type = "provider_usage"
-	ProviderSources        Type = "provider_sources"
-	ProviderFinish         Type = "provider_finish"
-	ProviderRetry          Type = "provider_retry"
-	ToolCall               Type = "tool_call"
-	ToolDispatchStarted    Type = "tool_dispatch_started"
-	ToolActivityUpdated    Type = "tool_activity_updated"
-	ToolResult             Type = "tool_result"
-	ToolApprovalRequested  Type = "tool_approval_requested"
-	ToolApprovalApproved   Type = "tool_approval_approved"
-	ToolApprovalRejected   Type = "tool_approval_rejected"
-	ToolApprovalTimedOut   Type = "tool_approval_timed_out"
-	ToolApprovalCanceled   Type = "tool_approval_canceled"
-	HostedToolCall         Type = "hosted_tool_call"
-	HostedToolResult       Type = "hosted_tool_result"
-	MCPServerConnecting    Type = "mcp_server_connecting"
-	MCPServerReady         Type = "mcp_server_ready"
-	MCPServerFailed        Type = "mcp_server_failed"
-	MCPToolsListed         Type = "mcp_tools_listed"
-	MCPToolCall            Type = "mcp_tool_call"
-	MCPToolResult          Type = "mcp_tool_result"
-	SkillDetected          Type = "skill_detected"
-	SkillLoaded            Type = "skill_loaded"
-	SkillBlocked           Type = "skill_blocked"
-	SkillInstallRequired   Type = "skill_install_required"
-	SkillDisclosureApplied Type = "skill_disclosure_applied"
-	ContextCompact         Type = "context_compact"
-	ContextCompactDebug    Type = "context_compact_debug"
-	ContextContinue        Type = "context_continue"
-	ThreadEntryCommitted   Type = "thread_entry_committed"
-	ControlSignal          Type = "control_signal"
-	BudgetExceeded         Type = "budget_exceeded"
-	StepEnd                Type = "step_end"
-	RunEnd                 Type = "run_end"
+	StepStart              = observation.EventTypeStepStart
+	ProviderRequest        = observation.EventTypeProviderRequest
+	ProviderDelta          = observation.EventTypeProviderDelta
+	ProviderReasoning      = observation.EventTypeProviderReasoning
+	ProviderToolCallStart  = observation.EventTypeProviderToolCallStart
+	ProviderToolCallDelta  = observation.EventTypeProviderToolCallDelta
+	ProviderToolCallEnd    = observation.EventTypeProviderToolCallEnd
+	ProviderUsage          = observation.EventTypeProviderUsage
+	ProviderSources        = observation.EventTypeProviderSources
+	ProviderFinish         = observation.EventTypeProviderFinish
+	ProviderRetry          = observation.EventTypeProviderRetry
+	ToolCall               = observation.EventTypeToolCall
+	ToolDispatchStarted    = observation.EventTypeToolDispatchStarted
+	ToolActivityUpdated    = observation.EventTypeToolActivityUpdated
+	ToolResult             = observation.EventTypeToolResult
+	ToolApprovalRequested  = observation.EventTypeToolApprovalRequested
+	ToolApprovalApproved   = observation.EventTypeToolApprovalApproved
+	ToolApprovalRejected   = observation.EventTypeToolApprovalRejected
+	ToolApprovalTimedOut   = observation.EventTypeToolApprovalTimedOut
+	ToolApprovalCanceled   = observation.EventTypeToolApprovalCanceled
+	HostedToolCall         = observation.EventTypeHostedToolCall
+	HostedToolResult       = observation.EventTypeHostedToolResult
+	MCPServerConnecting    = observation.EventTypeMCPServerConnecting
+	MCPServerReady         = observation.EventTypeMCPServerReady
+	MCPServerFailed        = observation.EventTypeMCPServerFailed
+	MCPToolsListed         = observation.EventTypeMCPToolsListed
+	MCPToolCall            = observation.EventTypeMCPToolCall
+	MCPToolResult          = observation.EventTypeMCPToolResult
+	SkillDetected          = observation.EventTypeSkillDetected
+	SkillLoaded            = observation.EventTypeSkillLoaded
+	SkillBlocked           = observation.EventTypeSkillBlocked
+	SkillInstallRequired   = observation.EventTypeSkillInstallRequired
+	SkillDisclosureApplied = observation.EventTypeSkillDisclosureApplied
+	ContextCompact         = observation.EventTypeContextCompact
+	ContextCompactDebug    = observation.EventTypeContextCompactDebug
+	ContextContinue        = observation.EventTypeContextContinue
+	ThreadEntryCommitted   = observation.EventTypeThreadEntryCommitted
+	ControlSignal          = observation.EventTypeControlSignal
+	BudgetExceeded         = observation.EventTypeBudgetExceeded
+	StepEnd                = observation.EventTypeStepEnd
+	RunEnd                 = observation.EventTypeRunEnd
 )
 
 type Event struct {

@@ -786,7 +786,7 @@ type EventSink interface {
 }
 
 type Event struct {
-	Type             string                            `json:"type"`
+	Type             observation.EventType             `json:"type"`
 	TraceID          TraceID                           `json:"trace_id,omitempty"`
 	RunID            RunID                             `json:"run_id,omitempty"`
 	ThreadID         ThreadID                          `json:"thread_id,omitempty"`
@@ -814,6 +814,28 @@ type Event struct {
 	Sources          []SourceRef                       `json:"sources,omitempty"`
 	Metadata         map[string]any                    `json:"metadata,omitempty"`
 	Timestamp        time.Time                         `json:"timestamp,omitempty"`
+}
+
+func (e Event) Validate() error {
+	if !e.Type.Valid() {
+		return fmt.Errorf("unsupported runtime event type %q", e.Type)
+	}
+	if e.ContextStatus != nil {
+		if err := e.ContextStatus.Validate(); err != nil {
+			return fmt.Errorf("invalid context status: %w", err)
+		}
+	}
+	if e.Compaction != nil {
+		if err := e.Compaction.Validate(); err != nil {
+			return fmt.Errorf("invalid compaction event: %w", err)
+		}
+	}
+	if e.CompactionDebug != nil {
+		if err := e.CompactionDebug.Validate(); err != nil {
+			return fmt.Errorf("invalid compaction debug event: %w", err)
+		}
+	}
+	return nil
 }
 
 type StreamObservationType string
@@ -2815,7 +2837,7 @@ func runtimeEvent(ev event.Event) Event {
 	stream := runtimeStreamObservation(ev, sanitized.Metadata)
 	ev = sanitized
 	return Event{
-		Type:            string(ev.Type),
+		Type:            ev.Type,
 		TraceID:         TraceID(ev.TraceID),
 		RunID:           RunID(ev.RunID),
 		ThreadID:        ThreadID(ev.ThreadID),
@@ -2967,8 +2989,8 @@ func runtimeCompactionEventWithError(raw, sanitized event.Event, sanitizedError 
 		return nil
 	}
 	rawMeta, _ := raw.Metadata.(map[string]any)
-	phase := stringFromMetadata(meta, "phase")
-	if phase == "" || (sanitizedError != "" && phase != observation.CompactionPhaseFailed && phase != observation.CompactionPhaseCancelled) {
+	phase := observation.CompactionPhase(stringFromMetadata(meta, "phase"))
+	if !phase.Valid() || (sanitizedError != "" && phase != observation.CompactionPhaseFailed && phase != observation.CompactionPhaseCancelled) {
 		return nil
 	}
 	out := observation.CompactionEvent{
@@ -3035,9 +3057,9 @@ func runtimeCompactionDebugEventWithError(raw, sanitized event.Event, sanitizedE
 		return nil
 	}
 	rawMeta, _ := raw.Metadata.(map[string]any)
-	stage := stringFromMetadata(meta, "stage")
-	status := stringFromMetadata(meta, "status")
-	if stage == "" || status == "" {
+	stage := observation.CompactionDebugStage(stringFromMetadata(meta, "stage"))
+	status := observation.CompactionDebugStatus(stringFromMetadata(meta, "status"))
+	if !stage.Valid() || !status.Valid() {
 		return nil
 	}
 	out := observation.CompactionDebugEvent{
@@ -3322,7 +3344,7 @@ func boolFromAnyMetadata(meta map[string]any, key string) bool {
 func runtimeObservationEvent(ev event.Event) observation.Event {
 	sanitized := event.Sanitize(ev)
 	return observation.Event{
-		Type:            string(sanitized.Type),
+		Type:            sanitized.Type,
 		TraceID:         sanitized.TraceID,
 		RunID:           sanitized.RunID,
 		ThreadID:        sanitized.ThreadID,

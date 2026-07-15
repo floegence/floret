@@ -98,9 +98,9 @@ func mergeContextStatuses(primary []ObservedContextStatus, secondary []ObservedC
 
 func contextStatusKey(status ObservedContextStatus) string {
 	if status.RequestID != "" {
-		return status.Phase + "\x00" + status.RequestID + "\x00" + fmt.Sprintf("%d", status.Attempt)
+		return string(status.Phase) + "\x00" + status.RequestID + "\x00" + fmt.Sprintf("%d", status.Attempt)
 	}
-	return status.Phase + "\x00" + status.LogicalRequestID + "\x00" + fmt.Sprintf("%d\x00%d\x00%d", status.Attempt, status.Step, status.ObservedAt.UTC().UnixNano())
+	return string(status.Phase) + "\x00" + status.LogicalRequestID + "\x00" + fmt.Sprintf("%d\x00%d\x00%d", status.Attempt, status.Step, status.ObservedAt.UTC().UnixNano())
 }
 
 func contextStatusesFromPromptRecords(requests []cache.ProviderRequestRecord, responses []cache.ProviderResponseRecord) []ObservedContextStatus {
@@ -163,7 +163,7 @@ func compactionEventKey(compact ObservedCompactionEvent) string {
 		compact.RequestID,
 		compact.ThreadID,
 		compact.TurnID,
-		compact.Phase,
+		string(compact.Phase),
 		compact.Trigger,
 		compact.Reason,
 		fmt.Sprintf("%d", compact.TokensBefore),
@@ -194,8 +194,8 @@ func compactionDebugEventKey(debug ObservedCompactionDebugEvent) string {
 	return strings.Join([]string{
 		debug.OperationID,
 		debug.RequestID,
-		debug.Stage,
-		debug.Status,
+		string(debug.Stage),
+		string(debug.Status),
 		fmt.Sprintf("%d", debug.CompactionConvergenceAttempt),
 		fmt.Sprintf("%d", debug.Step),
 		fmt.Sprintf("%d", debug.ObservedAt.UTC().UnixNano()),
@@ -284,7 +284,7 @@ func providerUsageFromPromptResponse(resp cache.ProviderResponseRecord) observat
 
 func observationEvent(ev event.Event) observation.Event {
 	return observation.Event{
-		Type:         string(ev.Type),
+		Type:         ev.Type,
 		TraceID:      ev.TraceID,
 		RunID:        ev.RunID,
 		ThreadID:     ev.ThreadID,

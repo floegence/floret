@@ -233,7 +233,7 @@ func TestProjectThreadTurnKeepsRequestedApprovalWaitingAfterSuccessfulTurnMarker
 				ThreadID:  "thread-waiting-approval",
 				TurnID:    "turn-waiting-approval",
 				Kind:      ThreadDetailEventApproval,
-				Type:      observation.EventTypeToolApprovalRequested,
+				Type:      string(observation.EventTypeToolApprovalRequested),
 				CreatedAt: now,
 				Approval:  &ThreadDetailApproval{State: "requested", ToolID: "exec-1", ToolName: "terminal.exec"},
 				ActivityTimeline: projectionSingleItemTimeline("run-waiting-approval", "thread-waiting-approval", "turn-waiting-approval", observation.ActivityItem{
@@ -339,7 +339,7 @@ func TestProjectThreadTurnIgnoresStartedMarkerBeforeApprovalActivity(t *testing.
 				ThreadID:  "thread-started-approval",
 				TurnID:    "turn-started-approval",
 				Kind:      ThreadDetailEventApproval,
-				Type:      observation.EventTypeToolApprovalRequested,
+				Type:      string(observation.EventTypeToolApprovalRequested),
 				CreatedAt: now.Add(3*time.Second + 5*time.Millisecond),
 				Approval: &ThreadDetailApproval{
 					State:    "requested",
@@ -410,7 +410,7 @@ func TestProjectThreadTurnPromotesToolDispatchToRunning(t *testing.T) {
 				ThreadID:  "thread-dispatch",
 				TurnID:    "turn-dispatch",
 				Kind:      ThreadDetailEventToolDispatch,
-				Type:      observation.EventTypeToolDispatchStarted,
+				Type:      string(observation.EventTypeToolDispatchStarted),
 				CreatedAt: now.Add(25 * time.Millisecond),
 				Message: &ThreadDetailMessage{Activity: &observation.ActivityPresentation{
 					Label:    "curl -s https://example.test",
@@ -469,7 +469,7 @@ func TestProjectThreadTurnMergesToolActivityUpdate(t *testing.T) {
 				ThreadID:  "thread-terminal-live",
 				TurnID:    "turn-terminal-live",
 				Kind:      ThreadDetailEventToolDispatch,
-				Type:      observation.EventTypeToolDispatchStarted,
+				Type:      string(observation.EventTypeToolDispatchStarted),
 				CreatedAt: now.Add(10 * time.Millisecond),
 				ToolCall:  &ThreadDetailToolCall{ID: "call-1", Name: "terminal.exec"},
 			},
@@ -479,7 +479,7 @@ func TestProjectThreadTurnMergesToolActivityUpdate(t *testing.T) {
 				ThreadID:  "thread-terminal-live",
 				TurnID:    "turn-terminal-live",
 				Kind:      ThreadDetailEventToolActivity,
-				Type:      observation.EventTypeToolActivityUpdated,
+				Type:      string(observation.EventTypeToolActivityUpdated),
 				CreatedAt: now.Add(20 * time.Millisecond),
 				Message: &ThreadDetailMessage{Activity: &observation.ActivityPresentation{
 					Renderer: observation.ActivityRendererTerminal,
@@ -524,7 +524,7 @@ func TestProjectThreadTurnSettlesApprovalAndToolFromDetailEvents(t *testing.T) {
 				ThreadID:  "thread-settled",
 				TurnID:    "turn-settled",
 				Kind:      ThreadDetailEventApproval,
-				Type:      observation.EventTypeToolApprovalRequested,
+				Type:      string(observation.EventTypeToolApprovalRequested),
 				CreatedAt: now,
 				Approval:  &ThreadDetailApproval{State: "requested", ToolID: "call-1", ToolName: "terminal.exec"},
 				ActivityTimeline: projectionSingleItemTimeline("run-settled", "thread-settled", "turn-settled", observation.ActivityItem{
@@ -547,7 +547,7 @@ func TestProjectThreadTurnSettlesApprovalAndToolFromDetailEvents(t *testing.T) {
 				ThreadID:  "thread-settled",
 				TurnID:    "turn-settled",
 				Kind:      ThreadDetailEventApproval,
-				Type:      observation.EventTypeToolApprovalApproved,
+				Type:      string(observation.EventTypeToolApprovalApproved),
 				CreatedAt: now.Add(time.Second),
 				Approval:  &ThreadDetailApproval{State: "approved", ToolID: "call-1", ToolName: "terminal.exec"},
 			},
@@ -632,7 +632,7 @@ func TestProjectThreadTurnSettlesWaitingApprovalOnFailedTurn(t *testing.T) {
 				ThreadID:  "thread-failed",
 				TurnID:    "turn-failed",
 				Kind:      ThreadDetailEventApproval,
-				Type:      observation.EventTypeToolApprovalRequested,
+				Type:      string(observation.EventTypeToolApprovalRequested),
 				CreatedAt: now,
 				Approval:  &ThreadDetailApproval{State: "requested", ToolID: "call-1", ToolName: "terminal.exec"},
 				ActivityTimeline: projectionSingleItemTimeline("run-failed", "thread-failed", "turn-failed", observation.ActivityItem{

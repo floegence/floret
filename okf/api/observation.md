@@ -22,6 +22,12 @@ summaries without parsing assistant text or depending on implementation types.
 * `CompactionEventsFromEvents` extracts compaction lifecycle facts.
 * `CompactionDebugEventsFromEvents` extracts safe compaction diagnostic facts.
 
+Public event kinds and finite lifecycle fields are typed contracts.
+`EventType`, context phase/display status, compaction phase/status, and
+compaction debug stage/status expose `Valid`; their containing DTOs expose
+`Validate`. Unknown values and inconsistent compaction phase/status pairs are
+contract errors rather than normal presentation states.
+
 `BuildActivityTimeline` owns the product-neutral terminal semantics for activity
 items within one sanitized observation group. Only explicit terminal `run_end`
 observations settle unresolved items: cancelled runs produce `canceled`

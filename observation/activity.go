@@ -14,21 +14,6 @@ import (
 )
 
 const (
-	EventTypeToolCall              = "tool_call"
-	EventTypeToolDispatchStarted   = "tool_dispatch_started"
-	EventTypeToolActivityUpdated   = "tool_activity_updated"
-	EventTypeToolResult            = "tool_result"
-	EventTypeToolApprovalRequested = "tool_approval_requested"
-	EventTypeToolApprovalApproved  = "tool_approval_approved"
-	EventTypeToolApprovalRejected  = "tool_approval_rejected"
-	EventTypeToolApprovalTimedOut  = "tool_approval_timed_out"
-	EventTypeToolApprovalCanceled  = "tool_approval_canceled"
-	EventTypeHostedToolCall        = "hosted_tool_call"
-	EventTypeHostedToolResult      = "hosted_tool_result"
-	EventTypeControlSignal         = "control_signal"
-	EventTypeBudgetExceeded        = "budget_exceeded"
-	EventTypeRunEnd                = "run_end"
-
 	ActivityTimelineSchemaVersion = 1
 
 	ActivityKindTool    ActivityKind = "tool"

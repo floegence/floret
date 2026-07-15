@@ -18,6 +18,10 @@ must be observable through events or testable state.
 Public sinks and host-facing projections use sanitized events. Observation DTOs
 are intentionally narrower than raw debug records and omit provider payloads,
 reasoning, tool arguments, tool results, and local paths.
+Runtime and observation events share the public `observation.EventType`
+vocabulary. Finite context and compaction states are typed and validated at host
+boundaries; consumers must reject unknown values instead of mapping them to a
+successful or stable state.
 
 # Main Projections
 

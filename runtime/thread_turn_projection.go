@@ -974,14 +974,14 @@ func threadTurnProjectionRunEndStatus(status string) string {
 	}
 }
 
-func threadTurnProjectionApprovalEventType(detail ThreadDetailEvent) string {
-	switch strings.TrimSpace(detail.Type) {
+func threadTurnProjectionApprovalEventType(detail ThreadDetailEvent) observation.EventType {
+	switch observation.EventType(strings.TrimSpace(detail.Type)) {
 	case observation.EventTypeToolApprovalRequested,
 		observation.EventTypeToolApprovalApproved,
 		observation.EventTypeToolApprovalRejected,
 		observation.EventTypeToolApprovalTimedOut,
 		observation.EventTypeToolApprovalCanceled:
-		return strings.TrimSpace(detail.Type)
+		return observation.EventType(strings.TrimSpace(detail.Type))
 	}
 	if detail.Approval == nil {
 		return observation.EventTypeToolApprovalRequested

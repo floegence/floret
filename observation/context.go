@@ -10,21 +10,38 @@ import (
 )
 
 const (
-	ContextPhaseProjectedRequest = "projected_request"
-	ContextPhaseProviderUsage    = "provider_usage"
+	ContextPhaseProjectedRequest ContextPhase = "projected_request"
+	ContextPhaseProviderUsage    ContextPhase = "provider_usage"
 
-	ContextStatusStable        = "stable"
-	ContextStatusNearThreshold = "near_threshold"
-	ContextStatusWillCompact   = "will_compact"
-	ContextStatusHardLimit     = "hard_limit"
-	ContextStatusEstimated     = "estimated"
+	ContextStatusStable        ContextDisplayStatus = "stable"
+	ContextStatusNearThreshold ContextDisplayStatus = "near_threshold"
+	ContextStatusWillCompact   ContextDisplayStatus = "will_compact"
+	ContextStatusHardLimit     ContextDisplayStatus = "hard_limit"
+	ContextStatusEstimated     ContextDisplayStatus = "estimated"
 
 	ProviderUsagePhaseStreamUsage        = "stream_usage"
 	ProviderUsagePhaseFinalContextStatus = "final_context_status"
 )
 
+type ContextPhase string
+
+func (p ContextPhase) Valid() bool {
+	return p == ContextPhaseProjectedRequest || p == ContextPhaseProviderUsage
+}
+
+type ContextDisplayStatus string
+
+func (s ContextDisplayStatus) Valid() bool {
+	switch s {
+	case ContextStatusStable, ContextStatusNearThreshold, ContextStatusWillCompact, ContextStatusHardLimit, ContextStatusEstimated:
+		return true
+	default:
+		return false
+	}
+}
+
 type Event struct {
-	Type            string                `json:"type"`
+	Type            EventType             `json:"type"`
 	TraceID         string                `json:"trace_id,omitempty"`
 	RunID           string                `json:"run_id,omitempty"`
 	ThreadID        string                `json:"thread_id,omitempty"`
@@ -110,7 +127,7 @@ type ContextStatus struct {
 	RequestID        string                 `json:"request_id,omitempty"`
 	LogicalRequestID string                 `json:"logical_request_id,omitempty"`
 	Attempt          int                    `json:"attempt,omitempty"`
-	Phase            string                 `json:"phase"`
+	Phase            ContextPhase           `json:"phase"`
 	Provider         string                 `json:"provider,omitempty"`
 	Model            string                 `json:"model,omitempty"`
 	ObservedAt       time.Time              `json:"observed_at"`
@@ -119,7 +136,17 @@ type ContextStatus struct {
 	ContextPressure  config.ContextPressure `json:"context_pressure,omitempty"`
 	UsedRatio        float64                `json:"used_ratio,omitempty"`
 	ThresholdRatio   float64                `json:"threshold_ratio,omitempty"`
-	Status           string                 `json:"status"`
+	Status           ContextDisplayStatus   `json:"status"`
+}
+
+func (s ContextStatus) Validate() error {
+	if !s.Phase.Valid() {
+		return fmt.Errorf("unsupported context phase %q", s.Phase)
+	}
+	if !s.Status.Valid() {
+		return fmt.Errorf("unsupported context display status %q", s.Status)
+	}
+	return nil
 }
 
 func ContextStatusFromRequest(req RequestObservation) ContextStatus {
@@ -249,7 +276,7 @@ func RequestID(runID string, step int) string {
 	return fmt.Sprintf("%s:req:%d", runID, step)
 }
 
-func ContextPressureDisplayStatus(pressure config.ContextPressure) string {
+func ContextPressureDisplayStatus(pressure config.ContextPressure) ContextDisplayStatus {
 	if pressure.HardLimitExceeded {
 		return ContextStatusHardLimit
 	}

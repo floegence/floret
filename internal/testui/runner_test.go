@@ -3237,7 +3237,7 @@ func fakeExternalBraveSearchProfile() ProviderProfile {
 	}
 }
 
-func countContextStatuses(statuses []ObservedContextStatus, phase string, requestID string) int {
+func countContextStatuses(statuses []ObservedContextStatus, phase observation.ContextPhase, requestID string) int {
 	count := 0
 	for _, status := range statuses {
 		if status.Phase == phase && status.RequestID == requestID {

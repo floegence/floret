@@ -1,31 +1,55 @@
 package observation
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/floegence/floret/config"
 )
 
 const (
-	EventTypeContextCompactDebug = "context_compact_debug"
+	CompactionDebugStageBegin                   CompactionDebugStage = "begin"
+	CompactionDebugStagePoll                    CompactionDebugStage = "poll"
+	CompactionDebugStagePreflight               CompactionDebugStage = "preflight"
+	CompactionDebugStageGenerateAttemptStart    CompactionDebugStage = "generate_attempt_start"
+	CompactionDebugStageGenerateAttemptComplete CompactionDebugStage = "generate_attempt_complete"
+	CompactionDebugStageRequestRebuildStart     CompactionDebugStage = "request_rebuild_start"
+	CompactionDebugStageRequestRebuildComplete  CompactionDebugStage = "request_rebuild_complete"
+	CompactionDebugStageRequestValidation       CompactionDebugStage = "request_validation"
+	CompactionDebugStageInstallStart            CompactionDebugStage = "install_start"
+	CompactionDebugStageInstallComplete         CompactionDebugStage = "install_complete"
 
-	CompactionDebugStageBegin                   = "begin"
-	CompactionDebugStagePoll                    = "poll"
-	CompactionDebugStagePreflight               = "preflight"
-	CompactionDebugStageGenerateAttemptStart    = "generate_attempt_start"
-	CompactionDebugStageGenerateAttemptComplete = "generate_attempt_complete"
-	CompactionDebugStageRequestRebuildStart     = "request_rebuild_start"
-	CompactionDebugStageRequestRebuildComplete  = "request_rebuild_complete"
-	CompactionDebugStageRequestValidation       = "request_validation"
-	CompactionDebugStageInstallStart            = "install_start"
-	CompactionDebugStageInstallComplete         = "install_complete"
-
-	CompactionDebugStatusRunning   = "running"
-	CompactionDebugStatusOK        = "ok"
-	CompactionDebugStatusRetrying  = "retrying"
-	CompactionDebugStatusFailed    = "failed"
-	CompactionDebugStatusCancelled = "cancelled"
+	CompactionDebugStatusRunning   CompactionDebugStatus = "running"
+	CompactionDebugStatusOK        CompactionDebugStatus = "ok"
+	CompactionDebugStatusRetrying  CompactionDebugStatus = "retrying"
+	CompactionDebugStatusFailed    CompactionDebugStatus = "failed"
+	CompactionDebugStatusCancelled CompactionDebugStatus = "cancelled"
 )
+
+type CompactionDebugStage string
+
+func (s CompactionDebugStage) Valid() bool {
+	switch s {
+	case CompactionDebugStageBegin, CompactionDebugStagePoll, CompactionDebugStagePreflight,
+		CompactionDebugStageGenerateAttemptStart, CompactionDebugStageGenerateAttemptComplete,
+		CompactionDebugStageRequestRebuildStart, CompactionDebugStageRequestRebuildComplete,
+		CompactionDebugStageRequestValidation, CompactionDebugStageInstallStart, CompactionDebugStageInstallComplete:
+		return true
+	default:
+		return false
+	}
+}
+
+type CompactionDebugStatus string
+
+func (s CompactionDebugStatus) Valid() bool {
+	switch s {
+	case CompactionDebugStatusRunning, CompactionDebugStatusOK, CompactionDebugStatusRetrying, CompactionDebugStatusFailed, CompactionDebugStatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
 
 type CompactionDebugEvent struct {
 	RunID                            string                 `json:"run_id,omitempty"`
@@ -34,8 +58,8 @@ type CompactionDebugEvent struct {
 	Step                             int                    `json:"step,omitempty"`
 	OperationID                      string                 `json:"operation_id,omitempty"`
 	RequestID                        string                 `json:"request_id,omitempty"`
-	Stage                            string                 `json:"stage"`
-	Status                           string                 `json:"status"`
+	Stage                            CompactionDebugStage   `json:"stage"`
+	Status                           CompactionDebugStatus  `json:"status"`
 	Trigger                          string                 `json:"trigger,omitempty"`
 	Reason                           string                 `json:"reason,omitempty"`
 	Source                           string                 `json:"source,omitempty"`
@@ -63,17 +87,27 @@ type CompactionDebugEvent struct {
 	ObservedAt                       time.Time              `json:"observed_at"`
 }
 
+func (e CompactionDebugEvent) Validate() error {
+	if !e.Stage.Valid() {
+		return fmt.Errorf("unsupported compaction debug stage %q", e.Stage)
+	}
+	if !e.Status.Valid() {
+		return fmt.Errorf("unsupported compaction debug status %q", e.Status)
+	}
+	return nil
+}
+
 func CompactionDebugEventFromEvent(ev Event) (CompactionDebugEvent, bool) {
 	if ev.CompactionDebug != nil {
-		return *ev.CompactionDebug, true
+		return *ev.CompactionDebug, ev.CompactionDebug.Validate() == nil
 	}
 	if ev.Type != EventTypeContextCompactDebug {
 		return CompactionDebugEvent{}, false
 	}
 	meta := ev.Metadata
-	stage := stringFromAny(meta["stage"])
-	status := stringFromAny(meta["status"])
-	if stage == "" || status == "" {
+	stage := CompactionDebugStage(stringFromAny(meta["stage"]))
+	status := CompactionDebugStatus(stringFromAny(meta["status"]))
+	if !stage.Valid() || !status.Valid() {
 		return CompactionDebugEvent{}, false
 	}
 	out := CompactionDebugEvent{
@@ -131,13 +165,6 @@ func CompactionDebugEventFromEvent(ev Event) (CompactionDebugEvent, bool) {
 		}
 	}
 	out.RequestEstimate = requestEstimateFromAny(meta["request_estimate"])
-	if out.Status != CompactionDebugStatusRunning &&
-		out.Status != CompactionDebugStatusOK &&
-		out.Status != CompactionDebugStatusRetrying &&
-		out.Status != CompactionDebugStatusFailed &&
-		out.Status != CompactionDebugStatusCancelled {
-		return CompactionDebugEvent{}, false
-	}
 	return out, true
 }
 

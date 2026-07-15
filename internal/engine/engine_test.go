@@ -4459,7 +4459,7 @@ func engineTestActivityTimeline(events []event.Event) observation.ActivityTimeli
 	for _, ev := range events {
 		sanitized := event.Sanitize(ev)
 		observed = append(observed, observation.Event{
-			Type:       string(sanitized.Type),
+			Type:       sanitized.Type,
 			TraceID:    sanitized.TraceID,
 			RunID:      sanitized.RunID,
 			ThreadID:   sanitized.ThreadID,

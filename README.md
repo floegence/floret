@@ -232,6 +232,11 @@ Send a `runtime.EventSink` to receive sanitized lifecycle events and use the
 Events are designed for host rendering and diagnostics; they are not a secret
 store or a replacement for your product database.
 
+Public lifecycle fields use finite types such as `observation.EventType`,
+`ContextPhase`, `ContextDisplayStatus`, `CompactionPhase`, and
+`CompactionStatus`. Hosts should validate events at their integration boundary
+and reject unknown values instead of assigning a normal display state.
+
 When a host needs a durable display projection, use `ThreadTurnProjection` and
 the public detail APIs. Do not read Floret's storage tables or rebuild
 provider-visible history in the host.

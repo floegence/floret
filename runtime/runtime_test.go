@@ -724,7 +724,7 @@ func TestHostStreamsProjectedContextStatus(t *testing.T) {
 		status.ContextPressure.ContextWindowTokens != config.DefaultContextWindowTokens ||
 		status.ContextPressure.ProjectedInputTokens <= 0 ||
 		status.UsedRatio <= 0 ||
-		strings.TrimSpace(status.Status) == "" {
+		strings.TrimSpace(string(status.Status)) == "" {
 		t.Fatalf("context status = %#v", status)
 	}
 }
@@ -2723,6 +2723,26 @@ func TestHostReadTurnProjectionFromDurableDetail(t *testing.T) {
 	}
 	if _, err := host.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "thread", TurnID: "turn-1"}); err == nil || !strings.Contains(err.Error(), "run id is required") {
 		t.Fatalf("ReadTurnProjection without run id err = %v, want required run id", err)
+	}
+}
+
+func TestRuntimeEventValidateRejectsUnknownPublicState(t *testing.T) {
+	t.Parallel()
+
+	if err := (Event{Type: observation.EventTypeStepStart}).Validate(); err != nil {
+		t.Fatalf("valid runtime event: %v", err)
+	}
+	if err := (Event{Type: "future_event"}).Validate(); err == nil {
+		t.Fatal("unknown runtime event type validated")
+	}
+	if err := (Event{
+		Type: observation.EventTypeProviderUsage,
+		ContextStatus: &observation.ContextStatus{
+			Phase:  observation.ContextPhaseProjectedRequest,
+			Status: "future_status",
+		},
+	}).Validate(); err == nil {
+		t.Fatal("runtime event with unknown context status validated")
 	}
 }
 

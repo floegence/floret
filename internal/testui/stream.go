@@ -114,7 +114,7 @@ func (r *streamingEventRecorder) Emit(ev event.Event) {
 				At:              ev.Timestamp,
 				CompactionDebug: &debug,
 				EngineEvent:     &ev,
-				Message:         debug.Stage,
+				Message:         string(debug.Stage),
 				Error:           debug.Error,
 			})
 		}

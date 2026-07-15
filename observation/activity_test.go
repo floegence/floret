@@ -600,7 +600,7 @@ func TestBuildActivityTimelineProjectsApprovalDenialAsSingleToolItem(t *testing.
 	start := time.UnixMilli(1_700_000_003_000)
 	tests := []struct {
 		name       string
-		eventType  string
+		eventType  EventType
 		wantStatus ActivityStatus
 		wantState  string
 	}{
