@@ -236,6 +236,11 @@ When a host needs a durable display projection, use `ThreadTurnProjection` and
 the public detail APIs. Do not read Floret's storage tables or rebuild
 provider-visible history in the host.
 
+Every turn projection carries `ThroughOrdinal`, the greatest durable detail
+event ordinal included in that projection. Compare it only within the explicit
+thread, turn, and run identities to reject duplicate or stale projections.
+`ProjectedAt` is observation time only and is not an ordering key.
+
 ### Runtime flow
 
 ```text

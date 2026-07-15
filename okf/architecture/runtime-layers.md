@@ -164,6 +164,10 @@ Hosts that need to reload the display projection for a known hosted turn should
 use `ReadTurnProjection` with explicit `ThreadID`, `TurnID`, and `RunID`. This
 keeps execution identity host-supplied while Floret rebuilds assistant text,
 control-signal segments, and activity timelines from durable detail.
+Live, terminal-result, pending-tool settlement, and read-back projections share
+one version rule: `ThroughOrdinal` is the greatest durable journal-detail
+ordinal included by the common projector. Projection timestamps are diagnostic
+only.
 
 Closing a subagent stops current child execution and queued work. It preserves
 the child thread and journal so the host can still read detail after close,

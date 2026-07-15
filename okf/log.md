@@ -1,5 +1,9 @@
 # Floret OKF Update Log
 
+## 2026-07-15
+* **Fix**: Added durable monotonic `ThroughOrdinal` versioning to every hosted
+  turn projection and clarified that `ProjectedAt` is not an ordering key.
+
 ## 2026-07-14
 * **Breaking**: Removed tool-declared parallel-safety scheduling. Ordinary calls
   in one model batch now execute concurrently, while provider-visible results

@@ -193,6 +193,10 @@ pending-settlement, and read-back projections are canonical current-turn
 display projections built by the Floret host from raw-capable journal facts;
 the default preview-only detail read model is for listing and inspection, not
 for authoritative assistant markdown.
+`ThreadTurnProjection.ThroughOrdinal` is the maximum durable detail-event
+ordinal included in the projection. Hosts compare it only within the explicit
+`ThreadID`, `TurnID`, and `RunID` identity tuple to reject duplicate or stale
+updates. `ProjectedAt` records projection time but does not define ordering.
 `ReadTurnProjection` requires explicit `RunID` input instead of inferring it
 from stored rows, because `RunID` is execution identity and not the thread or
 turn storage identity. A missing thread is reported with `ErrThreadNotFound`; a

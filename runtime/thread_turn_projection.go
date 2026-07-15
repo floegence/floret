@@ -34,13 +34,14 @@ type ProjectThreadTurnRequest struct {
 }
 
 type ThreadTurnProjection struct {
-	ThreadID  ThreadID                      `json:"thread_id,omitempty"`
-	TurnID    TurnID                        `json:"turn_id,omitempty"`
-	RunID     RunID                         `json:"run_id,omitempty"`
-	TraceID   TraceID                       `json:"trace_id,omitempty"`
-	Status    TurnStatus                    `json:"status,omitempty"`
-	Segments  []ThreadTurnProjectionSegment `json:"segments,omitempty"`
-	Projected time.Time                     `json:"projected_at,omitempty"`
+	ThreadID       ThreadID                      `json:"thread_id,omitempty"`
+	TurnID         TurnID                        `json:"turn_id,omitempty"`
+	RunID          RunID                         `json:"run_id,omitempty"`
+	TraceID        TraceID                       `json:"trace_id,omitempty"`
+	Status         TurnStatus                    `json:"status,omitempty"`
+	Segments       []ThreadTurnProjectionSegment `json:"segments,omitempty"`
+	ThroughOrdinal int64                         `json:"through_ordinal,omitempty"`
+	ProjectedAt    time.Time                     `json:"projected_at,omitempty"`
 }
 
 type ThreadTurnProjectionSegment struct {
@@ -59,13 +60,14 @@ type ThreadTurnProjectionSignal struct {
 
 func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 	projection := ThreadTurnProjection{
-		ThreadID:  req.ThreadID,
-		TurnID:    req.TurnID,
-		RunID:     req.RunID,
-		TraceID:   req.TraceID,
-		Projected: time.Now().UTC(),
+		ThreadID:    req.ThreadID,
+		TurnID:      req.TurnID,
+		RunID:       req.RunID,
+		TraceID:     req.TraceID,
+		ProjectedAt: time.Now().UTC(),
 	}
 	events := threadTurnProjectionEvents(req.Events, req.TurnID)
+	projection.ThroughOrdinal = threadTurnProjectionThroughOrdinal(events)
 	projection.Status = threadTurnProjectionStatus(events)
 	if len(events) == 0 {
 		return projection
@@ -179,6 +181,16 @@ func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 	threadTurnProjectionApplyTerminalSettlements(&projection, terminalSettlements)
 	threadTurnProjectionMergeDuplicateActivityItems(&projection)
 	return projection
+}
+
+func threadTurnProjectionThroughOrdinal(events []ThreadDetailEvent) int64 {
+	var through int64
+	for _, ev := range events {
+		if ev.Ordinal > through {
+			through = ev.Ordinal
+		}
+	}
+	return through
 }
 
 func threadTurnProjectionStatus(events []ThreadDetailEvent) TurnStatus {

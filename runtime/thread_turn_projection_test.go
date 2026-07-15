@@ -7,6 +7,28 @@ import (
 	"github.com/floegence/floret/observation"
 )
 
+func TestProjectThreadTurnUsesMaximumIncludedOrdinal(t *testing.T) {
+	t.Parallel()
+
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
+		ThreadID: "thread-1",
+		TurnID:   "turn-1",
+		RunID:    "run-1",
+		Events: []ThreadDetailEvent{
+			{ID: "event-9", Ordinal: 9, TurnID: "turn-2", Kind: ThreadDetailEventAssistantMessage, Message: &ThreadDetailMessage{Content: "other turn"}},
+			{ID: "event-4", Ordinal: 4, TurnID: "turn-1", Kind: ThreadDetailEventAssistantMessage, Message: &ThreadDetailMessage{Content: "latest"}},
+			{ID: "event-2", Ordinal: 2, TurnID: "turn-1", Kind: ThreadDetailEventAssistantMessage, Message: &ThreadDetailMessage{Content: "earlier"}},
+		},
+	})
+
+	if projection.ThroughOrdinal != 4 {
+		t.Fatalf("ThroughOrdinal = %d, want 4", projection.ThroughOrdinal)
+	}
+	if projection.ProjectedAt.IsZero() {
+		t.Fatal("ProjectedAt is zero")
+	}
+}
+
 func TestProjectThreadTurnOrdersTextActivityAndControlSegments(t *testing.T) {
 	now := time.Unix(100, 0)
 	projection := ProjectThreadTurn(ProjectThreadTurnRequest{

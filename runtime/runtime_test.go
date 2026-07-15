@@ -2712,6 +2712,9 @@ func TestHostReadTurnProjectionFromDurableDetail(t *testing.T) {
 	if runtimeProjectionAssistantText(result.Projection) != runtimeProjectionAssistantText(projection) {
 		t.Fatalf("read projection differs from turn result: result=%#v read=%#v", result.Projection, projection)
 	}
+	if projection.ThroughOrdinal <= 0 || projection.ThroughOrdinal != result.Projection.ThroughOrdinal {
+		t.Fatalf("read ThroughOrdinal=%d, result=%d", projection.ThroughOrdinal, result.Projection.ThroughOrdinal)
+	}
 	if _, err := host.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "thread", TurnID: "missing-turn", RunID: "run-missing"}); !errors.Is(err, ErrTurnNotFound) {
 		t.Fatalf("ReadTurnProjection err = %v, want ErrTurnNotFound", err)
 	}
@@ -3599,7 +3602,18 @@ func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
 	if len(liveProjections) != committedEvents {
 		t.Fatalf("live projections=%d, want one per committed event %d", len(liveProjections), committedEvents)
 	}
+	for i, projection := range liveProjections {
+		if projection.ThroughOrdinal <= 0 {
+			t.Fatalf("live projection %d ThroughOrdinal=%d, want positive", i, projection.ThroughOrdinal)
+		}
+		if i > 0 && projection.ThroughOrdinal <= liveProjections[i-1].ThroughOrdinal {
+			t.Fatalf("live projection ordinals did not advance: previous=%d current=%d", liveProjections[i-1].ThroughOrdinal, projection.ThroughOrdinal)
+		}
+	}
 	finalLiveProjection := liveProjections[len(liveProjections)-1]
+	if finalLiveProjection.ThroughOrdinal != result.Projection.ThroughOrdinal {
+		t.Fatalf("final live ThroughOrdinal=%d, result=%d", finalLiveProjection.ThroughOrdinal, result.Projection.ThroughOrdinal)
+	}
 	if got := runtimeProjectionSegmentKinds(finalLiveProjection.Segments); !slices.Equal(got, runtimeProjectionSegmentKinds(result.Projection.Segments)) {
 		t.Fatalf("final live projection segments = %#v, want %#v", got, runtimeProjectionSegmentKinds(result.Projection.Segments))
 	}
