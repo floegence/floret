@@ -51,7 +51,8 @@ Floret 提供这些底层能力，却不会接管你的产品。它不是 Agent 
 ### 为不接受预设的产品而生
 
 - **保留模型接入权。** 可使用内置配置，也可实现 `runtime.ModelGateway`。Floret 管理请求与续接生命周期，传输和凭据仍归产品所有。
-- **让工具随业务状态变化。** 通过 `tools.Registry` 注册严格的业务工具；再用 `runtime.ToolSurfaceProvider` 在一次运行的安全点更新工具、托管能力、指令和宿主上下文。
+- **定义真正属于业务的 Agent。** 通过 `config.AgentProfile.SystemPrompt` 或 `config.Config.SystemPrompt` 定义角色、语气、业务场景和操作规则，而不是交付一个千篇一律的通用助手。
+- **让工具和指令随业务状态变化。** 通过 `tools.Registry` 注册严格的业务工具；再用 `runtime.ToolSurfaceProvider` 在一次运行的安全点更新工具、托管能力、指令和宿主上下文。
 - **让对话成为可靠资产。** `runtime.Host` 管理线程、回合、重试、分叉、父级管理的子线程以及对 Provider 安全的历史。
 - **把审批策略留在产品中。** Floret 理解通用副作用、资源与审批状态；谁能做什么、在何处做、为何允许，仍由你的产品决定。
 - **让运行过程可见。** 将脱敏事件、上下文压力、压缩事实和中立活动时间线接入任意 UI，无需暴露提示词、密钥或内部存储记录。
@@ -107,11 +108,15 @@ result, err := host.RunTurn(ctx, runtime.RunTurnRequest{
 
 ## 生产环境的接入方式
 
+### 让提示词承载产品意图
+
+Floret 不会预设通用人设。使用 `config.AgentProfile.SystemPrompt` 或 `config.Config.SystemPrompt` 为 Agent 定义初始角色、语气、业务场景和操作规则。提示词属于宿主的产品配置，因此客服专家、运维分析师、编程助手或行业专家可以共享同一运行时，而不必改变运行时本身。
+
+需要根据上下文调整行为时，让 `ToolSurfaceProvider` 返回 `runtime.ToolSurface`。它可以和工具表面、托管能力、宿主上下文一起替换当前系统提示词，适合产品模式、工作区、权限或业务阶段发生变化的场景。Floret 会在模型请求和本地工具分发前刷新该表面，因此模型较早做出的决定不会悄然运行在新的指令或产品策略之外。
+
 ### 只授予运行时必需的权限
 
 使用 `tools.Registry` 定义业务动作。每个工具都有严格的 JSON Schema，并可描述副作用和资源。Floret 会校验调用、在需要时走审批流程、分发 Handler、记录结果并生成模型可见的结果；Handler 仍必须执行你的业务鉴权。
-
-需要动态改变能力时，让 `ToolSurfaceProvider` 返回 `runtime.ToolSurface`。它适用于产品模式、工作区切换、权限变更或托管能力变化。Floret 会在模型请求和本地工具分发前刷新该表面，因此模型较早做出的决定不会悄然越过较新的产品策略。
 
 ### 围绕明确的身份设计
 

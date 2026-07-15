@@ -43,7 +43,8 @@ La distinción importa cuando el producto debe tener identidad propia. La interf
 ### Para productos que no pueden conformarse con una receta cerrada
 
 - **Conserva el control de la ruta al modelo.** Usa la configuración integrada o implementa `runtime.ModelGateway`. Floret lleva las solicitudes y su continuación; el transporte y las credenciales siguen siendo del producto.
-- **Haz que las herramientas respondan al contexto.** Registra herramientas de dominio estrictas en `tools.Registry` y actualiza herramientas, capacidades alojadas, instrucciones y contexto del host con `runtime.ToolSurfaceProvider` en puntos seguros de una ejecución.
+- **Da a cada Agent un rol propio de tu negocio.** Con `config.AgentProfile.SystemPrompt` o `config.Config.SystemPrompt` defines el rol, el tono, el escenario de negocio y las reglas de operación, en lugar de entregar un asistente genérico.
+- **Haz que las herramientas y las instrucciones respondan al trabajo.** Registra herramientas de dominio estrictas en `tools.Registry` y actualiza herramientas, capacidades alojadas, instrucciones y contexto del host con `runtime.ToolSurfaceProvider` en puntos seguros de una ejecución.
 - **Convierte las conversaciones en activos fiables.** `runtime.Host` gestiona hilos, turnos, reintentos, bifurcaciones, subhilos administrados por el padre e historial seguro para el provider.
 - **Mantén la política de aprobación en el producto.** Floret entiende efectos, recursos y estados de aprobación genéricos. Tu producto decide quién puede hacer qué, dónde y por qué.
 - **Haz visible la ejecución.** Conecta eventos saneados, presión de contexto, hechos de compactación y líneas de tiempo de actividad neutrales a cualquier UI, sin exponer prompts, secretos ni registros internos.
@@ -95,11 +96,15 @@ Encontrarás un ejemplo completo y ejecutable en el [README en inglés](README.m
 
 ## Forma de llevarlo a producción
 
+### Deja que los prompts expresen la intención del producto
+
+Floret no impone una personalidad genérica. Define el rol inicial, el tono, el escenario de negocio y las reglas de operación de un Agent mediante `config.AgentProfile.SystemPrompt` o `config.Config.SystemPrompt`. El prompt es configuración de producto propiedad del host: un especialista de soporte, un analista de operaciones, un asistente de programación o un experto de dominio pueden compartir el mismo runtime sin cambiarlo.
+
+Para comportamiento dependiente del contexto, haz que `ToolSurfaceProvider` devuelva una `runtime.ToolSurface`. Puede sustituir el prompt de sistema actual junto con la superficie de herramientas, las capacidades alojadas y el contexto del host. Sirve para cambios de modo de producto, espacio de trabajo, permisos o etapa de negocio. Floret actualiza esa superficie antes de las solicitudes del modelo y del dispatch local; una decisión antigua del modelo no puede ejecutarse en silencio fuera de instrucciones o políticas de producto más recientes.
+
 ### Concede al runtime solo la autoridad que necesita
 
 Define acciones de dominio con `tools.Registry`. Cada herramienta tiene un JSON Schema estricto y puede describir efectos y recursos. Floret valida la llamada, solicita aprobación cuando hace falta, ejecuta el handler, registra el resultado y lo devuelve al modelo. El handler debe seguir aplicando la autorización específica de tu producto.
-
-Para capacidades dinámicas, haz que `ToolSurfaceProvider` devuelva una `runtime.ToolSurface`. Sirve para modos de producto, cambios de espacio de trabajo, permisos o capacidades alojadas. Floret actualiza esa superficie antes de las solicitudes del modelo y del dispatch local; una decisión antigua del modelo no puede sortear silenciosamente una política de producto más reciente.
 
 ### Trata las identidades de forma explícita
 

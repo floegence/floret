@@ -43,7 +43,8 @@ Cette séparation est essentielle lorsqu'un produit doit conserver sa personnali
 ### Pour les produits qui ne peuvent pas se contenter d'un modèle imposé
 
 - **Vous gardez la main sur le chemin vers le modèle.** Utilisez la configuration intégrée ou implémentez `runtime.ModelGateway`. Floret pilote les requêtes et leurs continuations ; le transport et les identifiants restent à votre produit.
-- **Les outils suivent le contexte.** Enregistrez des outils métier stricts dans `tools.Registry`, puis actualisez outils, capacités hébergées, instructions et contexte hôte avec `runtime.ToolSurfaceProvider` à des points sûrs du run.
+- **Donnez à chaque Agent un rôle ancré dans votre métier.** `config.AgentProfile.SystemPrompt` ou `config.Config.SystemPrompt` vous permet de définir rôle, ton, scénario métier et règles de fonctionnement, plutôt que de livrer un assistant générique.
+- **Les outils et les instructions suivent le travail.** Enregistrez des outils métier stricts dans `tools.Registry`, puis actualisez outils, capacités hébergées, instructions et contexte hôte avec `runtime.ToolSurfaceProvider` à des points sûrs du run.
 - **Les conversations deviennent des actifs fiables.** `runtime.Host` gère threads, tours, reprises, forks, sous-threads gérés par le parent et historique sûr pour le provider.
 - **La politique d'approbation reste dans le produit.** Floret comprend les effets, ressources et états d'approbation génériques. Votre produit décide qui peut faire quoi, où et pourquoi.
 - **L'exécution reste visible.** Connectez événements assainis, pression de contexte, faits de compaction et timelines d'activité neutres à n'importe quelle UI, sans exposer prompts, secrets ou enregistrements internes.
@@ -95,11 +96,15 @@ L'exemple complet et directement exécutable se trouve dans le [README anglais](
 
 ## Intégration en production
 
+### Faites porter l'intention produit par les prompts
+
+Floret n'impose pas de persona générique. Définissez le rôle initial, le ton, le scénario métier et les règles de fonctionnement de l'Agent avec `config.AgentProfile.SystemPrompt` ou `config.Config.SystemPrompt`. Le prompt est une configuration détenue par l'hôte : un spécialiste du support, un analyste des opérations, un assistant de programmation ou un expert métier peuvent partager le même runtime sans le modifier.
+
+Pour un comportement qui dépend du contexte, faites renvoyer une `runtime.ToolSurface` par `ToolSurfaceProvider`. Elle peut remplacer le prompt système courant en même temps que la surface d'outils, les capacités hébergées et le contexte hôte. Cela convient aux changements de mode produit, d'espace de travail, de droits ou d'étape métier. Floret actualise cette surface avant les requêtes modèle et le dispatch local, de sorte qu'une ancienne décision du modèle ne puisse pas s'exécuter discrètement en dehors de nouvelles instructions ou règles produit.
+
 ### N'accordez à la runtime que l'autorité nécessaire
 
 Définissez les actions métier avec `tools.Registry`. Chaque outil possède un JSON Schema strict et peut décrire effets et ressources. Floret valide l'appel, demande une approbation si nécessaire, exécute le handler, enregistre le résultat et le renvoie au modèle. Le handler doit toujours appliquer l'autorisation propre au produit.
-
-Pour faire varier les capacités, faites renvoyer une `runtime.ToolSurface` par `ToolSurfaceProvider`. Cela convient aux modes produit, changements d'espace de travail, de droits ou de capacités hébergées. Floret actualise cette surface avant les requêtes modèle et le dispatch local : une décision plus ancienne du modèle ne peut donc pas contourner silencieusement une politique produit plus récente.
 
 ### Traitez les identités explicitement
 

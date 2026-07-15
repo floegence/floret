@@ -62,10 +62,14 @@ execution lifecycle to Floret.
 - **Bring your model path.** Use built-in configuration or provide a
   `runtime.ModelGateway`; Floret drives the request and continuation lifecycle
   while your product retains transport and credential control.
-- **Make tools match the moment.** Register strict domain tools with
-  `tools.Registry`, then use `runtime.ToolSurfaceProvider` to refresh tools,
-  hosted capabilities, instructions, and host context at safe points during a
-  run.
+- **Give every agent a business-native role.** Set
+  `config.AgentProfile.SystemPrompt` or `config.Config.SystemPrompt` to define
+  the role, voice, business scenario, and operating rules your product needs,
+  rather than shipping a generic assistant.
+- **Keep tools and instructions in step with the work.** Register strict domain
+  tools with `tools.Registry`, then use `runtime.ToolSurfaceProvider` to
+  refresh tools, hosted capabilities, instructions, and host context at safe
+  points during a run.
 - **Keep conversations durable.** `runtime.Host` manages threads, turns,
   retries, forks, parent-managed child threads, and provider-safe history.
 - **Put approval policy where it belongs.** Floret understands generic effects,
@@ -86,7 +90,8 @@ execution lifecycle to Floret.
 | Compact an idle thread | `runtime.CompactThreadRequest` |
 | Keep Floret runtime data in memory or SQLite | `runtime.NewMemoryStore` or `runtime.OpenSQLiteStore` |
 | Keep model transport under product control | `runtime.ModelGateway` |
-| Change exposed capabilities during a run | `runtime.ToolSurfaceProvider` |
+| Define an agent's role and business instructions | `config.AgentProfile.SystemPrompt` or `config.Config.SystemPrompt` |
+| Change tools and instructions during a run | `runtime.ToolSurfaceProvider` |
 | Register domain actions | `tools.Registry` |
 | Render neutral runtime facts | `runtime.EventSink` and `observation` DTOs |
 
@@ -175,6 +180,23 @@ data. Your product data stays in your own store, keyed by `runtime.ThreadID`.
 
 ## Production Shape
 
+### Let prompts carry product intent
+
+Floret does not prescribe a generic persona. Give an agent its initial role,
+voice, business scenario, and operating rules through
+`config.AgentProfile.SystemPrompt` or `config.Config.SystemPrompt`. The prompt
+is host-owned product configuration, so different agents can behave like a
+support specialist, an operations analyst, a coding assistant, or a domain
+expert without changing the runtime.
+
+For context-dependent behavior, return a `runtime.ToolSurface` from a
+`ToolSurfaceProvider`. It can replace the current system prompt alongside the
+tool surface, hosted capabilities, and host context. This is useful when a
+conversation moves between product modes, workspaces, permissions, or business
+stages. Floret refreshes that surface before model requests and local dispatch,
+so an old model decision cannot silently run under newer instructions or
+product policy.
+
 ### Give the runtime only the authority it needs
 
 Define domain actions through `tools.Registry`. Each tool has a strict JSON
@@ -189,12 +211,6 @@ authorization rules.
 | Permission | generic approval hook and effect metadata | product authorization policy |
 | Execution | scheduling, panic recovery, and result projection | the domain action itself |
 | Output | model projection, neutral activity, and artifact references | product-specific display choices |
-
-For changing capabilities, return a `runtime.ToolSurface` from a
-`ToolSurfaceProvider`. This is useful for product modes, workspace changes,
-permission updates, or a different set of hosted capabilities. Floret refreshes
-the surface before model requests and local dispatch, so an old model decision
-cannot silently run against a newer product policy.
 
 ### Design around explicit identity
 

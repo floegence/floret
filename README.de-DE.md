@@ -43,7 +43,8 @@ Das ist entscheidend, wenn ein Produkt wirklich eigenständig bleiben muss. Ober
 ### Für Produkte, die keine Vorgaben akzeptieren können
 
 - **Der Modellzugang bleibt bei dir.** Nutze die eingebaute Konfiguration oder implementiere `runtime.ModelGateway`. Floret steuert Anfrage und Fortsetzung, Transport und Zugangsdaten bleiben beim Produkt.
-- **Tools passen sich dem Kontext an.** Registriere strikte Domänen-Tools in `tools.Registry` und erneuere mit `runtime.ToolSurfaceProvider` Tools, gehostete Fähigkeiten, Anweisungen und Host-Kontext an sicheren Punkten eines Laufs.
+- **Gib jedem Agenten eine Rolle, die zu deinem Geschäft passt.** Mit `config.AgentProfile.SystemPrompt` oder `config.Config.SystemPrompt` definierst du Rolle, Ton, Geschäftsszenario und Arbeitsregeln, statt einen beliebigen Standardassistenten auszuliefern.
+- **Tools und Anweisungen passen sich der Arbeit an.** Registriere strikte Domänen-Tools in `tools.Registry` und erneuere mit `runtime.ToolSurfaceProvider` Tools, gehostete Fähigkeiten, Anweisungen und Host-Kontext an sicheren Punkten eines Laufs.
 - **Gespräche werden zu belastbaren Assets.** `runtime.Host` verwaltet Threads, Turns, Wiederholungen, Forks, elternverwaltete Unterthreads und provider-sicheren Verlauf.
 - **Freigaberegeln bleiben im Produkt.** Floret kennt allgemeine Effekte, Ressourcen und Freigabestatus. Wer was, wo und warum tun darf, entscheidest du.
 - **Laufzeitverhalten wird sichtbar.** Sanitisierte Ereignisse, Kontextdruck, Kompaktierungsfakten und neutrale Aktivitäts-Timelines lassen sich ohne Prompts, Geheimnisse oder interne Speicherzeilen in jede UI einbinden.
@@ -95,11 +96,15 @@ Ein vollständiges, direkt ausführbares Beispiel steht im [englischen README](R
 
 ## Form für den Produktiveinsatz
 
+### Lass Prompts die Produktabsicht tragen
+
+Floret schreibt keine generische Persona vor. Mit `config.AgentProfile.SystemPrompt` oder `config.Config.SystemPrompt` gibst du einem Agenten seine anfängliche Rolle, seinen Ton, sein Geschäftsszenario und seine Arbeitsregeln. Der Prompt ist produktseitige Konfiguration: Support-Spezialisten, Betriebsanalysten, Coding-Assistenten oder Branchenexperten können dieselbe Laufzeit nutzen, ohne die Laufzeit selbst zu verändern.
+
+Für kontextabhängiges Verhalten lässt ein `ToolSurfaceProvider` eine `runtime.ToolSurface` zurückgeben. Sie kann neben Tool-Oberfläche, gehosteten Fähigkeiten und Host-Kontext auch den aktuellen System-Prompt ersetzen. Das passt zu Änderungen von Produktmodus, Workspace, Berechtigungen oder Geschäftsphase. Floret aktualisiert die Oberfläche vor Modellanfragen und lokaler Ausführung, sodass eine ältere Modellentscheidung nicht unbemerkt außerhalb neuer Anweisungen oder Produktrichtlinien laufen kann.
+
 ### Gib der Laufzeit nur die notwendige Berechtigung
 
 Domänenaktionen werden mit `tools.Registry` definiert. Jedes Tool hat ein striktes JSON-Schema und kann Effekte und Ressourcen beschreiben. Floret validiert den Aufruf, fordert bei Bedarf eine Freigabe an, führt den Handler aus, protokolliert das Ergebnis und gibt es an das Modell zurück. Der Handler muss weiterhin die produktspezifische Autorisierung erzwingen.
-
-Für dynamische Fähigkeiten liefert ein `ToolSurfaceProvider` eine `runtime.ToolSurface`. Das passt zu Produktmodi, Workspace-Wechseln, Berechtigungsänderungen oder anderen gehosteten Fähigkeiten. Floret aktualisiert diese Oberfläche vor Modellanfragen und lokaler Ausführung. Eine ältere Modellentscheidung kann dadurch nicht unbemerkt eine neuere Produktrichtlinie umgehen.
 
 ### Arbeite mit expliziten Identitäten
 
