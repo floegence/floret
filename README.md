@@ -246,6 +246,12 @@ event ordinal included in that projection. Compare it only within the explicit
 thread, turn, and run identities to reject duplicate or stale projections.
 `ProjectedAt` is observation time only and is not an ordering key.
 
+Turn execution and display projection availability are independent outcomes.
+`TurnResult.ProjectionStatus` is `ready` or `unavailable`; an unavailable
+projection keeps terminal status, output, metrics, provider state, signal, and
+the ordinary engine error unchanged. `ProjectionError` is diagnostic, while
+`ReadTurnProjection` is the explicit durable reload operation.
+
 ### Runtime flow
 
 ```text

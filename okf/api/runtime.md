@@ -87,9 +87,9 @@ continuation state, and lifecycle observations.
 * `ErrThreadNotFound`, `ErrTurnNotFound`, `ErrRunNotFound`, and
   `ErrSubAgentNotFound` are public sentinel errors for `errors.Is` checks on
   Host facade not-found responses.
-* `ErrTurnProjectionUnavailable` reports that a terminal turn result exists but
-  its final durable display projection could not be constructed. Callers must
-  still inspect the returned `TurnResult` terminal facts.
+* `TurnResult.ProjectionStatus` reports `ready` or `unavailable` independently
+  from execution error. An unavailable projection preserves terminal engine
+  facts and carries diagnostic text in `ProjectionError`.
 * `ModelGateway` lets a host supply model transport through
   `HostOptions.ModelGateway` while Floret owns loop control, tool dispatch,
   context lifecycle, and ledgers.
@@ -203,11 +203,11 @@ turn storage identity. A missing thread is reported with `ErrThreadNotFound`; a
 known thread with no matching turn detail is reported with `ErrTurnNotFound`;
 and a turn whose durable detail does not record the requested run is reported
 with `ErrRunNotFound`.
-If `RunTurn` reaches terminal engine state but final detail reading or projection
-attachment fails, it returns the terminal `TurnResult` together with an error
-wrapping `ErrTurnProjectionUnavailable`. Status, metrics, provider state, and
-control signal remain engine facts; projection availability is a separate host
-read concern.
+If final detail reading or projection attachment fails, `RunTurn`, `RetryTurn`,
+and `CompletePendingTool` preserve their engine result, return
+`ProjectionStatus=unavailable`, and do not convert the projection failure into
+an execution error. `SettlePendingTool` likewise preserves its committed detail
+event when the subsequent projection read is unavailable.
 `ForkThread` is the public runtime contract for host-visible conversation forks.
 It copies the Floret-owned durable thread path into a new thread, rewrites
 destination `TurnID` and `RunID` execution identities, and returns the mapping
@@ -328,10 +328,10 @@ Host facade not-found responses should be handled with `errors.Is` against
 `runtime.ErrSubAgentNotFound`. Hosts should not parse error strings or import
 Floret internal package sentinels.
 
-Terminal projection failures should be handled with `errors.Is(err,
-runtime.ErrTurnProjectionUnavailable)`. This sentinel does not classify a
-product UI state or imply that the engine run failed; hosts choose their own
-retry and presentation policy while preserving the returned terminal facts.
+Hosts validate `ProjectionStatus`, `Projection`, and `ProjectionError` as one
+outcome. `ready` requires a projection and no projection error; `unavailable`
+requires no projection and a non-empty diagnostic. Explicit
+`ReadTurnProjection` remains the durable reload operation.
 
 `StreamObservation` is for host rendering and diagnostics. It is not raw
 provider wire data and must not carry prompt text, tool arguments, tool results,

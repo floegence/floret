@@ -5,6 +5,8 @@
   turn projection and clarified that `ProjectedAt` is not an ordering key.
 * **Breaking**: Replaced public string event/context/compaction states with
   finite typed contracts and explicit validation.
+* **Breaking**: Separated turn execution errors from explicit projection
+  availability and removed the projection-failure sentinel error.
 
 ## 2026-07-14
 * **Breaking**: Removed tool-declared parallel-safety scheduling. Ordinary calls
@@ -14,9 +16,6 @@
   approval requests and pending approval snapshots for stable host presentation.
 
 ## 2026-07-13
-* **Fix**: Documented terminal projection failures as a separate recoverable
-  host-read contract that preserves terminal engine facts and is identifiable
-  through `ErrTurnProjectionUnavailable`.
 * **Update**: Documented cumulative run-level `MaxInputTokens` independently
   from cumulative total-token and per-request output limits.
 * **Fix**: Documented one-operation thread-tree deletion and SQLite transaction

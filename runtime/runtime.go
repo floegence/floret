@@ -44,8 +44,6 @@ var (
 	ErrTurnNotFound = errors.New("floret turn not found")
 	// ErrRunNotFound reports that a durable run requested through Host was not found.
 	ErrRunNotFound = errors.New("floret run not found")
-	// ErrTurnProjectionUnavailable reports that a terminal turn result could not be projected from durable detail events.
-	ErrTurnProjectionUnavailable = errors.New("floret turn projection unavailable")
 	// ErrSubAgentNotFound reports that a parent-scoped child thread requested through Host was not found.
 	ErrSubAgentNotFound = errors.New("floret subagent not found")
 )
@@ -453,11 +451,13 @@ type PendingApprovals struct {
 }
 
 type PendingToolSettlementResult struct {
-	ThreadID   ThreadID             `json:"thread_id"`
-	TurnID     TurnID               `json:"turn_id"`
-	RunID      RunID                `json:"run_id,omitempty"`
-	Event      ThreadDetailEvent    `json:"event"`
-	Projection ThreadTurnProjection `json:"projection"`
+	ThreadID         ThreadID              `json:"thread_id"`
+	TurnID           TurnID                `json:"turn_id"`
+	RunID            RunID                 `json:"run_id,omitempty"`
+	Event            ThreadDetailEvent     `json:"event"`
+	ProjectionStatus TurnProjectionStatus  `json:"projection_status"`
+	Projection       *ThreadTurnProjection `json:"projection,omitempty"`
+	ProjectionError  string                `json:"projection_error,omitempty"`
 }
 
 type PendingApprovalResource struct {
@@ -767,8 +767,52 @@ type TurnResult struct {
 	ProviderState      *ModelState                  `json:"provider_state,omitempty"`
 	Signal             *TurnSignal                  `json:"signal,omitempty"`
 	ActivityTimeline   observation.ActivityTimeline `json:"activity_timeline"`
-	Projection         ThreadTurnProjection         `json:"projection,omitempty"`
+	ProjectionStatus   TurnProjectionStatus         `json:"projection_status"`
+	Projection         *ThreadTurnProjection        `json:"projection,omitempty"`
+	ProjectionError    string                       `json:"projection_error,omitempty"`
 	PendingApprovals   []PendingApproval            `json:"pending_approvals,omitempty"`
+}
+
+type TurnProjectionStatus string
+
+const (
+	TurnProjectionStatusReady       TurnProjectionStatus = "ready"
+	TurnProjectionStatusUnavailable TurnProjectionStatus = "unavailable"
+)
+
+func (s TurnProjectionStatus) Valid() bool {
+	return s == TurnProjectionStatusReady || s == TurnProjectionStatusUnavailable
+}
+
+func validateTurnProjectionOutcome(status TurnProjectionStatus, projection *ThreadTurnProjection, projectionError string) error {
+	if !status.Valid() {
+		return fmt.Errorf("unsupported turn projection status %q", status)
+	}
+	switch status {
+	case TurnProjectionStatusReady:
+		if projection == nil {
+			return errors.New("ready turn projection is required")
+		}
+		if strings.TrimSpace(projectionError) != "" {
+			return errors.New("ready turn projection must not include an error")
+		}
+	case TurnProjectionStatusUnavailable:
+		if projection != nil {
+			return errors.New("unavailable turn projection must not include a projection")
+		}
+		if strings.TrimSpace(projectionError) == "" {
+			return errors.New("unavailable turn projection requires an error")
+		}
+	}
+	return nil
+}
+
+func (r TurnResult) ValidateProjection() error {
+	return validateTurnProjectionOutcome(r.ProjectionStatus, r.Projection, r.ProjectionError)
+}
+
+func (r PendingToolSettlementResult) ValidateProjection() error {
+	return validateTurnProjectionOutcome(r.ProjectionStatus, r.Projection, r.ProjectionError)
 }
 
 type CompactThreadResult struct {
@@ -1317,10 +1361,7 @@ func (h *host) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, err
 	out := turnResult(result, string(req.ThreadID), activityRecorder.Snapshot(), time.Now().UnixMilli())
 	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
 	defer cancelProjection()
-	projectionErr := h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out)
-	if projectionErr != nil {
-		runErr = errors.Join(runErr, fmt.Errorf("%w: %w", ErrTurnProjectionUnavailable, projectionErr))
-	}
+	h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out)
 	return out, runtimeHostError(runErr)
 }
 
@@ -1342,10 +1383,7 @@ func (h *host) RetryTurn(ctx context.Context, req RetryTurnRequest) (TurnResult,
 	out := turnResult(result, string(req.ThreadID), nil, time.Now().UnixMilli())
 	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
 	defer cancelProjection()
-	projectionErr := h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out)
-	if runErr == nil && projectionErr != nil {
-		runErr = projectionErr
-	}
+	h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out)
 	return out, runtimeHostError(runErr)
 }
 
@@ -1418,10 +1456,7 @@ func (h *host) CompletePendingTool(ctx context.Context, req PendingToolCompletio
 	out := turnResult(result, string(req.ThreadID), nil, time.Now().UnixMilli())
 	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
 	defer cancelProjection()
-	projectionErr := h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out)
-	if runErr == nil && projectionErr != nil {
-		runErr = projectionErr
-	}
+	h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out)
 	return out, runtimeHostError(runErr)
 }
 
@@ -1471,15 +1506,19 @@ func settlePendingTool(ctx context.Context, harness *agentharness.AgentHarness, 
 	defer cancelProjection()
 	events, err := listRawThreadDetailEventsForTurn(projectionCtx, harness, string(req.ThreadID), string(req.TurnID))
 	if err != nil {
-		return PendingToolSettlementResult{}, runtimeHostError(err)
+		out.ProjectionStatus = TurnProjectionStatusUnavailable
+		out.ProjectionError = runtimeHostError(err).Error()
+		return out, nil
 	}
-	out.Projection = ProjectThreadTurn(ProjectThreadTurnRequest{
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
 		ThreadID: req.ThreadID,
 		TurnID:   req.TurnID,
 		RunID:    req.RunID,
 		TraceID:  TraceID(req.RunID),
 		Events:   events,
 	})
+	out.ProjectionStatus = TurnProjectionStatusReady
+	out.Projection = &projection
 	return out, nil
 }
 
@@ -1867,22 +1906,31 @@ func turnResult(in agentharness.TurnResult, threadID string, events []observatio
 	return out
 }
 
-func (h *host) attachThreadTurnProjection(ctx context.Context, threadID string, result *TurnResult) error {
-	if h == nil || result == nil || strings.TrimSpace(threadID) == "" || strings.TrimSpace(string(result.ID)) == "" {
-		return nil
+func (h *host) attachThreadTurnProjection(ctx context.Context, threadID string, result *TurnResult) {
+	if result == nil {
+		return
+	}
+	if h == nil || strings.TrimSpace(threadID) == "" || strings.TrimSpace(string(result.ID)) == "" {
+		result.ProjectionStatus = TurnProjectionStatusUnavailable
+		result.ProjectionError = "turn projection identity is incomplete"
+		return
 	}
 	events, err := listRawThreadDetailEventsForTurn(ctx, h.harness, threadID, string(result.ID))
 	if err != nil {
-		return err
+		result.ProjectionStatus = TurnProjectionStatusUnavailable
+		result.ProjectionError = runtimeHostError(err).Error()
+		return
 	}
-	result.Projection = ProjectThreadTurn(ProjectThreadTurnRequest{
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
 		ThreadID: ThreadID(threadID),
 		TurnID:   result.ID,
 		RunID:    result.RunID,
 		TraceID:  TraceID(result.RunID),
 		Events:   events,
 	})
-	return nil
+	result.ProjectionStatus = TurnProjectionStatusReady
+	result.Projection = &projection
+	result.ProjectionError = ""
 }
 
 func runtimeTerminalProjectionContext(ctx context.Context) (context.Context, context.CancelFunc) {

@@ -19,8 +19,9 @@ runs turns, retries, completes or settles pending tool work, manages durable
 child threads, deletes thread data, and returns host-safe snapshots.
 Terminal execution facts and terminal display projection availability are
 separate results. If durable detail cannot be read after a turn terminates,
-`RunTurn` preserves the engine result and wraps the detail failure with
-`ErrTurnProjectionUnavailable` for host recovery.
+the runtime preserves the engine result and reports projection status as
+`unavailable` without changing the execution error. Pending-tool settlement
+also preserves a committed settlement event when its projection read fails.
 `runtime.NewThreadMaintenanceHost` is the provider-free variant for maintenance
 processes that share a Floret store but do not run provider turns. It exposes
 thread summary recovery, turn projection read-back, pending tool settlement,

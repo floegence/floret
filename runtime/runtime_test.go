@@ -104,8 +104,8 @@ func TestHostRunTurnReportsTerminalProjectionUnavailableWithoutDiscardingResult(
 	}
 
 	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
-	if !errors.Is(err, ErrTurnProjectionUnavailable) {
-		t.Fatalf("RunTurn err = %v, want ErrTurnProjectionUnavailable", err)
+	if err != nil {
+		t.Fatalf("RunTurn err = %v, want nil", err)
 	}
 	if result.Status != TurnStatusCompleted || result.Output != "configured" {
 		t.Fatalf("result terminal facts = %#v", result)
@@ -113,8 +113,11 @@ func TestHostRunTurnReportsTerminalProjectionUnavailableWithoutDiscardingResult(
 	if result.ID != "turn-1" || result.RunID != "run-1" || result.Metrics.LLMRequests != 1 {
 		t.Fatalf("result execution facts = %#v", result)
 	}
-	if result.Projection.ThreadID != "" || len(result.Projection.Segments) != 0 {
-		t.Fatalf("projection = %#v, want unavailable zero projection", result.Projection)
+	if result.ProjectionStatus != TurnProjectionStatusUnavailable || result.Projection != nil || strings.TrimSpace(result.ProjectionError) == "" {
+		t.Fatalf("projection outcome = %#v, want unavailable diagnostic", result)
+	}
+	if err := result.ValidateProjection(); err != nil {
+		t.Fatalf("projection outcome validation: %v", err)
 	}
 }
 
@@ -2709,7 +2712,7 @@ func TestHostReadTurnProjectionFromDurableDetail(t *testing.T) {
 	if runtimeProjectionAssistantText(projection) != "projected answer" {
 		t.Fatalf("projection text = %q", runtimeProjectionAssistantText(projection))
 	}
-	if runtimeProjectionAssistantText(result.Projection) != runtimeProjectionAssistantText(projection) {
+	if runtimeProjectionAssistantText(*result.Projection) != runtimeProjectionAssistantText(projection) {
 		t.Fatalf("read projection differs from turn result: result=%#v read=%#v", result.Projection, projection)
 	}
 	if projection.ThroughOrdinal <= 0 || projection.ThroughOrdinal != result.Projection.ThroughOrdinal {
@@ -2743,6 +2746,33 @@ func TestRuntimeEventValidateRejectsUnknownPublicState(t *testing.T) {
 		},
 	}).Validate(); err == nil {
 		t.Fatal("runtime event with unknown context status validated")
+	}
+}
+
+func TestTurnProjectionOutcomeValidation(t *testing.T) {
+	t.Parallel()
+
+	projection := &ThreadTurnProjection{ThreadID: "thread", TurnID: "turn", RunID: "run", ThroughOrdinal: 1}
+	tests := []struct {
+		name    string
+		result  TurnResult
+		wantErr bool
+	}{
+		{name: "ready", result: TurnResult{ProjectionStatus: TurnProjectionStatusReady, Projection: projection}},
+		{name: "unavailable", result: TurnResult{ProjectionStatus: TurnProjectionStatusUnavailable, ProjectionError: "detail read failed"}},
+		{name: "unknown status", result: TurnResult{ProjectionStatus: "future", Projection: projection}, wantErr: true},
+		{name: "ready without projection", result: TurnResult{ProjectionStatus: TurnProjectionStatusReady}, wantErr: true},
+		{name: "ready with error", result: TurnResult{ProjectionStatus: TurnProjectionStatusReady, Projection: projection, ProjectionError: "unexpected"}, wantErr: true},
+		{name: "unavailable with projection", result: TurnResult{ProjectionStatus: TurnProjectionStatusUnavailable, Projection: projection, ProjectionError: "detail read failed"}, wantErr: true},
+		{name: "unavailable without error", result: TurnResult{ProjectionStatus: TurnProjectionStatusUnavailable}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.result.ValidateProjection()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateProjection() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -3112,7 +3142,9 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 		return events, nil
 	})
 
+	settlementRepo := &settlementProjectionFailureRepo{MemoryRepo: sessiontree.NewMemoryRepo()}
 	store := NewMemoryStore()
+	store.repo = settlementRepo
 	host, err := NewHost(HostOptions{
 		Config:               runtimeGatewayConfig("test"),
 		ModelGateway:         gateway,
@@ -3143,7 +3175,7 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	if run.Status != TurnStatusCompleted || run.Output != longAssistantAfterPending {
 		t.Fatalf("run = %#v", run)
 	}
-	if item := runtimeProjectionToolItem(run.Projection, "exec-1"); item.Status != observation.ActivityStatusRunning {
+	if item := runtimeProjectionToolItem(*run.Projection, "exec-1"); item.Status != observation.ActivityStatusRunning {
 		t.Fatalf("pending item should remain running before explicit settlement: %#v", item)
 	}
 	if invocation.RunID != "run-1" ||
@@ -3177,6 +3209,7 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 		t.Fatalf("wrong host-correlation settlement changed projection: %#v", item)
 	}
 
+	settlementRepo.arm.Store(true)
 	settled, err := maintenance.SettlePendingTool(ctx, PendingToolSettlementRequest{
 		ThreadID:   "thread",
 		TurnID:     "turn-1",
@@ -3198,7 +3231,17 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 		settled.Event.ToolResult.Content != "exit 0" {
 		t.Fatalf("settlement event = %#v", settled.Event)
 	}
-	item := runtimeProjectionToolItem(settled.Projection, "exec-1")
+	if settled.ProjectionStatus != TurnProjectionStatusUnavailable || settled.Projection != nil || settled.ProjectionError == "" {
+		t.Fatalf("settlement projection outcome = %#v, want unavailable", settled)
+	}
+	if err := settled.ValidateProjection(); err != nil {
+		t.Fatalf("settlement projection validation: %v", err)
+	}
+	readProjection, err := maintenance.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "thread", TurnID: "turn-1", RunID: "run-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := runtimeProjectionToolItem(readProjection, "exec-1")
 	if item.Status != observation.ActivityStatusSuccess || item.Label != "command completed" || item.Payload["exit_code"] != 0 {
 		t.Fatalf("settled projection item = %#v", item)
 	}
@@ -3233,12 +3276,8 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	if !errors.Is(err, agentharness.ErrPendingToolSettlementConflict) {
 		t.Fatalf("conflicting public settlement err = %v, want conflict", err)
 	}
-	if got := runtimeProjectionAssistantText(settled.Projection); got != longAssistantAfterPending {
+	if got := runtimeProjectionAssistantText(readProjection); got != longAssistantAfterPending {
 		t.Fatalf("settled projection assistant text length=%d, want full %d\ntext=%q", len([]rune(got)), len([]rune(longAssistantAfterPending)), got)
-	}
-	readProjection, err := maintenance.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "thread", TurnID: "turn-1", RunID: "run-1"})
-	if err != nil {
-		t.Fatal(err)
 	}
 	if _, err := maintenance.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "thread", TurnID: "turn-1", RunID: "other-run"}); !errors.Is(err, ErrRunNotFound) {
 		t.Fatalf("ReadTurnProjection wrong run err = %v, want ErrRunNotFound", err)
@@ -3345,10 +3384,10 @@ func TestHostSettlePendingToolOnlyUpdatesExplicitPendingTarget(t *testing.T) {
 	if run.Status != TurnStatusCompleted {
 		t.Fatalf("run status=%q, want completed", run.Status)
 	}
-	if item := runtimeProjectionToolItem(run.Projection, "exec-a"); item.Status != observation.ActivityStatusRunning {
+	if item := runtimeProjectionToolItem(*run.Projection, "exec-a"); item.Status != observation.ActivityStatusRunning {
 		t.Fatalf("exec-a should remain running before settlement: %#v", item)
 	}
-	if item := runtimeProjectionToolItem(run.Projection, "exec-b"); item.Status != observation.ActivityStatusRunning {
+	if item := runtimeProjectionToolItem(*run.Projection, "exec-b"); item.Status != observation.ActivityStatusRunning {
 		t.Fatalf("exec-b should remain running before settlement: %#v", item)
 	}
 
@@ -3373,10 +3412,10 @@ func TestHostSettlePendingToolOnlyUpdatesExplicitPendingTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item := runtimeProjectionToolItem(settled.Projection, "exec-a"); item.Status != observation.ActivityStatusSuccess {
+	if item := runtimeProjectionToolItem(*settled.Projection, "exec-a"); item.Status != observation.ActivityStatusSuccess {
 		t.Fatalf("exec-a settled item = %#v, want success", item)
 	}
-	if item := runtimeProjectionToolItem(settled.Projection, "exec-b"); item.Status != observation.ActivityStatusRunning {
+	if item := runtimeProjectionToolItem(*settled.Projection, "exec-b"); item.Status != observation.ActivityStatusRunning {
 		t.Fatalf("exec-b should remain running after exec-a settlement: %#v", item)
 	}
 
@@ -4007,7 +4046,7 @@ func TestHostRunTurnProjectionUsesRawAssistantContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	projected := runtimeProjectionAssistantText(result.Projection)
+	projected := runtimeProjectionAssistantText(*result.Projection)
 	if projected != fullAnswer {
 		t.Fatalf("projection assistant text length=%d, want full %d\ntext=%q", len([]rune(projected)), len([]rune(fullAnswer)), projected)
 	}
@@ -4501,6 +4540,27 @@ func (r *terminalProjectionFailureRepo) Path(ctx context.Context, threadID, leaf
 
 type terminalProjectionFailureRecorder struct {
 	repo *terminalProjectionFailureRepo
+}
+
+type settlementProjectionFailureRepo struct {
+	*sessiontree.MemoryRepo
+	arm      atomic.Bool
+	failPath atomic.Bool
+}
+
+func (r *settlementProjectionFailureRepo) Append(ctx context.Context, entry sessiontree.Entry, opts sessiontree.AppendOptions) (sessiontree.Entry, error) {
+	appended, err := r.MemoryRepo.Append(ctx, entry, opts)
+	if err == nil && r.arm.Swap(false) {
+		r.failPath.Store(true)
+	}
+	return appended, err
+}
+
+func (r *settlementProjectionFailureRepo) Path(ctx context.Context, threadID, leafID string) ([]sessiontree.Entry, error) {
+	if r.failPath.Swap(false) {
+		return nil, errors.New("injected settlement projection read failure")
+	}
+	return r.MemoryRepo.Path(ctx, threadID, leafID)
 }
 
 func (r *terminalProjectionFailureRecorder) EmitEvent(ev Event) {
