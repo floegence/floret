@@ -38,6 +38,31 @@ type ForkOperationID string
 type PromptScopeID string
 type TraceID string
 
+type FinishReason = observation.FinishReason
+type CompletionReason = observation.CompletionReason
+type ContinuationReason = observation.ContinuationReason
+
+const (
+	FinishReasonUnknown       = observation.FinishReasonUnknown
+	FinishReasonStop          = observation.FinishReasonStop
+	FinishReasonToolCalls     = observation.FinishReasonToolCalls
+	FinishReasonLength        = observation.FinishReasonLength
+	FinishReasonContentFilter = observation.FinishReasonContentFilter
+	FinishReasonError         = observation.FinishReasonError
+	FinishReasonCancelled     = observation.FinishReasonCancelled
+
+	CompletionReasonNaturalStop = observation.CompletionReasonNaturalStop
+	CompletionReasonToolSignal  = observation.CompletionReasonToolSignal
+	CompletionReasonHookStop    = observation.CompletionReasonHookStop
+
+	ContinuationReasonToolResults       = observation.ContinuationReasonToolResults
+	ContinuationReasonCompaction        = observation.ContinuationReasonCompaction
+	ContinuationReasonProviderTruncated = observation.ContinuationReasonProviderTruncated
+	ContinuationReasonRetryEmpty        = observation.ContinuationReasonRetryEmpty
+	ContinuationReasonNoProgress        = observation.ContinuationReasonNoProgress
+	ContinuationReasonHook              = observation.ContinuationReasonHook
+)
+
 var (
 	// ErrThreadNotFound reports that a durable thread requested through Host was not found.
 	ErrThreadNotFound = errors.New("floret thread not found")
@@ -72,6 +97,25 @@ type ThreadMaintenanceHost struct {
 	harness *agentharness.AgentHarness
 }
 
+// ThreadTitleMode selects who owns durable thread title generation.
+type ThreadTitleMode string
+
+const (
+	ThreadTitleModeHostOwned ThreadTitleMode = "host_owned"
+	ThreadTitleModeProvider  ThreadTitleMode = "provider"
+)
+
+func normalizeThreadTitleMode(mode ThreadTitleMode) (ThreadTitleMode, error) {
+	switch mode {
+	case "", ThreadTitleModeHostOwned:
+		return ThreadTitleModeHostOwned, nil
+	case ThreadTitleModeProvider:
+		return ThreadTitleModeProvider, nil
+	default:
+		return "", fmt.Errorf("unsupported thread title mode %q", mode)
+	}
+}
+
 type HostOptions struct {
 	Config               config.Config
 	ModelGateway         ModelGateway
@@ -85,6 +129,7 @@ type HostOptions struct {
 	LoopLimits           LoopLimits
 	SubAgentRunTimeout   time.Duration
 	Capabilities         CapabilityOptions
+	ThreadTitleMode      ThreadTitleMode
 }
 
 // ThreadMaintenanceHostOptions configures NewThreadMaintenanceHost.
@@ -737,25 +782,25 @@ type ThreadMessage struct {
 }
 
 type TurnResult struct {
-	ID                 TurnID                       `json:"id"`
-	RunID              RunID                        `json:"run_id,omitempty"`
-	Status             TurnStatus                   `json:"status"`
-	Output             string                       `json:"output,omitempty"`
-	Error              string                       `json:"error,omitempty"`
-	Diagnostics        map[string]string            `json:"diagnostics,omitempty"`
-	Metrics            RunMetrics                   `json:"metrics"`
-	CompletionReason   string                       `json:"completion_reason,omitempty"`
-	ContinuationReason string                       `json:"continuation_reason,omitempty"`
-	FinishReason       string                       `json:"finish_reason,omitempty"`
-	RawFinishReason    string                       `json:"raw_finish_reason,omitempty"`
-	FinishInferred     bool                         `json:"finish_inferred,omitempty"`
-	ProviderState      *ModelState                  `json:"provider_state,omitempty"`
-	Signal             *TurnSignal                  `json:"signal,omitempty"`
-	ActivityTimeline   observation.ActivityTimeline `json:"activity_timeline"`
-	ProjectionStatus   TurnProjectionStatus         `json:"projection_status"`
-	Projection         *ThreadTurnProjection        `json:"projection,omitempty"`
-	ProjectionError    string                       `json:"projection_error,omitempty"`
-	PendingApprovals   []PendingApproval            `json:"pending_approvals,omitempty"`
+	ID                 TurnID                         `json:"id"`
+	RunID              RunID                          `json:"run_id,omitempty"`
+	Status             TurnStatus                     `json:"status"`
+	Output             string                         `json:"output,omitempty"`
+	Error              string                         `json:"error,omitempty"`
+	Diagnostics        map[string]string              `json:"diagnostics,omitempty"`
+	Metrics            RunMetrics                     `json:"metrics"`
+	CompletionReason   observation.CompletionReason   `json:"completion_reason,omitempty"`
+	ContinuationReason observation.ContinuationReason `json:"continuation_reason,omitempty"`
+	FinishReason       observation.FinishReason       `json:"finish_reason,omitempty"`
+	RawFinishReason    string                         `json:"raw_finish_reason,omitempty"`
+	FinishInferred     bool                           `json:"finish_inferred,omitempty"`
+	ProviderState      *ModelState                    `json:"provider_state,omitempty"`
+	Signal             *TurnSignal                    `json:"signal,omitempty"`
+	ActivityTimeline   observation.ActivityTimeline   `json:"activity_timeline"`
+	ProjectionStatus   TurnProjectionStatus           `json:"projection_status"`
+	Projection         *ThreadTurnProjection          `json:"projection,omitempty"`
+	ProjectionError    string                         `json:"projection_error,omitempty"`
+	PendingApprovals   []PendingApproval              `json:"pending_approvals,omitempty"`
 }
 
 type TurnProjectionStatus string
@@ -815,39 +860,58 @@ type EventSink interface {
 }
 
 type Event struct {
-	Type             observation.EventType             `json:"type"`
-	TraceID          TraceID                           `json:"trace_id,omitempty"`
-	RunID            RunID                             `json:"run_id,omitempty"`
-	ThreadID         ThreadID                          `json:"thread_id,omitempty"`
-	TurnID           TurnID                            `json:"turn_id,omitempty"`
-	Step             int                               `json:"step,omitempty"`
-	Provider         string                            `json:"provider,omitempty"`
-	Model            string                            `json:"model,omitempty"`
-	Message          string                            `json:"message,omitempty"`
-	Result           string                            `json:"result,omitempty"`
-	Error            string                            `json:"error,omitempty"`
-	ToolID           string                            `json:"tool_id,omitempty"`
-	ToolName         string                            `json:"tool_name,omitempty"`
-	ToolKind         string                            `json:"tool_kind,omitempty"`
-	ArgsHash         string                            `json:"args_hash,omitempty"`
-	DurationMS       int64                             `json:"duration_ms,omitempty"`
-	FinishReason     string                            `json:"finish_reason,omitempty"`
-	Activity         *observation.ActivityPresentation `json:"activity,omitempty"`
-	ActivityTimeline *observation.ActivityTimeline     `json:"activity_timeline,omitempty"`
-	Projection       *ThreadTurnProjection             `json:"projection,omitempty"`
-	Stream           *StreamObservation                `json:"stream,omitempty"`
-	Committed        *ThreadDetailEvent                `json:"committed,omitempty"`
-	ContextStatus    *observation.ContextStatus        `json:"context_status,omitempty"`
-	Compaction       *observation.CompactionEvent      `json:"compaction,omitempty"`
-	CompactionDebug  *observation.CompactionDebugEvent `json:"compaction_debug,omitempty"`
-	Sources          []SourceRef                       `json:"sources,omitempty"`
-	Metadata         map[string]any                    `json:"metadata,omitempty"`
-	Timestamp        time.Time                         `json:"timestamp,omitempty"`
+	Type               observation.EventType             `json:"type"`
+	TraceID            TraceID                           `json:"trace_id,omitempty"`
+	RunID              RunID                             `json:"run_id,omitempty"`
+	ThreadID           ThreadID                          `json:"thread_id,omitempty"`
+	TurnID             TurnID                            `json:"turn_id,omitempty"`
+	Step               int                               `json:"step,omitempty"`
+	Provider           string                            `json:"provider,omitempty"`
+	Model              string                            `json:"model,omitempty"`
+	Message            string                            `json:"message,omitempty"`
+	Result             string                            `json:"result,omitempty"`
+	Error              string                            `json:"error,omitempty"`
+	ToolID             string                            `json:"tool_id,omitempty"`
+	ToolName           string                            `json:"tool_name,omitempty"`
+	ToolKind           string                            `json:"tool_kind,omitempty"`
+	ArgsHash           string                            `json:"args_hash,omitempty"`
+	DurationMS         int64                             `json:"duration_ms,omitempty"`
+	FinishReason       observation.FinishReason          `json:"finish_reason,omitempty"`
+	RawFinishReason    string                            `json:"raw_finish_reason,omitempty"`
+	FinishInferred     bool                              `json:"finish_inferred,omitempty"`
+	CompletionReason   observation.CompletionReason      `json:"completion_reason,omitempty"`
+	ContinuationReason observation.ContinuationReason    `json:"continuation_reason,omitempty"`
+	Activity           *observation.ActivityPresentation `json:"activity,omitempty"`
+	ActivityTimeline   *observation.ActivityTimeline     `json:"activity_timeline,omitempty"`
+	Projection         *ThreadTurnProjection             `json:"projection,omitempty"`
+	Stream             *StreamObservation                `json:"stream,omitempty"`
+	Committed          *ThreadDetailEvent                `json:"committed,omitempty"`
+	ContextStatus      *observation.ContextStatus        `json:"context_status,omitempty"`
+	Compaction         *observation.CompactionEvent      `json:"compaction,omitempty"`
+	CompactionDebug    *observation.CompactionDebugEvent `json:"compaction_debug,omitempty"`
+	Sources            []SourceRef                       `json:"sources,omitempty"`
+	Metadata           map[string]any                    `json:"metadata,omitempty"`
+	Timestamp          time.Time                         `json:"timestamp,omitempty"`
 }
 
 func (e Event) Validate() error {
 	if !e.Type.Valid() {
 		return fmt.Errorf("unsupported runtime event type %q", e.Type)
+	}
+	if e.FinishReason != "" && !e.FinishReason.Valid() {
+		return fmt.Errorf("unsupported finish reason %q", e.FinishReason)
+	}
+	if e.CompletionReason != "" && !e.CompletionReason.Valid() {
+		return fmt.Errorf("unsupported completion reason %q", e.CompletionReason)
+	}
+	if e.ContinuationReason != "" && !e.ContinuationReason.Valid() {
+		return fmt.Errorf("unsupported continuation reason %q", e.ContinuationReason)
+	}
+	if e.CompletionReason != "" && e.ContinuationReason != "" {
+		return errors.New("runtime event cannot complete and continue simultaneously")
+	}
+	if e.FinishInferred && e.FinishReason == "" {
+		return errors.New("runtime event inferred finish requires finish reason")
 	}
 	if e.ContextStatus != nil {
 		if err := e.ContextStatus.Validate(); err != nil {
@@ -883,15 +947,15 @@ const (
 // StreamObservation is a provider-neutral, engine-confirmed streaming fact for
 // hosts that render live assistant output from Floret runtime events.
 type StreamObservation struct {
-	Type            StreamObservationType `json:"type"`
-	Text            string                `json:"text,omitempty"`
-	ToolCallStream  *ModelToolCallStream  `json:"tool_call_stream,omitempty"`
-	Reason          string                `json:"reason,omitempty"`
-	FinishReason    string                `json:"finish_reason,omitempty"`
-	RawFinishReason string                `json:"raw_finish_reason,omitempty"`
-	FinishInferred  bool                  `json:"finish_inferred,omitempty"`
-	Attempt         int                   `json:"attempt,omitempty"`
-	Labels          RunLabels             `json:"labels,omitempty"`
+	Type            StreamObservationType    `json:"type"`
+	Text            string                   `json:"text,omitempty"`
+	ToolCallStream  *ModelToolCallStream     `json:"tool_call_stream,omitempty"`
+	Reason          string                   `json:"reason,omitempty"`
+	FinishReason    observation.FinishReason `json:"finish_reason,omitempty"`
+	RawFinishReason string                   `json:"raw_finish_reason,omitempty"`
+	FinishInferred  bool                     `json:"finish_inferred,omitempty"`
+	Attempt         int                      `json:"attempt,omitempty"`
+	Labels          RunLabels                `json:"labels,omitempty"`
 }
 
 type ThreadStatus string
@@ -1067,6 +1131,10 @@ func (s *Store) threadTreeIDs(ctx context.Context, threadID string) ([]string, e
 }
 
 func NewHost(opts HostOptions) (*Host, error) {
+	titleMode, err := normalizeThreadTitleMode(opts.ThreadTitleMode)
+	if err != nil {
+		return nil, err
+	}
 	cfg, provider, err := resolveHostConfigAndProvider(opts)
 	if err != nil {
 		return nil, err
@@ -1089,6 +1157,7 @@ func NewHost(opts HostOptions) (*Host, error) {
 		LoopLimits:          opts.LoopLimits,
 		SubAgentRunTimeout:  opts.SubAgentRunTimeout,
 		Capabilities:        opts.Capabilities,
+		ThreadTitleMode:     titleMode,
 	})
 	if err != nil {
 		return nil, err
@@ -1873,9 +1942,9 @@ func turnResult(in agentharness.TurnResult, threadID string, events []observatio
 		Output:             in.Output,
 		Diagnostics:        cloneStringMap(in.Diagnostics),
 		Metrics:            runtimeMetrics(in.Metrics),
-		CompletionReason:   string(in.CompletionReason),
-		ContinuationReason: string(in.ContinuationReason),
-		FinishReason:       string(in.FinishReason),
+		CompletionReason:   observation.CompletionReason(in.CompletionReason),
+		ContinuationReason: observation.ContinuationReason(in.ContinuationReason),
+		FinishReason:       observation.FinishReason(in.FinishReason),
 		RawFinishReason:    in.RawFinishReason,
 		FinishInferred:     in.FinishInferred,
 		ProviderState:      modelState(in.ProviderState),
@@ -2654,6 +2723,7 @@ type harnessOptions struct {
 	Sink                event.Sink
 	SinkPolicy          event.SinkPolicy
 	Title               agentharness.TitleGenerator
+	ThreadTitleMode     ThreadTitleMode
 	NewID               func(string) string
 	LoopLimits          LoopLimits
 	SubAgentRunTimeout  time.Duration
@@ -2704,6 +2774,15 @@ func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harness
 		loopLimits.WallTime = opts.LoopLimits.WallTime
 	}
 	model, _ := catalog.FindModel(cfg.Provider, cfg.Model)
+	titleGenerator := opts.Title
+	if titleGenerator == nil && opts.ThreadTitleMode == ThreadTitleModeProvider {
+		titleGenerator = agentharness.ProviderTitleGenerator{
+			Provider:     p,
+			ProviderName: cfg.Provider,
+			Model:        cfg.Model,
+			Reasoning:    model.Reasoning,
+		}
+	}
 	return agentharness.New(agentharness.Options{
 		Provider:            p,
 		ProviderName:        cfg.Provider,
@@ -2717,7 +2796,7 @@ func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harness
 		SinkPolicy:          opts.SinkPolicy,
 		Approver:            opts.Approver,
 		ToolSurfaceProvider: opts.ToolSurfaceProvider,
-		TitleGenerator:      opts.Title,
+		TitleGenerator:      titleGenerator,
 		CompactionPrompt:    compaction.PromptOptions{},
 		Artifacts:           store.artifacts,
 		Reasoning:           model.Reasoning,
@@ -2874,32 +2953,36 @@ func runtimeEvent(ev event.Event) Event {
 	stream := runtimeStreamObservation(ev, sanitized.Metadata)
 	ev = sanitized
 	return Event{
-		Type:            ev.Type,
-		TraceID:         TraceID(ev.TraceID),
-		RunID:           RunID(ev.RunID),
-		ThreadID:        ThreadID(ev.ThreadID),
-		TurnID:          TurnID(ev.TurnID),
-		Step:            ev.Step,
-		Provider:        ev.Provider,
-		Model:           ev.Model,
-		Message:         ev.Message,
-		Result:          ev.Result,
-		Error:           ev.Err,
-		ToolID:          ev.ToolID,
-		ToolName:        ev.ToolName,
-		ToolKind:        ev.ToolKind,
-		ArgsHash:        ev.ArgsHash,
-		DurationMS:      ev.Duration,
-		FinishReason:    ev.FinishReason,
-		Activity:        cloneActivityPresentation(ev.Activity),
-		Stream:          stream,
-		Committed:       committed,
-		ContextStatus:   contextStatus,
-		Compaction:      compactionEvent,
-		CompactionDebug: compactionDebugEvent,
-		Sources:         runtimeSourceRefs(ev.Sources),
-		Metadata:        safeMetadata(ev.Metadata),
-		Timestamp:       ev.Timestamp,
+		Type:               ev.Type,
+		TraceID:            TraceID(ev.TraceID),
+		RunID:              RunID(ev.RunID),
+		ThreadID:           ThreadID(ev.ThreadID),
+		TurnID:             TurnID(ev.TurnID),
+		Step:               ev.Step,
+		Provider:           ev.Provider,
+		Model:              ev.Model,
+		Message:            ev.Message,
+		Result:             ev.Result,
+		Error:              ev.Err,
+		ToolID:             ev.ToolID,
+		ToolName:           ev.ToolName,
+		ToolKind:           ev.ToolKind,
+		ArgsHash:           ev.ArgsHash,
+		DurationMS:         ev.Duration,
+		FinishReason:       observation.FinishReason(ev.FinishReason),
+		RawFinishReason:    ev.RawFinishReason,
+		FinishInferred:     ev.FinishInferred,
+		CompletionReason:   observation.CompletionReason(ev.CompletionReason),
+		ContinuationReason: observation.ContinuationReason(ev.ContinuationReason),
+		Activity:           cloneActivityPresentation(ev.Activity),
+		Stream:             stream,
+		Committed:          committed,
+		ContextStatus:      contextStatus,
+		Compaction:         compactionEvent,
+		CompactionDebug:    compactionDebugEvent,
+		Sources:            runtimeSourceRefs(ev.Sources),
+		Metadata:           safeMetadata(ev.Metadata),
+		Timestamp:          ev.Timestamp,
 	}
 }
 
@@ -3221,7 +3304,7 @@ func runtimeStreamObservation(ev event.Event, safeMetadata any) *StreamObservati
 		Text:            text,
 		ToolCallStream:  toolCallStream,
 		Reason:          reason,
-		FinishReason:    ev.FinishReason,
+		FinishReason:    observation.FinishReason(ev.FinishReason),
 		RawFinishReason: ev.RawFinishReason,
 		FinishInferred:  ev.FinishInferred,
 		Attempt:         streamAttemptFromMetadata(safeMetadata),
@@ -3381,28 +3464,32 @@ func boolFromAnyMetadata(meta map[string]any, key string) bool {
 func runtimeObservationEvent(ev event.Event) observation.Event {
 	sanitized := event.Sanitize(ev)
 	return observation.Event{
-		Type:            sanitized.Type,
-		TraceID:         sanitized.TraceID,
-		RunID:           sanitized.RunID,
-		ThreadID:        sanitized.ThreadID,
-		TurnID:          sanitized.TurnID,
-		Step:            sanitized.Step,
-		Provider:        sanitized.Provider,
-		Model:           sanitized.Model,
-		Message:         sanitized.Message,
-		Result:          sanitized.Result,
-		Error:           sanitized.Err,
-		ToolID:          sanitized.ToolID,
-		ToolName:        sanitized.ToolName,
-		ToolKind:        sanitized.ToolKind,
-		ArgsHash:        sanitized.ArgsHash,
-		DurationMS:      sanitized.Duration,
-		FinishReason:    sanitized.FinishReason,
-		Activity:        cloneActivityPresentation(sanitized.Activity),
-		Compaction:      runtimeCompactionEventWithError(ev, sanitized, sanitized.Err),
-		CompactionDebug: runtimeCompactionDebugEventWithError(ev, sanitized, sanitized.Err),
-		Metadata:        safeMetadata(sanitized.Metadata),
-		ObservedAt:      sanitized.Timestamp,
+		Type:               sanitized.Type,
+		TraceID:            sanitized.TraceID,
+		RunID:              sanitized.RunID,
+		ThreadID:           sanitized.ThreadID,
+		TurnID:             sanitized.TurnID,
+		Step:               sanitized.Step,
+		Provider:           sanitized.Provider,
+		Model:              sanitized.Model,
+		Message:            sanitized.Message,
+		Result:             sanitized.Result,
+		Error:              sanitized.Err,
+		ToolID:             sanitized.ToolID,
+		ToolName:           sanitized.ToolName,
+		ToolKind:           sanitized.ToolKind,
+		ArgsHash:           sanitized.ArgsHash,
+		DurationMS:         sanitized.Duration,
+		FinishReason:       observation.FinishReason(sanitized.FinishReason),
+		RawFinishReason:    sanitized.RawFinishReason,
+		FinishInferred:     sanitized.FinishInferred,
+		CompletionReason:   observation.CompletionReason(sanitized.CompletionReason),
+		ContinuationReason: observation.ContinuationReason(sanitized.ContinuationReason),
+		Activity:           cloneActivityPresentation(sanitized.Activity),
+		Compaction:         runtimeCompactionEventWithError(ev, sanitized, sanitized.Err),
+		CompactionDebug:    runtimeCompactionDebugEventWithError(ev, sanitized, sanitized.Err),
+		Metadata:           safeMetadata(sanitized.Metadata),
+		ObservedAt:         sanitized.Timestamp,
 	}
 }
 

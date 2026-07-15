@@ -17,6 +17,7 @@ import (
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/internal/agentharness"
 	"github.com/floegence/floret/internal/engine"
+	"github.com/floegence/floret/internal/event"
 	"github.com/floegence/floret/internal/provider"
 	"github.com/floegence/floret/internal/provider/cache"
 	"github.com/floegence/floret/internal/session"
@@ -282,6 +283,142 @@ func TestHostRunsThreadThroughModelGateway(t *testing.T) {
 	}
 	if req.Provider != "runtime-test-gateway" || req.Model != "fake-model" {
 		t.Fatalf("gateway request provider/model = %#v", req)
+	}
+	if slices.ContainsFunc(requests, func(req ModelRequest) bool { return strings.HasSuffix(string(req.RunID), ":thread-title") }) {
+		t.Fatalf("host-owned title mode issued a title request: %#v", requests)
+	}
+	snapshot, err := host.ReadThread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Title != "" || snapshot.TitleStatus != "" {
+		t.Fatalf("host-owned title snapshot = %#v, want empty title metadata", snapshot)
+	}
+}
+
+func TestHostProviderTitleModeGeneratesTitle(t *testing.T) {
+	ctx := context.Background()
+	var mu sync.Mutex
+	var requests []ModelRequest
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		mu.Lock()
+		requests = append(requests, req)
+		mu.Unlock()
+		if strings.HasSuffix(string(req.RunID), ":thread-title") {
+			return runtimeGatewayEvents("Generated title"), nil
+		}
+		return runtimeGatewayEvents("gateway hosted thread"), nil
+	})
+	host, err := NewHost(HostOptions{
+		Config:               runtimeGatewayConfig("gateway system"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		ThreadTitleMode:      ThreadTitleModeProvider,
+		IDGenerator:          deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := host.ReadThread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Title != "Generated title" || snapshot.TitleStatus != string(sessiontree.ThreadTitleReady) {
+		t.Fatalf("provider title snapshot = %#v", snapshot)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 2 || !strings.HasSuffix(string(requests[1].RunID), ":thread-title") {
+		t.Fatalf("gateway requests = %#v, want turn then title", requests)
+	}
+}
+
+func TestNewHostRejectsUnknownThreadTitleMode(t *testing.T) {
+	_, err := NewHost(HostOptions{
+		Config:          config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "ok"},
+		ThreadTitleMode: ThreadTitleMode("automatic"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "thread title mode") {
+		t.Fatalf("NewHost error = %v, want invalid thread title mode", err)
+	}
+}
+
+func TestRuntimeEventCopiesTypedLifecycleReasons(t *testing.T) {
+	input := event.Event{
+		Type:               event.StepEnd,
+		RunID:              "run-1",
+		FinishReason:       "stop",
+		RawFinishReason:    "end_turn",
+		FinishInferred:     true,
+		CompletionReason:   "natural_stop",
+		ContinuationReason: "",
+	}
+	got := runtimeEvent(input)
+	if got.FinishReason != observation.FinishReasonStop || got.RawFinishReason != "end_turn" || !got.FinishInferred || got.CompletionReason != observation.CompletionReasonNaturalStop || got.ContinuationReason != "" {
+		t.Fatalf("runtime event = %#v", got)
+	}
+	observed := runtimeObservationEvent(input)
+	if observed.FinishReason != observation.FinishReasonStop || observed.RawFinishReason != "end_turn" || !observed.FinishInferred || observed.CompletionReason != observation.CompletionReasonNaturalStop || observed.ContinuationReason != "" {
+		t.Fatalf("observation event = %#v", observed)
+	}
+}
+
+func TestRuntimeEventValidatesLifecycleReasons(t *testing.T) {
+	tests := []struct {
+		name  string
+		event Event
+	}{
+		{name: "unknown finish", event: Event{Type: observation.EventTypeStepEnd, FinishReason: observation.FinishReason("mystery")}},
+		{name: "unknown completion", event: Event{Type: observation.EventTypeStepEnd, CompletionReason: observation.CompletionReason("mystery")}},
+		{name: "unknown continuation", event: Event{Type: observation.EventTypeStepEnd, ContinuationReason: observation.ContinuationReason("mystery")}},
+		{name: "mixed terminal decisions", event: Event{Type: observation.EventTypeStepEnd, CompletionReason: observation.CompletionReasonNaturalStop, ContinuationReason: observation.ContinuationReasonToolResults}},
+		{name: "inferred without finish", event: Event{Type: observation.EventTypeStepEnd, FinishInferred: true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.event.Validate(); err == nil {
+				t.Fatalf("Validate(%#v) succeeded, want error", tt.event)
+			}
+		})
+	}
+	valid := Event{
+		Type:             observation.EventTypeStepEnd,
+		FinishReason:     observation.FinishReasonStop,
+		RawFinishReason:  "end_turn",
+		FinishInferred:   true,
+		CompletionReason: observation.CompletionReasonNaturalStop,
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid event rejected: %v", err)
+	}
+}
+
+func TestRuntimeEventLifecycleReasonsJSONRoundTrip(t *testing.T) {
+	want := Event{
+		Type:               observation.EventTypeStepEnd,
+		RunID:              "run-1",
+		FinishReason:       observation.FinishReasonToolCalls,
+		RawFinishReason:    "tool_use",
+		ContinuationReason: observation.ContinuationReasonToolResults,
+		Timestamp:          time.Unix(10, 0).UTC(),
+	}
+	raw, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Event
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("round trip = %#v, want %#v", got, want)
 	}
 }
 

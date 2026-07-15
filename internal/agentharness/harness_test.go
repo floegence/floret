@@ -125,6 +125,15 @@ func TestThreadRunGeneratesTitleMetadataAfterSuccessfulTurn(t *testing.T) {
 			Kind:             provider.ReasoningKindEffort,
 			DisableSupported: true,
 		},
+		TitleGenerator: ProviderTitleGenerator{
+			Provider:     p,
+			ProviderName: "fake",
+			Model:        "fake-model",
+			Reasoning: provider.ReasoningCapability{
+				Kind:             provider.ReasoningKindEffort,
+				DisableSupported: true,
+			},
+		},
 		LoopLimits: LoopLimits{
 			MaxEmptyProviderRetries: 1,
 			NoProgressLimit:         2,
@@ -170,6 +179,37 @@ func TestThreadRunGeneratesTitleMetadataAfterSuccessfulTurn(t *testing.T) {
 		return ev.Type == EventTitleUpdated && ev.ThreadID == "thread" && ev.TurnID == "turn-1" && ev.Message == snap.Title
 	}) {
 		t.Fatalf("title update event missing: %#v", rec.Snapshot())
+	}
+}
+
+func TestThreadRunLeavesTitleHostOwnedWhenGeneratorIsNil(t *testing.T) {
+	ctx := context.Background()
+	p := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done text"), scriptharness.Done()))
+	h := New(Options{
+		Provider:     p,
+		ProviderName: "fake",
+		Model:        "fake-model",
+		SystemPrompt: "You are a test assistant.",
+		Tools:        tools.NewRegistry(),
+		Repo:         sessiontree.NewMemoryRepo(),
+		PromptStore:  cache.NewMemoryStore(),
+	})
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := thread.Run(ctx, "do it", RunOptions{TurnID: "turn-1"}); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := h.options.Repo.Thread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Title != "" || meta.TitleStatus != "" || meta.TitleSource != "" {
+		t.Fatalf("host-owned title metadata = %#v, want empty", meta)
+	}
+	if len(p.Requests) != 1 {
+		t.Fatalf("provider requests = %#v, want only the turn request", p.Requests)
 	}
 }
 

@@ -400,14 +400,6 @@ func New(options Options) *AgentHarness {
 	if options.Artifacts == nil {
 		options.Artifacts = artifact.NewMemoryStore()
 	}
-	if options.TitleGenerator == nil {
-		options.TitleGenerator = ProviderTitleGenerator{
-			Provider:     options.Provider,
-			ProviderName: options.ProviderName,
-			Model:        options.Model,
-			Reasoning:    options.Reasoning,
-		}
-	}
 	if options.Now == nil {
 		options.Now = time.Now
 	}

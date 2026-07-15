@@ -84,6 +84,21 @@ func TestSanitizeRemovesProviderDeltaAndReasoning(t *testing.T) {
 	}
 }
 
+func TestSanitizePreservesLifecycleReasons(t *testing.T) {
+	got := Sanitize(Event{
+		Type:               StepEnd,
+		RunID:              "run",
+		FinishReason:       "stop",
+		RawFinishReason:    "end_turn",
+		FinishInferred:     true,
+		CompletionReason:   "natural_stop",
+		ContinuationReason: "",
+	})
+	if got.FinishReason != "stop" || got.RawFinishReason != "end_turn" || !got.FinishInferred || got.CompletionReason != "natural_stop" || got.ContinuationReason != "" {
+		t.Fatalf("sanitized lifecycle reasons = %#v", got)
+	}
+}
+
 func TestSanitizeRemovesThreadEntryCommittedDetail(t *testing.T) {
 	got := Sanitize(Event{
 		Type:    ThreadEntryCommitted,

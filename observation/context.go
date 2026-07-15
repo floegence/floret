@@ -41,28 +41,32 @@ func (s ContextDisplayStatus) Valid() bool {
 }
 
 type Event struct {
-	Type            EventType             `json:"type"`
-	TraceID         string                `json:"trace_id,omitempty"`
-	RunID           string                `json:"run_id,omitempty"`
-	ThreadID        string                `json:"thread_id,omitempty"`
-	TurnID          string                `json:"turn_id,omitempty"`
-	Step            int                   `json:"step,omitempty"`
-	Provider        string                `json:"provider,omitempty"`
-	Model           string                `json:"model,omitempty"`
-	Message         string                `json:"message,omitempty"`
-	Result          string                `json:"result,omitempty"`
-	Error           string                `json:"error,omitempty"`
-	ToolID          string                `json:"tool_id,omitempty"`
-	ToolName        string                `json:"tool_name,omitempty"`
-	ToolKind        string                `json:"tool_kind,omitempty"`
-	ArgsHash        string                `json:"args_hash,omitempty"`
-	DurationMS      int64                 `json:"duration_ms,omitempty"`
-	FinishReason    string                `json:"finish_reason,omitempty"`
-	Activity        *ActivityPresentation `json:"activity,omitempty"`
-	Compaction      *CompactionEvent      `json:"compaction,omitempty"`
-	CompactionDebug *CompactionDebugEvent `json:"compaction_debug,omitempty"`
-	Metadata        map[string]any        `json:"metadata,omitempty"`
-	ObservedAt      time.Time             `json:"observed_at"`
+	Type               EventType             `json:"type"`
+	TraceID            string                `json:"trace_id,omitempty"`
+	RunID              string                `json:"run_id,omitempty"`
+	ThreadID           string                `json:"thread_id,omitempty"`
+	TurnID             string                `json:"turn_id,omitempty"`
+	Step               int                   `json:"step,omitempty"`
+	Provider           string                `json:"provider,omitempty"`
+	Model              string                `json:"model,omitempty"`
+	Message            string                `json:"message,omitempty"`
+	Result             string                `json:"result,omitempty"`
+	Error              string                `json:"error,omitempty"`
+	ToolID             string                `json:"tool_id,omitempty"`
+	ToolName           string                `json:"tool_name,omitempty"`
+	ToolKind           string                `json:"tool_kind,omitempty"`
+	ArgsHash           string                `json:"args_hash,omitempty"`
+	DurationMS         int64                 `json:"duration_ms,omitempty"`
+	FinishReason       FinishReason          `json:"finish_reason,omitempty"`
+	RawFinishReason    string                `json:"raw_finish_reason,omitempty"`
+	FinishInferred     bool                  `json:"finish_inferred,omitempty"`
+	CompletionReason   CompletionReason      `json:"completion_reason,omitempty"`
+	ContinuationReason ContinuationReason    `json:"continuation_reason,omitempty"`
+	Activity           *ActivityPresentation `json:"activity,omitempty"`
+	Compaction         *CompactionEvent      `json:"compaction,omitempty"`
+	CompactionDebug    *CompactionDebugEvent `json:"compaction_debug,omitempty"`
+	Metadata           map[string]any        `json:"metadata,omitempty"`
+	ObservedAt         time.Time             `json:"observed_at"`
 }
 
 type ProviderUsage struct {
