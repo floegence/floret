@@ -86,7 +86,7 @@ execution lifecycle to Floret.
 | You need to... | Use... |
 | --- | --- |
 | Configure an agent and a provider | `config.Config` or `config.Load` |
-| Run durable conversations | `runtime.NewHost` and `runtime.Host` |
+| Run durable conversations | `runtime.NewHost` and concrete `*runtime.Host` |
 | Compact an idle thread | `runtime.CompactThreadRequest` |
 | Keep Floret runtime data in memory or SQLite | `runtime.NewMemoryStore` or `runtime.OpenSQLiteStore` |
 | Keep model transport under product control | `runtime.ModelGateway` |
@@ -278,6 +278,11 @@ Floret runtime
 Floret is deterministic with the fake provider, so tool behavior, approval
 flows, retries, context pressure, and host UI projections can be tested without
 real model calls.
+
+`NewHost` and `NewThreadMaintenanceHost` return concrete facade pointers.
+Application packages that need substitution should declare local interfaces
+containing only the methods used by that responsibility instead of depending on
+one repository-wide host interface.
 
 ```bash
 go test ./...

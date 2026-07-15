@@ -591,7 +591,7 @@ func TestHostForwardsTurnModelReasoningAndOpaqueProviderState(t *testing.T) {
 		close(events)
 		return events, nil
 	})
-	newHost := func(model string) Host {
+	newHost := func(model string) *Host {
 		t.Helper()
 		host, err := NewHost(HostOptions{
 			Config:               runtimeGatewayConfig("gateway system"),
@@ -4669,8 +4669,8 @@ func TestThreadMaintenanceHostDeletesThreadTreeWithoutProviderConfig(t *testing.
 		t.Fatal(err)
 	}
 	defer maintenance.Close()
-	if _, ok := maintenance.(Host); ok {
-		t.Fatalf("ThreadMaintenanceHost must not expose provider execution methods")
+	if _, ok := reflect.TypeOf(maintenance).MethodByName("RunTurn"); ok {
+		t.Fatalf("ThreadMaintenanceHost must not expose RunTurn")
 	}
 	if summary, err := maintenance.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "parent"}); err != nil || summary.ID != "parent" {
 		t.Fatalf("EnsureThread summary=%#v err=%v", summary, err)
@@ -4990,7 +4990,11 @@ func eventuallyRuntimeToolResult(rec *runtimeEventRecorder, toolID string) bool 
 	return false
 }
 
-func eventuallyThreadDetailToolResult(ctx context.Context, t *testing.T, host Host, threadID string, toolID string, status observation.ActivityStatus) bool {
+type threadDetailEventLister interface {
+	ListThreadDetailEvents(context.Context, ListThreadDetailEventsRequest) (ThreadDetailEvents, error)
+}
+
+func eventuallyThreadDetailToolResult(ctx context.Context, t *testing.T, host threadDetailEventLister, threadID string, toolID string, status observation.ActivityStatus) bool {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {

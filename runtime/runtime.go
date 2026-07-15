@@ -55,45 +55,21 @@ var (
 	ErrForkOperationTargetMissing = errors.New("floret fork operation target is missing")
 )
 
-type Host interface {
-	StartThread(context.Context, StartThreadRequest) (ThreadSnapshot, error)
-	EnsureThread(context.Context, EnsureThreadRequest) (ThreadSummary, error)
-	ForkThread(context.Context, ForkThreadRequest) (ForkThreadResult, error)
-	ReadThread(context.Context, ThreadID) (ThreadSnapshot, error)
-	ListThreadDetailEvents(context.Context, ListThreadDetailEventsRequest) (ThreadDetailEvents, error)
-	ListPendingApprovals(context.Context, ListPendingApprovalsRequest) (PendingApprovals, error)
-	ReadTurnProjection(context.Context, ReadTurnProjectionRequest) (ThreadTurnProjection, error)
-	RunTurn(context.Context, RunTurnRequest) (TurnResult, error)
-	RetryTurn(context.Context, RetryTurnRequest) (TurnResult, error)
-	CompactThread(context.Context, CompactThreadRequest) (CompactThreadResult, error)
-	CompletePendingTool(context.Context, PendingToolCompletionRequest) (TurnResult, error)
-	SettlePendingTool(context.Context, PendingToolSettlementRequest) (PendingToolSettlementResult, error)
-	SpawnSubAgent(context.Context, SpawnSubAgentRequest) (SubAgentSnapshot, error)
-	SendSubAgentInput(context.Context, SendSubAgentInputRequest) (SubAgentSnapshot, error)
-	WaitSubAgents(context.Context, WaitSubAgentsRequest) (WaitSubAgentsResult, error)
-	ListSubAgents(context.Context, ThreadID) ([]SubAgentSnapshot, error)
-	CloseSubAgent(context.Context, CloseSubAgentRequest) (SubAgentSnapshot, error)
-	CloseSubAgents(context.Context, CloseSubAgentsRequest) (CloseSubAgentsResult, error)
-	ListSubAgentActivityTimeline(context.Context, ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error)
-	ReadSubAgentDetail(context.Context, ReadSubAgentDetailRequest) (SubAgentDetail, error)
-	ListSubAgentDetailEvents(context.Context, ListSubAgentDetailEventsRequest) (SubAgentDetailEvents, error)
-	DeleteThread(context.Context, ThreadID) error
-	Close() error
+// Host is the concrete public facade for provider-backed durable conversations.
+// Callers that need substitution should declare a local interface containing
+// only the methods used by that responsibility.
+type Host struct {
+	cfg     config.Config
+	store   *Store
+	sink    EventSink
+	harness *agentharness.AgentHarness
 }
 
-// ThreadMaintenanceHost exposes provider-free thread maintenance operations over a Floret store.
-type ThreadMaintenanceHost interface {
-	EnsureThread(context.Context, EnsureThreadRequest) (ThreadSummary, error)
-	ForkThread(context.Context, ForkThreadRequest) (ForkThreadResult, error)
-	ReadTurnProjection(context.Context, ReadTurnProjectionRequest) (ThreadTurnProjection, error)
-	SettlePendingTool(context.Context, PendingToolSettlementRequest) (PendingToolSettlementResult, error)
-	ListSubAgents(context.Context, ThreadID) ([]SubAgentSnapshot, error)
-	ListSubAgentActivityTimeline(context.Context, ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error)
-	ReadSubAgentDetail(context.Context, ReadSubAgentDetailRequest) (SubAgentDetail, error)
-	ListSubAgentDetailEvents(context.Context, ListSubAgentDetailEventsRequest) (SubAgentDetailEvents, error)
-	CloseSubAgents(context.Context, CloseSubAgentsRequest) (CloseSubAgentsResult, error)
-	DeleteThread(context.Context, ThreadID) error
-	Close() error
+// ThreadMaintenanceHost is the concrete provider-free facade for maintenance
+// operations over an existing Floret store.
+type ThreadMaintenanceHost struct {
+	store   *Store
+	harness *agentharness.AgentHarness
 }
 
 type HostOptions struct {
@@ -1090,14 +1066,7 @@ func (s *Store) threadTreeIDs(ctx context.Context, threadID string) ([]string, e
 	return out, nil
 }
 
-type host struct {
-	cfg     config.Config
-	store   *Store
-	sink    EventSink
-	harness *agentharness.AgentHarness
-}
-
-func NewHost(opts HostOptions) (Host, error) {
+func NewHost(opts HostOptions) (*Host, error) {
 	cfg, provider, err := resolveHostConfigAndProvider(opts)
 	if err != nil {
 		return nil, err
@@ -1124,7 +1093,7 @@ func NewHost(opts HostOptions) (Host, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &host{cfg: cfg, store: store, sink: opts.Sink, harness: harness}, nil
+	return &Host{cfg: cfg, store: store, sink: opts.Sink, harness: harness}, nil
 }
 
 func resolveHostConfigAndProvider(opts HostOptions) (config.Config, provider.Provider, error) {
@@ -1154,14 +1123,9 @@ func resolveHostConfigAndProvider(opts HostOptions) (config.Config, provider.Pro
 	return cfg, modelProvider, nil
 }
 
-type threadMaintenanceHost struct {
-	store   *Store
-	harness *agentharness.AgentHarness
-}
-
 // NewThreadMaintenanceHost creates a provider-free host for thread maintenance.
 // It does not configure model transport, tools, or provider loop execution.
-func NewThreadMaintenanceHost(opts ThreadMaintenanceHostOptions) (ThreadMaintenanceHost, error) {
+func NewThreadMaintenanceHost(opts ThreadMaintenanceHostOptions) (*ThreadMaintenanceHost, error) {
 	store := opts.Store
 	if store == nil {
 		return nil, errors.New("thread maintenance host store is required")
@@ -1177,7 +1141,7 @@ func NewThreadMaintenanceHost(opts ThreadMaintenanceHostOptions) (ThreadMaintena
 		Sink:           newRuntimeEventSink(opts.Sink),
 		SinkPolicy:     runtimeHarnessSinkPolicy(),
 	})
-	return &threadMaintenanceHost{store: store, harness: harness}, nil
+	return &ThreadMaintenanceHost{store: store, harness: harness}, nil
 }
 
 func runtimeHarnessSinkPolicy() event.SinkPolicy {
@@ -1207,7 +1171,7 @@ func runtimeHostError(err error) error {
 	}
 }
 
-func (h *host) StartThread(ctx context.Context, req StartThreadRequest) (ThreadSnapshot, error) {
+func (h *Host) StartThread(ctx context.Context, req StartThreadRequest) (ThreadSnapshot, error) {
 	thread, err := h.harness.StartThread(ctx, agentharness.StartThreadOptions{ThreadID: string(req.ThreadID)})
 	if err != nil {
 		return ThreadSnapshot{}, runtimeHostError(err)
@@ -1215,11 +1179,11 @@ func (h *host) StartThread(ctx context.Context, req StartThreadRequest) (ThreadS
 	return readThread(ctx, thread)
 }
 
-func (h *host) EnsureThread(ctx context.Context, req EnsureThreadRequest) (ThreadSummary, error) {
+func (h *Host) EnsureThread(ctx context.Context, req EnsureThreadRequest) (ThreadSummary, error) {
 	return ensureThread(ctx, h.harness, req)
 }
 
-func (h *threadMaintenanceHost) EnsureThread(ctx context.Context, req EnsureThreadRequest) (ThreadSummary, error) {
+func (h *ThreadMaintenanceHost) EnsureThread(ctx context.Context, req EnsureThreadRequest) (ThreadSummary, error) {
 	return ensureThread(ctx, h.harness, req)
 }
 
@@ -1231,11 +1195,11 @@ func ensureThread(ctx context.Context, harness *agentharness.AgentHarness, req E
 	return threadSummary(summary), nil
 }
 
-func (h *host) ForkThread(ctx context.Context, req ForkThreadRequest) (ForkThreadResult, error) {
+func (h *Host) ForkThread(ctx context.Context, req ForkThreadRequest) (ForkThreadResult, error) {
 	return forkThread(ctx, h.harness, req)
 }
 
-func (h *threadMaintenanceHost) ForkThread(ctx context.Context, req ForkThreadRequest) (ForkThreadResult, error) {
+func (h *ThreadMaintenanceHost) ForkThread(ctx context.Context, req ForkThreadRequest) (ForkThreadResult, error) {
 	return forkThread(ctx, h.harness, req)
 }
 
@@ -1264,7 +1228,7 @@ func forkThread(ctx context.Context, harness *agentharness.AgentHarness, req For
 	return forkThreadResult(result), nil
 }
 
-func (h *host) ReadThread(ctx context.Context, threadID ThreadID) (ThreadSnapshot, error) {
+func (h *Host) ReadThread(ctx context.Context, threadID ThreadID) (ThreadSnapshot, error) {
 	thread, err := h.harness.ResumeThread(ctx, string(threadID), agentharness.ResumeOptions{})
 	if err != nil {
 		return ThreadSnapshot{}, runtimeHostError(err)
@@ -1272,7 +1236,7 @@ func (h *host) ReadThread(ctx context.Context, threadID ThreadID) (ThreadSnapsho
 	return readThread(ctx, thread)
 }
 
-func (h *host) ListThreadDetailEvents(ctx context.Context, req ListThreadDetailEventsRequest) (ThreadDetailEvents, error) {
+func (h *Host) ListThreadDetailEvents(ctx context.Context, req ListThreadDetailEventsRequest) (ThreadDetailEvents, error) {
 	detail, err := h.harness.ListThreadDetailEvents(ctx, agentharness.ListThreadDetailEventsOptions{
 		ThreadID:     string(req.ThreadID),
 		AfterOrdinal: req.AfterOrdinal,
@@ -1291,7 +1255,7 @@ func (h *host) ListThreadDetailEvents(ctx context.Context, req ListThreadDetailE
 	}, nil
 }
 
-func (h *host) ListPendingApprovals(ctx context.Context, req ListPendingApprovalsRequest) (PendingApprovals, error) {
+func (h *Host) ListPendingApprovals(ctx context.Context, req ListPendingApprovalsRequest) (PendingApprovals, error) {
 	result, err := h.harness.ListPendingApprovals(ctx, agentharness.ListPendingApprovalsOptions{ThreadID: string(req.ThreadID)})
 	if err != nil {
 		return PendingApprovals{}, runtimeHostError(err)
@@ -1299,11 +1263,11 @@ func (h *host) ListPendingApprovals(ctx context.Context, req ListPendingApproval
 	return pendingApprovals(result), nil
 }
 
-func (h *host) ReadTurnProjection(ctx context.Context, req ReadTurnProjectionRequest) (ThreadTurnProjection, error) {
+func (h *Host) ReadTurnProjection(ctx context.Context, req ReadTurnProjectionRequest) (ThreadTurnProjection, error) {
 	return readTurnProjection(ctx, h.harness, req)
 }
 
-func (h *threadMaintenanceHost) ReadTurnProjection(ctx context.Context, req ReadTurnProjectionRequest) (ThreadTurnProjection, error) {
+func (h *ThreadMaintenanceHost) ReadTurnProjection(ctx context.Context, req ReadTurnProjectionRequest) (ThreadTurnProjection, error) {
 	return readTurnProjection(ctx, h.harness, req)
 }
 
@@ -1336,7 +1300,7 @@ func readTurnProjection(ctx context.Context, harness *agentharness.AgentHarness,
 	}), nil
 }
 
-func (h *host) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, error) {
+func (h *Host) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, error) {
 	if strings.TrimSpace(string(req.RunID)) == "" {
 		return TurnResult{}, errors.New("run id is required")
 	}
@@ -1388,7 +1352,7 @@ func (h *host) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, err
 	return out, runtimeHostError(runErr)
 }
 
-func (h *host) RetryTurn(ctx context.Context, req RetryTurnRequest) (TurnResult, error) {
+func (h *Host) RetryTurn(ctx context.Context, req RetryTurnRequest) (TurnResult, error) {
 	if strings.TrimSpace(string(req.ThreadID)) == "" {
 		return TurnResult{}, errors.New("thread id is required")
 	}
@@ -1410,7 +1374,7 @@ func (h *host) RetryTurn(ctx context.Context, req RetryTurnRequest) (TurnResult,
 	return out, runtimeHostError(runErr)
 }
 
-func (h *host) CompactThread(ctx context.Context, req CompactThreadRequest) (CompactThreadResult, error) {
+func (h *Host) CompactThread(ctx context.Context, req CompactThreadRequest) (CompactThreadResult, error) {
 	if strings.TrimSpace(string(req.ThreadID)) == "" {
 		return CompactThreadResult{}, errors.New("thread id is required")
 	}
@@ -1451,7 +1415,7 @@ func (h *host) CompactThread(ctx context.Context, req CompactThreadRequest) (Com
 	return out, runtimeHostError(compactErr)
 }
 
-func (h *host) CompletePendingTool(ctx context.Context, req PendingToolCompletionRequest) (TurnResult, error) {
+func (h *Host) CompletePendingTool(ctx context.Context, req PendingToolCompletionRequest) (TurnResult, error) {
 	if strings.TrimSpace(string(req.ThreadID)) == "" {
 		return TurnResult{}, errors.New("thread id is required")
 	}
@@ -1483,11 +1447,11 @@ func (h *host) CompletePendingTool(ctx context.Context, req PendingToolCompletio
 	return out, runtimeHostError(runErr)
 }
 
-func (h *host) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+func (h *Host) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
 	return settlePendingTool(ctx, h.harness, req)
 }
 
-func (h *threadMaintenanceHost) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+func (h *ThreadMaintenanceHost) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
 	return settlePendingTool(ctx, h.harness, req)
 }
 
@@ -1545,7 +1509,7 @@ func settlePendingTool(ctx context.Context, harness *agentharness.AgentHarness, 
 	return out, nil
 }
 
-func (h *host) SpawnSubAgent(ctx context.Context, req SpawnSubAgentRequest) (SubAgentSnapshot, error) {
+func (h *Host) SpawnSubAgent(ctx context.Context, req SpawnSubAgentRequest) (SubAgentSnapshot, error) {
 	snapshot, err := h.harness.SpawnSubAgent(ctx, agentharness.SpawnSubAgentOptions{
 		ParentThreadID:  string(req.ParentThreadID),
 		ParentTurnID:    string(req.ParentTurnID),
@@ -1563,7 +1527,7 @@ func (h *host) SpawnSubAgent(ctx context.Context, req SpawnSubAgentRequest) (Sub
 	return subAgentSnapshot(snapshot), nil
 }
 
-func (h *host) SendSubAgentInput(ctx context.Context, req SendSubAgentInputRequest) (SubAgentSnapshot, error) {
+func (h *Host) SendSubAgentInput(ctx context.Context, req SendSubAgentInputRequest) (SubAgentSnapshot, error) {
 	snapshot, err := h.harness.SendSubAgentInput(ctx, agentharness.SendSubAgentInputOptions{
 		ParentThreadID: string(req.ParentThreadID),
 		ChildThreadID:  string(req.ChildThreadID),
@@ -1577,7 +1541,7 @@ func (h *host) SendSubAgentInput(ctx context.Context, req SendSubAgentInputReque
 	return subAgentSnapshot(snapshot), nil
 }
 
-func (h *host) WaitSubAgents(ctx context.Context, req WaitSubAgentsRequest) (WaitSubAgentsResult, error) {
+func (h *Host) WaitSubAgents(ctx context.Context, req WaitSubAgentsRequest) (WaitSubAgentsResult, error) {
 	result, err := h.harness.WaitSubAgents(ctx, agentharness.WaitSubAgentsOptions{
 		ParentThreadID: string(req.ParentThreadID),
 		ChildThreadIDs: threadIDStrings(req.ChildThreadIDs),
@@ -1589,11 +1553,11 @@ func (h *host) WaitSubAgents(ctx context.Context, req WaitSubAgentsRequest) (Wai
 	return waitSubAgentsResult(result), nil
 }
 
-func (h *host) ListSubAgents(ctx context.Context, parentThreadID ThreadID) ([]SubAgentSnapshot, error) {
+func (h *Host) ListSubAgents(ctx context.Context, parentThreadID ThreadID) ([]SubAgentSnapshot, error) {
 	return listSubAgents(ctx, h.harness, parentThreadID)
 }
 
-func (h *threadMaintenanceHost) ListSubAgents(ctx context.Context, parentThreadID ThreadID) ([]SubAgentSnapshot, error) {
+func (h *ThreadMaintenanceHost) ListSubAgents(ctx context.Context, parentThreadID ThreadID) ([]SubAgentSnapshot, error) {
 	return listSubAgents(ctx, h.harness, parentThreadID)
 }
 
@@ -1609,7 +1573,7 @@ func listSubAgents(ctx context.Context, harness *agentharness.AgentHarness, pare
 	return out, nil
 }
 
-func (h *host) CloseSubAgent(ctx context.Context, req CloseSubAgentRequest) (SubAgentSnapshot, error) {
+func (h *Host) CloseSubAgent(ctx context.Context, req CloseSubAgentRequest) (SubAgentSnapshot, error) {
 	snapshot, err := h.harness.CloseSubAgent(ctx, agentharness.CloseSubAgentOptions{
 		ParentThreadID: string(req.ParentThreadID),
 		ChildThreadID:  string(req.ChildThreadID),
@@ -1621,11 +1585,11 @@ func (h *host) CloseSubAgent(ctx context.Context, req CloseSubAgentRequest) (Sub
 	return subAgentSnapshot(snapshot), nil
 }
 
-func (h *host) CloseSubAgents(ctx context.Context, req CloseSubAgentsRequest) (CloseSubAgentsResult, error) {
+func (h *Host) CloseSubAgents(ctx context.Context, req CloseSubAgentsRequest) (CloseSubAgentsResult, error) {
 	return closeSubAgents(ctx, h.harness, req)
 }
 
-func (h *threadMaintenanceHost) CloseSubAgents(ctx context.Context, req CloseSubAgentsRequest) (CloseSubAgentsResult, error) {
+func (h *ThreadMaintenanceHost) CloseSubAgents(ctx context.Context, req CloseSubAgentsRequest) (CloseSubAgentsResult, error) {
 	return closeSubAgents(ctx, h.harness, req)
 }
 
@@ -1644,11 +1608,11 @@ func closeSubAgents(ctx context.Context, harness *agentharness.AgentHarness, req
 	return out, nil
 }
 
-func (h *host) ListSubAgentActivityTimeline(ctx context.Context, req ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error) {
+func (h *Host) ListSubAgentActivityTimeline(ctx context.Context, req ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error) {
 	return listSubAgentActivityTimeline(ctx, h.harness, req)
 }
 
-func (h *threadMaintenanceHost) ListSubAgentActivityTimeline(ctx context.Context, req ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error) {
+func (h *ThreadMaintenanceHost) ListSubAgentActivityTimeline(ctx context.Context, req ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error) {
 	return listSubAgentActivityTimeline(ctx, h.harness, req)
 }
 
@@ -1664,11 +1628,11 @@ func listSubAgentActivityTimeline(ctx context.Context, harness *agentharness.Age
 	}, nil
 }
 
-func (h *host) ReadSubAgentDetail(ctx context.Context, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
+func (h *Host) ReadSubAgentDetail(ctx context.Context, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
 	return readSubAgentDetail(ctx, h.harness, req)
 }
 
-func (h *threadMaintenanceHost) ReadSubAgentDetail(ctx context.Context, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
+func (h *ThreadMaintenanceHost) ReadSubAgentDetail(ctx context.Context, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
 	return readSubAgentDetail(ctx, h.harness, req)
 }
 
@@ -1686,11 +1650,11 @@ func readSubAgentDetail(ctx context.Context, harness *agentharness.AgentHarness,
 	return subAgentDetail(detail), nil
 }
 
-func (h *host) ListSubAgentDetailEvents(ctx context.Context, req ListSubAgentDetailEventsRequest) (SubAgentDetailEvents, error) {
+func (h *Host) ListSubAgentDetailEvents(ctx context.Context, req ListSubAgentDetailEventsRequest) (SubAgentDetailEvents, error) {
 	return listSubAgentDetailEvents(ctx, h.harness, req)
 }
 
-func (h *threadMaintenanceHost) ListSubAgentDetailEvents(ctx context.Context, req ListSubAgentDetailEventsRequest) (SubAgentDetailEvents, error) {
+func (h *ThreadMaintenanceHost) ListSubAgentDetailEvents(ctx context.Context, req ListSubAgentDetailEventsRequest) (SubAgentDetailEvents, error) {
 	return listSubAgentDetailEvents(ctx, h.harness, req)
 }
 
@@ -1716,11 +1680,11 @@ func listSubAgentDetailEvents(ctx context.Context, harness *agentharness.AgentHa
 	}, nil
 }
 
-func (h *host) DeleteThread(ctx context.Context, threadID ThreadID) error {
+func (h *Host) DeleteThread(ctx context.Context, threadID ThreadID) error {
 	return deleteThread(ctx, h.store, threadID)
 }
 
-func (h *threadMaintenanceHost) DeleteThread(ctx context.Context, threadID ThreadID) error {
+func (h *ThreadMaintenanceHost) DeleteThread(ctx context.Context, threadID ThreadID) error {
 	return deleteThread(ctx, h.store, threadID)
 }
 
@@ -1732,11 +1696,11 @@ func deleteThread(ctx context.Context, store *Store, threadID ThreadID) error {
 	return runtimeHostError(store.deleteThreadData(ctx, id))
 }
 
-func (h *host) Close() error {
+func (h *Host) Close() error {
 	return h.store.Close()
 }
 
-func (h *threadMaintenanceHost) Close() error {
+func (h *ThreadMaintenanceHost) Close() error {
 	return h.store.Close()
 }
 
@@ -1930,7 +1894,7 @@ func turnResult(in agentharness.TurnResult, threadID string, events []observatio
 	return out
 }
 
-func (h *host) attachThreadTurnProjection(ctx context.Context, threadID string, result *TurnResult) {
+func (h *Host) attachThreadTurnProjection(ctx context.Context, threadID string, result *TurnResult) {
 	if result == nil {
 		return
 	}

@@ -14,9 +14,13 @@ provider execution.
 
 # Layer Responsibilities
 
-`runtime.Host` is the public durable conversation facade. It starts threads,
-runs turns, retries, completes or settles pending tool work, manages durable
-child threads, deletes thread data, and returns host-safe snapshots.
+`runtime.Host` is the concrete public durable conversation facade. It starts
+threads, runs turns, retries, completes or settles pending tool work, manages
+durable child threads, deletes thread data, and returns host-safe snapshots.
+`runtime.ThreadMaintenanceHost` is a separate concrete provider-free facade.
+Downstream responsibility domains declare their own minimal interfaces when
+they need substitution, so a turn runner, projection reader, fork coordinator,
+or pending-tool settler depends only on the capability it actually calls.
 Terminal execution facts and terminal display projection availability are
 separate results. If durable detail cannot be read after a turn terminates,
 the runtime preserves the engine result and reports projection status as

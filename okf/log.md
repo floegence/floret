@@ -13,6 +13,9 @@
 * **Update**: Added dedicated memory and SQLite fork-operation storage, SQLite
   schema v10 target markers, immutable parent/terminal-child plans, and
   restart-safe exact result replay.
+* **Breaking**: Replaced the broad public `Host` and `ThreadMaintenanceHost`
+  interfaces with concrete facade types and constructors returning pointers, so
+  downstream packages own local minimal capability interfaces.
 
 ## 2026-07-14
 * **Breaking**: Removed tool-declared parallel-safety scheduling. Ordinary calls

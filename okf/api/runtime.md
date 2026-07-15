@@ -10,10 +10,16 @@ timestamp: 2026-06-20T00:00:00Z
 # Summary
 
 `runtime` is the primary downstream integration package. Use `runtime.NewHost`
-for durable conversations. Hosts provide product input, tools, permissions, and
-optional model transport; Floret owns provider loop execution, provider-visible
-context assembly, trimming, summary generation, compaction checkpoints,
-continuation state, and lifecycle observations.
+for durable conversations. It returns the concrete `*runtime.Host` facade;
+`NewThreadMaintenanceHost` returns the concrete
+`*runtime.ThreadMaintenanceHost` facade. Hosts provide product input, tools,
+permissions, and optional model transport; Floret owns provider loop execution,
+provider-visible context assembly, trimming, summary generation, compaction
+checkpoints, continuation state, and lifecycle observations.
+
+Downstream packages that need substitution define local interfaces containing
+only their actual capability methods. Floret does not publish a repository-wide
+host interface for every runtime operation.
 
 # Main Entry Points
 
@@ -327,10 +333,10 @@ running.
 Subagent detail reads from this facade return the same persisted model/context
 facts as provider-backed hosts.
 `ThreadMaintenanceHostOptions.Store` is required so maintenance code cannot
-silently operate on an empty ephemeral store. The constructor returns an
-independent `ThreadMaintenanceHost` implementation, so reload, detail, pending
+silently operate on an empty ephemeral store. The constructor returns the
+independent concrete `*ThreadMaintenanceHost` facade, so reload, detail, pending
 work settlement, cleanup, and deletion code can stay on the public runtime
-facade without pretending to be a model-running host.
+boundary without pretending to be a model-running host.
 
 Host facade not-found responses should be handled with `errors.Is` against
 `runtime.ErrThreadNotFound`, `runtime.ErrTurnNotFound`,

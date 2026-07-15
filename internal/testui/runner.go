@@ -2956,7 +2956,14 @@ func (g *seedThenBlockingTestModelGateway) StreamModel(ctx context.Context, req 
 	return blockingTestModelGateway{started: g.started}.StreamModel(ctx, req)
 }
 
-func testuiCompactionHost(sink flruntime.EventSink, gateway flruntime.ModelGateway) (flruntime.Host, error) {
+type testuiCompactionRuntime interface {
+	StartThread(context.Context, flruntime.StartThreadRequest) (flruntime.ThreadSnapshot, error)
+	RunTurn(context.Context, flruntime.RunTurnRequest) (flruntime.TurnResult, error)
+	CompactThread(context.Context, flruntime.CompactThreadRequest) (flruntime.CompactThreadResult, error)
+	Close() error
+}
+
+func testuiCompactionHost(sink flruntime.EventSink, gateway flruntime.ModelGateway) (testuiCompactionRuntime, error) {
 	return flruntime.NewHost(flruntime.HostOptions{
 		Config:               testuiProjectedCompactionConfig(256000, 100, true),
 		ModelGateway:         gateway,
@@ -2966,7 +2973,7 @@ func testuiCompactionHost(sink flruntime.EventSink, gateway flruntime.ModelGatew
 	})
 }
 
-func testuiCompactionNoopHost(sink flruntime.EventSink, gateway flruntime.ModelGateway) (flruntime.Host, error) {
+func testuiCompactionNoopHost(sink flruntime.EventSink, gateway flruntime.ModelGateway) (testuiCompactionRuntime, error) {
 	return flruntime.NewHost(flruntime.HostOptions{
 		Config:               testuiProjectedCompactionConfig(256000, 0, false),
 		ModelGateway:         gateway,

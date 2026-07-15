@@ -25,6 +25,9 @@ updates. Contributor-facing documentation may explain internals, but downstream
 examples must use public packages.
 Durable cross-store coordination uses explicit public operation identities and
 results; downstream hosts must not import internal storage contracts.
+Runtime constructors return concrete facade pointers. Interface ownership stays
+with the caller, which declares the smallest capability set needed by each
+responsibility instead of inheriting a broad framework interface.
 
 # Related
 
