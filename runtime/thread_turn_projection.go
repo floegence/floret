@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -34,13 +35,13 @@ type ProjectThreadTurnRequest struct {
 }
 
 type ThreadTurnProjection struct {
-	ThreadID       ThreadID                      `json:"thread_id,omitempty"`
-	TurnID         TurnID                        `json:"turn_id,omitempty"`
-	RunID          RunID                         `json:"run_id,omitempty"`
+	ThreadID       ThreadID                      `json:"thread_id"`
+	TurnID         TurnID                        `json:"turn_id"`
+	RunID          RunID                         `json:"run_id"`
 	TraceID        TraceID                       `json:"trace_id,omitempty"`
-	Status         TurnStatus                    `json:"status,omitempty"`
+	Status         TurnStatus                    `json:"status"`
 	Segments       []ThreadTurnProjectionSegment `json:"segments,omitempty"`
-	ThroughOrdinal int64                         `json:"through_ordinal,omitempty"`
+	ThroughOrdinal int64                         `json:"through_ordinal"`
 	ProjectedAt    time.Time                     `json:"projected_at,omitempty"`
 }
 
@@ -56,6 +57,40 @@ type ThreadTurnProjectionSignal struct {
 	Name   string `json:"name,omitempty"`
 	CallID string `json:"call_id,omitempty"`
 	Text   string `json:"text,omitempty"`
+}
+
+func (p ThreadTurnProjection) Validate() error {
+	if strings.TrimSpace(string(p.ThreadID)) == "" || strings.TrimSpace(string(p.TurnID)) == "" || strings.TrimSpace(string(p.RunID)) == "" {
+		return errors.New("turn projection identity is incomplete")
+	}
+	if p.ThroughOrdinal <= 0 {
+		return fmt.Errorf("turn projection ordinal must be positive, got %d", p.ThroughOrdinal)
+	}
+	if !p.Status.Valid() {
+		return fmt.Errorf("unsupported turn projection status %q", p.Status)
+	}
+	for index, segment := range p.Segments {
+		switch segment.Kind {
+		case ThreadTurnProjectionSegmentAssistantText:
+		case ThreadTurnProjectionSegmentActivityTimeline:
+			if segment.ActivityTimeline == nil {
+				return fmt.Errorf("turn projection segment %d is missing activity timeline", index)
+			}
+			if err := observation.ValidateActivityTimeline(*segment.ActivityTimeline); err != nil {
+				return fmt.Errorf("invalid activity timeline at segment %d: %w", index, err)
+			}
+		case ThreadTurnProjectionSegmentControlSignal:
+			if segment.Signal == nil && strings.TrimSpace(segment.Text) == "" {
+				return fmt.Errorf("turn projection segment %d is missing control signal content", index)
+			}
+			if segment.Signal != nil && strings.TrimSpace(segment.Signal.Name) == "" {
+				return fmt.Errorf("turn projection segment %d has an unnamed control signal", index)
+			}
+		default:
+			return fmt.Errorf("unsupported turn projection segment kind %q", segment.Kind)
+		}
+	}
+	return nil
 }
 
 func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
@@ -203,6 +238,8 @@ func threadTurnProjectionStatus(events []ThreadDetailEvent) TurnStatus {
 			continue
 		}
 		switch strings.TrimSpace(ev.TurnMarker.Status) {
+		case string(sessiontree.TurnStarted):
+			status = TurnStatusRunning
 		case string(sessiontree.TurnCompleted):
 			status = TurnStatusCompleted
 		case string(sessiontree.TurnWaiting):

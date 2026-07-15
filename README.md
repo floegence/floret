@@ -244,9 +244,10 @@ Public lifecycle fields use finite types such as `observation.EventType`,
 `CompactionStatus`. Normalized finish, completion, and continuation reasons are
 also finite public fields. Raw provider finish text remains separate in
 `RawFinishReason`, and `FinishInferred` records whether normalization required
-inference. Hosts should validate events at their integration boundary and reject
-unknown values instead of assigning a normal display state or reading lifecycle
-semantics from `Metadata`.
+inference. Hosts should call `runtime.Event.Validate` at their integration
+boundary. It validates the event plus nested stream observations, activity
+timelines, and turn projections so unknown values cannot acquire a normal
+display state or lifecycle semantics from `Metadata`.
 
 Thread titles are host-owned by default. Set
 `HostOptions.ThreadTitleMode = runtime.ThreadTitleModeProvider` only when Floret
@@ -262,13 +263,17 @@ provider-visible history in the host.
 Every turn projection carries `ThroughOrdinal`, the greatest durable detail
 event ordinal included in that projection. Compare it only within the explicit
 thread, turn, and run identities to reject duplicate or stale projections.
-`ProjectedAt` is observation time only and is not an ordering key.
+`ProjectedAt` is observation time only and is not an ordering key. Live
+projections report `Status=running` from the committed turn-start marker until a
+completed, waiting, failed, or cancelled marker becomes durable.
 
 Turn execution and display projection availability are independent outcomes.
-`TurnResult.ProjectionStatus` is `ready` or `unavailable`; an unavailable
+`TurnResult.ProjectionAvailability` is `ready` or `unavailable`; an unavailable
 projection keeps terminal status, output, metrics, provider state, signal, and
 the ordinary engine error unchanged. `ProjectionError` is diagnostic, while
-`ReadTurnProjection` is the explicit durable reload operation.
+`ReadTurnProjection` is the explicit durable reload operation. Runtime event
+sinks receive only public observation event types; harness lifecycle events stay
+on the separate internal harness sink.
 
 ### Runtime flow
 

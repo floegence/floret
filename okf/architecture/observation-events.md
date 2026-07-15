@@ -60,6 +60,11 @@ successful or stable state.
   tool-call stream start/delta/end facts. Model tool-call stream facts identify
   the call but do not expose argument text; local tool execution remains a
   separate activity timeline concern.
+* The public runtime event sink contains only finite `observation.EventType`
+  values. Agent-harness lifecycle notifications such as thread resume, turn
+  start, and entry append remain on the internal harness sink and are not
+  converted into runtime observation events. `runtime.Event.Validate` validates
+  nested stream, activity, and turn-projection contracts at the host boundary.
 * Subagent detail events expose parent-scoped child journal facts for host UI and
   audit readers. They include persisted messages, tool call/result records,
   approval state, turn markers, compaction checkpoints, and run failures in
@@ -74,10 +79,12 @@ successful or stable state.
   appended. `runtime.Event.Projection` carries the current hosted-turn display
   projection on those committed events, so hosts can render live display order
   without reading Floret storage internals or rebuilding activity from host
-  audit records. `TurnResult.Projection`, pending settlement projections, and
-  live event projections are built inside the runtime host from raw-capable
-  current-turn facts, while default detail reads remain bounded previews for
-  inspection surfaces. `ProjectThreadTurn` reduces the ordered detail events
+  audit records. The committed turn-start marker gives live projections the
+  explicit `running` status until a terminal marker becomes durable.
+  `TurnResult.Projection`, pending settlement projections, and live event
+  projections are built inside the runtime host from raw-capable current-turn
+  facts, while default detail reads remain bounded previews for inspection
+  surfaces. `ProjectThreadTurn` reduces the ordered detail events
   for a turn; it does not allow a stale aggregate activity timeline to override
   later detail facts. `runtime.Event.ActivityTimeline` remains lifecycle
   observation data, not the main display segment-ordering contract. Terminal

@@ -115,7 +115,7 @@ func TestHostRunTurnReportsTerminalProjectionUnavailableWithoutDiscardingResult(
 	if result.ID != "turn-1" || result.RunID != "run-1" || result.Metrics.LLMRequests != 1 {
 		t.Fatalf("result execution facts = %#v", result)
 	}
-	if result.ProjectionStatus != TurnProjectionStatusUnavailable || result.Projection != nil || strings.TrimSpace(result.ProjectionError) == "" {
+	if result.ProjectionAvailability != TurnProjectionAvailabilityUnavailable || result.Projection != nil || strings.TrimSpace(result.ProjectionError) == "" {
 		t.Fatalf("projection outcome = %#v, want unavailable diagnostic", result)
 	}
 	if err := result.ValidateProjection(); err != nil {
@@ -2885,24 +2885,82 @@ func TestRuntimeEventValidateRejectsUnknownPublicState(t *testing.T) {
 	}).Validate(); err == nil {
 		t.Fatal("runtime event with unknown context status validated")
 	}
+	if err := (Event{
+		Type:   observation.EventTypeProviderDelta,
+		Stream: &StreamObservation{Type: "future_stream"},
+	}).Validate(); err == nil {
+		t.Fatal("runtime event with unknown stream observation validated")
+	}
+	if err := (Event{
+		Type: observation.EventTypeProviderFinish,
+		Stream: &StreamObservation{
+			Type:         StreamObservationModelStreamDone,
+			FinishReason: "future_finish",
+		},
+	}).Validate(); err == nil {
+		t.Fatal("runtime event with unknown stream finish reason validated")
+	}
+	if err := (Event{
+		Type: observation.EventTypeProviderFinish,
+		Stream: &StreamObservation{
+			Type:           StreamObservationModelStreamDone,
+			FinishInferred: true,
+		},
+	}).Validate(); err == nil {
+		t.Fatal("runtime event with inferred stream finish and no reason validated")
+	}
+	if err := (Event{
+		Type:             observation.EventTypeToolCall,
+		ActivityTimeline: &observation.ActivityTimeline{},
+	}).Validate(); err == nil {
+		t.Fatal("runtime event with invalid activity timeline validated")
+	}
+	validProjection := ThreadTurnProjection{
+		ThreadID:       "thread",
+		TurnID:         "turn",
+		RunID:          "run",
+		Status:         TurnStatusRunning,
+		ThroughOrdinal: 1,
+	}
+	if err := (Event{
+		Type:       observation.EventTypeThreadEntryCommitted,
+		ThreadID:   "thread",
+		TurnID:     "turn",
+		RunID:      "run",
+		Projection: &validProjection,
+	}).Validate(); err != nil {
+		t.Fatalf("runtime event with valid running projection rejected: %v", err)
+	}
+	if err := (Event{
+		Type:       observation.EventTypeThreadEntryCommitted,
+		ThreadID:   "other-thread",
+		TurnID:     "turn",
+		RunID:      "run",
+		Projection: &validProjection,
+	}).Validate(); err == nil {
+		t.Fatal("runtime event with mismatched projection identity validated")
+	}
 }
 
 func TestTurnProjectionOutcomeValidation(t *testing.T) {
 	t.Parallel()
 
-	projection := &ThreadTurnProjection{ThreadID: "thread", TurnID: "turn", RunID: "run", ThroughOrdinal: 1}
+	projection := &ThreadTurnProjection{ThreadID: "thread", TurnID: "turn", RunID: "run", Status: TurnStatusCompleted, ThroughOrdinal: 1}
 	tests := []struct {
 		name    string
 		result  TurnResult
 		wantErr bool
 	}{
-		{name: "ready", result: TurnResult{ProjectionStatus: TurnProjectionStatusReady, Projection: projection}},
-		{name: "unavailable", result: TurnResult{ProjectionStatus: TurnProjectionStatusUnavailable, ProjectionError: "detail read failed"}},
-		{name: "unknown status", result: TurnResult{ProjectionStatus: "future", Projection: projection}, wantErr: true},
-		{name: "ready without projection", result: TurnResult{ProjectionStatus: TurnProjectionStatusReady}, wantErr: true},
-		{name: "ready with error", result: TurnResult{ProjectionStatus: TurnProjectionStatusReady, Projection: projection, ProjectionError: "unexpected"}, wantErr: true},
-		{name: "unavailable with projection", result: TurnResult{ProjectionStatus: TurnProjectionStatusUnavailable, Projection: projection, ProjectionError: "detail read failed"}, wantErr: true},
-		{name: "unavailable without error", result: TurnResult{ProjectionStatus: TurnProjectionStatusUnavailable}, wantErr: true},
+		{name: "ready", result: TurnResult{ID: "turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: TurnProjectionAvailabilityReady, Projection: projection}},
+		{name: "unavailable", result: TurnResult{ID: "turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: TurnProjectionAvailabilityUnavailable, ProjectionError: "detail read failed"}},
+		{name: "unknown availability", result: TurnResult{ID: "turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: "future", Projection: projection}, wantErr: true},
+		{name: "ready without projection", result: TurnResult{ID: "turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: TurnProjectionAvailabilityReady}, wantErr: true},
+		{name: "ready with error", result: TurnResult{ID: "turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: TurnProjectionAvailabilityReady, Projection: projection, ProjectionError: "unexpected"}, wantErr: true},
+		{name: "unavailable with projection", result: TurnResult{ID: "turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: TurnProjectionAvailabilityUnavailable, Projection: projection, ProjectionError: "detail read failed"}, wantErr: true},
+		{name: "unavailable without error", result: TurnResult{ID: "turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: TurnProjectionAvailabilityUnavailable}, wantErr: true},
+		{name: "running result", result: TurnResult{ID: "turn", RunID: "run", Status: TurnStatusRunning, ProjectionAvailability: TurnProjectionAvailabilityReady, Projection: projection}, wantErr: true},
+		{name: "status mismatch", result: TurnResult{ID: "turn", RunID: "run", Status: TurnStatusFailed, ProjectionAvailability: TurnProjectionAvailabilityReady, Projection: projection}, wantErr: true},
+		{name: "identity mismatch", result: TurnResult{ID: "other-turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: TurnProjectionAvailabilityReady, Projection: projection}, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2911,6 +2969,54 @@ func TestTurnProjectionOutcomeValidation(t *testing.T) {
 				t.Fatalf("ValidateProjection() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestPendingToolSettlementProjectionValidation(t *testing.T) {
+	t.Parallel()
+
+	projection := &ThreadTurnProjection{
+		ThreadID:       "thread",
+		TurnID:         "turn",
+		RunID:          "run",
+		Status:         TurnStatusCompleted,
+		ThroughOrdinal: 1,
+	}
+	valid := PendingToolSettlementResult{
+		ThreadID:               "thread",
+		TurnID:                 "turn",
+		RunID:                  "run",
+		ProjectionAvailability: TurnProjectionAvailabilityReady,
+		Projection:             projection,
+	}
+	if err := valid.ValidateProjection(); err != nil {
+		t.Fatalf("valid pending tool settlement projection rejected: %v", err)
+	}
+
+	mismatched := valid
+	mismatched.ThreadID = "other-thread"
+	if err := mismatched.ValidateProjection(); err == nil {
+		t.Fatal("pending tool settlement projection identity mismatch validated")
+	}
+}
+
+func TestTurnProjectionAvailabilityJSONUsesExplicitAvailabilityField(t *testing.T) {
+	t.Parallel()
+
+	raw, err := json.Marshal(TurnResult{
+		Status:                 TurnStatusCompleted,
+		ProjectionAvailability: TurnProjectionAvailabilityUnavailable,
+		ProjectionError:        "detail read failed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, `"projection_availability":"unavailable"`) {
+		t.Fatalf("turn result JSON missing projection availability: %s", text)
+	}
+	if strings.Contains(text, "projection_status") {
+		t.Fatalf("turn result JSON retained removed projection_status field: %s", text)
 	}
 }
 
@@ -3600,7 +3706,7 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 		settled.Event.ToolResult.Content != "exit 0" {
 		t.Fatalf("settlement event = %#v", settled.Event)
 	}
-	if settled.ProjectionStatus != TurnProjectionStatusUnavailable || settled.Projection != nil || settled.ProjectionError == "" {
+	if settled.ProjectionAvailability != TurnProjectionAvailabilityUnavailable || settled.Projection != nil || settled.ProjectionError == "" {
 		t.Fatalf("settlement projection outcome = %#v, want unavailable", settled)
 	}
 	if err := settled.ValidateProjection(); err != nil {
@@ -4007,6 +4113,9 @@ func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
 	committedEvents := 0
 	var liveProjections []ThreadTurnProjection
 	for _, ev := range rec.events {
+		if err := ev.Validate(); err != nil {
+			t.Fatalf("public runtime event failed validation: type=%q error=%v event=%#v", ev.Type, err, ev)
+		}
 		if ev.Committed == nil {
 			continue
 		}
@@ -4031,11 +4140,21 @@ func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
 		t.Fatalf("live projections=%d, want one per committed event %d", len(liveProjections), committedEvents)
 	}
 	for i, projection := range liveProjections {
+		if err := projection.Validate(); err != nil {
+			t.Fatalf("live projection %d failed validation: %v", i, err)
+		}
 		if projection.ThroughOrdinal <= 0 {
 			t.Fatalf("live projection %d ThroughOrdinal=%d, want positive", i, projection.ThroughOrdinal)
 		}
 		if i > 0 && projection.ThroughOrdinal <= liveProjections[i-1].ThroughOrdinal {
 			t.Fatalf("live projection ordinals did not advance: previous=%d current=%d", liveProjections[i-1].ThroughOrdinal, projection.ThroughOrdinal)
+		}
+		wantStatus := TurnStatusRunning
+		if i == len(liveProjections)-1 {
+			wantStatus = TurnStatusCompleted
+		}
+		if projection.Status != wantStatus {
+			t.Fatalf("live projection %d status=%q, want %q", i, projection.Status, wantStatus)
 		}
 	}
 	finalLiveProjection := liveProjections[len(liveProjections)-1]

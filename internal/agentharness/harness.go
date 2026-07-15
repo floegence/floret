@@ -917,9 +917,6 @@ func (h *AgentHarness) emit(ev HarnessEvent) {
 	if h.options.HarnessSink != nil {
 		h.options.HarnessSink.EmitHarness(ev)
 	}
-	if h.options.Sink != nil {
-		h.options.Sink.Emit(event.Sanitize(event.Event{Type: event.Type(ev.Type), RunID: ev.RunID, ThreadID: ev.ThreadID, TurnID: ev.TurnID, Message: ev.Message, Timestamp: ev.Timestamp}))
-	}
 }
 
 func (h *AgentHarness) emitEntryCommitted(entry sessiontree.Entry, runID string) {

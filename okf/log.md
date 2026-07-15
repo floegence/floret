@@ -1,5 +1,14 @@
 # Floret OKF Update Log
 
+## 2026-07-16
+* **Breaking**: Renamed turn projection availability from `ProjectionStatus` to
+  `ProjectionAvailability` and removed the old Go and JSON contract names.
+* **Fix**: Made live turn projections explicitly `running` until a terminal turn
+  marker is durable and added Floret-owned projection validation.
+* **Fix**: Kept private harness lifecycle events off the public runtime event
+  sink and made runtime event validation cover nested stream, activity, and
+  projection contracts.
+
 ## 2026-07-15
 * **Breaking**: Made thread titles host-owned by default and added the explicit
   `ThreadTitleModeProvider` opt-in for Floret provider title requests.

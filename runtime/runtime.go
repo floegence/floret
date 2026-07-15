@@ -481,13 +481,13 @@ type PendingApprovals struct {
 }
 
 type PendingToolSettlementResult struct {
-	ThreadID         ThreadID              `json:"thread_id"`
-	TurnID           TurnID                `json:"turn_id"`
-	RunID            RunID                 `json:"run_id,omitempty"`
-	Event            ThreadDetailEvent     `json:"event"`
-	ProjectionStatus TurnProjectionStatus  `json:"projection_status"`
-	Projection       *ThreadTurnProjection `json:"projection,omitempty"`
-	ProjectionError  string                `json:"projection_error,omitempty"`
+	ThreadID               ThreadID                   `json:"thread_id"`
+	TurnID                 TurnID                     `json:"turn_id"`
+	RunID                  RunID                      `json:"run_id,omitempty"`
+	Event                  ThreadDetailEvent          `json:"event"`
+	ProjectionAvailability TurnProjectionAvailability `json:"projection_availability"`
+	Projection             *ThreadTurnProjection      `json:"projection,omitempty"`
+	ProjectionError        string                     `json:"projection_error,omitempty"`
 }
 
 type PendingApprovalResource struct {
@@ -782,51 +782,54 @@ type ThreadMessage struct {
 }
 
 type TurnResult struct {
-	ID                 TurnID                         `json:"id"`
-	RunID              RunID                          `json:"run_id,omitempty"`
-	Status             TurnStatus                     `json:"status"`
-	Output             string                         `json:"output,omitempty"`
-	Error              string                         `json:"error,omitempty"`
-	Diagnostics        map[string]string              `json:"diagnostics,omitempty"`
-	Metrics            RunMetrics                     `json:"metrics"`
-	CompletionReason   observation.CompletionReason   `json:"completion_reason,omitempty"`
-	ContinuationReason observation.ContinuationReason `json:"continuation_reason,omitempty"`
-	FinishReason       observation.FinishReason       `json:"finish_reason,omitempty"`
-	RawFinishReason    string                         `json:"raw_finish_reason,omitempty"`
-	FinishInferred     bool                           `json:"finish_inferred,omitempty"`
-	ProviderState      *ModelState                    `json:"provider_state,omitempty"`
-	Signal             *TurnSignal                    `json:"signal,omitempty"`
-	ActivityTimeline   observation.ActivityTimeline   `json:"activity_timeline"`
-	ProjectionStatus   TurnProjectionStatus           `json:"projection_status"`
-	Projection         *ThreadTurnProjection          `json:"projection,omitempty"`
-	ProjectionError    string                         `json:"projection_error,omitempty"`
-	PendingApprovals   []PendingApproval              `json:"pending_approvals,omitempty"`
+	ID                     TurnID                         `json:"id"`
+	RunID                  RunID                          `json:"run_id,omitempty"`
+	Status                 TurnStatus                     `json:"status"`
+	Output                 string                         `json:"output,omitempty"`
+	Error                  string                         `json:"error,omitempty"`
+	Diagnostics            map[string]string              `json:"diagnostics,omitempty"`
+	Metrics                RunMetrics                     `json:"metrics"`
+	CompletionReason       observation.CompletionReason   `json:"completion_reason,omitempty"`
+	ContinuationReason     observation.ContinuationReason `json:"continuation_reason,omitempty"`
+	FinishReason           observation.FinishReason       `json:"finish_reason,omitempty"`
+	RawFinishReason        string                         `json:"raw_finish_reason,omitempty"`
+	FinishInferred         bool                           `json:"finish_inferred,omitempty"`
+	ProviderState          *ModelState                    `json:"provider_state,omitempty"`
+	Signal                 *TurnSignal                    `json:"signal,omitempty"`
+	ActivityTimeline       observation.ActivityTimeline   `json:"activity_timeline"`
+	ProjectionAvailability TurnProjectionAvailability     `json:"projection_availability"`
+	Projection             *ThreadTurnProjection          `json:"projection,omitempty"`
+	ProjectionError        string                         `json:"projection_error,omitempty"`
+	PendingApprovals       []PendingApproval              `json:"pending_approvals,omitempty"`
 }
 
-type TurnProjectionStatus string
+type TurnProjectionAvailability string
 
 const (
-	TurnProjectionStatusReady       TurnProjectionStatus = "ready"
-	TurnProjectionStatusUnavailable TurnProjectionStatus = "unavailable"
+	TurnProjectionAvailabilityReady       TurnProjectionAvailability = "ready"
+	TurnProjectionAvailabilityUnavailable TurnProjectionAvailability = "unavailable"
 )
 
-func (s TurnProjectionStatus) Valid() bool {
-	return s == TurnProjectionStatusReady || s == TurnProjectionStatusUnavailable
+func (a TurnProjectionAvailability) Valid() bool {
+	return a == TurnProjectionAvailabilityReady || a == TurnProjectionAvailabilityUnavailable
 }
 
-func validateTurnProjectionOutcome(status TurnProjectionStatus, projection *ThreadTurnProjection, projectionError string) error {
-	if !status.Valid() {
-		return fmt.Errorf("unsupported turn projection status %q", status)
+func validateTurnProjectionOutcome(availability TurnProjectionAvailability, projection *ThreadTurnProjection, projectionError string) error {
+	if !availability.Valid() {
+		return fmt.Errorf("unsupported turn projection availability %q", availability)
 	}
-	switch status {
-	case TurnProjectionStatusReady:
+	switch availability {
+	case TurnProjectionAvailabilityReady:
 		if projection == nil {
 			return errors.New("ready turn projection is required")
 		}
 		if strings.TrimSpace(projectionError) != "" {
 			return errors.New("ready turn projection must not include an error")
 		}
-	case TurnProjectionStatusUnavailable:
+		if err := projection.Validate(); err != nil {
+			return fmt.Errorf("invalid ready turn projection: %w", err)
+		}
+	case TurnProjectionAvailabilityUnavailable:
 		if projection != nil {
 			return errors.New("unavailable turn projection must not include a projection")
 		}
@@ -838,11 +841,35 @@ func validateTurnProjectionOutcome(status TurnProjectionStatus, projection *Thre
 }
 
 func (r TurnResult) ValidateProjection() error {
-	return validateTurnProjectionOutcome(r.ProjectionStatus, r.Projection, r.ProjectionError)
+	if !r.Status.Valid() || !r.Status.IsTerminal() {
+		return fmt.Errorf("turn result requires terminal status, got %q", r.Status)
+	}
+	if err := validateTurnProjectionOutcome(r.ProjectionAvailability, r.Projection, r.ProjectionError); err != nil {
+		return err
+	}
+	if r.Projection == nil {
+		return nil
+	}
+	if r.Projection.TurnID != r.ID || r.Projection.RunID != r.RunID {
+		return errors.New("turn result projection identity mismatch")
+	}
+	if r.Projection.Status != r.Status {
+		return fmt.Errorf("turn result projection status %q does not match result status %q", r.Projection.Status, r.Status)
+	}
+	return nil
 }
 
 func (r PendingToolSettlementResult) ValidateProjection() error {
-	return validateTurnProjectionOutcome(r.ProjectionStatus, r.Projection, r.ProjectionError)
+	if err := validateTurnProjectionOutcome(r.ProjectionAvailability, r.Projection, r.ProjectionError); err != nil {
+		return err
+	}
+	if r.Projection == nil {
+		return nil
+	}
+	if r.Projection.ThreadID != r.ThreadID || r.Projection.TurnID != r.TurnID || r.Projection.RunID != r.RunID {
+		return errors.New("pending tool settlement projection identity mismatch")
+	}
+	return nil
 }
 
 type CompactThreadResult struct {
@@ -928,6 +955,24 @@ func (e Event) Validate() error {
 			return fmt.Errorf("invalid compaction debug event: %w", err)
 		}
 	}
+	if e.Stream != nil {
+		if err := e.Stream.Validate(); err != nil {
+			return fmt.Errorf("invalid stream observation: %w", err)
+		}
+	}
+	if e.ActivityTimeline != nil {
+		if err := observation.ValidateActivityTimeline(*e.ActivityTimeline); err != nil {
+			return fmt.Errorf("invalid event activity timeline: %w", err)
+		}
+	}
+	if e.Projection != nil {
+		if err := e.Projection.Validate(); err != nil {
+			return fmt.Errorf("invalid event turn projection: %w", err)
+		}
+		if e.ThreadID != e.Projection.ThreadID || e.TurnID != e.Projection.TurnID || e.RunID != e.Projection.RunID {
+			return errors.New("runtime event projection identity mismatch")
+		}
+	}
 	return nil
 }
 
@@ -944,6 +989,22 @@ const (
 	StreamObservationModelStreamAbort StreamObservationType = "model_stream_abort"
 )
 
+func (t StreamObservationType) Valid() bool {
+	switch t {
+	case StreamObservationAssistantDelta,
+		StreamObservationReasoningDelta,
+		StreamObservationToolCallStart,
+		StreamObservationToolCallDelta,
+		StreamObservationToolCallEnd,
+		StreamObservationModelRetry,
+		StreamObservationModelStreamDone,
+		StreamObservationModelStreamAbort:
+		return true
+	default:
+		return false
+	}
+}
+
 // StreamObservation is a provider-neutral, engine-confirmed streaming fact for
 // hosts that render live assistant output from Floret runtime events.
 type StreamObservation struct {
@@ -956,6 +1017,19 @@ type StreamObservation struct {
 	FinishInferred  bool                     `json:"finish_inferred,omitempty"`
 	Attempt         int                      `json:"attempt,omitempty"`
 	Labels          RunLabels                `json:"labels,omitempty"`
+}
+
+func (s StreamObservation) Validate() error {
+	if !s.Type.Valid() {
+		return fmt.Errorf("unsupported stream observation type %q", s.Type)
+	}
+	if s.FinishReason != "" && !s.FinishReason.Valid() {
+		return fmt.Errorf("unsupported stream finish reason %q", s.FinishReason)
+	}
+	if s.FinishInferred && s.FinishReason == "" {
+		return errors.New("inferred stream finish requires finish reason")
+	}
+	return nil
 }
 
 type ThreadStatus string
@@ -980,11 +1054,30 @@ const (
 type TurnStatus string
 
 const (
+	TurnStatusRunning   TurnStatus = "running"
 	TurnStatusCompleted TurnStatus = "completed"
 	TurnStatusWaiting   TurnStatus = "waiting"
 	TurnStatusFailed    TurnStatus = "failed"
 	TurnStatusCancelled TurnStatus = "cancelled"
 )
+
+func (s TurnStatus) Valid() bool {
+	switch s {
+	case TurnStatusRunning, TurnStatusCompleted, TurnStatusWaiting, TurnStatusFailed, TurnStatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s TurnStatus) IsTerminal() bool {
+	switch s {
+	case TurnStatusCompleted, TurnStatusWaiting, TurnStatusFailed, TurnStatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
 
 type Store struct {
 	repo           sessiontree.Repo
@@ -1562,7 +1655,7 @@ func settlePendingTool(ctx context.Context, harness *agentharness.AgentHarness, 
 	defer cancelProjection()
 	events, err := listRawThreadDetailEventsForTurn(projectionCtx, harness, string(req.ThreadID), string(req.TurnID))
 	if err != nil {
-		out.ProjectionStatus = TurnProjectionStatusUnavailable
+		out.ProjectionAvailability = TurnProjectionAvailabilityUnavailable
 		out.ProjectionError = runtimeHostError(err).Error()
 		return out, nil
 	}
@@ -1573,7 +1666,7 @@ func settlePendingTool(ctx context.Context, harness *agentharness.AgentHarness, 
 		TraceID:  TraceID(req.RunID),
 		Events:   events,
 	})
-	out.ProjectionStatus = TurnProjectionStatusReady
+	out.ProjectionAvailability = TurnProjectionAvailabilityReady
 	out.Projection = &projection
 	return out, nil
 }
@@ -1968,13 +2061,13 @@ func (h *Host) attachThreadTurnProjection(ctx context.Context, threadID string, 
 		return
 	}
 	if h == nil || strings.TrimSpace(threadID) == "" || strings.TrimSpace(string(result.ID)) == "" {
-		result.ProjectionStatus = TurnProjectionStatusUnavailable
+		result.ProjectionAvailability = TurnProjectionAvailabilityUnavailable
 		result.ProjectionError = "turn projection identity is incomplete"
 		return
 	}
 	events, err := listRawThreadDetailEventsForTurn(ctx, h.harness, threadID, string(result.ID))
 	if err != nil {
-		result.ProjectionStatus = TurnProjectionStatusUnavailable
+		result.ProjectionAvailability = TurnProjectionAvailabilityUnavailable
 		result.ProjectionError = runtimeHostError(err).Error()
 		return
 	}
@@ -1985,7 +2078,7 @@ func (h *Host) attachThreadTurnProjection(ctx context.Context, threadID string, 
 		TraceID:  TraceID(result.RunID),
 		Events:   events,
 	})
-	result.ProjectionStatus = TurnProjectionStatusReady
+	result.ProjectionAvailability = TurnProjectionAvailabilityReady
 	result.Projection = &projection
 	result.ProjectionError = ""
 }

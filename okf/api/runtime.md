@@ -93,9 +93,9 @@ host interface for every runtime operation.
 * `ErrThreadNotFound`, `ErrTurnNotFound`, `ErrRunNotFound`, and
   `ErrSubAgentNotFound` are public sentinel errors for `errors.Is` checks on
   Host facade not-found responses.
-* `TurnResult.ProjectionStatus` reports `ready` or `unavailable` independently
-  from execution error. An unavailable projection preserves terminal engine
-  facts and carries diagnostic text in `ProjectionError`.
+* `TurnResult.ProjectionAvailability` reports `ready` or `unavailable`
+  independently from execution error. An unavailable projection preserves
+  terminal engine facts and carries diagnostic text in `ProjectionError`.
 * `ModelGateway` lets a host supply model transport through
   `HostOptions.ModelGateway` while Floret owns loop control, tool dispatch,
   context lifecycle, and ledgers.
@@ -203,7 +203,10 @@ for authoritative assistant markdown.
 `ThreadTurnProjection.ThroughOrdinal` is the maximum durable detail-event
 ordinal included in the projection. Hosts compare it only within the explicit
 `ThreadID`, `TurnID`, and `RunID` identity tuple to reject duplicate or stale
-updates. `ProjectedAt` records projection time but does not define ordering.
+updates. `ProjectedAt` records projection time but does not define ordering. A
+projection whose turn-start marker is durable reports `Status=running`; the
+status changes only when a completed, waiting, failed, or cancelled marker (or a
+terminal error fact) is included.
 `ReadTurnProjection` requires explicit `RunID` input instead of inferring it
 from stored rows, because `RunID` is execution identity and not the thread or
 turn storage identity. A missing thread is reported with `ErrThreadNotFound`; a
@@ -212,9 +215,9 @@ and a turn whose durable detail does not record the requested run is reported
 with `ErrRunNotFound`.
 If final detail reading or projection attachment fails, `RunTurn`, `RetryTurn`,
 and `CompletePendingTool` preserve their engine result, return
-`ProjectionStatus=unavailable`, and do not convert the projection failure into
-an execution error. `SettlePendingTool` likewise preserves its committed detail
-event when the subsequent projection read is unavailable.
+`ProjectionAvailability=unavailable`, and do not convert the projection failure
+into an execution error. `SettlePendingTool` likewise preserves its committed
+detail event when the subsequent projection read is unavailable.
 `ForkThread` is the public runtime contract for host-visible conversation forks.
 Its request requires a host-supplied `ForkOperationID`. Before creating any
 target, Floret durably fixes the source leaf, destination thread IDs, complete
@@ -349,9 +352,9 @@ Fork replay failures should likewise use `errors.Is` with
 `runtime.ErrForkOperationConflict`, `runtime.ErrForkDestinationConflict`, and
 `runtime.ErrForkOperationTargetMissing`.
 
-Hosts validate `ProjectionStatus`, `Projection`, and `ProjectionError` as one
-outcome. `ready` requires a projection and no projection error; `unavailable`
-requires no projection and a non-empty diagnostic. Explicit
+Hosts validate `ProjectionAvailability`, `Projection`, and `ProjectionError` as
+one outcome. `ready` requires a valid projection and no projection error;
+`unavailable` requires no projection and a non-empty diagnostic. Explicit
 `ReadTurnProjection` remains the durable reload operation.
 
 `StreamObservation` is for host rendering and diagnostics. It is not raw
@@ -361,15 +364,18 @@ local paths, or secrets.
 `runtime.Event`, `observation.Event`, `TurnResult`, and `StreamObservation`
 expose normalized `FinishReason`, separate `RawFinishReason`, `FinishInferred`,
 and finite completion or continuation reasons as typed fields. Metadata is not a
-secondary encoding of those decisions. Non-empty unknown values, simultaneous
-completion and continuation, and inferred finishes without a normalized reason
-fail runtime event validation.
+secondary encoding of those decisions. `runtime.Event.Validate` recursively
+validates stream observations, activity timelines, turn projections, and event
+to projection identity. Non-empty unknown values, simultaneous completion and
+continuation, and inferred finishes without a normalized reason fail validation.
 
 `runtime.Event.Committed` carries a `ThreadDetailEvent` after Floret has
 successfully appended the corresponding journal entry. Hosts can render provider
 text deltas as temporary live output, but durable display reconciliation should
 use committed thread events or `ListThreadDetailEvents` so visible ordering
-matches Floret's stored transcript.
+matches Floret's stored transcript. Internal harness events such as
+`entry_appended` and `turn_started` remain on `HarnessSink`; they are not runtime
+observation events and never enter the public `EventSink`.
 
 Projected control signals are declared through `TurnSignalSpec`. Waiting
 signals interrupt the turn with their projected prompt. Terminal signals complete

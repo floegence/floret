@@ -286,7 +286,7 @@ func TestProjectThreadTurnKeepsRequestedApprovalWaitingAfterSuccessfulTurnMarker
 	}
 }
 
-func TestProjectThreadTurnIgnoresStartedMarkerBeforeApprovalActivity(t *testing.T) {
+func TestProjectThreadTurnUsesStartedMarkerWithoutRenderingIt(t *testing.T) {
 	now := time.UnixMilli(1_700_030_000_000)
 	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
 		ThreadID: "thread-started-approval",
@@ -351,6 +351,12 @@ func TestProjectThreadTurnIgnoresStartedMarkerBeforeApprovalActivity(t *testing.
 		},
 	})
 
+	if projection.Status != TurnStatusRunning {
+		t.Fatalf("projection status=%q, want running", projection.Status)
+	}
+	if err := projection.Validate(); err != nil {
+		t.Fatalf("running projection validation: %v", err)
+	}
 	if len(projection.Segments) != 1 || projection.Segments[0].ActivityTimeline == nil {
 		t.Fatalf("projection segments = %#v", projection.Segments)
 	}
@@ -379,6 +385,42 @@ func TestProjectThreadTurnIgnoresStartedMarkerBeforeApprovalActivity(t *testing.
 		queued.EndedAtUnixMS != 0 ||
 		queued.Label != "curl -sL https://search.example.test" {
 		t.Fatalf("second tool item mismatch: %#v", queued)
+	}
+}
+
+func TestThreadTurnProjectionValidation(t *testing.T) {
+	t.Parallel()
+
+	valid := ThreadTurnProjection{
+		ThreadID:       "thread",
+		TurnID:         "turn",
+		RunID:          "run",
+		Status:         TurnStatusRunning,
+		ThroughOrdinal: 1,
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid running projection rejected: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		projection ThreadTurnProjection
+	}{
+		{name: "missing identity", projection: ThreadTurnProjection{Status: TurnStatusRunning, ThroughOrdinal: 1}},
+		{name: "invalid ordinal", projection: ThreadTurnProjection{ThreadID: "thread", TurnID: "turn", RunID: "run", Status: TurnStatusRunning}},
+		{name: "unknown status", projection: ThreadTurnProjection{ThreadID: "thread", TurnID: "turn", RunID: "run", Status: "future", ThroughOrdinal: 1}},
+		{name: "unknown segment", projection: ThreadTurnProjection{ThreadID: "thread", TurnID: "turn", RunID: "run", Status: TurnStatusRunning, ThroughOrdinal: 1, Segments: []ThreadTurnProjectionSegment{{Kind: "future"}}}},
+		{name: "missing activity timeline", projection: ThreadTurnProjection{ThreadID: "thread", TurnID: "turn", RunID: "run", Status: TurnStatusRunning, ThroughOrdinal: 1, Segments: []ThreadTurnProjectionSegment{{Kind: ThreadTurnProjectionSegmentActivityTimeline}}}},
+		{name: "invalid activity timeline", projection: ThreadTurnProjection{ThreadID: "thread", TurnID: "turn", RunID: "run", Status: TurnStatusRunning, ThroughOrdinal: 1, Segments: []ThreadTurnProjectionSegment{{Kind: ThreadTurnProjectionSegmentActivityTimeline, ActivityTimeline: &observation.ActivityTimeline{}}}}},
+		{name: "missing control signal", projection: ThreadTurnProjection{ThreadID: "thread", TurnID: "turn", RunID: "run", Status: TurnStatusRunning, ThroughOrdinal: 1, Segments: []ThreadTurnProjectionSegment{{Kind: ThreadTurnProjectionSegmentControlSignal}}}},
+		{name: "unnamed control signal", projection: ThreadTurnProjection{ThreadID: "thread", TurnID: "turn", RunID: "run", Status: TurnStatusRunning, ThroughOrdinal: 1, Segments: []ThreadTurnProjectionSegment{{Kind: ThreadTurnProjectionSegmentControlSignal, Signal: &ThreadTurnProjectionSignal{CallID: "call"}}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.projection.Validate(); err == nil {
+				t.Fatalf("invalid projection validated: %#v", tt.projection)
+			}
+		})
 	}
 }
 
