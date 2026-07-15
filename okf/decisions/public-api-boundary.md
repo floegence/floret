@@ -23,6 +23,8 @@ those details downstream contracts.
 New host-facing capabilities need public API, tests, README guidance, and OKF
 updates. Contributor-facing documentation may explain internals, but downstream
 examples must use public packages.
+Durable cross-store coordination uses explicit public operation identities and
+results; downstream hosts must not import internal storage contracts.
 
 # Related
 

@@ -7,6 +7,12 @@
   finite typed contracts and explicit validation.
 * **Breaking**: Separated turn execution errors from explicit projection
   availability and removed the projection-failure sentinel error.
+* **Breaking**: Required `ForkOperationID` for public thread forks and added
+  replayable operation results with explicit request, destination, and missing
+  target conflicts.
+* **Update**: Added dedicated memory and SQLite fork-operation storage, SQLite
+  schema v10 target markers, immutable parent/terminal-child plans, and
+  restart-safe exact result replay.
 
 ## 2026-07-14
 * **Breaking**: Removed tool-declared parallel-safety scheduling. Ordinary calls

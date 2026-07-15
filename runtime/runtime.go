@@ -34,6 +34,7 @@ import (
 type ThreadID string
 type TurnID string
 type RunID string
+type ForkOperationID string
 type PromptScopeID string
 type TraceID string
 
@@ -46,6 +47,12 @@ var (
 	ErrRunNotFound = errors.New("floret run not found")
 	// ErrSubAgentNotFound reports that a parent-scoped child thread requested through Host was not found.
 	ErrSubAgentNotFound = errors.New("floret subagent not found")
+	// ErrForkOperationConflict reports that an operation ID was reused with a different fork request.
+	ErrForkOperationConflict = errors.New("floret fork operation conflicts with existing request")
+	// ErrForkDestinationConflict reports that a planned destination is owned by another operation or node.
+	ErrForkDestinationConflict = errors.New("floret fork destination conflicts with operation plan")
+	// ErrForkOperationTargetMissing reports that a completed operation no longer has every marked target.
+	ErrForkOperationTargetMissing = errors.New("floret fork operation target is missing")
 )
 
 type Host interface {
@@ -132,13 +139,15 @@ type EnsureThreadRequest struct {
 }
 
 type ForkThreadRequest struct {
+	OperationID         ForkOperationID
 	SourceThreadID      ThreadID
 	DestinationThreadID ThreadID
 }
 
 type ForkThreadResult struct {
-	Thread ThreadSummary   `json:"thread"`
-	Turns  []ForkedTurnRef `json:"turns,omitempty"`
+	OperationID ForkOperationID `json:"operation_id"`
+	Thread      ThreadSummary   `json:"thread"`
+	Turns       []ForkedTurnRef `json:"turns,omitempty"`
 }
 
 type ForkedTurnRef struct {
@@ -938,21 +947,24 @@ const (
 )
 
 type Store struct {
-	repo       sessiontree.Repo
-	prompt     cache.Store
-	artifacts  artifact.Store
-	deleteData func(context.Context, storage.DeleteThreadTreeDataRequest) error
-	close      func() error
+	repo           sessiontree.Repo
+	prompt         cache.Store
+	artifacts      artifact.Store
+	forkOperations storage.ForkOperationStore
+	deleteData     func(context.Context, storage.DeleteThreadTreeDataRequest) error
+	close          func() error
 }
 
 func NewMemoryStore() *Store {
 	repo := sessiontree.NewMemoryRepo()
 	prompt := cache.NewMemoryStore()
 	artifacts := artifact.NewMemoryStore()
+	forkOperations := storage.NewMemoryForkOperationStore()
 	return &Store{
-		repo:      repo,
-		prompt:    prompt,
-		artifacts: artifacts,
+		repo:           repo,
+		prompt:         prompt,
+		artifacts:      artifacts,
+		forkOperations: forkOperations,
 		deleteData: func(ctx context.Context, req storage.DeleteThreadTreeDataRequest) error {
 			threadIDs := cleanRuntimeIDs(append([]string{req.RootThreadID}, req.ThreadIDs...))
 			for i := len(threadIDs) - 1; i >= 0; i-- {
@@ -979,9 +991,10 @@ func OpenSQLiteStore(path string) (*Store, error) {
 		return nil, err
 	}
 	return &Store{
-		repo:      sqliteStore,
-		prompt:    sqliteStore,
-		artifacts: sqliteStore,
+		repo:           sqliteStore,
+		prompt:         sqliteStore,
+		artifacts:      sqliteStore,
+		forkOperations: sqliteStore,
 		deleteData: func(ctx context.Context, req storage.DeleteThreadTreeDataRequest) error {
 			return sqliteStore.DeleteThreadTreeData(ctx, req)
 		},
@@ -1000,7 +1013,7 @@ func (s *Store) validate() error {
 	if s == nil {
 		return errors.New("runtime store is required")
 	}
-	if s.repo == nil || s.prompt == nil || s.artifacts == nil || s.deleteData == nil {
+	if s.repo == nil || s.prompt == nil || s.artifacts == nil || s.forkOperations == nil || s.deleteData == nil {
 		return errors.New("runtime store must be created with runtime.NewMemoryStore or runtime.OpenSQLiteStore")
 	}
 	return nil
@@ -1157,11 +1170,12 @@ func NewThreadMaintenanceHost(opts ThreadMaintenanceHostOptions) (ThreadMaintena
 		return nil, err
 	}
 	harness := agentharness.New(agentharness.Options{
-		Repo:        store.repo,
-		PromptStore: store.prompt,
-		Artifacts:   store.artifacts,
-		Sink:        newRuntimeEventSink(opts.Sink),
-		SinkPolicy:  runtimeHarnessSinkPolicy(),
+		Repo:           store.repo,
+		ForkOperations: store.forkOperations,
+		PromptStore:    store.prompt,
+		Artifacts:      store.artifacts,
+		Sink:           newRuntimeEventSink(opts.Sink),
+		SinkPolicy:     runtimeHarnessSinkPolicy(),
 	})
 	return &threadMaintenanceHost{store: store, harness: harness}, nil
 }
@@ -1180,6 +1194,12 @@ func runtimeHostError(err error) error {
 		return fmt.Errorf("%w: %w", ErrRunNotFound, err)
 	case errors.Is(err, agentharness.ErrSubAgentNotFound):
 		return fmt.Errorf("%w: %w", ErrSubAgentNotFound, err)
+	case errors.Is(err, agentharness.ErrForkOperationConflict):
+		return fmt.Errorf("%w: %w", ErrForkOperationConflict, err)
+	case errors.Is(err, agentharness.ErrForkOperationTargetMissing):
+		return fmt.Errorf("%w: %w", ErrForkOperationTargetMissing, err)
+	case errors.Is(err, sessiontree.ErrForkDestinationConflict):
+		return fmt.Errorf("%w: %w", ErrForkDestinationConflict, err)
 	case errors.Is(err, sessiontree.ErrThreadNotFound):
 		return fmt.Errorf("%w: %w", ErrThreadNotFound, err)
 	default:
@@ -1220,6 +1240,9 @@ func (h *threadMaintenanceHost) ForkThread(ctx context.Context, req ForkThreadRe
 }
 
 func forkThread(ctx context.Context, harness *agentharness.AgentHarness, req ForkThreadRequest) (ForkThreadResult, error) {
+	if strings.TrimSpace(string(req.OperationID)) == "" {
+		return ForkThreadResult{}, errors.New("fork operation id is required")
+	}
 	if strings.TrimSpace(string(req.SourceThreadID)) == "" {
 		return ForkThreadResult{}, errors.New("source thread id is required")
 	}
@@ -1230,10 +1253,10 @@ func forkThread(ctx context.Context, harness *agentharness.AgentHarness, req For
 		return ForkThreadResult{}, errors.New("fork destination must differ from source")
 	}
 	result, err := harness.ForkThreadWithResult(ctx, agentharness.ForkOptions{
-		SourceThreadID:         string(req.SourceThreadID),
-		NewThreadID:            string(req.DestinationThreadID),
-		RewriteTurnIdentities:  true,
-		CloneTerminalSubAgents: true,
+		OperationID:           string(req.OperationID),
+		SourceThreadID:        string(req.SourceThreadID),
+		NewThreadID:           string(req.DestinationThreadID),
+		RewriteTurnIdentities: true,
 	})
 	if err != nil {
 		return ForkThreadResult{}, runtimeHostError(err)
@@ -1803,8 +1826,9 @@ func threadSummary(in agentharness.ThreadSummary) ThreadSummary {
 
 func forkThreadResult(in agentharness.ForkResult) ForkThreadResult {
 	out := ForkThreadResult{
-		Thread: threadSummary(in.Summary),
-		Turns:  make([]ForkedTurnRef, 0, len(in.Turns)),
+		OperationID: ForkOperationID(in.OperationID),
+		Thread:      threadSummary(in.Summary),
+		Turns:       make([]ForkedTurnRef, 0, len(in.Turns)),
 	}
 	for _, ref := range in.Turns {
 		out.Turns = append(out.Turns, ForkedTurnRef{
@@ -2724,6 +2748,7 @@ func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harness
 		Tools:               registry,
 		PromptStore:         store.prompt,
 		Repo:                store.repo,
+		ForkOperations:      store.forkOperations,
 		Sink:                opts.Sink,
 		SinkPolicy:          opts.SinkPolicy,
 		Approver:            opts.Approver,

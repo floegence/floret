@@ -374,6 +374,139 @@ VALUES('child', 'parent', 'worker', 'none', '2026-06-30T09:00:00Z', '2026-06-30T
 	}
 }
 
+func TestSQLiteStoreMigratesV9ForkOperationSchema(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "floret.db")
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.ExecContext(ctx, `
+CREATE TABLE schema_meta (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);
+INSERT INTO schema_meta(key, value) VALUES
+	('schema_version', '9'),
+	('raw_encoder_version', '1');
+CREATE TABLE threads (
+	id TEXT PRIMARY KEY,
+	leaf_id TEXT NOT NULL DEFAULT '',
+	parent_thread_id TEXT NOT NULL DEFAULT '',
+	parent_turn_id TEXT NOT NULL DEFAULT '',
+	forked_from_thread_id TEXT NOT NULL DEFAULT '',
+	forked_from_entry_id TEXT NOT NULL DEFAULT '',
+	task_name TEXT NOT NULL DEFAULT '',
+	task_description TEXT NOT NULL DEFAULT '',
+	agent_path TEXT NOT NULL DEFAULT '',
+	host_profile_ref TEXT NOT NULL DEFAULT '',
+	fork_mode TEXT NOT NULL DEFAULT '',
+	closed INTEGER NOT NULL DEFAULT 0,
+	archived INTEGER NOT NULL DEFAULT 0,
+	title TEXT NOT NULL DEFAULT '',
+	title_status TEXT NOT NULL DEFAULT '',
+	title_source TEXT NOT NULL DEFAULT '',
+	title_updated_at TEXT NOT NULL DEFAULT '',
+	title_error TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	status TEXT NOT NULL DEFAULT '',
+	last_viewed_at TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO threads(id, created_at, updated_at) VALUES('legacy', '2026-07-15T08:00:00Z', '2026-07-15T08:00:00Z');
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	version, err := store.SchemaVersion(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != schemaVersion {
+		t.Fatalf("schema version = %q, want %q", version, schemaVersion)
+	}
+	meta, err := store.Thread(ctx, "legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.ForkOperationID != "" || meta.ForkOperationNodeID != "" {
+		t.Fatalf("legacy fork markers = %#v", meta)
+	}
+	now := time.Date(2026, 7, 15, 9, 0, 0, 0, time.UTC)
+	if _, created, err := store.PrepareForkOperation(ctx, storage.ForkOperationRecord{
+		OperationID:        "operation",
+		RequestFingerprint: "fingerprint",
+		State:              storage.ForkOperationPrepared,
+		Plan:               []byte(`{"version":1}`),
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	}); err != nil || !created {
+		t.Fatalf("PrepareForkOperation created=%v err=%v", created, err)
+	}
+}
+
+func TestSQLiteStorePersistsCompletedForkOperationAfterReopen(t *testing.T) {
+	ctx := context.Background()
+	store, path := openSQLiteStoreForTest(t)
+	now := time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC)
+	plan := []byte(`{"version":1,"root":{"destination_thread_id":"fork"}}`)
+	record, created, err := store.PrepareForkOperation(ctx, storage.ForkOperationRecord{
+		OperationID:        "operation",
+		RequestFingerprint: "fingerprint",
+		State:              storage.ForkOperationPrepared,
+		Plan:               plan,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	})
+	if err != nil || !created {
+		t.Fatalf("PrepareForkOperation created=%v err=%v", created, err)
+	}
+	finishedAt := now.Add(time.Minute)
+	record.State = storage.ForkOperationCompleted
+	record.Result = []byte(`{"operation_id":"operation","thread":{"id":"fork"}}`)
+	record.UpdatedAt = finishedAt
+	record.FinishedAt = finishedAt
+	if err := store.UpdateForkOperation(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	got, err := reopened.ForkOperation(ctx, "operation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OperationID != record.OperationID || got.RequestFingerprint != record.RequestFingerprint || got.State != storage.ForkOperationCompleted || string(got.Plan) != string(record.Plan) || string(got.Result) != string(record.Result) || !got.CreatedAt.Equal(now) || !got.UpdatedAt.Equal(finishedAt) || !got.FinishedAt.Equal(finishedAt) {
+		t.Fatalf("reopened fork operation = %#v, want %#v", got, record)
+	}
+	existing, created, err := reopened.PrepareForkOperation(ctx, storage.ForkOperationRecord{
+		OperationID:        "operation",
+		RequestFingerprint: "different",
+		State:              storage.ForkOperationPrepared,
+		Plan:               []byte(`{"different":true}`),
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	})
+	if err != nil || created || existing.RequestFingerprint != "fingerprint" || existing.State != storage.ForkOperationCompleted {
+		t.Fatalf("existing fork operation created=%v record=%#v err=%v", created, existing, err)
+	}
+}
+
 func TestSQLiteStoreMigratesV3PromptCacheScopeColumns(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "floret.db")

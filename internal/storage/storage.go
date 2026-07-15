@@ -37,6 +37,7 @@ type Store interface {
 	sessiontree.Repo
 	cache.Store
 	MetadataStore
+	ForkOperationStore
 	DeleteThreadTreeData(context.Context, DeleteThreadTreeDataRequest) error
 	Close() error
 }

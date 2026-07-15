@@ -56,6 +56,13 @@ production gateway integration.
 `AgentHarness` is the internal durable conversation layer. It owns threads,
 parent-child thread lifecycle, turn lifecycle, retries, forks, titles, and
 projection of an active journal path into one engine execution.
+Public thread forks are durable operations rather than best-effort recursive
+copies. AgentHarness prepares one immutable plan containing the pinned source
+leaf, destination IDs, turn/run rewrites, terminal child list, and child
+metadata patches before any target exists. Storage persists that plan and final
+result independently from generic metadata. Replays execute exact marked nodes;
+they do not infer success from destination existence or inspect a newer source
+path.
 Realtime turn projection and final engine-result backfill share one durable
 journal. When a provider continuation appends more assistant text to the same
 turn, the harness commits the live prefix at continuation boundaries and only
@@ -182,4 +189,5 @@ opaque labels. Hosts own prompt policy, permissions, UI, and product workflow.
 * [Runtime Host](/runtime/runtime.go)
 * [Projected Turns](/runtime/projected_turn.go)
 * [Agent Harness](/internal/agentharness/harness.go)
+* [Replayable Forks](/internal/agentharness/fork_operation.go)
 * [Engine](/internal/engine/engine.go)

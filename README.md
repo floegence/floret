@@ -220,10 +220,17 @@ Keep Floret's runtime identities in product work records:
 - `TurnID` identifies one user-facing turn.
 - `RunID` identifies one concrete provider execution.
 - `PromptScopeID` identifies prompt-cache and provider-ledger reuse.
+- `ForkOperationID` identifies one replayable durable thread-fork operation.
 
 They are intentionally separate. For example, a host-owned process that later
 settles pending tool work must use the recorded Floret `ThreadID`, `TurnID`, and
 `RunID`, rather than a UI, audit, or display identifier.
+
+Thread forks require a host-supplied `ForkOperationID`. Floret saves the source
+leaf, destination identities, terminal child-thread plan, and turn/run mappings
+before creating any target. Repeating the same operation resumes missing plan
+nodes or returns the stored result; reusing it for a different request, finding
+an unrelated destination, or losing a completed target fails explicitly.
 
 ### Render facts, not engine internals
 

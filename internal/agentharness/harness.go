@@ -24,6 +24,7 @@ import (
 	"github.com/floegence/floret/internal/session/contextpolicy"
 	"github.com/floegence/floret/internal/sessionlifecycle"
 	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/internal/storage"
 	"github.com/floegence/floret/observation"
 	"github.com/floegence/floret/tools"
 )
@@ -36,6 +37,8 @@ var (
 	ErrPendingToolSettlementTargetToolNotFound = errors.New("pending tool settlement target tool call was not found")
 	ErrPendingToolSettlementTargetNotActive    = errors.New("pending tool settlement target is not an active pending tool result")
 	ErrPendingToolSettlementConflict           = errors.New("pending tool settlement conflicts with existing settlement")
+	ErrForkOperationConflict                   = errors.New("fork operation conflicts with existing request")
+	ErrForkOperationTargetMissing              = errors.New("fork operation target is missing")
 )
 
 const (
@@ -90,6 +93,7 @@ type Options struct {
 	Tools               *tools.Registry
 	PromptStore         cache.Store
 	Repo                sessiontree.Repo
+	ForkOperations      storage.ForkOperationStore
 	Sink                event.Sink
 	SinkPolicy          event.SinkPolicy
 	HarnessSink         HarnessSink
@@ -147,26 +151,27 @@ type StartThreadOptions struct {
 type ResumeOptions struct{}
 
 type ForkOptions struct {
-	SourceThreadID         string
-	EntryID                string
-	Position               sessiontree.ForkPosition
-	NewThreadID            string
-	RewriteTurnIdentities  bool
-	CloneTerminalSubAgents bool
+	SourceThreadID        string
+	EntryID               string
+	Position              sessiontree.ForkPosition
+	NewThreadID           string
+	OperationID           string
+	RewriteTurnIdentities bool
 }
 
 type ForkResult struct {
-	Thread  *Thread
-	Summary ThreadSummary
-	Turns   []ForkedTurnRef
+	OperationID string
+	Thread      *Thread
+	Summary     ThreadSummary
+	Turns       []ForkedTurnRef
 }
 
 type ForkedTurnRef struct {
-	SourceTurnID      string
-	SourceRunID       string
-	DestinationTurnID string
-	DestinationRunID  string
-	CreatedAt         time.Time
+	SourceTurnID      string    `json:"source_turn_id,omitempty"`
+	SourceRunID       string    `json:"source_run_id,omitempty"`
+	DestinationTurnID string    `json:"destination_turn_id,omitempty"`
+	DestinationRunID  string    `json:"destination_run_id,omitempty"`
+	CreatedAt         time.Time `json:"created_at,omitempty"`
 }
 
 type MoveOptions struct {
@@ -807,6 +812,9 @@ func (h *AgentHarness) ForkThread(ctx context.Context, opts ForkOptions) (*Threa
 }
 
 func (h *AgentHarness) ForkThreadWithResult(ctx context.Context, opts ForkOptions) (ForkResult, error) {
+	if strings.TrimSpace(opts.OperationID) != "" {
+		return h.forkThreadReplayable(ctx, opts)
+	}
 	turnIDs := map[string]string(nil)
 	runIDs := map[string]string(nil)
 	turnRefs := []ForkedTurnRef(nil)
@@ -829,11 +837,6 @@ func (h *AgentHarness) ForkThreadWithResult(ctx context.Context, opts ForkOption
 	if err != nil {
 		return ForkResult{}, err
 	}
-	if opts.CloneTerminalSubAgents {
-		if err := h.cloneForkedTerminalSubAgents(ctx, opts.SourceThreadID, meta.ID, turnIDs); err != nil {
-			return ForkResult{}, err
-		}
-	}
 	thread := h.cacheThread(meta.ID)
 	h.emit(HarnessEvent{Type: EventThreadForked, ThreadID: meta.ID, EntryID: meta.ForkedFromEntryID, Metadata: map[string]string{"source_thread_id": opts.SourceThreadID}})
 	summary, err := thread.Summary(ctx)
@@ -848,55 +851,7 @@ func (h *AgentHarness) forkIdentityRewrite(ctx context.Context, opts ForkOptions
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	turnIDs := map[string]string{}
-	runIDs := map[string]string{}
-	refsByTurn := map[string]*ForkedTurnRef{}
-	order := make([]string, 0)
-	for _, entry := range path {
-		sourceTurnID := strings.TrimSpace(entry.TurnID)
-		if sourceTurnID == "" {
-			continue
-		}
-		destinationTurnID := turnIDs[sourceTurnID]
-		if destinationTurnID == "" {
-			destinationTurnID = h.nextID("turn")
-			turnIDs[sourceTurnID] = destinationTurnID
-		}
-		ref := refsByTurn[sourceTurnID]
-		if ref == nil {
-			ref = &ForkedTurnRef{
-				SourceTurnID:      sourceTurnID,
-				DestinationTurnID: destinationTurnID,
-				CreatedAt:         entry.CreatedAt,
-			}
-			refsByTurn[sourceTurnID] = ref
-			order = append(order, sourceTurnID)
-		}
-		if ref.CreatedAt.IsZero() || (!entry.CreatedAt.IsZero() && entry.CreatedAt.Before(ref.CreatedAt)) {
-			ref.CreatedAt = entry.CreatedAt
-		}
-		sourceRunID := strings.TrimSpace(entry.Metadata["run_id"])
-		if sourceRunID == "" {
-			continue
-		}
-		destinationRunID := runIDs[sourceRunID]
-		if destinationRunID == "" {
-			destinationRunID = h.nextID("run")
-			runIDs[sourceRunID] = destinationRunID
-		}
-		if ref.SourceRunID == "" {
-			ref.SourceRunID = sourceRunID
-			ref.DestinationRunID = destinationRunID
-		}
-	}
-	refs := make([]ForkedTurnRef, 0, len(order))
-	for _, turnID := range order {
-		ref := refsByTurn[turnID]
-		if ref == nil {
-			continue
-		}
-		refs = append(refs, *ref)
-	}
+	turnIDs, runIDs, refs := h.forkIdentityRewriteFromPath(path)
 	return turnIDs, runIDs, refs, nil
 }
 
@@ -924,51 +879,6 @@ func (h *AgentHarness) forkSourcePath(ctx context.Context, opts ForkOptions) ([]
 		targetID = entry.ParentID
 	}
 	return h.options.Repo.Path(ctx, opts.SourceThreadID, targetID)
-}
-
-func (h *AgentHarness) cloneForkedTerminalSubAgents(ctx context.Context, sourceParentThreadID string, destinationParentThreadID string, parentTurnIDs map[string]string) error {
-	metas, err := h.childThreadMetas(ctx, sourceParentThreadID)
-	if err != nil {
-		return err
-	}
-	for _, meta := range metas {
-		snapshot, err := h.subAgentSnapshotFromMeta(ctx, meta)
-		if err != nil {
-			return err
-		}
-		if !isTerminalSubAgentStatus(snapshot.Status) {
-			continue
-		}
-		childID, err := h.nextSubAgentThreadID(ctx)
-		if err != nil {
-			return err
-		}
-		if _, err := h.ForkThreadWithResult(ctx, ForkOptions{
-			SourceThreadID:        meta.ID,
-			NewThreadID:           childID,
-			RewriteTurnIdentities: true,
-		}); err != nil {
-			return err
-		}
-		cloned, err := h.options.Repo.Thread(ctx, childID)
-		if err != nil {
-			return err
-		}
-		cloned.ParentThreadID = strings.TrimSpace(destinationParentThreadID)
-		cloned.ParentTurnID = forkMappedID(meta.ParentTurnID, parentTurnIDs)
-		cloned.TaskName = meta.TaskName
-		cloned.TaskDescription = meta.TaskDescription
-		cloned.AgentPath = meta.AgentPath
-		cloned.HostProfileRef = meta.HostProfileRef
-		cloned.ForkMode = meta.ForkMode
-		cloned.Closed = meta.Closed
-		cloned.Status = meta.Status
-		cloned.UpdatedAt = h.now()
-		if err := h.options.Repo.UpdateThread(ctx, cloned); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func forkMappedID(value string, ids map[string]string) string {

@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	schemaVersion     = "9"
+	schemaVersion     = "10"
 	rawEncoderVersion = "1"
 	driverName        = "sqlite"
 )
@@ -130,7 +130,7 @@ func (s *Store) init(ctx context.Context) error {
 		return err
 	}
 	if current != schemaVersion {
-		if current != "3" && current != "4" && current != "5" && current != "6" && current != "7" && current != "8" {
+		if current != "3" && current != "4" && current != "5" && current != "6" && current != "7" && current != "8" && current != "9" {
 			return fmt.Errorf("unsupported sqlite store schema version %q", current)
 		}
 		if err := s.migrate(ctx, current); err != nil {
@@ -208,8 +208,20 @@ func (s *Store) migrate(ctx context.Context, current string) error {
 			if err := addColumnIfMissing(ctx, tx, "threads", "task_description", `ALTER TABLE threads ADD COLUMN task_description TEXT NOT NULL DEFAULT ''`); err != nil {
 				return fmt.Errorf("migrate v8→v9 add task_description column: %w", err)
 			}
+			current = "9"
+		}
+		if current == "9" {
+			if err := addColumnIfMissing(ctx, tx, "threads", "fork_operation_id", `ALTER TABLE threads ADD COLUMN fork_operation_id TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("migrate v9→v10 add fork operation id column: %w", err)
+			}
+			if err := addColumnIfMissing(ctx, tx, "threads", "fork_operation_node_id", `ALTER TABLE threads ADD COLUMN fork_operation_node_id TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("migrate v9→v10 add fork operation node id column: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, forkOperationsSQL); err != nil {
+				return fmt.Errorf("migrate v9→v10 create fork operations table: %w", err)
+			}
 			if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_version'`, schemaVersion); err != nil {
-				return fmt.Errorf("migrate v8→v9 update schema_version: %w", err)
+				return fmt.Errorf("migrate v9→v10 update schema_version: %w", err)
 			}
 			return nil
 		}
@@ -483,7 +495,7 @@ func (s *Store) ListThreads(ctx context.Context, opts sessiontree.ListThreadsOpt
 		where = append(where, "archived = 0")
 	}
 	query := `SELECT
-			id, leaf_id, parent_thread_id, parent_turn_id, forked_from_thread_id, forked_from_entry_id,
+			id, leaf_id, parent_thread_id, parent_turn_id, forked_from_thread_id, forked_from_entry_id, fork_operation_id, fork_operation_node_id,
 			task_name, task_description, agent_path, host_profile_ref, fork_mode, closed, archived,
 			title, title_status, title_source, title_updated_at, title_error,
 			created_at, updated_at, status, last_viewed_at
@@ -684,7 +696,7 @@ func (s *Store) Fork(ctx context.Context, opts sessiontree.ForkOptions) (session
 			return err
 		}
 		targetID := opts.EntryID
-		if targetID == "" {
+		if targetID == "" && !opts.EntryIDPinned {
 			targetID = sourceMeta.LeafID
 		}
 		if opts.Position == sessiontree.ForkBefore {
@@ -696,10 +708,6 @@ func (s *Store) Fork(ctx context.Context, opts sessiontree.ForkOptions) (session
 				return err
 			}
 			targetID = entry.ParentID
-		}
-		path, err := pathWithRunner(ctx, tx, opts.SourceThreadID, targetID)
-		if err != nil {
-			return err
 		}
 		now := opts.Now
 		if now.IsZero() {
@@ -714,9 +722,28 @@ func (s *Store) Fork(ctx context.Context, opts sessiontree.ForkOptions) (session
 		} else if ok, err := threadExists(ctx, tx, newID); err != nil {
 			return err
 		} else if ok {
+			existing, err := loadThread(ctx, tx, newID)
+			if err != nil {
+				return err
+			}
+			if opts.OperationID != "" && opts.OperationNodeID != "" &&
+				existing.ForkOperationID == opts.OperationID &&
+				existing.ForkOperationNodeID == opts.OperationNodeID &&
+				existing.ForkedFromThreadID == opts.SourceThreadID &&
+				existing.ForkedFromEntryID == targetID {
+				forked = existing
+				return nil
+			}
+			if opts.OperationID != "" || opts.OperationNodeID != "" {
+				return sessiontree.ErrForkDestinationConflict
+			}
 			return sessiontree.ErrThreadExists
 		}
-		meta := sessiontree.ThreadMeta{ID: newID, ParentThreadID: opts.SourceThreadID, ForkedFromThreadID: opts.SourceThreadID, ForkedFromEntryID: targetID, CreatedAt: now, UpdatedAt: now}
+		path, err := pathWithRunner(ctx, tx, opts.SourceThreadID, targetID)
+		if err != nil {
+			return err
+		}
+		meta := sessiontree.ThreadMeta{ID: newID, ParentThreadID: opts.SourceThreadID, ForkedFromThreadID: opts.SourceThreadID, ForkedFromEntryID: targetID, ForkOperationID: opts.OperationID, ForkOperationNodeID: opts.OperationNodeID, CreatedAt: now, UpdatedAt: now}
 		if err := insertThread(ctx, tx, meta); err != nil {
 			return err
 		}
@@ -936,6 +963,114 @@ func (s *Store) PutMetadata(ctx context.Context, rec storage.MetadataRecord) err
 	})
 }
 
+func (s *Store) PrepareForkOperation(ctx context.Context, rec storage.ForkOperationRecord) (storage.ForkOperationRecord, bool, error) {
+	if err := storage.ValidatePreparedForkOperation(rec); err != nil {
+		return storage.ForkOperationRecord{}, false, err
+	}
+	var existing storage.ForkOperationRecord
+	created := false
+	err := s.withImmediate(ctx, func(tx sqlRunner) error {
+		result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO fork_operations(
+			operation_id, request_fingerprint, state, plan_json, result_json, error_code, error_message,
+			created_at, updated_at, finished_at
+		) VALUES(?, ?, ?, ?, '', '', '', ?, ?, '')`,
+			rec.OperationID, rec.RequestFingerprint, string(rec.State), string(rec.Plan),
+			formatTime(rec.CreatedAt), formatTime(rec.UpdatedAt))
+		if err != nil {
+			return err
+		}
+		if rows, err := result.RowsAffected(); err != nil {
+			return err
+		} else {
+			created = rows == 1
+		}
+		existing, err = loadForkOperation(ctx, tx, rec.OperationID)
+		return err
+	})
+	return existing, created, err
+}
+
+func (s *Store) ForkOperation(ctx context.Context, operationID string) (storage.ForkOperationRecord, error) {
+	return loadForkOperation(ctx, s.db, strings.TrimSpace(operationID))
+}
+
+func (s *Store) UpdateForkOperation(ctx context.Context, rec storage.ForkOperationRecord) error {
+	if err := storage.ValidateForkOperationRecord(rec); err != nil {
+		return err
+	}
+	return s.withImmediate(ctx, func(tx sqlRunner) error {
+		existing, err := loadForkOperation(ctx, tx, rec.OperationID)
+		if err != nil {
+			return err
+		}
+		if existing.RequestFingerprint != rec.RequestFingerprint || !jsonRawEqual(existing.Plan, rec.Plan) {
+			return storage.ErrForkOperationConflict
+		}
+		if existing.State != storage.ForkOperationPrepared && !forkOperationRecordEqual(existing, rec) {
+			return storage.ErrForkOperationConflict
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE fork_operations SET
+			state = ?, result_json = ?, error_code = ?, error_message = ?, updated_at = ?, finished_at = ?
+			WHERE operation_id = ?`,
+			string(rec.State), string(rec.Result), rec.ErrorCode, rec.ErrorMessage,
+			formatTime(rec.UpdatedAt), formatTime(rec.FinishedAt), rec.OperationID)
+		return err
+	})
+}
+
+func loadForkOperation(ctx context.Context, q sqlRunner, operationID string) (storage.ForkOperationRecord, error) {
+	var rec storage.ForkOperationRecord
+	var state, plan, result, created, updated, finished string
+	err := q.QueryRowContext(ctx, `SELECT operation_id, request_fingerprint, state, plan_json, result_json,
+		error_code, error_message, created_at, updated_at, finished_at
+		FROM fork_operations WHERE operation_id = ?`, operationID).Scan(
+		&rec.OperationID, &rec.RequestFingerprint, &state, &plan, &result,
+		&rec.ErrorCode, &rec.ErrorMessage, &created, &updated, &finished,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storage.ForkOperationRecord{}, storage.ErrForkOperationNotFound
+	}
+	if err != nil {
+		return storage.ForkOperationRecord{}, err
+	}
+	rec.State = storage.ForkOperationState(state)
+	rec.Plan = json.RawMessage(plan)
+	if strings.TrimSpace(result) != "" {
+		rec.Result = json.RawMessage(result)
+	}
+	rec.CreatedAt = parseTime(created)
+	rec.UpdatedAt = parseTime(updated)
+	rec.FinishedAt = parseTime(finished)
+	return rec, nil
+}
+
+func jsonRawEqual(left, right json.RawMessage) bool {
+	if len(left) == 0 || len(right) == 0 {
+		return len(left) == len(right)
+	}
+	var leftValue any
+	var rightValue any
+	if json.Unmarshal(left, &leftValue) != nil || json.Unmarshal(right, &rightValue) != nil {
+		return false
+	}
+	leftJSON, _ := json.Marshal(leftValue)
+	rightJSON, _ := json.Marshal(rightValue)
+	return string(leftJSON) == string(rightJSON)
+}
+
+func forkOperationRecordEqual(left, right storage.ForkOperationRecord) bool {
+	return left.OperationID == right.OperationID &&
+		left.RequestFingerprint == right.RequestFingerprint &&
+		left.State == right.State &&
+		jsonRawEqual(left.Plan, right.Plan) &&
+		jsonRawEqual(left.Result, right.Result) &&
+		left.ErrorCode == right.ErrorCode &&
+		left.ErrorMessage == right.ErrorMessage &&
+		left.CreatedAt.Equal(right.CreatedAt) &&
+		left.UpdatedAt.Equal(right.UpdatedAt) &&
+		left.FinishedAt.Equal(right.FinishedAt)
+}
+
 func (s *Store) Metadata(ctx context.Context, namespace, id string) (storage.MetadataRecord, error) {
 	var rec storage.MetadataRecord
 	var created, updated, raw string
@@ -1102,12 +1237,13 @@ func (s *Store) artifactText(ctx context.Context, id string) (string, bool, erro
 
 func insertThread(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO threads(
-		id, leaf_id, parent_thread_id, parent_turn_id, forked_from_thread_id, forked_from_entry_id,
+		id, leaf_id, parent_thread_id, parent_turn_id, forked_from_thread_id, forked_from_entry_id, fork_operation_id, fork_operation_node_id,
 		task_name, task_description, agent_path, host_profile_ref, fork_mode, closed, archived,
 		title, title_status, title_source, title_updated_at, title_error,
 		created_at, updated_at, status, last_viewed_at
-	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		meta.ID, meta.LeafID, meta.ParentThreadID, meta.ParentTurnID, meta.ForkedFromThreadID, meta.ForkedFromEntryID,
+		meta.ForkOperationID, meta.ForkOperationNodeID,
 		meta.TaskName, meta.TaskDescription, meta.AgentPath, meta.HostProfileRef, meta.ForkMode, boolInt(meta.Closed), boolInt(meta.Archived),
 		meta.Title, string(meta.TitleStatus), string(meta.TitleSource), formatTime(meta.TitleUpdatedAt), meta.TitleError,
 		formatTime(meta.CreatedAt), formatTime(meta.UpdatedAt), meta.Status, formatTime(meta.LastViewedAt))
@@ -1131,12 +1267,13 @@ func loadTurnLease(ctx context.Context, q sqlRunner, threadID string) (sessiontr
 
 func updateThread(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta) error {
 	_, err := tx.ExecContext(ctx, `UPDATE threads SET
-		leaf_id = ?, parent_thread_id = ?, parent_turn_id = ?, forked_from_thread_id = ?, forked_from_entry_id = ?,
+		leaf_id = ?, parent_thread_id = ?, parent_turn_id = ?, forked_from_thread_id = ?, forked_from_entry_id = ?, fork_operation_id = ?, fork_operation_node_id = ?,
 		task_name = ?, task_description = ?, agent_path = ?, host_profile_ref = ?, fork_mode = ?, closed = ?, archived = ?,
 		title = ?, title_status = ?, title_source = ?, title_updated_at = ?, title_error = ?,
 		created_at = ?, updated_at = ?, status = ?, last_viewed_at = ?
 		WHERE id = ?`,
 		meta.LeafID, meta.ParentThreadID, meta.ParentTurnID, meta.ForkedFromThreadID, meta.ForkedFromEntryID,
+		meta.ForkOperationID, meta.ForkOperationNodeID,
 		meta.TaskName, meta.TaskDescription, meta.AgentPath, meta.HostProfileRef, meta.ForkMode, boolInt(meta.Closed), boolInt(meta.Archived),
 		meta.Title, string(meta.TitleStatus), string(meta.TitleSource), formatTime(meta.TitleUpdatedAt), meta.TitleError,
 		formatTime(meta.CreatedAt), formatTime(meta.UpdatedAt), meta.Status, formatTime(meta.LastViewedAt), meta.ID)
@@ -1145,7 +1282,7 @@ func updateThread(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta
 
 func loadThread(ctx context.Context, q sqlRunner, threadID string) (sessiontree.ThreadMeta, error) {
 	meta, err := scanThreadMeta(q.QueryRowContext(ctx, `SELECT
-		id, leaf_id, parent_thread_id, parent_turn_id, forked_from_thread_id, forked_from_entry_id,
+		id, leaf_id, parent_thread_id, parent_turn_id, forked_from_thread_id, forked_from_entry_id, fork_operation_id, fork_operation_node_id,
 		task_name, task_description, agent_path, host_profile_ref, fork_mode, closed, archived,
 		title, title_status, title_source, title_updated_at, title_error,
 		created_at, updated_at, status, last_viewed_at
@@ -1162,6 +1299,7 @@ func scanThreadMeta(scanner rowScanner) (sessiontree.ThreadMeta, error) {
 	var titleStatus, titleSource, titleUpdated, created, updated, status, lastViewed string
 	err := scanner.Scan(
 		&meta.ID, &meta.LeafID, &meta.ParentThreadID, &meta.ParentTurnID, &meta.ForkedFromThreadID, &meta.ForkedFromEntryID,
+		&meta.ForkOperationID, &meta.ForkOperationNodeID,
 		&meta.TaskName, &meta.TaskDescription, &meta.AgentPath, &meta.HostProfileRef, &meta.ForkMode, &closed, &archived,
 		&meta.Title, &titleStatus, &titleSource, &titleUpdated, &meta.TitleError,
 		&created, &updated, &status, &lastViewed,
@@ -1561,6 +1699,23 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 `
 
+const forkOperationsSQL = `
+CREATE TABLE IF NOT EXISTS fork_operations (
+	operation_id TEXT PRIMARY KEY,
+	request_fingerprint TEXT NOT NULL,
+	state TEXT NOT NULL,
+	plan_json TEXT NOT NULL,
+	result_json TEXT NOT NULL DEFAULT '',
+	error_code TEXT NOT NULL DEFAULT '',
+	error_message TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	finished_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS fork_operations_state_updated_idx ON fork_operations(state, updated_at);
+`
+
 const schemaSQL = schemaMetaSQL + `
 
 	CREATE TABLE IF NOT EXISTS threads (
@@ -1570,6 +1725,8 @@ const schemaSQL = schemaMetaSQL + `
 		parent_turn_id TEXT NOT NULL DEFAULT '',
 		forked_from_thread_id TEXT NOT NULL DEFAULT '',
 		forked_from_entry_id TEXT NOT NULL DEFAULT '',
+		fork_operation_id TEXT NOT NULL DEFAULT '',
+		fork_operation_node_id TEXT NOT NULL DEFAULT '',
 		task_name TEXT NOT NULL DEFAULT '',
 		task_description TEXT NOT NULL DEFAULT '',
 		agent_path TEXT NOT NULL DEFAULT '',
@@ -1587,6 +1744,8 @@ const schemaSQL = schemaMetaSQL + `
 	status TEXT NOT NULL DEFAULT '',
 	last_viewed_at TEXT NOT NULL DEFAULT ''
 );
+
+` + forkOperationsSQL + `
 
 CREATE TABLE IF NOT EXISTS entries (
 	thread_id TEXT NOT NULL,

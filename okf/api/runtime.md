@@ -209,12 +209,22 @@ and `CompletePendingTool` preserve their engine result, return
 an execution error. `SettlePendingTool` likewise preserves its committed detail
 event when the subsequent projection read is unavailable.
 `ForkThread` is the public runtime contract for host-visible conversation forks.
-It copies the Floret-owned durable thread path into a new thread, rewrites
-destination `TurnID` and `RunID` execution identities, and returns the mapping
-needed for later `ReadTurnProjection` calls. Host products may persist those
-public identity references with their own thread metadata, but must not clone
-Floret storage tables or materialize Floret display projections into a host
-shadow transcript. Provider-free `ThreadMaintenanceHost` exposes the same
+Its request requires a host-supplied `ForkOperationID`. Before creating any
+target, Floret durably fixes the source leaf, destination thread IDs, complete
+turn/run mappings, and terminal child-thread clone plan. Each target carries an
+exact operation/node marker. Repeating the same operation and request resumes
+only missing nodes or returns the stored result, including after SQLite reopen;
+it never rereads a newer source leaf or regenerates identities. Reusing an
+operation for a different request returns `ErrForkOperationConflict`; an
+occupied or mismarked destination returns `ErrForkDestinationConflict`; and a
+missing target from a completed operation returns
+`ErrForkOperationTargetMissing`.
+
+The result returns the operation ID and the destination `TurnID`/`RunID`
+mapping needed for later `ReadTurnProjection` calls. Host products may persist
+those public identity references with their own thread metadata, but must not
+clone Floret storage tables or materialize Floret display projections into a
+host shadow transcript. Provider-free `ThreadMaintenanceHost` exposes the same
 contract so UI and restart maintenance can fork thread history without provider
 configuration.
 `ProjectThreadTurn` derives assistant text, control-signal segments, and turn
@@ -327,6 +337,10 @@ Host facade not-found responses should be handled with `errors.Is` against
 `runtime.ErrRunNotFound`, or
 `runtime.ErrSubAgentNotFound`. Hosts should not parse error strings or import
 Floret internal package sentinels.
+
+Fork replay failures should likewise use `errors.Is` with
+`runtime.ErrForkOperationConflict`, `runtime.ErrForkDestinationConflict`, and
+`runtime.ErrForkOperationTargetMissing`.
 
 Hosts validate `ProjectionStatus`, `Projection`, and `ProjectionError` as one
 outcome. `ready` requires a projection and no projection error; `unavailable`

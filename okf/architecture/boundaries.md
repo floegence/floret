@@ -27,7 +27,7 @@ Floret owns:
 * control signal contracts;
 * opaque model state lifecycle;
 * engine thread-tree lifecycle, including child-thread fork mode, stop/close,
-  prompt cache retention, and engine-data deletion.
+  replayable fork operations, prompt cache retention, and engine-data deletion.
 
 The host owns:
 
@@ -49,6 +49,12 @@ close unfinished Floret subagents and keep history; delete-style product actions
 delete Floret-owned thread trees through `runtime.Host.DeleteThread`. Floret
 owns the atomic engine-store deletion of the resolved tree; the host remains
 responsible for deleting or retaining its separate product records.
+
+Cross-store product fork coordination stays in the host. Floret owns only its
+operation-marked engine thread-tree plan and result. A host should persist its
+own product snapshot and use the same public `ForkOperationID` when resuming;
+it must not inspect Floret operation tables or compensate by deleting Floret
+targets after an uncertain outcome.
 
 # Key Source Files
 

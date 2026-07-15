@@ -66,11 +66,12 @@ const (
 )
 
 var (
-	ErrThreadNotFound = errors.New("session tree thread not found")
-	ErrEntryNotFound  = errors.New("session tree entry not found")
-	ErrInvalidParent  = errors.New("session tree invalid parent")
-	ErrActiveTurn     = errors.New("session tree thread already has an active turn")
-	ErrThreadExists   = errors.New("session tree thread already exists")
+	ErrThreadNotFound          = errors.New("session tree thread not found")
+	ErrEntryNotFound           = errors.New("session tree entry not found")
+	ErrInvalidParent           = errors.New("session tree invalid parent")
+	ErrActiveTurn              = errors.New("session tree thread already has an active turn")
+	ErrThreadExists            = errors.New("session tree thread already exists")
+	ErrForkDestinationConflict = errors.New("session tree fork destination conflicts with operation marker")
 )
 
 type AppendCommittedError struct {
@@ -86,28 +87,30 @@ func (e AppendCommittedError) Unwrap() error {
 }
 
 type ThreadMeta struct {
-	ID                 string            `json:"id"`
-	LeafID             string            `json:"leaf_id,omitempty"`
-	ParentThreadID     string            `json:"parent_thread_id,omitempty"`
-	ParentTurnID       string            `json:"parent_turn_id,omitempty"`
-	ForkedFromThreadID string            `json:"forked_from_thread_id,omitempty"`
-	ForkedFromEntryID  string            `json:"forked_from_entry_id,omitempty"`
-	TaskName           string            `json:"task_name,omitempty"`
-	TaskDescription    string            `json:"task_description,omitempty"`
-	AgentPath          string            `json:"agent_path,omitempty"`
-	HostProfileRef     string            `json:"host_profile_ref,omitempty"`
-	ForkMode           string            `json:"fork_mode,omitempty"`
-	Closed             bool              `json:"closed,omitempty"`
-	Archived           bool              `json:"archived,omitempty"`
-	Title              string            `json:"title,omitempty"`
-	TitleStatus        ThreadTitleStatus `json:"title_status,omitempty"`
-	TitleSource        ThreadTitleSource `json:"title_source,omitempty"`
-	TitleUpdatedAt     time.Time         `json:"title_updated_at,omitempty"`
-	TitleError         string            `json:"title_error,omitempty"`
-	CreatedAt          time.Time         `json:"created_at"`
-	UpdatedAt          time.Time         `json:"updated_at"`
-	Status             string            `json:"status,omitempty"`
-	LastViewedAt       time.Time         `json:"last_viewed_at,omitempty"`
+	ID                  string            `json:"id"`
+	LeafID              string            `json:"leaf_id,omitempty"`
+	ParentThreadID      string            `json:"parent_thread_id,omitempty"`
+	ParentTurnID        string            `json:"parent_turn_id,omitempty"`
+	ForkedFromThreadID  string            `json:"forked_from_thread_id,omitempty"`
+	ForkedFromEntryID   string            `json:"forked_from_entry_id,omitempty"`
+	ForkOperationID     string            `json:"fork_operation_id,omitempty"`
+	ForkOperationNodeID string            `json:"fork_operation_node_id,omitempty"`
+	TaskName            string            `json:"task_name,omitempty"`
+	TaskDescription     string            `json:"task_description,omitempty"`
+	AgentPath           string            `json:"agent_path,omitempty"`
+	HostProfileRef      string            `json:"host_profile_ref,omitempty"`
+	ForkMode            string            `json:"fork_mode,omitempty"`
+	Closed              bool              `json:"closed,omitempty"`
+	Archived            bool              `json:"archived,omitempty"`
+	Title               string            `json:"title,omitempty"`
+	TitleStatus         ThreadTitleStatus `json:"title_status,omitempty"`
+	TitleSource         ThreadTitleSource `json:"title_source,omitempty"`
+	TitleUpdatedAt      time.Time         `json:"title_updated_at,omitempty"`
+	TitleError          string            `json:"title_error,omitempty"`
+	CreatedAt           time.Time         `json:"created_at"`
+	UpdatedAt           time.Time         `json:"updated_at"`
+	Status              string            `json:"status,omitempty"`
+	LastViewedAt        time.Time         `json:"last_viewed_at,omitempty"`
 }
 
 type Entry struct {
@@ -157,13 +160,16 @@ const (
 )
 
 type ForkOptions struct {
-	SourceThreadID string
-	EntryID        string
-	Position       ForkPosition
-	NewThreadID    string
-	Now            time.Time
-	TurnIDMap      map[string]string
-	RunIDMap       map[string]string
+	SourceThreadID  string
+	EntryID         string
+	EntryIDPinned   bool
+	Position        ForkPosition
+	NewThreadID     string
+	OperationID     string
+	OperationNodeID string
+	Now             time.Time
+	TurnIDMap       map[string]string
+	RunIDMap        map[string]string
 }
 
 type ContextOptions struct{}
@@ -532,7 +538,7 @@ func (r *MemoryRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, er
 		return ThreadMeta{}, ErrThreadNotFound
 	}
 	targetID := opts.EntryID
-	if targetID == "" {
+	if targetID == "" && !opts.EntryIDPinned {
 		targetID = sourceMeta.LeafID
 	}
 	if opts.Position == ForkBefore {
@@ -541,10 +547,6 @@ func (r *MemoryRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, er
 			return ThreadMeta{}, ErrEntryNotFound
 		}
 		targetID = entry.ParentID
-	}
-	path, err := pathLocked(r.threads, r.entries, opts.SourceThreadID, targetID)
-	if err != nil {
-		return ThreadMeta{}, err
 	}
 	now := opts.Now
 	if now.IsZero() {
@@ -559,13 +561,23 @@ func (r *MemoryRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, er
 				break
 			}
 		}
-	} else if _, ok := r.threads[newID]; ok {
+	} else if existing, ok := r.threads[newID]; ok {
+		if forkDestinationMatches(existing, opts, targetID) {
+			return existing, nil
+		}
+		if opts.OperationID != "" || opts.OperationNodeID != "" {
+			return ThreadMeta{}, ErrForkDestinationConflict
+		}
 		return ThreadMeta{}, ErrThreadExists
 	}
 	if len(r.entries[newID]) > 0 {
 		return ThreadMeta{}, ErrThreadExists
 	}
-	meta := ThreadMeta{ID: newID, ParentThreadID: opts.SourceThreadID, ForkedFromThreadID: opts.SourceThreadID, ForkedFromEntryID: targetID, CreatedAt: now, UpdatedAt: now}
+	path, err := pathLocked(r.threads, r.entries, opts.SourceThreadID, targetID)
+	if err != nil {
+		return ThreadMeta{}, err
+	}
+	meta := ThreadMeta{ID: newID, ParentThreadID: opts.SourceThreadID, ForkedFromThreadID: opts.SourceThreadID, ForkedFromEntryID: targetID, ForkOperationID: opts.OperationID, ForkOperationNodeID: opts.OperationNodeID, CreatedAt: now, UpdatedAt: now}
 	oldToNew := map[string]string{"": ""}
 	for _, entry := range path {
 		r.seq++
@@ -588,6 +600,14 @@ func (r *MemoryRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, er
 	r.threads[newID] = meta
 	_ = ctx
 	return meta, nil
+}
+
+func forkDestinationMatches(meta ThreadMeta, opts ForkOptions, targetID string) bool {
+	return opts.OperationID != "" && opts.OperationNodeID != "" &&
+		meta.ForkOperationID == opts.OperationID &&
+		meta.ForkOperationNodeID == opts.OperationNodeID &&
+		meta.ForkedFromThreadID == opts.SourceThreadID &&
+		meta.ForkedFromEntryID == targetID
 }
 
 type FileRepo struct {
@@ -846,6 +866,34 @@ func (r *FileRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, erro
 	defer r.mu.Unlock()
 	if err := r.load(ctx); err != nil {
 		return ThreadMeta{}, err
+	}
+	if opts.NewThreadID != "" {
+		source, err := r.mem.Thread(ctx, opts.SourceThreadID)
+		if err != nil {
+			return ThreadMeta{}, err
+		}
+		targetID := opts.EntryID
+		if targetID == "" && !opts.EntryIDPinned {
+			targetID = source.LeafID
+		}
+		if opts.Position == ForkBefore {
+			entry, err := r.mem.Entry(ctx, opts.SourceThreadID, targetID)
+			if err != nil {
+				return ThreadMeta{}, err
+			}
+			targetID = entry.ParentID
+		}
+		if existing, err := r.mem.Thread(ctx, opts.NewThreadID); err == nil {
+			if forkDestinationMatches(existing, opts, targetID) {
+				return existing, nil
+			}
+			if opts.OperationID != "" || opts.OperationNodeID != "" {
+				return ThreadMeta{}, ErrForkDestinationConflict
+			}
+			return ThreadMeta{}, ErrThreadExists
+		} else if !errors.Is(err, ErrThreadNotFound) {
+			return ThreadMeta{}, err
+		}
 	}
 	meta, err := r.mem.Fork(ctx, opts)
 	if err != nil {

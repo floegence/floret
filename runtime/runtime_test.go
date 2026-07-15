@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -2805,7 +2806,7 @@ func TestThreadMaintenanceHostForkThreadPreservesProjectionWithNewIdentity(t *te
 	}
 	defer maintenance.Close()
 
-	forked, err := maintenance.ForkThread(ctx, ForkThreadRequest{SourceThreadID: "source", DestinationThreadID: "fork"})
+	forked, err := maintenance.ForkThread(ctx, ForkThreadRequest{OperationID: "fork-operation", SourceThreadID: "source", DestinationThreadID: "fork"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2814,6 +2815,9 @@ func TestThreadMaintenanceHostForkThreadPreservesProjectionWithNewIdentity(t *te
 	}
 	if len(forked.Turns) != 1 {
 		t.Fatalf("forked turns = %#v, want one", forked.Turns)
+	}
+	if forked.OperationID != "fork-operation" {
+		t.Fatalf("operation id = %q", forked.OperationID)
 	}
 	ref := forked.Turns[0]
 	if ref.SourceTurnID != "turn-source" || ref.SourceRunID != "run-source" {
@@ -2876,7 +2880,7 @@ func TestThreadMaintenanceHostForkThreadPreservesSQLiteProjectionAfterReopen(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	forked, err := maintenance.ForkThread(ctx, ForkThreadRequest{SourceThreadID: "source", DestinationThreadID: "fork"})
+	forked, err := maintenance.ForkThread(ctx, ForkThreadRequest{OperationID: "fork-operation", SourceThreadID: "source", DestinationThreadID: "fork"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2903,6 +2907,13 @@ func TestThreadMaintenanceHostForkThreadPreservesSQLiteProjectionAfterReopen(t *
 		t.Fatal(err)
 	}
 	defer reopened.Close()
+	replayed, err := reopened.ForkThread(ctx, ForkThreadRequest{OperationID: "fork-operation", SourceThreadID: "source", DestinationThreadID: "fork"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(replayed, forked) {
+		t.Fatalf("replayed fork = %#v, want %#v", replayed, forked)
+	}
 	projection, err := reopened.ReadTurnProjection(ctx, ReadTurnProjectionRequest{
 		ThreadID: "fork",
 		TurnID:   ref.DestinationTurnID,
@@ -2914,6 +2925,227 @@ func TestThreadMaintenanceHostForkThreadPreservesSQLiteProjectionAfterReopen(t *
 	if projection.Status != TurnStatusCompleted || runtimeProjectionAssistantText(projection) != "sqlite projected answer" {
 		t.Fatalf("fork projection = %#v", projection)
 	}
+}
+
+func TestThreadMaintenanceHostForkThreadRejectsOperationAndDestinationConflicts(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "source"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, store.repo, "source", "source-turn", session.Message{Role: session.User, Content: "pinned"}); err != nil {
+		t.Fatal(err)
+	}
+	maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer maintenance.Close()
+
+	request := ForkThreadRequest{OperationID: "operation", SourceThreadID: "source", DestinationThreadID: "fork"}
+	first, err := maintenance.ForkThread(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, store.repo, "source", "later-turn", session.Message{Role: session.User, Content: "later"}); err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := maintenance.ForkThread(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(replayed, first) {
+		t.Fatalf("replayed fork = %#v, want %#v", replayed, first)
+	}
+	forkPath, err := store.repo.Path(ctx, "fork", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(forkPath) != 1 || forkPath[0].Message.Content != "pinned" {
+		t.Fatalf("fork path drifted with source: %#v", forkPath)
+	}
+	if _, err := maintenance.ForkThread(ctx, ForkThreadRequest{OperationID: "operation", SourceThreadID: "source", DestinationThreadID: "different"}); !errors.Is(err, ErrForkOperationConflict) {
+		t.Fatalf("request conflict error = %v", err)
+	}
+
+	if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "occupied"}); err != nil {
+		t.Fatal(err)
+	}
+	conflictingRequest := ForkThreadRequest{OperationID: "destination-operation", SourceThreadID: "source", DestinationThreadID: "occupied"}
+	if _, err := maintenance.ForkThread(ctx, conflictingRequest); !errors.Is(err, ErrForkDestinationConflict) {
+		t.Fatalf("destination conflict error = %v", err)
+	}
+	if _, err := maintenance.ForkThread(ctx, conflictingRequest); !errors.Is(err, ErrForkDestinationConflict) {
+		t.Fatalf("persisted destination conflict error = %v", err)
+	}
+}
+
+func TestThreadMaintenanceHostForkThreadValidatesCompletedTargets(t *testing.T) {
+	ctx := context.Background()
+	t.Run("missing", func(t *testing.T) {
+		store := NewMemoryStore()
+		if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "source"}); err != nil {
+			t.Fatal(err)
+		}
+		maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer maintenance.Close()
+		req := ForkThreadRequest{OperationID: "operation", SourceThreadID: "source", DestinationThreadID: "fork"}
+		if _, err := maintenance.ForkThread(ctx, req); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.repo.DeleteThread(ctx, "fork"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := maintenance.ForkThread(ctx, req); !errors.Is(err, ErrForkOperationTargetMissing) {
+			t.Fatalf("missing target error = %v", err)
+		}
+	})
+	t.Run("marker mismatch", func(t *testing.T) {
+		store := NewMemoryStore()
+		if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "source"}); err != nil {
+			t.Fatal(err)
+		}
+		maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer maintenance.Close()
+		req := ForkThreadRequest{OperationID: "operation", SourceThreadID: "source", DestinationThreadID: "fork"}
+		if _, err := maintenance.ForkThread(ctx, req); err != nil {
+			t.Fatal(err)
+		}
+		meta, err := store.repo.Thread(ctx, "fork")
+		if err != nil {
+			t.Fatal(err)
+		}
+		meta.ForkOperationNodeID = "different-node"
+		if err := store.repo.UpdateThread(ctx, meta); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := maintenance.ForkThread(ctx, req); !errors.Is(err, ErrForkDestinationConflict) {
+			t.Fatalf("marker conflict error = %v", err)
+		}
+	})
+}
+
+func TestThreadMaintenanceHostForkThreadRecoversAtOperationBoundaries(t *testing.T) {
+	ctx := context.Background()
+	t.Run("after plan save", func(t *testing.T) {
+		store := newForkTestStore(t, false)
+		faults := &forkOperationFaultStore{ForkOperationStore: store.forkOperations, failPrepareAfterSave: true}
+		store.forkOperations = faults
+		maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer maintenance.Close()
+		req := ForkThreadRequest{OperationID: "operation", SourceThreadID: "source", DestinationThreadID: "fork"}
+		if _, err := maintenance.ForkThread(ctx, req); !errors.Is(err, errInjectedForkFailure) {
+			t.Fatalf("first error = %v", err)
+		}
+		if _, err := store.repo.Thread(ctx, "fork"); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+			t.Fatalf("destination exists before retry: %v", err)
+		}
+		if _, err := sessiontree.AppendMessage(ctx, store.repo, "source", "later-turn", session.Message{Role: session.User, Content: "later"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := maintenance.ForkThread(ctx, req); err != nil {
+			t.Fatal(err)
+		}
+		path, err := store.repo.Path(ctx, "fork", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(path) != 1 || path[0].Message.Content != "source" {
+			t.Fatalf("prepared fork used changed source path: %#v", path)
+		}
+	})
+
+	t.Run("before root", func(t *testing.T) {
+		store := newForkTestStore(t, false)
+		faults := &forkRepoFaultStore{Repo: store.repo, list: store.repo.(sessiontree.ThreadListRepo), failAt: 1}
+		store.repo = faults
+		maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer maintenance.Close()
+		req := ForkThreadRequest{OperationID: "operation", SourceThreadID: "source", DestinationThreadID: "fork"}
+		if _, err := maintenance.ForkThread(ctx, req); !errors.Is(err, errInjectedForkFailure) {
+			t.Fatalf("first error = %v", err)
+		}
+		if _, err := maintenance.ForkThread(ctx, req); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("between root and terminal child", func(t *testing.T) {
+		store := newForkTestStore(t, true)
+		faults := &forkRepoFaultStore{Repo: store.repo, list: store.repo.(sessiontree.ThreadListRepo), failAt: 2}
+		store.repo = faults
+		maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer maintenance.Close()
+		req := ForkThreadRequest{OperationID: "operation", SourceThreadID: "source", DestinationThreadID: "fork"}
+		if _, err := maintenance.ForkThread(ctx, req); !errors.Is(err, errInjectedForkFailure) {
+			t.Fatalf("first error = %v", err)
+		}
+		if _, err := store.repo.Thread(ctx, "fork"); err != nil {
+			t.Fatalf("root was not committed: %v", err)
+		}
+		first, err := maintenance.ForkThread(ctx, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := maintenance.ForkThread(ctx, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(first, second) {
+			t.Fatalf("replayed fork = %#v, want %#v", second, first)
+		}
+		children, err := maintenance.ListSubAgents(ctx, "fork")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(children) != 1 {
+			t.Fatalf("terminal children = %#v", children)
+		}
+	})
+
+	t.Run("before completed record", func(t *testing.T) {
+		store := newForkTestStore(t, false)
+		faults := &forkOperationFaultStore{ForkOperationStore: store.forkOperations, failUpdate: true}
+		store.forkOperations = faults
+		maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer maintenance.Close()
+		req := ForkThreadRequest{OperationID: "operation", SourceThreadID: "source", DestinationThreadID: "fork"}
+		if _, err := maintenance.ForkThread(ctx, req); !errors.Is(err, errInjectedForkFailure) {
+			t.Fatalf("first error = %v", err)
+		}
+		if _, err := store.repo.Thread(ctx, "fork"); err != nil {
+			t.Fatalf("destination was not committed: %v", err)
+		}
+		first, err := maintenance.ForkThread(ctx, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := maintenance.ForkThread(ctx, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(first, second) {
+			t.Fatalf("replayed fork = %#v, want %#v", second, first)
+		}
+	})
 }
 
 func TestThreadMaintenanceHostForkThreadClonesTerminalSubAgents(t *testing.T) {
@@ -2958,7 +3190,7 @@ func TestThreadMaintenanceHostForkThreadClonesTerminalSubAgents(t *testing.T) {
 	}
 	defer maintenance.Close()
 
-	forked, err := maintenance.ForkThread(ctx, ForkThreadRequest{SourceThreadID: "parent", DestinationThreadID: "parent-fork"})
+	forked, err := maintenance.ForkThread(ctx, ForkThreadRequest{OperationID: "fork-operation", SourceThreadID: "parent", DestinationThreadID: "parent-fork"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4523,6 +4755,95 @@ func deterministicIDs() func(string) string {
 	return func(prefix string) string {
 		return fmt.Sprintf("%s-deterministic-%d", prefix, seq.Add(1))
 	}
+}
+
+var errInjectedForkFailure = errors.New("injected fork failure")
+
+type forkOperationFaultStore struct {
+	storage.ForkOperationStore
+	mu                   sync.Mutex
+	failPrepareAfterSave bool
+	failUpdate           bool
+}
+
+func (s *forkOperationFaultStore) PrepareForkOperation(ctx context.Context, rec storage.ForkOperationRecord) (storage.ForkOperationRecord, bool, error) {
+	stored, created, err := s.ForkOperationStore.PrepareForkOperation(ctx, rec)
+	if err != nil {
+		return storage.ForkOperationRecord{}, false, err
+	}
+	s.mu.Lock()
+	fail := s.failPrepareAfterSave
+	s.failPrepareAfterSave = false
+	s.mu.Unlock()
+	if fail {
+		return storage.ForkOperationRecord{}, false, errInjectedForkFailure
+	}
+	return stored, created, nil
+}
+
+func (s *forkOperationFaultStore) UpdateForkOperation(ctx context.Context, rec storage.ForkOperationRecord) error {
+	s.mu.Lock()
+	fail := s.failUpdate
+	s.failUpdate = false
+	s.mu.Unlock()
+	if fail {
+		return errInjectedForkFailure
+	}
+	return s.ForkOperationStore.UpdateForkOperation(ctx, rec)
+}
+
+type forkRepoFaultStore struct {
+	sessiontree.Repo
+	list   sessiontree.ThreadListRepo
+	mu     sync.Mutex
+	calls  int
+	failAt int
+}
+
+func (r *forkRepoFaultStore) Fork(ctx context.Context, opts sessiontree.ForkOptions) (sessiontree.ThreadMeta, error) {
+	r.mu.Lock()
+	r.calls++
+	call := r.calls
+	fail := r.failAt == call
+	r.mu.Unlock()
+	if fail {
+		return sessiontree.ThreadMeta{}, errInjectedForkFailure
+	}
+	return r.Repo.Fork(ctx, opts)
+}
+
+func (r *forkRepoFaultStore) ListThreads(ctx context.Context, opts sessiontree.ListThreadsOptions) ([]sessiontree.ThreadMeta, error) {
+	return r.list.ListThreads(ctx, opts)
+}
+
+func newForkTestStore(t *testing.T, withTerminalChild bool) *Store {
+	t.Helper()
+	ctx := context.Background()
+	store := NewMemoryStore()
+	now := time.Date(2026, 7, 15, 8, 0, 0, 0, time.UTC)
+	if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "source", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, store.repo, "source", "source-turn", session.Message{Role: session.User, Content: "source"}); err != nil {
+		t.Fatal(err)
+	}
+	if withTerminalChild {
+		if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{
+			ID:             "child",
+			ParentThreadID: "source",
+			ParentTurnID:   "source-turn",
+			TaskName:       "review",
+			AgentPath:      "/root/review",
+			ForkMode:       string(SubAgentForkNone),
+			Closed:         true,
+			Status:         string(SubAgentStatusClosed),
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return store
 }
 
 type terminalProjectionFailureRepo struct {
