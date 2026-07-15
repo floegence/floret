@@ -1,6 +1,11 @@
 # Floret OKF Update Log
 
 ## 2026-07-15
+* **Breaking**: Made thread titles host-owned by default and added the explicit
+  `ThreadTitleModeProvider` opt-in for Floret provider title requests.
+* **Breaking**: Added typed normalized finish, completion, and continuation
+  reasons plus raw finish and inference fields to public runtime and observation
+  events, removing metadata as a lifecycle-reason contract.
 * **Fix**: Added durable monotonic `ThroughOrdinal` versioning to every hosted
   turn projection and clarified that `ProjectedAt` is not an ordering key.
 * **Breaking**: Replaced public string event/context/compaction states with

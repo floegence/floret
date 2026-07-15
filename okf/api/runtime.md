@@ -126,13 +126,14 @@ not host-owned pending tool work. Each child uses its own durable `ThreadID` and
 prompt scope; host products own agent profiles, permission policy, UI, and
 orchestration prompts.
 
-When `HostOptions.ModelGateway` is set, hosted parent turns, hosted child turns,
-and hosted title generation all use the supplied model transport. The gateway is
-still invoked with the concrete runtime identity for each request, so a child
-turn uses the child `ThreadID` and prompt scope. Provider/model identity comes
-from `HostOptions.ModelGatewayIdentity`; gateway-backed hosts pass raw
-non-transport config to `NewHost` and keep provider transport configuration out
-of `HostOptions.Config`.
+When `HostOptions.ModelGateway` is set, hosted parent and child turns use the
+supplied model transport. Thread titles remain host-owned unless the host
+explicitly selects `ThreadTitleModeProvider`; only that mode sends title requests
+through the same gateway. The gateway is invoked with the concrete runtime
+identity for each request, so a child turn uses the child `ThreadID` and prompt
+scope. Provider/model identity comes from `HostOptions.ModelGatewayIdentity`;
+gateway-backed hosts pass raw non-transport config to `NewHost` and keep provider
+transport configuration out of `HostOptions.Config`.
 
 Child `ThreadID` is the lifecycle target for spawn, send, wait, list, and close.
 Task names, task descriptions, and agent paths are reference metadata and may
@@ -356,6 +357,13 @@ requires no projection and a non-empty diagnostic. Explicit
 `StreamObservation` is for host rendering and diagnostics. It is not raw
 provider wire data and must not carry prompt text, tool arguments, tool results,
 local paths, or secrets.
+
+`runtime.Event`, `observation.Event`, `TurnResult`, and `StreamObservation`
+expose normalized `FinishReason`, separate `RawFinishReason`, `FinishInferred`,
+and finite completion or continuation reasons as typed fields. Metadata is not a
+secondary encoding of those decisions. Non-empty unknown values, simultaneous
+completion and continuation, and inferred finishes without a normalized reason
+fail runtime event validation.
 
 `runtime.Event.Committed` carries a `ThreadDetailEvent` after Floret has
 successfully appended the corresponding journal entry. Hosts can render provider

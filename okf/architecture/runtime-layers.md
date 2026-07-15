@@ -48,10 +48,13 @@ turn/run/tool/handle identity, is idempotent for the same terminal status, and
 may be recorded before the pending result row when host-owned work finishes
 faster than the provider turn can commit that row.
 
-`HostOptions.ModelGateway` lets a host route hosted parent turns, child turns,
-and hosted title generation through product-owned model transport while Floret
-still owns request construction, provider loop control, ledgers, tool dispatch,
-and runtime events.
+`HostOptions.ModelGateway` lets a host route hosted parent and child turns
+through product-owned model transport while Floret still owns request
+construction, provider loop control, ledgers, tool dispatch, and runtime events.
+Title generation is host-owned by default. `ThreadTitleModeProvider` is the
+explicit opt-in that routes a dedicated Floret title request through the same
+transport; a nil internal title generator means disabled rather than an implicit
+provider fallback.
 `HostOptions.ModelGatewayIdentity` supplies the provider/model identity for that
 host-owned transport. Gateway-backed hosts keep provider transport settings out
 of `HostOptions.Config`, so fake provider configuration cannot leak into a
@@ -60,6 +63,9 @@ production gateway integration.
 `AgentHarness` is the internal durable conversation layer. It owns threads,
 parent-child thread lifecycle, turn lifecycle, retries, forks, titles, and
 projection of an active journal path into one engine execution.
+The public observation boundary carries normalized finish, raw finish,
+inference, completion, and continuation as distinct typed facts. Hosts consume
+those fields directly instead of interpreting metadata keys.
 Public thread forks are durable operations rather than best-effort recursive
 copies. AgentHarness prepares one immutable plan containing the pinned source
 leaf, destination IDs, turn/run rewrites, terminal child list, and child

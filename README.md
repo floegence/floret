@@ -241,8 +241,19 @@ store or a replacement for your product database.
 
 Public lifecycle fields use finite types such as `observation.EventType`,
 `ContextPhase`, `ContextDisplayStatus`, `CompactionPhase`, and
-`CompactionStatus`. Hosts should validate events at their integration boundary
-and reject unknown values instead of assigning a normal display state.
+`CompactionStatus`. Normalized finish, completion, and continuation reasons are
+also finite public fields. Raw provider finish text remains separate in
+`RawFinishReason`, and `FinishInferred` records whether normalization required
+inference. Hosts should validate events at their integration boundary and reject
+unknown values instead of assigning a normal display state or reading lifecycle
+semantics from `Metadata`.
+
+Thread titles are host-owned by default. Set
+`HostOptions.ThreadTitleMode = runtime.ThreadTitleModeProvider` only when Floret
+should issue a dedicated provider request and persist the resulting title in its
+thread journal. Products that own their title workflow should keep the default
+`runtime.ThreadTitleModeHostOwned` behavior and store product titles outside the
+Floret store.
 
 When a host needs a durable display projection, use `ThreadTurnProjection` and
 the public detail APIs. Do not read Floret's storage tables or rebuild
