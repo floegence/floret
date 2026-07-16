@@ -296,7 +296,11 @@ terminal fact rather than as a generic failure. Successful turns keep
 host-owned pending work running until the host reports a terminal outcome
 through `SettlePendingTool`. That settlement remains authoritative for the tool
 id and updates the same projected activity item rather than adding a duplicate
-row. Runtime restart recovery also reconciles active turn leases from the same
+row. A provider-backed Host may settle pending work through the same active
+thread it already owns; this detail-only mutation does not reacquire the turn
+lease or create another provider request. `ThreadMaintenanceHost` continues to
+respect leases owned by active provider hosts. Runtime restart recovery also
+reconciles active turn leases from the same
 durable facts: a turn that already has terminal or interrupted evidence is
 closed through Floret's ledger before the next `RunTurn` is admitted. Downstream
 hosts should consume Floret projections and settlement results

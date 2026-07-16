@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-07-16
+* **Fix**: Allowed a provider-backed Host to settle pending tool activity through
+  its already-active thread without re-entering turn admission, while keeping
+  maintenance hosts isolated by the existing turn lease.
 * **Feature**: Added validated polling identity exclusions for presentation-only
   tool arguments so changing user-facing activity copy cannot bypass the
   no-progress duplicate-call guard.

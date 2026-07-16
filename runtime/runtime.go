@@ -1610,6 +1610,12 @@ func (h *Host) CompletePendingTool(ctx context.Context, req PendingToolCompletio
 }
 
 func (h *Host) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+	if thread, ok := h.harness.ActiveThread(string(req.ThreadID)); ok {
+		if err := validatePendingToolSettlementRequest(req); err != nil {
+			return PendingToolSettlementResult{}, err
+		}
+		return settlePendingToolOnThread(ctx, h.harness, thread, req)
+	}
 	return settlePendingTool(ctx, h.harness, req)
 }
 
@@ -1618,19 +1624,30 @@ func (h *ThreadMaintenanceHost) SettlePendingTool(ctx context.Context, req Pendi
 }
 
 func settlePendingTool(ctx context.Context, harness *agentharness.AgentHarness, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
-	if strings.TrimSpace(string(req.ThreadID)) == "" {
-		return PendingToolSettlementResult{}, errors.New("thread id is required")
-	}
-	if strings.TrimSpace(string(req.TurnID)) == "" {
-		return PendingToolSettlementResult{}, errors.New("turn id is required")
-	}
-	if strings.TrimSpace(string(req.RunID)) == "" {
-		return PendingToolSettlementResult{}, errors.New("run id is required")
+	if err := validatePendingToolSettlementRequest(req); err != nil {
+		return PendingToolSettlementResult{}, err
 	}
 	thread, err := harness.ResumeThread(ctx, string(req.ThreadID), agentharness.ResumeOptions{})
 	if err != nil {
 		return PendingToolSettlementResult{}, runtimeHostError(err)
 	}
+	return settlePendingToolOnThread(ctx, harness, thread, req)
+}
+
+func validatePendingToolSettlementRequest(req PendingToolSettlementRequest) error {
+	if strings.TrimSpace(string(req.ThreadID)) == "" {
+		return errors.New("thread id is required")
+	}
+	if strings.TrimSpace(string(req.TurnID)) == "" {
+		return errors.New("turn id is required")
+	}
+	if strings.TrimSpace(string(req.RunID)) == "" {
+		return errors.New("run id is required")
+	}
+	return nil
+}
+
+func settlePendingToolOnThread(ctx context.Context, harness *agentharness.AgentHarness, thread *agentharness.Thread, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
 	event, err := thread.SettlePendingTool(ctx, agentharness.PendingToolSettlement{
 		TurnID:     string(req.TurnID),
 		RunID:      string(req.RunID),

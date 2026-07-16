@@ -47,6 +47,10 @@ state without resuming the provider loop. Settlement is keyed by the public
 turn/run/tool/handle identity, is idempotent for the same terminal status, and
 may be recorded before the pending result row when host-owned work finishes
 faster than the provider turn can commit that row.
+When the provider-backed `Host` already owns an active thread, settlement uses
+that same active `AgentHarness` thread and does not re-enter turn admission.
+The provider-free maintenance host still resumes the target thread normally, so
+it cannot bypass a turn lease owned by another host.
 
 `HostOptions.ModelGateway` lets a host route hosted parent and child turns
 through product-owned model transport while Floret still owns request

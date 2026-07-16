@@ -3773,6 +3773,147 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	}
 }
 
+func TestHostSettlePendingToolDuringActiveTurnUsesOwnedThread(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	registry := tools.NewRegistry()
+	var host *Host
+	maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := registry.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{
+			Name:        "terminal_exec",
+			InputSchema: runtimeEchoSchema(),
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+		},
+		nil,
+		nil,
+		func(_ context.Context, _ tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			return tools.Result{
+				Activity: &observation.ActivityPresentation{
+					Label:    "stream timestamps",
+					Renderer: observation.ActivityRendererTerminal,
+					Payload:  map[string]any{"command": "stream timestamps"},
+				},
+				Pending: &tools.PendingToolResult{
+					Handle:      "terminal:job:active",
+					State:       tools.PendingToolResultRunning,
+					Summary:     "Command is running",
+					Instruction: "Stop it when enough output has been collected.",
+				},
+			}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{
+			Name:        "terminal_terminate",
+			InputSchema: runtimeEchoSchema(),
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+		},
+		nil,
+		nil,
+		func(ctx context.Context, _ tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			req := PendingToolSettlementRequest{
+				ThreadID:   "thread-active-settlement",
+				TurnID:     "turn-active-settlement",
+				RunID:      "run-active-settlement",
+				ToolCallID: "exec-active",
+				ToolName:   "terminal_exec",
+				Handle:     "terminal:job:active",
+				Status:     PendingToolSettlementCanceled,
+				Summary:    "Command was stopped",
+				Activity: &observation.ActivityPresentation{
+					Label:    "stream timestamps",
+					Renderer: observation.ActivityRendererTerminal,
+					Payload:  map[string]any{"command": "stream timestamps", "status": "canceled"},
+				},
+			}
+			if _, err := maintenance.SettlePendingTool(ctx, req); !errors.Is(err, agentharness.ErrActiveTurn) {
+				t.Fatalf("maintenance settlement err=%v, want ErrActiveTurn", err)
+			}
+			if _, err := host.SettlePendingTool(ctx, req); err != nil {
+				return tools.Result{}, err
+			}
+			return tools.Result{
+				Text: "terminated",
+				Activity: &observation.ActivityPresentation{
+					Label:    "stop timestamp stream",
+					Renderer: observation.ActivityRendererTerminal,
+					Payload:  map[string]any{"terminated": true},
+				},
+			}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+
+	var requests atomic.Int32
+	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		step := requests.Add(1)
+		events := make(chan ModelEvent, 2)
+		switch step {
+		case 1:
+			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "exec-active", Name: "terminal_exec", Args: `{"text":"stream timestamps"}`}}}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+		case 2:
+			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "terminate-active", Name: "terminal_terminate", Args: `{"text":"stop timestamp stream"}`}}}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+		case 3:
+			events <- ModelEvent{Type: ModelEventDelta, Text: "command stopped"}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+		default:
+			t.Fatalf("unexpected provider request %d: %#v", step, req)
+		}
+		close(events)
+		return events, nil
+	})
+	host, err = NewHost(HostOptions{
+		Config:               runtimeGatewayConfig("test"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                store,
+		Tools:                registry,
+		Approver:             allowRuntimeTools,
+		IDGenerator:          deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread-active-settlement"}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := host.RunTurn(ctx, RunTurnRequest{
+		RunID:    "run-active-settlement",
+		ThreadID: "thread-active-settlement",
+		TurnID:   "turn-active-settlement",
+		Input:    "stream timestamps and stop the command",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != TurnStatusCompleted || run.Output != "command stopped" {
+		t.Fatalf("run=%#v", run)
+	}
+	if got := requests.Load(); got != 3 {
+		t.Fatalf("provider requests=%d, want 3", got)
+	}
+	if run.Projection == nil {
+		t.Fatal("run projection is missing")
+	}
+	if item := runtimeProjectionToolItem(*run.Projection, "exec-active"); item.Status != observation.ActivityStatusCanceled {
+		t.Fatalf("pending exec item=%#v, want canceled", item)
+	}
+	if item := runtimeProjectionToolItem(*run.Projection, "terminate-active"); item.Status != observation.ActivityStatusSuccess || item.Label != "stop timestamp stream" {
+		t.Fatalf("terminate item=%#v, want successful descriptive result", item)
+	}
+}
+
 func TestHostSettlePendingToolOnlyUpdatesExplicitPendingTarget(t *testing.T) {
 	ctx := context.Background()
 	registry := tools.NewRegistry()

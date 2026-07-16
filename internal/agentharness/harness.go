@@ -455,6 +455,28 @@ func (h *AgentHarness) ResumeThread(ctx context.Context, id string, _ ResumeOpti
 	return thread, nil
 }
 
+// ActiveThread returns the cached thread only when this harness currently owns
+// an active mutation for it. It does not recover or acquire a turn lease.
+func (h *AgentHarness) ActiveThread(id string) (*Thread, bool) {
+	if h == nil {
+		return nil, false
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, false
+	}
+	h.mu.Lock()
+	thread := h.threads[id]
+	h.mu.Unlock()
+	if thread == nil {
+		return nil, false
+	}
+	thread.mu.Lock()
+	active := thread.active
+	thread.mu.Unlock()
+	return thread, active
+}
+
 func (h *AgentHarness) markInterruptedTurns(ctx context.Context, meta sessiontree.ThreadMeta) error {
 	path, err := h.options.Repo.Path(ctx, meta.ID, meta.LeafID)
 	if err != nil {
