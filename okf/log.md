@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-07-16
+* **Feature**: Added validated polling identity exclusions for presentation-only
+  tool arguments so changing user-facing activity copy cannot bypass the
+  no-progress duplicate-call guard.
 * **Breaking**: Renamed turn projection availability from `ProjectionStatus` to
   `ProjectionAvailability` and removed the old Go and JSON contract names.
 * **Fix**: Made live turn projections explicitly `running` until a terminal turn

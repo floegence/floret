@@ -56,6 +56,46 @@ func TestRegisterRejectsInvalidTool(t *testing.T) {
 	}
 }
 
+func TestRegisterValidatesRepeatIdentityIgnoredArguments(t *testing.T) {
+	t.Parallel()
+
+	valid := testTool("poll", true, func(context.Context, Invocation[testArgs]) (Result, error) {
+		return Result{}, nil
+	})
+	valid.Definition.InputSchema = StrictObject(map[string]any{
+		"value":       String("poll identity"),
+		"description": String("user-facing activity description"),
+	}, []string{"value", "description"})
+	valid.Definition.Annotations = map[string]any{
+		AnnotationRepeatPolicy:                   RepeatPolicyPolling,
+		AnnotationRepeatIdentityIgnoredArguments: []string{"description"},
+	}
+	if err := NewRegistry().Register(valid); err != nil {
+		t.Fatalf("valid polling annotations rejected: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		annotations map[string]any
+	}{
+		{name: "requires polling policy", annotations: map[string]any{AnnotationRepeatIdentityIgnoredArguments: []string{"description"}}},
+		{name: "requires string array", annotations: map[string]any{AnnotationRepeatPolicy: RepeatPolicyPolling, AnnotationRepeatIdentityIgnoredArguments: "description"}},
+		{name: "requires nonempty array", annotations: map[string]any{AnnotationRepeatPolicy: RepeatPolicyPolling, AnnotationRepeatIdentityIgnoredArguments: []string{}}},
+		{name: "rejects duplicate fields", annotations: map[string]any{AnnotationRepeatPolicy: RepeatPolicyPolling, AnnotationRepeatIdentityIgnoredArguments: []string{"description", "description"}}},
+		{name: "rejects unknown fields", annotations: map[string]any{AnnotationRepeatPolicy: RepeatPolicyPolling, AnnotationRepeatIdentityIgnoredArguments: []string{"missing"}}},
+		{name: "rejects unknown policy", annotations: map[string]any{AnnotationRepeatPolicy: "retry"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tool := valid
+			tool.Definition.Annotations = tt.annotations
+			if err := NewRegistry().Register(tool); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("err = %v, want invalid", err)
+			}
+		})
+	}
+}
+
 func TestUnknownToolFailsClearly(t *testing.T) {
 	got := NewRegistry().Run(context.Background(), ToolCall{Name: "missing"}, nil)
 	if !got.IsError || got.Text != `unknown tool "missing"` {

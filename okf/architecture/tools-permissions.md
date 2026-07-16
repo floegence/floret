@@ -99,6 +99,11 @@ host should treat only `approval_state=requested` with `status=waiting` as an
 active pending approval. `approval_state=approved` may briefly pair with
 `status=pending` between approval resolution and tool dispatch.
 
+For polling tools, presentation-only arguments can be excluded from generic
+repeat identity through the validated tools annotation contract. This keeps
+product copy available to activity presentation without allowing copy changes
+to bypass Floret's no-progress duplicate-call guard.
+
 # Pending Tool Work
 
 A tool may return a pending result when the host starts work whose lifecycle

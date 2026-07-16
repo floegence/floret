@@ -921,7 +921,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			activeHistory = append(activeHistory, msg)
 			state.activeMessages = append([]session.Message(nil), activeHistory...)
 		}
-		sig := toolSignature(calls)
+		sig := toolSignature(activeToolRegistry, calls)
 		if sig == lastToolSig {
 			if toolBatchAllowsProgressRepeat(activeToolRegistry, calls) && lastToolProgressSig != "" {
 				if lastToolProgressSig != duplicateProgressSig {
@@ -3755,10 +3755,10 @@ func validateToolCalls(calls []provider.ToolCall) error {
 	return nil
 }
 
-func toolSignature(calls []provider.ToolCall) string {
+func toolSignature(reg *tools.Registry, calls []provider.ToolCall) string {
 	s := ""
 	for _, c := range calls {
-		s += c.Name + "\x00" + c.Args + "\x00"
+		s += c.Name + "\x00" + toolIdentityArgs(reg, c) + "\x00"
 	}
 	return s
 }
@@ -3775,12 +3775,57 @@ func toolProgressSignature(reg *tools.Registry, calls []provider.ToolCall, resul
 		}
 		b.WriteString(call.Name)
 		b.WriteByte(0)
-		b.WriteString(call.Args)
+		b.WriteString(toolIdentityArgs(reg, call))
 		b.WriteByte(0)
 		b.WriteString(token)
 		b.WriteByte(0)
 	}
 	return b.String()
+}
+
+func toolIdentityArgs(reg *tools.Registry, call provider.ToolCall) string {
+	if reg == nil {
+		return call.Args
+	}
+	def, ok := reg.Definition(call.Name)
+	if !ok || strings.TrimSpace(fmt.Sprint(def.Annotations[tools.AnnotationRepeatPolicy])) != tools.RepeatPolicyPolling {
+		return call.Args
+	}
+	ignored := repeatIdentityIgnoredArguments(def.Annotations[tools.AnnotationRepeatIdentityIgnoredArguments])
+	if len(ignored) == 0 {
+		return call.Args
+	}
+	args, err := tools.Validate(def.InputSchema, []byte(call.Args))
+	if err != nil {
+		return call.Args
+	}
+	for _, field := range ignored {
+		delete(args, field)
+	}
+	raw, err := cache.CanonicalJSON(args)
+	if err != nil {
+		return call.Args
+	}
+	return string(raw)
+}
+
+func repeatIdentityIgnoredArguments(raw any) []string {
+	values, ok := raw.([]any)
+	if !ok {
+		if typed, ok := raw.([]string); ok {
+			return append([]string(nil), typed...)
+		}
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, rawValue := range values {
+		value, ok := rawValue.(string)
+		if !ok || strings.TrimSpace(value) == "" {
+			return nil
+		}
+		out = append(out, strings.TrimSpace(value))
+	}
+	return out
 }
 
 func toolBatchAllowsProgressRepeat(reg *tools.Registry, calls []provider.ToolCall) bool {

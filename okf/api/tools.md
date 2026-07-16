@@ -65,6 +65,13 @@ annotations. The tool result must then include
 call made observable progress. The engine still fails repeated polling calls
 when the progress token does not change.
 
+Polling tools that accept presentation-only top-level arguments may declare
+those names through `tools.AnnotationRepeatIdentityIgnoredArguments`. Floret
+removes only those arguments when computing duplicate and progress identities;
+the original validated arguments still reach activity presentation, handlers,
+events, and provider-visible history. The ignored-argument declaration is valid
+only for polling tools and must name unique properties from the input schema.
+
 # Key Source Files
 
 * [Tools Package](/tools/tools.go)

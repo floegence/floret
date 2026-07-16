@@ -24,9 +24,10 @@ const (
 )
 
 const (
-	AnnotationRepeatPolicy      = "repeat_policy"
-	RepeatPolicyPolling         = "polling"
-	ResultMetadataProgressToken = "progress_token"
+	AnnotationRepeatPolicy                   = "repeat_policy"
+	AnnotationRepeatIdentityIgnoredArguments = "repeat_identity_ignored_arguments"
+	RepeatPolicyPolling                      = "polling"
+	ResultMetadataProgressToken              = "progress_token"
 )
 
 type Definition struct {
@@ -236,6 +237,9 @@ func ValidateDefinition(def Definition) (Definition, error) {
 	if def.Name == "" {
 		return def, ErrInvalid
 	}
+	if def.Annotations != nil {
+		def.Annotations = cloneSchema(def.Annotations)
+	}
 	if IsReservedName(def.Name) {
 		return def, fmt.Errorf("%w: reserved tool name %q", ErrInvalid, def.Name)
 	}
@@ -280,7 +284,78 @@ func ValidateDefinition(def Definition) (Definition, error) {
 	if def.OpenWorld && def.Permission.Mode == PermissionAllow {
 		return def, fmt.Errorf("%w: open-world tool %q must ask or deny by default", ErrInvalid, def.Name)
 	}
+	if err := validateRepeatAnnotations(&def); err != nil {
+		return def, err
+	}
 	return def, nil
+}
+
+func validateRepeatAnnotations(def *Definition) error {
+	if def == nil || len(def.Annotations) == 0 {
+		return nil
+	}
+	policy := ""
+	if raw, ok := def.Annotations[AnnotationRepeatPolicy]; ok {
+		value, ok := raw.(string)
+		if !ok {
+			return fmt.Errorf("%w: tool %q repeat policy must be a string", ErrInvalid, def.Name)
+		}
+		policy = strings.TrimSpace(value)
+		if policy != RepeatPolicyPolling {
+			return fmt.Errorf("%w: tool %q has unknown repeat policy %q", ErrInvalid, def.Name, policy)
+		}
+		def.Annotations[AnnotationRepeatPolicy] = policy
+	}
+	rawFields, ok := def.Annotations[AnnotationRepeatIdentityIgnoredArguments]
+	if !ok {
+		return nil
+	}
+	if policy != RepeatPolicyPolling {
+		return fmt.Errorf("%w: tool %q repeat identity ignored arguments require polling repeat policy", ErrInvalid, def.Name)
+	}
+	fields, err := repeatIdentityIgnoredArguments(rawFields)
+	if err != nil {
+		return fmt.Errorf("%w: tool %q repeat identity ignored arguments: %v", ErrInvalid, def.Name, err)
+	}
+	properties, _ := def.InputSchema["properties"].(map[string]any)
+	seen := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		if _, exists := seen[field]; exists {
+			return fmt.Errorf("%w: tool %q repeat identity ignored argument %q is duplicated", ErrInvalid, def.Name, field)
+		}
+		if _, exists := properties[field]; !exists {
+			return fmt.Errorf("%w: tool %q repeat identity ignored argument %q is not an input property", ErrInvalid, def.Name, field)
+		}
+		seen[field] = struct{}{}
+	}
+	def.Annotations[AnnotationRepeatIdentityIgnoredArguments] = fields
+	return nil
+}
+
+func repeatIdentityIgnoredArguments(raw any) ([]string, error) {
+	var values []any
+	switch typed := raw.(type) {
+	case []any:
+		values = typed
+	default:
+		return nil, errors.New("must be a non-empty string array")
+	}
+	if len(values) == 0 {
+		return nil, errors.New("must be a non-empty string array")
+	}
+	fields := make([]string, 0, len(values))
+	for _, rawValue := range values {
+		value, ok := rawValue.(string)
+		if !ok {
+			return nil, errors.New("must contain only strings")
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil, errors.New("must not contain empty names")
+		}
+		fields = append(fields, value)
+	}
+	return fields, nil
 }
 
 func safeReadOnlyDefault(def Definition, effects map[Effect]bool) bool {

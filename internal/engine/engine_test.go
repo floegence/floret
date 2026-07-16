@@ -3924,15 +3924,15 @@ func TestLoopGuardsDuplicateToolsAndCancellation(t *testing.T) {
 	t.Run("polling progress resets duplicate guard", func(t *testing.T) {
 		p := harness.NewScriptedProvider(
 			[]provider.StreamEvent{
-				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-1", Name: "poll", Args: `{"value":"same"}`}}},
+				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-1", Name: "poll", Args: `{"value":"same","description":"Check the build output"}`}}},
 				{Type: provider.Done, Reason: "tool_calls"},
 			},
 			[]provider.StreamEvent{
-				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-2", Name: "poll", Args: `{"value":"same"}`}}},
+				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-2", Name: "poll", Args: `{"value":"same","description":"Check the latest build output again"}`}}},
 				{Type: provider.Done, Reason: "tool_calls"},
 			},
 			[]provider.StreamEvent{
-				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-3", Name: "poll", Args: `{"value":"same"}`}}},
+				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-3", Name: "poll", Args: `{"value":"same","description":"Take another look at the build output"}`}}},
 				{Type: provider.Done, Reason: "tool_calls"},
 			},
 			[]provider.StreamEvent{
@@ -3946,9 +3946,12 @@ func TestLoopGuardsDuplicateToolsAndCancellation(t *testing.T) {
 		mustRegister(t, e.Tools, tools.Define[stringArgs](
 			tools.Definition{
 				Name:        "poll",
-				InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+				InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value"), "description": tools.String("description")}, []string{"value", "description"}),
 				Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
-				Annotations: map[string]any{tools.AnnotationRepeatPolicy: tools.RepeatPolicyPolling},
+				Annotations: map[string]any{
+					tools.AnnotationRepeatPolicy:                   tools.RepeatPolicyPolling,
+					tools.AnnotationRepeatIdentityIgnoredArguments: []string{"description"},
+				},
 			},
 			nil,
 			nil,
@@ -3969,15 +3972,15 @@ func TestLoopGuardsDuplicateToolsAndCancellation(t *testing.T) {
 	t.Run("polling without progress still fails", func(t *testing.T) {
 		p := harness.NewScriptedProvider(
 			[]provider.StreamEvent{
-				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-1", Name: "poll", Args: `{"value":"same"}`}}},
+				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-1", Name: "poll", Args: `{"value":"same","description":"Check the build output"}`}}},
 				{Type: provider.Done, Reason: "tool_calls"},
 			},
 			[]provider.StreamEvent{
-				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-2", Name: "poll", Args: `{"value":"same"}`}}},
+				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-2", Name: "poll", Args: `{"value":"same","description":"Check the latest build output again"}`}}},
 				{Type: provider.Done, Reason: "tool_calls"},
 			},
 			[]provider.StreamEvent{
-				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-3", Name: "poll", Args: `{"value":"same"}`}}},
+				{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{{ID: "poll-3", Name: "poll", Args: `{"value":"same","description":"Take another look at the build output"}`}}},
 				{Type: provider.Done, Reason: "tool_calls"},
 			},
 		)
@@ -3986,9 +3989,12 @@ func TestLoopGuardsDuplicateToolsAndCancellation(t *testing.T) {
 		mustRegister(t, e.Tools, tools.Define[stringArgs](
 			tools.Definition{
 				Name:        "poll",
-				InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+				InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value"), "description": tools.String("description")}, []string{"value", "description"}),
 				Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
-				Annotations: map[string]any{tools.AnnotationRepeatPolicy: tools.RepeatPolicyPolling},
+				Annotations: map[string]any{
+					tools.AnnotationRepeatPolicy:                   tools.RepeatPolicyPolling,
+					tools.AnnotationRepeatIdentityIgnoredArguments: []string{"description"},
+				},
 			},
 			nil,
 			nil,
