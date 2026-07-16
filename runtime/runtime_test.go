@@ -2792,14 +2792,16 @@ func TestHostPublicNotFoundErrors(t *testing.T) {
 		t.Fatalf("CompletePendingTool err = %v, want ErrThreadNotFound", err)
 	}
 	if _, err := host.SettlePendingTool(ctx, PendingToolSettlementRequest{
-		ThreadID:   "missing",
-		TurnID:     "turn-1",
-		RunID:      "run-1",
-		ToolCallID: "exec-1",
-		ToolName:   "terminal.exec",
-		Handle:     "terminal:job:123",
-		Status:     PendingToolSettlementCompleted,
-		Summary:    "done",
+		Target: PendingToolSettlementTarget{
+			ThreadID:   "missing",
+			TurnID:     "turn-1",
+			RunID:      "run-1",
+			ToolCallID: "exec-1",
+			ToolName:   "terminal.exec",
+			Handle:     "terminal:job:123",
+		},
+		Status:  PendingToolSettlementCompleted,
+		Summary: "done",
 	}); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("SettlePendingTool err = %v, want ErrThreadNotFound", err)
 	}
@@ -2975,6 +2977,14 @@ func TestTurnProjectionOutcomeValidation(t *testing.T) {
 func TestPendingToolSettlementProjectionValidation(t *testing.T) {
 	t.Parallel()
 
+	target := PendingToolSettlementTarget{
+		ThreadID:   "thread",
+		TurnID:     "turn",
+		RunID:      "run",
+		ToolCallID: "tool",
+		ToolName:   "terminal.exec",
+		Handle:     "terminal:job:123",
+	}
 	projection := &ThreadTurnProjection{
 		ThreadID:       "thread",
 		TurnID:         "turn",
@@ -2983,9 +2993,8 @@ func TestPendingToolSettlementProjectionValidation(t *testing.T) {
 		ThroughOrdinal: 1,
 	}
 	valid := PendingToolSettlementResult{
-		ThreadID:               "thread",
-		TurnID:                 "turn",
-		RunID:                  "run",
+		Target:                 target,
+		Event:                  pendingToolSettlementValidationEvent(target),
 		ProjectionAvailability: TurnProjectionAvailabilityReady,
 		Projection:             projection,
 	}
@@ -2994,9 +3003,66 @@ func TestPendingToolSettlementProjectionValidation(t *testing.T) {
 	}
 
 	mismatched := valid
-	mismatched.ThreadID = "other-thread"
+	mismatched.Target.ThreadID = "other-thread"
 	if err := mismatched.ValidateProjection(); err == nil {
 		t.Fatal("pending tool settlement projection identity mismatch validated")
+	}
+
+	mismatchedEvent := valid
+	mismatchedEvent.Event.Metadata["handle"] = "terminal:job:other"
+	if err := mismatchedEvent.ValidateProjection(); err == nil {
+		t.Fatal("pending tool settlement event target mismatch validated")
+	}
+}
+
+func TestPendingToolSettlementTargetValidationRequiresCompleteIdentity(t *testing.T) {
+	t.Parallel()
+
+	valid := PendingToolSettlementTarget{
+		ThreadID:   "thread",
+		TurnID:     "turn",
+		RunID:      "run",
+		ToolCallID: "tool",
+		ToolName:   "terminal.exec",
+		Handle:     "terminal:job:123",
+	}
+	tests := []struct {
+		name   string
+		mutate func(*PendingToolSettlementTarget)
+	}{
+		{name: "thread", mutate: func(target *PendingToolSettlementTarget) { target.ThreadID = "" }},
+		{name: "turn", mutate: func(target *PendingToolSettlementTarget) { target.TurnID = "" }},
+		{name: "run", mutate: func(target *PendingToolSettlementTarget) { target.RunID = "" }},
+		{name: "tool call", mutate: func(target *PendingToolSettlementTarget) { target.ToolCallID = "" }},
+		{name: "tool name", mutate: func(target *PendingToolSettlementTarget) { target.ToolName = "" }},
+		{name: "handle", mutate: func(target *PendingToolSettlementTarget) { target.Handle = "" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target := valid
+			tt.mutate(&target)
+			if err := validatePendingToolSettlementTarget(target); err == nil {
+				t.Fatal("incomplete pending tool settlement target validated")
+			}
+		})
+	}
+}
+
+func pendingToolSettlementValidationEvent(target PendingToolSettlementTarget) ThreadDetailEvent {
+	return ThreadDetailEvent{
+		ThreadID: target.ThreadID,
+		TurnID:   target.TurnID,
+		Kind:     ThreadDetailEventToolResult,
+		Type:     threadTurnProjectionPendingToolSettlementType,
+		ToolResult: &ThreadDetailToolResult{
+			CallID:   target.ToolCallID,
+			ToolName: target.ToolName,
+			Status:   string(observation.ActivityStatusSuccess),
+		},
+		Metadata: map[string]string{
+			"run_id": string(target.RunID),
+			"handle": target.Handle,
+		},
 	}
 }
 
@@ -3666,15 +3732,17 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	defer maintenance.Close()
 
 	if _, err := maintenance.SettlePendingTool(ctx, PendingToolSettlementRequest{
-		ThreadID:   "thread",
-		TurnID:     "turn-1",
-		RunID:      "run_child_audit",
-		ToolCallID: "exec-1",
-		ToolName:   "terminal_exec",
-		Handle:     "terminal:job:123",
-		Status:     PendingToolSettlementCompleted,
-		Summary:    "wrong host correlation run",
-		Output:     "exit 0",
+		Target: PendingToolSettlementTarget{
+			ThreadID:   "thread",
+			TurnID:     "turn-1",
+			RunID:      "run_child_audit",
+			ToolCallID: "exec-1",
+			ToolName:   "terminal_exec",
+			Handle:     "terminal:job:123",
+		},
+		Status:  PendingToolSettlementCompleted,
+		Summary: "wrong host correlation run",
+		Output:  "exit 0",
 	}); !errors.Is(err, ErrRunNotFound) {
 		t.Fatalf("host-correlation settlement err = %v, want ErrRunNotFound", err)
 	}
@@ -3686,16 +3754,18 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 
 	settlementRepo.arm.Store(true)
 	settled, err := maintenance.SettlePendingTool(ctx, PendingToolSettlementRequest{
-		ThreadID:   "thread",
-		TurnID:     "turn-1",
-		RunID:      "run-1",
-		ToolCallID: "exec-1",
-		ToolName:   "terminal_exec",
-		Handle:     "terminal:job:123",
-		Status:     PendingToolSettlementCompleted,
-		Summary:    "command completed",
-		Output:     "exit 0",
-		Activity:   &observation.ActivityPresentation{Label: "command completed", Renderer: observation.ActivityRendererTerminal, Payload: map[string]any{"exit_code": 0}},
+		Target: PendingToolSettlementTarget{
+			ThreadID:   "thread",
+			TurnID:     "turn-1",
+			RunID:      "run-1",
+			ToolCallID: "exec-1",
+			ToolName:   "terminal_exec",
+			Handle:     "terminal:job:123",
+		},
+		Status:   PendingToolSettlementCompleted,
+		Summary:  "command completed",
+		Output:   "exit 0",
+		Activity: &observation.ActivityPresentation{Label: "command completed", Renderer: observation.ActivityRendererTerminal, Payload: map[string]any{"exit_code": 0}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3705,6 +3775,16 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 		settled.Event.ToolResult.Status != string(observation.ActivityStatusSuccess) ||
 		settled.Event.ToolResult.Content != "exit 0" {
 		t.Fatalf("settlement event = %#v", settled.Event)
+	}
+	if settled.Target != (PendingToolSettlementTarget{
+		ThreadID:   "thread",
+		TurnID:     "turn-1",
+		RunID:      "run-1",
+		ToolCallID: "exec-1",
+		ToolName:   "terminal_exec",
+		Handle:     "terminal:job:123",
+	}) {
+		t.Fatalf("settlement target = %#v", settled.Target)
 	}
 	if settled.ProjectionAvailability != TurnProjectionAvailabilityUnavailable || settled.Projection != nil || settled.ProjectionError == "" {
 		t.Fatalf("settlement projection outcome = %#v, want unavailable", settled)
@@ -3721,16 +3801,18 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 		t.Fatalf("settled projection item = %#v", item)
 	}
 	again, err := maintenance.SettlePendingTool(ctx, PendingToolSettlementRequest{
-		ThreadID:   "thread",
-		TurnID:     "turn-1",
-		RunID:      "run-1",
-		ToolCallID: "exec-1",
-		ToolName:   "terminal_exec",
-		Handle:     "terminal:job:123",
-		Status:     PendingToolSettlementCompleted,
-		Summary:    "command completed",
-		Output:     "exit 0",
-		Activity:   &observation.ActivityPresentation{Label: "command completed", Renderer: observation.ActivityRendererTerminal, Payload: map[string]any{"exit_code": 0}},
+		Target: PendingToolSettlementTarget{
+			ThreadID:   "thread",
+			TurnID:     "turn-1",
+			RunID:      "run-1",
+			ToolCallID: "exec-1",
+			ToolName:   "terminal_exec",
+			Handle:     "terminal:job:123",
+		},
+		Status:   PendingToolSettlementCompleted,
+		Summary:  "command completed",
+		Output:   "exit 0",
+		Activity: &observation.ActivityPresentation{Label: "command completed", Renderer: observation.ActivityRendererTerminal, Payload: map[string]any{"exit_code": 0}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3739,14 +3821,16 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 		t.Fatalf("idempotent public settlement returned a different event: first=%#v again=%#v", settled.Event, again.Event)
 	}
 	_, err = maintenance.SettlePendingTool(ctx, PendingToolSettlementRequest{
-		ThreadID:   "thread",
-		TurnID:     "turn-1",
-		RunID:      "run-1",
-		ToolCallID: "exec-1",
-		ToolName:   "terminal_exec",
-		Handle:     "terminal:job:123",
-		Status:     PendingToolSettlementFailed,
-		Summary:    "command failed",
+		Target: PendingToolSettlementTarget{
+			ThreadID:   "thread",
+			TurnID:     "turn-1",
+			RunID:      "run-1",
+			ToolCallID: "exec-1",
+			ToolName:   "terminal_exec",
+			Handle:     "terminal:job:123",
+		},
+		Status:  PendingToolSettlementFailed,
+		Summary: "command failed",
 	})
 	if !errors.Is(err, agentharness.ErrPendingToolSettlementConflict) {
 		t.Fatalf("conflicting public settlement err = %v, want conflict", err)
@@ -3819,14 +3903,16 @@ func TestHostSettlePendingToolDuringActiveTurnUsesOwnedThread(t *testing.T) {
 		nil,
 		func(ctx context.Context, _ tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
 			req := PendingToolSettlementRequest{
-				ThreadID:   "thread-active-settlement",
-				TurnID:     "turn-active-settlement",
-				RunID:      "run-active-settlement",
-				ToolCallID: "exec-active",
-				ToolName:   "terminal_exec",
-				Handle:     "terminal:job:active",
-				Status:     PendingToolSettlementCanceled,
-				Summary:    "Command was stopped",
+				Target: PendingToolSettlementTarget{
+					ThreadID:   "thread-active-settlement",
+					TurnID:     "turn-active-settlement",
+					RunID:      "run-active-settlement",
+					ToolCallID: "exec-active",
+					ToolName:   "terminal_exec",
+					Handle:     "terminal:job:active",
+				},
+				Status:  PendingToolSettlementCanceled,
+				Summary: "Command was stopped",
 				Activity: &observation.ActivityPresentation{
 					Label:    "stream timestamps",
 					Renderer: observation.ActivityRendererTerminal,
@@ -4014,16 +4100,18 @@ func TestHostSettlePendingToolOnlyUpdatesExplicitPendingTarget(t *testing.T) {
 	defer maintenance.Close()
 
 	settled, err := maintenance.SettlePendingTool(ctx, PendingToolSettlementRequest{
-		ThreadID:   "thread",
-		TurnID:     "turn-1",
-		RunID:      "run-1",
-		ToolCallID: "exec-a",
-		ToolName:   "terminal_exec",
-		Handle:     "terminal:job:npm-test",
-		Status:     PendingToolSettlementCompleted,
-		Summary:    "npm test completed",
-		Output:     "ok",
-		Activity:   &observation.ActivityPresentation{Label: "npm test", Renderer: observation.ActivityRendererTerminal, Payload: map[string]any{"command": "npm test", "exit_code": 0}},
+		Target: PendingToolSettlementTarget{
+			ThreadID:   "thread",
+			TurnID:     "turn-1",
+			RunID:      "run-1",
+			ToolCallID: "exec-a",
+			ToolName:   "terminal_exec",
+			Handle:     "terminal:job:npm-test",
+		},
+		Status:   PendingToolSettlementCompleted,
+		Summary:  "npm test completed",
+		Output:   "ok",
+		Activity: &observation.ActivityPresentation{Label: "npm test", Renderer: observation.ActivityRendererTerminal, Payload: map[string]any{"command": "npm test", "exit_code": 0}},
 	})
 	if err != nil {
 		t.Fatal(err)

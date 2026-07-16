@@ -213,6 +213,12 @@ Downstream hosts must integrate through Floret public packages such as
 `internal/*`. New host-facing boundary capabilities must be exposed as general
 public API with tests and documentation.
 
+Floret's durable journal and public projections are the single source of truth
+for tool invocation identity, lifecycle status, result, error, and host-owned
+pending-work settlement. Downstream hosts may retain product authorization,
+security audit, routing, and transport diagnostics, but must not persist a
+second queryable tool lifecycle or rebuild tool status from audit records.
+
 General capabilities may move into Floret only when they are product-neutral
 agent-engine contracts. Product policy and UI semantics stay in the host. If a
 future design intentionally changes this boundary, update the relevant

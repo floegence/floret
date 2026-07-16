@@ -1,6 +1,12 @@
 # Floret OKF Update Log
 
 ## 2026-07-16
+* **Breaking**: Replaced the flat pending-tool settlement identity fields with
+  `PendingToolSettlementTarget` and made settlement results validate and echo
+  the complete target identity.
+* **Boundary**: Declared the Floret journal and public projections as the sole
+  queryable tool lifecycle source while allowing downstream product audit and
+  diagnostics that do not duplicate tool state.
 * **Fix**: Allowed a provider-backed Host to settle pending tool activity through
   its already-active thread without re-entering turn admission, while keeping
   maintenance hosts isolated by the existing turn lease.

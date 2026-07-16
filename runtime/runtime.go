@@ -267,19 +267,25 @@ const (
 	PendingToolSettlementCanceled  PendingToolSettlementStatus = "canceled"
 )
 
+// PendingToolSettlementTarget identifies the exact pending tool result that a
+// host owns and intends to settle.
+type PendingToolSettlementTarget struct {
+	ThreadID   ThreadID `json:"thread_id"`
+	TurnID     TurnID   `json:"turn_id"`
+	RunID      RunID    `json:"run_id"`
+	ToolCallID string   `json:"tool_call_id"`
+	ToolName   string   `json:"tool_name"`
+	Handle     string   `json:"handle"`
+}
+
 // PendingToolSettlementRequest records a host-owned pending tool outcome as a
 // detail/activity event only. It does not resume the provider loop.
 type PendingToolSettlementRequest struct {
-	ThreadID   ThreadID
-	TurnID     TurnID
-	RunID      RunID
-	ToolCallID string
-	ToolName   string
-	Handle     string
-	Status     PendingToolSettlementStatus
-	Summary    string
-	Output     string
-	Activity   *observation.ActivityPresentation
+	Target   PendingToolSettlementTarget
+	Status   PendingToolSettlementStatus
+	Summary  string
+	Output   string
+	Activity *observation.ActivityPresentation
 }
 
 type SubAgentStatus string
@@ -481,13 +487,11 @@ type PendingApprovals struct {
 }
 
 type PendingToolSettlementResult struct {
-	ThreadID               ThreadID                   `json:"thread_id"`
-	TurnID                 TurnID                     `json:"turn_id"`
-	RunID                  RunID                      `json:"run_id,omitempty"`
-	Event                  ThreadDetailEvent          `json:"event"`
-	ProjectionAvailability TurnProjectionAvailability `json:"projection_availability"`
-	Projection             *ThreadTurnProjection      `json:"projection,omitempty"`
-	ProjectionError        string                     `json:"projection_error,omitempty"`
+	Target                 PendingToolSettlementTarget `json:"target"`
+	Event                  ThreadDetailEvent           `json:"event"`
+	ProjectionAvailability TurnProjectionAvailability  `json:"projection_availability"`
+	Projection             *ThreadTurnProjection       `json:"projection,omitempty"`
+	ProjectionError        string                      `json:"projection_error,omitempty"`
 }
 
 type PendingApprovalResource struct {
@@ -860,13 +864,28 @@ func (r TurnResult) ValidateProjection() error {
 }
 
 func (r PendingToolSettlementResult) ValidateProjection() error {
+	if err := validatePendingToolSettlementTarget(r.Target); err != nil {
+		return fmt.Errorf("invalid pending tool settlement target: %w", err)
+	}
+	if r.Event.ThreadID != r.Target.ThreadID || r.Event.TurnID != r.Target.TurnID {
+		return errors.New("pending tool settlement event thread identity mismatch")
+	}
+	if r.Event.Kind != ThreadDetailEventToolResult || r.Event.Type != threadTurnProjectionPendingToolSettlementType || r.Event.ToolResult == nil {
+		return errors.New("pending tool settlement result requires a settlement tool result event")
+	}
+	if strings.TrimSpace(r.Event.ToolResult.CallID) != strings.TrimSpace(r.Target.ToolCallID) ||
+		strings.TrimSpace(r.Event.ToolResult.ToolName) != strings.TrimSpace(r.Target.ToolName) ||
+		strings.TrimSpace(r.Event.Metadata["run_id"]) != strings.TrimSpace(string(r.Target.RunID)) ||
+		strings.TrimSpace(r.Event.Metadata["handle"]) != strings.TrimSpace(r.Target.Handle) {
+		return errors.New("pending tool settlement event target mismatch")
+	}
 	if err := validateTurnProjectionOutcome(r.ProjectionAvailability, r.Projection, r.ProjectionError); err != nil {
 		return err
 	}
 	if r.Projection == nil {
 		return nil
 	}
-	if r.Projection.ThreadID != r.ThreadID || r.Projection.TurnID != r.TurnID || r.Projection.RunID != r.RunID {
+	if r.Projection.ThreadID != r.Target.ThreadID || r.Projection.TurnID != r.Target.TurnID || r.Projection.RunID != r.Target.RunID {
 		return errors.New("pending tool settlement projection identity mismatch")
 	}
 	return nil
@@ -1610,7 +1629,7 @@ func (h *Host) CompletePendingTool(ctx context.Context, req PendingToolCompletio
 }
 
 func (h *Host) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
-	if thread, ok := h.harness.ActiveThread(string(req.ThreadID)); ok {
+	if thread, ok := h.harness.ActiveThread(string(req.Target.ThreadID)); ok {
 		if err := validatePendingToolSettlementRequest(req); err != nil {
 			return PendingToolSettlementResult{}, err
 		}
@@ -1627,7 +1646,7 @@ func settlePendingTool(ctx context.Context, harness *agentharness.AgentHarness, 
 	if err := validatePendingToolSettlementRequest(req); err != nil {
 		return PendingToolSettlementResult{}, err
 	}
-	thread, err := harness.ResumeThread(ctx, string(req.ThreadID), agentharness.ResumeOptions{})
+	thread, err := harness.ResumeThread(ctx, string(req.Target.ThreadID), agentharness.ResumeOptions{})
 	if err != nil {
 		return PendingToolSettlementResult{}, runtimeHostError(err)
 	}
@@ -1635,25 +1654,38 @@ func settlePendingTool(ctx context.Context, harness *agentharness.AgentHarness, 
 }
 
 func validatePendingToolSettlementRequest(req PendingToolSettlementRequest) error {
-	if strings.TrimSpace(string(req.ThreadID)) == "" {
+	return validatePendingToolSettlementTarget(req.Target)
+}
+
+func validatePendingToolSettlementTarget(target PendingToolSettlementTarget) error {
+	if strings.TrimSpace(string(target.ThreadID)) == "" {
 		return errors.New("thread id is required")
 	}
-	if strings.TrimSpace(string(req.TurnID)) == "" {
+	if strings.TrimSpace(string(target.TurnID)) == "" {
 		return errors.New("turn id is required")
 	}
-	if strings.TrimSpace(string(req.RunID)) == "" {
+	if strings.TrimSpace(string(target.RunID)) == "" {
 		return errors.New("run id is required")
+	}
+	if strings.TrimSpace(target.ToolCallID) == "" {
+		return errors.New("tool call id is required")
+	}
+	if strings.TrimSpace(target.ToolName) == "" {
+		return errors.New("tool name is required")
+	}
+	if strings.TrimSpace(target.Handle) == "" {
+		return errors.New("handle is required")
 	}
 	return nil
 }
 
 func settlePendingToolOnThread(ctx context.Context, harness *agentharness.AgentHarness, thread *agentharness.Thread, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
 	event, err := thread.SettlePendingTool(ctx, agentharness.PendingToolSettlement{
-		TurnID:     string(req.TurnID),
-		RunID:      string(req.RunID),
-		ToolCallID: req.ToolCallID,
-		ToolName:   req.ToolName,
-		Handle:     req.Handle,
+		TurnID:     string(req.Target.TurnID),
+		RunID:      string(req.Target.RunID),
+		ToolCallID: req.Target.ToolCallID,
+		ToolName:   req.Target.ToolName,
+		Handle:     req.Target.Handle,
 		Status:     pendingToolSettlementStatus(req.Status),
 		Summary:    req.Summary,
 		Output:     req.Output,
@@ -1663,24 +1695,22 @@ func settlePendingToolOnThread(ctx context.Context, harness *agentharness.AgentH
 		return PendingToolSettlementResult{}, runtimeHostError(err)
 	}
 	out := PendingToolSettlementResult{
-		ThreadID: req.ThreadID,
-		TurnID:   req.TurnID,
-		RunID:    req.RunID,
-		Event:    threadDetailEvent(event),
+		Target: req.Target,
+		Event:  threadDetailEvent(event),
 	}
 	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
 	defer cancelProjection()
-	events, err := listRawThreadDetailEventsForTurn(projectionCtx, harness, string(req.ThreadID), string(req.TurnID))
+	events, err := listRawThreadDetailEventsForTurn(projectionCtx, harness, string(req.Target.ThreadID), string(req.Target.TurnID))
 	if err != nil {
 		out.ProjectionAvailability = TurnProjectionAvailabilityUnavailable
 		out.ProjectionError = runtimeHostError(err).Error()
 		return out, nil
 	}
 	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
-		ThreadID: req.ThreadID,
-		TurnID:   req.TurnID,
-		RunID:    req.RunID,
-		TraceID:  TraceID(req.RunID),
+		ThreadID: req.Target.ThreadID,
+		TurnID:   req.Target.TurnID,
+		RunID:    req.Target.RunID,
+		TraceID:  TraceID(req.Target.RunID),
 		Events:   events,
 	})
 	out.ProjectionAvailability = TurnProjectionAvailabilityReady

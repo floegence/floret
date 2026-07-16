@@ -44,13 +44,18 @@ Pending tool completion and pending tool settlement are intentionally separate.
 should reason over a host-owned completion. `SettlePendingTool` appends only a
 detail/activity event for the original turn when the host needs to update UI
 state without resuming the provider loop. Settlement is keyed by the public
-turn/run/tool/handle identity, is idempotent for the same terminal status, and
-may be recorded before the pending result row when host-owned work finishes
-faster than the provider turn can commit that row.
+`PendingToolSettlementTarget`, which carries complete thread, turn, run, tool
+call, tool name, and handle identity. It is idempotent for the same terminal
+status and may be recorded before the pending result row when host-owned work
+finishes faster than the provider turn can commit that row.
 When the provider-backed `Host` already owns an active thread, settlement uses
 that same active `AgentHarness` thread and does not re-enter turn admission.
 The provider-free maintenance host still resumes the target thread normally, so
 it cannot bypass a turn lease owned by another host.
+
+The durable Floret journal and its public projections are the canonical tool
+lifecycle source. Hosts may keep product audit and diagnostics, but must not
+persist a queryable copy of tool status, arguments, results, or errors.
 
 `HostOptions.ModelGateway` lets a host route hosted parent and child turns
 through product-owned model transport while Floret still owns request

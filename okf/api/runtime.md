@@ -80,11 +80,13 @@ host interface for every runtime operation.
   the follow-up execution identity.
 * `SettlePendingTool` records a host-owned pending tool outcome as a
   detail/activity event for the original turn without creating provider-visible
-  context or running another model turn. It is idempotent for the same
-  `TurnID`/`RunID`/tool call/tool name/handle/status target, rejects conflicting
-  status for an already settled target, and may arrive before the original
-  pending tool result row when host-owned work finishes immediately after the
-  tool call is exposed.
+  context or running another model turn. `PendingToolSettlementTarget` carries
+  the complete thread, turn, run, tool call, tool name, and handle identity; the
+  result echoes that target and validates it against the settlement event and
+  projection. Settlement is idempotent for the same target and status, rejects
+  conflicting status for an already settled target, and may arrive before the
+  original pending tool result row when host-owned work finishes immediately
+  after the tool call is exposed.
 * `tools.PendingToolResult.Handle` is the provider-visible continuation token.
   Pending metadata remains observation-only and is not rendered as a model-facing
   tool result field.

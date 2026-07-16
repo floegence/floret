@@ -23,6 +23,11 @@ vocabulary. Finite context and compaction states are typed and validated at host
 boundaries; consumers must reject unknown values instead of mapping them to a
 successful or stable state.
 
+Tool lifecycle facts remain canonical in the Floret journal and its public
+projections. Downstream product audit may describe who requested an operation
+or which policy applied, but it must not become a second tool-status query
+model.
+
 # Main Projections
 
 * Activity timelines summarize tool, hosted-tool, approval, control, and budget
