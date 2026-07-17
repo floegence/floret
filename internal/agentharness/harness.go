@@ -86,30 +86,32 @@ type HarnessSink interface {
 }
 
 type Options struct {
-	Provider            provider.Provider
-	ProviderName        string
-	Model               string
-	SystemPrompt        string
-	Tools               *tools.Registry
-	PromptStore         cache.Store
-	Repo                sessiontree.Repo
-	ForkOperations      storage.ForkOperationStore
-	Sink                event.Sink
-	SinkPolicy          event.SinkPolicy
-	HarnessSink         HarnessSink
-	Approver            tools.Approver
-	ToolSurfaceProvider engine.ToolSurfaceProvider
-	StopHook            engine.StopHook
-	CompactionGenerator compaction.SummaryGenerator
-	CompactionPrompt    compaction.PromptOptions
-	TitleGenerator      TitleGenerator
-	Artifacts           artifact.Store
-	Reasoning           provider.ReasoningCapability
-	TurnPolicy          TurnPolicy
-	LoopLimits          LoopLimits
-	SubAgentRunTimeout  time.Duration
-	NewID               func(string) string
-	Now                 func() time.Time
+	Provider              provider.Provider
+	ProviderName          string
+	Model                 string
+	SystemPrompt          string
+	Tools                 *tools.Registry
+	PromptStore           cache.Store
+	Repo                  sessiontree.Repo
+	ForkOperations        storage.ForkOperationStore
+	ProviderStates        storage.ProviderStateStore
+	StateCompatibilityKey string
+	Sink                  event.Sink
+	SinkPolicy            event.SinkPolicy
+	HarnessSink           HarnessSink
+	Approver              tools.Approver
+	ToolSurfaceProvider   engine.ToolSurfaceProvider
+	StopHook              engine.StopHook
+	CompactionGenerator   compaction.SummaryGenerator
+	CompactionPrompt      compaction.PromptOptions
+	TitleGenerator        TitleGenerator
+	Artifacts             artifact.Store
+	Reasoning             provider.ReasoningCapability
+	TurnPolicy            TurnPolicy
+	LoopLimits            LoopLimits
+	SubAgentRunTimeout    time.Duration
+	NewID                 func(string) string
+	Now                   func() time.Time
 }
 
 type TurnPolicy struct {
@@ -193,7 +195,6 @@ type RunOptions struct {
 	MaxToolCalls             int
 	MaxLengthContinuations   int
 	MaxStopHookContinuations int
-	PreviousProviderState    *provider.State
 	ManualCompactions        engine.ManualCompactionSource
 	ToolSurfaceProvider      engine.ToolSurfaceProvider
 	SupplementalContext      []engine.TurnSupplementalContextItem
@@ -210,7 +211,6 @@ type CompactOptions struct {
 	MaxCostUSD             float64
 	MaxToolCalls           int
 	MaxLengthContinuations int
-	PreviousProviderState  *provider.State
 	Sink                   event.Sink
 }
 
@@ -325,16 +325,68 @@ type TurnResult struct {
 	RawFinishReason    string
 	FinishInferred     bool
 	ControlSignal      *engine.ControlSignal
-	ProviderState      *provider.State
 	PendingApprovals   []PendingApproval
 }
 
 type CompactResult struct {
-	Status        engine.Status
-	Err           error
-	Diagnostics   map[string]string
-	Metrics       engine.RunMetrics
-	ProviderState *provider.State
+	RunID       string
+	Status      engine.Status
+	Err         error
+	Diagnostics map[string]string
+	Metrics     engine.RunMetrics
+}
+
+func (h *AgentHarness) providerState(ctx context.Context, threadID, leafEntryID string) (*provider.State, error) {
+	if h.options.ProviderStates == nil {
+		return nil, nil
+	}
+	if strings.TrimSpace(h.options.StateCompatibilityKey) == "" {
+		return nil, errors.New("provider state compatibility key is required")
+	}
+	record, err := h.options.ProviderStates.ProviderState(ctx, threadID)
+	if errors.Is(err, storage.ErrProviderStateNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(record.LeafEntryID) != strings.TrimSpace(leafEntryID) || strings.TrimSpace(record.CompatibilityKey) != strings.TrimSpace(h.options.StateCompatibilityKey) {
+		if err := h.options.ProviderStates.DeleteProviderState(ctx, threadID); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	if strings.TrimSpace(record.State.Kind) == "" || strings.TrimSpace(record.State.ID) == "" {
+		return nil, errors.New("stored provider state is incomplete")
+	}
+	return provider.CloneState(&record.State), nil
+}
+
+func (h *AgentHarness) saveProviderState(ctx context.Context, threadID, leafEntryID, runID, turnID string, state *provider.State) error {
+	if h.options.ProviderStates == nil {
+		if state != nil {
+			return errors.New("provider state store is required to persist provider continuation")
+		}
+		return nil
+	}
+	if strings.TrimSpace(h.options.StateCompatibilityKey) == "" {
+		return errors.New("provider state compatibility key is required")
+	}
+	if state == nil {
+		return h.options.ProviderStates.DeleteProviderState(ctx, threadID)
+	}
+	if strings.TrimSpace(state.Kind) == "" || strings.TrimSpace(state.ID) == "" {
+		return errors.New("provider state is incomplete")
+	}
+	return h.options.ProviderStates.PutProviderState(ctx, storage.ProviderStateRecord{
+		ThreadID:         threadID,
+		LeafEntryID:      leafEntryID,
+		CompatibilityKey: strings.TrimSpace(h.options.StateCompatibilityKey),
+		State:            *provider.CloneState(state),
+		CreatedByRunID:   runID,
+		CreatedByTurnID:  turnID,
+		UpdatedAt:        h.now(),
+	})
 }
 
 type ListPendingApprovalsOptions struct {
@@ -847,6 +899,7 @@ func (h *AgentHarness) ForkThreadWithResult(ctx context.Context, opts ForkOption
 		Now:            h.now(),
 		TurnIDMap:      turnIDs,
 		RunIDMap:       runIDs,
+		RewriteEntry:   rewriteForkContextEntry,
 	})
 	if err != nil {
 		return ForkResult{}, err
@@ -858,6 +911,41 @@ func (h *AgentHarness) ForkThreadWithResult(ctx context.Context, opts ForkOption
 		return ForkResult{}, err
 	}
 	return ForkResult{Thread: thread, Summary: summary, Turns: turnRefs}, nil
+}
+
+func rewriteForkContextEntry(entry sessiontree.Entry, identity sessiontree.ForkEntryIdentity) (sessiontree.Entry, error) {
+	if entry.Type != sessiontree.EntryCustom {
+		return entry, nil
+	}
+	switch entry.Metadata[subAgentDetailKindKey] {
+	case subAgentContextStatusEntryKind:
+		status, err := subAgentDetailContextStatus(entry.Metadata)
+		if err != nil {
+			return sessiontree.Entry{}, err
+		}
+		status.ThreadID = identity.DestinationThreadID
+		status.TurnID = rewriteForkContextID(status.TurnID, identity.TurnIDMap)
+		status.RunID = rewriteForkContextID(status.RunID, identity.RunIDMap)
+		entry.Metadata[subAgentContextStatusKey] = mustSubAgentMetadataJSON(status)
+	case subAgentContextCompactionEntryKind:
+		compact, err := subAgentDetailContextCompaction(entry.Metadata)
+		if err != nil {
+			return sessiontree.Entry{}, err
+		}
+		compact.ThreadID = identity.DestinationThreadID
+		compact.TurnID = rewriteForkContextID(compact.TurnID, identity.TurnIDMap)
+		compact.RunID = rewriteForkContextID(compact.RunID, identity.RunIDMap)
+		entry.Metadata[subAgentContextCompactionKey] = mustSubAgentMetadataJSON(compact)
+	}
+	return entry, nil
+}
+
+func rewriteForkContextID(value string, rewrites map[string]string) string {
+	value = strings.TrimSpace(value)
+	if next := strings.TrimSpace(rewrites[value]); next != "" {
+		return next
+	}
+	return value
 }
 
 func (h *AgentHarness) forkIdentityRewrite(ctx context.Context, opts ForkOptions) (map[string]string, map[string]string, []ForkedTurnRef, error) {
@@ -1442,6 +1530,9 @@ func (t *Thread) Compact(ctx context.Context, opts CompactOptions) (CompactResul
 	if requestID == "" {
 		return CompactResult{}, errors.New("manual compaction request id is required")
 	}
+	if strings.TrimSpace(opts.Source) == "" {
+		return CompactResult{}, errors.New("manual compaction source is required")
+	}
 	runID := t.harness.nextID("compact")
 	release, err := t.enterMutation(ctx, runID)
 	if err != nil {
@@ -1451,6 +1542,10 @@ func (t *Thread) Compact(ctx context.Context, opts CompactOptions) (CompactResul
 	snap, err := t.Journal(ctx)
 	if err != nil {
 		return CompactResult{Status: engine.Failed, Err: err, Diagnostics: map[string]string{"diagnostic": "snapshot_error"}}, err
+	}
+	previousProviderState, err := t.harness.providerState(ctx, t.id, snap.Meta.LeafID)
+	if err != nil {
+		return CompactResult{RunID: runID, Status: engine.Failed, Err: err, Diagnostics: map[string]string{"diagnostic": "provider_state_load_error"}}, err
 	}
 	history := sessiontree.BuildContext(snap.Path, sessiontree.ContextOptions{})
 	engineOptions := t.harness.engineOptions()
@@ -1464,6 +1559,10 @@ func (t *Thread) Compact(ctx context.Context, opts CompactOptions) (CompactResul
 	engineOptions.Labels = opts.Labels
 	engineOptions.ContextPolicy = contextpolicy.Normalize(engineOptions.ContextPolicy)
 	applyCompactOptions(&engineOptions, opts)
+	engineOptions.PreviousProviderState = provider.CloneState(previousProviderState)
+	if err := t.appendContextPolicyEvent(ctx, "", runID, engineOptions.ProviderName, engineOptions.Model, engineOptions.ContextPolicy); err != nil {
+		return CompactResult{RunID: runID, Status: engine.Failed, Err: err, Diagnostics: map[string]string{"diagnostic": "append_context_policy_error"}}, err
+	}
 	eng, err := engine.New(engine.Config{
 		Provider:     t.harness.options.Provider,
 		Tools:        t.harness.options.Tools,
@@ -1490,7 +1589,7 @@ func (t *Thread) Compact(ctx context.Context, opts CompactOptions) (CompactResul
 		TraceID:               runID,
 		PromptScopeID:         t.id,
 		Labels:                opts.Labels,
-		PreviousProviderState: provider.CloneState(opts.PreviousProviderState),
+		PreviousProviderState: provider.CloneState(previousProviderState),
 		History:               history,
 	}, engine.ManualCompactionRequest{RequestID: requestID, Source: strings.TrimSpace(opts.Source)})
 	persistCtx, cancelPersist := turnFinalizationContext(ctx)
@@ -1502,11 +1601,28 @@ func (t *Thread) Compact(ctx context.Context, opts CompactOptions) (CompactResul
 	if err := projection.Flush(); err != nil {
 		return CompactResult{Status: engine.Failed, Err: err, Metrics: result.Metrics, Diagnostics: map[string]string{"diagnostic": "projection_flush_error"}}, err
 	}
+	metaAfter, err := t.harness.options.Repo.Thread(persistCtx, t.id)
+	if err != nil {
+		if finalizationErr := projection.failCompactionFinalization(err); finalizationErr != nil {
+			return CompactResult{}, finalizationErr
+		}
+		return CompactResult{RunID: runID, Status: engine.Failed, Err: err, Metrics: result.Metrics, Diagnostics: map[string]string{"diagnostic": "provider_state_persistence_error"}}, err
+	}
+	stateToSave := previousProviderState
+	if result.Metrics.Compactions > 0 {
+		stateToSave = nil
+	}
+	if err := t.harness.saveProviderState(persistCtx, t.id, metaAfter.LeafID, runID, "", stateToSave); err != nil {
+		if finalizationErr := projection.failCompactionFinalization(err); finalizationErr != nil {
+			return CompactResult{}, finalizationErr
+		}
+		return CompactResult{RunID: runID, Status: engine.Failed, Err: err, Metrics: result.Metrics, Diagnostics: map[string]string{"diagnostic": "provider_state_persistence_error"}}, err
+	}
 	return CompactResult{
-		Status:        result.Status,
-		Err:           result.Err,
-		Metrics:       result.Metrics,
-		ProviderState: provider.CloneState(result.ProviderState),
+		RunID:   runID,
+		Status:  result.Status,
+		Err:     result.Err,
+		Metrics: result.Metrics,
 	}, result.Err
 }
 
@@ -1545,6 +1661,14 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	if runID == "" {
 		runID = t.harness.nextID("run")
 	}
+	metaBefore, err := t.harness.options.Repo.Thread(ctx, t.id)
+	if err != nil {
+		return TurnResult{}, err
+	}
+	previousProviderState, err := t.harness.providerState(ctx, t.id, metaBefore.LeafID)
+	if err != nil {
+		return TurnResult{}, err
+	}
 	if entry, err := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, sessiontree.TurnStarted, map[string]string{"run_id": runID}); err != nil {
 		return TurnResult{}, err
 	} else {
@@ -1579,6 +1703,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	engineOptions.Labels = opts.Labels
 	engineOptions.ContextPolicy = contextpolicy.Normalize(engineOptions.ContextPolicy)
 	applyRunOptions(&engineOptions, opts)
+	engineOptions.PreviousProviderState = provider.CloneState(previousProviderState)
 	if err := t.appendContextPolicyEvent(ctx, turnID, runID, engineOptions.ProviderName, engineOptions.Model, engineOptions.ContextPolicy); err != nil {
 		persistCtx, cancelPersist := turnFinalizationContext(ctx)
 		defer cancelPersist()
@@ -1667,6 +1792,17 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	} else {
 		t.harness.emitEntryCommitted(entry, runID)
 	}
+	metaAfter, err := t.harness.options.Repo.Thread(persistCtx, t.id)
+	if err != nil {
+		return t.finalizeProviderStateFailure(persistCtx, turnID, runID, result, err)
+	}
+	var stateToSave *provider.State
+	if result.ProviderStateFresh {
+		stateToSave = result.ProviderState
+	}
+	if err := t.harness.saveProviderState(persistCtx, t.id, metaAfter.LeafID, runID, turnID, stateToSave); err != nil {
+		return t.finalizeProviderStateFailure(persistCtx, turnID, runID, result, err)
+	}
 	eventType := EventTurnCompleted
 	if result.Status == engine.Failed {
 		eventType = EventTurnFailed
@@ -1681,6 +1817,29 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 		}
 	}
 	return t.turnResultFromEngine(turnID, runID, result, nil), result.Err
+}
+
+func (t *Thread) finalizeProviderStateFailure(ctx context.Context, turnID, runID string, result engine.Result, cause error) (TurnResult, error) {
+	failed := result
+	failed.Status = engine.Failed
+	failed.Err = cause
+	failed.CompletionReason = ""
+	failed.ContinuationReason = ""
+	if entry, err := sessiontree.AppendFailure(ctx, t.harness.options.Repo, t.id, turnID, cause.Error()); err != nil {
+		return TurnResult{}, err
+	} else {
+		t.harness.emitEntryCommitted(entry, runID)
+	}
+	metadata := markerMetadata(runID, failed)
+	metadata["failure_reason"] = cause.Error()
+	metadata["diagnostic"] = "provider_state_persistence_error"
+	if entry, err := sessiontree.AppendTurnMarker(ctx, t.harness.options.Repo, t.id, turnID, sessiontree.TurnFailed, metadata); err != nil {
+		return TurnResult{}, err
+	} else {
+		t.harness.emitEntryCommitted(entry, runID)
+	}
+	t.harness.emit(HarnessEvent{Type: EventTurnFailed, RunID: runID, ThreadID: t.id, TurnID: turnID, Status: string(engine.Failed), Message: cause.Error()})
+	return t.turnResultFromEngine(turnID, runID, failed, map[string]string{"diagnostic": "provider_state_persistence_error"}), cause
 }
 
 func mergeTerminalMetadata(dst, src map[string]string) {
@@ -1909,9 +2068,6 @@ func applyRunOptions(dst *engine.Options, opts RunOptions) {
 	if opts.MaxStopHookContinuations > 0 {
 		dst.MaxStopHookContinuations = opts.MaxStopHookContinuations
 	}
-	if opts.PreviousProviderState != nil {
-		dst.PreviousProviderState = provider.CloneState(opts.PreviousProviderState)
-	}
 	if opts.ManualCompactions != nil {
 		dst.ManualCompactions = opts.ManualCompactions
 	}
@@ -1942,9 +2098,6 @@ func applyCompactOptions(dst *engine.Options, opts CompactOptions) {
 	if opts.MaxLengthContinuations > 0 {
 		dst.MaxLengthContinuations = opts.MaxLengthContinuations
 	}
-	if opts.PreviousProviderState != nil {
-		dst.PreviousProviderState = provider.CloneState(opts.PreviousProviderState)
-	}
 }
 
 func turnResultFromEngine(turnID string, runID string, result engine.Result, diagnostics map[string]string) TurnResult {
@@ -1962,7 +2115,6 @@ func turnResultFromEngine(turnID string, runID string, result engine.Result, dia
 		RawFinishReason:    result.RawFinishReason,
 		FinishInferred:     result.FinishInferred,
 		ControlSignal:      cloneEngineControlSignal(result.ControlSignal),
-		ProviderState:      provider.CloneState(result.ProviderState),
 	}
 }
 
@@ -2415,7 +2567,10 @@ func (t *Thread) appendContextStatusEvent(ctx context.Context, turnID string, ru
 }
 
 func (t *Thread) appendContextCompactionEvent(ctx context.Context, turnID string, runID string, ev event.Event) error {
-	compact, ok := subAgentContextCompactionFromEvent(ev)
+	compact, ok, err := subAgentContextCompactionFromEvent(ev)
+	if err != nil {
+		return err
+	}
 	if !ok {
 		return nil
 	}
@@ -2493,25 +2648,36 @@ func subAgentContextStatusFromEvent(ev event.Event) (observation.ContextStatus, 
 	}
 }
 
-func subAgentContextCompactionFromEvent(ev event.Event) (SubAgentDetailContextCompaction, bool) {
+func subAgentContextCompactionFromEvent(ev event.Event) (ThreadContextCompaction, bool, error) {
 	if ev.Type != event.ContextCompact {
-		return SubAgentDetailContextCompaction{}, false
+		return ThreadContextCompaction{}, false, nil
 	}
 	meta, ok := ev.Metadata.(map[string]any)
 	if !ok {
-		return SubAgentDetailContextCompaction{}, false
+		return ThreadContextCompaction{}, false, errors.New("context compaction event metadata is invalid")
 	}
 	phase := stringFromEventMetadata(meta["phase"])
-	status := subAgentDetailContextCompactionStatus(phase)
-	if phase == "" || status == "" {
-		return SubAgentDetailContextCompaction{}, false
+	statusByPhase := map[string]string{
+		string(observation.CompactionPhaseStart):     string(observation.CompactionStatusRunning),
+		string(observation.CompactionPhaseComplete):  string(observation.CompactionStatusCompacted),
+		string(observation.CompactionPhaseFailed):    string(observation.CompactionStatusFailed),
+		string(observation.CompactionPhaseCancelled): string(observation.CompactionStatusCancelled),
+		string(observation.CompactionPhaseNoop):      string(observation.CompactionStatusNoop),
 	}
-	return SubAgentDetailContextCompaction{
+	status, ok := statusByPhase[phase]
+	if !ok {
+		return ThreadContextCompaction{}, false, fmt.Errorf("unsupported context compaction phase %q", phase)
+	}
+	operationID := stringFromEventMetadata(meta["operation_id"])
+	if strings.TrimSpace(operationID) == "" {
+		return ThreadContextCompaction{}, false, errors.New("context compaction operation id is required")
+	}
+	return ThreadContextCompaction{
 		RunID:               ev.RunID,
 		ThreadID:            ev.ThreadID,
 		TurnID:              ev.TurnID,
 		Step:                ev.Step,
-		OperationID:         stringFromEventMetadata(meta["operation_id"]),
+		OperationID:         operationID,
 		RequestID:           stringFromEventMetadata(meta["request_id"]),
 		Phase:               phase,
 		Status:              status,
@@ -2522,7 +2688,7 @@ func subAgentContextCompactionFromEvent(ev event.Event) (SubAgentDetailContextCo
 		TokensAfterEstimate: int64FromEventMetadata(meta["tokens_after_estimate"]),
 		Error:               strings.TrimSpace(ev.Err),
 		ObservedAt:          nonZeroTime(ev.Timestamp, time.Now()),
-	}, true
+	}, true, nil
 }
 
 func subAgentObservationProviderUsage(in provider.Usage) observation.ProviderUsage {
@@ -2699,13 +2865,11 @@ func (m *durableCompactionManager) Compact(ctx context.Context, req engine.Compa
 		return compaction.Result{}, nil, err
 	}
 	previous := latestCompactionEntry(snap.Path)
-	previousSummary := previous.Summary
-	if req.PreviousSummary != "" {
-		previousSummary = req.PreviousSummary
-	}
-	previousID := previous.CompactionID
-	if req.PreviousCompactionID != "" {
-		previousID = req.PreviousCompactionID
+	if strings.TrimSpace(previous.CompactionID) != strings.TrimSpace(req.PreviousCompactionID) ||
+		previous.CompactionGeneration != req.PreviousGeneration ||
+		strings.TrimSpace(previous.CompactionWindowID) != strings.TrimSpace(req.PreviousWindowID) ||
+		strings.TrimSpace(previous.Summary) != strings.TrimSpace(req.PreviousSummary) {
+		return compaction.Result{}, nil, errors.New("journal compaction identity does not match active context")
 	}
 	generator := m.thread.harness.options.CompactionGenerator
 	if generator == nil {
@@ -2721,8 +2885,13 @@ func (m *durableCompactionManager) Compact(ctx context.Context, req engine.Compa
 	compactionID := m.thread.harness.nextID("compaction")
 	prep, err := compaction.Prepare(ctx, compaction.Request{
 		CompactionID:         compactionID,
-		PreviousCompactionID: previousID,
-		PreviousSummary:      previousSummary,
+		OperationID:          req.OperationID,
+		RequestID:            req.RequestID,
+		Source:               req.Source,
+		PreviousCompactionID: req.PreviousCompactionID,
+		PreviousGeneration:   req.PreviousGeneration,
+		PreviousWindowID:     req.PreviousWindowID,
+		PreviousSummary:      req.PreviousSummary,
 		History:              req.History,
 		Policy:               req.Policy,
 		Trigger:              req.Trigger,
@@ -2735,12 +2904,6 @@ func (m *durableCompactionManager) Compact(ctx context.Context, req engine.Compa
 	if err != nil {
 		return compaction.Result{}, nil, err
 	}
-	if previous.CompactionGeneration > 0 {
-		prep.Result.Details["compaction_generation"] = strconv.Itoa(previous.CompactionGeneration + 1)
-	}
-	if prep.Result.PreviousCompactionID == "" {
-		prep.Result.PreviousCompactionID = previousID
-	}
 	return prep.Result, prep.ActiveMessages, nil
 }
 
@@ -2748,7 +2911,9 @@ func (m *durableCompactionManager) CommitCompaction(ctx context.Context, req eng
 	if m == nil || m.thread == nil {
 		return compaction.Result{}, nil, errors.New("durable compaction manager requires thread")
 	}
-	entry, err := sessiontree.AppendCompaction(ctx, m.thread.harness.options.Repo, m.thread.id, m.turnID, req.Result)
+	result := req.Result
+	result.Phase = req.Phase
+	entry, err := sessiontree.AppendCompaction(ctx, m.thread.harness.options.Repo, m.thread.id, m.turnID, result)
 	if err != nil {
 		var committed sessiontree.AppendCommittedError
 		if !errors.As(err, &committed) {
@@ -2756,8 +2921,6 @@ func (m *durableCompactionManager) CommitCompaction(ctx context.Context, req eng
 		}
 	}
 	m.thread.harness.emitEntryCommitted(entry, req.RunID)
-	result := req.Result
-	result.Phase = req.Phase
 	result.CompactionID = entry.CompactionID
 	result.CompactionGeneration = entry.CompactionGeneration
 	result.CompactionWindowID = entry.CompactionWindowID
@@ -2841,6 +3004,7 @@ type turnProjection struct {
 	pendingResults   []pendingToolMessage
 	pendingBatchSize int
 	pendingCallsSent bool
+	lastCompaction   event.Event
 	err              error
 }
 
@@ -2866,6 +3030,9 @@ func (p *turnProjection) Emit(ev event.Event) {
 		p.err = p.thread.appendContextStatusEvent(p.ctx, p.turnID, p.runID, ev)
 	case event.ContextCompact:
 		p.err = p.thread.appendContextCompactionEvent(p.ctx, p.turnID, p.runID, ev)
+		if p.err == nil {
+			p.lastCompaction = ev
+		}
 	case event.ProviderDelta:
 		if err := p.flushPendingToolBatch(false); err != nil {
 			p.err = err
@@ -2962,6 +3129,27 @@ func (p *turnProjection) Emit(ev event.Event) {
 			}
 		}
 	}
+}
+
+func (p *turnProjection) failCompactionFinalization(cause error) error {
+	p.mu.Lock()
+	last := p.lastCompaction
+	p.mu.Unlock()
+	if last.Type != event.ContextCompact {
+		return errors.New("compaction finalization failed without a compaction lifecycle event")
+	}
+	metadata, ok := last.Metadata.(map[string]any)
+	if !ok {
+		return errors.New("compaction finalization event metadata is invalid")
+	}
+	metadata = cloneAnyMap(metadata)
+	metadata["phase"] = string(observation.CompactionPhaseFailed)
+	last.Metadata = metadata
+	last.Err = cause.Error()
+	last.Result = ""
+	last.Timestamp = p.thread.harness.now()
+	p.Emit(last)
+	return p.Flush()
 }
 
 func (p *turnProjection) Flush() error {

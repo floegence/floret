@@ -116,9 +116,11 @@ func TestStreamValidatorContracts(t *testing.T) {
 			ev   StreamEvent
 			want string
 		}{
-			{name: "missing id", ev: StreamEvent{Type: ToolCalls, ToolCalls: []ToolCall{{Name: "read"}}}, want: "id is required"},
-			{name: "missing name", ev: StreamEvent{Type: ToolCalls, ToolCalls: []ToolCall{{ID: "call-1"}}}, want: "name is required"},
-			{name: "duplicate id", ev: StreamEvent{Type: ToolCalls, ToolCalls: []ToolCall{{ID: "call-1", Name: "read"}, {ID: "call-1", Name: "write"}}}, want: "duplicate tool call id"},
+			{name: "missing id", ev: StreamEvent{Type: ToolCalls, ToolCalls: []ToolCall{{Name: "read", Args: `{}`}}}, want: "id is required"},
+			{name: "missing name", ev: StreamEvent{Type: ToolCalls, ToolCalls: []ToolCall{{ID: "call-1", Args: `{}`}}}, want: "name is required"},
+			{name: "missing args", ev: StreamEvent{Type: ToolCalls, ToolCalls: []ToolCall{{ID: "call-1", Name: "read"}}}, want: "args are required"},
+			{name: "invalid args", ev: StreamEvent{Type: ToolCalls, ToolCalls: []ToolCall{{ID: "call-1", Name: "read", Args: "{"}}}, want: "valid JSON"},
+			{name: "duplicate id", ev: StreamEvent{Type: ToolCalls, ToolCalls: []ToolCall{{ID: "call-1", Name: "read", Args: `{}`}, {ID: "call-1", Name: "write", Args: `{}`}}}, want: "duplicate tool call id"},
 			{name: "stream missing id", ev: StreamEvent{Type: ToolCallStart, ToolCallStream: ToolCallStream{Name: "read"}}, want: "stream id is required"},
 			{name: "stream missing name", ev: StreamEvent{Type: ToolCallDelta, ToolCallStream: ToolCallStream{ID: "call-1"}}, want: "stream name is required"},
 			{name: "hosted missing id", ev: StreamEvent{Type: HostedToolCall, ToolCall: ToolCall{Name: "web_search"}}, want: "id is required"},

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/floret/internal/provider"
 	"github.com/floegence/floret/internal/provider/cache"
 	"github.com/floegence/floret/internal/session"
 	"github.com/floegence/floret/internal/session/artifact"
@@ -169,288 +170,125 @@ func TestSQLiteStorePersistsSubAgentThreadMetadata(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreMigratesV6SubAgentMetadataColumns(t *testing.T) {
+func TestSQLiteStoreRejectsPreReleaseSchemaVersion(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "floret.db")
-	db, err := sql.Open(driverName, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = db.ExecContext(ctx, `
-CREATE TABLE schema_meta (
-	key TEXT PRIMARY KEY,
-	value TEXT NOT NULL
-);
-INSERT INTO schema_meta(key, value) VALUES
-	('schema_version', '6'),
-	('raw_encoder_version', '1');
-CREATE TABLE threads (
-	id TEXT PRIMARY KEY,
-	leaf_id TEXT NOT NULL DEFAULT '',
-	parent_thread_id TEXT NOT NULL DEFAULT '',
-	forked_from_thread_id TEXT NOT NULL DEFAULT '',
-	forked_from_entry_id TEXT NOT NULL DEFAULT '',
-	archived INTEGER NOT NULL DEFAULT 0,
-	title TEXT NOT NULL DEFAULT '',
-	title_status TEXT NOT NULL DEFAULT '',
-	title_source TEXT NOT NULL DEFAULT '',
-	title_updated_at TEXT NOT NULL DEFAULT '',
-	title_error TEXT NOT NULL DEFAULT '',
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL,
-	status TEXT NOT NULL DEFAULT '',
-	last_viewed_at TEXT NOT NULL DEFAULT ''
-);
-INSERT INTO threads(id, created_at, updated_at, status) VALUES('legacy', '2026-06-23T09:00:00Z', '2026-06-23T09:00:00Z', 'completed');
-`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	store, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
+	store, path := openSQLiteStoreForTest(t)
 	version, err := store.SchemaVersion(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if version != schemaVersion {
-		t.Fatalf("schema version = %q, want %q", version, schemaVersion)
+		t.Fatalf("fresh schema version = %q, want %q", version, schemaVersion)
 	}
-	meta, err := store.Thread(ctx, "legacy")
-	if err != nil {
+	if err := store.putMetaValue(ctx, "schema_version", "10"); err != nil {
 		t.Fatal(err)
 	}
-	if meta.ParentTurnID != "" || meta.TaskName != "" || meta.TaskDescription != "" || meta.AgentPath != "" || meta.HostProfileRef != "" || meta.ForkMode != "" || meta.Closed {
-		t.Fatalf("legacy subagent defaults = %#v", meta)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), `unsupported sqlite store schema version "10"`) {
+		t.Fatalf("old schema open err = %v", err)
 	}
 }
 
-func TestSQLiteStoreMigratesV7ForkModeColumn(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "floret.db")
+func TestSQLiteStoreRejectsUnversionedExistingSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
 	db, err := sql.Open(driverName, path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.ExecContext(ctx, `
-CREATE TABLE schema_meta (
-	key TEXT PRIMARY KEY,
-	value TEXT NOT NULL
-);
-INSERT INTO schema_meta(key, value) VALUES
-	('schema_version', '7'),
-	('raw_encoder_version', '1');
-CREATE TABLE threads (
-	id TEXT PRIMARY KEY,
-	leaf_id TEXT NOT NULL DEFAULT '',
-	parent_thread_id TEXT NOT NULL DEFAULT '',
-	parent_turn_id TEXT NOT NULL DEFAULT '',
-	forked_from_thread_id TEXT NOT NULL DEFAULT '',
-	forked_from_entry_id TEXT NOT NULL DEFAULT '',
-	task_name TEXT NOT NULL DEFAULT '',
-	agent_path TEXT NOT NULL DEFAULT '',
-	host_profile_ref TEXT NOT NULL DEFAULT '',
-	closed INTEGER NOT NULL DEFAULT 0,
-	archived INTEGER NOT NULL DEFAULT 0,
-	title TEXT NOT NULL DEFAULT '',
-	title_status TEXT NOT NULL DEFAULT '',
-	title_source TEXT NOT NULL DEFAULT '',
-	title_updated_at TEXT NOT NULL DEFAULT '',
-	title_error TEXT NOT NULL DEFAULT '',
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL,
-	status TEXT NOT NULL DEFAULT '',
-	last_viewed_at TEXT NOT NULL DEFAULT ''
-);
-INSERT INTO threads(id, parent_thread_id, task_name, agent_path, created_at, updated_at)
-VALUES('child', 'parent', 'worker', '/root/worker', '2026-06-28T09:00:00Z', '2026-06-28T09:00:00Z');
-`)
-	if err != nil {
+	if _, err := db.Exec(`CREATE TABLE legacy_threads (id TEXT PRIMARY KEY)`); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	store, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	version, err := store.SchemaVersion(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if version != schemaVersion {
-		t.Fatalf("schema version = %q, want %q", version, schemaVersion)
-	}
-	meta, err := store.Thread(ctx, "child")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if meta.ForkMode != "" {
-		t.Fatalf("legacy fork mode default = %q, want empty", meta.ForkMode)
-	}
-	if meta.TaskDescription != "" {
-		t.Fatalf("legacy task description default = %q, want empty", meta.TaskDescription)
+	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), "without canonical schema metadata") {
+		t.Fatalf("unversioned schema open err = %v", err)
 	}
 }
 
-func TestSQLiteStoreMigratesV8TaskDescriptionColumn(t *testing.T) {
+func TestSQLiteStoreRejectsMissingCanonicalSchemaFingerprint(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "floret.db")
-	db, err := sql.Open(driverName, path)
-	if err != nil {
+	store, path := openSQLiteStoreForTest(t)
+	if err := store.withImmediate(ctx, func(tx sqlRunner) error {
+		_, err := tx.ExecContext(ctx, `DELETE FROM schema_meta WHERE key = 'schema_fingerprint'`)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.ExecContext(ctx, `
-CREATE TABLE schema_meta (
-	key TEXT PRIMARY KEY,
-	value TEXT NOT NULL
-);
-INSERT INTO schema_meta(key, value) VALUES
-	('schema_version', '8'),
-	('raw_encoder_version', '1');
-CREATE TABLE threads (
-	id TEXT PRIMARY KEY,
-	leaf_id TEXT NOT NULL DEFAULT '',
-	parent_thread_id TEXT NOT NULL DEFAULT '',
-	parent_turn_id TEXT NOT NULL DEFAULT '',
-	forked_from_thread_id TEXT NOT NULL DEFAULT '',
-	forked_from_entry_id TEXT NOT NULL DEFAULT '',
-	task_name TEXT NOT NULL DEFAULT '',
-	agent_path TEXT NOT NULL DEFAULT '',
-	host_profile_ref TEXT NOT NULL DEFAULT '',
-	closed INTEGER NOT NULL DEFAULT 0,
-	archived INTEGER NOT NULL DEFAULT 0,
-	title TEXT NOT NULL DEFAULT '',
-	title_status TEXT NOT NULL DEFAULT '',
-	title_source TEXT NOT NULL DEFAULT '',
-	title_updated_at TEXT NOT NULL DEFAULT '',
-	title_error TEXT NOT NULL DEFAULT '',
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL,
-	status TEXT NOT NULL DEFAULT '',
-	last_viewed_at TEXT NOT NULL DEFAULT '',
-	fork_mode TEXT NOT NULL DEFAULT ''
-);
-INSERT INTO threads(id, parent_thread_id, task_name, fork_mode, created_at, updated_at)
-VALUES('child', 'parent', 'worker', 'none', '2026-06-30T09:00:00Z', '2026-06-30T09:00:00Z');
-`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
+	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	store, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	version, err := store.SchemaVersion(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if version != schemaVersion {
-		t.Fatalf("schema version = %q, want %q", version, schemaVersion)
-	}
-	meta, err := store.Thread(ctx, "child")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if meta.ForkMode != "none" {
-		t.Fatalf("fork mode = %q, want none", meta.ForkMode)
-	}
-	if meta.TaskDescription != "" {
-		t.Fatalf("legacy task description default = %q, want empty", meta.TaskDescription)
+	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), "unsupported sqlite store schema fingerprint") {
+		t.Fatalf("missing schema fingerprint open err = %v", err)
 	}
 }
 
-func TestSQLiteStoreMigratesV9ForkOperationSchema(t *testing.T) {
+func TestSQLiteStoreProviderStateRoundTripCorruptionForkAndDelete(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "floret.db")
-	db, err := sql.Open(driverName, path)
+	store, path := openSQLiteStoreForTest(t)
+	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := sessiontree.AppendMessage(ctx, store, "thread", "turn-1", session.Message{Role: session.User, Content: "hello"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.ExecContext(ctx, `
-CREATE TABLE schema_meta (
-	key TEXT PRIMARY KEY,
-	value TEXT NOT NULL
-);
-INSERT INTO schema_meta(key, value) VALUES
-	('schema_version', '9'),
-	('raw_encoder_version', '1');
-CREATE TABLE threads (
-	id TEXT PRIMARY KEY,
-	leaf_id TEXT NOT NULL DEFAULT '',
-	parent_thread_id TEXT NOT NULL DEFAULT '',
-	parent_turn_id TEXT NOT NULL DEFAULT '',
-	forked_from_thread_id TEXT NOT NULL DEFAULT '',
-	forked_from_entry_id TEXT NOT NULL DEFAULT '',
-	task_name TEXT NOT NULL DEFAULT '',
-	task_description TEXT NOT NULL DEFAULT '',
-	agent_path TEXT NOT NULL DEFAULT '',
-	host_profile_ref TEXT NOT NULL DEFAULT '',
-	fork_mode TEXT NOT NULL DEFAULT '',
-	closed INTEGER NOT NULL DEFAULT 0,
-	archived INTEGER NOT NULL DEFAULT 0,
-	title TEXT NOT NULL DEFAULT '',
-	title_status TEXT NOT NULL DEFAULT '',
-	title_source TEXT NOT NULL DEFAULT '',
-	title_updated_at TEXT NOT NULL DEFAULT '',
-	title_error TEXT NOT NULL DEFAULT '',
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL,
-	status TEXT NOT NULL DEFAULT '',
-	last_viewed_at TEXT NOT NULL DEFAULT ''
-);
-INSERT INTO threads(id, created_at, updated_at) VALUES('legacy', '2026-07-15T08:00:00Z', '2026-07-15T08:00:00Z');
-`)
-	if err != nil {
+	want := storage.ProviderStateRecord{
+		ThreadID:         "thread",
+		LeafEntryID:      leaf.ID,
+		CompatibilityKey: "provider-profile:model:endpoint:route",
+		State: provider.State{
+			Kind:       "responses",
+			ID:         "response-state-1",
+			Attributes: map[string]string{"cursor": "next"},
+		},
+		CreatedByRunID:  "run-1",
+		CreatedByTurnID: "turn-1",
+		UpdatedAt:       time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC),
+	}
+	if err := store.PutProviderState(ctx, want); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Close(); err != nil {
+	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	store, err := Open(path)
+	store, err = Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	version, err := store.SchemaVersion(ctx)
+	got, err := store.ProviderState(ctx, "thread")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != schemaVersion {
-		t.Fatalf("schema version = %q, want %q", version, schemaVersion)
+	if got.ThreadID != want.ThreadID || got.LeafEntryID != want.LeafEntryID || got.CompatibilityKey != want.CompatibilityKey || got.State.ID != want.State.ID || got.State.Attributes["cursor"] != "next" || got.CreatedByRunID != "run-1" || got.CreatedByTurnID != "turn-1" || !got.UpdatedAt.Equal(want.UpdatedAt) {
+		t.Fatalf("reopened provider state = %#v, want %#v", got, want)
 	}
-	meta, err := store.Thread(ctx, "legacy")
-	if err != nil {
+	if _, err := store.Fork(ctx, sessiontree.ForkOptions{SourceThreadID: "thread", NewThreadID: "fork"}); err != nil {
 		t.Fatal(err)
 	}
-	if meta.ForkOperationID != "" || meta.ForkOperationNodeID != "" {
-		t.Fatalf("legacy fork markers = %#v", meta)
+	if _, err := store.ProviderState(ctx, "fork"); !errors.Is(err, storage.ErrProviderStateNotFound) {
+		t.Fatalf("fork provider state err = %v, want not found", err)
 	}
-	now := time.Date(2026, 7, 15, 9, 0, 0, 0, time.UTC)
-	if _, created, err := store.PrepareForkOperation(ctx, storage.ForkOperationRecord{
-		OperationID:        "operation",
-		RequestFingerprint: "fingerprint",
-		State:              storage.ForkOperationPrepared,
-		Plan:               []byte(`{"version":1}`),
-		CreatedAt:          now,
-		UpdatedAt:          now,
-	}); err != nil || !created {
-		t.Fatalf("PrepareForkOperation created=%v err=%v", created, err)
+	if _, err := store.db.ExecContext(ctx, `UPDATE provider_states SET state_json = '{' WHERE thread_id = 'thread'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ProviderState(ctx, "thread"); err == nil || !strings.Contains(err.Error(), "decode provider state") {
+		t.Fatalf("corrupt provider state err = %v", err)
+	}
+	if err := store.PutProviderState(ctx, want); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteThreadTreeData(ctx, storage.DeleteThreadTreeDataRequest{RootThreadID: "thread", ThreadIDs: []string{"thread"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ProviderState(ctx, "thread"); !errors.Is(err, storage.ErrProviderStateNotFound) {
+		t.Fatalf("deleted provider state err = %v, want not found", err)
 	}
 }
 
@@ -504,200 +342,6 @@ func TestSQLiteStorePersistsCompletedForkOperationAfterReopen(t *testing.T) {
 	})
 	if err != nil || created || existing.RequestFingerprint != "fingerprint" || existing.State != storage.ForkOperationCompleted {
 		t.Fatalf("existing fork operation created=%v record=%#v err=%v", created, existing, err)
-	}
-}
-
-func TestSQLiteStoreMigratesV3PromptCacheScopeColumns(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "floret.db")
-	db, err := sql.Open(driverName, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = db.ExecContext(ctx, `
-CREATE TABLE schema_meta (
-	key TEXT PRIMARY KEY,
-	value TEXT NOT NULL
-);
-INSERT INTO schema_meta(key, value) VALUES
-	('schema_version', '3'),
-	('raw_encoder_version', '1');
-CREATE TABLE threads (
-	id TEXT PRIMARY KEY,
-	leaf_id TEXT NOT NULL DEFAULT '',
-	parent_thread_id TEXT NOT NULL DEFAULT '',
-	forked_from_thread_id TEXT NOT NULL DEFAULT '',
-	forked_from_entry_id TEXT NOT NULL DEFAULT '',
-	archived INTEGER NOT NULL DEFAULT 0,
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL
-);
-INSERT INTO threads(id, created_at, updated_at) VALUES('thread', '2026-06-05T01:00:00Z', '2026-06-05T01:00:00Z');
-CREATE TABLE entries (
-	thread_id TEXT NOT NULL,
-	id TEXT NOT NULL,
-	ordinal INTEGER NOT NULL,
-	parent_id TEXT NOT NULL DEFAULT '',
-	type TEXT NOT NULL,
-	turn_id TEXT NOT NULL DEFAULT '',
-	created_at TEXT NOT NULL,
-	message_json TEXT NOT NULL DEFAULT '{}',
-	raw TEXT NOT NULL DEFAULT '',
-	raw_hash TEXT NOT NULL DEFAULT '',
-	raw_encoder_version INTEGER NOT NULL DEFAULT 1,
-	turn_status TEXT NOT NULL DEFAULT '',
-	provider TEXT NOT NULL DEFAULT '',
-	model TEXT NOT NULL DEFAULT '',
-	compaction_id TEXT NOT NULL DEFAULT '',
-	previous_compaction_id TEXT NOT NULL DEFAULT '',
-	compacted_through_entry_id TEXT NOT NULL DEFAULT '',
-	summary_schema_version TEXT NOT NULL DEFAULT '',
-	compaction_generation INTEGER NOT NULL DEFAULT 0,
-	compaction_window_id TEXT NOT NULL DEFAULT '',
-	first_kept_entry_id TEXT NOT NULL DEFAULT '',
-	summary TEXT NOT NULL DEFAULT '',
-	compaction_trigger TEXT NOT NULL DEFAULT '',
-	compaction_reason TEXT NOT NULL DEFAULT '',
-	compaction_phase TEXT NOT NULL DEFAULT '',
-	tokens_before INTEGER NOT NULL DEFAULT 0,
-	tokens_after_estimate INTEGER NOT NULL DEFAULT 0,
-	context_usage_before_json TEXT NOT NULL DEFAULT '{}',
-	context_usage_after_json TEXT NOT NULL DEFAULT '{}',
-	error TEXT NOT NULL DEFAULT '',
-	metadata_json TEXT NOT NULL DEFAULT '{}',
-	PRIMARY KEY (thread_id, id),
-	UNIQUE (thread_id, ordinal),
-	FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
-);
-CREATE TABLE active_turn_leases (
-	thread_id TEXT PRIMARY KEY,
-	turn_id TEXT NOT NULL DEFAULT '',
-	owner_id TEXT NOT NULL DEFAULT '',
-	created_at TEXT NOT NULL,
-	FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
-);
-CREATE TABLE prompt_segments (
-	rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-	id TEXT NOT NULL,
-	run_id TEXT NOT NULL,
-	provider TEXT NOT NULL,
-	model TEXT NOT NULL,
-	sequence INTEGER NOT NULL DEFAULT 0,
-	created_at TEXT NOT NULL,
-	data_json TEXT NOT NULL
-);
-CREATE INDEX prompt_segments_lookup_idx ON prompt_segments(run_id, provider, model, rowid);
-CREATE TABLE prompt_toolsets (
-	rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-	id TEXT NOT NULL,
-	run_id TEXT NOT NULL,
-	provider TEXT NOT NULL,
-	model TEXT NOT NULL,
-	epoch INTEGER NOT NULL DEFAULT 0,
-	created_at TEXT NOT NULL,
-	data_json TEXT NOT NULL
-);
-CREATE INDEX prompt_toolsets_lookup_idx ON prompt_toolsets(run_id, provider, model, rowid);
-CREATE TABLE prompt_requests (
-	rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-	id TEXT NOT NULL,
-	run_id TEXT NOT NULL,
-	provider TEXT NOT NULL,
-	model TEXT NOT NULL,
-	created_at TEXT NOT NULL,
-	data_json TEXT NOT NULL
-);
-CREATE INDEX prompt_requests_run_idx ON prompt_requests(run_id, rowid);
-CREATE TABLE prompt_responses (
-	rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-	request_id TEXT NOT NULL,
-	run_id TEXT NOT NULL,
-	created_at TEXT NOT NULL,
-	data_json TEXT NOT NULL
-);
-CREATE INDEX prompt_responses_run_idx ON prompt_responses(run_id, rowid);
-CREATE TABLE metadata_records (
-	namespace TEXT NOT NULL,
-	id TEXT NOT NULL,
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL,
-	data_json TEXT NOT NULL,
-	PRIMARY KEY(namespace, id)
-);
-INSERT INTO prompt_segments(id, run_id, provider, model, sequence, created_at, data_json)
-VALUES('seg-1', 'thread', 'openai', 'model', 1, '2026-06-05T01:00:00Z', '{"id":"seg-1","prompt_scope_id":"thread","provider":"openai","model":"model","kind":"system","raw":"system","created_at":"2026-06-05T01:00:00Z"}');
-INSERT INTO prompt_toolsets(id, run_id, provider, model, epoch, created_at, data_json)
-VALUES('toolset-1', 'thread', 'openai', 'model', 1, '2026-06-05T01:00:00Z', '{"id":"toolset-1","prompt_scope_id":"thread","provider":"openai","model":"model","epoch":1,"created_at":"2026-06-05T01:00:00Z"}');
-INSERT INTO prompt_requests(id, run_id, provider, model, created_at, data_json)
-VALUES('req-1', 'thread', 'openai', 'model', '2026-06-05T01:00:00Z', '{"id":"req-1","prompt_scope_id":"thread","run_id":"turn-1","provider":"openai","model":"model","created_at":"2026-06-05T01:00:00Z"}');
-INSERT INTO prompt_responses(request_id, run_id, created_at, data_json)
-VALUES('req-1', 'thread', '2026-06-05T01:00:00Z', '{"request_id":"req-1","prompt_scope_id":"thread","run_id":"turn-1","created_at":"2026-06-05T01:00:00Z"}');
-`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	store, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	version, err := store.SchemaVersion(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if version != schemaVersion {
-		t.Fatalf("schema version = %q, want %q", version, schemaVersion)
-	}
-	for _, table := range []string{"prompt_segments", "prompt_toolsets", "prompt_requests", "prompt_responses"} {
-		if ok, err := columnExists(ctx, store.db, table, "prompt_scope_id"); err != nil {
-			t.Fatal(err)
-		} else if !ok {
-			t.Fatalf("%s prompt_scope_id column missing after migration", table)
-		}
-		if ok, err := columnExists(ctx, store.db, table, "run_id"); err != nil {
-			t.Fatal(err)
-		} else if ok {
-			t.Fatalf("%s still has legacy run_id column", table)
-		}
-	}
-	meta, err := store.Thread(ctx, "thread")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if meta.Title != "" || meta.Status != "" || meta.ParentTurnID != "" || meta.TaskName != "" || meta.AgentPath != "" || meta.HostProfileRef != "" || meta.Closed {
-		t.Fatalf("legacy thread defaults = %#v", meta)
-	}
-	segments, err := store.Segments(ctx, "thread", "openai", "model")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(segments) != 1 || segments[0].ID != "seg-1" {
-		t.Fatalf("segments after migration = %#v", segments)
-	}
-	toolset, ok, err := store.ActiveToolset(ctx, "thread", "openai", "model")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || toolset.ID != "toolset-1" {
-		t.Fatalf("toolset after migration = %#v ok=%v", toolset, ok)
-	}
-	requests, err := store.ProviderRequests(ctx, "thread")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(requests) != 1 || requests[0].ID != "req-1" {
-		t.Fatalf("requests after migration = %#v", requests)
-	}
-	responses, err := store.ProviderResponses(ctx, "thread")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(responses) != 1 || responses[0].RequestID != "req-1" {
-		t.Fatalf("responses after migration = %#v", responses)
 	}
 }
 
@@ -975,6 +619,8 @@ func TestSQLiteStoreForkRewritesCompactionEntryReferences(t *testing.T) {
 	compacted, err := sessiontree.AppendCompaction(ctx, store, "source", "turn-2", compaction.Result{
 		CompactionID:            "compaction-2",
 		PreviousCompactionID:    "compaction-1",
+		CompactionGeneration:    2,
+		CompactionWindowID:      "window-2",
 		FirstKeptEntryID:        kept.ID,
 		KeptUserEntryIDs:        []string{old.ID},
 		CompactedThroughEntryID: old.ID,
@@ -983,6 +629,9 @@ func TestSQLiteStoreForkRewritesCompactionEntryReferences(t *testing.T) {
 		Trigger:                 compaction.TriggerPreRequest,
 		Reason:                  compaction.ReasonThreshold,
 		Phase:                   compaction.PhaseInstall,
+		OperationID:             "op-2",
+		RequestID:               "req-2",
+		Source:                  "engine",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1010,6 +659,9 @@ func TestSQLiteStoreForkRewritesCompactionEntryReferences(t *testing.T) {
 	}
 	if entry.PreviousCompactionID != "compaction-1" {
 		t.Fatalf("previous compaction id should stay stable: %#v", entry)
+	}
+	if entry.CompactionOperationID != "op-2" || entry.CompactionRequestID != "req-2" || entry.CompactionSource != "engine" {
+		t.Fatalf("typed compaction identity = %#v", entry)
 	}
 	if got := sessiontree.BuildContext(pathEntries, sessiontree.ContextOptions{}); len(got) != 2 ||
 		got[0].Role != session.User ||

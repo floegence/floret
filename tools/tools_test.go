@@ -56,6 +56,21 @@ func TestRegisterRejectsInvalidTool(t *testing.T) {
 	}
 }
 
+func TestRegistryRejectsEmptyToolArgsWithoutSubstitution(t *testing.T) {
+	called := false
+	reg := NewRegistry()
+	if err := reg.Register(testTool("read", true, func(context.Context, Invocation[testArgs]) (Result, error) {
+		called = true
+		return Result{}, nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	got := reg.Run(context.Background(), ToolCall{ID: "call-1", Name: "read"}, nil)
+	if !got.IsError || called || !strings.Contains(got.Text, "invalid JSON") {
+		t.Fatalf("empty args result = %#v called=%v", got, called)
+	}
+}
+
 func TestRegisterValidatesRepeatIdentityIgnoredArguments(t *testing.T) {
 	t.Parallel()
 

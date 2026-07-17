@@ -143,8 +143,20 @@ func compactionOperationID(runID string, step int, trigger compaction.Trigger, r
 	return CompactionOperationID(runID, step, trigger, reason, manual.RequestID)
 }
 
+func compactionLifecycleRequest(operationID string, trigger compaction.Trigger, request ManualCompactionRequest) ManualCompactionRequest {
+	request.RequestID = strings.TrimSpace(request.RequestID)
+	request.Source = strings.TrimSpace(request.Source)
+	if request.RequestID == "" {
+		request.RequestID = operationID + ":request"
+	}
+	if request.Source == "" && trigger != compaction.TriggerManual {
+		request.Source = "engine"
+	}
+	return request
+}
+
 func compactionStartMetadata(operationID string, trigger compaction.Trigger, reason compaction.Reason, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage, manual ManualCompactionRequest) map[string]any {
-	return withManualCompactionMetadata(map[string]any{
+	return withCompactionIdentityMetadata(map[string]any{
 		"phase":                  ContextCompactPhaseStart,
 		"operation_id":           operationID,
 		"trigger":                trigger,
@@ -156,7 +168,7 @@ func compactionStartMetadata(operationID string, trigger compaction.Trigger, rea
 }
 
 func compactionFailedMetadata(operationID string, trigger compaction.Trigger, reason compaction.Reason, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage, manual ManualCompactionRequest) map[string]any {
-	return withManualCompactionMetadata(map[string]any{
+	return withCompactionIdentityMetadata(map[string]any{
 		"phase":                  ContextCompactPhaseFailed,
 		"operation_id":           operationID,
 		"trigger":                trigger,
@@ -168,7 +180,7 @@ func compactionFailedMetadata(operationID string, trigger compaction.Trigger, re
 }
 
 func compactionCancelledMetadata(operationID string, trigger compaction.Trigger, reason compaction.Reason, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage, manual ManualCompactionRequest) map[string]any {
-	return withManualCompactionMetadata(map[string]any{
+	return withCompactionIdentityMetadata(map[string]any{
 		"phase":                  ContextCompactPhaseCancelled,
 		"operation_id":           operationID,
 		"trigger":                trigger,
@@ -180,7 +192,7 @@ func compactionCancelledMetadata(operationID string, trigger compaction.Trigger,
 }
 
 func compactionNoopMetadata(operationID string, trigger compaction.Trigger, noopReason string, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage, manual ManualCompactionRequest) map[string]any {
-	return withManualCompactionMetadata(map[string]any{
+	return withCompactionIdentityMetadata(map[string]any{
 		"phase":                  ContextCompactPhaseNoop,
 		"operation_id":           operationID,
 		"trigger":                trigger,
@@ -192,7 +204,7 @@ func compactionNoopMetadata(operationID string, trigger compaction.Trigger, noop
 }
 
 func compactionCompleteMetadata(operationID string, result compaction.Result, validation compactedRequestValidation, manual ManualCompactionRequest) map[string]any {
-	return withManualCompactionMetadata(map[string]any{
+	return withCompactionIdentityMetadata(map[string]any{
 		"phase":                      ContextCompactPhaseComplete,
 		"operation_id":               operationID,
 		"trigger":                    result.Trigger,
@@ -219,7 +231,7 @@ func compactionCompleteMetadata(operationID string, result compaction.Result, va
 }
 
 func compactionDebugMetadata(operationID string, stage string, status string, trigger compaction.Trigger, reason compaction.Reason, beforePressure contextpolicy.ContextPressure, usage contextpolicy.Usage, manual ManualCompactionRequest) map[string]any {
-	return withManualCompactionMetadata(map[string]any{
+	return withCompactionIdentityMetadata(map[string]any{
 		"stage":                  stage,
 		"status":                 status,
 		"operation_id":           operationID,
@@ -232,7 +244,7 @@ func compactionDebugMetadata(operationID string, stage string, status string, tr
 	}, manual)
 }
 
-func withManualCompactionMetadata(meta map[string]any, manual ManualCompactionRequest) map[string]any {
+func withCompactionIdentityMetadata(meta map[string]any, manual ManualCompactionRequest) map[string]any {
 	if requestID := strings.TrimSpace(manual.RequestID); requestID != "" {
 		meta["request_id"] = requestID
 	}

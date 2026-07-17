@@ -25,7 +25,7 @@ Floret owns:
 * product-neutral pending approval snapshots;
 * runtime observation;
 * control signal contracts;
-* opaque model state lifecycle;
+* opaque model state lifecycle and persistence in Floret Store;
 * engine thread-tree lifecycle, including child-thread fork mode, stop/close,
   replayable fork operations, prompt cache retention, and engine-data deletion.
 
@@ -37,11 +37,23 @@ The host owns:
 * workspace-specific resource policy;
 * domain tools, approval UI, and product approval summaries.
 
+Hosts provide provider credentials, provider profiles, and direct wire adapters,
+but they do not persist opaque continuation, context usage, compaction state,
+assistant/tool history, or another model-visible message projection. Those
+facts are read through `ReadThreadContext`, `ReadTurnProjection`, and detail
+APIs. Product/UI DTO mapping may be transient or response-scoped, never a second
+durable engine source of truth.
+
 # Maintenance Notes
 
 When a change adds a new host-facing capability, expose it as general public API
 with tests and documentation. Do not move product-specific policy into Floret
 core to make one downstream integration easier.
+
+`runtime.Store` is opaque and caller-owned. Hosts create one Store explicitly,
+share it across runtime facades as needed, and close it once after active work
+stops. Runtime facades do not create hidden stores, close injected stores, or
+support old schema migration and dual-read paths.
 
 Hosts may choose when product actions stop or delete work, but they should
 express those choices through Floret runtime APIs. Stop-style product actions

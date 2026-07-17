@@ -450,6 +450,8 @@ func TestMultipleCompactionsUseOnlyLastBoundary(t *testing.T) {
 	kept1, _ := AppendMessage(ctx, repo, "thread", "t2", session.Message{Role: session.User, Content: "kept1"})
 	c1, err := AppendCompaction(ctx, repo, "thread", "t2", compaction.Result{
 		CompactionID:            "c1",
+		CompactionGeneration:    1,
+		CompactionWindowID:      "c1",
 		FirstKeptEntryID:        kept1.ID,
 		KeptUserEntryIDs:        []string{old.ID, kept1.ID},
 		CompactedThroughEntryID: old.ID,
@@ -458,6 +460,9 @@ func TestMultipleCompactionsUseOnlyLastBoundary(t *testing.T) {
 		Trigger:                 compaction.TriggerPreRequest,
 		Reason:                  compaction.ReasonThreshold,
 		Phase:                   compaction.PhaseInstall,
+		OperationID:             "op-1",
+		RequestID:               "req-1",
+		Source:                  "engine",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -467,6 +472,8 @@ func TestMultipleCompactionsUseOnlyLastBoundary(t *testing.T) {
 	_, err = AppendCompaction(ctx, repo, "thread", "t3", compaction.Result{
 		CompactionID:            "c2",
 		PreviousCompactionID:    "c1",
+		CompactionGeneration:    2,
+		CompactionWindowID:      "c2",
 		FirstKeptEntryID:        kept3.ID,
 		KeptUserEntryIDs:        []string{kept2.ID, kept3.ID},
 		CompactedThroughEntryID: c1.ID,
@@ -475,7 +482,9 @@ func TestMultipleCompactionsUseOnlyLastBoundary(t *testing.T) {
 		Trigger:                 compaction.TriggerPostResponse,
 		Reason:                  compaction.ReasonFollowUpPressure,
 		Phase:                   compaction.PhaseInstall,
-		Details:                 map[string]string{"compaction_generation": "2"},
+		OperationID:             "op-2",
+		RequestID:               "req-2",
+		Source:                  "engine",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -503,6 +512,47 @@ func TestMultipleCompactionsUseOnlyLastBoundary(t *testing.T) {
 	}
 }
 
+func TestAppendCompactionRequiresCanonicalIdentity(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemoryRepo()
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	base := compaction.Result{
+		CompactionID:         "compaction-1",
+		CompactionGeneration: 1,
+		CompactionWindowID:   "window-1",
+		Summary:              "summary",
+		SummarySchemaVersion: compaction.SummarySchemaVersion,
+		Trigger:              compaction.TriggerManual,
+		Reason:               compaction.ReasonManual,
+		Phase:                compaction.PhaseInstall,
+		OperationID:          "operation-1",
+		RequestID:            "request-1",
+		Source:               "test",
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*compaction.Result)
+		want   string
+	}{
+		{name: "missing generation", mutate: func(result *compaction.Result) { result.CompactionGeneration = 0 }, want: "id, generation, and window id"},
+		{name: "missing window", mutate: func(result *compaction.Result) { result.CompactionWindowID = "" }, want: "id, generation, and window id"},
+		{name: "missing operation", mutate: func(result *compaction.Result) { result.OperationID = "" }, want: "operation, request, and source"},
+		{name: "missing request", mutate: func(result *compaction.Result) { result.RequestID = "" }, want: "operation, request, and source"},
+		{name: "missing source", mutate: func(result *compaction.Result) { result.Source = "" }, want: "operation, request, and source"},
+		{name: "identity alias", mutate: func(result *compaction.Result) { result.Details = map[string]string{"operation_id": "legacy"} }, want: "must not contain identity alias"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := base
+			tc.mutate(&result)
+			if _, err := AppendCompaction(ctx, repo, "thread", "turn-1", result); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("AppendCompaction err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestForkRewritesCompactionReferences(t *testing.T) {
 	ctx := context.Background()
 	repo := NewMemoryRepo()
@@ -513,6 +563,8 @@ func TestForkRewritesCompactionReferences(t *testing.T) {
 	kept, _ := AppendMessage(ctx, repo, "source", "t2", session.Message{Role: session.User, Content: "kept"})
 	compacted, err := AppendCompaction(ctx, repo, "source", "t2", compaction.Result{
 		CompactionID:            "c1",
+		CompactionGeneration:    1,
+		CompactionWindowID:      "c1",
 		FirstKeptEntryID:        kept.ID,
 		KeptUserEntryIDs:        []string{old.ID},
 		CompactedThroughEntryID: old.ID,
@@ -521,6 +573,9 @@ func TestForkRewritesCompactionReferences(t *testing.T) {
 		Trigger:                 compaction.TriggerPreRequest,
 		Reason:                  compaction.ReasonThreshold,
 		Phase:                   compaction.PhaseInstall,
+		OperationID:             "op-1",
+		RequestID:               "req-1",
+		Source:                  "engine",
 	})
 	if err != nil {
 		t.Fatal(err)

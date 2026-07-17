@@ -72,18 +72,18 @@ Instala los paquetes estables para aplicaciones downstream:
 go get github.com/floegence/floret/config github.com/floegence/floret/runtime github.com/floegence/floret/tools github.com/floegence/floret/observation
 ```
 
-Inicia un hilo duradero con el Fake Provider determinista:
-
 ```go
+store := runtime.NewMemoryStore()
+defer store.Close()
+
 host, err := runtime.NewHost(runtime.HostOptions{
 	Config: config.Config{
 		Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "Hello from Floret.",
 		AgentProfile: config.AgentProfile{ID: "support-agent", Name: "Support Agent"},
 	},
-	Store: runtime.NewMemoryStore(),
+	Store: store,
 })
 if err != nil { /* handle error */ }
-defer host.Close()
 
 thread, err := host.StartThread(ctx, runtime.StartThreadRequest{ThreadID: "thread-1"})
 result, err := host.RunTurn(ctx, runtime.RunTurnRequest{

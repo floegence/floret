@@ -127,9 +127,6 @@ func Define[T any](
 				return decode(raw)
 			}
 			var args T
-			if len(strings.TrimSpace(string(raw))) == 0 {
-				raw = []byte("{}")
-			}
 			if err := json.Unmarshal(raw, &args); err != nil {
 				return nil, err
 			}
@@ -441,9 +438,6 @@ func (r *Registry) ActivityForCall(call ToolCall, opts RunOptions) (*observation
 		return nil, nil
 	}
 	raw := strings.TrimSpace(call.Args)
-	if raw == "" {
-		raw = "{}"
-	}
 	if _, err := Validate(t.Definition.InputSchema, []byte(raw)); err != nil {
 		return nil, err
 	}
@@ -483,9 +477,6 @@ func (r *Registry) run(ctx context.Context, call ToolCall, approver Approver, op
 		return ErrorResult(call.ID, call.Name, fmt.Sprintf("unknown tool %q", call.Name))
 	}
 	raw := strings.TrimSpace(call.Args)
-	if raw == "" {
-		raw = "{}"
-	}
 	if _, err := Validate(t.Definition.InputSchema, []byte(raw)); err != nil {
 		return ErrorResult(call.ID, call.Name, InvalidArgumentsText(call.Name, err))
 	}
@@ -648,9 +639,6 @@ func activityForApprovalRequest(def Definition, call ToolCall, args any, opts Ru
 		return nil
 	}
 	raw := strings.TrimSpace(call.Args)
-	if raw == "" {
-		raw = "{}"
-	}
 	activity, err := def.Activity(Invocation[any]{
 		CallID:        call.ID,
 		Name:          call.Name,

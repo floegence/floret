@@ -88,6 +88,7 @@ execution lifecycle to Floret.
 | Configure an agent and a provider | `config.Config` or `config.Load` |
 | Run durable conversations | `runtime.NewHost` and concrete `*runtime.Host` |
 | Compact an idle thread | `runtime.CompactThreadRequest` |
+| Reload canonical context state | `Host.ReadThreadContext` or `ThreadMaintenanceHost.ReadThreadContext` |
 | Keep Floret runtime data in memory or SQLite | `runtime.NewMemoryStore` or `runtime.OpenSQLiteStore` |
 | Keep model transport under product control | `runtime.ModelGateway` |
 | Define an agent's role and business instructions | `config.AgentProfile.SystemPrompt` or `config.Config.SystemPrompt` |
@@ -103,7 +104,7 @@ application owns every product decision.
 | Floret runs | Your application decides |
 | --- | --- |
 | Provider loop, retries, tool continuation, and finish state | When users can start, retry, interrupt, or cancel work |
-| Durable thread journal, prompt scope, provider ledger, and runtime artifacts | Users, workspaces, billing, product metadata, and retention policy |
+| Durable thread journal, prompt scope, provider ledger, opaque continuation, and runtime artifacts | Users, workspaces, billing, product metadata, and retention policy |
 | Tool schema validation, generic effect metadata, approval lifecycle, and result projection | Authorization, approval UX, domain actions, and user-facing copy |
 | Context pressure, compaction lifecycle, and provider-visible history | What product data is safe to supply and how it appears in the interface |
 | Sanitized events and neutral activity facts | Layout, workflows, controls, routing, and diagnostics policy |
@@ -137,6 +138,9 @@ import (
 func main() {
 	ctx := context.Background()
 
+	store := runtime.NewMemoryStore()
+	defer store.Close()
+
 	host, err := runtime.NewHost(runtime.HostOptions{
 		Config: config.Config{
 			Provider:     config.ProviderFake,
@@ -148,12 +152,11 @@ func main() {
 				SystemPrompt: "Answer clearly and briefly.",
 			},
 		},
-		Store: runtime.NewMemoryStore(),
+		Store: store,
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer host.Close()
 
 	thread, err := host.StartThread(ctx, runtime.StartThreadRequest{ThreadID: "thread-1"})
 	if err != nil {
@@ -177,6 +180,9 @@ Replace the fake configuration with an OpenAI-compatible gateway or a
 host-supplied `runtime.ModelGateway` when your product owns model transport.
 Use `runtime.OpenSQLiteStore(path)` when Floret should persist its own runtime
 data. Your product data stays in your own store, keyed by `runtime.ThreadID`.
+The caller owns the runtime Store, may share it across runtime facades, and
+closes it once after all active work has stopped. Runtime facades never close an
+injected Store.
 
 ## Production Shape
 
@@ -246,8 +252,9 @@ also finite public fields. Raw provider finish text remains separate in
 `RawFinishReason`, and `FinishInferred` records whether normalization required
 inference. Hosts should call `runtime.Event.Validate` at their integration
 boundary. It validates the event plus nested stream observations, activity
-timelines, and turn projections so unknown values cannot acquire a normal
-display state or lifecycle semantics from `Metadata`.
+timelines, context/compaction observations, committed detail identity, and turn
+projections so unknown values cannot acquire a normal display state or lifecycle
+semantics from `Metadata`.
 
 Thread titles are host-owned by default. Set
 `HostOptions.ThreadTitleMode = runtime.ThreadTitleModeProvider` only when Floret
@@ -269,11 +276,12 @@ completed, waiting, failed, or cancelled marker becomes durable.
 
 Turn execution and display projection availability are independent outcomes.
 `TurnResult.ProjectionAvailability` is `ready` or `unavailable`; an unavailable
-projection keeps terminal status, output, metrics, provider state, signal, and
-the ordinary engine error unchanged. `ProjectionError` is diagnostic, while
-`ReadTurnProjection` is the explicit durable reload operation. Runtime event
-sinks receive only public observation event types; harness lifecycle events stay
-on the separate internal harness sink.
+projection keeps terminal status, output, metrics, signal, and the ordinary
+engine error unchanged. Opaque provider continuation is owned and persisted by
+Floret's Store and is never exposed on `TurnResult`. `ProjectionError` is
+diagnostic, while `ReadTurnProjection` is the explicit durable reload operation.
+Runtime event sinks receive only public observation event types; harness
+lifecycle events stay on the separate internal harness sink.
 
 ### Runtime flow
 

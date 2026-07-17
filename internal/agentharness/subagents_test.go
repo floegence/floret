@@ -531,6 +531,107 @@ func TestReadSubAgentDetailContextWindowComesFromModelPolicyNotForkMode(t *testi
 	}
 }
 
+func TestReadThreadContextFailsClosedOnInvalidJournalData(t *testing.T) {
+	ctx := context.Background()
+	validStatus := observation.ContextStatus{
+		RunID:      "run-1",
+		ThreadID:   "thread",
+		TurnID:     "turn-1",
+		Step:       1,
+		Phase:      observation.ContextPhaseProjectedRequest,
+		Provider:   "fake",
+		Model:      "fake-model",
+		ObservedAt: time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC),
+		Status:     observation.ContextStatusStable,
+	}
+	validPolicy := subAgentContextPolicyMetadata("fake", "fake-model", contextpolicy.Policy{ContextWindowTokens: 256000})
+	tests := []struct {
+		name    string
+		entries []sessiontree.Entry
+		want    string
+	}{
+		{
+			name: "malformed policy",
+			entries: []sessiontree.Entry{{
+				ThreadID: "thread",
+				TurnID:   "turn-1",
+				Type:     sessiontree.EntryCustom,
+				Metadata: map[string]string{
+					subAgentDetailKindKey:      subAgentContextPolicyEntryKind,
+					subAgentContextProviderKey: "fake",
+					subAgentContextModelKey:    "fake-model",
+					subAgentContextPolicyKey:   "{",
+				},
+			}},
+			want: "decode thread context policy",
+		},
+		{
+			name: "malformed status",
+			entries: []sessiontree.Entry{
+				{ThreadID: "thread", TurnID: "turn-1", Type: sessiontree.EntryCustom, Metadata: validPolicy},
+				{ThreadID: "thread", TurnID: "turn-1", Type: sessiontree.EntryCustom, Metadata: map[string]string{subAgentDetailKindKey: subAgentContextStatusEntryKind, subAgentContextStatusKey: "{"}},
+			},
+			want: "decode thread context status",
+		},
+		{
+			name: "missing policy",
+			entries: []sessiontree.Entry{{
+				ThreadID: "thread", TurnID: "turn-1", Type: sessiontree.EntryCustom,
+				Metadata: map[string]string{subAgentDetailKindKey: subAgentContextStatusEntryKind, subAgentContextStatusKey: mustSubAgentMetadataJSON(validStatus)},
+			}},
+			want: "missing its policy",
+		},
+		{
+			name: "thread identity mismatch",
+			entries: []sessiontree.Entry{
+				{ThreadID: "thread", TurnID: "turn-1", Type: sessiontree.EntryCustom, Metadata: validPolicy},
+				{ThreadID: "thread", TurnID: "turn-1", Type: sessiontree.EntryCustom, Metadata: map[string]string{subAgentDetailKindKey: subAgentContextStatusEntryKind, subAgentContextStatusKey: mustSubAgentMetadataJSON(func() observation.ContextStatus { status := validStatus; status.ThreadID = "other"; return status }())}},
+			},
+			want: "status identity mismatch",
+		},
+		{
+			name: "run identity mismatch",
+			entries: []sessiontree.Entry{
+				{ThreadID: "thread", TurnID: "turn-1", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnStarted, Metadata: map[string]string{"run_id": "run-other"}},
+				{ThreadID: "thread", TurnID: "turn-1", Type: sessiontree.EntryCustom, Metadata: validPolicy},
+				{ThreadID: "thread", TurnID: "turn-1", Type: sessiontree.EntryCustom, Metadata: map[string]string{subAgentDetailKindKey: subAgentContextStatusEntryKind, subAgentContextStatusKey: mustSubAgentMetadataJSON(validStatus)}},
+			},
+			want: "run identity mismatch",
+		},
+		{
+			name: "missing compaction operation",
+			entries: []sessiontree.Entry{
+				{ThreadID: "thread", TurnID: "turn-1", Type: sessiontree.EntryCustom, Metadata: validPolicy},
+				{ThreadID: "thread", TurnID: "turn-1", Type: sessiontree.EntryCustom, Metadata: map[string]string{
+					subAgentDetailKindKey: subAgentContextCompactionEntryKind,
+					subAgentContextCompactionKey: mustSubAgentMetadataJSON(ThreadContextCompaction{
+						RunID: "run-1", ThreadID: "thread", TurnID: "turn-1",
+						Phase: string(observation.CompactionPhaseNoop), Status: string(observation.CompactionStatusNoop),
+					}),
+				}},
+			},
+			want: "requires operation id",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := sessiontree.NewMemoryRepo()
+			h := newTestHarness(scriptharness.NewScriptedProvider(), repo, cache.NewMemoryStore())
+			if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"}); err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range tc.entries {
+				if _, err := repo.Append(ctx, entry, sessiontree.AppendOptions{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := h.ReadThreadContext(ctx, "thread"); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ReadThreadContext err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestReadSubAgentDetailEnforcesOwnershipAndPagination(t *testing.T) {
 	ctx := context.Background()
 	provider := scriptharness.NewScriptedProvider(

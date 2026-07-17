@@ -1,5 +1,26 @@
 # Floret OKF Update Log
 
+## 2026-07-17
+* **Breaking**: Required caller-owned `runtime.Store`, removed facade `Close`
+  methods and hidden memory Store creation, and reset SQLite to one canonical
+  schema that rejects pre-release versions instead of migrating them.
+* **Breaking**: Replaced flat gateway messages with typed roles, grouped ordered
+  tool calls, typed tool results, strict JSON/adjacency validation, and required
+  `ModelGatewayIdentity.StateCompatibilityKey`.
+* **Boundary**: Moved opaque provider continuation persistence fully into
+  Floret Store with journal-leaf and compatibility-key matching, restart-safe
+  loading, fork isolation, thread-tree deletion, and failed-finalization
+  semantics for persistence errors.
+* **Feature**: Added canonical `ReadThreadContext` on provider-backed and
+  maintenance facades, shared the snapshot type with subagent detail, and made
+  malformed or identity-conflicting context journal data fail explicitly.
+* **Breaking**: Made turn, compaction, committed-detail, and context identities
+  explicit; removed `TurnID = RunID`, compaction metadata aliases, and inferred
+  compaction generation/window fields.
+* **Update**: Required manual compaction request/source identity, generated
+  canonical automatic request IDs with `Source=engine`, and made compact-only
+  results carry one validated terminal compaction event without provider state.
+
 ## 2026-07-16
 * **Breaking**: Replaced the flat pending-tool settlement identity fields with
   `PendingToolSettlementTarget` and made settlement results validate and echo

@@ -78,8 +78,12 @@ const (
 
 type Request struct {
 	CompactionID         string
+	OperationID          string
+	RequestID            string
+	Source               string
 	PreviousCompactionID string
 	PreviousGeneration   int
+	PreviousWindowID     string
 	PreviousSummary      string
 	History              []session.Message
 	Policy               contextpolicy.Policy
@@ -93,6 +97,9 @@ type Request struct {
 
 type Result struct {
 	CompactionID            string              `json:"compaction_id"`
+	OperationID             string              `json:"operation_id"`
+	RequestID               string              `json:"request_id"`
+	Source                  string              `json:"source"`
 	PreviousCompactionID    string              `json:"previous_compaction_id,omitempty"`
 	CompactionGeneration    int                 `json:"compaction_generation,omitempty"`
 	CompactionWindowID      string              `json:"compaction_window_id,omitempty"`
@@ -154,7 +161,10 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		req.Phase = PhaseGenerate
 	}
 	history := stripEmptyMessages(req.History)
-	history = removeActiveCompactionSummary(history, &req)
+	history, err := removeActiveCompactionSummary(history, req)
+	if err != nil {
+		return Preparation{}, err
+	}
 	usageBefore := contextpolicy.EstimateMessageContext("", history, req.Policy)
 	if len(history) == 1 {
 		keptUsers := selectKeptUserMessages(history, req.Policy.RecentUserTokens)
@@ -163,6 +173,9 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		recordProjectedToolDetails(details, history, nil)
 		result := Result{
 			CompactionID:            req.CompactionID,
+			OperationID:             strings.TrimSpace(req.OperationID),
+			RequestID:               strings.TrimSpace(req.RequestID),
+			Source:                  strings.TrimSpace(req.Source),
 			PreviousCompactionID:    req.PreviousCompactionID,
 			KeptUserEntryIDs:        keptUserEntryIDs(keptUsers),
 			CompactedThroughEntryID: lastEntryID(history),
@@ -178,7 +191,9 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		if result.CompactionID == "" {
 			result.CompactionID = stableCompactionID(req, history, nil)
 		}
-		normalizeResultWindow(&result, req)
+		if err := normalizeResultWindow(&result, req); err != nil {
+			return Preparation{}, err
+		}
 		prep := Preparation{Request: req, CompactedHead: append([]session.Message(nil), history...), Result: result}
 		summary, generationDetails, err := generateSummary(ctx, generator, prep)
 		if err != nil {
@@ -230,6 +245,9 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	}
 	result := Result{
 		CompactionID:            req.CompactionID,
+		OperationID:             strings.TrimSpace(req.OperationID),
+		RequestID:               strings.TrimSpace(req.RequestID),
+		Source:                  strings.TrimSpace(req.Source),
 		PreviousCompactionID:    req.PreviousCompactionID,
 		FirstKeptEntryID:        firstKept,
 		KeptUserEntryIDs:        keptUserEntryIDs(keptUsers),
@@ -246,7 +264,9 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	if result.CompactionID == "" {
 		result.CompactionID = stableCompactionID(req, head, tail)
 	}
-	normalizeResultWindow(&result, req)
+	if err := normalizeResultWindow(&result, req); err != nil {
+		return Preparation{}, err
+	}
 	prep := Preparation{Request: req, CompactedHead: head, RetainedTail: tail, Result: result}
 	summary, generationDetails, err := generateSummary(ctx, generator, prep)
 	if err != nil {
@@ -494,67 +514,55 @@ func stripEmptyMessages(messages []session.Message) []session.Message {
 	return out
 }
 
-func removeActiveCompactionSummary(messages []session.Message, req *Request) []session.Message {
+func removeActiveCompactionSummary(messages []session.Message, req Request) ([]session.Message, error) {
 	index := -1
 	for i, msg := range messages {
-		if msg.Kind == session.MessageKindCompactionSummary {
-			index = i
-		}
-	}
-	if index < 0 {
-		return messages
-	}
-	summary := messages[index]
-	if req.PreviousSummary == "" {
-		req.PreviousSummary = ExtractCheckpointSummary(summary.Content)
-	}
-	if req.PreviousCompactionID == "" {
-		req.PreviousCompactionID = summary.CompactionID
-	}
-	if req.PreviousGeneration == 0 {
-		req.PreviousGeneration = summary.CompactionGeneration
-	}
-	out := make([]session.Message, 0, len(messages)-1)
-	for _, msg := range messages {
-		if msg.Kind == session.MessageKindCompactionSummary {
+		if msg.Kind != session.MessageKindCompactionSummary {
 			continue
 		}
-		out = append(out, msg)
+		if index >= 0 {
+			return nil, errors.New("multiple active compaction summaries are not supported")
+		}
+		index = i
 	}
-	return out
+	if index < 0 {
+		if strings.TrimSpace(req.PreviousCompactionID) != "" || req.PreviousGeneration != 0 || strings.TrimSpace(req.PreviousWindowID) != "" || strings.TrimSpace(req.PreviousSummary) != "" {
+			return nil, errors.New("previous compaction identity requires an active compaction summary")
+		}
+		return messages, nil
+	}
+	summary := messages[index]
+	if strings.TrimSpace(summary.CompactionID) == "" || summary.CompactionGeneration <= 0 || strings.TrimSpace(summary.CompactionWindowID) == "" {
+		return nil, errors.New("active compaction summary has incomplete identity")
+	}
+	if strings.TrimSpace(req.PreviousCompactionID) == "" || req.PreviousGeneration <= 0 || strings.TrimSpace(req.PreviousWindowID) == "" || strings.TrimSpace(req.PreviousSummary) == "" {
+		return nil, errors.New("active compaction summary requires explicit previous compaction identity")
+	}
+	if strings.TrimSpace(req.PreviousCompactionID) != strings.TrimSpace(summary.CompactionID) ||
+		req.PreviousGeneration != summary.CompactionGeneration ||
+		strings.TrimSpace(req.PreviousWindowID) != strings.TrimSpace(summary.CompactionWindowID) ||
+		strings.TrimSpace(req.PreviousSummary) != ExtractCheckpointSummary(summary.Content) {
+		return nil, errors.New("active compaction summary identity mismatch")
+	}
+	out := make([]session.Message, 0, len(messages)-1)
+	out = append(out, messages[:index]...)
+	out = append(out, messages[index+1:]...)
+	return out, nil
 }
 
-func normalizeResultWindow(result *Result, req Request) {
-	if result.CompactionGeneration <= 0 {
-		result.CompactionGeneration = requestedCompactionGeneration(result.Details)
+func normalizeResultWindow(result *Result, req Request) error {
+	if strings.TrimSpace(result.CompactionID) == "" {
+		return errors.New("compaction id is required")
 	}
-	if result.CompactionGeneration <= 0 && req.PreviousGeneration > 0 {
+	if strings.TrimSpace(req.PreviousCompactionID) != "" && (req.PreviousGeneration <= 0 || strings.TrimSpace(req.PreviousWindowID) == "") {
+		return errors.New("previous compaction generation and window id are required")
+	}
+	result.CompactionGeneration = 1
+	if req.PreviousGeneration > 0 {
 		result.CompactionGeneration = req.PreviousGeneration + 1
 	}
-	if result.CompactionGeneration <= 0 {
-		if result.PreviousCompactionID != "" {
-			result.CompactionGeneration = 2
-		} else {
-			result.CompactionGeneration = 1
-		}
-	}
-	if result.CompactionWindowID == "" {
-		result.CompactionWindowID = result.CompactionID
-	}
-	if result.CompactionWindowID == "" {
-		result.CompactionWindowID = result.FirstKeptEntryID
-	}
-}
-
-func requestedCompactionGeneration(details map[string]string) int {
-	if details == nil {
-		return 0
-	}
-	var generation int
-	if _, err := fmt.Sscanf(details["compaction_generation"], "%d", &generation); err == nil && generation > 0 {
-		return generation
-	}
-	return 0
+	result.CompactionWindowID = result.CompactionID
+	return nil
 }
 
 func ExtractCheckpointSummary(content string) string {

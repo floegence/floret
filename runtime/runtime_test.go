@@ -40,13 +40,13 @@ func TestHostRunsFakeProviderThread(t *testing.T) {
 			FakeResponse: "configured",
 			SystemPrompt: "test",
 		},
+		Store:       NewMemoryStore(),
 		Sink:        rec,
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 
 	started, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"})
 	if err != nil {
@@ -100,7 +100,6 @@ func TestHostRunTurnReportsTerminalProjectionUnavailableWithoutDiscardingResult(
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
@@ -112,13 +111,13 @@ func TestHostRunTurnReportsTerminalProjectionUnavailableWithoutDiscardingResult(
 	if result.Status != TurnStatusCompleted || result.Output != "configured" {
 		t.Fatalf("result terminal facts = %#v", result)
 	}
-	if result.ID != "turn-1" || result.RunID != "run-1" || result.Metrics.LLMRequests != 1 {
+	if result.TurnID != "turn-1" || result.RunID != "run-1" || result.Metrics.LLMRequests != 1 {
 		t.Fatalf("result execution facts = %#v", result)
 	}
 	if result.ProjectionAvailability != TurnProjectionAvailabilityUnavailable || result.Projection != nil || strings.TrimSpace(result.ProjectionError) == "" {
 		t.Fatalf("projection outcome = %#v, want unavailable diagnostic", result)
 	}
-	if err := result.ValidateProjection(); err != nil {
+	if err := result.Validate(); err != nil {
 		t.Fatalf("projection outcome validation: %v", err)
 	}
 }
@@ -132,12 +131,12 @@ func TestHostEnsureThreadReturnsSummaryWithoutMessages(t *testing.T) {
 			FakeResponse: "configured",
 			SystemPrompt: "test",
 		},
+		Store:       NewMemoryStore(),
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 
 	started, err := host.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "thread"})
 	if err != nil {
@@ -187,7 +186,6 @@ func TestHostRunTurnRecoversInterruptedActiveLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
@@ -255,12 +253,12 @@ func TestHostRunsThreadThroughModelGateway(t *testing.T) {
 		Config:               runtimeGatewayConfig("gateway system"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                NewMemoryStore(),
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
@@ -313,13 +311,13 @@ func TestHostProviderTitleModeGeneratesTitle(t *testing.T) {
 		Config:               runtimeGatewayConfig("gateway system"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                NewMemoryStore(),
 		ThreadTitleMode:      ThreadTitleModeProvider,
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
@@ -436,12 +434,12 @@ func TestHostRunTurnEnforcesCumulativeInputTokenLimit(t *testing.T) {
 		Config:               runtimeGatewayConfig("gateway system"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                NewMemoryStore(),
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +480,6 @@ func TestHostRunTurnProjectsSupplementalContextOnlyIntoCurrentProviderRequest(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
@@ -536,14 +533,14 @@ func TestHostRunTurnProjectsSupplementalContextOnlyIntoCurrentProviderRequest(t 
 	supplementalContent := ""
 	inputCount := 0
 	for i, msg := range firstReq.Messages {
-		if msg.Role == "user" && msg.Content == "what is this process" {
+		if msg.Role == ModelMessageRoleUser && msg.Text == "what is this process" {
 			inputIndex = i
 			inputCount++
 		}
-		if strings.Contains(msg.Content, "Host-provided supplemental context") {
+		if strings.Contains(msg.Text, "Host-provided supplemental context") {
 			supplementalIndex = i
-			supplementalContent = msg.Content
-			if msg.Role != "user" {
+			supplementalContent = msg.Text
+			if msg.Role != ModelMessageRoleUser {
 				t.Fatalf("supplemental message role = %q, want user", msg.Role)
 			}
 		}
@@ -560,7 +557,7 @@ func TestHostRunTurnProjectsSupplementalContextOnlyIntoCurrentProviderRequest(t 
 		}
 	}
 	for _, msg := range secondReq.Messages {
-		if strings.Contains(msg.Content, "Host-provided supplemental context") || strings.Contains(msg.Content, "12264") {
+		if strings.Contains(msg.Text, "Host-provided supplemental context") || strings.Contains(msg.Text, "12264") {
 			t.Fatalf("supplemental context leaked into follow-up request: %#v", secondReq.Messages)
 		}
 	}
@@ -589,12 +586,12 @@ func TestHostRunTurnIgnoresEmptySupplementalContext(t *testing.T) {
 		Config:               runtimeGatewayConfig("gateway system"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                NewMemoryStore(),
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
@@ -617,7 +614,7 @@ func TestHostRunTurnIgnoresEmptySupplementalContext(t *testing.T) {
 		t.Fatalf("missing gateway request: %#v", requests)
 	}
 	for _, msg := range req.Messages {
-		if strings.Contains(msg.Content, "Host-provided supplemental context") {
+		if strings.Contains(msg.Text, "Host-provided supplemental context") {
 			t.Fatalf("empty supplemental context changed request messages: %#v", req.Messages)
 		}
 	}
@@ -709,7 +706,7 @@ func TestHostModelGatewayRequiresExplicitIdentity(t *testing.T) {
 	}
 }
 
-func TestHostForwardsTurnModelReasoningAndOpaqueProviderState(t *testing.T) {
+func TestHostPersistsOpaqueProviderStateWithinFloretStore(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
 	var mu sync.Mutex
@@ -743,7 +740,6 @@ func TestHostForwardsTurnModelReasoningAndOpaqueProviderState(t *testing.T) {
 		return host
 	}
 	firstHost := newHost("model-a")
-	defer firstHost.Close()
 	if _, err := firstHost.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
@@ -757,31 +753,29 @@ func TestHostForwardsTurnModelReasoningAndOpaqueProviderState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Status != TurnStatusCompleted || first.ProviderState == nil || first.ProviderState.ID != "state-turn-1" {
+	if first.Status != TurnStatusCompleted {
 		t.Fatalf("first turn result = %#v", first)
 	}
 
-	secondHost := newHost("model-b")
-	defer secondHost.Close()
-	previous := &ModelState{Kind: "responses", ID: "state-turn-1", Attributes: map[string]string{"cursor": "turn-1", "custom": "keep"}}
+	secondHost := newHost("model-a")
 	second, err := secondHost.RunTurn(ctx, RunTurnRequest{
-		RunID:                 "run-2",
-		ThreadID:              "thread",
-		TurnID:                "turn-2",
-		Input:                 "second",
-		Reasoning:             ReasoningSelection{Level: ReasoningLevelLow},
-		PreviousProviderState: previous,
+		RunID:    "run-2",
+		ThreadID: "thread",
+		TurnID:   "turn-2",
+		Input:    "second",
+		Reasoning: ReasoningSelection{
+			Level: ReasoningLevelLow,
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Status != TurnStatusCompleted || second.ProviderState == nil || second.ProviderState.ID != "state-turn-2" || second.ProviderState.Attributes["model"] != "model-b" {
+	if second.Status != TurnStatusCompleted {
 		t.Fatalf("second turn result = %#v", second)
 	}
-	previous.Attributes["cursor"] = "mutated"
-	second.ProviderState.Attributes["model"] = "mutated"
 
-	if _, err := secondHost.RunTurn(ctx, RunTurnRequest{RunID: "run-3", ThreadID: "thread", TurnID: "turn-3", Input: "third"}); err != nil {
+	thirdHost := newHost("model-b")
+	if _, err := thirdHost.RunTurn(ctx, RunTurnRequest{RunID: "run-3", ThreadID: "thread", TurnID: "turn-3", Input: "third"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -802,14 +796,447 @@ func TestHostForwardsTurnModelReasoningAndOpaqueProviderState(t *testing.T) {
 	if firstReq.Model != "model-a" || firstReq.Reasoning.Level != ReasoningLevelHigh || firstReq.PreviousState != nil {
 		t.Fatalf("first gateway request = %#v", firstReq)
 	}
-	if secondReq.Model != "model-b" || secondReq.Reasoning.Level != ReasoningLevelLow {
+	if secondReq.Model != "model-a" || secondReq.Reasoning.Level != ReasoningLevelLow {
 		t.Fatalf("second gateway request model/reasoning = %#v", secondReq)
 	}
-	if secondReq.PreviousState == nil || secondReq.PreviousState.Kind != "responses" || secondReq.PreviousState.ID != "state-turn-1" || secondReq.PreviousState.Attributes["cursor"] != "turn-1" || secondReq.PreviousState.Attributes["custom"] != "keep" {
+	if secondReq.PreviousState == nil || secondReq.PreviousState.Kind != "responses" || secondReq.PreviousState.ID != "state-turn-1" || secondReq.PreviousState.Attributes["cursor"] != "turn-1" || secondReq.PreviousState.Attributes["model"] != "model-a" {
 		t.Fatalf("second gateway request previous state = %#v", secondReq.PreviousState)
 	}
 	if thirdReq.PreviousState != nil {
-		t.Fatalf("runtime should not persist provider state across turns: %#v", thirdReq.PreviousState)
+		t.Fatalf("compatibility key change must invalidate provider state: %#v", thirdReq.PreviousState)
+	}
+}
+
+func TestHostReloadsProviderStateFromSQLiteStore(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "floret.db")
+	var mu sync.Mutex
+	var requests []ModelRequest
+	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		mu.Lock()
+		requests = append(requests, req)
+		mu.Unlock()
+		events := make(chan ModelEvent, 2)
+		events <- ModelEvent{Type: ModelEventDelta, Text: "ok"}
+		events <- ModelEvent{Type: ModelEventDone, Reason: "stop", ResponseState: &ModelState{Kind: "responses", ID: "state-" + string(req.TurnID)}}
+		close(events)
+		return events, nil
+	})
+	newHost := func(store *Store) *Host {
+		t.Helper()
+		host, err := NewHost(HostOptions{
+			Config:               runtimeGatewayConfig("test"),
+			ModelGateway:         gateway,
+			ModelGatewayIdentity: runtimeGatewayIdentity("model-a"),
+			Store:                store,
+			IDGenerator:          deterministicIDs(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return host
+	}
+	store, err := OpenSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := newHost(store)
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = OpenSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextSnapshot, err := maintenance.ReadThreadContext(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contextSnapshot.ThreadID != "thread" || contextSnapshot.Provider != "runtime-test-gateway" || contextSnapshot.Model != "model-a" || contextSnapshot.Usage == nil {
+		t.Fatalf("reopened context snapshot = %#v", contextSnapshot)
+	}
+	host = newHost(store)
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-2", ThreadID: "thread", TurnID: "turn-2", Input: "second"}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	second, ok := findRuntimeModelRequest(requests, "thread", "turn-2", 1)
+	if !ok || second.PreviousState == nil || second.PreviousState.ID != "state-turn-1" {
+		t.Fatalf("reopened gateway request = %#v", second)
+	}
+}
+
+func TestHostClearsProviderStateWhenTurnReturnsNoFreshState(t *testing.T) {
+	ctx := context.Background()
+	var mu sync.Mutex
+	var requests []ModelRequest
+	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		mu.Lock()
+		requests = append(requests, req)
+		mu.Unlock()
+		events := make(chan ModelEvent, 2)
+		events <- ModelEvent{Type: ModelEventDelta, Text: "ok"}
+		done := ModelEvent{Type: ModelEventDone, Reason: "stop"}
+		if req.TurnID == "turn-1" {
+			done.ResponseState = &ModelState{Kind: "responses", ID: "state-turn-1"}
+		}
+		events <- done
+		close(events)
+		return events, nil
+	})
+	host, err := NewHost(HostOptions{
+		Config:               runtimeGatewayConfig("test"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("model-a"),
+		Store:                NewMemoryStore(),
+		IDGenerator:          deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	for index := 1; index <= 3; index++ {
+		turnID := TurnID(fmt.Sprintf("turn-%d", index))
+		if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: RunID(fmt.Sprintf("run-%d", index)), ThreadID: "thread", TurnID: turnID, Input: "next"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	second, _ := findRuntimeModelRequest(requests, "thread", "turn-2", 1)
+	third, _ := findRuntimeModelRequest(requests, "thread", "turn-3", 1)
+	if second.PreviousState == nil || second.PreviousState.ID != "state-turn-1" {
+		t.Fatalf("second request previous state = %#v", second.PreviousState)
+	}
+	if third.PreviousState != nil {
+		t.Fatalf("third request retained stale provider state: %#v", third.PreviousState)
+	}
+}
+
+func TestHostProviderStatePersistenceFailureFailsTurnFinalization(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	store.providerStates = &runtimeFailingProviderStateStore{ProviderStateStore: store.providerStates, failPut: true}
+	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		events := make(chan ModelEvent, 2)
+		events <- ModelEvent{Type: ModelEventDelta, Text: "provider answer"}
+		events <- ModelEvent{Type: ModelEventDone, Reason: "stop", ResponseState: &ModelState{Kind: "responses", ID: "state-1"}}
+		close(events)
+		return events, nil
+	})
+	host, err := NewHost(HostOptions{
+		Config:               runtimeGatewayConfig("test"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("model-a"),
+		Store:                store,
+		IDGenerator:          deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	if err == nil || !strings.Contains(err.Error(), "injected provider state put failure") {
+		t.Fatalf("RunTurn err = %v", err)
+	}
+	if result.Status != TurnStatusFailed || result.Error == "" || result.Projection == nil || result.Projection.Status != TurnStatusFailed {
+		t.Fatalf("failed finalization result = %#v", result)
+	}
+	if err := result.Validate(); err != nil {
+		t.Fatalf("failed finalization result validation: %v", err)
+	}
+	snapshot, readErr := host.ReadThread(ctx, "thread")
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if snapshot.Status != ThreadStatusFailed {
+		t.Fatalf("thread status = %q, want failed", snapshot.Status)
+	}
+}
+
+func TestHostNoopCompactionPreservesProviderState(t *testing.T) {
+	ctx := context.Background()
+	var mu sync.Mutex
+	var requests []ModelRequest
+	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		mu.Lock()
+		requests = append(requests, req)
+		mu.Unlock()
+		events := make(chan ModelEvent, 2)
+		events <- ModelEvent{Type: ModelEventDelta, Text: "short answer"}
+		done := ModelEvent{Type: ModelEventDone, Reason: "stop"}
+		if req.TurnID == "turn-1" {
+			done.ResponseState = &ModelState{Kind: "responses", ID: "state-turn-1"}
+		}
+		events <- done
+		close(events)
+		return events, nil
+	})
+	host, err := NewHost(HostOptions{
+		Config:               runtimeGatewayConfig("test"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("model-a"),
+		Store:                NewMemoryStore(),
+		IDGenerator:          deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: "short"}); err != nil {
+		t.Fatal(err)
+	}
+	compacted, err := host.CompactThread(ctx, CompactThreadRequest{ThreadID: "thread", RequestID: "compact-1", Source: "idle"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compacted.Compaction.Status != observation.CompactionStatusNoop || compacted.Compaction.OperationID == "" || compacted.Compaction.RequestID != "compact-1" || compacted.Compaction.Source != "idle" {
+		t.Fatalf("noop compaction result = %#v", compacted)
+	}
+	if err := compacted.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-2", ThreadID: "thread", TurnID: "turn-2", Input: "continue"}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	second, ok := findRuntimeModelRequest(requests, "thread", "turn-2", 1)
+	if !ok || second.PreviousState == nil || second.PreviousState.ID != "state-turn-1" {
+		t.Fatalf("request after noop compaction = %#v", second)
+	}
+}
+
+func TestHostSuccessfulCompactionClearsProviderState(t *testing.T) {
+	ctx := context.Background()
+	var mu sync.Mutex
+	var requests []ModelRequest
+	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		mu.Lock()
+		requests = append(requests, req)
+		mu.Unlock()
+		events := make(chan ModelEvent, 2)
+		if req.TurnID == "" {
+			events <- ModelEvent{Type: ModelEventDelta, Text: "compacted summary"}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+		} else {
+			events <- ModelEvent{Type: ModelEventDelta, Text: "turn answer"}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "stop", ResponseState: &ModelState{Kind: "responses", ID: "state-" + string(req.TurnID)}}
+		}
+		close(events)
+		return events, nil
+	})
+	host, err := NewHost(HostOptions{
+		Config:               runtimeCompactionTestConfig(),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("model-a"),
+		Store:                NewMemoryStore(),
+		IDGenerator:          deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: runtimeLargeCompactionInput()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-2", ThreadID: "thread", TurnID: "turn-2", Input: "latest tail"}); err != nil {
+		t.Fatal(err)
+	}
+	compacted, err := host.CompactThread(ctx, CompactThreadRequest{ThreadID: "thread", RequestID: "compact-1", Source: "idle"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compacted.Compaction.Status != observation.CompactionStatusCompacted || compacted.Metrics.Compactions != 1 {
+		t.Fatalf("compaction result = %#v", compacted)
+	}
+	if err := compacted.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-3", ThreadID: "thread", TurnID: "turn-3", Input: "after compaction"}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	third, ok := findRuntimeModelRequest(requests, "thread", "turn-3", 1)
+	if !ok || third.PreviousState != nil {
+		t.Fatalf("request after successful compaction = %#v", third)
+	}
+}
+
+func TestHostProviderStateDeleteFailureFailsCompactionFinalization(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	providerStates := &runtimeFailingProviderStateStore{ProviderStateStore: store.providerStates}
+	store.providerStates = providerStates
+	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		events := make(chan ModelEvent, 2)
+		if req.TurnID == "" {
+			events <- ModelEvent{Type: ModelEventDelta, Text: "compacted summary"}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+		} else {
+			events <- ModelEvent{Type: ModelEventDelta, Text: "turn answer"}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "stop", ResponseState: &ModelState{Kind: "responses", ID: "state-" + string(req.TurnID)}}
+		}
+		close(events)
+		return events, nil
+	})
+	host, err := NewHost(HostOptions{
+		Config:               runtimeCompactionTestConfig(),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("model-a"),
+		Store:                store,
+		IDGenerator:          deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: runtimeLargeCompactionInput()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-2", ThreadID: "thread", TurnID: "turn-2", Input: "latest tail"}); err != nil {
+		t.Fatal(err)
+	}
+	providerStates.failDelete = true
+	result, err := host.CompactThread(ctx, CompactThreadRequest{ThreadID: "thread", RequestID: "compact-1", Source: "idle"})
+	if err == nil || !strings.Contains(err.Error(), "injected provider state delete failure") {
+		t.Fatalf("CompactThread err = %v", err)
+	}
+	if result.Compaction.Status != observation.CompactionStatusFailed || result.Compaction.Error == "" {
+		t.Fatalf("failed compaction finalization result = %#v", result)
+	}
+	if err := result.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, readErr := host.ReadThreadContext(ctx, "thread")
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(snapshot.Compactions) == 0 || snapshot.Compactions[len(snapshot.Compactions)-1].Status != observation.CompactionStatusFailed {
+		t.Fatalf("context compactions = %#v", snapshot.Compactions)
+	}
+}
+
+func TestRuntimeModelMessagesGroupsAssistantToolCallsAndPreservesResponseBoundaries(t *testing.T) {
+	messages, err := runtimeModelMessages([]session.Message{
+		{Role: session.System, Content: "system"},
+		{Role: session.User, Content: "inspect"},
+		{Role: session.Assistant, Content: "I will inspect. ", Reasoning: "shared reasoning"},
+		{Role: session.Assistant, ToolCallID: "call-1", ToolName: "read", ToolArgs: `{"path":"a"}`, Reasoning: "shared reasoning"},
+		{Role: session.Assistant, ToolCallID: "call-2", ToolName: "read", ToolArgs: `{"path":"b"}`, Reasoning: "shared reasoning"},
+		{Role: session.Tool, ToolCallID: "call-1", ToolName: "read", Content: "a"},
+		{Role: session.Tool, ToolCallID: "call-2", ToolName: "read", Content: "b"},
+		{Role: session.Assistant, Content: "first response", Reasoning: "first"},
+		{Role: session.Assistant, Content: "continued response", Reasoning: "second"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 7 {
+		t.Fatalf("model messages = %#v, want 7 grouped messages", messages)
+	}
+	group := messages[2]
+	if group.Role != ModelMessageRoleAssistant || group.Text != "I will inspect. " || group.Reasoning != "shared reasoning" || len(group.ToolCalls) != 2 {
+		t.Fatalf("assistant tool group = %#v", group)
+	}
+	if group.ToolCalls[0].ID != "call-1" || group.ToolCalls[1].ID != "call-2" || group.ToolCalls[0].Reasoning != "shared reasoning" {
+		t.Fatalf("assistant tool call order = %#v", group.ToolCalls)
+	}
+	if messages[5].Text != "first response" || messages[6].Text != "continued response" {
+		t.Fatalf("adjacent assistant responses were merged: %#v", messages[5:])
+	}
+}
+
+func TestRuntimeModelMessagesRejectsInvalidToolSequences(t *testing.T) {
+	tests := []struct {
+		name     string
+		messages []session.Message
+		want     string
+	}{
+		{
+			name:     "empty args",
+			messages: []session.Message{{Role: session.Assistant, ToolCallID: "call-1", ToolName: "read"}},
+			want:     "requires id, name, and args",
+		},
+		{
+			name:     "invalid args JSON",
+			messages: []session.Message{{Role: session.Assistant, ToolCallID: "call-1", ToolName: "read", ToolArgs: "{"}},
+			want:     "invalid JSON args",
+		},
+		{
+			name: "duplicate call id",
+			messages: []session.Message{
+				{Role: session.Assistant, ToolCallID: "call-1", ToolName: "read", ToolArgs: `{}`},
+				{Role: session.Assistant, ToolCallID: "call-1", ToolName: "write", ToolArgs: `{}`},
+			},
+			want: "duplicate assistant tool call id",
+		},
+		{
+			name:     "orphan result",
+			messages: []session.Message{{Role: session.Tool, ToolCallID: "call-1", ToolName: "read", Content: "result"}},
+			want:     "without a pending call",
+		},
+		{
+			name: "result order",
+			messages: []session.Message{
+				{Role: session.Assistant, ToolCallID: "call-1", ToolName: "read", ToolArgs: `{}`},
+				{Role: session.Assistant, ToolCallID: "call-2", ToolName: "read", ToolArgs: `{}`},
+				{Role: session.Tool, ToolCallID: "call-2", ToolName: "read", Content: "second"},
+			},
+			want: "before pending call",
+		},
+		{
+			name: "result name mismatch",
+			messages: []session.Message{
+				{Role: session.Assistant, ToolCallID: "call-1", ToolName: "read", ToolArgs: `{}`},
+				{Role: session.Tool, ToolCallID: "call-1", ToolName: "write", Content: "result"},
+			},
+			want: "name mismatch",
+		},
+		{
+			name: "message before result",
+			messages: []session.Message{
+				{Role: session.Assistant, ToolCallID: "call-1", ToolName: "read", ToolArgs: `{}`},
+				{Role: session.User, Content: "continue"},
+			},
+			want: "before pending tool results",
+		},
+		{
+			name:     "unresolved call",
+			messages: []session.Message{{Role: session.Assistant, ToolCallID: "call-1", ToolName: "read", ToolArgs: `{}`}},
+			want:     "unresolved tool calls",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := runtimeModelMessages(tc.messages); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("runtimeModelMessages err = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -829,13 +1256,13 @@ func TestHostStreamsProjectedContextStatus(t *testing.T) {
 		},
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                NewMemoryStore(),
 		Sink:                 rec,
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
@@ -905,6 +1332,7 @@ func TestHostModelGatewayPreservesTextAroundToolCalls(t *testing.T) {
 		Config:               runtimeGatewayConfig("gateway system"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                NewMemoryStore(),
 		Tools:                reg,
 		Sink:                 rec,
 		IDGenerator:          deterministicIDs(),
@@ -912,7 +1340,6 @@ func TestHostModelGatewayPreservesTextAroundToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
@@ -1012,6 +1439,7 @@ func TestHostEmitsActivityTimelineForToolLifecycle(t *testing.T) {
 		Config:               runtimeGatewayConfig("test"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                NewMemoryStore(),
 		Tools:                reg,
 		Sink:                 rec,
 		IDGenerator:          deterministicIDs(),
@@ -1019,7 +1447,6 @@ func TestHostEmitsActivityTimelineForToolLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
@@ -1201,7 +1628,6 @@ func TestHostEmitsParallelToolResultBeforeSlowSiblingAndPersistsDetailInCallOrde
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1295,6 +1721,7 @@ func TestHostToolSurfaceProviderRefreshesGatewayRequests(t *testing.T) {
 		Config:               runtimeGatewayConfig("base"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                NewMemoryStore(),
 		ToolSurfaceProvider: func(_ context.Context, req ToolSurfaceRequest) (ToolSurface, error) {
 			if req.Step >= 2 && req.Phase == "provider_request" {
 				return ToolSurface{
@@ -1338,7 +1765,7 @@ func TestHostToolSurfaceProviderRefreshesGatewayRequests(t *testing.T) {
 	if names := runtimeToolNames(second.Tools); !slices.Contains(names, "read") || !slices.Contains(names, "write") {
 		t.Fatalf("second request tools = %v, want read/write", names)
 	}
-	if first.Messages[0].Content != "read surface" || second.Messages[0].Content != "full surface" {
+	if first.Messages[0].Text != "read surface" || second.Messages[0].Text != "full surface" {
 		t.Fatalf("dynamic prompts were not forwarded: %#v", requests)
 	}
 	if len(first.HostedTools) != 0 {
@@ -1414,7 +1841,6 @@ func TestHostRunTurnPreservesDistinctRunAndTurnIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1431,7 +1857,7 @@ func TestHostRunTurnPreservesDistinctRunAndTurnIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ID != "turn-msg" || result.RunID != "run-parent" || result.Status != TurnStatusCompleted {
+	if result.TurnID != "turn-msg" || result.RunID != "run-parent" || result.Status != TurnStatusCompleted {
 		t.Fatalf("result = %#v", result)
 	}
 	if result.ActivityTimeline.RunID != "run-parent" ||
@@ -1578,7 +2004,6 @@ func TestHostRunTurnCanceledProjectionSettlesPendingActivity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(context.Background(), StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1735,7 +2160,6 @@ func TestHostSubAgentsInheritModelGatewayWithChildPromptScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1808,12 +2232,12 @@ func TestHostManagesSubAgentLifecycle(t *testing.T) {
 			FakeResponse: "child done",
 			SystemPrompt: "test",
 		},
+		Store:       NewMemoryStore(),
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1959,7 +2383,6 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1979,14 +2402,32 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if defaultDetail.Context.Model.Provider != "runtime-test-gateway" || defaultDetail.Context.Model.Model != "fake-model" {
-		t.Fatalf("detail context model = %#v", defaultDetail.Context.Model)
+	if defaultDetail.Context.Provider != "runtime-test-gateway" || defaultDetail.Context.Model != "fake-model" {
+		t.Fatalf("detail context model = %#v", defaultDetail.Context)
 	}
 	if defaultDetail.Context.Policy.ContextWindowTokens != config.DefaultContextWindowTokens || defaultDetail.Context.Policy.ReservedOutputTokens != config.DefaultReservedOutputTokens {
 		t.Fatalf("detail context policy = %#v", defaultDetail.Context.Policy)
 	}
 	if defaultDetail.Context.Usage == nil || defaultDetail.Context.Usage.ContextPressure.ContextWindowTokens != config.DefaultContextWindowTokens || defaultDetail.Context.Usage.Provider != "runtime-test-gateway" {
 		t.Fatalf("detail context usage = %#v", defaultDetail.Context.Usage)
+	}
+	canonicalContext, err := host.ReadThreadContext(ctx, "child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(canonicalContext, defaultDetail.Context) {
+		t.Fatalf("subagent detail context = %#v, canonical = %#v", defaultDetail.Context, canonicalContext)
+	}
+	maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	maintenanceContext, err := maintenance.ReadThreadContext(ctx, "child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(maintenanceContext, canonicalContext) {
+		t.Fatalf("maintenance context = %#v, host context = %#v", maintenanceContext, canonicalContext)
 	}
 	contextJSON, err := json.Marshal(defaultDetail.Context)
 	if err != nil {
@@ -2056,11 +2497,10 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 	mu.Lock()
 	requestsBeforeMaintenance := requests
 	mu.Unlock()
-	maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
+	maintenance, err = NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer maintenance.Close()
 	listed, err := maintenance.ListSubAgents(ctx, "parent")
 	if err != nil {
 		t.Fatal(err)
@@ -2121,7 +2561,6 @@ func TestHostReadsSubAgentDetailRawMessageContentContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
@@ -2188,7 +2627,6 @@ func TestHostReadsSubAgentDetailRawMessageContentContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer maintenance.Close()
 	maintenanceRaw, err := maintenance.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "child", IncludeRaw: true})
 	if err != nil {
 		t.Fatal(err)
@@ -2256,7 +2694,7 @@ func TestHostSQLiteStorePersistsSubAgentDetail(t *testing.T) {
 	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"child"}, Timeout: 2 * time.Second}); err != nil || waited.TimedOut {
 		t.Fatalf("waited=%#v err=%v", waited, err)
 	}
-	if err := host.Close(); err != nil {
+	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2276,7 +2714,6 @@ func TestHostSQLiteStorePersistsSubAgentDetail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
 	detail, err := reopened.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "child", IncludeRaw: true})
 	if err != nil {
 		t.Fatal(err)
@@ -2331,7 +2768,7 @@ func TestThreadMaintenanceHostListsSubAgentsAfterHostRestart(t *testing.T) {
 	}); err != nil || waited.TimedOut {
 		t.Fatalf("waited=%#v err=%v", waited, err)
 	}
-	if err := host.Close(); err != nil {
+	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2343,7 +2780,6 @@ func TestThreadMaintenanceHostListsSubAgentsAfterHostRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer maintenance.Close()
 	listed, err := maintenance.ListSubAgents(ctx, "parent")
 	if err != nil {
 		t.Fatal(err)
@@ -2471,7 +2907,7 @@ func TestHostSQLiteStorePersistsSubAgentDetailActivity(t *testing.T) {
 	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"child"}, Timeout: 2 * time.Second}); err != nil || waited.TimedOut {
 		t.Fatalf("waited=%#v err=%v", waited, err)
 	}
-	if err := host.Close(); err != nil {
+	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2490,7 +2926,6 @@ func TestHostSQLiteStorePersistsSubAgentDetailActivity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
 	detail, err := reopened.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "child"})
 	if err != nil {
 		t.Fatal(err)
@@ -2530,12 +2965,12 @@ func TestHostCloseSubAgentsStopsUnfinishedChildren(t *testing.T) {
 		Config:               runtimeGatewayConfig("test"),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                NewMemoryStore(),
 		IDGenerator:          deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
@@ -2616,15 +3051,10 @@ func TestThreadMaintenanceHostClosesChildrenAfterFailedParentTurn(t *testing.T) 
 	if err == nil || failed.Status != TurnStatusFailed {
 		t.Fatalf("failed parent turn = %#v err=%v, want failed result and error", failed, err)
 	}
-	if err := host.Close(); err != nil {
-		t.Fatal(err)
-	}
-
 	maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer maintenance.Close()
 	closed, err := maintenance.CloseSubAgents(ctx, CloseSubAgentsRequest{ParentThreadID: "parent", Reason: "parent_failed"})
 	if err != nil {
 		t.Fatal(err)
@@ -2679,7 +3109,7 @@ func TestHostSQLiteStorePersistsThreadBehindOpaqueStore(t *testing.T) {
 	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := host.Close(); err != nil {
+	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2687,7 +3117,6 @@ func TestHostSQLiteStorePersistsThreadBehindOpaqueStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
 	host, err = NewHost(HostOptions{
 		Config: config.Config{
 			Provider:     config.ProviderFake,
@@ -2769,12 +3198,12 @@ func TestHostPublicNotFoundErrors(t *testing.T) {
 			FakeResponse: "ok",
 			SystemPrompt: "test",
 		},
+		Store:       NewMemoryStore(),
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 
 	if _, err := host.ReadThread(ctx, "missing"); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("ReadThread err = %v, want ErrThreadNotFound", err)
@@ -2828,12 +3257,12 @@ func TestHostReadTurnProjectionFromDurableDetail(t *testing.T) {
 			FakeResponse: "projected answer",
 			SystemPrompt: "test",
 		},
+		Store:       NewMemoryStore(),
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
@@ -2942,6 +3371,29 @@ func TestRuntimeEventValidateRejectsUnknownPublicState(t *testing.T) {
 	}).Validate(); err == nil {
 		t.Fatal("runtime event with mismatched projection identity validated")
 	}
+	committed := &ThreadDetailEvent{ThreadID: "thread", TurnID: "turn", RunID: "run", Step: 2}
+	if err := (Event{
+		Type:      observation.EventTypeThreadEntryCommitted,
+		ThreadID:  "thread",
+		TurnID:    "turn",
+		RunID:     "run",
+		Step:      2,
+		Committed: committed,
+	}).Validate(); err != nil {
+		t.Fatalf("runtime event with valid committed identity rejected: %v", err)
+	}
+	badCommitted := *committed
+	badCommitted.RunID = "other-run"
+	if err := (Event{
+		Type:      observation.EventTypeThreadEntryCommitted,
+		ThreadID:  "thread",
+		TurnID:    "turn",
+		RunID:     "run",
+		Step:      2,
+		Committed: &badCommitted,
+	}).Validate(); err == nil {
+		t.Fatal("runtime event with mismatched committed run identity validated")
+	}
 }
 
 func TestTurnProjectionOutcomeValidation(t *testing.T) {
@@ -2953,24 +3405,69 @@ func TestTurnProjectionOutcomeValidation(t *testing.T) {
 		result  TurnResult
 		wantErr bool
 	}{
-		{name: "ready", result: TurnResult{ID: "turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: TurnProjectionAvailabilityReady, Projection: projection}},
-		{name: "unavailable", result: TurnResult{ID: "turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: TurnProjectionAvailabilityUnavailable, ProjectionError: "detail read failed"}},
-		{name: "unknown availability", result: TurnResult{ID: "turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: "future", Projection: projection}, wantErr: true},
-		{name: "ready without projection", result: TurnResult{ID: "turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: TurnProjectionAvailabilityReady}, wantErr: true},
-		{name: "ready with error", result: TurnResult{ID: "turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: TurnProjectionAvailabilityReady, Projection: projection, ProjectionError: "unexpected"}, wantErr: true},
-		{name: "unavailable with projection", result: TurnResult{ID: "turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: TurnProjectionAvailabilityUnavailable, Projection: projection, ProjectionError: "detail read failed"}, wantErr: true},
-		{name: "unavailable without error", result: TurnResult{ID: "turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: TurnProjectionAvailabilityUnavailable}, wantErr: true},
-		{name: "running result", result: TurnResult{ID: "turn", RunID: "run", Status: TurnStatusRunning, ProjectionAvailability: TurnProjectionAvailabilityReady, Projection: projection}, wantErr: true},
-		{name: "status mismatch", result: TurnResult{ID: "turn", RunID: "run", Status: TurnStatusFailed, ProjectionAvailability: TurnProjectionAvailabilityReady, Projection: projection}, wantErr: true},
-		{name: "identity mismatch", result: TurnResult{ID: "other-turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: TurnProjectionAvailabilityReady, Projection: projection}, wantErr: true},
+		{name: "ready", result: TurnResult{ThreadID: "thread", TurnID: "turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: TurnProjectionAvailabilityReady, Projection: projection}},
+		{name: "unavailable", result: TurnResult{ThreadID: "thread", TurnID: "turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: TurnProjectionAvailabilityUnavailable, ProjectionError: "detail read failed"}},
+		{name: "unknown availability", result: TurnResult{ThreadID: "thread", TurnID: "turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: "future", Projection: projection}, wantErr: true},
+		{name: "ready without projection", result: TurnResult{ThreadID: "thread", TurnID: "turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: TurnProjectionAvailabilityReady}, wantErr: true},
+		{name: "ready with error", result: TurnResult{ThreadID: "thread", TurnID: "turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: TurnProjectionAvailabilityReady, Projection: projection, ProjectionError: "unexpected"}, wantErr: true},
+		{name: "unavailable with projection", result: TurnResult{ThreadID: "thread", TurnID: "turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: TurnProjectionAvailabilityUnavailable, Projection: projection, ProjectionError: "detail read failed"}, wantErr: true},
+		{name: "unavailable without error", result: TurnResult{ThreadID: "thread", TurnID: "turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: TurnProjectionAvailabilityUnavailable}, wantErr: true},
+		{name: "running result", result: TurnResult{ThreadID: "thread", TurnID: "turn", RunID: "run", Status: TurnStatusRunning, ProjectionAvailability: TurnProjectionAvailabilityReady, Projection: projection}, wantErr: true},
+		{name: "status mismatch", result: TurnResult{ThreadID: "thread", TurnID: "turn", RunID: "run", Status: TurnStatusFailed, ProjectionAvailability: TurnProjectionAvailabilityReady, Projection: projection}, wantErr: true},
+		{name: "identity mismatch", result: TurnResult{ThreadID: "thread", TurnID: "other-turn", RunID: "run", Status: TurnStatusCompleted, ProjectionAvailability: TurnProjectionAvailabilityReady, Projection: projection}, wantErr: true},
+	}
+	for index := range tests {
+		tests[index].result.ActivityTimeline = observation.BuildActivityTimeline(observation.ActivityRunMeta{
+			RunID:    string(tests[index].result.RunID),
+			ThreadID: string(tests[index].result.ThreadID),
+			TurnID:   string(tests[index].result.TurnID),
+			TraceID:  string(tests[index].result.RunID),
+		}, nil, time.Now().UnixMilli())
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := tt.result.ValidateProjection()
+			err := tt.result.Validate()
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("ValidateProjection() error = %v, wantErr %v", err, tt.wantErr)
+				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestCompactThreadResultValidationRequiresCanonicalTimelineIdentity(t *testing.T) {
+	t.Parallel()
+
+	valid := CompactThreadResult{
+		ThreadID:  "thread",
+		RunID:     "run",
+		RequestID: "request",
+		Compaction: observation.CompactionEvent{
+			ThreadID:    "thread",
+			RunID:       "run",
+			OperationID: "operation",
+			RequestID:   "request",
+			Source:      "test",
+			Phase:       observation.CompactionPhaseNoop,
+			Status:      observation.CompactionStatusNoop,
+		},
+		ActivityTimeline: observation.BuildActivityTimeline(observation.ActivityRunMeta{
+			RunID:    "run",
+			ThreadID: "thread",
+			TraceID:  "run",
+		}, nil, time.Now().UnixMilli()),
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid compact thread result rejected: %v", err)
+	}
+	invalid := valid
+	invalid.ActivityTimeline.RunID = "other-run"
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("compact thread result with mismatched activity timeline validated")
+	}
+	invalid = valid
+	invalid.ActivityTimeline.SchemaVersion = 0
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("compact thread result with invalid activity timeline validated")
 	}
 }
 
@@ -2998,19 +3495,19 @@ func TestPendingToolSettlementProjectionValidation(t *testing.T) {
 		ProjectionAvailability: TurnProjectionAvailabilityReady,
 		Projection:             projection,
 	}
-	if err := valid.ValidateProjection(); err != nil {
+	if err := valid.Validate(); err != nil {
 		t.Fatalf("valid pending tool settlement projection rejected: %v", err)
 	}
 
 	mismatched := valid
 	mismatched.Target.ThreadID = "other-thread"
-	if err := mismatched.ValidateProjection(); err == nil {
+	if err := mismatched.Validate(); err == nil {
 		t.Fatal("pending tool settlement projection identity mismatch validated")
 	}
 
 	mismatchedEvent := valid
 	mismatchedEvent.Event.Metadata["handle"] = "terminal:job:other"
-	if err := mismatchedEvent.ValidateProjection(); err == nil {
+	if err := mismatchedEvent.Validate(); err == nil {
 		t.Fatal("pending tool settlement event target mismatch validated")
 	}
 }
@@ -3102,7 +3599,6 @@ func TestThreadMaintenanceHostForkThreadPreservesProjectionWithNewIdentity(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "source"}); err != nil {
 		t.Fatal(err)
 	}
@@ -3113,7 +3609,6 @@ func TestThreadMaintenanceHostForkThreadPreservesProjectionWithNewIdentity(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer maintenance.Close()
 
 	forked, err := maintenance.ForkThread(ctx, ForkThreadRequest{OperationID: "fork-operation", SourceThreadID: "source", DestinationThreadID: "fork"})
 	if err != nil {
@@ -3177,7 +3672,7 @@ func TestThreadMaintenanceHostForkThreadPreservesSQLiteProjectionAfterReopen(t *
 	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-source", ThreadID: "source", TurnID: "turn-source", Input: "hello"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := host.Close(); err != nil {
+	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3193,7 +3688,7 @@ func TestThreadMaintenanceHostForkThreadPreservesSQLiteProjectionAfterReopen(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := maintenance.Close(); err != nil {
+	if err := forkStore.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if len(forked.Turns) != 1 {
@@ -3215,7 +3710,6 @@ func TestThreadMaintenanceHostForkThreadPreservesSQLiteProjectionAfterReopen(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
 	replayed, err := reopened.ForkThread(ctx, ForkThreadRequest{OperationID: "fork-operation", SourceThreadID: "source", DestinationThreadID: "fork"})
 	if err != nil {
 		t.Fatal(err)
@@ -3249,7 +3743,6 @@ func TestThreadMaintenanceHostForkThreadRejectsOperationAndDestinationConflicts(
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer maintenance.Close()
 
 	request := ForkThreadRequest{OperationID: "operation", SourceThreadID: "source", DestinationThreadID: "fork"}
 	first, err := maintenance.ForkThread(ctx, request)
@@ -3300,7 +3793,6 @@ func TestThreadMaintenanceHostForkThreadValidatesCompletedTargets(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer maintenance.Close()
 		req := ForkThreadRequest{OperationID: "operation", SourceThreadID: "source", DestinationThreadID: "fork"}
 		if _, err := maintenance.ForkThread(ctx, req); err != nil {
 			t.Fatal(err)
@@ -3321,7 +3813,6 @@ func TestThreadMaintenanceHostForkThreadValidatesCompletedTargets(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer maintenance.Close()
 		req := ForkThreadRequest{OperationID: "operation", SourceThreadID: "source", DestinationThreadID: "fork"}
 		if _, err := maintenance.ForkThread(ctx, req); err != nil {
 			t.Fatal(err)
@@ -3350,7 +3841,6 @@ func TestThreadMaintenanceHostForkThreadRecoversAtOperationBoundaries(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer maintenance.Close()
 		req := ForkThreadRequest{OperationID: "operation", SourceThreadID: "source", DestinationThreadID: "fork"}
 		if _, err := maintenance.ForkThread(ctx, req); !errors.Is(err, errInjectedForkFailure) {
 			t.Fatalf("first error = %v", err)
@@ -3381,7 +3871,6 @@ func TestThreadMaintenanceHostForkThreadRecoversAtOperationBoundaries(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer maintenance.Close()
 		req := ForkThreadRequest{OperationID: "operation", SourceThreadID: "source", DestinationThreadID: "fork"}
 		if _, err := maintenance.ForkThread(ctx, req); !errors.Is(err, errInjectedForkFailure) {
 			t.Fatalf("first error = %v", err)
@@ -3399,7 +3888,6 @@ func TestThreadMaintenanceHostForkThreadRecoversAtOperationBoundaries(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer maintenance.Close()
 		req := ForkThreadRequest{OperationID: "operation", SourceThreadID: "source", DestinationThreadID: "fork"}
 		if _, err := maintenance.ForkThread(ctx, req); !errors.Is(err, errInjectedForkFailure) {
 			t.Fatalf("first error = %v", err)
@@ -3435,7 +3923,6 @@ func TestThreadMaintenanceHostForkThreadRecoversAtOperationBoundaries(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer maintenance.Close()
 		req := ForkThreadRequest{OperationID: "operation", SourceThreadID: "source", DestinationThreadID: "fork"}
 		if _, err := maintenance.ForkThread(ctx, req); !errors.Is(err, errInjectedForkFailure) {
 			t.Fatalf("first error = %v", err)
@@ -3473,7 +3960,6 @@ func TestThreadMaintenanceHostForkThreadClonesTerminalSubAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
@@ -3497,7 +3983,6 @@ func TestThreadMaintenanceHostForkThreadClonesTerminalSubAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer maintenance.Close()
 
 	forked, err := maintenance.ForkThread(ctx, ForkThreadRequest{OperationID: "fork-operation", SourceThreadID: "parent", DestinationThreadID: "parent-fork"})
 	if err != nil {
@@ -3539,13 +4024,13 @@ func TestHostCompletePendingToolRunsFollowUpTurnThroughPublicFacade(t *testing.T
 			FakeResponse: "completion handled",
 			SystemPrompt: "test",
 		},
+		Store:       NewMemoryStore(),
 		Sink:        rec,
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
@@ -3571,7 +4056,7 @@ func TestHostCompletePendingToolRunsFollowUpTurnThroughPublicFacade(t *testing.T
 	if result.Status != TurnStatusCompleted || result.Output != "completion handled" {
 		t.Fatalf("result = %#v", result)
 	}
-	if result.RunID != "turn-start" || result.ID != "turn-complete" {
+	if result.RunID != "turn-start" || result.TurnID != "turn-complete" {
 		t.Fatalf("completion execution identity = %#v", result)
 	}
 	snapshot, err := host.ReadThread(ctx, "thread")
@@ -3598,12 +4083,12 @@ func TestHostCompletePendingToolRejectsInvalidRequest(t *testing.T) {
 			FakeResponse: "ok",
 			SystemPrompt: "test",
 		},
+		Store:       NewMemoryStore(),
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{}); err == nil || !strings.Contains(err.Error(), "thread id is required") {
 		t.Fatalf("err = %v", err)
 	}
@@ -3729,7 +4214,6 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer maintenance.Close()
 
 	if _, err := maintenance.SettlePendingTool(ctx, PendingToolSettlementRequest{
 		Target: PendingToolSettlementTarget{
@@ -3789,7 +4273,7 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	if settled.ProjectionAvailability != TurnProjectionAvailabilityUnavailable || settled.Projection != nil || settled.ProjectionError == "" {
 		t.Fatalf("settlement projection outcome = %#v, want unavailable", settled)
 	}
-	if err := settled.ValidateProjection(); err != nil {
+	if err := settled.Validate(); err != nil {
 		t.Fatalf("settlement projection validation: %v", err)
 	}
 	readProjection, err := maintenance.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "thread", TurnID: "turn-1", RunID: "run-1"})
@@ -3970,7 +4454,6 @@ func TestHostSettlePendingToolDuringActiveTurnUsesOwnedThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread-active-settlement"}); err != nil {
 		t.Fatal(err)
 	}
@@ -4097,7 +4580,6 @@ func TestHostSettlePendingToolOnlyUpdatesExplicitPendingTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer maintenance.Close()
 
 	settled, err := maintenance.SettlePendingTool(ctx, PendingToolSettlementRequest{
 		Target: PendingToolSettlementTarget{
@@ -4166,11 +4648,12 @@ func TestHarnessHelperRunsCustomToolWithoutPublicProviderAPI(t *testing.T) {
 		Model:        "fake-model",
 		SystemPrompt: "test",
 	}, scripted, harnessOptions{
-		Store:    NewMemoryStore(),
-		Tools:    registry,
-		Title:    fixedTitleGenerator{},
-		NewID:    deterministicIDs(),
-		Approver: allowRuntimeTools,
+		Store:                 NewMemoryStore(),
+		Tools:                 registry,
+		Title:                 fixedTitleGenerator{},
+		NewID:                 deterministicIDs(),
+		Approver:              allowRuntimeTools,
+		StateCompatibilityKey: "runtime-test-scripted-provider",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -4258,7 +4741,6 @@ func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
@@ -4486,7 +4968,6 @@ func TestHostListPendingApprovalsDuringActiveRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
@@ -4616,7 +5097,6 @@ func TestHostPendingApprovalSnapshotKeepsModelBatchOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread-batch"}); err != nil {
 		t.Fatal(err)
 	}
@@ -4671,7 +5151,6 @@ func TestHostThreadDetailEventsOmitRawUnlessRequested(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
@@ -4755,7 +5234,6 @@ func TestHostRunTurnProjectionUsesRawAssistantContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
@@ -4892,7 +5370,6 @@ func TestHostProjectionTreatsCoreControlSignalAsControl(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
@@ -5145,15 +5622,10 @@ func TestThreadMaintenanceHostDeletesThreadTreeWithoutProviderConfig(t *testing.
 	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"child"}, Timeout: 2 * time.Second}); err != nil || waited.TimedOut {
 		t.Fatalf("waited=%#v err=%v", waited, err)
 	}
-	if err := host.Close(); err != nil {
-		t.Fatal(err)
-	}
-
 	maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer maintenance.Close()
 	if _, ok := reflect.TypeOf(maintenance).MethodByName("RunTurn"); ok {
 		t.Fatalf("ThreadMaintenanceHost must not expose RunTurn")
 	}
@@ -5193,8 +5665,26 @@ func runtimeGatewayConfig(systemPrompt string) config.Config {
 	}
 }
 
+func runtimeCompactionTestConfig() config.Config {
+	return config.Config{
+		SystemPrompt: "runtime compaction test",
+		ContextPolicy: config.ContextPolicy{
+			ContextWindowTokens:          256000,
+			ReservedOutputTokens:         25600,
+			ReservedSummaryTokens:        40,
+			RecentTailTokens:             20,
+			RecentUserTokens:             20,
+			CompactedContextTargetTokens: 100,
+		},
+	}
+}
+
+func runtimeLargeCompactionInput() string {
+	return strings.Repeat("older context ", 6000) + "\n\n" + strings.Repeat("older answer ", 4500) + "\n\ncontinue after compaction"
+}
+
 func runtimeGatewayIdentity(model string) ModelGatewayIdentity {
-	return ModelGatewayIdentity{Provider: "runtime-test-gateway", Model: strings.TrimSpace(model)}
+	return ModelGatewayIdentity{Provider: "runtime-test-gateway", Model: strings.TrimSpace(model), StateCompatibilityKey: "runtime-test-gateway:" + strings.TrimSpace(model)}
 }
 
 func runtimeEchoSchema() map[string]any {
@@ -5367,6 +5857,26 @@ func (r *settlementProjectionFailureRepo) Path(ctx context.Context, threadID, le
 		return nil, errors.New("injected settlement projection read failure")
 	}
 	return r.MemoryRepo.Path(ctx, threadID, leafID)
+}
+
+type runtimeFailingProviderStateStore struct {
+	storage.ProviderStateStore
+	failPut    bool
+	failDelete bool
+}
+
+func (s *runtimeFailingProviderStateStore) PutProviderState(ctx context.Context, record storage.ProviderStateRecord) error {
+	if s.failPut {
+		return errors.New("injected provider state put failure")
+	}
+	return s.ProviderStateStore.PutProviderState(ctx, record)
+}
+
+func (s *runtimeFailingProviderStateStore) DeleteProviderState(ctx context.Context, threadID string) error {
+	if s.failDelete {
+		return errors.New("injected provider state delete failure")
+	}
+	return s.ProviderStateStore.DeleteProviderState(ctx, threadID)
 }
 
 func (r *terminalProjectionFailureRecorder) EmitEvent(ev Event) {

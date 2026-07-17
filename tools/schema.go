@@ -81,9 +81,6 @@ func Nullable(schema map[string]any) map[string]any {
 }
 
 func Validate(schema map[string]any, raw []byte) (map[string]any, error) {
-	if len(bytes.TrimSpace(raw)) == 0 {
-		raw = []byte("{}")
-	}
 	var value any
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()

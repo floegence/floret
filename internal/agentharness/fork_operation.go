@@ -267,6 +267,7 @@ func (h *AgentHarness) executeForkPlanNode(ctx context.Context, plan forkOperati
 		Now:             plan.PreparedAt,
 		TurnIDMap:       node.TurnIDMap,
 		RunIDMap:        node.RunIDMap,
+		RewriteEntry:    rewriteForkContextEntry,
 	})
 	if err != nil {
 		return err

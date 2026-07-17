@@ -138,6 +138,9 @@ type Entry struct {
 	CompactionTrigger       string              `json:"compaction_trigger,omitempty"`
 	CompactionReason        string              `json:"compaction_reason,omitempty"`
 	CompactionPhase         string              `json:"compaction_phase,omitempty"`
+	CompactionOperationID   string              `json:"compaction_operation_id,omitempty"`
+	CompactionRequestID     string              `json:"compaction_request_id,omitempty"`
+	CompactionSource        string              `json:"compaction_source,omitempty"`
 	TokensBefore            int64               `json:"tokens_before,omitempty"`
 	TokensAfterEstimate     int64               `json:"tokens_after_estimate,omitempty"`
 	ContextUsageBefore      contextpolicy.Usage `json:"context_usage_before,omitempty"`
@@ -170,6 +173,14 @@ type ForkOptions struct {
 	Now             time.Time
 	TurnIDMap       map[string]string
 	RunIDMap        map[string]string
+	RewriteEntry    func(Entry, ForkEntryIdentity) (Entry, error)
+}
+
+type ForkEntryIdentity struct {
+	SourceThreadID      string
+	DestinationThreadID string
+	TurnIDMap           map[string]string
+	RunIDMap            map[string]string
 }
 
 type ContextOptions struct{}
@@ -590,6 +601,17 @@ func (r *MemoryRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, er
 		next.CompactedThroughEntryID = oldToNew[entry.CompactedThroughEntryID]
 		next.KeptUserEntryIDs = rewriteEntryIDs(entry.KeptUserEntryIDs, oldToNew)
 		next.Metadata = rewriteForkMetadata(next.Metadata, oldToNew, opts.TurnIDMap, opts.RunIDMap)
+		if opts.RewriteEntry != nil {
+			next, err = opts.RewriteEntry(next, ForkEntryIdentity{
+				SourceThreadID:      opts.SourceThreadID,
+				DestinationThreadID: newID,
+				TurnIDMap:           opts.TurnIDMap,
+				RunIDMap:            opts.RunIDMap,
+			})
+			if err != nil {
+				return ThreadMeta{}, err
+			}
+		}
 		next.CreatedAt = now
 		next.Raw = rawForEntry(next)
 		next.RawHash = stableHash(next.Raw)
@@ -1209,6 +1231,17 @@ func AppendMessageAt(ctx context.Context, repo Repo, threadID, turnID string, ms
 }
 
 func AppendCompaction(ctx context.Context, repo Repo, threadID, turnID string, result compaction.Result) (Entry, error) {
+	if strings.TrimSpace(result.CompactionID) == "" || result.CompactionGeneration <= 0 || strings.TrimSpace(result.CompactionWindowID) == "" {
+		return Entry{}, errors.New("compaction result requires id, generation, and window id")
+	}
+	if strings.TrimSpace(result.OperationID) == "" || strings.TrimSpace(result.RequestID) == "" || strings.TrimSpace(result.Source) == "" {
+		return Entry{}, errors.New("compaction result requires operation, request, and source identities")
+	}
+	for _, key := range []string{"operation_id", "request_id", "source"} {
+		if _, exists := result.Details[key]; exists {
+			return Entry{}, fmt.Errorf("compaction details must not contain identity alias %q", key)
+		}
+	}
 	return repo.Append(ctx, Entry{
 		ThreadID:                threadID,
 		TurnID:                  turnID,
@@ -1217,14 +1250,17 @@ func AppendCompaction(ctx context.Context, repo Repo, threadID, turnID string, r
 		PreviousCompactionID:    result.PreviousCompactionID,
 		CompactedThroughEntryID: result.CompactedThroughEntryID,
 		SummarySchemaVersion:    result.SummarySchemaVersion,
-		CompactionGeneration:    compactionGeneration(result),
-		CompactionWindowID:      compactionWindowID(result),
+		CompactionGeneration:    result.CompactionGeneration,
+		CompactionWindowID:      result.CompactionWindowID,
 		FirstKeptEntryID:        result.FirstKeptEntryID,
 		KeptUserEntryIDs:        append([]string(nil), result.KeptUserEntryIDs...),
 		Summary:                 result.Summary,
 		CompactionTrigger:       string(result.Trigger),
 		CompactionReason:        string(result.Reason),
 		CompactionPhase:         string(result.Phase),
+		CompactionOperationID:   strings.TrimSpace(result.OperationID),
+		CompactionRequestID:     strings.TrimSpace(result.RequestID),
+		CompactionSource:        strings.TrimSpace(result.Source),
 		TokensBefore:            result.TokensBefore,
 		TokensAfterEstimate:     result.TokensAfterEstimate,
 		ContextUsageBefore:      result.UsageBefore,
@@ -1336,32 +1372,6 @@ func rewriteForkMetadata(metadata map[string]string, entryIDs map[string]string,
 		out[key] = next
 	}
 	return out
-}
-
-func compactionGeneration(result compaction.Result) int {
-	if result.CompactionGeneration > 0 {
-		return result.CompactionGeneration
-	}
-	if value := result.Details["compaction_generation"]; value != "" {
-		var generation int
-		if _, err := fmt.Sscanf(value, "%d", &generation); err == nil && generation > 0 {
-			return generation
-		}
-	}
-	if result.PreviousCompactionID != "" {
-		return 2
-	}
-	return 1
-}
-
-func compactionWindowID(result compaction.Result) string {
-	if result.CompactionWindowID != "" {
-		return result.CompactionWindowID
-	}
-	if result.CompactionID != "" {
-		return result.CompactionID
-	}
-	return result.FirstKeptEntryID
 }
 
 func typeForMessage(msg session.Message) EntryType {

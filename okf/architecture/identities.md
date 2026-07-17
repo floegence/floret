@@ -32,6 +32,16 @@ must not infer it from `TurnID` or `ThreadID`. Harness-owned internal executions
 such as retry, queued child input, and maintenance follow-ups generate a fresh
 execution `RunID` through the Floret ID generator. Prompt-cache rows and JSON
 use `prompt_scope_id`, not `run_id`, as the reuse boundary.
+Standalone Engine runs and compact-only maintenance executions may carry a
+`RunID` without a `TurnID`; code must not synthesize `TurnID = RunID`. Public
+`TurnResult`, `CompactThreadResult`, nested context/compaction observations, and
+live committed detail validate their complete applicable identity tuples.
+
+Every compaction lifecycle has a structured `OperationID`, `RequestID`, and
+`Source`. Manual work uses the caller's required request/source values;
+automatic work uses a Floret-generated request ID and `Source=engine`. Journal
+entries store those typed fields directly and never recover them from a
+compaction ID or metadata alias.
 
 Parent-managed child threads use the child `ThreadID` as the durable
 conversation identity. `AgentPath` and task names are references for hosts,

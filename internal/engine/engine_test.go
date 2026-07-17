@@ -979,6 +979,7 @@ func TestProviderRequestAndResponseRecordsCarryThreadAndTurnIDs(t *testing.T) {
 	e.Prompt = promptStore
 	e.Options.RunID = "turn"
 	e.Options.ThreadID = "thread"
+	e.Options.TurnID = "turn"
 
 	got := e.Run(context.Background(), "hello")
 
@@ -3786,8 +3787,8 @@ func TestPreRequestThresholdRequiresExplicitCompactor(t *testing.T) {
 	if meta, _ := debugEvents[0].Metadata.(map[string]any); meta["stage"] != engine.ContextCompactDebugStageBegin || meta["status"] != engine.ContextCompactDebugStatusRunning {
 		t.Fatalf("begin debug metadata = %#v", debugEvents[0].Metadata)
 	}
-	if debugEvents[0].TurnID != "run" || debugEvents[1].TurnID != "run" {
-		t.Fatalf("debug turn ids = %q, %q; want run correlation", debugEvents[0].TurnID, debugEvents[1].TurnID)
+	if debugEvents[0].TurnID != "" || debugEvents[1].TurnID != "" {
+		t.Fatalf("standalone debug events must not infer turn ids: %q, %q", debugEvents[0].TurnID, debugEvents[1].TurnID)
 	}
 	if meta, _ := debugEvents[1].Metadata.(map[string]any); meta["stage"] != engine.ContextCompactDebugStagePreflight ||
 		meta["status"] != engine.ContextCompactDebugStatusFailed ||
@@ -4022,6 +4023,27 @@ func TestLoopGuardsDuplicateToolsAndCancellation(t *testing.T) {
 		got := e.Run(context.Background(), "loop")
 		if !errors.Is(got.Err, engine.ErrDuplicateToolCallID) {
 			t.Fatalf("err = %v, want duplicate tool call id", got.Err)
+		}
+	})
+	t.Run("invalid tool call contracts", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			call provider.ToolCall
+			want string
+		}{
+			{name: "missing id", call: provider.ToolCall{Name: "read", Args: `{}`}, want: "id is required"},
+			{name: "missing name", call: provider.ToolCall{ID: "call-1", Args: `{}`}, want: "name is required"},
+			{name: "missing args", call: provider.ToolCall{ID: "call-1", Name: "read"}, want: "args are required"},
+			{name: "invalid args", call: provider.ToolCall{ID: "call-1", Name: "read", Args: "{"}, want: "valid JSON"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				p := harness.NewScriptedProvider([]provider.StreamEvent{{Type: provider.ToolCalls, ToolCalls: []provider.ToolCall{tc.call}}})
+				e := newTestEngine(p, &event.Recorder{})
+				got := e.Run(context.Background(), "run")
+				if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), tc.want) {
+					t.Fatalf("result = %#v, want %q", got, tc.want)
+				}
+			})
 		}
 	})
 	t.Run("cancel", func(t *testing.T) {

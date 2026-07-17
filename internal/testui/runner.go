@@ -2679,7 +2679,6 @@ func (r Runner) runProjectedManualCompactionScenario(ctx context.Context) RunRes
 	if err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, flruntime.StartThreadRequest{ThreadID: "testui-manual-active"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
@@ -2727,7 +2726,6 @@ func (r Runner) runProjectedManualNoopScenario(ctx context.Context) RunResponse 
 	if err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, flruntime.StartThreadRequest{ThreadID: "testui-manual-noop"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
@@ -2743,7 +2741,7 @@ func (r Runner) runProjectedManualNoopScenario(ctx context.Context) RunResponse 
 	if err != nil {
 		return finishRunResponse(r, resp, "fail", err.Error())
 	}
-	if result.Status != string(flruntime.TurnStatusCompleted) || result.Metrics.Compactions != 0 || result.ProviderState != nil {
+	if result.Compaction.Status != obs.CompactionStatusNoop || result.Metrics.Compactions != 0 {
 		return finishRunResponse(r, resp, "fail", fmt.Sprintf("unexpected noop result %#v", result))
 	}
 	compactions, _ := testuiRuntimeCompactionObservations(sink.events)
@@ -2765,7 +2763,6 @@ func (r Runner) runProjectedManualPollErrorScenario(ctx context.Context) RunResp
 	if err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, flruntime.StartThreadRequest{ThreadID: "testui-manual-poll-error"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
@@ -2797,7 +2794,6 @@ func (r Runner) runProjectedCompactOnlyScenario(ctx context.Context) RunResponse
 	if err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, flruntime.StartThreadRequest{ThreadID: "testui-compact-only"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
@@ -2816,7 +2812,7 @@ func (r Runner) runProjectedCompactOnlyScenario(ctx context.Context) RunResponse
 	if err != nil {
 		return finishRunResponse(r, resp, "fail", err.Error())
 	}
-	if result.Status != string(flruntime.TurnStatusCompleted) || result.Metrics.Compactions != 1 {
+	if result.Compaction.Status != obs.CompactionStatusCompacted || result.Metrics.Compactions != 1 {
 		compactions, debugs := testuiRuntimeCompactionObservations(sink.events)
 		return finishRunResponse(r, resp, "fail", fmt.Sprintf("unexpected result %#v compactions=%#v debugs=%#v", result, compactions, debugs))
 	}
@@ -2848,7 +2844,6 @@ func (r Runner) runProjectedCompactCancelScenario(ctx context.Context) RunRespon
 	if err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
-	defer host.Close()
 	if _, err := host.StartThread(ctx, flruntime.StartThreadRequest{ThreadID: "testui-compact-cancel"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
@@ -2878,7 +2873,7 @@ func (r Runner) runProjectedCompactCancelScenario(ctx context.Context) RunRespon
 	cancel()
 	out := <-done
 	resp.Agent = testuiRuntimeContextCompactionRun(out.result, sink.events)
-	if out.err == nil || !errors.Is(out.err, context.Canceled) || out.result.Status != string(flruntime.TurnStatusCancelled) {
+	if out.err == nil || !errors.Is(out.err, context.Canceled) || out.result.Compaction.Status != obs.CompactionStatusCancelled {
 		return finishRunResponse(r, resp, "fail", fmt.Sprintf("unexpected cancel result=%#v err=%v", out.result, out.err))
 	}
 	compactions, debugs := testuiRuntimeCompactionObservations(sink.events)
@@ -2960,7 +2955,6 @@ type testuiCompactionRuntime interface {
 	StartThread(context.Context, flruntime.StartThreadRequest) (flruntime.ThreadSnapshot, error)
 	RunTurn(context.Context, flruntime.RunTurnRequest) (flruntime.TurnResult, error)
 	CompactThread(context.Context, flruntime.CompactThreadRequest) (flruntime.CompactThreadResult, error)
-	Close() error
 }
 
 func testuiCompactionHost(sink flruntime.EventSink, gateway flruntime.ModelGateway) (testuiCompactionRuntime, error) {
@@ -2984,7 +2978,7 @@ func testuiCompactionNoopHost(sink flruntime.EventSink, gateway flruntime.ModelG
 }
 
 func testuiModelGatewayIdentity() flruntime.ModelGatewayIdentity {
-	return flruntime.ModelGatewayIdentity{Provider: "testui-gateway", Model: "testui-model"}
+	return flruntime.ModelGatewayIdentity{Provider: "testui-gateway", Model: "testui-model", StateCompatibilityKey: "testui-gateway:testui-model"}
 }
 
 func testuiProjectedCompactionConfig(window int64, compactTarget int64, compactAggressively bool) config.Config {
@@ -3028,8 +3022,8 @@ func testuiRuntimeAgentRun(result flruntime.TurnResult, events []flruntime.Event
 
 func testuiRuntimeContextCompactionRun(result flruntime.CompactThreadResult, events []flruntime.Event) *AgentRun {
 	return &AgentRun{
-		EngineStatus: result.Status,
-		Output:       result.Error,
+		EngineStatus: string(result.Compaction.Status),
+		Output:       result.Compaction.Error,
 		Metrics: engine.RunMetrics{
 			Steps:       result.Metrics.Steps,
 			LLMRequests: result.Metrics.LLMRequests,

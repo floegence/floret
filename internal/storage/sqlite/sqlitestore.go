@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	schemaVersion     = "10"
+	schemaVersion     = "11"
 	rawEncoderVersion = "1"
 	driverName        = "sqlite"
 )
@@ -112,36 +112,32 @@ func (s *Store) init(ctx context.Context) error {
 			return err
 		}
 	}
+	hasSchema, err := s.hasUserSchema(ctx)
+	if err != nil {
+		return err
+	}
 	if _, err := s.db.ExecContext(ctx, schemaMetaSQL); err != nil {
 		return err
 	}
 	current, err := s.metaValue(ctx, "schema_version")
 	if errors.Is(err, storage.ErrMetadataNotFound) {
+		if hasSchema {
+			return errors.New("unsupported sqlite store without canonical schema metadata")
+		}
 		if _, err := s.db.ExecContext(ctx, schemaSQL); err != nil {
 			return err
 		}
 		if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_meta(key, value) VALUES
-			('schema_version', ?), ('raw_encoder_version', ?)`, schemaVersion, rawEncoderVersion); err != nil {
+			('schema_version', ?), ('raw_encoder_version', ?), ('schema_fingerprint', ?)`, schemaVersion, rawEncoderVersion, canonicalSchemaFingerprint()); err != nil {
 			return err
 		}
-		return dropSubAgentPathIndex(ctx, s.db)
+		return nil
 	}
 	if err != nil {
 		return err
 	}
 	if current != schemaVersion {
-		if current != "3" && current != "4" && current != "5" && current != "6" && current != "7" && current != "8" && current != "9" {
-			return fmt.Errorf("unsupported sqlite store schema version %q", current)
-		}
-		if err := s.migrate(ctx, current); err != nil {
-			return err
-		}
-	}
-	if _, err := s.db.ExecContext(ctx, schemaSQL); err != nil {
-		return err
-	}
-	if err := dropSubAgentPathIndex(ctx, s.db); err != nil {
-		return err
+		return fmt.Errorf("unsupported sqlite store schema version %q", current)
 	}
 	rawVersion, err := s.metaValue(ctx, "raw_encoder_version")
 	if err != nil {
@@ -150,199 +146,27 @@ func (s *Store) init(ctx context.Context) error {
 	if rawVersion != rawEncoderVersion {
 		return fmt.Errorf("unsupported sqlite store raw encoder version %q", rawVersion)
 	}
-	return nil
-}
-
-func (s *Store) migrate(ctx context.Context, current string) error {
-	return s.withImmediate(ctx, func(tx sqlRunner) error {
-		if current == "3" || current == "4" {
-			if err := migrateThreadTitleColumns(ctx, tx, current); err != nil {
-				return err
-			}
-			if err := migratePromptCacheScopeColumns(ctx, tx); err != nil {
-				return fmt.Errorf("migrate v%s→v5 prompt cache scope columns: %w", current, err)
-			}
-			if current == "3" {
-				if err := addColumnIfMissing(ctx, tx, "entries", "kept_user_entry_ids_json", `ALTER TABLE entries ADD COLUMN kept_user_entry_ids_json TEXT NOT NULL DEFAULT '[]'`); err != nil {
-					return fmt.Errorf("migrate v3→v5 add kept user entry ids column: %w", err)
-				}
-			}
-			current = "5"
-		}
-		if current == "5" {
-			if err := addColumnIfMissing(ctx, tx, "threads", "status", `ALTER TABLE threads ADD COLUMN status TEXT NOT NULL DEFAULT ''`); err != nil {
-				return fmt.Errorf("migrate v5→v6 add status column: %w", err)
-			}
-			if err := addColumnIfMissing(ctx, tx, "threads", "last_viewed_at", `ALTER TABLE threads ADD COLUMN last_viewed_at TEXT NOT NULL DEFAULT ''`); err != nil {
-				return fmt.Errorf("migrate v5→v6 add last_viewed_at column: %w", err)
-			}
-			current = "6"
-		}
-		if current == "6" {
-			for _, column := range []struct {
-				name string
-				stmt string
-			}{
-				{name: "parent_turn_id", stmt: `ALTER TABLE threads ADD COLUMN parent_turn_id TEXT NOT NULL DEFAULT ''`},
-				{name: "task_name", stmt: `ALTER TABLE threads ADD COLUMN task_name TEXT NOT NULL DEFAULT ''`},
-				{name: "agent_path", stmt: `ALTER TABLE threads ADD COLUMN agent_path TEXT NOT NULL DEFAULT ''`},
-				{name: "host_profile_ref", stmt: `ALTER TABLE threads ADD COLUMN host_profile_ref TEXT NOT NULL DEFAULT ''`},
-				{name: "closed", stmt: `ALTER TABLE threads ADD COLUMN closed INTEGER NOT NULL DEFAULT 0`},
-			} {
-				if err := addColumnIfMissing(ctx, tx, "threads", column.name, column.stmt); err != nil {
-					return fmt.Errorf("migrate v6→v7 add %s column: %w", column.name, err)
-				}
-			}
-			if err := dropSubAgentPathIndex(ctx, tx); err != nil {
-				return fmt.Errorf("migrate v6→v7 drop subagent path index: %w", err)
-			}
-			current = "7"
-		}
-		if current == "7" {
-			if err := addColumnIfMissing(ctx, tx, "threads", "fork_mode", `ALTER TABLE threads ADD COLUMN fork_mode TEXT NOT NULL DEFAULT ''`); err != nil {
-				return fmt.Errorf("migrate v7→v8 add fork_mode column: %w", err)
-			}
-			current = "8"
-		}
-		if current == "8" {
-			if err := addColumnIfMissing(ctx, tx, "threads", "task_description", `ALTER TABLE threads ADD COLUMN task_description TEXT NOT NULL DEFAULT ''`); err != nil {
-				return fmt.Errorf("migrate v8→v9 add task_description column: %w", err)
-			}
-			current = "9"
-		}
-		if current == "9" {
-			if err := addColumnIfMissing(ctx, tx, "threads", "fork_operation_id", `ALTER TABLE threads ADD COLUMN fork_operation_id TEXT NOT NULL DEFAULT ''`); err != nil {
-				return fmt.Errorf("migrate v9→v10 add fork operation id column: %w", err)
-			}
-			if err := addColumnIfMissing(ctx, tx, "threads", "fork_operation_node_id", `ALTER TABLE threads ADD COLUMN fork_operation_node_id TEXT NOT NULL DEFAULT ''`); err != nil {
-				return fmt.Errorf("migrate v9→v10 add fork operation node id column: %w", err)
-			}
-			if _, err := tx.ExecContext(ctx, forkOperationsSQL); err != nil {
-				return fmt.Errorf("migrate v9→v10 create fork operations table: %w", err)
-			}
-			if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_version'`, schemaVersion); err != nil {
-				return fmt.Errorf("migrate v9→v10 update schema_version: %w", err)
-			}
-			return nil
-		}
-		return fmt.Errorf("unsupported sqlite store schema version %q", current)
-	})
-}
-
-func migrateThreadTitleColumns(ctx context.Context, q sqlRunner, current string) error {
-	for _, column := range []struct {
-		name string
-		stmt string
-	}{
-		{name: "title", stmt: `ALTER TABLE threads ADD COLUMN title TEXT NOT NULL DEFAULT ''`},
-		{name: "title_status", stmt: `ALTER TABLE threads ADD COLUMN title_status TEXT NOT NULL DEFAULT ''`},
-		{name: "title_source", stmt: `ALTER TABLE threads ADD COLUMN title_source TEXT NOT NULL DEFAULT ''`},
-		{name: "title_updated_at", stmt: `ALTER TABLE threads ADD COLUMN title_updated_at TEXT NOT NULL DEFAULT ''`},
-		{name: "title_error", stmt: `ALTER TABLE threads ADD COLUMN title_error TEXT NOT NULL DEFAULT ''`},
-	} {
-		if err := addColumnIfMissing(ctx, q, "threads", column.name, column.stmt); err != nil {
-			return fmt.Errorf("migrate v%s→v5 add %s column: %w", current, column.name, err)
-		}
-	}
-	return nil
-}
-
-func migratePromptCacheScopeColumns(ctx context.Context, q sqlRunner) error {
-	tables := []struct {
-		name       string
-		oldIndex   string
-		newIndex   string
-		createStmt string
-	}{
-		{
-			name:       "prompt_segments",
-			oldIndex:   "prompt_segments_lookup_idx",
-			newIndex:   "prompt_segments_lookup_idx",
-			createStmt: `CREATE INDEX IF NOT EXISTS prompt_segments_lookup_idx ON prompt_segments(prompt_scope_id, provider, model, rowid)`,
-		},
-		{
-			name:       "prompt_toolsets",
-			oldIndex:   "prompt_toolsets_lookup_idx",
-			newIndex:   "prompt_toolsets_lookup_idx",
-			createStmt: `CREATE INDEX IF NOT EXISTS prompt_toolsets_lookup_idx ON prompt_toolsets(prompt_scope_id, provider, model, rowid)`,
-		},
-		{
-			name:       "prompt_requests",
-			oldIndex:   "prompt_requests_run_idx",
-			newIndex:   "prompt_requests_scope_idx",
-			createStmt: `CREATE INDEX IF NOT EXISTS prompt_requests_scope_idx ON prompt_requests(prompt_scope_id, rowid)`,
-		},
-		{
-			name:       "prompt_responses",
-			oldIndex:   "prompt_responses_run_idx",
-			newIndex:   "prompt_responses_scope_idx",
-			createStmt: `CREATE INDEX IF NOT EXISTS prompt_responses_scope_idx ON prompt_responses(prompt_scope_id, rowid)`,
-		},
-	}
-	for _, table := range tables {
-		hasScope, err := columnExists(ctx, q, table.name, "prompt_scope_id")
-		if err != nil {
-			return err
-		}
-		if !hasScope {
-			hasRunID, err := columnExists(ctx, q, table.name, "run_id")
-			if err != nil {
-				return err
-			}
-			if !hasRunID {
-				return fmt.Errorf("%s has neither prompt_scope_id nor run_id", table.name)
-			}
-			if _, err := q.ExecContext(ctx, `ALTER TABLE `+table.name+` RENAME COLUMN run_id TO prompt_scope_id`); err != nil {
-				return err
-			}
-		}
-		for _, index := range []string{table.oldIndex, table.newIndex} {
-			if _, err := q.ExecContext(ctx, `DROP INDEX IF EXISTS `+index); err != nil {
-				return err
-			}
-		}
-		if _, err := q.ExecContext(ctx, table.createStmt); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func addColumnIfMissing(ctx context.Context, q sqlRunner, table, column, stmt string) error {
-	ok, err := columnExists(ctx, q, table, column)
+	fingerprint, err := s.metaValue(ctx, "schema_fingerprint")
 	if err != nil {
-		return err
+		return fmt.Errorf("unsupported sqlite store schema fingerprint: %w", err)
 	}
-	if ok {
-		return nil
+	if fingerprint != canonicalSchemaFingerprint() {
+		return fmt.Errorf("unsupported sqlite store schema fingerprint %q", fingerprint)
 	}
-	_, err = q.ExecContext(ctx, stmt)
-	return err
+	return nil
 }
 
-func dropSubAgentPathIndex(ctx context.Context, q sqlRunner) error {
-	_, err := q.ExecContext(ctx, `DROP INDEX IF EXISTS threads_subagent_path_unique`)
-	return err
-}
-
-func columnExists(ctx context.Context, q sqlRunner, table, column string) (bool, error) {
-	rows, err := q.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
-	if err != nil {
+func (s *Store) hasUserSchema(ctx context.Context) (bool, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).Scan(&count); err != nil {
 		return false, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid, notNull, pk int
-		var name, typ string
-		var defaultValue sql.NullString
-		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
-			return false, err
-		}
-		if name == column {
-			return true, nil
-		}
-	}
-	return false, rows.Err()
+	return count > 0, nil
+}
+
+func canonicalSchemaFingerprint() string {
+	sum := sha256.Sum256([]byte(schemaSQL))
+	return hex.EncodeToString(sum[:])
 }
 
 func (s *Store) metaValue(ctx context.Context, key string) (string, error) {
@@ -762,6 +586,17 @@ func (s *Store) Fork(ctx context.Context, opts sessiontree.ForkOptions) (session
 			next.CompactedThroughEntryID = oldToNew[entry.CompactedThroughEntryID]
 			next.KeptUserEntryIDs = rewriteEntryIDs(entry.KeptUserEntryIDs, oldToNew)
 			next.Metadata = rewriteForkMetadata(next.Metadata, oldToNew, opts.TurnIDMap, opts.RunIDMap)
+			if opts.RewriteEntry != nil {
+				next, err = opts.RewriteEntry(next, sessiontree.ForkEntryIdentity{
+					SourceThreadID:      opts.SourceThreadID,
+					DestinationThreadID: newID,
+					TurnIDMap:           opts.TurnIDMap,
+					RunIDMap:            opts.RunIDMap,
+				})
+				if err != nil {
+					return err
+				}
+			}
 			next.CreatedAt = now
 			next = sessiontree.PrepareEntry(next)
 			ordinal, err := nextOrdinal(ctx, tx, newID)
@@ -1117,6 +952,79 @@ func (s *Store) DeleteMetadata(ctx context.Context, namespace, id string) error 
 	})
 }
 
+func (s *Store) ProviderState(ctx context.Context, threadID string) (storage.ProviderStateRecord, error) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return storage.ProviderStateRecord{}, errors.New("provider state thread id is required")
+	}
+	var record storage.ProviderStateRecord
+	var rawState, updatedAt string
+	err := s.db.QueryRowContext(ctx, `SELECT thread_id, leaf_entry_id, compatibility_key, state_json,
+		created_by_run_id, created_by_turn_id, updated_at
+		FROM provider_states WHERE thread_id = ?`, threadID).Scan(
+		&record.ThreadID, &record.LeafEntryID, &record.CompatibilityKey, &rawState,
+		&record.CreatedByRunID, &record.CreatedByTurnID, &updatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storage.ProviderStateRecord{}, storage.ErrProviderStateNotFound
+	}
+	if err != nil {
+		return storage.ProviderStateRecord{}, err
+	}
+	if err := json.Unmarshal([]byte(rawState), &record.State); err != nil {
+		return storage.ProviderStateRecord{}, fmt.Errorf("decode provider state for thread %q: %w", threadID, err)
+	}
+	if strings.TrimSpace(record.State.Kind) == "" || strings.TrimSpace(record.State.ID) == "" {
+		return storage.ProviderStateRecord{}, fmt.Errorf("provider state for thread %q is incomplete", threadID)
+	}
+	record.UpdatedAt = parseTime(updatedAt)
+	return record, nil
+}
+
+func (s *Store) PutProviderState(ctx context.Context, record storage.ProviderStateRecord) error {
+	record.ThreadID = strings.TrimSpace(record.ThreadID)
+	record.LeafEntryID = strings.TrimSpace(record.LeafEntryID)
+	record.CompatibilityKey = strings.TrimSpace(record.CompatibilityKey)
+	record.CreatedByRunID = strings.TrimSpace(record.CreatedByRunID)
+	record.CreatedByTurnID = strings.TrimSpace(record.CreatedByTurnID)
+	if record.ThreadID == "" || record.LeafEntryID == "" || record.CompatibilityKey == "" || strings.TrimSpace(record.State.Kind) == "" || strings.TrimSpace(record.State.ID) == "" {
+		return errors.New("provider state record is incomplete")
+	}
+	if record.UpdatedAt.IsZero() {
+		record.UpdatedAt = time.Now()
+	}
+	rawState, err := json.Marshal(record.State)
+	if err != nil {
+		return err
+	}
+	return s.withImmediate(ctx, func(tx sqlRunner) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO provider_states(
+			thread_id, leaf_entry_id, compatibility_key, state_json, created_by_run_id, created_by_turn_id, updated_at
+		) VALUES(?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(thread_id) DO UPDATE SET
+			leaf_entry_id = excluded.leaf_entry_id,
+			compatibility_key = excluded.compatibility_key,
+			state_json = excluded.state_json,
+			created_by_run_id = excluded.created_by_run_id,
+			created_by_turn_id = excluded.created_by_turn_id,
+			updated_at = excluded.updated_at`,
+			record.ThreadID, record.LeafEntryID, record.CompatibilityKey, string(rawState),
+			record.CreatedByRunID, record.CreatedByTurnID, formatTime(record.UpdatedAt))
+		return err
+	})
+}
+
+func (s *Store) DeleteProviderState(ctx context.Context, threadID string) error {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return errors.New("provider state thread id is required")
+	}
+	return s.withImmediate(ctx, func(tx sqlRunner) error {
+		_, err := tx.ExecContext(ctx, `DELETE FROM provider_states WHERE thread_id = ?`, threadID)
+		return err
+	})
+}
+
 func (s *Store) DeleteThreadTreeData(ctx context.Context, req storage.DeleteThreadTreeDataRequest) error {
 	rootThreadID := strings.TrimSpace(req.RootThreadID)
 	if rootThreadID == "" {
@@ -1350,14 +1258,16 @@ func insertEntry(ctx context.Context, tx sqlRunner, entry sessiontree.Entry, ord
 		compacted_through_entry_id, summary_schema_version, compaction_generation,
 		compaction_window_id, first_kept_entry_id, kept_user_entry_ids_json, summary, compaction_trigger,
 		compaction_reason, compaction_phase, tokens_before, tokens_after_estimate,
+		compaction_operation_id, compaction_request_id, compaction_source,
 		context_usage_before_json, context_usage_after_json, error, metadata_json
-	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.ThreadID, entry.ID, ordinal, entry.ParentID, string(entry.Type), entry.TurnID, formatTime(entry.CreatedAt),
 		string(messageJSON), entry.Raw, entry.RawHash, 1,
 		string(entry.TurnStatus), entry.Provider, entry.Model, entry.CompactionID, entry.PreviousCompactionID,
 		entry.CompactedThroughEntryID, entry.SummarySchemaVersion, entry.CompactionGeneration,
 		entry.CompactionWindowID, entry.FirstKeptEntryID, string(keptUserEntryIDsJSON), entry.Summary, entry.CompactionTrigger,
 		entry.CompactionReason, entry.CompactionPhase, entry.TokensBefore, entry.TokensAfterEstimate,
+		entry.CompactionOperationID, entry.CompactionRequestID, entry.CompactionSource,
 		string(beforeJSON), string(afterJSON), entry.Error, string(metadataJSON))
 	return err
 }
@@ -1449,6 +1359,7 @@ func scanEntry(rows *sql.Rows) (sessiontree.Entry, error) {
 		&entry.CompactedThroughEntryID, &entry.SummarySchemaVersion, &entry.CompactionGeneration,
 		&entry.CompactionWindowID, &entry.FirstKeptEntryID, &keptUserEntryIDsJSON, &entry.Summary, &entry.CompactionTrigger,
 		&entry.CompactionReason, &entry.CompactionPhase, &entry.TokensBefore, &entry.TokensAfterEstimate,
+		&entry.CompactionOperationID, &entry.CompactionRequestID, &entry.CompactionSource,
 		&beforeJSON, &afterJSON, &entry.Error, &metadataJSON,
 	)
 	if err != nil {
@@ -1690,6 +1601,7 @@ const entryColumns = `thread_id, id, parent_id, type, turn_id, created_at,
 	compacted_through_entry_id, summary_schema_version, compaction_generation,
 	compaction_window_id, first_kept_entry_id, kept_user_entry_ids_json, summary, compaction_trigger,
 	compaction_reason, compaction_phase, tokens_before, tokens_after_estimate,
+	compaction_operation_id, compaction_request_id, compaction_source,
 	context_usage_before_json, context_usage_after_json, error, metadata_json`
 
 const schemaMetaSQL = `
@@ -1774,6 +1686,9 @@ CREATE TABLE IF NOT EXISTS entries (
 	compaction_trigger TEXT NOT NULL DEFAULT '',
 	compaction_reason TEXT NOT NULL DEFAULT '',
 	compaction_phase TEXT NOT NULL DEFAULT '',
+	compaction_operation_id TEXT NOT NULL DEFAULT '',
+	compaction_request_id TEXT NOT NULL DEFAULT '',
+	compaction_source TEXT NOT NULL DEFAULT '',
 	tokens_before INTEGER NOT NULL DEFAULT 0,
 	tokens_after_estimate INTEGER NOT NULL DEFAULT 0,
 	context_usage_before_json TEXT NOT NULL DEFAULT '{}',
@@ -1788,6 +1703,17 @@ CREATE TABLE IF NOT EXISTS entries (
 CREATE INDEX IF NOT EXISTS entries_parent_idx ON entries(thread_id, parent_id);
 CREATE INDEX IF NOT EXISTS entries_thread_ordinal_idx ON entries(thread_id, ordinal);
 CREATE INDEX IF NOT EXISTS threads_updated_at_idx ON threads(updated_at);
+
+CREATE TABLE IF NOT EXISTS provider_states (
+	thread_id TEXT PRIMARY KEY,
+	leaf_entry_id TEXT NOT NULL,
+	compatibility_key TEXT NOT NULL,
+	state_json TEXT NOT NULL,
+	created_by_run_id TEXT NOT NULL DEFAULT '',
+	created_by_turn_id TEXT NOT NULL DEFAULT '',
+	updated_at TEXT NOT NULL,
+	FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
+);
 
 ` + activeTurnLeasesSQL + `
 

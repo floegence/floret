@@ -153,10 +153,16 @@ func TestProviderSummaryRequestKeepsFullPreviousSummary(t *testing.T) {
 	}
 	previous := sessioncompaction.BuildCheckpointMessage(previousSummary, nil, nil)
 	previous.CompactionID = "c0"
+	previous.CompactionGeneration = 1
+	previous.CompactionWindowID = "c0"
 	scripted := harness.NewScriptedProvider(harness.Step(harness.Text("summary ok"), harness.Done()))
 
 	prep, err := sessioncompaction.Prepare(context.Background(), sessioncompaction.Request{
-		CompactionID: "c1",
+		CompactionID:         "c1",
+		PreviousCompactionID: previous.CompactionID,
+		PreviousGeneration:   previous.CompactionGeneration,
+		PreviousWindowID:     previous.CompactionWindowID,
+		PreviousSummary:      sessioncompaction.ExtractCheckpointSummary(previous.Content),
 		History: []session.Message{
 			previous,
 			{Role: session.User, Content: "new request", EntryID: "u1"},

@@ -106,6 +106,34 @@ func TestThreadRunPassesHostLabelsToLocalTools(t *testing.T) {
 	}
 }
 
+func TestThreadRunRejectsProviderContinuationWithoutStateStore(t *testing.T) {
+	ctx := context.Background()
+	done := scriptharness.Done()
+	done.ResponseState = &provider.State{Kind: "responses", ID: "state-1"}
+	p := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done"), done))
+	h := New(Options{
+		Provider:              p,
+		ProviderName:          "fake",
+		Model:                 "fake-model",
+		SystemPrompt:          "You are a test assistant.",
+		Tools:                 tools.NewRegistry(),
+		Repo:                  sessiontree.NewMemoryRepo(),
+		PromptStore:           cache.NewMemoryStore(),
+		StateCompatibilityKey: "fake-state-key",
+	})
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := thread.Run(ctx, "do it", RunOptions{TurnID: "turn-1"})
+	if err == nil || !strings.Contains(err.Error(), "provider state store is required") {
+		t.Fatalf("Run err = %v, want provider state store requirement", err)
+	}
+	if result.Status != engine.Failed {
+		t.Fatalf("result status = %q, want failed", result.Status)
+	}
+}
+
 func TestThreadRunGeneratesTitleMetadataAfterSuccessfulTurn(t *testing.T) {
 	ctx := context.Background()
 	rec := &HarnessRecorder{}
@@ -1738,7 +1766,7 @@ func TestManualCompactHoldsActiveTurnGuardDuringMutation(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := thread.Compact(ctx, CompactOptions{RequestID: "manual-1"})
+		_, err := thread.Compact(ctx, CompactOptions{RequestID: "manual-1", Source: "test"})
 		done <- err
 	}()
 	<-repo.entered

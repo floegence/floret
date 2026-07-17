@@ -288,7 +288,7 @@ func (v *StreamValidator) Observe(ev StreamEvent) error {
 		}
 		return nil
 	case HostedToolCall, HostedToolResult:
-		if err := ValidateToolCall(ev.ToolCall); err != nil {
+		if err := validateToolCallIdentity(ev.ToolCall); err != nil {
 			return err
 		}
 		if ev.Type == HostedToolCall {
@@ -336,6 +336,20 @@ func (v *StreamValidator) Finish() error {
 }
 
 func ValidateToolCall(call ToolCall) error {
+	if err := validateToolCallIdentity(call); err != nil {
+		return err
+	}
+	args := strings.TrimSpace(call.Args)
+	if args == "" {
+		return errors.New("provider tool call args are required")
+	}
+	if !json.Valid([]byte(args)) {
+		return errors.New("provider tool call args must be valid JSON")
+	}
+	return nil
+}
+
+func validateToolCallIdentity(call ToolCall) error {
 	if strings.TrimSpace(call.ID) == "" {
 		return errors.New("provider tool call id is required")
 	}

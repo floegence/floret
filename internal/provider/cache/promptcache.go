@@ -74,9 +74,6 @@ func (r PromptScopeRef) validate() error {
 	if strings.TrimSpace(r.RunID) == "" {
 		return errors.New("run id is required")
 	}
-	if strings.TrimSpace(r.TurnID) == "" {
-		return errors.New("turn id is required")
-	}
 	return nil
 }
 

@@ -38,6 +38,7 @@ type Store interface {
 	cache.Store
 	MetadataStore
 	ForkOperationStore
+	ProviderStateStore
 	DeleteThreadTreeData(context.Context, DeleteThreadTreeDataRequest) error
 	Close() error
 }

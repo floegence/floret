@@ -29,6 +29,9 @@ host interface for every runtime operation.
   close, and thread deletion operations that do not run the model loop.
 * `NewMemoryStore` creates an in-memory runtime store for tests or ephemeral use.
 * `OpenSQLiteStore` creates Floret-managed durable runtime storage.
+  `HostOptions.Store` and `ThreadMaintenanceHostOptions.Store` are required.
+  The caller owns the Store lifetime and closes it after all hosts and active
+  work using that Store have stopped; neither facade exposes `Close`.
 * `Host.EnsureThread` creates or recovers a hosted thread and returns
   transcript-free `ThreadSummary` lifecycle metadata.
 * `Host.RunTurn` executes one hosted user-facing turn.
@@ -49,7 +52,14 @@ host interface for every runtime operation.
   to Floret.
 * `Host.CompactThread` runs a compaction-only maintenance operation for an idle
   hosted thread through `CompactThreadRequest` without creating natural
-  assistant output.
+  assistant output. `RequestID` and `Source` are required, and the result carries
+  one validated terminal `observation.CompactionEvent` with exact thread, run,
+  request, operation, and source identity.
+* `Host.ReadThreadContext` and `ThreadMaintenanceHost.ReadThreadContext` return
+  the same canonical `ThreadContextSnapshot` projected from the active journal
+  path for main or child threads. The snapshot contains resolved provider/model,
+  `config.ContextPolicy`, latest `ContextStatus`, typed compaction events, and
+  `UpdatedAt`; malformed or identity-conflicting journal data returns an error.
 * `SpawnSubAgent`, `SendSubAgentInput`, `WaitSubAgents`, `ListSubAgents`,
   `CloseSubAgent`, and `CloseSubAgents` manage durable child threads under a
   hosted parent thread.
@@ -101,8 +111,9 @@ host interface for every runtime operation.
 * `ModelGateway` lets a host supply model transport through
   `HostOptions.ModelGateway` while Floret owns loop control, tool dispatch,
   context lifecycle, and ledgers.
-* `ModelGatewayIdentity` supplies the provider and model names for
-  `ModelGateway` requests and ledgers. Gateway-backed hosts must not set
+* `ModelGatewayIdentity` supplies provider/model names and a required,
+  non-sensitive `StateCompatibilityKey` for `ModelGateway` requests, ledgers,
+  and opaque continuation compatibility. Gateway-backed hosts must not set
   provider transport fields such as provider, model, base URL, API key, or fake
   response in `HostOptions.Config`; pass the raw non-transport runtime config to
   `NewHost` and put transport identity only in `HostOptions.ModelGatewayIdentity`.
@@ -116,12 +127,25 @@ host interface for every runtime operation.
   `ModelEventToolCallEnd` expose model tool-call streaming as provider-neutral
   public runtime events. They identify the call being generated without carrying
   argument text; `ModelEventToolCalls` remains the final executable batch.
+* `ModelRequest.Messages` uses typed roles, assistant text/reasoning, grouped
+  `[]tools.ToolCall`, and one typed tool result per tool message. Floret groups
+  parallel calls and validates call IDs, JSON arguments, result order, names,
+  and adjacency before invoking the gateway. Gateway adapters map this contract
+  directly to provider wire format and must not regroup, deduplicate, reorder,
+  drop, or repair messages.
 
 # Boundaries
 
 The host should treat `runtime.Store` as opaque. Product data such as owners,
 workspace metadata, pinned state, billing, and read watermarks belongs in the
 host database keyed by `runtime.ThreadID`.
+
+Floret Store data includes the journal, prompt-cache/provider ledgers, tool
+artifacts, context lifecycle, and opaque provider continuation. Hosts must not
+query Store tables, copy provider state into product storage, or persist a
+second model-visible message projection. A host may map public snapshots to a
+response or in-memory UI DTO, but that mapping is not another durable engine
+fact source.
 
 Subagents are parent-managed child threads, not a graph workflow framework and
 not host-owned pending tool work. Each child uses its own durable `ThreadID` and
@@ -326,16 +350,18 @@ Deleting a thread is a data lifecycle operation. `DeleteThread` deletes the
 target thread and Floret-managed descendant child threads, plus their prompt
 cache records and thread artifacts. Runtime resolves the complete tree before
 issuing one storage delete operation. SQLite applies threads, entries, active
-leases, metadata, artifacts, prompt segments, toolsets, provider requests, and
-provider responses in one immediate transaction, so a failure rolls back the
-whole tree without changing the public store schema. Hosts should use this
+leases, metadata, artifacts, prompt segments, toolsets, provider requests,
+provider responses, and provider continuation in one immediate transaction, so
+a failure rolls back the whole tree without changing the public store schema.
+Hosts should use this
 public API instead of querying or mutating Floret storage tables directly.
 
 `NewThreadMaintenanceHost` is the provider-free constructor for maintenance
 processes that share a Floret `Store` but do not need provider configuration.
 It exposes `EnsureThread`, `ReadTurnProjection`, `SettlePendingTool`,
 `ListSubAgents`, `ListSubAgentActivityTimeline`, `ReadSubAgentDetail`,
-`ListSubAgentDetailEvents`, `CloseSubAgents`, `DeleteThread`, and `Close`
+`ListSubAgentDetailEvents`, `ReadThreadContext`, `CloseSubAgents`, and
+`DeleteThread`
 without accepting fake providers, model gateways, tools, or host UI options.
 `ListSubAgents` on this facade returns the same durable parent-scoped child
 snapshots after process restart as a provider-backed host would expose while
@@ -376,7 +402,8 @@ to projection identity. Non-empty unknown values, simultaneous completion and
 continuation, and inferred finishes without a normalized reason fail validation.
 
 `runtime.Event.Committed` carries a `ThreadDetailEvent` after Floret has
-successfully appended the corresponding journal entry. Hosts can render provider
+successfully appended the corresponding journal entry. Its typed thread, turn,
+run, and step identity must match the enclosing event. Hosts can render provider
 text deltas as temporary live output, but durable display reconciliation should
 use committed thread events or `ListThreadDetailEvents` so visible ordering
 matches Floret's stored transcript. Internal harness events such as
@@ -419,7 +446,9 @@ active-run requests through `ManualCompactionSource`; Floret decides the safe
 point, runs the same compaction pipeline as automatic pressure compaction with
 `manual/manual` trigger and reason, includes request correlation in
 start/complete/failed/cancelled observations, and then continues the provider
-loop when the manual compaction failed without cancellation.
+loop when the manual compaction failed without cancellation. Every accepted
+manual request requires both `RequestID` and `Source`; automatic compactions use
+a Floret-generated request ID and `Source=engine`.
 Manual compaction is admission controlled by Floret. A valid manual request does
 not force checkpoint creation: when the current Floret-owned context is below
 the minimum useful compaction target, has no safe cut point, or would not shrink
@@ -451,11 +480,13 @@ preserving operation/request correlation without exposing raw request strings in
 public runtime events.
 
 For idle hosted threads, `Host.CompactThread` is the public compaction-only
-entry point. The result reports status, metrics, safe lifecycle observations,
-activity timeline, and opaque provider state. Hosts may persist opaque provider
-state envelopes and pass them back unchanged, but they must not parse them,
-rebuild provider-visible history, or treat context assembly reports as input for
-the next turn.
+entry point. The result reports one canonical terminal compaction event,
+metrics, and activity timeline. Opaque provider continuation is loaded,
+invalidated, cleared, and persisted only inside Floret Store; it is not returned
+to the host. A successful context-changing compaction clears continuation,
+while noop, failed, or cancelled operations preserve it only when
+provider-visible context did not change. Provider-state persistence failure is
+a finalization failure, never a successful result with a warning.
 
 # Key Source Files
 

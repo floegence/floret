@@ -193,19 +193,18 @@ type TurnSupplementalContextItem struct {
 }
 
 type RunTurnRequest struct {
-	RunID                 RunID
-	ThreadID              ThreadID
-	TurnID                TurnID
-	Input                 string
-	SupplementalContext   []TurnSupplementalContextItem
-	Labels                RunLabels
-	PreviousProviderState *ModelState
-	Completion            TurnCompletionPolicy
-	Signals               TurnSignalSpec
-	Limits                TurnLimits
-	Reasoning             ReasoningSelection
-	ManualCompactions     ManualCompactionSource
-	ToolSurfaceProvider   ToolSurfaceProvider
+	RunID               RunID
+	ThreadID            ThreadID
+	TurnID              TurnID
+	Input               string
+	SupplementalContext []TurnSupplementalContextItem
+	Labels              RunLabels
+	Completion          TurnCompletionPolicy
+	Signals             TurnSignalSpec
+	Limits              TurnLimits
+	Reasoning           ReasoningSelection
+	ManualCompactions   ManualCompactionSource
+	ToolSurfaceProvider ToolSurfaceProvider
 }
 
 type RetryTurnRequest struct {
@@ -215,13 +214,12 @@ type RetryTurnRequest struct {
 }
 
 type CompactThreadRequest struct {
-	ThreadID              ThreadID
-	RequestID             string
-	Source                string
-	Labels                RunLabels
-	PreviousProviderState *ModelState
-	Limits                TurnLimits
-	Reasoning             ReasoningSelection
+	ThreadID  ThreadID
+	RequestID string
+	Source    string
+	Labels    RunLabels
+	Limits    TurnLimits
+	Reasoning ReasoningSelection
 }
 
 // ReadTurnProjectionRequest identifies a durable hosted turn projection to rebuild from Floret detail.
@@ -413,7 +411,7 @@ type SubAgentDetail struct {
 	Snapshot         SubAgentSnapshot             `json:"snapshot"`
 	Events           []SubAgentDetailEvent        `json:"events"`
 	ActivityTimeline observation.ActivityTimeline `json:"activity_timeline"`
-	Context          SubAgentDetailContext        `json:"context,omitempty"`
+	Context          ThreadContextSnapshot        `json:"context,omitempty"`
 	NextOrdinal      int64                        `json:"next_ordinal,omitempty"`
 	HasMore          bool                         `json:"has_more,omitempty"`
 	RetainedFrom     int64                        `json:"retained_from,omitempty"`
@@ -423,48 +421,51 @@ type SubAgentDetail struct {
 type SubAgentDetailEvents struct {
 	Events           []SubAgentDetailEvent        `json:"events"`
 	ActivityTimeline observation.ActivityTimeline `json:"activity_timeline"`
-	Context          SubAgentDetailContext        `json:"context,omitempty"`
+	Context          ThreadContextSnapshot        `json:"context,omitempty"`
 	NextOrdinal      int64                        `json:"next_ordinal,omitempty"`
 	HasMore          bool                         `json:"has_more,omitempty"`
 	RetainedFrom     int64                        `json:"retained_from,omitempty"`
 	GeneratedAt      time.Time                    `json:"generated_at"`
 }
 
-type SubAgentDetailContext struct {
-	Model       SubAgentDetailContextModel        `json:"model,omitempty"`
-	Policy      SubAgentDetailContextPolicy       `json:"policy,omitempty"`
-	Usage       *observation.ContextStatus        `json:"usage,omitempty"`
-	Compactions []SubAgentDetailContextCompaction `json:"compactions,omitempty"`
-	UpdatedAt   time.Time                         `json:"updated_at,omitempty"`
+type ThreadContextSnapshot struct {
+	ThreadID    ThreadID                      `json:"thread_id"`
+	Provider    string                        `json:"provider,omitempty"`
+	Model       string                        `json:"model,omitempty"`
+	Policy      config.ContextPolicy          `json:"policy,omitempty"`
+	Usage       *observation.ContextStatus    `json:"usage,omitempty"`
+	Compactions []observation.CompactionEvent `json:"compactions,omitempty"`
+	UpdatedAt   time.Time                     `json:"updated_at,omitempty"`
 }
 
-type SubAgentDetailContextModel struct {
-	Provider string `json:"provider,omitempty"`
-	Model    string `json:"model,omitempty"`
-}
-
-type SubAgentDetailContextPolicy struct {
-	ContextWindowTokens  int64 `json:"context_window_tokens,omitempty"`
-	MaxOutputTokens      int64 `json:"max_output_tokens,omitempty"`
-	ReservedOutputTokens int64 `json:"reserved_output_tokens,omitempty"`
-}
-
-type SubAgentDetailContextCompaction struct {
-	RunID               string    `json:"run_id,omitempty"`
-	ThreadID            string    `json:"thread_id,omitempty"`
-	TurnID              string    `json:"turn_id,omitempty"`
-	Step                int       `json:"step,omitempty"`
-	OperationID         string    `json:"operation_id,omitempty"`
-	RequestID           string    `json:"request_id,omitempty"`
-	Phase               string    `json:"phase,omitempty"`
-	Status              string    `json:"status,omitempty"`
-	Trigger             string    `json:"trigger,omitempty"`
-	Reason              string    `json:"reason,omitempty"`
-	Source              string    `json:"source,omitempty"`
-	TokensBefore        int64     `json:"tokens_before,omitempty"`
-	TokensAfterEstimate int64     `json:"tokens_after_estimate,omitempty"`
-	Error               string    `json:"error,omitempty"`
-	ObservedAt          time.Time `json:"observed_at,omitempty"`
+func (s ThreadContextSnapshot) Validate() error {
+	if strings.TrimSpace(string(s.ThreadID)) == "" {
+		return errors.New("thread context snapshot requires thread id")
+	}
+	hasContext := strings.TrimSpace(s.Provider) != "" || strings.TrimSpace(s.Model) != "" || s.Policy.ContextWindowTokens > 0 || s.Usage != nil || len(s.Compactions) > 0
+	if hasContext && (strings.TrimSpace(s.Provider) == "" || strings.TrimSpace(s.Model) == "" || s.Policy.ContextWindowTokens <= 0 || s.UpdatedAt.IsZero()) {
+		return errors.New("thread context snapshot requires model and policy")
+	}
+	if s.Usage != nil {
+		if err := s.Usage.Validate(); err != nil {
+			return err
+		}
+		if strings.TrimSpace(s.Usage.RunID) == "" || strings.TrimSpace(s.Usage.TurnID) == "" || s.Usage.ThreadID != string(s.ThreadID) {
+			return errors.New("thread context usage identity mismatch")
+		}
+		if s.Usage.Provider != s.Provider || s.Usage.Model != s.Model {
+			return errors.New("thread context usage model identity mismatch")
+		}
+	}
+	for _, compact := range s.Compactions {
+		if err := compact.Validate(); err != nil {
+			return err
+		}
+		if compact.ThreadID != string(s.ThreadID) || strings.TrimSpace(compact.RunID) == "" || strings.TrimSpace(compact.OperationID) == "" || strings.TrimSpace(compact.RequestID) == "" {
+			return errors.New("thread context compaction identity mismatch")
+		}
+	}
+	return nil
 }
 
 type SubAgentActivityTimelineResult struct {
@@ -588,6 +589,8 @@ type ThreadDetailEvent struct {
 	ParentID  string                `json:"parent_id,omitempty"`
 	ThreadID  ThreadID              `json:"thread_id"`
 	TurnID    TurnID                `json:"turn_id,omitempty"`
+	RunID     RunID                 `json:"run_id,omitempty"`
+	Step      int                   `json:"step,omitempty"`
 	Kind      ThreadDetailEventKind `json:"kind"`
 	Type      string                `json:"type,omitempty"`
 	CreatedAt time.Time             `json:"created_at"`
@@ -653,6 +656,9 @@ type ThreadDetailTurnMarker struct {
 }
 
 type ThreadDetailCompaction struct {
+	OperationID             string            `json:"operation_id,omitempty"`
+	RequestID               string            `json:"request_id,omitempty"`
+	Source                  string            `json:"source,omitempty"`
 	CompactionID            string            `json:"compaction_id,omitempty"`
 	PreviousCompactionID    string            `json:"previous_compaction_id,omitempty"`
 	CompactedThroughEntryID string            `json:"compacted_through_entry_id,omitempty"`
@@ -718,6 +724,9 @@ type SubAgentDetailTurnMarker struct {
 }
 
 type SubAgentDetailCompaction struct {
+	OperationID         string            `json:"operation_id,omitempty"`
+	RequestID           string            `json:"request_id,omitempty"`
+	Source              string            `json:"source,omitempty"`
 	Trigger             string            `json:"trigger,omitempty"`
 	Reason              string            `json:"reason,omitempty"`
 	Phase               string            `json:"phase,omitempty"`
@@ -786,8 +795,9 @@ type ThreadMessage struct {
 }
 
 type TurnResult struct {
-	ID                     TurnID                         `json:"id"`
-	RunID                  RunID                          `json:"run_id,omitempty"`
+	ThreadID               ThreadID                       `json:"thread_id"`
+	TurnID                 TurnID                         `json:"turn_id"`
+	RunID                  RunID                          `json:"run_id"`
 	Status                 TurnStatus                     `json:"status"`
 	Output                 string                         `json:"output,omitempty"`
 	Error                  string                         `json:"error,omitempty"`
@@ -798,7 +808,6 @@ type TurnResult struct {
 	FinishReason           observation.FinishReason       `json:"finish_reason,omitempty"`
 	RawFinishReason        string                         `json:"raw_finish_reason,omitempty"`
 	FinishInferred         bool                           `json:"finish_inferred,omitempty"`
-	ProviderState          *ModelState                    `json:"provider_state,omitempty"`
 	Signal                 *TurnSignal                    `json:"signal,omitempty"`
 	ActivityTimeline       observation.ActivityTimeline   `json:"activity_timeline"`
 	ProjectionAvailability TurnProjectionAvailability     `json:"projection_availability"`
@@ -844,9 +853,33 @@ func validateTurnProjectionOutcome(availability TurnProjectionAvailability, proj
 	return nil
 }
 
-func (r TurnResult) ValidateProjection() error {
+func (r TurnResult) Validate() error {
+	if strings.TrimSpace(string(r.ThreadID)) == "" || strings.TrimSpace(string(r.TurnID)) == "" || strings.TrimSpace(string(r.RunID)) == "" {
+		return errors.New("turn result requires thread, turn, and run identities")
+	}
 	if !r.Status.Valid() || !r.Status.IsTerminal() {
 		return fmt.Errorf("turn result requires terminal status, got %q", r.Status)
+	}
+	if r.CompletionReason != "" && !r.CompletionReason.Valid() {
+		return fmt.Errorf("unsupported turn completion reason %q", r.CompletionReason)
+	}
+	if r.ContinuationReason != "" && !r.ContinuationReason.Valid() {
+		return fmt.Errorf("unsupported turn continuation reason %q", r.ContinuationReason)
+	}
+	if r.CompletionReason != "" && r.ContinuationReason != "" {
+		return errors.New("turn result cannot complete and continue simultaneously")
+	}
+	if r.FinishReason != "" && !r.FinishReason.Valid() {
+		return fmt.Errorf("unsupported turn finish reason %q", r.FinishReason)
+	}
+	if r.FinishInferred && r.FinishReason == "" {
+		return errors.New("inferred turn finish requires finish reason")
+	}
+	if err := observation.ValidateActivityTimeline(r.ActivityTimeline); err != nil {
+		return fmt.Errorf("invalid turn result activity timeline: %w", err)
+	}
+	if r.ActivityTimeline.ThreadID != string(r.ThreadID) || r.ActivityTimeline.TurnID != string(r.TurnID) || r.ActivityTimeline.RunID != string(r.RunID) || r.ActivityTimeline.TraceID != string(r.RunID) {
+		return errors.New("turn result activity timeline identity mismatch")
 	}
 	if err := validateTurnProjectionOutcome(r.ProjectionAvailability, r.Projection, r.ProjectionError); err != nil {
 		return err
@@ -854,7 +887,7 @@ func (r TurnResult) ValidateProjection() error {
 	if r.Projection == nil {
 		return nil
 	}
-	if r.Projection.TurnID != r.ID || r.Projection.RunID != r.RunID {
+	if r.Projection.ThreadID != r.ThreadID || r.Projection.TurnID != r.TurnID || r.Projection.RunID != r.RunID {
 		return errors.New("turn result projection identity mismatch")
 	}
 	if r.Projection.Status != r.Status {
@@ -863,7 +896,7 @@ func (r TurnResult) ValidateProjection() error {
 	return nil
 }
 
-func (r PendingToolSettlementResult) ValidateProjection() error {
+func (r PendingToolSettlementResult) Validate() error {
 	if err := validatePendingToolSettlementTarget(r.Target); err != nil {
 		return fmt.Errorf("invalid pending tool settlement target: %w", err)
 	}
@@ -892,13 +925,40 @@ func (r PendingToolSettlementResult) ValidateProjection() error {
 }
 
 type CompactThreadResult struct {
-	ThreadID         ThreadID                     `json:"thread_id,omitempty"`
-	Status           string                       `json:"status"`
-	Error            string                       `json:"error,omitempty"`
-	Diagnostics      map[string]string            `json:"diagnostics,omitempty"`
+	ThreadID         ThreadID                     `json:"thread_id"`
+	RunID            RunID                        `json:"run_id"`
+	RequestID        string                       `json:"request_id"`
+	Compaction       observation.CompactionEvent  `json:"compaction"`
 	Metrics          RunMetrics                   `json:"metrics"`
-	ProviderState    *ModelState                  `json:"provider_state,omitempty"`
 	ActivityTimeline observation.ActivityTimeline `json:"activity_timeline"`
+}
+
+func (r CompactThreadResult) Validate() error {
+	if strings.TrimSpace(string(r.ThreadID)) == "" || strings.TrimSpace(string(r.RunID)) == "" || strings.TrimSpace(r.RequestID) == "" {
+		return errors.New("compact thread result requires thread, run, and request identities")
+	}
+	if err := r.Compaction.Validate(); err != nil {
+		return fmt.Errorf("invalid compact thread result: %w", err)
+	}
+	if strings.TrimSpace(r.Compaction.ThreadID) != string(r.ThreadID) || strings.TrimSpace(r.Compaction.RunID) != string(r.RunID) || strings.TrimSpace(r.Compaction.RequestID) != strings.TrimSpace(r.RequestID) {
+		return errors.New("compact thread result identity mismatch")
+	}
+	if r.Compaction.TurnID != "" {
+		return fmt.Errorf("standalone thread compaction must not include turn id %q", r.Compaction.TurnID)
+	}
+	if r.Compaction.Status == observation.CompactionStatusRunning {
+		return errors.New("compact thread result requires terminal compaction status")
+	}
+	if strings.TrimSpace(r.Compaction.OperationID) == "" || strings.TrimSpace(r.Compaction.Source) == "" {
+		return errors.New("compact thread result requires operation and source identities")
+	}
+	if err := observation.ValidateActivityTimeline(r.ActivityTimeline); err != nil {
+		return fmt.Errorf("invalid compact thread result activity timeline: %w", err)
+	}
+	if r.ActivityTimeline.ThreadID != string(r.ThreadID) || r.ActivityTimeline.TurnID != "" || r.ActivityTimeline.RunID != string(r.RunID) || r.ActivityTimeline.TraceID != string(r.RunID) {
+		return errors.New("compact thread result activity timeline identity mismatch")
+	}
+	return nil
 }
 
 type EventSink interface {
@@ -963,15 +1023,24 @@ func (e Event) Validate() error {
 		if err := e.ContextStatus.Validate(); err != nil {
 			return fmt.Errorf("invalid context status: %w", err)
 		}
+		if !eventIdentityMatches(e, e.ContextStatus.RunID, e.ContextStatus.ThreadID, e.ContextStatus.TurnID, e.ContextStatus.Step) {
+			return errors.New("runtime event context status identity mismatch")
+		}
 	}
 	if e.Compaction != nil {
 		if err := e.Compaction.Validate(); err != nil {
 			return fmt.Errorf("invalid compaction event: %w", err)
 		}
+		if !eventIdentityMatches(e, e.Compaction.RunID, e.Compaction.ThreadID, e.Compaction.TurnID, e.Compaction.Step) {
+			return errors.New("runtime event compaction identity mismatch")
+		}
 	}
 	if e.CompactionDebug != nil {
 		if err := e.CompactionDebug.Validate(); err != nil {
 			return fmt.Errorf("invalid compaction debug event: %w", err)
+		}
+		if !eventIdentityMatches(e, e.CompactionDebug.RunID, e.CompactionDebug.ThreadID, e.CompactionDebug.TurnID, e.CompactionDebug.Step) {
+			return errors.New("runtime event compaction debug identity mismatch")
 		}
 	}
 	if e.Stream != nil {
@@ -983,6 +1052,9 @@ func (e Event) Validate() error {
 		if err := observation.ValidateActivityTimeline(*e.ActivityTimeline); err != nil {
 			return fmt.Errorf("invalid event activity timeline: %w", err)
 		}
+		if e.ActivityTimeline.RunID != string(e.RunID) || e.ActivityTimeline.ThreadID != string(e.ThreadID) || e.ActivityTimeline.TurnID != string(e.TurnID) {
+			return errors.New("runtime event activity timeline identity mismatch")
+		}
 	}
 	if e.Projection != nil {
 		if err := e.Projection.Validate(); err != nil {
@@ -992,7 +1064,19 @@ func (e Event) Validate() error {
 			return errors.New("runtime event projection identity mismatch")
 		}
 	}
+	if e.Committed != nil {
+		if e.Committed.ThreadID != e.ThreadID || e.Committed.TurnID != e.TurnID || e.Committed.RunID != e.RunID || e.Committed.Step != e.Step {
+			return errors.New("runtime event committed detail identity mismatch")
+		}
+	}
 	return nil
+}
+
+func eventIdentityMatches(e Event, runID, threadID, turnID string, step int) bool {
+	return strings.TrimSpace(runID) == string(e.RunID) &&
+		strings.TrimSpace(threadID) == string(e.ThreadID) &&
+		strings.TrimSpace(turnID) == string(e.TurnID) &&
+		step == e.Step
 }
 
 type StreamObservationType string
@@ -1103,6 +1187,7 @@ type Store struct {
 	prompt         cache.Store
 	artifacts      artifact.Store
 	forkOperations storage.ForkOperationStore
+	providerStates storage.ProviderStateStore
 	deleteData     func(context.Context, storage.DeleteThreadTreeDataRequest) error
 	close          func() error
 }
@@ -1112,11 +1197,13 @@ func NewMemoryStore() *Store {
 	prompt := cache.NewMemoryStore()
 	artifacts := artifact.NewMemoryStore()
 	forkOperations := storage.NewMemoryForkOperationStore()
+	providerStates := storage.NewMemoryProviderStateStore()
 	return &Store{
 		repo:           repo,
 		prompt:         prompt,
 		artifacts:      artifacts,
 		forkOperations: forkOperations,
+		providerStates: providerStates,
 		deleteData: func(ctx context.Context, req storage.DeleteThreadTreeDataRequest) error {
 			threadIDs := cleanRuntimeIDs(append([]string{req.RootThreadID}, req.ThreadIDs...))
 			for i := len(threadIDs) - 1; i >= 0; i-- {
@@ -1128,6 +1215,9 @@ func NewMemoryStore() *Store {
 				return err
 			}
 			for _, threadID := range threadIDs {
+				if err := providerStates.DeleteProviderState(ctx, threadID); err != nil {
+					return err
+				}
 				if err := artifacts.DeleteThreadArtifacts(ctx, threadID); err != nil {
 					return err
 				}
@@ -1147,6 +1237,7 @@ func OpenSQLiteStore(path string) (*Store, error) {
 		prompt:         sqliteStore,
 		artifacts:      sqliteStore,
 		forkOperations: sqliteStore,
+		providerStates: sqliteStore,
 		deleteData: func(ctx context.Context, req storage.DeleteThreadTreeDataRequest) error {
 			return sqliteStore.DeleteThreadTreeData(ctx, req)
 		},
@@ -1165,7 +1256,7 @@ func (s *Store) validate() error {
 	if s == nil {
 		return errors.New("runtime store is required")
 	}
-	if s.repo == nil || s.prompt == nil || s.artifacts == nil || s.forkOperations == nil || s.deleteData == nil {
+	if s.repo == nil || s.prompt == nil || s.artifacts == nil || s.forkOperations == nil || s.providerStates == nil || s.deleteData == nil {
 		return errors.New("runtime store must be created with runtime.NewMemoryStore or runtime.OpenSQLiteStore")
 	}
 	return nil
@@ -1253,23 +1344,24 @@ func NewHost(opts HostOptions) (*Host, error) {
 	}
 	store := opts.Store
 	if store == nil {
-		store = NewMemoryStore()
+		return nil, errors.New("host store is required")
 	}
 	if err := store.validate(); err != nil {
 		return nil, err
 	}
 	harness, err := newHarnessWithProvider(cfg, provider, harnessOptions{
-		Store:               store,
-		Tools:               opts.Tools,
-		Approver:            opts.Approver,
-		Sink:                newRuntimeEventSink(opts.Sink),
-		SinkPolicy:          runtimeHarnessSinkPolicy(),
-		ToolSurfaceProvider: runtimeToolSurfaceProvider(opts.ToolSurfaceProvider),
-		NewID:               opts.IDGenerator,
-		LoopLimits:          opts.LoopLimits,
-		SubAgentRunTimeout:  opts.SubAgentRunTimeout,
-		Capabilities:        opts.Capabilities,
-		ThreadTitleMode:     titleMode,
+		Store:                 store,
+		Tools:                 opts.Tools,
+		Approver:              opts.Approver,
+		Sink:                  newRuntimeEventSink(opts.Sink),
+		SinkPolicy:            runtimeHarnessSinkPolicy(),
+		ToolSurfaceProvider:   runtimeToolSurfaceProvider(opts.ToolSurfaceProvider),
+		NewID:                 opts.IDGenerator,
+		LoopLimits:            opts.LoopLimits,
+		SubAgentRunTimeout:    opts.SubAgentRunTimeout,
+		Capabilities:          opts.Capabilities,
+		ThreadTitleMode:       titleMode,
+		StateCompatibilityKey: runtimeStateCompatibilityKey(cfg, opts),
 	})
 	if err != nil {
 		return nil, err
@@ -1436,6 +1528,26 @@ func (h *Host) ListThreadDetailEvents(ctx context.Context, req ListThreadDetailE
 	}, nil
 }
 
+func (h *Host) ReadThreadContext(ctx context.Context, threadID ThreadID) (ThreadContextSnapshot, error) {
+	return readThreadContext(ctx, h.harness, threadID)
+}
+
+func (h *ThreadMaintenanceHost) ReadThreadContext(ctx context.Context, threadID ThreadID) (ThreadContextSnapshot, error) {
+	return readThreadContext(ctx, h.harness, threadID)
+}
+
+func readThreadContext(ctx context.Context, harness *agentharness.AgentHarness, threadID ThreadID) (ThreadContextSnapshot, error) {
+	contextSnapshot, err := harness.ReadThreadContext(ctx, string(threadID))
+	if err != nil {
+		return ThreadContextSnapshot{}, runtimeHostError(err)
+	}
+	out := subAgentDetailContext(string(threadID), contextSnapshot)
+	if err := out.Validate(); err != nil {
+		return ThreadContextSnapshot{}, err
+	}
+	return out, nil
+}
+
 func (h *Host) ListPendingApprovals(ctx context.Context, req ListPendingApprovalsRequest) (PendingApprovals, error) {
 	result, err := h.harness.ListPendingApprovals(ctx, agentharness.ListPendingApprovalsOptions{ThreadID: string(req.ThreadID)})
 	if err != nil {
@@ -1520,7 +1632,6 @@ func (h *Host) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, err
 		MaxToolCalls:             req.Limits.MaxToolCalls,
 		MaxLengthContinuations:   req.Limits.MaxLengthContinuations,
 		MaxStopHookContinuations: req.Limits.MaxStopHookContinuations,
-		PreviousProviderState:    providerState(req.PreviousProviderState),
 		ManualCompactions:        projectedManualCompactionSource(req.ManualCompactions),
 		ToolSurfaceProvider:      runtimeToolSurfaceProvider(req.ToolSurfaceProvider),
 		SupplementalContext:      agentHarnessSupplementalContext(req.SupplementalContext),
@@ -1559,6 +1670,12 @@ func (h *Host) CompactThread(ctx context.Context, req CompactThreadRequest) (Com
 	if strings.TrimSpace(string(req.ThreadID)) == "" {
 		return CompactThreadResult{}, errors.New("thread id is required")
 	}
+	if strings.TrimSpace(req.RequestID) == "" {
+		return CompactThreadResult{}, errors.New("manual compaction request id is required")
+	}
+	if strings.TrimSpace(req.Source) == "" {
+		return CompactThreadResult{}, errors.New("manual compaction source is required")
+	}
 	thread, err := h.harness.ResumeThread(ctx, string(req.ThreadID), agentharness.ResumeOptions{})
 	if err != nil {
 		return CompactThreadResult{}, runtimeHostError(err)
@@ -1574,24 +1691,37 @@ func (h *Host) CompactThread(ctx context.Context, req CompactThreadRequest) (Com
 		MaxCostUSD:             req.Limits.MaxCostUSD,
 		MaxToolCalls:           req.Limits.MaxToolCalls,
 		MaxLengthContinuations: req.Limits.MaxLengthContinuations,
-		PreviousProviderState:  providerState(req.PreviousProviderState),
 		Sink:                   activityRecorder,
 	})
+	events := activityRecorder.Snapshot()
+	compactions := observation.CompactionEventsFromEvents(events)
+	terminalCompactions := make([]observation.CompactionEvent, 0, 1)
+	for _, compact := range compactions {
+		if compact.Status != observation.CompactionStatusRunning {
+			terminalCompactions = append(terminalCompactions, compact)
+		}
+	}
+	if len(terminalCompactions) == 0 {
+		if compactErr != nil {
+			return CompactThreadResult{}, runtimeHostError(compactErr)
+		}
+		return CompactThreadResult{}, errors.New("compact thread completed without a terminal compaction event")
+	}
 	out := CompactThreadResult{
-		ThreadID:      req.ThreadID,
-		Status:        string(result.Status),
-		Diagnostics:   cloneStringMap(result.Diagnostics),
-		Metrics:       runtimeMetrics(result.Metrics),
-		ProviderState: modelState(result.ProviderState),
+		ThreadID:   req.ThreadID,
+		RunID:      RunID(result.RunID),
+		RequestID:  strings.TrimSpace(req.RequestID),
+		Compaction: terminalCompactions[len(terminalCompactions)-1],
+		Metrics:    runtimeMetrics(result.Metrics),
 		ActivityTimeline: observation.BuildActivityTimeline(observation.ActivityRunMeta{
-			RunID:    "",
+			RunID:    result.RunID,
 			ThreadID: string(req.ThreadID),
 			TurnID:   "",
-			TraceID:  "",
-		}, activityRecorder.Snapshot(), time.Now().UnixMilli()),
+			TraceID:  result.RunID,
+		}, events, time.Now().UnixMilli()),
 	}
-	if result.Err != nil {
-		out.Error = result.Err.Error()
+	if err := out.Validate(); err != nil {
+		return CompactThreadResult{}, err
 	}
 	return out, runtimeHostError(compactErr)
 }
@@ -1881,7 +2011,7 @@ func listSubAgentDetailEvents(ctx context.Context, harness *agentharness.AgentHa
 	return SubAgentDetailEvents{
 		Events:           subAgentDetailEvents(detail.Events),
 		ActivityTimeline: cloneRuntimeActivityTimeline(detail.ActivityTimeline),
-		Context:          subAgentDetailContext(detail.Context),
+		Context:          subAgentDetailContext(detail.Snapshot.ThreadID, detail.Context),
 		NextOrdinal:      detail.NextOrdinal,
 		HasMore:          detail.HasMore,
 		RetainedFrom:     detail.RetainedFrom,
@@ -1903,14 +2033,6 @@ func deleteThread(ctx context.Context, store *Store, threadID ThreadID) error {
 		return errors.New("thread id is required")
 	}
 	return runtimeHostError(store.deleteThreadData(ctx, id))
-}
-
-func (h *Host) Close() error {
-	return h.store.Close()
-}
-
-func (h *ThreadMaintenanceHost) Close() error {
-	return h.store.Close()
 }
 
 func pendingToolCompletionStatus(status PendingToolCompletionStatus) agentharness.PendingToolCompletionStatus {
@@ -2076,7 +2198,8 @@ func pendingApprovalResources(in []agentharness.PendingApprovalResource) []Pendi
 
 func turnResult(in agentharness.TurnResult, threadID string, events []observation.Event, nowUnixMS int64) TurnResult {
 	out := TurnResult{
-		ID:                 TurnID(in.ID),
+		ThreadID:           ThreadID(threadID),
+		TurnID:             TurnID(in.ID),
 		RunID:              RunID(in.RunID),
 		Status:             TurnStatus(in.Status),
 		Output:             in.Output,
@@ -2087,7 +2210,6 @@ func turnResult(in agentharness.TurnResult, threadID string, events []observatio
 		FinishReason:       observation.FinishReason(in.FinishReason),
 		RawFinishReason:    in.RawFinishReason,
 		FinishInferred:     in.FinishInferred,
-		ProviderState:      modelState(in.ProviderState),
 		Signal:             runtimeTurnSignal(in.ControlSignal),
 		ActivityTimeline: observation.BuildActivityTimeline(observation.ActivityRunMeta{
 			RunID:    in.RunID,
@@ -2107,12 +2229,12 @@ func (h *Host) attachThreadTurnProjection(ctx context.Context, threadID string, 
 	if result == nil {
 		return
 	}
-	if h == nil || strings.TrimSpace(threadID) == "" || strings.TrimSpace(string(result.ID)) == "" {
+	if h == nil || strings.TrimSpace(threadID) == "" || strings.TrimSpace(string(result.TurnID)) == "" {
 		result.ProjectionAvailability = TurnProjectionAvailabilityUnavailable
 		result.ProjectionError = "turn projection identity is incomplete"
 		return
 	}
-	events, err := listRawThreadDetailEventsForTurn(ctx, h.harness, threadID, string(result.ID))
+	events, err := listRawThreadDetailEventsForTurn(ctx, h.harness, threadID, string(result.TurnID))
 	if err != nil {
 		result.ProjectionAvailability = TurnProjectionAvailabilityUnavailable
 		result.ProjectionError = runtimeHostError(err).Error()
@@ -2120,7 +2242,7 @@ func (h *Host) attachThreadTurnProjection(ctx context.Context, threadID string, 
 	}
 	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
 		ThreadID: ThreadID(threadID),
-		TurnID:   result.ID,
+		TurnID:   result.TurnID,
 		RunID:    result.RunID,
 		TraceID:  TraceID(result.RunID),
 		Events:   events,
@@ -2425,7 +2547,7 @@ func subAgentDetail(in agentharness.SubAgentDetail) SubAgentDetail {
 		Snapshot:         subAgentSnapshot(in.Snapshot),
 		Events:           subAgentDetailEvents(in.Events),
 		ActivityTimeline: cloneRuntimeActivityTimeline(in.ActivityTimeline),
-		Context:          subAgentDetailContext(in.Context),
+		Context:          subAgentDetailContext(in.Snapshot.ThreadID, in.Context),
 		NextOrdinal:      in.NextOrdinal,
 		HasMore:          in.HasMore,
 		RetainedFrom:     in.RetainedFrom,
@@ -2433,13 +2555,12 @@ func subAgentDetail(in agentharness.SubAgentDetail) SubAgentDetail {
 	}
 }
 
-func subAgentDetailContext(in agentharness.SubAgentDetailContext) SubAgentDetailContext {
-	return SubAgentDetailContext{
-		Model: SubAgentDetailContextModel{
-			Provider: in.Model.Provider,
-			Model:    in.Model.Model,
-		},
-		Policy: SubAgentDetailContextPolicy{
+func subAgentDetailContext(threadID string, in agentharness.ThreadContextSnapshot) ThreadContextSnapshot {
+	return ThreadContextSnapshot{
+		ThreadID: ThreadID(threadID),
+		Provider: in.Model.Provider,
+		Model:    in.Model.Model,
+		Policy: config.ContextPolicy{
 			ContextWindowTokens:  in.Policy.ContextWindowTokens,
 			MaxOutputTokens:      in.Policy.MaxOutputTokens,
 			ReservedOutputTokens: in.Policy.ReservedOutputTokens,
@@ -2450,21 +2571,21 @@ func subAgentDetailContext(in agentharness.SubAgentDetailContext) SubAgentDetail
 	}
 }
 
-func subAgentDetailContextCompactions(in []agentharness.SubAgentDetailContextCompaction) []SubAgentDetailContextCompaction {
+func subAgentDetailContextCompactions(in []agentharness.ThreadContextCompaction) []observation.CompactionEvent {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make([]SubAgentDetailContextCompaction, 0, len(in))
+	out := make([]observation.CompactionEvent, 0, len(in))
 	for _, compact := range in {
-		out = append(out, SubAgentDetailContextCompaction{
+		out = append(out, observation.CompactionEvent{
 			RunID:               compact.RunID,
 			ThreadID:            compact.ThreadID,
 			TurnID:              compact.TurnID,
 			Step:                compact.Step,
 			OperationID:         compact.OperationID,
 			RequestID:           compact.RequestID,
-			Phase:               compact.Phase,
-			Status:              compact.Status,
+			Phase:               observation.CompactionPhase(compact.Phase),
+			Status:              observation.CompactionStatus(compact.Status),
 			Trigger:             compact.Trigger,
 			Reason:              compact.Reason,
 			Source:              compact.Source,
@@ -2625,6 +2746,9 @@ func threadDetailCompaction(in *agentharness.SubAgentDetailCompaction) *ThreadDe
 		return nil
 	}
 	return &ThreadDetailCompaction{
+		OperationID:             in.OperationID,
+		RequestID:               in.RequestID,
+		Source:                  in.Source,
 		CompactionID:            in.CompactionID,
 		PreviousCompactionID:    in.PreviousCompactionID,
 		CompactedThroughEntryID: in.CompactedThroughEntryID,
@@ -2839,6 +2963,9 @@ func subAgentDetailCompaction(in *agentharness.SubAgentDetailCompaction) *SubAge
 		return nil
 	}
 	return &SubAgentDetailCompaction{
+		OperationID:         in.OperationID,
+		RequestID:           in.RequestID,
+		Source:              in.Source,
 		Trigger:             in.Trigger,
 		Reason:              in.Reason,
 		Phase:               in.Phase,
@@ -2857,25 +2984,26 @@ func threadIDStrings(ids []ThreadID) []string {
 }
 
 type harnessOptions struct {
-	Store               *Store
-	Tools               *tools.Registry
-	Approver            tools.Approver
-	Sink                event.Sink
-	SinkPolicy          event.SinkPolicy
-	Title               agentharness.TitleGenerator
-	ThreadTitleMode     ThreadTitleMode
-	NewID               func(string) string
-	LoopLimits          LoopLimits
-	SubAgentRunTimeout  time.Duration
-	Capabilities        CapabilityOptions
-	ToolSurfaceProvider engine.ToolSurfaceProvider
+	Store                 *Store
+	Tools                 *tools.Registry
+	Approver              tools.Approver
+	Sink                  event.Sink
+	SinkPolicy            event.SinkPolicy
+	Title                 agentharness.TitleGenerator
+	ThreadTitleMode       ThreadTitleMode
+	NewID                 func(string) string
+	LoopLimits            LoopLimits
+	SubAgentRunTimeout    time.Duration
+	Capabilities          CapabilityOptions
+	ToolSurfaceProvider   engine.ToolSurfaceProvider
+	StateCompatibilityKey string
 }
 
 func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harnessOptions) (*agentharness.AgentHarness, error) {
 	cfg = config.ResolvePrompt(cfg)
 	store := opts.Store
 	if store == nil {
-		store = NewMemoryStore()
+		return nil, errors.New("runtime store is required")
 	}
 	registry := opts.Tools
 	if registry == nil {
@@ -2924,27 +3052,42 @@ func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harness
 		}
 	}
 	return agentharness.New(agentharness.Options{
-		Provider:            p,
-		ProviderName:        cfg.Provider,
-		Model:               cfg.Model,
-		SystemPrompt:        effectivePrompt,
-		Tools:               registry,
-		PromptStore:         store.prompt,
-		Repo:                store.repo,
-		ForkOperations:      store.forkOperations,
-		Sink:                opts.Sink,
-		SinkPolicy:          opts.SinkPolicy,
-		Approver:            opts.Approver,
-		ToolSurfaceProvider: opts.ToolSurfaceProvider,
-		TitleGenerator:      titleGenerator,
-		CompactionPrompt:    compaction.PromptOptions{},
-		Artifacts:           store.artifacts,
-		Reasoning:           model.Reasoning,
-		TurnPolicy:          turnPolicy,
-		LoopLimits:          loopLimits,
-		SubAgentRunTimeout:  opts.SubAgentRunTimeout,
-		NewID:               opts.NewID,
+		Provider:              p,
+		ProviderName:          cfg.Provider,
+		Model:                 cfg.Model,
+		SystemPrompt:          effectivePrompt,
+		Tools:                 registry,
+		PromptStore:           store.prompt,
+		Repo:                  store.repo,
+		ForkOperations:        store.forkOperations,
+		ProviderStates:        store.providerStates,
+		StateCompatibilityKey: opts.StateCompatibilityKey,
+		Sink:                  opts.Sink,
+		SinkPolicy:            opts.SinkPolicy,
+		Approver:              opts.Approver,
+		ToolSurfaceProvider:   opts.ToolSurfaceProvider,
+		TitleGenerator:        titleGenerator,
+		CompactionPrompt:      compaction.PromptOptions{},
+		Artifacts:             store.artifacts,
+		Reasoning:             model.Reasoning,
+		TurnPolicy:            turnPolicy,
+		LoopLimits:            loopLimits,
+		SubAgentRunTimeout:    opts.SubAgentRunTimeout,
+		NewID:                 opts.NewID,
 	}), nil
+}
+
+func runtimeStateCompatibilityKey(cfg config.Config, opts HostOptions) string {
+	if opts.ModelGateway != nil {
+		return strings.TrimSpace(opts.ModelGatewayIdentity.StateCompatibilityKey)
+	}
+	raw := strings.Join([]string{
+		strings.TrimSpace(cfg.Provider),
+		strings.TrimSpace(cfg.Model),
+		strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/"),
+	}, "\x00")
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
 }
 
 func mergeCapabilityOptions(cfg config.Config, explicit CapabilityOptions) CapabilityOptions {
@@ -3136,6 +3279,8 @@ func runtimeCommittedEvent(raw, sanitized event.Event) *ThreadDetailEvent {
 		return nil
 	}
 	out := threadDetailEvent(detail)
+	out.RunID = RunID(sanitized.RunID)
+	out.Step = sanitized.Step
 	if out.Ordinal == 0 {
 		out.Ordinal = int64FromMetadata(meta, "ordinal")
 	}

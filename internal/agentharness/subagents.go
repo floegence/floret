@@ -209,33 +209,33 @@ type SubAgentDetail struct {
 	Snapshot         SubAgentSnapshot             `json:"snapshot"`
 	Events           []SubAgentDetailEvent        `json:"events"`
 	ActivityTimeline observation.ActivityTimeline `json:"activity_timeline"`
-	Context          SubAgentDetailContext        `json:"context,omitempty"`
+	Context          ThreadContextSnapshot        `json:"context,omitempty"`
 	NextOrdinal      int64                        `json:"next_ordinal,omitempty"`
 	HasMore          bool                         `json:"has_more,omitempty"`
 	RetainedFrom     int64                        `json:"retained_from,omitempty"`
 	GeneratedAt      time.Time                    `json:"generated_at"`
 }
 
-type SubAgentDetailContext struct {
-	Model       SubAgentDetailContextModel        `json:"model,omitempty"`
-	Policy      SubAgentDetailContextPolicy       `json:"policy,omitempty"`
-	Usage       *observation.ContextStatus        `json:"usage,omitempty"`
-	Compactions []SubAgentDetailContextCompaction `json:"compactions,omitempty"`
-	UpdatedAt   time.Time                         `json:"updated_at,omitempty"`
+type ThreadContextSnapshot struct {
+	Model       ThreadContextModel         `json:"model,omitempty"`
+	Policy      ThreadContextPolicy        `json:"policy,omitempty"`
+	Usage       *observation.ContextStatus `json:"usage,omitempty"`
+	Compactions []ThreadContextCompaction  `json:"compactions,omitempty"`
+	UpdatedAt   time.Time                  `json:"updated_at,omitempty"`
 }
 
-type SubAgentDetailContextModel struct {
+type ThreadContextModel struct {
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`
 }
 
-type SubAgentDetailContextPolicy struct {
+type ThreadContextPolicy struct {
 	ContextWindowTokens  int64 `json:"context_window_tokens,omitempty"`
 	MaxOutputTokens      int64 `json:"max_output_tokens,omitempty"`
 	ReservedOutputTokens int64 `json:"reserved_output_tokens,omitempty"`
 }
 
-type SubAgentDetailContextCompaction struct {
+type ThreadContextCompaction struct {
 	RunID               string    `json:"run_id,omitempty"`
 	ThreadID            string    `json:"thread_id,omitempty"`
 	TurnID              string    `json:"turn_id,omitempty"`
@@ -349,6 +349,9 @@ type SubAgentDetailTurnMarker struct {
 }
 
 type SubAgentDetailCompaction struct {
+	OperationID             string            `json:"operation_id,omitempty"`
+	RequestID               string            `json:"request_id,omitempty"`
+	Source                  string            `json:"source,omitempty"`
 	CompactionID            string            `json:"compaction_id,omitempty"`
 	PreviousCompactionID    string            `json:"previous_compaction_id,omitempty"`
 	CompactedThroughEntryID string            `json:"compacted_through_entry_id,omitempty"`
@@ -616,7 +619,10 @@ func (h *AgentHarness) ReadSubAgentDetail(ctx context.Context, opts ReadSubAgent
 	}
 	generatedAt := h.now()
 	activityTimeline := h.subAgentDetailActivityTimeline(entries, retainedFrom, activityContext, generatedAt)
-	contextSnapshot := h.subAgentDetailContext(entries, retainedFrom, activityContext, generatedAt)
+	contextSnapshot, err := h.subAgentDetailContext(entries, retainedFrom, activityContext, generatedAt)
+	if err != nil {
+		return SubAgentDetail{}, err
+	}
 	events := make([]SubAgentDetailEvent, 0, len(entries))
 	var nextOrdinal int64
 	var hasMore bool
@@ -668,59 +674,65 @@ func (h *AgentHarness) subAgentDetailActivityTimeline(entries []sessiontree.Entr
 	return observation.BuildActivityTimeline(observation.ActivityRunMeta{}, observed, generatedAt.UnixMilli())
 }
 
-func (h *AgentHarness) subAgentDetailContext(entries []sessiontree.Entry, retainedFrom int64, activityContext subAgentDetailActivityContext, generatedAt time.Time) SubAgentDetailContext {
-	out := SubAgentDetailContext{}
-	compactions := make([]SubAgentDetailContextCompaction, 0)
+func (h *AgentHarness) subAgentDetailContext(entries []sessiontree.Entry, retainedFrom int64, activityContext subAgentDetailActivityContext, generatedAt time.Time) (ThreadContextSnapshot, error) {
+	out := ThreadContextSnapshot{}
+	compactions := make([]ThreadContextCompaction, 0)
 	seenCompactions := map[string]int{}
 	latestContextObservedAt := time.Time{}
+	hasPolicy := false
 	for index, entry := range entries {
-		ordinal := int64(index + 1)
-		if ordinal < retainedFrom {
+		if int64(index+1) < retainedFrom {
 			continue
 		}
 		switch {
 		case entry.Type == sessiontree.EntryCustom && entry.Metadata[subAgentDetailKindKey] == subAgentContextPolicyEntryKind:
-			if provider := strings.TrimSpace(entry.Metadata[subAgentContextProviderKey]); provider != "" {
-				out.Model.Provider = provider
+			providerName := strings.TrimSpace(entry.Metadata[subAgentContextProviderKey])
+			modelName := strings.TrimSpace(entry.Metadata[subAgentContextModelKey])
+			if providerName == "" || modelName == "" {
+				return ThreadContextSnapshot{}, errors.New("thread context policy requires provider and model")
 			}
-			if model := strings.TrimSpace(entry.Metadata[subAgentContextModelKey]); model != "" {
-				out.Model.Model = model
+			policy, err := subAgentDetailContextPolicy(entry.Metadata)
+			if err != nil {
+				return ThreadContextSnapshot{}, err
 			}
-			if policy, ok := subAgentDetailContextPolicy(entry.Metadata); ok {
-				out.Policy = policy
-			}
+			out.Model.Provider = providerName
+			out.Model.Model = modelName
+			out.Policy = policy
+			hasPolicy = true
 			latestContextObservedAt = maxTime(latestContextObservedAt, entry.CreatedAt)
 		case entry.Type == sessiontree.EntryCustom && entry.Metadata[subAgentDetailKindKey] == subAgentContextStatusEntryKind:
-			status, ok := subAgentDetailContextStatus(entry.Metadata)
-			if !ok {
-				continue
+			status, err := subAgentDetailContextStatus(entry.Metadata)
+			if err != nil {
+				return ThreadContextSnapshot{}, err
+			}
+			if status.ThreadID != entry.ThreadID || status.TurnID != entry.TurnID {
+				return ThreadContextSnapshot{}, errors.New("thread context status identity mismatch")
+			}
+			if runID := activityContext.runIDForTurn(entry.TurnID); runID != "" && status.RunID != runID {
+				return ThreadContextSnapshot{}, errors.New("thread context status run identity mismatch")
+			}
+			if hasPolicy && (status.Provider != out.Model.Provider || status.Model != out.Model.Model) {
+				return ThreadContextSnapshot{}, errors.New("thread context status model identity mismatch")
 			}
 			out.Usage = &status
-			if provider := strings.TrimSpace(status.Provider); provider != "" {
-				out.Model.Provider = provider
-			}
-			if model := strings.TrimSpace(status.Model); model != "" {
-				out.Model.Model = model
-			}
-			if out.Policy.ContextWindowTokens <= 0 {
-				out.Policy = subAgentDetailContextPolicyFromStatus(status)
-			}
 			latestContextObservedAt = maxTime(latestContextObservedAt, nonZeroTime(status.ObservedAt, entry.CreatedAt))
 		case entry.Type == sessiontree.EntryCustom && entry.Metadata[subAgentDetailKindKey] == subAgentContextCompactionEntryKind:
-			compact, ok := subAgentDetailContextCompaction(entry.Metadata)
-			if !ok {
-				continue
+			compact, err := subAgentDetailContextCompaction(entry.Metadata)
+			if err != nil {
+				return ThreadContextSnapshot{}, err
 			}
-			compactions = upsertSubAgentDetailCompaction(compactions, seenCompactions, compact)
-			latestContextObservedAt = maxTime(latestContextObservedAt, nonZeroTime(compact.ObservedAt, entry.CreatedAt))
-		case entry.Type == sessiontree.EntryCompaction:
-			compact := subAgentDetailContextCompactionFromEntry(entry, ordinal, activityContext)
-			if compact.OperationID == "" && compact.Status == "" {
-				continue
+			if compact.ThreadID != entry.ThreadID || compact.TurnID != entry.TurnID {
+				return ThreadContextSnapshot{}, errors.New("thread context compaction identity mismatch")
 			}
 			compactions = upsertSubAgentDetailCompaction(compactions, seenCompactions, compact)
 			latestContextObservedAt = maxTime(latestContextObservedAt, nonZeroTime(compact.ObservedAt, entry.CreatedAt))
 		}
+	}
+	if !hasPolicy && (out.Usage != nil || len(compactions) > 0) {
+		return ThreadContextSnapshot{}, errors.New("thread context lifecycle is missing its policy")
+	}
+	if out.Usage != nil && (out.Usage.Provider != out.Model.Provider || out.Usage.Model != out.Model.Model) {
+		return ThreadContextSnapshot{}, errors.New("thread context status model identity mismatch")
 	}
 	out.Compactions = compactions
 	if !latestContextObservedAt.IsZero() {
@@ -728,91 +740,61 @@ func (h *AgentHarness) subAgentDetailContext(entries []sessiontree.Entry, retain
 	} else if !generatedAt.IsZero() && (out.Model.Provider != "" || out.Model.Model != "" || out.Policy.ContextWindowTokens > 0 || out.Usage != nil || len(out.Compactions) > 0) {
 		out.UpdatedAt = generatedAt
 	}
-	return out
+	return out, nil
 }
 
-func subAgentDetailContextPolicy(metadata map[string]string) (SubAgentDetailContextPolicy, bool) {
+func subAgentDetailContextPolicy(metadata map[string]string) (ThreadContextPolicy, error) {
 	raw := strings.TrimSpace(metadata[subAgentContextPolicyKey])
 	if raw == "" {
-		return SubAgentDetailContextPolicy{}, false
+		return ThreadContextPolicy{}, errors.New("thread context policy payload is required")
 	}
-	var policy SubAgentDetailContextPolicy
+	var policy ThreadContextPolicy
 	if err := json.Unmarshal([]byte(raw), &policy); err != nil {
-		return SubAgentDetailContextPolicy{}, false
+		return ThreadContextPolicy{}, fmt.Errorf("decode thread context policy: %w", err)
 	}
-	return policy, policy.ContextWindowTokens > 0 || policy.MaxOutputTokens > 0 || policy.ReservedOutputTokens > 0
+	if policy.ContextWindowTokens <= 0 {
+		return ThreadContextPolicy{}, errors.New("thread context policy requires context window tokens")
+	}
+	return policy, nil
 }
 
-func subAgentDetailContextStatus(metadata map[string]string) (observation.ContextStatus, bool) {
+func subAgentDetailContextStatus(metadata map[string]string) (observation.ContextStatus, error) {
 	raw := strings.TrimSpace(metadata[subAgentContextStatusKey])
 	if raw == "" {
-		return observation.ContextStatus{}, false
+		return observation.ContextStatus{}, errors.New("thread context status payload is required")
 	}
 	var status observation.ContextStatus
 	if err := json.Unmarshal([]byte(raw), &status); err != nil {
-		return observation.ContextStatus{}, false
+		return observation.ContextStatus{}, fmt.Errorf("decode thread context status: %w", err)
 	}
-	return status, status.Phase != "" || status.Status != "" || status.ContextPressure.ContextWindowTokens > 0
+	if err := status.Validate(); err != nil {
+		return observation.ContextStatus{}, err
+	}
+	return status, nil
 }
 
-func subAgentDetailContextPolicyFromStatus(status observation.ContextStatus) SubAgentDetailContextPolicy {
-	return SubAgentDetailContextPolicy{
-		ContextWindowTokens: status.ContextPressure.ContextWindowTokens,
-	}
-}
-
-func subAgentDetailContextCompaction(metadata map[string]string) (SubAgentDetailContextCompaction, bool) {
+func subAgentDetailContextCompaction(metadata map[string]string) (ThreadContextCompaction, error) {
 	raw := strings.TrimSpace(metadata[subAgentContextCompactionKey])
 	if raw == "" {
-		return SubAgentDetailContextCompaction{}, false
+		return ThreadContextCompaction{}, errors.New("thread context compaction payload is required")
 	}
-	var compact SubAgentDetailContextCompaction
+	var compact ThreadContextCompaction
 	if err := json.Unmarshal([]byte(raw), &compact); err != nil {
-		return SubAgentDetailContextCompaction{}, false
+		return ThreadContextCompaction{}, fmt.Errorf("decode thread context compaction: %w", err)
 	}
-	return compact, compact.OperationID != "" || compact.Status != "" || compact.Phase != ""
+	if strings.TrimSpace(compact.OperationID) == "" {
+		return ThreadContextCompaction{}, errors.New("thread context compaction requires operation id")
+	}
+	if strings.TrimSpace(compact.RunID) == "" || strings.TrimSpace(compact.ThreadID) == "" || strings.TrimSpace(compact.RequestID) == "" {
+		return ThreadContextCompaction{}, errors.New("thread context compaction requires run, thread, and request identities")
+	}
+	if err := (observation.CompactionEvent{Phase: observation.CompactionPhase(compact.Phase), Status: observation.CompactionStatus(compact.Status)}).Validate(); err != nil {
+		return ThreadContextCompaction{}, err
+	}
+	return compact, nil
 }
 
-func subAgentDetailContextCompactionFromEntry(entry sessiontree.Entry, ordinal int64, activityContext subAgentDetailActivityContext) SubAgentDetailContextCompaction {
-	phase := strings.TrimSpace(entry.CompactionPhase)
-	if phase == "" {
-		phase = string(observation.CompactionPhaseComplete)
-	}
-	return SubAgentDetailContextCompaction{
-		RunID:               activityContext.runIDForTurn(entry.TurnID),
-		ThreadID:            entry.ThreadID,
-		TurnID:              entry.TurnID,
-		Step:                int(ordinal),
-		OperationID:         firstSubAgentDetailNonEmpty(entry.Metadata["operation_id"], entry.CompactionID),
-		Phase:               phase,
-		Status:              subAgentDetailContextCompactionStatus(phase),
-		Trigger:             entry.CompactionTrigger,
-		Reason:              entry.CompactionReason,
-		TokensBefore:        entry.TokensBefore,
-		TokensAfterEstimate: entry.TokensAfterEstimate,
-		Error:               entry.Error,
-		ObservedAt:          entry.CreatedAt,
-	}
-}
-
-func subAgentDetailContextCompactionStatus(phase string) string {
-	switch strings.TrimSpace(phase) {
-	case string(observation.CompactionPhaseStart):
-		return string(observation.CompactionStatusRunning)
-	case string(observation.CompactionPhaseComplete):
-		return string(observation.CompactionStatusCompacted)
-	case string(observation.CompactionPhaseFailed):
-		return string(observation.CompactionStatusFailed)
-	case string(observation.CompactionPhaseCancelled):
-		return string(observation.CompactionStatusCancelled)
-	case string(observation.CompactionPhaseNoop):
-		return string(observation.CompactionStatusNoop)
-	default:
-		return ""
-	}
-}
-
-func upsertSubAgentDetailCompaction(compactions []SubAgentDetailContextCompaction, seen map[string]int, compact SubAgentDetailContextCompaction) []SubAgentDetailContextCompaction {
+func upsertSubAgentDetailCompaction(compactions []ThreadContextCompaction, seen map[string]int, compact ThreadContextCompaction) []ThreadContextCompaction {
 	key := subAgentDetailContextCompactionKey(compact)
 	if key == "" {
 		compactions = append(compactions, compact)
@@ -826,22 +808,13 @@ func upsertSubAgentDetailCompaction(compactions []SubAgentDetailContextCompactio
 	return append(compactions, compact)
 }
 
-func subAgentDetailContextCompactionKey(compact SubAgentDetailContextCompaction) string {
-	if value := strings.TrimSpace(compact.OperationID); value != "" {
-		return value
-	}
-	if value := strings.TrimSpace(compact.RequestID); value != "" {
-		return strings.Join([]string{strings.TrimSpace(compact.RunID), "request", value}, ":")
-	}
-	if compact.RunID == "" && compact.TurnID == "" && compact.Step == 0 && compact.Trigger == "" && compact.Reason == "" {
-		return ""
-	}
-	return fmt.Sprintf("%s:%s:%d:%s:%s", strings.TrimSpace(compact.RunID), strings.TrimSpace(compact.TurnID), compact.Step, strings.TrimSpace(compact.Trigger), strings.TrimSpace(compact.Reason))
+func subAgentDetailContextCompactionKey(compact ThreadContextCompaction) string {
+	return strings.TrimSpace(compact.OperationID)
 }
 
-func subAgentPublicContextPolicy(policy contextpolicy.Policy) SubAgentDetailContextPolicy {
+func subAgentPublicContextPolicy(policy contextpolicy.Policy) ThreadContextPolicy {
 	normalized := contextpolicy.Normalize(policy)
-	return SubAgentDetailContextPolicy{
+	return ThreadContextPolicy{
 		ContextWindowTokens:  normalized.ContextWindowTokens,
 		MaxOutputTokens:      normalized.MaxOutputTokens,
 		ReservedOutputTokens: normalized.ReservedOutputTokens,
@@ -940,6 +913,27 @@ func (h *AgentHarness) ListThreadDetailEvents(ctx context.Context, opts ListThre
 		RetainedFrom: retainedFrom,
 		GeneratedAt:  h.now(),
 	}, nil
+}
+
+func (h *AgentHarness) ReadThreadContext(ctx context.Context, threadID string) (ThreadContextSnapshot, error) {
+	if h == nil {
+		return ThreadContextSnapshot{}, errors.New("agent harness is nil")
+	}
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return ThreadContextSnapshot{}, errors.New("thread id is required")
+	}
+	thread := h.cacheThread(threadID)
+	journal, err := thread.Journal(ctx)
+	if err != nil {
+		return ThreadContextSnapshot{}, err
+	}
+	entries := journal.Path
+	activityContext := subAgentDetailActivityContext{
+		resultCallIDs: subAgentDetailResultCallIDs(entries),
+		runIDs:        subAgentDetailTurnRunIDs(entries),
+	}
+	return h.subAgentDetailContext(entries, threadDetailRetainedFrom(entries), activityContext, h.now())
 }
 
 func threadDetailRetainedFrom(entries []sessiontree.Entry) int64 {
@@ -1582,6 +1576,9 @@ func subAgentDetailToolResult(msg session.Message, includeRaw bool) *SubAgentDet
 
 func subAgentDetailCompaction(entry sessiontree.Entry) *SubAgentDetailCompaction {
 	return &SubAgentDetailCompaction{
+		OperationID:             entry.CompactionOperationID,
+		RequestID:               entry.CompactionRequestID,
+		Source:                  entry.CompactionSource,
 		CompactionID:            entry.CompactionID,
 		PreviousCompactionID:    entry.PreviousCompactionID,
 		CompactedThroughEntryID: entry.CompactedThroughEntryID,

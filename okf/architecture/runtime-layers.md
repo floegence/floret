@@ -28,11 +28,15 @@ the runtime preserves the engine result and reports projection status as
 also preserves a committed settlement event when its projection read fails.
 `runtime.NewThreadMaintenanceHost` is the provider-free variant for maintenance
 processes that share a Floret store but do not run provider turns. It exposes
-thread summary recovery, turn projection read-back, pending tool settlement,
-parent child-thread closing, and thread-tree deletion without accepting
+thread summary recovery, canonical context snapshot read-back, turn projection
+read-back, pending tool settlement, parent child-thread closing, and thread-tree
+deletion without accepting
 provider, model, fake response, gateway, tools, or host UI configuration. Its
 store option is required because maintenance paths must target an existing
 Floret store deliberately.
+`HostOptions.Store` is also required. The caller owns one Store and may share it
+across provider-backed and maintenance facades; facades never close an injected
+Store, so shutdown closes the Store exactly once after active work ends.
 Runtime resolves a target thread plus its descendants before submitting one
 tree delete request to storage. The SQLite implementation deletes thread rows,
 journal entries, active leases, metadata, artifacts, prompt scopes, and provider
@@ -65,13 +69,26 @@ explicit opt-in that routes a dedicated Floret title request through the same
 transport; a nil internal title generator means disabled rather than an implicit
 provider fallback.
 `HostOptions.ModelGatewayIdentity` supplies the provider/model identity for that
-host-owned transport. Gateway-backed hosts keep provider transport settings out
+host-owned transport plus a required non-sensitive continuation compatibility
+key. Gateway-backed hosts keep provider transport settings out
 of `HostOptions.Config`, so fake provider configuration cannot leak into a
 production gateway integration.
+Before invoking that gateway, Floret projects the journal into typed model
+messages. One assistant response carries text/reasoning plus its ordered
+parallel tool-call group; tool results must follow in the same order with exact
+call ID and tool name. Empty or invalid JSON arguments, duplicate IDs, orphaned
+results, unresolved calls, and illegal adjacency fail before transport. The
+gateway adapter only performs a direct wire-shape mapping.
 
 `AgentHarness` is the internal durable conversation layer. It owns threads,
 parent-child thread lifecycle, turn lifecycle, retries, forks, titles, and
 projection of an active journal path into one engine execution.
+It also owns opaque provider continuation persistence in Floret Store. A turn
+loads continuation only when the current journal leaf and compatibility key
+match exactly; mismatch deletes the record. Fresh response state is committed
+after journal finalization, context-changing turns without fresh state clear the
+old record, and persistence failure changes the operation to a failed
+finalization rather than returning success with missing state.
 The public observation boundary carries normalized finish, raw finish,
 inference, completion, and continuation as distinct typed facts. Hosts consume
 those fields directly instead of interpreting metadata keys.
@@ -149,10 +166,13 @@ not provide target tokens, history ranges, or summary policy to override that
 decision.
 
 Idle compaction uses `Host.CompactThread` instead of pretending to be a user
-turn. It runs the compaction pipeline once and returns status, metrics, safe
-observations, activity timeline, and opaque provider state. The host persists
-opaque envelopes unchanged and must not rebuild provider-visible history from
-product messages, debug reports, or checkpoint internals.
+turn. It requires a request ID and source, runs the compaction pipeline once,
+and returns one canonical terminal compaction event, metrics, and activity
+timeline. Floret clears continuation after a successful context change and
+preserves it across noop/failed/cancelled operations only when provider-visible
+context is unchanged. The host never receives or persists the opaque envelope
+and must not rebuild provider-visible history from product messages, debug
+reports, or checkpoint internals.
 
 # Child Threads
 

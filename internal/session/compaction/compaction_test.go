@@ -98,6 +98,8 @@ func TestPrepareKeepsMultiToolBatchBoundary(t *testing.T) {
 func TestPrepareUpdatesPreviousSummaryWithoutStackingOldSummaryMessages(t *testing.T) {
 	previous := BuildCheckpointMessage("S1 old summary", []session.Message{{Role: session.User, Content: "original user preserved in checkpoint", EntryID: "e1"}}, nil)
 	previous.CompactionID = "c1"
+	previous.CompactionGeneration = 1
+	previous.CompactionWindowID = "c1"
 	history := []session.Message{
 		previous,
 		{Role: session.User, Content: "new work", EntryID: "e2"},
@@ -105,8 +107,12 @@ func TestPrepareUpdatesPreviousSummaryWithoutStackingOldSummaryMessages(t *testi
 		{Role: session.User, Content: "tail", EntryID: "e4"},
 	}
 	prep, err := Prepare(context.Background(), Request{
-		History: history,
-		Policy:  contextpolicy.Policy{ContextWindowTokens: 1200, ReservedOutputTokens: 80, ReservedSummaryTokens: 120, RecentTailTokens: 12},
+		PreviousCompactionID: previous.CompactionID,
+		PreviousGeneration:   previous.CompactionGeneration,
+		PreviousWindowID:     previous.CompactionWindowID,
+		PreviousSummary:      ExtractCheckpointSummary(previous.Content),
+		History:              history,
+		Policy:               contextpolicy.Policy{ContextWindowTokens: 1200, ReservedOutputTokens: 80, ReservedSummaryTokens: 120, RecentTailTokens: 12},
 	}, ExtractiveSummaryGenerator{})
 	if err != nil {
 		t.Fatal(err)
@@ -117,14 +123,20 @@ func TestPrepareUpdatesPreviousSummaryWithoutStackingOldSummaryMessages(t *testi
 	}
 }
 
-func TestPrepareDropsStackedCheckpointMessagesAndUsesLatestPreviousSummary(t *testing.T) {
+func TestPrepareRejectsStackedCheckpointMessages(t *testing.T) {
 	older := BuildCheckpointMessage("S0 older summary", []session.Message{{Role: session.User, Content: "older preserved checkpoint user", EntryID: "u0"}}, nil)
 	older.CompactionID = "c0"
+	older.CompactionGeneration = 1
+	older.CompactionWindowID = "c0"
 	latest := BuildCheckpointMessage("S1 latest summary", []session.Message{{Role: session.User, Content: "latest preserved checkpoint user", EntryID: "u1"}}, nil)
 	latest.CompactionID = "c1"
-	generator := &recordingSummaryGenerator{summaries: []string{"S2 new summary"}}
-
-	prep, err := Prepare(context.Background(), Request{
+	latest.CompactionGeneration = 2
+	latest.CompactionWindowID = "c1"
+	_, err := Prepare(context.Background(), Request{
+		PreviousCompactionID: latest.CompactionID,
+		PreviousGeneration:   latest.CompactionGeneration,
+		PreviousWindowID:     latest.CompactionWindowID,
+		PreviousSummary:      ExtractCheckpointSummary(latest.Content),
 		History: []session.Message{
 			older,
 			latest,
@@ -133,30 +145,39 @@ func TestPrepareDropsStackedCheckpointMessagesAndUsesLatestPreviousSummary(t *te
 			{Role: session.User, Content: "tail", EntryID: "u3"},
 		},
 		Policy: contextpolicy.Policy{ContextWindowTokens: 200000, ReservedOutputTokens: 1000, ReservedSummaryTokens: 1000, RecentTailTokens: 12},
-	}, generator)
-	if err != nil {
-		t.Fatal(err)
+	}, ExtractiveSummaryGenerator{})
+	if err == nil || !strings.Contains(err.Error(), "multiple active compaction summaries") {
+		t.Fatalf("Prepare err = %v, want stacked checkpoint rejection", err)
 	}
-	if len(generator.calls) != 1 {
-		t.Fatalf("summary generator calls = %d, want 1", len(generator.calls))
+}
+
+func TestPrepareRejectsMalformedOrImplicitPreviousCheckpointIdentity(t *testing.T) {
+	checkpoint := BuildCheckpointMessage("previous summary", nil, nil)
+	checkpoint.CompactionID = "compaction-1"
+	checkpoint.CompactionGeneration = 1
+	checkpoint.CompactionWindowID = "window-1"
+	history := []session.Message{
+		checkpoint,
+		{Role: session.User, Content: "new work", EntryID: "u2"},
+		{Role: session.Assistant, Content: "new decision", EntryID: "a2"},
 	}
-	call := generator.calls[0]
-	if call.Request.PreviousCompactionID != "c1" || call.Request.PreviousSummary != "S1 latest summary" {
-		t.Fatalf("latest checkpoint should be previous summary source: %#v", call.Request)
+	policy := contextpolicy.Policy{ContextWindowTokens: 1200, ReservedOutputTokens: 80, ReservedSummaryTokens: 120, RecentTailTokens: 12}
+
+	if _, err := Prepare(context.Background(), Request{History: history, Policy: policy}, ExtractiveSummaryGenerator{}); err == nil || !strings.Contains(err.Error(), "explicit previous compaction identity") {
+		t.Fatalf("Prepare without previous identity err = %v", err)
 	}
-	for _, msg := range append(append([]session.Message(nil), call.CompactedHead...), call.RetainedTail...) {
-		if msg.Kind == session.MessageKindCompactionSummary {
-			t.Fatalf("old checkpoint should not remain in compacted scope or tail: %#v", call)
-		}
-	}
-	checkpoint := requireSingleCheckpoint(t, prep.ActiveMessages)
-	if got := ExtractCheckpointSummary(checkpoint.Content); got != "S2 new summary" {
-		t.Fatalf("new checkpoint summary = %q, want stub summary", got)
-	}
-	for _, input := range preservedUserInputs(t, checkpoint) {
-		if input.EntryID == "u0" || input.EntryID == "u1" {
-			t.Fatalf("old checkpoint users should not be structurally re-preserved: %#v", input)
-		}
+
+	malformed := append([]session.Message(nil), history...)
+	malformed[0].CompactionGeneration = 0
+	if _, err := Prepare(context.Background(), Request{
+		PreviousCompactionID: checkpoint.CompactionID,
+		PreviousGeneration:   checkpoint.CompactionGeneration,
+		PreviousWindowID:     checkpoint.CompactionWindowID,
+		PreviousSummary:      ExtractCheckpointSummary(checkpoint.Content),
+		History:              malformed,
+		Policy:               policy,
+	}, ExtractiveSummaryGenerator{}); err == nil || !strings.Contains(err.Error(), "incomplete identity") {
+		t.Fatalf("Prepare with malformed checkpoint err = %v", err)
 	}
 }
 
@@ -318,6 +339,8 @@ func TestPrepareDeduplicatesKeptUsersAlreadyInTail(t *testing.T) {
 func TestPrepareExtractsPurePreviousSummaryFromCheckpoint(t *testing.T) {
 	previous := BuildCheckpointMessage("S1 old summary", []session.Message{{Role: session.User, Content: "old user", EntryID: "u1"}}, nil)
 	previous.CompactionID = "c1"
+	previous.CompactionGeneration = 1
+	previous.CompactionWindowID = "c1"
 	history := []session.Message{
 		previous,
 		{Role: session.User, Content: "new work", EntryID: "u2"},
@@ -325,8 +348,12 @@ func TestPrepareExtractsPurePreviousSummaryFromCheckpoint(t *testing.T) {
 		{Role: session.User, Content: "tail", EntryID: "u3"},
 	}
 	prep, err := Prepare(context.Background(), Request{
-		History: history,
-		Policy:  contextpolicy.Policy{ContextWindowTokens: 1200, ReservedOutputTokens: 80, ReservedSummaryTokens: 120, RecentTailTokens: 12},
+		PreviousCompactionID: previous.CompactionID,
+		PreviousGeneration:   previous.CompactionGeneration,
+		PreviousWindowID:     previous.CompactionWindowID,
+		PreviousSummary:      ExtractCheckpointSummary(previous.Content),
+		History:              history,
+		Policy:               contextpolicy.Policy{ContextWindowTokens: 1200, ReservedOutputTokens: 80, ReservedSummaryTokens: 120, RecentTailTokens: 12},
 	}, ExtractiveSummaryGenerator{})
 	if err != nil {
 		t.Fatal(err)
@@ -387,9 +414,13 @@ func TestPrepareRepeatedCompactionReplacesCheckpointWithoutPreservedUserGrowth(t
 		session.Message{Role: session.Assistant, Content: "round 2 tail answer", EntryID: "a5"},
 	)
 	round2, err := Prepare(context.Background(), Request{
-		CompactionID: "c2",
-		History:      round2History,
-		Policy:       policy,
+		CompactionID:         "c2",
+		PreviousCompactionID: checkpoint1.CompactionID,
+		PreviousGeneration:   checkpoint1.CompactionGeneration,
+		PreviousWindowID:     checkpoint1.CompactionWindowID,
+		PreviousSummary:      ExtractCheckpointSummary(checkpoint1.Content),
+		History:              round2History,
+		Policy:               policy,
 	}, generator)
 	if err != nil {
 		t.Fatal(err)
@@ -419,9 +450,13 @@ func TestPrepareRepeatedCompactionReplacesCheckpointWithoutPreservedUserGrowth(t
 		session.Message{Role: session.Assistant, Content: "round 3 tail answer", EntryID: "a7"},
 	)
 	round3, err := Prepare(context.Background(), Request{
-		CompactionID: "c3",
-		History:      round3History,
-		Policy:       policy,
+		CompactionID:         "c3",
+		PreviousCompactionID: checkpoint2.CompactionID,
+		PreviousGeneration:   checkpoint2.CompactionGeneration,
+		PreviousWindowID:     checkpoint2.CompactionWindowID,
+		PreviousSummary:      ExtractCheckpointSummary(checkpoint2.Content),
+		History:              round3History,
+		Policy:               policy,
 	}, generator)
 	if err != nil {
 		t.Fatal(err)
