@@ -5620,8 +5620,12 @@ func TestListThreadTurnsHidesTurnUntilCanonicalUserEntryIsCommitted(t *testing.T
 			if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "corrupt-thread", "turn-corrupt", sessiontree.TurnCompleted, map[string]string{"run_id": "run-corrupt"}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "corrupt-thread", Tail: 1}); err == nil || !strings.Contains(err.Error(), "without a canonical user entry") {
-				t.Fatalf("corrupt terminal turn error = %v", err)
+			unadmittedTerminal, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "corrupt-thread", Tail: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(unadmittedTerminal.Turns) != 0 || unadmittedTerminal.ThroughOrdinal != 2 {
+				t.Fatalf("unadmitted terminal page = %#v, want no conversation turn through ordinal 2", unadmittedTerminal)
 			}
 		})
 	}

@@ -40,9 +40,9 @@ host interface for every runtime operation.
   no message shortcut.
 * `Host.ListThreadTurns` and `ThreadMaintenanceHost.ListThreadTurns` return
   canonical turn snapshots in ascending journal ordinal order. Before, after,
-  and tail pagination are mutually exclusive. A started marker does not make a
-  turn public by itself; the turn enters the page only after its canonical user
-  entry is committed. Each returned turn includes its explicit run identity,
+  and tail pagination are mutually exclusive. Started, waiting, or terminal
+  markers do not make a turn public by themselves; the turn enters the page only
+  after its canonical user entry is committed. Each returned turn includes its explicit run identity,
   canonical user entry and input, failure, verified control signals, complete
   `ThreadTurnProjection`, and projection-through ordinal.
 * `ReadThreadAgentTodos` and `UpdateThreadAgentTodos` expose Floret-owned typed
@@ -256,8 +256,8 @@ terminal error fact) is included.
 same journal facts by started-turn ordinal and always returns ascending turns,
 so hosts do not merge local transcript rows, timestamps, previews, or live
 draft IDs into history. `ThreadTurnsPage.ThroughOrdinal` still reports the full
-journal read boundary while a started-only turn is hidden, allowing hosts to
-observe revision progress without receiving a half-admitted turn. A live
+journal read boundary while a marker-only turn is hidden, allowing hosts to
+observe revision progress without receiving an unadmitted turn. A live
 projection is accepted only for its exact
 `ThreadID`/`TurnID`/`RunID`; once the durable projection reaches the turn, a host
 removes its in-memory draft or resynchronizes instead of guessing an order.

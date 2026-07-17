@@ -210,9 +210,9 @@ window size.
 Hosts that only need thread lifecycle metadata use `EnsureThread`,
 `ThreadSummary`, or transcript-free `ReadThread`. Conversation bootstrap and
 pagination use `ListThreadTurns`, whose before, after, and tail modes always
-return admitted canonical turn ordinals in ascending order. A durable started
-marker remains outside the public turn list until its canonical user entry is
-present, while the page through ordinal continues to cover the full read
+return admitted canonical turn ordinals in ascending order. A marker-only turn
+remains outside the public turn list even if it is later cancelled or terminal;
+only a canonical user entry admits it. The page through ordinal continues to cover the full read
 boundary. Hosts that need to reload a single known turn may use
 `ReadTurnProjection` with explicit `ThreadID`, `TurnID`, and `RunID`. Floret
 rebuilds assistant text, verified control-signal payloads, and activity timelines

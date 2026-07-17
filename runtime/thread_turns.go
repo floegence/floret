@@ -168,6 +168,9 @@ func projectThreadTurnSnapshots(threadID ThreadID, events []ThreadDetailEvent) (
 			return nil, 0, fmt.Errorf("turn %q has an invalid started marker", turnID)
 		}
 		userEntryID, userInput := canonicalTurnUserInput(events, turnID, ordinal)
+		if strings.TrimSpace(userEntryID) == "" {
+			continue
+		}
 		projection := ProjectThreadTurn(ProjectThreadTurnRequest{
 			ThreadID: threadID,
 			TurnID:   turnID,
@@ -177,12 +180,6 @@ func projectThreadTurnSnapshots(threadID ThreadID, events []ThreadDetailEvent) (
 		})
 		if err := projection.Validate(); err != nil {
 			return nil, 0, fmt.Errorf("project turn %q: %w", turnID, err)
-		}
-		if strings.TrimSpace(userEntryID) == "" {
-			if projection.Status != TurnStatusRunning {
-				return nil, 0, fmt.Errorf("turn %q reached %q without a canonical user entry", turnID, projection.Status)
-			}
-			continue
 		}
 		turns = append(turns, ThreadTurnSnapshot{
 			TurnID:         turnID,
