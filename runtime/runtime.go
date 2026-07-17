@@ -78,6 +78,10 @@ var (
 	ErrForkDestinationConflict = errors.New("floret fork destination conflicts with operation plan")
 	// ErrForkOperationTargetMissing reports that a completed operation no longer has every marked target.
 	ErrForkOperationTargetMissing = errors.New("floret fork operation target is missing")
+	// ErrAgentTodoVersionConflict reports that a todo update was based on a stale canonical version.
+	ErrAgentTodoVersionConflict = errors.New("floret agent todo version conflict")
+	// ErrJournalInvariant reports an ambiguous active path that Floret refuses to repair heuristically.
+	ErrJournalInvariant = errors.New("floret thread journal invariant violated")
 )
 
 // Host is the concrete public facade for provider-backed durable conversations.
@@ -228,6 +232,48 @@ type ReadTurnProjectionRequest struct {
 	ThreadID ThreadID
 	TurnID   TurnID
 	RunID    RunID
+}
+
+type AgentTodoStatus string
+
+const (
+	AgentTodoPending    AgentTodoStatus = "pending"
+	AgentTodoInProgress AgentTodoStatus = "in_progress"
+	AgentTodoCompleted  AgentTodoStatus = "completed"
+)
+
+func (s AgentTodoStatus) Valid() bool {
+	switch s {
+	case AgentTodoPending, AgentTodoInProgress, AgentTodoCompleted:
+		return true
+	default:
+		return false
+	}
+}
+
+type AgentTodo struct {
+	ID      string          `json:"id"`
+	Content string          `json:"content"`
+	Status  AgentTodoStatus `json:"status"`
+}
+
+type ThreadAgentTodoState struct {
+	ThreadID          ThreadID    `json:"thread_id"`
+	Version           int64       `json:"version"`
+	Items             []AgentTodo `json:"items"`
+	UpdatedAt         time.Time   `json:"updated_at,omitempty"`
+	UpdatedByTurnID   TurnID      `json:"updated_by_turn_id,omitempty"`
+	UpdatedByRunID    RunID       `json:"updated_by_run_id,omitempty"`
+	UpdatedByToolCall string      `json:"updated_by_tool_call_id,omitempty"`
+}
+
+type UpdateThreadAgentTodosRequest struct {
+	ThreadID        ThreadID
+	ExpectedVersion int64
+	Items           []AgentTodo
+	TurnID          TurnID
+	RunID           RunID
+	ToolCallID      string
 }
 
 // PendingToolCompletionStatus describes the observed outcome of host-owned work
@@ -617,11 +663,21 @@ type ThreadDetailMessage struct {
 }
 
 type ThreadDetailToolCall struct {
-	ID          string `json:"id,omitempty"`
-	Name        string `json:"name,omitempty"`
-	ArgsPreview string `json:"args_preview,omitempty"`
-	ArgsJSON    string `json:"args_json,omitempty"`
-	ArgsHash    string `json:"args_hash,omitempty"`
+	ID            string                     `json:"id,omitempty"`
+	Name          string                     `json:"name,omitempty"`
+	ArgsPreview   string                     `json:"args_preview,omitempty"`
+	ArgsJSON      string                     `json:"args_json,omitempty"`
+	ArgsHash      string                     `json:"args_hash,omitempty"`
+	ControlSignal *ThreadDetailControlSignal `json:"control_signal,omitempty"`
+}
+
+type ThreadDetailControlSignal struct {
+	Name        string         `json:"name,omitempty"`
+	CallID      string         `json:"call_id,omitempty"`
+	Disposition string         `json:"disposition,omitempty"`
+	Text        string         `json:"text,omitempty"`
+	ArgsHash    string         `json:"args_hash,omitempty"`
+	Payload     map[string]any `json:"payload,omitempty"`
 }
 
 type ThreadDetailToolResult struct {
@@ -685,11 +741,12 @@ type SubAgentDetailMessage struct {
 }
 
 type SubAgentDetailToolCall struct {
-	ID          string `json:"id,omitempty"`
-	Name        string `json:"name,omitempty"`
-	ArgsPreview string `json:"args_preview,omitempty"`
-	ArgsJSON    string `json:"args_json,omitempty"`
-	ArgsHash    string `json:"args_hash,omitempty"`
+	ID            string                     `json:"id,omitempty"`
+	Name          string                     `json:"name,omitempty"`
+	ArgsPreview   string                     `json:"args_preview,omitempty"`
+	ArgsJSON      string                     `json:"args_json,omitempty"`
+	ArgsHash      string                     `json:"args_hash,omitempty"`
+	ControlSignal *ThreadDetailControlSignal `json:"control_signal,omitempty"`
 }
 
 type SubAgentDetailToolResult struct {
@@ -751,22 +808,23 @@ type RunLabels struct {
 }
 
 type ThreadSnapshot struct {
-	ID               ThreadID        `json:"id"`
-	Title            string          `json:"title,omitempty"`
-	TitleStatus      string          `json:"title_status,omitempty"`
-	TitleSource      string          `json:"title_source,omitempty"`
-	TitleUpdatedAt   time.Time       `json:"title_updated_at,omitempty"`
-	TitleError       string          `json:"title_error,omitempty"`
-	CreatedAt        time.Time       `json:"created_at"`
-	UpdatedAt        time.Time       `json:"updated_at"`
-	Phase            ThreadPhase     `json:"phase"`
-	Status           ThreadStatus    `json:"status"`
-	LatestTurnID     TurnID          `json:"latest_turn_id,omitempty"`
-	WaitingPrompt    string          `json:"waiting_prompt,omitempty"`
-	Recoverable      bool            `json:"recoverable"`
-	CanAppendMessage bool            `json:"can_append_message"`
-	CanRetry         bool            `json:"can_retry"`
-	Messages         []ThreadMessage `json:"messages"`
+	ID               ThreadID     `json:"id"`
+	Title            string       `json:"title,omitempty"`
+	TitleStatus      string       `json:"title_status,omitempty"`
+	TitleSource      string       `json:"title_source,omitempty"`
+	TitleUpdatedAt   time.Time    `json:"title_updated_at,omitempty"`
+	TitleError       string       `json:"title_error,omitempty"`
+	CreatedAt        time.Time    `json:"created_at"`
+	UpdatedAt        time.Time    `json:"updated_at"`
+	Phase            ThreadPhase  `json:"phase"`
+	Status           ThreadStatus `json:"status"`
+	LatestTurnID     TurnID       `json:"latest_turn_id,omitempty"`
+	LatestRunID      RunID        `json:"latest_run_id,omitempty"`
+	ThroughOrdinal   int64        `json:"through_ordinal"`
+	WaitingPrompt    string       `json:"waiting_prompt,omitempty"`
+	Recoverable      bool         `json:"recoverable"`
+	CanAppendMessage bool         `json:"can_append_message"`
+	CanRetry         bool         `json:"can_retry"`
 }
 
 type ThreadSummary struct {
@@ -785,13 +843,6 @@ type ThreadSummary struct {
 	Recoverable      bool         `json:"recoverable"`
 	CanAppendMessage bool         `json:"can_append_message"`
 	CanRetry         bool         `json:"can_retry"`
-}
-
-type ThreadMessage struct {
-	Role      string    `json:"role"`
-	Content   string    `json:"content"`
-	TurnID    TurnID    `json:"turn_id,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
 }
 
 type TurnResult struct {
@@ -1188,6 +1239,7 @@ type Store struct {
 	artifacts      artifact.Store
 	forkOperations storage.ForkOperationStore
 	providerStates storage.ProviderStateStore
+	agentTodos     sessiontree.AgentTodoStateRepo
 	deleteData     func(context.Context, storage.DeleteThreadTreeDataRequest) error
 	close          func() error
 }
@@ -1204,6 +1256,7 @@ func NewMemoryStore() *Store {
 		artifacts:      artifacts,
 		forkOperations: forkOperations,
 		providerStates: providerStates,
+		agentTodos:     repo,
 		deleteData: func(ctx context.Context, req storage.DeleteThreadTreeDataRequest) error {
 			threadIDs := cleanRuntimeIDs(append([]string{req.RootThreadID}, req.ThreadIDs...))
 			for i := len(threadIDs) - 1; i >= 0; i-- {
@@ -1238,6 +1291,7 @@ func OpenSQLiteStore(path string) (*Store, error) {
 		artifacts:      sqliteStore,
 		forkOperations: sqliteStore,
 		providerStates: sqliteStore,
+		agentTodos:     sqliteStore,
 		deleteData: func(ctx context.Context, req storage.DeleteThreadTreeDataRequest) error {
 			return sqliteStore.DeleteThreadTreeData(ctx, req)
 		},
@@ -1256,7 +1310,7 @@ func (s *Store) validate() error {
 	if s == nil {
 		return errors.New("runtime store is required")
 	}
-	if s.repo == nil || s.prompt == nil || s.artifacts == nil || s.forkOperations == nil || s.providerStates == nil || s.deleteData == nil {
+	if s.repo == nil || s.prompt == nil || s.artifacts == nil || s.forkOperations == nil || s.providerStates == nil || s.agentTodos == nil || s.deleteData == nil {
 		return errors.New("runtime store must be created with runtime.NewMemoryStore or runtime.OpenSQLiteStore")
 	}
 	return nil
@@ -1437,6 +1491,10 @@ func runtimeHostError(err error) error {
 		return fmt.Errorf("%w: %w", ErrForkOperationTargetMissing, err)
 	case errors.Is(err, sessiontree.ErrForkDestinationConflict):
 		return fmt.Errorf("%w: %w", ErrForkDestinationConflict, err)
+	case errors.Is(err, sessiontree.ErrAgentTodoVersionConflict):
+		return fmt.Errorf("%w: %w", ErrAgentTodoVersionConflict, err)
+	case errors.Is(err, agentharness.ErrJournalInvariant):
+		return fmt.Errorf("%w: %w", ErrJournalInvariant, err)
 	case errors.Is(err, sessiontree.ErrThreadNotFound):
 		return fmt.Errorf("%w: %w", ErrThreadNotFound, err)
 	default:
@@ -1502,11 +1560,19 @@ func forkThread(ctx context.Context, harness *agentharness.AgentHarness, req For
 }
 
 func (h *Host) ReadThread(ctx context.Context, threadID ThreadID) (ThreadSnapshot, error) {
-	thread, err := h.harness.ResumeThread(ctx, string(threadID), agentharness.ResumeOptions{})
+	return readThreadByID(ctx, h.harness, threadID)
+}
+
+func (h *ThreadMaintenanceHost) ReadThread(ctx context.Context, threadID ThreadID) (ThreadSnapshot, error) {
+	return readThreadByID(ctx, h.harness, threadID)
+}
+
+func readThreadByID(ctx context.Context, harness *agentharness.AgentHarness, threadID ThreadID) (ThreadSnapshot, error) {
+	snapshot, err := harness.ReadThread(ctx, string(threadID))
 	if err != nil {
 		return ThreadSnapshot{}, runtimeHostError(err)
 	}
-	return readThread(ctx, thread)
+	return threadSnapshot(snapshot), nil
 }
 
 func (h *Host) ListThreadDetailEvents(ctx context.Context, req ListThreadDetailEventsRequest) (ThreadDetailEvents, error) {
@@ -1546,6 +1612,121 @@ func readThreadContext(ctx context.Context, harness *agentharness.AgentHarness, 
 		return ThreadContextSnapshot{}, err
 	}
 	return out, nil
+}
+
+func (h *Host) ReadThreadAgentTodos(ctx context.Context, threadID ThreadID) (ThreadAgentTodoState, error) {
+	return readThreadAgentTodos(ctx, h.store, threadID)
+}
+
+func (h *ThreadMaintenanceHost) ReadThreadAgentTodos(ctx context.Context, threadID ThreadID) (ThreadAgentTodoState, error) {
+	return readThreadAgentTodos(ctx, h.store, threadID)
+}
+
+func readThreadAgentTodos(ctx context.Context, store *Store, threadID ThreadID) (ThreadAgentTodoState, error) {
+	if strings.TrimSpace(string(threadID)) == "" {
+		return ThreadAgentTodoState{}, errors.New("thread id is required")
+	}
+	state, err := store.agentTodos.ReadAgentTodoState(ctx, string(threadID))
+	if err != nil {
+		return ThreadAgentTodoState{}, runtimeHostError(err)
+	}
+	return threadAgentTodoState(state), nil
+}
+
+func (h *Host) UpdateThreadAgentTodos(ctx context.Context, req UpdateThreadAgentTodosRequest) (ThreadAgentTodoState, error) {
+	return updateThreadAgentTodos(ctx, h.store, req)
+}
+
+func (h *ThreadMaintenanceHost) UpdateThreadAgentTodos(ctx context.Context, req UpdateThreadAgentTodosRequest) (ThreadAgentTodoState, error) {
+	return updateThreadAgentTodos(ctx, h.store, req)
+}
+
+func updateThreadAgentTodos(ctx context.Context, store *Store, req UpdateThreadAgentTodosRequest) (ThreadAgentTodoState, error) {
+	if strings.TrimSpace(string(req.ThreadID)) == "" {
+		return ThreadAgentTodoState{}, errors.New("thread id is required")
+	}
+	if req.ExpectedVersion < 0 {
+		return ThreadAgentTodoState{}, errors.New("expected todo version must be non-negative")
+	}
+	if strings.TrimSpace(string(req.TurnID)) == "" || strings.TrimSpace(string(req.RunID)) == "" || strings.TrimSpace(req.ToolCallID) == "" {
+		return ThreadAgentTodoState{}, errors.New("todo update requires turn, run, and tool call identities")
+	}
+	if err := validateAgentTodoUpdateIdentity(ctx, store.repo, req); err != nil {
+		return ThreadAgentTodoState{}, err
+	}
+	items := make([]sessiontree.AgentTodoItem, 0, len(req.Items))
+	seen := make(map[string]struct{}, len(req.Items))
+	for index, item := range req.Items {
+		id := strings.TrimSpace(item.ID)
+		content := strings.TrimSpace(item.Content)
+		if id == "" || content == "" || !item.Status.Valid() {
+			return ThreadAgentTodoState{}, fmt.Errorf("todo item %d is invalid", index)
+		}
+		if _, ok := seen[id]; ok {
+			return ThreadAgentTodoState{}, fmt.Errorf("duplicate todo id %q", id)
+		}
+		seen[id] = struct{}{}
+		items = append(items, sessiontree.AgentTodoItem{ID: id, Content: content, Status: sessiontree.AgentTodoStatus(item.Status)})
+	}
+	state, err := store.agentTodos.CompareAndSwapAgentTodoState(ctx, sessiontree.AgentTodoState{
+		ThreadID:          string(req.ThreadID),
+		Items:             items,
+		UpdatedAt:         time.Now().UTC(),
+		UpdatedByTurnID:   string(req.TurnID),
+		UpdatedByRunID:    string(req.RunID),
+		UpdatedByToolCall: strings.TrimSpace(req.ToolCallID),
+	}, req.ExpectedVersion)
+	if err != nil {
+		return ThreadAgentTodoState{}, runtimeHostError(err)
+	}
+	return threadAgentTodoState(state), nil
+}
+
+func validateAgentTodoUpdateIdentity(ctx context.Context, repo sessiontree.Repo, req UpdateThreadAgentTodosRequest) error {
+	meta, err := repo.Thread(ctx, string(req.ThreadID))
+	if err != nil {
+		return runtimeHostError(err)
+	}
+	path, err := repo.Path(ctx, string(req.ThreadID), meta.LeafID)
+	if err != nil {
+		return runtimeHostError(err)
+	}
+	runFound := false
+	toolFound := false
+	for _, entry := range path {
+		if entry.TurnID != string(req.TurnID) {
+			continue
+		}
+		if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnStarted && strings.TrimSpace(entry.Metadata["run_id"]) == string(req.RunID) {
+			runFound = true
+		}
+		if entry.Type == sessiontree.EntryToolCall && strings.TrimSpace(entry.Message.ToolCallID) == strings.TrimSpace(req.ToolCallID) {
+			toolFound = true
+		}
+	}
+	if !runFound {
+		return fmt.Errorf("%w: %s", ErrRunNotFound, req.RunID)
+	}
+	if !toolFound {
+		return fmt.Errorf("todo update tool call %q was not found in turn %q", req.ToolCallID, req.TurnID)
+	}
+	return nil
+}
+
+func threadAgentTodoState(in sessiontree.AgentTodoState) ThreadAgentTodoState {
+	out := ThreadAgentTodoState{
+		ThreadID:          ThreadID(in.ThreadID),
+		Version:           in.Version,
+		Items:             make([]AgentTodo, 0, len(in.Items)),
+		UpdatedAt:         in.UpdatedAt,
+		UpdatedByTurnID:   TurnID(in.UpdatedByTurnID),
+		UpdatedByRunID:    RunID(in.UpdatedByRunID),
+		UpdatedByToolCall: in.UpdatedByToolCall,
+	}
+	for _, item := range in.Items {
+		out.Items = append(out.Items, AgentTodo{ID: item.ID, Content: item.Content, Status: AgentTodoStatus(item.Status)})
+	}
+	return out
 }
 
 func (h *Host) ListPendingApprovals(ctx context.Context, req ListPendingApprovalsRequest) (PendingApprovals, error) {
@@ -2082,19 +2263,12 @@ func threadSnapshot(in agentharness.ThreadSnapshot) ThreadSnapshot {
 		Phase:            ThreadPhase(in.Phase),
 		Status:           ThreadStatus(in.Status),
 		LatestTurnID:     TurnID(in.LatestTurnID),
+		LatestRunID:      RunID(in.LatestRunID),
+		ThroughOrdinal:   in.ThroughOrdinal,
 		WaitingPrompt:    in.WaitingPrompt,
 		Recoverable:      in.Recoverable,
 		CanAppendMessage: in.CanAppendMessage,
 		CanRetry:         in.CanRetry,
-		Messages:         make([]ThreadMessage, 0, len(in.Messages)),
-	}
-	for _, msg := range in.Messages {
-		out.Messages = append(out.Messages, ThreadMessage{
-			Role:      string(msg.Role),
-			Content:   msg.Content,
-			TurnID:    TurnID(msg.TurnID),
-			CreatedAt: msg.CreatedAt,
-		})
 	}
 	return out
 }
@@ -2684,7 +2858,18 @@ func threadDetailToolCall(in *agentharness.SubAgentDetailToolCall) *ThreadDetail
 	if in == nil {
 		return nil
 	}
-	return &ThreadDetailToolCall{ID: in.ID, Name: in.Name, ArgsPreview: in.ArgsPreview, ArgsJSON: in.ArgsJSON, ArgsHash: in.ArgsHash}
+	out := &ThreadDetailToolCall{ID: in.ID, Name: in.Name, ArgsPreview: in.ArgsPreview, ArgsJSON: in.ArgsJSON, ArgsHash: in.ArgsHash}
+	if in.ControlSignal != nil {
+		out.ControlSignal = &ThreadDetailControlSignal{
+			Name:        in.ControlSignal.Name,
+			CallID:      in.ControlSignal.CallID,
+			Disposition: in.ControlSignal.Disposition,
+			Text:        in.ControlSignal.Text,
+			ArgsHash:    in.ControlSignal.ArgsHash,
+			Payload:     cloneAnyMap(in.ControlSignal.Payload),
+		}
+	}
+	return out
 }
 
 func threadDetailToolResult(in *agentharness.SubAgentDetailToolResult) *ThreadDetailToolResult {
@@ -2819,6 +3004,11 @@ func cloneThreadDetailToolCall(in *ThreadDetailToolCall) *ThreadDetailToolCall {
 		return nil
 	}
 	out := *in
+	if in.ControlSignal != nil {
+		signal := *in.ControlSignal
+		signal.Payload = cloneAnyMap(in.ControlSignal.Payload)
+		out.ControlSignal = &signal
+	}
 	return &out
 }
 
@@ -2884,6 +3074,7 @@ func cloneThreadTurnProjectionSegment(in ThreadTurnProjectionSegment) ThreadTurn
 	out.ActivityTimeline = observation.CloneActivityTimeline(in.ActivityTimeline)
 	if in.Signal != nil {
 		signal := *in.Signal
+		signal.Payload = cloneAnyMap(in.Signal.Payload)
 		out.Signal = &signal
 	}
 	out.EventIDs = append([]string(nil), in.EventIDs...)
@@ -2901,7 +3092,18 @@ func subAgentDetailToolCall(in *agentharness.SubAgentDetailToolCall) *SubAgentDe
 	if in == nil {
 		return nil
 	}
-	return &SubAgentDetailToolCall{ID: in.ID, Name: in.Name, ArgsPreview: in.ArgsPreview, ArgsJSON: in.ArgsJSON, ArgsHash: in.ArgsHash}
+	out := &SubAgentDetailToolCall{ID: in.ID, Name: in.Name, ArgsPreview: in.ArgsPreview, ArgsJSON: in.ArgsJSON, ArgsHash: in.ArgsHash}
+	if in.ControlSignal != nil {
+		out.ControlSignal = &ThreadDetailControlSignal{
+			Name:        in.ControlSignal.Name,
+			CallID:      in.ControlSignal.CallID,
+			Disposition: in.ControlSignal.Disposition,
+			Text:        in.ControlSignal.Text,
+			ArgsHash:    in.ControlSignal.ArgsHash,
+			Payload:     cloneAnyMap(in.ControlSignal.Payload),
+		}
+	}
+	return out
 }
 
 func subAgentDetailToolResult(in *agentharness.SubAgentDetailToolResult) *SubAgentDetailToolResult {

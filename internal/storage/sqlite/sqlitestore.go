@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	schemaVersion     = "11"
+	schemaVersion     = "12"
 	rawEncoderVersion = "1"
 	driverName        = "sqlite"
 )
@@ -612,10 +612,114 @@ func (s *Store) Fork(ctx context.Context, opts sessiontree.ForkOptions) (session
 		if err := updateThread(ctx, tx, meta); err != nil {
 			return err
 		}
+		if todo, ok, err := loadAgentTodoState(ctx, tx, opts.SourceThreadID); err != nil {
+			return err
+		} else if ok {
+			todo.ThreadID = newID
+			todo.UpdatedByTurnID = rewriteForkID(todo.UpdatedByTurnID, opts.TurnIDMap)
+			todo.UpdatedByRunID = rewriteForkID(todo.UpdatedByRunID, opts.RunIDMap)
+			if err := putAgentTodoState(ctx, tx, todo); err != nil {
+				return err
+			}
+		}
 		forked = meta
 		return nil
 	})
 	return forked, err
+}
+
+func (s *Store) ReadAgentTodoState(ctx context.Context, threadID string) (sessiontree.AgentTodoState, error) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return sessiontree.AgentTodoState{}, errors.New("agent todo state thread id is required")
+	}
+	if _, err := loadThread(ctx, s.db, threadID); err != nil {
+		return sessiontree.AgentTodoState{}, err
+	}
+	state, ok, err := loadAgentTodoState(ctx, s.db, threadID)
+	if err != nil {
+		return sessiontree.AgentTodoState{}, err
+	}
+	if !ok {
+		return sessiontree.AgentTodoState{ThreadID: threadID}, nil
+	}
+	return state, nil
+}
+
+func (s *Store) CompareAndSwapAgentTodoState(ctx context.Context, state sessiontree.AgentTodoState, expectedVersion int64) (sessiontree.AgentTodoState, error) {
+	state.ThreadID = strings.TrimSpace(state.ThreadID)
+	if state.ThreadID == "" {
+		return sessiontree.AgentTodoState{}, errors.New("agent todo state thread id is required")
+	}
+	var updated sessiontree.AgentTodoState
+	err := s.withImmediate(ctx, func(tx sqlRunner) error {
+		if _, err := loadThread(ctx, tx, state.ThreadID); err != nil {
+			return err
+		}
+		current, ok, err := loadAgentTodoState(ctx, tx, state.ThreadID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			current = sessiontree.AgentTodoState{ThreadID: state.ThreadID}
+		}
+		if current.Version != expectedVersion {
+			return sessiontree.ErrAgentTodoVersionConflict
+		}
+		state.Version = expectedVersion + 1
+		if state.UpdatedAt.IsZero() {
+			state.UpdatedAt = time.Now()
+		}
+		if err := putAgentTodoState(ctx, tx, state); err != nil {
+			return err
+		}
+		updated = state
+		updated.Items = append([]sessiontree.AgentTodoItem(nil), state.Items...)
+		return nil
+	})
+	return updated, err
+}
+
+func loadAgentTodoState(ctx context.Context, q sqlRunner, threadID string) (sessiontree.AgentTodoState, bool, error) {
+	var state sessiontree.AgentTodoState
+	var itemsJSON, updatedAt string
+	err := q.QueryRowContext(ctx, `SELECT thread_id, version, items_json, updated_at,
+		updated_by_turn_id, updated_by_run_id, updated_by_tool_call_id
+		FROM agent_todo_states WHERE thread_id = ?`, threadID).Scan(
+		&state.ThreadID, &state.Version, &itemsJSON, &updatedAt,
+		&state.UpdatedByTurnID, &state.UpdatedByRunID, &state.UpdatedByToolCall,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return sessiontree.AgentTodoState{}, false, nil
+	}
+	if err != nil {
+		return sessiontree.AgentTodoState{}, false, err
+	}
+	if err := json.Unmarshal([]byte(itemsJSON), &state.Items); err != nil {
+		return sessiontree.AgentTodoState{}, false, fmt.Errorf("decode agent todo state for thread %q: %w", threadID, err)
+	}
+	state.UpdatedAt = parseTime(updatedAt)
+	return state, true, nil
+}
+
+func putAgentTodoState(ctx context.Context, q sqlRunner, state sessiontree.AgentTodoState) error {
+	itemsJSON, err := json.Marshal(state.Items)
+	if err != nil {
+		return err
+	}
+	_, err = q.ExecContext(ctx, `INSERT INTO agent_todo_states(
+		thread_id, version, items_json, updated_at, updated_by_turn_id, updated_by_run_id, updated_by_tool_call_id
+	) VALUES(?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(thread_id) DO UPDATE SET
+		version = excluded.version,
+		items_json = excluded.items_json,
+		updated_at = excluded.updated_at,
+		updated_by_turn_id = excluded.updated_by_turn_id,
+		updated_by_run_id = excluded.updated_by_run_id,
+		updated_by_tool_call_id = excluded.updated_by_tool_call_id`,
+		state.ThreadID, state.Version, string(itemsJSON), formatTime(state.UpdatedAt),
+		state.UpdatedByTurnID, state.UpdatedByRunID, state.UpdatedByToolCall)
+	return err
 }
 
 func (s *Store) AppendSegment(ctx context.Context, seg cache.Segment) error {
@@ -1715,6 +1819,17 @@ CREATE TABLE IF NOT EXISTS provider_states (
 	FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS agent_todo_states (
+	thread_id TEXT PRIMARY KEY,
+	version INTEGER NOT NULL,
+	items_json TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	updated_by_turn_id TEXT NOT NULL DEFAULT '',
+	updated_by_run_id TEXT NOT NULL DEFAULT '',
+	updated_by_tool_call_id TEXT NOT NULL DEFAULT '',
+	FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
+);
+
 ` + activeTurnLeasesSQL + `
 
 CREATE TABLE IF NOT EXISTS prompt_segments (
@@ -1815,3 +1930,4 @@ var _ storage.Store = (*Store)(nil)
 var _ artifact.Store = (*Store)(nil)
 var _ sessiontree.Repo = (*Store)(nil)
 var _ sessiontree.TurnLeaseRepo = (*Store)(nil)
+var _ sessiontree.AgentTodoStateRepo = (*Store)(nil)

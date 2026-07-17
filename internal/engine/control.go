@@ -55,6 +55,7 @@ func DefaultControlSpec(policy CompletionPolicy) ControlSpec {
 				CallID:     call.ID,
 				ArgsHash:   providerStableHash(call.Args),
 				OutputText: sig.Output,
+				Payload:    cloneControlPayload(sig.Payload),
 			}
 			switch sig.Kind {
 			case control.SignalAskUser:
@@ -71,6 +72,32 @@ func DefaultControlSpec(policy CompletionPolicy) ControlSpec {
 			return out, true, nil
 		},
 	}
+}
+
+func cloneControlPayload(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		switch typed := value.(type) {
+		case map[string]any:
+			out[key] = cloneControlPayload(typed)
+		case []any:
+			items := make([]any, len(typed))
+			for index, item := range typed {
+				if nested, ok := item.(map[string]any); ok {
+					items[index] = cloneControlPayload(nested)
+				} else {
+					items[index] = item
+				}
+			}
+			out[key] = items
+		default:
+			out[key] = typed
+		}
+	}
+	return out
 }
 
 func normalizeControlSpec(spec ControlSpec, policy CompletionPolicy) ControlSpec {

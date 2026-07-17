@@ -1,6 +1,20 @@
 # Floret OKF Update Log
 
 ## 2026-07-17
+* **Breaking**: Removed the transcript shortcut from `ThreadSnapshot` and added
+  provider-backed and provider-free `ListThreadTurns`/`ReadThread` contracts for
+  canonical ordinal history, run identity, failure, projection, and verified
+  control payloads.
+* **Feature**: Added typed Agent todo state with CAS updates, canonical tool
+  authorship, Memory/SQLite persistence, fork identity rewriting, deletion, and
+  reopen behavior.
+* **Fix**: Removed branch-scanning interrupted recovery and leaf rewind. Resume
+  now handles only the active lease turn or one unfinished active-path turn,
+  rejects multiple unfinished turns, and never writes tool results for control
+  signals.
+* **Fix**: Made projection and provider-state persistence precede terminal
+  markers so persistence failures remain unfinished and can be recovered
+  without fabricating a terminal result.
 * **Breaking**: Required caller-owned `runtime.Store`, removed facade `Close`
   methods and hidden memory Store creation, and reset SQLite to one canonical
   schema that rejects pre-release versions instead of migrating them.

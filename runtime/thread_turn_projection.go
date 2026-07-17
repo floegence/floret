@@ -54,9 +54,12 @@ type ThreadTurnProjectionSegment struct {
 }
 
 type ThreadTurnProjectionSignal struct {
-	Name   string `json:"name,omitempty"`
-	CallID string `json:"call_id,omitempty"`
-	Text   string `json:"text,omitempty"`
+	Name        string         `json:"name,omitempty"`
+	CallID      string         `json:"call_id,omitempty"`
+	Disposition string         `json:"disposition,omitempty"`
+	Text        string         `json:"text,omitempty"`
+	ArgsHash    string         `json:"args_hash,omitempty"`
+	Payload     map[string]any `json:"payload,omitempty"`
 }
 
 func (p ThreadTurnProjection) Validate() error {
@@ -180,13 +183,22 @@ func ProjectThreadTurn(req ProjectThreadTurnRequest) ThreadTurnProjection {
 			}
 			flushText()
 			if ev.Message != nil && strings.TrimSpace(ev.Message.Kind) == "control_signal" {
+				signal := &ThreadTurnProjectionSignal{
+					Name:   strings.TrimSpace(ev.ToolCall.Name),
+					CallID: strings.TrimSpace(ev.ToolCall.ID),
+					Text:   threadTurnProjectionMessageText(ev.Message),
+				}
+				if verified := ev.ToolCall.ControlSignal; verified != nil {
+					signal.Name = strings.TrimSpace(verified.Name)
+					signal.CallID = strings.TrimSpace(verified.CallID)
+					signal.Disposition = strings.TrimSpace(verified.Disposition)
+					signal.Text = strings.TrimSpace(verified.Text)
+					signal.ArgsHash = strings.TrimSpace(verified.ArgsHash)
+					signal.Payload = cloneAnyMap(verified.Payload)
+				}
 				projection.Segments = append(projection.Segments, ThreadTurnProjectionSegment{
-					Kind: ThreadTurnProjectionSegmentControlSignal,
-					Signal: &ThreadTurnProjectionSignal{
-						Name:   strings.TrimSpace(ev.ToolCall.Name),
-						CallID: strings.TrimSpace(ev.ToolCall.ID),
-						Text:   threadTurnProjectionMessageText(ev.Message),
-					},
+					Kind:     ThreadTurnProjectionSegmentControlSignal,
+					Signal:   signal,
 					EventIDs: []string{strings.TrimSpace(ev.ID)},
 				})
 			}

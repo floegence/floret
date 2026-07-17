@@ -25,6 +25,8 @@ Floret owns:
 * product-neutral pending approval snapshots;
 * runtime observation;
 * control signal contracts;
+* admitted user/assistant conversation, canonical turn pages, projections, and
+  typed Agent todo state;
 * opaque model state lifecycle and persistence in Floret Store;
 * engine thread-tree lifecycle, including child-thread fork mode, stop/close,
   replayable fork operations, prompt cache retention, and engine-data deletion.
@@ -39,10 +41,11 @@ The host owns:
 
 Hosts provide provider credentials, provider profiles, and direct wire adapters,
 but they do not persist opaque continuation, context usage, compaction state,
-assistant/tool history, or another model-visible message projection. Those
-facts are read through `ReadThreadContext`, `ReadTurnProjection`, and detail
-APIs. Product/UI DTO mapping may be transient or response-scoped, never a second
-durable engine source of truth.
+assistant/tool history, turn/run state, Agent todos, approval lifecycle, or
+another model-visible message projection. Those facts are read through
+`ReadThread`, `ListThreadTurns`, `ReadThreadAgentTodos`, `ReadThreadContext`,
+`ReadTurnProjection`, and detail APIs. Product/UI DTO mapping may be transient
+or response-scoped, never a second durable engine source of truth.
 
 # Maintenance Notes
 

@@ -184,6 +184,14 @@ The caller owns the runtime Store, may share it across runtime facades, and
 closes it once after all active work has stopped. Runtime facades never close an
 injected Store.
 
+Floret's journal is the only durable source for admitted user input, assistant
+output, turn/run lifecycle, control signals, approvals, projections, and Agent
+todos. Use `ListThreadTurns` for ordered bootstrap and pagination, `ReadThread`
+for transcript-free thread lifecycle metadata, and the typed Agent todo CAS
+methods for `write_todos` state. A host may keep product metadata and commands
+that Floret has not admitted yet, but it must not copy these Agent facts into a
+second conversation or run database.
+
 ## Production Shape
 
 ### Let prompts carry product intent

@@ -452,9 +452,9 @@ func TestEmptyTaskCompleteSignalIsProviderSafeWhenRunContinues(t *testing.T) {
 		t.Fatalf("second result = %#v", got)
 	}
 	if !slices.ContainsFunc(p2.Requests[0].RawPlan.Segments, func(seg cache.Segment) bool {
-		return seg.Kind == cache.SegmentAssistant && seg.Message.Content == "Agent completed the task."
+		return seg.Kind == cache.SegmentAssistant && seg.Message.Content == "Agent completed the task: First run done."
 	}) {
-		t.Fatalf("continued run missing provider-safe empty task_complete text: %#v", p2.Requests[0].RawPlan.Segments)
+		t.Fatalf("continued run missing canonical task_complete display text: %#v", p2.Requests[0].RawPlan.Segments)
 	}
 	if slices.ContainsFunc(p2.Requests[0].RawPlan.Segments, func(seg cache.Segment) bool {
 		return strings.Contains(seg.Message.Content, "Agent control signal")

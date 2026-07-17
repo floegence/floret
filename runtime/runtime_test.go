@@ -67,11 +67,16 @@ func TestHostRunsFakeProviderThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	if snapshot.Status != ThreadStatusCompleted ||
-		len(snapshot.Messages) != 2 ||
-		snapshot.Messages[0].Role != string(session.User) ||
-		snapshot.Messages[0].Content != "hello" ||
-		snapshot.Messages[1].Content != "configured" {
+		snapshot.LatestRunID != "turn-1" ||
+		snapshot.ThroughOrdinal <= 0 {
 		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	page, err := host.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Turns) != 1 || page.Turns[0].UserInput != "hello" || runtimeProjectionAssistantText(page.Turns[0].Projection) != "configured" {
+		t.Fatalf("turn page = %#v", page)
 	}
 	if !slices.ContainsFunc(rec.events, func(ev Event) bool {
 		return ev.Type == "provider_delta" && ev.ThreadID == "thread" && ev.RunID == "turn-1"
@@ -166,8 +171,16 @@ func TestHostEnsureThreadReturnsSummaryWithoutMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.Messages) == 0 {
-		t.Fatalf("test setup did not create transcript messages: %#v", snapshot)
+	data, err = json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "messages") || strings.Contains(string(data), "configured") {
+		t.Fatalf("thread snapshot leaked transcript data: %s", string(data))
+	}
+	page, err := host.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 1})
+	if err != nil || len(page.Turns) != 1 {
+		t.Fatalf("canonical turn page = %#v err=%v", page, err)
 	}
 }
 
@@ -561,13 +574,14 @@ func TestHostRunTurnProjectsSupplementalContextOnlyIntoCurrentProviderRequest(t 
 			t.Fatalf("supplemental context leaked into follow-up request: %#v", secondReq.Messages)
 		}
 	}
-	snapshot, err := host.ReadThread(ctx, "thread")
+	page, err := host.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, msg := range snapshot.Messages {
-		if strings.Contains(msg.Content, "Host-provided supplemental context") || strings.Contains(msg.Content, "12264") {
-			t.Fatalf("supplemental context leaked into durable thread snapshot: %#v", snapshot.Messages)
+	for _, turn := range page.Turns {
+		if strings.Contains(turn.UserInput, "Host-provided supplemental context") || strings.Contains(turn.UserInput, "12264") ||
+			strings.Contains(runtimeProjectionAssistantText(turn.Projection), "Host-provided supplemental context") || strings.Contains(runtimeProjectionAssistantText(turn.Projection), "12264") {
+			t.Fatalf("supplemental context leaked into canonical turn page: %#v", page)
 		}
 	}
 }
@@ -956,18 +970,15 @@ func TestHostProviderStatePersistenceFailureFailsTurnFinalization(t *testing.T) 
 	if err == nil || !strings.Contains(err.Error(), "injected provider state put failure") {
 		t.Fatalf("RunTurn err = %v", err)
 	}
-	if result.Status != TurnStatusFailed || result.Error == "" || result.Projection == nil || result.Projection.Status != TurnStatusFailed {
-		t.Fatalf("failed finalization result = %#v", result)
-	}
-	if err := result.Validate(); err != nil {
-		t.Fatalf("failed finalization result validation: %v", err)
+	if result.Status != "" {
+		t.Fatalf("persistence failure returned a terminal result: %#v", result)
 	}
 	snapshot, readErr := host.ReadThread(ctx, "thread")
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if snapshot.Status != ThreadStatusFailed {
-		t.Fatalf("thread status = %q, want failed", snapshot.Status)
+	if snapshot.Status != ThreadStatusInterrupted {
+		t.Fatalf("thread status = %q, want unfinished interrupted", snapshot.Status)
 	}
 }
 
@@ -3130,12 +3141,12 @@ func TestHostSQLiteStorePersistsThreadBehindOpaqueStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := host.ReadThread(ctx, "thread")
+	page, err := host.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.Messages) != 2 || snapshot.Messages[1].Content != "persisted" {
-		t.Fatalf("reopened snapshot = %#v", snapshot)
+	if len(page.Turns) != 1 || runtimeProjectionAssistantText(page.Turns[0].Projection) != "persisted" {
+		t.Fatalf("reopened turn page = %#v", page)
 	}
 }
 
@@ -4063,11 +4074,15 @@ func TestHostCompletePendingToolRunsFollowUpTurnThroughPublicFacade(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.LatestTurnID != "turn-complete" || len(snapshot.Messages) != 2 {
+	if snapshot.LatestTurnID != "turn-complete" || snapshot.LatestRunID != "turn-start" {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}
-	if snapshot.Messages[0].Role != string(session.User) || !strings.Contains(snapshot.Messages[0].Content, "<pending_tool_completion>") {
-		t.Fatalf("completion message missing: %#v", snapshot.Messages)
+	page, err := host.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Turns) != 1 || !strings.Contains(page.Turns[0].UserInput, "<pending_tool_completion>") {
+		t.Fatalf("completion turn missing: %#v", page)
 	}
 	if len(rec.events) == 0 {
 		t.Fatalf("expected runtime events")
@@ -5410,10 +5425,250 @@ func TestHostProjectionTreatsCoreControlSignalAsControl(t *testing.T) {
 	if call.Message == nil || call.Message.Kind != "control_signal" {
 		t.Fatalf("control call detail = %#v", call)
 	}
+	if call.ToolCall == nil || call.ToolCall.ControlSignal == nil || call.ToolCall.ControlSignal.Payload["result"] != "all done" {
+		t.Fatalf("verified control payload missing from detail: %#v", call.ToolCall)
+	}
 	if call.ActivityTimeline == nil ||
 		len(call.ActivityTimeline.Items) != 1 ||
 		call.ActivityTimeline.Items[0].Kind != observation.ActivityKindControl {
 		t.Fatalf("control detail activity = %#v", call.ActivityTimeline)
+	}
+	page, err := host.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Turns) != 1 || len(page.Turns[0].ControlSignals) != 1 || page.Turns[0].ControlSignals[0].Payload["result"] != "all done" {
+		t.Fatalf("canonical control signal missing from turn page: %#v", page)
+	}
+}
+
+func TestListThreadTurnsPagesCanonicalTimeline(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		open func(*testing.T) *Store
+	}{
+		{name: "memory", open: func(t *testing.T) *Store { return NewMemoryStore() }},
+		{name: "sqlite", open: func(t *testing.T) *Store {
+			store, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "floret.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			return store
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := tc.open(t)
+			maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := maintenance.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "thread"}); err != nil {
+				t.Fatal(err)
+			}
+			append := func(turnID, runID, input, output string, status sessiontree.TurnMarkerStatus) {
+				if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "thread", turnID, sessiontree.TurnStarted, map[string]string{"run_id": runID}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := sessiontree.AppendMessage(ctx, store.repo, "thread", turnID, session.Message{Role: session.User, Content: input}); err != nil {
+					t.Fatal(err)
+				}
+				if output != "" {
+					if _, err := sessiontree.AppendMessage(ctx, store.repo, "thread", turnID, session.Message{Role: session.Assistant, Content: output}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "thread", turnID, status, map[string]string{"run_id": runID}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			append("turn-1", "run-1", "one", "answer one", sessiontree.TurnCompleted)
+			if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "thread", "turn-2", sessiontree.TurnStarted, map[string]string{"run_id": "run-2"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessiontree.AppendMessage(ctx, store.repo, "thread", "turn-2", session.Message{Role: session.User, Content: "two"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessiontree.AppendMessage(ctx, store.repo, "thread", "turn-2", session.Message{
+				Role:       session.Assistant,
+				Kind:       session.MessageKindControlSignal,
+				Content:    "tool_call",
+				ToolCallID: "ask-1",
+				ToolName:   "ask_user",
+				ToolArgs:   `{"question":"Continue?"}`,
+				ControlSignal: &session.ControlSignalView{
+					Name:        "ask_user",
+					CallID:      "ask-1",
+					Disposition: "waiting",
+					OutputText:  "Continue?",
+					ArgsHash:    "verified-hash",
+					Payload:     map[string]any{"question": "Continue?"},
+				},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "thread", "turn-2", sessiontree.TurnWaiting, map[string]string{"run_id": "run-2"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "thread", "turn-3", sessiontree.TurnStarted, map[string]string{"run_id": "run-3"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessiontree.AppendMessage(ctx, store.repo, "thread", "turn-3", session.Message{Role: session.User, Content: "three"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessiontree.AppendFailure(ctx, store.repo, "thread", "turn-3", "canonical failure"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "thread", "turn-3", sessiontree.TurnFailed, map[string]string{"run_id": "run-3", "failure_reason": "canonical failure"}); err != nil {
+				t.Fatal(err)
+			}
+			append("turn-4", "run-4", "four", "answer four", sessiontree.TurnCompleted)
+
+			all, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", AfterOrdinal: 0, Limit: 10})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(all.Turns) != 4 || all.Turns[0].UserInput != "one" || all.Turns[3].RunID != "run-4" {
+				t.Fatalf("all turns = %#v", all)
+			}
+			for index := 1; index < len(all.Turns); index++ {
+				if all.Turns[index].Ordinal <= all.Turns[index-1].Ordinal {
+					t.Fatalf("turn ordinals are not ascending: %#v", all.Turns)
+				}
+			}
+			if all.Turns[1].Status != TurnStatusWaiting || len(all.Turns[1].ControlSignals) != 1 || all.Turns[1].ControlSignals[0].Payload["question"] != "Continue?" {
+				t.Fatalf("waiting turn = %#v", all.Turns[1])
+			}
+			if all.Turns[2].Status != TurnStatusFailed || all.Turns[2].Failure != "canonical failure" {
+				t.Fatalf("failed turn = %#v", all.Turns[2])
+			}
+			before, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", BeforeOrdinal: all.Turns[2].Ordinal, Limit: 2})
+			if err != nil || len(before.Turns) != 2 || before.Turns[0].TurnID != "turn-1" || before.Turns[1].TurnID != "turn-2" {
+				t.Fatalf("before page = %#v err=%v", before, err)
+			}
+			after, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", AfterOrdinal: all.Turns[1].Ordinal, Limit: 1})
+			if err != nil || len(after.Turns) != 1 || after.Turns[0].TurnID != "turn-3" || !after.HasMore {
+				t.Fatalf("after page = %#v err=%v", after, err)
+			}
+			tail, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 2})
+			if err != nil || len(tail.Turns) != 2 || tail.Turns[0].TurnID != "turn-3" || tail.Turns[1].TurnID != "turn-4" || !tail.HasMore {
+				t.Fatalf("tail page = %#v err=%v", tail, err)
+			}
+			snapshot, err := maintenance.ReadThread(ctx, "thread")
+			if err != nil || snapshot.LatestRunID != "run-4" || snapshot.ThroughOrdinal != all.ThroughOrdinal {
+				t.Fatalf("thread snapshot = %#v err=%v", snapshot, err)
+			}
+		})
+	}
+}
+
+func TestThreadAgentTodosCASForkDeleteAndReopen(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		run  func(*testing.T, func(*Store))
+	}{
+		{name: "memory", run: func(t *testing.T, test func(*Store)) { test(NewMemoryStore()) }},
+		{name: "sqlite", run: func(t *testing.T, test func(*Store)) {
+			path := filepath.Join(t.TempDir(), "floret.db")
+			store, err := OpenSQLiteStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			test(store)
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := OpenSQLiteStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			state, err := readThreadAgentTodos(ctx, reopened, "source")
+			if err != nil || state.Version != 2 || len(state.Items) != 1 {
+				t.Fatalf("reopened todo state = %#v err=%v", state, err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.run(t, func(store *Store) {
+				maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := maintenance.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "source"}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "source", "turn-1", sessiontree.TurnStarted, map[string]string{"run_id": "run-1"}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := sessiontree.AppendMessage(ctx, store.repo, "source", "turn-1", session.Message{Role: session.User, Content: "plan"}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := sessiontree.AppendMessage(ctx, store.repo, "source", "turn-1", session.Message{Role: session.Assistant, Content: "tool_call", ToolCallID: "write-1", ToolName: "write_todos", ToolArgs: `{}`}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := sessiontree.AppendMessage(ctx, store.repo, "source", "turn-1", session.Message{Role: session.Tool, Content: "ok", ToolCallID: "write-1", ToolName: "write_todos"}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "source", "turn-1", sessiontree.TurnCompleted, map[string]string{"run_id": "run-1"}); err != nil {
+					t.Fatal(err)
+				}
+				empty, err := maintenance.ReadThreadAgentTodos(ctx, "source")
+				if err != nil || empty.Version != 0 || len(empty.Items) != 0 {
+					t.Fatalf("empty todos = %#v err=%v", empty, err)
+				}
+				first, err := maintenance.UpdateThreadAgentTodos(ctx, UpdateThreadAgentTodosRequest{
+					ThreadID: "source", ExpectedVersion: 0, TurnID: "turn-1", RunID: "run-1", ToolCallID: "write-1",
+					Items: []AgentTodo{{ID: "todo-1", Content: "implement", Status: AgentTodoInProgress}},
+				})
+				if err != nil || first.Version != 1 {
+					t.Fatalf("first todo update = %#v err=%v", first, err)
+				}
+				var successes atomic.Int64
+				var conflicts atomic.Int64
+				var wg sync.WaitGroup
+				for index := 0; index < 2; index++ {
+					wg.Add(1)
+					go func(index int) {
+						defer wg.Done()
+						_, err := maintenance.UpdateThreadAgentTodos(ctx, UpdateThreadAgentTodosRequest{
+							ThreadID: "source", ExpectedVersion: 1, TurnID: "turn-1", RunID: "run-1", ToolCallID: "write-1",
+							Items: []AgentTodo{{ID: "todo-1", Content: "implement", Status: AgentTodoCompleted}},
+						})
+						if err == nil {
+							successes.Add(1)
+						} else if errors.Is(err, ErrAgentTodoVersionConflict) {
+							conflicts.Add(1)
+						} else {
+							t.Errorf("concurrent todo update: %v", err)
+						}
+					}(index)
+				}
+				wg.Wait()
+				if successes.Load() != 1 || conflicts.Load() != 1 {
+					t.Fatalf("todo CAS successes=%d conflicts=%d", successes.Load(), conflicts.Load())
+				}
+				fork, err := maintenance.ForkThread(ctx, ForkThreadRequest{OperationID: "fork-1", SourceThreadID: "source", DestinationThreadID: "fork"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				forked, err := maintenance.ReadThreadAgentTodos(ctx, "fork")
+				if err != nil || forked.Version != 2 || len(forked.Items) != 1 {
+					t.Fatalf("forked todos = %#v err=%v", forked, err)
+				}
+				if len(fork.Turns) != 1 || forked.UpdatedByTurnID != TurnID(fork.Turns[0].DestinationTurnID) || forked.UpdatedByRunID != RunID(fork.Turns[0].DestinationRunID) {
+					t.Fatalf("forked todo identity = %#v fork=%#v", forked, fork)
+				}
+				if err := maintenance.DeleteThread(ctx, "fork"); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := maintenance.ReadThreadAgentTodos(ctx, "fork"); !errors.Is(err, ErrThreadNotFound) {
+					t.Fatalf("deleted todo read err = %v", err)
+				}
+			})
+		})
 	}
 }
 

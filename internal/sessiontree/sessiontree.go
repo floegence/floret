@@ -66,12 +66,13 @@ const (
 )
 
 var (
-	ErrThreadNotFound          = errors.New("session tree thread not found")
-	ErrEntryNotFound           = errors.New("session tree entry not found")
-	ErrInvalidParent           = errors.New("session tree invalid parent")
-	ErrActiveTurn              = errors.New("session tree thread already has an active turn")
-	ErrThreadExists            = errors.New("session tree thread already exists")
-	ErrForkDestinationConflict = errors.New("session tree fork destination conflicts with operation marker")
+	ErrThreadNotFound           = errors.New("session tree thread not found")
+	ErrEntryNotFound            = errors.New("session tree entry not found")
+	ErrInvalidParent            = errors.New("session tree invalid parent")
+	ErrActiveTurn               = errors.New("session tree thread already has an active turn")
+	ErrThreadExists             = errors.New("session tree thread already exists")
+	ErrForkDestinationConflict  = errors.New("session tree fork destination conflicts with operation marker")
+	ErrAgentTodoVersionConflict = errors.New("session tree agent todo version conflict")
 )
 
 type AppendCommittedError struct {
@@ -316,16 +317,46 @@ type TurnLeaseRepo interface {
 	ClearExpiredTurnLease(context.Context, string, time.Time) (TurnLease, bool, error)
 }
 
+type AgentTodoStatus string
+
+const (
+	AgentTodoPending    AgentTodoStatus = "pending"
+	AgentTodoInProgress AgentTodoStatus = "in_progress"
+	AgentTodoCompleted  AgentTodoStatus = "completed"
+)
+
+type AgentTodoItem struct {
+	ID      string          `json:"id"`
+	Content string          `json:"content"`
+	Status  AgentTodoStatus `json:"status"`
+}
+
+type AgentTodoState struct {
+	ThreadID          string          `json:"thread_id"`
+	Version           int64           `json:"version"`
+	Items             []AgentTodoItem `json:"items"`
+	UpdatedAt         time.Time       `json:"updated_at,omitempty"`
+	UpdatedByTurnID   string          `json:"updated_by_turn_id,omitempty"`
+	UpdatedByRunID    string          `json:"updated_by_run_id,omitempty"`
+	UpdatedByToolCall string          `json:"updated_by_tool_call_id,omitempty"`
+}
+
+type AgentTodoStateRepo interface {
+	ReadAgentTodoState(context.Context, string) (AgentTodoState, error)
+	CompareAndSwapAgentTodoState(context.Context, AgentTodoState, int64) (AgentTodoState, error)
+}
+
 type MemoryRepo struct {
 	mu      sync.Mutex
 	threads map[string]ThreadMeta
 	entries map[string][]Entry
 	leases  map[string]TurnLease
+	todos   map[string]AgentTodoState
 	seq     int64
 }
 
 func NewMemoryRepo() *MemoryRepo {
-	return &MemoryRepo{threads: map[string]ThreadMeta{}, entries: map[string][]Entry{}, leases: map[string]TurnLease{}}
+	return &MemoryRepo{threads: map[string]ThreadMeta{}, entries: map[string][]Entry{}, leases: map[string]TurnLease{}, todos: map[string]AgentTodoState{}}
 }
 
 func (r *MemoryRepo) CreateThread(_ context.Context, meta ThreadMeta) (ThreadMeta, error) {
@@ -406,6 +437,38 @@ func (r *MemoryRepo) ClearExpiredTurnLease(_ context.Context, threadID string, c
 	return lease, true, nil
 }
 
+func (r *MemoryRepo) ReadAgentTodoState(_ context.Context, threadID string) (AgentTodoState, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.threads[threadID]; !ok {
+		return AgentTodoState{}, ErrThreadNotFound
+	}
+	state, ok := r.todos[threadID]
+	if !ok {
+		return AgentTodoState{ThreadID: threadID}, nil
+	}
+	return cloneAgentTodoState(state), nil
+}
+
+func (r *MemoryRepo) CompareAndSwapAgentTodoState(_ context.Context, state AgentTodoState, expectedVersion int64) (AgentTodoState, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.threads[state.ThreadID]; !ok {
+		return AgentTodoState{}, ErrThreadNotFound
+	}
+	current := r.todos[state.ThreadID]
+	if current.Version != expectedVersion {
+		return AgentTodoState{}, ErrAgentTodoVersionConflict
+	}
+	state.Version = expectedVersion + 1
+	if state.UpdatedAt.IsZero() {
+		state.UpdatedAt = time.Now()
+	}
+	state = cloneAgentTodoState(state)
+	r.todos[state.ThreadID] = state
+	return cloneAgentTodoState(state), nil
+}
+
 func (r *MemoryRepo) Thread(_ context.Context, threadID string) (ThreadMeta, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -446,6 +509,7 @@ func (r *MemoryRepo) DeleteThread(_ context.Context, threadID string) error {
 	delete(r.threads, threadID)
 	delete(r.entries, threadID)
 	delete(r.leases, threadID)
+	delete(r.todos, threadID)
 	return nil
 }
 
@@ -620,6 +684,12 @@ func (r *MemoryRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, er
 		meta.LeafID = next.ID
 	}
 	r.threads[newID] = meta
+	if todo, ok := r.todos[opts.SourceThreadID]; ok {
+		todo.ThreadID = newID
+		todo.UpdatedByTurnID = rewriteForkID(todo.UpdatedByTurnID, opts.TurnIDMap)
+		todo.UpdatedByRunID = rewriteForkID(todo.UpdatedByRunID, opts.RunIDMap)
+		r.todos[newID] = cloneAgentTodoState(todo)
+	}
 	_ = ctx
 	return meta, nil
 }
@@ -773,6 +843,31 @@ func (r *FileRepo) ClearExpiredTurnLease(ctx context.Context, threadID string, c
 	return lease, true, nil
 }
 
+func (r *FileRepo) ReadAgentTodoState(ctx context.Context, threadID string) (AgentTodoState, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.load(ctx); err != nil {
+		return AgentTodoState{}, err
+	}
+	return r.mem.ReadAgentTodoState(ctx, threadID)
+}
+
+func (r *FileRepo) CompareAndSwapAgentTodoState(ctx context.Context, state AgentTodoState, expectedVersion int64) (AgentTodoState, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.load(ctx); err != nil {
+		return AgentTodoState{}, err
+	}
+	updated, err := r.mem.CompareAndSwapAgentTodoState(ctx, state, expectedVersion)
+	if err != nil {
+		return AgentTodoState{}, err
+	}
+	if err := r.saveAgentTodoState(updated); err != nil {
+		return AgentTodoState{}, err
+	}
+	return updated, nil
+}
+
 func (r *FileRepo) Thread(ctx context.Context, threadID string) (ThreadMeta, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -814,6 +909,7 @@ func (r *FileRepo) DeleteThread(ctx context.Context, threadID string) error {
 	}
 	delete(r.mem.threads, threadID)
 	delete(r.mem.entries, threadID)
+	delete(r.mem.todos, threadID)
 	return os.RemoveAll(filepath.Join(r.root, safePath(threadID)))
 }
 
@@ -933,6 +1029,11 @@ func (r *FileRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, erro
 			return ThreadMeta{}, err
 		}
 	}
+	if todo, ok := r.mem.todos[meta.ID]; ok {
+		if err := r.saveAgentTodoState(todo); err != nil {
+			return ThreadMeta{}, err
+		}
+	}
 	return meta, nil
 }
 
@@ -971,6 +1072,15 @@ func (r *FileRepo) load(ctx context.Context) error {
 		}
 		mem.threads[meta.ID] = meta
 		mem.entries[meta.ID] = entries
+		todoData, err := os.ReadFile(filepath.Join(dir, "agent_todos.json"))
+		if err == nil {
+			var todo AgentTodoState
+			if json.Unmarshal(todoData, &todo) == nil && todo.ThreadID == meta.ID {
+				mem.todos[meta.ID] = cloneAgentTodoState(todo)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
 	r.mem = mem
 	return nil
@@ -1050,6 +1160,18 @@ func (r *FileRepo) saveThread(meta ThreadMeta) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, "thread.json"), data, 0o600)
+}
+
+func (r *FileRepo) saveAgentTodoState(state AgentTodoState) error {
+	dir := filepath.Join(r.root, safePath(state.ThreadID))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "agent_todos.json"), data, 0o600)
 }
 
 func (r *FileRepo) appendEntry(entry Entry) error {
@@ -1271,6 +1393,10 @@ func AppendCompaction(ctx context.Context, repo Repo, threadID, turnID string, r
 
 func AppendTurnMarker(ctx context.Context, repo Repo, threadID, turnID string, status TurnMarkerStatus, metadata map[string]string) (Entry, error) {
 	return repo.Append(ctx, Entry{ThreadID: threadID, TurnID: turnID, Type: EntryTurnMarker, TurnStatus: status, Metadata: metadata}, AppendOptions{})
+}
+
+func AppendTurnMarkerWithID(ctx context.Context, repo Repo, threadID, turnID, entryID string, status TurnMarkerStatus, metadata map[string]string) (Entry, error) {
+	return repo.Append(ctx, Entry{ThreadID: threadID, TurnID: turnID, Type: EntryTurnMarker, TurnStatus: status, Metadata: metadata}, AppendOptions{ID: entryID})
 }
 
 func AppendActiveTools(ctx context.Context, repo Repo, threadID string, metadata map[string]string) (Entry, error) {
@@ -1526,6 +1652,11 @@ func cloneEntry(entry Entry) Entry {
 		entry.KeptUserEntryIDs = append([]string(nil), entry.KeptUserEntryIDs...)
 	}
 	return entry
+}
+
+func cloneAgentTodoState(state AgentTodoState) AgentTodoState {
+	state.Items = append([]AgentTodoItem(nil), state.Items...)
+	return state
 }
 
 func mapsClone(in map[string]string) map[string]string {

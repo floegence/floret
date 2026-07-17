@@ -965,6 +965,13 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				if len(signal.Labels) == 0 {
 					signal.Labels = observabilityLabels(opts.Labels)
 				}
+				if !attachProjectedControlSignal(activeHistory, signal) {
+					return e.end(state, opts, step, Failed, output, fmt.Errorf("projected control signal %q has no matching call %q", signal.Name, signal.CallID), metrics, started, decision)
+				}
+				if err := e.store.ReplaceTranscript(opts.RunID, activeHistory); err != nil {
+					return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+				}
+				state.activeMessages = session.CloneMessages(activeHistory)
 				decision.ControlSignal = signal
 				e.emitControlSignal(opts, step, signal)
 				switch signal.Disposition {
@@ -3239,8 +3246,40 @@ func providerSafeControlMessage(msg session.Message, spec ControlSpec) session.M
 }
 
 func projectProviderSafeControlSignal(msg session.Message, spec ControlSpec) (ControlSignal, bool, error) {
+	if view := msg.ControlSignal; view != nil {
+		return ControlSignal{
+			Disposition: ControlDisposition(view.Disposition),
+			Name:        view.Name,
+			CallID:      view.CallID,
+			Payload:     cloneControlPayload(view.Payload),
+			OutputText:  view.OutputText,
+			ArgsHash:    view.ArgsHash,
+		}, true, nil
+	}
 	call := provider.ToolCall{ID: msg.ToolCallID, Name: msg.ToolName, Args: msg.ToolArgs}
 	return spec.project(call, controlProjectionContext{})
+}
+
+func attachProjectedControlSignal(messages []session.Message, signal *ControlSignal) bool {
+	if signal == nil {
+		return false
+	}
+	for index := len(messages) - 1; index >= 0; index-- {
+		message := &messages[index]
+		if message.Role != session.Assistant || strings.TrimSpace(message.ToolCallID) != strings.TrimSpace(signal.CallID) {
+			continue
+		}
+		message.ControlSignal = &session.ControlSignalView{
+			Name:        strings.TrimSpace(signal.Name),
+			CallID:      strings.TrimSpace(signal.CallID),
+			Disposition: string(signal.Disposition),
+			OutputText:  strings.TrimSpace(signal.OutputText),
+			ArgsHash:    strings.TrimSpace(signal.ArgsHash),
+			Payload:     cloneControlPayload(signal.Payload),
+		}
+		return true
+	}
+	return false
 }
 
 func providerSafeControlText(signal ControlSignal) string {

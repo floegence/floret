@@ -310,11 +310,21 @@ type SubAgentDetailMessage struct {
 }
 
 type SubAgentDetailToolCall struct {
-	ID          string `json:"id,omitempty"`
-	Name        string `json:"name,omitempty"`
-	ArgsPreview string `json:"args_preview,omitempty"`
-	ArgsJSON    string `json:"args_json,omitempty"`
-	ArgsHash    string `json:"args_hash,omitempty"`
+	ID            string                       `json:"id,omitempty"`
+	Name          string                       `json:"name,omitempty"`
+	ArgsPreview   string                       `json:"args_preview,omitempty"`
+	ArgsJSON      string                       `json:"args_json,omitempty"`
+	ArgsHash      string                       `json:"args_hash,omitempty"`
+	ControlSignal *SubAgentDetailControlSignal `json:"control_signal,omitempty"`
+}
+
+type SubAgentDetailControlSignal struct {
+	Name        string         `json:"name,omitempty"`
+	CallID      string         `json:"call_id,omitempty"`
+	Disposition string         `json:"disposition,omitempty"`
+	Text        string         `json:"text,omitempty"`
+	ArgsHash    string         `json:"args_hash,omitempty"`
+	Payload     map[string]any `json:"payload,omitempty"`
 }
 
 type SubAgentDetailToolResult struct {
@@ -1535,6 +1545,16 @@ func subAgentDetailToolCall(msg session.Message, includeRaw bool) *SubAgentDetai
 		Name:        msg.ToolName,
 		ArgsPreview: safeSubAgentDetailPreview(args, 500),
 		ArgsHash:    stableSubAgentDetailHash(args),
+	}
+	if signal := session.CloneControlSignalView(msg.ControlSignal); signal != nil {
+		out.ControlSignal = &SubAgentDetailControlSignal{
+			Name:        signal.Name,
+			CallID:      signal.CallID,
+			Disposition: signal.Disposition,
+			Text:        signal.OutputText,
+			ArgsHash:    signal.ArgsHash,
+			Payload:     signal.Payload,
+		}
 	}
 	if includeRaw {
 		out.ArgsJSON = args

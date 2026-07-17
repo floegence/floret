@@ -39,9 +39,9 @@ across provider-backed and maintenance facades; facades never close an injected
 Store, so shutdown closes the Store exactly once after active work ends.
 Runtime resolves a target thread plus its descendants before submitting one
 tree delete request to storage. The SQLite implementation deletes thread rows,
-journal entries, active leases, metadata, artifacts, prompt scopes, and provider
-ledgers in one immediate transaction; the public schema and `DeleteThread`
-signature remain stable.
+journal entries, active leases, Agent todo state, metadata, artifacts, prompt
+scopes, and provider ledgers in one immediate transaction; the public schema and
+`DeleteThread` signature remain stable.
 
 Pending tool completion and pending tool settlement are intentionally separate.
 `CompletePendingTool` creates a provider-visible follow-up turn when the model
@@ -57,9 +57,11 @@ that same active `AgentHarness` thread and does not re-enter turn admission.
 The provider-free maintenance host still resumes the target thread normally, so
 it cannot bypass a turn lease owned by another host.
 
-The durable Floret journal and its public projections are the canonical tool
-lifecycle source. Hosts may keep product audit and diagnostics, but must not
-persist a queryable copy of tool status, arguments, results, or errors.
+The durable Floret journal, public turn pages and projections, pending approval
+snapshot, and typed Agent todo state are the canonical Agent source. Hosts may
+keep product audit and diagnostics, but must not persist a queryable copy of
+conversation content, turn/run lifecycle, todo state, approval lifecycle, tool
+status, arguments, results, or errors.
 
 `HostOptions.ModelGateway` lets a host route hosted parent and child turns
 through product-owned model transport while Floret still owns request
@@ -86,9 +88,10 @@ projection of an active journal path into one engine execution.
 It also owns opaque provider continuation persistence in Floret Store. A turn
 loads continuation only when the current journal leaf and compatibility key
 match exactly; mismatch deletes the record. Fresh response state is committed
-after journal finalization, context-changing turns without fresh state clear the
-old record, and persistence failure changes the operation to a failed
-finalization rather than returning success with missing state.
+against the precomputed terminal entry identity before that terminal marker is
+appended, while context-changing turns without fresh state clear the old record.
+If projection, provider-state, failure, or terminal persistence fails, the turn
+remains unfinished instead of returning a fabricated terminal result.
 The public observation boundary carries normalized finish, raw finish,
 inference, completion, and continuation as distinct typed facts. Hosts consume
 those fields directly instead of interpreting metadata keys.
@@ -109,14 +112,14 @@ validated the compacted provider request, so a journal checkpoint is an
 installed continuation boundary rather than a candidate summary.
 Restart recovery uses the same durable ledger boundary. `ResumeThread` closes
 unresolved provider-visible tool calls for interrupted turns before writing the
-terminal interrupted marker. If a later user message or failure already created
-a provider-unsafe active branch, `AgentHarness` moves the active leaf back to
-the last provider-safe ancestor, writes neutral terminal tool results on a new
-branch, and leaves the old branch readable as historical ledger state. Active
+terminal interrupted marker. Only ordinary provider-visible calls receive
+closure results; `MessageKindControlSignal` never does. The harness processes
+the active lease's exact turn, or the active path's sole unfinished turn when no
+lease exists. Multiple unfinished turns fail as a journal invariant. Recovery
+does not scan inactive branches, move the leaf, or discard later turns. Active
 turn lease reconciliation is owned by this layer as well: once durable evidence
-shows that a turn is failed, cancelled, interrupted, or terminal, the harness
-must complete the terminal ledger state and release the lease before admitting
-the next turn.
+shows that the leased turn is terminal, the harness releases that lease before
+admitting the next turn.
 
 `Engine` is the prompt-first single-run executor. It owns provider loop control,
 tool invocation, compaction decisions, prompt-cache requests, metrics, and event
@@ -204,13 +207,14 @@ status, and public compaction operations. Fork mode and parent/child thread
 identity affect lookup and journal ownership only; they do not define context
 window size.
 
-Hosts that only need thread lifecycle metadata should use `EnsureThread` and
-`ThreadSummary`. `ReadThread` exposes transcript messages and should not be the
-default integration point for UI bootstrapping or subagent inspection.
-Hosts that need to reload the display projection for a known hosted turn should
-use `ReadTurnProjection` with explicit `ThreadID`, `TurnID`, and `RunID`. This
-keeps execution identity host-supplied while Floret rebuilds assistant text,
-control-signal segments, and activity timelines from durable detail.
+Hosts that only need thread lifecycle metadata use `EnsureThread`,
+`ThreadSummary`, or transcript-free `ReadThread`. Conversation bootstrap and
+pagination use `ListThreadTurns`, whose before, after, and tail modes always
+return canonical turn ordinals in ascending order. Hosts that need to reload a
+single known turn may use `ReadTurnProjection` with explicit `ThreadID`,
+`TurnID`, and `RunID`. Floret rebuilds assistant text, verified control-signal
+payloads, and activity timelines from durable detail; hosts do not assemble a
+shadow transcript.
 Live, terminal-result, pending-tool settlement, and read-back projections share
 one version rule: `ThroughOrdinal` is the greatest durable journal-detail
 ordinal included by the common projector. Projection timestamps are diagnostic

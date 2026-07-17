@@ -34,6 +34,19 @@ host interface for every runtime operation.
   work using that Store have stopped; neither facade exposes `Close`.
 * `Host.EnsureThread` creates or recovers a hosted thread and returns
   transcript-free `ThreadSummary` lifecycle metadata.
+* `Host.ReadThread` and `ThreadMaintenanceHost.ReadThread` return the same
+  transcript-free `ThreadSnapshot`, including canonical status, latest turn and
+  run identity, and the journal `ThroughOrdinal`. The snapshot intentionally has
+  no message shortcut.
+* `Host.ListThreadTurns` and `ThreadMaintenanceHost.ListThreadTurns` return
+  canonical turn snapshots in ascending journal ordinal order. Before, after,
+  and tail pagination are mutually exclusive. Each turn includes its explicit
+  run identity, canonical user entry and input, failure, verified control
+  signals, complete `ThreadTurnProjection`, and projection-through ordinal.
+* `ReadThreadAgentTodos` and `UpdateThreadAgentTodos` expose Floret-owned typed
+  Agent todo state. Updates use compare-and-swap versioning and must reference a
+  real journal turn, run, and tool call. Fork rewrites the stored turn/run
+  authorship with the journal, and thread deletion removes the state.
 * `Host.RunTurn` executes one hosted user-facing turn.
 * `RunTurnRequest.Limits.MaxInputTokens` caps cumulative provider input tokens
   across every model request in one run. `MaxTotalTokens` independently caps
@@ -105,6 +118,9 @@ host interface for every runtime operation.
 * `ErrThreadNotFound`, `ErrTurnNotFound`, `ErrRunNotFound`, and
   `ErrSubAgentNotFound` are public sentinel errors for `errors.Is` checks on
   Host facade not-found responses.
+* `ErrJournalInvariant` reports that resume found ambiguous active-path state
+  and refused heuristic repair. `ErrAgentTodoVersionConflict` reports a stale
+  todo CAS update.
 * `TurnResult.ProjectionAvailability` reports `ready` or `unavailable`
   independently from execution error. An unavailable projection preserves
   terminal engine facts and carries diagnostic text in `ProjectionError`.
@@ -140,12 +156,13 @@ The host should treat `runtime.Store` as opaque. Product data such as owners,
 workspace metadata, pinned state, billing, and read watermarks belongs in the
 host database keyed by `runtime.ThreadID`.
 
-Floret Store data includes the journal, prompt-cache/provider ledgers, tool
-artifacts, context lifecycle, and opaque provider continuation. Hosts must not
-query Store tables, copy provider state into product storage, or persist a
-second model-visible message projection. A host may map public snapshots to a
-response or in-memory UI DTO, but that mapping is not another durable engine
-fact source.
+Floret Store data includes the admitted conversation journal, turn/run
+lifecycle, projections, verified control payloads, approvals, Agent todos,
+prompt-cache/provider ledgers, tool artifacts, context lifecycle, and opaque
+provider continuation. Hosts must not query Store tables, copy these facts into
+product storage, or persist a second conversation, run, todo, approval, or
+model-visible message projection. A host may map public snapshots to a response
+or in-memory UI DTO, but that mapping is not another durable engine fact source.
 
 Subagents are parent-managed child threads, not a graph workflow framework and
 not host-owned pending tool work. Each child uses its own durable `ThreadID` and
@@ -233,6 +250,12 @@ updates. `ProjectedAt` records projection time but does not define ordering. A
 projection whose turn-start marker is durable reports `Status=running`; the
 status changes only when a completed, waiting, failed, or cancelled marker (or a
 terminal error fact) is included.
+`ListThreadTurns` is the normal conversation-history read model. It groups the
+same journal facts by started-turn ordinal and always returns ascending turns,
+so hosts do not merge local transcript rows, timestamps, previews, or live
+draft IDs into history. A live projection is accepted only for its exact
+`ThreadID`/`TurnID`/`RunID`; once the durable projection reaches the turn, a host
+removes its in-memory draft or resynchronizes instead of guessing an order.
 `ReadTurnProjection` requires explicit `RunID` input instead of inferring it
 from stored rows, because `RunID` is execution identity and not the thread or
 turn storage identity. A missing thread is reported with `ErrThreadNotFound`; a
@@ -326,9 +349,11 @@ row. A provider-backed Host may settle pending work through the same active
 thread it already owns; this detail-only mutation does not reacquire the turn
 lease or create another provider request. `ThreadMaintenanceHost` continues to
 respect leases owned by active provider hosts. Runtime restart recovery also
-reconciles active turn leases from the same
-durable facts: a turn that already has terminal or interrupted evidence is
-closed through Floret's ledger before the next `RunTurn` is admitted. Downstream
+reconciles active turn leases from the same durable facts. `ResumeThread`
+processes only the leased turn, or the sole unfinished turn on the active path
+when no lease exists. Multiple unfinished turns are a journal invariant error.
+Recovery never scans branches or rewinds the leaf, and every control-signal
+message is excluded from ordinary unresolved tool-call settlement. Downstream
 hosts should consume Floret projections and settlement results
 to replace their product UI for the turn instead of synthesizing final tool
 status from local audit records or live stream leftovers.
@@ -348,7 +373,8 @@ fact.
 
 Deleting a thread is a data lifecycle operation. `DeleteThread` deletes the
 target thread and Floret-managed descendant child threads, plus their prompt
-cache records and thread artifacts. Runtime resolves the complete tree before
+cache records, Agent todo state, and thread artifacts. Runtime resolves the
+complete tree before
 issuing one storage delete operation. SQLite applies threads, entries, active
 leases, metadata, artifacts, prompt segments, toolsets, provider requests,
 provider responses, and provider continuation in one immediate transaction, so

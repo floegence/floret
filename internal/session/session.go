@@ -59,6 +59,15 @@ type ActivityPresentation struct {
 	Payload     map[string]any      `json:"payload,omitempty"`
 }
 
+type ControlSignalView struct {
+	Name        string         `json:"name,omitempty"`
+	CallID      string         `json:"call_id,omitempty"`
+	Disposition string         `json:"disposition,omitempty"`
+	OutputText  string         `json:"output_text,omitempty"`
+	ArgsHash    string         `json:"args_hash,omitempty"`
+	Payload     map[string]any `json:"payload,omitempty"`
+}
+
 type Message struct {
 	Role                 Role
 	Content              string
@@ -71,6 +80,7 @@ type Message struct {
 	Kind                 MessageKind
 	ToolResult           *ToolResultView
 	Activity             *ActivityPresentation `json:"activity,omitempty"`
+	ControlSignal        *ControlSignalView    `json:"control_signal,omitempty"`
 	CompactionID         string
 	CompactionGeneration int
 	CompactionWindowID   string
@@ -134,7 +144,22 @@ func CloneMessage(msg Message) Message {
 		msg.ToolResult = &view
 	}
 	msg.Activity = CloneActivityPresentation(msg.Activity)
+	msg.ControlSignal = CloneControlSignalView(msg.ControlSignal)
 	return msg
+}
+
+func CloneControlSignalView(in *ControlSignalView) *ControlSignalView {
+	if in == nil {
+		return nil
+	}
+	return &ControlSignalView{
+		Name:        in.Name,
+		CallID:      in.CallID,
+		Disposition: in.Disposition,
+		OutputText:  in.OutputText,
+		ArgsHash:    in.ArgsHash,
+		Payload:     cloneActivityPayload(in.Payload),
+	}
 }
 
 func CloneActivityPresentation(in *ActivityPresentation) *ActivityPresentation {

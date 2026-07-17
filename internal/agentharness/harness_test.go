@@ -129,8 +129,15 @@ func TestThreadRunRejectsProviderContinuationWithoutStateStore(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "provider state store is required") {
 		t.Fatalf("Run err = %v, want provider state store requirement", err)
 	}
-	if result.Status != engine.Failed {
-		t.Fatalf("result status = %q, want failed", result.Status)
+	if result.Status != "" {
+		t.Fatalf("result status = %q, want no terminal result", result.Status)
+	}
+	journal, readErr := thread.Journal(ctx)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if got := unfinishedTurns(journal.Path); !slices.Equal(got, []string{"turn-1"}) {
+		t.Fatalf("provider state persistence failure should leave turn unfinished: %#v", journal.Path)
 	}
 }
 
@@ -2338,7 +2345,7 @@ func TestResumeReleasesActiveLeaseForTerminalTurn(t *testing.T) {
 	}
 }
 
-func TestResumeRepairsUnsafeInterruptedActiveBranch(t *testing.T) {
+func TestResumePreservesCompletedTurnsAfterTaskComplete(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name string
@@ -2353,20 +2360,33 @@ func TestResumeRepairsUnsafeInterruptedActiveBranch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			appendInterruptedWaitTurn(t, ctx, tc.repo, "thread", "turn-interrupted")
-			if _, err := sessiontree.AppendFailure(ctx, tc.repo, "thread", "turn-interrupted", interruptedTurnFailureMessage); err != nil {
-				t.Fatal(err)
+			for index, turnID := range []string{"turn-complete", "turn-two", "turn-three"} {
+				runID := "run-" + turnID
+				if _, err := sessiontree.AppendTurnMarker(ctx, tc.repo, "thread", turnID, sessiontree.TurnStarted, map[string]string{"run_id": runID}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := sessiontree.AppendMessage(ctx, tc.repo, "thread", turnID, session.Message{Role: session.User, Content: fmt.Sprintf("user-%d", index+1)}); err != nil {
+					t.Fatal(err)
+				}
+				if index == 0 {
+					if _, err := sessiontree.AppendMessage(ctx, tc.repo, "thread", turnID, session.Message{
+						Role:       session.Assistant,
+						Content:    "tool_call",
+						ToolCallID: "complete-1",
+						ToolName:   "task_complete",
+						ToolArgs:   `{"output":"done"}`,
+						Kind:       session.MessageKindControlSignal,
+					}); err != nil {
+						t.Fatal(err)
+					}
+				} else if _, err := sessiontree.AppendMessage(ctx, tc.repo, "thread", turnID, session.Message{Role: session.Assistant, Content: fmt.Sprintf("assistant-%d", index+1)}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := sessiontree.AppendTurnMarker(ctx, tc.repo, "thread", turnID, sessiontree.TurnCompleted, map[string]string{"run_id": runID}); err != nil {
+					t.Fatal(err)
+				}
 			}
-			if _, err := sessiontree.AppendTurnMarker(ctx, tc.repo, "thread", "turn-interrupted", sessiontree.TurnAborted, map[string]string{"recoverable": "true"}); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := sessiontree.AppendTurnMarker(ctx, tc.repo, "thread", "turn-bad-continue", sessiontree.TurnStarted, nil); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := sessiontree.AppendMessage(ctx, tc.repo, "thread", "turn-bad-continue", session.Message{Role: session.User, Content: "continue"}); err != nil {
-				t.Fatal(err)
-			}
-			badLeaf, err := tc.repo.Append(ctx, sessiontree.Entry{ThreadID: "thread", TurnID: "turn-bad-continue", Type: sessiontree.EntryRunFailure, Error: "provider history unsafe"}, sessiontree.AppendOptions{})
+			before, err := thread.Journal(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2379,30 +2399,99 @@ func TestResumeRepairsUnsafeInterruptedActiveBranch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if snap.Meta.LeafID == badLeaf.ID {
-				t.Fatalf("active leaf still points at unsafe branch: %q", snap.Meta.LeafID)
+			if snap.Meta.LeafID != before.Meta.LeafID {
+				t.Fatalf("resume moved leaf from %q to %q", before.Meta.LeafID, snap.Meta.LeafID)
 			}
-			if got := countEntriesWithContent(snap.Path, sessiontree.EntryUserMessage, "continue"); got != 0 {
-				t.Fatalf("active repaired path retained bad continue message: count=%d path=%#v", got, snap.Path)
+			if got := countToolEntries(snap.Path, sessiontree.EntryToolResult, "complete-1"); got != 0 {
+				t.Fatalf("control signal received %d synthetic tool results: %#v", got, snap.Path)
 			}
-			if got := countToolEntries(snap.Path, sessiontree.EntryToolResult, "call-wait"); got != 1 {
-				t.Fatalf("tool result count = %d in %#v", got, snap.Path)
+			if got := countEntries(snap.Path, sessiontree.EntryUserMessage); got != 3 {
+				t.Fatalf("resume retained %d user turns, want 3: %#v", got, snap.Path)
 			}
 			if err := assertProviderSafeToolHistory(snap.Context); err != nil {
-				t.Fatalf("repaired active context is unsafe: %v\n%#v", err, snap.Context)
-			}
-			oldBranch, err := tc.repo.Path(ctx, "thread", badLeaf.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := countEntriesWithContent(oldBranch, sessiontree.EntryUserMessage, "continue"); got != 1 {
-				t.Fatalf("old unsafe branch should remain readable: count=%d entries=%#v", got, oldBranch)
+				t.Fatalf("provider history after resume is unsafe: %v\n%#v", err, snap.Context)
 			}
 			second, err := resumed.Run(ctx, "continue", RunOptions{TurnID: "turn-continue"})
 			if err != nil || second.Status != engine.Completed {
 				t.Fatalf("second = %#v err=%v", second, err)
 			}
 		})
+	}
+}
+
+func TestResumeDoesNotSettleControlSignals(t *testing.T) {
+	ctx := context.Background()
+	for _, toolName := range []string{"ask_user", "custom_pause"} {
+		t.Run(toolName, func(t *testing.T) {
+			repo := sessiontree.NewMemoryRepo()
+			h := newTestHarness(scriptharness.NewScriptedProvider(), repo, cache.NewMemoryStore())
+			thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessiontree.AppendTurnMarker(ctx, repo, "thread", "turn-control", sessiontree.TurnStarted, map[string]string{"run_id": "run-control"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessiontree.AppendMessage(ctx, repo, "thread", "turn-control", session.Message{Role: session.User, Content: "pause"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessiontree.AppendMessage(ctx, repo, "thread", "turn-control", session.Message{
+				Role:       session.Assistant,
+				Content:    "control",
+				ToolCallID: "control-1",
+				ToolName:   toolName,
+				ToolArgs:   `{"question":"continue?"}`,
+				Kind:       session.MessageKindControlSignal,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			resumed, err := h.ResumeThread(ctx, thread.ID(), ResumeOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			snap, err := resumed.Journal(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := countToolEntries(snap.Path, sessiontree.EntryToolResult, "control-1"); got != 0 {
+				t.Fatalf("control signal received %d synthetic tool results: %#v", got, snap.Path)
+			}
+			if got := countTurnMarkersForTurn(snap.Path, "turn-control", sessiontree.TurnAborted); got != 1 {
+				t.Fatalf("aborted marker count = %d, want 1: %#v", got, snap.Path)
+			}
+		})
+	}
+}
+
+func TestResumeRejectsMultipleUnfinishedTurnsWithoutMutation(t *testing.T) {
+	ctx := context.Background()
+	repo := sessiontree.NewMemoryRepo()
+	h := newTestHarness(scriptharness.NewScriptedProvider(), repo, cache.NewMemoryStore())
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, turnID := range []string{"turn-one", "turn-two"} {
+		if _, err := sessiontree.AppendTurnMarker(ctx, repo, "thread", turnID, sessiontree.TurnStarted, map[string]string{"run_id": "run-" + turnID}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := sessiontree.AppendMessage(ctx, repo, "thread", turnID, session.Message{Role: session.User, Content: turnID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := thread.Journal(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ResumeThread(ctx, thread.ID(), ResumeOptions{}); !errors.Is(err, ErrJournalInvariant) {
+		t.Fatalf("ResumeThread err = %v, want ErrJournalInvariant", err)
+	}
+	after, err := thread.Journal(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Meta.LeafID != before.Meta.LeafID || len(after.Entries) != len(before.Entries) {
+		t.Fatalf("invariant failure mutated journal: before=%#v after=%#v", before, after)
 	}
 }
 
@@ -2614,8 +2703,8 @@ func TestThreadRunProjectionCancellationMarksTurnAborted(t *testing.T) {
 		if !errors.Is(out.err, context.Canceled) {
 			t.Fatalf("run err = %v, want context canceled", out.err)
 		}
-		if out.result.Status != engine.Cancelled {
-			t.Fatalf("result status = %s, want cancelled", out.result.Status)
+		if out.result.Status != "" {
+			t.Fatalf("projection persistence failure returned terminal status %s", out.result.Status)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("run did not finish after cancellation")
@@ -2624,20 +2713,26 @@ func TestThreadRunProjectionCancellationMarksTurnAborted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.ContainsFunc(snap.Entries, func(entry sessiontree.Entry) bool {
-		return entry.Type == sessiontree.EntryTurnMarker &&
-			entry.TurnID == "turn-canceled" &&
-			entry.TurnStatus == sessiontree.TurnAborted &&
-			entry.Metadata["diagnostic"] == "projection_error"
-	}) {
-		t.Fatalf("projection cancellation should persist aborted terminal marker: %#v", snap.Entries)
-	}
 	if slices.ContainsFunc(snap.Entries, func(entry sessiontree.Entry) bool {
 		return entry.Type == sessiontree.EntryTurnMarker &&
 			entry.TurnID == "turn-canceled" &&
-			entry.TurnStatus == sessiontree.TurnFailed
+			isTerminalTurnMarker(entry.TurnStatus)
 	}) {
-		t.Fatalf("projection cancellation persisted failed marker: %#v", snap.Entries)
+		t.Fatalf("projection persistence failure wrote a terminal marker: %#v", snap.Entries)
+	}
+	if got := unfinishedTurns(snap.Path); !slices.Equal(got, []string{"turn-canceled"}) {
+		t.Fatalf("projection persistence failure should leave one unfinished turn: %#v", snap.Path)
+	}
+	resumed, err := h.ResumeThread(ctx, thread.ID(), ResumeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := resumed.Journal(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countTurnMarkersForTurn(recovered.Path, "turn-canceled", sessiontree.TurnAborted); got != 1 {
+		t.Fatalf("resume did not terminalize the unfinished turn exactly once: %#v", recovered.Path)
 	}
 }
 
