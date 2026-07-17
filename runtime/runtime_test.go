@@ -5563,6 +5563,70 @@ func TestListThreadTurnsPagesCanonicalTimeline(t *testing.T) {
 	}
 }
 
+func TestListThreadTurnsHidesTurnUntilCanonicalUserEntryIsCommitted(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		open func(*testing.T) *Store
+	}{
+		{name: "memory", open: func(t *testing.T) *Store { return NewMemoryStore() }},
+		{name: "sqlite", open: func(t *testing.T) *Store {
+			store, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "floret.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			return store
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := tc.open(t)
+			maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := maintenance.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "thread"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "thread", "turn-1", sessiontree.TurnStarted, map[string]string{"run_id": "run-1"}); err != nil {
+				t.Fatal(err)
+			}
+
+			startedOnly, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(startedOnly.Turns) != 0 || startedOnly.ThroughOrdinal != 1 {
+				t.Fatalf("started-only page = %#v, want no admitted turns through ordinal 1", startedOnly)
+			}
+			if _, err := sessiontree.AppendMessage(ctx, store.repo, "thread", "turn-1", session.Message{Role: session.User, Content: "canonical input"}); err != nil {
+				t.Fatal(err)
+			}
+
+			admitted, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(admitted.Turns) != 1 || admitted.Turns[0].TurnID != "turn-1" || admitted.Turns[0].RunID != "run-1" || admitted.Turns[0].UserEntryID == "" || admitted.Turns[0].UserInput != "canonical input" || admitted.ThroughOrdinal != 2 {
+				t.Fatalf("admitted page = %#v", admitted)
+			}
+
+			if _, err := maintenance.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "corrupt-thread"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "corrupt-thread", "turn-corrupt", sessiontree.TurnStarted, map[string]string{"run_id": "run-corrupt"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "corrupt-thread", "turn-corrupt", sessiontree.TurnCompleted, map[string]string{"run_id": "run-corrupt"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "corrupt-thread", Tail: 1}); err == nil || !strings.Contains(err.Error(), "without a canonical user entry") {
+				t.Fatalf("corrupt terminal turn error = %v", err)
+			}
+		})
+	}
+}
+
 func TestThreadAgentTodosCASForkDeleteAndReopen(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {

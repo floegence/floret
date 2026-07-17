@@ -1,6 +1,8 @@
 # Floret OKF Update Log
 
 ## 2026-07-17
+* **Fix**: Kept started-only turns out of public turn pages until their canonical
+  user entry is committed, while preserving the full journal through ordinal.
 * **Breaking**: Removed the transcript shortcut from `ThreadSnapshot` and added
   provider-backed and provider-free `ListThreadTurns`/`ReadThread` contracts for
   canonical ordinal history, run identity, failure, projection, and verified
