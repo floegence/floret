@@ -45,7 +45,7 @@ Das ist entscheidend, wenn ein Produkt wirklich eigenständig bleiben muss. Ober
 - **Der Modellzugang bleibt bei dir.** Nutze die eingebaute Konfiguration oder implementiere `runtime.ModelGateway`. Floret steuert Anfrage und Fortsetzung, Transport und Zugangsdaten bleiben beim Produkt.
 - **Gib jedem Agenten eine Rolle, die zu deinem Geschäft passt.** Mit `config.AgentProfile.SystemPrompt` oder `config.Config.SystemPrompt` definierst du Rolle, Ton, Geschäftsszenario und Arbeitsregeln, statt einen beliebigen Standardassistenten auszuliefern.
 - **Tools und Anweisungen passen sich der Arbeit an.** Registriere strikte Domänen-Tools in `tools.Registry` und erneuere mit `runtime.ToolSurfaceProvider` Tools, gehostete Fähigkeiten, Anweisungen und Host-Kontext an sicheren Punkten eines Laufs.
-- **Gespräche werden zu belastbaren Assets.** `runtime.Host` verwaltet Threads, Turns, Wiederholungen, Forks, elternverwaltete Unterthreads und provider-sicheren Verlauf.
+- **Gespräche werden zu belastbaren Assets.** Die Floret-Runtime verwaltet Threads, Turns, Wiederholungen, Forks, elternverwaltete Unterthreads und provider-sicheren Verlauf.
 - **Freigaberegeln bleiben im Produkt.** Floret kennt allgemeine Effekte, Ressourcen und Freigabestatus. Wer was, wo und warum tun darf, entscheidest du.
 - **Laufzeitverhalten wird sichtbar.** Sanitisierte Ereignisse, Kontextdruck, Kompaktierungsfakten und neutrale Aktivitäts-Timelines lassen sich ohne Prompts, Geheimnisse oder interne Speicherzeilen in jede UI einbinden.
 - **Teste das Produkt statt das Zufallsverhalten eines Modells.** Der Fake Provider macht Agentenflüsse lokal und in CI deterministisch.
@@ -75,22 +75,24 @@ go get github.com/floegence/floret/config github.com/floegence/floret/runtime gi
 ```go
 store := runtime.NewMemoryStore()
 defer store.Close()
-runtimeRoot, err := runtime.NewHostRuntime(store)
+bootstrap, err := runtime.NewHostBootstrap(store)
 if err != nil { /* handle error */ }
-threadCreator, err := runtime.NewThreadCreateHost(runtime.ThreadCapabilityOptions{Runtime: runtimeRoot})
+threadCreator, err := runtime.NewThreadCreateHost(bootstrap, nil)
 if err != nil { /* handle error */ }
 
-host, err := runtime.NewHost(runtime.HostOptions{
+turnFactory, err := runtime.NewTurnExecutionHostFactory(bootstrap)
+if err != nil { /* handle error */ }
+turnHost, err := turnFactory.NewHost(runtime.TurnExecutionHostOptions{
+	ThreadID: "thread-1",
 	Config: config.Config{
 		Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "Hello from Floret.",
 		AgentProfile: config.AgentProfile{ID: "support-agent", Name: "Support Agent"},
 	},
-	Runtime: runtimeRoot,
 })
 if err != nil { /* handle error */ }
 
 thread, err := threadCreator.CreateThread(ctx, runtime.CreateThreadRequest{ThreadID: "thread-1"})
-result, err := host.RunTurn(ctx, runtime.RunTurnRequest{
+result, err := turnHost.RunTurn(ctx, runtime.RunTurnRequest{
 	ThreadID: thread.ID, TurnID: "turn-1", RunID: "run-1",
 	Input: runtime.TurnInput{Text: "Welcome a new customer in one sentence."},
 })

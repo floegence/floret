@@ -43,7 +43,7 @@ before treating compaction as complete.
 
 # Use With
 
-* [runtime](runtime.md) when constructing `runtime.Host`.
+* [runtime](runtime.md) when constructing provider-backed runtime capabilities.
 * [Observation](observation.md) when interpreting context pressure DTOs.
 
 # Key Source Files

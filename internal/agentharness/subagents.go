@@ -463,24 +463,17 @@ func (h *AgentHarness) SpawnSubAgent(ctx context.Context, opts SpawnSubAgentOpti
 		thread, err = h.ForkThread(ctx, ForkOptions{
 			SourceThreadID: parentID,
 			NewThreadID:    childID,
+			DestinationMeta: &sessiontree.ForkDestinationMeta{
+				ParentThreadID:  parentID,
+				ParentTurnID:    strings.TrimSpace(opts.ParentTurnID),
+				TaskName:        taskName,
+				TaskDescription: taskDescription,
+				AgentPath:       path,
+				HostProfileRef:  strings.TrimSpace(opts.HostProfileRef),
+				ForkMode:        string(forkMode),
+			},
 		})
 		if err != nil {
-			return SubAgentSnapshot{}, err
-		}
-		meta, err := h.options.Repo.Thread(ctx, childID)
-		if err != nil {
-			return SubAgentSnapshot{}, err
-		}
-		meta.ParentThreadID = parentID
-		meta.ParentTurnID = strings.TrimSpace(opts.ParentTurnID)
-		meta.TaskName = taskName
-		meta.TaskDescription = taskDescription
-		meta.AgentPath = path
-		meta.HostProfileRef = strings.TrimSpace(opts.HostProfileRef)
-		meta.ForkMode = string(forkMode)
-		meta.Status = ""
-		meta.UpdatedAt = now
-		if err := h.options.Repo.UpdateThread(ctx, meta); err != nil {
 			return SubAgentSnapshot{}, err
 		}
 	default:
@@ -2396,7 +2389,7 @@ func (h *AgentHarness) resolveSubAgentMeta(ctx context.Context, parentThreadID, 
 		}
 		return sessiontree.ThreadMeta{}, err
 	}
-	if meta.ParentThreadID != parentThreadID || strings.TrimSpace(meta.AgentPath) == "" {
+	if meta.ParentThreadID != parentThreadID {
 		return sessiontree.ThreadMeta{}, ErrSubAgentNotFound
 	}
 	return meta, nil
@@ -2439,7 +2432,7 @@ func (h *AgentHarness) childThreadMetas(ctx context.Context, parentThreadID stri
 	}
 	children := make([]sessiontree.ThreadMeta, 0)
 	for _, meta := range threads {
-		if meta.ParentThreadID == parentThreadID && strings.TrimSpace(meta.AgentPath) != "" {
+		if meta.ParentThreadID == parentThreadID {
 			children = append(children, meta)
 		}
 	}

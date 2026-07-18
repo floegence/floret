@@ -64,14 +64,18 @@ const (
 )
 
 var (
-	// ErrThreadNotFound reports that a durable thread requested through Host was not found.
+	// ErrThreadNotFound reports that a requested durable thread was not found.
 	ErrThreadNotFound = errors.New("floret thread not found")
-	// ErrTurnNotFound reports that a durable turn requested through Host was not found.
+	// ErrThreadNotActive reports that an active-only capability no longer owns the thread mutation.
+	ErrThreadNotActive = errors.New("floret thread is not active")
+	// ErrTurnNotFound reports that a requested durable turn was not found.
 	ErrTurnNotFound = errors.New("floret turn not found")
-	// ErrRunNotFound reports that a durable run requested through Host was not found.
+	// ErrRunNotFound reports that a requested durable run was not found.
 	ErrRunNotFound = errors.New("floret run not found")
-	// ErrSubAgentNotFound reports that a parent-scoped child thread requested through Host was not found.
+	// ErrSubAgentNotFound reports that a requested parent-scoped child thread was not found.
 	ErrSubAgentNotFound = errors.New("floret subagent not found")
+	// ErrSubAgentParentRequired reports that a child operation used a root-thread capability.
+	ErrSubAgentParentRequired = errors.New("floret subagent operation requires parent authority")
 	// ErrForkOperationConflict reports that an operation ID was reused with a different fork request.
 	ErrForkOperationConflict = errors.New("floret fork operation conflicts with existing request")
 	// ErrForkDestinationConflict reports that a planned destination is owned by another operation or node.
@@ -82,12 +86,11 @@ var (
 	ErrAgentTodoVersionConflict = errors.New("floret agent todo version conflict")
 	// ErrJournalInvariant reports an ambiguous active path that Floret refuses to repair heuristically.
 	ErrJournalInvariant = errors.New("floret thread journal invariant violated")
+	// ErrThreadAuthorityInvariant reports invalid durable root/SubAgent ownership metadata.
+	ErrThreadAuthorityInvariant = errors.New("floret thread authority invariant violated")
 )
 
-// Host is the concrete public facade for provider-backed durable conversations.
-// Callers that need substitution should declare a local interface containing
-// only the methods used by that responsibility.
-type Host struct {
+type providerHost struct {
 	cfg                       config.Config
 	store                     *Store
 	sink                      EventSink
@@ -114,11 +117,11 @@ func normalizeThreadTitleMode(mode ThreadTitleMode) (ThreadTitleMode, error) {
 	}
 }
 
-type HostOptions struct {
+type providerHostOptions struct {
 	Config               config.Config
 	ModelGateway         ModelGateway
 	ModelGatewayIdentity ModelGatewayIdentity
-	Runtime              *HostRuntime
+	Store                *Store
 	Tools                *tools.Registry
 	Approver             tools.Approver
 	Sink                 EventSink
@@ -1210,14 +1213,15 @@ func (s TurnStatus) IsTerminal() bool {
 }
 
 type Store struct {
-	repo           sessiontree.Repo
-	prompt         cache.Store
-	artifacts      artifact.Store
-	forkOperations storage.ForkOperationStore
-	providerStates storage.ProviderStateStore
-	agentTodos     sessiontree.AgentTodoStateRepo
-	deleteData     func(context.Context, storage.DeleteThreadTreeDataRequest) error
-	close          func() error
+	repo              sessiontree.Repo
+	prompt            cache.Store
+	artifacts         artifact.Store
+	forkOperations    storage.ForkOperationStore
+	providerStates    storage.ProviderStateStore
+	agentTodos        sessiontree.AgentTodoStateRepo
+	deleteData        func(context.Context, string, []string) error
+	threadAuthorityMu sync.Mutex
+	close             func() error
 }
 
 func NewMemoryStore() *Store {
@@ -1233,14 +1237,14 @@ func NewMemoryStore() *Store {
 		forkOperations: forkOperations,
 		providerStates: providerStates,
 		agentTodos:     repo,
-		deleteData: func(ctx context.Context, req storage.DeleteThreadTreeDataRequest) error {
-			threadIDs := cleanRuntimeIDs(append([]string{req.RootThreadID}, req.ThreadIDs...))
+		deleteData: func(ctx context.Context, rootThreadID string, threadIDs []string) error {
+			threadIDs = cleanRuntimeIDs(append([]string{rootThreadID}, threadIDs...))
 			for i := len(threadIDs) - 1; i >= 0; i-- {
 				if err := repo.DeleteThread(ctx, threadIDs[i]); err != nil {
 					return err
 				}
 			}
-			if err := prompt.DeletePromptScopes(ctx, req.PromptScopeIDs...); err != nil {
+			if err := prompt.DeletePromptScopes(ctx, threadIDs...); err != nil {
 				return err
 			}
 			for _, threadID := range threadIDs {
@@ -1268,8 +1272,9 @@ func OpenSQLiteStore(path string) (*Store, error) {
 		forkOperations: sqliteStore,
 		providerStates: sqliteStore,
 		agentTodos:     sqliteStore,
-		deleteData: func(ctx context.Context, req storage.DeleteThreadTreeDataRequest) error {
-			return sqliteStore.DeleteThreadTreeData(ctx, req)
+		deleteData: func(ctx context.Context, rootThreadID string, _ []string) error {
+			_, err := sqliteStore.DeleteThreadTreeData(ctx, rootThreadID)
+			return err
 		},
 		close: sqliteStore.Close,
 	}, nil
@@ -1300,11 +1305,7 @@ func (s *Store) deleteThreadData(ctx context.Context, threadID string) error {
 	if err != nil {
 		return err
 	}
-	return s.deleteData(ctx, storage.DeleteThreadTreeDataRequest{
-		RootThreadID:   threadID,
-		ThreadIDs:      threadIDs,
-		PromptScopeIDs: append([]string(nil), threadIDs...),
-	})
+	return s.deleteData(ctx, threadID, threadIDs)
 }
 
 func cleanRuntimeIDs(values []string) []string {
@@ -1329,41 +1330,14 @@ func (s *Store) threadTreeIDs(ctx context.Context, threadID string) ([]string, e
 	if threadID == "" {
 		return nil, errors.New("thread id is required")
 	}
-	if _, err := s.repo.Thread(ctx, threadID); err != nil {
-		return nil, err
-	}
 	threads, err := sessiontree.ListThreads(ctx, s.repo, sessiontree.ListThreadsOptions{IncludeArchived: true})
 	if err != nil {
 		return nil, err
 	}
-	children := map[string][]string{}
-	for _, meta := range threads {
-		parentID := strings.TrimSpace(meta.ParentThreadID)
-		id := strings.TrimSpace(meta.ID)
-		if parentID == "" || id == "" {
-			continue
-		}
-		children[parentID] = append(children[parentID], id)
-	}
-	out := []string{}
-	seen := map[string]bool{}
-	var walk func(string)
-	walk = func(id string) {
-		id = strings.TrimSpace(id)
-		if id == "" || seen[id] {
-			return
-		}
-		seen[id] = true
-		out = append(out, id)
-		for _, childID := range children[id] {
-			walk(childID)
-		}
-	}
-	walk(threadID)
-	return out, nil
+	return sessiontree.ThreadAuthorityTreeIDs(threads, threadID)
 }
 
-func NewHost(opts HostOptions) (*Host, error) {
+func newProviderHost(opts providerHostOptions) (*providerHost, error) {
 	titleMode, err := normalizeThreadTitleMode(opts.ThreadTitleMode)
 	if err != nil {
 		return nil, err
@@ -1372,10 +1346,10 @@ func NewHost(opts HostOptions) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
-	if opts.Runtime == nil || opts.Runtime.store == nil {
-		return nil, errors.New("host runtime is required")
+	store := opts.Store
+	if store == nil {
+		return nil, errors.New("runtime store is required")
 	}
-	store := opts.Runtime.store
 	if err := store.validate(); err != nil {
 		return nil, err
 	}
@@ -1396,7 +1370,7 @@ func NewHost(opts HostOptions) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Host{
+	return &providerHost{
 		cfg:                       cfg,
 		store:                     store,
 		sink:                      opts.Sink,
@@ -1405,7 +1379,7 @@ func NewHost(opts HostOptions) (*Host, error) {
 	}, nil
 }
 
-func resolveHostConfigAndProvider(opts HostOptions) (config.Config, provider.Provider, error) {
+func resolveHostConfigAndProvider(opts providerHostOptions) (config.Config, provider.Provider, error) {
 	if opts.ModelGateway != nil {
 		identity, err := normalizeModelGatewayIdentity(opts.ModelGatewayIdentity)
 		if err != nil {
@@ -1456,6 +1430,8 @@ func runtimeHostError(err error) error {
 		return fmt.Errorf("%w: %w", ErrAgentTodoVersionConflict, err)
 	case errors.Is(err, agentharness.ErrJournalInvariant):
 		return fmt.Errorf("%w: %w", ErrJournalInvariant, err)
+	case errors.Is(err, sessiontree.ErrInvalidThreadAuthority):
+		return fmt.Errorf("%w: %w", ErrThreadAuthorityInvariant, err)
 	case errors.Is(err, sessiontree.ErrThreadNotFound):
 		return fmt.Errorf("%w: %w", ErrThreadNotFound, err)
 	default:
@@ -1464,10 +1440,26 @@ func runtimeHostError(err error) error {
 }
 
 func (h *ThreadCreateHost) CreateThread(ctx context.Context, req CreateThreadRequest) (ThreadSummary, error) {
-	return createThread(ctx, h.harness, req)
+	req.ThreadID = ThreadID(strings.TrimSpace(string(req.ThreadID)))
+	if req.ThreadID == "" {
+		return ThreadSummary{}, errors.New("thread id is required")
+	}
+	h.store.threadAuthorityMu.Lock()
+	defer h.store.threadAuthorityMu.Unlock()
+	summary, err := createThread(ctx, h.harness, req)
+	if err != nil {
+		return ThreadSummary{}, err
+	}
+	if err := validateRootThreadAuthority(ctx, h.store, req.ThreadID); err != nil {
+		return ThreadSummary{}, err
+	}
+	return summary, nil
 }
 
 func createThread(ctx context.Context, harness *agentharness.AgentHarness, req CreateThreadRequest) (ThreadSummary, error) {
+	if strings.TrimSpace(string(req.ThreadID)) == "" {
+		return ThreadSummary{}, errors.New("thread id is required")
+	}
 	summary, err := harness.CreateThread(ctx, agentharness.StartThreadOptions{ThreadID: string(req.ThreadID)})
 	if err != nil {
 		return ThreadSummary{}, runtimeHostError(err)
@@ -1476,6 +1468,9 @@ func createThread(ctx context.Context, harness *agentharness.AgentHarness, req C
 }
 
 func (h *ThreadTitleHost) SetThreadTitle(ctx context.Context, req SetThreadTitleRequest) (ThreadSnapshot, error) {
+	if err := validateRootThreadAuthority(ctx, h.store, req.ThreadID); err != nil {
+		return ThreadSnapshot{}, err
+	}
 	return setThreadTitle(ctx, h.harness, req)
 }
 
@@ -1488,6 +1483,11 @@ func setThreadTitle(ctx context.Context, harness *agentharness.AgentHarness, req
 }
 
 func (h *ThreadForkHost) ForkThread(ctx context.Context, req ForkThreadRequest) (ForkThreadResult, error) {
+	h.store.threadAuthorityMu.Lock()
+	defer h.store.threadAuthorityMu.Unlock()
+	if err := validateRootThreadAuthority(ctx, h.store, req.SourceThreadID); err != nil {
+		return ForkThreadResult{}, err
+	}
 	return forkThread(ctx, h.harness, req)
 }
 
@@ -1516,11 +1516,14 @@ func forkThread(ctx context.Context, harness *agentharness.AgentHarness, req For
 	return forkThreadResult(result), nil
 }
 
-func (h *Host) ReadThread(ctx context.Context, threadID ThreadID) (ThreadSnapshot, error) {
+func (h *providerHost) ReadThread(ctx context.Context, threadID ThreadID) (ThreadSnapshot, error) {
 	return readThreadByID(ctx, h.harness, threadID)
 }
 
 func (h *ThreadReadHost) ReadThread(ctx context.Context, threadID ThreadID) (ThreadSnapshot, error) {
+	if err := validateRootThreadAuthority(ctx, h.store, threadID); err != nil {
+		return ThreadSnapshot{}, err
+	}
 	return readThreadByID(ctx, h.harness, threadID)
 }
 
@@ -1532,11 +1535,14 @@ func readThreadByID(ctx context.Context, harness *agentharness.AgentHarness, thr
 	return threadSnapshot(snapshot), nil
 }
 
-func (h *Host) ListThreadDetailEvents(ctx context.Context, req ListThreadDetailEventsRequest) (ThreadDetailEvents, error) {
+func (h *providerHost) ListThreadDetailEvents(ctx context.Context, req ListThreadDetailEventsRequest) (ThreadDetailEvents, error) {
 	return listThreadDetailEvents(ctx, h.harness, req)
 }
 
 func (h *ThreadReadHost) ListThreadDetailEvents(ctx context.Context, req ListThreadDetailEventsRequest) (ThreadDetailEvents, error) {
+	if err := validateRootThreadAuthority(ctx, h.store, req.ThreadID); err != nil {
+		return ThreadDetailEvents{}, err
+	}
 	return listThreadDetailEvents(ctx, h.harness, req)
 }
 
@@ -1559,11 +1565,14 @@ func listThreadDetailEvents(ctx context.Context, harness *agentharness.AgentHarn
 	}, nil
 }
 
-func (h *Host) ReadThreadContext(ctx context.Context, threadID ThreadID) (ThreadContextSnapshot, error) {
+func (h *providerHost) ReadThreadContext(ctx context.Context, threadID ThreadID) (ThreadContextSnapshot, error) {
 	return readThreadContext(ctx, h.harness, threadID)
 }
 
 func (h *ThreadReadHost) ReadThreadContext(ctx context.Context, threadID ThreadID) (ThreadContextSnapshot, error) {
+	if err := validateRootThreadAuthority(ctx, h.store, threadID); err != nil {
+		return ThreadContextSnapshot{}, err
+	}
 	return readThreadContext(ctx, h.harness, threadID)
 }
 
@@ -1579,11 +1588,14 @@ func readThreadContext(ctx context.Context, harness *agentharness.AgentHarness, 
 	return out, nil
 }
 
-func (h *Host) ReadThreadAgentTodos(ctx context.Context, threadID ThreadID) (ThreadAgentTodoState, error) {
+func (h *providerHost) ReadThreadAgentTodos(ctx context.Context, threadID ThreadID) (ThreadAgentTodoState, error) {
 	return readThreadAgentTodos(ctx, h.store, threadID)
 }
 
 func (h *ThreadReadHost) ReadThreadAgentTodos(ctx context.Context, threadID ThreadID) (ThreadAgentTodoState, error) {
+	if err := validateRootThreadAuthority(ctx, h.store, threadID); err != nil {
+		return ThreadAgentTodoState{}, err
+	}
 	return readThreadAgentTodos(ctx, h.store, threadID)
 }
 
@@ -1598,7 +1610,7 @@ func readThreadAgentTodos(ctx context.Context, store *Store, threadID ThreadID) 
 	return threadAgentTodoState(state), nil
 }
 
-func (h *Host) UpdateThreadAgentTodos(ctx context.Context, req UpdateThreadAgentTodosRequest) (ThreadAgentTodoState, error) {
+func (h *providerHost) UpdateThreadAgentTodos(ctx context.Context, req UpdateThreadAgentTodosRequest) (ThreadAgentTodoState, error) {
 	return updateThreadAgentTodos(ctx, h.store, req)
 }
 
@@ -1690,7 +1702,7 @@ func threadAgentTodoState(in sessiontree.AgentTodoState) ThreadAgentTodoState {
 	return out
 }
 
-func (h *Host) ListPendingApprovals(ctx context.Context, req ListPendingApprovalsRequest) (PendingApprovals, error) {
+func (h *providerHost) ListPendingApprovals(ctx context.Context, req ListPendingApprovalsRequest) (PendingApprovals, error) {
 	return listPendingApprovals(ctx, h.harness, req)
 }
 
@@ -1706,11 +1718,14 @@ func listPendingApprovals(ctx context.Context, harness *agentharness.AgentHarnes
 	return out, nil
 }
 
-func (h *Host) ReadTurnProjection(ctx context.Context, req ReadTurnProjectionRequest) (ThreadTurnProjection, error) {
+func (h *providerHost) ReadTurnProjection(ctx context.Context, req ReadTurnProjectionRequest) (ThreadTurnProjection, error) {
 	return readTurnProjection(ctx, h.harness, req)
 }
 
 func (h *ThreadReadHost) ReadTurnProjection(ctx context.Context, req ReadTurnProjectionRequest) (ThreadTurnProjection, error) {
+	if err := validateRootThreadAuthority(ctx, h.store, req.ThreadID); err != nil {
+		return ThreadTurnProjection{}, err
+	}
 	return readTurnProjection(ctx, h.harness, req)
 }
 
@@ -1743,7 +1758,7 @@ func readTurnProjection(ctx context.Context, harness *agentharness.AgentHarness,
 	}), nil
 }
 
-func (h *Host) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, error) {
+func (h *providerHost) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, error) {
 	if strings.TrimSpace(string(req.RunID)) == "" {
 		return TurnResult{}, errors.New("run id is required")
 	}
@@ -1831,7 +1846,7 @@ func sessionMessageAttachments(in []MessageAttachment) []session.MessageAttachme
 	return out
 }
 
-func (h *Host) RetryTurn(ctx context.Context, req RetryTurnRequest) (TurnResult, error) {
+func (h *providerHost) RetryTurn(ctx context.Context, req RetryTurnRequest) (TurnResult, error) {
 	if strings.TrimSpace(string(req.ThreadID)) == "" {
 		return TurnResult{}, errors.New("thread id is required")
 	}
@@ -1853,7 +1868,7 @@ func (h *Host) RetryTurn(ctx context.Context, req RetryTurnRequest) (TurnResult,
 	return out, runtimeHostError(runErr)
 }
 
-func (h *Host) CompactThread(ctx context.Context, req CompactThreadRequest) (CompactThreadResult, error) {
+func (h *providerHost) CompactThread(ctx context.Context, req CompactThreadRequest) (CompactThreadResult, error) {
 	if strings.TrimSpace(string(req.ThreadID)) == "" {
 		return CompactThreadResult{}, errors.New("thread id is required")
 	}
@@ -1913,7 +1928,7 @@ func (h *Host) CompactThread(ctx context.Context, req CompactThreadRequest) (Com
 	return out, runtimeHostError(compactErr)
 }
 
-func (h *Host) CompletePendingTool(ctx context.Context, req PendingToolCompletionRequest) (TurnResult, error) {
+func (h *providerHost) CompletePendingTool(ctx context.Context, req PendingToolCompletionRequest) (TurnResult, error) {
 	if strings.TrimSpace(string(req.ThreadID)) == "" {
 		return TurnResult{}, errors.New("thread id is required")
 	}
@@ -1945,18 +1960,53 @@ func (h *Host) CompletePendingTool(ctx context.Context, req PendingToolCompletio
 	return out, runtimeHostError(runErr)
 }
 
-func (h *Host) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
-	if thread, ok := h.harness.ActiveThread(string(req.Target.ThreadID)); ok {
-		if err := validatePendingToolSettlementRequest(req); err != nil {
+func (h *PendingToolSettlementHost) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+	if h == nil || h.harness == nil {
+		return PendingToolSettlementResult{}, errors.New("pending tool settlement host is invalid")
+	}
+	if err := validatePendingToolSettlementRequest(req); err != nil {
+		return PendingToolSettlementResult{}, err
+	}
+	if (h.threadID == "") == (h.parentThreadID == "") {
+		return PendingToolSettlementResult{}, errors.New("pending tool settlement host authority is invalid")
+	}
+	if h.threadID != "" {
+		if err := validateBoundThreadID(h.threadID, req.Target.ThreadID, "pending tool settlement host"); err != nil {
 			return PendingToolSettlementResult{}, err
 		}
-		return settlePendingToolOnThread(ctx, h.harness, thread, req)
+		if err := validateRootThreadAuthority(ctx, h.store, req.Target.ThreadID); err != nil {
+			return PendingToolSettlementResult{}, err
+		}
+	} else {
+		if err := validateSubAgentSettlementAuthority(ctx, h.harness, h.parentThreadID, req.Target.ThreadID); err != nil {
+			return PendingToolSettlementResult{}, err
+		}
 	}
-	return settlePendingTool(ctx, h.harness, req)
+	switch h.mode {
+	case pendingToolSettlementActive:
+		thread, ok := h.harness.ActiveThread(string(req.Target.ThreadID))
+		if !ok {
+			return PendingToolSettlementResult{}, ErrThreadNotActive
+		}
+		return settlePendingToolOnThread(ctx, h.harness, thread, req)
+	case pendingToolSettlementRecovery:
+		return settlePendingTool(ctx, h.harness, req)
+	default:
+		return PendingToolSettlementResult{}, errors.New("pending tool settlement host mode is invalid")
+	}
 }
 
-func (h *PendingToolSettlementHost) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
-	return settlePendingTool(ctx, h.harness, req)
+func validateSubAgentSettlementAuthority(ctx context.Context, harness *agentharness.AgentHarness, parentThreadID, childThreadID ThreadID) error {
+	snapshots, err := harness.ListSubAgents(ctx, string(parentThreadID))
+	if err != nil {
+		return runtimeHostError(err)
+	}
+	for _, snapshot := range snapshots {
+		if snapshot.ThreadID == string(childThreadID) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %s", ErrSubAgentNotFound, childThreadID)
 }
 
 func settlePendingTool(ctx context.Context, harness *agentharness.AgentHarness, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
@@ -2035,7 +2085,7 @@ func settlePendingToolOnThread(ctx context.Context, harness *agentharness.AgentH
 	return out, nil
 }
 
-func (h *Host) SpawnSubAgent(ctx context.Context, req SpawnSubAgentRequest) (SubAgentSnapshot, error) {
+func (h *providerHost) SpawnSubAgent(ctx context.Context, req SpawnSubAgentRequest) (SubAgentSnapshot, error) {
 	snapshot, err := h.harness.SpawnSubAgent(ctx, agentharness.SpawnSubAgentOptions{
 		ParentThreadID:  string(req.ParentThreadID),
 		ParentTurnID:    string(req.ParentTurnID),
@@ -2053,7 +2103,7 @@ func (h *Host) SpawnSubAgent(ctx context.Context, req SpawnSubAgentRequest) (Sub
 	return subAgentSnapshot(snapshot), nil
 }
 
-func (h *Host) SendSubAgentInput(ctx context.Context, req SendSubAgentInputRequest) (SubAgentSnapshot, error) {
+func (h *providerHost) SendSubAgentInput(ctx context.Context, req SendSubAgentInputRequest) (SubAgentSnapshot, error) {
 	snapshot, err := h.harness.SendSubAgentInput(ctx, agentharness.SendSubAgentInputOptions{
 		ParentThreadID: string(req.ParentThreadID),
 		ChildThreadID:  string(req.ChildThreadID),
@@ -2067,7 +2117,7 @@ func (h *Host) SendSubAgentInput(ctx context.Context, req SendSubAgentInputReque
 	return subAgentSnapshot(snapshot), nil
 }
 
-func (h *Host) WaitSubAgents(ctx context.Context, req WaitSubAgentsRequest) (WaitSubAgentsResult, error) {
+func (h *providerHost) WaitSubAgents(ctx context.Context, req WaitSubAgentsRequest) (WaitSubAgentsResult, error) {
 	result, err := h.harness.WaitSubAgents(ctx, agentharness.WaitSubAgentsOptions{
 		ParentThreadID: string(req.ParentThreadID),
 		ChildThreadIDs: threadIDStrings(req.ChildThreadIDs),
@@ -2079,11 +2129,14 @@ func (h *Host) WaitSubAgents(ctx context.Context, req WaitSubAgentsRequest) (Wai
 	return waitSubAgentsResult(result), nil
 }
 
-func (h *Host) ListSubAgents(ctx context.Context, parentThreadID ThreadID) ([]SubAgentSnapshot, error) {
+func (h *providerHost) ListSubAgents(ctx context.Context, parentThreadID ThreadID) ([]SubAgentSnapshot, error) {
 	return listSubAgents(ctx, h.harness, parentThreadID)
 }
 
-func (h *ThreadReadHost) ListSubAgents(ctx context.Context, parentThreadID ThreadID) ([]SubAgentSnapshot, error) {
+func (h *SubAgentReadHost) ListSubAgents(ctx context.Context, parentThreadID ThreadID) ([]SubAgentSnapshot, error) {
+	if err := validateBoundThreadID(h.parentThreadID, parentThreadID, "subagent read host parent"); err != nil {
+		return nil, err
+	}
 	return listSubAgents(ctx, h.harness, parentThreadID)
 }
 
@@ -2099,7 +2152,7 @@ func listSubAgents(ctx context.Context, harness *agentharness.AgentHarness, pare
 	return out, nil
 }
 
-func (h *Host) CloseSubAgent(ctx context.Context, req CloseSubAgentRequest) (SubAgentSnapshot, error) {
+func (h *providerHost) CloseSubAgent(ctx context.Context, req CloseSubAgentRequest) (SubAgentSnapshot, error) {
 	snapshot, err := h.harness.CloseSubAgent(ctx, agentharness.CloseSubAgentOptions{
 		ParentThreadID: string(req.ParentThreadID),
 		ChildThreadID:  string(req.ChildThreadID),
@@ -2112,6 +2165,15 @@ func (h *Host) CloseSubAgent(ctx context.Context, req CloseSubAgentRequest) (Sub
 }
 
 func (h *SubAgentMaintenanceHost) CloseSubAgents(ctx context.Context, req CloseSubAgentsRequest) (CloseSubAgentsResult, error) {
+	if h == nil || h.harness == nil {
+		return CloseSubAgentsResult{}, errors.New("subagent maintenance host is invalid")
+	}
+	if h.parentThreadID == "" {
+		return CloseSubAgentsResult{}, errors.New("subagent maintenance host authority is invalid")
+	}
+	if err := validateBoundThreadID(h.parentThreadID, req.ParentThreadID, "subagent maintenance host parent"); err != nil {
+		return CloseSubAgentsResult{}, err
+	}
 	return closeSubAgents(ctx, h.harness, req)
 }
 
@@ -2130,11 +2192,14 @@ func closeSubAgents(ctx context.Context, harness *agentharness.AgentHarness, req
 	return out, nil
 }
 
-func (h *Host) ListSubAgentActivityTimeline(ctx context.Context, req ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error) {
+func (h *providerHost) ListSubAgentActivityTimeline(ctx context.Context, req ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error) {
 	return listSubAgentActivityTimeline(ctx, h.harness, req)
 }
 
-func (h *ThreadReadHost) ListSubAgentActivityTimeline(ctx context.Context, req ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error) {
+func (h *SubAgentReadHost) ListSubAgentActivityTimeline(ctx context.Context, req ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error) {
+	if err := validateBoundThreadID(h.parentThreadID, req.ParentThreadID, "subagent read host parent"); err != nil {
+		return SubAgentActivityTimelineResult{}, err
+	}
 	return listSubAgentActivityTimeline(ctx, h.harness, req)
 }
 
@@ -2150,12 +2215,29 @@ func listSubAgentActivityTimeline(ctx context.Context, harness *agentharness.Age
 	}, nil
 }
 
-func (h *Host) ReadSubAgentDetail(ctx context.Context, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
+func (h *providerHost) ReadSubAgentDetail(ctx context.Context, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
 	return readSubAgentDetail(ctx, h.harness, req)
 }
 
-func (h *ThreadReadHost) ReadSubAgentDetail(ctx context.Context, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
+func (h *SubAgentReadHost) ReadSubAgentDetail(ctx context.Context, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
+	if err := validateBoundThreadID(h.parentThreadID, req.ParentThreadID, "subagent read host parent"); err != nil {
+		return SubAgentDetail{}, err
+	}
 	return readSubAgentDetail(ctx, h.harness, req)
+}
+
+func validateRootThreadAuthority(ctx context.Context, store *Store, threadID ThreadID) error {
+	if strings.TrimSpace(string(threadID)) == "" {
+		return errors.New("thread id is required")
+	}
+	meta, err := store.repo.Thread(ctx, string(threadID))
+	if err != nil {
+		return runtimeHostError(err)
+	}
+	if strings.TrimSpace(meta.ParentThreadID) != "" {
+		return fmt.Errorf("%w: %s", ErrSubAgentParentRequired, threadID)
+	}
+	return nil
 }
 
 func readSubAgentDetail(ctx context.Context, harness *agentharness.AgentHarness, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
@@ -2173,6 +2255,11 @@ func readSubAgentDetail(ctx context.Context, harness *agentharness.AgentHarness,
 }
 
 func (h *ThreadDeleteHost) DeleteThread(ctx context.Context, threadID ThreadID) error {
+	h.store.threadAuthorityMu.Lock()
+	defer h.store.threadAuthorityMu.Unlock()
+	if err := validateRootThreadAuthority(ctx, h.store, threadID); err != nil {
+		return err
+	}
 	return deleteThread(ctx, h.store, threadID)
 }
 
@@ -2356,7 +2443,7 @@ func turnResult(in agentharness.TurnResult, threadID string, events []observatio
 	return out
 }
 
-func (h *Host) attachThreadTurnProjection(ctx context.Context, threadID string, result *TurnResult) {
+func (h *providerHost) attachThreadTurnProjection(ctx context.Context, threadID string, result *TurnResult) {
 	if result == nil {
 		return
 	}
@@ -3120,7 +3207,7 @@ func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harness
 	}), nil
 }
 
-func runtimeStateCompatibilityKey(cfg config.Config, opts HostOptions) string {
+func runtimeStateCompatibilityKey(cfg config.Config, opts providerHostOptions) string {
 	if opts.ModelGateway != nil {
 		return strings.TrimSpace(opts.ModelGatewayIdentity.StateCompatibilityKey)
 	}

@@ -1,6 +1,46 @@
 # Floret OKF Update Log
 
 ## 2026-07-19
+* **Breaking**: Replaced the reusable `HostRuntime` constructor token with a
+  composition-root-only `HostBootstrap`. Provider, SubAgent read/maintenance,
+  and recovery settlement options no longer carry a root authority; exact
+  factories issue only their corresponding bound capability.
+* **Storage**: Separated ordinary fork lineage from SubAgent ownership.
+  `ForkedFromThreadID` now records lineage while `ParentThreadID` is reserved
+  for parent-owned child threads, whose ownership metadata is written in the
+  same Memory lock or SQLite transaction as the fork destination.
+* **Migration**: Added strict SQLite schema v12-to-v13 authority migration.
+  Persisted replayable fork plans repair known operation boundaries; ambiguous
+  parent metadata rolls back and rejects open instead of being guessed. The
+  migration rewrites fork plans to the v2 atomic `destination_meta` contract and
+  removes obsolete turn/run mapping rows from persisted fork results.
+* **Breaking**: Removed the broad public `Host`, `NewHost`, and `HostOptions`
+  surface. Provider-backed work now uses thread-bound `TurnExecutionHost`,
+  thread-bound `ThreadCompactionHost`, and parent-bound `SubAgentHost`
+  capabilities with tailored options.
+* **Boundary**: Made explicit request identities fail when they do not match a
+  provider capability's bound thread or parent, so long-lived runs and
+  coordinators cannot operate on arbitrary canonical journals.
+* **Boundary**: Made `PendingToolSettlementHost` the only public pending
+  settlement surface. Active turn and SubAgent owners derive a settlement
+  handle that shares their harness and fails rather than falling back after the
+  owner becomes inactive; restart coordinators construct a handle
+  bound to exactly one thread or parent. Bulk SubAgent maintenance is likewise
+  bound to one canonical parent.
+* **Boundary**: Serialized root create, ordinary fork, SubAgent spawn, and root
+  tree delete through one Store-level authority mutation gate. Delete keeps the
+  gate across parent validation, descendant discovery, and durable deletion so
+  concurrent spawn cannot leave an orphan child.
+* **Storage**: Changed SQLite thread-tree deletion to accept only a root identity
+  and derive the validated current descendant set inside the immediate
+  transaction. Multiple Store instances or processes cannot create a child in
+  the runtime snapshot gap, and every v13 open rejects missing or cyclic parent
+  authority.
+* **Storage**: Made Memory fork publication all-or-nothing and FileRepo fork
+  persistence publish through one atomic directory rename. Malformed todo state,
+  incomplete fork data, and cyclic parent authority now fail closed.
+* **Test**: Added exact method-set, options-surface, authority mismatch, and
+  whole-package source guards for the narrowed public runtime API.
 * **Breaking**: Removed public fork source/destination turn and run identity
   mappings. `ForkThreadResult` now exposes only the operation identity and
   canonical destination thread summary; hosts read destination turns through

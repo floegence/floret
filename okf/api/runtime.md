@@ -1,7 +1,7 @@
 ---
 type: Public API
 title: runtime Package
-description: The runtime package is the main public facade for hosted threads, child threads, stores, events, control signals, and Floret-owned context lifecycle.
+description: The runtime package is the public capability surface for hosted threads, child threads, stores, events, control signals, and Floret-owned context lifecycle.
 resource: /runtime/runtime.go
 tags: [api, runtime]
 timestamp: 2026-06-20T00:00:00Z
@@ -9,15 +9,16 @@ timestamp: 2026-06-20T00:00:00Z
 
 # Summary
 
-`runtime` is the primary downstream integration package. Use `runtime.NewHost`
-for provider-backed reads and active execution. It returns the concrete
-`*runtime.Host` facade. Provider-free lifecycle transitions use narrow handles:
-`ThreadCreateHost`, `ThreadTitleHost`, `ThreadForkHost`, `ThreadDeleteHost`,
-`ThreadReadHost`, `SubAgentMaintenanceHost`, and
-`PendingToolSettlementHost`. Hosts provide product input, tools, permissions,
-and optional model transport; Floret owns provider loop execution,
-provider-visible context assembly, trimming, summary generation, compaction
-checkpoints, continuation state, and lifecycle observations.
+`runtime` is the primary downstream integration package. Provider-backed work
+uses a thread-bound `TurnExecutionHost`, a thread-bound
+`ThreadCompactionHost`, or a parent-bound `SubAgentHost`. Provider-free
+lifecycle transitions use `ThreadCreateHost`, `ThreadTitleHost`,
+`ThreadForkHost`, `ThreadDeleteHost`, `ThreadReadHost`,
+`SubAgentMaintenanceHost`, and `PendingToolSettlementHost`. Hosts provide
+product input, tools, permissions, and optional model transport; Floret owns
+provider loop execution, provider-visible context assembly, trimming, summary
+generation, compaction checkpoints, continuation state, and lifecycle
+observations.
 
 Downstream packages that need substitution define local interfaces containing
 only their actual capability methods. Floret does not publish a repository-wide
@@ -25,44 +26,55 @@ host interface for every runtime operation.
 
 # Main Entry Points
 
-* `NewHost` creates a durable conversation host.
+* `NewHostBootstrap` converts one opened Store into a composition-root
+  authority. It must not be retained by services or runs.
+* `NewTurnExecutionHostFactory`, `NewThreadCompactionHostFactory`, and
+  `NewSubAgentHostFactory` issue provider-backed capabilities bound to one root
+  `ThreadID` or one parent `ThreadID`. Their options do not accept a Store or
+  bootstrap authority.
 * `NewThreadCreateHost`, `NewThreadTitleHost`, `NewThreadForkHost`,
-  `NewThreadDeleteHost`, `NewThreadReadHost`,
-  `NewSubAgentMaintenanceHost`, and `NewPendingToolSettlementHost` each create
-  one provider-free capability. None of these handles exposes another
+  `NewThreadDeleteHost`, and `NewThreadReadHost` create one provider-free root
+  capability at bootstrap. `NewSubAgentReadHostFactory` and
+  `NewSubAgentMaintenanceHostFactory` issue parent-bound child capabilities.
+  `NewPendingToolRecoveryHostFactory` issues a recovery settlement handle bound
+  to exactly one root thread or SubAgent parent. None exposes an unrelated
   lifecycle transition.
+* `NewTurnPendingToolSettlementHost` and
+  `NewSubAgentPendingToolSettlementHost` derive the same one-method settlement
+  capability from an active bound owner so settlement can use that owner's
+  harness without exposing turn or child lifecycle methods.
 * `NewMemoryStore` creates an in-memory runtime store for tests or ephemeral use.
-* `OpenSQLiteStore` creates Floret-managed durable runtime storage.
-  Bootstrap code converts the opened Store to an opaque `HostRuntime`, constructs
-  the required handles, and owns the Store lifetime. `HostOptions.Runtime` and
-  `ThreadCapabilityOptions.Runtime` accept that opaque token; long-lived
-  coordinators must receive only their selected handle.
-  Opening a known v11 SQLite store upgrades it transactionally to v12 after
-  validating its raw encoder and canonical schema fingerprint; unknown or
-  malformed versions remain rejected.
+* `OpenSQLiteStore` creates Floret-managed durable runtime storage. Bootstrap
+  code converts the Store to `HostBootstrap`, issues exact factories and
+  handles, then discards the bootstrap token while retaining Store lifetime
+  ownership. Opening a known v11 or v12 SQLite store upgrades it transactionally
+  to v13 after validating its raw encoder, schema fingerprint, fork plans, and
+  root/SubAgent ownership metadata. Every v13 open also validates the complete
+  parent graph, so missing parents and cycles are rejected before use.
 * `ThreadCreateHost.CreateThread` is the only top-level public operation that
   creates a missing canonical journal. Creation is idempotent for the same
   `ThreadID` and returns transcript-free `ThreadSummary` lifecycle metadata.
   There is no second start-or-create alias.
-* `Host.ReadThread` and `ThreadReadHost.ReadThread` return the same
-  transcript-free `ThreadSnapshot`, including canonical status, latest turn and
-  run identity, and the journal `ThroughOrdinal`. The snapshot intentionally has
-  no message shortcut.
+* `ThreadReadHost.ReadThread` returns a transcript-free `ThreadSnapshot`,
+  including canonical status, latest turn and run identity, and the journal
+  `ThroughOrdinal`. The snapshot intentionally has no message shortcut.
 * `ReadThreadOverview` returns that `ThreadSnapshot` together with the optional
   latest admitted `ThreadTurnSnapshot`, both projected from one active-path read.
   An unadmitted started marker does not fabricate a latest turn.
-* `Host.ListThreadTurns` and `ThreadReadHost.ListThreadTurns` return
-  canonical turn snapshots in ascending journal ordinal order. Before, after,
+* `ThreadReadHost.ListThreadTurns` returns canonical turn snapshots in ascending
+  journal ordinal order. Before, after,
   and tail pagination are mutually exclusive. Started, waiting, or terminal
   markers do not make a turn public by themselves; the turn enters the page only
   after its canonical user entry is committed. Each returned turn includes its explicit run identity,
   canonical user entry and input, failure, verified control signals, complete
   `ThreadTurnProjection`, and projection-through ordinal.
-* `ReadThreadAgentTodos` and `UpdateThreadAgentTodos` expose Floret-owned typed
-  Agent todo state. Updates use compare-and-swap versioning and must reference a
-  real journal turn, run, and tool call. Fork rewrites the stored turn/run
-  authorship with the journal, and thread deletion removes the state.
-* `Host.RunTurn` executes one hosted user-facing turn.
+* `ThreadReadHost.ReadThreadAgentTodos` reads Floret-owned typed Agent todo
+  state. `TurnExecutionHost.UpdateThreadAgentTodos` updates that state with
+  compare-and-swap versioning and must reference a real journal turn, run, and
+  tool call. Fork rewrites the stored turn/run authorship with the journal, and
+  thread deletion removes the state.
+* `TurnExecutionHost.RunTurn` executes one hosted user-facing turn and rejects a
+  request whose `ThreadID` differs from the handle binding.
 * `RunTurnRequest.Input` is `TurnInput{Text, Attachments}`. Text or at least one
   attachment is required. Each `MessageAttachment` carries an opaque durable
   `ResourceRef`, name, MIME type, and non-negative size; Floret persists and
@@ -82,19 +94,21 @@ host interface for every runtime operation.
   permission state, tool approval state, or opaque provider continuation state.
   Hosts own source policy, redaction, and truncation before passing those items
   to Floret.
-* `Host.CompactThread` runs a compaction-only maintenance operation for an idle
-  hosted thread through `CompactThreadRequest` without creating natural
+* `ThreadCompactionHost.CompactThread` runs a compaction-only maintenance
+  operation for its bound idle thread through `CompactThreadRequest` without creating natural
   assistant output. `RequestID` and `Source` are required, and the result carries
   one validated terminal `observation.CompactionEvent` with exact thread, run,
   request, operation, and source identity.
-* `Host.ReadThreadContext` and `ThreadReadHost.ReadThreadContext` return
-  the same canonical `ThreadContextSnapshot` projected from the active journal
-  path for main or child threads. The snapshot contains resolved provider/model,
+* `ThreadReadHost.ReadThreadContext` returns the canonical
+  `ThreadContextSnapshot` projected from the active journal path for a top-level
+  thread. Child context is available only inside parent-scoped SubAgent detail.
+  The snapshot contains resolved provider/model,
   `config.ContextPolicy`, latest `ContextStatus`, typed compaction events, and
   `UpdatedAt`; malformed or identity-conflicting journal data returns an error.
-* `SpawnSubAgent`, `SendSubAgentInput`, `WaitSubAgents`, `ListSubAgents`,
-  `CloseSubAgent`, and `CloseSubAgents` manage durable child threads under a
-  hosted parent thread. Every parent-scoped operation first requires that the
+* `SubAgentHost` owns `SpawnSubAgent`, `SendSubAgentInput`, `WaitSubAgents`, and
+  `CloseSubAgent`; `SubAgentReadHost` owns list/detail/activity reads; and
+  `SubAgentMaintenanceHost` owns bulk close. Every capability is bound to one
+  parent and first requires that the
   canonical parent journal still exists; retained child metadata cannot keep an
   orphaned SubAgent operational after its parent is missing.
 * `ListSubAgentActivityTimeline` returns a parent-scoped,
@@ -146,22 +160,29 @@ host interface for every runtime operation.
   including child threads, prompt cache scopes, and artifacts.
 * `ErrThreadNotFound`, `ErrTurnNotFound`, `ErrRunNotFound`, and
   `ErrSubAgentNotFound` are public sentinel errors for `errors.Is` checks on
-  Host facade not-found responses.
+  capability not-found responses.
+* `ErrThreadNotActive` reports that an active-derived pending settlement handle
+  no longer owns an active thread. It never falls back to recovery admission.
+* `ErrSubAgentParentRequired` reports that a root capability was used for a
+  parent-owned child thread. `ErrThreadAuthorityInvariant` reports malformed,
+  missing, cyclic, or conflicting durable root/SubAgent authority metadata.
+  Both support `errors.Is`.
 * `ErrJournalInvariant` reports that resume found ambiguous active-path state
   and refused heuristic repair. `ErrAgentTodoVersionConflict` reports a stale
   todo CAS update.
 * `TurnResult.ProjectionAvailability` reports `ready` or `unavailable`
   independently from execution error. An unavailable projection preserves
   terminal engine facts and carries diagnostic text in `ProjectionError`.
-* `ModelGateway` lets a host supply model transport through
-  `HostOptions.ModelGateway` while Floret owns loop control, tool dispatch,
-  context lifecycle, and ledgers.
+* `ModelGateway` lets a host supply model transport through provider-backed
+  capability options while Floret owns loop control, tool dispatch, context
+  lifecycle, and ledgers.
 * `ModelGatewayIdentity` supplies provider/model names and a required,
   non-sensitive `StateCompatibilityKey` for `ModelGateway` requests, ledgers,
   and opaque continuation compatibility. Gateway-backed hosts must not set
   provider transport fields such as provider, model, base URL, API key, or fake
-  response in `HostOptions.Config`; pass the raw non-transport runtime config to
-  `NewHost` and put transport identity only in `HostOptions.ModelGatewayIdentity`.
+  response in the capability `Config`; pass the raw non-transport runtime
+  config to the selected constructor and put transport identity only in its
+  `ModelGatewayIdentity`.
 * `ToolSurfaceProvider` lets a host refresh the provider-visible local tools,
   hosted tools, system prompt, and host context at provider-loop safe points
   without adding product-specific policy concepts to Floret.
@@ -198,14 +219,16 @@ not host-owned pending tool work. Each child uses its own durable `ThreadID` and
 prompt scope; host products own agent profiles, permission policy, UI, and
 orchestration prompts.
 
-When `HostOptions.ModelGateway` is set, hosted parent and child turns use the
-supplied model transport. Title selection remains host-owned unless the host
+When `TurnExecutionHostOptions.ModelGateway` or
+`SubAgentHostOptions.ModelGateway` is set, hosted parent and child turns use
+the supplied model transport. Title selection remains host-owned unless the host
 explicitly selects `ThreadTitleModeProvider`; only that mode sends title requests
 through the same gateway, while both modes persist through Floret. The gateway is invoked with the concrete runtime
 identity for each request, so a child turn uses the child `ThreadID` and prompt
-scope. Provider/model identity comes from `HostOptions.ModelGatewayIdentity`;
-gateway-backed hosts pass raw non-transport config to `NewHost` and keep provider
-transport configuration out of `HostOptions.Config`.
+scope. Provider/model identity comes from the selected capability's
+`ModelGatewayIdentity`; gateway-backed hosts pass raw non-transport config to
+the selected constructor and keep provider transport configuration out of its
+`Config`.
 Provider-visible user messages carry attachment resource references through
 `ModelMessage` so the host adapter can resolve them into provider-native image or
 file content. Opaque attachments are rejected before admission when no
@@ -218,7 +241,7 @@ responsibility or objective for the child as neutral lifecycle metadata; product
 UI actions, routing ids, and display copy remain host-owned. Queued child inputs
 are journal entries in the child thread, so host restart and storage backends
 preserve pending work, cancellation, and consumption state.
-After a provider-backed host process restarts, `ThreadReadHost.ListSubAgents`
+After a provider-backed host process restarts, `SubAgentReadHost.ListSubAgents`
 is the canonical public reload source for a parent thread's child-thread list;
 hosts must not inspect Floret storage tables or rebuild child identity from
 transcript display projections.
@@ -315,13 +338,13 @@ occupied or mismarked destination returns `ErrForkDestinationConflict`; and a
 missing target from a completed operation returns
 `ErrForkOperationTargetMissing`.
 
-The result returns the operation ID and the destination `TurnID`/`RunID`
-mapping needed for later `ReadTurnProjection` calls. Host products may persist
-those public identity references with their own thread metadata, but must not
-clone Floret storage tables or materialize Floret display projections into a
-host shadow transcript. `ThreadForkHost` exposes the fork transition without
-provider configuration; source validation uses a separately injected
-`ThreadReadHost`.
+The result returns only the operation ID and destination thread summary. It does
+not expose source-to-destination `TurnID` or `RunID` mappings. A host that needs
+destination turn details reads them through `ThreadReadHost.ListThreadTurns` and
+must not persist its own fork identity map, clone Floret storage tables, or
+materialize Floret display projections into a host shadow transcript.
+`ThreadForkHost` exposes the fork transition without provider configuration;
+source validation uses a separately injected `ThreadReadHost`.
 `ProjectThreadTurn` derives assistant text, control-signal segments, and turn
 activity only from the ordered `ThreadDetailEvent` stream for the target turn.
 It does not accept or merge an older aggregate activity timeline as an input.
@@ -381,11 +404,12 @@ terminal fact rather than as a generic failure. Successful turns keep
 host-owned pending work running until the host reports a terminal outcome
 through `SettlePendingTool`. That settlement remains authoritative for the tool
 id and updates the same projected activity item rather than adding a duplicate
-row. A provider-backed Host may settle pending work through the same active
-thread it already owns; this detail-only mutation does not reacquire the turn
-lease or create another provider request. `PendingToolSettlementHost` is the
-separate provider-free settlement capability and must be bound to the one
-coordinator responsible for that pending work. Runtime restart recovery also
+row. `PendingToolSettlementHost` is the only public settlement surface. A
+handle derived from `TurnExecutionHost` or `SubAgentHost` shares the same active
+harness, requires that thread to remain active, and never reacquires turn
+admission. A restart coordinator constructs a provider-free settlement handle
+bound to exactly one thread or parent. In every case the handle belongs to the
+one coordinator responsible for that pending work. Runtime restart recovery also
 reconciles active turn leases from the same durable facts. `ResumeThread`
 processes only the leased turn, or the sole unfinished turn on the active path
 when no lease exists. Multiple unfinished turns are a journal invariant error.
@@ -411,27 +435,40 @@ fact.
 Deleting a thread is a data lifecycle operation. `DeleteThread` deletes the
 target thread and Floret-managed descendant child threads, plus their prompt
 cache records, Agent todo state, and thread artifacts. Runtime resolves the
-complete tree before
-issuing one storage delete operation. SQLite applies threads, entries, active
+complete tree while holding the same Store-level authority mutation gate used
+by root creation, ordinary fork, and SubAgent spawn, so a child cannot appear
+between descendant discovery and deletion on one Store. Runtime then issues one
+root-scoped storage delete operation. SQLite independently reloads and validates
+the complete authority graph inside its immediate transaction, derives the
+current descendant set there, and applies threads, entries, active
 leases, metadata, artifacts, prompt segments, toolsets, provider requests,
 provider responses, and provider continuation in one immediate transaction, so
 a failure rolls back the whole tree without changing the public store schema.
 Hosts should use this
 public API instead of querying or mutating Floret storage tables directly.
 
-Provider-free operations are intentionally separate handles. Use
+Lifecycle operations are intentionally separate handles. Use
+`TurnExecutionHost` for admitted turn execution,
+`ThreadCompactionHost` for idle compaction, `SubAgentHost` for interactive
+child lifecycle, parent-bound `SubAgentReadHost` for child reload and detail,
 `ThreadReadHost` for canonical reloads, `ThreadCreateHost` for top-level
 creation, `ThreadTitleHost` for title writes, `ThreadForkHost` for forks,
-`ThreadDeleteHost` for thread-tree deletion, `SubAgentMaintenanceHost` for
-bulk child close, and `PendingToolSettlementHost` for one pending-tool
-settlement owner. These handles accept `ThreadCapabilityOptions.Runtime`, an
-opaque token created at bootstrap; they do not accept or expose a raw Store.
+`ThreadDeleteHost` for thread-tree deletion, parent-bound
+`SubAgentMaintenanceHost` for bulk child close, and thread- or parent-bound
+`PendingToolSettlementHost` for one pending-tool settlement owner. Only
+composition-root constructors accept `HostBootstrap`; provider options and
+bound handle options do not accept or expose a Store or bootstrap authority.
 
-Host facade not-found responses should be handled with `errors.Is` against
-`runtime.ErrThreadNotFound`, `runtime.ErrTurnNotFound`,
+Capability not-found responses should be handled with `errors.Is` against
+`runtime.ErrThreadNotFound`, `runtime.ErrThreadNotActive`, `runtime.ErrTurnNotFound`,
 `runtime.ErrRunNotFound`, or
 `runtime.ErrSubAgentNotFound`. Hosts should not parse error strings or import
 Floret internal package sentinels.
+
+Authority failures should use `errors.Is` with
+`runtime.ErrSubAgentParentRequired` or
+`runtime.ErrThreadAuthorityInvariant`; hosts must not repair, reinterpret, or
+recreate the affected canonical thread.
 
 Fork replay failures should likewise use `errors.Is` with
 `runtime.ErrForkOperationConflict`, `runtime.ErrForkDestinationConflict`, and
@@ -479,7 +516,8 @@ receive the effective selection and must render provider-specific payloads
 outside Floret.
 
 Dynamic tool surfaces are host-owned policy projection points. A host may set
-`HostOptions.ToolSurfaceProvider` for a durable host or
+`TurnExecutionHostOptions.ToolSurfaceProvider` or
+`SubAgentHostOptions.ToolSurfaceProvider` for a bound provider capability, or
 `RunTurnRequest.ToolSurfaceProvider` for one turn. Floret invokes it before
 provider requests, before ordinary local tool dispatch, and before compact-only
 provider request rebuilds. The returned `ToolSurface` can supply a current
@@ -532,8 +570,8 @@ semantics. Cancelled compactions use cancelled lifecycle and debug statuses,
 preserving operation/request correlation without exposing raw request strings in
 public runtime events.
 
-For idle hosted threads, `Host.CompactThread` is the public compaction-only
-entry point. The result reports one canonical terminal compaction event,
+For idle hosted threads, `ThreadCompactionHost.CompactThread` is the public
+compaction-only entry point. The result reports one canonical terminal compaction event,
 metrics, and activity timeline. Opaque provider continuation is loaded,
 invalidated, cleared, and persisted only inside Floret Store; it is not returned
 to the host. A successful context-changing compaction clears continuation,
@@ -543,6 +581,7 @@ a finalization failure, never a successful result with a warning.
 
 # Key Source Files
 
-* [Runtime Host](/runtime/runtime.go)
+* [Runtime Contracts](/runtime/runtime.go)
+* [Provider Capabilities](/runtime/provider_capabilities.go)
 * [Projected Turns](/runtime/projected_turn.go)
 * [Core Control Helpers](/runtime/control.go)

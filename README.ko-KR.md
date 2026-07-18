@@ -45,7 +45,7 @@ Floret은 이 실행 기반을 제공하지만 제품을 대신 정의하지는 
 - **모델 경로는 직접 통제합니다.** 내장 설정을 쓰거나 `runtime.ModelGateway`를 구현할 수 있습니다. Floret은 요청과 연속 실행 수명 주기를 관리하고, 전송과 자격 증명은 제품이 관리합니다.
 - **업무에 맞는 고유한 역할을 Agent에 부여합니다.** `config.AgentProfile.SystemPrompt` 또는 `config.Config.SystemPrompt`로 역할, 어조, 업무 시나리오, 운영 규칙을 정의할 수 있습니다. 모두 같은 범용 어시스턴트를 출시할 필요가 없습니다.
 - **업무 상황에 맞춰 도구와 지시문을 바꿉니다.** `tools.Registry`에 엄격한 도메인 도구를 등록하고, `runtime.ToolSurfaceProvider`로 실행 중 안전한 시점에 도구, 호스팅 기능, 지시문, 호스트 컨텍스트를 새로 고칠 수 있습니다.
-- **대화를 신뢰할 수 있는 자산으로 만듭니다.** `runtime.Host`는 스레드, 턴, 재시도, 포크, 부모가 관리하는 하위 스레드, Provider에 안전한 기록을 관리합니다.
+- **대화를 신뢰할 수 있는 자산으로 만듭니다.** Floret 런타임은 스레드, 턴, 재시도, 포크, 부모가 관리하는 하위 스레드, Provider에 안전한 기록을 관리합니다.
 - **승인 정책은 제품에 둡니다.** Floret은 일반적인 효과, 리소스, 승인 상태를 다룹니다. 누가 무엇을 어디서 왜 할 수 있는지는 제품이 결정합니다.
 - **실행 상태를 드러냅니다.** 프롬프트, 시크릿, 내부 저장소 레코드를 노출하지 않고 정제된 이벤트, 컨텍스트 압력, 압축 정보, 중립적인 활동 타임라인을 어떤 UI에나 연결합니다.
 - **모델 운에 기대지 않고 테스트합니다.** Fake Provider로 로컬과 CI에서 에이전트 흐름을 결정적으로 검증할 수 있습니다.
@@ -75,22 +75,24 @@ go get github.com/floegence/floret/config github.com/floegence/floret/runtime gi
 ```go
 store := runtime.NewMemoryStore()
 defer store.Close()
-runtimeRoot, err := runtime.NewHostRuntime(store)
+bootstrap, err := runtime.NewHostBootstrap(store)
 if err != nil { /* handle error */ }
-threadCreator, err := runtime.NewThreadCreateHost(runtime.ThreadCapabilityOptions{Runtime: runtimeRoot})
+threadCreator, err := runtime.NewThreadCreateHost(bootstrap, nil)
 if err != nil { /* handle error */ }
 
-host, err := runtime.NewHost(runtime.HostOptions{
+turnFactory, err := runtime.NewTurnExecutionHostFactory(bootstrap)
+if err != nil { /* handle error */ }
+turnHost, err := turnFactory.NewHost(runtime.TurnExecutionHostOptions{
+	ThreadID: "thread-1",
 	Config: config.Config{
 		Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "Hello from Floret.",
 		AgentProfile: config.AgentProfile{ID: "support-agent", Name: "Support Agent"},
 	},
-	Runtime: runtimeRoot,
 })
 if err != nil { /* handle error */ }
 
 thread, err := threadCreator.CreateThread(ctx, runtime.CreateThreadRequest{ThreadID: "thread-1"})
-result, err := host.RunTurn(ctx, runtime.RunTurnRequest{
+result, err := turnHost.RunTurn(ctx, runtime.RunTurnRequest{
 	ThreadID: thread.ID, TurnID: "turn-1", RunID: "run-1",
 	Input: runtime.TurnInput{Text: "Welcome a new customer in one sentence."},
 })

@@ -27,18 +27,12 @@ type MetadataStore interface {
 	DeleteMetadata(context.Context, string, string) error
 }
 
-type DeleteThreadTreeDataRequest struct {
-	RootThreadID   string
-	ThreadIDs      []string
-	PromptScopeIDs []string
-}
-
 type Store interface {
 	sessiontree.Repo
 	cache.Store
 	MetadataStore
 	ForkOperationStore
 	ProviderStateStore
-	DeleteThreadTreeData(context.Context, DeleteThreadTreeDataRequest) error
+	DeleteThreadTreeData(context.Context, string) ([]string, error)
 	Close() error
 }

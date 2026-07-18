@@ -112,7 +112,17 @@ func (s *Store) init(ctx context.Context) error {
 		}
 	}
 	return s.withImmediate(ctx, func(tx sqlRunner) error {
-		return ensureSchema(ctx, tx)
+		if err := ensureSchema(ctx, tx); err != nil {
+			return err
+		}
+		threads, err := loadThreadAuthorityGraph(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if err := sessiontree.ValidateThreadAuthorityGraph(threads); err != nil {
+			return fmt.Errorf("validate sqlite store thread authority: %w", err)
+		}
+		return nil
 	})
 }
 
@@ -186,6 +196,16 @@ func (s *Store) CreateThread(ctx context.Context, meta sessiontree.ThreadMeta) (
 		}
 		meta.CreatedAt = now
 		meta.UpdatedAt = now
+		if err := sessiontree.ValidateThreadMetaAuthority(meta); err != nil {
+			return err
+		}
+		if parentID := strings.TrimSpace(meta.ParentThreadID); parentID != "" {
+			if ok, err := threadExists(ctx, tx, parentID); err != nil {
+				return err
+			} else if !ok {
+				return fmt.Errorf("%w: parent thread %q", sessiontree.ErrInvalidThreadAuthority, parentID)
+			}
+		}
 		return insertThread(ctx, tx, meta)
 	})
 	return meta, err
@@ -302,12 +322,15 @@ func (s *Store) UpdateThread(ctx context.Context, meta sessiontree.ThreadMeta) e
 		meta.UpdatedAt = time.Now()
 	}
 	return s.withImmediate(ctx, func(tx sqlRunner) error {
-		var exists int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM threads WHERE id = ?`, meta.ID).Scan(&exists); err != nil {
+		current, err := loadThread(ctx, tx, meta.ID)
+		if err != nil {
 			return err
 		}
-		if exists == 0 {
-			return sessiontree.ErrThreadNotFound
+		if err := sessiontree.ValidateThreadMetaAuthority(meta); err != nil {
+			return err
+		}
+		if !sessiontree.SameThreadAuthority(current, meta) {
+			return fmt.Errorf("%w: thread %q authority is immutable", sessiontree.ErrInvalidThreadAuthority, meta.ID)
 		}
 		return updateThread(ctx, tx, meta)
 	})
@@ -585,7 +608,8 @@ func (s *Store) Fork(ctx context.Context, opts sessiontree.ForkOptions) (session
 				existing.ForkOperationID == opts.OperationID &&
 				existing.ForkOperationNodeID == opts.OperationNodeID &&
 				existing.ForkedFromThreadID == opts.SourceThreadID &&
-				existing.ForkedFromEntryID == targetID {
+				existing.ForkedFromEntryID == targetID &&
+				sessiontree.MatchesForkDestinationMeta(existing, opts.DestinationMeta) {
 				forked = existing
 				return nil
 			}
@@ -598,7 +622,18 @@ func (s *Store) Fork(ctx context.Context, opts sessiontree.ForkOptions) (session
 		if err != nil {
 			return err
 		}
-		meta := sessiontree.ThreadMeta{ID: newID, ParentThreadID: opts.SourceThreadID, ForkedFromThreadID: opts.SourceThreadID, ForkedFromEntryID: targetID, ForkOperationID: opts.OperationID, ForkOperationNodeID: opts.OperationNodeID, CreatedAt: now, UpdatedAt: now}
+		meta := sessiontree.ThreadMeta{ID: newID, ForkedFromThreadID: opts.SourceThreadID, ForkedFromEntryID: targetID, ForkOperationID: opts.OperationID, ForkOperationNodeID: opts.OperationNodeID, CreatedAt: now, UpdatedAt: now}
+		applyForkDestinationMeta(&meta, opts.DestinationMeta)
+		if err := sessiontree.ValidateThreadMetaAuthority(meta); err != nil {
+			return err
+		}
+		if parentID := strings.TrimSpace(meta.ParentThreadID); parentID != "" {
+			if ok, err := threadExists(ctx, tx, parentID); err != nil {
+				return err
+			} else if !ok {
+				return fmt.Errorf("%w: parent thread %q", sessiontree.ErrInvalidThreadAuthority, parentID)
+			}
+		}
 		if err := insertThread(ctx, tx, meta); err != nil {
 			return err
 		}
@@ -657,6 +692,21 @@ func (s *Store) Fork(ctx context.Context, opts sessiontree.ForkOptions) (session
 		return nil
 	})
 	return forked, err
+}
+
+func applyForkDestinationMeta(meta *sessiontree.ThreadMeta, destination *sessiontree.ForkDestinationMeta) {
+	if meta == nil || destination == nil {
+		return
+	}
+	meta.ParentThreadID = strings.TrimSpace(destination.ParentThreadID)
+	meta.ParentTurnID = strings.TrimSpace(destination.ParentTurnID)
+	meta.TaskName = strings.TrimSpace(destination.TaskName)
+	meta.TaskDescription = strings.TrimSpace(destination.TaskDescription)
+	meta.AgentPath = strings.TrimSpace(destination.AgentPath)
+	meta.HostProfileRef = strings.TrimSpace(destination.HostProfileRef)
+	meta.ForkMode = strings.TrimSpace(destination.ForkMode)
+	meta.Closed = destination.Closed
+	meta.Status = strings.TrimSpace(destination.Status)
 }
 
 func (s *Store) ReadAgentTodoState(ctx context.Context, threadID string) (sessiontree.AgentTodoState, error) {
@@ -1160,21 +1210,22 @@ func (s *Store) DeleteProviderState(ctx context.Context, threadID string) error 
 	})
 }
 
-func (s *Store) DeleteThreadTreeData(ctx context.Context, req storage.DeleteThreadTreeDataRequest) error {
-	rootThreadID := strings.TrimSpace(req.RootThreadID)
+func (s *Store) DeleteThreadTreeData(ctx context.Context, rootThreadID string) ([]string, error) {
+	rootThreadID = strings.TrimSpace(rootThreadID)
 	if rootThreadID == "" {
-		return errors.New("root thread id is required")
+		return nil, errors.New("root thread id is required")
 	}
-	threadIDs := cleanIDs(append([]string{rootThreadID}, req.ThreadIDs...))
-	promptScopeIDs := cleanIDs(append(append([]string{}, threadIDs...), req.PromptScopeIDs...))
-	return s.withImmediate(ctx, func(tx sqlRunner) error {
-		ok, err := threadExists(ctx, tx, rootThreadID)
+	var deletedThreadIDs []string
+	err := s.withImmediate(ctx, func(tx sqlRunner) error {
+		threads, err := loadThreadAuthorityGraph(ctx, tx)
 		if err != nil {
 			return err
 		}
-		if !ok {
-			return sessiontree.ErrThreadNotFound
+		threadIDs, err := sessiontree.ThreadAuthorityTreeIDs(threads, rootThreadID)
+		if err != nil {
+			return err
 		}
+		deletedThreadIDs = append([]string(nil), threadIDs...)
 		for _, threadID := range threadIDs {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM metadata_records WHERE id = ?`, threadID); err != nil {
 				return err
@@ -1188,7 +1239,7 @@ func (s *Store) DeleteThreadTreeData(ctx context.Context, req storage.DeleteThre
 				return err
 			}
 		}
-		for _, promptScopeID := range promptScopeIDs {
+		for _, promptScopeID := range threadIDs {
 			for _, table := range []string{"prompt_segments", "prompt_toolsets", "prompt_requests", "prompt_responses"} {
 				if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE prompt_scope_id = ?`, promptScopeID); err != nil {
 					return err
@@ -1197,6 +1248,10 @@ func (s *Store) DeleteThreadTreeData(ctx context.Context, req storage.DeleteThre
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return deletedThreadIDs, nil
 }
 
 func (s *Store) PutToolOutput(ctx context.Context, output artifact.ToolOutputArtifact) (artifact.Ref, error) {
@@ -1336,6 +1391,31 @@ func loadThread(ctx context.Context, q sqlRunner, threadID string) (sessiontree.
 	return meta, err
 }
 
+func loadThreadAuthorityGraph(ctx context.Context, q sqlRunner) ([]sessiontree.ThreadMeta, error) {
+	rows, err := q.QueryContext(ctx, `SELECT
+		id, leaf_id, parent_thread_id, parent_turn_id, forked_from_thread_id, forked_from_entry_id, fork_operation_id, fork_operation_node_id,
+		task_name, task_description, agent_path, host_profile_ref, fork_mode, closed, archived,
+		title, title_status, title_source, title_updated_at, title_error,
+		created_at, updated_at, status, last_viewed_at
+		FROM threads ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	threads := []sessiontree.ThreadMeta{}
+	for rows.Next() {
+		meta, err := scanThreadMeta(rows)
+		if err != nil {
+			return nil, err
+		}
+		threads = append(threads, meta)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return threads, nil
+}
+
 func scanThreadMeta(scanner rowScanner) (sessiontree.ThreadMeta, error) {
 	var meta sessiontree.ThreadMeta
 	var archived, closed int
@@ -1359,6 +1439,9 @@ func scanThreadMeta(scanner rowScanner) (sessiontree.ThreadMeta, error) {
 	meta.UpdatedAt = parseTime(updated)
 	meta.Status = status
 	meta.LastViewedAt = parseTime(lastViewed)
+	if err := sessiontree.ValidateThreadMetaAuthority(meta); err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
 	return meta, nil
 }
 

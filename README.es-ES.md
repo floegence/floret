@@ -45,7 +45,7 @@ La distinción importa cuando el producto debe tener identidad propia. La interf
 - **Conserva el control de la ruta al modelo.** Usa la configuración integrada o implementa `runtime.ModelGateway`. Floret lleva las solicitudes y su continuación; el transporte y las credenciales siguen siendo del producto.
 - **Da a cada Agent un rol propio de tu negocio.** Con `config.AgentProfile.SystemPrompt` o `config.Config.SystemPrompt` defines el rol, el tono, el escenario de negocio y las reglas de operación, en lugar de entregar un asistente genérico.
 - **Haz que las herramientas y las instrucciones respondan al trabajo.** Registra herramientas de dominio estrictas en `tools.Registry` y actualiza herramientas, capacidades alojadas, instrucciones y contexto del host con `runtime.ToolSurfaceProvider` en puntos seguros de una ejecución.
-- **Convierte las conversaciones en activos fiables.** `runtime.Host` gestiona hilos, turnos, reintentos, bifurcaciones, subhilos administrados por el padre e historial seguro para el provider.
+- **Convierte las conversaciones en activos fiables.** El runtime de Floret gestiona hilos, turnos, reintentos, bifurcaciones, subhilos administrados por el padre e historial seguro para el provider.
 - **Mantén la política de aprobación en el producto.** Floret entiende efectos, recursos y estados de aprobación genéricos. Tu producto decide quién puede hacer qué, dónde y por qué.
 - **Haz visible la ejecución.** Conecta eventos saneados, presión de contexto, hechos de compactación y líneas de tiempo de actividad neutrales a cualquier UI, sin exponer prompts, secretos ni registros internos.
 - **Prueba el producto, no la suerte del modelo.** El Fake Provider vuelve deterministas los flujos de agentes, tanto en local como en CI.
@@ -75,22 +75,24 @@ go get github.com/floegence/floret/config github.com/floegence/floret/runtime gi
 ```go
 store := runtime.NewMemoryStore()
 defer store.Close()
-runtimeRoot, err := runtime.NewHostRuntime(store)
+bootstrap, err := runtime.NewHostBootstrap(store)
 if err != nil { /* handle error */ }
-threadCreator, err := runtime.NewThreadCreateHost(runtime.ThreadCapabilityOptions{Runtime: runtimeRoot})
+threadCreator, err := runtime.NewThreadCreateHost(bootstrap, nil)
 if err != nil { /* handle error */ }
 
-host, err := runtime.NewHost(runtime.HostOptions{
+turnFactory, err := runtime.NewTurnExecutionHostFactory(bootstrap)
+if err != nil { /* handle error */ }
+turnHost, err := turnFactory.NewHost(runtime.TurnExecutionHostOptions{
+	ThreadID: "thread-1",
 	Config: config.Config{
 		Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "Hello from Floret.",
 		AgentProfile: config.AgentProfile{ID: "support-agent", Name: "Support Agent"},
 	},
-	Runtime: runtimeRoot,
 })
 if err != nil { /* handle error */ }
 
 thread, err := threadCreator.CreateThread(ctx, runtime.CreateThreadRequest{ThreadID: "thread-1"})
-result, err := host.RunTurn(ctx, runtime.RunTurnRequest{
+result, err := turnHost.RunTurn(ctx, runtime.RunTurnRequest{
 	ThreadID: thread.ID, TurnID: "turn-1", RunID: "run-1",
 	Input: runtime.TurnInput{Text: "Welcome a new customer in one sentence."},
 })

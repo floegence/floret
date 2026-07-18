@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -3197,8 +3198,11 @@ func (rendererProvider) ToolRaw(def cache.ToolDefinition) (string, string, error
 }
 
 func fixedClock() func() time.Time {
+	var mu sync.Mutex
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	return func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
 		now = now.Add(250 * time.Millisecond)
 		return now
 	}

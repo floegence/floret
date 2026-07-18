@@ -212,20 +212,71 @@ func (s *testUIStorage) listMetadata(ctx context.Context, fileStore func() ([]ag
 	}
 }
 
-func (s *testUIStorage) deleteSession(ctx context.Context, root string, sessionID string, fileStore func() error) error {
+func (s *testUIStorage) deleteSession(ctx context.Context, root string, sessionID string) ([]string, error) {
+	var threadIDs []string
 	switch s.mode {
 	case StorageModeSQLite:
-		return s.sqlite.DeleteThreadTreeData(ctx, floretstorage.DeleteThreadTreeDataRequest{
-			RootThreadID:   sessionID,
-			ThreadIDs:      []string{sessionID},
-			PromptScopeIDs: []string{sessionID},
-		})
+		deleted, err := s.sqlite.DeleteThreadTreeData(ctx, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		threadIDs = deleted
 	case StorageModeMemory:
-		_ = s.memory.repo.DeleteThread(ctx, sessionID)
-		_ = s.memory.prompt.DeletePromptScopes(ctx, sessionID)
-		delete(s.memory.metadata, sessionID)
-		return nil
+		deleted, err := testUIThreadAuthorityTreeIDs(ctx, s.memory.repo, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		threadIDs = deleted
+		for i := len(threadIDs) - 1; i >= 0; i-- {
+			if err := s.memory.repo.DeleteThread(ctx, threadIDs[i]); err != nil {
+				return nil, err
+			}
+		}
+		if err := s.memory.prompt.DeletePromptScopes(ctx, threadIDs...); err != nil {
+			return nil, err
+		}
+		for _, threadID := range threadIDs {
+			delete(s.memory.metadata, threadID)
+		}
 	default:
-		return fileStore()
+		repo := s.repo(root)
+		deleted, err := testUIThreadAuthorityTreeIDs(ctx, repo, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		threadIDs = deleted
+		for i := len(threadIDs) - 1; i >= 0; i-- {
+			if err := repo.DeleteThread(ctx, threadIDs[i]); err != nil {
+				return nil, err
+			}
+		}
+		promptDeleter, ok := s.prompt(root).(cache.Deleter)
+		if !ok {
+			return nil, errors.New("file prompt store does not support prompt scope deletion")
+		}
+		if err := promptDeleter.DeletePromptScopes(ctx, threadIDs...); err != nil {
+			return nil, err
+		}
+		for _, threadID := range threadIDs {
+			metadataPath := filepath.Join(s.path, "metadata", safeSessionFileName(threadID)+".json")
+			if err := os.Remove(metadataPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return nil, err
+			}
+		}
 	}
+	artifactStore := newToolOutputArtifactStore(filepath.Join(root, managedArtifactsRootRel))
+	for _, threadID := range threadIDs {
+		if err := artifactStore.DeleteThreadArtifacts(ctx, threadID); err != nil {
+			return nil, err
+		}
+	}
+	return threadIDs, nil
+}
+
+func testUIThreadAuthorityTreeIDs(ctx context.Context, repo sessiontree.Repo, rootThreadID string) ([]string, error) {
+	threads, err := sessiontree.ListThreads(ctx, repo, sessiontree.ListThreadsOptions{IncludeArchived: true})
+	if err != nil {
+		return nil, err
+	}
+	return sessiontree.ThreadAuthorityTreeIDs(threads, rootThreadID)
 }

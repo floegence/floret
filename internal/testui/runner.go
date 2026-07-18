@@ -624,21 +624,8 @@ func (r *Runner) DeleteAgentSession(ctx context.Context, sessionID string) error
 		registry.order = removeSessionID(registry.order, sessionID)
 		registry.mu.Unlock()
 	}
-	if err := store.deleteSession(ctx, r.Root, sessionID, func() error {
-		if err := os.Remove(r.agentSessionMetadataPath(sessionID)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		if err := os.RemoveAll(filepath.Join(r.agentSessionTreeRoot(), safeSessionFileName(sessionID))); err != nil {
-			return err
-		}
-		if err := os.RemoveAll(filepath.Join(r.Root, ".floret-test-ui", "prompt-cache", safeSessionFileName(sessionID))); err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	return os.RemoveAll(toolOutputArtifactSessionDir(r.managedArtifactsRoot(), sessionID))
+	_, err = store.deleteSession(ctx, r.Root, sessionID)
+	return err
 }
 
 func (r *Runner) AgentSession(ctx context.Context, sessionID string) (AgentSessionSnapshot, error) {
@@ -2675,7 +2662,7 @@ func (r Runner) runProjectedManualCompactionScenario(ctx context.Context) RunRes
 	resp := RunResponse{ID: fmt.Sprintf("%d", r.now().UnixNano()), Target: TargetContextCompactionScenarios, Title: "Manual active compaction continues", Kind: "agent", StartedAt: r.now()}
 	sink := &runtimeEventSink{}
 	manual := &testManualCompactionSource{request: flruntime.ManualCompactionRequest{RequestID: "testui-manual-active", Source: "test_ui"}}
-	host, err := testuiCompactionHost(sink, testModelGateway("continued after compact"))
+	host, err := testuiCompactionHost("testui-manual-active", sink, testModelGateway("continued after compact"))
 	if err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
@@ -2722,7 +2709,7 @@ func (r Runner) runProjectedManualCompactionScenario(ctx context.Context) RunRes
 func (r Runner) runProjectedManualNoopScenario(ctx context.Context) RunResponse {
 	resp := RunResponse{ID: fmt.Sprintf("%d", r.now().UnixNano()), Target: TargetContextCompactionScenarios, Title: "Manual compact noops for short context", Kind: "agent", StartedAt: r.now()}
 	sink := &runtimeEventSink{}
-	host, err := testuiCompactionNoopHost(sink, testModelGateway("short context seed"))
+	host, err := testuiCompactionNoopHost("testui-manual-noop", sink, testModelGateway("short context seed"))
 	if err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
@@ -2759,7 +2746,7 @@ func (r Runner) runProjectedManualNoopScenario(ctx context.Context) RunResponse 
 func (r Runner) runProjectedManualPollErrorScenario(ctx context.Context) RunResponse {
 	resp := RunResponse{ID: fmt.Sprintf("%d", r.now().UnixNano()), Target: TargetContextCompactionScenarios, Title: "Manual poll error is observable", Kind: "agent", StartedAt: r.now()}
 	sink := &runtimeEventSink{}
-	host, err := testuiCompactionHost(sink, testModelGateway("continued after poll error"))
+	host, err := testuiCompactionHost("testui-manual-poll-error", sink, testModelGateway("continued after poll error"))
 	if err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
@@ -2790,7 +2777,7 @@ func (r Runner) runProjectedManualPollErrorScenario(ctx context.Context) RunResp
 func (r Runner) runProjectedCompactOnlyScenario(ctx context.Context) RunResponse {
 	resp := RunResponse{ID: fmt.Sprintf("%d", r.now().UnixNano()), Target: TargetContextCompactionScenarios, Title: "Compact-only returns checkpoint", Kind: "agent", StartedAt: r.now()}
 	sink := &runtimeEventSink{}
-	host, err := testuiCompactionHost(sink, testModelGateway("seed answer"))
+	host, err := testuiCompactionHost("testui-compact-only", sink, testModelGateway("seed answer"))
 	if err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
@@ -2838,9 +2825,10 @@ func (r Runner) runProjectedCompactOnlyScenario(ctx context.Context) RunResponse
 func (r Runner) runProjectedCompactCancelScenario(ctx context.Context) RunResponse {
 	resp := RunResponse{ID: fmt.Sprintf("%d", r.now().UnixNano()), Target: TargetContextCompactionScenarios, Title: "Compact-only cancel is observable", Kind: "agent", StartedAt: r.now()}
 	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	started := make(chan struct{})
 	sink := &runtimeEventSink{}
-	host, err := testuiCompactionHost(sink, &seedThenBlockingTestModelGateway{started: started})
+	host, err := testuiCompactionHost("testui-compact-cancel", sink, &seedThenBlockingTestModelGateway{started: started})
 	if err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
@@ -2958,8 +2946,9 @@ type testuiCompactionRuntime interface {
 }
 
 type testuiCompactionFacade struct {
-	host   *flruntime.Host
-	create *flruntime.ThreadCreateHost
+	turn       *flruntime.TurnExecutionHost
+	compaction *flruntime.ThreadCompactionHost
+	create     *flruntime.ThreadCreateHost
 }
 
 func (f *testuiCompactionFacade) CreateThread(ctx context.Context, req flruntime.CreateThreadRequest) (flruntime.ThreadSummary, error) {
@@ -2967,57 +2956,95 @@ func (f *testuiCompactionFacade) CreateThread(ctx context.Context, req flruntime
 }
 
 func (f *testuiCompactionFacade) RunTurn(ctx context.Context, req flruntime.RunTurnRequest) (flruntime.TurnResult, error) {
-	return f.host.RunTurn(ctx, req)
+	return f.turn.RunTurn(ctx, req)
 }
 
 func (f *testuiCompactionFacade) CompactThread(ctx context.Context, req flruntime.CompactThreadRequest) (flruntime.CompactThreadResult, error) {
-	return f.host.CompactThread(ctx, req)
+	return f.compaction.CompactThread(ctx, req)
 }
 
-func testuiCompactionHost(sink flruntime.EventSink, gateway flruntime.ModelGateway) (testuiCompactionRuntime, error) {
+func testuiCompactionHost(threadID flruntime.ThreadID, sink flruntime.EventSink, gateway flruntime.ModelGateway) (testuiCompactionRuntime, error) {
 	store := flruntime.NewMemoryStore()
-	runtime, err := flruntime.NewHostRuntime(store)
+	bootstrap, err := flruntime.NewHostBootstrap(store)
 	if err != nil {
 		return nil, err
 	}
-	host, err := flruntime.NewHost(flruntime.HostOptions{
+	turnFactory, err := flruntime.NewTurnExecutionHostFactory(bootstrap)
+	if err != nil {
+		return nil, err
+	}
+	compactionFactory, err := flruntime.NewThreadCompactionHostFactory(bootstrap)
+	if err != nil {
+		return nil, err
+	}
+	config := testuiProjectedCompactionConfig(256000, 100, true)
+	turn, err := turnFactory.NewHost(flruntime.TurnExecutionHostOptions{
+		ThreadID:             threadID,
+		Config:               config,
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: testuiModelGatewayIdentity(),
+		Sink:                 sink,
+	})
+	if err != nil {
+		return nil, err
+	}
+	compaction, err := compactionFactory.NewHost(flruntime.ThreadCompactionHostOptions{
+		ThreadID:             threadID,
 		Config:               testuiProjectedCompactionConfig(256000, 100, true),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: testuiModelGatewayIdentity(),
-		Runtime:              runtime,
 		Sink:                 sink,
 	})
 	if err != nil {
 		return nil, err
 	}
-	create, err := flruntime.NewThreadCreateHost(flruntime.ThreadCapabilityOptions{Runtime: runtime, Sink: sink})
+	create, err := flruntime.NewThreadCreateHost(bootstrap, sink)
 	if err != nil {
 		return nil, err
 	}
-	return &testuiCompactionFacade{host: host, create: create}, nil
+	return &testuiCompactionFacade{turn: turn, compaction: compaction, create: create}, nil
 }
 
-func testuiCompactionNoopHost(sink flruntime.EventSink, gateway flruntime.ModelGateway) (testuiCompactionRuntime, error) {
+func testuiCompactionNoopHost(threadID flruntime.ThreadID, sink flruntime.EventSink, gateway flruntime.ModelGateway) (testuiCompactionRuntime, error) {
 	store := flruntime.NewMemoryStore()
-	runtime, err := flruntime.NewHostRuntime(store)
+	bootstrap, err := flruntime.NewHostBootstrap(store)
 	if err != nil {
 		return nil, err
 	}
-	host, err := flruntime.NewHost(flruntime.HostOptions{
+	turnFactory, err := flruntime.NewTurnExecutionHostFactory(bootstrap)
+	if err != nil {
+		return nil, err
+	}
+	compactionFactory, err := flruntime.NewThreadCompactionHostFactory(bootstrap)
+	if err != nil {
+		return nil, err
+	}
+	config := testuiProjectedCompactionConfig(256000, 0, false)
+	turn, err := turnFactory.NewHost(flruntime.TurnExecutionHostOptions{
+		ThreadID:             threadID,
+		Config:               config,
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: testuiModelGatewayIdentity(),
+		Sink:                 sink,
+	})
+	if err != nil {
+		return nil, err
+	}
+	compaction, err := compactionFactory.NewHost(flruntime.ThreadCompactionHostOptions{
+		ThreadID:             threadID,
 		Config:               testuiProjectedCompactionConfig(256000, 0, false),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: testuiModelGatewayIdentity(),
-		Runtime:              runtime,
 		Sink:                 sink,
 	})
 	if err != nil {
 		return nil, err
 	}
-	create, err := flruntime.NewThreadCreateHost(flruntime.ThreadCapabilityOptions{Runtime: runtime, Sink: sink})
+	create, err := flruntime.NewThreadCreateHost(bootstrap, sink)
 	if err != nil {
 		return nil, err
 	}
-	return &testuiCompactionFacade{host: host, create: create}, nil
+	return &testuiCompactionFacade{turn: turn, compaction: compaction, create: create}, nil
 }
 
 func testuiModelGatewayIdentity() flruntime.ModelGatewayIdentity {

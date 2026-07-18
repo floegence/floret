@@ -14,35 +14,46 @@ provider execution.
 
 # Layer Responsibilities
 
-`runtime.Host` is the provider-backed read and active-execution facade. It runs
-turns, retries, compacts, settles active pending work, manages interactive child
-threads, and returns host-safe snapshots. It does not create, title, fork,
-delete, or bulk-close thread data.
+Provider-backed authority is split by lifecycle owner. `TurnExecutionHost`
+runs and resumes admitted turns for one bound thread;
+`ThreadCompactionHost` compacts one bound thread; and `SubAgentHost` manages
+interactive child lifecycle under one bound parent. Requests keep explicit
+thread identities and fail before provider or journal work when they do not
+match the handle authority. Canonical reads remain on `ThreadReadHost`.
 
 Provider-free lifecycle transitions use narrow concrete capabilities. Bootstrap
 code creates `ThreadCreateHost`, `ThreadTitleHost`, `ThreadForkHost`,
-`ThreadDeleteHost`, `ThreadReadHost`, `SubAgentMaintenanceHost`, and the
-`PendingToolSettlementHost` from one opaque `HostRuntime`. Each coordinator
-receives only the handle for its transition; no coordinator receives a raw
-`runtime.Store` or the opaque runtime token. `ThreadReadHost` is read-only and
-is the reload source for canonical thread, turn, context, todo, and SubAgent
-projections. Pending approval reads remain on the provider-backed `Host`, whose
-active harness owns the current approval map.
+`ThreadDeleteHost`, `ThreadReadHost`, parent-bound
+`SubAgentMaintenanceHost`, and the thread- or parent-bound
+`PendingToolSettlementHost` from one `HostBootstrap`. Bootstrap immediately
+issues exact provider, SubAgent read/maintenance, and recovery factories, then
+passes only the required factory or handle to each owner. No coordinator
+receives a raw `runtime.Store` or the bootstrap token. `ThreadReadHost` is
+read-only and is the reload source for top-level thread, turn, context, and todo
+projections; parent-bound `SubAgentReadHost` owns child list/detail/activity
+reads. Pending approval reads remain on the bound `TurnExecutionHost`,
+whose active harness owns the current approval map.
 Terminal execution facts and terminal display projection availability are
 separate results. If durable detail cannot be read after a turn terminates,
 the runtime preserves the engine result and reports projection status as
 `unavailable` without changing the execution error. Pending-tool settlement
 also preserves a committed settlement event when its projection read fails.
-`HostOptions.Runtime` and `ThreadCapabilityOptions.Runtime` accept only the
-opaque runtime token. `runtime.Store` is opened and closed by the bootstrap
-owner; it is never stored in a coordinator or run object. Facades never close
-an injected Store, so shutdown closes the Store exactly once after active work
+Provider and bound-child options contain no Store, bootstrap, or runtime root.
+`runtime.Store` is opened and closed by the bootstrap owner; neither it nor
+`HostBootstrap` is stored in a coordinator or run object. Capability handles
+never close the Store, so shutdown closes it exactly once after active work
 ends.
 Runtime resolves a target thread plus its descendants before submitting one
-tree delete request to storage. The SQLite implementation deletes thread rows,
-journal entries, active leases, Agent todo state, metadata, artifacts, prompt
-scopes, and provider ledgers in one immediate transaction; the public schema and
-`DeleteThread` signature remain stable.
+tree delete request to storage. Root creation, ordinary fork, SubAgent spawn,
+and root tree deletion share one Store-level authority mutation gate; deletion
+holds it across root validation, descendant discovery, and physical deletion so
+concurrent spawn on that Store cannot leave an orphan child. The SQLite
+implementation accepts only the root identity, reloads and validates the full
+authority graph inside its immediate transaction, derives the current child
+tree, and then deletes thread rows, journal entries, active leases, Agent todo
+state, metadata, artifacts, prompt scopes, and provider ledgers. This closes the
+gap across multiple Store instances or processes. Every SQLite open validates
+the complete current authority graph before exposing the Store.
 
 Pending tool completion and pending tool settlement are intentionally separate.
 `CompletePendingTool` creates a provider-visible follow-up turn when the model
@@ -53,11 +64,13 @@ state without resuming the provider loop. Settlement is keyed by the public
 call, tool name, and handle identity. It is idempotent for the same terminal
 status and may be recorded before the pending result row when host-owned work
 finishes faster than the provider turn can commit that row.
-When the provider-backed `Host` already owns an active thread, settlement uses
-that same active `AgentHarness` thread and does not re-enter turn admission. The
-provider-free `PendingToolSettlementHost` is a dedicated coordinator capability;
-it is not a general maintenance or read facade and must be bound to the one
-owner responsible for settling that pending work.
+`PendingToolSettlementHost` is the only public settlement surface. A settlement
+handle derived from a bound turn or SubAgent capability shares that active
+`AgentHarness` and fails with `ErrThreadNotActive` instead of re-entering turn
+admission after the owner becomes idle. A restart coordinator may
+construct a provider-free settlement handle bound to exactly one thread or
+parent. The handle is not a general maintenance or read facade and must be
+owned by the one coordinator responsible for that pending work.
 
 The durable Floret journal, public turn pages and projections, pending approval
 snapshot, and typed Agent todo state are the canonical Agent source. Hosts may
@@ -65,7 +78,8 @@ keep product audit and diagnostics, but must not persist a queryable copy of
 conversation content, turn/run lifecycle, todo state, approval lifecycle, tool
 status, arguments, results, or errors.
 
-`HostOptions.ModelGateway` lets a host route hosted parent and child turns
+`TurnExecutionHostOptions.ModelGateway` and
+`SubAgentHostOptions.ModelGateway` let a host route parent and child turns
 through product-owned model transport while Floret still owns request
 construction, provider loop control, ledgers, tool dispatch, and runtime events.
 Title generation is host-owned by default, but title persistence is always
@@ -73,11 +87,11 @@ Floret-owned. `SetThreadTitle` is the explicit host write contract.
 `ThreadTitleModeProvider` routes a dedicated Floret title request through the
 same transport; a nil internal title generator means disabled rather than an
 implicit provider fallback.
-`HostOptions.ModelGatewayIdentity` supplies the provider/model identity for that
+Their `ModelGatewayIdentity` fields supply the provider/model identity for that
 host-owned transport plus a required non-sensitive continuation compatibility
-key. Gateway-backed hosts keep provider transport settings out
-of `HostOptions.Config`, so fake provider configuration cannot leak into a
-production gateway integration.
+key. Gateway-backed capabilities keep provider transport settings out of their
+`Config`, so fake provider configuration cannot leak into a production gateway
+integration.
 Before invoking that gateway, Floret projects the journal into typed model
 messages. One assistant response carries text/reasoning plus its ordered
 parallel tool-call group; tool results must follow in the same order with exact
@@ -151,11 +165,11 @@ engine never fabricates a successful completion.
 
 # Hosted Context Lifecycle
 
-`runtime.Host` is the public facade for durable turns and context lifecycle.
-The host supplies product input, tools, permissions, and optional model
-transport; Floret owns provider-visible context assembly, trimming, summary
-generation, checkpoint installation, provider continuation state, prompt-cache
-ledgers, and lifecycle events.
+`TurnExecutionHost` is the public capability for admitted turns, while
+`ThreadCompactionHost` owns idle compaction. The host supplies product input,
+tools, permissions, and optional model transport; Floret owns provider-visible
+context assembly, trimming, summary generation, checkpoint installation,
+provider continuation state, prompt-cache ledgers, and lifecycle events.
 
 `RunTurnRequest.Input` is the durable user message contract. Its text and opaque
 attachment references enter the canonical journal together and remain attached
@@ -180,8 +194,8 @@ with a `noop` observation rather than a checkpoint or a run failure. Hosts must
 not provide target tokens, history ranges, or summary policy to override that
 decision.
 
-Idle compaction uses `Host.CompactThread` instead of pretending to be a user
-turn. It requires a request ID and source, runs the compaction pipeline once,
+Idle compaction uses `ThreadCompactionHost.CompactThread` instead of pretending
+to be a user turn. It requires a request ID and source, runs the compaction pipeline once,
 and returns one canonical terminal compaction event, metrics, and activity
 timeline. Floret clears continuation after a successful context change and
 preserves it across noop/failed/cancelled operations only when provider-visible
@@ -192,8 +206,9 @@ reports, or checkpoint internals.
 # Child Threads
 
 Hosted subagents are durable child threads managed by `AgentHarness` and exposed
-through `runtime.Host`. A parent can spawn, send input to, wait for, list, and
-close child threads. The child runs as a normal Floret thread with its own
+through a parent-bound `SubAgentHost`. A parent can spawn, send input to, wait
+for, and close child threads; canonical list and detail reads use a separately
+parent-bound `SubAgentReadHost`. The child runs as a normal Floret thread with its own
 `ThreadID`, `TurnID`s, prompt scope, provider request ledger, and journal.
 Floret persists neutral delegated-work metadata such as task name and task
 description with the child lifecycle; downstream products decide how to render
@@ -247,7 +262,8 @@ opaque labels. Hosts own prompt policy, permissions, UI, and product workflow.
 
 # Key Source Files
 
-* [Runtime Host](/runtime/runtime.go)
+* [Runtime Contracts](/runtime/runtime.go)
+* [Provider Capabilities](/runtime/provider_capabilities.go)
 * [Projected Turns](/runtime/projected_turn.go)
 * [Agent Harness](/internal/agentharness/harness.go)
 * [Replayable Forks](/internal/agentharness/fork_operation.go)

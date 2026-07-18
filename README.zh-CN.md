@@ -53,7 +53,7 @@ Floret 提供这些底层能力，却不会接管你的产品。它不是 Agent 
 - **保留模型接入权。** 可使用内置配置，也可实现 `runtime.ModelGateway`。Floret 管理请求与续接生命周期，传输和凭据仍归产品所有。
 - **定义真正属于业务的 Agent。** 通过 `config.AgentProfile.SystemPrompt` 或 `config.Config.SystemPrompt` 定义角色、语气、业务场景和操作规则，而不是交付一个千篇一律的通用助手。
 - **让工具和指令随业务状态变化。** 通过 `tools.Registry` 注册严格的业务工具；再用 `runtime.ToolSurfaceProvider` 在一次运行的安全点更新工具、托管能力、指令和宿主上下文。
-- **让对话成为可靠资产。** `runtime.Host` 管理线程、回合、重试、分叉、父级管理的子线程以及对 Provider 安全的历史。
+- **让对话成为可靠资产。** Floret runtime 管理线程、回合、重试、分叉、父级管理的子线程以及对 Provider 安全的历史。
 - **把审批策略留在产品中。** Floret 理解通用副作用、资源与审批状态；谁能做什么、在何处做、为何允许，仍由你的产品决定。
 - **让运行过程可见。** 将脱敏事件、上下文压力、压缩事实和中立活动时间线接入任意 UI，无需暴露提示词、密钥或内部存储记录。
 - **测试产品，而不是碰运气。** Fake Provider 让本地和 CI 中的 Agent 流程保持确定性。
@@ -83,22 +83,24 @@ go get github.com/floegence/floret/config github.com/floegence/floret/runtime gi
 ```go
 store := runtime.NewMemoryStore()
 defer store.Close()
-runtimeRoot, err := runtime.NewHostRuntime(store)
+bootstrap, err := runtime.NewHostBootstrap(store)
 if err != nil { /* handle error */ }
-threadCreator, err := runtime.NewThreadCreateHost(runtime.ThreadCapabilityOptions{Runtime: runtimeRoot})
+threadCreator, err := runtime.NewThreadCreateHost(bootstrap, nil)
 if err != nil { /* handle error */ }
 
-host, err := runtime.NewHost(runtime.HostOptions{
+turnFactory, err := runtime.NewTurnExecutionHostFactory(bootstrap)
+if err != nil { /* handle error */ }
+turnHost, err := turnFactory.NewHost(runtime.TurnExecutionHostOptions{
+	ThreadID: "thread-1",
 	Config: config.Config{
 		Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "Hello from Floret.",
 		AgentProfile: config.AgentProfile{ID: "support-agent", Name: "Support Agent"},
 	},
-	Runtime: runtimeRoot,
 })
 if err != nil { /* handle error */ }
 
 thread, err := threadCreator.CreateThread(ctx, runtime.CreateThreadRequest{ThreadID: "thread-1"})
-result, err := host.RunTurn(ctx, runtime.RunTurnRequest{
+result, err := turnHost.RunTurn(ctx, runtime.RunTurnRequest{
 	ThreadID: thread.ID, TurnID: "turn-1", RunID: "run-1",
 	Input: runtime.TurnInput{Text: "Welcome a new customer in one sentence."},
 })

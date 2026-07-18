@@ -1,12 +1,14 @@
 package agentharness
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"time"
@@ -15,7 +17,7 @@ import (
 	"github.com/floegence/floret/internal/storage"
 )
 
-const forkOperationPlanVersion = 1
+const forkOperationPlanVersion = 2
 
 const (
 	forkErrorDestinationConflict = "destination_conflict"
@@ -31,32 +33,18 @@ type forkOperationPlan struct {
 }
 
 type forkPlanNode struct {
-	NodeID              string                   `json:"node_id"`
-	SourceThreadID      string                   `json:"source_thread_id"`
-	SourceEntryID       string                   `json:"source_entry_id,omitempty"`
-	DestinationThreadID string                   `json:"destination_thread_id"`
-	TurnIDMap           map[string]string        `json:"turn_id_map,omitempty"`
-	RunIDMap            map[string]string        `json:"run_id_map,omitempty"`
-	Turns               []ForkedTurnRef          `json:"turns,omitempty"`
-	MetadataPatch       *forkThreadMetadataPatch `json:"metadata_patch,omitempty"`
-}
-
-type forkThreadMetadataPatch struct {
-	ParentThreadID  string `json:"parent_thread_id"`
-	ParentTurnID    string `json:"parent_turn_id,omitempty"`
-	TaskName        string `json:"task_name,omitempty"`
-	TaskDescription string `json:"task_description,omitempty"`
-	AgentPath       string `json:"agent_path,omitempty"`
-	HostProfileRef  string `json:"host_profile_ref,omitempty"`
-	ForkMode        string `json:"fork_mode,omitempty"`
-	Closed          bool   `json:"closed,omitempty"`
-	Status          string `json:"status,omitempty"`
+	NodeID              string                           `json:"node_id"`
+	SourceThreadID      string                           `json:"source_thread_id"`
+	SourceEntryID       string                           `json:"source_entry_id,omitempty"`
+	DestinationThreadID string                           `json:"destination_thread_id"`
+	TurnIDMap           map[string]string                `json:"turn_id_map,omitempty"`
+	RunIDMap            map[string]string                `json:"run_id_map,omitempty"`
+	DestinationMeta     *sessiontree.ForkDestinationMeta `json:"destination_meta,omitempty"`
 }
 
 type persistedForkResult struct {
-	OperationID string          `json:"operation_id"`
-	Summary     ThreadSummary   `json:"thread"`
-	Turns       []ForkedTurnRef `json:"turns,omitempty"`
+	OperationID string        `json:"operation_id"`
+	Summary     ThreadSummary `json:"thread"`
 }
 
 type forkRequestIdentity struct {
@@ -80,11 +68,11 @@ func (h *AgentHarness) forkThreadReplayable(ctx context.Context, opts ForkOption
 		if existing.RequestFingerprint != fingerprint {
 			return ForkResult{}, ErrForkOperationConflict
 		}
-		var plan forkOperationPlan
-		if err := json.Unmarshal(existing.Plan, &plan); err != nil {
+		plan, err := decodeForkOperationPlan(existing.Plan)
+		if err != nil {
 			return ForkResult{}, fmt.Errorf("decode fork operation plan: %w", err)
 		}
-		if plan.Version != forkOperationPlanVersion || plan.OperationID != opts.OperationID || plan.RequestFingerprint != fingerprint {
+		if err := validateForkOperationPlan(plan, opts.OperationID, fingerprint); err != nil {
 			return ForkResult{}, ErrForkOperationConflict
 		}
 		return h.resumeForkOperation(ctx, existing, plan)
@@ -113,10 +101,11 @@ func (h *AgentHarness) forkThreadReplayable(ctx context.Context, opts ForkOption
 	if record.RequestFingerprint != fingerprint {
 		return ForkResult{}, ErrForkOperationConflict
 	}
-	if err := json.Unmarshal(record.Plan, &plan); err != nil {
+	plan, err = decodeForkOperationPlan(record.Plan)
+	if err != nil {
 		return ForkResult{}, fmt.Errorf("decode fork operation plan: %w", err)
 	}
-	if plan.Version != forkOperationPlanVersion || plan.OperationID != opts.OperationID || plan.RequestFingerprint != fingerprint {
+	if err := validateForkOperationPlan(plan, opts.OperationID, fingerprint); err != nil {
 		return ForkResult{}, ErrForkOperationConflict
 	}
 	return h.resumeForkOperation(ctx, record, plan)
@@ -154,7 +143,7 @@ func (h *AgentHarness) prepareForkOperationPlan(ctx context.Context, opts ForkOp
 		if err != nil {
 			return forkOperationPlan{}, err
 		}
-		node.MetadataPatch = &forkThreadMetadataPatch{
+		node.DestinationMeta = &sessiontree.ForkDestinationMeta{
 			ParentThreadID:  root.DestinationThreadID,
 			ParentTurnID:    forkMappedID(meta.ParentTurnID, root.TurnIDMap),
 			TaskName:        meta.TaskName,
@@ -188,9 +177,8 @@ func (h *AgentHarness) prepareForkPlanNode(ctx context.Context, nodeID, sourceTh
 	}
 	var turnIDs map[string]string
 	var runIDs map[string]string
-	var turns []ForkedTurnRef
 	if rewriteIdentities {
-		turnIDs, runIDs, turns = h.forkIdentityRewriteFromPath(path)
+		turnIDs, runIDs = h.forkIdentityRewriteFromPath(path)
 	}
 	return forkPlanNode{
 		NodeID:              nodeID,
@@ -199,7 +187,6 @@ func (h *AgentHarness) prepareForkPlanNode(ctx context.Context, nodeID, sourceTh
 		DestinationThreadID: strings.TrimSpace(destinationThreadID),
 		TurnIDMap:           turnIDs,
 		RunIDMap:            runIDs,
-		Turns:               turns,
 	}, nil
 }
 
@@ -209,7 +196,7 @@ func (h *AgentHarness) resumeForkOperation(ctx context.Context, record storage.F
 		if err := h.validateCompletedForkTargets(ctx, plan); err != nil {
 			return ForkResult{}, err
 		}
-		return h.decodeForkResult(record.Result)
+		return h.decodeForkResult(record.Result, plan.OperationID, plan.Root.DestinationThreadID)
 	case storage.ForkOperationFailed:
 		return ForkResult{}, persistedForkError(record.ErrorCode, record.ErrorMessage)
 	case storage.ForkOperationPrepared:
@@ -231,7 +218,7 @@ func (h *AgentHarness) resumeForkOperation(ctx context.Context, record storage.F
 	if err != nil {
 		return ForkResult{}, err
 	}
-	resultJSON, err := json.Marshal(persistedForkResult{OperationID: plan.OperationID, Summary: summary, Turns: plan.Root.Turns})
+	resultJSON, err := json.Marshal(persistedForkResult{OperationID: plan.OperationID, Summary: summary})
 	if err != nil {
 		return ForkResult{}, err
 	}
@@ -247,12 +234,12 @@ func (h *AgentHarness) resumeForkOperation(ctx context.Context, record storage.F
 				if validateErr := h.validateCompletedForkTargets(ctx, plan); validateErr != nil {
 					return ForkResult{}, validateErr
 				}
-				return h.decodeForkResult(current.Result)
+				return h.decodeForkResult(current.Result, plan.OperationID, plan.Root.DestinationThreadID)
 			}
 		}
 		return ForkResult{}, err
 	}
-	return h.decodeForkResult(resultJSON)
+	return h.decodeForkResult(resultJSON, plan.OperationID, plan.Root.DestinationThreadID)
 }
 
 func (h *AgentHarness) executeForkPlanNode(ctx context.Context, plan forkOperationPlan, node forkPlanNode) error {
@@ -267,30 +254,11 @@ func (h *AgentHarness) executeForkPlanNode(ctx context.Context, plan forkOperati
 		Now:             plan.PreparedAt,
 		TurnIDMap:       node.TurnIDMap,
 		RunIDMap:        node.RunIDMap,
+		DestinationMeta: node.DestinationMeta,
 		RewriteEntry:    rewriteForkContextEntry,
 	})
 	if err != nil {
 		return err
-	}
-	if node.MetadataPatch != nil {
-		meta, err := h.options.Repo.Thread(ctx, node.DestinationThreadID)
-		if err != nil {
-			return err
-		}
-		patch := node.MetadataPatch
-		meta.ParentThreadID = patch.ParentThreadID
-		meta.ParentTurnID = patch.ParentTurnID
-		meta.TaskName = patch.TaskName
-		meta.TaskDescription = patch.TaskDescription
-		meta.AgentPath = patch.AgentPath
-		meta.HostProfileRef = patch.HostProfileRef
-		meta.ForkMode = patch.ForkMode
-		meta.Closed = patch.Closed
-		meta.Status = patch.Status
-		meta.UpdatedAt = plan.PreparedAt
-		if err := h.options.Repo.UpdateThread(ctx, meta); err != nil {
-			return err
-		}
 	}
 	h.emit(HarnessEvent{Type: EventThreadForked, ThreadID: node.DestinationThreadID, EntryID: node.SourceEntryID, Metadata: map[string]string{"source_thread_id": node.SourceThreadID, "fork_operation_id": plan.OperationID, "fork_operation_node_id": node.NodeID}})
 	return nil
@@ -306,7 +274,7 @@ func (h *AgentHarness) validateCompletedForkTargets(ctx context.Context, plan fo
 		if err != nil {
 			return err
 		}
-		if meta.ForkOperationID != plan.OperationID || meta.ForkOperationNodeID != node.NodeID || meta.ForkedFromThreadID != node.SourceThreadID || meta.ForkedFromEntryID != node.SourceEntryID {
+		if meta.ForkOperationID != plan.OperationID || meta.ForkOperationNodeID != node.NodeID || meta.ForkedFromThreadID != node.SourceThreadID || meta.ForkedFromEntryID != node.SourceEntryID || !sessiontree.MatchesForkDestinationMeta(meta, node.DestinationMeta) {
 			return sessiontree.ErrForkDestinationConflict
 		}
 	}
@@ -335,17 +303,76 @@ func persistedForkError(code, message string) error {
 	}
 }
 
-func (h *AgentHarness) decodeForkResult(data json.RawMessage) (ForkResult, error) {
+func (h *AgentHarness) decodeForkResult(data json.RawMessage, operationID, destinationThreadID string) (ForkResult, error) {
 	var persisted persistedForkResult
-	if err := json.Unmarshal(data, &persisted); err != nil {
+	if err := decodeStrictJSON(data, &persisted); err != nil {
 		return ForkResult{}, fmt.Errorf("decode fork operation result: %w", err)
+	}
+	if persisted.OperationID != strings.TrimSpace(operationID) || persisted.Summary.ID != strings.TrimSpace(destinationThreadID) {
+		return ForkResult{}, ErrForkOperationConflict
 	}
 	return ForkResult{
 		OperationID: persisted.OperationID,
 		Thread:      h.cacheThread(persisted.Summary.ID),
 		Summary:     persisted.Summary,
-		Turns:       append([]ForkedTurnRef(nil), persisted.Turns...),
 	}, nil
+}
+
+func decodeForkOperationPlan(data json.RawMessage) (forkOperationPlan, error) {
+	var plan forkOperationPlan
+	if err := decodeStrictJSON(data, &plan); err != nil {
+		return forkOperationPlan{}, err
+	}
+	return plan, nil
+}
+
+func validateForkOperationPlan(plan forkOperationPlan, operationID, fingerprint string) error {
+	if plan.Version != forkOperationPlanVersion ||
+		plan.OperationID != strings.TrimSpace(operationID) ||
+		plan.RequestFingerprint != strings.TrimSpace(fingerprint) ||
+		plan.PreparedAt.IsZero() {
+		return ErrForkOperationConflict
+	}
+	nodes := append([]forkPlanNode{plan.Root}, plan.TerminalChildren...)
+	seen := make(map[string]struct{}, len(nodes))
+	for index, node := range nodes {
+		if strings.TrimSpace(node.NodeID) == "" || strings.TrimSpace(node.SourceThreadID) == "" || strings.TrimSpace(node.DestinationThreadID) == "" {
+			return ErrForkOperationConflict
+		}
+		if _, duplicate := seen[node.DestinationThreadID]; duplicate {
+			return ErrForkOperationConflict
+		}
+		seen[node.DestinationThreadID] = struct{}{}
+		if index == 0 {
+			if node.NodeID != "root" || node.DestinationMeta != nil {
+				return ErrForkOperationConflict
+			}
+			continue
+		}
+		meta := node.DestinationMeta
+		if meta == nil ||
+			strings.TrimSpace(meta.ParentThreadID) != plan.Root.DestinationThreadID ||
+			strings.TrimSpace(meta.TaskName) == "" ||
+			strings.TrimSpace(meta.AgentPath) == "" {
+			return ErrForkOperationConflict
+		}
+	}
+	return nil
+}
+
+func decodeStrictJSON(data []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("unexpected trailing JSON value")
+		}
+		return err
+	}
+	return nil
 }
 
 func forkRequestFingerprint(opts ForkOptions) (string, error) {
@@ -385,11 +412,9 @@ func (h *AgentHarness) nextForkDestinationThreadID(ctx context.Context, reserved
 	return "", errors.New("unable to allocate unique fork destination thread id")
 }
 
-func (h *AgentHarness) forkIdentityRewriteFromPath(path []sessiontree.Entry) (map[string]string, map[string]string, []ForkedTurnRef) {
+func (h *AgentHarness) forkIdentityRewriteFromPath(path []sessiontree.Entry) (map[string]string, map[string]string) {
 	turnIDs := map[string]string{}
 	runIDs := map[string]string{}
-	refsByTurn := map[string]*ForkedTurnRef{}
-	order := make([]string, 0)
 	for _, entry := range path {
 		sourceTurnID := strings.TrimSpace(entry.TurnID)
 		if sourceTurnID == "" {
@@ -400,15 +425,6 @@ func (h *AgentHarness) forkIdentityRewriteFromPath(path []sessiontree.Entry) (ma
 			destinationTurnID = h.nextID("turn")
 			turnIDs[sourceTurnID] = destinationTurnID
 		}
-		ref := refsByTurn[sourceTurnID]
-		if ref == nil {
-			ref = &ForkedTurnRef{SourceTurnID: sourceTurnID, DestinationTurnID: destinationTurnID, CreatedAt: entry.CreatedAt}
-			refsByTurn[sourceTurnID] = ref
-			order = append(order, sourceTurnID)
-		}
-		if ref.CreatedAt.IsZero() || (!entry.CreatedAt.IsZero() && entry.CreatedAt.Before(ref.CreatedAt)) {
-			ref.CreatedAt = entry.CreatedAt
-		}
 		sourceRunID := strings.TrimSpace(entry.Metadata["run_id"])
 		if sourceRunID == "" {
 			continue
@@ -418,16 +434,6 @@ func (h *AgentHarness) forkIdentityRewriteFromPath(path []sessiontree.Entry) (ma
 			destinationRunID = h.nextID("run")
 			runIDs[sourceRunID] = destinationRunID
 		}
-		if ref.SourceRunID == "" {
-			ref.SourceRunID = sourceRunID
-			ref.DestinationRunID = destinationRunID
-		}
 	}
-	refs := make([]ForkedTurnRef, 0, len(order))
-	for _, turnID := range order {
-		if ref := refsByTurn[turnID]; ref != nil {
-			refs = append(refs, *ref)
-		}
-	}
-	return turnIDs, runIDs, refs
+	return turnIDs, runIDs
 }

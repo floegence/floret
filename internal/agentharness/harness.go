@@ -161,21 +161,13 @@ type ForkOptions struct {
 	NewThreadID           string
 	OperationID           string
 	RewriteTurnIdentities bool
+	DestinationMeta       *sessiontree.ForkDestinationMeta
 }
 
 type ForkResult struct {
 	OperationID string
 	Thread      *Thread
 	Summary     ThreadSummary
-	Turns       []ForkedTurnRef
-}
-
-type ForkedTurnRef struct {
-	SourceTurnID      string    `json:"source_turn_id,omitempty"`
-	SourceRunID       string    `json:"source_run_id,omitempty"`
-	DestinationTurnID string    `json:"destination_turn_id,omitempty"`
-	DestinationRunID  string    `json:"destination_run_id,omitempty"`
-	CreatedAt         time.Time `json:"created_at,omitempty"`
 }
 
 type MoveOptions struct {
@@ -783,23 +775,23 @@ func (h *AgentHarness) ForkThreadWithResult(ctx context.Context, opts ForkOption
 	}
 	turnIDs := map[string]string(nil)
 	runIDs := map[string]string(nil)
-	turnRefs := []ForkedTurnRef(nil)
 	if opts.RewriteTurnIdentities {
 		var err error
-		turnIDs, runIDs, turnRefs, err = h.forkIdentityRewrite(ctx, opts)
+		turnIDs, runIDs, err = h.forkIdentityRewrite(ctx, opts)
 		if err != nil {
 			return ForkResult{}, err
 		}
 	}
 	meta, err := h.options.Repo.Fork(ctx, sessiontree.ForkOptions{
-		SourceThreadID: opts.SourceThreadID,
-		EntryID:        opts.EntryID,
-		Position:       opts.Position,
-		NewThreadID:    opts.NewThreadID,
-		Now:            h.now(),
-		TurnIDMap:      turnIDs,
-		RunIDMap:       runIDs,
-		RewriteEntry:   rewriteForkContextEntry,
+		SourceThreadID:  opts.SourceThreadID,
+		EntryID:         opts.EntryID,
+		Position:        opts.Position,
+		NewThreadID:     opts.NewThreadID,
+		Now:             h.now(),
+		TurnIDMap:       turnIDs,
+		RunIDMap:        runIDs,
+		DestinationMeta: opts.DestinationMeta,
+		RewriteEntry:    rewriteForkContextEntry,
 	})
 	if err != nil {
 		return ForkResult{}, err
@@ -810,7 +802,7 @@ func (h *AgentHarness) ForkThreadWithResult(ctx context.Context, opts ForkOption
 	if err != nil {
 		return ForkResult{}, err
 	}
-	return ForkResult{Thread: thread, Summary: summary, Turns: turnRefs}, nil
+	return ForkResult{Thread: thread, Summary: summary}, nil
 }
 
 func rewriteForkContextEntry(entry sessiontree.Entry, identity sessiontree.ForkEntryIdentity) (sessiontree.Entry, error) {
@@ -848,13 +840,13 @@ func rewriteForkContextID(value string, rewrites map[string]string) string {
 	return value
 }
 
-func (h *AgentHarness) forkIdentityRewrite(ctx context.Context, opts ForkOptions) (map[string]string, map[string]string, []ForkedTurnRef, error) {
+func (h *AgentHarness) forkIdentityRewrite(ctx context.Context, opts ForkOptions) (map[string]string, map[string]string, error) {
 	path, err := h.forkSourcePath(ctx, opts)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-	turnIDs, runIDs, refs := h.forkIdentityRewriteFromPath(path)
-	return turnIDs, runIDs, refs, nil
+	turnIDs, runIDs := h.forkIdentityRewriteFromPath(path)
+	return turnIDs, runIDs, nil
 }
 
 func (h *AgentHarness) forkSourcePath(ctx context.Context, opts ForkOptions) ([]sessiontree.Entry, error) {

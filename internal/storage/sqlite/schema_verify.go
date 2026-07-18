@@ -71,8 +71,13 @@ func verifySchemaVersion(ctx context.Context, tx sqlRunner, version string) erro
 			return fmt.Errorf("unsupported sqlite store schema fingerprint %q", fingerprint)
 		}
 		return verifySchemaContract(ctx, tx, false)
-	case schemaVersion:
+	case schemaVersion12:
 		if fingerprint != schemaFingerprintVersion12 && fingerprint != canonicalSchemaFingerprint() {
+			return fmt.Errorf("unsupported sqlite store schema fingerprint %q", fingerprint)
+		}
+		return verifySchemaContract(ctx, tx, true)
+	case schemaVersion:
+		if fingerprint != canonicalSchemaFingerprint() {
 			return fmt.Errorf("unsupported sqlite store schema fingerprint %q", fingerprint)
 		}
 		return verifySchemaContract(ctx, tx, true)

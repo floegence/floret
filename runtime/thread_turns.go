@@ -62,27 +62,36 @@ type ThreadControlSignal struct {
 	Payload     map[string]any `json:"payload,omitempty"`
 }
 
-func (h *Host) ListThreadTurns(ctx context.Context, req ListThreadTurnsRequest) (ThreadTurnsPage, error) {
+func (h *providerHost) ListThreadTurns(ctx context.Context, req ListThreadTurnsRequest) (ThreadTurnsPage, error) {
 	return listThreadTurns(ctx, h.harness, req)
 }
 
 func (h *ThreadReadHost) ListThreadTurns(ctx context.Context, req ListThreadTurnsRequest) (ThreadTurnsPage, error) {
+	if err := validateRootThreadAuthority(ctx, h.store, req.ThreadID); err != nil {
+		return ThreadTurnsPage{}, err
+	}
 	return listThreadTurns(ctx, h.harness, req)
 }
 
-func (h *Host) ReadLatestThreadTurn(ctx context.Context, threadID ThreadID) (ThreadTurnSnapshot, error) {
+func (h *providerHost) ReadLatestThreadTurn(ctx context.Context, threadID ThreadID) (ThreadTurnSnapshot, error) {
 	return readLatestThreadTurn(ctx, h.harness, threadID)
 }
 
 func (h *ThreadReadHost) ReadLatestThreadTurn(ctx context.Context, threadID ThreadID) (ThreadTurnSnapshot, error) {
+	if err := validateRootThreadAuthority(ctx, h.store, threadID); err != nil {
+		return ThreadTurnSnapshot{}, err
+	}
 	return readLatestThreadTurn(ctx, h.harness, threadID)
 }
 
-func (h *Host) ReadThreadOverview(ctx context.Context, threadID ThreadID) (ThreadOverview, error) {
+func (h *providerHost) ReadThreadOverview(ctx context.Context, threadID ThreadID) (ThreadOverview, error) {
 	return readThreadOverview(ctx, h.harness, threadID)
 }
 
 func (h *ThreadReadHost) ReadThreadOverview(ctx context.Context, threadID ThreadID) (ThreadOverview, error) {
+	if err := validateRootThreadAuthority(ctx, h.store, threadID); err != nil {
+		return ThreadOverview{}, err
+	}
 	return readThreadOverview(ctx, h.harness, threadID)
 }
 

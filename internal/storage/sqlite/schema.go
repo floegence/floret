@@ -11,7 +11,8 @@ import (
 )
 
 const (
-	schemaVersion              = "12"
+	schemaVersion              = "13"
+	schemaVersion12            = "12"
 	schemaVersion11            = "11"
 	minimumSchemaVersion       = "11"
 	schemaFingerprintVersion11 = "200ee3cee291df623ac3cc7d603121cb22601992b4851e13fb859081053f4c85"

@@ -111,7 +111,7 @@ func TestSQLiteStorePersistsSessionTreeAndForkAfterReopen(t *testing.T) {
 	if got := sessiontree.BuildContext(forkPath, sessiontree.ContextOptions{}); len(got) != 2 || got[0].Content != "first" || got[1].Content != "branch" {
 		t.Fatalf("fork context = %#v", got)
 	}
-	if fork.ForkedFromThreadID != "thread" || fork.ForkedFromEntryID != branch.ID {
+	if fork.ParentThreadID != "" || fork.ForkedFromThreadID != "thread" || fork.ForkedFromEntryID != branch.ID {
 		t.Fatalf("fork metadata = %#v", fork)
 	}
 }
@@ -120,6 +120,9 @@ func TestSQLiteStorePersistsSubAgentThreadMetadata(t *testing.T) {
 	ctx := context.Background()
 	store, path := openSQLiteStoreForTest(t)
 	now := time.Date(2026, 6, 23, 9, 0, 0, 0, time.UTC)
+	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "parent", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
 	child := sessiontree.ThreadMeta{
 		ID:              "child",
 		ParentThreadID:  "parent",
@@ -165,7 +168,13 @@ func TestSQLiteStorePersistsSubAgentThreadMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed) != 1 || listed[0].TaskDescription != child.TaskDescription || listed[0].AgentPath != child.AgentPath || !listed[0].Closed {
+	var listedChild sessiontree.ThreadMeta
+	for _, meta := range listed {
+		if meta.ID == child.ID {
+			listedChild = meta
+		}
+	}
+	if len(listed) != 2 || listedChild.TaskDescription != child.TaskDescription || listedChild.AgentPath != child.AgentPath || !listedChild.Closed {
 		t.Fatalf("listed threads = %#v", listed)
 	}
 }
@@ -409,9 +418,12 @@ func TestSQLiteStoreSerializesConcurrentSchemaMigration(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreAcceptsPublishedVersion12FingerprintWithoutRewritingIt(t *testing.T) {
+func TestSQLiteStoreMigratesPublishedVersion12Fingerprint(t *testing.T) {
 	ctx := context.Background()
 	store, path := openSQLiteStoreForTest(t)
+	if err := store.putMetaValue(ctx, "schema_version", schemaVersion12); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.putMetaValue(ctx, "schema_fingerprint", schemaFingerprintVersion12); err != nil {
 		t.Fatal(err)
 	}
@@ -434,8 +446,323 @@ func TestSQLiteStoreAcceptsPublishedVersion12FingerprintWithoutRewritingIt(t *te
 	if err := db.QueryRow(`SELECT value FROM schema_meta WHERE key = 'schema_fingerprint'`).Scan(&fingerprint); err != nil {
 		t.Fatal(err)
 	}
-	if fingerprint != schemaFingerprintVersion12 {
-		t.Fatalf("schema fingerprint = %q, want published fingerprint %q", fingerprint, schemaFingerprintVersion12)
+	if fingerprint != canonicalSchemaFingerprint() {
+		t.Fatalf("schema fingerprint = %q, want canonical fingerprint %q", fingerprint, canonicalSchemaFingerprint())
+	}
+}
+
+func TestSQLiteStoreMigratesVersion12ThreadAuthority(t *testing.T) {
+	ctx := context.Background()
+	store, path := openSQLiteStoreForTest(t)
+	now := time.Date(2026, 7, 18, 13, 0, 0, 0, time.UTC)
+	for _, id := range []string{"source", "parent"} {
+		if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: id, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fork, err := store.Fork(ctx, sessiontree.ForkOptions{SourceThreadID: "source", NewThreadID: "fork", Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{
+		ID: "child", ParentThreadID: "parent", TaskName: "child", AgentPath: "/root/child", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE threads SET parent_thread_id = ? WHERE id = ?`, "source", fork.ID); err != nil {
+		t.Fatal(err)
+	}
+	downgradeSQLiteSchemaToVersion12(t, ctx, store)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	migratedFork, err := reopened.Thread(ctx, "fork")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migratedFork.ParentThreadID != "" || migratedFork.ForkedFromThreadID != "source" {
+		t.Fatalf("migrated fork authority = %#v", migratedFork)
+	}
+	child, err := reopened.Thread(ctx, "child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.ParentThreadID != "parent" || child.AgentPath != "/root/child" {
+		t.Fatalf("migrated child authority = %#v", child)
+	}
+}
+
+func TestSQLiteStoreMigratesVersion12ReplayableForkIntermediateState(t *testing.T) {
+	ctx := context.Background()
+	store, path := openSQLiteStoreForTest(t)
+	now := time.Date(2026, 7, 18, 14, 0, 0, 0, time.UTC)
+	for _, meta := range []sessiontree.ThreadMeta{
+		{ID: "source", CreatedAt: now, UpdatedAt: now},
+		{ID: "source-child", ParentThreadID: "source", TaskName: "worker", AgentPath: "/root/worker", CreatedAt: now, UpdatedAt: now},
+		{ID: "source-child-closed", ParentThreadID: "source", TaskName: "closed-worker", AgentPath: "/root/closed-worker", CreatedAt: now, UpdatedAt: now},
+	} {
+		if _, err := store.CreateThread(ctx, meta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.Fork(ctx, sessiontree.ForkOptions{
+		SourceThreadID: "source", NewThreadID: "fork", OperationID: "operation", OperationNodeID: "root", Now: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Fork(ctx, sessiontree.ForkOptions{
+		SourceThreadID: "source-child", NewThreadID: "fork-child", OperationID: "operation", OperationNodeID: "terminal-child-1", Now: now,
+		DestinationMeta: &sessiontree.ForkDestinationMeta{ParentThreadID: "fork", TaskName: "worker", AgentPath: "/root/worker", ForkMode: "full_path", Status: "completed"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Fork(ctx, sessiontree.ForkOptions{
+		SourceThreadID: "source-child-closed", NewThreadID: "fork-child-closed", OperationID: "operation", OperationNodeID: "terminal-child-2", Now: now,
+		DestinationMeta: &sessiontree.ForkDestinationMeta{ParentThreadID: "fork", TaskName: "closed-worker", AgentPath: "/root/closed-worker", ForkMode: "full_path", Status: "completed"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE threads SET parent_thread_id = 'source' WHERE id = 'fork'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE threads SET
+		parent_thread_id = 'source-child', parent_turn_id = '', task_name = '', task_description = '',
+		agent_path = '', host_profile_ref = '', fork_mode = '', closed = 0, status = ''
+		WHERE id = 'fork-child'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE threads SET closed = 1, status = 'closed' WHERE id = 'fork-child-closed'`); err != nil {
+		t.Fatal(err)
+	}
+	plan := `{"version":1,"operation_id":"operation","request_fingerprint":"fingerprint","prepared_at":"2026-07-18T14:00:00Z","root":{"node_id":"root","source_thread_id":"source","destination_thread_id":"fork"},"terminal_children":[{"node_id":"terminal-child-1","source_thread_id":"source-child","destination_thread_id":"fork-child","metadata_patch":{"parent_thread_id":"fork","task_name":"worker","agent_path":"/root/worker","fork_mode":"full_path","status":"completed"}},{"node_id":"terminal-child-2","source_thread_id":"source-child-closed","destination_thread_id":"fork-child-closed","metadata_patch":{"parent_thread_id":"fork","task_name":"closed-worker","agent_path":"/root/closed-worker","fork_mode":"full_path","status":"completed"}}]}`
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO fork_operations(
+		operation_id, request_fingerprint, state, plan_json, result_json, error_code, error_message, created_at, updated_at, finished_at
+	) VALUES('operation', 'fingerprint', 'completed', ?, '{"operation_id":"operation","thread":{"id":"fork"},"turns":[]}', '', '', ?, ?, ?)`, plan, formatTime(now), formatTime(now), formatTime(now)); err != nil {
+		t.Fatal(err)
+	}
+	downgradeSQLiteSchemaToVersion12(t, ctx, store)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	root, err := reopened.Thread(ctx, "fork")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.ParentThreadID != "" {
+		t.Fatalf("migrated root = %#v", root)
+	}
+	child, err := reopened.Thread(ctx, "fork-child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.ParentThreadID != "fork" || child.TaskName != "worker" || child.AgentPath != "/root/worker" || child.Status != "completed" {
+		t.Fatalf("migrated terminal child = %#v", child)
+	}
+	closedChild, err := reopened.Thread(ctx, "fork-child-closed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !closedChild.Closed || closedChild.Status != "closed" {
+		t.Fatalf("migrated child lifecycle was reset = %#v", closedChild)
+	}
+	var upgradedPlan, upgradedResult string
+	if err := reopened.db.QueryRowContext(ctx, `SELECT plan_json, result_json FROM fork_operations WHERE operation_id = 'operation'`).Scan(&upgradedPlan, &upgradedResult); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(upgradedPlan, `"version":2`) || !strings.Contains(upgradedPlan, `"destination_meta"`) || strings.Contains(upgradedPlan, `"metadata_patch"`) || strings.Contains(upgradedPlan, `"turns"`) {
+		t.Fatalf("upgraded fork plan = %s", upgradedPlan)
+	}
+	if strings.Contains(upgradedResult, `"turns"`) {
+		t.Fatalf("upgraded fork result = %s", upgradedResult)
+	}
+}
+
+func TestSQLiteStoreRejectsAmbiguousVersion12ThreadAuthority(t *testing.T) {
+	ctx := context.Background()
+	store, path := openSQLiteStoreForTest(t)
+	now := time.Date(2026, 7, 18, 15, 0, 0, 0, time.UTC)
+	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "source", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Fork(ctx, sessiontree.ForkOptions{SourceThreadID: "source", NewThreadID: "ambiguous", Now: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE threads SET parent_thread_id = 'source', task_description = 'ambiguous' WHERE id = 'ambiguous'`); err != nil {
+		t.Fatal(err)
+	}
+	downgradeSQLiteSchemaToVersion12(t, ctx, store)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), "ambiguous parent authority") {
+		t.Fatalf("Open ambiguous v12 err = %v", err)
+	}
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var version string
+	if err := db.QueryRow(`SELECT value FROM schema_meta WHERE key = 'schema_version'`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != schemaVersion12 {
+		t.Fatalf("schema version after rejected migration = %q, want %q", version, schemaVersion12)
+	}
+}
+
+func TestSQLiteStoreRejectsVersion12ThreadAuthorityCycle(t *testing.T) {
+	ctx := context.Background()
+	store, path := openSQLiteStoreForTest(t)
+	now := time.Date(2026, 7, 18, 15, 30, 0, 0, time.UTC)
+	for _, id := range []string{"a", "b"} {
+		if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: id, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, update := range []struct {
+		id       string
+		parentID string
+		path     string
+	}{
+		{id: "a", parentID: "b", path: "/root/b/a"},
+		{id: "b", parentID: "a", path: "/root/a/b"},
+	} {
+		if _, err := store.db.ExecContext(ctx, `UPDATE threads SET parent_thread_id = ?, task_name = ?, agent_path = ? WHERE id = ?`, update.parentID, update.id, update.path, update.id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	downgradeSQLiteSchemaToVersion12(t, ctx, store)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), "parent cycle") {
+		t.Fatalf("Open v12 authority cycle error = %v", err)
+	}
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var version string
+	if err := db.QueryRow(`SELECT value FROM schema_meta WHERE key = 'schema_version'`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != schemaVersion12 {
+		t.Fatalf("schema version after rejected cycle migration = %q, want %q", version, schemaVersion12)
+	}
+}
+
+func TestSQLiteStoreRejectsInvalidVersion13ThreadAuthorityGraph(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name    string
+		seed    []string
+		corrupt func(*testing.T, *Store)
+		want    string
+	}{
+		{
+			name: "missing parent",
+			seed: []string{"child"},
+			corrupt: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.db.ExecContext(ctx, `UPDATE threads SET parent_thread_id = 'missing', task_name = 'child', agent_path = '/root/child' WHERE id = 'child'`); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: `parent "missing" is missing`,
+		},
+		{
+			name: "parent cycle",
+			seed: []string{"a", "b"},
+			corrupt: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.db.ExecContext(ctx, `UPDATE threads SET parent_thread_id = 'b', task_name = 'a', agent_path = '/root/b/a' WHERE id = 'a'`); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.db.ExecContext(ctx, `UPDATE threads SET parent_thread_id = 'a', task_name = 'b', agent_path = '/root/a/b' WHERE id = 'b'`); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "parent cycle",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, path := openSQLiteStoreForTest(t)
+			now := time.Date(2026, 7, 18, 15, 45, 0, 0, time.UTC)
+			for _, threadID := range tc.seed {
+				if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: threadID, CreatedAt: now, UpdatedAt: now}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tc.corrupt(t, store)
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Open(path); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Open invalid v13 authority graph error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestSQLiteStoreMigratesHistoricalVersion12ForkOperations(t *testing.T) {
+	ctx := context.Background()
+	store, path := openSQLiteStoreForTest(t)
+	now := time.Date(2026, 7, 18, 16, 0, 0, 0, time.UTC)
+	for _, id := range []string{"source", "occupied"} {
+		if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: id, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	missingPlan := `{"version":1,"operation_id":"completed-missing","request_fingerprint":"missing-fingerprint","prepared_at":"2026-07-18T16:00:00Z","root":{"node_id":"root","source_thread_id":"source","destination_thread_id":"deleted-fork"}}`
+	failedPlan := `{"version":1,"operation_id":"failed-conflict","request_fingerprint":"failed-fingerprint","prepared_at":"2026-07-18T16:00:00Z","root":{"node_id":"root","source_thread_id":"source","destination_thread_id":"occupied"}}`
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO fork_operations(
+		operation_id, request_fingerprint, state, plan_json, result_json, error_code, error_message, created_at, updated_at, finished_at
+	) VALUES
+		('completed-missing', 'missing-fingerprint', 'completed', ?, '{"operation_id":"completed-missing","thread":{"id":"deleted-fork"},"turns":[]}', '', '', ?, ?, ?),
+		('failed-conflict', 'failed-fingerprint', 'failed', ?, '', 'destination_conflict', 'occupied', ?, ?, ?)`,
+		missingPlan, formatTime(now), formatTime(now), formatTime(now),
+		failedPlan, formatTime(now), formatTime(now), formatTime(now)); err != nil {
+		t.Fatal(err)
+	}
+	downgradeSQLiteSchemaToVersion12(t, ctx, store)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if _, err := reopened.Thread(ctx, "occupied"); err != nil {
+		t.Fatalf("historical conflict target was modified: %v", err)
+	}
+	if _, err := reopened.Thread(ctx, "deleted-fork"); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+		t.Fatalf("deleted historical target err = %v", err)
+	}
+	for _, operationID := range []string{"completed-missing", "failed-conflict"} {
+		var plan string
+		if err := reopened.db.QueryRowContext(ctx, `SELECT plan_json FROM fork_operations WHERE operation_id = ?`, operationID).Scan(&plan); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(plan, `"version":2`) || strings.Contains(plan, `"metadata_patch"`) {
+			t.Fatalf("historical operation %q plan = %s", operationID, plan)
+		}
 	}
 }
 
@@ -546,7 +873,7 @@ func TestSQLiteStoreProviderStateRoundTripCorruptionForkAndDelete(t *testing.T) 
 	if err := store.PutProviderState(ctx, want); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.DeleteThreadTreeData(ctx, storage.DeleteThreadTreeDataRequest{RootThreadID: "thread", ThreadIDs: []string{"thread"}}); err != nil {
+	if _, err := store.DeleteThreadTreeData(ctx, "thread"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.ProviderState(ctx, "thread"); !errors.Is(err, storage.ErrProviderStateNotFound) {
@@ -611,6 +938,9 @@ func TestSQLiteStoreAllowsDuplicateSubAgentPathWithDistinctThreadIDs(t *testing.
 	ctx := context.Background()
 	store, _ := openSQLiteStoreForTest(t)
 	now := time.Date(2026, 6, 23, 9, 0, 0, 0, time.UTC)
+	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "parent", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
 	first := sessiontree.ThreadMeta{
 		ID:             "child-a",
 		ParentThreadID: "parent",
@@ -1096,7 +1426,7 @@ func TestSQLiteStorePromptMetadataDeleteThreadTreeDataAndSchemaGuard(t *testing.
 	if text, ok, err := store.artifactText(ctx, artifactRef.ID); err != nil || !ok || text != "full durable tool output" {
 		t.Fatalf("reopened artifact text=%q ok=%v err=%v", text, ok, err)
 	}
-	if err := store.DeleteThreadTreeData(ctx, storage.DeleteThreadTreeDataRequest{RootThreadID: "thread", ThreadIDs: []string{"thread"}, PromptScopeIDs: []string{"thread"}}); err != nil {
+	if _, err := store.DeleteThreadTreeData(ctx, "thread"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Thread(ctx, "thread"); !errors.Is(err, sessiontree.ErrThreadNotFound) {
@@ -1117,7 +1447,7 @@ func TestSQLiteStorePromptMetadataDeleteThreadTreeDataAndSchemaGuard(t *testing.
 	if text, ok, err := store.artifactText(ctx, artifactRef.ID); err != nil || ok || text != "" {
 		t.Fatalf("artifact after delete text=%q ok=%v err=%v", text, ok, err)
 	}
-	if err := store.DeleteThreadTreeData(ctx, storage.DeleteThreadTreeDataRequest{RootThreadID: "thread", ThreadIDs: []string{"thread"}}); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+	if _, err := store.DeleteThreadTreeData(ctx, "thread"); !errors.Is(err, sessiontree.ErrThreadNotFound) {
 		t.Fatalf("second delete err = %v, want ErrThreadNotFound", err)
 	}
 	if err := store.putMetaValue(ctx, "schema_version", "999"); err != nil {
@@ -1139,11 +1469,7 @@ func TestSQLiteStoreDeleteThreadTreeDataDeletesNestedTree(t *testing.T) {
 	seedSQLiteThreadTreeData(t, ctx, store, "grandchild", "child")
 	seedSQLiteThreadTreeData(t, ctx, store, "survivor", "")
 
-	err := store.DeleteThreadTreeData(ctx, storage.DeleteThreadTreeDataRequest{
-		RootThreadID:   "parent",
-		ThreadIDs:      []string{"parent", "child", "grandchild"},
-		PromptScopeIDs: []string{"parent", "child", "grandchild"},
-	})
+	_, err := store.DeleteThreadTreeData(ctx, "parent")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1173,11 +1499,7 @@ func TestSQLiteStoreDeleteThreadTreeDataRollsBackOnDeleteFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := store.DeleteThreadTreeData(ctx, storage.DeleteThreadTreeDataRequest{
-		RootThreadID:   "parent",
-		ThreadIDs:      []string{"parent", "child", "grandchild"},
-		PromptScopeIDs: []string{"parent", "child", "grandchild"},
-	})
+	_, err := store.DeleteThreadTreeData(ctx, "parent")
 	if err == nil || !strings.Contains(err.Error(), "injected thread tree delete failure") {
 		t.Fatalf("DeleteThreadTreeData err = %v, want injected failure", err)
 	}
@@ -1352,10 +1674,25 @@ func openSQLiteStoreForTest(t *testing.T) (*Store, string) {
 	return store, path
 }
 
+func downgradeSQLiteSchemaToVersion12(t *testing.T, ctx context.Context, store *Store) {
+	t.Helper()
+	if err := store.putMetaValue(ctx, "schema_version", schemaVersion12); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.putMetaValue(ctx, "schema_fingerprint", schemaFingerprintVersion12); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func seedSQLiteThreadTreeData(t *testing.T, ctx context.Context, store *Store, threadID, parentThreadID string) {
 	t.Helper()
 	now := time.Date(2026, 7, 13, 10, 0, 0, 0, time.UTC)
-	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: threadID, ParentThreadID: parentThreadID, CreatedAt: now}); err != nil {
+	meta := sessiontree.ThreadMeta{ID: threadID, ParentThreadID: parentThreadID, CreatedAt: now}
+	if parentThreadID != "" {
+		meta.TaskName = threadID
+		meta.AgentPath = "/root/" + threadID
+	}
+	if _, err := store.CreateThread(ctx, meta); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := sessiontree.AppendMessage(ctx, store, threadID, "turn-1", session.Message{Role: session.User, Content: "hello"}); err != nil {

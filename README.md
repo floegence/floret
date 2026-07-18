@@ -70,7 +70,7 @@ execution lifecycle to Floret.
   tools with `tools.Registry`, then use `runtime.ToolSurfaceProvider` to
   refresh tools, hosted capabilities, instructions, and host context at safe
   points during a run.
-- **Keep conversations durable.** `runtime.Host` manages threads, turns,
+- **Keep conversations durable.** The Floret runtime manages threads, turns,
   retries, forks, parent-managed child threads, and provider-safe history.
 - **Put approval policy where it belongs.** Floret understands generic effects,
   resources, and approval state. Your product decides who may do what, where,
@@ -86,9 +86,10 @@ execution lifecycle to Floret.
 | You need to... | Use... |
 | --- | --- |
 | Configure an agent and a provider | `config.Config` or `config.Load` |
-| Run durable conversations | `runtime.NewHost` and concrete `*runtime.Host` |
-| Compact an idle thread | `runtime.CompactThreadRequest` |
-| Reload canonical context state | `Host.ReadThreadContext` or `ThreadReadHost.ReadThreadContext` |
+| Run durable conversations | `runtime.NewTurnExecutionHostFactory` |
+| Compact an idle thread | `runtime.NewThreadCompactionHostFactory` with `runtime.CompactThreadRequest` |
+| Manage interactive child threads | `runtime.NewSubAgentHostFactory` |
+| Reload canonical context state | `runtime.NewThreadReadHost` |
 | Keep Floret runtime data in memory or SQLite | `runtime.NewMemoryStore` or `runtime.OpenSQLiteStore` |
 | Keep model transport under product control | `runtime.ModelGateway` |
 | Define an agent's role and business instructions | `config.AgentProfile.SystemPrompt` or `config.Config.SystemPrompt` |
@@ -140,16 +141,20 @@ func main() {
 
 	store := runtime.NewMemoryStore()
 	defer store.Close()
-	runtimeRoot, err := runtime.NewHostRuntime(store)
+	bootstrap, err := runtime.NewHostBootstrap(store)
 	if err != nil {
 		log.Fatal(err)
 	}
-	threadCreator, err := runtime.NewThreadCreateHost(runtime.ThreadCapabilityOptions{Runtime: runtimeRoot})
+	threadCreator, err := runtime.NewThreadCreateHost(bootstrap, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	host, err := runtime.NewHost(runtime.HostOptions{
+	turnFactory, err := runtime.NewTurnExecutionHostFactory(bootstrap)
+	if err != nil {
+		log.Fatal(err)
+	}
+	turnHost, err := turnFactory.NewHost(runtime.TurnExecutionHostOptions{
+		ThreadID: "thread-1",
 		Config: config.Config{
 			Provider:     config.ProviderFake,
 			Model:        "fake-model",
@@ -160,7 +165,6 @@ func main() {
 				SystemPrompt: "Answer clearly and briefly.",
 			},
 		},
-		Runtime: runtimeRoot,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -171,7 +175,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	result, err := host.RunTurn(ctx, runtime.RunTurnRequest{
+	result, err := turnHost.RunTurn(ctx, runtime.RunTurnRequest{
 		ThreadID: thread.ID,
 		TurnID:   "turn-1",
 		RunID:    "run-1",
@@ -275,7 +279,8 @@ projections so unknown values cannot acquire a normal display state or lifecycle
 semantics from `Metadata`.
 
 Thread titles are always persisted by Floret. Set
-`HostOptions.ThreadTitleMode = runtime.ThreadTitleModeProvider` when Floret
+`TurnExecutionHostOptions.ThreadTitleMode = runtime.ThreadTitleModeProvider`
+when Floret
 should issue the dedicated provider request automatically. Products that choose
 titles themselves keep the default `runtime.ThreadTitleModeHostOwned` behavior
 and call `SetThreadTitle`; they must not store a second title copy.
@@ -310,13 +315,14 @@ lifecycle events stay on the separate internal harness sink.
 
 ```text
 Host UI/API
-  |
-  | CreateThread / RunTurn / CompactThread / RetryTurn
-  v
-runtime.Host
-  |
-  | provider loop, durable journal, tool dispatch, context lifecycle
-  v
+  |                  |                       |
+  | CreateThread     | RunTurn / RetryTurn    | CompactThread
+  v                  v                       v
+ThreadCreateHost  TurnExecutionHost  ThreadCompactionHost
+  |                  |                       |
+  | canonical journal| provider/tool loop    | context lifecycle
+  +------------------+-----------+-----------+
+                                 v
 Floret runtime
 ```
 
@@ -326,13 +332,15 @@ Floret is deterministic with the fake provider, so tool behavior, approval
 flows, retries, context pressure, and host UI projections can be tested without
 real model calls.
 
-`NewHost` returns the provider-backed read/run facade. Creation, title, fork,
-delete, and SubAgent maintenance are separate concrete capabilities:
-`ThreadCreateHost`, `ThreadTitleHost`, `ThreadForkHost`, `ThreadDeleteHost`,
-`ThreadReadHost`, and `SubAgentMaintenanceHost`. Construct these handles from
-the opaque `HostRuntime` at one bootstrap boundary, then pass only the selected
-handle to its coordinator. Application packages that need substitution should
-declare local interfaces containing only the methods used by that responsibility.
+Provider-backed execution uses separate thread-bound `TurnExecutionHost`,
+`ThreadCompactionHost`, and parent-bound `SubAgentHost` capabilities. Creation,
+read, title, fork, delete, parent-bound SubAgent read/maintenance, and bound
+pending-tool settlement are also separate concrete capabilities. Construct them from the opaque
+`HostBootstrap` at one composition root. Provider-backed and parent-bound work
+is issued through exact factories that cannot create unrelated lifecycle
+capabilities; pass only the selected factory or bound handle to its owner.
+Requests retain explicit identities and fail when they do not match the handle
+authority.
 
 ```bash
 go test ./...

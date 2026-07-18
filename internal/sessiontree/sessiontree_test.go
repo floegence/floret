@@ -178,7 +178,7 @@ func TestFileRepoReadsLongJSONLEntries(t *testing.T) {
 	}
 }
 
-func TestFileRepoSkipsMalformedThreadWithoutHidingValidThreads(t *testing.T) {
+func TestFileRepoRejectsMalformedThreadWithoutPartialReads(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	repo := NewFileRepo(root)
@@ -201,15 +201,8 @@ func TestFileRepoSkipsMalformedThreadWithoutHidingValidThreads(t *testing.T) {
 	}
 
 	restored := NewFileRepo(root)
-	entries, err := restored.Entries(ctx, "good")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 || entries[0].Message.Content != longResult {
-		t.Fatalf("good entries = %#v", entries)
-	}
-	if _, err := restored.Thread(ctx, "bad"); !errors.Is(err, ErrThreadNotFound) {
-		t.Fatalf("bad thread err = %v, want ErrThreadNotFound", err)
+	if _, err := restored.Entries(ctx, "good"); err == nil || !strings.Contains(err.Error(), "unexpected EOF") {
+		t.Fatalf("Entries(good) err = %v, want malformed repository failure", err)
 	}
 }
 
@@ -810,7 +803,7 @@ func TestFileRepoPersistsThreadLeafEntriesAndFork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if forkMeta.ForkedFromThreadID != "thread" || forkMeta.ForkedFromEntryID != user.ID {
+	if forkMeta.ParentThreadID != "" || forkMeta.ForkedFromThreadID != "thread" || forkMeta.ForkedFromEntryID != user.ID {
 		t.Fatalf("reloaded fork metadata = %#v", forkMeta)
 	}
 	forkPath, err := reloadedAgain.Path(ctx, "fork", "")
@@ -847,6 +840,153 @@ func TestFileRepoAppendAfterReloadDoesNotReuseEntryID(t *testing.T) {
 	}
 	if got := BuildContext(path, ContextOptions{}); len(got) != 2 || got[0].Content != "first" || got[1].Content != "second" {
 		t.Fatalf("path after reload append = %#v", got)
+	}
+}
+
+func TestMemoryRepoForkFailureDoesNotPublishPartialDestination(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemoryRepo()
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "source"}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := AppendMessage(ctx, repo, "source", "turn-1", session.Message{Role: session.User, Content: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Append(ctx, Entry{ThreadID: "source", TurnID: "turn-1", Type: EntryAssistantMessage, Message: session.Message{Role: session.Assistant, Content: "second"}}, AppendOptions{ParentID: first.ID}); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	_, err = repo.Fork(ctx, ForkOptions{
+		SourceThreadID: "source",
+		NewThreadID:    "fork",
+		RewriteEntry: func(entry Entry, _ ForkEntryIdentity) (Entry, error) {
+			calls++
+			if calls == 2 {
+				return Entry{}, errors.New("rewrite failed")
+			}
+			return entry, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "rewrite failed") {
+		t.Fatalf("Fork error = %v", err)
+	}
+	if _, err := repo.Thread(ctx, "fork"); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("partial fork thread err = %v", err)
+	}
+	if _, err := repo.Fork(ctx, ForkOptions{SourceThreadID: "source", NewThreadID: "fork"}); err != nil {
+		t.Fatalf("retry fork after rewrite failure: %v", err)
+	}
+}
+
+func TestFileRepoForkPersistenceFailureDoesNotPublishDestination(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	repo := NewFileRepo(root)
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "source"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AppendMessage(ctx, repo, "source", "turn-1", session.Message{Role: session.User, Content: "seed"}); err != nil {
+		t.Fatal(err)
+	}
+	destinationDir := filepath.Join(root, safePath("fork"))
+	if err := os.MkdirAll(destinationDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(destinationDir, "occupied"), []byte("occupied"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := repo.Fork(ctx, ForkOptions{SourceThreadID: "source", NewThreadID: "fork"}); err == nil {
+		t.Fatal("Fork succeeded despite occupied destination directory")
+	}
+	if _, err := repo.Thread(ctx, "fork"); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("failed fork remained in memory: %v", err)
+	}
+	tempDirs, err := filepath.Glob(filepath.Join(filepath.Dir(root), "."+filepath.Base(root)+"-fork-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tempDirs) != 0 {
+		t.Fatalf("failed fork left temporary directories: %v", tempDirs)
+	}
+	if err := os.RemoveAll(destinationDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Fork(ctx, ForkOptions{SourceThreadID: "source", NewThreadID: "fork"}); err != nil {
+		t.Fatalf("retry fork after persistence failure: %v", err)
+	}
+	if _, err := NewFileRepo(root).Thread(ctx, "fork"); err != nil {
+		t.Fatalf("reloaded retry fork: %v", err)
+	}
+}
+
+func TestFileRepoRejectsInvalidAgentTodoState(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		data string
+		want string
+	}{
+		{name: "malformed", data: `{"thread_id":`, want: "decode agent todo state"},
+		{name: "wrong thread", data: `{"thread_id":"other","version":1,"items":[]}`, want: "does not match"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			repo := NewFileRepo(root)
+			if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "thread"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, safePath("thread"), "agent_todos.json"), []byte(tc.data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := NewFileRepo(root).Thread(ctx, "thread"); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Thread error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestFileRepoRejectsThreadAuthorityCycle(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	repo := NewFileRepo(root)
+	for _, id := range []string{"a", "b"} {
+		if _, err := repo.CreateThread(ctx, ThreadMeta{ID: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, update := range []struct {
+		id       string
+		parentID string
+		path     string
+	}{
+		{id: "a", parentID: "b", path: "/root/b/a"},
+		{id: "b", parentID: "a", path: "/root/a/b"},
+	} {
+		path := filepath.Join(root, safePath(update.id), "thread.json")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var meta ThreadMeta
+		if err := json.Unmarshal(data, &meta); err != nil {
+			t.Fatal(err)
+		}
+		meta.ParentThreadID = update.parentID
+		meta.TaskName = update.id
+		meta.AgentPath = update.path
+		data, err = json.Marshal(meta)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := NewFileRepo(root).Thread(ctx, "a"); !errors.Is(err, ErrInvalidThreadAuthority) || !strings.Contains(err.Error(), "parent cycle") {
+		t.Fatalf("Thread cycle error = %v", err)
 	}
 }
 

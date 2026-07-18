@@ -1,6 +1,7 @@
 package sessiontree
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -71,6 +72,7 @@ var (
 	ErrInvalidParent            = errors.New("session tree invalid parent")
 	ErrActiveTurn               = errors.New("session tree thread already has an active turn")
 	ErrThreadExists             = errors.New("session tree thread already exists")
+	ErrInvalidThreadAuthority   = errors.New("session tree invalid thread authority")
 	ErrForkDestinationConflict  = errors.New("session tree fork destination conflicts with operation marker")
 	ErrAgentTodoVersionConflict = errors.New("session tree agent todo version conflict")
 )
@@ -112,6 +114,126 @@ type ThreadMeta struct {
 	UpdatedAt           time.Time         `json:"updated_at"`
 	Status              string            `json:"status,omitempty"`
 	LastViewedAt        time.Time         `json:"last_viewed_at,omitempty"`
+}
+
+// ValidateThreadMetaAuthority enforces the durable distinction between
+// independent root threads and parent-owned SubAgent threads.
+func ValidateThreadMetaAuthority(meta ThreadMeta) error {
+	id := strings.TrimSpace(meta.ID)
+	parentID := strings.TrimSpace(meta.ParentThreadID)
+	if id == "" {
+		return fmt.Errorf("%w: thread id is required", ErrInvalidThreadAuthority)
+	}
+	if parentID == "" {
+		if strings.TrimSpace(meta.ParentTurnID) != "" ||
+			strings.TrimSpace(meta.TaskName) != "" ||
+			strings.TrimSpace(meta.TaskDescription) != "" ||
+			strings.TrimSpace(meta.AgentPath) != "" ||
+			strings.TrimSpace(meta.HostProfileRef) != "" ||
+			strings.TrimSpace(meta.ForkMode) != "" || meta.Closed || strings.TrimSpace(meta.Status) != "" {
+			return fmt.Errorf("%w: root thread %q contains subagent ownership metadata", ErrInvalidThreadAuthority, id)
+		}
+	} else {
+		if parentID == id {
+			return fmt.Errorf("%w: thread %q cannot own itself", ErrInvalidThreadAuthority, id)
+		}
+		if strings.TrimSpace(meta.TaskName) == "" || strings.TrimSpace(meta.AgentPath) == "" {
+			return fmt.Errorf("%w: subagent thread %q requires task name and agent path", ErrInvalidThreadAuthority, id)
+		}
+	}
+	if (strings.TrimSpace(meta.ForkOperationID) == "") != (strings.TrimSpace(meta.ForkOperationNodeID) == "") {
+		return fmt.Errorf("%w: thread %q has incomplete fork operation identity", ErrInvalidThreadAuthority, id)
+	}
+	return nil
+}
+
+// SameThreadAuthority reports whether an update preserves immutable ownership
+// and lineage identity.
+func SameThreadAuthority(left, right ThreadMeta) bool {
+	return left.ParentThreadID == right.ParentThreadID &&
+		left.ParentTurnID == right.ParentTurnID &&
+		left.ForkedFromThreadID == right.ForkedFromThreadID &&
+		left.ForkedFromEntryID == right.ForkedFromEntryID &&
+		left.ForkOperationID == right.ForkOperationID &&
+		left.ForkOperationNodeID == right.ForkOperationNodeID &&
+		left.TaskName == right.TaskName &&
+		left.TaskDescription == right.TaskDescription &&
+		left.AgentPath == right.AgentPath &&
+		left.HostProfileRef == right.HostProfileRef &&
+		left.ForkMode == right.ForkMode
+}
+
+// ValidateThreadAuthorityGraph requires every SubAgent parent chain to be
+// acyclic and terminate at an existing root thread.
+func ValidateThreadAuthorityGraph(threads []ThreadMeta) error {
+	byID := make(map[string]ThreadMeta, len(threads))
+	for _, meta := range threads {
+		if err := ValidateThreadMetaAuthority(meta); err != nil {
+			return err
+		}
+		if _, duplicate := byID[meta.ID]; duplicate {
+			return fmt.Errorf("%w: duplicate thread %q", ErrInvalidThreadAuthority, meta.ID)
+		}
+		byID[meta.ID] = meta
+	}
+	for _, start := range threads {
+		seen := map[string]struct{}{}
+		current := start
+		for {
+			if _, duplicate := seen[current.ID]; duplicate {
+				return fmt.Errorf("%w: parent cycle includes thread %q", ErrInvalidThreadAuthority, current.ID)
+			}
+			seen[current.ID] = struct{}{}
+			parentID := strings.TrimSpace(current.ParentThreadID)
+			if parentID == "" {
+				break
+			}
+			parent, ok := byID[parentID]
+			if !ok {
+				return fmt.Errorf("%w: thread %q parent %q is missing", ErrInvalidThreadAuthority, current.ID, parentID)
+			}
+			current = parent
+		}
+	}
+	return nil
+}
+
+// ThreadAuthorityTreeIDs returns one root and all descendants owned through
+// ParentThreadID after validating the complete authority graph.
+func ThreadAuthorityTreeIDs(threads []ThreadMeta, rootThreadID string) ([]string, error) {
+	rootThreadID = strings.TrimSpace(rootThreadID)
+	if rootThreadID == "" {
+		return nil, errors.New("root thread id is required")
+	}
+	if err := ValidateThreadAuthorityGraph(threads); err != nil {
+		return nil, err
+	}
+	children := make(map[string][]string)
+	rootExists := false
+	for _, meta := range threads {
+		if meta.ID == rootThreadID {
+			rootExists = true
+		}
+		if parentID := strings.TrimSpace(meta.ParentThreadID); parentID != "" {
+			children[parentID] = append(children[parentID], meta.ID)
+		}
+	}
+	if !rootExists {
+		return nil, ErrThreadNotFound
+	}
+	for parentID := range children {
+		slices.Sort(children[parentID])
+	}
+	out := make([]string, 0, len(threads))
+	var walk func(string)
+	walk = func(threadID string) {
+		out = append(out, threadID)
+		for _, childID := range children[threadID] {
+			walk(childID)
+		}
+	}
+	walk(rootThreadID)
+	return out, nil
 }
 
 type Entry struct {
@@ -174,7 +296,22 @@ type ForkOptions struct {
 	Now             time.Time
 	TurnIDMap       map[string]string
 	RunIDMap        map[string]string
+	DestinationMeta *ForkDestinationMeta
 	RewriteEntry    func(Entry, ForkEntryIdentity) (Entry, error)
+}
+
+// ForkDestinationMeta is the child ownership metadata written atomically with
+// a fork destination. A nil value creates an independent root fork.
+type ForkDestinationMeta struct {
+	ParentThreadID  string `json:"parent_thread_id"`
+	ParentTurnID    string `json:"parent_turn_id,omitempty"`
+	TaskName        string `json:"task_name,omitempty"`
+	TaskDescription string `json:"task_description,omitempty"`
+	AgentPath       string `json:"agent_path,omitempty"`
+	HostProfileRef  string `json:"host_profile_ref,omitempty"`
+	ForkMode        string `json:"fork_mode,omitempty"`
+	Closed          bool   `json:"closed,omitempty"`
+	Status          string `json:"status,omitempty"`
 }
 
 type ForkEntryIdentity struct {
@@ -389,6 +526,14 @@ func (r *MemoryRepo) CreateThread(_ context.Context, meta ThreadMeta) (ThreadMet
 	}
 	meta.CreatedAt = now
 	meta.UpdatedAt = now
+	if err := ValidateThreadMetaAuthority(meta); err != nil {
+		return ThreadMeta{}, err
+	}
+	if parentID := strings.TrimSpace(meta.ParentThreadID); parentID != "" {
+		if _, ok := r.threads[parentID]; !ok {
+			return ThreadMeta{}, fmt.Errorf("%w: parent thread %q", ErrInvalidThreadAuthority, parentID)
+		}
+	}
 	r.threads[meta.ID] = meta
 	return meta, nil
 }
@@ -486,6 +631,9 @@ func (r *MemoryRepo) Thread(_ context.Context, threadID string) (ThreadMeta, err
 	if !ok {
 		return ThreadMeta{}, ErrThreadNotFound
 	}
+	if err := ValidateThreadMetaAuthority(meta); err != nil {
+		return ThreadMeta{}, err
+	}
 	return meta, nil
 }
 
@@ -494,6 +642,9 @@ func (r *MemoryRepo) ListThreads(_ context.Context, opts ListThreadsOptions) ([]
 	defer r.mu.Unlock()
 	out := make([]ThreadMeta, 0, len(r.threads))
 	for _, meta := range r.threads {
+		if err := ValidateThreadMetaAuthority(meta); err != nil {
+			return nil, err
+		}
 		out = append(out, meta)
 	}
 	return ApplyThreadListOptions(out, opts), nil
@@ -502,8 +653,15 @@ func (r *MemoryRepo) ListThreads(_ context.Context, opts ListThreadsOptions) ([]
 func (r *MemoryRepo) UpdateThread(_ context.Context, meta ThreadMeta) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.threads[meta.ID]; !ok {
+	current, ok := r.threads[meta.ID]
+	if !ok {
 		return ErrThreadNotFound
+	}
+	if err := ValidateThreadMetaAuthority(meta); err != nil {
+		return err
+	}
+	if !SameThreadAuthority(current, meta) {
+		return fmt.Errorf("%w: thread %q authority is immutable", ErrInvalidThreadAuthority, meta.ID)
 	}
 	meta.UpdatedAt = nonZeroTime(meta.UpdatedAt)
 	r.threads[meta.ID] = meta
@@ -700,8 +858,18 @@ func (r *MemoryRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, er
 	if err != nil {
 		return ThreadMeta{}, err
 	}
-	meta := ThreadMeta{ID: newID, ParentThreadID: opts.SourceThreadID, ForkedFromThreadID: opts.SourceThreadID, ForkedFromEntryID: targetID, ForkOperationID: opts.OperationID, ForkOperationNodeID: opts.OperationNodeID, CreatedAt: now, UpdatedAt: now}
+	meta := ThreadMeta{ID: newID, ForkedFromThreadID: opts.SourceThreadID, ForkedFromEntryID: targetID, ForkOperationID: opts.OperationID, ForkOperationNodeID: opts.OperationNodeID, CreatedAt: now, UpdatedAt: now}
+	applyForkDestinationMeta(&meta, opts.DestinationMeta)
+	if err := ValidateThreadMetaAuthority(meta); err != nil {
+		return ThreadMeta{}, err
+	}
+	if parentID := strings.TrimSpace(meta.ParentThreadID); parentID != "" {
+		if _, ok := r.threads[parentID]; !ok {
+			return ThreadMeta{}, fmt.Errorf("%w: parent thread %q", ErrInvalidThreadAuthority, parentID)
+		}
+	}
 	oldToNew := map[string]string{"": ""}
+	forkedEntries := make([]Entry, 0, len(path))
 	for _, entry := range path {
 		r.seq++
 		next := cloneEntry(entry)
@@ -728,18 +896,40 @@ func (r *MemoryRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, er
 		next.Raw = rawForEntry(next)
 		next.RawHash = stableHash(next.Raw)
 		oldToNew[entry.ID] = next.ID
-		r.entries[newID] = append(r.entries[newID], next)
+		forkedEntries = append(forkedEntries, next)
 		meta.LeafID = next.ID
 	}
-	r.threads[newID] = meta
+	var forkedTodo AgentTodoState
+	hasForkedTodo := false
 	if todo, ok := r.todos[opts.SourceThreadID]; ok {
 		todo.ThreadID = newID
 		todo.UpdatedByTurnID = rewriteForkID(todo.UpdatedByTurnID, opts.TurnIDMap)
 		todo.UpdatedByRunID = rewriteForkID(todo.UpdatedByRunID, opts.RunIDMap)
-		r.todos[newID] = cloneAgentTodoState(todo)
+		forkedTodo = cloneAgentTodoState(todo)
+		hasForkedTodo = true
+	}
+	r.entries[newID] = forkedEntries
+	r.threads[newID] = meta
+	if hasForkedTodo {
+		r.todos[newID] = forkedTodo
 	}
 	_ = ctx
 	return meta, nil
+}
+
+func applyForkDestinationMeta(meta *ThreadMeta, destination *ForkDestinationMeta) {
+	if meta == nil || destination == nil {
+		return
+	}
+	meta.ParentThreadID = strings.TrimSpace(destination.ParentThreadID)
+	meta.ParentTurnID = strings.TrimSpace(destination.ParentTurnID)
+	meta.TaskName = strings.TrimSpace(destination.TaskName)
+	meta.TaskDescription = strings.TrimSpace(destination.TaskDescription)
+	meta.AgentPath = strings.TrimSpace(destination.AgentPath)
+	meta.HostProfileRef = strings.TrimSpace(destination.HostProfileRef)
+	meta.ForkMode = strings.TrimSpace(destination.ForkMode)
+	meta.Closed = destination.Closed
+	meta.Status = strings.TrimSpace(destination.Status)
 }
 
 func forkDestinationMatches(meta ThreadMeta, opts ForkOptions, targetID string) bool {
@@ -747,7 +937,22 @@ func forkDestinationMatches(meta ThreadMeta, opts ForkOptions, targetID string) 
 		meta.ForkOperationID == opts.OperationID &&
 		meta.ForkOperationNodeID == opts.OperationNodeID &&
 		meta.ForkedFromThreadID == opts.SourceThreadID &&
-		meta.ForkedFromEntryID == targetID
+		meta.ForkedFromEntryID == targetID &&
+		MatchesForkDestinationMeta(meta, opts.DestinationMeta)
+}
+
+// MatchesForkDestinationMeta reports whether persisted ownership metadata
+// exactly matches the fork plan. It is used for replay idempotency.
+func MatchesForkDestinationMeta(meta ThreadMeta, destination *ForkDestinationMeta) bool {
+	want := ThreadMeta{}
+	applyForkDestinationMeta(&want, destination)
+	return meta.ParentThreadID == want.ParentThreadID &&
+		meta.ParentTurnID == want.ParentTurnID &&
+		meta.TaskName == want.TaskName &&
+		meta.TaskDescription == want.TaskDescription &&
+		meta.AgentPath == want.AgentPath &&
+		meta.HostProfileRef == want.HostProfileRef &&
+		meta.ForkMode == want.ForkMode
 }
 
 type FileRepo struct {
@@ -1074,24 +1279,71 @@ func (r *FileRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, erro
 	if err != nil {
 		return ThreadMeta{}, err
 	}
-	if err := r.saveThread(meta); err != nil {
-		return ThreadMeta{}, err
-	}
 	entries, err := r.mem.Entries(ctx, meta.ID)
 	if err != nil {
+		r.rollbackFork(meta.ID)
 		return ThreadMeta{}, err
 	}
-	for _, entry := range entries {
-		if err := r.appendEntry(entry); err != nil {
-			return ThreadMeta{}, err
-		}
+	var todo *AgentTodoState
+	if state, ok := r.mem.todos[meta.ID]; ok {
+		cloned := cloneAgentTodoState(state)
+		todo = &cloned
 	}
-	if todo, ok := r.mem.todos[meta.ID]; ok {
-		if err := r.saveAgentTodoState(todo); err != nil {
-			return ThreadMeta{}, err
-		}
+	if err := persistFileRepoFork(r.root, meta, entries, todo); err != nil {
+		r.rollbackFork(meta.ID)
+		return ThreadMeta{}, err
 	}
 	return meta, nil
+}
+
+func (r *FileRepo) rollbackFork(threadID string) {
+	delete(r.mem.threads, threadID)
+	delete(r.mem.entries, threadID)
+	delete(r.mem.todos, threadID)
+}
+
+func persistFileRepoFork(root string, meta ThreadMeta, entries []Entry, todo *AgentTodoState) error {
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return err
+	}
+	tempDir, err := os.MkdirTemp(filepath.Dir(root), "."+filepath.Base(root)+"-fork-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tempDir)
+	threadJSON, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "thread.json"), threadJSON, 0o600); err != nil {
+		return err
+	}
+	var journal bytes.Buffer
+	for _, entry := range entries {
+		data, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		journal.Write(data)
+		journal.WriteByte('\n')
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "entries.jsonl"), journal.Bytes(), 0o600); err != nil {
+		return err
+	}
+	if todo != nil {
+		data, err := json.MarshalIndent(todo, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(tempDir, "agent_todos.json"), data, 0o600); err != nil {
+			return err
+		}
+	}
+	finalDir := filepath.Join(root, safePath(meta.ID))
+	if err := os.Rename(tempDir, finalDir); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (r *FileRepo) load(ctx context.Context) error {
@@ -1106,19 +1358,25 @@ func (r *FileRepo) load(ctx context.Context) error {
 	for _, path := range threads {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			continue
+			return fmt.Errorf("read thread metadata %s: %w", path, err)
 		}
 		var meta ThreadMeta
 		if err := json.Unmarshal(data, &meta); err != nil {
-			continue
+			return fmt.Errorf("decode thread metadata %s: %w", path, err)
 		}
 		if meta.ID == "" {
-			continue
+			return fmt.Errorf("%w: thread metadata %s has empty id", ErrInvalidThreadAuthority, path)
+		}
+		if err := ValidateThreadMetaAuthority(meta); err != nil {
+			return fmt.Errorf("validate thread metadata %s: %w", path, err)
 		}
 		dir := filepath.Dir(path)
 		entries, err := readEntries(filepath.Join(dir, "entries.jsonl"))
 		if err != nil {
-			continue
+			return fmt.Errorf("read thread entries %s: %w", path, err)
+		}
+		if len(entries) == 0 && strings.TrimSpace(meta.LeafID) != "" {
+			return fmt.Errorf("thread metadata %s references leaf %q without journal entries", path, meta.LeafID)
 		}
 		repairedMeta := reconcileFileThreadLeaf(meta, entries)
 		if repairedMeta != meta {
@@ -1132,12 +1390,23 @@ func (r *FileRepo) load(ctx context.Context) error {
 		todoData, err := os.ReadFile(filepath.Join(dir, "agent_todos.json"))
 		if err == nil {
 			var todo AgentTodoState
-			if json.Unmarshal(todoData, &todo) == nil && todo.ThreadID == meta.ID {
-				mem.todos[meta.ID] = cloneAgentTodoState(todo)
+			if err := json.Unmarshal(todoData, &todo); err != nil {
+				return fmt.Errorf("decode agent todo state for thread %q: %w", meta.ID, err)
 			}
+			if todo.ThreadID != meta.ID {
+				return fmt.Errorf("agent todo state thread id %q does not match %q", todo.ThreadID, meta.ID)
+			}
+			mem.todos[meta.ID] = cloneAgentTodoState(todo)
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+	}
+	metas := make([]ThreadMeta, 0, len(mem.threads))
+	for _, meta := range mem.threads {
+		metas = append(metas, meta)
+	}
+	if err := ValidateThreadAuthorityGraph(metas); err != nil {
+		return err
 	}
 	r.mem = mem
 	return nil
