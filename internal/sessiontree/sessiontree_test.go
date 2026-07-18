@@ -312,6 +312,44 @@ func TestMoveLeafPreservesOldBranch(t *testing.T) {
 	}
 }
 
+func TestMemoryRepoPathPageUsesActivePathOrdinals(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemoryRepo()
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"root", "one", "two", "leaf"} {
+		if _, err := repo.Append(ctx, Entry{ThreadID: "thread", Type: EntryCustom}, AppendOptions{ID: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := repo.PathPage(ctx, "thread", "", "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := entryIDs(page.Entries); !slices.Equal(got, []string{"leaf", "two"}) || page.NewestOrdinal != 4 || !page.HasMore || page.NextEntryID != "two" {
+		t.Fatalf("first path page = %#v", page)
+	}
+	page, err = repo.PathPage(ctx, "thread", "", page.NextEntryID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := entryIDs(page.Entries); !slices.Equal(got, []string{"one", "root"}) || page.NewestOrdinal != 2 || page.HasMore || page.NextEntryID != "" {
+		t.Fatalf("second path page = %#v", page)
+	}
+	if _, err := repo.PathPage(ctx, "thread", "", "missing", 2); !errors.Is(err, ErrEntryNotFound) {
+		t.Fatalf("missing continuation err = %v", err)
+	}
+}
+
+func entryIDs(entries []Entry) []string {
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, entry.ID)
+	}
+	return out
+}
+
 func TestForkAtAndBeforeUserMessage(t *testing.T) {
 	ctx := context.Background()
 	repo := NewMemoryRepo()

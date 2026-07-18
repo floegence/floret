@@ -24,11 +24,8 @@ import (
 )
 
 const (
-	schemaVersion              = "12"
-	schemaVersion11            = "11"
-	schemaFingerprintVersion11 = "200ee3cee291df623ac3cc7d603121cb22601992b4851e13fb859081053f4c85"
-	rawEncoderVersion          = "1"
-	driverName                 = "sqlite"
+	rawEncoderVersion = "1"
+	driverName        = "sqlite"
 )
 
 type Option func(*options)
@@ -114,95 +111,9 @@ func (s *Store) init(ctx context.Context) error {
 			return err
 		}
 	}
-	hasSchema, err := s.hasUserSchema(ctx)
-	if err != nil {
-		return err
-	}
-	if _, err := s.db.ExecContext(ctx, schemaMetaSQL); err != nil {
-		return err
-	}
-	current, err := s.metaValue(ctx, "schema_version")
-	if errors.Is(err, storage.ErrMetadataNotFound) {
-		if hasSchema {
-			return errors.New("unsupported sqlite store without canonical schema metadata")
-		}
-		if _, err := s.db.ExecContext(ctx, schemaSQL); err != nil {
-			return err
-		}
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_meta(key, value) VALUES
-			('schema_version', ?), ('raw_encoder_version', ?), ('schema_fingerprint', ?)`, schemaVersion, rawEncoderVersion, canonicalSchemaFingerprint()); err != nil {
-			return err
-		}
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if current != schemaVersion {
-		if err := s.migrateSchema(ctx, current); err != nil {
-			return err
-		}
-	}
-	rawVersion, err := s.metaValue(ctx, "raw_encoder_version")
-	if err != nil {
-		return err
-	}
-	if rawVersion != rawEncoderVersion {
-		return fmt.Errorf("unsupported sqlite store raw encoder version %q", rawVersion)
-	}
-	fingerprint, err := s.metaValue(ctx, "schema_fingerprint")
-	if err != nil {
-		return fmt.Errorf("unsupported sqlite store schema fingerprint: %w", err)
-	}
-	if fingerprint != canonicalSchemaFingerprint() {
-		return fmt.Errorf("unsupported sqlite store schema fingerprint %q", fingerprint)
-	}
-	return nil
-}
-
-func (s *Store) migrateSchema(ctx context.Context, current string) error {
-	if current != schemaVersion11 {
-		return fmt.Errorf("unsupported sqlite store schema version %q", current)
-	}
 	return s.withImmediate(ctx, func(tx sqlRunner) error {
-		rawVersion, err := metaValue(ctx, tx, "raw_encoder_version")
-		if err != nil {
-			return fmt.Errorf("unsupported sqlite store raw encoder version: %w", err)
-		}
-		if rawVersion != rawEncoderVersion {
-			return fmt.Errorf("unsupported sqlite store raw encoder version %q", rawVersion)
-		}
-		fingerprint, err := metaValue(ctx, tx, "schema_fingerprint")
-		if err != nil {
-			return fmt.Errorf("unsupported sqlite store schema fingerprint: %w", err)
-		}
-		if fingerprint != schemaFingerprintVersion11 {
-			return fmt.Errorf("unsupported sqlite store schema fingerprint %q", fingerprint)
-		}
-		if _, err := tx.ExecContext(ctx, agentTodoStatesMigrationSQL); err != nil {
-			return fmt.Errorf("migrate sqlite store schema v11 to v12: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_version'`, schemaVersion); err != nil {
-			return fmt.Errorf("update sqlite store schema version: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_fingerprint'`, canonicalSchemaFingerprint()); err != nil {
-			return fmt.Errorf("update sqlite store schema fingerprint: %w", err)
-		}
-		return nil
+		return ensureSchema(ctx, tx)
 	})
-}
-
-func (s *Store) hasUserSchema(ctx context.Context) (bool, error) {
-	var count int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).Scan(&count); err != nil {
-		return false, err
-	}
-	return count > 0, nil
-}
-
-func canonicalSchemaFingerprint() string {
-	sum := sha256.Sum256([]byte(schemaSQL))
-	return hex.EncodeToString(sum[:])
 }
 
 func (s *Store) metaValue(ctx context.Context, key string) (string, error) {
@@ -526,6 +437,86 @@ func (s *Store) Path(ctx context.Context, threadID, leafID string) ([]sessiontre
 	}
 	slices.Reverse(rev)
 	return rev, nil
+}
+
+func (s *Store) PathPage(ctx context.Context, threadID, leafID, beforeEntryID string, limit int) (sessiontree.PathPage, error) {
+	if limit <= 0 {
+		return sessiontree.PathPage{}, errors.New("path page limit must be positive")
+	}
+	meta, err := loadThread(ctx, s.db, threadID)
+	if err != nil {
+		return sessiontree.PathPage{}, err
+	}
+	if leafID == "" {
+		leafID = meta.LeafID
+	}
+	if beforeEntryID != "" {
+		var parentID string
+		if err := s.db.QueryRowContext(ctx, `SELECT parent_id FROM entries WHERE thread_id = ? AND id = ?`, threadID, beforeEntryID).Scan(&parentID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return sessiontree.PathPage{}, sessiontree.ErrEntryNotFound
+			}
+			return sessiontree.PathPage{}, err
+		}
+		leafID = parentID
+	}
+	if leafID == "" {
+		return sessiontree.PathPage{}, nil
+	}
+	query := `WITH RECURSIVE path(depth, visited, cycle, ` + entryColumns + `) AS (
+SELECT 0, printf('/%d/', e.rowid), 0, ` + qualifiedEntryColumns("e") + `
+FROM entries e
+WHERE e.thread_id = ? AND e.id = ?
+UNION ALL
+SELECT path.depth + 1,
+	path.visited || printf('%d/', e.rowid),
+	instr(path.visited, printf('/%d/', e.rowid)) > 0,
+	` + qualifiedEntryColumns("e") + `
+FROM entries e
+JOIN path ON path.thread_id = e.thread_id AND path.parent_id = e.id
+	WHERE path.cycle = 0
+)
+SELECT ` + entryColumns + `, COUNT(*) OVER(), MAX(cycle) OVER() FROM path ORDER BY depth ASC LIMIT ?`
+	rows, err := s.db.QueryContext(ctx, query, threadID, leafID, limit+1)
+	if err != nil {
+		return sessiontree.PathPage{}, err
+	}
+	defer rows.Close()
+	entries := make([]sessiontree.Entry, 0, limit+1)
+	var newestOrdinal int64
+	var hasCycle bool
+	for rows.Next() {
+		var pageNewestOrdinal int64
+		var cycle int
+		entry, err := scanEntry(rows, &pageNewestOrdinal, &cycle)
+		if err != nil {
+			return sessiontree.PathPage{}, err
+		}
+		if newestOrdinal == 0 {
+			newestOrdinal = pageNewestOrdinal
+		} else if newestOrdinal != pageNewestOrdinal {
+			return sessiontree.PathPage{}, errors.New("sqlite store path page ordinal changed during query")
+		}
+		hasCycle = hasCycle || cycle != 0
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return sessiontree.PathPage{}, err
+	}
+	if hasCycle {
+		return sessiontree.PathPage{}, sessiontree.ErrInvalidParent
+	}
+	if len(entries) == 0 {
+		return sessiontree.PathPage{}, sessiontree.ErrEntryNotFound
+	}
+	page := sessiontree.PathPage{NewestOrdinal: newestOrdinal}
+	if len(entries) > limit {
+		page.HasMore = true
+		page.NextEntryID = entries[limit-1].ID
+		entries = entries[:limit]
+	}
+	page.Entries = entries
+	return page, nil
 }
 
 func (s *Store) MoveLeaf(ctx context.Context, threadID, entryID string) error {
@@ -1492,11 +1483,11 @@ func loadEntries(ctx context.Context, q sqlRunner, threadID string) ([]sessiontr
 	return out, rows.Err()
 }
 
-func scanEntry(rows *sql.Rows) (sessiontree.Entry, error) {
+func scanEntry(rows rowScanner, extra ...any) (sessiontree.Entry, error) {
 	var entry sessiontree.Entry
 	var typ, turnStatus, created, messageJSON, keptUserEntryIDsJSON, beforeJSON, afterJSON, metadataJSON string
 	var rawEncoder int
-	err := rows.Scan(
+	destinations := []any{
 		&entry.ThreadID, &entry.ID, &entry.ParentID, &typ, &entry.TurnID, &created,
 		&messageJSON, &entry.Raw, &entry.RawHash, &rawEncoder,
 		&turnStatus, &entry.Provider, &entry.Model, &entry.CompactionID, &entry.PreviousCompactionID,
@@ -1505,7 +1496,9 @@ func scanEntry(rows *sql.Rows) (sessiontree.Entry, error) {
 		&entry.CompactionReason, &entry.CompactionPhase, &entry.TokensBefore, &entry.TokensAfterEstimate,
 		&entry.CompactionOperationID, &entry.CompactionRequestID, &entry.CompactionSource,
 		&beforeJSON, &afterJSON, &entry.Error, &metadataJSON,
-	)
+	}
+	destinations = append(destinations, extra...)
+	err := rows.Scan(destinations...)
 	if err != nil {
 		return sessiontree.Entry{}, err
 	}
@@ -1748,236 +1741,13 @@ const entryColumns = `thread_id, id, parent_id, type, turn_id, created_at,
 	compaction_operation_id, compaction_request_id, compaction_source,
 	context_usage_before_json, context_usage_after_json, error, metadata_json`
 
-const schemaMetaSQL = `
-CREATE TABLE IF NOT EXISTS schema_meta (
-	key TEXT PRIMARY KEY,
-	value TEXT NOT NULL
-);
-`
-
-const forkOperationsSQL = `
-CREATE TABLE IF NOT EXISTS fork_operations (
-	operation_id TEXT PRIMARY KEY,
-	request_fingerprint TEXT NOT NULL,
-	state TEXT NOT NULL,
-	plan_json TEXT NOT NULL,
-	result_json TEXT NOT NULL DEFAULT '',
-	error_code TEXT NOT NULL DEFAULT '',
-	error_message TEXT NOT NULL DEFAULT '',
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL,
-	finished_at TEXT NOT NULL DEFAULT ''
-);
-
-CREATE INDEX IF NOT EXISTS fork_operations_state_updated_idx ON fork_operations(state, updated_at);
-`
-
-const schemaSQL = schemaMetaSQL + `
-
-	CREATE TABLE IF NOT EXISTS threads (
-		id TEXT PRIMARY KEY,
-		leaf_id TEXT NOT NULL DEFAULT '',
-		parent_thread_id TEXT NOT NULL DEFAULT '',
-		parent_turn_id TEXT NOT NULL DEFAULT '',
-		forked_from_thread_id TEXT NOT NULL DEFAULT '',
-		forked_from_entry_id TEXT NOT NULL DEFAULT '',
-		fork_operation_id TEXT NOT NULL DEFAULT '',
-		fork_operation_node_id TEXT NOT NULL DEFAULT '',
-		task_name TEXT NOT NULL DEFAULT '',
-		task_description TEXT NOT NULL DEFAULT '',
-		agent_path TEXT NOT NULL DEFAULT '',
-		host_profile_ref TEXT NOT NULL DEFAULT '',
-		fork_mode TEXT NOT NULL DEFAULT '',
-		closed INTEGER NOT NULL DEFAULT 0,
-		archived INTEGER NOT NULL DEFAULT 0,
-		title TEXT NOT NULL DEFAULT '',
-	title_status TEXT NOT NULL DEFAULT '',
-	title_source TEXT NOT NULL DEFAULT '',
-	title_updated_at TEXT NOT NULL DEFAULT '',
-	title_error TEXT NOT NULL DEFAULT '',
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL,
-	status TEXT NOT NULL DEFAULT '',
-	last_viewed_at TEXT NOT NULL DEFAULT ''
-);
-
-` + forkOperationsSQL + `
-
-CREATE TABLE IF NOT EXISTS entries (
-	thread_id TEXT NOT NULL,
-	id TEXT NOT NULL,
-	ordinal INTEGER NOT NULL,
-	parent_id TEXT NOT NULL DEFAULT '',
-	type TEXT NOT NULL,
-	turn_id TEXT NOT NULL DEFAULT '',
-	created_at TEXT NOT NULL,
-	message_json TEXT NOT NULL DEFAULT '{}',
-	raw TEXT NOT NULL DEFAULT '',
-	raw_hash TEXT NOT NULL DEFAULT '',
-	raw_encoder_version INTEGER NOT NULL DEFAULT 1,
-	turn_status TEXT NOT NULL DEFAULT '',
-	provider TEXT NOT NULL DEFAULT '',
-	model TEXT NOT NULL DEFAULT '',
-	compaction_id TEXT NOT NULL DEFAULT '',
-	previous_compaction_id TEXT NOT NULL DEFAULT '',
-	compacted_through_entry_id TEXT NOT NULL DEFAULT '',
-	summary_schema_version TEXT NOT NULL DEFAULT '',
-	compaction_generation INTEGER NOT NULL DEFAULT 0,
-	compaction_window_id TEXT NOT NULL DEFAULT '',
-	first_kept_entry_id TEXT NOT NULL DEFAULT '',
-	kept_user_entry_ids_json TEXT NOT NULL DEFAULT '[]',
-	summary TEXT NOT NULL DEFAULT '',
-	compaction_trigger TEXT NOT NULL DEFAULT '',
-	compaction_reason TEXT NOT NULL DEFAULT '',
-	compaction_phase TEXT NOT NULL DEFAULT '',
-	compaction_operation_id TEXT NOT NULL DEFAULT '',
-	compaction_request_id TEXT NOT NULL DEFAULT '',
-	compaction_source TEXT NOT NULL DEFAULT '',
-	tokens_before INTEGER NOT NULL DEFAULT 0,
-	tokens_after_estimate INTEGER NOT NULL DEFAULT 0,
-	context_usage_before_json TEXT NOT NULL DEFAULT '{}',
-	context_usage_after_json TEXT NOT NULL DEFAULT '{}',
-	error TEXT NOT NULL DEFAULT '',
-	metadata_json TEXT NOT NULL DEFAULT '{}',
-	PRIMARY KEY (thread_id, id),
-	UNIQUE (thread_id, ordinal),
-	FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS entries_parent_idx ON entries(thread_id, parent_id);
-CREATE INDEX IF NOT EXISTS entries_thread_ordinal_idx ON entries(thread_id, ordinal);
-CREATE INDEX IF NOT EXISTS threads_updated_at_idx ON threads(updated_at);
-
-CREATE TABLE IF NOT EXISTS provider_states (
-	thread_id TEXT PRIMARY KEY,
-	leaf_entry_id TEXT NOT NULL,
-	compatibility_key TEXT NOT NULL,
-	state_json TEXT NOT NULL,
-	created_by_run_id TEXT NOT NULL DEFAULT '',
-	created_by_turn_id TEXT NOT NULL DEFAULT '',
-	updated_at TEXT NOT NULL,
-	FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS agent_todo_states (
-	thread_id TEXT PRIMARY KEY,
-	version INTEGER NOT NULL,
-	items_json TEXT NOT NULL,
-	updated_at TEXT NOT NULL,
-	updated_by_turn_id TEXT NOT NULL DEFAULT '',
-	updated_by_run_id TEXT NOT NULL DEFAULT '',
-	updated_by_tool_call_id TEXT NOT NULL DEFAULT '',
-	FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
-);
-
-` + activeTurnLeasesSQL + `
-
-CREATE TABLE IF NOT EXISTS prompt_segments (
-	rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-	id TEXT NOT NULL,
-	prompt_scope_id TEXT NOT NULL,
-	provider TEXT NOT NULL,
-	model TEXT NOT NULL,
-	sequence INTEGER NOT NULL DEFAULT 0,
-	created_at TEXT NOT NULL,
-	data_json TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS prompt_segments_lookup_idx ON prompt_segments(prompt_scope_id, provider, model, rowid);
-
-CREATE TABLE IF NOT EXISTS prompt_toolsets (
-	rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-	id TEXT NOT NULL,
-	prompt_scope_id TEXT NOT NULL,
-	provider TEXT NOT NULL,
-	model TEXT NOT NULL,
-	epoch INTEGER NOT NULL DEFAULT 0,
-	created_at TEXT NOT NULL,
-	data_json TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS prompt_toolsets_lookup_idx ON prompt_toolsets(prompt_scope_id, provider, model, rowid);
-
-CREATE TABLE IF NOT EXISTS prompt_requests (
-	rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-	id TEXT NOT NULL,
-	prompt_scope_id TEXT NOT NULL,
-	provider TEXT NOT NULL,
-	model TEXT NOT NULL,
-	created_at TEXT NOT NULL,
-	data_json TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS prompt_requests_scope_idx ON prompt_requests(prompt_scope_id, rowid);
-
-CREATE TABLE IF NOT EXISTS prompt_responses (
-	rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-	request_id TEXT NOT NULL,
-	prompt_scope_id TEXT NOT NULL,
-	created_at TEXT NOT NULL,
-	data_json TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS prompt_responses_scope_idx ON prompt_responses(prompt_scope_id, rowid);
-
-CREATE TABLE IF NOT EXISTS tool_output_artifacts (
-	rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-	id TEXT NOT NULL UNIQUE,
-	run_id TEXT NOT NULL DEFAULT '',
-	thread_id TEXT NOT NULL,
-	turn_id TEXT NOT NULL DEFAULT '',
-	prompt_scope_id TEXT NOT NULL DEFAULT '',
-	step INTEGER NOT NULL DEFAULT 0,
-	call_id TEXT NOT NULL DEFAULT '',
-	tool_name TEXT NOT NULL DEFAULT '',
-	kind TEXT NOT NULL,
-	mime TEXT NOT NULL,
-	safe_label TEXT NOT NULL,
-	url TEXT NOT NULL,
-	size_bytes INTEGER NOT NULL DEFAULT 0,
-	sha256 TEXT NOT NULL,
-	text TEXT NOT NULL,
-	metadata_json TEXT NOT NULL DEFAULT '{}',
-	created_at TEXT NOT NULL,
-	FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS tool_output_artifacts_thread_idx ON tool_output_artifacts(thread_id, rowid);
-
-CREATE TABLE IF NOT EXISTS metadata_records (
-	namespace TEXT NOT NULL,
-	id TEXT NOT NULL,
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL,
-	data_json TEXT NOT NULL,
-	PRIMARY KEY(namespace, id)
-);
-
-CREATE INDEX IF NOT EXISTS metadata_records_namespace_updated_idx ON metadata_records(namespace, updated_at, id);
-`
-
-const activeTurnLeasesSQL = `
-CREATE TABLE IF NOT EXISTS active_turn_leases (
-	thread_id TEXT PRIMARY KEY,
-	turn_id TEXT NOT NULL DEFAULT '',
-	owner_id TEXT NOT NULL DEFAULT '',
-	created_at TEXT NOT NULL,
-	FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
-);
-`
-
-const agentTodoStatesMigrationSQL = `
-CREATE TABLE agent_todo_states (
-	thread_id TEXT PRIMARY KEY,
-	version INTEGER NOT NULL,
-	items_json TEXT NOT NULL,
-	updated_at TEXT NOT NULL,
-	updated_by_turn_id TEXT NOT NULL DEFAULT '',
-	updated_by_run_id TEXT NOT NULL DEFAULT '',
-	updated_by_tool_call_id TEXT NOT NULL DEFAULT '',
-	FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
-);
-`
+func qualifiedEntryColumns(alias string) string {
+	columns := strings.Split(entryColumns, ",")
+	for index, column := range columns {
+		columns[index] = alias + "." + strings.TrimSpace(column)
+	}
+	return strings.Join(columns, ", ")
+}
 
 var _ storage.Store = (*Store)(nil)
 var _ artifact.Store = (*Store)(nil)

@@ -533,6 +533,24 @@ type PendingApprovals struct {
 	GeneratedAt time.Time         `json:"generated_at"`
 }
 
+func (p PendingApprovals) Validate() error {
+	if strings.TrimSpace(string(p.ThreadID)) == "" {
+		return errors.New("pending approvals require thread id")
+	}
+	if p.GeneratedAt.IsZero() {
+		return errors.New("pending approvals require generated time")
+	}
+	for index, approval := range p.Approvals {
+		if err := approval.Validate(); err != nil {
+			return fmt.Errorf("pending approval %d: %w", index, err)
+		}
+		if approval.ThreadID != p.ThreadID {
+			return fmt.Errorf("pending approval %d thread identity mismatch", index)
+		}
+	}
+	return nil
+}
+
 type PendingToolSettlementResult struct {
 	Target                 PendingToolSettlementTarget `json:"target"`
 	Event                  ThreadDetailEvent           `json:"event"`
@@ -544,6 +562,13 @@ type PendingToolSettlementResult struct {
 type PendingApprovalResource struct {
 	Kind  string `json:"kind,omitempty"`
 	Value string `json:"value,omitempty"`
+}
+
+func (r PendingApprovalResource) Validate() error {
+	if strings.TrimSpace(r.Kind) == "" || strings.TrimSpace(r.Value) == "" {
+		return errors.New("pending approval resource requires kind and value")
+	}
+	return nil
 }
 
 type PendingApproval struct {
@@ -571,6 +596,44 @@ type PendingApproval struct {
 	Destructive bool                      `json:"destructive,omitempty"`
 	OpenWorld   bool                      `json:"open_world,omitempty"`
 	Reason      string                    `json:"reason,omitempty"`
+}
+
+func (p PendingApproval) Validate() error {
+	if strings.TrimSpace(p.ApprovalID) == "" || strings.TrimSpace(p.ToolCallID) == "" {
+		return errors.New("pending approval requires approval and tool call identities")
+	}
+	if strings.TrimSpace(p.ToolName) == "" || strings.TrimSpace(p.ToolKind) == "" {
+		return errors.New("pending approval requires tool name and kind")
+	}
+	if strings.TrimSpace(string(p.RunID)) == "" || strings.TrimSpace(string(p.ThreadID)) == "" || strings.TrimSpace(string(p.TurnID)) == "" {
+		return errors.New("pending approval requires run, thread, and turn identities")
+	}
+	if p.Step <= 0 {
+		return errors.New("pending approval step must be positive")
+	}
+	if p.BatchSize <= 0 || p.BatchIndex < 0 || p.BatchIndex >= p.BatchSize {
+		return errors.New("pending approval batch position is invalid")
+	}
+	if p.State != "requested" || p.Revision <= 0 || p.Epoch <= 0 {
+		return errors.New("pending approval lifecycle state is invalid")
+	}
+	if p.RequestedAt.IsZero() || !p.ResolvedAt.IsZero() {
+		return errors.New("pending approval timestamps are invalid")
+	}
+	if strings.TrimSpace(p.ArgsHash) == "" {
+		return errors.New("pending approval requires args hash")
+	}
+	for index, resource := range p.Resources {
+		if err := resource.Validate(); err != nil {
+			return fmt.Errorf("pending approval resource %d: %w", index, err)
+		}
+	}
+	for index, effect := range p.Effects {
+		if strings.TrimSpace(effect) == "" {
+			return fmt.Errorf("pending approval effect %d is empty", index)
+		}
+	}
+	return nil
 }
 
 type SubAgentDetailEventKind string
@@ -1734,7 +1797,11 @@ func (h *Host) ListPendingApprovals(ctx context.Context, req ListPendingApproval
 	if err != nil {
 		return PendingApprovals{}, runtimeHostError(err)
 	}
-	return pendingApprovals(result), nil
+	out := pendingApprovals(result)
+	if err := out.Validate(); err != nil {
+		return PendingApprovals{}, fmt.Errorf("validate pending approvals: %w", err)
+	}
+	return out, nil
 }
 
 func (h *Host) ReadTurnProjection(ctx context.Context, req ReadTurnProjectionRequest) (ThreadTurnProjection, error) {

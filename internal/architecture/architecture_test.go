@@ -515,7 +515,10 @@ func TestPromptCacheIdentityUsesPromptScope(t *testing.T) {
 		}
 	}
 
-	sqliteText := readTextFile(t, filepath.Join("internal", "storage", "sqlite", "sqlitestore.go"))
+	sqliteText := strings.Join([]string{
+		readTextFile(t, filepath.Join("internal", "storage", "sqlite", "schema.go")),
+		readTextFile(t, filepath.Join("internal", "storage", "sqlite", "sqlitestore.go")),
+	}, "\n")
 	for _, want := range []string{"prompt_scope_id TEXT NOT NULL", "DeletePromptScopes", "DeleteThreadTreeData"} {
 		if !strings.Contains(sqliteText, want) {
 			t.Fatalf("sqlite storage contract missing %q", want)
@@ -722,7 +725,7 @@ func textFiles(t *testing.T, root string) []string {
 
 func sqlTableDDL(t *testing.T, text, table string) string {
 	t.Helper()
-	startMarker := "CREATE TABLE IF NOT EXISTS " + table + " ("
+	startMarker := "CREATE TABLE " + table + " ("
 	start := strings.Index(text, startMarker)
 	if start < 0 {
 		t.Fatalf("sqlite schema missing table %s", table)

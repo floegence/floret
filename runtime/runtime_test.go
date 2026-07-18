@@ -5524,6 +5524,15 @@ func TestListThreadTurnsPagesCanonicalTimeline(t *testing.T) {
 				t.Fatal(err)
 			}
 			append("turn-4", "run-4", "four", "answer four", sessiontree.TurnCompleted)
+			for index := 0; index < agentharness.MaxThreadDetailEventLimit+1; index++ {
+				if _, err := store.repo.Append(ctx, sessiontree.Entry{
+					ThreadID: "thread",
+					Type:     sessiontree.EntryCustom,
+					Metadata: map[string]string{"type": "product_neutral_observation"},
+				}, sessiontree.AppendOptions{}); err != nil {
+					t.Fatal(err)
+				}
+			}
 
 			all, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", AfterOrdinal: 0, Limit: 10})
 			if err != nil {
@@ -5554,6 +5563,10 @@ func TestListThreadTurnsPagesCanonicalTimeline(t *testing.T) {
 			tail, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 2})
 			if err != nil || len(tail.Turns) != 2 || tail.Turns[0].TurnID != "turn-3" || tail.Turns[1].TurnID != "turn-4" || !tail.HasMore {
 				t.Fatalf("tail page = %#v err=%v", tail, err)
+			}
+			latest, err := maintenance.ReadLatestThreadTurn(ctx, "thread")
+			if err != nil || latest.TurnID != "turn-4" || latest.Ordinal != tail.Turns[1].Ordinal {
+				t.Fatalf("latest turn = %#v err=%v", latest, err)
 			}
 			snapshot, err := maintenance.ReadThread(ctx, "thread")
 			if err != nil || snapshot.LatestRunID != "run-4" || snapshot.ThroughOrdinal != all.ThroughOrdinal {

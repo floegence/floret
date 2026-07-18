@@ -305,19 +305,20 @@ func TestSQLiteStoreVersion11MigrationRollsBackOnMetadataFailure(t *testing.T) {
 		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_version'`, schemaVersion11); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_fingerprint'`, schemaFingerprintVersion11); err != nil {
-			return err
-		}
-		_, err := tx.ExecContext(ctx, `CREATE TRIGGER reject_schema_version_update
-			BEFORE UPDATE ON schema_meta
-			WHEN OLD.key = 'schema_version'
-			BEGIN
-				SELECT RAISE(ABORT, 'reject schema version update');
-			END`)
+		_, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_fingerprint'`, schemaFingerprintVersion11)
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
+	originalApply := schemaMigrations[0].apply
+	schemaMigrations[0].apply = func(ctx context.Context, tx sqlRunner) error {
+		if err := originalApply(ctx, tx); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `DELETE FROM schema_meta WHERE key = 'schema_version'`)
+		return err
+	}
+	t.Cleanup(func() { schemaMigrations[0].apply = originalApply })
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -343,6 +344,50 @@ func TestSQLiteStoreVersion11MigrationRollsBackOnMetadataFailure(t *testing.T) {
 	}
 	if todoTables != 0 {
 		t.Fatalf("agent todo table count after rollback = %d, want 0", todoTables)
+	}
+}
+
+func TestSQLiteStoreAcceptsPublishedVersion12FingerprintWithoutRewritingIt(t *testing.T) {
+	ctx := context.Background()
+	store, path := openSQLiteStoreForTest(t)
+	if err := store.putMetaValue(ctx, "schema_fingerprint", schemaFingerprintVersion12); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("open published v12 schema: %v", err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var fingerprint string
+	if err := db.QueryRow(`SELECT value FROM schema_meta WHERE key = 'schema_fingerprint'`).Scan(&fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if fingerprint != schemaFingerprintVersion12 {
+		t.Fatalf("schema fingerprint = %q, want published fingerprint %q", fingerprint, schemaFingerprintVersion12)
+	}
+}
+
+func TestSQLiteStoreRejectsSchemaContractDrift(t *testing.T) {
+	ctx := context.Background()
+	store, path := openSQLiteStoreForTest(t)
+	if _, err := store.db.ExecContext(ctx, `CREATE INDEX unexpected_threads_status_idx ON threads(status)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), "schema contract mismatch") {
+		t.Fatalf("schema drift open err = %v", err)
 	}
 }
 
@@ -761,6 +806,50 @@ func TestSQLiteStoreRejectsInvalidParentDetectsPathDamageAndSerializesConcurrent
 		}
 		seen[entry.ID] = struct{}{}
 	}
+}
+
+func TestSQLiteStorePathPageUsesActivePathOrdinals(t *testing.T) {
+	ctx := context.Background()
+	store, _ := openSQLiteStoreForTest(t)
+	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"root", "one", "two", "leaf"} {
+		if _, err := store.Append(ctx, sessiontree.Entry{ThreadID: "thread", Type: sessiontree.EntryCustom}, sessiontree.AppendOptions{ID: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := store.PathPage(ctx, "thread", "", "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pathEntryIDs(page.Entries); !slices.Equal(got, []string{"leaf", "two"}) || page.NewestOrdinal != 4 || !page.HasMore || page.NextEntryID != "two" {
+		t.Fatalf("first path page = %#v", page)
+	}
+	page, err = store.PathPage(ctx, "thread", "", page.NextEntryID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pathEntryIDs(page.Entries); !slices.Equal(got, []string{"one", "root"}) || page.NewestOrdinal != 2 || page.HasMore || page.NextEntryID != "" {
+		t.Fatalf("second path page = %#v", page)
+	}
+	if _, err := store.PathPage(ctx, "thread", "", "missing", 2); !errors.Is(err, sessiontree.ErrEntryNotFound) {
+		t.Fatalf("missing continuation err = %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE entries SET parent_id = 'leaf' WHERE thread_id = 'thread' AND id = 'root'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PathPage(ctx, "thread", "", "", 2); !errors.Is(err, sessiontree.ErrInvalidParent) {
+		t.Fatalf("cyclic path page err = %v", err)
+	}
+}
+
+func pathEntryIDs(entries []sessiontree.Entry) []string {
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, entry.ID)
+	}
+	return out
 }
 
 func TestSQLiteStoreForkRewritesCompactionEntryReferences(t *testing.T) {

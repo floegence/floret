@@ -64,6 +64,35 @@ func (h *ThreadMaintenanceHost) ListThreadTurns(ctx context.Context, req ListThr
 	return listThreadTurns(ctx, h.harness, req)
 }
 
+func (h *Host) ReadLatestThreadTurn(ctx context.Context, threadID ThreadID) (ThreadTurnSnapshot, error) {
+	return readLatestThreadTurn(ctx, h.harness, threadID)
+}
+
+func (h *ThreadMaintenanceHost) ReadLatestThreadTurn(ctx context.Context, threadID ThreadID) (ThreadTurnSnapshot, error) {
+	return readLatestThreadTurn(ctx, h.harness, threadID)
+}
+
+func readLatestThreadTurn(ctx context.Context, harness *agentharness.AgentHarness, threadID ThreadID) (ThreadTurnSnapshot, error) {
+	if strings.TrimSpace(string(threadID)) == "" {
+		return ThreadTurnSnapshot{}, errors.New("thread id is required")
+	}
+	detail, err := harness.ReadLatestThreadDetailEvents(ctx, string(threadID), true)
+	if err != nil {
+		return ThreadTurnSnapshot{}, runtimeHostError(err)
+	}
+	turns, _, err := projectThreadTurnSnapshots(threadID, threadDetailEvents(detail.Events))
+	if err != nil {
+		return ThreadTurnSnapshot{}, err
+	}
+	if len(turns) == 0 {
+		return ThreadTurnSnapshot{}, ErrTurnNotFound
+	}
+	if len(turns) != 1 {
+		return ThreadTurnSnapshot{}, fmt.Errorf("latest thread turn query returned %d turns", len(turns))
+	}
+	return turns[0], nil
+}
+
 func listThreadTurns(ctx context.Context, harness *agentharness.AgentHarness, req ListThreadTurnsRequest) (ThreadTurnsPage, error) {
 	if strings.TrimSpace(string(req.ThreadID)) == "" {
 		return ThreadTurnsPage{}, errors.New("thread id is required")

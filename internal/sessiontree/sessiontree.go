@@ -224,8 +224,18 @@ type Repo interface {
 	Entry(context.Context, string, string) (Entry, error)
 	Entries(context.Context, string) ([]Entry, error)
 	Path(context.Context, string, string) ([]Entry, error)
+	PathPage(context.Context, string, string, string, int) (PathPage, error)
 	MoveLeaf(context.Context, string, string) error
 	Fork(context.Context, ForkOptions) (ThreadMeta, error)
+}
+
+type PathPage struct {
+	Entries     []Entry
+	NextEntryID string
+	HasMore     bool
+	// NewestOrdinal is the active-path ordinal of Entries[0]. Entries are
+	// returned newest first, so later entries decrement this value by one.
+	NewestOrdinal int64
 }
 
 type ThreadListRepo interface {
@@ -584,6 +594,44 @@ func (r *MemoryRepo) Path(_ context.Context, threadID, leafID string) ([]Entry, 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return pathLocked(r.threads, r.entries, threadID, leafID)
+}
+
+func (r *MemoryRepo) PathPage(_ context.Context, threadID, leafID, beforeEntryID string, limit int) (PathPage, error) {
+	if limit <= 0 {
+		return PathPage{}, errors.New("path page limit must be positive")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	path, err := pathLocked(r.threads, r.entries, threadID, leafID)
+	if err != nil {
+		return PathPage{}, err
+	}
+	end := len(path)
+	if beforeEntryID != "" {
+		end = -1
+		for index, entry := range path {
+			if entry.ID == beforeEntryID {
+				end = index
+				break
+			}
+		}
+		if end < 0 {
+			return PathPage{}, ErrEntryNotFound
+		}
+	}
+	start := end - limit
+	if start < 0 {
+		start = 0
+	}
+	entries := make([]Entry, 0, end-start)
+	for index := end - 1; index >= start; index-- {
+		entries = append(entries, cloneEntry(path[index]))
+	}
+	page := PathPage{Entries: entries, HasMore: start > 0, NewestOrdinal: int64(end)}
+	if page.HasMore {
+		page.NextEntryID = path[start].ID
+	}
+	return page, nil
 }
 
 func (r *MemoryRepo) MoveLeaf(_ context.Context, threadID, entryID string) error {
@@ -961,6 +1009,15 @@ func (r *FileRepo) Path(ctx context.Context, threadID, leafID string) ([]Entry, 
 		return nil, err
 	}
 	return r.mem.Path(ctx, threadID, leafID)
+}
+
+func (r *FileRepo) PathPage(ctx context.Context, threadID, leafID, beforeEntryID string, limit int) (PathPage, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.load(ctx); err != nil {
+		return PathPage{}, err
+	}
+	return r.mem.PathPage(ctx, threadID, leafID, beforeEntryID, limit)
 }
 
 func (r *FileRepo) MoveLeaf(ctx context.Context, threadID, entryID string) error {

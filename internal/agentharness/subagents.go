@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -921,6 +922,104 @@ func (h *AgentHarness) ListThreadDetailEvents(ctx context.Context, opts ListThre
 		NextOrdinal:  nextOrdinal,
 		HasMore:      hasMore,
 		RetainedFrom: retainedFrom,
+		GeneratedAt:  h.now(),
+	}, nil
+}
+
+// ReadLatestThreadDetailEvents reads only the active-path entries required to
+// project the latest admitted turn. It walks backwards until it has the latest
+// started marker and the canonical user input used by that turn.
+func (h *AgentHarness) ReadLatestThreadDetailEvents(ctx context.Context, threadID string, includeRaw bool) (ThreadDetailEvents, error) {
+	if h == nil {
+		return ThreadDetailEvents{}, errors.New("agent harness is nil")
+	}
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return ThreadDetailEvents{}, errors.New("thread id is required")
+	}
+	meta, err := h.options.Repo.Thread(ctx, threadID)
+	if err != nil {
+		return ThreadDetailEvents{}, err
+	}
+	type pathEntry struct {
+		entry   sessiontree.Entry
+		ordinal int64
+	}
+	selected := make([]pathEntry, 0, DefaultThreadDetailEventLimit)
+	beforeEntryID := ""
+	latestTurnID := ""
+	hasCanonicalUser := false
+	for {
+		page, err := h.options.Repo.PathPage(ctx, threadID, meta.LeafID, beforeEntryID, MaxThreadDetailEventLimit)
+		if err != nil {
+			return ThreadDetailEvents{}, err
+		}
+		for index, entry := range page.Entries {
+			ordinal := page.NewestOrdinal - int64(index)
+			selected = append(selected, pathEntry{entry: entry, ordinal: ordinal})
+			if latestTurnID == "" {
+				if entry.Type != sessiontree.EntryTurnMarker || entry.TurnStatus != sessiontree.TurnStarted {
+					continue
+				}
+				latestTurnID = strings.TrimSpace(entry.TurnID)
+				if latestTurnID == "" || strings.TrimSpace(entry.Metadata["run_id"]) == "" {
+					return ThreadDetailEvents{}, errors.New("latest turn started marker has incomplete identity")
+				}
+				for _, candidate := range selected {
+					if candidate.entry.Type == sessiontree.EntryUserMessage && strings.TrimSpace(candidate.entry.TurnID) == latestTurnID {
+						hasCanonicalUser = true
+						break
+					}
+				}
+				if hasCanonicalUser {
+					break
+				}
+				continue
+			}
+			if entry.Type == sessiontree.EntryUserMessage {
+				hasCanonicalUser = true
+				break
+			}
+		}
+		if latestTurnID != "" && hasCanonicalUser {
+			break
+		}
+		if !page.HasMore {
+			break
+		}
+		if strings.TrimSpace(page.NextEntryID) == "" {
+			return ThreadDetailEvents{}, errors.New("session tree path pagination did not provide a continuation entry")
+		}
+		beforeEntryID = page.NextEntryID
+	}
+	if latestTurnID == "" || !hasCanonicalUser {
+		return ThreadDetailEvents{GeneratedAt: h.now()}, nil
+	}
+	slices.Reverse(selected)
+	entries := make([]sessiontree.Entry, 0, len(selected))
+	for _, item := range selected {
+		entries = append(entries, item.entry)
+	}
+	activityContext := subAgentDetailActivityContext{
+		resultCallIDs: subAgentDetailResultCallIDs(entries),
+		runIDs:        subAgentDetailTurnRunIDs(entries),
+	}
+	events := make([]SubAgentDetailEvent, 0, len(entries))
+	var nextOrdinal int64
+	for _, item := range selected {
+		event, ok := h.subAgentDetailEvent(item.entry, item.ordinal, includeRaw, activityContext)
+		if !ok {
+			continue
+		}
+		events = append(events, event)
+		if item.ordinal > nextOrdinal {
+			nextOrdinal = item.ordinal
+		}
+	}
+	return ThreadDetailEvents{
+		Events:       events,
+		NextOrdinal:  nextOrdinal,
+		RetainedFrom: selected[0].ordinal,
 		GeneratedAt:  h.now(),
 	}, nil
 }
