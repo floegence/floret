@@ -14,29 +14,30 @@ provider execution.
 
 # Layer Responsibilities
 
-`runtime.Host` is the concrete public durable conversation facade. It starts
-threads, runs turns, retries, completes or settles pending tool work, manages
-durable child threads, deletes thread data, and returns host-safe snapshots.
-`runtime.ThreadMaintenanceHost` is a separate concrete provider-free facade.
-Downstream responsibility domains declare their own minimal interfaces when
-they need substitution, so a turn runner, projection reader, fork coordinator,
-or pending-tool settler depends only on the capability it actually calls.
+`runtime.Host` is the provider-backed read and active-execution facade. It runs
+turns, retries, compacts, settles active pending work, manages interactive child
+threads, and returns host-safe snapshots. It does not create, title, fork,
+delete, or bulk-close thread data.
+
+Provider-free lifecycle transitions use narrow concrete capabilities. Bootstrap
+code creates `ThreadCreateHost`, `ThreadTitleHost`, `ThreadForkHost`,
+`ThreadDeleteHost`, `ThreadReadHost`, `SubAgentMaintenanceHost`, and the
+`PendingToolSettlementHost` from one opaque `HostRuntime`. Each coordinator
+receives only the handle for its transition; no coordinator receives a raw
+`runtime.Store` or the opaque runtime token. `ThreadReadHost` is read-only and
+is the reload source for canonical thread, turn, context, todo, and SubAgent
+projections. Pending approval reads remain on the provider-backed `Host`, whose
+active harness owns the current approval map.
 Terminal execution facts and terminal display projection availability are
 separate results. If durable detail cannot be read after a turn terminates,
 the runtime preserves the engine result and reports projection status as
 `unavailable` without changing the execution error. Pending-tool settlement
 also preserves a committed settlement event when its projection read fails.
-`runtime.NewThreadMaintenanceHost` is the provider-free variant for maintenance
-processes that share a Floret store but do not run provider turns. It exposes
-thread summary recovery, canonical context snapshot read-back, turn projection
-read-back, pending tool settlement, parent child-thread closing, and thread-tree
-deletion without accepting
-provider, model, fake response, gateway, tools, or host UI configuration. Its
-store option is required because maintenance paths must target an existing
-Floret store deliberately.
-`HostOptions.Store` is also required. The caller owns one Store and may share it
-across provider-backed and maintenance facades; facades never close an injected
-Store, so shutdown closes the Store exactly once after active work ends.
+`HostOptions.Runtime` and `ThreadCapabilityOptions.Runtime` accept only the
+opaque runtime token. `runtime.Store` is opened and closed by the bootstrap
+owner; it is never stored in a coordinator or run object. Facades never close
+an injected Store, so shutdown closes the Store exactly once after active work
+ends.
 Runtime resolves a target thread plus its descendants before submitting one
 tree delete request to storage. The SQLite implementation deletes thread rows,
 journal entries, active leases, Agent todo state, metadata, artifacts, prompt
@@ -53,9 +54,10 @@ call, tool name, and handle identity. It is idempotent for the same terminal
 status and may be recorded before the pending result row when host-owned work
 finishes faster than the provider turn can commit that row.
 When the provider-backed `Host` already owns an active thread, settlement uses
-that same active `AgentHarness` thread and does not re-enter turn admission.
-The provider-free maintenance host still resumes the target thread normally, so
-it cannot bypass a turn lease owned by another host.
+that same active `AgentHarness` thread and does not re-enter turn admission. The
+provider-free `PendingToolSettlementHost` is a dedicated coordinator capability;
+it is not a general maintenance or read facade and must be bound to the one
+owner responsible for settling that pending work.
 
 The durable Floret journal, public turn pages and projections, pending approval
 snapshot, and typed Agent todo state are the canonical Agent source. Hosts may

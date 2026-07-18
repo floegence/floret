@@ -6,10 +6,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
+
+	floretRuntime "github.com/floegence/floret/runtime"
 )
 
 const modulePath = "github.com/floegence/floret"
@@ -228,6 +231,23 @@ func TestReadmeOnlyDocumentsStableDownstreamAPI(t *testing.T) {
 	}
 }
 
+func TestCurrentCapabilityDocsDoNotAdvertiseRemovedFacade(t *testing.T) {
+	for _, file := range []string{
+		"README.md",
+		filepath.Join("okf", "api", "runtime.md"),
+		filepath.Join("okf", "architecture", "runtime-layers.md"),
+		filepath.Join("okf", "architecture", "boundaries.md"),
+		filepath.Join("okf", "decisions", "public-api-boundary.md"),
+	} {
+		text := readTextFile(t, file)
+		for _, forbidden := range []string{"ThreadMaintenanceHost", "NewThreadMaintenanceHost", "HostOptions.Store", "ThreadMaintenanceHostOptions"} {
+			if strings.Contains(text, forbidden) {
+				t.Fatalf("%s advertises removed capability facade %q", file, forbidden)
+			}
+		}
+	}
+}
+
 func TestRuntimePublicAPIDoesNotExposeContextLifecycleBackdoors(t *testing.T) {
 	text := readTextFile(t, filepath.Join("runtime", "projected_turn.go")) + "\n" + readTextFile(t, filepath.Join("runtime", "runtime.go"))
 	for _, forbidden := range []string{
@@ -248,7 +268,7 @@ func TestRuntimePublicAPIDoesNotExposeContextLifecycleBackdoors(t *testing.T) {
 }
 
 func TestRuntimeThreadCreationContractIsExplicit(t *testing.T) {
-	text := readTextFile(t, filepath.Join("runtime", "runtime.go"))
+	text := readTextFile(t, filepath.Join("runtime", "runtime.go")) + "\n" + readTextFile(t, filepath.Join("runtime", "thread_capabilities.go"))
 	for _, want := range []string{"type CreateThreadRequest struct", ") CreateThread("} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("runtime public API is missing explicit thread creation contract %q", want)
@@ -262,6 +282,70 @@ func TestRuntimeThreadCreationContractIsExplicit(t *testing.T) {
 	} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("runtime public API retains ambiguous thread creation contract %q", forbidden)
+		}
+	}
+}
+
+func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
+	methodNames := func(typ reflect.Type) map[string]struct{} {
+		out := make(map[string]struct{}, typ.NumMethod())
+		for i := 0; i < typ.NumMethod(); i++ {
+			out[typ.Method(i).Name] = struct{}{}
+		}
+		return out
+	}
+	exact := func(name string, typ reflect.Type, want ...string) {
+		t.Helper()
+		got := methodNames(typ)
+		wantSet := make(map[string]struct{}, len(want))
+		for _, method := range want {
+			wantSet[method] = struct{}{}
+		}
+		if !reflect.DeepEqual(got, wantSet) {
+			t.Fatalf("%s exported method set = %#v, want %#v", name, got, wantSet)
+		}
+	}
+	exact("HostRuntime", reflect.TypeOf((*floretRuntime.HostRuntime)(nil)))
+	exact("ThreadCreateHost", reflect.TypeOf((*floretRuntime.ThreadCreateHost)(nil)), "CreateThread")
+	exact("ThreadTitleHost", reflect.TypeOf((*floretRuntime.ThreadTitleHost)(nil)), "SetThreadTitle")
+	exact("ThreadForkHost", reflect.TypeOf((*floretRuntime.ThreadForkHost)(nil)), "ForkThread")
+	exact("ThreadDeleteHost", reflect.TypeOf((*floretRuntime.ThreadDeleteHost)(nil)), "DeleteThread")
+	exact("SubAgentMaintenanceHost", reflect.TypeOf((*floretRuntime.SubAgentMaintenanceHost)(nil)), "CloseSubAgents")
+	exact("PendingToolSettlementHost", reflect.TypeOf((*floretRuntime.PendingToolSettlementHost)(nil)), "SettlePendingTool")
+	exact("ThreadReadHost", reflect.TypeOf((*floretRuntime.ThreadReadHost)(nil)),
+		"ListSubAgentActivityTimeline", "ListSubAgentDetailEvents", "ListSubAgents",
+		"ListThreadDetailEvents", "ListThreadTurns", "ReadLatestThreadTurn", "ReadSubAgentDetail", "ReadThread",
+		"ReadThreadAgentTodos", "ReadThreadContext", "ReadThreadOverview", "ReadTurnProjection")
+	exact("Host", reflect.TypeOf((*floretRuntime.Host)(nil)),
+		"CloseSubAgent", "CompactThread", "CompletePendingTool", "ListPendingApprovals",
+		"ListSubAgentActivityTimeline", "ListSubAgentDetailEvents", "ListSubAgents", "ListThreadDetailEvents",
+		"ListThreadTurns", "ReadLatestThreadTurn", "ReadSubAgentDetail", "ReadThread", "ReadThreadAgentTodos",
+		"ReadThreadContext", "ReadThreadOverview", "ReadTurnProjection", "RetryTurn", "RunTurn",
+		"SendSubAgentInput", "SettlePendingTool", "SpawnSubAgent", "UpdateThreadAgentTodos", "WaitSubAgents")
+	exact("Store", reflect.TypeOf((*floretRuntime.Store)(nil)), "Close")
+	for _, forbidden := range []string{"CreateThread", "SetThreadTitle", "ForkThread", "DeleteThread"} {
+		if _, ok := methodNames(reflect.TypeOf((*floretRuntime.Host)(nil)))[forbidden]; ok {
+			t.Fatalf("Host exported forbidden capability %q", forbidden)
+		}
+	}
+	options := reflect.TypeOf(floretRuntime.ThreadCapabilityOptions{})
+	if _, ok := options.FieldByName("Store"); ok {
+		t.Fatal("ThreadCapabilityOptions exposes raw Store")
+	}
+	for name, typ := range map[string]reflect.Type{
+		"HostRuntime":               reflect.TypeOf(floretRuntime.HostRuntime{}),
+		"ThreadCreateHost":          reflect.TypeOf(floretRuntime.ThreadCreateHost{}),
+		"ThreadReadHost":            reflect.TypeOf(floretRuntime.ThreadReadHost{}),
+		"ThreadTitleHost":           reflect.TypeOf(floretRuntime.ThreadTitleHost{}),
+		"ThreadForkHost":            reflect.TypeOf(floretRuntime.ThreadForkHost{}),
+		"ThreadDeleteHost":          reflect.TypeOf(floretRuntime.ThreadDeleteHost{}),
+		"SubAgentMaintenanceHost":   reflect.TypeOf(floretRuntime.SubAgentMaintenanceHost{}),
+		"PendingToolSettlementHost": reflect.TypeOf(floretRuntime.PendingToolSettlementHost{}),
+	} {
+		for i := 0; i < typ.NumField(); i++ {
+			if typ.Field(i).PkgPath == "" {
+				t.Fatalf("%s exposes exported field %q", name, typ.Field(i).Name)
+			}
 		}
 	}
 }

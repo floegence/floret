@@ -1,6 +1,21 @@
 # Floret OKF Update Log
 
 ## 2026-07-18
+* **Breaking**: Removed the broad provider-free `ThreadMaintenanceHost` facade.
+  `Host` no longer exposes top-level thread creation, title, fork, delete, or
+  bulk child-close operations. These transitions now use the single-purpose
+  `ThreadCreateHost`, `ThreadTitleHost`, `ThreadForkHost`, `ThreadDeleteHost`,
+  and `SubAgentMaintenanceHost` capabilities; canonical reads use
+  `ThreadReadHost`, and provider-free pending settlement uses the dedicated
+  `PendingToolSettlementHost`.
+* **Boundary**: Replaced `HostOptions.Store` and raw Store capability options
+  with opaque `HostRuntime`/`ThreadCapabilityOptions.Runtime`. Bootstrap owns
+  Store construction and lifetime; long-lived coordinators receive only the
+  narrow handle for their lifecycle transition.
+* **Test**: Added exact public method-set checks for `HostRuntime`, `Host`, and
+  every narrow capability so removed lifecycle aliases cannot return silently.
+
+## 2026-07-18
 * **Fix**: Made every parent-scoped SubAgent operation fail with canonical
   thread-not-found when the parent journal is missing, even if orphaned child
   metadata remains in storage.

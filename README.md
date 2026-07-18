@@ -88,7 +88,7 @@ execution lifecycle to Floret.
 | Configure an agent and a provider | `config.Config` or `config.Load` |
 | Run durable conversations | `runtime.NewHost` and concrete `*runtime.Host` |
 | Compact an idle thread | `runtime.CompactThreadRequest` |
-| Reload canonical context state | `Host.ReadThreadContext` or `ThreadMaintenanceHost.ReadThreadContext` |
+| Reload canonical context state | `Host.ReadThreadContext` or `ThreadReadHost.ReadThreadContext` |
 | Keep Floret runtime data in memory or SQLite | `runtime.NewMemoryStore` or `runtime.OpenSQLiteStore` |
 | Keep model transport under product control | `runtime.ModelGateway` |
 | Define an agent's role and business instructions | `config.AgentProfile.SystemPrompt` or `config.Config.SystemPrompt` |
@@ -140,6 +140,14 @@ func main() {
 
 	store := runtime.NewMemoryStore()
 	defer store.Close()
+	runtimeRoot, err := runtime.NewHostRuntime(store)
+	if err != nil {
+		log.Fatal(err)
+	}
+	threadCreator, err := runtime.NewThreadCreateHost(runtime.ThreadCapabilityOptions{Runtime: runtimeRoot})
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	host, err := runtime.NewHost(runtime.HostOptions{
 		Config: config.Config{
@@ -152,13 +160,13 @@ func main() {
 				SystemPrompt: "Answer clearly and briefly.",
 			},
 		},
-		Store: store,
+		Runtime: runtimeRoot,
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	thread, err := host.CreateThread(ctx, runtime.CreateThreadRequest{ThreadID: "thread-1"})
+	thread, err := threadCreator.CreateThread(ctx, runtime.CreateThreadRequest{ThreadID: "thread-1"})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -318,10 +326,13 @@ Floret is deterministic with the fake provider, so tool behavior, approval
 flows, retries, context pressure, and host UI projections can be tested without
 real model calls.
 
-`NewHost` and `NewThreadMaintenanceHost` return concrete facade pointers.
-Application packages that need substitution should declare local interfaces
-containing only the methods used by that responsibility instead of depending on
-one repository-wide host interface.
+`NewHost` returns the provider-backed read/run facade. Creation, title, fork,
+delete, and SubAgent maintenance are separate concrete capabilities:
+`ThreadCreateHost`, `ThreadTitleHost`, `ThreadForkHost`, `ThreadDeleteHost`,
+`ThreadReadHost`, and `SubAgentMaintenanceHost`. Construct these handles from
+the opaque `HostRuntime` at one bootstrap boundary, then pass only the selected
+handle to its coordinator. Application packages that need substitution should
+declare local interfaces containing only the methods used by that responsibility.
 
 ```bash
 go test ./...

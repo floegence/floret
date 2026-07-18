@@ -66,7 +66,7 @@ func (h *Host) ListThreadTurns(ctx context.Context, req ListThreadTurnsRequest) 
 	return listThreadTurns(ctx, h.harness, req)
 }
 
-func (h *ThreadMaintenanceHost) ListThreadTurns(ctx context.Context, req ListThreadTurnsRequest) (ThreadTurnsPage, error) {
+func (h *ThreadReadHost) ListThreadTurns(ctx context.Context, req ListThreadTurnsRequest) (ThreadTurnsPage, error) {
 	return listThreadTurns(ctx, h.harness, req)
 }
 
@@ -74,7 +74,7 @@ func (h *Host) ReadLatestThreadTurn(ctx context.Context, threadID ThreadID) (Thr
 	return readLatestThreadTurn(ctx, h.harness, threadID)
 }
 
-func (h *ThreadMaintenanceHost) ReadLatestThreadTurn(ctx context.Context, threadID ThreadID) (ThreadTurnSnapshot, error) {
+func (h *ThreadReadHost) ReadLatestThreadTurn(ctx context.Context, threadID ThreadID) (ThreadTurnSnapshot, error) {
 	return readLatestThreadTurn(ctx, h.harness, threadID)
 }
 
@@ -82,7 +82,7 @@ func (h *Host) ReadThreadOverview(ctx context.Context, threadID ThreadID) (Threa
 	return readThreadOverview(ctx, h.harness, threadID)
 }
 
-func (h *ThreadMaintenanceHost) ReadThreadOverview(ctx context.Context, threadID ThreadID) (ThreadOverview, error) {
+func (h *ThreadReadHost) ReadThreadOverview(ctx context.Context, threadID ThreadID) (ThreadOverview, error) {
 	return readThreadOverview(ctx, h.harness, threadID)
 }
 

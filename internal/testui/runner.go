@@ -2957,24 +2957,67 @@ type testuiCompactionRuntime interface {
 	CompactThread(context.Context, flruntime.CompactThreadRequest) (flruntime.CompactThreadResult, error)
 }
 
+type testuiCompactionFacade struct {
+	host   *flruntime.Host
+	create *flruntime.ThreadCreateHost
+}
+
+func (f *testuiCompactionFacade) CreateThread(ctx context.Context, req flruntime.CreateThreadRequest) (flruntime.ThreadSummary, error) {
+	return f.create.CreateThread(ctx, req)
+}
+
+func (f *testuiCompactionFacade) RunTurn(ctx context.Context, req flruntime.RunTurnRequest) (flruntime.TurnResult, error) {
+	return f.host.RunTurn(ctx, req)
+}
+
+func (f *testuiCompactionFacade) CompactThread(ctx context.Context, req flruntime.CompactThreadRequest) (flruntime.CompactThreadResult, error) {
+	return f.host.CompactThread(ctx, req)
+}
+
 func testuiCompactionHost(sink flruntime.EventSink, gateway flruntime.ModelGateway) (testuiCompactionRuntime, error) {
-	return flruntime.NewHost(flruntime.HostOptions{
+	store := flruntime.NewMemoryStore()
+	runtime, err := flruntime.NewHostRuntime(store)
+	if err != nil {
+		return nil, err
+	}
+	host, err := flruntime.NewHost(flruntime.HostOptions{
 		Config:               testuiProjectedCompactionConfig(256000, 100, true),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: testuiModelGatewayIdentity(),
-		Store:                flruntime.NewMemoryStore(),
+		Runtime:              runtime,
 		Sink:                 sink,
 	})
+	if err != nil {
+		return nil, err
+	}
+	create, err := flruntime.NewThreadCreateHost(flruntime.ThreadCapabilityOptions{Runtime: runtime, Sink: sink})
+	if err != nil {
+		return nil, err
+	}
+	return &testuiCompactionFacade{host: host, create: create}, nil
 }
 
 func testuiCompactionNoopHost(sink flruntime.EventSink, gateway flruntime.ModelGateway) (testuiCompactionRuntime, error) {
-	return flruntime.NewHost(flruntime.HostOptions{
+	store := flruntime.NewMemoryStore()
+	runtime, err := flruntime.NewHostRuntime(store)
+	if err != nil {
+		return nil, err
+	}
+	host, err := flruntime.NewHost(flruntime.HostOptions{
 		Config:               testuiProjectedCompactionConfig(256000, 0, false),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: testuiModelGatewayIdentity(),
-		Store:                flruntime.NewMemoryStore(),
+		Runtime:              runtime,
 		Sink:                 sink,
 	})
+	if err != nil {
+		return nil, err
+	}
+	create, err := flruntime.NewThreadCreateHost(flruntime.ThreadCapabilityOptions{Runtime: runtime, Sink: sink})
+	if err != nil {
+		return nil, err
+	}
+	return &testuiCompactionFacade{host: host, create: create}, nil
 }
 
 func testuiModelGatewayIdentity() flruntime.ModelGatewayIdentity {

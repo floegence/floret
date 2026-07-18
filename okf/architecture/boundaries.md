@@ -53,9 +53,10 @@ When a change adds a new host-facing capability, expose it as general public API
 with tests and documentation. Do not move product-specific policy into Floret
 core to make one downstream integration easier.
 
-`runtime.Store` is opaque and caller-owned. Hosts create one Store explicitly,
-share it across runtime facades as needed, and close it once after active work
-stops. Runtime facades do not create hidden stores or close injected stores.
+`runtime.Store` is opaque and owned by the bootstrap lifetime owner. Bootstrap
+converts it to one `HostRuntime`, creates the required narrow handles, and closes
+the Store once after active work stops. Coordinators and runs receive only their
+selected handle; they cannot mint another handle or access Store internals.
 `OpenSQLiteStore` performs one explicit, transactional migration from the
 published v0.10 schema v11 to v12 when the raw encoder and canonical v11
 fingerprint match exactly; unknown versions, fingerprints, and unversioned
@@ -63,10 +64,11 @@ databases remain errors, with no dual-read path.
 
 Hosts may choose when product actions stop or delete work, but they should
 express those choices through Floret runtime APIs. Stop-style product actions
-close unfinished Floret subagents and keep history; delete-style product actions
-delete Floret-owned thread trees through `runtime.Host.DeleteThread`. Floret
-owns the atomic engine-store deletion of the resolved tree; the host remains
-responsible for deleting or retaining its separate product records.
+close unfinished Floret subagents through `SubAgentMaintenanceHost` and keep
+history; delete-style product actions delete Floret-owned thread trees through
+`ThreadDeleteHost.DeleteThread`. Floret owns the atomic engine-store deletion
+of the resolved tree; the host remains responsible for deleting or retaining
+its separate product records.
 
 Cross-store product fork coordination stays in the host. Floret owns only its
 operation-marked engine thread-tree plan and result. A host should persist its

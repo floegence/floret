@@ -83,20 +83,24 @@ go get github.com/floegence/floret/config github.com/floegence/floret/runtime gi
 ```go
 store := runtime.NewMemoryStore()
 defer store.Close()
+runtimeRoot, err := runtime.NewHostRuntime(store)
+if err != nil { /* handle error */ }
+threadCreator, err := runtime.NewThreadCreateHost(runtime.ThreadCapabilityOptions{Runtime: runtimeRoot})
+if err != nil { /* handle error */ }
 
 host, err := runtime.NewHost(runtime.HostOptions{
 	Config: config.Config{
 		Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "Hello from Floret.",
 		AgentProfile: config.AgentProfile{ID: "support-agent", Name: "Support Agent"},
 	},
-	Store: store,
+	Runtime: runtimeRoot,
 })
 if err != nil { /* handle error */ }
 
-thread, err := host.CreateThread(ctx, runtime.CreateThreadRequest{ThreadID: "thread-1"})
+thread, err := threadCreator.CreateThread(ctx, runtime.CreateThreadRequest{ThreadID: "thread-1"})
 result, err := host.RunTurn(ctx, runtime.RunTurnRequest{
 	ThreadID: thread.ID, TurnID: "turn-1", RunID: "run-1",
-	Input: "Welcome a new customer in one sentence.",
+	Input: runtime.TurnInput{Text: "Welcome a new customer in one sentence."},
 })
 ```
 
