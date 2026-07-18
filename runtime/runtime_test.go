@@ -2785,7 +2785,7 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 	if got := firstRuntimeSubAgentDetailEvent(detail.Events, ThreadDetailEventToolResult); got.ToolResult == nil || got.ToolResult.Content != "file content" {
 		t.Fatalf("tool result detail = %#v", got)
 	}
-	next, err := host.ListSubAgentDetailEvents(ctx, ListSubAgentDetailEventsRequest{ParentThreadID: "parent", ChildThreadID: "child", AfterOrdinal: detail.Events[0].Ordinal, Limit: 1, IncludeRaw: true})
+	next, err := host.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "child", AfterOrdinal: detail.Events[0].Ordinal, Limit: 1, IncludeRaw: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2829,7 +2829,7 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 	if maintenanceDetail.Context.Policy.ContextWindowTokens != defaultDetail.Context.Policy.ContextWindowTokens || maintenanceDetail.Context.Usage == nil {
 		t.Fatalf("maintenance detail context = %#v want %#v", maintenanceDetail.Context, defaultDetail.Context)
 	}
-	maintenanceEvents, err := maintenance.ListSubAgentDetailEvents(ctx, ListSubAgentDetailEventsRequest{ParentThreadID: "parent", ChildThreadID: "child", Limit: 1})
+	maintenanceEvents, err := maintenance.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "child", Limit: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2913,7 +2913,7 @@ func TestHostReadsSubAgentDetailRawMessageContentContract(t *testing.T) {
 		t.Fatalf("raw assistant should keep full content and bounded preview: %#v", assistantRaw)
 	}
 
-	page, err := host.ListSubAgentDetailEvents(ctx, ListSubAgentDetailEventsRequest{
+	page, err := host.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{
 		ParentThreadID: "parent",
 		ChildThreadID:  "child",
 		AfterOrdinal:   assistantRaw.Ordinal - 1,
@@ -3546,12 +3546,6 @@ func TestHostPublicNotFoundErrors(t *testing.T) {
 	}); !errors.Is(err, ErrSubAgentNotFound) {
 		t.Fatalf("ReadSubAgentDetail err = %v, want ErrSubAgentNotFound", err)
 	}
-	if _, err := host.ListSubAgentDetailEvents(ctx, ListSubAgentDetailEventsRequest{
-		ParentThreadID: "parent",
-		ChildThreadID:  "missing-child",
-	}); !errors.Is(err, ErrSubAgentNotFound) {
-		t.Fatalf("ListSubAgentDetailEvents err = %v, want ErrSubAgentNotFound", err)
-	}
 }
 
 func TestHostReadTurnProjectionFromDurableDetail(t *testing.T) {
@@ -3923,23 +3917,21 @@ func TestThreadForkHostPreservesProjectionWithNewIdentity(t *testing.T) {
 	if forked.Thread.ID != "fork" || !forked.Thread.CanAppendMessage {
 		t.Fatalf("forked thread = %#v", forked.Thread)
 	}
-	if len(forked.Turns) != 1 {
-		t.Fatalf("forked turns = %#v, want one", forked.Turns)
-	}
 	if forked.OperationID != "fork-operation" {
 		t.Fatalf("operation id = %q", forked.OperationID)
 	}
-	ref := forked.Turns[0]
-	if ref.SourceTurnID != "turn-source" || ref.SourceRunID != "run-source" {
-		t.Fatalf("source identity = %#v", ref)
+	turns, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "fork"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if ref.DestinationTurnID == "" || ref.DestinationRunID == "" || ref.DestinationTurnID == ref.SourceTurnID || ref.DestinationRunID == ref.SourceRunID {
-		t.Fatalf("destination identity was not rewritten: %#v", ref)
+	if len(turns.Turns) != 1 || turns.Turns[0].TurnID == "" || turns.Turns[0].RunID == "" || turns.Turns[0].TurnID == "turn-source" || turns.Turns[0].RunID == "run-source" {
+		t.Fatalf("forked canonical turns = %#v", turns.Turns)
 	}
+	ref := turns.Turns[0]
 	projection, err := maintenance.ReadTurnProjection(ctx, ReadTurnProjectionRequest{
 		ThreadID: "fork",
-		TurnID:   ref.DestinationTurnID,
-		RunID:    ref.DestinationRunID,
+		TurnID:   ref.TurnID,
+		RunID:    ref.RunID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3994,18 +3986,16 @@ func TestThreadForkHostPreservesSQLiteProjectionAfterReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := forkStore.Close(); err != nil {
+	turns, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "fork"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(forked.Turns) != 1 {
-		t.Fatalf("forked turns = %#v, want one", forked.Turns)
+	if len(turns.Turns) != 1 || turns.Turns[0].TurnID == "" || turns.Turns[0].RunID == "" || turns.Turns[0].TurnID == "turn-source" || turns.Turns[0].RunID == "run-source" {
+		t.Fatalf("forked canonical turns = %#v", turns.Turns)
 	}
-	ref := forked.Turns[0]
-	if ref.SourceTurnID != "turn-source" || ref.SourceRunID != "run-source" {
-		t.Fatalf("source identity = %#v", ref)
-	}
-	if ref.DestinationTurnID == "" || ref.DestinationRunID == "" || ref.DestinationTurnID == ref.SourceTurnID || ref.DestinationRunID == ref.SourceRunID {
-		t.Fatalf("destination identity was not rewritten: %#v", ref)
+	ref := turns.Turns[0]
+	if err := forkStore.Close(); err != nil {
+		t.Fatal(err)
 	}
 
 	reopenedStore, err := OpenSQLiteStore(path)
@@ -4025,8 +4015,8 @@ func TestThreadForkHostPreservesSQLiteProjectionAfterReopen(t *testing.T) {
 	}
 	projection, err := reopened.ReadTurnProjection(ctx, ReadTurnProjectionRequest{
 		ThreadID: "fork",
-		TurnID:   ref.DestinationTurnID,
-		RunID:    ref.DestinationRunID,
+		TurnID:   ref.TurnID,
+		RunID:    ref.RunID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -4290,12 +4280,15 @@ func TestThreadForkHostClonesTerminalSubAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	forked, err := maintenance.ForkThread(ctx, ForkThreadRequest{OperationID: "fork-operation", SourceThreadID: "parent", DestinationThreadID: "parent-fork"})
+	if _, err := maintenance.ForkThread(ctx, ForkThreadRequest{OperationID: "fork-operation", SourceThreadID: "parent", DestinationThreadID: "parent-fork"}); err != nil {
+		t.Fatal(err)
+	}
+	turns, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "parent-fork"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(forked.Turns) != 1 || forked.Turns[0].DestinationTurnID == "" {
-		t.Fatalf("forked turns = %#v", forked.Turns)
+	if len(turns.Turns) != 1 || turns.Turns[0].TurnID == "" {
+		t.Fatalf("forked canonical turns = %#v", turns.Turns)
 	}
 	children, err := maintenance.ListSubAgents(ctx, "parent-fork")
 	if err != nil {
@@ -4304,8 +4297,8 @@ func TestThreadForkHostClonesTerminalSubAgents(t *testing.T) {
 	if len(children) != 1 || children[0].ThreadID == "child" || children[0].Status != SubAgentStatusCompleted {
 		t.Fatalf("forked children = %#v", children)
 	}
-	if children[0].ParentTurnID != forked.Turns[0].DestinationTurnID {
-		t.Fatalf("forked child parent turn = %q, want %q", children[0].ParentTurnID, forked.Turns[0].DestinationTurnID)
+	if children[0].ParentTurnID != turns.Turns[0].TurnID {
+		t.Fatalf("forked child parent turn = %q, want %q", children[0].ParentTurnID, turns.Turns[0].TurnID)
 	}
 	detail, err := maintenance.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{
 		ParentThreadID: "parent-fork",
@@ -6036,16 +6029,19 @@ func TestThreadAgentTodosCASForkDeleteAndReopen(t *testing.T) {
 				if successes.Load() != 1 || conflicts.Load() != 1 {
 					t.Fatalf("todo CAS successes=%d conflicts=%d", successes.Load(), conflicts.Load())
 				}
-				fork, err := maintenance.ForkThread(ctx, ForkThreadRequest{OperationID: "fork-1", SourceThreadID: "source", DestinationThreadID: "fork"})
-				if err != nil {
+				if _, err := maintenance.ForkThread(ctx, ForkThreadRequest{OperationID: "fork-1", SourceThreadID: "source", DestinationThreadID: "fork"}); err != nil {
 					t.Fatal(err)
 				}
 				forked, err := maintenance.ReadThreadAgentTodos(ctx, "fork")
 				if err != nil || forked.Version != 2 || len(forked.Items) != 1 {
 					t.Fatalf("forked todos = %#v err=%v", forked, err)
 				}
-				if len(fork.Turns) != 1 || forked.UpdatedByTurnID != TurnID(fork.Turns[0].DestinationTurnID) || forked.UpdatedByRunID != RunID(fork.Turns[0].DestinationRunID) {
-					t.Fatalf("forked todo identity = %#v fork=%#v", forked, fork)
+				turns, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "fork"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(turns.Turns) != 1 || forked.UpdatedByTurnID != turns.Turns[0].TurnID || forked.UpdatedByRunID != turns.Turns[0].RunID {
+					t.Fatalf("forked todo identity = %#v turns=%#v", forked, turns.Turns)
 				}
 				if err := maintenance.DeleteThread(ctx, "fork"); err != nil {
 					t.Fatal(err)
@@ -6326,9 +6322,6 @@ func TestSubAgentReadsReportMissingCanonicalParent(t *testing.T) {
 	}
 	if _, err := maintenance.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "child"}); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("ReadSubAgentDetail err = %v, want ErrThreadNotFound", err)
-	}
-	if _, err := maintenance.ListSubAgentDetailEvents(ctx, ListSubAgentDetailEventsRequest{ParentThreadID: "parent", ChildThreadID: "child"}); !errors.Is(err, ErrThreadNotFound) {
-		t.Fatalf("ListSubAgentDetailEvents err = %v, want ErrThreadNotFound", err)
 	}
 }
 

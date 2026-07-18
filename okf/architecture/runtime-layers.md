@@ -207,13 +207,13 @@ Waiting for child threads is intentionally separate from reading child detail.
 the child transcript, tool outputs, or detail timeline.
 `ListSubAgentActivityTimeline` gives host UIs a parent-scoped activity summary
 derived from child snapshots without exposing the child transcript.
-`ReadSubAgentDetail` and `ListSubAgentDetailEvents` are separate public host
-APIs for parent-scoped, paginated inspection of the child journal. They let a
-product UI show complete child execution detail while keeping parent model
-context small. Their top-level activity timeline is rebuilt from retained child
-detail events on each read so later tool results and pending-tool settlements
-replace earlier running updates; row events remain the ordered child journal.
-Their top-level context block carries neutral model-bound context facts:
+`ReadSubAgentDetail` is the single public host API for parent-scoped, paginated
+inspection of the child journal. It lets a product UI show complete child
+execution detail while keeping parent model context small. Its top-level
+activity timeline is rebuilt from retained child detail events on each read so
+later tool results and pending-tool settlements replace earlier running updates;
+row events remain the ordered child journal.
+Its top-level context block carries neutral model-bound context facts:
 provider/model identity, model-derived context policy, current pressure/usage
 status, and public compaction operations. Fork mode and parent/child thread
 identity affect lookup and journal ownership only; they do not define context

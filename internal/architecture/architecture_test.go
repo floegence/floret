@@ -313,12 +313,12 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 	exact("SubAgentMaintenanceHost", reflect.TypeOf((*floretRuntime.SubAgentMaintenanceHost)(nil)), "CloseSubAgents")
 	exact("PendingToolSettlementHost", reflect.TypeOf((*floretRuntime.PendingToolSettlementHost)(nil)), "SettlePendingTool")
 	exact("ThreadReadHost", reflect.TypeOf((*floretRuntime.ThreadReadHost)(nil)),
-		"ListSubAgentActivityTimeline", "ListSubAgentDetailEvents", "ListSubAgents",
+		"ListSubAgentActivityTimeline", "ListSubAgents",
 		"ListThreadDetailEvents", "ListThreadTurns", "ReadLatestThreadTurn", "ReadSubAgentDetail", "ReadThread",
 		"ReadThreadAgentTodos", "ReadThreadContext", "ReadThreadOverview", "ReadTurnProjection")
 	exact("Host", reflect.TypeOf((*floretRuntime.Host)(nil)),
 		"CloseSubAgent", "CompactThread", "CompletePendingTool", "ListPendingApprovals",
-		"ListSubAgentActivityTimeline", "ListSubAgentDetailEvents", "ListSubAgents", "ListThreadDetailEvents",
+		"ListSubAgentActivityTimeline", "ListSubAgents", "ListThreadDetailEvents",
 		"ListThreadTurns", "ReadLatestThreadTurn", "ReadSubAgentDetail", "ReadThread", "ReadThreadAgentTodos",
 		"ReadThreadContext", "ReadThreadOverview", "ReadTurnProjection", "RetryTurn", "RunTurn",
 		"SendSubAgentInput", "SettlePendingTool", "SpawnSubAgent", "UpdateThreadAgentTodos", "WaitSubAgents")
@@ -346,6 +346,20 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 			if typ.Field(i).PkgPath == "" {
 				t.Fatalf("%s exposes exported field %q", name, typ.Field(i).Name)
 			}
+		}
+	}
+}
+
+func TestRuntimePublicAPIDoesNotExposeForkIdentityMapsOrDuplicateSubAgentPages(t *testing.T) {
+	text := readTextFile(t, filepath.Join("runtime", "runtime.go"))
+	for _, forbidden := range []string{
+		"ForkedTurnRef",
+		"ListSubAgentDetailEvents",
+		"ListSubAgentDetailEventsRequest",
+		"SubAgentDetailEvents",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("runtime public API retains duplicate authority contract %q", forbidden)
 		}
 	}
 }

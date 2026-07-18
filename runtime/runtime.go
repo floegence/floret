@@ -161,15 +161,6 @@ type ForkThreadRequest struct {
 type ForkThreadResult struct {
 	OperationID ForkOperationID `json:"operation_id"`
 	Thread      ThreadSummary   `json:"thread"`
-	Turns       []ForkedTurnRef `json:"turns,omitempty"`
-}
-
-type ForkedTurnRef struct {
-	SourceTurnID      TurnID    `json:"source_turn_id,omitempty"`
-	SourceRunID       RunID     `json:"source_run_id,omitempty"`
-	DestinationTurnID TurnID    `json:"destination_turn_id,omitempty"`
-	DestinationRunID  RunID     `json:"destination_run_id,omitempty"`
-	CreatedAt         time.Time `json:"created_at,omitempty"`
 }
 
 // TurnSupplementalContextItem is host-provided context that is visible only to
@@ -435,14 +426,6 @@ type ReadSubAgentDetailRequest struct {
 	IncludeRaw     bool
 }
 
-type ListSubAgentDetailEventsRequest struct {
-	ParentThreadID ThreadID
-	ChildThreadID  ThreadID
-	AfterOrdinal   int64
-	Limit          int
-	IncludeRaw     bool
-}
-
 type ListSubAgentActivityTimelineRequest struct {
 	ParentThreadID ThreadID
 	Meta           observation.ActivityRunMeta
@@ -493,16 +476,6 @@ type CloseSubAgentsResult struct {
 
 type SubAgentDetail struct {
 	Snapshot         SubAgentSnapshot             `json:"snapshot"`
-	Events           []ThreadDetailEvent          `json:"events"`
-	ActivityTimeline observation.ActivityTimeline `json:"activity_timeline"`
-	Context          ThreadContextSnapshot        `json:"context,omitempty"`
-	NextOrdinal      int64                        `json:"next_ordinal,omitempty"`
-	HasMore          bool                         `json:"has_more,omitempty"`
-	RetainedFrom     int64                        `json:"retained_from,omitempty"`
-	GeneratedAt      time.Time                    `json:"generated_at"`
-}
-
-type SubAgentDetailEvents struct {
 	Events           []ThreadDetailEvent          `json:"events"`
 	ActivityTimeline observation.ActivityTimeline `json:"activity_timeline"`
 	Context          ThreadContextSnapshot        `json:"context,omitempty"`
@@ -2199,36 +2172,6 @@ func readSubAgentDetail(ctx context.Context, harness *agentharness.AgentHarness,
 	return subAgentDetail(detail), nil
 }
 
-func (h *Host) ListSubAgentDetailEvents(ctx context.Context, req ListSubAgentDetailEventsRequest) (SubAgentDetailEvents, error) {
-	return listSubAgentDetailEvents(ctx, h.harness, req)
-}
-
-func (h *ThreadReadHost) ListSubAgentDetailEvents(ctx context.Context, req ListSubAgentDetailEventsRequest) (SubAgentDetailEvents, error) {
-	return listSubAgentDetailEvents(ctx, h.harness, req)
-}
-
-func listSubAgentDetailEvents(ctx context.Context, harness *agentharness.AgentHarness, req ListSubAgentDetailEventsRequest) (SubAgentDetailEvents, error) {
-	detail, err := harness.ReadSubAgentDetail(ctx, agentharness.ReadSubAgentDetailOptions{
-		ParentThreadID: string(req.ParentThreadID),
-		ChildThreadID:  string(req.ChildThreadID),
-		AfterOrdinal:   req.AfterOrdinal,
-		Limit:          req.Limit,
-		IncludeRaw:     req.IncludeRaw,
-	})
-	if err != nil {
-		return SubAgentDetailEvents{}, runtimeHostError(err)
-	}
-	return SubAgentDetailEvents{
-		Events:           subAgentThreadDetailEvents(detail.Events),
-		ActivityTimeline: cloneRuntimeActivityTimeline(detail.ActivityTimeline),
-		Context:          subAgentDetailContext(detail.Snapshot.ThreadID, detail.Context),
-		NextOrdinal:      detail.NextOrdinal,
-		HasMore:          detail.HasMore,
-		RetainedFrom:     detail.RetainedFrom,
-		GeneratedAt:      detail.GeneratedAt,
-	}, nil
-}
-
 func (h *ThreadDeleteHost) DeleteThread(ctx context.Context, threadID ThreadID) error {
 	return deleteThread(ctx, h.store, threadID)
 }
@@ -2319,21 +2262,10 @@ func threadSummary(in agentharness.ThreadSummary) ThreadSummary {
 }
 
 func forkThreadResult(in agentharness.ForkResult) ForkThreadResult {
-	out := ForkThreadResult{
+	return ForkThreadResult{
 		OperationID: ForkOperationID(in.OperationID),
 		Thread:      threadSummary(in.Summary),
-		Turns:       make([]ForkedTurnRef, 0, len(in.Turns)),
 	}
-	for _, ref := range in.Turns {
-		out.Turns = append(out.Turns, ForkedTurnRef{
-			SourceTurnID:      TurnID(ref.SourceTurnID),
-			SourceRunID:       RunID(ref.SourceRunID),
-			DestinationTurnID: TurnID(ref.DestinationTurnID),
-			DestinationRunID:  RunID(ref.DestinationRunID),
-			CreatedAt:         ref.CreatedAt,
-		})
-	}
-	return out
 }
 
 func pendingApprovals(in agentharness.PendingApprovals) PendingApprovals {

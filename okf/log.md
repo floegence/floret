@@ -1,5 +1,16 @@
 # Floret OKF Update Log
 
+## 2026-07-19
+* **Breaking**: Removed public fork source/destination turn and run identity
+  mappings. `ForkThreadResult` now exposes only the operation identity and
+  canonical destination thread summary; hosts read destination turns through
+  the canonical thread read APIs.
+* **Breaking**: Removed the duplicate `ListSubAgentDetailEvents` request/result
+  contract. `ReadSubAgentDetail` is now the single parent-scoped paginated
+  SubAgent detail API and continues to return unified `ThreadDetailEvent` rows.
+* **Boundary**: Added architecture guards so fork identity maps and duplicate
+  SubAgent detail page contracts cannot return to the public runtime surface.
+
 ## 2026-07-18
 * **Breaking**: Removed the broad provider-free `ThreadMaintenanceHost` facade.
   `Host` no longer exposes top-level thread creation, title, fork, delete, or

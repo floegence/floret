@@ -102,15 +102,15 @@ host interface for every runtime operation.
   status without exposing child transcripts. Its payload includes durable
   child-thread identity as `thread_id`, but not
   downstream product actions, routing targets, or UI runtime labels.
-* `ReadSubAgentDetail` and `ListSubAgentDetailEvents` let a host read a
-  parent-scoped, paginated child-thread execution timeline for human UI or
-  audit surfaces without expanding `WaitSubAgents` payloads. Their top-level
+* `ReadSubAgentDetail` lets a host read a parent-scoped, paginated child-thread
+  execution timeline for human UI or audit surfaces without expanding
+  `WaitSubAgents` payloads. Its top-level
   `activity_timeline` is the canonical current activity projection rebuilt from
   retained child detail events; paginated rows are ordered journal facts rather
   than live tool-state snapshots.
   Child and root detail rows use the same `ThreadDetailEvent` contract; parent
   scoping remains enforced by the child-detail request.
-  Their top-level `context` block exposes neutral model-bound facts: provider
+  Its top-level `context` block exposes neutral model-bound facts: provider
   and model identity, model-derived context policy, current context
   pressure/usage status, and public compaction lifecycle operations. Context
   window size comes from the resolved model capability and policy, not from
