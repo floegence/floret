@@ -156,10 +156,6 @@ type CapabilityOptions struct {
 	SkillPromptBudgetBytes int
 }
 
-type StartThreadRequest struct {
-	ThreadID ThreadID
-}
-
 type CreateThreadRequest struct {
 	ThreadID ThreadID
 }
@@ -1526,14 +1522,6 @@ func runtimeHostError(err error) error {
 	default:
 		return err
 	}
-}
-
-func (h *Host) StartThread(ctx context.Context, req StartThreadRequest) (ThreadSnapshot, error) {
-	thread, err := h.harness.StartThread(ctx, agentharness.StartThreadOptions{ThreadID: string(req.ThreadID)})
-	if err != nil {
-		return ThreadSnapshot{}, runtimeHostError(err)
-	}
-	return readThread(ctx, thread)
 }
 
 func (h *Host) CreateThread(ctx context.Context, req CreateThreadRequest) (ThreadSummary, error) {

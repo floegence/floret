@@ -158,7 +158,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	thread, err := host.StartThread(ctx, runtime.StartThreadRequest{ThreadID: "thread-1"})
+	thread, err := host.CreateThread(ctx, runtime.CreateThreadRequest{ThreadID: "thread-1"})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -303,7 +303,7 @@ lifecycle events stay on the separate internal harness sink.
 ```text
 Host UI/API
   |
-  | StartThread / RunTurn / CompactThread / RetryTurn
+  | CreateThread / RunTurn / CompactThread / RetryTurn
   v
 runtime.Host
   |

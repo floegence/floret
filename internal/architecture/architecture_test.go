@@ -254,7 +254,12 @@ func TestRuntimeThreadCreationContractIsExplicit(t *testing.T) {
 			t.Fatalf("runtime public API is missing explicit thread creation contract %q", want)
 		}
 	}
-	for _, forbidden := range []string{"Ensure" + "ThreadRequest", ") Ensure" + "Thread("} {
+	for _, forbidden := range []string{
+		"Ensure" + "ThreadRequest",
+		") Ensure" + "Thread(",
+		"type Start" + "ThreadRequest struct",
+		") Start" + "Thread(",
+	} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("runtime public API retains ambiguous thread creation contract %q", forbidden)
 		}

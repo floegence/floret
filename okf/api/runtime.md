@@ -38,7 +38,7 @@ host interface for every runtime operation.
 * `Host.CreateThread` and `ThreadMaintenanceHost.CreateThread` are the only
   public operations that create a missing canonical journal. Creation is
   idempotent for the same `ThreadID` and returns transcript-free
-  `ThreadSummary` lifecycle metadata.
+  `ThreadSummary` lifecycle metadata. There is no second start-or-create alias.
 * `Host.ReadThread` and `ThreadMaintenanceHost.ReadThread` return the same
   transcript-free `ThreadSnapshot`, including canonical status, latest turn and
   run identity, and the journal `ThroughOrdinal`. The snapshot intentionally has

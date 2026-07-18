@@ -85,7 +85,7 @@ host, err := runtime.NewHost(runtime.HostOptions{
 })
 if err != nil { /* handle error */ }
 
-thread, err := host.StartThread(ctx, runtime.StartThreadRequest{ThreadID: "thread-1"})
+thread, err := host.CreateThread(ctx, runtime.CreateThreadRequest{ThreadID: "thread-1"})
 result, err := host.RunTurn(ctx, runtime.RunTurnRequest{
 	ThreadID: thread.ID, TurnID: "turn-1", RunID: "run-1",
 	Input: "Welcome a new customer in one sentence.",

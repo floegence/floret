@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-07-18
+* **Breaking**: Removed the duplicate public `Host.StartThread` creation path.
+  `CreateThread` is now the only public operation that can create a missing
+  canonical journal, keeping creation capability explicit for downstream hosts.
 * **Breaking**: Renamed the idempotent public thread creation contract from
   `EnsureThread` to `CreateThread`. Missing journals are created only through
   that explicit API; runtime, maintenance, and downstream host read paths must

@@ -2679,7 +2679,7 @@ func (r Runner) runProjectedManualCompactionScenario(ctx context.Context) RunRes
 	if err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
-	if _, err := host.StartThread(ctx, flruntime.StartThreadRequest{ThreadID: "testui-manual-active"}); err != nil {
+	if _, err := host.CreateThread(ctx, flruntime.CreateThreadRequest{ThreadID: "testui-manual-active"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
 	if _, err := host.RunTurn(ctx, flruntime.RunTurnRequest{
@@ -2726,7 +2726,7 @@ func (r Runner) runProjectedManualNoopScenario(ctx context.Context) RunResponse 
 	if err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
-	if _, err := host.StartThread(ctx, flruntime.StartThreadRequest{ThreadID: "testui-manual-noop"}); err != nil {
+	if _, err := host.CreateThread(ctx, flruntime.CreateThreadRequest{ThreadID: "testui-manual-noop"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
 	if _, err := host.RunTurn(ctx, flruntime.RunTurnRequest{RunID: "testui-manual-noop-seed", ThreadID: "testui-manual-noop", TurnID: "testui-manual-noop-seed", Input: flruntime.TurnInput{Text: "short context"}}); err != nil {
@@ -2763,7 +2763,7 @@ func (r Runner) runProjectedManualPollErrorScenario(ctx context.Context) RunResp
 	if err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
-	if _, err := host.StartThread(ctx, flruntime.StartThreadRequest{ThreadID: "testui-manual-poll-error"}); err != nil {
+	if _, err := host.CreateThread(ctx, flruntime.CreateThreadRequest{ThreadID: "testui-manual-poll-error"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
 	result, err := host.RunTurn(ctx, flruntime.RunTurnRequest{
@@ -2794,7 +2794,7 @@ func (r Runner) runProjectedCompactOnlyScenario(ctx context.Context) RunResponse
 	if err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
-	if _, err := host.StartThread(ctx, flruntime.StartThreadRequest{ThreadID: "testui-compact-only"}); err != nil {
+	if _, err := host.CreateThread(ctx, flruntime.CreateThreadRequest{ThreadID: "testui-compact-only"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
 	if _, err := host.RunTurn(ctx, flruntime.RunTurnRequest{RunID: "testui-compact-seed", ThreadID: "testui-compact-only", TurnID: "testui-compact-seed", Input: flruntime.TurnInput{Text: testuiLargeCompactionInput()}}); err != nil {
@@ -2844,7 +2844,7 @@ func (r Runner) runProjectedCompactCancelScenario(ctx context.Context) RunRespon
 	if err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
-	if _, err := host.StartThread(ctx, flruntime.StartThreadRequest{ThreadID: "testui-compact-cancel"}); err != nil {
+	if _, err := host.CreateThread(ctx, flruntime.CreateThreadRequest{ThreadID: "testui-compact-cancel"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
 	if _, err := host.RunTurn(context.Background(), flruntime.RunTurnRequest{RunID: "testui-compact-cancel-seed", ThreadID: "testui-compact-cancel", TurnID: "testui-compact-cancel-seed", Input: flruntime.TurnInput{Text: testuiLargeCompactionInput()}}); err != nil {
@@ -2952,7 +2952,7 @@ func (g *seedThenBlockingTestModelGateway) StreamModel(ctx context.Context, req 
 }
 
 type testuiCompactionRuntime interface {
-	StartThread(context.Context, flruntime.StartThreadRequest) (flruntime.ThreadSnapshot, error)
+	CreateThread(context.Context, flruntime.CreateThreadRequest) (flruntime.ThreadSummary, error)
 	RunTurn(context.Context, flruntime.RunTurnRequest) (flruntime.TurnResult, error)
 	CompactThread(context.Context, flruntime.CompactThreadRequest) (flruntime.CompactThreadResult, error)
 }

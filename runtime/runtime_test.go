@@ -48,7 +48,7 @@ func TestHostRunsFakeProviderThread(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	started, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"})
+	started, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestHostRunTurnReportsTerminalProjectionUnavailableWithoutDiscardingResult(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -273,7 +273,7 @@ func TestHostRunsThreadThroughModelGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}})
@@ -331,7 +331,7 @@ func TestHostProviderTitleModeGeneratesTitle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}}); err != nil {
@@ -428,7 +428,7 @@ func TestHostPersistsAndProjectsOpaqueMessageAttachments(t *testing.T) {
 		return host
 	}
 	host := newHost(store)
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	attachment := MessageAttachment{ResourceRef: "upload:asset-1", Name: "diagram.png", MIMEType: "image/png", SizeBytes: 1234}
@@ -512,7 +512,7 @@ func TestHostRejectsOpaqueAttachmentsWithoutModelGatewayBeforeAdmission(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	_, err = host.RunTurn(ctx, RunTurnRequest{
@@ -633,7 +633,7 @@ func TestHostRunTurnEnforcesCumulativeInputTokenLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -673,7 +673,7 @@ func TestHostRunTurnProjectsSupplementalContextOnlyIntoCurrentProviderRequest(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	first, err := host.RunTurn(ctx, RunTurnRequest{
@@ -786,7 +786,7 @@ func TestHostRunTurnIgnoresEmptySupplementalContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.RunTurn(ctx, RunTurnRequest{
@@ -934,7 +934,7 @@ func TestHostPersistsOpaqueProviderStateWithinFloretStore(t *testing.T) {
 		return host
 	}
 	firstHost := newHost("model-a")
-	if _, err := firstHost.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := firstHost.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	first, err := firstHost.RunTurn(ctx, RunTurnRequest{
@@ -1035,7 +1035,7 @@ func TestHostReloadsProviderStateFromSQLiteStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	host := newHost(store)
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "first"}}); err != nil {
@@ -1101,7 +1101,7 @@ func TestHostClearsProviderStateWhenTurnReturnsNoFreshState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	for index := 1; index <= 3; index++ {
@@ -1143,7 +1143,7 @@ func TestHostProviderStatePersistenceFailureFailsTurnFinalization(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}})
@@ -1190,7 +1190,7 @@ func TestHostNoopCompactionPreservesProviderState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "short"}}); err != nil {
@@ -1246,7 +1246,7 @@ func TestHostSuccessfulCompactionClearsProviderState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: runtimeLargeCompactionInput()}}); err != nil {
@@ -1303,7 +1303,7 @@ func TestHostProviderStateDeleteFailureFailsCompactionFinalization(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: runtimeLargeCompactionInput()}}); err != nil {
@@ -1455,7 +1455,7 @@ func TestHostStreamsProjectedContextStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}})
@@ -1532,7 +1532,7 @@ func TestHostModelGatewayPreservesTextAroundToolCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}})
@@ -1639,7 +1639,7 @@ func TestHostEmitsActivityTimelineForToolLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "run"}})
@@ -1819,7 +1819,7 @@ func TestHostEmitsParallelToolResultBeforeSlowSiblingAndPersistsDetailInCallOrde
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
@@ -1932,8 +1932,8 @@ func TestHostToolSurfaceProviderRefreshesGatewayRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHost: %v", err)
 	}
-	if _, err := host.StartThread(context.Background(), StartThreadRequest{ThreadID: "thread"}); err != nil {
-		t.Fatalf("StartThread: %v", err)
+	if _, err := host.CreateThread(context.Background(), CreateThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatalf("CreateThread: %v", err)
 	}
 	result, err := host.RunTurn(context.Background(), RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}})
 	if err != nil {
@@ -2032,7 +2032,7 @@ func TestHostRunTurnPreservesDistinctRunAndTurnIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := host.RunTurn(ctx, RunTurnRequest{
@@ -2195,7 +2195,7 @@ func TestHostRunTurnCanceledProjectionSettlesPendingActivity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(context.Background(), StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(context.Background(), CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2351,7 +2351,7 @@ func TestHostSubAgentsInheritModelGatewayWithChildPromptScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2429,7 +2429,7 @@ func TestHostManagesSubAgentLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2574,7 +2574,7 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
@@ -2752,7 +2752,7 @@ func TestHostReadsSubAgentDetailRawMessageContentContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
@@ -2876,7 +2876,7 @@ func TestHostSQLiteStorePersistsSubAgentDetail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{ParentThreadID: "parent", ThreadID: "child", TaskName: "Persist", Message: "work", ForkMode: SubAgentForkNone}); err != nil {
@@ -2937,7 +2937,7 @@ func TestThreadMaintenanceHostListsSubAgentsAfterHostRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
@@ -3088,7 +3088,7 @@ func TestHostSQLiteStorePersistsSubAgentDetailActivity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{ParentThreadID: "parent", ThreadID: "child", TaskName: "Persist", Message: "work", ForkMode: SubAgentForkNone}); err != nil {
@@ -3161,7 +3161,7 @@ func TestHostCloseSubAgentsStopsUnfinishedChildren(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{ParentThreadID: "parent", ThreadID: "completed", TaskName: "completed", Message: "finish", ForkMode: SubAgentForkNone}); err != nil {
@@ -3225,7 +3225,7 @@ func TestThreadMaintenanceHostClosesChildrenAfterFailedParentTurn(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{ParentThreadID: "parent", ThreadID: "completed", TaskName: "completed", Message: "finish", ForkMode: SubAgentForkNone}); err != nil {
@@ -3293,7 +3293,7 @@ func TestHostSQLiteStorePersistsThreadBehindOpaqueStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}}); err != nil {
@@ -3454,7 +3454,7 @@ func TestHostReadTurnProjectionFromDurableDetail(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}})
@@ -3789,7 +3789,7 @@ func TestThreadMaintenanceHostForkThreadPreservesProjectionWithNewIdentity(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "source"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "source"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-source", ThreadID: "source", TurnID: "turn-source", Input: TurnInput{Text: "hello"}}); err != nil {
@@ -3856,7 +3856,7 @@ func TestThreadMaintenanceHostForkThreadPreservesSQLiteProjectionAfterReopen(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "source"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "source"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-source", ThreadID: "source", TurnID: "turn-source", Input: TurnInput{Text: "hello"}}); err != nil {
@@ -4150,7 +4150,7 @@ func TestThreadMaintenanceHostForkThreadClonesTerminalSubAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-parent", ThreadID: "parent", TurnID: "turn-parent", Input: TurnInput{Text: "coordinate"}}); err != nil {
@@ -4222,7 +4222,7 @@ func TestHostCompletePendingToolRunsFollowUpTurnThroughPublicFacade(t *testing.T
 		t.Fatal(err)
 	}
 
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{
@@ -4292,7 +4292,7 @@ func TestHostCompletePendingToolRejectsInvalidRequest(t *testing.T) {
 	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{ThreadID: "missing", RunID: "pending-run", Status: PendingToolCompletionCompleted, Summary: "done", Handle: "terminal:job:123"}); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("err = %v, want ErrThreadNotFound", err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{ThreadID: "thread", RunID: "pending-run", Status: PendingToolCompletionStatus("bogus"), Summary: "done", Handle: "terminal:job:123"}); err == nil || !strings.Contains(err.Error(), "invalid status") {
@@ -4385,7 +4385,7 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	run, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "run pending command"}})
@@ -4648,7 +4648,7 @@ func TestHostSettlePendingToolDuringActiveTurnUsesOwnedThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread-active-settlement"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread-active-settlement"}); err != nil {
 		t.Fatal(err)
 	}
 	run, err := host.RunTurn(ctx, RunTurnRequest{
@@ -4753,7 +4753,7 @@ func TestHostSettlePendingToolOnlyUpdatesExplicitPendingTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	run, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "run commands"}})
@@ -4935,7 +4935,7 @@ func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "run tools"}})
@@ -5162,7 +5162,7 @@ func TestHostListPendingApprovalsDuringActiveRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	runErr := make(chan error, 1)
@@ -5291,7 +5291,7 @@ func TestHostPendingApprovalSnapshotKeepsModelBatchOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread-batch"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread-batch"}); err != nil {
 		t.Fatal(err)
 	}
 	runErr := make(chan error, 1)
@@ -5345,7 +5345,7 @@ func TestHostThreadDetailEventsOmitRawUnlessRequested(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "private input"}}); err != nil {
@@ -5428,7 +5428,7 @@ func TestHostRunTurnProjectionUsesRawAssistantContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "find options"}})
@@ -5564,7 +5564,7 @@ func TestHostProjectionTreatsCoreControlSignalAsControl(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := host.RunTurn(ctx, RunTurnRequest{
@@ -5992,7 +5992,7 @@ func TestHostDeleteThreadUsesStoreBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	thread, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}})
@@ -6060,7 +6060,7 @@ func TestHostDeleteThreadCascadesEngineThreadTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
@@ -6132,7 +6132,7 @@ func TestThreadMaintenanceHostDeletesThreadTreeWithoutProviderConfig(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
