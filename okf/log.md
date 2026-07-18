@@ -5,6 +5,11 @@
   published v0.10 store shape, creating Floret-owned Agent todo state without
   rewriting journal or provider data; unknown versions and fingerprints remain
   rejected.
+* **Feature**: Added bounded active-path paging and `ReadLatestThreadTurn` so
+  hosts can read the latest admitted turn without replaying or caching the full
+  journal.
+* **Fix**: Required canonical user entries to carry the exact turn identity and
+  removed predecessor-message substitution from turn projection.
 
 ## 2026-07-17
 * **Fix**: Kept marker-only turns out of public turn pages unless their canonical
@@ -79,8 +84,8 @@
 * **Breaking**: Required `ForkOperationID` for public thread forks and added
   replayable operation results with explicit request, destination, and missing
   target conflicts.
-* **Update**: Added dedicated memory and SQLite fork-operation storage, SQLite
-  schema v10 target markers, immutable parent/terminal-child plans, and
+* **Update**: Added dedicated memory and SQLite fork-operation storage, durable
+  target markers, immutable parent/terminal-child plans, and
   restart-safe exact result replay.
 * **Breaking**: Replaced the broad public `Host` and `ThreadMaintenanceHost`
   interfaces with concrete facade types and constructors returning pointers, so

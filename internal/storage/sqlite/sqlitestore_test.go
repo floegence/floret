@@ -241,13 +241,13 @@ func TestSQLiteStoreMigratesSchemaVersion11(t *testing.T) {
 func TestSQLiteStoreRejectsUnknownSchemaVersion(t *testing.T) {
 	ctx := context.Background()
 	store, path := openSQLiteStoreForTest(t)
-	if err := store.putMetaValue(ctx, "schema_version", "10"); err != nil {
+	if err := store.putMetaValue(ctx, "schema_version", "0"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), `unsupported sqlite store schema version "10"`) {
+	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), `unsupported sqlite store schema version "0"`) {
 		t.Fatalf("unknown schema open err = %v", err)
 	}
 }
@@ -344,6 +344,68 @@ func TestSQLiteStoreVersion11MigrationRollsBackOnMetadataFailure(t *testing.T) {
 	}
 	if todoTables != 0 {
 		t.Fatalf("agent todo table count after rollback = %d, want 0", todoTables)
+	}
+}
+
+func TestSQLiteStoreSerializesConcurrentSchemaMigration(t *testing.T) {
+	ctx := context.Background()
+	store, path := openSQLiteStoreForTest(t)
+	if err := store.withImmediate(ctx, func(tx sqlRunner) error {
+		if _, err := tx.ExecContext(ctx, `DROP TABLE agent_todo_states`); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_version'`, schemaVersion11); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_fingerprint'`, schemaFingerprintVersion11)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	originalApply := schemaMigrations[0].apply
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var mu sync.Mutex
+	applyCount := 0
+	schemaMigrations[0].apply = func(ctx context.Context, tx sqlRunner) error {
+		mu.Lock()
+		applyCount++
+		count := applyCount
+		mu.Unlock()
+		if count == 1 {
+			close(started)
+			<-release
+		}
+		return originalApply(ctx, tx)
+	}
+	t.Cleanup(func() { schemaMigrations[0].apply = originalApply })
+
+	results := make(chan error, 2)
+	open := func() {
+		reopened, err := Open(path)
+		if reopened != nil {
+			_ = reopened.Close()
+		}
+		results <- err
+	}
+	go open()
+	<-started
+	go open()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatalf("concurrent Open: %v", err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if applyCount != 1 {
+		t.Fatalf("migration apply count = %d, want 1", applyCount)
 	}
 }
 

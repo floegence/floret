@@ -948,7 +948,6 @@ func (h *AgentHarness) ReadLatestThreadDetailEvents(ctx context.Context, threadI
 	selected := make([]pathEntry, 0, DefaultThreadDetailEventLimit)
 	beforeEntryID := ""
 	latestTurnID := ""
-	hasCanonicalUser := false
 	for {
 		page, err := h.options.Repo.PathPage(ctx, threadID, meta.LeafID, beforeEntryID, MaxThreadDetailEventLimit)
 		if err != nil {
@@ -957,31 +956,24 @@ func (h *AgentHarness) ReadLatestThreadDetailEvents(ctx context.Context, threadI
 		for index, entry := range page.Entries {
 			ordinal := page.NewestOrdinal - int64(index)
 			selected = append(selected, pathEntry{entry: entry, ordinal: ordinal})
-			if latestTurnID == "" {
-				if entry.Type != sessiontree.EntryTurnMarker || entry.TurnStatus != sessiontree.TurnStarted {
-					continue
-				}
-				latestTurnID = strings.TrimSpace(entry.TurnID)
-				if latestTurnID == "" || strings.TrimSpace(entry.Metadata["run_id"]) == "" {
-					return ThreadDetailEvents{}, errors.New("latest turn started marker has incomplete identity")
-				}
-				for _, candidate := range selected {
-					if candidate.entry.Type == sessiontree.EntryUserMessage && strings.TrimSpace(candidate.entry.TurnID) == latestTurnID {
-						hasCanonicalUser = true
-						break
-					}
-				}
-				if hasCanonicalUser {
-					break
-				}
+			if entry.Type != sessiontree.EntryTurnMarker || entry.TurnStatus != sessiontree.TurnStarted {
 				continue
 			}
-			if entry.Type == sessiontree.EntryUserMessage {
-				hasCanonicalUser = true
+			candidateTurnID := strings.TrimSpace(entry.TurnID)
+			if candidateTurnID == "" || strings.TrimSpace(entry.Metadata["run_id"]) == "" {
+				return ThreadDetailEvents{}, errors.New("latest turn started marker has incomplete identity")
+			}
+			for _, candidate := range selected {
+				if candidate.entry.Type == sessiontree.EntryUserMessage && strings.TrimSpace(candidate.entry.TurnID) == candidateTurnID {
+					latestTurnID = candidateTurnID
+					break
+				}
+			}
+			if latestTurnID != "" {
 				break
 			}
 		}
-		if latestTurnID != "" && hasCanonicalUser {
+		if latestTurnID != "" {
 			break
 		}
 		if !page.HasMore {
@@ -992,7 +984,7 @@ func (h *AgentHarness) ReadLatestThreadDetailEvents(ctx context.Context, threadI
 		}
 		beforeEntryID = page.NextEntryID
 	}
-	if latestTurnID == "" || !hasCanonicalUser {
+	if latestTurnID == "" {
 		return ThreadDetailEvents{GeneratedAt: h.now()}, nil
 	}
 	slices.Reverse(selected)

@@ -99,6 +99,8 @@ host interface for every runtime operation.
   parent thread, child thread, subagent, or fork mode.
 * `ListThreadDetailEvents` lets a host read the Floret-owned ordered execution
   transcript for a hosted thread without reading Floret storage internals.
+* `ReadLatestThreadTurn` returns the latest admitted turn from the active path
+  without requiring hosts to cache or replay the complete journal.
 * `ProjectThreadTurn`, `ReadTurnProjection`, and `TurnResult.Projection` expose
   the product-neutral ordered assistant text, activity timeline, and
   control-signal segments for a hosted turn.

@@ -5612,6 +5612,9 @@ func TestListThreadTurnsHidesTurnUntilCanonicalUserEntryIsCommitted(t *testing.T
 			if len(startedOnly.Turns) != 0 || startedOnly.ThroughOrdinal != 1 {
 				t.Fatalf("started-only page = %#v, want no admitted turns through ordinal 1", startedOnly)
 			}
+			if _, err := maintenance.ReadLatestThreadTurn(ctx, "thread"); !errors.Is(err, ErrTurnNotFound) {
+				t.Fatalf("latest started-only turn err = %v, want ErrTurnNotFound", err)
+			}
 			if _, err := sessiontree.AppendMessage(ctx, store.repo, "thread", "turn-1", session.Message{Role: session.User, Content: "canonical input"}); err != nil {
 				t.Fatal(err)
 			}
@@ -5622,6 +5625,13 @@ func TestListThreadTurnsHidesTurnUntilCanonicalUserEntryIsCommitted(t *testing.T
 			}
 			if len(admitted.Turns) != 1 || admitted.Turns[0].TurnID != "turn-1" || admitted.Turns[0].RunID != "run-1" || admitted.Turns[0].UserEntryID == "" || admitted.Turns[0].UserInput != "canonical input" || admitted.ThroughOrdinal != 2 {
 				t.Fatalf("admitted page = %#v", admitted)
+			}
+			if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "thread", "turn-2", sessiontree.TurnStarted, map[string]string{"run_id": "run-2"}); err != nil {
+				t.Fatal(err)
+			}
+			latest, err := maintenance.ReadLatestThreadTurn(ctx, "thread")
+			if err != nil || latest.TurnID != "turn-1" {
+				t.Fatalf("latest admitted turn behind dangling marker = %#v err=%v", latest, err)
 			}
 
 			if _, err := maintenance.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "corrupt-thread"}); err != nil {

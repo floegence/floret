@@ -25,9 +25,9 @@ across process restarts.
 # Consequences
 
 The memory and SQLite stores implement a dedicated fork-operation contract.
-SQLite schema v10 stores operation state, request fingerprint, plan, terminal
-result or error, timestamps, and thread markers. A matching prepared operation
-executes only missing marked nodes; a matching completed operation verifies all
+The current SQLite schema stores operation state, request fingerprint, plan,
+terminal result or error, timestamps, and thread markers. A matching prepared
+operation executes only missing marked nodes; a matching completed operation verifies all
 targets and returns its stored result. Request reuse, unrelated destinations,
 marker mismatch, and missing completed targets fail explicitly. Generic
 metadata is not part of this protocol, and hosts coordinate their own product

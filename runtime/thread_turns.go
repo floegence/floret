@@ -196,7 +196,7 @@ func projectThreadTurnSnapshots(threadID ThreadID, events []ThreadDetailEvent) (
 		if strings.TrimSpace(string(runID)) == "" || ordinal <= 0 || startedAt.IsZero() {
 			return nil, 0, fmt.Errorf("turn %q has an invalid started marker", turnID)
 		}
-		userEntryID, userInput := canonicalTurnUserInput(events, turnID, ordinal)
+		userEntryID, userInput := canonicalTurnUserInput(events, turnID)
 		if strings.TrimSpace(userEntryID) == "" {
 			continue
 		}
@@ -238,18 +238,11 @@ func threadTurnStartedIdentity(events []ThreadDetailEvent) (RunID, int64, time.T
 	return "", 0, time.Time{}
 }
 
-func canonicalTurnUserInput(events []ThreadDetailEvent, turnID TurnID, startedOrdinal int64) (string, string) {
+func canonicalTurnUserInput(events []ThreadDetailEvent, turnID TurnID) (string, string) {
 	for _, event := range events {
 		if event.TurnID == turnID && event.Kind == ThreadDetailEventUserMessage && event.Message != nil {
 			return event.ID, event.Message.Content
 		}
-	}
-	for index := len(events) - 1; index >= 0; index-- {
-		event := events[index]
-		if event.Ordinal >= startedOrdinal || event.Kind != ThreadDetailEventUserMessage || event.Message == nil {
-			continue
-		}
-		return event.ID, event.Message.Content
 	}
 	return "", ""
 }
