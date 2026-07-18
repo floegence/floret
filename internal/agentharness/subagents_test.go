@@ -1138,3 +1138,48 @@ func TestWaitSubAgentsReturnsInterruptedChildAfterRestart(t *testing.T) {
 		t.Fatalf("waited = %#v", waited)
 	}
 }
+
+func TestSubAgentOperationsRequireCanonicalParentThread(t *testing.T) {
+	ctx := context.Background()
+	repo := sessiontree.NewMemoryRepo()
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "parent", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{
+		ID:             "child",
+		ParentThreadID: "parent",
+		TaskName:       "worker",
+		AgentPath:      "/root/worker",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.DeleteThread(ctx, "parent"); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newTestHarness(scriptharness.NewScriptedProvider(), repo, cache.NewMemoryStore())
+	assertParentMissing := func(name string, err error) {
+		t.Helper()
+		if !errors.Is(err, sessiontree.ErrThreadNotFound) {
+			t.Fatalf("%s err = %v, want ErrThreadNotFound", name, err)
+		}
+	}
+
+	_, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{ParentThreadID: "parent", ThreadID: "new-child", TaskName: "new", Message: "work", ForkMode: SubAgentForkNone})
+	assertParentMissing("SpawnSubAgent", err)
+	_, err = h.SendSubAgentInput(ctx, SendSubAgentInputOptions{ParentThreadID: "parent", ChildThreadID: "child", Message: "continue"})
+	assertParentMissing("SendSubAgentInput", err)
+	_, err = h.WaitSubAgents(ctx, WaitSubAgentsOptions{ParentThreadID: "parent", ChildThreadIDs: []string{"child"}, Timeout: time.Millisecond})
+	assertParentMissing("WaitSubAgents", err)
+	_, err = h.ReadSubAgentDetail(ctx, ReadSubAgentDetailOptions{ParentThreadID: "parent", ChildThreadID: "child"})
+	assertParentMissing("ReadSubAgentDetail", err)
+	_, err = h.ListSubAgents(ctx, "parent")
+	assertParentMissing("ListSubAgents", err)
+	_, err = h.CloseSubAgent(ctx, CloseSubAgentOptions{ParentThreadID: "parent", ChildThreadID: "child"})
+	assertParentMissing("CloseSubAgent", err)
+	_, err = h.CloseSubAgents(ctx, CloseSubAgentsOptions{ParentThreadID: "parent"})
+	assertParentMissing("CloseSubAgents", err)
+}

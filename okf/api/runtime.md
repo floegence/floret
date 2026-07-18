@@ -89,7 +89,9 @@ host interface for every runtime operation.
   `UpdatedAt`; malformed or identity-conflicting journal data returns an error.
 * `SpawnSubAgent`, `SendSubAgentInput`, `WaitSubAgents`, `ListSubAgents`,
   `CloseSubAgent`, and `CloseSubAgents` manage durable child threads under a
-  hosted parent thread.
+  hosted parent thread. Every parent-scoped operation first requires that the
+  canonical parent journal still exists; retained child metadata cannot keep an
+  orphaned SubAgent operational after its parent is missing.
 * `ListSubAgentActivityTimeline` returns a parent-scoped,
   product-neutral `observation.ActivityTimeline` for hosted child lifecycle
   status without exposing child transcripts. Its payload includes durable

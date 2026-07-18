@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-07-18
+* **Fix**: Made every parent-scoped SubAgent operation fail with canonical
+  thread-not-found when the parent journal is missing, even if orphaned child
+  metadata remains in storage.
 * **Breaking**: Removed the duplicate public `Host.StartThread` creation path.
   `CreateThread` is now the only public operation that can create a missing
   canonical journal, keeping creation capability explicit for downstream hosts.

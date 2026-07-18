@@ -422,7 +422,7 @@ func (h *AgentHarness) SpawnSubAgent(ctx context.Context, opts SpawnSubAgentOpti
 		return SubAgentSnapshot{}, err
 	}
 	taskDescription := strings.TrimSpace(opts.TaskDescription)
-	parentMeta, err := h.options.Repo.Thread(ctx, parentID)
+	parentMeta, err := h.subAgentParentThread(ctx, parentID)
 	if err != nil {
 		return SubAgentSnapshot{}, err
 	}
@@ -2382,6 +2382,9 @@ func (h *AgentHarness) resolveSubAgentMeta(ctx context.Context, parentThreadID, 
 	if parentThreadID == "" {
 		return sessiontree.ThreadMeta{}, errors.New("parent thread id is required")
 	}
+	if _, err := h.subAgentParentThread(ctx, parentThreadID); err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
 	target = strings.TrimSpace(target)
 	if target == "" {
 		return sessiontree.ThreadMeta{}, errors.New("subagent child thread id is required")
@@ -2397,6 +2400,10 @@ func (h *AgentHarness) resolveSubAgentMeta(ctx context.Context, parentThreadID, 
 		return sessiontree.ThreadMeta{}, ErrSubAgentNotFound
 	}
 	return meta, nil
+}
+
+func (h *AgentHarness) subAgentParentThread(ctx context.Context, parentThreadID string) (sessiontree.ThreadMeta, error) {
+	return h.options.Repo.Thread(ctx, strings.TrimSpace(parentThreadID))
 }
 
 func (h *AgentHarness) updateSubAgentMeta(ctx context.Context, threadID string, update func(*sessiontree.ThreadMeta)) (sessiontree.ThreadMeta, error) {
@@ -2418,6 +2425,9 @@ func (h *AgentHarness) childThreadMetas(ctx context.Context, parentThreadID stri
 	parentThreadID = strings.TrimSpace(parentThreadID)
 	if parentThreadID == "" {
 		return nil, errors.New("parent thread id is required")
+	}
+	if _, err := h.subAgentParentThread(ctx, parentThreadID); err != nil {
+		return nil, err
 	}
 	listRepo, ok := h.options.Repo.(sessiontree.ThreadListRepo)
 	if !ok {

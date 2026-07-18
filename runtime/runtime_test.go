@@ -3424,6 +3424,9 @@ func TestHostPublicNotFoundErrors(t *testing.T) {
 	}); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("SettlePendingTool err = %v, want ErrThreadNotFound", err)
 	}
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := host.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{
 		ParentThreadID: "parent",
 		ChildThreadID:  "missing-child",
@@ -6174,6 +6177,28 @@ func TestThreadMaintenanceHostDeletesThreadTreeWithoutProviderConfig(t *testing.
 func TestThreadMaintenanceHostRequiresStore(t *testing.T) {
 	if _, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{}); err == nil || !strings.Contains(err.Error(), "store is required") {
 		t.Fatalf("NewThreadMaintenanceHost err = %v, want store required", err)
+	}
+}
+
+func TestSubAgentReadsReportMissingCanonicalParent(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "child", ParentThreadID: "parent", TaskName: "worker", AgentPath: "/root/worker", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := maintenance.ListSubAgents(ctx, "parent"); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("ListSubAgents err = %v, want ErrThreadNotFound", err)
+	}
+	if _, err := maintenance.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "child"}); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("ReadSubAgentDetail err = %v, want ErrThreadNotFound", err)
+	}
+	if _, err := maintenance.ListSubAgentDetailEvents(ctx, ListSubAgentDetailEventsRequest{ParentThreadID: "parent", ChildThreadID: "child"}); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("ListSubAgentDetailEvents err = %v, want ErrThreadNotFound", err)
 	}
 }
 
