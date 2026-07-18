@@ -55,8 +55,11 @@ core to make one downstream integration easier.
 
 `runtime.Store` is opaque and caller-owned. Hosts create one Store explicitly,
 share it across runtime facades as needed, and close it once after active work
-stops. Runtime facades do not create hidden stores, close injected stores, or
-support old schema migration and dual-read paths.
+stops. Runtime facades do not create hidden stores or close injected stores.
+`OpenSQLiteStore` performs one explicit, transactional migration from the
+published v0.10 schema v11 to v12 when the raw encoder and canonical v11
+fingerprint match exactly; unknown versions, fingerprints, and unversioned
+databases remain errors, with no dual-read path.
 
 Hosts may choose when product actions stop or delete work, but they should
 express those choices through Floret runtime APIs. Stop-style product actions

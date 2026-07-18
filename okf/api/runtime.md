@@ -32,6 +32,9 @@ host interface for every runtime operation.
   `HostOptions.Store` and `ThreadMaintenanceHostOptions.Store` are required.
   The caller owns the Store lifetime and closes it after all hosts and active
   work using that Store have stopped; neither facade exposes `Close`.
+  Opening a known v11 SQLite store upgrades it transactionally to v12 after
+  validating its raw encoder and canonical schema fingerprint; unknown or
+  malformed versions remain rejected.
 * `Host.EnsureThread` creates or recovers a hosted thread and returns
   transcript-free `ThreadSummary` lifecycle metadata.
 * `Host.ReadThread` and `ThreadMaintenanceHost.ReadThread` return the same

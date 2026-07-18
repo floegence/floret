@@ -1,5 +1,11 @@
 # Floret OKF Update Log
 
+## 2026-07-18
+* **Fix**: Added a strict transactional SQLite v11-to-v12 migration for the
+  published v0.10 store shape, creating Floret-owned Agent todo state without
+  rewriting journal or provider data; unknown versions and fingerprints remain
+  rejected.
+
 ## 2026-07-17
 * **Fix**: Kept marker-only turns out of public turn pages unless their canonical
   user entry is committed, while preserving the full journal through ordinal.
@@ -19,7 +25,7 @@
   without fabricating a terminal result.
 * **Breaking**: Required caller-owned `runtime.Store`, removed facade `Close`
   methods and hidden memory Store creation, and reset SQLite to one canonical
-  schema that rejects pre-release versions instead of migrating them.
+  schema with explicit metadata and fingerprint validation.
 * **Breaking**: Replaced flat gateway messages with typed roles, grouped ordered
   tool calls, typed tool results, strict JSON/adjacency validation, and required
   `ModelGatewayIdentity.StateCompatibilityKey`.

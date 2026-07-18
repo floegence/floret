@@ -170,16 +170,77 @@ func TestSQLiteStorePersistsSubAgentThreadMetadata(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreRejectsPreReleaseSchemaVersion(t *testing.T) {
+func TestSQLiteStoreMigratesSchemaVersion11(t *testing.T) {
 	ctx := context.Background()
 	store, path := openSQLiteStoreForTest(t)
-	version, err := store.SchemaVersion(ctx)
+	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := sessiontree.AppendMessage(ctx, store, "thread", "turn-1", session.Message{Role: session.User, Content: "preserved"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutProviderState(ctx, storage.ProviderStateRecord{
+		ThreadID:         "thread",
+		LeafEntryID:      entry.ID,
+		CompatibilityKey: "provider:model:endpoint:route",
+		State:            provider.State{Kind: "responses", ID: "response-1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.withImmediate(ctx, func(tx sqlRunner) error {
+		if _, err := tx.ExecContext(ctx, `DROP TABLE agent_todo_states`); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_version'`, schemaVersion11); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_fingerprint'`, schemaFingerprintVersion11)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open migrated store: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	version, err := reopened.SchemaVersion(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if version != schemaVersion {
-		t.Fatalf("fresh schema version = %q, want %q", version, schemaVersion)
+		t.Fatalf("migrated schema version = %q, want %q", version, schemaVersion)
 	}
+	pathEntries, err := reopened.Path(ctx, "thread", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pathEntries) != 1 || pathEntries[0].Message.Content != "preserved" {
+		t.Fatalf("migrated path = %#v", pathEntries)
+	}
+	if _, err := reopened.ProviderState(ctx, "thread"); err != nil {
+		t.Fatalf("read migrated provider state: %v", err)
+	}
+	todo, err := reopened.CompareAndSwapAgentTodoState(ctx, sessiontree.AgentTodoState{
+		ThreadID: "thread",
+		Items:    []sessiontree.AgentTodoItem{{Content: "migrated todo", Status: "pending"}},
+	}, 0)
+	if err != nil {
+		t.Fatalf("write migrated todo state: %v", err)
+	}
+	if todo.Version != 1 || len(todo.Items) != 1 || todo.Items[0].Content != "migrated todo" {
+		t.Fatalf("migrated todo state = %#v", todo)
+	}
+}
+
+func TestSQLiteStoreRejectsUnknownSchemaVersion(t *testing.T) {
+	ctx := context.Background()
+	store, path := openSQLiteStoreForTest(t)
 	if err := store.putMetaValue(ctx, "schema_version", "10"); err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +248,101 @@ func TestSQLiteStoreRejectsPreReleaseSchemaVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), `unsupported sqlite store schema version "10"`) {
-		t.Fatalf("old schema open err = %v", err)
+		t.Fatalf("unknown schema open err = %v", err)
+	}
+}
+
+func TestSQLiteStoreVersion11MigrationRejectsWrongFingerprintWithoutChanges(t *testing.T) {
+	ctx := context.Background()
+	store, path := openSQLiteStoreForTest(t)
+	if err := store.withImmediate(ctx, func(tx sqlRunner) error {
+		if _, err := tx.ExecContext(ctx, `DROP TABLE agent_todo_states`); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_version'`, schemaVersion11); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = 'wrong' WHERE key = 'schema_fingerprint'`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), `unsupported sqlite store schema fingerprint "wrong"`) {
+		t.Fatalf("wrong fingerprint open err = %v", err)
+	}
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var version string
+	if err := db.QueryRow(`SELECT value FROM schema_meta WHERE key = 'schema_version'`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != schemaVersion11 {
+		t.Fatalf("schema version after rejected migration = %q, want %q", version, schemaVersion11)
+	}
+	var todoTables int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agent_todo_states'`).Scan(&todoTables); err != nil {
+		t.Fatal(err)
+	}
+	if todoTables != 0 {
+		t.Fatalf("agent todo table count after rejected migration = %d, want 0", todoTables)
+	}
+}
+
+func TestSQLiteStoreVersion11MigrationRollsBackOnMetadataFailure(t *testing.T) {
+	ctx := context.Background()
+	store, path := openSQLiteStoreForTest(t)
+	if err := store.withImmediate(ctx, func(tx sqlRunner) error {
+		if _, err := tx.ExecContext(ctx, `DROP TABLE agent_todo_states`); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_version'`, schemaVersion11); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_fingerprint'`, schemaFingerprintVersion11); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `CREATE TRIGGER reject_schema_version_update
+			BEFORE UPDATE ON schema_meta
+			WHEN OLD.key = 'schema_version'
+			BEGIN
+				SELECT RAISE(ABORT, 'reject schema version update');
+			END`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), "update sqlite store schema version") {
+		t.Fatalf("failed migration open err = %v", err)
+	}
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var version string
+	if err := db.QueryRow(`SELECT value FROM schema_meta WHERE key = 'schema_version'`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != schemaVersion11 {
+		t.Fatalf("schema version after rollback = %q, want %q", version, schemaVersion11)
+	}
+	var todoTables int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agent_todo_states'`).Scan(&todoTables); err != nil {
+		t.Fatal(err)
+	}
+	if todoTables != 0 {
+		t.Fatalf("agent todo table count after rollback = %d, want 0", todoTables)
 	}
 }
 

@@ -24,9 +24,11 @@ import (
 )
 
 const (
-	schemaVersion     = "12"
-	rawEncoderVersion = "1"
-	driverName        = "sqlite"
+	schemaVersion              = "12"
+	schemaVersion11            = "11"
+	schemaFingerprintVersion11 = "200ee3cee291df623ac3cc7d603121cb22601992b4851e13fb859081053f4c85"
+	rawEncoderVersion          = "1"
+	driverName                 = "sqlite"
 )
 
 type Option func(*options)
@@ -137,7 +139,9 @@ func (s *Store) init(ctx context.Context) error {
 		return err
 	}
 	if current != schemaVersion {
-		return fmt.Errorf("unsupported sqlite store schema version %q", current)
+		if err := s.migrateSchema(ctx, current); err != nil {
+			return err
+		}
 	}
 	rawVersion, err := s.metaValue(ctx, "raw_encoder_version")
 	if err != nil {
@@ -156,6 +160,38 @@ func (s *Store) init(ctx context.Context) error {
 	return nil
 }
 
+func (s *Store) migrateSchema(ctx context.Context, current string) error {
+	if current != schemaVersion11 {
+		return fmt.Errorf("unsupported sqlite store schema version %q", current)
+	}
+	return s.withImmediate(ctx, func(tx sqlRunner) error {
+		rawVersion, err := metaValue(ctx, tx, "raw_encoder_version")
+		if err != nil {
+			return fmt.Errorf("unsupported sqlite store raw encoder version: %w", err)
+		}
+		if rawVersion != rawEncoderVersion {
+			return fmt.Errorf("unsupported sqlite store raw encoder version %q", rawVersion)
+		}
+		fingerprint, err := metaValue(ctx, tx, "schema_fingerprint")
+		if err != nil {
+			return fmt.Errorf("unsupported sqlite store schema fingerprint: %w", err)
+		}
+		if fingerprint != schemaFingerprintVersion11 {
+			return fmt.Errorf("unsupported sqlite store schema fingerprint %q", fingerprint)
+		}
+		if _, err := tx.ExecContext(ctx, agentTodoStatesMigrationSQL); err != nil {
+			return fmt.Errorf("migrate sqlite store schema v11 to v12: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_version'`, schemaVersion); err != nil {
+			return fmt.Errorf("update sqlite store schema version: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_fingerprint'`, canonicalSchemaFingerprint()); err != nil {
+			return fmt.Errorf("update sqlite store schema fingerprint: %w", err)
+		}
+		return nil
+	})
+}
+
 func (s *Store) hasUserSchema(ctx context.Context) (bool, error) {
 	var count int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).Scan(&count); err != nil {
@@ -170,8 +206,12 @@ func canonicalSchemaFingerprint() string {
 }
 
 func (s *Store) metaValue(ctx context.Context, key string) (string, error) {
+	return metaValue(ctx, s.db, key)
+}
+
+func metaValue(ctx context.Context, q sqlRunner, key string) (string, error) {
 	var value string
-	err := s.db.QueryRowContext(ctx, `SELECT value FROM schema_meta WHERE key = ?`, key).Scan(&value)
+	err := q.QueryRowContext(ctx, `SELECT value FROM schema_meta WHERE key = ?`, key).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", storage.ErrMetadataNotFound
 	}
@@ -1922,6 +1962,19 @@ CREATE TABLE IF NOT EXISTS active_turn_leases (
 	turn_id TEXT NOT NULL DEFAULT '',
 	owner_id TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL,
+	FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
+);
+`
+
+const agentTodoStatesMigrationSQL = `
+CREATE TABLE agent_todo_states (
+	thread_id TEXT PRIMARY KEY,
+	version INTEGER NOT NULL,
+	items_json TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	updated_by_turn_id TEXT NOT NULL DEFAULT '',
+	updated_by_run_id TEXT NOT NULL DEFAULT '',
+	updated_by_tool_call_id TEXT NOT NULL DEFAULT '',
 	FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
 );
 `
