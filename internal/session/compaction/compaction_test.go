@@ -3,7 +3,7 @@ package compaction
 import (
 	"context"
 	"encoding/json"
-	"slices"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -915,7 +915,7 @@ func requireCheckpointPlusTail(t *testing.T, prep Preparation) session.Message {
 	if len(prep.ActiveMessages) != len(prep.RetainedTail)+1 {
 		t.Fatalf("active messages length = %d, want checkpoint plus %d retained tail messages: %#v", len(prep.ActiveMessages), len(prep.RetainedTail), prep.ActiveMessages)
 	}
-	if !slices.Equal(prep.ActiveMessages[1:], prep.RetainedTail) {
+	if !reflect.DeepEqual(prep.ActiveMessages[1:], prep.RetainedTail) {
 		t.Fatalf("active messages should be [checkpoint] + retained tail: active=%#v tail=%#v", prep.ActiveMessages, prep.RetainedTail)
 	}
 	return checkpoint

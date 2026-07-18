@@ -2,6 +2,7 @@ package agentharness
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -80,5 +81,25 @@ func TestProviderTitleGeneratorOmitsReasoningForModelsWithoutShortSelection(t *t
 	}
 	if got := recorder.requests[0].Reasoning; !got.IsZero() {
 		t.Fatalf("Reasoning=%#v, want omitted", got)
+	}
+}
+
+func TestThreadTitlePromptUsesAttachmentMetadataWithoutResourceReference(t *testing.T) {
+	messages, err := threadTitlePromptMessages([]session.Message{{
+		Role: session.User,
+		Attachments: []session.MessageAttachment{{
+			ResourceRef: "upload:secret-resource-id",
+			Name:        "architecture.png",
+			MIMEType:    "image/png",
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 || !strings.Contains(messages[1].Content, "architecture.png (image/png)") {
+		t.Fatalf("title messages = %#v", messages)
+	}
+	if strings.Contains(messages[1].Content, "secret-resource-id") {
+		t.Fatalf("title prompt leaked resource reference: %q", messages[1].Content)
 	}
 }

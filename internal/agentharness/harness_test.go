@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -3069,7 +3070,7 @@ func messagePrefixEqual(got, want []session.Message) bool {
 		candidate.EntryID = ""
 		candidate.ParentEntryID = ""
 		candidate.ToolResult = nil
-		if candidate != msg {
+		if !reflect.DeepEqual(candidate, msg) {
 			return false
 		}
 	}

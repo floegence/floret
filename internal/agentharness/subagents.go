@@ -302,12 +302,13 @@ type SubAgentDetailEvent struct {
 }
 
 type SubAgentDetailMessage struct {
-	Role      string                            `json:"role,omitempty"`
-	Kind      string                            `json:"kind,omitempty"`
-	Preview   string                            `json:"preview,omitempty"`
-	Content   string                            `json:"content,omitempty"`
-	Reasoning string                            `json:"reasoning,omitempty"`
-	Activity  *observation.ActivityPresentation `json:"activity,omitempty"`
+	Role        string                            `json:"role,omitempty"`
+	Kind        string                            `json:"kind,omitempty"`
+	Preview     string                            `json:"preview,omitempty"`
+	Content     string                            `json:"content,omitempty"`
+	Attachments []session.MessageAttachment       `json:"attachments,omitempty"`
+	Reasoning   string                            `json:"reasoning,omitempty"`
+	Activity    *observation.ActivityPresentation `json:"activity,omitempty"`
 }
 
 type SubAgentDetailToolCall struct {
@@ -1016,6 +1017,58 @@ func (h *AgentHarness) ReadLatestThreadDetailEvents(ctx context.Context, threadI
 	}, nil
 }
 
+func (h *AgentHarness) latestThreadDetailEventsFromPath(path []sessiontree.Entry, includeRaw bool) (ThreadDetailEvents, error) {
+	latestStartedIndex := -1
+	latestTurnID := ""
+	for index := len(path) - 1; index >= 0; index-- {
+		entry := path[index]
+		if entry.Type != sessiontree.EntryTurnMarker || entry.TurnStatus != sessiontree.TurnStarted {
+			continue
+		}
+		latestTurnID = strings.TrimSpace(entry.TurnID)
+		if latestTurnID == "" || strings.TrimSpace(entry.Metadata["run_id"]) == "" {
+			return ThreadDetailEvents{}, errors.New("latest turn started marker has incomplete identity")
+		}
+		latestStartedIndex = index
+		break
+	}
+	if latestStartedIndex < 0 {
+		return ThreadDetailEvents{GeneratedAt: h.now()}, nil
+	}
+	admitted := false
+	for _, entry := range path[latestStartedIndex+1:] {
+		if entry.Type == sessiontree.EntryUserMessage && strings.TrimSpace(entry.TurnID) == latestTurnID {
+			admitted = true
+			break
+		}
+	}
+	if !admitted {
+		return ThreadDetailEvents{GeneratedAt: h.now()}, nil
+	}
+	entries := path[latestStartedIndex:]
+	activityContext := subAgentDetailActivityContext{
+		resultCallIDs: subAgentDetailResultCallIDs(entries),
+		runIDs:        subAgentDetailTurnRunIDs(entries),
+	}
+	events := make([]SubAgentDetailEvent, 0, len(entries))
+	var nextOrdinal int64
+	for offset, entry := range entries {
+		ordinal := int64(latestStartedIndex + offset + 1)
+		event, ok := h.subAgentDetailEvent(entry, ordinal, includeRaw, activityContext)
+		if !ok {
+			continue
+		}
+		events = append(events, event)
+		nextOrdinal = ordinal
+	}
+	return ThreadDetailEvents{
+		Events:       events,
+		NextOrdinal:  nextOrdinal,
+		RetainedFrom: int64(latestStartedIndex + 1),
+		GeneratedAt:  h.now(),
+	}, nil
+}
+
 func (h *AgentHarness) ReadThreadContext(ctx context.Context, threadID string) (ThreadContextSnapshot, error) {
 	if h == nil {
 		return ThreadContextSnapshot{}, errors.New("agent harness is nil")
@@ -1610,14 +1663,15 @@ func subAgentDetailApproval(metadata map[string]string) *SubAgentDetailApproval 
 
 func subAgentDetailMessage(msg session.Message, includeRaw bool) *SubAgentDetailMessage {
 	activity := observationActivityPresentation(msg.Activity)
-	if msg.Role == "" && msg.Kind == "" && msg.Content == "" && msg.Reasoning == "" && activity == nil {
+	if msg.Role == "" && msg.Kind == "" && msg.Content == "" && len(msg.Attachments) == 0 && msg.Reasoning == "" && activity == nil {
 		return nil
 	}
 	out := &SubAgentDetailMessage{
-		Role:     string(msg.Role),
-		Kind:     string(msg.Kind),
-		Preview:  safeSubAgentDetailPreview(msg.Content, 500),
-		Activity: activity,
+		Role:        string(msg.Role),
+		Kind:        string(msg.Kind),
+		Preview:     safeSubAgentDetailPreview(msg.Content, 500),
+		Attachments: append([]session.MessageAttachment(nil), msg.Attachments...),
+		Activity:    activity,
 	}
 	if includeRaw {
 		out.Content = msg.Content

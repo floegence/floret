@@ -54,6 +54,8 @@ const (
 	ContextCompactDebug    = observation.EventTypeContextCompactDebug
 	ContextContinue        = observation.EventTypeContextContinue
 	ThreadEntryCommitted   = observation.EventTypeThreadEntryCommitted
+	ThreadTitleUpdated     = observation.EventTypeThreadTitleUpdated
+	ThreadTitleFailed      = observation.EventTypeThreadTitleFailed
 	ControlSignal          = observation.EventTypeControlSignal
 	BudgetExceeded         = observation.EventTypeBudgetExceeded
 	StepEnd                = observation.EventTypeStepEnd

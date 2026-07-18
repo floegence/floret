@@ -138,6 +138,7 @@ type LoopLimits struct {
 
 type AgentHarness struct {
 	mu              sync.Mutex
+	titleMu         sync.Mutex
 	subagentSpawnMu sync.Mutex
 	options         Options
 	threads         map[string]*Thread
@@ -199,6 +200,7 @@ type RunOptions struct {
 	ManualCompactions        engine.ManualCompactionSource
 	ToolSurfaceProvider      engine.ToolSurfaceProvider
 	SupplementalContext      []engine.TurnSupplementalContextItem
+	Attachments              []session.MessageAttachment
 	Sink                     event.Sink
 }
 
@@ -299,11 +301,17 @@ type ThreadSummary struct {
 	CanRetry         bool      `json:"can_retry"`
 }
 
+type ThreadOverview struct {
+	Thread     ThreadSnapshot
+	LatestTurn ThreadDetailEvents
+}
+
 type ThreadMessage struct {
-	Role      session.Role `json:"role"`
-	Content   string       `json:"content"`
-	TurnID    string       `json:"turn_id,omitempty"`
-	CreatedAt time.Time    `json:"created_at"`
+	Role        session.Role                `json:"role"`
+	Content     string                      `json:"content"`
+	Attachments []session.MessageAttachment `json:"attachments,omitempty"`
+	TurnID      string                      `json:"turn_id,omitempty"`
+	CreatedAt   time.Time                   `json:"created_at"`
 }
 
 type ThreadJournalSnapshot struct {
@@ -919,6 +927,26 @@ func (h *AgentHarness) emit(ev HarnessEvent) {
 	if h.options.HarnessSink != nil {
 		h.options.HarnessSink.EmitHarness(ev)
 	}
+	if h.options.Sink != nil {
+		var eventType event.Type
+		switch ev.Type {
+		case EventTitleUpdated:
+			eventType = event.ThreadTitleUpdated
+		case EventTitleFailed:
+			eventType = event.ThreadTitleFailed
+		}
+		if eventType != "" {
+			h.options.Sink.Emit(event.Event{
+				Type:      eventType,
+				RunID:     ev.RunID,
+				ThreadID:  ev.ThreadID,
+				TurnID:    ev.TurnID,
+				Message:   ev.Message,
+				Metadata:  cloneStringMap(ev.Metadata),
+				Timestamp: ev.Timestamp,
+			})
+		}
+	}
 }
 
 func (h *AgentHarness) emitEntryCommitted(entry sessiontree.Entry, runID string) {
@@ -1037,6 +1065,10 @@ func (t *Thread) Read(ctx context.Context) (ThreadSnapshot, error) {
 	if err != nil {
 		return ThreadSnapshot{}, err
 	}
+	return threadSnapshotFromJournal(journal), nil
+}
+
+func threadSnapshotFromJournal(journal ThreadJournalSnapshot) ThreadSnapshot {
 	lifecycle := sessionlifecycle.Derive(journal.Path, journal.Phase)
 	return ThreadSnapshot{
 		ID:               journal.Meta.ID,
@@ -1057,7 +1089,7 @@ func (t *Thread) Read(ctx context.Context) (ThreadSnapshot, error) {
 		CanAppendMessage: lifecycle.CanAppendMessage(),
 		CanRetry:         retryTarget(journal.Path).Entry.ID != "",
 		Messages:         threadMessages(journal.Path),
-	}, nil
+	}
 }
 
 func (h *AgentHarness) ReadThread(ctx context.Context, id string) (ThreadSnapshot, error) {
@@ -1069,6 +1101,59 @@ func (h *AgentHarness) ReadThread(ctx context.Context, id string) (ThreadSnapsho
 		return ThreadSnapshot{}, errors.New("thread id is required")
 	}
 	return h.cacheThread(id).Read(ctx)
+}
+
+func (h *AgentHarness) SetThreadTitle(ctx context.Context, id, rawTitle string) (ThreadSnapshot, error) {
+	if h == nil {
+		return ThreadSnapshot{}, errors.New("agent harness is nil")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ThreadSnapshot{}, errors.New("thread id is required")
+	}
+	title, err := normalizeHostThreadTitle(rawTitle)
+	if err != nil {
+		return ThreadSnapshot{}, err
+	}
+	h.titleMu.Lock()
+	meta, err := h.options.Repo.Thread(ctx, id)
+	changed := false
+	if err == nil && meta.Title != title {
+		meta.Title = title
+		meta.TitleStatus = sessiontree.ThreadTitleReady
+		meta.TitleSource = sessiontree.ThreadTitleSourceHost
+		meta.TitleUpdatedAt = h.now()
+		meta.TitleError = ""
+		err = updateThreadTitle(ctx, h.options.Repo, meta)
+		changed = err == nil
+	}
+	h.titleMu.Unlock()
+	if err != nil {
+		return ThreadSnapshot{}, err
+	}
+	if changed {
+		h.emit(HarnessEvent{Type: EventTitleUpdated, ThreadID: id, Message: title, Metadata: map[string]string{"source": string(sessiontree.ThreadTitleSourceHost)}})
+	}
+	return h.ReadThread(ctx, id)
+}
+
+func (h *AgentHarness) ReadThreadOverview(ctx context.Context, id string) (ThreadOverview, error) {
+	if h == nil {
+		return ThreadOverview{}, errors.New("agent harness is nil")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ThreadOverview{}, errors.New("thread id is required")
+	}
+	journal, err := h.cacheThread(id).Journal(ctx)
+	if err != nil {
+		return ThreadOverview{}, err
+	}
+	latest, err := h.latestThreadDetailEventsFromPath(journal.Path, true)
+	if err != nil {
+		return ThreadOverview{}, err
+	}
+	return ThreadOverview{Thread: threadSnapshotFromJournal(journal), LatestTurn: latest}, nil
 }
 
 func latestThreadRunID(path []sessiontree.Entry) string {
@@ -1143,14 +1228,15 @@ func threadMessages(path []sessiontree.Entry) []ThreadMessage {
 	for _, entry := range path {
 		switch entry.Type {
 		case sessiontree.EntryUserMessage, sessiontree.EntryAssistantMessage:
-			if entry.Message.Content == "" {
+			if entry.Message.Content == "" && len(entry.Message.Attachments) == 0 {
 				continue
 			}
 			out = append(out, ThreadMessage{
-				Role:      entry.Message.Role,
-				Content:   entry.Message.Content,
-				TurnID:    entry.TurnID,
-				CreatedAt: entry.CreatedAt,
+				Role:        entry.Message.Role,
+				Content:     entry.Message.Content,
+				Attachments: append([]session.MessageAttachment(nil), entry.Message.Attachments...),
+				TurnID:      entry.TurnID,
+				CreatedAt:   entry.CreatedAt,
 			})
 		}
 	}
@@ -1542,7 +1628,7 @@ func (t *Thread) Compact(ctx context.Context, opts CompactOptions) (CompactResul
 }
 
 func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retryUser *sessiontree.Entry) (TurnResult, error) {
-	if strings.TrimSpace(input) == "" && retryUser == nil {
+	if strings.TrimSpace(input) == "" && len(opts.Attachments) == 0 && retryUser == nil {
 		return TurnResult{}, errors.New("input is required")
 	}
 	if err := t.enterTurn(); err != nil {
@@ -1591,7 +1677,11 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	}
 	t.harness.emit(HarnessEvent{Type: EventTurnStarted, RunID: runID, ThreadID: t.id, TurnID: turnID})
 	if retryUser == nil {
-		entry, err := sessiontree.AppendMessage(ctx, t.harness.options.Repo, t.id, turnID, session.Message{Role: session.User, Content: input})
+		entry, err := sessiontree.AppendMessage(ctx, t.harness.options.Repo, t.id, turnID, session.Message{
+			Role:        session.User,
+			Content:     input,
+			Attachments: append([]session.MessageAttachment(nil), opts.Attachments...),
+		})
 		if err != nil {
 			persistCtx, cancelPersist := turnFinalizationContext(ctx)
 			defer cancelPersist()
@@ -1765,13 +1855,25 @@ func (t *Thread) ensureThreadTitle(ctx context.Context, turnID string) error {
 	messages := sessiontree.BuildContext(path, sessiontree.ContextOptions{})
 	result, err := generator.GenerateTitle(ctx, TitleRequest{ThreadID: t.id, TurnID: turnID, Messages: session.CloneMessages(messages)})
 	now := t.harness.now()
+	t.harness.titleMu.Lock()
+	meta, readErr := t.harness.options.Repo.Thread(ctx, t.id)
+	if readErr != nil {
+		t.harness.titleMu.Unlock()
+		return readErr
+	}
+	if strings.TrimSpace(meta.Title) != "" {
+		t.harness.titleMu.Unlock()
+		return nil
+	}
 	if err != nil {
 		meta.Title = ""
 		meta.TitleStatus = sessiontree.ThreadTitleFailed
 		meta.TitleSource = ""
 		meta.TitleUpdatedAt = now
 		meta.TitleError = err.Error()
-		if updateErr := updateThreadTitle(ctx, t.harness.options.Repo, meta); updateErr != nil {
+		updateErr := updateThreadTitle(ctx, t.harness.options.Repo, meta)
+		t.harness.titleMu.Unlock()
+		if updateErr != nil {
 			return updateErr
 		}
 		return err
@@ -1784,7 +1886,9 @@ func (t *Thread) ensureThreadTitle(ctx context.Context, turnID string) error {
 		meta.TitleSource = ""
 		meta.TitleUpdatedAt = now
 		meta.TitleError = err.Error()
-		if updateErr := updateThreadTitle(ctx, t.harness.options.Repo, meta); updateErr != nil {
+		updateErr := updateThreadTitle(ctx, t.harness.options.Repo, meta)
+		t.harness.titleMu.Unlock()
+		if updateErr != nil {
 			return updateErr
 		}
 		return err
@@ -1798,8 +1902,10 @@ func (t *Thread) ensureThreadTitle(ctx context.Context, turnID string) error {
 	meta.TitleSource = source
 	meta.TitleUpdatedAt = now
 	meta.TitleError = ""
-	if err := updateThreadTitle(ctx, t.harness.options.Repo, meta); err != nil {
-		return err
+	updateErr := updateThreadTitle(ctx, t.harness.options.Repo, meta)
+	t.harness.titleMu.Unlock()
+	if updateErr != nil {
+		return updateErr
 	}
 	t.harness.emit(HarnessEvent{Type: EventTitleUpdated, ThreadID: t.id, TurnID: turnID, Message: title, Metadata: map[string]string{"source": string(source)}})
 	return nil

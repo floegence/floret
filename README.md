@@ -167,7 +167,9 @@ func main() {
 		ThreadID: thread.ID,
 		TurnID:   "turn-1",
 		RunID:    "run-1",
-		Input:    "Welcome a new customer in one sentence.",
+		Input: runtime.TurnInput{
+			Text: "Welcome a new customer in one sentence.",
+		},
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -264,12 +266,17 @@ timelines, context/compaction observations, committed detail identity, and turn
 projections so unknown values cannot acquire a normal display state or lifecycle
 semantics from `Metadata`.
 
-Thread titles are host-owned by default. Set
-`HostOptions.ThreadTitleMode = runtime.ThreadTitleModeProvider` only when Floret
-should issue a dedicated provider request and persist the resulting title in its
-thread journal. Products that own their title workflow should keep the default
-`runtime.ThreadTitleModeHostOwned` behavior and store product titles outside the
-Floret store.
+Thread titles are always persisted by Floret. Set
+`HostOptions.ThreadTitleMode = runtime.ThreadTitleModeProvider` when Floret
+should issue the dedicated provider request automatically. Products that choose
+titles themselves keep the default `runtime.ThreadTitleModeHostOwned` behavior
+and call `SetThreadTitle`; they must not store a second title copy.
+
+`RunTurnRequest.Input` is a structured `runtime.TurnInput`. A user turn may
+contain text, opaque `MessageAttachment` resource references, or both. Attachment
+resources remain host-owned and are resolved only by a host-supplied
+`ModelGateway`; Floret persists the message-to-resource association without
+reading the resource or storing file bytes.
 
 When a host needs a durable display projection, use `ThreadTurnProjection` and
 the public detail APIs. Do not read Floret's storage tables or rebuild

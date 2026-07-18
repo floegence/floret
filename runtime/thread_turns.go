@@ -32,19 +32,25 @@ type ThreadTurnsPage struct {
 	GeneratedAt    time.Time            `json:"generated_at"`
 }
 
+type ThreadOverview struct {
+	Thread     ThreadSnapshot      `json:"thread"`
+	LatestTurn *ThreadTurnSnapshot `json:"latest_turn,omitempty"`
+}
+
 type ThreadTurnSnapshot struct {
-	TurnID         TurnID                `json:"turn_id"`
-	RunID          RunID                 `json:"run_id"`
-	Ordinal        int64                 `json:"ordinal"`
-	StartedAt      time.Time             `json:"started_at"`
-	UpdatedAt      time.Time             `json:"updated_at"`
-	UserEntryID    string                `json:"user_entry_id,omitempty"`
-	UserInput      string                `json:"user_input,omitempty"`
-	Status         TurnStatus            `json:"status"`
-	Failure        string                `json:"failure,omitempty"`
-	Projection     ThreadTurnProjection  `json:"projection"`
-	ControlSignals []ThreadControlSignal `json:"control_signals,omitempty"`
-	ThroughOrdinal int64                 `json:"through_ordinal"`
+	TurnID          TurnID                `json:"turn_id"`
+	RunID           RunID                 `json:"run_id"`
+	Ordinal         int64                 `json:"ordinal"`
+	StartedAt       time.Time             `json:"started_at"`
+	UpdatedAt       time.Time             `json:"updated_at"`
+	UserEntryID     string                `json:"user_entry_id,omitempty"`
+	UserInput       string                `json:"user_input,omitempty"`
+	UserAttachments []MessageAttachment   `json:"user_attachments,omitempty"`
+	Status          TurnStatus            `json:"status"`
+	Failure         string                `json:"failure,omitempty"`
+	Projection      ThreadTurnProjection  `json:"projection"`
+	ControlSignals  []ThreadControlSignal `json:"control_signals,omitempty"`
+	ThroughOrdinal  int64                 `json:"through_ordinal"`
 }
 
 type ThreadControlSignal struct {
@@ -70,6 +76,42 @@ func (h *Host) ReadLatestThreadTurn(ctx context.Context, threadID ThreadID) (Thr
 
 func (h *ThreadMaintenanceHost) ReadLatestThreadTurn(ctx context.Context, threadID ThreadID) (ThreadTurnSnapshot, error) {
 	return readLatestThreadTurn(ctx, h.harness, threadID)
+}
+
+func (h *Host) ReadThreadOverview(ctx context.Context, threadID ThreadID) (ThreadOverview, error) {
+	return readThreadOverview(ctx, h.harness, threadID)
+}
+
+func (h *ThreadMaintenanceHost) ReadThreadOverview(ctx context.Context, threadID ThreadID) (ThreadOverview, error) {
+	return readThreadOverview(ctx, h.harness, threadID)
+}
+
+func readThreadOverview(ctx context.Context, harness *agentharness.AgentHarness, threadID ThreadID) (ThreadOverview, error) {
+	if strings.TrimSpace(string(threadID)) == "" {
+		return ThreadOverview{}, errors.New("thread id is required")
+	}
+	overview, err := harness.ReadThreadOverview(ctx, string(threadID))
+	if err != nil {
+		return ThreadOverview{}, runtimeHostError(err)
+	}
+	thread := threadSnapshot(overview.Thread)
+	events := threadDetailEvents(overview.LatestTurn.Events)
+	turns, _, err := projectThreadTurnSnapshots(threadID, events)
+	if err != nil {
+		return ThreadOverview{}, err
+	}
+	if len(turns) > 1 {
+		return ThreadOverview{}, fmt.Errorf("thread overview latest turn query returned %d turns", len(turns))
+	}
+	result := ThreadOverview{Thread: thread}
+	if len(turns) == 1 {
+		latest := turns[0]
+		if latest.ThroughOrdinal > thread.ThroughOrdinal {
+			return ThreadOverview{}, fmt.Errorf("%w: latest turn revision exceeds thread revision", ErrJournalInvariant)
+		}
+		result.LatestTurn = &latest
+	}
+	return result, nil
 }
 
 func readLatestThreadTurn(ctx context.Context, harness *agentharness.AgentHarness, threadID ThreadID) (ThreadTurnSnapshot, error) {
@@ -196,7 +238,7 @@ func projectThreadTurnSnapshots(threadID ThreadID, events []ThreadDetailEvent) (
 		if strings.TrimSpace(string(runID)) == "" || ordinal <= 0 || startedAt.IsZero() {
 			return nil, 0, fmt.Errorf("turn %q has an invalid started marker", turnID)
 		}
-		userEntryID, userInput := canonicalTurnUserInput(events, turnID)
+		userEntryID, userInput, userAttachments := canonicalTurnUserInput(events, turnID)
 		if strings.TrimSpace(userEntryID) == "" {
 			continue
 		}
@@ -211,18 +253,19 @@ func projectThreadTurnSnapshots(threadID ThreadID, events []ThreadDetailEvent) (
 			return nil, 0, fmt.Errorf("project turn %q: %w", turnID, err)
 		}
 		turns = append(turns, ThreadTurnSnapshot{
-			TurnID:         turnID,
-			RunID:          runID,
-			Ordinal:        ordinal,
-			StartedAt:      startedAt,
-			UpdatedAt:      turnEvents[len(turnEvents)-1].CreatedAt,
-			UserEntryID:    userEntryID,
-			UserInput:      userInput,
-			Status:         projection.Status,
-			Failure:        canonicalTurnFailure(turnEvents),
-			Projection:     projection,
-			ControlSignals: threadTurnControlSignals(turnEvents),
-			ThroughOrdinal: projection.ThroughOrdinal,
+			TurnID:          turnID,
+			RunID:           runID,
+			Ordinal:         ordinal,
+			StartedAt:       startedAt,
+			UpdatedAt:       turnEvents[len(turnEvents)-1].CreatedAt,
+			UserEntryID:     userEntryID,
+			UserInput:       userInput,
+			UserAttachments: userAttachments,
+			Status:          projection.Status,
+			Failure:         canonicalTurnFailure(turnEvents),
+			Projection:      projection,
+			ControlSignals:  threadTurnControlSignals(turnEvents),
+			ThroughOrdinal:  projection.ThroughOrdinal,
 		})
 	}
 	return turns, through, nil
@@ -238,13 +281,13 @@ func threadTurnStartedIdentity(events []ThreadDetailEvent) (RunID, int64, time.T
 	return "", 0, time.Time{}
 }
 
-func canonicalTurnUserInput(events []ThreadDetailEvent, turnID TurnID) (string, string) {
+func canonicalTurnUserInput(events []ThreadDetailEvent, turnID TurnID) (string, string, []MessageAttachment) {
 	for _, event := range events {
 		if event.TurnID == turnID && event.Kind == ThreadDetailEventUserMessage && event.Message != nil {
-			return event.ID, event.Message.Content
+			return event.ID, event.Message.Content, append([]MessageAttachment(nil), event.Message.Attachments...)
 		}
 	}
-	return "", ""
+	return "", "", nil
 }
 
 func canonicalTurnFailure(events []ThreadDetailEvent) string {

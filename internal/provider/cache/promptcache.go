@@ -129,13 +129,14 @@ type Segment struct {
 }
 
 type MessageSnapshot struct {
-	Role       string `json:"role,omitempty"`
-	Content    string `json:"content,omitempty"`
-	Reasoning  string `json:"reasoning,omitempty"`
-	ToolCallID string `json:"tool_call_id,omitempty"`
-	ToolName   string `json:"tool_name,omitempty"`
-	ToolArgs   string `json:"tool_args,omitempty"`
-	Kind       string `json:"kind,omitempty"`
+	Role        string                      `json:"role,omitempty"`
+	Content     string                      `json:"content,omitempty"`
+	Attachments []session.MessageAttachment `json:"attachments,omitempty"`
+	Reasoning   string                      `json:"reasoning,omitempty"`
+	ToolCallID  string                      `json:"tool_call_id,omitempty"`
+	ToolName    string                      `json:"tool_name,omitempty"`
+	ToolArgs    string                      `json:"tool_args,omitempty"`
+	Kind        string                      `json:"kind,omitempty"`
 }
 
 type ToolDefinition struct {
@@ -1203,13 +1204,14 @@ func Messages(plan RawPlan) []session.Message {
 
 func newMessageSegment(input BuildInput, kind SegmentKind, msg session.Message, sequence int64) (Segment, error) {
 	snap := MessageSnapshot{
-		Role:       string(msg.Role),
-		Content:    msg.Content,
-		Reasoning:  msg.Reasoning,
-		ToolCallID: msg.ToolCallID,
-		ToolName:   msg.ToolName,
-		ToolArgs:   msg.ToolArgs,
-		Kind:       string(msg.Kind),
+		Role:        string(msg.Role),
+		Content:     msg.Content,
+		Attachments: append([]session.MessageAttachment(nil), msg.Attachments...),
+		Reasoning:   msg.Reasoning,
+		ToolCallID:  msg.ToolCallID,
+		ToolName:    msg.ToolName,
+		ToolArgs:    msg.ToolArgs,
+		Kind:        string(msg.Kind),
 	}
 	entryID := msg.EntryID
 	parentEntryID := msg.ParentEntryID
@@ -1231,6 +1233,7 @@ func newMessageSegment(input BuildInput, kind SegmentKind, msg session.Message, 
 			"kind":         kind,
 			"role":         snap.Role,
 			"content":      snap.Content,
+			"attachments":  snap.Attachments,
 			"reasoning":    snap.Reasoning,
 			"tool_call_id": snap.ToolCallID,
 			"tool_name":    snap.ToolName,
@@ -1326,13 +1329,14 @@ func kindForMessage(msg session.Message) SegmentKind {
 
 func (m MessageSnapshot) toSession() session.Message {
 	return session.Message{
-		Role:       session.Role(m.Role),
-		Content:    m.Content,
-		Reasoning:  m.Reasoning,
-		ToolCallID: m.ToolCallID,
-		ToolName:   m.ToolName,
-		ToolArgs:   m.ToolArgs,
-		Kind:       session.MessageKind(m.Kind),
+		Role:        session.Role(m.Role),
+		Content:     m.Content,
+		Attachments: append([]session.MessageAttachment(nil), m.Attachments...),
+		Reasoning:   m.Reasoning,
+		ToolCallID:  m.ToolCallID,
+		ToolName:    m.ToolName,
+		ToolArgs:    m.ToolArgs,
+		Kind:        session.MessageKind(m.Kind),
 	}
 }
 

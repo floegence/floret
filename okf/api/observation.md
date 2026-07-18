@@ -27,6 +27,8 @@ Public event kinds and finite lifecycle fields are typed contracts.
 compaction debug stage/status expose `Valid`; their containing DTOs expose
 `Validate`. Unknown values and inconsistent compaction phase/status pairs are
 contract errors rather than normal presentation states.
+`thread_title_updated` and `thread_title_failed` expose canonical title lifecycle
+changes without requiring hosts to poll or maintain a separate retry ledger.
 
 `BuildActivityTimeline` owns the product-neutral terminal semantics for activity
 items within one sanitized observation group. Only explicit terminal `run_end`

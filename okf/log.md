@@ -1,6 +1,15 @@
 # Floret OKF Update Log
 
 ## 2026-07-18
+* **Breaking**: Replaced string `RunTurnRequest.Input` with structured
+  `TurnInput`, added canonical opaque message attachments through journal,
+  prompt cache, model gateway, detail, turn, fork, and reopen projections, and
+  rejected attachments when no host resolver is available.
+* **Feature**: Added same-active-path `ReadThreadOverview` and canonical,
+  idempotent `SetThreadTitle` with public title lifecycle events.
+* **Breaking**: Unified root and child detail rows on `ThreadDetailEvent` and
+  removed the public duplicate SubAgent detail DTO family and `subagent_id`
+  identity alias.
 * **Fix**: Added a strict transactional SQLite v11-to-v12 migration for the
   published v0.10 store shape, creating Floret-owned Agent todo state without
   rewriting journal or provider data; unknown versions and fingerprints remain

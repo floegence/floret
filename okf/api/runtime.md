@@ -41,6 +41,9 @@ host interface for every runtime operation.
   transcript-free `ThreadSnapshot`, including canonical status, latest turn and
   run identity, and the journal `ThroughOrdinal`. The snapshot intentionally has
   no message shortcut.
+* `ReadThreadOverview` returns that `ThreadSnapshot` together with the optional
+  latest admitted `ThreadTurnSnapshot`, both projected from one active-path read.
+  An unadmitted started marker does not fabricate a latest turn.
 * `Host.ListThreadTurns` and `ThreadMaintenanceHost.ListThreadTurns` return
   canonical turn snapshots in ascending journal ordinal order. Before, after,
   and tail pagination are mutually exclusive. Started, waiting, or terminal
@@ -53,6 +56,10 @@ host interface for every runtime operation.
   real journal turn, run, and tool call. Fork rewrites the stored turn/run
   authorship with the journal, and thread deletion removes the state.
 * `Host.RunTurn` executes one hosted user-facing turn.
+* `RunTurnRequest.Input` is `TurnInput{Text, Attachments}`. Text or at least one
+  attachment is required. Each `MessageAttachment` carries an opaque durable
+  `ResourceRef`, name, MIME type, and non-negative size; Floret persists and
+  projects the reference but never resolves or reads the host resource.
 * `RunTurnRequest.Limits.MaxInputTokens` caps cumulative provider input tokens
   across every model request in one run. `MaxTotalTokens` independently caps
   cumulative total tokens; provider/context output limits remain per request.
@@ -84,7 +91,7 @@ host interface for every runtime operation.
 * `ListSubAgentActivityTimeline` returns a parent-scoped,
   product-neutral `observation.ActivityTimeline` for hosted child lifecycle
   status without exposing child transcripts. Its payload includes durable
-  child-thread identities such as `thread_id` and `subagent_id`, but not
+  child-thread identity as `thread_id`, but not
   downstream product actions, routing targets, or UI runtime labels.
 * `ReadSubAgentDetail` and `ListSubAgentDetailEvents` let a host read a
   parent-scoped, paginated child-thread execution timeline for human UI or
@@ -92,6 +99,8 @@ host interface for every runtime operation.
   `activity_timeline` is the canonical current activity projection rebuilt from
   retained child detail events; paginated rows are ordered journal facts rather
   than live tool-state snapshots.
+  Child and root detail rows use the same `ThreadDetailEvent` contract; parent
+  scoping remains enforced by the child-detail request.
   Their top-level `context` block exposes neutral model-bound facts: provider
   and model identity, model-derived context policy, current context
   pressure/usage status, and public compaction lifecycle operations. Context
@@ -101,6 +110,10 @@ host interface for every runtime operation.
   transcript for a hosted thread without reading Floret storage internals.
 * `ReadLatestThreadTurn` returns the latest admitted turn from the active path
   without requiring hosts to cache or replay the complete journal.
+* `SetThreadTitle` is the only host title write contract. It stores a non-empty,
+  single-line title of at most 200 Unicode characters as a canonical host title,
+  is idempotent for the same value, and emits `thread_title_updated` when the
+  value changes.
 * `ProjectThreadTurn`, `ReadTurnProjection`, and `TurnResult.Projection` expose
   the product-neutral ordered assistant text, activity timeline, and
   control-signal segments for a hosted turn.
@@ -177,13 +190,17 @@ prompt scope; host products own agent profiles, permission policy, UI, and
 orchestration prompts.
 
 When `HostOptions.ModelGateway` is set, hosted parent and child turns use the
-supplied model transport. Thread titles remain host-owned unless the host
+supplied model transport. Title selection remains host-owned unless the host
 explicitly selects `ThreadTitleModeProvider`; only that mode sends title requests
-through the same gateway. The gateway is invoked with the concrete runtime
+through the same gateway, while both modes persist through Floret. The gateway is invoked with the concrete runtime
 identity for each request, so a child turn uses the child `ThreadID` and prompt
 scope. Provider/model identity comes from `HostOptions.ModelGatewayIdentity`;
 gateway-backed hosts pass raw non-transport config to `NewHost` and keep provider
 transport configuration out of `HostOptions.Config`.
+Provider-visible user messages carry attachment resource references through
+`ModelMessage` so the host adapter can resolve them into provider-native image or
+file content. Opaque attachments are rejected before admission when no
+`ModelGateway` exists; they never degrade into filename text.
 
 Child `ThreadID` is the lifecycle target for spawn, send, wait, list, and close.
 Task names, task descriptions, and agent paths are reference metadata and may
@@ -394,7 +411,8 @@ public API instead of querying or mutating Floret storage tables directly.
 
 `NewThreadMaintenanceHost` is the provider-free constructor for maintenance
 processes that share a Floret `Store` but do not need provider configuration.
-It exposes `EnsureThread`, `ReadTurnProjection`, `SettlePendingTool`,
+It exposes `EnsureThread`, `ReadThreadOverview`, `SetThreadTitle`,
+`ReadTurnProjection`, `SettlePendingTool`,
 `ListSubAgents`, `ListSubAgentActivityTimeline`, `ReadSubAgentDetail`,
 `ListSubAgentDetailEvents`, `ReadThreadContext`, `CloseSubAgents`, and
 `DeleteThread`

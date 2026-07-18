@@ -68,9 +68,20 @@ type ControlSignalView struct {
 	Payload     map[string]any `json:"payload,omitempty"`
 }
 
+// MessageAttachment is one durable host-owned resource reference associated
+// with a user message. Floret persists and projects the opaque reference but
+// never resolves or reads the resource itself.
+type MessageAttachment struct {
+	ResourceRef string `json:"resource_ref"`
+	Name        string `json:"name"`
+	MIMEType    string `json:"mime_type"`
+	SizeBytes   int64  `json:"size_bytes,omitempty"`
+}
+
 type Message struct {
 	Role                 Role
 	Content              string
+	Attachments          []MessageAttachment
 	Reasoning            string
 	ToolCallID           string
 	ToolName             string
@@ -135,6 +146,7 @@ func CloneMessages(messages []Message) []Message {
 }
 
 func CloneMessage(msg Message) Message {
+	msg.Attachments = append([]MessageAttachment(nil), msg.Attachments...)
 	if msg.ToolResult != nil {
 		view := *msg.ToolResult
 		if view.FullOutput != nil {

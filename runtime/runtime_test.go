@@ -55,7 +55,7 @@ func TestHostRunsFakeProviderThread(t *testing.T) {
 	if started.ID != "thread" || !started.CanAppendMessage {
 		t.Fatalf("started thread = %#v", started)
 	}
-	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestHostRunTurnReportsTerminalProjectionUnavailableWithoutDiscardingResult(
 		t.Fatal(err)
 	}
 
-	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}})
 	if err != nil {
 		t.Fatalf("RunTurn err = %v, want nil", err)
 	}
@@ -150,7 +150,7 @@ func TestHostEnsureThreadReturnsSummaryWithoutMessages(t *testing.T) {
 	if started.ID != "thread" || !started.CanAppendMessage {
 		t.Fatalf("started summary = %#v", started)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"}); err != nil {
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}}); err != nil {
 		t.Fatal(err)
 	}
 	ensured, err := host.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "thread"})
@@ -233,7 +233,7 @@ func TestHostRunTurnRecoversInterruptedActiveLease(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-continue", ThreadID: "thread", TurnID: "turn-continue", Input: "continue"})
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-continue", ThreadID: "thread", TurnID: "turn-continue", Input: TurnInput{Text: "continue"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestHostRunsThreadThroughModelGateway(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +334,7 @@ func TestHostProviderTitleModeGeneratesTitle(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"}); err != nil {
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}}); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := host.ReadThread(ctx, "thread")
@@ -348,6 +348,186 @@ func TestHostProviderTitleModeGeneratesTitle(t *testing.T) {
 	defer mu.Unlock()
 	if len(requests) != 2 || !strings.HasSuffix(string(requests[1].RunID), ":thread-title") {
 		t.Fatalf("gateway requests = %#v, want turn then title", requests)
+	}
+}
+
+func TestHostSetThreadTitleIsCanonicalAndIdempotent(t *testing.T) {
+	ctx := context.Background()
+	recorder := &runtimeEventRecorder{}
+	host, err := NewHost(HostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "configured",
+		},
+		Store: NewMemoryStore(),
+		Sink:  recorder,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := host.SetThreadTitle(ctx, SetThreadTitleRequest{ThreadID: "thread", Title: "  Manual title  "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Title != "Manual title" || first.TitleStatus != string(sessiontree.ThreadTitleReady) || first.TitleSource != string(sessiontree.ThreadTitleSourceHost) || first.TitleUpdatedAt.IsZero() {
+		t.Fatalf("first title snapshot = %#v", first)
+	}
+	second, err := host.SetThreadTitle(ctx, SetThreadTitleRequest{ThreadID: "thread", Title: "Manual title"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.TitleUpdatedAt != first.TitleUpdatedAt {
+		t.Fatalf("idempotent title changed update time: first=%s second=%s", first.TitleUpdatedAt, second.TitleUpdatedAt)
+	}
+	updates := 0
+	for _, event := range recorder.events {
+		if event.Type == observation.EventTypeThreadTitleUpdated {
+			updates++
+		}
+	}
+	if updates != 1 {
+		t.Fatalf("title update events = %d, want 1: %#v", updates, recorder.events)
+	}
+	for _, title := range []string{"", "two\nlines", strings.Repeat("x", 201)} {
+		if _, err := host.SetThreadTitle(ctx, SetThreadTitleRequest{ThreadID: "thread", Title: title}); err == nil {
+			t.Fatalf("SetThreadTitle(%q) succeeded, want validation error", title)
+		}
+	}
+}
+
+func TestHostPersistsAndProjectsOpaqueMessageAttachments(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "floret.db")
+	store, err := OpenSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var requests []ModelRequest
+	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		mu.Lock()
+		requests = append(requests, req)
+		mu.Unlock()
+		return runtimeGatewayEvents("attachment accepted"), nil
+	})
+	newHost := func(store *Store) *Host {
+		host, err := NewHost(HostOptions{
+			Config:               runtimeGatewayConfig("gateway system"),
+			ModelGateway:         gateway,
+			ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+			Store:                store,
+			IDGenerator:          deterministicIDs(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return host
+	}
+	host := newHost(store)
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	attachment := MessageAttachment{ResourceRef: "upload:asset-1", Name: "diagram.png", MIMEType: "image/png", SizeBytes: 1234}
+	if _, err := host.RunTurn(ctx, RunTurnRequest{
+		RunID: "run-1", ThreadID: "thread", TurnID: "turn-1",
+		Input: TurnInput{Attachments: []MessageAttachment{attachment}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	overview, err := host.ReadThreadOverview(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overview.LatestTurn == nil || overview.LatestTurn.UserInput != "" || !reflect.DeepEqual(overview.LatestTurn.UserAttachments, []MessageAttachment{attachment}) {
+		t.Fatalf("thread overview = %#v", overview)
+	}
+	detail, err := host.ListThreadDetailEvents(ctx, ListThreadDetailEventsRequest{ThreadID: "thread", IncludeRaw: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(detail.Events, func(event ThreadDetailEvent) bool {
+		return event.Kind == ThreadDetailEventUserMessage && event.Message != nil && reflect.DeepEqual(event.Message.Attachments, []MessageAttachment{attachment})
+	}) {
+		t.Fatalf("thread detail did not preserve attachment: %#v", detail.Events)
+	}
+	mu.Lock()
+	firstRequest, ok := findRuntimeModelRequest(requests, "thread", "turn-1", 1)
+	mu.Unlock()
+	if !ok || len(firstRequest.Messages) < 2 || !reflect.DeepEqual(firstRequest.Messages[len(firstRequest.Messages)-1].Attachments, []MessageAttachment{attachment}) {
+		t.Fatalf("model request did not project attachment: %#v", firstRequest)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: reopened})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := maintenance.ReadThreadOverview(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.LatestTurn == nil || !reflect.DeepEqual(reloaded.LatestTurn.UserAttachments, []MessageAttachment{attachment}) {
+		t.Fatalf("reloaded overview = %#v", reloaded)
+	}
+	if _, err := maintenance.ForkThread(ctx, ForkThreadRequest{OperationID: "fork-op", SourceThreadID: "thread", DestinationThreadID: "fork"}); err != nil {
+		t.Fatal(err)
+	}
+	forkHost, err := NewHost(HostOptions{
+		Config:               runtimeGatewayConfig("gateway system"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                reopened,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootForkDetail, err := forkHost.ListThreadDetailEvents(ctx, ListThreadDetailEventsRequest{ThreadID: "fork", IncludeRaw: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(rootForkDetail.Events, func(event ThreadDetailEvent) bool {
+		return event.Kind == ThreadDetailEventUserMessage && event.Message != nil && reflect.DeepEqual(event.Message.Attachments, []MessageAttachment{attachment})
+	}) {
+		t.Fatalf("fork detail did not preserve attachment: %#v", rootForkDetail.Events)
+	}
+}
+
+func TestHostRejectsOpaqueAttachmentsWithoutModelGatewayBeforeAdmission(t *testing.T) {
+	ctx := context.Background()
+	host, err := NewHost(HostOptions{
+		Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "configured"},
+		Store:  NewMemoryStore(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = host.RunTurn(ctx, RunTurnRequest{
+		RunID: "run-1", ThreadID: "thread", TurnID: "turn-1",
+		Input: TurnInput{Attachments: []MessageAttachment{{ResourceRef: "upload:asset-1", Name: "file.txt", MIMEType: "text/plain"}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "ModelGateway") {
+		t.Fatalf("RunTurn error = %v, want explicit attachment transport error", err)
+	}
+	overview, err := host.ReadThreadOverview(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overview.LatestTurn != nil || overview.Thread.ThroughOrdinal != 0 {
+		t.Fatalf("rejected attachment was admitted: %#v", overview)
 	}
 }
 
@@ -461,7 +641,7 @@ func TestHostRunTurnEnforcesCumulativeInputTokenLimit(t *testing.T) {
 		RunID:    "run-1",
 		ThreadID: "thread",
 		TurnID:   "turn-1",
-		Input:    "hello",
+		Input:    TurnInput{Text: "hello"},
 		Limits:   TurnLimits{MaxInputTokens: 100},
 	})
 	if err == nil || !strings.Contains(err.Error(), "input token budget exceeded") {
@@ -500,7 +680,7 @@ func TestHostRunTurnProjectsSupplementalContextOnlyIntoCurrentProviderRequest(t 
 		RunID:    "run-1",
 		ThreadID: "thread",
 		TurnID:   "turn-1",
-		Input:    "what is this process",
+		Input:    TurnInput{Text: "what is this process"},
 		SupplementalContext: []TurnSupplementalContextItem{{
 			Kind:      "process_snapshot",
 			Title:     "Codex (Service)",
@@ -523,7 +703,7 @@ func TestHostRunTurnProjectsSupplementalContextOnlyIntoCurrentProviderRequest(t 
 	if first.Status != TurnStatusCompleted {
 		t.Fatalf("first result = %#v", first)
 	}
-	second, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-2", ThreadID: "thread", TurnID: "turn-2", Input: "continue"})
+	second, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-2", ThreadID: "thread", TurnID: "turn-2", Input: TurnInput{Text: "continue"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -613,7 +793,7 @@ func TestHostRunTurnIgnoresEmptySupplementalContext(t *testing.T) {
 		RunID:    "run-1",
 		ThreadID: "thread",
 		TurnID:   "turn-1",
-		Input:    "hello",
+		Input:    TurnInput{Text: "hello"},
 		SupplementalContext: []TurnSupplementalContextItem{
 			{},
 			{Kind: " ", Title: " ", Text: " ", Metadata: map[string]string{" ": " "}},
@@ -761,7 +941,7 @@ func TestHostPersistsOpaqueProviderStateWithinFloretStore(t *testing.T) {
 		RunID:     "run-1",
 		ThreadID:  "thread",
 		TurnID:    "turn-1",
-		Input:     "first",
+		Input:     TurnInput{Text: "first"},
 		Reasoning: ReasoningSelection{Level: ReasoningLevelHigh},
 	})
 	if err != nil {
@@ -776,7 +956,7 @@ func TestHostPersistsOpaqueProviderStateWithinFloretStore(t *testing.T) {
 		RunID:    "run-2",
 		ThreadID: "thread",
 		TurnID:   "turn-2",
-		Input:    "second",
+		Input:    TurnInput{Text: "second"},
 		Reasoning: ReasoningSelection{
 			Level: ReasoningLevelLow,
 		},
@@ -789,7 +969,7 @@ func TestHostPersistsOpaqueProviderStateWithinFloretStore(t *testing.T) {
 	}
 
 	thirdHost := newHost("model-b")
-	if _, err := thirdHost.RunTurn(ctx, RunTurnRequest{RunID: "run-3", ThreadID: "thread", TurnID: "turn-3", Input: "third"}); err != nil {
+	if _, err := thirdHost.RunTurn(ctx, RunTurnRequest{RunID: "run-3", ThreadID: "thread", TurnID: "turn-3", Input: TurnInput{Text: "third"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -858,7 +1038,7 @@ func TestHostReloadsProviderStateFromSQLiteStore(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: "first"}); err != nil {
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "first"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -882,7 +1062,7 @@ func TestHostReloadsProviderStateFromSQLiteStore(t *testing.T) {
 		t.Fatalf("reopened context snapshot = %#v", contextSnapshot)
 	}
 	host = newHost(store)
-	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-2", ThreadID: "thread", TurnID: "turn-2", Input: "second"}); err != nil {
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-2", ThreadID: "thread", TurnID: "turn-2", Input: TurnInput{Text: "second"}}); err != nil {
 		t.Fatal(err)
 	}
 	mu.Lock()
@@ -926,7 +1106,7 @@ func TestHostClearsProviderStateWhenTurnReturnsNoFreshState(t *testing.T) {
 	}
 	for index := 1; index <= 3; index++ {
 		turnID := TurnID(fmt.Sprintf("turn-%d", index))
-		if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: RunID(fmt.Sprintf("run-%d", index)), ThreadID: "thread", TurnID: turnID, Input: "next"}); err != nil {
+		if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: RunID(fmt.Sprintf("run-%d", index)), ThreadID: "thread", TurnID: turnID, Input: TurnInput{Text: "next"}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -966,7 +1146,7 @@ func TestHostProviderStatePersistenceFailureFailsTurnFinalization(t *testing.T) 
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}})
 	if err == nil || !strings.Contains(err.Error(), "injected provider state put failure") {
 		t.Fatalf("RunTurn err = %v", err)
 	}
@@ -1013,7 +1193,7 @@ func TestHostNoopCompactionPreservesProviderState(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: "short"}); err != nil {
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "short"}}); err != nil {
 		t.Fatal(err)
 	}
 	compacted, err := host.CompactThread(ctx, CompactThreadRequest{ThreadID: "thread", RequestID: "compact-1", Source: "idle"})
@@ -1026,7 +1206,7 @@ func TestHostNoopCompactionPreservesProviderState(t *testing.T) {
 	if err := compacted.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-2", ThreadID: "thread", TurnID: "turn-2", Input: "continue"}); err != nil {
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-2", ThreadID: "thread", TurnID: "turn-2", Input: TurnInput{Text: "continue"}}); err != nil {
 		t.Fatal(err)
 	}
 	mu.Lock()
@@ -1069,10 +1249,10 @@ func TestHostSuccessfulCompactionClearsProviderState(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: runtimeLargeCompactionInput()}); err != nil {
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: runtimeLargeCompactionInput()}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-2", ThreadID: "thread", TurnID: "turn-2", Input: "latest tail"}); err != nil {
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-2", ThreadID: "thread", TurnID: "turn-2", Input: TurnInput{Text: "latest tail"}}); err != nil {
 		t.Fatal(err)
 	}
 	compacted, err := host.CompactThread(ctx, CompactThreadRequest{ThreadID: "thread", RequestID: "compact-1", Source: "idle"})
@@ -1085,7 +1265,7 @@ func TestHostSuccessfulCompactionClearsProviderState(t *testing.T) {
 	if err := compacted.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-3", ThreadID: "thread", TurnID: "turn-3", Input: "after compaction"}); err != nil {
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-3", ThreadID: "thread", TurnID: "turn-3", Input: TurnInput{Text: "after compaction"}}); err != nil {
 		t.Fatal(err)
 	}
 	mu.Lock()
@@ -1126,10 +1306,10 @@ func TestHostProviderStateDeleteFailureFailsCompactionFinalization(t *testing.T)
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: runtimeLargeCompactionInput()}); err != nil {
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: runtimeLargeCompactionInput()}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-2", ThreadID: "thread", TurnID: "turn-2", Input: "latest tail"}); err != nil {
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-2", ThreadID: "thread", TurnID: "turn-2", Input: TurnInput{Text: "latest tail"}}); err != nil {
 		t.Fatal(err)
 	}
 	providerStates.failDelete = true
@@ -1278,7 +1458,7 @@ func TestHostStreamsProjectedContextStatus(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1355,7 +1535,7 @@ func TestHostModelGatewayPreservesTextAroundToolCalls(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1462,7 +1642,7 @@ func TestHostEmitsActivityTimelineForToolLifecycle(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: "run"})
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "run"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1644,7 +1824,7 @@ func TestHostEmitsParallelToolResultBeforeSlowSiblingAndPersistsDetailInCallOrde
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: "run"})
+		_, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "run"}})
 		done <- err
 	}()
 	select {
@@ -1755,7 +1935,7 @@ func TestHostToolSurfaceProviderRefreshesGatewayRequests(t *testing.T) {
 	if _, err := host.StartThread(context.Background(), StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatalf("StartThread: %v", err)
 	}
-	result, err := host.RunTurn(context.Background(), RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	result, err := host.RunTurn(context.Background(), RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}})
 	if err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
@@ -1859,7 +2039,7 @@ func TestHostRunTurnPreservesDistinctRunAndTurnIdentity(t *testing.T) {
 		RunID:    "run-parent",
 		ThreadID: "thread",
 		TurnID:   "turn-msg",
-		Input:    "write",
+		Input:    TurnInput{Text: "write"},
 		Labels: RunLabels{
 			Correlation: map[string]string{"message_id": "turn-msg"},
 			Host:        map[string]string{"product_run_id": "run-parent"},
@@ -2027,7 +2207,7 @@ func TestHostRunTurnCanceledProjectionSettlesPendingActivity(t *testing.T) {
 	}
 	done := make(chan runOutcome, 1)
 	go func() {
-		result, err := host.RunTurn(runCtx, RunTurnRequest{RunID: "run-canceled", ThreadID: "thread", TurnID: "turn-canceled", Input: "run pending work"})
+		result, err := host.RunTurn(runCtx, RunTurnRequest{RunID: "run-canceled", ThreadID: "thread", TurnID: "turn-canceled", Input: TurnInput{Text: "run pending work"}})
 		done <- runOutcome{result: result, err: err}
 	}()
 
@@ -2113,7 +2293,7 @@ func TestSubAgentActivityTimelineProjectsStatusSummary(t *testing.T) {
 	if counts.Pending != 1 || counts.Running != 1 || counts.Waiting != 2 || counts.Success != 1 || counts.Error != 1 || counts.Canceled != 2 {
 		t.Fatalf("counts=%#v", counts)
 	}
-	if timeline.Items[0].ToolName != "subagents" || timeline.Items[0].Payload["subagent_id"] != "interrupted" {
+	if timeline.Items[0].ToolName != "subagents" || timeline.Items[0].Payload["thread_id"] != "interrupted" {
 		t.Fatalf("first item=%#v, want newest active subagent", timeline.Items[0])
 	}
 	if timeline.Items[0].Status != observation.ActivityStatusWaiting {
@@ -2122,10 +2302,10 @@ func TestSubAgentActivityTimelineProjectsStatusSummary(t *testing.T) {
 	foundDisplay := false
 	foundDescription := false
 	for _, item := range timeline.Items {
-		if item.Payload["subagent_id"] == "completed" {
+		if item.Payload["thread_id"] == "completed" {
 			foundDescription = item.Payload["task_description"] == "Check the completed path."
 		}
-		if item.Payload["subagent_id"] == "running" {
+		if item.Payload["thread_id"] == "running" {
 			foundDisplay = item.Label == "running task" &&
 				item.Description == "Keep checking the running path." &&
 				item.Description != "working"
@@ -2455,18 +2635,18 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 			t.Fatalf("hidden context entry leaked into detail events: %#v", ev)
 		}
 	}
-	if got := firstRuntimeSubAgentDetailEvent(defaultDetail.Events, SubAgentDetailEventToolCall); got.ToolCall == nil || got.ToolCall.ArgsJSON != "" || got.ToolCall.ArgsPreview == "" || got.ToolCall.ArgsHash == "" {
+	if got := firstRuntimeSubAgentDetailEvent(defaultDetail.Events, ThreadDetailEventToolCall); got.ToolCall == nil || got.ToolCall.ArgsJSON != "" || got.ToolCall.ArgsPreview == "" || got.ToolCall.ArgsHash == "" {
 		t.Fatalf("default detail should expose only safe args preview and keep hash: %#v", got)
 	}
-	if got := firstRuntimeSubAgentDetailEvent(defaultDetail.Events, SubAgentDetailEventToolCall); got.ActivityTimeline != nil {
+	if got := firstRuntimeSubAgentDetailEvent(defaultDetail.Events, ThreadDetailEventToolCall); got.ActivityTimeline != nil {
 		t.Fatalf("completed tool call row should not duplicate result activity: %#v", got.ActivityTimeline)
 	}
-	if got := firstRuntimeSubAgentDetailEvent(defaultDetail.Events, SubAgentDetailEventToolResult); got.ToolResult == nil || got.ToolResult.Content != "" || got.ToolResult.Preview != "file content" || got.ToolResult.ContentSHA256 == "" || got.ToolResult.Status != string(observation.ActivityStatusSuccess) {
+	if got := firstRuntimeSubAgentDetailEvent(defaultDetail.Events, ThreadDetailEventToolResult); got.ToolResult == nil || got.ToolResult.Content != "" || got.ToolResult.Preview != "file content" || got.ToolResult.ContentSHA256 == "" || got.ToolResult.Status != string(observation.ActivityStatusSuccess) {
 		t.Fatalf("default detail should expose only safe tool result preview and keep hash: %#v", got)
 	} else if got.ActivityTimeline != nil {
 		t.Fatalf("tool result row should not expose stale per-event activity: %#v", got.ActivityTimeline)
 	}
-	if activity := firstRuntimeSubAgentDetailEvent(defaultDetail.Events, SubAgentDetailEventToolActivity); activity.ActivityTimeline != nil {
+	if activity := firstRuntimeSubAgentDetailEvent(defaultDetail.Events, ThreadDetailEventToolActivity); activity.ActivityTimeline != nil {
 		t.Fatalf("tool activity row should not expose stale per-event activity: %#v", activity.ActivityTimeline)
 	}
 	if err := observation.ValidateActivityTimeline(defaultDetail.ActivityTimeline); err != nil {
@@ -2486,10 +2666,10 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 	if detail.Snapshot.ThreadID != "child" || len(detail.Events) == 0 || detail.RetainedFrom == 0 {
 		t.Fatalf("detail = %#v", detail)
 	}
-	if got := firstRuntimeSubAgentDetailEvent(detail.Events, SubAgentDetailEventToolCall); got.ToolCall == nil || got.ToolCall.Name != "read" || got.ToolCall.ArgsHash == "" {
+	if got := firstRuntimeSubAgentDetailEvent(detail.Events, ThreadDetailEventToolCall); got.ToolCall == nil || got.ToolCall.Name != "read" || got.ToolCall.ArgsHash == "" {
 		t.Fatalf("tool call detail = %#v", got)
 	}
-	if got := firstRuntimeSubAgentDetailEvent(detail.Events, SubAgentDetailEventToolResult); got.ToolResult == nil || got.ToolResult.Content != "file content" {
+	if got := firstRuntimeSubAgentDetailEvent(detail.Events, ThreadDetailEventToolResult); got.ToolResult == nil || got.ToolResult.Content != "file content" {
 		t.Fatalf("tool result detail = %#v", got)
 	}
 	next, err := host.ListSubAgentDetailEvents(ctx, ListSubAgentDetailEventsRequest{ParentThreadID: "parent", ChildThreadID: "child", AfterOrdinal: detail.Events[0].Ordinal, Limit: 1, IncludeRaw: true})
@@ -2592,14 +2772,14 @@ func TestHostReadsSubAgentDetailRawMessageContentContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inputPreview := firstRuntimeSubAgentDetailEvent(previewOnly.Events, SubAgentDetailEventInput)
+	inputPreview := firstRuntimeSubAgentDetailEvent(previewOnly.Events, ThreadDetailEventInput)
 	if inputPreview.Message == nil || inputPreview.Message.Content != "" || inputPreview.Message.Preview == "" || !strings.HasSuffix(inputPreview.Message.Preview, "...") {
 		t.Fatalf("preview input should omit raw content and keep bounded preview: %#v", inputPreview)
 	}
 	if strings.Contains(inputPreview.Message.Preview, "mission tail") {
 		t.Fatalf("preview input exposed tail raw content: %q", inputPreview.Message.Preview)
 	}
-	assistantPreview := firstRuntimeSubAgentDetailEvent(previewOnly.Events, SubAgentDetailEventAssistantMessage)
+	assistantPreview := firstRuntimeSubAgentDetailEvent(previewOnly.Events, ThreadDetailEventAssistantMessage)
 	if assistantPreview.Message == nil || assistantPreview.Message.Content != "" || assistantPreview.Message.Preview == "" || !strings.HasSuffix(assistantPreview.Message.Preview, "...") {
 		t.Fatalf("preview assistant should omit raw content and keep bounded preview: %#v", assistantPreview)
 	}
@@ -2611,11 +2791,11 @@ func TestHostReadsSubAgentDetailRawMessageContentContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inputRaw := firstRuntimeSubAgentDetailEvent(raw.Events, SubAgentDetailEventInput)
+	inputRaw := firstRuntimeSubAgentDetailEvent(raw.Events, ThreadDetailEventInput)
 	if inputRaw.Message == nil || inputRaw.Message.Content != longMission || inputRaw.Message.Preview == "" || inputRaw.Message.Preview == inputRaw.Message.Content {
 		t.Fatalf("raw input should keep full content and bounded preview: %#v", inputRaw)
 	}
-	assistantRaw := firstRuntimeSubAgentDetailEvent(raw.Events, SubAgentDetailEventAssistantMessage)
+	assistantRaw := firstRuntimeSubAgentDetailEvent(raw.Events, ThreadDetailEventAssistantMessage)
 	if assistantRaw.Message == nil || assistantRaw.Message.Content != longAnswer || assistantRaw.Message.Preview == "" || assistantRaw.Message.Preview == assistantRaw.Message.Content {
 		t.Fatalf("raw assistant should keep full content and bounded preview: %#v", assistantRaw)
 	}
@@ -2630,7 +2810,7 @@ func TestHostReadsSubAgentDetailRawMessageContentContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(page.Events) != 1 || page.Events[0].Kind != SubAgentDetailEventAssistantMessage || page.Events[0].Message == nil || page.Events[0].Message.Content != longAnswer {
+	if len(page.Events) != 1 || page.Events[0].Kind != ThreadDetailEventAssistantMessage || page.Events[0].Message == nil || page.Events[0].Message.Content != longAnswer {
 		t.Fatalf("paged raw assistant event = %#v", page.Events)
 	}
 
@@ -2642,14 +2822,14 @@ func TestHostReadsSubAgentDetailRawMessageContentContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	maintenanceAssistant := firstRuntimeSubAgentDetailEvent(maintenanceRaw.Events, SubAgentDetailEventAssistantMessage)
+	maintenanceAssistant := firstRuntimeSubAgentDetailEvent(maintenanceRaw.Events, ThreadDetailEventAssistantMessage)
 	if maintenanceAssistant.Message == nil || maintenanceAssistant.Message.Content != longAnswer || maintenanceAssistant.Message.Preview == maintenanceAssistant.Message.Content {
 		t.Fatalf("maintenance raw assistant should keep full content and bounded preview: %#v", maintenanceAssistant)
 	}
 }
 
 func TestSubAgentDetailCompactionSanitizesInternalMetadata(t *testing.T) {
-	out := subAgentDetailCompaction(&agentharness.SubAgentDetailCompaction{
+	out := threadDetailCompaction(&agentharness.SubAgentDetailCompaction{
 		Trigger: "manual",
 		Reason:  "manual",
 		Phase:   "complete",
@@ -2732,7 +2912,7 @@ func TestHostSQLiteStorePersistsSubAgentDetail(t *testing.T) {
 	if detail.Snapshot.ForkMode != SubAgentForkNone {
 		t.Fatalf("reopened fork mode = %q, want %q", detail.Snapshot.ForkMode, SubAgentForkNone)
 	}
-	if got := firstRuntimeSubAgentDetailEvent(detail.Events, SubAgentDetailEventAssistantMessage); got.Message == nil || got.Message.Content != longAnswer || got.Message.Preview == got.Message.Content || !strings.Contains(got.Message.Content, "reopened-full-output") {
+	if got := firstRuntimeSubAgentDetailEvent(detail.Events, ThreadDetailEventAssistantMessage); got.Message == nil || got.Message.Content != longAnswer || got.Message.Preview == got.Message.Content || !strings.Contains(got.Message.Content, "reopened-full-output") {
 		t.Fatalf("reopened detail = %#v", detail.Events)
 	}
 }
@@ -2836,7 +3016,6 @@ func TestThreadMaintenanceHostListsSubAgentsAfterHostRestart(t *testing.T) {
 	}
 	item := timeline.Timeline.Items[0]
 	if item.Payload["thread_id"] != "child" ||
-		item.Payload["subagent_id"] != "child" ||
 		item.Payload["parent_thread_id"] != "parent" ||
 		item.Payload["parent_turn_id"] != "parent-turn" ||
 		item.Payload["task_name"] != "restart_review" ||
@@ -2941,7 +3120,7 @@ func TestHostSQLiteStorePersistsSubAgentDetailActivity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := firstRuntimeSubAgentDetailEvent(detail.Events, SubAgentDetailEventToolResult)
+	result := firstRuntimeSubAgentDetailEvent(detail.Events, ThreadDetailEventToolResult)
 	if result.ToolResult == nil || result.ToolResult.Status != string(observation.ActivityStatusSuccess) {
 		t.Fatalf("reopened result detail = %#v", result)
 	}
@@ -2954,7 +3133,7 @@ func TestHostSQLiteStorePersistsSubAgentDetailActivity(t *testing.T) {
 	if item := runtimeSubAgentActivityItem(detail.ActivityTimeline, "read-1"); item.Status != observation.ActivityStatusSuccess || item.Description != "Read persisted" {
 		t.Fatalf("reopened activity timeline = %#v", detail.ActivityTimeline)
 	}
-	if call := firstRuntimeSubAgentDetailEvent(detail.Events, SubAgentDetailEventToolCall); call.ActivityTimeline != nil {
+	if call := firstRuntimeSubAgentDetailEvent(detail.Events, ThreadDetailEventToolCall); call.ActivityTimeline != nil {
 		t.Fatalf("reopened completed call row duplicated activity: %#v", call.ActivityTimeline)
 	}
 }
@@ -3058,7 +3237,7 @@ func TestThreadMaintenanceHostClosesChildrenAfterFailedParentTurn(t *testing.T) 
 	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{ParentThreadID: "parent", ThreadID: "running", TaskName: "running", Message: "hang", ForkMode: SubAgentForkNone}); err != nil {
 		t.Fatal(err)
 	}
-	failed, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-parent-failed", ThreadID: "parent", TurnID: "turn-parent-failed", Input: "coordinate children"})
+	failed, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-parent-failed", ThreadID: "parent", TurnID: "turn-parent-failed", Input: TurnInput{Text: "coordinate children"}})
 	if err == nil || failed.Status != TurnStatusFailed {
 		t.Fatalf("failed parent turn = %#v err=%v, want failed result and error", failed, err)
 	}
@@ -3087,7 +3266,7 @@ func TestThreadMaintenanceHostClosesChildrenAfterFailedParentTurn(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.ContainsFunc(detail.Events, func(ev SubAgentDetailEvent) bool {
+	if !slices.ContainsFunc(detail.Events, func(ev ThreadDetailEvent) bool {
 		return ev.Type == "subagent_lifecycle" && ev.Metadata["reason"] == "parent_failed"
 	}) {
 		t.Fatalf("running detail missing parent_failed lifecycle: %#v", detail.Events)
@@ -3117,7 +3296,7 @@ func TestHostSQLiteStorePersistsThreadBehindOpaqueStore(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"}); err != nil {
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -3278,7 +3457,7 @@ func TestHostReadTurnProjectionFromDurableDetail(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3613,7 +3792,7 @@ func TestThreadMaintenanceHostForkThreadPreservesProjectionWithNewIdentity(t *te
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "source"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-source", ThreadID: "source", TurnID: "turn-source", Input: "hello"}); err != nil {
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-source", ThreadID: "source", TurnID: "turn-source", Input: TurnInput{Text: "hello"}}); err != nil {
 		t.Fatal(err)
 	}
 	maintenance, err := NewThreadMaintenanceHost(ThreadMaintenanceHostOptions{Store: store})
@@ -3652,7 +3831,7 @@ func TestThreadMaintenanceHostForkThreadPreservesProjectionWithNewIdentity(t *te
 	if projection.Status != TurnStatusCompleted || runtimeProjectionAssistantText(projection) != "projected answer" {
 		t.Fatalf("fork projection = %#v", projection)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-fork-next", ThreadID: "fork", TurnID: "turn-fork-next", Input: "continue"}); err != nil {
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-fork-next", ThreadID: "fork", TurnID: "turn-fork-next", Input: TurnInput{Text: "continue"}}); err != nil {
 		t.Fatalf("RunTurn on fork: %v", err)
 	}
 }
@@ -3680,7 +3859,7 @@ func TestThreadMaintenanceHostForkThreadPreservesSQLiteProjectionAfterReopen(t *
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "source"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-source", ThreadID: "source", TurnID: "turn-source", Input: "hello"}); err != nil {
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-source", ThreadID: "source", TurnID: "turn-source", Input: TurnInput{Text: "hello"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -3974,7 +4153,7 @@ func TestThreadMaintenanceHostForkThreadClonesTerminalSubAgents(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-parent", ThreadID: "parent", TurnID: "turn-parent", Input: "coordinate"}); err != nil {
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-parent", ThreadID: "parent", TurnID: "turn-parent", Input: TurnInput{Text: "coordinate"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
@@ -4209,7 +4388,7 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	run, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: "run pending command"})
+	run, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "run pending command"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4476,7 +4655,7 @@ func TestHostSettlePendingToolDuringActiveTurnUsesOwnedThread(t *testing.T) {
 		RunID:    "run-active-settlement",
 		ThreadID: "thread-active-settlement",
 		TurnID:   "turn-active-settlement",
-		Input:    "stream timestamps and stop the command",
+		Input:    TurnInput{Text: "stream timestamps and stop the command"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -4577,7 +4756,7 @@ func TestHostSettlePendingToolOnlyUpdatesExplicitPendingTarget(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	run, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: "run commands"})
+	run, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "run commands"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4759,7 +4938,7 @@ func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "run tools"})
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "run tools"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4992,7 +5171,7 @@ func TestHostListPendingApprovalsDuringActiveRun(t *testing.T) {
 			RunID:    "turn-1",
 			ThreadID: "thread",
 			TurnID:   "turn-1",
-			Input:    "write",
+			Input:    TurnInput{Text: "write"},
 			Labels: RunLabels{
 				Host: map[string]string{"target": "runtime-test"},
 			},
@@ -5117,7 +5296,7 @@ func TestHostPendingApprovalSnapshotKeepsModelBatchOrder(t *testing.T) {
 	}
 	runErr := make(chan error, 1)
 	go func() {
-		_, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-batch", ThreadID: "thread-batch", TurnID: "turn-batch", Input: "write both"})
+		_, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-batch", ThreadID: "thread-batch", TurnID: "turn-batch", Input: TurnInput{Text: "write both"}})
 		runErr <- err
 	}()
 	seen := map[string]tools.ApprovalRequest{}
@@ -5169,7 +5348,7 @@ func TestHostThreadDetailEventsOmitRawUnlessRequested(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "private input"}); err != nil {
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "private input"}}); err != nil {
 		t.Fatal(err)
 	}
 	preview, err := host.ListThreadDetailEvents(ctx, ListThreadDetailEventsRequest{ThreadID: "thread"})
@@ -5252,7 +5431,7 @@ func TestHostRunTurnProjectionUsesRawAssistantContent(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "find options"})
+	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "find options"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5392,7 +5571,7 @@ func TestHostProjectionTreatsCoreControlSignalAsControl(t *testing.T) {
 		RunID:      "run-1",
 		ThreadID:   "thread",
 		TurnID:     "turn-1",
-		Input:      "finish",
+		Input:      TurnInput{Text: "finish"},
 		Completion: TurnCompletionExplicitSignal,
 		Signals: TurnSignalSpec{
 			Definitions: CoreControlDefinitions(true),
@@ -5816,7 +5995,7 @@ func TestHostDeleteThreadUsesStoreBoundary(t *testing.T) {
 	if _, err := host.StartThread(ctx, StartThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	thread, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: "hello"})
+	thread, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6235,13 +6414,13 @@ type stringArgs struct {
 	Value string `json:"value"`
 }
 
-func firstRuntimeSubAgentDetailEvent(events []SubAgentDetailEvent, kind SubAgentDetailEventKind) SubAgentDetailEvent {
+func firstRuntimeSubAgentDetailEvent(events []ThreadDetailEvent, kind ThreadDetailEventKind) ThreadDetailEvent {
 	for _, event := range events {
 		if event.Kind == kind {
 			return event
 		}
 	}
-	return SubAgentDetailEvent{}
+	return ThreadDetailEvent{}
 }
 
 func firstRuntimeThreadDetailEvent(events []ThreadDetailEvent, kind ThreadDetailEventKind) ThreadDetailEvent {
@@ -6283,7 +6462,7 @@ func runtimeProjectionAssistantText(projection ThreadTurnProjection) string {
 func runtimeSubAgentDetailAssistantText(detail SubAgentDetail) string {
 	var out strings.Builder
 	for _, event := range detail.Events {
-		if event.Kind != SubAgentDetailEventAssistantMessage || event.Message == nil {
+		if event.Kind != ThreadDetailEventAssistantMessage || event.Message == nil {
 			continue
 		}
 		out.WriteString(event.Message.Content)

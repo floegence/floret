@@ -15,10 +15,25 @@ import (
 
 const (
 	defaultThreadTitleMaxRunes        = 16
+	maxHostThreadTitleRunes           = 200
 	defaultThreadTitleMaxOutputTokens = 64
 	threadTitlePromptMaxMessages      = 8
 	threadTitlePromptMaxContentRunes  = 600
 )
+
+func normalizeHostThreadTitle(raw string) (string, error) {
+	title := strings.TrimSpace(raw)
+	if title == "" {
+		return "", errors.New("thread title is required")
+	}
+	if strings.ContainsAny(title, "\r\n") {
+		return "", errors.New("thread title must be a single line")
+	}
+	if utf8.RuneCountInString(title) > maxHostThreadTitleRunes {
+		return "", fmt.Errorf("thread title must not exceed %d Unicode characters", maxHostThreadTitleRunes)
+	}
+	return title, nil
+}
 
 const ThreadTitleLogicalRequestID = "thread_title"
 
@@ -137,10 +152,17 @@ func threadTitlePromptMessages(messages []session.Message) ([]session.Message, e
 			continue
 		}
 		content := cleanTitleContent(msg.Content)
-		if content == "" {
+		attachments := threadTitleAttachmentSummary(msg.Attachments)
+		if content == "" && attachments == "" {
 			continue
 		}
 		content = truncateTitlePromptContent(content, threadTitlePromptMaxContentRunes)
+		if attachments != "" {
+			if content != "" {
+				content += "\n"
+			}
+			content += "Attachments: " + attachments
+		}
 		switch msg.Role {
 		case session.User:
 			lines = append(lines, "User: "+content)
@@ -166,6 +188,22 @@ func threadTitlePromptMessages(messages []session.Message) ([]session.Message, e
 		{Role: session.System, Content: system},
 		{Role: session.User, Content: user},
 	}, nil
+}
+
+func threadTitleAttachmentSummary(attachments []session.MessageAttachment) string {
+	parts := make([]string, 0, len(attachments))
+	for _, attachment := range attachments {
+		name := cleanTitleContent(attachment.Name)
+		mimeType := cleanTitleContent(attachment.MIMEType)
+		if name == "" {
+			continue
+		}
+		if mimeType != "" {
+			name += " (" + mimeType + ")"
+		}
+		parts = append(parts, name)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func cleanTitleContent(text string) string {

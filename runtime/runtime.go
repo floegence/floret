@@ -88,10 +88,11 @@ var (
 // Callers that need substitution should declare a local interface containing
 // only the methods used by that responsibility.
 type Host struct {
-	cfg     config.Config
-	store   *Store
-	sink    EventSink
-	harness *agentharness.AgentHarness
+	cfg                       config.Config
+	store                     *Store
+	sink                      EventSink
+	harness                   *agentharness.AgentHarness
+	supportsOpaqueAttachments bool
 }
 
 // ThreadMaintenanceHost is the concrete provider-free facade for maintenance
@@ -163,6 +164,11 @@ type EnsureThreadRequest struct {
 	ThreadID ThreadID
 }
 
+type SetThreadTitleRequest struct {
+	ThreadID ThreadID `json:"thread_id"`
+	Title    string   `json:"title"`
+}
+
 type ForkThreadRequest struct {
 	OperationID         ForkOperationID
 	SourceThreadID      ThreadID
@@ -196,11 +202,60 @@ type TurnSupplementalContextItem struct {
 	Truncated bool
 }
 
+// MessageAttachment identifies one host-owned resource attached to a durable
+// user message. ResourceRef is opaque to Floret and is resolved only by the
+// host's ModelGateway implementation.
+type MessageAttachment struct {
+	ResourceRef string `json:"resource_ref"`
+	Name        string `json:"name"`
+	MIMEType    string `json:"mime_type"`
+	SizeBytes   int64  `json:"size_bytes,omitempty"`
+}
+
+func (a MessageAttachment) Validate() error {
+	if strings.TrimSpace(a.ResourceRef) == "" {
+		return errors.New("message attachment resource ref is required")
+	}
+	if strings.TrimSpace(a.Name) == "" {
+		return errors.New("message attachment name is required")
+	}
+	if strings.TrimSpace(a.MIMEType) == "" {
+		return errors.New("message attachment MIME type is required")
+	}
+	if a.SizeBytes < 0 {
+		return errors.New("message attachment size must be non-negative")
+	}
+	return nil
+}
+
+type TurnInput struct {
+	Text        string              `json:"text,omitempty"`
+	Attachments []MessageAttachment `json:"attachments,omitempty"`
+}
+
+func (i TurnInput) Validate() error {
+	if strings.TrimSpace(i.Text) == "" && len(i.Attachments) == 0 {
+		return errors.New("turn input requires text or attachments")
+	}
+	seen := make(map[string]struct{}, len(i.Attachments))
+	for index, attachment := range i.Attachments {
+		if err := attachment.Validate(); err != nil {
+			return fmt.Errorf("turn input attachment %d: %w", index, err)
+		}
+		ref := strings.TrimSpace(attachment.ResourceRef)
+		if _, ok := seen[ref]; ok {
+			return fmt.Errorf("turn input contains duplicate attachment resource ref %q", ref)
+		}
+		seen[ref] = struct{}{}
+	}
+	return nil
+}
+
 type RunTurnRequest struct {
 	RunID               RunID
 	ThreadID            ThreadID
 	TurnID              TurnID
-	Input               string
+	Input               TurnInput
 	SupplementalContext []TurnSupplementalContextItem
 	Labels              RunLabels
 	Completion          TurnCompletionPolicy
@@ -455,7 +510,7 @@ type CloseSubAgentsResult struct {
 
 type SubAgentDetail struct {
 	Snapshot         SubAgentSnapshot             `json:"snapshot"`
-	Events           []SubAgentDetailEvent        `json:"events"`
+	Events           []ThreadDetailEvent          `json:"events"`
 	ActivityTimeline observation.ActivityTimeline `json:"activity_timeline"`
 	Context          ThreadContextSnapshot        `json:"context,omitempty"`
 	NextOrdinal      int64                        `json:"next_ordinal,omitempty"`
@@ -465,7 +520,7 @@ type SubAgentDetail struct {
 }
 
 type SubAgentDetailEvents struct {
-	Events           []SubAgentDetailEvent        `json:"events"`
+	Events           []ThreadDetailEvent          `json:"events"`
 	ActivityTimeline observation.ActivityTimeline `json:"activity_timeline"`
 	Context          ThreadContextSnapshot        `json:"context,omitempty"`
 	NextOrdinal      int64                        `json:"next_ordinal,omitempty"`
@@ -636,23 +691,6 @@ func (p PendingApproval) Validate() error {
 	return nil
 }
 
-type SubAgentDetailEventKind string
-
-const (
-	SubAgentDetailEventUserMessage      SubAgentDetailEventKind = "user_message"
-	SubAgentDetailEventAssistantMessage SubAgentDetailEventKind = "assistant_message"
-	SubAgentDetailEventToolCall         SubAgentDetailEventKind = "tool_call"
-	SubAgentDetailEventToolDispatch     SubAgentDetailEventKind = "tool_dispatch"
-	SubAgentDetailEventToolActivity     SubAgentDetailEventKind = "tool_activity"
-	SubAgentDetailEventToolResult       SubAgentDetailEventKind = "tool_result"
-	SubAgentDetailEventTurnMarker       SubAgentDetailEventKind = "turn_marker"
-	SubAgentDetailEventCompaction       SubAgentDetailEventKind = "compaction"
-	SubAgentDetailEventError            SubAgentDetailEventKind = "error"
-	SubAgentDetailEventApproval         SubAgentDetailEventKind = "approval"
-	SubAgentDetailEventInput            SubAgentDetailEventKind = "input"
-	SubAgentDetailEventCustom           SubAgentDetailEventKind = "custom"
-)
-
 type ThreadDetailEventKind string
 
 const (
@@ -669,28 +707,6 @@ const (
 	ThreadDetailEventInput            ThreadDetailEventKind = "input"
 	ThreadDetailEventCustom           ThreadDetailEventKind = "custom"
 )
-
-type SubAgentDetailEvent struct {
-	ID        string                  `json:"id"`
-	Ordinal   int64                   `json:"ordinal"`
-	ParentID  string                  `json:"parent_id,omitempty"`
-	ThreadID  ThreadID                `json:"thread_id"`
-	TurnID    TurnID                  `json:"turn_id,omitempty"`
-	Kind      SubAgentDetailEventKind `json:"kind"`
-	Type      string                  `json:"type,omitempty"`
-	CreatedAt time.Time               `json:"created_at"`
-
-	Message    *SubAgentDetailMessage    `json:"message,omitempty"`
-	ToolCall   *SubAgentDetailToolCall   `json:"tool_call,omitempty"`
-	ToolResult *SubAgentDetailToolResult `json:"tool_result,omitempty"`
-	Approval   *SubAgentDetailApproval   `json:"approval,omitempty"`
-	TurnMarker *SubAgentDetailTurnMarker `json:"turn_marker,omitempty"`
-	Compaction *SubAgentDetailCompaction `json:"compaction,omitempty"`
-	Error      string                    `json:"error,omitempty"`
-	Metadata   map[string]string         `json:"metadata,omitempty"`
-
-	ActivityTimeline *observation.ActivityTimeline `json:"activity_timeline,omitempty"`
-}
 
 type ThreadDetailEvent struct {
 	ID        string                `json:"id"`
@@ -717,12 +733,13 @@ type ThreadDetailEvent struct {
 }
 
 type ThreadDetailMessage struct {
-	Role      string                            `json:"role,omitempty"`
-	Kind      string                            `json:"kind,omitempty"`
-	Preview   string                            `json:"preview,omitempty"`
-	Content   string                            `json:"content,omitempty"`
-	Reasoning string                            `json:"reasoning,omitempty"`
-	Activity  *observation.ActivityPresentation `json:"activity,omitempty"`
+	Role        string                            `json:"role,omitempty"`
+	Kind        string                            `json:"kind,omitempty"`
+	Preview     string                            `json:"preview,omitempty"`
+	Content     string                            `json:"content,omitempty"`
+	Attachments []MessageAttachment               `json:"attachments,omitempty"`
+	Reasoning   string                            `json:"reasoning,omitempty"`
+	Activity    *observation.ActivityPresentation `json:"activity,omitempty"`
 }
 
 type ThreadDetailToolCall struct {
@@ -793,66 +810,6 @@ type ThreadDetailCompaction struct {
 	TokensBefore            int64             `json:"tokens_before,omitempty"`
 	TokensAfterEstimate     int64             `json:"tokens_after_estimate,omitempty"`
 	Metadata                map[string]string `json:"metadata,omitempty"`
-}
-
-type SubAgentDetailMessage struct {
-	Role      string `json:"role,omitempty"`
-	Kind      string `json:"kind,omitempty"`
-	Preview   string `json:"preview,omitempty"`
-	Content   string `json:"content,omitempty"`
-	Reasoning string `json:"reasoning,omitempty"`
-}
-
-type SubAgentDetailToolCall struct {
-	ID            string                     `json:"id,omitempty"`
-	Name          string                     `json:"name,omitempty"`
-	ArgsPreview   string                     `json:"args_preview,omitempty"`
-	ArgsJSON      string                     `json:"args_json,omitempty"`
-	ArgsHash      string                     `json:"args_hash,omitempty"`
-	ControlSignal *ThreadDetailControlSignal `json:"control_signal,omitempty"`
-}
-
-type SubAgentDetailToolResult struct {
-	CallID        string       `json:"call_id,omitempty"`
-	ToolName      string       `json:"tool_name,omitempty"`
-	Status        string       `json:"status,omitempty"`
-	Preview       string       `json:"preview,omitempty"`
-	Content       string       `json:"content,omitempty"`
-	Truncated     bool         `json:"truncated,omitempty"`
-	OriginalBytes int          `json:"original_bytes,omitempty"`
-	VisibleBytes  int          `json:"visible_bytes,omitempty"`
-	OriginalLines int          `json:"original_lines,omitempty"`
-	VisibleLines  int          `json:"visible_lines,omitempty"`
-	Strategy      string       `json:"strategy,omitempty"`
-	ContentSHA256 string       `json:"content_sha256,omitempty"`
-	FullOutput    *ArtifactRef `json:"full_output,omitempty"`
-}
-
-type SubAgentDetailApproval struct {
-	State    string            `json:"state,omitempty"`
-	ToolID   string            `json:"tool_id,omitempty"`
-	ToolName string            `json:"tool_name,omitempty"`
-	ToolKind string            `json:"tool_kind,omitempty"`
-	ArgsHash string            `json:"args_hash,omitempty"`
-	Reason   string            `json:"reason,omitempty"`
-	Metadata map[string]string `json:"metadata,omitempty"`
-}
-
-type SubAgentDetailTurnMarker struct {
-	Status   string            `json:"status,omitempty"`
-	Metadata map[string]string `json:"metadata,omitempty"`
-}
-
-type SubAgentDetailCompaction struct {
-	OperationID         string            `json:"operation_id,omitempty"`
-	RequestID           string            `json:"request_id,omitempty"`
-	Source              string            `json:"source,omitempty"`
-	Trigger             string            `json:"trigger,omitempty"`
-	Reason              string            `json:"reason,omitempty"`
-	Phase               string            `json:"phase,omitempty"`
-	TokensBefore        int64             `json:"tokens_before,omitempty"`
-	TokensAfterEstimate int64             `json:"tokens_after_estimate,omitempty"`
-	Metadata            map[string]string `json:"metadata,omitempty"`
 }
 
 type ArtifactRef struct {
@@ -1483,7 +1440,13 @@ func NewHost(opts HostOptions) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Host{cfg: cfg, store: store, sink: opts.Sink, harness: harness}, nil
+	return &Host{
+		cfg:                       cfg,
+		store:                     store,
+		sink:                      opts.Sink,
+		harness:                   harness,
+		supportsOpaqueAttachments: opts.ModelGateway != nil,
+	}, nil
 }
 
 func resolveHostConfigAndProvider(opts HostOptions) (config.Config, provider.Provider, error) {
@@ -1587,6 +1550,22 @@ func ensureThread(ctx context.Context, harness *agentharness.AgentHarness, req E
 		return ThreadSummary{}, runtimeHostError(err)
 	}
 	return threadSummary(summary), nil
+}
+
+func (h *Host) SetThreadTitle(ctx context.Context, req SetThreadTitleRequest) (ThreadSnapshot, error) {
+	return setThreadTitle(ctx, h.harness, req)
+}
+
+func (h *ThreadMaintenanceHost) SetThreadTitle(ctx context.Context, req SetThreadTitleRequest) (ThreadSnapshot, error) {
+	return setThreadTitle(ctx, h.harness, req)
+}
+
+func setThreadTitle(ctx context.Context, harness *agentharness.AgentHarness, req SetThreadTitleRequest) (ThreadSnapshot, error) {
+	snapshot, err := harness.SetThreadTitle(ctx, string(req.ThreadID), req.Title)
+	if err != nil {
+		return ThreadSnapshot{}, runtimeHostError(err)
+	}
+	return threadSnapshot(snapshot), nil
 }
 
 func (h *Host) ForkThread(ctx context.Context, req ForkThreadRequest) (ForkThreadResult, error) {
@@ -1851,6 +1830,13 @@ func (h *Host) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, err
 	if strings.TrimSpace(string(req.TurnID)) == "" {
 		return TurnResult{}, errors.New("turn id is required")
 	}
+	input, err := normalizeTurnInput(req.Input)
+	if err != nil {
+		return TurnResult{}, err
+	}
+	if len(input.Attachments) > 0 && !h.supportsOpaqueAttachments {
+		return TurnResult{}, errors.New("opaque message attachments require a ModelGateway host")
+	}
 	completionPolicy, err := engineTurnCompletionPolicy(req.Completion)
 	if err != nil {
 		return TurnResult{}, err
@@ -1864,7 +1850,7 @@ func (h *Host) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, err
 		return TurnResult{}, runtimeHostError(err)
 	}
 	activityRecorder := &runtimeActivityEventRecorder{sink: newRuntimeEventSink(h.sink)}
-	result, runErr := thread.Run(ctx, req.Input, agentharness.RunOptions{
+	result, runErr := thread.Run(ctx, input.Text, agentharness.RunOptions{
 		RunID:  string(req.RunID),
 		TurnID: string(req.TurnID),
 		Labels: engine.RunLabels{
@@ -1883,6 +1869,7 @@ func (h *Host) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, err
 		ManualCompactions:        projectedManualCompactionSource(req.ManualCompactions),
 		ToolSurfaceProvider:      runtimeToolSurfaceProvider(req.ToolSurfaceProvider),
 		SupplementalContext:      agentHarnessSupplementalContext(req.SupplementalContext),
+		Attachments:              sessionMessageAttachments(input.Attachments),
 		Sink:                     activityRecorder,
 	})
 	out := turnResult(result, string(req.ThreadID), activityRecorder.Snapshot(), time.Now().UnixMilli())
@@ -1890,6 +1877,35 @@ func (h *Host) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, err
 	defer cancelProjection()
 	h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out)
 	return out, runtimeHostError(runErr)
+}
+
+func normalizeTurnInput(input TurnInput) (TurnInput, error) {
+	input.Attachments = append([]MessageAttachment(nil), input.Attachments...)
+	for index := range input.Attachments {
+		input.Attachments[index].ResourceRef = strings.TrimSpace(input.Attachments[index].ResourceRef)
+		input.Attachments[index].Name = strings.TrimSpace(input.Attachments[index].Name)
+		input.Attachments[index].MIMEType = strings.TrimSpace(input.Attachments[index].MIMEType)
+	}
+	if err := input.Validate(); err != nil {
+		return TurnInput{}, err
+	}
+	return input, nil
+}
+
+func sessionMessageAttachments(in []MessageAttachment) []session.MessageAttachment {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]session.MessageAttachment, 0, len(in))
+	for _, attachment := range in {
+		out = append(out, session.MessageAttachment{
+			ResourceRef: attachment.ResourceRef,
+			Name:        attachment.Name,
+			MIMEType:    attachment.MIMEType,
+			SizeBytes:   attachment.SizeBytes,
+		})
+	}
+	return out
 }
 
 func (h *Host) RetryTurn(ctx context.Context, req RetryTurnRequest) (TurnResult, error) {
@@ -2257,7 +2273,7 @@ func listSubAgentDetailEvents(ctx context.Context, harness *agentharness.AgentHa
 		return SubAgentDetailEvents{}, runtimeHostError(err)
 	}
 	return SubAgentDetailEvents{
-		Events:           subAgentDetailEvents(detail.Events),
+		Events:           subAgentThreadDetailEvents(detail.Events),
 		ActivityTimeline: cloneRuntimeActivityTimeline(detail.ActivityTimeline),
 		Context:          subAgentDetailContext(detail.Snapshot.ThreadID, detail.Context),
 		NextOrdinal:      detail.NextOrdinal,
@@ -2666,7 +2682,6 @@ func metaThreadID(meta observation.ActivityRunMeta, snapshots []agentharness.Sub
 func subAgentActivityPayload(snapshot agentharness.SubAgentSnapshot) map[string]any {
 	title := firstRuntimeNonEmpty(strings.TrimSpace(snapshot.TaskName), strings.TrimSpace(snapshot.Path), strings.TrimSpace(snapshot.ThreadID))
 	return map[string]any{
-		"subagent_id":      strings.TrimSpace(snapshot.ThreadID),
 		"thread_id":        strings.TrimSpace(snapshot.ThreadID),
 		"path":             strings.TrimSpace(snapshot.Path),
 		"task_name":        strings.TrimSpace(snapshot.TaskName),
@@ -2786,7 +2801,7 @@ func firstRuntimeNonEmpty(values ...string) string {
 func subAgentDetail(in agentharness.SubAgentDetail) SubAgentDetail {
 	return SubAgentDetail{
 		Snapshot:         subAgentSnapshot(in.Snapshot),
-		Events:           subAgentDetailEvents(in.Events),
+		Events:           subAgentThreadDetailEvents(in.Events),
 		ActivityTimeline: cloneRuntimeActivityTimeline(in.ActivityTimeline),
 		Context:          subAgentDetailContext(in.Snapshot.ThreadID, in.Context),
 		NextOrdinal:      in.NextOrdinal,
@@ -2847,14 +2862,6 @@ func cloneContextStatus(in *observation.ContextStatus) *observation.ContextStatu
 	return &out
 }
 
-func subAgentDetailEvents(in []agentharness.SubAgentDetailEvent) []SubAgentDetailEvent {
-	out := make([]SubAgentDetailEvent, 0, len(in))
-	for _, ev := range in {
-		out = append(out, subAgentDetailEvent(ev))
-	}
-	return out
-}
-
 func threadDetailEvents(in []agentharness.SubAgentDetailEvent) []ThreadDetailEvent {
 	out := make([]ThreadDetailEvent, 0, len(in))
 	for _, ev := range in {
@@ -2863,25 +2870,12 @@ func threadDetailEvents(in []agentharness.SubAgentDetailEvent) []ThreadDetailEve
 	return out
 }
 
-func subAgentDetailEvent(in agentharness.SubAgentDetailEvent) SubAgentDetailEvent {
-	return SubAgentDetailEvent{
-		ID:         in.ID,
-		Ordinal:    in.Ordinal,
-		ParentID:   in.ParentID,
-		ThreadID:   ThreadID(in.ThreadID),
-		TurnID:     TurnID(in.TurnID),
-		Kind:       SubAgentDetailEventKind(in.Kind),
-		Type:       in.Type,
-		CreatedAt:  in.CreatedAt,
-		Message:    subAgentDetailMessage(in.Message),
-		ToolCall:   subAgentDetailToolCall(in.ToolCall),
-		ToolResult: subAgentDetailToolResult(in.ToolResult),
-		Approval:   subAgentDetailApproval(in.Approval),
-		TurnMarker: subAgentDetailTurnMarker(in.TurnMarker),
-		Compaction: subAgentDetailCompaction(in.Compaction),
-		Error:      in.Error,
-		Metadata:   cloneStringMap(in.Metadata),
+func subAgentThreadDetailEvents(in []agentharness.SubAgentDetailEvent) []ThreadDetailEvent {
+	out := threadDetailEvents(in)
+	for index := range out {
+		out[index].ActivityTimeline = nil
 	}
+	return out
 }
 
 func threadDetailEvent(in agentharness.SubAgentDetailEvent) ThreadDetailEvent {
@@ -2912,12 +2906,13 @@ func threadDetailMessage(in *agentharness.SubAgentDetailMessage) *ThreadDetailMe
 		return nil
 	}
 	return &ThreadDetailMessage{
-		Role:      in.Role,
-		Kind:      in.Kind,
-		Preview:   in.Preview,
-		Content:   in.Content,
-		Reasoning: in.Reasoning,
-		Activity:  cloneActivityPresentation(in.Activity),
+		Role:        in.Role,
+		Kind:        in.Kind,
+		Preview:     in.Preview,
+		Content:     in.Content,
+		Attachments: runtimeMessageAttachments(in.Attachments),
+		Reasoning:   in.Reasoning,
+		Activity:    cloneActivityPresentation(in.Activity),
 	}
 }
 
@@ -3015,7 +3010,7 @@ func threadDetailCompaction(in *agentharness.SubAgentDetailCompaction) *ThreadDe
 		Phase:                   in.Phase,
 		TokensBefore:            in.TokensBefore,
 		TokensAfterEstimate:     in.TokensAfterEstimate,
-		Metadata:                cloneStringMap(in.Metadata),
+		Metadata:                safeStringMetadata(in.Metadata),
 	}
 }
 
@@ -3057,12 +3052,13 @@ func cloneThreadDetailMessage(in *ThreadDetailMessage) *ThreadDetailMessage {
 		return nil
 	}
 	return &ThreadDetailMessage{
-		Role:      in.Role,
-		Kind:      in.Kind,
-		Preview:   in.Preview,
-		Content:   in.Content,
-		Reasoning: in.Reasoning,
-		Activity:  cloneActivityPresentation(in.Activity),
+		Role:        in.Role,
+		Kind:        in.Kind,
+		Preview:     in.Preview,
+		Content:     in.Content,
+		Attachments: append([]MessageAttachment(nil), in.Attachments...),
+		Reasoning:   in.Reasoning,
+		Activity:    cloneActivityPresentation(in.Activity),
 	}
 }
 
@@ -3146,102 +3142,6 @@ func cloneThreadTurnProjectionSegment(in ThreadTurnProjectionSegment) ThreadTurn
 	}
 	out.EventIDs = append([]string(nil), in.EventIDs...)
 	return out
-}
-
-func subAgentDetailMessage(in *agentharness.SubAgentDetailMessage) *SubAgentDetailMessage {
-	if in == nil {
-		return nil
-	}
-	return &SubAgentDetailMessage{Role: in.Role, Kind: in.Kind, Preview: in.Preview, Content: in.Content, Reasoning: in.Reasoning}
-}
-
-func subAgentDetailToolCall(in *agentharness.SubAgentDetailToolCall) *SubAgentDetailToolCall {
-	if in == nil {
-		return nil
-	}
-	out := &SubAgentDetailToolCall{ID: in.ID, Name: in.Name, ArgsPreview: in.ArgsPreview, ArgsJSON: in.ArgsJSON, ArgsHash: in.ArgsHash}
-	if in.ControlSignal != nil {
-		out.ControlSignal = &ThreadDetailControlSignal{
-			Name:        in.ControlSignal.Name,
-			CallID:      in.ControlSignal.CallID,
-			Disposition: in.ControlSignal.Disposition,
-			Text:        in.ControlSignal.Text,
-			ArgsHash:    in.ControlSignal.ArgsHash,
-			Payload:     cloneAnyMap(in.ControlSignal.Payload),
-		}
-	}
-	return out
-}
-
-func subAgentDetailToolResult(in *agentharness.SubAgentDetailToolResult) *SubAgentDetailToolResult {
-	if in == nil {
-		return nil
-	}
-	out := &SubAgentDetailToolResult{
-		CallID:        in.CallID,
-		ToolName:      in.ToolName,
-		Status:        in.Status,
-		Preview:       in.Preview,
-		Content:       in.Content,
-		Truncated:     in.Truncated,
-		OriginalBytes: in.OriginalBytes,
-		VisibleBytes:  in.VisibleBytes,
-		OriginalLines: in.OriginalLines,
-		VisibleLines:  in.VisibleLines,
-		Strategy:      in.Strategy,
-		ContentSHA256: in.ContentSHA256,
-	}
-	if in.FullOutput != nil {
-		out.FullOutput = &ArtifactRef{
-			ID:        in.FullOutput.ID,
-			SafeLabel: in.FullOutput.SafeLabel,
-			URL:       in.FullOutput.URL,
-			Kind:      in.FullOutput.Kind,
-			MIME:      in.FullOutput.MIME,
-			SizeBytes: in.FullOutput.SizeBytes,
-			SHA256:    in.FullOutput.SHA256,
-		}
-	}
-	return out
-}
-
-func subAgentDetailApproval(in *agentharness.SubAgentDetailApproval) *SubAgentDetailApproval {
-	if in == nil {
-		return nil
-	}
-	return &SubAgentDetailApproval{
-		State:    in.State,
-		ToolID:   in.ToolID,
-		ToolName: in.ToolName,
-		ToolKind: in.ToolKind,
-		ArgsHash: in.ArgsHash,
-		Reason:   in.Reason,
-		Metadata: cloneStringMap(in.Metadata),
-	}
-}
-
-func subAgentDetailTurnMarker(in *agentharness.SubAgentDetailTurnMarker) *SubAgentDetailTurnMarker {
-	if in == nil {
-		return nil
-	}
-	return &SubAgentDetailTurnMarker{Status: in.Status, Metadata: cloneStringMap(in.Metadata)}
-}
-
-func subAgentDetailCompaction(in *agentharness.SubAgentDetailCompaction) *SubAgentDetailCompaction {
-	if in == nil {
-		return nil
-	}
-	return &SubAgentDetailCompaction{
-		OperationID:         in.OperationID,
-		RequestID:           in.RequestID,
-		Source:              in.Source,
-		Trigger:             in.Trigger,
-		Reason:              in.Reason,
-		Phase:               in.Phase,
-		TokensBefore:        in.TokensBefore,
-		TokensAfterEstimate: in.TokensAfterEstimate,
-		Metadata:            safeStringMetadata(in.Metadata),
-	}
 }
 
 func threadIDStrings(ids []ThreadID) []string {

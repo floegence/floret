@@ -66,10 +66,11 @@ status, arguments, results, or errors.
 `HostOptions.ModelGateway` lets a host route hosted parent and child turns
 through product-owned model transport while Floret still owns request
 construction, provider loop control, ledgers, tool dispatch, and runtime events.
-Title generation is host-owned by default. `ThreadTitleModeProvider` is the
-explicit opt-in that routes a dedicated Floret title request through the same
-transport; a nil internal title generator means disabled rather than an implicit
-provider fallback.
+Title generation is host-owned by default, but title persistence is always
+Floret-owned. `SetThreadTitle` is the explicit host write contract.
+`ThreadTitleModeProvider` routes a dedicated Floret title request through the
+same transport; a nil internal title generator means disabled rather than an
+implicit provider fallback.
 `HostOptions.ModelGatewayIdentity` supplies the provider/model identity for that
 host-owned transport plus a required non-sensitive continuation compatibility
 key. Gateway-backed hosts keep provider transport settings out
@@ -81,6 +82,10 @@ parallel tool-call group; tool results must follow in the same order with exact
 call ID and tool name. Empty or invalid JSON arguments, duplicate IDs, orphaned
 results, unresolved calls, and illegal adjacency fail before transport. The
 gateway adapter only performs a direct wire-shape mapping.
+User messages may also carry opaque attachment resource references. Floret
+stores the association in the journal and prompt-cache snapshot while the
+`ModelGateway` host resolves the resource into provider-native content. A native
+provider host without that resolver rejects attachments before admission.
 
 `AgentHarness` is the internal durable conversation layer. It owns threads,
 parent-child thread lifecycle, turn lifecycle, retries, forks, titles, and
@@ -150,6 +155,11 @@ transport; Floret owns provider-visible context assembly, trimming, summary
 generation, checkpoint installation, provider continuation state, prompt-cache
 ledgers, and lifecycle events.
 
+`RunTurnRequest.Input` is the durable user message contract. Its text and opaque
+attachment references enter the canonical journal together and remain attached
+through provider projection, detail reads, compaction retention, and forks.
+Resource bytes and resource lifecycle remain host-owned.
+
 `RunTurnRequest.SupplementalContext` is the host-facing current-turn context
 slot. AgentHarness forwards it to Engine as provider-request projection input,
 and Engine renders it into each provider request for that turn without appending
@@ -207,7 +217,9 @@ status, and public compaction operations. Fork mode and parent/child thread
 identity affect lookup and journal ownership only; they do not define context
 window size.
 
-Hosts that only need thread lifecycle metadata use `EnsureThread`,
+Hosts that need lifecycle metadata plus the latest admitted turn use
+`ReadThreadOverview`, which projects both from one active path. Hosts that only
+need thread lifecycle metadata use `EnsureThread`,
 `ThreadSummary`, or transcript-free `ReadThread`. Conversation bootstrap and
 pagination use `ListThreadTurns`, whose before, after, and tail modes always
 return admitted canonical turn ordinals in ascending order. A marker-only turn
