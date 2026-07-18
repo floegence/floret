@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-07-18
+* **Breaking**: Renamed the idempotent public thread creation contract from
+  `EnsureThread` to `CreateThread`. Missing journals are created only through
+  that explicit API; runtime, maintenance, and downstream host read paths must
+  surface `ErrThreadNotFound` instead of treating creation as recovery.
 * **Breaking**: Replaced string `RunTurnRequest.Input` with structured
   `TurnInput`, added canonical opaque message attachments through journal,
   prompt cache, model gateway, detail, turn, fork, and reopen projections, and

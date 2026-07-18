@@ -35,8 +35,10 @@ host interface for every runtime operation.
   Opening a known v11 SQLite store upgrades it transactionally to v12 after
   validating its raw encoder and canonical schema fingerprint; unknown or
   malformed versions remain rejected.
-* `Host.EnsureThread` creates or recovers a hosted thread and returns
-  transcript-free `ThreadSummary` lifecycle metadata.
+* `Host.CreateThread` and `ThreadMaintenanceHost.CreateThread` are the only
+  public operations that create a missing canonical journal. Creation is
+  idempotent for the same `ThreadID` and returns transcript-free
+  `ThreadSummary` lifecycle metadata.
 * `Host.ReadThread` and `ThreadMaintenanceHost.ReadThread` return the same
   transcript-free `ThreadSnapshot`, including canonical status, latest turn and
   run identity, and the journal `ThroughOrdinal`. The snapshot intentionally has
@@ -411,7 +413,7 @@ public API instead of querying or mutating Floret storage tables directly.
 
 `NewThreadMaintenanceHost` is the provider-free constructor for maintenance
 processes that share a Floret `Store` but do not need provider configuration.
-It exposes `EnsureThread`, `ReadThreadOverview`, `SetThreadTitle`,
+It exposes `CreateThread`, `ReadThreadOverview`, `SetThreadTitle`,
 `ReadTurnProjection`, `SettlePendingTool`,
 `ListSubAgents`, `ListSubAgentActivityTimeline`, `ReadSubAgentDetail`,
 `ListSubAgentDetailEvents`, `ReadThreadContext`, `CloseSubAgents`, and

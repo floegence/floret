@@ -218,10 +218,11 @@ identity affect lookup and journal ownership only; they do not define context
 window size.
 
 Hosts that need lifecycle metadata plus the latest admitted turn use
-`ReadThreadOverview`, which projects both from one active path. Hosts that only
-need thread lifecycle metadata use `EnsureThread`,
-`ThreadSummary`, or transcript-free `ReadThread`. Conversation bootstrap and
-pagination use `ListThreadTurns`, whose before, after, and tail modes always
+`ReadThreadOverview`, which projects both from one active path. Hosts create a
+missing canonical journal only through `CreateThread`; transcript-free
+`ReadThread` and `ThreadSummary` projections never create or recover one.
+Conversation bootstrap and pagination use `ListThreadTurns`, whose before,
+after, and tail modes always
 return admitted canonical turn ordinals in ascending order. A marker-only turn
 remains outside the public turn list even if it is later cancelled or terminal;
 only a canonical user entry admits it. The page through ordinal continues to cover the full read

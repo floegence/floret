@@ -485,7 +485,7 @@ func (h *AgentHarness) StartThread(ctx context.Context, opts StartThreadOptions)
 	return thread, nil
 }
 
-func (h *AgentHarness) EnsureThread(ctx context.Context, opts StartThreadOptions) (ThreadSummary, error) {
+func (h *AgentHarness) CreateThread(ctx context.Context, opts StartThreadOptions) (ThreadSummary, error) {
 	thread, err := h.StartThread(ctx, opts)
 	if errors.Is(err, sessiontree.ErrThreadExists) {
 		thread = h.cacheThread(strings.TrimSpace(opts.ThreadID))

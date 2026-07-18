@@ -247,6 +247,20 @@ func TestRuntimePublicAPIDoesNotExposeContextLifecycleBackdoors(t *testing.T) {
 	}
 }
 
+func TestRuntimeThreadCreationContractIsExplicit(t *testing.T) {
+	text := readTextFile(t, filepath.Join("runtime", "runtime.go"))
+	for _, want := range []string{"type CreateThreadRequest struct", ") CreateThread("} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("runtime public API is missing explicit thread creation contract %q", want)
+		}
+	}
+	for _, forbidden := range []string{"Ensure" + "ThreadRequest", ") Ensure" + "Thread("} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("runtime public API retains ambiguous thread creation contract %q", forbidden)
+		}
+	}
+}
+
 func TestObservationPublicAPIDoesNotExposeCompactionInternals(t *testing.T) {
 	text := readTextFile(t, filepath.Join("observation", "context.go")) + "\n" +
 		readTextFile(t, filepath.Join("observation", "compaction.go")) + "\n" +

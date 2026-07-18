@@ -127,7 +127,7 @@ func TestHostRunTurnReportsTerminalProjectionUnavailableWithoutDiscardingResult(
 	}
 }
 
-func TestHostEnsureThreadReturnsSummaryWithoutMessages(t *testing.T) {
+func TestHostCreateThreadIsIdempotentAndReturnsSummaryWithoutMessages(t *testing.T) {
 	ctx := context.Background()
 	host, err := NewHost(HostOptions{
 		Config: config.Config{
@@ -143,7 +143,7 @@ func TestHostEnsureThreadReturnsSummaryWithoutMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	started, err := host.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "thread"})
+	started, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,14 +153,14 @@ func TestHostEnsureThreadReturnsSummaryWithoutMessages(t *testing.T) {
 	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}}); err != nil {
 		t.Fatal(err)
 	}
-	ensured, err := host.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "thread"})
+	created, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ensured.ID != "thread" || ensured.Status != ThreadStatusCompleted || ensured.LatestTurnID != "turn-1" {
-		t.Fatalf("ensured summary = %#v", ensured)
+	if created.ID != "thread" || created.Status != ThreadStatusCompleted || created.LatestTurnID != "turn-1" {
+		t.Fatalf("created summary = %#v", created)
 	}
-	data, err := json.Marshal(ensured)
+	data, err := json.Marshal(created)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestHostRunTurnRecoversInterruptedActiveLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "thread", "turn-interrupted", sessiontree.TurnStarted, map[string]string{"run_id": "run-interrupted"}); err != nil {
@@ -366,7 +366,7 @@ func TestHostSetThreadTitleIsCanonicalAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "thread"}); err != nil {
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
 	first, err := host.SetThreadTitle(ctx, SetThreadTitleRequest{ThreadID: "thread", Title: "  Manual title  "})
@@ -5643,7 +5643,7 @@ func TestListThreadTurnsPagesCanonicalTimeline(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := maintenance.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "thread"}); err != nil {
+			if _, err := maintenance.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 				t.Fatal(err)
 			}
 			append := func(turnID, runID, input, output string, status sessiontree.TurnMarkerStatus) {
@@ -5777,7 +5777,7 @@ func TestListThreadTurnsHidesTurnUntilCanonicalUserEntryIsCommitted(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := maintenance.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "thread"}); err != nil {
+			if _, err := maintenance.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "thread", "turn-1", sessiontree.TurnStarted, map[string]string{"run_id": "run-1"}); err != nil {
@@ -5813,7 +5813,7 @@ func TestListThreadTurnsHidesTurnUntilCanonicalUserEntryIsCommitted(t *testing.T
 				t.Fatalf("latest admitted turn behind dangling marker = %#v err=%v", latest, err)
 			}
 
-			if _, err := maintenance.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "corrupt-thread"}); err != nil {
+			if _, err := maintenance.CreateThread(ctx, CreateThreadRequest{ThreadID: "corrupt-thread"}); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "corrupt-thread", "turn-corrupt", sessiontree.TurnStarted, map[string]string{"run_id": "run-corrupt"}); err != nil {
@@ -5867,7 +5867,7 @@ func TestThreadAgentTodosCASForkDeleteAndReopen(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := maintenance.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "source"}); err != nil {
+				if _, err := maintenance.CreateThread(ctx, CreateThreadRequest{ThreadID: "source"}); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "source", "turn-1", sessiontree.TurnStarted, map[string]string{"run_id": "run-1"}); err != nil {
@@ -6154,8 +6154,8 @@ func TestThreadMaintenanceHostDeletesThreadTreeWithoutProviderConfig(t *testing.
 	if _, ok := reflect.TypeOf(maintenance).MethodByName("RunTurn"); ok {
 		t.Fatalf("ThreadMaintenanceHost must not expose RunTurn")
 	}
-	if summary, err := maintenance.EnsureThread(ctx, EnsureThreadRequest{ThreadID: "parent"}); err != nil || summary.ID != "parent" {
-		t.Fatalf("EnsureThread summary=%#v err=%v", summary, err)
+	if summary, err := maintenance.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil || summary.ID != "parent" {
+		t.Fatalf("CreateThread summary=%#v err=%v", summary, err)
 	}
 	if closed, err := maintenance.CloseSubAgents(ctx, CloseSubAgentsRequest{ParentThreadID: "parent", Reason: "cleanup"}); err != nil || len(closed.Snapshots) != 1 {
 		t.Fatalf("CloseSubAgents result=%#v err=%v", closed, err)

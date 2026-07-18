@@ -160,7 +160,7 @@ type StartThreadRequest struct {
 	ThreadID ThreadID
 }
 
-type EnsureThreadRequest struct {
+type CreateThreadRequest struct {
 	ThreadID ThreadID
 }
 
@@ -1536,16 +1536,16 @@ func (h *Host) StartThread(ctx context.Context, req StartThreadRequest) (ThreadS
 	return readThread(ctx, thread)
 }
 
-func (h *Host) EnsureThread(ctx context.Context, req EnsureThreadRequest) (ThreadSummary, error) {
-	return ensureThread(ctx, h.harness, req)
+func (h *Host) CreateThread(ctx context.Context, req CreateThreadRequest) (ThreadSummary, error) {
+	return createThread(ctx, h.harness, req)
 }
 
-func (h *ThreadMaintenanceHost) EnsureThread(ctx context.Context, req EnsureThreadRequest) (ThreadSummary, error) {
-	return ensureThread(ctx, h.harness, req)
+func (h *ThreadMaintenanceHost) CreateThread(ctx context.Context, req CreateThreadRequest) (ThreadSummary, error) {
+	return createThread(ctx, h.harness, req)
 }
 
-func ensureThread(ctx context.Context, harness *agentharness.AgentHarness, req EnsureThreadRequest) (ThreadSummary, error) {
-	summary, err := harness.EnsureThread(ctx, agentharness.StartThreadOptions{ThreadID: string(req.ThreadID)})
+func createThread(ctx context.Context, harness *agentharness.AgentHarness, req CreateThreadRequest) (ThreadSummary, error) {
+	summary, err := harness.CreateThread(ctx, agentharness.StartThreadOptions{ThreadID: string(req.ThreadID)})
 	if err != nil {
 		return ThreadSummary{}, runtimeHostError(err)
 	}
