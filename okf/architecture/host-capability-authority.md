@@ -46,7 +46,8 @@ call and therefore retains a durable mutation lease.
 ## Canonical Lifecycle
 
 `absent` means no thread row and no deletion tombstone exist. Only an exact
-root-create capability or a root-fork commit may publish the identity.
+root-create capability, a root-fork commit, or an exact parent-bound SubAgent
+publication may publish the identity.
 
 `open` means the thread exists and may participate in operations allowed by its
 claim and lease axes.
@@ -74,6 +75,17 @@ classify replay: a created root retains its `CreateIntentID` and create
 fingerprint, while every fork destination retains its fork `OperationID`, plan
 node identity, and source provenance.
 
+Create-intent, fork-operation, SubAgent `PublicationID`, and SubAgent
+`InputRequestID` idempotency records survive root-tree deletion permanently as
+internal authority ledgers; they are not queryable Agent state. Root-create and
+fork capabilities that explicitly support tombstoned authority compare retained
+request identity/fingerprint before classifying an exact replay as deleted.
+SubAgent capability construction instead requires a live parent: after root-tree
+deletion `SubAgentHostFactory.NewHost` returns `ErrThreadDeleted` before any
+operation can run. Retained SubAgent ledgers prevent the same request ID from
+being reused under another live parent, where changed fingerprint or authority is
+`ErrRequestConflict`; they do not create a tombstone replay capability.
+
 ## Fork Claim Proof
 
 A prepared root fork is identified by:
@@ -96,6 +108,8 @@ SubAgent publication, inbox publication, admission, close, another fork, and
 delete. Reads of existing sources remain valid. Missing claims, extra claims,
 changed plans, or visible destinations while an operation is still prepared are
 authority corruption. Recovery fails rather than recreating or inferring claims.
+Returning an already-persisted exact publication/input replay is a read, not a
+publication, and does not conflict with a claim.
 
 The fork operation states are exactly:
 
@@ -103,7 +117,7 @@ The fork operation states are exactly:
 | --- | --- | --- |
 | `prepared` | immutable plan plus complete claim set; no destinations visible | `CommitFork`, `FailFork`, or replay same request |
 | `completed` | immutable plan and result stored; either all planned destinations are matching live canonical rows, or all are matching provenance tombstones after atomic root-tree deletion; no claims | idempotent read/replay only |
-| `failed` | no planned destination visible; deterministic error stored; no claims | idempotent error replay only |
+| `failed` | immutable plan and deterministic error stored; no live row or tombstone carries this operation/node provenance; no claims | idempotent error replay only |
 
 `CommitFork` creates every planned destination, stores the completed result, and
 releases every claim in one transaction. Partial publication is impossible.
@@ -111,6 +125,15 @@ releases every claim in one transaction. Partial publication is impossible.
 deterministic failure plus claim release. Transient storage or cancellation
 errors leave the operation prepared so the same source-bound `ThreadForkHost`
 and `OperationID` can replay it. There is no compensation delete.
+
+After `FailFork`, the planned destination IDs return to ordinary
+`absent + unclaimed` authority and may later be used by any otherwise-authorized
+canonical creation operation: exact root create, root-fork commit, or
+parent-bound SubAgent publication. Failed replay always returns the stored
+deterministic error; it does not inspect or claim an unrelated later occupant. A
+live row or tombstone that carries the failed operation's own `OperationID` and
+plan-node provenance is `ErrAuthorityCorrupt`, because `FailFork` can commit only
+before publication.
 
 A completed fork operation is permanent. Replay validates the immutable result
 against every planned destination. If every destination is the matching live
@@ -206,6 +229,20 @@ structured pending-tool completion reference.
 Replay of the same request ID and fingerprint returns the same
 `SubAgentInputID`. Reuse with any changed fingerprint field is a public request
 conflict. The Store assigns the immutable `SubAgentInputID` during publication.
+It also assigns a strictly increasing sequence within the child inbox. Sequence
+is durable ordering authority; timestamps and journal scans are not.
+
+Every SubAgent operation first revalidates its bound live parent. After that
+parent check, publication checks an existing `PublicationID` or `InputRequestID`
+before child lifecycle rejection. Exact same-fingerprint replay is read-only and
+returns the stored publication/input after that input becomes admitted or cancelled, and
+regardless of a live child's claim, lease, `closing`, or `closed` state. It does
+not reopen the child, publish another input, alter sequence, or start a provider.
+A changed fingerprint remains `ErrRequestConflict`; a new request against a
+claimed, `closing`, or `closed` child returns the authority/lifecycle error. After
+root-tree deletion no SubAgent operation is reachable because parent-bound host
+construction returns `ErrThreadDeleted`. Reusing the retained request ID through
+another live parent returns `ErrRequestConflict`.
 
 Interrupt publication atomically cancels all earlier pending inputs and
 publishes the new pending input. Admission and close are serialized with inbox
@@ -273,6 +310,19 @@ old decision cannot authorize dispatch and the gate appends a new decision under
 the same effect attempt. Only the proof for the current revision may reach the
 closure.
 
+If current policy denies the invocation, or policy read, approval validation,
+audit persistence, or the host gate fails before the one-shot closure is invoked,
+Floret calls `RejectEffectAttempt` with the exact fresh turn proof, attempt ID,
+request fingerprint, typed public rejection code, and a rejection fingerprint.
+The Store requires state `prepared` and atomically records `rejected`. Replay with
+the same attempt, request, code, and rejection fingerprint returns the stored
+rejection; any changed terminal rejection is `ErrRequestConflict`. A storage
+failure leaves the attempt `prepared`, calls no handler, and may retry that same
+rejection commit while the local call retains the result, or let turn finalization
+cancel the attempt. There is no durable rejecting state. Any later replay that
+observes only `prepared`, including after process loss, rereads current host
+policy and may authorize or reject according to that current policy.
+
 `EffectAuthorizationRequest` contains `EffectAttemptID`, exact `ThreadID`,
 `TurnID`, `RunID`, `ToolCallID`, tool name, argument hash, declared
 resources/effects, read-only/destructive/open-world classification, and the
@@ -329,10 +379,8 @@ the handler. If that result cannot be durably completed before turn shutdown,
 the owner uses `MarkEffectUnknown` under the exact fresh proof. A process crash
 leaves recovery to perform the same conservative transition.
 
-If policy read, parse, approval validation, audit persistence, or gate acquisition
-fails, the closure is not invoked and Floret commits `rejected`. Policy downgrade
-waits for an in-flight authorized effect to return; a later effect observes the
-new policy.
+Policy downgrade waits for an in-flight authorized effect to return; a later
+effect observes the new policy.
 
 Each local active `Thread` owns an in-process authority gate tied to its exact
 lease generation. Provider request start and tool dispatch enter that gate. Tool
@@ -455,6 +503,9 @@ turn recovery are separate capabilities and cannot derive active authority.
 Factories bind identity before provider-backed construction. `NewHost` validates
 Store lifetime and canonical root/parent authority before skills, tools, sinks,
 registries, gateways, provider state, or other construction side effects.
+`SubAgentHostFactory.NewHost` requires a live open parent; a tombstoned parent
+returns `ErrThreadDeleted`, so deleted SubAgent request ledgers are never exposed
+through an operation-capable host.
 
 ## Exact Method Sets
 
@@ -507,6 +558,7 @@ implements validation and commit in one critical section or transaction.
 | `RenewLease` | compare exact fresh proof and advance heartbeat/expiry |
 | `AppendWithProof` | compare exact fresh proof before journal, provider-state, approval, todo, or automatic-title write |
 | `PrepareEffectAttempt` | Store-assign the single attempt for one canonical invocation, or replay/conflict its exact fingerprint |
+| `RejectEffectAttempt` | compare exact fresh turn proof and one `prepared` attempt, then persist one typed terminal rejection or replay/conflict it |
 | `BeginEffectDispatch` | final-check one-shot authorization, exact current fresh generation, lifecycle, and `prepared` state; transition to `dispatching` |
 | `FinishEffectDispatch` | persist handler result and canonical tool result as `completed` or `failed` without re-invoking handler |
 | `MarkEffectUnknown` | under the exact local turn proof, terminalize a `dispatching` attempt whose result cannot be durably completed, without handler retry |
@@ -554,8 +606,13 @@ mutable or host-owned data are not create fingerprint fields. Replay returns the
 same canonical root only if its stored create fingerprint matches and it is an
 open top-level root with no parent, fork source, or fork operation identity.
 Reuse of either identity with a different fingerprint is `ErrRequestConflict`.
-Existing child, claimed destination, malformed root, or tombstone is a conflict.
-Failure emits no event and creates no cached object.
+Existing child, claimed destination, or malformed live root is a conflict. If the
+same create-intent record and fingerprint resolve to its matching created-root
+tombstone, replay returns `ErrThreadDeleted`. Reusing that `CreateIntentID` for a
+different thread/fingerprint, or reusing that created-root `ThreadID` with changed
+create provenance, is `ErrRequestConflict`. A new intent targeting any other
+tombstoned identity, including one produced by fork or SubAgent publication,
+returns `ErrThreadDeleted`. Failure emits no event and creates no cached object.
 
 ## Turn Admission, Renewal, And Finish
 
@@ -611,13 +668,21 @@ revalidates the complete target, appends the settlement, and leaves the thread
 idle. It never starts a provider.
 
 `CompletePendingTool` is a different provider-backed transition. Its request
-contains `Target`, `ContinuationTurnID`, `ContinuationRunID`, and the terminal
-outcome. `AdmitPendingToolCompletion` atomically validates the exact target,
-accepts an existing identical settlement or writes it, acquires the continuation
-turn proof, and appends turn-start plus one structured host-authored user message
-that references the target. A conflicting settlement or reused continuation ID
-fails before provider invocation. The normal turn renewal and finish contract
-then applies.
+contains a durable `CompletionRequestID`, `Target`, `ContinuationTurnID`,
+`ContinuationRunID`, and the terminal outcome. Its immutable completion
+fingerprint covers all of those fields plus the structured host-authored
+continuation payload. `AdmitPendingToolCompletion` atomically persists the
+completion request record, validates the exact target, accepts an existing
+identical settlement or writes it, acquires the continuation turn proof, and
+appends turn-start plus the structured user message that references the target.
+A conflicting settlement, changed completion fingerprint, or continuation ID
+already owned by another request fails before provider invocation.
+
+Replay of the same `CompletionRequestID` and fingerprint returns the stored
+admission result whether the continuation is leased, terminal, or later recovered;
+it never starts another provider owner. Reuse with any changed field is
+`ErrRequestConflict`. The normal turn renewal and finish contract applies only to
+the owner that received the original exact proof.
 
 Root completion is owned by `TurnExecutionHost`. Child completion is owned by
 the exact parent-bound `SubAgentHost` through
@@ -628,17 +693,42 @@ atomically settles the exact target, and publishes one structured pending input
 under a durable `InputRequestID`. `WaitSubAgents` later admits that exact input.
 This preserves the single SubAgent admission owner while avoiding a
 settled-without-continuation crash gap.
+For child completion, `InputRequestID` is also the completion request identity;
+its fingerprint includes the exact target, outcome, child, and structured input.
+Replay returns the same input even after it becomes admitted or cancelled.
 
 ## Compaction And Manual Title
 
 Compaction owner: exact `ThreadCompactionHost`. `CompactThread` carries a durable
-`RequestID`, which is the `MutationID`. `BeginCompaction` persists the request and
-fresh mutation lease before provider invocation. The owner renews it during the
-provider call. Replay of the same request returns a completed result, reports a
-fresh in-progress owner as busy, or takes over an eligible expired lease with a
-new generation and retries the same immutable request. A different request
-cannot recover or release it. `FinishCompaction` stores one result/failure and
-releases the proof atomically.
+`RequestID`, which is the `MutationID`. Its immutable request fingerprint covers
+`ThreadID`, `RequestID`, source, pinned source leaf entry, pinned active-path hash,
+summary schema version, prompt identity, and the canonical compaction request
+payload hash. `BeginCompaction` revalidates the pinned path and atomically stores
+that request record in `prepared` state plus a fresh mutation lease before
+provider invocation.
+
+The owner renews during the provider call. Replay of the same request and
+fingerprint returns its stored terminal record, reports a fresh or expired-fenced
+owner as busy, or takes over an eligible lease with a new generation and retries
+the same immutable request. A changed fingerprint is `ErrRequestConflict`; a
+different request cannot recover or release it.
+
+`FinishCompaction` accepts the exact current proof, request fingerprint, and one
+terminal outcome fingerprint. Success stores the canonical compaction entry and
+completed result; failure stores one typed terminal error. Both terminal shapes
+record the finishing owner and generation and release the proof atomically.
+Replay with that exact finishing proof and outcome fingerprint returns the stored
+terminal record. A changed outcome is `ErrRequestConflict`; an older generation
+after takeover is `ErrStaleAuthority`. Terminal failed compaction is not retried;
+a new provider attempt requires a new `RequestID`.
+
+The durable compaction states are exactly:
+
+| State | Durable shape | Allowed transition |
+| --- | --- | --- |
+| `prepared` | immutable request fingerprint plus current compaction lease proof; no terminal outcome | renew, eligible exact takeover, exact finish, or same-request replay |
+| `completed` | immutable request, canonical result, outcome fingerprint, and finishing owner/generation; no lease | exact terminal replay only |
+| `failed` | immutable request, typed error, outcome fingerprint, and finishing owner/generation; no lease | exact terminal replay only |
 
 Manual title is provider-free. `SetTitle` checks idle, enters mutation authority,
 writes the title event/state, and leaves authority in one transaction. It has no
@@ -662,6 +752,9 @@ Completed replay returns the stored result only while every planned destination
 is the matching live row. Exact matching fork-provenance tombstones return
 `ErrThreadDeleted`; missing or inconsistent live/tombstone authority returns
 `ErrAuthorityCorrupt`.
+Failed replay returns its stored error even if an unrelated later operation uses
+one of the formerly planned destination IDs. Only a row or tombstone carrying the
+failed operation's own provenance is corruption.
 
 ## Root Tree Delete
 
@@ -740,11 +833,17 @@ multiple direct child turns, but each local child `Thread` stores only its own
 exact proof. Nested children require a different `SubAgentHost` bound to that
 child as parent.
 
-`AdmitSubAgentInput` atomically selects one pending input, acquires the child
-turn generation, appends turn-start and canonical user message carrying the
-exact `SubAgentInputID`, and marks it admitted. Two processes cannot admit the
-same input. Active child settlement revalidates the parent-child relation and
-requires that child's local proof to equal its durable proof.
+`AdmitSubAgentInput` does not accept a caller-selected `SubAgentInputID`. Under
+the child authority transaction, the Store selects the pending input with the
+lowest durable sequence, using `SubAgentInputID` only as a deterministic tie
+breaker, then acquires the child turn generation, appends turn-start and the
+canonical user message carrying that exact ID, and marks it admitted. No pending
+input returns `ErrSubAgentInputNotFound` with zero lease or journal mutation.
+Replay of the same child `TurnID`/`RunID` returns the input already admitted to
+that turn; reuse of those continuation identities for another input is a request
+conflict. Two processes cannot admit the same input. Active child settlement
+revalidates the parent-child relation and requires that child's local proof to
+equal its durable proof.
 
 ## SubAgent Close
 
@@ -759,8 +858,12 @@ must be idle, unclaimed, and open/closed. The target child alone may have one
 fresh turn lease, and only when the calling `SubAgentHost` supplies the exact
 local proof. A foreign lease, an active descendant, an expired-fenced lease, or
 a takeover-eligible lease returns busy with zero close or cancellation side
-effects. On success, every open node is marked `closing` under the same operation
-ID. New inbox, admission, spawn, fork, and delete transitions are then fenced.
+effects. The target itself must be open; a new close identity against an already
+closed target returns `ErrSubAgentClosed`. On success, the Store persists the
+immutable subtree membership and each node's prepared lifecycle. Every open node
+is marked `closing` under the same operation ID; already-closed descendants remain
+closed and receive no new lifecycle write. New inbox, admission, spawn, fork, and
+delete transitions are then fenced.
 
 If the target turn is active, the host first takes the exclusive side of that
 local `Thread` authority gate. This waits for any in-flight authorized local
@@ -777,10 +880,15 @@ tool effect. If the owner crashes, the exact parent-child
 complete close itself.
 
 `FinishSubAgentClose` requires the same request fingerprint and no remaining
-lease. It atomically cancels every pending input, appends lifecycle entries in
-postorder, and marks the whole prepared subtree closed. Crash after preparation
-leaves a visible, fail-closed `closing` subtree; replay of the same
-`CloseOperationID` resumes it. There is no reopen or fallback path.
+lease. It atomically cancels pending inputs only for nodes prepared from `open`,
+appends lifecycle entries for those nodes in postorder, and marks those nodes
+closed. Descendants recorded as already closed are verified unchanged and are
+not appended to. Crash after preparation leaves a visible, fail-closed `closing`
+subtree; replay of the same `CloseOperationID` resumes it, and replay after
+completion returns the stored result. There is no reopen or fallback path.
+Completed close replay is a read of the immutable close record. It remains
+available through an already-bound live-parent host while the closed child is a
+pinned fork source; the fork claim blocks new close mutation, not exact replay.
 
 There is no public batch close capability. A host parent-stop coordinator lists
 canonical children and records its own progress while invoking exact
@@ -804,18 +912,18 @@ post-close cancellation append.
 | absent, fork-claimed | not found | reject | reject | reject | reject | reject | matching prepared operation only | reject |
 | open, idle | allow | conflict | allow | reject | allow | allow for child | allow prepare as source | allow if whole tree idle |
 | open, fresh turn lease | allow | conflict | reject | exact fresh proof only | reject | allow dedicated child inbox only | reject | reject busy |
-| open, expired-fenced turn lease | allow | conflict | reject | reject | recovery only after skew window | reject | reject | reject busy |
-| open, takeover-eligible turn lease | allow | conflict | reject | reject | interrupted recovery only | reject | reject | reject busy |
-| open, fresh compaction lease | allow | conflict | reject | exact fresh compaction proof only | reject | reject | reject | reject busy |
-| open, expired-fenced compaction lease | allow | conflict | reject | reject | reject busy, including same RequestID | reject | reject | reject busy |
-| open, takeover-eligible compaction lease | allow | conflict | reject | reject | same RequestID `TakeOverCompaction` only | reject | reject | reject busy |
-| open, fork-claimed | allow | conflict | reject | reject | reject | reject | matching prepared operation only | reject busy |
-| closing child, idle | allow | conflict | reject | reject | matching close finish only | reject | reject | reject busy |
-| closing target child, fresh turn lease | allow | conflict | reject | terminal-cancel/renew only under exact proof | matching close waits | reject | reject | reject busy |
-| closing target child, expired-fenced turn lease | allow | conflict | reject | reject | reject busy | reject | reject | reject busy |
-| closing target child, takeover-eligible turn lease | allow | conflict | reject | reject | interrupted recovery, then matching close replay | reject | reject | reject busy |
-| closed child, unclaimed | allow | conflict | reject | reject | idempotent subtree close only | reject | allow as pinned terminal source | root-tree delete only |
-| closed child, fork-claimed | allow | conflict | reject | reject | reject | reject | matching prepared operation only | reject busy |
+| open, expired-fenced turn lease | allow | conflict | reject | reject | recovery only after skew window | exact existing publication/input replay only | reject | reject busy |
+| open, takeover-eligible turn lease | allow | conflict | reject | reject | interrupted recovery only | exact existing publication/input replay only | reject | reject busy |
+| open, fresh compaction lease | allow | conflict | reject | exact fresh compaction proof only | reject | exact existing publication/input replay only | reject | reject busy |
+| open, expired-fenced compaction lease | allow | conflict | reject | reject | reject busy, including same RequestID | exact existing publication/input replay only | reject | reject busy |
+| open, takeover-eligible compaction lease | allow | conflict | reject | reject | same RequestID `TakeOverCompaction` only | exact existing publication/input replay only | reject | reject busy |
+| open, fork-claimed | allow | conflict | reject | reject | reject | exact existing publication/input replay only | matching prepared operation only | reject busy |
+| closing child, idle | allow | conflict | reject | reject | matching close finish only | exact existing publication/input replay only | reject | reject busy |
+| closing target child, fresh turn lease | allow | conflict | reject | terminal-cancel/renew only under exact proof | matching close waits | exact existing publication/input replay only | reject | reject busy |
+| closing target child, expired-fenced turn lease | allow | conflict | reject | reject | reject busy | exact existing publication/input replay only | reject | reject busy |
+| closing target child, takeover-eligible turn lease | allow | conflict | reject | reject | interrupted recovery, then matching close replay | exact existing publication/input replay only | reject | reject busy |
+| closed child, unclaimed | allow | conflict | reject | reject | matching completed close replay only; new close rejects closed | exact existing publication/input replay only | allow as pinned terminal source | root-tree delete only |
+| closed child, fork-claimed | allow | conflict | reject | reject | exact completed close replay only; new close rejects | exact existing publication/input replay only | matching prepared operation only | reject busy |
 | deleted tombstone | deleted error | deleted conflict | reject | reject | reject | reject | reject | root delete replay only |
 
 Provider request start is allowed only for `open + fresh turn lease` under the
@@ -871,6 +979,7 @@ Public callers branch through `errors.Is`/`errors.As`, never strings:
 | `ErrPendingToolNotFound` | exact target identity absent; request must change |
 | `ErrPendingToolNotPending` | target exists but is not pending; request must change |
 | `ErrPendingToolSettlementConflict` | terminal fingerprint differs; fatal conflict |
+| `ErrSubAgentInputNotFound` | exact child inbox has no pending input at admission linearization; no lease or journal mutation occurred |
 | `ErrRequestConflict` plus `RequestConflictError` | one create/fork/compaction/publication/input/completion/close identity or canonical effect invocation was reused with a different fingerprint; fatal for that request identity |
 | `ErrEffectUnauthorized` | current host policy or approval denies the exact invocation; handler was not called |
 | `ErrAuthorizationUnavailable` | current policy read, approval check, audit persistence, or host gate failed; handler was not called; retry after host state changes requires a new canonical tool invocation, never a replacement attempt for the same ToolCallID |
@@ -895,7 +1004,9 @@ error. After the local closure crossed `dispatching`, it is wrapped by
 `CommittedEffectError`, which is authoritative for no-retry handling. Repeated
 public dispatch of the same `EffectAttemptID` returns the canonical state:
 `prepared` may resume the same fingerprint, `completed`/`failed` return the
-stored result, and `dispatching`/`unknown` return `ErrEffectOutcomeUnknown`.
+stored result, `rejected` returns its stored public rejection, `cancelled` returns
+its stored terminal cancellation, and `dispatching`/`unknown` return
+`ErrEffectOutcomeUnknown`.
 Supplying a different attempt ID for the same canonical invocation is impossible
 through the public contract and rejected by the Store uniqueness constraint in
 internal tests.
@@ -915,7 +1026,7 @@ and public error classification. It does not claim cross-process durability.
 
 SQLite is the normative durable and cross-process backend. Lifecycle,
 tombstones, fork operation/claims, lease generation/heartbeat/expiry, input
-request identity, effect-attempt lifecycle, and semantic transitions are
+and publication request identity, effect-attempt lifecycle, and semantic transitions are
 persisted. Multi-row transitions
 use one transaction with an early write lock. Lease policy is persisted and
 validated on open. Invalid authority combinations are constrained or explicitly
@@ -985,7 +1096,7 @@ File rejection where unsupported.
 | Object graph | Store exposes only `Close`; bootstrap copies/error/panic cannot issue; each binder issues one family; create binds one ThreadID/CreateIntentID; downstream services cannot contain binder/raw Store fields |
 | Store lifetime | `Close` races with bind/NewHost/run/recovery without post-closing side effects; retained capabilities fail `ErrStoreClosed`; cleanup replay admits no work |
 | Construction | missing root, child passed as root, missing parent, deleted identity, and wrong bound ID fail before skills/tools/events/registry/gateway/provider state |
-| Root create | same intent/different ThreadID, same ThreadID/different intent, changed contract version, wrong existing shape, and tombstone conflict; concurrent exact replay publishes one root/result |
+| Root create | same intent/different ThreadID, same created-root ThreadID/different intent, changed contract version, and wrong live shape conflict; matching deleted create replay and new intent against another tombstone return deleted; concurrent exact live replay publishes one root/result |
 | State shapes | every invalid lifecycle/claim/lease/input/fork combination is rejected by Memory, SQLite, verification, and migration |
 | Schema compatibility | one early-write-locked transaction checks empty exact v13 and migrates it to exact frozen v14; concurrent different lease policies produce one winner and typed mismatch losers; non-empty v13, older/unknown versions, missing metadata, and alternate v14 fingerprints are rejected without schema or data changes; no identity is synthesized |
 | Lease liveness | renewal keeps long turn and approval wait fresh; failed renewal fences dispatch/write; expired-fenced cannot write or take over; only takeover-eligible exact proof can recover |
@@ -993,16 +1104,16 @@ File rejection where unsupported.
 | Admission | start plus user message are atomic; provider is not called on failure; retry move is atomic; finish plus release is atomic |
 | Active settlement | complete target identity; local proof equals durable proof; wrong turn or generation has zero append/provider/tool side effect |
 | Recovery settlement | fresh/expired-fenced lease blocks; identical concurrent settlement writes once; conflict is explicit; no durable mutation half-state |
-| Completion | root target settlement plus continuation admission is atomic; child target settlement plus pending input publication is atomic; target/continuation/input IDs are distinct; provider is not called on conflict |
-| Effect authorization | Store assigns one attempt per canonical invocation across concurrent/different-ID preparation; attempt lifecycle covers crash before/after dispatch boundary; final handler boundary rereads same fresh owner/generation while allowing newer heartbeat; one-shot rejects double/deferred calls; FinishTurn cancels prepared and blocks dispatching; receipt is Floret-sealed; policy revision changes append a new current decision; unknown is never auto-retried |
+| Completion | root `CompletionRequestID` replay/conflict plus target settlement and continuation admission are atomic; child `InputRequestID` replay/conflict plus target settlement and pending input publication are atomic; target/continuation/input IDs are distinct; replay never starts a second provider owner |
+| Effect authorization | Store assigns one attempt per canonical invocation across concurrent/different-ID preparation; denied/unavailable authorization commits one exact `rejected` result without handler entry; failed rejection persistence leaves ordinary `prepared` so later replay rereads current policy; attempt lifecycle covers crash before/after dispatch boundary; final handler boundary rereads same fresh owner/generation while allowing newer heartbeat; one-shot rejects double/deferred calls; FinishTurn cancels prepared and blocks dispatching; receipt is Floret-sealed; policy revision changes append a new current decision; unknown is never auto-retried |
 | Interrupted recovery | public exact root/parent-child capability; fresh failure-marked lease preserved; takeover rechecks path in transaction; dual SQLite yields one finalization |
-| Compaction | same RequestID replay only; renewal and expired takeover fence generations; different request cannot recover; one terminal result |
-| Fork | prepare pins complete plan/claims; no destination visible while prepared; commit is all-node atomic; failure publishes none; completed all-live replay returns stored result; completed all-tombstoned matching provenance returns `ErrThreadDeleted`; every mixture or missing/inconsistent authority is corruption, never recreation |
-| Delete | active descendant, claim, concurrent spawn, malformed graph, or never-existing root causes zero deletion; tombstone replay; deleted ID cannot recreate; cleanup error is committed |
+| Compaction | immutable pinned-path fingerprint; same RequestID replay only; renewal and expired takeover fence generations; exact terminal owner/outcome replay; changed outcome conflicts; different request cannot recover; one terminal result |
+| Fork | prepare pins complete plan/claims; no destination visible while prepared; commit is all-node atomic; failure publishes none and releases IDs for later root create, root fork, or SubAgent publication; failed-op provenance can never appear; completed all-live replay returns stored result; completed all-tombstoned matching provenance returns `ErrThreadDeleted`; every completed mixture or missing/inconsistent authority is corruption, never recreation |
+| Delete | active descendant, claim, concurrent spawn, malformed graph, or never-existing root causes zero deletion; tombstone replay; deleted ID cannot recreate; publication/input idempotency ledgers survive for cross-parent request-ID nonreuse, while deleted parent host construction fails before SubAgent operations; cleanup error is committed |
 | SubAgent publication | create and fork-copy metadata plus first input atomic; PublicationID replay/conflict; no success event/cache before commit; spawn never executes provider |
-| SubAgent input | InputRequestID replay/conflict; pending/admitted/cancelled transitions only; interrupt atomic; no consumed state |
-| SubAgent admission | only Wait admits; reads never activate; dual SQLite admits exact input once; start/user/admitted state atomic; user carries exact input ID |
-| SubAgent close | request identity replay/conflict; foreign/descendant lease gives zero prepare/cancel; local authority gate orders provider/tool dispatch before closing; FinishTurn/recovery preserve closing; send/admit race outcomes exact; no closed parent with open descendant or pending input |
+| SubAgent input | PublicationID/InputRequestID replay/conflict; exact replay is read-only across every live claim/lease/closing/closed state while new requests reject; ledgers survive delete for cross-parent ID nonreuse but deleted parent construction exposes no operation replay; pending/admitted/cancelled transitions only; interrupt atomic; no consumed state |
+| SubAgent admission | only Wait admits; reads never activate; Store selects lowest durable inbox sequence; dual SQLite admits exact input once; no-pending has zero mutation; start/user/admitted state atomic; user carries exact input ID |
+| SubAgent close | request identity replay/conflict; exact completed replay remains readable under fork claim while new close rejects; new close against closed target rejects; foreign/descendant lease gives zero prepare/cancel; preclosed descendants remain unchanged; local authority gate orders provider/tool dispatch before closing; FinishTurn/recovery preserve closing; send/admit race outcomes exact; no closed parent with open descendant or pending input |
 | Production entry | provider start requires Store authority plus fresh proof/local gate; local handler dispatch additionally requires canonical effect attempt and host authorization gate; settlement/recovery/SubAgent execution has no no-Store path |
 
 # Freeze Gate
