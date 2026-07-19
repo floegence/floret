@@ -86,10 +86,10 @@ execution lifecycle to Floret.
 | You need to... | Use... |
 | --- | --- |
 | Configure an agent and a provider | `config.Config` or `config.Load` |
-| Run durable conversations | `runtime.NewTurnExecutionHostFactory` |
-| Compact an idle thread | `runtime.NewThreadCompactionHostFactory` with `runtime.CompactThreadRequest` |
-| Manage interactive child threads | `runtime.NewSubAgentHostFactory` |
-| Reload canonical context state | `runtime.NewThreadReadHost` |
+| Run durable conversations | `runtime.NewTurnExecutionHostBinder` |
+| Compact an idle thread | `runtime.NewThreadCompactionHostBinder` with `runtime.CompactThreadRequest` |
+| Manage interactive child threads | `runtime.NewSubAgentHostBinder` |
+| Reload canonical context state | `runtime.NewThreadReadHostBinder` |
 | Keep Floret runtime data in memory or SQLite | `runtime.NewMemoryStore` or `runtime.OpenSQLiteStore` |
 | Keep model transport under product control | `runtime.ModelGateway` |
 | Define an agent's role and business instructions | `config.AgentProfile.SystemPrompt` or `config.Config.SystemPrompt` |
@@ -141,20 +141,36 @@ func main() {
 
 	store := runtime.NewMemoryStore()
 	defer store.Close()
-	bootstrap, err := runtime.NewHostBootstrap(store)
+	var createBinder *runtime.ThreadCreateHostBinder
+	var turnBinder *runtime.TurnExecutionHostBinder
+	err := runtime.ConfigureHostCapabilities(store, func(bootstrap *runtime.HostBootstrap) error {
+		var err error
+		createBinder, err = runtime.NewThreadCreateHostBinder(bootstrap)
+		if err != nil {
+			return err
+		}
+		turnBinder, err = runtime.NewTurnExecutionHostBinder(bootstrap)
+		return err
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	threadCreator, err := runtime.NewThreadCreateHost(bootstrap, nil)
+	createIntentID := runtime.CreateIntentID("create-thread-1")
+	threadCreator, err := createBinder.Bind("thread-1", createIntentID)
 	if err != nil {
 		log.Fatal(err)
 	}
-	turnFactory, err := runtime.NewTurnExecutionHostFactory(bootstrap)
+	turnFactory, err := turnBinder.Bind("thread-1")
 	if err != nil {
 		log.Fatal(err)
 	}
-	turnHost, err := turnFactory.NewHost(runtime.TurnExecutionHostOptions{
-		ThreadID: "thread-1",
+	thread, err := threadCreator.CreateThread(ctx, runtime.CreateThreadRequest{
+		ThreadID: "thread-1", CreateIntentID: createIntentID,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	turnHost, err := turnFactory.NewHost(ctx, runtime.TurnExecutionHostOptions{
 		Config: config.Config{
 			Provider:     config.ProviderFake,
 			Model:        "fake-model",
@@ -166,11 +182,6 @@ func main() {
 			},
 		},
 	})
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	thread, err := threadCreator.CreateThread(ctx, runtime.CreateThreadRequest{ThreadID: "thread-1"})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -229,14 +240,14 @@ product policy.
 
 Define domain actions through `tools.Registry`. Each tool has a strict JSON
 schema and can describe its effects and resources. Floret validates the call,
-runs approval when required, dispatches the handler, records the outcome, and
-returns a provider-visible result. The handler must still enforce your
-authorization rules.
+records its generic approval lifecycle, and routes effectful dispatch through
+the host's `runtime.EffectAuthorizationGate` before invoking the handler. The
+handler must still enforce your authorization rules.
 
 | Tool concern | Floret handles | Host handles |
 | --- | --- | --- |
 | Schema | strict provider-visible JSON shape | domain argument meaning |
-| Permission | generic approval hook and effect metadata | product authorization policy |
+| Permission | effect metadata and durable approval lifecycle | product authorization and approval policy through `EffectAuthorizationGate` |
 | Execution | scheduling, panic recovery, and result projection | the domain action itself |
 | Output | model projection, neutral activity, and artifact references | product-specific display choices |
 
@@ -335,10 +346,15 @@ real model calls.
 Provider-backed execution uses separate thread-bound `TurnExecutionHost`,
 `ThreadCompactionHost`, and parent-bound `SubAgentHost` capabilities. Creation,
 read, title, fork, delete, parent-bound SubAgent read/maintenance, and bound
-pending-tool settlement are also separate concrete capabilities. Construct them from the opaque
-`HostBootstrap` at one composition root. Provider-backed and parent-bound work
-is issued through exact factories that cannot create unrelated lifecycle
-capabilities; pass only the selected factory or bound handle to its owner.
+pending-tool settlement are also separate concrete capabilities. Create and
+retain only the required narrow binders inside the one-time
+`ConfigureHostCapabilities` callback. The callback bootstrap is sealed before
+configuration returns, and retained binders become active only after the
+callback succeeds. Afterward, each binder can issue only its named capability.
+Provider binders fix one thread or parent before provider options are supplied;
+provider-free binders return either the create-only coordinator handle or an
+exact existing-authority handle. Pass only that selected factory or handle to
+its owner; binders stay at the composition root.
 Requests retain explicit identities and fail when they do not match the handle
 authority.
 

@@ -30,15 +30,25 @@ stays with the caller, which declares the smallest capability set needed by
 each responsibility instead of inheriting a framework interface.
 
 The durable runtime capability surface is intentionally split at lifecycle boundaries.
-`HostBootstrap` is an opaque composition-root token; it has no exported methods
-and must not be retained by a coordinator or run. It issues exact factories,
-whose sole `NewHost` method can create only the corresponding bound capability.
+`ConfigureHostCapabilities` exposes `HostBootstrap` only during one callback,
+then seals it. The Store rejects a second configuration and rejects value-copy
+reuse. Bootstrap copies share the same sealed state, and binders are published
+only when the callback returns successfully. The callback issues narrow
+binders; no surviving public object can mint
+more than one capability family. Provider binders receive a root or parent
+identity before returning a factory whose `NewHost` method accepts provider
+configuration but cannot select another authority.
+Binders are composition-root issuers, not service or run dependencies. The
+composition root must bind the exact root or parent identity before handing a
+factory or handle to the operation owner.
 Provider-backed work is split into a
 thread-bound `TurnExecutionHost`, a thread-bound `ThreadCompactionHost`, and a
 parent-bound `SubAgentHost`. Provider-free `ThreadCreateHost`,
 `ThreadTitleHost`, `ThreadForkHost`, `ThreadDeleteHost`, `ThreadReadHost`,
-parent-bound `SubAgentMaintenanceHost`, and thread- or parent-bound
-`PendingToolSettlementHost` expose only their named authority. Every bound
+parent-bound `SubAgentReadHost`, `PendingToolRecoveryHost`, and exact
+`InterruptedTurnRecoveryHost` are created through their
+responsibility-specific binders and expose only their named operation. Active
+pending settlement remains on the exact turn/SubAgent execution owner. Every bound
 request keeps its explicit identity and fails on a mismatch. This makes
 canonical Agent lifecycle ownership visible in method
 sets and authority identities instead of relying on a downstream caller to
@@ -56,6 +66,13 @@ This prevents a narrow method set from being undermined by concurrent mutations
 through another legitimate capability. SQLite does not trust that in-process
 snapshot: its delete contract accepts only the root identity and derives the
 current ownership tree again inside the write transaction.
+
+Production `AgentHarness` receives only the journal read/append surface required
+by an admitted run. It cannot create or delete threads, prepare forks, acquire
+leases, move leaves, or write provider state through a broad repository. Those
+transitions are available only to their semantic storage owners. Provider state
+changes only with atomic turn finalization, and root deletion preserves generic
+host metadata outside Floret's Agent authority.
 
 # Related
 

@@ -2,6 +2,7 @@ package skills_test
 
 import (
 	"context"
+	"github.com/floegence/floret/internal/testing/tooltest"
 	"github.com/floegence/floret/internal/tools/skills"
 	"github.com/floegence/floret/tools"
 	"os"
@@ -92,7 +93,7 @@ func TestSkillToolReadsFullSkillMarkdown(t *testing.T) {
 		t.Fatal(err)
 	}
 	reg := tools.NewRegistry(tool)
-	result := reg.Run(context.Background(), tools.ToolCall{ID: "call-1", Name: "skill", Args: `{"name":"pdf"}`}, nil)
+	result := tooltest.Run(context.Background(), reg, tools.ToolCall{ID: "call-1", Name: "skill", Args: `{"name":"pdf"}`}, nil)
 	if result.IsError || result.Text != body {
 		t.Fatalf("result = %#v", result)
 	}
@@ -110,7 +111,7 @@ func TestSkillToolRejectsUnknownSkill(t *testing.T) {
 		t.Fatal(err)
 	}
 	reg := tools.NewRegistry(tool)
-	result := reg.Run(context.Background(), tools.ToolCall{ID: "call-1", Name: "skill", Args: `{"name":"other"}`}, nil)
+	result := tooltest.Run(context.Background(), reg, tools.ToolCall{ID: "call-1", Name: "skill", Args: `{"name":"other"}`}, nil)
 	if !result.IsError || !strings.Contains(result.Text, "skill not found") {
 		t.Fatalf("result = %#v", result)
 	}

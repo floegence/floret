@@ -22,6 +22,7 @@ import (
 	"github.com/floegence/floret/internal/session/compaction"
 	"github.com/floegence/floret/internal/sessionlifecycle"
 	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/internal/storage"
 	"github.com/floegence/floret/internal/storage/sqlite"
 	scriptharness "github.com/floegence/floret/internal/testing/harness"
 	"github.com/floegence/floret/observation"
@@ -107,18 +108,19 @@ func TestThreadRunPassesHostLabelsToLocalTools(t *testing.T) {
 	}
 }
 
-func TestThreadRunRejectsProviderContinuationWithoutStateStore(t *testing.T) {
+func TestThreadRunFinalizesFailureWhenProviderStateCannotPersist(t *testing.T) {
 	ctx := context.Background()
 	done := scriptharness.Done()
 	done.ResponseState = &provider.State{Kind: "responses", ID: "state-1"}
 	p := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done"), done))
+	repo := &failingProviderStateFinishRepo{MemoryRepo: sessiontree.NewMemoryRepo()}
 	h := New(Options{
 		Provider:              p,
 		ProviderName:          "fake",
 		Model:                 "fake-model",
 		SystemPrompt:          "You are a test assistant.",
 		Tools:                 tools.NewRegistry(),
-		Repo:                  sessiontree.NewMemoryRepo(),
+		Repo:                  repo,
 		PromptStore:           cache.NewMemoryStore(),
 		StateCompatibilityKey: "fake-state-key",
 	})
@@ -127,19 +129,35 @@ func TestThreadRunRejectsProviderContinuationWithoutStateStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := thread.Run(ctx, "do it", RunOptions{TurnID: "turn-1"})
-	if err == nil || !strings.Contains(err.Error(), "provider state store is required") {
-		t.Fatalf("Run err = %v, want provider state store requirement", err)
+	if err == nil || !strings.Contains(err.Error(), "injected provider state persistence failure") {
+		t.Fatalf("Run err = %v, want provider state persistence failure", err)
 	}
-	if result.Status != "" {
-		t.Fatalf("result status = %q, want no terminal result", result.Status)
+	if result.Status != engine.Failed {
+		t.Fatalf("result status = %q, want failed terminal result", result.Status)
 	}
 	journal, readErr := thread.Journal(ctx)
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if got := unfinishedTurns(journal.Path); !slices.Equal(got, []string{"turn-1"}) {
-		t.Fatalf("provider state persistence failure should leave turn unfinished: %#v", journal.Path)
+	if got := unfinishedTurns(journal.Path); len(got) != 0 {
+		t.Fatalf("provider state persistence failure left unfinished turns %v: %#v", got, journal.Path)
 	}
+	if !hasEntry(journal.Path, sessiontree.EntryTurnMarker, sessiontree.TurnFailed) {
+		t.Fatalf("provider state persistence failure did not commit a failed terminal marker: %#v", journal.Path)
+	}
+}
+
+type failingProviderStateFinishRepo struct {
+	*sessiontree.MemoryRepo
+	failed bool
+}
+
+func (r *failingProviderStateFinishRepo) FinishTurn(ctx context.Context, req sessiontree.FinishTurnRequest) (sessiontree.FinishTurnResult, error) {
+	if req.ProviderState != nil && !r.failed {
+		r.failed = true
+		return sessiontree.FinishTurnResult{}, errors.New("injected provider state persistence failure")
+	}
+	return r.MemoryRepo.FinishTurn(ctx, req)
 }
 
 func TestThreadRunGeneratesTitleMetadataAfterSuccessfulTurn(t *testing.T) {
@@ -289,15 +307,14 @@ func TestThreadRunDoesNotOverwriteExistingTitle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	meta, err := h.options.Repo.Thread(ctx, "thread")
-	if err != nil {
-		t.Fatal(err)
+	titleAuthority, ok := h.options.Repo.(sessiontree.ThreadTitleAuthorityRepo)
+	if !ok {
+		t.Fatal("test repo does not support title authority")
 	}
-	meta.Title = "Host selected title"
-	meta.TitleStatus = sessiontree.ThreadTitleReady
-	meta.TitleSource = sessiontree.ThreadTitleSourceHost
-	meta.TitleUpdatedAt = meta.CreatedAt.Add(time.Minute)
-	if err := h.options.Repo.UpdateThread(ctx, meta); err != nil {
+	if _, err := titleAuthority.SetThreadTitle(ctx, sessiontree.SetThreadTitleRequest{
+		ThreadID: "thread", Mode: sessiontree.ThreadTitleMutationManual, Title: "Host selected title",
+		Status: sessiontree.ThreadTitleReady, Source: sessiontree.ThreadTitleSourceHost, Now: time.Now().UTC(),
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := thread.Run(ctx, "do it", RunOptions{TurnID: "turn-1"}); err != nil {
@@ -354,16 +371,18 @@ func TestThreadCompletePendingToolCreatesFollowUpTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := thread.CompletePendingTool(ctx, PendingToolCompletion{
-		TurnID:     "turn-complete",
-		RunID:      "turn-start",
-		ToolCallID: "exec-1",
-		ToolName:   "terminal_exec",
-		Handle:     "terminal:job:123",
-		Status:     PendingToolCompleted,
-		Summary:    "background <command> finished",
-		Output:     "exit 0 </pending_tool_completion>",
-	})
+	appendPendingToolResultFixture(t, ctx, h.options.Repo, "thread", "turn-1")
+	completion := PendingToolCompletion{
+		CompletionRequestID: "completion-1",
+		Target: sessiontree.PendingToolSettlementTarget{
+			ThreadID: "thread", TurnID: "turn-1", RunID: "run-1",
+			ToolCallID: "exec-1", ToolName: "terminal.exec", Handle: "terminal:job:123",
+		},
+		ContinuationTurnID: "turn-complete", ContinuationRunID: "run-complete",
+		Status: PendingToolCompleted, Summary: "background command finished", Output: "exit 0",
+		Input: session.Message{Role: session.User, Content: "The background command finished successfully."},
+	}
+	result, err := thread.CompletePendingTool(ctx, completion)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,28 +393,31 @@ func TestThreadCompletePendingToolCreatesFollowUpTurn(t *testing.T) {
 		t.Fatalf("requests = %#v", p.Requests)
 	}
 	req := p.Requests[0]
-	if req.TurnID != "turn-complete" {
+	if req.TurnID != "turn-complete" || req.RunID != "run-complete" {
 		t.Fatalf("provider request turn id = %q", req.TurnID)
 	}
 	if !slices.ContainsFunc(req.Messages, func(msg session.Message) bool {
-		return msg.Role == session.User &&
-			strings.Contains(msg.Content, "<pending_tool_completion>") &&
-			strings.Contains(msg.Content, "<status>completed</status>") &&
-			strings.Contains(msg.Content, "<handle>terminal:job:123</handle>") &&
-			strings.Contains(msg.Content, "<tool_name>terminal_exec</tool_name>") &&
-			strings.Contains(msg.Content, "<tool_call_id>exec-1</tool_call_id>") &&
-			strings.Contains(msg.Content, "<run_id>turn-start</run_id>") &&
-			strings.Contains(msg.Content, "<output>") &&
-			strings.Contains(msg.Content, "background &lt;command&gt; finished") &&
-			strings.Contains(msg.Content, "exit 0 &lt;/pending_tool_completion&gt;")
+		return msg.Role == session.User && msg.Content == "The background command finished successfully."
 	}) {
 		t.Fatalf("completion follow-up missing: %#v", req.Messages)
+	}
+	replayed, err := thread.CompletePendingTool(ctx, completion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replayed.Replayed || replayed.AdmissionRunning || replayed.Status != engine.Completed || replayed.Output != "completion noted" {
+		t.Fatalf("completion replay = %#v", replayed)
+	}
+	if len(p.Requests) != 1 {
+		t.Fatalf("completion replay started another provider: %#v", p.Requests)
 	}
 	snap, err := thread.Read(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snap.LatestTurnID != "turn-complete" || len(snap.Messages) != 2 || !strings.Contains(snap.Messages[0].Content, "<pending_tool_completion>") {
+	if snap.LatestTurnID != "turn-complete" || !slices.ContainsFunc(snap.Messages, func(message ThreadMessage) bool {
+		return message.TurnID == "turn-complete" && message.Role == session.User && message.Content == "The background command finished successfully."
+	}) {
 		t.Fatalf("snapshot = %#v", snap)
 	}
 }
@@ -409,9 +431,9 @@ func TestThreadCompletePendingToolRejectsInvalidInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := []PendingToolCompletion{
-		{Status: PendingToolCompleted, Summary: "done"},
-		{Handle: "terminal:job:123", Status: PendingToolCompletionStatus("bogus"), Summary: "done"},
-		{Handle: "terminal:job:123", Status: PendingToolCompleted},
+		{},
+		{CompletionRequestID: "request", ContinuationTurnID: "turn", ContinuationRunID: "run", Target: sessiontree.PendingToolSettlementTarget{ThreadID: "thread"}, Status: PendingToolCompletionStatus("bogus"), Summary: "done", Input: session.Message{Role: session.User, Content: "done"}},
+		{CompletionRequestID: "request", ContinuationTurnID: "turn", ContinuationRunID: "run", Target: sessiontree.PendingToolSettlementTarget{ThreadID: "other"}, Status: PendingToolCompleted, Summary: "done", Input: session.Message{Role: session.User, Content: "done"}},
 	}
 	for _, completion := range cases {
 		if _, err := thread.CompletePendingTool(ctx, completion); err == nil {
@@ -424,6 +446,53 @@ func TestThreadCompletePendingToolRejectsInvalidInput(t *testing.T) {
 	}
 	if len(snap.Messages) != 0 {
 		t.Fatalf("invalid completion should not append messages: %#v", snap.Messages)
+	}
+}
+
+func TestThreadCompletePendingToolActiveReplayNeverStartsSecondProviderOwner(t *testing.T) {
+	ctx := context.Background()
+	provider := newBlockingProvider()
+	h := newTestHarness(provider, sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendPendingToolResultFixture(t, ctx, h.options.Repo, "thread", "turn-1")
+	completion := PendingToolCompletion{
+		CompletionRequestID: "completion-active",
+		Target: sessiontree.PendingToolSettlementTarget{
+			ThreadID: "thread", TurnID: "turn-1", RunID: "run-1",
+			ToolCallID: "exec-1", ToolName: "terminal.exec", Handle: "terminal:job:123",
+		},
+		ContinuationTurnID: "turn-2", ContinuationRunID: "run-2",
+		Status: PendingToolCompleted, Summary: "done", Input: session.Message{Role: session.User, Content: "background work completed"},
+	}
+	firstCtx, cancelFirst := context.WithCancel(ctx)
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := thread.CompletePendingTool(firstCtx, completion)
+		firstDone <- err
+	}()
+	select {
+	case <-provider.started:
+	case <-time.After(time.Second):
+		t.Fatal("first completion did not start provider")
+	}
+
+	replayCtx, cancelReplay := context.WithTimeout(ctx, time.Second)
+	defer cancelReplay()
+	replayed, err := thread.CompletePendingTool(replayCtx, completion)
+	if err != nil {
+		t.Fatalf("active completion replay: %v", err)
+	}
+	if !replayed.Replayed || !replayed.AdmissionRunning || replayed.ID != "turn-2" || replayed.RunID != "run-2" {
+		t.Fatalf("active completion replay = %#v", replayed)
+	}
+	cancelFirst()
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("first completion did not stop")
 	}
 }
 
@@ -544,7 +613,214 @@ func TestThreadSettlePendingToolIsIdempotentForSameTarget(t *testing.T) {
 	}
 }
 
-func TestThreadSettlePendingToolAcceptsSettlementBeforePendingResult(t *testing.T) {
+func TestSQLitePendingToolRecoverySettlementIsSingleWriter(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "floret.db")
+	firstStore, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = firstStore.Close() })
+	secondStore, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = secondStore.Close() })
+	if _, err := firstStore.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	appendPendingToolResultFixture(t, ctx, firstStore, "thread", "turn-1")
+	firstHarness := newTestHarness(scriptharness.NewScriptedProvider(), firstStore, firstStore)
+	secondHarness := newTestHarness(scriptharness.NewScriptedProvider(), secondStore, secondStore)
+	firstThread, err := firstHarness.ResumeThread(ctx, "thread", ResumeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondThread, err := secondHarness.ResumeThread(ctx, "thread", ResumeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settlement := PendingToolSettlement{
+		TurnID:     "turn-1",
+		RunID:      "run-1",
+		ToolCallID: "exec-1",
+		ToolName:   "terminal.exec",
+		Handle:     "terminal:job:123",
+		Status:     PendingToolSettledCompleted,
+		Summary:    "completed",
+		Output:     "ok",
+	}
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for _, thread := range []*Thread{firstThread, secondThread} {
+		go func(thread *Thread) {
+			<-start
+			_, err := thread.SettlePendingTool(ctx, settlement)
+			errs <- err
+		}(thread)
+	}
+	close(start)
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil && !errors.Is(err, ErrActiveTurn) {
+			t.Fatalf("concurrent settlement err = %v", err)
+		}
+	}
+	if _, err := secondThread.SettlePendingTool(ctx, settlement); err != nil {
+		t.Fatalf("idempotent retry after concurrent settlement: %v", err)
+	}
+	entries, err := firstStore.Entries(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countPendingToolSettlementEntries(entries); got != 1 {
+		t.Fatalf("pending settlement entries = %d, want 1", got)
+	}
+	conflict := settlement
+	conflict.Status = PendingToolSettledFailed
+	conflict.Summary = "failed"
+	conflict.Output = ""
+	if _, err := secondThread.SettlePendingTool(ctx, conflict); !errors.Is(err, ErrPendingToolSettlementConflict) {
+		t.Fatalf("conflicting settlement err = %v, want conflict", err)
+	}
+}
+
+type blockingSettlementRepo struct {
+	sessiontree.Repo
+	sessiontree.TurnLeaseRepo
+}
+
+func TestPendingToolRecoveryRejectsRepoWithoutSemanticAuthority(t *testing.T) {
+	ctx := context.Background()
+	base := sessiontree.NewMemoryRepo()
+	if _, err := base.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	appendPendingToolResultFixture(t, ctx, base, "thread", "turn-1")
+	blocked := &blockingSettlementRepo{Repo: base, TurnLeaseRepo: base}
+	recovery := newTestHarness(scriptharness.NewScriptedProvider(), blocked, cache.NewMemoryStore())
+	recoveryThread := recovery.cacheThread("thread")
+	if _, err := recoveryThread.SettlePendingTool(ctx, PendingToolSettlement{
+		TurnID: "turn-1", RunID: "run-1", ToolCallID: "exec-1", ToolName: "terminal.exec", Handle: "terminal:job:123",
+		Status: PendingToolSettledCompleted, Summary: "completed", Output: "ok",
+	}); err == nil || !strings.Contains(err.Error(), "does not support atomic pending tool recovery") {
+		t.Fatalf("settlement err = %v, want semantic authority requirement", err)
+	}
+	entries, err := base.Entries(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countPendingToolSettlementEntries(entries); got != 0 {
+		t.Fatalf("unsupported repo appended %d settlements", got)
+	}
+}
+
+func TestPendingToolRecoveryDoesNotTakeOverExistingMutationLease(t *testing.T) {
+	ctx := context.Background()
+	repo := sessiontree.NewMemoryRepo()
+	if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	appendPendingToolResultFixture(t, ctx, repo, "thread", "turn-1")
+	lease, err := repo.AcquireTurnLease(ctx, sessiontree.TurnLease{
+		ThreadID:     "thread",
+		MutationID:   "mutation-1",
+		MutationKind: "compaction",
+		OwnerID:      "other-owner",
+		Purpose:      sessiontree.TurnLeasePurposeMutation,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newTestHarness(scriptharness.NewScriptedProvider(), repo, cache.NewMemoryStore())
+	thread := h.cacheThread("thread")
+	if _, err := thread.SettlePendingTool(ctx, PendingToolSettlement{
+		TurnID: "turn-1", RunID: "run-1", ToolCallID: "exec-1", ToolName: "terminal.exec", Handle: "terminal:job:123",
+		Status: PendingToolSettledCompleted, Summary: "completed", Output: "ok",
+	}); !errors.Is(err, ErrActiveTurn) {
+		t.Fatalf("settlement err = %v, want ErrActiveTurn", err)
+	}
+	active, ok, err := repo.ActiveTurnLease(ctx, "thread")
+	if err != nil || !ok || !sessiontree.SameTurnLease(active, lease) {
+		t.Fatalf("active lease = %#v ok=%v err=%v, want %#v", active, ok, err, lease)
+	}
+	entries, err := repo.Entries(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countPendingToolSettlementEntries(entries); got != 0 {
+		t.Fatalf("pending settlement entries = %d, want 0", got)
+	}
+}
+
+func TestSQLiteInterruptedTurnRecoveryHasSingleFinalizationOwner(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "floret.db")
+	initial := time.Date(2026, 7, 19, 8, 0, 0, 0, time.UTC)
+	now := initial
+	policy := sessiontree.LeasePolicy{TTL: 30 * time.Second, RenewInterval: 10 * time.Second, ClockSkewAllowance: 2 * time.Second}
+	firstStore, err := sqlite.Open(path, sqlite.WithLeasePolicy(policy), sqlite.WithAuthorityClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = firstStore.Close() })
+	secondStore, err := sqlite.Open(path, sqlite.WithLeasePolicy(policy), sqlite.WithAuthorityClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = secondStore.Close() })
+	if _, err := firstStore.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread", CreatedAt: initial, UpdatedAt: initial}); err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := firstStore.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+		ThreadID: "thread", TurnID: "turn-interrupted", RunID: "run-interrupted", OwnerID: "dead-owner",
+		Input: session.Message{Role: session.User, Content: "work"}, RequestFingerprint: "admission-fingerprint", Now: initial,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = initial.Add(policy.TTL + policy.ClockSkewAllowance + time.Second)
+	recovery := sessiontree.RecoverInterruptedTurnRequest{
+		ExpectedLease: admitted.Lease,
+		Now:           now,
+	}
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for _, store := range []*sqlite.Store{firstStore, secondStore} {
+		go func(store *sqlite.Store) {
+			<-start
+			_, err := store.RecoverInterruptedTurn(ctx, recovery)
+			errs <- err
+		}(store)
+	}
+	close(start)
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent recovery err = %v", err)
+		}
+	}
+	entries, err := firstStore.Entries(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := 0
+	failures := 0
+	for _, entry := range entries {
+		if entry.TurnID != "turn-interrupted" {
+			continue
+		}
+		if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnAborted {
+			terminal++
+		}
+		if entry.Type == sessiontree.EntryRunFailure {
+			failures++
+		}
+	}
+	if terminal != 1 || failures != 1 {
+		t.Fatalf("recovered journal terminal=%d failures=%d entries=%#v", terminal, failures, entries)
+	}
+}
+
+func TestThreadSettlePendingToolRejectsSettlementBeforePendingResult(t *testing.T) {
 	ctx := context.Background()
 	p := scriptharness.NewScriptedProvider()
 	repo := sessiontree.NewMemoryRepo()
@@ -555,7 +831,7 @@ func TestThreadSettlePendingToolAcceptsSettlementBeforePendingResult(t *testing.
 	}
 	appendPendingToolCallFixture(t, ctx, repo, "thread", "turn-1")
 
-	event, err := thread.SettlePendingTool(ctx, PendingToolSettlement{
+	_, err = thread.SettlePendingTool(ctx, PendingToolSettlement{
 		TurnID:     "turn-1",
 		RunID:      "run-1",
 		ToolCallID: "exec-1",
@@ -565,11 +841,8 @@ func TestThreadSettlePendingToolAcceptsSettlementBeforePendingResult(t *testing.
 		Summary:    "command completed",
 		Output:     "exit 0",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if event.Kind != SubAgentDetailEventToolResult || event.Type != pendingToolSettlementEntryKind {
-		t.Fatalf("early settlement event = %#v", event)
+	if !errors.Is(err, ErrPendingToolSettlementTargetNotActive) {
+		t.Fatalf("early settlement err = %v, want inactive target", err)
 	}
 }
 
@@ -610,6 +883,34 @@ func TestThreadSettlePendingToolRejectsInvalidTarget(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "not an active pending tool result") {
 		t.Fatalf("wrong handle err = %v", err)
+	}
+}
+
+func TestPendingToolActiveSettlementRequiresCanonicalEffectAttemptIdentity(t *testing.T) {
+	path := []sessiontree.Entry{
+		{ThreadID: "thread", TurnID: "turn-1", Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnStarted, Metadata: map[string]string{"run_id": "run-1"}},
+		{ThreadID: "thread", TurnID: "turn-1", Type: sessiontree.EntryToolCall,
+			Message: session.Message{Role: session.Assistant, ToolCallID: "call-1", ToolName: "tool"}},
+		{ThreadID: "thread", TurnID: "turn-1", Type: sessiontree.EntryToolResult,
+			Metadata: map[string]string{sessiontree.PendingToolEffectAttemptIDKey: "effect-1"},
+			Message: session.Message{Role: session.Tool, ToolCallID: "call-1", ToolName: "tool",
+				ToolResult: &session.ToolResultView{Status: string(observation.ActivityStatusRunning)},
+				Activity:   &session.ActivityPresentation{Payload: map[string]any{"pending_handle": "tool:job:1"}}}},
+	}
+	settlement := PendingToolSettlement{
+		TurnID: "turn-1", RunID: "run-1", ToolCallID: "call-1", ToolName: "tool", Handle: "tool:job:1",
+		Status: PendingToolSettledCompleted, Summary: "done",
+	}
+	if _, _, err := pendingToolSettlementTarget(path, settlement); !errors.Is(err, ErrPendingToolSettlementTargetNotActive) {
+		t.Fatalf("missing effect attempt err=%v, want ErrPendingToolSettlementTargetNotActive", err)
+	}
+	settlement.EffectAttemptID = "wrong-effect"
+	if _, _, err := pendingToolSettlementTarget(path, settlement); !errors.Is(err, ErrPendingToolSettlementTargetNotActive) {
+		t.Fatalf("wrong effect attempt err=%v, want ErrPendingToolSettlementTargetNotActive", err)
+	}
+	settlement.EffectAttemptID = "effect-1"
+	if existing, replayed, err := pendingToolSettlementTarget(path, settlement); err != nil || replayed || existing.ID != "" {
+		t.Fatalf("canonical effect target existing=%#v replayed=%v err=%v", existing, replayed, err)
 	}
 }
 
@@ -661,10 +962,14 @@ func TestThreadReadLifecycleStates(t *testing.T) {
 			name:     "interrupted",
 			provider: scriptharness.NewScriptedProvider(),
 			prepare: func(ctx context.Context, _ *AgentHarness, thread *Thread) error {
-				if _, err := sessiontree.AppendTurnMarker(ctx, thread.harness.options.Repo, thread.ID(), "turn-1", sessiontree.TurnStarted, nil); err != nil {
-					return err
+				repo, ok := thread.harness.options.Repo.(sessiontree.TurnAuthorityRepo)
+				if !ok {
+					return errors.New("test repo does not support turn authority")
 				}
-				_, err := sessiontree.AppendMessage(ctx, thread.harness.options.Repo, thread.ID(), "turn-1", session.Message{Role: session.User, Content: "unfinished"})
+				_, err := repo.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+					ThreadID: thread.ID(), TurnID: "turn-1", RunID: "run-1", OwnerID: "interrupted-owner",
+					Input: session.Message{Role: session.User, Content: "unfinished"}, RequestFingerprint: "interrupted-fixture",
+				})
 				return err
 			},
 			want:    "interrupted",
@@ -1114,13 +1419,18 @@ func TestRetryAfterInterruptedTurnUsesRealtimeToolSavePoint(t *testing.T) {
 		return "read result", nil
 	}))
 	h := New(Options{
-		Provider:     p,
-		ProviderName: "fake",
-		Model:        "fake-model",
-		SystemPrompt: "You are a test assistant.",
-		Tools:        registry,
-		Repo:         repo,
-		PromptStore:  promptStore,
+		Provider:                p,
+		ProviderName:            "fake",
+		Model:                   "fake-model",
+		SystemPrompt:            "You are a test assistant.",
+		Tools:                   registry,
+		Repo:                    repo,
+		PromptStore:             promptStore,
+		EffectAuthorizationGate: allowHarnessEffectGate{},
+		BeginSubAgentExecution: func() (context.Context, func(), error) {
+			ctx, cancel := context.WithCancel(context.Background())
+			return ctx, cancel, nil
+		},
 		TitleGenerator: fixedTitleGenerator{
 			title: "Test thread title",
 		},
@@ -1191,7 +1501,7 @@ func TestForkContinuesWithoutPollutingSourceThread(t *testing.T) {
 	}
 	sourceSnap, _ := source.Journal(ctx)
 	userEntry := firstEntry(sourceSnap.Entries, sessiontree.EntryUserMessage)
-	fork, err := h.ForkThread(ctx, ForkOptions{SourceThreadID: "source", EntryID: userEntry.ID, NewThreadID: "fork"})
+	fork, err := h.ForkThread(ctx, ForkOptions{OperationID: "fork-source-user", SourceThreadID: "source", EntryID: userEntry.ID, NewThreadID: "fork"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1220,32 +1530,6 @@ func TestForkContinuesWithoutPollutingSourceThread(t *testing.T) {
 	forkSnap, _ := fork.Journal(ctx)
 	if forkSnap.Meta.ForkedFromThreadID != "source" || forkSnap.Meta.ForkedFromEntryID != userEntry.ID {
 		t.Fatalf("fork metadata = %#v", forkSnap.Meta)
-	}
-}
-
-func TestMoveToBranchSummaryEntersActiveContext(t *testing.T) {
-	ctx := context.Background()
-	h := newTestHarness(scriptharness.NewScriptedProvider(), sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
-	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := sessiontree.AppendMessage(ctx, h.options.Repo, "thread", "turn-1", session.Message{Role: session.User, Content: "first"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sessiontree.AppendMessage(ctx, h.options.Repo, "thread", "turn-2", session.Message{Role: session.Assistant, Content: "branch work"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := thread.MoveTo(ctx, first.ID, MoveOptions{Summary: "Left branch had branch work."}); err != nil {
-		t.Fatal(err)
-	}
-	snap, err := thread.Journal(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(snap.Context) != 2 || snap.Context[0].Content != "first" || snap.Context[1].Content != "Left branch had branch work." {
-		t.Fatalf("branch summary should enter active context: %#v", snap.Context)
 	}
 }
 
@@ -1486,12 +1770,14 @@ func TestDefaultProviderCompactionUsesConfiguredPromptOptions(t *testing.T) {
 	}
 }
 
-func TestMultipleCompactionsForkReloadAndContinueUseLatestWindow(t *testing.T) {
+func TestSQLiteMultipleCompactionsForkReloadAndContinueUseLatestWindow(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
-	promptRoot := t.TempDir()
-	repo := sessiontree.NewFileRepo(root)
-	promptStore := cache.NewFileStore(promptRoot)
+	path := filepath.Join(t.TempDir(), "floret.db")
+	repo, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
 	p := scriptharness.NewScriptedProvider(
 		nil,
 		scriptharness.Step(scriptharness.Text("after first"), scriptharness.Done()),
@@ -1500,7 +1786,7 @@ func TestMultipleCompactionsForkReloadAndContinueUseLatestWindow(t *testing.T) {
 	)
 	p.Errs[1] = provider.ErrContextOverflow
 	p.Errs[3] = provider.ErrContextOverflow
-	h := newTestHarness(p, repo, promptStore)
+	h := newTestHarness(p, repo, repo)
 	h.options.CompactionGenerator = compaction.ExtractiveSummaryGenerator{}
 	h.options.TurnPolicy.ContextPolicy.ContextWindowTokens = 12000
 	h.options.TurnPolicy.ContextPolicy.ReservedOutputTokens = 512
@@ -1544,8 +1830,13 @@ func TestMultipleCompactionsForkReloadAndContinueUseLatestWindow(t *testing.T) {
 		t.Fatalf("second compaction should link previous generation: %#v", latest)
 	}
 
-	reloadedHarness := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("fork done"), scriptharness.Done())), sessiontree.NewFileRepo(root), cache.NewFileStore(promptRoot))
-	fork, err := reloadedHarness.ForkThread(ctx, ForkOptions{SourceThreadID: "thread", EntryID: latest.ID, NewThreadID: "fork"})
+	reloadedStore, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reloadedStore.Close() })
+	reloadedHarness := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("fork done"), scriptharness.Done())), reloadedStore, reloadedStore)
+	fork, err := reloadedHarness.ForkThread(ctx, ForkOptions{OperationID: "fork-reloaded", SourceThreadID: "thread", EntryID: latest.ID, NewThreadID: "fork"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1583,14 +1874,16 @@ func TestMultipleCompactionsForkReloadAndContinueUseLatestWindow(t *testing.T) {
 	}
 }
 
-func TestFileRepoResumeContinuesThreadAndReusesRawSegments(t *testing.T) {
+func TestSQLiteResumeContinuesThreadAndReusesRawSegments(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
-	promptRoot := t.TempDir()
-	repo := sessiontree.NewFileRepo(root)
-	promptStore := cache.NewFileStore(promptRoot)
+	path := filepath.Join(t.TempDir(), "floret.db")
+	repo, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
 	firstProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Tool("ask", "ask_user", `{"question":"more?"}`), scriptharness.DoneReason("tool_calls")))
-	h := newTestHarness(firstProvider, repo, promptStore)
+	h := newTestHarness(firstProvider, repo, repo)
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 	if err != nil {
 		t.Fatal(err)
@@ -1605,7 +1898,12 @@ func TestFileRepoResumeContinuesThreadAndReusesRawSegments(t *testing.T) {
 	firstRequestSegments := append([]string(nil), firstProvider.Requests[0].RawPlan.SegmentIDs...)
 	firstRequestRaws := segmentRaws(firstProvider.Requests[0].RawPlan.Segments)
 	secondProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("ok"), scriptharness.Done()))
-	resumedHarness := newTestHarness(secondProvider, sessiontree.NewFileRepo(root), cache.NewFileStore(promptRoot))
+	resumedStore, err := sqlite.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resumedStore.Close() })
+	resumedHarness := newTestHarness(secondProvider, resumedStore, resumedStore)
 	resumed, err := resumedHarness.ResumeThread(ctx, "thread", ResumeOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -1642,28 +1940,27 @@ func TestFileRepoResumeContinuesThreadAndReusesRawSegments(t *testing.T) {
 	}
 }
 
-func TestFileRepoActiveTurnLeaseBlocksSecondHarnessResume(t *testing.T) {
+func TestFileRepoTurnExecutionRejectsBeforeProviderStart(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	promptRoot := t.TempDir()
 	blocking := newBlockingProvider()
-	firstHarness := newTestHarness(blocking, sessiontree.NewFileRepo(root), cache.NewFileStore(promptRoot))
-	thread, err := firstHarness.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	repo := sessiontree.NewFileRepo(root)
+	if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	firstHarness := newTestHarness(blocking, repo, cache.NewFileStore(promptRoot))
+	thread, err := firstHarness.ResumeThread(ctx, "thread", ResumeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	done := make(chan error, 1)
-	go func() {
-		_, err := thread.Run(runCtx, "hang", RunOptions{TurnID: "turn-live"})
-		done <- err
-	}()
-	<-blocking.started
-
-	secondHarness := newTestHarness(scriptharness.NewScriptedProvider(), sessiontree.NewFileRepo(root), cache.NewFileStore(promptRoot))
-	if _, err := secondHarness.ResumeThread(ctx, "thread", ResumeOptions{}); !errors.Is(err, ErrActiveTurn) {
-		t.Fatalf("resume err = %v, want active turn guard", err)
+	if _, err := thread.Run(ctx, "hang", RunOptions{TurnID: "turn-live"}); err == nil || !strings.Contains(err.Error(), "does not support atomic turn admission") {
+		t.Fatalf("Run err = %v, want atomic authority requirement", err)
+	}
+	select {
+	case <-blocking.started:
+		t.Fatal("provider started for unsupported file authority backend")
+	default:
 	}
 	entries, err := sessiontree.NewFileRepo(root).Entries(ctx, "thread")
 	if err != nil {
@@ -1675,87 +1972,52 @@ func TestFileRepoActiveTurnLeaseBlocksSecondHarnessResume(t *testing.T) {
 	}) {
 		t.Fatalf("live turn should not be marked interrupted: %#v", entries)
 	}
-	cancel()
-	<-done
 }
 
-func TestFileRepoResumeClearsOnlyExpiredActiveTurnLease(t *testing.T) {
+func TestFileRepoDoesNotExposeInterruptedTurnRecoveryCapability(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	promptRoot := t.TempDir()
-	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
 	repo := sessiontree.NewFileRepo(root)
+	if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
 	h := newTestHarness(scriptharness.NewScriptedProvider(), repo, cache.NewFileStore(promptRoot))
-	h.options.Now = func() time.Time { return now }
-	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	thread, err := h.ResumeThread(ctx, "thread", ResumeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sessiontree.AppendTurnMarker(ctx, repo, thread.ID(), "turn-stale", sessiontree.TurnStarted, nil); err != nil {
+	if _, err := sessiontree.AppendTurnMarker(ctx, repo, thread.ID(), "turn-interrupted", sessiontree.TurnStarted, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.AcquireTurnLease(ctx, sessiontree.TurnLease{ThreadID: thread.ID(), TurnID: "turn-stale", OwnerID: "dead-owner", CreatedAt: now.Add(-25 * time.Hour)}); err != nil {
+	if err := repo.AcquireTurnLease(ctx, sessiontree.TurnLease{ThreadID: thread.ID(), TurnID: "turn-interrupted", OwnerID: "other-owner"}); err != nil {
 		t.Fatal(err)
 	}
-	resumedHarness := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("ok"), scriptharness.Done())), sessiontree.NewFileRepo(root), cache.NewFileStore(promptRoot))
-	resumedHarness.options.Now = func() time.Time { return now }
-	resumed, err := resumedHarness.ResumeThread(ctx, thread.ID(), ResumeOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	snap, err := resumed.Journal(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.ContainsFunc(snap.Entries, func(entry sessiontree.Entry) bool {
-		return entry.Type == sessiontree.EntryTurnMarker && entry.TurnID == "turn-stale" && entry.TurnStatus == sessiontree.TurnAborted
-	}) {
-		t.Fatalf("stale started turn should be marked aborted after expired lease recovery: %#v", snap.Entries)
-	}
-	if _, ok, err := sessiontree.NewFileRepo(root).ActiveTurnLease(ctx, thread.ID()); err != nil || ok {
-		t.Fatalf("expired lease should be cleared, ok=%v err=%v", ok, err)
-	}
-}
-
-func TestMoveToHoldsActiveTurnGuardDuringMutation(t *testing.T) {
-	ctx := context.Background()
-	repo := &blockingMoveRepo{MemoryRepo: sessiontree.NewMemoryRepo(), entered: make(chan struct{}), release: make(chan struct{})}
-	h := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done"), scriptharness.Done())), repo, cache.NewMemoryStore())
-	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := thread.Run(ctx, "first", RunOptions{TurnID: "turn-1"}); err != nil {
-		t.Fatal(err)
+	if _, ok := any(sessiontree.NewFileRepo(root)).(sessiontree.InterruptedTurnRecoveryRepo); ok {
+		t.Fatal("file repo unexpectedly exposes interrupted turn recovery authority")
 	}
 	snap, err := thread.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := firstEntry(snap.Entries, sessiontree.EntryUserMessage).ID
-	done := make(chan error, 1)
-	go func() {
-		done <- thread.MoveTo(ctx, target, MoveOptions{})
-	}()
-	<-repo.entered
-	if _, err := thread.Run(ctx, "racing", RunOptions{TurnID: "turn-race"}); !errors.Is(err, ErrActiveTurn) {
-		t.Fatalf("run err = %v, want active turn during MoveTo", err)
-	}
-	close(repo.release)
-	if err := <-done; err != nil {
-		t.Fatal(err)
+	if slices.ContainsFunc(snap.Entries, func(entry sessiontree.Entry) bool {
+		return entry.Type == sessiontree.EntryTurnMarker && entry.TurnID == "turn-interrupted" && entry.TurnStatus != sessiontree.TurnStarted
+	}) {
+		t.Fatalf("ordinary resume mutated interrupted turn: %#v", snap.Entries)
 	}
 }
 
 func TestManualCompactHoldsActiveTurnGuardDuringMutation(t *testing.T) {
 	ctx := context.Background()
-	repo := &blockingAppendRepo{MemoryRepo: sessiontree.NewMemoryRepo(), entered: make(chan struct{}), release: make(chan struct{})}
+	repo := sessiontree.NewMemoryRepo()
 	h := newTestHarness(scriptharness.NewScriptedProvider(
 		scriptharness.Step(scriptharness.Text("seeded"), scriptharness.Done()),
 		scriptharness.Step(scriptharness.Text("tailed"), scriptharness.Done()),
 		scriptharness.Step(scriptharness.Text("done"), scriptharness.Done()),
 	), repo, cache.NewMemoryStore())
-	h.options.CompactionGenerator = compaction.ExtractiveSummaryGenerator{}
+	generator := &blockingCompactionGenerator{entered: make(chan struct{}), release: make(chan struct{})}
+	h.options.CompactionGenerator = generator
+	h.options.CompactionPromptIdentity = "test-blocking-extractive-v1"
 	h.options.TurnPolicy.ContextPolicy.ContextWindowTokens = 256000
 	h.options.TurnPolicy.ContextPolicy.ReservedOutputTokens = 64000
 	h.options.TurnPolicy.ContextPolicy.ReservedSummaryTokens = 40
@@ -1777,11 +2039,11 @@ func TestManualCompactHoldsActiveTurnGuardDuringMutation(t *testing.T) {
 		_, err := thread.Compact(ctx, CompactOptions{RequestID: "manual-1", Source: "test"})
 		done <- err
 	}()
-	<-repo.entered
+	<-generator.entered
 	if _, err := thread.Run(ctx, "racing", RunOptions{TurnID: "turn-race"}); !errors.Is(err, ErrActiveTurn) {
 		t.Fatalf("run err = %v, want active turn during Compact", err)
 	}
-	close(repo.release)
+	close(generator.release)
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
@@ -1872,7 +2134,7 @@ func assertForkAndSourceRunConcurrentlyWithoutPollution(t *testing.T, ctx contex
 	if _, err := source.Run(ctx, "seed", RunOptions{TurnID: "turn-seed"}); err != nil {
 		t.Fatal(err)
 	}
-	fork, err := h.ForkThread(ctx, ForkOptions{SourceThreadID: "source", NewThreadID: "fork"})
+	fork, err := h.ForkThread(ctx, ForkOptions{OperationID: "fork-source", SourceThreadID: "source", NewThreadID: "fork"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1938,13 +2200,14 @@ func TestToolProjectionDoesNotDuplicateMultiToolBatches(t *testing.T) {
 		return "result " + value, nil
 	}))
 	h := New(Options{
-		Provider:     p,
-		ProviderName: "fake",
-		Model:        "fake-model",
-		SystemPrompt: "You are a test assistant.",
-		Tools:        registry,
-		Repo:         repo,
-		PromptStore:  promptStore,
+		Provider:                p,
+		ProviderName:            "fake",
+		Model:                   "fake-model",
+		SystemPrompt:            "You are a test assistant.",
+		Tools:                   registry,
+		Repo:                    repo,
+		PromptStore:             promptStore,
+		EffectAuthorizationGate: allowHarnessEffectGate{},
 		TitleGenerator: fixedTitleGenerator{
 			title: "Test thread title",
 		},
@@ -2147,7 +2410,7 @@ func TestAppendDeltaSkipsProjectedAssistantFinalButKeepsSeparateTurns(t *testing
 	}
 }
 
-func TestResumeMarksUnfinishedTurnInterrupted(t *testing.T) {
+func TestResumeRejectsUnfinishedTurnWithoutRecoveryAuthority(t *testing.T) {
 	ctx := context.Background()
 	repo := sessiontree.NewMemoryRepo()
 	h := newTestHarness(scriptharness.NewScriptedProvider(), repo, cache.NewMemoryStore())
@@ -2161,25 +2424,80 @@ func TestResumeMarksUnfinishedTurnInterrupted(t *testing.T) {
 	if _, err := sessiontree.AppendMessage(ctx, repo, "thread", "turn-interrupted", session.Message{Role: session.User, Content: "unfinished"}); err != nil {
 		t.Fatal(err)
 	}
-	resumed, err := h.ResumeThread(ctx, thread.ID(), ResumeOptions{})
+	before, err := thread.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap, err := resumed.Journal(ctx)
+	if _, err := h.ResumeThread(ctx, thread.ID(), ResumeOptions{}); !errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
+		t.Fatalf("ResumeThread err = %v, want ErrAuthorityCorrupt", err)
+	}
+	after, err := thread.Journal(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasEntry(snap.Entries, sessiontree.EntryTurnMarker, sessiontree.TurnAborted) {
-		t.Fatalf("unfinished turn should be marked aborted: %#v", snap.Entries)
-	}
-	if !slices.ContainsFunc(snap.Entries, func(entry sessiontree.Entry) bool {
-		return entry.Type == sessiontree.EntryRunFailure && entry.TurnID == "turn-interrupted" && entry.Error == "turn interrupted during previous process"
-	}) {
-		t.Fatalf("unfinished turn failure marker missing: %#v", snap.Entries)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("ordinary resume mutated unfinished turn: before=%#v after=%#v", before, after)
 	}
 }
 
-func TestResumeInterruptedTurnClosesUnresolvedToolCallAndContinues(t *testing.T) {
+func TestResumeThreadDefersCacheUntilSemanticCommit(t *testing.T) {
+	ctx := context.Background()
+	newResumed := func(t *testing.T) (*AgentHarness, *sessiontree.MemoryRepo, *Thread) {
+		t.Helper()
+		repo := sessiontree.NewMemoryRepo()
+		if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread"}); err != nil {
+			t.Fatal(err)
+		}
+		h := newTestHarness(scriptharness.NewScriptedProvider(), repo, cache.NewMemoryStore())
+		thread, err := h.ResumeThread(ctx, "thread", ResumeOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(h.threads) != 0 {
+			t.Fatalf("read-only resume populated cache: %#v", h.threads)
+		}
+		return h, repo, thread
+	}
+
+	t.Run("admission failure", func(t *testing.T) {
+		h, repo, thread := newResumed(t)
+		if _, err := repo.AcquireTurnLease(ctx, sessiontree.TurnLease{ThreadID: "thread", TurnID: "other-turn", OwnerID: "other-owner"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := thread.Run(ctx, "hello", RunOptions{TurnID: "turn"}); !errors.Is(err, ErrActiveTurn) {
+			t.Fatalf("Run err=%v, want ErrActiveTurn", err)
+		}
+		if len(h.threads) != 0 {
+			t.Fatalf("failed admission populated cache: %#v", h.threads)
+		}
+	})
+
+	t.Run("compaction failure", func(t *testing.T) {
+		h, _, thread := newResumed(t)
+		if _, err := thread.Compact(ctx, CompactOptions{RequestID: "compact", Source: "test"}); err == nil {
+			t.Fatal("empty-path compaction unexpectedly succeeded")
+		}
+		if len(h.threads) != 0 {
+			t.Fatalf("failed compaction populated cache: %#v", h.threads)
+		}
+	})
+
+	t.Run("recovery failure", func(t *testing.T) {
+		h, _, thread := newResumed(t)
+		_, err := thread.SettlePendingTool(ctx, PendingToolSettlement{
+			TurnID: "missing-turn", RunID: "missing-run", ToolCallID: "missing-call", ToolName: "terminal.exec",
+			Handle: "terminal:missing", Status: PendingToolSettledCompleted, Summary: "done", Output: "ok",
+		})
+		if !errors.Is(err, ErrPendingToolSettlementTargetTurnNotFound) {
+			t.Fatalf("SettlePendingTool err=%v, want missing target", err)
+		}
+		if len(h.threads) != 0 {
+			t.Fatalf("failed recovery populated cache: %#v", h.threads)
+		}
+	})
+}
+
+func TestResumeRejectsUnfinishedToolCallWithoutMutation(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name string
@@ -2189,39 +2507,28 @@ func TestResumeInterruptedTurnClosesUnresolvedToolCallAndContinues(t *testing.T)
 		{name: "sqlite", repo: openSQLiteRepoForHarnessTest(t)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("continued"), scriptharness.Done())), tc.repo, cache.NewMemoryStore())
+			h := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("unexpected"), scriptharness.Done())), tc.repo, cache.NewMemoryStore())
 			thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 			if err != nil {
 				t.Fatal(err)
 			}
 			appendInterruptedWaitTurn(t, ctx, tc.repo, "thread", "turn-interrupted")
 
-			resumed, err := h.ResumeThread(ctx, thread.ID(), ResumeOptions{})
+			if _, err := h.ResumeThread(ctx, thread.ID(), ResumeOptions{}); !errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
+				t.Fatalf("ResumeThread err = %v, want ErrAuthorityCorrupt", err)
+			}
+			snap, err := thread.Journal(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			snap, err := resumed.Journal(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := countToolEntries(snap.Entries, sessiontree.EntryToolResult, "call-wait"); got != 1 {
+			if got := countToolEntries(snap.Entries, sessiontree.EntryToolResult, "call-wait"); got != 0 {
 				t.Fatalf("tool result count = %d in %#v", got, snap.Entries)
-			}
-			if status := toolResultStatusForCall(snap.Entries, "call-wait"); status != string(observation.ActivityStatusCanceled) {
-				t.Fatalf("call-wait status = %q, want canceled", status)
-			}
-			if err := assertProviderSafeToolHistory(snap.Context); err != nil {
-				t.Fatalf("provider history after resume is unsafe: %v\n%#v", err, snap.Context)
-			}
-			second, err := resumed.Run(ctx, "continue", RunOptions{TurnID: "turn-continue"})
-			if err != nil || second.Status != engine.Completed {
-				t.Fatalf("second = %#v err=%v", second, err)
 			}
 		})
 	}
 }
 
-func TestResumeRecoversActiveLeaseWithPersistedRunFailure(t *testing.T) {
+func TestResumeDoesNotRecoverActiveLease(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name string
@@ -2231,63 +2538,46 @@ func TestResumeRecoversActiveLeaseWithPersistedRunFailure(t *testing.T) {
 		{name: "sqlite", repo: openSQLiteRepoForHarnessTest(t)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("continued"), scriptharness.Done())), tc.repo, cache.NewMemoryStore())
+			h := newTestHarness(scriptharness.NewScriptedProvider(), tc.repo, cache.NewMemoryStore())
 			thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			appendInterruptedWaitTurn(t, ctx, tc.repo, thread.ID(), "turn-interrupted")
-			if _, err := sessiontree.AppendTurnMarker(ctx, tc.repo, thread.ID(), "turn-interrupted", sessiontree.TurnSavePoint, map[string]string{"reason": "run_result"}); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := sessiontree.AppendFailure(ctx, tc.repo, thread.ID(), "turn-interrupted", context.Canceled.Error()); err != nil {
+			if _, err := sessiontree.AppendTurnMarker(ctx, tc.repo, thread.ID(), "turn-interrupted", sessiontree.TurnStarted, map[string]string{"run_id": "run-interrupted"}); err != nil {
 				t.Fatal(err)
 			}
 			leaseRepo := tc.repo.(sessiontree.TurnLeaseRepo)
-			if err := leaseRepo.AcquireTurnLease(ctx, sessiontree.TurnLease{
-				ThreadID:  thread.ID(),
-				TurnID:    "turn-interrupted",
-				OwnerID:   "dead-owner",
-				CreatedAt: time.Now(),
-			}); err != nil {
-				t.Fatal(err)
-			}
-
-			resumed, err := h.ResumeThread(ctx, thread.ID(), ResumeOptions{})
+			lease, err := leaseRepo.AcquireTurnLease(ctx, sessiontree.TurnLease{
+				ThreadID: thread.ID(),
+				TurnID:   "turn-interrupted",
+				OwnerID:  "other-owner",
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, ok, err := leaseRepo.ActiveTurnLease(ctx, thread.ID()); err != nil || ok {
-				t.Fatalf("active lease should be released after persisted failure recovery, ok=%v err=%v", ok, err)
-			}
-			snap, err := resumed.Journal(ctx)
+			before, err := thread.Journal(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := countToolEntries(snap.Entries, sessiontree.EntryToolResult, "call-wait"); got != 1 {
-				t.Fatalf("tool result count = %d in %#v", got, snap.Entries)
+			if _, err := h.ResumeThread(ctx, thread.ID(), ResumeOptions{}); err != nil {
+				t.Fatal(err)
 			}
-			if status := toolResultStatusForCall(snap.Entries, "call-wait"); status != string(observation.ActivityStatusCanceled) {
-				t.Fatalf("call-wait status = %q, want canceled", status)
+			active, ok, err := leaseRepo.ActiveTurnLease(ctx, thread.ID())
+			if err != nil || !ok || !sessiontree.SameTurnLease(active, lease) {
+				t.Fatalf("active lease = %#v ok=%v err=%v, want %#v", active, ok, err, lease)
 			}
-			if got := countRunFailuresForTurn(snap.Path, "turn-interrupted"); got != 1 {
-				t.Fatalf("active path run failure count = %d, want one recovered failure: %#v", got, snap.Path)
+			after, err := thread.Journal(ctx)
+			if err != nil {
+				t.Fatal(err)
 			}
-			if got := countTurnMarkersForTurn(snap.Path, "turn-interrupted", sessiontree.TurnAborted); got != 1 {
-				t.Fatalf("active path aborted marker count = %d, want one: %#v", got, snap.Path)
-			}
-			if err := assertProviderSafeToolHistory(snap.Context); err != nil {
-				t.Fatalf("provider history after active lease recovery is unsafe: %v\n%#v", err, snap.Context)
-			}
-			second, err := resumed.Run(ctx, "continue", RunOptions{TurnID: "turn-continue"})
-			if err != nil || second.Status != engine.Completed {
-				t.Fatalf("second = %#v err=%v", second, err)
+			if !reflect.DeepEqual(after, before) {
+				t.Fatalf("ordinary resume changed journal:\nbefore=%#v\nafter=%#v", before, after)
 			}
 		})
 	}
 }
 
-func TestResumeReleasesActiveLeaseForTerminalTurn(t *testing.T) {
+func TestResumeDoesNotReleaseTerminalTurnLease(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name string
@@ -2297,7 +2587,7 @@ func TestResumeReleasesActiveLeaseForTerminalTurn(t *testing.T) {
 		{name: "sqlite", repo: openSQLiteRepoForHarnessTest(t)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("continued"), scriptharness.Done())), tc.repo, cache.NewMemoryStore())
+			h := newTestHarness(scriptharness.NewScriptedProvider(), tc.repo, cache.NewMemoryStore())
 			thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
 			if err != nil {
 				t.Fatal(err)
@@ -2305,42 +2595,24 @@ func TestResumeReleasesActiveLeaseForTerminalTurn(t *testing.T) {
 			if _, err := sessiontree.AppendTurnMarker(ctx, tc.repo, thread.ID(), "turn-terminal", sessiontree.TurnStarted, map[string]string{"run_id": "run-terminal"}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := sessiontree.AppendMessage(ctx, tc.repo, thread.ID(), "turn-terminal", session.Message{Role: session.User, Content: "interrupted"}); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := sessiontree.AppendFailure(ctx, tc.repo, thread.ID(), "turn-terminal", context.Canceled.Error()); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := sessiontree.AppendTurnMarker(ctx, tc.repo, thread.ID(), "turn-terminal", sessiontree.TurnAborted, map[string]string{"recoverable": "true"}); err != nil {
+			if _, err := sessiontree.AppendTurnMarker(ctx, tc.repo, thread.ID(), "turn-terminal", sessiontree.TurnAborted, nil); err != nil {
 				t.Fatal(err)
 			}
 			leaseRepo := tc.repo.(sessiontree.TurnLeaseRepo)
-			if err := leaseRepo.AcquireTurnLease(ctx, sessiontree.TurnLease{
-				ThreadID:  thread.ID(),
-				TurnID:    "turn-terminal",
-				OwnerID:   "dead-owner",
-				CreatedAt: time.Now(),
-			}); err != nil {
-				t.Fatal(err)
-			}
-
-			resumed, err := h.ResumeThread(ctx, thread.ID(), ResumeOptions{})
+			lease, err := leaseRepo.AcquireTurnLease(ctx, sessiontree.TurnLease{
+				ThreadID: thread.ID(),
+				TurnID:   "turn-terminal",
+				OwnerID:  "other-owner",
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, ok, err := leaseRepo.ActiveTurnLease(ctx, thread.ID()); err != nil || ok {
-				t.Fatalf("terminal turn lease should be released, ok=%v err=%v", ok, err)
+			if _, err := h.ResumeThread(ctx, thread.ID(), ResumeOptions{}); !errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
+				t.Fatalf("ResumeThread err = %v, want ErrAuthorityCorrupt", err)
 			}
-			snap, err := resumed.Journal(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := countTurnMarkersForTurn(snap.Entries, "turn-terminal", sessiontree.TurnAborted); got != 1 {
-				t.Fatalf("aborted marker count = %d, want no duplicate: %#v", got, snap.Entries)
-			}
-			second, err := resumed.Run(ctx, "continue", RunOptions{TurnID: "turn-continue"})
-			if err != nil || second.Status != engine.Completed {
-				t.Fatalf("second = %#v err=%v", second, err)
+			active, ok, err := leaseRepo.ActiveTurnLease(ctx, thread.ID())
+			if err != nil || !ok || !sessiontree.SameTurnLease(active, lease) {
+				t.Fatalf("active lease = %#v ok=%v err=%v, want %#v", active, ok, err, lease)
 			}
 		})
 	}
@@ -2396,7 +2668,7 @@ func TestResumePreservesCompletedTurnsAfterTaskComplete(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			snap, err := resumed.Journal(ctx)
+			snap, err := thread.Journal(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2446,19 +2718,18 @@ func TestResumeDoesNotSettleControlSignals(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			resumed, err := h.ResumeThread(ctx, thread.ID(), ResumeOptions{})
-			if err != nil {
-				t.Fatal(err)
+			if _, err := h.ResumeThread(ctx, thread.ID(), ResumeOptions{}); !errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
+				t.Fatalf("ResumeThread err = %v, want ErrAuthorityCorrupt", err)
 			}
-			snap, err := resumed.Journal(ctx)
+			snap, err := thread.Journal(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if got := countToolEntries(snap.Path, sessiontree.EntryToolResult, "control-1"); got != 0 {
 				t.Fatalf("control signal received %d synthetic tool results: %#v", got, snap.Path)
 			}
-			if got := countTurnMarkersForTurn(snap.Path, "turn-control", sessiontree.TurnAborted); got != 1 {
-				t.Fatalf("aborted marker count = %d, want 1: %#v", got, snap.Path)
+			if got := countTurnMarkersForTurn(snap.Path, "turn-control", sessiontree.TurnAborted); got != 0 {
+				t.Fatalf("ordinary resume appended %d aborted markers: %#v", got, snap.Path)
 			}
 		})
 	}
@@ -2484,8 +2755,8 @@ func TestResumeRejectsMultipleUnfinishedTurnsWithoutMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.ResumeThread(ctx, thread.ID(), ResumeOptions{}); !errors.Is(err, ErrJournalInvariant) {
-		t.Fatalf("ResumeThread err = %v, want ErrJournalInvariant", err)
+	if _, err := h.ResumeThread(ctx, thread.ID(), ResumeOptions{}); !errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
+		t.Fatalf("ResumeThread err = %v, want ErrAuthorityCorrupt", err)
 	}
 	after, err := thread.Journal(ctx)
 	if err != nil {
@@ -2656,7 +2927,7 @@ func TestThreadRunPersistsTerminalMarkerAfterDeadline(t *testing.T) {
 	}
 }
 
-func TestThreadRunProjectionCancellationMarksTurnAborted(t *testing.T) {
+func TestThreadRunProjectionCancellationAfterDispatchFinishesEffectAndAbortsTurn(t *testing.T) {
 	ctx := context.Background()
 	p := scriptharness.NewScriptedProvider(
 		scriptharness.Step(
@@ -2702,10 +2973,10 @@ func TestThreadRunProjectionCancellationMarksTurnAborted(t *testing.T) {
 	select {
 	case out := <-done:
 		if !errors.Is(out.err, context.Canceled) {
-			t.Fatalf("run err = %v, want context canceled", out.err)
+			t.Fatalf("run err = %v, want caller cancellation after committed effect result", out.err)
 		}
-		if out.result.Status != "" {
-			t.Fatalf("projection persistence failure returned terminal status %s", out.result.Status)
+		if out.result.Status != engine.Cancelled {
+			t.Fatalf("projection cancellation status=%s, want cancelled", out.result.Status)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("run did not finish after cancellation")
@@ -2714,15 +2985,21 @@ func TestThreadRunProjectionCancellationMarksTurnAborted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if slices.ContainsFunc(snap.Entries, func(entry sessiontree.Entry) bool {
+	if !slices.ContainsFunc(snap.Entries, func(entry sessiontree.Entry) bool {
+		return entry.Type == sessiontree.EntryToolResult && entry.TurnID == "turn-canceled" &&
+			entry.Message.ToolCallID == "read-1" && entry.Message.Content == "ok"
+	}) {
+		t.Fatalf("projection cancellation lost the canonical effect result: %#v", snap.Entries)
+	}
+	if !slices.ContainsFunc(snap.Entries, func(entry sessiontree.Entry) bool {
 		return entry.Type == sessiontree.EntryTurnMarker &&
 			entry.TurnID == "turn-canceled" &&
 			isTerminalTurnMarker(entry.TurnStatus)
 	}) {
-		t.Fatalf("projection persistence failure wrote a terminal marker: %#v", snap.Entries)
+		t.Fatalf("projection cancellation did not terminalize the turn: %#v", snap.Entries)
 	}
-	if got := unfinishedTurns(snap.Path); !slices.Equal(got, []string{"turn-canceled"}) {
-		t.Fatalf("projection persistence failure should leave one unfinished turn: %#v", snap.Path)
+	if got := unfinishedTurns(snap.Path); len(got) != 0 {
+		t.Fatalf("projection cancellation left unfinished turns %v: %#v", got, snap.Path)
 	}
 	resumed, err := h.ResumeThread(ctx, thread.ID(), ResumeOptions{})
 	if err != nil {
@@ -2733,22 +3010,37 @@ func TestThreadRunProjectionCancellationMarksTurnAborted(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := countTurnMarkersForTurn(recovered.Path, "turn-canceled", sessiontree.TurnAborted); got != 1 {
-		t.Fatalf("resume did not terminalize the unfinished turn exactly once: %#v", recovered.Path)
+		t.Fatalf("ordinary resume changed the terminal turn: %#v", recovered.Path)
+	}
+	if _, active, err := repo.ActiveTurnLease(ctx, "thread"); err != nil || active {
+		t.Fatalf("terminal turn retained active authority: active=%v err=%v", active, err)
 	}
 }
 
 func newTestHarness(p provider.Provider, repo sessiontree.Repo, promptStore cache.Store) *AgentHarness {
 	rec := &event.Recorder{}
 	registry := tools.NewRegistry()
+	var forkOperations storage.ForkOperationStore
+	if memory, ok := repo.(*sessiontree.MemoryRepo); ok {
+		forkOperations = storage.NewMemoryForkOperationStore(memory)
+	} else if durable, ok := repo.(storage.ForkOperationStore); ok {
+		forkOperations = durable
+	}
 	return New(Options{
-		Provider:       p,
-		ProviderName:   "fake",
-		Model:          "fake-model",
-		SystemPrompt:   "You are a test assistant.",
-		Tools:          registry,
-		Repo:           repo,
-		PromptStore:    promptStore,
-		Sink:           rec,
+		Provider:                p,
+		ProviderName:            "fake",
+		Model:                   "fake-model",
+		SystemPrompt:            "You are a test assistant.",
+		Tools:                   registry,
+		Repo:                    repo,
+		ForkOperations:          forkOperations,
+		PromptStore:             promptStore,
+		Sink:                    rec,
+		EffectAuthorizationGate: allowHarnessEffectGate{},
+		BeginSubAgentExecution: func() (context.Context, func(), error) {
+			executionCtx, cancel := context.WithCancel(context.Background())
+			return executionCtx, cancel, nil
+		},
 		TitleGenerator: fixedTitleGenerator{title: "Test thread title"},
 		LoopLimits: LoopLimits{
 			MaxEmptyProviderRetries: 1,
@@ -2758,13 +3050,24 @@ func newTestHarness(p provider.Provider, repo sessiontree.Repo, promptStore cach
 	})
 }
 
+type allowHarnessEffectGate struct{}
+
+func (allowHarnessEffectGate) Dispatch(ctx context.Context, req EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
+	return effect(EffectAuthorizationProof{
+		EffectAttemptID: req.EffectAttemptID, RequestFingerprint: req.RequestFingerprint,
+		ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, ToolCallID: req.ToolCallID,
+		LeaseOwnerID: req.LeaseOwnerID, LeaseGeneration: req.LeaseGeneration,
+		PolicyRevision: "test-policy-v1", AuditReference: "test-audit", AuditHash: "test-audit-hash", AuthorizedAt: time.Now(),
+	})
+}
+
 func mustRegister(registry *tools.Registry, tool tools.Tool) {
 	if err := registry.Register(tool); err != nil {
 		panic(err)
 	}
 }
 
-func appendPendingToolResultFixture(t *testing.T, ctx context.Context, repo sessiontree.Repo, threadID string, turnID string) {
+func appendPendingToolResultFixture(t *testing.T, ctx context.Context, repo sessiontree.JournalRepo, threadID string, turnID string) {
 	t.Helper()
 	appendPendingToolCallFixture(t, ctx, repo, threadID, turnID)
 	if _, err := sessiontree.AppendMessage(ctx, repo, threadID, turnID, session.Message{
@@ -2791,7 +3094,7 @@ func appendPendingToolResultFixture(t *testing.T, ctx context.Context, repo sess
 	}
 }
 
-func appendPendingToolCallFixture(t *testing.T, ctx context.Context, repo sessiontree.Repo, threadID string, turnID string) {
+func appendPendingToolCallFixture(t *testing.T, ctx context.Context, repo sessiontree.JournalRepo, threadID string, turnID string) {
 	t.Helper()
 	if _, err := sessiontree.AppendTurnMarker(ctx, repo, threadID, turnID, sessiontree.TurnStarted, map[string]string{"run_id": "run-1"}); err != nil {
 		t.Fatal(err)
@@ -3119,21 +3422,20 @@ type blockingProvider struct {
 	once    sync.Once
 }
 
-type blockingMoveRepo struct {
-	*sessiontree.MemoryRepo
+type blockingCompactionGenerator struct {
 	entered chan struct{}
 	release chan struct{}
 	once    sync.Once
 }
 
-func (r *blockingMoveRepo) MoveLeaf(ctx context.Context, threadID, entryID string) error {
-	r.once.Do(func() { close(r.entered) })
+func (g *blockingCompactionGenerator) GenerateSummary(ctx context.Context, prep compaction.Preparation) (string, error) {
+	g.once.Do(func() { close(g.entered) })
 	select {
+	case <-g.release:
+		return compaction.ExtractiveSummaryGenerator{}.GenerateSummary(ctx, prep)
 	case <-ctx.Done():
-		return ctx.Err()
-	case <-r.release:
+		return "", ctx.Err()
 	}
-	return r.MemoryRepo.MoveLeaf(ctx, threadID, entryID)
 }
 
 type blockingAppendRepo struct {

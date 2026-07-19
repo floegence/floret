@@ -2,9 +2,7 @@ package sqlite
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,11 +28,28 @@ const (
 
 type Option func(*options)
 
-type options struct{}
+type options struct {
+	leasePolicy sessiontree.LeasePolicy
+	now         func() time.Time
+}
+
+func WithLeasePolicy(policy sessiontree.LeasePolicy) Option {
+	return func(opts *options) {
+		opts.leasePolicy = policy
+	}
+}
+
+func WithAuthorityClock(now func() time.Time) Option {
+	return func(opts *options) {
+		opts.now = now
+	}
+}
 
 type Store struct {
-	db   *sql.DB
-	path string
+	db          *sql.DB
+	path        string
+	leasePolicy sessiontree.LeasePolicy
+	now         func() time.Time
 }
 
 type sqlRunner interface {
@@ -55,8 +70,17 @@ func Open(path string, opts ...Option) (*Store, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("sqlite store path is required")
 	}
+	configured := options{leasePolicy: sessiontree.DefaultLeasePolicy, now: time.Now}
 	for _, opt := range opts {
-		opt(&options{})
+		if opt != nil {
+			opt(&configured)
+		}
+	}
+	if err := configured.leasePolicy.Validate(); err != nil {
+		return nil, err
+	}
+	if configured.now == nil {
+		return nil, errors.New("sqlite store authority clock is required")
 	}
 	if path != ":memory:" {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -69,7 +93,7 @@ func Open(path string, opts ...Option) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	store := &Store{db: db, path: path}
+	store := &Store{db: db, path: path, leasePolicy: configured.leasePolicy, now: configured.now}
 	if err := store.init(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -103,16 +127,14 @@ func (s *Store) putMetaValue(ctx context.Context, key, value string) error {
 func (s *Store) init(ctx context.Context) error {
 	for _, pragma := range []string{
 		"PRAGMA foreign_keys = ON",
-		"PRAGMA journal_mode = WAL",
-		"PRAGMA synchronous = FULL",
 		"PRAGMA busy_timeout = 5000",
 	} {
 		if _, err := s.db.ExecContext(ctx, pragma); err != nil {
 			return err
 		}
 	}
-	return s.withImmediate(ctx, func(tx sqlRunner) error {
-		if err := ensureSchema(ctx, tx); err != nil {
+	if err := s.withImmediate(ctx, func(tx sqlRunner) error {
+		if err := ensureSchema(ctx, tx, s.leasePolicy); err != nil {
 			return err
 		}
 		threads, err := loadThreadAuthorityGraph(ctx, tx)
@@ -123,7 +145,18 @@ func (s *Store) init(ctx context.Context) error {
 			return fmt.Errorf("validate sqlite store thread authority: %w", err)
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	for _, pragma := range []string{
+		"PRAGMA journal_mode = WAL",
+		"PRAGMA synchronous = FULL",
+	} {
+		if _, err := s.db.ExecContext(ctx, pragma); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) metaValue(ctx context.Context, key string) (string, error) {
@@ -173,70 +206,234 @@ func (s *Store) withImmediate(ctx context.Context, fn func(sqlRunner) error) err
 }
 
 func (s *Store) CreateThread(ctx context.Context, meta sessiontree.ThreadMeta) (sessiontree.ThreadMeta, error) {
-	now := meta.CreatedAt
-	if now.IsZero() {
-		now = time.Now()
-	}
 	err := s.withImmediate(ctx, func(tx sqlRunner) error {
-		if meta.ID == "" {
-			for {
-				meta.ID = "thread-" + strconv.FormatInt(time.Now().UnixNano(), 10)
-				ok, err := threadExists(ctx, tx, meta.ID)
-				if err != nil {
-					return err
-				}
-				if !ok {
-					break
-				}
-			}
-		} else if ok, err := threadExists(ctx, tx, meta.ID); err != nil {
-			return err
-		} else if ok {
-			return sessiontree.ErrThreadExists
-		}
-		meta.CreatedAt = now
-		meta.UpdatedAt = now
-		if err := sessiontree.ValidateThreadMetaAuthority(meta); err != nil {
-			return err
-		}
-		if parentID := strings.TrimSpace(meta.ParentThreadID); parentID != "" {
-			if ok, err := threadExists(ctx, tx, parentID); err != nil {
-				return err
-			} else if !ok {
-				return fmt.Errorf("%w: parent thread %q", sessiontree.ErrInvalidThreadAuthority, parentID)
-			}
-		}
-		return insertThread(ctx, tx, meta)
+		var err error
+		meta, err = createThreadWithRunner(ctx, tx, meta)
+		return err
 	})
 	return meta, err
 }
 
-func (s *Store) AcquireTurnLease(ctx context.Context, lease sessiontree.TurnLease) error {
-	if strings.TrimSpace(lease.ThreadID) == "" {
-		return sessiontree.ErrThreadNotFound
+func createThreadWithRunner(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta) (sessiontree.ThreadMeta, error) {
+	now := meta.CreatedAt
+	if now.IsZero() {
+		now = time.Now()
 	}
-	if lease.CreatedAt.IsZero() {
-		lease.CreatedAt = time.Now()
-	}
-	return s.withImmediate(ctx, func(tx sqlRunner) error {
-		if ok, err := threadExists(ctx, tx, lease.ThreadID); err != nil {
-			return err
-		} else if !ok {
-			return sessiontree.ErrThreadNotFound
+	if meta.ID == "" {
+		for {
+			meta.ID = "thread-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+			ok, err := threadExists(ctx, tx, meta.ID)
+			if err != nil {
+				return sessiontree.ThreadMeta{}, err
+			}
+			if !ok {
+				break
+			}
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO active_turn_leases(thread_id, turn_id, owner_id, created_at)
-			VALUES(?, ?, ?, ?)`, lease.ThreadID, lease.TurnID, lease.OwnerID, formatTime(lease.CreatedAt))
+	} else if ok, err := threadExists(ctx, tx, meta.ID); err != nil {
+		return sessiontree.ThreadMeta{}, err
+	} else if ok {
+		return sessiontree.ThreadMeta{}, sessiontree.ErrThreadExists
+	}
+	if _, err := loadThreadTombstone(ctx, tx, meta.ID); err == nil {
+		return sessiontree.ThreadMeta{}, sessiontree.ErrThreadDeleted
+	} else if !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, sessiontree.ErrThreadNotFound) {
+		return sessiontree.ThreadMeta{}, err
+	}
+	if err := rejectClaimedThreadAuthorities(ctx, tx, meta.ID, meta.ParentThreadID); err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
+	meta.CreatedAt = now
+	meta.UpdatedAt = now
+	if err := sessiontree.ValidateThreadMetaAuthority(meta); err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
+	if parentID := strings.TrimSpace(meta.ParentThreadID); parentID != "" {
+		parent, err := loadThread(ctx, tx, parentID)
+		if errors.Is(err, sessiontree.ErrThreadNotFound) {
+			return sessiontree.ThreadMeta{}, fmt.Errorf("%w: parent thread %q", sessiontree.ErrInvalidThreadAuthority, parentID)
+		}
+		if err != nil {
+			return sessiontree.ThreadMeta{}, err
+		}
+		if err := rejectSQLiteThreadWriteLifecycle(parent); err != nil {
+			return sessiontree.ThreadMeta{}, err
+		}
+	}
+	if err := insertThread(ctx, tx, meta); err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
+	return meta, nil
+}
+
+func (s *Store) CreateThreadWithInitialEntry(ctx context.Context, meta sessiontree.ThreadMeta, initial sessiontree.Entry) (sessiontree.ThreadMeta, sessiontree.Entry, error) {
+	var created sessiontree.ThreadMeta
+	var saved sessiontree.Entry
+	err := s.withImmediate(ctx, func(tx sqlRunner) error {
+		var err error
+		created, err = createThreadWithRunner(ctx, tx, meta)
+		if err != nil {
+			return err
+		}
+		initial.ThreadID = created.ID
+		saved, err = appendWithRunner(ctx, tx, initial, sessiontree.AppendOptions{Now: created.CreatedAt}, s.now)
+		if err != nil {
+			return err
+		}
+		created, err = loadThread(ctx, tx, created.ID)
+		return err
+	})
+	return created, saved, err
+}
+
+func (s *Store) AcquireTurnLease(ctx context.Context, request sessiontree.TurnLease) (sessiontree.TurnLease, error) {
+	purpose, err := request.Purpose.Normalize()
+	if err != nil {
+		return sessiontree.TurnLease{}, err
+	}
+	if strings.TrimSpace(request.ThreadID) == "" || strings.TrimSpace(request.OwnerID) == "" {
+		return sessiontree.TurnLease{}, errors.New("lease thread and owner are required")
+	}
+	if purpose == sessiontree.TurnLeasePurposeTurn {
+		if strings.TrimSpace(request.TurnID) == "" || strings.TrimSpace(request.MutationID) != "" || strings.TrimSpace(request.MutationKind) != "" {
+			return sessiontree.TurnLease{}, errors.New("turn lease request requires only turn identity")
+		}
+	} else if strings.TrimSpace(request.TurnID) != "" || strings.TrimSpace(request.MutationID) == "" || strings.TrimSpace(request.MutationKind) == "" {
+		return sessiontree.TurnLease{}, errors.New("mutation lease request requires only mutation identity and kind")
+	}
+	var proof sessiontree.TurnLease
+	err = s.withImmediate(ctx, func(tx sqlRunner) error {
+		meta, err := loadThread(ctx, tx, request.ThreadID)
+		if err != nil {
+			return err
+		}
+		if err := rejectSQLiteThreadWriteLifecycle(meta); err != nil {
+			return err
+		}
+		if _, claimed, err := loadThreadAuthorityClaim(ctx, tx, request.ThreadID); err != nil {
+			return err
+		} else if claimed {
+			return sessiontree.ErrThreadAuthorityBusy
+		}
+		if _, active, err := loadTurnLease(ctx, tx, request.ThreadID); err != nil {
+			return err
+		} else if active {
+			return sessiontree.ErrActiveTurn
+		}
+		var generation int64
+		if err := tx.QueryRowContext(ctx, `SELECT lease_generation FROM threads WHERE id = ?`, request.ThreadID).Scan(&generation); err != nil {
+			return err
+		}
+		generation++
+		if _, err := tx.ExecContext(ctx, `UPDATE threads SET lease_generation = ? WHERE id = ?`, generation, request.ThreadID); err != nil {
+			return err
+		}
+		now := s.now().UTC()
+		proof = sessiontree.TurnLease{
+			ThreadID:     strings.TrimSpace(request.ThreadID),
+			Purpose:      purpose,
+			TurnID:       strings.TrimSpace(request.TurnID),
+			MutationID:   strings.TrimSpace(request.MutationID),
+			MutationKind: strings.TrimSpace(request.MutationKind),
+			OwnerID:      strings.TrimSpace(request.OwnerID),
+			Generation:   generation,
+			Heartbeat:    0,
+			AcquiredAt:   now,
+			RenewedAt:    now,
+			ExpiresAt:    now.Add(s.leasePolicy.TTL),
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO active_turn_leases(
+			thread_id, purpose, turn_id, mutation_id, mutation_kind, owner_id, generation, heartbeat, acquired_at, renewed_at, expires_at
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			proof.ThreadID, string(proof.Purpose), proof.TurnID, proof.MutationID, proof.MutationKind, proof.OwnerID,
+			proof.Generation, proof.Heartbeat, formatTime(proof.AcquiredAt), formatTime(proof.RenewedAt), formatTime(proof.ExpiresAt))
 		if isConstraintError(err) {
 			return sessiontree.ErrActiveTurn
 		}
 		return err
 	})
+	return proof, err
 }
 
-func (s *Store) ReleaseTurnLease(ctx context.Context, lease sessiontree.TurnLease) error {
+func (s *Store) RenewTurnLease(ctx context.Context, proof sessiontree.TurnLease) (sessiontree.TurnLease, error) {
+	var renewed sessiontree.TurnLease
+	err := s.withImmediate(ctx, func(tx sqlRunner) error {
+		active, ok, err := loadTurnLease(ctx, tx, proof.ThreadID)
+		if err != nil {
+			return err
+		}
+		if !ok || !sessiontree.SameTurnLease(active, proof) {
+			return sessiontree.ErrStaleAuthority
+		}
+		now := s.now().UTC()
+		if !active.Fresh(now) {
+			return sessiontree.ErrStaleAuthority
+		}
+		active.Heartbeat++
+		active.RenewedAt = now
+		active.ExpiresAt = now.Add(s.leasePolicy.TTL)
+		if _, err := tx.ExecContext(ctx, `UPDATE active_turn_leases SET heartbeat = ?, renewed_at = ?, expires_at = ?
+			WHERE thread_id = ? AND generation = ?`,
+			active.Heartbeat, formatTime(active.RenewedAt), formatTime(active.ExpiresAt), active.ThreadID, active.Generation); err != nil {
+			return err
+		}
+		if active.Purpose == sessiontree.TurnLeasePurposeTurn {
+			var admissionCount int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM turn_admissions WHERE thread_id = ? AND turn_id = ?`, proof.ThreadID, proof.TurnID).Scan(&admissionCount); err != nil {
+				return err
+			}
+			updated, err := tx.ExecContext(ctx, `UPDATE turn_admissions SET heartbeat = ?, renewed_at = ?, expires_at = ?
+				WHERE thread_id = ? AND turn_id = ? AND owner_id = ? AND generation = ? AND heartbeat = ?`,
+				active.Heartbeat, formatTime(active.RenewedAt), formatTime(active.ExpiresAt),
+				proof.ThreadID, proof.TurnID, proof.OwnerID, proof.Generation, proof.Heartbeat)
+			if err != nil {
+				return err
+			}
+			if count, err := updated.RowsAffected(); err != nil {
+				return err
+			} else if admissionCount == 1 && count != 1 {
+				return sessiontree.ErrAuthorityCorrupt
+			}
+		}
+		if active.Purpose == sessiontree.TurnLeasePurposeMutation && active.MutationKind == sessiontree.CompactionMutationKind {
+			updated, err := tx.ExecContext(ctx, `UPDATE compaction_operations SET lease_heartbeat = ?, lease_renewed_at = ?, lease_expires_at = ?, updated_at = ?
+				WHERE request_id = ? AND thread_id = ? AND state = 'prepared' AND lease_owner_id = ? AND lease_generation = ? AND lease_heartbeat = ?`,
+				active.Heartbeat, formatTime(active.RenewedAt), formatTime(active.ExpiresAt), formatTime(now),
+				active.MutationID, active.ThreadID, proof.OwnerID, proof.Generation, proof.Heartbeat)
+			if err != nil {
+				return err
+			}
+			if count, err := updated.RowsAffected(); err != nil {
+				return err
+			} else if count != 1 {
+				return sessiontree.ErrAuthorityCorrupt
+			}
+		}
+		renewed = active
+		return nil
+	})
+	return renewed, err
+}
+
+func (s *Store) ReleaseTurnLease(ctx context.Context, proof sessiontree.TurnLease) error {
 	return s.withImmediate(ctx, func(tx sqlRunner) error {
-		_, err := tx.ExecContext(ctx, `DELETE FROM active_turn_leases
-			WHERE thread_id = ? AND turn_id = ? AND owner_id = ?`, lease.ThreadID, lease.TurnID, lease.OwnerID)
+		active, ok, err := loadTurnLease(ctx, tx, proof.ThreadID)
+		if err != nil {
+			return err
+		}
+		if !ok || !sessiontree.SameTurnLease(active, proof) {
+			return sessiontree.ErrStaleAuthority
+		}
+		if active.Purpose == sessiontree.TurnLeasePurposeMutation && active.MutationKind == sessiontree.CompactionMutationKind {
+			var count int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM compaction_operations WHERE request_id = ? AND state = 'prepared'`, active.MutationID).Scan(&count); err != nil {
+				return err
+			}
+			if count != 0 {
+				return sessiontree.ErrInvalidThreadAuthority
+			}
+		}
+		_, err = tx.ExecContext(ctx, `DELETE FROM active_turn_leases WHERE thread_id = ? AND generation = ?`, proof.ThreadID, proof.Generation)
 		return err
 	})
 }
@@ -250,33 +447,8 @@ func (s *Store) ActiveTurnLease(ctx context.Context, threadID string) (sessiontr
 	return loadTurnLease(ctx, s.db, threadID)
 }
 
-func (s *Store) ClearExpiredTurnLease(ctx context.Context, threadID string, cutoff time.Time) (sessiontree.TurnLease, bool, error) {
-	if cutoff.IsZero() {
-		return sessiontree.TurnLease{}, false, nil
-	}
-	var cleared sessiontree.TurnLease
-	ok := false
-	err := s.withImmediate(ctx, func(tx sqlRunner) error {
-		if exists, err := threadExists(ctx, tx, threadID); err != nil {
-			return err
-		} else if !exists {
-			return sessiontree.ErrThreadNotFound
-		}
-		lease, found, err := loadTurnLease(ctx, tx, threadID)
-		if err != nil || !found {
-			return err
-		}
-		if lease.CreatedAt.IsZero() || !lease.CreatedAt.Before(cutoff) {
-			return nil
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM active_turn_leases WHERE thread_id = ?`, threadID); err != nil {
-			return err
-		}
-		cleared = lease
-		ok = true
-		return nil
-	})
-	return cleared, ok, err
+func (s *Store) AuthorityLeasePolicy() sessiontree.LeasePolicy {
+	return s.leasePolicy
 }
 
 func (s *Store) Thread(ctx context.Context, threadID string) (sessiontree.ThreadMeta, error) {
@@ -291,9 +463,9 @@ func (s *Store) ListThreads(ctx context.Context, opts sessiontree.ListThreadsOpt
 	}
 	query := `SELECT
 			id, leaf_id, parent_thread_id, parent_turn_id, forked_from_thread_id, forked_from_entry_id, fork_operation_id, fork_operation_node_id,
-			task_name, task_description, agent_path, host_profile_ref, fork_mode, closed, archived,
+			task_name, task_description, agent_path, host_profile_ref, fork_mode, lifecycle, close_operation_id, archived,
 			title, title_status, title_source, title_updated_at, title_error,
-			created_at, updated_at, status, last_viewed_at
+			created_at, updated_at, last_viewed_at
 			FROM threads`
 	if len(where) > 0 {
 		query += ` WHERE ` + strings.Join(where, ` AND `)
@@ -332,6 +504,19 @@ func (s *Store) UpdateThread(ctx context.Context, meta sessiontree.ThreadMeta) e
 		if !sessiontree.SameThreadAuthority(current, meta) {
 			return fmt.Errorf("%w: thread %q authority is immutable", sessiontree.ErrInvalidThreadAuthority, meta.ID)
 		}
+		if err := rejectSQLiteThreadWriteLifecycle(current); err != nil {
+			return err
+		}
+		if err := rejectClaimedThreadAuthorities(ctx, tx, meta.ID); err != nil {
+			return err
+		}
+		active, _, err := loadTurnLease(ctx, tx, meta.ID)
+		if err != nil {
+			return err
+		}
+		if err := validateSQLiteTurnLeaseMutation(ctx, meta.ID, "", active, s.now().UTC()); err != nil {
+			return err
+		}
 		return updateThread(ctx, tx, meta)
 	})
 }
@@ -345,6 +530,14 @@ func (s *Store) DeleteThread(ctx context.Context, threadID string) error {
 		if exists == 0 {
 			return sessiontree.ErrThreadNotFound
 		}
+		if _, active, err := loadTurnLease(ctx, tx, threadID); err != nil {
+			return err
+		} else if active {
+			return sessiontree.ErrActiveTurn
+		}
+		if err := rejectClaimedThreadAuthorities(ctx, tx, threadID); err != nil {
+			return err
+		}
 		_, err := tx.ExecContext(ctx, `DELETE FROM threads WHERE id = ?`, threadID)
 		return err
 	})
@@ -353,61 +546,79 @@ func (s *Store) DeleteThread(ctx context.Context, threadID string) error {
 func (s *Store) Append(ctx context.Context, entry sessiontree.Entry, opts sessiontree.AppendOptions) (sessiontree.Entry, error) {
 	var saved sessiontree.Entry
 	err := s.withImmediate(ctx, func(tx sqlRunner) error {
-		meta, err := loadThread(ctx, tx, entry.ThreadID)
-		if err != nil {
-			return err
-		}
-		if opts.ParentID != "" {
-			entry.ParentID = opts.ParentID
-		} else if entry.ParentID == "" {
-			entry.ParentID = meta.LeafID
-		}
-		if entry.ParentID != "" {
-			ok, err := entryExists(ctx, tx, entry.ThreadID, entry.ParentID)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				return sessiontree.ErrInvalidParent
-			}
-		}
-		if opts.ID != "" {
-			entry.ID = opts.ID
-		}
-		if entry.ID == "" {
-			id, err := nextEntryID(ctx, tx, entry.ThreadID)
-			if err != nil {
-				return err
-			}
-			entry.ID = id
-		} else if ok, err := entryExists(ctx, tx, entry.ThreadID, entry.ID); err != nil {
-			return err
-		} else if ok {
-			return fmt.Errorf("session tree entry id already exists: %s", entry.ID)
-		}
-		if entry.CreatedAt.IsZero() {
-			entry.CreatedAt = opts.Now
-		}
-		if entry.CreatedAt.IsZero() {
-			entry.CreatedAt = time.Now()
-		}
-		entry = sessiontree.PrepareEntry(entry)
-		ordinal, err := nextOrdinal(ctx, tx, entry.ThreadID)
-		if err != nil {
-			return err
-		}
-		if err := insertEntry(ctx, tx, entry, ordinal, false); err != nil {
-			return err
-		}
-		meta.LeafID = entry.ID
-		meta.UpdatedAt = entry.CreatedAt
-		if err := updateThread(ctx, tx, meta); err != nil {
-			return err
-		}
-		saved = cloneEntry(entry)
-		return nil
+		var err error
+		saved, err = appendWithRunner(ctx, tx, entry, opts, s.now)
+		return err
 	})
 	return saved, err
+}
+
+func appendWithRunner(ctx context.Context, tx sqlRunner, entry sessiontree.Entry, opts sessiontree.AppendOptions, now func() time.Time) (sessiontree.Entry, error) {
+	meta, err := loadThread(ctx, tx, entry.ThreadID)
+	if err != nil {
+		return sessiontree.Entry{}, err
+	}
+	if err := rejectClaimedThreadAuthorities(ctx, tx, entry.ThreadID); err != nil {
+		return sessiontree.Entry{}, err
+	}
+	if err := rejectSQLiteThreadWriteLifecycle(meta); err != nil {
+		return sessiontree.Entry{}, err
+	}
+	activeLease, _, err := loadTurnLease(ctx, tx, entry.ThreadID)
+	if err != nil {
+		return sessiontree.Entry{}, err
+	}
+	if err := validateSQLiteTurnLeaseMutation(ctx, entry.ThreadID, entry.TurnID, activeLease, now().UTC()); err != nil {
+		return sessiontree.Entry{}, err
+	}
+	if opts.ParentID != "" {
+		entry.ParentID = opts.ParentID
+	} else if entry.ParentID == "" {
+		entry.ParentID = meta.LeafID
+	}
+	if entry.ParentID != "" {
+		ok, err := entryExists(ctx, tx, entry.ThreadID, entry.ParentID)
+		if err != nil {
+			return sessiontree.Entry{}, err
+		}
+		if !ok {
+			return sessiontree.Entry{}, sessiontree.ErrInvalidParent
+		}
+	}
+	if opts.ID != "" {
+		entry.ID = opts.ID
+	}
+	if entry.ID == "" {
+		id, err := nextEntryID(ctx, tx, entry.ThreadID)
+		if err != nil {
+			return sessiontree.Entry{}, err
+		}
+		entry.ID = id
+	} else if ok, err := entryExists(ctx, tx, entry.ThreadID, entry.ID); err != nil {
+		return sessiontree.Entry{}, err
+	} else if ok {
+		return sessiontree.Entry{}, fmt.Errorf("session tree entry id already exists: %s", entry.ID)
+	}
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = opts.Now
+	}
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = time.Now()
+	}
+	entry = sessiontree.PrepareEntry(entry)
+	ordinal, err := nextOrdinal(ctx, tx, entry.ThreadID)
+	if err != nil {
+		return sessiontree.Entry{}, err
+	}
+	if err := insertEntry(ctx, tx, entry, ordinal, false); err != nil {
+		return sessiontree.Entry{}, err
+	}
+	meta.LeafID = entry.ID
+	meta.UpdatedAt = entry.CreatedAt
+	if err := updateThread(ctx, tx, meta); err != nil {
+		return sessiontree.Entry{}, err
+	}
+	return cloneEntry(entry), nil
 }
 
 func (s *Store) Entry(ctx context.Context, threadID, entryID string) (sessiontree.Entry, error) {
@@ -548,6 +759,12 @@ func (s *Store) MoveLeaf(ctx context.Context, threadID, entryID string) error {
 		if err != nil {
 			return err
 		}
+		if err := rejectClaimedThreadAuthorities(ctx, tx, threadID); err != nil {
+			return err
+		}
+		if err := rejectSQLiteThreadWriteLifecycle(meta); err != nil {
+			return err
+		}
 		if entryID != "" {
 			ok, err := entryExists(ctx, tx, threadID, entryID)
 			if err != nil {
@@ -564,134 +781,216 @@ func (s *Store) MoveLeaf(ctx context.Context, threadID, entryID string) error {
 }
 
 func (s *Store) Fork(ctx context.Context, opts sessiontree.ForkOptions) (sessiontree.ThreadMeta, error) {
+	if strings.TrimSpace(opts.OperationID) != "" || strings.TrimSpace(opts.OperationNodeID) != "" {
+		return sessiontree.ThreadMeta{}, sessiontree.ErrInvalidThreadAuthority
+	}
 	var forked sessiontree.ThreadMeta
 	err := s.withImmediate(ctx, func(tx sqlRunner) error {
-		if opts.Position == "" {
-			opts.Position = sessiontree.ForkAt
-		}
-		sourceMeta, err := loadThread(ctx, tx, opts.SourceThreadID)
-		if err != nil {
-			return err
-		}
-		targetID := opts.EntryID
-		if targetID == "" && !opts.EntryIDPinned {
-			targetID = sourceMeta.LeafID
-		}
-		if opts.Position == sessiontree.ForkBefore {
-			entry, err := loadEntry(ctx, tx, opts.SourceThreadID, targetID)
-			if errors.Is(err, sql.ErrNoRows) {
-				return sessiontree.ErrEntryNotFound
-			}
-			if err != nil {
-				return err
-			}
-			targetID = entry.ParentID
-		}
-		now := opts.Now
-		if now.IsZero() {
-			now = time.Now()
-		}
-		newID := opts.NewThreadID
-		if newID == "" {
-			newID, err = nextForkID(ctx, tx, opts.SourceThreadID)
-			if err != nil {
-				return err
-			}
-		} else if ok, err := threadExists(ctx, tx, newID); err != nil {
-			return err
-		} else if ok {
-			existing, err := loadThread(ctx, tx, newID)
-			if err != nil {
-				return err
-			}
-			if opts.OperationID != "" && opts.OperationNodeID != "" &&
-				existing.ForkOperationID == opts.OperationID &&
-				existing.ForkOperationNodeID == opts.OperationNodeID &&
-				existing.ForkedFromThreadID == opts.SourceThreadID &&
-				existing.ForkedFromEntryID == targetID &&
-				sessiontree.MatchesForkDestinationMeta(existing, opts.DestinationMeta) {
-				forked = existing
-				return nil
-			}
-			if opts.OperationID != "" || opts.OperationNodeID != "" {
-				return sessiontree.ErrForkDestinationConflict
-			}
-			return sessiontree.ErrThreadExists
-		}
-		path, err := pathWithRunner(ctx, tx, opts.SourceThreadID, targetID)
-		if err != nil {
-			return err
-		}
-		meta := sessiontree.ThreadMeta{ID: newID, ForkedFromThreadID: opts.SourceThreadID, ForkedFromEntryID: targetID, ForkOperationID: opts.OperationID, ForkOperationNodeID: opts.OperationNodeID, CreatedAt: now, UpdatedAt: now}
-		applyForkDestinationMeta(&meta, opts.DestinationMeta)
-		if err := sessiontree.ValidateThreadMetaAuthority(meta); err != nil {
-			return err
-		}
-		if parentID := strings.TrimSpace(meta.ParentThreadID); parentID != "" {
-			if ok, err := threadExists(ctx, tx, parentID); err != nil {
-				return err
-			} else if !ok {
-				return fmt.Errorf("%w: parent thread %q", sessiontree.ErrInvalidThreadAuthority, parentID)
-			}
-		}
-		if err := insertThread(ctx, tx, meta); err != nil {
-			return err
-		}
-		oldToNew := map[string]string{"": ""}
-		for _, entry := range path {
-			next := cloneEntry(entry)
-			nextID, err := nextEntryID(ctx, tx, newID)
-			if err != nil {
-				return err
-			}
-			next.ID = nextID
-			next.ThreadID = newID
-			next.ParentID = oldToNew[entry.ParentID]
-			next.TurnID = rewriteForkID(next.TurnID, opts.TurnIDMap)
-			next.FirstKeptEntryID = oldToNew[entry.FirstKeptEntryID]
-			next.CompactedThroughEntryID = oldToNew[entry.CompactedThroughEntryID]
-			next.KeptUserEntryIDs = rewriteEntryIDs(entry.KeptUserEntryIDs, oldToNew)
-			next.Metadata = rewriteForkMetadata(next.Metadata, oldToNew, opts.TurnIDMap, opts.RunIDMap)
-			if opts.RewriteEntry != nil {
-				next, err = opts.RewriteEntry(next, sessiontree.ForkEntryIdentity{
-					SourceThreadID:      opts.SourceThreadID,
-					DestinationThreadID: newID,
-					TurnIDMap:           opts.TurnIDMap,
-					RunIDMap:            opts.RunIDMap,
-				})
-				if err != nil {
-					return err
-				}
-			}
-			next.CreatedAt = now
-			next = sessiontree.PrepareEntry(next)
-			ordinal, err := nextOrdinal(ctx, tx, newID)
-			if err != nil {
-				return err
-			}
-			if err := insertEntry(ctx, tx, next, ordinal, false); err != nil {
-				return err
-			}
-			oldToNew[entry.ID] = next.ID
-			meta.LeafID = next.ID
-		}
-		if err := updateThread(ctx, tx, meta); err != nil {
-			return err
-		}
-		if todo, ok, err := loadAgentTodoState(ctx, tx, opts.SourceThreadID); err != nil {
-			return err
-		} else if ok {
-			todo.ThreadID = newID
-			todo.UpdatedByTurnID = rewriteForkID(todo.UpdatedByTurnID, opts.TurnIDMap)
-			todo.UpdatedByRunID = rewriteForkID(todo.UpdatedByRunID, opts.RunIDMap)
-			if err := putAgentTodoState(ctx, tx, todo); err != nil {
-				return err
-			}
-		}
-		forked = meta
-		return nil
+		var err error
+		forked, err = forkWithRunner(ctx, tx, opts)
+		return err
 	})
 	return forked, err
+}
+
+func forkWithRunner(ctx context.Context, tx sqlRunner, opts sessiontree.ForkOptions) (sessiontree.ThreadMeta, error) {
+	if opts.Position == "" {
+		opts.Position = sessiontree.ForkAt
+	}
+	sourceMeta, err := loadThread(ctx, tx, opts.SourceThreadID)
+	if err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
+	if err := requireForkAuthorityClaims(ctx, tx, opts.OperationID, opts.SourceThreadID); err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
+	if sourceMeta.IsClosed() && strings.TrimSpace(opts.OperationID) == "" {
+		return sessiontree.ThreadMeta{}, sessiontree.ErrThreadClosed
+	}
+	targetID := opts.EntryID
+	if targetID == "" && !opts.EntryIDPinned {
+		targetID = sourceMeta.LeafID
+	}
+	if opts.Position == sessiontree.ForkBefore {
+		entry, err := loadEntry(ctx, tx, opts.SourceThreadID, targetID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return sessiontree.ThreadMeta{}, sessiontree.ErrEntryNotFound
+		}
+		if err != nil {
+			return sessiontree.ThreadMeta{}, err
+		}
+		targetID = entry.ParentID
+	}
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	newID := opts.NewThreadID
+	if newID == "" {
+		newID, err = nextForkID(ctx, tx, opts.SourceThreadID)
+		if err != nil {
+			return sessiontree.ThreadMeta{}, err
+		}
+	} else if ok, err := threadExists(ctx, tx, newID); err != nil {
+		return sessiontree.ThreadMeta{}, err
+	} else if ok {
+		if err := requireForkAuthorityClaims(ctx, tx, opts.OperationID, newID); err != nil {
+			return sessiontree.ThreadMeta{}, err
+		}
+		existing, err := loadThread(ctx, tx, newID)
+		if err != nil {
+			return sessiontree.ThreadMeta{}, err
+		}
+		if opts.OperationID != "" && opts.OperationNodeID != "" &&
+			existing.ForkOperationID == opts.OperationID &&
+			existing.ForkOperationNodeID == opts.OperationNodeID &&
+			existing.ForkedFromThreadID == opts.SourceThreadID &&
+			existing.ForkedFromEntryID == targetID &&
+			sessiontree.MatchesForkDestinationMeta(existing, opts.DestinationMeta) {
+			return existing, nil
+		}
+		if opts.OperationID != "" || opts.OperationNodeID != "" {
+			return sessiontree.ThreadMeta{}, sessiontree.ErrForkDestinationConflict
+		}
+		return sessiontree.ThreadMeta{}, sessiontree.ErrThreadExists
+	}
+	if err := requireForkAuthorityClaims(ctx, tx, opts.OperationID, newID); err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
+	path, err := pathWithRunner(ctx, tx, opts.SourceThreadID, targetID)
+	if err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
+	closure := artifact.CloneClosure(opts.ArtifactClosure)
+	if artifact.IsZeroClosure(closure) && strings.TrimSpace(opts.OperationID) == "" {
+		closure, err = sqliteArtifactClosure(ctx, tx, opts.SourceThreadID, newID, path)
+		if err != nil {
+			return sessiontree.ThreadMeta{}, err
+		}
+	}
+	if err := validateSQLiteArtifactClosure(ctx, tx, opts.SourceThreadID, newID, path, closure); err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
+	meta := sessiontree.ThreadMeta{ID: newID, ForkedFromThreadID: opts.SourceThreadID, ForkedFromEntryID: targetID, ForkOperationID: opts.OperationID, ForkOperationNodeID: opts.OperationNodeID, CreatedAt: now, UpdatedAt: now}
+	applyForkDestinationMeta(&meta, opts.DestinationMeta)
+	if err := sessiontree.ValidateThreadMetaAuthority(meta); err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
+	if parentID := strings.TrimSpace(meta.ParentThreadID); parentID != "" {
+		if err := requireForkAuthorityClaims(ctx, tx, opts.OperationID, parentID); err != nil {
+			return sessiontree.ThreadMeta{}, err
+		}
+		parent, err := loadThread(ctx, tx, parentID)
+		if errors.Is(err, sessiontree.ErrThreadNotFound) {
+			return sessiontree.ThreadMeta{}, fmt.Errorf("%w: parent thread %q", sessiontree.ErrInvalidThreadAuthority, parentID)
+		}
+		if err != nil {
+			return sessiontree.ThreadMeta{}, err
+		}
+		if parent.IsClosed() && strings.TrimSpace(opts.OperationID) == "" {
+			return sessiontree.ThreadMeta{}, sessiontree.ErrThreadClosed
+		}
+	}
+	if err := insertThread(ctx, tx, meta); err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
+	oldToNew := map[string]string{"": ""}
+	for _, entry := range path {
+		next := cloneEntry(entry)
+		nextID, err := nextEntryID(ctx, tx, newID)
+		if err != nil {
+			return sessiontree.ThreadMeta{}, err
+		}
+		next.ID = nextID
+		next.ThreadID = newID
+		next.ParentID = oldToNew[entry.ParentID]
+		next.TurnID = rewriteForkID(next.TurnID, opts.TurnIDMap)
+		next.FirstKeptEntryID = oldToNew[entry.FirstKeptEntryID]
+		next.CompactedThroughEntryID = oldToNew[entry.CompactedThroughEntryID]
+		next.KeptUserEntryIDs = rewriteEntryIDs(entry.KeptUserEntryIDs, oldToNew)
+		next.Metadata = rewriteForkMetadata(next.Metadata, oldToNew, opts.TurnIDMap, opts.RunIDMap)
+		if opts.RewriteEntry != nil {
+			next, err = opts.RewriteEntry(next, sessiontree.ForkEntryIdentity{
+				SourceThreadID:      opts.SourceThreadID,
+				DestinationThreadID: newID,
+				TurnIDMap:           opts.TurnIDMap,
+				RunIDMap:            opts.RunIDMap,
+			})
+			if err != nil {
+				return sessiontree.ThreadMeta{}, err
+			}
+		}
+		next.CreatedAt = now
+		next = sessiontree.PrepareEntry(next)
+		ordinal, err := nextOrdinal(ctx, tx, newID)
+		if err != nil {
+			return sessiontree.ThreadMeta{}, err
+		}
+		if err := insertEntry(ctx, tx, next, ordinal, false); err != nil {
+			return sessiontree.ThreadMeta{}, err
+		}
+		oldToNew[entry.ID] = next.ID
+		meta.LeafID = next.ID
+	}
+	if err := copySQLiteArtifactClosure(ctx, tx, closure, oldToNew, now); err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
+	destinationPath, err := pathWithRunner(ctx, tx, newID, meta.LeafID)
+	if err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
+	boundaryID, err := nextEntryID(ctx, tx, newID)
+	if err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
+	boundary, err := sessiontree.PrepareBranchBoundaryEntry(destinationPath, newID, meta.LeafID, boundaryID, "fork", now)
+	if err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
+	if boundary.ID != "" {
+		ordinal, err := nextOrdinal(ctx, tx, newID)
+		if err != nil {
+			return sessiontree.ThreadMeta{}, err
+		}
+		if err := insertEntry(ctx, tx, boundary, ordinal, true); err != nil {
+			return sessiontree.ThreadMeta{}, err
+		}
+		meta.LeafID = boundary.ID
+	}
+	if err := updateThread(ctx, tx, meta); err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
+	if todo, ok, err := loadAgentTodoState(ctx, tx, opts.SourceThreadID); err != nil {
+		return sessiontree.ThreadMeta{}, err
+	} else if ok {
+		todo.ThreadID = newID
+		todo.UpdatedByTurnID = rewriteForkID(todo.UpdatedByTurnID, opts.TurnIDMap)
+		todo.UpdatedByRunID = rewriteForkID(todo.UpdatedByRunID, opts.RunIDMap)
+		if err := putAgentTodoState(ctx, tx, todo); err != nil {
+			return sessiontree.ThreadMeta{}, err
+		}
+	}
+	return meta, nil
+}
+
+func (s *Store) ForkWithInitialEntry(ctx context.Context, opts sessiontree.ForkOptions, initial sessiontree.Entry) (sessiontree.ThreadMeta, sessiontree.Entry, error) {
+	var forked sessiontree.ThreadMeta
+	var saved sessiontree.Entry
+	err := s.withImmediate(ctx, func(tx sqlRunner) error {
+		var err error
+		forked, err = forkWithRunner(ctx, tx, opts)
+		if err != nil {
+			return err
+		}
+		initial.ThreadID = forked.ID
+		saved, err = appendWithRunner(ctx, tx, initial, sessiontree.AppendOptions{Now: opts.Now}, s.now)
+		if err != nil {
+			return err
+		}
+		forked, err = loadThread(ctx, tx, forked.ID)
+		return err
+	})
+	return forked, saved, err
 }
 
 func applyForkDestinationMeta(meta *sessiontree.ThreadMeta, destination *sessiontree.ForkDestinationMeta) {
@@ -705,8 +1004,7 @@ func applyForkDestinationMeta(meta *sessiontree.ThreadMeta, destination *session
 	meta.AgentPath = strings.TrimSpace(destination.AgentPath)
 	meta.HostProfileRef = strings.TrimSpace(destination.HostProfileRef)
 	meta.ForkMode = strings.TrimSpace(destination.ForkMode)
-	meta.Closed = destination.Closed
-	meta.Status = strings.TrimSpace(destination.Status)
+	meta.Lifecycle = destination.Lifecycle
 }
 
 func (s *Store) ReadAgentTodoState(ctx context.Context, threadID string) (sessiontree.AgentTodoState, error) {
@@ -734,7 +1032,24 @@ func (s *Store) CompareAndSwapAgentTodoState(ctx context.Context, state sessiont
 	}
 	var updated sessiontree.AgentTodoState
 	err := s.withImmediate(ctx, func(tx sqlRunner) error {
-		if _, err := loadThread(ctx, tx, state.ThreadID); err != nil {
+		meta, err := loadThread(ctx, tx, state.ThreadID)
+		if err != nil {
+			return err
+		}
+		if err := rejectSQLiteThreadWriteLifecycle(meta); err != nil {
+			return err
+		}
+		if err := rejectClaimedThreadAuthorities(ctx, tx, state.ThreadID); err != nil {
+			return err
+		}
+		active, ok, err := loadTurnLease(ctx, tx, state.ThreadID)
+		if err != nil {
+			return err
+		}
+		if !ok || active.Purpose != sessiontree.TurnLeasePurposeTurn {
+			return sessiontree.ErrActiveTurn
+		}
+		if err := validateSQLiteTurnLeaseMutation(ctx, state.ThreadID, active.TurnID, active, s.now().UTC()); err != nil {
 			return err
 		}
 		current, ok, err := loadAgentTodoState(ctx, tx, state.ThreadID)
@@ -987,64 +1302,262 @@ func (s *Store) PrepareForkOperation(ctx context.Context, rec storage.ForkOperat
 	if err := storage.ValidatePreparedForkOperation(rec); err != nil {
 		return storage.ForkOperationRecord{}, false, err
 	}
+	plan, err := storage.DecodeForkOperationPlan(rec.Plan)
+	if err != nil {
+		return storage.ForkOperationRecord{}, false, err
+	}
+	nodes := storage.ForkOperationPlanNodes(plan)
 	var existing storage.ForkOperationRecord
 	created := false
-	err := s.withImmediate(ctx, func(tx sqlRunner) error {
-		result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO fork_operations(
-			operation_id, request_fingerprint, state, plan_json, result_json, error_code, error_message,
-			created_at, updated_at, finished_at
-		) VALUES(?, ?, ?, ?, '', '', '', ?, ?, '')`,
-			rec.OperationID, rec.RequestFingerprint, string(rec.State), string(rec.Plan),
-			formatTime(rec.CreatedAt), formatTime(rec.UpdatedAt))
+	err = s.withImmediate(ctx, func(tx sqlRunner) error {
+		loaded, err := loadForkOperation(ctx, tx, rec.OperationID)
+		if err == nil {
+			existing = loaded
+			return nil
+		}
+		if !errors.Is(err, storage.ErrForkOperationNotFound) {
+			return err
+		}
+		if err := validateForkOperationPlanAtPrepare(ctx, tx, plan, nodes); err != nil {
+			return err
+		}
+		if err := ensureForkOperationSourcesIdle(ctx, tx, rec.SourceThreadIDs); err != nil {
+			return err
+		}
+		if err := ensureForkOperationDestinationsAbsent(ctx, tx, rec.SourceThreadIDs, rec.AuthorityThreadIDs); err != nil {
+			return err
+		}
+		sourceJSON, err := json.Marshal(rec.SourceThreadIDs)
 		if err != nil {
 			return err
 		}
-		if rows, err := result.RowsAffected(); err != nil {
+		authorityJSON, err := json.Marshal(rec.AuthorityThreadIDs)
+		if err != nil {
 			return err
-		} else {
-			created = rows == 1
 		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO fork_operations(
+			operation_id, request_fingerprint, source_thread_ids_json, authority_thread_ids_json,
+			state, plan_json, result_json, error_code, error_message, created_at, updated_at, finished_at
+		) VALUES(?, ?, ?, ?, ?, ?, '', '', '', ?, ?, '')`,
+			rec.OperationID, rec.RequestFingerprint, string(sourceJSON), string(authorityJSON),
+			string(rec.State), string(rec.Plan), formatTime(rec.CreatedAt), formatTime(rec.UpdatedAt)); err != nil {
+			return err
+		}
+		for _, threadID := range rec.AuthorityThreadIDs {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO thread_authority_claims(thread_id, operation_id, created_at)
+				VALUES(?, ?, ?)`, threadID, rec.OperationID, formatTime(rec.CreatedAt)); err != nil {
+				if isConstraintError(err) {
+					return sessiontree.ErrThreadAuthorityBusy
+				}
+				return err
+			}
+		}
+		created = true
 		existing, err = loadForkOperation(ctx, tx, rec.OperationID)
 		return err
 	})
 	return existing, created, err
 }
 
-func (s *Store) ForkOperation(ctx context.Context, operationID string) (storage.ForkOperationRecord, error) {
-	return loadForkOperation(ctx, s.db, strings.TrimSpace(operationID))
-}
-
-func (s *Store) UpdateForkOperation(ctx context.Context, rec storage.ForkOperationRecord) error {
-	if err := storage.ValidateForkOperationRecord(rec); err != nil {
+func validateForkOperationPlanAtPrepare(ctx context.Context, q sqlRunner, plan storage.ForkOperationPlan, nodes []sessiontree.ForkOptions) error {
+	threads, err := loadThreadAuthorityGraph(ctx, q)
+	if err != nil {
 		return err
 	}
-	return s.withImmediate(ctx, func(tx sqlRunner) error {
-		existing, err := loadForkOperation(ctx, tx, rec.OperationID)
+	rootThreadID := strings.TrimSpace(plan.Root.SourceThreadID)
+	nodeBySource := make(map[string]sessiontree.ForkOptions, len(nodes))
+	for _, node := range nodes {
+		nodeBySource[strings.TrimSpace(node.SourceThreadID)] = node
+	}
+	states := make([]sessiontree.ForkPrepareThreadState, 0)
+	for _, meta := range threads {
+		if meta.ID != rootThreadID && strings.TrimSpace(meta.ParentThreadID) != rootThreadID {
+			continue
+		}
+		path, err := pathWithRunner(ctx, q, meta.ID, meta.LeafID)
 		if err != nil {
 			return err
 		}
-		if existing.RequestFingerprint != rec.RequestFingerprint || !jsonRawEqual(existing.Plan, rec.Plan) {
+		var pinned []sessiontree.Entry
+		if node, ok := nodeBySource[meta.ID]; ok {
+			pinned, err = pathWithRunner(ctx, q, meta.ID, node.EntryID)
+			if err != nil {
+				return err
+			}
+		}
+		pending := 0
+		if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM subagent_inputs WHERE child_thread_id = ? AND state = 'pending'`, meta.ID).Scan(&pending); err != nil {
+			return err
+		}
+		states = append(states, sessiontree.ForkPrepareThreadState{Meta: meta, Path: path, PinnedPath: pinned, PendingInputCount: pending})
+	}
+	if err := sessiontree.ValidateForkPrepareState(rootThreadID, nodes, states); err != nil {
+		return err
+	}
+	for _, state := range states {
+		node, ok := nodeBySource[state.Meta.ID]
+		if !ok {
+			continue
+		}
+		if err := validateSQLiteArtifactClosure(ctx, q, state.Meta.ID, node.NewThreadID, state.PinnedPath, node.ArtifactClosure); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) ForkOperation(ctx context.Context, operationID string) (storage.ForkOperationRecord, error) {
+	var record storage.ForkOperationRecord
+	err := s.withRead(ctx, func(q sqlRunner) error {
+		var err error
+		record, err = loadForkOperation(ctx, q, strings.TrimSpace(operationID))
+		if err != nil || record.State != storage.ForkOperationCompleted {
+			return err
+		}
+		plan, err := storage.DecodeForkOperationPlan(record.Plan)
+		if err != nil {
+			return err
+		}
+		return validateSQLiteCompletedArtifactClosures(ctx, q, plan)
+	})
+	return record, err
+}
+
+func (s *Store) CommitForkOperation(ctx context.Context, req storage.ForkOperationCommitRequest) (storage.ForkOperationRecord, bool, error) {
+	if strings.TrimSpace(req.OperationID) == "" || strings.TrimSpace(req.RequestFingerprint) == "" || len(req.Plan) == 0 || !json.Valid(req.Plan) || len(req.Nodes) == 0 ||
+		len(req.Result) == 0 || !json.Valid(req.Result) || req.FinishedAt.IsZero() {
+		return storage.ForkOperationRecord{}, false, errors.New("fork commit requires operation, fingerprint, complete nodes, result, and finish time")
+	}
+	var terminal storage.ForkOperationRecord
+	replayed := false
+	err := s.withImmediate(ctx, func(tx sqlRunner) error {
+		existing, err := loadForkOperation(ctx, tx, strings.TrimSpace(req.OperationID))
+		if err != nil {
+			return err
+		}
+		if existing.RequestFingerprint != strings.TrimSpace(req.RequestFingerprint) {
 			return storage.ErrForkOperationConflict
 		}
-		if existing.State != storage.ForkOperationPrepared && !forkOperationRecordEqual(existing, rec) {
+		if !jsonRawEqual(existing.Plan, req.Plan) {
 			return storage.ErrForkOperationConflict
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE fork_operations SET
-			state = ?, result_json = ?, error_code = ?, error_message = ?, updated_at = ?, finished_at = ?
-			WHERE operation_id = ?`,
-			string(rec.State), string(rec.Result), rec.ErrorCode, rec.ErrorMessage,
-			formatTime(rec.UpdatedAt), formatTime(rec.FinishedAt), rec.OperationID)
+		plan, err := storage.DecodeForkOperationPlan(existing.Plan)
+		if err != nil {
+			return err
+		}
+		if err := storage.ValidateForkOperationCommitNodes(plan, req.Nodes); err != nil {
+			return err
+		}
+		if existing.State == storage.ForkOperationCompleted {
+			if !jsonRawEqual(existing.Result, req.Result) {
+				return storage.ErrForkOperationConflict
+			}
+			if err := validateSQLiteCompletedArtifactClosures(ctx, tx, plan); err != nil {
+				return err
+			}
+			terminal, replayed = existing, true
+			return nil
+		}
+		if existing.State != storage.ForkOperationPrepared {
+			return storage.ErrForkOperationConflict
+		}
+		if err := validatePreparedForkCommit(ctx, tx, existing, req.Nodes); err != nil {
+			return err
+		}
+		for _, node := range req.Nodes {
+			if _, err := forkWithRunner(ctx, tx, node); err != nil {
+				return err
+			}
+		}
+		if err := validateSQLiteCompletedArtifactClosures(ctx, tx, plan); err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE fork_operations SET state = 'completed', result_json = ?,
+			error_code = '', error_message = '', updated_at = ?, finished_at = ?
+			WHERE operation_id = ? AND state = 'prepared'`, string(req.Result), formatTime(req.FinishedAt), formatTime(req.FinishedAt), existing.OperationID)
+		if err != nil {
+			return err
+		}
+		if count, err := result.RowsAffected(); err != nil {
+			return err
+		} else if count != 1 {
+			return storage.ErrForkOperationConflict
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM thread_authority_claims WHERE operation_id = ?`, existing.OperationID); err != nil {
+			return err
+		}
+		terminal, err = loadForkOperation(ctx, tx, existing.OperationID)
 		return err
 	})
+	return terminal, replayed, err
+}
+
+func validateSQLiteCompletedArtifactClosures(ctx context.Context, q sqlRunner, plan storage.ForkOperationPlan) error {
+	for _, node := range append([]storage.ForkOperationPlanNode{plan.Root}, plan.TerminalChildren...) {
+		if err := validateSQLiteArtifactForkDestination(ctx, q, node.ArtifactClosure); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) FailForkOperation(ctx context.Context, req storage.ForkOperationFailureRequest) (storage.ForkOperationRecord, bool, error) {
+	if strings.TrimSpace(req.OperationID) == "" || strings.TrimSpace(req.RequestFingerprint) == "" ||
+		strings.TrimSpace(req.ErrorCode) == "" || strings.TrimSpace(req.ErrorMessage) == "" || req.FinishedAt.IsZero() {
+		return storage.ForkOperationRecord{}, false, errors.New("fork failure requires operation, fingerprint, typed error, and finish time")
+	}
+	var terminal storage.ForkOperationRecord
+	replayed := false
+	err := s.withImmediate(ctx, func(tx sqlRunner) error {
+		existing, err := loadForkOperation(ctx, tx, strings.TrimSpace(req.OperationID))
+		if err != nil {
+			return err
+		}
+		if existing.RequestFingerprint != strings.TrimSpace(req.RequestFingerprint) {
+			return storage.ErrForkOperationConflict
+		}
+		if existing.State == storage.ForkOperationFailed {
+			if existing.ErrorCode != strings.TrimSpace(req.ErrorCode) || existing.ErrorMessage != strings.TrimSpace(req.ErrorMessage) {
+				return storage.ErrForkOperationConflict
+			}
+			terminal, replayed = existing, true
+			return nil
+		}
+		if existing.State != storage.ForkOperationPrepared {
+			return storage.ErrForkOperationConflict
+		}
+		if err := validatePreparedForkFailure(ctx, tx, existing); err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE fork_operations SET state = 'failed', result_json = '',
+			error_code = ?, error_message = ?, updated_at = ?, finished_at = ?
+			WHERE operation_id = ? AND state = 'prepared'`, strings.TrimSpace(req.ErrorCode), strings.TrimSpace(req.ErrorMessage),
+			formatTime(req.FinishedAt), formatTime(req.FinishedAt), existing.OperationID)
+		if err != nil {
+			return err
+		}
+		if count, err := result.RowsAffected(); err != nil {
+			return err
+		} else if count != 1 {
+			return storage.ErrForkOperationConflict
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM thread_authority_claims WHERE operation_id = ?`, existing.OperationID); err != nil {
+			return err
+		}
+		terminal, err = loadForkOperation(ctx, tx, existing.OperationID)
+		return err
+	})
+	return terminal, replayed, err
 }
 
 func loadForkOperation(ctx context.Context, q sqlRunner, operationID string) (storage.ForkOperationRecord, error) {
 	var rec storage.ForkOperationRecord
-	var state, plan, result, created, updated, finished string
-	err := q.QueryRowContext(ctx, `SELECT operation_id, request_fingerprint, state, plan_json, result_json,
+	var sourceIDs, authorityIDs, state, plan, result, created, updated, finished string
+	err := q.QueryRowContext(ctx, `SELECT operation_id, request_fingerprint, source_thread_ids_json, authority_thread_ids_json,
+		state, plan_json, result_json,
 		error_code, error_message, created_at, updated_at, finished_at
 		FROM fork_operations WHERE operation_id = ?`, operationID).Scan(
-		&rec.OperationID, &rec.RequestFingerprint, &state, &plan, &result,
+		&rec.OperationID, &rec.RequestFingerprint, &sourceIDs, &authorityIDs, &state, &plan, &result,
 		&rec.ErrorCode, &rec.ErrorMessage, &created, &updated, &finished,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1052,6 +1565,12 @@ func loadForkOperation(ctx context.Context, q sqlRunner, operationID string) (st
 	}
 	if err != nil {
 		return storage.ForkOperationRecord{}, err
+	}
+	if err := json.Unmarshal([]byte(sourceIDs), &rec.SourceThreadIDs); err != nil {
+		return storage.ForkOperationRecord{}, fmt.Errorf("decode fork operation source thread ids: %w", err)
+	}
+	if err := json.Unmarshal([]byte(authorityIDs), &rec.AuthorityThreadIDs); err != nil {
+		return storage.ForkOperationRecord{}, fmt.Errorf("decode fork operation authority thread ids: %w", err)
 	}
 	rec.State = storage.ForkOperationState(state)
 	rec.Plan = json.RawMessage(plan)
@@ -1081,6 +1600,8 @@ func jsonRawEqual(left, right json.RawMessage) bool {
 func forkOperationRecordEqual(left, right storage.ForkOperationRecord) bool {
 	return left.OperationID == right.OperationID &&
 		left.RequestFingerprint == right.RequestFingerprint &&
+		stringSliceEqual(left.SourceThreadIDs, right.SourceThreadIDs) &&
+		stringSliceEqual(left.AuthorityThreadIDs, right.AuthorityThreadIDs) &&
 		left.State == right.State &&
 		jsonRawEqual(left.Plan, right.Plan) &&
 		jsonRawEqual(left.Result, right.Result) &&
@@ -1089,6 +1610,190 @@ func forkOperationRecordEqual(left, right storage.ForkOperationRecord) bool {
 		left.CreatedAt.Equal(right.CreatedAt) &&
 		left.UpdatedAt.Equal(right.UpdatedAt) &&
 		left.FinishedAt.Equal(right.FinishedAt)
+}
+
+func ensureForkOperationSourcesIdle(ctx context.Context, q sqlRunner, sourceThreadIDs []string) error {
+	for _, threadID := range sourceThreadIDs {
+		meta, err := loadThread(ctx, q, threadID)
+		if err != nil {
+			return err
+		}
+		if meta.Lifecycle == sessiontree.ThreadLifecycleClosing {
+			return sessiontree.ErrSubAgentClosing
+		}
+		if _, active, err := loadTurnLease(ctx, q, threadID); err != nil {
+			return err
+		} else if active {
+			return sessiontree.ErrActiveTurn
+		}
+	}
+	return nil
+}
+
+func ensureForkOperationDestinationsAbsent(ctx context.Context, q sqlRunner, sourceThreadIDs, authorityThreadIDs []string) error {
+	sources := make(map[string]struct{}, len(sourceThreadIDs))
+	for _, threadID := range sourceThreadIDs {
+		sources[threadID] = struct{}{}
+	}
+	for _, threadID := range authorityThreadIDs {
+		if _, source := sources[threadID]; source {
+			continue
+		}
+		if exists, err := threadExists(ctx, q, threadID); err != nil {
+			return err
+		} else if exists {
+			return sessiontree.ErrForkDestinationConflict
+		}
+		if _, err := loadThreadTombstone(ctx, q, threadID); err == nil {
+			return sessiontree.ErrForkDestinationConflict
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	return nil
+}
+
+func validatePreparedForkCommit(ctx context.Context, q sqlRunner, operation storage.ForkOperationRecord, nodes []sessiontree.ForkOptions) error {
+	sources := make(map[string]struct{}, len(operation.SourceThreadIDs))
+	authority := make(map[string]struct{}, len(operation.AuthorityThreadIDs))
+	destinations := make(map[string]struct{}, len(operation.AuthorityThreadIDs)-len(operation.SourceThreadIDs))
+	for _, threadID := range operation.SourceThreadIDs {
+		sources[threadID] = struct{}{}
+	}
+	for _, threadID := range operation.AuthorityThreadIDs {
+		authority[threadID] = struct{}{}
+		if _, source := sources[threadID]; !source {
+			destinations[threadID] = struct{}{}
+		}
+	}
+	nodeSources := make(map[string]struct{}, len(nodes))
+	nodeDestinations := make(map[string]struct{}, len(nodes))
+	for _, node := range nodes {
+		sourceID := strings.TrimSpace(node.SourceThreadID)
+		destinationID := strings.TrimSpace(node.NewThreadID)
+		if strings.TrimSpace(node.OperationID) != operation.OperationID || strings.TrimSpace(node.OperationNodeID) == "" {
+			return sessiontree.ErrInvalidThreadAuthority
+		}
+		if _, ok := sources[sourceID]; !ok {
+			return sessiontree.ErrInvalidThreadAuthority
+		}
+		if _, ok := destinations[destinationID]; !ok {
+			return sessiontree.ErrInvalidThreadAuthority
+		}
+		if _, duplicate := nodeDestinations[destinationID]; duplicate {
+			return sessiontree.ErrInvalidThreadAuthority
+		}
+		nodeSources[sourceID] = struct{}{}
+		nodeDestinations[destinationID] = struct{}{}
+	}
+	if !sqliteStringSetEqual(nodeSources, sources) || !sqliteStringSetEqual(nodeDestinations, destinations) {
+		return sessiontree.ErrInvalidThreadAuthority
+	}
+	if err := validateExactForkClaims(ctx, q, operation.OperationID, authority); err != nil {
+		return err
+	}
+	for threadID := range sources {
+		if exists, err := threadExists(ctx, q, threadID); err != nil {
+			return err
+		} else if !exists {
+			return sessiontree.ErrAuthorityCorrupt
+		}
+		if _, active, err := loadTurnLease(ctx, q, threadID); err != nil {
+			return err
+		} else if active {
+			return sessiontree.ErrAuthorityCorrupt
+		}
+	}
+	for threadID := range destinations {
+		if exists, err := threadExists(ctx, q, threadID); err != nil {
+			return err
+		} else if exists {
+			return sessiontree.ErrAuthorityCorrupt
+		}
+		if _, err := loadThreadTombstone(ctx, q, threadID); err == nil {
+			return sessiontree.ErrAuthorityCorrupt
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	return nil
+}
+
+func validatePreparedForkFailure(ctx context.Context, q sqlRunner, operation storage.ForkOperationRecord) error {
+	sources := make(map[string]struct{}, len(operation.SourceThreadIDs))
+	authority := make(map[string]struct{}, len(operation.AuthorityThreadIDs))
+	for _, threadID := range operation.SourceThreadIDs {
+		sources[threadID] = struct{}{}
+	}
+	for _, threadID := range operation.AuthorityThreadIDs {
+		authority[threadID] = struct{}{}
+	}
+	if err := validateExactForkClaims(ctx, q, operation.OperationID, authority); err != nil {
+		return err
+	}
+	for threadID := range authority {
+		if _, source := sources[threadID]; source {
+			continue
+		}
+		if exists, err := threadExists(ctx, q, threadID); err != nil {
+			return err
+		} else if exists {
+			return sessiontree.ErrAuthorityCorrupt
+		}
+		if _, err := loadThreadTombstone(ctx, q, threadID); err == nil {
+			return sessiontree.ErrAuthorityCorrupt
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateExactForkClaims(ctx context.Context, q sqlRunner, operationID string, authority map[string]struct{}) error {
+	rows, err := q.QueryContext(ctx, `SELECT thread_id FROM thread_authority_claims WHERE operation_id = ?`, operationID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	claimed := make(map[string]struct{}, len(authority))
+	for rows.Next() {
+		var threadID string
+		if err := rows.Scan(&threadID); err != nil {
+			return err
+		}
+		claimed[threadID] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !sqliteStringSetEqual(claimed, authority) {
+		return sessiontree.ErrAuthorityCorrupt
+	}
+	return nil
+}
+
+func sqliteStringSetEqual(left, right map[string]struct{}) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for value := range left {
+		if _, ok := right[value]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func stringSliceEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Store) Metadata(ctx context.Context, namespace, id string) (storage.MetadataRecord, error) {
@@ -1137,12 +1842,12 @@ func (s *Store) DeleteMetadata(ctx context.Context, namespace, id string) error 
 	})
 }
 
-func (s *Store) ProviderState(ctx context.Context, threadID string) (storage.ProviderStateRecord, error) {
+func (s *Store) ProviderState(ctx context.Context, threadID string) (sessiontree.ProviderStateRecord, error) {
 	threadID = strings.TrimSpace(threadID)
 	if threadID == "" {
-		return storage.ProviderStateRecord{}, errors.New("provider state thread id is required")
+		return sessiontree.ProviderStateRecord{}, errors.New("provider state thread id is required")
 	}
-	var record storage.ProviderStateRecord
+	var record sessiontree.ProviderStateRecord
 	var rawState, updatedAt string
 	err := s.db.QueryRowContext(ctx, `SELECT thread_id, leaf_entry_id, compatibility_key, state_json,
 		created_by_run_id, created_by_turn_id, updated_at
@@ -1151,22 +1856,22 @@ func (s *Store) ProviderState(ctx context.Context, threadID string) (storage.Pro
 		&record.CreatedByRunID, &record.CreatedByTurnID, &updatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
-		return storage.ProviderStateRecord{}, storage.ErrProviderStateNotFound
+		return sessiontree.ProviderStateRecord{}, sessiontree.ErrProviderStateNotFound
 	}
 	if err != nil {
-		return storage.ProviderStateRecord{}, err
+		return sessiontree.ProviderStateRecord{}, err
 	}
 	if err := json.Unmarshal([]byte(rawState), &record.State); err != nil {
-		return storage.ProviderStateRecord{}, fmt.Errorf("decode provider state for thread %q: %w", threadID, err)
+		return sessiontree.ProviderStateRecord{}, fmt.Errorf("decode provider state for thread %q: %w", threadID, err)
 	}
 	if strings.TrimSpace(record.State.Kind) == "" || strings.TrimSpace(record.State.ID) == "" {
-		return storage.ProviderStateRecord{}, fmt.Errorf("provider state for thread %q is incomplete", threadID)
+		return sessiontree.ProviderStateRecord{}, fmt.Errorf("provider state for thread %q is incomplete", threadID)
 	}
 	record.UpdatedAt = parseTime(updatedAt)
 	return record, nil
 }
 
-func (s *Store) PutProviderState(ctx context.Context, record storage.ProviderStateRecord) error {
+func (s *Store) PutProviderState(ctx context.Context, record sessiontree.ProviderStateRecord) error {
 	record.ThreadID = strings.TrimSpace(record.ThreadID)
 	record.LeafEntryID = strings.TrimSpace(record.LeafEntryID)
 	record.CompatibilityKey = strings.TrimSpace(record.CompatibilityKey)
@@ -1183,19 +1888,24 @@ func (s *Store) PutProviderState(ctx context.Context, record storage.ProviderSta
 		return err
 	}
 	return s.withImmediate(ctx, func(tx sqlRunner) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO provider_states(
-			thread_id, leaf_entry_id, compatibility_key, state_json, created_by_run_id, created_by_turn_id, updated_at
-		) VALUES(?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(thread_id) DO UPDATE SET
-			leaf_entry_id = excluded.leaf_entry_id,
-			compatibility_key = excluded.compatibility_key,
-			state_json = excluded.state_json,
-			created_by_run_id = excluded.created_by_run_id,
-			created_by_turn_id = excluded.created_by_turn_id,
-			updated_at = excluded.updated_at`,
-			record.ThreadID, record.LeafEntryID, record.CompatibilityKey, string(rawState),
-			record.CreatedByRunID, record.CreatedByTurnID, formatTime(record.UpdatedAt))
-		return err
+		meta, err := loadThread(ctx, tx, record.ThreadID)
+		if err != nil {
+			return err
+		}
+		if err := rejectSQLiteThreadWriteLifecycle(meta); err != nil {
+			return err
+		}
+		if err := rejectClaimedThreadAuthorities(ctx, tx, record.ThreadID); err != nil {
+			return err
+		}
+		active, ok, err := loadTurnLease(ctx, tx, record.ThreadID)
+		if err != nil {
+			return err
+		}
+		if !ok || validateSQLiteTurnLeaseMutation(ctx, record.ThreadID, "", active, s.now().UTC()) != nil {
+			return sessiontree.ErrStaleAuthority
+		}
+		return putProviderStateWithRunner(ctx, tx, record, rawState)
 	})
 }
 
@@ -1205,112 +1915,115 @@ func (s *Store) DeleteProviderState(ctx context.Context, threadID string) error 
 		return errors.New("provider state thread id is required")
 	}
 	return s.withImmediate(ctx, func(tx sqlRunner) error {
-		_, err := tx.ExecContext(ctx, `DELETE FROM provider_states WHERE thread_id = ?`, threadID)
+		meta, err := loadThread(ctx, tx, threadID)
+		if err != nil {
+			return err
+		}
+		if err := rejectSQLiteThreadWriteLifecycle(meta); err != nil {
+			return err
+		}
+		if err := rejectClaimedThreadAuthorities(ctx, tx, threadID); err != nil {
+			return err
+		}
+		active, ok, err := loadTurnLease(ctx, tx, threadID)
+		if err != nil {
+			return err
+		}
+		if !ok || validateSQLiteTurnLeaseMutation(ctx, threadID, "", active, s.now().UTC()) != nil {
+			return sessiontree.ErrStaleAuthority
+		}
+		_, err = tx.ExecContext(ctx, `DELETE FROM provider_states WHERE thread_id = ?`, threadID)
 		return err
 	})
 }
 
-func (s *Store) DeleteThreadTreeData(ctx context.Context, rootThreadID string) ([]string, error) {
-	rootThreadID = strings.TrimSpace(rootThreadID)
-	if rootThreadID == "" {
-		return nil, errors.New("root thread id is required")
+func putProviderStateWithRunner(ctx context.Context, q sqlRunner, record sessiontree.ProviderStateRecord, rawState []byte) error {
+	_, err := q.ExecContext(ctx, `INSERT INTO provider_states(
+		thread_id, leaf_entry_id, compatibility_key, state_json, created_by_run_id, created_by_turn_id, updated_at
+	) VALUES(?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(thread_id) DO UPDATE SET
+		leaf_entry_id = excluded.leaf_entry_id,
+		compatibility_key = excluded.compatibility_key,
+		state_json = excluded.state_json,
+		created_by_run_id = excluded.created_by_run_id,
+		created_by_turn_id = excluded.created_by_turn_id,
+		updated_at = excluded.updated_at`,
+		record.ThreadID, record.LeafEntryID, record.CompatibilityKey, string(rawState),
+		record.CreatedByRunID, record.CreatedByTurnID, formatTime(record.UpdatedAt))
+	return err
+}
+
+func loadThreadAuthorityClaim(ctx context.Context, q sqlRunner, threadID string) (string, bool, error) {
+	var operationID string
+	err := q.QueryRowContext(ctx, `SELECT operation_id FROM thread_authority_claims WHERE thread_id = ?`, threadID).Scan(&operationID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
 	}
-	var deletedThreadIDs []string
-	err := s.withImmediate(ctx, func(tx sqlRunner) error {
-		threads, err := loadThreadAuthorityGraph(ctx, tx)
+	if err != nil {
+		return "", false, err
+	}
+	return operationID, true, nil
+}
+
+func rejectClaimedThreadAuthorities(ctx context.Context, q sqlRunner, threadIDs ...string) error {
+	for _, threadID := range threadIDs {
+		threadID = strings.TrimSpace(threadID)
+		if threadID == "" {
+			continue
+		}
+		if _, claimed, err := loadThreadAuthorityClaim(ctx, q, threadID); err != nil {
+			return err
+		} else if claimed {
+			return sessiontree.ErrThreadAuthorityBusy
+		}
+	}
+	return nil
+}
+
+func requireForkAuthorityClaims(ctx context.Context, q sqlRunner, operationID string, threadIDs ...string) error {
+	operationID = strings.TrimSpace(operationID)
+	for _, threadID := range threadIDs {
+		threadID = strings.TrimSpace(threadID)
+		if threadID == "" {
+			continue
+		}
+		owner, claimed, err := loadThreadAuthorityClaim(ctx, q, threadID)
 		if err != nil {
 			return err
 		}
-		threadIDs, err := sessiontree.ThreadAuthorityTreeIDs(threads, rootThreadID)
-		if err != nil {
-			return err
+		if operationID == "" {
+			if claimed {
+				return sessiontree.ErrThreadAuthorityBusy
+			}
+			continue
 		}
-		deletedThreadIDs = append([]string(nil), threadIDs...)
-		for _, threadID := range threadIDs {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM metadata_records WHERE id = ?`, threadID); err != nil {
-				return err
-			}
-			if _, err := tx.ExecContext(ctx, `DELETE FROM tool_output_artifacts WHERE thread_id = ?`, threadID); err != nil {
-				return err
-			}
+		if !claimed || owner != operationID {
+			return sessiontree.ErrThreadAuthorityBusy
 		}
-		for i := len(threadIDs) - 1; i >= 0; i-- {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM threads WHERE id = ?`, threadIDs[i]); err != nil {
-				return err
-			}
+	}
+	return nil
+}
+
+func validateSQLiteTurnLeaseMutation(ctx context.Context, threadID, turnID string, active sessiontree.TurnLease, now time.Time) error {
+	proof, hasProof := sessiontree.TurnLeaseFromContext(ctx)
+	relevantProof := hasProof && proof.ThreadID == strings.TrimSpace(threadID)
+	activeExists := active.Validate() == nil
+	if activeExists {
+		if !relevantProof || !sessiontree.SameTurnLease(proof, active) {
+			return sessiontree.ErrActiveTurn
 		}
-		for _, promptScopeID := range threadIDs {
-			for _, table := range []string{"prompt_segments", "prompt_toolsets", "prompt_requests", "prompt_responses"} {
-				if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE prompt_scope_id = ?`, promptScopeID); err != nil {
-					return err
-				}
-			}
+		if !active.Fresh(now) {
+			return sessiontree.ErrStaleAuthority
+		}
+		if strings.TrimSpace(turnID) != "" && strings.TrimSpace(turnID) != active.TurnID {
+			return sessiontree.ErrActiveTurn
 		}
 		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
-	return deletedThreadIDs, nil
-}
-
-func (s *Store) PutToolOutput(ctx context.Context, output artifact.ToolOutputArtifact) (artifact.Ref, error) {
-	if s == nil {
-		return artifact.Ref{}, errors.New("sqlite artifact store is nil")
+	if relevantProof {
+		return sessiontree.ErrActiveTurn
 	}
-	threadID := strings.TrimSpace(output.ThreadID)
-	if threadID == "" {
-		return artifact.Ref{}, errors.New("thread id is required")
-	}
-	if output.MIME == "" {
-		output.MIME = artifact.DefaultMIME
-	}
-	if output.Kind == "" {
-		output.Kind = artifact.DefaultKind
-	}
-	metadata, err := json.Marshal(output.Metadata)
-	if err != nil {
-		return artifact.Ref{}, err
-	}
-	if string(metadata) == "null" {
-		metadata = []byte("{}")
-	}
-	sum := sha256.Sum256([]byte(output.Text))
-	hash := hex.EncodeToString(sum[:])
-	now := time.Now()
-	var ref artifact.Ref
-	err = s.withImmediate(ctx, func(tx sqlRunner) error {
-		if ok, err := threadExists(ctx, tx, threadID); err != nil {
-			return err
-		} else if !ok {
-			return sessiontree.ErrThreadNotFound
-		}
-		var next int64
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(rowid), 0) + 1 FROM tool_output_artifacts`).Scan(&next); err != nil {
-			return err
-		}
-		toolName := artifact.SafeLabel(output.ToolName, 32)
-		ref = artifact.Ref{
-			ID:        artifact.SafeLabel(fmt.Sprintf("%s-%06d-%s", toolName, next, hash[:12]), artifact.DefaultSafeLabelMaxChars),
-			SafeLabel: artifact.SafeLabel(fmt.Sprintf("%s-output-%06d.log", output.ToolName, next), artifact.DefaultSafeLabelMaxChars),
-			URL:       "/api/artifacts/" + artifact.SafeLabel(fmt.Sprintf("%s-%06d-%s", toolName, next, hash[:12]), artifact.DefaultSafeLabelMaxChars),
-			Kind:      output.Kind,
-			MIME:      output.MIME,
-			SizeBytes: int64(len(output.Text)),
-			SHA256:    hash,
-		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO tool_output_artifacts(
-			id, run_id, thread_id, turn_id, prompt_scope_id, step, call_id, tool_name,
-			kind, mime, safe_label, url, size_bytes, sha256, text, metadata_json, created_at
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			ref.ID, output.RunID, threadID, output.TurnID, output.PromptScopeID, output.Step, output.CallID, output.ToolName,
-			ref.Kind, ref.MIME, ref.SafeLabel, ref.URL, ref.SizeBytes, ref.SHA256, output.Text, string(metadata), formatTime(now))
-		return err
-	})
-	if err != nil {
-		return artifact.Ref{}, err
-	}
-	return ref, nil
+	return nil
 }
 
 func (s *Store) DeleteThreadArtifacts(ctx context.Context, threadID string) error {
@@ -1324,66 +2037,71 @@ func (s *Store) DeleteThreadArtifacts(ctx context.Context, threadID string) erro
 	})
 }
 
-func (s *Store) artifactText(ctx context.Context, id string) (string, bool, error) {
-	var text string
-	err := s.db.QueryRowContext(ctx, `SELECT text FROM tool_output_artifacts WHERE id = ?`, id).Scan(&text)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
-	}
-	return text, err == nil, err
-}
-
 func insertThread(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO threads(
 		id, leaf_id, parent_thread_id, parent_turn_id, forked_from_thread_id, forked_from_entry_id, fork_operation_id, fork_operation_node_id,
-		task_name, task_description, agent_path, host_profile_ref, fork_mode, closed, archived,
+		task_name, task_description, agent_path, host_profile_ref, fork_mode, lifecycle, close_operation_id, archived,
 		title, title_status, title_source, title_updated_at, title_error,
-		created_at, updated_at, status, last_viewed_at
+		created_at, updated_at, last_viewed_at
 	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		meta.ID, meta.LeafID, meta.ParentThreadID, meta.ParentTurnID, meta.ForkedFromThreadID, meta.ForkedFromEntryID,
 		meta.ForkOperationID, meta.ForkOperationNodeID,
-		meta.TaskName, meta.TaskDescription, meta.AgentPath, meta.HostProfileRef, meta.ForkMode, boolInt(meta.Closed), boolInt(meta.Archived),
+		meta.TaskName, meta.TaskDescription, meta.AgentPath, meta.HostProfileRef, meta.ForkMode, storedThreadLifecycle(meta), meta.CloseOperationID, boolInt(meta.Archived),
 		meta.Title, string(meta.TitleStatus), string(meta.TitleSource), formatTime(meta.TitleUpdatedAt), meta.TitleError,
-		formatTime(meta.CreatedAt), formatTime(meta.UpdatedAt), meta.Status, formatTime(meta.LastViewedAt))
+		formatTime(meta.CreatedAt), formatTime(meta.UpdatedAt), formatTime(meta.LastViewedAt))
 	return err
 }
 
 func loadTurnLease(ctx context.Context, q sqlRunner, threadID string) (sessiontree.TurnLease, bool, error) {
 	var lease sessiontree.TurnLease
-	var created string
-	err := q.QueryRowContext(ctx, `SELECT thread_id, turn_id, owner_id, created_at
-		FROM active_turn_leases WHERE thread_id = ?`, threadID).Scan(&lease.ThreadID, &lease.TurnID, &lease.OwnerID, &created)
+	var acquired, renewed, expires, purpose string
+	err := q.QueryRowContext(ctx, `SELECT
+		thread_id, purpose, turn_id, mutation_id, mutation_kind, owner_id,
+		generation, heartbeat, acquired_at, renewed_at, expires_at
+		FROM active_turn_leases WHERE thread_id = ?`, threadID).Scan(
+		&lease.ThreadID, &purpose, &lease.TurnID, &lease.MutationID, &lease.MutationKind, &lease.OwnerID,
+		&lease.Generation, &lease.Heartbeat, &acquired, &renewed, &expires,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return sessiontree.TurnLease{}, false, nil
 	}
 	if err != nil {
 		return sessiontree.TurnLease{}, false, err
 	}
-	lease.CreatedAt = parseTime(created)
+	lease.AcquiredAt = parseTime(acquired)
+	lease.RenewedAt = parseTime(renewed)
+	lease.ExpiresAt = parseTime(expires)
+	lease.Purpose, err = sessiontree.TurnLeasePurpose(purpose).Normalize()
+	if err != nil {
+		return sessiontree.TurnLease{}, false, err
+	}
+	if err := lease.Validate(); err != nil {
+		return sessiontree.TurnLease{}, false, fmt.Errorf("invalid sqlite turn lease: %w", err)
+	}
 	return lease, true, nil
 }
 
 func updateThread(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta) error {
 	_, err := tx.ExecContext(ctx, `UPDATE threads SET
 		leaf_id = ?, parent_thread_id = ?, parent_turn_id = ?, forked_from_thread_id = ?, forked_from_entry_id = ?, fork_operation_id = ?, fork_operation_node_id = ?,
-		task_name = ?, task_description = ?, agent_path = ?, host_profile_ref = ?, fork_mode = ?, closed = ?, archived = ?,
+		task_name = ?, task_description = ?, agent_path = ?, host_profile_ref = ?, fork_mode = ?, lifecycle = ?, close_operation_id = ?, archived = ?,
 		title = ?, title_status = ?, title_source = ?, title_updated_at = ?, title_error = ?,
-		created_at = ?, updated_at = ?, status = ?, last_viewed_at = ?
+		created_at = ?, updated_at = ?, last_viewed_at = ?
 		WHERE id = ?`,
 		meta.LeafID, meta.ParentThreadID, meta.ParentTurnID, meta.ForkedFromThreadID, meta.ForkedFromEntryID,
 		meta.ForkOperationID, meta.ForkOperationNodeID,
-		meta.TaskName, meta.TaskDescription, meta.AgentPath, meta.HostProfileRef, meta.ForkMode, boolInt(meta.Closed), boolInt(meta.Archived),
+		meta.TaskName, meta.TaskDescription, meta.AgentPath, meta.HostProfileRef, meta.ForkMode, storedThreadLifecycle(meta), meta.CloseOperationID, boolInt(meta.Archived),
 		meta.Title, string(meta.TitleStatus), string(meta.TitleSource), formatTime(meta.TitleUpdatedAt), meta.TitleError,
-		formatTime(meta.CreatedAt), formatTime(meta.UpdatedAt), meta.Status, formatTime(meta.LastViewedAt), meta.ID)
+		formatTime(meta.CreatedAt), formatTime(meta.UpdatedAt), formatTime(meta.LastViewedAt), meta.ID)
 	return err
 }
 
 func loadThread(ctx context.Context, q sqlRunner, threadID string) (sessiontree.ThreadMeta, error) {
 	meta, err := scanThreadMeta(q.QueryRowContext(ctx, `SELECT
 		id, leaf_id, parent_thread_id, parent_turn_id, forked_from_thread_id, forked_from_entry_id, fork_operation_id, fork_operation_node_id,
-		task_name, task_description, agent_path, host_profile_ref, fork_mode, closed, archived,
+		task_name, task_description, agent_path, host_profile_ref, fork_mode, lifecycle, close_operation_id, archived,
 		title, title_status, title_source, title_updated_at, title_error,
-		created_at, updated_at, status, last_viewed_at
+		created_at, updated_at, last_viewed_at
 		FROM threads WHERE id = ?`, threadID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return sessiontree.ThreadMeta{}, sessiontree.ErrThreadNotFound
@@ -1394,9 +2112,9 @@ func loadThread(ctx context.Context, q sqlRunner, threadID string) (sessiontree.
 func loadThreadAuthorityGraph(ctx context.Context, q sqlRunner) ([]sessiontree.ThreadMeta, error) {
 	rows, err := q.QueryContext(ctx, `SELECT
 		id, leaf_id, parent_thread_id, parent_turn_id, forked_from_thread_id, forked_from_entry_id, fork_operation_id, fork_operation_node_id,
-		task_name, task_description, agent_path, host_profile_ref, fork_mode, closed, archived,
+		task_name, task_description, agent_path, host_profile_ref, fork_mode, lifecycle, close_operation_id, archived,
 		title, title_status, title_source, title_updated_at, title_error,
-		created_at, updated_at, status, last_viewed_at
+		created_at, updated_at, last_viewed_at
 		FROM threads ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -1418,26 +2136,25 @@ func loadThreadAuthorityGraph(ctx context.Context, q sqlRunner) ([]sessiontree.T
 
 func scanThreadMeta(scanner rowScanner) (sessiontree.ThreadMeta, error) {
 	var meta sessiontree.ThreadMeta
-	var archived, closed int
-	var titleStatus, titleSource, titleUpdated, created, updated, status, lastViewed string
+	var archived int
+	var lifecycle, titleStatus, titleSource, titleUpdated, created, updated, lastViewed string
 	err := scanner.Scan(
 		&meta.ID, &meta.LeafID, &meta.ParentThreadID, &meta.ParentTurnID, &meta.ForkedFromThreadID, &meta.ForkedFromEntryID,
 		&meta.ForkOperationID, &meta.ForkOperationNodeID,
-		&meta.TaskName, &meta.TaskDescription, &meta.AgentPath, &meta.HostProfileRef, &meta.ForkMode, &closed, &archived,
+		&meta.TaskName, &meta.TaskDescription, &meta.AgentPath, &meta.HostProfileRef, &meta.ForkMode, &lifecycle, &meta.CloseOperationID, &archived,
 		&meta.Title, &titleStatus, &titleSource, &titleUpdated, &meta.TitleError,
-		&created, &updated, &status, &lastViewed,
+		&created, &updated, &lastViewed,
 	)
 	if err != nil {
 		return sessiontree.ThreadMeta{}, err
 	}
-	meta.Closed = closed != 0
+	meta.Lifecycle = sessiontree.ThreadLifecycle(lifecycle)
 	meta.Archived = archived != 0
 	meta.TitleStatus = sessiontree.ThreadTitleStatus(titleStatus)
 	meta.TitleSource = sessiontree.ThreadTitleSource(titleSource)
 	meta.TitleUpdatedAt = parseTime(titleUpdated)
 	meta.CreatedAt = parseTime(created)
 	meta.UpdatedAt = parseTime(updated)
-	meta.Status = status
 	meta.LastViewedAt = parseTime(lastViewed)
 	if err := sessiontree.ValidateThreadMetaAuthority(meta); err != nil {
 		return sessiontree.ThreadMeta{}, err
@@ -1785,7 +2502,7 @@ func rewriteForkMetadata(metadata map[string]string, entryIDs map[string]string,
 			next = rewriteForkID(value, runIDs)
 		case "turn_id":
 			next = rewriteForkID(value, turnIDs)
-		case "entry_id", "parent_entry_id", "input_entry_id":
+		case "entry_id", "parent_entry_id", "input_entry_id", "subagent_input_id":
 			next = rewriteForkID(value, entryIDs)
 		}
 		out[key] = next
@@ -1798,6 +2515,14 @@ func boolInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func storedThreadLifecycle(meta sessiontree.ThreadMeta) string {
+	lifecycle, err := meta.CanonicalLifecycle()
+	if err != nil {
+		return string(meta.Lifecycle)
+	}
+	return string(lifecycle)
 }
 
 func formatTime(t time.Time) string {
@@ -1833,7 +2558,6 @@ func qualifiedEntryColumns(alias string) string {
 }
 
 var _ storage.Store = (*Store)(nil)
-var _ artifact.Store = (*Store)(nil)
 var _ sessiontree.Repo = (*Store)(nil)
 var _ sessiontree.TurnLeaseRepo = (*Store)(nil)
 var _ sessiontree.AgentTodoStateRepo = (*Store)(nil)

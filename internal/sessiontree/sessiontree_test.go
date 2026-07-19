@@ -250,10 +250,10 @@ func TestFileRepoThreadIDsDoNotShareEncodedDirectoryOrLease(t *testing.T) {
 	if _, err := AppendMessage(ctx, repo, "a_b", "turn-b", session.Message{Role: session.User, Content: "underscore"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.AcquireTurnLease(ctx, TurnLease{ThreadID: "a/b", TurnID: "turn-a", OwnerID: "owner-a", CreatedAt: time.Now()}); err != nil {
+	if err := repo.AcquireTurnLease(ctx, TurnLease{ThreadID: "a/b", TurnID: "turn-a", OwnerID: "owner-a"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.AcquireTurnLease(ctx, TurnLease{ThreadID: "a_b", TurnID: "turn-b", OwnerID: "owner-b", CreatedAt: time.Now()}); err != nil {
+	if err := repo.AcquireTurnLease(ctx, TurnLease{ThreadID: "a_b", TurnID: "turn-b", OwnerID: "owner-b"}); err != nil {
 		t.Fatalf("distinct thread IDs should not share lease file: %v", err)
 	}
 	reloaded := NewFileRepo(root)
@@ -726,7 +726,7 @@ func TestBuildContextProjectionKeepsMessagesCanonicalAndExposesArtifactSegments(
 	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	ref := artifact.Ref{ID: "artifact-1", SafeLabel: "tool-output.log", URL: "/artifacts/tool-output.log", Kind: artifact.DefaultKind, MIME: artifact.DefaultMIME, SizeBytes: 128, SHA256: "abc123"}
+	ref := artifact.Ref{ID: "artifact-1", SafeLabel: "tool-output.log", Kind: artifact.DefaultKind, MIME: artifact.DefaultMIME, SizeBytes: 128, SHA256: "abc123"}
 	if _, err := AppendMessage(ctx, repo, "thread", "turn-1", session.Message{Role: session.User, Content: "inspect"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1022,6 +1022,48 @@ func TestMemoryAndFileRepoDeleteThread(t *testing.T) {
 	}
 }
 
+func TestMemoryRepoDeleteThreadRejectsActiveMutationLeaseWithoutChangingAuthority(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 19, 22, 30, 0, 0, time.UTC)
+	repo, err := NewMemoryRepoWithLeasePolicy(DefaultLeasePolicy, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "thread", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := AppendMessage(ctx, repo, "thread", "turn", session.Message{Role: session.User, Content: "compact me"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := repo.Path(ctx, "thread", entry.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	begin, err := repo.BeginCompaction(ctx, BeginCompactionRequest{
+		ThreadID: "thread", RequestID: "compaction", RequestFingerprint: "request-fingerprint",
+		Source: "provider", SourceLeafID: entry.ID, ActivePathHash: ActivePathHash(path),
+		SummarySchemaVersion: "1", PromptIdentity: "prompt", RequestPayloadHash: "payload",
+		OwnerID: "owner", Now: now,
+	})
+	if err != nil || !begin.Owner || begin.Operation.State != CompactionOperationPrepared || begin.Operation.Lease.Purpose != TurnLeasePurposeMutation {
+		t.Fatalf("begin compaction=%#v err=%v", begin, err)
+	}
+	threadBefore := repo.threads["thread"]
+	leaseBefore := repo.leases["thread"]
+	operationBefore := repo.compactionOperations["compaction"]
+	entriesBefore := len(repo.entries["thread"])
+
+	if err := repo.DeleteThread(ctx, "thread"); !errors.Is(err, ErrActiveTurn) {
+		t.Fatalf("DeleteThread with mutation lease err=%v, want ErrActiveTurn", err)
+	}
+	if repo.threads["thread"] != threadBefore || repo.leases["thread"] != leaseBefore ||
+		repo.compactionOperations["compaction"] != operationBefore || len(repo.entries["thread"]) != entriesBefore {
+		t.Fatalf("rejected delete changed authority: thread=%#v lease=%#v compaction=%#v entries=%d",
+			repo.threads["thread"], repo.leases["thread"], repo.compactionOperations["compaction"], len(repo.entries["thread"]))
+	}
+}
+
 func TestFileRepoRepairsStaleThreadLeafFromJournal(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -1146,6 +1188,218 @@ func TestInvalidParentIsRejected(t *testing.T) {
 	_, err := repo.Append(ctx, Entry{ThreadID: "thread", Type: EntryCustom}, AppendOptions{ParentID: "missing"})
 	if !errors.Is(err, ErrInvalidParent) {
 		t.Fatalf("err = %v, want invalid parent", err)
+	}
+}
+
+func TestMemoryRepoThreadAuthorityClaimBlocksUnownedMutations(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemoryRepo()
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "source"}); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := AppendMessage(ctx, repo, "source", "turn-1", session.Message{Role: session.User, Content: "source"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.AcquireThreadAuthorityClaim(ctx, "operation", []string{"source"}, []string{"source", "fork"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := AppendMessage(ctx, repo, "source", "turn-2", session.Message{Role: session.User, Content: "blocked"}); !errors.Is(err, ErrThreadAuthorityBusy) {
+		t.Fatalf("AppendMessage err = %v, want ErrThreadAuthorityBusy", err)
+	}
+	meta, err := repo.Thread(ctx, "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.Title = "blocked"
+	if err := repo.UpdateThread(ctx, meta); !errors.Is(err, ErrThreadAuthorityBusy) {
+		t.Fatalf("UpdateThread err = %v, want ErrThreadAuthorityBusy", err)
+	}
+	if _, err := repo.CompareAndSwapAgentTodoState(ctx, AgentTodoState{ThreadID: "source"}, 0); !errors.Is(err, ErrThreadAuthorityBusy) {
+		t.Fatalf("CompareAndSwapAgentTodoState err = %v, want ErrThreadAuthorityBusy", err)
+	}
+	if err := repo.MoveLeaf(ctx, "source", entry.ID); !errors.Is(err, ErrThreadAuthorityBusy) {
+		t.Fatalf("MoveLeaf err = %v, want ErrThreadAuthorityBusy", err)
+	}
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "fork"}); !errors.Is(err, ErrThreadAuthorityBusy) {
+		t.Fatalf("CreateThread destination err = %v, want ErrThreadAuthorityBusy", err)
+	}
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "child", ParentThreadID: "source", TaskName: "child", AgentPath: "/root/child"}); !errors.Is(err, ErrThreadAuthorityBusy) {
+		t.Fatalf("CreateThread child err = %v, want ErrThreadAuthorityBusy", err)
+	}
+	if _, err := repo.Fork(ctx, ForkOptions{SourceThreadID: "source", NewThreadID: "other"}); !errors.Is(err, ErrThreadAuthorityBusy) {
+		t.Fatalf("unowned Fork err = %v, want ErrThreadAuthorityBusy", err)
+	}
+	if _, err := repo.Fork(ctx, ForkOptions{SourceThreadID: "source", NewThreadID: "fork", OperationID: "wrong", OperationNodeID: "root"}); !errors.Is(err, ErrInvalidThreadAuthority) {
+		t.Fatalf("wrong-operation Fork err = %v, want ErrInvalidThreadAuthority", err)
+	}
+	if _, err := repo.Fork(ctx, ForkOptions{SourceThreadID: "source", NewThreadID: "fork", OperationID: "operation", OperationNodeID: "root"}); !errors.Is(err, ErrInvalidThreadAuthority) {
+		t.Fatalf("raw operation Fork err = %v, want ErrInvalidThreadAuthority", err)
+	}
+
+	repo.ReleaseThreadAuthorityClaim(ctx, "operation")
+	if _, err := AppendMessage(ctx, repo, "source", "turn-2", session.Message{Role: session.User, Content: "allowed"}); err != nil {
+		t.Fatalf("AppendMessage after release: %v", err)
+	}
+}
+
+func TestMemoryRepoTurnLeaseFencesJournalMutationGeneration(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemoryRepo()
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := repo.AcquireTurnLease(ctx, TurnLease{ThreadID: "thread", TurnID: "turn-1", OwnerID: "owner-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendTurn := func(ctx context.Context, turnID string) error {
+		_, err := AppendMessage(ctx, repo, "thread", turnID, session.Message{Role: session.User, Content: turnID})
+		return err
+	}
+	if err := appendTurn(ctx, "turn-1"); !errors.Is(err, ErrActiveTurn) {
+		t.Fatalf("append without proof err = %v, want ErrActiveTurn", err)
+	}
+	wrongOwner := first
+	wrongOwner.OwnerID = "wrong"
+	if err := appendTurn(ContextWithTurnLease(ctx, wrongOwner), "turn-1"); !errors.Is(err, ErrActiveTurn) {
+		t.Fatalf("append with wrong owner err = %v, want ErrActiveTurn", err)
+	}
+	if err := appendTurn(ContextWithTurnLease(ctx, first), "turn-2"); !errors.Is(err, ErrActiveTurn) {
+		t.Fatalf("append with wrong turn err = %v, want ErrActiveTurn", err)
+	}
+	if err := appendTurn(ContextWithTurnLease(ctx, first), "turn-1"); err != nil {
+		t.Fatalf("append with exact proof: %v", err)
+	}
+	if err := repo.ReleaseTurnLease(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendTurn(ContextWithTurnLease(ctx, first), "turn-1"); !errors.Is(err, ErrActiveTurn) {
+		t.Fatalf("append with released proof err = %v, want ErrActiveTurn", err)
+	}
+	second, err := repo.AcquireTurnLease(ctx, TurnLease{ThreadID: "thread", TurnID: "turn-2", OwnerID: "owner-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := appendTurn(ContextWithTurnLease(ctx, first), "turn-1"); !errors.Is(err, ErrActiveTurn) {
+		t.Fatalf("append with stale generation err = %v, want ErrActiveTurn", err)
+	}
+	if err := appendTurn(ContextWithTurnLease(ctx, second), "turn-2"); err != nil {
+		t.Fatalf("append with current generation: %v", err)
+	}
+}
+
+func TestMemoryRepoSubAgentCloseFencesBeforeTerminalCommit(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemoryRepo()
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "child", ParentThreadID: "parent", TaskName: "child", AgentPath: "/root/child"}); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := repo.AcquireTurnLease(ctx, TurnLease{ThreadID: "child", TurnID: "turn", OwnerID: "owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := PrepareSubAgentCloseRequest{
+		CloseOperationID: "close-1",
+		ParentThreadID:   "parent",
+		TargetThreadID:   "child",
+		Reason:           "test",
+		Now:              time.Now(),
+	}
+	if _, err := repo.PrepareSubAgentClose(ctx, request); !errors.Is(err, ErrThreadAuthorityBusy) {
+		t.Fatalf("PrepareSubAgentClose with foreign lease err = %v, want ErrThreadAuthorityBusy", err)
+	}
+	request.TargetLease = &lease
+	prepared, err := repo.PrepareSubAgentClose(ctx, request)
+	if err != nil || prepared.Replayed || prepared.Operation.State != SubAgentClosePrepared {
+		t.Fatalf("PrepareSubAgentClose result=%#v err=%v", prepared, err)
+	}
+	meta, err := repo.Thread(ctx, "child")
+	if err != nil || !meta.IsClosing() || meta.CloseOperationID != "close-1" {
+		t.Fatalf("prepared child meta=%#v err=%v", meta, err)
+	}
+	if err := repo.ReleaseTurnLease(ctx, lease); err != nil {
+		t.Fatal(err)
+	}
+	finished, err := repo.FinishSubAgentClose(ctx, FinishSubAgentCloseRequest{
+		CloseOperationID: "close-1", ParentThreadID: "parent", TargetThreadID: "child", Reason: "test", Now: time.Now(),
+	})
+	if err != nil || finished.Replayed || len(finished.Threads) != 1 || len(finished.Entries) != 1 {
+		t.Fatalf("FinishSubAgentClose result=%#v err=%v", finished, err)
+	}
+	meta = finished.Threads[0]
+	entry := finished.Entries[0]
+	if !meta.IsClosed() || meta.CloseOperationID != "" || entry.ID == "" || meta.LeafID != entry.ID {
+		t.Fatalf("closed meta=%#v entry=%#v", meta, entry)
+	}
+	entriesBefore, err := repo.Entries(ctx, "child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := repo.FinishSubAgentClose(ctx, FinishSubAgentCloseRequest{
+		CloseOperationID: "close-1", ParentThreadID: "parent", TargetThreadID: "child", Reason: "test",
+	})
+	if err != nil || !replayed.Replayed {
+		t.Fatalf("idempotent FinishSubAgentClose result=%#v err=%v", replayed, err)
+	}
+	entriesAfter, err := repo.Entries(ctx, "child")
+	if err != nil || len(entriesAfter) != len(entriesBefore) {
+		t.Fatalf("idempotent close entries before=%d after=%d err=%v", len(entriesBefore), len(entriesAfter), err)
+	}
+	if _, err := repo.AcquireTurnLease(ctx, TurnLease{ThreadID: "child", TurnID: "later", OwnerID: "later"}); !errors.Is(err, ErrThreadClosed) {
+		t.Fatalf("AcquireTurnLease on closed child err = %v, want ErrThreadClosed", err)
+	}
+	if _, err := AppendMessage(ctx, repo, "child", "later", session.Message{Role: session.User, Content: "later"}); !errors.Is(err, ErrThreadClosed) {
+		t.Fatalf("AppendMessage on closed child err = %v, want ErrThreadClosed", err)
+	}
+	if _, err := repo.CompareAndSwapAgentTodoState(ctx, AgentTodoState{ThreadID: "child"}, 0); !errors.Is(err, ErrThreadClosed) {
+		t.Fatalf("CompareAndSwapAgentTodoState on closed child err = %v, want ErrThreadClosed", err)
+	}
+	if err := repo.MoveLeaf(ctx, "child", entry.ID); !errors.Is(err, ErrThreadClosed) {
+		t.Fatalf("MoveLeaf on closed child err = %v, want ErrThreadClosed", err)
+	}
+	meta.Title = "blocked"
+	if err := repo.UpdateThread(ctx, meta); !errors.Is(err, ErrThreadClosed) {
+		t.Fatalf("UpdateThread on closed child err = %v, want ErrThreadClosed", err)
+	}
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "grandchild", ParentThreadID: "child", TaskName: "grandchild", AgentPath: "/root/child/grandchild"}); !errors.Is(err, ErrThreadClosed) {
+		t.Fatalf("CreateThread under closed child err = %v, want ErrThreadClosed", err)
+	}
+	if _, err := repo.Fork(ctx, ForkOptions{SourceThreadID: "child", NewThreadID: "fork"}); !errors.Is(err, ErrThreadClosed) {
+		t.Fatalf("Fork closed child err = %v, want ErrThreadClosed", err)
+	}
+}
+
+func TestMemoryRepoThreadPublicationRollsBackWithInitialEntry(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemoryRepo()
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	child := ThreadMeta{ID: "child", ParentThreadID: "parent", TaskName: "child", AgentPath: "/root/child"}
+	badInitial := Entry{Type: EntryCustom, ParentID: "missing", Metadata: map[string]string{"kind": "input"}}
+	if _, _, err := repo.CreateThreadWithInitialEntry(ctx, child, badInitial); !errors.Is(err, ErrInvalidParent) {
+		t.Fatalf("CreateThreadWithInitialEntry err = %v, want ErrInvalidParent", err)
+	}
+	if _, err := repo.Thread(ctx, "child"); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("child after rejected publication err = %v, want ErrThreadNotFound", err)
+	}
+	meta, initial, err := repo.CreateThreadWithInitialEntry(ctx, child, Entry{Type: EntryCustom, Metadata: map[string]string{"kind": "input"}})
+	if err != nil || meta.LeafID != initial.ID || initial.ID == "" {
+		t.Fatalf("published child meta=%#v initial=%#v err=%v", meta, initial, err)
+	}
+	if _, err := AppendMessage(ctx, repo, "parent", "turn-1", session.Message{Role: session.User, Content: "source"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repo.ForkWithInitialEntry(ctx, ForkOptions{SourceThreadID: "parent", NewThreadID: "fork"}, badInitial); !errors.Is(err, ErrInvalidParent) {
+		t.Fatalf("ForkWithInitialEntry err = %v, want ErrInvalidParent", err)
+	}
+	if _, err := repo.Thread(ctx, "fork"); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("fork after rejected publication err = %v, want ErrThreadNotFound", err)
 	}
 }
 

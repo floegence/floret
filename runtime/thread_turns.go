@@ -11,6 +11,31 @@ import (
 	"github.com/floegence/floret/internal/sessiontree"
 )
 
+// RecoverInterruptedTurn atomically takes over and finalizes the exact proof bound at host construction.
+func (h *InterruptedTurnRecoveryHost) RecoverInterruptedTurn(ctx context.Context) (RecoverInterruptedTurnResult, error) {
+	if h == nil || h.store == nil || h.harness == nil || h.threadID == "" {
+		return RecoverInterruptedTurnResult{}, errors.New("interrupted turn recovery host is required")
+	}
+	operationCtx, done, err := beginHostOperationContext(h.store, ctx)
+	if err != nil {
+		return RecoverInterruptedTurnResult{}, err
+	}
+	defer done()
+	result, err := h.harness.RecoverInterruptedTurn(operationCtx, agentharness.RecoverInterruptedTurnOptions{
+		ThreadID: string(h.threadID), ParentThreadID: string(h.parentThreadID), ExpectedLease: h.expectedLease,
+	})
+	if err != nil {
+		return RecoverInterruptedTurnResult{}, requestConflictError(runtimeHostError(err), "interrupted_turn_recovery", h.expectedLease.TurnID)
+	}
+	status := TurnStatusFailed
+	if result.Status == sessiontree.TurnAborted {
+		status = TurnStatusCancelled
+	}
+	return RecoverInterruptedTurnResult{
+		ThreadID: ThreadID(result.ThreadID), TurnID: TurnID(result.TurnID), RunID: RunID(result.RunID), Status: status, Replayed: result.Replayed,
+	}, nil
+}
+
 const (
 	defaultThreadTurnsLimit = 50
 	maxThreadTurnsLimit     = 200
@@ -67,7 +92,12 @@ func (h *providerHost) ListThreadTurns(ctx context.Context, req ListThreadTurnsR
 }
 
 func (h *ThreadReadHost) ListThreadTurns(ctx context.Context, req ListThreadTurnsRequest) (ThreadTurnsPage, error) {
-	if err := validateRootThreadAuthority(ctx, h.store, req.ThreadID); err != nil {
+	done, err := beginHostOperation(h.store)
+	if err != nil {
+		return ThreadTurnsPage{}, err
+	}
+	defer done()
+	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, req.ThreadID, "thread read host"); err != nil {
 		return ThreadTurnsPage{}, err
 	}
 	return listThreadTurns(ctx, h.harness, req)
@@ -78,7 +108,12 @@ func (h *providerHost) ReadLatestThreadTurn(ctx context.Context, threadID Thread
 }
 
 func (h *ThreadReadHost) ReadLatestThreadTurn(ctx context.Context, threadID ThreadID) (ThreadTurnSnapshot, error) {
-	if err := validateRootThreadAuthority(ctx, h.store, threadID); err != nil {
+	done, err := beginHostOperation(h.store)
+	if err != nil {
+		return ThreadTurnSnapshot{}, err
+	}
+	defer done()
+	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, threadID, "thread read host"); err != nil {
 		return ThreadTurnSnapshot{}, err
 	}
 	return readLatestThreadTurn(ctx, h.harness, threadID)
@@ -89,7 +124,12 @@ func (h *providerHost) ReadThreadOverview(ctx context.Context, threadID ThreadID
 }
 
 func (h *ThreadReadHost) ReadThreadOverview(ctx context.Context, threadID ThreadID) (ThreadOverview, error) {
-	if err := validateRootThreadAuthority(ctx, h.store, threadID); err != nil {
+	done, err := beginHostOperation(h.store)
+	if err != nil {
+		return ThreadOverview{}, err
+	}
+	defer done()
+	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, threadID, "thread read host"); err != nil {
 		return ThreadOverview{}, err
 	}
 	return readThreadOverview(ctx, h.harness, threadID)

@@ -71,6 +71,66 @@ func TestRegistryRejectsEmptyToolArgsWithoutSubstitution(t *testing.T) {
 	}
 }
 
+func TestRegistryDispatchRequiresEffectAuthorityBeforeToolSideEffects(t *testing.T) {
+	called := false
+	reg := NewRegistry()
+	if err := reg.Register(Define[testArgs](
+		Definition{
+			Name:        "write",
+			InputSchema: StrictObject(map[string]any{"value": String("")}, []string{"value"}),
+			Effects:     []Effect{EffectWrite},
+			Permission:  PermissionSpec{Mode: PermissionAllow},
+		},
+		nil,
+		func(Invocation[testArgs]) ([]ResourceRef, error) {
+			called = true
+			return nil, nil
+		},
+		func(context.Context, Invocation[testArgs]) (Result, error) {
+			called = true
+			return Result{Text: "must not run"}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	result := reg.Dispatch(context.Background(), ToolCall{ID: "call", Name: "write", Args: `{"value":"x"}`}, DispatchOptions{})
+	if !result.IsError || result.Text != ErrEffectDispatcherRequired.Error() || called {
+		t.Fatalf("result=%#v called=%v", result, called)
+	}
+}
+
+func TestRegistryDispatchInvokesHandlerOnlyInsideEffectDispatcher(t *testing.T) {
+	handlerCalled := false
+	dispatcherCalled := false
+	reg := NewRegistry()
+	if err := reg.Register(testTool("read", true, func(context.Context, Invocation[testArgs]) (Result, error) {
+		handlerCalled = true
+		if !dispatcherCalled {
+			t.Fatal("handler ran outside effect dispatcher")
+		}
+		return Result{Text: "ok"}, nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	opts := DispatchOptions{
+		EffectDispatcher: func(_ context.Context, req EffectDispatchRequest, invoke func() Result) Result {
+			dispatcherCalled = true
+			if req.CallID != "call" || req.Name != "read" || req.Permission.Mode != PermissionAllow {
+				t.Fatalf("dispatch request = %#v", req)
+			}
+			return invoke()
+		},
+	}
+	result := reg.Dispatch(context.Background(), ToolCall{ID: "call", Name: "read", Args: `{"value":"x"}`}, opts)
+	if result.IsError || result.Text != "ok" || !dispatcherCalled || !handlerCalled || !result.RequiresEffectFinalization() {
+		t.Fatalf("result=%#v dispatcher=%v handler=%v", result, dispatcherCalled, handlerCalled)
+	}
+	unknown := reg.Dispatch(context.Background(), ToolCall{ID: "missing", Name: "missing", Args: `{}`}, opts)
+	if !unknown.IsError || unknown.RequiresEffectFinalization() {
+		t.Fatalf("pre-dispatch failure incorrectly requires effect finalization: %#v", unknown)
+	}
+}
+
 func TestRegisterValidatesRepeatIdentityIgnoredArguments(t *testing.T) {
 	t.Parallel()
 
@@ -307,10 +367,10 @@ func TestPermissionResolverCanRequireApprovalForRiskyInvocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	var approval ApprovalRequest
-	got := reg.RunWithOptions(context.Background(), ToolCall{ID: "call", Name: "shell", Args: `{"value":"rm file"}`}, func(_ context.Context, req ApprovalRequest) (PermissionDecision, error) {
+	got := runWithOptionsForTest(reg, context.Background(), ToolCall{ID: "call", Name: "shell", Args: `{"value":"rm file"}`}, func(_ context.Context, req ApprovalRequest) (PermissionDecision, error) {
 		approval = req
 		return PermissionDecisionAllow, nil
-	}, RunOptions{RunID: "run", ThreadID: "thread", TurnID: "turn", Step: 2, Labels: map[string]string{"correlation.turn": "turn"}})
+	}, DispatchOptions{RunID: "run", ThreadID: "thread", TurnID: "turn", Step: 2, Labels: map[string]string{"correlation.turn": "turn"}})
 	if got.IsError || got.Text != "ok" {
 		t.Fatalf("result = %#v", got)
 	}
@@ -347,10 +407,10 @@ func TestPermissionDenyDoesNotCallResourcesApproverOrHandler(t *testing.T) {
 	)); err != nil {
 		t.Fatal(err)
 	}
-	got := reg.RunWithOptions(context.Background(), ToolCall{ID: "call", Name: "blocked", Args: `{"value":"x"}`}, func(context.Context, ApprovalRequest) (PermissionDecision, error) {
+	got := runWithOptionsForTest(reg, context.Background(), ToolCall{ID: "call", Name: "blocked", Args: `{"value":"x"}`}, func(context.Context, ApprovalRequest) (PermissionDecision, error) {
 		called = true
 		return PermissionDecisionAllow, nil
-	}, RunOptions{RunID: "run", ThreadID: "session", Step: 7})
+	}, DispatchOptions{RunID: "run", ThreadID: "session", Step: 7})
 	if !got.IsError || got.Text != ErrRejected.Error() {
 		t.Fatalf("result = %#v", got)
 	}
@@ -519,7 +579,7 @@ func TestDefinePassesRunThreadTurnStepAndTypedArgs(t *testing.T) {
 	reg := NewRegistry()
 	var seen Invocation[testArgs]
 	var approvalHost map[string]string
-	opts := RunOptions{
+	opts := DispatchOptions{
 		RunID:         "run",
 		ThreadID:      "thread",
 		TurnID:        "turn",
@@ -552,7 +612,7 @@ func TestDefinePassesRunThreadTurnStepAndTypedArgs(t *testing.T) {
 	)); err != nil {
 		t.Fatal(err)
 	}
-	got := reg.RunWithOptions(context.Background(), ToolCall{ID: "call", Name: "inspect", Args: `{"value":"typed"}`}, func(_ context.Context, req ApprovalRequest) (PermissionDecision, error) {
+	got := runWithOptionsForTest(reg, context.Background(), ToolCall{ID: "call", Name: "inspect", Args: `{"value":"typed"}`}, func(_ context.Context, req ApprovalRequest) (PermissionDecision, error) {
 		approvalHost = req.HostContext
 		if req.HostContext["target_id"] != "env-a" || req.Labels["correlation.turn"] != "turn-1" {
 			t.Fatalf("approval context = %#v labels=%#v", req.HostContext, req.Labels)

@@ -37,6 +37,7 @@ const (
 	SubAgentStatusFailed      SubAgentStatus = "failed"
 	SubAgentStatusCancelled   SubAgentStatus = "cancelled"
 	SubAgentStatusInterrupted SubAgentStatus = "interrupted"
+	SubAgentStatusClosing     SubAgentStatus = "closing"
 	SubAgentStatusClosed      SubAgentStatus = "closed"
 )
 
@@ -53,19 +54,7 @@ const (
 )
 
 const (
-	subAgentInputEntryKind      = "subagent_input"
-	subAgentInputStatePending   = "pending"
-	subAgentInputStateConsumed  = "consumed"
-	subAgentInputStateCancelled = "cancelled"
-
-	subAgentInputKindKey        = "kind"
-	subAgentInputStateKey       = "state"
-	subAgentInputEntryIDKey     = "input_entry_id"
-	subAgentInputMessageHashKey = "message_hash"
-	subAgentInputInterruptKey   = "interrupt"
-	subAgentInputTurnIDKey      = "turn_id"
-	subAgentInputLabelHostKey   = "labels_host_json"
-	subAgentInputLabelCorrKey   = "labels_correlation_json"
+	subAgentAdmittedInputIDKey = "subagent_input_id"
 
 	subAgentApprovalEntryKind = "subagent_approval"
 	subAgentDetailKindKey     = "kind"
@@ -123,22 +112,39 @@ const (
 )
 
 type SpawnSubAgentOptions struct {
+	PublicationID   string
 	ParentThreadID  string
 	ParentTurnID    string
 	ThreadID        string
 	TaskName        string
 	TaskDescription string
 	Message         string
+	Attachments     []session.MessageAttachment
 	HostProfileRef  string
 	ForkMode        SubAgentForkMode
 	Labels          engine.RunLabels
 }
 
 type SendSubAgentInputOptions struct {
+	InputRequestID string
 	ParentThreadID string
 	ChildThreadID  string
 	Message        string
+	Attachments    []session.MessageAttachment
 	Interrupt      bool
+	Labels         engine.RunLabels
+}
+
+type PublishSubAgentPendingToolCompletionOptions struct {
+	InputRequestID string
+	ParentThreadID string
+	ChildThreadID  string
+	Target         sessiontree.PendingToolSettlementTarget
+	Status         PendingToolCompletionStatus
+	Summary        string
+	Output         string
+	Message        string
+	Attachments    []session.MessageAttachment
 	Labels         engine.RunLabels
 }
 
@@ -149,19 +155,10 @@ type WaitSubAgentsOptions struct {
 }
 
 type CloseSubAgentOptions struct {
-	ParentThreadID string
-	ChildThreadID  string
-	Reason         string
-}
-
-type CloseSubAgentsOptions struct {
-	ParentThreadID string
-	Reason         string
-}
-
-type CloseSubAgentsResult struct {
-	Snapshots []SubAgentSnapshot `json:"snapshots"`
-	Closed    int                `json:"closed,omitempty"`
+	CloseOperationID string
+	ParentThreadID   string
+	ChildThreadID    string
+	Reason           string
 }
 
 type ReadSubAgentDetailOptions struct {
@@ -275,7 +272,6 @@ const (
 	SubAgentDetailEventCompaction       SubAgentDetailEventKind = "compaction"
 	SubAgentDetailEventError            SubAgentDetailEventKind = "error"
 	SubAgentDetailEventApproval         SubAgentDetailEventKind = "approval"
-	SubAgentDetailEventInput            SubAgentDetailEventKind = "input"
 	SubAgentDetailEventCustom           SubAgentDetailEventKind = "custom"
 )
 
@@ -330,19 +326,20 @@ type SubAgentDetailControlSignal struct {
 }
 
 type SubAgentDetailToolResult struct {
-	CallID        string        `json:"call_id,omitempty"`
-	ToolName      string        `json:"tool_name,omitempty"`
-	Status        string        `json:"status,omitempty"`
-	Preview       string        `json:"preview,omitempty"`
-	Content       string        `json:"content,omitempty"`
-	Truncated     bool          `json:"truncated,omitempty"`
-	OriginalBytes int           `json:"original_bytes,omitempty"`
-	VisibleBytes  int           `json:"visible_bytes,omitempty"`
-	OriginalLines int           `json:"original_lines,omitempty"`
-	VisibleLines  int           `json:"visible_lines,omitempty"`
-	Strategy      string        `json:"strategy,omitempty"`
-	ContentSHA256 string        `json:"content_sha256,omitempty"`
-	FullOutput    *artifact.Ref `json:"full_output,omitempty"`
+	CallID          string        `json:"call_id,omitempty"`
+	ToolName        string        `json:"tool_name,omitempty"`
+	EffectAttemptID string        `json:"effect_attempt_id,omitempty"`
+	Status          string        `json:"status,omitempty"`
+	Preview         string        `json:"preview,omitempty"`
+	Content         string        `json:"content,omitempty"`
+	Truncated       bool          `json:"truncated,omitempty"`
+	OriginalBytes   int           `json:"original_bytes,omitempty"`
+	VisibleBytes    int           `json:"visible_bytes,omitempty"`
+	OriginalLines   int           `json:"original_lines,omitempty"`
+	VisibleLines    int           `json:"visible_lines,omitempty"`
+	Strategy        string        `json:"strategy,omitempty"`
+	ContentSHA256   string        `json:"content_sha256,omitempty"`
+	FullOutput      *artifact.Ref `json:"full_output,omitempty"`
 }
 
 type SubAgentDetailApproval struct {
@@ -381,12 +378,6 @@ type SubAgentDetailCompaction struct {
 	Metadata                map[string]string `json:"metadata,omitempty"`
 }
 
-type subagentInput struct {
-	entryID string
-	message string
-	labels  engine.RunLabels
-}
-
 type subagentController struct {
 	parentThreadID string
 	threadID       string
@@ -395,7 +386,6 @@ type subagentController struct {
 	thread         *Thread
 
 	mu      sync.Mutex
-	queue   []subagentInput
 	running bool
 	turnID  string
 	closed  bool
@@ -407,151 +397,277 @@ func (h *AgentHarness) SpawnSubAgent(ctx context.Context, opts SpawnSubAgentOpti
 	if h == nil {
 		return SubAgentSnapshot{}, errors.New("agent harness is nil")
 	}
-	h.subagentSpawnMu.Lock()
-	defer h.subagentSpawnMu.Unlock()
+	publicationID := strings.TrimSpace(opts.PublicationID)
+	if publicationID == "" {
+		return SubAgentSnapshot{}, errors.New("subagent publication id is required")
+	}
 	parentID := strings.TrimSpace(opts.ParentThreadID)
 	if parentID == "" {
 		return SubAgentSnapshot{}, errors.New("parent thread id is required")
 	}
-	message := strings.TrimSpace(opts.Message)
-	if message == "" {
-		return SubAgentSnapshot{}, errors.New("subagent message is required")
+	childID := strings.TrimSpace(opts.ThreadID)
+	if childID == "" {
+		return SubAgentSnapshot{}, errors.New("subagent thread id is required")
+	}
+	message := session.Message{Role: session.User, Content: strings.TrimSpace(opts.Message), Attachments: append([]session.MessageAttachment(nil), opts.Attachments...)}
+	if message.Content == "" && len(message.Attachments) == 0 {
+		return SubAgentSnapshot{}, errors.New("subagent message or attachments are required")
 	}
 	taskName, err := normalizeSubAgentTaskName(opts.TaskName)
 	if err != nil {
 		return SubAgentSnapshot{}, err
 	}
-	taskDescription := strings.TrimSpace(opts.TaskDescription)
 	parentMeta, err := h.subAgentParentThread(ctx, parentID)
 	if err != nil {
 		return SubAgentSnapshot{}, err
 	}
-	path := childAgentPath(parentMeta.AgentPath, taskName)
-	childID := strings.TrimSpace(opts.ThreadID)
-	if childID == "" {
-		childID, err = h.nextSubAgentThreadID(ctx)
+	forkMode := opts.ForkMode
+	if forkMode != SubAgentForkNone && forkMode != SubAgentForkFullPath {
+		return SubAgentSnapshot{}, fmt.Errorf("unsupported subagent fork mode %q", forkMode)
+	}
+	now := h.now()
+	childMeta := sessiontree.ThreadMeta{
+		ID:              childID,
+		ParentThreadID:  parentID,
+		ParentTurnID:    strings.TrimSpace(opts.ParentTurnID),
+		TaskName:        taskName,
+		TaskDescription: strings.TrimSpace(opts.TaskDescription),
+		AgentPath:       childAgentPath(parentMeta.AgentPath, taskName),
+		HostProfileRef:  strings.TrimSpace(opts.HostProfileRef),
+		ForkMode:        string(forkMode),
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	var forkOptions *sessiontree.ForkOptions
+	var artifactClosure artifact.Closure
+	if forkMode == SubAgentForkFullPath {
+		path, err := h.options.Repo.Path(ctx, parentID, parentMeta.LeafID)
 		if err != nil {
 			return SubAgentSnapshot{}, err
 		}
-	}
-	now := h.now()
-	forkMode := opts.ForkMode
-	if forkMode == "" {
-		forkMode = SubAgentForkFullPath
-	}
-	var thread *Thread
-	switch forkMode {
-	case SubAgentForkNone:
-		meta := sessiontree.ThreadMeta{
-			ID:              childID,
-			ParentThreadID:  parentID,
-			ParentTurnID:    strings.TrimSpace(opts.ParentTurnID),
-			TaskName:        taskName,
-			TaskDescription: taskDescription,
-			AgentPath:       path,
-			HostProfileRef:  strings.TrimSpace(opts.HostProfileRef),
-			ForkMode:        string(forkMode),
-			CreatedAt:       now,
-			UpdatedAt:       now,
+		artifactRepo, ok := h.options.Repo.(sessiontree.ArtifactAuthorityRepo)
+		if !ok {
+			return SubAgentSnapshot{}, errors.New("session tree repo does not support artifact authority operations")
 		}
-		if _, err := h.options.Repo.CreateThread(ctx, meta); err != nil {
-			return SubAgentSnapshot{}, err
+		entryIDs := make([]string, len(path))
+		for index, entry := range path {
+			entryIDs[index] = entry.ID
 		}
-		thread = h.cacheThread(childID)
-		h.emit(HarnessEvent{Type: EventThreadStarted, ThreadID: childID, ParentID: parentID})
-	case SubAgentForkFullPath:
-		thread, err = h.ForkThread(ctx, ForkOptions{
-			SourceThreadID: parentID,
-			NewThreadID:    childID,
-			DestinationMeta: &sessiontree.ForkDestinationMeta{
-				ParentThreadID:  parentID,
-				ParentTurnID:    strings.TrimSpace(opts.ParentTurnID),
-				TaskName:        taskName,
-				TaskDescription: taskDescription,
-				AgentPath:       path,
-				HostProfileRef:  strings.TrimSpace(opts.HostProfileRef),
-				ForkMode:        string(forkMode),
-			},
+		artifactClosure, err = artifactRepo.ArtifactClosure(ctx, sessiontree.ArtifactClosureRequest{
+			SourceThreadID:      parentID,
+			DestinationThreadID: childID,
+			EntryIDs:            entryIDs,
 		})
 		if err != nil {
 			return SubAgentSnapshot{}, err
 		}
-	default:
-		return SubAgentSnapshot{}, fmt.Errorf("unsupported subagent fork mode %q", forkMode)
-	}
-	ctrl, err := h.ensureSubAgentController(ctx, sessiontree.ThreadMeta{
-		ID:              childID,
-		ParentThreadID:  parentID,
-		TaskName:        taskName,
-		TaskDescription: taskDescription,
-		AgentPath:       path,
-	}, thread)
-	if err != nil {
-		return SubAgentSnapshot{}, err
-	}
-	h.emit(HarnessEvent{
-		Type:     EventSubAgentSpawned,
-		ThreadID: parentID,
-		Message:  message,
-		Metadata: map[string]string{
-			"subagent_thread_id": childID,
-			"subagent_path":      path,
-			"task_name":          taskName,
-			"task_description":   taskDescription,
-			"host_profile_ref":   strings.TrimSpace(opts.HostProfileRef),
-		},
-	})
-	input, err := h.appendSubAgentInput(ctx, childID, message, opts.Labels, false)
-	if err != nil {
-		return SubAgentSnapshot{}, err
-	}
-	if err := h.enqueueSubAgentInput(ctx, ctrl, input, false); err != nil {
-		if cancelErr := h.appendSubAgentInputState(ctx, childID, input.entryID, subAgentInputStateCancelled, nil); cancelErr != nil {
-			return SubAgentSnapshot{}, errors.Join(err, cancelErr)
+		forkOptions = &sessiontree.ForkOptions{
+			SourceThreadID:       parentID,
+			EntryID:              parentMeta.LeafID,
+			EntryIDPinned:        true,
+			ExpectedSourceLeafID: parentMeta.LeafID,
+			NewThreadID:          childID,
+			Now:                  now,
+			DestinationMeta: &sessiontree.ForkDestinationMeta{
+				ParentThreadID:  childMeta.ParentThreadID,
+				ParentTurnID:    childMeta.ParentTurnID,
+				TaskName:        childMeta.TaskName,
+				TaskDescription: childMeta.TaskDescription,
+				AgentPath:       childMeta.AgentPath,
+				HostProfileRef:  childMeta.HostProfileRef,
+				ForkMode:        childMeta.ForkMode,
+			},
+			ArtifactClosure: artifact.CloneClosure(artifactClosure),
+			RewriteEntry:    rewriteForkContextEntry,
 		}
+	}
+	fingerprint, err := subAgentPublicationFingerprint(publicationID, childMeta, forkMode, parentMeta.LeafID, artifactClosure.Fingerprint, message, opts.Labels)
+	if err != nil {
 		return SubAgentSnapshot{}, err
+	}
+	repo, ok := h.options.Repo.(sessiontree.SubAgentInputAuthorityRepo)
+	if !ok {
+		return SubAgentSnapshot{}, errors.New("session tree repo does not support subagent authority operations")
+	}
+	published, err := repo.PublishSubAgent(ctx, sessiontree.PublishSubAgentRequest{
+		PublicationID:      publicationID,
+		RequestFingerprint: fingerprint,
+		ParentThreadID:     parentID,
+		ChildMeta:          childMeta,
+		ForkOptions:        forkOptions,
+		ArtifactClosure:    artifact.CloneClosure(artifactClosure),
+		Message:            message,
+		HostLabels:         cloneStringMap(opts.Labels.Host),
+		CorrelationLabels:  cloneStringMap(opts.Labels.Correlation),
+		Now:                now,
+	})
+	if err != nil {
+		return SubAgentSnapshot{}, err
+	}
+	thread := h.cacheThread(childID)
+	if _, err := h.ensureSubAgentController(ctx, published.Thread, thread); err != nil {
+		return SubAgentSnapshot{}, err
+	}
+	if !published.Replayed {
+		if forkMode == SubAgentForkNone {
+			h.emit(HarnessEvent{Type: EventThreadStarted, ThreadID: childID, ParentID: parentID})
+		} else {
+			h.emit(HarnessEvent{Type: EventThreadForked, ThreadID: childID, EntryID: published.Thread.ForkedFromEntryID, Metadata: map[string]string{"source_thread_id": parentID}})
+		}
+		h.emit(HarnessEvent{
+			Type: EventSubAgentSpawned, ThreadID: parentID, Message: message.Content,
+			Metadata: map[string]string{
+				"subagent_thread_id": childID,
+				"subagent_path":      childMeta.AgentPath,
+				"task_name":          taskName,
+				"task_description":   childMeta.TaskDescription,
+				"host_profile_ref":   childMeta.HostProfileRef,
+				"subagent_input_id":  published.Input.SubAgentInputID,
+			},
+		})
+		h.notifySubAgentUpdate()
 	}
 	return h.subAgentSnapshot(ctx, childID)
 }
 
 func (h *AgentHarness) SendSubAgentInput(ctx context.Context, opts SendSubAgentInputOptions) (SubAgentSnapshot, error) {
+	requestID := strings.TrimSpace(opts.InputRequestID)
+	if requestID == "" {
+		return SubAgentSnapshot{}, errors.New("subagent input request id is required")
+	}
 	meta, err := h.resolveSubAgentMeta(ctx, opts.ParentThreadID, opts.ChildThreadID)
 	if err != nil {
 		return SubAgentSnapshot{}, err
 	}
-	if meta.Closed {
-		return SubAgentSnapshot{}, ErrSubAgentClosed
+	message := session.Message{Role: session.User, Content: strings.TrimSpace(opts.Message), Attachments: append([]session.MessageAttachment(nil), opts.Attachments...)}
+	if message.Content == "" && len(message.Attachments) == 0 {
+		return SubAgentSnapshot{}, errors.New("subagent message or attachments are required")
 	}
-	message := strings.TrimSpace(opts.Message)
-	if message == "" {
-		return SubAgentSnapshot{}, errors.New("subagent message is required")
-	}
-	thread := h.cacheThread(meta.ID)
-	ctrl, err := h.ensureSubAgentController(ctx, meta, thread)
+	fingerprint, err := subAgentInputFingerprint(requestID, strings.TrimSpace(opts.ParentThreadID), meta.ID, message, opts.Labels, opts.Interrupt)
 	if err != nil {
 		return SubAgentSnapshot{}, err
 	}
-	h.emit(HarnessEvent{
-		Type:     EventSubAgentInput,
-		ThreadID: strings.TrimSpace(opts.ParentThreadID),
-		Message:  message,
-		Metadata: map[string]string{
-			"subagent_thread_id": meta.ID,
-			"subagent_path":      meta.AgentPath,
-			"interrupt":          fmt.Sprintf("%t", opts.Interrupt),
-		},
+	repo, ok := h.options.Repo.(sessiontree.SubAgentInputAuthorityRepo)
+	if !ok {
+		return SubAgentSnapshot{}, errors.New("session tree repo does not support subagent authority operations")
+	}
+	input, replayed, err := repo.PublishSubAgentInput(ctx, sessiontree.PublishSubAgentInputRequest{
+		InputRequestID:     requestID,
+		RequestFingerprint: fingerprint,
+		ParentThreadID:     strings.TrimSpace(opts.ParentThreadID),
+		ChildThreadID:      meta.ID,
+		Message:            message,
+		HostLabels:         cloneStringMap(opts.Labels.Host),
+		CorrelationLabels:  cloneStringMap(opts.Labels.Correlation),
+		Interrupt:          opts.Interrupt,
+		Now:                h.now(),
 	})
-	input, err := h.appendSubAgentInput(ctx, meta.ID, message, opts.Labels, opts.Interrupt)
 	if err != nil {
-		return SubAgentSnapshot{}, err
-	}
-	if err := h.enqueueSubAgentInput(ctx, ctrl, input, opts.Interrupt); err != nil {
-		if cancelErr := h.appendSubAgentInputState(ctx, meta.ID, input.entryID, subAgentInputStateCancelled, nil); cancelErr != nil {
-			return SubAgentSnapshot{}, errors.Join(err, cancelErr)
+		if errors.Is(err, sessiontree.ErrThreadClosed) {
+			return SubAgentSnapshot{}, ErrSubAgentClosed
 		}
 		return SubAgentSnapshot{}, err
 	}
+	if !replayed {
+		h.emit(HarnessEvent{
+			Type: EventSubAgentInput, ThreadID: strings.TrimSpace(opts.ParentThreadID), Message: message.Content,
+			Metadata: map[string]string{
+				"subagent_thread_id": meta.ID,
+				"subagent_path":      meta.AgentPath,
+				"subagent_input_id":  input.SubAgentInputID,
+				"interrupt":          fmt.Sprintf("%t", opts.Interrupt),
+			},
+		})
+		h.notifySubAgentUpdate()
+	}
 	return h.subAgentSnapshot(ctx, meta.ID)
+}
+
+func (h *AgentHarness) PublishSubAgentPendingToolCompletion(ctx context.Context, opts PublishSubAgentPendingToolCompletionOptions) (SubAgentSnapshot, error) {
+	requestID := strings.TrimSpace(opts.InputRequestID)
+	if requestID == "" {
+		return SubAgentSnapshot{}, errors.New("subagent pending tool completion input request id is required")
+	}
+	parentID := strings.TrimSpace(opts.ParentThreadID)
+	childID := strings.TrimSpace(opts.ChildThreadID)
+	meta, err := h.resolveSubAgentMeta(ctx, parentID, childID)
+	if err != nil {
+		return SubAgentSnapshot{}, err
+	}
+	if strings.TrimSpace(opts.Target.ThreadID) != childID {
+		return SubAgentSnapshot{}, errors.New("subagent pending tool completion target thread identity mismatch")
+	}
+	message := session.Message{Role: session.User, Content: strings.TrimSpace(opts.Message), Attachments: append([]session.MessageAttachment(nil), opts.Attachments...)}
+	if message.Content == "" && len(message.Attachments) == 0 {
+		return SubAgentSnapshot{}, errors.New("subagent pending tool completion requires message or attachments")
+	}
+	settlement, err := normalizePendingToolSettlement(PendingToolSettlement{
+		TurnID: opts.Target.TurnID, RunID: opts.Target.RunID,
+		ToolCallID: opts.Target.ToolCallID, ToolName: opts.Target.ToolName, Handle: opts.Target.Handle,
+		EffectAttemptID: opts.Target.EffectAttemptID,
+		Status:          pendingToolSettlementStatusFromCompletion(opts.Status), Summary: opts.Summary, Output: opts.Output,
+	})
+	if err != nil {
+		return SubAgentSnapshot{}, err
+	}
+	settlementEntry, settlementFingerprint, err := pendingToolSettlementAuthorityEntry(childID, settlement)
+	if err != nil {
+		return SubAgentSnapshot{}, err
+	}
+	fingerprint, err := subAgentPendingToolCompletionFingerprint(requestID, parentID, childID, opts.Target,
+		opts.Status, settlement.Summary, settlement.Output, message, opts.Labels)
+	if err != nil {
+		return SubAgentSnapshot{}, err
+	}
+	repo, ok := h.options.Repo.(sessiontree.SubAgentInputAuthorityRepo)
+	if !ok {
+		return SubAgentSnapshot{}, errors.New("session tree repo does not support subagent authority operations")
+	}
+	published, err := repo.PublishSubAgentPendingToolCompletion(ctx, sessiontree.PublishSubAgentPendingToolCompletionRequest{
+		InputRequestID: requestID, RequestFingerprint: fingerprint, SettlementFingerprint: settlementFingerprint,
+		ParentThreadID: parentID, ChildThreadID: childID, Target: opts.Target, Settlement: settlementEntry,
+		Message: message, HostLabels: cloneStringMap(opts.Labels.Host), CorrelationLabels: cloneStringMap(opts.Labels.Correlation), Now: h.now(),
+	})
+	if err != nil {
+		if errors.Is(err, sessiontree.ErrThreadClosed) || errors.Is(err, sessiontree.ErrSubAgentClosing) {
+			return SubAgentSnapshot{}, ErrSubAgentClosed
+		}
+		if errors.Is(err, sessiontree.ErrPendingToolTurnNotFound) {
+			return SubAgentSnapshot{}, ErrPendingToolSettlementTargetTurnNotFound
+		}
+		if errors.Is(err, sessiontree.ErrPendingToolRunNotFound) {
+			return SubAgentSnapshot{}, ErrPendingToolSettlementTargetRunNotFound
+		}
+		if errors.Is(err, sessiontree.ErrPendingToolNotFound) {
+			return SubAgentSnapshot{}, ErrPendingToolSettlementTargetToolNotFound
+		}
+		if errors.Is(err, sessiontree.ErrPendingToolNotPending) {
+			return SubAgentSnapshot{}, ErrPendingToolSettlementTargetNotActive
+		}
+		if errors.Is(err, sessiontree.ErrSubAgentRequestConflict) {
+			return SubAgentSnapshot{}, err
+		}
+		if errors.Is(err, sessiontree.ErrRequestConflict) {
+			return SubAgentSnapshot{}, ErrPendingToolSettlementConflict
+		}
+		return SubAgentSnapshot{}, err
+	}
+	if !published.Replayed {
+		if !published.SettlementReplayed {
+			h.emitEntryCommitted(published.Settlement, opts.Target.RunID)
+			h.emit(HarnessEvent{Type: EventEntryAppended, RunID: opts.Target.RunID, ThreadID: childID,
+				TurnID: opts.Target.TurnID, EntryID: published.Settlement.ID, ParentID: published.Settlement.ParentID, Message: pendingToolSettlementEntryKind})
+		}
+		h.emit(HarnessEvent{
+			Type: EventSubAgentInput, ThreadID: parentID, Message: message.Content,
+			Metadata: map[string]string{
+				"subagent_thread_id": childID, "subagent_path": meta.AgentPath,
+				"subagent_input_id": published.Input.SubAgentInputID, "pending_tool_completion": "true",
+			},
+		})
+		h.notifySubAgentUpdate()
+	}
+	return h.subAgentSnapshot(ctx, childID)
 }
 
 func (h *AgentHarness) WaitSubAgents(ctx context.Context, opts WaitSubAgentsOptions) (WaitSubAgentsResult, error) {
@@ -571,7 +687,12 @@ func (h *AgentHarness) WaitSubAgents(ctx context.Context, opts WaitSubAgentsOpti
 	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
+	poll := time.NewTicker(100 * time.Millisecond)
+	defer poll.Stop()
 	for {
+		if err := h.activateSubAgentTargets(ctx, opts.ParentThreadID, targets); err != nil {
+			return WaitSubAgentsResult{}, err
+		}
 		snapshots, err := h.snapshotsForTargets(ctx, opts.ParentThreadID, targets)
 		if err != nil {
 			return WaitSubAgentsResult{}, err
@@ -584,9 +705,28 @@ func (h *AgentHarness) WaitSubAgents(ctx context.Context, opts WaitSubAgentsOpti
 			return WaitSubAgentsResult{}, ctx.Err()
 		case <-timer.C:
 			return WaitSubAgentsResult{Snapshots: snapshots, TimedOut: true}, nil
+		case <-poll.C:
 		case <-h.subAgentUpdateChannel():
 		}
 	}
+}
+
+func (h *AgentHarness) activateSubAgentTargets(ctx context.Context, parentThreadID string, childThreadIDs []string) error {
+	for _, childThreadID := range childThreadIDs {
+		meta, err := h.resolveSubAgentMeta(ctx, parentThreadID, childThreadID)
+		if err != nil {
+			return err
+		}
+		if meta.IsClosed() {
+			continue
+		}
+		ctrl, err := h.ensureSubAgentController(ctx, meta, h.cacheThread(meta.ID))
+		if err != nil {
+			return err
+		}
+		h.startNextSubAgentTurn(ctrl)
+	}
+	return nil
 }
 
 func (h *AgentHarness) ReadSubAgentDetail(ctx context.Context, opts ReadSubAgentDetailOptions) (SubAgentDetail, error) {
@@ -603,7 +743,7 @@ func (h *AgentHarness) ReadSubAgentDetail(ctx context.Context, opts ReadSubAgent
 	if limit > MaxSubAgentDetailLimit {
 		limit = MaxSubAgentDetailLimit
 	}
-	meta, err := h.resolveSubAgentMeta(ctx, opts.ParentThreadID, opts.ChildThreadID)
+	meta, err := h.resolveSubAgentDescendantMeta(ctx, opts.ParentThreadID, opts.ChildThreadID)
 	if err != nil {
 		return SubAgentDetail{}, err
 	}
@@ -1091,13 +1231,6 @@ func threadDetailRetainedFrom(entries []sessiontree.Entry) int64 {
 }
 
 func subAgentDetailRetainedFrom(entries []sessiontree.Entry) int64 {
-	for index, entry := range entries {
-		if entry.Type == sessiontree.EntryCustom &&
-			entry.Metadata[subAgentInputKindKey] == subAgentInputEntryKind &&
-			entry.Metadata[subAgentInputStateKey] == subAgentInputStatePending {
-			return int64(index + 1)
-		}
-	}
 	if len(entries) == 0 {
 		return 0
 	}
@@ -1131,7 +1264,7 @@ func (h *AgentHarness) subAgentDetailEvent(entry sessiontree.Entry, ordinal int6
 		event.Kind = SubAgentDetailEventToolResult
 		event.Type = string(sessiontree.EntryToolResult)
 		event.Message = subAgentDetailMessage(entry.Message, includeRaw)
-		event.ToolResult = subAgentDetailToolResult(entry.Message, includeRaw)
+		event.ToolResult = subAgentDetailToolResult(entry.Message, entry.Metadata, includeRaw)
 	case sessiontree.EntryTurnMarker:
 		event.Kind = SubAgentDetailEventTurnMarker
 		event.Type = string(sessiontree.EntryTurnMarker)
@@ -1151,14 +1284,6 @@ func (h *AgentHarness) subAgentDetailEvent(entry sessiontree.Entry, ordinal int6
 		event.Kind = SubAgentDetailEventCustom
 		event.Type = entry.Metadata[subAgentDetailTypeKey]
 		switch entry.Metadata[subAgentDetailKindKey] {
-		case subAgentInputEntryKind:
-			event.Kind = SubAgentDetailEventInput
-			if event.Type == "" {
-				event.Type = subAgentInputEntryKind
-			}
-			if strings.TrimSpace(entry.Message.Content) != "" {
-				event.Message = subAgentDetailMessage(session.Message{Role: session.User, Content: entry.Message.Content}, includeRaw)
-			}
 		case subAgentApprovalEntryKind:
 			event.Kind = SubAgentDetailEventApproval
 			if event.Type == "" {
@@ -1185,7 +1310,7 @@ func (h *AgentHarness) subAgentDetailEvent(entry sessiontree.Entry, ordinal int6
 				event.Type = pendingToolSettlementEntryKind
 			}
 			event.Message = subAgentDetailMessage(entry.Message, includeRaw)
-			event.ToolResult = subAgentDetailToolResult(entry.Message, includeRaw)
+			event.ToolResult = subAgentDetailToolResult(entry.Message, entry.Metadata, includeRaw)
 		case subAgentLifecycleEntryKind:
 			event.Kind = SubAgentDetailEventCustom
 			if event.Type == "" {
@@ -1213,7 +1338,7 @@ func (h *AgentHarness) subAgentDetailEvent(entry sessiontree.Entry, ordinal int6
 
 func subAgentDetailRawAvailable(event SubAgentDetailEvent) bool {
 	switch event.Kind {
-	case SubAgentDetailEventInput, SubAgentDetailEventUserMessage, SubAgentDetailEventAssistantMessage, SubAgentDetailEventToolCall, SubAgentDetailEventToolDispatch, SubAgentDetailEventToolActivity, SubAgentDetailEventToolResult:
+	case SubAgentDetailEventUserMessage, SubAgentDetailEventAssistantMessage, SubAgentDetailEventToolCall, SubAgentDetailEventToolDispatch, SubAgentDetailEventToolActivity, SubAgentDetailEventToolResult:
 		return true
 	default:
 		return false
@@ -1380,14 +1505,6 @@ func subAgentDetailObservationEvent(detail SubAgentDetailEvent, entry sessiontre
 		if detail.Approval.State == "rejected" || detail.Approval.State == "timed_out" {
 			base.Error = "tool_approval_" + detail.Approval.State
 		}
-		return base, true
-	case SubAgentDetailEventInput:
-		base.Type = observation.EventTypeControlSignal
-		base.ToolID = "subagent_input"
-		base.ToolName = "subagent_input"
-		base.ToolKind = "control"
-		base.Activity = subAgentDetailActivityPresentation("Subagent input", "queued")
-		base.Metadata = map[string]any{"control_disposition": "continue"}
 		return base, true
 	case SubAgentDetailEventTurnMarker:
 		if detail.TurnMarker == nil {
@@ -1700,14 +1817,15 @@ func subAgentDetailToolCall(msg session.Message, includeRaw bool) *SubAgentDetai
 	return out
 }
 
-func subAgentDetailToolResult(msg session.Message, includeRaw bool) *SubAgentDetailToolResult {
+func subAgentDetailToolResult(msg session.Message, metadata map[string]string, includeRaw bool) *SubAgentDetailToolResult {
 	if msg.ToolCallID == "" && msg.ToolName == "" && msg.Content == "" && msg.ToolResult == nil {
 		return nil
 	}
 	out := &SubAgentDetailToolResult{
-		CallID:   msg.ToolCallID,
-		ToolName: msg.ToolName,
-		Preview:  safeSubAgentDetailPreview(msg.Content, 800),
+		CallID:          msg.ToolCallID,
+		ToolName:        msg.ToolName,
+		EffectAttemptID: strings.TrimSpace(metadata[sessiontree.PendingToolEffectAttemptIDKey]),
+		Preview:         safeSubAgentDetailPreview(msg.Content, 800),
 	}
 	if includeRaw {
 		out.Content = msg.Content
@@ -1816,196 +1934,231 @@ func (h *AgentHarness) ListSubAgents(ctx context.Context, parentThreadID string)
 	return out, nil
 }
 
+func (h *AgentHarness) ValidateSubAgentAuthority(ctx context.Context, parentThreadID, childThreadID string) error {
+	if h == nil {
+		return errors.New("agent harness is nil")
+	}
+	_, err := h.resolveSubAgentMeta(ctx, parentThreadID, childThreadID)
+	return err
+}
+
 func (h *AgentHarness) CloseSubAgent(ctx context.Context, opts CloseSubAgentOptions) (SubAgentSnapshot, error) {
 	meta, err := h.resolveSubAgentMeta(ctx, opts.ParentThreadID, opts.ChildThreadID)
 	if err != nil {
 		return SubAgentSnapshot{}, err
 	}
+	operationID := strings.TrimSpace(opts.CloseOperationID)
+	if operationID == "" {
+		return SubAgentSnapshot{}, errors.New("subagent close operation id is required")
+	}
+	reason := strings.TrimSpace(opts.Reason)
+	if reason == "" {
+		return SubAgentSnapshot{}, errors.New("subagent close reason is required")
+	}
+	closeRepo, ok := h.options.Repo.(sessiontree.SubAgentCloseAuthorityRepo)
+	if !ok {
+		return SubAgentSnapshot{}, errors.New("session tree repo does not support atomic subagent close authority")
+	}
+	key := subAgentControllerKey(meta.ID)
+	h.mu.Lock()
+	ctrl := h.subagents[key]
+	h.mu.Unlock()
 	thread := h.cacheThread(meta.ID)
-	ctrl, err := h.ensureSubAgentController(ctx, meta, thread)
+	thread.authorityMu.Lock()
+	var targetLease *sessiontree.TurnLease
+	if local := thread.activeLeaseSnapshot(); strings.TrimSpace(local.OwnerID) != "" {
+		copy := local
+		targetLease = &copy
+	}
+	prepared, err := closeRepo.PrepareSubAgentClose(ctx, sessiontree.PrepareSubAgentCloseRequest{
+		CloseOperationID: operationID,
+		ParentThreadID:   strings.TrimSpace(opts.ParentThreadID),
+		TargetThreadID:   meta.ID,
+		Reason:           reason,
+		TargetLease:      targetLease,
+		Now:              h.now(),
+	})
 	if err != nil {
+		thread.authorityMu.Unlock()
 		return SubAgentSnapshot{}, err
 	}
-	ctrl.mu.Lock()
-	ctrl.closed = true
-	queued := append([]subagentInput(nil), ctrl.queue...)
-	ctrl.queue = nil
-	cancel := ctrl.cancel
-	done := ctrl.done
-	ctrl.mu.Unlock()
-	for _, input := range queued {
-		if err := h.appendSubAgentInputState(ctx, meta.ID, input.entryID, subAgentInputStateCancelled, nil); err != nil {
-			return SubAgentSnapshot{}, err
-		}
+	var cancel context.CancelFunc
+	var done chan struct{}
+	if ctrl != nil {
+		ctrl.mu.Lock()
+		ctrl.closed = true
+		cancel = ctrl.cancel
+		done = ctrl.done
+		ctrl.mu.Unlock()
 	}
-	if cancel != nil {
+	if cancel != nil && prepared.Operation.State == sessiontree.SubAgentClosePrepared {
 		cancel()
 	}
-	if done != nil {
+	thread.authorityMu.Unlock()
+	if done != nil && prepared.Operation.State == sessiontree.SubAgentClosePrepared {
 		select {
 		case <-done:
 		case <-ctx.Done():
 			return SubAgentSnapshot{}, ctx.Err()
 		}
 	}
-	meta, err = h.updateSubAgentMeta(ctx, meta.ID, func(current *sessiontree.ThreadMeta) {
-		current.Closed = true
-		current.Status = string(SubAgentStatusClosed)
+	finished, err := closeRepo.FinishSubAgentClose(ctx, sessiontree.FinishSubAgentCloseRequest{
+		CloseOperationID: operationID,
+		ParentThreadID:   strings.TrimSpace(opts.ParentThreadID),
+		TargetThreadID:   meta.ID,
+		Reason:           reason,
+		Now:              h.now(),
 	})
 	if err != nil {
 		return SubAgentSnapshot{}, err
 	}
-	if err := h.appendSubAgentLifecycleEvent(ctx, meta.ID, map[string]string{
-		subAgentLifecycleActionKey: "closed",
-		subAgentLifecycleReasonKey: closeSubAgentReason(opts.Reason),
-		"parent_thread_id":         strings.TrimSpace(opts.ParentThreadID),
-	}); err != nil {
-		return SubAgentSnapshot{}, err
+	for _, closedMeta := range finished.Threads {
+		h.mu.Lock()
+		closedController := h.subagents[subAgentControllerKey(closedMeta.ID)]
+		h.mu.Unlock()
+		if closedController != nil {
+			closedController.mu.Lock()
+			closedController.closed = true
+			closedController.mu.Unlock()
+		}
 	}
-	h.emit(HarnessEvent{
-		Type:     EventSubAgentClosed,
-		ThreadID: strings.TrimSpace(opts.ParentThreadID),
-		Metadata: map[string]string{
-			"subagent_thread_id": meta.ID,
-			"subagent_path":      meta.AgentPath,
-		},
-	})
+	if !finished.Replayed {
+		for _, entry := range finished.Entries {
+			h.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: entry.ThreadID, EntryID: entry.ID, ParentID: entry.ParentID, Message: subAgentLifecycleEntryKind})
+		}
+		h.emit(HarnessEvent{
+			Type:     EventSubAgentClosed,
+			ThreadID: strings.TrimSpace(opts.ParentThreadID),
+			Metadata: map[string]string{
+				"subagent_thread_id": meta.ID,
+				"subagent_path":      meta.AgentPath,
+				"close_operation_id": operationID,
+			},
+		})
+	}
 	h.notifySubAgentUpdate()
 	return h.subAgentSnapshot(ctx, meta.ID)
 }
 
-func (h *AgentHarness) CloseSubAgents(ctx context.Context, opts CloseSubAgentsOptions) (CloseSubAgentsResult, error) {
-	if h == nil {
-		return CloseSubAgentsResult{}, errors.New("agent harness is nil")
-	}
-	parentThreadID := strings.TrimSpace(opts.ParentThreadID)
-	if parentThreadID == "" {
-		return CloseSubAgentsResult{}, errors.New("parent thread id is required")
-	}
-	metas, err := h.childThreadMetas(ctx, parentThreadID)
-	if err != nil {
-		return CloseSubAgentsResult{}, err
-	}
-	result := CloseSubAgentsResult{Snapshots: make([]SubAgentSnapshot, 0, len(metas))}
-	for _, meta := range metas {
-		snapshot, err := h.subAgentSnapshotFromMeta(ctx, meta)
-		if err != nil {
-			return CloseSubAgentsResult{}, err
-		}
-		if shouldCloseSubAgentForParentStop(snapshot) {
-			snapshot, err = h.CloseSubAgent(ctx, CloseSubAgentOptions{
-				ParentThreadID: parentThreadID,
-				ChildThreadID:  snapshot.ThreadID,
-				Reason:         opts.Reason,
-			})
-			if err != nil {
-				return CloseSubAgentsResult{}, err
-			}
-			result.Closed++
-		}
-		result.Snapshots = append(result.Snapshots, snapshot)
-	}
-	return result, nil
-}
-
-func (h *AgentHarness) enqueueSubAgentInput(ctx context.Context, ctrl *subagentController, input subagentInput, interrupt bool) error {
-	ctrl.mu.Lock()
-	if ctrl.closed {
-		ctrl.mu.Unlock()
-		return ErrSubAgentClosed
-	}
-	var cancelled []subagentInput
-	if interrupt {
-		cancelled = append(cancelled, ctrl.queue...)
-		if ctrl.cancel != nil {
-			ctrl.cancel()
-		}
-		ctrl.queue = []subagentInput{input}
-	} else {
-		ctrl.queue = append(ctrl.queue, input)
-	}
-	shouldStart := !ctrl.running
-	ctrl.mu.Unlock()
-	for _, old := range cancelled {
-		if err := h.appendSubAgentInputState(ctx, ctrl.threadID, old.entryID, subAgentInputStateCancelled, nil); err != nil {
-			return err
-		}
-	}
-	h.notifySubAgentUpdate()
-	if shouldStart {
-		h.startNextSubAgentTurn(ctrl)
-	}
-	return nil
-}
-
 func (h *AgentHarness) startNextSubAgentTurn(ctrl *subagentController) {
 	ctrl.mu.Lock()
-	if ctrl.closed || ctrl.running || len(ctrl.queue) == 0 {
+	if ctrl.closed || ctrl.running {
 		ctrl.mu.Unlock()
 		return
 	}
-	turnID, err := h.nextSubAgentTurnID(context.Background(), ctrl.threadID)
+	thread := ctrl.thread
+	ctrl.mu.Unlock()
+
+	executionCtx, finishExecution, err := h.beginSubAgentExecution()
 	if err != nil {
-		ctrl.mu.Unlock()
 		h.notifySubAgentUpdate()
 		return
 	}
-	input := ctrl.queue[0]
-	ctrl.queue = ctrl.queue[1:]
-	runCtx, cancel := h.subAgentRunContext()
+	executionTransferred := false
+	defer func() {
+		if !executionTransferred {
+			finishExecution()
+		}
+	}()
+
+	turnID, err := h.nextSubAgentTurnID(executionCtx, ctrl.threadID)
+	if err != nil {
+		h.notifySubAgentUpdate()
+		return
+	}
+	runID := h.nextID("run")
+	if err := thread.enterTurn(); err != nil {
+		h.notifySubAgentUpdate()
+		return
+	}
+	repo, ok := h.options.Repo.(sessiontree.SubAgentInputAuthorityRepo)
+	if !ok {
+		thread.leaveTurn()
+		h.notifySubAgentUpdate()
+		return
+	}
+	admission, err := repo.AdmitSubAgentInput(executionCtx, sessiontree.AdmitSubAgentInputRequest{
+		ParentThreadID: ctrl.parentThreadID,
+		ChildThreadID:  ctrl.threadID,
+		TurnID:         turnID,
+		RunID:          runID,
+		OwnerID:        h.nextID("lease"),
+		Now:            h.now(),
+	})
+	if err != nil {
+		thread.leaveTurn()
+		if !errors.Is(err, sessiontree.ErrSubAgentInputNotFound) && !errors.Is(err, sessiontree.ErrActiveTurn) {
+			h.notifySubAgentUpdate()
+		}
+		return
+	}
+	if admission.Replayed {
+		thread.leaveTurn()
+		h.notifySubAgentUpdate()
+		return
+	}
+	lease := admission.Lease
+	if err := thread.bindActiveLease(lease); err != nil {
+		leaseCtx := sessiontree.ContextWithTurnLease(executionCtx, lease)
+		_, _ = thread.finishTurn(leaseCtx, runID, terminalTurnEntryID(ctrl.threadID, turnID, runID), sessiontree.TurnFailed,
+			map[string]string{"run_id": runID, "diagnostic": "local_owner_bind_error"}, err.Error(), nil)
+		thread.leaveTurn()
+		h.notifySubAgentUpdate()
+		return
+	}
+	releaseLease := func(ctx context.Context) {
+		thread.clearActiveLease(lease)
+		thread.leaveTurn()
+	}
+
+	labels := engine.RunLabels{
+		Host:        cloneStringMap(admission.Input.HostLabels),
+		Correlation: cloneStringMap(admission.Input.CorrelationLabels),
+	}
+	runCtx, cancel := h.subAgentRunContext(executionCtx)
+	ctrl.mu.Lock()
+	cancelImmediately := ctrl.closed
 	ctrl.running = true
 	ctrl.turnID = turnID
 	ctrl.cancel = cancel
 	ctrl.done = make(chan struct{})
-	thread := ctrl.thread
-	done := ctrl.done
 	ctrl.mu.Unlock()
-
-	if !h.subAgentCanStartQueuedInput(context.Background(), thread) {
+	if cancelImmediately {
 		cancel()
-		ctrl.mu.Lock()
-		ctrl.running = false
-		ctrl.turnID = ""
-		ctrl.cancel = nil
-		ctrl.queue = append([]subagentInput{input}, ctrl.queue...)
-		if ctrl.done == done {
-			ctrl.done = nil
-		}
-		ctrl.mu.Unlock()
-		if done != nil {
-			close(done)
-		}
-		h.notifySubAgentUpdate()
-		return
 	}
-	if err := h.appendSubAgentInputState(context.Background(), ctrl.threadID, input.entryID, subAgentInputStateConsumed, map[string]string{subAgentInputTurnIDKey: turnID}); err != nil {
-		cancel()
-		ctrl.mu.Lock()
-		ctrl.running = false
-		ctrl.turnID = ""
-		ctrl.cancel = nil
-		ctrl.queue = append([]subagentInput{input}, ctrl.queue...)
-		if ctrl.done == done {
-			ctrl.done = nil
-		}
-		ctrl.mu.Unlock()
-		if done != nil {
-			close(done)
-		}
-		h.notifySubAgentUpdate()
-		return
-	}
+	h.emitEntryCommitted(admission.TurnStarted, runID)
+	h.emitEntryCommitted(admission.UserMessage, runID)
+	h.emit(HarnessEvent{Type: EventTurnStarted, RunID: runID, ThreadID: ctrl.threadID, TurnID: turnID})
+	h.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: ctrl.threadID, TurnID: turnID, EntryID: admission.UserMessage.ID, ParentID: admission.UserMessage.ParentID})
 	h.notifySubAgentUpdate()
+	executionTransferred = true
 	go func() {
-		result, err := thread.Run(runCtx, input.message, RunOptions{
-			TurnID: turnID,
-			Labels: input.labels,
-			DeadlineMetadata: map[string]string{
-				subAgentTerminalReasonKey: subAgentRunTimeoutReason,
-			},
-		})
-		timeout := errors.Is(err, context.DeadlineExceeded)
+		defer finishExecution()
+		leaseCtx := sessiontree.ContextWithTurnLease(runCtx, lease)
+		renewedCtx, stopRenewal, renewalStartErr := thread.startLeaseRenewal(leaseCtx, lease)
+		result, err := TurnResult{}, renewalStartErr
+		if renewalStartErr != nil {
+			_, _ = thread.finishTurn(leaseCtx, runID, terminalTurnEntryID(ctrl.threadID, turnID, runID), sessiontree.TurnFailed,
+				map[string]string{"run_id": runID, "diagnostic": "lease_renewal_start_error"}, renewalStartErr.Error(), nil)
+		} else {
+			result, err = thread.runLeased(renewedCtx, admission.Input.Message.Content, RunOptions{
+				RunID:               runID,
+				TurnID:              turnID,
+				Attachments:         append([]session.MessageAttachment(nil), admission.Input.Message.Attachments...),
+				Labels:              labels,
+				AdmittedInputID:     admission.Input.SubAgentInputID,
+				AdmissionCommitted:  true,
+				AdmissionBaseLeafID: admission.TurnStarted.ParentID,
+				DeadlineMetadata: map[string]string{
+					subAgentTerminalReasonKey: subAgentRunTimeoutReason,
+				},
+			}, nil)
+			if renewalErr := stopRenewal(); renewalErr != nil && err == nil {
+				err = renewalErr
+			}
+		}
 		cancel()
+		releaseLease(leaseCtx)
 		status := string(result.Status)
 		if err != nil && status == "" {
 			status = string(engine.Failed)
@@ -2014,41 +2167,35 @@ func (h *AgentHarness) startNextSubAgentTurn(ctrl *subagentController) {
 		ctrl.running = false
 		ctrl.turnID = ""
 		ctrl.cancel = nil
-		closed := ctrl.closed
-		hasNext := len(ctrl.queue) > 0 && !closed
 		done := ctrl.done
 		ctrl.done = nil
 		ctrl.mu.Unlock()
-		if !closed && isSettledSubAgentStatus(SubAgentStatus(status)) {
-			_, _ = h.updateSubAgentMeta(context.Background(), ctrl.threadID, func(current *sessiontree.ThreadMeta) {
-				current.Status = status
-				if timeout {
-					current.Status = string(SubAgentStatusCancelled)
-				}
-			})
-		}
 		if done != nil {
 			close(done)
 		}
 		h.emit(HarnessEvent{
-			Type:     EventSubAgentCompleted,
-			ThreadID: ctrl.parentThreadID,
-			Status:   status,
-			Message:  result.Output,
-			Metadata: map[string]string{
-				"subagent_thread_id": ctrl.threadID,
-				"subagent_path":      ctrl.path,
-			},
+			Type: EventSubAgentCompleted, ThreadID: ctrl.parentThreadID, Status: status, Message: result.Output,
+			Metadata: map[string]string{"subagent_thread_id": ctrl.threadID, "subagent_path": ctrl.path},
 		})
 		h.notifySubAgentUpdate()
-		if hasNext {
-			h.startNextSubAgentTurn(ctrl)
-		}
 	}()
 }
 
-func (h *AgentHarness) subAgentRunContext() (context.Context, context.CancelFunc) {
-	base, baseCancel := context.WithCancel(context.Background())
+func (h *AgentHarness) beginSubAgentExecution() (context.Context, func(), error) {
+	if h != nil && h.options.BeginSubAgentExecution != nil {
+		ctx, finish, err := h.options.BeginSubAgentExecution()
+		if err != nil {
+			return nil, nil, err
+		}
+		if ctx == nil || finish == nil {
+			return nil, nil, errors.New("subagent execution lifetime authority returned an invalid handle")
+		}
+		return ctx, finish, nil
+	}
+	return nil, nil, errors.New("subagent execution lifetime authority is required")
+}
+
+func (h *AgentHarness) subAgentRunContext(base context.Context) (context.Context, context.CancelFunc) {
 	timeout := DefaultSubAgentRunTimeout
 	if h != nil && h.options.SubAgentRunTimeout > 0 {
 		timeout = h.options.SubAgentRunTimeout
@@ -2057,49 +2204,19 @@ func (h *AgentHarness) subAgentRunContext() (context.Context, context.CancelFunc
 		timeout = MaxSubAgentRunTimeout
 	}
 	if timeout <= 0 {
-		return base, baseCancel
+		return context.WithCancel(base)
 	}
-	ctx, timeoutCancel := context.WithTimeout(base, timeout)
-	return ctx, func() {
-		timeoutCancel()
-		baseCancel()
-	}
+	return context.WithTimeout(base, timeout)
 }
 
-func (h *AgentHarness) subAgentCanStartQueuedInput(ctx context.Context, thread *Thread) bool {
-	if thread == nil {
-		return false
-	}
-	if lease, ok, err := h.activeTurnLease(ctx, thread.ID()); err != nil || ok && lease.TurnID != "" {
-		return false
-	}
-	read, err := thread.Read(ctx)
-	if err != nil {
-		return false
-	}
-	return read.CanAppendMessage
-}
-
-func (h *AgentHarness) appendSubAgentLifecycleEvent(ctx context.Context, threadID string, metadata map[string]string) error {
-	if h == nil || h.options.Repo == nil {
-		return nil
-	}
+func subAgentLifecycleEntry(threadID string, metadata map[string]string) sessiontree.Entry {
 	meta := cloneStringMap(metadata)
 	if meta == nil {
 		meta = map[string]string{}
 	}
 	meta[subAgentDetailKindKey] = subAgentLifecycleEntryKind
 	meta[subAgentDetailTypeKey] = subAgentLifecycleEntryKind
-	entry, err := h.options.Repo.Append(ctx, sessiontree.Entry{
-		ThreadID: threadID,
-		Type:     sessiontree.EntryCustom,
-		Metadata: meta,
-	}, sessiontree.AppendOptions{})
-	if err != nil {
-		return err
-	}
-	h.emit(HarnessEvent{Type: EventEntryAppended, ThreadID: threadID, EntryID: entry.ID, ParentID: entry.ParentID, Message: subAgentLifecycleEntryKind})
-	return nil
+	return sessiontree.Entry{ThreadID: threadID, Type: sessiontree.EntryCustom, Metadata: meta}
 }
 
 func (h *AgentHarness) ensureSubAgentController(ctx context.Context, meta sessiontree.ThreadMeta, thread *Thread) (*subagentController, error) {
@@ -2116,18 +2233,13 @@ func (h *AgentHarness) ensureSubAgentController(ctx context.Context, meta sessio
 		return ctrl, nil
 	}
 	h.mu.Unlock()
-	pending, err := h.pendingSubAgentInputs(ctx, meta.ID)
-	if err != nil {
-		return nil, err
-	}
 	ctrl := &subagentController{
 		parentThreadID: meta.ParentThreadID,
 		threadID:       meta.ID,
 		path:           meta.AgentPath,
 		taskName:       meta.TaskName,
 		thread:         thread,
-		closed:         meta.Closed,
-		queue:          pending,
+		closed:         meta.IsClosed(),
 	}
 	h.mu.Lock()
 	if existing, ok := h.subagents[key]; ok {
@@ -2187,74 +2299,47 @@ func (h *AgentHarness) subAgentSnapshot(ctx context.Context, threadID string) (S
 
 func (h *AgentHarness) subAgentSnapshotFromMeta(ctx context.Context, meta sessiontree.ThreadMeta) (SubAgentSnapshot, error) {
 	thread := h.cacheThread(meta.ID)
-	status := subAgentStatusFromMeta(meta)
+	status := SubAgentStatusIdle
 	queued, err := h.pendingSubAgentInputCount(ctx, meta.ID)
 	if err != nil {
 		return SubAgentSnapshot{}, err
 	}
+	if meta.IsClosed() {
+		queued = 0
+	}
+	writeClosed := meta.IsClosed() || meta.IsClosing()
 	liveRunning := false
 	key := subAgentControllerKey(meta.ID)
 	h.mu.Lock()
 	ctrl := h.subagents[key]
 	h.mu.Unlock()
-	if ctrl == nil && queued > 0 && !meta.Closed {
-		var err error
-		ctrl, err = h.ensureSubAgentController(ctx, meta, thread)
-		if err != nil {
-			return SubAgentSnapshot{}, err
-		}
-	}
-	if ctrl != nil && queued > 0 && !meta.Closed {
-		h.startNextSubAgentTurn(ctrl)
-		nextQueued, err := h.pendingSubAgentInputCount(ctx, meta.ID)
-		if err != nil {
-			return SubAgentSnapshot{}, err
-		}
-		queued = nextQueued
-	}
 	runningTurnID := ""
 	if ctrl != nil {
 		ctrl.mu.Lock()
-		if ctrl.running && !meta.Closed {
+		if ctrl.running && !writeClosed {
 			liveRunning = true
 			runningTurnID = ctrl.turnID
 			status = SubAgentStatusRunning
 		}
 		ctrl.mu.Unlock()
 	}
-	if queued > 0 && !meta.Closed && status != SubAgentStatusRunning {
+	if queued > 0 && !writeClosed && status != SubAgentStatusRunning {
 		status = SubAgentStatusRunning
 	}
 	read, err := thread.Read(ctx)
-	if err == nil {
-		if !meta.Closed && queued == 0 && read.Status != "" {
-			readStatus := SubAgentStatus(read.Status)
-			if !liveRunning || runningTurnID != "" && read.LatestTurnID == runningTurnID && isSettledSubAgentStatus(readStatus) {
-				liveRunning = false
-				status = readStatus
-			}
+	if err != nil {
+		return SubAgentSnapshot{}, err
+	}
+	if meta.IsClosed() {
+		status = SubAgentStatusClosed
+	} else if meta.IsClosing() {
+		status = SubAgentStatusClosing
+	} else if !writeClosed && queued == 0 && read.Status != "" {
+		readStatus := SubAgentStatus(read.Status)
+		if !liveRunning || runningTurnID != "" && read.LatestTurnID == runningTurnID && isSettledSubAgentStatus(readStatus) {
+			liveRunning = false
+			status = readStatus
 		}
-		return SubAgentSnapshot{
-			ThreadID:        meta.ID,
-			Path:            meta.AgentPath,
-			TaskName:        meta.TaskName,
-			TaskDescription: meta.TaskDescription,
-			ParentThreadID:  meta.ParentThreadID,
-			ParentTurnID:    meta.ParentTurnID,
-			HostProfileRef:  meta.HostProfileRef,
-			ForkMode:        SubAgentForkMode(meta.ForkMode),
-			Status:          status,
-			LatestTurnID:    read.LatestTurnID,
-			LastMessage:     latestSubAgentMessage(read.Messages),
-			WaitingPrompt:   read.WaitingPrompt,
-			QueuedInputs:    queued,
-			CreatedAt:       meta.CreatedAt,
-			UpdatedAt:       meta.UpdatedAt,
-			Closed:          meta.Closed,
-			CanSendInput:    !meta.Closed,
-			CanInterrupt:    !meta.Closed && status == SubAgentStatusRunning,
-			CanClose:        !meta.Closed,
-		}, nil
 	}
 	return SubAgentSnapshot{
 		ThreadID:        meta.ID,
@@ -2266,56 +2351,17 @@ func (h *AgentHarness) subAgentSnapshotFromMeta(ctx context.Context, meta sessio
 		HostProfileRef:  meta.HostProfileRef,
 		ForkMode:        SubAgentForkMode(meta.ForkMode),
 		Status:          status,
+		LatestTurnID:    read.LatestTurnID,
+		LastMessage:     latestSubAgentMessage(read.Messages),
+		WaitingPrompt:   read.WaitingPrompt,
 		QueuedInputs:    queued,
 		CreatedAt:       meta.CreatedAt,
 		UpdatedAt:       meta.UpdatedAt,
-		Closed:          meta.Closed,
-		CanSendInput:    !meta.Closed,
-		CanInterrupt:    !meta.Closed && status == SubAgentStatusRunning,
-		CanClose:        !meta.Closed,
+		Closed:          meta.IsClosed(),
+		CanSendInput:    !writeClosed,
+		CanInterrupt:    !writeClosed && status == SubAgentStatusRunning,
+		CanClose:        !writeClosed,
 	}, nil
-}
-
-func subAgentStatusFromMeta(meta sessiontree.ThreadMeta) SubAgentStatus {
-	if meta.Closed {
-		return SubAgentStatusClosed
-	}
-	switch strings.TrimSpace(meta.Status) {
-	case string(SubAgentStatusRunning):
-		return SubAgentStatusRunning
-	case string(SubAgentStatusWaiting):
-		return SubAgentStatusWaiting
-	case string(SubAgentStatusCompleted):
-		return SubAgentStatusCompleted
-	case string(SubAgentStatusFailed):
-		return SubAgentStatusFailed
-	case string(SubAgentStatusCancelled):
-		return SubAgentStatusCancelled
-	case string(SubAgentStatusInterrupted):
-		return SubAgentStatusInterrupted
-	default:
-		return SubAgentStatusIdle
-	}
-}
-
-func closeSubAgentReason(reason string) string {
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		return "parent_close"
-	}
-	return reason
-}
-
-func shouldCloseSubAgentForParentStop(snapshot SubAgentSnapshot) bool {
-	if !snapshot.CanClose || snapshot.Closed {
-		return false
-	}
-	switch snapshot.Status {
-	case SubAgentStatusCompleted, SubAgentStatusFailed, SubAgentStatusCancelled, SubAgentStatusClosed:
-		return false
-	default:
-		return true
-	}
 }
 
 func isTerminalSubAgentStatus(status SubAgentStatus) bool {
@@ -2395,23 +2441,61 @@ func (h *AgentHarness) resolveSubAgentMeta(ctx context.Context, parentThreadID, 
 	return meta, nil
 }
 
-func (h *AgentHarness) subAgentParentThread(ctx context.Context, parentThreadID string) (sessiontree.ThreadMeta, error) {
-	return h.options.Repo.Thread(ctx, strings.TrimSpace(parentThreadID))
-}
-
-func (h *AgentHarness) updateSubAgentMeta(ctx context.Context, threadID string, update func(*sessiontree.ThreadMeta)) (sessiontree.ThreadMeta, error) {
-	meta, err := h.options.Repo.Thread(ctx, threadID)
+func (h *AgentHarness) resolveSubAgentDescendantMeta(ctx context.Context, parentThreadID, target string) (sessiontree.ThreadMeta, error) {
+	parentThreadID = strings.TrimSpace(parentThreadID)
+	if parentThreadID == "" {
+		return sessiontree.ThreadMeta{}, errors.New("parent thread id is required")
+	}
+	parent, err := h.subAgentParentThread(ctx, parentThreadID)
 	if err != nil {
 		return sessiontree.ThreadMeta{}, err
 	}
-	if update != nil {
-		update(&meta)
+	if err := sessiontree.ValidateThreadMetaAuthority(parent); err != nil {
+		return sessiontree.ThreadMeta{}, sessiontree.ErrAuthorityCorrupt
 	}
-	meta.UpdatedAt = h.now()
-	if err := h.options.Repo.UpdateThread(ctx, meta); err != nil {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return sessiontree.ThreadMeta{}, errors.New("subagent child thread id is required")
+	}
+	if target == parentThreadID {
+		return sessiontree.ThreadMeta{}, ErrSubAgentNotFound
+	}
+	meta, err := h.options.Repo.Thread(ctx, target)
+	if err != nil {
+		if errors.Is(err, sessiontree.ErrThreadNotFound) {
+			return sessiontree.ThreadMeta{}, ErrSubAgentNotFound
+		}
 		return sessiontree.ThreadMeta{}, err
 	}
-	return meta, nil
+	targetMeta := meta
+	seen := map[string]struct{}{target: {}}
+	for {
+		if err := sessiontree.ValidateThreadMetaAuthority(meta); err != nil {
+			return sessiontree.ThreadMeta{}, sessiontree.ErrAuthorityCorrupt
+		}
+		ancestorID := strings.TrimSpace(meta.ParentThreadID)
+		if ancestorID == "" {
+			return sessiontree.ThreadMeta{}, ErrSubAgentNotFound
+		}
+		if ancestorID == parentThreadID {
+			return targetMeta, nil
+		}
+		if _, duplicate := seen[ancestorID]; duplicate {
+			return sessiontree.ThreadMeta{}, sessiontree.ErrAuthorityCorrupt
+		}
+		seen[ancestorID] = struct{}{}
+		meta, err = h.options.Repo.Thread(ctx, ancestorID)
+		if errors.Is(err, sessiontree.ErrThreadNotFound) {
+			return sessiontree.ThreadMeta{}, sessiontree.ErrAuthorityCorrupt
+		}
+		if err != nil {
+			return sessiontree.ThreadMeta{}, err
+		}
+	}
+}
+
+func (h *AgentHarness) subAgentParentThread(ctx context.Context, parentThreadID string) (sessiontree.ThreadMeta, error) {
+	return h.options.Repo.Thread(ctx, strings.TrimSpace(parentThreadID))
 }
 
 func (h *AgentHarness) childThreadMetas(ctx context.Context, parentThreadID string) ([]sessiontree.ThreadMeta, error) {
@@ -2439,174 +2523,92 @@ func (h *AgentHarness) childThreadMetas(ctx context.Context, parentThreadID stri
 	return children, nil
 }
 
-func (h *AgentHarness) nextSubAgentThreadID(ctx context.Context) (string, error) {
-	for i := 0; i < 100; i++ {
-		id := h.nextID("subagent")
-		if strings.TrimSpace(id) == "" {
-			continue
-		}
-		if _, err := h.options.Repo.Thread(ctx, id); errors.Is(err, sessiontree.ErrThreadNotFound) {
-			return id, nil
-		} else if err != nil {
-			return "", err
-		}
-	}
-	return "", errors.New("unable to allocate unique subagent thread id")
-}
-
-func (h *AgentHarness) nextSubAgentTurnID(ctx context.Context, threadID string) (string, error) {
-	for i := 0; i < 100; i++ {
-		id := h.nextID("turn")
-		if strings.TrimSpace(id) == "" {
-			continue
-		}
-		entries, err := h.options.Repo.Entries(ctx, threadID)
-		if err != nil {
-			return "", err
-		}
-		exists := false
-		for _, entry := range entries {
-			if entry.TurnID == id {
-				exists = true
-				break
-			}
-		}
-		if !exists {
-			return id, nil
-		}
-	}
-	return "", errors.New("unable to allocate unique subagent turn id")
-}
-
-func (h *AgentHarness) appendSubAgentInput(ctx context.Context, threadID, message string, labels engine.RunLabels, interrupt bool) (subagentInput, error) {
-	message = strings.TrimSpace(message)
-	if message == "" {
-		return subagentInput{}, errors.New("subagent message is required")
-	}
-	metadata := map[string]string{
-		subAgentInputKindKey:        subAgentInputEntryKind,
-		subAgentInputStateKey:       subAgentInputStatePending,
-		subAgentInputMessageHashKey: subAgentInputMessageHash(message),
-		subAgentInputInterruptKey:   fmt.Sprintf("%t", interrupt),
-	}
-	if len(labels.Host) > 0 {
-		if data, err := json.Marshal(labels.Host); err == nil {
-			metadata[subAgentInputLabelHostKey] = string(data)
-		}
-	}
-	if len(labels.Correlation) > 0 {
-		if data, err := json.Marshal(labels.Correlation); err == nil {
-			metadata[subAgentInputLabelCorrKey] = string(data)
-		}
-	}
-	entry, err := h.options.Repo.Append(ctx, sessiontree.Entry{
-		ThreadID: threadID,
-		Type:     sessiontree.EntryCustom,
-		Message:  session.Message{Content: message},
-		Metadata: metadata,
-	}, sessiontree.AppendOptions{})
-	if err != nil {
-		return subagentInput{}, err
-	}
-	return subagentInput{entryID: entry.ID, message: message, labels: labels}, nil
-}
-
-func (h *AgentHarness) appendSubAgentInputState(ctx context.Context, threadID, inputEntryID, state string, extra map[string]string) error {
-	inputEntryID = strings.TrimSpace(inputEntryID)
-	if inputEntryID == "" {
-		return nil
-	}
-	metadata := map[string]string{
-		subAgentInputKindKey:    subAgentInputEntryKind,
-		subAgentInputStateKey:   state,
-		subAgentInputEntryIDKey: inputEntryID,
-	}
-	for key, value := range extra {
-		if strings.TrimSpace(key) != "" {
-			metadata[key] = value
-		}
-	}
-	_, err := h.options.Repo.Append(ctx, sessiontree.Entry{
-		ThreadID: threadID,
-		Type:     sessiontree.EntryCustom,
-		Metadata: metadata,
-	}, sessiontree.AppendOptions{})
-	return err
-}
-
 func (h *AgentHarness) pendingSubAgentInputCount(ctx context.Context, threadID string) (int, error) {
-	inputs, err := h.pendingSubAgentInputs(ctx, threadID)
+	repo, ok := h.options.Repo.(sessiontree.SubAgentInputAuthorityRepo)
+	if !ok {
+		return 0, errors.New("session tree repo does not support subagent authority operations")
+	}
+	inputs, err := repo.ListSubAgentInputs(ctx, threadID, sessiontree.SubAgentInputPending)
 	if err != nil {
 		return 0, err
 	}
 	return len(inputs), nil
 }
 
-func (h *AgentHarness) pendingSubAgentInputs(ctx context.Context, threadID string) ([]subagentInput, error) {
-	entries, err := h.options.Repo.Entries(ctx, threadID)
+func (h *AgentHarness) nextSubAgentTurnID(_ context.Context, _ string) (string, error) {
+	id := strings.TrimSpace(h.nextID("turn"))
+	if id == "" {
+		return "", errors.New("subagent turn id generator returned an empty identity")
+	}
+	return id, nil
+}
+
+func subAgentPublicationFingerprint(publicationID string, meta sessiontree.ThreadMeta, forkMode SubAgentForkMode, sourceLeafID, artifactClosureFingerprint string, message session.Message, labels engine.RunLabels) (string, error) {
+	meta.CreatedAt = time.Time{}
+	meta.UpdatedAt = time.Time{}
+	payload := struct {
+		PublicationID              string
+		Child                      sessiontree.ThreadMeta
+		ForkMode                   SubAgentForkMode
+		SourceLeafID               string
+		ArtifactClosureFingerprint string
+		Message                    session.Message
+		HostLabels                 map[string]string
+		CorrelationLabels          map[string]string
+	}{
+		PublicationID: publicationID, Child: meta, ForkMode: forkMode, SourceLeafID: sourceLeafID,
+		ArtifactClosureFingerprint: artifactClosureFingerprint,
+		Message:                    message, HostLabels: labels.Host, CorrelationLabels: labels.Correlation,
+	}
+	return hashSubAgentAuthorityPayload(payload)
+}
+
+func subAgentInputFingerprint(requestID, parentThreadID, childThreadID string, message session.Message, labels engine.RunLabels, interrupt bool) (string, error) {
+	payload := struct {
+		InputRequestID    string
+		ParentThreadID    string
+		ChildThreadID     string
+		Message           session.Message
+		HostLabels        map[string]string
+		CorrelationLabels map[string]string
+		Interrupt         bool
+	}{
+		InputRequestID: requestID, ParentThreadID: parentThreadID, ChildThreadID: childThreadID,
+		Message: message, HostLabels: labels.Host, CorrelationLabels: labels.Correlation, Interrupt: interrupt,
+	}
+	return hashSubAgentAuthorityPayload(payload)
+}
+
+func subAgentPendingToolCompletionFingerprint(requestID, parentThreadID, childThreadID string,
+	target sessiontree.PendingToolSettlementTarget, status PendingToolCompletionStatus, summary, output string,
+	message session.Message, labels engine.RunLabels,
+) (string, error) {
+	payload := struct {
+		InputRequestID    string
+		ParentThreadID    string
+		ChildThreadID     string
+		Target            sessiontree.PendingToolSettlementTarget
+		Status            PendingToolCompletionStatus
+		Summary           string
+		Output            string
+		Message           session.Message
+		HostLabels        map[string]string
+		CorrelationLabels map[string]string
+	}{
+		InputRequestID: requestID, ParentThreadID: parentThreadID, ChildThreadID: childThreadID,
+		Target: target, Status: status, Summary: summary, Output: output, Message: session.CloneMessage(message),
+		HostLabels: labels.Host, CorrelationLabels: labels.Correlation,
+	}
+	return hashSubAgentAuthorityPayload(payload)
+}
+
+func hashSubAgentAuthorityPayload(payload any) (string, error) {
+	data, err := json.Marshal(payload)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	stateByID := map[string]string{}
-	inputByID := map[string]subagentInput{}
-	consumedTurnByID := map[string]string{}
-	turnHasUserMessage := map[string]bool{}
-	order := make([]string, 0)
-	for _, entry := range entries {
-		if entry.Type == sessiontree.EntryUserMessage && entry.TurnID != "" {
-			turnHasUserMessage[entry.TurnID] = true
-		}
-		if entry.Type != sessiontree.EntryCustom || entry.Metadata[subAgentInputKindKey] != subAgentInputEntryKind {
-			continue
-		}
-		state := strings.TrimSpace(entry.Metadata[subAgentInputStateKey])
-		switch state {
-		case subAgentInputStatePending:
-			labels := subAgentInputLabels(entry.Metadata)
-			inputByID[entry.ID] = subagentInput{entryID: entry.ID, message: strings.TrimSpace(entry.Message.Content), labels: labels}
-			stateByID[entry.ID] = state
-			order = append(order, entry.ID)
-		case subAgentInputStateConsumed, subAgentInputStateCancelled:
-			target := strings.TrimSpace(entry.Metadata[subAgentInputEntryIDKey])
-			if target != "" {
-				stateByID[target] = state
-				if state == subAgentInputStateConsumed {
-					consumedTurnByID[target] = strings.TrimSpace(entry.Metadata[subAgentInputTurnIDKey])
-				}
-			}
-		}
-	}
-	out := make([]subagentInput, 0, len(order))
-	for _, id := range order {
-		if stateByID[id] == subAgentInputStateConsumed && !turnHasUserMessage[consumedTurnByID[id]] {
-			stateByID[id] = subAgentInputStatePending
-		}
-		if stateByID[id] != subAgentInputStatePending {
-			continue
-		}
-		input := inputByID[id]
-		if input.message == "" {
-			continue
-		}
-		out = append(out, input)
-	}
-	return out, nil
-}
-
-func subAgentInputLabels(metadata map[string]string) engine.RunLabels {
-	var labels engine.RunLabels
-	if raw := strings.TrimSpace(metadata[subAgentInputLabelHostKey]); raw != "" {
-		_ = json.Unmarshal([]byte(raw), &labels.Host)
-	}
-	if raw := strings.TrimSpace(metadata[subAgentInputLabelCorrKey]); raw != "" {
-		_ = json.Unmarshal([]byte(raw), &labels.Correlation)
-	}
-	return labels
-}
-
-func subAgentInputMessageHash(message string) string {
-	sum := sha256.Sum256([]byte(message))
-	return hex.EncodeToString(sum[:])
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func normalizeSubAgentTaskName(taskName string) (string, error) {

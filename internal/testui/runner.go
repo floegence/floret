@@ -19,7 +19,6 @@ import (
 
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/internal/agentharness"
-	"github.com/floegence/floret/internal/configbridge"
 	"github.com/floegence/floret/internal/control"
 	"github.com/floegence/floret/internal/engine"
 	"github.com/floegence/floret/internal/event"
@@ -29,11 +28,9 @@ import (
 	"github.com/floegence/floret/internal/provider/catalog"
 	"github.com/floegence/floret/internal/searchcap"
 	"github.com/floegence/floret/internal/session"
-	"github.com/floegence/floret/internal/session/artifact"
 	"github.com/floegence/floret/internal/session/compaction"
 	"github.com/floegence/floret/internal/sessionlifecycle"
 	"github.com/floegence/floret/internal/sessiontree"
-	"github.com/floegence/floret/internal/storage/sqlite"
 	"github.com/floegence/floret/internal/testing/eval"
 	"github.com/floegence/floret/internal/testing/harness"
 	"github.com/floegence/floret/internal/tools/builtin"
@@ -72,19 +69,18 @@ type Runner struct {
 	Sessions             *agentSessionRegistry
 	StorageMode          string
 	StoragePath          string
-	storageSQLite        *sqlite.Store
-	storageMemory        *memoryStorage
+	storageMu            sync.Mutex
+	storage              *testUIStorage
 }
 
-func NewRunner(root string) Runner {
-	return Runner{
-		Root:            root,
-		EnvFile:         filepath.Join(root, config.DefaultEnvFile),
-		Now:             time.Now,
-		Exec:            execCommand,
-		ProviderFactory: adapters.NewProvider,
-		Sessions:        newAgentSessionRegistry(),
-		StorageMode:     StorageModeSQLite,
+func NewRunner(root string) *Runner {
+	return &Runner{
+		Root:        root,
+		EnvFile:     filepath.Join(root, config.DefaultEnvFile),
+		Now:         time.Now,
+		Exec:        execCommand,
+		Sessions:    newAgentSessionRegistry(),
+		StorageMode: StorageModeSQLite,
 	}
 }
 
@@ -111,12 +107,15 @@ type agentSession struct {
 	cfg                     config.Config
 	provider                *observingProvider
 	recorder                agentEventRecorder
-	harnessRecorder         agentHarnessRecorder
-	repo                    sessiontree.Repo
-	promptStore             cache.Store
 	registry                *tools.Registry
-	harness                 *agentharness.AgentHarness
-	thread                  *agentharness.Thread
+	read                    *flruntime.ThreadReadHost
+	title                   *flruntime.ThreadTitleHost
+	turnFactory             *flruntime.TurnExecutionHostFactory
+	subagentFactory         *flruntime.SubAgentHostFactory
+	turn                    *flruntime.TurnExecutionHost
+	subagent                *flruntime.SubAgentHost
+	subagentRead            *flruntime.SubAgentReadHost
+	ownedStore              *flruntime.Store
 	nextID                  func(string) string
 	turns                   []AgentTurnSummary
 	snapshotMu              sync.Mutex
@@ -128,25 +127,21 @@ type agentSession struct {
 type agentSessionRuntime struct {
 	provider                *observingProvider
 	recorder                agentEventRecorder
-	harnessRecorder         agentHarnessRecorder
 	registry                *tools.Registry
 	hostedTools             []provider.HostedToolDefinition
 	unavailableCapabilities []string
 	capabilities            CapabilityState
 	mcpManager              *mcp.Manager
-	harness                 *agentharness.AgentHarness
-	thread                  *agentharness.Thread
+	read                    *flruntime.ThreadReadHost
+	title                   *flruntime.ThreadTitleHost
+	turn                    *flruntime.TurnExecutionHost
+	subagent                *flruntime.SubAgentHost
+	subagentRead            *flruntime.SubAgentReadHost
 	nextID                  func(string) string
 }
 
 type agentEventRecorder interface {
-	event.Sink
 	Snapshot() []event.Event
-}
-
-type agentHarnessRecorder interface {
-	agentharness.HarnessSink
-	Snapshot() []agentharness.HarnessEvent
 }
 
 func newAgentSessionRegistry() *agentSessionRegistry {
@@ -251,8 +246,6 @@ func (r *Runner) CreateIdleAgentSession(ctx context.Context, req AgentRunRequest
 	}
 	sess, err := r.buildAgentSession(ctx, agentSessionBuildOptions{
 		ID:             sessionID,
-		CreatedAt:      started,
-		UpdatedAt:      started,
 		Profile:        resolvedProfile,
 		AgentProfile:   cfg.AgentProfile,
 		PromptIdentity: cfg.PromptIdentity,
@@ -336,8 +329,6 @@ func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeR
 	sess, err := probe.buildAgentSession(ctx, agentSessionBuildOptions{
 		ID:            sessionID,
 		Transient:     true,
-		CreatedAt:     started,
-		UpdatedAt:     started,
 		Profile:       profile,
 		SystemPrompt:  cfg.SystemPrompt,
 		SelectedTools: selectedTools,
@@ -348,6 +339,7 @@ func (r *Runner) RunInterfaceProbe(ctx context.Context, req AgentInterfaceProbeR
 	if err != nil {
 		return localInspectionAgentRunResponse(r.failAgentRun(resp, err))
 	}
+	defer sess.close()
 	resp.Profile = stripProfileSecret(profile)
 	result := probe.runAgentTurn(ctx, sess, resp, "Run the test UI tool contract probe for the selected tools.")
 	result.Probe = true
@@ -403,8 +395,6 @@ func (r *Runner) CreateAgentSession(ctx context.Context, req AgentRunRequest) Ag
 	}
 	sess, err := r.buildAgentSession(ctx, agentSessionBuildOptions{
 		ID:             sessionID,
-		CreatedAt:      started,
-		UpdatedAt:      started,
 		Profile:        resolvedProfile,
 		AgentProfile:   cfg.AgentProfile,
 		PromptIdentity: cfg.PromptIdentity,
@@ -532,24 +522,11 @@ func (r *Runner) UpdateAgentSessionTools(ctx context.Context, sessionID string, 
 	if slices.Equal(sess.selectedTools, selectedTools) {
 		return localInspectionAgentSessionSnapshot(current), nil
 	}
-	previous := cloneSelectedTools(sess.selectedTools)
 	nextRuntime, err := sess.prepareRuntime(ctx, r, selectedTools)
 	if err != nil {
 		return AgentSessionSnapshot{}, err
 	}
 	now := r.now()
-	reason := strings.TrimSpace(req.Reason)
-	metadata := map[string]string{
-		"source":         "test-ui",
-		"previous_tools": strings.Join(previous, ","),
-		"selected_tools": strings.Join(selectedTools, ","),
-	}
-	if reason != "" {
-		metadata["reason"] = reason
-	}
-	if _, err := sessiontree.AppendActiveTools(ctx, sess.repo, sess.id, metadata); err != nil {
-		return AgentSessionSnapshot{}, err
-	}
 	currentTools := sess.selectedTools
 	currentUpdatedAt := sess.updatedAt
 	sess.selectedTools = selectedTools
@@ -597,20 +574,17 @@ func (r *Runner) DeleteAgentSession(ctx context.Context, sessionID string) error
 		}
 		delete(registry.sessions, sessionID)
 		registry.order = removeSessionID(registry.order, sessionID)
-		if sess.mcpManager != nil {
-			_ = sess.mcpManager.Close()
-			sess.mcpManager = nil
-		}
+		sess.close()
 		sess.mu.Unlock()
 	}
 	registry.mu.Unlock()
 	if !inMemory {
 		meta, err := r.loadAgentSessionMetadata(sessionID)
 		if err != nil {
-			return fmt.Errorf("agent session %q not found", sessionID)
-		}
-		if meta.ID == "" {
-			return fmt.Errorf("agent session %q not found", sessionID)
+			if errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("agent session %q not found: %w", sessionID, err)
+			}
+			return fmt.Errorf("load agent session %q metadata: %w", sessionID, err)
 		}
 		snap, err := r.sessionSnapshotFromMetadata(ctx, meta)
 		if err != nil {
@@ -624,7 +598,7 @@ func (r *Runner) DeleteAgentSession(ctx context.Context, sessionID string) error
 		registry.order = removeSessionID(registry.order, sessionID)
 		registry.mu.Unlock()
 	}
-	_, err = store.deleteSession(ctx, r.Root, sessionID)
+	_, err = store.deleteSession(ctx, sessionID)
 	return err
 }
 
@@ -633,7 +607,10 @@ func (r *Runner) AgentSession(ctx context.Context, sessionID string) (AgentSessi
 	if !ok {
 		meta, err := r.loadAgentSessionMetadata(sessionID)
 		if err != nil {
-			return AgentSessionSnapshot{}, fmt.Errorf("agent session %q not found", sessionID)
+			if errors.Is(err, os.ErrNotExist) {
+				return AgentSessionSnapshot{}, fmt.Errorf("agent session %q not found: %w", sessionID, err)
+			}
+			return AgentSessionSnapshot{}, fmt.Errorf("load agent session %q metadata: %w", sessionID, err)
 		}
 		snapshot, err := r.sessionSnapshotFromMetadata(ctx, meta)
 		if err != nil {
@@ -642,7 +619,11 @@ func (r *Runner) AgentSession(ctx context.Context, sessionID string) (AgentSessi
 		return localInspectionAgentSessionSnapshot(snapshot), nil
 	}
 	if !sess.mu.TryLock() {
-		return localInspectionAgentSessionSnapshot(r.runningAgentSessionSnapshot(ctx, sess)), nil
+		snapshot, err := r.runningAgentSessionSnapshot(ctx, sess)
+		if err != nil {
+			return AgentSessionSnapshot{}, fmt.Errorf("snapshot running agent session %q: %w", sess.id, err)
+		}
+		return localInspectionAgentSessionSnapshot(snapshot), nil
 	}
 	defer sess.mu.Unlock()
 	snapshot, err := r.sessionSnapshotLocked(ctx, sess)
@@ -671,20 +652,21 @@ func (r *Runner) SpawnAgentSessionSubAgent(ctx context.Context, sessionID string
 		return AgentSubAgentActionResponse{}, err
 	}
 	defer sess.mu.Unlock()
-	snapshot, err := sess.harness.SpawnSubAgent(ctx, agentharness.SpawnSubAgentOptions{
-		ParentThreadID:  sess.id,
-		ParentTurnID:    strings.TrimSpace(req.ParentTurnID),
-		ThreadID:        strings.TrimSpace(req.ThreadID),
+	snapshot, err := sess.subagent.SpawnSubAgent(ctx, flruntime.SpawnSubAgentRequest{
+		PublicationID:   req.PublicationID,
+		ParentThreadID:  flruntime.ThreadID(sess.id),
+		ParentTurnID:    flruntime.TurnID(strings.TrimSpace(req.ParentTurnID)),
+		ThreadID:        flruntime.ThreadID(strings.TrimSpace(req.ThreadID)),
 		TaskName:        req.TaskName,
 		TaskDescription: req.TaskDescription,
 		Message:         req.Message,
 		HostProfileRef:  req.HostProfileRef,
-		ForkMode:        req.ForkMode,
+		ForkMode:        flruntime.SubAgentForkMode(req.ForkMode),
 	})
 	if err != nil {
 		return AgentSubAgentActionResponse{}, err
 	}
-	return r.subAgentActionResponseLocked(ctx, sess, snapshot)
+	return r.subAgentActionResponseLocked(ctx, sess, harnessSubAgentSnapshot(snapshot))
 }
 
 func (r *Runner) SendAgentSessionSubAgentInput(ctx context.Context, sessionID, target string, req AgentSubAgentInputRequest) (AgentSubAgentActionResponse, error) {
@@ -693,16 +675,17 @@ func (r *Runner) SendAgentSessionSubAgentInput(ctx context.Context, sessionID, t
 		return AgentSubAgentActionResponse{}, err
 	}
 	defer sess.mu.Unlock()
-	snapshot, err := sess.harness.SendSubAgentInput(ctx, agentharness.SendSubAgentInputOptions{
-		ParentThreadID: sess.id,
-		ChildThreadID:  target,
+	snapshot, err := sess.subagent.SendSubAgentInput(ctx, flruntime.SendSubAgentInputRequest{
+		InputRequestID: req.InputRequestID,
+		ParentThreadID: flruntime.ThreadID(sess.id),
+		ChildThreadID:  flruntime.ThreadID(target),
 		Message:        req.Message,
 		Interrupt:      req.Interrupt,
 	})
 	if err != nil {
 		return AgentSubAgentActionResponse{}, err
 	}
-	return r.subAgentActionResponseLocked(ctx, sess, snapshot)
+	return r.subAgentActionResponseLocked(ctx, sess, harnessSubAgentSnapshot(snapshot))
 }
 
 func (r *Runner) WaitAgentSessionSubAgents(ctx context.Context, sessionID string, req AgentSubAgentWaitRequest) (AgentSubAgentWaitResponse, error) {
@@ -710,9 +693,13 @@ func (r *Runner) WaitAgentSessionSubAgents(ctx context.Context, sessionID string
 	if err != nil {
 		return AgentSubAgentWaitResponse{}, err
 	}
-	result, err := sess.harness.WaitSubAgents(ctx, agentharness.WaitSubAgentsOptions{
-		ParentThreadID: sess.id,
-		ChildThreadIDs: req.ThreadIDs,
+	childIDs := make([]flruntime.ThreadID, 0, len(req.ThreadIDs))
+	for _, threadID := range req.ThreadIDs {
+		childIDs = append(childIDs, flruntime.ThreadID(threadID))
+	}
+	result, err := sess.subagent.WaitSubAgents(ctx, flruntime.WaitSubAgentsRequest{
+		ParentThreadID: flruntime.ThreadID(sess.id),
+		ChildThreadIDs: childIDs,
 		Timeout:        time.Duration(req.TimeoutMS) * time.Millisecond,
 	})
 	if err != nil {
@@ -731,7 +718,7 @@ func (r *Runner) WaitAgentSessionSubAgents(ctx context.Context, sessionID string
 		return AgentSubAgentWaitResponse{}, err
 	}
 	return AgentSubAgentWaitResponse{
-		Result:    pathSafeWaitSubAgentsResult(result),
+		Result:    pathSafeWaitSubAgentsResult(harnessWaitSubAgentsResult(result)),
 		SubAgents: pathSafeSubAgentSnapshots(subagents),
 		Session:   localInspectionAgentSessionSnapshot(session),
 	}, nil
@@ -742,9 +729,9 @@ func (r *Runner) AgentSessionSubAgentDetail(ctx context.Context, sessionID, targ
 	if err != nil {
 		return AgentSubAgentDetailResponse{}, err
 	}
-	detail, err := sess.harness.ReadSubAgentDetail(ctx, agentharness.ReadSubAgentDetailOptions{
-		ParentThreadID: sess.id,
-		ChildThreadID:  target,
+	detail, err := sess.subagentRead.ReadSubAgentDetail(ctx, flruntime.ReadSubAgentDetailRequest{
+		ParentThreadID: flruntime.ThreadID(sess.id),
+		ChildThreadID:  flruntime.ThreadID(target),
 		AfterOrdinal:   afterOrdinal,
 		Limit:          limit,
 		IncludeRaw:     includeRaw,
@@ -752,7 +739,11 @@ func (r *Runner) AgentSessionSubAgentDetail(ctx context.Context, sessionID, targ
 	if err != nil {
 		return AgentSubAgentDetailResponse{}, err
 	}
-	return AgentSubAgentDetailResponse{Detail: pathSafeSubAgentDetail(detail)}, nil
+	converted, err := harnessSubAgentDetail(detail)
+	if err != nil {
+		return AgentSubAgentDetailResponse{}, err
+	}
+	return AgentSubAgentDetailResponse{Detail: pathSafeSubAgentDetail(converted)}, nil
 }
 
 func (r *Runner) CloseAgentSessionSubAgent(ctx context.Context, sessionID, target string) (AgentSubAgentActionResponse, error) {
@@ -761,11 +752,16 @@ func (r *Runner) CloseAgentSessionSubAgent(ctx context.Context, sessionID, targe
 		return AgentSubAgentActionResponse{}, err
 	}
 	defer sess.mu.Unlock()
-	snapshot, err := sess.harness.CloseSubAgent(ctx, agentharness.CloseSubAgentOptions{ParentThreadID: sess.id, ChildThreadID: target})
+	snapshot, err := sess.subagent.CloseSubAgent(ctx, flruntime.CloseSubAgentRequest{
+		CloseOperationID: "testui-close:" + sess.id + ":" + strings.TrimSpace(target),
+		ParentThreadID:   flruntime.ThreadID(sess.id),
+		ChildThreadID:    flruntime.ThreadID(target),
+		Reason:           "user_close",
+	})
 	if err != nil {
 		return AgentSubAgentActionResponse{}, err
 	}
-	return r.subAgentActionResponseLocked(ctx, sess, snapshot)
+	return r.subAgentActionResponseLocked(ctx, sess, harnessSubAgentSnapshot(snapshot))
 }
 
 func (r *Runner) lockedAgentSession(ctx context.Context, sessionID string) (*agentSession, error) {
@@ -796,74 +792,67 @@ func (r *Runner) subAgentActionResponseLocked(ctx context.Context, sess *agentSe
 }
 
 func (r *Runner) subAgentsLocked(ctx context.Context, sess *agentSession) ([]agentharness.SubAgentSnapshot, error) {
-	if sess == nil || sess.harness == nil {
-		return nil, nil
+	if sess == nil {
+		return nil, errors.New("agent session is required")
 	}
-	return sess.harness.ListSubAgents(ctx, sess.id)
-}
-
-func subAgentSnapshotsFromRepo(ctx context.Context, repo sessiontree.Repo, parentThreadID string) []agentharness.SubAgentSnapshot {
-	listRepo, ok := repo.(sessiontree.ThreadListRepo)
-	if !ok {
-		return nil
+	if sess.subagentRead == nil {
+		return nil, errors.New("agent session subagent read authority is required")
 	}
-	metas, err := listRepo.ListThreads(ctx, sessiontree.ListThreadsOptions{IncludeArchived: true})
-	if err != nil {
-		return nil
-	}
-	out := make([]agentharness.SubAgentSnapshot, 0)
-	for _, meta := range metas {
-		if meta.ParentThreadID != parentThreadID || strings.TrimSpace(meta.AgentPath) == "" {
-			continue
-		}
-		status := agentharness.SubAgentStatus(meta.Status)
-		if status == "" {
-			status = agentharness.SubAgentStatusIdle
-		}
-		if meta.Closed {
-			status = agentharness.SubAgentStatusClosed
-		}
-		out = append(out, agentharness.SubAgentSnapshot{
-			ThreadID:        meta.ID,
-			Path:            meta.AgentPath,
-			TaskName:        meta.TaskName,
-			TaskDescription: meta.TaskDescription,
-			ParentThreadID:  meta.ParentThreadID,
-			ParentTurnID:    meta.ParentTurnID,
-			HostProfileRef:  meta.HostProfileRef,
-			Status:          status,
-			CreatedAt:       meta.CreatedAt,
-			UpdatedAt:       meta.UpdatedAt,
-			Closed:          meta.Closed,
-			CanSendInput:    !meta.Closed,
-			CanClose:        !meta.Closed,
-		})
-	}
-	slices.SortFunc(out, func(a, b agentharness.SubAgentSnapshot) int {
-		if a.CreatedAt.Equal(b.CreatedAt) {
-			return strings.Compare(a.Path, b.Path)
-		}
-		if a.CreatedAt.Before(b.CreatedAt) {
-			return -1
-		}
-		return 1
-	})
-	return out
+	snapshots, err := sess.subagentRead.ListSubAgents(ctx, flruntime.ThreadID(sess.id))
+	return harnessSubAgentSnapshots(snapshots), err
 }
 
 func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selectedTools []string) (agentSessionRuntime, error) {
-	p, err := r.providerFactory()(sess.cfg)
-	if err != nil {
-		return agentSessionRuntime{}, err
-	}
-	observed := newObservingProvider(p)
-	titleGenerator, err := r.titleGenerator(sess.cfg)
-	if err != nil {
-		return agentSessionRuntime{}, err
-	}
-	rec := &streamingEventRecorder{}
-	harnessRec := &streamingHarnessRecorder{repo: sess.repo, threadID: sess.id}
+	rec := newTestUIRuntimeEventRecorder()
 	registry := tools.NewRegistry()
+	idGenerator, err := r.agentSessionIDGenerator(ctx, sess.read, sess.id)
+	if err != nil {
+		return agentSessionRuntime{}, err
+	}
+	if sess.turnFactory == nil || sess.subagentFactory == nil {
+		return agentSessionRuntime{}, errors.New("agent session execution factories are required")
+	}
+	runtimeConfig := sess.cfg
+	gateway := &testUIProviderGateway{}
+	gatewayIdentity := testUIModelGatewayIdentity(runtimeConfig)
+	hostConfig := runtimeConfig
+	hostConfig.Provider = ""
+	hostConfig.Model = ""
+	hostConfig.BaseURL = ""
+	hostConfig.APIKey = ""
+	hostConfig.FakeResponse = ""
+	var currentToolSurface flruntime.ToolSurface
+	toolSurface := func(context.Context, flruntime.ToolSurfaceRequest) (flruntime.ToolSurface, error) {
+		return currentToolSurface, nil
+	}
+	hostOptions := flruntime.TurnExecutionHostOptions{
+		Config: hostConfig, ModelGateway: gateway, ModelGatewayIdentity: gatewayIdentity,
+		Tools: registry, EffectAuthorizationGate: testUIRuntimeEffectAuthorizationGate{}, Sink: rec,
+		ToolSurfaceProvider: toolSurface, IDGenerator: idGenerator,
+		LoopLimits: flruntime.LoopLimits{
+			MaxEmptyProviderRetries: runtimeConfig.MaxEmptyProviderRetries,
+			NoProgressLimit:         runtimeConfig.NoProgressLimit, DuplicateToolLimit: runtimeConfig.DuplicateToolLimit, WallTime: runtimeConfig.WallTime,
+		},
+		ThreadTitleMode: flruntime.ThreadTitleModeProvider,
+	}
+	turn, err := sess.turnFactory.NewHost(ctx, hostOptions)
+	if err != nil {
+		return agentSessionRuntime{}, err
+	}
+	subagent, err := sess.subagentFactory.NewHost(ctx, flruntime.SubAgentHostOptions{
+		Config: hostConfig, ModelGateway: gateway, ModelGatewayIdentity: gatewayIdentity,
+		Tools: registry, EffectAuthorizationGate: testUIRuntimeEffectAuthorizationGate{}, Sink: rec,
+		ToolSurfaceProvider: toolSurface, IDGenerator: idGenerator,
+		LoopLimits: hostOptions.LoopLimits, ThreadTitleMode: flruntime.ThreadTitleModeProvider,
+	})
+	if err != nil {
+		return agentSessionRuntime{}, err
+	}
+
+	// Runtime capability construction above is the exact authority check. Host
+	// capability discovery and provider construction may start processes, read
+	// files, or emit events, so they must happen only after both exact factories
+	// accepted the canonical root/parent.
 	hostedTools, unavailableCapabilities, err := registerAgentSessionTools(registry, r.Root, r.EnvFile, selectedTools, sess.profile)
 	if err != nil {
 		return agentSessionRuntime{}, err
@@ -872,59 +861,39 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 	if err != nil {
 		return agentSessionRuntime{}, err
 	}
-	systemPrompt := appendCapabilityPrompt(sess.systemPrompt, skillPrompt)
-	idGenerator := r.agentSessionIDGenerator(ctx, sess.repo, sess.id)
-	cacheRetention, err := config.PromptCacheRetention(sess.cfg)
+	keepMCPManager := false
+	defer func() {
+		if !keepMCPManager && mcpManager != nil {
+			_ = mcpManager.Close()
+		}
+	}()
+	runtimeConfig.SystemPrompt = appendCapabilityPrompt(sess.systemPrompt, skillPrompt)
+	currentToolSurface = testUIToolSurface(hostedTools, runtimeConfig.SystemPrompt)
+	turnProvider, err := r.providerFactory()(runtimeConfig)
 	if err != nil {
 		return agentSessionRuntime{}, err
 	}
-	model, _ := catalog.FindModel(sess.cfg.Provider, sess.cfg.Model)
-	h := agentharness.New(agentharness.Options{
-		Provider:       observedProviderRuntime(observed),
-		ProviderName:   sess.cfg.Provider,
-		Model:          sess.cfg.Model,
-		SystemPrompt:   systemPrompt,
-		Tools:          registry,
-		PromptStore:    sess.promptStore,
-		Repo:           sess.repo,
-		Artifacts:      newToolOutputArtifactStore(r.managedArtifactsRoot()),
-		Sink:           rec,
-		SinkPolicy:     agentSessionSinkPolicy(),
-		HarnessSink:    harnessRec,
-		Approver:       testUIToolApprover,
-		TitleGenerator: titleGenerator,
-		Reasoning:      model.Reasoning,
-		TurnPolicy: agentharness.TurnPolicy{
-			CacheRetention:        configbridge.CacheRetention(cacheRetention),
-			ContextPolicy:         configbridge.ContextPolicy(sess.contextPolicy),
-			Reasoning:             configbridge.ReasoningSelection(sess.cfg.Reasoning),
-			HostedToolDefinitions: hostedTools,
-		},
-		LoopLimits: agentharness.LoopLimits{
-			MaxEmptyProviderRetries: sess.cfg.MaxEmptyProviderRetries,
-			NoProgressLimit:         sess.cfg.NoProgressLimit,
-			DuplicateToolLimit:      sess.cfg.DuplicateToolLimit,
-			WallTime:                sess.cfg.WallTime,
-			MaxCostUSD:              1.00,
-		},
-		NewID: idGenerator,
-		Now:   r.now,
-	})
-	thread, err := h.ResumeThread(ctx, sess.id, agentharness.ResumeOptions{})
+	observed := newObservingProvider(turnProvider)
+	titleProvider, err := r.titleProviderFactory()(runtimeConfig)
 	if err != nil {
 		return agentSessionRuntime{}, err
 	}
+	gateway.turn = observedProviderRuntime(observed)
+	gateway.title = titleProvider
+	keepMCPManager = true
 	return agentSessionRuntime{
 		provider:                observed,
 		recorder:                rec,
-		harnessRecorder:         harnessRec,
 		registry:                registry,
 		hostedTools:             hostedTools,
 		unavailableCapabilities: unavailableCapabilities,
 		capabilities:            capabilities,
 		mcpManager:              mcpManager,
-		harness:                 h,
-		thread:                  thread,
+		read:                    sess.read,
+		title:                   sess.title,
+		turn:                    turn,
+		subagent:                subagent,
+		subagentRead:            sess.subagentRead,
 		nextID:                  idGenerator,
 	}, nil
 }
@@ -935,14 +904,16 @@ func (sess *agentSession) applyRuntime(runtime agentSessionRuntime) {
 	}
 	sess.provider = runtime.provider
 	sess.recorder = runtime.recorder
-	sess.harnessRecorder = runtime.harnessRecorder
 	sess.registry = runtime.registry
 	sess.hostedTools = runtime.hostedTools
 	sess.unavailableCapabilities = runtime.unavailableCapabilities
 	sess.capabilities = runtime.capabilities
 	sess.mcpManager = runtime.mcpManager
-	sess.harness = runtime.harness
-	sess.thread = runtime.thread
+	sess.read = runtime.read
+	sess.title = runtime.title
+	sess.turn = runtime.turn
+	sess.subagent = runtime.subagent
+	sess.subagentRead = runtime.subagentRead
 	sess.nextID = runtime.nextID
 }
 
@@ -956,28 +927,30 @@ func setAgentSessionStreamSink(sess *agentSession, sink AgentStreamSink) {
 	if rec, ok := sess.recorder.(interface{ SetStreamSink(AgentStreamSink) }); ok {
 		rec.SetStreamSink(sink)
 	}
-	if rec, ok := sess.harnessRecorder.(interface{ SetStreamSink(AgentStreamSink) }); ok {
-		rec.SetStreamSink(sink)
-	}
 }
 
 func isAgentSessionInputError(err error) bool {
 	return errors.Is(err, errAgentSessionInput)
 }
 
-func (r *Runner) AgentSessions(ctx context.Context) []AgentSessionSnapshot {
+func (r *Runner) AgentSessions(ctx context.Context) ([]AgentSessionSnapshot, error) {
 	sessions := r.sessionRegistry().list()
 	out := make([]AgentSessionSnapshot, 0, len(sessions))
 	for _, sess := range sessions {
 		if !sess.mu.TryLock() {
-			out = append(out, localInspectionAgentSessionSnapshot(r.runningAgentSessionSnapshot(ctx, sess)))
+			snapshot, err := r.runningAgentSessionSnapshot(ctx, sess)
+			if err != nil {
+				return nil, fmt.Errorf("snapshot running agent session %q: %w", sess.id, err)
+			}
+			out = append(out, localInspectionAgentSessionSnapshot(snapshot))
 			continue
 		}
 		snap, err := r.sessionSnapshotLocked(ctx, sess)
 		sess.mu.Unlock()
-		if err == nil {
-			out = append(out, localInspectionAgentSessionSnapshot(snap))
+		if err != nil {
+			return nil, fmt.Errorf("snapshot active agent session %q: %w", sess.id, err)
 		}
+		out = append(out, localInspectionAgentSessionSnapshot(snap))
 	}
 	seen := map[string]struct{}{}
 	for _, snap := range out {
@@ -985,16 +958,17 @@ func (r *Runner) AgentSessions(ctx context.Context) []AgentSessionSnapshot {
 	}
 	metas, err := r.listAgentSessionMetadata()
 	if err != nil {
-		return out
+		return nil, fmt.Errorf("list agent session metadata: %w", err)
 	}
 	for _, meta := range metas {
 		if _, ok := seen[meta.ID]; ok {
 			continue
 		}
 		snap, err := r.sessionSnapshotFromMetadata(ctx, meta)
-		if err == nil {
-			out = append(out, localInspectionAgentSessionSnapshot(snap))
+		if err != nil {
+			return nil, fmt.Errorf("snapshot persisted agent session %q: %w", meta.ID, err)
 		}
+		out = append(out, localInspectionAgentSessionSnapshot(snap))
 	}
 	slices.SortFunc(out, func(a, b AgentSessionSnapshot) int {
 		if a.CreatedAt.Equal(b.CreatedAt) {
@@ -1005,14 +979,12 @@ func (r *Runner) AgentSessions(ctx context.Context) []AgentSessionSnapshot {
 		}
 		return 1
 	})
-	return out
+	return out, nil
 }
 
 type agentSessionBuildOptions struct {
 	ID             string
 	Transient      bool
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
 	Profile        ProviderProfile
 	AgentProfile   config.AgentProfile
 	PromptIdentity config.PromptIdentity
@@ -1020,135 +992,121 @@ type agentSessionBuildOptions struct {
 	SelectedTools  []string
 	ContextPolicy  config.ContextPolicy
 	Config         config.Config
-	Turns          []AgentTurnSummary
 	Start          bool
 }
 
 func (r *Runner) buildAgentSession(ctx context.Context, opts agentSessionBuildOptions) (*agentSession, error) {
 	cfg := config.ResolvePrompt(agentSessionPromptConfig(opts))
-	p, err := r.providerFactory()(cfg)
-	if err != nil {
-		return nil, err
-	}
-	observed := newObservingProvider(p)
-	titleGenerator, err := r.titleGenerator(cfg)
-	if err != nil {
-		return nil, err
-	}
-	var repo sessiontree.Repo
-	var promptStore cache.Store
+	var store *testUIStorage
+	var ownedStore *flruntime.Store
+	var err error
 	if opts.Transient {
-		repo = sessiontree.NewMemoryRepo()
-		promptStore = cache.NewMemoryStore()
+		ownedStore = flruntime.NewMemoryStore()
+		store = &testUIStorage{mode: StorageModeMemory, runtimeStore: ownedStore, metadata: map[string]agentSessionMetadata{}}
+		if err := store.configureCapabilities(); err != nil {
+			_ = ownedStore.Close()
+			return nil, err
+		}
 	} else {
-		store, err := r.sessionStorage(ctx)
+		store, err = r.sessionStorage(ctx)
 		if err != nil {
 			return nil, err
 		}
-		repo = store.repo(r.Root)
-		promptStore = store.prompt(r.Root)
 	}
-	rec := &streamingEventRecorder{}
-	harnessRec := &streamingHarnessRecorder{repo: repo, threadID: opts.ID}
-	selectedTools, err := normalizeAgentSessionToolsForProfile(opts.SelectedTools, opts.Profile, r.EnvFile)
-	if err != nil {
-		return nil, err
-	}
-	registry := tools.NewRegistry()
-	hostedTools, unavailableCapabilities, err := registerAgentSessionTools(registry, r.Root, r.EnvFile, selectedTools, opts.Profile)
-	if err != nil {
-		return nil, err
-	}
-	capabilities, skillPrompt, mcpManager, err := r.registerAgentCapabilities(registry, rec)
-	if err != nil {
-		return nil, err
-	}
-	capabilities.Diagnostics = append(capabilities.Diagnostics, modelRiskDiagnostics(opts.Profile, cfg.ContextPolicy)...)
-	systemPrompt := appendCapabilityPrompt(cfg.SystemPrompt, skillPrompt)
-	idGenerator := r.agentSessionIDGenerator(ctx, repo, opts.ID)
-	cacheRetention, err := config.PromptCacheRetention(cfg)
-	if err != nil {
-		return nil, err
-	}
-	model, _ := catalog.FindModel(cfg.Provider, cfg.Model)
-	h := agentharness.New(agentharness.Options{
-		Provider:       observedProviderRuntime(observed),
-		ProviderName:   cfg.Provider,
-		Model:          cfg.Model,
-		SystemPrompt:   systemPrompt,
-		Tools:          registry,
-		PromptStore:    promptStore,
-		Repo:           repo,
-		Artifacts:      newToolOutputArtifactStore(r.managedArtifactsRoot()),
-		Sink:           rec,
-		SinkPolicy:     agentSessionSinkPolicy(),
-		HarnessSink:    harnessRec,
-		Approver:       testUIToolApprover,
-		TitleGenerator: titleGenerator,
-		Reasoning:      model.Reasoning,
-		TurnPolicy: agentharness.TurnPolicy{
-			CacheRetention:        configbridge.CacheRetention(cacheRetention),
-			ContextPolicy:         configbridge.ContextPolicy(cfg.ContextPolicy),
-			Reasoning:             configbridge.ReasoningSelection(cfg.Reasoning),
-			HostedToolDefinitions: hostedTools,
-		},
-		LoopLimits: agentharness.LoopLimits{
-			MaxEmptyProviderRetries: cfg.MaxEmptyProviderRetries,
-			NoProgressLimit:         cfg.NoProgressLimit,
-			DuplicateToolLimit:      cfg.DuplicateToolLimit,
-			WallTime:                cfg.WallTime,
-			MaxCostUSD:              1.00,
-		},
-		NewID: idGenerator,
-		Now:   r.now,
-	})
-	var thread *agentharness.Thread
 	if opts.Start {
-		thread, err = h.StartThread(ctx, agentharness.StartThreadOptions{ThreadID: opts.ID})
-	} else {
-		thread, err = h.ResumeThread(ctx, opts.ID, agentharness.ResumeOptions{})
+		create, err := store.capabilities.create.Bind(flruntime.ThreadID(opts.ID), flruntime.CreateIntentID("testui-agent-session:"+opts.ID))
+		if err != nil {
+			if ownedStore != nil {
+				_ = ownedStore.Close()
+			}
+			return nil, err
+		}
+		if _, err := create.CreateThread(ctx, flruntime.CreateThreadRequest{ThreadID: flruntime.ThreadID(opts.ID), CreateIntentID: flruntime.CreateIntentID("testui-agent-session:" + opts.ID)}); err != nil {
+			if ownedStore != nil {
+				_ = ownedStore.Close()
+			}
+			return nil, err
+		}
 	}
+	read, err := store.capabilities.read.NewHost(ctx, flruntime.ThreadID(opts.ID))
 	if err != nil {
-		if mcpManager != nil {
-			_ = mcpManager.Close()
+		if ownedStore != nil {
+			_ = ownedStore.Close()
 		}
 		return nil, err
 	}
-	createdAt := opts.CreatedAt
-	if createdAt.IsZero() {
-		createdAt = r.now()
+	title, err := store.capabilities.title.NewHost(ctx, flruntime.ThreadID(opts.ID), nil)
+	if err != nil {
+		if ownedStore != nil {
+			_ = ownedStore.Close()
+		}
+		return nil, err
 	}
-	updatedAt := opts.UpdatedAt
-	if updatedAt.IsZero() {
-		updatedAt = createdAt
+	subagentRead, err := store.capabilities.subagentRead.NewHost(ctx, flruntime.ThreadID(opts.ID))
+	if err != nil {
+		if ownedStore != nil {
+			_ = ownedStore.Close()
+		}
+		return nil, err
 	}
-	return &agentSession{
-		id:                      opts.ID,
-		transient:               opts.Transient,
-		profile:                 opts.Profile,
-		agentProfile:            cfg.AgentProfile,
-		promptIdentity:          cfg.PromptIdentity,
-		systemPrompt:            cfg.SystemPrompt,
-		selectedTools:           selectedTools,
-		hostedTools:             hostedTools,
-		unavailableCapabilities: unavailableCapabilities,
-		capabilities:            capabilities,
-		mcpManager:              mcpManager,
-		contextPolicy:           cfg.ContextPolicy,
-		cfg:                     cfg,
-		provider:                observed,
-		recorder:                rec,
-		harnessRecorder:         harnessRec,
-		repo:                    repo,
-		promptStore:             promptStore,
-		registry:                registry,
-		harness:                 h,
-		thread:                  thread,
-		nextID:                  idGenerator,
-		turns:                   append([]AgentTurnSummary(nil), opts.Turns...),
-		createdAt:               createdAt,
-		updatedAt:               updatedAt,
-	}, nil
+	turnFactory, err := store.capabilities.turn.Bind(flruntime.ThreadID(opts.ID))
+	if err != nil {
+		if ownedStore != nil {
+			_ = ownedStore.Close()
+		}
+		return nil, err
+	}
+	subagentFactory, err := store.capabilities.subagent.Bind(flruntime.ThreadID(opts.ID))
+	if err != nil {
+		if ownedStore != nil {
+			_ = ownedStore.Close()
+		}
+		return nil, err
+	}
+	journal, err := readTestUIRuntimeJournal(ctx, read, opts.ID)
+	if err != nil {
+		if ownedStore != nil {
+			_ = ownedStore.Close()
+		}
+		return nil, err
+	}
+	selectedTools, err := normalizeAgentSessionToolsForProfile(opts.SelectedTools, opts.Profile, r.EnvFile)
+	if err != nil {
+		if ownedStore != nil {
+			_ = ownedStore.Close()
+		}
+		return nil, err
+	}
+	sess := &agentSession{
+		id:              opts.ID,
+		transient:       opts.Transient,
+		profile:         opts.Profile,
+		agentProfile:    cfg.AgentProfile,
+		promptIdentity:  cfg.PromptIdentity,
+		systemPrompt:    cfg.SystemPrompt,
+		selectedTools:   selectedTools,
+		contextPolicy:   cfg.ContextPolicy,
+		cfg:             cfg,
+		read:            read,
+		title:           title,
+		turnFactory:     turnFactory,
+		subagentFactory: subagentFactory,
+		subagentRead:    subagentRead,
+		ownedStore:      ownedStore,
+		turns:           summariesFromEntries(journal.Entries, nil),
+		createdAt:       journal.Thread.CreatedAt,
+		updatedAt:       journal.Thread.UpdatedAt,
+	}
+	runtimeState, err := sess.prepareRuntime(ctx, r, selectedTools)
+	if err != nil {
+		if ownedStore != nil {
+			_ = ownedStore.Close()
+		}
+		return nil, err
+	}
+	runtimeState.capabilities.Diagnostics = append(runtimeState.capabilities.Diagnostics, modelRiskDiagnostics(opts.Profile, cfg.ContextPolicy)...)
+	sess.applyRuntime(runtimeState)
+	return sess, nil
 }
 
 func (r Runner) promptConfigForRun(req AgentRunRequest) (config.Config, error) {
@@ -1185,28 +1143,37 @@ func hasPromptConfigInput(cfg config.Config) bool {
 		cfg.PromptIdentity.Source != ""
 }
 
-func (r *Runner) agentSessionIDGenerator(ctx context.Context, repo sessiontree.Repo, sessionID string) func(string) string {
+func (r *Runner) agentSessionIDGenerator(ctx context.Context, read *flruntime.ThreadReadHost, sessionID string) (func(string) string, error) {
 	var mu sync.Mutex
 	seqByPrefix := map[string]int{}
-	if entries, err := repo.Entries(ctx, sessionID); err == nil {
-		for _, entry := range entries {
-			rememberPrefixedID(seqByPrefix, entry.TurnID)
-			rememberPrefixedID(seqByPrefix, entry.CompactionID)
-		}
+	journal, err := readTestUIRuntimeJournal(ctx, read, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range journal.Entries {
+		rememberPrefixedID(seqByPrefix, entry.TurnID)
+		rememberPrefixedID(seqByPrefix, entry.CompactionID)
 	}
 	return func(prefix string) string {
 		mu.Lock()
 		defer mu.Unlock()
 		seqByPrefix[prefix]++
 		return fmt.Sprintf("%s-%d", prefix, seqByPrefix[prefix])
-	}
+	}, nil
 }
 
-func testUIToolApprover(_ context.Context, req tools.ApprovalRequest) (tools.PermissionDecision, error) {
-	if strings.HasPrefix(strings.TrimSpace(req.Name), "mcp__") {
-		return tools.PermissionDecisionDeny, nil
+func (sess *agentSession) close() {
+	if sess == nil {
+		return
 	}
-	return tools.PermissionDecisionAllow, nil
+	if sess.mcpManager != nil {
+		_ = sess.mcpManager.Close()
+		sess.mcpManager = nil
+	}
+	if sess.ownedStore != nil {
+		_ = sess.ownedStore.Close()
+		sess.ownedStore = nil
+	}
 }
 
 func (r *Runner) registerAgentCapabilities(registry *tools.Registry, sink event.Sink) (CapabilityState, string, *mcp.Manager, error) {
@@ -1497,7 +1464,10 @@ func (r *Runner) restoreAgentSession(ctx context.Context, sessionID string) (*ag
 	meta, err := r.loadAgentSessionMetadata(sessionID)
 	if err != nil {
 		registry.mu.Unlock()
-		return nil, fmt.Errorf("agent session %q not found", sessionID)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("agent session %q not found: %w", sessionID, err)
+		}
+		return nil, fmt.Errorf("load agent session %q metadata: %w", sessionID, err)
 	}
 	cfg, profile, err := r.cfgFromSessionMetadata(meta)
 	if err != nil {
@@ -1506,14 +1476,11 @@ func (r *Runner) restoreAgentSession(ctx context.Context, sessionID string) (*ag
 	}
 	sess, err := r.buildAgentSession(ctx, agentSessionBuildOptions{
 		ID:            meta.ID,
-		CreatedAt:     meta.CreatedAt,
-		UpdatedAt:     meta.UpdatedAt,
 		Profile:       profile,
 		SystemPrompt:  meta.SystemPrompt,
 		SelectedTools: meta.SelectedTools,
 		ContextPolicy: meta.ContextPolicy,
 		Config:        cfg,
-		Turns:         meta.Turns,
 		Start:         false,
 	})
 	if err != nil {
@@ -1541,50 +1508,55 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 	if err != nil {
 		return AgentSessionSnapshot{}, err
 	}
-	repo := store.repo(r.Root)
-	thread, err := repo.Thread(ctx, meta.ID)
+	read, err := store.capabilities.read.NewHost(ctx, flruntime.ThreadID(meta.ID))
 	if err != nil {
 		return AgentSessionSnapshot{}, err
 	}
-	path, err := repo.Path(ctx, meta.ID, thread.LeafID)
+	journal, err := readTestUIRuntimeJournal(ctx, read, meta.ID)
 	if err != nil {
 		return AgentSessionSnapshot{}, err
 	}
-	entries, err := repo.Entries(ctx, meta.ID)
+	subagentRead, err := store.capabilities.subagentRead.NewHost(ctx, flruntime.ThreadID(meta.ID))
 	if err != nil {
 		return AgentSessionSnapshot{}, err
 	}
-	lifecycle := sessionlifecycle.Derive(path, sessionlifecycle.PhaseIdle)
-	turns := summariesFromEntries(entries, meta.Turns)
-	projection := observeContextProjection(sessiontree.BuildContextProjection(path, sessiontree.ContextProjectionOptions{Purpose: sessiontree.ProjectionTestUI}))
+	turns := summariesFromEntries(journal.Entries, nil)
+	projection := observeContextProjection(sessiontree.BuildContextProjection(journal.Path, sessiontree.ContextProjectionOptions{Purpose: sessiontree.ProjectionTestUI}))
+	projectObservedContextArtifactRoutes(&projection, meta.ID, meta.ID)
 	active := projection.Messages
-	pathEntries := observeEntries(path)
-	allEntries := observeEntries(entries)
-	updatedAt := meta.UpdatedAt
-	if thread.UpdatedAt.After(updatedAt) {
-		updatedAt = thread.UpdatedAt
-	}
-	if !slices.Equal(turns, meta.Turns) || updatedAt.After(meta.UpdatedAt) {
-		meta.Turns = append([]AgentTurnSummary(nil), turns...)
-		meta.UpdatedAt = updatedAt
-		_ = r.saveAgentSessionMetadata(meta)
-	}
-	promptObservation := r.observationFromPromptCache(ctx, store.prompt(r.Root), meta.ID)
+	pathEntries := observeAgentSessionEntries(journal.Path, meta.ID)
+	allEntries := observeAgentSessionEntries(journal.Entries, meta.ID)
 	compactionEvents := compactionEventsForObservation(pathEntries, nil)
 	compactionDebugs := compactionDebugEventsForObservation(nil)
-	subagents := subAgentSnapshotsFromRepo(ctx, repo, meta.ID)
+	publicSubagents, err := subagentRead.ListSubAgents(ctx, flruntime.ThreadID(meta.ID))
+	if err != nil {
+		return AgentSessionSnapshot{}, err
+	}
+	subagents := harnessSubAgentSnapshots(publicSubagents)
+	leafID := ""
+	if len(journal.Path) > 0 {
+		leafID = journal.Path[len(journal.Path)-1].ID
+	}
+	var contextStatuses []ObservedContextStatus
+	contextSnapshot, err := read.ReadThreadContext(ctx, flruntime.ThreadID(meta.ID))
+	if err != nil {
+		return AgentSessionSnapshot{}, err
+	}
+	if contextSnapshot.Usage != nil {
+		contextStatuses = []ObservedContextStatus{*contextSnapshot.Usage}
+	}
 	return AgentSessionSnapshot{
 		ID:                      meta.ID,
-		Title:                   thread.Title,
-		TitleStatus:             string(thread.TitleStatus),
-		TitleSource:             string(thread.TitleSource),
-		TitleUpdatedAt:          thread.TitleUpdatedAt,
-		TitleError:              thread.TitleError,
-		Status:                  lifecycle.Status(),
-		Phase:                   lifecycle.Phase(),
-		LeafID:                  thread.LeafID,
-		CreatedAt:               meta.CreatedAt,
-		UpdatedAt:               updatedAt,
+		Title:                   journal.Thread.Title,
+		TitleStatus:             journal.Thread.TitleStatus,
+		TitleSource:             journal.Thread.TitleSource,
+		TitleUpdatedAt:          journal.Thread.TitleUpdatedAt,
+		TitleError:              journal.Thread.TitleError,
+		Status:                  string(journal.Thread.Status),
+		Phase:                   string(journal.Thread.Phase),
+		LeafID:                  leafID,
+		CreatedAt:               journal.Thread.CreatedAt,
+		UpdatedAt:               journal.Thread.UpdatedAt,
 		Profile:                 stripProfileSecret(meta.Profile),
 		AgentProfile:            promptCfg.AgentProfile,
 		PromptIdentity:          promptCfg.PromptIdentity,
@@ -1594,24 +1566,23 @@ func (r *Runner) sessionSnapshotFromMetadata(ctx context.Context, meta agentSess
 		UnavailableCapabilities: searchSnapshotUnavailable(meta.Profile, r.EnvFile, meta.SelectedTools),
 		Capabilities:            r.capabilityStateFromEnv(),
 		ContextPolicy:           meta.ContextPolicy,
-		LatestTurnID:            lifecycle.LatestTurnID(),
-		WaitingPrompt:           lifecycle.WaitingPrompt(),
-		Recoverable:             lifecycle.Recoverable(),
-		CanAppendMessage:        lifecycle.CanAppendMessage(),
+		LatestTurnID:            string(journal.Thread.LatestTurnID),
+		WaitingPrompt:           journal.Thread.WaitingPrompt,
+		Recoverable:             journal.Thread.Recoverable,
+		CanAppendMessage:        journal.Thread.CanAppendMessage,
 		Turns:                   turns,
 		ActiveContext:           active,
 		ContextProjection:       projection,
 		PathEntries:             pathEntries,
 		AllEntries:              allEntries,
 		AggregateMetrics:        aggregateTurnMetrics(turns),
-		Compactions:             countCompactions(path),
-		ContextStatuses:         promptObservation.ContextStatuses,
+		Compactions:             countCompactions(journal.Path),
+		ContextStatuses:         contextStatuses,
 		CompactionEvents:        compactionEvents,
 		CompactionDebugs:        compactionDebugs,
 		SubAgents:               pathSafeSubAgentSnapshots(subagents),
 		Observation: AgentObservation{
-			ProviderRequests:  promptObservation.ProviderRequests,
-			ContextStatuses:   promptObservation.ContextStatuses,
+			ContextStatuses:   contextStatuses,
 			CompactionEvents:  compactionEvents,
 			CompactionDebugs:  compactionDebugs,
 			SessionMessages:   sessionMessagesFromEntries(pathEntries),
@@ -1632,7 +1603,15 @@ func (r *Runner) runAgentTurn(ctx context.Context, sess *agentSession, resp Agen
 }
 
 func (r *Runner) runAgentTurnLocked(ctx context.Context, sess *agentSession, resp AgentRunResponse, message string, turnID string) AgentRunResponse {
-	turn, err := sess.thread.Run(ctx, message, agentharness.RunOptions{TurnID: turnID})
+	runtimeTurn, err := sess.turn.RunTurn(ctx, flruntime.RunTurnRequest{
+		RunID: flruntime.RunID(turnID), ThreadID: flruntime.ThreadID(sess.id), TurnID: flruntime.TurnID(turnID),
+		Input: flruntime.TurnInput{Text: message}, Limits: flruntime.TurnLimits{MaxCostUSD: 1.00},
+		Signals: flruntime.TurnSignalSpec{
+			Definitions: flruntime.CoreControlDefinitions(false),
+			Project:     flruntime.ProjectCoreControlSignal,
+		},
+	})
+	turn := harnessTurnResultFromRuntime(runtimeTurn, err)
 	if err != nil && turn.Status == "" {
 		return r.failAgentRun(resp, err)
 	}
@@ -1647,7 +1626,7 @@ func (r *Runner) runAgentTurnLocked(ctx context.Context, sess *agentSession, res
 	resp.Output = turn.Output
 	resp.Metrics = turn.Metrics
 	resp.Events = sess.recorder.Snapshot()
-	resp.HarnessEvents = sess.harnessRecorder.Snapshot()
+	resp.HarnessEvents = nil
 	resp.Profile = sess.profile
 	resp.CompletionReason = string(turn.CompletionReason)
 	resp.ContinuationReason = string(turn.ContinuationReason)
@@ -1697,9 +1676,7 @@ func (r *Runner) runAgentTurnLocked(ctx context.Context, sess *agentSession, res
 		return failed
 	}
 	sess.updatedAt = snapshot.UpdatedAt
-	if snap, err := sess.thread.Journal(finalCtx); err == nil {
-		sess.turns = summariesFromEntries(snap.Entries, sess.turns)
-	}
+	sess.turns = append([]AgentTurnSummary(nil), snapshot.Turns...)
 	snapshot.Turns = append([]AgentTurnSummary(nil), sess.turns...)
 	snapshot.AggregateMetrics = aggregateTurnMetrics(snapshot.Turns)
 	if turn.Diagnostics != nil {
@@ -1769,6 +1746,7 @@ func (r *Runner) failAgentRunWithStatus(resp AgentRunResponse, statusCode int, e
 
 func isMissingAgentSessionError(err error) bool {
 	return errors.Is(err, os.ErrNotExist) ||
+		errors.Is(err, flruntime.ErrThreadNotFound) ||
 		errors.Is(err, sessiontree.ErrThreadNotFound) ||
 		strings.Contains(err.Error(), "not found")
 }
@@ -1819,28 +1797,32 @@ func snapshotIsRunning(snapshot AgentSessionSnapshot) bool {
 }
 
 func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) (AgentSessionSnapshot, error) {
-	snap, err := sess.thread.Journal(ctx)
+	journal, err := readTestUIRuntimeJournal(ctx, sess.read, sess.id)
 	if err != nil {
 		return AgentSessionSnapshot{}, err
 	}
-	lifecycle := sessionlifecycle.Derive(snap.Path, snap.Phase)
-	turns := summariesFromEntries(snap.Entries, sess.turns)
-	projection := observeContextProjection(sessiontree.BuildContextProjection(snap.Path, sessiontree.ContextProjectionOptions{Purpose: sessiontree.ProjectionTestUI}))
+	turns := summariesFromEntries(journal.Entries, sess.turns)
+	projection := observeContextProjection(sessiontree.BuildContextProjection(journal.Path, sessiontree.ContextProjectionOptions{Purpose: sessiontree.ProjectionTestUI}))
+	projectObservedContextArtifactRoutes(&projection, sess.id, sess.id)
 	active := projection.Messages
-	pathEntries := observeEntries(snap.Path)
-	allEntries := observeEntries(snap.Entries)
+	pathEntries := observeAgentSessionEntries(journal.Path, sess.id)
+	allEntries := observeAgentSessionEntries(journal.Entries, sess.id)
+	leafID := ""
+	if len(journal.Path) > 0 {
+		leafID = journal.Path[len(journal.Path)-1].ID
+	}
 	snapshot := AgentSessionSnapshot{
 		ID:                      sess.id,
-		Title:                   snap.Meta.Title,
-		TitleStatus:             string(snap.Meta.TitleStatus),
-		TitleSource:             string(snap.Meta.TitleSource),
-		TitleUpdatedAt:          snap.Meta.TitleUpdatedAt,
-		TitleError:              snap.Meta.TitleError,
-		Status:                  lifecycle.Status(),
-		Phase:                   lifecycle.Phase(),
-		LeafID:                  snap.Meta.LeafID,
-		CreatedAt:               sess.createdAt,
-		UpdatedAt:               sess.updatedAt,
+		Title:                   journal.Thread.Title,
+		TitleStatus:             journal.Thread.TitleStatus,
+		TitleSource:             journal.Thread.TitleSource,
+		TitleUpdatedAt:          journal.Thread.TitleUpdatedAt,
+		TitleError:              journal.Thread.TitleError,
+		Status:                  string(journal.Thread.Status),
+		Phase:                   string(journal.Thread.Phase),
+		LeafID:                  leafID,
+		CreatedAt:               journal.Thread.CreatedAt,
+		UpdatedAt:               journal.Thread.UpdatedAt,
 		Profile:                 sess.profile,
 		AgentProfile:            sess.agentProfile,
 		PromptIdentity:          sess.promptIdentity,
@@ -1850,33 +1832,44 @@ func (r *Runner) sessionSnapshotLocked(ctx context.Context, sess *agentSession) 
 		UnavailableCapabilities: append([]string(nil), sess.unavailableCapabilities...),
 		Capabilities:            sess.capabilities,
 		ContextPolicy:           sess.contextPolicy,
-		LatestTurnID:            lifecycle.LatestTurnID(),
-		WaitingPrompt:           lifecycle.WaitingPrompt(),
-		Recoverable:             lifecycle.Recoverable(),
-		CanAppendMessage:        lifecycle.CanAppendMessage(),
+		LatestTurnID:            string(journal.Thread.LatestTurnID),
+		WaitingPrompt:           journal.Thread.WaitingPrompt,
+		Recoverable:             journal.Thread.Recoverable,
+		CanAppendMessage:        journal.Thread.CanAppendMessage,
 		Turns:                   turns,
 		ActiveContext:           active,
 		ContextProjection:       projection,
 		PathEntries:             pathEntries,
 		AllEntries:              allEntries,
 		AggregateMetrics:        aggregateTurnMetrics(turns),
-		Compactions:             countCompactions(snap.Path),
+		Compactions:             countCompactions(journal.Path),
 	}
-	promptObservation := r.observationFromPromptCache(ctx, sess.promptStore, sess.id)
-	snapshot.ContextStatuses = promptObservation.ContextStatuses
-	snapshot.CompactionEvents = compactionEventsForObservation(pathEntries, nil)
+	contextSnapshot, err := sess.read.ReadThreadContext(ctx, flruntime.ThreadID(sess.id))
+	if err != nil {
+		return AgentSessionSnapshot{}, err
+	}
+	if contextSnapshot.Usage != nil {
+		snapshot.ContextStatuses = []ObservedContextStatus{*contextSnapshot.Usage}
+	}
+	if len(snapshot.CompactionEvents) == 0 {
+		snapshot.CompactionEvents = compactionEventsForObservation(pathEntries, nil)
+	}
 	snapshot.ActivityTimeline = activityTimelineForObservation(obs.ActivityRunMeta{RunID: snapshot.LatestTurnID, ThreadID: sess.id, TurnID: snapshot.LatestTurnID}, eventsForRun(sess.recorder.Snapshot(), snapshot.LatestTurnID), r.now())
-	snapshot.Observation.ProviderRequests = promptObservation.ProviderRequests
-	snapshot.Observation.ContextStatuses = promptObservation.ContextStatuses
+	if sess.provider != nil {
+		snapshot.Observation.ProviderRequests = sess.provider.Snapshot().ProviderRequests
+	}
+	snapshot.Observation.ContextStatuses = snapshot.ContextStatuses
 	snapshot.Observation.CompactionEvents = snapshot.CompactionEvents
 	snapshot.Observation.ActivityTimeline = snapshot.ActivityTimeline
 	snapshot.Observation.SessionMessages = sessionMessagesFromEntries(pathEntries)
 	snapshot.Observation.ActiveContext = active
 	snapshot.Observation.ContextProjection = projection
 	snapshot.Observation.PathEntries = pathEntries
-	if subagents, err := r.subAgentsLocked(ctx, sess); err == nil {
-		snapshot.SubAgents = pathSafeSubAgentSnapshots(subagents)
+	subagents, err := r.subAgentsLocked(ctx, sess)
+	if err != nil {
+		return AgentSessionSnapshot{}, err
 	}
+	snapshot.SubAgents = pathSafeSubAgentSnapshots(subagents)
 	storeAgentSessionSnapshot(sess, snapshot)
 	return snapshot, nil
 }
@@ -1912,7 +1905,7 @@ func (r *Runner) markAgentSessionRunningLocked(sess *agentSession, turnID string
 	storeAgentSessionSnapshot(sess, snapshot)
 }
 
-func (r *Runner) runningAgentSessionSnapshot(ctx context.Context, sess *agentSession) AgentSessionSnapshot {
+func (r *Runner) runningAgentSessionSnapshot(ctx context.Context, sess *agentSession) (AgentSessionSnapshot, error) {
 	snapshot := loadAgentSessionSnapshot(sess)
 	lifecycle := sessionlifecycle.Running(snapshot.LatestTurnID)
 	if snapshot.ID == "" {
@@ -1938,17 +1931,31 @@ func (r *Runner) runningAgentSessionSnapshot(ctx context.Context, sess *agentSes
 	snapshot.WaitingPrompt = lifecycle.WaitingPrompt()
 	snapshot.Recoverable = lifecycle.Recoverable()
 	snapshot.CanAppendMessage = lifecycle.CanAppendMessage()
-	if refreshed, err := r.refreshRunningSnapshotFromThread(ctx, sess, snapshot); err == nil {
-		snapshot = refreshed
+	refreshed, err := r.refreshRunningSnapshotFromThread(ctx, sess, snapshot)
+	if err != nil {
+		return AgentSessionSnapshot{}, err
 	}
+	snapshot = refreshed
+	// The retained in-memory session lock is the exact authority that this turn
+	// is still running. A separate read host can project durable detail while it
+	// is in flight, but its provider-free lifecycle derivation must not replace
+	// that live host state with idle/interrupted.
+	snapshot.Status = lifecycle.Status()
+	snapshot.Phase = lifecycle.Phase()
+	snapshot.LatestTurnID = lifecycle.LatestTurnID()
+	snapshot.WaitingPrompt = lifecycle.WaitingPrompt()
+	snapshot.Recoverable = lifecycle.Recoverable()
+	snapshot.CanAppendMessage = lifecycle.CanAppendMessage()
 	snapshot.Observation = r.runningAgentObservation(sess, snapshot)
 	snapshot.ContextStatuses = append([]ObservedContextStatus(nil), snapshot.Observation.ContextStatuses...)
 	snapshot.CompactionEvents = append([]ObservedCompactionEvent(nil), snapshot.Observation.CompactionEvents...)
 	snapshot.ActivityTimeline = snapshot.Observation.ActivityTimeline
-	if subagents, err := r.subAgentsLocked(ctx, sess); err == nil {
-		snapshot.SubAgents = pathSafeSubAgentSnapshots(subagents)
+	subagents, err := r.subAgentsLocked(ctx, sess)
+	if err != nil {
+		return AgentSessionSnapshot{}, err
 	}
-	return snapshot
+	snapshot.SubAgents = pathSafeSubAgentSnapshots(subagents)
+	return snapshot, nil
 }
 
 // restoreInternalSnapshotIdentity fills in raw identity fields that cached
@@ -1969,33 +1976,42 @@ func restoreInternalSnapshotIdentity(snapshot *AgentSessionSnapshot, sess *agent
 }
 
 func (r *Runner) refreshRunningSnapshotFromThread(ctx context.Context, sess *agentSession, snapshot AgentSessionSnapshot) (AgentSessionSnapshot, error) {
-	snap, err := sess.thread.Journal(ctx)
+	journal, err := readTestUIRuntimeJournal(ctx, sess.read, sess.id)
 	if err != nil {
 		return snapshot, err
 	}
-	lifecycle := sessionlifecycle.Running(snapshot.LatestTurnID)
-	snapshot.LeafID = snap.Meta.LeafID
-	snapshot.Title = snap.Meta.Title
-	snapshot.TitleStatus = string(snap.Meta.TitleStatus)
-	snapshot.TitleSource = string(snap.Meta.TitleSource)
-	snapshot.TitleUpdatedAt = snap.Meta.TitleUpdatedAt
-	snapshot.TitleError = snap.Meta.TitleError
-	snapshot.Status = lifecycle.Status()
-	snapshot.Phase = lifecycle.Phase()
-	snapshot.WaitingPrompt = lifecycle.WaitingPrompt()
-	snapshot.Recoverable = lifecycle.Recoverable()
-	snapshot.CanAppendMessage = lifecycle.CanAppendMessage()
-	projection := observeContextProjection(sessiontree.BuildContextProjection(snap.Path, sessiontree.ContextProjectionOptions{Purpose: sessiontree.ProjectionTestUI}))
+	if len(journal.Path) > 0 {
+		snapshot.LeafID = journal.Path[len(journal.Path)-1].ID
+	}
+	snapshot.Title = journal.Thread.Title
+	snapshot.TitleStatus = journal.Thread.TitleStatus
+	snapshot.TitleSource = journal.Thread.TitleSource
+	snapshot.TitleUpdatedAt = journal.Thread.TitleUpdatedAt
+	snapshot.TitleError = journal.Thread.TitleError
+	snapshot.Status = string(journal.Thread.Status)
+	snapshot.Phase = string(journal.Thread.Phase)
+	snapshot.WaitingPrompt = journal.Thread.WaitingPrompt
+	snapshot.Recoverable = journal.Thread.Recoverable
+	snapshot.CanAppendMessage = journal.Thread.CanAppendMessage
+	projection := observeContextProjection(sessiontree.BuildContextProjection(journal.Path, sessiontree.ContextProjectionOptions{Purpose: sessiontree.ProjectionTestUI}))
+	projectObservedContextArtifactRoutes(&projection, sess.id, sess.id)
 	snapshot.ActiveContext = projection.Messages
 	snapshot.ContextProjection = projection
-	snapshot.PathEntries = observeEntries(snap.Path)
-	snapshot.AllEntries = observeEntries(snap.Entries)
-	snapshot.Compactions = countCompactions(snap.Path)
-	promptObservation := r.observationFromPromptCache(ctx, sess.promptStore, sess.id)
-	snapshot.ContextStatuses = promptObservation.ContextStatuses
+	snapshot.PathEntries = observeAgentSessionEntries(journal.Path, sess.id)
+	snapshot.AllEntries = observeAgentSessionEntries(journal.Entries, sess.id)
+	snapshot.Compactions = countCompactions(journal.Path)
+	contextSnapshot, err := sess.read.ReadThreadContext(ctx, flruntime.ThreadID(sess.id))
+	if err != nil {
+		return AgentSessionSnapshot{}, err
+	}
+	if contextSnapshot.Usage != nil {
+		snapshot.ContextStatuses = []ObservedContextStatus{*contextSnapshot.Usage}
+	}
 	snapshot.CompactionEvents = compactionEventsForObservation(snapshot.PathEntries, nil)
-	snapshot.Observation.ProviderRequests = promptObservation.ProviderRequests
-	snapshot.Observation.ContextStatuses = promptObservation.ContextStatuses
+	if sess.provider != nil {
+		snapshot.Observation.ProviderRequests = sess.provider.Snapshot().ProviderRequests
+	}
+	snapshot.Observation.ContextStatuses = snapshot.ContextStatuses
 	snapshot.Observation.CompactionEvents = snapshot.CompactionEvents
 	snapshot.Observation.ActivityTimeline = snapshot.ActivityTimeline
 	snapshot.Observation.SessionMessages = sessionMessagesFromEntries(snapshot.PathEntries)
@@ -2018,7 +2034,10 @@ func loadAgentSessionSnapshot(sess *agentSession) AgentSessionSnapshot {
 }
 
 func (r *Runner) agentObservationLocked(sess *agentSession, snapshot AgentSessionSnapshot, result engine.Result, turnID string) AgentObservation {
-	observation := sess.provider.Snapshot()
+	observation := AgentObservation{}
+	if sess.provider != nil {
+		observation = sess.provider.Snapshot()
+	}
 	observation.SessionMessages = sessionMessagesFromEntries(snapshot.PathEntries)
 	observation.ActiveContext = snapshot.ActiveContext
 	observation.ContextProjection = snapshot.ContextProjection
@@ -2033,7 +2052,10 @@ func (r *Runner) agentObservationLocked(sess *agentSession, snapshot AgentSessio
 }
 
 func (r *Runner) runningAgentObservation(sess *agentSession, snapshot AgentSessionSnapshot) AgentObservation {
-	observation := sess.provider.Snapshot()
+	observation := AgentObservation{}
+	if sess.provider != nil {
+		observation = sess.provider.Snapshot()
+	}
 	observation.SessionMessages = sessionMessagesFromEntries(snapshot.PathEntries)
 	observation.ActiveContext = snapshot.ActiveContext
 	observation.ContextProjection = snapshot.ContextProjection
@@ -2468,6 +2490,14 @@ func observeEntries(entries []sessiontree.Entry) []ObservedSessionEntry {
 	return out
 }
 
+func observeAgentSessionEntries(entries []sessiontree.Entry, sessionID string) []ObservedSessionEntry {
+	out := observeEntries(entries)
+	for index := range out {
+		projectObservedEntryArtifactRoute(&out[index], sessionID)
+	}
+	return out
+}
+
 func observeEntryMessage(msg session.Message) ObservedSessionMessage {
 	items := observeMessages([]session.Message{msg})
 	if len(items) == 0 {
@@ -2662,11 +2692,8 @@ func (r Runner) runProjectedManualCompactionScenario(ctx context.Context) RunRes
 	resp := RunResponse{ID: fmt.Sprintf("%d", r.now().UnixNano()), Target: TargetContextCompactionScenarios, Title: "Manual active compaction continues", Kind: "agent", StartedAt: r.now()}
 	sink := &runtimeEventSink{}
 	manual := &testManualCompactionSource{request: flruntime.ManualCompactionRequest{RequestID: "testui-manual-active", Source: "test_ui"}}
-	host, err := testuiCompactionHost("testui-manual-active", sink, testModelGateway("continued after compact"))
+	host, err := testuiCompactionHost(ctx, "testui-manual-active", sink, testModelGateway("continued after compact"))
 	if err != nil {
-		return finishRunResponse(r, resp, "error", err.Error())
-	}
-	if _, err := host.CreateThread(ctx, flruntime.CreateThreadRequest{ThreadID: "testui-manual-active"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
 	if _, err := host.RunTurn(ctx, flruntime.RunTurnRequest{
@@ -2709,11 +2736,8 @@ func (r Runner) runProjectedManualCompactionScenario(ctx context.Context) RunRes
 func (r Runner) runProjectedManualNoopScenario(ctx context.Context) RunResponse {
 	resp := RunResponse{ID: fmt.Sprintf("%d", r.now().UnixNano()), Target: TargetContextCompactionScenarios, Title: "Manual compact noops for short context", Kind: "agent", StartedAt: r.now()}
 	sink := &runtimeEventSink{}
-	host, err := testuiCompactionNoopHost("testui-manual-noop", sink, testModelGateway("short context seed"))
+	host, err := testuiCompactionNoopHost(ctx, "testui-manual-noop", sink, testModelGateway("short context seed"))
 	if err != nil {
-		return finishRunResponse(r, resp, "error", err.Error())
-	}
-	if _, err := host.CreateThread(ctx, flruntime.CreateThreadRequest{ThreadID: "testui-manual-noop"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
 	if _, err := host.RunTurn(ctx, flruntime.RunTurnRequest{RunID: "testui-manual-noop-seed", ThreadID: "testui-manual-noop", TurnID: "testui-manual-noop-seed", Input: flruntime.TurnInput{Text: "short context"}}); err != nil {
@@ -2725,7 +2749,7 @@ func (r Runner) runProjectedManualNoopScenario(ctx context.Context) RunResponse 
 		Source:    "test_ui",
 	})
 	resp.Agent = testuiRuntimeContextCompactionRun(result, sink.events)
-	if err != nil {
+	if err != nil && !errors.Is(err, engine.ErrCompactionNoop) {
 		return finishRunResponse(r, resp, "fail", err.Error())
 	}
 	if result.Compaction.Status != obs.CompactionStatusNoop || result.Metrics.Compactions != 0 {
@@ -2746,11 +2770,8 @@ func (r Runner) runProjectedManualNoopScenario(ctx context.Context) RunResponse 
 func (r Runner) runProjectedManualPollErrorScenario(ctx context.Context) RunResponse {
 	resp := RunResponse{ID: fmt.Sprintf("%d", r.now().UnixNano()), Target: TargetContextCompactionScenarios, Title: "Manual poll error is observable", Kind: "agent", StartedAt: r.now()}
 	sink := &runtimeEventSink{}
-	host, err := testuiCompactionHost("testui-manual-poll-error", sink, testModelGateway("continued after poll error"))
+	host, err := testuiCompactionHost(ctx, "testui-manual-poll-error", sink, testModelGateway("continued after poll error"))
 	if err != nil {
-		return finishRunResponse(r, resp, "error", err.Error())
-	}
-	if _, err := host.CreateThread(ctx, flruntime.CreateThreadRequest{ThreadID: "testui-manual-poll-error"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
 	result, err := host.RunTurn(ctx, flruntime.RunTurnRequest{
@@ -2777,11 +2798,8 @@ func (r Runner) runProjectedManualPollErrorScenario(ctx context.Context) RunResp
 func (r Runner) runProjectedCompactOnlyScenario(ctx context.Context) RunResponse {
 	resp := RunResponse{ID: fmt.Sprintf("%d", r.now().UnixNano()), Target: TargetContextCompactionScenarios, Title: "Compact-only returns checkpoint", Kind: "agent", StartedAt: r.now()}
 	sink := &runtimeEventSink{}
-	host, err := testuiCompactionHost("testui-compact-only", sink, testModelGateway("seed answer"))
+	host, err := testuiCompactionHost(ctx, "testui-compact-only", sink, testModelGateway("seed answer"))
 	if err != nil {
-		return finishRunResponse(r, resp, "error", err.Error())
-	}
-	if _, err := host.CreateThread(ctx, flruntime.CreateThreadRequest{ThreadID: "testui-compact-only"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
 	if _, err := host.RunTurn(ctx, flruntime.RunTurnRequest{RunID: "testui-compact-seed", ThreadID: "testui-compact-only", TurnID: "testui-compact-seed", Input: flruntime.TurnInput{Text: testuiLargeCompactionInput()}}); err != nil {
@@ -2828,11 +2846,8 @@ func (r Runner) runProjectedCompactCancelScenario(ctx context.Context) RunRespon
 	defer cancel()
 	started := make(chan struct{})
 	sink := &runtimeEventSink{}
-	host, err := testuiCompactionHost("testui-compact-cancel", sink, &seedThenBlockingTestModelGateway{started: started})
+	host, err := testuiCompactionHost(ctx, "testui-compact-cancel", sink, &seedThenBlockingTestModelGateway{started: started})
 	if err != nil {
-		return finishRunResponse(r, resp, "error", err.Error())
-	}
-	if _, err := host.CreateThread(ctx, flruntime.CreateThreadRequest{ThreadID: "testui-compact-cancel"}); err != nil {
 		return finishRunResponse(r, resp, "error", err.Error())
 	}
 	if _, err := host.RunTurn(context.Background(), flruntime.RunTurnRequest{RunID: "testui-compact-cancel-seed", ThreadID: "testui-compact-cancel", TurnID: "testui-compact-cancel-seed", Input: flruntime.TurnInput{Text: testuiLargeCompactionInput()}}); err != nil {
@@ -2910,6 +2925,56 @@ func (g testModelGateway) StreamModel(ctx context.Context, req flruntime.ModelRe
 	return events, nil
 }
 
+type testuiEvalModelGateway struct {
+	mu   sync.Mutex
+	step int
+}
+
+func (g *testuiEvalModelGateway) StreamModel(context.Context, flruntime.ModelRequest) (<-chan flruntime.ModelEvent, error) {
+	g.mu.Lock()
+	g.step++
+	step := g.step
+	g.mu.Unlock()
+	events := make(chan flruntime.ModelEvent, 4)
+	switch step {
+	case 1:
+		events <- flruntime.ModelEvent{Type: flruntime.ModelEventUsage, Usage: flruntime.ProviderUsage{
+			InputTokens: 42, OutputTokens: 8, TotalTokens: 50, Source: string(provider.UsageNative), Available: true,
+		}}
+		events <- flruntime.ModelEvent{Type: flruntime.ModelEventToolCalls, ToolCalls: []tools.ToolCall{{
+			ID: "write-result", Name: "write", Args: `{"path":"RESULT.txt","content":"floret eval passed\n"}`,
+		}}}
+		events <- flruntime.ModelEvent{Type: flruntime.ModelEventDone, Reason: "tool_calls"}
+	case 2:
+		events <- flruntime.ModelEvent{Type: flruntime.ModelEventUsage, Usage: flruntime.ProviderUsage{
+			InputTokens: 18, OutputTokens: 5, TotalTokens: 23, Source: string(provider.UsageEstimated), Available: true,
+		}}
+		events <- flruntime.ModelEvent{Type: flruntime.ModelEventDelta, Text: "Created RESULT.txt and verified the eval oracle."}
+		events <- flruntime.ModelEvent{Type: flruntime.ModelEventDone, Reason: "stop"}
+	default:
+		events <- flruntime.ModelEvent{Type: flruntime.ModelEventError, Err: fmt.Errorf("unexpected eval model step %d", step)}
+	}
+	close(events)
+	return events, nil
+}
+
+type testUIRuntimeEffectAuthorizationGate struct{}
+
+func (testUIRuntimeEffectAuthorizationGate) Dispatch(_ context.Context, req flruntime.EffectAuthorizationRequest, effect flruntime.AuthorizedEffect) (flruntime.EffectDispatchResult, error) {
+	if req.Permission.Mode == tools.PermissionDeny || strings.HasPrefix(strings.TrimSpace(req.ToolName), "mcp__") {
+		return flruntime.EffectDispatchResult{}, flruntime.ErrEffectUnauthorized
+	}
+	return effect(flruntime.EffectAuthorizationProof{
+		EffectAttemptID: req.EffectAttemptID, RequestFingerprint: req.RequestFingerprint,
+		ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, ToolCallID: req.ToolCallID,
+		LeaseOwnerID: req.LeaseOwnerID, LeaseGeneration: req.LeaseGeneration,
+		PolicyRevision: "testui-policy-v1", ApprovalID: req.EffectAttemptID,
+		AuditReference: "testui-audit-" + req.EffectAttemptID,
+		AuditHash:      sessiontree.StableHash(req.EffectAttemptID + "\x00" + req.RequestFingerprint),
+		AuthorizedAt:   time.Now().UTC(),
+	})
+}
+
 type blockingTestModelGateway struct {
 	started chan struct{}
 }
@@ -2940,7 +3005,6 @@ func (g *seedThenBlockingTestModelGateway) StreamModel(ctx context.Context, req 
 }
 
 type testuiCompactionRuntime interface {
-	CreateThread(context.Context, flruntime.CreateThreadRequest) (flruntime.ThreadSummary, error)
 	RunTurn(context.Context, flruntime.RunTurnRequest) (flruntime.TurnResult, error)
 	CompactThread(context.Context, flruntime.CompactThreadRequest) (flruntime.CompactThreadResult, error)
 }
@@ -2948,11 +3012,6 @@ type testuiCompactionRuntime interface {
 type testuiCompactionFacade struct {
 	turn       *flruntime.TurnExecutionHost
 	compaction *flruntime.ThreadCompactionHost
-	create     *flruntime.ThreadCreateHost
-}
-
-func (f *testuiCompactionFacade) CreateThread(ctx context.Context, req flruntime.CreateThreadRequest) (flruntime.ThreadSummary, error) {
-	return f.create.CreateThread(ctx, req)
 }
 
 func (f *testuiCompactionFacade) RunTurn(ctx context.Context, req flruntime.RunTurnRequest) (flruntime.TurnResult, error) {
@@ -2963,23 +3022,17 @@ func (f *testuiCompactionFacade) CompactThread(ctx context.Context, req flruntim
 	return f.compaction.CompactThread(ctx, req)
 }
 
-func testuiCompactionHost(threadID flruntime.ThreadID, sink flruntime.EventSink, gateway flruntime.ModelGateway) (testuiCompactionRuntime, error) {
+func testuiCompactionHost(ctx context.Context, threadID flruntime.ThreadID, sink flruntime.EventSink, gateway flruntime.ModelGateway) (testuiCompactionRuntime, error) {
 	store := flruntime.NewMemoryStore()
-	bootstrap, err := flruntime.NewHostBootstrap(store)
+	create, turnFactory, compactionFactory, err := testuiCompactionCapabilities(store, threadID, sink)
 	if err != nil {
 		return nil, err
 	}
-	turnFactory, err := flruntime.NewTurnExecutionHostFactory(bootstrap)
-	if err != nil {
-		return nil, err
-	}
-	compactionFactory, err := flruntime.NewThreadCompactionHostFactory(bootstrap)
-	if err != nil {
+	if _, err := create.CreateThread(ctx, flruntime.CreateThreadRequest{ThreadID: threadID}); err != nil {
 		return nil, err
 	}
 	config := testuiProjectedCompactionConfig(256000, 100, true)
-	turn, err := turnFactory.NewHost(flruntime.TurnExecutionHostOptions{
-		ThreadID:             threadID,
+	turn, err := turnFactory.NewHost(ctx, flruntime.TurnExecutionHostOptions{
 		Config:               config,
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: testuiModelGatewayIdentity(),
@@ -2988,8 +3041,7 @@ func testuiCompactionHost(threadID flruntime.ThreadID, sink flruntime.EventSink,
 	if err != nil {
 		return nil, err
 	}
-	compaction, err := compactionFactory.NewHost(flruntime.ThreadCompactionHostOptions{
-		ThreadID:             threadID,
+	compaction, err := compactionFactory.NewHost(ctx, flruntime.ThreadCompactionHostOptions{
 		Config:               testuiProjectedCompactionConfig(256000, 100, true),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: testuiModelGatewayIdentity(),
@@ -2998,30 +3050,20 @@ func testuiCompactionHost(threadID flruntime.ThreadID, sink flruntime.EventSink,
 	if err != nil {
 		return nil, err
 	}
-	create, err := flruntime.NewThreadCreateHost(bootstrap, sink)
-	if err != nil {
-		return nil, err
-	}
-	return &testuiCompactionFacade{turn: turn, compaction: compaction, create: create}, nil
+	return &testuiCompactionFacade{turn: turn, compaction: compaction}, nil
 }
 
-func testuiCompactionNoopHost(threadID flruntime.ThreadID, sink flruntime.EventSink, gateway flruntime.ModelGateway) (testuiCompactionRuntime, error) {
+func testuiCompactionNoopHost(ctx context.Context, threadID flruntime.ThreadID, sink flruntime.EventSink, gateway flruntime.ModelGateway) (testuiCompactionRuntime, error) {
 	store := flruntime.NewMemoryStore()
-	bootstrap, err := flruntime.NewHostBootstrap(store)
+	create, turnFactory, compactionFactory, err := testuiCompactionCapabilities(store, threadID, sink)
 	if err != nil {
 		return nil, err
 	}
-	turnFactory, err := flruntime.NewTurnExecutionHostFactory(bootstrap)
-	if err != nil {
-		return nil, err
-	}
-	compactionFactory, err := flruntime.NewThreadCompactionHostFactory(bootstrap)
-	if err != nil {
+	if _, err := create.CreateThread(ctx, flruntime.CreateThreadRequest{ThreadID: threadID}); err != nil {
 		return nil, err
 	}
 	config := testuiProjectedCompactionConfig(256000, 0, false)
-	turn, err := turnFactory.NewHost(flruntime.TurnExecutionHostOptions{
-		ThreadID:             threadID,
+	turn, err := turnFactory.NewHost(ctx, flruntime.TurnExecutionHostOptions{
 		Config:               config,
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: testuiModelGatewayIdentity(),
@@ -3030,8 +3072,7 @@ func testuiCompactionNoopHost(threadID flruntime.ThreadID, sink flruntime.EventS
 	if err != nil {
 		return nil, err
 	}
-	compaction, err := compactionFactory.NewHost(flruntime.ThreadCompactionHostOptions{
-		ThreadID:             threadID,
+	compaction, err := compactionFactory.NewHost(ctx, flruntime.ThreadCompactionHostOptions{
 		Config:               testuiProjectedCompactionConfig(256000, 0, false),
 		ModelGateway:         gateway,
 		ModelGatewayIdentity: testuiModelGatewayIdentity(),
@@ -3040,11 +3081,68 @@ func testuiCompactionNoopHost(threadID flruntime.ThreadID, sink flruntime.EventS
 	if err != nil {
 		return nil, err
 	}
-	create, err := flruntime.NewThreadCreateHost(bootstrap, sink)
+	return &testuiCompactionFacade{turn: turn, compaction: compaction}, nil
+}
+
+func testuiCompactionCapabilities(store *flruntime.Store, threadID flruntime.ThreadID, sink flruntime.EventSink) (*flruntime.ThreadCreateHost, *flruntime.TurnExecutionHostFactory, *flruntime.ThreadCompactionHostFactory, error) {
+	var createBinder *flruntime.ThreadCreateHostBinder
+	var turnBinder *flruntime.TurnExecutionHostBinder
+	var compactionBinder *flruntime.ThreadCompactionHostBinder
+	err := flruntime.ConfigureHostCapabilities(store, func(bootstrap *flruntime.HostBootstrap) error {
+		var err error
+		if createBinder, err = flruntime.NewThreadCreateHostBinder(bootstrap); err != nil {
+			return err
+		}
+		if turnBinder, err = flruntime.NewTurnExecutionHostBinder(bootstrap); err != nil {
+			return err
+		}
+		compactionBinder, err = flruntime.NewThreadCompactionHostBinder(bootstrap)
+		return err
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	create, err := createBinder.Bind(threadID, flruntime.CreateIntentID("testui-compaction-create:"+string(threadID)))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	turnFactory, err := turnBinder.Bind(threadID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	compactionFactory, err := compactionBinder.Bind(threadID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return create, turnFactory, compactionFactory, nil
+}
+
+func testuiTurnHost(ctx context.Context, store *flruntime.Store, threadID flruntime.ThreadID, intentID flruntime.CreateIntentID, opts flruntime.TurnExecutionHostOptions) (*flruntime.TurnExecutionHost, error) {
+	var createBinder *flruntime.ThreadCreateHostBinder
+	var turnBinder *flruntime.TurnExecutionHostBinder
+	err := flruntime.ConfigureHostCapabilities(store, func(bootstrap *flruntime.HostBootstrap) error {
+		var err error
+		if createBinder, err = flruntime.NewThreadCreateHostBinder(bootstrap); err != nil {
+			return err
+		}
+		turnBinder, err = flruntime.NewTurnExecutionHostBinder(bootstrap)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	return &testuiCompactionFacade{turn: turn, compaction: compaction, create: create}, nil
+	create, err := createBinder.Bind(threadID, intentID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := create.CreateThread(ctx, flruntime.CreateThreadRequest{ThreadID: threadID}); err != nil {
+		return nil, err
+	}
+	factory, err := turnBinder.Bind(threadID)
+	if err != nil {
+		return nil, err
+	}
+	return factory.NewHost(ctx, opts)
 }
 
 func testuiModelGatewayIdentity() flruntime.ModelGatewayIdentity {
@@ -3082,11 +3180,45 @@ func testuiRuntimeAgentRun(result flruntime.TurnResult, events []flruntime.Event
 		EngineStatus: string(result.Status),
 		Output:       result.Output,
 		Metrics: engine.RunMetrics{
+			Usage:       runtimeProviderUsage(result.Metrics.ProviderUsage),
 			Steps:       result.Metrics.Steps,
 			LLMRequests: result.Metrics.LLMRequests,
+			ToolCalls:   result.Metrics.ToolCalls,
 			Compactions: result.Metrics.Compactions,
+			Retries:     result.Metrics.Retries,
+			WallTimeMS:  result.Metrics.WallTimeMS,
 		},
 		Events: runtimeEventsAsEngineEvents(events),
+	}
+}
+
+func runtimeTurnEngineResult(result flruntime.TurnResult, runErr error) engine.Result {
+	err := runErr
+	if err == nil && strings.TrimSpace(result.Error) != "" {
+		err = errors.New(result.Error)
+	}
+	return engine.Result{
+		Status: engine.Status(result.Status),
+		Output: result.Output,
+		Err:    err,
+		Metrics: engine.RunMetrics{
+			Usage:       runtimeProviderUsage(result.Metrics.ProviderUsage),
+			Steps:       result.Metrics.Steps,
+			LLMRequests: result.Metrics.LLMRequests,
+			ToolCalls:   result.Metrics.ToolCalls,
+			Compactions: result.Metrics.Compactions,
+			Retries:     result.Metrics.Retries,
+			WallTimeMS:  result.Metrics.WallTimeMS,
+		},
+	}
+}
+
+func runtimeProviderUsage(usage flruntime.ProviderUsage) provider.Usage {
+	return provider.Usage{
+		InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, ReasoningTokens: usage.ReasoningTokens,
+		CacheReadTokens: usage.CacheReadTokens, CacheWriteTokens: usage.CacheWriteTokens,
+		TotalTokens: usage.TotalTokens, CostUSD: usage.CostUSD, Source: provider.UsageSource(usage.Source),
+		Available: usage.Available, WindowInputTokens: usage.WindowInputTokens,
 	}
 }
 
@@ -3107,18 +3239,31 @@ func runtimeEventsAsEngineEvents(events []flruntime.Event) []event.Event {
 	out := make([]event.Event, 0, len(events))
 	for _, ev := range events {
 		out = append(out, event.Event{
-			Type:      event.Type(ev.Type),
-			RunID:     string(ev.RunID),
-			ThreadID:  string(ev.ThreadID),
-			TurnID:    string(ev.TurnID),
-			Step:      ev.Step,
-			Message:   ev.Message,
-			Result:    ev.Result,
-			Err:       ev.Error,
-			Duration:  ev.DurationMS,
-			Metadata:  ev.Metadata,
-			Timestamp: ev.Timestamp,
+			Type: event.Type(ev.Type), TraceID: string(ev.TraceID), RunID: string(ev.RunID), ThreadID: string(ev.ThreadID), TurnID: string(ev.TurnID), Step: ev.Step,
+			Provider: ev.Provider, Model: ev.Model, Message: ev.Message, Result: ev.Result, Err: ev.Error,
+			ToolID: ev.ToolID, ToolName: ev.ToolName, ToolKind: ev.ToolKind, ArgsHash: ev.ArgsHash,
+			Duration: ev.DurationMS, FinishReason: string(ev.FinishReason), RawFinishReason: ev.RawFinishReason,
+			FinishInferred: ev.FinishInferred, CompletionReason: string(ev.CompletionReason), ContinuationReason: string(ev.ContinuationReason),
+			Activity: runtimeActivityPresentation(ev.Activity), Sources: runtimeSourceRefsAsEngine(ev.Sources), Metadata: ev.Metadata, Timestamp: ev.Timestamp,
 		})
+	}
+	return out
+}
+
+func runtimeActivityPresentation(in *obs.ActivityPresentation) *obs.ActivityPresentation {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.Chips = append([]obs.ActivityChip(nil), in.Chips...)
+	out.TargetRefs = append([]obs.ActivityTargetRef(nil), in.TargetRefs...)
+	return &out
+}
+
+func runtimeSourceRefsAsEngine(in []flruntime.SourceRef) []event.SourceRef {
+	out := make([]event.SourceRef, 0, len(in))
+	for _, source := range in {
+		out = append(out, event.SourceRef{Title: source.Title, URL: source.URL})
 	}
 	return out
 }
@@ -3183,48 +3328,32 @@ func (r Runner) runEvalDemo(ctx context.Context, resp RunResponse) RunResponse {
 	if err := initDemoGitWorkspace(ctx, workspace); err != nil {
 		return r.failAgent(resp, err)
 	}
-	rec := &event.Recorder{}
 	registry := tools.NewRegistry()
 	if err := builtin.RegisterWorkspaceMutation(registry, builtin.WorkspaceOptions{Root: workspace}); err != nil {
 		return r.failAgent(resp, err)
 	}
-	prov := harness.NewScriptedProvider(
-		harness.Step(
-			harness.Usage(provider.Usage{InputTokens: 42, OutputTokens: 8, CostUSD: 0, Source: provider.UsageNative}),
-			harness.Tool("write-readme", "write", `{"path":"RESULT.txt","content":"floret eval passed\n"}`),
-			harness.Done(),
-		),
-		harness.Step(
-			harness.Usage(provider.Usage{InputTokens: 18, OutputTokens: 5, Source: provider.UsageEstimated}),
-			harness.Text("Created RESULT.txt and verified the eval oracle."),
-			harness.Done(),
-		),
-	)
-	eng, err := engine.New(engine.Config{
-		Provider:     prov,
-		Store:        session.NewMemoryStore(),
-		Artifacts:    artifact.NewMemoryStore(),
-		SystemPrompt: "You are a deterministic Floret eval agent.",
-		Tools:        registry,
-		Sink:         rec,
-		Approver: func(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {
-			return tools.PermissionDecisionAllow, nil
-		},
-		Options: engine.Options{
-			RunID:              "testui-eval-demo",
-			ThreadID:           "testui-eval-demo",
-			TurnID:             "testui-eval-demo",
-			PromptScopeID:      "testui-eval-demo",
-			TraceID:            "testui-eval-demo",
-			ProviderName:       "scripted",
-			Model:              "scripted-eval",
-			MaxTotalTokens:     200,
+	store := flruntime.NewMemoryStore()
+	defer store.Close()
+	sink := &runtimeEventSink{}
+	threadID := flruntime.ThreadID("testui-eval-demo")
+	host, err := testuiTurnHost(ctx, store, threadID, "testui-eval-demo-create", flruntime.TurnExecutionHostOptions{
+		Config: config.Config{
+			SystemPrompt:       "You are a deterministic Floret eval agent.",
 			DuplicateToolLimit: 3,
+			ContextPolicy: config.ContextPolicy{
+				ContextWindowTokens: config.DefaultContextWindowTokens,
+			},
 		},
+		ModelGateway:            &testuiEvalModelGateway{},
+		ModelGatewayIdentity:    flruntime.ModelGatewayIdentity{Provider: "scripted", Model: "scripted-eval", StateCompatibilityKey: "scripted:eval-v1"},
+		Tools:                   registry,
+		EffectAuthorizationGate: testUIRuntimeEffectAuthorizationGate{},
+		Sink:                    sink,
 	})
 	if err != nil {
 		return r.failAgent(resp, err)
 	}
+	rec := &event.Recorder{}
 	artifactsDir := filepath.Join(workspace, "artifacts")
 	result, err := eval.Runner{
 		Suite:        "test-ui",
@@ -3233,8 +3362,17 @@ func (r Runner) runEvalDemo(ctx context.Context, resp RunResponse) RunResponse {
 		Model:        "scripted-eval",
 		Workspace:    workspace,
 		ArtifactsDir: artifactsDir,
-		Engine:       eng,
-		Trace:        rec,
+		Execute: func(runCtx context.Context, prompt string) engine.Result {
+			turn, runErr := host.RunTurn(runCtx, flruntime.RunTurnRequest{
+				RunID: "testui-eval-demo", ThreadID: threadID, TurnID: "testui-eval-demo",
+				Input: flruntime.TurnInput{Text: prompt}, Limits: flruntime.TurnLimits{MaxTotalTokens: 200},
+			})
+			for _, ev := range runtimeEventsAsEngineEvents(sink.events) {
+				rec.Emit(ev)
+			}
+			return runtimeTurnEngineResult(turn, runErr)
+		},
+		Trace: rec,
 	}.Run(ctx, eval.Case{
 		ID:       "write-result",
 		Title:    "Write and verify RESULT.txt",
@@ -3277,67 +3415,36 @@ func (r Runner) runProviderSmoke(ctx context.Context, resp RunResponse) RunRespo
 	if cfg.WallTime == 0 {
 		cfg.WallTime = 45 * time.Second
 	}
-	p, err := adapters.NewProvider(cfg)
-	if err != nil {
-		return r.failAgent(resp, err)
-	}
-	rec := &event.Recorder{}
-	registry := tools.NewRegistry()
-	store, err := r.sessionStorage(ctx)
-	if err != nil {
-		return r.failAgent(resp, err)
-	}
-	promptStore := store.prompt(r.Root)
-	cacheRetention, err := config.PromptCacheRetention(cfg)
-	if err != nil {
-		return r.failAgent(resp, err)
-	}
-	eng, err := engine.New(engine.Config{
-		Provider:     p,
-		Store:        session.NewMemoryStore(),
-		Prompt:       promptStore,
-		Artifacts:    artifact.NewMemoryStore(),
-		SystemPrompt: "You are Floret's smoke-test assistant. Reply with a short success message. Do not call normal tools unless you need to ask the user for missing information.",
-		Tools:        registry,
-		Sink:         rec,
-		Options: engine.Options{
-			RunID:                   runID,
-			ThreadID:                runID,
-			TurnID:                  runID,
-			PromptScopeID:           runID,
-			TraceID:                 runID,
-			ProviderName:            cfg.Provider,
-			Model:                   cfg.Model,
-			CacheRetention:          configbridge.CacheRetention(cacheRetention),
-			ContextPolicy:           configbridge.ContextPolicy(cfg.ContextPolicy),
-			MaxEmptyProviderRetries: cfg.MaxEmptyProviderRetries,
-			NoProgressLimit:         cfg.NoProgressLimit,
-			DuplicateToolLimit:      cfg.DuplicateToolLimit,
-			WallTime:                cfg.WallTime,
-			MaxTotalTokens:          4000,
-			MaxCostUSD:              0.25,
-		},
+	cfg.SystemPrompt = "You are Floret's smoke-test assistant. Reply with a short success message. Do not call normal tools unless you need to ask the user for missing information."
+	store := flruntime.NewMemoryStore()
+	defer store.Close()
+	sink := &runtimeEventSink{}
+	threadID := flruntime.ThreadID(runID)
+	host, err := testuiTurnHost(ctx, store, threadID, flruntime.CreateIntentID("testui-provider-create:"+runID), flruntime.TurnExecutionHostOptions{
+		Config: cfg,
+		Sink:   sink,
 	})
 	if err != nil {
 		return r.failAgent(resp, err)
 	}
-	result := eng.Run(ctx, "Reply with a concise confirmation that the configured provider can run Floret.")
-	resp.Agent = &AgentRun{
-		EngineStatus: string(result.Status),
-		Output:       result.Output,
-		Metrics:      result.Metrics,
-		Events:       rec.Snapshot(),
-		Config:       r.ConfigInfo(),
+	result, runErr := host.RunTurn(ctx, flruntime.RunTurnRequest{
+		RunID: flruntime.RunID(runID), ThreadID: threadID, TurnID: flruntime.TurnID(runID),
+		Input:  flruntime.TurnInput{Text: "Reply with a concise confirmation that the configured provider can run Floret."},
+		Limits: flruntime.TurnLimits{MaxTotalTokens: 4000, MaxCostUSD: 0.25},
+	})
+	resp.Agent = testuiRuntimeAgentRun(result, sink.events)
+	resp.Agent.Config = r.ConfigInfo()
+	if runErr != nil {
+		resp.Error = runErr.Error()
+	} else if strings.TrimSpace(result.Error) != "" {
+		resp.Error = result.Error
 	}
-	if result.Err != nil {
-		resp.Error = result.Err.Error()
-	}
-	if result.Status == engine.Completed {
+	if result.Status == flruntime.TurnStatusCompleted {
 		resp.Status = "pass"
-		resp.Summary = fmt.Sprintf("Provider completed in %d step(s) with %d total tokens.", result.Metrics.Steps, result.Metrics.Usage.Normalized().TotalTokens)
+		resp.Summary = fmt.Sprintf("Provider completed in %d step(s) with %d total tokens.", result.Metrics.Steps, result.Metrics.ProviderUsage.TotalTokens)
 	} else {
 		resp.Status = "fail"
-		resp.Summary = fmt.Sprintf("Provider ended with engine status %s.", result.Status)
+		resp.Summary = fmt.Sprintf("Provider ended with turn status %s.", result.Status)
 	}
 	resp.FinishedAt = r.now()
 	resp.DurationMS = resp.FinishedAt.Sub(resp.StartedAt).Milliseconds()

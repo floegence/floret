@@ -15,6 +15,7 @@ import (
 	"github.com/floegence/floret/internal/provider"
 	"github.com/floegence/floret/internal/session"
 	"github.com/floegence/floret/internal/testing/harness"
+	"github.com/floegence/floret/internal/testing/tooltest"
 	"github.com/floegence/floret/tools"
 )
 
@@ -60,10 +61,12 @@ func TestRunnerPassesOnlyWhenEngineCompletesAndOraclePasses(t *testing.T) {
 			SystemPrompt: "test",
 			Tools:        registry,
 			Sink:         rec,
-			Approver: func(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {
-				return tools.PermissionDecisionAllow, nil
+			Options: engine.Options{
+				RunID: "eval",
+				EffectDispatcher: tooltest.Dispatcher(func(context.Context, tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
+					return tooltest.PermissionDecisionAllow, nil
+				}),
 			},
-			Options: engine.Options{RunID: "eval"},
 		}),
 	}
 	result, err := runner.Run(context.Background(), Case{
@@ -303,12 +306,13 @@ func runCmd(t *testing.T, dir string, command string) {
 }
 
 func newEvalEngine(p provider.Provider) *engine.Engine {
+	opts := engine.Options{RunID: "eval", EffectDispatcher: tooltest.Dispatcher(nil)}
 	eng, err := engine.New(engine.Config{
 		Provider:     p,
 		Store:        session.NewMemoryStore(),
 		SystemPrompt: "test",
 		Tools:        tools.NewRegistry(),
-		Options:      engine.Options{RunID: "eval"},
+		Options:      opts,
 	})
 	if err != nil {
 		panic(err)
@@ -323,6 +327,9 @@ func newEvalEngineWithConfig(t *testing.T, cfg engine.Config) *engine.Engine {
 	}
 	if cfg.Tools == nil {
 		cfg.Tools = tools.NewRegistry()
+	}
+	if cfg.Options.EffectDispatcher == nil {
+		cfg.Options.EffectDispatcher = tooltest.Dispatcher(nil)
 	}
 	eng, err := engine.New(cfg)
 	if err != nil {

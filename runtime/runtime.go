@@ -20,7 +20,6 @@ import (
 	"github.com/floegence/floret/internal/provider/cache"
 	"github.com/floegence/floret/internal/provider/catalog"
 	"github.com/floegence/floret/internal/session"
-	"github.com/floegence/floret/internal/session/artifact"
 	"github.com/floegence/floret/internal/session/compaction"
 	"github.com/floegence/floret/internal/session/contextpolicy"
 	"github.com/floegence/floret/internal/sessiontree"
@@ -34,7 +33,9 @@ import (
 type ThreadID string
 type TurnID string
 type RunID string
+type ArtifactID string
 type ForkOperationID string
+type CreateIntentID string
 type PromptScopeID string
 type TraceID string
 
@@ -66,22 +67,60 @@ const (
 var (
 	// ErrThreadNotFound reports that a requested durable thread was not found.
 	ErrThreadNotFound = errors.New("floret thread not found")
+	// ErrThreadDeleted reports that a requested durable identity is permanently tombstoned.
+	ErrThreadDeleted = errors.New("floret thread is deleted")
 	// ErrThreadNotActive reports that an active-only capability no longer owns the thread mutation.
 	ErrThreadNotActive = errors.New("floret thread is not active")
+	// ErrThreadBusy reports that another active turn or mutation currently owns the thread.
+	ErrThreadBusy = errors.New("floret thread is busy")
 	// ErrTurnNotFound reports that a requested durable turn was not found.
 	ErrTurnNotFound = errors.New("floret turn not found")
 	// ErrRunNotFound reports that a requested durable run was not found.
 	ErrRunNotFound = errors.New("floret run not found")
+	// ErrArtifactNotFound reports that a requested durable artifact was not found.
+	ErrArtifactNotFound = errors.New("floret artifact not found")
+	// ErrNoRetryTarget reports that a thread has no canonical turn eligible for retry.
+	ErrNoRetryTarget = errors.New("floret thread has no retry target")
+	// ErrPendingToolNotFound reports that a settlement target does not identify a canonical tool call.
+	ErrPendingToolNotFound = errors.New("floret pending tool not found")
+	// ErrPendingToolNotActive reports that a settlement target is not an active pending tool result.
+	ErrPendingToolNotActive = errors.New("floret pending tool is not active")
+	// ErrPendingToolSettlementConflict reports that a pending tool was already settled differently.
+	ErrPendingToolSettlementConflict = errors.New("floret pending tool settlement conflict")
 	// ErrSubAgentNotFound reports that a requested parent-scoped child thread was not found.
 	ErrSubAgentNotFound = errors.New("floret subagent not found")
+	// ErrSubAgentClosed reports that a requested child mutation targets a closed SubAgent.
+	ErrSubAgentClosed = errors.New("floret subagent is closed")
+	// ErrSubAgentClosing reports that an explicit close operation owns the child subtree.
+	ErrSubAgentClosing = errors.New("floret subagent is closing")
+	// ErrStaleAuthority reports that a local proof no longer owns the durable generation.
+	ErrStaleAuthority = errors.New("floret authority proof is stale")
+	// ErrRequestConflict reports durable request identity reuse with changed input.
+	ErrRequestConflict = errors.New("floret request conflicts with persisted authority")
+	// ErrAuthorityCorrupt reports an impossible durable authority shape.
+	ErrAuthorityCorrupt = errors.New("floret authority state is corrupt")
+	// ErrUnsupportedStoreCapability reports a backend that lacks required atomicity.
+	ErrUnsupportedStoreCapability = errors.New("floret store capability is unsupported")
+	// ErrEffectUnauthorized reports a current host-policy denial before handler entry.
+	ErrEffectUnauthorized = errors.New("floret effect is unauthorized")
+	// ErrAuthorizationUnavailable reports a host-policy, approval, audit, or gate failure before handler entry.
+	ErrAuthorizationUnavailable = errors.New("floret effect authorization is unavailable")
+	// ErrInvalidAuthorizationProof reports a proof that does not match the canonical invocation.
+	ErrInvalidAuthorizationProof = errors.New("floret effect authorization proof is invalid")
+	// ErrEffectDispatchConsumed reports reuse or deferred use of a one-shot authorized effect.
+	ErrEffectDispatchConsumed = errors.New("floret authorized effect dispatch was consumed")
+	// ErrEffectOutcomeUnknown reports an invocation that crossed dispatch without a known result.
+	ErrEffectOutcomeUnknown = errors.New("floret effect outcome is unknown")
+	// ErrAuthorizationContract reports a host gate that did not return the closure's sealed result.
+	ErrAuthorizationContract = errors.New("floret effect authorization contract failed")
+	// ErrStoreClosed reports that the Store has started closing.
+	ErrStoreClosed = errors.New("floret store is closed")
 	// ErrSubAgentParentRequired reports that a child operation used a root-thread capability.
 	ErrSubAgentParentRequired = errors.New("floret subagent operation requires parent authority")
 	// ErrForkOperationConflict reports that an operation ID was reused with a different fork request.
 	ErrForkOperationConflict = errors.New("floret fork operation conflicts with existing request")
 	// ErrForkDestinationConflict reports that a planned destination is owned by another operation or node.
 	ErrForkDestinationConflict = errors.New("floret fork destination conflicts with operation plan")
-	// ErrForkOperationTargetMissing reports that a completed operation no longer has every marked target.
-	ErrForkOperationTargetMissing = errors.New("floret fork operation target is missing")
 	// ErrAgentTodoVersionConflict reports that a todo update was based on a stale canonical version.
 	ErrAgentTodoVersionConflict = errors.New("floret agent todo version conflict")
 	// ErrJournalInvariant reports an ambiguous active path that Floret refuses to repair heuristically.
@@ -89,6 +128,170 @@ var (
 	// ErrThreadAuthorityInvariant reports invalid durable root/SubAgent ownership metadata.
 	ErrThreadAuthorityInvariant = errors.New("floret thread authority invariant violated")
 )
+
+// CommittedCleanupError reports that canonical deletion committed and only
+// physical or auxiliary cleanup remains retryable.
+type CommittedCleanupError struct {
+	ThreadID ThreadID
+	Err      error
+}
+
+type AuthorityBusyKind string
+
+const (
+	AuthorityBusyTurn      AuthorityBusyKind = "turn"
+	AuthorityBusyAuthority AuthorityBusyKind = "authority"
+)
+
+// AuthorityBusyError classifies which durable authority family blocked an
+// operation without exposing an owner identity.
+type AuthorityBusyError struct {
+	Kind AuthorityBusyKind
+	Err  error
+}
+
+func (e *AuthorityBusyError) Error() string {
+	if e == nil {
+		return ErrThreadBusy.Error()
+	}
+	if e.Err == nil {
+		return fmt.Sprintf("%s: %s", ErrThreadBusy, e.Kind)
+	}
+	return fmt.Sprintf("%s: %s: %v", ErrThreadBusy, e.Kind, e.Err)
+}
+
+func (e *AuthorityBusyError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func (e *AuthorityBusyError) Is(target error) bool {
+	return target == ErrThreadBusy || e != nil && errors.Is(e.Err, target)
+}
+
+// RequestConflictError identifies the immutable request key that was reused
+// with different input. It never exposes the stored request payload.
+type RequestConflictError struct {
+	Operation string
+	RequestID string
+	Err       error
+}
+
+// UnsupportedStoreSchemaError reports an exact SQLite schema contract
+// mismatch without mutating or replacing the observed store.
+type UnsupportedStoreSchemaError struct {
+	ObservedVersion        string
+	ObservedFingerprint    string
+	CurrentVersion         string
+	CurrentFingerprint     string
+	PredecessorVersion     string
+	PredecessorFingerprint string
+}
+
+func (e *UnsupportedStoreSchemaError) Error() string {
+	if e == nil {
+		return "unsupported floret store schema"
+	}
+	return fmt.Sprintf(
+		"unsupported floret store schema version %q fingerprint %q; accepted current is version %q fingerprint %q and empty predecessor is version %q fingerprint %q",
+		e.ObservedVersion, e.ObservedFingerprint, e.CurrentVersion, e.CurrentFingerprint,
+		e.PredecessorVersion, e.PredecessorFingerprint,
+	)
+}
+
+type StoreLeasePolicy struct {
+	TTL                time.Duration
+	RenewInterval      time.Duration
+	ClockSkewAllowance time.Duration
+}
+
+// StoreLeasePolicyMismatchError reports that an opener requested a lease
+// policy different from the authority policy already persisted in the Store.
+type StoreLeasePolicyMismatchError struct {
+	Configured StoreLeasePolicy
+	Persisted  StoreLeasePolicy
+}
+
+func (e *StoreLeasePolicyMismatchError) Error() string {
+	if e == nil {
+		return "floret store lease policy mismatch"
+	}
+	return fmt.Sprintf("floret store lease policy mismatch: configured=%+v persisted=%+v", e.Configured, e.Persisted)
+}
+
+func (e *RequestConflictError) Error() string {
+	if e == nil {
+		return ErrRequestConflict.Error()
+	}
+	identity := strings.TrimSpace(e.Operation)
+	if requestID := strings.TrimSpace(e.RequestID); requestID != "" {
+		identity += " " + fmt.Sprintf("%q", requestID)
+	}
+	if identity == "" {
+		identity = "authority request"
+	}
+	if e.Err == nil {
+		return fmt.Sprintf("%s: %s", ErrRequestConflict, identity)
+	}
+	return fmt.Sprintf("%s: %s: %v", ErrRequestConflict, identity, e.Err)
+}
+
+func (e *RequestConflictError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func (e *RequestConflictError) Is(target error) bool {
+	return target == ErrRequestConflict || e != nil && errors.Is(e.Err, target)
+}
+
+func requestConflictError(err error, operation, requestID string) error {
+	if !errors.Is(err, ErrRequestConflict) {
+		return err
+	}
+	var existing *RequestConflictError
+	if errors.As(err, &existing) && existing != nil && existing.Err != nil {
+		err = existing.Err
+	}
+	return &RequestConflictError{Operation: strings.TrimSpace(operation), RequestID: strings.TrimSpace(requestID), Err: err}
+}
+
+func (e *CommittedCleanupError) Error() string {
+	if e == nil {
+		return "floret canonical cleanup committed"
+	}
+	return fmt.Sprintf("floret canonical cleanup committed for thread %q: %v", e.ThreadID, e.Err)
+}
+
+func (e *CommittedCleanupError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+type CommittedEffectError struct {
+	EffectAttemptID string
+	Err             error
+}
+
+func (e *CommittedEffectError) Error() string {
+	if e == nil || e.Err == nil {
+		return "floret effect handler dispatch committed"
+	}
+	return "floret effect handler dispatch committed: " + e.Err.Error()
+}
+
+func (e *CommittedEffectError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
 
 type providerHost struct {
 	cfg                       config.Config
@@ -118,19 +321,19 @@ func normalizeThreadTitleMode(mode ThreadTitleMode) (ThreadTitleMode, error) {
 }
 
 type providerHostOptions struct {
-	Config               config.Config
-	ModelGateway         ModelGateway
-	ModelGatewayIdentity ModelGatewayIdentity
-	Store                *Store
-	Tools                *tools.Registry
-	Approver             tools.Approver
-	Sink                 EventSink
-	ToolSurfaceProvider  ToolSurfaceProvider
-	IDGenerator          func(string) string
-	LoopLimits           LoopLimits
-	SubAgentRunTimeout   time.Duration
-	Capabilities         CapabilityOptions
-	ThreadTitleMode      ThreadTitleMode
+	Config                  config.Config
+	ModelGateway            ModelGateway
+	ModelGatewayIdentity    ModelGatewayIdentity
+	Store                   *Store
+	Tools                   *tools.Registry
+	EffectAuthorizationGate EffectAuthorizationGate
+	Sink                    EventSink
+	ToolSurfaceProvider     ToolSurfaceProvider
+	IDGenerator             func(string) string
+	LoopLimits              LoopLimits
+	SubAgentRunTimeout      time.Duration
+	Capabilities            CapabilityOptions
+	ThreadTitleMode         ThreadTitleMode
 }
 
 type LoopLimits struct {
@@ -147,7 +350,8 @@ type CapabilityOptions struct {
 }
 
 type CreateThreadRequest struct {
-	ThreadID ThreadID
+	ThreadID       ThreadID
+	CreateIntentID CreateIntentID
 }
 
 type SetThreadTitleRequest struct {
@@ -164,6 +368,14 @@ type ForkThreadRequest struct {
 type ForkThreadResult struct {
 	OperationID ForkOperationID `json:"operation_id"`
 	Thread      ThreadSummary   `json:"thread"`
+}
+
+type RecoverInterruptedTurnResult struct {
+	ThreadID ThreadID   `json:"thread_id"`
+	TurnID   TurnID     `json:"turn_id"`
+	RunID    RunID      `json:"run_id"`
+	Status   TurnStatus `json:"status"`
+	Replayed bool       `json:"replayed"`
 }
 
 // TurnSupplementalContextItem is host-provided context that is visible only to
@@ -187,6 +399,110 @@ type MessageAttachment struct {
 	Name        string `json:"name"`
 	MIMEType    string `json:"mime_type"`
 	SizeBytes   int64  `json:"size_bytes,omitempty"`
+}
+
+type EffectAuthorizationRequest struct {
+	EffectAttemptID    string               `json:"effect_attempt_id"`
+	RequestFingerprint string               `json:"request_fingerprint"`
+	ThreadID           ThreadID             `json:"thread_id"`
+	TurnID             TurnID               `json:"turn_id"`
+	RunID              RunID                `json:"run_id"`
+	ToolCallID         string               `json:"tool_call_id"`
+	ToolName           string               `json:"tool_name"`
+	ArgumentHash       string               `json:"argument_hash"`
+	Step               int                  `json:"step"`
+	BatchIndex         int                  `json:"batch_index"`
+	BatchSize          int                  `json:"batch_size"`
+	Labels             map[string]string    `json:"labels,omitempty"`
+	HostContext        map[string]string    `json:"host_context,omitempty"`
+	Resources          []tools.ResourceRef  `json:"resources,omitempty"`
+	Effects            []tools.Effect       `json:"effects,omitempty"`
+	Permission         tools.PermissionSpec `json:"permission"`
+	ReadOnly           bool                 `json:"read_only"`
+	Destructive        bool                 `json:"destructive"`
+	OpenWorld          bool                 `json:"open_world"`
+	LeaseOwnerID       string               `json:"lease_owner_id"`
+	LeaseGeneration    int64                `json:"lease_generation"`
+	ObservedHeartbeat  int64                `json:"observed_heartbeat"`
+}
+
+type EffectAuthorizationProof struct {
+	EffectAttemptID    string    `json:"effect_attempt_id"`
+	RequestFingerprint string    `json:"request_fingerprint"`
+	ThreadID           ThreadID  `json:"thread_id"`
+	TurnID             TurnID    `json:"turn_id"`
+	RunID              RunID     `json:"run_id"`
+	ToolCallID         string    `json:"tool_call_id"`
+	LeaseOwnerID       string    `json:"lease_owner_id"`
+	LeaseGeneration    int64     `json:"lease_generation"`
+	PolicyRevision     string    `json:"policy_revision"`
+	ApprovalID         string    `json:"approval_id,omitempty"`
+	AuditReference     string    `json:"audit_reference"`
+	AuditHash          string    `json:"audit_hash"`
+	AuthorizedAt       time.Time `json:"authorized_at"`
+}
+
+type EffectDispatchResult struct {
+	result agentharness.EffectDispatchResult
+}
+
+type AuthorizedEffect func(EffectAuthorizationProof) (EffectDispatchResult, error)
+
+type EffectAuthorizationGate interface {
+	Dispatch(context.Context, EffectAuthorizationRequest, AuthorizedEffect) (EffectDispatchResult, error)
+}
+
+type EffectAuthorizationGateFunc func(context.Context, EffectAuthorizationRequest, AuthorizedEffect) (EffectDispatchResult, error)
+
+func (f EffectAuthorizationGateFunc) Dispatch(ctx context.Context, req EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
+	return f(ctx, req, effect)
+}
+
+func runtimeEffectAuthorizationGate(gate EffectAuthorizationGate) agentharness.EffectAuthorizationGate {
+	if gate == nil {
+		return nil
+	}
+	return agentharness.EffectAuthorizationGateFunc(func(ctx context.Context, req agentharness.EffectAuthorizationRequest, effect agentharness.AuthorizedEffect) (agentharness.EffectDispatchResult, error) {
+		result, err := gate.Dispatch(ctx, EffectAuthorizationRequest{
+			EffectAttemptID: req.EffectAttemptID, RequestFingerprint: req.RequestFingerprint,
+			ThreadID: ThreadID(req.ThreadID), TurnID: TurnID(req.TurnID), RunID: RunID(req.RunID),
+			ToolCallID: req.ToolCallID, ToolName: req.ToolName, ArgumentHash: req.ArgumentHash,
+			Step: req.Step, BatchIndex: req.BatchIndex, BatchSize: req.BatchSize,
+			Labels: cloneStringMap(req.Labels), HostContext: cloneStringMap(req.HostContext),
+			Resources: append([]tools.ResourceRef(nil), req.Resources...), Effects: append([]tools.Effect(nil), req.Effects...),
+			Permission: req.Permission, ReadOnly: req.ReadOnly, Destructive: req.Destructive, OpenWorld: req.OpenWorld,
+			LeaseOwnerID: req.LeaseOwnerID, LeaseGeneration: req.LeaseGeneration, ObservedHeartbeat: req.ObservedHeartbeat,
+		}, func(proof EffectAuthorizationProof) (EffectDispatchResult, error) {
+			internalResult, err := effect(agentharness.EffectAuthorizationProof{
+				EffectAttemptID: proof.EffectAttemptID, RequestFingerprint: proof.RequestFingerprint,
+				ThreadID: string(proof.ThreadID), TurnID: string(proof.TurnID), RunID: string(proof.RunID), ToolCallID: proof.ToolCallID,
+				LeaseOwnerID: proof.LeaseOwnerID, LeaseGeneration: proof.LeaseGeneration,
+				PolicyRevision: proof.PolicyRevision, ApprovalID: proof.ApprovalID,
+				AuditReference: proof.AuditReference, AuditHash: proof.AuditHash, AuthorizedAt: proof.AuthorizedAt,
+			})
+			return EffectDispatchResult{result: internalResult}, runtimeEffectAuthorizationError(err)
+		})
+		return result.result, runtimeEffectAuthorizationError(err)
+	})
+}
+
+func runtimeEffectAuthorizationError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrEffectUnauthorized):
+		return fmt.Errorf("%w: %v", agentharness.ErrEffectUnauthorized, err)
+	case errors.Is(err, ErrAuthorizationUnavailable):
+		return fmt.Errorf("%w: %v", agentharness.ErrAuthorizationUnavailable, err)
+	case errors.Is(err, ErrInvalidAuthorizationProof):
+		return fmt.Errorf("%w: %v", agentharness.ErrInvalidAuthorizationProof, err)
+	case errors.Is(err, ErrEffectDispatchConsumed):
+		return fmt.Errorf("%w: %v", agentharness.ErrEffectDispatchConsumed, err)
+	case errors.Is(err, ErrAuthorizationContract):
+		return fmt.Errorf("%w: %v", agentharness.ErrAuthorizationContract, err)
+	default:
+		return err
+	}
 }
 
 func (a MessageAttachment) Validate() error {
@@ -321,16 +637,53 @@ const (
 // PendingToolCompletionRequest asks Floret to append a host-authored follow-up
 // turn for work whose lifecycle was owned outside Floret.
 type PendingToolCompletionRequest struct {
-	ThreadID   ThreadID
-	TurnID     TurnID
-	RunID      RunID
-	ToolCallID string
-	ToolName   string
-	Handle     string
-	Status     PendingToolCompletionStatus
-	Summary    string
-	Output     string
-	Labels     RunLabels
+	CompletionRequestID string
+	Target              PendingToolSettlementTarget
+	ContinuationTurnID  TurnID
+	ContinuationRunID   RunID
+	Status              PendingToolCompletionStatus
+	Summary             string
+	Output              string
+	Input               TurnInput
+	Labels              RunLabels
+}
+
+// PendingToolCompletionResult reports the one durable continuation admission.
+// Turn is present only once that continuation has reached a terminal state.
+type PendingToolCompletionResult struct {
+	CompletionRequestID string      `json:"completion_request_id"`
+	ThreadID            ThreadID    `json:"thread_id"`
+	TurnID              TurnID      `json:"turn_id"`
+	RunID               RunID       `json:"run_id"`
+	Status              TurnStatus  `json:"status"`
+	Replayed            bool        `json:"replayed,omitempty"`
+	Turn                *TurnResult `json:"turn,omitempty"`
+}
+
+func (r PendingToolCompletionResult) Validate() error {
+	if strings.TrimSpace(r.CompletionRequestID) == "" || strings.TrimSpace(string(r.ThreadID)) == "" ||
+		strings.TrimSpace(string(r.TurnID)) == "" || strings.TrimSpace(string(r.RunID)) == "" {
+		return errors.New("pending tool completion result requires completion request, thread, turn, and run identities")
+	}
+	if !r.Status.Valid() {
+		return fmt.Errorf("invalid pending tool completion status %q", r.Status)
+	}
+	if r.Status == TurnStatusRunning {
+		if r.Turn != nil {
+			return errors.New("running pending tool completion cannot include a terminal turn")
+		}
+		return nil
+	}
+	if r.Turn == nil {
+		return errors.New("terminal pending tool completion requires a turn result")
+	}
+	if err := r.Turn.Validate(); err != nil {
+		return err
+	}
+	if r.Turn.ThreadID != r.ThreadID || r.Turn.TurnID != r.TurnID || r.Turn.RunID != r.RunID || r.Turn.Status != r.Status {
+		return errors.New("pending tool completion turn identity mismatch")
+	}
+	return nil
 }
 
 // PendingToolSettlementStatus describes a host-owned pending tool outcome that
@@ -346,12 +699,13 @@ const (
 // PendingToolSettlementTarget identifies the exact pending tool result that a
 // host owns and intends to settle.
 type PendingToolSettlementTarget struct {
-	ThreadID   ThreadID `json:"thread_id"`
-	TurnID     TurnID   `json:"turn_id"`
-	RunID      RunID    `json:"run_id"`
-	ToolCallID string   `json:"tool_call_id"`
-	ToolName   string   `json:"tool_name"`
-	Handle     string   `json:"handle"`
+	ThreadID        ThreadID `json:"thread_id"`
+	TurnID          TurnID   `json:"turn_id"`
+	RunID           RunID    `json:"run_id"`
+	ToolCallID      string   `json:"tool_call_id"`
+	ToolName        string   `json:"tool_name"`
+	Handle          string   `json:"handle"`
+	EffectAttemptID string   `json:"effect_attempt_id,omitempty"`
 }
 
 // PendingToolSettlementRequest records a host-owned pending tool outcome as a
@@ -374,6 +728,7 @@ const (
 	SubAgentStatusFailed      SubAgentStatus = "failed"
 	SubAgentStatusCancelled   SubAgentStatus = "cancelled"
 	SubAgentStatusInterrupted SubAgentStatus = "interrupted"
+	SubAgentStatusClosing     SubAgentStatus = "closing"
 	SubAgentStatusClosed      SubAgentStatus = "closed"
 )
 
@@ -385,22 +740,38 @@ const (
 )
 
 type SpawnSubAgentRequest struct {
+	PublicationID   string
 	ParentThreadID  ThreadID
 	ParentTurnID    TurnID
 	ThreadID        ThreadID
 	TaskName        string
 	TaskDescription string
 	Message         string
+	Attachments     []MessageAttachment
 	HostProfileRef  string
 	ForkMode        SubAgentForkMode
 	Labels          RunLabels
 }
 
 type SendSubAgentInputRequest struct {
+	InputRequestID string
 	ParentThreadID ThreadID
 	ChildThreadID  ThreadID
 	Message        string
+	Attachments    []MessageAttachment
 	Interrupt      bool
+	Labels         RunLabels
+}
+
+type PublishSubAgentPendingToolCompletionRequest struct {
+	InputRequestID string
+	ParentThreadID ThreadID
+	ChildThreadID  ThreadID
+	Target         PendingToolSettlementTarget
+	Status         PendingToolCompletionStatus
+	Summary        string
+	Output         string
+	Input          TurnInput
 	Labels         RunLabels
 }
 
@@ -411,14 +782,10 @@ type WaitSubAgentsRequest struct {
 }
 
 type CloseSubAgentRequest struct {
-	ParentThreadID ThreadID
-	ChildThreadID  ThreadID
-	Reason         string
-}
-
-type CloseSubAgentsRequest struct {
-	ParentThreadID ThreadID
-	Reason         string
+	CloseOperationID string
+	ParentThreadID   ThreadID
+	ChildThreadID    ThreadID
+	Reason           string
 }
 
 type ReadSubAgentDetailRequest struct {
@@ -470,11 +837,6 @@ type SubAgentSnapshot struct {
 type WaitSubAgentsResult struct {
 	Snapshots []SubAgentSnapshot `json:"snapshots"`
 	TimedOut  bool               `json:"timed_out,omitempty"`
-}
-
-type CloseSubAgentsResult struct {
-	Snapshots []SubAgentSnapshot `json:"snapshots"`
-	Closed    int                `json:"closed,omitempty"`
 }
 
 type SubAgentDetail struct {
@@ -720,19 +1082,20 @@ type ThreadDetailControlSignal struct {
 }
 
 type ThreadDetailToolResult struct {
-	CallID        string       `json:"call_id,omitempty"`
-	ToolName      string       `json:"tool_name,omitempty"`
-	Status        string       `json:"status,omitempty"`
-	Preview       string       `json:"preview,omitempty"`
-	Content       string       `json:"content,omitempty"`
-	Truncated     bool         `json:"truncated,omitempty"`
-	OriginalBytes int          `json:"original_bytes,omitempty"`
-	VisibleBytes  int          `json:"visible_bytes,omitempty"`
-	OriginalLines int          `json:"original_lines,omitempty"`
-	VisibleLines  int          `json:"visible_lines,omitempty"`
-	Strategy      string       `json:"strategy,omitempty"`
-	ContentSHA256 string       `json:"content_sha256,omitempty"`
-	FullOutput    *ArtifactRef `json:"full_output,omitempty"`
+	CallID          string       `json:"call_id,omitempty"`
+	ToolName        string       `json:"tool_name,omitempty"`
+	EffectAttemptID string       `json:"effect_attempt_id,omitempty"`
+	Status          string       `json:"status,omitempty"`
+	Preview         string       `json:"preview,omitempty"`
+	Content         string       `json:"content,omitempty"`
+	Truncated       bool         `json:"truncated,omitempty"`
+	OriginalBytes   int          `json:"original_bytes,omitempty"`
+	VisibleBytes    int          `json:"visible_bytes,omitempty"`
+	OriginalLines   int          `json:"original_lines,omitempty"`
+	VisibleLines    int          `json:"visible_lines,omitempty"`
+	Strategy        string       `json:"strategy,omitempty"`
+	ContentSHA256   string       `json:"content_sha256,omitempty"`
+	FullOutput      *ArtifactRef `json:"full_output,omitempty"`
 }
 
 type ThreadDetailApproval struct {
@@ -772,13 +1135,22 @@ type ThreadDetailCompaction struct {
 }
 
 type ArtifactRef struct {
-	ID        string `json:"id,omitempty"`
-	SafeLabel string `json:"safe_label,omitempty"`
-	URL       string `json:"url,omitempty"`
-	Kind      string `json:"kind,omitempty"`
-	MIME      string `json:"mime,omitempty"`
-	SizeBytes int64  `json:"size_bytes,omitempty"`
-	SHA256    string `json:"sha256,omitempty"`
+	ID        ArtifactID `json:"id,omitempty"`
+	SafeLabel string     `json:"safe_label,omitempty"`
+	Kind      string     `json:"kind,omitempty"`
+	MIME      string     `json:"mime,omitempty"`
+	SizeBytes int64      `json:"size_bytes,omitempty"`
+	SHA256    string     `json:"sha256,omitempty"`
+}
+
+type ReadArtifactRequest struct {
+	ThreadID   ThreadID   `json:"thread_id"`
+	ArtifactID ArtifactID `json:"artifact_id"`
+}
+
+type ArtifactContent struct {
+	Ref  ArtifactRef `json:"ref"`
+	Text string      `json:"text"`
 }
 
 type RunLabels struct {
@@ -961,6 +1333,7 @@ type CompactThreadResult struct {
 	Compaction       observation.CompactionEvent  `json:"compaction"`
 	Metrics          RunMetrics                   `json:"metrics"`
 	ActivityTimeline observation.ActivityTimeline `json:"activity_timeline"`
+	Replayed         bool                         `json:"replayed,omitempty"`
 }
 
 func (r CompactThreadResult) Validate() error {
@@ -1213,86 +1586,270 @@ func (s TurnStatus) IsTerminal() bool {
 }
 
 type Store struct {
+	self              *Store
 	repo              sessiontree.Repo
 	prompt            cache.Store
-	artifacts         artifact.Store
 	forkOperations    storage.ForkOperationStore
-	providerStates    storage.ProviderStateStore
 	agentTodos        sessiontree.AgentTodoStateRepo
-	deleteData        func(context.Context, string, []string) error
+	rootAuthority     sessiontree.RootAuthorityRepo
+	deleteCleanup     func(context.Context, []string) error
 	threadAuthorityMu sync.Mutex
+	bootstrapMu       sync.Mutex
+	bootstrapIssued   bool
 	close             func() error
+	lifetimeMu        sync.Mutex
+	lifetimeCond      *sync.Cond
+	lifetimeState     storeLifetimeState
+	activeOperations  int
+	closeInProgress   bool
+	lifetimeCtx       context.Context
+	lifetimeCancel    context.CancelFunc
 }
+
+type storeLifetimeState string
+
+const (
+	storeLifetimeOpen    storeLifetimeState = "open"
+	storeLifetimeClosing storeLifetimeState = "closing"
+	storeLifetimeClosed  storeLifetimeState = "closed"
+)
 
 func NewMemoryStore() *Store {
 	repo := sessiontree.NewMemoryRepo()
 	prompt := cache.NewMemoryStore()
-	artifacts := artifact.NewMemoryStore()
-	forkOperations := storage.NewMemoryForkOperationStore()
-	providerStates := storage.NewMemoryProviderStateStore()
-	return &Store{
+	forkOperations := storage.NewMemoryForkOperationStore(repo)
+	store := &Store{
 		repo:           repo,
 		prompt:         prompt,
-		artifacts:      artifacts,
 		forkOperations: forkOperations,
-		providerStates: providerStates,
 		agentTodos:     repo,
-		deleteData: func(ctx context.Context, rootThreadID string, threadIDs []string) error {
-			threadIDs = cleanRuntimeIDs(append([]string{rootThreadID}, threadIDs...))
-			for i := len(threadIDs) - 1; i >= 0; i-- {
-				if err := repo.DeleteThread(ctx, threadIDs[i]); err != nil {
-					return err
-				}
-			}
+		rootAuthority:  repo,
+		deleteCleanup: func(ctx context.Context, threadIDs []string) error {
 			if err := prompt.DeletePromptScopes(ctx, threadIDs...); err != nil {
 				return err
-			}
-			for _, threadID := range threadIDs {
-				if err := providerStates.DeleteProviderState(ctx, threadID); err != nil {
-					return err
-				}
-				if err := artifacts.DeleteThreadArtifacts(ctx, threadID); err != nil {
-					return err
-				}
 			}
 			return nil
 		},
 	}
+	store.self = store
+	store.initLifetime()
+	return store
 }
 
 func OpenSQLiteStore(path string) (*Store, error) {
 	sqliteStore, err := sqlite.Open(path)
 	if err != nil {
+		var unsupported *storage.UnsupportedStoreSchemaError
+		if errors.As(err, &unsupported) {
+			return nil, &UnsupportedStoreSchemaError{
+				ObservedVersion: unsupported.ObservedVersion, ObservedFingerprint: unsupported.ObservedFingerprint,
+				CurrentVersion: unsupported.CurrentVersion, CurrentFingerprint: unsupported.CurrentFingerprint,
+				PredecessorVersion: unsupported.PredecessorVersion, PredecessorFingerprint: unsupported.PredecessorFingerprint,
+			}
+		}
+		var mismatch *storage.StoreLeasePolicyMismatchError
+		if errors.As(err, &mismatch) {
+			return nil, &StoreLeasePolicyMismatchError{
+				Configured: StoreLeasePolicy{
+					TTL: mismatch.Configured.TTL, RenewInterval: mismatch.Configured.RenewInterval,
+					ClockSkewAllowance: mismatch.Configured.ClockSkewAllowance,
+				},
+				Persisted: StoreLeasePolicy{
+					TTL: mismatch.Persisted.TTL, RenewInterval: mismatch.Persisted.RenewInterval,
+					ClockSkewAllowance: mismatch.Persisted.ClockSkewAllowance,
+				},
+			}
+		}
+		if errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
+			return nil, fmt.Errorf("%w: %w", ErrAuthorityCorrupt, err)
+		}
+		if errors.Is(err, sessiontree.ErrInvalidThreadAuthority) {
+			return nil, fmt.Errorf("%w: %w", ErrThreadAuthorityInvariant, err)
+		}
 		return nil, err
 	}
-	return &Store{
+	store := &Store{
 		repo:           sqliteStore,
 		prompt:         sqliteStore,
-		artifacts:      sqliteStore,
 		forkOperations: sqliteStore,
-		providerStates: sqliteStore,
 		agentTodos:     sqliteStore,
-		deleteData: func(ctx context.Context, rootThreadID string, _ []string) error {
-			_, err := sqliteStore.DeleteThreadTreeData(ctx, rootThreadID)
-			return err
-		},
-		close: sqliteStore.Close,
-	}, nil
+		rootAuthority:  sqliteStore,
+		deleteCleanup:  func(context.Context, []string) error { return nil },
+		close:          sqliteStore.Close,
+	}
+	store.self = store
+	store.initLifetime()
+	return store, nil
 }
 
 func (s *Store) Close() error {
-	if s == nil || s.close == nil {
+	if s == nil {
 		return nil
 	}
-	return s.close()
+	if err := s.validateIdentity(); err != nil {
+		return err
+	}
+	s.lifetimeMu.Lock()
+	s.initLifetimeLocked()
+	if s.lifetimeState == storeLifetimeClosed {
+		s.lifetimeMu.Unlock()
+		return nil
+	}
+	if s.lifetimeState == storeLifetimeOpen {
+		s.lifetimeState = storeLifetimeClosing
+		if s.lifetimeCancel != nil {
+			s.lifetimeCancel()
+		}
+	}
+	for s.closeInProgress {
+		s.lifetimeCond.Wait()
+		if s.lifetimeState == storeLifetimeClosed {
+			s.lifetimeMu.Unlock()
+			return nil
+		}
+	}
+	for s.activeOperations > 0 {
+		s.lifetimeCond.Wait()
+	}
+	s.closeInProgress = true
+	s.lifetimeMu.Unlock()
+
+	var err error
+	if s.close != nil {
+		err = s.close()
+	}
+
+	s.lifetimeMu.Lock()
+	s.closeInProgress = false
+	if err == nil {
+		s.lifetimeState = storeLifetimeClosed
+	}
+	s.lifetimeCond.Broadcast()
+	s.lifetimeMu.Unlock()
+	return err
 }
 
 func (s *Store) validate() error {
 	if s == nil {
 		return errors.New("runtime store is required")
 	}
-	if s.repo == nil || s.prompt == nil || s.artifacts == nil || s.forkOperations == nil || s.providerStates == nil || s.agentTodos == nil || s.deleteData == nil {
+	if err := s.validateIdentity(); err != nil {
+		return err
+	}
+	if err := s.validateOpen(); err != nil {
+		return err
+	}
+	if s.repo == nil || s.prompt == nil || s.forkOperations == nil || s.agentTodos == nil || s.rootAuthority == nil || s.deleteCleanup == nil {
 		return errors.New("runtime store must be created with runtime.NewMemoryStore or runtime.OpenSQLiteStore")
+	}
+	if _, ok := s.repo.(sessiontree.ProviderStateStore); !ok {
+		return ErrUnsupportedStoreCapability
+	}
+	return nil
+}
+
+func (s *Store) initLifetime() {
+	s.lifetimeMu.Lock()
+	defer s.lifetimeMu.Unlock()
+	s.initLifetimeLocked()
+}
+
+func (s *Store) initLifetimeLocked() {
+	if s.lifetimeCond == nil {
+		s.lifetimeCond = sync.NewCond(&s.lifetimeMu)
+	}
+	if s.lifetimeState == "" {
+		s.lifetimeState = storeLifetimeOpen
+	}
+	if s.lifetimeCtx == nil {
+		s.lifetimeCtx, s.lifetimeCancel = context.WithCancel(context.Background())
+	}
+}
+
+func (s *Store) validateOpen() error {
+	if s == nil {
+		return errors.New("runtime store is required")
+	}
+	s.lifetimeMu.Lock()
+	defer s.lifetimeMu.Unlock()
+	s.initLifetimeLocked()
+	if s.lifetimeState != storeLifetimeOpen {
+		return ErrStoreClosed
+	}
+	return nil
+}
+
+func (s *Store) beginOperation() (func(), error) {
+	if err := s.validateIdentity(); err != nil {
+		return nil, err
+	}
+	s.lifetimeMu.Lock()
+	s.initLifetimeLocked()
+	if s.lifetimeState != storeLifetimeOpen {
+		s.lifetimeMu.Unlock()
+		return nil, ErrStoreClosed
+	}
+	s.activeOperations++
+	s.lifetimeMu.Unlock()
+	return func() {
+		s.lifetimeMu.Lock()
+		s.activeOperations--
+		if s.activeOperations == 0 {
+			s.lifetimeCond.Broadcast()
+		}
+		s.lifetimeMu.Unlock()
+	}, nil
+}
+
+func (s *Store) beginOperationContext(ctx context.Context) (context.Context, func(), error) {
+	done, err := s.beginOperation()
+	if err != nil {
+		return nil, nil, err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	operationCtx, cancel := context.WithCancel(ctx)
+	s.lifetimeMu.Lock()
+	lifetimeCtx := s.lifetimeCtx
+	s.lifetimeMu.Unlock()
+	stopLifetimeCancel := context.AfterFunc(lifetimeCtx, cancel)
+	var once sync.Once
+	finish := func() {
+		once.Do(func() {
+			stopLifetimeCancel()
+			cancel()
+			done()
+		})
+	}
+	return operationCtx, finish, nil
+}
+
+func (s *Store) beginLifetimeOperationContext() (context.Context, func(), error) {
+	done, err := s.beginOperation()
+	if err != nil {
+		return nil, nil, err
+	}
+	s.lifetimeMu.Lock()
+	lifetimeCtx := s.lifetimeCtx
+	s.lifetimeMu.Unlock()
+	operationCtx, cancel := context.WithCancel(lifetimeCtx)
+	var once sync.Once
+	finish := func() {
+		once.Do(func() {
+			cancel()
+			done()
+		})
+	}
+	return operationCtx, finish, nil
+}
+
+func (s *Store) validateIdentity() error {
+	if s == nil {
+		return errors.New("runtime store is required")
+	}
+	if s.self != nil && s.self != s {
+		return errors.New("runtime store must not be copied")
 	}
 	return nil
 }
@@ -1301,11 +1858,14 @@ func (s *Store) deleteThreadData(ctx context.Context, threadID string) error {
 	if err := s.validate(); err != nil {
 		return err
 	}
-	threadIDs, err := s.threadTreeIDs(ctx, threadID)
+	result, err := s.rootAuthority.DeleteRootTree(ctx, threadID)
 	if err != nil {
 		return err
 	}
-	return s.deleteData(ctx, threadID, threadIDs)
+	if err := s.deleteCleanup(ctx, result.ThreadIDs); err != nil {
+		return &CommittedCleanupError{ThreadID: ThreadID(threadID), Err: err}
+	}
+	return nil
 }
 
 func cleanRuntimeIDs(values []string) []string {
@@ -1354,18 +1914,18 @@ func newProviderHost(opts providerHostOptions) (*providerHost, error) {
 		return nil, err
 	}
 	harness, err := newHarnessWithProvider(cfg, provider, harnessOptions{
-		Store:                 store,
-		Tools:                 opts.Tools,
-		Approver:              opts.Approver,
-		Sink:                  newRuntimeEventSink(opts.Sink),
-		SinkPolicy:            runtimeHarnessSinkPolicy(),
-		ToolSurfaceProvider:   runtimeToolSurfaceProvider(opts.ToolSurfaceProvider),
-		NewID:                 opts.IDGenerator,
-		LoopLimits:            opts.LoopLimits,
-		SubAgentRunTimeout:    opts.SubAgentRunTimeout,
-		Capabilities:          opts.Capabilities,
-		ThreadTitleMode:       titleMode,
-		StateCompatibilityKey: runtimeStateCompatibilityKey(cfg, opts),
+		Store:                   store,
+		Tools:                   opts.Tools,
+		EffectAuthorizationGate: opts.EffectAuthorizationGate,
+		Sink:                    newRuntimeEventSink(opts.Sink),
+		SinkPolicy:              runtimeHarnessSinkPolicy(),
+		ToolSurfaceProvider:     runtimeToolSurfaceProvider(opts.ToolSurfaceProvider),
+		NewID:                   opts.IDGenerator,
+		LoopLimits:              opts.LoopLimits,
+		SubAgentRunTimeout:      opts.SubAgentRunTimeout,
+		Capabilities:            opts.Capabilities,
+		ThreadTitleMode:         titleMode,
+		StateCompatibilityKey:   runtimeStateCompatibilityKey(cfg, opts),
 	})
 	if err != nil {
 		return nil, err
@@ -1411,27 +1971,77 @@ func runtimeHarnessSinkPolicy() event.SinkPolicy {
 }
 
 func runtimeHostError(err error) error {
+	var committedEffect *agentharness.CommittedEffectError
+	if errors.As(err, &committedEffect) {
+		return &CommittedEffectError{EffectAttemptID: committedEffect.EffectAttemptID, Err: runtimeHostError(committedEffect.Err)}
+	}
 	switch {
 	case err == nil:
 		return nil
+	case errors.Is(err, agentharness.ErrActiveTurn), errors.Is(err, sessiontree.ErrActiveTurn):
+		return &AuthorityBusyError{Kind: AuthorityBusyTurn, Err: err}
+	case errors.Is(err, sessiontree.ErrThreadAuthorityBusy):
+		return &AuthorityBusyError{Kind: AuthorityBusyAuthority, Err: err}
+	case errors.Is(err, sessiontree.ErrThreadDeleted):
+		return fmt.Errorf("%w: %w", ErrThreadDeleted, err)
+	case errors.Is(err, sessiontree.ErrSubAgentClosing):
+		return fmt.Errorf("%w: %w", ErrSubAgentClosing, err)
+	case errors.Is(err, sessiontree.ErrStaleAuthority):
+		return fmt.Errorf("%w: %w", ErrStaleAuthority, err)
+	case errors.Is(err, sessiontree.ErrRequestConflict):
+		return &RequestConflictError{Operation: "authority", Err: err}
+	case errors.Is(err, sessiontree.ErrAuthorityCorrupt):
+		return fmt.Errorf("%w: %w", ErrAuthorityCorrupt, err)
+	case errors.Is(err, sessiontree.ErrEffectOutcomeUnknown):
+		return fmt.Errorf("%w: %w", ErrEffectOutcomeUnknown, err)
+	case errors.Is(err, agentharness.ErrEffectUnauthorized):
+		return fmt.Errorf("%w: %w", ErrEffectUnauthorized, err)
+	case errors.Is(err, agentharness.ErrAuthorizationUnavailable):
+		return fmt.Errorf("%w: %w", ErrAuthorizationUnavailable, err)
+	case errors.Is(err, agentharness.ErrInvalidAuthorizationProof):
+		return fmt.Errorf("%w: %w", ErrInvalidAuthorizationProof, err)
+	case errors.Is(err, agentharness.ErrEffectDispatchConsumed):
+		return fmt.Errorf("%w: %w", ErrEffectDispatchConsumed, err)
+	case errors.Is(err, agentharness.ErrAuthorizationContract):
+		return fmt.Errorf("%w: %w", ErrAuthorizationContract, err)
+	case errors.Is(err, agentharness.ErrNoRetryTarget):
+		return fmt.Errorf("%w: %w", ErrNoRetryTarget, err)
 	case errors.Is(err, agentharness.ErrPendingToolSettlementTargetTurnNotFound):
 		return fmt.Errorf("%w: %w", ErrTurnNotFound, err)
 	case errors.Is(err, agentharness.ErrPendingToolSettlementTargetRunNotFound):
 		return fmt.Errorf("%w: %w", ErrRunNotFound, err)
+	case errors.Is(err, agentharness.ErrPendingToolSettlementTargetToolNotFound):
+		return fmt.Errorf("%w: %w", ErrPendingToolNotFound, err)
+	case errors.Is(err, agentharness.ErrPendingToolSettlementTargetNotActive):
+		return fmt.Errorf("%w: %w", ErrPendingToolNotActive, err)
+	case errors.Is(err, agentharness.ErrPendingToolSettlementConflict):
+		return fmt.Errorf("%w: %w", ErrPendingToolSettlementConflict, err)
 	case errors.Is(err, agentharness.ErrSubAgentNotFound):
 		return fmt.Errorf("%w: %w", ErrSubAgentNotFound, err)
+	case errors.Is(err, agentharness.ErrSubAgentClosed):
+		return fmt.Errorf("%w: %w", ErrSubAgentClosed, err)
+	case errors.Is(err, sessiontree.ErrThreadClosed):
+		return fmt.Errorf("%w: %w", ErrSubAgentClosed, err)
 	case errors.Is(err, agentharness.ErrForkOperationConflict):
 		return fmt.Errorf("%w: %w", ErrForkOperationConflict, err)
-	case errors.Is(err, agentharness.ErrForkOperationTargetMissing):
-		return fmt.Errorf("%w: %w", ErrForkOperationTargetMissing, err)
 	case errors.Is(err, sessiontree.ErrForkDestinationConflict):
 		return fmt.Errorf("%w: %w", ErrForkDestinationConflict, err)
 	case errors.Is(err, sessiontree.ErrAgentTodoVersionConflict):
 		return fmt.Errorf("%w: %w", ErrAgentTodoVersionConflict, err)
-	case errors.Is(err, agentharness.ErrJournalInvariant):
+	case errors.Is(err, agentharness.ErrJournalInvariant),
+		errors.Is(err, sessiontree.ErrEntryNotFound),
+		errors.Is(err, sessiontree.ErrInvalidParent):
 		return fmt.Errorf("%w: %w", ErrJournalInvariant, err)
 	case errors.Is(err, sessiontree.ErrInvalidThreadAuthority):
 		return fmt.Errorf("%w: %w", ErrThreadAuthorityInvariant, err)
+	case errors.Is(err, sessiontree.ErrArtifactNotFound):
+		return fmt.Errorf("%w: %w", ErrArtifactNotFound, err)
+	case errors.Is(err, sessiontree.ErrSubAgentNotFound):
+		return fmt.Errorf("%w: %w", ErrSubAgentNotFound, err)
+	case errors.Is(err, sessiontree.ErrSubAgentParentRequired):
+		return fmt.Errorf("%w: %w", ErrSubAgentParentRequired, err)
+	case errors.Is(err, sessiontree.ErrUnsupportedStoreCapability):
+		return fmt.Errorf("%w: %w", ErrUnsupportedStoreCapability, err)
 	case errors.Is(err, sessiontree.ErrThreadNotFound):
 		return fmt.Errorf("%w: %w", ErrThreadNotFound, err)
 	default:
@@ -1440,27 +2050,46 @@ func runtimeHostError(err error) error {
 }
 
 func (h *ThreadCreateHost) CreateThread(ctx context.Context, req CreateThreadRequest) (ThreadSummary, error) {
-	req.ThreadID = ThreadID(strings.TrimSpace(string(req.ThreadID)))
-	if req.ThreadID == "" {
-		return ThreadSummary{}, errors.New("thread id is required")
-	}
-	h.store.threadAuthorityMu.Lock()
-	defer h.store.threadAuthorityMu.Unlock()
-	summary, err := createThread(ctx, h.harness, req)
+	done, err := beginHostOperation(h.store)
 	if err != nil {
 		return ThreadSummary{}, err
 	}
-	if err := validateRootThreadAuthority(ctx, h.store, req.ThreadID); err != nil {
-		return ThreadSummary{}, err
+	defer done()
+	requestedThreadID := ThreadID(strings.TrimSpace(string(req.ThreadID)))
+	if requestedThreadID != "" && requestedThreadID != h.threadID {
+		return ThreadSummary{}, fmt.Errorf("thread create host is bound to thread %q, got %q", h.threadID, requestedThreadID)
 	}
-	return summary, nil
-}
-
-func createThread(ctx context.Context, harness *agentharness.AgentHarness, req CreateThreadRequest) (ThreadSummary, error) {
-	if strings.TrimSpace(string(req.ThreadID)) == "" {
-		return ThreadSummary{}, errors.New("thread id is required")
+	requestedIntentID := CreateIntentID(strings.TrimSpace(string(req.CreateIntentID)))
+	if requestedIntentID != "" && requestedIntentID != h.createIntentID {
+		return ThreadSummary{}, fmt.Errorf("thread create host is bound to create intent %q, got %q", h.createIntentID, requestedIntentID)
 	}
-	summary, err := harness.CreateThread(ctx, agentharness.StartThreadOptions{ThreadID: string(req.ThreadID)})
+	req.ThreadID = h.threadID
+	req.CreateIntentID = h.createIntentID
+	h.store.threadAuthorityMu.Lock()
+	defer h.store.threadAuthorityMu.Unlock()
+	created, err := h.store.rootAuthority.CreateRoot(ctx, sessiontree.CreateRootRequest{
+		ThreadID:        string(req.ThreadID),
+		CreateIntentID:  string(req.CreateIntentID),
+		ContractVersion: "1",
+		Meta:            sessiontree.ThreadMeta{ID: string(req.ThreadID)},
+	})
+	if err != nil {
+		return ThreadSummary{}, requestConflictError(runtimeHostError(err), "root_create", string(req.CreateIntentID))
+	}
+	thread, err := h.harness.BindCreatedRoot(created.Thread, created.Replayed)
+	if err != nil {
+		return ThreadSummary{}, runtimeHostError(err)
+	}
+	if !created.Replayed {
+		return ThreadSummary{
+			ID: ThreadID(created.Thread.ID), Title: created.Thread.Title,
+			TitleStatus: string(created.Thread.TitleStatus), TitleSource: string(created.Thread.TitleSource),
+			TitleUpdatedAt: created.Thread.TitleUpdatedAt, TitleError: created.Thread.TitleError,
+			CreatedAt: created.Thread.CreatedAt, UpdatedAt: created.Thread.UpdatedAt,
+			Phase: ThreadPhaseIdle, Status: ThreadStatusIdle, CanAppendMessage: true,
+		}, nil
+	}
+	summary, err := thread.Summary(ctx)
 	if err != nil {
 		return ThreadSummary{}, runtimeHostError(err)
 	}
@@ -1468,7 +2097,12 @@ func createThread(ctx context.Context, harness *agentharness.AgentHarness, req C
 }
 
 func (h *ThreadTitleHost) SetThreadTitle(ctx context.Context, req SetThreadTitleRequest) (ThreadSnapshot, error) {
-	if err := validateRootThreadAuthority(ctx, h.store, req.ThreadID); err != nil {
+	done, err := beginHostOperation(h.store)
+	if err != nil {
+		return ThreadSnapshot{}, err
+	}
+	defer done()
+	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, req.ThreadID, "thread title host"); err != nil {
 		return ThreadSnapshot{}, err
 	}
 	return setThreadTitle(ctx, h.harness, req)
@@ -1483,12 +2117,18 @@ func setThreadTitle(ctx context.Context, harness *agentharness.AgentHarness, req
 }
 
 func (h *ThreadForkHost) ForkThread(ctx context.Context, req ForkThreadRequest) (ForkThreadResult, error) {
-	h.store.threadAuthorityMu.Lock()
-	defer h.store.threadAuthorityMu.Unlock()
-	if err := validateRootThreadAuthority(ctx, h.store, req.SourceThreadID); err != nil {
+	done, err := beginHostOperation(h.store)
+	if err != nil {
 		return ForkThreadResult{}, err
 	}
-	return forkThread(ctx, h.harness, req)
+	defer done()
+	h.store.threadAuthorityMu.Lock()
+	defer h.store.threadAuthorityMu.Unlock()
+	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, req.SourceThreadID, "thread fork host"); err != nil {
+		return ForkThreadResult{}, err
+	}
+	result, err := forkThread(ctx, h.harness, req)
+	return result, requestConflictError(err, "fork", string(req.OperationID))
 }
 
 func forkThread(ctx context.Context, harness *agentharness.AgentHarness, req ForkThreadRequest) (ForkThreadResult, error) {
@@ -1521,7 +2161,12 @@ func (h *providerHost) ReadThread(ctx context.Context, threadID ThreadID) (Threa
 }
 
 func (h *ThreadReadHost) ReadThread(ctx context.Context, threadID ThreadID) (ThreadSnapshot, error) {
-	if err := validateRootThreadAuthority(ctx, h.store, threadID); err != nil {
+	done, err := beginHostOperation(h.store)
+	if err != nil {
+		return ThreadSnapshot{}, err
+	}
+	defer done()
+	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, threadID, "thread read host"); err != nil {
 		return ThreadSnapshot{}, err
 	}
 	return readThreadByID(ctx, h.harness, threadID)
@@ -1540,7 +2185,12 @@ func (h *providerHost) ListThreadDetailEvents(ctx context.Context, req ListThrea
 }
 
 func (h *ThreadReadHost) ListThreadDetailEvents(ctx context.Context, req ListThreadDetailEventsRequest) (ThreadDetailEvents, error) {
-	if err := validateRootThreadAuthority(ctx, h.store, req.ThreadID); err != nil {
+	done, err := beginHostOperation(h.store)
+	if err != nil {
+		return ThreadDetailEvents{}, err
+	}
+	defer done()
+	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, req.ThreadID, "thread read host"); err != nil {
 		return ThreadDetailEvents{}, err
 	}
 	return listThreadDetailEvents(ctx, h.harness, req)
@@ -1570,7 +2220,12 @@ func (h *providerHost) ReadThreadContext(ctx context.Context, threadID ThreadID)
 }
 
 func (h *ThreadReadHost) ReadThreadContext(ctx context.Context, threadID ThreadID) (ThreadContextSnapshot, error) {
-	if err := validateRootThreadAuthority(ctx, h.store, threadID); err != nil {
+	done, err := beginHostOperation(h.store)
+	if err != nil {
+		return ThreadContextSnapshot{}, err
+	}
+	defer done()
+	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, threadID, "thread read host"); err != nil {
 		return ThreadContextSnapshot{}, err
 	}
 	return readThreadContext(ctx, h.harness, threadID)
@@ -1593,7 +2248,12 @@ func (h *providerHost) ReadThreadAgentTodos(ctx context.Context, threadID Thread
 }
 
 func (h *ThreadReadHost) ReadThreadAgentTodos(ctx context.Context, threadID ThreadID) (ThreadAgentTodoState, error) {
-	if err := validateRootThreadAuthority(ctx, h.store, threadID); err != nil {
+	done, err := beginHostOperation(h.store)
+	if err != nil {
+		return ThreadAgentTodoState{}, err
+	}
+	defer done()
+	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, threadID, "thread read host"); err != nil {
 		return ThreadAgentTodoState{}, err
 	}
 	return readThreadAgentTodos(ctx, h.store, threadID)
@@ -1655,7 +2315,7 @@ func updateThreadAgentTodos(ctx context.Context, store *Store, req UpdateThreadA
 	return threadAgentTodoState(state), nil
 }
 
-func validateAgentTodoUpdateIdentity(ctx context.Context, repo sessiontree.Repo, req UpdateThreadAgentTodosRequest) error {
+func validateAgentTodoUpdateIdentity(ctx context.Context, repo sessiontree.JournalRepo, req UpdateThreadAgentTodosRequest) error {
 	meta, err := repo.Thread(ctx, string(req.ThreadID))
 	if err != nil {
 		return runtimeHostError(err)
@@ -1723,7 +2383,12 @@ func (h *providerHost) ReadTurnProjection(ctx context.Context, req ReadTurnProje
 }
 
 func (h *ThreadReadHost) ReadTurnProjection(ctx context.Context, req ReadTurnProjectionRequest) (ThreadTurnProjection, error) {
-	if err := validateRootThreadAuthority(ctx, h.store, req.ThreadID); err != nil {
+	done, err := beginHostOperation(h.store)
+	if err != nil {
+		return ThreadTurnProjection{}, err
+	}
+	defer done()
+	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, req.ThreadID, "thread read host"); err != nil {
 		return ThreadTurnProjection{}, err
 	}
 	return readTurnProjection(ctx, h.harness, req)
@@ -1904,10 +2569,28 @@ func (h *providerHost) CompactThread(ctx context.Context, req CompactThreadReque
 		}
 	}
 	if len(terminalCompactions) == 0 {
-		if compactErr != nil {
+		if result.Replayed || result.OperationID != "" {
+			status := observation.CompactionStatusCompacted
+			phase := observation.CompactionPhaseComplete
+			if compactErr != nil {
+				status = observation.CompactionStatusFailed
+				phase = observation.CompactionPhaseFailed
+			}
+			errorText := ""
+			if compactErr != nil {
+				errorText = compactErr.Error()
+			}
+			terminalCompactions = append(terminalCompactions, observation.CompactionEvent{
+				RunID: result.RunID, ThreadID: string(req.ThreadID), OperationID: result.OperationID,
+				RequestID: result.RequestID, Source: result.Source, Trigger: string(compaction.TriggerManual),
+				Reason: string(compaction.ReasonManual), Phase: phase, Status: status,
+				Error: errorText, ObservedAt: time.Now(),
+			})
+		} else if compactErr != nil {
 			return CompactThreadResult{}, runtimeHostError(compactErr)
+		} else {
+			return CompactThreadResult{}, errors.New("compact thread completed without a terminal compaction event")
 		}
-		return CompactThreadResult{}, errors.New("compact thread completed without a terminal compaction event")
 	}
 	out := CompactThreadResult{
 		ThreadID:   req.ThreadID,
@@ -1915,6 +2598,7 @@ func (h *providerHost) CompactThread(ctx context.Context, req CompactThreadReque
 		RequestID:  strings.TrimSpace(req.RequestID),
 		Compaction: terminalCompactions[len(terminalCompactions)-1],
 		Metrics:    runtimeMetrics(result.Metrics),
+		Replayed:   result.Replayed,
 		ActivityTimeline: observation.BuildActivityTimeline(observation.ActivityRunMeta{
 			RunID:    result.RunID,
 			ThreadID: string(req.ThreadID),
@@ -1928,50 +2612,80 @@ func (h *providerHost) CompactThread(ctx context.Context, req CompactThreadReque
 	return out, runtimeHostError(compactErr)
 }
 
-func (h *providerHost) CompletePendingTool(ctx context.Context, req PendingToolCompletionRequest) (TurnResult, error) {
-	if strings.TrimSpace(string(req.ThreadID)) == "" {
-		return TurnResult{}, errors.New("thread id is required")
+func (h *providerHost) CompletePendingTool(ctx context.Context, req PendingToolCompletionRequest) (PendingToolCompletionResult, error) {
+	requestID := strings.TrimSpace(req.CompletionRequestID)
+	if requestID == "" {
+		return PendingToolCompletionResult{}, errors.New("completion request id is required")
 	}
-	if strings.TrimSpace(string(req.RunID)) == "" {
-		return TurnResult{}, errors.New("run id is required")
+	if err := validatePendingToolSettlementTarget(req.Target); err != nil {
+		return PendingToolCompletionResult{}, err
 	}
-	thread, err := h.harness.ResumeThread(ctx, string(req.ThreadID), agentharness.ResumeOptions{})
+	if strings.TrimSpace(string(req.ContinuationTurnID)) == "" {
+		return PendingToolCompletionResult{}, errors.New("continuation turn id is required")
+	}
+	if strings.TrimSpace(string(req.ContinuationRunID)) == "" {
+		return PendingToolCompletionResult{}, errors.New("continuation run id is required")
+	}
+	input, err := normalizeTurnInput(req.Input)
 	if err != nil {
-		return TurnResult{}, runtimeHostError(err)
+		return PendingToolCompletionResult{}, err
+	}
+	if len(input.Attachments) > 0 && !h.supportsOpaqueAttachments {
+		return PendingToolCompletionResult{}, errors.New("opaque message attachments require a ModelGateway host")
+	}
+	thread, err := h.harness.ResumeThread(ctx, string(req.Target.ThreadID), agentharness.ResumeOptions{})
+	if err != nil {
+		return PendingToolCompletionResult{}, runtimeHostError(err)
 	}
 	result, runErr := thread.CompletePendingTool(ctx, agentharness.PendingToolCompletion{
-		TurnID:     string(req.TurnID),
-		RunID:      string(req.RunID),
-		ToolCallID: req.ToolCallID,
-		ToolName:   req.ToolName,
-		Handle:     req.Handle,
-		Status:     pendingToolCompletionStatus(req.Status),
-		Summary:    req.Summary,
-		Output:     req.Output,
+		CompletionRequestID: requestID,
+		Target: sessiontree.PendingToolSettlementTarget{
+			ThreadID: string(req.Target.ThreadID), TurnID: string(req.Target.TurnID), RunID: string(req.Target.RunID),
+			ToolCallID: req.Target.ToolCallID, ToolName: req.Target.ToolName, Handle: req.Target.Handle,
+			EffectAttemptID: req.Target.EffectAttemptID,
+		},
+		ContinuationTurnID: string(req.ContinuationTurnID), ContinuationRunID: string(req.ContinuationRunID),
+		Status: pendingToolCompletionStatus(req.Status), Summary: req.Summary, Output: req.Output,
+		Input: session.Message{Role: session.User, Content: input.Text, Attachments: sessionMessageAttachments(input.Attachments)},
 		Labels: engine.RunLabels{
 			Correlation: cloneStringMap(req.Labels.Correlation),
 			Host:        cloneStringMap(req.Labels.Host),
 		},
 	})
-	out := turnResult(result, string(req.ThreadID), nil, time.Now().UnixMilli())
+	out := PendingToolCompletionResult{
+		CompletionRequestID: requestID, ThreadID: req.Target.ThreadID,
+		TurnID: req.ContinuationTurnID, RunID: req.ContinuationRunID, Replayed: result.Replayed,
+	}
+	if result.AdmissionRunning {
+		out.Status = TurnStatusRunning
+		return out, runtimeHostError(runErr)
+	}
+	turn := turnResult(result, string(req.Target.ThreadID), nil, time.Now().UnixMilli())
 	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
 	defer cancelProjection()
-	h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out)
+	h.attachThreadTurnProjection(projectionCtx, string(req.Target.ThreadID), &turn)
+	out.Status = turn.Status
+	out.Turn = &turn
 	return out, runtimeHostError(runErr)
 }
 
-func (h *PendingToolSettlementHost) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+func (h *PendingToolRecoveryHost) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+	ctx, done, err := beginHostOperationContext(h.store, ctx)
+	if err != nil {
+		return PendingToolSettlementResult{}, err
+	}
+	defer done()
 	if h == nil || h.harness == nil {
-		return PendingToolSettlementResult{}, errors.New("pending tool settlement host is invalid")
+		return PendingToolSettlementResult{}, errors.New("pending tool recovery host is invalid")
 	}
 	if err := validatePendingToolSettlementRequest(req); err != nil {
 		return PendingToolSettlementResult{}, err
 	}
 	if (h.threadID == "") == (h.parentThreadID == "") {
-		return PendingToolSettlementResult{}, errors.New("pending tool settlement host authority is invalid")
+		return PendingToolSettlementResult{}, errors.New("pending tool recovery host authority is invalid")
 	}
 	if h.threadID != "" {
-		if err := validateBoundThreadID(h.threadID, req.Target.ThreadID, "pending tool settlement host"); err != nil {
+		if err := validateBoundThreadID(h.threadID, req.Target.ThreadID, "pending tool recovery host"); err != nil {
 			return PendingToolSettlementResult{}, err
 		}
 		if err := validateRootThreadAuthority(ctx, h.store, req.Target.ThreadID); err != nil {
@@ -1982,34 +2696,53 @@ func (h *PendingToolSettlementHost) SettlePendingTool(ctx context.Context, req P
 			return PendingToolSettlementResult{}, err
 		}
 	}
-	switch h.mode {
-	case pendingToolSettlementActive:
-		thread, ok := h.harness.ActiveThread(string(req.Target.ThreadID))
-		if !ok {
-			return PendingToolSettlementResult{}, ErrThreadNotActive
-		}
-		return settlePendingToolOnThread(ctx, h.harness, thread, req)
-	case pendingToolSettlementRecovery:
-		return settlePendingTool(ctx, h.harness, req)
-	default:
-		return PendingToolSettlementResult{}, errors.New("pending tool settlement host mode is invalid")
+	result, err := settlePendingToolRecovery(ctx, h.harness, req)
+	return result, requestConflictError(err, "pending_tool_settlement", req.Target.ToolCallID)
+}
+
+func (h *TurnExecutionHost) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
+	if err != nil {
+		return PendingToolSettlementResult{}, err
 	}
+	defer done()
+	if h == nil || h.host == nil || h.host.harness == nil {
+		return PendingToolSettlementResult{}, errors.New("turn execution host is invalid")
+	}
+	if err := validateBoundThreadID(h.threadID, req.Target.ThreadID, "turn execution host"); err != nil {
+		return PendingToolSettlementResult{}, err
+	}
+	if err := validateRootThreadAuthority(ctx, h.host.store, req.Target.ThreadID); err != nil {
+		return PendingToolSettlementResult{}, err
+	}
+	result, err := settlePendingToolActive(ctx, h.host.harness, req)
+	return result, requestConflictError(err, "pending_tool_settlement", req.Target.ToolCallID)
+}
+
+func (h *SubAgentHost) SettlePendingTool(ctx context.Context, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
+	if err != nil {
+		return PendingToolSettlementResult{}, err
+	}
+	defer done()
+	if h == nil || h.host == nil || h.host.harness == nil {
+		return PendingToolSettlementResult{}, errors.New("subagent host is invalid")
+	}
+	if err := validateSubAgentSettlementAuthority(ctx, h.host.harness, h.parentThreadID, req.Target.ThreadID); err != nil {
+		return PendingToolSettlementResult{}, err
+	}
+	result, err := settlePendingToolActive(ctx, h.host.harness, req)
+	return result, requestConflictError(err, "pending_tool_settlement", req.Target.ToolCallID)
 }
 
 func validateSubAgentSettlementAuthority(ctx context.Context, harness *agentharness.AgentHarness, parentThreadID, childThreadID ThreadID) error {
-	snapshots, err := harness.ListSubAgents(ctx, string(parentThreadID))
-	if err != nil {
+	if err := harness.ValidateSubAgentAuthority(ctx, string(parentThreadID), string(childThreadID)); err != nil {
 		return runtimeHostError(err)
 	}
-	for _, snapshot := range snapshots {
-		if snapshot.ThreadID == string(childThreadID) {
-			return nil
-		}
-	}
-	return fmt.Errorf("%w: %s", ErrSubAgentNotFound, childThreadID)
+	return nil
 }
 
-func settlePendingTool(ctx context.Context, harness *agentharness.AgentHarness, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+func settlePendingToolRecovery(ctx context.Context, harness *agentharness.AgentHarness, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
 	if err := validatePendingToolSettlementRequest(req); err != nil {
 		return PendingToolSettlementResult{}, err
 	}
@@ -2017,7 +2750,21 @@ func settlePendingTool(ctx context.Context, harness *agentharness.AgentHarness, 
 	if err != nil {
 		return PendingToolSettlementResult{}, runtimeHostError(err)
 	}
-	return settlePendingToolOnThread(ctx, harness, thread, req)
+	return settlePendingToolOnThread(ctx, harness, thread, req, sessiontree.TurnLease{})
+}
+
+func settlePendingToolActive(ctx context.Context, harness *agentharness.AgentHarness, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
+	if err := validatePendingToolSettlementRequest(req); err != nil {
+		return PendingToolSettlementResult{}, err
+	}
+	thread, lease, active, err := harness.OwnedActiveThread(ctx, string(req.Target.ThreadID), string(req.Target.TurnID))
+	if err != nil {
+		return PendingToolSettlementResult{}, runtimeHostError(err)
+	}
+	if !active {
+		return PendingToolSettlementResult{}, ErrThreadNotActive
+	}
+	return settlePendingToolOnThread(ctx, harness, thread, req, lease)
 }
 
 func validatePendingToolSettlementRequest(req PendingToolSettlementRequest) error {
@@ -2046,18 +2793,26 @@ func validatePendingToolSettlementTarget(target PendingToolSettlementTarget) err
 	return nil
 }
 
-func settlePendingToolOnThread(ctx context.Context, harness *agentharness.AgentHarness, thread *agentharness.Thread, req PendingToolSettlementRequest) (PendingToolSettlementResult, error) {
-	event, err := thread.SettlePendingTool(ctx, agentharness.PendingToolSettlement{
-		TurnID:     string(req.Target.TurnID),
-		RunID:      string(req.Target.RunID),
-		ToolCallID: req.Target.ToolCallID,
-		ToolName:   req.Target.ToolName,
-		Handle:     req.Target.Handle,
-		Status:     pendingToolSettlementStatus(req.Status),
-		Summary:    req.Summary,
-		Output:     req.Output,
-		Activity:   observation.CloneActivityPresentation(req.Activity),
-	})
+func settlePendingToolOnThread(ctx context.Context, harness *agentharness.AgentHarness, thread *agentharness.Thread, req PendingToolSettlementRequest, activeLease sessiontree.TurnLease) (PendingToolSettlementResult, error) {
+	settlement := agentharness.PendingToolSettlement{
+		TurnID:          string(req.Target.TurnID),
+		RunID:           string(req.Target.RunID),
+		ToolCallID:      req.Target.ToolCallID,
+		ToolName:        req.Target.ToolName,
+		Handle:          req.Target.Handle,
+		EffectAttemptID: req.Target.EffectAttemptID,
+		Status:          pendingToolSettlementStatus(req.Status),
+		Summary:         req.Summary,
+		Output:          req.Output,
+		Activity:        observation.CloneActivityPresentation(req.Activity),
+	}
+	var event agentharness.SubAgentDetailEvent
+	var err error
+	if strings.TrimSpace(activeLease.OwnerID) == "" {
+		event, err = thread.SettlePendingTool(ctx, settlement)
+	} else {
+		event, err = thread.SettlePendingToolActive(ctx, settlement, activeLease)
+	}
 	if err != nil {
 		return PendingToolSettlementResult{}, runtimeHostError(err)
 	}
@@ -2087,12 +2842,14 @@ func settlePendingToolOnThread(ctx context.Context, harness *agentharness.AgentH
 
 func (h *providerHost) SpawnSubAgent(ctx context.Context, req SpawnSubAgentRequest) (SubAgentSnapshot, error) {
 	snapshot, err := h.harness.SpawnSubAgent(ctx, agentharness.SpawnSubAgentOptions{
+		PublicationID:   req.PublicationID,
 		ParentThreadID:  string(req.ParentThreadID),
 		ParentTurnID:    string(req.ParentTurnID),
 		ThreadID:        string(req.ThreadID),
 		TaskName:        req.TaskName,
 		TaskDescription: req.TaskDescription,
 		Message:         req.Message,
+		Attachments:     sessionMessageAttachments(req.Attachments),
 		HostProfileRef:  req.HostProfileRef,
 		ForkMode:        agentharness.SubAgentForkMode(req.ForkMode),
 		Labels:          engineLabels(req.Labels),
@@ -2105,11 +2862,46 @@ func (h *providerHost) SpawnSubAgent(ctx context.Context, req SpawnSubAgentReque
 
 func (h *providerHost) SendSubAgentInput(ctx context.Context, req SendSubAgentInputRequest) (SubAgentSnapshot, error) {
 	snapshot, err := h.harness.SendSubAgentInput(ctx, agentharness.SendSubAgentInputOptions{
+		InputRequestID: req.InputRequestID,
 		ParentThreadID: string(req.ParentThreadID),
 		ChildThreadID:  string(req.ChildThreadID),
 		Message:        req.Message,
+		Attachments:    sessionMessageAttachments(req.Attachments),
 		Interrupt:      req.Interrupt,
 		Labels:         engineLabels(req.Labels),
+	})
+	if err != nil {
+		return SubAgentSnapshot{}, runtimeHostError(err)
+	}
+	return subAgentSnapshot(snapshot), nil
+}
+
+func (h *providerHost) PublishSubAgentPendingToolCompletion(ctx context.Context, req PublishSubAgentPendingToolCompletionRequest) (SubAgentSnapshot, error) {
+	if strings.TrimSpace(req.InputRequestID) == "" {
+		return SubAgentSnapshot{}, errors.New("subagent pending tool completion input request id is required")
+	}
+	if strings.TrimSpace(string(req.ParentThreadID)) == "" || strings.TrimSpace(string(req.ChildThreadID)) == "" {
+		return SubAgentSnapshot{}, errors.New("subagent pending tool completion requires parent and child thread identities")
+	}
+	if err := validatePendingToolSettlementTarget(req.Target); err != nil {
+		return SubAgentSnapshot{}, err
+	}
+	if req.Target.ThreadID != req.ChildThreadID {
+		return SubAgentSnapshot{}, errors.New("subagent pending tool completion target thread identity mismatch")
+	}
+	input, err := normalizeTurnInput(req.Input)
+	if err != nil {
+		return SubAgentSnapshot{}, err
+	}
+	snapshot, err := h.harness.PublishSubAgentPendingToolCompletion(ctx, agentharness.PublishSubAgentPendingToolCompletionOptions{
+		InputRequestID: req.InputRequestID, ParentThreadID: string(req.ParentThreadID), ChildThreadID: string(req.ChildThreadID),
+		Target: sessiontree.PendingToolSettlementTarget{
+			ThreadID: string(req.Target.ThreadID), TurnID: string(req.Target.TurnID), RunID: string(req.Target.RunID),
+			ToolCallID: req.Target.ToolCallID, ToolName: req.Target.ToolName, Handle: req.Target.Handle,
+			EffectAttemptID: req.Target.EffectAttemptID,
+		},
+		Status: pendingToolCompletionStatus(req.Status), Summary: req.Summary, Output: req.Output,
+		Message: input.Text, Attachments: sessionMessageAttachments(input.Attachments), Labels: engineLabels(req.Labels),
 	})
 	if err != nil {
 		return SubAgentSnapshot{}, runtimeHostError(err)
@@ -2134,6 +2926,11 @@ func (h *providerHost) ListSubAgents(ctx context.Context, parentThreadID ThreadI
 }
 
 func (h *SubAgentReadHost) ListSubAgents(ctx context.Context, parentThreadID ThreadID) ([]SubAgentSnapshot, error) {
+	done, err := beginHostOperation(h.store)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
 	if err := validateBoundThreadID(h.parentThreadID, parentThreadID, "subagent read host parent"); err != nil {
 		return nil, err
 	}
@@ -2154,9 +2951,10 @@ func listSubAgents(ctx context.Context, harness *agentharness.AgentHarness, pare
 
 func (h *providerHost) CloseSubAgent(ctx context.Context, req CloseSubAgentRequest) (SubAgentSnapshot, error) {
 	snapshot, err := h.harness.CloseSubAgent(ctx, agentharness.CloseSubAgentOptions{
-		ParentThreadID: string(req.ParentThreadID),
-		ChildThreadID:  string(req.ChildThreadID),
-		Reason:         req.Reason,
+		CloseOperationID: req.CloseOperationID,
+		ParentThreadID:   string(req.ParentThreadID),
+		ChildThreadID:    string(req.ChildThreadID),
+		Reason:           req.Reason,
 	})
 	if err != nil {
 		return SubAgentSnapshot{}, runtimeHostError(err)
@@ -2164,39 +2962,16 @@ func (h *providerHost) CloseSubAgent(ctx context.Context, req CloseSubAgentReque
 	return subAgentSnapshot(snapshot), nil
 }
 
-func (h *SubAgentMaintenanceHost) CloseSubAgents(ctx context.Context, req CloseSubAgentsRequest) (CloseSubAgentsResult, error) {
-	if h == nil || h.harness == nil {
-		return CloseSubAgentsResult{}, errors.New("subagent maintenance host is invalid")
-	}
-	if h.parentThreadID == "" {
-		return CloseSubAgentsResult{}, errors.New("subagent maintenance host authority is invalid")
-	}
-	if err := validateBoundThreadID(h.parentThreadID, req.ParentThreadID, "subagent maintenance host parent"); err != nil {
-		return CloseSubAgentsResult{}, err
-	}
-	return closeSubAgents(ctx, h.harness, req)
-}
-
-func closeSubAgents(ctx context.Context, harness *agentharness.AgentHarness, req CloseSubAgentsRequest) (CloseSubAgentsResult, error) {
-	result, err := harness.CloseSubAgents(ctx, agentharness.CloseSubAgentsOptions{
-		ParentThreadID: string(req.ParentThreadID),
-		Reason:         req.Reason,
-	})
-	if err != nil {
-		return CloseSubAgentsResult{}, runtimeHostError(err)
-	}
-	out := CloseSubAgentsResult{Closed: result.Closed, Snapshots: make([]SubAgentSnapshot, 0, len(result.Snapshots))}
-	for _, snapshot := range result.Snapshots {
-		out.Snapshots = append(out.Snapshots, subAgentSnapshot(snapshot))
-	}
-	return out, nil
-}
-
 func (h *providerHost) ListSubAgentActivityTimeline(ctx context.Context, req ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error) {
 	return listSubAgentActivityTimeline(ctx, h.harness, req)
 }
 
 func (h *SubAgentReadHost) ListSubAgentActivityTimeline(ctx context.Context, req ListSubAgentActivityTimelineRequest) (SubAgentActivityTimelineResult, error) {
+	done, err := beginHostOperation(h.store)
+	if err != nil {
+		return SubAgentActivityTimelineResult{}, err
+	}
+	defer done()
 	if err := validateBoundThreadID(h.parentThreadID, req.ParentThreadID, "subagent read host parent"); err != nil {
 		return SubAgentActivityTimelineResult{}, err
 	}
@@ -2220,6 +2995,11 @@ func (h *providerHost) ReadSubAgentDetail(ctx context.Context, req ReadSubAgentD
 }
 
 func (h *SubAgentReadHost) ReadSubAgentDetail(ctx context.Context, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
+	done, err := beginHostOperation(h.store)
+	if err != nil {
+		return SubAgentDetail{}, err
+	}
+	defer done()
 	if err := validateBoundThreadID(h.parentThreadID, req.ParentThreadID, "subagent read host parent"); err != nil {
 		return SubAgentDetail{}, err
 	}
@@ -2230,14 +3010,14 @@ func validateRootThreadAuthority(ctx context.Context, store *Store, threadID Thr
 	if strings.TrimSpace(string(threadID)) == "" {
 		return errors.New("thread id is required")
 	}
-	meta, err := store.repo.Thread(ctx, string(threadID))
+	snapshot, err := inspectThreadAuthority(ctx, store, threadID)
 	if err != nil {
-		return runtimeHostError(err)
+		return err
 	}
-	if strings.TrimSpace(meta.ParentThreadID) != "" {
+	if strings.TrimSpace(snapshot.Thread.ParentThreadID) != "" {
 		return fmt.Errorf("%w: %s", ErrSubAgentParentRequired, threadID)
 	}
-	return nil
+	return validateLiveThreadLifecycle(snapshot.Thread)
 }
 
 func readSubAgentDetail(ctx context.Context, harness *agentharness.AgentHarness, req ReadSubAgentDetailRequest) (SubAgentDetail, error) {
@@ -2255,9 +3035,14 @@ func readSubAgentDetail(ctx context.Context, harness *agentharness.AgentHarness,
 }
 
 func (h *ThreadDeleteHost) DeleteThread(ctx context.Context, threadID ThreadID) error {
+	done, err := beginHostOperation(h.store)
+	if err != nil {
+		return err
+	}
+	defer done()
 	h.store.threadAuthorityMu.Lock()
 	defer h.store.threadAuthorityMu.Unlock()
-	if err := validateRootThreadAuthority(ctx, h.store, threadID); err != nil {
+	if err := validateBoundThreadID(h.threadID, threadID, "thread delete host"); err != nil {
 		return err
 	}
 	return deleteThread(ctx, h.store, threadID)
@@ -2900,24 +3685,24 @@ func threadDetailToolResult(in *agentharness.SubAgentDetailToolResult) *ThreadDe
 		return nil
 	}
 	out := &ThreadDetailToolResult{
-		CallID:        in.CallID,
-		ToolName:      in.ToolName,
-		Status:        in.Status,
-		Preview:       in.Preview,
-		Content:       in.Content,
-		Truncated:     in.Truncated,
-		OriginalBytes: in.OriginalBytes,
-		VisibleBytes:  in.VisibleBytes,
-		OriginalLines: in.OriginalLines,
-		VisibleLines:  in.VisibleLines,
-		Strategy:      in.Strategy,
-		ContentSHA256: in.ContentSHA256,
+		CallID:          in.CallID,
+		ToolName:        in.ToolName,
+		EffectAttemptID: in.EffectAttemptID,
+		Status:          in.Status,
+		Preview:         in.Preview,
+		Content:         in.Content,
+		Truncated:       in.Truncated,
+		OriginalBytes:   in.OriginalBytes,
+		VisibleBytes:    in.VisibleBytes,
+		OriginalLines:   in.OriginalLines,
+		VisibleLines:    in.VisibleLines,
+		Strategy:        in.Strategy,
+		ContentSHA256:   in.ContentSHA256,
 	}
 	if in.FullOutput != nil {
 		out.FullOutput = &ArtifactRef{
-			ID:        in.FullOutput.ID,
+			ID:        ArtifactID(in.FullOutput.ID),
 			SafeLabel: in.FullOutput.SafeLabel,
-			URL:       in.FullOutput.URL,
 			Kind:      in.FullOutput.Kind,
 			MIME:      in.FullOutput.MIME,
 			SizeBytes: in.FullOutput.SizeBytes,
@@ -3114,19 +3899,19 @@ func threadIDStrings(ids []ThreadID) []string {
 }
 
 type harnessOptions struct {
-	Store                 *Store
-	Tools                 *tools.Registry
-	Approver              tools.Approver
-	Sink                  event.Sink
-	SinkPolicy            event.SinkPolicy
-	Title                 agentharness.TitleGenerator
-	ThreadTitleMode       ThreadTitleMode
-	NewID                 func(string) string
-	LoopLimits            LoopLimits
-	SubAgentRunTimeout    time.Duration
-	Capabilities          CapabilityOptions
-	ToolSurfaceProvider   engine.ToolSurfaceProvider
-	StateCompatibilityKey string
+	Store                   *Store
+	Tools                   *tools.Registry
+	EffectAuthorizationGate EffectAuthorizationGate
+	Sink                    event.Sink
+	SinkPolicy              event.SinkPolicy
+	Title                   agentharness.TitleGenerator
+	ThreadTitleMode         ThreadTitleMode
+	NewID                   func(string) string
+	LoopLimits              LoopLimits
+	SubAgentRunTimeout      time.Duration
+	Capabilities            CapabilityOptions
+	ToolSurfaceProvider     engine.ToolSurfaceProvider
+	StateCompatibilityKey   string
 }
 
 func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harnessOptions) (*agentharness.AgentHarness, error) {
@@ -3182,28 +3967,27 @@ func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harness
 		}
 	}
 	return agentharness.New(agentharness.Options{
-		Provider:              p,
-		ProviderName:          cfg.Provider,
-		Model:                 cfg.Model,
-		SystemPrompt:          effectivePrompt,
-		Tools:                 registry,
-		PromptStore:           store.prompt,
-		Repo:                  store.repo,
-		ForkOperations:        store.forkOperations,
-		ProviderStates:        store.providerStates,
-		StateCompatibilityKey: opts.StateCompatibilityKey,
-		Sink:                  opts.Sink,
-		SinkPolicy:            opts.SinkPolicy,
-		Approver:              opts.Approver,
-		ToolSurfaceProvider:   opts.ToolSurfaceProvider,
-		TitleGenerator:        titleGenerator,
-		CompactionPrompt:      compaction.PromptOptions{},
-		Artifacts:             store.artifacts,
-		Reasoning:             model.Reasoning,
-		TurnPolicy:            turnPolicy,
-		LoopLimits:            loopLimits,
-		SubAgentRunTimeout:    opts.SubAgentRunTimeout,
-		NewID:                 opts.NewID,
+		Provider:                p,
+		ProviderName:            cfg.Provider,
+		Model:                   cfg.Model,
+		SystemPrompt:            effectivePrompt,
+		Tools:                   registry,
+		PromptStore:             store.prompt,
+		Repo:                    store.repo,
+		ForkOperations:          store.forkOperations,
+		StateCompatibilityKey:   opts.StateCompatibilityKey,
+		Sink:                    opts.Sink,
+		SinkPolicy:              opts.SinkPolicy,
+		EffectAuthorizationGate: runtimeEffectAuthorizationGate(opts.EffectAuthorizationGate),
+		ToolSurfaceProvider:     opts.ToolSurfaceProvider,
+		TitleGenerator:          titleGenerator,
+		CompactionPrompt:        compaction.PromptOptions{},
+		Reasoning:               model.Reasoning,
+		TurnPolicy:              turnPolicy,
+		LoopLimits:              loopLimits,
+		SubAgentRunTimeout:      opts.SubAgentRunTimeout,
+		BeginSubAgentExecution:  store.beginLifetimeOperationContext,
+		NewID:                   opts.NewID,
 	}), nil
 }
 
@@ -4082,50 +4866,4 @@ func cloneStringMap(in map[string]string) map[string]string {
 		out[key] = value
 	}
 	return out
-}
-
-type engineHelperOptions struct {
-	RunID         string
-	PromptScopeID string
-	PromptStore   cache.Store
-}
-
-func newEngineWithProvider(cfg config.Config, p provider.Provider, store session.TranscriptStore, registry *tools.Registry, opts engineHelperOptions) (*engine.Engine, error) {
-	cfg = config.ResolvePrompt(cfg)
-	if store == nil {
-		store = session.NewMemoryStore()
-	}
-	if registry == nil {
-		registry = tools.NewRegistry()
-	}
-	promptStore := opts.PromptStore
-	if promptStore == nil {
-		promptStore = cache.NewMemoryStore()
-	}
-	cacheRetention, err := config.PromptCacheRetention(cfg)
-	if err != nil {
-		return nil, err
-	}
-	return engine.New(engine.Config{
-		Provider:     p,
-		Store:        store,
-		Prompt:       promptStore,
-		Artifacts:    artifact.NewMemoryStore(),
-		SystemPrompt: cfg.SystemPrompt,
-		Tools:        registry,
-		Options: engine.Options{
-			RunID:                   opts.RunID,
-			TraceID:                 opts.RunID,
-			PromptScopeID:           opts.PromptScopeID,
-			ProviderName:            cfg.Provider,
-			Model:                   cfg.Model,
-			CacheRetention:          configbridge.CacheRetention(cacheRetention),
-			ContextPolicy:           configbridge.ContextPolicy(cfg.ContextPolicy),
-			Reasoning:               configbridge.ReasoningSelection(cfg.Reasoning),
-			MaxEmptyProviderRetries: cfg.MaxEmptyProviderRetries,
-			NoProgressLimit:         cfg.NoProgressLimit,
-			DuplicateToolLimit:      cfg.DuplicateToolLimit,
-			WallTime:                cfg.WallTime,
-		},
-	})
 }

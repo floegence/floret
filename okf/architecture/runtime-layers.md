@@ -21,14 +21,16 @@ interactive child lifecycle under one bound parent. Requests keep explicit
 thread identities and fail before provider or journal work when they do not
 match the handle authority. Canonical reads remain on `ThreadReadHost`.
 
-Provider-free lifecycle transitions use narrow concrete capabilities. Bootstrap
-code creates `ThreadCreateHost`, `ThreadTitleHost`, `ThreadForkHost`,
-`ThreadDeleteHost`, `ThreadReadHost`, parent-bound
-`SubAgentMaintenanceHost`, and the thread- or parent-bound
-`PendingToolSettlementHost` from one `HostBootstrap`. Bootstrap immediately
-issues exact provider, SubAgent read/maintenance, and recovery factories, then
-passes only the required factory or handle to each owner. No coordinator
-receives a raw `runtime.Store` or the bootstrap token. `ThreadReadHost` is
+Provider-free lifecycle transitions use narrow concrete capabilities.
+`ConfigureHostCapabilities` runs once per Store, issues responsibility-specific
+binders, and seals its `HostBootstrap` before returning. Provider binders later
+fix one root or parent before returning a provider-configurable factory;
+provider-free binders return exact create, title, fork, delete, read, SubAgent
+read, pending settlement recovery, or exact interrupted-turn recovery handles.
+Binders remain inside the composition
+root. No coordinator or run receives a raw `runtime.Store`, the bootstrap token,
+or any binder; it receives only the exact authority-bound factory or handle for
+its responsibility. `ThreadReadHost` is
 read-only and is the reload source for top-level thread, turn, context, and todo
 projections; parent-bound `SubAgentReadHost` owns child list/detail/activity
 reads. Pending approval reads remain on the bound `TurnExecutionHost`,
@@ -38,11 +40,14 @@ separate results. If durable detail cannot be read after a turn terminates,
 the runtime preserves the engine result and reports projection status as
 `unavailable` without changing the execution error. Pending-tool settlement
 also preserves a committed settlement event when its projection read fails.
-Provider and bound-child options contain no Store, bootstrap, or runtime root.
-`runtime.Store` is opened and closed by the bootstrap owner; neither it nor
-`HostBootstrap` is stored in a coordinator or run object. Capability handles
-never close the Store, so shutdown closes it exactly once after active work
-ends.
+Provider options contain no Store, bootstrap, thread, parent, or runtime root.
+`runtime.Store` is opened and closed by the composition owner; neither it nor a
+usable `HostBootstrap` is stored in a coordinator or run object. Binders and
+capability handles never close the Store, so shutdown closes it exactly once
+after active work ends. `Store.Close` first fences new operations, cancels
+Store-owned active execution, waits for terminal finalization and lease release,
+and only then closes the backend. Retained binders, factories, and handles
+return `ErrStoreClosed` after closing starts.
 Runtime resolves a target thread plus its descendants before submitting one
 tree delete request to storage. Root creation, ordinary fork, SubAgent spawn,
 and root tree deletion share one Store-level authority mutation gate; deletion
@@ -51,7 +56,9 @@ concurrent spawn on that Store cannot leave an orphan child. The SQLite
 implementation accepts only the root identity, reloads and validates the full
 authority graph inside its immediate transaction, derives the current child
 tree, and then deletes thread rows, journal entries, active leases, Agent todo
-state, metadata, artifacts, prompt scopes, and provider ledgers. This closes the
+state, Floret authority records, artifacts, prompt scopes, and provider ledgers.
+Host-owned generic metadata is outside canonical deletion and remains for its
+own coordinator to clean up. This closes the
 gap across multiple Store instances or processes. Every SQLite open validates
 the complete current authority graph before exposing the Store.
 
@@ -64,13 +71,13 @@ state without resuming the provider loop. Settlement is keyed by the public
 call, tool name, and handle identity. It is idempotent for the same terminal
 status and may be recorded before the pending result row when host-owned work
 finishes faster than the provider turn can commit that row.
-`PendingToolSettlementHost` is the only public settlement surface. A settlement
-handle derived from a bound turn or SubAgent capability shares that active
-`AgentHarness` and fails with `ErrThreadNotActive` instead of re-entering turn
-admission after the owner becomes idle. A restart coordinator may
-construct a provider-free settlement handle bound to exactly one thread or
-parent. The handle is not a general maintenance or read facade and must be
-owned by the one coordinator responsible for that pending work.
+Active settlement is available only through the exact bound
+`TurnExecutionHost` or `SubAgentHost` and requires that owner's local durable
+lease proof. It fails with `ErrThreadNotActive` instead of reacquiring turn
+admission after the owner becomes idle. A restart coordinator may construct a
+provider-free `PendingToolRecoveryHost` bound directly to exactly one root or
+parent. It is not a general maintenance or read facade and must be owned by the
+one coordinator responsible for that pending work.
 
 The durable Floret journal, public turn pages and projections, pending approval
 snapshot, and typed Agent todo state are the canonical Agent source. Hosts may
@@ -103,16 +110,20 @@ stores the association in the journal and prompt-cache snapshot while the
 `ModelGateway` host resolves the resource into provider-native content. A native
 provider host without that resolver rejects attachments before admission.
 
-`AgentHarness` is the internal durable conversation layer. It owns threads,
-parent-child thread lifecycle, turn lifecycle, retries, forks, titles, and
-projection of an active journal path into one engine execution.
-It also owns opaque provider continuation persistence in Floret Store. A turn
-loads continuation only when the current journal leaf and compatibility key
-match exactly; mismatch deletes the record. Fresh response state is committed
-against the precomputed terminal entry identity before that terminal marker is
-appended, while context-changing turns without fresh state clear the old record.
-If projection, provider-state, failure, or terminal persistence fails, the turn
-remains unfinished instead of returning a fabricated terminal result.
+`AgentHarness` is the internal durable conversation layer. Its production
+options receive only `sessiontree.JournalRepo`, so normal runs cannot create,
+delete, fork, claim, acquire leases, or mutate provider state through generic
+repository methods. Lifecycle coordinators call the dedicated semantic storage
+kernel for those transitions. AgentHarness owns turn execution, retries,
+SubAgent runtime behavior, titles, and projection of an active journal path into
+one engine execution.
+It also consumes opaque provider continuation from Floret Store. A turn loads
+continuation only when the current journal leaf and compatibility key match
+exactly. Incompatible state is ignored for that request and is replaced or
+cleared only as part of the next atomic `FinishTurn`; there is no early cleanup
+side effect. Fresh response state, terminal outcome, and exact lease release are
+committed together. If projection or finalization fails, the turn remains
+unfinished instead of returning a fabricated terminal result.
 The public observation boundary carries normalized finish, raw finish,
 inference, completion, and continuation as distinct typed facts. Hosts consume
 those fields directly instead of interpreting metadata keys.
@@ -131,16 +142,15 @@ without duplicating accumulated provider output.
 Durable compaction entries are committed only after `Engine` has rebuilt and
 validated the compacted provider request, so a journal checkpoint is an
 installed continuation boundary rather than a candidate summary.
-Restart recovery uses the same durable ledger boundary. `ResumeThread` closes
-unresolved provider-visible tool calls for interrupted turns before writing the
-terminal interrupted marker. Only ordinary provider-visible calls receive
-closure results; `MessageKindControlSignal` never does. The harness processes
-the active lease's exact turn, or the active path's sole unfinished turn when no
-lease exists. Multiple unfinished turns fail as a journal invariant. Recovery
-does not scan inactive branches, move the leaf, or discard later turns. Active
-turn lease reconciliation is owned by this layer as well: once durable evidence
-shows that the leased turn is terminal, the harness releases that lease before
-admitting the next turn.
+Restart recovery is an explicit proof-bound capability. `ResumeThread` only
+binds an existing canonical journal and never settles or rewrites it.
+`InterruptedTurnRecoveryHost` requires the complete takeover-eligible turn lease
+proof plus exact root or parent-child authority. The storage kernel replaces
+that proof with a recovery mutation generation, rereads the active path in the
+same critical section or transaction, marks dispatching effects unknown,
+cancels prepared effects, appends the exact interrupted terminal outcome, and
+releases authority atomically. It never selects an unfinished turn without a
+lease, scans another branch, moves the leaf, or infers recovery from host state.
 
 `Engine` is the prompt-first single-run executor. It owns provider loop control,
 tool invocation, compaction decisions, prompt-cache requests, metrics, and event

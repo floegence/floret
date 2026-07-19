@@ -20,12 +20,15 @@ import (
 var staticFiles embed.FS
 
 type Server struct {
-	Runner  Runner
+	Runner  *Runner
 	Timeout time.Duration
 	static  http.Handler
 }
 
-func NewServer(r Runner) (*Server, error) {
+func NewServer(r *Runner) (*Server, error) {
+	if r == nil {
+		return nil, errors.New("test UI runner is required")
+	}
 	sub, err := fs.Sub(staticFiles, "static")
 	if err != nil {
 		return nil, err
@@ -37,6 +40,13 @@ func NewServer(r Runner) (*Server, error) {
 	}, nil
 }
 
+func (s *Server) Close() error {
+	if s == nil || s.Runner == nil {
+		return nil
+	}
+	return s.Runner.Close()
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/config", s.handleConfig)
@@ -44,6 +54,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/config", s.handleSaveConfig)
 	mux.HandleFunc("POST /api/agent/run", s.handleAgentRun)
 	mux.HandleFunc("POST /api/agent/interface-probe", s.handleAgentInterfaceProbe)
+	mux.HandleFunc("GET /api/agent/artifacts/", s.handleAgentArtifact)
 	mux.HandleFunc("GET /api/agent/sessions", s.handleAgentSessions)
 	mux.HandleFunc("POST /api/agent/sessions", s.handleAgentSessionCreate)
 	mux.HandleFunc("GET /api/agent/sessions/", s.handleAgentSessionRoute)
@@ -115,7 +126,12 @@ func (s *Server) handleAgentInterfaceProbe(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) handleAgentSessions(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.Runner.AgentSessions(r.Context()))
+	sessions, err := s.Runner.AgentSessions(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, sessions)
 }
 
 func (s *Server) handleAgentSessionCreate(w http.ResponseWriter, r *http.Request) {

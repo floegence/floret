@@ -249,18 +249,20 @@ type AgentTurnRequest struct {
 }
 
 type AgentSubAgentSpawnRequest struct {
-	ThreadID        string                        `json:"thread_id,omitempty"`
+	PublicationID   string                        `json:"publication_id"`
+	ThreadID        string                        `json:"thread_id"`
 	TaskName        string                        `json:"task_name"`
 	TaskDescription string                        `json:"task_description,omitempty"`
 	Message         string                        `json:"message"`
 	HostProfileRef  string                        `json:"host_profile_ref,omitempty"`
-	ForkMode        agentharness.SubAgentForkMode `json:"fork_mode,omitempty"`
+	ForkMode        agentharness.SubAgentForkMode `json:"fork_mode"`
 	ParentTurnID    string                        `json:"parent_turn_id,omitempty"`
 }
 
 type AgentSubAgentInputRequest struct {
-	Message   string `json:"message"`
-	Interrupt bool   `json:"interrupt,omitempty"`
+	InputRequestID string `json:"input_request_id"`
+	Message        string `json:"message"`
+	Interrupt      bool   `json:"interrupt,omitempty"`
 }
 
 type AgentSubAgentWaitRequest struct {

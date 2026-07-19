@@ -1,10 +1,8 @@
 package tools
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"strings"
 	"unicode/utf8"
 )
@@ -36,15 +34,24 @@ type OutputPolicy struct {
 }
 
 type OutputProjection struct {
-	VisibleText   string
-	Truncated     bool
-	OriginalBytes int
-	VisibleBytes  int
-	OriginalLines int
-	VisibleLines  int
-	Strategy      OutputStrategy
-	ContentSHA256 string
-	FullOutput    *ArtifactRef
+	VisibleText    string
+	Truncated      bool
+	OriginalBytes  int
+	VisibleBytes   int
+	OriginalLines  int
+	VisibleLines   int
+	Strategy       OutputStrategy
+	ContentSHA256  string
+	FullOutput     *ArtifactRef
+	FullOutputPlan *FullOutputPlan
+}
+
+// FullOutputPlan is a side-effect-free request to admit the complete tool
+// output together with its canonical result. It is not a durable artifact ref.
+type FullOutputPlan struct {
+	Text string
+	Kind string
+	MIME string
 }
 
 func DefaultOutputPolicy() OutputPolicy {
@@ -113,7 +120,7 @@ func MergeOutputPolicy(base OutputPolicy, override *OutputPolicy) OutputPolicy {
 	return NormalizeOutputPolicy(out)
 }
 
-func BuildOutputProjection(ctx context.Context, result Result, policy OutputPolicy, store ArtifactStore) (OutputProjection, error) {
+func BuildOutputProjection(result Result, policy OutputPolicy) OutputProjection {
 	policy = NormalizeOutputPolicy(policy)
 	text := result.Text
 	limited := text
@@ -144,56 +151,12 @@ func BuildOutputProjection(ctx context.Context, result Result, policy OutputPoli
 		ContentSHA256: stableTextHash(text),
 	}
 	if !truncated {
-		return projection, nil
+		return projection
 	}
 	if policy.PreserveFull {
-		if store == nil {
-			return OutputProjection{}, errors.New("artifact store is required to preserve truncated tool output")
-		}
-		ref, err := store.PutToolOutput(ctx, ToolOutputArtifact{
-			RunID:         result.MetadataString("run_id"),
-			ThreadID:      result.MetadataString("thread_id"),
-			TurnID:        result.MetadataString("turn_id"),
-			PromptScopeID: result.MetadataString("prompt_scope_id"),
-			Step:          result.MetadataInt("step"),
-			CallID:        result.CallID,
-			ToolName:      result.Name,
-			Text:          text,
-			MIME:          policy.ArtifactMIME,
-			Kind:          policy.ArtifactKind,
-			Metadata:      result.Metadata,
-		})
-		if err != nil {
-			return OutputProjection{}, err
-		}
-		projection.FullOutput = &ref
-		return projection, nil
+		projection.FullOutputPlan = &FullOutputPlan{Text: text, Kind: policy.ArtifactKind, MIME: policy.ArtifactMIME}
 	}
-	return projection, nil
-}
-
-func (r Result) MetadataString(key string) string {
-	if r.Metadata == nil {
-		return ""
-	}
-	value, _ := r.Metadata[key].(string)
-	return value
-}
-
-func (r Result) MetadataInt(key string) int {
-	if r.Metadata == nil {
-		return 0
-	}
-	switch value := r.Metadata[key].(type) {
-	case int:
-		return value
-	case int64:
-		return int(value)
-	case float64:
-		return int(value)
-	default:
-		return 0
-	}
+	return projection
 }
 
 func limitLines(text string, maxLines int, strategy OutputStrategy) (string, bool) {

@@ -2,8 +2,6 @@ package tools
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +15,7 @@ import (
 var ErrRejected = errors.New("tool call rejected")
 var ErrDuplicate = errors.New("duplicate tool name")
 var ErrInvalid = errors.New("invalid tool")
+var ErrEffectDispatcherRequired = errors.New("tool effect authority dispatcher is required")
 
 const (
 	ControlAskUser      = "ask_user"
@@ -49,7 +48,7 @@ type Definition struct {
 	Annotations   map[string]any
 }
 
-type RunOptions struct {
+type DispatchOptions struct {
 	RunID         string
 	ThreadID      string
 	TurnID        string
@@ -60,9 +59,33 @@ type RunOptions struct {
 	Labels        map[string]string
 	HostContext   map[string]string
 
-	DispatchStarted func(DispatchStart)
-	ActivityUpdated func(ToolActivityUpdate)
+	DispatchStarted  func(DispatchStart)
+	ActivityUpdated  func(ToolActivityUpdate)
+	EffectDispatcher EffectDispatcher
 }
+
+type EffectDispatchRequest struct {
+	CallID        string
+	Name          string
+	RawArgs       string
+	RunID         string
+	ThreadID      string
+	TurnID        string
+	PromptScopeID string
+	Step          int
+	BatchIndex    int
+	BatchSize     int
+	Labels        map[string]string
+	HostContext   map[string]string
+	Resources     []ResourceRef
+	Effects       []Effect
+	Permission    PermissionSpec
+	ReadOnly      bool
+	Destructive   bool
+	OpenWorld     bool
+}
+
+type EffectDispatcher func(context.Context, EffectDispatchRequest, func() Result) Result
 
 type DispatchStart struct {
 	CallID        string
@@ -422,15 +445,11 @@ func cloneDefinition(def Definition) Definition {
 	return def
 }
 
-func (r *Registry) Run(ctx context.Context, call ToolCall, approver Approver) Result {
-	return r.RunWithOptions(ctx, call, approver, RunOptions{})
+func (r *Registry) Dispatch(ctx context.Context, call ToolCall, opts DispatchOptions) Result {
+	return r.dispatch(ctx, call, opts)
 }
 
-func (r *Registry) RunWithOptions(ctx context.Context, call ToolCall, approver Approver, opts RunOptions) Result {
-	return r.run(ctx, call, approver, opts)
-}
-
-func (r *Registry) ActivityForCall(call ToolCall, opts RunOptions) (*observation.ActivityPresentation, error) {
+func (r *Registry) ActivityForCall(call ToolCall, opts DispatchOptions) (*observation.ActivityPresentation, error) {
 	r.mu.RLock()
 	t, ok := r.tools[call.Name]
 	r.mu.RUnlock()
@@ -460,7 +479,10 @@ func (r *Registry) ActivityForCall(call ToolCall, opts RunOptions) (*observation
 	})
 }
 
-func (r *Registry) run(ctx context.Context, call ToolCall, approver Approver, opts RunOptions) (result Result) {
+func (r *Registry) dispatch(ctx context.Context, call ToolCall, opts DispatchOptions) (result Result) {
+	if opts.EffectDispatcher == nil {
+		return ErrorResult(call.ID, call.Name, ErrEffectDispatcherRequired.Error())
+	}
 	if opts.BatchSize <= 0 {
 		opts.BatchIndex = 0
 		opts.BatchSize = 1
@@ -496,26 +518,14 @@ func (r *Registry) run(ctx context.Context, call ToolCall, approver Approver, op
 	if err != nil {
 		return ErrorResult(call.ID, call.Name, fmt.Sprintf("tool %q permission resolution failed: %v", call.Name, err))
 	}
-	if denied := r.permissionDenied(ctx, t.Definition, permission, call, args, resources, opts, approver); denied != "" {
-		return ErrorResult(call.ID, call.Name, denied)
-	}
-	if opts.DispatchStarted != nil {
-		opts.DispatchStarted(DispatchStart{
-			CallID:        call.ID,
-			Name:          call.Name,
-			RawArgs:       raw,
-			RunID:         opts.RunID,
-			ThreadID:      opts.ThreadID,
-			TurnID:        opts.TurnID,
-			PromptScopeID: opts.PromptScopeID,
-			Step:          opts.Step,
-			Labels:        cloneStringMap(opts.Labels),
-			HostContext:   cloneStringMap(opts.HostContext),
-		})
-	}
-	if opts.ActivityUpdated != nil {
-		inv.ActivityUpdater = func(update ActivityUpdate) {
-			opts.ActivityUpdated(ToolActivityUpdate{
+	invoke := func() (handlerResult Result) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				handlerResult = ErrorResult(call.ID, call.Name, fmt.Sprintf("tool %q panicked: %v", call.Name, recovered))
+			}
+		}()
+		if opts.DispatchStarted != nil {
+			opts.DispatchStarted(DispatchStart{
 				CallID:        call.ID,
 				Name:          call.Name,
 				RawArgs:       raw,
@@ -526,27 +536,54 @@ func (r *Registry) run(ctx context.Context, call ToolCall, approver Approver, op
 				Step:          opts.Step,
 				Labels:        cloneStringMap(opts.Labels),
 				HostContext:   cloneStringMap(opts.HostContext),
-				Activity:      observation.CloneActivityPresentation(update.Activity),
-				Metadata:      cloneAnyMap(update.Metadata),
 			})
 		}
-	}
-	result, err = t.handler(ctx, inv)
-	if err != nil {
-		return ErrorResult(call.ID, call.Name, err.Error())
-	}
-	result = result.withCall(call.ID, call.Name)
-	if result.Pending != nil {
-		pending := result.Pending.normalized()
-		if err := pending.Validate(); err != nil {
+		if opts.ActivityUpdated != nil {
+			inv.ActivityUpdater = func(update ActivityUpdate) {
+				opts.ActivityUpdated(ToolActivityUpdate{
+					CallID:        call.ID,
+					Name:          call.Name,
+					RawArgs:       raw,
+					RunID:         opts.RunID,
+					ThreadID:      opts.ThreadID,
+					TurnID:        opts.TurnID,
+					PromptScopeID: opts.PromptScopeID,
+					Step:          opts.Step,
+					Labels:        cloneStringMap(opts.Labels),
+					HostContext:   cloneStringMap(opts.HostContext),
+					Activity:      observation.CloneActivityPresentation(update.Activity),
+					Metadata:      cloneAnyMap(update.Metadata),
+				})
+			}
+		}
+		result, err := t.handler(ctx, inv)
+		if err != nil {
 			return ErrorResult(call.ID, call.Name, err.Error())
 		}
-		result.Pending = &pending
-	}
-	if t.Definition.OutputSchema != nil && result.Structured != nil {
-		if err := ValidateStructured(t.Definition.OutputSchema, result.Structured); err != nil {
-			return ErrorResult(call.ID, call.Name, fmt.Sprintf("tool %q returned invalid structured output: %v", call.Name, err))
+		result = result.withCall(call.ID, call.Name)
+		if result.Pending != nil {
+			pending := result.Pending.normalized()
+			if err := pending.Validate(); err != nil {
+				return ErrorResult(call.ID, call.Name, err.Error())
+			}
+			result.Pending = &pending
 		}
+		if t.Definition.OutputSchema != nil && result.Structured != nil {
+			if err := ValidateStructured(t.Definition.OutputSchema, result.Structured); err != nil {
+				return ErrorResult(call.ID, call.Name, fmt.Sprintf("tool %q returned invalid structured output: %v", call.Name, err))
+			}
+		}
+		return result
+	}
+	result = opts.EffectDispatcher(ctx, EffectDispatchRequest{
+		CallID: call.ID, Name: call.Name, RawArgs: raw, RunID: opts.RunID, ThreadID: opts.ThreadID,
+		TurnID: opts.TurnID, PromptScopeID: opts.PromptScopeID, Step: opts.Step,
+		BatchIndex: opts.BatchIndex, BatchSize: opts.BatchSize, Labels: cloneStringMap(opts.Labels), HostContext: cloneStringMap(opts.HostContext),
+		Resources: append([]ResourceRef(nil), resources...), Effects: append([]Effect(nil), t.Definition.Effects...), Permission: permission,
+		ReadOnly: t.Definition.ReadOnly, Destructive: t.Definition.Destructive, OpenWorld: t.Definition.OpenWorld,
+	}, invoke)
+	if result.DispatchErr == nil {
+		result.effectFinalizationRequired = true
 	}
 	return result
 }
@@ -585,98 +622,6 @@ func invocationPermission(def Definition, inv erasedInvocation) (PermissionSpec,
 	return permission, nil
 }
 
-func (r *Registry) permissionDenied(ctx context.Context, def Definition, permission PermissionSpec, call ToolCall, args any, resources []ResourceRef, opts RunOptions, approver Approver) string {
-	switch permission.Mode {
-	case PermissionDeny:
-		return ErrRejected.Error()
-	case PermissionAllow:
-		return ""
-	case PermissionAsk:
-		if approver == nil {
-			return ErrRejected.Error()
-		}
-		activity := activityForApprovalRequest(def, call, args, opts)
-		decision, err := approver(ctx, ApprovalRequest{
-			ApprovalID:    approvalID(call),
-			ID:            call.ID,
-			Name:          call.Name,
-			Args:          call.Args,
-			ArgsHash:      stableApprovalArgsHash(call.Args),
-			ValidatedArgs: args,
-			Activity:      activity,
-			RunID:         opts.RunID,
-			ThreadID:      opts.ThreadID,
-			TurnID:        opts.TurnID,
-			PromptScopeID: opts.PromptScopeID,
-			Step:          opts.Step,
-			BatchIndex:    opts.BatchIndex,
-			BatchSize:     opts.BatchSize,
-			Resources:     resources,
-			Effects:       append([]Effect(nil), def.Effects...),
-			Labels:        cloneStringMap(opts.Labels),
-			HostContext:   cloneStringMap(opts.HostContext),
-			ReadOnly:      def.ReadOnly,
-			Destructive:   def.Destructive,
-			OpenWorld:     def.OpenWorld,
-		})
-		if err != nil {
-			return err.Error()
-		}
-		if !decision.Allowed() {
-			if reason := strings.TrimSpace(decision.RejectionReason()); reason != "" {
-				return reason
-			}
-			return ErrRejected.Error()
-		}
-	default:
-		return ErrRejected.Error()
-	}
-	return ""
-}
-
-func activityForApprovalRequest(def Definition, call ToolCall, args any, opts RunOptions) *observation.ActivityPresentation {
-	if def.Activity == nil {
-		return nil
-	}
-	raw := strings.TrimSpace(call.Args)
-	activity, err := def.Activity(Invocation[any]{
-		CallID:        call.ID,
-		Name:          call.Name,
-		RawArgs:       raw,
-		Args:          args,
-		RunID:         opts.RunID,
-		ThreadID:      opts.ThreadID,
-		TurnID:        opts.TurnID,
-		PromptScopeID: opts.PromptScopeID,
-		Step:          opts.Step,
-		Labels:        cloneStringMap(opts.Labels),
-		HostContext:   cloneStringMap(opts.HostContext),
-	})
-	if err != nil {
-		return nil
-	}
-	return activity
-}
-
-func approvalID(call ToolCall) string {
-	if id := strings.TrimSpace(call.ID); id != "" {
-		return id
-	}
-	if name := strings.TrimSpace(call.Name); name != "" {
-		return name
-	}
-	return "tool"
-}
-
-func stableApprovalArgsHash(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])
-}
-
 func cloneStringMap(in map[string]string) map[string]string {
 	if in == nil {
 		return nil
@@ -697,27 +642,6 @@ func cloneAnyMap(in map[string]any) map[string]any {
 		out[key] = cloneAny(value)
 	}
 	return out
-}
-
-func (r *Registry) RunBatch(ctx context.Context, calls []ToolCall, approver Approver) []Result {
-	return r.RunBatchWithOptions(ctx, calls, approver, RunOptions{})
-}
-
-func (r *Registry) RunBatchWithOptions(ctx context.Context, calls []ToolCall, approver Approver, opts RunOptions) []Result {
-	results := make([]Result, len(calls))
-	var wg sync.WaitGroup
-	for i := range calls {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			callOpts := opts
-			callOpts.BatchIndex = idx
-			callOpts.BatchSize = len(calls)
-			results[idx] = r.RunWithOptions(ctx, calls[idx], approver, callOpts)
-		}(i)
-	}
-	wg.Wait()
-	return results
 }
 
 func (r *Registry) OutputPolicyFor(name string) OutputPolicy {

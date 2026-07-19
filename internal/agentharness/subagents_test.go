@@ -3,21 +3,36 @@ package agentharness
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/internal/engine"
 	"github.com/floegence/floret/internal/provider"
 	"github.com/floegence/floret/internal/provider/cache"
 	"github.com/floegence/floret/internal/session"
 	"github.com/floegence/floret/internal/session/contextpolicy"
 	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/internal/storage/sqlite"
 	scriptharness "github.com/floegence/floret/internal/testing/harness"
 	"github.com/floegence/floret/observation"
 	"github.com/floegence/floret/tools"
 )
+
+type countingSubAgentProvider struct {
+	calls *atomic.Int64
+}
+
+func (p countingSubAgentProvider) Stream(context.Context, provider.Request) (<-chan provider.StreamEvent, error) {
+	p.calls.Add(1)
+	events := make(chan provider.StreamEvent, 2)
+	events <- provider.StreamEvent{Type: provider.Delta, Text: "done"}
+	events <- provider.StreamEvent{Type: provider.Done, Reason: "stop"}
+	close(events)
+	return events, nil
+}
 
 func TestSubAgentLifecycleRunsChildThreadWithIsolatedPromptScope(t *testing.T) {
 	ctx := context.Background()
@@ -26,8 +41,11 @@ func TestSubAgentLifecycleRunsChildThreadWithIsolatedPromptScope(t *testing.T) {
 	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := sessiontree.AppendMessage(ctx, h.options.Repo, "parent", "seed", session.Message{Role: session.User, Content: "seed"}); err != nil {
+		t.Fatal(err)
+	}
 
-	spawned, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+	spawned, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{PublicationID: "test-publication-" + h.nextID("publication"),
 		ParentThreadID:  "parent",
 		ParentTurnID:    "parent-turn",
 		ThreadID:        "child",
@@ -75,6 +93,118 @@ func TestSubAgentLifecycleRunsChildThreadWithIsolatedPromptScope(t *testing.T) {
 	}
 }
 
+func TestPublishSubAgentPendingToolCompletionDefersExecutionToWait(t *testing.T) {
+	ctx := context.Background()
+	provider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("child continued"), scriptharness.Done()))
+	repo := sessiontree.NewMemoryRepo()
+	h := newTestHarness(provider, repo, cache.NewMemoryStore())
+	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{
+		ID: "child", ParentThreadID: "parent", ParentTurnID: "parent-turn",
+		TaskName: "worker", AgentPath: "/root/worker", Lifecycle: sessiontree.ThreadLifecycleOpen,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	appendPendingToolResultFixture(t, ctx, repo, "child", "turn-pending")
+	opts := PublishSubAgentPendingToolCompletionOptions{
+		InputRequestID: "completion-input-1", ParentThreadID: "parent", ChildThreadID: "child",
+		Target: sessiontree.PendingToolSettlementTarget{
+			ThreadID: "child", TurnID: "turn-pending", RunID: "run-1",
+			ToolCallID: "exec-1", ToolName: "terminal.exec", Handle: "terminal:job:123",
+		},
+		Status: PendingToolCompleted, Summary: "background work completed", Output: "ok",
+		Message: "continue with the completed background result",
+	}
+	published, err := h.PublishSubAgentPendingToolCompletion(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if published.QueuedInputs != 1 || len(provider.Requests) != 0 {
+		t.Fatalf("published snapshot=%#v provider requests=%#v", published, provider.Requests)
+	}
+	replayed, err := h.PublishSubAgentPendingToolCompletion(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.QueuedInputs != 1 || len(provider.Requests) != 0 {
+		t.Fatalf("replayed snapshot=%#v provider requests=%#v", replayed, provider.Requests)
+	}
+	waited, err := h.WaitSubAgents(ctx, WaitSubAgentsOptions{ParentThreadID: "parent", ChildThreadIDs: []string{"child"}, Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waited.TimedOut || len(waited.Snapshots) != 1 || waited.Snapshots[0].Status != SubAgentStatusCompleted || len(provider.Requests) != 1 {
+		t.Fatalf("waited=%#v provider requests=%#v", waited, provider.Requests)
+	}
+	request := provider.Requests[0]
+	if request.ThreadID != "child" || request.Messages[len(request.Messages)-1].Content != "continue with the completed background result" {
+		t.Fatalf("child continuation request = %#v", request)
+	}
+}
+
+func TestClosedSubAgentRequestReplayUsesDurableLedgers(t *testing.T) {
+	ctx := context.Background()
+	repo := sessiontree.NewMemoryRepo()
+	h := newTestHarness(scriptharness.NewScriptedProvider(), repo, cache.NewMemoryStore())
+	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{
+		ID: "child", ParentThreadID: "parent", ParentTurnID: "parent-turn", TaskName: "worker", AgentPath: "/root/worker",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	appendPendingToolResultFixture(t, ctx, repo, "child", "turn-pending")
+
+	input := SendSubAgentInputOptions{
+		InputRequestID: "input-replay", ParentThreadID: "parent", ChildThreadID: "child", Message: "continue",
+	}
+	if _, err := h.SendSubAgentInput(ctx, input); err != nil {
+		t.Fatal(err)
+	}
+	completion := PublishSubAgentPendingToolCompletionOptions{
+		InputRequestID: "completion-replay", ParentThreadID: "parent", ChildThreadID: "child",
+		Target: sessiontree.PendingToolSettlementTarget{
+			ThreadID: "child", TurnID: "turn-pending", RunID: "run-1",
+			ToolCallID: "exec-1", ToolName: "terminal.exec", Handle: "terminal:job:123",
+		},
+		Status: PendingToolCompleted, Summary: "completed", Output: "ok", Message: "continue after completion",
+	}
+	if _, err := h.PublishSubAgentPendingToolCompletion(ctx, completion); err != nil {
+		t.Fatal(err)
+	}
+	closed, err := h.CloseSubAgent(ctx, CloseSubAgentOptions{
+		CloseOperationID: "close-child", ParentThreadID: "parent", ChildThreadID: "child", Reason: "done",
+	})
+	if err != nil || !closed.Closed {
+		t.Fatalf("closed=%#v err=%v", closed, err)
+	}
+
+	if replayed, err := h.SendSubAgentInput(ctx, input); err != nil || !replayed.Closed {
+		t.Fatalf("closed input replay=%#v err=%v", replayed, err)
+	}
+	changedInput := input
+	changedInput.Message = "changed"
+	if _, err := h.SendSubAgentInput(ctx, changedInput); !errors.Is(err, sessiontree.ErrSubAgentRequestConflict) || !errors.Is(err, sessiontree.ErrRequestConflict) {
+		t.Fatalf("changed closed input err=%v, want durable request conflict", err)
+	}
+	if replayed, err := h.PublishSubAgentPendingToolCompletion(ctx, completion); err != nil || !replayed.Closed {
+		t.Fatalf("closed completion replay=%#v err=%v", replayed, err)
+	}
+	changedCompletion := completion
+	changedCompletion.Output = "changed"
+	if _, err := h.PublishSubAgentPendingToolCompletion(ctx, changedCompletion); !errors.Is(err, sessiontree.ErrSubAgentRequestConflict) || !errors.Is(err, sessiontree.ErrRequestConflict) {
+		t.Fatalf("changed closed completion err=%v, want durable request conflict", err)
+	}
+	newInput := input
+	newInput.InputRequestID = "new-input"
+	if _, err := h.SendSubAgentInput(ctx, newInput); !errors.Is(err, ErrSubAgentClosed) {
+		t.Fatalf("new closed input err=%v, want ErrSubAgentClosed", err)
+	}
+}
+
 func TestWaitSubAgentsRequiresAllTargetsToReachTerminalState(t *testing.T) {
 	ctx := context.Background()
 	provider := scriptharness.NewScriptedProvider(
@@ -85,7 +215,7 @@ func TestWaitSubAgentsRequiresAllTargetsToReachTerminalState(t *testing.T) {
 	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{PublicationID: "test-publication-" + h.nextID("publication"),
 		ParentThreadID: "parent",
 		ThreadID:       "fast",
 		TaskName:       "fast",
@@ -101,7 +231,7 @@ func TestWaitSubAgentsRequiresAllTargetsToReachTerminalState(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{PublicationID: "test-publication-" + h.nextID("publication"),
 		ParentThreadID: "parent",
 		ThreadID:       "slow",
 		TaskName:       "slow",
@@ -134,7 +264,7 @@ func TestCloseSubAgentCancelsChildAndRejectsFurtherInput(t *testing.T) {
 	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{PublicationID: "test-publication-" + h.nextID("publication"),
 		ParentThreadID: "parent",
 		ThreadID:       "child",
 		TaskName:       "worker",
@@ -143,20 +273,28 @@ func TestCloseSubAgentCancelsChildAndRejectsFurtherInput(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	waitDone := make(chan error, 1)
+	go func() {
+		_, err := h.WaitSubAgents(ctx, WaitSubAgentsOptions{ParentThreadID: "parent", ChildThreadIDs: []string{"child"}, Timeout: 2 * time.Second})
+		waitDone <- err
+	}()
 	select {
 	case <-provider.started:
 	case <-time.After(2 * time.Second):
 		t.Fatal("child run did not start")
 	}
 
-	closed, err := h.CloseSubAgent(ctx, CloseSubAgentOptions{ParentThreadID: "parent", ChildThreadID: "child"})
+	closed, err := h.CloseSubAgent(ctx, CloseSubAgentOptions{CloseOperationID: "close-child", ParentThreadID: "parent", ChildThreadID: "child", Reason: "test_close"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if closed.Status != SubAgentStatusClosed || !closed.Closed || closed.CanSendInput || closed.CanClose {
 		t.Fatalf("closed snapshot = %#v", closed)
 	}
-	if _, err := h.SendSubAgentInput(ctx, SendSubAgentInputOptions{
+	if err := <-waitDone; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.SendSubAgentInput(ctx, SendSubAgentInputOptions{InputRequestID: "test-input-" + h.nextID("input"),
 		ParentThreadID: "parent",
 		ChildThreadID:  "child",
 		Message:        "keep going",
@@ -175,7 +313,7 @@ func TestCloseSubAgentsStopsUnfinishedChildrenAndKeepsCompletedHistory(t *testin
 	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{PublicationID: "test-publication-" + h.nextID("publication"),
 		ParentThreadID: "parent",
 		ThreadID:       "completed",
 		TaskName:       "completed",
@@ -187,7 +325,7 @@ func TestCloseSubAgentsStopsUnfinishedChildrenAndKeepsCompletedHistory(t *testin
 	if waited, err := h.WaitSubAgents(ctx, WaitSubAgentsOptions{ParentThreadID: "parent", ChildThreadIDs: []string{"completed"}, Timeout: 2 * time.Second}); err != nil || waited.TimedOut {
 		t.Fatalf("completed wait=%#v err=%v", waited, err)
 	}
-	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{PublicationID: "test-publication-" + h.nextID("publication"),
 		ParentThreadID: "parent",
 		ThreadID:       "running",
 		TaskName:       "running",
@@ -197,19 +335,29 @@ func TestCloseSubAgentsStopsUnfinishedChildrenAndKeepsCompletedHistory(t *testin
 		t.Fatal(err)
 	}
 
-	result, err := h.CloseSubAgents(ctx, CloseSubAgentsOptions{ParentThreadID: "parent", Reason: "parent_stop"})
+	result, err := h.ListSubAgents(ctx, "parent")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Closed != 1 || len(result.Snapshots) != 2 {
+	if len(result) != 2 {
 		t.Fatalf("close result = %#v", result)
 	}
 	byID := map[string]SubAgentSnapshot{}
-	for _, snapshot := range result.Snapshots {
+	for _, snapshot := range result {
 		byID[snapshot.ThreadID] = snapshot
 	}
 	if byID["completed"].Status != SubAgentStatusCompleted || byID["completed"].Closed {
 		t.Fatalf("completed child should remain completed history: %#v", byID["completed"])
+	}
+	if _, err := h.CloseSubAgent(ctx, CloseSubAgentOptions{CloseOperationID: "close-running", ParentThreadID: "parent", ChildThreadID: "running", Reason: "parent_stop"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err = h.ListSubAgents(ctx, "parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, snapshot := range result {
+		byID[snapshot.ThreadID] = snapshot
 	}
 	if byID["running"].Status != SubAgentStatusClosed || !byID["running"].Closed || byID["running"].CanClose {
 		t.Fatalf("running child should be closed: %#v", byID["running"])
@@ -244,7 +392,7 @@ func TestWaitSubAgentsDoesNotCompleteWhileFollowUpInputIsQueued(t *testing.T) {
 	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{PublicationID: "test-publication-" + h.nextID("publication"),
 		ParentThreadID: "parent",
 		ThreadID:       "child",
 		TaskName:       "worker",
@@ -260,7 +408,7 @@ func TestWaitSubAgentsDoesNotCompleteWhileFollowUpInputIsQueued(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.SendSubAgentInput(ctx, SendSubAgentInputOptions{
+	if _, err := h.SendSubAgentInput(ctx, SendSubAgentInputOptions{InputRequestID: "test-input-" + h.nextID("input"),
 		ParentThreadID: "parent",
 		ChildThreadID:  "child",
 		Message:        "second",
@@ -289,7 +437,7 @@ func TestWaitSubAgentsReturnsWhenChildIsWaitingForInput(t *testing.T) {
 	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{PublicationID: "test-publication-" + h.nextID("publication"),
 		ParentThreadID: "parent",
 		ThreadID:       "child",
 		TaskName:       "blocked worker",
@@ -324,6 +472,9 @@ func TestReadSubAgentDetailProjectsToolAndApprovalEvents(t *testing.T) {
 		),
 	)
 	h := newTestHarness(provider, sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
+	h.options.EffectAuthorizationGate = EffectAuthorizationGateFunc(func(context.Context, EffectAuthorizationRequest, AuthorizedEffect) (EffectDispatchResult, error) {
+		return EffectDispatchResult{}, ErrEffectUnauthorized
+	})
 	mustRegister(h.options.Tools, tools.Define[stringArgs](
 		tools.Definition{
 			Name:        "write_file",
@@ -340,7 +491,7 @@ func TestReadSubAgentDetailProjectsToolAndApprovalEvents(t *testing.T) {
 	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{PublicationID: "test-publication-" + h.nextID("publication"),
 		ParentThreadID: "parent",
 		ThreadID:       "child",
 		TaskName:       "worker",
@@ -360,7 +511,7 @@ func TestReadSubAgentDetailProjectsToolAndApprovalEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(detail.Events) == 0 || detail.Events[0].Kind != SubAgentDetailEventInput || detail.Events[0].Message.Content != "attempt write" {
+	if len(detail.Events) < 2 || detail.Events[0].Kind != SubAgentDetailEventTurnMarker || detail.Events[1].Kind != SubAgentDetailEventUserMessage || detail.Events[1].Message == nil || detail.Events[1].Message.Content != "attempt write" {
 		t.Fatalf("detail should start at delegated input: %#v", detail.Events)
 	}
 	if detail.Events[0].ActivityTimeline == nil {
@@ -393,8 +544,8 @@ func TestReadSubAgentDetailProjectsToolAndApprovalEvents(t *testing.T) {
 		t.Fatalf("approval detail must not expose raw resources: %#v", approval.Approval.Metadata)
 	}
 	result := firstSubAgentDetailEvent(detail.Events, SubAgentDetailEventToolResult)
-	if result.ToolResult == nil || !strings.Contains(result.ToolResult.Content, "ERROR:") || result.ToolResult.Status != string(observation.ActivityStatusError) {
-		t.Fatalf("tool result detail = %#v", result)
+	if result.ToolResult == nil || !strings.Contains(result.ToolResult.Content, ErrEffectUnauthorized.Error()) || result.ToolResult.Status != string(observation.ActivityStatusError) {
+		t.Fatalf("tool result detail = %#v event=%#v", result.ToolResult, result)
 	}
 	if result.ActivityTimeline == nil {
 		t.Fatalf("tool result detail should have activity timeline: %#v", result)
@@ -418,7 +569,7 @@ func TestReadSubAgentDetailRawMessageContentContract(t *testing.T) {
 	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{PublicationID: "test-publication-" + h.nextID("publication"),
 		ParentThreadID: "parent",
 		ThreadID:       "child",
 		TaskName:       "raw contract",
@@ -435,7 +586,7 @@ func TestReadSubAgentDetailRawMessageContentContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inputPreview := firstSubAgentDetailEvent(previewOnly.Events, SubAgentDetailEventInput)
+	inputPreview := firstSubAgentDetailEvent(previewOnly.Events, SubAgentDetailEventUserMessage)
 	if inputPreview.Message == nil || inputPreview.Message.Content != "" || inputPreview.Message.Preview == "" || !strings.HasSuffix(inputPreview.Message.Preview, "...") {
 		t.Fatalf("preview input should omit raw content and keep bounded preview: %#v", inputPreview)
 	}
@@ -454,7 +605,7 @@ func TestReadSubAgentDetailRawMessageContentContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inputRaw := firstSubAgentDetailEvent(raw.Events, SubAgentDetailEventInput)
+	inputRaw := firstSubAgentDetailEvent(raw.Events, SubAgentDetailEventUserMessage)
 	if inputRaw.Message == nil || inputRaw.Message.Content != longMission || inputRaw.Message.Preview == "" || inputRaw.Message.Preview == inputRaw.Message.Content {
 		t.Fatalf("raw input should keep full content and bounded preview: %#v", inputRaw)
 	}
@@ -479,6 +630,9 @@ func TestReadSubAgentDetailContextWindowComesFromModelPolicyNotForkMode(t *testi
 	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := sessiontree.AppendMessage(ctx, h.options.Repo, "parent", "seed", session.Message{Role: session.User, Content: "seed"}); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		childID  string
 		forkMode SubAgentForkMode
@@ -486,7 +640,7 @@ func TestReadSubAgentDetailContextWindowComesFromModelPolicyNotForkMode(t *testi
 		{childID: "child-none", forkMode: SubAgentForkNone},
 		{childID: "child-fork", forkMode: SubAgentForkFullPath},
 	} {
-		if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+		if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{PublicationID: "test-publication-" + h.nextID("publication"),
 			ParentThreadID: "parent",
 			ThreadID:       tc.childID,
 			TaskName:       tc.childID,
@@ -510,7 +664,7 @@ func TestReadSubAgentDetailContextWindowComesFromModelPolicyNotForkMode(t *testi
 		}
 	}
 	h.options.TurnPolicy.ContextPolicy.ContextWindowTokens = 768000
-	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{PublicationID: "test-publication-" + h.nextID("publication"),
 		ParentThreadID: "parent",
 		ThreadID:       "child-changed",
 		TaskName:       "changed",
@@ -644,7 +798,7 @@ func TestReadSubAgentDetailEnforcesOwnershipAndPagination(t *testing.T) {
 	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "other"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{PublicationID: "test-publication-" + h.nextID("publication"),
 		ParentThreadID: "parent",
 		ThreadID:       "child",
 		TaskName:       "worker",
@@ -663,7 +817,7 @@ func TestReadSubAgentDetailEnforcesOwnershipAndPagination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := firstSubAgentDetailEvent(defaultDetail.Events, SubAgentDetailEventInput); got.Message == nil || got.Message.Content != "" || got.Message.Preview != "work" || got.Metadata[subAgentDetailRawOmitted] != "true" {
+	if got := firstSubAgentDetailEvent(defaultDetail.Events, SubAgentDetailEventUserMessage); got.Message == nil || got.Message.Content != "" || got.Message.Preview != "work" || got.Metadata[subAgentDetailRawOmitted] != "true" {
 		t.Fatalf("default detail should expose only safe input preview: %#v", got)
 	}
 	first, err := h.ReadSubAgentDetail(ctx, ReadSubAgentDetailOptions{ParentThreadID: "parent", ChildThreadID: "child", Limit: 1, IncludeRaw: true})
@@ -685,7 +839,7 @@ func TestReadSubAgentDetailEnforcesOwnershipAndPagination(t *testing.T) {
 func TestSubAgentRunTimeoutClampsToMaximum(t *testing.T) {
 	h := newTestHarness(scriptharness.NewScriptedProvider(), sessiontree.NewMemoryRepo(), cache.NewMemoryStore())
 	h.options.SubAgentRunTimeout = MaxSubAgentWaitTimeout + time.Hour
-	ctx, cancel := h.subAgentRunContext()
+	ctx, cancel := h.subAgentRunContext(context.Background())
 	defer cancel()
 	deadline, ok := ctx.Deadline()
 	if !ok {
@@ -705,7 +859,7 @@ func TestSubAgentRunTimeoutStopsExecutionAndKeepsDetailReadable(t *testing.T) {
 	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{PublicationID: "test-publication-" + h.nextID("publication"),
 		ParentThreadID: "parent",
 		ThreadID:       "child",
 		TaskName:       "worker",
@@ -714,16 +868,16 @@ func TestSubAgentRunTimeoutStopsExecutionAndKeepsDetailReadable(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-provider.started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("child run did not start")
-	}
 	waited, err := h.WaitSubAgents(ctx, WaitSubAgentsOptions{
 		ParentThreadID: "parent",
 		ChildThreadIDs: []string{"child"},
 		Timeout:        2 * time.Second,
 	})
+	select {
+	case <-provider.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("child run did not start")
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -752,7 +906,7 @@ func TestCloseSubAgentRecordsLifecycleDetail(t *testing.T) {
 	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{PublicationID: "test-publication-" + h.nextID("publication"),
 		ParentThreadID: "parent",
 		ThreadID:       "child",
 		TaskName:       "worker",
@@ -764,7 +918,7 @@ func TestCloseSubAgentRecordsLifecycleDetail(t *testing.T) {
 	if _, err := h.WaitSubAgents(ctx, WaitSubAgentsOptions{ParentThreadID: "parent", ChildThreadIDs: []string{"child"}, Timeout: 2 * time.Second}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.CloseSubAgent(ctx, CloseSubAgentOptions{ParentThreadID: "parent", ChildThreadID: "child"}); err != nil {
+	if _, err := h.CloseSubAgent(ctx, CloseSubAgentOptions{CloseOperationID: "close-child-detail", ParentThreadID: "parent", ChildThreadID: "child", Reason: "parent_close"}); err != nil {
 		t.Fatal(err)
 	}
 	detail, err := h.ReadSubAgentDetail(ctx, ReadSubAgentDetailOptions{ParentThreadID: "parent", ChildThreadID: "child"})
@@ -800,16 +954,20 @@ func TestSubAgentSnapshotUsesJournalAfterControllerRestart(t *testing.T) {
 		TaskName:        "worker",
 		TaskDescription: "Continue the worker after restart.",
 		AgentPath:       "/root/worker",
-		Status:          string(SubAgentStatusRunning),
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sessiontree.AppendTurnMarker(ctx, repo, "child", "turn-1", sessiontree.TurnStarted, nil); err != nil {
+	admission, err := repo.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+		ThreadID: "child", TurnID: "turn-1", RunID: "run-1", OwnerID: "interrupted-owner",
+		Input: session.Message{Role: session.User, Content: "finished input"}, RequestFingerprint: "completed-child-fixture",
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.Append(ctx, sessiontree.Entry{
+	leaseCtx := sessiontree.ContextWithTurnLease(ctx, admission.Lease)
+	if _, err := repo.Append(leaseCtx, sessiontree.Entry{
 		ThreadID: "child",
 		TurnID:   "turn-1",
 		Type:     sessiontree.EntryAssistantMessage,
@@ -817,7 +975,10 @@ func TestSubAgentSnapshotUsesJournalAfterControllerRestart(t *testing.T) {
 	}, sessiontree.AppendOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sessiontree.AppendTurnMarker(ctx, repo, "child", "turn-1", sessiontree.TurnCompleted, nil); err != nil {
+	if _, err := repo.FinishTurn(leaseCtx, sessiontree.FinishTurnRequest{
+		Lease: admission.Lease, RunID: "run-1", TerminalEntryID: "terminal-restart", Status: sessiontree.TurnCompleted,
+		OutcomeFingerprint: "completed-child-outcome", Now: now,
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -855,7 +1016,7 @@ func TestSpawnSubAgentAllowsConcurrentDuplicatePathWithDistinctThreadIDs(t *test
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+			_, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{PublicationID: "test-publication-" + h.nextID("publication"),
 				ParentThreadID: "parent",
 				ThreadID:       childID,
 				TaskName:       "same task",
@@ -888,7 +1049,7 @@ func TestSpawnSubAgentAllowsConcurrentDuplicatePathWithDistinctThreadIDs(t *test
 	closeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	for _, item := range listed {
-		if _, err := h.CloseSubAgent(closeCtx, CloseSubAgentOptions{ParentThreadID: "parent", ChildThreadID: item.ThreadID}); err != nil {
+		if _, err := h.CloseSubAgent(closeCtx, CloseSubAgentOptions{CloseOperationID: "close-" + item.ThreadID, ParentThreadID: "parent", ChildThreadID: item.ThreadID, Reason: "test_cleanup"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -902,7 +1063,7 @@ func TestQueuedSubAgentInputSurvivesHarnessRestart(t *testing.T) {
 	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{PublicationID: "test-publication-" + h.nextID("publication"),
 		ParentThreadID: "parent",
 		ThreadID:       "child",
 		TaskName:       "worker",
@@ -914,11 +1075,18 @@ func TestQueuedSubAgentInputSurvivesHarnessRestart(t *testing.T) {
 	if _, err := h.WaitSubAgents(ctx, WaitSubAgentsOptions{ParentThreadID: "parent", ChildThreadIDs: []string{"child"}, Timeout: 2 * time.Second}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.appendSubAgentInput(ctx, "child", "second", engine.RunLabels{
-		Host:        map[string]string{"role": "worker"},
-		Correlation: map[string]string{"parent": "parent"},
-	}, false); err != nil {
+	if _, replayed, err := repo.PublishSubAgentInput(ctx, sessiontree.PublishSubAgentInputRequest{
+		InputRequestID:     "input-second",
+		RequestFingerprint: "input-second-fingerprint",
+		ParentThreadID:     "parent",
+		ChildThreadID:      "child",
+		Message:            session.Message{Role: session.User, Content: "second"},
+		HostLabels:         map[string]string{"role": "worker"},
+		CorrelationLabels:  map[string]string{"parent": "parent"},
+	}); err != nil {
 		t.Fatal(err)
+	} else if replayed {
+		t.Fatal("first durable input publication unexpectedly replayed")
 	}
 
 	secondProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("second done"), scriptharness.Done()))
@@ -942,50 +1110,195 @@ func TestQueuedSubAgentInputSurvivesHarnessRestart(t *testing.T) {
 	}
 }
 
-func TestConsumedSubAgentInputWithoutUserMessageIsRecoveredAfterRestart(t *testing.T) {
+func TestSQLiteSubAgentAdmissionHasSingleLeaseOwnerAcrossHarnesses(t *testing.T) {
 	ctx := context.Background()
-	repo := sessiontree.NewMemoryRepo()
-	firstProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("first done"), scriptharness.Done()))
-	h := newTestHarness(firstProvider, repo, cache.NewMemoryStore())
-	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "parent"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
-		ParentThreadID: "parent",
-		ThreadID:       "child",
-		TaskName:       "worker",
-		Message:        "first",
-		ForkMode:       SubAgentForkNone,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.WaitSubAgents(ctx, WaitSubAgentsOptions{ParentThreadID: "parent", ChildThreadIDs: []string{"child"}, Timeout: 2 * time.Second}); err != nil {
-		t.Fatal(err)
-	}
-	input, err := h.appendSubAgentInput(ctx, "child", "recover me", engine.RunLabels{}, false)
+	path := filepath.Join(t.TempDir(), "floret.db")
+	firstStore, err := sqlite.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := h.appendSubAgentInputState(ctx, "child", input.entryID, subAgentInputStateConsumed, map[string]string{subAgentInputTurnIDKey: "turn-crashed"}); err != nil {
+	t.Cleanup(func() { _ = firstStore.Close() })
+	secondStore, err := sqlite.Open(path)
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	secondProvider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("recovered"), scriptharness.Done()))
-	restarted := newTestHarness(secondProvider, repo, cache.NewMemoryStore())
-	waited, err := restarted.WaitSubAgents(ctx, WaitSubAgentsOptions{
-		ParentThreadID: "parent",
-		ChildThreadIDs: []string{"child"},
-		Timeout:        2 * time.Second,
+	t.Cleanup(func() { _ = secondStore.Close() })
+	if _, err := firstStore.CreateThread(ctx, sessiontree.ThreadMeta{ID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	childMeta := sessiontree.ThreadMeta{ID: "child", ParentThreadID: "parent", TaskName: "child", AgentPath: "/root/child", ForkMode: string(SubAgentForkNone)}
+	published, err := firstStore.PublishSubAgent(ctx, sessiontree.PublishSubAgentRequest{
+		PublicationID:      "publication-child",
+		RequestFingerprint: "publication-child-fingerprint",
+		ParentThreadID:     "parent",
+		ChildMeta:          childMeta,
+		Message:            session.Message{Role: session.User, Content: "work once"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if waited.TimedOut || len(secondProvider.Requests) != 1 {
-		t.Fatalf("waited=%#v requests=%#v", waited, secondProvider.Requests)
+	var calls atomic.Int64
+	first := newTestHarness(countingSubAgentProvider{calls: &calls}, firstStore, firstStore)
+	second := newTestHarness(countingSubAgentProvider{calls: &calls}, secondStore, secondStore)
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for _, harness := range []*AgentHarness{first, second} {
+		go func(h *AgentHarness) {
+			<-start
+			result, err := h.WaitSubAgents(ctx, WaitSubAgentsOptions{ParentThreadID: "parent", ChildThreadIDs: []string{"child"}, Timeout: 2 * time.Second})
+			if err == nil && result.TimedOut {
+				err = errors.New("subagent wait timed out")
+			}
+			errs <- err
+		}(harness)
 	}
-	messages := secondProvider.Requests[0].Messages
-	if len(messages) == 0 || messages[len(messages)-1].Content != "recover me" {
-		t.Fatalf("recovered request messages = %#v", messages)
+	close(start)
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("provider calls = %d, want 1", got)
+	}
+	entries, err := firstStore.Entries(ctx, "child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	userEntries := make([]sessiontree.Entry, 0, 1)
+	for _, entry := range entries {
+		if entry.Type == sessiontree.EntryUserMessage {
+			userEntries = append(userEntries, entry)
+		}
+	}
+	if len(userEntries) != 1 || userEntries[0].Metadata[subAgentAdmittedInputIDKey] != published.Input.SubAgentInputID {
+		t.Fatalf("canonical user entries = %#v, want one admission for %q", userEntries, published.Input.SubAgentInputID)
+	}
+}
+
+func TestSubAgentReadsDoNotActivateQueuedInputAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	repo := sessiontree.NewMemoryRepo()
+	now := time.Date(2026, 7, 19, 9, 0, 0, 0, time.UTC)
+	if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "parent", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.PublishSubAgent(ctx, sessiontree.PublishSubAgentRequest{
+		PublicationID:      "publication-child",
+		RequestFingerprint: "publication-child-fingerprint",
+		ParentThreadID:     "parent",
+		ChildMeta: sessiontree.ThreadMeta{
+			ID:             "child",
+			ParentThreadID: "parent",
+			TaskName:       "worker",
+			AgentPath:      "/root/worker",
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		},
+		Message: session.Message{Role: session.User, Content: "queued work"},
+		Now:     now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := repo.Entries(ctx, "child")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	provider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("unexpected"), scriptharness.Done()))
+	restarted := newTestHarness(provider, repo, cache.NewMemoryStore())
+	listed, err := restarted.ListSubAgents(ctx, "parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].ThreadID != "child" || listed[0].QueuedInputs != 1 {
+		t.Fatalf("listed = %#v", listed)
+	}
+	detail, err := restarted.ReadSubAgentDetail(ctx, ReadSubAgentDetailOptions{ParentThreadID: "parent", ChildThreadID: "child", IncludeRaw: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Snapshot.QueuedInputs != 1 {
+		t.Fatalf("detail snapshot = %#v", detail.Snapshot)
+	}
+	after, err := repo.Entries(ctx, "child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("read changed journal entry count: before=%d after=%d", len(before), len(after))
+	}
+	for index := range before {
+		if before[index].ID != after[index].ID || before[index].RawHash != after[index].RawHash {
+			t.Fatalf("read changed journal entry %d: before=%#v after=%#v", index, before[index], after[index])
+		}
+	}
+	if lease, active, err := repo.ActiveTurnLease(ctx, "child"); err != nil {
+		t.Fatal(err)
+	} else if active {
+		t.Fatalf("read acquired child turn lease: %#v", lease)
+	}
+	restarted.mu.Lock()
+	controllers := len(restarted.subagents)
+	restarted.mu.Unlock()
+	if controllers != 0 {
+		t.Fatalf("read created %d subagent controllers", controllers)
+	}
+	if len(provider.Requests) != 0 {
+		t.Fatalf("read called provider: %#v", provider.Requests)
+	}
+}
+
+func TestAdmitSubAgentInputWritesCanonicalUserMessage(t *testing.T) {
+	ctx := context.Background()
+	repo := sessiontree.NewMemoryRepo()
+	if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	published, err := repo.PublishSubAgent(ctx, sessiontree.PublishSubAgentRequest{
+		PublicationID:      "publication-child",
+		RequestFingerprint: "publication-child-fingerprint",
+		ParentThreadID:     "parent",
+		ChildMeta: sessiontree.ThreadMeta{
+			ID:             "child",
+			ParentThreadID: "parent",
+			TaskName:       "worker",
+			AgentPath:      "/root/worker",
+		},
+		Message: session.Message{Role: session.User, Content: "canonical input"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := repo.AdmitSubAgentInput(ctx, sessiontree.AdmitSubAgentInputRequest{
+		ParentThreadID: "parent",
+		ChildThreadID:  "child",
+		TurnID:         "turn-child",
+		RunID:          "run-child",
+		OwnerID:        "owner-child",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admitted.Input.State != sessiontree.SubAgentInputAdmitted || admitted.Input.SubAgentInputID != published.Input.SubAgentInputID {
+		t.Fatalf("admitted input = %#v", admitted.Input)
+	}
+	if admitted.UserMessage.Type != sessiontree.EntryUserMessage || admitted.UserMessage.Message.Role != session.User || admitted.UserMessage.Message.Content != "canonical input" {
+		t.Fatalf("canonical user message = %#v", admitted.UserMessage)
+	}
+	if admitted.UserMessage.Metadata[subAgentAdmittedInputIDKey] != published.Input.SubAgentInputID {
+		t.Fatalf("canonical user message metadata = %#v", admitted.UserMessage.Metadata)
+	}
+	inputs, err := repo.ListSubAgentInputs(ctx, "child", sessiontree.SubAgentInputAdmitted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inputs) != 1 || inputs[0].SubAgentInputID != published.Input.SubAgentInputID {
+		t.Fatalf("admitted durable inputs = %#v", inputs)
+	}
+	if err := repo.ReleaseTurnLease(ctx, admitted.Lease); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -1015,7 +1328,7 @@ func TestCloseSubAgentCancelsDurablePendingInputs(t *testing.T) {
 	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{PublicationID: "test-publication-" + h.nextID("publication"),
 		ParentThreadID: "parent",
 		ThreadID:       "child",
 		TaskName:       "worker",
@@ -1027,19 +1340,28 @@ func TestCloseSubAgentCancelsDurablePendingInputs(t *testing.T) {
 	if _, err := h.WaitSubAgents(ctx, WaitSubAgentsOptions{ParentThreadID: "parent", ChildThreadIDs: []string{"child"}, Timeout: 2 * time.Second}); err != nil {
 		t.Fatal(err)
 	}
-	input, err := h.appendSubAgentInput(ctx, "child", "after close", engine.RunLabels{}, false)
+	input, replayed, err := repo.PublishSubAgentInput(ctx, sessiontree.PublishSubAgentInputRequest{
+		InputRequestID:     "input-after-close",
+		RequestFingerprint: "input-after-close-fingerprint",
+		ParentThreadID:     "parent",
+		ChildThreadID:      "child",
+		Message:            session.Message{Role: session.User, Content: "after close"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctrl, err := h.ensureSubAgentController(ctx, sessiontree.ThreadMeta{ID: "child", ParentThreadID: "parent", AgentPath: "/root/worker"}, h.cacheThread("child"))
+	if replayed {
+		t.Fatal("first durable input publication unexpectedly replayed")
+	}
+	if _, err := h.CloseSubAgent(ctx, CloseSubAgentOptions{CloseOperationID: "close-child-pending", ParentThreadID: "parent", ChildThreadID: "child", Reason: "test_close"}); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, err := repo.ListSubAgentInputs(ctx, "child", sessiontree.SubAgentInputCancelled)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctrl.mu.Lock()
-	ctrl.queue = []subagentInput{input}
-	ctrl.mu.Unlock()
-	if _, err := h.CloseSubAgent(ctx, CloseSubAgentOptions{ParentThreadID: "parent", ChildThreadID: "child"}); err != nil {
-		t.Fatal(err)
+	if len(cancelled) != 1 || cancelled[0].SubAgentInputID != input.SubAgentInputID {
+		t.Fatalf("cancelled durable inputs = %#v, want %q", cancelled, input.SubAgentInputID)
 	}
 
 	restarted := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("unexpected"), scriptharness.Done())), repo, cache.NewMemoryStore())
@@ -1052,7 +1374,7 @@ func TestCloseSubAgentCancelsDurablePendingInputs(t *testing.T) {
 	}
 }
 
-func TestSubAgentInputPendingIsCancelledWhenEnqueueFindsClosedChild(t *testing.T) {
+func TestProcessLocalControllerFlagCannotCreateSubAgentCloseAuthority(t *testing.T) {
 	ctx := context.Background()
 	repo := sessiontree.NewMemoryRepo()
 	provider := scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("done"), scriptharness.Done()))
@@ -1060,7 +1382,7 @@ func TestSubAgentInputPendingIsCancelledWhenEnqueueFindsClosedChild(t *testing.T
 	if _, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{
+	if _, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{PublicationID: "test-publication-" + h.nextID("publication"),
 		ParentThreadID: "parent",
 		ThreadID:       "child",
 		TaskName:       "worker",
@@ -1083,12 +1405,12 @@ func TestSubAgentInputPendingIsCancelledWhenEnqueueFindsClosedChild(t *testing.T
 	ctrl.mu.Lock()
 	ctrl.closed = true
 	ctrl.mu.Unlock()
-	if _, err := h.SendSubAgentInput(ctx, SendSubAgentInputOptions{
+	if _, err := h.SendSubAgentInput(ctx, SendSubAgentInputOptions{InputRequestID: "test-input-" + h.nextID("input"),
 		ParentThreadID: "parent",
 		ChildThreadID:  "child",
 		Message:        "do not run",
-	}); !errors.Is(err, ErrSubAgentClosed) {
-		t.Fatalf("send err = %v", err)
+	}); err != nil {
+		t.Fatalf("durable send was incorrectly fenced by process-local controller state: %v", err)
 	}
 
 	restarted := newTestHarness(scriptharness.NewScriptedProvider(scriptharness.Step(scriptharness.Text("unexpected"), scriptharness.Done())), repo, cache.NewMemoryStore())
@@ -1096,7 +1418,7 @@ func TestSubAgentInputPendingIsCancelledWhenEnqueueFindsClosedChild(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed) != 1 || listed[0].QueuedInputs != 0 {
+	if len(listed) != 1 || listed[0].QueuedInputs != 1 || listed[0].Closed {
 		t.Fatalf("listed = %#v", listed)
 	}
 }
@@ -1118,7 +1440,10 @@ func TestWaitSubAgentsReturnsInterruptedChildAfterRestart(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sessiontree.AppendTurnMarker(ctx, repo, "child", "turn-1", sessiontree.TurnStarted, nil); err != nil {
+	if _, err := repo.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+		ThreadID: "child", TurnID: "turn-1", RunID: "run-1", OwnerID: "interrupted-owner",
+		Input: session.Message{Role: session.User, Content: "unfinished"}, RequestFingerprint: "interrupted-child-restart",
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1168,9 +1493,9 @@ func TestSubAgentOperationsRequireCanonicalParentThread(t *testing.T) {
 		}
 	}
 
-	_, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{ParentThreadID: "parent", ThreadID: "new-child", TaskName: "new", Message: "work", ForkMode: SubAgentForkNone})
+	_, err := h.SpawnSubAgent(ctx, SpawnSubAgentOptions{PublicationID: "test-publication-" + h.nextID("publication"), ParentThreadID: "parent", ThreadID: "new-child", TaskName: "new", Message: "work", ForkMode: SubAgentForkNone})
 	assertParentMissing("SpawnSubAgent", err)
-	_, err = h.SendSubAgentInput(ctx, SendSubAgentInputOptions{ParentThreadID: "parent", ChildThreadID: "child", Message: "continue"})
+	_, err = h.SendSubAgentInput(ctx, SendSubAgentInputOptions{InputRequestID: "test-input-" + h.nextID("input"), ParentThreadID: "parent", ChildThreadID: "child", Message: "continue"})
 	assertParentMissing("SendSubAgentInput", err)
 	_, err = h.WaitSubAgents(ctx, WaitSubAgentsOptions{ParentThreadID: "parent", ChildThreadIDs: []string{"child"}, Timeout: time.Millisecond})
 	assertParentMissing("WaitSubAgents", err)
@@ -1178,8 +1503,6 @@ func TestSubAgentOperationsRequireCanonicalParentThread(t *testing.T) {
 	assertParentMissing("ReadSubAgentDetail", err)
 	_, err = h.ListSubAgents(ctx, "parent")
 	assertParentMissing("ListSubAgents", err)
-	_, err = h.CloseSubAgent(ctx, CloseSubAgentOptions{ParentThreadID: "parent", ChildThreadID: "child"})
+	_, err = h.CloseSubAgent(ctx, CloseSubAgentOptions{CloseOperationID: "close-missing", ParentThreadID: "parent", ChildThreadID: "child", Reason: "test"})
 	assertParentMissing("CloseSubAgent", err)
-	_, err = h.CloseSubAgents(ctx, CloseSubAgentsOptions{ParentThreadID: "parent"})
-	assertParentMissing("CloseSubAgents", err)
 }

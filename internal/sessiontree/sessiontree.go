@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -73,6 +74,12 @@ var (
 	ErrActiveTurn               = errors.New("session tree thread already has an active turn")
 	ErrThreadExists             = errors.New("session tree thread already exists")
 	ErrInvalidThreadAuthority   = errors.New("session tree invalid thread authority")
+	ErrThreadAuthorityBusy      = errors.New("session tree thread authority is busy")
+	ErrThreadClosed             = errors.New("session tree thread is closed")
+	ErrThreadDeleted            = errors.New("session tree thread is deleted")
+	ErrSubAgentClosing          = errors.New("session tree subagent is closing")
+	ErrStaleAuthority           = errors.New("session tree authority proof is stale")
+	ErrAuthorityCorrupt         = errors.New("session tree authority state is corrupt")
 	ErrForkDestinationConflict  = errors.New("session tree fork destination conflicts with operation marker")
 	ErrAgentTodoVersionConflict = errors.New("session tree agent todo version conflict")
 )
@@ -103,7 +110,8 @@ type ThreadMeta struct {
 	AgentPath           string            `json:"agent_path,omitempty"`
 	HostProfileRef      string            `json:"host_profile_ref,omitempty"`
 	ForkMode            string            `json:"fork_mode,omitempty"`
-	Closed              bool              `json:"closed,omitempty"`
+	Lifecycle           ThreadLifecycle   `json:"lifecycle,omitempty"`
+	CloseOperationID    string            `json:"close_operation_id,omitempty"`
 	Archived            bool              `json:"archived,omitempty"`
 	Title               string            `json:"title,omitempty"`
 	TitleStatus         ThreadTitleStatus `json:"title_status,omitempty"`
@@ -112,7 +120,6 @@ type ThreadMeta struct {
 	TitleError          string            `json:"title_error,omitempty"`
 	CreatedAt           time.Time         `json:"created_at"`
 	UpdatedAt           time.Time         `json:"updated_at"`
-	Status              string            `json:"status,omitempty"`
 	LastViewedAt        time.Time         `json:"last_viewed_at,omitempty"`
 }
 
@@ -124,13 +131,20 @@ func ValidateThreadMetaAuthority(meta ThreadMeta) error {
 	if id == "" {
 		return fmt.Errorf("%w: thread id is required", ErrInvalidThreadAuthority)
 	}
+	lifecycle, err := normalizeThreadLifecycle(meta)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidThreadAuthority, err)
+	}
+	if lifecycle == ThreadLifecycleDeleted {
+		return fmt.Errorf("%w: live thread %q cannot use deleted lifecycle", ErrInvalidThreadAuthority, id)
+	}
 	if parentID == "" {
 		if strings.TrimSpace(meta.ParentTurnID) != "" ||
 			strings.TrimSpace(meta.TaskName) != "" ||
 			strings.TrimSpace(meta.TaskDescription) != "" ||
 			strings.TrimSpace(meta.AgentPath) != "" ||
 			strings.TrimSpace(meta.HostProfileRef) != "" ||
-			strings.TrimSpace(meta.ForkMode) != "" || meta.Closed || strings.TrimSpace(meta.Status) != "" {
+			strings.TrimSpace(meta.ForkMode) != "" || meta.Lifecycle == ThreadLifecycleClosing || meta.Lifecycle == ThreadLifecycleClosed {
 			return fmt.Errorf("%w: root thread %q contains subagent ownership metadata", ErrInvalidThreadAuthority, id)
 		}
 	} else {
@@ -140,6 +154,14 @@ func ValidateThreadMetaAuthority(meta ThreadMeta) error {
 		if strings.TrimSpace(meta.TaskName) == "" || strings.TrimSpace(meta.AgentPath) == "" {
 			return fmt.Errorf("%w: subagent thread %q requires task name and agent path", ErrInvalidThreadAuthority, id)
 		}
+	}
+	closeOperationID := strings.TrimSpace(meta.CloseOperationID)
+	if lifecycle == ThreadLifecycleClosing {
+		if parentID == "" || closeOperationID == "" {
+			return fmt.Errorf("%w: closing child thread %q requires close operation authority", ErrInvalidThreadAuthority, id)
+		}
+	} else if closeOperationID != "" {
+		return fmt.Errorf("%w: non-closing thread %q carries close operation authority", ErrInvalidThreadAuthority, id)
 	}
 	if (strings.TrimSpace(meta.ForkOperationID) == "") != (strings.TrimSpace(meta.ForkOperationNodeID) == "") {
 		return fmt.Errorf("%w: thread %q has incomplete fork operation identity", ErrInvalidThreadAuthority, id)
@@ -160,7 +182,8 @@ func SameThreadAuthority(left, right ThreadMeta) bool {
 		left.TaskDescription == right.TaskDescription &&
 		left.AgentPath == right.AgentPath &&
 		left.HostProfileRef == right.HostProfileRef &&
-		left.ForkMode == right.ForkMode
+		left.ForkMode == right.ForkMode &&
+		left.CloseOperationID == right.CloseOperationID
 }
 
 // ValidateThreadAuthorityGraph requires every SubAgent parent chain to be
@@ -286,32 +309,33 @@ const (
 )
 
 type ForkOptions struct {
-	SourceThreadID  string
-	EntryID         string
-	EntryIDPinned   bool
-	Position        ForkPosition
-	NewThreadID     string
-	OperationID     string
-	OperationNodeID string
-	Now             time.Time
-	TurnIDMap       map[string]string
-	RunIDMap        map[string]string
-	DestinationMeta *ForkDestinationMeta
-	RewriteEntry    func(Entry, ForkEntryIdentity) (Entry, error)
+	SourceThreadID       string
+	EntryID              string
+	EntryIDPinned        bool
+	ExpectedSourceLeafID string
+	Position             ForkPosition
+	NewThreadID          string
+	OperationID          string
+	OperationNodeID      string
+	Now                  time.Time
+	TurnIDMap            map[string]string
+	RunIDMap             map[string]string
+	DestinationMeta      *ForkDestinationMeta
+	ArtifactClosure      artifact.Closure
+	RewriteEntry         func(Entry, ForkEntryIdentity) (Entry, error)
 }
 
 // ForkDestinationMeta is the child ownership metadata written atomically with
 // a fork destination. A nil value creates an independent root fork.
 type ForkDestinationMeta struct {
-	ParentThreadID  string `json:"parent_thread_id"`
-	ParentTurnID    string `json:"parent_turn_id,omitempty"`
-	TaskName        string `json:"task_name,omitempty"`
-	TaskDescription string `json:"task_description,omitempty"`
-	AgentPath       string `json:"agent_path,omitempty"`
-	HostProfileRef  string `json:"host_profile_ref,omitempty"`
-	ForkMode        string `json:"fork_mode,omitempty"`
-	Closed          bool   `json:"closed,omitempty"`
-	Status          string `json:"status,omitempty"`
+	ParentThreadID  string          `json:"parent_thread_id"`
+	ParentTurnID    string          `json:"parent_turn_id,omitempty"`
+	TaskName        string          `json:"task_name,omitempty"`
+	TaskDescription string          `json:"task_description,omitempty"`
+	AgentPath       string          `json:"agent_path,omitempty"`
+	HostProfileRef  string          `json:"host_profile_ref,omitempty"`
+	ForkMode        string          `json:"fork_mode,omitempty"`
+	Lifecycle       ThreadLifecycle `json:"lifecycle,omitempty"`
 }
 
 type ForkEntryIdentity struct {
@@ -352,16 +376,25 @@ type ProjectedSegment struct {
 	UIPreview     string         `json:"ui_preview,omitempty"`
 }
 
-type Repo interface {
-	CreateThread(context.Context, ThreadMeta) (ThreadMeta, error)
+// JournalRepo is the durable journal capability used by normal Agent
+// execution. It intentionally excludes lifecycle creation, deletion, fork,
+// and metadata replacement capabilities.
+type JournalRepo interface {
 	Thread(context.Context, string) (ThreadMeta, error)
-	UpdateThread(context.Context, ThreadMeta) error
-	DeleteThread(context.Context, string) error
 	Append(context.Context, Entry, AppendOptions) (Entry, error)
 	Entry(context.Context, string, string) (Entry, error)
 	Entries(context.Context, string) ([]Entry, error)
 	Path(context.Context, string, string) ([]Entry, error)
 	PathPage(context.Context, string, string, string, int) (PathPage, error)
+}
+
+// Repo is the internal storage implementation contract. Production runtime
+// actors receive narrower capabilities such as JournalRepo instead.
+type Repo interface {
+	JournalRepo
+	CreateThread(context.Context, ThreadMeta) (ThreadMeta, error)
+	UpdateThread(context.Context, ThreadMeta) error
+	DeleteThread(context.Context, string) error
 	MoveLeaf(context.Context, string, string) error
 	Fork(context.Context, ForkOptions) (ThreadMeta, error)
 }
@@ -386,7 +419,7 @@ type ListThreadsOptions struct {
 	AfterID         string
 }
 
-func ListThreads(ctx context.Context, repo Repo, opts ListThreadsOptions) ([]ThreadMeta, error) {
+func ListThreads(ctx context.Context, repo JournalRepo, opts ListThreadsOptions) ([]ThreadMeta, error) {
 	if repo == nil {
 		return nil, errors.New("session tree repo is required")
 	}
@@ -450,18 +483,187 @@ func threadAfterListCursor(meta ThreadMeta, opts ListThreadsOptions) bool {
 	return false
 }
 
+type TurnLeasePurpose string
+
+const (
+	TurnLeasePurposeTurn     TurnLeasePurpose = "turn"
+	TurnLeasePurposeMutation TurnLeasePurpose = "mutation"
+)
+
+func (p TurnLeasePurpose) Normalize() (TurnLeasePurpose, error) {
+	if p == "" {
+		return TurnLeasePurposeTurn, nil
+	}
+	switch p {
+	case TurnLeasePurposeTurn, TurnLeasePurposeMutation:
+		return p, nil
+	default:
+		return "", fmt.Errorf("invalid turn lease purpose %q", p)
+	}
+}
+
 type TurnLease struct {
-	ThreadID  string    `json:"thread_id"`
-	TurnID    string    `json:"turn_id"`
-	OwnerID   string    `json:"owner_id"`
-	CreatedAt time.Time `json:"created_at"`
+	ThreadID     string           `json:"thread_id"`
+	Purpose      TurnLeasePurpose `json:"purpose"`
+	TurnID       string           `json:"turn_id,omitempty"`
+	MutationID   string           `json:"mutation_id,omitempty"`
+	MutationKind string           `json:"mutation_kind,omitempty"`
+	OwnerID      string           `json:"owner_id"`
+	Generation   int64            `json:"generation"`
+	Heartbeat    int64            `json:"heartbeat"`
+	AcquiredAt   time.Time        `json:"acquired_at"`
+	RenewedAt    time.Time        `json:"renewed_at"`
+	ExpiresAt    time.Time        `json:"expires_at"`
+}
+
+type LeasePolicy struct {
+	TTL                time.Duration
+	RenewInterval      time.Duration
+	ClockSkewAllowance time.Duration
+}
+
+func (p LeasePolicy) Validate() error {
+	if p.TTL <= 0 {
+		return errors.New("lease TTL must be positive")
+	}
+	if p.RenewInterval <= 0 {
+		return errors.New("lease renew interval must be positive")
+	}
+	if p.ClockSkewAllowance < 0 {
+		return errors.New("lease clock skew allowance must be non-negative")
+	}
+	if p.RenewInterval > p.TTL/3 {
+		return errors.New("lease renew interval must not exceed one third of TTL")
+	}
+	return nil
+}
+
+var DefaultLeasePolicy = LeasePolicy{
+	TTL:                30 * time.Second,
+	RenewInterval:      10 * time.Second,
+	ClockSkewAllowance: 2 * time.Second,
+}
+
+type turnLeaseContextKey struct{}
+
+type turnLeaseBinding struct {
+	mu    sync.RWMutex
+	lease TurnLease
+}
+
+// ContextWithTurnLease binds the exact durable mutation owner to journal writes.
+func ContextWithTurnLease(ctx context.Context, lease TurnLease) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	lease.Purpose, _ = lease.Purpose.Normalize()
+	return context.WithValue(ctx, turnLeaseContextKey{}, &turnLeaseBinding{lease: lease})
+}
+
+// TurnLeaseFromContext returns the durable mutation owner bound to ctx.
+func TurnLeaseFromContext(ctx context.Context) (TurnLease, bool) {
+	if ctx == nil {
+		return TurnLease{}, false
+	}
+	binding, ok := ctx.Value(turnLeaseContextKey{}).(*turnLeaseBinding)
+	if !ok || binding == nil {
+		return TurnLease{}, false
+	}
+	binding.mu.RLock()
+	lease := binding.lease
+	binding.mu.RUnlock()
+	if lease.Validate() != nil {
+		return TurnLease{}, false
+	}
+	return lease, true
+}
+
+// UpdateTurnLeaseContext advances one context binding after a successful
+// durable renewal. It cannot replace a different owner or generation.
+func UpdateTurnLeaseContext(ctx context.Context, previous, renewed TurnLease) error {
+	if ctx == nil {
+		return ErrStaleAuthority
+	}
+	binding, ok := ctx.Value(turnLeaseContextKey{}).(*turnLeaseBinding)
+	if !ok || binding == nil {
+		return ErrStaleAuthority
+	}
+	if err := renewed.Validate(); err != nil {
+		return err
+	}
+	binding.mu.Lock()
+	defer binding.mu.Unlock()
+	if !SameTurnLease(binding.lease, previous) ||
+		previous.ThreadID != renewed.ThreadID || previous.Purpose != renewed.Purpose ||
+		previous.TurnID != renewed.TurnID || previous.MutationID != renewed.MutationID ||
+		previous.OwnerID != renewed.OwnerID || previous.Generation != renewed.Generation ||
+		renewed.Heartbeat <= previous.Heartbeat {
+		return ErrStaleAuthority
+	}
+	binding.lease = renewed
+	return nil
+}
+
+func (l TurnLease) Validate() error {
+	purpose, err := l.Purpose.Normalize()
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(l.ThreadID) == "" || strings.TrimSpace(l.OwnerID) == "" {
+		return errors.New("lease thread and owner are required")
+	}
+	switch purpose {
+	case TurnLeasePurposeTurn:
+		if strings.TrimSpace(l.TurnID) == "" || strings.TrimSpace(l.MutationID) != "" || strings.TrimSpace(l.MutationKind) != "" {
+			return errors.New("turn lease requires only turn identity")
+		}
+	case TurnLeasePurposeMutation:
+		if strings.TrimSpace(l.TurnID) != "" || strings.TrimSpace(l.MutationID) == "" || strings.TrimSpace(l.MutationKind) == "" {
+			return errors.New("mutation lease requires only mutation identity and kind")
+		}
+	}
+	if l.Generation <= 0 || l.Heartbeat < 0 || l.AcquiredAt.IsZero() || l.RenewedAt.IsZero() || l.ExpiresAt.IsZero() || l.ExpiresAt.Before(l.RenewedAt) {
+		return errors.New("lease proof is incomplete")
+	}
+	return nil
+}
+
+func SameTurnLease(left, right TurnLease) bool {
+	return left.ThreadID == right.ThreadID &&
+		left.Purpose == right.Purpose &&
+		left.TurnID == right.TurnID &&
+		left.MutationID == right.MutationID &&
+		left.MutationKind == right.MutationKind &&
+		left.OwnerID == right.OwnerID &&
+		left.Generation == right.Generation &&
+		left.Heartbeat == right.Heartbeat &&
+		left.AcquiredAt.Equal(right.AcquiredAt) &&
+		left.RenewedAt.Equal(right.RenewedAt) &&
+		left.ExpiresAt.Equal(right.ExpiresAt)
+}
+
+func (l TurnLease) Fresh(now time.Time) bool {
+	return l.Validate() == nil && !now.After(l.ExpiresAt)
+}
+
+func (l TurnLease) TakeoverEligible(now time.Time, policy LeasePolicy) bool {
+	return l.Validate() == nil && now.After(l.ExpiresAt.Add(policy.ClockSkewAllowance))
 }
 
 type TurnLeaseRepo interface {
-	AcquireTurnLease(context.Context, TurnLease) error
+	AcquireTurnLease(context.Context, TurnLease) (TurnLease, error)
+	RenewTurnLease(context.Context, TurnLease) (TurnLease, error)
 	ReleaseTurnLease(context.Context, TurnLease) error
 	ActiveTurnLease(context.Context, string) (TurnLease, bool, error)
-	ClearExpiredTurnLease(context.Context, string, time.Time) (TurnLease, bool, error)
+}
+
+type LeasePolicyRepo interface {
+	AuthorityLeasePolicy() LeasePolicy
+}
+
+type ThreadPublishRepo interface {
+	CreateThreadWithInitialEntry(context.Context, ThreadMeta, Entry) (ThreadMeta, Entry, error)
+	ForkWithInitialEntry(context.Context, ForkOptions, Entry) (ThreadMeta, Entry, error)
 }
 
 type AgentTodoStatus string
@@ -494,21 +696,85 @@ type AgentTodoStateRepo interface {
 }
 
 type MemoryRepo struct {
-	mu      sync.Mutex
-	threads map[string]ThreadMeta
-	entries map[string][]Entry
-	leases  map[string]TurnLease
-	todos   map[string]AgentTodoState
-	seq     int64
+	mu                             sync.Mutex
+	threads                        map[string]ThreadMeta
+	entries                        map[string][]Entry
+	leases                         map[string]TurnLease
+	leaseGeneration                map[string]int64
+	leasePolicy                    LeasePolicy
+	now                            func() time.Time
+	authorityClaims                map[string]string
+	todos                          map[string]AgentTodoState
+	subAgentInputs                 map[string][]SubAgentInputRecord
+	subAgentInputSequence          map[string]int64
+	subAgentPublications           map[string]subAgentRequestLedger
+	subAgentInputRequests          map[string]subAgentRequestLedger
+	rootCreateIntents              map[string]rootCreateLedger
+	tombstones                     map[string]ThreadTombstone
+	turnAdmissions                 map[string]turnAdmissionLedger
+	turnFinishes                   map[string]turnFinishLedger
+	effectAttempts                 map[string]EffectAttempt
+	effectAttemptByInvocation      map[string]string
+	effectAttemptSequence          int64
+	subAgentCloseOperations        map[string]SubAgentCloseOperation
+	pendingToolCompletions         map[string]pendingToolCompletionLedger
+	subAgentPendingToolCompletions map[string]subAgentPendingToolCompletionLedger
+	compactionOperations           map[string]CompactionOperation
+	providerStates                 map[string]ProviderStateRecord
+	artifacts                      map[string]artifact.Record
+	seq                            int64
 }
 
 func NewMemoryRepo() *MemoryRepo {
-	return &MemoryRepo{threads: map[string]ThreadMeta{}, entries: map[string][]Entry{}, leases: map[string]TurnLease{}, todos: map[string]AgentTodoState{}}
+	repo, err := NewMemoryRepoWithLeasePolicy(DefaultLeasePolicy, time.Now)
+	if err != nil {
+		panic(err)
+	}
+	return repo
+}
+
+func NewMemoryRepoWithLeasePolicy(policy LeasePolicy, now func() time.Time) (*MemoryRepo, error) {
+	if err := policy.Validate(); err != nil {
+		return nil, err
+	}
+	if now == nil {
+		return nil, errors.New("lease authority clock is required")
+	}
+	return &MemoryRepo{
+		threads:                        map[string]ThreadMeta{},
+		entries:                        map[string][]Entry{},
+		leases:                         map[string]TurnLease{},
+		leaseGeneration:                map[string]int64{},
+		leasePolicy:                    policy,
+		now:                            now,
+		authorityClaims:                map[string]string{},
+		todos:                          map[string]AgentTodoState{},
+		subAgentInputs:                 map[string][]SubAgentInputRecord{},
+		subAgentInputSequence:          map[string]int64{},
+		subAgentPublications:           map[string]subAgentRequestLedger{},
+		subAgentInputRequests:          map[string]subAgentRequestLedger{},
+		rootCreateIntents:              map[string]rootCreateLedger{},
+		tombstones:                     map[string]ThreadTombstone{},
+		turnAdmissions:                 map[string]turnAdmissionLedger{},
+		turnFinishes:                   map[string]turnFinishLedger{},
+		effectAttempts:                 map[string]EffectAttempt{},
+		effectAttemptByInvocation:      map[string]string{},
+		subAgentCloseOperations:        map[string]SubAgentCloseOperation{},
+		pendingToolCompletions:         map[string]pendingToolCompletionLedger{},
+		subAgentPendingToolCompletions: map[string]subAgentPendingToolCompletionLedger{},
+		compactionOperations:           map[string]CompactionOperation{},
+		providerStates:                 map[string]ProviderStateRecord{},
+		artifacts:                      map[string]artifact.Record{},
+	}, nil
 }
 
 func (r *MemoryRepo) CreateThread(_ context.Context, meta ThreadMeta) (ThreadMeta, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.createThreadLocked(meta)
+}
+
+func (r *MemoryRepo) createThreadLocked(meta ThreadMeta) (ThreadMeta, error) {
 	if meta.ID == "" {
 		for {
 			r.seq++
@@ -519,52 +785,173 @@ func (r *MemoryRepo) CreateThread(_ context.Context, meta ThreadMeta) (ThreadMet
 		}
 	} else if _, ok := r.threads[meta.ID]; ok {
 		return ThreadMeta{}, ErrThreadExists
+	} else if _, ok := r.tombstones[meta.ID]; ok {
+		return ThreadMeta{}, ErrThreadDeleted
+	}
+	if r.threadAuthorityClaimedLocked(meta.ID) || r.threadAuthorityClaimedLocked(meta.ParentThreadID) {
+		return ThreadMeta{}, ErrThreadAuthorityBusy
 	}
 	now := meta.CreatedAt
 	if now.IsZero() {
-		now = time.Now()
+		now = r.now().UTC()
 	}
 	meta.CreatedAt = now
 	meta.UpdatedAt = now
+	if meta.Lifecycle == "" {
+		meta.Lifecycle = ThreadLifecycleOpen
+	}
 	if err := ValidateThreadMetaAuthority(meta); err != nil {
 		return ThreadMeta{}, err
 	}
 	if parentID := strings.TrimSpace(meta.ParentThreadID); parentID != "" {
-		if _, ok := r.threads[parentID]; !ok {
+		parent, ok := r.threads[parentID]
+		if !ok {
 			return ThreadMeta{}, fmt.Errorf("%w: parent thread %q", ErrInvalidThreadAuthority, parentID)
+		}
+		if err := lifecycleRejectsWrite(parent); err != nil {
+			return ThreadMeta{}, err
 		}
 	}
 	r.threads[meta.ID] = meta
 	return meta, nil
 }
 
-func (r *MemoryRepo) AcquireTurnLease(_ context.Context, lease TurnLease) error {
+func (r *MemoryRepo) CreateThreadWithInitialEntry(ctx context.Context, meta ThreadMeta, initial Entry) (ThreadMeta, Entry, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.threads[lease.ThreadID]; !ok {
-		return ErrThreadNotFound
+	seqBefore := r.seq
+	created, err := r.createThreadLocked(meta)
+	if err != nil {
+		return ThreadMeta{}, Entry{}, err
 	}
-	if active, ok := r.leases[lease.ThreadID]; ok && active.TurnID != "" {
-		return ErrActiveTurn
+	initial.ThreadID = created.ID
+	saved, err := r.appendLocked(ctx, initial, AppendOptions{Now: created.CreatedAt})
+	if err != nil {
+		delete(r.threads, created.ID)
+		delete(r.entries, created.ID)
+		delete(r.todos, created.ID)
+		r.seq = seqBefore
+		return ThreadMeta{}, Entry{}, err
 	}
-	if lease.CreatedAt.IsZero() {
-		lease.CreatedAt = time.Now()
-	}
-	r.leases[lease.ThreadID] = lease
-	return nil
+	return r.threads[created.ID], saved, nil
 }
 
-func (r *MemoryRepo) ReleaseTurnLease(_ context.Context, lease TurnLease) error {
+func (r *MemoryRepo) AcquireTurnLease(_ context.Context, request TurnLease) (TurnLease, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	active, ok := r.leases[lease.ThreadID]
-	if !ok {
-		return nil
+	if _, ok := r.threads[request.ThreadID]; !ok {
+		return TurnLease{}, ErrThreadNotFound
 	}
-	if active.OwnerID != lease.OwnerID || active.TurnID != lease.TurnID {
-		return nil
+	if err := lifecycleRejectsWrite(r.threads[request.ThreadID]); err != nil {
+		return TurnLease{}, err
 	}
-	delete(r.leases, lease.ThreadID)
+	if strings.TrimSpace(r.authorityClaims[request.ThreadID]) != "" {
+		return TurnLease{}, ErrThreadAuthorityBusy
+	}
+	if _, ok := r.leases[request.ThreadID]; ok {
+		return TurnLease{}, ErrActiveTurn
+	}
+	purpose, err := validateLeaseRequest(request)
+	if err != nil {
+		return TurnLease{}, err
+	}
+	now := r.now().UTC()
+	r.leaseGeneration[request.ThreadID]++
+	proof := TurnLease{
+		ThreadID:     strings.TrimSpace(request.ThreadID),
+		Purpose:      purpose,
+		TurnID:       strings.TrimSpace(request.TurnID),
+		MutationID:   strings.TrimSpace(request.MutationID),
+		MutationKind: strings.TrimSpace(request.MutationKind),
+		OwnerID:      strings.TrimSpace(request.OwnerID),
+		Generation:   r.leaseGeneration[request.ThreadID],
+		Heartbeat:    0,
+		AcquiredAt:   now,
+		RenewedAt:    now,
+		ExpiresAt:    now.Add(r.leasePolicy.TTL),
+	}
+	r.leases[request.ThreadID] = proof
+	return proof, nil
+}
+
+func validateLeaseRequest(request TurnLease) (TurnLeasePurpose, error) {
+	purpose, err := request.Purpose.Normalize()
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(request.ThreadID) == "" || strings.TrimSpace(request.OwnerID) == "" {
+		return "", errors.New("lease thread and owner are required")
+	}
+	switch purpose {
+	case TurnLeasePurposeTurn:
+		if strings.TrimSpace(request.TurnID) == "" || strings.TrimSpace(request.MutationID) != "" || strings.TrimSpace(request.MutationKind) != "" {
+			return "", errors.New("turn lease request requires only turn identity")
+		}
+	case TurnLeasePurposeMutation:
+		if strings.TrimSpace(request.TurnID) != "" || strings.TrimSpace(request.MutationID) == "" || strings.TrimSpace(request.MutationKind) == "" {
+			return "", errors.New("mutation lease request requires only mutation identity and kind")
+		}
+	}
+	return purpose, nil
+}
+
+func (r *MemoryRepo) RenewTurnLease(_ context.Context, proof TurnLease) (TurnLease, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	active, ok := r.leases[proof.ThreadID]
+	if !ok || !SameTurnLease(active, proof) {
+		return TurnLease{}, ErrStaleAuthority
+	}
+	now := r.now().UTC()
+	if !active.Fresh(now) {
+		return TurnLease{}, ErrStaleAuthority
+	}
+	var admission turnAdmissionLedger
+	var hasAdmission bool
+	if active.Purpose == TurnLeasePurposeTurn {
+		admission, hasAdmission = r.turnAdmissions[turnAdmissionKey(active.ThreadID, active.TurnID)]
+		if hasAdmission && !SameTurnLease(admission.Lease, proof) {
+			return TurnLease{}, ErrAuthorityCorrupt
+		}
+	}
+	var compactionOperation CompactionOperation
+	var hasCompactionOperation bool
+	if active.Purpose == TurnLeasePurposeMutation && active.MutationKind == CompactionMutationKind {
+		compactionOperation, hasCompactionOperation = r.compactionOperations[active.MutationID]
+		if !hasCompactionOperation || compactionOperation.State != CompactionOperationPrepared || !SameTurnLease(compactionOperation.Lease, proof) {
+			return TurnLease{}, ErrAuthorityCorrupt
+		}
+	}
+	active.Heartbeat++
+	active.RenewedAt = now
+	active.ExpiresAt = now.Add(r.leasePolicy.TTL)
+	r.leases[proof.ThreadID] = active
+	if hasAdmission {
+		key := turnAdmissionKey(active.ThreadID, active.TurnID)
+		admission.Lease = active
+		r.turnAdmissions[key] = admission
+	}
+	if hasCompactionOperation {
+		compactionOperation.Lease = active
+		compactionOperation.UpdatedAt = now
+		r.compactionOperations[compactionOperation.RequestID] = compactionOperation
+	}
+	return active, nil
+}
+
+func (r *MemoryRepo) ReleaseTurnLease(_ context.Context, proof TurnLease) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	active, ok := r.leases[proof.ThreadID]
+	if !ok || !SameTurnLease(active, proof) {
+		return ErrStaleAuthority
+	}
+	if active.Purpose == TurnLeasePurposeMutation && active.MutationKind == CompactionMutationKind {
+		if operation, exists := r.compactionOperations[active.MutationID]; exists && operation.State == CompactionOperationPrepared {
+			return ErrInvalidThreadAuthority
+		}
+	}
+	delete(r.leases, proof.ThreadID)
 	return nil
 }
 
@@ -578,18 +965,8 @@ func (r *MemoryRepo) ActiveTurnLease(_ context.Context, threadID string) (TurnLe
 	return lease, ok, nil
 }
 
-func (r *MemoryRepo) ClearExpiredTurnLease(_ context.Context, threadID string, cutoff time.Time) (TurnLease, bool, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, ok := r.threads[threadID]; !ok {
-		return TurnLease{}, false, ErrThreadNotFound
-	}
-	lease, ok := r.leases[threadID]
-	if !ok || cutoff.IsZero() || lease.CreatedAt.IsZero() || !lease.CreatedAt.Before(cutoff) {
-		return TurnLease{}, false, nil
-	}
-	delete(r.leases, threadID)
-	return lease, true, nil
+func (r *MemoryRepo) AuthorityLeasePolicy() LeasePolicy {
+	return r.leasePolicy
 }
 
 func (r *MemoryRepo) ReadAgentTodoState(_ context.Context, threadID string) (AgentTodoState, error) {
@@ -605,11 +982,20 @@ func (r *MemoryRepo) ReadAgentTodoState(_ context.Context, threadID string) (Age
 	return cloneAgentTodoState(state), nil
 }
 
-func (r *MemoryRepo) CompareAndSwapAgentTodoState(_ context.Context, state AgentTodoState, expectedVersion int64) (AgentTodoState, error) {
+func (r *MemoryRepo) CompareAndSwapAgentTodoState(ctx context.Context, state AgentTodoState, expectedVersion int64) (AgentTodoState, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.threads[state.ThreadID]; !ok {
 		return AgentTodoState{}, ErrThreadNotFound
+	}
+	if err := lifecycleRejectsWrite(r.threads[state.ThreadID]); err != nil {
+		return AgentTodoState{}, err
+	}
+	if r.threadAuthorityClaimedLocked(state.ThreadID) {
+		return AgentTodoState{}, ErrThreadAuthorityBusy
+	}
+	if err := r.requireActiveTurnWriteAuthorityLocked(ctx, state.ThreadID); err != nil {
+		return AgentTodoState{}, err
 	}
 	current := r.todos[state.ThreadID]
 	if current.Version != expectedVersion {
@@ -650,7 +1036,7 @@ func (r *MemoryRepo) ListThreads(_ context.Context, opts ListThreadsOptions) ([]
 	return ApplyThreadListOptions(out, opts), nil
 }
 
-func (r *MemoryRepo) UpdateThread(_ context.Context, meta ThreadMeta) error {
+func (r *MemoryRepo) UpdateThread(ctx context.Context, meta ThreadMeta) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	current, ok := r.threads[meta.ID]
@@ -663,8 +1049,51 @@ func (r *MemoryRepo) UpdateThread(_ context.Context, meta ThreadMeta) error {
 	if !SameThreadAuthority(current, meta) {
 		return fmt.Errorf("%w: thread %q authority is immutable", ErrInvalidThreadAuthority, meta.ID)
 	}
+	if err := lifecycleRejectsWrite(current); err != nil {
+		return err
+	}
+	if r.threadAuthorityClaimedLocked(meta.ID) {
+		return ErrThreadAuthorityBusy
+	}
+	if err := r.requireThreadWriteAuthorityLocked(ctx, meta.ID); err != nil {
+		return err
+	}
 	meta.UpdatedAt = nonZeroTime(meta.UpdatedAt)
 	r.threads[meta.ID] = meta
+	return nil
+}
+
+func (r *MemoryRepo) requireThreadWriteAuthorityLocked(ctx context.Context, threadID string) error {
+	active, activeExists := r.leases[strings.TrimSpace(threadID)]
+	proof, hasProof := TurnLeaseFromContext(ctx)
+	relevantProof := hasProof && proof.ThreadID == strings.TrimSpace(threadID)
+	if !activeExists {
+		if relevantProof {
+			return ErrStaleAuthority
+		}
+		return nil
+	}
+	if !relevantProof || !SameTurnLease(proof, active) {
+		return ErrActiveTurn
+	}
+	if !active.Fresh(r.now().UTC()) {
+		return ErrStaleAuthority
+	}
+	return nil
+}
+
+func (r *MemoryRepo) requireActiveTurnWriteAuthorityLocked(ctx context.Context, threadID string) error {
+	active, ok := r.leases[strings.TrimSpace(threadID)]
+	if !ok || active.Purpose != TurnLeasePurposeTurn {
+		return ErrActiveTurn
+	}
+	proof, hasProof := TurnLeaseFromContext(ctx)
+	if !hasProof || !SameTurnLease(proof, active) {
+		return ErrActiveTurn
+	}
+	if !active.Fresh(r.now().UTC()) {
+		return ErrStaleAuthority
+	}
 	return nil
 }
 
@@ -674,19 +1103,297 @@ func (r *MemoryRepo) DeleteThread(_ context.Context, threadID string) error {
 	if _, ok := r.threads[threadID]; !ok {
 		return ErrThreadNotFound
 	}
+	if _, ok := r.leases[threadID]; ok {
+		return ErrActiveTurn
+	}
+	if strings.TrimSpace(r.authorityClaims[threadID]) != "" {
+		return ErrThreadAuthorityBusy
+	}
 	delete(r.threads, threadID)
 	delete(r.entries, threadID)
 	delete(r.leases, threadID)
+	delete(r.authorityClaims, threadID)
 	delete(r.todos, threadID)
+	delete(r.providerStates, threadID)
+	delete(r.subAgentInputs, threadID)
+	delete(r.subAgentInputSequence, threadID)
+	for key, record := range r.artifacts {
+		if record.ThreadID == threadID {
+			delete(r.artifacts, key)
+		}
+	}
 	return nil
 }
 
-func (r *MemoryRepo) Append(_ context.Context, entry Entry, opts AppendOptions) (Entry, error) {
+// AcquireThreadAuthorityClaim reserves identities for one replayable structural
+// operation. Required source threads must exist and have no active turn lease.
+func (r *MemoryRepo) AcquireThreadAuthorityClaim(_ context.Context, operationID string, requiredSourceThreadIDs, authorityThreadIDs []string) error {
+	operationID = strings.TrimSpace(operationID)
+	if operationID == "" {
+		return errors.New("thread authority claim operation id is required")
+	}
+	requiredSourceThreadIDs = cleanUniqueStrings(requiredSourceThreadIDs)
+	authorityThreadIDs = cleanUniqueStrings(authorityThreadIDs)
+	if len(requiredSourceThreadIDs) == 0 || len(authorityThreadIDs) == 0 {
+		return errors.New("thread authority claim requires source and authority thread ids")
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	for _, threadID := range requiredSourceThreadIDs {
+		if _, ok := r.threads[threadID]; !ok {
+			return ErrThreadNotFound
+		}
+		if _, ok := r.leases[threadID]; ok {
+			return ErrActiveTurn
+		}
+	}
+	sourceSet := make(map[string]struct{}, len(requiredSourceThreadIDs))
+	for _, threadID := range requiredSourceThreadIDs {
+		sourceSet[threadID] = struct{}{}
+	}
+	for _, threadID := range authorityThreadIDs {
+		if _, source := sourceSet[threadID]; !source {
+			if _, exists := r.threads[threadID]; exists {
+				return ErrForkDestinationConflict
+			}
+			if _, deleted := r.tombstones[threadID]; deleted {
+				return ErrForkDestinationConflict
+			}
+		}
+		if owner := strings.TrimSpace(r.authorityClaims[threadID]); owner != "" && owner != operationID {
+			return ErrThreadAuthorityBusy
+		}
+	}
+	for _, threadID := range authorityThreadIDs {
+		r.authorityClaims[threadID] = operationID
+	}
+	return nil
+}
+
+// CommitForkBatch publishes every destination and releases the operation's
+// complete claim set in one MemoryRepo critical section. The callback persists
+// the terminal operation record before readers can observe the destinations.
+func (r *MemoryRepo) CommitForkBatch(ctx context.Context, operationID string, nodes []ForkOptions, commit func() error) ([]ThreadMeta, error) {
+	operationID = strings.TrimSpace(operationID)
+	if operationID == "" || len(nodes) == 0 || commit == nil {
+		return nil, errors.New("fork batch requires operation, nodes, and terminal commit")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	sources, destinations, authority, err := validateForkBatchNodes(operationID, nodes)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.validateForkClaimLocked(operationID, sources, destinations, authority); err != nil {
+		return nil, err
+	}
+	seqBefore := r.seq
+	created := make([]string, 0, len(nodes))
+	rollback := func() {
+		for _, threadID := range created {
+			delete(r.threads, threadID)
+			delete(r.entries, threadID)
+			delete(r.todos, threadID)
+			delete(r.providerStates, threadID)
+			for key, record := range r.artifacts {
+				if record.ThreadID == threadID {
+					delete(r.artifacts, key)
+				}
+			}
+		}
+		r.seq = seqBefore
+	}
+	results := make([]ThreadMeta, 0, len(nodes))
+	for _, node := range nodes {
+		forked, err := r.forkLocked(ctx, node)
+		if err != nil {
+			rollback()
+			return nil, err
+		}
+		created = append(created, forked.ID)
+		results = append(results, forked)
+	}
+	if err := commit(); err != nil {
+		rollback()
+		return nil, err
+	}
+	for threadID, owner := range r.authorityClaims {
+		if owner == operationID {
+			delete(r.authorityClaims, threadID)
+		}
+	}
+	return results, nil
+}
+
+// FailForkClaim records one deterministic pre-publication failure and releases
+// the complete claim set without exposing an unclaimed prepared operation.
+func (r *MemoryRepo) FailForkClaim(operationID string, sourceThreadIDs, authorityThreadIDs []string, commit func() error) error {
+	operationID = strings.TrimSpace(operationID)
+	if operationID == "" || commit == nil {
+		return errors.New("fork failure requires operation and terminal commit")
+	}
+	sources := cleanUniqueStrings(sourceThreadIDs)
+	authority := cleanUniqueStrings(authorityThreadIDs)
+	if len(sources) == 0 || len(authority) == 0 {
+		return ErrInvalidThreadAuthority
+	}
+	sourceSet := stringSet(sources)
+	destinations := make([]string, 0, len(authority)-len(sources))
+	for _, threadID := range authority {
+		if _, source := sourceSet[threadID]; !source {
+			destinations = append(destinations, threadID)
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.validateForkClaimLocked(operationID, sources, destinations, authority); err != nil {
+		return err
+	}
+	if err := commit(); err != nil {
+		return err
+	}
+	for _, threadID := range authority {
+		delete(r.authorityClaims, threadID)
+	}
+	return nil
+}
+
+func validateForkBatchNodes(operationID string, nodes []ForkOptions) ([]string, []string, []string, error) {
+	sourceSet := map[string]struct{}{}
+	destinationSet := map[string]struct{}{}
+	for _, node := range nodes {
+		sourceID := strings.TrimSpace(node.SourceThreadID)
+		destinationID := strings.TrimSpace(node.NewThreadID)
+		if strings.TrimSpace(node.OperationID) != operationID || strings.TrimSpace(node.OperationNodeID) == "" || sourceID == "" || destinationID == "" {
+			return nil, nil, nil, ErrInvalidThreadAuthority
+		}
+		if _, duplicate := destinationSet[destinationID]; duplicate {
+			return nil, nil, nil, ErrInvalidThreadAuthority
+		}
+		sourceSet[sourceID] = struct{}{}
+		destinationSet[destinationID] = struct{}{}
+	}
+	sources := sortedStringSet(sourceSet)
+	destinations := sortedStringSet(destinationSet)
+	authoritySet := stringSet(sources)
+	for _, threadID := range destinations {
+		authoritySet[threadID] = struct{}{}
+	}
+	return sources, destinations, sortedStringSet(authoritySet), nil
+}
+
+func (r *MemoryRepo) validateForkClaimLocked(operationID string, sources, destinations, authority []string) error {
+	claimed := map[string]struct{}{}
+	for threadID, owner := range r.authorityClaims {
+		if owner == operationID {
+			claimed[threadID] = struct{}{}
+		}
+	}
+	if !equalStringSets(claimed, stringSet(authority)) {
+		return ErrAuthorityCorrupt
+	}
+	for _, threadID := range sources {
+		if _, exists := r.threads[threadID]; !exists {
+			return ErrAuthorityCorrupt
+		}
+		if _, leased := r.leases[threadID]; leased {
+			return ErrAuthorityCorrupt
+		}
+	}
+	for _, threadID := range destinations {
+		if _, exists := r.threads[threadID]; exists {
+			return ErrAuthorityCorrupt
+		}
+		if _, deleted := r.tombstones[threadID]; deleted {
+			return ErrAuthorityCorrupt
+		}
+		if _, leased := r.leases[threadID]; leased {
+			return ErrAuthorityCorrupt
+		}
+	}
+	return nil
+}
+
+func stringSet(values []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		out[strings.TrimSpace(value)] = struct{}{}
+	}
+	return out
+}
+
+func sortedStringSet(values map[string]struct{}) []string {
+	out := make([]string, 0, len(values))
+	for value := range values {
+		out = append(out, value)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func equalStringSets(left, right map[string]struct{}) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for value := range left {
+		if _, ok := right[value]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// ReleaseThreadAuthorityClaim releases every identity held by one operation.
+func (r *MemoryRepo) ReleaseThreadAuthorityClaim(_ context.Context, operationID string) {
+	operationID = strings.TrimSpace(operationID)
+	if operationID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for threadID, owner := range r.authorityClaims {
+		if owner == operationID {
+			delete(r.authorityClaims, threadID)
+		}
+	}
+}
+
+func cleanUniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func (r *MemoryRepo) Append(ctx context.Context, entry Entry, opts AppendOptions) (Entry, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.appendLocked(ctx, entry, opts)
+}
+
+func (r *MemoryRepo) appendLocked(ctx context.Context, entry Entry, opts AppendOptions) (Entry, error) {
 	meta, ok := r.threads[entry.ThreadID]
 	if !ok {
 		return Entry{}, ErrThreadNotFound
+	}
+	if r.threadAuthorityClaimedLocked(entry.ThreadID) {
+		return Entry{}, ErrThreadAuthorityBusy
+	}
+	if err := lifecycleRejectsWrite(meta); err != nil {
+		return Entry{}, err
+	}
+	if err := validateTurnLeaseMutation(ctx, entry.ThreadID, entry.TurnID, r.leases[entry.ThreadID], r.now().UTC()); err != nil {
+		return Entry{}, err
 	}
 	if opts.ParentID != "" {
 		entry.ParentID = opts.ParentID
@@ -799,6 +1506,12 @@ func (r *MemoryRepo) MoveLeaf(_ context.Context, threadID, entryID string) error
 	if !ok {
 		return ErrThreadNotFound
 	}
+	if err := lifecycleRejectsWrite(meta); err != nil {
+		return err
+	}
+	if r.threadAuthorityClaimedLocked(threadID) {
+		return ErrThreadAuthorityBusy
+	}
 	if entryID != "" && !containsEntry(r.entries[threadID], entryID) {
 		return ErrEntryNotFound
 	}
@@ -809,14 +1522,27 @@ func (r *MemoryRepo) MoveLeaf(_ context.Context, threadID, entryID string) error
 }
 
 func (r *MemoryRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, error) {
+	if strings.TrimSpace(opts.OperationID) != "" || strings.TrimSpace(opts.OperationNodeID) != "" {
+		return ThreadMeta{}, ErrInvalidThreadAuthority
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.forkLocked(ctx, opts)
+}
+
+func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMeta, error) {
 	if opts.Position == "" {
 		opts.Position = ForkAt
 	}
 	sourceMeta, ok := r.threads[opts.SourceThreadID]
 	if !ok {
 		return ThreadMeta{}, ErrThreadNotFound
+	}
+	if err := r.requireForkAuthorityLocked(opts.OperationID, opts.SourceThreadID); err != nil {
+		return ThreadMeta{}, err
+	}
+	if sourceMeta.IsClosed() && strings.TrimSpace(opts.OperationID) == "" {
+		return ThreadMeta{}, ErrThreadClosed
 	}
 	targetID := opts.EntryID
 	if targetID == "" && !opts.EntryIDPinned {
@@ -843,6 +1569,9 @@ func (r *MemoryRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, er
 			}
 		}
 	} else if existing, ok := r.threads[newID]; ok {
+		if err := r.requireForkAuthorityLocked(opts.OperationID, newID); err != nil {
+			return ThreadMeta{}, err
+		}
 		if forkDestinationMatches(existing, opts, targetID) {
 			return existing, nil
 		}
@@ -851,11 +1580,27 @@ func (r *MemoryRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, er
 		}
 		return ThreadMeta{}, ErrThreadExists
 	}
+	if _, deleted := r.tombstones[newID]; deleted {
+		return ThreadMeta{}, ErrForkDestinationConflict
+	}
 	if len(r.entries[newID]) > 0 {
 		return ThreadMeta{}, ErrThreadExists
 	}
+	if err := r.requireForkAuthorityLocked(opts.OperationID, newID); err != nil {
+		return ThreadMeta{}, err
+	}
 	path, err := pathLocked(r.threads, r.entries, opts.SourceThreadID, targetID)
 	if err != nil {
+		return ThreadMeta{}, err
+	}
+	closure := artifact.CloneClosure(opts.ArtifactClosure)
+	if artifact.IsZeroClosure(closure) && strings.TrimSpace(opts.OperationID) == "" {
+		closure, err = r.artifactClosureLocked(opts.SourceThreadID, newID, path)
+		if err != nil {
+			return ThreadMeta{}, err
+		}
+	}
+	if err := r.validateArtifactClosureLocked(opts.SourceThreadID, newID, path, closure); err != nil {
 		return ThreadMeta{}, err
 	}
 	meta := ThreadMeta{ID: newID, ForkedFromThreadID: opts.SourceThreadID, ForkedFromEntryID: targetID, ForkOperationID: opts.OperationID, ForkOperationNodeID: opts.OperationNodeID, CreatedAt: now, UpdatedAt: now}
@@ -864,8 +1609,15 @@ func (r *MemoryRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, er
 		return ThreadMeta{}, err
 	}
 	if parentID := strings.TrimSpace(meta.ParentThreadID); parentID != "" {
-		if _, ok := r.threads[parentID]; !ok {
+		if err := r.requireForkAuthorityLocked(opts.OperationID, parentID); err != nil {
+			return ThreadMeta{}, err
+		}
+		parent, ok := r.threads[parentID]
+		if !ok {
 			return ThreadMeta{}, fmt.Errorf("%w: parent thread %q", ErrInvalidThreadAuthority, parentID)
+		}
+		if parent.IsClosed() && strings.TrimSpace(opts.OperationID) == "" {
+			return ThreadMeta{}, ErrThreadClosed
 		}
 	}
 	oldToNew := map[string]string{"": ""}
@@ -899,6 +1651,29 @@ func (r *MemoryRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, er
 		forkedEntries = append(forkedEntries, next)
 		meta.LeafID = next.ID
 	}
+	stagedArtifacts, err := r.stageArtifactForkLocked(closure, oldToNew, now)
+	if err != nil {
+		return ThreadMeta{}, err
+	}
+	for _, item := range closure.Items {
+		entry, ok := memoryEntryByID(forkedEntries, oldToNew[item.SourceEntryID])
+		if !ok || entry.Message.ToolResult == nil || entry.Message.ToolResult.FullOutput == nil || !reflect.DeepEqual(*entry.Message.ToolResult.FullOutput, item.Ref) {
+			return ThreadMeta{}, ErrAuthorityCorrupt
+		}
+	}
+	unfinished, err := unfinishedTurnIDs(forkedEntries)
+	if err != nil {
+		return ThreadMeta{}, err
+	}
+	if len(unfinished) != 0 {
+		r.seq++
+		boundary, err := PrepareBranchBoundaryEntry(forkedEntries, newID, meta.LeafID, fmt.Sprintf("%s-entry-%d", newID, r.seq), "fork", now)
+		if err != nil {
+			return ThreadMeta{}, err
+		}
+		forkedEntries = append(forkedEntries, boundary)
+		meta.LeafID = boundary.ID
+	}
 	var forkedTodo AgentTodoState
 	hasForkedTodo := false
 	if todo, ok := r.todos[opts.SourceThreadID]; ok {
@@ -910,11 +1685,86 @@ func (r *MemoryRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, er
 	}
 	r.entries[newID] = forkedEntries
 	r.threads[newID] = meta
+	for key, record := range stagedArtifacts {
+		r.artifacts[key] = record
+	}
 	if hasForkedTodo {
 		r.todos[newID] = forkedTodo
 	}
 	_ = ctx
 	return meta, nil
+}
+
+func (r *MemoryRepo) ForkWithInitialEntry(ctx context.Context, opts ForkOptions, initial Entry) (ThreadMeta, Entry, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	seqBefore := r.seq
+	forked, err := r.forkLocked(ctx, opts)
+	if err != nil {
+		return ThreadMeta{}, Entry{}, err
+	}
+	initial.ThreadID = forked.ID
+	saved, err := r.appendLocked(ctx, initial, AppendOptions{Now: opts.Now})
+	if err != nil {
+		delete(r.threads, forked.ID)
+		delete(r.entries, forked.ID)
+		delete(r.todos, forked.ID)
+		for key, record := range r.artifacts {
+			if record.ThreadID == forked.ID {
+				delete(r.artifacts, key)
+			}
+		}
+		r.seq = seqBefore
+		return ThreadMeta{}, Entry{}, err
+	}
+	return r.threads[forked.ID], saved, nil
+}
+
+func (r *MemoryRepo) threadAuthorityClaimedLocked(threadID string) bool {
+	return strings.TrimSpace(r.authorityClaims[strings.TrimSpace(threadID)]) != ""
+}
+
+func (r *MemoryRepo) requireForkAuthorityLocked(operationID string, threadIDs ...string) error {
+	operationID = strings.TrimSpace(operationID)
+	for _, threadID := range threadIDs {
+		threadID = strings.TrimSpace(threadID)
+		if threadID == "" {
+			continue
+		}
+		owner := strings.TrimSpace(r.authorityClaims[threadID])
+		if operationID == "" {
+			if owner != "" {
+				return ErrThreadAuthorityBusy
+			}
+			continue
+		}
+		if owner != operationID {
+			return ErrThreadAuthorityBusy
+		}
+	}
+	return nil
+}
+
+func validateTurnLeaseMutation(ctx context.Context, threadID, turnID string, active TurnLease, now time.Time) error {
+	proof, hasProof := TurnLeaseFromContext(ctx)
+	relevantProof := hasProof && proof.ThreadID == strings.TrimSpace(threadID)
+	activeExists := active.Validate() == nil
+	if activeExists {
+		if !relevantProof || !SameTurnLease(proof, active) {
+			return ErrActiveTurn
+		}
+		if !active.Fresh(now) {
+			return ErrStaleAuthority
+		}
+		if strings.TrimSpace(turnID) != "" && strings.TrimSpace(turnID) != active.TurnID {
+			return ErrActiveTurn
+		}
+		return nil
+	}
+	if relevantProof {
+		return ErrActiveTurn
+	}
+	return nil
 }
 
 func applyForkDestinationMeta(meta *ThreadMeta, destination *ForkDestinationMeta) {
@@ -928,8 +1778,7 @@ func applyForkDestinationMeta(meta *ThreadMeta, destination *ForkDestinationMeta
 	meta.AgentPath = strings.TrimSpace(destination.AgentPath)
 	meta.HostProfileRef = strings.TrimSpace(destination.HostProfileRef)
 	meta.ForkMode = strings.TrimSpace(destination.ForkMode)
-	meta.Closed = destination.Closed
-	meta.Status = strings.TrimSpace(destination.Status)
+	meta.Lifecycle = destination.Lifecycle
 }
 
 func forkDestinationMatches(meta ThreadMeta, opts ForkOptions, targetID string) bool {
@@ -990,9 +1839,18 @@ func (r *FileRepo) AcquireTurnLease(ctx context.Context, lease TurnLease) error 
 	if _, err := r.mem.Thread(ctx, lease.ThreadID); err != nil {
 		return err
 	}
-	if lease.CreatedAt.IsZero() {
-		lease.CreatedAt = time.Now()
+	if lease.AcquiredAt.IsZero() {
+		now := time.Now().UTC()
+		lease.Generation = 1
+		lease.AcquiredAt = now
+		lease.RenewedAt = now
+		lease.ExpiresAt = now.Add(DefaultLeasePolicy.TTL)
 	}
+	purpose, err := lease.Purpose.Normalize()
+	if err != nil {
+		return err
+	}
+	lease.Purpose = purpose
 	dir := filepath.Join(r.root, safePath(lease.ThreadID))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -1039,7 +1897,15 @@ func (r *FileRepo) ReleaseTurnLease(ctx context.Context, lease TurnLease) error 
 	if err := json.Unmarshal(data, &active); err != nil {
 		return err
 	}
-	if active.OwnerID != lease.OwnerID || active.TurnID != lease.TurnID {
+	activePurpose, err := active.Purpose.Normalize()
+	if err != nil {
+		return err
+	}
+	leasePurpose, err := lease.Purpose.Normalize()
+	if err != nil {
+		return err
+	}
+	if active.OwnerID != lease.OwnerID || active.TurnID != lease.TurnID || activePurpose != leasePurpose {
 		return nil
 	}
 	return os.Remove(path)
@@ -1061,6 +1927,10 @@ func (r *FileRepo) ActiveTurnLease(ctx context.Context, threadID string) (TurnLe
 	}
 	var lease TurnLease
 	if err := json.Unmarshal(data, &lease); err != nil {
+		return TurnLease{}, false, err
+	}
+	lease.Purpose, err = lease.Purpose.Normalize()
+	if err != nil {
 		return TurnLease{}, false, err
 	}
 	return lease, true, nil
@@ -1087,7 +1957,11 @@ func (r *FileRepo) ClearExpiredTurnLease(ctx context.Context, threadID string, c
 	if err := json.Unmarshal(data, &lease); err != nil {
 		return TurnLease{}, false, err
 	}
-	if lease.CreatedAt.IsZero() || !lease.CreatedAt.Before(cutoff) {
+	lease.Purpose, err = lease.Purpose.Normalize()
+	if err != nil {
+		return TurnLease{}, false, err
+	}
+	if lease.AcquiredAt.IsZero() || !lease.AcquiredAt.Before(cutoff) {
 		return TurnLease{}, false, nil
 	}
 	if err := os.Remove(path); err != nil {
@@ -1400,6 +2274,21 @@ func (r *FileRepo) load(ctx context.Context) error {
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		leaseData, err := os.ReadFile(filepath.Join(dir, "active_turn.json"))
+		if err == nil {
+			var lease TurnLease
+			if err := json.Unmarshal(leaseData, &lease); err != nil {
+				return fmt.Errorf("decode active turn lease for thread %q: %w", meta.ID, err)
+			}
+			purpose, purposeErr := lease.Purpose.Normalize()
+			if lease.ThreadID != meta.ID || strings.TrimSpace(lease.OwnerID) == "" || lease.AcquiredAt.IsZero() || purposeErr != nil || lease.Validate() != nil {
+				return fmt.Errorf("active turn lease for thread %q is invalid", meta.ID)
+			}
+			lease.Purpose = purpose
+			mem.leases[meta.ID] = lease
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
 	metas := make([]ThreadMeta, 0, len(mem.threads))
 	for _, meta := range mem.threads {
@@ -1670,15 +2559,23 @@ func appendProviderVisible(messages []session.Message, entry Entry) []session.Me
 	return messages
 }
 
-func AppendMessage(ctx context.Context, repo Repo, threadID, turnID string, msg session.Message) (Entry, error) {
+func AppendMessage(ctx context.Context, repo JournalRepo, threadID, turnID string, msg session.Message) (Entry, error) {
 	return AppendMessageAt(ctx, repo, threadID, turnID, msg, time.Time{})
 }
 
-func AppendMessageAt(ctx context.Context, repo Repo, threadID, turnID string, msg session.Message, observedAt time.Time) (Entry, error) {
+func AppendMessageAt(ctx context.Context, repo JournalRepo, threadID, turnID string, msg session.Message, observedAt time.Time) (Entry, error) {
 	return repo.Append(ctx, Entry{ThreadID: threadID, TurnID: turnID, Type: typeForMessage(msg), Message: msg}, AppendOptions{Now: observedAt})
 }
 
-func AppendCompaction(ctx context.Context, repo Repo, threadID, turnID string, result compaction.Result) (Entry, error) {
+func AppendCompaction(ctx context.Context, repo JournalRepo, threadID, turnID string, result compaction.Result) (Entry, error) {
+	entry, err := CompactionEntry(threadID, turnID, result)
+	if err != nil {
+		return Entry{}, err
+	}
+	return repo.Append(ctx, entry, AppendOptions{})
+}
+
+func CompactionEntry(threadID, turnID string, result compaction.Result) (Entry, error) {
 	if strings.TrimSpace(result.CompactionID) == "" || result.CompactionGeneration <= 0 || strings.TrimSpace(result.CompactionWindowID) == "" {
 		return Entry{}, errors.New("compaction result requires id, generation, and window id")
 	}
@@ -1690,7 +2587,7 @@ func AppendCompaction(ctx context.Context, repo Repo, threadID, turnID string, r
 			return Entry{}, fmt.Errorf("compaction details must not contain identity alias %q", key)
 		}
 	}
-	return repo.Append(ctx, Entry{
+	return Entry{
 		ThreadID:                threadID,
 		TurnID:                  turnID,
 		Type:                    EntryCompaction,
@@ -1714,22 +2611,22 @@ func AppendCompaction(ctx context.Context, repo Repo, threadID, turnID string, r
 		ContextUsageBefore:      result.UsageBefore,
 		ContextUsageAfter:       result.UsageAfter,
 		Metadata:                mapsClone(result.Details),
-	}, AppendOptions{})
+	}, nil
 }
 
-func AppendTurnMarker(ctx context.Context, repo Repo, threadID, turnID string, status TurnMarkerStatus, metadata map[string]string) (Entry, error) {
+func AppendTurnMarker(ctx context.Context, repo JournalRepo, threadID, turnID string, status TurnMarkerStatus, metadata map[string]string) (Entry, error) {
 	return repo.Append(ctx, Entry{ThreadID: threadID, TurnID: turnID, Type: EntryTurnMarker, TurnStatus: status, Metadata: metadata}, AppendOptions{})
 }
 
-func AppendTurnMarkerWithID(ctx context.Context, repo Repo, threadID, turnID, entryID string, status TurnMarkerStatus, metadata map[string]string) (Entry, error) {
+func AppendTurnMarkerWithID(ctx context.Context, repo JournalRepo, threadID, turnID, entryID string, status TurnMarkerStatus, metadata map[string]string) (Entry, error) {
 	return repo.Append(ctx, Entry{ThreadID: threadID, TurnID: turnID, Type: EntryTurnMarker, TurnStatus: status, Metadata: metadata}, AppendOptions{ID: entryID})
 }
 
-func AppendActiveTools(ctx context.Context, repo Repo, threadID string, metadata map[string]string) (Entry, error) {
+func AppendActiveTools(ctx context.Context, repo JournalRepo, threadID string, metadata map[string]string) (Entry, error) {
 	return repo.Append(ctx, Entry{ThreadID: threadID, Type: EntryActiveTools, Metadata: metadata}, AppendOptions{})
 }
 
-func AppendFailure(ctx context.Context, repo Repo, threadID, turnID, message string) (Entry, error) {
+func AppendFailure(ctx context.Context, repo JournalRepo, threadID, turnID string, message string) (Entry, error) {
 	return repo.Append(ctx, Entry{ThreadID: threadID, TurnID: turnID, Type: EntryRunFailure, Error: message}, AppendOptions{})
 }
 
@@ -1818,7 +2715,7 @@ func rewriteForkMetadata(metadata map[string]string, entryIDs map[string]string,
 			next = rewriteForkID(value, runIDs)
 		case "turn_id":
 			next = rewriteForkID(value, turnIDs)
-		case "entry_id", "parent_entry_id", "input_entry_id":
+		case "entry_id", "parent_entry_id", "input_entry_id", "subagent_input_id":
 			next = rewriteForkID(value, entryIDs)
 		}
 		out[key] = next

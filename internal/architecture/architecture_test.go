@@ -1,6 +1,7 @@
 package floret_test
 
 import (
+	"context"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -14,6 +15,7 @@ import (
 	"testing"
 
 	floretRuntime "github.com/floegence/floret/runtime"
+	floretTools "github.com/floegence/floret/tools"
 )
 
 const modulePath = "github.com/floegence/floret"
@@ -220,7 +222,7 @@ func TestPublicPackagesDoNotImportForbiddenImplementationPackages(t *testing.T) 
 
 func TestReadmeOnlyDocumentsStableDownstreamAPI(t *testing.T) {
 	text := readTextFile(t, "README.md")
-	for _, want := range []string{"runtime.NewHostBootstrap", "runtime.NewTurnExecutionHostFactory", "runtime.TurnExecutionHost", "runtime.NewThreadCompactionHostFactory", "runtime.NewSubAgentHostFactory", "runtime.CompactThreadRequest", "runtime.ModelGateway", "runtime.NewMemoryStore", "runtime.OpenSQLiteStore", "tools.Registry", "observation"} {
+	for _, want := range []string{"runtime.ConfigureHostCapabilities", "runtime.NewTurnExecutionHostBinder", "runtime.TurnExecutionHost", "runtime.NewThreadCompactionHostBinder", "runtime.NewSubAgentHostBinder", "runtime.CompactThreadRequest", "runtime.ModelGateway", "runtime.NewMemoryStore", "runtime.OpenSQLiteStore", "tools.Registry", "observation"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("README missing stable downstream API %q", want)
 		}
@@ -238,6 +240,7 @@ func TestCurrentCapabilityDocsDoNotAdvertiseRemovedFacade(t *testing.T) {
 		filepath.Join("okf", "api", "runtime.md"),
 		filepath.Join("okf", "architecture", "runtime-layers.md"),
 		filepath.Join("okf", "architecture", "boundaries.md"),
+		filepath.Join("okf", "architecture", "host-capability-authority.md"),
 		filepath.Join("okf", "decisions", "public-api-boundary.md"),
 	} {
 		text := readTextFile(t, file)
@@ -287,6 +290,68 @@ func TestRuntimeThreadCreationContractIsExplicit(t *testing.T) {
 	}
 }
 
+func TestAgentHarnessProductionCannotAcquireLifecycleAuthority(t *testing.T) {
+	forbiddenCalls := map[string]bool{
+		"AcquireTurnLease":    true,
+		"CreateThread":        true,
+		"DeleteProviderState": true,
+		"DeleteThread":        true,
+		"Fork":                true,
+		"MoveLeaf":            true,
+		"PutProviderState":    true,
+		"ReleaseTurnLease":    true,
+		"UpdateThread":        true,
+	}
+	for _, path := range goFiles(t, filepath.Join("internal", "agentharness")) {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range file.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv != nil && (fn.Name.Name == "StartThread" || fn.Name.Name == "CreateThread") {
+				t.Fatalf("production AgentHarness lifecycle creation method %s returned in %s", fn.Name.Name, path)
+			}
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if ok && forbiddenCalls[selector.Sel.Name] {
+				t.Fatalf("production AgentHarness calls forbidden lifecycle primitive %s in %s", selector.Sel.Name, path)
+			}
+			return true
+		})
+	}
+	harness := readTextFile(t, filepath.Join("internal", "agentharness", "harness.go"))
+	if !strings.Contains(harness, "Repo                     sessiontree.JournalRepo") {
+		t.Fatal("AgentHarness Options must retain only sessiontree.JournalRepo")
+	}
+}
+
+func TestStorageAuthorityHasNoAlternateTreeDeleteOrHostMetadataCleanup(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("internal", "sessiontree", "sessiontree.go"),
+		filepath.Join("internal", "storage", "storage.go"),
+		filepath.Join("internal", "storage", "sqlite", "sqlitestore.go"),
+	} {
+		text := readTextFile(t, path)
+		for _, forbidden := range []string{"DeleteThreadTreeData", "DeleteThreadTree("} {
+			if strings.Contains(text, forbidden) {
+				t.Fatalf("%s retains alternate tree delete capability %q", path, forbidden)
+			}
+		}
+	}
+	authorityKernel := readTextFile(t, filepath.Join("internal", "storage", "sqlite", "authority_kernel.go"))
+	if strings.Contains(authorityKernel, "DELETE FROM metadata_records") {
+		t.Fatal("Floret root delete must not delete host-owned metadata records")
+	}
+}
+
 func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 	methodNames := func(typ reflect.Type) map[string]struct{} {
 		out := make(map[string]struct{}, typ.NumMethod())
@@ -307,48 +372,64 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 		}
 	}
 	exact("HostBootstrap", reflect.TypeOf((*floretRuntime.HostBootstrap)(nil)))
+	exact("ThreadCreateHostBinder", reflect.TypeOf((*floretRuntime.ThreadCreateHostBinder)(nil)), "Bind")
+	exact("ThreadReadHostBinder", reflect.TypeOf((*floretRuntime.ThreadReadHostBinder)(nil)), "NewHost")
+	exact("ThreadTitleHostBinder", reflect.TypeOf((*floretRuntime.ThreadTitleHostBinder)(nil)), "NewHost")
+	exact("ThreadForkHostBinder", reflect.TypeOf((*floretRuntime.ThreadForkHostBinder)(nil)), "NewHost")
+	exact("ThreadDeleteHostBinder", reflect.TypeOf((*floretRuntime.ThreadDeleteHostBinder)(nil)), "NewHost")
+	exact("TurnExecutionHostBinder", reflect.TypeOf((*floretRuntime.TurnExecutionHostBinder)(nil)), "Bind")
+	exact("ThreadCompactionHostBinder", reflect.TypeOf((*floretRuntime.ThreadCompactionHostBinder)(nil)), "Bind")
+	exact("SubAgentHostBinder", reflect.TypeOf((*floretRuntime.SubAgentHostBinder)(nil)), "Bind")
+	exact("SubAgentReadHostBinder", reflect.TypeOf((*floretRuntime.SubAgentReadHostBinder)(nil)), "NewHost")
+	exact("PendingToolRecoveryHostBinder", reflect.TypeOf((*floretRuntime.PendingToolRecoveryHostBinder)(nil)), "NewSubAgentHost", "NewThreadHost")
+	exact("InterruptedTurnRecoveryHostBinder", reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHostBinder)(nil)), "NewSubAgentHost", "NewThreadHost")
 	exact("TurnExecutionHostFactory", reflect.TypeOf((*floretRuntime.TurnExecutionHostFactory)(nil)), "NewHost")
 	exact("ThreadCompactionHostFactory", reflect.TypeOf((*floretRuntime.ThreadCompactionHostFactory)(nil)), "NewHost")
 	exact("SubAgentHostFactory", reflect.TypeOf((*floretRuntime.SubAgentHostFactory)(nil)), "NewHost")
-	exact("SubAgentReadHostFactory", reflect.TypeOf((*floretRuntime.SubAgentReadHostFactory)(nil)), "NewHost")
-	exact("SubAgentMaintenanceHostFactory", reflect.TypeOf((*floretRuntime.SubAgentMaintenanceHostFactory)(nil)), "NewHost")
-	exact("PendingToolRecoveryHostFactory", reflect.TypeOf((*floretRuntime.PendingToolRecoveryHostFactory)(nil)), "NewHost")
 	exact("ThreadCreateHost", reflect.TypeOf((*floretRuntime.ThreadCreateHost)(nil)), "CreateThread")
 	exact("ThreadTitleHost", reflect.TypeOf((*floretRuntime.ThreadTitleHost)(nil)), "SetThreadTitle")
 	exact("ThreadForkHost", reflect.TypeOf((*floretRuntime.ThreadForkHost)(nil)), "ForkThread")
 	exact("ThreadDeleteHost", reflect.TypeOf((*floretRuntime.ThreadDeleteHost)(nil)), "DeleteThread")
-	exact("SubAgentMaintenanceHost", reflect.TypeOf((*floretRuntime.SubAgentMaintenanceHost)(nil)), "CloseSubAgents")
 	exact("SubAgentReadHost", reflect.TypeOf((*floretRuntime.SubAgentReadHost)(nil)),
-		"ListSubAgentActivityTimeline", "ListSubAgents", "ReadSubAgentDetail")
-	exact("PendingToolSettlementHost", reflect.TypeOf((*floretRuntime.PendingToolSettlementHost)(nil)), "SettlePendingTool")
+		"ListSubAgentActivityTimeline", "ListSubAgents", "ReadArtifact", "ReadSubAgentDetail")
+	exact("PendingToolRecoveryHost", reflect.TypeOf((*floretRuntime.PendingToolRecoveryHost)(nil)), "SettlePendingTool")
+	exact("InterruptedTurnRecoveryHost", reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHost)(nil)), "RecoverInterruptedTurn")
 	exact("TurnExecutionHost", reflect.TypeOf((*floretRuntime.TurnExecutionHost)(nil)),
-		"CompletePendingTool", "ListPendingApprovals", "RetryTurn", "RunTurn", "UpdateThreadAgentTodos")
+		"CompletePendingTool", "ListPendingApprovals", "RetryTurn", "RunTurn", "SettlePendingTool", "UpdateThreadAgentTodos")
 	exact("ThreadCompactionHost", reflect.TypeOf((*floretRuntime.ThreadCompactionHost)(nil)), "CompactThread")
 	exact("SubAgentHost", reflect.TypeOf((*floretRuntime.SubAgentHost)(nil)),
-		"CloseSubAgent", "SendSubAgentInput", "SpawnSubAgent", "WaitSubAgents")
+		"CloseSubAgent", "PublishPendingToolCompletion", "SendSubAgentInput", "SettlePendingTool", "SpawnSubAgent", "WaitSubAgents")
 	exact("ThreadReadHost", reflect.TypeOf((*floretRuntime.ThreadReadHost)(nil)),
 		"ListThreadDetailEvents", "ListThreadTurns", "ReadLatestThreadTurn", "ReadThread",
-		"ReadThreadAgentTodos", "ReadThreadContext", "ReadThreadOverview", "ReadTurnProjection")
+		"ReadArtifact", "ReadThreadAgentTodos", "ReadThreadContext", "ReadThreadOverview", "ReadTurnProjection")
 	exact("Store", reflect.TypeOf((*floretRuntime.Store)(nil)), "Close")
 	for name, typ := range map[string]reflect.Type{
-		"HostBootstrap":                  reflect.TypeOf(floretRuntime.HostBootstrap{}),
-		"TurnExecutionHostFactory":       reflect.TypeOf(floretRuntime.TurnExecutionHostFactory{}),
-		"ThreadCompactionHostFactory":    reflect.TypeOf(floretRuntime.ThreadCompactionHostFactory{}),
-		"SubAgentHostFactory":            reflect.TypeOf(floretRuntime.SubAgentHostFactory{}),
-		"SubAgentReadHostFactory":        reflect.TypeOf(floretRuntime.SubAgentReadHostFactory{}),
-		"SubAgentMaintenanceHostFactory": reflect.TypeOf(floretRuntime.SubAgentMaintenanceHostFactory{}),
-		"PendingToolRecoveryHostFactory": reflect.TypeOf(floretRuntime.PendingToolRecoveryHostFactory{}),
-		"TurnExecutionHost":              reflect.TypeOf(floretRuntime.TurnExecutionHost{}),
-		"ThreadCompactionHost":           reflect.TypeOf(floretRuntime.ThreadCompactionHost{}),
-		"SubAgentHost":                   reflect.TypeOf(floretRuntime.SubAgentHost{}),
-		"SubAgentReadHost":               reflect.TypeOf(floretRuntime.SubAgentReadHost{}),
-		"ThreadCreateHost":               reflect.TypeOf(floretRuntime.ThreadCreateHost{}),
-		"ThreadReadHost":                 reflect.TypeOf(floretRuntime.ThreadReadHost{}),
-		"ThreadTitleHost":                reflect.TypeOf(floretRuntime.ThreadTitleHost{}),
-		"ThreadForkHost":                 reflect.TypeOf(floretRuntime.ThreadForkHost{}),
-		"ThreadDeleteHost":               reflect.TypeOf(floretRuntime.ThreadDeleteHost{}),
-		"SubAgentMaintenanceHost":        reflect.TypeOf(floretRuntime.SubAgentMaintenanceHost{}),
-		"PendingToolSettlementHost":      reflect.TypeOf(floretRuntime.PendingToolSettlementHost{}),
+		"HostBootstrap":                     reflect.TypeOf(floretRuntime.HostBootstrap{}),
+		"ThreadCreateHostBinder":            reflect.TypeOf(floretRuntime.ThreadCreateHostBinder{}),
+		"ThreadReadHostBinder":              reflect.TypeOf(floretRuntime.ThreadReadHostBinder{}),
+		"ThreadTitleHostBinder":             reflect.TypeOf(floretRuntime.ThreadTitleHostBinder{}),
+		"ThreadForkHostBinder":              reflect.TypeOf(floretRuntime.ThreadForkHostBinder{}),
+		"ThreadDeleteHostBinder":            reflect.TypeOf(floretRuntime.ThreadDeleteHostBinder{}),
+		"TurnExecutionHostBinder":           reflect.TypeOf(floretRuntime.TurnExecutionHostBinder{}),
+		"ThreadCompactionHostBinder":        reflect.TypeOf(floretRuntime.ThreadCompactionHostBinder{}),
+		"SubAgentHostBinder":                reflect.TypeOf(floretRuntime.SubAgentHostBinder{}),
+		"SubAgentReadHostBinder":            reflect.TypeOf(floretRuntime.SubAgentReadHostBinder{}),
+		"PendingToolRecoveryHostBinder":     reflect.TypeOf(floretRuntime.PendingToolRecoveryHostBinder{}),
+		"InterruptedTurnRecoveryHostBinder": reflect.TypeOf(floretRuntime.InterruptedTurnRecoveryHostBinder{}),
+		"TurnExecutionHostFactory":          reflect.TypeOf(floretRuntime.TurnExecutionHostFactory{}),
+		"ThreadCompactionHostFactory":       reflect.TypeOf(floretRuntime.ThreadCompactionHostFactory{}),
+		"SubAgentHostFactory":               reflect.TypeOf(floretRuntime.SubAgentHostFactory{}),
+		"TurnExecutionHost":                 reflect.TypeOf(floretRuntime.TurnExecutionHost{}),
+		"ThreadCompactionHost":              reflect.TypeOf(floretRuntime.ThreadCompactionHost{}),
+		"SubAgentHost":                      reflect.TypeOf(floretRuntime.SubAgentHost{}),
+		"SubAgentReadHost":                  reflect.TypeOf(floretRuntime.SubAgentReadHost{}),
+		"ThreadCreateHost":                  reflect.TypeOf(floretRuntime.ThreadCreateHost{}),
+		"ThreadReadHost":                    reflect.TypeOf(floretRuntime.ThreadReadHost{}),
+		"ThreadTitleHost":                   reflect.TypeOf(floretRuntime.ThreadTitleHost{}),
+		"ThreadForkHost":                    reflect.TypeOf(floretRuntime.ThreadForkHost{}),
+		"ThreadDeleteHost":                  reflect.TypeOf(floretRuntime.ThreadDeleteHost{}),
+		"PendingToolRecoveryHost":           reflect.TypeOf(floretRuntime.PendingToolRecoveryHost{}),
+		"InterruptedTurnRecoveryHost":       reflect.TypeOf(floretRuntime.InterruptedTurnRecoveryHost{}),
 	} {
 		for i := 0; i < typ.NumField(); i++ {
 			if typ.Field(i).PkgPath == "" {
@@ -375,20 +456,116 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 		}
 	}
 	exactFields("TurnExecutionHostOptions", reflect.TypeOf(floretRuntime.TurnExecutionHostOptions{}),
-		"Approver", "Capabilities", "Config", "IDGenerator", "LoopLimits", "ModelGateway",
-		"ModelGatewayIdentity", "Sink", "ThreadID", "ThreadTitleMode", "ToolSurfaceProvider", "Tools")
+		"Capabilities", "Config", "EffectAuthorizationGate", "IDGenerator", "LoopLimits", "ModelGateway",
+		"ModelGatewayIdentity", "Sink", "ThreadTitleMode", "ToolSurfaceProvider", "Tools")
 	exactFields("ThreadCompactionHostOptions", compactionOptions,
-		"Config", "IDGenerator", "LoopLimits", "ModelGateway", "ModelGatewayIdentity", "Sink", "ThreadID")
+		"Config", "IDGenerator", "LoopLimits", "ModelGateway", "ModelGatewayIdentity", "Sink")
 	exactFields("SubAgentHostOptions", reflect.TypeOf(floretRuntime.SubAgentHostOptions{}),
-		"Approver", "Capabilities", "Config", "IDGenerator", "LoopLimits", "ModelGateway",
-		"ModelGatewayIdentity", "ParentThreadID", "Sink", "SubAgentRunTimeout", "ThreadTitleMode",
+		"Capabilities", "Config", "EffectAuthorizationGate", "IDGenerator", "LoopLimits", "ModelGateway",
+		"ModelGatewayIdentity", "Sink", "SubAgentRunTimeout", "ThreadTitleMode",
 		"ToolSurfaceProvider", "Tools")
-	exactFields("PendingToolRecoveryHostOptions", reflect.TypeOf(floretRuntime.PendingToolRecoveryHostOptions{}),
-		"ParentThreadID", "Sink", "ThreadID")
-	exactFields("SubAgentMaintenanceHostOptions", reflect.TypeOf(floretRuntime.SubAgentMaintenanceHostOptions{}),
-		"ParentThreadID", "Sink")
-	exactFields("SubAgentReadHostOptions", reflect.TypeOf(floretRuntime.SubAgentReadHostOptions{}),
-		"ParentThreadID", "Sink")
+	exactFields("ArtifactRef", reflect.TypeOf(floretRuntime.ArtifactRef{}),
+		"ID", "Kind", "MIME", "SHA256", "SafeLabel", "SizeBytes")
+	exactFields("ReadArtifactRequest", reflect.TypeOf(floretRuntime.ReadArtifactRequest{}),
+		"ArtifactID", "ThreadID")
+	exactFields("ArtifactContent", reflect.TypeOf(floretRuntime.ArtifactContent{}), "Ref", "Text")
+}
+
+func TestTestUIAgentSessionCannotRetainCapabilityIssuers(t *testing.T) {
+	path := filepath.Join("internal", "testui", "runner.go")
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			typeSpec := spec.(*ast.TypeSpec)
+			if typeSpec.Name.Name != "agentSession" {
+				continue
+			}
+			found = true
+			shape := typeSpec.Type.(*ast.StructType)
+			for _, field := range shape.Fields.List {
+				ast.Inspect(field.Type, func(node ast.Node) bool {
+					ident, ok := node.(*ast.Ident)
+					if ok && (strings.HasSuffix(ident.Name, "Binder") || ident.Name == "testUIRuntimeCapabilityBinders") {
+						t.Fatalf("test UI agentSession retains Store-wide capability issuer %s", ident.Name)
+					}
+					return true
+				})
+			}
+		}
+	}
+	if !found {
+		t.Fatal("test UI agentSession type not found")
+	}
+}
+
+func TestTestUIRuntimeConstructionChecksExactAuthorityBeforeHostSideEffects(t *testing.T) {
+	text := readTextFile(t, filepath.Join("internal", "testui", "runner.go"))
+	start := strings.Index(text, "func (sess *agentSession) prepareRuntime(")
+	if start < 0 {
+		t.Fatal("test UI prepareRuntime function not found")
+	}
+	tail := text[start:]
+	end := strings.Index(tail, "\nfunc (sess *agentSession) applyRuntime(")
+	if end < 0 {
+		t.Fatal("test UI prepareRuntime function end not found")
+	}
+	body := tail[:end]
+	turnAuthority := strings.Index(body, "sess.turnFactory.NewHost(")
+	subAgentAuthority := strings.Index(body, "sess.subagentFactory.NewHost(")
+	if turnAuthority < 0 || subAgentAuthority < 0 {
+		t.Fatal("test UI prepareRuntime must construct exact turn and SubAgent authorities")
+	}
+	for _, sideEffect := range []string{
+		"registerAgentSessionTools(",
+		"r.registerAgentCapabilities(",
+		"r.providerFactory()(",
+		"r.titleProviderFactory()(",
+	} {
+		position := strings.Index(body, sideEffect)
+		if position < 0 {
+			t.Fatalf("test UI prepareRuntime is missing %q", sideEffect)
+		}
+		if position < turnAuthority || position < subAgentAuthority {
+			t.Fatalf("test UI prepareRuntime starts %q before exact authority construction", sideEffect)
+		}
+	}
+}
+
+func TestProviderCapabilityHostConstructionRequiresAuthorityContext(t *testing.T) {
+	contextType := reflect.TypeOf((*context.Context)(nil)).Elem()
+	for _, item := range []struct {
+		typ    reflect.Type
+		method string
+	}{
+		{reflect.TypeOf((*floretRuntime.ThreadReadHostBinder)(nil)), "NewHost"},
+		{reflect.TypeOf((*floretRuntime.ThreadTitleHostBinder)(nil)), "NewHost"},
+		{reflect.TypeOf((*floretRuntime.ThreadForkHostBinder)(nil)), "NewHost"},
+		{reflect.TypeOf((*floretRuntime.ThreadDeleteHostBinder)(nil)), "NewHost"},
+		{reflect.TypeOf((*floretRuntime.SubAgentReadHostBinder)(nil)), "NewHost"},
+		{reflect.TypeOf((*floretRuntime.PendingToolRecoveryHostBinder)(nil)), "NewThreadHost"},
+		{reflect.TypeOf((*floretRuntime.PendingToolRecoveryHostBinder)(nil)), "NewSubAgentHost"},
+		{reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHostBinder)(nil)), "NewThreadHost"},
+		{reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHostBinder)(nil)), "NewSubAgentHost"},
+		{reflect.TypeOf((*floretRuntime.TurnExecutionHostFactory)(nil)), "NewHost"},
+		{reflect.TypeOf((*floretRuntime.ThreadCompactionHostFactory)(nil)), "NewHost"},
+		{reflect.TypeOf((*floretRuntime.SubAgentHostFactory)(nil)), "NewHost"},
+	} {
+		method, ok := item.typ.MethodByName(item.method)
+		if !ok {
+			t.Fatalf("%s is missing %s", item.typ.Elem().Name(), item.method)
+		}
+		if method.Type.NumIn() < 2 || method.Type.In(1) != contextType {
+			t.Fatalf("%s.%s must receive context.Context first, got %s", item.typ.Elem().Name(), item.method, method.Type)
+		}
+	}
 }
 
 func TestRuntimePrivateProviderHostOnlyBacksApprovedCapabilities(t *testing.T) {
@@ -441,18 +618,18 @@ func TestRuntimePrivateProviderHostOnlyBacksApprovedCapabilities(t *testing.T) {
 
 func TestRuntimeBootstrapAuthorityIsConfinedToCompositionConstructors(t *testing.T) {
 	allowed := map[string]bool{
-		"NewHostBootstrap":                  true,
-		"NewPendingToolRecoveryHostFactory": true,
-		"NewSubAgentHostFactory":            true,
-		"NewSubAgentMaintenanceHostFactory": true,
-		"NewSubAgentReadHostFactory":        true,
-		"NewThreadCompactionHostFactory":    true,
-		"NewThreadCreateHost":               true,
-		"NewThreadDeleteHost":               true,
-		"NewThreadForkHost":                 true,
-		"NewThreadReadHost":                 true,
-		"NewThreadTitleHost":                true,
-		"NewTurnExecutionHostFactory":       true,
+		"ConfigureHostCapabilities":            true,
+		"NewInterruptedTurnRecoveryHostBinder": true,
+		"NewPendingToolRecoveryHostBinder":     true,
+		"NewSubAgentHostBinder":                true,
+		"NewSubAgentReadHostBinder":            true,
+		"NewThreadCompactionHostBinder":        true,
+		"NewThreadCreateHostBinder":            true,
+		"NewThreadDeleteHostBinder":            true,
+		"NewThreadForkHostBinder":              true,
+		"NewThreadReadHostBinder":              true,
+		"NewThreadTitleHostBinder":             true,
+		"NewTurnExecutionHostBinder":           true,
 	}
 	found := map[string]bool{}
 	for _, path := range walkAllFiles(t, "runtime") {
@@ -513,14 +690,53 @@ func TestRuntimeBootstrapAuthorityIsConfinedToCompositionConstructors(t *testing
 	}
 }
 
+func TestRuntimeStoreAuthorityCrossesOnlyCompositionBoundary(t *testing.T) {
+	allowed := map[string]bool{
+		"ConfigureHostCapabilities": true,
+		"NewMemoryStore":            true,
+		"OpenSQLiteStore":           true,
+	}
+	found := map[string]bool{}
+	for _, path := range walkAllFiles(t, "runtime") {
+		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil || !ast.IsExported(fn.Name.Name) {
+				continue
+			}
+			usesStore := false
+			ast.Inspect(fn.Type, func(node ast.Node) bool {
+				ident, ok := node.(*ast.Ident)
+				if ok && ident.Name == "Store" {
+					usesStore = true
+				}
+				return true
+			})
+			if !usesStore {
+				continue
+			}
+			if !allowed[fn.Name.Name] {
+				t.Fatalf("runtime Store authority leaks through public function %s in %s", fn.Name.Name, path)
+			}
+			found[fn.Name.Name] = true
+		}
+	}
+	if !reflect.DeepEqual(found, allowed) {
+		t.Fatalf("public Store boundary = %#v, want %#v", found, allowed)
+	}
+}
+
 func TestRuntimeHostOptionsDoNotCarryAuthorityRoots(t *testing.T) {
 	for _, typ := range []reflect.Type{
 		reflect.TypeOf(floretRuntime.TurnExecutionHostOptions{}),
 		reflect.TypeOf(floretRuntime.ThreadCompactionHostOptions{}),
 		reflect.TypeOf(floretRuntime.SubAgentHostOptions{}),
-		reflect.TypeOf(floretRuntime.SubAgentReadHostOptions{}),
-		reflect.TypeOf(floretRuntime.SubAgentMaintenanceHostOptions{}),
-		reflect.TypeOf(floretRuntime.PendingToolRecoveryHostOptions{}),
 	} {
 		for _, field := range []string{"Store", "Bootstrap", "Runtime"} {
 			if _, ok := typ.FieldByName(field); ok {
@@ -532,25 +748,21 @@ func TestRuntimeHostOptionsDoNotCarryAuthorityRoots(t *testing.T) {
 
 func TestRuntimeCapabilityConstructorsAndAggregatesStayExplicit(t *testing.T) {
 	allowedConstructors := map[string]bool{
-		"NewHostBootstrap":                     true,
-		"NewPendingToolRecoveryHostFactory":    true,
-		"NewSubAgentHostFactory":               true,
-		"NewSubAgentMaintenanceHostFactory":    true,
-		"NewSubAgentPendingToolSettlementHost": true,
-		"NewSubAgentReadHostFactory":           true,
-		"NewThreadCompactionHostFactory":       true,
-		"NewThreadCreateHost":                  true,
-		"NewThreadDeleteHost":                  true,
-		"NewThreadForkHost":                    true,
-		"NewThreadReadHost":                    true,
-		"NewThreadTitleHost":                   true,
-		"NewTurnExecutionHostFactory":          true,
-		"NewTurnPendingToolSettlementHost":     true,
+		"NewPendingToolRecoveryHostBinder":     true,
+		"NewInterruptedTurnRecoveryHostBinder": true,
+		"NewSubAgentHostBinder":                true,
+		"NewSubAgentReadHostBinder":            true,
+		"NewThreadCompactionHostBinder":        true,
+		"NewThreadCreateHostBinder":            true,
+		"NewThreadDeleteHostBinder":            true,
+		"NewThreadForkHostBinder":              true,
+		"NewThreadReadHostBinder":              true,
+		"NewThreadTitleHostBinder":             true,
+		"NewTurnExecutionHostBinder":           true,
 	}
 	foundConstructors := map[string]bool{}
 	authorityOwners := map[string]string{
 		"CloseSubAgent":                "SubAgentHost",
-		"CloseSubAgents":               "SubAgentMaintenanceHost",
 		"CompactThread":                "ThreadCompactionHost",
 		"CompletePendingTool":          "TurnExecutionHost",
 		"CreateThread":                 "ThreadCreateHost",
@@ -572,18 +784,26 @@ func TestRuntimeCapabilityConstructorsAndAggregatesStayExplicit(t *testing.T) {
 		"RunTurn":                      "TurnExecutionHost",
 		"SendSubAgentInput":            "SubAgentHost",
 		"SetThreadTitle":               "ThreadTitleHost",
-		"SettlePendingTool":            "PendingToolSettlementHost",
 		"SpawnSubAgent":                "SubAgentHost",
 		"UpdateThreadAgentTodos":       "TurnExecutionHost",
 		"WaitSubAgents":                "SubAgentHost",
 	}
 	capabilityTypes := map[string]bool{
-		"HostBootstrap": true, "PendingToolSettlementHost": true, "PendingToolRecoveryHostFactory": true,
-		"SubAgentHost": true, "SubAgentHostFactory": true, "SubAgentMaintenanceHost": true, "SubAgentMaintenanceHostFactory": true,
-		"SubAgentReadHost": true, "SubAgentReadHostFactory": true,
+		"HostBootstrap": true, "PendingToolRecoveryHost": true, "PendingToolRecoveryHostBinder": true,
+		"InterruptedTurnRecoveryHost": true, "InterruptedTurnRecoveryHostBinder": true,
+		"ThreadCreateHostBinder": true, "ThreadReadHostBinder": true, "ThreadTitleHostBinder": true,
+		"ThreadForkHostBinder": true, "ThreadDeleteHostBinder": true,
+		"SubAgentHost": true, "SubAgentHostBinder": true, "SubAgentHostFactory": true,
+		"SubAgentReadHost": true, "SubAgentReadHostBinder": true,
 		"ThreadCompactionHost": true, "ThreadCreateHost": true, "ThreadDeleteHost": true,
-		"ThreadCompactionHostFactory": true, "ThreadForkHost": true, "ThreadReadHost": true, "ThreadTitleHost": true,
-		"TurnExecutionHost": true, "TurnExecutionHostFactory": true,
+		"ThreadCompactionHostBinder": true, "ThreadCompactionHostFactory": true,
+		"ThreadForkHost": true, "ThreadReadHost": true, "ThreadTitleHost": true,
+		"TurnExecutionHost": true, "TurnExecutionHostBinder": true, "TurnExecutionHostFactory": true,
+	}
+	settlementOwners := map[string]bool{
+		"PendingToolRecoveryHost": true,
+		"SubAgentHost":            true,
+		"TurnExecutionHost":       true,
 	}
 	for _, path := range walkAllFiles(t, "runtime") {
 		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
@@ -616,6 +836,19 @@ func TestRuntimeCapabilityConstructorsAndAggregatesStayExplicit(t *testing.T) {
 					foundConstructors[typed.Name.Name] = true
 				}
 				if typed.Recv != nil && ast.IsExported(typed.Name.Name) {
+					if typed.Name.Name == "SettlePendingTool" {
+						receiver := ""
+						ast.Inspect(typed.Recv.List[0].Type, func(node ast.Node) bool {
+							if ident, ok := node.(*ast.Ident); ok {
+								receiver = ident.Name
+							}
+							return true
+						})
+						if !settlementOwners[receiver] {
+							t.Fatalf("runtime settlement receiver = %s", receiver)
+						}
+						continue
+					}
 					owner, authorityMethod := authorityOwners[typed.Name.Name]
 					if !authorityMethod {
 						continue
@@ -627,9 +860,6 @@ func TestRuntimeCapabilityConstructorsAndAggregatesStayExplicit(t *testing.T) {
 						}
 						return true
 					})
-					if typed.Name.Name == "SettlePendingTool" && receiver != owner {
-						t.Fatalf("runtime authority method %s receiver = %s, want %s", typed.Name.Name, receiver, owner)
-					}
 					if ast.IsExported(receiver) && receiver != owner {
 						t.Fatalf("runtime authority method %s receiver = %s, want %s", typed.Name.Name, receiver, owner)
 					}
@@ -660,7 +890,7 @@ func TestRuntimeCapabilityConstructorsAndAggregatesStayExplicit(t *testing.T) {
 								t.Fatalf("runtime exported interface %s embeds another contract", typeSpec.Name.Name)
 							}
 							for _, name := range field.Names {
-								if _, ok := authorityOwners[name.Name]; ok {
+								if _, ok := authorityOwners[name.Name]; ok || name.Name == "SettlePendingTool" {
 									t.Fatalf("runtime interface %s aggregates authority method %s", typeSpec.Name.Name, name.Name)
 								}
 							}
@@ -988,8 +1218,9 @@ func TestPromptCacheIdentityUsesPromptScope(t *testing.T) {
 	sqliteText := strings.Join([]string{
 		readTextFile(t, filepath.Join("internal", "storage", "sqlite", "schema.go")),
 		readTextFile(t, filepath.Join("internal", "storage", "sqlite", "sqlitestore.go")),
+		readTextFile(t, filepath.Join("internal", "storage", "sqlite", "authority_kernel.go")),
 	}, "\n")
-	for _, want := range []string{"prompt_scope_id TEXT NOT NULL", "DeletePromptScopes", "DeleteThreadTreeData"} {
+	for _, want := range []string{"prompt_scope_id TEXT NOT NULL", "DeletePromptScopes", "DeleteRootTree"} {
 		if !strings.Contains(sqliteText, want) {
 			t.Fatalf("sqlite storage contract missing %q", want)
 		}
@@ -1095,6 +1326,50 @@ func TestRemovedToolHandlerOrHostedDispatchDoesNotReturn(t *testing.T) {
 	}
 	if strings.Contains(text, "HostedToolDefinition") || strings.Contains(text, "HostedTools") {
 		t.Fatalf("generic local tool runtime must not dispatch provider-hosted tools")
+	}
+}
+
+func TestToolRegistryExposesOnlyAuthorityGatedDispatch(t *testing.T) {
+	registryType := reflect.TypeOf((*floretTools.Registry)(nil))
+	got := make([]string, 0, registryType.NumMethod())
+	for index := 0; index < registryType.NumMethod(); index++ {
+		got = append(got, registryType.Method(index).Name)
+	}
+	want := []string{"ActivityForCall", "Definition", "Definitions", "Dispatch", "ExposedDefinitions", "OutputPolicyFor", "Register"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("tools.Registry exported method set = %#v, want %#v", got, want)
+	}
+	text := readTextFile(t, filepath.Join("tools", "tools.go"))
+	for _, want := range []string{
+		"if opts.EffectDispatcher == nil",
+		"ErrEffectDispatcherRequired",
+		"result = opts.EffectDispatcher(ctx, EffectDispatchRequest{",
+		"result.effectFinalizationRequired = true",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("tools.Registry dispatch boundary is missing %q", want)
+		}
+	}
+}
+
+func TestToolsPermissionSourceDoesNotRestoreApprovalCallbackContract(t *testing.T) {
+	text := readTextFile(t, filepath.Join("tools", "permission.go"))
+	for _, removed := range []string{
+		"type Approval" + "Request struct",
+		"type Permission" + "Decision struct",
+		"type Permission" + "DecisionState string",
+		"type Appro" + "ver func",
+		"Permission" + "DecisionAllow",
+		"Permission" + "DecisionDeny",
+	} {
+		if strings.Contains(text, removed) {
+			t.Fatalf("tools permission source restored orphan approval contract %q", removed)
+		}
+	}
+	for _, retained := range []string{"type PermissionSpec struct", "type PermissionResolver func", "type ResourceRef struct"} {
+		if !strings.Contains(text, retained) {
+			t.Fatalf("tools permission source dropped retained contract %q", retained)
+		}
 	}
 }
 

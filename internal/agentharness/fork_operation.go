@@ -11,40 +11,24 @@ import (
 	"io"
 	"slices"
 	"strings"
-	"time"
 
+	"github.com/floegence/floret/internal/session/artifact"
 	"github.com/floegence/floret/internal/sessiontree"
 	"github.com/floegence/floret/internal/storage"
 )
 
-const forkOperationPlanVersion = 2
+const forkOperationPlanVersion = storage.ForkOperationPlanVersion
 
 const (
 	forkErrorDestinationConflict = "destination_conflict"
 )
 
-type forkOperationPlan struct {
-	Version            int            `json:"version"`
-	OperationID        string         `json:"operation_id"`
-	RequestFingerprint string         `json:"request_fingerprint"`
-	PreparedAt         time.Time      `json:"prepared_at"`
-	Root               forkPlanNode   `json:"root"`
-	TerminalChildren   []forkPlanNode `json:"terminal_children,omitempty"`
-}
-
-type forkPlanNode struct {
-	NodeID              string                           `json:"node_id"`
-	SourceThreadID      string                           `json:"source_thread_id"`
-	SourceEntryID       string                           `json:"source_entry_id,omitempty"`
-	DestinationThreadID string                           `json:"destination_thread_id"`
-	TurnIDMap           map[string]string                `json:"turn_id_map,omitempty"`
-	RunIDMap            map[string]string                `json:"run_id_map,omitempty"`
-	DestinationMeta     *sessiontree.ForkDestinationMeta `json:"destination_meta,omitempty"`
-}
+type forkOperationPlan = storage.ForkOperationPlan
+type forkPlanNode = storage.ForkOperationPlanNode
 
 type persistedForkResult struct {
-	OperationID string        `json:"operation_id"`
-	Summary     ThreadSummary `json:"thread"`
+	OperationID string `json:"operation_id"`
+	ThreadID    string `json:"thread_id"`
 }
 
 type forkRequestIdentity struct {
@@ -90,6 +74,8 @@ func (h *AgentHarness) forkThreadReplayable(ctx context.Context, opts ForkOption
 	record, _, err := h.options.ForkOperations.PrepareForkOperation(ctx, storage.ForkOperationRecord{
 		OperationID:        opts.OperationID,
 		RequestFingerprint: fingerprint,
+		SourceThreadIDs:    forkPlanSourceThreadIDs(plan),
+		AuthorityThreadIDs: forkPlanAuthorityThreadIDs(plan),
 		State:              storage.ForkOperationPrepared,
 		Plan:               planJSON,
 		CreatedAt:          plan.PreparedAt,
@@ -109,6 +95,14 @@ func (h *AgentHarness) forkThreadReplayable(ctx context.Context, opts ForkOption
 		return ForkResult{}, ErrForkOperationConflict
 	}
 	return h.resumeForkOperation(ctx, record, plan)
+}
+
+func forkPlanSourceThreadIDs(plan forkOperationPlan) []string {
+	return storage.ForkOperationPlanSourceThreadIDs(plan)
+}
+
+func forkPlanAuthorityThreadIDs(plan forkOperationPlan) []string {
+	return storage.ForkOperationPlanAuthorityThreadIDs(plan)
 }
 
 func (h *AgentHarness) prepareForkOperationPlan(ctx context.Context, opts ForkOptions, fingerprint string) (forkOperationPlan, error) {
@@ -151,8 +145,7 @@ func (h *AgentHarness) prepareForkOperationPlan(ctx context.Context, opts ForkOp
 			AgentPath:       meta.AgentPath,
 			HostProfileRef:  meta.HostProfileRef,
 			ForkMode:        meta.ForkMode,
-			Closed:          meta.Closed,
-			Status:          meta.Status,
+			Lifecycle:       meta.Lifecycle,
 		}
 		terminal = append(terminal, node)
 	}
@@ -167,6 +160,10 @@ func (h *AgentHarness) prepareForkOperationPlan(ctx context.Context, opts ForkOp
 }
 
 func (h *AgentHarness) prepareForkPlanNode(ctx context.Context, nodeID, sourceThreadID, entryID string, position sessiontree.ForkPosition, destinationThreadID string, rewriteIdentities bool) (forkPlanNode, error) {
+	sourceMeta, err := h.options.Repo.Thread(ctx, sourceThreadID)
+	if err != nil {
+		return forkPlanNode{}, err
+	}
 	path, err := h.forkSourcePath(ctx, ForkOptions{SourceThreadID: sourceThreadID, EntryID: entryID, Position: position})
 	if err != nil {
 		return forkPlanNode{}, err
@@ -180,13 +177,31 @@ func (h *AgentHarness) prepareForkPlanNode(ctx context.Context, nodeID, sourceTh
 	if rewriteIdentities {
 		turnIDs, runIDs = h.forkIdentityRewriteFromPath(path)
 	}
+	artifactRepo, ok := h.options.Repo.(sessiontree.ArtifactAuthorityRepo)
+	if !ok {
+		return forkPlanNode{}, errors.New("session tree repo does not support artifact authority operations")
+	}
+	entryIDs := make([]string, len(path))
+	for index, entry := range path {
+		entryIDs[index] = entry.ID
+	}
+	closure, err := artifactRepo.ArtifactClosure(ctx, sessiontree.ArtifactClosureRequest{
+		SourceThreadID:      strings.TrimSpace(sourceThreadID),
+		DestinationThreadID: strings.TrimSpace(destinationThreadID),
+		EntryIDs:            entryIDs,
+	})
+	if err != nil {
+		return forkPlanNode{}, err
+	}
 	return forkPlanNode{
 		NodeID:              nodeID,
 		SourceThreadID:      strings.TrimSpace(sourceThreadID),
 		SourceEntryID:       resolvedEntryID,
+		SourceLeafEntryID:   strings.TrimSpace(sourceMeta.LeafID),
 		DestinationThreadID: strings.TrimSpace(destinationThreadID),
 		TurnIDMap:           turnIDs,
 		RunIDMap:            runIDs,
+		ArtifactClosure:     artifact.CloneClosure(closure),
 	}, nil
 }
 
@@ -196,7 +211,7 @@ func (h *AgentHarness) resumeForkOperation(ctx context.Context, record storage.F
 		if err := h.validateCompletedForkTargets(ctx, plan); err != nil {
 			return ForkResult{}, err
 		}
-		return h.decodeForkResult(record.Result, plan.OperationID, plan.Root.DestinationThreadID)
+		return h.decodeForkResult(ctx, record.Result, plan.OperationID, plan.Root.DestinationThreadID)
 	case storage.ForkOperationFailed:
 		return ForkResult{}, persistedForkError(record.ErrorCode, record.ErrorMessage)
 	case storage.ForkOperationPrepared:
@@ -204,91 +219,104 @@ func (h *AgentHarness) resumeForkOperation(ctx context.Context, record storage.F
 		return ForkResult{}, fmt.Errorf("invalid fork operation state %q", record.State)
 	}
 
-	nodes := append([]forkPlanNode{plan.Root}, plan.TerminalChildren...)
-	for _, node := range nodes {
-		if err := h.executeForkPlanNode(ctx, plan, node); err != nil {
-			if errors.Is(err, sessiontree.ErrForkDestinationConflict) {
-				return ForkResult{}, h.failForkOperation(ctx, record, forkErrorDestinationConflict, err)
-			}
-			return ForkResult{}, err
-		}
+	planNodes := append([]forkPlanNode{plan.Root}, plan.TerminalChildren...)
+	nodes := make([]sessiontree.ForkOptions, 0, len(planNodes))
+	for _, node := range planNodes {
+		nodes = append(nodes, forkPlanNodeOptions(plan, node))
 	}
-	thread := h.cacheThread(plan.Root.DestinationThreadID)
-	summary, err := thread.Summary(ctx)
-	if err != nil {
-		return ForkResult{}, err
-	}
-	resultJSON, err := json.Marshal(persistedForkResult{OperationID: plan.OperationID, Summary: summary})
+	resultJSON, err := json.Marshal(persistedForkResult{OperationID: plan.OperationID, ThreadID: plan.Root.DestinationThreadID})
 	if err != nil {
 		return ForkResult{}, err
 	}
 	finishedAt := h.now()
-	record.State = storage.ForkOperationCompleted
-	record.Result = resultJSON
-	record.UpdatedAt = finishedAt
-	record.FinishedAt = finishedAt
-	if err := h.options.ForkOperations.UpdateForkOperation(ctx, record); err != nil {
-		if errors.Is(err, storage.ErrForkOperationConflict) {
-			current, loadErr := h.options.ForkOperations.ForkOperation(ctx, record.OperationID)
-			if loadErr == nil && current.State == storage.ForkOperationCompleted {
-				if validateErr := h.validateCompletedForkTargets(ctx, plan); validateErr != nil {
-					return ForkResult{}, validateErr
-				}
-				return h.decodeForkResult(current.Result, plan.OperationID, plan.Root.DestinationThreadID)
-			}
+	committed, replayed, err := h.options.ForkOperations.CommitForkOperation(ctx, storage.ForkOperationCommitRequest{
+		OperationID:        plan.OperationID,
+		RequestFingerprint: plan.RequestFingerprint,
+		Plan:               record.Plan,
+		Nodes:              nodes,
+		Result:             resultJSON,
+		FinishedAt:         finishedAt,
+	})
+	if err != nil {
+		if errors.Is(err, sessiontree.ErrForkDestinationConflict) {
+			return ForkResult{}, h.failForkOperation(ctx, record, forkErrorDestinationConflict, err)
 		}
 		return ForkResult{}, err
 	}
-	return h.decodeForkResult(resultJSON, plan.OperationID, plan.Root.DestinationThreadID)
+	if err := h.validateCompletedForkTargets(ctx, plan); err != nil {
+		return ForkResult{}, err
+	}
+	if !replayed {
+		for _, node := range planNodes {
+			h.emit(HarnessEvent{Type: EventThreadForked, ThreadID: node.DestinationThreadID, EntryID: node.SourceEntryID, Metadata: map[string]string{"source_thread_id": node.SourceThreadID, "fork_operation_id": plan.OperationID, "fork_operation_node_id": node.NodeID}})
+		}
+	}
+	return h.decodeForkResult(ctx, committed.Result, plan.OperationID, plan.Root.DestinationThreadID)
 }
 
-func (h *AgentHarness) executeForkPlanNode(ctx context.Context, plan forkOperationPlan, node forkPlanNode) error {
-	_, err := h.options.Repo.Fork(ctx, sessiontree.ForkOptions{
-		SourceThreadID:  node.SourceThreadID,
-		EntryID:         node.SourceEntryID,
-		EntryIDPinned:   true,
-		Position:        sessiontree.ForkAt,
-		NewThreadID:     node.DestinationThreadID,
-		OperationID:     plan.OperationID,
-		OperationNodeID: node.NodeID,
-		Now:             plan.PreparedAt,
-		TurnIDMap:       node.TurnIDMap,
-		RunIDMap:        node.RunIDMap,
-		DestinationMeta: node.DestinationMeta,
-		RewriteEntry:    rewriteForkContextEntry,
-	})
-	if err != nil {
-		return err
+func forkPlanNodeOptions(plan forkOperationPlan, node forkPlanNode) sessiontree.ForkOptions {
+	return sessiontree.ForkOptions{
+		SourceThreadID:       node.SourceThreadID,
+		EntryID:              node.SourceEntryID,
+		EntryIDPinned:        true,
+		ExpectedSourceLeafID: node.SourceLeafEntryID,
+		Position:             sessiontree.ForkAt,
+		NewThreadID:          node.DestinationThreadID,
+		OperationID:          plan.OperationID,
+		OperationNodeID:      node.NodeID,
+		Now:                  plan.PreparedAt,
+		TurnIDMap:            node.TurnIDMap,
+		RunIDMap:             node.RunIDMap,
+		DestinationMeta:      node.DestinationMeta,
+		ArtifactClosure:      artifact.CloneClosure(node.ArtifactClosure),
+		RewriteEntry:         rewriteForkContextEntry,
 	}
-	h.emit(HarnessEvent{Type: EventThreadForked, ThreadID: node.DestinationThreadID, EntryID: node.SourceEntryID, Metadata: map[string]string{"source_thread_id": node.SourceThreadID, "fork_operation_id": plan.OperationID, "fork_operation_node_id": node.NodeID}})
-	return nil
 }
 
 func (h *AgentHarness) validateCompletedForkTargets(ctx context.Context, plan forkOperationPlan) error {
 	nodes := append([]forkPlanNode{plan.Root}, plan.TerminalChildren...)
+	deleted := 0
 	for _, node := range nodes {
 		meta, err := h.options.Repo.Thread(ctx, node.DestinationThreadID)
-		if errors.Is(err, sessiontree.ErrThreadNotFound) {
-			return fmt.Errorf("%w: %s", ErrForkOperationTargetMissing, node.DestinationThreadID)
+		if err == nil {
+			if meta.ForkOperationID != plan.OperationID || meta.ForkOperationNodeID != node.NodeID || meta.ForkedFromThreadID != node.SourceThreadID || meta.ForkedFromEntryID != node.SourceEntryID || !sessiontree.MatchesForkDestinationMeta(meta, node.DestinationMeta) {
+				return sessiontree.ErrAuthorityCorrupt
+			}
+			continue
 		}
-		if err != nil {
+		if !errors.Is(err, sessiontree.ErrThreadNotFound) && !errors.Is(err, sessiontree.ErrThreadDeleted) {
 			return err
 		}
-		if meta.ForkOperationID != plan.OperationID || meta.ForkOperationNodeID != node.NodeID || meta.ForkedFromThreadID != node.SourceThreadID || meta.ForkedFromEntryID != node.SourceEntryID || !sessiontree.MatchesForkDestinationMeta(meta, node.DestinationMeta) {
-			return sessiontree.ErrForkDestinationConflict
+		tombstones, ok := h.options.Repo.(sessiontree.ThreadTombstoneRepo)
+		if !ok {
+			return sessiontree.ErrAuthorityCorrupt
 		}
+		tombstone, tombstoneErr := tombstones.ThreadTombstone(ctx, node.DestinationThreadID)
+		if tombstoneErr != nil || tombstone.ForkOperationID != plan.OperationID || tombstone.ForkOperationNodeID != node.NodeID ||
+			tombstone.ForkedFromThreadID != node.SourceThreadID || tombstone.ForkedFromEntryID != node.SourceEntryID {
+			return sessiontree.ErrAuthorityCorrupt
+		}
+		deleted++
+	}
+	if deleted == len(nodes) {
+		return sessiontree.ErrThreadDeleted
+	}
+	if deleted != 0 {
+		return sessiontree.ErrAuthorityCorrupt
 	}
 	return nil
 }
 
 func (h *AgentHarness) failForkOperation(ctx context.Context, record storage.ForkOperationRecord, code string, cause error) error {
 	finishedAt := h.now()
-	record.State = storage.ForkOperationFailed
-	record.ErrorCode = code
-	record.ErrorMessage = cause.Error()
-	record.UpdatedAt = finishedAt
-	record.FinishedAt = finishedAt
-	if err := h.options.ForkOperations.UpdateForkOperation(ctx, record); err != nil && !errors.Is(err, storage.ErrForkOperationConflict) {
+	_, _, err := h.options.ForkOperations.FailForkOperation(ctx, storage.ForkOperationFailureRequest{
+		OperationID:        record.OperationID,
+		RequestFingerprint: record.RequestFingerprint,
+		ErrorCode:          code,
+		ErrorMessage:       cause.Error(),
+		FinishedAt:         finishedAt,
+	})
+	if err != nil {
 		return errors.Join(cause, err)
 	}
 	return persistedForkError(code, cause.Error())
@@ -303,59 +331,33 @@ func persistedForkError(code, message string) error {
 	}
 }
 
-func (h *AgentHarness) decodeForkResult(data json.RawMessage, operationID, destinationThreadID string) (ForkResult, error) {
+func (h *AgentHarness) decodeForkResult(ctx context.Context, data json.RawMessage, operationID, destinationThreadID string) (ForkResult, error) {
 	var persisted persistedForkResult
 	if err := decodeStrictJSON(data, &persisted); err != nil {
 		return ForkResult{}, fmt.Errorf("decode fork operation result: %w", err)
 	}
-	if persisted.OperationID != strings.TrimSpace(operationID) || persisted.Summary.ID != strings.TrimSpace(destinationThreadID) {
+	if persisted.OperationID != strings.TrimSpace(operationID) || persisted.ThreadID != strings.TrimSpace(destinationThreadID) {
 		return ForkResult{}, ErrForkOperationConflict
+	}
+	thread := h.cacheThread(persisted.ThreadID)
+	summary, err := thread.Summary(ctx)
+	if err != nil {
+		return ForkResult{}, err
 	}
 	return ForkResult{
 		OperationID: persisted.OperationID,
-		Thread:      h.cacheThread(persisted.Summary.ID),
-		Summary:     persisted.Summary,
+		Thread:      thread,
+		Summary:     summary,
 	}, nil
 }
 
 func decodeForkOperationPlan(data json.RawMessage) (forkOperationPlan, error) {
-	var plan forkOperationPlan
-	if err := decodeStrictJSON(data, &plan); err != nil {
-		return forkOperationPlan{}, err
-	}
-	return plan, nil
+	return storage.DecodeForkOperationPlan(data)
 }
 
 func validateForkOperationPlan(plan forkOperationPlan, operationID, fingerprint string) error {
-	if plan.Version != forkOperationPlanVersion ||
-		plan.OperationID != strings.TrimSpace(operationID) ||
-		plan.RequestFingerprint != strings.TrimSpace(fingerprint) ||
-		plan.PreparedAt.IsZero() {
+	if err := storage.ValidateForkOperationPlan(plan, operationID, fingerprint); err != nil {
 		return ErrForkOperationConflict
-	}
-	nodes := append([]forkPlanNode{plan.Root}, plan.TerminalChildren...)
-	seen := make(map[string]struct{}, len(nodes))
-	for index, node := range nodes {
-		if strings.TrimSpace(node.NodeID) == "" || strings.TrimSpace(node.SourceThreadID) == "" || strings.TrimSpace(node.DestinationThreadID) == "" {
-			return ErrForkOperationConflict
-		}
-		if _, duplicate := seen[node.DestinationThreadID]; duplicate {
-			return ErrForkOperationConflict
-		}
-		seen[node.DestinationThreadID] = struct{}{}
-		if index == 0 {
-			if node.NodeID != "root" || node.DestinationMeta != nil {
-				return ErrForkOperationConflict
-			}
-			continue
-		}
-		meta := node.DestinationMeta
-		if meta == nil ||
-			strings.TrimSpace(meta.ParentThreadID) != plan.Root.DestinationThreadID ||
-			strings.TrimSpace(meta.TaskName) == "" ||
-			strings.TrimSpace(meta.AgentPath) == "" {
-			return ErrForkOperationConflict
-		}
 	}
 	return nil
 }

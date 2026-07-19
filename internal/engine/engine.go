@@ -134,6 +134,23 @@ type ExecutionIdentity struct {
 	PromptScopeID string
 }
 
+type EffectResultFinalizationRequest struct {
+	RunID      string
+	ThreadID   string
+	TurnID     string
+	ToolCallID string
+	Message    session.Message
+	FullOutput *artifact.FullOutput
+}
+
+type EffectResultFinalizationResult struct {
+	Handled  bool
+	Message  session.Message
+	Replayed bool
+}
+
+type EffectResultFinalizer func(context.Context, EffectResultFinalizationRequest) (EffectResultFinalizationResult, error)
+
 type Options struct {
 	RunID                    string
 	ThreadID                 string
@@ -163,6 +180,9 @@ type Options struct {
 	MaxStopHookContinuations int
 	ManualCompactions        ManualCompactionSource
 	ToolSurfaceProvider      ToolSurfaceProvider
+	EffectDispatcher         tools.EffectDispatcher
+	EffectResultFinalizer    EffectResultFinalizer
+	ProviderRequestGate      func(context.Context) (func(), error)
 	SupplementalContext      []TurnSupplementalContextItem
 
 	toolDefinitions []provider.ToolDefinition
@@ -343,10 +363,8 @@ type Engine struct {
 	tools     *tools.Registry
 	store     session.TranscriptStore
 	prompt    cache.Store
-	artifacts artifact.Store
 	memory    *memory.Manager
 	sink      event.Sink
-	approver  tools.Approver
 	stopHook  StopHook
 	compactor CompactionManager
 	options   Options
@@ -357,17 +375,12 @@ type turnState struct {
 }
 
 type Config struct {
-	Provider provider.Provider
-	Tools    *tools.Registry
-	Store    session.TranscriptStore
-	Prompt   cache.Store
-	// Artifacts is required when a tool output policy preserves truncated full
-	// output. Runtime and harness callers provide a default store; direct engine
-	// callers may leave it nil only if their tools do not need preservation.
-	Artifacts    artifact.Store
+	Provider     provider.Provider
+	Tools        *tools.Registry
+	Store        session.TranscriptStore
+	Prompt       cache.Store
 	SystemPrompt string
 	Sink         event.Sink
-	Approver     tools.Approver
 	StopHook     StopHook
 	Compactor    CompactionManager
 	Options      Options
@@ -397,10 +410,8 @@ func New(cfg Config) (*Engine, error) {
 		tools:     cfg.Tools,
 		store:     cfg.Store,
 		prompt:    cfg.Prompt,
-		artifacts: cfg.Artifacts,
 		memory:    mem,
 		sink:      cfg.Sink,
-		approver:  cfg.Approver,
 		stopHook:  cfg.StopHook,
 		compactor: cfg.Compactor,
 		options:   cloneOptions(cfg.Options),
@@ -435,15 +446,6 @@ func (e *Engine) SetSink(sink event.Sink) {
 		return
 	}
 	e.sink = sink
-}
-
-// SetApprover replaces the tool approver for subsequent runs. It is a host
-// wiring hook and must not be called concurrently with an active Run or RunTurn.
-func (e *Engine) SetApprover(approver tools.Approver) {
-	if e == nil {
-		return
-	}
-	e.approver = approver
 }
 
 // SetStopHook replaces the stop hook for subsequent runs. It is a host wiring
@@ -617,10 +619,8 @@ func (e *Engine) runner(store session.TranscriptStore, opts Options) (*Engine, e
 		tools:     registry,
 		store:     store,
 		prompt:    prompt,
-		artifacts: e.artifacts,
 		memory:    mem,
 		sink:      e.sink,
-		approver:  e.approver,
 		stopHook:  e.stopHook,
 		compactor: e.compactor,
 		options:   cloneOptions(opts),
@@ -850,7 +850,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			}
 		}
 		var activeToolRegistry *tools.Registry
-		var toolRunOptions tools.RunOptions
+		var toolRunOptions tools.DispatchOptions
 		callActivities := map[string]*observation.ActivityPresentation{}
 		callBatchMetadata := map[string]map[string]any{}
 		if len(classifiedCalls.Ordinary) > 0 {
@@ -868,7 +868,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			if activeToolRegistry == nil {
 				activeToolRegistry = tools.NewRegistry()
 			}
-			toolRunOptions = tools.RunOptions{
+			toolRunOptions = tools.DispatchOptions{
 				RunID:         opts.RunID,
 				ThreadID:      opts.ThreadID,
 				TurnID:        opts.TurnID,
@@ -910,6 +910,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 						Metadata: mergeAnyMetadata(callBatchMetadata[update.CallID], update.Metadata),
 					})
 				},
+				EffectDispatcher: opts.EffectDispatcher,
 			}
 			for i, call := range calls {
 				activity, activityErr := activeToolRegistry.ActivityForCall(toolCall(call), toolRunOptions)
@@ -1024,20 +1025,27 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			}
 		}
 		processToolResult := func(i int, result tools.Result) error {
+			if result.DispatchErr != nil {
+				return result.DispatchErr
+			}
 			result = preparePendingToolResult(result)
 			result.Activity = sanitizeActivityPresentation(result.Activity)
 			toolResults[i] = result
 			resultStatus := toolResultStatus(result)
+			finalizeEffect := func(message session.Message, fullOutput *artifact.FullOutput) (EffectResultFinalizationResult, error) {
+				if !result.RequiresEffectFinalization() || opts.EffectResultFinalizer == nil {
+					return EffectResultFinalizationResult{}, nil
+				}
+				return opts.EffectResultFinalizer(ctx, EffectResultFinalizationRequest{
+					RunID: opts.RunID, ThreadID: opts.ThreadID, TurnID: opts.TurnID,
+					ToolCallID: result.CallID, Message: session.CloneMessage(message), FullOutput: cloneFullOutput(fullOutput),
+				})
+			}
 			projection := exactToolOutputProjection(result.Text)
 			resultLatency := time.Since(toolStarted).Milliseconds()
 			if result.Pending == nil {
 				policy := tools.MergeOutputPolicy(activeToolRegistry.OutputPolicyFor(result.Name), result.OutputPolicy)
-				var err error
-				projection, err = tools.BuildOutputProjection(ctx, toolOutputArtifactResult(result, opts, step), policy, toolArtifactStoreFor(e.artifacts))
-				if err != nil {
-					e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: resultLatency, Activity: result.Activity, Metadata: mergeToolResultMetadata(result.Metadata, i, len(calls))})
-					return err
-				}
+				projection = tools.BuildOutputProjection(result, policy)
 			}
 			text := projection.VisibleText
 			errText := ""
@@ -1049,22 +1057,50 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			wasDispatched := dispatchedCalls[result.CallID]
 			dispatchedMu.Unlock()
 			result.Activity = errorToolResultActivityPresentation(result.Activity, callActivities[result.CallID], resultStatus, errText, !wasDispatched)
-			metadata := mergeToolResultMetadata(result.Metadata, i, len(calls))
 			resultView := (*session.ToolResultView)(nil)
 			if result.Pending == nil {
-				metadata = mergeToolResultMetadata(toolProjectionMetadata(result.Metadata, projection), i, len(calls))
 				resultView = toolResultView(projection)
 			}
 			if resultView == nil {
 				resultView = &session.ToolResultView{}
 			}
 			resultView.Status = resultStatus
-			e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: resultLatency, Activity: result.Activity, Metadata: metadata, Artifacts: eventArtifacts(projection, result.Artifacts)})
 			toolMessages[i] = e.stableMessage(opts.RunID, session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: resultView, Activity: sessionActivityPresentation(result.Activity)})
+			finalized, err := finalizeEffect(toolMessages[i], artifactFullOutputPlan(projection.FullOutputPlan))
+			if err != nil {
+				metadataBase := result.Metadata
+				if result.Pending == nil {
+					metadataBase = toolProjectionMetadata(result.Metadata, projection)
+				}
+				metadata := mergeToolResultMetadata(metadataBase, i, len(calls))
+				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: resultLatency, Activity: result.Activity, Metadata: metadata})
+				return err
+			}
+			if finalized.Handled {
+				toolMessages[i], err = applyCommittedEffectMessage(toolMessages[i], finalized, &projection)
+				if err != nil {
+					return err
+				}
+				text = toolMessages[i].Content
+				if result.IsError {
+					errText = strings.TrimPrefix(text, "ERROR: ")
+				}
+			} else if projection.FullOutputPlan != nil {
+				err := errors.New("effect result finalizer is required to preserve truncated tool output")
+				metadata := mergeToolResultMetadata(toolProjectionMetadata(result.Metadata, projection), i, len(calls))
+				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: resultLatency, Activity: result.Activity, Metadata: metadata})
+				return err
+			}
+			metadataBase := result.Metadata
+			if result.Pending == nil {
+				metadataBase = toolProjectionMetadata(result.Metadata, projection)
+			}
+			metadata := mergeToolResultMetadata(metadataBase, i, len(calls))
+			e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: resultLatency, Activity: result.Activity, Metadata: metadata, Artifacts: eventArtifacts(projection, result.Artifacts)})
 			toolMessageSet[i] = true
 			return nil
 		}
-		if _, err := runToolBatchWithObserver(ctx, activeToolRegistry, toolCalls(calls), e.approverWithEvents(opts, step), toolRunOptions, processToolResult); err != nil {
+		if _, err := runToolBatchWithObserver(ctx, activeToolRegistry, toolCalls(calls), toolRunOptions, processToolResult); err != nil {
 			if isContextCancellation(err) {
 				return e.end(state, opts, step, Cancelled, output, err, metrics, started, decision)
 			}
@@ -1141,7 +1177,7 @@ type observedToolResult struct {
 	result tools.Result
 }
 
-func runToolBatchWithObserver(ctx context.Context, registry *tools.Registry, calls []tools.ToolCall, approver tools.Approver, opts tools.RunOptions, observe func(int, tools.Result) error) ([]tools.Result, error) {
+func runToolBatchWithObserver(ctx context.Context, registry *tools.Registry, calls []tools.ToolCall, opts tools.DispatchOptions, observe func(int, tools.Result) error) ([]tools.Result, error) {
 	results := make([]tools.Result, len(calls))
 	done := make(chan observedToolResult, len(calls))
 	for i := range calls {
@@ -1151,7 +1187,7 @@ func runToolBatchWithObserver(ctx context.Context, registry *tools.Registry, cal
 			callOpts.BatchSize = len(calls)
 			done <- observedToolResult{
 				index:  idx,
-				result: registry.RunWithOptions(ctx, calls[idx], approver, callOpts),
+				result: registry.Dispatch(ctx, calls[idx], callOpts),
 			}
 		}(i)
 	}
@@ -1159,8 +1195,12 @@ func runToolBatchWithObserver(ctx context.Context, registry *tools.Registry, cal
 	for range calls {
 		item := <-done
 		results[item.index] = item.result
-		if observeErr == nil && observe != nil {
-			observeErr = observe(item.index, item.result)
+	}
+	for index, result := range results {
+		if observe != nil {
+			if err := observe(index, result); observeErr == nil && err != nil {
+				observeErr = err
+			}
 		}
 	}
 	return results, observeErr
@@ -2132,7 +2172,22 @@ func (e *Engine) sendOrdinaryProviderRequest(ctx context.Context, opts Options, 
 }
 
 func (e *Engine) sendProviderAttempt(ctx context.Context, opts Options, step int, req provider.Request, metrics *RunMetrics) (StepOutput, int64, bool, error) {
+	var releaseProviderStart func()
+	if opts.ProviderRequestGate != nil {
+		var err error
+		releaseProviderStart, err = opts.ProviderRequestGate(ctx)
+		if err != nil {
+			return StepOutput{}, 0, false, err
+		}
+	}
+	releaseProviderGate := func() {
+		if releaseProviderStart != nil {
+			releaseProviderStart()
+			releaseProviderStart = nil
+		}
+	}
 	if _, err := cache.RecordProviderRequest(ctx, e.prompt, providerRequestSnapshot(req)); err != nil {
+		releaseProviderGate()
 		return StepOutput{}, 0, false, err
 	}
 	if metrics != nil {
@@ -2141,6 +2196,7 @@ func (e *Engine) sendProviderAttempt(ctx context.Context, opts Options, step int
 	e.emit(opts, event.Event{Type: event.ProviderRequest, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: fmt.Sprintf("%d messages, %d raw segments, %d local tools, %d hosted tools, prefix %s", len(req.Messages), len(req.RawPlan.Segments), len(req.Tools), len(req.HostedTools), shortHash(req.RawPlan.PrefixHash)), Metadata: mergeAnyMetadata(providerRequestMetadata(req), toolSurfaceMetadata(opts))})
 	started := time.Now()
 	stream, err := e.provider.Stream(ctx, req)
+	releaseProviderGate()
 	latency := time.Since(started).Milliseconds()
 	if errors.Is(err, provider.ErrContextOverflow) {
 		return StepOutput{}, latency, true, err
@@ -3303,107 +3359,6 @@ func providerSafeControlText(signal ControlSignal) string {
 	}
 }
 
-func (e *Engine) approverWithEvents(opts Options, step int) tools.Approver {
-	return func(ctx context.Context, req tools.ApprovalRequest) (tools.PermissionDecision, error) {
-		e.emitApprovalEvent(opts, step, event.ToolApprovalRequested, req, "", "")
-		if e.approver == nil {
-			e.emitApprovalEvent(opts, step, event.ToolApprovalRejected, req, tools.ErrRejected.Error(), "")
-			return tools.PermissionDecisionDeny, nil
-		}
-		decision, err := e.approver(ctx, req)
-		if err != nil {
-			switch {
-			case errors.Is(err, context.DeadlineExceeded):
-				e.emitApprovalEvent(opts, step, event.ToolApprovalTimedOut, req, err.Error(), "")
-			case errors.Is(err, context.Canceled):
-				e.emitApprovalEvent(opts, step, event.ToolApprovalCanceled, req, err.Error(), "")
-			default:
-				e.emitApprovalEvent(opts, step, event.ToolApprovalRejected, req, err.Error(), "")
-			}
-			return decision, err
-		}
-		if decision.Allowed() {
-			e.emitApprovalEvent(opts, step, event.ToolApprovalApproved, req, strings.TrimSpace(decision.Reason), "")
-			return decision, nil
-		}
-		reason := strings.TrimSpace(decision.RejectionReason())
-		if reason == "" {
-			reason = tools.ErrRejected.Error()
-		}
-		e.emitApprovalEvent(opts, step, event.ToolApprovalRejected, req, reason, "")
-		return decision, nil
-	}
-}
-
-func (e *Engine) emitApprovalEvent(opts Options, step int, typ event.Type, req tools.ApprovalRequest, reason string, result string) {
-	e.emit(opts, event.Event{
-		Type:     typ,
-		TraceID:  opts.TraceID,
-		RunID:    opts.RunID,
-		ThreadID: opts.ThreadID,
-		Step:     step,
-		Provider: opts.ProviderName,
-		Model:    opts.Model,
-		ToolID:   req.ID,
-		ToolName: req.Name,
-		ToolKind: "local",
-		Args:     req.Args,
-		ArgsHash: req.ArgsHash,
-		Activity: req.Activity,
-		Result:   result,
-		Err:      reason,
-		Metadata: approvalEventMetadata(req, reason),
-	})
-}
-
-func approvalEventMetadata(req tools.ApprovalRequest, reason string) map[string]any {
-	metadata := map[string]any{
-		"approval_id": req.ApprovalID,
-		"resources":   approvalResources(req.Resources),
-		"effects":     approvalEffects(req.Effects),
-		"read_only":   req.ReadOnly,
-		"destructive": req.Destructive,
-		"open_world":  req.OpenWorld,
-		"batch_index": req.BatchIndex,
-		"batch_size":  req.BatchSize,
-	}
-	if strings.TrimSpace(reason) != "" {
-		metadata["reason"] = reason
-	}
-	if len(req.Labels) > 0 {
-		metadata["labels"] = cloneStringMap(req.Labels)
-	}
-	if len(req.HostContext) > 0 {
-		metadata["host_context"] = cloneStringMap(req.HostContext)
-	}
-	return metadata
-}
-
-func approvalResources(resources []tools.ResourceRef) []map[string]string {
-	if len(resources) == 0 {
-		return nil
-	}
-	out := make([]map[string]string, 0, len(resources))
-	for _, resource := range resources {
-		out = append(out, map[string]string{
-			"kind":  resource.Kind,
-			"value": resource.Value,
-		})
-	}
-	return out
-}
-
-func approvalEffects(effects []tools.Effect) []string {
-	if len(effects) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(effects))
-	for _, effect := range effects {
-		out = append(out, string(effect))
-	}
-	return out
-}
-
 func convertToolDefinitions(defs []provider.ToolDefinition) []cache.ToolDefinition {
 	out := make([]cache.ToolDefinition, 0, len(defs))
 	for _, def := range defs {
@@ -3520,7 +3475,6 @@ func eventArtifact(ref tools.ArtifactRef) event.Artifact {
 	return event.Artifact{
 		ID:        ref.ID,
 		SafeLabel: ref.SafeLabel,
-		URL:       ref.URL,
 		Kind:      ref.Kind,
 		MIME:      ref.MIME,
 		SizeBytes: ref.SizeBytes,
@@ -3528,42 +3482,10 @@ func eventArtifact(ref tools.ArtifactRef) event.Artifact {
 	}
 }
 
-type toolArtifactStore struct {
-	store artifact.Store
-}
-
-func toolArtifactStoreFor(store artifact.Store) tools.ArtifactStore {
-	if store == nil {
-		return nil
-	}
-	return toolArtifactStore{store: store}
-}
-
-func (s toolArtifactStore) PutToolOutput(ctx context.Context, output tools.ToolOutputArtifact) (tools.ArtifactRef, error) {
-	ref, err := s.store.PutToolOutput(ctx, artifact.ToolOutputArtifact{
-		RunID:         output.RunID,
-		ThreadID:      output.ThreadID,
-		TurnID:        output.TurnID,
-		PromptScopeID: output.PromptScopeID,
-		Step:          output.Step,
-		CallID:        output.CallID,
-		ToolName:      output.ToolName,
-		Text:          output.Text,
-		MIME:          output.MIME,
-		Kind:          output.Kind,
-		Metadata:      output.Metadata,
-	})
-	if err != nil {
-		return tools.ArtifactRef{}, err
-	}
-	return toolArtifactRef(ref), nil
-}
-
 func toolArtifactRef(ref artifact.Ref) tools.ArtifactRef {
 	return tools.ArtifactRef{
 		ID:        ref.ID,
 		SafeLabel: ref.SafeLabel,
-		URL:       ref.URL,
 		Kind:      ref.Kind,
 		MIME:      ref.MIME,
 		SizeBytes: ref.SizeBytes,
@@ -3575,13 +3497,88 @@ func artifactRef(ref tools.ArtifactRef) artifact.Ref {
 	return artifact.Ref{
 		ID:        ref.ID,
 		SafeLabel: ref.SafeLabel,
-		URL:       ref.URL,
 		Kind:      ref.Kind,
 		MIME:      ref.MIME,
 		SizeBytes: ref.SizeBytes,
 		SHA256:    ref.SHA256,
 	}
 }
+
+func artifactFullOutputPlan(plan *tools.FullOutputPlan) *artifact.FullOutput {
+	if plan == nil {
+		return nil
+	}
+	full := artifact.NormalizeFullOutput(artifact.FullOutput{Text: plan.Text, Kind: plan.Kind, MIME: plan.MIME})
+	return &full
+}
+
+func cloneFullOutput(in *artifact.FullOutput) *artifact.FullOutput {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
+
+func applyCommittedEffectMessage(local session.Message, finalized EffectResultFinalizationResult, projection *tools.OutputProjection) (session.Message, error) {
+	committed := finalized.Message
+	if projection == nil || local.Role != session.Tool || committed.Role != session.Tool ||
+		local.ToolCallID != committed.ToolCallID || local.ToolName != committed.ToolName ||
+		local.ToolResult == nil || committed.ToolResult == nil {
+		return session.Message{}, errors.New("committed effect result does not match projected tool result")
+	}
+	if finalized.Replayed {
+		projection.VisibleText = committed.Content
+		projection.Truncated = committed.ToolResult.Truncated
+		projection.OriginalBytes = committed.ToolResult.OriginalBytes
+		projection.VisibleBytes = committed.ToolResult.VisibleBytes
+		projection.OriginalLines = committed.ToolResult.OriginalLines
+		projection.VisibleLines = committed.ToolResult.VisibleLines
+		projection.Strategy = tools.OutputStrategy(committed.ToolResult.Strategy)
+		projection.ContentSHA256 = committed.ToolResult.ContentSHA256
+		projection.FullOutputPlan = nil
+		if committed.ToolResult.FullOutput != nil {
+			if err := artifact.ValidateRef(*committed.ToolResult.FullOutput); err != nil {
+				return session.Message{}, err
+			}
+			projection.FullOutput = pointerTo(toolArtifactRef(*committed.ToolResult.FullOutput))
+		} else {
+			projection.FullOutput = nil
+		}
+		return session.CloneMessage(committed), nil
+	}
+	if local.Content != committed.Content {
+		return session.Message{}, errors.New("committed effect result content does not match projected tool result")
+	}
+	if local.ToolResult.Status != committed.ToolResult.Status || local.ToolResult.Truncated != committed.ToolResult.Truncated ||
+		local.ToolResult.OriginalBytes != committed.ToolResult.OriginalBytes || local.ToolResult.VisibleBytes != committed.ToolResult.VisibleBytes ||
+		local.ToolResult.OriginalLines != committed.ToolResult.OriginalLines || local.ToolResult.VisibleLines != committed.ToolResult.VisibleLines ||
+		local.ToolResult.Strategy != committed.ToolResult.Strategy || local.ToolResult.ContentSHA256 != committed.ToolResult.ContentSHA256 {
+		return session.Message{}, errors.New("committed effect result metadata does not match projected tool result")
+	}
+	plan := artifactFullOutputPlan(projection.FullOutputPlan)
+	ref := committed.ToolResult.FullOutput
+	if plan == nil {
+		if ref != nil {
+			return session.Message{}, errors.New("committed effect result contains unexpected full output")
+		}
+		return session.CloneMessage(committed), nil
+	}
+	if ref == nil {
+		return session.Message{}, errors.New("committed effect result is missing full output")
+	}
+	if err := artifact.ValidateRef(*ref); err != nil {
+		return session.Message{}, err
+	}
+	if ref.Kind != plan.Kind || ref.MIME != plan.MIME || ref.SizeBytes != int64(len(plan.Text)) || ref.SHA256 != artifact.TextSHA256(plan.Text) {
+		return session.Message{}, errors.New("committed full output does not match planned payload")
+	}
+	projection.FullOutput = pointerTo(toolArtifactRef(*ref))
+	projection.FullOutputPlan = nil
+	return session.CloneMessage(committed), nil
+}
+
+func pointerTo[T any](value T) *T { return &value }
 
 func toolProjectionMetadata(base map[string]any, projection tools.OutputProjection) map[string]any {
 	metadata := make(map[string]any, len(base)+12)
@@ -3640,24 +3637,6 @@ func toolResultView(projection tools.OutputProjection) *session.ToolResultView {
 		view.FullOutput = &ref
 	}
 	return view
-}
-
-func toolOutputArtifactResult(result tools.Result, opts Options, step int) tools.Result {
-	if result.Metadata == nil {
-		result.Metadata = map[string]any{}
-	} else {
-		metadata := make(map[string]any, len(result.Metadata)+5)
-		for key, value := range result.Metadata {
-			metadata[key] = value
-		}
-		result.Metadata = metadata
-	}
-	result.Metadata["run_id"] = opts.RunID
-	result.Metadata["thread_id"] = opts.ThreadID
-	result.Metadata["turn_id"] = opts.TurnID
-	result.Metadata["prompt_scope_id"] = opts.PromptScopeID
-	result.Metadata["step"] = step
-	return result
 }
 
 func mergeToolResultMetadata(base map[string]any, batchIndex, batchSize int) map[string]any {

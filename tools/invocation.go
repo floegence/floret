@@ -1,10 +1,6 @@
 package tools
 
-import (
-	"context"
-
-	"github.com/floegence/floret/observation"
-)
+import "github.com/floegence/floret/observation"
 
 type ToolCall struct {
 	ID        string
@@ -26,29 +22,10 @@ type ToolDefinition struct {
 type ArtifactRef struct {
 	ID        string `json:"id,omitempty"`
 	SafeLabel string `json:"safe_label,omitempty"`
-	URL       string `json:"url,omitempty"`
 	Kind      string `json:"kind,omitempty"`
 	MIME      string `json:"mime,omitempty"`
 	SizeBytes int64  `json:"size_bytes,omitempty"`
 	SHA256    string `json:"sha256,omitempty"`
-}
-
-type ToolOutputArtifact struct {
-	RunID         string         `json:"run_id,omitempty"`
-	ThreadID      string         `json:"thread_id,omitempty"`
-	TurnID        string         `json:"turn_id,omitempty"`
-	PromptScopeID string         `json:"prompt_scope_id,omitempty"`
-	Step          int            `json:"step,omitempty"`
-	CallID        string         `json:"call_id,omitempty"`
-	ToolName      string         `json:"tool_name,omitempty"`
-	Text          string         `json:"text,omitempty"`
-	MIME          string         `json:"mime,omitempty"`
-	Kind          string         `json:"kind,omitempty"`
-	Metadata      map[string]any `json:"metadata,omitempty"`
-}
-
-type ArtifactStore interface {
-	PutToolOutput(context.Context, ToolOutputArtifact) (ArtifactRef, error)
 }
 
 type Invocation[T any] struct {
@@ -90,6 +67,9 @@ type Result struct {
 	OutputPolicy *OutputPolicy
 	Pending      *PendingToolResult
 	IsError      bool
+	DispatchErr  error
+
+	effectFinalizationRequired bool
 }
 
 func ErrorResult(callID, name, text string) Result {
@@ -104,4 +84,10 @@ func (r Result) withCall(callID, name string) Result {
 		r.Name = name
 	}
 	return r
+}
+
+// RequiresEffectFinalization reports whether the result crossed the effect
+// authority dispatcher and therefore requires its atomic result finalizer.
+func (r Result) RequiresEffectFinalization() bool {
+	return r.effectFinalizationRequired
 }

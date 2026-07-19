@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/floegence/floret/internal/testing/tooltest"
 	"github.com/floegence/floret/internal/tools/mcp"
 	"github.com/floegence/floret/tools"
 	"net/http"
@@ -49,7 +50,7 @@ func TestStdioServerListsAndCallsTools(t *testing.T) {
 	if def.Permission.Mode != tools.PermissionAsk || !def.OpenWorld {
 		t.Fatalf("permission/effects = %#v", def)
 	}
-	result := reg.Run(context.Background(), tools.ToolCall{ID: "call-1", Name: "mcp__context7__search", Args: `{"query":"floret"}`}, allowAll)
+	result := tooltest.Run(context.Background(), reg, tools.ToolCall{ID: "call-1", Name: "mcp__context7__search", Args: `{"query":"floret"}`}, allowAll)
 	if result.IsError || result.Text != "search: floret" {
 		t.Fatalf("result = %#v", result)
 	}
@@ -98,7 +99,7 @@ func TestStreamableHTTPServerListsAndCallsTools(t *testing.T) {
 	if err := manager.RegisterTools(reg); err != nil {
 		t.Fatal(err)
 	}
-	result := reg.Run(context.Background(), tools.ToolCall{ID: "call-1", Name: "mcp__docs__lookup", Args: `{"id":"abc"}`}, allowAll)
+	result := tooltest.Run(context.Background(), reg, tools.ToolCall{ID: "call-1", Name: "mcp__docs__lookup", Args: `{"id":"abc"}`}, allowAll)
 	if result.IsError || result.Text != "lookup ok" {
 		t.Fatalf("result = %#v", result)
 	}
@@ -330,7 +331,7 @@ func TestPermissionDenyBlocksMCPToolCall(t *testing.T) {
 	if err := manager.RegisterTools(reg); err != nil {
 		t.Fatal(err)
 	}
-	result := reg.Run(context.Background(), tools.ToolCall{ID: "call-1", Name: "mcp__context7__search", Args: `{"query":"floret"}`}, denyAll)
+	result := tooltest.Run(context.Background(), reg, tools.ToolCall{ID: "call-1", Name: "mcp__context7__search", Args: `{"query":"floret"}`}, denyAll)
 	if !result.IsError || result.Text != tools.ErrRejected.Error() {
 		t.Fatalf("result = %#v", result)
 	}
@@ -397,10 +398,10 @@ func writeLine(t *testing.T, out *bufio.Writer, value map[string]any) {
 	}
 }
 
-func allowAll(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {
-	return tools.PermissionDecisionAllow, nil
+func allowAll(context.Context, tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
+	return tooltest.PermissionDecisionAllow, nil
 }
 
-func denyAll(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {
-	return tools.PermissionDecisionDeny, nil
+func denyAll(context.Context, tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
+	return tooltest.PermissionDecisionDeny, nil
 }

@@ -26,7 +26,7 @@ func TestPrepareRequiresExplicitSummaryGenerator(t *testing.T) {
 }
 
 func TestPrepareProducesStableCutpointAndPreservesToolPair(t *testing.T) {
-	ref := artifact.Ref{ID: "artifact-1", SafeLabel: "tool-output.log", URL: "/artifacts/tool-output.log", SizeBytes: 4096, SHA256: "abc123"}
+	ref := artifact.Ref{ID: "artifact-1", SafeLabel: "tool-output.log", SizeBytes: 4096, SHA256: "abc123"}
 	history := []session.Message{
 		{Role: session.User, Content: "old goal", EntryID: "e1"},
 		{Role: session.Assistant, Content: "tool_call", ToolCallID: "call-1", ToolName: "read", ToolArgs: "A", EntryID: "e2"},

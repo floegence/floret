@@ -1,6 +1,108 @@
 # Floret OKF Update Log
 
 ## 2026-07-19
+* **Boundary**: Bound each Test UI session to its exact turn and SubAgent
+  factories instead of retaining the composition-root binder bundle; an active
+  session can no longer mint authority for another canonical thread.
+* **API**: Allowed parent-bound SubAgent reads to be rebound for open, closing,
+  or closed parents and made detail reads cover any validated descendant while
+  keeping mutation operations restricted to direct children.
+* **Storage**: Bound fork-mode SubAgent publication and replay to the exact
+  parent source, child ownership metadata, pinned source leaf, destination
+  metadata, and artifact closure in one atomic transition.
+* **Storage**: Made new fork-mode SubAgent publication compare its pinned source
+  leaf with the parent's current leaf inside the same Memory lock or SQLite
+  transaction, reject unknown fork positions, and keep exact replay read-only
+  after the parent advances.
+* **Boundary**: Made Test UI runtime rebuild construct its exact turn and
+  SubAgent authorities before tool registration, skill discovery, MCP startup,
+  capability events, or provider construction; failed later setup closes any
+  newly started MCP manager.
+* **Storage**: Made Memory deletion reject every active lease purpose, including
+  mutation leases, without changing the thread, lease, journal, or prepared
+  compaction authority.
+* **Effects**: Made the registry distinguish pre-dispatch tool errors from
+  results that crossed effect authority. Authorized results now require an
+  exact one-shot finalizer, and caller cancellation after dispatch begins
+  cannot bypass atomic effect-result persistence.
+* **Documentation**: Corrected restart guidance: `ResumeThread` is a read-only
+  attachment to canonical state, while interrupted-turn recovery requires an
+  exact lease-proof-bound `InterruptedTurnRecoveryHost`.
+* **Storage**: Made artifact reads validate the complete live/tombstoned
+  ancestry shape and exact composite record ownership. Cycles, broken ancestry,
+  malformed bound parents, and map-key/record drift now return authority
+  corruption instead of being hidden as a missing SubAgent or artifact.
+* **Boundary**: Made Test UI canonical journal, context, SubAgent, and ID
+  sequence reads fail closed. Running-session inspection no longer retains an
+  older snapshot or restarts identifier allocation when Floret authority is
+  unavailable.
+* **Boundary**: Removed host URL assumptions and generic pre-journal writes from
+  Floret-owned full tool output. `FinishEffectDispatch` now admits immutable
+  payload plus its canonical result reference atomically, while exact root and
+  parent-descendant read capabilities return content without a global resolver.
+* **Storage**: Bound root fork v5 and SubAgent fork-copy publication to the exact
+  on-path artifact reference/payload closure, with atomic same-ID destination
+  copies, strict replay validation, and rollback on drift or collision.
+* **Boundary**: Migrated the Test UI to public runtime capabilities for
+  canonical create/read/title/turn/SubAgent/delete work. Persisted snapshots no
+  longer hold raw repos or rebuild provider-request internals, and host artifact
+  URLs resolve through exact bound read authority.
+* **Storage**: Moved interrupted-turn run, terminal status, failure, and outcome
+  derivation into the Memory critical section and SQLite immediate transaction.
+  Recovery replay now revalidates the complete expired lease proof and exact
+  parent authority against the canonical terminal ledger.
+* **Boundary**: Removed the orphan public `tools` approval callback types after
+  `EffectAuthorizationGate` became the sole host authorization boundary; test
+  approval helpers now remain internal-only.
+* **Boundary**: Removed production `AgentHarness` root creation and narrowed its
+  repository to `JournalRepo`; only the exact create coordinator can publish a
+  missing canonical root.
+* **Boundary**: Made provider-free capability construction context-aware and
+  fail before returning a handle when root/parent identity is missing, deleted,
+  closed, or has the wrong root/child shape. Delete alone accepts its exact
+  tombstoned root for replay.
+* **Storage**: Made terminal turn outcome, provider continuation replacement or
+  clearing, and exact lease release one `FinishTurn` transition. Incompatible
+  continuation is no longer deleted as a construction-time cleanup side effect.
+* **Storage**: Made root-tree deletion retain host-owned generic metadata and
+  retain the authority ledgers needed to reject deleted identity/request reuse;
+  removed alternate tree-delete entry points.
+* **Storage**: Froze SQLite authority schema v14 with only exact empty v13
+  migration, persisted lease-policy equality, typed non-destructive schema
+  errors, and explicit File-backend rejection where semantic mutation atomicity
+  is unavailable.
+* **API**: Added typed `AuthorityBusyError`, `RequestConflictError`,
+  `UnsupportedStoreSchemaError`, and `StoreLeasePolicyMismatchError` so hosts
+  can branch without importing internals or parsing text.
+* **Lifecycle**: Added Store lifetime fencing: close rejects new work, cancels
+  active execution, waits for terminal finalization, and makes every retained
+  binder, factory, handle, and create capability return `ErrStoreClosed`.
+* **Boundary**: Required provider-backed host construction to validate its bound
+  canonical root or parent before skill discovery, event emission, tool
+  registration, or other provider initialization effects.
+* **Boundary**: Added public runtime sentinels for active thread mutation,
+  missing retry targets, pending-tool target state and settlement conflicts, and
+  closed SubAgent writes. Downstream hosts can classify every branchable
+  capability failure with `errors.Is` without importing internal packages.
+* **Documentation**: Clarified that one-time bootstrap prevents a reusable
+  cross-family issuer; responsibility-specific binders remain composition-root
+  issuers for their single capability family.
+* **Breaking**: Replaced reusable `NewHostBootstrap` with one-time
+  `ConfigureHostCapabilities`. The Store rejects reconfiguration and value
+  copies, all bootstrap copies share one sealed state, and failed or panicked
+  configuration attempts leave every leaked binder inactive.
+* **Boundary**: Added responsibility-specific binders for create, read, title,
+  fork, delete, turn execution, compaction, SubAgent lifecycle/read/maintenance,
+  and pending recovery. A retained binder cannot mint another capability family.
+* **Breaking**: Removed thread authority from provider host options. Provider
+  binders fix one root or parent before returning a configurable factory; root
+  and SubAgent recovery use separate binder methods with no invalid mixed shape.
+* **Boundary**: Fixed the host authority contract as an actor/capability matrix
+  plus create, admit, settle, fork, delete, and recover transition ownership.
+  Binders remain at the composition root; services and runs receive only an
+  exact authority-bound factory or handle.
+
+## 2026-07-19
 * **Breaking**: Replaced the reusable `HostRuntime` constructor token with a
   composition-root-only `HostBootstrap`. Provider, SubAgent read/maintenance,
   and recovery settlement options no longer carry a root authority; exact

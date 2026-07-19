@@ -53,22 +53,29 @@ When a change adds a new host-facing capability, expose it as general public API
 with tests and documentation. Do not move product-specific policy into Floret
 core to make one downstream integration easier.
 
-`runtime.Store` is opaque and owned by the bootstrap lifetime owner. Bootstrap
-converts it to one `HostBootstrap`, issues the required narrow factories and
-handles, and closes the Store once after active work stops. Coordinators and
-runs receive only their selected factory or handle; they cannot mint unrelated
-authority or access Store internals. `OpenSQLiteStore` upgrades known v11 and
-v12 stores transactionally to v13 after exact raw-encoder, schema, fork-plan,
-and thread-authority validation. Unknown, ambiguous, or unversioned databases
-remain errors, with no dual-read path.
+`runtime.Store` is opaque and owned by the composition lifetime owner.
+`ConfigureHostCapabilities` can run only once for that non-copyable Store and
+seals `HostBootstrap` when its callback returns. The callback distributes narrow
+binders, which remain private to the composition root. Coordinators and runs
+receive only an exact authority-bound factory or handle and cannot mint an
+unrelated capability. Provider-free binders validate exact canonical authority
+using `context.Context` before returning a handle; create instead binds an exact
+absent `ThreadID` plus durable `CreateIntentID`. The owner closes the Store once;
+close fences new operations and waits for active finalization.
+`OpenSQLiteStore` accepts exact v14 or transactionally upgrades only an exact
+empty v13 predecessor. Non-empty, older, ambiguous, unversioned, or
+fingerprint-mismatched databases return a typed error without a dual-read or
+repair path.
 
 Hosts may choose when product actions stop or delete work, but they should
 express those choices through Floret runtime APIs. Stop-style product actions
-close unfinished Floret subagents through `SubAgentMaintenanceHost` and keep
-history; delete-style product actions delete Floret-owned thread trees through
+close exact unfinished Floret subagents through their parent-bound
+`SubAgentHost` and keep history; delete-style product actions delete
+Floret-owned thread trees through
 `ThreadDeleteHost.DeleteThread`. Floret owns the atomic engine-store deletion
 of the resolved tree; the host remains responsible for deleting or retaining
-its separate product records.
+its separate product records. Floret root deletion never treats generic host
+metadata as canonical Agent state.
 
 Cross-store product fork coordination stays in the host. Floret owns only its
 operation-marked engine thread-tree plan and result. A host should persist its

@@ -21,149 +21,445 @@ import (
 	"github.com/floegence/floret/internal/provider"
 	"github.com/floegence/floret/internal/provider/cache"
 	"github.com/floegence/floret/internal/session"
-	"github.com/floegence/floret/internal/session/artifact"
 	"github.com/floegence/floret/internal/session/contextpolicy"
 	"github.com/floegence/floret/internal/sessiontree"
 	"github.com/floegence/floret/internal/storage"
 	"github.com/floegence/floret/internal/testing/harness"
+	"github.com/floegence/floret/internal/testing/tooltest"
 	"github.com/floegence/floret/observation"
 	"github.com/floegence/floret/tools"
 )
 
 type testProviderFacade struct {
 	*providerHost
-	*ThreadCreateHost
-	*ThreadTitleHost
-	*ThreadForkHost
-	*ThreadDeleteHost
+	create *ThreadCreateHostBinder
+	title  *ThreadTitleHostBinder
+	fork   *ThreadForkHostBinder
+	delete *ThreadDeleteHostBinder
+	sink   EventSink
 }
 
 type testMaintenanceFacade struct {
-	*ThreadCreateHost
-	*ThreadReadHost
-	*ThreadTitleHost
-	*ThreadForkHost
-	*ThreadDeleteHost
-	store *Store
+	create *ThreadCreateHostBinder
+	read   *ThreadReadHostBinder
+	title  *ThreadTitleHostBinder
+	fork   *ThreadForkHostBinder
+	delete *ThreadDeleteHostBinder
+	store  *Store
 }
 
-func mustHostBootstrap(t *testing.T, store *Store) *HostBootstrap {
+type testCapabilitySet struct {
+	create       *ThreadCreateHostBinder
+	read         *ThreadReadHostBinder
+	title        *ThreadTitleHostBinder
+	fork         *ThreadForkHostBinder
+	delete       *ThreadDeleteHostBinder
+	turn         *TurnExecutionHostBinder
+	compaction   *ThreadCompactionHostBinder
+	subAgent     *SubAgentHostBinder
+	subAgentRead *SubAgentReadHostBinder
+	recovery     *PendingToolRecoveryHostBinder
+}
+
+var testCapabilities = struct {
+	sync.Mutex
+	byStore map[*Store]*testCapabilitySet
+}{byStore: make(map[*Store]*testCapabilitySet)}
+
+func mustTestCapabilities(t *testing.T, store *Store) *testCapabilitySet {
 	t.Helper()
-	bootstrap, err := NewHostBootstrap(store)
-	if err != nil {
-		t.Fatalf("NewHostBootstrap: %v", err)
+	testCapabilities.Lock()
+	defer testCapabilities.Unlock()
+	if existing := testCapabilities.byStore[store]; existing != nil {
+		return existing
 	}
-	return bootstrap
+	set := &testCapabilitySet{}
+	err := ConfigureHostCapabilities(store, func(bootstrap *HostBootstrap) error {
+		var err error
+		if set.create, err = NewThreadCreateHostBinder(bootstrap); err != nil {
+			return err
+		}
+		if set.read, err = NewThreadReadHostBinder(bootstrap); err != nil {
+			return err
+		}
+		if set.title, err = NewThreadTitleHostBinder(bootstrap); err != nil {
+			return err
+		}
+		if set.fork, err = NewThreadForkHostBinder(bootstrap); err != nil {
+			return err
+		}
+		if set.delete, err = NewThreadDeleteHostBinder(bootstrap); err != nil {
+			return err
+		}
+		if set.turn, err = NewTurnExecutionHostBinder(bootstrap); err != nil {
+			return err
+		}
+		if set.compaction, err = NewThreadCompactionHostBinder(bootstrap); err != nil {
+			return err
+		}
+		if set.subAgent, err = NewSubAgentHostBinder(bootstrap); err != nil {
+			return err
+		}
+		if set.subAgentRead, err = NewSubAgentReadHostBinder(bootstrap); err != nil {
+			return err
+		}
+		set.recovery, err = NewPendingToolRecoveryHostBinder(bootstrap)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("ConfigureHostCapabilities: %v", err)
+	}
+	testCapabilities.byStore[store] = set
+	return set
+}
+
+func testCreateThreadRequest(threadID ThreadID) CreateThreadRequest {
+	normalized := ThreadID(strings.TrimSpace(string(threadID)))
+	return CreateThreadRequest{
+		ThreadID:       threadID,
+		CreateIntentID: CreateIntentID("test-create:" + string(normalized)),
+	}
+}
+
+func publishTestSubAgentFixture(t *testing.T, ctx context.Context, store *Store, publicationID string, parentThreadID, childThreadID ThreadID, parentTurnID TurnID) sessiontree.PublishSubAgentResult {
+	t.Helper()
+	if strings.TrimSpace(publicationID) == "" {
+		t.Fatal("test subagent fixture requires an explicit publication id")
+	}
+	authority, ok := store.repo.(sessiontree.SubAgentInputAuthorityRepo)
+	if !ok {
+		t.Fatal("test store does not support durable subagent publication")
+	}
+	parent, err := store.repo.Thread(ctx, string(parentThreadID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentPath := strings.TrimSuffix(strings.TrimSpace(parent.AgentPath), "/")
+	if parentPath == "" {
+		parentPath = "/root"
+	}
+	taskName := strings.ReplaceAll(string(childThreadID), "-", "_")
+	now := time.Now().UTC()
+	result, err := authority.PublishSubAgent(ctx, sessiontree.PublishSubAgentRequest{
+		PublicationID:      publicationID,
+		RequestFingerprint: "test-publication:" + publicationID,
+		ParentThreadID:     string(parentThreadID),
+		ChildMeta: sessiontree.ThreadMeta{
+			ID:             string(childThreadID),
+			ParentThreadID: string(parentThreadID),
+			ParentTurnID:   string(parentTurnID),
+			TaskName:       taskName,
+			AgentPath:      parentPath + "/" + taskName,
+			ForkMode:       string(SubAgentForkNone),
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		},
+		Message: session.Message{Role: session.User, Content: "fixture input"},
+		Now:     now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func publishTestSubAgentFixtureWithMeta(t *testing.T, ctx context.Context, store *Store, publicationID string, childMeta sessiontree.ThreadMeta, message string) sessiontree.PublishSubAgentResult {
+	t.Helper()
+	if strings.TrimSpace(publicationID) == "" {
+		t.Fatal("test subagent fixture requires an explicit publication id")
+	}
+	authority, ok := store.repo.(sessiontree.SubAgentInputAuthorityRepo)
+	if !ok {
+		t.Fatal("test store does not support durable subagent publication")
+	}
+	now := time.Now().UTC()
+	if childMeta.CreatedAt.IsZero() {
+		childMeta.CreatedAt = now
+	}
+	if childMeta.UpdatedAt.IsZero() {
+		childMeta.UpdatedAt = now
+	}
+	result, err := authority.PublishSubAgent(ctx, sessiontree.PublishSubAgentRequest{
+		PublicationID:      publicationID,
+		RequestFingerprint: "test-publication:" + publicationID,
+		ParentThreadID:     childMeta.ParentThreadID,
+		ChildMeta:          childMeta,
+		Message:            session.Message{Role: session.User, Content: message},
+		Now:                now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func completeTestSubAgentFixture(t *testing.T, ctx context.Context, store *Store, parentThreadID, childThreadID ThreadID) {
+	t.Helper()
+	authority, ok := store.repo.(sessiontree.SubAgentInputAuthorityRepo)
+	if !ok {
+		t.Fatal("test store does not support durable subagent admission")
+	}
+	turnID := "fixture-turn:" + string(childThreadID)
+	runID := "fixture-run:" + string(childThreadID)
+	admitted, err := authority.AdmitSubAgentInput(ctx, sessiontree.AdmitSubAgentInputRequest{
+		ParentThreadID: string(parentThreadID),
+		ChildThreadID:  string(childThreadID),
+		TurnID:         turnID,
+		RunID:          runID,
+		OwnerID:        "fixture-owner:" + string(childThreadID),
+		Now:            time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseCtx := sessiontree.ContextWithTurnLease(ctx, admitted.Lease)
+	if _, err := sessiontree.AppendTurnMarker(leaseCtx, store.repo, string(childThreadID), turnID, sessiontree.TurnCompleted, map[string]string{"run_id": runID}); err != nil {
+		t.Fatal(err)
+	}
+	leaseRepo, ok := store.repo.(sessiontree.TurnLeaseRepo)
+	if !ok {
+		t.Fatal("test store does not support durable lease release")
+	}
+	if err := leaseRepo.ReleaseTurnLease(ctx, admitted.Lease); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func newTestHost(t *testing.T, opts providerHostOptions) (*testProviderFacade, error) {
 	t.Helper()
+	if opts.EffectAuthorizationGate == nil {
+		opts.EffectAuthorizationGate = allowRuntimeEffectGate{}
+	}
 	host, err := newProviderHost(opts)
 	if err != nil {
 		return nil, err
 	}
-	bootstrap := mustHostBootstrap(t, opts.Store)
-	create, err := NewThreadCreateHost(bootstrap, opts.Sink)
-	if err != nil {
-		return nil, err
-	}
-	title, err := NewThreadTitleHost(bootstrap, opts.Sink)
-	if err != nil {
-		return nil, err
-	}
-	fork, err := NewThreadForkHost(bootstrap, opts.Sink)
-	if err != nil {
-		return nil, err
-	}
-	deleteHost, err := NewThreadDeleteHost(bootstrap)
-	if err != nil {
-		return nil, err
-	}
+	capabilities := mustTestCapabilities(t, opts.Store)
 	return &testProviderFacade{
-		providerHost:     host,
-		ThreadCreateHost: create,
-		ThreadTitleHost:  title,
-		ThreadForkHost:   fork,
-		ThreadDeleteHost: deleteHost,
+		providerHost: host,
+		create:       capabilities.create,
+		title:        capabilities.title,
+		fork:         capabilities.fork,
+		delete:       capabilities.delete,
+		sink:         opts.Sink,
 	}, nil
+}
+
+type allowRuntimeEffectGate struct{ approver tooltest.Approver }
+
+func (g allowRuntimeEffectGate) Dispatch(ctx context.Context, req EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
+	if req.Permission.Mode == tools.PermissionDeny {
+		return EffectDispatchResult{}, ErrEffectUnauthorized
+	}
+	if req.Permission.Mode == tools.PermissionAsk {
+		if g.approver == nil {
+			return EffectDispatchResult{}, ErrEffectUnauthorized
+		}
+		decision, err := g.approver(ctx, tooltest.ApprovalRequest{
+			ApprovalID: req.EffectAttemptID, ID: req.ToolCallID, Name: req.ToolName, ArgsHash: req.ArgumentHash,
+			RunID: string(req.RunID), ThreadID: string(req.ThreadID), TurnID: string(req.TurnID),
+			Step: req.Step, BatchIndex: req.BatchIndex, BatchSize: req.BatchSize,
+			Labels: cloneStringMap(req.Labels), HostContext: cloneStringMap(req.HostContext),
+			Resources: append([]tools.ResourceRef(nil), req.Resources...), Effects: append([]tools.Effect(nil), req.Effects...),
+			ReadOnly: req.ReadOnly, Destructive: req.Destructive, OpenWorld: req.OpenWorld,
+		})
+		if err != nil {
+			return EffectDispatchResult{}, err
+		}
+		if !decision.Allowed() {
+			return EffectDispatchResult{}, ErrEffectUnauthorized
+		}
+	}
+	return effect(EffectAuthorizationProof{
+		EffectAttemptID: req.EffectAttemptID, RequestFingerprint: req.RequestFingerprint,
+		ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, ToolCallID: req.ToolCallID,
+		LeaseOwnerID: req.LeaseOwnerID, LeaseGeneration: req.LeaseGeneration,
+		PolicyRevision: "test-policy-v1", AuditReference: "test-audit-" + req.EffectAttemptID,
+		AuditHash: "test-audit-hash", AuthorizedAt: time.Now(),
+	})
+}
+
+type recordingRuntimeEffectGate struct {
+	delegate allowRuntimeEffectGate
+	mu       sync.Mutex
+	byCallID map[string]string
+}
+
+func newRecordingRuntimeEffectGate(approver tooltest.Approver) *recordingRuntimeEffectGate {
+	return &recordingRuntimeEffectGate{
+		delegate: allowRuntimeEffectGate{approver: approver},
+		byCallID: make(map[string]string),
+	}
+}
+
+func (g *recordingRuntimeEffectGate) Dispatch(ctx context.Context, req EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
+	g.mu.Lock()
+	g.byCallID[req.ToolCallID] = req.EffectAttemptID
+	g.mu.Unlock()
+	return g.delegate.Dispatch(ctx, req, effect)
+}
+
+func (g *recordingRuntimeEffectGate) effectAttemptID(callID string) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.byCallID[callID]
 }
 
 func newTestMaintenanceHost(t *testing.T, store *Store) (*testMaintenanceFacade, error) {
 	t.Helper()
-	bootstrap := mustHostBootstrap(t, store)
-	create, err := NewThreadCreateHost(bootstrap, nil)
-	if err != nil {
-		return nil, err
-	}
-	read, err := NewThreadReadHost(bootstrap, nil)
-	if err != nil {
-		return nil, err
-	}
-	title, err := NewThreadTitleHost(bootstrap, nil)
-	if err != nil {
-		return nil, err
-	}
-	fork, err := NewThreadForkHost(bootstrap, nil)
-	if err != nil {
-		return nil, err
-	}
-	deleteHost, err := NewThreadDeleteHost(bootstrap)
-	if err != nil {
-		return nil, err
-	}
+	capabilities := mustTestCapabilities(t, store)
 	return &testMaintenanceFacade{
-		ThreadCreateHost: create,
-		ThreadReadHost:   read,
-		ThreadTitleHost:  title,
-		ThreadForkHost:   fork,
-		ThreadDeleteHost: deleteHost,
-		store:            store,
+		create: capabilities.create,
+		read:   capabilities.read,
+		title:  capabilities.title,
+		fork:   capabilities.fork,
+		delete: capabilities.delete,
+		store:  store,
 	}, nil
-}
-
-func newTestSubAgentMaintenanceHost(t *testing.T, store *Store, parentThreadID ThreadID) *SubAgentMaintenanceHost {
-	t.Helper()
-	factory, err := NewSubAgentMaintenanceHostFactory(mustHostBootstrap(t, store))
-	if err != nil {
-		t.Fatal(err)
-	}
-	host, err := factory.NewHost(SubAgentMaintenanceHostOptions{
-		ParentThreadID: parentThreadID,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return host
 }
 
 func newTestSubAgentReadHost(t *testing.T, store *Store, parentThreadID ThreadID) *SubAgentReadHost {
 	t.Helper()
-	factory, err := NewSubAgentReadHostFactory(mustHostBootstrap(t, store))
-	if err != nil {
-		t.Fatal(err)
-	}
-	host, err := factory.NewHost(SubAgentReadHostOptions{
-		ParentThreadID: parentThreadID,
-	})
+	host, err := mustTestCapabilities(t, store).subAgentRead.NewHost(context.Background(), parentThreadID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return host
 }
 
-func newTestPendingToolSettlementHost(t *testing.T, store *Store, threadID ThreadID) *PendingToolSettlementHost {
+func newTestPendingToolRecoveryHost(t *testing.T, store *Store, threadID ThreadID) *PendingToolRecoveryHost {
 	t.Helper()
-	factory, err := NewPendingToolRecoveryHostFactory(mustHostBootstrap(t, store))
-	if err != nil {
-		t.Fatal(err)
-	}
-	host, err := factory.NewHost(PendingToolRecoveryHostOptions{
-		ThreadID: threadID,
-	})
+	host, err := mustTestCapabilities(t, store).recovery.NewThreadHost(context.Background(), threadID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return host
+}
+
+func (f *testProviderFacade) SetThreadTitle(ctx context.Context, req SetThreadTitleRequest) (ThreadSnapshot, error) {
+	host, err := f.title.NewHost(ctx, req.ThreadID, f.sink)
+	if err != nil {
+		return ThreadSnapshot{}, err
+	}
+	return host.SetThreadTitle(ctx, req)
+}
+
+func (f *testProviderFacade) CreateThread(ctx context.Context, req CreateThreadRequest) (ThreadSummary, error) {
+	req.CreateIntentID = testCreateThreadRequest(req.ThreadID).CreateIntentID
+	host, err := f.create.Bind(req.ThreadID, req.CreateIntentID)
+	if err != nil {
+		return ThreadSummary{}, err
+	}
+	return host.CreateThread(ctx, req)
+}
+
+func (f *testProviderFacade) ForkThread(ctx context.Context, req ForkThreadRequest) (ForkThreadResult, error) {
+	host, err := f.fork.NewHost(ctx, req.SourceThreadID, f.sink)
+	if err != nil {
+		return ForkThreadResult{}, err
+	}
+	return host.ForkThread(ctx, req)
+}
+
+func (f *testProviderFacade) DeleteThread(ctx context.Context, threadID ThreadID) error {
+	host, err := f.delete.NewHost(ctx, threadID)
+	if err != nil {
+		return err
+	}
+	return host.DeleteThread(ctx, threadID)
+}
+
+func (f *testMaintenanceFacade) ReadThread(ctx context.Context, threadID ThreadID) (ThreadSnapshot, error) {
+	host, err := f.readHost(ctx, threadID)
+	if err != nil {
+		return ThreadSnapshot{}, err
+	}
+	return host.ReadThread(ctx, threadID)
+}
+
+func (f *testMaintenanceFacade) CreateThread(ctx context.Context, req CreateThreadRequest) (ThreadSummary, error) {
+	req.CreateIntentID = testCreateThreadRequest(req.ThreadID).CreateIntentID
+	host, err := f.create.Bind(req.ThreadID, req.CreateIntentID)
+	if err != nil {
+		return ThreadSummary{}, err
+	}
+	return host.CreateThread(ctx, req)
+}
+
+func (f *testMaintenanceFacade) ReadThreadOverview(ctx context.Context, threadID ThreadID) (ThreadOverview, error) {
+	host, err := f.readHost(ctx, threadID)
+	if err != nil {
+		return ThreadOverview{}, err
+	}
+	return host.ReadThreadOverview(ctx, threadID)
+}
+
+func (f *testMaintenanceFacade) ListThreadTurns(ctx context.Context, req ListThreadTurnsRequest) (ThreadTurnsPage, error) {
+	host, err := f.readHost(ctx, req.ThreadID)
+	if err != nil {
+		return ThreadTurnsPage{}, err
+	}
+	return host.ListThreadTurns(ctx, req)
+}
+
+func (f *testMaintenanceFacade) ReadLatestThreadTurn(ctx context.Context, threadID ThreadID) (ThreadTurnSnapshot, error) {
+	host, err := f.readHost(ctx, threadID)
+	if err != nil {
+		return ThreadTurnSnapshot{}, err
+	}
+	return host.ReadLatestThreadTurn(ctx, threadID)
+}
+
+func (f *testMaintenanceFacade) ReadThreadContext(ctx context.Context, threadID ThreadID) (ThreadContextSnapshot, error) {
+	host, err := f.readHost(ctx, threadID)
+	if err != nil {
+		return ThreadContextSnapshot{}, err
+	}
+	return host.ReadThreadContext(ctx, threadID)
+}
+
+func (f *testMaintenanceFacade) ReadThreadAgentTodos(ctx context.Context, threadID ThreadID) (ThreadAgentTodoState, error) {
+	host, err := f.readHost(ctx, threadID)
+	if err != nil {
+		return ThreadAgentTodoState{}, err
+	}
+	return host.ReadThreadAgentTodos(ctx, threadID)
+}
+
+func (f *testMaintenanceFacade) ReadTurnProjection(ctx context.Context, req ReadTurnProjectionRequest) (ThreadTurnProjection, error) {
+	host, err := f.readHost(ctx, req.ThreadID)
+	if err != nil {
+		return ThreadTurnProjection{}, err
+	}
+	return host.ReadTurnProjection(ctx, req)
+}
+
+func (f *testMaintenanceFacade) readHost(ctx context.Context, threadID ThreadID) (*ThreadReadHost, error) {
+	return f.read.NewHost(ctx, threadID)
+}
+
+func (f *testMaintenanceFacade) SetThreadTitle(ctx context.Context, req SetThreadTitleRequest) (ThreadSnapshot, error) {
+	host, err := f.title.NewHost(ctx, req.ThreadID, nil)
+	if err != nil {
+		return ThreadSnapshot{}, err
+	}
+	return host.SetThreadTitle(ctx, req)
+}
+
+func (f *testMaintenanceFacade) ForkThread(ctx context.Context, req ForkThreadRequest) (ForkThreadResult, error) {
+	host, err := f.fork.NewHost(ctx, req.SourceThreadID, nil)
+	if err != nil {
+		return ForkThreadResult{}, err
+	}
+	return host.ForkThread(ctx, req)
+}
+
+func (f *testMaintenanceFacade) DeleteThread(ctx context.Context, threadID ThreadID) error {
+	host, err := f.delete.NewHost(ctx, threadID)
+	if err != nil {
+		return err
+	}
+	return host.DeleteThread(ctx, threadID)
 }
 
 func (f *testMaintenanceFacade) UpdateThreadAgentTodos(ctx context.Context, req UpdateThreadAgentTodosRequest) (ThreadAgentTodoState, error) {
@@ -230,6 +526,8 @@ func TestHostRunTurnReportsTerminalProjectionUnavailableWithoutDiscardingResult(
 	repo := &terminalProjectionFailureRepo{MemoryRepo: sessiontree.NewMemoryRepo()}
 	store := NewMemoryStore()
 	store.repo = repo
+	store.rootAuthority = repo
+	store.agentTodos = repo
 	recorder := &terminalProjectionFailureRecorder{repo: repo}
 	host, err := newTestHost(t, providerHostOptions{
 		Config: config.Config{
@@ -324,9 +622,21 @@ func TestHostCreateThreadIsIdempotentAndReturnsSummaryWithoutMessages(t *testing
 	}
 }
 
-func TestHostRunTurnRecoversInterruptedActiveLease(t *testing.T) {
+func TestHostRunTurnRejectsTakeoverEligibleInterruptedLeaseWithoutExplicitRecovery(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
+	leasePolicy := sessiontree.DefaultLeasePolicy
+	leaseNow := time.Date(2026, time.July, 19, 8, 0, 0, 0, time.UTC)
+	leaseAuthority, err := sessiontree.NewMemoryRepoWithLeasePolicy(leasePolicy, func() time.Time {
+		return leaseNow
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.repo = leaseAuthority
+	store.rootAuthority = leaseAuthority
+	store.agentTodos = leaseAuthority
+	store.forkOperations = storage.NewMemoryForkOperationStore(leaseAuthority)
 	host, err := newTestHost(t, providerHostOptions{
 		Config: config.Config{
 			Provider:     config.ProviderFake,
@@ -364,30 +674,35 @@ func TestHostRunTurnRecoversInterruptedActiveLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	leaseRepo := store.repo.(sessiontree.TurnLeaseRepo)
-	if err := leaseRepo.AcquireTurnLease(ctx, sessiontree.TurnLease{
-		ThreadID:  "thread",
-		TurnID:    "turn-interrupted",
-		OwnerID:   "dead-owner",
-		CreatedAt: time.Now(),
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	result, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-continue", ThreadID: "thread", TurnID: "turn-continue", Input: TurnInput{Text: "continue"}})
+	interruptedLease, err := leaseRepo.AcquireTurnLease(ctx, sessiontree.TurnLease{
+		ThreadID: "thread",
+		TurnID:   "turn-interrupted",
+		OwnerID:  "dead-owner",
+		Purpose:  sessiontree.TurnLeasePurposeTurn,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != TurnStatusCompleted || result.Output != "continued" {
-		t.Fatalf("result = %#v", result)
+	if interruptedLease.Generation != 1 || interruptedLease.Heartbeat != 0 ||
+		!interruptedLease.AcquiredAt.Equal(leaseNow) ||
+		!interruptedLease.RenewedAt.Equal(leaseNow) ||
+		!interruptedLease.ExpiresAt.Equal(leaseNow.Add(leasePolicy.TTL)) {
+		t.Fatalf("interrupted lease proof = %#v", interruptedLease)
 	}
-	if _, ok, err := leaseRepo.ActiveTurnLease(ctx, "thread"); err != nil || ok {
-		t.Fatalf("active lease should be released after runtime recovery, ok=%v err=%v", ok, err)
+	leaseNow = interruptedLease.ExpiresAt.Add(leasePolicy.ClockSkewAllowance + time.Nanosecond)
+
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-continue", ThreadID: "thread", TurnID: "turn-continue", Input: TurnInput{Text: "continue"}}); !errors.Is(err, ErrThreadBusy) {
+		t.Fatalf("run with takeover-eligible interrupted lease err=%v, want ErrThreadBusy", err)
+	}
+	activeLease, ok, err := leaseRepo.ActiveTurnLease(ctx, "thread")
+	if err != nil || !ok || !sessiontree.SameTurnLease(activeLease, interruptedLease) {
+		t.Fatalf("active lease = %#v ok=%v err=%v, want unchanged %#v", activeLease, ok, err, interruptedLease)
 	}
 	snapshot, err := host.ReadThread(ctx, "thread")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.LatestTurnID != "turn-continue" || snapshot.Status != ThreadStatusCompleted {
+	if snapshot.LatestTurnID != "turn-interrupted" || snapshot.Status != ThreadStatusInterrupted {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}
 }
@@ -1262,10 +1577,11 @@ func TestHostClearsProviderStateWhenTurnReturnsNoFreshState(t *testing.T) {
 	}
 }
 
-func TestHostProviderStatePersistenceFailureFailsTurnFinalization(t *testing.T) {
+func TestHostProviderStatePersistenceFailureRecordsFailedTurnFinalization(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
-	store.providerStates = &runtimeFailingProviderStateStore{ProviderStateStore: store.providerStates, failPut: true}
+	providerStates := &runtimeFailingProviderStateRepo{MemoryRepo: store.repo.(*sessiontree.MemoryRepo), failFinishPut: true}
+	store.repo = providerStates
 	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
 		events := make(chan ModelEvent, 2)
 		events <- ModelEvent{Type: ModelEventDelta, Text: "provider answer"}
@@ -1290,15 +1606,15 @@ func TestHostProviderStatePersistenceFailureFailsTurnFinalization(t *testing.T) 
 	if err == nil || !strings.Contains(err.Error(), "injected provider state put failure") {
 		t.Fatalf("RunTurn err = %v", err)
 	}
-	if result.Status != "" {
-		t.Fatalf("persistence failure returned a terminal result: %#v", result)
+	if result.Status != TurnStatusFailed || !strings.Contains(result.Error, "injected provider state put failure") {
+		t.Fatalf("persistence failure result = %#v, want failed terminal outcome", result)
 	}
 	snapshot, readErr := host.ReadThread(ctx, "thread")
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if snapshot.Status != ThreadStatusInterrupted {
-		t.Fatalf("thread status = %q, want unfinished interrupted", snapshot.Status)
+	if snapshot.Status != ThreadStatusFailed {
+		t.Fatalf("thread status = %q, want failed", snapshot.Status)
 	}
 }
 
@@ -1337,8 +1653,8 @@ func TestHostNoopCompactionPreservesProviderState(t *testing.T) {
 		t.Fatal(err)
 	}
 	compacted, err := host.CompactThread(ctx, CompactThreadRequest{ThreadID: "thread", RequestID: "compact-1", Source: "idle"})
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, engine.ErrCompactionNoop) {
+		t.Fatalf("noop compaction err = %v, want ErrCompactionNoop", err)
 	}
 	if compacted.Compaction.Status != observation.CompactionStatusNoop || compacted.Compaction.OperationID == "" || compacted.Compaction.RequestID != "compact-1" || compacted.Compaction.Source != "idle" {
 		t.Fatalf("noop compaction result = %#v", compacted)
@@ -1405,6 +1721,25 @@ func TestHostSuccessfulCompactionClearsProviderState(t *testing.T) {
 	if err := compacted.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	mu.Lock()
+	requestsBeforeReplay := len(requests)
+	mu.Unlock()
+	replayed, err := host.CompactThread(ctx, CompactThreadRequest{ThreadID: "thread", RequestID: "compact-1", Source: "idle"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replayed.Replayed || replayed.Compaction.Status != observation.CompactionStatusCompacted {
+		t.Fatalf("compaction replay = %#v", replayed)
+	}
+	if err := replayed.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if len(requests) != requestsBeforeReplay {
+		mu.Unlock()
+		t.Fatalf("compaction replay invoked provider: before=%d after=%d", requestsBeforeReplay, len(requests))
+	}
+	mu.Unlock()
 	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-3", ThreadID: "thread", TurnID: "turn-3", Input: TurnInput{Text: "after compaction"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -1416,11 +1751,11 @@ func TestHostSuccessfulCompactionClearsProviderState(t *testing.T) {
 	}
 }
 
-func TestHostProviderStateDeleteFailureFailsCompactionFinalization(t *testing.T) {
+func TestHostCompactionDefersIncompatibleProviderStateCleanupToTurnFinish(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
-	providerStates := &runtimeFailingProviderStateStore{ProviderStateStore: store.providerStates}
-	store.providerStates = providerStates
+	providerStates := &runtimeFailingProviderStateRepo{MemoryRepo: store.repo.(*sessiontree.MemoryRepo)}
+	store.repo = providerStates
 	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
 		events := make(chan ModelEvent, 2)
 		if req.TurnID == "" {
@@ -1452,23 +1787,22 @@ func TestHostProviderStateDeleteFailureFailsCompactionFinalization(t *testing.T)
 	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-2", ThreadID: "thread", TurnID: "turn-2", Input: TurnInput{Text: "latest tail"}}); err != nil {
 		t.Fatal(err)
 	}
-	providerStates.failDelete = true
 	result, err := host.CompactThread(ctx, CompactThreadRequest{ThreadID: "thread", RequestID: "compact-1", Source: "idle"})
-	if err == nil || !strings.Contains(err.Error(), "injected provider state delete failure") {
+	if err != nil {
 		t.Fatalf("CompactThread err = %v", err)
 	}
-	if result.Compaction.Status != observation.CompactionStatusFailed || result.Compaction.Error == "" {
-		t.Fatalf("failed compaction finalization result = %#v", result)
+	if result.Compaction.Status != observation.CompactionStatusCompacted {
+		t.Fatalf("canonical compaction result = %#v", result)
 	}
 	if err := result.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, readErr := host.ReadThreadContext(ctx, "thread")
-	if readErr != nil {
-		t.Fatal(readErr)
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-3", ThreadID: "thread", TurnID: "turn-3", Input: TurnInput{Text: "after compaction"}}); err != nil {
+		t.Fatalf("next turn after compaction: %v", err)
 	}
-	if len(snapshot.Compactions) == 0 || snapshot.Compactions[len(snapshot.Compactions)-1].Status != observation.CompactionStatusFailed {
-		t.Fatalf("context compactions = %#v", snapshot.Compactions)
+	state, err := providerStates.ProviderState(ctx, "thread")
+	if err != nil || state.State.ID != "state-turn-3" || state.CreatedByTurnID != "turn-3" {
+		t.Fatalf("provider state after atomic turn finish = %#v err=%v", state, err)
 	}
 }
 
@@ -1866,7 +2200,7 @@ func TestHostEmitsActivityTimelineForToolLifecycle(t *testing.T) {
 	}
 }
 
-func TestHostEmitsParallelToolResultBeforeSlowSiblingAndPersistsDetailInCallOrder(t *testing.T) {
+func TestHostCommitsParallelToolResultsInCanonicalCallOrder(t *testing.T) {
 	ctx := context.Background()
 	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
 		events := make(chan ModelEvent, 3)
@@ -1972,9 +2306,11 @@ func TestHostEmitsParallelToolResultBeforeSlowSiblingAndPersistsDetailInCallOrde
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for slow sibling")
 	}
-	if !eventuallyRuntimeToolResult(rec, "exec-1") {
+	if slices.ContainsFunc(rec.snapshot(), func(event Event) bool {
+		return event.Type == "tool_result" && event.ToolID == "exec-1"
+	}) {
 		close(releaseSlow)
-		t.Fatal("pending tool result event was not emitted before slow sibling finished")
+		t.Fatal("later parallel result was observed before the canonical earlier result")
 	}
 	close(releaseSlow)
 	select {
@@ -2150,7 +2486,7 @@ func TestHostRunTurnPreservesDistinctRunAndTurnIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	var surfaceRequests []ToolSurfaceRequest
-	var approval tools.ApprovalRequest
+	var approval tooltest.ApprovalRequest
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("test"),
 		ModelGateway:         gateway,
@@ -2163,10 +2499,10 @@ func TestHostRunTurnPreservesDistinctRunAndTurnIdentity(t *testing.T) {
 				HostContext: map[string]string{"surface": "runtime-test"},
 			}, nil
 		},
-		Approver: func(_ context.Context, req tools.ApprovalRequest) (tools.PermissionDecision, error) {
+		EffectAuthorizationGate: allowRuntimeEffectGate{approver: func(_ context.Context, req tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
 			approval = req
-			return tools.PermissionDecisionAllow, nil
-		},
+			return tooltest.PermissionDecisionAllow, nil
+		}},
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -2244,7 +2580,6 @@ func TestHostRunTurnPreservesDistinctRunAndTurnIdentity(t *testing.T) {
 	if approval.RunID != "run-parent" ||
 		approval.ThreadID != "thread" ||
 		approval.TurnID != "turn-msg" ||
-		approval.PromptScopeID != "thread" ||
 		approval.Step != 1 ||
 		approval.HostContext["surface"] != "runtime-test" {
 		t.Fatalf("approval request identity = %#v", approval)
@@ -2323,14 +2658,14 @@ func TestHostRunTurnCanceledProjectionSettlesPendingActivity(t *testing.T) {
 
 	rec := &runtimeEventRecorder{}
 	host, err := newTestHost(t, providerHostOptions{
-		Config:               runtimeGatewayConfig("test"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                NewMemoryStore(),
-		Tools:                registry,
-		Approver:             allowRuntimeTools,
-		Sink:                 rec,
-		IDGenerator:          deterministicIDs(),
+		Config:                  runtimeGatewayConfig("test"),
+		ModelGateway:            gateway,
+		ModelGatewayIdentity:    runtimeGatewayIdentity("fake-model"),
+		Store:                   NewMemoryStore(),
+		Tools:                   registry,
+		EffectAuthorizationGate: allowRuntimeEffectGate{approver: allowRuntimeTools},
+		Sink:                    rec,
+		IDGenerator:             deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2496,6 +2831,7 @@ func TestHostSubAgentsInheritModelGatewayWithChildPromptScope(t *testing.T) {
 	}
 
 	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+		PublicationID:   "publication-child-gateway",
 		ParentThreadID:  "parent",
 		ParentTurnID:    "parent-turn",
 		ThreadID:        "child",
@@ -2574,6 +2910,7 @@ func TestHostManagesSubAgentLifecycle(t *testing.T) {
 	}
 
 	spawned, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+		PublicationID:   "publication-child-lifecycle",
 		ParentThreadID:  "parent",
 		ParentTurnID:    "parent-turn",
 		ThreadID:        "child",
@@ -2627,6 +2964,7 @@ func TestHostManagesSubAgentLifecycle(t *testing.T) {
 	}
 
 	sent, err := host.SendSubAgentInput(ctx, SendSubAgentInputRequest{
+		InputRequestID: "input-child-lifecycle",
 		ParentThreadID: "parent",
 		ChildThreadID:  "child",
 		Message:        "one more check",
@@ -2637,7 +2975,7 @@ func TestHostManagesSubAgentLifecycle(t *testing.T) {
 	if sent.ThreadID != "child" || !sent.CanSendInput {
 		t.Fatalf("sent = %#v", sent)
 	}
-	closed, err := host.CloseSubAgent(ctx, CloseSubAgentRequest{ParentThreadID: "parent", ChildThreadID: "child"})
+	closed, err := host.CloseSubAgent(ctx, CloseSubAgentRequest{CloseOperationID: "close-child", ParentThreadID: "parent", ChildThreadID: "child", Reason: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2718,6 +3056,7 @@ func TestHostReadsSubAgentDetailThroughPublicAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+		PublicationID:  "publication-child-detail",
 		ParentThreadID: "parent",
 		ThreadID:       "child",
 		TaskName:       "Read",
@@ -2890,6 +3229,7 @@ func TestHostReadsSubAgentDetailRawMessageContentContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+		PublicationID:  "publication-child-raw",
 		ParentThreadID: "parent",
 		ThreadID:       "child",
 		TaskName:       "Raw Contract",
@@ -2906,7 +3246,7 @@ func TestHostReadsSubAgentDetailRawMessageContentContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inputPreview := firstRuntimeSubAgentDetailEvent(previewOnly.Events, ThreadDetailEventInput)
+	inputPreview := firstRuntimeSubAgentDetailEvent(previewOnly.Events, ThreadDetailEventUserMessage)
 	if inputPreview.Message == nil || inputPreview.Message.Content != "" || inputPreview.Message.Preview == "" || !strings.HasSuffix(inputPreview.Message.Preview, "...") {
 		t.Fatalf("preview input should omit raw content and keep bounded preview: %#v", inputPreview)
 	}
@@ -2925,7 +3265,7 @@ func TestHostReadsSubAgentDetailRawMessageContentContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inputRaw := firstRuntimeSubAgentDetailEvent(raw.Events, ThreadDetailEventInput)
+	inputRaw := firstRuntimeSubAgentDetailEvent(raw.Events, ThreadDetailEventUserMessage)
 	if inputRaw.Message == nil || inputRaw.Message.Content != longMission || inputRaw.Message.Preview == "" || inputRaw.Message.Preview == inputRaw.Message.Content {
 		t.Fatalf("raw input should keep full content and bounded preview: %#v", inputRaw)
 	}
@@ -3010,9 +3350,7 @@ func TestHostSQLiteStorePersistsSubAgentDetail(t *testing.T) {
 	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{ParentThreadID: "parent", ThreadID: "child", TaskName: "Persist", Message: "work", ForkMode: SubAgentForkNone}); err != nil {
-		t.Fatal(err)
-	}
+	publishTestSubAgentFixture(t, ctx, store, "publication-child-restart", "parent", "child", "")
 	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"child"}, Timeout: 2 * time.Second}); err != nil || waited.TimedOut {
 		t.Fatalf("waited=%#v err=%v", waited, err)
 	}
@@ -3071,18 +3409,16 @@ func TestThreadReadHostListsSubAgentsAfterHostRestart(t *testing.T) {
 	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+	publishTestSubAgentFixtureWithMeta(t, ctx, store, "publication-child-restart-list", sessiontree.ThreadMeta{
+		ID:              "child",
 		ParentThreadID:  "parent",
 		ParentTurnID:    "parent-turn",
-		ThreadID:        "child",
-		TaskName:        "Restart Review",
+		TaskName:        "restart_review",
 		TaskDescription: "Verify subagent listing after runtime restart.",
-		Message:         "check restart list",
+		AgentPath:       "/root/restart_review",
 		HostProfileRef:  "reviewer",
-		ForkMode:        SubAgentForkNone,
-	}); err != nil {
-		t.Fatal(err)
-	}
+		ForkMode:        string(SubAgentForkNone),
+	}, "check restart list")
 	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{
 		ParentThreadID: "parent",
 		ChildThreadIDs: []ThreadID{"child"},
@@ -3205,13 +3541,13 @@ func TestHostSQLiteStorePersistsSubAgentDetailActivity(t *testing.T) {
 		t.Fatal(err)
 	}
 	host, err := newTestHost(t, providerHostOptions{
-		Config:               runtimeGatewayConfig("test"),
-		Store:                store,
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Tools:                registry,
-		Approver:             allowRuntimeTools,
-		IDGenerator:          deterministicIDs(),
+		Config:                  runtimeGatewayConfig("test"),
+		Store:                   store,
+		ModelGateway:            gateway,
+		ModelGatewayIdentity:    runtimeGatewayIdentity("fake-model"),
+		Tools:                   registry,
+		EffectAuthorizationGate: allowRuntimeEffectGate{approver: allowRuntimeTools},
+		IDGenerator:             deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3219,9 +3555,7 @@ func TestHostSQLiteStorePersistsSubAgentDetailActivity(t *testing.T) {
 	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{ParentThreadID: "parent", ThreadID: "child", TaskName: "Persist", Message: "work", ForkMode: SubAgentForkNone}); err != nil {
-		t.Fatal(err)
-	}
+	publishTestSubAgentFixture(t, ctx, store, "publication-child-activity", "parent", "child", "")
 	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"child"}, Timeout: 2 * time.Second}); err != nil || waited.TimedOut {
 		t.Fatalf("waited=%#v err=%v", waited, err)
 	}
@@ -3292,26 +3626,25 @@ func TestHostCloseSubAgentsStopsUnfinishedChildren(t *testing.T) {
 	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{ParentThreadID: "parent", ThreadID: "completed", TaskName: "completed", Message: "finish", ForkMode: SubAgentForkNone}); err != nil {
+	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{PublicationID: "publication-completed-close", ParentThreadID: "parent", ThreadID: "completed", TaskName: "completed", Message: "finish", ForkMode: SubAgentForkNone}); err != nil {
 		t.Fatal(err)
 	}
 	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"completed"}, Timeout: 2 * time.Second}); err != nil || waited.TimedOut {
 		t.Fatalf("completed wait=%#v err=%v", waited, err)
 	}
-	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{ParentThreadID: "parent", ThreadID: "running", TaskName: "running", Message: "hang", ForkMode: SubAgentForkNone}); err != nil {
+	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{PublicationID: "publication-running-close", ParentThreadID: "parent", ThreadID: "running", TaskName: "running", Message: "hang", ForkMode: SubAgentForkNone}); err != nil {
 		t.Fatal(err)
 	}
 
-	maintenance := newTestSubAgentMaintenanceHost(t, host.providerHost.store, "parent")
-	result, err := maintenance.CloseSubAgents(ctx, CloseSubAgentsRequest{ParentThreadID: "parent", Reason: "parent_stop"})
-	if err != nil {
+	if _, err := host.CloseSubAgent(ctx, CloseSubAgentRequest{CloseOperationID: "close-running", ParentThreadID: "parent", ChildThreadID: "running", Reason: "parent_stop"}); err != nil {
 		t.Fatal(err)
 	}
-	if result.Closed != 1 || len(result.Snapshots) != 2 {
-		t.Fatalf("close result = %#v", result)
+	result, err := newTestSubAgentReadHost(t, host.providerHost.store, "parent").ListSubAgents(ctx, "parent")
+	if err != nil || len(result) != 2 {
+		t.Fatalf("close snapshots = %#v err=%v", result, err)
 	}
 	byID := map[ThreadID]SubAgentSnapshot{}
-	for _, snapshot := range result.Snapshots {
+	for _, snapshot := range result {
 		byID[snapshot.ThreadID] = snapshot
 	}
 	if byID["completed"].Status != SubAgentStatusCompleted || byID["completed"].Closed {
@@ -3322,7 +3655,7 @@ func TestHostCloseSubAgentsStopsUnfinishedChildren(t *testing.T) {
 	}
 }
 
-func TestSubAgentMaintenanceHostClosesChildrenAfterFailedParentTurn(t *testing.T) {
+func TestSubAgentHostClosesChildAfterFailedParentTurn(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
 	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
@@ -3357,29 +3690,28 @@ func TestSubAgentMaintenanceHostClosesChildrenAfterFailedParentTurn(t *testing.T
 	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{ParentThreadID: "parent", ThreadID: "completed", TaskName: "completed", Message: "finish", ForkMode: SubAgentForkNone}); err != nil {
+	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{PublicationID: "publication-completed-parent-failed", ParentThreadID: "parent", ThreadID: "completed", TaskName: "completed", Message: "finish", ForkMode: SubAgentForkNone}); err != nil {
 		t.Fatal(err)
 	}
 	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"completed"}, Timeout: 2 * time.Second}); err != nil || waited.TimedOut {
 		t.Fatalf("completed wait=%#v err=%v", waited, err)
 	}
-	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{ParentThreadID: "parent", ThreadID: "running", TaskName: "running", Message: "hang", ForkMode: SubAgentForkNone}); err != nil {
+	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{PublicationID: "publication-running-parent-failed", ParentThreadID: "parent", ThreadID: "running", TaskName: "running", Message: "hang", ForkMode: SubAgentForkNone}); err != nil {
 		t.Fatal(err)
 	}
 	failed, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-parent-failed", ThreadID: "parent", TurnID: "turn-parent-failed", Input: TurnInput{Text: "coordinate children"}})
 	if err == nil || failed.Status != TurnStatusFailed {
 		t.Fatalf("failed parent turn = %#v err=%v, want failed result and error", failed, err)
 	}
-	maintenance := newTestSubAgentMaintenanceHost(t, store, "parent")
-	closed, err := maintenance.CloseSubAgents(ctx, CloseSubAgentsRequest{ParentThreadID: "parent", Reason: "parent_failed"})
-	if err != nil {
+	if _, err := host.CloseSubAgent(ctx, CloseSubAgentRequest{CloseOperationID: "close-running-failed-parent", ParentThreadID: "parent", ChildThreadID: "running", Reason: "parent_failed"}); err != nil {
 		t.Fatal(err)
 	}
-	if closed.Closed != 1 || len(closed.Snapshots) != 2 {
-		t.Fatalf("CloseSubAgents result=%#v", closed)
+	closed, err := newTestSubAgentReadHost(t, store, "parent").ListSubAgents(ctx, "parent")
+	if err != nil || len(closed) != 2 {
+		t.Fatalf("CloseSubAgent snapshots=%#v err=%v", closed, err)
 	}
 	byID := map[ThreadID]SubAgentSnapshot{}
-	for _, snapshot := range closed.Snapshots {
+	for _, snapshot := range closed {
 		byID[snapshot.ThreadID] = snapshot
 	}
 	if byID["completed"].Status != SubAgentStatusCompleted || byID["completed"].Closed {
@@ -3397,6 +3729,87 @@ func TestSubAgentMaintenanceHostClosesChildrenAfterFailedParentTurn(t *testing.T
 		return ev.Type == "subagent_lifecycle" && ev.Metadata["reason"] == "parent_failed"
 	}) {
 		t.Fatalf("running detail missing parent_failed lifecycle: %#v", detail.Events)
+	}
+}
+
+func TestSubAgentHostRejectsRemoteActiveChildWithoutSideEffects(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		events := make(chan ModelEvent)
+		go func() {
+			defer close(events)
+			<-ctx.Done()
+		}()
+		return events, nil
+	})
+	owner, err := newTestHost(t, providerHostOptions{
+		Config:               runtimeGatewayConfig("test"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                store,
+		IDGenerator:          deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.SpawnSubAgent(ctx, SpawnSubAgentRequest{PublicationID: "publication-child-remote-close", ParentThreadID: "parent", ThreadID: "child", TaskName: "child", Message: "work", ForkMode: SubAgentForkNone}); err != nil {
+		t.Fatal(err)
+	}
+	waitDone := make(chan error, 1)
+	go func() {
+		_, err := owner.WaitSubAgents(ctx, WaitSubAgentsRequest{ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"child"}, Timeout: 10 * time.Second})
+		waitDone <- err
+	}()
+	leaseRepo := store.repo.(sessiontree.TurnLeaseRepo)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, active, err := leaseRepo.ActiveTurnLease(ctx, "child"); err != nil {
+			t.Fatal(err)
+		} else if active {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("child did not acquire an active lease")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	remoteFactory, err := mustTestCapabilities(t, store).subAgent.Bind("parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := remoteFactory.NewHost(ctx, SubAgentHostOptions{
+		Config: runtimeGatewayConfig("test"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"), IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := remote.CloseSubAgent(ctx, CloseSubAgentRequest{CloseOperationID: "remote-close", ParentThreadID: "parent", ChildThreadID: "child", Reason: "remote"}); !errors.Is(err, ErrThreadBusy) {
+		t.Fatalf("CloseSubAgent err = %v, want ErrThreadBusy", err)
+	}
+	read := newTestSubAgentReadHost(t, store, "parent")
+	snapshot, err := read.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "child"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Snapshot.Closed || slices.ContainsFunc(snapshot.Events, func(event ThreadDetailEvent) bool {
+		return event.Type == "subagent_lifecycle" && event.Metadata["action"] == "closed"
+	}) {
+		t.Fatalf("remote close wrote canonical side effects: %#v", snapshot)
+	}
+	if _, err := owner.CloseSubAgent(ctx, CloseSubAgentRequest{CloseOperationID: "owner-close", ParentThreadID: "parent", ChildThreadID: "child", Reason: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-waitDone:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("WaitSubAgents after owner close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitSubAgents did not finish after owner close")
 	}
 }
 
@@ -3529,28 +3942,18 @@ func TestHostPublicNotFoundErrors(t *testing.T) {
 		t.Fatalf("ReadTurnProjection err = %v, want ErrThreadNotFound", err)
 	}
 	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{
-		ThreadID: "missing",
-		RunID:    "pending-run",
-		Status:   PendingToolCompletionCompleted,
-		Summary:  "done",
-		Handle:   "terminal:job:123",
+		CompletionRequestID: "missing-completion",
+		Target: PendingToolSettlementTarget{
+			ThreadID: "missing", TurnID: "turn-1", RunID: "run-1",
+			ToolCallID: "exec-1", ToolName: "terminal.exec", Handle: "terminal:job:123",
+		},
+		ContinuationTurnID: "turn-2", ContinuationRunID: "run-2",
+		Status: PendingToolCompletionCompleted, Summary: "done", Input: TurnInput{Text: "done"},
 	}); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("CompletePendingTool err = %v, want ErrThreadNotFound", err)
 	}
-	settlement := newTestPendingToolSettlementHost(t, host.providerHost.store, "missing")
-	if _, err := settlement.SettlePendingTool(ctx, PendingToolSettlementRequest{
-		Target: PendingToolSettlementTarget{
-			ThreadID:   "missing",
-			TurnID:     "turn-1",
-			RunID:      "run-1",
-			ToolCallID: "exec-1",
-			ToolName:   "terminal.exec",
-			Handle:     "terminal:job:123",
-		},
-		Status:  PendingToolSettlementCompleted,
-		Summary: "done",
-	}); !errors.Is(err, ErrThreadNotFound) {
-		t.Fatalf("SettlePendingTool err = %v, want ErrThreadNotFound", err)
+	if _, err := mustTestCapabilities(t, host.providerHost.store).recovery.NewThreadHost(ctx, "missing", nil); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("pending recovery construction err = %v, want ErrThreadNotFound", err)
 	}
 	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
 		t.Fatal(err)
@@ -3560,6 +3963,42 @@ func TestHostPublicNotFoundErrors(t *testing.T) {
 		ChildThreadID:  "missing-child",
 	}); !errors.Is(err, ErrSubAgentNotFound) {
 		t.Fatalf("ReadSubAgentDetail err = %v, want ErrSubAgentNotFound", err)
+	}
+}
+
+func TestRuntimeHostErrorMapsPublicBranchableSentinels(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  error
+		public error
+	}{
+		{name: "active turn", input: agentharness.ErrActiveTurn, public: ErrThreadBusy},
+		{name: "active lease", input: sessiontree.ErrActiveTurn, public: ErrThreadBusy},
+		{name: "authority claim", input: sessiontree.ErrThreadAuthorityBusy, public: ErrThreadBusy},
+		{name: "retry target", input: agentharness.ErrNoRetryTarget, public: ErrNoRetryTarget},
+		{name: "settlement turn", input: agentharness.ErrPendingToolSettlementTargetTurnNotFound, public: ErrTurnNotFound},
+		{name: "settlement run", input: agentharness.ErrPendingToolSettlementTargetRunNotFound, public: ErrRunNotFound},
+		{name: "settlement tool", input: agentharness.ErrPendingToolSettlementTargetToolNotFound, public: ErrPendingToolNotFound},
+		{name: "settlement inactive", input: agentharness.ErrPendingToolSettlementTargetNotActive, public: ErrPendingToolNotActive},
+		{name: "settlement conflict", input: agentharness.ErrPendingToolSettlementConflict, public: ErrPendingToolSettlementConflict},
+		{name: "subagent missing", input: agentharness.ErrSubAgentNotFound, public: ErrSubAgentNotFound},
+		{name: "subagent closed", input: agentharness.ErrSubAgentClosed, public: ErrSubAgentClosed},
+		{name: "fork operation conflict", input: agentharness.ErrForkOperationConflict, public: ErrForkOperationConflict},
+		{name: "fork destination conflict", input: sessiontree.ErrForkDestinationConflict, public: ErrForkDestinationConflict},
+		{name: "todo version conflict", input: sessiontree.ErrAgentTodoVersionConflict, public: ErrAgentTodoVersionConflict},
+		{name: "harness journal invariant", input: agentharness.ErrJournalInvariant, public: ErrJournalInvariant},
+		{name: "journal entry missing", input: sessiontree.ErrEntryNotFound, public: ErrJournalInvariant},
+		{name: "journal parent invalid", input: sessiontree.ErrInvalidParent, public: ErrJournalInvariant},
+		{name: "thread authority invalid", input: sessiontree.ErrInvalidThreadAuthority, public: ErrThreadAuthorityInvariant},
+		{name: "thread missing", input: sessiontree.ErrThreadNotFound, public: ErrThreadNotFound},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := runtimeHostError(test.input)
+			if !errors.Is(err, test.public) {
+				t.Fatalf("runtimeHostError(%v) = %v, want errors.Is(_, %v)", test.input, err, test.public)
+			}
+		})
 	}
 }
 
@@ -3961,12 +4400,11 @@ func TestThreadForkHostPreservesProjectionWithNewIdentity(t *testing.T) {
 	if projection.Status != TurnStatusCompleted || runtimeProjectionAssistantText(projection) != "projected answer" {
 		t.Fatalf("fork projection = %#v", projection)
 	}
-	turnFactory, err := NewTurnExecutionHostFactory(mustHostBootstrap(t, store))
+	turnFactory, err := mustTestCapabilities(t, store).turn.Bind("fork")
 	if err != nil {
 		t.Fatal(err)
 	}
-	forkTurn, err := turnFactory.NewHost(TurnExecutionHostOptions{
-		ThreadID: "fork",
+	forkTurn, err := turnFactory.NewHost(ctx, TurnExecutionHostOptions{
 		Config: config.Config{
 			Provider:     config.ProviderFake,
 			Model:        "fake-model",
@@ -4088,8 +4526,9 @@ func TestThreadForkHostRejectsOperationAndDestinationConflicts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(record.Plan), `"version":2`) || strings.Contains(string(record.Plan), `"metadata_patch"`) || strings.Contains(string(record.Plan), `"turns"`) || strings.Contains(string(record.Result), `"turns"`) {
-		t.Fatalf("persisted fork operation retained obsolete fields: plan=%s result=%s", record.Plan, record.Result)
+	if !strings.Contains(string(record.Plan), `"version":5`) || !strings.Contains(string(record.Plan), `"source_leaf_entry_id"`) || !strings.Contains(string(record.Plan), `"artifact_closure"`) ||
+		strings.Contains(string(record.Plan), `"metadata_patch"`) || strings.Contains(string(record.Plan), `"turns"`) || strings.Contains(string(record.Result), `"turns"`) || strings.Contains(string(record.Result), `"title"`) || strings.Contains(string(record.Result), `"status"`) {
+		t.Fatalf("persisted fork operation shape mismatch: plan=%s result=%s", record.Plan, record.Result)
 	}
 	if _, err := sessiontree.AppendMessage(ctx, store.repo, "source", "later-turn", session.Message{Role: session.User, Content: "later"}); err != nil {
 		t.Fatal(err)
@@ -4126,6 +4565,26 @@ func TestThreadForkHostRejectsOperationAndDestinationConflicts(t *testing.T) {
 
 func TestThreadForkHostValidatesCompletedTargets(t *testing.T) {
 	ctx := context.Background()
+	t.Run("deleted", func(t *testing.T) {
+		store := NewMemoryStore()
+		if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "source"}); err != nil {
+			t.Fatal(err)
+		}
+		maintenance, err := newTestMaintenanceHost(t, store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := ForkThreadRequest{OperationID: "operation", SourceThreadID: "source", DestinationThreadID: "fork"}
+		if _, err := maintenance.ForkThread(ctx, req); err != nil {
+			t.Fatal(err)
+		}
+		if err := maintenance.DeleteThread(ctx, "fork"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := maintenance.ForkThread(ctx, req); !errors.Is(err, ErrThreadDeleted) {
+			t.Fatalf("deleted target replay error = %v", err)
+		}
+	})
 	t.Run("missing", func(t *testing.T) {
 		store := NewMemoryStore()
 		if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "source"}); err != nil {
@@ -4142,13 +4601,20 @@ func TestThreadForkHostValidatesCompletedTargets(t *testing.T) {
 		if err := store.repo.DeleteThread(ctx, "fork"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := maintenance.ForkThread(ctx, req); !errors.Is(err, ErrForkOperationTargetMissing) {
+		if _, err := maintenance.ForkThread(ctx, req); !errors.Is(err, ErrThreadNotFound) {
 			t.Fatalf("missing target error = %v", err)
 		}
 	})
 	t.Run("marker mismatch", func(t *testing.T) {
 		store := NewMemoryStore()
-		repo := &forkMarkerMismatchRepo{Repo: store.repo}
+		underlying := store.repo
+		repo := &forkMarkerMismatchRepo{
+			Repo:                          underlying,
+			ThreadAuthorityInspectionRepo: underlying.(sessiontree.ThreadAuthorityInspectionRepo),
+			SubAgentInputAuthorityRepo:    underlying.(sessiontree.SubAgentInputAuthorityRepo),
+			ProviderStateStore:            underlying.(sessiontree.ProviderStateStore),
+			ArtifactAuthorityRepo:         underlying.(sessiontree.ArtifactAuthorityRepo),
+		}
 		store.repo = repo
 		if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "source"}); err != nil {
 			t.Fatal(err)
@@ -4162,7 +4628,7 @@ func TestThreadForkHostValidatesCompletedTargets(t *testing.T) {
 			t.Fatal(err)
 		}
 		repo.corrupt = true
-		if _, err := maintenance.ForkThread(ctx, req); !errors.Is(err, ErrForkDestinationConflict) {
+		if _, err := maintenance.ForkThread(ctx, req); !errors.Is(err, ErrAuthorityCorrupt) {
 			t.Fatalf("marker conflict error = %v", err)
 		}
 	})
@@ -4170,6 +4636,10 @@ func TestThreadForkHostValidatesCompletedTargets(t *testing.T) {
 
 type forkMarkerMismatchRepo struct {
 	sessiontree.Repo
+	sessiontree.ThreadAuthorityInspectionRepo
+	sessiontree.SubAgentInputAuthorityRepo
+	sessiontree.ProviderStateStore
+	sessiontree.ArtifactAuthorityRepo
 	corrupt bool
 }
 
@@ -4206,8 +4676,8 @@ func TestThreadForkHostRecoversAtOperationBoundaries(t *testing.T) {
 		if _, err := store.repo.Thread(ctx, "fork"); !errors.Is(err, sessiontree.ErrThreadNotFound) {
 			t.Fatalf("destination exists before retry: %v", err)
 		}
-		if _, err := sessiontree.AppendMessage(ctx, store.repo, "source", "later-turn", session.Message{Role: session.User, Content: "later"}); err != nil {
-			t.Fatal(err)
+		if _, err := sessiontree.AppendMessage(ctx, store.repo, "source", "later-turn", session.Message{Role: session.User, Content: "later"}); !errors.Is(err, sessiontree.ErrThreadAuthorityBusy) {
+			t.Fatalf("append during prepared fork err = %v, want ErrThreadAuthorityBusy", err)
 		}
 		if _, err := maintenance.ForkThread(ctx, req); err != nil {
 			t.Fatal(err)
@@ -4223,8 +4693,8 @@ func TestThreadForkHostRecoversAtOperationBoundaries(t *testing.T) {
 
 	t.Run("before root", func(t *testing.T) {
 		store := newForkTestStore(t, false)
-		faults := &forkRepoFaultStore{Repo: store.repo, list: store.repo.(sessiontree.ThreadListRepo), failAt: 1}
-		store.repo = faults
+		faults := &forkOperationFaultStore{ForkOperationStore: store.forkOperations, failNode: 1}
+		store.forkOperations = faults
 		maintenance, err := newTestMaintenanceHost(t, store)
 		if err != nil {
 			t.Fatal(err)
@@ -4240,8 +4710,8 @@ func TestThreadForkHostRecoversAtOperationBoundaries(t *testing.T) {
 
 	t.Run("between root and terminal child", func(t *testing.T) {
 		store := newForkTestStore(t, true)
-		faults := &forkRepoFaultStore{Repo: store.repo, list: store.repo.(sessiontree.ThreadListRepo), failAt: 2}
-		store.repo = faults
+		faults := &forkOperationFaultStore{ForkOperationStore: store.forkOperations, failNode: 2}
+		store.forkOperations = faults
 		maintenance, err := newTestMaintenanceHost(t, store)
 		if err != nil {
 			t.Fatal(err)
@@ -4250,8 +4720,8 @@ func TestThreadForkHostRecoversAtOperationBoundaries(t *testing.T) {
 		if _, err := maintenance.ForkThread(ctx, req); !errors.Is(err, errInjectedForkFailure) {
 			t.Fatalf("first error = %v", err)
 		}
-		if _, err := store.repo.Thread(ctx, "fork"); err != nil {
-			t.Fatalf("root was not committed: %v", err)
+		if _, err := store.repo.Thread(ctx, "fork"); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+			t.Fatalf("partial root visible after failed batch: %v", err)
 		}
 		first, err := maintenance.ForkThread(ctx, req)
 		if err != nil {
@@ -4276,7 +4746,7 @@ func TestThreadForkHostRecoversAtOperationBoundaries(t *testing.T) {
 
 	t.Run("before completed record", func(t *testing.T) {
 		store := newForkTestStore(t, false)
-		faults := &forkOperationFaultStore{ForkOperationStore: store.forkOperations, failUpdate: true}
+		faults := &forkOperationFaultStore{ForkOperationStore: store.forkOperations, failCommit: true}
 		store.forkOperations = faults
 		maintenance, err := newTestMaintenanceHost(t, store)
 		if err != nil {
@@ -4286,8 +4756,8 @@ func TestThreadForkHostRecoversAtOperationBoundaries(t *testing.T) {
 		if _, err := maintenance.ForkThread(ctx, req); !errors.Is(err, errInjectedForkFailure) {
 			t.Fatalf("first error = %v", err)
 		}
-		if _, err := store.repo.Thread(ctx, "fork"); err != nil {
-			t.Fatalf("destination was not committed: %v", err)
+		if _, err := store.repo.Thread(ctx, "fork"); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+			t.Fatalf("destination visible before terminal record: %v", err)
 		}
 		first, err := maintenance.ForkThread(ctx, req)
 		if err != nil {
@@ -4326,6 +4796,7 @@ func TestThreadForkHostClonesTerminalSubAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+		PublicationID:  "publication-child-fork-clone",
 		ParentThreadID: "parent",
 		ParentTurnID:   "turn-parent",
 		ThreadID:       "child",
@@ -4375,12 +4846,11 @@ func TestThreadForkHostClonesTerminalSubAgents(t *testing.T) {
 	if runtimeSubAgentDetailAssistantText(detail) != "child done" {
 		t.Fatalf("forked child detail = %#v", detail.Events)
 	}
-	subAgentFactory, err := NewSubAgentHostFactory(mustHostBootstrap(t, store))
+	subAgentFactory, err := mustTestCapabilities(t, store).subAgent.Bind("parent-fork")
 	if err != nil {
 		t.Fatal(err)
 	}
-	forkSubAgents, err := subAgentFactory.NewHost(SubAgentHostOptions{
-		ParentThreadID: "parent-fork",
+	forkSubAgents, err := subAgentFactory.NewHost(ctx, SubAgentHostOptions{
 		Config: config.Config{
 			Provider:     config.ProviderFake,
 			Model:        "fake-model",
@@ -4391,7 +4861,7 @@ func TestThreadForkHostClonesTerminalSubAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	closed, err := forkSubAgents.CloseSubAgent(ctx, CloseSubAgentRequest{ParentThreadID: "parent-fork", ChildThreadID: children[0].ThreadID, Reason: "archive"})
+	closed, err := forkSubAgents.CloseSubAgent(ctx, CloseSubAgentRequest{CloseOperationID: "close-fork-child", ParentThreadID: "parent-fork", ChildThreadID: children[0].ThreadID, Reason: "archive"})
 	if err != nil || !closed.Closed || closed.Status != SubAgentStatusClosed {
 		t.Fatalf("closed forked child = %#v err=%v", closed, err)
 	}
@@ -4435,16 +4905,16 @@ func TestHostCompletePendingToolRunsFollowUpTurnThroughPublicFacade(t *testing.T
 	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
+	seedRuntimePendingToolCompletionTarget(t, host, "thread")
 	result, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{
-		ThreadID:   "thread",
-		TurnID:     "turn-complete",
-		RunID:      "turn-start",
-		ToolCallID: "exec-1",
-		ToolName:   "terminal_exec",
-		Handle:     "terminal:job:123",
-		Status:     PendingToolCompletionCompleted,
-		Summary:    "background job finished",
-		Output:     "exit 0",
+		CompletionRequestID: "completion-1",
+		Target: PendingToolSettlementTarget{
+			ThreadID: "thread", TurnID: "turn-pending", RunID: "run-pending",
+			ToolCallID: "exec-1", ToolName: "terminal.exec", Handle: "terminal:job:123",
+		},
+		ContinuationTurnID: "turn-complete", ContinuationRunID: "run-complete",
+		Status: PendingToolCompletionCompleted, Summary: "background job finished", Output: "exit 0",
+		Input: TurnInput{Text: "The background job finished."},
 		Labels: RunLabels{
 			Correlation: map[string]string{"message_id": "msg-1"},
 			Host:        map[string]string{"workspace_id": "ws-1"},
@@ -4453,24 +4923,27 @@ func TestHostCompletePendingToolRunsFollowUpTurnThroughPublicFacade(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != TurnStatusCompleted || result.Output != "completion handled" {
+	if result.Status != TurnStatusCompleted || result.Turn == nil || result.Turn.Output != "completion handled" {
 		t.Fatalf("result = %#v", result)
 	}
-	if result.RunID != "turn-start" || result.TurnID != "turn-complete" {
+	if result.RunID != "run-complete" || result.TurnID != "turn-complete" || result.Replayed {
 		t.Fatalf("completion execution identity = %#v", result)
+	}
+	if err := result.Validate(); err != nil {
+		t.Fatalf("completion result validation: %v", err)
 	}
 	snapshot, err := host.ReadThread(ctx, "thread")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.LatestTurnID != "turn-complete" || snapshot.LatestRunID != "turn-start" {
+	if snapshot.LatestTurnID != "turn-complete" || snapshot.LatestRunID != "run-complete" {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}
 	page, err := host.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(page.Turns) != 1 || !strings.Contains(page.Turns[0].UserInput, "<pending_tool_completion>") {
+	if len(page.Turns) != 1 || page.Turns[0].UserInput != "The background job finished." {
 		t.Fatalf("completion turn missing: %#v", page)
 	}
 	if len(rec.events) == 0 {
@@ -4493,26 +4966,64 @@ func TestHostCompletePendingToolRejectsInvalidRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{}); err == nil || !strings.Contains(err.Error(), "thread id is required") {
+	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{}); err == nil || !strings.Contains(err.Error(), "completion request id is required") {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{ThreadID: "thread", Status: PendingToolCompletionCompleted, Summary: "done", Handle: "terminal:job:123"}); err == nil || !strings.Contains(err.Error(), "run id is required") {
+	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{CompletionRequestID: "request"}); err == nil || !strings.Contains(err.Error(), "thread id is required") {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{ThreadID: "missing", RunID: "pending-run", Status: PendingToolCompletionCompleted, Summary: "done", Handle: "terminal:job:123"}); !errors.Is(err, ErrThreadNotFound) {
+	valid := PendingToolCompletionRequest{
+		CompletionRequestID: "request",
+		Target:              PendingToolSettlementTarget{ThreadID: "missing", TurnID: "turn-1", RunID: "run-1", ToolCallID: "exec-1", ToolName: "terminal.exec", Handle: "terminal:job:123"},
+		ContinuationTurnID:  "turn-2", ContinuationRunID: "run-2", Status: PendingToolCompletionCompleted,
+		Summary: "done", Input: TurnInput{Text: "done"},
+	}
+	if _, err := host.CompletePendingTool(ctx, valid); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("err = %v, want ErrThreadNotFound", err)
 	}
 	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.CompletePendingTool(ctx, PendingToolCompletionRequest{ThreadID: "thread", RunID: "pending-run", Status: PendingToolCompletionStatus("bogus"), Summary: "done", Handle: "terminal:job:123"}); err == nil || !strings.Contains(err.Error(), "invalid status") {
+	valid.Target.ThreadID = "thread"
+	valid.Status = PendingToolCompletionStatus("bogus")
+	if _, err := host.CompletePendingTool(ctx, valid); err == nil || !strings.Contains(err.Error(), "invalid status") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func seedRuntimePendingToolCompletionTarget(t *testing.T, host *testProviderFacade, threadID string) {
+	t.Helper()
+	seedRuntimePendingToolCompletionTargetOnRepo(t, host.providerHost.store.repo, threadID)
+}
+
+func seedRuntimePendingToolCompletionTargetOnRepo(t *testing.T, repo sessiontree.Repo, threadID string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := sessiontree.AppendTurnMarker(ctx, repo, threadID, "turn-pending", sessiontree.TurnStarted, map[string]string{"run_id": "run-pending"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, repo, threadID, "turn-pending", session.Message{Role: session.User, Content: "start background work"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, repo, threadID, "turn-pending", session.Message{Role: session.Assistant, ToolCallID: "exec-1", ToolName: "terminal.exec", ToolArgs: `{}`}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, repo, threadID, "turn-pending", session.Message{
+		Role: session.Tool, ToolCallID: "exec-1", ToolName: "terminal.exec",
+		ToolResult: &session.ToolResultView{Status: "running"},
+		Activity:   &session.ActivityPresentation{Payload: map[string]any{"pending_handle": "terminal:job:123"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendTurnMarker(ctx, repo, threadID, "turn-pending", sessiontree.TurnCompleted, map[string]string{"run_id": "run-pending"}); err != nil {
+		t.Fatal(err)
 	}
 }
 
 func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	ctx := context.Background()
 	registry := tools.NewRegistry()
+	effectGate := newRecordingRuntimeEffectGate(allowRuntimeTools)
 	var invocation tools.Invocation[runtimeEchoArgs]
 	if err := registry.Register(tools.Define[runtimeEchoArgs](
 		tools.Definition{
@@ -4575,6 +5086,8 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	settlementRepo := &settlementProjectionFailureRepo{MemoryRepo: sessiontree.NewMemoryRepo()}
 	store := NewMemoryStore()
 	store.repo = settlementRepo
+	store.rootAuthority = settlementRepo
+	store.agentTodos = settlementRepo
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("test"),
 		ModelGateway:         gateway,
@@ -4589,8 +5102,8 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 				},
 			}, nil
 		},
-		Approver:    allowRuntimeTools,
-		IDGenerator: deterministicIDs(),
+		EffectAuthorizationGate: effectGate,
+		IDGenerator:             deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -4618,16 +5131,17 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settlement := newTestPendingToolSettlementHost(t, store, "thread")
+	settlement := newTestPendingToolRecoveryHost(t, store, "thread")
 
 	if _, err := settlement.SettlePendingTool(ctx, PendingToolSettlementRequest{
 		Target: PendingToolSettlementTarget{
-			ThreadID:   "thread",
-			TurnID:     "turn-1",
-			RunID:      "run_child_audit",
-			ToolCallID: "exec-1",
-			ToolName:   "terminal_exec",
-			Handle:     "terminal:job:123",
+			ThreadID:        "thread",
+			TurnID:          "turn-1",
+			RunID:           "run_child_audit",
+			ToolCallID:      "exec-1",
+			ToolName:        "terminal_exec",
+			Handle:          "terminal:job:123",
+			EffectAttemptID: effectGate.effectAttemptID("exec-1"),
 		},
 		Status:  PendingToolSettlementCompleted,
 		Summary: "wrong host correlation run",
@@ -4644,12 +5158,13 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	settlementRepo.arm.Store(true)
 	settled, err := settlement.SettlePendingTool(ctx, PendingToolSettlementRequest{
 		Target: PendingToolSettlementTarget{
-			ThreadID:   "thread",
-			TurnID:     "turn-1",
-			RunID:      "run-1",
-			ToolCallID: "exec-1",
-			ToolName:   "terminal_exec",
-			Handle:     "terminal:job:123",
+			ThreadID:        "thread",
+			TurnID:          "turn-1",
+			RunID:           "run-1",
+			ToolCallID:      "exec-1",
+			ToolName:        "terminal_exec",
+			Handle:          "terminal:job:123",
+			EffectAttemptID: effectGate.effectAttemptID("exec-1"),
 		},
 		Status:   PendingToolSettlementCompleted,
 		Summary:  "command completed",
@@ -4666,12 +5181,13 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 		t.Fatalf("settlement event = %#v", settled.Event)
 	}
 	if settled.Target != (PendingToolSettlementTarget{
-		ThreadID:   "thread",
-		TurnID:     "turn-1",
-		RunID:      "run-1",
-		ToolCallID: "exec-1",
-		ToolName:   "terminal_exec",
-		Handle:     "terminal:job:123",
+		ThreadID:        "thread",
+		TurnID:          "turn-1",
+		RunID:           "run-1",
+		ToolCallID:      "exec-1",
+		ToolName:        "terminal_exec",
+		Handle:          "terminal:job:123",
+		EffectAttemptID: effectGate.effectAttemptID("exec-1"),
 	}) {
 		t.Fatalf("settlement target = %#v", settled.Target)
 	}
@@ -4681,7 +5197,7 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	if err := settled.Validate(); err != nil {
 		t.Fatalf("settlement projection validation: %v", err)
 	}
-	readHost, err := NewThreadReadHost(mustHostBootstrap(t, store), nil)
+	readHost, err := mustTestCapabilities(t, store).read.NewHost(ctx, "thread")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4695,12 +5211,13 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	}
 	again, err := settlement.SettlePendingTool(ctx, PendingToolSettlementRequest{
 		Target: PendingToolSettlementTarget{
-			ThreadID:   "thread",
-			TurnID:     "turn-1",
-			RunID:      "run-1",
-			ToolCallID: "exec-1",
-			ToolName:   "terminal_exec",
-			Handle:     "terminal:job:123",
+			ThreadID:        "thread",
+			TurnID:          "turn-1",
+			RunID:           "run-1",
+			ToolCallID:      "exec-1",
+			ToolName:        "terminal_exec",
+			Handle:          "terminal:job:123",
+			EffectAttemptID: effectGate.effectAttemptID("exec-1"),
 		},
 		Status:   PendingToolSettlementCompleted,
 		Summary:  "command completed",
@@ -4715,18 +5232,19 @@ func TestHostSettlePendingToolAppendsDetailWithoutProviderTurn(t *testing.T) {
 	}
 	_, err = settlement.SettlePendingTool(ctx, PendingToolSettlementRequest{
 		Target: PendingToolSettlementTarget{
-			ThreadID:   "thread",
-			TurnID:     "turn-1",
-			RunID:      "run-1",
-			ToolCallID: "exec-1",
-			ToolName:   "terminal_exec",
-			Handle:     "terminal:job:123",
+			ThreadID:        "thread",
+			TurnID:          "turn-1",
+			RunID:           "run-1",
+			ToolCallID:      "exec-1",
+			ToolName:        "terminal_exec",
+			Handle:          "terminal:job:123",
+			EffectAttemptID: effectGate.effectAttemptID("exec-1"),
 		},
 		Status:  PendingToolSettlementFailed,
 		Summary: "command failed",
 	})
-	if !errors.Is(err, agentharness.ErrPendingToolSettlementConflict) {
-		t.Fatalf("conflicting public settlement err = %v, want conflict", err)
+	if !errors.Is(err, ErrPendingToolSettlementConflict) {
+		t.Fatalf("conflicting public settlement err = %v, want ErrPendingToolSettlementConflict", err)
 	}
 	if got := runtimeProjectionAssistantText(readProjection); got != longAssistantAfterPending {
 		t.Fatalf("settled projection assistant text length=%d, want full %d\ntext=%q", len([]rune(got)), len([]rune(longAssistantAfterPending)), got)
@@ -4754,10 +5272,11 @@ func TestTurnSettlementHostUsesOwnedActiveThread(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
 	registry := tools.NewRegistry()
+	effectGate := newRecordingRuntimeEffectGate(allowRuntimeTools)
 	var host *testProviderFacade
-	var settlement *PendingToolSettlementHost
+	var turnOwner *TurnExecutionHost
 	var err error
-	recoverySettlement := newTestPendingToolSettlementHost(t, store, "thread-active-settlement")
+	var recoverySettlement *PendingToolRecoveryHost
 
 	if err := registry.Register(tools.Define[runtimeEchoArgs](
 		tools.Definition{
@@ -4796,12 +5315,13 @@ func TestTurnSettlementHostUsesOwnedActiveThread(t *testing.T) {
 		func(ctx context.Context, _ tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
 			req := PendingToolSettlementRequest{
 				Target: PendingToolSettlementTarget{
-					ThreadID:   "thread-active-settlement",
-					TurnID:     "turn-active-settlement",
-					RunID:      "run-active-settlement",
-					ToolCallID: "exec-active",
-					ToolName:   "terminal_exec",
-					Handle:     "terminal:job:active",
+					ThreadID:        "thread-active-settlement",
+					TurnID:          "turn-active-settlement",
+					RunID:           "run-active-settlement",
+					ToolCallID:      "exec-active",
+					ToolName:        "terminal_exec",
+					Handle:          "terminal:job:active",
+					EffectAttemptID: effectGate.effectAttemptID("exec-active"),
 				},
 				Status:  PendingToolSettlementCanceled,
 				Summary: "Command was stopped",
@@ -4811,10 +5331,10 @@ func TestTurnSettlementHostUsesOwnedActiveThread(t *testing.T) {
 					Payload:  map[string]any{"command": "stream timestamps", "status": "canceled"},
 				},
 			}
-			if _, err := recoverySettlement.SettlePendingTool(ctx, req); !errors.Is(err, agentharness.ErrActiveTurn) {
-				t.Fatalf("maintenance settlement err=%v, want ErrActiveTurn", err)
+			if _, err := recoverySettlement.SettlePendingTool(ctx, req); !errors.Is(err, ErrThreadBusy) {
+				t.Fatalf("maintenance settlement err=%v, want ErrThreadBusy", err)
 			}
-			if _, err := settlement.SettlePendingTool(ctx, req); err != nil {
+			if _, err := turnOwner.SettlePendingTool(ctx, req); err != nil {
 				return tools.Result{}, err
 			}
 			return tools.Result{
@@ -4851,27 +5371,25 @@ func TestTurnSettlementHostUsesOwnedActiveThread(t *testing.T) {
 		return events, nil
 	})
 	host, err = newTestHost(t, providerHostOptions{
-		Config:               runtimeGatewayConfig("test"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                store,
-		Tools:                registry,
-		Approver:             allowRuntimeTools,
-		IDGenerator:          deterministicIDs(),
+		Config:                  runtimeGatewayConfig("test"),
+		ModelGateway:            gateway,
+		ModelGatewayIdentity:    runtimeGatewayIdentity("fake-model"),
+		Store:                   store,
+		Tools:                   registry,
+		EffectAuthorizationGate: effectGate,
+		IDGenerator:             deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	settlement, err = NewTurnPendingToolSettlementHost(&TurnExecutionHost{
+	turnOwner = &TurnExecutionHost{
 		threadID: "thread-active-settlement",
 		host:     host.providerHost,
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
 	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread-active-settlement"}); err != nil {
 		t.Fatal(err)
 	}
+	recoverySettlement = newTestPendingToolRecoveryHost(t, store, "thread-active-settlement")
 	run, err := host.RunTurn(ctx, RunTurnRequest{
 		RunID:    "run-active-settlement",
 		ThreadID: "thread-active-settlement",
@@ -4898,9 +5416,173 @@ func TestTurnSettlementHostUsesOwnedActiveThread(t *testing.T) {
 	}
 }
 
+func TestTurnSettlementHostRejectsReplacedActiveLeaseGeneration(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	registry := tools.NewRegistry()
+	if err := registry.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{
+			Name:        "terminal_exec",
+			InputSchema: runtimeEchoSchema(),
+			Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+		},
+		nil,
+		nil,
+		func(_ context.Context, _ tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			return tools.Result{
+				Pending: &tools.PendingToolResult{
+					Handle:      "terminal:job:replaced-lease",
+					State:       tools.PendingToolResultRunning,
+					Summary:     "Command is running",
+					Instruction: "Settle the command when it exits.",
+				},
+			}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+
+	secondRequest := make(chan struct{})
+	releaseSecondRequest := make(chan struct{})
+	var requests atomic.Int32
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		events := make(chan ModelEvent, 2)
+		switch requests.Add(1) {
+		case 1:
+			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "exec-replaced-lease", Name: "terminal_exec", Args: `{"text":"stream"}`}}}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+			close(events)
+			return events, nil
+		case 2:
+			close(secondRequest)
+			select {
+			case <-releaseSecondRequest:
+			case <-ctx.Done():
+				close(events)
+				return events, ctx.Err()
+			}
+			events <- ModelEvent{Type: ModelEventDelta, Text: "done"}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+			close(events)
+			return events, nil
+		default:
+			close(events)
+			t.Fatalf("unexpected provider request: %#v", req)
+			return events, nil
+		}
+	})
+
+	capabilities := mustTestCapabilities(t, store)
+	createRequest := testCreateThreadRequest("thread-replaced-lease")
+	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := create.CreateThread(ctx, createRequest); err != nil {
+		t.Fatal(err)
+	}
+	factory, err := capabilities.turn.Bind("thread-replaced-lease")
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := factory.NewHost(ctx, TurnExecutionHostOptions{
+		Config:                  runtimeGatewayConfig("test"),
+		ModelGateway:            gateway,
+		ModelGatewayIdentity:    runtimeGatewayIdentity("fake-model"),
+		Tools:                   registry,
+		EffectAuthorizationGate: allowRuntimeEffectGate{approver: allowRuntimeTools},
+		IDGenerator:             deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type runOutcome struct {
+		result TurnResult
+		err    error
+	}
+	runDone := make(chan runOutcome, 1)
+	go func() {
+		result, err := owner.RunTurn(ctx, RunTurnRequest{
+			RunID:    "run-replaced-lease",
+			ThreadID: "thread-replaced-lease",
+			TurnID:   "turn-replaced-lease",
+			Input:    TurnInput{Text: "run the command"},
+		})
+		runDone <- runOutcome{result: result, err: err}
+	}()
+	<-secondRequest
+
+	leaseRepo := store.repo.(sessiontree.TurnLeaseRepo)
+	ownedLease, active, err := leaseRepo.ActiveTurnLease(ctx, "thread-replaced-lease")
+	if err != nil || !active {
+		t.Fatalf("owned active lease: lease=%#v active=%v err=%v", ownedLease, active, err)
+	}
+	entriesBefore, err := store.repo.Entries(ctx, "thread-replaced-lease")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := leaseRepo.ReleaseTurnLease(ctx, ownedLease); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := leaseRepo.AcquireTurnLease(ctx, sessiontree.TurnLease{
+		ThreadID: "thread-replaced-lease",
+		TurnID:   "turn-replaced-lease",
+		OwnerID:  "replacement-owner",
+		Purpose:  sessiontree.TurnLeasePurposeTurn,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.Generation <= ownedLease.Generation || replacement.Heartbeat != 0 {
+		t.Fatalf("replacement proof = %#v, want generation after %#v with initial heartbeat", replacement, ownedLease)
+	}
+	_, err = owner.SettlePendingTool(ctx, PendingToolSettlementRequest{
+		Target: PendingToolSettlementTarget{
+			ThreadID:   "thread-replaced-lease",
+			TurnID:     "turn-replaced-lease",
+			RunID:      "run-replaced-lease",
+			ToolCallID: "exec-replaced-lease",
+			ToolName:   "terminal_exec",
+			Handle:     "terminal:job:replaced-lease",
+		},
+		Status:  PendingToolSettlementCompleted,
+		Summary: "command completed",
+		Output:  "exit 0",
+	})
+	if !errors.Is(err, ErrThreadNotActive) {
+		t.Fatalf("settlement with replaced lease err=%v, want ErrThreadNotActive", err)
+	}
+	entriesAfter, err := store.repo.Entries(ctx, "thread-replaced-lease")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(entriesAfter, entriesBefore) {
+		t.Fatalf("rejected settlement changed journal:\nbefore=%#v\nafter=%#v", entriesBefore, entriesAfter)
+	}
+
+	close(releaseSecondRequest)
+	select {
+	case outcome := <-runDone:
+		if !errors.Is(outcome.err, ErrStaleAuthority) {
+			t.Fatalf("fenced run outcome=%#v err=%v, want ErrStaleAuthority", outcome.result, outcome.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for fenced turn owner")
+	}
+	activeLease, active, err := leaseRepo.ActiveTurnLease(ctx, "thread-replaced-lease")
+	if err != nil || !active || !sessiontree.SameTurnLease(activeLease, replacement) {
+		t.Fatalf("active lease after stale owner exit = %#v active=%v err=%v, want %#v", activeLease, active, err, replacement)
+	}
+	if err := leaseRepo.ReleaseTurnLease(ctx, replacement); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestHostSettlePendingToolOnlyUpdatesExplicitPendingTarget(t *testing.T) {
 	ctx := context.Background()
 	registry := tools.NewRegistry()
+	effectGate := newRecordingRuntimeEffectGate(allowRuntimeTools)
 	if err := registry.Register(tools.Define[runtimeEchoArgs](
 		tools.Definition{
 			Name:        "terminal_exec",
@@ -4963,13 +5645,13 @@ func TestHostSettlePendingToolOnlyUpdatesExplicitPendingTarget(t *testing.T) {
 
 	store := NewMemoryStore()
 	host, err := newTestHost(t, providerHostOptions{
-		Config:               runtimeGatewayConfig("test"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                store,
-		Tools:                registry,
-		Approver:             allowRuntimeTools,
-		IDGenerator:          deterministicIDs(),
+		Config:                  runtimeGatewayConfig("test"),
+		ModelGateway:            gateway,
+		ModelGatewayIdentity:    runtimeGatewayIdentity("fake-model"),
+		Store:                   store,
+		Tools:                   registry,
+		EffectAuthorizationGate: effectGate,
+		IDGenerator:             deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -4991,15 +5673,16 @@ func TestHostSettlePendingToolOnlyUpdatesExplicitPendingTarget(t *testing.T) {
 		t.Fatalf("exec-b should remain running before settlement: %#v", item)
 	}
 
-	settlement := newTestPendingToolSettlementHost(t, store, "thread")
+	settlement := newTestPendingToolRecoveryHost(t, store, "thread")
 	settled, err := settlement.SettlePendingTool(ctx, PendingToolSettlementRequest{
 		Target: PendingToolSettlementTarget{
-			ThreadID:   "thread",
-			TurnID:     "turn-1",
-			RunID:      "run-1",
-			ToolCallID: "exec-a",
-			ToolName:   "terminal_exec",
-			Handle:     "terminal:job:npm-test",
+			ThreadID:        "thread",
+			TurnID:          "turn-1",
+			RunID:           "run-1",
+			ToolCallID:      "exec-a",
+			ToolName:        "terminal_exec",
+			Handle:          "terminal:job:npm-test",
+			EffectAttemptID: effectGate.effectAttemptID("exec-a"),
 		},
 		Status:   PendingToolSettlementCompleted,
 		Summary:  "npm test completed",
@@ -5016,7 +5699,7 @@ func TestHostSettlePendingToolOnlyUpdatesExplicitPendingTarget(t *testing.T) {
 		t.Fatalf("exec-b should remain running after exec-a settlement: %#v", item)
 	}
 
-	readHost, err := NewThreadReadHost(mustHostBootstrap(t, store), nil)
+	readHost, err := mustTestCapabilities(t, store).read.NewHost(ctx, "thread")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5058,22 +5741,30 @@ func TestHarnessHelperRunsCustomToolWithoutPublicProviderAPI(t *testing.T) {
 		harness.Step(harness.Tool("echo-1", "echo", `{"text":"from tool"}`), harness.DoneReason("tool_calls")),
 		harness.Step(harness.Text("done"), harness.Done()),
 	)
+	store := NewMemoryStore()
 	h, err := newHarnessWithProvider(config.Config{
 		Provider:     config.ProviderFake,
 		Model:        "fake-model",
 		SystemPrompt: "test",
 	}, scripted, harnessOptions{
-		Store:                 NewMemoryStore(),
-		Tools:                 registry,
-		Title:                 fixedTitleGenerator{},
-		NewID:                 deterministicIDs(),
-		Approver:              allowRuntimeTools,
-		StateCompatibilityKey: "runtime-test-scripted-provider",
+		Store:                   store,
+		Tools:                   registry,
+		Title:                   fixedTitleGenerator{},
+		NewID:                   deterministicIDs(),
+		EffectAuthorizationGate: allowRuntimeEffectGate{approver: allowRuntimeTools},
+		StateCompatibilityKey:   "runtime-test-scripted-provider",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	thread, err := h.StartThread(ctx, agentharness.StartThreadOptions{ThreadID: "thread"})
+	created, err := store.rootAuthority.CreateRoot(ctx, sessiontree.CreateRootRequest{
+		ThreadID: "thread", CreateIntentID: "runtime-test-scripted-provider", ContractVersion: "1",
+		Meta: sessiontree.ThreadMeta{ID: "thread"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread, err := h.BindCreatedRoot(created.Thread, created.Replayed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5144,14 +5835,14 @@ func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
 	})
 	rec := &runtimeEventRecorder{}
 	host, err := newTestHost(t, providerHostOptions{
-		Config:               runtimeGatewayConfig("test"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
-		Store:                NewMemoryStore(),
-		Tools:                registry,
-		Approver:             allowRuntimeTools,
-		Sink:                 rec,
-		IDGenerator:          deterministicIDs(),
+		Config:                  runtimeGatewayConfig("test"),
+		ModelGateway:            gateway,
+		ModelGatewayIdentity:    runtimeGatewayIdentity("fake-model"),
+		Store:                   NewMemoryStore(),
+		Tools:                   registry,
+		EffectAuthorizationGate: allowRuntimeEffectGate{approver: allowRuntimeTools},
+		Sink:                    rec,
+		IDGenerator:             deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -5226,6 +5917,9 @@ func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
 		}
 		if ev.ToolResult.Status != string(observation.ActivityStatusSuccess) {
 			t.Fatalf("thread detail tool result status = %#v", ev.ToolResult)
+		}
+		if ev.ToolResult.EffectAttemptID == "" {
+			t.Fatalf("thread detail tool result lost canonical effect attempt identity: %#v", ev.ToolResult)
 		}
 		if ev.ActivityTimeline == nil {
 			t.Fatalf("thread detail tool result should include activity timeline: %#v", ev)
@@ -5365,18 +6059,18 @@ func TestHostListPendingApprovalsDuringActiveRun(t *testing.T) {
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
 		Store:                NewMemoryStore(),
 		Tools:                registry,
-		Approver: func(ctx context.Context, req tools.ApprovalRequest) (tools.PermissionDecision, error) {
-			if req.ApprovalID != "call-1" || req.HostContext["target"] != "runtime-test" || req.Labels["host.target"] != "runtime-test" {
+		EffectAuthorizationGate: allowRuntimeEffectGate{approver: func(ctx context.Context, req tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
+			if req.ApprovalID == "" || req.ApprovalID == "call-1" || req.HostContext["target"] != "runtime-test" || req.Labels["host.target"] != "runtime-test" {
 				t.Errorf("approval request = %#v", req)
 			}
 			close(requested)
 			select {
 			case <-release:
-				return tools.PermissionDecisionAllow, nil
+				return tooltest.PermissionDecisionAllow, nil
 			case <-ctx.Done():
-				return tools.PermissionDecision{}, ctx.Err()
+				return tooltest.PermissionDecision{}, ctx.Err()
 			}
-		},
+		}},
 		Sink:        rec,
 		IDGenerator: deterministicIDs(),
 	})
@@ -5418,7 +6112,7 @@ func TestHostListPendingApprovalsDuringActiveRun(t *testing.T) {
 		t.Fatalf("pending approvals = %#v", pending)
 	}
 	approval := pending.Approvals[0]
-	if approval.ApprovalID != "call-1" ||
+	if approval.ApprovalID == "" || approval.ApprovalID == "call-1" ||
 		approval.ToolCallID != "call-1" ||
 		approval.ToolName != "write_note" ||
 		approval.RunID != "turn-1" ||
@@ -5490,7 +6184,7 @@ func TestHostPendingApprovalSnapshotKeepsModelBatchOrder(t *testing.T) {
 		close(events)
 		return events, nil
 	})
-	requested := make(chan tools.ApprovalRequest, 2)
+	requested := make(chan tooltest.ApprovalRequest, 2)
 	release := make(chan struct{})
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("test"),
@@ -5498,15 +6192,15 @@ func TestHostPendingApprovalSnapshotKeepsModelBatchOrder(t *testing.T) {
 		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
 		Store:                NewMemoryStore(),
 		Tools:                registry,
-		Approver: func(ctx context.Context, req tools.ApprovalRequest) (tools.PermissionDecision, error) {
+		EffectAuthorizationGate: allowRuntimeEffectGate{approver: func(ctx context.Context, req tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
 			requested <- req
 			select {
 			case <-release:
-				return tools.PermissionDecisionAllow, nil
+				return tooltest.PermissionDecisionAllow, nil
 			case <-ctx.Done():
-				return tools.PermissionDecision{}, ctx.Err()
+				return tooltest.PermissionDecision{}, ctx.Err()
 			}
-		},
+		}},
 		IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
@@ -5520,7 +6214,7 @@ func TestHostPendingApprovalSnapshotKeepsModelBatchOrder(t *testing.T) {
 		_, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-batch", ThreadID: "thread-batch", TurnID: "turn-batch", Input: TurnInput{Text: "write both"}})
 		runErr <- err
 	}()
-	seen := map[string]tools.ApprovalRequest{}
+	seen := map[string]tooltest.ApprovalRequest{}
 	for range 2 {
 		select {
 		case req := <-requested:
@@ -5976,7 +6670,7 @@ func TestListThreadTurnsPagesCanonicalTimeline(t *testing.T) {
 	}
 }
 
-func TestListThreadTurnsHidesTurnUntilCanonicalUserEntryIsCommitted(t *testing.T) {
+func TestListThreadTurnsReadsAtomicCanonicalAdmission(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name string
@@ -6001,21 +6695,15 @@ func TestListThreadTurnsHidesTurnUntilCanonicalUserEntryIsCommitted(t *testing.T
 			if _, err := maintenance.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "thread", "turn-1", sessiontree.TurnStarted, map[string]string{"run_id": "run-1"}); err != nil {
-				t.Fatal(err)
+			authority, ok := store.repo.(sessiontree.TurnAuthorityRepo)
+			if !ok {
+				t.Fatal("store does not support atomic turn admission")
 			}
-
-			startedOnly, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 1})
+			admission, err := authority.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+				ThreadID: "thread", TurnID: "turn-1", RunID: "run-1", OwnerID: "owner-1",
+				Input: session.Message{Role: session.User, Content: "canonical input"}, RequestFingerprint: "atomic-admission-1",
+			})
 			if err != nil {
-				t.Fatal(err)
-			}
-			if len(startedOnly.Turns) != 0 || startedOnly.ThroughOrdinal != 1 {
-				t.Fatalf("started-only page = %#v, want no admitted turns through ordinal 1", startedOnly)
-			}
-			if _, err := maintenance.ReadLatestThreadTurn(ctx, "thread"); !errors.Is(err, ErrTurnNotFound) {
-				t.Fatalf("latest started-only turn err = %v, want ErrTurnNotFound", err)
-			}
-			if _, err := sessiontree.AppendMessage(ctx, store.repo, "thread", "turn-1", session.Message{Role: session.User, Content: "canonical input"}); err != nil {
 				t.Fatal(err)
 			}
 
@@ -6026,29 +6714,12 @@ func TestListThreadTurnsHidesTurnUntilCanonicalUserEntryIsCommitted(t *testing.T
 			if len(admitted.Turns) != 1 || admitted.Turns[0].TurnID != "turn-1" || admitted.Turns[0].RunID != "run-1" || admitted.Turns[0].UserEntryID == "" || admitted.Turns[0].UserInput != "canonical input" || admitted.ThroughOrdinal != 2 {
 				t.Fatalf("admitted page = %#v", admitted)
 			}
-			if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "thread", "turn-2", sessiontree.TurnStarted, map[string]string{"run_id": "run-2"}); err != nil {
+			leaseCtx := sessiontree.ContextWithTurnLease(ctx, admission.Lease)
+			if _, err := authority.FinishTurn(leaseCtx, sessiontree.FinishTurnRequest{
+				Lease: admission.Lease, RunID: "run-1", TerminalEntryID: "terminal-1", Status: sessiontree.TurnCompleted,
+				OutcomeFingerprint: "atomic-finish-1",
+			}); err != nil {
 				t.Fatal(err)
-			}
-			latest, err := maintenance.ReadLatestThreadTurn(ctx, "thread")
-			if err != nil || latest.TurnID != "turn-1" {
-				t.Fatalf("latest admitted turn behind dangling marker = %#v err=%v", latest, err)
-			}
-
-			if _, err := maintenance.CreateThread(ctx, CreateThreadRequest{ThreadID: "corrupt-thread"}); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "corrupt-thread", "turn-corrupt", sessiontree.TurnStarted, map[string]string{"run_id": "run-corrupt"}); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "corrupt-thread", "turn-corrupt", sessiontree.TurnCompleted, map[string]string{"run_id": "run-corrupt"}); err != nil {
-				t.Fatal(err)
-			}
-			unadmittedTerminal, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "corrupt-thread", Tail: 1})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(unadmittedTerminal.Turns) != 0 || unadmittedTerminal.ThroughOrdinal != 2 {
-				t.Fatalf("unadmitted terminal page = %#v, want no conversation turn through ordinal 2", unadmittedTerminal)
 			}
 		})
 	}
@@ -6091,29 +6762,27 @@ func TestThreadAgentTodosCASForkDeleteAndReopen(t *testing.T) {
 				if _, err := maintenance.CreateThread(ctx, CreateThreadRequest{ThreadID: "source"}); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "source", "turn-1", sessiontree.TurnStarted, map[string]string{"run_id": "run-1"}); err != nil {
+				authority := store.repo.(sessiontree.TurnAuthorityRepo)
+				admission, err := authority.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+					ThreadID: "source", TurnID: "turn-1", RunID: "run-1", OwnerID: "owner-1",
+					Input: session.Message{Role: session.User, Content: "plan"}, RequestFingerprint: "todo-admission",
+				})
+				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := sessiontree.AppendMessage(ctx, store.repo, "source", "turn-1", session.Message{Role: session.User, Content: "plan"}); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := sessiontree.AppendMessage(ctx, store.repo, "source", "turn-1", session.Message{Role: session.Assistant, Content: "tool_call", ToolCallID: "write-1", ToolName: "write_todos", ToolArgs: `{}`}); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := sessiontree.AppendMessage(ctx, store.repo, "source", "turn-1", session.Message{Role: session.Tool, Content: "ok", ToolCallID: "write-1", ToolName: "write_todos"}); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "source", "turn-1", sessiontree.TurnCompleted, map[string]string{"run_id": "run-1"}); err != nil {
+				leaseCtx := sessiontree.ContextWithTurnLease(ctx, admission.Lease)
+				if _, err := sessiontree.AppendMessage(leaseCtx, store.repo, "source", "turn-1", session.Message{Role: session.Assistant, Content: "tool_call", ToolCallID: "write-1", ToolName: "write_todos", ToolArgs: `{}`}); err != nil {
 					t.Fatal(err)
 				}
 				empty, err := maintenance.ReadThreadAgentTodos(ctx, "source")
 				if err != nil || empty.Version != 0 || len(empty.Items) != 0 {
 					t.Fatalf("empty todos = %#v err=%v", empty, err)
 				}
-				first, err := maintenance.UpdateThreadAgentTodos(ctx, UpdateThreadAgentTodosRequest{
-					ThreadID: "source", ExpectedVersion: 0, TurnID: "turn-1", RunID: "run-1", ToolCallID: "write-1",
-					Items: []AgentTodo{{ID: "todo-1", Content: "implement", Status: AgentTodoInProgress}},
-				})
+				firstState, err := store.agentTodos.CompareAndSwapAgentTodoState(leaseCtx, sessiontree.AgentTodoState{
+					ThreadID: "source", Items: []sessiontree.AgentTodoItem{{ID: "todo-1", Content: "implement", Status: sessiontree.AgentTodoInProgress}},
+					UpdatedByTurnID: "turn-1", UpdatedByRunID: "run-1", UpdatedByToolCall: "write-1",
+				}, 0)
+				first := threadAgentTodoState(firstState)
 				if err != nil || first.Version != 1 {
 					t.Fatalf("first todo update = %#v err=%v", first, err)
 				}
@@ -6124,13 +6793,13 @@ func TestThreadAgentTodosCASForkDeleteAndReopen(t *testing.T) {
 					wg.Add(1)
 					go func(index int) {
 						defer wg.Done()
-						_, err := maintenance.UpdateThreadAgentTodos(ctx, UpdateThreadAgentTodosRequest{
-							ThreadID: "source", ExpectedVersion: 1, TurnID: "turn-1", RunID: "run-1", ToolCallID: "write-1",
-							Items: []AgentTodo{{ID: "todo-1", Content: "implement", Status: AgentTodoCompleted}},
-						})
+						_, err := store.agentTodos.CompareAndSwapAgentTodoState(leaseCtx, sessiontree.AgentTodoState{
+							ThreadID: "source", Items: []sessiontree.AgentTodoItem{{ID: "todo-1", Content: "implement", Status: sessiontree.AgentTodoCompleted}},
+							UpdatedByTurnID: "turn-1", UpdatedByRunID: "run-1", UpdatedByToolCall: "write-1",
+						}, 1)
 						if err == nil {
 							successes.Add(1)
-						} else if errors.Is(err, ErrAgentTodoVersionConflict) {
+						} else if errors.Is(err, sessiontree.ErrAgentTodoVersionConflict) {
 							conflicts.Add(1)
 						} else {
 							t.Errorf("concurrent todo update: %v", err)
@@ -6140,6 +6809,17 @@ func TestThreadAgentTodosCASForkDeleteAndReopen(t *testing.T) {
 				wg.Wait()
 				if successes.Load() != 1 || conflicts.Load() != 1 {
 					t.Fatalf("todo CAS successes=%d conflicts=%d", successes.Load(), conflicts.Load())
+				}
+				if _, err := authority.FinishTurn(leaseCtx, sessiontree.FinishTurnRequest{
+					Lease: admission.Lease, RunID: "run-1", TerminalEntryID: "todo-terminal", Status: sessiontree.TurnCompleted,
+					OutcomeFingerprint: "todo-finish", ClearProviderState: true,
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := maintenance.UpdateThreadAgentTodos(ctx, UpdateThreadAgentTodosRequest{
+					ThreadID: "source", ExpectedVersion: 2, TurnID: "turn-1", RunID: "run-1", ToolCallID: "write-1",
+				}); !errors.Is(err, ErrThreadBusy) {
+					t.Fatalf("idle todo update err = %v, want ErrThreadBusy", err)
 				}
 				if _, err := maintenance.ForkThread(ctx, ForkThreadRequest{OperationID: "fork-1", SourceThreadID: "source", DestinationThreadID: "fork"}); err != nil {
 					t.Fatal(err)
@@ -6158,10 +6838,96 @@ func TestThreadAgentTodosCASForkDeleteAndReopen(t *testing.T) {
 				if err := maintenance.DeleteThread(ctx, "fork"); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := maintenance.ReadThreadAgentTodos(ctx, "fork"); !errors.Is(err, ErrThreadNotFound) {
+				if _, err := maintenance.ReadThreadAgentTodos(ctx, "fork"); !errors.Is(err, ErrThreadDeleted) {
 					t.Fatalf("deleted todo read err = %v", err)
 				}
 			})
+		})
+	}
+}
+
+func TestTurnExecutionHostUpdatesTodosOnlyInsideOwnedToolDispatch(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		store func(*testing.T) *Store
+	}{
+		{name: "memory", store: func(*testing.T) *Store { return NewMemoryStore() }},
+		{name: "sqlite", store: func(t *testing.T) *Store {
+			store, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "floret.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			return store
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := tc.store(t)
+			capabilities := mustTestCapabilities(t, store)
+			createRequest := testCreateThreadRequest("thread")
+			create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := create.CreateThread(ctx, createRequest); err != nil {
+				t.Fatal(err)
+			}
+
+			gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+				events := make(chan ModelEvent, 2)
+				if req.Step == 1 {
+					events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{ID: "write-1", Name: "write_todos", Args: `{"text":"implement"}`}}}
+					events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+				} else {
+					events <- ModelEvent{Type: ModelEventDelta, Text: "done"}
+					events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+				}
+				close(events)
+				return events, nil
+			})
+			registry := tools.NewRegistry()
+			var turnHost *TurnExecutionHost
+			if err := registry.Register(tools.Define[runtimeEchoArgs](
+				tools.Definition{Name: "write_todos", InputSchema: runtimeEchoSchema(), Permission: tools.PermissionSpec{Mode: tools.PermissionAllow}},
+				nil, nil,
+				func(toolCtx context.Context, inv tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+					state, err := turnHost.UpdateThreadAgentTodos(toolCtx, UpdateThreadAgentTodosRequest{
+						ThreadID: ThreadID(inv.ThreadID), ExpectedVersion: 0, TurnID: TurnID(inv.TurnID), RunID: RunID(inv.RunID), ToolCallID: inv.CallID,
+						Items: []AgentTodo{{ID: "todo-1", Content: inv.Args.Text, Status: AgentTodoInProgress}},
+					})
+					if err != nil {
+						return tools.Result{}, err
+					}
+					return tools.Result{Text: fmt.Sprintf("todo version %d", state.Version)}, nil
+				},
+			)); err != nil {
+				t.Fatal(err)
+			}
+			factory, err := capabilities.turn.Bind("thread")
+			if err != nil {
+				t.Fatal(err)
+			}
+			turnHost, err = factory.NewHost(ctx, TurnExecutionHostOptions{
+				Config: runtimeGatewayConfig("test"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("model-a"),
+				Tools: registry, EffectAuthorizationGate: allowRuntimeEffectGate{}, IDGenerator: deterministicIDs(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := turnHost.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn-1", RunID: "run-1", Input: TurnInput{Text: "plan"}})
+			if err != nil || result.Status != TurnStatusCompleted {
+				t.Fatalf("RunTurn result=%#v err=%v", result, err)
+			}
+			state, err := readThreadAgentTodos(ctx, store, "thread")
+			if err != nil || state.Version != 1 || len(state.Items) != 1 || state.Items[0].Content != "implement" {
+				t.Fatalf("todo state=%#v err=%v", state, err)
+			}
+			if _, err := turnHost.UpdateThreadAgentTodos(ctx, UpdateThreadAgentTodosRequest{
+				ThreadID: "thread", ExpectedVersion: 1, TurnID: "turn-1", RunID: "run-1", ToolCallID: "write-1",
+			}); !errors.Is(err, ErrThreadBusy) {
+				t.Fatalf("idle todo update err=%v, want ErrThreadBusy", err)
+			}
 		})
 	}
 }
@@ -6229,23 +6995,6 @@ func TestHostDeleteThreadUsesStoreBoundary(t *testing.T) {
 	if requests, err := store.prompt.ProviderRequests(ctx, "thread"); err != nil || len(requests) == 0 {
 		t.Fatalf("prompt ledger before delete = %#v, %v", requests, err)
 	}
-	ref, err := store.artifacts.PutToolOutput(ctx, artifact.ToolOutputArtifact{
-		ThreadID:      "thread",
-		TurnID:        "turn-1",
-		RunID:         "turn-1",
-		PromptScopeID: "thread",
-		Step:          1,
-		CallID:        "call-1",
-		ToolName:      "echo",
-		Text:          "full output",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	artifacts := store.artifacts.(*artifact.MemoryStore)
-	if _, exists := artifacts.Ref(ref.ID); !exists {
-		t.Fatalf("artifact should exist before delete")
-	}
 	if err := host.DeleteThread(ctx, "thread"); err != nil {
 		t.Fatal(err)
 	}
@@ -6255,23 +7004,18 @@ func TestHostDeleteThreadUsesStoreBoundary(t *testing.T) {
 	if requests, err := store.prompt.ProviderRequests(ctx, "thread"); err != nil || len(requests) != 0 {
 		t.Fatalf("prompt ledger after delete = %#v, %v", requests, err)
 	}
-	if _, exists := artifacts.Ref(ref.ID); exists {
-		t.Fatalf("thread artifact should be deleted")
-	}
 }
 
 func TestHostDeleteThreadCascadesEngineThreadTree(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
-	deleteData := store.deleteData
+	deleteCleanup := store.deleteCleanup
 	var deleteCalls int
-	var deleteRoot string
 	var deleteThreadIDs []string
-	store.deleteData = func(ctx context.Context, rootThreadID string, threadIDs []string) error {
+	store.deleteCleanup = func(ctx context.Context, threadIDs []string) error {
 		deleteCalls++
-		deleteRoot = rootThreadID
 		deleteThreadIDs = append([]string(nil), threadIDs...)
-		return deleteData(ctx, rootThreadID, threadIDs)
+		return deleteCleanup(ctx, threadIDs)
 	}
 	host, err := newTestHost(t, providerHostOptions{
 		Config: config.Config{
@@ -6290,6 +7034,7 @@ func TestHostDeleteThreadCascadesEngineThreadTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+		PublicationID:  "publication-child-delete-cascade",
 		ParentThreadID: "parent",
 		ThreadID:       "child",
 		TaskName:       "worker",
@@ -6304,29 +7049,11 @@ func TestHostDeleteThreadCascadesEngineThreadTree(t *testing.T) {
 	if requests, err := store.prompt.ProviderRequests(ctx, "child"); err != nil || len(requests) == 0 {
 		t.Fatalf("child prompt ledger before delete = %#v, %v", requests, err)
 	}
-	ref, err := store.artifacts.PutToolOutput(ctx, artifact.ToolOutputArtifact{
-		ThreadID:      "child",
-		TurnID:        "child-turn-1",
-		RunID:         "child-turn-1",
-		PromptScopeID: "child",
-		Step:          1,
-		CallID:        "call-child",
-		ToolName:      "echo",
-		Text:          "child artifact",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	artifacts := store.artifacts.(*artifact.MemoryStore)
-	if _, exists := artifacts.Ref(ref.ID); !exists {
-		t.Fatalf("child artifact should exist before delete")
-	}
-
 	if err := host.DeleteThread(ctx, "parent"); err != nil {
 		t.Fatal(err)
 	}
-	if deleteCalls != 1 || deleteRoot != "parent" || !slices.Equal(deleteThreadIDs, []string{"parent", "child"}) {
-		t.Fatalf("delete calls = %d root = %q thread ids = %v", deleteCalls, deleteRoot, deleteThreadIDs)
+	if deleteCalls != 1 || !slices.Equal(deleteThreadIDs, []string{"parent", "child"}) {
+		t.Fatalf("delete cleanup calls = %d thread ids = %v", deleteCalls, deleteThreadIDs)
 	}
 	if _, err := host.ReadThread(ctx, "parent"); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("parent read err=%v, want ErrThreadNotFound", err)
@@ -6336,9 +7063,6 @@ func TestHostDeleteThreadCascadesEngineThreadTree(t *testing.T) {
 	}
 	if requests, err := store.prompt.ProviderRequests(ctx, "child"); err != nil || len(requests) != 0 {
 		t.Fatalf("child prompt ledger after delete = %#v, %v", requests, err)
-	}
-	if _, exists := artifacts.Ref(ref.ID); exists {
-		t.Fatalf("child artifact should be deleted")
 	}
 }
 
@@ -6362,6 +7086,7 @@ func TestThreadDeleteHostDeletesThreadTreeWithoutProviderConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+		PublicationID:  "publication-child-delete-no-provider",
 		ParentThreadID: "parent",
 		ThreadID:       "child",
 		TaskName:       "worker",
@@ -6383,9 +7108,8 @@ func TestThreadDeleteHostDeletesThreadTreeWithoutProviderConfig(t *testing.T) {
 	if summary, err := maintenance.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil || summary.ID != "parent" {
 		t.Fatalf("CreateThread summary=%#v err=%v", summary, err)
 	}
-	subAgentMaintenance := newTestSubAgentMaintenanceHost(t, store, "parent")
-	if closed, err := subAgentMaintenance.CloseSubAgents(ctx, CloseSubAgentsRequest{ParentThreadID: "parent", Reason: "cleanup"}); err != nil || len(closed.Snapshots) != 1 {
-		t.Fatalf("CloseSubAgents result=%#v err=%v", closed, err)
+	if closed, err := host.CloseSubAgent(ctx, CloseSubAgentRequest{CloseOperationID: "cleanup-child", ParentThreadID: "parent", ChildThreadID: "child", Reason: "cleanup"}); err != nil || !closed.Closed {
+		t.Fatalf("CloseSubAgent result=%#v err=%v", closed, err)
 	}
 	if err := maintenance.DeleteThread(ctx, "parent"); err != nil {
 		t.Fatal(err)
@@ -6403,23 +7127,16 @@ func TestThreadCapabilityHostsRequireBootstrapAuthority(t *testing.T) {
 		name string
 		call func() error
 	}{
-		{name: "create", call: func() error { _, err := NewThreadCreateHost(nil, nil); return err }},
-		{name: "read", call: func() error { _, err := NewThreadReadHost(nil, nil); return err }},
-		{name: "title", call: func() error { _, err := NewThreadTitleHost(nil, nil); return err }},
-		{name: "fork", call: func() error { _, err := NewThreadForkHost(nil, nil); return err }},
-		{name: "delete", call: func() error { _, err := NewThreadDeleteHost(nil); return err }},
-		{name: "subagent maintenance", call: func() error {
-			_, err := NewSubAgentMaintenanceHostFactory(nil)
-			return err
-		}},
-		{name: "subagent read", call: func() error {
-			_, err := NewSubAgentReadHostFactory(nil)
-			return err
-		}},
-		{name: "pending settlement", call: func() error {
-			_, err := NewPendingToolRecoveryHostFactory(nil)
-			return err
-		}},
+		{name: "create", call: func() error { _, err := NewThreadCreateHostBinder(nil); return err }},
+		{name: "read", call: func() error { _, err := NewThreadReadHostBinder(nil); return err }},
+		{name: "title", call: func() error { _, err := NewThreadTitleHostBinder(nil); return err }},
+		{name: "fork", call: func() error { _, err := NewThreadForkHostBinder(nil); return err }},
+		{name: "delete", call: func() error { _, err := NewThreadDeleteHostBinder(nil); return err }},
+		{name: "subagent read", call: func() error { _, err := NewSubAgentReadHostBinder(nil); return err }},
+		{name: "pending settlement", call: func() error { _, err := NewPendingToolRecoveryHostBinder(nil); return err }},
+		{name: "turn", call: func() error { _, err := NewTurnExecutionHostBinder(nil); return err }},
+		{name: "compaction", call: func() error { _, err := NewThreadCompactionHostBinder(nil); return err }},
+		{name: "subagent", call: func() error { _, err := NewSubAgentHostBinder(nil); return err }},
 	}
 	for _, constructor := range constructors {
 		t.Run(constructor.name, func(t *testing.T) {
@@ -6431,25 +7148,449 @@ func TestThreadCapabilityHostsRequireBootstrapAuthority(t *testing.T) {
 	}
 }
 
+func TestStoreCloseRejectsRetainedCapabilities(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		open func(*testing.T) *Store
+	}{
+		{name: "memory", open: func(*testing.T) *Store { return NewMemoryStore() }},
+		{name: "sqlite", open: func(t *testing.T) *Store {
+			store, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "close.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return store
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := tc.open(t)
+			capabilities := mustTestCapabilities(t, store)
+			createRequest := testCreateThreadRequest("thread")
+			create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := create.CreateThread(ctx, createRequest); err != nil {
+				t.Fatal(err)
+			}
+			read, err := capabilities.read.NewHost(ctx, "thread")
+			if err != nil {
+				t.Fatal(err)
+			}
+			factory, err := capabilities.turn.Bind("thread")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var gatewayCalls atomic.Int64
+			gateway := runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+				gatewayCalls.Add(1)
+				return runtimeGatewayEvents("must not run"), nil
+			})
+			turn, err := factory.NewHost(ctx, TurnExecutionHostOptions{
+				Config: runtimeGatewayConfig("close"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("close"),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			otherRequest := testCreateThreadRequest("other")
+			otherCreate, err := capabilities.create.Bind(otherRequest.ThreadID, otherRequest.CreateIntentID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatalf("idempotent close: %v", err)
+			}
+			if _, err := capabilities.read.NewHost(ctx, "thread"); !errors.Is(err, ErrStoreClosed) {
+				t.Fatalf("retained binder construction err=%v, want ErrStoreClosed", err)
+			}
+			if _, err := capabilities.create.Bind("closed-create", "closed-create-intent"); !errors.Is(err, ErrStoreClosed) {
+				t.Fatalf("retained create binder err=%v, want ErrStoreClosed", err)
+			}
+			if _, err := capabilities.turn.Bind("thread"); !errors.Is(err, ErrStoreClosed) {
+				t.Fatalf("retained turn binder err=%v, want ErrStoreClosed", err)
+			}
+			if _, err := capabilities.compaction.Bind("thread"); !errors.Is(err, ErrStoreClosed) {
+				t.Fatalf("retained compaction binder err=%v, want ErrStoreClosed", err)
+			}
+			if _, err := capabilities.subAgent.Bind("thread"); !errors.Is(err, ErrStoreClosed) {
+				t.Fatalf("retained subagent binder err=%v, want ErrStoreClosed", err)
+			}
+			if _, err := factory.NewHost(ctx, TurnExecutionHostOptions{Config: runtimeGatewayConfig("closed")}); !errors.Is(err, ErrStoreClosed) {
+				t.Fatalf("retained factory construction err=%v, want ErrStoreClosed", err)
+			}
+			if _, err := read.ReadThread(ctx, "thread"); !errors.Is(err, ErrStoreClosed) {
+				t.Fatalf("retained read host err=%v, want ErrStoreClosed", err)
+			}
+			if _, err := turn.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn", RunID: "run", Input: TurnInput{Text: "closed"}}); !errors.Is(err, ErrStoreClosed) {
+				t.Fatalf("retained turn host err=%v, want ErrStoreClosed", err)
+			}
+			if _, err := otherCreate.CreateThread(ctx, otherRequest); !errors.Is(err, ErrStoreClosed) {
+				t.Fatalf("retained create host err=%v, want ErrStoreClosed", err)
+			}
+			if gatewayCalls.Load() != 0 {
+				t.Fatalf("gateway calls after close = %d", gatewayCalls.Load())
+			}
+		})
+	}
+}
+
+func TestStoreCloseCancelsAndWaitsForActiveTurnFinalization(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	repo := store.repo.(*sessiontree.MemoryRepo)
+	capabilities := mustTestCapabilities(t, store)
+	createRequest := testCreateThreadRequest("thread")
+	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := create.CreateThread(ctx, createRequest); err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	gateway := runtimeModelGateway(func(ctx context.Context, _ ModelRequest) (<-chan ModelEvent, error) {
+		events := make(chan ModelEvent, 1)
+		close(entered)
+		go func() {
+			<-ctx.Done()
+			events <- ModelEvent{Type: ModelEventError, Err: ctx.Err()}
+			close(events)
+		}()
+		return events, nil
+	})
+	factory, err := capabilities.turn.Bind("thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := factory.NewHost(ctx, TurnExecutionHostOptions{
+		Config: runtimeGatewayConfig("close active"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("close-active"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDone := make(chan error, 1)
+	go func() {
+		_, err := turn.RunTurn(ctx, RunTurnRequest{ThreadID: "thread", TurnID: "turn", RunID: "run", Input: TurnInput{Text: "wait"}})
+		runDone <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider did not start")
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- store.Close() }()
+	select {
+	case err := <-runDone:
+		if err == nil {
+			t.Fatal("cancelled active turn returned nil error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("active turn did not finalize after store close")
+	}
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("store close did not wait for active finalization")
+	}
+	if _, active, err := repo.ActiveTurnLease(ctx, "thread"); err != nil || active {
+		t.Fatalf("active lease after close: active=%v err=%v", active, err)
+	}
+	entries, err := repo.Entries(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(entries, func(entry sessiontree.Entry) bool {
+		return entry.Type == sessiontree.EntryTurnMarker && entry.TurnID == "turn" &&
+			(entry.TurnStatus == sessiontree.TurnAborted || entry.TurnStatus == sessiontree.TurnFailed)
+	}) {
+		t.Fatalf("close left turn without terminal marker: %#v", entries)
+	}
+}
+
+func TestStoreCloseCancelsAndWaitsForTimedOutSubAgentFinalization(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	repo := store.repo.(*sessiontree.MemoryRepo)
+	capabilities := mustTestCapabilities(t, store)
+	createRequest := testCreateThreadRequest("parent")
+	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := create.CreateThread(ctx, createRequest); err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	cancelled := make(chan struct{})
+	gateway := runtimeModelGateway(func(ctx context.Context, _ ModelRequest) (<-chan ModelEvent, error) {
+		events := make(chan ModelEvent, 1)
+		close(entered)
+		go func() {
+			<-ctx.Done()
+			close(cancelled)
+			events <- ModelEvent{Type: ModelEventError, Err: ctx.Err()}
+			close(events)
+		}()
+		return events, nil
+	})
+	factory, err := capabilities.subAgent.Bind("parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := factory.NewHost(ctx, SubAgentHostOptions{
+		Config: runtimeGatewayConfig("close child"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("close-child"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+		PublicationID: "child-publication", ParentThreadID: "parent", ThreadID: "child", TaskName: "worker", Message: "wait", ForkMode: SubAgentForkNone,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{
+		ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"child"}, Timeout: 25 * time.Millisecond,
+	})
+	if err != nil || !waited.TimedOut {
+		t.Fatalf("waited=%#v err=%v, want timeout with child still owned", waited, err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("child provider did not start")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- store.Close() }()
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("store close did not cancel timed-out child execution")
+	}
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("store close did not wait for child finalization")
+	}
+	if _, active, err := repo.ActiveTurnLease(ctx, "child"); err != nil || active {
+		t.Fatalf("child lease after close: active=%v err=%v", active, err)
+	}
+	entries, err := repo.Entries(ctx, "child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(entries, func(entry sessiontree.Entry) bool {
+		return entry.Type == sessiontree.EntryTurnMarker &&
+			(entry.TurnStatus == sessiontree.TurnAborted || entry.TurnStatus == sessiontree.TurnFailed)
+	}) {
+		t.Fatalf("close left child without terminal marker: %#v", entries)
+	}
+}
+
+func TestClosedSubAgentRequestReplayReturnsPublicRequestConflict(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		open func(*testing.T) *Store
+	}{
+		{name: "memory", open: func(*testing.T) *Store { return NewMemoryStore() }},
+		{name: "sqlite", open: func(t *testing.T) *Store {
+			store, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "closed-input-replay.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return store
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := tc.open(t)
+			t.Cleanup(func() { _ = store.Close() })
+			capabilities := mustTestCapabilities(t, store)
+			createRequest := testCreateThreadRequest("parent")
+			create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := create.CreateThread(ctx, createRequest); err != nil {
+				t.Fatal(err)
+			}
+			factory, err := capabilities.subAgent.Bind("parent")
+			if err != nil {
+				t.Fatal(err)
+			}
+			host, err := factory.NewHost(ctx, SubAgentHostOptions{Config: config.Config{
+				Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "test",
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+				PublicationID: "child-publication", ParentThreadID: "parent", ThreadID: "child", TaskName: "worker", Message: "start", ForkMode: SubAgentForkNone,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			request := SendSubAgentInputRequest{
+				InputRequestID: "child-input", ParentThreadID: "parent", ChildThreadID: "child", Message: "continue",
+			}
+			if _, err := host.SendSubAgentInput(ctx, request); err != nil {
+				t.Fatal(err)
+			}
+			seedRuntimePendingToolCompletionTargetOnRepo(t, store.repo, "child")
+			completion := PublishSubAgentPendingToolCompletionRequest{
+				InputRequestID: "child-completion", ParentThreadID: "parent", ChildThreadID: "child",
+				Target: PendingToolSettlementTarget{
+					ThreadID: "child", TurnID: "turn-pending", RunID: "run-pending",
+					ToolCallID: "exec-1", ToolName: "terminal.exec", Handle: "terminal:job:123",
+				},
+				Status: PendingToolCompletionCompleted, Summary: "completed", Output: "ok", Input: TurnInput{Text: "continue after completion"},
+			}
+			if _, err := host.PublishPendingToolCompletion(ctx, completion); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := host.CloseSubAgent(ctx, CloseSubAgentRequest{
+				CloseOperationID: "close-child", ParentThreadID: "parent", ChildThreadID: "child", Reason: "done",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if replayed, err := host.SendSubAgentInput(ctx, request); err != nil || !replayed.Closed {
+				t.Fatalf("closed replay=%#v err=%v", replayed, err)
+			}
+			request.Message = "changed"
+			_, err = host.SendSubAgentInput(ctx, request)
+			if !errors.Is(err, ErrRequestConflict) {
+				t.Fatalf("changed closed replay err=%v, want ErrRequestConflict", err)
+			}
+			var conflict *RequestConflictError
+			if !errors.As(err, &conflict) || conflict.Operation != "subagent_input" || conflict.RequestID != "child-input" {
+				t.Fatalf("changed closed replay conflict=%#v err=%v", conflict, err)
+			}
+			if replayed, err := host.PublishPendingToolCompletion(ctx, completion); err != nil || !replayed.Closed {
+				t.Fatalf("closed completion replay=%#v err=%v", replayed, err)
+			}
+			completion.Output = "changed"
+			_, err = host.PublishPendingToolCompletion(ctx, completion)
+			if !errors.Is(err, ErrRequestConflict) {
+				t.Fatalf("changed closed completion replay err=%v, want ErrRequestConflict", err)
+			}
+			conflict = nil
+			if !errors.As(err, &conflict) || conflict.Operation != "subagent_pending_tool_completion" || conflict.RequestID != "child-completion" {
+				t.Fatalf("changed closed completion conflict=%#v err=%v", conflict, err)
+			}
+		})
+	}
+}
+
+func TestHostCapabilityConfigurationSealsBootstrapAndRejectsReuse(t *testing.T) {
+	store := NewMemoryStore()
+	var retained *HostBootstrap
+	var copied HostBootstrap
+	if err := ConfigureHostCapabilities(store, func(bootstrap *HostBootstrap) error {
+		retained = bootstrap
+		copied = *bootstrap
+		_, err := NewThreadReadHostBinder(bootstrap)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewThreadReadHostBinder(retained); err == nil || !strings.Contains(err.Error(), "no longer active") {
+		t.Fatalf("retained bootstrap error = %v, want sealed bootstrap", err)
+	}
+	if _, err := NewThreadReadHostBinder(&copied); err == nil || !strings.Contains(err.Error(), "no longer active") {
+		t.Fatalf("copied bootstrap error = %v, want shared sealed state", err)
+	}
+	if err := ConfigureHostCapabilities(store, func(*HostBootstrap) error { return nil }); err == nil || !strings.Contains(err.Error(), "already configured") {
+		t.Fatalf("second configuration error = %v, want one-time configuration", err)
+	}
+	storeCopy := &Store{self: store}
+	if err := ConfigureHostCapabilities(storeCopy, func(*HostBootstrap) error { return nil }); err == nil || !strings.Contains(err.Error(), "must not be copied") {
+		t.Fatalf("copied store configuration error = %v, want copy rejection", err)
+	}
+	closeCalled := false
+	storeCopy.close = func() error { closeCalled = true; return nil }
+	if err := storeCopy.Close(); err == nil || !strings.Contains(err.Error(), "must not be copied") || closeCalled {
+		t.Fatalf("copied store close error = %v close_called=%v, want rejection before close", err, closeCalled)
+	}
+
+	failedStore := NewMemoryStore()
+	configureErr := errors.New("configure failed")
+	var failedBootstrap *HostBootstrap
+	var leakedBinder *ThreadReadHostBinder
+	if err := ConfigureHostCapabilities(failedStore, func(bootstrap *HostBootstrap) error {
+		failedBootstrap = bootstrap
+		var err error
+		leakedBinder, err = NewThreadReadHostBinder(bootstrap)
+		if err != nil {
+			return err
+		}
+		return configureErr
+	}); !errors.Is(err, configureErr) {
+		t.Fatalf("failed configuration error = %v, want %v", err, configureErr)
+	}
+	if _, err := NewThreadReadHostBinder(failedBootstrap); err == nil || !strings.Contains(err.Error(), "no longer active") {
+		t.Fatalf("failed callback retained bootstrap error = %v, want sealed bootstrap", err)
+	}
+	if _, err := leakedBinder.NewHost(context.Background(), "thread"); err == nil || !strings.Contains(err.Error(), "not active") {
+		t.Fatalf("failed callback leaked binder error = %v, want unpublished binder", err)
+	}
+	if err := ConfigureHostCapabilities(failedStore, func(*HostBootstrap) error { return nil }); err == nil || !strings.Contains(err.Error(), "already configured") {
+		t.Fatalf("failed callback retry error = %v, want fail-closed configuration", err)
+	}
+
+	panicStore := NewMemoryStore()
+	var panicBinder *ThreadReadHostBinder
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != "configure panic" {
+				t.Fatalf("configure panic = %#v, want configure panic", recovered)
+			}
+		}()
+		_ = ConfigureHostCapabilities(panicStore, func(bootstrap *HostBootstrap) error {
+			var err error
+			panicBinder, err = NewThreadReadHostBinder(bootstrap)
+			if err != nil {
+				return err
+			}
+			panic("configure panic")
+		})
+	}()
+	if _, err := panicBinder.NewHost(context.Background(), "thread"); err == nil || !strings.Contains(err.Error(), "not active") {
+		t.Fatalf("panicked callback leaked binder error = %v, want unpublished binder", err)
+	}
+	if err := ConfigureHostCapabilities(panicStore, func(*HostBootstrap) error { return nil }); err == nil || !strings.Contains(err.Error(), "already configured") {
+		t.Fatalf("panicked callback retry error = %v, want fail-closed configuration", err)
+	}
+}
+
 func TestSubAgentReadsReportMissingCanonicalParent(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
-	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
-	if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "parent", CreatedAt: now, UpdatedAt: now}); err != nil {
+	capabilities := mustTestCapabilities(t, store)
+	createRequest := testCreateThreadRequest("parent")
+	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "child", ParentThreadID: "parent", TaskName: "worker", AgentPath: "/root/worker", CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := create.CreateThread(ctx, createRequest); err != nil {
 		t.Fatal(err)
 	}
+	publishTestSubAgentFixture(t, ctx, store, "publication-missing-parent-child", "parent", "child", "")
 	if err := store.repo.DeleteThread(ctx, "parent"); err != nil {
 		t.Fatal(err)
 	}
-	subAgentRead := newTestSubAgentReadHost(t, store, "parent")
-	if _, err := subAgentRead.ListSubAgents(ctx, "parent"); !errors.Is(err, ErrThreadNotFound) {
-		t.Fatalf("ListSubAgents err = %v, want ErrThreadNotFound", err)
-	}
-	if _, err := subAgentRead.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "child"}); !errors.Is(err, ErrThreadNotFound) {
-		t.Fatalf("ReadSubAgentDetail err = %v, want ErrThreadNotFound", err)
+	if _, err := capabilities.subAgentRead.NewHost(ctx, "parent"); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("subagent read construction err = %v, want ErrThreadNotFound", err)
 	}
 }
 
@@ -6539,7 +7680,8 @@ type forkOperationFaultStore struct {
 	storage.ForkOperationStore
 	mu                   sync.Mutex
 	failPrepareAfterSave bool
-	failUpdate           bool
+	failCommit           bool
+	failNode             int
 }
 
 func (s *forkOperationFaultStore) PrepareForkOperation(ctx context.Context, rec storage.ForkOperationRecord) (storage.ForkOperationRecord, bool, error) {
@@ -6557,39 +7699,26 @@ func (s *forkOperationFaultStore) PrepareForkOperation(ctx context.Context, rec 
 	return stored, created, nil
 }
 
-func (s *forkOperationFaultStore) UpdateForkOperation(ctx context.Context, rec storage.ForkOperationRecord) error {
+func (s *forkOperationFaultStore) CommitForkOperation(ctx context.Context, req storage.ForkOperationCommitRequest) (storage.ForkOperationRecord, bool, error) {
 	s.mu.Lock()
-	fail := s.failUpdate
-	s.failUpdate = false
+	fail := s.failCommit
+	failNode := s.failNode
+	s.failCommit = false
+	s.failNode = 0
 	s.mu.Unlock()
 	if fail {
-		return errInjectedForkFailure
+		return storage.ForkOperationRecord{}, false, errInjectedForkFailure
 	}
-	return s.ForkOperationStore.UpdateForkOperation(ctx, rec)
-}
-
-type forkRepoFaultStore struct {
-	sessiontree.Repo
-	list   sessiontree.ThreadListRepo
-	mu     sync.Mutex
-	calls  int
-	failAt int
-}
-
-func (r *forkRepoFaultStore) Fork(ctx context.Context, opts sessiontree.ForkOptions) (sessiontree.ThreadMeta, error) {
-	r.mu.Lock()
-	r.calls++
-	call := r.calls
-	fail := r.failAt == call
-	r.mu.Unlock()
-	if fail {
-		return sessiontree.ThreadMeta{}, errInjectedForkFailure
+	if failNode > 0 && failNode <= len(req.Nodes) {
+		req.Nodes = append([]sessiontree.ForkOptions(nil), req.Nodes...)
+		req.Nodes[failNode-1].OperationID = ""
+		_, _, err := s.ForkOperationStore.CommitForkOperation(ctx, req)
+		if err != nil {
+			return storage.ForkOperationRecord{}, false, errInjectedForkFailure
+		}
+		return storage.ForkOperationRecord{}, false, errors.New("injected fork node unexpectedly succeeded")
 	}
-	return r.Repo.Fork(ctx, opts)
-}
-
-func (r *forkRepoFaultStore) ListThreads(ctx context.Context, opts sessiontree.ListThreadsOptions) ([]sessiontree.ThreadMeta, error) {
-	return r.list.ListThreads(ctx, opts)
+	return s.ForkOperationStore.CommitForkOperation(ctx, req)
 }
 
 func newForkTestStore(t *testing.T, withTerminalChild bool) *Store {
@@ -6604,18 +7733,18 @@ func newForkTestStore(t *testing.T, withTerminalChild bool) *Store {
 		t.Fatal(err)
 	}
 	if withTerminalChild {
-		if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{
-			ID:             "child",
-			ParentThreadID: "source",
-			ParentTurnID:   "source-turn",
-			TaskName:       "review",
-			AgentPath:      "/root/review",
-			ForkMode:       string(SubAgentForkNone),
-			Closed:         true,
-			Status:         string(SubAgentStatusClosed),
-			CreatedAt:      now,
-			UpdatedAt:      now,
-		}); err != nil {
+		publishTestSubAgentFixture(t, ctx, store, "publication-fork-fixture-child", "source", "child", "source-turn")
+		completeTestSubAgentFixture(t, ctx, store, "source", "child")
+		capabilities := mustTestCapabilities(t, store)
+		factory, err := capabilities.subAgent.Bind("source")
+		if err != nil {
+			t.Fatal(err)
+		}
+		childHost, err := factory.NewHost(ctx, SubAgentHostOptions{Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "test"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := childHost.CloseSubAgent(ctx, CloseSubAgentRequest{CloseOperationID: "close-source-child", ParentThreadID: "source", ChildThreadID: "child", Reason: "fixture"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -6641,43 +7770,48 @@ type terminalProjectionFailureRecorder struct {
 
 type settlementProjectionFailureRepo struct {
 	*sessiontree.MemoryRepo
-	arm      atomic.Bool
-	failPath atomic.Bool
+	arm                 atomic.Bool
+	failPath            atomic.Bool
+	postSettlementPaths atomic.Int32
 }
 
 func (r *settlementProjectionFailureRepo) Append(ctx context.Context, entry sessiontree.Entry, opts sessiontree.AppendOptions) (sessiontree.Entry, error) {
 	appended, err := r.MemoryRepo.Append(ctx, entry, opts)
 	if err == nil && r.arm.Swap(false) {
 		r.failPath.Store(true)
+		r.postSettlementPaths.Store(0)
 	}
 	return appended, err
 }
 
 func (r *settlementProjectionFailureRepo) Path(ctx context.Context, threadID, leafID string) ([]sessiontree.Entry, error) {
-	if r.failPath.Swap(false) {
+	if r.failPath.Load() && r.postSettlementPaths.Add(1) > 1 {
+		r.failPath.Store(false)
 		return nil, errors.New("injected settlement projection read failure")
 	}
 	return r.MemoryRepo.Path(ctx, threadID, leafID)
 }
 
-type runtimeFailingProviderStateStore struct {
-	storage.ProviderStateStore
-	failPut    bool
-	failDelete bool
+func (r *settlementProjectionFailureRepo) SettlePendingToolRecovery(ctx context.Context, req sessiontree.SettlePendingToolRecoveryRequest) (sessiontree.SettlePendingToolRecoveryResult, error) {
+	settled, err := r.MemoryRepo.SettlePendingToolRecovery(ctx, req)
+	if err == nil && r.arm.Swap(false) {
+		r.failPath.Store(true)
+		r.postSettlementPaths.Store(0)
+	}
+	return settled, err
 }
 
-func (s *runtimeFailingProviderStateStore) PutProviderState(ctx context.Context, record storage.ProviderStateRecord) error {
-	if s.failPut {
-		return errors.New("injected provider state put failure")
-	}
-	return s.ProviderStateStore.PutProviderState(ctx, record)
+type runtimeFailingProviderStateRepo struct {
+	*sessiontree.MemoryRepo
+	failFinishPut bool
 }
 
-func (s *runtimeFailingProviderStateStore) DeleteProviderState(ctx context.Context, threadID string) error {
-	if s.failDelete {
-		return errors.New("injected provider state delete failure")
+func (s *runtimeFailingProviderStateRepo) FinishTurn(ctx context.Context, req sessiontree.FinishTurnRequest) (sessiontree.FinishTurnResult, error) {
+	if s.failFinishPut && req.ProviderState != nil {
+		s.failFinishPut = false
+		return sessiontree.FinishTurnResult{}, errors.New("injected provider state put failure")
 	}
-	return s.ProviderStateStore.DeleteProviderState(ctx, threadID)
+	return s.MemoryRepo.FinishTurn(ctx, req)
 }
 
 func (r *terminalProjectionFailureRecorder) EmitEvent(ev Event) {
@@ -6811,8 +7945,8 @@ func eventuallyThreadDetailToolResult(ctx context.Context, t *testing.T, host th
 	return false
 }
 
-func allowRuntimeTools(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {
-	return tools.PermissionDecisionAllow, nil
+func allowRuntimeTools(context.Context, tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
+	return tooltest.PermissionDecisionAllow, nil
 }
 
 type runtimeModelGateway func(context.Context, ModelRequest) (<-chan ModelEvent, error)

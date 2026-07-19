@@ -407,7 +407,7 @@ func TestServerManagesAgentSessionSubAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	spawnBody := `{"thread_id":"child","task_name":"Review API","host_profile_ref":"reviewer","fork_mode":"none","message":"review the API"}`
+	spawnBody := `{"publication_id":"publication-child","thread_id":"child","task_name":"Review API","host_profile_ref":"reviewer","fork_mode":"none","message":"review the API"}`
 	spawnRec := httptest.NewRecorder()
 	handler.ServeHTTP(spawnRec, httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+created.ID+"/subagents", strings.NewReader(spawnBody)))
 	if spawnRec.Code != http.StatusOK {
@@ -660,8 +660,8 @@ func TestServerStreamsAgentTurnEventsBeforeCompletion(t *testing.T) {
 	if toolResult.Entry == nil || toolResult.Entry.Type != "tool_result" || toolResult.Entry.Message.ToolName != "list" || toolResult.Entry.Message.ToolCallID != "list-1" {
 		t.Fatalf("tool result stream event missing observed entry payload: %#v", toolResult)
 	}
-	if toolResult.Entry.Message.Content == "" {
-		t.Fatalf("tool result stream event should expose local inspection result content: %#v", toolResult)
+	if toolResult.Entry.Message.Content != "" || toolResult.Entry.RawHash == "" || toolResult.Entry.Message.ToolResult == nil || toolResult.Entry.Message.ToolResult.ContentSHA256 == "" {
+		t.Fatalf("live tool result detail should expose preview/hash without raw content: %#v", toolResult)
 	}
 	if !slices.ContainsFunc(events, func(ev AgentStreamEvent) bool {
 		return ev.Type == AgentStreamToolResult &&
@@ -705,6 +705,9 @@ func TestServerStreamsHostedSearchEventsWithLocalInspectionByDefault(t *testing.
 	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
 		return newProvider(), nil
 	}
+	runner.TitleProviderFactory = func(config.Config) (provider.Provider, error) {
+		return harness.NewScriptedProvider(harness.Step(harness.Text("Hosted Search"), harness.Done())), nil
+	}
 	server, err := NewServer(runner)
 	if err != nil {
 		t.Fatal(err)
@@ -736,22 +739,21 @@ func TestServerStreamsHostedSearchEventsWithLocalInspectionByDefault(t *testing.
 	events := parseSSEAgentEvents(t, streamBody)
 	if !slices.ContainsFunc(events, func(ev AgentStreamEvent) bool {
 		return ev.Type == AgentStreamToolCall &&
-			ev.EngineEvent != nil &&
-			ev.EngineEvent.Type == event.HostedToolCall &&
-			ev.EngineEvent.ToolKind == "hosted" &&
-			ev.EngineEvent.ToolName == "web_search" &&
-			ev.EngineEvent.Args == `{"query":"Changsha weather"}`
+			ev.ProviderEvent != nil &&
+			ev.ProviderEvent.Type == provider.HostedToolCall &&
+			len(ev.ProviderEvent.ToolCalls) == 1 &&
+			ev.ProviderEvent.ToolCalls[0].Name == "web_search" &&
+			ev.ProviderEvent.ToolCalls[0].Args == `{"query":"Changsha weather"}`
 	}) {
 		t.Fatalf("local inspection hosted call SSE event missing args: %#v", events)
 	}
 	if !slices.ContainsFunc(events, func(ev AgentStreamEvent) bool {
 		return ev.Type == AgentStreamToolResult &&
-			ev.EngineEvent != nil &&
-			ev.EngineEvent.Type == event.HostedToolResult &&
-			ev.EngineEvent.ToolKind == "hosted" &&
-			ev.EngineEvent.ToolName == "web_search" &&
+			ev.ProviderEvent != nil &&
+			ev.ProviderEvent.Type == provider.HostedToolResult &&
+			ev.ProviderEvent.HostedResult != nil &&
 			strings.Contains(ev.Message, "provider-hosted result") &&
-			strings.Contains(ev.EngineEvent.Result, "https://example.com/hosted/changsha")
+			ev.ProviderEvent.HostedResult.Results[0].URL == "https://example.com/hosted/changsha"
 	}) {
 		t.Fatalf("local inspection hosted result SSE event missing hosted result: %#v", events)
 	}
@@ -812,16 +814,17 @@ func TestServerStreamExposesLocalInspectionEventsByDefault(t *testing.T) {
 		return ev.Entry != nil &&
 			ev.Entry.Type == "tool_call" &&
 			ev.Entry.Message.ToolCallID == "list-1" &&
-			ev.Entry.Message.ToolArgs == `{"path":null,"limit":2}`
+			ev.Entry.Message.ToolArgs == "" &&
+			ev.Entry.RawHash != ""
 	}) {
-		t.Fatalf("SSE entry should expose tool call args by default: %#v", events)
+		t.Fatalf("SSE entry should expose tool call hash without raw args: %#v", events)
 	}
 	if !slices.ContainsFunc(events, func(ev AgentStreamEvent) bool {
 		return ev.EngineEvent != nil &&
 			ev.EngineEvent.Type == event.ToolResult &&
-			strings.Contains(ev.EngineEvent.Result, "PRIVATE_OUTPUT_X")
+			ev.EngineEvent.Result == ""
 	}) {
-		t.Fatalf("SSE engine event should expose tool result by default: %#v", events)
+		t.Fatalf("SSE engine event should keep raw tool result sanitized: %#v", events)
 	}
 	for _, ev := range events {
 		if ev.ActivityTimeline == nil {
@@ -989,13 +992,11 @@ func TestServerLocalInspectionKeepsToolBodiesButSanitizesPathMetadata(t *testing
 		}
 		meta, _ := ev.Metadata.(map[string]any)
 		workdir, _ := meta["workdir"].(string)
-		return strings.Contains(ev.Result, "DEBUG_RAW_OUTPUT") &&
-			!strings.Contains(ev.Result, secretPath) &&
-			strings.Contains(ev.Result, event.SafePathLabel(secretPath)) &&
+		return ev.Result == "" &&
 			workdir != "" &&
 			!strings.Contains(workdir, root)
 	}) {
-		t.Fatalf("local inspection events should keep result but sanitize workdir: %#v", created.Events)
+		t.Fatalf("public runtime events should sanitize result and workdir: %#v", created.Events)
 	}
 }
 
@@ -1461,8 +1462,8 @@ func TestServerAgentSessionToolsPatchUpdatesNextProviderRequest(t *testing.T) {
 	if patchRec.Code != http.StatusOK {
 		t.Fatalf("patch status = %d, body = %s", patchRec.Code, patchRec.Body.String())
 	}
-	if !strings.Contains(patchRec.Body.String(), "PRIVATE_REASON_X") {
-		t.Fatalf("patch response should expose local tool update reason: %s", patchRec.Body.String())
+	if strings.Contains(patchRec.Body.String(), "PRIVATE_REASON_X") {
+		t.Fatalf("host-only tool update reason leaked into canonical snapshot: %s", patchRec.Body.String())
 	}
 	var patched AgentSessionSnapshot
 	if err := json.Unmarshal(patchRec.Body.Bytes(), &patched); err != nil {
@@ -1471,13 +1472,10 @@ func TestServerAgentSessionToolsPatchUpdatesNextProviderRequest(t *testing.T) {
 	if !slices.Equal(patched.SelectedTools, []string{"grep", "shell"}) {
 		t.Fatalf("patched selected tools = %#v", patched.SelectedTools)
 	}
-	if !slices.ContainsFunc(patched.PathEntries, func(entry ObservedSessionEntry) bool {
-		return entry.Type == "active_tools_change" &&
-			entry.Metadata["previous_tools"] == "" &&
-			entry.Metadata["selected_tools"] == "grep,shell" &&
-			entry.Metadata["reason"] == "need command access PRIVATE_REASON_X"
+	if slices.ContainsFunc(patched.PathEntries, func(entry ObservedSessionEntry) bool {
+		return entry.Type == "active_tools_change"
 	}) {
-		t.Fatalf("tool audit entry missing: %#v", patched.PathEntries)
+		t.Fatalf("host tool selection mutated canonical lifecycle: %#v", patched.PathEntries)
 	}
 
 	turnReq := httptest.NewRequest(http.MethodPost, "/api/agent/sessions/"+first.SessionID+"/turns", strings.NewReader(`{"message":"main.go"}`))
@@ -1986,8 +1984,18 @@ func TestServerAgentSessionDeleteRemovesToolOutputArtifactRoute(t *testing.T) {
 			break
 		}
 	}
-	if artifactURL == "" || !strings.HasPrefix(artifactURL, "/artifacts/") {
+	if artifactURL == "" || !strings.HasPrefix(artifactURL, agentArtifactRoutePrefix) {
 		t.Fatalf("artifact route missing from observation: %#v", first.Observation.SessionMessages)
+	}
+	sessionID, _, artifactID, ok := parseTestUIAgentArtifactURL(artifactURL)
+	if !ok || sessionID != first.SessionID {
+		t.Fatalf("artifact route authority = session %q artifact %q ok=%v", sessionID, artifactID, ok)
+	}
+	foreignURL := testUIAgentArtifactURL(first.SessionID, "foreign-thread", artifactID)
+	foreignRec := httptest.NewRecorder()
+	handler.ServeHTTP(foreignRec, httptest.NewRequest(http.MethodGet, foreignURL, nil))
+	if foreignRec.Code != http.StatusNotFound {
+		t.Fatalf("foreign artifact authority status/body = %d %q", foreignRec.Code, foreignRec.Body.String())
 	}
 
 	artifactReq := httptest.NewRequest(http.MethodGet, artifactURL, nil)
@@ -1995,6 +2003,12 @@ func TestServerAgentSessionDeleteRemovesToolOutputArtifactRoute(t *testing.T) {
 	handler.ServeHTTP(artifactRec, artifactReq)
 	if artifactRec.Code != http.StatusOK || artifactRec.Body.String() != "0123456789abcdef" {
 		t.Fatalf("artifact before delete status/body = %d %q", artifactRec.Code, artifactRec.Body.String())
+	}
+	if got := artifactRec.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("artifact content type = %q", got)
+	}
+	if got := artifactRec.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "attachment;") || strings.Contains(got, "../") {
+		t.Fatalf("artifact content disposition = %q", got)
 	}
 
 	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/agent/sessions/"+first.SessionID, nil)
@@ -2124,8 +2138,12 @@ func TestServerAgentSessionDeadlineTurnIsTerminalOnLaterRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(meta.Turns) != 1 || meta.Turns[0].Status != snapshot.Status || !meta.UpdatedAt.After(meta.CreatedAt) {
-		t.Fatalf("metadata = %#v", meta)
+	encodedMeta, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encodedMeta, []byte(`"turns"`)) {
+		t.Fatalf("host metadata persisted canonical turns: %s", encodedMeta)
 	}
 }
 
@@ -2353,7 +2371,7 @@ func allAgentToolNamesForTest() []string {
 	return names
 }
 
-func availableAgentToolNamesForTest(t *testing.T, runner Runner) []string {
+func availableAgentToolNamesForTest(t *testing.T, runner *Runner) []string {
 	t.Helper()
 	state, err := runner.ConfigState()
 	if err != nil {

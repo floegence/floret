@@ -3,11 +3,14 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/floegence/floret/internal/storage"
 )
 
 type schemaColumnContract struct {
@@ -43,86 +46,76 @@ type schemaTableContract struct {
 	ForeignKeys []schemaForeignKeyContract
 }
 
+type schemaObjectContract struct {
+	Type      string
+	Name      string
+	TableName string
+	SQL       string
+}
+
 type schemaContract struct {
-	Tables map[string]schemaTableContract
+	Tables  map[string]schemaTableContract
+	Objects []schemaObjectContract
 }
 
 var (
 	canonicalContractOnce sync.Once
 	canonicalContract     schemaContract
 	canonicalContractErr  error
+	schema13ContractOnce  sync.Once
+	schema13Contract      schemaContract
+	schema13ContractErr   error
 )
 
-func verifySchemaVersion(ctx context.Context, tx sqlRunner, version string) error {
-	rawVersion, err := metaValue(ctx, tx, "raw_encoder_version")
+func verifySchemaVersion(ctx context.Context, q sqlRunner, version string) error {
+	rawVersion, err := metaValue(ctx, q, "raw_encoder_version")
 	if err != nil {
-		return fmt.Errorf("read raw encoder version: %w", err)
+		if errors.Is(err, storage.ErrMetadataNotFound) {
+			return unsupportedSchemaError(version, "")
+		}
+		return fmt.Errorf("read sqlite store raw encoder version: %w", err)
 	}
 	if rawVersion != rawEncoderVersion {
-		return fmt.Errorf("unsupported sqlite store raw encoder version %q", rawVersion)
+		return fmt.Errorf("%w: unsupported raw encoder version %q", unsupportedSchemaError(version, ""), rawVersion)
 	}
-	fingerprint, err := metaValue(ctx, tx, "schema_fingerprint")
+	fingerprint, err := metaValue(ctx, q, "schema_fingerprint")
 	if err != nil {
-		return fmt.Errorf("unsupported sqlite store schema fingerprint: %w", err)
+		if errors.Is(err, storage.ErrMetadataNotFound) {
+			return unsupportedSchemaError(version, "")
+		}
+		return fmt.Errorf("read sqlite store schema fingerprint: %w", err)
 	}
+	var expectedFingerprint string
 	switch version {
-	case schemaVersion11:
-		if fingerprint != schemaFingerprintVersion11 {
-			return fmt.Errorf("unsupported sqlite store schema fingerprint %q", fingerprint)
-		}
-		return verifySchemaContract(ctx, tx, false)
-	case schemaVersion12:
-		if fingerprint != schemaFingerprintVersion12 && fingerprint != canonicalSchemaFingerprint() {
-			return fmt.Errorf("unsupported sqlite store schema fingerprint %q", fingerprint)
-		}
-		return verifySchemaContract(ctx, tx, true)
+	case schemaVersion13:
+		expectedFingerprint = schemaFingerprintVersion13
 	case schemaVersion:
-		if fingerprint != canonicalSchemaFingerprint() {
-			return fmt.Errorf("unsupported sqlite store schema fingerprint %q", fingerprint)
-		}
-		return verifySchemaContract(ctx, tx, true)
+		expectedFingerprint = schemaFingerprintVersion14
 	default:
-		return fmt.Errorf("unsupported sqlite store schema version %q; minimum supported version is %s", version, minimumSchemaVersion)
+		return unsupportedSchemaError(version, fingerprint)
 	}
+	if fingerprint != expectedFingerprint {
+		return unsupportedSchemaError(version, fingerprint)
+	}
+	if err := verifySchemaContract(ctx, q, version); err != nil {
+		return fmt.Errorf("%w: %v", unsupportedSchemaError(version, fingerprint), err)
+	}
+	return nil
 }
 
-func verifySchemaContract(ctx context.Context, tx sqlRunner, includeAgentTodos bool) error {
-	expected, err := expectedSchemaContract(includeAgentTodos)
+func verifySchemaContract(ctx context.Context, q sqlRunner, version string) error {
+	expected, err := expectedSchemaContract(version)
 	if err != nil {
 		return err
 	}
-	actual, err := readSchemaContract(ctx, tx)
+	actual, err := readSchemaContract(ctx, q)
 	if err != nil {
 		return err
 	}
 	if !reflect.DeepEqual(actual, expected) {
-		return fmt.Errorf("sqlite store schema contract mismatch: got %#v, want %#v", actual, expected)
+		return fmt.Errorf("sqlite store schema contract mismatch: %s", describeSchemaContractMismatch(actual, expected))
 	}
-	var unsupportedObjects []string
-	rows, err := tx.QueryContext(ctx, `SELECT type || ':' || name FROM sqlite_master
-		WHERE type IN ('view', 'trigger') AND name NOT LIKE 'sqlite_%' ORDER BY type, name`)
-	if err != nil {
-		return err
-	}
-	for rows.Next() {
-		var object string
-		if err := rows.Scan(&object); err != nil {
-			_ = rows.Close()
-			return err
-		}
-		unsupportedObjects = append(unsupportedObjects, object)
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return err
-	}
-	if err := rows.Close(); err != nil {
-		return err
-	}
-	if len(unsupportedObjects) > 0 {
-		return fmt.Errorf("sqlite store contains unsupported schema objects %v", unsupportedObjects)
-	}
-	rows, err = tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	rows, err := q.QueryContext(ctx, `PRAGMA foreign_key_check`)
 	if err != nil {
 		return err
 	}
@@ -133,30 +126,65 @@ func verifySchemaContract(ctx context.Context, tx sqlRunner, includeAgentTodos b
 	return rows.Err()
 }
 
-func expectedSchemaContract(includeAgentTodos bool) (schemaContract, error) {
-	canonicalContractOnce.Do(func() {
+func describeSchemaContractMismatch(actual, expected schemaContract) string {
+	actualNames := make([]string, 0, len(actual.Tables))
+	for name := range actual.Tables {
+		actualNames = append(actualNames, name)
+	}
+	expectedNames := make([]string, 0, len(expected.Tables))
+	for name := range expected.Tables {
+		expectedNames = append(expectedNames, name)
+	}
+	sort.Strings(actualNames)
+	sort.Strings(expectedNames)
+	if !reflect.DeepEqual(actualNames, expectedNames) {
+		return fmt.Sprintf("tables got %v want %v", actualNames, expectedNames)
+	}
+	for _, name := range expectedNames {
+		if !reflect.DeepEqual(actual.Tables[name], expected.Tables[name]) {
+			return fmt.Sprintf("table %q got %#v want %#v", name, actual.Tables[name], expected.Tables[name])
+		}
+	}
+	limit := len(actual.Objects)
+	if len(expected.Objects) < limit {
+		limit = len(expected.Objects)
+	}
+	for index := 0; index < limit; index++ {
+		if actual.Objects[index] != expected.Objects[index] {
+			return fmt.Sprintf("object %d got %#v want %#v", index, actual.Objects[index], expected.Objects[index])
+		}
+	}
+	return fmt.Sprintf("object count got %d want %d", len(actual.Objects), len(expected.Objects))
+}
+
+func expectedSchemaContract(version string) (schemaContract, error) {
+	build := func(schema string) (schemaContract, error) {
 		db, err := sql.Open(driverName, ":memory:")
 		if err != nil {
-			canonicalContractErr = err
-			return
+			return schemaContract{}, err
 		}
 		defer db.Close()
 		db.SetMaxOpenConns(1)
 		db.SetMaxIdleConns(1)
-		if _, err := db.Exec(schemaSQL); err != nil {
-			canonicalContractErr = fmt.Errorf("build canonical sqlite schema contract: %w", err)
-			return
+		if _, err := db.Exec(schema); err != nil {
+			return schemaContract{}, fmt.Errorf("build canonical sqlite schema contract: %w", err)
 		}
-		canonicalContract, canonicalContractErr = readSchemaContract(context.Background(), db)
-	})
-	if canonicalContractErr != nil {
-		return schemaContract{}, canonicalContractErr
+		return readSchemaContract(context.Background(), db)
 	}
-	out := cloneSchemaContract(canonicalContract)
-	if !includeAgentTodos {
-		delete(out.Tables, "agent_todo_states")
+	switch version {
+	case schemaVersion13:
+		schema13ContractOnce.Do(func() {
+			schema13Contract, schema13ContractErr = build(schemaVersion13SQL)
+		})
+		return cloneSchemaContract(schema13Contract), schema13ContractErr
+	case schemaVersion:
+		canonicalContractOnce.Do(func() {
+			canonicalContract, canonicalContractErr = build(schemaSQL)
+		})
+		return cloneSchemaContract(canonicalContract), canonicalContractErr
+	default:
+		return schemaContract{}, fmt.Errorf("unsupported sqlite schema contract version %q", version)
 	}
-	return out, nil
 }
 
 func readSchemaContract(ctx context.Context, q sqlRunner) (schemaContract, error) {
@@ -172,7 +200,35 @@ func readSchemaContract(ctx context.Context, q sqlRunner) (schemaContract, error
 		}
 		contract.Tables[tableName] = table
 	}
+	contract.Objects, err = readSchemaObjectContracts(ctx, q)
+	if err != nil {
+		return schemaContract{}, err
+	}
 	return contract, nil
+}
+
+func readSchemaObjectContracts(ctx context.Context, q sqlRunner) ([]schemaObjectContract, error) {
+	rows, err := q.QueryContext(ctx, `SELECT type, name, tbl_name, sql FROM sqlite_master
+		WHERE type IN ('table', 'index') AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+		ORDER BY type, name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var objects []schemaObjectContract
+	for rows.Next() {
+		var object schemaObjectContract
+		if err := rows.Scan(&object.Type, &object.Name, &object.TableName, &object.SQL); err != nil {
+			return nil, err
+		}
+		object.SQL = normalizeSchemaSQL(object.SQL)
+		objects = append(objects, object)
+	}
+	return objects, rows.Err()
+}
+
+func normalizeSchemaSQL(value string) string {
+	return strings.Join(strings.Fields(strings.TrimSuffix(strings.TrimSpace(value), ";")), " ")
 }
 
 func readSchemaTableContract(ctx context.Context, q sqlRunner, tableName string) (schemaTableContract, error) {
@@ -290,14 +346,20 @@ func userTableNames(ctx context.Context, q sqlRunner) ([]string, error) {
 }
 
 func cloneSchemaContract(in schemaContract) schemaContract {
-	out := schemaContract{Tables: make(map[string]schemaTableContract, len(in.Tables))}
+	out := schemaContract{
+		Tables:  make(map[string]schemaTableContract, len(in.Tables)),
+		Objects: append([]schemaObjectContract(nil), in.Objects...),
+	}
 	for name, table := range in.Tables {
 		table.Columns = append([]schemaColumnContract(nil), table.Columns...)
 		table.ForeignKeys = append([]schemaForeignKeyContract(nil), table.ForeignKeys...)
-		indexes := make([]schemaIndexContract, len(table.Indexes))
-		for index, item := range table.Indexes {
-			item.Columns = append([]string(nil), item.Columns...)
-			indexes[index] = item
+		var indexes []schemaIndexContract
+		if table.Indexes != nil {
+			indexes = make([]schemaIndexContract, len(table.Indexes))
+			for index, item := range table.Indexes {
+				item.Columns = append([]string(nil), item.Columns...)
+				indexes[index] = item
+			}
 		}
 		table.Indexes = indexes
 		out.Tables[name] = table

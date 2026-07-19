@@ -70,6 +70,7 @@ type Runner struct {
 	Workspace    string
 	ArtifactsDir string
 	Engine       *engine.Engine
+	Execute      func(context.Context, string) engine.Result
 	Trace        *event.Recorder
 }
 
@@ -80,8 +81,8 @@ func (r Runner) Run(ctx context.Context, c Case) (Result, error) {
 	if c.Prompt == "" {
 		return Result{}, errors.New("eval case prompt is required")
 	}
-	if r.Engine == nil {
-		return Result{}, errors.New("engine is required")
+	if r.Engine == nil && r.Execute == nil {
+		return Result{}, errors.New("engine or execute function is required")
 	}
 	artifacts := map[string]string{}
 	if r.ArtifactsDir != "" {
@@ -108,12 +109,17 @@ func (r Runner) Run(ctx context.Context, c Case) (Result, error) {
 		_ = os.WriteFile(diffPath, []byte(r.workspaceDiff(ctx)), 0o644)
 		artifacts["final_diff"] = diffPath
 	}
-	engineForRun, err := withBudgets(r.Engine, c.Budgets)
-	if err != nil {
-		return Result{}, err
-	}
 	start := time.Now()
-	eng := engineForRun.Run(ctx, c.Prompt)
+	var eng engine.Result
+	if r.Execute != nil {
+		eng = r.Execute(ctx, c.Prompt)
+	} else {
+		engineForRun, err := withBudgets(r.Engine, c.Budgets)
+		if err != nil {
+			return Result{}, err
+		}
+		eng = engineForRun.Run(ctx, c.Prompt)
+	}
 	result := Result{
 		CaseID:       c.ID,
 		Suite:        r.Suite,

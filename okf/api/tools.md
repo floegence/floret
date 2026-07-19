@@ -1,7 +1,7 @@
 ---
 type: Public API
 title: tools Package
-description: The tools package defines local tool registration, validation, permission checks, execution, pending results, and output projection.
+description: The tools package defines local tool registration, validation, authority-gated dispatch, pending results, and output projection.
 resource: /tools/doc.go
 tags: [api, tools]
 timestamp: 2026-06-20T00:00:00Z
@@ -17,18 +17,23 @@ strict provider-visible schemas and typed handlers.
 * `tools.Define` builds a typed local tool.
 * `tools.NewRegistry` and `tools.NewRegistryE` collect tool definitions.
 * `Registry.Register` validates tool contracts.
-* `Registry.Run` and `Registry.RunBatch` execute validated tool calls.
+* `Registry.Dispatch` is the engine-facing dispatch boundary and requires an
+  `EffectDispatcher` supplied by Floret's durable thread runtime.
 * Schema helpers build strict tool input shapes.
 
 # Permission Model
 
-Tools declare effects and permission behavior. Approval requests include
-validated arguments, resource references, effects, and risk flags so hosts can
-make product-specific decisions outside Floret core.
+Tools declare effects and permission behavior. A public registry does not expose
+a direct handler runner. Floret first creates a canonical effect attempt, then
+passes the exact invocation to the host `EffectAuthorizationGate`; only its
+synchronous authorized callback can cross the handler boundary. Missing effect
+authority fails before resource extraction or handler side effects.
+`ApprovalRequest`, `PermissionDecision`, and `Approver` are not `tools` package
+contracts; test-only authorization helpers live under `internal/testing`.
 
 # Dispatch Observation
 
-`tools.RunOptions.DispatchStarted` is the product-neutral observer used by the
+`tools.DispatchOptions.DispatchStarted` is the product-neutral observer used by the
 engine to mark the exact point where a validated, permitted, and approved local
 tool leaves the queue and enters handler execution. It is emitted before the
 handler is invoked and carries only the tool call identity, raw arguments for the
@@ -40,7 +45,7 @@ to the local tool runtime.
 `Invocation.UpdateActivity` lets a running tool publish sanitized presentation
 updates for its own activity item without returning a tool result. The engine
 emits those updates as ordered `tool_activity_updated` observations through
-`tools.RunOptions.ActivityUpdated`; projections merge them into the existing
+`tools.DispatchOptions.ActivityUpdated`; projections merge them into the existing
 `tool:<tool_id>` item. This is for product-neutral public display payloads such
 as a host-owned read handle, byte counters, or latest visible output. It does
 not create a second activity row, change approval decisions, or complete the
@@ -48,12 +53,11 @@ tool invocation.
 
 # Batch Execution
 
-`Registry.RunBatchWithOptions` starts every ordinary call in the supplied model
-batch concurrently. `RunOptions.BatchIndex` and `BatchSize` identify each call's
-original position for approval and observation metadata; they do not gate
-dispatch. Result slices remain in call order even when live observations arrive
-in completion order. A dependent call belongs in a later model response after
-its prerequisite result is available.
+The engine starts ordinary calls from one provider batch concurrently.
+`DispatchOptions.BatchIndex` and `BatchSize` identify each call's original
+position for authorization and observation metadata; they do not gate dispatch.
+A dependent call belongs in a later model response after its prerequisite result
+is available.
 
 # Repeat And Progress Metadata
 

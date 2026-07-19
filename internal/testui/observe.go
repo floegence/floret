@@ -209,7 +209,24 @@ func (p *observingProvider) recordEvent(runID string, threadID string, turnID st
 		}
 	}
 	p.evs = append(p.evs, observed)
+	sink := p.sink
 	p.mu.Unlock()
+	if sink == nil || (ev.Type != provider.HostedToolCall && ev.Type != provider.HostedToolResult) {
+		return
+	}
+	eventCopy := observed
+	typ := AgentStreamToolCall
+	message := ""
+	if ev.Type == provider.HostedToolResult {
+		typ = AgentStreamToolResult
+		if hostedResult != nil {
+			message = hostedResult.SummaryText()
+		}
+	}
+	sink.EmitAgentStream(AgentStreamEvent{
+		Type: typ, SessionID: threadID, TurnID: turnID, Step: step, At: observed.ObservedAt,
+		ProviderEvent: &eventCopy, Message: message,
+	})
 }
 
 func observedHostedResult(result provider.HostedToolResultData) *provider.HostedToolResultData {
@@ -395,7 +412,6 @@ func observeArtifactRef(ref artifact.Ref) ObservedArtifactRef {
 	return ObservedArtifactRef{
 		ID:        ref.ID,
 		SafeLabel: ref.SafeLabel,
-		URL:       ref.URL,
 		Kind:      ref.Kind,
 		MIME:      ref.MIME,
 		SizeBytes: ref.SizeBytes,

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/floegence/floret/internal/testing/tooltest"
 	"github.com/floegence/floret/tools"
 	"net/http"
 	"net/http/httptest"
@@ -31,42 +32,42 @@ func TestReadListGlobAndGrepWorkspaceTools(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	read := reg.Run(context.Background(), tools.ToolCall{Name: "read", Args: `{"path":"main.go","offset":0,"limit":1}`}, nil)
+	read := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "read", Args: `{"path":"main.go","offset":0,"limit":1}`}, nil)
 	if read.IsError || read.Text != "package main" {
 		t.Fatalf("read = %#v", read)
 	}
-	readDefaultRange := reg.Run(context.Background(), tools.ToolCall{Name: "read", Args: `{"path":"main.go"}`}, nil)
+	readDefaultRange := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "read", Args: `{"path":"main.go"}`}, nil)
 	if readDefaultRange.IsError || !strings.Contains(readDefaultRange.Text, "func main()") {
 		t.Fatalf("read with default range = %#v", readDefaultRange)
 	}
 	assertRequiredFields(t, reg, "read", "path")
-	list := reg.Run(context.Background(), tools.ToolCall{Name: "list", Args: `{"path":null,"limit":10}`}, nil)
+	list := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "list", Args: `{"path":null,"limit":10}`}, nil)
 	if list.IsError || !strings.Contains(list.Text, "pkg/") || !strings.Contains(list.Text, "main.go") {
 		t.Fatalf("list = %#v", list)
 	}
-	listDefaultLimit := reg.Run(context.Background(), tools.ToolCall{Name: "list", Args: `{"path":"."}`}, nil)
+	listDefaultLimit := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "list", Args: `{"path":"."}`}, nil)
 	if listDefaultLimit.IsError || !strings.Contains(listDefaultLimit.Text, "pkg/") || !strings.Contains(listDefaultLimit.Text, "main.go") {
 		t.Fatalf("list with default limit = %#v", listDefaultLimit)
 	}
 	assertRequiredFields(t, reg, "list")
-	glob := reg.Run(context.Background(), tools.ToolCall{Name: "glob", Args: `{"pattern":"**/*.go","path":null,"limit":10}`}, nil)
+	glob := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "glob", Args: `{"pattern":"**/*.go","path":null,"limit":10}`}, nil)
 	if glob.IsError || !strings.Contains(glob.Text, "main.go") || !strings.Contains(glob.Text, "pkg/util.go") {
 		t.Fatalf("glob = %#v", glob)
 	}
-	globDefaultRange := reg.Run(context.Background(), tools.ToolCall{Name: "glob", Args: `{"pattern":"**/*.go"}`}, nil)
+	globDefaultRange := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "glob", Args: `{"pattern":"**/*.go"}`}, nil)
 	if globDefaultRange.IsError || !strings.Contains(globDefaultRange.Text, "main.go") || !strings.Contains(globDefaultRange.Text, "pkg/util.go") {
 		t.Fatalf("glob with default range = %#v", globDefaultRange)
 	}
-	globIgnoreCase := reg.Run(context.Background(), tools.ToolCall{Name: "glob", Args: `{"pattern":"**/UTIL.GO","ignore_case":true}`}, nil)
+	globIgnoreCase := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "glob", Args: `{"pattern":"**/UTIL.GO","ignore_case":true}`}, nil)
 	if globIgnoreCase.IsError || !strings.Contains(globIgnoreCase.Text, "pkg/util.go") {
 		t.Fatalf("glob with ignore_case = %#v", globIgnoreCase)
 	}
 	assertRequiredFields(t, reg, "glob", "pattern")
-	grep := reg.Run(context.Background(), tools.ToolCall{Name: "grep", Args: `{"pattern":"Floret","path":null,"glob":"*.go","ignore_case":false,"literal":true,"context":null,"limit":10}`}, nil)
+	grep := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "grep", Args: `{"pattern":"Floret","path":null,"glob":"*.go","ignore_case":false,"literal":true,"context":null,"limit":10}`}, nil)
 	if grep.IsError || !strings.Contains(grep.Text, "util.go") {
 		t.Fatalf("grep = %#v", grep)
 	}
-	grepDefaults := reg.Run(context.Background(), tools.ToolCall{Name: "grep", Args: `{"pattern":"Floret","path":"pkg"}`}, nil)
+	grepDefaults := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "grep", Args: `{"pattern":"Floret","path":"pkg"}`}, nil)
 	if grepDefaults.IsError || !strings.Contains(grepDefaults.Text, "util.go") {
 		t.Fatalf("grep with defaults = %#v", grepDefaults)
 	}
@@ -137,11 +138,11 @@ func TestWorkspaceMutationRequiresApprovalAndWritesFile(t *testing.T) {
 	if err := RegisterWorkspaceMutation(reg, WorkspaceOptions{Root: root}); err != nil {
 		t.Fatal(err)
 	}
-	denied := reg.Run(context.Background(), tools.ToolCall{Name: "write", Args: `{"path":"answer.txt","content":"no"}`}, nil)
+	denied := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "write", Args: `{"path":"answer.txt","content":"no"}`}, nil)
 	if !denied.IsError || denied.Text != tools.ErrRejected.Error() {
 		t.Fatalf("denied = %#v", denied)
 	}
-	approved := reg.Run(context.Background(), tools.ToolCall{Name: "write", Args: `{"path":"answer.txt","content":"yes"}`}, allowAll)
+	approved := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "write", Args: `{"path":"answer.txt","content":"yes"}`}, allowAll)
 	if approved.IsError {
 		t.Fatalf("approved = %#v", approved)
 	}
@@ -160,7 +161,7 @@ func TestWorkspaceMutationRequiresApprovalAndWritesFile(t *testing.T) {
 		"+done",
 		"*** End Patch",
 	}, "\n")
-	applied := reg.Run(context.Background(), tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
+	applied := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
 	if applied.IsError {
 		t.Fatalf("apply_patch = %#v", applied)
 	}
@@ -175,11 +176,11 @@ func TestShellRequiresApprovalAndReturnsExitMetadata(t *testing.T) {
 	if err := RegisterShell(reg, ShellOptions{CWD: t.TempDir(), Runner: fakeRunner{result: CommandResult{Stdout: "ok\n", ExitCode: 0, DurationMS: 7}}}); err != nil {
 		t.Fatal(err)
 	}
-	denied := reg.Run(context.Background(), tools.ToolCall{Name: "shell", Args: `{"command":"echo ok"}`}, nil)
+	denied := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "shell", Args: `{"command":"echo ok"}`}, nil)
 	if !denied.IsError {
 		t.Fatalf("shell without approval should fail: %#v", denied)
 	}
-	got := reg.Run(context.Background(), tools.ToolCall{Name: "shell", Args: `{"command":"echo ok"}`}, allowAll)
+	got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "shell", Args: `{"command":"echo ok"}`}, allowAll)
 	if got.IsError || got.Text != "ok" || got.Metadata["exit_code"] != 0 {
 		t.Fatalf("shell = %#v", got)
 	}
@@ -197,7 +198,7 @@ func TestShellDefaultsOptionalRuntimeFieldsAndKeepsStrictSchema(t *testing.T) {
 	// timeout, and output limits are runtime defaults. Making those knobs required
 	// turns otherwise valid calls into schema failures before execution.
 	assertRequiredFields(t, reg, "shell", "command")
-	got := reg.Run(context.Background(), tools.ToolCall{Name: "shell", Args: `{"command":"printf 0123456789"}`}, allowAll)
+	got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "shell", Args: `{"command":"printf 0123456789"}`}, allowAll)
 	if got.IsError {
 		t.Fatalf("shell with command-only args should succeed: %#v", got)
 	}
@@ -207,11 +208,11 @@ func TestShellDefaultsOptionalRuntimeFieldsAndKeepsStrictSchema(t *testing.T) {
 	if got.Text != "0123456789" || got.OutputPolicy == nil || got.OutputPolicy.VisibleMaxBytes != 4 || got.OutputPolicy.Strategy != tools.OutputTail {
 		t.Fatalf("default max_output_bytes projection policy was not applied: %#v", got)
 	}
-	extra := reg.Run(context.Background(), tools.ToolCall{Name: "shell", Args: `{"command":"echo ok","extra":true}`}, allowAll)
+	extra := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "shell", Args: `{"command":"echo ok","extra":true}`}, allowAll)
 	if !extra.IsError || !strings.Contains(extra.Text, "$.extra is not allowed") {
 		t.Fatalf("extra field should still be rejected: %#v", extra)
 	}
-	wrongType := reg.Run(context.Background(), tools.ToolCall{Name: "shell", Args: `{"command":"echo ok","timeout_ms":"soon"}`}, allowAll)
+	wrongType := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "shell", Args: `{"command":"echo ok","timeout_ms":"soon"}`}, allowAll)
 	if !wrongType.IsError || !strings.Contains(wrongType.Text, "$.timeout_ms must be an integer") {
 		t.Fatalf("wrong optional type should still be rejected: %#v", wrongType)
 	}
@@ -227,7 +228,7 @@ func TestWebSearchRequiresAPIKeyAndSearchQueryApproval(t *testing.T) {
 	} else {
 		t.Fatalf("expected missing API key registration error")
 	}
-	if got := reg.Run(context.Background(), tools.ToolCall{Name: ToolWebSearch, Args: `{"query":"Changsha weather 2026-06-03"}`}, allowAll); !got.IsError || !strings.Contains(got.Text, "unknown tool") {
+	if got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: ToolWebSearch, Args: `{"query":"Changsha weather 2026-06-03"}`}, allowAll); !got.IsError || !strings.Contains(got.Text, "unknown tool") {
 		t.Fatalf("unregistered web_search = %#v", got)
 	}
 
@@ -235,14 +236,14 @@ func TestWebSearchRequiresAPIKeyAndSearchQueryApproval(t *testing.T) {
 	if err := RegisterSearch(reg, SearchOptions{APIKey: "brave-key", Endpoint: "http://127.0.0.1"}); err != nil {
 		t.Fatal(err)
 	}
-	denied := reg.Run(context.Background(), tools.ToolCall{Name: ToolWebSearch, Args: `{"query":"Changsha weather 2026-06-03","count":8,"country":null,"search_lang":null,"freshness":null}`}, nil)
+	denied := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: ToolWebSearch, Args: `{"query":"Changsha weather 2026-06-03","count":8,"country":null,"search_lang":null,"freshness":null}`}, nil)
 	if !denied.IsError || denied.Text != tools.ErrRejected.Error() {
 		t.Fatalf("denied = %#v", denied)
 	}
-	var approval tools.ApprovalRequest
-	_ = reg.Run(context.Background(), tools.ToolCall{Name: ToolWebSearch, Args: `{"query":"Changsha weather 2026-06-03","count":8,"country":null,"search_lang":null,"freshness":null}`}, func(_ context.Context, req tools.ApprovalRequest) (tools.PermissionDecision, error) {
+	var approval tooltest.ApprovalRequest
+	_ = tooltest.Run(context.Background(), reg, tools.ToolCall{Name: ToolWebSearch, Args: `{"query":"Changsha weather 2026-06-03","count":8,"country":null,"search_lang":null,"freshness":null}`}, func(_ context.Context, req tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
 		approval = req
-		return tools.PermissionDecisionDeny, nil
+		return tooltest.PermissionDecisionDeny, nil
 	})
 	if len(approval.Resources) != 1 || approval.Resources[0].Kind != "search_query" || approval.Resources[0].Value != "Changsha weather 2026-06-03" {
 		t.Fatalf("approval resources = %#v", approval.Resources)
@@ -275,7 +276,7 @@ func TestWebSearchCallsBraveAndReturnsCompactResults(t *testing.T) {
 	if err := RegisterSearch(reg, SearchOptions{APIKey: "brave-key", Endpoint: server.URL}); err != nil {
 		t.Fatal(err)
 	}
-	got := reg.Run(context.Background(), tools.ToolCall{Name: ToolWebSearch, Args: `{"query":"Changsha weather 2026-06-03","count":3,"country":"CN","search_lang":"zh-hans","freshness":"pd"}`}, allowAll)
+	got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: ToolWebSearch, Args: `{"query":"Changsha weather 2026-06-03","count":3,"country":"CN","search_lang":"zh-hans","freshness":"pd"}`}, allowAll)
 	if got.IsError || !strings.Contains(got.Text, "Changsha weather") || !strings.Contains(got.Text, "https://example.com/weather") {
 		t.Fatalf("web_search = %#v", got)
 	}
@@ -302,7 +303,7 @@ func TestWebSearchAcceptsQueryOnlyAndUsesDefaults(t *testing.T) {
 	if err := RegisterSearch(reg, SearchOptions{APIKey: "brave-key", Endpoint: server.URL}); err != nil {
 		t.Fatal(err)
 	}
-	got := reg.Run(context.Background(), tools.ToolCall{Name: ToolWebSearch, Args: `{"query":"Changsha weather 2026-06-03"}`}, allowAll)
+	got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: ToolWebSearch, Args: `{"query":"Changsha weather 2026-06-03"}`}, allowAll)
 	if got.IsError || !strings.Contains(got.Text, "Changsha weather") || got.Metadata["count"] != 8 {
 		t.Fatalf("web_search query-only = %#v", got)
 	}
@@ -321,7 +322,7 @@ func TestWebSearchHandlesEmptyErrorsAndTimeouts(t *testing.T) {
 		if err := RegisterSearch(reg, SearchOptions{APIKey: "key", Endpoint: server.URL}); err != nil {
 			t.Fatal(err)
 		}
-		got := reg.Run(context.Background(), tools.ToolCall{Name: ToolWebSearch, Args: `{"query":"no such result","count":null,"country":null,"search_lang":null,"freshness":null}`}, allowAll)
+		got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: ToolWebSearch, Args: `{"query":"no such result","count":null,"country":null,"search_lang":null,"freshness":null}`}, allowAll)
 		if got.IsError || !strings.Contains(got.Text, "No web search results") || got.Metadata["result_count"] != 0 {
 			t.Fatalf("empty = %#v", got)
 		}
@@ -337,7 +338,7 @@ func TestWebSearchHandlesEmptyErrorsAndTimeouts(t *testing.T) {
 			if err := RegisterSearch(reg, SearchOptions{APIKey: "key", Endpoint: server.URL}); err != nil {
 				t.Fatal(err)
 			}
-			got := reg.Run(context.Background(), tools.ToolCall{Name: ToolWebSearch, Args: `{"query":"error","count":null,"country":null,"search_lang":null,"freshness":null}`}, allowAll)
+			got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: ToolWebSearch, Args: `{"query":"error","count":null,"country":null,"search_lang":null,"freshness":null}`}, allowAll)
 			if !got.IsError || !strings.Contains(got.Text, fmt.Sprintf("status %d", status)) {
 				t.Fatalf("http status %d = %#v", status, got)
 			}
@@ -354,7 +355,7 @@ func TestWebSearchHandlesEmptyErrorsAndTimeouts(t *testing.T) {
 		if err := RegisterSearch(reg, SearchOptions{APIKey: "key", Endpoint: server.URL, DefaultTimeoutMS: 20}); err != nil {
 			t.Fatal(err)
 		}
-		got := reg.Run(context.Background(), tools.ToolCall{Name: ToolWebSearch, Args: `{"query":"slow","count":null,"country":null,"search_lang":null,"freshness":null}`}, allowAll)
+		got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: ToolWebSearch, Args: `{"query":"slow","count":null,"country":null,"search_lang":null,"freshness":null}`}, allowAll)
 		if !got.IsError || !strings.Contains(got.Text, "deadline") && !strings.Contains(got.Text, "timeout") {
 			t.Fatalf("timeout = %#v", got)
 		}
@@ -372,7 +373,7 @@ func TestWebSearchRejectsInvalidArgumentsBeforeExecution(t *testing.T) {
 		`{"query":"x","count":21,"country":null,"search_lang":null,"freshness":null}`,
 		`{"query":"x","count":8,"country":null,"search_lang":null,"freshness":"bad"}`,
 	} {
-		got := reg.Run(context.Background(), tools.ToolCall{Name: ToolWebSearch, Args: args}, allowAll)
+		got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: ToolWebSearch, Args: args}, allowAll)
 		if !got.IsError {
 			t.Fatalf("args %s should fail: %#v", args, got)
 		}
@@ -392,12 +393,12 @@ func TestReadRejectsPathEscapeAbsoluteAndBinary(t *testing.T) {
 		`{"path":"../outside","offset":null,"limit":null}`,
 		`{"path":"/etc/passwd","offset":null,"limit":null}`,
 	} {
-		got := reg.Run(context.Background(), tools.ToolCall{Name: "read", Args: args}, nil)
+		got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "read", Args: args}, nil)
 		if !got.IsError || !strings.Contains(got.Text, "workspace") {
 			t.Fatalf("read should reject %s: %#v", args, got)
 		}
 	}
-	binary := reg.Run(context.Background(), tools.ToolCall{Name: "read", Args: `{"path":"bin.dat","offset":null,"limit":null}`}, nil)
+	binary := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "read", Args: `{"path":"bin.dat","offset":null,"limit":null}`}, nil)
 	if !binary.IsError || !strings.Contains(binary.Text, "binary") {
 		t.Fatalf("binary read = %#v", binary)
 	}
@@ -415,11 +416,11 @@ func TestReadOffsetBeyondEOFAndDirectoryMetadata(t *testing.T) {
 	if err := RegisterReadOnlyWorkspace(reg, WorkspaceOptions{Root: root}); err != nil {
 		t.Fatal(err)
 	}
-	got := reg.Run(context.Background(), tools.ToolCall{Name: "read", Args: `{"path":"a.txt","offset":99,"limit":10}`}, nil)
+	got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "read", Args: `{"path":"a.txt","offset":99,"limit":10}`}, nil)
 	if got.IsError || got.Text != "" || got.Metadata["line_start"] != 3 || got.Metadata["line_end"] != 3 {
 		t.Fatalf("offset beyond eof = %#v", got)
 	}
-	dir := reg.Run(context.Background(), tools.ToolCall{Name: "read", Args: `{"path":"dir","offset":null,"limit":10}`}, nil)
+	dir := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "read", Args: `{"path":"dir","offset":null,"limit":10}`}, nil)
 	if dir.IsError || dir.Metadata["kind"] != "directory" {
 		t.Fatalf("directory read = %#v", dir)
 	}
@@ -444,7 +445,7 @@ func TestApplyPatchPlanningFailureDoesNotWriteAndRejectsEscape(t *testing.T) {
 		"+new",
 		"*** End Patch",
 	}, "\n")
-	got := reg.Run(context.Background(), tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
+	got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
 	if !got.IsError || !strings.Contains(got.Text, "did not match") {
 		t.Fatalf("patch should fail on context mismatch: %#v", got)
 	}
@@ -459,7 +460,7 @@ func TestApplyPatchPlanningFailureDoesNotWriteAndRejectsEscape(t *testing.T) {
 		t.Fatalf("updated file should not have changed: %q", data)
 	}
 	escape := strings.Join([]string{"*** Begin Patch", "*** Add File: ../escape.txt", "+x", "*** End Patch"}, "\n")
-	escaped := reg.Run(context.Background(), tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(escape) + `}`}, allowAll)
+	escaped := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(escape) + `}`}, allowAll)
 	if !escaped.IsError || !strings.Contains(escaped.Text, "workspace") {
 		t.Fatalf("escape patch = %#v", escaped)
 	}
@@ -488,7 +489,7 @@ func TestApplyPatchAddUpdateDeleteHappyPath(t *testing.T) {
 		"*** Delete File: delete.txt",
 		"*** End Patch",
 	}, "\n")
-	got := reg.Run(context.Background(), tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
+	got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
 	if got.IsError {
 		t.Fatalf("patch = %#v", got)
 	}
@@ -536,7 +537,7 @@ func TestApplyPatchMultiChunkAnchorEOFAndMove(t *testing.T) {
 		"*** End of File",
 		"*** End Patch",
 	}, "\n")
-	got := reg.Run(context.Background(), tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
+	got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
 	if got.IsError {
 		t.Fatalf("patch = %#v", got)
 	}
@@ -570,7 +571,7 @@ func TestApplyPatchUpdatesNoFinalNewlineWithTrailingNewline(t *testing.T) {
 		"+second line",
 		"*** End Patch",
 	}, "\n")
-	got := reg.Run(context.Background(), tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
+	got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
 	if got.IsError {
 		t.Fatalf("patch = %#v", got)
 	}
@@ -600,7 +601,7 @@ func TestApplyPatchPureAdditionUpdateChunkAppends(t *testing.T) {
 		"+added line 2",
 		"*** End Patch",
 	}, "\n")
-	got := reg.Run(context.Background(), tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
+	got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
 	if got.IsError {
 		t.Fatalf("patch = %#v", got)
 	}
@@ -679,7 +680,7 @@ func TestApplyPatchUnifiedRangeHeadersAndLenientMatching(t *testing.T) {
 		"*** End of File",
 		"*** End Patch",
 	}, "\n")
-	got := reg.Run(context.Background(), tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
+	got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
 	if got.IsError {
 		t.Fatalf("patch = %#v", got)
 	}
@@ -735,7 +736,7 @@ func TestApplyPatchRejectsInvalidFormsExistingAddMissingFilesAndMoveTarget(t *te
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := reg.Run(context.Background(), tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(tc.patch) + `}`}, allowAll)
+			got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(tc.patch) + `}`}, allowAll)
 			if !got.IsError || !strings.Contains(got.Text, tc.want) {
 				t.Fatalf("patch result = %#v, want error containing %q", got, tc.want)
 			}
@@ -767,7 +768,7 @@ func TestApplyPatchApplyFailureRollsBackVisibleWrites(t *testing.T) {
 		"+created",
 		"*** End Patch",
 	}, "\n")
-	got := reg.Run(context.Background(), tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
+	got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
 	if !got.IsError {
 		if err := os.WriteFile(filepath.Join(blocked, "probe.txt"), []byte("probe"), 0o644); err == nil {
 			t.Skip("read-only directory is writable on this platform")
@@ -794,7 +795,7 @@ func TestEditToolIsNotRegistered(t *testing.T) {
 	if hasToolDefinition(reg.Definitions(), "edit") {
 		t.Fatalf("edit tool should not be registered: %#v", reg.Definitions())
 	}
-	got := reg.Run(context.Background(), tools.ToolCall{Name: "edit", Args: `{"path":"a.txt","old_text":"x","new_text":"y","replace_all":false}`}, allowAll)
+	got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "edit", Args: `{"path":"a.txt","old_text":"x","new_text":"y","replace_all":false}`}, allowAll)
 	if !got.IsError || !strings.Contains(got.Text, `unknown tool "edit"`) {
 		t.Fatalf("edit call = %#v", got)
 	}
@@ -809,15 +810,15 @@ func TestWriteCreatesParentsOverwritesExistingEmptyAndRejectsEscape(t *testing.T
 	if err := RegisterWorkspaceMutation(reg, WorkspaceOptions{Root: root}); err != nil {
 		t.Fatal(err)
 	}
-	create := reg.Run(context.Background(), tools.ToolCall{Name: "write", Args: `{"path":"nested/a.txt","content":"first"}`}, allowAll)
+	create := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "write", Args: `{"path":"nested/a.txt","content":"first"}`}, allowAll)
 	if create.IsError {
 		t.Fatalf("create = %#v", create)
 	}
-	overwrite := reg.Run(context.Background(), tools.ToolCall{Name: "write", Args: `{"path":"nested/a.txt","content":"second"}`}, allowAll)
+	overwrite := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "write", Args: `{"path":"nested/a.txt","content":"second"}`}, allowAll)
 	if overwrite.IsError {
 		t.Fatalf("overwrite = %#v", overwrite)
 	}
-	empty := reg.Run(context.Background(), tools.ToolCall{Name: "write", Args: `{"path":"empty.txt","content":""}`}, allowAll)
+	empty := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "write", Args: `{"path":"empty.txt","content":""}`}, allowAll)
 	if empty.IsError || empty.Metadata["bytes"] != 0 {
 		t.Fatalf("empty = %#v", empty)
 	}
@@ -828,15 +829,15 @@ func TestWriteCreatesParentsOverwritesExistingEmptyAndRejectsEscape(t *testing.T
 	if string(data) != "second" {
 		t.Fatalf("file = %q", data)
 	}
-	escape := reg.Run(context.Background(), tools.ToolCall{Name: "write", Args: `{"path":"../escape.txt","content":"x"}`}, allowAll)
+	escape := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "write", Args: `{"path":"../escape.txt","content":"x"}`}, allowAll)
 	if !escape.IsError || !strings.Contains(escape.Text, "workspace") {
 		t.Fatalf("escape = %#v", escape)
 	}
-	rootPath := reg.Run(context.Background(), tools.ToolCall{Name: "write", Args: `{"path":"","content":"x"}`}, allowAll)
+	rootPath := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "write", Args: `{"path":"","content":"x"}`}, allowAll)
 	if !rootPath.IsError || !strings.Contains(rootPath.Text, "must name a file") {
 		t.Fatalf("root path = %#v", rootPath)
 	}
-	directory := reg.Run(context.Background(), tools.ToolCall{Name: "write", Args: `{"path":"nested","content":"x"}`}, allowAll)
+	directory := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "write", Args: `{"path":"nested","content":"x"}`}, allowAll)
 	if !directory.IsError || !strings.Contains(directory.Text, "directory") {
 		t.Fatalf("directory = %#v", directory)
 	}
@@ -858,7 +859,7 @@ func TestWorkspaceMutationRejectsSymlinkEscapes(t *testing.T) {
 	if err := RegisterWorkspaceMutation(reg, WorkspaceOptions{Root: root}); err != nil {
 		t.Fatal(err)
 	}
-	write := reg.Run(context.Background(), tools.ToolCall{Name: "write", Args: `{"path":"linked-file.txt","content":"changed"}`}, allowAll)
+	write := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "write", Args: `{"path":"linked-file.txt","content":"changed"}`}, allowAll)
 	if !write.IsError || !strings.Contains(write.Text, "symlink") {
 		t.Fatalf("write symlink escape = %#v", write)
 	}
@@ -868,7 +869,7 @@ func TestWorkspaceMutationRejectsSymlinkEscapes(t *testing.T) {
 		"+created",
 		"*** End Patch",
 	}, "\n")
-	got := reg.Run(context.Background(), tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
+	got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "apply_patch", Args: `{"patch":` + quoteJSON(patch) + `}`}, allowAll)
 	if !got.IsError || !strings.Contains(got.Text, "symlink") {
 		t.Fatalf("apply_patch symlink escape = %#v", got)
 	}
@@ -903,35 +904,35 @@ func TestListGlobGrepBoundaries(t *testing.T) {
 	if err := RegisterReadOnlyWorkspace(reg, WorkspaceOptions{Root: root}); err != nil {
 		t.Fatal(err)
 	}
-	list := reg.Run(context.Background(), tools.ToolCall{Name: "list", Args: `{"path":null,"limit":2}`}, nil)
+	list := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "list", Args: `{"path":null,"limit":2}`}, nil)
 	if list.IsError || list.Text != ".git/\na.txt" {
 		t.Fatalf("list = %#v", list)
 	}
-	listEscape := reg.Run(context.Background(), tools.ToolCall{Name: "list", Args: `{"path":"../escape","limit":null}`}, nil)
+	listEscape := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "list", Args: `{"path":"../escape","limit":null}`}, nil)
 	if !listEscape.IsError || !strings.Contains(listEscape.Text, "workspace") {
 		t.Fatalf("list escape = %#v", listEscape)
 	}
-	glob := reg.Run(context.Background(), tools.ToolCall{Name: "glob", Args: `{"pattern":"**/*.go","path":null,"limit":1}`}, nil)
+	glob := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "glob", Args: `{"pattern":"**/*.go","path":null,"limit":1}`}, nil)
 	if glob.IsError || strings.Contains(glob.Text, ".git") || strings.Count(strings.TrimSpace(glob.Text), "\n") > 0 || !strings.Contains(glob.Text, ".go") {
 		t.Fatalf("glob = %#v", glob)
 	}
-	globNone := reg.Run(context.Background(), tools.ToolCall{Name: "glob", Args: `{"pattern":"**/*.missing","path":null,"limit":10}`}, nil)
+	globNone := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "glob", Args: `{"pattern":"**/*.missing","path":null,"limit":10}`}, nil)
 	if globNone.IsError || globNone.Text != "" || globNone.Metadata["matches"] != 0 {
 		t.Fatalf("glob none = %#v", globNone)
 	}
-	globEscape := reg.Run(context.Background(), tools.ToolCall{Name: "glob", Args: `{"pattern":"*","path":"../escape","limit":null}`}, nil)
+	globEscape := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "glob", Args: `{"pattern":"*","path":"../escape","limit":null}`}, nil)
 	if !globEscape.IsError || !strings.Contains(globEscape.Text, "workspace") {
 		t.Fatalf("glob escape = %#v", globEscape)
 	}
-	grep := reg.Run(context.Background(), tools.ToolCall{Name: "grep", Args: `{"pattern":"target","path":"pkg","glob":"*.go","ignore_case":true,"literal":false,"context":1,"limit":3}`}, nil)
+	grep := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "grep", Args: `{"pattern":"target","path":"pkg","glob":"*.go","ignore_case":true,"literal":false,"context":1,"limit":3}`}, nil)
 	if grep.IsError || !strings.Contains(grep.Text, "Target") || grep.Metadata["matches"] != 3 {
 		t.Fatalf("grep = %#v", grep)
 	}
-	grepNone := reg.Run(context.Background(), tools.ToolCall{Name: "grep", Args: `{"pattern":"missing","path":null,"glob":null,"ignore_case":false,"literal":true,"context":null,"limit":10}`}, nil)
+	grepNone := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "grep", Args: `{"pattern":"missing","path":null,"glob":null,"ignore_case":false,"literal":true,"context":null,"limit":10}`}, nil)
 	if grepNone.IsError || grepNone.Text != "" || grepNone.Metadata["matches"] != 0 {
 		t.Fatalf("grep none = %#v", grepNone)
 	}
-	grepEscape := reg.Run(context.Background(), tools.ToolCall{Name: "grep", Args: `{"pattern":"x","path":"../escape","glob":null,"ignore_case":false,"literal":true,"context":null,"limit":10}`}, nil)
+	grepEscape := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "grep", Args: `{"pattern":"x","path":"../escape","glob":null,"ignore_case":false,"literal":true,"context":null,"limit":10}`}, nil)
 	if !grepEscape.IsError || !strings.Contains(grepEscape.Text, "workspace") {
 		t.Fatalf("grep escape = %#v", grepEscape)
 	}
@@ -952,7 +953,7 @@ func TestGlobSkipsGitDirectoryEvenWhenFilesMatchPattern(t *testing.T) {
 	if err := RegisterReadOnlyWorkspace(reg, WorkspaceOptions{Root: root}); err != nil {
 		t.Fatal(err)
 	}
-	got := reg.Run(context.Background(), tools.ToolCall{Name: "glob", Args: `{"pattern":"**/*.go","path":null,"limit":10}`}, nil)
+	got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "glob", Args: `{"pattern":"**/*.go","path":null,"limit":10}`}, nil)
 	if got.IsError || !strings.Contains(got.Text, "pkg/visible.go") || strings.Contains(got.Text, ".git/ignored.go") {
 		t.Fatalf("glob should skip .git matches: %#v", got)
 	}
@@ -963,7 +964,7 @@ func TestShellNonZeroAndMaxOutputBytesSetsProjectionPolicy(t *testing.T) {
 	if err := RegisterShell(reg, ShellOptions{CWD: t.TempDir(), Runner: fakeRunner{result: CommandResult{Stdout: "0123456789abcdef", Stderr: "bad\n", ExitCode: 9, DurationMS: 3}}, MaxOutputBytes: 8}); err != nil {
 		t.Fatal(err)
 	}
-	got := reg.Run(context.Background(), tools.ToolCall{Name: "shell", Args: `{"command":"fail","workdir":null,"timeout_ms":null,"max_output_bytes":8}`}, allowAll)
+	got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "shell", Args: `{"command":"fail","workdir":null,"timeout_ms":null,"max_output_bytes":8}`}, allowAll)
 	if !got.IsError || got.Metadata["exit_code"] != 9 || got.OutputPolicy == nil || got.OutputPolicy.VisibleMaxBytes != 8 || got.Text != "0123456789abcdef\nstderr:\nbad" {
 		t.Fatalf("shell = %#v", got)
 	}
@@ -979,7 +980,7 @@ func TestShellTimeoutWorkdirAndClosedStdin(t *testing.T) {
 	if err := RegisterShell(reg, ShellOptions{CWD: root, Runner: &seen, DefaultTimeoutMS: 1234}); err != nil {
 		t.Fatal(err)
 	}
-	got := reg.Run(context.Background(), tools.ToolCall{Name: "shell", Args: `{"command":"cat","workdir":"sub","timeout_ms":77,"max_output_bytes":null}`}, allowAll)
+	got := tooltest.Run(context.Background(), reg, tools.ToolCall{Name: "shell", Args: `{"command":"cat","workdir":"sub","timeout_ms":77,"max_output_bytes":null}`}, allowAll)
 	if got.IsError {
 		t.Fatalf("shell = %#v", got)
 	}
@@ -991,19 +992,19 @@ func TestShellTimeoutWorkdirAndClosedStdin(t *testing.T) {
 	if err := RegisterShell(live, ShellOptions{CWD: root, DefaultTimeoutMS: 200}); err != nil {
 		t.Fatal(err)
 	}
-	stdin := live.Run(context.Background(), tools.ToolCall{Name: "shell", Args: `{"command":"cat","workdir":null,"timeout_ms":200,"max_output_bytes":null}`}, allowAll)
+	stdin := tooltest.Run(context.Background(), live, tools.ToolCall{Name: "shell", Args: `{"command":"cat","workdir":null,"timeout_ms":200,"max_output_bytes":null}`}, allowAll)
 	if stdin.IsError || !strings.Contains(stdin.Text, "no output") {
 		t.Fatalf("stdin should be closed, got %#v", stdin)
 	}
 	started := time.Now()
-	timeout := live.Run(context.Background(), tools.ToolCall{Name: "shell", Args: `{"command":"sleep 1","workdir":null,"timeout_ms":20,"max_output_bytes":null}`}, allowAll)
+	timeout := tooltest.Run(context.Background(), live, tools.ToolCall{Name: "shell", Args: `{"command":"sleep 1","workdir":null,"timeout_ms":20,"max_output_bytes":null}`}, allowAll)
 	if !timeout.IsError || !strings.Contains(timeout.Text, "deadline") || time.Since(started) > 500*time.Millisecond {
 		t.Fatalf("timeout = %#v elapsed=%s", timeout, time.Since(started))
 	}
 }
 
-func allowAll(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {
-	return tools.PermissionDecisionAllow, nil
+func allowAll(context.Context, tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
+	return tooltest.PermissionDecisionAllow, nil
 }
 
 type fakeRunner struct {

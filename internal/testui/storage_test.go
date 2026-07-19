@@ -4,105 +4,53 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
-	"slices"
 	"testing"
 	"time"
 
-	"github.com/floegence/floret/internal/sessiontree"
-	floretstorage "github.com/floegence/floret/internal/storage"
+	flruntime "github.com/floegence/floret/runtime"
 )
 
-func TestTestUIStorageDeleteSessionRemovesThreadAuthorityTree(t *testing.T) {
+func TestTestUIStorageDeleteSessionUsesBoundPublicCapability(t *testing.T) {
 	ctx := context.Background()
-	for _, mode := range []string{StorageModeMemory, StorageModeFile, StorageModeSQLite} {
+	for _, mode := range []string{StorageModeMemory, StorageModeSQLite} {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()
 			runner := NewRunner(root)
 			runner.StorageMode = mode
+			t.Cleanup(func() { _ = runner.Close() })
 			store, err := runner.sessionStorage(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if runner.storageSQLite != nil {
-				t.Cleanup(func() { _ = runner.storageSQLite.Close() })
-			}
-			repo := store.repo(root)
-			now := time.Date(2026, 7, 18, 18, 0, 0, 0, time.UTC)
-			if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "parent", CreatedAt: now, UpdatedAt: now}); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{
-				ID: "child", ParentThreadID: "parent", TaskName: "child", AgentPath: "/root/child",
-				Closed: true, Status: "closed", CreatedAt: now, UpdatedAt: now,
-			}); err != nil {
-				t.Fatal(err)
-			}
-
-			for _, threadID := range []string{"parent", "child"} {
-				artifactDir := toolOutputArtifactSessionDir(runner.managedArtifactsRoot(), threadID)
-				if err := os.MkdirAll(artifactDir, 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(artifactDir, "output.log"), []byte("output"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			switch mode {
-			case StorageModeMemory:
-				store.memory.metadata["parent"] = agentSessionMetadata{ID: "parent"}
-				store.memory.metadata["child"] = agentSessionMetadata{ID: "child"}
-			case StorageModeFile:
-				if err := os.MkdirAll(runner.agentSessionMetadataRoot(), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				for _, threadID := range []string{"parent", "child"} {
-					if err := os.WriteFile(runner.agentSessionMetadataPath(threadID), []byte(`{}`), 0o600); err != nil {
-						t.Fatal(err)
-					}
-				}
-			case StorageModeSQLite:
-				for _, threadID := range []string{"parent", "child"} {
-					if err := store.sqlite.PutMetadata(ctx, floretstorage.MetadataRecord{Namespace: agentSessionMetadataNamespace, ID: threadID, CreatedAt: now, UpdatedAt: now, Data: []byte(`{}`)}); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-
-			deleted, err := store.deleteSession(ctx, root, "parent")
+			create, err := store.capabilities.create.Bind("parent", "create-parent")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !slices.Equal(deleted, []string{"parent", "child"}) {
-				t.Fatalf("deleted thread ids = %v", deleted)
+			if _, err := create.CreateThread(ctx, flruntime.CreateThreadRequest{ThreadID: "parent", CreateIntentID: "create-parent"}); err != nil {
+				t.Fatal(err)
 			}
-			for _, threadID := range deleted {
-				if _, err := repo.Thread(ctx, threadID); !errors.Is(err, sessiontree.ErrThreadNotFound) {
-					t.Fatalf("Thread(%q) after delete err = %v", threadID, err)
-				}
-				if _, err := os.Stat(toolOutputArtifactSessionDir(runner.managedArtifactsRoot(), threadID)); !errors.Is(err, os.ErrNotExist) {
-					t.Fatalf("artifact directory for %q remains: %v", threadID, err)
-				}
-				switch mode {
-				case StorageModeMemory:
-					if _, ok := store.memory.metadata[threadID]; ok {
-						t.Fatalf("memory metadata for %q remains", threadID)
-					}
-				case StorageModeFile:
-					if _, err := os.Stat(runner.agentSessionMetadataPath(threadID)); !errors.Is(err, os.ErrNotExist) {
-						t.Fatalf("file metadata for %q remains: %v", threadID, err)
-					}
-				case StorageModeSQLite:
-					if _, err := store.sqlite.Metadata(ctx, agentSessionMetadataNamespace, threadID); !errors.Is(err, floretstorage.ErrMetadataNotFound) {
-						t.Fatalf("sqlite metadata for %q remains: %v", threadID, err)
-					}
-				}
+			now := time.Date(2026, 7, 18, 18, 0, 0, 0, time.UTC)
+			if err := store.saveMetadata(ctx, agentSessionMetadata{Version: agentSessionMetadataVersion, ID: "parent", CreatedAt: now, UpdatedAt: now}, nil); err != nil {
+				t.Fatal(err)
 			}
-			if mode == StorageModeFile {
-				if _, err := sessiontree.ListThreads(ctx, sessiontree.NewFileRepo(runner.agentSessionTreeRoot()), sessiontree.ListThreadsOptions{IncludeArchived: true}); err != nil {
-					t.Fatalf("reopen file repo after tree delete: %v", err)
-				}
+			deleted, err := store.deleteSession(ctx, "parent")
+			if err != nil || len(deleted) != 1 || deleted[0] != "parent" {
+				t.Fatalf("delete result=%v err=%v", deleted, err)
+			}
+			if _, err := store.capabilities.read.NewHost(ctx, "parent"); !errors.Is(err, flruntime.ErrThreadDeleted) {
+				t.Fatalf("read host after delete err=%v, want ErrThreadDeleted", err)
+			}
+			if _, err := store.loadMetadata(ctx, "parent", nil); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("metadata after delete err=%v, want not exist", err)
 			}
 		})
+	}
+}
+
+func TestTestUIStorageRejectsFileAuthorityFallback(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	runner.StorageMode = StorageModeFile
+	if _, err := runner.sessionStorage(context.Background()); !errors.Is(err, flruntime.ErrUnsupportedStoreCapability) {
+		t.Fatalf("file storage error=%v, want ErrUnsupportedStoreCapability", err)
 	}
 }

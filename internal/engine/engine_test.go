@@ -26,6 +26,7 @@ import (
 	"github.com/floegence/floret/internal/session/compaction"
 	"github.com/floegence/floret/internal/session/contextpolicy"
 	"github.com/floegence/floret/internal/testing/harness"
+	"github.com/floegence/floret/internal/testing/tooltest"
 	"github.com/floegence/floret/observation"
 	"github.com/floegence/floret/tools"
 )
@@ -1864,7 +1865,7 @@ func TestWaitingCanResumeByAppendingUserAnswerToSameRun(t *testing.T) {
 	}
 }
 
-func TestApprovalDeniedReturnsToolErrorAndAllowsModelRecovery(t *testing.T) {
+func TestEffectDispatcherDenialReturnsToolErrorAndAllowsModelRecovery(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
 		[]provider.StreamEvent{
@@ -1884,8 +1885,8 @@ func TestApprovalDeniedReturnsToolErrorAndAllowsModelRecovery(t *testing.T) {
 	}))
 	e := newTestEngine(p, rec)
 	e.Tools = reg
-	e.Approver = func(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {
-		return tools.PermissionDecisionDeny, nil
+	e.Approver = func(context.Context, tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
+		return tooltest.PermissionDecisionDeny, nil
 	}
 
 	got := e.Run(context.Background(), "write")
@@ -1896,7 +1897,7 @@ func TestApprovalDeniedReturnsToolErrorAndAllowsModelRecovery(t *testing.T) {
 	if called {
 		t.Fatalf("approved-only tool handler ran after denial")
 	}
-	assertApprovalEvents(t, rec.Events, event.ToolApprovalRequested, event.ToolApprovalRejected)
+	assertApprovalEvents(t, rec.Events)
 	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
 		return ev.Type == event.ToolResult && ev.Err == tools.ErrRejected.Error()
 	}) {
@@ -1904,7 +1905,7 @@ func TestApprovalDeniedReturnsToolErrorAndAllowsModelRecovery(t *testing.T) {
 	}
 }
 
-func TestApprovalApprovedLifecycleExecutesTool(t *testing.T) {
+func TestEffectDispatcherAuthorizationExecutesTool(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
 		harness.Step(harness.Tool("write-1", "write", `{"value":"safe"}`), harness.DoneReason("tool_calls")),
@@ -1931,7 +1932,7 @@ func TestApprovalApprovedLifecycleExecutesTool(t *testing.T) {
 	e := newTestEngine(p, rec)
 	e.Tools = reg
 	e.Options.Labels = engine.RunLabels{Correlation: map[string]string{"turn": "t1"}}
-	e.Approver = func(_ context.Context, req tools.ApprovalRequest) (tools.PermissionDecision, error) {
+	e.Approver = func(_ context.Context, req tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
 		if req.ApprovalID != "write-1" || req.ArgsHash == "" || req.Labels["correlation.turn"] != "t1" {
 			t.Fatalf("approval request missing id/hash/labels: %#v", req)
 		}
@@ -1941,7 +1942,7 @@ func TestApprovalApprovedLifecycleExecutesTool(t *testing.T) {
 		if len(req.Effects) != 1 || req.Effects[0] != tools.EffectWrite {
 			t.Fatalf("approval effects = %#v", req.Effects)
 		}
-		return tools.PermissionDecision{State: tools.PermissionDecisionStateAllow, Reason: "approved by test"}, nil
+		return tooltest.PermissionDecision{State: tooltest.PermissionDecisionStateAllow, Reason: "approved by test"}, nil
 	}
 
 	got := e.Run(context.Background(), "write")
@@ -1952,18 +1953,11 @@ func TestApprovalApprovedLifecycleExecutesTool(t *testing.T) {
 	if !called {
 		t.Fatalf("approved tool handler did not run")
 	}
-	assertEventOrder(t, rec.Events, event.ToolCall, event.ToolApprovalRequested, event.ToolApprovalApproved, event.ToolDispatchStarted, event.ToolResult)
-	requested := firstEvent(rec.Events, event.ToolApprovalRequested)
-	if requested.ArgsHash == "" || requested.Args != `{"value":"safe"}` {
-		t.Fatalf("approval requested event should include raw args for raw sink and stable hash: %#v", requested)
-	}
-	meta, ok := requested.Metadata.(map[string]any)
-	if !ok || meta["approval_id"] != "write-1" || meta["schema_version"] != "event.v1" {
-		t.Fatalf("approval metadata = %#v", requested.Metadata)
-	}
+	assertApprovalEvents(t, rec.Events)
+	assertEventOrder(t, rec.Events, event.ToolCall, event.ToolDispatchStarted, event.ToolResult)
 }
 
-func TestApprovalRejectedReasonReturnsToolError(t *testing.T) {
+func TestEffectDispatcherRejectionReasonReturnsToolError(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
 		harness.Step(harness.Tool("write-1", "write", `{"value":"danger"}`), harness.DoneReason("tool_calls")),
@@ -1977,8 +1971,8 @@ func TestApprovalRejectedReasonReturnsToolError(t *testing.T) {
 	}))
 	e := newTestEngine(p, rec)
 	e.Tools = reg
-	e.Approver = func(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {
-		return tools.PermissionDecisionDenied("not allowed by policy"), nil
+	e.Approver = func(context.Context, tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
+		return tooltest.PermissionDecisionDenied("not allowed by policy"), nil
 	}
 
 	got := e.Run(context.Background(), "write")
@@ -1989,7 +1983,7 @@ func TestApprovalRejectedReasonReturnsToolError(t *testing.T) {
 	if called {
 		t.Fatalf("rejected tool handler ran")
 	}
-	assertApprovalEvents(t, rec.Events, event.ToolApprovalRequested, event.ToolApprovalRejected)
+	assertApprovalEvents(t, rec.Events)
 	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
 		return ev.Type == event.ToolResult && ev.Err == "not allowed by policy"
 	}) {
@@ -1997,14 +1991,13 @@ func TestApprovalRejectedReasonReturnsToolError(t *testing.T) {
 	}
 }
 
-func TestApprovalTimeoutAndCancelLifecycleReturnToolErrors(t *testing.T) {
+func TestEffectDispatcherTimeoutAndCancelReturnToolErrors(t *testing.T) {
 	for _, tt := range []struct {
-		name      string
-		err       error
-		wantEvent event.Type
+		name string
+		err  error
 	}{
-		{name: "timeout", err: context.DeadlineExceeded, wantEvent: event.ToolApprovalTimedOut},
-		{name: "cancel", err: context.Canceled, wantEvent: event.ToolApprovalCanceled},
+		{name: "timeout", err: context.DeadlineExceeded},
+		{name: "cancel", err: context.Canceled},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := &event.Recorder{}
@@ -2020,8 +2013,8 @@ func TestApprovalTimeoutAndCancelLifecycleReturnToolErrors(t *testing.T) {
 			}))
 			e := newTestEngine(p, rec)
 			e.Tools = reg
-			e.Approver = func(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {
-				return tools.PermissionDecision{}, tt.err
+			e.Approver = func(context.Context, tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
+				return tooltest.PermissionDecision{}, tt.err
 			}
 
 			got := e.Run(context.Background(), "write")
@@ -2032,7 +2025,7 @@ func TestApprovalTimeoutAndCancelLifecycleReturnToolErrors(t *testing.T) {
 			if called {
 				t.Fatalf("%s approval tool handler ran", tt.name)
 			}
-			assertApprovalEvents(t, rec.Events, event.ToolApprovalRequested, tt.wantEvent)
+			assertApprovalEvents(t, rec.Events)
 			if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
 				return ev.Type == event.ToolResult && ev.Err == tt.err.Error()
 			}) {
@@ -2076,7 +2069,7 @@ func TestFrameworkToolErrorsExposeNeutralActivityReason(t *testing.T) {
 	tests := []struct {
 		name          string
 		tool          tools.Tool
-		approver      tools.Approver
+		approver      tooltest.Approver
 		args          string
 		wantReason    string
 		wantRenderer  observation.ActivityRenderer
@@ -2116,8 +2109,8 @@ func TestFrameworkToolErrorsExposeNeutralActivityReason(t *testing.T) {
 					return tools.Result{Text: "unexpected"}, nil
 				},
 			),
-			approver: func(context.Context, tools.ApprovalRequest) (tools.PermissionDecision, error) {
-				return tools.PermissionDecisionDenied("not allowed by policy"), nil
+			approver: func(context.Context, tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
+				return tooltest.PermissionDecisionDenied("not allowed by policy"), nil
 			},
 			args:          `{"value":"notes.md"}`,
 			wantReason:    "not allowed by policy",
@@ -2254,6 +2247,7 @@ func TestToolOutputProjectionAppliesBeforeHistoryAndNextProviderRequest(t *testi
 	))
 	e := newTestEngine(p, &event.Recorder{})
 	e.Tools = reg
+	e.Options.EffectResultFinalizer = testEffectResultFinalizer("effect-read-output")
 
 	got := e.Run(context.Background(), "read")
 
@@ -2436,7 +2430,7 @@ func TestToolActivityUpdateEmitsRunningPresentation(t *testing.T) {
 	}
 }
 
-func TestParallelPendingToolResultEmitsBeforeSlowSiblingFinishes(t *testing.T) {
+func TestParallelPendingToolResultWaitsForProviderCallOrder(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
 		harness.Step(
@@ -2499,14 +2493,20 @@ func TestParallelPendingToolResultEmitsBeforeSlowSiblingFinishes(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for slow sibling to start")
 	}
+	time.Sleep(25 * time.Millisecond)
+	if slices.ContainsFunc(rec.Snapshot(), func(ev event.Event) bool {
+		return ev.Type == event.ToolResult && ev.ToolID == "pending-1"
+	}) {
+		close(releaseSlow)
+		t.Fatal("pending tool result was emitted before its parallel batch reached canonical commit order")
+	}
+	close(releaseSlow)
 	if !eventuallyToolResult(rec, "pending-1", func(ev event.Event) bool {
 		values, _ := ev.Metadata.(map[string]any)
 		return values["pending_tool_result"] == true
 	}) {
-		close(releaseSlow)
-		t.Fatal("pending tool result was not emitted before slow sibling finished")
+		t.Fatal("pending tool result was not emitted after the ordered batch completed")
 	}
-	close(releaseSlow)
 	select {
 	case got := <-done:
 		if got.Status != engine.Completed {
@@ -2556,13 +2556,17 @@ func TestParallelToolResultsAppendTranscriptInCallOrder(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for slow tool to start")
 	}
-	if !eventuallyToolResult(rec, "fast-1", func(ev event.Event) bool {
-		return ev.Result == "fast"
+	time.Sleep(25 * time.Millisecond)
+	if slices.ContainsFunc(rec.Snapshot(), func(ev event.Event) bool {
+		return ev.Type == event.ToolResult && ev.ToolID == "fast-1"
 	}) {
 		close(releaseSlow)
-		t.Fatal("fast tool result was not emitted before slow sibling finished")
+		t.Fatal("fast tool result was emitted ahead of the preceding provider call")
 	}
 	close(releaseSlow)
+	if !eventuallyToolResult(rec, "fast-1", func(ev event.Event) bool { return ev.Result == "fast" }) {
+		t.Fatal("fast tool result was not emitted after the preceding call completed")
+	}
 	select {
 	case got := <-done:
 		if got.Status != engine.Completed {
@@ -2585,7 +2589,7 @@ func TestParallelToolResultsAppendTranscriptInCallOrder(t *testing.T) {
 	}
 }
 
-func TestToolOutputProjectionFailsWhenPreservingWithoutArtifactStore(t *testing.T) {
+func TestToolOutputProjectionFailsWhenPreservingWithoutEffectFinalizer(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
 		harness.Step(harness.Tool("read-1", "read", `{"value":"x"}`), harness.DoneReason("tool_calls")),
@@ -2610,18 +2614,17 @@ func TestToolOutputProjectionFailsWhenPreservingWithoutArtifactStore(t *testing.
 	))
 	e := newTestEngine(p, rec)
 	e.Tools = reg
-	e.Artifacts = nil
 
 	got := e.Run(context.Background(), "read")
 
-	if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), "artifact store") {
-		t.Fatalf("result = %#v, want artifact store failure", got)
+	if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), "effect result finalizer") {
+		t.Fatalf("result = %#v, want effect finalizer failure", got)
 	}
 	if len(p.Requests) != 1 {
 		t.Fatalf("provider should not receive a follow-up request after projection failure: %d", len(p.Requests))
 	}
 	if !slices.ContainsFunc(rec.Events, func(ev event.Event) bool {
-		return ev.Type == event.ToolResult && ev.ToolName == "read" && strings.Contains(ev.Err, "artifact store")
+		return ev.Type == event.ToolResult && ev.ToolName == "read" && strings.Contains(ev.Err, "effect result finalizer")
 	}) {
 		t.Fatalf("tool result failure event missing: %#v", rec.Events)
 	}
@@ -2653,6 +2656,7 @@ func TestErrorToolOutputProjectionPreservesErrorPrefixMetadataAndArtifacts(t *te
 	))
 	e := newTestEngine(p, rec)
 	e.Tools = reg
+	e.Options.EffectResultFinalizer = testEffectResultFinalizer("effect-error-output")
 
 	got := e.Run(context.Background(), "run")
 
@@ -2865,7 +2869,7 @@ func TestToolBatchRunsConcurrentlyAndKeepsResultOrder(t *testing.T) {
 	}
 	done := make(chan []tools.Result, 1)
 	go func() {
-		done <- reg.RunBatch(context.Background(), []tools.ToolCall{
+		done <- tooltest.RunBatch(context.Background(), reg, []tools.ToolCall{
 			{ID: "a", Name: "first", Args: `{"value":"a"}`},
 			{ID: "b", Name: "second", Args: `{"value":"b"}`},
 			{ID: "c", Name: "third", Args: `{"value":"c"}`},
@@ -2902,10 +2906,10 @@ func TestSingleToolRunUsesSingleItemBatchMetadata(t *testing.T) {
 			return tools.Result{Text: inv.Args.Value}, nil
 		},
 	))
-	var approval tools.ApprovalRequest
-	result := reg.Run(context.Background(), tools.ToolCall{ID: "a", Name: "approve_one", Args: `{"value":"a"}`}, func(_ context.Context, req tools.ApprovalRequest) (tools.PermissionDecision, error) {
+	var approval tooltest.ApprovalRequest
+	result := tooltest.Run(context.Background(), reg, tools.ToolCall{ID: "a", Name: "approve_one", Args: `{"value":"a"}`}, func(_ context.Context, req tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
 		approval = req
-		return tools.PermissionDecisionAllow, nil
+		return tooltest.PermissionDecisionAllow, nil
 	})
 	if result.IsError || approval.BatchIndex != 0 || approval.BatchSize != 1 {
 		t.Fatalf("result=%#v approval=%#v", result, approval)
@@ -4231,14 +4235,30 @@ type testEngine struct {
 	Provider     provider.Provider
 	Store        session.TranscriptStore
 	Prompt       cache.Store
-	Artifacts    artifact.Store
 	SystemPrompt string
 	Tools        *tools.Registry
 	Sink         event.Sink
-	Approver     tools.Approver
+	Approver     tooltest.Approver
 	StopHook     engine.StopHook
 	Compactor    engine.CompactionManager
 	Options      engine.Options
+}
+
+func testEffectResultFinalizer(effectAttemptID string) engine.EffectResultFinalizer {
+	return func(_ context.Context, req engine.EffectResultFinalizationRequest) (engine.EffectResultFinalizationResult, error) {
+		message := session.CloneMessage(req.Message)
+		if req.FullOutput != nil {
+			ref, err := artifact.RefForEffect(effectAttemptID, message.ToolName, *req.FullOutput)
+			if err != nil {
+				return engine.EffectResultFinalizationResult{}, err
+			}
+			if message.ToolResult == nil || message.ToolResult.FullOutput != nil {
+				return engine.EffectResultFinalizationResult{}, errors.New("invalid planned tool result")
+			}
+			message.ToolResult.FullOutput = &ref
+		}
+		return engine.EffectResultFinalizationResult{Handled: true, Message: message}, nil
+	}
 }
 
 func newTestEngine(p provider.Provider, rec *event.Recorder) *testEngine {
@@ -4246,7 +4266,6 @@ func newTestEngine(p provider.Provider, rec *event.Recorder) *testEngine {
 		Provider:     p,
 		Store:        session.NewMemoryStore(),
 		Prompt:       cache.NewMemoryStore(),
-		Artifacts:    artifact.NewMemoryStore(),
 		SystemPrompt: "You are a test assistant.",
 		Tools:        tools.NewRegistry(),
 		Sink:         rec,
@@ -4261,18 +4280,20 @@ func newTestEngine(p provider.Provider, rec *event.Recorder) *testEngine {
 
 func (e *testEngine) build(t *testing.T) *engine.Engine {
 	t.Helper()
+	opts := e.Options
+	if opts.EffectDispatcher == nil {
+		opts.EffectDispatcher = tooltest.Dispatcher(e.Approver)
+	}
 	eng, err := engine.New(engine.Config{
 		Provider:     e.Provider,
 		Store:        e.Store,
 		Prompt:       e.Prompt,
-		Artifacts:    e.Artifacts,
 		SystemPrompt: e.SystemPrompt,
 		Tools:        e.Tools,
 		Sink:         e.Sink,
-		Approver:     e.Approver,
 		StopHook:     e.StopHook,
 		Compactor:    e.Compactor,
-		Options:      e.Options,
+		Options:      opts,
 	})
 	if err != nil {
 		t.Fatalf("new engine: %v", err)
@@ -4281,18 +4302,20 @@ func (e *testEngine) build(t *testing.T) *engine.Engine {
 }
 
 func (e *testEngine) tryBuild() (*engine.Engine, error) {
+	opts := e.Options
+	if opts.EffectDispatcher == nil {
+		opts.EffectDispatcher = tooltest.Dispatcher(e.Approver)
+	}
 	return engine.New(engine.Config{
 		Provider:     e.Provider,
 		Store:        e.Store,
 		Prompt:       e.Prompt,
-		Artifacts:    e.Artifacts,
 		SystemPrompt: e.SystemPrompt,
 		Tools:        e.Tools,
 		Sink:         e.Sink,
-		Approver:     e.Approver,
 		StopHook:     e.StopHook,
 		Compactor:    e.Compactor,
-		Options:      e.Options,
+		Options:      opts,
 	})
 }
 

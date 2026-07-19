@@ -14,8 +14,10 @@ uses a thread-bound `TurnExecutionHost`, a thread-bound
 `ThreadCompactionHost`, or a parent-bound `SubAgentHost`. Provider-free
 lifecycle transitions use `ThreadCreateHost`, `ThreadTitleHost`,
 `ThreadForkHost`, `ThreadDeleteHost`, `ThreadReadHost`,
-`SubAgentMaintenanceHost`, and `PendingToolSettlementHost`. Hosts provide
-product input, tools, permissions, and optional model transport; Floret owns
+`SubAgentReadHost`, `PendingToolRecoveryHost`, and
+`InterruptedTurnRecoveryHost`. Active pending settlement stays on the exact
+`TurnExecutionHost` or `SubAgentHost` owner. Hosts provide product input, tools,
+permissions, and optional model transport; Floret owns
 provider loop execution, provider-visible context assembly, trimming, summary
 generation, compaction checkpoints, continuation state, and lifecycle
 observations.
@@ -26,38 +28,57 @@ host interface for every runtime operation.
 
 # Main Entry Points
 
-* `NewHostBootstrap` converts one opened Store into a composition-root
-  authority. It must not be retained by services or runs.
-* `NewTurnExecutionHostFactory`, `NewThreadCompactionHostFactory`, and
-  `NewSubAgentHostFactory` issue provider-backed capabilities bound to one root
-  `ThreadID` or one parent `ThreadID`. Their options do not accept a Store or
-  bootstrap authority.
-* `NewThreadCreateHost`, `NewThreadTitleHost`, `NewThreadForkHost`,
-  `NewThreadDeleteHost`, and `NewThreadReadHost` create one provider-free root
-  capability at bootstrap. `NewSubAgentReadHostFactory` and
-  `NewSubAgentMaintenanceHostFactory` issue parent-bound child capabilities.
-  `NewPendingToolRecoveryHostFactory` issues a recovery settlement handle bound
-  to exactly one root thread or SubAgent parent. None exposes an unrelated
-  lifecycle transition.
-* `NewTurnPendingToolSettlementHost` and
-  `NewSubAgentPendingToolSettlementHost` derive the same one-method settlement
-  capability from an active bound owner so settlement can use that owner's
-  harness without exposing turn or child lifecycle methods.
+* `ConfigureHostCapabilities` opens the Store's only bootstrap callback and
+  seals its `HostBootstrap` before returning. The Store rejects reconfiguration
+  and value copies, so no reusable cross-family issuer or bootstrap survives
+  configuration. Responsibility-specific binders may remain at the composition
+  root and become active only after a successful callback; error and panic paths
+  revoke every binder created by that attempt.
+* `NewTurnExecutionHostBinder`, `NewThreadCompactionHostBinder`, and
+  `NewSubAgentHostBinder` create narrow issuers. Their `Bind` method fixes one
+  root `ThreadID` or parent `ThreadID` and returns a factory whose
+  `NewHost(ctx, options)` first verifies that exact canonical authority, before
+  provider configuration, skill discovery, event emission, or tool registry
+  mutation. Its options contain provider/runtime configuration only.
+* `NewThreadCreateHostBinder`, `NewThreadTitleHostBinder`,
+  `NewThreadForkHostBinder`, `NewThreadDeleteHostBinder`, and
+  `NewThreadReadHostBinder` create provider-free issuers for one named
+  responsibility. Except for create, their `NewHost(ctx, ...)` methods validate
+  the exact canonical root or parent before returning a durable handle.
+  SubAgent reads use their parent-bound binder.
+  `PendingToolRecoveryHostBinder` exposes separate root-thread and SubAgent
+  parent methods, and `InterruptedTurnRecoveryHostBinder` binds either an exact
+  root turn or an exact parent-child turn. Recovery authority has no mixed or
+  empty identity shape.
 * `NewMemoryStore` creates an in-memory runtime store for tests or ephemeral use.
 * `OpenSQLiteStore` creates Floret-managed durable runtime storage. Bootstrap
-  code converts the Store to `HostBootstrap`, issues exact factories and
-  handles, then discards the bootstrap token while retaining Store lifetime
-  ownership. Opening a known v11 or v12 SQLite store upgrades it transactionally
-  to v13 after validating its raw encoder, schema fingerprint, fork plans, and
-  root/SubAgent ownership metadata. Every v13 open also validates the complete
-  parent graph, so missing parents and cycles are rejected before use.
+  code invokes `ConfigureHostCapabilities`, retains only selected narrow
+  binders at the composition root, distributes only exact bound factories or
+  handles, and keeps Store lifetime ownership. Store close rejects new
+  operations, cancels Store-owned executions, waits for terminal finalization,
+  and then closes the backend. SQLite accepts the exact v14 schema or upgrades
+  only the exact empty v13 predecessor under one early write lock. Non-empty,
+  older, unknown, or fingerprint-mismatched stores are rejected without
+  mutation through `UnsupportedStoreSchemaError`.
 * `ThreadCreateHost.CreateThread` is the only top-level public operation that
-  creates a missing canonical journal. Creation is idempotent for the same
-  `ThreadID` and returns transcript-free `ThreadSummary` lifecycle metadata.
-  There is no second start-or-create alias.
+  creates a missing canonical journal. Its binder fixes the exact `ThreadID`
+  and `CreateIntentID` before the handle reaches the create coordinator.
+  Creation is idempotent only for that immutable identity and fingerprint and
+  returns transcript-free `ThreadSummary` lifecycle metadata. There is no
+  second start-or-create alias.
 * `ThreadReadHost.ReadThread` returns a transcript-free `ThreadSnapshot`,
   including canonical status, latest turn and run identity, and the journal
   `ThroughOrdinal`. The snapshot intentionally has no message shortcut.
+* `ThreadReadHost.ReadArtifact` reads the immutable content for one
+  `ArtifactID` owned by its exact bound root thread. `SubAgentReadHost.ReadArtifact`
+  performs the same read for any complete descendant of its bound parent. Each
+  operation validates thread authority and reads the artifact atomically from
+  the Store; missing artifacts return `ErrArtifactNotFound` with a zero
+  `ArtifactContent` result.
+  `ArtifactRef` contains only Floret-owned identity and safe metadata. It has no
+  URL or filesystem path: downstream hosts construct authenticated routes from
+  their already-bound root or SubAgent read capability instead of persisting a
+  second artifact mapping.
 * `ReadThreadOverview` returns that `ThreadSnapshot` together with the optional
   latest admitted `ThreadTurnSnapshot`, both projected from one active-path read.
   An unadmitted started marker does not fabricate a latest turn.
@@ -106,9 +127,8 @@ host interface for every runtime operation.
   `config.ContextPolicy`, latest `ContextStatus`, typed compaction events, and
   `UpdatedAt`; malformed or identity-conflicting journal data returns an error.
 * `SubAgentHost` owns `SpawnSubAgent`, `SendSubAgentInput`, `WaitSubAgents`, and
-  `CloseSubAgent`; `SubAgentReadHost` owns list/detail/activity reads; and
-  `SubAgentMaintenanceHost` owns bulk close. Every capability is bound to one
-  parent and first requires that the
+  `CloseSubAgent`; `SubAgentReadHost` owns list/detail/activity reads. Every
+  capability is bound to one parent and first requires that the
   canonical parent journal still exists; retained child metadata cannot keep an
   orphaned SubAgent operational after its parent is missing.
 * `ListSubAgentActivityTimeline` returns a parent-scoped,
@@ -158,11 +178,22 @@ host interface for every runtime operation.
   tool result field.
 * `DeleteThread` removes a Floret-owned thread tree from the engine store,
   including child threads, prompt cache scopes, and artifacts.
-* `ErrThreadNotFound`, `ErrTurnNotFound`, `ErrRunNotFound`, and
-  `ErrSubAgentNotFound` are public sentinel errors for `errors.Is` checks on
-  capability not-found responses.
+* `ErrThreadNotFound`, `ErrTurnNotFound`, `ErrRunNotFound`,
+  `ErrArtifactNotFound`, and `ErrSubAgentNotFound` are public sentinel errors
+  for `errors.Is` checks on capability not-found responses.
 * `ErrThreadNotActive` reports that an active-derived pending settlement handle
   no longer owns an active thread. It never falls back to recovery admission.
+* `ErrThreadBusy` reports that an active turn or another canonical mutation owns
+  the thread. `ErrNoRetryTarget` reports that no canonical turn is eligible for
+  retry. Hosts branch on these sentinels rather than importing harness or journal
+  lease errors.
+  `AuthorityBusyError`, inspected with `errors.As`, classifies turn versus
+  structural/mutation authority without exposing owner identity.
+* `ErrPendingToolNotFound`, `ErrPendingToolNotActive`, and
+  `ErrPendingToolSettlementConflict` distinguish an unknown tool-call target, a
+  target that is not an active pending result, and a target that was already
+  settled differently. `ErrSubAgentClosed` reports a child mutation attempted
+  after canonical close. All support `errors.Is`.
 * `ErrSubAgentParentRequired` reports that a root capability was used for a
   parent-owned child thread. `ErrThreadAuthorityInvariant` reports malformed,
   missing, cyclic, or conflicting durable root/SubAgent authority metadata.
@@ -170,6 +201,10 @@ host interface for every runtime operation.
 * `ErrJournalInvariant` reports that resume found ambiguous active-path state
   and refused heuristic repair. `ErrAgentTodoVersionConflict` reports a stale
   todo CAS update.
+* `ErrRequestConflict` plus `RequestConflictError` reports immutable request-ID
+  reuse with changed input without exposing stored payloads. Store open errors
+  use `UnsupportedStoreSchemaError` and `StoreLeasePolicyMismatchError` for
+  typed, non-destructive compatibility handling.
 * `TurnResult.ProjectionAvailability` reports `ready` or `unavailable`
   independently from execution error. An unavailable projection preserves
   terminal engine facts and carries diagnostic text in `ProjectionError`.
@@ -330,13 +365,14 @@ detail event when the subsequent projection read is unavailable.
 Its request requires a host-supplied `ForkOperationID`. Before creating any
 target, Floret durably fixes the source leaf, destination thread IDs, complete
 turn/run mappings, and terminal child-thread clone plan. Each target carries an
-exact operation/node marker. Repeating the same operation and request resumes
-only missing nodes or returns the stored result, including after SQLite reopen;
-it never rereads a newer source leaf or regenerates identities. Reusing an
+exact operation/node marker. Commit publishes every planned target and the
+terminal operation result in one transaction; replay never recreates a missing
+node, rereads a newer source leaf, or regenerates identities. Reusing an
 operation for a different request returns `ErrForkOperationConflict`; an
-occupied or mismarked destination returns `ErrForkDestinationConflict`; and a
-missing target from a completed operation returns
-`ErrForkOperationTargetMissing`.
+occupied destination before preparation returns `ErrForkDestinationConflict`;
+and a missing, partial, or mismarked completed target set returns
+`ErrAuthorityCorrupt`. An exact matching tombstoned target tree returns
+`ErrThreadDeleted`.
 
 The result returns only the operation ID and destination thread summary. It does
 not expose source-to-destination `TurnID` or `RunID` mappings. A host that needs
@@ -404,18 +440,15 @@ terminal fact rather than as a generic failure. Successful turns keep
 host-owned pending work running until the host reports a terminal outcome
 through `SettlePendingTool`. That settlement remains authoritative for the tool
 id and updates the same projected activity item rather than adding a duplicate
-row. `PendingToolSettlementHost` is the only public settlement surface. A
-handle derived from `TurnExecutionHost` or `SubAgentHost` shares the same active
-harness, requires that thread to remain active, and never reacquires turn
-admission. A restart coordinator constructs a provider-free settlement handle
-bound to exactly one thread or parent. In every case the handle belongs to the
-one coordinator responsible for that pending work. Runtime restart recovery also
-reconciles active turn leases from the same durable facts. `ResumeThread`
-processes only the leased turn, or the sole unfinished turn on the active path
-when no lease exists. Multiple unfinished turns are a journal invariant error.
-Recovery never scans branches or rewinds the leaf, and every control-signal
-message is excluded from ordinary unresolved tool-call settlement. Downstream
-hosts should consume Floret projections and settlement results
+row. Active settlement is a method only on the exact `TurnExecutionHost` or
+`SubAgentHost` owner and requires its locally held durable lease proof; it never
+reacquires admission. A restart coordinator receives a provider-free
+`PendingToolRecoveryHost` bound to exactly one root or parent. Interrupted-turn
+recovery uses a separate exact root or parent-child capability whose durable
+takeover and finalization occur in one transaction. Recovery never scans
+branches, rewinds the leaf, or treats missing authority as success, and every
+control-signal message is excluded from ordinary unresolved tool-call
+settlement. Downstream hosts should consume Floret projections and settlement results
 to replace their product UI for the turn instead of synthesizing final tool
 status from local audit records or live stream leftovers.
 
@@ -441,9 +474,11 @@ between descendant discovery and deletion on one Store. Runtime then issues one
 root-scoped storage delete operation. SQLite independently reloads and validates
 the complete authority graph inside its immediate transaction, derives the
 current descendant set there, and applies threads, entries, active
-leases, metadata, artifacts, prompt segments, toolsets, provider requests,
+leases, Floret authority records, artifacts, prompt segments, toolsets, provider requests,
 provider responses, and provider continuation in one immediate transaction, so
 a failure rolls back the whole tree without changing the public store schema.
+Generic host metadata records are not Floret Agent state and are deliberately
+retained for the owning host to clean up after canonical deletion commits.
 Hosts should use this
 public API instead of querying or mutating Floret storage tables directly.
 
@@ -454,15 +489,23 @@ child lifecycle, parent-bound `SubAgentReadHost` for child reload and detail,
 `ThreadReadHost` for canonical reloads, `ThreadCreateHost` for top-level
 creation, `ThreadTitleHost` for title writes, `ThreadForkHost` for forks,
 `ThreadDeleteHost` for thread-tree deletion, parent-bound
-`SubAgentMaintenanceHost` for bulk child close, and thread- or parent-bound
-`PendingToolSettlementHost` for one pending-tool settlement owner. Only
-composition-root constructors accept `HostBootstrap`; provider options and
-bound handle options do not accept or expose a Store or bootstrap authority.
+`SubAgentReadHost` for child reads, `PendingToolRecoveryHost` for idle recovery
+settlement, and `InterruptedTurnRecoveryHost` for exact expired-turn recovery.
+Active settlement stays on `TurnExecutionHost` or `SubAgentHost`. Only binder
+constructors inside `ConfigureHostCapabilities` accept `HostBootstrap`;
+provider options and bound handle options do not accept or expose a Store or
+bootstrap authority. Thread and parent identities are binder arguments, not
+runtime-owner options.
 
-Capability not-found responses should be handled with `errors.Is` against
-`runtime.ErrThreadNotFound`, `runtime.ErrThreadNotActive`, `runtime.ErrTurnNotFound`,
-`runtime.ErrRunNotFound`, or
-`runtime.ErrSubAgentNotFound`. Hosts should not parse error strings or import
+Capability responses should be handled with `errors.Is` against the public
+runtime sentinels. Not-found and ownership checks use
+`runtime.ErrThreadNotFound`, `runtime.ErrThreadNotActive`,
+`runtime.ErrTurnNotFound`, `runtime.ErrRunNotFound`, and
+`runtime.ErrSubAgentNotFound`. Mutation and retry coordination use
+`runtime.ErrThreadBusy` and `runtime.ErrNoRetryTarget`. Pending settlement uses
+`runtime.ErrPendingToolNotFound`, `runtime.ErrPendingToolNotActive`, and
+`runtime.ErrPendingToolSettlementConflict`; closed child writes use
+`runtime.ErrSubAgentClosed`. Hosts should not parse error strings or import
 Floret internal package sentinels.
 
 Authority failures should use `errors.Is` with
@@ -471,8 +514,8 @@ Authority failures should use `errors.Is` with
 recreate the affected canonical thread.
 
 Fork replay failures should likewise use `errors.Is` with
-`runtime.ErrForkOperationConflict`, `runtime.ErrForkDestinationConflict`, and
-`runtime.ErrForkOperationTargetMissing`.
+`runtime.ErrForkOperationConflict`, `runtime.ErrForkDestinationConflict`,
+`runtime.ErrThreadDeleted`, and `runtime.ErrAuthorityCorrupt`.
 
 Hosts validate `ProjectionAvailability`, `Projection`, and `ProjectionError` as
 one outcome. `ready` requires a valid projection and no projection error;

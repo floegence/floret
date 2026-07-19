@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,7 +17,7 @@ import (
 	"github.com/floegence/floret/internal/provider"
 )
 
-const agentSessionMetadataVersion = 1
+const agentSessionMetadataVersion = 2
 
 type agentSessionMetadata struct {
 	Version        int                   `json:"version"`
@@ -31,7 +32,6 @@ type agentSessionMetadata struct {
 	SelectedTools  []string              `json:"selected_tools"`
 	ContextPolicy  config.ContextPolicy  `json:"context_policy"`
 	Engine         agentSessionEngine    `json:"engine"`
-	Turns          []AgentTurnSummary    `json:"turns"`
 	APIKeyRequired bool                  `json:"api_key_required,omitempty"`
 }
 
@@ -139,8 +139,20 @@ func (r Runner) loadAgentSessionMetadataFile(sessionID string) (agentSessionMeta
 	if err != nil {
 		return agentSessionMetadata{}, err
 	}
+	return decodeAgentSessionMetadata(data)
+}
+
+func decodeAgentSessionMetadata(data []byte) (agentSessionMetadata, error) {
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
 	var meta agentSessionMetadata
-	if err := json.Unmarshal(data, &meta); err != nil {
+	if err := decoder.Decode(&meta); err != nil {
+		return agentSessionMetadata{}, err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return agentSessionMetadata{}, errors.New("agent session metadata contains multiple JSON values")
+		}
 		return agentSessionMetadata{}, err
 	}
 	return meta, nil
@@ -194,7 +206,7 @@ func (r *Runner) listAgentSessionMetadata() ([]agentSessionMetadata, error) {
 	for _, meta := range raw {
 		normalized, err := r.normalizeAgentSessionMetadata(meta.ID, meta)
 		if err != nil {
-			continue
+			return nil, err
 		}
 		out = append(out, normalized)
 	}
@@ -219,11 +231,11 @@ func (r Runner) listAgentSessionMetadataFiles() ([]agentSessionMetadata, error) 
 	for _, path := range paths {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			continue
+			return nil, err
 		}
-		var meta agentSessionMetadata
-		if err := json.Unmarshal(data, &meta); err != nil || meta.ID == "" {
-			continue
+		meta, err := decodeAgentSessionMetadata(data)
+		if err != nil {
+			return nil, err
 		}
 		out = append(out, meta)
 	}
@@ -271,7 +283,6 @@ func (r Runner) metadataFromSession(sess *agentSession) agentSessionMetadata {
 			DuplicateToolLimit:      sess.cfg.DuplicateToolLimit,
 			WallTime:                sess.cfg.WallTime,
 		},
-		Turns:          append([]AgentTurnSummary(nil), sess.turns...),
 		APIKeyRequired: sess.profile.APIKeySet,
 	}
 }

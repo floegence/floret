@@ -9,11 +9,11 @@ timestamp: 2026-07-18T00:00:00Z
 
 # Status
 
-This document is the proposed normative authority contract for the next Floret
-host boundary. Implementation and release work remain paused until two
-independent design reviewers confirm that it has no missing durable state,
-owner, transition, public capability, or failure point. Current code is evidence
-to map after approval; it is not the source of truth for this contract.
+This document is the frozen normative authority contract for the next Floret
+host boundary. Independent design review approved its durable states, owners,
+transitions, public capabilities, and failure points before implementation
+resumed. Implementation must map to this document; discovering a new state or
+transition reopens design review instead of creating a local workaround.
 
 # Boundary
 
@@ -99,9 +99,10 @@ PlanHash
 ```
 
 `PrepareFork` atomically pins every source path, terminal child, destination
-identity, parent relation, and identity rewrite; persists one immutable plan;
-and claims every source and destination identity. A destination is absent while
-the operation is prepared. No destination becomes visible before commit.
+identity, parent relation, identity rewrite, and thread-scoped artifact manifest;
+persists one immutable plan; and claims every source and destination identity.
+A destination is absent while the operation is prepared. No destination journal
+or artifact becomes visible before commit.
 
 A claim blocks create, lease acquisition, append, metadata, todo, leaf move,
 SubAgent publication, inbox publication, admission, close, another fork, and
@@ -119,8 +120,9 @@ The fork operation states are exactly:
 | `completed` | immutable plan and result stored; either all planned destinations are matching live canonical rows, or all are matching provenance tombstones after atomic root-tree deletion; no claims | idempotent read/replay only |
 | `failed` | immutable plan and deterministic error stored; no live row or tombstone carries this operation/node provenance; no claims | idempotent error replay only |
 
-`CommitFork` creates every planned destination, stores the completed result, and
-releases every claim in one transaction. Partial publication is impossible.
+`CommitFork` creates every planned destination and its artifact copies, stores
+the completed result, and releases every claim in one transaction. Partial
+publication is impossible.
 `FailFork` is allowed only when no destination is visible and atomically stores a
 deterministic failure plus claim release. Transient storage or cancellation
 errors leave the operation prepared so the same source-bound `ThreadForkHost`
@@ -480,14 +482,14 @@ exposes only `Close`.
 | --- | --- | --- | --- |
 | Store lifetime owner | `Store`, narrow binders | whole Store for trusted composition only | configure once, close |
 | Root create coordinator | `ThreadCreateHost` | one exact root ID plus durable `CreateIntentID` | create or replay that root intent only |
-| Root read owner | `ThreadReadHost` | one existing root | canonical reads only |
+| Root read owner | `ThreadReadHost` | one existing root | canonical reads and exact Floret artifact reads only |
 | Title coordinator | `ThreadTitleHost` | one existing root | manual title only |
 | Fork coordinator | `ThreadForkHost` | one source root | prepare/commit/replay one explicit fork request |
 | Delete coordinator | `ThreadDeleteHost` | one existing or tombstoned root | delete or replay that root tree |
 | Turn owner | `TurnExecutionHostFactory` or `TurnExecutionHost` | one root | run, retry, pending completion, active settlement, approval read, todo update |
 | Compaction owner | `ThreadCompactionHostFactory` or `ThreadCompactionHost` | one root | compact/replay one explicit request |
 | Interactive SubAgent owner | `SubAgentHostFactory` or `SubAgentHost` | one parent | publish child/input or child pending completion, explicitly wait/admit direct children, active child settlement, close one child subtree |
-| SubAgent read owner | `SubAgentReadHost` | one parent | direct-child and descendant reads only |
+| SubAgent read owner | `SubAgentReadHost` | one parent | list direct children; read any current descendant canonical detail or artifact |
 | Pending settlement recovery owner | `PendingToolRecoveryHost` | one root or one exact parent | provider-free exact settlement |
 | Interrupted turn recovery owner | `InterruptedTurnRecoveryHost` | one root or one exact parent-child pair | finalize one takeover-eligible interrupted turn |
 | Host effect authorization owner | `EffectAuthorizationGate` | current host policy resolved for one exact invocation | authorize, audit, and dispatch one supplied effect closure under the host policy gate |
@@ -530,14 +532,14 @@ Public capability types have no exported methods beyond this list:
 | `ThreadCompactionHostFactory` | `NewHost` |
 | `SubAgentHostFactory` | `NewHost` |
 | `ThreadCreateHost` | `CreateThread` |
-| `ThreadReadHost` | `ReadThread`, `ReadThreadOverview`, `ListThreadTurns`, `ReadLatestThreadTurn`, `ListThreadDetailEvents`, `ReadThreadContext`, `ReadThreadAgentTodos`, `ReadTurnProjection` |
+| `ThreadReadHost` | `ReadThread`, `ReadThreadOverview`, `ListThreadTurns`, `ReadLatestThreadTurn`, `ListThreadDetailEvents`, `ReadThreadContext`, `ReadThreadAgentTodos`, `ReadTurnProjection`, `ReadArtifact` |
 | `ThreadTitleHost` | `SetThreadTitle` |
 | `ThreadForkHost` | `ForkThread` |
 | `ThreadDeleteHost` | `DeleteThread` |
 | `TurnExecutionHost` | `RunTurn`, `RetryTurn`, `CompletePendingTool`, `SettlePendingTool`, `ListPendingApprovals`, `UpdateThreadAgentTodos` |
 | `ThreadCompactionHost` | `CompactThread` |
 | `SubAgentHost` | `SpawnSubAgent`, `SendSubAgentInput`, `PublishPendingToolCompletion`, `WaitSubAgents`, `SettlePendingTool`, `CloseSubAgent` |
-| `SubAgentReadHost` | `ListSubAgents`, `ReadSubAgentDetail`, `ListSubAgentActivityTimeline` |
+| `SubAgentReadHost` | `ListSubAgents`, `ReadSubAgentDetail`, `ListSubAgentActivityTimeline`, `ReadArtifact` |
 | `PendingToolRecoveryHost` | `SettlePendingTool` |
 | `InterruptedTurnRecoveryHost` | `RecoverInterruptedTurn` |
 | `EffectAuthorizationGate` | `Dispatch` |
@@ -560,7 +562,7 @@ implements validation and commit in one critical section or transaction.
 | `PrepareEffectAttempt` | Store-assign the single attempt for one canonical invocation, or replay/conflict its exact fingerprint |
 | `RejectEffectAttempt` | compare exact fresh turn proof and one `prepared` attempt, then persist one typed terminal rejection or replay/conflict it |
 | `BeginEffectDispatch` | final-check one-shot authorization, exact current fresh generation, lifecycle, and `prepared` state; transition to `dispatching` |
-| `FinishEffectDispatch` | persist handler result and canonical tool result as `completed` or `failed` without re-invoking handler |
+| `FinishEffectDispatch` | persist handler result, optional immutable full-output artifact, and canonical tool result as one `completed` or `failed` transition without re-invoking handler |
 | `MarkEffectUnknown` | under the exact local turn proof, terminalize a `dispatching` attempt whose result cannot be durably completed, without handler retry |
 | `RecoverEffectAttempt` | turn `prepared` into `cancelled` and `dispatching` into `unknown` during interrupted-turn recovery |
 | `FinishTurn` | cancel remaining `prepared` effects, reject any `dispatching` effect, require all attempts terminal-safe, append terminal outcome/provider state, release proof, and preserve matching `closing` |
@@ -568,24 +570,110 @@ implements validation and commit in one critical section or transaction.
 | `BeginCompaction` | persist request identity and acquire fresh compaction mutation proof |
 | `TakeOverCompaction` | compare one takeover-eligible compaction proof and replace it with a durable new generation for the same request |
 | `FinishCompaction` | persist exact result/failure and release exact mutation proof |
-| `PrepareFork` | pin immutable complete plan and claim every source/destination identity |
-| `CommitFork` | publish all destinations, store completed result, and release all claims |
+| `PrepareFork` | pin immutable complete journal/artifact plan and claim every source/destination identity |
+| `CommitFork` | publish all destinations and thread-scoped artifact copies, store completed result, and release all claims |
 | `FailFork` | store deterministic pre-publication failure and release all claims |
 | `SetTitle` | enter and leave manual-title mutation authority within one transaction |
 | `SettlePendingToolRecovery` | enter and leave settlement mutation authority within one transaction |
 | `RecoverInterruptedTurn` | take over exact eligible lease, reread path, finalize exact turn, and release within one transaction |
-| `PublishSubAgent` | create or fork-copy one child and publish its first pending input atomically |
+| `PublishSubAgent` | create one child, or fork-copy its pinned journal/artifact closure, and publish its first pending input atomically |
 | `PublishSubAgentInput` | publish/replay one input and apply interrupt cancellations atomically |
 | `PublishSubAgentPendingToolCompletion` | settle one exact idle-child pending target and publish one structured pending input atomically |
 | `AdmitSubAgentInput` | select one pending input, acquire child turn proof, append turn-start/user message, and mark admitted |
 | `PrepareSubAgentClose` | validate exact parent/child and close request, fence one idle descendant subtree plus an optionally locally owned active target turn as `closing` |
 | `FinishSubAgentClose` | require no remaining leases, cancel pending inputs, append lifecycle entries, and mark the prepared subtree closed atomically |
 | `DeleteRootTree` | rederive exact tree, reject claim/lease, remove queryable state, and write tombstones |
+| `ReadArtifact` | in one snapshot validate exact root or complete descendant ancestry, lifecycle, and `(ThreadID, ArtifactID)` ownership, then return reference and text |
 
 Generic append, metadata, leaf, todo, and lease primitives may exist inside a
 backend, but production agentharness paths use the semantic owner operation.
 Unsupported interfaces fail during composition or `NewHost`, never after work
 starts.
+
+## Artifact Read Authority
+
+Floret-owned full tool output is durable Agent output, not a host file or URL.
+The public `ArtifactRef` contains an opaque `ArtifactID`, safe label, kind, MIME,
+size, and content hash. It never contains or implies an HTTP route, filesystem
+path, sibling-store key, or host product identity. A host may project a returned
+reference into its own authenticated transport URL without persisting another
+artifact-to-thread mapping.
+
+`ArtifactID` is unique only within its canonical `ThreadID`; the durable lookup
+key is `(ThreadID, ArtifactID)`. The public operation is exactly:
+
+```text
+ReadArtifactRequest { ThreadID, ArtifactID }
+ArtifactContent { Ref, Text }
+```
+
+Full-output creation is not a generic artifact-store write. For one local tool
+invocation, `FinishEffectDispatch` receives the already-captured full text and
+output policy, assigns the deterministic thread-scoped `ArtifactID`, writes the
+immutable artifact payload, and appends the canonical tool-result entry carrying
+its complete `ArtifactRef` in the same proof-bound Memory critical section or
+SQLite transaction. Either both become visible or neither does. Replay verifies
+the same effect outcome, payload hash, and complete reference and never writes a
+second artifact. An artifact row without its exact canonical result entry, or a
+result reference without its immutable payload, is authority corruption and is
+never readable. Fork claims block new effect dispatch and therefore block this
+only production artifact-admission transition.
+
+`ThreadReadHost.ReadArtifact` accepts only its exact bound root.
+`SubAgentReadHost.ReadArtifact` accepts one exact requested descendant and
+atomically proves the complete current ancestry from that thread to its bound
+parent. The bound parent itself, an ancestor, sibling, cousin, or thread under
+another tree is not a descendant. A SubAgent read binder may bind an existing
+`open`, `closing`, or `closed` parent because reads remain valid across child
+closure; `deleted` is never readable. The requested descendant may likewise be
+`open`, `closing`, or `closed`.
+
+The Store performs canonical lifecycle/shape validation, ancestry validation,
+composite artifact lookup, ownership validation, and reference/content loading
+inside one Memory critical section or SQLite read transaction. A concurrent
+root-tree delete therefore yields exactly one linear result: the complete read
+finishes before deletion, or deletion wins and the read returns a zero-value
+result with no content or reference metadata. Physically retained cleanup bytes
+after a committed delete are unreachable.
+
+Missing `(ThreadID, ArtifactID)` and an ID that exists only under another thread
+both return `ErrArtifactNotFound`, preventing an artifact-existence oracle.
+Foreign SubAgent ancestry returns `ErrSubAgentNotFound`; a child passed to a root
+read host returns `ErrSubAgentParentRequired`; deleted authority returns
+`ErrThreadDeleted`; malformed ancestry or artifact ownership returns
+`ErrAuthorityCorrupt`; Store closure returns `ErrStoreClosed`; and a backend
+without the atomic operation returns `ErrUnsupportedStoreCapability`. Every
+error returns a completely zero `ArtifactContent`. There is no public artifact
+listing, write, delete, global-ID lookup, raw Store accessor, or URL resolver.
+
+Error precedence validates the bound authority before artifact identity. A
+deleted bound parent/root returns `ErrThreadDeleted`. With a live bound parent,
+an absent target or any live/tombstoned target whose complete ancestry does not
+reach that parent returns `ErrSubAgentNotFound` without revealing whether the
+foreign identity exists. A tombstoned target whose retained ancestry does reach
+the bound parent returns `ErrThreadDeleted`. Only after live authority succeeds
+does the composite artifact lookup return `ErrArtifactNotFound`.
+
+Fork copying treats artifact payload as part of the pinned canonical source.
+For each source/destination pair, the immutable fork plan stores exactly the
+deduplicated artifact-reference closure reachable from the pinned entries that
+will be copied. Each manifest item pins source and destination thread,
+thread-scoped `ArtifactID`, complete canonical reference fingerprint (safe label,
+kind, MIME, size, and content hash), payload content hash, and source canonical
+result entry. Duplicate references to the same composite identity must be
+byte-for-byte identical; orphan artifacts and artifacts referenced only by an
+off-path branch are not copied.
+
+`CommitFork` revalidates that exact source closure and copies each immutable
+payload to the corresponding destination under the same thread-scoped
+`ArtifactID` in the same transaction as journal publication, so copied journal
+references need no rewrite. Missing/changed source payload or reference,
+inconsistent duplicate reference, extra planned item, or destination identity
+collision is authority corruption and publishes no destination or artifact.
+Deleting the source later does not affect the destination copy; destination
+deletion removes its copy. Completed live replay validates the exact destination
+entry/reference/payload closure, while an all-tombstoned completed replay returns
+`ErrThreadDeleted` without inspecting deleted payload bytes.
 
 # State Transitions
 
@@ -810,11 +898,22 @@ uses that exact fresh proof. Outside a turn it enters/leaves a short
 `subagent_publish` mutation inside the publication transaction.
 
 Create mode publishes child metadata plus first pending input. Fork-copy mode
-copies the pinned parent path, applies child metadata, and publishes the first
-pending input in the same transaction. It is not a replayable root fork and does
-not use a fork claim. A claim on the parent, closed/deleted parent, wrong parent
-identity, non-absent child, or proof mismatch rejects publication. No controller,
-child, input, or success event exists before commit.
+copies the pinned parent path and exactly its deduplicated on-path artifact
+entry/reference/payload closure, applies child metadata, copies each payload
+under the same child-scoped `ArtifactID`, and publishes the first pending input
+in the same transaction. The durable `PublicationID` fingerprint includes the
+complete pinned path hash and artifact closure fingerprint. Create mode requires
+an empty artifact closure.
+
+SubAgent fork-copy is not a replayable root fork and does not use a fork claim,
+but it applies the same immutable reference and payload validation as root fork
+commit. Source drift, orphan/off-path inclusion, inconsistent duplicate refs,
+or child composite collision returns zero child, input, journal, and artifact
+publication. Exact replay validates the already-published child journal and
+artifact closure and never recopies payloads. A claim on the parent,
+closed/deleted parent, wrong parent identity, non-absent child, or proof mismatch
+rejects publication. No controller, child, input, or success event exists before
+commit.
 
 Spawn and send only publish pending work. They never start provider execution.
 
@@ -838,7 +937,8 @@ the child authority transaction, the Store selects the pending input with the
 lowest durable sequence, using `SubAgentInputID` only as a deterministic tie
 breaker, then acquires the child turn generation, appends turn-start and the
 canonical user message carrying that exact ID, and marks it admitted. No pending
-input returns `ErrSubAgentInputNotFound` with zero lease or journal mutation.
+input returns the internal no-work result with zero lease or journal mutation;
+`WaitSubAgents` does not expose it as a public lifecycle error.
 Replay of the same child `TurnID`/`RunID` returns the input already admitted to
 that turn; reuse of those continuation identities for another input is a request
 conflict. Two processes cannot admit the same input. Active child settlement
@@ -935,7 +1035,7 @@ local Thread authority gate. Local tool handler dispatch additionally requires
 | Operation | Parent/root requirements | Child/source requirements | Destination requirements |
 | --- | --- | --- | --- |
 | SubAgent create publication | open parent, unclaimed; idle short mutation or exact fresh parent turn proof | none | absent, unclaimed, no tombstone |
-| SubAgent fork-copy publication | same as create publication | pinned parent path in the same transaction | absent, unclaimed, no tombstone |
+| SubAgent fork-copy publication | same as create publication | pinned parent path plus exact on-path artifact closure in the same transaction | absent, unclaimed, no tombstone; child journal, artifact copies, and first input publish atomically |
 | SubAgent inbox publication | open parent, unclaimed | open direct child, unclaimed, no mutation lease; idle or fresh turn lease | not applicable |
 | SubAgent pending completion publication | open parent, unclaimed | open direct child, idle, exact pending tool target | one structured pending input plus target settlement in one commit |
 | SubAgent admission | open parent, unclaimed | open direct child, idle, exact pending input | not applicable |
@@ -970,16 +1070,17 @@ Public callers branch through `errors.Is`/`errors.As`, never strings:
 | --- | --- |
 | `ErrThreadNotFound` | identity never existed; not success and not locally retryable |
 | `ErrThreadDeleted` | tombstoned identity, including exact replay of a completed fork whose destination tree was later deleted; fatal except exact delete replay |
+| `ErrSubAgentNotFound` | requested descendant is absent from or foreign to the bound parent; artifact reads return a zero `ArtifactContent` and do not reveal foreign identity existence |
 | `ErrThreadBusy` plus `AuthorityBusyError.Kind` | claim, fresh turn, expired-fenced turn, or mutation owner; retry only after observed authority change |
 | `ErrSubAgentClosing` | exact close operation owns the subtree; only same close replay or required turn recovery may proceed |
 | `ErrSubAgentClosed` | child lifecycle is terminal; fatal for writes |
-| `ErrInvalidThreadAuthority` | requested parent/root relation is wrong; fatal |
+| `ErrThreadAuthorityInvariant` or `ErrSubAgentParentRequired` | durable authority is malformed, or a root capability targeted a parent-owned child; fatal |
 | `ErrStaleAuthority` | local generation/heartbeat is no longer current; owner must stop effects |
 | `ErrNoRetryTarget` | canonical retry target absent; request must change |
 | `ErrPendingToolNotFound` | exact target identity absent; request must change |
-| `ErrPendingToolNotPending` | target exists but is not pending; request must change |
+| `ErrPendingToolNotActive` | target exists but is not an active pending result; request must change |
 | `ErrPendingToolSettlementConflict` | terminal fingerprint differs; fatal conflict |
-| `ErrSubAgentInputNotFound` | exact child inbox has no pending input at admission linearization; no lease or journal mutation occurred |
+| `ErrArtifactNotFound` | requested `(ThreadID, ArtifactID)` is absent, including an ID owned only by another thread; result contains no content or reference metadata |
 | `ErrRequestConflict` plus `RequestConflictError` | one create/fork/compaction/publication/input/completion/close identity or canonical effect invocation was reused with a different fingerprint; fatal for that request identity |
 | `ErrEffectUnauthorized` | current host policy or approval denies the exact invocation; handler was not called |
 | `ErrAuthorizationUnavailable` | current policy read, approval check, audit persistence, or host gate failed; handler was not called; retry after host state changes requires a new canonical tool invocation, never a replacement attempt for the same ToolCallID |
@@ -1108,9 +1209,10 @@ File rejection where unsupported.
 | Effect authorization | Store assigns one attempt per canonical invocation across concurrent/different-ID preparation; denied/unavailable authorization commits one exact `rejected` result without handler entry; failed rejection persistence leaves ordinary `prepared` so later replay rereads current policy; attempt lifecycle covers crash before/after dispatch boundary; final handler boundary rereads same fresh owner/generation while allowing newer heartbeat; one-shot rejects double/deferred calls; FinishTurn cancels prepared and blocks dispatching; receipt is Floret-sealed; policy revision changes append a new current decision; unknown is never auto-retried |
 | Interrupted recovery | public exact root/parent-child capability; fresh failure-marked lease preserved; takeover rechecks path in transaction; dual SQLite yields one finalization |
 | Compaction | immutable pinned-path fingerprint; same RequestID replay only; renewal and expired takeover fence generations; exact terminal owner/outcome replay; changed outcome conflicts; different request cannot recover; one terminal result |
-| Fork | prepare pins complete plan/claims; no destination visible while prepared; commit is all-node atomic; failure publishes none and releases IDs for later root create, root fork, or SubAgent publication; failed-op provenance can never appear; completed all-live replay returns stored result; completed all-tombstoned matching provenance returns `ErrThreadDeleted`; every completed mixture or missing/inconsistent authority is corruption, never recreation |
+| Fork | prepare pins complete plan/claims plus exact on-path artifact-reference closure; orphan/off-path artifacts excluded; duplicate refs must agree; source reference/payload metadata and hash changes reject; no destination visible while prepared; destination collision or commit failure rolls back every journal/artifact copy; failure publishes none and releases IDs for later root create, root fork, or SubAgent publication; failed-op provenance can never appear; completed all-live replay validates journal/artifact closure and returns stored result; completed all-tombstoned matching provenance returns `ErrThreadDeleted`; every completed mixture or missing/inconsistent authority is corruption, never recreation |
 | Delete | active descendant, claim, concurrent spawn, malformed graph, or never-existing root causes zero deletion; tombstone replay; deleted ID cannot recreate; publication/input idempotency ledgers survive for cross-parent request-ID nonreuse, while deleted parent host construction fails before SubAgent operations; cleanup error is committed |
-| SubAgent publication | create and fork-copy metadata plus first input atomic; PublicationID replay/conflict; no success event/cache before commit; spawn never executes provider |
+| Artifact admission/read | `FinishEffectDispatch` atomically creates immutable payload plus exact canonical result ref and replays one artifact only; failed append leaves no orphan and dangling/inconsistent rows are corruption; exact root or complete descendant read authority; Store-scoped `(ThreadID, ArtifactID)` collision tests; open/closing/closed child reads; parent/self/ancestor/sibling/cousin/foreign/deleted rejection; missing and wrong-owner both `ErrArtifactNotFound`; every failure has a zero result; read/delete and read/Store-close linearization; Memory/SQLite parity; public refs contain no host URL or path |
+| SubAgent publication | create mode requires empty artifact closure; fork-copy pins exact path plus on-path entry/ref/payload closure into PublicationID fingerprint; orphan/off-path and inconsistent duplicate refs reject; source drift or child artifact collision rolls back child/journal/input/artifacts; exact replay validates without recopy; no success event/cache before commit; spawn never executes provider |
 | SubAgent input | PublicationID/InputRequestID replay/conflict; exact replay is read-only across every live claim/lease/closing/closed state while new requests reject; ledgers survive delete for cross-parent ID nonreuse but deleted parent construction exposes no operation replay; pending/admitted/cancelled transitions only; interrupt atomic; no consumed state |
 | SubAgent admission | only Wait admits; reads never activate; Store selects lowest durable inbox sequence; dual SQLite admits exact input once; no-pending has zero mutation; start/user/admitted state atomic; user carries exact input ID |
 | SubAgent close | request identity replay/conflict; exact completed replay remains readable under fork claim while new close rejects; new close against closed target rejects; foreign/descendant lease gives zero prepare/cancel; preclosed descendants remain unchanged; local authority gate orders provider/tool dispatch before closing; FinishTurn/recovery preserve closing; send/admit race outcomes exact; no closed parent with open descendant or pending input |
@@ -1118,7 +1220,8 @@ File rejection where unsupported.
 
 # Freeze Gate
 
-Before implementation resumes:
+The completed design freeze used this gate, which remains mandatory for later
+authority-contract changes:
 
 1. Two independent reviewers review this document only and do not inspect or
    patch implementation.

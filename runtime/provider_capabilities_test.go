@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -11,54 +14,246 @@ import (
 
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/tools"
 )
 
 func TestProviderCapabilitiesRequireBoundAuthority(t *testing.T) {
-	bootstrap := mustHostBootstrap(t, NewMemoryStore())
-	turnFactory, err := NewTurnExecutionHostFactory(bootstrap)
+	ctx := context.Background()
+	capabilities := mustTestCapabilities(t, NewMemoryStore())
+	constructors := []struct {
+		name string
+		call func() error
+	}{
+		{name: "turn factory", call: func() error { _, err := capabilities.turn.Bind(""); return err }},
+		{name: "compaction factory", call: func() error { _, err := capabilities.compaction.Bind(""); return err }},
+		{name: "subagent factory", call: func() error { _, err := capabilities.subAgent.Bind(""); return err }},
+		{name: "thread read", call: func() error { _, err := capabilities.read.NewHost(ctx, ""); return err }},
+		{name: "thread title", call: func() error { _, err := capabilities.title.NewHost(ctx, "", nil); return err }},
+		{name: "thread fork", call: func() error { _, err := capabilities.fork.NewHost(ctx, "", nil); return err }},
+		{name: "thread delete", call: func() error { _, err := capabilities.delete.NewHost(ctx, ""); return err }},
+		{name: "subagent read", call: func() error { _, err := capabilities.subAgentRead.NewHost(ctx, ""); return err }},
+		{name: "thread recovery", call: func() error { _, err := capabilities.recovery.NewThreadHost(ctx, "", nil); return err }},
+		{name: "subagent recovery", call: func() error { _, err := capabilities.recovery.NewSubAgentHost(ctx, "", nil); return err }},
+	}
+	for _, constructor := range constructors {
+		if err := constructor.call(); err == nil || !strings.Contains(err.Error(), "requires thread id") {
+			t.Fatalf("%s error = %v, want bound authority", constructor.name, err)
+		}
+	}
+}
+
+func TestProviderFreeCapabilityConstructionValidatesCanonicalAuthority(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	capabilities := mustTestCapabilities(t, store)
+	events := &runtimeEventRecorder{}
+	missing := []struct {
+		name string
+		call func() error
+	}{
+		{name: "read", call: func() error { _, err := capabilities.read.NewHost(ctx, "missing"); return err }},
+		{name: "title", call: func() error { _, err := capabilities.title.NewHost(ctx, "missing", events); return err }},
+		{name: "fork", call: func() error { _, err := capabilities.fork.NewHost(ctx, "missing", events); return err }},
+		{name: "delete", call: func() error { _, err := capabilities.delete.NewHost(ctx, "missing"); return err }},
+		{name: "subagent read", call: func() error { _, err := capabilities.subAgentRead.NewHost(ctx, "missing"); return err }},
+		{name: "pending recovery", call: func() error { _, err := capabilities.recovery.NewThreadHost(ctx, "missing", events); return err }},
+		{name: "subagent recovery", call: func() error { _, err := capabilities.recovery.NewSubAgentHost(ctx, "missing", events); return err }},
+	}
+	for _, constructor := range missing {
+		if err := constructor.call(); !errors.Is(err, ErrThreadNotFound) {
+			t.Fatalf("%s missing construction err=%v, want ErrThreadNotFound", constructor.name, err)
+		}
+	}
+	if got := events.snapshot(); len(got) != 0 {
+		t.Fatalf("missing capability construction emitted events: %#v", got)
+	}
+
+	createRequest := testCreateThreadRequest("thread")
+	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	compactionFactory, err := NewThreadCompactionHostFactory(bootstrap)
+	if _, err := create.CreateThread(ctx, createRequest); err != nil {
+		t.Fatal(err)
+	}
+	deleteHost, err := capabilities.delete.NewHost(ctx, "thread")
 	if err != nil {
 		t.Fatal(err)
 	}
-	subAgentFactory, err := NewSubAgentHostFactory(bootstrap)
+	if err := deleteHost.DeleteThread(ctx, "thread"); err != nil {
+		t.Fatal(err)
+	}
+	for _, constructor := range []struct {
+		name string
+		call func() error
+	}{
+		{name: "read", call: func() error { _, err := capabilities.read.NewHost(ctx, "thread"); return err }},
+		{name: "title", call: func() error { _, err := capabilities.title.NewHost(ctx, "thread", events); return err }},
+		{name: "fork", call: func() error { _, err := capabilities.fork.NewHost(ctx, "thread", events); return err }},
+		{name: "pending recovery", call: func() error { _, err := capabilities.recovery.NewThreadHost(ctx, "thread", events); return err }},
+	} {
+		if err := constructor.call(); !errors.Is(err, ErrThreadDeleted) {
+			t.Fatalf("%s tombstoned construction err=%v, want ErrThreadDeleted", constructor.name, err)
+		}
+	}
+	replayedDelete, err := capabilities.delete.NewHost(ctx, "thread")
+	if err != nil {
+		t.Fatalf("delete replay construction: %v", err)
+	}
+	if err := replayedDelete.DeleteThread(ctx, "thread"); err != nil {
+		t.Fatalf("delete replay: %v", err)
+	}
+}
+
+func TestProviderHostConstructionRejectsInvalidCanonicalAuthorityBeforeSideEffects(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	capabilities := mustTestCapabilities(t, store)
+	createRequest := testCreateThreadRequest("root")
+	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	maintenanceFactory, err := NewSubAgentMaintenanceHostFactory(bootstrap)
-	if err != nil {
+	if _, err := create.CreateThread(ctx, createRequest); err != nil {
 		t.Fatal(err)
 	}
-	readFactory, err := NewSubAgentReadHostFactory(bootstrap)
-	if err != nil {
+	publishTestSubAgentFixture(t, ctx, store, "publication-root-child", "root", "child", "")
+
+	skillRoot := t.TempDir()
+	skillDir := filepath.Join(skillRoot, "review")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	recoveryFactory, err := NewPendingToolRecoveryHostFactory(bootstrap)
-	if err != nil {
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: review\ndescription: Review code.\n---\n# Review\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := turnFactory.NewHost(TurnExecutionHostOptions{}); err == nil || !strings.Contains(err.Error(), "requires thread id") {
-		t.Fatalf("NewTurnExecutionHost error = %v, want bound thread", err)
+	providerConfig := runtimeGatewayConfig("authority test")
+	providerConfig.SkillsEnabled = true
+	providerConfig.SkillSources = []string{skillRoot}
+
+	type storeSnapshot struct {
+		threads []sessiontree.ThreadMeta
+		entries map[string][]sessiontree.Entry
 	}
-	if _, err := compactionFactory.NewHost(ThreadCompactionHostOptions{}); err == nil || !strings.Contains(err.Error(), "requires thread id") {
-		t.Fatalf("NewThreadCompactionHost error = %v, want bound thread", err)
+	snapshotStore := func() storeSnapshot {
+		t.Helper()
+		threads, err := sessiontree.ListThreads(ctx, store.repo, sessiontree.ListThreadsOptions{IncludeArchived: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries := make(map[string][]sessiontree.Entry, len(threads))
+		for _, thread := range threads {
+			threadEntries, err := store.repo.Entries(ctx, thread.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entries[thread.ID] = threadEntries
+		}
+		return storeSnapshot{threads: threads, entries: entries}
 	}
-	if _, err := subAgentFactory.NewHost(SubAgentHostOptions{}); err == nil || !strings.Contains(err.Error(), "requires thread id") {
-		t.Fatalf("NewSubAgentHost error = %v, want bound parent", err)
+
+	tests := []struct {
+		name      string
+		wantError error
+		newHost   func(*tools.Registry, *runtimeEventRecorder, ModelGateway) error
+	}{
+		{
+			name:      "turn missing root",
+			wantError: ErrThreadNotFound,
+			newHost: func(registry *tools.Registry, events *runtimeEventRecorder, gateway ModelGateway) error {
+				factory, err := capabilities.turn.Bind("missing-root")
+				if err != nil {
+					return err
+				}
+				_, err = factory.NewHost(ctx, TurnExecutionHostOptions{
+					Config: providerConfig, ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("authority"), Tools: registry, Sink: events,
+				})
+				return err
+			},
+		},
+		{
+			name:      "turn canonical child",
+			wantError: ErrSubAgentParentRequired,
+			newHost: func(registry *tools.Registry, events *runtimeEventRecorder, gateway ModelGateway) error {
+				factory, err := capabilities.turn.Bind("child")
+				if err != nil {
+					return err
+				}
+				_, err = factory.NewHost(ctx, TurnExecutionHostOptions{
+					Config: providerConfig, ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("authority"), Tools: registry, Sink: events,
+				})
+				return err
+			},
+		},
+		{
+			name:      "compaction missing root",
+			wantError: ErrThreadNotFound,
+			newHost: func(_ *tools.Registry, events *runtimeEventRecorder, gateway ModelGateway) error {
+				factory, err := capabilities.compaction.Bind("missing-root")
+				if err != nil {
+					return err
+				}
+				_, err = factory.NewHost(ctx, ThreadCompactionHostOptions{
+					Config: providerConfig, ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("authority"), Sink: events,
+				})
+				return err
+			},
+		},
+		{
+			name:      "compaction canonical child",
+			wantError: ErrSubAgentParentRequired,
+			newHost: func(_ *tools.Registry, events *runtimeEventRecorder, gateway ModelGateway) error {
+				factory, err := capabilities.compaction.Bind("child")
+				if err != nil {
+					return err
+				}
+				_, err = factory.NewHost(ctx, ThreadCompactionHostOptions{
+					Config: providerConfig, ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("authority"), Sink: events,
+				})
+				return err
+			},
+		},
+		{
+			name:      "subagent missing parent",
+			wantError: ErrThreadNotFound,
+			newHost: func(registry *tools.Registry, events *runtimeEventRecorder, gateway ModelGateway) error {
+				factory, err := capabilities.subAgent.Bind("missing-parent")
+				if err != nil {
+					return err
+				}
+				_, err = factory.NewHost(ctx, SubAgentHostOptions{
+					Config: providerConfig, ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("authority"), Tools: registry, Sink: events,
+				})
+				return err
+			},
+		},
 	}
-	if _, err := maintenanceFactory.NewHost(SubAgentMaintenanceHostOptions{}); err == nil || !strings.Contains(err.Error(), "requires thread id") {
-		t.Fatalf("NewSubAgentMaintenanceHost error = %v, want bound parent", err)
-	}
-	if _, err := readFactory.NewHost(SubAgentReadHostOptions{}); err == nil || !strings.Contains(err.Error(), "requires thread id") {
-		t.Fatalf("NewSubAgentReadHost error = %v, want bound parent", err)
-	}
-	if _, err := recoveryFactory.NewHost(PendingToolRecoveryHostOptions{}); err == nil || !strings.Contains(err.Error(), "exactly one") {
-		t.Fatalf("NewPendingToolSettlementHost error = %v, want one authority", err)
-	}
-	if _, err := recoveryFactory.NewHost(PendingToolRecoveryHostOptions{ThreadID: "thread", ParentThreadID: "parent"}); err == nil || !strings.Contains(err.Error(), "exactly one") {
-		t.Fatalf("NewPendingToolSettlementHost error = %v, want one authority", err)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before := snapshotStore()
+			registry := tools.NewRegistry()
+			events := &runtimeEventRecorder{}
+			var gatewayCalls atomic.Int64
+			gateway := runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+				gatewayCalls.Add(1)
+				return runtimeGatewayEvents("unexpected"), nil
+			})
+			if err := test.newHost(registry, events, gateway); !errors.Is(err, test.wantError) {
+				t.Fatalf("NewHost error = %v, want %v", err, test.wantError)
+			}
+			if got := events.snapshot(); len(got) != 0 {
+				t.Fatalf("rejected host emitted events: %#v", got)
+			}
+			if definitions := registry.Definitions(); len(definitions) != 0 {
+				t.Fatalf("rejected host registered tools: %#v", definitions)
+			}
+			if calls := gatewayCalls.Load(); calls != 0 {
+				t.Fatalf("rejected host called gateway %d times", calls)
+			}
+			if after := snapshotStore(); !reflect.DeepEqual(after, before) {
+				t.Fatalf("rejected host changed canonical store: before=%#v after=%#v", before, after)
+			}
+		})
 	}
 }
 
@@ -80,12 +275,12 @@ func TestThreadCreateHostRejectsEmptyIDBeforeWriting(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			store := tc.store(t)
-			create, err := NewThreadCreateHost(mustHostBootstrap(t, store), nil)
-			if err != nil {
-				t.Fatal(err)
+			binder := mustTestCapabilities(t, store).create
+			if _, err := binder.Bind("", "create-intent"); err == nil || !strings.Contains(err.Error(), "requires thread id") {
+				t.Fatalf("Bind(empty thread) err = %v", err)
 			}
-			if _, err := create.CreateThread(ctx, CreateThreadRequest{}); err == nil || !strings.Contains(err.Error(), "thread id is required") {
-				t.Fatalf("CreateThread(empty) err = %v", err)
+			if _, err := binder.Bind("missing-intent", ""); err == nil || !strings.Contains(err.Error(), "requires create intent id") {
+				t.Fatalf("Bind(missing intent) err = %v", err)
 			}
 			threads, err := sessiontree.ListThreads(ctx, store.repo, sessiontree.ListThreadsOptions{IncludeArchived: true})
 			if err != nil {
@@ -94,7 +289,12 @@ func TestThreadCreateHostRejectsEmptyIDBeforeWriting(t *testing.T) {
 			if len(threads) != 0 {
 				t.Fatalf("empty create persisted threads: %#v", threads)
 			}
-			summary, err := create.CreateThread(ctx, CreateThreadRequest{ThreadID: "  thread  "})
+			createRequest := testCreateThreadRequest("  thread  ")
+			create, err := binder.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			summary, err := create.CreateThread(ctx, createRequest)
 			if err != nil || summary.ID != "thread" {
 				t.Fatalf("CreateThread(trimmed) summary=%#v err=%v", summary, err)
 			}
@@ -104,21 +304,29 @@ func TestThreadCreateHostRejectsEmptyIDBeforeWriting(t *testing.T) {
 
 func TestProviderCapabilitiesRejectAuthorityMismatch(t *testing.T) {
 	ctx := context.Background()
-	bootstrap := mustHostBootstrap(t, NewMemoryStore())
+	store := NewMemoryStore()
+	capabilities := mustTestCapabilities(t, store)
+	for _, threadID := range []ThreadID{"thread-a", "parent-a"} {
+		createRequest := testCreateThreadRequest(threadID)
+		create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := create.CreateThread(ctx, createRequest); err != nil {
+			t.Fatal(err)
+		}
+	}
 	providerConfig := config.Config{
 		Provider:     config.ProviderFake,
 		Model:        "fake-model",
 		FakeResponse: "done",
 		SystemPrompt: "test",
 	}
-	turnFactory, err := NewTurnExecutionHostFactory(bootstrap)
+	turnFactory, err := capabilities.turn.Bind("thread-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	turn, err := turnFactory.NewHost(TurnExecutionHostOptions{
-		ThreadID: "thread-a",
-		Config:   providerConfig,
-	})
+	turn, err := turnFactory.NewHost(ctx, TurnExecutionHostOptions{Config: providerConfig})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +337,7 @@ func TestProviderCapabilitiesRejectAuthorityMismatch(t *testing.T) {
 		{name: "run", call: func() error { _, err := turn.RunTurn(ctx, RunTurnRequest{ThreadID: "thread-b"}); return err }},
 		{name: "retry", call: func() error { _, err := turn.RetryTurn(ctx, RetryTurnRequest{ThreadID: "thread-b"}); return err }},
 		{name: "complete pending", call: func() error {
-			_, err := turn.CompletePendingTool(ctx, PendingToolCompletionRequest{ThreadID: "thread-b"})
+			_, err := turn.CompletePendingTool(ctx, PendingToolCompletionRequest{Target: PendingToolSettlementTarget{ThreadID: "thread-b"}})
 			return err
 		}},
 		{name: "list approvals", call: func() error {
@@ -147,14 +355,11 @@ func TestProviderCapabilitiesRejectAuthorityMismatch(t *testing.T) {
 		}
 	}
 
-	compactionFactory, err := NewThreadCompactionHostFactory(bootstrap)
+	compactionFactory, err := capabilities.compaction.Bind("thread-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	compaction, err := compactionFactory.NewHost(ThreadCompactionHostOptions{
-		ThreadID: "thread-a",
-		Config:   providerConfig,
-	})
+	compaction, err := compactionFactory.NewHost(ctx, ThreadCompactionHostOptions{Config: providerConfig})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,14 +367,11 @@ func TestProviderCapabilitiesRejectAuthorityMismatch(t *testing.T) {
 		t.Fatalf("CompactThread error = %v, want authority mismatch", err)
 	}
 
-	subAgentFactory, err := NewSubAgentHostFactory(bootstrap)
+	subAgentFactory, err := capabilities.subAgent.Bind("parent-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	subAgents, err := subAgentFactory.NewHost(SubAgentHostOptions{
-		ParentThreadID: "parent-a",
-		Config:         providerConfig,
-	})
+	subAgents, err := subAgentFactory.NewHost(ctx, SubAgentHostOptions{Config: providerConfig})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,11 +380,11 @@ func TestProviderCapabilitiesRejectAuthorityMismatch(t *testing.T) {
 		call func() error
 	}{
 		{name: "spawn", call: func() error {
-			_, err := subAgents.SpawnSubAgent(ctx, SpawnSubAgentRequest{ParentThreadID: "parent-b"})
+			_, err := subAgents.SpawnSubAgent(ctx, SpawnSubAgentRequest{PublicationID: "publication-bound-parent", ParentThreadID: "parent-b"})
 			return err
 		}},
 		{name: "send", call: func() error {
-			_, err := subAgents.SendSubAgentInput(ctx, SendSubAgentInputRequest{ParentThreadID: "parent-b"})
+			_, err := subAgents.SendSubAgentInput(ctx, SendSubAgentInputRequest{InputRequestID: "input-bound-parent", ParentThreadID: "parent-b"})
 			return err
 		}},
 		{name: "wait", call: func() error {
@@ -199,26 +401,7 @@ func TestProviderCapabilitiesRejectAuthorityMismatch(t *testing.T) {
 			t.Fatalf("%s error = %v, want authority mismatch", call.name, err)
 		}
 	}
-	maintenanceFactory, err := NewSubAgentMaintenanceHostFactory(bootstrap)
-	if err != nil {
-		t.Fatal(err)
-	}
-	maintenance, err := maintenanceFactory.NewHost(SubAgentMaintenanceHostOptions{
-		ParentThreadID: "parent-a",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := maintenance.CloseSubAgents(ctx, CloseSubAgentsRequest{ParentThreadID: "parent-b"}); err == nil || !strings.Contains(err.Error(), "bound to thread") {
-		t.Fatalf("CloseSubAgents error = %v, want authority mismatch", err)
-	}
-	readFactory, err := NewSubAgentReadHostFactory(bootstrap)
-	if err != nil {
-		t.Fatal(err)
-	}
-	subAgentRead, err := readFactory.NewHost(SubAgentReadHostOptions{
-		ParentThreadID: "parent-a",
-	})
+	subAgentRead, err := capabilities.subAgentRead.NewHost(ctx, "parent-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,66 +423,120 @@ func TestProviderCapabilitiesRejectAuthorityMismatch(t *testing.T) {
 			t.Fatalf("subagent read %s error = %v, want authority mismatch", call.name, err)
 		}
 	}
+
+	read, err := capabilities.read.NewHost(ctx, "thread-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	title, err := capabilities.title.NewHost(ctx, "thread-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fork, err := capabilities.fork.NewHost(ctx, "thread-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleteHost, err := capabilities.delete.NewHost(ctx, "thread-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootCalls := []struct {
+		name string
+		call func() error
+	}{
+		{name: "read", call: func() error { _, err := read.ReadThread(ctx, "thread-b"); return err }},
+		{name: "title", call: func() error {
+			_, err := title.SetThreadTitle(ctx, SetThreadTitleRequest{ThreadID: "thread-b", Title: "wrong"})
+			return err
+		}},
+		{name: "fork", call: func() error {
+			_, err := fork.ForkThread(ctx, ForkThreadRequest{OperationID: "wrong", SourceThreadID: "thread-b", DestinationThreadID: "fork"})
+			return err
+		}},
+		{name: "delete", call: func() error { return deleteHost.DeleteThread(ctx, "thread-b") }},
+	}
+	for _, call := range rootCalls {
+		if err := call.call(); err == nil || !strings.Contains(err.Error(), "bound to thread") {
+			t.Fatalf("%s error = %v, want authority mismatch", call.name, err)
+		}
+	}
+	if _, err := store.repo.Thread(ctx, "fork"); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+		t.Fatalf("mismatched fork changed destination: %v", err)
+	}
 }
 
-func TestRootCapabilitiesRejectCanonicalChild(t *testing.T) {
+func TestBoundRootCapabilitiesRejectCrossAuthorityBeforeSideEffects(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
-	bootstrap := mustHostBootstrap(t, store)
-	create, err := NewThreadCreateHost(bootstrap, nil)
+	capabilities := mustTestCapabilities(t, store)
+	for _, threadID := range []ThreadID{"thread-a", "thread-b"} {
+		createRequest := testCreateThreadRequest(threadID)
+		create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := create.CreateThread(ctx, createRequest); err != nil {
+			t.Fatal(err)
+		}
+	}
+	readA, err := capabilities.read.NewHost(ctx, "thread-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := create.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC()
-	if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{
-		ID: "child", ParentThreadID: "parent", TaskName: "child", AgentPath: "/root/child", CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := create.CreateThread(ctx, CreateThreadRequest{ThreadID: "child"}); !errors.Is(err, ErrSubAgentParentRequired) {
-		t.Fatalf("CreateThread(existing child) error = %v, want ErrSubAgentParentRequired", err)
-	}
-	providerConfig := config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "test"}
-	turnFactory, err := NewTurnExecutionHostFactory(bootstrap)
+	readB, err := capabilities.read.NewHost(ctx, "thread-b")
 	if err != nil {
 		t.Fatal(err)
 	}
-	turn, err := turnFactory.NewHost(TurnExecutionHostOptions{ThreadID: "child", Config: providerConfig})
+	beforeA, err := readA.ReadThread(ctx, "thread-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	compactionFactory, err := NewThreadCompactionHostFactory(bootstrap)
+	beforeB, err := readB.ReadThread(ctx, "thread-b")
 	if err != nil {
 		t.Fatal(err)
 	}
-	compaction, err := compactionFactory.NewHost(ThreadCompactionHostOptions{ThreadID: "child", Config: providerConfig})
+
+	var gatewayCalls atomic.Int64
+	gateway := runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+		gatewayCalls.Add(1)
+		return runtimeGatewayEvents("unexpected"), nil
+	})
+	events := &runtimeEventRecorder{}
+	turnFactory, err := capabilities.turn.Bind("thread-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	read, err := NewThreadReadHost(bootstrap, nil)
+	turn, err := turnFactory.NewHost(ctx, TurnExecutionHostOptions{
+		Config:               runtimeGatewayConfig("test"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("test-model"),
+		Sink:                 events,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	title, err := NewThreadTitleHost(bootstrap, nil)
+	compactionFactory, err := capabilities.compaction.Bind("thread-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fork, err := NewThreadForkHost(bootstrap, nil)
+	compaction, err := compactionFactory.NewHost(ctx, ThreadCompactionHostOptions{
+		Config:               runtimeCompactionTestConfig(),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("test-model"),
+		Sink:                 events,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	deleteHost, err := NewThreadDeleteHost(bootstrap)
+	title, err := capabilities.title.NewHost(ctx, "thread-a", events)
 	if err != nil {
 		t.Fatal(err)
 	}
-	recoveryFactory, err := NewPendingToolRecoveryHostFactory(bootstrap)
+	fork, err := capabilities.fork.NewHost(ctx, "thread-a", events)
 	if err != nil {
 		t.Fatal(err)
 	}
-	settlement, err := recoveryFactory.NewHost(PendingToolRecoveryHostOptions{ThreadID: "child"})
+	deleteHost, err := capabilities.delete.NewHost(ctx, "thread-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,60 +545,100 @@ func TestRootCapabilitiesRejectCanonicalChild(t *testing.T) {
 		name string
 		call func() error
 	}{
-		{name: "run", call: func() error { _, err := turn.RunTurn(ctx, RunTurnRequest{ThreadID: "child"}); return err }},
-		{name: "retry", call: func() error { _, err := turn.RetryTurn(ctx, RetryTurnRequest{ThreadID: "child"}); return err }},
-		{name: "complete pending", call: func() error {
-			_, err := turn.CompletePendingTool(ctx, PendingToolCompletionRequest{ThreadID: "child"})
-			return err
-		}},
-		{name: "list approvals", call: func() error {
-			_, err := turn.ListPendingApprovals(ctx, ListPendingApprovalsRequest{ThreadID: "child"})
-			return err
-		}},
-		{name: "update todos", call: func() error {
-			_, err := turn.UpdateThreadAgentTodos(ctx, UpdateThreadAgentTodosRequest{ThreadID: "child"})
+		{name: "run", call: func() error {
+			_, err := turn.RunTurn(ctx, RunTurnRequest{ThreadID: "thread-b", TurnID: "turn-b", RunID: "run-b", Input: TurnInput{Text: "hello"}})
 			return err
 		}},
 		{name: "compact", call: func() error {
-			_, err := compaction.CompactThread(ctx, CompactThreadRequest{ThreadID: "child"})
-			return err
-		}},
-		{name: "read", call: func() error { _, err := read.ReadThread(ctx, "child"); return err }},
-		{name: "overview", call: func() error { _, err := read.ReadThreadOverview(ctx, "child"); return err }},
-		{name: "latest turn", call: func() error { _, err := read.ReadLatestThreadTurn(ctx, "child"); return err }},
-		{name: "turns", call: func() error {
-			_, err := read.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "child"})
-			return err
-		}},
-		{name: "details", call: func() error {
-			_, err := read.ListThreadDetailEvents(ctx, ListThreadDetailEventsRequest{ThreadID: "child"})
-			return err
-		}},
-		{name: "context", call: func() error { _, err := read.ReadThreadContext(ctx, "child"); return err }},
-		{name: "todos", call: func() error { _, err := read.ReadThreadAgentTodos(ctx, "child"); return err }},
-		{name: "projection", call: func() error {
-			_, err := read.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "child"})
+			_, err := compaction.CompactThread(ctx, CompactThreadRequest{ThreadID: "thread-b", RequestID: "compact-b", Source: "test"})
 			return err
 		}},
 		{name: "title", call: func() error {
-			_, err := title.SetThreadTitle(ctx, SetThreadTitleRequest{ThreadID: "child", Title: "child"})
+			_, err := title.SetThreadTitle(ctx, SetThreadTitleRequest{ThreadID: "thread-b", Title: "wrong title"})
 			return err
 		}},
 		{name: "fork", call: func() error {
-			_, err := fork.ForkThread(ctx, ForkThreadRequest{OperationID: "operation", SourceThreadID: "child", DestinationThreadID: "fork"})
+			_, err := fork.ForkThread(ctx, ForkThreadRequest{OperationID: "fork-b", SourceThreadID: "thread-b", DestinationThreadID: "fork-b"})
 			return err
 		}},
-		{name: "delete", call: func() error { return deleteHost.DeleteThread(ctx, "child") }},
-		{name: "settlement", call: func() error {
-			_, err := settlement.SettlePendingTool(ctx, PendingToolSettlementRequest{Target: PendingToolSettlementTarget{
-				ThreadID: "child", TurnID: "turn", RunID: "run", ToolCallID: "call", ToolName: "tool", Handle: "handle",
-			}})
-			return err
-		}},
+		{name: "delete", call: func() error { return deleteHost.DeleteThread(ctx, "thread-b") }},
 	}
 	for _, call := range calls {
-		if err := call.call(); !errors.Is(err, ErrSubAgentParentRequired) {
-			t.Fatalf("%s error = %v, want ErrSubAgentParentRequired", call.name, err)
+		if err := call.call(); err == nil || !strings.Contains(err.Error(), "bound to thread") {
+			t.Fatalf("%s error = %v, want authority mismatch", call.name, err)
+		}
+	}
+	if gatewayCalls.Load() != 0 {
+		t.Fatalf("provider calls = %d, want 0", gatewayCalls.Load())
+	}
+	if got := events.snapshot(); len(got) != 0 {
+		t.Fatalf("events after rejected cross-authority calls = %#v", got)
+	}
+	afterA, err := readA.ReadThread(ctx, "thread-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterB, err := readB.ReadThread(ctx, "thread-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterA, beforeA) || !reflect.DeepEqual(afterB, beforeB) {
+		t.Fatalf("rejected calls changed canonical threads: before=(%#v,%#v) after=(%#v,%#v)", beforeA, beforeB, afterA, afterB)
+	}
+	if _, err := store.repo.Thread(ctx, "fork-b"); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+		t.Fatalf("rejected fork created destination: %v", err)
+	}
+}
+
+func TestRootCapabilitiesRejectCanonicalChild(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	capabilities := mustTestCapabilities(t, store)
+	parentCreateRequest := testCreateThreadRequest("parent")
+	create, err := capabilities.create.Bind(parentCreateRequest.ThreadID, parentCreateRequest.CreateIntentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := create.CreateThread(ctx, parentCreateRequest); err != nil {
+		t.Fatal(err)
+	}
+	providerConfig := config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "test"}
+	publishTestSubAgentFixture(t, ctx, store, "publication-root-child", "parent", "child", "")
+	childCreateRequest := testCreateThreadRequest("child")
+	childCreate, err := capabilities.create.Bind(childCreateRequest.ThreadID, childCreateRequest.CreateIntentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := childCreate.CreateThread(ctx, childCreateRequest); !errors.Is(err, ErrRequestConflict) {
+		t.Fatalf("CreateThread(existing child) error = %v, want ErrRequestConflict", err)
+	}
+	turnFactory, err := capabilities.turn.Bind("child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := turnFactory.NewHost(ctx, TurnExecutionHostOptions{Config: providerConfig}); !errors.Is(err, ErrSubAgentParentRequired) {
+		t.Fatalf("turn NewHost(child) error = %v, want ErrSubAgentParentRequired", err)
+	}
+	compactionFactory, err := capabilities.compaction.Bind("child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compactionFactory.NewHost(ctx, ThreadCompactionHostOptions{Config: providerConfig}); !errors.Is(err, ErrSubAgentParentRequired) {
+		t.Fatalf("compaction NewHost(child) error = %v, want ErrSubAgentParentRequired", err)
+	}
+	constructors := []struct {
+		name string
+		call func() error
+	}{
+		{name: "read", call: func() error { _, err := capabilities.read.NewHost(ctx, "child"); return err }},
+		{name: "title", call: func() error { _, err := capabilities.title.NewHost(ctx, "child", nil); return err }},
+		{name: "fork", call: func() error { _, err := capabilities.fork.NewHost(ctx, "child", nil); return err }},
+		{name: "delete", call: func() error { _, err := capabilities.delete.NewHost(ctx, "child"); return err }},
+		{name: "settlement", call: func() error { _, err := capabilities.recovery.NewThreadHost(ctx, "child", nil); return err }},
+	}
+	for _, constructor := range constructors {
+		if err := constructor.call(); !errors.Is(err, ErrSubAgentParentRequired) {
+			t.Fatalf("%s construction error = %v, want ErrSubAgentParentRequired", constructor.name, err)
 		}
 	}
 	if _, err := store.repo.Thread(ctx, "child"); err != nil {
@@ -387,28 +664,25 @@ func TestRootDeleteDoesNotCascadeIntoIndependentFork(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			store := tc.store(t)
-			bootstrap := mustHostBootstrap(t, store)
-			create, err := NewThreadCreateHost(bootstrap, nil)
+			capabilities := mustTestCapabilities(t, store)
+			createRequest := testCreateThreadRequest("source")
+			create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := create.CreateThread(ctx, CreateThreadRequest{ThreadID: "source"}); err != nil {
+			if _, err := create.CreateThread(ctx, createRequest); err != nil {
 				t.Fatal(err)
 			}
-			now := time.Now().UTC()
-			if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{
-				ID: "child", ParentThreadID: "source", TaskName: "child", AgentPath: "/root/child", CreatedAt: now, UpdatedAt: now,
-			}); err != nil {
-				t.Fatal(err)
-			}
-			fork, err := NewThreadForkHost(bootstrap, nil)
+			publishTestSubAgentFixture(t, ctx, store, "publication-source-child", "source", "child", "")
+			completeTestSubAgentFixture(t, ctx, store, "source", "child")
+			fork, err := capabilities.fork.NewHost(ctx, "source", nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if _, err := fork.ForkThread(ctx, ForkThreadRequest{OperationID: "fork-operation", SourceThreadID: "source", DestinationThreadID: "fork"}); err != nil {
 				t.Fatal(err)
 			}
-			deleteHost, err := NewThreadDeleteHost(bootstrap)
+			deleteHost, err := capabilities.delete.NewHost(ctx, "source")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -434,35 +708,33 @@ func TestRootDeleteDoesNotCascadeIntoIndependentFork(t *testing.T) {
 func TestRootDeleteSerializesConcurrentSubAgentSpawn(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
-	bootstrap := mustHostBootstrap(t, store)
-	create, err := NewThreadCreateHost(bootstrap, nil)
+	capabilities := mustTestCapabilities(t, store)
+	createRequest := testCreateThreadRequest("parent")
+	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := create.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
+	if _, err := create.CreateThread(ctx, createRequest); err != nil {
 		t.Fatal(err)
 	}
 
-	underlying := store.repo
-	blocking := &blockingThreadListRepo{
-		Repo:               underlying,
-		list:               underlying.(sessiontree.ThreadListRepo),
-		entered:            make(chan struct{}),
-		release:            make(chan struct{}),
-		threadWhileBlocked: make(chan string, 1),
+	underlying := store.rootAuthority
+	blocking := &blockingRootAuthorityRepo{
+		RootAuthorityRepo: underlying,
+		entered:           make(chan struct{}),
+		release:           make(chan struct{}),
 	}
-	store.repo = blocking
+	store.rootAuthority = blocking
 
-	deleteHost, err := NewThreadDeleteHost(bootstrap)
+	deleteHost, err := capabilities.delete.NewHost(ctx, "parent")
 	if err != nil {
 		t.Fatal(err)
 	}
-	subAgentFactory, err := NewSubAgentHostFactory(bootstrap)
+	subAgentFactory, err := capabilities.subAgent.Bind("parent")
 	if err != nil {
 		t.Fatal(err)
 	}
-	subAgents, err := subAgentFactory.NewHost(SubAgentHostOptions{
-		ParentThreadID: "parent",
+	subAgents, err := subAgentFactory.NewHost(ctx, SubAgentHostOptions{
 		Config: config.Config{
 			Provider:     config.ProviderFake,
 			Model:        "fake-model",
@@ -485,6 +757,7 @@ func TestRootDeleteSerializesConcurrentSubAgentSpawn(t *testing.T) {
 	go func() {
 		close(spawnStarted)
 		_, err := subAgents.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+			PublicationID:  "publication-child-delete-race",
 			ParentThreadID: "parent",
 			ThreadID:       "child",
 			TaskName:       "child",
@@ -496,8 +769,6 @@ func TestRootDeleteSerializesConcurrentSubAgentSpawn(t *testing.T) {
 	<-spawnStarted
 
 	select {
-	case threadID := <-blocking.threadWhileBlocked:
-		t.Fatalf("spawn read thread %q while delete owned the authority gate", threadID)
 	case err := <-spawnDone:
 		t.Fatalf("spawn completed before delete released the authority gate: %v", err)
 	case <-time.After(100 * time.Millisecond):
@@ -510,7 +781,7 @@ func TestRootDeleteSerializesConcurrentSubAgentSpawn(t *testing.T) {
 	if err := <-spawnDone; !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("spawn after delete error = %v, want ErrThreadNotFound", err)
 	}
-	if _, err := underlying.Thread(ctx, "child"); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+	if _, err := store.repo.Thread(ctx, "child"); !errors.Is(err, sessiontree.ErrThreadNotFound) {
 		t.Fatalf("concurrent spawn left orphan child: %v", err)
 	}
 }
@@ -528,29 +799,26 @@ func TestSQLiteRootDeleteRechecksAuthorityTreeInsideStorageTransaction(t *testin
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = otherStore.Close() })
-	bootstrap := mustHostBootstrap(t, store)
-	create, err := NewThreadCreateHost(bootstrap, nil)
+	capabilities := mustTestCapabilities(t, store)
+	createRequest := testCreateThreadRequest("parent")
+	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := create.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
+	if _, err := create.CreateThread(ctx, createRequest); err != nil {
 		t.Fatal(err)
 	}
-
-	deleteData := store.deleteData
-	store.deleteData = func(ctx context.Context, rootThreadID string, snapshotThreadIDs []string) error {
-		if len(snapshotThreadIDs) != 1 || snapshotThreadIDs[0] != "parent" {
-			return fmt.Errorf("unexpected runtime delete snapshot %v", snapshotThreadIDs)
-		}
-		now := time.Now().UTC()
-		if _, err := otherStore.repo.CreateThread(ctx, sessiontree.ThreadMeta{
-			ID: "child", ParentThreadID: "parent", TaskName: "child", AgentPath: "/root/child", CreatedAt: now, UpdatedAt: now,
-		}); err != nil {
-			return err
-		}
-		return deleteData(ctx, rootThreadID, snapshotThreadIDs)
+	store.rootAuthority = &beforeDeleteRootAuthorityRepo{
+		RootAuthorityRepo: store.rootAuthority,
+		beforeDelete: func(ctx context.Context, rootThreadID string) error {
+			if rootThreadID != "parent" {
+				return fmt.Errorf("unexpected root delete %q", rootThreadID)
+			}
+			publishTestSubAgentFixture(t, ctx, otherStore, "publication-delete-race-child", "parent", "child", "")
+			return nil
+		},
 	}
-	deleteHost, err := NewThreadDeleteHost(bootstrap)
+	deleteHost, err := capabilities.delete.NewHost(ctx, "parent")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -564,68 +832,58 @@ func TestSQLiteRootDeleteRechecksAuthorityTreeInsideStorageTransaction(t *testin
 	}
 }
 
-type blockingThreadListRepo struct {
-	sessiontree.Repo
-	list               sessiontree.ThreadListRepo
-	entered            chan struct{}
-	release            chan struct{}
-	listBlocked        atomic.Bool
-	threadWhileBlocked chan string
+type blockingRootAuthorityRepo struct {
+	sessiontree.RootAuthorityRepo
+	entered chan struct{}
+	release chan struct{}
 }
 
-func (r *blockingThreadListRepo) Thread(ctx context.Context, threadID string) (sessiontree.ThreadMeta, error) {
-	if r.listBlocked.Load() {
-		select {
-		case r.threadWhileBlocked <- threadID:
-		default:
+type beforeDeleteRootAuthorityRepo struct {
+	sessiontree.RootAuthorityRepo
+	beforeDelete func(context.Context, string) error
+}
+
+func (r *beforeDeleteRootAuthorityRepo) DeleteRootTree(ctx context.Context, rootThreadID string) (sessiontree.DeleteRootTreeResult, error) {
+	if r.beforeDelete != nil {
+		if err := r.beforeDelete(ctx, rootThreadID); err != nil {
+			return sessiontree.DeleteRootTreeResult{}, err
 		}
 	}
-	return r.Repo.Thread(ctx, threadID)
+	return r.RootAuthorityRepo.DeleteRootTree(ctx, rootThreadID)
 }
 
-func (r *blockingThreadListRepo) ListThreads(ctx context.Context, opts sessiontree.ListThreadsOptions) ([]sessiontree.ThreadMeta, error) {
-	r.listBlocked.Store(true)
+func (r *blockingRootAuthorityRepo) DeleteRootTree(ctx context.Context, rootThreadID string) (sessiontree.DeleteRootTreeResult, error) {
 	close(r.entered)
 	select {
 	case <-r.release:
 	case <-ctx.Done():
-		r.listBlocked.Store(false)
-		return nil, ctx.Err()
+		return sessiontree.DeleteRootTreeResult{}, ctx.Err()
 	}
-	r.listBlocked.Store(false)
-	return r.list.ListThreads(ctx, opts)
+	return r.RootAuthorityRepo.DeleteRootTree(ctx, rootThreadID)
 }
 
-func TestPendingToolSettlementHostsPreserveAuthority(t *testing.T) {
+func TestPendingToolOwnersPreserveAuthority(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
-	bootstrap := mustHostBootstrap(t, store)
-	create, err := NewThreadCreateHost(bootstrap, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := create.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread-a"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := create.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread-b"}); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC()
-	for _, meta := range []sessiontree.ThreadMeta{
-		{ID: "child-a", ParentThreadID: "thread-a", TaskName: "child-a", AgentPath: "/root/child-a", CreatedAt: now, UpdatedAt: now},
-		{ID: "child-b", ParentThreadID: "thread-b", TaskName: "child-b", AgentPath: "/root/child-b", CreatedAt: now, UpdatedAt: now},
-		{ID: "grandchild-a", ParentThreadID: "child-a", TaskName: "grandchild-a", AgentPath: "/root/child-a/grandchild-a", CreatedAt: now, UpdatedAt: now},
-	} {
-		if _, err := store.repo.CreateThread(ctx, meta); err != nil {
+	capabilities := mustTestCapabilities(t, store)
+	for _, threadID := range []ThreadID{"thread-a", "thread-b"} {
+		createRequest := testCreateThreadRequest(threadID)
+		create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := create.CreateThread(ctx, createRequest); err != nil {
 			t.Fatal(err)
 		}
 	}
-	turnFactory, err := NewTurnExecutionHostFactory(bootstrap)
+	publishTestSubAgentFixture(t, ctx, store, "publication-child-a", "thread-a", "child-a", "")
+	publishTestSubAgentFixture(t, ctx, store, "publication-child-b", "thread-b", "child-b", "")
+	publishTestSubAgentFixture(t, ctx, store, "publication-grandchild-a", "child-a", "grandchild-a", "")
+	turnFactory, err := capabilities.turn.Bind("thread-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	turn, err := turnFactory.NewHost(TurnExecutionHostOptions{
-		ThreadID: "thread-a",
+	turn, err := turnFactory.NewHost(ctx, TurnExecutionHostOptions{
 		Config: config.Config{
 			Provider:     config.ProviderFake,
 			Model:        "fake-model",
@@ -633,10 +891,6 @@ func TestPendingToolSettlementHostsPreserveAuthority(t *testing.T) {
 			SystemPrompt: "test",
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	activeSettlement, err := NewTurnPendingToolSettlementHost(turn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -648,21 +902,15 @@ func TestPendingToolSettlementHostsPreserveAuthority(t *testing.T) {
 		ToolName:   "tool",
 		Handle:     "handle",
 	}}
-	if _, err := activeSettlement.SettlePendingTool(ctx, request); err == nil || !strings.Contains(err.Error(), "bound to thread") {
+	if _, err := turn.SettlePendingTool(ctx, request); err == nil || !strings.Contains(err.Error(), "bound to thread") {
 		t.Fatalf("active settlement error = %v, want authority mismatch", err)
 	}
 	request.Target.ThreadID = "thread-a"
-	if _, err := activeSettlement.SettlePendingTool(ctx, request); !errors.Is(err, ErrThreadNotActive) {
+	if _, err := turn.SettlePendingTool(ctx, request); !errors.Is(err, ErrThreadNotActive) {
 		t.Fatalf("inactive derived settlement error = %v, want ErrThreadNotActive", err)
 	}
 
-	recoveryFactory, err := NewPendingToolRecoveryHostFactory(bootstrap)
-	if err != nil {
-		t.Fatal(err)
-	}
-	recoverySettlement, err := recoveryFactory.NewHost(PendingToolRecoveryHostOptions{
-		ThreadID: "thread-a",
-	})
+	recoverySettlement, err := capabilities.recovery.NewThreadHost(ctx, "thread-a", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -675,12 +923,11 @@ func TestPendingToolSettlementHostsPreserveAuthority(t *testing.T) {
 		t.Fatalf("recovery settlement unexpectedly required an active owner: %v", err)
 	}
 
-	subAgentFactory, err := NewSubAgentHostFactory(bootstrap)
+	subAgentFactory, err := capabilities.subAgent.Bind("thread-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	subAgents, err := subAgentFactory.NewHost(SubAgentHostOptions{
-		ParentThreadID: "thread-a",
+	subAgents, err := subAgentFactory.NewHost(ctx, SubAgentHostOptions{
 		Config: config.Config{
 			Provider:     config.ProviderFake,
 			Model:        "fake-model",
@@ -691,18 +938,14 @@ func TestPendingToolSettlementHostsPreserveAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	subAgentSettlement, err := NewSubAgentPendingToolSettlementHost(subAgents)
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, target := range []ThreadID{"thread-a", "child-b", "grandchild-a", "unknown-child"} {
 		request.Target.ThreadID = target
-		if _, err := subAgentSettlement.SettlePendingTool(ctx, request); !errors.Is(err, ErrSubAgentNotFound) {
+		if _, err := subAgents.SettlePendingTool(ctx, request); !errors.Is(err, ErrSubAgentNotFound) {
 			t.Fatalf("subagent settlement target %q error = %v, want ErrSubAgentNotFound", target, err)
 		}
 	}
 	request.Target.ThreadID = "child-a"
-	if _, err := subAgentSettlement.SettlePendingTool(ctx, request); !errors.Is(err, ErrThreadNotActive) {
+	if _, err := subAgents.SettlePendingTool(ctx, request); !errors.Is(err, ErrThreadNotActive) {
 		t.Fatalf("inactive direct child settlement error = %v, want ErrThreadNotActive", err)
 	}
 }

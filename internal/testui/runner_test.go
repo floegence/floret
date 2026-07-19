@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/config"
+	"github.com/floegence/floret/internal/agentharness"
 	"github.com/floegence/floret/internal/engine"
 	"github.com/floegence/floret/internal/event"
 	"github.com/floegence/floret/internal/provider"
@@ -31,6 +33,7 @@ import (
 	"github.com/floegence/floret/internal/testing/harness"
 	"github.com/floegence/floret/internal/tools/mcp"
 	"github.com/floegence/floret/observation"
+	flruntime "github.com/floegence/floret/runtime"
 )
 
 func TestRunnerParsesGoTestJSON(t *testing.T) {
@@ -440,7 +443,7 @@ func TestRunnerMCPConfigExposesToolAndDeniesDefaultApproval(t *testing.T) {
 		Message:      "use mcp",
 		SystemPrompt: "test",
 	})
-	if result.Status != "completed" || result.Output != "recovered" {
+	if result.Status != "failed" || !strings.Contains(result.Error, agentharness.ErrEffectUnauthorized.Error()) {
 		t.Fatalf("result = %#v", result)
 	}
 	if !slices.ContainsFunc(result.Observation.ProviderRequests[0].Tools, func(def provider.ToolDefinition) bool {
@@ -459,10 +462,19 @@ func TestRunnerMCPConfigExposesToolAndDeniesDefaultApproval(t *testing.T) {
 	}) {
 		t.Fatalf("readable mcp event missing: %#v", result.Events)
 	}
-	if !slices.ContainsFunc(result.Observation.ActiveContext, func(msg ObservedSessionMessage) bool {
-		return msg.Role == "tool" && msg.ToolName == "mcp__docs__lookup" && msg.Content == "ERROR: tool call rejected"
+	if !slices.ContainsFunc(result.Events, func(ev event.Event) bool {
+		meta, _ := ev.Metadata.(map[string]any)
+		return ev.Type == event.ToolApprovalRejected && meta["error_present"] == true
 	}) {
-		t.Fatalf("denied mcp result missing: %#v", result.Observation.ActiveContext)
+		t.Fatalf("denied mcp audit event missing: %#v", result.Events)
+	}
+	if len(result.Observation.ProviderRequests) != 1 {
+		t.Fatalf("denied mcp effect reached another provider request: %#v", result.Observation.ProviderRequests)
+	}
+	if !slices.ContainsFunc(result.Observation.ActiveContext, func(msg ObservedSessionMessage) bool {
+		return msg.Role == "tool" && msg.ToolName == "mcp__docs__lookup" && strings.Contains(msg.Content, agentharness.ErrEffectUnauthorized.Error())
+	}) {
+		t.Fatalf("denied mcp canonical failure result missing: %#v", result.Observation.ActiveContext)
 	}
 }
 
@@ -609,25 +621,9 @@ func TestRunnerRunAgentReturnsInteractionObservation(t *testing.T) {
 	}) {
 		t.Fatalf("ask_user interrupt tool definition missing: %#v", result.Observation.ProviderRequests[0].Tools)
 	}
-	summary := result.Observation.ProviderRequests[0].CacheSummary
-	if len(result.Observation.ProviderRequests[0].RawSegments) == 0 || summary.PrefixHash == "" || summary.PayloadHash == "" || summary.ToolsetID == "" || summary.ToolsetEpoch == 0 {
-		t.Fatalf("prompt cache observation missing: %#v", result.Observation.ProviderRequests[0])
-	}
-	if !slices.ContainsFunc(result.Observation.ProviderRequests[0].RawSegments, func(segment ObservedRawSegment) bool {
-		return segment.Kind == "system" && !segment.Reused
-	}) {
-		t.Fatalf("raw segment state not exposed: %#v", result.Observation.ProviderRequests[0].RawSegments)
-	}
-	if !slices.ContainsFunc(result.Observation.ProviderRequests[0].RawSegments, func(segment ObservedRawSegment) bool {
-		return segment.Kind == "system" &&
-			segment.Raw != "" &&
-			segment.RawPreview != "" &&
-			segment.Fingerprint != "" &&
-			segment.SchemaVersion != "" &&
-			segment.AdapterVersion != "" &&
-			segment.Sequence > 0
-	}) {
-		t.Fatalf("raw segment local inspection fields not exposed: %#v", result.Observation.ProviderRequests[0].RawSegments)
+	request := result.Observation.ProviderRequests[0]
+	if len(request.RawSegments) != 0 || request.CacheSummary != (ObservedCacheSummary{}) {
+		t.Fatalf("model gateway observation fabricated internal prompt-cache data: %#v", request)
 	}
 }
 
@@ -811,22 +807,22 @@ func TestRunnerAgentSessionExposesToolOutputArtifactMetadata(t *testing.T) {
 	if toolMsg.ToolResult == nil || !toolMsg.ToolResult.Truncated || toolMsg.ToolResult.FullOutput == nil {
 		t.Fatalf("tool result view missing artifact ref: %#v", toolMsg)
 	}
-	if strings.Contains(toolMsg.ToolResult.FullOutput.URL, root) || !strings.HasPrefix(toolMsg.ToolResult.FullOutput.URL, "/artifacts/") {
+	if strings.Contains(toolMsg.ToolResult.FullOutput.URL, root) || !strings.HasPrefix(toolMsg.ToolResult.FullOutput.URL, agentArtifactRoutePrefix) {
 		t.Fatalf("artifact ref should be safe and routed: %#v", toolMsg.ToolResult.FullOutput)
 	}
-	artifactPath := filepath.Join(runner.managedArtifactsRoot(), filepath.FromSlash(strings.TrimPrefix(toolMsg.ToolResult.FullOutput.URL, "/artifacts/")))
-	data, err := os.ReadFile(artifactPath)
-	if err != nil {
-		t.Fatalf("artifact file missing: %v", err)
+	sessionID, threadID, artifactID, ok := parseTestUIAgentArtifactURL(toolMsg.ToolResult.FullOutput.URL)
+	if !ok || sessionID != result.SessionID || threadID != result.SessionID || string(artifactID) != toolMsg.ToolResult.FullOutput.ID {
+		t.Fatalf("artifact route authority = session %q thread %q artifact %q ok=%v", sessionID, threadID, artifactID, ok)
 	}
-	if string(data) != "0123456789abcdef" {
-		t.Fatalf("artifact content = %q", data)
+	content, err := runner.readAgentSessionArtifact(context.Background(), sessionID, threadID, artifactID)
+	if err != nil || content.Text != "0123456789abcdef" {
+		t.Fatalf("runtime artifact content = %#v, %v", content, err)
 	}
 	if err := runner.DeleteAgentSession(context.Background(), result.SessionID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(toolOutputArtifactSessionDir(runner.managedArtifactsRoot(), result.SessionID)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("tool output artifact directory still exists or returned unexpected err: %v", err)
+	if _, err := runner.readAgentSessionArtifact(context.Background(), sessionID, threadID, artifactID); !isMissingAgentArtifactError(err) {
+		t.Fatalf("artifact read after delete err=%v, want missing", err)
 	}
 }
 
@@ -925,6 +921,9 @@ func TestRunnerAgentSessionUsesProviderHostedSearchWithoutLocalWebSearch(t *test
 	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
 		return newProvider(), nil
 	}
+	runner.TitleProviderFactory = func(config.Config) (provider.Provider, error) {
+		return harness.NewScriptedProvider(harness.Step(harness.Text("Hosted Search"), harness.Done())), nil
+	}
 
 	result := runner.CreateAgentSession(context.Background(), AgentRunRequest{
 		Profile: ProviderProfile{
@@ -950,12 +949,12 @@ func TestRunnerAgentSessionUsesProviderHostedSearchWithoutLocalWebSearch(t *test
 	if len(req.HostedTools) != 1 || req.HostedTools[0].Name != "web_search" || req.HostedTools[0].Type != "web_search" || req.HostedTools[0].Options["wire_shape"] != string(searchcap.WireShapeAnthropicServerWebSearch) {
 		t.Fatalf("hosted tools = %#v", req.HostedTools)
 	}
-	if !slices.ContainsFunc(result.Events, func(ev event.Event) bool {
-		return ev.Type == event.HostedToolCall && ev.ToolName == "web_search"
-	}) || !slices.ContainsFunc(result.Events, func(ev event.Event) bool {
-		return ev.Type == event.HostedToolResult && ev.ToolName == "web_search"
+	if !slices.ContainsFunc(result.Observation.ProviderEvents, func(ev ObservedProviderEvent) bool {
+		return ev.Type == provider.HostedToolCall && len(ev.ToolCalls) == 1 && ev.ToolCalls[0].Name == "web_search"
+	}) || !slices.ContainsFunc(result.Observation.ProviderEvents, func(ev ObservedProviderEvent) bool {
+		return ev.Type == provider.HostedToolResult && ev.HostedResult != nil
 	}) {
-		t.Fatalf("hosted tool events missing: %#v", result.Events)
+		t.Fatalf("hosted gateway events missing: %#v", result.Observation.ProviderEvents)
 	}
 	body, err := json.Marshal(result)
 	if err != nil {
@@ -1001,15 +1000,6 @@ func TestRunnerAgentSessionUsesProviderHostedSearchWithoutLocalWebSearch(t *test
 	}) {
 		t.Fatalf("local inspection provider events should expose hosted result details: %#v", result.Observation.ProviderEvents)
 	}
-	hostedResults := 0
-	for _, ev := range result.Events {
-		if ev.Type == event.HostedToolResult && ev.ToolName == "web_search" {
-			hostedResults++
-		}
-	}
-	if hostedResults != 1 {
-		t.Fatalf("hosted result should be emitted once, got %d: %#v", hostedResults, result.Events)
-	}
 }
 
 func TestRunnerAgentLocalInspectionExposesRawDataByDefault(t *testing.T) {
@@ -1048,10 +1038,8 @@ func TestRunnerAgentLocalInspectionExposesRawDataByDefault(t *testing.T) {
 			t.Fatalf("local inspection response missing %q: %s", want, body)
 		}
 	}
-	if !slices.ContainsFunc(result.Observation.ProviderRequests[0].RawSegments, func(segment ObservedRawSegment) bool {
-		return segment.Raw != "" && segment.RawPreview != "" && segment.SHA256 != ""
-	}) {
-		t.Fatalf("local inspection raw segments should expose ledger and raw text: %#v", result.Observation.ProviderRequests[0].RawSegments)
+	if len(result.Observation.ProviderRequests[0].RawSegments) != 0 || result.Observation.ProviderRequests[0].CacheSummary != (ObservedCacheSummary{}) {
+		t.Fatalf("local inspection fabricated internal prompt-cache data: %#v", result.Observation.ProviderRequests[0])
 	}
 	if !slices.ContainsFunc(result.Observation.SessionMessages, func(msg ObservedSessionMessage) bool {
 		return msg.ToolCallID == "list-1" && msg.ToolArgs == `{"path":null,"limit":2}`
@@ -1166,29 +1154,8 @@ func TestRunnerAgentSessionToolPatchPersistsAcrossRestore(t *testing.T) {
 	if hasStrictTool(second.Observation.ProviderRequests[0].Tools, "grep") {
 		t.Fatalf("previous tool still exposed after restore: %#v", second.Observation.ProviderRequests[0].Tools)
 	}
-	if !slices.ContainsFunc(second.Session.PathEntries, func(entry ObservedSessionEntry) bool {
-		return entry.Type == "active_tools_change" &&
-			entry.Metadata["previous_tools"] == "grep" &&
-			entry.Metadata["selected_tools"] == "read,shell" &&
-			entry.Metadata["reason"] == "restore test"
-	}) {
-		t.Fatalf("tool patch audit entry missing after restore: %#v", second.Session.PathEntries)
-	}
-	raw, err := restoredRunner.sessionStorage(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	entries, err := raw.repo(root).Entries(context.Background(), first.SessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.ContainsFunc(entries, func(entry sessiontree.Entry) bool {
-		return entry.Type == sessiontree.EntryActiveTools &&
-			entry.Metadata["previous_tools"] == "grep" &&
-			entry.Metadata["selected_tools"] == "read,shell" &&
-			entry.Metadata["reason"] == "restore test"
-	}) {
-		t.Fatalf("durable audit metadata should retain raw reason: %#v", entries)
+	if slices.ContainsFunc(second.Session.PathEntries, func(entry ObservedSessionEntry) bool { return entry.Type == "active_tools_change" }) {
+		t.Fatalf("host-owned tool selection leaked into canonical lifecycle: %#v", second.Session.PathEntries)
 	}
 }
 
@@ -1225,7 +1192,7 @@ func TestRunnerRestoresLongSessionEntryAndKeepsSelectedTools(t *testing.T) {
 	recoveredRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
 		return harness.NewScriptedProvider(harness.Step(harness.Text("restored done"), harness.Done())), nil
 	}
-	sessions := recoveredRunner.AgentSessions(context.Background())
+	sessions := mustAgentSessions(t, recoveredRunner)
 	if len(sessions) != 1 || sessions[0].ID != first.SessionID || !slices.Equal(sessions[0].SelectedTools, []string{"grep", "shell"}) {
 		t.Fatalf("sessions = %#v", sessions)
 	}
@@ -1380,7 +1347,7 @@ func TestRunnerAgentSessionPersistsAndResumesAfterNewRunner(t *testing.T) {
 		return secondProvider, nil
 	}
 
-	sessions := recoveredRunner.AgentSessions(context.Background())
+	sessions := mustAgentSessions(t, recoveredRunner)
 	if len(sessions) != 1 || sessions[0].ID != first.SessionID || sessions[0].Status != "waiting" || sessions[0].WaitingPrompt != "Which file?" {
 		t.Fatalf("sessions = %#v", sessions)
 	}
@@ -1419,7 +1386,7 @@ func TestRunnerAgentSessionPersistsAndResumesAfterNewRunner(t *testing.T) {
 
 	afterRestartAgain := NewRunner(root)
 	afterRestartAgain.Now = fixedClock()
-	after := afterRestartAgain.AgentSessions(context.Background())
+	after := mustAgentSessions(t, afterRestartAgain)
 	if len(after) != 1 || after[0].ID != first.SessionID || len(after[0].Turns) != 2 || after[0].Status != "completed" {
 		t.Fatalf("after = %#v", after)
 	}
@@ -1458,7 +1425,7 @@ func TestRunnerAgentSessionsKeepCreatedOrderAcrossMemoryAndDisk(t *testing.T) {
 
 	listRunner := NewRunner(root)
 	listRunner.Now = fixedClock()
-	sessions := listRunner.AgentSessions(context.Background())
+	sessions := mustAgentSessions(t, listRunner)
 	if len(sessions) != 2 || sessions[0].ID != second.SessionID || sessions[1].ID != first.SessionID {
 		t.Fatalf("sessions = %#v", sessions)
 	}
@@ -1473,7 +1440,7 @@ func TestRunnerAgentSessionsKeepCreatedOrderAcrossMemoryAndDisk(t *testing.T) {
 	if updatedFirst.Status != "completed" {
 		t.Fatalf("updated first = %#v", updatedFirst)
 	}
-	sessions = listRunner.AgentSessions(context.Background())
+	sessions = mustAgentSessions(t, listRunner)
 	if len(sessions) != 2 || sessions[0].ID != second.SessionID || sessions[1].ID != first.SessionID {
 		t.Fatalf("updated session should not reorder created-time list: %#v", sessions)
 	}
@@ -1576,200 +1543,82 @@ func TestRunnerRejectsMalformedAgentSessionMetadata(t *testing.T) {
 	}
 }
 
-func TestRunnerPersistedInterruptedTurnSnapshotsAsInterrupted(t *testing.T) {
-	root := t.TempDir()
-	runner := NewRunner(root)
-	runner.StorageMode = StorageModeFile
-	runner.Now = fixedClock()
-	sessionID := "testui-session-interrupted"
-	turnID := "turn-1"
-	started := runner.now()
-	agentProfile, promptIdentity := promptMetadataForTest("test")
-	repo := sessiontree.NewFileRepo(runner.agentSessionTreeRoot())
-	if _, err := repo.CreateThread(context.Background(), sessiontree.ThreadMeta{ID: sessionID, CreatedAt: started, UpdatedAt: started}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sessiontree.AppendTurnMarker(context.Background(), repo, sessionID, turnID, sessiontree.TurnStarted, nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sessiontree.AppendMessage(context.Background(), repo, sessionID, turnID, session.Message{Role: session.User, Content: "start"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := runner.saveAgentSessionMetadata(agentSessionMetadata{
-		ID:             sessionID,
-		CreatedAt:      started,
-		UpdatedAt:      started,
-		Profile:        ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
-		AgentProfile:   agentProfile,
-		PromptIdentity: promptIdentity,
-		SystemPrompt:   "test",
-		ContextPolicy:  contextPolicyForTest(8192),
-		Engine: agentSessionEngine{
-			MaxEmptyProviderRetries: 1,
-			NoProgressLimit:         2,
-			DuplicateToolLimit:      3,
-			WallTime:                60 * time.Second,
-		},
-		Turns: []AgentTurnSummary{{
-			ID:        turnID,
-			Status:    "running",
-			StartedAt: started,
-		}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	restored := NewRunner(root)
-	restored.StorageMode = StorageModeFile
-	restored.Now = fixedClock()
-	sessions := restored.AgentSessions(context.Background())
-	if len(sessions) != 1 || sessions[0].Status != "interrupted" || !sessions[0].Recoverable || sessions[0].CanAppendMessage {
-		t.Fatalf("sessions = %#v", sessions)
-	}
-	snapshot, err := restored.AgentSession(context.Background(), sessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.Status != "interrupted" || !snapshot.Recoverable || snapshot.CanAppendMessage {
-		t.Fatalf("snapshot = %#v", snapshot)
-	}
-	appendResult := restored.RunAgentTurn(context.Background(), sessionID, AgentTurnRequest{Message: "again"})
-	if appendResult.Status != "error" || appendResult.StatusCode != 409 || !strings.Contains(appendResult.Error, "cannot accept") {
-		t.Fatalf("appendResult = %#v", appendResult)
+func TestDecodeAgentSessionMetadataRejectsRemovedTurnsField(t *testing.T) {
+	_, err := decodeAgentSessionMetadata([]byte(`{"version":2,"id":"session-a","turns":[]}`))
+	if err == nil || !strings.Contains(err.Error(), `unknown field "turns"`) {
+		t.Fatalf("err = %v, want removed turns field rejection", err)
 	}
 }
 
-func TestRunnerPersistedAbortedTurnSnapshotsAsCancelled(t *testing.T) {
-	root := t.TempDir()
-	runner := NewRunner(root)
-	runner.StorageMode = StorageModeFile
-	runner.Now = fixedClock()
-	sessionID := "testui-session-cancelled"
-	turnID := "turn-1"
-	started := runner.now()
-	agentProfile, promptIdentity := promptMetadataForTest("test")
-	repo := sessiontree.NewFileRepo(runner.agentSessionTreeRoot())
-	if _, err := repo.CreateThread(context.Background(), sessiontree.ThreadMeta{ID: sessionID, CreatedAt: started, UpdatedAt: started}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sessiontree.AppendTurnMarker(context.Background(), repo, sessionID, turnID, sessiontree.TurnStarted, nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sessiontree.AppendTurnMarker(context.Background(), repo, sessionID, turnID, sessiontree.TurnAborted, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := runner.saveAgentSessionMetadata(agentSessionMetadata{
-		ID:             sessionID,
-		CreatedAt:      started,
-		UpdatedAt:      started,
-		Profile:        ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
-		AgentProfile:   agentProfile,
-		PromptIdentity: promptIdentity,
-		SystemPrompt:   "test",
-		ContextPolicy:  contextPolicyForTest(8192),
-		Engine: agentSessionEngine{
-			MaxEmptyProviderRetries: 1,
-			NoProgressLimit:         2,
-			DuplicateToolLimit:      3,
-			WallTime:                60 * time.Second,
-		},
-		Turns: []AgentTurnSummary{{
-			ID:        turnID,
-			Status:    string(engine.Cancelled),
-			StartedAt: started,
-		}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	restored := NewRunner(root)
-	restored.StorageMode = StorageModeFile
-	snapshot, err := restored.AgentSession(context.Background(), sessionID)
+func TestRunnerAgentSessionsRejectsCorruptMetadata(t *testing.T) {
+	ctx := context.Background()
+	runner := NewRunner(t.TempDir())
+	t.Cleanup(func() { _ = runner.Close() })
+	store, err := runner.sessionStorage(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Status != string(engine.Cancelled) || snapshot.Recoverable || snapshot.CanAppendMessage {
-		t.Fatalf("snapshot = %#v", snapshot)
+	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+	if _, err := store.metadataDB.ExecContext(ctx, `INSERT INTO metadata_records(namespace, id, created_at, updated_at, data_json) VALUES(?, ?, ?, ?, ?)`,
+		agentSessionMetadataNamespace, "broken", formatMetadataTime(now), formatMetadataTime(now), `{"version":2,"id":"broken","turns":[]}`); err != nil {
+		t.Fatal(err)
+	}
+	if sessions, err := runner.AgentSessions(ctx); err == nil || sessions != nil || !strings.Contains(err.Error(), `unknown field "turns"`) {
+		t.Fatalf("sessions=%#v err=%v", sessions, err)
 	}
 }
 
-func TestRunnerRepairsStaleThreadLeafAndMetadataTurnsFromJournal(t *testing.T) {
+func TestRunnerMetadataCorruptionIsNotReportedAsMissing(t *testing.T) {
+	runner := NewRunner(t.TempDir())
+	t.Cleanup(func() { _ = runner.Close() })
+	store, err := runner.sessionStorage(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.metadataDB.Exec(`INSERT INTO metadata_records(namespace, id, created_at, updated_at, data_json) VALUES(?, ?, '', '', ?)`, agentSessionMetadataNamespace, "broken", `{"version":2,"id":"broken","turns":[]}`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = runner.AgentSession(context.Background(), "broken")
+	if err == nil || isMissingAgentSessionError(err) || !strings.Contains(err.Error(), `unknown field "turns"`) {
+		t.Fatalf("err = %v, want explicit metadata corruption", err)
+	}
+}
+
+func TestRunnerMetadataCannotRecreateDeletedCanonicalThread(t *testing.T) {
+	ctx := context.Background()
 	root := t.TempDir()
 	runner := NewRunner(root)
-	runner.StorageMode = StorageModeFile
 	runner.Now = fixedClock()
-	sessionID := "testui-session-stale-leaf"
-	turnID := "turn-1"
-	started := runner.now()
-	agentProfile, promptIdentity := promptMetadataForTest("test")
-	repo := sessiontree.NewFileRepo(runner.agentSessionTreeRoot())
-	if _, err := repo.CreateThread(context.Background(), sessiontree.ThreadMeta{ID: sessionID, CreatedAt: started, UpdatedAt: started}); err != nil {
-		t.Fatal(err)
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return harness.NewScriptedProvider(), nil
 	}
-	user, err := sessiontree.AppendMessage(context.Background(), repo, sessionID, turnID, session.Message{Role: session.User, Content: "start"})
+	created, err := runner.CreateIdleAgentSession(ctx, AgentRunRequest{
+		Profile:      ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		SystemPrompt: "test",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sessiontree.AppendTurnMarker(context.Background(), repo, sessionID, turnID, sessiontree.TurnCompleted, map[string]string{"finish_reason": "stop"}); err != nil {
-		t.Fatal(err)
-	}
-	threadPath := filepath.Join(runner.agentSessionTreeRoot(), safeSessionFileName(sessionID), "thread.json")
-	threadData, err := os.ReadFile(threadPath)
+	store, err := runner.sessionStorage(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var thread sessiontree.ThreadMeta
-	if err := json.Unmarshal(threadData, &thread); err != nil {
-		t.Fatal(err)
-	}
-	thread.LeafID = user.ID
-	thread.UpdatedAt = user.CreatedAt
-	staleThreadData, err := json.Marshal(thread)
+	deleteHost, err := store.capabilities.delete.NewHost(ctx, flruntime.ThreadID(created.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(threadPath, staleThreadData, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := runner.saveAgentSessionMetadata(agentSessionMetadata{
-		ID:             sessionID,
-		CreatedAt:      started,
-		UpdatedAt:      started,
-		Profile:        ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
-		AgentProfile:   agentProfile,
-		PromptIdentity: promptIdentity,
-		SystemPrompt:   "test",
-		ContextPolicy:  contextPolicyForTest(8192),
-		Engine: agentSessionEngine{
-			MaxEmptyProviderRetries: 1,
-			NoProgressLimit:         2,
-			DuplicateToolLimit:      3,
-			WallTime:                60 * time.Second,
-		},
-	}); err != nil {
+	if err := deleteHost.DeleteThread(ctx, flruntime.ThreadID(created.ID)); err != nil {
 		t.Fatal(err)
 	}
 
-	restored := NewRunner(root)
-	restored.StorageMode = StorageModeFile
-	restored.Now = fixedClock()
-	sessions := restored.AgentSessions(context.Background())
-	if len(sessions) != 1 || sessions[0].Status != string(engine.Completed) || !sessions[0].CanAppendMessage || len(sessions[0].Turns) != 1 {
-		t.Fatalf("sessions = %#v", sessions)
-	}
-	snapshot, err := restored.AgentSession(context.Background(), sessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.Status != string(engine.Completed) || snapshot.LeafID == user.ID || len(snapshot.Turns) != 1 || snapshot.Turns[0].Status != string(engine.Completed) {
-		t.Fatalf("snapshot = %#v", snapshot)
-	}
-	meta, err := restored.loadAgentSessionMetadata(sessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(meta.Turns) != 1 || meta.Turns[0].Status != string(engine.Completed) || !meta.UpdatedAt.After(started) {
-		t.Fatalf("metadata was not refreshed from journal: %#v", meta)
+	restarted := NewRunner(root)
+	t.Cleanup(func() {
+		_ = restarted.Close()
+		_ = runner.Close()
+	})
+	sessions, err := restarted.AgentSessions(ctx)
+	if err == nil || sessions != nil || !errors.Is(err, flruntime.ErrThreadDeleted) {
+		t.Fatalf("sessions=%#v err=%v, want deleted canonical thread failure", sessions, err)
 	}
 }
 
@@ -1811,106 +1660,35 @@ func TestRunnerAgentSessionCanContinueAfterCompletedTurn(t *testing.T) {
 	}
 }
 
-func TestRunnerDeleteAgentSessionRemovesMetadataTreeAndPromptCache(t *testing.T) {
+func TestRunnerFileAgentSessionFailsAtCompositionBeforeProviderOrFiles(t *testing.T) {
 	root := t.TempDir()
-	scripted := harness.NewScriptedProvider(
-		harness.Step(harness.Text("first done"), harness.Done()),
-		harness.Step(harness.Text("second done"), harness.Done()),
-	)
 	runner := NewRunner(root)
 	runner.StorageMode = StorageModeFile
 	runner.Now = fixedClock()
+	providerCalls := 0
 	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
-		return scripted, nil
+		providerCalls++
+		return harness.NewScriptedProvider(harness.Step(harness.Text("must not run"), harness.Done())), nil
 	}
 
-	first := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+	result := runner.CreateAgentSession(context.Background(), AgentRunRequest{
 		Profile:      ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
 		Message:      "first",
 		SystemPrompt: "test",
 	})
-	if first.Status != "completed" {
-		t.Fatalf("first = %#v", first)
+	if result.Status != "error" || !strings.Contains(result.Error, "floret store capability is unsupported") {
+		t.Fatalf("result = %#v", result)
 	}
-	second := runner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "second"})
-	if second.Status != "completed" {
-		t.Fatalf("second = %#v", second)
-	}
-	if first.TurnID == "" || second.TurnID == "" || first.TurnID == second.TurnID {
-		t.Fatalf("turn ids = %q, %q", first.TurnID, second.TurnID)
+	if providerCalls != 0 {
+		t.Fatalf("provider factory calls = %d, want 0", providerCalls)
 	}
 	for _, path := range []string{
-		runner.agentSessionMetadataPath(first.SessionID),
-		filepath.Join(runner.agentSessionTreeRoot(), safeSessionFileName(first.SessionID)),
-		filepath.Join(root, ".floret-test-ui", "prompt-cache", safeSessionFileName(first.SessionID)),
-	} {
-		if _, err := os.Stat(path); err != nil {
-			t.Fatalf("expected persisted session artifact %s: %v", path, err)
-		}
-	}
-
-	if err := runner.DeleteAgentSession(context.Background(), first.SessionID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := runner.AgentSession(context.Background(), first.SessionID); err == nil || !isMissingAgentSessionError(err) {
-		t.Fatalf("AgentSession err = %v, want missing", err)
-	}
-	if sessions := runner.AgentSessions(context.Background()); len(sessions) != 0 {
-		t.Fatalf("sessions = %#v", sessions)
-	}
-	for _, path := range []string{
-		runner.agentSessionMetadataPath(first.SessionID),
-		filepath.Join(runner.agentSessionTreeRoot(), safeSessionFileName(first.SessionID)),
-		filepath.Join(root, ".floret-test-ui", "prompt-cache", safeSessionFileName(first.SessionID)),
+		runner.agentSessionMetadataRoot(),
+		runner.agentSessionTreeRoot(),
+		filepath.Join(root, ".floret-test-ui", "prompt-cache"),
 	} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("artifact %s still exists or returned unexpected err: %v", path, err)
-		}
-	}
-}
-
-func TestRunnerDeleteRestoredAgentSessionRemovesPromptCacheWithoutProvider(t *testing.T) {
-	root := t.TempDir()
-	firstProvider := harness.NewScriptedProvider(
-		harness.Step(harness.Text("first done"), harness.Done()),
-		harness.Step(harness.Text("second done"), harness.Done()),
-	)
-	firstRunner := NewRunner(root)
-	firstRunner.StorageMode = StorageModeFile
-	firstRunner.Now = fixedClock()
-	firstRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
-		return firstProvider, nil
-	}
-
-	first := firstRunner.CreateAgentSession(context.Background(), AgentRunRequest{
-		Profile:      ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
-		Message:      "first",
-		SystemPrompt: "test",
-	})
-	if first.Status != "completed" {
-		t.Fatalf("first = %#v", first)
-	}
-	second := firstRunner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "second"})
-	if second.Status != "completed" {
-		t.Fatalf("second = %#v", second)
-	}
-
-	restored := NewRunner(root)
-	restored.StorageMode = StorageModeFile
-	restored.Now = fixedClock()
-	restored.ProviderFactory = func(config.Config) (provider.Provider, error) {
-		return nil, errors.New("delete should not build provider runtime")
-	}
-	if err := restored.DeleteAgentSession(context.Background(), first.SessionID); err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range []string{
-		restored.agentSessionMetadataPath(first.SessionID),
-		filepath.Join(restored.agentSessionTreeRoot(), safeSessionFileName(first.SessionID)),
-		filepath.Join(root, ".floret-test-ui", "prompt-cache", safeSessionFileName(first.SessionID)),
-	} {
-		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("artifact %s still exists or returned unexpected err: %v", path, err)
+			t.Fatalf("composition failure created %s: %v", path, err)
 		}
 	}
 }
@@ -1947,7 +1725,7 @@ func TestRunnerDefaultSQLitePersistsListsRestoresAndDeletesSession(t *testing.T)
 	secondRunner.ProviderFactory = func(config.Config) (provider.Provider, error) {
 		return secondProvider, nil
 	}
-	sessions := secondRunner.AgentSessions(context.Background())
+	sessions := mustAgentSessions(t, secondRunner)
 	if len(sessions) != 1 || sessions[0].ID != first.SessionID || !slices.Equal(sessions[0].SelectedTools, []string{"grep"}) {
 		t.Fatalf("restarted sessions = %#v", sessions)
 	}
@@ -1965,7 +1743,7 @@ func TestRunnerDefaultSQLitePersistsListsRestoresAndDeletesSession(t *testing.T)
 	if err := secondRunner.DeleteAgentSession(context.Background(), first.SessionID); err != nil {
 		t.Fatal(err)
 	}
-	if sessions := secondRunner.AgentSessions(context.Background()); len(sessions) != 0 {
+	if sessions := mustAgentSessions(t, secondRunner); len(sessions) != 0 {
 		t.Fatalf("sessions after delete = %#v", sessions)
 	}
 	if _, err := secondRunner.AgentSession(context.Background(), first.SessionID); err == nil || !isMissingAgentSessionError(err) {
@@ -1987,7 +1765,7 @@ func TestRunnerInterfaceProbeDoesNotOpenDefaultSQLite(t *testing.T) {
 	if _, err := os.Stat(sqlite.DefaultTestUIPath(root)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("transient probe should not create sqlite db, err=%v", err)
 	}
-	if runner.storageSQLite != nil {
+	if runner.storage != nil {
 		t.Fatalf("transient probe opened sqlite store")
 	}
 }
@@ -2193,7 +1971,7 @@ func TestRunnerAgentSessionRegistryIsStableForLiteralRunner(t *testing.T) {
 	if second.Status != "completed" || second.Output != "literal resumed" {
 		t.Fatalf("second = %#v", second)
 	}
-	if sessions := runner.AgentSessions(context.Background()); len(sessions) != 1 || sessions[0].ID != first.SessionID {
+	if sessions := mustAgentSessions(t, &runner); len(sessions) != 1 || sessions[0].ID != first.SessionID {
 		t.Fatalf("sessions = %#v", sessions)
 	}
 }
@@ -2270,13 +2048,22 @@ func TestRunnerAgentSessionSnapshotsDoNotBlockOnRunningTurn(t *testing.T) {
 	defer sess.mu.Unlock()
 	runner.markAgentSessionRunningLocked(sess, "turn-busy")
 
-	listResult := make(chan []AgentSessionSnapshot, 1)
+	type listOutcome struct {
+		sessions []AgentSessionSnapshot
+		err      error
+	}
+	listResult := make(chan listOutcome, 1)
 	go func() {
-		listResult <- runner.AgentSessions(context.Background())
+		sessions, err := runner.AgentSessions(context.Background())
+		listResult <- listOutcome{sessions: sessions, err: err}
 	}()
 	var sessions []AgentSessionSnapshot
 	select {
-	case sessions = <-listResult:
+	case outcome := <-listResult:
+		if outcome.err != nil {
+			t.Fatal(outcome.err)
+		}
+		sessions = outcome.sessions
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("AgentSessions blocked on running session")
 	}
@@ -2307,6 +2094,55 @@ func TestRunnerAgentSessionSnapshotsDoNotBlockOnRunningTurn(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("AgentSession blocked on running session")
 	}
+}
+
+func TestRunnerRunningSnapshotsFailWhenCanonicalReadFails(t *testing.T) {
+	ctx := context.Background()
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	t.Cleanup(func() { _ = runner.Close() })
+
+	created, err := runner.CreateIdleAgentSession(ctx, AgentRunRequest{
+		Profile:      ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		Message:      "hello",
+		SystemPrompt: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, ok := runner.Sessions.get(created.ID)
+	if !ok {
+		t.Fatal("session not registered")
+	}
+	store, err := runner.sessionStorage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	runner.markAgentSessionRunningLocked(sess, "turn-running")
+	if err := store.runtimeStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if generator, err := runner.agentSessionIDGenerator(ctx, sess.read, created.ID); !errors.Is(err, flruntime.ErrStoreClosed) || generator != nil {
+		t.Fatalf("id generator present=%v err=%v, want nil ErrStoreClosed", generator != nil, err)
+	}
+
+	if snapshot, err := runner.AgentSession(ctx, created.ID); !errors.Is(err, flruntime.ErrStoreClosed) || !reflect.DeepEqual(snapshot, AgentSessionSnapshot{}) {
+		t.Fatalf("running snapshot=%#v err=%v, want zero ErrStoreClosed", snapshot, err)
+	}
+	if snapshots, err := runner.AgentSessions(ctx); !errors.Is(err, flruntime.ErrStoreClosed) || snapshots != nil {
+		t.Fatalf("running snapshots=%#v err=%v, want nil ErrStoreClosed", snapshots, err)
+	}
+}
+
+func mustAgentSessions(t *testing.T, runner *Runner) []AgentSessionSnapshot {
+	t.Helper()
+	sessions, err := runner.AgentSessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sessions
 }
 
 func TestRunnerRunningSnapshotUsesRealTurnID(t *testing.T) {
@@ -2361,6 +2197,7 @@ func TestRunnerRunningSnapshotUsesRealTurnID(t *testing.T) {
 func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *testing.T) {
 	root := t.TempDir()
 	scripted := harness.NewScriptedProvider(
+		harness.Step(harness.Text("history accepted"), harness.Done()),
 		harness.Step(harness.Text("compact summary"), harness.Done()),
 		harness.Step(harness.Text("after compact"), harness.Done()),
 	)
@@ -2369,6 +2206,9 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
 		return scripted, nil
 	}
+	policy := contextPolicyForTest(2500)
+	policy.RecentUserTokens = 64
+	policy.CompactedContextTargetTokens = 800
 	initial, err := runner.CreateIdleAgentSession(context.Background(), AgentRunRequest{
 		Profile: ProviderProfile{
 			ID:           "fake",
@@ -2378,21 +2218,16 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 			FakeResponse: "unused",
 		},
 		SystemPrompt:  "test",
-		ContextPolicy: contextPolicyForTest(1800),
+		ContextPolicy: policy,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	long := strings.Repeat("history ", 620)
-	sess, ok := runner.Sessions.get(initial.ID)
-	if !ok {
-		t.Fatalf("idle session not registered: %#v", initial)
+	first := runner.RunAgentTurn(context.Background(), initial.ID, AgentTurnRequest{Message: strings.Repeat("history ", 500)})
+	if first.Status != "completed" || first.Output != "history accepted" {
+		t.Fatalf("first = %#v", first)
 	}
-	if _, err := sessiontree.AppendMessage(context.Background(), sess.repo, initial.ID, "turn-history", session.Message{Role: session.User, Content: long}); err != nil {
-		t.Fatal(err)
-	}
-
-	result := runner.RunAgentTurn(context.Background(), initial.ID, AgentTurnRequest{Message: "continue"})
+	result := runner.RunAgentTurn(context.Background(), initial.ID, AgentTurnRequest{Message: strings.Repeat("more ", 350) + " continue"})
 
 	if result.Status != "completed" || result.Output != "after compact" {
 		t.Fatalf("result = %#v", result)
@@ -2415,42 +2250,21 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 	}) {
 		t.Fatalf("path entries missing compaction metadata: %#v", result.Observation.PathEntries)
 	}
-	if compactionEntry.ContextUsageBefore.OutputHeadroom == 0 || compactionEntry.ContextUsageBefore.AutoCompactRatio != contextpolicy.DefaultAutoCompactRatioPercent {
-		t.Fatalf("compaction entry missing before budget usage: %#v", compactionEntry.ContextUsageBefore)
-	}
-	if compactionEntry.ContextUsageAfter.OutputHeadroom == 0 || compactionEntry.ContextUsageAfter.AutoCompactRatio != contextpolicy.DefaultAutoCompactRatioPercent {
-		t.Fatalf("compaction entry missing after budget usage: %#v", compactionEntry.ContextUsageAfter)
-	}
-	if !slices.ContainsFunc(result.Observation.ProviderRequests, func(request ObservedProviderRequest) bool {
-		return slices.ContainsFunc(request.RawSegments, func(segment ObservedRawSegment) bool {
-			return segment.Kind == "compaction" &&
-				segment.PromptScopeID == result.SessionID &&
-				segment.CreatedByRunID != "" &&
-				segment.CreatedByTurnID == result.TurnID &&
-				segment.EntryID != "" &&
-				segment.CompactionGeneration > 0 &&
-				segment.CompactionWindowID != ""
+	if len(result.Observation.ProviderRequests) == 0 || !slices.ContainsFunc(result.Observation.ProviderRequests, func(request ObservedProviderRequest) bool {
+		return slices.ContainsFunc(request.Messages, func(message ObservedSessionMessage) bool {
+			return strings.Contains(message.Content, "compact summary")
 		})
 	}) {
-		t.Fatalf("provider request missing compaction segment: %#v", result.Observation.ProviderRequests)
+		t.Fatalf("model gateway request missing projected compaction message: %#v", result.Observation.ProviderRequests)
 	}
 	if !slices.ContainsFunc(result.Session.ContextStatuses, func(status ObservedContextStatus) bool {
 		return status.Phase == observation.ContextPhaseProjectedRequest &&
 			status.ThreadID == result.SessionID &&
 			status.TurnID == result.TurnID &&
 			status.RequestID != "" &&
-			status.ContextPressure.ContextWindowTokens == 1800
+			status.ContextPressure.ContextWindowTokens == 2500
 	}) {
 		t.Fatalf("session missing projected context status: %#v", result.Session.ContextStatuses)
-	}
-	if !slices.ContainsFunc(result.Session.ContextStatuses, func(status ObservedContextStatus) bool {
-		return status.Phase == observation.ContextPhaseProviderUsage &&
-			status.ThreadID == result.SessionID &&
-			status.TurnID == result.TurnID &&
-			status.RequestID != "" &&
-			status.ContextPressure.ContextWindowTokens == 1800
-	}) {
-		t.Fatalf("session missing provider usage context status: %#v", result.Session.ContextStatuses)
 	}
 	if !slices.ContainsFunc(result.Session.CompactionEvents, func(event ObservedCompactionEvent) bool {
 		return event.Phase == engine.ContextCompactPhaseComplete &&
@@ -2475,34 +2289,12 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 			status.ThreadID == result.SessionID &&
 			status.TurnID == result.TurnID &&
 			status.RequestID != "" &&
-			status.ContextPressure.ContextWindowTokens == 1800
+			status.ContextPressure.ContextWindowTokens == 2500
 	}) {
 		t.Fatalf("reopened snapshot missing projected context status: %#v", snapshot.ContextStatuses)
 	}
-	if !slices.ContainsFunc(snapshot.ContextStatuses, func(status ObservedContextStatus) bool {
-		return status.Phase == observation.ContextPhaseProviderUsage &&
-			status.ThreadID == result.SessionID &&
-			status.TurnID == result.TurnID &&
-			status.RequestID != "" &&
-			status.ContextPressure.ContextWindowTokens == 1800
-	}) {
-		t.Fatalf("reopened snapshot missing provider usage context status: %#v", snapshot.ContextStatuses)
-	}
-	if !slices.ContainsFunc(snapshot.Observation.ProviderRequests, func(request ObservedProviderRequest) bool {
-		return request.ThreadID == result.SessionID &&
-			request.PromptScopeID == result.SessionID &&
-			request.TurnID == result.TurnID &&
-			request.RequestEstimate.EstimatedInputTokens > 0 &&
-			request.ProjectedPressure.ContextWindowTokens == 1800 &&
-			slices.ContainsFunc(request.RawSegments, func(segment ObservedRawSegment) bool {
-				return segment.Kind == "compaction" &&
-					segment.PromptScopeID == result.SessionID &&
-					segment.CreatedByTurnID == result.TurnID &&
-					segment.CompactionGeneration == compactionEntry.CompactionGeneration &&
-					segment.CompactionWindowID == compactionEntry.CompactionWindowID
-			})
-	}) {
-		t.Fatalf("reopened snapshot missing provider request observation: %#v", snapshot.Observation.ProviderRequests)
+	if len(snapshot.Observation.ProviderRequests) != 0 {
+		t.Fatalf("reopened snapshot fabricated provider request observation: %#v", snapshot.Observation.ProviderRequests)
 	}
 	if !slices.ContainsFunc(snapshot.CompactionEvents, func(event ObservedCompactionEvent) bool {
 		return event.Phase == engine.ContextCompactPhaseComplete &&

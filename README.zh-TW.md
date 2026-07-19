@@ -75,15 +75,27 @@ go get github.com/floegence/floret/config github.com/floegence/floret/runtime gi
 ```go
 store := runtime.NewMemoryStore()
 defer store.Close()
-bootstrap, err := runtime.NewHostBootstrap(store)
-if err != nil { /* handle error */ }
-threadCreator, err := runtime.NewThreadCreateHost(bootstrap, nil)
+var createBinder *runtime.ThreadCreateHostBinder
+var turnBinder *runtime.TurnExecutionHostBinder
+err := runtime.ConfigureHostCapabilities(store, func(bootstrap *runtime.HostBootstrap) error {
+	var err error
+	createBinder, err = runtime.NewThreadCreateHostBinder(bootstrap)
+	if err != nil { return err }
+	turnBinder, err = runtime.NewTurnExecutionHostBinder(bootstrap)
+	return err
+})
 if err != nil { /* handle error */ }
 
-turnFactory, err := runtime.NewTurnExecutionHostFactory(bootstrap)
+createIntentID := runtime.CreateIntentID("create-thread-1")
+threadCreator, err := createBinder.Bind("thread-1", createIntentID)
 if err != nil { /* handle error */ }
-turnHost, err := turnFactory.NewHost(runtime.TurnExecutionHostOptions{
-	ThreadID: "thread-1",
+turnFactory, err := turnBinder.Bind("thread-1")
+if err != nil { /* handle error */ }
+thread, err := threadCreator.CreateThread(ctx, runtime.CreateThreadRequest{
+	ThreadID: "thread-1", CreateIntentID: createIntentID,
+})
+if err != nil { /* handle error */ }
+turnHost, err := turnFactory.NewHost(ctx, runtime.TurnExecutionHostOptions{
 	Config: config.Config{
 		Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "Hello from Floret.",
 		AgentProfile: config.AgentProfile{ID: "support-agent", Name: "Support Agent"},
@@ -91,7 +103,6 @@ turnHost, err := turnFactory.NewHost(runtime.TurnExecutionHostOptions{
 })
 if err != nil { /* handle error */ }
 
-thread, err := threadCreator.CreateThread(ctx, runtime.CreateThreadRequest{ThreadID: "thread-1"})
 result, err := turnHost.RunTurn(ctx, runtime.RunTurnRequest{
 	ThreadID: thread.ID, TurnID: "turn-1", RunID: "run-1",
 	Input: runtime.TurnInput{Text: "Welcome a new customer in one sentence."},
