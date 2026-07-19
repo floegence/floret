@@ -68,7 +68,11 @@ inside its root parent's replayable fork plan.
 writes tombstones for the root and all descendants in the same Floret Store
 transaction that removes queryable Agent data. Deleted `ThreadID` values are not
 reusable. Delete replay is idempotent against the root tombstone. Every other
-operation returns an explicit deleted-authority error.
+operation returns an explicit deleted-authority error. Tombstones permanently
+retain the canonical identity provenance required to reject identity reuse and
+classify replay: a created root retains its `CreateIntentID` and create
+fingerprint, while every fork destination retains its fork `OperationID`, plan
+node identity, and source provenance.
 
 ## Fork Claim Proof
 
@@ -98,7 +102,7 @@ The fork operation states are exactly:
 | State | Durable shape | Allowed transition |
 | --- | --- | --- |
 | `prepared` | immutable plan plus complete claim set; no destinations visible | `CommitFork`, `FailFork`, or replay same request |
-| `completed` | all planned destinations visible; result stored; no claims | idempotent read/replay only |
+| `completed` | immutable plan and result stored; either all planned destinations are matching live canonical rows, or all are matching provenance tombstones after atomic root-tree deletion; no claims | idempotent read/replay only |
 | `failed` | no planned destination visible; deterministic error stored; no claims | idempotent error replay only |
 
 `CommitFork` creates every planned destination, stores the completed result, and
@@ -107,6 +111,17 @@ releases every claim in one transaction. Partial publication is impossible.
 deterministic failure plus claim release. Transient storage or cancellation
 errors leave the operation prepared so the same source-bound `ThreadForkHost`
 and `OperationID` can replay it. There is no compensation delete.
+
+A completed fork operation is permanent. Replay validates the immutable result
+against every planned destination. If every destination is the matching live
+canonical row, replay returns the stored completed result. If the destination
+tree was later atomically deleted and every planned node has a tombstone carrying
+the exact operation, plan-node, and source provenance, replay returns
+`ErrThreadDeleted`. A destination with neither the matching live row nor the
+matching tombstone is `ErrAuthorityCorrupt`. Every live/tombstoned mixture is
+also corruption because root-tree deletion tombstones the complete planned
+destination tree atomically. Replay never recreates a destination or rewrites
+the completed result.
 
 ## Lease Proof And Liveness
 
@@ -643,6 +658,10 @@ A deterministic conflict before publication may instead transition prepared to
 failed through `FailFork`. Transient errors remain prepared. Replays read only
 the immutable plan; they do not regenerate IDs, discover new children, rebuild
 mappings, recreate missing completed targets, or compensate by deletion.
+Completed replay returns the stored result only while every planned destination
+is the matching live row. Exact matching fork-provenance tombstones return
+`ErrThreadDeleted`; missing or inconsistent live/tombstone authority returns
+`ErrAuthorityCorrupt`.
 
 ## Root Tree Delete
 
@@ -842,7 +861,7 @@ Public callers branch through `errors.Is`/`errors.As`, never strings:
 | Public result | Meaning and retry rule |
 | --- | --- |
 | `ErrThreadNotFound` | identity never existed; not success and not locally retryable |
-| `ErrThreadDeleted` | tombstoned identity; fatal except exact delete replay |
+| `ErrThreadDeleted` | tombstoned identity, including exact replay of a completed fork whose destination tree was later deleted; fatal except exact delete replay |
 | `ErrThreadBusy` plus `AuthorityBusyError.Kind` | claim, fresh turn, expired-fenced turn, or mutation owner; retry only after observed authority change |
 | `ErrSubAgentClosing` | exact close operation owns the subtree; only same close replay or required turn recovery may proceed |
 | `ErrSubAgentClosed` | child lifecycle is terminal; fatal for writes |
@@ -861,6 +880,8 @@ Public callers branch through `errors.Is`/`errors.As`, never strings:
 | `ErrAuthorizationContract` | gate returned success without the closure result or changed/forged its opaque receipt; retry classification depends on whether the local closure crossed dispatch |
 | `ErrAuthorityCorrupt` | impossible durable shape, claim set, graph, or operation state; fatal and startup-blocking when discovered during verification |
 | `ErrUnsupportedStoreCapability` | backend cannot provide required semantic atomicity; composition failure |
+| `UnsupportedStoreSchemaError` via `errors.As` | Store version or fingerprint is not an exact supported schema or migration source; opening is non-destructive and no compatibility data is synthesized |
+| `StoreLeasePolicyMismatchError` via `errors.As` | configured lease policy differs from the persisted Store policy; opening is non-destructive and may be retried only with the exact persisted policy |
 | `ErrStoreClosed` | Store is closing/closed; no new work may start |
 | `CommittedCleanupError` via `errors.As` | canonical delete/close committed; retry cleanup only, never repeat canonical mutation |
 | `CommittedEffectError` via `errors.As` | exact authorized handler was invoked; never retry the effect, only record/repair observation state |
@@ -900,6 +921,42 @@ use one transaction with an early write lock. Lease policy is persisted and
 validated on open. Invalid authority combinations are constrained or explicitly
 rejected. Two independently opened Store instances observe one owner and result.
 
+### Schema Compatibility
+
+The authority-kernel schema remains version `14` until this unpublished design is
+implemented. Version `14` is accepted only with the exact frozen canonical
+fingerprint. A different version `14` fingerprint, including an earlier
+experimental fingerprint, is not a migration source and is rejected
+non-destructively. No version `15` is introduced to preserve an unpublished
+shape.
+
+The only supported predecessor is the exact version `13` fingerprint, and it may
+migrate only when the Store is empty. Empty means every version `13` data table
+has zero rows; only schema metadata and SQLite-internal bookkeeping may exist.
+The Store acquires an early SQLite write lock and, in that same transaction,
+verifies emptiness before replacing any schema object. A non-empty version `13`
+Store is rejected non-destructively because it cannot supply `CreateIntentID`,
+request identities, authority generation and expiry, effect attempts, close
+identities, or other frozen authority proofs without guessing.
+
+Under that same early-write-locked transaction, an empty version `13` Store is
+replaced by the exact version `14` schema and configured lease policy. The
+emptiness decision and replacement therefore have one linearization point.
+Failure leaves the version `13` schema and fingerprint unchanged. The migration
+never synthesizes identities, resets data, renames or backs up a database, or
+creates an alternate Store.
+Versions older than `13`, unknown versions, missing metadata, and unknown
+fingerprints return `UnsupportedStoreSchemaError` with the observed version and
+fingerprint plus the exact accepted current and predecessor shapes.
+
+Opening an exact version `14` Store requires the configured lease policy to equal
+the persisted policy. A mismatch returns `StoreLeasePolicyMismatchError` before
+issuing capabilities or changing durable state. If concurrent openers attempt to
+migrate the same empty version `13` Store with different policies, the opener
+holding the migration transaction persists one policy; every loser rereads the
+resulting version `14` schema and either opens with that exact policy or returns
+the same mismatch error. It never overwrites the winner's policy.
+
 ## File
 
 File storage may advertise only capability families for which it provides the
@@ -930,6 +987,7 @@ File rejection where unsupported.
 | Construction | missing root, child passed as root, missing parent, deleted identity, and wrong bound ID fail before skills/tools/events/registry/gateway/provider state |
 | Root create | same intent/different ThreadID, same ThreadID/different intent, changed contract version, wrong existing shape, and tombstone conflict; concurrent exact replay publishes one root/result |
 | State shapes | every invalid lifecycle/claim/lease/input/fork combination is rejected by Memory, SQLite, verification, and migration |
+| Schema compatibility | one early-write-locked transaction checks empty exact v13 and migrates it to exact frozen v14; concurrent different lease policies produce one winner and typed mismatch losers; non-empty v13, older/unknown versions, missing metadata, and alternate v14 fingerprints are rejected without schema or data changes; no identity is synthesized |
 | Lease liveness | renewal keeps long turn and approval wait fresh; failed renewal fences dispatch/write; expired-fenced cannot write or take over; only takeover-eligible exact proof can recover |
 | Generation | stale/released/wrong-owner/wrong-purpose/wrong-turn/replaced-generation proof cannot write, renew, finish, or release |
 | Admission | start plus user message are atomic; provider is not called on failure; retry move is atomic; finish plus release is atomic |
@@ -939,7 +997,7 @@ File rejection where unsupported.
 | Effect authorization | Store assigns one attempt per canonical invocation across concurrent/different-ID preparation; attempt lifecycle covers crash before/after dispatch boundary; final handler boundary rereads same fresh owner/generation while allowing newer heartbeat; one-shot rejects double/deferred calls; FinishTurn cancels prepared and blocks dispatching; receipt is Floret-sealed; policy revision changes append a new current decision; unknown is never auto-retried |
 | Interrupted recovery | public exact root/parent-child capability; fresh failure-marked lease preserved; takeover rechecks path in transaction; dual SQLite yields one finalization |
 | Compaction | same RequestID replay only; renewal and expired takeover fence generations; different request cannot recover; one terminal result |
-| Fork | prepare pins complete plan/claims; no destination visible while prepared; commit is all-node atomic; failure publishes none; missing completed target is corruption, not recreation |
+| Fork | prepare pins complete plan/claims; no destination visible while prepared; commit is all-node atomic; failure publishes none; completed all-live replay returns stored result; completed all-tombstoned matching provenance returns `ErrThreadDeleted`; every mixture or missing/inconsistent authority is corruption, never recreation |
 | Delete | active descendant, claim, concurrent spawn, malformed graph, or never-existing root causes zero deletion; tombstone replay; deleted ID cannot recreate; cleanup error is committed |
 | SubAgent publication | create and fork-copy metadata plus first input atomic; PublicationID replay/conflict; no success event/cache before commit; spawn never executes provider |
 | SubAgent input | InputRequestID replay/conflict; pending/admitted/cancelled transitions only; interrupt atomic; no consumed state |
