@@ -79,6 +79,7 @@ var (
 	ErrThreadDeleted            = errors.New("session tree thread is deleted")
 	ErrSubAgentClosing          = errors.New("session tree subagent is closing")
 	ErrStaleAuthority           = errors.New("session tree authority proof is stale")
+	ErrRecoveryTargetResolved   = errors.New("session tree interrupted recovery target is resolved")
 	ErrAuthorityCorrupt         = errors.New("session tree authority state is corrupt")
 	ErrForkDestinationConflict  = errors.New("session tree fork destination conflicts with operation marker")
 	ErrAgentTodoVersionConflict = errors.New("session tree agent todo version conflict")

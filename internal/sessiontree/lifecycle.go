@@ -126,10 +126,20 @@ type ThreadAuthoritySnapshot struct {
 	Thread           ThreadMeta
 	Lease            *TurnLease
 	ClaimOperationID string
+	LeaseGeneration  int64
 }
 
 type ThreadAuthorityInspectionRepo interface {
 	InspectThreadAuthority(context.Context, string) (ThreadAuthoritySnapshot, error)
+}
+
+type SubAgentThreadAuthoritySnapshot struct {
+	Parent ThreadMeta
+	Child  ThreadAuthoritySnapshot
+}
+
+type SubAgentThreadAuthorityInspectionRepo interface {
+	InspectSubAgentThreadAuthority(context.Context, string, string) (SubAgentThreadAuthoritySnapshot, error)
 }
 
 type rootCreateLedger struct {
@@ -263,7 +273,9 @@ func (r *MemoryRepo) InspectThreadAuthority(_ context.Context, threadID string) 
 		}
 		return ThreadAuthoritySnapshot{}, ErrThreadNotFound
 	}
-	snapshot := ThreadAuthoritySnapshot{Thread: meta, ClaimOperationID: r.authorityClaims[threadID]}
+	snapshot := ThreadAuthoritySnapshot{
+		Thread: meta, ClaimOperationID: r.authorityClaims[threadID], LeaseGeneration: r.leaseGeneration[threadID],
+	}
 	if lease, active := r.leases[threadID]; active {
 		copy := lease
 		snapshot.Lease = &copy
@@ -272,10 +284,46 @@ func (r *MemoryRepo) InspectThreadAuthority(_ context.Context, threadID string) 
 	if err != nil {
 		return ThreadAuthoritySnapshot{}, err
 	}
-	if err := ValidateThreadAuthorityState(path, snapshot.Lease, snapshot.ClaimOperationID); err != nil {
+	if err := ValidateThreadAuthoritySnapshot(snapshot.Thread, path, snapshot.Lease, snapshot.ClaimOperationID, snapshot.LeaseGeneration); err != nil {
 		return ThreadAuthoritySnapshot{}, err
 	}
 	return snapshot, nil
+}
+
+func (r *MemoryRepo) InspectSubAgentThreadAuthority(_ context.Context, parentThreadID, childThreadID string) (SubAgentThreadAuthoritySnapshot, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	parentThreadID = strings.TrimSpace(parentThreadID)
+	childThreadID = strings.TrimSpace(childThreadID)
+	parent, ok := r.threads[parentThreadID]
+	if !ok {
+		if _, deleted := r.tombstones[parentThreadID]; deleted {
+			return SubAgentThreadAuthoritySnapshot{}, ErrThreadDeleted
+		}
+		return SubAgentThreadAuthoritySnapshot{}, ErrThreadNotFound
+	}
+	if err := ValidateThreadMetaAuthority(parent); err != nil {
+		return SubAgentThreadAuthoritySnapshot{}, ErrAuthorityCorrupt
+	}
+	child, ok := r.threads[childThreadID]
+	if !ok || strings.TrimSpace(child.ParentThreadID) != parentThreadID {
+		return SubAgentThreadAuthoritySnapshot{}, ErrSubAgentNotFound
+	}
+	snapshot := ThreadAuthoritySnapshot{
+		Thread: child, ClaimOperationID: r.authorityClaims[childThreadID], LeaseGeneration: r.leaseGeneration[childThreadID],
+	}
+	if lease, active := r.leases[childThreadID]; active {
+		copy := lease
+		snapshot.Lease = &copy
+	}
+	path, err := pathLocked(r.threads, r.entries, childThreadID, child.LeafID)
+	if err != nil {
+		return SubAgentThreadAuthoritySnapshot{}, err
+	}
+	if err := ValidateThreadAuthoritySnapshot(snapshot.Thread, path, snapshot.Lease, snapshot.ClaimOperationID, snapshot.LeaseGeneration); err != nil {
+		return SubAgentThreadAuthoritySnapshot{}, err
+	}
+	return SubAgentThreadAuthoritySnapshot{Parent: parent, Child: snapshot}, nil
 }
 
 func (r *MemoryRepo) DeleteRootTree(_ context.Context, rootThreadID string) (DeleteRootTreeResult, error) {

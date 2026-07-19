@@ -75,6 +75,10 @@ var (
 	ErrThreadBusy = errors.New("floret thread is busy")
 	// ErrTurnNotFound reports that a requested durable turn was not found.
 	ErrTurnNotFound = errors.New("floret turn not found")
+	// ErrInterruptedTurnNotFound reports that a live exact recovery target has no active turn lease.
+	ErrInterruptedTurnNotFound = errors.New("floret interrupted turn not found")
+	// ErrRecoveryTargetResolved reports that an exact interrupted-turn target no longer owns its bound lease generation.
+	ErrRecoveryTargetResolved = errors.New("floret interrupted turn recovery target is resolved")
 	// ErrRunNotFound reports that a requested durable run was not found.
 	ErrRunNotFound = errors.New("floret run not found")
 	// ErrArtifactNotFound reports that a requested durable artifact was not found.
@@ -1988,6 +1992,8 @@ func runtimeHostError(err error) error {
 		return fmt.Errorf("%w: %w", ErrSubAgentClosing, err)
 	case errors.Is(err, sessiontree.ErrStaleAuthority):
 		return fmt.Errorf("%w: %w", ErrStaleAuthority, err)
+	case errors.Is(err, sessiontree.ErrRecoveryTargetResolved):
+		return fmt.Errorf("%w: %w", ErrRecoveryTargetResolved, err)
 	case errors.Is(err, sessiontree.ErrRequestConflict):
 		return &RequestConflictError{Operation: "authority", Err: err}
 	case errors.Is(err, sessiontree.ErrAuthorityCorrupt):

@@ -1,5 +1,15 @@
 # Floret OKF Update Log
 
+## 2026-07-20
+* **Boundary**: Amended the frozen interrupted-turn recovery object graph so the
+  composition root delivers a factory bound to one exact root or parent-child
+  turn owner and generation. Recovery retries may refresh only that target's
+  heartbeat proof and cannot follow replacement or future-turn authority.
+* **Storage**: Added atomic interrupted-turn resolution validation across the
+  current authority snapshot, admission proof, finish ledger, and terminal
+  entry; recovery takeover now rejects missing or drifted admission authority
+  before generation, effect, or journal mutation.
+
 ## 2026-07-19
 * **Boundary**: Bound each Test UI session to its exact turn and SubAgent
   factories instead of retaining the composition-root binder bundle; an active

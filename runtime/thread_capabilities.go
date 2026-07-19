@@ -71,7 +71,7 @@ type PendingToolRecoveryHostBinder struct {
 	lease *capabilityLease
 }
 
-// InterruptedTurnRecoveryHostBinder issues only exact interrupted-turn recovery handles.
+// InterruptedTurnRecoveryHostBinder issues only exact interrupted-turn recovery factories.
 type InterruptedTurnRecoveryHostBinder struct {
 	store *Store
 	lease *capabilityLease
@@ -128,6 +128,21 @@ type PendingToolRecoveryHost struct {
 	parentThreadID ThreadID
 }
 
+// InterruptedTurnRecoveryHostFactory refreshes recovery authority for one exact
+// root or parent-child turn owner and generation.
+type InterruptedTurnRecoveryHostFactory struct {
+	state *interruptedTurnRecoveryFactoryState
+}
+
+type interruptedTurnRecoveryFactoryState struct {
+	mu             sync.Mutex
+	store          *Store
+	threadID       ThreadID
+	parentThreadID ThreadID
+	latestLease    sessiontree.TurnLease
+	resolved       bool
+}
+
 // InterruptedTurnRecoveryHost finalizes one exact expired turn authority proof.
 type InterruptedTurnRecoveryHost struct {
 	store          *Store
@@ -135,6 +150,7 @@ type InterruptedTurnRecoveryHost struct {
 	threadID       ThreadID
 	parentThreadID ThreadID
 	expectedLease  sessiontree.TurnLease
+	factoryState   *interruptedTurnRecoveryFactoryState
 }
 
 // ConfigureHostCapabilities exposes one short-lived bootstrap scope. The Store
@@ -469,21 +485,43 @@ func (b *PendingToolRecoveryHostBinder) NewSubAgentHost(ctx context.Context, par
 	}, nil
 }
 
-// NewThreadHost binds recovery to the exact current turn proof of one root thread.
-func (b *InterruptedTurnRecoveryHostBinder) NewThreadHost(ctx context.Context, threadID ThreadID, sink EventSink) (*InterruptedTurnRecoveryHost, error) {
-	return b.newHost(ctx, "", threadID, sink)
+// BindThread binds recovery to the exact current turn owner and generation of one root thread.
+func (b *InterruptedTurnRecoveryHostBinder) BindThread(ctx context.Context, threadID ThreadID) (*InterruptedTurnRecoveryHostFactory, error) {
+	return b.bindThread(ctx, threadID)
 }
 
-// NewSubAgentHost binds recovery to the exact current turn proof of one child under one parent.
-func (b *InterruptedTurnRecoveryHostBinder) NewSubAgentHost(ctx context.Context, parentThreadID, childThreadID ThreadID, sink EventSink) (*InterruptedTurnRecoveryHost, error) {
+// BindSubAgent binds recovery to the exact current turn owner and generation of one child under one parent.
+func (b *InterruptedTurnRecoveryHostBinder) BindSubAgent(ctx context.Context, parentThreadID, childThreadID ThreadID) (*InterruptedTurnRecoveryHostFactory, error) {
+	if b == nil {
+		return nil, errors.New("interrupted turn recovery host binder is required")
+	}
+	if err := validateCapabilityBinder(b.store, b.lease, "interrupted turn recovery host binder"); err != nil {
+		return nil, err
+	}
 	parentThreadID, err := normalizeBoundThreadID(parentThreadID, "interrupted turn recovery parent")
 	if err != nil {
 		return nil, err
 	}
-	return b.newHost(ctx, parentThreadID, childThreadID, sink)
+	childThreadID, err = normalizeBoundThreadID(childThreadID, "interrupted turn recovery host")
+	if err != nil {
+		return nil, err
+	}
+	done, err := beginHostOperation(b.store)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	scoped, err := inspectSubAgentThreadAuthority(ctx, b.store, parentThreadID, childThreadID)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateLiveThreadLifecycle(scoped.Parent); err != nil {
+		return nil, err
+	}
+	return newInterruptedTurnRecoveryFactory(b.store, scoped.Child, parentThreadID)
 }
 
-func (b *InterruptedTurnRecoveryHostBinder) newHost(ctx context.Context, parentThreadID, threadID ThreadID, sink EventSink) (*InterruptedTurnRecoveryHost, error) {
+func (b *InterruptedTurnRecoveryHostBinder) bindThread(ctx context.Context, threadID ThreadID) (*InterruptedTurnRecoveryHostFactory, error) {
 	if b == nil {
 		return nil, errors.New("interrupted turn recovery host binder is required")
 	}
@@ -503,25 +541,157 @@ func (b *InterruptedTurnRecoveryHostBinder) newHost(ctx context.Context, parentT
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(snapshot.Thread.ParentThreadID) != strings.TrimSpace(string(parentThreadID)) {
-		return nil, runtimeHostError(sessiontree.ErrInvalidThreadAuthority)
+	if err := validateInterruptedRecoveryIdentity(snapshot.Thread, ""); err != nil {
+		return nil, err
 	}
-	if err := validateLiveThreadLifecycle(snapshot.Thread); err != nil {
+	return newInterruptedTurnRecoveryFactory(b.store, snapshot, "")
+}
+
+func newInterruptedTurnRecoveryFactory(store *Store, snapshot sessiontree.ThreadAuthoritySnapshot, parentThreadID ThreadID) (*InterruptedTurnRecoveryHostFactory, error) {
+	if store == nil || store.repo == nil {
+		return nil, errors.New("runtime store is required")
+	}
+	if _, ok := store.repo.(sessiontree.InterruptedTurnResolutionValidationRepo); !ok {
+		return nil, ErrUnsupportedStoreCapability
+	}
+	if snapshot.ClaimOperationID != "" {
+		return nil, ErrInterruptedTurnNotFound
+	}
+	if err := validateInterruptedRecoveryLifecycle(snapshot.Thread, parentThreadID); err != nil {
 		return nil, err
 	}
 	if snapshot.Lease == nil || snapshot.Lease.Purpose != sessiontree.TurnLeasePurposeTurn {
-		return nil, ErrTurnNotFound
+		return nil, ErrInterruptedTurnNotFound
 	}
-	if snapshot.ClaimOperationID != "" {
+	return &InterruptedTurnRecoveryHostFactory{
+		state: &interruptedTurnRecoveryFactoryState{
+			store: store, threadID: ThreadID(snapshot.Thread.ID), parentThreadID: parentThreadID, latestLease: *snapshot.Lease,
+		},
+	}, nil
+}
+
+// NewHost binds one recovery attempt to the current complete proof for the factory's exact target.
+func (f *InterruptedTurnRecoveryHostFactory) NewHost(ctx context.Context, sink EventSink) (*InterruptedTurnRecoveryHost, error) {
+	if f == nil || f.state == nil || f.state.store == nil || f.state.threadID == "" {
+		return nil, errors.New("interrupted turn recovery host factory is required")
+	}
+	state := f.state
+	done, err := beginHostOperation(state.store)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.resolved {
+		return nil, ErrRecoveryTargetResolved
+	}
+	snapshot, err := inspectInterruptedRecoveryFactoryAuthority(ctx, state)
+	if err != nil {
+		return nil, err
+	}
+	if snapshot.Lease == nil {
+		if snapshot.LeaseGeneration < state.latestLease.Generation {
+			return nil, ErrAuthorityCorrupt
+		}
+		if err := validateInterruptedTurnResolution(ctx, state); err != nil {
+			return nil, err
+		}
+		state.resolved = true
+		return nil, ErrRecoveryTargetResolved
+	}
+	current := *snapshot.Lease
+	if err := sessiontree.ValidateInterruptedTurnLeaseSuccessor(state.latestLease, current); err != nil {
+		return nil, runtimeHostError(err)
+	}
+	if current.Generation > state.latestLease.Generation {
+		if err := validateInterruptedTurnResolution(ctx, state); err != nil {
+			return nil, err
+		}
+		state.resolved = true
+		return nil, ErrRecoveryTargetResolved
+	}
+	if strings.TrimSpace(snapshot.ClaimOperationID) != "" {
 		return nil, ErrAuthorityCorrupt
 	}
-	harness, err := newCapabilityHarness(b.store, sink)
+	if err := validateInterruptedRecoveryLifecycle(snapshot.Thread, state.parentThreadID); err != nil {
+		return nil, err
+	}
+	state.latestLease = current
+	harness, err := newCapabilityHarness(state.store, sink)
 	if err != nil {
 		return nil, err
 	}
 	return &InterruptedTurnRecoveryHost{
-		store: b.store, harness: harness, threadID: threadID, parentThreadID: parentThreadID, expectedLease: *snapshot.Lease,
+		store: state.store, harness: harness, threadID: state.threadID, parentThreadID: state.parentThreadID, expectedLease: current,
+		factoryState: state,
 	}, nil
+}
+
+func validateInterruptedTurnResolution(ctx context.Context, state *interruptedTurnRecoveryFactoryState) error {
+	validator, ok := state.store.repo.(sessiontree.InterruptedTurnResolutionValidationRepo)
+	if !ok {
+		return ErrUnsupportedStoreCapability
+	}
+	err := validator.ValidateInterruptedTurnResolution(ctx, sessiontree.RecoverInterruptedTurnRequest{
+		ExpectedLease: state.latestLease, ParentThreadID: string(state.parentThreadID),
+	})
+	if errors.Is(err, sessiontree.ErrRequestConflict) {
+		return ErrAuthorityCorrupt
+	}
+	return runtimeHostError(err)
+}
+
+func inspectInterruptedRecoveryFactoryAuthority(ctx context.Context, state *interruptedTurnRecoveryFactoryState) (sessiontree.ThreadAuthoritySnapshot, error) {
+	if strings.TrimSpace(string(state.parentThreadID)) == "" {
+		snapshot, err := inspectThreadAuthority(ctx, state.store, state.threadID)
+		if err != nil {
+			return sessiontree.ThreadAuthoritySnapshot{}, err
+		}
+		if err := validateInterruptedRecoveryIdentity(snapshot.Thread, ""); err != nil {
+			return sessiontree.ThreadAuthoritySnapshot{}, err
+		}
+		return snapshot, nil
+	}
+	scoped, err := inspectSubAgentThreadAuthority(ctx, state.store, state.parentThreadID, state.threadID)
+	if err != nil {
+		return sessiontree.ThreadAuthoritySnapshot{}, err
+	}
+	if err := validateLiveThreadLifecycle(scoped.Parent); err != nil {
+		return sessiontree.ThreadAuthoritySnapshot{}, err
+	}
+	return scoped.Child, nil
+}
+
+func validateInterruptedRecoveryIdentity(meta sessiontree.ThreadMeta, parentThreadID ThreadID) error {
+	actualParent := strings.TrimSpace(meta.ParentThreadID)
+	expectedParent := strings.TrimSpace(string(parentThreadID))
+	if expectedParent == "" {
+		if actualParent != "" {
+			return fmt.Errorf("%w: %s", ErrSubAgentParentRequired, meta.ID)
+		}
+		return nil
+	}
+	if actualParent != expectedParent {
+		return runtimeHostError(sessiontree.ErrInvalidThreadAuthority)
+	}
+	return nil
+}
+
+func validateInterruptedRecoveryLifecycle(meta sessiontree.ThreadMeta, parentThreadID ThreadID) error {
+	if strings.TrimSpace(string(parentThreadID)) == "" {
+		return validateLiveThreadLifecycle(meta)
+	}
+	switch meta.Lifecycle {
+	case "", sessiontree.ThreadLifecycleOpen, sessiontree.ThreadLifecycleClosing:
+		return nil
+	case sessiontree.ThreadLifecycleClosed:
+		return ErrSubAgentClosed
+	case sessiontree.ThreadLifecycleDeleted:
+		return ErrThreadDeleted
+	default:
+		return ErrAuthorityCorrupt
+	}
 }
 
 func validateCapabilityStore(store *Store) error {

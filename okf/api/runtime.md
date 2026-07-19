@@ -4,7 +4,7 @@ title: runtime Package
 description: The runtime package is the public capability surface for hosted threads, child threads, stores, events, control signals, and Floret-owned context lifecycle.
 resource: /runtime/runtime.go
 tags: [api, runtime]
-timestamp: 2026-06-20T00:00:00Z
+timestamp: 2026-07-20T00:00:00Z
 ---
 
 # Summary
@@ -15,7 +15,7 @@ uses a thread-bound `TurnExecutionHost`, a thread-bound
 lifecycle transitions use `ThreadCreateHost`, `ThreadTitleHost`,
 `ThreadForkHost`, `ThreadDeleteHost`, `ThreadReadHost`,
 `SubAgentReadHost`, `PendingToolRecoveryHost`, and
-`InterruptedTurnRecoveryHost`. Active pending settlement stays on the exact
+`InterruptedTurnRecoveryHostFactory` / `InterruptedTurnRecoveryHost`. Active pending settlement stays on the exact
 `TurnExecutionHost` or `SubAgentHost` owner. Hosts provide product input, tools,
 permissions, and optional model transport; Floret owns
 provider loop execution, provider-visible context assembly, trimming, summary
@@ -47,9 +47,13 @@ host interface for every runtime operation.
   the exact canonical root or parent before returning a durable handle.
   SubAgent reads use their parent-bound binder.
   `PendingToolRecoveryHostBinder` exposes separate root-thread and SubAgent
-  parent methods, and `InterruptedTurnRecoveryHostBinder` binds either an exact
-  root turn or an exact parent-child turn. Recovery authority has no mixed or
-  empty identity shape.
+  parent methods. `InterruptedTurnRecoveryHostBinder.BindThread` and
+  `BindSubAgent` snapshot one exact root or parent-child turn owner and
+  generation into `InterruptedTurnRecoveryHostFactory`; its `NewHost` may
+  refresh only heartbeat and expiry for that stable target. Before permanently
+  resolving a disappeared or replaced target, Floret atomically validates its
+  canonical admission and finish ledgers. Recovery authority has no mixed or
+  empty identity shape and cannot follow a later turn.
 * `NewMemoryStore` creates an in-memory runtime store for tests or ephemeral use.
 * `OpenSQLiteStore` creates Floret-managed durable runtime storage. Bootstrap
   code invokes `ConfigureHostCapabilities`, retains only selected narrow
@@ -181,6 +185,11 @@ host interface for every runtime operation.
 * `ErrThreadNotFound`, `ErrTurnNotFound`, `ErrRunNotFound`,
   `ErrArtifactNotFound`, and `ErrSubAgentNotFound` are public sentinel errors
   for `errors.Is` checks on capability not-found responses.
+* `ErrInterruptedTurnNotFound` means a validated live exact root or
+  parent-child target has no active turn lease, so bind creates no recovery
+  target. `ErrRecoveryTargetResolved` means an already-bound exact target's
+  lease disappeared or moved to a valid higher generation; the coordinator
+  permanently finishes that target and never follows replacement authority.
 * `ErrThreadNotActive` reports that an active-derived pending settlement handle
   no longer owns an active thread. It never falls back to recovery admission.
 * `ErrThreadBusy` reports that an active turn or another canonical mutation owns
@@ -444,8 +453,11 @@ row. Active settlement is a method only on the exact `TurnExecutionHost` or
 `SubAgentHost` owner and requires its locally held durable lease proof; it never
 reacquires admission. A restart coordinator receives a provider-free
 `PendingToolRecoveryHost` bound to exactly one root or parent. Interrupted-turn
-recovery uses a separate exact root or parent-child capability whose durable
-takeover and finalization occur in one transaction. Recovery never scans
+recovery uses a separate factory bound to one exact root or parent-child plus
+`TurnID`, owner, and generation. `NewHost` refreshes only a newer heartbeat for
+that same target; disappearance or valid generation replacement ends the
+target, while proof rollback or same-generation identity drift is authority
+corruption. Durable takeover and finalization occur in one transaction. Recovery never scans
 branches, rewinds the leaf, or treats missing authority as success, and every
 control-signal message is excluded from ordinary unresolved tool-call
 settlement. Downstream hosts should consume Floret projections and settlement results
@@ -490,7 +502,8 @@ child lifecycle, parent-bound `SubAgentReadHost` for child reload and detail,
 creation, `ThreadTitleHost` for title writes, `ThreadForkHost` for forks,
 `ThreadDeleteHost` for thread-tree deletion, parent-bound
 `SubAgentReadHost` for child reads, `PendingToolRecoveryHost` for idle recovery
-settlement, and `InterruptedTurnRecoveryHost` for exact expired-turn recovery.
+settlement, and `InterruptedTurnRecoveryHostFactory` plus its proof-bound
+`InterruptedTurnRecoveryHost` for exact expired-turn recovery.
 Active settlement stays on `TurnExecutionHost` or `SubAgentHost`. Only binder
 constructors inside `ConfigureHostCapabilities` accept `HostBootstrap`;
 provider options and bound handle options do not accept or expose a Store or
@@ -506,7 +519,11 @@ runtime sentinels. Not-found and ownership checks use
 `runtime.ErrPendingToolNotFound`, `runtime.ErrPendingToolNotActive`, and
 `runtime.ErrPendingToolSettlementConflict`; closed child writes use
 `runtime.ErrSubAgentClosed`. Hosts should not parse error strings or import
-Floret internal package sentinels.
+Floret internal package sentinels. Interrupted-turn discovery and completion
+use `runtime.ErrInterruptedTurnNotFound` and
+`runtime.ErrRecoveryTargetResolved`; a stale proof-bound handle uses
+`runtime.ErrStaleAuthority` and must be refreshed only through its same exact
+factory.
 
 Authority failures should use `errors.Is` with
 `runtime.ErrSubAgentParentRequired` or

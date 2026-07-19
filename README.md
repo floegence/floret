@@ -89,6 +89,7 @@ execution lifecycle to Floret.
 | Run durable conversations | `runtime.NewTurnExecutionHostBinder` |
 | Compact an idle thread | `runtime.NewThreadCompactionHostBinder` with `runtime.CompactThreadRequest` |
 | Manage interactive child threads | `runtime.NewSubAgentHostBinder` |
+| Recover one exact interrupted turn | `runtime.NewInterruptedTurnRecoveryHostBinder` |
 | Reload canonical context state | `runtime.NewThreadReadHostBinder` |
 | Keep Floret runtime data in memory or SQLite | `runtime.NewMemoryStore` or `runtime.OpenSQLiteStore` |
 | Keep model transport under product control | `runtime.ModelGateway` |

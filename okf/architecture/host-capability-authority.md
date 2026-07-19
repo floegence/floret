@@ -4,7 +4,7 @@ title: Host Capability Authority
 description: Normative authority states, public object graph, storage transitions, and failure invariants for Floret host capabilities.
 resource: /runtime/thread_capabilities.go
 tags: [architecture, runtime, capability, authority]
-timestamp: 2026-07-18T00:00:00Z
+timestamp: 2026-07-20T00:00:00Z
 ---
 
 # Status
@@ -14,6 +14,12 @@ host boundary. Independent design review approved its durable states, owners,
 transitions, public capabilities, and failure points before implementation
 resumed. Implementation must map to this document; discovering a new state or
 transition reopens design review instead of creating a local workaround.
+
+The v0.19 amendment reopens only interrupted-turn recovery delivery. It adds no
+durable state or transition: the store-wide binder now snapshots one active turn
+authority and produces a factory bound to that stable recovery target before
+coordinator delivery. The factory may refresh only heartbeat and expiry fields
+for the same turn owner and generation.
 
 # Boundary
 
@@ -491,12 +497,22 @@ exposes only `Close`.
 | Interactive SubAgent owner | `SubAgentHostFactory` or `SubAgentHost` | one parent | publish child/input or child pending completion, explicitly wait/admit direct children, active child settlement, close one child subtree |
 | SubAgent read owner | `SubAgentReadHost` | one parent | list direct children; read any current descendant canonical detail or artifact |
 | Pending settlement recovery owner | `PendingToolRecoveryHost` | one root or one exact parent | provider-free exact settlement |
-| Interrupted turn recovery owner | `InterruptedTurnRecoveryHost` | one root or one exact parent-child pair | finalize one takeover-eligible interrupted turn |
+| Interrupted recovery target owner | `InterruptedTurnRecoveryHostFactory` | one root or exact parent-child pair plus one `TurnID`, `OwnerID`, and `Generation` | refresh the complete proof for that same target only |
+| Interrupted recovery attempt owner | `InterruptedTurnRecoveryHost` | one complete current proof for the factory's target | finalize that target once it is takeover eligible |
 | Host effect authorization owner | `EffectAuthorizationGate` | current host policy resolved for one exact invocation | authorize, audit, and dispatch one supplied effect closure under the host policy gate |
 
 `ThreadCreateHostBinder.Bind(ThreadID, CreateIntentID)` binds before delivery. A
-create service cannot choose another root ID or intent in `CreateThread`. Every other binder similarly
-binds root, parent, or parent-child identity before a service receives a value.
+create service cannot choose another root ID or intent in `CreateThread`. Every
+other binder similarly binds root, parent, or parent-child identity before a
+service receives a value. In particular,
+`InterruptedTurnRecoveryHostBinder.BindThread(Context, ThreadID)` and
+`BindSubAgent(Context, ParentThreadID, ChildThreadID)` require one active turn
+lease and return exact factories bound to `{ThreadID, ParentThreadID, TurnID,
+OwnerID, Generation}`. A recovery coordinator may retain those factories because
+they cannot select another thread or later turn. `NewHost` rereads the complete
+proof and may refresh only `Heartbeat`, `RenewedAt`, and `ExpiresAt` while the
+stable target identity remains equal. This lets a retry observe renewal without
+retaining the store-wide binder or following replacement authority.
 
 There is no `PendingToolSettlementHost`. Active settlement belongs to the active
 `TurnExecutionHost` or `SubAgentHost`. Provider-free settlement and interrupted
@@ -527,10 +543,11 @@ Public capability types have no exported methods beyond this list:
 | `SubAgentHostBinder` | `Bind` |
 | `SubAgentReadHostBinder` | `NewHost` |
 | `PendingToolRecoveryHostBinder` | `NewThreadHost`, `NewSubAgentHost` |
-| `InterruptedTurnRecoveryHostBinder` | `NewThreadHost`, `NewSubAgentHost` |
+| `InterruptedTurnRecoveryHostBinder` | `BindThread`, `BindSubAgent` |
 | `TurnExecutionHostFactory` | `NewHost` |
 | `ThreadCompactionHostFactory` | `NewHost` |
 | `SubAgentHostFactory` | `NewHost` |
+| `InterruptedTurnRecoveryHostFactory` | `NewHost` |
 | `ThreadCreateHost` | `CreateThread` |
 | `ThreadReadHost` | `ReadThread`, `ReadThreadOverview`, `ListThreadTurns`, `ReadLatestThreadTurn`, `ListThreadDetailEvents`, `ReadThreadContext`, `ReadThreadAgentTodos`, `ReadTurnProjection`, `ReadArtifact` |
 | `ThreadTitleHost` | `SetThreadTitle` |
@@ -566,6 +583,7 @@ implements validation and commit in one critical section or transaction.
 | `MarkEffectUnknown` | under the exact local turn proof, terminalize a `dispatching` attempt whose result cannot be durably completed, without handler retry |
 | `RecoverEffectAttempt` | turn `prepared` into `cancelled` and `dispatching` into `unknown` during interrupted-turn recovery |
 | `FinishTurn` | cancel remaining `prepared` effects, reject any `dispatching` effect, require all attempts terminal-safe, append terminal outcome/provider state, release proof, and preserve matching `closing` |
+| `ValidateInterruptedTurnResolution` | in one read transaction validate the current authority snapshot plus the bound target's admission, normal/recovery finish, and terminal ledgers before a factory permanently resolves it |
 | `AdmitPendingToolCompletion` | validate/settle exact pending target and admit one new host-authored continuation turn |
 | `BeginCompaction` | persist request identity and acquire fresh compaction mutation proof |
 | `TakeOverCompaction` | compare one takeover-eligible compaction proof and replace it with a durable new generation for the same request |
@@ -886,6 +904,38 @@ reconstructs a journal, or infers owner death from a failure marker.
 Recovery of a closing target preserves the immutable `CloseOperationID`; it
 cannot reopen the subtree or finish close.
 
+The exact `InterruptedTurnRecoveryHostFactory` survives retries and contains the
+already-bound root or parent-child identity plus the initial `TurnID`, `OwnerID`,
+and `Generation`. Each `NewHost` call reads the current complete lease proof. It
+returns a proof-bound handle only when those stable fields still match, while
+accepting a monotonically newer heartbeat and its timestamps. A lower heartbeat
+within the same generation is authority corruption.
+
+`BindThread` or `BindSubAgent` first validates the live exact root or
+parent-child authority, then returns `ErrInterruptedTurnNotFound` when that
+target has no active turn lease. Composition creates no target and the failure
+has zero side effects. Once a factory exists, `NewHost` validates the current
+proof as a canonical successor before classifying it. Lease disappearance or a
+well-formed strictly higher generation is resolved only after
+`ValidateInterruptedTurnResolution` atomically rechecks the current authority
+snapshot and the exact target's admission, finish, and terminal ledgers. The
+coordinator then permanently completes that target and never follows later
+authority. Lease disappearance is canonical only when the durable generation
+ledger has not rolled back. A normal owner finish at the same generation and a
+completed recovery at the next generation are both validated from their exact
+admission proof. A lower generation or heartbeat, malformed finish ledger, or
+changed purpose, `TurnID`, or `OwnerID` within the same generation is authority
+corruption rather than a resolved target. If root-tree deletion commits between
+the preliminary proof read and atomic resolution validation, the tombstone
+returns `ErrThreadDeleted`; legitimate deletion is never reported as corruption.
+
+A fresh or expired-fenced matching proof produces a handle whose
+`RecoverInterruptedTurn` returns `ErrThreadBusy` with zero mutation. The same
+handle may be retried as wall time advances when the proof is unchanged. If
+renewal advances heartbeat, the old handle returns `ErrStaleAuthority`; the
+coordinator obtains a refreshed handle from the same factory. Neither the
+factory nor the handle can bind another identity or stable turn authority.
+
 ## SubAgent Publication
 
 Owner: exact parent-bound `SubAgentHost`.
@@ -1069,6 +1119,8 @@ Public callers branch through `errors.Is`/`errors.As`, never strings:
 | Public result | Meaning and retry rule |
 | --- | --- |
 | `ErrThreadNotFound` | identity never existed; not success and not locally retryable |
+| `ErrInterruptedTurnNotFound` | a validated live exact root or parent-child target has no active turn lease; bind creates no recovery target, has zero side effects, and the current recovery scan does not retry it |
+| `ErrRecoveryTargetResolved` | an exact interrupted-turn factory's bound lease disappeared or was replaced by a well-formed strictly higher generation; the coordinator completes that target and never follows later authority |
 | `ErrThreadDeleted` | tombstoned identity, including exact replay of a completed fork whose destination tree was later deleted; fatal except exact delete replay |
 | `ErrSubAgentNotFound` | requested descendant is absent from or foreign to the bound parent; artifact reads return a zero `ArtifactContent` and do not reveal foreign identity existence |
 | `ErrThreadBusy` plus `AuthorityBusyError.Kind` | claim, fresh turn, expired-fenced turn, or mutation owner; retry only after observed authority change |
@@ -1194,7 +1246,7 @@ File rejection where unsupported.
 
 | Area | Required negative proof |
 | --- | --- |
-| Object graph | Store exposes only `Close`; bootstrap copies/error/panic cannot issue; each binder issues one family; create binds one ThreadID/CreateIntentID; downstream services cannot contain binder/raw Store fields |
+| Object graph | Store exposes only `Close`; bootstrap copies/error/panic cannot issue; each binder issues one family; create binds one ThreadID/CreateIntentID; interrupted recovery snapshots one exact root/parent-child plus TurnID/OwnerID/Generation factory before coordinator delivery; downstream services cannot contain binder/raw Store fields |
 | Store lifetime | `Close` races with bind/NewHost/run/recovery without post-closing side effects; retained capabilities fail `ErrStoreClosed`; cleanup replay admits no work |
 | Construction | missing root, child passed as root, missing parent, deleted identity, and wrong bound ID fail before skills/tools/events/registry/gateway/provider state |
 | Root create | same intent/different ThreadID, same created-root ThreadID/different intent, changed contract version, and wrong live shape conflict; matching deleted create replay and new intent against another tombstone return deleted; concurrent exact live replay publishes one root/result |
@@ -1202,12 +1254,13 @@ File rejection where unsupported.
 | Schema compatibility | one early-write-locked transaction checks empty exact v13 and migrates it to exact frozen v14; concurrent different lease policies produce one winner and typed mismatch losers; non-empty v13, older/unknown versions, missing metadata, and alternate v14 fingerprints are rejected without schema or data changes; no identity is synthesized |
 | Lease liveness | renewal keeps long turn and approval wait fresh; failed renewal fences dispatch/write; expired-fenced cannot write or take over; only takeover-eligible exact proof can recover |
 | Generation | stale/released/wrong-owner/wrong-purpose/wrong-turn/replaced-generation proof cannot write, renew, finish, or release |
+| Recovery factory | bind validates live exact authority and returns `ErrInterruptedTurnNotFound` with no target for no lease; exact root and parent-child factories cannot select another identity or later turn; same-target heartbeat renewal makes the old handle stale and a refreshed handle busy/recoverable; lease disappearance or a valid higher generation resolves only after atomic admission/finish/terminal validation; generation/heartbeat rollback, missing or malformed resolution linkage, malformed replacement, or same-generation stable-field drift is corruption; concurrent tombstoning returns deleted; wrong root-child/parent-child relation, Store close, fresh/expired-fenced/stale attempts, and concurrent bind/NewHost/renew/release/replacement/recovery all have zero mutation unless exact takeover commits |
 | Admission | start plus user message are atomic; provider is not called on failure; retry move is atomic; finish plus release is atomic |
 | Active settlement | complete target identity; local proof equals durable proof; wrong turn or generation has zero append/provider/tool side effect |
 | Recovery settlement | fresh/expired-fenced lease blocks; identical concurrent settlement writes once; conflict is explicit; no durable mutation half-state |
 | Completion | root `CompletionRequestID` replay/conflict plus target settlement and continuation admission are atomic; child `InputRequestID` replay/conflict plus target settlement and pending input publication are atomic; target/continuation/input IDs are distinct; replay never starts a second provider owner |
 | Effect authorization | Store assigns one attempt per canonical invocation across concurrent/different-ID preparation; denied/unavailable authorization commits one exact `rejected` result without handler entry; failed rejection persistence leaves ordinary `prepared` so later replay rereads current policy; attempt lifecycle covers crash before/after dispatch boundary; final handler boundary rereads same fresh owner/generation while allowing newer heartbeat; one-shot rejects double/deferred calls; FinishTurn cancels prepared and blocks dispatching; receipt is Floret-sealed; policy revision changes append a new current decision; unknown is never auto-retried |
-| Interrupted recovery | public exact root/parent-child capability; fresh failure-marked lease preserved; takeover rechecks path in transaction; dual SQLite yields one finalization |
+| Interrupted recovery | public exact root/parent-child and TurnID/OwnerID/Generation factory; validated no-lease target returns `ErrInterruptedTurnNotFound` and is not created; same-target renewal refreshes without following a later turn; only canonically finished targets or valid higher-generation replacements resolve, while rollback, missing/drifted admission, malformed finish, or same-generation stable drift is corruption; fresh failure-marked and expired-fenced leases are preserved; stale/resolved targets have zero journal/effect/event/result mutation; takeover validates admission plus started path before mutation and rechecks path in transaction; dual SQLite yields one finalization |
 | Compaction | immutable pinned-path fingerprint; same RequestID replay only; renewal and expired takeover fence generations; exact terminal owner/outcome replay; changed outcome conflicts; different request cannot recover; one terminal result |
 | Fork | prepare pins complete plan/claims plus exact on-path artifact-reference closure; orphan/off-path artifacts excluded; duplicate refs must agree; source reference/payload metadata and hash changes reject; no destination visible while prepared; destination collision or commit failure rolls back every journal/artifact copy; failure publishes none and releases IDs for later root create, root fork, or SubAgent publication; failed-op provenance can never appear; completed all-live replay validates journal/artifact closure and returns stored result; completed all-tombstoned matching provenance returns `ErrThreadDeleted`; every completed mixture or missing/inconsistent authority is corruption, never recreation |
 | Delete | active descendant, claim, concurrent spawn, malformed graph, or never-existing root causes zero deletion; tombstone replay; deleted ID cannot recreate; publication/input idempotency ledgers survive for cross-parent request-ID nonreuse, while deleted parent host construction fails before SubAgent operations; cleanup error is committed |

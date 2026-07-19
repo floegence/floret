@@ -135,6 +135,213 @@ func TestInterruptedTurnRecoveryReplayBindsCompleteLeaseAndParent(t *testing.T) 
 	}
 }
 
+func TestSQLiteInterruptedTurnRecoveryRejectsCorruptResolvedFinish(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.July, 20, 12, 30, 0, 0, time.UTC)
+	for _, testCase := range []struct {
+		name  string
+		query string
+	}{
+		{name: "invalid terminal", query: `UPDATE entries SET type = 'run_failure' WHERE thread_id = 'thread' AND id = 'terminal'`},
+		{name: "admission run drift", query: `UPDATE turn_admissions SET run_id = 'different-run' WHERE thread_id = 'thread' AND turn_id = 'turn'`},
+		{name: "turn started reference drift", query: `UPDATE turn_admissions SET turn_started_id = 'terminal' WHERE thread_id = 'thread' AND turn_id = 'turn'`},
+		{name: "generation rollback", query: `UPDATE threads SET lease_generation = 0 WHERE id = 'thread'`},
+		{name: "active finished generation", query: `INSERT INTO active_turn_leases(thread_id, purpose, turn_id, mutation_id, mutation_kind, owner_id, generation, heartbeat, acquired_at, renewed_at, expires_at) SELECT thread_id, 'turn', turn_id, '', '', owner_id, generation, heartbeat, acquired_at, renewed_at, expires_at FROM turn_admissions WHERE thread_id = 'thread' AND turn_id = 'turn'`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			store, err := Open(filepath.Join(t.TempDir(), "resolved-corruption.db"), WithAuthorityClock(func() time.Time { return now }))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread"}); err != nil {
+				t.Fatal(err)
+			}
+			admitted, err := store.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+				ThreadID: "thread", TurnID: "turn", RunID: "run", OwnerID: "owner",
+				Input: session.Message{Role: session.User, Content: "work"}, RequestFingerprint: "admit", Now: now,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.FinishTurn(ctx, sessiontree.FinishTurnRequest{
+				Lease: admitted.Lease, RunID: "run", TerminalEntryID: "terminal", Status: sessiontree.TurnCompleted,
+				OutcomeFingerprint: "finish", Now: now.Add(time.Second),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.db.ExecContext(ctx, testCase.query); err != nil {
+				t.Fatal(err)
+			}
+
+			request := sessiontree.RecoverInterruptedTurnRequest{ExpectedLease: admitted.Lease}
+			if err := store.ValidateInterruptedTurnResolution(ctx, request); !errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
+				t.Fatalf("ValidateInterruptedTurnResolution err=%v, want ErrAuthorityCorrupt", err)
+			}
+			if _, err := store.RecoverInterruptedTurn(ctx, request); !errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
+				t.Fatalf("RecoverInterruptedTurn err=%v, want ErrAuthorityCorrupt", err)
+			}
+		})
+	}
+}
+
+func TestSQLiteInterruptedTurnResolutionRejectsRecoveryFailureLinkDrift(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.July, 20, 12, 45, 0, 0, time.UTC)
+	store, err := Open(filepath.Join(t.TempDir(), "recovery-link-corruption.db"), WithAuthorityClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := store.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+		ThreadID: "thread", TurnID: "turn", RunID: "run", OwnerID: "owner",
+		Input: session.Message{Role: session.User, Content: "work"}, RequestFingerprint: "admit", Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = admitted.Lease.ExpiresAt.Add(sessiontree.DefaultLeasePolicy.ClockSkewAllowance + time.Nanosecond)
+	recovered, err := store.RecoverInterruptedTurn(ctx, sessiontree.RecoverInterruptedTurnRequest{ExpectedLease: admitted.Lease, Now: now})
+	if err != nil || recovered.Failure == nil {
+		t.Fatalf("recovered=%#v err=%v", recovered, err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE entries SET parent_id = ? WHERE thread_id = 'thread' AND id = ?`, admitted.TurnStarted.ID, recovered.Terminal.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ValidateInterruptedTurnResolution(ctx, sessiontree.RecoverInterruptedTurnRequest{ExpectedLease: admitted.Lease}); !errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
+		t.Fatalf("ValidateInterruptedTurnResolution err=%v, want ErrAuthorityCorrupt", err)
+	}
+}
+
+func TestSQLiteInterruptedTurnResolutionReturnsDeletedForTombstone(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.July, 20, 12, 50, 0, 0, time.UTC)
+	store, err := Open(filepath.Join(t.TempDir(), "resolution-delete.db"), WithAuthorityClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := store.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+		ThreadID: "thread", TurnID: "turn", RunID: "run", OwnerID: "owner",
+		Input: session.Message{Role: session.User, Content: "work"}, RequestFingerprint: "admit", Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishTurn(ctx, sessiontree.FinishTurnRequest{
+		Lease: admitted.Lease, RunID: "run", TerminalEntryID: "terminal", Status: sessiontree.TurnCompleted,
+		OutcomeFingerprint: "finish", Now: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DeleteRootTree(ctx, "thread"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ValidateInterruptedTurnResolution(ctx, sessiontree.RecoverInterruptedTurnRequest{ExpectedLease: admitted.Lease}); !errors.Is(err, sessiontree.ErrThreadDeleted) {
+		t.Fatalf("ValidateInterruptedTurnResolution err=%v, want ErrThreadDeleted", err)
+	}
+}
+
+func TestSQLiteInterruptedTurnRecoveryRejectsCorruptAdmissionBeforeMutation(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.July, 20, 13, 30, 0, 0, time.UTC)
+	for _, testCase := range []struct {
+		name  string
+		query string
+	}{
+		{name: "missing", query: `DELETE FROM turn_admissions WHERE thread_id = 'thread' AND turn_id = 'turn'`},
+		{name: "run drift", query: `UPDATE turn_admissions SET run_id = 'different-run' WHERE thread_id = 'thread' AND turn_id = 'turn'`},
+		{name: "lease drift", query: `UPDATE turn_admissions SET heartbeat = heartbeat + 1 WHERE thread_id = 'thread' AND turn_id = 'turn'`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			current := now
+			store, err := Open(filepath.Join(t.TempDir(), "admission-corruption.db"), WithAuthorityClock(func() time.Time { return current }))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread"}); err != nil {
+				t.Fatal(err)
+			}
+			admitted, err := store.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+				ThreadID: "thread", TurnID: "turn", RunID: "run", OwnerID: "owner",
+				Input: session.Message{Role: session.User, Content: "work"}, RequestFingerprint: "admit", Now: current,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.db.ExecContext(ctx, testCase.query); err != nil {
+				t.Fatal(err)
+			}
+			current = admitted.Lease.ExpiresAt.Add(sessiontree.DefaultLeasePolicy.ClockSkewAllowance + time.Nanosecond)
+			var beforeEntries, beforeGeneration, beforeLeases int
+			if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM entries WHERE thread_id = 'thread'`).Scan(&beforeEntries); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.db.QueryRowContext(ctx, `SELECT lease_generation FROM threads WHERE id = 'thread'`).Scan(&beforeGeneration); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM active_turn_leases WHERE thread_id = 'thread'`).Scan(&beforeLeases); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := store.RecoverInterruptedTurn(ctx, sessiontree.RecoverInterruptedTurnRequest{ExpectedLease: admitted.Lease}); !errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
+				t.Fatalf("RecoverInterruptedTurn err=%v, want ErrAuthorityCorrupt", err)
+			}
+			var afterEntries, afterGeneration, afterLeases int
+			if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM entries WHERE thread_id = 'thread'`).Scan(&afterEntries); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.db.QueryRowContext(ctx, `SELECT lease_generation FROM threads WHERE id = 'thread'`).Scan(&afterGeneration); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM active_turn_leases WHERE thread_id = 'thread'`).Scan(&afterLeases); err != nil {
+				t.Fatal(err)
+			}
+			if afterEntries != beforeEntries || afterGeneration != beforeGeneration || afterLeases != beforeLeases {
+				t.Fatalf("corrupt admission mutated authority: entries %d->%d generation %d->%d leases %d->%d", beforeEntries, afterEntries, beforeGeneration, afterGeneration, beforeLeases, afterLeases)
+			}
+		})
+	}
+}
+
+func TestSQLiteInterruptedTurnResolutionPreservesContextCancellation(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.July, 20, 14, 0, 0, 0, time.UTC)
+	store, err := Open(filepath.Join(t.TempDir(), "resolution-cancel.db"), WithAuthorityClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := store.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+		ThreadID: "thread", TurnID: "turn", RunID: "run", OwnerID: "owner",
+		Input: session.Message{Role: session.User, Content: "work"}, RequestFingerprint: "admit", Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishTurn(ctx, sessiontree.FinishTurnRequest{
+		Lease: admitted.Lease, RunID: "run", TerminalEntryID: "terminal", Status: sessiontree.TurnCompleted,
+		OutcomeFingerprint: "finish", Now: now.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := store.ValidateInterruptedTurnResolution(cancelled, sessiontree.RecoverInterruptedTurnRequest{ExpectedLease: admitted.Lease}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ValidateInterruptedTurnResolution err=%v, want context.Canceled", err)
+	}
+}
+
 func newInterruptedTurnRecoveryTestRepo(
 	t *testing.T,
 	backend string,

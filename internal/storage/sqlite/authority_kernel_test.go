@@ -60,6 +60,50 @@ func TestSQLiteRootAuthorityPersistsTombstoneAndRequestIdentity(t *testing.T) {
 	}
 }
 
+func TestSQLiteAuthorityInspectionRejectsLeaseLedgerAndLifecycleCorruption(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 20, 11, 30, 0, 0, time.UTC)
+	store, err := Open(filepath.Join(t.TempDir(), "inspection-corruption.db"), WithAuthorityClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	for _, meta := range []sessiontree.ThreadMeta{
+		{ID: "root"},
+		{ID: "other"},
+		{ID: "child", ParentThreadID: "root", TaskName: "child", AgentPath: "/root/child"},
+	} {
+		if _, err := store.CreateThread(ctx, meta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	admitted, err := store.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+		ThreadID: "child", TurnID: "turn", RunID: "run", OwnerID: "owner",
+		Input: session.Message{Role: session.User, Content: "work"}, RequestFingerprint: "admit",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.InspectSubAgentThreadAuthority(ctx, "other", "child"); !errors.Is(err, sessiontree.ErrSubAgentNotFound) {
+		t.Fatalf("foreign child err=%v, want ErrSubAgentNotFound", err)
+	}
+	if _, err := store.InspectSubAgentThreadAuthority(ctx, "root", "missing"); !errors.Is(err, sessiontree.ErrSubAgentNotFound) {
+		t.Fatalf("missing child err=%v, want ErrSubAgentNotFound", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE threads SET lease_generation = ? WHERE id = 'child'`, admitted.Lease.Generation+1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.InspectThreadAuthority(ctx, "child"); !errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
+		t.Fatalf("lease generation mismatch err=%v, want ErrAuthorityCorrupt", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE threads SET lease_generation = ?, lifecycle = 'closed' WHERE id = 'child'`, admitted.Lease.Generation); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.InspectThreadAuthority(ctx, "child"); !errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
+		t.Fatalf("closed child with lease err=%v, want ErrAuthorityCorrupt", err)
+	}
+}
+
 func TestSQLiteRootCreateReplayRejectsNonCanonicalLiveShape(t *testing.T) {
 	for _, test := range []struct {
 		name  string

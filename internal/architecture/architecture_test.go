@@ -382,10 +382,11 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 	exact("SubAgentHostBinder", reflect.TypeOf((*floretRuntime.SubAgentHostBinder)(nil)), "Bind")
 	exact("SubAgentReadHostBinder", reflect.TypeOf((*floretRuntime.SubAgentReadHostBinder)(nil)), "NewHost")
 	exact("PendingToolRecoveryHostBinder", reflect.TypeOf((*floretRuntime.PendingToolRecoveryHostBinder)(nil)), "NewSubAgentHost", "NewThreadHost")
-	exact("InterruptedTurnRecoveryHostBinder", reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHostBinder)(nil)), "NewSubAgentHost", "NewThreadHost")
+	exact("InterruptedTurnRecoveryHostBinder", reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHostBinder)(nil)), "BindSubAgent", "BindThread")
 	exact("TurnExecutionHostFactory", reflect.TypeOf((*floretRuntime.TurnExecutionHostFactory)(nil)), "NewHost")
 	exact("ThreadCompactionHostFactory", reflect.TypeOf((*floretRuntime.ThreadCompactionHostFactory)(nil)), "NewHost")
 	exact("SubAgentHostFactory", reflect.TypeOf((*floretRuntime.SubAgentHostFactory)(nil)), "NewHost")
+	exact("InterruptedTurnRecoveryHostFactory", reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHostFactory)(nil)), "NewHost")
 	exact("ThreadCreateHost", reflect.TypeOf((*floretRuntime.ThreadCreateHost)(nil)), "CreateThread")
 	exact("ThreadTitleHost", reflect.TypeOf((*floretRuntime.ThreadTitleHost)(nil)), "SetThreadTitle")
 	exact("ThreadForkHost", reflect.TypeOf((*floretRuntime.ThreadForkHost)(nil)), "ForkThread")
@@ -404,32 +405,33 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 		"ReadArtifact", "ReadThreadAgentTodos", "ReadThreadContext", "ReadThreadOverview", "ReadTurnProjection")
 	exact("Store", reflect.TypeOf((*floretRuntime.Store)(nil)), "Close")
 	for name, typ := range map[string]reflect.Type{
-		"HostBootstrap":                     reflect.TypeOf(floretRuntime.HostBootstrap{}),
-		"ThreadCreateHostBinder":            reflect.TypeOf(floretRuntime.ThreadCreateHostBinder{}),
-		"ThreadReadHostBinder":              reflect.TypeOf(floretRuntime.ThreadReadHostBinder{}),
-		"ThreadTitleHostBinder":             reflect.TypeOf(floretRuntime.ThreadTitleHostBinder{}),
-		"ThreadForkHostBinder":              reflect.TypeOf(floretRuntime.ThreadForkHostBinder{}),
-		"ThreadDeleteHostBinder":            reflect.TypeOf(floretRuntime.ThreadDeleteHostBinder{}),
-		"TurnExecutionHostBinder":           reflect.TypeOf(floretRuntime.TurnExecutionHostBinder{}),
-		"ThreadCompactionHostBinder":        reflect.TypeOf(floretRuntime.ThreadCompactionHostBinder{}),
-		"SubAgentHostBinder":                reflect.TypeOf(floretRuntime.SubAgentHostBinder{}),
-		"SubAgentReadHostBinder":            reflect.TypeOf(floretRuntime.SubAgentReadHostBinder{}),
-		"PendingToolRecoveryHostBinder":     reflect.TypeOf(floretRuntime.PendingToolRecoveryHostBinder{}),
-		"InterruptedTurnRecoveryHostBinder": reflect.TypeOf(floretRuntime.InterruptedTurnRecoveryHostBinder{}),
-		"TurnExecutionHostFactory":          reflect.TypeOf(floretRuntime.TurnExecutionHostFactory{}),
-		"ThreadCompactionHostFactory":       reflect.TypeOf(floretRuntime.ThreadCompactionHostFactory{}),
-		"SubAgentHostFactory":               reflect.TypeOf(floretRuntime.SubAgentHostFactory{}),
-		"TurnExecutionHost":                 reflect.TypeOf(floretRuntime.TurnExecutionHost{}),
-		"ThreadCompactionHost":              reflect.TypeOf(floretRuntime.ThreadCompactionHost{}),
-		"SubAgentHost":                      reflect.TypeOf(floretRuntime.SubAgentHost{}),
-		"SubAgentReadHost":                  reflect.TypeOf(floretRuntime.SubAgentReadHost{}),
-		"ThreadCreateHost":                  reflect.TypeOf(floretRuntime.ThreadCreateHost{}),
-		"ThreadReadHost":                    reflect.TypeOf(floretRuntime.ThreadReadHost{}),
-		"ThreadTitleHost":                   reflect.TypeOf(floretRuntime.ThreadTitleHost{}),
-		"ThreadForkHost":                    reflect.TypeOf(floretRuntime.ThreadForkHost{}),
-		"ThreadDeleteHost":                  reflect.TypeOf(floretRuntime.ThreadDeleteHost{}),
-		"PendingToolRecoveryHost":           reflect.TypeOf(floretRuntime.PendingToolRecoveryHost{}),
-		"InterruptedTurnRecoveryHost":       reflect.TypeOf(floretRuntime.InterruptedTurnRecoveryHost{}),
+		"HostBootstrap":                      reflect.TypeOf(floretRuntime.HostBootstrap{}),
+		"ThreadCreateHostBinder":             reflect.TypeOf(floretRuntime.ThreadCreateHostBinder{}),
+		"ThreadReadHostBinder":               reflect.TypeOf(floretRuntime.ThreadReadHostBinder{}),
+		"ThreadTitleHostBinder":              reflect.TypeOf(floretRuntime.ThreadTitleHostBinder{}),
+		"ThreadForkHostBinder":               reflect.TypeOf(floretRuntime.ThreadForkHostBinder{}),
+		"ThreadDeleteHostBinder":             reflect.TypeOf(floretRuntime.ThreadDeleteHostBinder{}),
+		"TurnExecutionHostBinder":            reflect.TypeOf(floretRuntime.TurnExecutionHostBinder{}),
+		"ThreadCompactionHostBinder":         reflect.TypeOf(floretRuntime.ThreadCompactionHostBinder{}),
+		"SubAgentHostBinder":                 reflect.TypeOf(floretRuntime.SubAgentHostBinder{}),
+		"SubAgentReadHostBinder":             reflect.TypeOf(floretRuntime.SubAgentReadHostBinder{}),
+		"PendingToolRecoveryHostBinder":      reflect.TypeOf(floretRuntime.PendingToolRecoveryHostBinder{}),
+		"InterruptedTurnRecoveryHostBinder":  reflect.TypeOf(floretRuntime.InterruptedTurnRecoveryHostBinder{}),
+		"InterruptedTurnRecoveryHostFactory": reflect.TypeOf(floretRuntime.InterruptedTurnRecoveryHostFactory{}),
+		"TurnExecutionHostFactory":           reflect.TypeOf(floretRuntime.TurnExecutionHostFactory{}),
+		"ThreadCompactionHostFactory":        reflect.TypeOf(floretRuntime.ThreadCompactionHostFactory{}),
+		"SubAgentHostFactory":                reflect.TypeOf(floretRuntime.SubAgentHostFactory{}),
+		"TurnExecutionHost":                  reflect.TypeOf(floretRuntime.TurnExecutionHost{}),
+		"ThreadCompactionHost":               reflect.TypeOf(floretRuntime.ThreadCompactionHost{}),
+		"SubAgentHost":                       reflect.TypeOf(floretRuntime.SubAgentHost{}),
+		"SubAgentReadHost":                   reflect.TypeOf(floretRuntime.SubAgentReadHost{}),
+		"ThreadCreateHost":                   reflect.TypeOf(floretRuntime.ThreadCreateHost{}),
+		"ThreadReadHost":                     reflect.TypeOf(floretRuntime.ThreadReadHost{}),
+		"ThreadTitleHost":                    reflect.TypeOf(floretRuntime.ThreadTitleHost{}),
+		"ThreadForkHost":                     reflect.TypeOf(floretRuntime.ThreadForkHost{}),
+		"ThreadDeleteHost":                   reflect.TypeOf(floretRuntime.ThreadDeleteHost{}),
+		"PendingToolRecoveryHost":            reflect.TypeOf(floretRuntime.PendingToolRecoveryHost{}),
+		"InterruptedTurnRecoveryHost":        reflect.TypeOf(floretRuntime.InterruptedTurnRecoveryHost{}),
 	} {
 		for i := 0; i < typ.NumField(); i++ {
 			if typ.Field(i).PkgPath == "" {
@@ -552,8 +554,9 @@ func TestProviderCapabilityHostConstructionRequiresAuthorityContext(t *testing.T
 		{reflect.TypeOf((*floretRuntime.SubAgentReadHostBinder)(nil)), "NewHost"},
 		{reflect.TypeOf((*floretRuntime.PendingToolRecoveryHostBinder)(nil)), "NewThreadHost"},
 		{reflect.TypeOf((*floretRuntime.PendingToolRecoveryHostBinder)(nil)), "NewSubAgentHost"},
-		{reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHostBinder)(nil)), "NewThreadHost"},
-		{reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHostBinder)(nil)), "NewSubAgentHost"},
+		{reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHostBinder)(nil)), "BindThread"},
+		{reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHostBinder)(nil)), "BindSubAgent"},
+		{reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHostFactory)(nil)), "NewHost"},
 		{reflect.TypeOf((*floretRuntime.TurnExecutionHostFactory)(nil)), "NewHost"},
 		{reflect.TypeOf((*floretRuntime.ThreadCompactionHostFactory)(nil)), "NewHost"},
 		{reflect.TypeOf((*floretRuntime.SubAgentHostFactory)(nil)), "NewHost"},
@@ -791,7 +794,8 @@ func TestRuntimeCapabilityConstructorsAndAggregatesStayExplicit(t *testing.T) {
 	capabilityTypes := map[string]bool{
 		"HostBootstrap": true, "PendingToolRecoveryHost": true, "PendingToolRecoveryHostBinder": true,
 		"InterruptedTurnRecoveryHost": true, "InterruptedTurnRecoveryHostBinder": true,
-		"ThreadCreateHostBinder": true, "ThreadReadHostBinder": true, "ThreadTitleHostBinder": true,
+		"InterruptedTurnRecoveryHostFactory": true,
+		"ThreadCreateHostBinder":             true, "ThreadReadHostBinder": true, "ThreadTitleHostBinder": true,
 		"ThreadForkHostBinder": true, "ThreadDeleteHostBinder": true,
 		"SubAgentHost": true, "SubAgentHostBinder": true, "SubAgentHostFactory": true,
 		"SubAgentReadHost": true, "SubAgentReadHostBinder": true,

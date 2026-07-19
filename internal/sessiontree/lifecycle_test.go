@@ -115,6 +115,52 @@ func TestCreateRootRequestRejectsAllForkProvenance(t *testing.T) {
 	}
 }
 
+func TestMemoryAuthorityInspectionRejectsLeaseLedgerAndLifecycleCorruption(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 20, 11, 0, 0, 0, time.UTC)
+	repo, err := NewMemoryRepoWithLeasePolicy(DefaultLeasePolicy, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "root"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "other"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "child", ParentThreadID: "root", TaskName: "child", AgentPath: "/root/child"}); err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := repo.AdmitTurn(ctx, AdmitTurnRequest{
+		ThreadID: "child", TurnID: "turn", RunID: "run", OwnerID: "owner",
+		Input: session.Message{Role: session.User, Content: "work"}, RequestFingerprint: "admit",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.InspectSubAgentThreadAuthority(ctx, "other", "child"); !errors.Is(err, ErrSubAgentNotFound) {
+		t.Fatalf("foreign child err=%v, want ErrSubAgentNotFound", err)
+	}
+	if _, err := repo.InspectSubAgentThreadAuthority(ctx, "root", "missing"); !errors.Is(err, ErrSubAgentNotFound) {
+		t.Fatalf("missing child err=%v, want ErrSubAgentNotFound", err)
+	}
+	repo.mu.Lock()
+	repo.leaseGeneration["child"] = admitted.Lease.Generation + 1
+	repo.mu.Unlock()
+	if _, err := repo.InspectThreadAuthority(ctx, "child"); !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("lease generation mismatch err=%v, want ErrAuthorityCorrupt", err)
+	}
+	repo.mu.Lock()
+	repo.leaseGeneration["child"] = admitted.Lease.Generation
+	child := repo.threads["child"]
+	child.Lifecycle = ThreadLifecycleClosed
+	repo.threads["child"] = child
+	repo.mu.Unlock()
+	if _, err := repo.InspectThreadAuthority(ctx, "child"); !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("closed child with lease err=%v, want ErrAuthorityCorrupt", err)
+	}
+}
+
 func TestMemoryRootDeleteClearsQueryableAuthorityAndRetainsRequestIdentity(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 7, 19, 5, 30, 0, 0, time.UTC)

@@ -25,8 +25,16 @@ func (h *InterruptedTurnRecoveryHost) RecoverInterruptedTurn(ctx context.Context
 		ThreadID: string(h.threadID), ParentThreadID: string(h.parentThreadID), ExpectedLease: h.expectedLease,
 	})
 	if err != nil {
-		return RecoverInterruptedTurnResult{}, requestConflictError(runtimeHostError(err), "interrupted_turn_recovery", h.expectedLease.TurnID)
+		mapped := runtimeHostError(err)
+		if errors.Is(err, sessiontree.ErrRequestConflict) {
+			mapped = fmt.Errorf("%w: %w", ErrAuthorityCorrupt, err)
+		}
+		if errors.Is(mapped, ErrRecoveryTargetResolved) {
+			h.markInterruptedRecoveryFactoryResolved()
+		}
+		return RecoverInterruptedTurnResult{}, mapped
 	}
+	h.markInterruptedRecoveryFactoryResolved()
 	status := TurnStatusFailed
 	if result.Status == sessiontree.TurnAborted {
 		status = TurnStatusCancelled
@@ -34,6 +42,15 @@ func (h *InterruptedTurnRecoveryHost) RecoverInterruptedTurn(ctx context.Context
 	return RecoverInterruptedTurnResult{
 		ThreadID: ThreadID(result.ThreadID), TurnID: TurnID(result.TurnID), RunID: RunID(result.RunID), Status: status, Replayed: result.Replayed,
 	}, nil
+}
+
+func (h *InterruptedTurnRecoveryHost) markInterruptedRecoveryFactoryResolved() {
+	if h == nil || h.factoryState == nil {
+		return
+	}
+	h.factoryState.mu.Lock()
+	h.factoryState.resolved = true
+	h.factoryState.mu.Unlock()
 }
 
 const (

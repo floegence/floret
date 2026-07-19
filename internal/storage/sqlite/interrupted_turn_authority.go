@@ -22,62 +22,15 @@ func (s *Store) RecoverInterruptedTurn(ctx context.Context, req sessiontree.Reco
 			return err
 		}
 		if found {
-			if finished.Generation != req.ExpectedLease.Generation+1 {
-				return sessiontree.ErrRequestConflict
-			}
-			terminal, err := loadEntry(ctx, tx, threadID, finished.TerminalEntryID)
-			if errors.Is(err, sql.ErrNoRows) {
-				return sessiontree.ErrAuthorityCorrupt
-			}
+			resolution, err := validateSQLiteInterruptedTurnResolution(ctx, tx, req, finished)
 			if err != nil {
 				return err
 			}
-			if terminal.Type != sessiontree.EntryTurnMarker || terminal.TurnID != turnID ||
-				terminal.Metadata[sessiontree.InterruptedTurnRecoveryKindKey] != sessiontree.InterruptedTurnRecoveryKind ||
-				terminal.Metadata[sessiontree.InterruptedTurnRecoveryFingerprintKey] != finished.OutcomeFingerprint {
-				return sessiontree.ErrAuthorityCorrupt
+			if resolution.recoveryReplay && resolution.exactProof {
+				result = resolution.result
+				return nil
 			}
-			switch terminal.TurnStatus {
-			case sessiontree.TurnCompleted, sessiontree.TurnWaiting, sessiontree.TurnFailed, sessiontree.TurnAborted:
-			default:
-				return sessiontree.ErrAuthorityCorrupt
-			}
-			if terminal.Metadata[sessiontree.InterruptedTurnRecoveryParentKey] != strings.TrimSpace(req.ParentThreadID) {
-				return sessiontree.ErrInvalidThreadAuthority
-			}
-			failureMessage := ""
-			var failure *sessiontree.Entry
-			if finished.FailureEntryID != "" {
-				entry, err := loadEntry(ctx, tx, threadID, finished.FailureEntryID)
-				if errors.Is(err, sql.ErrNoRows) {
-					return sessiontree.ErrAuthorityCorrupt
-				}
-				if err != nil {
-					return err
-				}
-				if entry.Type != sessiontree.EntryRunFailure || entry.TurnID != turnID {
-					return sessiontree.ErrAuthorityCorrupt
-				}
-				failureMessage = entry.Error
-				failure = &entry
-			}
-			fingerprint, err := sessiontree.InterruptedTurnRecoveryFingerprint(
-				req.ExpectedLease, req.ParentThreadID, finished.RunID, terminal.TurnStatus, failureMessage,
-			)
-			if err != nil {
-				return err
-			}
-			if fingerprint != finished.OutcomeFingerprint {
-				return sessiontree.ErrRequestConflict
-			}
-			if terminal.ID != "recovery-terminal-"+fingerprint[:24] {
-				return sessiontree.ErrAuthorityCorrupt
-			}
-			result = sessiontree.RecoverInterruptedTurnResult{
-				RunID: finished.RunID, Status: terminal.TurnStatus, OutcomeFingerprint: fingerprint,
-				Failure: failure, Terminal: terminal, Generation: finished.Generation, Replayed: true,
-			}
-			return nil
+			return sessiontree.ErrRecoveryTargetResolved
 		}
 		meta, err := loadThread(ctx, tx, threadID)
 		if errors.Is(err, sessiontree.ErrThreadNotFound) {
@@ -129,6 +82,13 @@ func (s *Store) RecoverInterruptedTurn(ctx context.Context, req sessiontree.Reco
 		if !active.TakeoverEligible(s.now().UTC(), s.leasePolicy) {
 			return sessiontree.ErrThreadAuthorityBusy
 		}
+		admission, found, err := loadSQLiteTurnAdmission(ctx, tx, threadID, turnID)
+		if err != nil {
+			return err
+		}
+		if !found || validateSQLiteInterruptedTurnAdmission(admission, active) != nil {
+			return sessiontree.ErrAuthorityCorrupt
+		}
 		path, err := pathWithRunner(ctx, tx, threadID, meta.LeafID)
 		if err != nil {
 			return err
@@ -137,7 +97,7 @@ func (s *Store) RecoverInterruptedTurn(ctx context.Context, req sessiontree.Reco
 		if err != nil {
 			return err
 		}
-		if err := sessiontree.ValidateInterruptedTurnRecoveryPath(path, turnID, plan.RunID); err != nil {
+		if err := sessiontree.ValidateInterruptedTurnAdmissionPath(path, admission.ThreadID, turnID, admission.RunID, admission.TurnStartedID); err != nil {
 			return err
 		}
 		if exists, err := entryExists(ctx, tx, threadID, plan.TerminalEntryID); err != nil {
@@ -255,4 +215,260 @@ func (s *Store) RecoverInterruptedTurn(ctx context.Context, req sessiontree.Reco
 		return nil
 	})
 	return result, err
+}
+
+func (s *Store) ValidateInterruptedTurnResolution(ctx context.Context, req sessiontree.RecoverInterruptedTurnRequest) error {
+	if err := sessiontree.ValidateRecoverInterruptedTurnRequest(req); err != nil {
+		return err
+	}
+	return s.withImmediate(ctx, func(tx sqlRunner) error {
+		threadID := strings.TrimSpace(req.ExpectedLease.ThreadID)
+		if _, err := loadThread(ctx, tx, threadID); errors.Is(err, sessiontree.ErrThreadNotFound) {
+			if _, tombstoneErr := loadThreadTombstone(ctx, tx, threadID); tombstoneErr == nil {
+				return sessiontree.ErrThreadDeleted
+			} else if !errors.Is(tombstoneErr, sql.ErrNoRows) {
+				return tombstoneErr
+			}
+			return sessiontree.ErrAuthorityCorrupt
+		} else if err != nil {
+			return err
+		}
+		finished, found, err := loadSQLiteTurnFinish(ctx, tx, req.ExpectedLease.ThreadID, req.ExpectedLease.TurnID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return sessiontree.ErrAuthorityCorrupt
+		}
+		_, err = validateSQLiteInterruptedTurnResolution(ctx, tx, req, finished)
+		return err
+	})
+}
+
+type sqliteInterruptedTurnResolution struct {
+	result         sessiontree.RecoverInterruptedTurnResult
+	recoveryReplay bool
+	exactProof     bool
+}
+
+func validateSQLiteInterruptedTurnResolution(
+	ctx context.Context,
+	tx sqlRunner,
+	req sessiontree.RecoverInterruptedTurnRequest,
+	finished sqliteTurnFinishLedger,
+) (sqliteInterruptedTurnResolution, error) {
+	expectedLease := req.ExpectedLease
+	parentThreadID := strings.TrimSpace(req.ParentThreadID)
+	meta, err := loadThread(ctx, tx, expectedLease.ThreadID)
+	if errors.Is(err, sessiontree.ErrThreadNotFound) {
+		if _, tombstoneErr := loadThreadTombstone(ctx, tx, expectedLease.ThreadID); tombstoneErr == nil {
+			return sqliteInterruptedTurnResolution{}, sessiontree.ErrThreadDeleted
+		} else if !errors.Is(tombstoneErr, sql.ErrNoRows) {
+			return sqliteInterruptedTurnResolution{}, tombstoneErr
+		}
+		return sqliteInterruptedTurnResolution{}, sessiontree.ErrAuthorityCorrupt
+	}
+	if err != nil {
+		return sqliteInterruptedTurnResolution{}, err
+	}
+	if sessiontree.ValidateThreadMetaAuthority(meta) != nil {
+		return sqliteInterruptedTurnResolution{}, sessiontree.ErrAuthorityCorrupt
+	}
+	if strings.TrimSpace(meta.ParentThreadID) != parentThreadID {
+		return sqliteInterruptedTurnResolution{}, sessiontree.ErrInvalidThreadAuthority
+	}
+	if parentThreadID != "" {
+		parent, err := loadThread(ctx, tx, parentThreadID)
+		if errors.Is(err, sessiontree.ErrThreadNotFound) {
+			return sqliteInterruptedTurnResolution{}, sessiontree.ErrAuthorityCorrupt
+		}
+		if err != nil {
+			return sqliteInterruptedTurnResolution{}, err
+		}
+		if sessiontree.ValidateThreadMetaAuthority(parent) != nil {
+			return sqliteInterruptedTurnResolution{}, sessiontree.ErrAuthorityCorrupt
+		}
+	}
+	snapshot, err := inspectLiveThreadAuthority(ctx, tx, meta)
+	if err != nil {
+		return sqliteInterruptedTurnResolution{}, err
+	}
+	if snapshot.LeaseGeneration < expectedLease.Generation {
+		return sqliteInterruptedTurnResolution{}, sessiontree.ErrAuthorityCorrupt
+	}
+	if snapshot.Lease != nil {
+		if sessiontree.ValidateInterruptedTurnLeaseSuccessor(expectedLease, *snapshot.Lease) != nil ||
+			snapshot.Lease.Generation == expectedLease.Generation {
+			return sqliteInterruptedTurnResolution{}, sessiontree.ErrAuthorityCorrupt
+		}
+	}
+	admission, found, err := loadSQLiteTurnAdmission(ctx, tx, expectedLease.ThreadID, expectedLease.TurnID)
+	if err != nil {
+		return sqliteInterruptedTurnResolution{}, err
+	}
+	if !found {
+		return sqliteInterruptedTurnResolution{}, sessiontree.ErrAuthorityCorrupt
+	}
+	if err := validateSQLiteInterruptedTurnAdmissionSuccessor(admission, expectedLease); err != nil {
+		return sqliteInterruptedTurnResolution{}, err
+	}
+	started, err := loadEntry(ctx, tx, admission.ThreadID, admission.TurnStartedID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return sqliteInterruptedTurnResolution{}, sessiontree.ErrAuthorityCorrupt
+	}
+	if err != nil {
+		return sqliteInterruptedTurnResolution{}, err
+	}
+	if sessiontree.ValidateInterruptedTurnStartedEntry(started, admission.ThreadID, admission.TurnID, admission.RunID, admission.TurnStartedID) != nil {
+		return sqliteInterruptedTurnResolution{}, sessiontree.ErrAuthorityCorrupt
+	}
+	if snapshot.LeaseGeneration < finished.Generation ||
+		(snapshot.Lease != nil && snapshot.Lease.Generation <= finished.Generation) {
+		return sqliteInterruptedTurnResolution{}, sessiontree.ErrAuthorityCorrupt
+	}
+	switch finished.Generation {
+	case admission.Lease.Generation:
+		if err := validateSQLiteNormalInterruptedTurnFinish(ctx, tx, finished, admission); err != nil {
+			return sqliteInterruptedTurnResolution{}, err
+		}
+		return sqliteInterruptedTurnResolution{}, nil
+	case admission.Lease.Generation + 1:
+		result, err := validateSQLiteInterruptedTurnRecoveryReplay(ctx, tx, finished, admission.Lease, parentThreadID)
+		if err != nil {
+			if errors.Is(err, sessiontree.ErrRequestConflict) {
+				return sqliteInterruptedTurnResolution{}, sessiontree.ErrAuthorityCorrupt
+			}
+			return sqliteInterruptedTurnResolution{}, err
+		}
+		return sqliteInterruptedTurnResolution{
+			result: result, recoveryReplay: true, exactProof: sessiontree.SameTurnLease(admission.Lease, expectedLease),
+		}, nil
+	default:
+		return sqliteInterruptedTurnResolution{}, sessiontree.ErrAuthorityCorrupt
+	}
+}
+
+func validateSQLiteInterruptedTurnAdmission(admission sqliteTurnAdmissionLedger, active sessiontree.TurnLease) error {
+	if admission.ThreadID != active.ThreadID || admission.TurnID != active.TurnID ||
+		strings.TrimSpace(admission.RunID) == "" || strings.TrimSpace(admission.RequestFingerprint) == "" ||
+		strings.TrimSpace(admission.TurnStartedID) == "" || !sessiontree.SameTurnLease(admission.Lease, active) {
+		return sessiontree.ErrAuthorityCorrupt
+	}
+	return nil
+}
+
+func validateSQLiteInterruptedTurnAdmissionSuccessor(admission sqliteTurnAdmissionLedger, expectedLease sessiontree.TurnLease) error {
+	if admission.ThreadID != expectedLease.ThreadID || admission.TurnID != expectedLease.TurnID ||
+		strings.TrimSpace(admission.RunID) == "" || strings.TrimSpace(admission.RequestFingerprint) == "" ||
+		strings.TrimSpace(admission.TurnStartedID) == "" {
+		return sessiontree.ErrAuthorityCorrupt
+	}
+	if admission.Lease.Generation != expectedLease.Generation ||
+		sessiontree.ValidateInterruptedTurnLeaseSuccessor(expectedLease, admission.Lease) != nil {
+		return sessiontree.ErrRequestConflict
+	}
+	return nil
+}
+
+func validateSQLiteNormalInterruptedTurnFinish(
+	ctx context.Context,
+	tx sqlRunner,
+	finished sqliteTurnFinishLedger,
+	admission sqliteTurnAdmissionLedger,
+) error {
+	if finished.ThreadID != admission.ThreadID || finished.TurnID != admission.TurnID ||
+		finished.RunID != admission.RunID || finished.Generation != admission.Lease.Generation ||
+		strings.TrimSpace(finished.OutcomeFingerprint) == "" || strings.TrimSpace(finished.TerminalEntryID) == "" {
+		return sessiontree.ErrAuthorityCorrupt
+	}
+	terminal, err := loadEntry(ctx, tx, admission.ThreadID, finished.TerminalEntryID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return sessiontree.ErrAuthorityCorrupt
+	}
+	if err != nil {
+		return err
+	}
+	if terminal.Type != sessiontree.EntryTurnMarker || terminal.TurnID != admission.TurnID ||
+		!isSQLiteTerminalTurnStatus(terminal.TurnStatus) {
+		return sessiontree.ErrAuthorityCorrupt
+	}
+	if finished.FailureEntryID != "" {
+		failure, err := loadEntry(ctx, tx, admission.ThreadID, finished.FailureEntryID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return sessiontree.ErrAuthorityCorrupt
+		}
+		if err != nil {
+			return err
+		}
+		if failure.Type != sessiontree.EntryRunFailure || failure.TurnID != admission.TurnID || terminal.ParentID != failure.ID {
+			return sessiontree.ErrAuthorityCorrupt
+		}
+	}
+	return nil
+}
+
+func validateSQLiteInterruptedTurnRecoveryReplay(
+	ctx context.Context,
+	tx sqlRunner,
+	finished sqliteTurnFinishLedger,
+	expectedLease sessiontree.TurnLease,
+	parentThreadID string,
+) (sessiontree.RecoverInterruptedTurnResult, error) {
+	terminal, err := loadEntry(ctx, tx, expectedLease.ThreadID, finished.TerminalEntryID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return sessiontree.RecoverInterruptedTurnResult{}, sessiontree.ErrAuthorityCorrupt
+	}
+	if err != nil {
+		return sessiontree.RecoverInterruptedTurnResult{}, err
+	}
+	if terminal.Type != sessiontree.EntryTurnMarker || terminal.TurnID != expectedLease.TurnID ||
+		terminal.Metadata[sessiontree.InterruptedTurnRecoveryKindKey] != sessiontree.InterruptedTurnRecoveryKind ||
+		terminal.Metadata[sessiontree.InterruptedTurnRecoveryFingerprintKey] != finished.OutcomeFingerprint ||
+		!isSQLiteTerminalTurnStatus(terminal.TurnStatus) {
+		return sessiontree.RecoverInterruptedTurnResult{}, sessiontree.ErrAuthorityCorrupt
+	}
+	if terminal.Metadata[sessiontree.InterruptedTurnRecoveryParentKey] != strings.TrimSpace(parentThreadID) {
+		return sessiontree.RecoverInterruptedTurnResult{}, sessiontree.ErrInvalidThreadAuthority
+	}
+	failureMessage := ""
+	var failure *sessiontree.Entry
+	if finished.FailureEntryID != "" {
+		entry, err := loadEntry(ctx, tx, expectedLease.ThreadID, finished.FailureEntryID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return sessiontree.RecoverInterruptedTurnResult{}, sessiontree.ErrAuthorityCorrupt
+		}
+		if err != nil {
+			return sessiontree.RecoverInterruptedTurnResult{}, err
+		}
+		if entry.Type != sessiontree.EntryRunFailure || entry.TurnID != expectedLease.TurnID || terminal.ParentID != entry.ID {
+			return sessiontree.RecoverInterruptedTurnResult{}, sessiontree.ErrAuthorityCorrupt
+		}
+		failureMessage = entry.Error
+		failure = &entry
+	}
+	fingerprint, err := sessiontree.InterruptedTurnRecoveryFingerprint(
+		expectedLease, parentThreadID, finished.RunID, terminal.TurnStatus, failureMessage,
+	)
+	if err != nil {
+		return sessiontree.RecoverInterruptedTurnResult{}, err
+	}
+	if fingerprint != finished.OutcomeFingerprint {
+		return sessiontree.RecoverInterruptedTurnResult{}, sessiontree.ErrRequestConflict
+	}
+	if terminal.ID != "recovery-terminal-"+fingerprint[:24] {
+		return sessiontree.RecoverInterruptedTurnResult{}, sessiontree.ErrAuthorityCorrupt
+	}
+	return sessiontree.RecoverInterruptedTurnResult{
+		RunID: finished.RunID, Status: terminal.TurnStatus, OutcomeFingerprint: fingerprint,
+		Failure: failure, Terminal: terminal, Generation: finished.Generation, Replayed: true,
+	}, nil
+}
+
+func isSQLiteTerminalTurnStatus(status sessiontree.TurnMarkerStatus) bool {
+	switch status {
+	case sessiontree.TurnCompleted, sessiontree.TurnWaiting, sessiontree.TurnFailed, sessiontree.TurnAborted:
+		return true
+	default:
+		return false
+	}
 }

@@ -602,6 +602,18 @@ func inspectThreadAuthority(ctx context.Context, store *Store, threadID ThreadID
 	return snapshot, runtimeHostError(err)
 }
 
+func inspectSubAgentThreadAuthority(ctx context.Context, store *Store, parentThreadID, childThreadID ThreadID) (sessiontree.SubAgentThreadAuthoritySnapshot, error) {
+	if store == nil || store.repo == nil {
+		return sessiontree.SubAgentThreadAuthoritySnapshot{}, errors.New("runtime store is required")
+	}
+	inspector, ok := store.repo.(sessiontree.SubAgentThreadAuthorityInspectionRepo)
+	if !ok {
+		return sessiontree.SubAgentThreadAuthoritySnapshot{}, ErrUnsupportedStoreCapability
+	}
+	snapshot, err := inspector.InspectSubAgentThreadAuthority(ctx, string(parentThreadID), string(childThreadID))
+	return snapshot, runtimeHostError(err)
+}
+
 func validateLiveThreadLifecycle(meta sessiontree.ThreadMeta) error {
 	lifecycle := meta.Lifecycle
 	if lifecycle == "" {

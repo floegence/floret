@@ -218,27 +218,73 @@ func (s *Store) InspectThreadAuthority(ctx context.Context, threadID string) (se
 		if err != nil {
 			return err
 		}
-		snapshot.Thread = meta
-		if lease, active, err := loadTurnLease(ctx, tx, threadID); err != nil {
-			return err
-		} else if active {
-			snapshot.Lease = &lease
+		snapshot, err = inspectLiveThreadAuthority(ctx, tx, meta)
+		return err
+	})
+	return snapshot, err
+}
+
+func (s *Store) InspectSubAgentThreadAuthority(ctx context.Context, parentThreadID, childThreadID string) (sessiontree.SubAgentThreadAuthoritySnapshot, error) {
+	var result sessiontree.SubAgentThreadAuthoritySnapshot
+	err := s.withImmediate(ctx, func(tx sqlRunner) error {
+		parentThreadID = strings.TrimSpace(parentThreadID)
+		childThreadID = strings.TrimSpace(childThreadID)
+		parent, err := loadThread(ctx, tx, parentThreadID)
+		if errors.Is(err, sessiontree.ErrThreadNotFound) {
+			if _, tombstoneErr := loadThreadTombstone(ctx, tx, parentThreadID); tombstoneErr == nil {
+				return sessiontree.ErrThreadDeleted
+			}
 		}
-		if operationID, claimed, err := loadThreadAuthorityClaim(ctx, tx, threadID); err != nil {
-			return err
-		} else if claimed {
-			snapshot.ClaimOperationID = operationID
-		}
-		path, err := pathWithRunner(ctx, tx, threadID, meta.LeafID)
 		if err != nil {
 			return err
 		}
-		if err := sessiontree.ValidateThreadAuthorityState(path, snapshot.Lease, snapshot.ClaimOperationID); err != nil {
+		if err := sessiontree.ValidateThreadMetaAuthority(parent); err != nil {
+			return sessiontree.ErrAuthorityCorrupt
+		}
+		child, err := loadThread(ctx, tx, childThreadID)
+		if errors.Is(err, sessiontree.ErrThreadNotFound) {
+			return sessiontree.ErrSubAgentNotFound
+		}
+		if err != nil {
 			return err
 		}
+		if strings.TrimSpace(child.ParentThreadID) != parentThreadID {
+			return sessiontree.ErrSubAgentNotFound
+		}
+		childSnapshot, err := inspectLiveThreadAuthority(ctx, tx, child)
+		if err != nil {
+			return err
+		}
+		result = sessiontree.SubAgentThreadAuthoritySnapshot{Parent: parent, Child: childSnapshot}
 		return nil
 	})
-	return snapshot, err
+	return result, err
+}
+
+func inspectLiveThreadAuthority(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta) (sessiontree.ThreadAuthoritySnapshot, error) {
+	threadID := strings.TrimSpace(meta.ID)
+	snapshot := sessiontree.ThreadAuthoritySnapshot{Thread: meta}
+	if err := tx.QueryRowContext(ctx, `SELECT lease_generation FROM threads WHERE id = ?`, threadID).Scan(&snapshot.LeaseGeneration); err != nil {
+		return sessiontree.ThreadAuthoritySnapshot{}, err
+	}
+	if lease, active, err := loadTurnLease(ctx, tx, threadID); err != nil {
+		return sessiontree.ThreadAuthoritySnapshot{}, err
+	} else if active {
+		snapshot.Lease = &lease
+	}
+	if operationID, claimed, err := loadThreadAuthorityClaim(ctx, tx, threadID); err != nil {
+		return sessiontree.ThreadAuthoritySnapshot{}, err
+	} else if claimed {
+		snapshot.ClaimOperationID = operationID
+	}
+	path, err := pathWithRunner(ctx, tx, threadID, meta.LeafID)
+	if err != nil {
+		return sessiontree.ThreadAuthoritySnapshot{}, err
+	}
+	if err := sessiontree.ValidateThreadAuthoritySnapshot(meta, path, snapshot.Lease, snapshot.ClaimOperationID, snapshot.LeaseGeneration); err != nil {
+		return sessiontree.ThreadAuthoritySnapshot{}, err
+	}
+	return snapshot, nil
 }
 
 func loadThreadTombstone(ctx context.Context, q sqlRunner, threadID string) (sessiontree.ThreadTombstone, error) {

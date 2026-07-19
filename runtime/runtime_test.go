@@ -59,6 +59,7 @@ type testCapabilitySet struct {
 	subAgent     *SubAgentHostBinder
 	subAgentRead *SubAgentReadHostBinder
 	recovery     *PendingToolRecoveryHostBinder
+	interrupted  *InterruptedTurnRecoveryHostBinder
 }
 
 var testCapabilities = struct {
@@ -103,7 +104,10 @@ func mustTestCapabilities(t *testing.T, store *Store) *testCapabilitySet {
 		if set.subAgentRead, err = NewSubAgentReadHostBinder(bootstrap); err != nil {
 			return err
 		}
-		set.recovery, err = NewPendingToolRecoveryHostBinder(bootstrap)
+		if set.recovery, err = NewPendingToolRecoveryHostBinder(bootstrap); err != nil {
+			return err
+		}
+		set.interrupted, err = NewInterruptedTurnRecoveryHostBinder(bootstrap)
 		return err
 	})
 	if err != nil {

@@ -47,6 +47,10 @@ type InterruptedTurnRecoveryRepo interface {
 	RecoverInterruptedTurn(context.Context, RecoverInterruptedTurnRequest) (RecoverInterruptedTurnResult, error)
 }
 
+type InterruptedTurnResolutionValidationRepo interface {
+	ValidateInterruptedTurnResolution(context.Context, RecoverInterruptedTurnRequest) error
+}
+
 func ValidateThreadAuthorityState(path []Entry, lease *TurnLease, claimOperationID string) error {
 	unfinished, err := unfinishedTurnIDs(path)
 	if err != nil {
@@ -76,12 +80,78 @@ func ValidateThreadAuthorityState(path []Entry, lease *TurnLease, claimOperation
 	return nil
 }
 
+func ValidateThreadAuthoritySnapshot(meta ThreadMeta, path []Entry, lease *TurnLease, claimOperationID string, leaseGeneration int64) error {
+	if err := ValidateThreadMetaAuthority(meta); err != nil {
+		return ErrAuthorityCorrupt
+	}
+	if leaseGeneration < 0 {
+		return ErrAuthorityCorrupt
+	}
+	if lease != nil && lease.Generation != leaseGeneration {
+		return ErrAuthorityCorrupt
+	}
+	if err := ValidateThreadAuthorityState(path, lease, claimOperationID); err != nil {
+		return err
+	}
+	lifecycle, err := normalizeThreadLifecycle(meta)
+	if err != nil {
+		return ErrAuthorityCorrupt
+	}
+	switch lifecycle {
+	case ThreadLifecycleClosed:
+		if lease != nil {
+			return ErrAuthorityCorrupt
+		}
+	case ThreadLifecycleClosing:
+		if lease != nil && lease.Purpose != TurnLeasePurposeTurn {
+			return ErrAuthorityCorrupt
+		}
+	}
+	return nil
+}
+
 func ValidateRecoverInterruptedTurnRequest(req RecoverInterruptedTurnRequest) error {
 	if err := req.ExpectedLease.Validate(); err != nil {
 		return err
 	}
 	if req.ExpectedLease.Purpose != TurnLeasePurposeTurn {
 		return errors.New("interrupted turn recovery requires a turn lease")
+	}
+	return nil
+}
+
+// ValidateInterruptedTurnLeaseSuccessor verifies that current is a canonical
+// monotonic successor of the exact recovery target proof.
+func ValidateInterruptedTurnLeaseSuccessor(target, current TurnLease) error {
+	if err := target.Validate(); err != nil {
+		return ErrAuthorityCorrupt
+	}
+	if err := current.Validate(); err != nil {
+		return ErrAuthorityCorrupt
+	}
+	if target.Purpose != TurnLeasePurposeTurn || current.ThreadID != target.ThreadID {
+		return ErrAuthorityCorrupt
+	}
+	switch {
+	case current.Generation < target.Generation:
+		return ErrAuthorityCorrupt
+	case current.Generation > target.Generation:
+		return nil
+	}
+	if current.Purpose != target.Purpose || current.TurnID != target.TurnID ||
+		current.MutationID != target.MutationID || current.MutationKind != target.MutationKind ||
+		current.OwnerID != target.OwnerID || !current.AcquiredAt.Equal(target.AcquiredAt) {
+		return ErrAuthorityCorrupt
+	}
+	switch {
+	case current.Heartbeat < target.Heartbeat:
+		return ErrAuthorityCorrupt
+	case current.Heartbeat == target.Heartbeat:
+		if !SameTurnLease(current, target) {
+			return ErrAuthorityCorrupt
+		}
+	case current.RenewedAt.Before(target.RenewedAt), current.ExpiresAt.Before(target.ExpiresAt):
+		return ErrAuthorityCorrupt
 	}
 	return nil
 }
@@ -208,7 +278,14 @@ func (r *MemoryRepo) RecoverInterruptedTurn(_ context.Context, req RecoverInterr
 	turnID := strings.TrimSpace(req.ExpectedLease.TurnID)
 	key := turnAdmissionKey(threadID, turnID)
 	if finished, ok := r.turnFinishes[key]; ok {
-		return r.replayedInterruptedTurnLocked(finished, req.ExpectedLease, req.ParentThreadID)
+		resolution, err := r.validateInterruptedTurnResolutionLocked(req, finished)
+		if err != nil {
+			return RecoverInterruptedTurnResult{}, err
+		}
+		if resolution.recoveryReplay && resolution.exactProof {
+			return resolution.result, nil
+		}
+		return RecoverInterruptedTurnResult{}, ErrRecoveryTargetResolved
 	}
 	meta, ok := r.threads[threadID]
 	if !ok {
@@ -242,6 +319,10 @@ func (r *MemoryRepo) RecoverInterruptedTurn(_ context.Context, req RecoverInterr
 	if !active.TakeoverEligible(r.now().UTC(), r.leasePolicy) {
 		return RecoverInterruptedTurnResult{}, ErrThreadAuthorityBusy
 	}
+	admission, ok := r.turnAdmissions[key]
+	if !ok || validateInterruptedTurnAdmission(admission, active) != nil {
+		return RecoverInterruptedTurnResult{}, ErrAuthorityCorrupt
+	}
 	path, err := pathLocked(r.threads, r.entries, threadID, meta.LeafID)
 	if err != nil {
 		return RecoverInterruptedTurnResult{}, err
@@ -250,7 +331,7 @@ func (r *MemoryRepo) RecoverInterruptedTurn(_ context.Context, req RecoverInterr
 	if err != nil {
 		return RecoverInterruptedTurnResult{}, err
 	}
-	if err := ValidateInterruptedTurnRecoveryPath(path, turnID, plan.RunID); err != nil {
+	if err := ValidateInterruptedTurnAdmissionPath(path, admission.ThreadID, turnID, admission.RunID, admission.TurnStartedID); err != nil {
 		return RecoverInterruptedTurnResult{}, err
 	}
 	terminalEntryID := plan.TerminalEntryID
@@ -353,6 +434,158 @@ func (r *MemoryRepo) RecoverInterruptedTurn(_ context.Context, req RecoverInterr
 	return result, nil
 }
 
+func (r *MemoryRepo) ValidateInterruptedTurnResolution(_ context.Context, req RecoverInterruptedTurnRequest) error {
+	if err := ValidateRecoverInterruptedTurnRequest(req); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	threadID := strings.TrimSpace(req.ExpectedLease.ThreadID)
+	if _, ok := r.threads[threadID]; !ok {
+		if _, deleted := r.tombstones[threadID]; deleted {
+			return ErrThreadDeleted
+		}
+		return ErrAuthorityCorrupt
+	}
+	finished, ok := r.turnFinishes[turnAdmissionKey(req.ExpectedLease.ThreadID, req.ExpectedLease.TurnID)]
+	if !ok {
+		return ErrAuthorityCorrupt
+	}
+	_, err := r.validateInterruptedTurnResolutionLocked(req, finished)
+	return err
+}
+
+type interruptedTurnResolution struct {
+	result         RecoverInterruptedTurnResult
+	recoveryReplay bool
+	exactProof     bool
+}
+
+func (r *MemoryRepo) validateInterruptedTurnResolutionLocked(
+	req RecoverInterruptedTurnRequest,
+	finished turnFinishLedger,
+) (interruptedTurnResolution, error) {
+	expectedLease := req.ExpectedLease
+	threadID := strings.TrimSpace(expectedLease.ThreadID)
+	meta, ok := r.threads[threadID]
+	if !ok {
+		if _, deleted := r.tombstones[threadID]; deleted {
+			return interruptedTurnResolution{}, ErrThreadDeleted
+		}
+		return interruptedTurnResolution{}, ErrAuthorityCorrupt
+	}
+	if ValidateThreadMetaAuthority(meta) != nil {
+		return interruptedTurnResolution{}, ErrAuthorityCorrupt
+	}
+	parentThreadID := strings.TrimSpace(req.ParentThreadID)
+	if strings.TrimSpace(meta.ParentThreadID) != parentThreadID {
+		return interruptedTurnResolution{}, ErrInvalidThreadAuthority
+	}
+	if parentThreadID != "" {
+		parent, ok := r.threads[parentThreadID]
+		if !ok || ValidateThreadMetaAuthority(parent) != nil {
+			return interruptedTurnResolution{}, ErrAuthorityCorrupt
+		}
+	}
+	leaseGeneration := r.leaseGeneration[threadID]
+	var active *TurnLease
+	if lease, ok := r.leases[threadID]; ok {
+		copy := lease
+		active = &copy
+	}
+	path, err := pathLocked(r.threads, r.entries, threadID, meta.LeafID)
+	if err != nil {
+		return interruptedTurnResolution{}, err
+	}
+	if err := ValidateThreadAuthoritySnapshot(meta, path, active, r.authorityClaims[threadID], leaseGeneration); err != nil {
+		return interruptedTurnResolution{}, err
+	}
+	if leaseGeneration < expectedLease.Generation {
+		return interruptedTurnResolution{}, ErrAuthorityCorrupt
+	}
+	if active != nil {
+		if ValidateInterruptedTurnLeaseSuccessor(expectedLease, *active) != nil || active.Generation == expectedLease.Generation {
+			return interruptedTurnResolution{}, ErrAuthorityCorrupt
+		}
+	}
+	key := turnAdmissionKey(expectedLease.ThreadID, expectedLease.TurnID)
+	admission, ok := r.turnAdmissions[key]
+	if !ok {
+		return interruptedTurnResolution{}, ErrAuthorityCorrupt
+	}
+	if err := validateInterruptedTurnAdmissionSuccessor(admission, expectedLease); err != nil {
+		return interruptedTurnResolution{}, err
+	}
+	started, ok := findEntry(r.entries[admission.ThreadID], admission.TurnStartedID)
+	if !ok || ValidateInterruptedTurnStartedEntry(started, admission.ThreadID, admission.TurnID, admission.RunID, admission.TurnStartedID) != nil {
+		return interruptedTurnResolution{}, ErrAuthorityCorrupt
+	}
+	if leaseGeneration < finished.Generation || (active != nil && active.Generation <= finished.Generation) {
+		return interruptedTurnResolution{}, ErrAuthorityCorrupt
+	}
+	switch finished.Generation {
+	case admission.Lease.Generation:
+		if err := r.validateNormalInterruptedTurnFinishLocked(finished, admission); err != nil {
+			return interruptedTurnResolution{}, err
+		}
+		return interruptedTurnResolution{}, nil
+	case admission.Lease.Generation + 1:
+		result, err := r.replayedInterruptedTurnLocked(finished, admission.Lease, parentThreadID)
+		if err != nil {
+			if errors.Is(err, ErrRequestConflict) {
+				return interruptedTurnResolution{}, ErrAuthorityCorrupt
+			}
+			return interruptedTurnResolution{}, err
+		}
+		return interruptedTurnResolution{
+			result: result, recoveryReplay: true, exactProof: SameTurnLease(admission.Lease, expectedLease),
+		}, nil
+	default:
+		return interruptedTurnResolution{}, ErrAuthorityCorrupt
+	}
+}
+
+func validateInterruptedTurnAdmission(admission turnAdmissionLedger, active TurnLease) error {
+	if admission.ThreadID != active.ThreadID || admission.TurnID != active.TurnID ||
+		strings.TrimSpace(admission.RunID) == "" || strings.TrimSpace(admission.RequestFingerprint) == "" ||
+		strings.TrimSpace(admission.TurnStartedID) == "" || !SameTurnLease(admission.Lease, active) {
+		return ErrAuthorityCorrupt
+	}
+	return nil
+}
+
+func validateInterruptedTurnAdmissionSuccessor(admission turnAdmissionLedger, expectedLease TurnLease) error {
+	if admission.ThreadID != expectedLease.ThreadID || admission.TurnID != expectedLease.TurnID ||
+		strings.TrimSpace(admission.RunID) == "" || strings.TrimSpace(admission.RequestFingerprint) == "" ||
+		strings.TrimSpace(admission.TurnStartedID) == "" {
+		return ErrAuthorityCorrupt
+	}
+	if admission.Lease.Generation != expectedLease.Generation ||
+		ValidateInterruptedTurnLeaseSuccessor(expectedLease, admission.Lease) != nil {
+		return ErrRequestConflict
+	}
+	return nil
+}
+
+func (r *MemoryRepo) validateNormalInterruptedTurnFinishLocked(finished turnFinishLedger, admission turnAdmissionLedger) error {
+	if finished.ThreadID != admission.ThreadID || finished.TurnID != admission.TurnID ||
+		finished.RunID != admission.RunID || finished.Generation != admission.Lease.Generation ||
+		strings.TrimSpace(finished.OutcomeFingerprint) == "" || strings.TrimSpace(finished.TerminalEntryID) == "" {
+		return ErrAuthorityCorrupt
+	}
+	terminal, ok := findEntry(r.entries[finished.ThreadID], finished.TerminalEntryID)
+	if !ok || terminal.Type != EntryTurnMarker || terminal.TurnID != admission.TurnID || !terminalTurnMarker(terminal.TurnStatus) {
+		return ErrAuthorityCorrupt
+	}
+	if finished.FailureEntryID != "" {
+		failure, ok := findEntry(r.entries[finished.ThreadID], finished.FailureEntryID)
+		if !ok || failure.Type != EntryRunFailure || failure.TurnID != admission.TurnID || terminal.ParentID != failure.ID {
+			return ErrAuthorityCorrupt
+		}
+	}
+	return nil
+}
+
 func (r *MemoryRepo) replayedInterruptedTurnLocked(
 	finished turnFinishLedger,
 	expectedLease TurnLease,
@@ -375,7 +608,7 @@ func (r *MemoryRepo) replayedInterruptedTurnLocked(
 	var failure *Entry
 	if finished.FailureEntryID != "" {
 		entry, ok := findEntry(r.entries[finished.ThreadID], finished.FailureEntryID)
-		if !ok || entry.Type != EntryRunFailure || entry.TurnID != finished.TurnID {
+		if !ok || entry.Type != EntryRunFailure || entry.TurnID != finished.TurnID || terminal.ParentID != entry.ID {
 			return RecoverInterruptedTurnResult{}, ErrAuthorityCorrupt
 		}
 		failureMessage = entry.Error
@@ -387,8 +620,11 @@ func (r *MemoryRepo) replayedInterruptedTurnLocked(
 	if err != nil {
 		return RecoverInterruptedTurnResult{}, err
 	}
-	if fingerprint != finished.OutcomeFingerprint || terminal.ID != "recovery-terminal-"+fingerprint[:24] {
+	if fingerprint != finished.OutcomeFingerprint {
 		return RecoverInterruptedTurnResult{}, ErrRequestConflict
+	}
+	if terminal.ID != "recovery-terminal-"+fingerprint[:24] {
+		return RecoverInterruptedTurnResult{}, ErrAuthorityCorrupt
 	}
 	result := RecoverInterruptedTurnResult{
 		RunID: finished.RunID, Status: terminal.TurnStatus, OutcomeFingerprint: finished.OutcomeFingerprint,
@@ -443,6 +679,30 @@ func ValidateInterruptedTurnRecoveryPath(path []Entry, turnID, runID string) err
 	}
 	if startedRunID == "" || startedRunID != strings.TrimSpace(runID) {
 		return ErrRequestConflict
+	}
+	return nil
+}
+
+func ValidateInterruptedTurnAdmissionPath(path []Entry, threadID, turnID, runID, turnStartedID string) error {
+	if err := ValidateInterruptedTurnRecoveryPath(path, turnID, runID); err != nil {
+		if errors.Is(err, ErrRequestConflict) {
+			return ErrAuthorityCorrupt
+		}
+		return err
+	}
+	for _, entry := range path {
+		if ValidateInterruptedTurnStartedEntry(entry, threadID, turnID, runID, turnStartedID) == nil {
+			return nil
+		}
+	}
+	return ErrAuthorityCorrupt
+}
+
+func ValidateInterruptedTurnStartedEntry(entry Entry, threadID, turnID, runID, turnStartedID string) error {
+	if entry.ID != strings.TrimSpace(turnStartedID) || entry.ThreadID != strings.TrimSpace(threadID) ||
+		entry.Type != EntryTurnMarker || entry.TurnStatus != TurnStarted || entry.TurnID != strings.TrimSpace(turnID) ||
+		strings.TrimSpace(entry.Metadata["run_id"]) != strings.TrimSpace(runID) {
+		return ErrAuthorityCorrupt
 	}
 	return nil
 }

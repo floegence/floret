@@ -34,6 +34,8 @@ func TestProviderCapabilitiesRequireBoundAuthority(t *testing.T) {
 		{name: "subagent read", call: func() error { _, err := capabilities.subAgentRead.NewHost(ctx, ""); return err }},
 		{name: "thread recovery", call: func() error { _, err := capabilities.recovery.NewThreadHost(ctx, "", nil); return err }},
 		{name: "subagent recovery", call: func() error { _, err := capabilities.recovery.NewSubAgentHost(ctx, "", nil); return err }},
+		{name: "interrupted thread recovery", call: func() error { _, err := capabilities.interrupted.BindThread(ctx, ""); return err }},
+		{name: "interrupted subagent recovery", call: func() error { _, err := capabilities.interrupted.BindSubAgent(ctx, "", ""); return err }},
 	}
 	for _, constructor := range constructors {
 		if err := constructor.call(); err == nil || !strings.Contains(err.Error(), "requires thread id") {
@@ -58,6 +60,8 @@ func TestProviderFreeCapabilityConstructionValidatesCanonicalAuthority(t *testin
 		{name: "subagent read", call: func() error { _, err := capabilities.subAgentRead.NewHost(ctx, "missing"); return err }},
 		{name: "pending recovery", call: func() error { _, err := capabilities.recovery.NewThreadHost(ctx, "missing", events); return err }},
 		{name: "subagent recovery", call: func() error { _, err := capabilities.recovery.NewSubAgentHost(ctx, "missing", events); return err }},
+		{name: "interrupted thread recovery", call: func() error { _, err := capabilities.interrupted.BindThread(ctx, "missing"); return err }},
+		{name: "interrupted subagent recovery", call: func() error { _, err := capabilities.interrupted.BindSubAgent(ctx, "missing", "child"); return err }},
 	}
 	for _, constructor := range missing {
 		if err := constructor.call(); !errors.Is(err, ErrThreadNotFound) {
@@ -76,6 +80,12 @@ func TestProviderFreeCapabilityConstructionValidatesCanonicalAuthority(t *testin
 	if _, err := create.CreateThread(ctx, createRequest); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := capabilities.interrupted.BindThread(ctx, "thread"); !errors.Is(err, ErrInterruptedTurnNotFound) {
+		t.Fatalf("idle interrupted recovery bind err=%v, want ErrInterruptedTurnNotFound", err)
+	}
+	if got := events.snapshot(); len(got) != 0 {
+		t.Fatalf("idle interrupted recovery bind emitted events: %#v", got)
+	}
 	deleteHost, err := capabilities.delete.NewHost(ctx, "thread")
 	if err != nil {
 		t.Fatal(err)
@@ -91,6 +101,7 @@ func TestProviderFreeCapabilityConstructionValidatesCanonicalAuthority(t *testin
 		{name: "title", call: func() error { _, err := capabilities.title.NewHost(ctx, "thread", events); return err }},
 		{name: "fork", call: func() error { _, err := capabilities.fork.NewHost(ctx, "thread", events); return err }},
 		{name: "pending recovery", call: func() error { _, err := capabilities.recovery.NewThreadHost(ctx, "thread", events); return err }},
+		{name: "interrupted recovery", call: func() error { _, err := capabilities.interrupted.BindThread(ctx, "thread"); return err }},
 	} {
 		if err := constructor.call(); !errors.Is(err, ErrThreadDeleted) {
 			t.Fatalf("%s tombstoned construction err=%v, want ErrThreadDeleted", constructor.name, err)
@@ -635,6 +646,7 @@ func TestRootCapabilitiesRejectCanonicalChild(t *testing.T) {
 		{name: "fork", call: func() error { _, err := capabilities.fork.NewHost(ctx, "child", nil); return err }},
 		{name: "delete", call: func() error { _, err := capabilities.delete.NewHost(ctx, "child"); return err }},
 		{name: "settlement", call: func() error { _, err := capabilities.recovery.NewThreadHost(ctx, "child", nil); return err }},
+		{name: "interrupted recovery", call: func() error { _, err := capabilities.interrupted.BindThread(ctx, "child"); return err }},
 	}
 	for _, constructor := range constructors {
 		if err := constructor.call(); !errors.Is(err, ErrSubAgentParentRequired) {
@@ -643,6 +655,20 @@ func TestRootCapabilitiesRejectCanonicalChild(t *testing.T) {
 	}
 	if _, err := store.repo.Thread(ctx, "child"); err != nil {
 		t.Fatalf("root capability rejection changed child: %v", err)
+	}
+	if _, err := capabilities.interrupted.BindSubAgent(ctx, "parent", "child"); !errors.Is(err, ErrInterruptedTurnNotFound) {
+		t.Fatalf("idle child recovery bind err=%v, want ErrInterruptedTurnNotFound", err)
+	}
+	otherCreateRequest := testCreateThreadRequest("other-parent")
+	otherCreate, err := capabilities.create.Bind(otherCreateRequest.ThreadID, otherCreateRequest.CreateIntentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := otherCreate.CreateThread(ctx, otherCreateRequest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capabilities.interrupted.BindSubAgent(ctx, "other-parent", "child"); !errors.Is(err, ErrSubAgentNotFound) {
+		t.Fatalf("wrong-parent recovery bind err=%v, want ErrSubAgentNotFound", err)
 	}
 }
 
