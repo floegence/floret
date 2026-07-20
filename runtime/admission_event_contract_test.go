@@ -77,6 +77,7 @@ func TestCanonicalUserAdmissionIsReadableBeforeProviderEvents(t *testing.T) {
 				MIMEType:    "text/plain",
 				SizeBytes:   18,
 			}
+			references := canonicalReferenceFixture()
 			t.Cleanup(func() {
 				if err := store.Close(); err != nil {
 					t.Errorf("close store: %v", err)
@@ -105,10 +106,11 @@ func TestCanonicalUserAdmissionIsReadableBeforeProviderEvents(t *testing.T) {
 			sink.readHost = readHost
 
 			if _, err := host.RunTurn(ctx, RunTurnRequest{
-				ThreadID: "thread",
-				TurnID:   "turn-1",
-				RunID:    "run-1",
-				Input:    TurnInput{Text: "hello", Attachments: []MessageAttachment{attachment}},
+				ThreadID:            "thread",
+				TurnID:              "turn-1",
+				RunID:               "run-1",
+				Input:               TurnInput{Text: "hello", Attachments: []MessageAttachment{attachment}, References: references},
+				SupplementalContext: renderableSupplementalFixture(),
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -122,7 +124,7 @@ func TestCanonicalUserAdmissionIsReadableBeforeProviderEvents(t *testing.T) {
 			}
 			turn := page.Turns[0]
 			if turn.TurnID != "turn-1" || turn.RunID != "run-1" || turn.UserEntryID == "" || turn.UserInput != "hello" ||
-				!reflect.DeepEqual(turn.UserAttachments, []MessageAttachment{attachment}) || turn.Status != TurnStatusRunning {
+				!reflect.DeepEqual(turn.UserAttachments, []MessageAttachment{attachment}) || !reflect.DeepEqual(turn.UserReferences, references) || turn.Status != TurnStatusRunning {
 				t.Fatalf("canonical running turn at admission = %#v", turn)
 			}
 			admissionIndex := -1

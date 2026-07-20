@@ -34,3 +34,23 @@ func TestMemoryStoreAppendMessagesReplaceAndIsolation(t *testing.T) {
 		t.Fatalf("runs are not isolated: %#v", b)
 	}
 }
+
+func TestCloneMessageDeepCopiesReferences(t *testing.T) {
+	original := Message{
+		Role: User,
+		References: []MessageReference{{
+			ReferenceID: "context:turn-1:0",
+			Kind:        MessageReferenceResource,
+			Label:       "config.yaml",
+			Text:        "/workspace/config.yaml",
+			ResourceRef: "host-resource:v1:config",
+		}},
+	}
+
+	cloned := CloneMessage(original)
+	cloned.References[0].Label = "mutated"
+	cloned.References[0].ResourceRef = "mutated"
+	if original.References[0].Label != "config.yaml" || original.References[0].ResourceRef != "host-resource:v1:config" {
+		t.Fatalf("CloneMessage aliased references: original=%#v cloned=%#v", original, cloned)
+	}
+}

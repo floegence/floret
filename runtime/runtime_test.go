@@ -1225,7 +1225,7 @@ func TestHostRunTurnProjectsSupplementalContextOnlyIntoCurrentProviderRequest(t 
 	}
 }
 
-func TestHostRunTurnIgnoresEmptySupplementalContext(t *testing.T) {
+func TestHostRunTurnRejectsEmptySupplementalContextBeforeAdmission(t *testing.T) {
 	ctx := context.Background()
 	var mu sync.Mutex
 	var requests []ModelRequest
@@ -1257,19 +1257,20 @@ func TestHostRunTurnIgnoresEmptySupplementalContext(t *testing.T) {
 			{},
 			{Kind: " ", Title: " ", Text: " ", Metadata: map[string]string{" ": " "}},
 		},
-	}); err != nil {
-		t.Fatal(err)
+	}); err == nil {
+		t.Fatal("RunTurn succeeded with empty supplemental context")
 	}
 	mu.Lock()
-	defer mu.Unlock()
-	req, ok := findRuntimeModelRequest(requests, "thread", "turn-1", 1)
-	if !ok {
-		t.Fatalf("missing gateway request: %#v", requests)
+	if len(requests) != 0 {
+		t.Fatalf("empty supplemental context reached provider: %#v", requests)
 	}
-	for _, msg := range req.Messages {
-		if strings.Contains(msg.Text, "Host-provided supplemental context") {
-			t.Fatalf("empty supplemental context changed request messages: %#v", req.Messages)
-		}
+	mu.Unlock()
+	overview, err := host.ReadThreadOverview(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overview.LatestTurn != nil || overview.Thread.ThroughOrdinal != 0 {
+		t.Fatalf("empty supplemental context mutated thread: %#v", overview)
 	}
 }
 
