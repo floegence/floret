@@ -133,14 +133,15 @@ type LoopLimits struct {
 }
 
 type AgentHarness struct {
-	mu              sync.Mutex
-	subagentSpawnMu sync.Mutex
-	options         Options
-	threads         map[string]*Thread
-	subagents       map[string]*subagentController
-	subagentUpdates chan struct{}
-	approvals       map[string]map[string]PendingApproval
-	seq             int64
+	mu                        sync.Mutex
+	subagentSpawnMu           sync.Mutex
+	options                   Options
+	effectFinalizationTimeout time.Duration
+	threads                   map[string]*Thread
+	subagents                 map[string]*subagentController
+	subagentUpdates           chan struct{}
+	approvals                 map[string]map[string]PendingApproval
+	seq                       int64
 }
 
 type ResumeOptions struct{}
@@ -2579,6 +2580,14 @@ func turnFinalizationContext(ctx context.Context) (context.Context, context.Canc
 	// persist the terminal marker; host/UI deadlines must not strand a durable
 	// session in a permanently running state.
 	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+}
+
+func (h *AgentHarness) effectFinalizationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := 5 * time.Second
+	if h != nil && h.effectFinalizationTimeout > 0 {
+		timeout = h.effectFinalizationTimeout
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
 }
 
 func (t *Thread) enterTurn() error {

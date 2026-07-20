@@ -3,11 +3,13 @@ package agentharness
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/floegence/floret/internal/engine"
+	"github.com/floegence/floret/internal/event"
 	"github.com/floegence/floret/internal/provider/cache"
 	"github.com/floegence/floret/internal/session"
 	"github.com/floegence/floret/internal/session/artifact"
@@ -377,8 +379,14 @@ func TestFinishEffectFailureMarksUnknownWithFreshContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if countTurnMarkersForTurn(journal.Path, "turn-1", sessiontree.TurnAborted) != 1 {
-		t.Fatalf("unknown effect did not permit exactly one aborted terminal marker: %#v", journal.Path)
+	terminalMarkers := 0
+	for _, entry := range journal.Path {
+		if entry.Type == sessiontree.EntryTurnMarker && entry.TurnID == "turn-1" && isTerminalTurnMarker(entry.TurnStatus) {
+			terminalMarkers++
+		}
+	}
+	if terminalMarkers != 1 {
+		t.Fatalf("unknown effect did not permit exactly one terminal marker: %#v", journal.Path)
 	}
 }
 
@@ -395,6 +403,10 @@ func TestFinishAndMarkUnknownFailureAreOneShotAndJoined(t *testing.T) {
 	)
 	h := newTestHarness(p, repo, cache.NewMemoryStore())
 	h.effectFinalizationTimeout = 20 * time.Millisecond
+	rec, ok := h.options.Sink.(*event.Recorder)
+	if !ok {
+		t.Fatalf("test harness sink=%T, want event recorder", h.options.Sink)
+	}
 	var handlerCalls atomic.Int64
 	mustRegister(h.options.Tools, stringTool("shell", func(context.Context, string) (string, error) {
 		handlerCalls.Add(1)
@@ -405,12 +417,20 @@ func TestFinishAndMarkUnknownFailureAreOneShotAndJoined(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, runErr := thread.Run(context.Background(), "run", RunOptions{RunID: "run-1", TurnID: "turn-1"})
-	if !errors.Is(runErr, finishErr) || !errors.Is(runErr, markErr) {
-		t.Fatalf("run err=%v, want joined finish and unknown failures", runErr)
+	if !errors.Is(runErr, sessiontree.ErrEffectOutcomeUnknown) {
+		t.Fatalf("run err=%v, want fail-closed unknown outcome", runErr)
 	}
 	if handlerCalls.Load() != 1 || repo.finishCalls.Load() != 1 || repo.markCalls.Load() != 1 {
 		t.Fatalf("calls handler=%d finish=%d mark=%d, want one-shot 1/1/1", handlerCalls.Load(), repo.finishCalls.Load(), repo.markCalls.Load())
 	}
+	for _, ev := range rec.Snapshot() {
+		if ev.Type == event.RunEnd {
+			if strings.Contains(ev.Err, finishErr.Error()) && strings.Contains(ev.Err, markErr.Error()) {
+				return
+			}
+		}
+	}
+	t.Fatalf("missing joined run failure event: %#v", rec.Snapshot())
 }
 
 type failingEffectFinishRepo struct {

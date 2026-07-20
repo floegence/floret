@@ -277,76 +277,66 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 			handlerResult := invoke()
 			finalizerKey := effectFinalizerKey(request.RunID, request.TurnID, request.CallID)
 			if err := t.registerEffectFinalizer(finalizerKey, func(finalizeCtx context.Context, request engine.EffectResultFinalizationRequest) (engine.EffectResultFinalizationResult, error) {
-				persistCtx, cancel := turnFinalizationContext(ctx)
-				defer cancel()
-				select {
-				case finalize <- effectFinalizeRequest{ctx: persistCtx, request: cloneEffectFinalizationRequest(request)}:
-				case <-persistCtx.Done():
-					return engine.EffectResultFinalizationResult{}, persistCtx.Err()
-				}
-				select {
-				case outcome := <-gateDone:
-					if outcome.err != nil {
-						var committed *CommittedEffectError
-						if errors.As(outcome.err, &committed) {
-							return engine.EffectResultFinalizationResult{}, outcome.err
-						}
-						return engine.EffectResultFinalizationResult{}, &CommittedEffectError{EffectAttemptID: prepared.Attempt.EffectAttemptID, Err: outcome.err}
+				finalize <- effectFinalizeRequest{ctx: finalizeCtx, request: cloneEffectFinalizationRequest(request)}
+				outcome := <-gateDone
+				if outcome.err != nil {
+					var committed *CommittedEffectError
+					if errors.As(outcome.err, &committed) {
+						return engine.EffectResultFinalizationResult{}, outcome.err
 					}
-					return outcome.result.finalization, nil
-				case <-persistCtx.Done():
-					return engine.EffectResultFinalizationResult{}, persistCtx.Err()
+					return engine.EffectResultFinalizationResult{}, &CommittedEffectError{EffectAttemptID: prepared.Attempt.EffectAttemptID, Err: outcome.err}
 				}
+				return outcome.result.finalization, nil
 			}); err != nil {
 				return EffectDispatchResult{}, err
 			}
 			defer t.removeEffectFinalizer(finalizerKey)
-			effectCommitCtx, cancelEffectCommit := turnFinalizationContext(ctx)
-			defer cancelEffectCommit()
 			ready <- handlerResult
-			select {
-			case finalization := <-finalize:
-				current, ok := sessiontree.TurnLeaseFromContext(effectCommitCtx)
-				if !ok || current.OwnerID != lease.OwnerID || current.Generation != lease.Generation {
-					return EffectDispatchResult{}, sessiontree.ErrStaleAuthority
-				}
-				outcomeFingerprint, err := effectOutcomeFingerprint(handlerResult, finalization.request.Message, finalization.request.FullOutput)
-				if err != nil {
-					return EffectDispatchResult{}, err
-				}
-				finished, err := repo.FinishEffectDispatch(finalization.ctx, sessiontree.FinishEffectDispatchRequest{
-					Lease: current, EffectAttemptID: prepared.Attempt.EffectAttemptID, RequestFingerprint: fingerprint,
-					OutcomeFingerprint: outcomeFingerprint, Failed: handlerResult.IsError || effectMessageFailed(finalization.request.Message), Now: t.harness.now(),
-					Result:     sessiontree.Entry{ThreadID: request.ThreadID, TurnID: request.TurnID, Type: sessiontree.EntryToolResult, Message: session.CloneMessage(finalization.request.Message)},
-					FullOutput: cloneEffectFullOutput(finalization.request.FullOutput),
-				})
-				if err != nil {
-					unknownFingerprint := sessiontree.StableHash(prepared.Attempt.EffectAttemptID + "\x00unknown\x00" + err.Error())
-					_, markErr := repo.MarkEffectUnknown(finalization.ctx, sessiontree.MarkEffectUnknownRequest{
-						Lease: current, EffectAttemptID: prepared.Attempt.EffectAttemptID, RequestFingerprint: fingerprint,
-						OutcomeFingerprint: unknownFingerprint, Now: t.harness.now(),
-					})
-					if markErr != nil {
-						return EffectDispatchResult{}, &CommittedEffectError{EffectAttemptID: prepared.Attempt.EffectAttemptID, Err: errors.Join(err, markErr)}
-					}
-					return EffectDispatchResult{}, &CommittedEffectError{EffectAttemptID: prepared.Attempt.EffectAttemptID, Err: err}
-				}
-				committedFinalization, validateErr := validateCommittedEffectFinalization(finalization.request, prepared.Attempt, finished)
-				if validateErr != nil {
-					return EffectDispatchResult{}, &CommittedEffectError{EffectAttemptID: prepared.Attempt.EffectAttemptID, Err: validateErr}
-				}
-				entry := finished.Result
-				if !finished.Replayed {
-					t.harness.emitEntryCommitted(entry, request.RunID)
-					t.harness.emit(HarnessEvent{
-						Type: EventEntryAppended, RunID: request.RunID, ThreadID: request.ThreadID, TurnID: request.TurnID,
-						EntryID: entry.ID, ParentID: entry.ParentID,
-					})
-				}
-				return EffectDispatchResult{seal: seal, finalization: committedFinalization}, nil
-			case <-effectCommitCtx.Done():
-				return EffectDispatchResult{}, effectCommitCtx.Err()
+			finalization := <-finalize
+			finishCtx, cancelFinish := t.harness.effectFinalizationContext(finalization.ctx)
+			current, ok = sessiontree.TurnLeaseFromContext(finishCtx)
+			if !ok || current.OwnerID != lease.OwnerID || current.Generation != lease.Generation {
+				cancelFinish()
+				return EffectDispatchResult{}, sessiontree.ErrStaleAuthority
 			}
+			outcomeFingerprint, err := effectOutcomeFingerprint(handlerResult, finalization.request.Message, finalization.request.FullOutput)
+			if err != nil {
+				cancelFinish()
+				return EffectDispatchResult{}, err
+			}
+			finished, err := repo.FinishEffectDispatch(finishCtx, sessiontree.FinishEffectDispatchRequest{
+				Lease: current, EffectAttemptID: prepared.Attempt.EffectAttemptID, RequestFingerprint: fingerprint,
+				OutcomeFingerprint: outcomeFingerprint, Failed: handlerResult.IsError || effectMessageFailed(finalization.request.Message), Now: t.harness.now(),
+				Result:     sessiontree.Entry{ThreadID: request.ThreadID, TurnID: request.TurnID, Type: sessiontree.EntryToolResult, Message: session.CloneMessage(finalization.request.Message)},
+				FullOutput: cloneEffectFullOutput(finalization.request.FullOutput),
+			})
+			cancelFinish()
+			if err != nil {
+				unknownFingerprint := sessiontree.StableHash(prepared.Attempt.EffectAttemptID + "\x00unknown\x00" + err.Error())
+				unknownCtx, cancelUnknown := t.harness.effectFinalizationContext(finalization.ctx)
+				_, markErr := repo.MarkEffectUnknown(unknownCtx, sessiontree.MarkEffectUnknownRequest{
+					Lease: current, EffectAttemptID: prepared.Attempt.EffectAttemptID, RequestFingerprint: fingerprint,
+					OutcomeFingerprint: unknownFingerprint, Now: t.harness.now(),
+				})
+				cancelUnknown()
+				if markErr != nil {
+					return EffectDispatchResult{}, &CommittedEffectError{EffectAttemptID: prepared.Attempt.EffectAttemptID, Err: errors.Join(err, markErr)}
+				}
+				return EffectDispatchResult{}, &CommittedEffectError{EffectAttemptID: prepared.Attempt.EffectAttemptID, Err: err}
+			}
+			committedFinalization, validateErr := validateCommittedEffectFinalization(finalization.request, prepared.Attempt, finished)
+			if validateErr != nil {
+				return EffectDispatchResult{}, &CommittedEffectError{EffectAttemptID: prepared.Attempt.EffectAttemptID, Err: validateErr}
+			}
+			entry := finished.Result
+			if !finished.Replayed {
+				t.harness.emitEntryCommitted(entry, request.RunID)
+				t.harness.emit(HarnessEvent{
+					Type: EventEntryAppended, RunID: request.RunID, ThreadID: request.ThreadID, TurnID: request.TurnID,
+					EntryID: entry.ID, ParentID: entry.ParentID,
+				})
+			}
+			return EffectDispatchResult{seal: seal, finalization: committedFinalization}, nil
 		})
 		active.Store(false)
 		if gateErr == nil && result.seal != seal {

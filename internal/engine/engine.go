@@ -1068,12 +1068,19 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			toolMessages[i] = e.stableMessage(opts.RunID, session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: resultView, Activity: sessionActivityPresentation(result.Activity)})
 			finalized, err := finalizeEffect(toolMessages[i], artifactFullOutputPlan(projection.FullOutputPlan))
 			if err != nil {
+				failureActivity := errorToolResultActivityPresentation(
+					result.Activity,
+					callActivities[result.CallID],
+					string(observation.ActivityStatusError),
+					err.Error(),
+					true,
+				)
 				metadataBase := result.Metadata
 				if result.Pending == nil {
 					metadataBase = toolProjectionMetadata(result.Metadata, projection)
 				}
 				metadata := mergeToolResultMetadata(metadataBase, i, len(calls))
-				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: resultLatency, Activity: result.Activity, Metadata: metadata})
+				e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Err: err.Error(), Duration: resultLatency, Activity: failureActivity, Metadata: metadata})
 				return err
 			}
 			if finalized.Handled {
