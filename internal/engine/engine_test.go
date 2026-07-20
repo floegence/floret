@@ -2647,8 +2647,16 @@ func TestEffectFinalizerFailureRewritesSuccessfulActivityAsError(t *testing.T) {
 			return tools.Result{
 				Text: "handler succeeded",
 				Activity: &observation.ActivityPresentation{
-					Renderer: observation.ActivityRendererStructured,
-					Payload:  map[string]any{"status": string(observation.ActivityStatusSuccess)},
+					Label:       "Shell command",
+					Description: "Command completed",
+					Renderer:    observation.ActivityRendererStructured,
+					Chips:       []observation.ActivityChip{{Kind: "status", Label: "Success", Tone: "success"}},
+					Payload: map[string]any{
+						"status":    string(observation.ActivityStatusSuccess),
+						"exit_code": 0,
+						"stdout":    "handler succeeded",
+						"error":     map[string]any{"message": "stale handler error"},
+					},
 				},
 			}, nil
 		},
@@ -2673,6 +2681,14 @@ func TestEffectFinalizerFailureRewritesSuccessfulActivityAsError(t *testing.T) {
 		}
 		if ev.Activity == nil || ev.Activity.Payload["status"] != string(observation.ActivityStatusError) {
 			t.Fatalf("finalizer error retained successful activity: %#v", ev.Activity)
+		}
+		if ev.Activity.Label != "Shell command" || ev.Activity.Description != finalizationErr.Error() || len(ev.Activity.Chips) != 0 || len(ev.Activity.TargetRefs) != 0 {
+			t.Fatalf("finalizer error activity retained successful presentation: %#v", ev.Activity)
+		}
+		for _, forbidden := range []string{"exit_code", "stdout"} {
+			if _, ok := ev.Activity.Payload[forbidden]; ok {
+				t.Fatalf("finalizer error activity retained %q: %#v", forbidden, ev.Activity)
+			}
 		}
 		errorPayload, _ := ev.Activity.Payload["error"].(map[string]any)
 		if errorPayload["message"] != finalizationErr.Error() {

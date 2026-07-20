@@ -225,6 +225,94 @@ func TestCallerCancellationAfterHandlerStartsStillFinishesEffectDispatch(t *test
 	t.Fatalf("cancelled caller bypassed durable effect result: %#v", journal.Entries)
 }
 
+func TestCallerCancellationWaitsForStartedHandlerBeyondFinalizationWindow(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	repo := &countingEffectFinishRepo{MemoryRepo: sessiontree.NewMemoryRepo()}
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("call-1", "shell", `{"value":"x"}`), harness.DoneReason("tool_calls")),
+	)
+	h := newTestHarness(p, repo, cache.NewMemoryStore())
+	const finalizationWindow = 20 * time.Millisecond
+	h.effectFinalizationTimeout = finalizationWindow
+	started := make(chan struct{})
+	release := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	mustRegister(h.options.Tools, tools.Define[stringArgs](
+		tools.Definition{
+			Name: "shell", InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+			Permission: tools.PermissionSpec{Mode: tools.PermissionAllow},
+		},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
+			close(started)
+			<-release
+			return tools.Result{Text: "late committed output"}, nil
+		},
+	))
+	thread, err := h.StartThread(context.Background(), StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct {
+		result TurnResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := thread.Run(ctx, "run", RunOptions{RunID: "run-1", TurnID: "turn-1"})
+		done <- struct {
+			result TurnResult
+			err    error
+		}{result: result, err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("effect handler did not start")
+	}
+	cancel()
+	select {
+	case out := <-done:
+		t.Fatalf("run finished before started handler returned: result=%#v err=%v", out.result, out.err)
+	case <-time.After(3 * finalizationWindow):
+	}
+	close(release)
+	released = true
+	select {
+	case out := <-done:
+		if out.err == nil || out.result.Status != engine.Cancelled {
+			t.Fatalf("run result=%#v err=%v, want caller cancellation after canonical finalization", out.result, out.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("run did not finish after handler returned")
+	}
+	if got := repo.finishCalls.Load(); got != 1 {
+		t.Fatalf("FinishEffectDispatch calls=%d, want 1", got)
+	}
+	journal, err := thread.Journal(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolResults := 0
+	terminalMarkers := 0
+	for _, entry := range journal.Path {
+		if entry.Type == sessiontree.EntryToolResult && entry.Message.ToolCallID == "call-1" && entry.Message.Content == "late committed output" {
+			toolResults++
+		}
+		if entry.Type == sessiontree.EntryTurnMarker && entry.TurnID == "turn-1" && isTerminalTurnMarker(entry.TurnStatus) {
+			terminalMarkers++
+		}
+	}
+	if toolResults != 1 || terminalMarkers != 1 {
+		t.Fatalf("canonical convergence tool_results=%d terminal_markers=%d path=%#v", toolResults, terminalMarkers, journal.Path)
+	}
+}
+
 func TestParallelEffectFinalizationWindowStartsAtOrderedFinalization(t *testing.T) {
 	ctx := context.Background()
 	repo := &countingEffectFinishRepo{MemoryRepo: sessiontree.NewMemoryRepo()}

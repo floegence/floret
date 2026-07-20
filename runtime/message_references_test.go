@@ -94,6 +94,24 @@ func TestTurnInputValidatesClosedMessageReferenceUnionAndLimits(t *testing.T) {
 	}
 }
 
+func TestMessageReferenceResourceRefSupportsSelfContainedLocatorBoundary(t *testing.T) {
+	const locatorLimit = 8 * 1024
+	if MaxMessageReferenceResourceRefBytes != locatorLimit {
+		t.Fatalf("resource ref limit = %d, want %d", MaxMessageReferenceResourceRefBytes, locatorLimit)
+	}
+	valid := MessageReference{
+		ReferenceID: "context:0", Kind: MessageReferenceResource, Label: "max path",
+		ResourceRef: strings.Repeat("x", locatorLimit),
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("boundary resource ref rejected: %v", err)
+	}
+	valid.ResourceRef += "x"
+	if err := valid.Validate(); err == nil {
+		t.Fatal("oversized resource ref succeeded")
+	}
+}
+
 func TestHostReferenceOnlyTurnUsesCurrentSupplementalWithoutHistoryLeak(t *testing.T) {
 	ctx := context.Background()
 	var mu sync.Mutex
