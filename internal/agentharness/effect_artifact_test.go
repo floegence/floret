@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/floegence/floret/internal/engine"
 	"github.com/floegence/floret/internal/provider/cache"
@@ -222,6 +223,196 @@ func TestCallerCancellationAfterHandlerStartsStillFinishesEffectDispatch(t *test
 	t.Fatalf("cancelled caller bypassed durable effect result: %#v", journal.Entries)
 }
 
+func TestParallelEffectFinalizationWindowStartsAtOrderedFinalization(t *testing.T) {
+	ctx := context.Background()
+	repo := &countingEffectFinishRepo{MemoryRepo: sessiontree.NewMemoryRepo()}
+	p := harness.NewScriptedProvider(
+		harness.Step(
+			harness.Tool("call-0", "tool_0", `{"value":"zero"}`),
+			harness.Tool("call-1", "tool_1", `{"value":"one"}`),
+			harness.Tool("call-2", "tool_2", `{"value":"two"}`),
+			harness.DoneReason("tool_calls"),
+		),
+		harness.Step(harness.Text("done"), harness.Done()),
+	)
+	h := newTestHarness(p, repo, cache.NewMemoryStore())
+	const finalizationWindow = 20 * time.Millisecond
+	h.effectFinalizationTimeout = finalizationWindow
+
+	releaseSlow := make(chan struct{})
+	fastReturned := make(chan struct{})
+	allStarted := make(chan struct{})
+	var started atomic.Int64
+	register := func(name string, wait bool) {
+		mustRegister(h.options.Tools, tools.Define[stringArgs](
+			tools.Definition{
+				Name: name, InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+				Permission: tools.PermissionSpec{Mode: tools.PermissionAllow},
+			},
+			nil,
+			nil,
+			func(ctx context.Context, invocation tools.Invocation[stringArgs]) (tools.Result, error) {
+				if started.Add(1) == 3 {
+					close(allStarted)
+				}
+				if wait {
+					select {
+					case <-releaseSlow:
+					case <-ctx.Done():
+						return tools.Result{}, ctx.Err()
+					}
+				} else {
+					close(fastReturned)
+				}
+				return tools.Result{Text: invocation.Args.Value}, nil
+			},
+		))
+	}
+	register("tool_0", true)
+	register("tool_1", false)
+	register("tool_2", true)
+
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct {
+		result TurnResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := thread.Run(ctx, "run", RunOptions{RunID: "run-1", TurnID: "turn-1"})
+		done <- struct {
+			result TurnResult
+			err    error
+		}{result: result, err: err}
+	}()
+
+	select {
+	case <-allStarted:
+	case <-time.After(time.Second):
+		t.Fatal("parallel effect handlers did not all start")
+	}
+	select {
+	case <-fastReturned:
+	case <-time.After(time.Second):
+		t.Fatal("fast effect handler did not return")
+	}
+	// The fast handler is deliberately held behind the ordered batch observer.
+	// Its persistence budget must not start while the Engine is still waiting for
+	// the earlier/later handler results.
+	time.Sleep(3 * finalizationWindow)
+	close(releaseSlow)
+
+	select {
+	case out := <-done:
+		if out.err != nil || out.result.Status != engine.Completed {
+			t.Fatalf("parallel run result=%#v err=%v", out.result, out.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("parallel run did not finish")
+	}
+	if got := repo.finishCalls.Load(); got != 3 {
+		t.Fatalf("FinishEffectDispatch calls=%d, want one per handler", got)
+	}
+	if got := started.Load(); got != 3 {
+		t.Fatalf("handler calls=%d, want 3", got)
+	}
+	journal, err := thread.Journal(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, callID := range []string{"call-0", "call-1", "call-2"} {
+		found := false
+		for _, entry := range journal.Entries {
+			if entry.Type == sessiontree.EntryToolResult && entry.Message.ToolCallID == callID {
+				found = true
+				if entry.Message.ToolResult == nil || entry.Message.ToolResult.Status != string(observation.ActivityStatusSuccess) {
+					t.Fatalf("tool result %s=%#v, want success", callID, entry.Message)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("journal missing canonical result for %s: %#v", callID, journal.Entries)
+		}
+	}
+}
+
+func TestFinishEffectFailureMarksUnknownWithFreshContext(t *testing.T) {
+	finishErr := errors.New("finish persistence failed")
+	repo := &effectFinalizationFailureRepo{
+		MemoryRepo:   sessiontree.NewMemoryRepo(),
+		finishErr:    finishErr,
+		expireFinish: true,
+	}
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("call-1", "shell", `{"value":"x"}`), harness.DoneReason("tool_calls")),
+	)
+	h := newTestHarness(p, repo, cache.NewMemoryStore())
+	h.effectFinalizationTimeout = 20 * time.Millisecond
+	var handlerCalls atomic.Int64
+	mustRegister(h.options.Tools, stringTool("shell", func(context.Context, string) (string, error) {
+		handlerCalls.Add(1)
+		return "known side effect", nil
+	}))
+	thread, err := h.StartThread(context.Background(), StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, runErr := thread.Run(context.Background(), "run", RunOptions{RunID: "run-1", TurnID: "turn-1"})
+	var committed *CommittedEffectError
+	if !errors.As(runErr, &committed) || !errors.Is(runErr, finishErr) {
+		t.Fatalf("run err=%v, want committed finish failure", runErr)
+	}
+	if handlerCalls.Load() != 1 || repo.finishCalls.Load() != 1 || repo.markCalls.Load() != 1 {
+		t.Fatalf("calls handler=%d finish=%d mark=%d, want 1/1/1", handlerCalls.Load(), repo.finishCalls.Load(), repo.markCalls.Load())
+	}
+	if got := repo.markContextErr.Load(); got != nil {
+		t.Fatalf("MarkEffectUnknown inherited exhausted finish context: %v", got)
+	}
+	if got := repo.markedState.Load(); got != string(sessiontree.EffectAttemptUnknown) {
+		t.Fatalf("marked state=%v, want unknown", got)
+	}
+	journal, err := thread.Journal(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if countTurnMarkersForTurn(journal.Path, "turn-1", sessiontree.TurnAborted) != 1 {
+		t.Fatalf("unknown effect did not permit exactly one aborted terminal marker: %#v", journal.Path)
+	}
+}
+
+func TestFinishAndMarkUnknownFailureAreOneShotAndJoined(t *testing.T) {
+	finishErr := errors.New("finish persistence failed")
+	markErr := errors.New("mark unknown failed")
+	repo := &effectFinalizationFailureRepo{
+		MemoryRepo: sessiontree.NewMemoryRepo(),
+		finishErr:  finishErr,
+		markErr:    markErr,
+	}
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("call-1", "shell", `{"value":"x"}`), harness.DoneReason("tool_calls")),
+	)
+	h := newTestHarness(p, repo, cache.NewMemoryStore())
+	h.effectFinalizationTimeout = 20 * time.Millisecond
+	var handlerCalls atomic.Int64
+	mustRegister(h.options.Tools, stringTool("shell", func(context.Context, string) (string, error) {
+		handlerCalls.Add(1)
+		return "known side effect", nil
+	}))
+	thread, err := h.StartThread(context.Background(), StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, runErr := thread.Run(context.Background(), "run", RunOptions{RunID: "run-1", TurnID: "turn-1"})
+	if !errors.Is(runErr, finishErr) || !errors.Is(runErr, markErr) {
+		t.Fatalf("run err=%v, want joined finish and unknown failures", runErr)
+	}
+	if handlerCalls.Load() != 1 || repo.finishCalls.Load() != 1 || repo.markCalls.Load() != 1 {
+		t.Fatalf("calls handler=%d finish=%d mark=%d, want one-shot 1/1/1", handlerCalls.Load(), repo.finishCalls.Load(), repo.markCalls.Load())
+	}
+}
+
 type failingEffectFinishRepo struct {
 	*sessiontree.MemoryRepo
 	err error
@@ -232,6 +423,17 @@ type countingEffectFinishRepo struct {
 	finishCalls atomic.Int64
 }
 
+type effectFinalizationFailureRepo struct {
+	*sessiontree.MemoryRepo
+	finishErr      error
+	markErr        error
+	expireFinish   bool
+	finishCalls    atomic.Int64
+	markCalls      atomic.Int64
+	markContextErr atomic.Value
+	markedState    atomic.Value
+}
+
 func (r *countingEffectFinishRepo) FinishEffectDispatch(ctx context.Context, req sessiontree.FinishEffectDispatchRequest) (sessiontree.FinishEffectDispatchResult, error) {
 	r.finishCalls.Add(1)
 	return r.MemoryRepo.FinishEffectDispatch(ctx, req)
@@ -239,4 +441,28 @@ func (r *countingEffectFinishRepo) FinishEffectDispatch(ctx context.Context, req
 
 func (r *failingEffectFinishRepo) FinishEffectDispatch(context.Context, sessiontree.FinishEffectDispatchRequest) (sessiontree.FinishEffectDispatchResult, error) {
 	return sessiontree.FinishEffectDispatchResult{}, r.err
+}
+
+func (r *effectFinalizationFailureRepo) FinishEffectDispatch(ctx context.Context, _ sessiontree.FinishEffectDispatchRequest) (sessiontree.FinishEffectDispatchResult, error) {
+	r.finishCalls.Add(1)
+	if r.expireFinish {
+		<-ctx.Done()
+	}
+	return sessiontree.FinishEffectDispatchResult{}, r.finishErr
+}
+
+func (r *effectFinalizationFailureRepo) MarkEffectUnknown(ctx context.Context, req sessiontree.MarkEffectUnknownRequest) (sessiontree.EffectAttempt, error) {
+	r.markCalls.Add(1)
+	if err := ctx.Err(); err != nil {
+		r.markContextErr.Store(err)
+		return sessiontree.EffectAttempt{}, err
+	}
+	if r.markErr != nil {
+		return sessiontree.EffectAttempt{}, r.markErr
+	}
+	attempt, err := r.MemoryRepo.MarkEffectUnknown(ctx, req)
+	if err == nil {
+		r.markedState.Store(string(attempt.State))
+	}
+	return attempt, err
 }

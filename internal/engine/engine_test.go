@@ -2630,6 +2630,59 @@ func TestToolOutputProjectionFailsWhenPreservingWithoutEffectFinalizer(t *testin
 	}
 }
 
+func TestEffectFinalizerFailureRewritesSuccessfulActivityAsError(t *testing.T) {
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("shell-1", "shell", `{"value":"x"}`), harness.DoneReason("tool_calls")),
+	)
+	reg := tools.NewRegistry()
+	mustRegister(t, reg, tools.Define[stringArgs](
+		tools.Definition{
+			Name: "shell", InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+			Permission: tools.PermissionSpec{Mode: tools.PermissionAllow},
+		},
+		nil,
+		nil,
+		func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
+			return tools.Result{
+				Text: "handler succeeded",
+				Activity: &observation.ActivityPresentation{
+					Renderer: observation.ActivityRendererStructured,
+					Payload:  map[string]any{"status": string(observation.ActivityStatusSuccess)},
+				},
+			}, nil
+		},
+	))
+	finalizationErr := errors.New("effect result persistence failed")
+	e := newTestEngine(p, rec)
+	e.Tools = reg
+	e.Options.EffectResultFinalizer = func(context.Context, engine.EffectResultFinalizationRequest) (engine.EffectResultFinalizationResult, error) {
+		return engine.EffectResultFinalizationResult{}, finalizationErr
+	}
+
+	got := e.Run(context.Background(), "run")
+	if got.Status != engine.Failed || !errors.Is(got.Err, finalizationErr) {
+		t.Fatalf("result=%#v, want finalization failure", got)
+	}
+	for _, ev := range rec.Snapshot() {
+		if ev.Type != event.ToolResult || ev.ToolID != "shell-1" {
+			continue
+		}
+		if ev.Err != finalizationErr.Error() || ev.Result != "" {
+			t.Fatalf("tool result event=%#v, want pure finalizer error", ev)
+		}
+		if ev.Activity == nil || ev.Activity.Payload["status"] != string(observation.ActivityStatusError) {
+			t.Fatalf("finalizer error retained successful activity: %#v", ev.Activity)
+		}
+		errorPayload, _ := ev.Activity.Payload["error"].(map[string]any)
+		if errorPayload["message"] != finalizationErr.Error() {
+			t.Fatalf("activity error payload=%#v, want finalizer error", errorPayload)
+		}
+		return
+	}
+	t.Fatalf("missing tool result error event: %#v", rec.Snapshot())
+}
+
 func TestErrorToolOutputProjectionPreservesErrorPrefixMetadataAndArtifacts(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
