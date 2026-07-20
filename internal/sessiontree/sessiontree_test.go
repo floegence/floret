@@ -430,10 +430,10 @@ func TestCompactionContextEmbedsKeptUsersInCheckpointAndDedupesTail(t *testing.T
 	if got[0].Role != session.User || got[0].Kind != session.MessageKindCompactionSummary {
 		t.Fatalf("context should start with user checkpoint: %#v", got)
 	}
-	if !strings.Contains(got[0].Content, `"entry_id": "`+oldUser.ID+`"`) || !strings.Contains(got[0].Content, "old user") {
+	if strings.Contains(got[0].Content, `"entry_id"`) || !strings.Contains(got[0].Content, "old user") {
 		t.Fatalf("tail-external kept user should be embedded in checkpoint: %#v", got[0])
 	}
-	if strings.Contains(got[0].Content, `"entry_id": "`+latestUser.ID+`"`) {
+	if strings.Contains(got[0].Content, `"content": "latest user"`) {
 		t.Fatalf("tail user should not be duplicated inside checkpoint: %#v", got[0])
 	}
 }
@@ -466,7 +466,7 @@ func TestCompactionContextDoesNotInferTailWhenKeptUsersAreExplicit(t *testing.T)
 	if len(got) != 1 || got[0].Role != session.User || got[0].Kind != session.MessageKindCompactionSummary {
 		t.Fatalf("explicit kept users without tail should produce one checkpoint: %#v", got)
 	}
-	if !strings.Contains(got[0].Content, `"entry_id": "`+user.ID+`"`) || !strings.Contains(got[0].Content, "single user") {
+	if strings.Contains(got[0].Content, `"entry_id"`) || !strings.Contains(got[0].Content, "single user") {
 		t.Fatalf("explicit kept user should be embedded in checkpoint: %#v", got[0])
 	}
 }
@@ -538,7 +538,7 @@ func TestMultipleCompactionsUseOnlyLastBoundary(t *testing.T) {
 		t.Fatalf("durable checkpoint should describe the retained tail it is followed by: %q", got[0].Content)
 	}
 	preserved := preservedUsersFromCheckpoint(t, got[0].Content)
-	if len(preserved) != 1 || preserved[0].EntryID != kept2.ID || preserved[0].Content != "kept2" {
+	if len(preserved) != 1 || preserved[0].Content != "kept2" || strings.Contains(got[0].Content, `"entry_id"`) {
 		t.Fatalf("latest checkpoint should preserve only tail-external kept users: %#v", preserved)
 	}
 }
@@ -650,7 +650,6 @@ func messageContents(messages []session.Message) []string {
 }
 
 type checkpointPreservedUser struct {
-	EntryID string `json:"entry_id"`
 	Content string `json:"content"`
 }
 

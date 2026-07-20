@@ -388,7 +388,7 @@ func (r *MemoryRepo) DeleteRootTree(_ context.Context, rootThreadID string) (Del
 			DeletedAt: now,
 		}
 		delete(r.threads, threadID)
-		delete(r.entries, threadID)
+		r.deleteIndexedEntriesLocked(threadID)
 		delete(r.todos, threadID)
 		delete(r.providerStates, threadID)
 		delete(r.leases, threadID)

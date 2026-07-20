@@ -43,14 +43,30 @@ func migrateEmptySchemaVersion13(ctx context.Context, tx sqlRunner, leasePolicy 
 		}
 	}
 	if _, err := tx.ExecContext(ctx, schemaSQL); err != nil {
-		return fmt.Errorf("create sqlite store schema v14: %w", err)
+		return fmt.Errorf("create sqlite store schema v15: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_meta(key, value) VALUES
-		('schema_version', ?), ('raw_encoder_version', ?), ('schema_fingerprint', ?)`, schemaVersion, rawEncoderVersion, schemaFingerprintVersion14); err != nil {
-		return fmt.Errorf("write sqlite store schema v14 metadata: %w", err)
+		('schema_version', ?), ('raw_encoder_version', ?), ('schema_fingerprint', ?)`, schemaVersion, rawEncoderVersion, schemaFingerprintVersion15); err != nil {
+		return fmt.Errorf("write sqlite store schema v15 metadata: %w", err)
 	}
 	if err := persistLeasePolicy(ctx, tx, leasePolicy); err != nil {
 		return err
+	}
+	return nil
+}
+
+func migrateSchemaVersion14(ctx context.Context, tx sqlRunner) error {
+	if err := verifySchemaVersion(ctx, tx, schemaVersion14); err != nil {
+		return fmt.Errorf("verify sqlite store schema v14 before migration: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, canonicalTurnIndexSQL); err != nil {
+		return fmt.Errorf("create sqlite store canonical turn indexes: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_version'`, schemaVersion); err != nil {
+		return fmt.Errorf("write sqlite store schema v15 version: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'schema_fingerprint'`, schemaFingerprintVersion15); err != nil {
+		return fmt.Errorf("write sqlite store schema v15 fingerprint: %w", err)
 	}
 	return nil
 }

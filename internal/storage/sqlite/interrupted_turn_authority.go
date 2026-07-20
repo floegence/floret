@@ -93,7 +93,15 @@ func (s *Store) RecoverInterruptedTurn(ctx context.Context, req sessiontree.Reco
 		if err != nil {
 			return err
 		}
-		plan, err := sessiontree.DeriveInterruptedTurnRecoveryPlan(path, req.ExpectedLease, req.ParentThreadID)
+		attempts, err := loadInterruptedTurnEffectAttempts(ctx, tx, threadID, turnID)
+		if err != nil {
+			return err
+		}
+		effects, err := sessiontree.InterruptedTurnRecoveryEffects(attempts, "")
+		if err != nil {
+			return err
+		}
+		plan, err := sessiontree.DeriveInterruptedTurnRecoveryPlan(path, req.ExpectedLease, req.ParentThreadID, effects)
 		if err != nil {
 			return err
 		}
@@ -104,16 +112,6 @@ func (s *Store) RecoverInterruptedTurn(ctx context.Context, req sessiontree.Reco
 			return err
 		} else if exists {
 			return sessiontree.ErrRequestConflict
-		}
-		var unsafe int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM effect_attempts
-			WHERE thread_id = ? AND turn_id = ?
-			AND state NOT IN ('prepared', 'dispatching', 'completed', 'failed', 'rejected', 'cancelled', 'unknown')`,
-			threadID, turnID).Scan(&unsafe); err != nil {
-			return err
-		}
-		if unsafe != 0 {
-			return sessiontree.ErrAuthorityCorrupt
 		}
 		var storedGeneration int64
 		if err := tx.QueryRowContext(ctx, `SELECT lease_generation FROM threads WHERE id = ?`, threadID).Scan(&storedGeneration); err != nil {
@@ -140,12 +138,17 @@ func (s *Store) RecoverInterruptedTurn(ctx context.Context, req sessiontree.Reco
 			return sessiontree.ErrStaleAuthority
 		}
 		now := authorityNow(req.Now, s.now)
+		effectStates := make(map[string]sessiontree.EffectAttemptState, len(plan.Effects))
+		for _, effect := range plan.Effects {
+			effectStates[effect.ToolCallID] = effect.State
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE effect_attempts SET
 			state = CASE state WHEN 'prepared' THEN 'cancelled' ELSE 'unknown' END,
 			terminal_fingerprint = CASE state WHEN 'prepared' THEN ? ELSE ? END,
 			updated_at = ?
 			WHERE thread_id = ? AND turn_id = ? AND state IN ('prepared', 'dispatching')`,
-			"turn-recovery-cancelled:"+plan.OutcomeFingerprint, "turn-recovery-unknown:"+plan.OutcomeFingerprint,
+			sessiontree.InterruptedTurnRecoveryCancelledEffectFingerprint(plan.OutcomeFingerprint),
+			sessiontree.InterruptedTurnRecoveryUnknownEffectFingerprint(plan.OutcomeFingerprint),
 			formatTime(now), threadID, turnID); err != nil {
 			return err
 		}
@@ -154,7 +157,7 @@ func (s *Store) RecoverInterruptedTurn(ctx context.Context, req sessiontree.Reco
 		for _, call := range sessiontree.UnresolvedInterruptedTurnCalls(path, turnID) {
 			entry, err := insertTurnAuthorityEntry(ctx, tx, sessiontree.Entry{
 				ThreadID: threadID, ParentID: parentID, Type: sessiontree.EntryToolResult,
-				TurnID: turnID, Message: sessiontree.InterruptedTurnToolResult(call.Message), CreatedAt: now,
+				TurnID: turnID, Message: sessiontree.InterruptedTurnToolResult(call.Message, effectStates[call.Message.ToolCallID]), CreatedAt: now,
 			})
 			if err != nil {
 				return err
@@ -446,8 +449,16 @@ func validateSQLiteInterruptedTurnRecoveryReplay(
 		failureMessage = entry.Error
 		failure = &entry
 	}
+	attempts, err := loadInterruptedTurnEffectAttempts(ctx, tx, expectedLease.ThreadID, expectedLease.TurnID)
+	if err != nil {
+		return sessiontree.RecoverInterruptedTurnResult{}, err
+	}
+	effects, err := sessiontree.InterruptedTurnRecoveryEffects(attempts, finished.OutcomeFingerprint)
+	if err != nil {
+		return sessiontree.RecoverInterruptedTurnResult{}, err
+	}
 	fingerprint, err := sessiontree.InterruptedTurnRecoveryFingerprint(
-		expectedLease, parentThreadID, finished.RunID, terminal.TurnStatus, failureMessage,
+		expectedLease, parentThreadID, finished.RunID, terminal.TurnStatus, failureMessage, effects,
 	)
 	if err != nil {
 		return sessiontree.RecoverInterruptedTurnResult{}, err
@@ -462,6 +473,42 @@ func validateSQLiteInterruptedTurnRecoveryReplay(
 		RunID: finished.RunID, Status: terminal.TurnStatus, OutcomeFingerprint: fingerprint,
 		Failure: failure, Terminal: terminal, Generation: finished.Generation, Replayed: true,
 	}, nil
+}
+
+func loadInterruptedTurnEffectAttempts(ctx context.Context, q sqlRunner, threadID, turnID string) ([]sessiontree.EffectAttempt, error) {
+	rows, err := q.QueryContext(ctx, `SELECT effect_attempt_id FROM effect_attempts
+		WHERE thread_id = ? AND turn_id = ? ORDER BY effect_attempt_id`, strings.TrimSpace(threadID), strings.TrimSpace(turnID))
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	attempts := make([]sessiontree.EffectAttempt, 0, len(ids))
+	for _, id := range ids {
+		attempt, found, err := loadEffectAttempt(ctx, q, id)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, sessiontree.ErrAuthorityCorrupt
+		}
+		attempts = append(attempts, attempt)
+	}
+	return attempts, nil
 }
 
 func isSQLiteTerminalTurnStatus(status sessiontree.TurnMarkerStatus) bool {

@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/floegence/floret/internal/engine"
 	"github.com/floegence/floret/internal/provider"
 	"github.com/floegence/floret/internal/provider/cache"
 	"github.com/floegence/floret/internal/session"
@@ -20,6 +22,102 @@ import (
 	"github.com/floegence/floret/observation"
 	"github.com/floegence/floret/tools"
 )
+
+type canonicalTurnOnlyRepo struct {
+	*sessiontree.MemoryRepo
+}
+
+func (r canonicalTurnOnlyRepo) Entries(context.Context, string) ([]sessiontree.Entry, error) {
+	return nil, errors.New("full journal scan is forbidden")
+}
+
+func (r canonicalTurnOnlyRepo) Path(context.Context, string, string) ([]sessiontree.Entry, error) {
+	return nil, errors.New("active path fallback is forbidden")
+}
+
+func TestReadTurnDetailEventsUsesCanonicalTurnIndex(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 20, 15, 30, 0, 0, time.UTC)
+	memory := sessiontree.NewMemoryRepo()
+	if _, err := memory.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memory.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+		ThreadID: "thread", TurnID: "turn", RunID: "run", OwnerID: "owner",
+		RequestFingerprint: "request", Input: session.Message{Role: session.User, Content: "inspect"}, Now: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	harness := New(Options{Repo: canonicalTurnOnlyRepo{MemoryRepo: memory}, Now: func() time.Time { return now }})
+	detail, found, err := harness.ReadTurnDetailEvents(ctx, "thread", "turn", "run", true)
+	if err != nil || !found {
+		t.Fatalf("ReadTurnDetailEvents found=%v err=%v", found, err)
+	}
+	user := firstSubAgentDetailEvent(detail.Events, SubAgentDetailEventUserMessage)
+	if user.Message == nil || user.Message.Content != "inspect" {
+		t.Fatalf("canonical user detail = %#v", user)
+	}
+}
+
+func TestTurnAdmissionReplayIncludesPostTerminalSettlementAndAllAssistantText(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 20, 19, 0, 0, 0, time.UTC)
+	repo := sessiontree.NewMemoryRepo()
+	if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := repo.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+		ThreadID: "thread", TurnID: "turn", RunID: "run", OwnerID: "owner",
+		RequestFingerprint: "request", Input: session.Message{Role: session.User, Content: "inspect"}, Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseCtx := sessiontree.ContextWithTurnLease(ctx, admitted.Lease)
+	for _, text := range []string{"first ", "second"} {
+		if _, err := repo.Append(leaseCtx, sessiontree.Entry{
+			ThreadID: "thread", TurnID: "turn", Type: sessiontree.EntryAssistantMessage,
+			Message: session.Message{Role: session.Assistant, Content: text},
+		}, sessiontree.AppendOptions{Now: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	finished, err := repo.FinishTurn(ctx, sessiontree.FinishTurnRequest{
+		Lease: admitted.Lease, RunID: "run", TerminalEntryID: "terminal", Status: sessiontree.TurnCompleted,
+		OutcomeFingerprint: "outcome", Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settlement, _, err := pendingToolSettlementAuthorityEntry("thread", PendingToolSettlement{
+		TurnID: "turn", RunID: "run", ToolCallID: "call", ToolName: "terminal", Handle: "terminal:job:1",
+		Status: PendingToolSettledCompleted, Summary: "completed", Output: "exit 0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settlement, err = repo.Append(ctx, settlement, sessiontree.AppendOptions{ParentID: finished.Terminal.ID, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedAdmission, found, err := repo.ReadTurnAdmission(ctx, "thread", "turn", "run")
+	if err != nil || !found || replayedAdmission.Terminal == nil {
+		t.Fatalf("replayed admission=%#v found=%v err=%v", replayedAdmission, found, err)
+	}
+	harness := New(Options{Repo: repo, Now: func() time.Time { return now }})
+	result, err := harness.cacheThread("thread").turnAdmissionReplayResult(ctx, replayedAdmission, "turn", "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != engine.Completed || result.Output != "first second" {
+		t.Fatalf("replay result=%#v", result)
+	}
+	if !slices.ContainsFunc(result.CanonicalEvents, func(event SubAgentDetailEvent) bool {
+		return event.ID == settlement.ID && event.Kind == SubAgentDetailEventToolResult
+	}) {
+		t.Fatalf("replay omitted post-terminal settlement %q: %#v", settlement.ID, result.CanonicalEvents)
+	}
+}
 
 type countingSubAgentProvider struct {
 	calls *atomic.Int64

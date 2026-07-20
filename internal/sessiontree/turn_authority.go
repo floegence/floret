@@ -50,7 +50,13 @@ type AdmitTurnResult struct {
 	TurnStarted      Entry
 	UserMessage      Entry
 	BaseLeafID       string
+	Terminal         *TurnTerminalOutcome
 	Replayed         bool
+}
+
+type TurnTerminalOutcome struct {
+	Failure  *Entry
+	Terminal Entry
 }
 
 type FinishTurnRequest struct {
@@ -74,6 +80,7 @@ type FinishTurnResult struct {
 
 type TurnAuthorityRepo interface {
 	AdmitTurn(context.Context, AdmitTurnRequest) (AdmitTurnResult, error)
+	ReadTurnAdmission(context.Context, string, string, string) (AdmitTurnResult, bool, error)
 	FinishTurn(context.Context, FinishTurnRequest) (FinishTurnResult, error)
 }
 
@@ -99,7 +106,7 @@ type turnFinishLedger struct {
 	TerminalEntryID    string
 }
 
-func validateAdmitTurnRequest(req AdmitTurnRequest) error {
+func ValidateAdmitTurnRequest(req AdmitTurnRequest) error {
 	if strings.TrimSpace(req.ThreadID) == "" || strings.TrimSpace(req.TurnID) == "" || strings.TrimSpace(req.RunID) == "" || strings.TrimSpace(req.OwnerID) == "" {
 		return errors.New("turn admission requires thread, turn, run, and owner identities")
 	}
@@ -110,10 +117,13 @@ func validateAdmitTurnRequest(req AdmitTurnRequest) error {
 		if req.Input.Role != session.User {
 			return errors.New("turn admission input must be a user message")
 		}
-		if strings.TrimSpace(req.Input.Content) == "" && len(req.Input.Attachments) == 0 {
-			return errors.New("turn admission requires text or attachments")
+		if strings.TrimSpace(req.Input.Content) == "" && len(req.Input.Attachments) == 0 && len(req.Input.References) == 0 {
+			return errors.New("turn admission requires text, attachments, or references")
 		}
-	} else if req.Input.Role != "" || strings.TrimSpace(req.Input.Content) != "" || len(req.Input.Attachments) != 0 {
+		if err := session.ValidateMessageReferences(req.Input.References); err != nil {
+			return err
+		}
+	} else if req.Input.Role != "" || strings.TrimSpace(req.Input.Content) != "" || len(req.Input.Attachments) != 0 || len(req.Input.References) != 0 {
 		return errors.New("retry admission cannot contain a replacement user message")
 	}
 	return nil
@@ -225,7 +235,7 @@ func (r *MemoryRepo) previewNextEntryIDsLocked(threadID string, count int) ([]st
 }
 
 func (r *MemoryRepo) AdmitTurn(_ context.Context, req AdmitTurnRequest) (AdmitTurnResult, error) {
-	if err := validateAdmitTurnRequest(req); err != nil {
+	if err := ValidateAdmitTurnRequest(req); err != nil {
 		return AdmitTurnResult{}, err
 	}
 	r.mu.Lock()
@@ -235,25 +245,7 @@ func (r *MemoryRepo) AdmitTurn(_ context.Context, req AdmitTurnRequest) (AdmitTu
 		if existing.RunID != strings.TrimSpace(req.RunID) || existing.RequestFingerprint != strings.TrimSpace(req.RequestFingerprint) {
 			return AdmitTurnResult{}, ErrRequestConflict
 		}
-		active, activeOK := r.leases[existing.ThreadID]
-		if !activeOK || !SameTurnLease(active, existing.Lease) {
-			return AdmitTurnResult{}, ErrRequestConflict
-		}
-		started, startedOK := findEntry(r.entries[existing.ThreadID], existing.TurnStartedID)
-		var boundary Entry
-		boundaryOK := existing.BoundaryTerminalID == ""
-		if existing.BoundaryTerminalID != "" {
-			boundary, boundaryOK = findEntry(r.entries[existing.ThreadID], existing.BoundaryTerminalID)
-		}
-		var user Entry
-		userOK := existing.UserMessageID == ""
-		if existing.UserMessageID != "" {
-			user, userOK = findEntry(r.entries[existing.ThreadID], existing.UserMessageID)
-		}
-		if !startedOK || !userOK || !boundaryOK {
-			return AdmitTurnResult{}, ErrAuthorityCorrupt
-		}
-		return AdmitTurnResult{Lease: active, BoundaryTerminal: boundary, TurnStarted: started, UserMessage: user, BaseLeafID: existing.BaseLeafID, Replayed: true}, nil
+		return r.replayTurnAdmissionLocked(existing)
 	}
 	meta, ok := r.threads[strings.TrimSpace(req.ThreadID)]
 	if !ok {
@@ -270,6 +262,9 @@ func (r *MemoryRepo) AdmitTurn(_ context.Context, req AdmitTurnRequest) (AdmitTu
 	}
 	if _, active := r.leases[meta.ID]; active {
 		return AdmitTurnResult{}, ErrActiveTurn
+	}
+	if r.hasTurnStartedLocked(meta.ID, req.TurnID) {
+		return AdmitTurnResult{}, ErrRequestConflict
 	}
 	seqBefore := r.seq
 	baseLeafID := meta.LeafID
@@ -306,7 +301,7 @@ func (r *MemoryRepo) AdmitTurn(_ context.Context, req AdmitTurnRequest) (AdmitTu
 	}
 	now := nonZeroAuthorityTime(req.Now, r.now)
 	if boundary.ID != "" {
-		r.entries[meta.ID] = append(r.entries[meta.ID], cloneEntry(boundary))
+		r.appendIndexedEntriesLocked(meta.ID, boundary)
 	}
 	started := Entry{
 		ID: r.nextEntryID(meta.ID), ThreadID: meta.ID, ParentID: baseLeafID, Type: EntryTurnMarker,
@@ -329,10 +324,10 @@ func (r *MemoryRepo) AdmitTurn(_ context.Context, req AdmitTurnRequest) (AdmitTu
 		r.seq = seqBefore
 		return AdmitTurnResult{}, errors.New("failed to allocate turn admission entries")
 	}
-	r.entries[meta.ID] = append(r.entries[meta.ID], cloneEntry(started))
+	r.appendIndexedEntriesLocked(meta.ID, started)
 	meta.LeafID = started.ID
 	if user.ID != "" {
-		r.entries[meta.ID] = append(r.entries[meta.ID], cloneEntry(user))
+		r.appendIndexedEntriesLocked(meta.ID, user)
 		meta.LeafID = user.ID
 	}
 	meta.UpdatedAt = now
@@ -342,6 +337,84 @@ func (r *MemoryRepo) AdmitTurn(_ context.Context, req AdmitTurnRequest) (AdmitTu
 		Lease: lease, BoundaryTerminalID: boundary.ID, TurnStartedID: started.ID, UserMessageID: user.ID, BaseLeafID: admissionBaseLeafID,
 	}
 	return AdmitTurnResult{Lease: lease, BoundaryTerminal: cloneEntry(boundary), TurnStarted: cloneEntry(started), UserMessage: cloneEntry(user), BaseLeafID: admissionBaseLeafID}, nil
+}
+
+func (r *MemoryRepo) ReadTurnAdmission(_ context.Context, threadID, turnID, runID string) (AdmitTurnResult, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	threadID = strings.TrimSpace(threadID)
+	if _, ok := r.threads[threadID]; !ok {
+		if _, deleted := r.tombstones[threadID]; deleted {
+			return AdmitTurnResult{}, false, ErrThreadDeleted
+		}
+		return AdmitTurnResult{}, false, ErrThreadNotFound
+	}
+	existing, ok := r.turnAdmissions[turnAdmissionKey(threadID, turnID)]
+	if !ok {
+		return AdmitTurnResult{}, false, nil
+	}
+	if existing.RunID != strings.TrimSpace(runID) {
+		return AdmitTurnResult{}, true, ErrRequestConflict
+	}
+	result, err := r.replayTurnAdmissionLocked(existing)
+	return result, true, err
+}
+
+func (r *MemoryRepo) replayTurnAdmissionLocked(existing turnAdmissionLedger) (AdmitTurnResult, error) {
+	key := turnAdmissionKey(existing.ThreadID, existing.TurnID)
+	var terminal *TurnTerminalOutcome
+	if finished, finishedOK := r.turnFinishes[key]; finishedOK {
+		if finished.RunID != existing.RunID {
+			return AdmitTurnResult{}, ErrAuthorityCorrupt
+		}
+		switch finished.Generation {
+		case existing.Lease.Generation:
+			if err := r.validateNormalInterruptedTurnFinishLocked(finished, existing); err != nil {
+				return AdmitTurnResult{}, err
+			}
+			terminalEntry, _ := findEntry(r.entries[existing.ThreadID], finished.TerminalEntryID)
+			terminal = &TurnTerminalOutcome{Terminal: terminalEntry}
+			if finished.FailureEntryID != "" {
+				failure, _ := findEntry(r.entries[existing.ThreadID], finished.FailureEntryID)
+				terminal.Failure = &failure
+			}
+		case existing.Lease.Generation + 1:
+			meta, ok := r.threads[existing.ThreadID]
+			if !ok {
+				return AdmitTurnResult{}, ErrAuthorityCorrupt
+			}
+			recovered, err := r.replayedInterruptedTurnLocked(finished, existing.Lease, meta.ParentThreadID)
+			if err != nil {
+				if errors.Is(err, ErrRequestConflict) || errors.Is(err, ErrInvalidThreadAuthority) {
+					return AdmitTurnResult{}, ErrAuthorityCorrupt
+				}
+				return AdmitTurnResult{}, err
+			}
+			terminal = &TurnTerminalOutcome{Terminal: recovered.Terminal, Failure: recovered.Failure}
+		default:
+			return AdmitTurnResult{}, ErrAuthorityCorrupt
+		}
+	} else {
+		active, activeOK := r.leases[existing.ThreadID]
+		if !activeOK || !SameTurnLease(active, existing.Lease) {
+			return AdmitTurnResult{}, ErrAuthorityCorrupt
+		}
+	}
+	started, startedOK := findEntry(r.entries[existing.ThreadID], existing.TurnStartedID)
+	var boundary Entry
+	boundaryOK := existing.BoundaryTerminalID == ""
+	if existing.BoundaryTerminalID != "" {
+		boundary, boundaryOK = findEntry(r.entries[existing.ThreadID], existing.BoundaryTerminalID)
+	}
+	var user Entry
+	userOK := existing.UserMessageID == ""
+	if existing.UserMessageID != "" {
+		user, userOK = findEntry(r.entries[existing.ThreadID], existing.UserMessageID)
+	}
+	if !startedOK || !userOK || !boundaryOK {
+		return AdmitTurnResult{}, ErrAuthorityCorrupt
+	}
+	return AdmitTurnResult{Lease: existing.Lease, BoundaryTerminal: boundary, TurnStarted: started, UserMessage: user, BaseLeafID: existing.BaseLeafID, Terminal: terminal, Replayed: true}, nil
 }
 
 func (r *MemoryRepo) FinishTurn(_ context.Context, req FinishTurnRequest) (FinishTurnResult, error) {
@@ -432,7 +505,7 @@ func (r *MemoryRepo) FinishTurn(_ context.Context, req FinishTurnRequest) (Finis
 		}
 		failure.Raw = rawForEntry(failure)
 		failure.RawHash = stableHash(failure.Raw)
-		r.entries[meta.ID] = append(r.entries[meta.ID], cloneEntry(failure))
+		r.appendIndexedEntriesLocked(meta.ID, failure)
 		parentID = failure.ID
 		copy := cloneEntry(failure)
 		result.Failure = &copy
@@ -443,7 +516,7 @@ func (r *MemoryRepo) FinishTurn(_ context.Context, req FinishTurnRequest) (Finis
 	}
 	terminal.Raw = rawForEntry(terminal)
 	terminal.RawHash = stableHash(terminal.Raw)
-	r.entries[meta.ID] = append(r.entries[meta.ID], cloneEntry(terminal))
+	r.appendIndexedEntriesLocked(meta.ID, terminal)
 	meta.LeafID = terminal.ID
 	meta.UpdatedAt = now
 	r.threads[meta.ID] = meta

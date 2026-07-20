@@ -293,7 +293,7 @@ func (r *MemoryRepo) FinishSubAgentClose(_ context.Context, req FinishSubAgentCl
 		meta := r.threads[node.ThreadID]
 		if node.WasOpen {
 			entry := subAgentCloseLifecycleEntry(operation, node.ThreadID, meta.LeafID, r.nextEntryID(node.ThreadID), now)
-			r.entries[node.ThreadID] = append(r.entries[node.ThreadID], cloneEntry(entry))
+			r.appendIndexedEntriesLocked(node.ThreadID, entry)
 			meta.LeafID = entry.ID
 			meta.Lifecycle = ThreadLifecycleClosed
 			meta.CloseOperationID = ""

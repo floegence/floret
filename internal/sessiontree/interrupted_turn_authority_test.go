@@ -87,6 +87,48 @@ func TestMemoryInterruptedTurnRecoveryRejectsCorruptResolvedFinish(t *testing.T)
 	}
 }
 
+func TestInterruptedTurnRecoveryFingerprintIncludesCompleteEffectFacts(t *testing.T) {
+	lease := TurnLease{
+		ThreadID: "thread", Purpose: TurnLeasePurposeTurn, TurnID: "turn", OwnerID: "owner", Generation: 1,
+		AcquiredAt: time.Date(2026, 7, 21, 2, 30, 0, 0, time.UTC), RenewedAt: time.Date(2026, 7, 21, 2, 30, 0, 0, time.UTC),
+		ExpiresAt: time.Date(2026, 7, 21, 2, 31, 0, 0, time.UTC),
+	}
+	prepared := InterruptedTurnRecoveryEffect{
+		EffectAttemptID: "effect-1", ToolCallID: "call-1", State: EffectAttemptPrepared,
+	}
+	dispatching := InterruptedTurnRecoveryEffect{
+		EffectAttemptID: "effect-2", ToolCallID: "call-2", State: EffectAttemptDispatching,
+	}
+	base, err := InterruptedTurnRecoveryFingerprint(
+		lease, "", "run", TurnFailed, InterruptedTurnEffectOutcomeUnknownMessage,
+		[]InterruptedTurnRecoveryEffect{prepared, dispatching},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reordered, err := InterruptedTurnRecoveryFingerprint(
+		lease, "", "run", TurnFailed, InterruptedTurnEffectOutcomeUnknownMessage,
+		[]InterruptedTurnRecoveryEffect{dispatching, prepared},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reordered != base {
+		t.Fatalf("effect fact order changed fingerprint: base=%s reordered=%s", base, reordered)
+	}
+	dispatching.State = EffectAttemptPrepared
+	changed, err := InterruptedTurnRecoveryFingerprint(
+		lease, "", "run", TurnFailed, InterruptedTurnEffectOutcomeUnknownMessage,
+		[]InterruptedTurnRecoveryEffect{prepared, dispatching},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed == base {
+		t.Fatal("effect state change did not change recovery fingerprint")
+	}
+}
+
 func TestMemoryInterruptedTurnResolutionRejectsRecoveryFailureLinkDrift(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.July, 20, 12, 45, 0, 0, time.UTC)

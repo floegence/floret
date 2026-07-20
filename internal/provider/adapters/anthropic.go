@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -323,6 +324,24 @@ func (p AnthropicProvider) contextAnthropicRequestWithCacheControl(req provider.
 		if err != nil {
 			return anthropicRequest{}, err
 		}
+	}
+	if req.EphemeralUser != nil {
+		absoluteIndex, err := provider.EphemeralUserMessageIndex(req.Messages, req.EphemeralUser)
+		if err != nil {
+			return anthropicRequest{}, err
+		}
+		systemPrefix := absoluteIndex - req.EphemeralUser.HistoryInsertAt
+		if len(renderedMessages) != len(req.Messages)-systemPrefix {
+			return anthropicRequest{}, errors.New("anthropic raw messages do not match canonical history count")
+		}
+		ephemeral := renderAnthropicMessages([]session.Message{req.EphemeralUser.Message}, nil)
+		if len(ephemeral) != 1 {
+			return anthropicRequest{}, errors.New("anthropic ephemeral user message did not render exactly once")
+		}
+		insertAt := req.EphemeralUser.HistoryInsertAt
+		renderedMessages = append(renderedMessages, anthropicMessage{})
+		copy(renderedMessages[insertAt+1:], renderedMessages[insertAt:])
+		renderedMessages[insertAt] = ephemeral[0]
 	}
 	return anthropicRequest{
 		System:   system,

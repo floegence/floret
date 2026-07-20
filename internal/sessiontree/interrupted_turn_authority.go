@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -11,11 +12,14 @@ import (
 )
 
 const (
-	InterruptedTurnRecoveryKindKey        = "authority_kind"
-	InterruptedTurnRecoveryKind           = "interrupted_turn_recovery"
-	InterruptedTurnRecoveryFingerprintKey = "authority_fingerprint"
-	InterruptedTurnRecoveryParentKey      = "authority_parent_thread_id"
-	InterruptedTurnFailureMessage         = "turn interrupted during previous process"
+	InterruptedTurnRecoveryKindKey               = "authority_kind"
+	InterruptedTurnRecoveryKind                  = "interrupted_turn_recovery"
+	InterruptedTurnRecoveryFingerprintKey        = "authority_fingerprint"
+	InterruptedTurnRecoveryParentKey             = "authority_parent_thread_id"
+	InterruptedTurnFailureMessage                = "turn interrupted during previous process"
+	InterruptedTurnEffectOutcomeUnknownMessage   = "effect outcome is unknown because the turn was interrupted after dispatch"
+	interruptedTurnRecoveryCancelledEffectPrefix = "turn-recovery-cancelled:"
+	interruptedTurnRecoveryUnknownEffectPrefix   = "turn-recovery-unknown:"
 )
 
 type RecoverInterruptedTurnRequest struct {
@@ -41,6 +45,13 @@ type InterruptedTurnRecoveryPlan struct {
 	FailureMessage     string
 	OutcomeFingerprint string
 	TerminalEntryID    string
+	Effects            []InterruptedTurnRecoveryEffect
+}
+
+type InterruptedTurnRecoveryEffect struct {
+	EffectAttemptID string             `json:"effect_attempt_id"`
+	ToolCallID      string             `json:"tool_call_id"`
+	State           EffectAttemptState `json:"state"`
 }
 
 type InterruptedTurnRecoveryRepo interface {
@@ -156,7 +167,7 @@ func ValidateInterruptedTurnLeaseSuccessor(target, current TurnLease) error {
 	return nil
 }
 
-func DeriveInterruptedTurnRecoveryPlan(path []Entry, expectedLease TurnLease, parentThreadID string) (InterruptedTurnRecoveryPlan, error) {
+func DeriveInterruptedTurnRecoveryPlan(path []Entry, expectedLease TurnLease, parentThreadID string, effects []InterruptedTurnRecoveryEffect) (InterruptedTurnRecoveryPlan, error) {
 	runID := interruptedTurnRecoveryRunID(path, expectedLease.TurnID)
 	if runID == "" {
 		return InterruptedTurnRecoveryPlan{}, ErrAuthorityCorrupt
@@ -165,18 +176,25 @@ func DeriveInterruptedTurnRecoveryPlan(path []Entry, expectedLease TurnLease, pa
 	if !info.Started || info.Terminal {
 		return InterruptedTurnRecoveryPlan{}, ErrAuthorityCorrupt
 	}
+	normalizedEffects, hasUnknownOutcome, err := normalizeInterruptedTurnRecoveryEffects(effects)
+	if err != nil {
+		return InterruptedTurnRecoveryPlan{}, err
+	}
 	status := interruptedTurnRecoveryTerminalStatus(info.RunFailureError)
 	failureMessage := InterruptedTurnFailureMessage
-	if info.RunFailure {
+	if hasUnknownOutcome {
+		status = TurnFailed
+		failureMessage = InterruptedTurnEffectOutcomeUnknownMessage
+	} else if info.RunFailure {
 		failureMessage = ""
 	}
-	fingerprint, err := InterruptedTurnRecoveryFingerprint(expectedLease, parentThreadID, runID, status, failureMessage)
+	fingerprint, err := InterruptedTurnRecoveryFingerprint(expectedLease, parentThreadID, runID, status, failureMessage, normalizedEffects)
 	if err != nil {
 		return InterruptedTurnRecoveryPlan{}, err
 	}
 	return InterruptedTurnRecoveryPlan{
 		RunID: runID, Status: status, FailureMessage: failureMessage,
-		OutcomeFingerprint: fingerprint, TerminalEntryID: "recovery-terminal-" + fingerprint[:24],
+		OutcomeFingerprint: fingerprint, TerminalEntryID: "recovery-terminal-" + fingerprint[:24], Effects: normalizedEffects,
 	}, nil
 }
 
@@ -186,27 +204,114 @@ func InterruptedTurnRecoveryFingerprint(
 	runID string,
 	status TurnMarkerStatus,
 	failureMessage string,
+	effects []InterruptedTurnRecoveryEffect,
 ) (string, error) {
 	if err := expectedLease.Validate(); err != nil {
 		return "", err
 	}
+	normalizedEffects, _, err := normalizeInterruptedTurnRecoveryEffects(effects)
+	if err != nil {
+		return "", err
+	}
 	payload, err := json.Marshal(struct {
-		ExpectedLease  TurnLease        `json:"expected_lease"`
-		ParentThreadID string           `json:"parent_thread_id,omitempty"`
-		RunID          string           `json:"run_id"`
-		Status         TurnMarkerStatus `json:"status"`
-		FailureMessage string           `json:"failure_message,omitempty"`
+		ExpectedLease  TurnLease                       `json:"expected_lease"`
+		ParentThreadID string                          `json:"parent_thread_id,omitempty"`
+		RunID          string                          `json:"run_id"`
+		Status         TurnMarkerStatus                `json:"status"`
+		FailureMessage string                          `json:"failure_message,omitempty"`
+		Effects        []InterruptedTurnRecoveryEffect `json:"effects,omitempty"`
 	}{
 		ExpectedLease:  expectedLease,
 		ParentThreadID: strings.TrimSpace(parentThreadID),
 		RunID:          strings.TrimSpace(runID),
 		Status:         status,
 		FailureMessage: strings.TrimSpace(failureMessage),
+		Effects:        normalizedEffects,
 	})
 	if err != nil {
 		return "", err
 	}
 	return StableHash(string(payload)), nil
+}
+
+func normalizeInterruptedTurnRecoveryEffects(effects []InterruptedTurnRecoveryEffect) ([]InterruptedTurnRecoveryEffect, bool, error) {
+	normalized := append([]InterruptedTurnRecoveryEffect(nil), effects...)
+	for index := range normalized {
+		normalized[index].EffectAttemptID = strings.TrimSpace(normalized[index].EffectAttemptID)
+		normalized[index].ToolCallID = strings.TrimSpace(normalized[index].ToolCallID)
+	}
+	sort.Slice(normalized, func(i, j int) bool {
+		if normalized[i].EffectAttemptID == normalized[j].EffectAttemptID {
+			return normalized[i].ToolCallID < normalized[j].ToolCallID
+		}
+		return normalized[i].EffectAttemptID < normalized[j].EffectAttemptID
+	})
+	seenAttempts := make(map[string]struct{}, len(normalized))
+	seenCalls := make(map[string]struct{}, len(normalized))
+	hasUnknownOutcome := false
+	for index := range normalized {
+		effect := &normalized[index]
+		if effect.EffectAttemptID == "" || effect.ToolCallID == "" || !validEffectAttemptState(effect.State) {
+			return nil, false, ErrAuthorityCorrupt
+		}
+		if _, exists := seenAttempts[effect.EffectAttemptID]; exists {
+			return nil, false, ErrAuthorityCorrupt
+		}
+		if _, exists := seenCalls[effect.ToolCallID]; exists {
+			return nil, false, ErrAuthorityCorrupt
+		}
+		seenAttempts[effect.EffectAttemptID] = struct{}{}
+		seenCalls[effect.ToolCallID] = struct{}{}
+		hasUnknownOutcome = hasUnknownOutcome || effect.State == EffectAttemptDispatching || effect.State == EffectAttemptUnknown
+	}
+	return normalized, hasUnknownOutcome, nil
+}
+
+func validEffectAttemptState(state EffectAttemptState) bool {
+	switch state {
+	case EffectAttemptPrepared, EffectAttemptDispatching, EffectAttemptCompleted, EffectAttemptFailed,
+		EffectAttemptRejected, EffectAttemptUnknown, EffectAttemptCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func InterruptedTurnRecoveryEffects(attempts []EffectAttempt, committedFingerprint string) ([]InterruptedTurnRecoveryEffect, error) {
+	effects := make([]InterruptedTurnRecoveryEffect, 0, len(attempts))
+	for _, attempt := range attempts {
+		state := attempt.State
+		terminalFingerprint := strings.TrimSpace(attempt.TerminalFingerprint)
+		if committedFingerprint != "" {
+			switch {
+			case strings.HasPrefix(terminalFingerprint, interruptedTurnRecoveryCancelledEffectPrefix):
+				if terminalFingerprint != InterruptedTurnRecoveryCancelledEffectFingerprint(committedFingerprint) || state != EffectAttemptCancelled {
+					return nil, ErrAuthorityCorrupt
+				}
+				state = EffectAttemptPrepared
+			case strings.HasPrefix(terminalFingerprint, interruptedTurnRecoveryUnknownEffectPrefix):
+				if terminalFingerprint != InterruptedTurnRecoveryUnknownEffectFingerprint(committedFingerprint) || state != EffectAttemptUnknown {
+					return nil, ErrAuthorityCorrupt
+				}
+				state = EffectAttemptDispatching
+			}
+		}
+		effects = append(effects, InterruptedTurnRecoveryEffect{
+			EffectAttemptID: attempt.EffectAttemptID,
+			ToolCallID:      attempt.Invocation.ToolCallID,
+			State:           state,
+		})
+	}
+	normalized, _, err := normalizeInterruptedTurnRecoveryEffects(effects)
+	return normalized, err
+}
+
+func InterruptedTurnRecoveryCancelledEffectFingerprint(recoveryFingerprint string) string {
+	return interruptedTurnRecoveryCancelledEffectPrefix + strings.TrimSpace(recoveryFingerprint)
+}
+
+func InterruptedTurnRecoveryUnknownEffectFingerprint(recoveryFingerprint string) string {
+	return interruptedTurnRecoveryUnknownEffectPrefix + strings.TrimSpace(recoveryFingerprint)
 }
 
 type interruptedTurnRecoveryInfo struct {
@@ -327,26 +432,32 @@ func (r *MemoryRepo) RecoverInterruptedTurn(_ context.Context, req RecoverInterr
 	if err != nil {
 		return RecoverInterruptedTurnResult{}, err
 	}
-	plan, err := DeriveInterruptedTurnRecoveryPlan(path, req.ExpectedLease, req.ParentThreadID)
+	if err := ValidateInterruptedTurnAdmissionPath(path, admission.ThreadID, turnID, admission.RunID, admission.TurnStartedID); err != nil {
+		return RecoverInterruptedTurnResult{}, err
+	}
+	turnAttempts := make([]EffectAttempt, 0)
+	for _, attempt := range r.effectAttempts {
+		if attempt.Invocation.ThreadID == threadID && attempt.Invocation.TurnID == turnID {
+			turnAttempts = append(turnAttempts, attempt)
+		}
+	}
+	effects, err := InterruptedTurnRecoveryEffects(turnAttempts, "")
 	if err != nil {
 		return RecoverInterruptedTurnResult{}, err
 	}
-	if err := ValidateInterruptedTurnAdmissionPath(path, admission.ThreadID, turnID, admission.RunID, admission.TurnStartedID); err != nil {
+	plan, err := DeriveInterruptedTurnRecoveryPlan(path, req.ExpectedLease, req.ParentThreadID, effects)
+	if err != nil {
 		return RecoverInterruptedTurnResult{}, err
 	}
 	terminalEntryID := plan.TerminalEntryID
 	if containsEntry(r.entries[threadID], terminalEntryID) {
 		return RecoverInterruptedTurnResult{}, ErrRequestConflict
 	}
-	for _, attempt := range r.effectAttempts {
-		if attempt.Invocation.ThreadID != threadID || attempt.Invocation.TurnID != turnID {
-			continue
-		}
-		if attempt.State != EffectAttemptPrepared && attempt.State != EffectAttemptDispatching && !effectAttemptTerminalSafe(attempt.State) {
-			return RecoverInterruptedTurnResult{}, ErrAuthorityCorrupt
-		}
-	}
 	unresolvedCalls := UnresolvedInterruptedTurnCalls(path, turnID)
+	effectStates := make(map[string]EffectAttemptState, len(plan.Effects))
+	for _, effect := range plan.Effects {
+		effectStates[effect.ToolCallID] = effect.State
+	}
 	generatedCount := len(unresolvedCalls)
 	if strings.TrimSpace(plan.FailureMessage) != "" {
 		generatedCount++
@@ -372,10 +483,10 @@ func (r *MemoryRepo) RecoverInterruptedTurn(_ context.Context, req RecoverInterr
 		switch attempt.State {
 		case EffectAttemptPrepared:
 			attempt.State = EffectAttemptCancelled
-			attempt.TerminalFingerprint = "turn-recovery-cancelled:" + plan.OutcomeFingerprint
+			attempt.TerminalFingerprint = InterruptedTurnRecoveryCancelledEffectFingerprint(plan.OutcomeFingerprint)
 		case EffectAttemptDispatching:
 			attempt.State = EffectAttemptUnknown
-			attempt.TerminalFingerprint = "turn-recovery-unknown:" + plan.OutcomeFingerprint
+			attempt.TerminalFingerprint = InterruptedTurnRecoveryUnknownEffectFingerprint(plan.OutcomeFingerprint)
 		}
 		attempt.UpdatedAt = now
 		r.effectAttempts[attemptID] = attempt
@@ -388,12 +499,12 @@ func (r *MemoryRepo) RecoverInterruptedTurn(_ context.Context, req RecoverInterr
 	for _, call := range unresolvedCalls {
 		entry := Entry{
 			ID: generatedIDs[generatedIndex], ThreadID: threadID, ParentID: parentID, Type: EntryToolResult, TurnID: turnID, CreatedAt: now,
-			Message: InterruptedTurnToolResult(call.Message),
+			Message: InterruptedTurnToolResult(call.Message, effectStates[call.Message.ToolCallID]),
 		}
 		generatedIndex++
 		entry.Raw = rawForEntry(entry)
 		entry.RawHash = stableHash(entry.Raw)
-		r.entries[threadID] = append(r.entries[threadID], cloneEntry(entry))
+		r.appendIndexedEntriesLocked(threadID, entry)
 		result.ToolResults = append(result.ToolResults, cloneEntry(entry))
 		parentID = entry.ID
 	}
@@ -404,7 +515,7 @@ func (r *MemoryRepo) RecoverInterruptedTurn(_ context.Context, req RecoverInterr
 		}
 		failure.Raw = rawForEntry(failure)
 		failure.RawHash = stableHash(failure.Raw)
-		r.entries[threadID] = append(r.entries[threadID], cloneEntry(failure))
+		r.appendIndexedEntriesLocked(threadID, failure)
 		result.Failure = &failure
 		parentID = failure.ID
 	}
@@ -417,7 +528,7 @@ func (r *MemoryRepo) RecoverInterruptedTurn(_ context.Context, req RecoverInterr
 	}
 	terminal.Raw = rawForEntry(terminal)
 	terminal.RawHash = stableHash(terminal.Raw)
-	r.entries[threadID] = append(r.entries[threadID], cloneEntry(terminal))
+	r.appendIndexedEntriesLocked(threadID, terminal)
 	meta.LeafID = terminal.ID
 	meta.UpdatedAt = now
 	r.threads[threadID] = meta
@@ -614,8 +725,18 @@ func (r *MemoryRepo) replayedInterruptedTurnLocked(
 		failureMessage = entry.Error
 		failure = &entry
 	}
+	turnAttempts := make([]EffectAttempt, 0)
+	for _, attempt := range r.effectAttempts {
+		if attempt.Invocation.ThreadID == finished.ThreadID && attempt.Invocation.TurnID == finished.TurnID {
+			turnAttempts = append(turnAttempts, attempt)
+		}
+	}
+	effects, err := InterruptedTurnRecoveryEffects(turnAttempts, finished.OutcomeFingerprint)
+	if err != nil {
+		return RecoverInterruptedTurnResult{}, err
+	}
 	fingerprint, err := InterruptedTurnRecoveryFingerprint(
-		expectedLease, parentThreadID, finished.RunID, terminal.TurnStatus, failureMessage,
+		expectedLease, parentThreadID, finished.RunID, terminal.TurnStatus, failureMessage, effects,
 	)
 	if err != nil {
 		return RecoverInterruptedTurnResult{}, err
@@ -797,7 +918,14 @@ func UnresolvedInterruptedTurnCalls(path []Entry, turnID string) []Entry {
 	return calls
 }
 
-func InterruptedTurnToolResult(call session.Message) session.Message {
+func InterruptedTurnToolResult(call session.Message, effectState EffectAttemptState) session.Message {
+	if effectState == EffectAttemptDispatching || effectState == EffectAttemptUnknown {
+		return session.Message{
+			Role: session.Tool, ToolCallID: call.ToolCallID, ToolName: call.ToolName,
+			Content:    "Tool call outcome is unknown because the turn was interrupted after dispatch.",
+			ToolResult: &session.ToolResultView{Status: "error"},
+		}
+	}
 	return session.Message{
 		Role: session.Tool, ToolCallID: call.ToolCallID, ToolName: call.ToolName,
 		Content:    "Tool call did not complete because the turn was interrupted.",

@@ -129,6 +129,30 @@ func validateEffectLease(lease TurnLease, threadID, turnID string) error {
 	return nil
 }
 
+// ValidateEffectLeaseSuccessor permits an effect authority operation to use a
+// proof captured before one or more durable heartbeat renewals. Ownership,
+// generation, acquisition identity, and monotonic lease time must remain exact.
+func ValidateEffectLeaseSuccessor(proof, current TurnLease) error {
+	if err := proof.Validate(); err != nil {
+		return ErrStaleAuthority
+	}
+	if err := current.Validate(); err != nil {
+		return ErrStaleAuthority
+	}
+	if proof.Purpose != TurnLeasePurposeTurn || current.Purpose != proof.Purpose ||
+		current.ThreadID != proof.ThreadID || current.TurnID != proof.TurnID ||
+		current.MutationID != proof.MutationID || current.MutationKind != proof.MutationKind ||
+		current.OwnerID != proof.OwnerID || current.Generation != proof.Generation ||
+		!current.AcquiredAt.Equal(proof.AcquiredAt) || current.Heartbeat < proof.Heartbeat ||
+		current.RenewedAt.Before(proof.RenewedAt) || current.ExpiresAt.Before(proof.ExpiresAt) {
+		return ErrStaleAuthority
+	}
+	if current.Heartbeat == proof.Heartbeat && !SameTurnLease(current, proof) {
+		return ErrStaleAuthority
+	}
+	return nil
+}
+
 func effectInvocationKey(inv EffectInvocationIdentity) string {
 	return strings.Join([]string{strings.TrimSpace(inv.ThreadID), strings.TrimSpace(inv.TurnID), strings.TrimSpace(inv.RunID), strings.TrimSpace(inv.ToolCallID)}, "\x00")
 }
@@ -299,7 +323,7 @@ func (r *MemoryRepo) FinishEffectDispatch(_ context.Context, req FinishEffectDis
 		}
 		committedRef = pendingRef
 	}
-	r.entries[meta.ID] = append(r.entries[meta.ID], cloneEntry(entry))
+	r.appendIndexedEntriesLocked(meta.ID, entry)
 	meta.LeafID = entry.ID
 	meta.UpdatedAt = entry.CreatedAt
 	r.threads[meta.ID] = meta
@@ -396,7 +420,7 @@ func (r *MemoryRepo) MarkEffectUnknown(_ context.Context, req MarkEffectUnknownR
 
 func (r *MemoryRepo) validateFreshEffectLeaseLocked(lease TurnLease) error {
 	active, ok := r.leases[lease.ThreadID]
-	if !ok || !SameTurnLease(active, lease) || !active.Fresh(r.now().UTC()) {
+	if !ok || ValidateEffectLeaseSuccessor(lease, active) != nil || !active.Fresh(r.now().UTC()) {
 		return ErrStaleAuthority
 	}
 	meta, ok := r.threads[lease.ThreadID]

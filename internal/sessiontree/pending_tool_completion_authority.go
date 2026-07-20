@@ -71,6 +71,9 @@ func ValidateAdmitPendingToolCompletionRequest(req AdmitPendingToolCompletionReq
 	if req.Input.Role != session.User {
 		return errors.New("pending tool completion continuation input must be a user message")
 	}
+	if err := session.ValidateMessageReferences(req.Input.References); err != nil {
+		return err
+	}
 	settlementRequest := SettlePendingToolRecoveryRequest{Target: req.Target, RequestFingerprint: req.SettlementFingerprint, Settlement: req.Settlement}
 	return validatePendingToolRecoveryRequest(settlementRequest)
 }
@@ -96,14 +99,19 @@ func (r *MemoryRepo) pendingToolCompletionReplayLocked(existing pendingToolCompl
 		return AdmitPendingToolCompletionResult{}, ErrRequestConflict
 	}
 	settlement, settlementOK := findEntry(r.entries[existing.ThreadID], existing.SettlementEntryID)
-	started, startedOK := findEntry(r.entries[existing.ThreadID], existing.TurnStartedID)
-	user, userOK := findEntry(r.entries[existing.ThreadID], existing.UserMessageID)
-	if !settlementOK || !startedOK || !userOK {
+	admissionLedger, admissionOK := r.turnAdmissions[turnAdmissionKey(existing.ThreadID, existing.ContinuationTurnID)]
+	if !settlementOK || !admissionOK || admissionLedger.RunID != existing.ContinuationRunID ||
+		admissionLedger.TurnStartedID != existing.TurnStartedID || admissionLedger.UserMessageID != existing.UserMessageID {
 		return AdmitPendingToolCompletionResult{}, ErrAuthorityCorrupt
 	}
+	admission, err := r.replayTurnAdmissionLocked(admissionLedger)
+	if err != nil {
+		return AdmitPendingToolCompletionResult{}, err
+	}
+	admission.Lease = TurnLease{}
 	return AdmitPendingToolCompletionResult{
 		Settlement: settlement,
-		Admission:  AdmitTurnResult{TurnStarted: started, UserMessage: user, BaseLeafID: existing.BaseLeafID, Replayed: true},
+		Admission:  admission,
 		Replayed:   true,
 	}, nil
 }
@@ -133,6 +141,9 @@ func (r *MemoryRepo) AdmitPendingToolCompletion(_ context.Context, req AdmitPend
 		return AdmitPendingToolCompletionResult{}, ErrThreadAuthorityBusy
 	}
 	if _, exists := r.turnAdmissions[turnAdmissionKey(meta.ID, req.ContinuationTurnID)]; exists {
+		return AdmitPendingToolCompletionResult{}, ErrRequestConflict
+	}
+	if r.hasTurnStartedLocked(meta.ID, req.ContinuationTurnID) {
 		return AdmitPendingToolCompletionResult{}, ErrRequestConflict
 	}
 	path, err := pathLocked(r.threads, r.entries, meta.ID, meta.LeafID)
@@ -182,9 +193,9 @@ func (r *MemoryRepo) AdmitPendingToolCompletion(_ context.Context, req AdmitPend
 	user.Raw = rawForEntry(user)
 	user.RawHash = stableHash(user.Raw)
 	if !settlementReplayed {
-		r.entries[meta.ID] = append(r.entries[meta.ID], cloneEntry(settlement))
+		r.appendIndexedEntriesLocked(meta.ID, settlement)
 	}
-	r.entries[meta.ID] = append(r.entries[meta.ID], cloneEntry(started), cloneEntry(user))
+	r.appendIndexedEntriesLocked(meta.ID, started, user)
 	meta.LeafID = user.ID
 	meta.UpdatedAt = now
 	r.threads[meta.ID] = meta

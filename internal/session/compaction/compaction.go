@@ -77,22 +77,23 @@ const (
 )
 
 type Request struct {
-	CompactionID         string
-	OperationID          string
-	RequestID            string
-	Source               string
-	PreviousCompactionID string
-	PreviousGeneration   int
-	PreviousWindowID     string
-	PreviousSummary      string
-	History              []session.Message
-	Policy               contextpolicy.Policy
-	Trigger              Trigger
-	Reason               Reason
-	Phase                Phase
-	Step                 int
-	Details              map[string]string
-	Now                  time.Time
+	CompactionID              string
+	SupplementalAnchorEntryID string
+	OperationID               string
+	RequestID                 string
+	Source                    string
+	PreviousCompactionID      string
+	PreviousGeneration        int
+	PreviousWindowID          string
+	PreviousSummary           string
+	History                   []session.Message
+	Policy                    contextpolicy.Policy
+	Trigger                   Trigger
+	Reason                    Reason
+	Phase                     Phase
+	Step                      int
+	Details                   map[string]string
+	Now                       time.Time
 }
 
 type Result struct {
@@ -165,8 +166,15 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	if err != nil {
 		return Preparation{}, err
 	}
+	protectedAnchor, err := supplementalAnchorIndex(history, req.SupplementalAnchorEntryID)
+	if err != nil {
+		return Preparation{}, err
+	}
 	usageBefore := contextpolicy.EstimateMessageContext("", history, req.Policy)
 	if len(history) == 1 {
+		if protectedAnchor == 0 {
+			return Preparation{}, ErrNoCutPoint
+		}
 		keptUsers := selectKeptUserMessages(history, req.Policy.RecentUserTokens)
 		details := mergeDetails(req.Details, map[string]string{"history_messages": "1", "compacted_messages": "1", "retained_tail_messages": "0", "single_message_compaction": "true"})
 		recordCompactionBudgetDetails(details, req.Policy)
@@ -194,8 +202,9 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		if err := normalizeResultWindow(&result, req); err != nil {
 			return Preparation{}, err
 		}
-		prep := Preparation{Request: req, CompactedHead: append([]session.Message(nil), history...), Result: result}
-		summary, generationDetails, err := generateSummary(ctx, generator, prep)
+		projectedHead, _, _ := session.ProjectProviderHistory(history, "")
+		prep := Preparation{Request: req, CompactedHead: projectedHead, Result: result}
+		summary, generationDetails, err := generateSummary(ctx, generator, providerSummaryPreparation(prep))
 		if err != nil {
 			return Preparation{}, err
 		}
@@ -212,10 +221,19 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 		return Preparation{}, ErrNoCutPoint
 	}
 	start := findTailStart(history, req.Policy.RecentTailTokens)
+	if protectedAnchor >= 0 && start > protectedAnchor {
+		start = protectedAnchor
+	}
 	if start <= 0 && len(history) > 1 {
+		if protectedAnchor == 0 {
+			return Preparation{}, ErrNoCutPoint
+		}
 		start = len(history) - 1
 	}
 	start = repairToolBoundary(history, start)
+	if protectedAnchor >= 0 && start > protectedAnchor {
+		return Preparation{}, fmt.Errorf("%w: tool boundary crossed supplemental anchor", ErrInvalidReference)
+	}
 	if start <= 0 && len(history) > 1 {
 		start = 1
 	}
@@ -224,9 +242,10 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	}
 	keptUsers := selectKeptUserMessages(history, req.Policy.RecentUserTokens)
 	var tailShrunk bool
-	start, tailShrunk = fitTailStartForCompactedContext(history, start, keptUsers, req.Policy)
+	start, tailShrunk = fitTailStartForCompactedContext(history, start, keptUsers, req.Policy, protectedAnchor)
 	head := append([]session.Message(nil), history[:start]...)
 	tail := append([]session.Message(nil), history[start:]...)
+	projectedHead, _, _ := session.ProjectProviderHistory(head, "")
 	firstKept := firstEntryID(tail)
 	compactedThrough := lastEntryID(head)
 	details := map[string]string{
@@ -267,8 +286,8 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	if err := normalizeResultWindow(&result, req); err != nil {
 		return Preparation{}, err
 	}
-	prep := Preparation{Request: req, CompactedHead: head, RetainedTail: tail, Result: result}
-	summary, generationDetails, err := generateSummary(ctx, generator, prep)
+	prep := Preparation{Request: req, CompactedHead: projectedHead, RetainedTail: tail, Result: result}
+	summary, generationDetails, err := generateSummary(ctx, generator, providerSummaryPreparation(prep))
 	if err != nil {
 		return Preparation{}, err
 	}
@@ -280,6 +299,9 @@ func Prepare(ctx context.Context, req Request, generator SummaryGenerator) (Prep
 	recordSummaryGenerationDetails(&prep.Result, generationDetails, req.Policy)
 	prep.Result.Summary = summary
 	prep.ActiveMessages = BuildActiveMessagesWithKeptUsers(prep.Result, keptUsers, tail)
+	if err := validateSupplementalAnchorRetained(prep.ActiveMessages, req.SupplementalAnchorEntryID); err != nil {
+		return Preparation{}, err
+	}
 	usageAfter := contextpolicy.EstimateMessageContext("", prep.ActiveMessages, req.Policy)
 	prep.Result.TokensAfterEstimate = usageAfter.InputTokens
 	prep.Result.UsageAfter = usageAfter
@@ -483,7 +505,7 @@ func checkpointContent(summary string, keptUsers []session.Message, hasTail bool
 		out.WriteString("Treat them as historical requirements unless the retained tail or the latest user message supersedes them.\n\n")
 		data := make([]preservedUserInput, 0, len(keptUsers))
 		for _, msg := range keptUsers {
-			data = append(data, preservedUserInput{EntryID: msg.EntryID, Content: msg.Content})
+			data = append(data, preservedUserInput{Content: msg.Content})
 		}
 		encoded, _ := json.MarshalIndent(data, "", "  ")
 		out.Write(encoded)
@@ -499,8 +521,30 @@ func checkpointContent(summary string, keptUsers []session.Message, hasTail bool
 }
 
 type preservedUserInput struct {
-	EntryID string `json:"entry_id"`
 	Content string `json:"content"`
+}
+
+func providerSummaryPreparation(prep Preparation) Preparation {
+	out := prep
+	out.Request = prep.Request
+	out.Request.SupplementalAnchorEntryID = ""
+	out.Request.History = providerSummaryMessages(prep.Request.History)
+	out.CompactedHead = providerSummaryMessages(prep.CompactedHead)
+	out.RetainedTail = providerSummaryMessages(prep.RetainedTail)
+	out.ActiveMessages = nil
+	out.Result.FirstKeptEntryID = ""
+	out.Result.KeptUserEntryIDs = nil
+	out.Result.CompactedThroughEntryID = ""
+	return out
+}
+
+func providerSummaryMessages(messages []session.Message) []session.Message {
+	out, _, _ := session.ProjectProviderHistory(messages, "")
+	for index := range out {
+		out[index].EntryID = ""
+		out[index].ParentEntryID = ""
+	}
+	return out
 }
 
 func stripEmptyMessages(messages []session.Message) []session.Message {
@@ -600,7 +644,7 @@ func findTailStart(history []session.Message, keepTokens int64) int {
 	return 0
 }
 
-func fitTailStartForCompactedContext(history []session.Message, start int, keptUsers []session.Message, policy contextpolicy.Policy) (int, bool) {
+func fitTailStartForCompactedContext(history []session.Message, start int, keptUsers []session.Message, policy contextpolicy.Policy, protectedIndex int) (int, bool) {
 	shrunk := false
 	target := compactedContextTarget(policy)
 	for start > 0 && start < len(history) {
@@ -609,6 +653,9 @@ func fitTailStartForCompactedContext(history []session.Message, start int, keptU
 			return start, shrunk
 		}
 		next := nextShrinkableTailStart(history, start)
+		if protectedIndex >= 0 && next > protectedIndex {
+			return start, shrunk
+		}
 		if next <= start || next >= len(history) {
 			return start, shrunk
 		}
@@ -675,7 +722,7 @@ func selectKeptUserMessages(history []session.Message, budget int64) []session.M
 	}
 	latest := -1
 	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].Role == session.User && history[i].EntryID != "" {
+		if history[i].Role == session.User && history[i].EntryID != "" && !session.IsReferenceOnlyUserMessage(history[i]) {
 			latest = i
 			break
 		}
@@ -686,7 +733,7 @@ func selectKeptUserMessages(history []session.Message, budget int64) []session.M
 	var selected []session.Message
 	total := contextpolicy.EstimateMessageTokens(history[latest])
 	for i := latest - 1; i >= 0; i-- {
-		if history[i].Role != session.User || history[i].EntryID == "" {
+		if history[i].Role != session.User || history[i].EntryID == "" || session.IsReferenceOnlyUserMessage(history[i]) {
 			continue
 		}
 		msgTokens := contextpolicy.EstimateMessageTokens(history[i])
@@ -699,6 +746,44 @@ func selectKeptUserMessages(history []session.Message, budget int64) []session.M
 	reverseMessages(selected)
 	selected = append(selected, history[latest])
 	return selected
+}
+
+func supplementalAnchorIndex(history []session.Message, anchorEntryID string) (int, error) {
+	anchorEntryID = strings.TrimSpace(anchorEntryID)
+	if anchorEntryID == "" {
+		return -1, nil
+	}
+	match := -1
+	for index, message := range history {
+		if message.EntryID != anchorEntryID {
+			continue
+		}
+		if match >= 0 || message.Role != session.User {
+			return -1, fmt.Errorf("%w: supplemental anchor must identify exactly one user message", ErrInvalidReference)
+		}
+		match = index
+	}
+	if match < 0 {
+		return -1, fmt.Errorf("%w: supplemental anchor is missing", ErrInvalidReference)
+	}
+	return match, nil
+}
+
+func validateSupplementalAnchorRetained(messages []session.Message, anchorEntryID string) error {
+	anchorEntryID = strings.TrimSpace(anchorEntryID)
+	if anchorEntryID == "" {
+		return nil
+	}
+	matches := 0
+	for _, message := range messages {
+		if message.EntryID == anchorEntryID {
+			matches++
+		}
+	}
+	if matches != 1 {
+		return fmt.Errorf("%w: supplemental anchor was not retained exactly once", ErrInvalidReference)
+	}
+	return nil
 }
 
 func repairToolBoundary(history []session.Message, start int) int {

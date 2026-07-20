@@ -313,6 +313,157 @@ func TestCallerCancellationWaitsForStartedHandlerBeyondFinalizationWindow(t *tes
 	}
 }
 
+func TestCallerCancellationLinearizesWithCommittedEffectDispatch(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	repo := &beginEffectCommitBarrierRepo{
+		MemoryRepo: sessiontree.NewMemoryRepo(),
+		committed:  make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("call-1", "shell", `{"value":"x"}`), harness.DoneReason("tool_calls")),
+	)
+	h := newTestHarness(p, repo, cache.NewMemoryStore())
+	var handlerCalls atomic.Int64
+	mustRegister(h.options.Tools, stringTool("shell", func(context.Context, string) (string, error) {
+		handlerCalls.Add(1)
+		return "committed output", nil
+	}))
+	thread, err := h.StartThread(context.Background(), StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct {
+		result TurnResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := thread.Run(ctx, "run", RunOptions{RunID: "run-1", TurnID: "turn-1"})
+		done <- struct {
+			result TurnResult
+			err    error
+		}{result: result, err: err}
+	}()
+	select {
+	case <-repo.committed:
+	case <-time.After(time.Second):
+		close(repo.release)
+		t.Fatal("effect dispatch did not reach committed barrier")
+	}
+	cancel()
+	select {
+	case out := <-done:
+		close(repo.release)
+		t.Fatalf("run escaped committed dispatch before handler result: result=%#v err=%v", out.result, out.err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(repo.release)
+	select {
+	case out := <-done:
+		if !errors.Is(out.err, context.Canceled) || out.result.Status != engine.Cancelled {
+			t.Fatalf("run result=%#v err=%v, want cancelled after canonical effect finalization", out.result, out.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("run did not finish after committed dispatch returned")
+	}
+	if handlerCalls.Load() != 1 || repo.finishCalls.Load() != 1 {
+		t.Fatalf("calls handler=%d finish=%d, want 1/1", handlerCalls.Load(), repo.finishCalls.Load())
+	}
+	journal, err := thread.Journal(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolResults := 0
+	terminalMarkers := 0
+	for _, entry := range journal.Path {
+		if entry.Type == sessiontree.EntryToolResult && entry.Message.ToolCallID == "call-1" && entry.Message.Content == "committed output" {
+			toolResults++
+		}
+		if entry.Type == sessiontree.EntryTurnMarker && entry.TurnID == "turn-1" && isTerminalTurnMarker(entry.TurnStatus) {
+			terminalMarkers++
+		}
+	}
+	if toolResults != 1 || terminalMarkers != 1 {
+		t.Fatalf("canonical convergence tool_results=%d terminal_markers=%d path=%#v", toolResults, terminalMarkers, journal.Path)
+	}
+}
+
+func TestCallerCancellationKeepsEffectLeaseAliveUntilLateHandlerFinalization(t *testing.T) {
+	const ttl = 90 * time.Millisecond
+	policy := sessiontree.LeasePolicy{TTL: ttl, RenewInterval: 20 * time.Millisecond, ClockSkewAllowance: 10 * time.Millisecond}
+	memory, err := sessiontree.NewMemoryRepoWithLeasePolicy(policy, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &countingEffectFinishRepo{MemoryRepo: memory}
+	ctx, cancel := context.WithCancel(context.Background())
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("call-1", "shell", `{"value":"x"}`), harness.DoneReason("tool_calls")),
+	)
+	h := newTestHarness(p, repo, cache.NewMemoryStore())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	mustRegister(h.options.Tools, stringTool("shell", func(context.Context, string) (string, error) {
+		close(started)
+		<-release
+		return "late output", nil
+	}))
+	thread, err := h.StartThread(context.Background(), StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct {
+		result TurnResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := thread.Run(ctx, "run", RunOptions{RunID: "run-1", TurnID: "turn-1"})
+		done <- struct {
+			result TurnResult
+			err    error
+		}{result: result, err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("effect handler did not start")
+	}
+	cancel()
+	time.Sleep(2 * ttl)
+	select {
+	case out := <-done:
+		close(release)
+		t.Fatalf("run finished before late handler release: result=%#v err=%v", out.result, out.err)
+	default:
+	}
+	close(release)
+	select {
+	case out := <-done:
+		if !errors.Is(out.err, context.Canceled) || out.result.Status != engine.Cancelled {
+			t.Fatalf("run result=%#v err=%v, want cancelled after late canonical effect finalization", out.result, out.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("run did not finish after late handler release")
+	}
+	if repo.finishCalls.Load() != 1 {
+		t.Fatalf("FinishEffectDispatch calls=%d, want 1", repo.finishCalls.Load())
+	}
+	journal, err := thread.Journal(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countTurnMarkersForTurn(journal.Path, "turn-1", sessiontree.TurnAborted); got != 1 {
+		t.Fatalf("late effect finalization terminal markers=%d, want 1: %#v", got, journal.Path)
+	}
+	for _, entry := range journal.Path {
+		if entry.Type == sessiontree.EntryToolResult && entry.Message.ToolCallID == "call-1" && entry.Message.Content == "late output" {
+			return
+		}
+	}
+	t.Fatalf("late effect result was not committed: %#v", journal.Path)
+}
+
 func TestParallelEffectFinalizationWindowStartsAtOrderedFinalization(t *testing.T) {
 	ctx := context.Background()
 	repo := &countingEffectFinishRepo{MemoryRepo: sessiontree.NewMemoryRepo()}
@@ -531,6 +682,13 @@ type countingEffectFinishRepo struct {
 	finishCalls atomic.Int64
 }
 
+type beginEffectCommitBarrierRepo struct {
+	*sessiontree.MemoryRepo
+	committed   chan struct{}
+	release     chan struct{}
+	finishCalls atomic.Int64
+}
+
 type effectFinalizationFailureRepo struct {
 	*sessiontree.MemoryRepo
 	finishErr      error
@@ -543,6 +701,21 @@ type effectFinalizationFailureRepo struct {
 }
 
 func (r *countingEffectFinishRepo) FinishEffectDispatch(ctx context.Context, req sessiontree.FinishEffectDispatchRequest) (sessiontree.FinishEffectDispatchResult, error) {
+	r.finishCalls.Add(1)
+	return r.MemoryRepo.FinishEffectDispatch(ctx, req)
+}
+
+func (r *beginEffectCommitBarrierRepo) BeginEffectDispatch(ctx context.Context, req sessiontree.BeginEffectDispatchRequest) (sessiontree.EffectAttempt, error) {
+	attempt, err := r.MemoryRepo.BeginEffectDispatch(ctx, req)
+	if err != nil {
+		return sessiontree.EffectAttempt{}, err
+	}
+	close(r.committed)
+	<-r.release
+	return attempt, nil
+}
+
+func (r *beginEffectCommitBarrierRepo) FinishEffectDispatch(ctx context.Context, req sessiontree.FinishEffectDispatchRequest) (sessiontree.FinishEffectDispatchResult, error) {
 	r.finishCalls.Add(1)
 	return r.MemoryRepo.FinishEffectDispatch(ctx, req)
 }

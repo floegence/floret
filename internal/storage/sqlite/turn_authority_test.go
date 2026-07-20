@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -20,10 +21,124 @@ type turnAuthorityTestRepo interface {
 	CreateThread(context.Context, sessiontree.ThreadMeta) (sessiontree.ThreadMeta, error)
 	Thread(context.Context, string) (sessiontree.ThreadMeta, error)
 	Entries(context.Context, string) ([]sessiontree.Entry, error)
+	Append(context.Context, sessiontree.Entry, sessiontree.AppendOptions) (sessiontree.Entry, error)
 	ActiveTurnLease(context.Context, string) (sessiontree.TurnLease, bool, error)
 	AdmitTurn(context.Context, sessiontree.AdmitTurnRequest) (sessiontree.AdmitTurnResult, error)
+	ReadTurnAdmission(context.Context, string, string, string) (sessiontree.AdmitTurnResult, bool, error)
+	CanonicalTurnEntries(context.Context, string, string, string) ([]sessiontree.Entry, bool, error)
 	FinishTurn(context.Context, sessiontree.FinishTurnRequest) (sessiontree.FinishTurnResult, error)
+	RecoverInterruptedTurn(context.Context, sessiontree.RecoverInterruptedTurnRequest) (sessiontree.RecoverInterruptedTurnResult, error)
 	ProviderState(context.Context, string) (sessiontree.ProviderStateRecord, error)
+	Fork(context.Context, sessiontree.ForkOptions) (sessiontree.ThreadMeta, error)
+}
+
+func TestStartedTurnIdentityIsUniqueAcrossJournalWriters(t *testing.T) {
+	now := time.Date(2026, 7, 20, 16, 0, 0, 0, time.UTC)
+	memory := sessiontree.NewMemoryRepo()
+	sqliteStore, err := Open(filepath.Join(t.TempDir(), "unique-started-turn.db"), WithAuthorityClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqliteStore.Close() })
+
+	for name, repo := range map[string]turnAuthorityTestRepo{"memory": memory, "sqlite": sqliteStore} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread", CreatedAt: now, UpdatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repo.Append(ctx, sessiontree.Entry{
+				ThreadID: "thread", TurnID: "historical-turn", Type: sessiontree.EntryTurnMarker,
+				TurnStatus: sessiontree.TurnStarted, Metadata: map[string]string{"run_id": "historical-run"},
+			}, sessiontree.AppendOptions{ID: "historical-started", Now: now}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repo.Append(ctx, sessiontree.Entry{
+				ThreadID: "thread", TurnID: "historical-turn", Type: sessiontree.EntryTurnMarker,
+				TurnStatus: sessiontree.TurnStarted, Metadata: map[string]string{"run_id": "different-run"},
+			}, sessiontree.AppendOptions{ID: "duplicate-started", Now: now}); !errors.Is(err, sessiontree.ErrRequestConflict) {
+				t.Fatalf("duplicate generic started err=%v, want ErrRequestConflict", err)
+			}
+			if _, err := repo.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+				ThreadID: "thread", TurnID: "historical-turn", RunID: "new-run", OwnerID: "owner",
+				RequestFingerprint: "new-request", Input: session.Message{Role: session.User, Content: "reuse"}, Now: now,
+			}); !errors.Is(err, sessiontree.ErrRequestConflict) {
+				t.Fatalf("historical turn admission err=%v, want ErrRequestConflict", err)
+			}
+			entries, err := repo.Entries(ctx, "thread")
+			if err != nil || len(entries) != 1 || entries[0].ID != "historical-started" {
+				t.Fatalf("journal after rejected reuse = %#v err=%v", entries, err)
+			}
+			if lease, active, err := repo.ActiveTurnLease(ctx, "thread"); err != nil || active {
+				t.Fatalf("rejected reuse lease=%#v active=%v err=%v", lease, active, err)
+			}
+		})
+	}
+}
+
+func TestForkRejectsCanonicalTurnAndRunIdentityCollisions(t *testing.T) {
+	now := time.Date(2026, 7, 20, 17, 0, 0, 0, time.UTC)
+	for _, collision := range []struct {
+		name      string
+		turnIDMap map[string]string
+		runIDMap  map[string]string
+	}{
+		{
+			name:      "turn id",
+			turnIDMap: map[string]string{"turn-a": "fork-turn", "turn-b": "fork-turn"},
+			runIDMap:  map[string]string{"run-a": "fork-run-a", "run-b": "fork-run-b"},
+		},
+		{
+			name:      "run id",
+			turnIDMap: map[string]string{"turn-a": "fork-turn-a", "turn-b": "fork-turn-b"},
+			runIDMap:  map[string]string{"run-a": "fork-run", "run-b": "fork-run"},
+		},
+	} {
+		t.Run(collision.name, func(t *testing.T) {
+			memory := sessiontree.NewMemoryRepo()
+			sqliteStore, err := Open(filepath.Join(t.TempDir(), "fork-identity-collision.db"), WithAuthorityClock(func() time.Time { return now }))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = sqliteStore.Close() })
+
+			for backend, repo := range map[string]turnAuthorityTestRepo{"memory": memory, "sqlite": sqliteStore} {
+				t.Run(backend, func(t *testing.T) {
+					ctx := context.Background()
+					if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "source", CreatedAt: now, UpdatedAt: now}); err != nil {
+						t.Fatal(err)
+					}
+					parentID := ""
+					for _, identity := range []struct{ turnID, runID string }{{"turn-a", "run-a"}, {"turn-b", "run-b"}} {
+						started, err := repo.Append(ctx, sessiontree.Entry{
+							ThreadID: "source", ParentID: parentID, TurnID: identity.turnID,
+							Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnStarted,
+							Metadata: map[string]string{"run_id": identity.runID},
+						}, sessiontree.AppendOptions{Now: now})
+						if err != nil {
+							t.Fatal(err)
+						}
+						terminal, err := repo.Append(ctx, sessiontree.Entry{
+							ThreadID: "source", ParentID: started.ID, TurnID: identity.turnID,
+							Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnCompleted,
+						}, sessiontree.AppendOptions{Now: now})
+						if err != nil {
+							t.Fatal(err)
+						}
+						parentID = terminal.ID
+					}
+					if _, err := repo.Fork(ctx, sessiontree.ForkOptions{
+						SourceThreadID: "source", NewThreadID: "fork", TurnIDMap: collision.turnIDMap, RunIDMap: collision.runIDMap, Now: now,
+					}); !errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
+						t.Fatalf("fork collision err=%v, want ErrAuthorityCorrupt", err)
+					}
+					if _, err := repo.Thread(ctx, "fork"); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+						t.Fatalf("rejected fork remained visible: %v", err)
+					}
+				})
+			}
+		})
+	}
 }
 
 func TestSchemaVersion13ExcludesTurnAuthorityLedgers(t *testing.T) {
@@ -71,6 +186,10 @@ func TestSQLiteTurnAuthorityMatchesMemoryAdmissionAndFinish(t *testing.T) {
 				admitted.UserMessage.ParentID != admitted.TurnStarted.ID {
 				t.Fatalf("canonical admission entries = started %#v user %#v", admitted.TurnStarted, admitted.UserMessage)
 			}
+			canonical, found, err := repo.CanonicalTurnEntries(ctx, "thread", "turn-1", "run-1")
+			if err != nil || !found || len(canonical) != 2 || canonical[0].ID != admitted.TurnStarted.ID || canonical[1].ID != admitted.UserMessage.ID {
+				t.Fatalf("canonical turn entries = %#v found=%v err=%v", canonical, found, err)
+			}
 			replayed, err := repo.AdmitTurn(ctx, admitRequest)
 			if err != nil || !replayed.Replayed || !sessiontree.SameTurnLease(replayed.Lease, admitted.Lease) {
 				t.Fatalf("admission replay = %#v err=%v", replayed, err)
@@ -103,6 +222,10 @@ func TestSQLiteTurnAuthorityMatchesMemoryAdmissionAndFinish(t *testing.T) {
 				finished.Terminal.ParentID != finished.Failure.ID || finished.Terminal.Metadata["reason"] != "provider" {
 				t.Fatalf("finish = %#v", finished)
 			}
+			canonical, found, err = repo.CanonicalTurnEntries(ctx, "thread", "turn-1", "run-1")
+			if err != nil || !found || len(canonical) != 4 || canonical[2].ID != finished.Failure.ID || canonical[3].ID != finished.Terminal.ID {
+				t.Fatalf("finished canonical turn entries = %#v found=%v err=%v", canonical, found, err)
+			}
 			if lease, active, err := repo.ActiveTurnLease(ctx, "thread"); err != nil || active {
 				t.Fatalf("active lease after finish = %#v active=%v err=%v", lease, active, err)
 			}
@@ -131,6 +254,123 @@ func TestSQLiteTurnAuthorityMatchesMemoryAdmissionAndFinish(t *testing.T) {
 	}
 }
 
+func TestTurnAdmissionReplayUsesExactFinishedBranchWhileRetryIsActive(t *testing.T) {
+	now := time.Date(2026, 7, 20, 11, 0, 0, 0, time.UTC)
+	memory := sessiontree.NewMemoryRepo()
+	sqliteStore, err := Open(filepath.Join(t.TempDir(), "exact-replay.db"), WithAuthorityClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqliteStore.Close() })
+
+	for name, repo := range map[string]turnAuthorityTestRepo{"memory": memory, "sqlite": sqliteStore} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread", CreatedAt: now, UpdatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			originalRequest := sessiontree.AdmitTurnRequest{
+				ThreadID: "thread", TurnID: "turn-a", RunID: "run-a", OwnerID: "owner-a", RequestFingerprint: "fingerprint-a",
+				Input: session.Message{Role: session.User, Content: "original"}, Now: now,
+			}
+			original, err := repo.AdmitTurn(ctx, originalRequest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			finished, err := repo.FinishTurn(ctx, sessiontree.FinishTurnRequest{
+				Lease: original.Lease, RunID: "run-a", TerminalEntryID: "terminal-a", Status: sessiontree.TurnCompleted,
+				OutcomeFingerprint: "outcome-a", Now: now,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repo.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+				ThreadID: "thread", TurnID: "turn-b", RunID: "run-b", OwnerID: "owner-b", RequestFingerprint: "fingerprint-b",
+				RetryLeafID: original.UserMessage.ID, Now: now,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			before, err := repo.Entries(ctx, "thread")
+			if err != nil {
+				t.Fatal(err)
+			}
+			replayed, err := repo.AdmitTurn(ctx, originalRequest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !replayed.Replayed || replayed.Terminal == nil || replayed.Terminal.Terminal.ID != finished.Terminal.ID || replayed.Terminal.Terminal.TurnStatus != sessiontree.TurnCompleted {
+				t.Fatalf("exact replay=%#v, want original terminal %#v", replayed, finished.Terminal)
+			}
+			after, err := repo.Entries(ctx, "thread")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(after, before) {
+				t.Fatalf("exact replay mutated journal: before=%#v after=%#v", before, after)
+			}
+		})
+	}
+}
+
+func TestTurnAdmissionReadAcceptsExactInterruptedRecoveryFinish(t *testing.T) {
+	initial := time.Date(2026, 7, 20, 14, 0, 0, 0, time.UTC)
+	now := initial
+	policy := sessiontree.LeasePolicy{TTL: 30 * time.Second, RenewInterval: 10 * time.Second, ClockSkewAllowance: 2 * time.Second}
+	memory, err := sessiontree.NewMemoryRepoWithLeasePolicy(policy, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqliteStore, err := Open(filepath.Join(t.TempDir(), "recovered-replay.db"), WithLeasePolicy(policy), WithAuthorityClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqliteStore.Close() })
+
+	for name, repo := range map[string]turnAuthorityTestRepo{"memory": memory, "sqlite": sqliteStore} {
+		t.Run(name, func(t *testing.T) {
+			now = initial
+			ctx := context.Background()
+			if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread", CreatedAt: initial, UpdatedAt: initial}); err != nil {
+				t.Fatal(err)
+			}
+			request := sessiontree.AdmitTurnRequest{
+				ThreadID: "thread", TurnID: "turn", RunID: "run", OwnerID: "owner",
+				Input: session.Message{Role: session.User, Content: "run"}, RequestFingerprint: "request", Now: initial,
+			}
+			admitted, err := repo.AdmitTurn(ctx, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now = initial.Add(policy.TTL + policy.ClockSkewAllowance + time.Second)
+			recovered, err := repo.RecoverInterruptedTurn(ctx, sessiontree.RecoverInterruptedTurnRequest{ExpectedLease: admitted.Lease, Now: now})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if recovered.Status != sessiontree.TurnAborted || recovered.Generation != admitted.Lease.Generation+1 {
+				t.Fatalf("recovery = %#v", recovered)
+			}
+			read, found, err := repo.ReadTurnAdmission(ctx, "thread", "turn", "run")
+			if err != nil || !found || !read.Replayed || read.Terminal == nil ||
+				read.Terminal.Terminal.ID != recovered.Terminal.ID || read.Terminal.Terminal.TurnStatus != sessiontree.TurnAborted {
+				t.Fatalf("recovered exact read = %#v found=%v err=%v", read, found, err)
+			}
+			entries, err := repo.Entries(ctx, "thread")
+			if err != nil {
+				t.Fatal(err)
+			}
+			terminalCount := 0
+			for _, entry := range entries {
+				if entry.TurnID == "turn" && entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnAborted {
+					terminalCount++
+				}
+			}
+			if terminalCount != 1 {
+				t.Fatalf("recovered terminal markers = %d entries=%#v", terminalCount, entries)
+			}
+		})
+	}
+}
+
 func TestSQLiteAdmitTurnRejectsMalformedReferencesWithoutMutation(t *testing.T) {
 	now := time.Date(2026, 7, 20, 9, 30, 0, 0, time.UTC)
 	store, err := Open(filepath.Join(t.TempDir(), "invalid-reference.db"), WithAuthorityClock(func() time.Time { return now }))
@@ -153,6 +393,36 @@ func TestSQLiteAdmitTurnRejectsMalformedReferencesWithoutMutation(t *testing.T) 
 		t.Fatalf("AdmitTurn error = %v, want malformed message reference", err)
 	}
 	assertSQLiteTurnAuthorityCounts(t, store, 0, 0, 0, 0)
+}
+
+func TestSQLiteCanonicalTurnEntriesRejectsReferenceRawDrift(t *testing.T) {
+	now := time.Date(2026, 7, 20, 9, 45, 0, 0, time.UTC)
+	store, err := Open(filepath.Join(t.TempDir(), "reference-raw-drift.db"), WithAuthorityClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := store.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+		ThreadID: "thread", TurnID: "turn", RunID: "run", OwnerID: "owner", RequestFingerprint: "request",
+		Input: session.Message{Role: session.User, Content: "inspect", References: []session.MessageReference{{
+			ReferenceID: "context:0", Kind: session.MessageReferenceText, Label: "quote", Text: "original",
+		}}}, Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE entries
+		SET message_json = json_set(message_json, '$.References[0].text', 'changed without raw update')
+		WHERE thread_id = ? AND id = ?`, "thread", admitted.UserMessage.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := store.CanonicalTurnEntries(ctx, "thread", "turn", "run"); !found || !errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
+		t.Fatalf("reference raw drift found=%v err=%v", found, err)
+	}
 }
 
 func TestSQLiteAppendRestrictsReferencesToValidUserMessagesWithoutMutation(t *testing.T) {

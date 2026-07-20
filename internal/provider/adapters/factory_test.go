@@ -696,6 +696,35 @@ func TestOpenAICompatibleProviderBuildsPayloadFromRawPlanSnapshots(t *testing.T)
 	}
 }
 
+func TestOpenAICompatibleProviderInsertsEphemeralUserAfterRawCanonicalHistory(t *testing.T) {
+	p := OpenAICompatibleProvider{}
+	req := provider.Request{
+		Messages: []session.Message{
+			{Role: session.System, Content: "system"},
+			{Role: session.User, Content: "canonical user"},
+			{Role: session.Assistant, Content: "canonical assistant"},
+		},
+		EphemeralUser: &provider.EphemeralUserMessage{Message: session.Message{Role: session.User, Content: "private overlay"}, HistoryInsertAt: 1},
+		RawPlan: cache.RawPlan{Segments: []cache.Segment{
+			{Kind: cache.SegmentSystem, FragmentType: cache.FragmentOpenAIMessage, Raw: `{"role":"system","content":"system"}`},
+			{Kind: cache.SegmentUserMessage, FragmentType: cache.FragmentOpenAIMessage, Raw: `{"role":"user","content":"canonical user"}`},
+			{Kind: cache.SegmentAssistant, FragmentType: cache.FragmentOpenAIMessage, Raw: `{"role":"assistant","content":"canonical assistant"}`},
+		}},
+	}
+	before, _ := json.Marshal(req.RawPlan)
+	out, err := p.contextChatRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Messages) != 4 || out.Messages[2].Role != "user" || out.Messages[2].Content != "private overlay" {
+		t.Fatalf("rendered messages=%#v", out.Messages)
+	}
+	after, _ := json.Marshal(req.RawPlan)
+	if !slices.Equal(before, after) {
+		t.Fatal("ephemeral insertion mutated raw plan")
+	}
+}
+
 func TestOpenAICompatibleProviderRejectsRawPlanWithoutProviderFragments(t *testing.T) {
 	called := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1073,6 +1102,38 @@ func TestAnthropicProviderBuildsPayloadFromRawPlanFragments(t *testing.T) {
 	}
 	if len(body.Messages) != 1 || body.Messages[0].Content != "raw user" {
 		t.Fatalf("messages were not built from raw fragment: %#v", body.Messages)
+	}
+}
+
+func TestAnthropicProviderInsertsEphemeralUserAfterRawCanonicalHistory(t *testing.T) {
+	p := AnthropicProvider{MaxTokens: 4096}
+	systemRaw, _ := cache.CanonicalJSON(anthropicContentBlock{Type: "text", Text: "system"})
+	userRaw, _ := cache.CanonicalJSON(anthropicMessage{Role: "user", Content: "canonical user"})
+	assistantRaw, _ := cache.CanonicalJSON(anthropicMessage{Role: "assistant", Content: "canonical assistant"})
+	req := provider.Request{
+		Messages: []session.Message{
+			{Role: session.System, Content: "system"},
+			{Role: session.User, Content: "canonical user"},
+			{Role: session.Assistant, Content: "canonical assistant"},
+		},
+		EphemeralUser: &provider.EphemeralUserMessage{Message: session.Message{Role: session.User, Content: "private overlay"}, HistoryInsertAt: 1},
+		RawPlan: cache.RawPlan{Segments: []cache.Segment{
+			{Kind: cache.SegmentSystem, FragmentType: cache.FragmentAnthropicSystem, Raw: systemRaw},
+			{Kind: cache.SegmentUserMessage, FragmentType: cache.FragmentAnthropicMessage, Raw: userRaw},
+			{Kind: cache.SegmentAssistant, FragmentType: cache.FragmentAnthropicMessage, Raw: assistantRaw},
+		}},
+	}
+	before, _ := json.Marshal(req.RawPlan)
+	out, err := p.contextAnthropicRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Messages) != 3 || out.Messages[1].Role != "user" || out.Messages[1].Content != "private overlay" {
+		t.Fatalf("rendered messages=%#v", out.Messages)
+	}
+	after, _ := json.Marshal(req.RawPlan)
+	if !slices.Equal(before, after) {
+		t.Fatal("ephemeral insertion mutated raw plan")
 	}
 }
 

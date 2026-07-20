@@ -464,7 +464,11 @@ func (p modelGatewayProvider) Stream(ctx context.Context, req provider.Request) 
 	if p.gateway == nil {
 		return nil, errors.New("model gateway is required")
 	}
-	messages, err := runtimeModelMessages(req.Messages)
+	providerMessages, err := provider.MessagesWithEphemeralUser(req.Messages, req.EphemeralUser)
+	if err != nil {
+		return nil, err
+	}
+	messages, err := runtimeModelMessages(providerMessages)
 	if err != nil {
 		return nil, err
 	}
@@ -573,6 +577,24 @@ func runtimeMessageAttachments(in []session.MessageAttachment) []MessageAttachme
 			Name:        attachment.Name,
 			MIMEType:    attachment.MIMEType,
 			SizeBytes:   attachment.SizeBytes,
+		})
+	}
+	return out
+}
+
+func runtimeMessageReferences(in []session.MessageReference) []MessageReference {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]MessageReference, 0, len(in))
+	for _, reference := range in {
+		out = append(out, MessageReference{
+			ReferenceID: reference.ReferenceID,
+			Kind:        MessageReferenceKind(reference.Kind),
+			Label:       reference.Label,
+			Text:        reference.Text,
+			ResourceRef: reference.ResourceRef,
+			Truncated:   reference.Truncated,
 		})
 	}
 	return out

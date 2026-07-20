@@ -78,10 +78,32 @@ type MessageAttachment struct {
 	SizeBytes   int64  `json:"size_bytes,omitempty"`
 }
 
+type MessageReferenceKind string
+
+const (
+	MessageReferenceText      MessageReferenceKind = "text"
+	MessageReferenceFile      MessageReferenceKind = "file"
+	MessageReferenceDirectory MessageReferenceKind = "directory"
+	MessageReferenceTerminal  MessageReferenceKind = "terminal"
+	MessageReferenceProcess   MessageReferenceKind = "process"
+)
+
+// MessageReference is one durable, user-visible reference associated with a
+// user message. ResourceRef remains opaque to Floret.
+type MessageReference struct {
+	ReferenceID string               `json:"reference_id"`
+	Kind        MessageReferenceKind `json:"kind"`
+	Label       string               `json:"label"`
+	Text        string               `json:"text,omitempty"`
+	ResourceRef string               `json:"resource_ref,omitempty"`
+	Truncated   bool                 `json:"truncated,omitempty"`
+}
+
 type Message struct {
 	Role                 Role
 	Content              string
 	Attachments          []MessageAttachment
+	References           []MessageReference
 	Reasoning            string
 	ToolCallID           string
 	ToolName             string
@@ -147,6 +169,7 @@ func CloneMessages(messages []Message) []Message {
 
 func CloneMessage(msg Message) Message {
 	msg.Attachments = append([]MessageAttachment(nil), msg.Attachments...)
+	msg.References = append([]MessageReference(nil), msg.References...)
 	if msg.ToolResult != nil {
 		view := *msg.ToolResult
 		if view.FullOutput != nil {

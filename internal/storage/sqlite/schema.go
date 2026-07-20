@@ -13,10 +13,12 @@ import (
 )
 
 const (
-	schemaVersion              = "14"
+	schemaVersion              = "15"
+	schemaVersion14            = "14"
 	schemaVersion13            = "13"
 	schemaFingerprintVersion13 = "d911a003f57c2e60123ae392164109ab42b20eefa9fdb2111f28d220b8c2e5cb"
 	schemaFingerprintVersion14 = "37d856aba09718aab51e3da7ea1e5d66a0b51e6f39d252ad2433caec9e333a07"
+	schemaFingerprintVersion15 = "edbfebf6c00fd69b2034b60db905ea6756304299e94903d1868460f314c583ae"
 )
 
 func ensureSchema(ctx context.Context, tx sqlRunner, leasePolicy sessiontree.LeasePolicy) error {
@@ -58,8 +60,19 @@ func ensureSchema(ctx context.Context, tx sqlRunner, leasePolicy sessiontree.Lea
 	}
 	switch current {
 	case schemaVersion:
+		if fingerprint != schemaFingerprintVersion15 {
+			return unsupportedSchemaError(current, fingerprint)
+		}
+		if err := verifySchemaVersion(ctx, tx, schemaVersion); err != nil {
+			return err
+		}
+		return verifyLeasePolicy(ctx, tx, leasePolicy)
+	case schemaVersion14:
 		if fingerprint != schemaFingerprintVersion14 {
 			return unsupportedSchemaError(current, fingerprint)
+		}
+		if err := migrateSchemaVersion14(ctx, tx); err != nil {
+			return err
 		}
 		if err := verifySchemaVersion(ctx, tx, schemaVersion); err != nil {
 			return err
@@ -83,9 +96,9 @@ func unsupportedSchemaError(version, fingerprint string) error {
 		ObservedVersion:        version,
 		ObservedFingerprint:    fingerprint,
 		CurrentVersion:         schemaVersion,
-		CurrentFingerprint:     schemaFingerprintVersion14,
-		PredecessorVersion:     schemaVersion13,
-		PredecessorFingerprint: schemaFingerprintVersion13,
+		CurrentFingerprint:     schemaFingerprintVersion15,
+		PredecessorVersion:     schemaVersion14,
+		PredecessorFingerprint: schemaFingerprintVersion14,
 	}
 }
 
@@ -106,7 +119,7 @@ func schemaTableExists(ctx context.Context, q sqlRunner, tableName string) (bool
 }
 
 func canonicalSchemaFingerprint() string {
-	return schemaFingerprintVersion14
+	return schemaFingerprintVersion15
 }
 
 func computedCanonicalSchemaFingerprint() string {
@@ -151,6 +164,12 @@ const threadAuthorityChecksSQL = `
 	CHECK (lease_generation >= 0),
 	CHECK ((lifecycle = 'closing' AND parent_thread_id <> '' AND close_operation_id <> '') OR
 		(lifecycle IN ('open', 'closed') AND close_operation_id = ''))
+`
+
+const canonicalTurnIndexSQL = `
+CREATE INDEX entries_turn_ordinal_idx ON entries(thread_id, turn_id, ordinal);
+CREATE UNIQUE INDEX entries_started_turn_unique_idx ON entries(thread_id, turn_id)
+	WHERE type = 'turn_marker' AND turn_status = 'started';
 `
 
 const turnAuthoritySQL = `
@@ -529,6 +548,7 @@ CREATE TABLE entries (
 
 CREATE INDEX entries_parent_idx ON entries(thread_id, parent_id);
 CREATE INDEX entries_thread_ordinal_idx ON entries(thread_id, ordinal);
+` + canonicalTurnIndexSQL + `
 CREATE INDEX threads_updated_at_idx ON threads(updated_at);
 
 ` + turnAuthoritySQL + pendingToolCompletionAuthoritySQL + compactionAuthoritySQL + effectAuthoritySQL + `
@@ -677,6 +697,8 @@ CREATE TABLE active_turn_leases (
 );
 `
 
+var schemaVersion14SQL = strings.Replace(schemaSQL, canonicalTurnIndexSQL, "", 1)
+
 var schemaVersion13SQL = strings.NewReplacer(
 	"\tid TEXT NOT NULL,\n\trun_id TEXT NOT NULL DEFAULT '',\n\tthread_id TEXT NOT NULL,\n", "\tid TEXT NOT NULL UNIQUE,\n\trun_id TEXT NOT NULL DEFAULT '',\n\tthread_id TEXT NOT NULL,\n",
 	"\teffect_attempt_id TEXT,\n\tcanonical_entry_id TEXT NOT NULL,\n", "",
@@ -698,4 +720,4 @@ var schemaVersion13SQL = strings.NewReplacer(
 	"\tlast_viewed_at TEXT NOT NULL DEFAULT '',\n", "\tlast_viewed_at TEXT NOT NULL DEFAULT ''\n",
 	forkOperationsSQL, forkOperationsSQLVersion13,
 	activeTurnLeasesSQL, activeTurnLeasesSQLVersion13,
-).Replace(schemaSQL)
+).Replace(schemaVersion14SQL)

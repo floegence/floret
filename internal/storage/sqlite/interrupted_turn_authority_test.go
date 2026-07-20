@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,7 +18,71 @@ type interruptedTurnRecoveryTestRepo interface {
 	Path(context.Context, string, string) ([]sessiontree.Entry, error)
 	Append(context.Context, sessiontree.Entry, sessiontree.AppendOptions) (sessiontree.Entry, error)
 	AdmitTurn(context.Context, sessiontree.AdmitTurnRequest) (sessiontree.AdmitTurnResult, error)
+	PrepareEffectAttempt(context.Context, sessiontree.PrepareEffectAttemptRequest) (sessiontree.PrepareEffectAttemptResult, error)
+	BeginEffectDispatch(context.Context, sessiontree.BeginEffectDispatchRequest) (sessiontree.EffectAttempt, error)
 	RecoverInterruptedTurn(context.Context, sessiontree.RecoverInterruptedTurnRequest) (sessiontree.RecoverInterruptedTurnResult, error)
+}
+
+func TestInterruptedTurnRecoveryPrioritizesDispatchingEffectUnknown(t *testing.T) {
+	for _, backend := range []string{"memory", "sqlite"} {
+		t.Run(backend, func(t *testing.T) {
+			initial := time.Date(2026, 7, 21, 2, 0, 0, 0, time.UTC)
+			current := initial
+			policy := sessiontree.LeasePolicy{TTL: 30 * time.Second, RenewInterval: 10 * time.Second, ClockSkewAllowance: 2 * time.Second}
+			repo := newInterruptedTurnRecoveryTestRepo(t, backend, policy, func() time.Time { return current })
+			ctx := context.Background()
+			if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread", CreatedAt: initial, UpdatedAt: initial}); err != nil {
+				t.Fatal(err)
+			}
+			admitted, err := repo.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+				ThreadID: "thread", TurnID: "turn", RunID: "run", OwnerID: "owner",
+				Input: session.Message{Role: session.User, Content: "work"}, RequestFingerprint: "admit", Now: initial,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			leaseCtx := sessiontree.ContextWithTurnLease(ctx, admitted.Lease)
+			for _, callID := range []string{"prepared", "dispatching"} {
+				if _, err := repo.Append(leaseCtx, sessiontree.Entry{
+					ThreadID: "thread", TurnID: "turn", Type: sessiontree.EntryToolCall,
+					Message: session.Message{Role: session.Assistant, ToolCallID: callID, ToolName: "tool"},
+				}, sessiontree.AppendOptions{Now: initial}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := repo.PrepareEffectAttempt(ctx, effectPrepareRequest(admitted.Lease, "run", "prepared", "hash-p", "request-p", initial)); err != nil {
+				t.Fatal(err)
+			}
+			dispatching, err := repo.PrepareEffectAttempt(ctx, effectPrepareRequest(admitted.Lease, "run", "dispatching", "hash-d", "request-d", initial))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repo.BeginEffectDispatch(ctx, sessiontree.BeginEffectDispatchRequest{
+				Lease: admitted.Lease, EffectAttemptID: dispatching.Attempt.EffectAttemptID, RequestFingerprint: "request-d",
+				ObservedHeartbeat: admitted.Lease.Heartbeat, AuthorizationProofHash: "proof", Now: initial,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			current = admitted.Lease.ExpiresAt.Add(policy.ClockSkewAllowance + time.Nanosecond)
+			recovered, err := repo.RecoverInterruptedTurn(ctx, sessiontree.RecoverInterruptedTurnRequest{ExpectedLease: admitted.Lease, Now: current})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if recovered.Status != sessiontree.TurnFailed || recovered.Terminal.TurnStatus != sessiontree.TurnFailed ||
+				recovered.Failure == nil || recovered.Failure.Error != sessiontree.InterruptedTurnEffectOutcomeUnknownMessage {
+				t.Fatalf("recovered=%#v, want canonical effect outcome unknown failure", recovered)
+			}
+			for _, result := range recovered.ToolResults {
+				if result.Message.ToolCallID == "dispatching" {
+					if result.Message.ToolResult == nil || result.Message.ToolResult.Status != "error" || !strings.Contains(strings.ToLower(result.Message.Content), "unknown") {
+						t.Fatalf("dispatching recovery result=%#v, want unknown error", result.Message)
+					}
+					return
+				}
+			}
+			t.Fatalf("missing dispatching recovery tool result: %#v", recovered.ToolResults)
+		})
+	}
 }
 
 func TestInterruptedTurnRecoveryDerivesLatestPathInsideAuthorityTransaction(t *testing.T) {
@@ -46,7 +111,7 @@ func TestInterruptedTurnRecoveryDerivesLatestPathInsideAuthorityTransaction(t *t
 			if err != nil {
 				t.Fatal(err)
 			}
-			diagnosticPlan, err := sessiontree.DeriveInterruptedTurnRecoveryPlan(diagnosticPath, admitted.Lease, "")
+			diagnosticPlan, err := sessiontree.DeriveInterruptedTurnRecoveryPlan(diagnosticPath, admitted.Lease, "", nil)
 			if err != nil {
 				t.Fatal(err)
 			}

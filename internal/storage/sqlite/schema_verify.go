@@ -65,6 +65,9 @@ var (
 	schema13ContractOnce  sync.Once
 	schema13Contract      schemaContract
 	schema13ContractErr   error
+	schema14ContractOnce  sync.Once
+	schema14Contract      schemaContract
+	schema14ContractErr   error
 )
 
 func verifySchemaVersion(ctx context.Context, q sqlRunner, version string) error {
@@ -89,8 +92,10 @@ func verifySchemaVersion(ctx context.Context, q sqlRunner, version string) error
 	switch version {
 	case schemaVersion13:
 		expectedFingerprint = schemaFingerprintVersion13
-	case schemaVersion:
+	case schemaVersion14:
 		expectedFingerprint = schemaFingerprintVersion14
+	case schemaVersion:
+		expectedFingerprint = schemaFingerprintVersion15
 	default:
 		return unsupportedSchemaError(version, fingerprint)
 	}
@@ -177,6 +182,11 @@ func expectedSchemaContract(version string) (schemaContract, error) {
 			schema13Contract, schema13ContractErr = build(schemaVersion13SQL)
 		})
 		return cloneSchemaContract(schema13Contract), schema13ContractErr
+	case schemaVersion14:
+		schema14ContractOnce.Do(func() {
+			schema14Contract, schema14ContractErr = build(schemaVersion14SQL)
+		})
+		return cloneSchemaContract(schema14Contract), schema14ContractErr
 	case schemaVersion:
 		canonicalContractOnce.Do(func() {
 			canonicalContract, canonicalContractErr = build(schemaSQL)

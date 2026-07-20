@@ -154,7 +154,7 @@ func (r *MemoryRepo) SettlePendingToolRecovery(_ context.Context, req SettlePend
 	entry.CreatedAt = nonZeroAuthorityTime(req.Now, r.now)
 	entry.Raw = rawForEntry(entry)
 	entry.RawHash = stableHash(entry.Raw)
-	r.entries[meta.ID] = append(r.entries[meta.ID], cloneEntry(entry))
+	r.appendIndexedEntriesLocked(meta.ID, entry)
 	meta.LeafID = entry.ID
 	meta.UpdatedAt = entry.CreatedAt
 	r.threads[meta.ID] = meta

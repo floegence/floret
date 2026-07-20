@@ -37,7 +37,7 @@ type sqliteTurnFinishLedger struct {
 }
 
 func (s *Store) AdmitTurn(ctx context.Context, req sessiontree.AdmitTurnRequest) (sessiontree.AdmitTurnResult, error) {
-	if err := validateSQLiteAdmitTurnRequest(req); err != nil {
+	if err := sessiontree.ValidateAdmitTurnRequest(req); err != nil {
 		return sessiontree.AdmitTurnResult{}, err
 	}
 	threadID := strings.TrimSpace(req.ThreadID)
@@ -55,45 +55,8 @@ func (s *Store) AdmitTurn(ctx context.Context, req sessiontree.AdmitTurnRequest)
 			if existing.RunID != runID || existing.RequestFingerprint != fingerprint {
 				return sessiontree.ErrRequestConflict
 			}
-			active, activeOK, err := loadTurnLease(ctx, tx, threadID)
-			if err != nil {
-				return err
-			}
-			if !activeOK || !sessiontree.SameTurnLease(active, existing.Lease) {
-				return sessiontree.ErrRequestConflict
-			}
-			started, err := loadEntry(ctx, tx, threadID, existing.TurnStartedID)
-			if errors.Is(err, sql.ErrNoRows) {
-				return sessiontree.ErrAuthorityCorrupt
-			}
-			if err != nil {
-				return err
-			}
-			var user sessiontree.Entry
-			var boundary sessiontree.Entry
-			if existing.BoundaryTerminalID != "" {
-				boundary, err = loadEntry(ctx, tx, threadID, existing.BoundaryTerminalID)
-				if errors.Is(err, sql.ErrNoRows) {
-					return sessiontree.ErrAuthorityCorrupt
-				}
-				if err != nil {
-					return err
-				}
-			}
-			if existing.UserMessageID != "" {
-				user, err = loadEntry(ctx, tx, threadID, existing.UserMessageID)
-				if errors.Is(err, sql.ErrNoRows) {
-					return sessiontree.ErrAuthorityCorrupt
-				}
-				if err != nil {
-					return err
-				}
-			}
-			result = sessiontree.AdmitTurnResult{
-				Lease: active, BoundaryTerminal: boundary, TurnStarted: started, UserMessage: user,
-				BaseLeafID: existing.BaseLeafID, Replayed: true,
-			}
-			return nil
+			result, err = loadSQLiteTurnAdmissionReplay(ctx, tx, existing)
+			return err
 		}
 
 		meta, err := loadThread(ctx, tx, threadID)
@@ -206,6 +169,106 @@ func (s *Store) AdmitTurn(ctx context.Context, req sessiontree.AdmitTurnRequest)
 		return nil
 	})
 	return result, err
+}
+
+func (s *Store) ReadTurnAdmission(ctx context.Context, threadID, turnID, runID string) (sessiontree.AdmitTurnResult, bool, error) {
+	threadID = strings.TrimSpace(threadID)
+	turnID = strings.TrimSpace(turnID)
+	runID = strings.TrimSpace(runID)
+	var result sessiontree.AdmitTurnResult
+	found := false
+	err := s.withRead(ctx, func(q sqlRunner) error {
+		if _, err := loadThread(ctx, q, threadID); err != nil {
+			return err
+		}
+		existing, ok, err := loadSQLiteTurnAdmission(ctx, q, threadID, turnID)
+		if err != nil || !ok {
+			return err
+		}
+		found = true
+		if existing.RunID != runID {
+			return sessiontree.ErrRequestConflict
+		}
+		result, err = loadSQLiteTurnAdmissionReplay(ctx, q, existing)
+		return err
+	})
+	return result, found, err
+}
+
+func loadSQLiteTurnAdmissionReplay(ctx context.Context, runner sqlRunner, existing sqliteTurnAdmissionLedger) (sessiontree.AdmitTurnResult, error) {
+	var terminal *sessiontree.TurnTerminalOutcome
+	finished, finishedOK, err := loadSQLiteTurnFinish(ctx, runner, existing.ThreadID, existing.TurnID)
+	if err != nil {
+		return sessiontree.AdmitTurnResult{}, err
+	}
+	if finishedOK {
+		if finished.RunID != existing.RunID {
+			return sessiontree.AdmitTurnResult{}, sessiontree.ErrAuthorityCorrupt
+		}
+		switch finished.Generation {
+		case existing.Lease.Generation:
+			if err := validateSQLiteNormalInterruptedTurnFinish(ctx, runner, finished, existing); err != nil {
+				return sessiontree.AdmitTurnResult{}, err
+			}
+			terminalEntry, _ := loadEntry(ctx, runner, existing.ThreadID, finished.TerminalEntryID)
+			terminal = &sessiontree.TurnTerminalOutcome{Terminal: terminalEntry}
+			if finished.FailureEntryID != "" {
+				failure, _ := loadEntry(ctx, runner, existing.ThreadID, finished.FailureEntryID)
+				terminal.Failure = &failure
+			}
+		case existing.Lease.Generation + 1:
+			meta, err := loadThread(ctx, runner, existing.ThreadID)
+			if err != nil {
+				return sessiontree.AdmitTurnResult{}, err
+			}
+			recovered, err := validateSQLiteInterruptedTurnRecoveryReplay(ctx, runner, finished, existing.Lease, meta.ParentThreadID)
+			if err != nil {
+				if errors.Is(err, sessiontree.ErrRequestConflict) || errors.Is(err, sessiontree.ErrInvalidThreadAuthority) {
+					return sessiontree.AdmitTurnResult{}, sessiontree.ErrAuthorityCorrupt
+				}
+				return sessiontree.AdmitTurnResult{}, err
+			}
+			terminal = &sessiontree.TurnTerminalOutcome{Terminal: recovered.Terminal, Failure: recovered.Failure}
+		default:
+			return sessiontree.AdmitTurnResult{}, sessiontree.ErrAuthorityCorrupt
+		}
+	} else {
+		active, activeOK, err := loadTurnLease(ctx, runner, existing.ThreadID)
+		if err != nil {
+			return sessiontree.AdmitTurnResult{}, err
+		}
+		if !activeOK || !sessiontree.SameTurnLease(active, existing.Lease) {
+			return sessiontree.AdmitTurnResult{}, sessiontree.ErrAuthorityCorrupt
+		}
+	}
+	started, err := loadEntry(ctx, runner, existing.ThreadID, existing.TurnStartedID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return sessiontree.AdmitTurnResult{}, sessiontree.ErrAuthorityCorrupt
+	} else if err != nil {
+		return sessiontree.AdmitTurnResult{}, err
+	}
+	var boundary sessiontree.Entry
+	if existing.BoundaryTerminalID != "" {
+		boundary, err = loadEntry(ctx, runner, existing.ThreadID, existing.BoundaryTerminalID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return sessiontree.AdmitTurnResult{}, sessiontree.ErrAuthorityCorrupt
+		} else if err != nil {
+			return sessiontree.AdmitTurnResult{}, err
+		}
+	}
+	var user sessiontree.Entry
+	if existing.UserMessageID != "" {
+		user, err = loadEntry(ctx, runner, existing.ThreadID, existing.UserMessageID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return sessiontree.AdmitTurnResult{}, sessiontree.ErrAuthorityCorrupt
+		} else if err != nil {
+			return sessiontree.AdmitTurnResult{}, err
+		}
+	}
+	return sessiontree.AdmitTurnResult{
+		Lease: existing.Lease, BoundaryTerminal: boundary, TurnStarted: started, UserMessage: user,
+		BaseLeafID: existing.BaseLeafID, Terminal: terminal, Replayed: true,
+	}, nil
 }
 
 func (s *Store) FinishTurn(ctx context.Context, req sessiontree.FinishTurnRequest) (sessiontree.FinishTurnResult, error) {
@@ -359,26 +422,6 @@ func (s *Store) FinishTurn(ctx context.Context, req sessiontree.FinishTurnReques
 	return result, err
 }
 
-func validateSQLiteAdmitTurnRequest(req sessiontree.AdmitTurnRequest) error {
-	if strings.TrimSpace(req.ThreadID) == "" || strings.TrimSpace(req.TurnID) == "" || strings.TrimSpace(req.RunID) == "" || strings.TrimSpace(req.OwnerID) == "" {
-		return errors.New("turn admission requires thread, turn, run, and owner identities")
-	}
-	if strings.TrimSpace(req.RequestFingerprint) == "" {
-		return errors.New("turn admission request fingerprint is required")
-	}
-	if strings.TrimSpace(req.RetryLeafID) == "" {
-		if req.Input.Role != session.User {
-			return errors.New("turn admission input must be a user message")
-		}
-		if strings.TrimSpace(req.Input.Content) == "" && len(req.Input.Attachments) == 0 {
-			return errors.New("turn admission requires text or attachments")
-		}
-	} else if req.Input.Role != "" || strings.TrimSpace(req.Input.Content) != "" || len(req.Input.Attachments) != 0 {
-		return errors.New("retry admission cannot contain a replacement user message")
-	}
-	return nil
-}
-
 func validateSQLiteFinishTurnRequest(req sessiontree.FinishTurnRequest) error {
 	if err := req.Lease.Validate(); err != nil {
 		return err
@@ -452,6 +495,15 @@ func insertTurnAuthorityEntry(ctx context.Context, tx sqlRunner, entry sessiontr
 	if strings.TrimSpace(entry.ThreadID) == "" {
 		return sessiontree.Entry{}, errors.New("turn authority entry requires thread identity")
 	}
+	if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnStarted {
+		exists, err := turnStartedExists(ctx, tx, entry.ThreadID, entry.TurnID)
+		if err != nil {
+			return sessiontree.Entry{}, err
+		}
+		if exists {
+			return sessiontree.Entry{}, sessiontree.ErrRequestConflict
+		}
+	}
 	if entry.ParentID != "" {
 		exists, err := entryExists(ctx, tx, entry.ThreadID, entry.ParentID)
 		if err != nil {
@@ -484,6 +536,19 @@ func insertTurnAuthorityEntry(ctx context.Context, tx sqlRunner, entry sessiontr
 		return sessiontree.Entry{}, err
 	}
 	return cloneEntry(entry), nil
+}
+
+func turnStartedExists(ctx context.Context, q sqlRunner, threadID, turnID string) (bool, error) {
+	var count int
+	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM entries
+		WHERE thread_id = ? AND turn_id = ? AND type = ? AND turn_status = ?`,
+		strings.TrimSpace(threadID), strings.TrimSpace(turnID), string(sessiontree.EntryTurnMarker), string(sessiontree.TurnStarted)).Scan(&count); err != nil {
+		return false, err
+	}
+	if count > 1 {
+		return false, sessiontree.ErrAuthorityCorrupt
+	}
+	return count == 1, nil
 }
 
 func loadSQLiteTurnAdmission(ctx context.Context, q sqlRunner, threadID, turnID string) (sqliteTurnAdmissionLedger, bool, error) {

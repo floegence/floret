@@ -56,6 +56,11 @@ func Hang() provider.StreamEvent {
 }
 
 func (p *ScriptedProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
+	messages, mergeErr := provider.MessagesWithEphemeralUser(req.Messages, req.EphemeralUser)
+	if mergeErr != nil {
+		return nil, mergeErr
+	}
+	req.Messages = messages
 	p.mu.Lock()
 	p.Requests = append(p.Requests, req)
 	err := p.Errs[len(p.Requests)]

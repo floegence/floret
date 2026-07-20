@@ -120,6 +120,7 @@ type SpawnSubAgentOptions struct {
 	TaskDescription string
 	Message         string
 	Attachments     []session.MessageAttachment
+	References      []session.MessageReference
 	HostProfileRef  string
 	ForkMode        SubAgentForkMode
 	Labels          engine.RunLabels
@@ -131,6 +132,7 @@ type SendSubAgentInputOptions struct {
 	ChildThreadID  string
 	Message        string
 	Attachments    []session.MessageAttachment
+	References     []session.MessageReference
 	Interrupt      bool
 	Labels         engine.RunLabels
 }
@@ -145,6 +147,7 @@ type PublishSubAgentPendingToolCompletionOptions struct {
 	Output         string
 	Message        string
 	Attachments    []session.MessageAttachment
+	References     []session.MessageReference
 	Labels         engine.RunLabels
 }
 
@@ -303,6 +306,7 @@ type SubAgentDetailMessage struct {
 	Preview     string                            `json:"preview,omitempty"`
 	Content     string                            `json:"content,omitempty"`
 	Attachments []session.MessageAttachment       `json:"attachments,omitempty"`
+	References  []session.MessageReference        `json:"references,omitempty"`
 	Reasoning   string                            `json:"reasoning,omitempty"`
 	Activity    *observation.ActivityPresentation `json:"activity,omitempty"`
 }
@@ -409,7 +413,7 @@ func (h *AgentHarness) SpawnSubAgent(ctx context.Context, opts SpawnSubAgentOpti
 	if childID == "" {
 		return SubAgentSnapshot{}, errors.New("subagent thread id is required")
 	}
-	message := session.Message{Role: session.User, Content: strings.TrimSpace(opts.Message), Attachments: append([]session.MessageAttachment(nil), opts.Attachments...)}
+	message := session.Message{Role: session.User, Content: strings.TrimSpace(opts.Message), Attachments: append([]session.MessageAttachment(nil), opts.Attachments...), References: append([]session.MessageReference(nil), opts.References...)}
 	if message.Content == "" && len(message.Attachments) == 0 {
 		return SubAgentSnapshot{}, errors.New("subagent message or attachments are required")
 	}
@@ -539,7 +543,7 @@ func (h *AgentHarness) SendSubAgentInput(ctx context.Context, opts SendSubAgentI
 	if err != nil {
 		return SubAgentSnapshot{}, err
 	}
-	message := session.Message{Role: session.User, Content: strings.TrimSpace(opts.Message), Attachments: append([]session.MessageAttachment(nil), opts.Attachments...)}
+	message := session.Message{Role: session.User, Content: strings.TrimSpace(opts.Message), Attachments: append([]session.MessageAttachment(nil), opts.Attachments...), References: append([]session.MessageReference(nil), opts.References...)}
 	if message.Content == "" && len(message.Attachments) == 0 {
 		return SubAgentSnapshot{}, errors.New("subagent message or attachments are required")
 	}
@@ -597,7 +601,7 @@ func (h *AgentHarness) PublishSubAgentPendingToolCompletion(ctx context.Context,
 	if strings.TrimSpace(opts.Target.ThreadID) != childID {
 		return SubAgentSnapshot{}, errors.New("subagent pending tool completion target thread identity mismatch")
 	}
-	message := session.Message{Role: session.User, Content: strings.TrimSpace(opts.Message), Attachments: append([]session.MessageAttachment(nil), opts.Attachments...)}
+	message := session.Message{Role: session.User, Content: strings.TrimSpace(opts.Message), Attachments: append([]session.MessageAttachment(nil), opts.Attachments...), References: append([]session.MessageReference(nil), opts.References...)}
 	if message.Content == "" && len(message.Attachments) == 0 {
 		return SubAgentSnapshot{}, errors.New("subagent pending tool completion requires message or attachments")
 	}
@@ -1058,6 +1062,43 @@ func (h *AgentHarness) ListThreadDetailEvents(ctx context.Context, opts ListThre
 		RetainedFrom: retainedFrom,
 		GeneratedAt:  h.now(),
 	}, nil
+}
+
+func (h *AgentHarness) detailEventsForCanonicalEntries(entries []sessiontree.Entry, includeRaw bool) []SubAgentDetailEvent {
+	activityContext := subAgentDetailActivityContext{
+		resultCallIDs: subAgentDetailResultCallIDs(entries),
+		runIDs:        subAgentDetailTurnRunIDs(entries),
+	}
+	events := make([]SubAgentDetailEvent, 0, len(entries))
+	for index, entry := range entries {
+		event, ok := h.subAgentDetailEvent(entry, int64(index+1), includeRaw, activityContext)
+		if ok {
+			events = append(events, event)
+		}
+	}
+	return events
+}
+
+func (h *AgentHarness) ReadTurnDetailEvents(ctx context.Context, threadID, turnID, runID string, includeRaw bool) (ThreadDetailEvents, bool, error) {
+	if h == nil || h.options.Repo == nil {
+		return ThreadDetailEvents{}, false, errors.New("agent harness is not initialized")
+	}
+	threadID = strings.TrimSpace(threadID)
+	turnID = strings.TrimSpace(turnID)
+	runID = strings.TrimSpace(runID)
+	canonical, ok := h.options.Repo.(sessiontree.CanonicalTurnRepo)
+	if !ok {
+		return ThreadDetailEvents{}, false, errors.New("session tree repo does not support canonical turn reads")
+	}
+	entries, found, err := canonical.CanonicalTurnEntries(ctx, threadID, turnID, runID)
+	if err != nil {
+		return ThreadDetailEvents{}, found, err
+	}
+	if !found {
+		return ThreadDetailEvents{}, false, nil
+	}
+	events := h.detailEventsForCanonicalEntries(entries, includeRaw)
+	return ThreadDetailEvents{Events: events, NextOrdinal: int64(len(events)), RetainedFrom: 1, GeneratedAt: h.now()}, true, nil
 }
 
 // ReadLatestThreadDetailEvents reads only the active-path entries required to
@@ -1773,7 +1814,7 @@ func subAgentDetailApproval(metadata map[string]string) *SubAgentDetailApproval 
 
 func subAgentDetailMessage(msg session.Message, includeRaw bool) *SubAgentDetailMessage {
 	activity := observationActivityPresentation(msg.Activity)
-	if msg.Role == "" && msg.Kind == "" && msg.Content == "" && len(msg.Attachments) == 0 && msg.Reasoning == "" && activity == nil {
+	if msg.Role == "" && msg.Kind == "" && msg.Content == "" && len(msg.Attachments) == 0 && len(msg.References) == 0 && msg.Reasoning == "" && activity == nil {
 		return nil
 	}
 	out := &SubAgentDetailMessage{
@@ -1781,6 +1822,7 @@ func subAgentDetailMessage(msg session.Message, includeRaw bool) *SubAgentDetail
 		Kind:        string(msg.Kind),
 		Preview:     safeSubAgentDetailPreview(msg.Content, 500),
 		Attachments: append([]session.MessageAttachment(nil), msg.Attachments...),
+		References:  append([]session.MessageReference(nil), msg.References...),
 		Activity:    activity,
 	}
 	if includeRaw {

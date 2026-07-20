@@ -306,7 +306,7 @@ func (r *MemoryRepo) FinishCompaction(_ context.Context, req FinishCompactionReq
 		committed.CreatedAt = now
 		committed.Raw = rawForEntry(committed)
 		committed.RawHash = stableHash(committed.Raw)
-		r.entries[meta.ID] = append(r.entries[meta.ID], cloneEntry(committed))
+		r.appendIndexedEntriesLocked(meta.ID, committed)
 		meta.LeafID = committed.ID
 		meta.UpdatedAt = now
 		r.threads[meta.ID] = meta

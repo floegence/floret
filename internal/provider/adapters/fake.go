@@ -11,7 +11,10 @@ type FakeProvider struct {
 	Response string
 }
 
-func (p FakeProvider) Stream(context.Context, provider.Request) (<-chan provider.StreamEvent, error) {
+func (p FakeProvider) Stream(_ context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
+	if _, err := provider.MessagesWithEphemeralUser(req.Messages, req.EphemeralUser); err != nil {
+		return nil, err
+	}
 	response := p.Response
 	if response == "" {
 		response = "ok"

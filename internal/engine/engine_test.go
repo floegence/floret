@@ -324,6 +324,119 @@ func TestRunTurnUsesCallerSuppliedHistoryWithoutAppendingUserText(t *testing.T) 
 	}
 }
 
+func TestSupplementalContextIsEphemeralProviderOverlay(t *testing.T) {
+	const sentinel = "SUPPLEMENTAL-SECRET-7f8b"
+	rec := &event.Recorder{}
+	p := harness.NewScriptedProvider(harness.Step(harness.Text("done"), harness.Done()))
+	promptStore := cache.NewMemoryStore()
+	e := newTestEngine(p, rec)
+	e.Prompt = promptStore
+	result := e.RunTurn(context.Background(), engine.RunInput{
+		RunID: "run-supplemental", ThreadID: "thread", TurnID: "turn", PromptScopeID: "thread",
+		History: []session.Message{{
+			Role: session.User, EntryID: "user-reference-only",
+			References: []session.MessageReference{{ReferenceID: "context:0", Kind: session.MessageReferenceText, Label: "quote", Text: "public display"}},
+		}},
+		SupplementalContext: []engine.TurnSupplementalContextItem{{Kind: "linked_context", Text: sentinel}},
+	})
+	if result.Status != engine.Completed || result.Err != nil {
+		t.Fatalf("result=%#v", result)
+	}
+	if len(p.Requests) != 1 {
+		t.Fatalf("provider requests=%d, want 1", len(p.Requests))
+	}
+	visible := 0
+	for _, message := range p.Requests[0].Messages {
+		if strings.Contains(message.Content, sentinel) {
+			visible++
+			if message.EntryID != "" || len(message.References) != 0 || len(message.Attachments) != 0 {
+				t.Fatalf("ephemeral provider message has durable identity: %#v", message)
+			}
+		}
+	}
+	if visible != 1 {
+		t.Fatalf("provider saw supplemental %d times in %#v", visible, p.Requests[0].Messages)
+	}
+	assertJSONExcludesString(t, "raw plan", p.Requests[0].RawPlan, sentinel)
+	segments, err := promptStore.Segments(context.Background(), p.Requests[0].PromptScopeID, p.Requests[0].Provider, p.Requests[0].Model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJSONExcludesString(t, "prompt segments", segments, sentinel)
+	requests, err := promptStore.ProviderRequests(context.Background(), "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	responses, err := promptStore.ProviderResponses(context.Background(), "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 0 || len(responses) != 0 {
+		t.Fatalf("supplemental request entered durable provider ledger: requests=%#v responses=%#v", requests, responses)
+	}
+	assertJSONExcludesString(t, "result messages", result.Messages, sentinel)
+	assertJSONExcludesString(t, "events", rec.Snapshot(), sentinel)
+}
+
+func TestSupplementalContextFencesProviderContinuationState(t *testing.T) {
+	previous := &provider.State{Kind: "responses", ID: "state-before"}
+	secret := &provider.State{Kind: "responses", ID: "state-from-supplemental"}
+	p := harness.NewScriptedProvider(harness.Step(
+		harness.Text("done"),
+		provider.StreamEvent{Type: provider.Done, Reason: "stop", ResponseState: secret},
+	))
+	e := newTestEngine(p, &event.Recorder{})
+	result := e.RunTurn(context.Background(), engine.RunInput{
+		RunID: "run-state-fence", ThreadID: "thread", TurnID: "turn", PromptScopeID: "thread",
+		PreviousProviderState: previous,
+		History:               []session.Message{{Role: session.User, Content: "inspect", EntryID: "user-turn"}},
+		SupplementalContext:   []engine.TurnSupplementalContextItem{{Kind: "linked_context", Text: "private context"}},
+	})
+	if result.Status != engine.Completed || result.Err != nil {
+		t.Fatalf("result=%#v", result)
+	}
+	if len(p.Requests) != 1 || p.Requests[0].PreviousState != nil {
+		t.Fatalf("supplemental request reused provider state: %#v", p.Requests)
+	}
+	if result.ProviderState != nil || result.ProviderStateFresh {
+		t.Fatalf("supplemental result exposed continuation state: state=%#v fresh=%t", result.ProviderState, result.ProviderStateFresh)
+	}
+}
+
+func TestSupplementalContextRejectsCachePolicyReenabledByNormalizer(t *testing.T) {
+	p := &hashingProvider{
+		ScriptedProvider: harness.NewScriptedProvider(harness.Step(harness.Text("must not run"), harness.Done())),
+		cache: cache.CachePolicy{
+			Enabled:            true,
+			Retention:          cache.RetentionInMemory,
+			PreferContinuation: true,
+		},
+	}
+	e := newTestEngine(p, &event.Recorder{})
+	result := e.RunTurn(context.Background(), engine.RunInput{
+		RunID: "run-cache-fence", ThreadID: "thread", TurnID: "turn", PromptScopeID: "thread",
+		History:             []session.Message{{Role: session.User, Content: "inspect", EntryID: "user-turn"}},
+		SupplementalContext: []engine.TurnSupplementalContextItem{{Kind: "linked_context", Text: "private context"}},
+	})
+	if result.Status != engine.Failed || result.Err == nil || !strings.Contains(result.Err.Error(), "supplemental context cache fence") {
+		t.Fatalf("result=%#v, want cache fence failure", result)
+	}
+	if len(p.Requests) != 0 {
+		t.Fatalf("provider received fenced request: %#v", p.Requests)
+	}
+}
+
+func assertJSONExcludesString(t *testing.T, name string, value any, forbidden string) {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal %s: %v", name, err)
+	}
+	if strings.Contains(string(raw), forbidden) {
+		t.Fatalf("%s contains %q: %s", name, forbidden, raw)
+	}
+}
+
 func TestRunTurnConcurrentSameEngineIsolatesTurnState(t *testing.T) {
 	p := newBarrierProvider(2)
 	e := newTestEngine(p, &event.Recorder{})

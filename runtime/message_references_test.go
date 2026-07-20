@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -27,10 +28,29 @@ func canonicalReferenceFixture() []MessageReference {
 		},
 		{
 			ReferenceID: "context:turn-1:1",
-			Kind:        MessageReferenceResource,
+			Kind:        MessageReferenceFile,
 			Label:       "config.yaml",
 			Text:        "/workspace/config.yaml",
 			ResourceRef: "host-resource:v1:config",
+		},
+		{
+			ReferenceID: "context:turn-1:2",
+			Kind:        MessageReferenceDirectory,
+			Label:       "workspace",
+			Text:        "/workspace",
+			ResourceRef: "host-resource:v1:workspace",
+		},
+		{
+			ReferenceID: "context:turn-1:3",
+			Kind:        MessageReferenceTerminal,
+			Label:       "Terminal selection",
+			Text:        "service ready\nlistening on :8080",
+		},
+		{
+			ReferenceID: "context:turn-1:4",
+			Kind:        MessageReferenceProcess,
+			Label:       "Process snapshot",
+			Text:        "server pid 42 running",
 		},
 	}
 }
@@ -66,8 +86,11 @@ func TestTurnInputValidatesClosedMessageReferenceUnionAndLimits(t *testing.T) {
 		}},
 		{name: "blank label", refs: []MessageReference{{ReferenceID: "ref", Kind: MessageReferenceText, Text: "text"}}},
 		{name: "text with resource", refs: []MessageReference{{ReferenceID: "ref", Kind: MessageReferenceText, Label: "label", Text: "text", ResourceRef: "resource"}}},
-		{name: "resource without ref", refs: []MessageReference{{ReferenceID: "ref", Kind: MessageReferenceResource, Label: "label"}}},
-		{name: "truncated without text", refs: []MessageReference{{ReferenceID: "ref", Kind: MessageReferenceResource, Label: "label", ResourceRef: "resource", Truncated: true}}},
+		{name: "terminal with resource", refs: []MessageReference{{ReferenceID: "ref", Kind: MessageReferenceTerminal, Label: "label", Text: "text", ResourceRef: "resource"}}},
+		{name: "process with resource", refs: []MessageReference{{ReferenceID: "ref", Kind: MessageReferenceProcess, Label: "label", Text: "text", ResourceRef: "resource"}}},
+		{name: "file without ref", refs: []MessageReference{{ReferenceID: "ref", Kind: MessageReferenceFile, Label: "label"}}},
+		{name: "directory without ref", refs: []MessageReference{{ReferenceID: "ref", Kind: MessageReferenceDirectory, Label: "label"}}},
+		{name: "truncated without text", refs: []MessageReference{{ReferenceID: "ref", Kind: MessageReferenceFile, Label: "label", ResourceRef: "resource", Truncated: true}}},
 		{name: "invalid utf8", refs: []MessageReference{{ReferenceID: "ref", Kind: MessageReferenceText, Label: "label", Text: string([]byte{0xff})}}},
 		{name: "too many", refs: func() []MessageReference {
 			out := make([]MessageReference, MaxMessageReferencesPerTurn+1)
@@ -86,8 +109,8 @@ func TestTurnInputValidatesClosedMessageReferenceUnionAndLimits(t *testing.T) {
 	}
 
 	duplicates := []MessageReference{
-		{ReferenceID: "ref-1", Kind: MessageReferenceResource, Label: "first", ResourceRef: "same"},
-		{ReferenceID: "ref-2", Kind: MessageReferenceResource, Label: "second", ResourceRef: "same"},
+		{ReferenceID: "ref-1", Kind: MessageReferenceFile, Label: "first", ResourceRef: "same"},
+		{ReferenceID: "ref-2", Kind: MessageReferenceFile, Label: "second", ResourceRef: "same"},
 	}
 	if err := (TurnInput{References: duplicates}).Validate(); err != nil {
 		t.Fatalf("duplicate opaque resource refs should preserve user order: %v", err)
@@ -100,7 +123,7 @@ func TestMessageReferenceResourceRefSupportsSelfContainedLocatorBoundary(t *test
 		t.Fatalf("resource ref limit = %d, want %d", MaxMessageReferenceResourceRefBytes, locatorLimit)
 	}
 	valid := MessageReference{
-		ReferenceID: "context:0", Kind: MessageReferenceResource, Label: "max path",
+		ReferenceID: "context:0", Kind: MessageReferenceFile, Label: "max path",
 		ResourceRef: strings.Repeat("x", locatorLimit),
 	}
 	if err := valid.Validate(); err != nil {
@@ -290,6 +313,19 @@ func TestHostRunTurnReplayStartsProviderOnce(t *testing.T) {
 	if !replayedRunning.Replayed || replayedRunning.Status != TurnStatusRunning || calls.Load() != 1 {
 		t.Fatalf("running replay=%#v provider calls=%d", replayedRunning, calls.Load())
 	}
+	for name, supplemental := range map[string][]TurnSupplementalContextItem{
+		"missing": nil,
+		"invalid": {{Kind: "invalid", Text: string([]byte{0xff})}},
+	} {
+		t.Run("running "+name, func(t *testing.T) {
+			replay := request
+			replay.SupplementalContext = supplemental
+			result, err := newHost().RunTurn(ctx, replay)
+			if err != nil || !result.Replayed || result.Status != TurnStatusRunning || calls.Load() != 1 {
+				t.Fatalf("running replay=%#v err=%v provider calls=%d", result, err, calls.Load())
+			}
+		})
+	}
 	close(release)
 	select {
 	case err := <-firstDone:
@@ -308,6 +344,76 @@ func TestHostRunTurnReplayStartsProviderOnce(t *testing.T) {
 	}
 	if !replayedTerminal.Replayed || replayedTerminal.Status != TurnStatusCompleted || replayedTerminal.Output != "done" || calls.Load() != 1 {
 		t.Fatalf("terminal replay=%#v provider calls=%d", replayedTerminal, calls.Load())
+	}
+	for name, supplemental := range map[string][]TurnSupplementalContextItem{
+		"missing": nil,
+		"invalid": {{Kind: "invalid", Text: string([]byte{0xff})}},
+	} {
+		t.Run("terminal "+name, func(t *testing.T) {
+			replay := request
+			replay.SupplementalContext = supplemental
+			result, err := newHost().RunTurn(ctx, replay)
+			if err != nil || !result.Replayed || result.Status != TurnStatusCompleted || result.Output != "done" || calls.Load() != 1 {
+				t.Fatalf("terminal replay=%#v err=%v provider calls=%d", result, err, calls.Load())
+			}
+		})
+	}
+}
+
+func TestHostReferenceReplayAfterRetryUsesExactTerminalBranch(t *testing.T) {
+	ctx := context.Background()
+	var calls atomic.Int64
+	host, err := newTestHost(t, providerHostOptions{
+		Config: runtimeGatewayConfig("exact reference replay"),
+		ModelGateway: runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+			index := calls.Add(1)
+			return runtimeGatewayEvents(map[int64]string{1: "original answer", 2: "retry answer"}[index]), nil
+		}),
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                NewMemoryStore(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	request := RunTurnRequest{
+		ThreadID: "thread", TurnID: "turn-original", RunID: "run-original",
+		Input: TurnInput{References: canonicalReferenceFixture()}, SupplementalContext: renderableSupplementalFixture(),
+	}
+	original, err := host.RunTurn(ctx, request)
+	if err != nil || original.Status != TurnStatusCompleted || original.Output != "original answer" {
+		t.Fatalf("original=%#v err=%v", original, err)
+	}
+	retried, err := host.RetryTurn(ctx, RetryTurnRequest{ThreadID: "thread", Reason: "verify"})
+	if err != nil || retried.Status != TurnStatusCompleted || retried.Output != "retry answer" {
+		t.Fatalf("retry=%#v err=%v", retried, err)
+	}
+	replayRequest := request
+	replayRequest.SupplementalContext = []TurnSupplementalContextItem{{Kind: "different", Text: "ignored replay context"}}
+	replayed, err := host.RunTurn(ctx, replayRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replayed.Replayed || replayed.Status != TurnStatusCompleted || replayed.Output != "original answer" || calls.Load() != 2 {
+		t.Fatalf("replay=%#v provider calls=%d", replayed, calls.Load())
+	}
+	if replayed.ProjectionAvailability != TurnProjectionAvailabilityReady || replayed.Projection == nil || replayed.Projection.Status != TurnStatusCompleted {
+		t.Fatalf("exact replay projection=%#v availability=%q", replayed.Projection, replayed.ProjectionAvailability)
+	}
+	readProjection, err := host.ReadTurnProjection(ctx, ReadTurnProjectionRequest{ThreadID: "thread", TurnID: "turn-original", RunID: "run-original"})
+	if err != nil || readProjection.Status != TurnStatusCompleted {
+		t.Fatalf("exact read projection=%#v err=%v", readProjection, err)
+	}
+	conflict := request
+	conflict.Input.References = append([]MessageReference(nil), request.Input.References...)
+	conflict.Input.References[0].Text = "changed canonical reference"
+	if _, err := host.RunTurn(ctx, conflict); !errors.Is(err, sessiontree.ErrRequestConflict) {
+		t.Fatalf("changed references replay error=%v, want request conflict", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("conflicting replay called provider %d times", calls.Load())
 	}
 }
 

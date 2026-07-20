@@ -183,6 +183,7 @@ type RunOptions struct {
 	ToolSurfaceProvider      engine.ToolSurfaceProvider
 	SupplementalContext      []engine.TurnSupplementalContextItem
 	Attachments              []session.MessageAttachment
+	References               []session.MessageReference
 	Sink                     event.Sink
 }
 
@@ -293,6 +294,7 @@ type ThreadMessage struct {
 	Role        session.Role                `json:"role"`
 	Content     string                      `json:"content"`
 	Attachments []session.MessageAttachment `json:"attachments,omitempty"`
+	References  []session.MessageReference  `json:"references,omitempty"`
 	TurnID      string                      `json:"turn_id,omitempty"`
 	CreatedAt   time.Time                   `json:"created_at"`
 }
@@ -320,6 +322,7 @@ type TurnResult struct {
 	FinishInferred     bool
 	ControlSignal      *engine.ControlSignal
 	PendingApprovals   []PendingApproval
+	CanonicalEvents    []SubAgentDetailEvent
 	Replayed           bool
 	AdmissionRunning   bool
 }
@@ -917,6 +920,7 @@ func (t *Thread) startLeaseRenewal(ctx context.Context, initial sessiontree.Turn
 		return nil, nil, err
 	}
 	runCtx, cancelRun := context.WithCancel(ctx)
+	renewalCtx, cancelRenewal := context.WithCancel(context.WithoutCancel(ctx))
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	var renewalMu sync.Mutex
@@ -930,7 +934,7 @@ func (t *Thread) startLeaseRenewal(ctx context.Context, initial sessiontree.Turn
 			select {
 			case <-stop:
 				return
-			case <-runCtx.Done():
+			case <-renewalCtx.Done():
 				return
 			case <-ticker.C:
 				t.authorityMu.RLock()
@@ -938,7 +942,7 @@ func (t *Thread) startLeaseRenewal(ctx context.Context, initial sessiontree.Turn
 					t.authorityMu.RUnlock()
 					return
 				}
-				renewed, err := repo.RenewTurnLease(runCtx, proof)
+				renewed, err := repo.RenewTurnLease(renewalCtx, proof)
 				if err == nil {
 					err = sessiontree.UpdateTurnLeaseContext(runCtx, proof, renewed)
 				}
@@ -960,8 +964,12 @@ func (t *Thread) startLeaseRenewal(ctx context.Context, initial sessiontree.Turn
 	}()
 	var stopOnce sync.Once
 	stopRenewal := func() error {
-		stopOnce.Do(func() { close(stop) })
+		stopOnce.Do(func() {
+			close(stop)
+			cancelRenewal()
+		})
 		<-done
+		cancelRun()
 		renewalMu.Lock()
 		defer renewalMu.Unlock()
 		return renewalErr
@@ -1136,13 +1144,14 @@ func threadMessages(path []sessiontree.Entry) []ThreadMessage {
 	for _, entry := range path {
 		switch entry.Type {
 		case sessiontree.EntryUserMessage, sessiontree.EntryAssistantMessage:
-			if entry.Message.Content == "" && len(entry.Message.Attachments) == 0 {
+			if entry.Message.Content == "" && len(entry.Message.Attachments) == 0 && len(entry.Message.References) == 0 {
 				continue
 			}
 			out = append(out, ThreadMessage{
 				Role:        entry.Message.Role,
 				Content:     entry.Message.Content,
 				Attachments: append([]session.MessageAttachment(nil), entry.Message.Attachments...),
+				References:  append([]session.MessageReference(nil), entry.Message.References...),
 				TurnID:      entry.TurnID,
 				CreatedAt:   entry.CreatedAt,
 			})
@@ -1285,7 +1294,7 @@ func (t *Thread) CompletePendingTool(ctx context.Context, completion PendingTool
 		if !replayed.Replayed {
 			return TurnResult{}, sessiontree.ErrAuthorityCorrupt
 		}
-		return t.pendingToolCompletionReplayResult(ctx, completion.ContinuationTurnID, completion.ContinuationRunID)
+		return t.turnAdmissionReplayResult(ctx, replayed.Admission, completion.ContinuationTurnID, completion.ContinuationRunID)
 	}
 	defer t.leaveTurn()
 	admitted, err := repo.AdmitPendingToolCompletion(ctx, request)
@@ -1294,7 +1303,7 @@ func (t *Thread) CompletePendingTool(ctx context.Context, completion PendingTool
 	}
 	t.harness.cacheThreadAfterCommit(t)
 	if admitted.Replayed {
-		return t.pendingToolCompletionReplayResult(ctx, completion.ContinuationTurnID, completion.ContinuationRunID)
+		return t.turnAdmissionReplayResult(ctx, admitted.Admission, completion.ContinuationTurnID, completion.ContinuationRunID)
 	}
 	lease := admitted.Admission.Lease
 	if err := t.bindActiveLease(lease); err != nil {
@@ -1330,6 +1339,7 @@ func (t *Thread) CompletePendingTool(ctx context.Context, completion PendingTool
 	result, runErr := t.runLeased(runCtx, completion.Input.Content, RunOptions{
 		RunID: completion.ContinuationRunID, TurnID: completion.ContinuationTurnID, Labels: completion.Labels,
 		Attachments:        append([]session.MessageAttachment(nil), completion.Input.Attachments...),
+		References:         append([]session.MessageReference(nil), completion.Input.References...),
 		AdmissionCommitted: true, AdmissionBaseLeafID: admitted.Admission.BaseLeafID,
 	}, nil)
 	if renewalErr := stopRenewal(); renewalErr != nil && runErr == nil {
@@ -1370,48 +1380,47 @@ func (t *Thread) pendingToolCompletionError(err error) error {
 	}
 }
 
-func (t *Thread) pendingToolCompletionReplayResult(ctx context.Context, turnID, runID string) (TurnResult, error) {
-	journal, err := t.Journal(ctx)
+func (t *Thread) turnAdmissionReplayResult(ctx context.Context, admission sessiontree.AdmitTurnResult, turnID, runID string) (TurnResult, error) {
+	result := TurnResult{ID: turnID, RunID: runID, Replayed: true, AdmissionRunning: admission.Terminal == nil}
+	if admission.Terminal == nil {
+		return result, nil
+	}
+	canonical, ok := t.harness.options.Repo.(sessiontree.CanonicalTurnRepo)
+	if !ok {
+		return TurnResult{}, errors.New("session tree repo does not support canonical turn reads")
+	}
+	entries, found, err := canonical.CanonicalTurnEntries(ctx, t.id, turnID, runID)
 	if err != nil {
 		return TurnResult{}, err
 	}
-	started := false
-	result := TurnResult{ID: turnID, RunID: runID, Replayed: true, AdmissionRunning: true}
-	for _, entry := range journal.Path {
-		if entry.TurnID != turnID {
-			continue
-		}
-		switch entry.Type {
-		case sessiontree.EntryTurnMarker:
-			if entry.TurnStatus == sessiontree.TurnStarted {
-				if strings.TrimSpace(entry.Metadata["run_id"]) != runID {
-					return TurnResult{}, sessiontree.ErrAuthorityCorrupt
-				}
-				started = true
-				continue
-			}
-			switch entry.TurnStatus {
-			case sessiontree.TurnCompleted:
-				result.Status, result.AdmissionRunning = engine.Completed, false
-			case sessiontree.TurnWaiting:
-				result.Status, result.AdmissionRunning = engine.Waiting, false
-			case sessiontree.TurnFailed:
-				result.Status, result.AdmissionRunning = engine.Failed, false
-			case sessiontree.TurnAborted:
-				result.Status, result.AdmissionRunning = engine.Cancelled, false
-			}
-		case sessiontree.EntryAssistantMessage:
-			if strings.TrimSpace(entry.Message.Content) != "" {
-				result.Output = entry.Message.Content
-			}
-		case sessiontree.EntryRunFailure:
-			if strings.TrimSpace(entry.Error) != "" {
-				result.Err = errors.New(entry.Error)
-			}
+	if !found {
+		return TurnResult{}, sessiontree.ErrAuthorityCorrupt
+	}
+	result.CanonicalEvents = t.harness.detailEventsForCanonicalEntries(entries, true)
+	var output strings.Builder
+	for _, entry := range entries {
+		if entry.Type == sessiontree.EntryAssistantMessage && strings.TrimSpace(entry.Message.Content) != "" {
+			output.WriteString(entry.Message.Content)
 		}
 	}
-	if !started {
+	result.Output = output.String()
+	switch admission.Terminal.Terminal.TurnStatus {
+	case sessiontree.TurnCompleted:
+		result.Status = engine.Completed
+	case sessiontree.TurnWaiting:
+		result.Status = engine.Waiting
+	case sessiontree.TurnFailed:
+		result.Status = engine.Failed
+	case sessiontree.TurnAborted:
+		result.Status = engine.Cancelled
+	default:
 		return TurnResult{}, sessiontree.ErrAuthorityCorrupt
+	}
+	if admission.Terminal.Failure != nil {
+		if strings.TrimSpace(admission.Terminal.Failure.Error) == "" {
+			return TurnResult{}, sessiontree.ErrAuthorityCorrupt
+		}
+		result.Err = errors.New(admission.Terminal.Failure.Error)
 	}
 	return result, result.Err
 }
@@ -1984,7 +1993,7 @@ func (t *Thread) finishFailedCompaction(ctx context.Context, authority sessiontr
 }
 
 func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retryUser *sessiontree.Entry) (TurnResult, error) {
-	if strings.TrimSpace(input) == "" && len(opts.Attachments) == 0 && retryUser == nil {
+	if strings.TrimSpace(input) == "" && len(opts.Attachments) == 0 && len(opts.References) == 0 && retryUser == nil {
 		return TurnResult{}, errors.New("input is required")
 	}
 	if err := t.enterTurn(); err != nil {
@@ -2003,15 +2012,37 @@ func (t *Thread) runEntered(ctx context.Context, input string, opts RunOptions, 
 	if runID == "" {
 		runID = t.harness.nextID("run")
 	}
+	authority, ok := t.harness.options.Repo.(sessiontree.TurnAuthorityRepo)
+	if !ok {
+		return TurnResult{}, errors.New("session tree repo does not support atomic turn admission")
+	}
+	_, existingAdmission, err := authority.ReadTurnAdmission(ctx, t.id, turnID, runID)
+	if err != nil {
+		return TurnResult{}, err
+	}
+	if !existingAdmission {
+		normalized, err := engine.NormalizeAndValidateTurnSupplementalContext(opts.SupplementalContext)
+		if err != nil {
+			return TurnResult{}, err
+		}
+		opts.SupplementalContext = normalized
+		if strings.TrimSpace(input) == "" && len(opts.Attachments) == 0 && len(opts.References) > 0 && len(normalized) == 0 {
+			return TurnResult{}, errors.New("reference-only turn input requires renderable supplemental context")
+		}
+	}
 	message := session.Message{
 		Role: session.User, Content: input,
 		Attachments: append([]session.MessageAttachment(nil), opts.Attachments...),
+		References:  append([]session.MessageReference(nil), opts.References...),
 	}
 	admission, err := t.harness.admitTurn(ctx, sessiontree.AdmitTurnRequest{
 		ThreadID: t.id, TurnID: turnID, RunID: runID, OwnerID: t.harness.nextID("lease"), Input: message,
 	})
 	if err != nil {
 		return TurnResult{}, err
+	}
+	if admission.Replayed {
+		return t.turnAdmissionReplayResult(ctx, admission, turnID, runID)
 	}
 	t.harness.cacheThreadAfterCommit(t)
 	lease := admission.Lease
@@ -3457,22 +3488,23 @@ func (m *durableCompactionManager) Compact(ctx context.Context, req engine.Compa
 		compactionID = "compaction-" + hash[:24]
 	}
 	prep, err := compaction.Prepare(ctx, compaction.Request{
-		CompactionID:         compactionID,
-		OperationID:          req.OperationID,
-		RequestID:            req.RequestID,
-		Source:               req.Source,
-		PreviousCompactionID: req.PreviousCompactionID,
-		PreviousGeneration:   req.PreviousGeneration,
-		PreviousWindowID:     req.PreviousWindowID,
-		PreviousSummary:      req.PreviousSummary,
-		History:              req.History,
-		Policy:               req.Policy,
-		Trigger:              req.Trigger,
-		Reason:               req.Reason,
-		Phase:                req.Phase,
-		Step:                 req.Step,
-		Details:              req.Details,
-		Now:                  m.thread.harness.now(),
+		CompactionID:              compactionID,
+		SupplementalAnchorEntryID: req.SupplementalAnchorEntryID,
+		OperationID:               req.OperationID,
+		RequestID:                 req.RequestID,
+		Source:                    req.Source,
+		PreviousCompactionID:      req.PreviousCompactionID,
+		PreviousGeneration:        req.PreviousGeneration,
+		PreviousWindowID:          req.PreviousWindowID,
+		PreviousSummary:           req.PreviousSummary,
+		History:                   req.History,
+		Policy:                    req.Policy,
+		Trigger:                   req.Trigger,
+		Reason:                    req.Reason,
+		Phase:                     req.Phase,
+		Step:                      req.Step,
+		Details:                   req.Details,
+		Now:                       m.thread.harness.now(),
 	}, generator)
 	if err != nil {
 		return compaction.Result{}, nil, err

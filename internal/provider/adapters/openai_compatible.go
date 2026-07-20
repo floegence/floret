@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -441,6 +442,22 @@ func (p OpenAICompatibleProvider) contextChatRequest(req provider.Request) (chat
 		if err != nil {
 			return chatRequest{}, err
 		}
+	}
+	if req.EphemeralUser != nil {
+		insertAt, err := provider.EphemeralUserMessageIndex(req.Messages, req.EphemeralUser)
+		if err != nil {
+			return chatRequest{}, err
+		}
+		if len(renderedMessages) != len(req.Messages) {
+			return chatRequest{}, errors.New("openai-compatible raw messages do not match canonical message count")
+		}
+		ephemeral := renderMessages([]session.Message{req.EphemeralUser.Message})
+		if len(ephemeral) != 1 {
+			return chatRequest{}, errors.New("openai-compatible ephemeral user message did not render exactly once")
+		}
+		renderedMessages = append(renderedMessages, chatMessage{})
+		copy(renderedMessages[insertAt+1:], renderedMessages[insertAt:])
+		renderedMessages[insertAt] = ephemeral[0]
 	}
 	renderedMessages = mergeAdjacentAssistantToolCalls(renderedMessages)
 	renderedMessages = normalizeChatToolResults(renderedMessages)

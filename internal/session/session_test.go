@@ -40,7 +40,7 @@ func TestCloneMessageDeepCopiesReferences(t *testing.T) {
 		Role: User,
 		References: []MessageReference{{
 			ReferenceID: "context:turn-1:0",
-			Kind:        MessageReferenceResource,
+			Kind:        MessageReferenceFile,
 			Label:       "config.yaml",
 			Text:        "/workspace/config.yaml",
 			ResourceRef: "host-resource:v1:config",

@@ -199,8 +199,151 @@ func TestSQLiteStoreMigratesExactEmptySchemaVersion13(t *testing.T) {
 	if err := store.db.QueryRow(`SELECT value FROM schema_meta WHERE key = 'schema_fingerprint'`).Scan(&fingerprint); err != nil {
 		t.Fatal(err)
 	}
-	if fingerprint != schemaFingerprintVersion14 {
-		t.Fatalf("schema fingerprint = %q, want %q", fingerprint, schemaFingerprintVersion14)
+	if fingerprint != schemaFingerprintVersion15 {
+		t.Fatalf("schema fingerprint = %q, want %q", fingerprint, schemaFingerprintVersion15)
+	}
+}
+
+func TestSQLiteStoreMigratesNonEmptySchemaVersion14CanonicalTurnIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v14-non-empty.db")
+	createSchemaVersion14StoreForTest(t, path, func(db *sql.DB) {
+		seedSchemaVersion14CanonicalTurn(t, db, false)
+	})
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open migrated v14 store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	version, err := store.SchemaVersion(context.Background())
+	if err != nil || version != schemaVersion {
+		t.Fatalf("schema version=%q err=%v, want %q", version, err, schemaVersion)
+	}
+	entries, found, err := store.CanonicalTurnEntries(context.Background(), "thread", "turn", "run")
+	if err != nil || !found || len(entries) != 1 || entries[0].ID != "started" {
+		t.Fatalf("migrated canonical turn entries=%#v found=%v err=%v", entries, found, err)
+	}
+	assertSQLiteIndexExists(t, store.db, "entries_turn_ordinal_idx")
+	assertSQLiteIndexExists(t, store.db, "entries_started_turn_unique_idx")
+}
+
+func TestSQLiteStoreRejectsCorruptVersion14DuplicateStartedAtomically(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v14-duplicate-started.db")
+	createSchemaVersion14StoreForTest(t, path, func(db *sql.DB) {
+		seedSchemaVersion14CanonicalTurn(t, db, true)
+	})
+
+	if _, err := Open(path); err == nil {
+		t.Fatal("Open corrupt v14 store succeeded")
+	}
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var version string
+	if err := db.QueryRow(`SELECT value FROM schema_meta WHERE key = 'schema_version'`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != schemaVersion14 {
+		t.Fatalf("failed migration version=%q, want unchanged %q", version, schemaVersion14)
+	}
+	var indexes int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN ('entries_turn_ordinal_idx', 'entries_started_turn_unique_idx')`).Scan(&indexes); err != nil {
+		t.Fatal(err)
+	}
+	if indexes != 0 {
+		t.Fatalf("failed migration left %d canonical turn indexes", indexes)
+	}
+}
+
+func TestSQLiteCanonicalTurnQueryUsesTurnOrdinalIndex(t *testing.T) {
+	store, _ := openSQLiteStoreForTest(t)
+	rows, err := store.db.Query(`EXPLAIN QUERY PLAN SELECT `+entryColumns+` FROM entries
+		WHERE thread_id = ? AND turn_id = ? ORDER BY ordinal`, "thread", "turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var details []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		details = append(details, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	plan := strings.Join(details, "\n")
+	if !strings.Contains(plan, "entries_turn_ordinal_idx") || strings.Contains(plan, "SCAN entries") {
+		t.Fatalf("canonical turn query plan = %q", plan)
+	}
+}
+
+func createSchemaVersion14StoreForTest(t *testing.T, path string, seed func(*sql.DB)) {
+	t.Helper()
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(schemaVersion14SQL); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO schema_meta(key, value) VALUES
+		('schema_version', ?), ('raw_encoder_version', ?), ('schema_fingerprint', ?)`,
+		schemaVersion14, rawEncoderVersion, schemaFingerprintVersion14); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := persistLeasePolicy(context.Background(), db, sessiontree.DefaultLeasePolicy); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if seed != nil {
+		seed(db)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedSchemaVersion14CanonicalTurn(t *testing.T, db *sql.DB, duplicate bool) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO threads(id, leaf_id, created_at, updated_at) VALUES('thread', 'started', '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	started := sessiontree.PrepareEntry(sessiontree.Entry{
+		ThreadID: "thread", ID: "started", Type: sessiontree.EntryTurnMarker, TurnID: "turn",
+		TurnStatus: sessiontree.TurnStarted, Metadata: map[string]string{"run_id": "run"},
+	})
+	if _, err := db.Exec(`INSERT INTO entries(thread_id, id, ordinal, type, turn_id, created_at, raw, raw_hash, turn_status, metadata_json)
+		VALUES('thread', 'started', 1, 'turn_marker', 'turn', '2026-07-20T00:00:00Z', ?, ?, 'started', '{"run_id":"run"}')`, started.Raw, started.RawHash); err != nil {
+		t.Fatal(err)
+	}
+	if duplicate {
+		other := sessiontree.PrepareEntry(sessiontree.Entry{
+			ThreadID: "thread", ID: "duplicate", ParentID: "started", Type: sessiontree.EntryTurnMarker, TurnID: "turn",
+			TurnStatus: sessiontree.TurnStarted, Metadata: map[string]string{"run_id": "other"},
+		})
+		if _, err := db.Exec(`INSERT INTO entries(thread_id, id, ordinal, parent_id, type, turn_id, created_at, raw, raw_hash, turn_status, metadata_json)
+			VALUES('thread', 'duplicate', 2, 'started', 'turn_marker', 'turn', '2026-07-20T00:00:01Z', ?, ?, 'started', '{"run_id":"other"}')`, other.Raw, other.RawHash); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func assertSQLiteIndexExists(t *testing.T, db *sql.DB, name string) {
+	t.Helper()
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, name).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("index %q count=%d, want 1", name, count)
 	}
 }
 
@@ -320,7 +463,8 @@ func TestSQLiteStoreRejectsUnsupportedSchemaShapesWithoutChanges(t *testing.T) {
 		{name: "old version", version: "12", fingerprint: "old"},
 		{name: "unknown version", version: "999", fingerprint: "unknown"},
 		{name: "alternate v13", version: schemaVersion13, fingerprint: "alternate-v13"},
-		{name: "alternate v14", version: schemaVersion, fingerprint: "alternate-v14"},
+		{name: "alternate v14", version: schemaVersion14, fingerprint: "alternate-v14"},
+		{name: "alternate v15", version: schemaVersion, fingerprint: "alternate-v15"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "unsupported.db")
@@ -368,8 +512,8 @@ func TestSQLiteStoreRejectsUnsupportedSchemaShapesWithoutChanges(t *testing.T) {
 }
 
 func TestSQLiteStoreCanonicalFingerprintIsFrozen(t *testing.T) {
-	if got := computedCanonicalSchemaFingerprint(); got != schemaFingerprintVersion14 {
-		t.Fatalf("schemaFingerprintVersion14 = %q, want computed %q", schemaFingerprintVersion14, got)
+	if got := computedCanonicalSchemaFingerprint(); got != schemaFingerprintVersion15 {
+		t.Fatalf("schemaFingerprintVersion15 = %q, want computed %q", schemaFingerprintVersion15, got)
 	}
 }
 

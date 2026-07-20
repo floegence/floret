@@ -571,6 +571,18 @@ func appendWithRunner(ctx context.Context, tx sqlRunner, entry sessiontree.Entry
 	if err := validateSQLiteTurnLeaseMutation(ctx, entry.ThreadID, entry.TurnID, activeLease, now().UTC()); err != nil {
 		return sessiontree.Entry{}, err
 	}
+	if err := sessiontree.ValidateEntryMessageReferences(entry); err != nil {
+		return sessiontree.Entry{}, err
+	}
+	if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnStarted {
+		exists, err := turnStartedExists(ctx, tx, entry.ThreadID, entry.TurnID)
+		if err != nil {
+			return sessiontree.Entry{}, err
+		}
+		if exists {
+			return sessiontree.Entry{}, sessiontree.ErrRequestConflict
+		}
+	}
 	if opts.ParentID != "" {
 		entry.ParentID = opts.ParentID
 	} else if entry.ParentID == "" {
@@ -634,6 +646,52 @@ func (s *Store) Entries(ctx context.Context, threadID string) ([]sessiontree.Ent
 		return nil, err
 	}
 	return loadEntries(ctx, s.db, threadID)
+}
+
+func (s *Store) CanonicalTurnEntries(ctx context.Context, threadID, turnID, runID string) ([]sessiontree.Entry, bool, error) {
+	threadID = strings.TrimSpace(threadID)
+	turnID = strings.TrimSpace(turnID)
+	runID = strings.TrimSpace(runID)
+	var entries []sessiontree.Entry
+	found := false
+	err := s.withRead(ctx, func(q sqlRunner) error {
+		if _, err := loadThread(ctx, q, threadID); err != nil {
+			if errors.Is(err, sessiontree.ErrThreadNotFound) {
+				if _, tombstoneErr := loadThreadTombstone(ctx, q, threadID); tombstoneErr == nil {
+					return sessiontree.ErrThreadDeleted
+				} else if !errors.Is(tombstoneErr, sql.ErrNoRows) {
+					return tombstoneErr
+				}
+			}
+			return err
+		}
+		rows, err := q.QueryContext(ctx, `SELECT `+entryColumns+` FROM entries
+			WHERE thread_id = ? AND turn_id = ? ORDER BY ordinal`, threadID, turnID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			entry, err := scanEntry(rows)
+			if err != nil {
+				return err
+			}
+			found = true
+			if err := sessiontree.ValidateEntryIntegrity(entry); err != nil {
+				return err
+			}
+			entries = append(entries, entry)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if len(entries) == 0 {
+			return nil
+		}
+		entries = sessiontree.CanonicalTurnEntriesForRead(entries)
+		return sessiontree.ValidateCanonicalTurnEntries(entries, threadID, turnID, runID)
+	})
+	return entries, found, err
 }
 
 func (s *Store) Path(ctx context.Context, threadID, leafID string) ([]sessiontree.Entry, error) {
@@ -895,6 +953,8 @@ func forkWithRunner(ctx context.Context, tx sqlRunner, opts sessiontree.ForkOpti
 		return sessiontree.ThreadMeta{}, err
 	}
 	oldToNew := map[string]string{"": ""}
+	startedTurnIDs := map[string]struct{}{}
+	startedRunIDs := map[string]struct{}{}
 	for _, entry := range path {
 		next := cloneEntry(entry)
 		nextID, err := nextEntryID(ctx, tx, newID)
@@ -919,6 +979,23 @@ func forkWithRunner(ctx context.Context, tx sqlRunner, opts sessiontree.ForkOpti
 			if err != nil {
 				return sessiontree.ThreadMeta{}, err
 			}
+		}
+		if next.Type == sessiontree.EntryTurnMarker && next.TurnStatus == sessiontree.TurnStarted {
+			turnID := strings.TrimSpace(next.TurnID)
+			runID := strings.TrimSpace(next.Metadata["run_id"])
+			if turnID == "" {
+				return sessiontree.ThreadMeta{}, sessiontree.ErrAuthorityCorrupt
+			}
+			if _, duplicate := startedTurnIDs[turnID]; duplicate {
+				return sessiontree.ThreadMeta{}, sessiontree.ErrAuthorityCorrupt
+			}
+			if runID != "" {
+				if _, duplicate := startedRunIDs[runID]; duplicate {
+					return sessiontree.ThreadMeta{}, sessiontree.ErrAuthorityCorrupt
+				}
+				startedRunIDs[runID] = struct{}{}
+			}
+			startedTurnIDs[turnID] = struct{}{}
 		}
 		next.CreatedAt = now
 		next = sessiontree.PrepareEntry(next)

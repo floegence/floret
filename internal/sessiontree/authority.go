@@ -207,7 +207,7 @@ func (r *MemoryRepo) PublishSubAgent(_ context.Context, req PublishSubAgentReque
 
 func (r *MemoryRepo) rollbackSubAgentPublicationChildLocked(childThreadID string) {
 	delete(r.threads, childThreadID)
-	delete(r.entries, childThreadID)
+	r.deleteIndexedEntriesLocked(childThreadID)
 	delete(r.todos, childThreadID)
 	delete(r.providerStates, childThreadID)
 	delete(r.leases, childThreadID)
@@ -224,7 +224,7 @@ func (r *MemoryRepo) rollbackSubAgentPublicationChildLocked(childThreadID string
 func (r *MemoryRepo) PublishSubAgentInput(_ context.Context, req PublishSubAgentInputRequest) (SubAgentInputRecord, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := validateSubAgentInputRequest(req); err != nil {
+	if err := ValidatePublishSubAgentInputRequest(req); err != nil {
 		return SubAgentInputRecord{}, false, err
 	}
 	parent, ok := r.threads[req.ParentThreadID]
@@ -316,6 +316,9 @@ func (r *MemoryRepo) AdmitSubAgentInput(ctx context.Context, req AdmitSubAgentIn
 	if _, active := r.leases[req.ChildThreadID]; active {
 		return AdmitSubAgentInputResult{}, ErrActiveTurn
 	}
+	if r.hasTurnStartedLocked(req.ChildThreadID, req.TurnID) {
+		return AdmitSubAgentInputResult{}, ErrRequestConflict
+	}
 	inputIndex := -1
 	for index, input := range r.subAgentInputs[req.ChildThreadID] {
 		if input.State == SubAgentInputPending && (inputIndex < 0 || input.Sequence < r.subAgentInputs[req.ChildThreadID][inputIndex].Sequence ||
@@ -353,7 +356,7 @@ func (r *MemoryRepo) AdmitSubAgentInput(ctx context.Context, req AdmitSubAgentIn
 	user.CreatedAt = now
 	user.Raw = rawForEntry(user)
 	user.RawHash = stableHash(user.Raw)
-	r.entries[req.ChildThreadID] = append(r.entries[req.ChildThreadID], cloneEntry(started), cloneEntry(user))
+	r.appendIndexedEntriesLocked(req.ChildThreadID, started, user)
 	child.LeafID = user.ID
 	child.UpdatedAt = now
 	r.threads[req.ChildThreadID] = child
@@ -455,6 +458,9 @@ func validateSubAgentPublicationRequest(req PublishSubAgentRequest) error {
 	if strings.TrimSpace(req.Message.Content) == "" && len(req.Message.Attachments) == 0 {
 		return errors.New("subagent publication requires a message")
 	}
+	if err := session.ValidateMessageReferences(req.Message.References); err != nil {
+		return err
+	}
 	if req.ForkOptions == nil {
 		if !artifact.IsZeroClosure(req.ArtifactClosure) {
 			return ErrRequestConflict
@@ -541,12 +547,15 @@ func (r *MemoryRepo) validateSubAgentPublicationArtifactsLocked(closure artifact
 	return r.validateArtifactForkDestinationLocked(closure)
 }
 
-func validateSubAgentInputRequest(req PublishSubAgentInputRequest) error {
+func ValidatePublishSubAgentInputRequest(req PublishSubAgentInputRequest) error {
 	if strings.TrimSpace(req.InputRequestID) == "" || strings.TrimSpace(req.RequestFingerprint) == "" || strings.TrimSpace(req.ParentThreadID) == "" || strings.TrimSpace(req.ChildThreadID) == "" {
 		return errors.New("subagent input requires request, fingerprint, parent, and child identities")
 	}
 	if strings.TrimSpace(req.Message.Content) == "" && len(req.Message.Attachments) == 0 {
 		return errors.New("subagent input requires a message")
+	}
+	if err := session.ValidateMessageReferences(req.Message.References); err != nil {
+		return err
 	}
 	return nil
 }

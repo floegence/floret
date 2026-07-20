@@ -52,6 +52,9 @@ func ValidatePublishSubAgentPendingToolCompletionRequest(req PublishSubAgentPend
 	if req.Message.Role != session.User || (strings.TrimSpace(req.Message.Content) == "" && len(req.Message.Attachments) == 0) {
 		return errors.New("subagent pending tool completion requires structured user input")
 	}
+	if err := session.ValidateMessageReferences(req.Message.References); err != nil {
+		return err
+	}
 	return validatePendingToolRecoveryRequest(SettlePendingToolRecoveryRequest{
 		Target: req.Target, RequestFingerprint: req.SettlementFingerprint, Settlement: req.Settlement,
 	})
@@ -123,7 +126,7 @@ func (r *MemoryRepo) PublishSubAgentPendingToolCompletion(_ context.Context, req
 		settlement.CreatedAt = now
 		settlement.Raw = rawForEntry(settlement)
 		settlement.RawHash = stableHash(settlement.Raw)
-		r.entries[child.ID] = append(r.entries[child.ID], cloneEntry(settlement))
+		r.appendIndexedEntriesLocked(child.ID, settlement)
 		child.LeafID = settlement.ID
 		child.UpdatedAt = now
 		r.threads[child.ID] = child

@@ -115,11 +115,8 @@ func (s *Store) PublishSubAgent(ctx context.Context, req sessiontree.PublishSubA
 }
 
 func (s *Store) PublishSubAgentInput(ctx context.Context, req sessiontree.PublishSubAgentInputRequest) (sessiontree.SubAgentInputRecord, bool, error) {
-	if strings.TrimSpace(req.InputRequestID) == "" || strings.TrimSpace(req.RequestFingerprint) == "" || strings.TrimSpace(req.ParentThreadID) == "" || strings.TrimSpace(req.ChildThreadID) == "" {
-		return sessiontree.SubAgentInputRecord{}, false, errors.New("subagent input requires request, fingerprint, parent, and child identities")
-	}
-	if strings.TrimSpace(req.Message.Content) == "" && len(req.Message.Attachments) == 0 {
-		return sessiontree.SubAgentInputRecord{}, false, errors.New("subagent input requires a message")
+	if err := sessiontree.ValidatePublishSubAgentInputRequest(req); err != nil {
+		return sessiontree.SubAgentInputRecord{}, false, err
 	}
 	var input sessiontree.SubAgentInputRecord
 	replayed := false

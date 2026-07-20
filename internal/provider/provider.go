@@ -29,6 +29,7 @@ type Request struct {
 	Provider         string
 	Model            string
 	Messages         []session.Message
+	EphemeralUser    *EphemeralUserMessage
 	Tools            []ToolDefinition
 	HostedTools      []HostedToolDefinition
 	RawPlan          cache.RawPlan
@@ -40,6 +41,54 @@ type Request struct {
 	Reasoning        ReasoningSelection
 	PreviousState    *State
 	Labels           RequestLabels
+}
+
+// EphemeralUserMessage is inserted into one provider request in memory. Its
+// index is relative to canonical non-system history and it has no durable ID.
+type EphemeralUserMessage struct {
+	Message         session.Message
+	HistoryInsertAt int
+}
+
+func EphemeralUserMessageIndex(messages []session.Message, ephemeral *EphemeralUserMessage) (int, error) {
+	if ephemeral == nil {
+		return -1, nil
+	}
+	message := ephemeral.Message
+	if message.Role != session.User || strings.TrimSpace(message.Content) == "" || len(message.Attachments) != 0 || len(message.References) != 0 ||
+		strings.TrimSpace(message.EntryID) != "" || strings.TrimSpace(message.ParentEntryID) != "" || message.Kind != "" ||
+		strings.TrimSpace(message.Reasoning) != "" || strings.TrimSpace(message.ToolCallID) != "" || strings.TrimSpace(message.ToolName) != "" || strings.TrimSpace(message.ToolArgs) != "" {
+		return 0, errors.New("ephemeral provider message must be an identity-free user text message")
+	}
+	systemPrefix := 0
+	for systemPrefix < len(messages) && messages[systemPrefix].Role == session.System {
+		systemPrefix++
+	}
+	for index := systemPrefix; index < len(messages); index++ {
+		if messages[index].Role == session.System {
+			return 0, errors.New("provider messages contain a non-prefix system message")
+		}
+	}
+	historyLength := len(messages) - systemPrefix
+	if ephemeral.HistoryInsertAt < 0 || ephemeral.HistoryInsertAt > historyLength {
+		return 0, fmt.Errorf("ephemeral provider message index %d is outside history length %d", ephemeral.HistoryInsertAt, historyLength)
+	}
+	return systemPrefix + ephemeral.HistoryInsertAt, nil
+}
+
+func MessagesWithEphemeralUser(messages []session.Message, ephemeral *EphemeralUserMessage) ([]session.Message, error) {
+	index, err := EphemeralUserMessageIndex(messages, ephemeral)
+	if err != nil {
+		return nil, err
+	}
+	if ephemeral == nil {
+		return session.CloneMessages(messages), nil
+	}
+	out := make([]session.Message, 0, len(messages)+1)
+	out = append(out, session.CloneMessages(messages[:index])...)
+	out = append(out, session.CloneMessage(ephemeral.Message))
+	out = append(out, session.CloneMessages(messages[index:])...)
+	return out, nil
 }
 
 type RequestLabels struct {
@@ -420,7 +469,11 @@ type TokenEstimator interface {
 }
 
 func GenericRequestEstimate(req Request) (TokenEstimate, error) {
-	prefix, messages := splitSystemMessages(req.Messages)
+	allMessages, err := MessagesWithEphemeralUser(req.Messages, req.EphemeralUser)
+	if err != nil {
+		return TokenEstimate{}, err
+	}
+	prefix, messages := splitSystemMessages(allMessages)
 	prefixTokens, err := estimateMessagesJSON(prefix)
 	if err != nil {
 		return TokenEstimate{}, err

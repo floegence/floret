@@ -109,6 +109,50 @@ func TestSQLiteSubAgentPendingToolCompletionMatchesMemory(t *testing.T) {
 	}
 }
 
+func TestSubAgentAdmissionRejectsHistoricalTurnIDWithoutMutation(t *testing.T) {
+	fixed := time.Date(2026, 7, 20, 18, 0, 0, 0, time.UTC)
+	policy := sessiontree.LeasePolicy{TTL: time.Hour, RenewInterval: 20 * time.Minute, ClockSkewAllowance: time.Second}
+	memory, err := sessiontree.NewMemoryRepoWithLeasePolicy(policy, func() time.Time { return fixed })
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqliteStore, err := Open(filepath.Join(t.TempDir(), "subagent-historical-turn.db"), WithLeasePolicy(policy), WithAuthorityClock(func() time.Time { return fixed }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqliteStore.Close() })
+
+	for backend, repo := range map[string]pendingToolAuthorityTestRepo{"memory": memory, "sqlite": sqliteStore} {
+		t.Run(backend, func(t *testing.T) {
+			request := seedSubAgentPendingToolCompletion(t, repo, fixed)
+			published, err := repo.PublishSubAgentPendingToolCompletion(context.Background(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := repo.Entries(context.Background(), "child")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repo.AdmitSubAgentInput(context.Background(), sessiontree.AdmitSubAgentInputRequest{
+				ParentThreadID: "parent", ChildThreadID: "child", TurnID: "turn-1", RunID: "different-run", OwnerID: "owner", Now: fixed,
+			}); !errors.Is(err, sessiontree.ErrRequestConflict) {
+				t.Fatalf("historical subagent turn err=%v, want ErrRequestConflict", err)
+			}
+			after, err := repo.Entries(context.Background(), "child")
+			if err != nil || len(after) != len(before) {
+				t.Fatalf("historical subagent admission mutated journal: before=%d after=%#v err=%v", len(before), after, err)
+			}
+			pending, err := repo.ListSubAgentInputs(context.Background(), "child", sessiontree.SubAgentInputPending)
+			if err != nil || len(pending) != 1 || pending[0].SubAgentInputID != published.Input.SubAgentInputID {
+				t.Fatalf("historical subagent admission changed pending input=%#v err=%v", pending, err)
+			}
+			if lease, active, err := repo.ActiveTurnLease(context.Background(), "child"); err != nil || active {
+				t.Fatalf("historical subagent admission lease=%#v active=%v err=%v", lease, active, err)
+			}
+		})
+	}
+}
+
 func prepareSubAgentReplayClaim(t *testing.T, repo pendingToolAuthorityTestRepo, now time.Time) {
 	t.Helper()
 	ctx := context.Background()
@@ -236,6 +280,43 @@ func TestSQLitePendingToolCompletionMatchesMemory(t *testing.T) {
 						t.Fatalf("completion settlement replay err=%v, want ErrRequestConflict", err)
 					}
 				})
+			}
+		})
+	}
+}
+
+func TestPendingToolContinuationRejectsHistoricalTurnIDWithoutMutation(t *testing.T) {
+	fixed := time.Date(2026, 7, 20, 18, 30, 0, 0, time.UTC)
+	policy := sessiontree.LeasePolicy{TTL: time.Hour, RenewInterval: 20 * time.Minute, ClockSkewAllowance: time.Second}
+	memory, err := sessiontree.NewMemoryRepoWithLeasePolicy(policy, func() time.Time { return fixed })
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqliteStore, err := Open(filepath.Join(t.TempDir(), "pending-historical-turn.db"), WithLeasePolicy(policy), WithAuthorityClock(func() time.Time { return fixed }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqliteStore.Close() })
+
+	for backend, repo := range map[string]pendingToolAuthorityTestRepo{"memory": memory, "sqlite": sqliteStore} {
+		t.Run(backend, func(t *testing.T) {
+			settlement := seedPendingToolRecovery(t, repo, fixed)
+			request := pendingToolCompletionRequest(settlement, fixed)
+			request.ContinuationTurnID = "turn-1"
+			request.ContinuationRunID = "different-run"
+			before, err := repo.Entries(context.Background(), "thread")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repo.AdmitPendingToolCompletion(context.Background(), request); !errors.Is(err, sessiontree.ErrRequestConflict) {
+				t.Fatalf("historical pending continuation err=%v, want ErrRequestConflict", err)
+			}
+			after, err := repo.Entries(context.Background(), "thread")
+			if err != nil || len(after) != len(before) || countPendingToolAuthoritySettlements(after) != 0 {
+				t.Fatalf("historical pending continuation mutated journal: before=%d after=%#v err=%v", len(before), after, err)
+			}
+			if lease, active, err := repo.ActiveTurnLease(context.Background(), "thread"); err != nil || active {
+				t.Fatalf("historical pending continuation lease=%#v active=%v err=%v", lease, active, err)
 			}
 		})
 	}

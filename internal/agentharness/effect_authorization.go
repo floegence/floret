@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -105,6 +106,61 @@ func (f EffectAuthorizationGateFunc) Dispatch(ctx context.Context, req EffectAut
 type effectGateOutcome struct {
 	result EffectDispatchResult
 	err    error
+}
+
+type effectDispatchPhase uint8
+
+const (
+	effectDispatchOpen effectDispatchPhase = iota
+	effectDispatchBeginning
+	effectDispatchBegun
+	effectDispatchNotBegun
+	effectDispatchCancelled
+)
+
+type effectDispatchBoundary struct {
+	mu       sync.Mutex
+	phase    effectDispatchPhase
+	resolved chan struct{}
+	once     sync.Once
+}
+
+func newEffectDispatchBoundary() *effectDispatchBoundary {
+	return &effectDispatchBoundary{phase: effectDispatchOpen, resolved: make(chan struct{})}
+}
+
+func (b *effectDispatchBoundary) begin() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.phase != effectDispatchOpen {
+		return false
+	}
+	b.phase = effectDispatchBeginning
+	return true
+}
+
+func (b *effectDispatchBoundary) resolve(begun bool) {
+	b.mu.Lock()
+	if begun {
+		b.phase = effectDispatchBegun
+	} else {
+		b.phase = effectDispatchNotBegun
+	}
+	b.mu.Unlock()
+	b.once.Do(func() { close(b.resolved) })
+}
+
+func (b *effectDispatchBoundary) cancelOrObserve() effectDispatchPhase {
+	b.mu.Lock()
+	if b.phase == effectDispatchOpen {
+		b.phase = effectDispatchCancelled
+	}
+	phase := b.phase
+	b.mu.Unlock()
+	if phase == effectDispatchCancelled {
+		b.once.Do(func() { close(b.resolved) })
+	}
+	return phase
 }
 
 type effectFinalizeRequest struct {
@@ -237,9 +293,9 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 	ready := make(chan tools.Result, 1)
 	finalize := make(chan effectFinalizeRequest, 1)
 	gateDone := make(chan effectGateOutcome, 1)
+	dispatchBoundary := newEffectDispatchBoundary()
 	var active atomic.Bool
 	var consumed atomic.Bool
-	var dispatchBegun atomic.Bool
 	active.Store(true)
 	seal := "effect-dispatch:" + sessiontree.StableHash(prepared.Attempt.EffectAttemptID+"\x00"+fingerprint)
 	go func() {
@@ -266,14 +322,18 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 			if !ok || current.OwnerID != lease.OwnerID || current.Generation != lease.Generation {
 				return EffectDispatchResult{}, sessiontree.ErrStaleAuthority
 			}
+			if !dispatchBoundary.begin() {
+				return EffectDispatchResult{}, ctx.Err()
+			}
 			if _, err := repo.BeginEffectDispatch(ctx, sessiontree.BeginEffectDispatchRequest{
 				Lease: current, EffectAttemptID: prepared.Attempt.EffectAttemptID, RequestFingerprint: fingerprint,
 				ObservedHeartbeat:      authorizationRequest.ObservedHeartbeat,
 				AuthorizationProofHash: sessiontree.StableHash(proof.AuditReference + "\x00" + proof.AuditHash + "\x00" + proof.PolicyRevision), Now: t.harness.now(),
 			}); err != nil {
+				dispatchBoundary.resolve(false)
 				return EffectDispatchResult{}, err
 			}
-			dispatchBegun.Store(true)
+			dispatchBoundary.resolve(true)
 			handlerResult := invoke()
 			finalizerKey := effectFinalizerKey(request.RunID, request.TurnID, request.CallID)
 			if err := t.registerEffectFinalizer(finalizerKey, func(finalizeCtx context.Context, request engine.EffectResultFinalizationRequest) (engine.EffectResultFinalizationResult, error) {
@@ -356,24 +416,39 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 		}
 		return t.rejectEffectAttempt(ctx, repo, lease, prepared.Attempt, fingerprint, outcome.err)
 	case <-ctx.Done():
-		if dispatchBegun.Load() {
-			persistCtx, cancelPersist := turnFinalizationContext(ctx)
-			defer cancelPersist()
-			select {
-			case handlerResult := <-ready:
-				return handlerResult
-			case outcome := <-gateDone:
-				if outcome.err == nil {
-					outcome.err = ErrAuthorizationContract
+		for {
+			switch dispatchBoundary.cancelOrObserve() {
+			case effectDispatchBeginning:
+				select {
+				case <-dispatchBoundary.resolved:
+					continue
+				case outcome := <-gateDone:
+					if outcome.err == nil {
+						outcome.err = ErrAuthorizationContract
+					}
+					return effectDispatchError(request.CallID, request.Name, outcome.err)
 				}
-				return effectDispatchError(request.CallID, request.Name, outcome.err)
-			case <-persistCtx.Done():
-				return committedEffectDispatchError(prepared.Attempt, persistCtx.Err())
+			case effectDispatchBegun:
+				select {
+				case handlerResult := <-ready:
+					return handlerResult
+				case outcome := <-gateDone:
+					if outcome.err == nil {
+						outcome.err = ErrAuthorizationContract
+					}
+					return effectDispatchError(request.CallID, request.Name, outcome.err)
+				}
+			case effectDispatchOpen:
+				continue
+			case effectDispatchCancelled, effectDispatchNotBegun:
+				active.Store(false)
+				persistCtx, cancelPersist := turnFinalizationContext(ctx)
+				defer cancelPersist()
+				return t.rejectEffectAttempt(persistCtx, repo, lease, prepared.Attempt, fingerprint, ctx.Err())
+			default:
+				return effectDispatchError(request.CallID, request.Name, ErrAuthorizationContract)
 			}
 		}
-		persistCtx, cancelPersist := turnFinalizationContext(ctx)
-		defer cancelPersist()
-		return t.rejectEffectAttempt(persistCtx, repo, lease, prepared.Attempt, fingerprint, ctx.Err())
 	}
 }
 

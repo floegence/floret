@@ -198,20 +198,22 @@ func sqlitePendingToolCompletionReplay(ctx context.Context, q sqlRunner, existin
 	if err != nil {
 		return sessiontree.AdmitPendingToolCompletionResult{}, err
 	}
-	started, err := loadRequiredAuthorityEntry(ctx, q, existing.Target.ThreadID, existing.TurnStartedID)
+	admissionLedger, found, err := loadSQLiteTurnAdmission(ctx, q, existing.Target.ThreadID, existing.ContinuationTurnID)
 	if err != nil {
 		return sessiontree.AdmitPendingToolCompletionResult{}, err
 	}
-	user, err := loadRequiredAuthorityEntry(ctx, q, existing.Target.ThreadID, existing.UserMessageID)
+	if !found || admissionLedger.RunID != existing.ContinuationRunID || admissionLedger.TurnStartedID != existing.TurnStartedID || admissionLedger.UserMessageID != existing.UserMessageID {
+		return sessiontree.AdmitPendingToolCompletionResult{}, sessiontree.ErrAuthorityCorrupt
+	}
+	admission, err := loadSQLiteTurnAdmissionReplay(ctx, q, admissionLedger)
 	if err != nil {
 		return sessiontree.AdmitPendingToolCompletionResult{}, err
 	}
+	admission.Lease = sessiontree.TurnLease{}
 	return sessiontree.AdmitPendingToolCompletionResult{
 		Settlement: settlement,
-		Admission: sessiontree.AdmitTurnResult{
-			TurnStarted: started, UserMessage: user, BaseLeafID: existing.BaseLeafID, Replayed: true,
-		},
-		Replayed: true,
+		Admission:  admission,
+		Replayed:   true,
 	}, nil
 }
 

@@ -65,6 +65,10 @@ func TestEffectAuthorityMatchesMemoryAndSQLite(t *testing.T) {
 			if err != nil || dispatching.State != sessiontree.EffectAttemptDispatching {
 				t.Fatalf("begin = %#v err=%v", dispatching, err)
 			}
+			latest, err := repo.RenewTurnLease(context.Background(), renewed)
+			if err != nil {
+				t.Fatal(err)
+			}
 			finishRequest := sessiontree.FinishEffectDispatchRequest{
 				Lease: renewed, EffectAttemptID: prepared.Attempt.EffectAttemptID, RequestFingerprint: "request-a",
 				OutcomeFingerprint: "outcome-a", Result: effectResultEntry("thread", "turn", "call", "tool", "ok"),
@@ -99,6 +103,33 @@ func TestEffectAuthorityMatchesMemoryAndSQLite(t *testing.T) {
 				if entry.ID == finished.Attempt.ResultEntryID && entry.Metadata[sessiontree.PendingToolEffectAttemptIDKey] != prepared.Attempt.EffectAttemptID {
 					t.Fatalf("effect result attempt identity = %#v, want %q", entry.Metadata, prepared.Attempt.EffectAttemptID)
 				}
+			}
+
+			unknownPrepared, err := repo.PrepareEffectAttempt(context.Background(), effectPrepareRequest(latest, "run", "call-unknown", "hash-u", "request-u", now))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repo.BeginEffectDispatch(context.Background(), sessiontree.BeginEffectDispatchRequest{
+				Lease: latest, EffectAttemptID: unknownPrepared.Attempt.EffectAttemptID, RequestFingerprint: "request-u",
+				ObservedHeartbeat: latest.Heartbeat, AuthorizationProofHash: "authorization-proof-u", Now: now,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			newest, err := repo.RenewTurnLease(context.Background(), latest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			unknown, err := repo.MarkEffectUnknown(context.Background(), sessiontree.MarkEffectUnknownRequest{
+				Lease: latest, EffectAttemptID: unknownPrepared.Attempt.EffectAttemptID, RequestFingerprint: "request-u",
+				OutcomeFingerprint: "unknown-u", Now: now,
+			})
+			if err != nil || unknown.State != sessiontree.EffectAttemptUnknown {
+				t.Fatalf("mark unknown after renewal = %#v err=%v", unknown, err)
+			}
+			future := newest
+			future.Heartbeat++
+			if _, err := repo.PrepareEffectAttempt(context.Background(), effectPrepareRequest(future, "run", "future", "hash-f", "request-f", now)); !errors.Is(err, sessiontree.ErrStaleAuthority) {
+				t.Fatalf("future heartbeat prepare err=%v, want ErrStaleAuthority", err)
 			}
 		})
 	}

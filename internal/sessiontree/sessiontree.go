@@ -389,6 +389,12 @@ type JournalRepo interface {
 	PathPage(context.Context, string, string, string, int) (PathPage, error)
 }
 
+// CanonicalTurnRepo reads all journal entries associated with one exact turn.
+// Execution replay authority remains owned by TurnAuthorityRepo.
+type CanonicalTurnRepo interface {
+	CanonicalTurnEntries(context.Context, string, string, string) ([]Entry, bool, error)
+}
+
 // Repo is the internal storage implementation contract. Production runtime
 // actors receive narrower capabilities such as JournalRepo instead.
 type Repo interface {
@@ -700,6 +706,8 @@ type MemoryRepo struct {
 	mu                             sync.Mutex
 	threads                        map[string]ThreadMeta
 	entries                        map[string][]Entry
+	turnEntryOrdinals              map[string]map[string][]int
+	turnEntryCounts                map[string]map[string]int
 	leases                         map[string]TurnLease
 	leaseGeneration                map[string]int64
 	leasePolicy                    LeasePolicy
@@ -744,6 +752,8 @@ func NewMemoryRepoWithLeasePolicy(policy LeasePolicy, now func() time.Time) (*Me
 	return &MemoryRepo{
 		threads:                        map[string]ThreadMeta{},
 		entries:                        map[string][]Entry{},
+		turnEntryOrdinals:              map[string]map[string][]int{},
+		turnEntryCounts:                map[string]map[string]int{},
 		leases:                         map[string]TurnLease{},
 		leaseGeneration:                map[string]int64{},
 		leasePolicy:                    policy,
@@ -829,7 +839,7 @@ func (r *MemoryRepo) CreateThreadWithInitialEntry(ctx context.Context, meta Thre
 	saved, err := r.appendLocked(ctx, initial, AppendOptions{Now: created.CreatedAt})
 	if err != nil {
 		delete(r.threads, created.ID)
-		delete(r.entries, created.ID)
+		r.deleteIndexedEntriesLocked(created.ID)
 		delete(r.todos, created.ID)
 		r.seq = seqBefore
 		return ThreadMeta{}, Entry{}, err
@@ -1111,7 +1121,7 @@ func (r *MemoryRepo) DeleteThread(_ context.Context, threadID string) error {
 		return ErrThreadAuthorityBusy
 	}
 	delete(r.threads, threadID)
-	delete(r.entries, threadID)
+	r.deleteIndexedEntriesLocked(threadID)
 	delete(r.leases, threadID)
 	delete(r.authorityClaims, threadID)
 	delete(r.todos, threadID)
@@ -1193,7 +1203,7 @@ func (r *MemoryRepo) CommitForkBatch(ctx context.Context, operationID string, no
 	rollback := func() {
 		for _, threadID := range created {
 			delete(r.threads, threadID)
-			delete(r.entries, threadID)
+			r.deleteIndexedEntriesLocked(threadID)
 			delete(r.todos, threadID)
 			delete(r.providerStates, threadID)
 			for key, record := range r.artifacts {
@@ -1396,6 +1406,12 @@ func (r *MemoryRepo) appendLocked(ctx context.Context, entry Entry, opts AppendO
 	if err := validateTurnLeaseMutation(ctx, entry.ThreadID, entry.TurnID, r.leases[entry.ThreadID], r.now().UTC()); err != nil {
 		return Entry{}, err
 	}
+	if err := ValidateEntryMessageReferences(entry); err != nil {
+		return Entry{}, err
+	}
+	if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted && r.hasTurnStartedLocked(entry.ThreadID, entry.TurnID) {
+		return Entry{}, ErrRequestConflict
+	}
 	if opts.ParentID != "" {
 		entry.ParentID = opts.ParentID
 	} else if entry.ParentID == "" {
@@ -1420,11 +1436,89 @@ func (r *MemoryRepo) appendLocked(ctx context.Context, entry Entry, opts AppendO
 	}
 	entry.Raw = rawForEntry(entry)
 	entry.RawHash = stableHash(entry.Raw)
-	r.entries[entry.ThreadID] = append(r.entries[entry.ThreadID], cloneEntry(entry))
+	r.appendIndexedEntriesLocked(entry.ThreadID, entry)
 	meta.LeafID = entry.ID
 	meta.UpdatedAt = entry.CreatedAt
 	r.threads[entry.ThreadID] = meta
 	return cloneEntry(entry), nil
+}
+
+func (r *MemoryRepo) hasTurnStartedLocked(threadID, turnID string) bool {
+	for _, ordinal := range r.turnEntryOrdinals[threadID][turnID] {
+		entries := r.entries[threadID]
+		if ordinal >= 0 && ordinal < len(entries) && entries[ordinal].Type == EntryTurnMarker && entries[ordinal].TurnStatus == TurnStarted {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *MemoryRepo) appendIndexedEntriesLocked(threadID string, entries ...Entry) {
+	if len(entries) == 0 {
+		return
+	}
+	if r.turnEntryOrdinals[threadID] == nil {
+		r.turnEntryOrdinals[threadID] = map[string][]int{}
+	}
+	if r.turnEntryCounts[threadID] == nil {
+		r.turnEntryCounts[threadID] = map[string]int{}
+	}
+	for _, entry := range entries {
+		ordinal := len(r.entries[threadID])
+		copy := cloneEntry(entry)
+		r.entries[threadID] = append(r.entries[threadID], copy)
+		if strings.TrimSpace(copy.TurnID) != "" {
+			r.turnEntryOrdinals[threadID][copy.TurnID] = append(r.turnEntryOrdinals[threadID][copy.TurnID], ordinal)
+			r.turnEntryCounts[threadID][copy.TurnID]++
+		}
+	}
+}
+
+func (r *MemoryRepo) replaceIndexedEntriesLocked(threadID string, entries []Entry) error {
+	indexed := map[string][]int{}
+	started := map[string]struct{}{}
+	startedRuns := map[string]struct{}{}
+	cloned := cloneEntries(entries)
+	for ordinal, entry := range cloned {
+		if entry.ThreadID != threadID {
+			return ErrAuthorityCorrupt
+		}
+		if err := ValidateEntryMessageReferences(entry); err != nil {
+			return ErrAuthorityCorrupt
+		}
+		turnID := strings.TrimSpace(entry.TurnID)
+		if turnID == "" {
+			continue
+		}
+		if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted {
+			if _, duplicate := started[turnID]; duplicate {
+				return ErrAuthorityCorrupt
+			}
+			runID := strings.TrimSpace(entry.Metadata["run_id"])
+			if runID != "" {
+				if _, duplicate := startedRuns[runID]; duplicate {
+					return ErrAuthorityCorrupt
+				}
+				startedRuns[runID] = struct{}{}
+			}
+			started[turnID] = struct{}{}
+		}
+		indexed[turnID] = append(indexed[turnID], ordinal)
+	}
+	r.entries[threadID] = cloned
+	r.turnEntryOrdinals[threadID] = indexed
+	counts := make(map[string]int, len(indexed))
+	for turnID, ordinals := range indexed {
+		counts[turnID] = len(ordinals)
+	}
+	r.turnEntryCounts[threadID] = counts
+	return nil
+}
+
+func (r *MemoryRepo) deleteIndexedEntriesLocked(threadID string) {
+	delete(r.entries, threadID)
+	delete(r.turnEntryOrdinals, threadID)
+	delete(r.turnEntryCounts, threadID)
 }
 
 func (r *MemoryRepo) nextEntryID(threadID string) string {
@@ -1454,6 +1548,102 @@ func (r *MemoryRepo) Entries(_ context.Context, threadID string) ([]Entry, error
 		return nil, ErrThreadNotFound
 	}
 	return cloneEntries(r.entries[threadID]), nil
+}
+
+func (r *MemoryRepo) CanonicalTurnEntries(_ context.Context, threadID, turnID, runID string) ([]Entry, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.threads[threadID]; !ok {
+		if _, deleted := r.tombstones[threadID]; deleted {
+			return nil, false, ErrThreadDeleted
+		}
+		return nil, false, ErrThreadNotFound
+	}
+	ordinals := r.turnEntryOrdinals[threadID][turnID]
+	if len(ordinals) == 0 {
+		return nil, false, nil
+	}
+	if r.turnEntryCounts[threadID][turnID] != len(ordinals) {
+		return nil, true, ErrAuthorityCorrupt
+	}
+	all := r.entries[threadID]
+	entries := make([]Entry, 0, len(ordinals))
+	previous := -1
+	for _, ordinal := range ordinals {
+		if ordinal <= previous || ordinal < 0 || ordinal >= len(all) {
+			return nil, true, ErrAuthorityCorrupt
+		}
+		entry := all[ordinal]
+		if entry.ThreadID != threadID || entry.TurnID != turnID {
+			return nil, true, ErrAuthorityCorrupt
+		}
+		if err := ValidateEntryIntegrity(entry); err != nil {
+			return nil, true, err
+		}
+		entries = append(entries, cloneEntry(entry))
+		previous = ordinal
+	}
+	entries = CanonicalTurnEntriesForRead(entries)
+	if err := ValidateCanonicalTurnEntries(entries, threadID, turnID, runID); err != nil {
+		return nil, true, err
+	}
+	return entries, true, nil
+}
+
+// CanonicalTurnEntriesForRead excludes retry/fork structural closures when the
+// same turn already has its execution terminal. A copied unfinished turn keeps
+// its branch boundary as the only canonical terminal.
+func CanonicalTurnEntriesForRead(entries []Entry) []Entry {
+	hasExecutionTerminal := false
+	for _, entry := range entries {
+		if entry.Type == EntryTurnMarker && terminalTurnMarker(entry.TurnStatus) && entry.Metadata["authority_kind"] != "branch_boundary" {
+			hasExecutionTerminal = true
+			break
+		}
+	}
+	if !hasExecutionTerminal {
+		return entries
+	}
+	filtered := make([]Entry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Type == EntryTurnMarker && terminalTurnMarker(entry.TurnStatus) && entry.Metadata["authority_kind"] == "branch_boundary" {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
+
+func ValidateCanonicalTurnEntries(entries []Entry, threadID, turnID, runID string) error {
+	threadID = strings.TrimSpace(threadID)
+	turnID = strings.TrimSpace(turnID)
+	runID = strings.TrimSpace(runID)
+	if threadID == "" || turnID == "" || runID == "" || len(entries) == 0 {
+		return ErrAuthorityCorrupt
+	}
+	started := 0
+	terminal := 0
+	for _, entry := range entries {
+		if entry.ThreadID != threadID || entry.TurnID != turnID {
+			return ErrAuthorityCorrupt
+		}
+		if entry.Type != EntryTurnMarker {
+			continue
+		}
+		if entry.TurnStatus == TurnStarted {
+			started++
+			if strings.TrimSpace(entry.Metadata["run_id"]) != runID {
+				return ErrRequestConflict
+			}
+		}
+		if terminalTurnMarker(entry.TurnStatus) {
+			terminal++
+		}
+	}
+	if started != 1 || terminal > 1 {
+		return ErrAuthorityCorrupt
+	}
+	return nil
 }
 
 func (r *MemoryRepo) Path(_ context.Context, threadID, leafID string) ([]Entry, error) {
@@ -1684,7 +1874,9 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 		forkedTodo = cloneAgentTodoState(todo)
 		hasForkedTodo = true
 	}
-	r.entries[newID] = forkedEntries
+	if err := r.replaceIndexedEntriesLocked(newID, forkedEntries); err != nil {
+		return ThreadMeta{}, err
+	}
 	r.threads[newID] = meta
 	for key, record := range stagedArtifacts {
 		r.artifacts[key] = record
@@ -1708,7 +1900,7 @@ func (r *MemoryRepo) ForkWithInitialEntry(ctx context.Context, opts ForkOptions,
 	saved, err := r.appendLocked(ctx, initial, AppendOptions{Now: opts.Now})
 	if err != nil {
 		delete(r.threads, forked.ID)
-		delete(r.entries, forked.ID)
+		r.deleteIndexedEntriesLocked(forked.ID)
 		delete(r.todos, forked.ID)
 		for key, record := range r.artifacts {
 			if record.ThreadID == forked.ID {
@@ -2036,7 +2228,7 @@ func (r *FileRepo) DeleteThread(ctx context.Context, threadID string) error {
 		return ErrThreadNotFound
 	}
 	delete(r.mem.threads, threadID)
-	delete(r.mem.entries, threadID)
+	r.mem.deleteIndexedEntriesLocked(threadID)
 	delete(r.mem.todos, threadID)
 	return os.RemoveAll(filepath.Join(r.root, safePath(threadID)))
 }
@@ -2080,6 +2272,15 @@ func (r *FileRepo) Entries(ctx context.Context, threadID string) ([]Entry, error
 		return nil, err
 	}
 	return r.mem.Entries(ctx, threadID)
+}
+
+func (r *FileRepo) CanonicalTurnEntries(ctx context.Context, threadID, turnID, runID string) ([]Entry, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.load(ctx); err != nil {
+		return nil, false, err
+	}
+	return r.mem.CanonicalTurnEntries(ctx, threadID, turnID, runID)
 }
 
 func (r *FileRepo) Path(ctx context.Context, threadID, leafID string) ([]Entry, error) {
@@ -2173,7 +2374,7 @@ func (r *FileRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, erro
 
 func (r *FileRepo) rollbackFork(threadID string) {
 	delete(r.mem.threads, threadID)
-	delete(r.mem.entries, threadID)
+	r.mem.deleteIndexedEntriesLocked(threadID)
 	delete(r.mem.todos, threadID)
 }
 
@@ -2261,7 +2462,9 @@ func (r *FileRepo) load(ctx context.Context) error {
 			}
 		}
 		mem.threads[meta.ID] = meta
-		mem.entries[meta.ID] = entries
+		if err := mem.replaceIndexedEntriesLocked(meta.ID, entries); err != nil {
+			return fmt.Errorf("index thread entries %s: %w", path, err)
+		}
 		todoData, err := os.ReadFile(filepath.Join(dir, "agent_todos.json"))
 		if err == nil {
 			var todo AgentTodoState
@@ -2794,6 +2997,35 @@ func PrepareEntry(entry Entry) Entry {
 	entry.Raw = rawForEntry(entry)
 	entry.RawHash = stableHash(entry.Raw)
 	return entry
+}
+
+func ValidateEntryMessageReferences(entry Entry) error {
+	if len(entry.Message.References) == 0 {
+		return nil
+	}
+	if entry.Type != EntryUserMessage || entry.Message.Role != session.User {
+		return errors.New("message references are only valid on canonical user message entries")
+	}
+	return session.ValidateMessageReferences(entry.Message.References)
+}
+
+func ValidateEntryIntegrity(entry Entry) error {
+	if err := ValidateEntryMessageReferences(entry); err != nil {
+		return ErrAuthorityCorrupt
+	}
+	if strings.TrimSpace(entry.Raw) == "" || strings.TrimSpace(entry.RawHash) == "" || stableHash(entry.Raw) != entry.RawHash {
+		return ErrAuthorityCorrupt
+	}
+	var raw struct {
+		Message session.Message `json:"message,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(entry.Raw), &raw); err != nil {
+		return ErrAuthorityCorrupt
+	}
+	if !reflect.DeepEqual(raw.Message.References, entry.Message.References) {
+		return ErrAuthorityCorrupt
+	}
+	return nil
 }
 
 func RawForEntry(entry Entry) string {

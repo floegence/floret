@@ -88,6 +88,7 @@ type ThreadTurnSnapshot struct {
 	UserEntryID     string                `json:"user_entry_id,omitempty"`
 	UserInput       string                `json:"user_input,omitempty"`
 	UserAttachments []MessageAttachment   `json:"user_attachments,omitempty"`
+	UserReferences  []MessageReference    `json:"user_references,omitempty"`
 	Status          TurnStatus            `json:"status"`
 	Failure         string                `json:"failure,omitempty"`
 	Projection      ThreadTurnProjection  `json:"projection"`
@@ -304,7 +305,7 @@ func projectThreadTurnSnapshots(threadID ThreadID, events []ThreadDetailEvent) (
 		if strings.TrimSpace(string(runID)) == "" || ordinal <= 0 || startedAt.IsZero() {
 			return nil, 0, fmt.Errorf("turn %q has an invalid started marker", turnID)
 		}
-		userEntryID, userInput, userAttachments := canonicalTurnUserInput(events, turnID)
+		userEntryID, userInput, userAttachments, userReferences := canonicalTurnUserInput(events, turnID)
 		if strings.TrimSpace(userEntryID) == "" {
 			continue
 		}
@@ -327,6 +328,7 @@ func projectThreadTurnSnapshots(threadID ThreadID, events []ThreadDetailEvent) (
 			UserEntryID:     userEntryID,
 			UserInput:       userInput,
 			UserAttachments: userAttachments,
+			UserReferences:  userReferences,
 			Status:          projection.Status,
 			Failure:         canonicalTurnFailure(turnEvents),
 			Projection:      projection,
@@ -347,13 +349,13 @@ func threadTurnStartedIdentity(events []ThreadDetailEvent) (RunID, int64, time.T
 	return "", 0, time.Time{}
 }
 
-func canonicalTurnUserInput(events []ThreadDetailEvent, turnID TurnID) (string, string, []MessageAttachment) {
+func canonicalTurnUserInput(events []ThreadDetailEvent, turnID TurnID) (string, string, []MessageAttachment, []MessageReference) {
 	for _, event := range events {
 		if event.TurnID == turnID && event.Kind == ThreadDetailEventUserMessage && event.Message != nil {
-			return event.ID, event.Message.Content, append([]MessageAttachment(nil), event.Message.Attachments...)
+			return event.ID, event.Message.Content, append([]MessageAttachment(nil), event.Message.Attachments...), append([]MessageReference(nil), event.Message.References...)
 		}
 	}
-	return "", "", nil
+	return "", "", nil, nil
 }
 
 func canonicalTurnFailure(events []ThreadDetailEvent) string {

@@ -7802,15 +7802,14 @@ func newForkTestStore(t *testing.T, withTerminalChild bool) *Store {
 
 type terminalProjectionFailureRepo struct {
 	*sessiontree.MemoryRepo
-	failPath     atomic.Bool
-	postRunPaths atomic.Int64
+	failCanonical atomic.Bool
 }
 
-func (r *terminalProjectionFailureRepo) Path(ctx context.Context, threadID, leafID string) ([]sessiontree.Entry, error) {
-	if r.failPath.Load() && r.postRunPaths.Add(1) > 1 {
-		return nil, errors.New("injected terminal projection read failure")
+func (r *terminalProjectionFailureRepo) CanonicalTurnEntries(ctx context.Context, threadID, turnID, runID string) ([]sessiontree.Entry, bool, error) {
+	if r.failCanonical.Swap(false) {
+		return nil, true, errors.New("injected terminal projection read failure")
 	}
-	return r.MemoryRepo.Path(ctx, threadID, leafID)
+	return r.MemoryRepo.CanonicalTurnEntries(ctx, threadID, turnID, runID)
 }
 
 type terminalProjectionFailureRecorder struct {
@@ -7819,33 +7818,29 @@ type terminalProjectionFailureRecorder struct {
 
 type settlementProjectionFailureRepo struct {
 	*sessiontree.MemoryRepo
-	arm                 atomic.Bool
-	failPath            atomic.Bool
-	postSettlementPaths atomic.Int32
+	arm           atomic.Bool
+	failCanonical atomic.Bool
 }
 
 func (r *settlementProjectionFailureRepo) Append(ctx context.Context, entry sessiontree.Entry, opts sessiontree.AppendOptions) (sessiontree.Entry, error) {
 	appended, err := r.MemoryRepo.Append(ctx, entry, opts)
 	if err == nil && r.arm.Swap(false) {
-		r.failPath.Store(true)
-		r.postSettlementPaths.Store(0)
+		r.failCanonical.Store(true)
 	}
 	return appended, err
 }
 
-func (r *settlementProjectionFailureRepo) Path(ctx context.Context, threadID, leafID string) ([]sessiontree.Entry, error) {
-	if r.failPath.Load() && r.postSettlementPaths.Add(1) > 1 {
-		r.failPath.Store(false)
-		return nil, errors.New("injected settlement projection read failure")
+func (r *settlementProjectionFailureRepo) CanonicalTurnEntries(ctx context.Context, threadID, turnID, runID string) ([]sessiontree.Entry, bool, error) {
+	if r.failCanonical.Swap(false) {
+		return nil, true, errors.New("injected settlement projection read failure")
 	}
-	return r.MemoryRepo.Path(ctx, threadID, leafID)
+	return r.MemoryRepo.CanonicalTurnEntries(ctx, threadID, turnID, runID)
 }
 
 func (r *settlementProjectionFailureRepo) SettlePendingToolRecovery(ctx context.Context, req sessiontree.SettlePendingToolRecoveryRequest) (sessiontree.SettlePendingToolRecoveryResult, error) {
 	settled, err := r.MemoryRepo.SettlePendingToolRecovery(ctx, req)
 	if err == nil && r.arm.Swap(false) {
-		r.failPath.Store(true)
-		r.postSettlementPaths.Store(0)
+		r.failCanonical.Store(true)
 	}
 	return settled, err
 }
@@ -7865,7 +7860,7 @@ func (s *runtimeFailingProviderStateRepo) FinishTurn(ctx context.Context, req se
 
 func (r *terminalProjectionFailureRecorder) EmitEvent(ev Event) {
 	if ev.Type == "run_end" {
-		r.repo.failPath.Store(true)
+		r.repo.failCanonical.Store(true)
 	}
 }
 

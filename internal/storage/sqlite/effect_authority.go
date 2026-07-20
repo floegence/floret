@@ -335,7 +335,7 @@ func (s *Store) validateFreshEffectLease(ctx context.Context, tx sqlRunner, leas
 	if err != nil {
 		return err
 	}
-	if !activeOK || !sessiontree.SameTurnLease(active, lease) || !active.Fresh(s.now().UTC()) {
+	if !activeOK || sessiontree.ValidateEffectLeaseSuccessor(lease, active) != nil || !active.Fresh(s.now().UTC()) {
 		return sessiontree.ErrStaleAuthority
 	}
 	meta, err := loadThread(ctx, tx, lease.ThreadID)

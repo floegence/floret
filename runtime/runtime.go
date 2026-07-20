@@ -405,6 +405,42 @@ type MessageAttachment struct {
 	SizeBytes   int64  `json:"size_bytes,omitempty"`
 }
 
+type MessageReferenceKind string
+
+const (
+	MessageReferenceText      MessageReferenceKind = "text"
+	MessageReferenceFile      MessageReferenceKind = "file"
+	MessageReferenceDirectory MessageReferenceKind = "directory"
+	MessageReferenceTerminal  MessageReferenceKind = "terminal"
+	MessageReferenceProcess   MessageReferenceKind = "process"
+
+	MaxMessageReferencesPerTurn           = 128
+	MaxMessageReferenceIDBytes            = 128
+	MaxMessageReferenceLabelRunes         = 256
+	MaxMessageReferenceTextRunes          = 12_000
+	MaxMessageReferenceResourceRefBytes   = 8_192
+	MaxMessageReferencesPayloadBytes      = 256 * 1024
+	MaxTurnSupplementalContextItems       = 128
+	MaxTurnSupplementalContextKindRunes   = 128
+	MaxTurnSupplementalContextTitleRunes  = 256
+	MaxTurnSupplementalContextTextRunes   = 16_384
+	MaxTurnSupplementalMetadataPairs      = 32
+	MaxTurnSupplementalMetadataKeyBytes   = 128
+	MaxTurnSupplementalMetadataValueRunes = 4_096
+	MaxTurnSupplementalPayloadBytes       = 256 * 1024
+)
+
+// MessageReference is one ordered, durable, user-visible reference associated
+// with a canonical user message. ResourceRef is opaque to Floret.
+type MessageReference struct {
+	ReferenceID string               `json:"reference_id"`
+	Kind        MessageReferenceKind `json:"kind"`
+	Label       string               `json:"label"`
+	Text        string               `json:"text,omitempty"`
+	ResourceRef string               `json:"resource_ref,omitempty"`
+	Truncated   bool                 `json:"truncated,omitempty"`
+}
+
 type EffectAuthorizationRequest struct {
 	EffectAttemptID    string               `json:"effect_attempt_id"`
 	RequestFingerprint string               `json:"request_fingerprint"`
@@ -528,11 +564,12 @@ func (a MessageAttachment) Validate() error {
 type TurnInput struct {
 	Text        string              `json:"text,omitempty"`
 	Attachments []MessageAttachment `json:"attachments,omitempty"`
+	References  []MessageReference  `json:"references,omitempty"`
 }
 
 func (i TurnInput) Validate() error {
-	if strings.TrimSpace(i.Text) == "" && len(i.Attachments) == 0 {
-		return errors.New("turn input requires text or attachments")
+	if strings.TrimSpace(i.Text) == "" && len(i.Attachments) == 0 && len(i.References) == 0 {
+		return errors.New("turn input requires text, attachments, or references")
 	}
 	seen := make(map[string]struct{}, len(i.Attachments))
 	for index, attachment := range i.Attachments {
@@ -545,7 +582,22 @@ func (i TurnInput) Validate() error {
 		}
 		seen[ref] = struct{}{}
 	}
-	return nil
+	return validateMessageReferences(i.References)
+}
+
+func validateMessageReferences(references []MessageReference) error {
+	return session.ValidateMessageReferences(sessionMessageReferences(references))
+}
+
+func (r MessageReference) Validate() error {
+	return session.MessageReference{
+		ReferenceID: r.ReferenceID,
+		Kind:        session.MessageReferenceKind(r.Kind),
+		Label:       r.Label,
+		Text:        r.Text,
+		ResourceRef: r.ResourceRef,
+		Truncated:   r.Truncated,
+	}.Validate()
 }
 
 type RunTurnRequest struct {
@@ -752,6 +804,7 @@ type SpawnSubAgentRequest struct {
 	TaskDescription string
 	Message         string
 	Attachments     []MessageAttachment
+	References      []MessageReference
 	HostProfileRef  string
 	ForkMode        SubAgentForkMode
 	Labels          RunLabels
@@ -763,6 +816,7 @@ type SendSubAgentInputRequest struct {
 	ChildThreadID  ThreadID
 	Message        string
 	Attachments    []MessageAttachment
+	References     []MessageReference
 	Interrupt      bool
 	Labels         RunLabels
 }
@@ -1063,6 +1117,7 @@ type ThreadDetailMessage struct {
 	Preview     string                            `json:"preview,omitempty"`
 	Content     string                            `json:"content,omitempty"`
 	Attachments []MessageAttachment               `json:"attachments,omitempty"`
+	References  []MessageReference                `json:"references,omitempty"`
 	Reasoning   string                            `json:"reasoning,omitempty"`
 	Activity    *observation.ActivityPresentation `json:"activity,omitempty"`
 }
@@ -1220,6 +1275,7 @@ type TurnResult struct {
 	Projection             *ThreadTurnProjection          `json:"projection,omitempty"`
 	ProjectionError        string                         `json:"projection_error,omitempty"`
 	PendingApprovals       []PendingApproval              `json:"pending_approvals,omitempty"`
+	Replayed               bool                           `json:"replayed,omitempty"`
 }
 
 type TurnProjectionAvailability string
@@ -1263,8 +1319,8 @@ func (r TurnResult) Validate() error {
 	if strings.TrimSpace(string(r.ThreadID)) == "" || strings.TrimSpace(string(r.TurnID)) == "" || strings.TrimSpace(string(r.RunID)) == "" {
 		return errors.New("turn result requires thread, turn, and run identities")
 	}
-	if !r.Status.Valid() || !r.Status.IsTerminal() {
-		return fmt.Errorf("turn result requires terminal status, got %q", r.Status)
+	if !r.Status.Valid() || (!r.Status.IsTerminal() && !(r.Replayed && r.Status == TurnStatusRunning)) {
+		return fmt.Errorf("turn result requires terminal status or a replayed running status, got %q", r.Status)
 	}
 	if r.CompletionReason != "" && !r.CompletionReason.Valid() {
 		return fmt.Errorf("unsupported turn completion reason %q", r.CompletionReason)
@@ -1502,13 +1558,16 @@ func validateCommittedUserMessage(committed ThreadDetailEvent) error {
 	if committed.Message == nil || strings.TrimSpace(committed.Message.Role) != string(session.User) {
 		return errors.New("runtime committed user message requires user payload")
 	}
-	if strings.TrimSpace(committed.Message.Content) == "" && strings.TrimSpace(committed.Message.Preview) == "" && len(committed.Message.Attachments) == 0 {
-		return errors.New("runtime committed user message requires preview, content, or attachments")
+	if strings.TrimSpace(committed.Message.Content) == "" && strings.TrimSpace(committed.Message.Preview) == "" && len(committed.Message.Attachments) == 0 && len(committed.Message.References) == 0 {
+		return errors.New("runtime committed user message requires preview, content, attachments, or references")
 	}
 	for index, attachment := range committed.Message.Attachments {
 		if err := attachment.Validate(); err != nil {
 			return fmt.Errorf("runtime committed user message attachment %d: %w", index, err)
 		}
+	}
+	if err := validateMessageReferences(committed.Message.References); err != nil {
+		return fmt.Errorf("runtime committed user message references: %w", err)
 	}
 	return nil
 }
@@ -2444,13 +2503,17 @@ func readTurnProjection(ctx context.Context, harness *agentharness.AgentHarness,
 	if strings.TrimSpace(string(req.RunID)) == "" {
 		return ThreadTurnProjection{}, errors.New("run id is required")
 	}
-	events, err := listRawThreadDetailEventsForTurn(ctx, harness, string(req.ThreadID), string(req.TurnID))
+	detail, found, err := harness.ReadTurnDetailEvents(ctx, string(req.ThreadID), string(req.TurnID), string(req.RunID), true)
 	if err != nil {
+		if errors.Is(err, sessiontree.ErrRequestConflict) {
+			return ThreadTurnProjection{}, fmt.Errorf("%w: %s", ErrRunNotFound, req.RunID)
+		}
 		return ThreadTurnProjection{}, runtimeHostError(err)
 	}
-	if len(events) == 0 {
+	if !found {
 		return ThreadTurnProjection{}, ErrTurnNotFound
 	}
+	events := threadDetailEvents(detail.Events)
 	if !threadDetailEventsTurnStartedRunIDMatches(events, req.RunID) {
 		return ThreadTurnProjection{}, fmt.Errorf("%w: %s", ErrRunNotFound, req.RunID)
 	}
@@ -2477,6 +2540,7 @@ func (h *providerHost) RunTurn(ctx context.Context, req RunTurnRequest) (TurnRes
 	if err != nil {
 		return TurnResult{}, err
 	}
+	supplementalContext := agentHarnessSupplementalContext(req.SupplementalContext)
 	if len(input.Attachments) > 0 && !h.supportsOpaqueAttachments {
 		return TurnResult{}, errors.New("opaque message attachments require a ModelGateway host")
 	}
@@ -2511,19 +2575,21 @@ func (h *providerHost) RunTurn(ctx context.Context, req RunTurnRequest) (TurnRes
 		MaxStopHookContinuations: req.Limits.MaxStopHookContinuations,
 		ManualCompactions:        projectedManualCompactionSource(req.ManualCompactions),
 		ToolSurfaceProvider:      runtimeToolSurfaceProvider(req.ToolSurfaceProvider),
-		SupplementalContext:      agentHarnessSupplementalContext(req.SupplementalContext),
+		SupplementalContext:      supplementalContext,
 		Attachments:              sessionMessageAttachments(input.Attachments),
+		References:               sessionMessageReferences(input.References),
 		Sink:                     activityRecorder,
 	})
 	out := turnResult(result, string(req.ThreadID), activityRecorder.Snapshot(), time.Now().UnixMilli())
 	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
 	defer cancelProjection()
-	h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out)
+	h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out, result.CanonicalEvents)
 	return out, runtimeHostError(runErr)
 }
 
 func normalizeTurnInput(input TurnInput) (TurnInput, error) {
 	input.Attachments = append([]MessageAttachment(nil), input.Attachments...)
+	input.References = append([]MessageReference(nil), input.References...)
 	for index := range input.Attachments {
 		input.Attachments[index].ResourceRef = strings.TrimSpace(input.Attachments[index].ResourceRef)
 		input.Attachments[index].Name = strings.TrimSpace(input.Attachments[index].Name)
@@ -2551,6 +2617,24 @@ func sessionMessageAttachments(in []MessageAttachment) []session.MessageAttachme
 	return out
 }
 
+func sessionMessageReferences(in []MessageReference) []session.MessageReference {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]session.MessageReference, 0, len(in))
+	for _, reference := range in {
+		out = append(out, session.MessageReference{
+			ReferenceID: reference.ReferenceID,
+			Kind:        session.MessageReferenceKind(reference.Kind),
+			Label:       reference.Label,
+			Text:        reference.Text,
+			ResourceRef: reference.ResourceRef,
+			Truncated:   reference.Truncated,
+		})
+	}
+	return out
+}
+
 func (h *providerHost) RetryTurn(ctx context.Context, req RetryTurnRequest) (TurnResult, error) {
 	if strings.TrimSpace(string(req.ThreadID)) == "" {
 		return TurnResult{}, errors.New("thread id is required")
@@ -2569,7 +2653,7 @@ func (h *providerHost) RetryTurn(ctx context.Context, req RetryTurnRequest) (Tur
 	out := turnResult(result, string(req.ThreadID), nil, time.Now().UnixMilli())
 	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
 	defer cancelProjection()
-	h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out)
+	h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out, result.CanonicalEvents)
 	return out, runtimeHostError(runErr)
 }
 
@@ -2670,6 +2754,9 @@ func (h *providerHost) CompletePendingTool(ctx context.Context, req PendingToolC
 	if err != nil {
 		return PendingToolCompletionResult{}, err
 	}
+	if err := rejectReferenceOnlyInputWithoutSupplemental(input, "pending tool completion"); err != nil {
+		return PendingToolCompletionResult{}, err
+	}
 	if len(input.Attachments) > 0 && !h.supportsOpaqueAttachments {
 		return PendingToolCompletionResult{}, errors.New("opaque message attachments require a ModelGateway host")
 	}
@@ -2686,7 +2773,7 @@ func (h *providerHost) CompletePendingTool(ctx context.Context, req PendingToolC
 		},
 		ContinuationTurnID: string(req.ContinuationTurnID), ContinuationRunID: string(req.ContinuationRunID),
 		Status: pendingToolCompletionStatus(req.Status), Summary: req.Summary, Output: req.Output,
-		Input: session.Message{Role: session.User, Content: input.Text, Attachments: sessionMessageAttachments(input.Attachments)},
+		Input: session.Message{Role: session.User, Content: input.Text, Attachments: sessionMessageAttachments(input.Attachments), References: sessionMessageReferences(input.References)},
 		Labels: engine.RunLabels{
 			Correlation: cloneStringMap(req.Labels.Correlation),
 			Host:        cloneStringMap(req.Labels.Host),
@@ -2703,7 +2790,7 @@ func (h *providerHost) CompletePendingTool(ctx context.Context, req PendingToolC
 	turn := turnResult(result, string(req.Target.ThreadID), nil, time.Now().UnixMilli())
 	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
 	defer cancelProjection()
-	h.attachThreadTurnProjection(projectionCtx, string(req.Target.ThreadID), &turn)
+	h.attachThreadTurnProjection(projectionCtx, string(req.Target.ThreadID), &turn, result.CanonicalEvents)
 	out.Status = turn.Status
 	out.Turn = &turn
 	return out, runtimeHostError(runErr)
@@ -2862,10 +2949,15 @@ func settlePendingToolOnThread(ctx context.Context, harness *agentharness.AgentH
 	}
 	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
 	defer cancelProjection()
-	events, err := listRawThreadDetailEventsForTurn(projectionCtx, harness, string(req.Target.ThreadID), string(req.Target.TurnID))
+	detail, found, err := harness.ReadTurnDetailEvents(projectionCtx, string(req.Target.ThreadID), string(req.Target.TurnID), string(req.Target.RunID), true)
 	if err != nil {
 		out.ProjectionAvailability = TurnProjectionAvailabilityUnavailable
 		out.ProjectionError = runtimeHostError(err).Error()
+		return out, nil
+	}
+	if !found {
+		out.ProjectionAvailability = TurnProjectionAvailabilityUnavailable
+		out.ProjectionError = runtimeHostError(sessiontree.ErrAuthorityCorrupt).Error()
 		return out, nil
 	}
 	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
@@ -2873,7 +2965,7 @@ func settlePendingToolOnThread(ctx context.Context, harness *agentharness.AgentH
 		TurnID:   req.Target.TurnID,
 		RunID:    req.Target.RunID,
 		TraceID:  TraceID(req.Target.RunID),
-		Events:   events,
+		Events:   threadDetailEvents(detail.Events),
 	})
 	out.ProjectionAvailability = TurnProjectionAvailabilityReady
 	out.Projection = &projection
@@ -2881,6 +2973,13 @@ func settlePendingToolOnThread(ctx context.Context, harness *agentharness.AgentH
 }
 
 func (h *providerHost) SpawnSubAgent(ctx context.Context, req SpawnSubAgentRequest) (SubAgentSnapshot, error) {
+	input, err := normalizeTurnInput(TurnInput{Text: req.Message, Attachments: req.Attachments, References: req.References})
+	if err != nil {
+		return SubAgentSnapshot{}, err
+	}
+	if err := rejectReferenceOnlyInputWithoutSupplemental(input, "subagent spawn"); err != nil {
+		return SubAgentSnapshot{}, err
+	}
 	snapshot, err := h.harness.SpawnSubAgent(ctx, agentharness.SpawnSubAgentOptions{
 		PublicationID:   req.PublicationID,
 		ParentThreadID:  string(req.ParentThreadID),
@@ -2888,8 +2987,9 @@ func (h *providerHost) SpawnSubAgent(ctx context.Context, req SpawnSubAgentReque
 		ThreadID:        string(req.ThreadID),
 		TaskName:        req.TaskName,
 		TaskDescription: req.TaskDescription,
-		Message:         req.Message,
-		Attachments:     sessionMessageAttachments(req.Attachments),
+		Message:         input.Text,
+		Attachments:     sessionMessageAttachments(input.Attachments),
+		References:      sessionMessageReferences(input.References),
 		HostProfileRef:  req.HostProfileRef,
 		ForkMode:        agentharness.SubAgentForkMode(req.ForkMode),
 		Labels:          engineLabels(req.Labels),
@@ -2901,12 +3001,20 @@ func (h *providerHost) SpawnSubAgent(ctx context.Context, req SpawnSubAgentReque
 }
 
 func (h *providerHost) SendSubAgentInput(ctx context.Context, req SendSubAgentInputRequest) (SubAgentSnapshot, error) {
+	input, err := normalizeTurnInput(TurnInput{Text: req.Message, Attachments: req.Attachments, References: req.References})
+	if err != nil {
+		return SubAgentSnapshot{}, err
+	}
+	if err := rejectReferenceOnlyInputWithoutSupplemental(input, "subagent input"); err != nil {
+		return SubAgentSnapshot{}, err
+	}
 	snapshot, err := h.harness.SendSubAgentInput(ctx, agentharness.SendSubAgentInputOptions{
 		InputRequestID: req.InputRequestID,
 		ParentThreadID: string(req.ParentThreadID),
 		ChildThreadID:  string(req.ChildThreadID),
-		Message:        req.Message,
-		Attachments:    sessionMessageAttachments(req.Attachments),
+		Message:        input.Text,
+		Attachments:    sessionMessageAttachments(input.Attachments),
+		References:     sessionMessageReferences(input.References),
 		Interrupt:      req.Interrupt,
 		Labels:         engineLabels(req.Labels),
 	})
@@ -2933,6 +3041,9 @@ func (h *providerHost) PublishSubAgentPendingToolCompletion(ctx context.Context,
 	if err != nil {
 		return SubAgentSnapshot{}, err
 	}
+	if err := rejectReferenceOnlyInputWithoutSupplemental(input, "subagent pending tool completion"); err != nil {
+		return SubAgentSnapshot{}, err
+	}
 	snapshot, err := h.harness.PublishSubAgentPendingToolCompletion(ctx, agentharness.PublishSubAgentPendingToolCompletionOptions{
 		InputRequestID: req.InputRequestID, ParentThreadID: string(req.ParentThreadID), ChildThreadID: string(req.ChildThreadID),
 		Target: sessiontree.PendingToolSettlementTarget{
@@ -2941,12 +3052,19 @@ func (h *providerHost) PublishSubAgentPendingToolCompletion(ctx context.Context,
 			EffectAttemptID: req.Target.EffectAttemptID,
 		},
 		Status: pendingToolCompletionStatus(req.Status), Summary: req.Summary, Output: req.Output,
-		Message: input.Text, Attachments: sessionMessageAttachments(input.Attachments), Labels: engineLabels(req.Labels),
+		Message: input.Text, Attachments: sessionMessageAttachments(input.Attachments), References: sessionMessageReferences(input.References), Labels: engineLabels(req.Labels),
 	})
 	if err != nil {
 		return SubAgentSnapshot{}, runtimeHostError(err)
 	}
 	return subAgentSnapshot(snapshot), nil
+}
+
+func rejectReferenceOnlyInputWithoutSupplemental(input TurnInput, operation string) error {
+	if strings.TrimSpace(input.Text) == "" && len(input.Attachments) == 0 && len(input.References) > 0 {
+		return fmt.Errorf("%s does not support reference-only input", operation)
+	}
+	return nil
 }
 
 func (h *providerHost) WaitSubAgents(ctx context.Context, req WaitSubAgentsRequest) (WaitSubAgentsResult, error) {
@@ -3240,11 +3358,15 @@ func pendingApprovalResources(in []agentharness.PendingApprovalResource) []Pendi
 }
 
 func turnResult(in agentharness.TurnResult, threadID string, events []observation.Event, nowUnixMS int64) TurnResult {
+	status := TurnStatus(in.Status)
+	if in.AdmissionRunning {
+		status = TurnStatusRunning
+	}
 	out := TurnResult{
 		ThreadID:           ThreadID(threadID),
 		TurnID:             TurnID(in.ID),
 		RunID:              RunID(in.RunID),
-		Status:             TurnStatus(in.Status),
+		Status:             status,
 		Output:             in.Output,
 		Diagnostics:        cloneStringMap(in.Diagnostics),
 		Metrics:            runtimeMetrics(in.Metrics),
@@ -3261,6 +3383,7 @@ func turnResult(in agentharness.TurnResult, threadID string, events []observatio
 			TraceID:  in.RunID,
 		}, events, nowUnixMS),
 		PendingApprovals: pendingApprovalList(in.PendingApprovals),
+		Replayed:         in.Replayed,
 	}
 	if in.Err != nil {
 		out.Error = in.Err.Error()
@@ -3268,7 +3391,7 @@ func turnResult(in agentharness.TurnResult, threadID string, events []observatio
 	return out
 }
 
-func (h *providerHost) attachThreadTurnProjection(ctx context.Context, threadID string, result *TurnResult) {
+func (h *providerHost) attachThreadTurnProjection(ctx context.Context, threadID string, result *TurnResult, canonicalEvents []agentharness.SubAgentDetailEvent) {
 	if result == nil {
 		return
 	}
@@ -3277,11 +3400,22 @@ func (h *providerHost) attachThreadTurnProjection(ctx context.Context, threadID 
 		result.ProjectionError = "turn projection identity is incomplete"
 		return
 	}
-	events, err := listRawThreadDetailEventsForTurn(ctx, h.harness, threadID, string(result.TurnID))
-	if err != nil {
-		result.ProjectionAvailability = TurnProjectionAvailabilityUnavailable
-		result.ProjectionError = runtimeHostError(err).Error()
-		return
+	var events []ThreadDetailEvent
+	if len(canonicalEvents) > 0 {
+		events = threadDetailEvents(canonicalEvents)
+	} else {
+		detail, found, err := h.harness.ReadTurnDetailEvents(ctx, threadID, string(result.TurnID), string(result.RunID), true)
+		if err != nil {
+			result.ProjectionAvailability = TurnProjectionAvailabilityUnavailable
+			result.ProjectionError = runtimeHostError(err).Error()
+			return
+		}
+		if !found {
+			result.ProjectionAvailability = TurnProjectionAvailabilityUnavailable
+			result.ProjectionError = runtimeHostError(sessiontree.ErrAuthorityCorrupt).Error()
+			return
+		}
+		events = threadDetailEvents(detail.Events)
 	}
 	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
 		ThreadID: ThreadID(threadID),
@@ -3300,34 +3434,6 @@ func runtimeTerminalProjectionContext(ctx context.Context) (context.Context, con
 		ctx = context.Background()
 	}
 	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-}
-
-func listRawThreadDetailEventsForTurn(ctx context.Context, harness *agentharness.AgentHarness, threadID string, turnID string) ([]ThreadDetailEvent, error) {
-	var out []ThreadDetailEvent
-	var afterOrdinal int64
-	for {
-		detail, err := harness.ListThreadDetailEvents(ctx, agentharness.ListThreadDetailEventsOptions{
-			ThreadID:     threadID,
-			AfterOrdinal: afterOrdinal,
-			Limit:        agentharness.MaxThreadDetailEventLimit,
-			IncludeRaw:   true,
-		})
-		if err != nil {
-			return nil, err
-		}
-		for _, ev := range threadDetailEvents(detail.Events) {
-			if strings.TrimSpace(string(ev.TurnID)) == strings.TrimSpace(turnID) {
-				out = append(out, ev)
-			}
-		}
-		if !detail.HasMore {
-			return out, nil
-		}
-		if detail.NextOrdinal <= afterOrdinal {
-			return nil, fmt.Errorf("thread detail pagination did not advance after ordinal %d", afterOrdinal)
-		}
-		afterOrdinal = detail.NextOrdinal
-	}
 }
 
 func threadDetailEventsTurnStartedRunIDMatches(events []ThreadDetailEvent, runID RunID) bool {
@@ -3697,6 +3803,7 @@ func threadDetailMessage(in *agentharness.SubAgentDetailMessage) *ThreadDetailMe
 		Preview:     in.Preview,
 		Content:     in.Content,
 		Attachments: runtimeMessageAttachments(in.Attachments),
+		References:  runtimeMessageReferences(in.References),
 		Reasoning:   in.Reasoning,
 		Activity:    cloneActivityPresentation(in.Activity),
 	}
@@ -3843,6 +3950,7 @@ func cloneThreadDetailMessage(in *ThreadDetailMessage) *ThreadDetailMessage {
 		Preview:     in.Preview,
 		Content:     in.Content,
 		Attachments: append([]MessageAttachment(nil), in.Attachments...),
+		References:  append([]MessageReference(nil), in.References...),
 		Reasoning:   in.Reasoning,
 		Activity:    cloneActivityPresentation(in.Activity),
 	}

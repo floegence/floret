@@ -35,7 +35,11 @@ func TestMemoryRecoverInterruptedTurnConflictHasZeroSideEffects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := DeriveInterruptedTurnRecoveryPlan(path, lease, "")
+	effects, err := InterruptedTurnRecoveryEffects([]EffectAttempt{prepared.Attempt}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := DeriveInterruptedTurnRecoveryPlan(path, lease, "", effects)
 	if err != nil {
 		t.Fatal(err)
 	}
