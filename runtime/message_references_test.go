@@ -146,6 +146,40 @@ func TestHostReferenceOnlyTurnUsesCurrentSupplementalWithoutHistoryLeak(t *testi
 	}
 }
 
+func TestHostReferenceOnlyTurnUsesSQLiteAdmissionAuthority(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "reference-only.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	host, err := newTestHost(t, providerHostOptions{
+		Config: runtimeGatewayConfig("reference-only sqlite"),
+		ModelGateway: runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+			return runtimeGatewayEvents("done"), nil
+		}),
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	want := canonicalReferenceFixture()
+	if _, err := host.RunTurn(ctx, RunTurnRequest{
+		ThreadID: "thread", TurnID: "turn", RunID: "run",
+		Input: TurnInput{References: want}, SupplementalContext: renderableSupplementalFixture(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := host.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 1})
+	if err != nil || len(page.Turns) != 1 || !reflect.DeepEqual(page.Turns[0].UserReferences, want) {
+		t.Fatalf("sqlite reference-only page=%#v err=%v", page, err)
+	}
+}
+
 func TestHostRejectsReferenceOnlyInvalidSupplementalBeforeAdmission(t *testing.T) {
 	cases := []struct {
 		name  string
