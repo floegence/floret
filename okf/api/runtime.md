@@ -90,7 +90,10 @@ host interface for every runtime operation.
   journal ordinal order. Before, after,
   and tail pagination are mutually exclusive. Started, waiting, or terminal
   markers do not make a turn public by themselves; the turn enters the page only
-  after its canonical user entry is committed. Each returned turn includes its explicit run identity,
+  after its canonical user entry is committed. The corresponding public
+  `thread_entry_committed` event is emitted only after this read returns the
+  same running turn, so a host may synchronize presentation from the public
+  read capability before handling provider or assistant events. Each returned turn includes its explicit run identity,
   canonical user entry and input, failure, verified control signals, complete
   `ThreadTurnProjection`, and projection-through ordinal.
 * `ThreadReadHost.ReadThreadAgentTodos` reads Floret-owned typed Agent todo

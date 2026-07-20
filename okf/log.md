@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-07-20
+* **API**: Made committed runtime events require their durable detail, validated
+  canonical user admission identity and payload, and proved Memory and SQLite
+  turn pages are synchronously readable before provider lifecycle begins.
 * **Boundary**: Amended the frozen interrupted-turn recovery object graph so the
   composition root delivers a factory bound to one exact root or parent-child
   turn owner and generation. Recovery retries may refresh only that target's

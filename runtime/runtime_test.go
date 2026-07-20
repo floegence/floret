@@ -4117,6 +4117,7 @@ func TestRuntimeEventValidateRejectsUnknownPublicState(t *testing.T) {
 		TurnID:     "turn",
 		RunID:      "run",
 		Projection: &validProjection,
+		Committed:  &ThreadDetailEvent{ID: "entry", ThreadID: "thread", TurnID: "turn", RunID: "run", Kind: ThreadDetailEventTurnMarker},
 	}).Validate(); err != nil {
 		t.Fatalf("runtime event with valid running projection rejected: %v", err)
 	}
@@ -4126,6 +4127,7 @@ func TestRuntimeEventValidateRejectsUnknownPublicState(t *testing.T) {
 		TurnID:     "turn",
 		RunID:      "run",
 		Projection: &validProjection,
+		Committed:  &ThreadDetailEvent{ID: "entry", ThreadID: "other-thread", TurnID: "turn", RunID: "run", Kind: ThreadDetailEventTurnMarker},
 	}).Validate(); err == nil {
 		t.Fatal("runtime event with mismatched projection identity validated")
 	}
@@ -4151,6 +4153,48 @@ func TestRuntimeEventValidateRejectsUnknownPublicState(t *testing.T) {
 		Committed: &badCommitted,
 	}).Validate(); err == nil {
 		t.Fatal("runtime event with mismatched committed run identity validated")
+	}
+	if err := (Event{
+		Type:     observation.EventTypeThreadEntryCommitted,
+		ThreadID: "thread",
+		TurnID:   "turn",
+		RunID:    "run",
+	}).Validate(); err == nil {
+		t.Fatal("runtime committed event without detail validated")
+	}
+	validCommittedUser := &ThreadDetailEvent{
+		ID: "user-entry", ThreadID: "thread", TurnID: "turn", RunID: "run",
+		Kind: ThreadDetailEventUserMessage, CreatedAt: time.Now(),
+		Message: &ThreadDetailMessage{Role: "user", Content: "hello"},
+	}
+	if err := (Event{
+		Type: observation.EventTypeThreadEntryCommitted, ThreadID: "thread", TurnID: "turn", RunID: "run",
+		Committed: validCommittedUser,
+	}).Validate(); err != nil {
+		t.Fatalf("runtime event with canonical user admission rejected: %v", err)
+	}
+	for _, mutate := range []func(*ThreadDetailEvent){
+		func(detail *ThreadDetailEvent) { detail.ID = "" },
+		func(detail *ThreadDetailEvent) { detail.CreatedAt = time.Time{} },
+		func(detail *ThreadDetailEvent) { detail.Message = nil },
+		func(detail *ThreadDetailEvent) {
+			detail.Message = &ThreadDetailMessage{Role: "assistant", Content: "hello"}
+		},
+		func(detail *ThreadDetailEvent) { detail.Message = &ThreadDetailMessage{Role: "user"} },
+		func(detail *ThreadDetailEvent) {
+			detail.Message = &ThreadDetailMessage{Role: "user", Attachments: []MessageAttachment{{Name: "broken"}}}
+		},
+	} {
+		malformed := *validCommittedUser
+		message := *validCommittedUser.Message
+		malformed.Message = &message
+		mutate(&malformed)
+		if err := (Event{
+			Type: observation.EventTypeThreadEntryCommitted, ThreadID: "thread", TurnID: "turn", RunID: "run",
+			Committed: &malformed,
+		}).Validate(); err == nil {
+			t.Fatalf("malformed canonical user admission validated: %#v", malformed)
+		}
 	}
 }
 

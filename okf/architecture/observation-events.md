@@ -81,7 +81,12 @@ model.
 * Thread detail events expose the hosted thread journal path in Floret entry
   ordinal order. `ListThreadDetailEvents` is the durable read model, while
   `runtime.Event.Committed` announces each entry after it is successfully
-  appended. `runtime.Event.Projection` carries the current hosted-turn display
+  appended. A `thread_entry_committed` runtime event must carry its exact
+  committed detail. A canonical user-message detail additionally requires
+  complete entry/thread/turn/run identity, creation time, a user payload, and
+  valid attachments. Floret emits that user admission event only after
+  `ListThreadTurns` can synchronously read the same running turn, and before
+  provider or assistant lifecycle events. `runtime.Event.Projection` carries the current hosted-turn display
   projection on those committed events, so hosts can render live display order
   without reading Floret storage internals or rebuilding activity from host
   audit records. The committed turn-start marker gives live projections the

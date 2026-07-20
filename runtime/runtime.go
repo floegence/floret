@@ -1471,9 +1471,43 @@ func (e Event) Validate() error {
 			return errors.New("runtime event projection identity mismatch")
 		}
 	}
+	if e.Type == observation.EventTypeThreadEntryCommitted && e.Committed == nil {
+		return errors.New("runtime thread entry committed event requires committed detail")
+	}
+	if e.Type != observation.EventTypeThreadEntryCommitted && e.Committed != nil {
+		return errors.New("runtime committed detail requires thread entry committed event type")
+	}
 	if e.Committed != nil {
 		if e.Committed.ThreadID != e.ThreadID || e.Committed.TurnID != e.TurnID || e.Committed.RunID != e.RunID || e.Committed.Step != e.Step {
 			return errors.New("runtime event committed detail identity mismatch")
+		}
+		if err := validateCommittedUserMessage(*e.Committed); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateCommittedUserMessage(committed ThreadDetailEvent) error {
+	if committed.Kind != ThreadDetailEventUserMessage {
+		return nil
+	}
+	if strings.TrimSpace(committed.ID) == "" || strings.TrimSpace(string(committed.ThreadID)) == "" ||
+		strings.TrimSpace(string(committed.TurnID)) == "" || strings.TrimSpace(string(committed.RunID)) == "" {
+		return errors.New("runtime committed user message requires entry, thread, turn, and run identities")
+	}
+	if committed.CreatedAt.IsZero() {
+		return errors.New("runtime committed user message requires creation time")
+	}
+	if committed.Message == nil || strings.TrimSpace(committed.Message.Role) != string(session.User) {
+		return errors.New("runtime committed user message requires user payload")
+	}
+	if strings.TrimSpace(committed.Message.Content) == "" && strings.TrimSpace(committed.Message.Preview) == "" && len(committed.Message.Attachments) == 0 {
+		return errors.New("runtime committed user message requires preview, content, or attachments")
+	}
+	for index, attachment := range committed.Message.Attachments {
+		if err := attachment.Validate(); err != nil {
+			return fmt.Errorf("runtime committed user message attachment %d: %w", index, err)
 		}
 	}
 	return nil
