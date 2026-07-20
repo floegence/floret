@@ -131,6 +131,69 @@ func TestSQLiteTurnAuthorityMatchesMemoryAdmissionAndFinish(t *testing.T) {
 	}
 }
 
+func TestSQLiteAdmitTurnRejectsMalformedReferencesWithoutMutation(t *testing.T) {
+	now := time.Date(2026, 7, 20, 9, 30, 0, 0, time.UTC)
+	store, err := Open(filepath.Join(t.TempDir(), "invalid-reference.db"), WithAuthorityClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = store.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+		ThreadID: "thread", TurnID: "turn", RunID: "run", OwnerID: "owner", RequestFingerprint: "fingerprint",
+		Input: session.Message{Role: session.User, Content: "inspect", References: []session.MessageReference{{
+			ReferenceID: "ref-1", Kind: session.MessageReferenceText, Label: "missing text",
+		}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "message reference") {
+		t.Fatalf("AdmitTurn error = %v, want malformed message reference", err)
+	}
+	assertSQLiteTurnAuthorityCounts(t, store, 0, 0, 0, 0)
+}
+
+func TestSQLiteAppendRestrictsReferencesToValidUserMessagesWithoutMutation(t *testing.T) {
+	now := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
+	valid := []session.MessageReference{{ReferenceID: "ref-1", Kind: session.MessageReferenceText, Label: "quote", Text: "selected"}}
+	tests := map[string]sessiontree.Entry{
+		"malformed user reference": {
+			ThreadID: "thread", Type: sessiontree.EntryUserMessage,
+			Message: session.Message{Role: session.User, Content: "inspect", References: []session.MessageReference{{
+				ReferenceID: "ref-1", Kind: session.MessageReferenceText, Label: "missing text",
+			}}},
+		},
+		"assistant reference": {
+			ThreadID: "thread", Type: sessiontree.EntryAssistantMessage,
+			Message: session.Message{Role: session.Assistant, Content: "answer", References: valid},
+		},
+	}
+
+	for name, entry := range tests {
+		t.Run(name, func(t *testing.T) {
+			store, err := Open(filepath.Join(t.TempDir(), "invalid-append.db"), WithAuthorityClock(func() time.Time { return now }))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			ctx := context.Background()
+			if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread", CreatedAt: now, UpdatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Append(ctx, entry, sessiontree.AppendOptions{Now: now}); err == nil || !strings.Contains(err.Error(), "message reference") {
+				t.Fatalf("Append error = %v, want message reference rejection", err)
+			}
+			assertSQLiteTurnAuthorityCounts(t, store, 0, 0, 0, 0)
+			meta, err := store.Thread(ctx, "thread")
+			if err != nil || meta.LeafID != "" {
+				t.Fatalf("thread after rejected append = %#v err=%v", meta, err)
+			}
+		})
+	}
+}
+
 func TestSQLiteAdmitTurnMissingRetryTargetHasZeroSideEffects(t *testing.T) {
 	fixed := time.Date(2026, 7, 19, 13, 0, 0, 0, time.UTC)
 	store, err := Open(filepath.Join(t.TempDir(), "missing-retry.db"), WithAuthorityClock(func() time.Time { return fixed }))

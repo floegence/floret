@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/floegence/floret/config"
+	"github.com/floegence/floret/internal/engine"
+	"github.com/floegence/floret/internal/session"
 	"github.com/floegence/floret/internal/sessiontree"
 )
 
@@ -415,5 +417,26 @@ func TestMessageReferencesPreserveValueOrder(t *testing.T) {
 	got := append([]MessageReference(nil), want...)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("references=%#v want=%#v", got, want)
+	}
+}
+
+func TestPublicMessageReferenceAndSupplementalLimitsMatchInternalValidation(t *testing.T) {
+	if MaxMessageReferencesPerTurn != session.MaxMessageReferencesPerTurn ||
+		MaxMessageReferenceIDBytes != session.MaxMessageReferenceIDBytes ||
+		MaxMessageReferenceLabelRunes != session.MaxMessageReferenceLabelRunes ||
+		MaxMessageReferenceTextRunes != session.MaxMessageReferenceTextRunes ||
+		MaxMessageReferenceResourceRefBytes != session.MaxMessageReferenceResourceRefBytes ||
+		MaxMessageReferencesPayloadBytes != session.MaxMessageReferencesPayloadBytes {
+		t.Fatal("public message reference limits diverged from durable validation")
+	}
+	if MaxTurnSupplementalContextItems != engine.MaxTurnSupplementalContextItems ||
+		MaxTurnSupplementalContextKindRunes != engine.MaxTurnSupplementalContextKindRunes ||
+		MaxTurnSupplementalContextTitleRunes != engine.MaxTurnSupplementalContextTitleRunes ||
+		MaxTurnSupplementalContextTextRunes != engine.MaxTurnSupplementalContextTextRunes ||
+		MaxTurnSupplementalMetadataPairs != engine.MaxTurnSupplementalMetadataPairs ||
+		MaxTurnSupplementalMetadataKeyBytes != engine.MaxTurnSupplementalMetadataKeyBytes ||
+		MaxTurnSupplementalMetadataValueRunes != engine.MaxTurnSupplementalMetadataValueRunes ||
+		MaxTurnSupplementalPayloadBytes != engine.MaxTurnSupplementalPayloadBytes {
+		t.Fatal("public supplemental context limits diverged from provider validation")
 	}
 }
