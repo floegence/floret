@@ -487,7 +487,9 @@ type EffectDispatchResult struct {
 	result agentharness.EffectDispatchResult
 }
 
-type AuthorizedEffect func(EffectAuthorizationProof) (EffectDispatchResult, error)
+// AuthorizedEffect invokes one prepared effect under the host-selected
+// execution context. Floret additionally bounds that context by the active turn.
+type AuthorizedEffect func(context.Context, EffectAuthorizationProof) (EffectDispatchResult, error)
 
 type EffectAuthorizationGate interface {
 	Dispatch(context.Context, EffectAuthorizationRequest, AuthorizedEffect) (EffectDispatchResult, error)
@@ -513,8 +515,8 @@ func runtimeEffectAuthorizationGate(gate EffectAuthorizationGate) agentharness.E
 			Resources: append([]tools.ResourceRef(nil), req.Resources...), Effects: append([]tools.Effect(nil), req.Effects...),
 			Permission: req.Permission, ReadOnly: req.ReadOnly, Destructive: req.Destructive, OpenWorld: req.OpenWorld,
 			LeaseOwnerID: req.LeaseOwnerID, LeaseGeneration: req.LeaseGeneration, ObservedHeartbeat: req.ObservedHeartbeat,
-		}, func(proof EffectAuthorizationProof) (EffectDispatchResult, error) {
-			internalResult, err := effect(agentharness.EffectAuthorizationProof{
+		}, func(dispatchCtx context.Context, proof EffectAuthorizationProof) (EffectDispatchResult, error) {
+			internalResult, err := effect(dispatchCtx, agentharness.EffectAuthorizationProof{
 				EffectAttemptID: proof.EffectAttemptID, RequestFingerprint: proof.RequestFingerprint,
 				ThreadID: string(proof.ThreadID), TurnID: string(proof.TurnID), RunID: string(proof.RunID), ToolCallID: proof.ToolCallID,
 				LeaseOwnerID: proof.LeaseOwnerID, LeaseGeneration: proof.LeaseGeneration,

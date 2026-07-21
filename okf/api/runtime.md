@@ -22,6 +22,11 @@ provider loop execution, provider-visible context assembly, trimming, summary
 generation, compaction checkpoints, continuation state, and lifecycle
 observations.
 
+`EffectAuthorizationGate` receives a one-shot context-aware
+`AuthorizedEffect`. The host-selected execution context is passed to the local
+handler and is always bounded by the active turn context. Cancellation before
+dispatch remains execution cancellation rather than an authorization failure.
+
 Downstream packages that need substitution define local interfaces containing
 only their actual capability methods. Floret does not publish a repository-wide
 host interface for every runtime operation.
@@ -517,6 +522,14 @@ control-signal message is excluded from ordinary unresolved tool-call
 settlement. Downstream hosts should consume Floret projections and settlement results
 to replace their product UI for the turn instead of synthesizing final tool
 status from local audit records or live stream leftovers.
+
+For locally owned work, an exact valid terminal `TurnResult` from the original
+`RunTurn` call is the active-authority release barrier. If execution instead
+returns without that terminal result, the host must confirm the exact terminal
+turn through the public canonical read API. A host may signal its own process
+before either proof, but it performs provider-free pending settlement only
+afterward. A busy recovery settlement before the barrier is not a condition to
+poll or retry.
 
 `ThreadTurnFailure{Code, Message}` is the canonical public failure contract.
 Stable codes distinguish cancellation, interruption, provider failure, tool

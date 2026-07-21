@@ -3137,7 +3137,7 @@ func newTestHarness(p provider.Provider, repo sessiontree.Repo, promptStore cach
 type allowHarnessEffectGate struct{}
 
 func (allowHarnessEffectGate) Dispatch(ctx context.Context, req EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
-	return effect(EffectAuthorizationProof{
+	return effect(ctx, EffectAuthorizationProof{
 		EffectAttemptID: req.EffectAttemptID, RequestFingerprint: req.RequestFingerprint,
 		ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, ToolCallID: req.ToolCallID,
 		LeaseOwnerID: req.LeaseOwnerID, LeaseGeneration: req.LeaseGeneration,

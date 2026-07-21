@@ -196,6 +196,12 @@ func TestEffectPanicBoundariesConvergeFromDurableAttemptState(t *testing.T) {
 			wantCode: sessiontree.TurnFailureAuthorizationContract, wantState: sessiontree.EffectAttemptRejected, wantRejects: 1,
 		},
 		{
+			name: "nil dispatch context", gate: func(req EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
+				return effect(nil, boundaryAuthorizationProof(req))
+			},
+			wantCode: sessiontree.TurnFailureAuthorizationContract, wantState: sessiontree.EffectAttemptRejected, wantRejects: 1,
+		},
+		{
 			name: "callback panic after dispatch", beginPanic: "after", gate: invokeBoundaryEffect,
 			wantCode: sessiontree.TurnFailureEffectOutcomeUnknown, wantState: sessiontree.EffectAttemptUnknown, wantMarks: 1,
 		},
@@ -205,7 +211,7 @@ func TestEffectPanicBoundariesConvergeFromDurableAttemptState(t *testing.T) {
 		},
 		{
 			name: "gate panic after known completion", gate: func(req EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
-				result, err := effect(boundaryAuthorizationProof(req))
+				result, err := effect(context.Background(), boundaryAuthorizationProof(req))
 				if err != nil {
 					return EffectDispatchResult{}, err
 				}
@@ -292,7 +298,7 @@ func TestAsyncEffectCallbackEarlyReturnConvergesAndExits(t *testing.T) {
 				go func() {
 					defer close(callbackDone)
 					<-callbackRelease
-					_, _ = effect(boundaryAuthorizationProof(req))
+					_, _ = effect(context.Background(), boundaryAuthorizationProof(req))
 				}()
 				if test.dispatch {
 					close(callbackRelease)
@@ -402,7 +408,7 @@ func TestGateEarlyReturnAfterFinalizerRegistrationSettlesBeforeOuterReturn(t *te
 			h.options.EffectAuthorizationGate = EffectAuthorizationGateFunc(func(_ context.Context, req EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
 				go func() {
 					defer close(callbackDone)
-					_, _ = effect(boundaryAuthorizationProof(req))
+					_, _ = effect(context.Background(), boundaryAuthorizationProof(req))
 				}()
 				<-registered
 				return EffectDispatchResult{}, nil
@@ -512,7 +518,7 @@ func TestRegisterFinalizerFailureAndGateEarlyReturnShareUnknownOwner(t *testing.
 			h.options.EffectAuthorizationGate = EffectAuthorizationGateFunc(func(_ context.Context, req EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
 				go func() {
 					defer close(callbackDone)
-					_, _ = effect(boundaryAuthorizationProof(req))
+					_, _ = effect(context.Background(), boundaryAuthorizationProof(req))
 				}()
 				<-registrationFailed
 				return EffectDispatchResult{}, nil
@@ -618,7 +624,7 @@ func TestApprovalReplayAndGateEarlyReturnShareUnknownOwner(t *testing.T) {
 			h.options.EffectAuthorizationGate = EffectAuthorizationGateFunc(func(_ context.Context, req EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
 				go func() {
 					defer close(callbackDone)
-					_, _ = effect(boundaryAuthorizationProof(req))
+					_, _ = effect(context.Background(), boundaryAuthorizationProof(req))
 				}()
 				<-commitReached
 				return EffectDispatchResult{}, nil
@@ -732,7 +738,7 @@ func TestHandlerPanicAndGateEarlyReturnShareUnknownOwner(t *testing.T) {
 			h.options.EffectAuthorizationGate = EffectAuthorizationGateFunc(func(_ context.Context, req EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
 				go func() {
 					defer close(callbackDone)
-					_, _ = effect(boundaryAuthorizationProof(req))
+					_, _ = effect(context.Background(), boundaryAuthorizationProof(req))
 				}()
 				<-handlerStarted
 				return EffectDispatchResult{}, nil
@@ -797,7 +803,7 @@ func TestHandlerPanicAndGateEarlyReturnShareUnknownOwner(t *testing.T) {
 }
 
 func invokeBoundaryEffect(req EffectAuthorizationRequest, effect AuthorizedEffect) (EffectDispatchResult, error) {
-	return effect(boundaryAuthorizationProof(req))
+	return effect(context.Background(), boundaryAuthorizationProof(req))
 }
 
 func boundaryAuthorizationProof(req EffectAuthorizationRequest) EffectAuthorizationProof {

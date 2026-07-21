@@ -86,7 +86,10 @@ type EffectDispatchRequest struct {
 	OpenWorld     bool
 }
 
-type EffectDispatcher func(context.Context, EffectDispatchRequest, func() Result) Result
+// EffectDispatcher authorizes one prepared effect and chooses the execution
+// context used by the tool handler. A lifecycle-owning dispatcher is responsible
+// for bounding that selected context by its caller's execution lifetime.
+type EffectDispatcher func(context.Context, EffectDispatchRequest, func(context.Context) Result) Result
 
 type EffectBatchPreflight func(context.Context, []EffectDispatchRequest) error
 
@@ -561,7 +564,7 @@ func (p preparedDispatch) dispatch(ctx context.Context, dispatcher EffectDispatc
 			result = ErrorResult(p.request.CallID, p.request.Name, fmt.Sprintf("tool %q panicked: %v", p.request.Name, recovered))
 		}
 	}()
-	result = dispatcher(ctx, p.request, func() Result { return p.invoke(ctx) })
+	result = dispatcher(ctx, p.request, p.invoke)
 	if result.DispatchErr == nil {
 		result.effectFinalizationRequired = true
 	}

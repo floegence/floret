@@ -3064,7 +3064,7 @@ func (testUIRuntimeEffectAuthorizationGate) Dispatch(_ context.Context, req flru
 	if req.Permission.Mode == tools.PermissionDeny || strings.HasPrefix(strings.TrimSpace(req.ToolName), "mcp__") {
 		return flruntime.EffectDispatchResult{}, flruntime.ErrEffectUnauthorized
 	}
-	return effect(flruntime.EffectAuthorizationProof{
+	return effect(context.Background(), flruntime.EffectAuthorizationProof{
 		EffectAttemptID: req.EffectAttemptID, RequestFingerprint: req.RequestFingerprint,
 		ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, ToolCallID: req.ToolCallID,
 		LeaseOwnerID: req.LeaseOwnerID, LeaseGeneration: req.LeaseGeneration,

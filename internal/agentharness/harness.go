@@ -2126,8 +2126,12 @@ func (t *Thread) runEntered(ctx context.Context, input string, opts RunOptions, 
 	if renewalErr := stopRenewal(); renewalErr != nil && runErr == nil {
 		runErr = renewalErr
 	}
-	automaticTitleExecution.FinishMain(runErr != nil)
+	automaticTitleExecution.FinishMain(automaticTitleWorkerMustJoin(result, runErr))
 	return result, runErr
+}
+
+func automaticTitleWorkerMustJoin(result TurnResult, runErr error) bool {
+	return runErr != nil || result.Status == engine.Cancelled || result.Status == engine.Failed
 }
 
 func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, retrySource *sessiontree.Entry) (TurnResult, error) {
@@ -2228,6 +2232,12 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 		History:             history,
 		SupplementalContext: engine.CloneTurnSupplementalContext(opts.SupplementalContext),
 	})
+	if result.Status == engine.Cancelled {
+		if cancellation := contextCancellationError(ctx); cancellation != nil {
+			result.Err = cancellation
+			result.FailureOrigin = engine.FailureOriginCancelled
+		}
+	}
 	persistCtx, cancelPersist := turnFinalizationContext(ctx)
 	defer cancelPersist()
 	resultFailureCode := ""

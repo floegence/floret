@@ -95,7 +95,7 @@ func runWithOptionsForTest(r *Registry, ctx context.Context, call ToolCall, appr
 }
 
 func (r *Registry) testEffectDispatcher(approver Approver) EffectDispatcher {
-	return func(ctx context.Context, req EffectDispatchRequest, invoke func() Result) Result {
+	return func(ctx context.Context, req EffectDispatchRequest, invoke func(context.Context) Result) Result {
 		r.mu.RLock()
 		tool, ok := r.tools[req.Name]
 		r.mu.RUnlock()
@@ -116,7 +116,7 @@ func (r *Registry) testEffectDispatcher(approver Approver) EffectDispatcher {
 		if denied := r.permissionDenied(ctx, tool.Definition, req.Permission, call, args, req.Resources, opts, approver); denied != "" {
 			return ErrorResult(req.CallID, req.Name, denied)
 		}
-		return invoke()
+		return invoke(ctx)
 	}
 }
 

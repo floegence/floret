@@ -110,7 +110,9 @@ type EffectDispatchResult struct {
 	finalization engine.EffectResultFinalizationResult
 }
 
-type AuthorizedEffect func(EffectAuthorizationProof) (EffectDispatchResult, error)
+// AuthorizedEffect crosses the canonical effect boundary under the execution
+// context selected by the host authorization gate.
+type AuthorizedEffect func(context.Context, EffectAuthorizationProof) (EffectDispatchResult, error)
 
 type EffectAuthorizationGate interface {
 	Dispatch(context.Context, EffectAuthorizationRequest, AuthorizedEffect) (EffectDispatchResult, error)
@@ -158,6 +160,24 @@ const (
 	effectDispatchNotBegun
 	effectDispatchCancelled
 )
+
+func contextCancellationError(ctx context.Context) error {
+	if ctx == nil || ctx.Err() == nil {
+		return nil
+	}
+	cause := context.Cause(ctx)
+	if cause == nil || cause == ctx.Err() {
+		return ctx.Err()
+	}
+	if errors.Is(cause, ctx.Err()) {
+		return cause
+	}
+	return errors.Join(ctx.Err(), cause)
+}
+
+func isContextCancellationError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
 
 type effectDispatchBoundary struct {
 	mu       sync.Mutex
@@ -272,12 +292,12 @@ func cloneEffectFinalizationRequest(in engine.EffectResultFinalizationRequest) e
 }
 
 func (t *Thread) effectDispatcher() tools.EffectDispatcher {
-	return func(ctx context.Context, request tools.EffectDispatchRequest, invoke func() tools.Result) tools.Result {
+	return func(ctx context.Context, request tools.EffectDispatchRequest, invoke func(context.Context) tools.Result) tools.Result {
 		return t.dispatchAuthorizedEffect(ctx, request, invoke)
 	}
 }
 
-func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.EffectDispatchRequest, invoke func() tools.Result) tools.Result {
+func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.EffectDispatchRequest, invoke func(context.Context) tools.Result) tools.Result {
 	if t == nil || t.harness == nil || t.harness.options.Repo == nil {
 		return effectDispatchError(request.CallID, request.Name, ErrAuthorizationUnavailable)
 	}
@@ -299,8 +319,17 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 		return effectDispatchError(request.CallID, request.Name, err)
 	}
 	approvalRequested := request.Permission.Mode == tools.PermissionAsk
+	cancelApprovalForExecution := func(cancellation error) error {
+		if err := t.cancelApprovalBatchForTurn(ctx, lease, request.RunID); err != nil {
+			return err
+		}
+		if cancellation == nil {
+			return context.Canceled
+		}
+		return cancellation
+	}
 	if approvalRequested && ctx.Err() != nil {
-		return effectDispatchError(request.CallID, request.Name, t.cancelApprovalBatchForTurn(ctx, lease, request.RunID))
+		return effectDispatchError(request.CallID, request.Name, cancelApprovalForExecution(contextCancellationError(ctx)))
 	}
 	prepared, err := repo.PrepareEffectAttempt(ctx, sessiontree.PrepareEffectAttemptRequest{
 		Lease: lease, RequestFingerprint: fingerprint, Now: t.harness.now(),
@@ -311,7 +340,7 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 	})
 	if err != nil {
 		if approvalRequested && ctx.Err() != nil {
-			return effectDispatchError(request.CallID, request.Name, t.cancelApprovalBatchForTurn(ctx, lease, request.RunID))
+			return effectDispatchError(request.CallID, request.Name, cancelApprovalForExecution(contextCancellationError(ctx)))
 		}
 		return effectDispatchError(request.CallID, request.Name, err)
 	}
@@ -328,14 +357,14 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 		approval, err = t.bindEffectApproval(ctx, authorizationRequest)
 		if err != nil {
 			if ctx.Err() != nil {
-				return effectDispatchError(request.CallID, request.Name, t.cancelApprovalBatchForTurn(ctx, lease, request.RunID))
+				return effectDispatchError(request.CallID, request.Name, cancelApprovalForExecution(contextCancellationError(ctx)))
 			}
 			return t.rejectEffectAttempt(ctx, repo, lease, prepared.Attempt, fingerprint, err)
 		}
 		receipt, waitErr := approval.wait(ctx)
 		if waitErr != nil {
-			if errors.Is(waitErr, context.Canceled) || errors.Is(waitErr, context.DeadlineExceeded) {
-				waitErr = t.cancelApprovalBatchForTurn(ctx, lease, request.RunID)
+			if isContextCancellationError(waitErr) {
+				waitErr = cancelApprovalForExecution(waitErr)
 			}
 			return effectDispatchError(request.CallID, request.Name, waitErr)
 		}
@@ -399,6 +428,10 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 				if !contractFailure {
 					failureErr = errors.Join(ErrAuthorizationContract, failureErr)
 				}
+				if approvalRequested {
+					convergenceErr = failureErr
+					return
+				}
 				convergenceErr = &effectAttemptRejectedError{Err: t.rejectEffectAttemptCause(persistCtx, repo, lease, observed.Attempt, fingerprint, failureErr)}
 			case sessiontree.EffectAttemptDispatching:
 				convergenceErr = markUnknown(persistCtx, reason, failureErr)
@@ -433,7 +466,7 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 		defer knownResultMu.Unlock()
 		return knownResult, knownResultAvailable
 	}
-	authorizedEffect := func(proof EffectAuthorizationProof) (dispatchResult EffectDispatchResult, dispatchErr error) {
+	authorizedEffect := func(dispatchCtx context.Context, proof EffectAuthorizationProof) (dispatchResult EffectDispatchResult, dispatchErr error) {
 		if !active.Load() || !callbackState.CompareAndSwap(0, 1) {
 			return EffectDispatchResult{}, ErrEffectDispatchConsumed
 		}
@@ -473,15 +506,33 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 				gateOutcome.resolve(*recoveredOutcome)
 			}
 		}()
+		if dispatchCtx == nil {
+			return EffectDispatchResult{}, ErrAuthorizationContract
+		}
+		dispatchCtx, cancelDispatch := context.WithCancelCause(dispatchCtx)
+		stopTurnCancellation := context.AfterFunc(ctx, func() {
+			cancelDispatch(contextCancellationError(ctx))
+		})
+		if cause := contextCancellationError(ctx); cause != nil {
+			cancelDispatch(cause)
+		}
+		defer func() {
+			stopTurnCancellation()
+			cancelDispatch(context.Canceled)
+		}()
+		dispatchCtx = sessiontree.ContextWithTurnLease(dispatchCtx, lease)
 		if err := validateEffectAuthorizationProof(authorizationRequest, proof); err != nil {
 			return EffectDispatchResult{}, err
 		}
-		current, ok := sessiontree.TurnLeaseFromContext(ctx)
+		current, ok := sessiontree.TurnLeaseFromContext(dispatchCtx)
 		if !ok || current.OwnerID != lease.OwnerID || current.Generation != lease.Generation {
 			return EffectDispatchResult{}, sessiontree.ErrStaleAuthority
 		}
+		if err := contextCancellationError(dispatchCtx); err != nil {
+			return EffectDispatchResult{}, err
+		}
 		if !dispatchBoundary.begin() {
-			if err := ctx.Err(); err != nil {
+			if err := contextCancellationError(ctx); err != nil {
 				return EffectDispatchResult{}, err
 			}
 			return EffectDispatchResult{}, ErrAuthorizationContract
@@ -494,9 +545,9 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 			approvedEvent = t.effectApprovalEvent(event.ToolApprovalApproved, authorizationRequest, "")
 			approvedEntry := approvalEventEntry(t.id, authorizationRequest.TurnID, approvedEvent)
 			approvedEntry.ID = sessiontree.ApprovalDispatchEntryID(approval.receipt.DecisionID, approval.record.ApprovalID)
-			approvalCommit, beginErr = approval.commitDispatch(ctx, current, proofHash, approvedEntry)
+			approvalCommit, beginErr = approval.commitDispatch(dispatchCtx, current, proofHash, approvedEntry)
 		} else {
-			_, beginErr = repo.BeginEffectDispatch(ctx, sessiontree.BeginEffectDispatchRequest{
+			_, beginErr = repo.BeginEffectDispatch(dispatchCtx, sessiontree.BeginEffectDispatchRequest{
 				Lease: current, EffectAttemptID: prepared.Attempt.EffectAttemptID, RequestFingerprint: fingerprint,
 				ObservedHeartbeat: authorizationRequest.ObservedHeartbeat, AuthorizationProofHash: proofHash, Now: t.harness.now(),
 			})
@@ -520,7 +571,7 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 				t.harness.options.Sink.Emit(event.SanitizeWithPolicy(approvedEvent, t.harness.options.SinkPolicy))
 			}
 		}
-		handlerResult := invoke()
+		handlerResult := invoke(dispatchCtx)
 		if handlerResult.DispatchErr != nil {
 			return EffectDispatchResult{}, convergeUnknown("effect_handler_panic", handlerResult.DispatchErr)
 		}
@@ -699,7 +750,27 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 			return handlerResult
 		default:
 		}
+		if cause := contextCancellationError(ctx); cause != nil {
+			switch dispatchBoundary.cancelOrObserve() {
+			case effectDispatchCancelled, effectDispatchNotBegun:
+				active.Store(false)
+				if approvalRequested {
+					return effectDispatchError(request.CallID, request.Name, cancelApprovalForExecution(cause))
+				}
+				return effectDispatchError(request.CallID, request.Name, cause)
+			}
+		}
 		outcome := gateOutcome.result()
+		if isContextCancellationError(outcome.err) {
+			switch dispatchBoundary.cancelOrObserve() {
+			case effectDispatchCancelled, effectDispatchNotBegun:
+				active.Store(false)
+				if approvalRequested {
+					return effectDispatchError(request.CallID, request.Name, cancelApprovalForExecution(outcome.err))
+				}
+				return effectDispatchError(request.CallID, request.Name, outcome.err)
+			}
+		}
 		if outcome.err == nil {
 			outcome.err = ErrAuthorizationContract
 		}
@@ -732,6 +803,32 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 					continue
 				case <-gateOutcome.done:
 					outcome := gateOutcome.result()
+					boundaryResolved := false
+					select {
+					case <-dispatchBoundary.resolved:
+						boundaryResolved = true
+					default:
+					}
+					if boundaryResolved {
+						switch dispatchBoundary.cancelOrObserve() {
+						case effectDispatchCancelled, effectDispatchNotBegun:
+							cancellation := contextCancellationError(ctx)
+							if cancellation == nil && isContextCancellationError(outcome.err) {
+								cancellation = outcome.err
+							}
+							if cancellation == nil {
+								cancellation = context.Canceled
+							}
+							active.Store(false)
+							if approvalRequested {
+								return effectDispatchError(request.CallID, request.Name, cancelApprovalForExecution(cancellation))
+							}
+							return effectDispatchError(request.CallID, request.Name, cancellation)
+						case effectDispatchBegun:
+						default:
+							return effectDispatchError(request.CallID, request.Name, ErrAuthorizationContract)
+						}
+					}
 					if outcome.err == nil {
 						outcome.err = ErrAuthorizationContract
 					}
@@ -767,12 +864,10 @@ func (t *Thread) dispatchAuthorizedEffect(ctx context.Context, request tools.Eff
 				continue
 			case effectDispatchCancelled, effectDispatchNotBegun:
 				active.Store(false)
-				persistCtx, cancelPersist := turnFinalizationContext(ctx)
-				defer cancelPersist()
 				if approvalRequested {
-					return effectDispatchError(request.CallID, request.Name, t.cancelApprovalBatchForTurn(ctx, lease, request.RunID))
+					return effectDispatchError(request.CallID, request.Name, cancelApprovalForExecution(contextCancellationError(ctx)))
 				}
-				return t.rejectEffectAttempt(persistCtx, repo, lease, prepared.Attempt, fingerprint, ctx.Err())
+				return effectDispatchError(request.CallID, request.Name, contextCancellationError(ctx))
 			default:
 				return effectDispatchError(request.CallID, request.Name, ErrAuthorizationContract)
 			}

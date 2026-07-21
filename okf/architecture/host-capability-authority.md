@@ -293,9 +293,17 @@ permission policy and approval evidence. They meet at one narrow public adapter:
 EffectAuthorizationGate.Dispatch(
   context,
   EffectAuthorizationRequest,
-  AuthorizedEffect(EffectAuthorizationProof),
+  AuthorizedEffect(execution context, EffectAuthorizationProof),
 ) -> EffectDispatchResult
 ```
+
+The callback execution context is selected by the host gate and reaches the
+tool handler. Floret composes it with the active turn context before the
+`prepared -> dispatching` boundary, so either scope may cancel execution and no
+host-selected context can extend the handler beyond canonical turn lifetime.
+Cancellation before dispatch remains execution cancellation: `FinishTurn`
+atomically cancels the prepared attempt instead of recording an authorization
+rejection. A nil context is a contract error and never enters the handler.
 
 Before calling the host gate, Floret persists one canonical effect attempt. The
 Store assigns `EffectAttemptID`; callers and adapters cannot choose it. A unique
@@ -1347,6 +1355,15 @@ approval validation, audit persistence, and synchronous callback invocation. It
 does not persist Floret effect lifecycle, cannot retain the callback, and cannot
 use audit rows as current permission. Adapter contract failures use the public
 authorization and committed-effect errors above.
+
+For a locally owned execution, an exact valid terminal `TurnResult` from the
+original `RunTurn` call is the authority-release barrier: terminal outcome and
+durable lease release are complete. If execution returns without that result,
+the host must first confirm the exact terminal turn through the public canonical
+read API. A host may signal its own pending processes earlier, but it uses the
+provider-free, exact root- or parent-bound pending recovery capability only
+after one of those proofs. `ErrThreadBusy` before the barrier is a contract
+fact, not a retry loop.
 
 # Required Negative Verification
 

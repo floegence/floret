@@ -82,6 +82,13 @@ admission after the owner becomes idle. A restart coordinator may construct a
 provider-free `PendingToolRecoveryHost` bound directly to exactly one root or
 parent. It is not a general maintenance or read facade and must be owned by the
 one coordinator responsible for that pending work.
+For a host that still owns the original local execution, an exact valid terminal
+`TurnResult` is the authority-release barrier: Floret has committed the terminal
+outcome and released the active lease. A return without that result requires an
+exact terminal confirmation through the public canonical read API. The host may
+then use its already scoped `PendingToolRecoveryHost` to settle remaining
+host-owned work. It must not start recovery settlement before either proof or
+mask the resulting `ErrThreadBusy` with polling.
 
 The durable Floret journal, public turn pages and projections, canonical titles,
 typed failures, ordered user references, aggregate approval queue, and typed
@@ -94,6 +101,11 @@ tool status, arguments, results, or errors.
 `SubAgentHostOptions.ModelGateway` let a host route parent and child turns
 through product-owned model transport while Floret still owns request
 construction, provider loop control, ledgers, tool dispatch, and runtime events.
+Their `EffectAuthorizationGate` receives a one-shot `AuthorizedEffect` callback
+that requires an execution context. The selected context reaches the handler,
+and Floret composes it with active turn cancellation before crossing durable
+effect dispatch. A host may therefore narrow one effect lifetime without
+creating a second lifecycle owner or allowing the effect to outlive the turn.
 Title generation is host-owned by default, but title persistence is always
 Floret-owned. `SetThreadTitle` is the explicit host write contract.
 `ThreadTitleModeProvider` routes a dedicated Floret title request through the

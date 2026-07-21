@@ -275,7 +275,7 @@ func (g allowRuntimeEffectGate) Dispatch(ctx context.Context, req EffectAuthoriz
 			return EffectDispatchResult{}, ErrEffectUnauthorized
 		}
 	}
-	return effect(EffectAuthorizationProof{
+	return effect(ctx, EffectAuthorizationProof{
 		EffectAttemptID: req.EffectAttemptID, RequestFingerprint: req.RequestFingerprint,
 		ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, ToolCallID: req.ToolCallID,
 		LeaseOwnerID: req.LeaseOwnerID, LeaseGeneration: req.LeaseGeneration,

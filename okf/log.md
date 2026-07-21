@@ -1,6 +1,13 @@
 # Floret OKF Update Log
 
 ## 2026-07-22
+* **Effects**: Made the host authorization callback context-aware, propagated
+  the selected execution scope to local handlers, and bounded it by canonical
+  turn cancellation without reclassifying pre-dispatch cancellation as an
+  authorization failure.
+* **Lifecycle**: Defined an exact valid terminal `RunTurn` result, or an exact
+  canonical terminal read after an incomplete return, as the active-authority
+  release barrier before pending-work recovery settlement.
 * **Reads**: Exposed canonical approval-queue reads through the bound
   `ThreadReadHost` capability so reconnect/bootstrap projections can reload
   root and descendant pending approvals without an active turn host or a

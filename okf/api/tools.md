@@ -28,6 +28,12 @@ a direct handler runner. Floret first creates a canonical effect attempt, then
 passes the exact invocation to the host `EffectAuthorizationGate`; only its
 synchronous authorized callback can cross the handler boundary. Missing effect
 authority fails before resource extraction or handler side effects.
+The dispatcher callback accepts an explicit execution `context.Context` chosen
+by the host gate. That context reaches the typed tool handler, while Floret also
+binds it to the active turn context so host cancellation can narrow execution
+but cannot extend it beyond canonical turn lifetime. Cancellation before the
+dispatch boundary leaves the attempt prepared for atomic turn cancellation;
+it is not rewritten as an authorization rejection.
 `ApprovalRequest`, `PermissionDecision`, and `Approver` are not `tools` package
 contracts; test-only authorization helpers live under `internal/testing`.
 After the handler crosses `dispatching`, Floret owns result convergence. It

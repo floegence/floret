@@ -100,25 +100,30 @@ func TestRegistryDispatchRequiresEffectAuthorityBeforeToolSideEffects(t *testing
 }
 
 func TestRegistryDispatchInvokesHandlerOnlyInsideEffectDispatcher(t *testing.T) {
+	type dispatchContextKey struct{}
 	handlerCalled := false
 	dispatcherCalled := false
+	selectedContext := context.WithValue(context.Background(), dispatchContextKey{}, "selected")
 	reg := NewRegistry()
-	if err := reg.Register(testTool("read", true, func(context.Context, Invocation[testArgs]) (Result, error) {
+	if err := reg.Register(testTool("read", true, func(ctx context.Context, _ Invocation[testArgs]) (Result, error) {
 		handlerCalled = true
 		if !dispatcherCalled {
 			t.Fatal("handler ran outside effect dispatcher")
+		}
+		if got := ctx.Value(dispatchContextKey{}); got != "selected" {
+			t.Fatalf("handler context value = %v, want selected dispatcher context", got)
 		}
 		return Result{Text: "ok"}, nil
 	})); err != nil {
 		t.Fatal(err)
 	}
 	opts := DispatchOptions{
-		EffectDispatcher: func(_ context.Context, req EffectDispatchRequest, invoke func() Result) Result {
+		EffectDispatcher: func(_ context.Context, req EffectDispatchRequest, invoke func(context.Context) Result) Result {
 			dispatcherCalled = true
 			if req.CallID != "call" || req.Name != "read" || req.Permission.Mode != PermissionAllow {
 				t.Fatalf("dispatch request = %#v", req)
 			}
-			return invoke()
+			return invoke(selectedContext)
 		},
 	}
 	result := reg.Dispatch(context.Background(), ToolCall{ID: "call", Name: "read", Args: `{"value":"x"}`}, opts)
@@ -949,7 +954,9 @@ func TestDispatchBatchPreflightsOnlyValidDispatchesInModelOrder(t *testing.T) {
 				<-release
 				return nil
 			},
-			EffectDispatcher: func(_ context.Context, _ EffectDispatchRequest, invoke func() Result) Result { return invoke() },
+			EffectDispatcher: func(ctx context.Context, _ EffectDispatchRequest, invoke func(context.Context) Result) Result {
+				return invoke(ctx)
+			},
 		})
 	}()
 	var requests []EffectDispatchRequest
@@ -988,7 +995,9 @@ func TestDispatchBatchPreflightFailurePreventsEveryPreparedHandler(t *testing.T)
 		{ID: "b", Name: "read", Args: `{"value":"b"}`},
 	}, DispatchOptions{
 		EffectBatchPreflight: func(context.Context, []EffectDispatchRequest) error { return errors.New("preflight failed") },
-		EffectDispatcher:     func(_ context.Context, _ EffectDispatchRequest, invoke func() Result) Result { return invoke() },
+		EffectDispatcher: func(ctx context.Context, _ EffectDispatchRequest, invoke func(context.Context) Result) Result {
+			return invoke(ctx)
+		},
 	})
 	if called != 0 || len(results) != 2 || !results[0].IsError || !results[1].IsError ||
 		!strings.Contains(results[0].Text, "preflight failed") || !strings.Contains(results[1].Text, "preflight failed") {

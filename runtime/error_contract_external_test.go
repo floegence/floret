@@ -268,6 +268,129 @@ func TestPublicRuntimeErrorsSupportErrorsIsWithoutInternalImports(t *testing.T) 
 	})
 }
 
+func TestTerminalRunTurnReturnReleasesAuthorityForPendingToolRecovery(t *testing.T) {
+	stores := []struct {
+		name string
+		open func(*testing.T) *floretruntime.Store
+	}{
+		{name: "memory", open: func(*testing.T) *floretruntime.Store { return floretruntime.NewMemoryStore() }},
+		{name: "sqlite", open: func(t *testing.T) *floretruntime.Store {
+			store, err := floretruntime.OpenSQLiteStore(filepath.Join(t.TempDir(), "recovery-after-cancel.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return store
+		}},
+	}
+	for _, storeCase := range stores {
+		t.Run(storeCase.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := storeCase.open(t)
+			t.Cleanup(func() { _ = store.Close() })
+			capabilities := configurePublicErrorCapabilities(t, store)
+			const threadID = floretruntime.ThreadID("recovery-after-cancel")
+			const turnID = floretruntime.TurnID("turn-1")
+			const runID = floretruntime.RunID("run-1")
+			createIntentID := floretruntime.CreateIntentID("create:recovery-after-cancel")
+			createHost, err := capabilities.create.Bind(threadID, createIntentID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := createHost.CreateThread(ctx, floretruntime.CreateThreadRequest{ThreadID: threadID, CreateIntentID: createIntentID}); err != nil {
+				t.Fatal(err)
+			}
+
+			registry := tools.NewRegistry()
+			if err := registry.Register(tools.Define[publicErrorArgs](tools.Definition{
+				Name:        "pending_tool",
+				InputSchema: tools.StrictObject(map[string]any{"text": tools.String("text")}, []string{"text"}),
+				Permission:  tools.PermissionSpec{Mode: tools.PermissionAllow},
+			}, nil, nil, func(context.Context, tools.Invocation[publicErrorArgs]) (tools.Result, error) {
+				return tools.Result{Pending: &tools.PendingToolResult{
+					Handle: "pending:cancel:1", State: tools.PendingToolResultRunning, Summary: "running", Instruction: "wait",
+				}}, nil
+			})); err != nil {
+				t.Fatal(err)
+			}
+			gateway := newCancelAfterPendingGateway()
+			effectGate := &publicAllowEffectGate{byCallID: make(map[string]string)}
+			factory, err := capabilities.turn.Bind(threadID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			host, err := factory.NewHost(ctx, floretruntime.TurnExecutionHostOptions{
+				Config:                  publicGatewayConfig(),
+				ModelGateway:            gateway,
+				ModelGatewayIdentity:    publicGatewayIdentity(),
+				Tools:                   registry,
+				EffectAuthorizationGate: effectGate,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			runCtx, cancelRun := context.WithCancel(ctx)
+			done := make(chan struct {
+				result floretruntime.TurnResult
+				err    error
+			}, 1)
+			go func() {
+				result, runErr := host.RunTurn(runCtx, floretruntime.RunTurnRequest{
+					RunID: runID, ThreadID: threadID, TurnID: turnID,
+					Input: floretruntime.TurnInput{Text: "start pending work"},
+				})
+				done <- struct {
+					result floretruntime.TurnResult
+					err    error
+				}{result: result, err: runErr}
+			}()
+			select {
+			case <-gateway.waiting:
+			case <-time.After(2 * time.Second):
+				cancelRun()
+				t.Fatal("turn did not reach the provider request after the pending tool result")
+			}
+			recovery, err := capabilities.recovery.NewThreadHost(ctx, threadID, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := publicSettlementRequest("pending-1", "pending_tool", "pending:cancel:1", floretruntime.PendingToolSettlementFailed)
+			request.Target.ThreadID = threadID
+			request.Target.TurnID = turnID
+			request.Target.RunID = runID
+			request.Target.EffectAttemptID = effectGate.effectAttemptID("pending-1")
+			request.Summary = "canceled"
+			if _, err := recovery.SettlePendingTool(ctx, request); !errors.Is(err, floretruntime.ErrThreadBusy) {
+				t.Fatalf("recovery settlement before terminal RunTurn return error=%v, want ErrThreadBusy", err)
+			}
+			cancelRun()
+			var outcome struct {
+				result floretruntime.TurnResult
+				err    error
+			}
+			select {
+			case outcome = <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("RunTurn did not return after cancellation")
+			}
+			if !errors.Is(outcome.err, context.Canceled) || outcome.result.Status != floretruntime.TurnStatusCancelled {
+				t.Fatalf("RunTurn result=%#v err=%v, want cancelled", outcome.result, outcome.err)
+			}
+
+			if _, err := recovery.SettlePendingTool(ctx, request); err != nil {
+				t.Fatalf("recovery settlement immediately after RunTurn returned: %v", err)
+			}
+			next, err := host.RunTurn(ctx, floretruntime.RunTurnRequest{
+				RunID: "run-2", ThreadID: threadID, TurnID: "turn-2",
+				Input: floretruntime.TurnInput{Text: "continue"},
+			})
+			if err != nil || next.Status != floretruntime.TurnStatusCompleted {
+				t.Fatalf("next turn after recovery result=%#v err=%v, want completed", next, err)
+			}
+		})
+	}
+}
+
 func TestPublicOpenSQLiteStoreMapsInvalidAuthorityGraph(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "invalid-authority.db")
@@ -373,7 +496,7 @@ func (g *publicAllowEffectGate) Dispatch(ctx context.Context, req floretruntime.
 	g.mu.Lock()
 	g.byCallID[req.ToolCallID] = req.EffectAttemptID
 	g.mu.Unlock()
-	return effect(floretruntime.EffectAuthorizationProof{
+	return effect(ctx, floretruntime.EffectAuthorizationProof{
 		EffectAttemptID: req.EffectAttemptID, RequestFingerprint: req.RequestFingerprint,
 		ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, ToolCallID: req.ToolCallID,
 		LeaseOwnerID: req.LeaseOwnerID, LeaseGeneration: req.LeaseGeneration,
@@ -445,6 +568,46 @@ func publicGatewayIdentity() floretruntime.ModelGatewayIdentity {
 type publicToolGateway struct {
 	mu   sync.Mutex
 	step int
+}
+
+type cancelAfterPendingGateway struct {
+	mu      sync.Mutex
+	step    int
+	waiting chan struct{}
+	once    sync.Once
+}
+
+func newCancelAfterPendingGateway() *cancelAfterPendingGateway {
+	return &cancelAfterPendingGateway{waiting: make(chan struct{})}
+}
+
+func (g *cancelAfterPendingGateway) StreamModel(ctx context.Context, _ floretruntime.ModelRequest) (<-chan floretruntime.ModelEvent, error) {
+	g.mu.Lock()
+	g.step++
+	step := g.step
+	g.mu.Unlock()
+	if step == 1 {
+		events := make(chan floretruntime.ModelEvent, 2)
+		events <- floretruntime.ModelEvent{
+			Type: floretruntime.ModelEventToolCalls,
+			ToolCalls: []tools.ToolCall{
+				{ID: "pending-1", Name: "pending_tool", Args: `{"text":"pending"}`},
+			},
+		}
+		events <- floretruntime.ModelEvent{Type: floretruntime.ModelEventDone, Reason: "tool_calls"}
+		close(events)
+		return events, nil
+	}
+	if step == 2 {
+		g.once.Do(func() { close(g.waiting) })
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	events := make(chan floretruntime.ModelEvent, 2)
+	events <- floretruntime.ModelEvent{Type: floretruntime.ModelEventDelta, Text: "done"}
+	events <- floretruntime.ModelEvent{Type: floretruntime.ModelEventDone, Reason: "stop"}
+	close(events)
+	return events, nil
 }
 
 func (g *publicToolGateway) StreamModel(context.Context, floretruntime.ModelRequest) (<-chan floretruntime.ModelEvent, error) {

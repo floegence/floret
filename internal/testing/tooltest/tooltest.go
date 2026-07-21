@@ -98,7 +98,7 @@ func RunBatch(ctx context.Context, registry *tools.Registry, calls []tools.ToolC
 // Dispatcher returns an in-memory authorization adapter for repository tests.
 // It must not be used by production packages.
 func Dispatcher(approver Approver) tools.EffectDispatcher {
-	return func(ctx context.Context, req tools.EffectDispatchRequest, invoke func() tools.Result) tools.Result {
+	return func(ctx context.Context, req tools.EffectDispatchRequest, invoke func(context.Context) tools.Result) tools.Result {
 		switch req.Permission.Mode {
 		case tools.PermissionDeny:
 			return tools.ErrorResult(req.CallID, req.Name, tools.ErrRejected.Error())
@@ -138,7 +138,7 @@ func Dispatcher(approver Approver) tools.EffectDispatcher {
 				return tools.ErrorResult(req.CallID, req.Name, reason)
 			}
 		}
-		return invoke()
+		return invoke(ctx)
 	}
 }
 

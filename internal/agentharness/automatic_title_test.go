@@ -206,6 +206,27 @@ func TestAutomaticTitleDetachesFromSuccessfulMainTurnCancellation(t *testing.T) 
 	}
 }
 
+func TestAutomaticTitleWorkerJoinFollowsCanonicalMainTurnOutcome(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		result TurnResult
+		err    error
+		want   bool
+	}{
+		{name: "completed", result: TurnResult{Status: engine.Completed}},
+		{name: "waiting", result: TurnResult{Status: engine.Waiting}},
+		{name: "cancelled without error", result: TurnResult{Status: engine.Cancelled}, want: true},
+		{name: "failed without error", result: TurnResult{Status: engine.Failed}, want: true},
+		{name: "returned error", result: TurnResult{Status: engine.Completed}, err: errors.New("run failed"), want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := automaticTitleWorkerMustJoin(test.result, test.err); got != test.want {
+				t.Fatalf("automaticTitleWorkerMustJoin(%#v, %v) = %v, want %v", test.result, test.err, got, test.want)
+			}
+		})
+	}
+}
+
 func TestAutomaticTitlePendingClaimDoesNotFailFollowUpTurn(t *testing.T) {
 	for _, test := range []struct {
 		name       string

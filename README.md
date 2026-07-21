@@ -243,7 +243,10 @@ Define domain actions through `tools.Registry`. Each tool has a strict JSON
 schema and can describe its effects and resources. Floret validates the call,
 records its generic approval lifecycle, and routes effectful dispatch through
 the host's `runtime.EffectAuthorizationGate` before invoking the handler. The
-handler must still enforce your authorization rules.
+handler must still enforce your authorization rules. The gate invokes the
+one-shot `AuthorizedEffect` with the execution context selected by the host;
+Floret also binds that context to the active turn lifetime, so neither a longer
+host context nor a retained callback can outlive canonical turn cancellation.
 
 | Tool concern | Floret handles | Host handles |
 | --- | --- | --- |
@@ -265,6 +268,14 @@ Keep Floret's runtime identities in product work records:
 They are intentionally separate. For example, a host-owned process that later
 settles pending tool work must use the recorded Floret `ThreadID`, `TurnID`, and
 `RunID`, rather than a UI, audit, or display identifier.
+
+When a host cancels its exact `RunTurn` context, an exact terminal `TurnResult`
+means Floret has committed the canonical terminal outcome and released active
+turn authority. That valid terminal result is the handoff point for settling
+remaining host-owned pending work through the bound `PendingToolRecoveryHost`.
+If execution returns without a valid exact terminal result, the host must first
+confirm the exact terminal turn through the public canonical read API. Hosts
+must not poll or retry around `ErrThreadBusy` before either proof exists.
 
 Thread forks require a host-supplied `ForkOperationID`. Floret saves the source
 leaf, destination identities, terminal child-thread plan, and turn/run mappings

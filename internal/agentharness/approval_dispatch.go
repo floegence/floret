@@ -230,10 +230,6 @@ func (t *Thread) cancelApprovalBatchForTurn(ctx context.Context, lease sessiontr
 	if !ok {
 		return errors.New("session tree repo does not support approval authority")
 	}
-	cause := ctx.Err()
-	if cause == nil {
-		cause = context.Canceled
-	}
 	persistCtx, cancel := turnFinalizationContext(ctx)
 	defer cancel()
 	queue, err := authority.ReadApprovalQueue(persistCtx, lease.ThreadID)
@@ -284,7 +280,7 @@ func (t *Thread) cancelApprovalBatchForTurn(ctx context.Context, lease sessiontr
 			}
 		}
 	}
-	return cause
+	return nil
 }
 
 func (a *effectApproval) commitDispatch(
