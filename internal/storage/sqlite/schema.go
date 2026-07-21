@@ -13,12 +13,14 @@ import (
 )
 
 const (
-	schemaVersion              = "15"
+	schemaVersion              = "16"
+	schemaVersion15            = "15"
 	schemaVersion14            = "14"
 	schemaVersion13            = "13"
 	schemaFingerprintVersion13 = "d911a003f57c2e60123ae392164109ab42b20eefa9fdb2111f28d220b8c2e5cb"
 	schemaFingerprintVersion14 = "37d856aba09718aab51e3da7ea1e5d66a0b51e6f39d252ad2433caec9e333a07"
 	schemaFingerprintVersion15 = "edbfebf6c00fd69b2034b60db905ea6756304299e94903d1868460f314c583ae"
+	schemaFingerprintVersion16 = "e9eb8db040f98a3d41d2a87109814d5cf005d58573c8750ac5b218bd6537f82e"
 )
 
 func ensureSchema(ctx context.Context, tx sqlRunner, leasePolicy sessiontree.LeasePolicy) error {
@@ -60,8 +62,19 @@ func ensureSchema(ctx context.Context, tx sqlRunner, leasePolicy sessiontree.Lea
 	}
 	switch current {
 	case schemaVersion:
+		if fingerprint != schemaFingerprintVersion16 {
+			return unsupportedSchemaError(current, fingerprint)
+		}
+		if err := verifySchemaVersion(ctx, tx, schemaVersion); err != nil {
+			return err
+		}
+		return verifyLeasePolicy(ctx, tx, leasePolicy)
+	case schemaVersion15:
 		if fingerprint != schemaFingerprintVersion15 {
 			return unsupportedSchemaError(current, fingerprint)
+		}
+		if err := migrateSchemaVersion15(ctx, tx); err != nil {
+			return err
 		}
 		if err := verifySchemaVersion(ctx, tx, schemaVersion); err != nil {
 			return err
@@ -72,6 +85,9 @@ func ensureSchema(ctx context.Context, tx sqlRunner, leasePolicy sessiontree.Lea
 			return unsupportedSchemaError(current, fingerprint)
 		}
 		if err := migrateSchemaVersion14(ctx, tx); err != nil {
+			return err
+		}
+		if err := migrateSchemaVersion15(ctx, tx); err != nil {
 			return err
 		}
 		if err := verifySchemaVersion(ctx, tx, schemaVersion); err != nil {
@@ -96,9 +112,9 @@ func unsupportedSchemaError(version, fingerprint string) error {
 		ObservedVersion:        version,
 		ObservedFingerprint:    fingerprint,
 		CurrentVersion:         schemaVersion,
-		CurrentFingerprint:     schemaFingerprintVersion15,
-		PredecessorVersion:     schemaVersion14,
-		PredecessorFingerprint: schemaFingerprintVersion14,
+		CurrentFingerprint:     schemaFingerprintVersion16,
+		PredecessorVersion:     schemaVersion15,
+		PredecessorFingerprint: schemaFingerprintVersion15,
 	}
 }
 
@@ -119,7 +135,7 @@ func schemaTableExists(ctx context.Context, q sqlRunner, tableName string) (bool
 }
 
 func canonicalSchemaFingerprint() string {
-	return schemaFingerprintVersion15
+	return schemaFingerprintVersion16
 }
 
 func computedCanonicalSchemaFingerprint() string {
@@ -160,6 +176,16 @@ const threadCloseOperationColumnSQL = `
 	close_operation_id TEXT NOT NULL DEFAULT '',
 `
 
+const threadTitleAuthorityColumnsSQL = `
+	title_generation INTEGER NOT NULL DEFAULT 0 CHECK (title_generation >= 0),
+	title_token TEXT NOT NULL DEFAULT '',
+`
+
+const pendingThreadTitleIndexSQL = `
+CREATE INDEX threads_pending_title_idx ON threads(title_updated_at, id)
+	WHERE title_status = 'pending';
+`
+
 const threadAuthorityChecksSQL = `
 	CHECK (lease_generation >= 0),
 	CHECK ((lifecycle = 'closing' AND parent_thread_id <> '' AND close_operation_id <> '') OR
@@ -170,6 +196,10 @@ const canonicalTurnIndexSQL = `
 CREATE INDEX entries_turn_ordinal_idx ON entries(thread_id, turn_id, ordinal);
 CREATE UNIQUE INDEX entries_started_turn_unique_idx ON entries(thread_id, turn_id)
 	WHERE type = 'turn_marker' AND turn_status = 'started';
+`
+
+const entryPathDepthColumnSQL = `
+	path_depth INTEGER NOT NULL DEFAULT 1 CHECK (path_depth > 0),
 `
 
 const turnAuthoritySQL = `
@@ -314,6 +344,93 @@ CREATE TABLE effect_attempts (
 );
 
 CREATE INDEX effect_attempts_turn_idx ON effect_attempts(thread_id, turn_id, effect_attempt_id);
+`
+
+const approvalAuthoritySQL = `
+CREATE TABLE approval_queues (
+	root_thread_id TEXT PRIMARY KEY,
+	generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+	revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+	current_approval_id TEXT NOT NULL DEFAULT '',
+	next_sequence INTEGER NOT NULL DEFAULT 0 CHECK (next_sequence >= 0),
+	updated_at TEXT NOT NULL DEFAULT '',
+	FOREIGN KEY (root_thread_id) REFERENCES threads(id) ON DELETE CASCADE
+);
+
+CREATE TABLE approval_requests (
+	approval_id TEXT PRIMARY KEY,
+	root_thread_id TEXT NOT NULL,
+	parent_thread_id TEXT NOT NULL DEFAULT '',
+	thread_id TEXT NOT NULL,
+	turn_id TEXT NOT NULL,
+	run_id TEXT NOT NULL,
+	tool_call_id TEXT NOT NULL,
+	effect_attempt_id TEXT NOT NULL UNIQUE,
+	tool_name TEXT NOT NULL,
+	tool_kind TEXT NOT NULL,
+	step INTEGER NOT NULL CHECK (step > 0),
+	batch_index INTEGER NOT NULL CHECK (batch_index >= 0),
+	batch_size INTEGER NOT NULL CHECK (batch_size > 0 AND batch_index < batch_size),
+	args_hash TEXT NOT NULL,
+	resources_json TEXT NOT NULL DEFAULT '[]',
+	effects_json TEXT NOT NULL DEFAULT '[]',
+	labels_json TEXT NOT NULL DEFAULT '{}',
+	host_context_json TEXT NOT NULL DEFAULT '{}',
+	read_only INTEGER NOT NULL DEFAULT 0 CHECK (read_only IN (0, 1)),
+	destructive INTEGER NOT NULL DEFAULT 0 CHECK (destructive IN (0, 1)),
+	open_world INTEGER NOT NULL DEFAULT 0 CHECK (open_world IN (0, 1)),
+	request_fingerprint TEXT NOT NULL,
+	state TEXT NOT NULL CHECK (state IN ('requested', 'decision_submitted', 'approved', 'rejected', 'failed', 'timed_out', 'cancelled')),
+	revision INTEGER NOT NULL CHECK (revision > 0),
+	queue_sequence INTEGER NOT NULL CHECK (queue_sequence > 0),
+	decision_id TEXT NOT NULL DEFAULT '',
+	reason TEXT NOT NULL DEFAULT '',
+	authorization_proof_hash TEXT NOT NULL DEFAULT '',
+	requested_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	resolved_at TEXT NOT NULL DEFAULT '',
+	UNIQUE (root_thread_id, queue_sequence),
+	FOREIGN KEY (root_thread_id) REFERENCES threads(id) ON DELETE CASCADE,
+	FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE,
+	FOREIGN KEY (effect_attempt_id) REFERENCES effect_attempts(effect_attempt_id) ON DELETE CASCADE,
+	CHECK (
+		(state IN ('requested', 'decision_submitted') AND resolved_at = '') OR
+		(state IN ('approved', 'rejected', 'failed', 'timed_out', 'cancelled') AND resolved_at <> '')
+	),
+	CHECK ((state = 'decision_submitted' AND decision_id <> '') OR state <> 'decision_submitted'),
+	CHECK ((state = 'approved' AND authorization_proof_hash <> '') OR state <> 'approved')
+);
+
+CREATE INDEX approval_requests_root_queue_idx ON approval_requests(root_thread_id, queue_sequence, approval_id)
+	WHERE state IN ('requested', 'decision_submitted');
+CREATE INDEX approval_requests_thread_idx ON approval_requests(thread_id, turn_id, approval_id);
+
+CREATE TABLE approval_decisions (
+	decision_id TEXT PRIMARY KEY,
+	expected_root_thread_id TEXT NOT NULL,
+	expected_generation INTEGER NOT NULL CHECK (expected_generation > 0),
+	expected_revision INTEGER NOT NULL CHECK (expected_revision > 0),
+	expected_approval_id TEXT NOT NULL,
+	expected_thread_id TEXT NOT NULL,
+	expected_turn_id TEXT NOT NULL,
+	expected_run_id TEXT NOT NULL,
+	expected_tool_call_id TEXT NOT NULL,
+	expected_effect_attempt_id TEXT NOT NULL,
+	expected_approval_revision INTEGER NOT NULL CHECK (expected_approval_revision > 0),
+	decision TEXT NOT NULL CHECK (decision IN ('approve', 'reject')),
+	approval_id TEXT NOT NULL,
+	receipt_state TEXT NOT NULL CHECK (receipt_state IN ('decision_submitted', 'approved', 'rejected', 'failed', 'timed_out', 'cancelled')),
+	reason TEXT NOT NULL DEFAULT '',
+	authorization_proof_hash TEXT NOT NULL DEFAULT '',
+	queue_generation INTEGER NOT NULL CHECK (queue_generation > 0),
+	queue_revision INTEGER NOT NULL CHECK (queue_revision > 0),
+	approval_revision INTEGER NOT NULL CHECK (approval_revision > 0),
+	submitted_at TEXT NOT NULL,
+	resolved_at TEXT NOT NULL DEFAULT '',
+	FOREIGN KEY (approval_id) REFERENCES approval_requests(approval_id) ON DELETE CASCADE
+);
+
+CREATE INDEX approval_decisions_approval_idx ON approval_decisions(approval_id, decision_id);
 `
 
 const subAgentInputsSQL = `
@@ -500,17 +617,21 @@ CREATE TABLE threads (
 	updated_at TEXT NOT NULL,
 	last_viewed_at TEXT NOT NULL DEFAULT '',
 ` + threadLeaseGenerationColumnSQL + `
+` + threadTitleAuthorityColumnsSQL + `
 ` + threadAuthorityChecksSQL + `
 );
+
+
+` + pendingThreadTitleIndexSQL + `
 
 ` + forkOperationsSQL + rootAuthoritySQL + `
 
 CREATE TABLE entries (
 	thread_id TEXT NOT NULL,
 	id TEXT NOT NULL,
-	ordinal INTEGER NOT NULL,
-	parent_id TEXT NOT NULL DEFAULT '',
-	type TEXT NOT NULL,
+		ordinal INTEGER NOT NULL,
+		parent_id TEXT NOT NULL DEFAULT '',
+		type TEXT NOT NULL,
 	turn_id TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL,
 	message_json TEXT NOT NULL DEFAULT '{}',
@@ -539,9 +660,10 @@ CREATE TABLE entries (
 	tokens_after_estimate INTEGER NOT NULL DEFAULT 0,
 	context_usage_before_json TEXT NOT NULL DEFAULT '{}',
 	context_usage_after_json TEXT NOT NULL DEFAULT '{}',
-	error TEXT NOT NULL DEFAULT '',
-	metadata_json TEXT NOT NULL DEFAULT '{}',
-	PRIMARY KEY (thread_id, id),
+		error TEXT NOT NULL DEFAULT '',
+		metadata_json TEXT NOT NULL DEFAULT '{}',
+		` + entryPathDepthColumnSQL + `
+		PRIMARY KEY (thread_id, id),
 	UNIQUE (thread_id, ordinal),
 	FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
 );
@@ -549,9 +671,9 @@ CREATE TABLE entries (
 CREATE INDEX entries_parent_idx ON entries(thread_id, parent_id);
 CREATE INDEX entries_thread_ordinal_idx ON entries(thread_id, ordinal);
 ` + canonicalTurnIndexSQL + `
-CREATE INDEX threads_updated_at_idx ON threads(updated_at);
+	CREATE INDEX threads_updated_at_idx ON threads(updated_at);
 
-` + turnAuthoritySQL + pendingToolCompletionAuthoritySQL + compactionAuthoritySQL + effectAuthoritySQL + `
+` + turnAuthoritySQL + pendingToolCompletionAuthoritySQL + compactionAuthoritySQL + effectAuthoritySQL + approvalAuthoritySQL + `
 
 CREATE TABLE provider_states (
 	thread_id TEXT PRIMARY KEY,
@@ -697,7 +819,14 @@ CREATE TABLE active_turn_leases (
 );
 `
 
-var schemaVersion14SQL = strings.Replace(schemaSQL, canonicalTurnIndexSQL, "", 1)
+var schemaVersion15SQL = strings.NewReplacer(
+	entryPathDepthColumnSQL, "",
+	threadTitleAuthorityColumnsSQL, "",
+	pendingThreadTitleIndexSQL, "",
+	approvalAuthoritySQL, "",
+).Replace(schemaSQL)
+
+var schemaVersion14SQL = strings.Replace(schemaVersion15SQL, canonicalTurnIndexSQL, "", 1)
 
 var schemaVersion13SQL = strings.NewReplacer(
 	"\tid TEXT NOT NULL,\n\trun_id TEXT NOT NULL DEFAULT '',\n\tthread_id TEXT NOT NULL,\n", "\tid TEXT NOT NULL UNIQUE,\n\trun_id TEXT NOT NULL DEFAULT '',\n\tthread_id TEXT NOT NULL,\n",

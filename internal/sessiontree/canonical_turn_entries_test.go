@@ -94,6 +94,42 @@ func TestMemoryCanonicalTurnEntriesFailsClosedOnCorruptIndex(t *testing.T) {
 	_ = admitted
 }
 
+func TestMemoryCanonicalTurnEntriesRejectsBrokenTurnParentChain(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemoryRepo()
+	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := repo.AdmitTurn(ctx, AdmitTurnRequest{
+		ThreadID: "thread", TurnID: "turn", RunID: "run", OwnerID: "owner",
+		RequestFingerprint: "request", Input: session.Message{Role: session.User, Content: "inspect"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assistant, err := repo.Append(ContextWithTurnLease(ctx, admitted.Lease), Entry{
+		ThreadID: "thread", TurnID: "turn", Type: EntryAssistantMessage,
+		Message: session.Message{Role: session.Assistant, Content: "answer"},
+	}, AppendOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repo.mu.Lock()
+	for index := range repo.entries["thread"] {
+		if repo.entries["thread"][index].ID != assistant.ID {
+			continue
+		}
+		repo.entries["thread"][index].ParentID = admitted.TurnStarted.ID
+		repo.entries["thread"][index] = PrepareEntry(repo.entries["thread"][index])
+	}
+	repo.mu.Unlock()
+
+	if _, found, err := repo.CanonicalTurnEntries(ctx, "thread", "turn", "run"); !found || !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("broken parent chain found=%v err=%v, want ErrAuthorityCorrupt", found, err)
+	}
+}
+
 func TestFileRepoCanonicalTurnEntriesSurviveReopenAndDeleteReuse(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -154,7 +190,8 @@ func TestFileRepoCanonicalTurnIndexRollsBackFailedFork(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(destinationDir, "occupied"), []byte("occupied"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.Fork(ctx, ForkOptions{SourceThreadID: "source", NewThreadID: "fork"}); err == nil {
+	forkOptions := ForkOptions{SourceThreadID: "source", NewThreadID: "fork", RunIDMap: map[string]string{"source-run": "fork-run"}}
+	if _, err := repo.Fork(ctx, forkOptions); err == nil {
 		t.Fatal("fork succeeded despite occupied destination")
 	}
 	if _, exists := repo.mem.turnEntryOrdinals["fork"]; exists {
@@ -163,10 +200,10 @@ func TestFileRepoCanonicalTurnIndexRollsBackFailedFork(t *testing.T) {
 	if err := os.RemoveAll(destinationDir); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.Fork(ctx, ForkOptions{SourceThreadID: "source", NewThreadID: "fork"}); err != nil {
+	if _, err := repo.Fork(ctx, forkOptions); err != nil {
 		t.Fatal(err)
 	}
-	entries, found, err := NewFileRepo(root).CanonicalTurnEntries(ctx, "fork", "source-turn", "source-run")
+	entries, found, err := NewFileRepo(root).CanonicalTurnEntries(ctx, "fork", "source-turn", "fork-run")
 	if err != nil || !found || len(entries) == 0 {
 		t.Fatalf("retried fork canonical entries=%#v found=%v err=%v", entries, found, err)
 	}
@@ -221,6 +258,11 @@ func TestMemoryCanonicalTurnEntriesRejectsReferenceRawDrift(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := repo.FinishTurn(ctx, FinishTurnRequest{
+		Lease: admitted.Lease, RunID: "run", TerminalEntryID: "terminal", Status: TurnCompleted, OutcomeFingerprint: "outcome",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	repo.mu.Lock()
 	for index := range repo.entries["thread"] {
 		if repo.entries["thread"][index].ID == admitted.UserMessage.ID {
@@ -230,5 +272,32 @@ func TestMemoryCanonicalTurnEntriesRejectsReferenceRawDrift(t *testing.T) {
 	repo.mu.Unlock()
 	if _, found, err := repo.CanonicalTurnEntries(ctx, "thread", "turn", "run"); !found || !errors.Is(err, ErrAuthorityCorrupt) {
 		t.Fatalf("reference raw drift found=%v err=%v", found, err)
+	}
+	if _, err := repo.ListCanonicalTurns(ctx, ListCanonicalTurnsOptions{ThreadID: "thread", Tail: 1}); !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("reference raw drift page err=%v", err)
+	}
+	if _, found, err := repo.ReadTurnAdmission(ctx, "thread", "turn", "run"); !found || !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("reference raw drift admission found=%v err=%v", found, err)
+	}
+	if _, err := repo.Fork(ctx, ForkOptions{SourceThreadID: "thread", NewThreadID: "fork"}); !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("reference raw drift fork err=%v", err)
+	}
+	if _, err := repo.Thread(ctx, "fork"); !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("failed corrupt fork published destination: %v", err)
+	}
+}
+
+func TestEntryIntegrityAcceptsLegacyRawWithoutReferencesField(t *testing.T) {
+	const legacyRaw = `{"type":"user_message","message":{"Role":"user","Content":"legacy","Attachments":null,"Reasoning":"","ToolCallID":"","ToolName":"","ToolArgs":"","EntryID":"","ParentEntryID":"","Kind":"","ToolResult":null,"CompactionID":"","CompactionGeneration":0,"CompactionWindowID":""}}`
+	entry := Entry{
+		Type: EntryUserMessage,
+		Message: session.Message{Role: session.User, Content: "legacy"},
+		Raw: legacyRaw, RawHash: StableHash(legacyRaw),
+	}
+	if err := ValidateEntryIntegrity(entry); err != nil {
+		t.Fatalf("legacy raw integrity: %v", err)
+	}
+	if got := RawForEntry(entry); got != legacyRaw {
+		t.Fatalf("legacy raw changed:\n got: %s\nwant: %s", got, legacyRaw)
 	}
 }

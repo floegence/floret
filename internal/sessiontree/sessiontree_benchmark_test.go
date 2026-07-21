@@ -47,6 +47,22 @@ func BenchmarkBuildContextTenThousandEntriesWithCompactions(b *testing.B) {
 	}
 }
 
+func BenchmarkBuildContextWithRetryResets(b *testing.B) {
+	for _, size := range []int{1_000, 100_000} {
+		b.Run(fmt.Sprintf("entries/%d", size), func(b *testing.B) {
+			path := buildRetryContextFixture(size)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for index := 0; index < b.N; index++ {
+				messages, err := BuildContextChecked(path, ContextOptions{})
+				if err != nil || len(messages) == 0 {
+					b.Fatalf("retry context messages=%#v err=%v", messages, err)
+				}
+			}
+		})
+	}
+}
+
 func containsCompactionSummary(messages []session.Message) bool {
 	for _, msg := range messages {
 		if msg.Kind == session.MessageKindCompactionSummary {

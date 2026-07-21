@@ -104,6 +104,53 @@ func TestSQLiteAuthorityInspectionRejectsLeaseLedgerAndLifecycleCorruption(t *te
 	}
 }
 
+func TestSQLiteAuthorityInspectionRemainsReadableDuringWriterReservation(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "inspection-read-concurrency.db")
+	writer, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	if _, err := writer.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reader.Close() })
+
+	reserved := make(chan struct{})
+	release := make(chan struct{})
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- writer.withImmediate(ctx, func(sqlRunner) error {
+			close(reserved)
+			<-release
+			return nil
+		})
+	}()
+	<-reserved
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := reader.InspectThreadAuthority(ctx, "thread")
+		readDone <- err
+	}()
+	select {
+	case err := <-readDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("authority inspection waited for an unrelated writer reservation")
+	}
+	close(release)
+	if err := <-writeDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSQLiteRootCreateReplayRejectsNonCanonicalLiveShape(t *testing.T) {
 	for _, test := range []struct {
 		name  string

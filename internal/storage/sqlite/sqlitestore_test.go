@@ -59,18 +59,16 @@ func TestSQLiteStorePersistsSessionTreeAndForkAfterReopen(t *testing.T) {
 	}
 	titleUpdatedAt := meta.UpdatedAt.Add(time.Minute)
 	updatedAt := meta.UpdatedAt
-	meta.Title = "Persist title metadata"
-	meta.TitleStatus = sessiontree.ThreadTitleReady
-	meta.TitleSource = sessiontree.ThreadTitleSourceProvider
-	meta.TitleUpdatedAt = titleUpdatedAt
-	if err := store.UpdateThread(ctx, meta); err != nil {
+	if _, err := store.SetThreadTitle(ctx, sessiontree.SetThreadTitleRequest{
+		ThreadID: meta.ID, Title: "Persist title metadata", Now: titleUpdatedAt,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	meta, err = store.Thread(ctx, "thread")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if meta.Title != "Persist title metadata" || meta.TitleStatus != sessiontree.ThreadTitleReady || meta.TitleSource != sessiontree.ThreadTitleSourceProvider || !meta.TitleUpdatedAt.Equal(titleUpdatedAt) || !meta.UpdatedAt.Equal(updatedAt) {
+	if meta.Title != "Persist title metadata" || meta.TitleStatus != sessiontree.ThreadTitleReady || meta.TitleSource != sessiontree.ThreadTitleSourceHost || !meta.TitleUpdatedAt.Equal(titleUpdatedAt) || !meta.UpdatedAt.Equal(updatedAt) {
 		t.Fatalf("thread title metadata = %#v", meta)
 	}
 	pathEntries, err := store.Path(ctx, "thread", "")
@@ -199,8 +197,8 @@ func TestSQLiteStoreMigratesExactEmptySchemaVersion13(t *testing.T) {
 	if err := store.db.QueryRow(`SELECT value FROM schema_meta WHERE key = 'schema_fingerprint'`).Scan(&fingerprint); err != nil {
 		t.Fatal(err)
 	}
-	if fingerprint != schemaFingerprintVersion15 {
-		t.Fatalf("schema fingerprint = %q, want %q", fingerprint, schemaFingerprintVersion15)
+	if fingerprint != schemaFingerprintVersion16 {
+		t.Fatalf("schema fingerprint = %q, want %q", fingerprint, schemaFingerprintVersion16)
 	}
 }
 
@@ -464,7 +462,8 @@ func TestSQLiteStoreRejectsUnsupportedSchemaShapesWithoutChanges(t *testing.T) {
 		{name: "unknown version", version: "999", fingerprint: "unknown"},
 		{name: "alternate v13", version: schemaVersion13, fingerprint: "alternate-v13"},
 		{name: "alternate v14", version: schemaVersion14, fingerprint: "alternate-v14"},
-		{name: "alternate v15", version: schemaVersion, fingerprint: "alternate-v15"},
+		{name: "alternate v15", version: schemaVersion15, fingerprint: "alternate-v15"},
+		{name: "alternate v16", version: schemaVersion, fingerprint: "alternate-v16"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "unsupported.db")
@@ -512,8 +511,8 @@ func TestSQLiteStoreRejectsUnsupportedSchemaShapesWithoutChanges(t *testing.T) {
 }
 
 func TestSQLiteStoreCanonicalFingerprintIsFrozen(t *testing.T) {
-	if got := computedCanonicalSchemaFingerprint(); got != schemaFingerprintVersion15 {
-		t.Fatalf("schemaFingerprintVersion15 = %q, want computed %q", schemaFingerprintVersion15, got)
+	if got := computedCanonicalSchemaFingerprint(); got != schemaFingerprintVersion16 {
+		t.Fatalf("schemaFingerprintVersion16 = %q, want computed %q", schemaFingerprintVersion16, got)
 	}
 }
 
@@ -1667,7 +1666,7 @@ func TestSQLiteStoreForkAuthorityClaimBlocksUnownedMutationsAcrossConnections(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	meta.Title = "blocked"
+	meta.Archived = true
 	if err := second.UpdateThread(ctx, meta); !errors.Is(err, sessiontree.ErrThreadAuthorityBusy) {
 		t.Fatalf("UpdateThread err = %v, want ErrThreadAuthorityBusy", err)
 	}

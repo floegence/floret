@@ -101,6 +101,9 @@ func (s *Store) PrepareSubAgentClose(ctx context.Context, req sessiontree.Prepar
 			if strings.TrimSpace(meta.CloseOperationID) != "" {
 				return sessiontree.ErrAuthorityCorrupt
 			}
+			if meta.TitleStatus == sessiontree.ThreadTitlePending {
+				return sessiontree.ErrThreadAuthorityBusy
+			}
 			if _, claimed, err := loadThreadAuthorityClaim(ctx, tx, threadID); err != nil {
 				return err
 			} else if claimed {

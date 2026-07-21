@@ -916,6 +916,86 @@ func TestRunBatchApprovalRequestsStartConcurrentlyWithBatchOrder(t *testing.T) {
 	}
 }
 
+func TestDispatchBatchPreflightsOnlyValidDispatchesInModelOrder(t *testing.T) {
+	reg := NewRegistry()
+	started := make(chan string, 2)
+	for _, definition := range []Definition{
+		{Name: "ask", Effects: []Effect{EffectWrite}, Permission: PermissionSpec{Mode: PermissionAsk}},
+		{Name: "allow", ReadOnly: true, Effects: []Effect{EffectRead}, Permission: PermissionSpec{Mode: PermissionAllow}},
+		{Name: "deny", Effects: []Effect{EffectShell}, Permission: PermissionSpec{Mode: PermissionDeny}},
+	} {
+		definition.InputSchema = StrictObject(map[string]any{"value": String("test value")}, []string{"value"})
+		if err := reg.Register(Define[testArgs](definition, nil, nil, func(_ context.Context, inv Invocation[testArgs]) (Result, error) {
+			started <- inv.CallID
+			return Result{Text: inv.Args.Value}, nil
+		})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	preflight := make(chan []EffectDispatchRequest, 1)
+	release := make(chan struct{})
+	done := make(chan []Result, 1)
+	go func() {
+		done <- reg.DispatchBatch(context.Background(), []ToolCall{
+			{ID: "unknown", Name: "missing", Args: `{"value":"unknown"}`},
+			{ID: "ask", Name: "ask", Args: `{"value":"ask"}`},
+			{ID: "invalid", Name: "allow", Args: `{`},
+			{ID: "deny", Name: "deny", Args: `{"value":"deny"}`},
+			{ID: "allow", Name: "allow", Args: `{"value":"allow"}`},
+		}, DispatchOptions{
+			RunID: "run", ThreadID: "thread", TurnID: "turn", Step: 1,
+			EffectBatchPreflight: func(_ context.Context, requests []EffectDispatchRequest) error {
+				preflight <- requests
+				<-release
+				return nil
+			},
+			EffectDispatcher: func(_ context.Context, _ EffectDispatchRequest, invoke func() Result) Result { return invoke() },
+		})
+	}()
+	var requests []EffectDispatchRequest
+	select {
+	case requests = <-preflight:
+	case <-time.After(time.Second):
+		t.Fatal("batch preflight was not called")
+	}
+	if len(requests) != 2 || requests[0].CallID != "ask" || requests[0].BatchIndex != 1 || requests[0].BatchSize != 5 ||
+		requests[1].CallID != "allow" || requests[1].BatchIndex != 4 || requests[1].BatchSize != 5 {
+		t.Fatalf("preflight requests = %#v", requests)
+	}
+	select {
+	case callID := <-started:
+		t.Fatalf("handler %q started before batch preflight completed", callID)
+	default:
+	}
+	close(release)
+	results := <-done
+	if len(results) != 5 || !results[0].IsError || results[1].IsError || !results[2].IsError || !results[3].IsError || results[4].IsError {
+		t.Fatalf("batch results = %#v", results)
+	}
+}
+
+func TestDispatchBatchPreflightFailurePreventsEveryPreparedHandler(t *testing.T) {
+	reg := NewRegistry()
+	called := 0
+	if err := reg.Register(testTool("read", true, func(context.Context, Invocation[testArgs]) (Result, error) {
+		called++
+		return Result{Text: "unexpected"}, nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	results := reg.DispatchBatch(context.Background(), []ToolCall{
+		{ID: "a", Name: "read", Args: `{"value":"a"}`},
+		{ID: "b", Name: "read", Args: `{"value":"b"}`},
+	}, DispatchOptions{
+		EffectBatchPreflight: func(context.Context, []EffectDispatchRequest) error { return errors.New("preflight failed") },
+		EffectDispatcher:     func(_ context.Context, _ EffectDispatchRequest, invoke func() Result) Result { return invoke() },
+	})
+	if called != 0 || len(results) != 2 || !results[0].IsError || !results[1].IsError ||
+		!strings.Contains(results[0].Text, "preflight failed") || !strings.Contains(results[1].Text, "preflight failed") {
+		t.Fatalf("called=%d results=%#v", called, results)
+	}
+}
+
 func contains(value, substr string) bool {
 	return strings.Contains(value, substr)
 }

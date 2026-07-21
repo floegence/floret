@@ -190,6 +190,10 @@ func TestMemoryRootDeleteClearsQueryableAuthorityAndRetainsRequestIdentity(t *te
 	repo.turnFinishes[turnAdmissionKey("root", "turn")] = turnFinishLedger{ThreadID: "root", TurnID: "turn", RunID: "run"}
 	repo.effectAttempts["effect"] = EffectAttempt{EffectAttemptID: "effect", Invocation: invocation, State: EffectAttemptCompleted}
 	repo.effectAttemptByInvocation[effectInvocationKey(invocation)] = "effect"
+	repo.approvalQueues["root"] = approvalQueueLedger{RootThreadID: "root", Generation: 1, Revision: 1, CurrentApprovalID: "approval", NextSequence: 1}
+	repo.approvals["approval"] = ApprovalRecord{ApprovalID: "approval", RootThreadID: "root", ThreadID: "root", EffectAttemptID: "effect", QueueSequence: 1}
+	repo.approvalByEffectAttempt["effect"] = "approval"
+	repo.approvalDecisions["decision"] = approvalDecisionLedger{Receipt: ApprovalDecisionReceipt{DecisionID: "decision", ApprovalID: "approval"}}
 	repo.pendingToolCompletions["root-completion"] = pendingToolCompletionLedger{CompletionRequestID: "root-completion", ThreadID: "root"}
 	repo.compactionOperations["compaction"] = CompactionOperation{ThreadID: "root", RequestID: "compaction", State: CompactionOperationCompleted}
 	repo.subAgentCloseOperations["close"] = SubAgentCloseOperation{CloseOperationID: "close", ParentThreadID: "root", TargetThreadID: "child", State: SubAgentCloseCompleted}
@@ -210,10 +214,12 @@ func TestMemoryRootDeleteClearsQueryableAuthorityAndRetainsRequestIdentity(t *te
 	if len(repo.threads) != 0 || len(repo.entries) != 0 || len(repo.todos) != 0 || len(repo.providerStates) != 0 ||
 		len(repo.leases) != 0 || len(repo.leaseGeneration) != 0 || len(repo.turnAdmissions) != 0 || len(repo.turnFinishes) != 0 ||
 		len(repo.effectAttempts) != 0 || len(repo.effectAttemptByInvocation) != 0 || len(repo.pendingToolCompletions) != 0 ||
+		len(repo.approvalQueues) != 0 || len(repo.approvals) != 0 || len(repo.approvalByEffectAttempt) != 0 || len(repo.approvalDecisions) != 0 ||
 		len(repo.compactionOperations) != 0 || len(repo.subAgentCloseOperations) != 0 || len(repo.subAgentInputs) != 0 || len(repo.subAgentInputSequence) != 0 {
-		t.Fatalf("root delete retained queryable authority: threads=%d entries=%d todos=%d provider=%d leases=%d generations=%d admissions=%d finishes=%d effects=%d effect-index=%d completions=%d compactions=%d closes=%d inputs=%d input-sequences=%d",
+		t.Fatalf("root delete retained queryable authority: threads=%d entries=%d todos=%d provider=%d leases=%d generations=%d admissions=%d finishes=%d effects=%d effect-index=%d approvals=%d approval-items=%d approval-effects=%d decisions=%d completions=%d compactions=%d closes=%d inputs=%d input-sequences=%d",
 			len(repo.threads), len(repo.entries), len(repo.todos), len(repo.providerStates), len(repo.leases), len(repo.leaseGeneration),
 			len(repo.turnAdmissions), len(repo.turnFinishes), len(repo.effectAttempts), len(repo.effectAttemptByInvocation),
+			len(repo.approvalQueues), len(repo.approvals), len(repo.approvalByEffectAttempt), len(repo.approvalDecisions),
 			len(repo.pendingToolCompletions), len(repo.compactionOperations), len(repo.subAgentCloseOperations), len(repo.subAgentInputs), len(repo.subAgentInputSequence))
 	}
 	if len(repo.rootCreateIntents) != 1 || len(repo.tombstones) != 2 || len(repo.subAgentPublications) != 1 ||

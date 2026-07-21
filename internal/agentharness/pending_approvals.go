@@ -3,358 +3,151 @@ package agentharness
 import (
 	"context"
 	"errors"
-	"fmt"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/floegence/floret/internal/event"
+	"github.com/floegence/floret/internal/sessiontree"
 )
 
-func (h *AgentHarness) ListPendingApprovals(ctx context.Context, opts ListPendingApprovalsOptions) (PendingApprovals, error) {
+type ResolveApprovalOptions struct {
+	DecisionID               string
+	ExpectedRootThreadID     string
+	ExpectedGeneration       int64
+	ExpectedRevision         int64
+	ExpectedCurrent          sessiontree.ApprovalIdentity
+	ExpectedApprovalRevision int64
+	Decision                 sessiontree.ApprovalDecision
+}
+
+type ResolveApprovalResult struct {
+	Receipt  sessiontree.ApprovalDecisionReceipt
+	Queue    ApprovalQueueSnapshot
+	Approval ApprovalRecord
+	Replayed bool
+}
+
+func (h *AgentHarness) ReadApprovalQueue(ctx context.Context, opts ReadApprovalQueueOptions) (ApprovalQueueSnapshot, error) {
 	if h == nil {
-		return PendingApprovals{}, errors.New("agent harness is nil")
+		return ApprovalQueueSnapshot{}, errors.New("agent harness is nil")
 	}
 	threadID := strings.TrimSpace(opts.ThreadID)
 	if threadID == "" {
-		return PendingApprovals{}, errors.New("thread id is required")
+		return ApprovalQueueSnapshot{}, errors.New("thread id is required")
 	}
-	if _, err := h.options.Repo.Thread(ctx, threadID); err != nil {
-		return PendingApprovals{}, err
+	authority, ok := h.options.Repo.(sessiontree.ApprovalAuthorityRepo)
+	if !ok {
+		return ApprovalQueueSnapshot{}, errors.New("session tree repo does not support approval authority")
 	}
-	return PendingApprovals{
-		ThreadID:    threadID,
-		Approvals:   h.snapshotPendingApprovals(threadID),
-		GeneratedAt: h.now(),
+	queue, err := authority.ReadApprovalQueue(ctx, threadID)
+	if err != nil {
+		return ApprovalQueueSnapshot{}, err
+	}
+	return approvalQueueSnapshot(queue), nil
+}
+
+func (h *AgentHarness) ResolveApproval(ctx context.Context, opts ResolveApprovalOptions) (ResolveApprovalResult, error) {
+	if h == nil {
+		return ResolveApprovalResult{}, errors.New("agent harness is nil")
+	}
+	authority, ok := h.options.Repo.(sessiontree.ApprovalAuthorityRepo)
+	if !ok {
+		return ResolveApprovalResult{}, errors.New("session tree repo does not support approval authority")
+	}
+	request := sessiontree.ResolveApprovalRequest{
+		DecisionID:               opts.DecisionID,
+		ExpectedRootThreadID:     opts.ExpectedRootThreadID,
+		ExpectedGeneration:       opts.ExpectedGeneration,
+		ExpectedRevision:         opts.ExpectedRevision,
+		ExpectedCurrent:          opts.ExpectedCurrent,
+		ExpectedApprovalRevision: opts.ExpectedApprovalRevision,
+		Decision:                 opts.Decision,
+		Now:                      h.now(),
+	}
+	var rejectedEvent event.Event
+	if opts.Decision == sessiontree.ApprovalDecisionReject {
+		record, err := authority.Approval(ctx, opts.ExpectedCurrent.ApprovalID)
+		if err != nil {
+			return ResolveApprovalResult{}, err
+		}
+		if !sessiontree.SameApprovalIdentity(record.Identity(), opts.ExpectedCurrent) || record.Revision != opts.ExpectedApprovalRevision {
+			return ResolveApprovalResult{}, sessiontree.ErrStaleAuthority
+		}
+		rejectedEvent = approvalEventFromRecord(h.now(), event.ToolApprovalRejected, record, sessiontree.ApprovalReasonUserRejected)
+		request.RejectedEntry = approvalEventEntry(record.ThreadID, record.TurnID, rejectedEvent)
+		request.RejectedEntry.ID = sessiontree.ApprovalRejectedEntryID(opts.DecisionID, record.ApprovalID)
+	}
+	resolved, err := authority.ResolveApproval(ctx, request)
+	if err != nil {
+		return ResolveApprovalResult{}, err
+	}
+	if opts.Decision == sessiontree.ApprovalDecisionReject {
+		if !sessiontree.ApprovalDispatchEntryRequestMatches(resolved.RejectedEntry, request.RejectedEntry) {
+			return ResolveApprovalResult{}, sessiontree.ErrAuthorityCorrupt
+		}
+		if !resolved.Replayed {
+			h.emitEntryCommitted(resolved.RejectedEntry, resolved.Approval.RunID)
+			h.emit(HarnessEvent{
+				Type: EventEntryAppended, RunID: resolved.Approval.RunID, ThreadID: resolved.Approval.ThreadID,
+				TurnID: resolved.Approval.TurnID, EntryID: resolved.RejectedEntry.ID, ParentID: resolved.RejectedEntry.ParentID,
+				Message: string(rejectedEvent.Type),
+			})
+			if h.options.Sink != nil {
+				h.options.Sink.Emit(event.SanitizeWithPolicy(rejectedEvent, h.options.SinkPolicy))
+			}
+		}
+	}
+	return ResolveApprovalResult{
+		Receipt: resolved.Receipt, Queue: approvalQueueSnapshot(resolved.Queue),
+		Approval: approvalRecordFromCanonical(resolved.Approval), Replayed: resolved.Replayed,
 	}, nil
 }
 
-func (h *AgentHarness) updatePendingApproval(ev event.Event) {
-	threadID := strings.TrimSpace(ev.ThreadID)
-	if threadID == "" {
-		return
+func approvalEventFromRecord(now time.Time, typ event.Type, record sessiontree.ApprovalRecord, reason string) event.Event {
+	resources := make([]map[string]string, 0, len(record.Resources))
+	for _, resource := range record.Resources {
+		resources = append(resources, map[string]string{"kind": resource.Kind, "value": resource.Value})
 	}
-	key := pendingApprovalKey(ev)
-	if key == "" {
-		return
-	}
-	now := h.now()
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.approvals == nil {
-		h.approvals = map[string]map[string]PendingApproval{}
-	}
-	byThread := h.approvals[threadID]
-	if byThread == nil {
-		byThread = map[string]PendingApproval{}
-		h.approvals[threadID] = byThread
-	}
-	switch ev.Type {
-	case event.ToolApprovalRequested:
-		current := byThread[key]
-		if current.Revision <= 0 {
-			current.Revision = 1
-		} else {
-			current.Revision++
-		}
-		current.Epoch++
-		current.ApprovalID = pendingApprovalID(ev)
-		current.ToolCallID = strings.TrimSpace(ev.ToolID)
-		current.ToolName = strings.TrimSpace(ev.ToolName)
-		current.ToolKind = strings.TrimSpace(ev.ToolKind)
-		current.RunID = strings.TrimSpace(ev.RunID)
-		current.ThreadID = threadID
-		current.TurnID = strings.TrimSpace(ev.TurnID)
-		current.Step = ev.Step
-		current.BatchIndex = pendingApprovalInt(ev.Metadata, "batch_index")
-		current.BatchSize = pendingApprovalInt(ev.Metadata, "batch_size")
-		current.State = "requested"
-		current.RequestedAt = pendingApprovalEventTime(ev, now)
-		current.ResolvedAt = time.Time{}
-		current.ArgsHash = strings.TrimSpace(ev.ArgsHash)
-		current.Resources = pendingApprovalResources(ev.Metadata)
-		current.Effects = pendingApprovalEffects(ev.Metadata)
-		current.Labels = pendingApprovalLabels(ev.Metadata)
-		current.HostContext = pendingApprovalHostContext(ev.Metadata)
-		current.ReadOnly = pendingApprovalBool(ev.Metadata, "read_only")
-		current.Destructive = pendingApprovalBool(ev.Metadata, "destructive")
-		current.OpenWorld = pendingApprovalBool(ev.Metadata, "open_world")
-		current.Reason = ""
-		byThread[key] = current
-	case event.ToolApprovalApproved, event.ToolApprovalRejected, event.ToolApprovalTimedOut, event.ToolApprovalCanceled:
-		current := byThread[key]
-		if current.ApprovalID == "" && current.ToolCallID == "" {
-			current = PendingApproval{
-				ApprovalID:  pendingApprovalID(ev),
-				ToolCallID:  strings.TrimSpace(ev.ToolID),
-				ToolName:    strings.TrimSpace(ev.ToolName),
-				ToolKind:    strings.TrimSpace(ev.ToolKind),
-				RunID:       strings.TrimSpace(ev.RunID),
-				ThreadID:    threadID,
-				TurnID:      strings.TrimSpace(ev.TurnID),
-				Step:        ev.Step,
-				BatchIndex:  pendingApprovalInt(ev.Metadata, "batch_index"),
-				BatchSize:   pendingApprovalInt(ev.Metadata, "batch_size"),
-				ArgsHash:    strings.TrimSpace(ev.ArgsHash),
-				Resources:   pendingApprovalResources(ev.Metadata),
-				Effects:     pendingApprovalEffects(ev.Metadata),
-				Labels:      pendingApprovalLabels(ev.Metadata),
-				HostContext: pendingApprovalHostContext(ev.Metadata),
-				RequestedAt: pendingApprovalEventTime(ev, now),
-			}
-		}
-		current.Revision++
-		current.Epoch++
-		current.State = pendingApprovalState(ev.Type)
-		current.ResolvedAt = pendingApprovalEventTime(ev, now)
-		current.Reason = strings.TrimSpace(ev.Err)
-		delete(byThread, key)
-		if len(byThread) == 0 {
-			delete(h.approvals, threadID)
-		}
+	return event.Event{
+		Type: typ, RunID: record.RunID, ThreadID: record.ThreadID, TurnID: record.TurnID, Step: record.Step,
+		ToolID: record.ToolCallID, ToolName: record.ToolName, ToolKind: record.ToolKind, ArgsHash: record.ArgsHash,
+		Err: strings.TrimSpace(reason), Timestamp: now,
+		Metadata: map[string]any{
+			"approval_id": record.ApprovalID, "resources": resources, "effects": append([]string(nil), record.Effects...),
+			"read_only": record.ReadOnly, "destructive": record.Destructive, "open_world": record.OpenWorld,
+			"batch_index": record.BatchIndex, "batch_size": record.BatchSize,
+			"labels": cloneStringMap(record.Labels), "host_context": cloneStringMap(record.HostContext),
+		},
 	}
 }
 
-func (h *AgentHarness) snapshotPendingApprovals(threadID string) []PendingApproval {
-	threadID = strings.TrimSpace(threadID)
-	if threadID == "" {
-		return nil
+func approvalQueueSnapshot(queue sessiontree.ApprovalQueue) ApprovalQueueSnapshot {
+	out := ApprovalQueueSnapshot{
+		RootThreadID: queue.RootThreadID, Generation: queue.Generation, Revision: queue.Revision,
+		CurrentApprovalID: queue.CurrentApprovalID, GeneratedAt: queue.GeneratedAt,
+		Approvals: make([]ApprovalRecord, 0, len(queue.Items)),
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	byThread := h.approvals[threadID]
-	if len(byThread) == 0 {
-		return nil
-	}
-	out := make([]PendingApproval, 0, len(byThread))
-	for _, approval := range byThread {
-		out = append(out, clonePendingApproval(approval))
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		left := out[i]
-		right := out[j]
-		if left.RunID == right.RunID && left.Step == right.Step && left.BatchIndex != right.BatchIndex {
-			return left.BatchIndex < right.BatchIndex
-		}
-		if !left.RequestedAt.Equal(right.RequestedAt) {
-			return left.RequestedAt.Before(right.RequestedAt)
-		}
-		if left.ToolCallID != right.ToolCallID {
-			return left.ToolCallID < right.ToolCallID
-		}
-		return left.ApprovalID < right.ApprovalID
-	})
-	return out
-}
-
-func pendingApprovalInt(meta any, key string) int {
-	values, ok := meta.(map[string]any)
-	if !ok {
-		return 0
-	}
-	switch value := values[key].(type) {
-	case int:
-		return value
-	case int32:
-		return int(value)
-	case int64:
-		return int(value)
-	case float32:
-		return int(value)
-	case float64:
-		return int(value)
-	default:
-		return 0
-	}
-}
-
-func clonePendingApproval(in PendingApproval) PendingApproval {
-	in.Resources = append([]PendingApprovalResource(nil), in.Resources...)
-	in.Effects = append([]string(nil), in.Effects...)
-	in.Labels = cloneStringMap(in.Labels)
-	in.HostContext = cloneStringMap(in.HostContext)
-	return in
-}
-
-func isApprovalEvent(typ event.Type) bool {
-	switch typ {
-	case event.ToolApprovalRequested, event.ToolApprovalApproved, event.ToolApprovalRejected, event.ToolApprovalTimedOut, event.ToolApprovalCanceled:
-		return true
-	default:
-		return false
-	}
-}
-
-func pendingApprovalKey(ev event.Event) string {
-	if id := pendingApprovalID(ev); id != "" {
-		return "approval:" + id
-	}
-	if id := strings.TrimSpace(ev.ToolID); id != "" {
-		return "tool:" + id
-	}
-	return ""
-}
-
-func pendingApprovalID(ev event.Event) string {
-	meta, ok := ev.Metadata.(map[string]any)
-	if !ok {
-		return ""
-	}
-	value, ok := meta["approval_id"]
-	if !ok || value == nil {
-		return ""
-	}
-	return strings.TrimSpace(fmt.Sprint(value))
-}
-
-func pendingApprovalEventTime(ev event.Event, fallback time.Time) time.Time {
-	if !ev.Timestamp.IsZero() {
-		return ev.Timestamp
-	}
-	return fallback
-}
-
-func pendingApprovalState(typ event.Type) string {
-	switch typ {
-	case event.ToolApprovalRequested:
-		return "requested"
-	case event.ToolApprovalApproved:
-		return "approved"
-	case event.ToolApprovalRejected:
-		return "rejected"
-	case event.ToolApprovalTimedOut:
-		return "timed_out"
-	case event.ToolApprovalCanceled:
-		return "canceled"
-	default:
-		return string(typ)
-	}
-}
-
-func pendingApprovalResources(meta any) []PendingApprovalResource {
-	values, ok := meta.(map[string]any)
-	if !ok {
-		return nil
-	}
-	raw, ok := values["resources"]
-	if !ok {
-		return nil
-	}
-	items, ok := raw.([]map[string]string)
-	if ok {
-		out := make([]PendingApprovalResource, 0, len(items))
-		for _, item := range items {
-			kind := strings.TrimSpace(item["kind"])
-			value := strings.TrimSpace(item["value"])
-			if kind == "" && value == "" {
-				continue
-			}
-			out = append(out, PendingApprovalResource{Kind: kind, Value: value})
-		}
-		return out
-	}
-	generic, ok := raw.([]any)
-	if !ok {
-		return nil
-	}
-	out := make([]PendingApprovalResource, 0, len(generic))
-	for _, item := range generic {
-		record, ok := item.(map[string]string)
-		if ok {
-			kind := strings.TrimSpace(record["kind"])
-			value := strings.TrimSpace(record["value"])
-			if kind != "" || value != "" {
-				out = append(out, PendingApprovalResource{Kind: kind, Value: value})
-			}
-			continue
-		}
-		anyRecord, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		kind := strings.TrimSpace(fmt.Sprint(anyRecord["kind"]))
-		value := strings.TrimSpace(fmt.Sprint(anyRecord["value"]))
-		if kind != "" || value != "" {
-			out = append(out, PendingApprovalResource{Kind: kind, Value: value})
-		}
+	for _, record := range queue.Items {
+		out.Approvals = append(out.Approvals, approvalRecordFromCanonical(record))
 	}
 	return out
 }
 
-func pendingApprovalEffects(meta any) []string {
-	values, ok := meta.(map[string]any)
-	if !ok {
-		return nil
+func approvalRecordFromCanonical(record sessiontree.ApprovalRecord) ApprovalRecord {
+	resources := make([]ApprovalResource, 0, len(record.Resources))
+	for _, resource := range record.Resources {
+		resources = append(resources, ApprovalResource{Kind: resource.Kind, Value: resource.Value})
 	}
-	raw, ok := values["effects"]
-	if !ok {
-		return nil
-	}
-	switch typed := raw.(type) {
-	case []string:
-		return append([]string(nil), typed...)
-	case []any:
-		out := make([]string, 0, len(typed))
-		for _, item := range typed {
-			if text := strings.TrimSpace(fmt.Sprint(item)); text != "" {
-				out = append(out, text)
-			}
-		}
-		return out
-	default:
-		return nil
-	}
-}
-
-func pendingApprovalLabels(meta any) map[string]string {
-	values, ok := meta.(map[string]any)
-	if !ok {
-		return nil
-	}
-	return pendingApprovalStringMap(values["labels"])
-}
-
-func pendingApprovalHostContext(meta any) map[string]string {
-	values, ok := meta.(map[string]any)
-	if !ok {
-		return nil
-	}
-	return pendingApprovalStringMap(values["host_context"])
-}
-
-func pendingApprovalStringMap(value any) map[string]string {
-	switch typed := value.(type) {
-	case map[string]string:
-		return cloneStringMap(typed)
-	case map[string]any:
-		out := make(map[string]string, len(typed))
-		for key, item := range typed {
-			key = strings.TrimSpace(key)
-			text := strings.TrimSpace(fmt.Sprint(item))
-			if key != "" && text != "" {
-				out[key] = text
-			}
-		}
-		if len(out) == 0 {
-			return nil
-		}
-		return out
-	default:
-		return nil
-	}
-}
-
-func pendingApprovalBool(meta any, key string) bool {
-	values, ok := meta.(map[string]any)
-	if !ok {
-		return false
-	}
-	switch typed := values[key].(type) {
-	case bool:
-		return typed
-	case string:
-		return strings.EqualFold(strings.TrimSpace(typed), "true")
-	default:
-		return false
+	return ApprovalRecord{
+		ApprovalID: record.ApprovalID, RootThreadID: record.RootThreadID, ParentThreadID: record.ParentThreadID,
+		ToolCallID: record.ToolCallID, EffectAttemptID: record.EffectAttemptID, ToolName: record.ToolName, ToolKind: record.ToolKind,
+		RunID: record.RunID, ThreadID: record.ThreadID, TurnID: record.TurnID,
+		Step: record.Step, BatchIndex: record.BatchIndex, BatchSize: record.BatchSize,
+		State: string(record.State), Revision: record.Revision, QueueSequence: record.QueueSequence, DecisionID: record.DecisionID,
+		RequestedAt: record.RequestedAt, UpdatedAt: record.UpdatedAt, ResolvedAt: record.ResolvedAt,
+		ArgsHash: record.ArgsHash, RequestFingerprint: record.RequestFingerprint, AuthorizationProofHash: record.AuthorizationProofHash,
+		Resources: resources, Effects: append([]string(nil), record.Effects...), Labels: cloneStringMap(record.Labels),
+		HostContext: cloneStringMap(record.HostContext), ReadOnly: record.ReadOnly, Destructive: record.Destructive,
+		OpenWorld: record.OpenWorld, Reason: record.Reason,
 	}
 }

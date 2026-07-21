@@ -1,9 +1,11 @@
 package runtime
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/floegence/floret/internal/sessiontree"
 	"github.com/floegence/floret/observation"
 )
 
@@ -730,6 +732,7 @@ func TestProjectThreadTurnSettlesUnresolvedToolOnTerminalTurn(t *testing.T) {
 		name          string
 		turnStatus    string
 		error         string
+		failureCode   string
 		wantStatus    observation.ActivityStatus
 		wantSeverity  observation.ActivitySeverity
 		wantSummary   observation.ActivityStatus
@@ -739,7 +742,8 @@ func TestProjectThreadTurnSettlesUnresolvedToolOnTerminalTurn(t *testing.T) {
 		{name: "completed", turnStatus: "completed", wantStatus: observation.ActivityStatusRunning, wantSeverity: observation.ActivitySeverityWarning, wantSummary: observation.ActivityStatusRunning, wantAttention: true},
 		{name: "canceled", turnStatus: string(observation.ActivityStatusCanceled), wantStatus: observation.ActivityStatusCanceled, wantSeverity: observation.ActivitySeverityWarning, wantSummary: observation.ActivityStatusCanceled},
 		{name: "cancelled spelling", turnStatus: "cancelled", wantStatus: observation.ActivityStatusCanceled, wantSeverity: observation.ActivitySeverityWarning, wantSummary: observation.ActivityStatusCanceled},
-		{name: "failed", turnStatus: "failed", error: "provider failed", wantStatus: observation.ActivityStatusError, wantSeverity: observation.ActivitySeverityError, wantSummary: observation.ActivityStatusError, wantAttention: true},
+		{name: "failed", turnStatus: "failed", error: "provider failed", failureCode: sessiontree.TurnFailureProvider, wantStatus: observation.ActivityStatusError, wantSeverity: observation.ActivitySeverityError, wantSummary: observation.ActivityStatusError, wantAttention: true},
+		{name: "failed cancellation-looking message", turnStatus: "failed", error: context.Canceled.Error(), failureCode: sessiontree.TurnFailureProvider, wantStatus: observation.ActivityStatusError, wantSeverity: observation.ActivitySeverityError, wantSummary: observation.ActivityStatusError, wantAttention: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -779,7 +783,8 @@ func TestProjectThreadTurnSettlesUnresolvedToolOnTerminalTurn(t *testing.T) {
 						CreatedAt: now.Add(time.Second),
 						Error:     tt.error,
 						TurnMarker: &ThreadDetailTurnMarker{
-							Status: tt.turnStatus,
+							Status:   tt.turnStatus,
+							Metadata: map[string]string{sessiontree.TurnFailureCodeMetadataKey: tt.failureCode},
 						},
 					},
 				},

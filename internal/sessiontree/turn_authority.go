@@ -2,6 +2,7 @@ package sessiontree
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,6 +13,11 @@ import (
 )
 
 var ErrProviderStateNotFound = errors.New("provider state not found")
+
+const (
+	RetrySourceTurnIDMetadataKey  = "retry_source_turn_id"
+	RetrySourceEntryIDMetadataKey = "retry_source_entry_id"
+)
 
 type ProviderStateRecord struct {
 	ThreadID         string
@@ -39,7 +45,8 @@ type AdmitTurnRequest struct {
 	RunID              string
 	OwnerID            string
 	Input              session.Message
-	RetryLeafID        string
+	RetrySourceTurnID  string
+	RetrySourceEntryID string
 	RequestFingerprint string
 	Now                time.Time
 }
@@ -113,7 +120,12 @@ func ValidateAdmitTurnRequest(req AdmitTurnRequest) error {
 	if strings.TrimSpace(req.RequestFingerprint) == "" {
 		return errors.New("turn admission request fingerprint is required")
 	}
-	if strings.TrimSpace(req.RetryLeafID) == "" {
+	retrySourceTurnID := strings.TrimSpace(req.RetrySourceTurnID)
+	retrySourceEntryID := strings.TrimSpace(req.RetrySourceEntryID)
+	if (retrySourceTurnID == "") != (retrySourceEntryID == "") {
+		return errors.New("retry admission requires source turn and entry identities")
+	}
+	if retrySourceTurnID == "" {
 		if req.Input.Role != session.User {
 			return errors.New("turn admission input must be a user message")
 		}
@@ -123,13 +135,109 @@ func ValidateAdmitTurnRequest(req AdmitTurnRequest) error {
 		if err := session.ValidateMessageReferences(req.Input.References); err != nil {
 			return err
 		}
-	} else if req.Input.Role != "" || strings.TrimSpace(req.Input.Content) != "" || len(req.Input.Attachments) != 0 || len(req.Input.References) != 0 {
-		return errors.New("retry admission cannot contain a replacement user message")
+	} else {
+		if retrySourceTurnID == strings.TrimSpace(req.TurnID) {
+			return errors.New("retry source turn must differ from retry turn")
+		}
+		if req.Input.Role != "" || strings.TrimSpace(req.Input.Content) != "" || len(req.Input.Attachments) != 0 || len(req.Input.References) != 0 {
+			return errors.New("retry admission cannot contain a replacement user message")
+		}
 	}
 	return nil
 }
 
-func validateFinishTurnRequest(req FinishTurnRequest) error {
+func TurnAdmissionRequestFingerprint(req AdmitTurnRequest) (string, error) {
+	payload, err := json.Marshal(struct {
+		ThreadID           string          `json:"thread_id"`
+		TurnID             string          `json:"turn_id"`
+		RunID              string          `json:"run_id"`
+		Input              session.Message `json:"input"`
+		RetrySourceTurnID  string          `json:"retry_source_turn_id,omitempty"`
+		RetrySourceEntryID string          `json:"retry_source_entry_id,omitempty"`
+	}{
+		ThreadID: strings.TrimSpace(req.ThreadID), TurnID: strings.TrimSpace(req.TurnID), RunID: strings.TrimSpace(req.RunID),
+		Input: session.CloneMessage(req.Input), RetrySourceTurnID: strings.TrimSpace(req.RetrySourceTurnID),
+		RetrySourceEntryID: strings.TrimSpace(req.RetrySourceEntryID),
+	})
+	if err != nil {
+		return "", err
+	}
+	return StableHash(string(payload)), nil
+}
+
+func ValidateRetrySourcePath(path []Entry, sourceTurnID, sourceEntryID string) (int, error) {
+	index, eligible, err := RetrySourceHasRetryEligibleDurableInput(path, sourceTurnID, sourceEntryID)
+	if err != nil {
+		return index, err
+	}
+	if !eligible {
+		return index, ErrInvalidThreadAuthority
+	}
+	return index, nil
+}
+
+// RetrySourceHasRetryEligibleDurableInput validates the structural retry source
+// and reports whether its canonical user input contains durable text or an
+// attachment. References alone require ephemeral supplemental context and are
+// therefore not replayable.
+func RetrySourceHasRetryEligibleDurableInput(path []Entry, sourceTurnID, sourceEntryID string) (int, bool, error) {
+	sourceTurnID = strings.TrimSpace(sourceTurnID)
+	sourceEntryID = strings.TrimSpace(sourceEntryID)
+	if sourceTurnID == "" || sourceEntryID == "" {
+		return -1, false, errors.New("retry source requires turn and entry identities")
+	}
+	for index, entry := range path {
+		if entry.ID != sourceEntryID {
+			continue
+		}
+		if err := validateRetrySourcePathIndex(path, index, sourceTurnID, sourceEntryID); err != nil {
+			return index, false, err
+		}
+		eligible, err := RetryPathHasRetryEligibleDurableInput(path[:index+1])
+		return index, eligible, err
+	}
+	return -1, false, ErrEntryNotFound
+}
+
+// RetryPathHasRetryEligibleDurableInput evaluates the newest canonical user
+// input at or before a retry source. Callers must provide an authority-validated
+// ancestor path ending at the source entry.
+func RetryPathHasRetryEligibleDurableInput(path []Entry) (bool, error) {
+	for index := len(path) - 1; index >= 0; index-- {
+		entry := path[index]
+		if entry.Type != EntryUserMessage {
+			continue
+		}
+		if entry.Message.Role != session.User {
+			return false, ErrInvalidThreadAuthority
+		}
+		return session.HasRetryEligibleDurableInput(entry.Message), nil
+	}
+	return false, ErrInvalidThreadAuthority
+}
+
+func validateRetrySourcePathIndex(path []Entry, index int, sourceTurnID, sourceEntryID string) error {
+	if index < 0 || index >= len(path) {
+		return ErrEntryNotFound
+	}
+	entry := path[index]
+	if entry.ID != sourceEntryID || strings.TrimSpace(entry.TurnID) != sourceTurnID {
+		return ErrInvalidThreadAuthority
+	}
+	if entry.Type == EntryUserMessage && entry.Message.Role == session.User {
+		return nil
+	}
+	if index+1 < len(path) {
+		savePoint := path[index+1]
+		if savePoint.Type == EntryTurnMarker && savePoint.TurnStatus == TurnSavePoint &&
+			savePoint.ParentID == entry.ID && strings.TrimSpace(savePoint.TurnID) == sourceTurnID {
+			return nil
+		}
+	}
+	return ErrInvalidThreadAuthority
+}
+
+func ValidateFinishTurnRequest(req FinishTurnRequest) error {
 	if err := req.Lease.Validate(); err != nil {
 		return err
 	}
@@ -143,6 +251,22 @@ func validateFinishTurnRequest(req FinishTurnRequest) error {
 	case TurnCompleted, TurnWaiting, TurnFailed, TurnAborted:
 	default:
 		return fmt.Errorf("invalid terminal turn status %q", req.Status)
+	}
+	failureCode := strings.TrimSpace(req.Metadata[TurnFailureCodeMetadataKey])
+	failureMessage := strings.TrimSpace(req.FailureMessage)
+	switch req.Status {
+	case TurnFailed:
+		if failureMessage == "" || !ValidTurnFailureCode(failureCode) || failureCode == TurnFailureCancelled || failureCode == TurnFailureInterrupted {
+			return errors.New("failed turn requires a failure message and valid failure code")
+		}
+	case TurnAborted:
+		if failureMessage == "" || failureCode != TurnFailureCancelled {
+			return errors.New("aborted turn requires a failure message and cancelled failure code")
+		}
+	case TurnCompleted, TurnWaiting:
+		if failureMessage != "" || failureCode != "" {
+			return errors.New("successful or waiting turn must not include a failure")
+		}
 	}
 	if req.ProviderState != nil && req.ClearProviderState {
 		return errors.New("turn finish provider state mutation is ambiguous")
@@ -238,6 +362,13 @@ func (r *MemoryRepo) AdmitTurn(_ context.Context, req AdmitTurnRequest) (AdmitTu
 	if err := ValidateAdmitTurnRequest(req); err != nil {
 		return AdmitTurnResult{}, err
 	}
+	req.ThreadID = strings.TrimSpace(req.ThreadID)
+	req.TurnID = strings.TrimSpace(req.TurnID)
+	req.RunID = strings.TrimSpace(req.RunID)
+	req.OwnerID = strings.TrimSpace(req.OwnerID)
+	req.RequestFingerprint = strings.TrimSpace(req.RequestFingerprint)
+	req.RetrySourceTurnID = strings.TrimSpace(req.RetrySourceTurnID)
+	req.RetrySourceEntryID = strings.TrimSpace(req.RetrySourceEntryID)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	key := turnAdmissionKey(req.ThreadID, req.TurnID)
@@ -269,28 +400,16 @@ func (r *MemoryRepo) AdmitTurn(_ context.Context, req AdmitTurnRequest) (AdmitTu
 	seqBefore := r.seq
 	baseLeafID := meta.LeafID
 	admissionBaseLeafID := baseLeafID
-	var boundary Entry
-	if retryLeafID := strings.TrimSpace(req.RetryLeafID); retryLeafID != "" {
-		if !containsEntry(r.entries[meta.ID], retryLeafID) {
-			return AdmitTurnResult{}, ErrEntryNotFound
-		}
-		baseLeafID = retryLeafID
-		admissionBaseLeafID = retryLeafID
-		path, err := pathLocked(r.threads, r.entries, meta.ID, baseLeafID)
+	if req.RetrySourceEntryID != "" {
+		activePath, err := pathLocked(r.threads, r.entries, meta.ID, meta.LeafID)
 		if err != nil {
 			return AdmitTurnResult{}, err
 		}
-		unfinished, err := unfinishedTurnIDs(path)
+		_, err = ValidateRetrySourcePath(activePath, req.RetrySourceTurnID, req.RetrySourceEntryID)
 		if err != nil {
 			return AdmitTurnResult{}, err
 		}
-		if len(unfinished) != 0 {
-			boundary, err = PrepareBranchBoundaryEntry(path, meta.ID, baseLeafID, r.nextEntryID(meta.ID), "retry", nonZeroAuthorityTime(req.Now, r.now))
-			if err != nil {
-				return AdmitTurnResult{}, err
-			}
-			baseLeafID = boundary.ID
-		}
+		admissionBaseLeafID = req.RetrySourceEntryID
 	}
 	lease, err := r.acquireTurnLeaseLocked(TurnLease{
 		ThreadID: meta.ID, Purpose: TurnLeasePurposeTurn, TurnID: strings.TrimSpace(req.TurnID), OwnerID: strings.TrimSpace(req.OwnerID),
@@ -300,18 +419,19 @@ func (r *MemoryRepo) AdmitTurn(_ context.Context, req AdmitTurnRequest) (AdmitTu
 		return AdmitTurnResult{}, err
 	}
 	now := nonZeroAuthorityTime(req.Now, r.now)
-	if boundary.ID != "" {
-		r.appendIndexedEntriesLocked(meta.ID, boundary)
-	}
 	started := Entry{
 		ID: r.nextEntryID(meta.ID), ThreadID: meta.ID, ParentID: baseLeafID, Type: EntryTurnMarker,
 		TurnID: strings.TrimSpace(req.TurnID), TurnStatus: TurnStarted, CreatedAt: now,
 		Metadata: map[string]string{"run_id": strings.TrimSpace(req.RunID)},
 	}
+	if req.RetrySourceEntryID != "" {
+		started.Metadata[RetrySourceTurnIDMetadataKey] = req.RetrySourceTurnID
+		started.Metadata[RetrySourceEntryIDMetadataKey] = req.RetrySourceEntryID
+	}
 	started.Raw = rawForEntry(started)
 	started.RawHash = stableHash(started.Raw)
 	var user Entry
-	if strings.TrimSpace(req.RetryLeafID) == "" {
+	if req.RetrySourceEntryID == "" {
 		user = Entry{
 			ID: r.nextEntryID(meta.ID), ThreadID: meta.ID, ParentID: started.ID, Type: EntryUserMessage,
 			TurnID: strings.TrimSpace(req.TurnID), CreatedAt: now, Message: session.CloneMessage(req.Input),
@@ -319,7 +439,7 @@ func (r *MemoryRepo) AdmitTurn(_ context.Context, req AdmitTurnRequest) (AdmitTu
 		user.Raw = rawForEntry(user)
 		user.RawHash = stableHash(user.Raw)
 	}
-	if started.ID == "" || (strings.TrimSpace(req.RetryLeafID) == "" && user.ID == "") {
+	if started.ID == "" || (req.RetrySourceEntryID == "" && user.ID == "") {
 		delete(r.leases, meta.ID)
 		r.seq = seqBefore
 		return AdmitTurnResult{}, errors.New("failed to allocate turn admission entries")
@@ -334,9 +454,9 @@ func (r *MemoryRepo) AdmitTurn(_ context.Context, req AdmitTurnRequest) (AdmitTu
 	r.threads[meta.ID] = meta
 	r.turnAdmissions[key] = turnAdmissionLedger{
 		ThreadID: meta.ID, TurnID: req.TurnID, RunID: req.RunID, RequestFingerprint: req.RequestFingerprint,
-		Lease: lease, BoundaryTerminalID: boundary.ID, TurnStartedID: started.ID, UserMessageID: user.ID, BaseLeafID: admissionBaseLeafID,
+		Lease: lease, TurnStartedID: started.ID, UserMessageID: user.ID, BaseLeafID: admissionBaseLeafID,
 	}
-	return AdmitTurnResult{Lease: lease, BoundaryTerminal: cloneEntry(boundary), TurnStarted: cloneEntry(started), UserMessage: cloneEntry(user), BaseLeafID: admissionBaseLeafID}, nil
+	return AdmitTurnResult{Lease: lease, TurnStarted: cloneEntry(started), UserMessage: cloneEntry(user), BaseLeafID: admissionBaseLeafID}, nil
 }
 
 func (r *MemoryRepo) ReadTurnAdmission(_ context.Context, threadID, turnID, runID string) (AdmitTurnResult, bool, error) {
@@ -383,7 +503,11 @@ func (r *MemoryRepo) replayTurnAdmissionLocked(existing turnAdmissionLedger) (Ad
 			if !ok {
 				return AdmitTurnResult{}, ErrAuthorityCorrupt
 			}
-			recovered, err := r.replayedInterruptedTurnLocked(finished, existing.Lease, meta.ParentThreadID)
+			path, err := pathLocked(r.threads, r.entries, existing.ThreadID, meta.LeafID)
+			if err != nil {
+				return AdmitTurnResult{}, err
+			}
+			recovered, err := r.replayedInterruptedTurnLocked(finished, existing.Lease, meta.ParentThreadID, path)
 			if err != nil {
 				if errors.Is(err, ErrRequestConflict) || errors.Is(err, ErrInvalidThreadAuthority) {
 					return AdmitTurnResult{}, ErrAuthorityCorrupt
@@ -414,11 +538,28 @@ func (r *MemoryRepo) replayTurnAdmissionLocked(existing turnAdmissionLedger) (Ad
 	if !startedOK || !userOK || !boundaryOK {
 		return AdmitTurnResult{}, ErrAuthorityCorrupt
 	}
+	for _, entry := range []Entry{started, boundary, user} {
+		if entry.ID != "" {
+			if err := ValidateEntryIntegrity(entry); err != nil {
+				return AdmitTurnResult{}, err
+			}
+		}
+	}
+	if terminal != nil {
+		if err := ValidateEntryIntegrity(terminal.Terminal); err != nil {
+			return AdmitTurnResult{}, err
+		}
+		if terminal.Failure != nil {
+			if err := ValidateEntryIntegrity(*terminal.Failure); err != nil {
+				return AdmitTurnResult{}, err
+			}
+		}
+	}
 	return AdmitTurnResult{Lease: existing.Lease, BoundaryTerminal: boundary, TurnStarted: started, UserMessage: user, BaseLeafID: existing.BaseLeafID, Terminal: terminal, Replayed: true}, nil
 }
 
 func (r *MemoryRepo) FinishTurn(_ context.Context, req FinishTurnRequest) (FinishTurnResult, error) {
-	if err := validateFinishTurnRequest(req); err != nil {
+	if err := ValidateFinishTurnRequest(req); err != nil {
 		return FinishTurnResult{}, err
 	}
 	r.mu.Lock()
@@ -427,6 +568,9 @@ func (r *MemoryRepo) FinishTurn(_ context.Context, req FinishTurnRequest) (Finis
 	if finished, ok := r.turnFinishes[key]; ok {
 		if finished.RunID != req.RunID || finished.Generation != req.Lease.Generation || finished.OutcomeFingerprint != req.OutcomeFingerprint {
 			return FinishTurnResult{}, ErrRequestConflict
+		}
+		if r.turnHasVisibleApprovalLocked(req.Lease.ThreadID, req.Lease.TurnID) {
+			return FinishTurnResult{}, ErrAuthorityCorrupt
 		}
 		terminal, ok := findEntry(r.entries[finished.ThreadID], finished.TerminalEntryID)
 		if !ok {
@@ -456,6 +600,9 @@ func (r *MemoryRepo) FinishTurn(_ context.Context, req FinishTurnRequest) (Finis
 	}
 	if lifecycle != ThreadLifecycleOpen && lifecycle != ThreadLifecycleClosing {
 		return FinishTurnResult{}, ErrThreadClosed
+	}
+	if r.turnHasVisibleApprovalLocked(req.Lease.ThreadID, req.Lease.TurnID) {
+		return FinishTurnResult{}, ErrRequestConflict
 	}
 	for _, attempt := range r.effectAttempts {
 		if attempt.Invocation.ThreadID != req.Lease.ThreadID || attempt.Invocation.TurnID != req.Lease.TurnID {
@@ -538,4 +685,13 @@ func (r *MemoryRepo) FinishTurn(_ context.Context, req FinishTurnRequest) (Finis
 	r.turnFinishes[key] = finish
 	result.Terminal = cloneEntry(terminal)
 	return result, nil
+}
+
+func (r *MemoryRepo) turnHasVisibleApprovalLocked(threadID, turnID string) bool {
+	for _, approval := range r.approvals {
+		if approval.ThreadID == threadID && approval.TurnID == turnID && approvalQueueVisible(approval.State) {
+			return true
+		}
+	}
+	return false
 }

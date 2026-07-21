@@ -56,8 +56,9 @@ const (
 type ThreadTitleStatus string
 
 const (
-	ThreadTitleReady  ThreadTitleStatus = "ready"
-	ThreadTitleFailed ThreadTitleStatus = "failed"
+	ThreadTitlePending ThreadTitleStatus = "pending"
+	ThreadTitleReady   ThreadTitleStatus = "ready"
+	ThreadTitleFailed  ThreadTitleStatus = "failed"
 )
 
 type ThreadTitleSource string
@@ -83,6 +84,7 @@ var (
 	ErrAuthorityCorrupt         = errors.New("session tree authority state is corrupt")
 	ErrForkDestinationConflict  = errors.New("session tree fork destination conflicts with operation marker")
 	ErrAgentTodoVersionConflict = errors.New("session tree agent todo version conflict")
+	ErrStaleCanonicalTurnCursor = errors.New("session tree canonical turn cursor is stale")
 )
 
 type AppendCommittedError struct {
@@ -119,6 +121,8 @@ type ThreadMeta struct {
 	TitleSource         ThreadTitleSource `json:"title_source,omitempty"`
 	TitleUpdatedAt      time.Time         `json:"title_updated_at,omitempty"`
 	TitleError          string            `json:"title_error,omitempty"`
+	TitleGeneration     int64             `json:"title_generation,omitempty"`
+	TitleToken          string            `json:"title_token,omitempty"`
 	CreatedAt           time.Time         `json:"created_at"`
 	UpdatedAt           time.Time         `json:"updated_at"`
 	LastViewedAt        time.Time         `json:"last_viewed_at,omitempty"`
@@ -131,6 +135,9 @@ func ValidateThreadMetaAuthority(meta ThreadMeta) error {
 	parentID := strings.TrimSpace(meta.ParentThreadID)
 	if id == "" {
 		return fmt.Errorf("%w: thread id is required", ErrInvalidThreadAuthority)
+	}
+	if err := ValidateThreadTitleState(meta); err != nil {
+		return err
 	}
 	lifecycle, err := normalizeThreadLifecycle(meta)
 	if err != nil {
@@ -264,6 +271,7 @@ type Entry struct {
 	ID                      string              `json:"id"`
 	ThreadID                string              `json:"thread_id"`
 	ParentID                string              `json:"parent_id,omitempty"`
+	PathDepth               int64               `json:"path_depth"`
 	Type                    EntryType           `json:"type"`
 	TurnID                  string              `json:"turn_id,omitempty"`
 	CreatedAt               time.Time           `json:"created_at"`
@@ -706,6 +714,8 @@ type MemoryRepo struct {
 	mu                             sync.Mutex
 	threads                        map[string]ThreadMeta
 	entries                        map[string][]Entry
+	entryOrdinals                  map[string]map[string]int
+	entryDepths                    map[string]map[string]int64
 	turnEntryOrdinals              map[string]map[string][]int
 	turnEntryCounts                map[string]map[string]int
 	leases                         map[string]TurnLease
@@ -725,6 +735,11 @@ type MemoryRepo struct {
 	effectAttempts                 map[string]EffectAttempt
 	effectAttemptByInvocation      map[string]string
 	effectAttemptSequence          int64
+	approvalQueues                 map[string]approvalQueueLedger
+	approvals                      map[string]ApprovalRecord
+	approvalByEffectAttempt        map[string]string
+	approvalDecisions              map[string]approvalDecisionLedger
+	approvalSignals                map[string]chan struct{}
 	subAgentCloseOperations        map[string]SubAgentCloseOperation
 	pendingToolCompletions         map[string]pendingToolCompletionLedger
 	subAgentPendingToolCompletions map[string]subAgentPendingToolCompletionLedger
@@ -752,6 +767,8 @@ func NewMemoryRepoWithLeasePolicy(policy LeasePolicy, now func() time.Time) (*Me
 	return &MemoryRepo{
 		threads:                        map[string]ThreadMeta{},
 		entries:                        map[string][]Entry{},
+		entryOrdinals:                  map[string]map[string]int{},
+		entryDepths:                    map[string]map[string]int64{},
 		turnEntryOrdinals:              map[string]map[string][]int{},
 		turnEntryCounts:                map[string]map[string]int{},
 		leases:                         map[string]TurnLease{},
@@ -770,6 +787,11 @@ func NewMemoryRepoWithLeasePolicy(policy LeasePolicy, now func() time.Time) (*Me
 		turnFinishes:                   map[string]turnFinishLedger{},
 		effectAttempts:                 map[string]EffectAttempt{},
 		effectAttemptByInvocation:      map[string]string{},
+		approvalQueues:                 map[string]approvalQueueLedger{},
+		approvals:                      map[string]ApprovalRecord{},
+		approvalByEffectAttempt:        map[string]string{},
+		approvalDecisions:              map[string]approvalDecisionLedger{},
+		approvalSignals:                map[string]chan struct{}{},
 		subAgentCloseOperations:        map[string]SubAgentCloseOperation{},
 		pendingToolCompletions:         map[string]pendingToolCompletionLedger{},
 		subAgentPendingToolCompletions: map[string]subAgentPendingToolCompletionLedger{},
@@ -1060,6 +1082,9 @@ func (r *MemoryRepo) UpdateThread(ctx context.Context, meta ThreadMeta) error {
 	if !SameThreadAuthority(current, meta) {
 		return fmt.Errorf("%w: thread %q authority is immutable", ErrInvalidThreadAuthority, meta.ID)
 	}
+	if !SameThreadTitleState(current, meta) {
+		return ErrRequestConflict
+	}
 	if err := lifecycleRejectsWrite(current); err != nil {
 		return err
 	}
@@ -1128,6 +1153,7 @@ func (r *MemoryRepo) DeleteThread(_ context.Context, threadID string) error {
 	delete(r.providerStates, threadID)
 	delete(r.subAgentInputs, threadID)
 	delete(r.subAgentInputSequence, threadID)
+	r.deleteApprovalAuthorityForThreadsLocked(map[string]struct{}{threadID: {}})
 	for key, record := range r.artifacts {
 		if record.ThreadID == threadID {
 			delete(r.artifacts, key)
@@ -1189,6 +1215,7 @@ func (r *MemoryRepo) CommitForkBatch(ctx context.Context, operationID string, no
 	if operationID == "" || len(nodes) == 0 || commit == nil {
 		return nil, errors.New("fork batch requires operation, nodes, and terminal commit")
 	}
+	nodes = snapshotForkNodes(nodes)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	sources, destinations, authority, err := validateForkBatchNodes(operationID, nodes)
@@ -1206,6 +1233,7 @@ func (r *MemoryRepo) CommitForkBatch(ctx context.Context, operationID string, no
 			r.deleteIndexedEntriesLocked(threadID)
 			delete(r.todos, threadID)
 			delete(r.providerStates, threadID)
+			r.deleteTurnAuthorityForThreadLocked(threadID)
 			for key, record := range r.artifacts {
 				if record.ThreadID == threadID {
 					delete(r.artifacts, key)
@@ -1291,6 +1319,14 @@ func validateForkBatchNodes(operationID string, nodes []ForkOptions) ([]string, 
 		authoritySet[threadID] = struct{}{}
 	}
 	return sources, destinations, sortedStringSet(authoritySet), nil
+}
+
+func snapshotForkNodes(nodes []ForkOptions) []ForkOptions {
+	snapshot := make([]ForkOptions, len(nodes))
+	for index, node := range nodes {
+		snapshot[index] = snapshotForkIdentityMaps(node)
+	}
+	return snapshot
 }
 
 func (r *MemoryRepo) validateForkClaimLocked(operationID string, sources, destinations, authority []string) error {
@@ -1409,23 +1445,33 @@ func (r *MemoryRepo) appendLocked(ctx context.Context, entry Entry, opts AppendO
 	if err := ValidateEntryMessageReferences(entry); err != nil {
 		return Entry{}, err
 	}
-	if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted && r.hasTurnStartedLocked(entry.ThreadID, entry.TurnID) {
-		return Entry{}, ErrRequestConflict
+	if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted {
+		runID := strings.TrimSpace(entry.Metadata["run_id"])
+		if runID == "" {
+			return Entry{}, fmt.Errorf("%w: started turn requires run identity", ErrInvalidThreadAuthority)
+		}
+		if r.hasTurnStartedLocked(entry.ThreadID, entry.TurnID) {
+			return Entry{}, ErrRequestConflict
+		}
+		entry.Metadata = cloneStringMap(entry.Metadata)
+		entry.Metadata["run_id"] = runID
 	}
 	if opts.ParentID != "" {
 		entry.ParentID = opts.ParentID
 	} else if entry.ParentID == "" {
 		entry.ParentID = meta.LeafID
 	}
-	if entry.ParentID != "" && !containsEntry(r.entries[entry.ThreadID], entry.ParentID) {
-		return Entry{}, ErrInvalidParent
+	if entry.ParentID != "" {
+		if _, ok := r.entryOrdinals[entry.ThreadID][entry.ParentID]; !ok {
+			return Entry{}, ErrInvalidParent
+		}
 	}
 	if opts.ID != "" {
 		entry.ID = opts.ID
 	}
 	if entry.ID == "" {
 		entry.ID = r.nextEntryID(entry.ThreadID)
-	} else if containsEntry(r.entries[entry.ThreadID], entry.ID) {
+	} else if _, exists := r.entryOrdinals[entry.ThreadID][entry.ID]; exists {
 		return Entry{}, fmt.Errorf("session tree entry id already exists: %s", entry.ID)
 	}
 	if entry.CreatedAt.IsZero() {
@@ -1433,6 +1479,14 @@ func (r *MemoryRepo) appendLocked(ctx context.Context, entry Entry, opts AppendO
 	}
 	if entry.CreatedAt.IsZero() {
 		entry.CreatedAt = time.Now()
+	}
+	entry.PathDepth = 1
+	if entry.ParentID != "" {
+		parentDepth, ok := r.entryDepths[entry.ThreadID][entry.ParentID]
+		if !ok || parentDepth <= 0 {
+			return Entry{}, ErrAuthorityCorrupt
+		}
+		entry.PathDepth = parentDepth + 1
 	}
 	entry.Raw = rawForEntry(entry)
 	entry.RawHash = stableHash(entry.Raw)
@@ -1460,13 +1514,25 @@ func (r *MemoryRepo) appendIndexedEntriesLocked(threadID string, entries ...Entr
 	if r.turnEntryOrdinals[threadID] == nil {
 		r.turnEntryOrdinals[threadID] = map[string][]int{}
 	}
+	if r.entryOrdinals[threadID] == nil {
+		r.entryOrdinals[threadID] = map[string]int{}
+	}
+	if r.entryDepths[threadID] == nil {
+		r.entryDepths[threadID] = map[string]int64{}
+	}
 	if r.turnEntryCounts[threadID] == nil {
 		r.turnEntryCounts[threadID] = map[string]int{}
 	}
 	for _, entry := range entries {
 		ordinal := len(r.entries[threadID])
 		copy := cloneEntry(entry)
+		copy.PathDepth = 1
+		if copy.ParentID != "" {
+			copy.PathDepth = r.entryDepths[threadID][copy.ParentID] + 1
+		}
 		r.entries[threadID] = append(r.entries[threadID], copy)
+		r.entryOrdinals[threadID][copy.ID] = ordinal
+		r.entryDepths[threadID][copy.ID] = copy.PathDepth
 		if strings.TrimSpace(copy.TurnID) != "" {
 			r.turnEntryOrdinals[threadID][copy.TurnID] = append(r.turnEntryOrdinals[threadID][copy.TurnID], ordinal)
 			r.turnEntryCounts[threadID][copy.TurnID]++
@@ -1475,13 +1541,42 @@ func (r *MemoryRepo) appendIndexedEntriesLocked(threadID string, entries ...Entr
 }
 
 func (r *MemoryRepo) replaceIndexedEntriesLocked(threadID string, entries []Entry) error {
+	entryOrdinals := make(map[string]int, len(entries))
+	entryDepths := make(map[string]int64, len(entries))
 	indexed := map[string][]int{}
 	started := map[string]struct{}{}
-	startedRuns := map[string]struct{}{}
 	cloned := cloneEntries(entries)
 	for ordinal, entry := range cloned {
 		if entry.ThreadID != threadID {
 			return ErrAuthorityCorrupt
+		}
+		if strings.TrimSpace(entry.ID) == "" {
+			return ErrAuthorityCorrupt
+		}
+		if _, duplicate := entryOrdinals[entry.ID]; duplicate {
+			return ErrAuthorityCorrupt
+		}
+		entryOrdinals[entry.ID] = ordinal
+		expectedDepth := int64(1)
+		unresolvedParent := false
+		if entry.ParentID != "" {
+			parentDepth, ok := entryDepths[entry.ParentID]
+			if !ok || parentDepth <= 0 {
+				// FileRepo keeps metadata readable when a journal is already
+				// broken; path and canonical reads still fail on the missing
+				// parent instead of repairing or adopting the orphan.
+				unresolvedParent = true
+			} else {
+				expectedDepth = parentDepth + 1
+			}
+		}
+		if !unresolvedParent && entry.PathDepth != expectedDepth {
+			return ErrAuthorityCorrupt
+		}
+		if unresolvedParent {
+			entryDepths[entry.ID] = 0
+		} else {
+			entryDepths[entry.ID] = entry.PathDepth
 		}
 		if err := ValidateEntryMessageReferences(entry); err != nil {
 			return ErrAuthorityCorrupt
@@ -1495,17 +1590,16 @@ func (r *MemoryRepo) replaceIndexedEntriesLocked(threadID string, entries []Entr
 				return ErrAuthorityCorrupt
 			}
 			runID := strings.TrimSpace(entry.Metadata["run_id"])
-			if runID != "" {
-				if _, duplicate := startedRuns[runID]; duplicate {
-					return ErrAuthorityCorrupt
-				}
-				startedRuns[runID] = struct{}{}
+			if runID == "" {
+				return ErrAuthorityCorrupt
 			}
 			started[turnID] = struct{}{}
 		}
 		indexed[turnID] = append(indexed[turnID], ordinal)
 	}
 	r.entries[threadID] = cloned
+	r.entryOrdinals[threadID] = entryOrdinals
+	r.entryDepths[threadID] = entryDepths
 	r.turnEntryOrdinals[threadID] = indexed
 	counts := make(map[string]int, len(indexed))
 	for turnID, ordinals := range indexed {
@@ -1517,6 +1611,8 @@ func (r *MemoryRepo) replaceIndexedEntriesLocked(threadID string, entries []Entr
 
 func (r *MemoryRepo) deleteIndexedEntriesLocked(threadID string) {
 	delete(r.entries, threadID)
+	delete(r.entryOrdinals, threadID)
+	delete(r.entryDepths, threadID)
 	delete(r.turnEntryOrdinals, threadID)
 	delete(r.turnEntryCounts, threadID)
 }
@@ -1534,9 +1630,21 @@ func (r *MemoryRepo) nextEntryID(threadID string) string {
 func (r *MemoryRepo) Entry(_ context.Context, threadID, entryID string) (Entry, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	entry, ok := findEntry(r.entries[threadID], entryID)
+	ordinal, ok := r.entryOrdinals[threadID][entryID]
 	if !ok {
 		return Entry{}, ErrEntryNotFound
+	}
+	entries := r.entries[threadID]
+	if ordinal < 0 || ordinal >= len(entries) {
+		return Entry{}, ErrAuthorityCorrupt
+	}
+	entry := entries[ordinal]
+	depth, depthOK := r.entryDepths[threadID][entryID]
+	if entry.ID != entryID || entry.ThreadID != threadID || !depthOK || depth <= 0 || entry.PathDepth != depth {
+		return Entry{}, ErrAuthorityCorrupt
+	}
+	if err := ValidateEntryIntegrity(entry); err != nil {
+		return Entry{}, err
 	}
 	return cloneEntry(entry), nil
 }
@@ -1621,29 +1729,81 @@ func ValidateCanonicalTurnEntries(entries []Entry, threadID, turnID, runID strin
 	if threadID == "" || turnID == "" || runID == "" || len(entries) == 0 {
 		return ErrAuthorityCorrupt
 	}
-	started := 0
-	terminal := 0
-	for _, entry := range entries {
-		if entry.ThreadID != threadID || entry.TurnID != turnID {
+	seenIDs := make(map[string]int, len(entries))
+	startedIndex := -1
+	terminalIndex := -1
+	storedRunID := ""
+	userEntries := 0
+	var retrySource *CanonicalTurnRetrySource
+	for index, entry := range entries {
+		if entry.ThreadID != threadID || entry.TurnID != turnID || strings.TrimSpace(entry.ID) == "" {
 			return ErrAuthorityCorrupt
+		}
+		if _, duplicate := seenIDs[entry.ID]; duplicate {
+			return ErrAuthorityCorrupt
+		}
+		seenIDs[entry.ID] = index
+		if entry.Type == EntryUserMessage {
+			userEntries++
 		}
 		if entry.Type != EntryTurnMarker {
 			continue
 		}
 		if entry.TurnStatus == TurnStarted {
-			started++
-			if strings.TrimSpace(entry.Metadata["run_id"]) != runID {
-				return ErrRequestConflict
+			if startedIndex >= 0 {
+				return ErrAuthorityCorrupt
+			}
+			startedIndex = index
+			storedRunID = strings.TrimSpace(entry.Metadata["run_id"])
+			var err error
+			retrySource, err = CanonicalTurnRetrySourceForStartedEntry(entry)
+			if err != nil {
+				return err
 			}
 		}
 		if terminalTurnMarker(entry.TurnStatus) {
-			terminal++
+			if terminalIndex >= 0 {
+				return ErrAuthorityCorrupt
+			}
+			terminalIndex = index
 		}
 	}
-	if started != 1 || terminal > 1 {
+	if startedIndex != 0 || storedRunID == "" || (terminalIndex >= 0 && terminalIndex < startedIndex) {
+		return ErrAuthorityCorrupt
+	}
+	if parentIndex, internal := seenIDs[entries[0].ParentID]; internal && parentIndex >= 0 {
+		return ErrAuthorityCorrupt
+	}
+	for index := 1; index < len(entries); index++ {
+		entry := entries[index]
+		if terminalIndex >= 0 && index > terminalIndex {
+			if !isCanonicalPostTerminalTurnEntry(entry) || strings.TrimSpace(entry.ParentID) == "" || entry.ParentID == entry.ID {
+				return ErrAuthorityCorrupt
+			}
+			if parentIndex, internal := seenIDs[entry.ParentID]; internal && parentIndex >= index {
+				return ErrAuthorityCorrupt
+			}
+			continue
+		}
+		if entry.ParentID != entries[index-1].ID {
+			return ErrAuthorityCorrupt
+		}
+	}
+	if storedRunID != runID {
+		return ErrRequestConflict
+	}
+	if retrySource != nil && userEntries != 0 {
 		return ErrAuthorityCorrupt
 	}
 	return nil
+}
+
+func isCanonicalPostTerminalTurnEntry(entry Entry) bool {
+	return entry.Type == EntryCustom &&
+		entry.Metadata[PendingToolSettlementKindKey] == PendingToolSettlementKind &&
+		strings.TrimSpace(entry.Metadata[PendingToolSettlementFingerprintKey]) != "" &&
+		strings.TrimSpace(entry.Message.ToolCallID) != "" &&
+		strings.TrimSpace(entry.Message.ToolName) != ""
 }
 
 func (r *MemoryRepo) Path(_ context.Context, threadID, leafID string) ([]Entry, error) {
@@ -1722,6 +1882,7 @@ func (r *MemoryRepo) Fork(ctx context.Context, opts ForkOptions) (ThreadMeta, er
 }
 
 func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMeta, error) {
+	opts = snapshotForkIdentityMaps(opts)
 	if opts.Position == "" {
 		opts.Position = ForkAt
 	}
@@ -1751,15 +1912,7 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 		now = time.Now()
 	}
 	newID := opts.NewThreadID
-	if newID == "" {
-		for {
-			r.seq++
-			newID = fmt.Sprintf("%s-fork-%d", opts.SourceThreadID, r.seq)
-			if _, ok := r.threads[newID]; !ok {
-				break
-			}
-		}
-	} else if existing, ok := r.threads[newID]; ok {
+	if existing, ok := r.threads[newID]; newID != "" && ok {
 		if err := r.requireForkAuthorityLocked(opts.OperationID, newID); err != nil {
 			return ThreadMeta{}, err
 		}
@@ -1771,6 +1924,22 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 		}
 		return ThreadMeta{}, ErrThreadExists
 	}
+	path, err := pathLocked(r.threads, r.entries, opts.SourceThreadID, targetID)
+	if err != nil {
+		return ThreadMeta{}, err
+	}
+	if err := r.validateForkRetryAdmissionsLocked(opts.SourceThreadID, path); err != nil {
+		return ThreadMeta{}, err
+	}
+	if newID == "" {
+		for {
+			r.seq++
+			newID = fmt.Sprintf("%s-fork-%d", opts.SourceThreadID, r.seq)
+			if _, ok := r.threads[newID]; !ok {
+				break
+			}
+		}
+	}
 	if _, deleted := r.tombstones[newID]; deleted {
 		return ThreadMeta{}, ErrForkDestinationConflict
 	}
@@ -1778,10 +1947,6 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 		return ThreadMeta{}, ErrThreadExists
 	}
 	if err := r.requireForkAuthorityLocked(opts.OperationID, newID); err != nil {
-		return ThreadMeta{}, err
-	}
-	path, err := pathLocked(r.threads, r.entries, opts.SourceThreadID, targetID)
-	if err != nil {
 		return ThreadMeta{}, err
 	}
 	closure := artifact.CloneClosure(opts.ArtifactClosure)
@@ -1812,6 +1977,19 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 		}
 	}
 	oldToNew := map[string]string{"": ""}
+	retryTargetEntryIDs := make(map[string]struct{})
+	for _, entry := range path {
+		if entry.Type != EntryTurnMarker || entry.TurnStatus != TurnStarted {
+			continue
+		}
+		retrySource, err := CanonicalTurnRetrySourceForStartedEntry(entry)
+		if err != nil {
+			return ThreadMeta{}, err
+		}
+		if retrySource != nil {
+			retryTargetEntryIDs[retrySource.EntryID] = struct{}{}
+		}
+	}
 	forkedEntries := make([]Entry, 0, len(path))
 	for _, entry := range path {
 		r.seq++
@@ -1824,15 +2002,61 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 		next.CompactedThroughEntryID = oldToNew[entry.CompactedThroughEntryID]
 		next.KeptUserEntryIDs = rewriteEntryIDs(entry.KeptUserEntryIDs, oldToNew)
 		next.Metadata = rewriteForkMetadata(next.Metadata, oldToNew, opts.TurnIDMap, opts.RunIDMap)
+		expectedID := next.ID
+		expectedThreadID := next.ThreadID
+		expectedParentID := next.ParentID
+		expectedTurnID := next.TurnID
+		expectedRunID := next.Metadata["run_id"]
+		expectedRetrySourceTurnID := next.Metadata[RetrySourceTurnIDMetadataKey]
+		expectedRetrySourceEntryID := next.Metadata[RetrySourceEntryIDMetadataKey]
+		sourceStarted := entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted
+		_, sourceTarget := retryTargetEntryIDs[entry.ID]
 		if opts.RewriteEntry != nil {
 			next, err = opts.RewriteEntry(next, ForkEntryIdentity{
 				SourceThreadID:      opts.SourceThreadID,
 				DestinationThreadID: newID,
-				TurnIDMap:           opts.TurnIDMap,
-				RunIDMap:            opts.RunIDMap,
+				TurnIDMap:           cloneStringMap(opts.TurnIDMap),
+				RunIDMap:            cloneStringMap(opts.RunIDMap),
 			})
 			if err != nil {
 				return ThreadMeta{}, err
+			}
+		}
+		destinationStarted := next.Type == EntryTurnMarker && next.TurnStatus == TurnStarted
+		if sourceStarted != destinationStarted {
+			return ThreadMeta{}, ErrAuthorityCorrupt
+		}
+		if (sourceStarted || sourceTarget) &&
+			(next.ID != expectedID || next.ThreadID != expectedThreadID || next.ParentID != expectedParentID || next.TurnID != expectedTurnID) {
+			return ThreadMeta{}, ErrAuthorityCorrupt
+		}
+		if sourceTarget && (next.Type != entry.Type || next.TurnStatus != entry.TurnStatus ||
+			next.Metadata["run_id"] != expectedRunID ||
+			next.Metadata[RetrySourceTurnIDMetadataKey] != expectedRetrySourceTurnID ||
+			next.Metadata[RetrySourceEntryIDMetadataKey] != expectedRetrySourceEntryID) {
+			return ThreadMeta{}, ErrAuthorityCorrupt
+		}
+		if sourceStarted {
+			if next.Type != EntryTurnMarker || next.TurnStatus != TurnStarted {
+				return ThreadMeta{}, ErrAuthorityCorrupt
+			}
+			sourceRetry, err := CanonicalTurnRetrySourceForStartedEntry(entry)
+			if err != nil {
+				return ThreadMeta{}, err
+			}
+			destinationRetry, err := CanonicalTurnRetrySourceForStartedEntry(next)
+			if err != nil {
+				return ThreadMeta{}, err
+			}
+			if (sourceRetry == nil) != (destinationRetry == nil) {
+				return ThreadMeta{}, ErrAuthorityCorrupt
+			}
+			if sourceRetry != nil && (destinationRetry.EntryID != oldToNew[sourceRetry.EntryID] ||
+				destinationRetry.TurnID != rewriteForkID(sourceRetry.TurnID, opts.TurnIDMap)) {
+				return ThreadMeta{}, ErrAuthorityCorrupt
+			}
+			if expectedRunID == "" || next.Metadata["run_id"] != expectedRunID {
+				return ThreadMeta{}, ErrAuthorityCorrupt
 			}
 		}
 		next.CreatedAt = now
@@ -1863,7 +2087,11 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 			return ThreadMeta{}, err
 		}
 		forkedEntries = append(forkedEntries, boundary)
+		forkedEntries[len(forkedEntries)-1].PathDepth = int64(len(forkedEntries))
 		meta.LeafID = boundary.ID
+	}
+	if err := ValidateForkRetryAuthorityPath(forkedEntries, newID); err != nil {
+		return ThreadMeta{}, err
 	}
 	var forkedTodo AgentTodoState
 	hasForkedTodo := false
@@ -1877,6 +2105,10 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 	if err := r.replaceIndexedEntriesLocked(newID, forkedEntries); err != nil {
 		return ThreadMeta{}, err
 	}
+	if err := r.rebuildRetryAdmissionFactsLocked(newID, forkedEntries); err != nil {
+		r.deleteIndexedEntriesLocked(newID)
+		return ThreadMeta{}, err
+	}
 	r.threads[newID] = meta
 	for key, record := range stagedArtifacts {
 		r.artifacts[key] = record
@@ -1886,6 +2118,31 @@ func (r *MemoryRepo) forkLocked(ctx context.Context, opts ForkOptions) (ThreadMe
 	}
 	_ = ctx
 	return meta, nil
+}
+
+func (r *MemoryRepo) validateForkRetryAdmissionsLocked(threadID string, path []Entry) error {
+	for _, entry := range path {
+		if entry.Type != EntryTurnMarker || entry.TurnStatus != TurnStarted {
+			continue
+		}
+		source, err := CanonicalTurnRetrySourceForStartedEntry(entry)
+		if err != nil {
+			return err
+		}
+		if source == nil {
+			continue
+		}
+		eligible, err := r.retrySourceHasRetryEligibleDurableInputLocked(
+			threadID, entry.TurnID, strings.TrimSpace(entry.Metadata["run_id"]), entry.ID, *source,
+		)
+		if err != nil {
+			return err
+		}
+		if !eligible {
+			return ErrAuthorityCorrupt
+		}
+	}
+	return nil
 }
 
 func (r *MemoryRepo) ForkWithInitialEntry(ctx context.Context, opts ForkOptions, initial Entry) (ThreadMeta, Entry, error) {
@@ -1902,6 +2159,7 @@ func (r *MemoryRepo) ForkWithInitialEntry(ctx context.Context, opts ForkOptions,
 		delete(r.threads, forked.ID)
 		r.deleteIndexedEntriesLocked(forked.ID)
 		delete(r.todos, forked.ID)
+		r.deleteTurnAuthorityForThreadLocked(forked.ID)
 		for key, record := range r.artifacts {
 			if record.ThreadID == forked.ID {
 				delete(r.artifacts, key)
@@ -1911,6 +2169,25 @@ func (r *MemoryRepo) ForkWithInitialEntry(ctx context.Context, opts ForkOptions,
 		return ThreadMeta{}, Entry{}, err
 	}
 	return r.threads[forked.ID], saved, nil
+}
+
+func snapshotForkIdentityMaps(opts ForkOptions) ForkOptions {
+	opts.TurnIDMap = cloneStringMap(opts.TurnIDMap)
+	opts.RunIDMap = cloneStringMap(opts.RunIDMap)
+	return opts
+}
+
+func (r *MemoryRepo) deleteTurnAuthorityForThreadLocked(threadID string) {
+	for key, admission := range r.turnAdmissions {
+		if admission.ThreadID == threadID {
+			delete(r.turnAdmissions, key)
+		}
+	}
+	for key, finish := range r.turnFinishes {
+		if finish.ThreadID == threadID {
+			delete(r.turnFinishes, key)
+		}
+	}
 }
 
 func (r *MemoryRepo) threadAuthorityClaimedLocked(threadID string) bool {
@@ -2283,6 +2560,15 @@ func (r *FileRepo) CanonicalTurnEntries(ctx context.Context, threadID, turnID, r
 	return r.mem.CanonicalTurnEntries(ctx, threadID, turnID, runID)
 }
 
+func (r *FileRepo) ListCanonicalTurns(ctx context.Context, opts ListCanonicalTurnsOptions) (CanonicalTurnsPage, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.load(ctx); err != nil {
+		return CanonicalTurnsPage{}, err
+	}
+	return r.mem.ListCanonicalTurns(ctx, opts)
+}
+
 func (r *FileRepo) Path(ctx context.Context, threadID, leafID string) ([]Entry, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -2376,6 +2662,8 @@ func (r *FileRepo) rollbackFork(threadID string) {
 	delete(r.mem.threads, threadID)
 	r.mem.deleteIndexedEntriesLocked(threadID)
 	delete(r.mem.todos, threadID)
+	r.mem.deleteTurnAuthorityForThreadLocked(threadID)
+	r.mem.deleteApprovalAuthorityForThreadsLocked(map[string]struct{}{threadID: {}})
 }
 
 func persistFileRepoFork(root string, meta ThreadMeta, entries []Entry, todo *AgentTodoState) error {
@@ -2431,6 +2719,11 @@ func (r *FileRepo) load(ctx context.Context) error {
 		return err
 	}
 	mem := NewMemoryRepo()
+	type legacyPathDepthMigration struct {
+		path    string
+		entries []Entry
+	}
+	var legacyPathDepthMigrations []legacyPathDepthMigration
 	for _, path := range threads {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -2447,9 +2740,18 @@ func (r *FileRepo) load(ctx context.Context) error {
 			return fmt.Errorf("validate thread metadata %s: %w", path, err)
 		}
 		dir := filepath.Dir(path)
-		entries, err := readEntries(filepath.Join(dir, "entries.jsonl"))
+		journalPath := filepath.Join(dir, "entries.jsonl")
+		entries, err := readEntries(journalPath)
 		if err != nil {
 			return fmt.Errorf("read thread entries %s: %w", path, err)
+		}
+		var migratePathDepth bool
+		entries, migratePathDepth, err = stageLegacyFileEntryPathDepths(entries)
+		if err != nil {
+			return fmt.Errorf("migrate thread entry path depths %s: %w", path, err)
+		}
+		if migratePathDepth {
+			legacyPathDepthMigrations = append(legacyPathDepthMigrations, legacyPathDepthMigration{path: journalPath, entries: entries})
 		}
 		if len(entries) == 0 && strings.TrimSpace(meta.LeafID) != "" {
 			return fmt.Errorf("thread metadata %s references leaf %q without journal entries", path, meta.LeafID)
@@ -2464,6 +2766,9 @@ func (r *FileRepo) load(ctx context.Context) error {
 		mem.threads[meta.ID] = meta
 		if err := mem.replaceIndexedEntriesLocked(meta.ID, entries); err != nil {
 			return fmt.Errorf("index thread entries %s: %w", path, err)
+		}
+		if err := mem.rebuildRetryAdmissionFactsLocked(meta.ID, entries); err != nil {
+			return fmt.Errorf("index thread retry admissions %s: %w", path, err)
 		}
 		todoData, err := os.ReadFile(filepath.Join(dir, "agent_todos.json"))
 		if err == nil {
@@ -2500,6 +2805,11 @@ func (r *FileRepo) load(ctx context.Context) error {
 	}
 	if err := ValidateThreadAuthorityGraph(metas); err != nil {
 		return err
+	}
+	for _, migration := range legacyPathDepthMigrations {
+		if err := writeEntriesAtomically(migration.path, migration.entries); err != nil {
+			return fmt.Errorf("write migrated thread entry path depths %s: %w", migration.path, err)
+		}
 	}
 	r.mem = mem
 	return nil
@@ -2614,15 +2924,69 @@ func (r *FileRepo) appendEntry(entry Entry) error {
 }
 
 func BuildContext(path []Entry, opts ContextOptions) []session.Message {
-	return BuildContextProjection(path, ContextProjectionOptions{}).Messages
+	messages, _ := BuildContextChecked(path, opts)
+	return messages
+}
+
+func BuildContextChecked(path []Entry, opts ContextOptions) ([]session.Message, error) {
+	projection, err := BuildContextProjectionChecked(path, ContextProjectionOptions{})
+	return projection.Messages, err
 }
 
 func BuildContextProjection(path []Entry, opts ContextProjectionOptions) ContextProjection {
+	projection, _ := BuildContextProjectionChecked(path, opts)
+	return projection
+}
+
+func BuildContextProjectionChecked(path []Entry, opts ContextProjectionOptions) (ContextProjection, error) {
 	if opts.Purpose == "" {
 		opts.Purpose = ProjectionProviderRequest
 	}
-	messages := buildContextMessages(path)
-	return ContextProjection{Messages: messages, Segments: projectedSegments(path, messages, opts.Purpose)}
+	contextPath, err := retryProjectedContextPath(path)
+	if err != nil {
+		return ContextProjection{}, err
+	}
+	messages := buildContextMessages(contextPath)
+	return ContextProjection{Messages: messages, Segments: projectedSegments(contextPath, messages, opts.Purpose)}, nil
+}
+
+func retryProjectedContextPath(path []Entry) ([]Entry, error) {
+	if len(path) == 0 {
+		return nil, nil
+	}
+	projected := make([]Entry, 0, len(path))
+	type contextPosition struct {
+		pathIndex       int
+		projectedLength int
+	}
+	positions := make(map[string]contextPosition, len(path))
+	for index, entry := range path {
+		if strings.TrimSpace(entry.ID) == "" {
+			return nil, ErrAuthorityCorrupt
+		}
+		if _, duplicate := positions[entry.ID]; duplicate {
+			return nil, ErrAuthorityCorrupt
+		}
+		if entry.Type == EntryTurnMarker && entry.TurnStatus == TurnStarted {
+			retrySource, err := CanonicalTurnRetrySourceForStartedEntry(entry)
+			if err != nil {
+				return nil, err
+			}
+			if retrySource != nil {
+				source, ok := positions[retrySource.EntryID]
+				if !ok || source.pathIndex >= index || validateRetrySourcePathIndex(path, source.pathIndex, retrySource.TurnID, retrySource.EntryID) != nil {
+					return nil, ErrAuthorityCorrupt
+				}
+				if source.projectedLength <= 0 || source.projectedLength > len(projected) || projected[source.projectedLength-1].ID != retrySource.EntryID {
+					return nil, ErrAuthorityCorrupt
+				}
+				projected = projected[:source.projectedLength]
+			}
+		}
+		projected = append(projected, entry)
+		positions[entry.ID] = contextPosition{pathIndex: index, projectedLength: len(projected)}
+	}
+	return projected, nil
 }
 
 func buildContextMessages(path []Entry) []session.Message {
@@ -2919,7 +3283,11 @@ func rewriteForkMetadata(metadata map[string]string, entryIDs map[string]string,
 			next = rewriteForkID(value, runIDs)
 		case "turn_id":
 			next = rewriteForkID(value, turnIDs)
+		case RetrySourceTurnIDMetadataKey:
+			next = rewriteForkID(value, turnIDs)
 		case "entry_id", "parent_entry_id", "input_entry_id", "subagent_input_id":
+			next = rewriteForkID(value, entryIDs)
+		case RetrySourceEntryIDMetadataKey:
 			next = rewriteForkID(value, entryIDs)
 		}
 		out[key] = next
@@ -2959,10 +3327,21 @@ func pathLocked(threads map[string]ThreadMeta, entries map[string][]Entry, threa
 		byID[entry.ID] = entry
 	}
 	var rev []Entry
+	seen := map[string]struct{}{}
 	for id := leafID; id != ""; {
+		if _, duplicate := seen[id]; duplicate {
+			return nil, ErrInvalidParent
+		}
+		seen[id] = struct{}{}
 		entry, ok := byID[id]
 		if !ok {
+			if len(rev) != 0 {
+				return nil, ErrInvalidParent
+			}
 			return nil, ErrEntryNotFound
+		}
+		if err := ValidateEntryIntegrity(entry); err != nil {
+			return nil, err
 		}
 		rev = append(rev, cloneEntry(entry))
 		id = entry.ParentID
@@ -2993,6 +3372,98 @@ func readEntries(path string) ([]Entry, error) {
 	}
 }
 
+func stageLegacyFileEntryPathDepths(entries []Entry) ([]Entry, bool, error) {
+	if len(entries) == 0 {
+		return entries, false, nil
+	}
+	zeroDepths := 0
+	for _, entry := range entries {
+		if entry.PathDepth == 0 {
+			zeroDepths++
+		}
+	}
+	if zeroDepths == 0 {
+		return entries, false, nil
+	}
+	if zeroDepths != len(entries) {
+		return nil, false, fmt.Errorf("%w: file journal mixes legacy and canonical path depths", ErrAuthorityCorrupt)
+	}
+	migrated := cloneEntries(entries)
+	depths := make(map[string]int64, len(migrated))
+	threadID := strings.TrimSpace(migrated[0].ThreadID)
+	if threadID == "" {
+		return entries, false, nil
+	}
+	rootCount := 0
+	for index := range migrated {
+		entry := &migrated[index]
+		if strings.TrimSpace(entry.ID) == "" || entry.ThreadID != threadID {
+			return entries, false, nil
+		}
+		if _, duplicate := depths[entry.ID]; duplicate {
+			return entries, false, nil
+		}
+		if err := ValidateEntryIntegrity(*entry); err != nil {
+			return entries, false, nil
+		}
+		depth := int64(1)
+		if entry.ParentID == "" {
+			rootCount++
+			if rootCount != 1 {
+				return entries, false, nil
+			}
+		} else {
+			parentDepth, ok := depths[entry.ParentID]
+			if !ok || parentDepth <= 0 {
+				return entries, false, nil
+			}
+			depth = parentDepth + 1
+		}
+		entry.PathDepth = depth
+		depths[entry.ID] = depth
+	}
+	if rootCount != 1 {
+		return entries, false, nil
+	}
+	return migrated, true, nil
+}
+
+func writeEntriesAtomically(path string, entries []Entry) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(dir, ".entries-path-depth-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	for _, entry := range entries {
+		data, err := json.Marshal(entry)
+		if err != nil {
+			_ = temp.Close()
+			return err
+		}
+		if _, err := temp.Write(append(data, '\n')); err != nil {
+			_ = temp.Close()
+			return err
+		}
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
+}
+
 func PrepareEntry(entry Entry) Entry {
 	entry.Raw = rawForEntry(entry)
 	entry.RawHash = stableHash(entry.Raw)
@@ -3016,13 +3487,7 @@ func ValidateEntryIntegrity(entry Entry) error {
 	if strings.TrimSpace(entry.Raw) == "" || strings.TrimSpace(entry.RawHash) == "" || stableHash(entry.Raw) != entry.RawHash {
 		return ErrAuthorityCorrupt
 	}
-	var raw struct {
-		Message session.Message `json:"message,omitempty"`
-	}
-	if err := json.Unmarshal([]byte(entry.Raw), &raw); err != nil {
-		return ErrAuthorityCorrupt
-	}
-	if !reflect.DeepEqual(raw.Message.References, entry.Message.References) {
+	if rawForEntry(entry) != entry.Raw {
 		return ErrAuthorityCorrupt
 	}
 	return nil

@@ -43,6 +43,7 @@ const (
 	EventTypeContextCompactDebug    EventType = "context_compact_debug"
 	EventTypeContextContinue        EventType = "context_continue"
 	EventTypeThreadEntryCommitted   EventType = "thread_entry_committed"
+	EventTypeThreadTitlePending     EventType = "thread_title_pending"
 	EventTypeThreadTitleUpdated     EventType = "thread_title_updated"
 	EventTypeThreadTitleFailed      EventType = "thread_title_failed"
 	EventTypeControlSignal          EventType = "control_signal"
@@ -68,7 +69,8 @@ func (t EventType) Valid() bool {
 		EventTypeSkillLoaded, EventTypeSkillBlocked, EventTypeSkillInstallRequired,
 		EventTypeSkillDisclosureApplied, EventTypeContextCompact,
 		EventTypeContextCompactDebug, EventTypeContextContinue,
-		EventTypeThreadEntryCommitted, EventTypeThreadTitleUpdated,
+		EventTypeThreadEntryCommitted, EventTypeThreadTitlePending,
+		EventTypeThreadTitleUpdated,
 		EventTypeThreadTitleFailed, EventTypeControlSignal,
 		EventTypeBudgetExceeded, EventTypeStepEnd, EventTypeRunEnd:
 		return true

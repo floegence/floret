@@ -532,18 +532,12 @@ func threadTurnProjectionMergeEventIDs(left, right []string) []string {
 func threadTurnProjectionTerminalSettlementStatus(ev ThreadDetailEvent) (observation.ActivityStatus, observation.ActivitySeverity, bool) {
 	switch ev.Kind {
 	case ThreadDetailEventError:
-		if threadTurnProjectionCancellationText(ev.Error) {
-			return observation.ActivityStatusCanceled, observation.ActivitySeverityWarning, true
-		}
-		return observation.ActivityStatusError, observation.ActivitySeverityError, true
+		return "", "", false
 	case ThreadDetailEventTurnMarker:
 		if ev.TurnMarker == nil {
 			return "", "", false
 		}
 		status := strings.TrimSpace(ev.TurnMarker.Status)
-		if threadTurnProjectionCancellationText(ev.Error) || threadTurnProjectionCancellationText(ev.TurnMarker.Metadata["failure_reason"]) {
-			return observation.ActivityStatusCanceled, observation.ActivitySeverityWarning, true
-		}
 		switch status {
 		case "aborted", string(observation.ActivityStatusCanceled), "cancelled":
 			return observation.ActivityStatusCanceled, observation.ActivitySeverityWarning, true
@@ -555,16 +549,6 @@ func threadTurnProjectionTerminalSettlementStatus(ev ThreadDetailEvent) (observa
 	default:
 		return "", "", false
 	}
-}
-
-func threadTurnProjectionCancellationText(text string) bool {
-	text = strings.ToLower(strings.TrimSpace(text))
-	if text == "" {
-		return false
-	}
-	return strings.Contains(text, "context canceled") ||
-		strings.Contains(text, "context cancelled") ||
-		strings.Contains(text, "deadline exceeded")
 }
 
 func threadTurnProjectionNeedsTerminalSettlement(item observation.ActivityItem, status observation.ActivityStatus) bool {

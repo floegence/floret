@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/internal/agentharness"
@@ -281,6 +282,50 @@ func (g allowRuntimeEffectGate) Dispatch(ctx context.Context, req EffectAuthoriz
 		PolicyRevision: "test-policy-v1", AuditReference: "test-audit-" + req.EffectAttemptID,
 		AuditHash: "test-audit-hash", AuthorizedAt: time.Now(),
 	})
+}
+
+func waitRuntimeApprovalQueue(t *testing.T, ctx context.Context, host interface {
+	ReadApprovalQueue(context.Context, ReadApprovalQueueRequest) (ApprovalQueue, error)
+}, threadID ThreadID, count int) ApprovalQueue {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		queue, err := host.ReadApprovalQueue(ctx, ReadApprovalQueueRequest{ThreadID: threadID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(queue.Items) == count {
+			return queue
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d approvals: %#v", count, queue)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func resolveRuntimeApproval(t *testing.T, ctx context.Context, host interface {
+	ResolveApproval(context.Context, ResolveApprovalRequest) (ResolveApprovalResult, error)
+}, queue ApprovalQueue, approval ApprovalRecord, decisionID string, decision ApprovalDecision) ResolveApprovalResult {
+	t.Helper()
+	result, err := host.ResolveApproval(ctx, runtimeApprovalDecisionRequest(queue, approval, decisionID, decision))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func runtimeApprovalDecisionRequest(queue ApprovalQueue, approval ApprovalRecord, decisionID string, decision ApprovalDecision) ResolveApprovalRequest {
+	return ResolveApprovalRequest{
+		DecisionID: decisionID, ExpectedRootThreadID: queue.RootThreadID,
+		ExpectedGeneration: queue.Generation, ExpectedRevision: queue.Revision,
+		ExpectedCurrent: ApprovalIdentity{
+			ApprovalID: approval.ApprovalID, ThreadID: approval.ThreadID, TurnID: approval.TurnID,
+			RunID: approval.RunID, ToolCallID: approval.ToolCallID, EffectAttemptID: approval.EffectAttemptID,
+		},
+		ExpectedApprovalRevision: approval.Revision,
+		Decision:                 decision,
+	}
 }
 
 type recordingRuntimeEffectGate struct {
@@ -796,17 +841,210 @@ func TestHostProviderTitleModeGeneratesTitle(t *testing.T) {
 	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}}); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := host.ReadThread(ctx, "thread")
-	if err != nil {
-		t.Fatal(err)
+	var snapshot ThreadSnapshot
+	deadline := time.Now().Add(time.Second)
+	for {
+		snapshot, err = host.ReadThread(ctx, "thread")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snapshot.TitleStatus == string(sessiontree.ThreadTitleReady) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("provider title did not become ready: %#v", snapshot)
+		}
+		time.Sleep(time.Millisecond)
 	}
 	if snapshot.Title != "Generated title" || snapshot.TitleStatus != string(sessiontree.ThreadTitleReady) {
 		t.Fatalf("provider title snapshot = %#v", snapshot)
 	}
 	mu.Lock()
-	defer mu.Unlock()
-	if len(requests) != 2 || !strings.HasSuffix(string(requests[1].RunID), ":thread-title") {
-		t.Fatalf("gateway requests = %#v, want turn then title", requests)
+	gotRequests := append([]ModelRequest(nil), requests...)
+	mu.Unlock()
+	if len(gotRequests) != 2 || !slices.ContainsFunc(gotRequests, func(req ModelRequest) bool {
+		return strings.HasSuffix(string(req.RunID), ":thread-title")
+	}) {
+		t.Fatalf("gateway requests = %#v, want turn and title", gotRequests)
+	}
+}
+
+func TestHostProviderTitleModeGeneratesChineseTitleWhileTurnIsRunning(t *testing.T) {
+	ctx := context.Background()
+	mainStarted := make(chan struct{})
+	mainRelease := make(chan struct{})
+	var mainOnce sync.Once
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		if strings.HasSuffix(string(req.RunID), ":thread-title") {
+			return runtimeGatewayEvents("修复终端任务"), nil
+		}
+		mainOnce.Do(func() { close(mainStarted) })
+		select {
+		case <-mainRelease:
+			return runtimeGatewayEvents("主 turn 完成"), nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	})
+	host, err := newTestHost(t, providerHostOptions{
+		Config:               runtimeGatewayConfig("gateway system"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                NewMemoryStore(),
+		ThreadTitleMode:      ThreadTitleModeProvider,
+		IDGenerator:          deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	type turnOutcome struct {
+		result TurnResult
+		err    error
+	}
+	done := make(chan turnOutcome, 1)
+	go func() {
+		result, runErr := host.RunTurn(ctx, RunTurnRequest{
+			RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "请处理终端任务"},
+		})
+		done <- turnOutcome{result: result, err: runErr}
+	}()
+	select {
+	case <-mainStarted:
+	case <-time.After(time.Second):
+		t.Fatal("main provider did not start")
+	}
+	deadline := time.Now().Add(time.Second)
+	var snapshot ThreadSnapshot
+	for {
+		snapshot, err = host.ReadThread(ctx, "thread")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snapshot.TitleStatus == string(sessiontree.ThreadTitleReady) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Chinese title did not become ready while turn was running: %#v", snapshot)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if snapshot.Title != "修复终端任务" || utf8.RuneCountInString(snapshot.Title) > 16 ||
+		snapshot.TitleSource != string(sessiontree.ThreadTitleSourceProvider) {
+		t.Fatalf("Chinese title snapshot=%#v", snapshot)
+	}
+	select {
+	case outcome := <-done:
+		t.Fatalf("turn completed before main provider release: %#v", outcome)
+	default:
+	}
+	close(mainRelease)
+	select {
+	case outcome := <-done:
+		if outcome.err != nil || outcome.result.Status != TurnStatusCompleted {
+			t.Fatalf("turn outcome=%#v", outcome)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("turn did not complete after main provider release")
+	}
+}
+
+func TestStoreCloseCancelsAndJoinsAutomaticTitleWorker(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	release := make(chan struct{})
+	gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		if strings.HasSuffix(string(req.RunID), ":thread-title") {
+			close(started)
+			<-ctx.Done()
+			close(cancelled)
+			<-release
+			return nil, ctx.Err()
+		}
+		return runtimeGatewayEvents("main turn completed"), nil
+	})
+	host, err := newTestHost(t, providerHostOptions{
+		Config:               runtimeGatewayConfig("gateway system"),
+		ModelGateway:         gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                store,
+		ThreadTitleMode:      ThreadTitleModeProvider,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"}}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("automatic title worker did not start")
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- store.Close() }()
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("Store.Close did not cancel automatic title worker")
+	}
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Store.Close returned before title worker finished: %v", err)
+	default:
+	}
+	close(release)
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Store.Close did not join automatic title worker")
+	}
+	meta, err := store.repo.Thread(context.Background(), "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.TitleStatus != sessiontree.ThreadTitleFailed || meta.TitleError != automaticTitleInterruptedForRuntimeTest {
+		t.Fatalf("title after close = %#v", meta)
+	}
+}
+
+func TestHostBootstrapRecoversOrphanedAutomaticTitle(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	now := time.Now().UTC()
+	if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	authority := store.repo.(sessiontree.ThreadTitleAuthorityRepo)
+	if _, err := authority.BeginAutomaticThreadTitle(ctx, sessiontree.BeginAutomaticThreadTitleRequest{
+		ThreadID: "thread", Token: "orphan-title", Now: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	host, err := newTestHost(t, providerHostOptions{
+		Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "unused"},
+		Store:  store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	snapshot, err := host.ReadThread(ctx, "thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.TitleStatus != string(sessiontree.ThreadTitleFailed) || snapshot.TitleError != automaticTitleRestartedForRuntimeTest {
+		t.Fatalf("recovered title snapshot = %#v", snapshot)
 	}
 }
 
@@ -1106,7 +1344,8 @@ func TestHostRunTurnEnforcesCumulativeInputTokenLimit(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "input token budget exceeded") {
 		t.Fatalf("RunTurn err = %v, want input token budget exceeded", err)
 	}
-	if result.Status != TurnStatusFailed || result.Metrics.ProviderUsage.InputTokens != 101 {
+	if result.Status != TurnStatusFailed || result.Metrics.ProviderUsage.InputTokens != 101 || result.Failure == nil ||
+		result.Failure.Code != ThreadTurnFailureEngineContract || result.Failure.Message != "input token budget exceeded" {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -1611,7 +1850,8 @@ func TestHostProviderStatePersistenceFailureRecordsFailedTurnFinalization(t *tes
 	if err == nil || !strings.Contains(err.Error(), "injected provider state put failure") {
 		t.Fatalf("RunTurn err = %v", err)
 	}
-	if result.Status != TurnStatusFailed || !strings.Contains(result.Error, "injected provider state put failure") {
+	if result.Status != TurnStatusFailed || result.Failure == nil || result.Failure.Code != ThreadTurnFailureStorage ||
+		!strings.Contains(result.Failure.Message, "injected provider state put failure") {
 		t.Fatalf("persistence failure result = %#v, want failed terminal outcome", result)
 	}
 	snapshot, readErr := host.ReadThread(ctx, "thread")
@@ -2516,16 +2756,36 @@ func TestHostRunTurnPreservesDistinctRunAndTurnIdentity(t *testing.T) {
 	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := host.RunTurn(ctx, RunTurnRequest{
-		RunID:    "run-parent",
-		ThreadID: "thread",
-		TurnID:   "turn-msg",
-		Input:    TurnInput{Text: "write"},
-		Labels: RunLabels{
-			Correlation: map[string]string{"message_id": "turn-msg"},
-			Host:        map[string]string{"product_run_id": "run-parent"},
-		},
-	})
+	type turnOutcome struct {
+		result TurnResult
+		err    error
+	}
+	done := make(chan turnOutcome, 1)
+	go func() {
+		result, err := host.RunTurn(ctx, RunTurnRequest{
+			RunID:    "run-parent",
+			ThreadID: "thread",
+			TurnID:   "turn-msg",
+			Input:    TurnInput{Text: "write"},
+			Labels: RunLabels{
+				Correlation: map[string]string{"message_id": "turn-msg"},
+				Host:        map[string]string{"product_run_id": "run-parent"},
+			},
+		})
+		done <- turnOutcome{result: result, err: err}
+	}()
+	queue := waitRuntimeApprovalQueue(t, ctx, host, "thread", 1)
+	if queue.Items[0].RunID != "run-parent" || queue.Items[0].TurnID != "turn-msg" || queue.Items[0].ThreadID != "thread" {
+		t.Fatalf("approval queue identity = %#v", queue.Items[0])
+	}
+	resolveRuntimeApproval(t, ctx, host, queue, queue.Items[0], "decision-run-parent", ApprovalDecisionApprove)
+	var outcome turnOutcome
+	select {
+	case outcome = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for approved turn")
+	}
+	result, err := outcome.result, outcome.err
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6064,7 +6324,7 @@ func TestHostThreadDetailEventsPreserveTextAroundToolCalls(t *testing.T) {
 	}
 }
 
-func TestHostListPendingApprovalsDuringActiveRun(t *testing.T) {
+func TestHostResolvesDurableApprovalBeforeProductAuthorization(t *testing.T) {
 	ctx := context.Background()
 	registry := tools.NewRegistry()
 	if err := registry.Register(tools.Define[runtimeEchoArgs](
@@ -6101,6 +6361,7 @@ func TestHostListPendingApprovalsDuringActiveRun(t *testing.T) {
 	})
 	requested := make(chan struct{})
 	release := make(chan struct{})
+	var gateCalls atomic.Int32
 	rec := &runtimeEventRecorder{}
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("test"),
@@ -6109,6 +6370,7 @@ func TestHostListPendingApprovalsDuringActiveRun(t *testing.T) {
 		Store:                NewMemoryStore(),
 		Tools:                registry,
 		EffectAuthorizationGate: allowRuntimeEffectGate{approver: func(ctx context.Context, req tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
+			gateCalls.Add(1)
 			if req.ApprovalID == "" || req.ApprovalID == "call-1" || req.HostContext["target"] != "runtime-test" || req.Labels["host.target"] != "runtime-test" {
 				t.Errorf("approval request = %#v", req)
 			}
@@ -6142,25 +6404,24 @@ func TestHostListPendingApprovalsDuringActiveRun(t *testing.T) {
 		})
 		runErr <- err
 	}()
-	select {
-	case <-requested:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for approval request")
+	queue := waitRuntimeApprovalQueue(t, ctx, host, "thread", 1)
+	decisionQueue := queue
+	if queue.RootThreadID != "thread" || queue.Generation <= 0 || queue.Revision <= 0 || queue.CurrentApprovalID == "" {
+		t.Fatalf("approval queue = %#v", queue)
 	}
-	if item := runtimeLiveProjectionItem(rec.snapshot(), "call-1"); item.ToolID != "call-1" ||
-		item.Status != observation.ActivityStatusWaiting ||
-		!item.RequiresApproval ||
-		item.ApprovalState != "requested" {
-		t.Fatalf("live approval projection item = %#v", item)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		item := runtimeLiveProjectionItem(rec.snapshot(), "call-1")
+		if item.ToolID == "call-1" && item.Status == observation.ActivityStatusWaiting &&
+			item.RequiresApproval && item.ApprovalState == "requested" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for live approval projection: %#v", item)
+		}
+		time.Sleep(time.Millisecond)
 	}
-	pending, err := host.ListPendingApprovals(ctx, ListPendingApprovalsRequest{ThreadID: "thread"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pending.ThreadID != "thread" || len(pending.Approvals) != 1 {
-		t.Fatalf("pending approvals = %#v", pending)
-	}
-	approval := pending.Approvals[0]
+	approval := queue.Items[0]
 	if approval.ApprovalID == "" || approval.ApprovalID == "call-1" ||
 		approval.ToolCallID != "call-1" ||
 		approval.ToolName != "write_note" ||
@@ -6182,6 +6443,29 @@ func TestHostListPendingApprovalsDuringActiveRun(t *testing.T) {
 	if len(approval.Resources) != 1 || approval.Resources[0].Kind != "file" || approval.Resources[0].Value != "notes.md" {
 		t.Fatalf("resources = %#v", approval.Resources)
 	}
+	resolved := resolveRuntimeApproval(t, ctx, host, queue, approval, "decision-approve-call-1", ApprovalDecisionApprove)
+	if resolved.Replayed || resolved.Receipt.State != "decision_submitted" || resolved.Approval.State != "decision_submitted" ||
+		resolved.Queue.CurrentApprovalID != approval.ApprovalID {
+		t.Fatalf("approval decision result = %#v", resolved)
+	}
+	replayed := resolveRuntimeApproval(t, ctx, host, queue, approval, "decision-approve-call-1", ApprovalDecisionApprove)
+	if !replayed.Replayed || replayed.Receipt.DecisionID != resolved.Receipt.DecisionID || replayed.Receipt.State != resolved.Receipt.State {
+		t.Fatalf("approval decision replay = %#v", replayed)
+	}
+	conflict := runtimeApprovalDecisionRequest(queue, approval, "decision-approve-call-1", ApprovalDecisionReject)
+	if _, err := host.ResolveApproval(ctx, conflict); err == nil {
+		t.Fatal("conflicting decision id reuse succeeded")
+	}
+	stale := runtimeApprovalDecisionRequest(queue, approval, "decision-stale-call-1", ApprovalDecisionApprove)
+	stale.ExpectedRevision++
+	if _, err := host.ResolveApproval(ctx, stale); err == nil {
+		t.Fatal("stale approval revision succeeded")
+	}
+	select {
+	case <-requested:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for product authorization after canonical decision")
+	}
 	close(release)
 	select {
 	case err := <-runErr:
@@ -6191,16 +6475,17 @@ func TestHostListPendingApprovalsDuringActiveRun(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for run")
 	}
-	pending, err = host.ListPendingApprovals(ctx, ListPendingApprovalsRequest{ThreadID: "thread"})
-	if err != nil {
-		t.Fatal(err)
+	queue = waitRuntimeApprovalQueue(t, ctx, host, "thread", 0)
+	if queue.CurrentApprovalID != "" {
+		t.Fatalf("resolved approval should not remain current: %#v", queue)
 	}
-	if len(pending.Approvals) != 0 {
-		t.Fatalf("resolved approval should not remain pending: %#v", pending)
+	finalReplay := resolveRuntimeApproval(t, ctx, host, decisionQueue, approval, "decision-approve-call-1", ApprovalDecisionApprove)
+	if !finalReplay.Replayed || finalReplay.Receipt.State != "approved" || gateCalls.Load() != 1 {
+		t.Fatalf("final approval replay=%#v gate_calls=%d", finalReplay, gateCalls.Load())
 	}
 }
 
-func TestHostPendingApprovalSnapshotKeepsModelBatchOrder(t *testing.T) {
+func TestHostApprovalQueueKeepsModelBatchOrder(t *testing.T) {
 	ctx := context.Background()
 	registry := tools.NewRegistry()
 	if err := registry.Register(tools.Define[runtimeEchoArgs](
@@ -6234,7 +6519,7 @@ func TestHostPendingApprovalSnapshotKeepsModelBatchOrder(t *testing.T) {
 		return events, nil
 	})
 	requested := make(chan tooltest.ApprovalRequest, 2)
-	release := make(chan struct{})
+	releases := map[string]chan struct{}{"call-a": make(chan struct{}), "call-b": make(chan struct{})}
 	host, err := newTestHost(t, providerHostOptions{
 		Config:               runtimeGatewayConfig("test"),
 		ModelGateway:         gateway,
@@ -6244,7 +6529,7 @@ func TestHostPendingApprovalSnapshotKeepsModelBatchOrder(t *testing.T) {
 		EffectAuthorizationGate: allowRuntimeEffectGate{approver: func(ctx context.Context, req tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
 			requested <- req
 			select {
-			case <-release:
+			case <-releases[req.ID]:
 				return tooltest.PermissionDecisionAllow, nil
 			case <-ctx.Done():
 				return tooltest.PermissionDecision{}, ctx.Err()
@@ -6263,25 +6548,46 @@ func TestHostPendingApprovalSnapshotKeepsModelBatchOrder(t *testing.T) {
 		_, err := host.RunTurn(ctx, RunTurnRequest{RunID: "turn-batch", ThreadID: "thread-batch", TurnID: "turn-batch", Input: TurnInput{Text: "write both"}})
 		runErr <- err
 	}()
-	seen := map[string]tooltest.ApprovalRequest{}
-	for range 2 {
-		select {
-		case req := <-requested:
-			seen[req.ID] = req
-		case <-time.After(2 * time.Second):
-			t.Fatalf("approval requests did not enter concurrently: %#v", seen)
+	queue := waitRuntimeApprovalQueue(t, ctx, host, "thread-batch", 2)
+	if queue.Items[0].ToolCallID != "call-a" || queue.Items[0].BatchIndex != 0 || queue.Items[0].BatchSize != 2 ||
+		queue.Items[1].ToolCallID != "call-b" || queue.Items[1].BatchIndex != 1 || queue.Items[1].BatchSize != 2 ||
+		queue.CurrentApprovalID != queue.Items[0].ApprovalID {
+		t.Fatalf("approval queue = %#v", queue)
+	}
+	resolveRuntimeApproval(t, ctx, host, queue, queue.Items[0], "decision-approve-call-a", ApprovalDecisionApprove)
+	select {
+	case req := <-requested:
+		if req.ID != "call-a" {
+			t.Fatalf("first product authorization = %#v", req)
 		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first product authorization")
 	}
-	pending, err := host.ListPendingApprovals(ctx, ListPendingApprovalsRequest{ThreadID: "thread-batch"})
-	if err != nil {
-		t.Fatal(err)
+	close(releases["call-a"])
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		queue, err = host.ReadApprovalQueue(ctx, ReadApprovalQueueRequest{ThreadID: "thread-batch"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(queue.Items) == 1 && queue.Items[0].ToolCallID == "call-b" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for second approval promotion: %#v", queue)
+		}
+		time.Sleep(time.Millisecond)
 	}
-	if len(pending.Approvals) != 2 ||
-		pending.Approvals[0].ToolCallID != "call-a" || pending.Approvals[0].BatchIndex != 0 || pending.Approvals[0].BatchSize != 2 ||
-		pending.Approvals[1].ToolCallID != "call-b" || pending.Approvals[1].BatchIndex != 1 || pending.Approvals[1].BatchSize != 2 {
-		t.Fatalf("pending approvals = %#v", pending.Approvals)
+	resolveRuntimeApproval(t, ctx, host, queue, queue.Items[0], "decision-approve-call-b", ApprovalDecisionApprove)
+	select {
+	case req := <-requested:
+		if req.ID != "call-b" {
+			t.Fatalf("second product authorization = %#v", req)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for second product authorization")
 	}
-	close(release)
+	close(releases["call-b"])
 	select {
 	case err := <-runErr:
 		if err != nil {
@@ -6289,6 +6595,181 @@ func TestHostPendingApprovalSnapshotKeepsModelBatchOrder(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for batch run")
+	}
+}
+
+func TestHostCancellationAtomicallyCancelsApprovalBatchBeforeGate(t *testing.T) {
+	runHostCancellationAtomicallyCancelsApprovalBatchBeforeGate(t, NewMemoryStore())
+}
+
+func TestSQLiteHostCancellationAtomicallyCancelsApprovalBatchBeforeGate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "approval-cancellation.db")
+	store, err := OpenSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runHostCancellationAtomicallyCancelsApprovalBatchBeforeGate(t, store)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	maintenance, err := newTestMaintenanceHost(t, reopened)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readHost, err := maintenance.readHost(context.Background(), "thread-cancel-batch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err := readHost.ListThreadDetailEvents(context.Background(), ListThreadDetailEventsRequest{
+		ThreadID: "thread-cancel-batch", IncludeRaw: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRuntimeApprovalCancellationDetails(t, detail.Events)
+}
+
+func runHostCancellationAtomicallyCancelsApprovalBatchBeforeGate(t *testing.T, store *Store) {
+	t.Helper()
+	registry := tools.NewRegistry()
+	var handlers atomic.Int32
+	if err := registry.Register(tools.Define[runtimeEchoArgs](
+		tools.Definition{
+			Name: "write_note", InputSchema: runtimeEchoSchema(), Effects: []tools.Effect{tools.EffectWrite},
+			Permission: tools.PermissionSpec{Mode: tools.PermissionAsk},
+		},
+		nil,
+		nil,
+		func(_ context.Context, inv tools.Invocation[runtimeEchoArgs]) (tools.Result, error) {
+			handlers.Add(1)
+			return tools.Result{Text: inv.Args.Text}, nil
+		},
+	)); err != nil {
+		t.Fatal(err)
+	}
+	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		events := make(chan ModelEvent, 3)
+		if req.Step == 1 {
+			events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{
+				{ID: "call-a", Name: "write_note", Args: `{"text":"a"}`},
+				{ID: "call-b", Name: "write_note", Args: `{"text":"b"}`},
+			}}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+		} else {
+			events <- ModelEvent{Type: ModelEventDelta, Text: "unexpected"}
+			events <- ModelEvent{Type: ModelEventDone, Reason: "stop"}
+		}
+		close(events)
+		return events, nil
+	})
+	var gateCalls atomic.Int32
+	host, err := newTestHost(t, providerHostOptions{
+		Config: runtimeGatewayConfig("test"), ModelGateway: gateway,
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"), Store: store, Tools: registry,
+		EffectAuthorizationGate: allowRuntimeEffectGate{approver: func(context.Context, tooltest.ApprovalRequest) (tooltest.PermissionDecision, error) {
+			gateCalls.Add(1)
+			return tooltest.PermissionDecisionAllow, nil
+		}},
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread-cancel-batch"}); err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		_, err := host.RunTurn(runCtx, RunTurnRequest{
+			RunID: "run-cancel-batch", ThreadID: "thread-cancel-batch", TurnID: "turn-cancel-batch", Input: TurnInput{Text: "write both"},
+		})
+		done <- err
+	}()
+	waitRuntimeApprovalQueue(t, ctx, host, "thread-cancel-batch", 2)
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled turn error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for cancelled approval batch")
+	}
+	queue := waitRuntimeApprovalQueue(t, ctx, host, "thread-cancel-batch", 0)
+	if queue.CurrentApprovalID != "" || gateCalls.Load() != 0 || handlers.Load() != 0 {
+		t.Fatalf("queue=%#v gate_calls=%d handlers=%d", queue, gateCalls.Load(), handlers.Load())
+	}
+	page, err := host.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread-cancel-batch", Tail: 1})
+	if err != nil || len(page.Turns) != 1 || page.Turns[0].Status != TurnStatusCancelled {
+		t.Fatalf("cancelled canonical turn page=%#v err=%v", page, err)
+	}
+	detail, err := host.ListThreadDetailEvents(ctx, ListThreadDetailEventsRequest{
+		ThreadID: "thread-cancel-batch", IncludeRaw: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRuntimeApprovalCancellationDetails(t, detail.Events)
+}
+
+func assertRuntimeApprovalCancellationDetails(t *testing.T, events []ThreadDetailEvent) {
+	t.Helper()
+	type lifecycle struct {
+		requested *ThreadDetailEvent
+		cancelled *ThreadDetailEvent
+	}
+	byCall := map[string]*lifecycle{"call-a": {}, "call-b": {}}
+	approvalEvents := 0
+	for index := range events {
+		detail := &events[index]
+		if detail.Kind != ThreadDetailEventApproval || detail.Approval == nil {
+			continue
+		}
+		approvalEvents++
+		item, ok := byCall[detail.Approval.ToolID]
+		if !ok {
+			t.Fatalf("unexpected approval detail: %#v", detail)
+		}
+		switch detail.Approval.State {
+		case "requested":
+			if item.requested != nil {
+				t.Fatalf("duplicate requested approval for %s", detail.Approval.ToolID)
+			}
+			item.requested = detail
+		case "canceled":
+			if item.cancelled != nil {
+				t.Fatalf("duplicate canceled approval for %s", detail.Approval.ToolID)
+			}
+			item.cancelled = detail
+		default:
+			t.Fatalf("unexpected approval state: %#v", detail)
+		}
+	}
+	if approvalEvents != 4 {
+		t.Fatalf("approval detail count=%d events=%#v", approvalEvents, events)
+	}
+	for callID, item := range byCall {
+		if item.requested == nil || item.cancelled == nil {
+			t.Fatalf("incomplete approval lifecycle for %s: %#v", callID, item)
+		}
+		requested := item.requested.Approval
+		cancelled := item.cancelled.Approval
+		if item.requested.Ordinal >= item.cancelled.Ordinal || requested.ToolName != "write_note" ||
+			cancelled.ToolName != requested.ToolName || cancelled.ToolKind != requested.ToolKind ||
+			cancelled.ArgsHash != requested.ArgsHash || cancelled.Reason != sessiontree.ApprovalReasonCancelled ||
+			item.requested.ID == item.cancelled.ID {
+			t.Fatalf("approval lifecycle mismatch for %s: requested=%#v cancelled=%#v", callID, item.requested, item.cancelled)
+		}
+	}
+	if byCall["call-a"].cancelled.Ordinal >= byCall["call-b"].cancelled.Ordinal {
+		t.Fatalf("cancellation order does not match queue order: a=%d b=%d", byCall["call-a"].cancelled.Ordinal, byCall["call-b"].cancelled.Ordinal)
 	}
 }
 
@@ -6663,7 +7144,10 @@ func TestListThreadTurnsPagesCanonicalTimeline(t *testing.T) {
 			if _, err := sessiontree.AppendFailure(ctx, store.repo, "thread", "turn-3", "canonical failure"); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "thread", "turn-3", sessiontree.TurnFailed, map[string]string{"run_id": "run-3", "failure_reason": "canonical failure"}); err != nil {
+			if _, err := sessiontree.AppendTurnMarker(ctx, store.repo, "thread", "turn-3", sessiontree.TurnFailed, map[string]string{
+				"run_id": "run-3", "failure_reason": "canonical failure",
+				sessiontree.TurnFailureCodeMetadataKey: sessiontree.TurnFailureProvider,
+			}); err != nil {
 				t.Fatal(err)
 			}
 			append("turn-4", "run-4", "four", "answer four", sessiontree.TurnCompleted)
@@ -6677,7 +7161,7 @@ func TestListThreadTurnsPagesCanonicalTimeline(t *testing.T) {
 				}
 			}
 
-			all, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", AfterOrdinal: 0, Limit: 10})
+			all, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 10})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -6692,20 +7176,20 @@ func TestListThreadTurnsPagesCanonicalTimeline(t *testing.T) {
 			if all.Turns[1].Status != TurnStatusWaiting || len(all.Turns[1].ControlSignals) != 1 || all.Turns[1].ControlSignals[0].Payload["question"] != "Continue?" {
 				t.Fatalf("waiting turn = %#v", all.Turns[1])
 			}
-			if all.Turns[2].Status != TurnStatusFailed || all.Turns[2].Failure != "canonical failure" {
+			if all.Turns[2].Status != TurnStatusFailed || all.Turns[2].Failure == nil ||
+				all.Turns[2].Failure.Code != ThreadTurnFailureProvider || all.Turns[2].Failure.Message != "canonical failure" {
 				t.Fatalf("failed turn = %#v", all.Turns[2])
-			}
-			before, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", BeforeOrdinal: all.Turns[2].Ordinal, Limit: 2})
-			if err != nil || len(before.Turns) != 2 || before.Turns[0].TurnID != "turn-1" || before.Turns[1].TurnID != "turn-2" {
-				t.Fatalf("before page = %#v err=%v", before, err)
-			}
-			after, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", AfterOrdinal: all.Turns[1].Ordinal, Limit: 1})
-			if err != nil || len(after.Turns) != 1 || after.Turns[0].TurnID != "turn-3" || !after.HasMore {
-				t.Fatalf("after page = %#v err=%v", after, err)
 			}
 			tail, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 2})
 			if err != nil || len(tail.Turns) != 2 || tail.Turns[0].TurnID != "turn-3" || tail.Turns[1].TurnID != "turn-4" || !tail.HasMore {
 				t.Fatalf("tail page = %#v err=%v", tail, err)
+			}
+			if tail.BeforeCursor == nil {
+				t.Fatal("tail page did not return a before cursor")
+			}
+			before, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", BeforeCursor: tail.BeforeCursor, Limit: 2})
+			if err != nil || len(before.Turns) != 2 || before.Turns[0].TurnID != "turn-1" || before.Turns[1].TurnID != "turn-2" {
+				t.Fatalf("before page = %#v err=%v", before, err)
 			}
 			latest, err := maintenance.ReadLatestThreadTurn(ctx, "thread")
 			if err != nil || latest.TurnID != "turn-4" || latest.Ordinal != tail.Turns[1].Ordinal {
@@ -6714,6 +7198,13 @@ func TestListThreadTurnsPagesCanonicalTimeline(t *testing.T) {
 			snapshot, err := maintenance.ReadThread(ctx, "thread")
 			if err != nil || snapshot.LatestRunID != "run-4" || snapshot.ThroughOrdinal != all.ThroughOrdinal {
 				t.Fatalf("thread snapshot = %#v err=%v", snapshot, err)
+			}
+			append("turn-5", "run-5", "five", "answer five", sessiontree.TurnCompleted)
+			since, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{
+				ThreadID: "thread", SinceCursor: &tail.SinceCursor, Limit: 1,
+			})
+			if err != nil || len(since.Turns) != 1 || since.Turns[0].TurnID != "turn-5" || since.HasMore {
+				t.Fatalf("since page = %#v err=%v", since, err)
 			}
 		})
 	}
@@ -7698,6 +8189,11 @@ type fixedTitleGenerator struct{}
 func (fixedTitleGenerator) GenerateTitle(context.Context, agentharness.TitleRequest) (agentharness.TitleResult, error) {
 	return agentharness.TitleResult{Title: "Runtime test title", Source: sessiontree.ThreadTitleSourceProvider}, nil
 }
+
+const (
+	automaticTitleInterruptedForRuntimeTest = "automatic title generation interrupted"
+	automaticTitleRestartedForRuntimeTest   = "automatic title generation interrupted during previous process"
+)
 
 type runtimeEventRecorder struct {
 	mu     sync.Mutex

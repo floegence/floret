@@ -781,5 +781,6 @@ func newCapabilityHarness(store *Store, sink EventSink) (*agentharness.AgentHarn
 		PromptStore:    store.prompt,
 		Sink:           newRuntimeEventSink(sink),
 		SinkPolicy:     runtimeHarnessSinkPolicy(),
+		TurnExecutions: store.turnExecutionRegistry(),
 	}), nil
 }

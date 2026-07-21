@@ -1,11 +1,29 @@
 package event
 
 import (
+	"math"
 	"strings"
 	"testing"
 
 	"github.com/floegence/floret/observation"
 )
+
+func TestSanitizeActivityPresentationDropsNonFiniteNumbers(t *testing.T) {
+	got := Sanitize(Event{Activity: &observation.ActivityPresentation{Payload: map[string]any{
+		"finite": 1.5,
+		"nan":    math.NaN(),
+		"inf":    math.Inf(1),
+	}}})
+	if got.Activity == nil || got.Activity.Payload["finite"] != 1.5 {
+		t.Fatalf("finite activity payload was not preserved: %#v", got.Activity)
+	}
+	if _, ok := got.Activity.Payload["nan"]; ok {
+		t.Fatalf("NaN activity payload was preserved: %#v", got.Activity.Payload)
+	}
+	if _, ok := got.Activity.Payload["inf"]; ok {
+		t.Fatalf("Inf activity payload was preserved: %#v", got.Activity.Payload)
+	}
+}
 
 func TestSafePathRefsTextSanitizesLocalPathsAndKeepsURLs(t *testing.T) {
 	path := "/Users/alice/work/floret/secret.txt"

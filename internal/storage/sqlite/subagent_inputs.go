@@ -192,6 +192,11 @@ func (s *Store) AdmitSubAgentInput(ctx context.Context, req sessiontree.AdmitSub
 	if strings.TrimSpace(req.ParentThreadID) == "" || strings.TrimSpace(req.ChildThreadID) == "" || strings.TrimSpace(req.TurnID) == "" || strings.TrimSpace(req.RunID) == "" || strings.TrimSpace(req.OwnerID) == "" {
 		return sessiontree.AdmitSubAgentInputResult{}, errors.New("subagent admission requires parent, child, turn, run, and owner identities")
 	}
+	req.ParentThreadID = strings.TrimSpace(req.ParentThreadID)
+	req.ChildThreadID = strings.TrimSpace(req.ChildThreadID)
+	req.TurnID = strings.TrimSpace(req.TurnID)
+	req.RunID = strings.TrimSpace(req.RunID)
+	req.OwnerID = strings.TrimSpace(req.OwnerID)
 	var result sessiontree.AdmitSubAgentInputResult
 	err := s.withImmediate(ctx, func(tx sqlRunner) error {
 		parent, err := loadThread(ctx, tx, req.ParentThreadID)

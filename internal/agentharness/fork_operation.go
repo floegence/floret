@@ -107,7 +107,7 @@ func forkPlanAuthorityThreadIDs(plan forkOperationPlan) []string {
 
 func (h *AgentHarness) prepareForkOperationPlan(ctx context.Context, opts ForkOptions, fingerprint string) (forkOperationPlan, error) {
 	preparedAt := h.now()
-	root, err := h.prepareForkPlanNode(ctx, "root", opts.SourceThreadID, opts.EntryID, opts.Position, opts.NewThreadID, opts.RewriteTurnIdentities)
+	root, err := h.prepareForkPlanNode(ctx, "root", opts.SourceThreadID, opts.EntryID, opts.Position, opts.NewThreadID, true)
 	if err != nil {
 		return forkOperationPlan{}, err
 	}
@@ -387,7 +387,7 @@ func forkRequestFingerprint(opts ForkOptions) (string, error) {
 		SourceEntryID:         strings.TrimSpace(opts.EntryID),
 		Position:              position,
 		DestinationThreadID:   strings.TrimSpace(opts.NewThreadID),
-		RewriteTurnIdentities: opts.RewriteTurnIdentities,
+		RewriteTurnIdentities: true,
 	})
 	if err != nil {
 		return "", err

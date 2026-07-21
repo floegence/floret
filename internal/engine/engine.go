@@ -145,9 +145,10 @@ type EffectResultFinalizationRequest struct {
 }
 
 type EffectResultFinalizationResult struct {
-	Handled  bool
-	Message  session.Message
-	Replayed bool
+	Handled          bool
+	Message          session.Message
+	Replayed         bool
+	CanonicalEntryID string
 }
 
 type EffectResultFinalizer func(context.Context, EffectResultFinalizationRequest) (EffectResultFinalizationResult, error)
@@ -181,6 +182,7 @@ type Options struct {
 	MaxStopHookContinuations int
 	ManualCompactions        ManualCompactionSource
 	ToolSurfaceProvider      ToolSurfaceProvider
+	EffectBatchPreflight     tools.EffectBatchPreflight
 	EffectDispatcher         tools.EffectDispatcher
 	EffectResultFinalizer    EffectResultFinalizer
 	ProviderRequestGate      func(context.Context) (func(), error)
@@ -226,6 +228,7 @@ type compactionBudgetPlan struct {
 
 type Result struct {
 	Status             Status
+	FailureOrigin      FailureOrigin
 	Output             string
 	Err                error
 	Metrics            RunMetrics
@@ -238,6 +241,72 @@ type Result struct {
 	ControlSignal      *ControlSignal
 	ProviderState      *provider.State
 	ProviderStateFresh bool
+}
+
+type FailureOrigin string
+
+const (
+	FailureOriginNone         FailureOrigin = ""
+	FailureOriginCancelled    FailureOrigin = "cancelled"
+	FailureOriginProvider     FailureOrigin = "provider"
+	FailureOriginToolDispatch FailureOrigin = "tool_dispatch"
+	FailureOriginStorage      FailureOrigin = "storage"
+	FailureOriginContract     FailureOrigin = "contract"
+)
+
+func (o FailureOrigin) Valid() bool {
+	switch o {
+	case FailureOriginNone, FailureOriginCancelled, FailureOriginProvider, FailureOriginToolDispatch, FailureOriginStorage, FailureOriginContract:
+		return true
+	default:
+		return false
+	}
+}
+
+type failureOriginError struct {
+	origin FailureOrigin
+	err    error
+}
+
+func (e *failureOriginError) Error() string { return e.err.Error() }
+func (e *failureOriginError) Unwrap() error { return e.err }
+
+func withFailureOrigin(err error, origin FailureOrigin) error {
+	if err == nil {
+		return nil
+	}
+	var classified *failureOriginError
+	if errors.As(err, &classified) && classified.origin.Valid() && classified.origin != FailureOriginNone {
+		return err
+	}
+	return &failureOriginError{origin: origin, err: err}
+}
+
+func failureOrigin(status Status, err error) FailureOrigin {
+	if err == nil {
+		return FailureOriginNone
+	}
+	if status == Cancelled || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return FailureOriginCancelled
+	}
+	var classified *failureOriginError
+	if errors.As(err, &classified) && classified.origin.Valid() && classified.origin != FailureOriginNone {
+		return classified.origin
+	}
+	switch {
+	case errors.Is(err, ErrProviderTruncated), errors.Is(err, ErrContentFiltered), errors.Is(err, ErrProviderFinishError):
+		return FailureOriginProvider
+	case errors.Is(err, ErrNoProgress),
+		errors.Is(err, ErrDuplicateTools),
+		errors.Is(err, ErrDuplicateToolCallID),
+		errors.Is(err, ErrStopHookLoop),
+		errors.Is(err, ErrInvalidTokenEstimate),
+		errors.Is(err, ErrCompactedRequestOverBudget),
+		errors.Is(err, ErrFixedContextOverBudget):
+		return FailureOriginContract
+	default:
+		return FailureOriginNone
+	}
 }
 
 type ContextCompactionResult struct {
@@ -512,7 +581,7 @@ func (m LocalCompactionManager) Compact(ctx context.Context, req CompactionReque
 func (e *Engine) Run(ctx context.Context, userText string) Result {
 	runner, err := e.runner(e.store, e.options)
 	if err != nil {
-		return Result{Status: Failed, Err: err}
+		return Result{Status: Failed, FailureOrigin: FailureOriginContract, Err: err}
 	}
 	return runner.run(ctx, userText)
 }
@@ -546,7 +615,7 @@ func (e *Engine) RunTurn(ctx context.Context, input RunInput) Result {
 	}
 	normalizedSupplemental, err := NormalizeAndValidateTurnSupplementalContext(opts.SupplementalContext)
 	if err != nil {
-		return Result{Status: Failed, Err: err}
+		return Result{Status: Failed, FailureOrigin: FailureOriginContract, Err: err}
 	}
 	opts.SupplementalContext = normalizedSupplemental
 	opts = normalizeOptions(opts)
@@ -556,12 +625,12 @@ func (e *Engine) RunTurn(ctx context.Context, input RunInput) Result {
 			history[i] = stableMessageAt(opts.RunID, i, msg)
 		}
 		if err := store.AppendTranscript(opts.RunID, history...); err != nil {
-			return Result{Status: Failed, Err: err}
+			return Result{Status: Failed, FailureOrigin: FailureOriginStorage, Err: err}
 		}
 	}
 	runner, err := e.runner(store, opts)
 	if err != nil {
-		return Result{Status: Failed, Err: err}
+		return Result{Status: Failed, FailureOrigin: FailureOriginContract, Err: err}
 	}
 	return runner.run(ctx, "")
 }
@@ -658,10 +727,13 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 	var err error
 	opts, err = e.resolveToolSurface(ctx, opts, 0, "init")
 	if err != nil {
-		return Result{Status: Failed, Err: err}
+		if isContextCancellation(err) {
+			return Result{Status: Cancelled, FailureOrigin: FailureOriginCancelled, Err: err}
+		}
+		return Result{Status: Failed, FailureOrigin: FailureOriginContract, Err: err}
 	}
 	if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, false); err != nil {
-		return Result{Status: Failed, Err: err}
+		return Result{Status: Failed, FailureOrigin: FailureOriginContract, Err: err}
 	}
 	supplementalTurn := len(opts.SupplementalContext) > 0
 	latestProviderState := provider.CloneState(opts.PreviousProviderState)
@@ -672,7 +744,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 	if userText != "" {
 		msg := e.stableMessage(opts.RunID, session.Message{Role: session.User, Content: userText})
 		if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
-			return Result{Status: Failed, Err: err}
+			return Result{Status: Failed, FailureOrigin: FailureOriginStorage, Err: err}
 		}
 	}
 	var output string
@@ -689,18 +761,18 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 	metrics := RunMetrics{}
 	activeHistory, err := e.store.Transcript(opts.RunID)
 	if err != nil {
-		return Result{Status: Failed, Err: err}
+		return Result{Status: Failed, FailureOrigin: FailureOriginStorage, Err: err}
 	}
 	state.activeMessages = append([]session.Message(nil), activeHistory...)
 	if supplementalTurn {
 		opts.supplementalAnchorEntryID = currentTurnUserEntryID(activeHistory)
 		if opts.supplementalAnchorEntryID == "" {
-			return Result{Status: Failed, Err: errors.New("supplemental context requires a current user message with durable identity")}
+			return Result{Status: Failed, FailureOrigin: FailureOriginContract, Err: errors.New("supplemental context requires a current user message with durable identity")}
 		}
 	}
 	pressureTracker := NewContextPressureTracker(opts.PromptScopeID)
 	if anchor, ok, err := e.prompt.LatestPressureAnchor(ctx, opts.PromptScopeID, opts.ProviderName, opts.Model); err != nil {
-		return Result{Status: Failed, Err: err}
+		return Result{Status: Failed, FailureOrigin: FailureOriginStorage, Err: err}
 	} else if ok && !supplementalTurn {
 		pressureTracker.SetAnchor(anchor)
 	}
@@ -716,7 +788,10 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		e.emit(opts, event.Event{Type: event.StepStart, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model})
 		opts, err = e.resolveToolSurface(ctx, opts, step, "provider_request")
 		if err != nil {
-			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
+			if isContextCancellation(err) {
+				return e.end(state, opts, step, Cancelled, output, err, metrics, started, RunDecision{})
+			}
+			return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginContract), metrics, started, RunDecision{})
 		}
 		if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, false); err != nil {
 			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
@@ -747,7 +822,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return e.end(state, opts, step, Cancelled, output, err, metrics, started, RunDecision{})
 			}
-			return e.end(state, opts, step, Failed, output, err, metrics, started, RunDecision{})
+			return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginProvider), metrics, started, RunDecision{})
 		}
 		stepText := stepOutput.Text
 		calls := stepOutput.Calls
@@ -803,9 +878,9 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		if stepText != "" {
 			output += stepText
 			noProgress = 0
-			msg := e.stableMessage(opts.RunID, session.Message{Role: session.Assistant, Content: stepText, Reasoning: stepReasoning})
+			msg := stableMessageAt(opts.RunID, len(activeHistory), session.Message{Role: session.Assistant, Content: stepText, Reasoning: stepReasoning})
 			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
-				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
 			}
 			activeHistory = append(activeHistory, msg)
 			state.activeMessages = append([]session.Message(nil), activeHistory...)
@@ -823,7 +898,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		if stepOutput.Retry {
 			emptyRetries++
 			if emptyRetries > opts.MaxEmptyProviderRetries {
-				return e.end(state, opts, step, Failed, output, errors.New("provider returned empty output"), metrics, started, decision)
+				return e.end(state, opts, step, Failed, output, withFailureOrigin(errors.New("provider returned empty output"), FailureOriginProvider), metrics, started, decision)
 			}
 			metrics.Retries++
 			e.emit(opts, event.Event{Type: event.ProviderRetry, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: "empty provider output"})
@@ -843,7 +918,10 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			if stepText != "" && provider.IsTerminalNaturalFinish(stepOutput.FinishReason) {
 				hook, err := e.applyStopHook(ctx, opts, step, session.Message{Role: session.Assistant, Content: stepText, Reasoning: stepReasoning}, metrics, stepOutput)
 				if err != nil {
-					return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+					if isContextCancellation(err) {
+						return e.end(state, opts, step, Cancelled, output, err, metrics, started, decision)
+					}
+					return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginContract), metrics, started, decision)
 				}
 				if hook.Continue {
 					stopHookContinuations++
@@ -854,9 +932,9 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 					if prompt == "" {
 						prompt = "Continue the task and address the remaining pending work."
 					}
-					msg := e.stableMessage(opts.RunID, session.Message{Role: session.User, Content: prompt})
+					msg := stableMessageAt(opts.RunID, len(activeHistory), session.Message{Role: session.User, Content: prompt})
 					if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
-						return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+						return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
 					}
 					activeHistory = append(activeHistory, msg)
 					state.activeMessages = append([]session.Message(nil), activeHistory...)
@@ -892,7 +970,10 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		if len(classifiedCalls.Ordinary) > 0 {
 			opts, err = e.resolveToolSurface(ctx, opts, step, "tool_dispatch")
 			if err != nil {
-				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+				if isContextCancellation(err) {
+					return e.end(state, opts, step, Cancelled, output, err, metrics, started, decision)
+				}
+				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginContract), metrics, started, decision)
 			}
 			if err := validateConfiguredTools(opts.toolDefinitions, opts.HostedToolDefinitions, false); err != nil {
 				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
@@ -946,7 +1027,8 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 						Metadata: mergeAnyMetadata(callBatchMetadata[update.CallID], update.Metadata),
 					})
 				},
-				EffectDispatcher: opts.EffectDispatcher,
+				EffectBatchPreflight: opts.EffectBatchPreflight,
+				EffectDispatcher:     opts.EffectDispatcher,
 			}
 			for i, call := range calls {
 				activity, activityErr := activeToolRegistry.ActivityForCall(toolCall(call), toolRunOptions)
@@ -966,13 +1048,14 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			if opts.ControlSpec.isControlTool(call.Name) {
 				kind = session.MessageKindControlSignal
 			}
-			msg := e.stableMessage(opts.RunID, session.Message{Role: session.Assistant, Kind: kind, Content: "tool_call", Reasoning: reasoning, ToolCallID: call.ID, ToolName: call.Name, ToolArgs: call.Args, Activity: sessionActivityPresentation(callActivities[call.ID])})
+			msg := stableMessageAt(opts.RunID, len(activeHistory), session.Message{Role: session.Assistant, Kind: kind, Content: "tool_call", Reasoning: reasoning, ToolCallID: call.ID, ToolName: call.Name, ToolArgs: call.Args, Activity: sessionActivityPresentation(callActivities[call.ID])})
 			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
-				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+				state.activeMessages = append([]session.Message(nil), activeHistory...)
+				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
 			}
 			activeHistory = append(activeHistory, msg)
-			state.activeMessages = append([]session.Message(nil), activeHistory...)
 		}
+		state.activeMessages = append([]session.Message(nil), activeHistory...)
 		sig := toolSignature(activeToolRegistry, calls)
 		if sig == lastToolSig {
 			if toolBatchAllowsProgressRepeat(activeToolRegistry, calls) && lastToolProgressSig != "" {
@@ -1006,7 +1089,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 					return e.end(state, opts, step, Failed, output, fmt.Errorf("projected control signal %q has no matching call %q", signal.Name, signal.CallID), metrics, started, decision)
 				}
 				if err := e.store.ReplaceTranscript(opts.RunID, activeHistory); err != nil {
-					return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+					return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
 				}
 				state.activeMessages = session.CloneMessages(activeHistory)
 				decision.ControlSignal = signal
@@ -1021,9 +1104,9 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 					e.emitStepEnd(opts, step, providerLatency, 0, usage, len(controlCalls), decision)
 					return e.end(state, opts, step, Waiting, signal.OutputText, nil, metrics, started, decision)
 				case ControlContinue:
-					msg := e.stableMessage(opts.RunID, session.Message{Role: session.Tool, Content: signal.OutputText, ToolCallID: signal.CallID, ToolName: signal.Name})
+					msg := stableMessageAt(opts.RunID, len(activeHistory), session.Message{Role: session.Tool, Content: signal.OutputText, ToolCallID: signal.CallID, ToolName: signal.Name})
 					if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
-						return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+						return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
 					}
 					activeHistory = append(activeHistory, msg)
 					state.activeMessages = append([]session.Message(nil), activeHistory...)
@@ -1049,6 +1132,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 		toolMessages := make([]session.Message, len(calls))
 		toolMessageSet := make([]bool, len(calls))
 		toolResults := make([]tools.Result, len(calls))
+		toolMessageIndex := len(activeHistory)
 		var dispatchedMu sync.Mutex
 		dispatchedCalls := map[string]bool{}
 		if toolRunOptions.DispatchStarted != nil {
@@ -1101,7 +1185,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				resultView = &session.ToolResultView{}
 			}
 			resultView.Status = resultStatus
-			toolMessages[i] = e.stableMessage(opts.RunID, session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: resultView, Activity: sessionActivityPresentation(result.Activity)})
+			toolMessages[i] = stableMessageAt(opts.RunID, toolMessageIndex, session.Message{Role: session.Tool, Content: text, ToolCallID: result.CallID, ToolName: result.Name, ToolResult: resultView, Activity: sessionActivityPresentation(result.Activity)})
 			finalized, err := finalizeEffect(toolMessages[i], artifactFullOutputPlan(projection.FullOutputPlan))
 			if err != nil {
 				failureActivity := effectFinalizationErrorActivityPresentation(
@@ -1137,7 +1221,7 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 				metadataBase = toolProjectionMetadata(result.Metadata, projection)
 			}
 			metadata := mergeToolResultMetadata(metadataBase, i, len(calls))
-			e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: resultLatency, Activity: result.Activity, Metadata: metadata, Artifacts: eventArtifacts(projection, result.Artifacts)})
+			e.emit(opts, event.Event{Type: event.ToolResult, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, ToolID: result.CallID, ToolName: result.Name, ToolKind: "local", Result: text, Err: errText, Duration: resultLatency, Activity: result.Activity, Metadata: metadata, Artifacts: eventArtifacts(projection, result.Artifacts), CanonicalEntryID: finalized.CanonicalEntryID})
 			toolMessageSet[i] = true
 			return nil
 		}
@@ -1145,14 +1229,14 @@ func (e *Engine) run(ctx context.Context, userText string) Result {
 			if isContextCancellation(err) {
 				return e.end(state, opts, step, Cancelled, output, err, metrics, started, decision)
 			}
-			return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+			return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginToolDispatch), metrics, started, decision)
 		}
 		for i, msg := range toolMessages {
 			if !toolMessageSet[i] {
 				return e.end(state, opts, step, Failed, output, fmt.Errorf("tool result %d was not recorded", i), metrics, started, decision)
 			}
 			if err := e.store.AppendTranscript(opts.RunID, msg); err != nil {
-				return e.end(state, opts, step, Failed, output, err, metrics, started, decision)
+				return e.end(state, opts, step, Failed, output, withFailureOrigin(err, FailureOriginStorage), metrics, started, decision)
 			}
 			activeHistory = append(activeHistory, msg)
 		}
@@ -1213,30 +1297,9 @@ func exactToolOutputProjection(text string) tools.OutputProjection {
 	}
 }
 
-type observedToolResult struct {
-	index  int
-	result tools.Result
-}
-
 func runToolBatchWithObserver(ctx context.Context, registry *tools.Registry, calls []tools.ToolCall, opts tools.DispatchOptions, observe func(int, tools.Result) error) ([]tools.Result, error) {
-	results := make([]tools.Result, len(calls))
-	done := make(chan observedToolResult, len(calls))
-	for i := range calls {
-		go func(idx int) {
-			callOpts := opts
-			callOpts.BatchIndex = idx
-			callOpts.BatchSize = len(calls)
-			done <- observedToolResult{
-				index:  idx,
-				result: registry.Dispatch(ctx, calls[idx], callOpts),
-			}
-		}(i)
-	}
+	results := registry.DispatchBatch(ctx, calls, opts)
 	var observeErr error
-	for range calls {
-		item := <-done
-		results[item.index] = item.result
-	}
 	for index, result := range results {
 		if observe != nil {
 			if err := observe(index, result); observeErr == nil && err != nil {
@@ -1771,7 +1834,7 @@ func (e *Engine) applyStopHook(ctx context.Context, opts Options, step int, last
 	}
 	messages, err := e.store.Transcript(opts.RunID)
 	if err != nil {
-		return StopHookResult{}, err
+		return StopHookResult{}, withFailureOrigin(err, FailureOriginStorage)
 	}
 	return e.stopHook(ctx, StopHookContext{
 		RunID:           opts.RunID,
@@ -1993,7 +2056,7 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 	}
 	toolset, _, err := cache.EnsureCurrentToolsetWithOptions(ctx, e.prompt, opts.PromptScopeID, opts.RunID, opts.ThreadID, opts.TurnID, opts.ProviderName, opts.Model, convertToolDefinitions(toolDefinitions), convertHostedToolDefinitions(opts.HostedToolDefinitions), time.Now(), cache.ToolsetOptions{AllowControlTools: true})
 	if err != nil {
-		return provider.Request{}, err
+		return provider.Request{}, withFailureOrigin(err, FailureOriginStorage)
 	}
 	requestHistory, ephemeralUser, err := providerRequestProjection(opts, history)
 	if err != nil {
@@ -2016,7 +2079,7 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 		Now:            time.Now(),
 	})
 	if err != nil {
-		return provider.Request{}, err
+		return provider.Request{}, withFailureOrigin(err, FailureOriginStorage)
 	}
 	activeTools := providerToolDefinitions(toolset.Tools)
 	activeHostedTools := hostedToolDefinitions(toolset.HostedTools)
@@ -2046,7 +2109,7 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 	if normalizer, ok := e.provider.(provider.CachePolicyNormalizer); ok {
 		cachePolicy, err = normalizer.NormalizeCachePolicy(cachePolicy)
 		if err != nil {
-			return provider.Request{}, err
+			return provider.Request{}, withFailureOrigin(err, FailureOriginProvider)
 		}
 	}
 	if ephemeralUser != nil && (cachePolicy.Enabled || cachePolicy.Retention != cache.RetentionNone || cachePolicy.PreferContinuation) {
@@ -2087,7 +2150,7 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 	if hasher, ok := e.provider.(provider.PayloadHasher); ok && ephemeralUser == nil {
 		payloadHash, err := hasher.PayloadHash(req)
 		if err != nil {
-			return provider.Request{}, err
+			return provider.Request{}, withFailureOrigin(err, FailureOriginProvider)
 		}
 		req.RawPlan.PayloadHash = payloadHash
 	}
@@ -2126,7 +2189,7 @@ func (e *Engine) estimateRequestTokens(ctx context.Context, req provider.Request
 	if estimator, ok := e.provider.(provider.TokenEstimator); ok {
 		estimate, err := estimator.EstimateTokens(ctx, req)
 		if err != nil {
-			return contextpolicy.RequestEstimate{}, err
+			return contextpolicy.RequestEstimate{}, withFailureOrigin(err, FailureOriginProvider)
 		}
 		if err := validateProviderTokenEstimate(estimate); err != nil {
 			return contextpolicy.RequestEstimate{}, err
@@ -2314,7 +2377,7 @@ func (e *Engine) sendProviderAttempt(ctx context.Context, opts Options, step int
 	if req.EphemeralUser == nil {
 		if _, err := cache.RecordProviderRequest(ctx, e.prompt, providerRequestSnapshot(req)); err != nil {
 			releaseProviderGate()
-			return StepOutput{}, 0, false, err
+			return StepOutput{}, 0, false, withFailureOrigin(err, FailureOriginStorage)
 		}
 	}
 	if metrics != nil {
@@ -2333,14 +2396,14 @@ func (e *Engine) sendProviderAttempt(ctx context.Context, opts Options, step int
 		return StepOutput{}, latency, true, err
 	}
 	if err != nil {
-		return StepOutput{}, latency, false, err
+		return StepOutput{}, latency, false, withFailureOrigin(err, FailureOriginProvider)
 	}
 	out, err := e.consume(ctx, opts, step, stream)
 	latency = time.Since(started).Milliseconds()
 	if errors.Is(err, provider.ErrContextOverflow) {
 		return out, latency, true, err
 	}
-	return out, latency, false, err
+	return out, latency, false, withFailureOrigin(err, FailureOriginProvider)
 }
 
 func isContextCancellation(err error) bool {
@@ -2436,7 +2499,7 @@ func validateNoLocalHostedToolNameConflict(local []provider.ToolDefinition, host
 
 func validateConfiguredTools(local []provider.ToolDefinition, hosted []provider.HostedToolDefinition, allowControl bool) error {
 	_, _, err := cache.NormalizeToolsetChecked(convertToolDefinitions(local), convertHostedToolDefinitions(hosted), cache.ToolsetOptions{AllowControlTools: allowControl})
-	return err
+	return withFailureOrigin(err, FailureOriginContract)
 }
 
 func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, history []session.Message, tracker *ContextPressureTracker, attempt int, overflowRetried bool, trigger compaction.Trigger, reason compaction.Reason, usage contextpolicy.Usage, failures *int, beforePressure contextpolicy.ContextPressure, manual ManualCompactionRequest, nextAction string) ([]session.Message, provider.Request, compaction.Result, error) {
@@ -3204,7 +3267,7 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 			return out, ctx.Err()
 		case ev, ok := <-stream:
 			if !ok {
-				if err := validator.Finish(); err != nil {
+				if err := providerStreamCloseError(ctx, &validator); err != nil {
 					return out, err
 				}
 				if out.Text == "" && len(out.Calls) == 0 {
@@ -3304,6 +3367,13 @@ func (e *Engine) consume(ctx context.Context, opts Options, step int, stream <-c
 			}
 		}
 	}
+}
+
+func providerStreamCloseError(ctx context.Context, validator *provider.StreamValidator) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return validator.Finish()
 }
 
 func eventSourceRefs(in []provider.SourceRef) []event.SourceRef {
@@ -3837,7 +3907,7 @@ func (e *Engine) end(state *turnState, opts Options, step int, status Status, ou
 	} else if e.store != nil {
 		messages, _ = e.store.Transcript(opts.RunID)
 	}
-	return Result{Status: status, Output: output, Err: err, Metrics: metrics, Messages: messages, CompletionReason: decision.CompletionReason, ContinuationReason: decision.ContinuationReason, FinishReason: decision.FinishReason, RawFinishReason: decision.RawFinishReason, FinishInferred: decision.FinishInferred, ControlSignal: cloneControlSignal(decision.ControlSignal), ProviderState: provider.CloneState(decision.ProviderState), ProviderStateFresh: decision.ProviderStateFresh}
+	return Result{Status: status, FailureOrigin: failureOrigin(status, err), Output: output, Err: err, Metrics: metrics, Messages: messages, CompletionReason: decision.CompletionReason, ContinuationReason: decision.ContinuationReason, FinishReason: decision.FinishReason, RawFinishReason: decision.RawFinishReason, FinishInferred: decision.FinishInferred, ControlSignal: cloneControlSignal(decision.ControlSignal), ProviderState: provider.CloneState(decision.ProviderState), ProviderStateFresh: decision.ProviderStateFresh}
 }
 
 func (e *Engine) emit(opts Options, ev event.Event) {
@@ -3886,7 +3956,7 @@ func (e *Engine) checkBudget(opts Options, metrics RunMetrics, step int) error {
 		message = fmt.Sprintf("tool calls %d exceeded limit %d", metrics.ToolCalls, opts.MaxToolCalls)
 		e.emit(opts, event.Event{Type: event.BudgetExceeded, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: message, Metrics: BudgetMetrics{Type: "tool_calls", Used: float64(metrics.ToolCalls), Limit: float64(opts.MaxToolCalls), Run: metrics}})
 	}
-	return err
+	return withFailureOrigin(err, FailureOriginContract)
 }
 
 func eventMetadata(opts Options, base any) map[string]any {

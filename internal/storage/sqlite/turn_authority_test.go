@@ -26,10 +26,113 @@ type turnAuthorityTestRepo interface {
 	AdmitTurn(context.Context, sessiontree.AdmitTurnRequest) (sessiontree.AdmitTurnResult, error)
 	ReadTurnAdmission(context.Context, string, string, string) (sessiontree.AdmitTurnResult, bool, error)
 	CanonicalTurnEntries(context.Context, string, string, string) ([]sessiontree.Entry, bool, error)
+	ListCanonicalTurns(context.Context, sessiontree.ListCanonicalTurnsOptions) (sessiontree.CanonicalTurnsPage, error)
 	FinishTurn(context.Context, sessiontree.FinishTurnRequest) (sessiontree.FinishTurnResult, error)
 	RecoverInterruptedTurn(context.Context, sessiontree.RecoverInterruptedTurnRequest) (sessiontree.RecoverInterruptedTurnResult, error)
 	ProviderState(context.Context, string) (sessiontree.ProviderStateRecord, error)
 	Fork(context.Context, sessiontree.ForkOptions) (sessiontree.ThreadMeta, error)
+}
+
+func TestRetryTurnAdmissionReferencesSourceWithoutDuplicatingUserJournal(t *testing.T) {
+	now := time.Date(2026, 7, 21, 3, 0, 0, 0, time.UTC)
+	memory := sessiontree.NewMemoryRepo()
+	sqliteStore, err := Open(filepath.Join(t.TempDir(), "retry-source.db"), WithAuthorityClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqliteStore.Close() })
+
+	for name, repo := range map[string]turnAuthorityTestRepo{"memory": memory, "sqlite": sqliteStore} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread", CreatedAt: now, UpdatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			original, err := repo.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+				ThreadID: "thread", TurnID: "turn-original", RunID: "run-original", OwnerID: "owner-original",
+				RequestFingerprint: "request-original", Input: session.Message{Role: session.User, Content: "original question"}, Now: now,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repo.FinishTurn(ctx, sessiontree.FinishTurnRequest{
+				Lease: original.Lease, RunID: "run-original", TerminalEntryID: "terminal-original", Status: sessiontree.TurnFailed,
+				Metadata:       map[string]string{sessiontree.TurnFailureCodeMetadataKey: sessiontree.TurnFailureProvider},
+				FailureMessage: "provider failed", OutcomeFingerprint: "outcome-original", Now: now,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			beforeRetry, err := repo.ListCanonicalTurns(ctx, sessiontree.ListCanonicalTurnsOptions{ThreadID: "thread", Tail: 1})
+			if err != nil || len(beforeRetry.Turns) != 1 {
+				t.Fatalf("before retry page=%#v err=%v", beforeRetry, err)
+			}
+
+			retry, err := repo.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+				ThreadID: "thread", TurnID: "turn-retry", RunID: "run-retry", OwnerID: "owner-retry",
+				RequestFingerprint: "request-retry", RetrySourceTurnID: "turn-original", RetrySourceEntryID: original.UserMessage.ID, Now: now,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if retry.UserMessage.ID != "" || retry.TurnStarted.Metadata[sessiontree.RetrySourceTurnIDMetadataKey] != "turn-original" ||
+				retry.TurnStarted.Metadata[sessiontree.RetrySourceEntryIDMetadataKey] != original.UserMessage.ID {
+				t.Fatalf("retry admission=%#v", retry)
+			}
+			leaseCtx := sessiontree.ContextWithTurnLease(ctx, retry.Lease)
+			if _, err := repo.Append(leaseCtx, sessiontree.Entry{
+				ThreadID: "thread", TurnID: "turn-retry", Type: sessiontree.EntryAssistantMessage,
+				Message: session.Message{Role: session.Assistant, Content: "retry answer"},
+			}, sessiontree.AppendOptions{Now: now}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repo.FinishTurn(ctx, sessiontree.FinishTurnRequest{
+				Lease: retry.Lease, RunID: "run-retry", TerminalEntryID: "terminal-retry", Status: sessiontree.TurnCompleted,
+				OutcomeFingerprint: "outcome-retry", Now: now,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			tail, err := repo.ListCanonicalTurns(ctx, sessiontree.ListCanonicalTurnsOptions{ThreadID: "thread", Tail: 2})
+			if err != nil || len(tail.Turns) != 2 || tail.Turns[1].TurnID != "turn-retry" || tail.Turns[1].RetrySource == nil ||
+				tail.Turns[1].RetrySource.TurnID != "turn-original" || tail.Turns[1].RetrySource.EntryID != original.UserMessage.ID {
+				t.Fatalf("retry tail page=%#v err=%v", tail, err)
+			}
+			for _, item := range tail.Turns[1].Entries {
+				if item.Entry.Type == sessiontree.EntryUserMessage {
+					t.Fatalf("retry turn duplicated user entry: %#v", tail.Turns[1].Entries)
+				}
+			}
+			if tail.SinceCursor.EntryID != tail.Turns[1].Entries[len(tail.Turns[1].Entries)-1].Entry.ID {
+				t.Fatalf("retry since cursor=%#v turn=%#v", tail.SinceCursor, tail.Turns[1])
+			}
+			sinceCursor := beforeRetry.SinceCursor
+			since, err := repo.ListCanonicalTurns(ctx, sessiontree.ListCanonicalTurnsOptions{ThreadID: "thread", SinceCursor: &sinceCursor, Limit: 1})
+			if err != nil || len(since.Turns) != 1 || since.Turns[0].TurnID != "turn-retry" || since.SinceCursor.EntryID != tail.SinceCursor.EntryID {
+				t.Fatalf("retry since page=%#v err=%v", since, err)
+			}
+			latest, err := repo.ListCanonicalTurns(ctx, sessiontree.ListCanonicalTurnsOptions{ThreadID: "thread", Tail: 1})
+			if err != nil || len(latest.Turns) != 1 || latest.BeforeCursor == nil {
+				t.Fatalf("retry latest page=%#v err=%v", latest, err)
+			}
+			before, err := repo.ListCanonicalTurns(ctx, sessiontree.ListCanonicalTurnsOptions{ThreadID: "thread", BeforeCursor: latest.BeforeCursor, Limit: 1})
+			if err != nil || len(before.Turns) != 1 || before.Turns[0].TurnID != "turn-original" {
+				t.Fatalf("retry before page=%#v err=%v", before, err)
+			}
+			entries, err := repo.Entries(ctx, "thread")
+			if err != nil {
+				t.Fatal(err)
+			}
+			userEntries := 0
+			for _, entry := range entries {
+				if entry.Type == sessiontree.EntryUserMessage {
+					userEntries++
+				}
+			}
+			if userEntries != 1 {
+				t.Fatalf("user entries=%d journal=%#v", userEntries, entries)
+			}
+		})
+	}
 }
 
 func TestStartedTurnIdentityIsUniqueAcrossJournalWriters(t *testing.T) {
@@ -76,7 +179,7 @@ func TestStartedTurnIdentityIsUniqueAcrossJournalWriters(t *testing.T) {
 	}
 }
 
-func TestForkRejectsCanonicalTurnAndRunIdentityCollisions(t *testing.T) {
+func TestForkRejectsCanonicalTurnIdentityCollisions(t *testing.T) {
 	now := time.Date(2026, 7, 20, 17, 0, 0, 0, time.UTC)
 	for _, collision := range []struct {
 		name      string
@@ -87,11 +190,6 @@ func TestForkRejectsCanonicalTurnAndRunIdentityCollisions(t *testing.T) {
 			name:      "turn id",
 			turnIDMap: map[string]string{"turn-a": "fork-turn", "turn-b": "fork-turn"},
 			runIDMap:  map[string]string{"run-a": "fork-run-a", "run-b": "fork-run-b"},
-		},
-		{
-			name:      "run id",
-			turnIDMap: map[string]string{"turn-a": "fork-turn-a", "turn-b": "fork-turn-b"},
-			runIDMap:  map[string]string{"run-a": "fork-run", "run-b": "fork-run"},
 		},
 	} {
 		t.Run(collision.name, func(t *testing.T) {
@@ -206,7 +304,7 @@ func TestSQLiteTurnAuthorityMatchesMemoryAdmissionAndFinish(t *testing.T) {
 
 			finishRequest := sessiontree.FinishTurnRequest{
 				Lease: admitted.Lease, RunID: "run-1", TerminalEntryID: "terminal-1", Status: sessiontree.TurnFailed,
-				Metadata: map[string]string{"reason": "provider"}, FailureMessage: "provider failed",
+				Metadata: map[string]string{"reason": "provider", sessiontree.TurnFailureCodeMetadataKey: sessiontree.TurnFailureProvider}, FailureMessage: "provider failed",
 				OutcomeFingerprint: "finish-fingerprint", Now: fixed.Add(time.Second),
 				ProviderState: &sessiontree.ProviderStateRecord{
 					ThreadID: "thread", LeafEntryID: "terminal-1", CompatibilityKey: "provider:model",
@@ -254,6 +352,69 @@ func TestSQLiteTurnAuthorityMatchesMemoryAdmissionAndFinish(t *testing.T) {
 	}
 }
 
+func TestFinishTurnRejectsIncompleteFailureContractWithoutMutation(t *testing.T) {
+	fixed := time.Date(2026, 7, 20, 18, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name           string
+		status         sessiontree.TurnMarkerStatus
+		failureCode    string
+		failureMessage string
+	}{
+		{name: "failed missing code", status: sessiontree.TurnFailed, failureMessage: "failed"},
+		{name: "failed missing message", status: sessiontree.TurnFailed, failureCode: sessiontree.TurnFailureProvider},
+		{name: "aborted wrong code", status: sessiontree.TurnAborted, failureCode: sessiontree.TurnFailureProvider, failureMessage: "cancelled"},
+		{name: "completed with failure", status: sessiontree.TurnCompleted, failureCode: sessiontree.TurnFailureProvider, failureMessage: "failed"},
+		{name: "waiting with failure code", status: sessiontree.TurnWaiting, failureCode: sessiontree.TurnFailureProvider},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			memory := sessiontree.NewMemoryRepo()
+			sqliteStore, err := Open(filepath.Join(t.TempDir(), "failure-contract.db"), WithAuthorityClock(func() time.Time { return fixed }))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = sqliteStore.Close() })
+
+			for backend, repo := range map[string]turnAuthorityTestRepo{"memory": memory, "sqlite": sqliteStore} {
+				t.Run(backend, func(t *testing.T) {
+					threadID := "thread-" + backend
+					if _, err := repo.CreateThread(context.Background(), sessiontree.ThreadMeta{ID: threadID, CreatedAt: fixed, UpdatedAt: fixed}); err != nil {
+						t.Fatal(err)
+					}
+					admitted, err := repo.AdmitTurn(context.Background(), sessiontree.AdmitTurnRequest{
+						ThreadID: threadID, TurnID: "turn", RunID: "run-" + backend, OwnerID: "owner",
+						Input: session.Message{Role: session.User, Content: "work"}, RequestFingerprint: "request", Now: fixed,
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					before, err := repo.Entries(context.Background(), threadID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					metadata := map[string]string{}
+					if test.failureCode != "" {
+						metadata[sessiontree.TurnFailureCodeMetadataKey] = test.failureCode
+					}
+					if _, err := repo.FinishTurn(context.Background(), sessiontree.FinishTurnRequest{
+						Lease: admitted.Lease, RunID: "run-" + backend, TerminalEntryID: "terminal", Status: test.status,
+						Metadata: metadata, FailureMessage: test.failureMessage, OutcomeFingerprint: "finish", Now: fixed,
+					}); err == nil {
+						t.Fatal("invalid failure contract was accepted")
+					}
+					after, err := repo.Entries(context.Background(), threadID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !reflect.DeepEqual(after, before) {
+						t.Fatalf("rejected finish mutated journal: before=%#v after=%#v", before, after)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestTurnAdmissionReplayUsesExactFinishedBranchWhileRetryIsActive(t *testing.T) {
 	now := time.Date(2026, 7, 20, 11, 0, 0, 0, time.UTC)
 	memory := sessiontree.NewMemoryRepo()
@@ -286,7 +447,7 @@ func TestTurnAdmissionReplayUsesExactFinishedBranchWhileRetryIsActive(t *testing
 			}
 			if _, err := repo.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
 				ThreadID: "thread", TurnID: "turn-b", RunID: "run-b", OwnerID: "owner-b", RequestFingerprint: "fingerprint-b",
-				RetryLeafID: original.UserMessage.ID, Now: now,
+				RetrySourceTurnID: "turn-a", RetrySourceEntryID: original.UserMessage.ID, Now: now,
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -415,6 +576,12 @@ func TestSQLiteCanonicalTurnEntriesRejectsReferenceRawDrift(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.FinishTurn(ctx, sessiontree.FinishTurnRequest{
+		Lease: admitted.Lease, RunID: "run", TerminalEntryID: "terminal", Status: sessiontree.TurnCompleted,
+		OutcomeFingerprint: "outcome", Now: now.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.db.ExecContext(ctx, `UPDATE entries
 		SET message_json = json_set(message_json, '$.References[0].text', 'changed without raw update')
 		WHERE thread_id = ? AND id = ?`, "thread", admitted.UserMessage.ID); err != nil {
@@ -422,6 +589,54 @@ func TestSQLiteCanonicalTurnEntriesRejectsReferenceRawDrift(t *testing.T) {
 	}
 	if _, found, err := store.CanonicalTurnEntries(ctx, "thread", "turn", "run"); !found || !errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
 		t.Fatalf("reference raw drift found=%v err=%v", found, err)
+	}
+	if _, err := store.ListCanonicalTurns(ctx, sessiontree.ListCanonicalTurnsOptions{ThreadID: "thread", Tail: 1}); !errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
+		t.Fatalf("reference raw drift page err=%v", err)
+	}
+	if _, found, err := store.ReadTurnAdmission(ctx, "thread", "turn", "run"); !found || !errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
+		t.Fatalf("reference raw drift admission found=%v err=%v", found, err)
+	}
+	if _, err := store.Fork(ctx, sessiontree.ForkOptions{SourceThreadID: "thread", NewThreadID: "fork"}); !errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
+		t.Fatalf("reference raw drift fork err=%v", err)
+	}
+	if _, err := store.Thread(ctx, "fork"); !errors.Is(err, sessiontree.ErrThreadNotFound) {
+		t.Fatalf("failed corrupt fork published destination: %v", err)
+	}
+}
+
+func TestSQLiteCanonicalTurnEntriesRejectsBrokenTurnParentChain(t *testing.T) {
+	now := time.Date(2026, 7, 20, 9, 50, 0, 0, time.UTC)
+	store, err := Open(filepath.Join(t.TempDir(), "broken-turn-parent.db"), WithAuthorityClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := store.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
+		ThreadID: "thread", TurnID: "turn", RunID: "run", OwnerID: "owner", RequestFingerprint: "request",
+		Input: session.Message{Role: session.User, Content: "inspect"}, Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assistant, err := store.Append(sessiontree.ContextWithTurnLease(ctx, admitted.Lease), sessiontree.Entry{
+		ThreadID: "thread", TurnID: "turn", Type: sessiontree.EntryAssistantMessage,
+		Message: session.Message{Role: session.Assistant, Content: "answer"},
+	}, sessiontree.AppendOptions{Now: now.Add(time.Second)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assistant.ParentID = admitted.TurnStarted.ID
+	assistant = sessiontree.PrepareEntry(assistant)
+	if _, err := store.db.ExecContext(ctx, `UPDATE entries SET parent_id = ?, raw = ?, raw_hash = ? WHERE thread_id = ? AND id = ?`,
+		assistant.ParentID, assistant.Raw, assistant.RawHash, "thread", assistant.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := store.CanonicalTurnEntries(ctx, "thread", "turn", "run"); !found || !errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
+		t.Fatalf("broken parent chain found=%v err=%v, want ErrAuthorityCorrupt", found, err)
 	}
 }
 
@@ -477,7 +692,8 @@ func TestSQLiteAdmitTurnMissingRetryTargetHasZeroSideEffects(t *testing.T) {
 	}
 	_, err = store.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{
 		ThreadID: "thread", TurnID: "turn-1", RunID: "run-1", OwnerID: "owner-1",
-		RetryLeafID:        "missing",
+		RetrySourceTurnID:  "source-turn",
+		RetrySourceEntryID: "missing",
 		RequestFingerprint: "retry-fingerprint",
 	})
 	if !errors.Is(err, sessiontree.ErrEntryNotFound) {

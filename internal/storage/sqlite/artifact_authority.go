@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -82,7 +83,7 @@ func (s *Store) ArtifactClosure(ctx context.Context, req sessiontree.ArtifactClo
 func (s *Store) withRead(ctx context.Context, fn func(sqlRunner) error) error {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return err
+		return fmt.Errorf("begin sqlite read transaction: %w", err)
 	}
 	committed := false
 	defer func() {
@@ -94,7 +95,7 @@ func (s *Store) withRead(ctx context.Context, fn func(sqlRunner) error) error {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
-		return err
+		return fmt.Errorf("commit sqlite read transaction: %w", err)
 	}
 	committed = true
 	return nil

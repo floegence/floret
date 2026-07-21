@@ -3,7 +3,11 @@ package agentharness
 import (
 	"context"
 	"errors"
+	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +18,7 @@ import (
 	"github.com/floegence/floret/internal/session"
 	"github.com/floegence/floret/internal/session/artifact"
 	"github.com/floegence/floret/internal/sessiontree"
+	"github.com/floegence/floret/internal/storage/sqlite"
 	"github.com/floegence/floret/internal/testing/harness"
 	"github.com/floegence/floret/observation"
 	"github.com/floegence/floret/tools"
@@ -151,10 +156,14 @@ func TestReplayEffectResultReturnsCommittedMessageWithoutRedispatch(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry, err := sessiontree.AppendMessage(ctx, repo, "thread", "turn-1", session.Message{
-		Role: session.Tool, Content: "visible", ToolCallID: "call-1", ToolName: "shell",
-		ToolResult: &session.ToolResultView{Status: string(observation.ActivityStatusSuccess)},
-	})
+	entry, err := repo.Append(ctx, sessiontree.Entry{
+		ThreadID: "thread", TurnID: "turn-1", Type: sessiontree.EntryToolResult,
+		Message: session.Message{
+			Role: session.Tool, Content: "visible", ToolCallID: "call-1", ToolName: "shell",
+			ToolResult: &session.ToolResultView{Status: string(observation.ActivityStatusSuccess)},
+		},
+		Metadata: map[string]string{sessiontree.PendingToolEffectAttemptIDKey: "effect-1"},
+	}, sessiontree.AppendOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -600,7 +609,7 @@ func TestFinishEffectFailureMarksUnknownWithFreshContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, runErr := thread.Run(context.Background(), "run", RunOptions{RunID: "run-1", TurnID: "turn-1"})
+	result, runErr := thread.Run(context.Background(), "run", RunOptions{RunID: "run-1", TurnID: "turn-1"})
 	var committed *CommittedEffectError
 	if !errors.As(runErr, &committed) || !errors.Is(runErr, finishErr) {
 		t.Fatalf("run err=%v, want committed finish failure", runErr)
@@ -626,6 +635,205 @@ func TestFinishEffectFailureMarksUnknownWithFreshContext(t *testing.T) {
 	}
 	if terminalMarkers != 1 {
 		t.Fatalf("unknown effect did not permit exactly one terminal marker: %#v", journal.Path)
+	}
+	if !errors.Is(runErr, sessiontree.ErrEffectOutcomeUnknown) {
+		t.Fatalf("run err=%v, want effect outcome unknown classification", runErr)
+	}
+	if result.Status != engine.Failed || result.FailureCode != sessiontree.TurnFailureEffectOutcomeUnknown {
+		t.Fatalf("run result=%#v, want failed effect_outcome_unknown", result)
+	}
+	page, err := h.ListCanonicalTurnDetailEvents(context.Background(), sessiontree.ListCanonicalTurnsOptions{ThreadID: "thread", Tail: 1}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.LatestStatus != string(engine.Failed) || len(page.Turns) != 1 {
+		t.Fatalf("canonical page=%#v, want one failed turn", page)
+	}
+	foundFailureCode := false
+	for _, detailEvent := range page.Turns[0].Events {
+		if detailEvent.TurnMarker != nil && detailEvent.TurnMarker.Metadata[sessiontree.TurnFailureCodeMetadataKey] == sessiontree.TurnFailureEffectOutcomeUnknown {
+			foundFailureCode = true
+		}
+	}
+	if !foundFailureCode {
+		t.Fatalf("canonical page omitted effect_outcome_unknown: %#v", page.Turns[0].Events)
+	}
+	replayed, replayErr := thread.Run(context.Background(), "run", RunOptions{RunID: "run-1", TurnID: "turn-1"})
+	if replayErr == nil || replayed.Status != engine.Failed || replayed.FailureCode != sessiontree.TurnFailureEffectOutcomeUnknown {
+		t.Fatalf("replay result=%#v err=%v, want failed effect_outcome_unknown", replayed, replayErr)
+	}
+	if handlerCalls.Load() != 1 || repo.finishCalls.Load() != 1 || repo.markCalls.Load() != 1 {
+		t.Fatalf("replay calls handler/finish/mark=%d/%d/%d, want unchanged 1/1/1", handlerCalls.Load(), repo.finishCalls.Load(), repo.markCalls.Load())
+	}
+}
+
+func TestEffectOutcomeFingerprintFailureConvergesUnknownWithoutReplay(t *testing.T) {
+	tests := []struct {
+		name string
+		open func(*testing.T) (sessiontree.Repo, *effectUnknownObserver, func())
+	}{
+		{
+			name: "memory",
+			open: func(*testing.T) (sessiontree.Repo, *effectUnknownObserver, func()) {
+				observer := &effectUnknownObserver{}
+				return &effectOutcomeFingerprintMemoryRepo{MemoryRepo: sessiontree.NewMemoryRepo(), observer: observer}, observer, func() {}
+			},
+		},
+		{
+			name: "sqlite",
+			open: func(t *testing.T) (sessiontree.Repo, *effectUnknownObserver, func()) {
+				store, err := sqlite.Open(filepath.Join(t.TempDir(), "effect-fingerprint.db"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				observer := &effectUnknownObserver{}
+				return &effectOutcomeFingerprintSQLiteRepo{Store: store, observer: observer}, observer, func() { _ = store.Close() }
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			repo, observer, closeRepo := test.open(t)
+			defer closeRepo()
+			provider := harness.NewScriptedProvider(
+				harness.Step(harness.Tool("call-1", "shell", `{"value":"x"}`), harness.DoneReason("tool_calls")),
+			)
+			h := newTestHarness(provider, repo, cache.NewMemoryStore())
+			fingerprintErr := errors.New("outcome fingerprint failed")
+			h.effectOutcomeFingerprinter = func(tools.Result, session.Message, *artifact.FullOutput) (string, error) {
+				return "", fingerprintErr
+			}
+			var handlerCalls atomic.Int64
+			mustRegister(h.options.Tools, tools.Define[stringArgs](
+				tools.Definition{
+					Name: "shell", InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+					Permission: tools.PermissionSpec{Mode: tools.PermissionAllow},
+				},
+				nil,
+				nil,
+				func(context.Context, tools.Invocation[stringArgs]) (tools.Result, error) {
+					handlerCalls.Add(1)
+					return tools.Result{Text: "side effect completed"}, nil
+				},
+			))
+			thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			result, runErr := thread.Run(ctx, "run", RunOptions{RunID: "run-1", TurnID: "turn-1"})
+			if !errors.Is(runErr, sessiontree.ErrEffectOutcomeUnknown) || !errors.Is(runErr, fingerprintErr) || result.Status != engine.Failed || result.FailureCode != sessiontree.TurnFailureEffectOutcomeUnknown {
+				t.Fatalf("run result=%#v err=%v, want failed effect_outcome_unknown", result, runErr)
+			}
+			if handlerCalls.Load() != 1 || observer.markCalls.Load() != 1 {
+				t.Fatalf("calls handler=%d mark=%d, want 1/1", handlerCalls.Load(), observer.markCalls.Load())
+			}
+			if state, _ := observer.state.Load().(sessiontree.EffectAttemptState); state != sessiontree.EffectAttemptUnknown {
+				t.Fatalf("effect state=%q, want unknown", state)
+			}
+
+			journal, err := thread.Journal(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			terminalMarkers := 0
+			failureEntries := 0
+			for _, entry := range journal.Path {
+				if entry.TurnID != "turn-1" {
+					continue
+				}
+				if entry.Type == sessiontree.EntryTurnMarker && isTerminalTurnMarker(entry.TurnStatus) {
+					terminalMarkers++
+					if entry.TurnStatus != sessiontree.TurnFailed || entry.Metadata[sessiontree.TurnFailureCodeMetadataKey] != sessiontree.TurnFailureEffectOutcomeUnknown {
+						t.Fatalf("terminal=%#v, want failed effect_outcome_unknown", entry)
+					}
+				}
+				if entry.Type == sessiontree.EntryRunFailure {
+					failureEntries++
+				}
+			}
+			if terminalMarkers != 1 || failureEntries != 1 {
+				t.Fatalf("terminal markers=%d failure entries=%d, want 1/1: %#v", terminalMarkers, failureEntries, journal.Path)
+			}
+			leaseRepo := repo.(interface {
+				ActiveTurnLease(context.Context, string) (sessiontree.TurnLease, bool, error)
+			})
+			if _, active, err := leaseRepo.ActiveTurnLease(ctx, "thread"); err != nil || active {
+				t.Fatalf("active lease=%v err=%v, want released", active, err)
+			}
+
+			replayed, replayErr := thread.Run(ctx, "run", RunOptions{RunID: "run-1", TurnID: "turn-1"})
+			if replayed.FailureCode != sessiontree.TurnFailureEffectOutcomeUnknown || replayErr == nil {
+				t.Fatalf("replay result=%#v err=%v, want canonical terminal replay", replayed, replayErr)
+			}
+			if handlerCalls.Load() != 1 || observer.markCalls.Load() != 1 {
+				t.Fatalf("replay calls handler=%d mark=%d, want unchanged 1/1", handlerCalls.Load(), observer.markCalls.Load())
+			}
+		})
+	}
+}
+
+func TestParallelEffectFinalizersContinueAfterFirstPersistenceFailure(t *testing.T) {
+	ctx := context.Background()
+	repo := &firstEffectFinishFailureRepo{
+		MemoryRepo: sessiontree.NewMemoryRepo(),
+		finishErr:  errors.New("first effect persistence failed"),
+		states:     map[string]sessiontree.EffectAttemptState{},
+	}
+	provider := harness.NewScriptedProvider(
+		harness.Step(
+			harness.Tool("call-0", "shell", `{"value":"zero"}`),
+			harness.Tool("call-1", "shell", `{"value":"one"}`),
+			harness.Tool("call-2", "shell", `{"value":"two"}`),
+			harness.DoneReason("tool_calls"),
+		),
+	)
+	h := newTestHarness(provider, repo, cache.NewMemoryStore())
+	var handlerCalls atomic.Int64
+	mustRegister(h.options.Tools, tools.Define[stringArgs](
+		tools.Definition{
+			Name: "shell", InputSchema: tools.StrictObject(map[string]any{"value": tools.String("value")}, []string{"value"}),
+			Permission: tools.PermissionSpec{Mode: tools.PermissionAllow},
+		},
+		nil,
+		nil,
+		func(_ context.Context, invocation tools.Invocation[stringArgs]) (tools.Result, error) {
+			handlerCalls.Add(1)
+			return tools.Result{Text: invocation.Args.Value}, nil
+		},
+	))
+	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, runErr := thread.Run(ctx, "run", RunOptions{RunID: "run-1", TurnID: "turn-1"})
+	if !errors.Is(runErr, sessiontree.ErrEffectOutcomeUnknown) || result.FailureCode != sessiontree.TurnFailureEffectOutcomeUnknown {
+		t.Fatalf("run result=%#v err=%v, want effect_outcome_unknown", result, runErr)
+	}
+	if handlerCalls.Load() != 3 || repo.finishCalls.Load() != 3 || repo.markCalls.Load() != 1 {
+		t.Fatalf("calls handler=%d finish=%d mark=%d, want 3/3/1", handlerCalls.Load(), repo.finishCalls.Load(), repo.markCalls.Load())
+	}
+	wantStates := map[string]sessiontree.EffectAttemptState{
+		"call-0": sessiontree.EffectAttemptUnknown,
+		"call-1": sessiontree.EffectAttemptCompleted,
+		"call-2": sessiontree.EffectAttemptCompleted,
+	}
+	if got := repo.snapshotStates(); !reflect.DeepEqual(got, wantStates) {
+		t.Fatalf("effect states=%v, want %v", got, wantStates)
+	}
+	journal, err := thread.Journal(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, callID := range []string{"call-1", "call-2"} {
+		if !slices.ContainsFunc(journal.Entries, func(entry sessiontree.Entry) bool {
+			return entry.Type == sessiontree.EntryToolResult && entry.Message.ToolCallID == callID
+		}) {
+			t.Fatalf("later finalizer %s did not commit: %#v", callID, journal.Entries)
+		}
 	}
 }
 
@@ -700,6 +908,30 @@ type effectFinalizationFailureRepo struct {
 	markedState    atomic.Value
 }
 
+type effectUnknownObserver struct {
+	markCalls atomic.Int64
+	state     atomic.Value
+}
+
+type effectOutcomeFingerprintMemoryRepo struct {
+	*sessiontree.MemoryRepo
+	observer *effectUnknownObserver
+}
+
+type effectOutcomeFingerprintSQLiteRepo struct {
+	*sqlite.Store
+	observer *effectUnknownObserver
+}
+
+type firstEffectFinishFailureRepo struct {
+	*sessiontree.MemoryRepo
+	finishErr   error
+	finishCalls atomic.Int64
+	markCalls   atomic.Int64
+	mu          sync.Mutex
+	states      map[string]sessiontree.EffectAttemptState
+}
+
 func (r *countingEffectFinishRepo) FinishEffectDispatch(ctx context.Context, req sessiontree.FinishEffectDispatchRequest) (sessiontree.FinishEffectDispatchResult, error) {
 	r.finishCalls.Add(1)
 	return r.MemoryRepo.FinishEffectDispatch(ctx, req)
@@ -746,4 +978,60 @@ func (r *effectFinalizationFailureRepo) MarkEffectUnknown(ctx context.Context, r
 		r.markedState.Store(string(attempt.State))
 	}
 	return attempt, err
+}
+
+func (r *effectOutcomeFingerprintMemoryRepo) MarkEffectUnknown(ctx context.Context, req sessiontree.MarkEffectUnknownRequest) (sessiontree.EffectAttempt, error) {
+	r.observer.markCalls.Add(1)
+	attempt, err := r.MemoryRepo.MarkEffectUnknown(ctx, req)
+	if err == nil {
+		r.observer.state.Store(attempt.State)
+	}
+	return attempt, err
+}
+
+func (r *effectOutcomeFingerprintSQLiteRepo) MarkEffectUnknown(ctx context.Context, req sessiontree.MarkEffectUnknownRequest) (sessiontree.EffectAttempt, error) {
+	r.observer.markCalls.Add(1)
+	attempt, err := r.Store.MarkEffectUnknown(ctx, req)
+	if err == nil {
+		r.observer.state.Store(attempt.State)
+	}
+	return attempt, err
+}
+
+func (r *firstEffectFinishFailureRepo) FinishEffectDispatch(ctx context.Context, req sessiontree.FinishEffectDispatchRequest) (sessiontree.FinishEffectDispatchResult, error) {
+	r.finishCalls.Add(1)
+	callID := req.Result.Message.ToolCallID
+	if callID == "call-0" {
+		return sessiontree.FinishEffectDispatchResult{}, r.finishErr
+	}
+	result, err := r.MemoryRepo.FinishEffectDispatch(ctx, req)
+	if err == nil {
+		r.recordState(callID, result.Attempt.State)
+	}
+	return result, err
+}
+
+func (r *firstEffectFinishFailureRepo) MarkEffectUnknown(ctx context.Context, req sessiontree.MarkEffectUnknownRequest) (sessiontree.EffectAttempt, error) {
+	r.markCalls.Add(1)
+	attempt, err := r.MemoryRepo.MarkEffectUnknown(ctx, req)
+	if err == nil {
+		r.recordState("call-0", attempt.State)
+	}
+	return attempt, err
+}
+
+func (r *firstEffectFinishFailureRepo) recordState(callID string, state sessiontree.EffectAttemptState) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.states[callID] = state
+}
+
+func (r *firstEffectFinishFailureRepo) snapshotStates() map[string]sessiontree.EffectAttemptState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]sessiontree.EffectAttemptState, len(r.states))
+	for callID, state := range r.states {
+		out[callID] = state
+	}
+	return out
 }

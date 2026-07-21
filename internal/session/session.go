@@ -103,7 +103,7 @@ type Message struct {
 	Role                 Role
 	Content              string
 	Attachments          []MessageAttachment
-	References           []MessageReference
+	References           []MessageReference `json:"References,omitempty"`
 	Reasoning            string
 	ToolCallID           string
 	ToolName             string

@@ -90,6 +90,28 @@ func TestMemoryAdmitTurnRejectsMalformedReferencesWithoutMutation(t *testing.T) 
 	}
 }
 
+func TestValidateAdmitTurnRequestRequiresCompleteRetrySource(t *testing.T) {
+	base := AdmitTurnRequest{
+		ThreadID: "thread", TurnID: "turn-retry", RunID: "run-retry", OwnerID: "owner", RequestFingerprint: "fingerprint",
+	}
+	for name, mutate := range map[string]func(*AdmitTurnRequest){
+		"missing source entry": func(req *AdmitTurnRequest) { req.RetrySourceTurnID = "turn-original" },
+		"missing source turn":  func(req *AdmitTurnRequest) { req.RetrySourceEntryID = "entry-original" },
+		"same source turn": func(req *AdmitTurnRequest) {
+			req.RetrySourceTurnID = req.TurnID
+			req.RetrySourceEntryID = "entry-original"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := base
+			mutate(&req)
+			if err := ValidateAdmitTurnRequest(req); err == nil {
+				t.Fatal("invalid retry source was accepted")
+			}
+		})
+	}
+}
+
 func TestMemoryAppendRestrictsReferencesToValidUserMessagesWithoutMutation(t *testing.T) {
 	now := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
 	valid := []session.MessageReference{{ReferenceID: "ref-1", Kind: session.MessageReferenceText, Label: "quote", Text: "selected"}}

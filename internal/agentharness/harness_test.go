@@ -163,10 +163,7 @@ func (r *failingProviderStateFinishRepo) FinishTurn(ctx context.Context, req ses
 func TestThreadRunGeneratesTitleMetadataAfterSuccessfulTurn(t *testing.T) {
 	ctx := context.Background()
 	rec := &HarnessRecorder{}
-	p := scriptharness.NewScriptedProvider(
-		scriptharness.Step(scriptharness.Text("Use a focused test plan for every tool."), scriptharness.Done()),
-		scriptharness.Step(scriptharness.Text("Streaming and tool-call validation"), scriptharness.Done()),
-	)
+	p := newConcurrentTitleProvider()
 	h := New(Options{
 		Provider:     p,
 		ProviderName: "fake",
@@ -188,6 +185,10 @@ func TestThreadRunGeneratesTitleMetadataAfterSuccessfulTurn(t *testing.T) {
 				DisableSupported: true,
 			},
 		},
+		BeginBackgroundExecution: func() (context.Context, func(), error) {
+			executionCtx, cancel := context.WithCancel(context.Background())
+			return executionCtx, cancel, nil
+		},
 		LoopLimits: LoopLimits{
 			MaxEmptyProviderRetries: 1,
 			NoProgressLimit:         2,
@@ -199,14 +200,55 @@ func TestThreadRunGeneratesTitleMetadataAfterSuccessfulTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := thread.Run(ctx, "Verify streaming output and tool calls", RunOptions{TurnID: "turn-1"})
-	if err != nil {
-		t.Fatal(err)
+	type turnOutcome struct {
+		result TurnResult
+		err    error
 	}
-	if result.Status != engine.Completed {
-		t.Fatalf("result = %#v", result)
+	turnDone := make(chan turnOutcome, 1)
+	go func() {
+		result, runErr := thread.Run(ctx, "Verify streaming output and tool calls", RunOptions{TurnID: "turn-1"})
+		turnDone <- turnOutcome{result: result, err: runErr}
+	}()
+	select {
+	case <-p.mainStarted:
+	case <-time.After(time.Second):
+		t.Fatal("main provider did not start")
 	}
-	snap, err := thread.Read(ctx)
+	select {
+	case <-p.titleStarted:
+	case <-time.After(time.Second):
+		t.Fatal("title provider did not start while main provider was blocked")
+	}
+	close(p.titleRelease)
+	deadline := time.Now().Add(time.Second)
+	var snap ThreadSnapshot
+	for {
+		snap, err = thread.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snap.TitleStatus == string(sessiontree.ThreadTitleReady) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("title did not become ready while main provider was blocked: %#v", snap)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case outcome := <-turnDone:
+		t.Fatalf("turn completed before main provider was released: %#v", outcome)
+	default:
+	}
+	close(p.mainRelease)
+	outcome := <-turnDone
+	if outcome.err != nil {
+		t.Fatal(outcome.err)
+	}
+	if outcome.result.Status != engine.Completed {
+		t.Fatalf("result = %#v", outcome.result)
+	}
+	snap, err = thread.Read(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,11 +258,19 @@ func TestThreadRunGeneratesTitleMetadataAfterSuccessfulTurn(t *testing.T) {
 	if snap.Title == "" || utf8.RuneCountInString(snap.Title) > defaultThreadTitleMaxRunes {
 		t.Fatalf("snapshot title %q should be non-empty and at most %d runes", snap.Title, defaultThreadTitleMaxRunes)
 	}
-	if len(p.Requests) != 2 || p.Requests[1].LogicalRequestID != "thread_title" || p.Requests[1].RunID != "turn-1:thread-title" || p.Requests[1].Reasoning.Level != provider.ReasoningLevelOff {
-		t.Fatalf("title provider request missing: %#v", p.Requests)
+	requests := p.snapshotRequests()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests = %#v", requests)
 	}
-	if len(p.Requests[1].Messages) != 2 || !strings.Contains(p.Requests[1].Messages[1].Content, "Verify streaming output and tool calls") {
-		t.Fatalf("title provider prompt = %#v", p.Requests[1].Messages)
+	titleRequest := requests[0]
+	if titleRequest.LogicalRequestID != ThreadTitleLogicalRequestID {
+		titleRequest = requests[1]
+	}
+	if titleRequest.LogicalRequestID != ThreadTitleLogicalRequestID || titleRequest.RunID != "turn-1:thread-title" || titleRequest.Reasoning.Level != provider.ReasoningLevelOff {
+		t.Fatalf("title provider request missing: %#v", requests)
+	}
+	if len(titleRequest.Messages) != 2 || !strings.Contains(titleRequest.Messages[1].Content, "Verify streaming output and tool calls") {
+		t.Fatalf("title provider prompt = %#v", titleRequest.Messages)
 	}
 	meta, err := h.options.Repo.Thread(ctx, "thread")
 	if err != nil {
@@ -285,9 +335,20 @@ func TestThreadRunRecordsTitleGenerationFailureWithoutFailingTurn(t *testing.T) 
 	if result.Status != engine.Completed {
 		t.Fatalf("result = %#v", result)
 	}
-	meta, err := h.options.Repo.Thread(ctx, "thread")
-	if err != nil {
-		t.Fatal(err)
+	var meta sessiontree.ThreadMeta
+	deadline := time.Now().Add(time.Second)
+	for {
+		meta, err = h.options.Repo.Thread(ctx, "thread")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if meta.TitleStatus == sessiontree.ThreadTitleFailed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("title failure did not settle: %#v", meta)
+		}
+		time.Sleep(time.Millisecond)
 	}
 	if meta.Title != "" || meta.TitleStatus != sessiontree.ThreadTitleFailed || !strings.Contains(meta.TitleError, "summary provider unavailable") {
 		t.Fatalf("failed title metadata = %#v", meta)
@@ -312,8 +373,7 @@ func TestThreadRunDoesNotOverwriteExistingTitle(t *testing.T) {
 		t.Fatal("test repo does not support title authority")
 	}
 	if _, err := titleAuthority.SetThreadTitle(ctx, sessiontree.SetThreadTitleRequest{
-		ThreadID: "thread", Mode: sessiontree.ThreadTitleMutationManual, Title: "Host selected title",
-		Status: sessiontree.ThreadTitleReady, Source: sessiontree.ThreadTitleSourceHost, Now: time.Now().UTC(),
+		ThreadID: "thread", Title: "Host selected title", Now: time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -326,6 +386,22 @@ func TestThreadRunDoesNotOverwriteExistingTitle(t *testing.T) {
 	}
 	if got.Title != "Host selected title" || got.TitleSource != sessiontree.ThreadTitleSourceHost {
 		t.Fatalf("existing title should be preserved: %#v", got)
+	}
+}
+
+func TestAutomaticTitleMessagesUseOnlyReferenceLabelsForReferenceOnlyInput(t *testing.T) {
+	messages := automaticTitleMessages(session.Message{
+		Role: session.User,
+		References: []session.MessageReference{
+			{ReferenceID: "text-1", Kind: session.MessageReferenceText, Label: "终端选区", Text: "sensitive selected text"},
+			{ReferenceID: "file-1", Kind: session.MessageReferenceFile, Label: "配置文件", ResourceRef: "opaque:sensitive-resource"},
+		},
+	})
+	if len(messages) != 1 || messages[0].Content != "终端选区\n配置文件" {
+		t.Fatalf("automatic title messages = %#v", messages)
+	}
+	if strings.Contains(messages[0].Content, "sensitive") || len(messages[0].Attachments) != 0 || len(messages[0].References) != 0 {
+		t.Fatalf("automatic title leaked reference content: %#v", messages[0])
 	}
 }
 
@@ -1064,6 +1140,10 @@ func TestHarnessOwnsEngineIdentityAndToolDefinitions(t *testing.T) {
 		TitleGenerator: fixedTitleGenerator{
 			title: "Test thread title",
 		},
+		BeginBackgroundExecution: func() (context.Context, func(), error) {
+			executionCtx, cancel := context.WithCancel(context.Background())
+			return executionCtx, cancel, nil
+		},
 		LoopLimits: LoopLimits{
 			MaxEmptyProviderRetries:  1,
 			NoProgressLimit:          2,
@@ -1427,7 +1507,7 @@ func TestRetryAfterInterruptedTurnUsesRealtimeToolSavePoint(t *testing.T) {
 		Repo:                    repo,
 		PromptStore:             promptStore,
 		EffectAuthorizationGate: allowHarnessEffectGate{},
-		BeginSubAgentExecution: func() (context.Context, func(), error) {
+		BeginBackgroundExecution: func() (context.Context, func(), error) {
 			ctx, cancel := context.WithCancel(context.Background())
 			return ctx, cancel, nil
 		},
@@ -1987,7 +2067,7 @@ func TestFileRepoDoesNotExposeInterruptedTurnRecoveryCapability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sessiontree.AppendTurnMarker(ctx, repo, thread.ID(), "turn-interrupted", sessiontree.TurnStarted, nil); err != nil {
+	if _, err := sessiontree.AppendTurnMarker(ctx, repo, thread.ID(), "turn-interrupted", sessiontree.TurnStarted, map[string]string{"run_id": "run-interrupted"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.AcquireTurnLease(ctx, sessiontree.TurnLease{ThreadID: thread.ID(), TurnID: "turn-interrupted", OwnerID: "other-owner"}); err != nil {
@@ -2211,6 +2291,10 @@ func TestToolProjectionDoesNotDuplicateMultiToolBatches(t *testing.T) {
 		TitleGenerator: fixedTitleGenerator{
 			title: "Test thread title",
 		},
+		BeginBackgroundExecution: func() (context.Context, func(), error) {
+			executionCtx, cancel := context.WithCancel(context.Background())
+			return executionCtx, cancel, nil
+		},
 		LoopLimits: LoopLimits{MaxEmptyProviderRetries: 1, NoProgressLimit: 2, DuplicateToolLimit: 3},
 	})
 	thread, err := h.StartThread(ctx, StartThreadOptions{ThreadID: "thread"})
@@ -2418,7 +2502,7 @@ func TestResumeRejectsUnfinishedTurnWithoutRecoveryAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sessiontree.AppendTurnMarker(ctx, repo, "thread", "turn-interrupted", sessiontree.TurnStarted, nil); err != nil {
+	if _, err := sessiontree.AppendTurnMarker(ctx, repo, "thread", "turn-interrupted", sessiontree.TurnStarted, map[string]string{"run_id": "run-interrupted"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := sessiontree.AppendMessage(ctx, repo, "thread", "turn-interrupted", session.Message{Role: session.User, Content: "unfinished"}); err != nil {
@@ -3037,7 +3121,7 @@ func newTestHarness(p provider.Provider, repo sessiontree.Repo, promptStore cach
 		PromptStore:             promptStore,
 		Sink:                    rec,
 		EffectAuthorizationGate: allowHarnessEffectGate{},
-		BeginSubAgentExecution: func() (context.Context, func(), error) {
+		BeginBackgroundExecution: func() (context.Context, func(), error) {
 			executionCtx, cancel := context.WithCancel(context.Background())
 			return executionCtx, cancel, nil
 		},
@@ -3146,6 +3230,55 @@ type fixedTitleGenerator struct {
 
 func (g fixedTitleGenerator) GenerateTitle(context.Context, TitleRequest) (TitleResult, error) {
 	return TitleResult{Title: g.title, Source: sessiontree.ThreadTitleSourceProvider}, nil
+}
+
+type concurrentTitleProvider struct {
+	mu           sync.Mutex
+	requests     []provider.Request
+	mainStarted  chan struct{}
+	mainRelease  chan struct{}
+	titleStarted chan struct{}
+	titleRelease chan struct{}
+}
+
+func newConcurrentTitleProvider() *concurrentTitleProvider {
+	return &concurrentTitleProvider{
+		mainStarted: make(chan struct{}), mainRelease: make(chan struct{}),
+		titleStarted: make(chan struct{}), titleRelease: make(chan struct{}),
+	}
+}
+
+func (p *concurrentTitleProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
+	p.mu.Lock()
+	p.requests = append(p.requests, req)
+	p.mu.Unlock()
+	started := p.mainStarted
+	release := p.mainRelease
+	text := "Use a focused test plan for every tool."
+	if req.LogicalRequestID == ThreadTitleLogicalRequestID {
+		started = p.titleStarted
+		release = p.titleRelease
+		text = "Streaming and tool-call validation"
+	}
+	close(started)
+	out := make(chan provider.StreamEvent, 2)
+	go func() {
+		defer close(out)
+		select {
+		case <-ctx.Done():
+			return
+		case <-release:
+		}
+		out <- provider.StreamEvent{Type: provider.Delta, Text: text}
+		out <- provider.StreamEvent{Type: provider.Done, Reason: "stop"}
+	}()
+	return out, nil
+}
+
+func (p *concurrentTitleProvider) snapshotRequests() []provider.Request {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]provider.Request(nil), p.requests...)
 }
 
 type estimatingHarnessProvider struct {

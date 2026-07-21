@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"math"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -54,6 +55,7 @@ const (
 	ContextCompactDebug    = observation.EventTypeContextCompactDebug
 	ContextContinue        = observation.EventTypeContextContinue
 	ThreadEntryCommitted   = observation.EventTypeThreadEntryCommitted
+	ThreadTitlePending     = observation.EventTypeThreadTitlePending
 	ThreadTitleUpdated     = observation.EventTypeThreadTitleUpdated
 	ThreadTitleFailed      = observation.EventTypeThreadTitleFailed
 	ControlSignal          = observation.EventTypeControlSignal
@@ -63,19 +65,22 @@ const (
 )
 
 type Event struct {
-	Type               Type                              `json:"type"`
-	TraceID            string                            `json:"trace_id,omitempty"`
-	RunID              string                            `json:"run_id"`
-	ThreadID           string                            `json:"thread_id,omitempty"`
-	TurnID             string                            `json:"turn_id,omitempty"`
-	PromptScopeID      string                            `json:"prompt_scope_id,omitempty"`
-	Step               int                               `json:"step,omitempty"`
-	Provider           string                            `json:"provider,omitempty"`
-	Model              string                            `json:"model,omitempty"`
-	Message            string                            `json:"message,omitempty"`
-	ToolID             string                            `json:"tool_id,omitempty"`
-	ToolName           string                            `json:"tool_name,omitempty"`
-	ToolKind           string                            `json:"tool_kind,omitempty"`
+	Type          Type   `json:"type"`
+	TraceID       string `json:"trace_id,omitempty"`
+	RunID         string `json:"run_id"`
+	ThreadID      string `json:"thread_id,omitempty"`
+	TurnID        string `json:"turn_id,omitempty"`
+	PromptScopeID string `json:"prompt_scope_id,omitempty"`
+	Step          int    `json:"step,omitempty"`
+	Provider      string `json:"provider,omitempty"`
+	Model         string `json:"model,omitempty"`
+	Message       string `json:"message,omitempty"`
+	ToolID        string `json:"tool_id,omitempty"`
+	ToolName      string `json:"tool_name,omitempty"`
+	ToolKind      string `json:"tool_kind,omitempty"`
+	// CanonicalEntryID links an effect result event to the journal entry that
+	// the effect authority already committed. It is internal projection state.
+	CanonicalEntryID   string                            `json:"-"`
 	Args               string                            `json:"args,omitempty"`
 	ArgsHash           string                            `json:"args_hash,omitempty"`
 	Result             string                            `json:"result,omitempty"`
@@ -373,7 +378,17 @@ func sanitizeActivityValue(key string, value any, depth int) (any, bool) {
 		return nil, true
 	case string:
 		return safeActivityPayloadString(key, v), true
-	case bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+	case bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return v, true
+	case float32:
+		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+			return nil, false
+		}
+		return v, true
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return nil, false
+		}
 		return v, true
 	case map[string]string:
 		if depth > 4 {

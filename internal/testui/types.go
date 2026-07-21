@@ -11,6 +11,7 @@ import (
 	"github.com/floegence/floret/internal/provider/cache"
 	"github.com/floegence/floret/internal/provider/catalog"
 	"github.com/floegence/floret/internal/searchcap"
+	"github.com/floegence/floret/internal/session"
 	"github.com/floegence/floret/internal/session/contextpolicy"
 	"github.com/floegence/floret/internal/sessiontree"
 	"github.com/floegence/floret/internal/testing/eval"
@@ -525,19 +526,21 @@ type ObservedContextSegment struct {
 }
 
 type ObservedSessionMessage struct {
-	Role                 string                  `json:"role"`
-	Content              string                  `json:"content,omitempty"`
-	Reasoning            string                  `json:"reasoning,omitempty"`
-	ToolCallID           string                  `json:"tool_call_id,omitempty"`
-	ToolName             string                  `json:"tool_name,omitempty"`
-	ToolArgs             string                  `json:"tool_args,omitempty"`
-	Kind                 string                  `json:"kind,omitempty"`
-	ToolResult           *ObservedToolResultView `json:"tool_result,omitempty"`
-	EntryID              string                  `json:"entry_id,omitempty"`
-	ParentEntryID        string                  `json:"parent_entry_id,omitempty"`
-	CompactionID         string                  `json:"compaction_id,omitempty"`
-	CompactionGeneration int                     `json:"compaction_generation,omitempty"`
-	CompactionWindowID   string                  `json:"compaction_window_id,omitempty"`
+	Role                 string                      `json:"role"`
+	Content              string                      `json:"content,omitempty"`
+	Attachments          []session.MessageAttachment `json:"attachments,omitempty"`
+	References           []session.MessageReference  `json:"references,omitempty"`
+	Reasoning            string                      `json:"reasoning,omitempty"`
+	ToolCallID           string                      `json:"tool_call_id,omitempty"`
+	ToolName             string                      `json:"tool_name,omitempty"`
+	ToolArgs             string                      `json:"tool_args,omitempty"`
+	Kind                 string                      `json:"kind,omitempty"`
+	ToolResult           *ObservedToolResultView     `json:"tool_result,omitempty"`
+	EntryID              string                      `json:"entry_id,omitempty"`
+	ParentEntryID        string                      `json:"parent_entry_id,omitempty"`
+	CompactionID         string                      `json:"compaction_id,omitempty"`
+	CompactionGeneration int                         `json:"compaction_generation,omitempty"`
+	CompactionWindowID   string                      `json:"compaction_window_id,omitempty"`
 }
 
 type ObservedSessionEntry struct {

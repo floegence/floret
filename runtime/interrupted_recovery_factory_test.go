@@ -83,7 +83,8 @@ func TestInterruptedTurnRecoveryFactoryRefreshesOnlyItsExactTarget(t *testing.T)
 			if err != nil {
 				t.Fatalf("takeover-eligible recovery: %v", err)
 			}
-			if result.ThreadID != "thread" || result.TurnID != "turn-1" || result.RunID != "run-1" || result.Status != TurnStatusCancelled {
+			if result.ThreadID != "thread" || result.TurnID != "turn-1" || result.RunID != "run-1" || result.Status != TurnStatusInterrupted ||
+				result.Failure == nil || result.Failure.Code != ThreadTurnFailureInterrupted {
 				t.Fatalf("recovery result=%#v", result)
 			}
 			if _, err := factory.NewHost(ctx, nil); !errors.Is(err, ErrRecoveryTargetResolved) {
@@ -102,6 +103,70 @@ func TestInterruptedTurnRecoveryFactoryRefreshesOnlyItsExactTarget(t *testing.T)
 				t.Fatalf("future lease changed: active=%#v ok=%v err=%v", active, ok, err)
 			}
 		})
+	}
+}
+
+func TestInterruptedTurnRecoveryFailureCodeRemainsReadableThroughPublicTurnPage(t *testing.T) {
+	for _, backend := range []string{"memory", "sqlite"} {
+		for _, test := range []struct {
+			name     string
+			code     string
+			wantCode ThreadTurnFailureCode
+		}{
+			{name: "untyped", wantCode: ThreadTurnFailureLegacyUnclassified},
+			{name: "typed provider", code: sessiontree.TurnFailureProvider, wantCode: ThreadTurnFailureProvider},
+		} {
+			t.Run(backend+"/"+test.name, func(t *testing.T) {
+				ctx := context.Background()
+				policy := sessiontree.LeasePolicy{TTL: 30 * time.Second, RenewInterval: 10 * time.Second, ClockSkewAllowance: 2 * time.Second}
+				now := time.Date(2026, time.July, 20, 8, 30, 0, 0, time.UTC)
+				store := newInterruptedRecoveryTestStore(t, backend, policy, func() time.Time { return now })
+				capabilities := mustTestCapabilities(t, store)
+				createTestRoot(t, ctx, capabilities, "thread")
+				admission := admitInterruptedRecoveryTestTurn(t, ctx, store, "thread", "turn", "run", "owner")
+				failureMetadata := map[string]string(nil)
+				if test.code != "" {
+					failureMetadata = map[string]string{sessiontree.TurnFailureCodeMetadataKey: test.code}
+				}
+				leaseCtx := sessiontree.ContextWithTurnLease(ctx, admission.Lease)
+				if _, err := store.repo.Append(leaseCtx, sessiontree.Entry{
+					ThreadID: "thread", TurnID: "turn", Type: sessiontree.EntryRunFailure,
+					Error: "provider failed", Metadata: failureMetadata,
+				}, sessiontree.AppendOptions{Now: now.Add(time.Second)}); err != nil {
+					t.Fatal(err)
+				}
+				now = admission.Lease.ExpiresAt.Add(policy.ClockSkewAllowance + time.Nanosecond)
+				factory, err := capabilities.interrupted.BindThread(ctx, "thread")
+				if err != nil {
+					t.Fatal(err)
+				}
+				host, err := factory.NewHost(ctx, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := host.RecoverInterruptedTurn(ctx); err != nil {
+					t.Fatal(err)
+				}
+				replayed, err := store.repo.(sessiontree.InterruptedTurnRecoveryRepo).RecoverInterruptedTurn(ctx, sessiontree.RecoverInterruptedTurnRequest{
+					ExpectedLease: admission.Lease,
+				})
+				if err != nil || !replayed.Replayed {
+					t.Fatalf("canonical recovery replay=%#v err=%v", replayed, err)
+				}
+				readHost, err := capabilities.read.NewHost(ctx, "thread")
+				if err != nil {
+					t.Fatal(err)
+				}
+				page, err := readHost.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 1})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(page.Turns) != 1 || page.Turns[0].Status != TurnStatusFailed || page.Turns[0].Failure == nil ||
+					page.Turns[0].Failure.Code != test.wantCode || page.Turns[0].Failure.Message != "provider failed" {
+					t.Fatalf("public recovery turn = %#v", page.Turns)
+				}
+			})
+		}
 	}
 }
 

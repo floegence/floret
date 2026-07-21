@@ -59,9 +59,10 @@ type DispatchOptions struct {
 	Labels        map[string]string
 	HostContext   map[string]string
 
-	DispatchStarted  func(DispatchStart)
-	ActivityUpdated  func(ToolActivityUpdate)
-	EffectDispatcher EffectDispatcher
+	DispatchStarted      func(DispatchStart)
+	ActivityUpdated      func(ToolActivityUpdate)
+	EffectBatchPreflight EffectBatchPreflight
+	EffectDispatcher     EffectDispatcher
 }
 
 type EffectDispatchRequest struct {
@@ -86,6 +87,8 @@ type EffectDispatchRequest struct {
 }
 
 type EffectDispatcher func(context.Context, EffectDispatchRequest, func() Result) Result
+
+type EffectBatchPreflight func(context.Context, []EffectDispatchRequest) error
 
 type DispatchStart struct {
 	CallID        string
@@ -446,7 +449,75 @@ func cloneDefinition(def Definition) Definition {
 }
 
 func (r *Registry) Dispatch(ctx context.Context, call ToolCall, opts DispatchOptions) Result {
-	return r.dispatch(ctx, call, opts)
+	if opts.EffectDispatcher == nil {
+		return ErrorResult(call.ID, call.Name, ErrEffectDispatcherRequired.Error())
+	}
+	if opts.BatchSize <= 0 {
+		opts.BatchIndex = 0
+		opts.BatchSize = 1
+	}
+	prepared, result, ok := r.prepareDispatch(call, opts)
+	if !ok {
+		return result
+	}
+	if opts.EffectBatchPreflight != nil {
+		if err := opts.EffectBatchPreflight(ctx, []EffectDispatchRequest{prepared.request}); err != nil {
+			return ErrorResult(call.ID, call.Name, err.Error())
+		}
+	}
+	return prepared.dispatch(ctx, opts.EffectDispatcher)
+}
+
+func (r *Registry) DispatchBatch(ctx context.Context, calls []ToolCall, opts DispatchOptions) []Result {
+	results := make([]Result, len(calls))
+	if len(calls) == 0 {
+		return results
+	}
+	if opts.EffectDispatcher == nil {
+		for index, call := range calls {
+			results[index] = ErrorResult(call.ID, call.Name, ErrEffectDispatcherRequired.Error())
+		}
+		return results
+	}
+	prepared := make([]preparedDispatch, len(calls))
+	ready := make([]bool, len(calls))
+	requests := make([]EffectDispatchRequest, 0, len(calls))
+	for index, call := range calls {
+		callOpts := opts
+		callOpts.BatchIndex = index
+		callOpts.BatchSize = len(calls)
+		item, result, ok := r.prepareDispatch(call, callOpts)
+		if !ok {
+			results[index] = result
+			continue
+		}
+		prepared[index] = item
+		ready[index] = true
+		requests = append(requests, item.request)
+	}
+	if opts.EffectBatchPreflight != nil && len(requests) > 0 {
+		if err := opts.EffectBatchPreflight(ctx, requests); err != nil {
+			for index, ok := range ready {
+				if ok {
+					results[index] = ErrorResult(calls[index].ID, calls[index].Name, err.Error())
+				}
+			}
+			return results
+		}
+	}
+	var wg sync.WaitGroup
+	for index, ok := range ready {
+		if !ok {
+			continue
+		}
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			results[index] = prepared[index].dispatch(ctx, opts.EffectDispatcher)
+		}(index)
+	}
+	wg.Wait()
+	return results
 }
 
 func (r *Registry) ActivityForCall(call ToolCall, opts DispatchOptions) (*observation.ActivityPresentation, error) {
@@ -479,49 +550,64 @@ func (r *Registry) ActivityForCall(call ToolCall, opts DispatchOptions) (*observ
 	})
 }
 
-func (r *Registry) dispatch(ctx context.Context, call ToolCall, opts DispatchOptions) (result Result) {
-	if opts.EffectDispatcher == nil {
-		return ErrorResult(call.ID, call.Name, ErrEffectDispatcherRequired.Error())
-	}
-	if opts.BatchSize <= 0 {
-		opts.BatchIndex = 0
-		opts.BatchSize = 1
-	}
+type preparedDispatch struct {
+	request EffectDispatchRequest
+	invoke  func(context.Context) Result
+}
+
+func (p preparedDispatch) dispatch(ctx context.Context, dispatcher EffectDispatcher) (result Result) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			result = ErrorResult(p.request.CallID, p.request.Name, fmt.Sprintf("tool %q panicked: %v", p.request.Name, recovered))
+		}
+	}()
+	result = dispatcher(ctx, p.request, func() Result { return p.invoke(ctx) })
+	if result.DispatchErr == nil {
+		result.effectFinalizationRequired = true
+	}
+	return result
+}
+
+func (r *Registry) prepareDispatch(call ToolCall, opts DispatchOptions) (prepared preparedDispatch, result Result, ok bool) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			prepared = preparedDispatch{}
 			result = ErrorResult(call.ID, call.Name, fmt.Sprintf("tool %q panicked: %v", call.Name, recovered))
+			ok = false
 		}
 	}()
 	r.mu.RLock()
 	t, ok := r.tools[call.Name]
 	r.mu.RUnlock()
 	if !ok {
-		return ErrorResult(call.ID, call.Name, fmt.Sprintf("unknown tool %q", call.Name))
+		return preparedDispatch{}, ErrorResult(call.ID, call.Name, fmt.Sprintf("unknown tool %q", call.Name)), false
 	}
 	raw := strings.TrimSpace(call.Args)
 	if _, err := Validate(t.Definition.InputSchema, []byte(raw)); err != nil {
-		return ErrorResult(call.ID, call.Name, InvalidArgumentsText(call.Name, err))
+		return preparedDispatch{}, ErrorResult(call.ID, call.Name, InvalidArgumentsText(call.Name, err)), false
 	}
 	args, err := t.decode([]byte(raw))
 	if err != nil {
-		return ErrorResult(call.ID, call.Name, InvalidArgumentsText(call.Name, err))
+		return preparedDispatch{}, ErrorResult(call.ID, call.Name, InvalidArgumentsText(call.Name, err)), false
 	}
 	inv := erasedInvocation{CallID: call.ID, Name: call.Name, RawArgs: raw, Args: args, RunID: opts.RunID, ThreadID: opts.ThreadID, TurnID: opts.TurnID, PromptScopeID: opts.PromptScopeID, Step: opts.Step, Labels: cloneStringMap(opts.Labels), HostContext: cloneStringMap(opts.HostContext)}
 	if t.Definition.Permission.Mode == PermissionDeny {
-		return ErrorResult(call.ID, call.Name, ErrRejected.Error())
+		return preparedDispatch{}, ErrorResult(call.ID, call.Name, ErrRejected.Error()), false
 	}
 	resources, err := t.resources(inv)
 	if err != nil {
-		return ErrorResult(call.ID, call.Name, fmt.Sprintf("tool %q resource extraction failed: %v", call.Name, err))
+		return preparedDispatch{}, ErrorResult(call.ID, call.Name, fmt.Sprintf("tool %q resource extraction failed: %v", call.Name, err)), false
 	}
 	permission, err := invocationPermission(t.Definition, inv)
 	if err != nil {
-		return ErrorResult(call.ID, call.Name, fmt.Sprintf("tool %q permission resolution failed: %v", call.Name, err))
+		return preparedDispatch{}, ErrorResult(call.ID, call.Name, fmt.Sprintf("tool %q permission resolution failed: %v", call.Name, err)), false
 	}
-	invoke := func() (handlerResult Result) {
+	invoke := func(ctx context.Context) (handlerResult Result) {
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				handlerResult = ErrorResult(call.ID, call.Name, fmt.Sprintf("tool %q panicked: %v", call.Name, recovered))
+				panicErr := fmt.Errorf("tool %q panicked: %v", call.Name, recovered)
+				handlerResult = ErrorResult(call.ID, call.Name, panicErr.Error())
+				handlerResult.DispatchErr = panicErr
 			}
 		}()
 		if opts.DispatchStarted != nil {
@@ -575,17 +661,14 @@ func (r *Registry) dispatch(ctx context.Context, call ToolCall, opts DispatchOpt
 		}
 		return result
 	}
-	result = opts.EffectDispatcher(ctx, EffectDispatchRequest{
+	request := EffectDispatchRequest{
 		CallID: call.ID, Name: call.Name, RawArgs: raw, RunID: opts.RunID, ThreadID: opts.ThreadID,
 		TurnID: opts.TurnID, PromptScopeID: opts.PromptScopeID, Step: opts.Step,
 		BatchIndex: opts.BatchIndex, BatchSize: opts.BatchSize, Labels: cloneStringMap(opts.Labels), HostContext: cloneStringMap(opts.HostContext),
 		Resources: append([]ResourceRef(nil), resources...), Effects: append([]Effect(nil), t.Definition.Effects...), Permission: permission,
 		ReadOnly: t.Definition.ReadOnly, Destructive: t.Definition.Destructive, OpenWorld: t.Definition.OpenWorld,
-	}, invoke)
-	if result.DispatchErr == nil {
-		result.effectFinalizationRequired = true
 	}
-	return result
+	return preparedDispatch{request: request, invoke: invoke}, Result{}, true
 }
 
 func invocationPermission(def Definition, inv erasedInvocation) (PermissionSpec, error) {

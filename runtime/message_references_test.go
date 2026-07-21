@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -133,6 +135,171 @@ func TestMessageReferenceResourceRefSupportsSelfContainedLocatorBoundary(t *test
 	if err := valid.Validate(); err == nil {
 		t.Fatal("oversized resource ref succeeded")
 	}
+	nonASCII := MessageReference{
+		ReferenceID: "context:1", Kind: MessageReferenceFile, Label: "multibyte locator",
+		ResourceRef: strings.Repeat("界", 2730) + "é",
+	}
+	if got := len([]byte(nonASCII.ResourceRef)); got != locatorLimit {
+		t.Fatalf("multibyte resource ref = %d bytes, want %d", got, locatorLimit)
+	}
+	if err := nonASCII.Validate(); err != nil {
+		t.Fatalf("boundary multibyte resource ref rejected: %v", err)
+	}
+	nonASCII.ResourceRef += "x"
+	if err := nonASCII.Validate(); err == nil {
+		t.Fatal("oversized multibyte resource ref succeeded")
+	}
+}
+
+func TestMessageReferenceFieldAndPayloadBoundaries(t *testing.T) {
+	valid := MessageReference{
+		ReferenceID: strings.Repeat("i", MaxMessageReferenceIDBytes),
+		Kind:        MessageReferenceText,
+		Label:       strings.Repeat("界", MaxMessageReferenceLabelRunes),
+		Text:        strings.Repeat("文", MaxMessageReferenceTextRunes),
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("boundary reference rejected: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(*MessageReference)
+	}{
+		{name: "overlong id", mutate: func(reference *MessageReference) { reference.ReferenceID += "i" }},
+		{name: "trim-unstable label", mutate: func(reference *MessageReference) { reference.Label = " label " }},
+		{name: "multiline label", mutate: func(reference *MessageReference) { reference.Label = "label\u2028next" }},
+		{name: "overlong label", mutate: func(reference *MessageReference) { reference.Label += "界" }},
+		{name: "overlong text", mutate: func(reference *MessageReference) { reference.Text += "文" }},
+		{name: "invalid id utf8", mutate: func(reference *MessageReference) { reference.ReferenceID = string([]byte{0xff}) }},
+		{name: "invalid label utf8", mutate: func(reference *MessageReference) { reference.Label = string([]byte{0xff}) }},
+		{name: "invalid text utf8", mutate: func(reference *MessageReference) { reference.Text = string([]byte{0xff}) }},
+		{name: "invalid resource utf8", mutate: func(reference *MessageReference) {
+			reference.Kind = MessageReferenceFile
+			reference.Text = ""
+			reference.ResourceRef = string([]byte{0xff})
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reference := valid
+			tc.mutate(&reference)
+			if err := reference.Validate(); err == nil {
+				t.Fatalf("invalid reference succeeded: %#v", reference)
+			}
+		})
+	}
+
+	atLimit := messageReferencesAtPayloadLimit(t)
+	raw, err := json.Marshal(atLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != MaxMessageReferencesPayloadBytes {
+		t.Fatalf("reference payload = %d bytes, want %d", len(raw), MaxMessageReferencesPayloadBytes)
+	}
+	if err := (TurnInput{References: atLimit}).Validate(); err != nil {
+		t.Fatalf("boundary reference payload rejected: %v", err)
+	}
+	overLimit := append([]MessageReference(nil), atLimit...)
+	overLimit[len(overLimit)-1].Text += "x"
+	if err := (TurnInput{References: overLimit}).Validate(); err == nil {
+		t.Fatal("oversized reference payload succeeded")
+	}
+}
+
+func messageReferencesAtPayloadLimit(t *testing.T) []MessageReference {
+	t.Helper()
+	references := make([]MessageReference, 0, MaxMessageReferencesPerTurn)
+	for index := 0; index < MaxMessageReferencesPerTurn; index++ {
+		candidate := append(append([]MessageReference(nil), references...), MessageReference{
+			ReferenceID: fmt.Sprintf("context:%03d", index),
+			Kind:        MessageReferenceFile,
+			Label:       "linked file",
+			ResourceRef: strings.Repeat("r", MaxMessageReferenceResourceRefBytes),
+		})
+		raw, err := json.Marshal(candidate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(raw) > MaxMessageReferencesPayloadBytes {
+			break
+		}
+		references = candidate
+	}
+	if len(references) == 0 {
+		t.Fatal("could not construct reference payload")
+	}
+	raw, err := json.Marshal(references)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining := MaxMessageReferencesPayloadBytes - len(raw)
+	last := &references[len(references)-1]
+	const nonEmptyTextJSONOverhead = len(`,"text":""`)
+	if remaining < nonEmptyTextJSONOverhead+1 {
+		shrink := nonEmptyTextJSONOverhead + 1 - remaining
+		last.ResourceRef = last.ResourceRef[:len(last.ResourceRef)-shrink]
+		remaining += shrink
+	}
+	last.Text = strings.Repeat("x", remaining-nonEmptyTextJSONOverhead)
+	if len(last.Text) > MaxMessageReferenceTextRunes {
+		t.Fatalf("payload boundary requires %d text characters", len(last.Text))
+	}
+	return references
+}
+
+func TestHostRejectsInvalidReferenceBeforeAdmissionWithoutMutation(t *testing.T) {
+	cases := []struct {
+		name      string
+		reference MessageReference
+	}{
+		{name: "overlong id", reference: MessageReference{ReferenceID: strings.Repeat("i", MaxMessageReferenceIDBytes+1), Kind: MessageReferenceText, Label: "label", Text: "text"}},
+		{name: "overlong label", reference: MessageReference{ReferenceID: "ref", Kind: MessageReferenceText, Label: strings.Repeat("界", MaxMessageReferenceLabelRunes+1), Text: "text"}},
+		{name: "overlong text", reference: MessageReference{ReferenceID: "ref", Kind: MessageReferenceText, Label: "label", Text: strings.Repeat("文", MaxMessageReferenceTextRunes+1)}},
+		{name: "invalid resource utf8", reference: MessageReference{ReferenceID: "ref", Kind: MessageReferenceFile, Label: "label", ResourceRef: string([]byte{0xff})}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := NewMemoryStore()
+			host, err := newTestHost(t, providerHostOptions{
+				Config: runtimeGatewayConfig("invalid reference"),
+				ModelGateway: runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+					return runtimeGatewayEvents("unexpected"), nil
+				}),
+				ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+				Store:                store,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := host.RunTurn(ctx, RunTurnRequest{
+				ThreadID: "thread", TurnID: "turn", RunID: "run",
+				Input: TurnInput{Text: "inspect", References: []MessageReference{tc.reference}},
+			}); err == nil {
+				t.Fatal("RunTurn succeeded")
+			}
+			entries, err := store.repo.Entries(ctx, "thread")
+			if err != nil {
+				t.Fatal(err)
+			}
+			meta, err := store.repo.Thread(ctx, "thread")
+			if err != nil {
+				t.Fatal(err)
+			}
+			overview, err := host.ReadThreadOverview(ctx, "thread")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 || meta.LeafID != "" || overview.Thread.ThroughOrdinal != 0 || overview.LatestTurn != nil {
+				t.Fatalf("invalid reference mutated authority: entries=%#v meta=%#v overview=%#v", entries, meta, overview)
+			}
+		})
+	}
 }
 
 func TestHostReferenceOnlyTurnUsesCurrentSupplementalWithoutHistoryLeak(t *testing.T) {
@@ -231,7 +398,24 @@ func TestHostRejectsReferenceOnlyInvalidSupplementalBeforeAdmission(t *testing.T
 		{name: "missing"},
 		{name: "blank", items: []TurnSupplementalContextItem{{Kind: " ", Title: " ", Text: " ", Metadata: map[string]string{" ": " "}}}},
 		{name: "flags only", items: []TurnSupplementalContextItem{{Sensitive: true, Truncated: true}}},
-		{name: "invalid utf8", items: []TurnSupplementalContextItem{{Text: string([]byte{0xff})}}},
+		{name: "invalid kind utf8", items: []TurnSupplementalContextItem{{Kind: string([]byte{0xff})}}},
+		{name: "invalid title utf8", items: []TurnSupplementalContextItem{{Title: string([]byte{0xff})}}},
+		{name: "invalid text utf8", items: []TurnSupplementalContextItem{{Text: string([]byte{0xff})}}},
+		{name: "overlong kind", items: []TurnSupplementalContextItem{{Kind: strings.Repeat("类", MaxTurnSupplementalContextKindRunes+1)}}},
+		{name: "overlong title", items: []TurnSupplementalContextItem{{Title: strings.Repeat("题", MaxTurnSupplementalContextTitleRunes+1)}}},
+		{name: "overlong text", items: []TurnSupplementalContextItem{{Text: strings.Repeat("文", MaxTurnSupplementalContextTextRunes+1)}}},
+		{name: "too many metadata pairs", items: []TurnSupplementalContextItem{{Metadata: runtimeSupplementalMetadataPairs(MaxTurnSupplementalMetadataPairs + 1)}}},
+		{name: "overlong metadata key", items: []TurnSupplementalContextItem{{Metadata: map[string]string{strings.Repeat("k", MaxTurnSupplementalMetadataKeyBytes+1): "value"}}}},
+		{name: "overlong metadata value", items: []TurnSupplementalContextItem{{Metadata: map[string]string{"key": strings.Repeat("值", MaxTurnSupplementalMetadataValueRunes+1)}}}},
+		{name: "invalid metadata key utf8", items: []TurnSupplementalContextItem{{Metadata: map[string]string{string([]byte{0xff}): "value"}}}},
+		{name: "invalid metadata value utf8", items: []TurnSupplementalContextItem{{Metadata: map[string]string{"key": string([]byte{0xff})}}}},
+		{name: "oversized rendered payload", items: func() []TurnSupplementalContextItem {
+			out := make([]TurnSupplementalContextItem, 17)
+			for index := range out {
+				out[index] = TurnSupplementalContextItem{Kind: "context", Text: strings.Repeat("x", MaxTurnSupplementalContextTextRunes)}
+			}
+			return out
+		}()},
 		{name: "too many", items: func() []TurnSupplementalContextItem {
 			out := make([]TurnSupplementalContextItem, MaxTurnSupplementalContextItems+1)
 			for index := range out {
@@ -264,6 +448,14 @@ func TestHostRejectsReferenceOnlyInvalidSupplementalBeforeAdmission(t *testing.T
 			}
 		})
 	}
+}
+
+func runtimeSupplementalMetadataPairs(count int) map[string]string {
+	metadata := make(map[string]string, count)
+	for index := 0; index < count; index++ {
+		metadata[fmt.Sprintf("key-%03d", index)] = "value"
+	}
+	return metadata
 }
 
 func TestHostRunTurnReplayStartsProviderOnce(t *testing.T) {
@@ -380,7 +572,7 @@ func TestHostReferenceReplayAfterRetryUsesExactTerminalBranch(t *testing.T) {
 	}
 	request := RunTurnRequest{
 		ThreadID: "thread", TurnID: "turn-original", RunID: "run-original",
-		Input: TurnInput{References: canonicalReferenceFixture()}, SupplementalContext: renderableSupplementalFixture(),
+		Input: TurnInput{Text: "inspect", References: canonicalReferenceFixture()}, SupplementalContext: renderableSupplementalFixture(),
 	}
 	original, err := host.RunTurn(ctx, request)
 	if err != nil || original.Status != TurnStatusCompleted || original.Output != "original answer" {
@@ -414,6 +606,43 @@ func TestHostReferenceReplayAfterRetryUsesExactTerminalBranch(t *testing.T) {
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("conflicting replay called provider %d times", calls.Load())
+	}
+}
+
+func TestHostReferenceOnlyFailureHasTypedNoRetryTarget(t *testing.T) {
+	ctx := context.Background()
+	var calls atomic.Int64
+	host, err := newTestHost(t, providerHostOptions{
+		Config: runtimeGatewayConfig("reference-only no retry"),
+		ModelGateway: runtimeModelGateway(func(context.Context, ModelRequest) (<-chan ModelEvent, error) {
+			calls.Add(1)
+			return nil, errors.New("provider failed")
+		}),
+		ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+		Store:                NewMemoryStore(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.RunTurn(ctx, RunTurnRequest{
+		ThreadID: "thread", TurnID: "turn", RunID: "run",
+		Input: TurnInput{References: canonicalReferenceFixture()}, SupplementalContext: renderableSupplementalFixture(),
+	}); err == nil {
+		t.Fatal("reference-only turn should retain its provider failure")
+	}
+	before, err := host.ReadThread(ctx, "thread")
+	if err != nil || before.CanRetry {
+		t.Fatalf("reference-only snapshot=%#v err=%v", before, err)
+	}
+	if _, err := host.RetryTurn(ctx, RetryTurnRequest{ThreadID: "thread", Reason: "provider recovered"}); !errors.Is(err, ErrNoRetryTarget) {
+		t.Fatalf("RetryTurn error=%v, want ErrNoRetryTarget", err)
+	}
+	after, err := host.ReadThread(ctx, "thread")
+	if err != nil || !reflect.DeepEqual(after, before) || calls.Load() != 1 {
+		t.Fatalf("rejected RetryTurn mutated snapshot or called provider: before=%#v after=%#v err=%v calls=%d", before, after, err, calls.Load())
 	}
 }
 

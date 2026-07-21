@@ -141,7 +141,7 @@ func (r *Runner) SaveConfigState(req SaveConfigRequest) (ConfigState, error) {
 	return r.ConfigState()
 }
 
-func (r Runner) profileByID(id string) (ProviderProfile, error) {
+func (r *Runner) profileByID(id string) (ProviderProfile, error) {
 	profiles, err := r.loadRawProfiles()
 	if err != nil {
 		return ProviderProfile{}, err
@@ -160,7 +160,7 @@ func (r Runner) profileByID(id string) (ProviderProfile, error) {
 	return ProviderProfile{}, fmt.Errorf("profile %q was not found", id)
 }
 
-func (r Runner) loadRawProfiles() ([]ProviderProfile, error) {
+func (r *Runner) loadRawProfiles() ([]ProviderProfile, error) {
 	fileValues, err := readDotEnv(r.EnvFile)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
@@ -171,7 +171,7 @@ func (r Runner) loadRawProfiles() ([]ProviderProfile, error) {
 	return []ProviderProfile{defaultTestUIProfile()}, nil
 }
 
-func (r Runner) activeProfileIDFromEnv(profiles []ProviderProfile) (string, error) {
+func (r *Runner) activeProfileIDFromEnv(profiles []ProviderProfile) (string, error) {
 	values, err := readDotEnv(r.EnvFile)
 	if err != nil && !os.IsNotExist(err) {
 		return "", err

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -57,6 +58,17 @@ func TestMemoryRepoAppendUpdatesLeafAndBuildContextFiltersEntries(t *testing.T) 
 	}
 }
 
+func TestValidateEntryIntegrityRejectsStructuredRawDrift(t *testing.T) {
+	entry := PrepareEntry(Entry{
+		ThreadID: "thread", ID: "entry", TurnID: "turn", Type: EntryUserMessage,
+		Message: session.Message{Role: session.User, Content: "original"},
+	})
+	entry.Message.Content = "changed without raw update"
+	if err := ValidateEntryIntegrity(entry); !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("ValidateEntryIntegrity error = %v, want ErrAuthorityCorrupt", err)
+	}
+}
+
 func TestMemoryRepoThreadTitleMetadataDoesNotChangeUpdatedAt(t *testing.T) {
 	ctx := context.Background()
 	repo := NewMemoryRepo()
@@ -65,18 +77,16 @@ func TestMemoryRepoThreadTitleMetadataDoesNotChangeUpdatedAt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	meta.Title = "Plan release checks"
-	meta.TitleStatus = ThreadTitleReady
-	meta.TitleSource = ThreadTitleSourceProvider
-	meta.TitleUpdatedAt = created.Add(time.Minute)
-	if err := repo.UpdateThread(ctx, meta); err != nil {
+	titleUpdatedAt := created.Add(time.Minute)
+	result, err := repo.SetThreadTitle(ctx, SetThreadTitleRequest{ThreadID: meta.ID, Title: "Plan release checks", Now: titleUpdatedAt})
+	if err != nil {
 		t.Fatal(err)
 	}
 	got, err := repo.Thread(ctx, "thread")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Title != meta.Title || got.TitleStatus != ThreadTitleReady || got.TitleSource != ThreadTitleSourceProvider || !got.TitleUpdatedAt.Equal(meta.TitleUpdatedAt) {
+	if got.Title != result.Thread.Title || got.TitleStatus != ThreadTitleReady || got.TitleSource != ThreadTitleSourceHost || !got.TitleUpdatedAt.Equal(titleUpdatedAt) {
 		t.Fatalf("title metadata = %#v", got)
 	}
 	if !got.UpdatedAt.Equal(created) {
@@ -701,6 +711,103 @@ func TestBuildContextConvertsSignalToolCallsToProviderSafeAssistantText(t *testi
 	}
 }
 
+func TestBuildContextCheckedResetsFailedBranchAtDurableRetrySource(t *testing.T) {
+	path := []Entry{
+		{ID: "original-user", ThreadID: "thread", TurnID: "turn-original", Type: EntryUserMessage,
+			Message: session.Message{Role: session.User, Content: "original question"}},
+		{ID: "failed-assistant", ThreadID: "thread", ParentID: "original-user", TurnID: "turn-original", Type: EntryAssistantMessage,
+			Message: session.Message{Role: session.Assistant, Content: "FAILED_ASSISTANT"}},
+		{ID: "failed-tool", ThreadID: "thread", ParentID: "failed-assistant", TurnID: "turn-original", Type: EntryToolCall,
+			Message: session.Message{Role: session.Assistant, ToolCallID: "failed-call", ToolName: "failed_tool", ToolArgs: `{"marker":"FAILED_TOOL"}`}},
+		{ID: "failed-terminal", ThreadID: "thread", ParentID: "failed-tool", TurnID: "turn-original", Type: EntryTurnMarker, TurnStatus: TurnFailed},
+		{ID: "retry-started", ThreadID: "thread", ParentID: "failed-terminal", TurnID: "turn-retry", Type: EntryTurnMarker, TurnStatus: TurnStarted,
+			Metadata: map[string]string{
+				"run_id": "run-retry", RetrySourceTurnIDMetadataKey: "turn-original", RetrySourceEntryIDMetadataKey: "original-user",
+			}},
+		{ID: "retry-assistant", ThreadID: "thread", ParentID: "retry-started", TurnID: "turn-retry", Type: EntryAssistantMessage,
+			Message: session.Message{Role: session.Assistant, Content: "retry answer"}},
+		{ID: "retry-terminal", ThreadID: "thread", ParentID: "retry-assistant", TurnID: "turn-retry", Type: EntryTurnMarker, TurnStatus: TurnCompleted},
+		{ID: "next-user", ThreadID: "thread", ParentID: "retry-terminal", TurnID: "turn-next", Type: EntryUserMessage,
+			Message: session.Message{Role: session.User, Content: "follow up"}},
+	}
+	messages, err := BuildContextChecked(path, ContextOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 3 || messages[0].EntryID != "original-user" || messages[1].EntryID != "retry-assistant" || messages[2].EntryID != "next-user" {
+		t.Fatalf("retry context=%#v", messages)
+	}
+	for _, message := range messages {
+		if strings.Contains(message.Content, "FAILED_ASSISTANT") || message.ToolName == "failed_tool" || strings.Contains(message.ToolArgs, "FAILED_TOOL") {
+			t.Fatalf("retry context leaked failed branch: %#v", messages)
+		}
+	}
+}
+
+func TestBuildContextCheckedRejectsInvalidDurableRetrySource(t *testing.T) {
+	path := []Entry{
+		{ID: "user", ThreadID: "thread", TurnID: "turn-original", Type: EntryUserMessage, Message: session.Message{Role: session.User, Content: "question"}},
+		{ID: "retry", ThreadID: "thread", ParentID: "user", TurnID: "turn-retry", Type: EntryTurnMarker, TurnStatus: TurnStarted,
+			Metadata: map[string]string{
+				"run_id": "run-retry", RetrySourceTurnIDMetadataKey: "turn-original", RetrySourceEntryIDMetadataKey: "missing",
+			}},
+	}
+	if _, err := BuildContextChecked(path, ContextOptions{}); !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("invalid retry source err=%v, want ErrAuthorityCorrupt", err)
+	}
+}
+
+func TestBuildContextRetryProjectionRemainsLinearAtOneHundredThousandEntries(t *testing.T) {
+	shortPath := buildRetryContextFixture(1_000)
+	longPath := buildRetryContextFixture(100_000)
+	measure := func(path []Entry) float64 {
+		return testing.AllocsPerRun(5, func() {
+			messages, err := BuildContextChecked(path, ContextOptions{})
+			if err != nil || len(messages) == 0 || messages[0].EntryID != "root-user" {
+				panic(fmt.Sprintf("retry context messages=%#v err=%v", messages, err))
+			}
+		})
+	}
+	shortAllocs := measure(shortPath)
+	longAllocs := measure(longPath)
+	if longAllocs > shortAllocs*15 {
+		t.Fatalf("retry projection allocations grew superlinearly: 1k=%f 100k=%f", shortAllocs, longAllocs)
+	}
+	started := time.Now()
+	if _, err := BuildContextChecked(longPath, ContextOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if duration := time.Since(started); duration > 2*time.Second {
+		t.Fatalf("100k retry context projection took %s", duration)
+	}
+}
+
+func buildRetryContextFixture(entries int) []Entry {
+	path := make([]Entry, 0, entries)
+	path = append(path, Entry{
+		ID: "root-user", ThreadID: "thread", TurnID: "turn-root", Type: EntryUserMessage,
+		Message: session.Message{Role: session.User, Content: "root question"},
+	})
+	for index := 1; index < entries; index++ {
+		parentID := path[len(path)-1].ID
+		entry := Entry{
+			ID: fmt.Sprintf("entry-%06d", index), ThreadID: "thread", ParentID: parentID,
+			TurnID: fmt.Sprintf("turn-%06d", index), Type: EntryAssistantMessage,
+			Message: session.Message{Role: session.Assistant, Content: "discarded branch output"},
+		}
+		if index%100 == 0 {
+			entry.Type = EntryTurnMarker
+			entry.TurnStatus = TurnStarted
+			entry.Message = session.Message{}
+			entry.Metadata = map[string]string{
+				"run_id": fmt.Sprintf("run-%06d", index), RetrySourceTurnIDMetadataKey: "turn-root", RetrySourceEntryIDMetadataKey: "root-user",
+			}
+		}
+		path = append(path, entry)
+	}
+	return path
+}
+
 func TestBuildContextAttachesEntryRefsToMessages(t *testing.T) {
 	ctx := context.Background()
 	repo := NewMemoryRepo()
@@ -765,11 +872,9 @@ func TestFileRepoPersistsThreadLeafEntriesAndFork(t *testing.T) {
 		t.Fatal(err)
 	}
 	updated := meta.UpdatedAt
-	meta.Title = "Persist title metadata"
-	meta.TitleStatus = ThreadTitleReady
-	meta.TitleSource = ThreadTitleSourceProvider
-	meta.TitleUpdatedAt = updated.Add(time.Minute)
-	if err := repo.UpdateThread(ctx, meta); err != nil {
+	if _, err := repo.SetThreadTitle(ctx, SetThreadTitleRequest{
+		ThreadID: meta.ID, Title: "Persist title metadata", Now: updated.Add(time.Minute),
+	}); err != nil {
 		t.Fatal(err)
 	}
 	reloaded := NewFileRepo(root)
@@ -780,7 +885,7 @@ func TestFileRepoPersistsThreadLeafEntriesAndFork(t *testing.T) {
 	if meta.LeafID != user.ID {
 		t.Fatalf("reloaded leaf = %q, want %q", meta.LeafID, user.ID)
 	}
-	if meta.Title != "Persist title metadata" || meta.TitleStatus != ThreadTitleReady || meta.TitleSource != ThreadTitleSourceProvider || !meta.UpdatedAt.Equal(updated) {
+	if meta.Title != "Persist title metadata" || meta.TitleStatus != ThreadTitleReady || meta.TitleSource != ThreadTitleSourceHost || !meta.UpdatedAt.Equal(updated) {
 		t.Fatalf("reloaded title metadata = %#v", meta)
 	}
 	path, err := reloaded.Path(ctx, "thread", "")
@@ -1211,7 +1316,7 @@ func TestMemoryRepoThreadAuthorityClaimBlocksUnownedMutations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	meta.Title = "blocked"
+	meta.Archived = true
 	if err := repo.UpdateThread(ctx, meta); !errors.Is(err, ErrThreadAuthorityBusy) {
 		t.Fatalf("UpdateThread err = %v, want ErrThreadAuthorityBusy", err)
 	}
@@ -1361,7 +1466,7 @@ func TestMemoryRepoSubAgentCloseFencesBeforeTerminalCommit(t *testing.T) {
 	if err := repo.MoveLeaf(ctx, "child", entry.ID); !errors.Is(err, ErrThreadClosed) {
 		t.Fatalf("MoveLeaf on closed child err = %v, want ErrThreadClosed", err)
 	}
-	meta.Title = "blocked"
+	meta.Archived = true
 	if err := repo.UpdateThread(ctx, meta); !errors.Is(err, ErrThreadClosed) {
 		t.Fatalf("UpdateThread on closed child err = %v, want ErrThreadClosed", err)
 	}

@@ -92,11 +92,11 @@ func deterministicToolScenarios() []toolScenario {
 	}
 }
 
-func (r Runner) runToolScenarioSuite(ctx context.Context, resp RunResponse) RunResponse {
+func (r *Runner) runToolScenarioSuite(ctx context.Context, resp RunResponse) RunResponse {
 	return r.runToolScenarioSuiteWith(ctx, resp, deterministicToolScenarios(), "Deterministic tool scenario suite")
 }
 
-func (r Runner) runToolScenarioSuiteWith(ctx context.Context, resp RunResponse, scenarios []toolScenario, title string) RunResponse {
+func (r *Runner) runToolScenarioSuiteWith(ctx context.Context, resp RunResponse, scenarios []toolScenario, title string) RunResponse {
 	resp.Title = title
 	resp.Kind = "suite"
 	status := "pass"
@@ -114,7 +114,7 @@ func (r Runner) runToolScenarioSuiteWith(ctx context.Context, resp RunResponse, 
 	return resp
 }
 
-func (r Runner) runToolScenario(ctx context.Context, scenario toolScenario) RunResponse {
+func (r *Runner) runToolScenario(ctx context.Context, scenario toolScenario) RunResponse {
 	started := r.now()
 	resp := RunResponse{
 		ID:        fmt.Sprintf("%s-%d", scenario.ID, started.UnixNano()),
@@ -201,7 +201,7 @@ func (r Runner) runToolScenario(ctx context.Context, scenario toolScenario) RunR
 	return resp
 }
 
-func (r Runner) runLiveToolScenarios(ctx context.Context, resp RunResponse, opts runOptions) RunResponse {
+func (r *Runner) runLiveToolScenarios(ctx context.Context, resp RunResponse, opts runOptions) RunResponse {
 	profile, err := r.profileByID(opts.ProfileID)
 	if err != nil {
 		return r.failAgent(resp, err)
@@ -242,7 +242,7 @@ func (r Runner) runLiveToolScenarios(ctx context.Context, resp RunResponse, opts
 	return resp
 }
 
-func (r Runner) runLiveLocalToolScenario(ctx context.Context, profile ProviderProfile) RunResponse {
+func (r *Runner) runLiveLocalToolScenario(ctx context.Context, profile ProviderProfile) RunResponse {
 	started := r.now()
 	resp := RunResponse{
 		ID:        fmt.Sprintf("live-local-tools-%d", started.UnixNano()),
@@ -292,7 +292,7 @@ func (r Runner) runLiveLocalToolScenario(ctx context.Context, profile ProviderPr
 	return resp
 }
 
-func (r Runner) runLiveWeatherToolScenario(ctx context.Context, profile ProviderProfile) RunResponse {
+func (r *Runner) runLiveWeatherToolScenario(ctx context.Context, profile ProviderProfile) RunResponse {
 	started := r.now()
 	resp := RunResponse{
 		ID:        fmt.Sprintf("live-weather-%d", started.UnixNano()),
@@ -331,7 +331,7 @@ func (r Runner) runLiveWeatherToolScenario(ctx context.Context, profile Provider
 	return resp
 }
 
-func (r Runner) runLiveAgentTurnsWithTimeout(ctx context.Context, workspace string, req AgentRunRequest, followUps []string) ([]AgentRunResponse, error) {
+func (r *Runner) runLiveAgentTurnsWithTimeout(ctx context.Context, workspace string, req AgentRunRequest, followUps []string) ([]AgentRunResponse, error) {
 	liveCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	type outcome struct {
@@ -791,7 +791,7 @@ func liveScenarioAgent(profile ProviderProfile, id string, title string, results
 	}
 }
 
-func (r Runner) failLiveScenario(resp RunResponse, profile ProviderProfile, id string, selected []string, err error, results []AgentRunResponse) RunResponse {
+func (r *Runner) failLiveScenario(resp RunResponse, profile ProviderProfile, id string, selected []string, err error, results []AgentRunResponse) RunResponse {
 	resp.Status = "fail"
 	resp.Error = err.Error()
 	resp.Summary = err.Error()

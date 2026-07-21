@@ -59,7 +59,7 @@ func TestMemoryArtifactAdmissionReplayAndConflictHaveAtomicState(t *testing.T) {
 	if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "orphan-check", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	orphanAdmission, orphanPrepared := prepareMemoryArtifactEffect(t, repo, "orphan-check", "turn", "run", "call", now)
+	orphanAdmission, orphanPrepared := prepareMemoryArtifactEffect(t, repo, "orphan-check", "orphan-turn", "orphan-run", "orphan-call", now)
 	orphanFull := artifact.FullOutput{Text: "must not persist"}
 	orphanRef, err := artifact.RefForEffect(orphanPrepared.Attempt.EffectAttemptID, "read", orphanFull)
 	if err != nil {
@@ -68,8 +68,8 @@ func TestMemoryArtifactAdmissionReplayAndConflictHaveAtomicState(t *testing.T) {
 	_, err = repo.FinishEffectDispatch(ctx, FinishEffectDispatchRequest{
 		Lease: orphanAdmission.Lease, EffectAttemptID: orphanPrepared.Attempt.EffectAttemptID, RequestFingerprint: "effect-orphan-check",
 		OutcomeFingerprint: "invalid", FullOutput: &orphanFull, Now: now,
-		Result: Entry{ThreadID: "wrong-thread", TurnID: "turn", Type: EntryToolResult,
-			Message: session.Message{Role: session.Tool, ToolCallID: "call", ToolName: "read", ToolResult: &session.ToolResultView{Status: "success"}}},
+		Result: Entry{ThreadID: "wrong-thread", TurnID: "orphan-turn", Type: EntryToolResult,
+			Message: session.Message{Role: session.Tool, ToolCallID: "orphan-call", ToolName: "read", ToolResult: &session.ToolResultView{Status: "success"}}},
 	})
 	if !errors.Is(err, ErrInvalidThreadAuthority) {
 		t.Fatalf("invalid artifact finish err=%v", err)
@@ -136,7 +136,10 @@ func TestMemoryArtifactReadAuthorityClosureAndDeleteRace(t *testing.T) {
 	if err != nil || len(closure.Items) != 1 || closure.Items[0].ArtifactID != rootRef.ID {
 		t.Fatalf("closure=%#v err=%v", closure, err)
 	}
-	forked, err := repo.Fork(ctx, ForkOptions{SourceThreadID: "root", NewThreadID: "fork", ArtifactClosure: closure, Now: now})
+	forked, err := repo.Fork(ctx, ForkOptions{
+		SourceThreadID: "root", NewThreadID: "fork", ArtifactClosure: closure, Now: now,
+		RunIDMap: map[string]string{"run-root": "run-root-fork"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

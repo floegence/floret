@@ -495,7 +495,17 @@ func (p modelGatewayProvider) Stream(ctx context.Context, req provider.Request) 
 	out := make(chan provider.StreamEvent)
 	go func() {
 		defer close(out)
-		for ev := range stream {
+		for {
+			var ev ModelEvent
+			var ok bool
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok = <-stream:
+			}
+			if ctx.Err() != nil || !ok {
+				return
+			}
 			select {
 			case <-ctx.Done():
 				return

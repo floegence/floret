@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/floegence/floret/internal/sessiontree"
 )
@@ -189,7 +190,7 @@ func (s *Store) DeleteRootTree(ctx context.Context, rootThreadID string) (sessio
 				return err
 			}
 		}
-		if err := deleteThreadTreeDataWithRunner(ctx, tx, threadIDs); err != nil {
+		if err := deleteThreadTreeDataWithRunner(ctx, tx, threadIDs, now); err != nil {
 			return err
 		}
 		result = sessiontree.DeleteRootTreeResult{ThreadIDs: append([]string(nil), threadIDs...)}
@@ -208,7 +209,7 @@ func (s *Store) ThreadTombstone(ctx context.Context, threadID string) (sessiontr
 
 func (s *Store) InspectThreadAuthority(ctx context.Context, threadID string) (sessiontree.ThreadAuthoritySnapshot, error) {
 	var snapshot sessiontree.ThreadAuthoritySnapshot
-	err := s.withImmediate(ctx, func(tx sqlRunner) error {
+	err := s.withRead(ctx, func(tx sqlRunner) error {
 		meta, err := loadThread(ctx, tx, strings.TrimSpace(threadID))
 		if errors.Is(err, sessiontree.ErrThreadNotFound) {
 			if _, tombstoneErr := loadThreadTombstone(ctx, tx, threadID); tombstoneErr == nil {
@@ -226,7 +227,7 @@ func (s *Store) InspectThreadAuthority(ctx context.Context, threadID string) (se
 
 func (s *Store) InspectSubAgentThreadAuthority(ctx context.Context, parentThreadID, childThreadID string) (sessiontree.SubAgentThreadAuthoritySnapshot, error) {
 	var result sessiontree.SubAgentThreadAuthoritySnapshot
-	err := s.withImmediate(ctx, func(tx sqlRunner) error {
+	err := s.withRead(ctx, func(tx sqlRunner) error {
 		parentThreadID = strings.TrimSpace(parentThreadID)
 		childThreadID = strings.TrimSpace(childThreadID)
 		parent, err := loadThread(ctx, tx, parentThreadID)
@@ -306,7 +307,10 @@ func loadThreadTombstone(ctx context.Context, q sqlRunner, threadID string) (ses
 	return tombstone, nil
 }
 
-func deleteThreadTreeDataWithRunner(ctx context.Context, tx sqlRunner, threadIDs []string) error {
+func deleteThreadTreeDataWithRunner(ctx context.Context, tx sqlRunner, threadIDs []string, now time.Time) error {
+	if err := deleteSQLiteApprovalAuthorityForThreads(ctx, tx, threadIDs, now); err != nil {
+		return err
+	}
 	for _, threadID := range threadIDs {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM subagent_close_operations WHERE parent_thread_id = ? OR target_thread_id = ?`, threadID, threadID); err != nil {
 			return err

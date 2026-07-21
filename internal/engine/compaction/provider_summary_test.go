@@ -2,9 +2,12 @@ package compaction
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/floegence/floret/internal/provider"
 	"github.com/floegence/floret/internal/session"
@@ -12,6 +15,49 @@ import (
 	"github.com/floegence/floret/internal/session/contextpolicy"
 	"github.com/floegence/floret/internal/testing/harness"
 )
+
+type neverClosingSummaryProvider struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (p *neverClosingSummaryProvider) Stream(context.Context, provider.Request) (<-chan provider.StreamEvent, error) {
+	p.once.Do(func() { close(p.started) })
+	return make(chan provider.StreamEvent), nil
+}
+
+func TestProviderSummaryCancelsNeverClosingStream(t *testing.T) {
+	policy := contextpolicy.Policy{ContextWindowTokens: 100000, ReservedOutputTokens: 1000, ReservedSummaryTokens: 20, RecentTailTokens: 8, RecentUserTokens: 20}
+	provider := &neverClosingSummaryProvider{started: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := sessioncompaction.Prepare(ctx, sessioncompaction.Request{
+			CompactionID: "c1",
+			History: []session.Message{
+				{Role: session.User, Content: "old request", EntryID: "u1"},
+				{Role: session.Assistant, Content: "old answer", EntryID: "a1"},
+				{Role: session.User, Content: "latest", EntryID: "u2"},
+			},
+			Policy: policy,
+		}, ProviderSummaryGenerator{Provider: provider, ProviderName: "fake", Model: "fake-model", Policy: policy})
+		done <- err
+	}()
+	select {
+	case <-provider.started:
+	case <-time.After(time.Second):
+		t.Fatal("summary provider did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != context.Canceled || !errors.Is(err, context.Canceled) {
+			t.Fatalf("Prepare err = %v, want exact context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("summary generation did not stop after context cancellation")
+	}
+}
 
 func TestProviderSummaryRequiresProvider(t *testing.T) {
 	policy := contextpolicy.Policy{ContextWindowTokens: 100000, ReservedOutputTokens: 1000, ReservedSummaryTokens: 20, RecentTailTokens: 8, RecentUserTokens: 20}

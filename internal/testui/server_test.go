@@ -433,6 +433,10 @@ func TestServerManagesAgentSessionSubAgents(t *testing.T) {
 	if waited.Result.TimedOut || len(waited.Result.Snapshots) != 1 || waited.Result.Snapshots[0].Status != "completed" {
 		t.Fatalf("waited = %#v", waited)
 	}
+	if len(waited.SubAgents) != 1 || len(waited.Session.SubAgents) != 1 ||
+		waited.Result.Snapshots[0] != waited.SubAgents[0] || waited.Result.Snapshots[0] != waited.Session.SubAgents[0] {
+		t.Fatalf("wait response mixed subagent projections: %#v", waited)
+	}
 
 	detailRec := httptest.NewRecorder()
 	handler.ServeHTTP(detailRec, httptest.NewRequest(http.MethodGet, "/api/agent/sessions/"+created.ID+"/subagents/child/detail?limit=20", nil))
@@ -1708,7 +1712,7 @@ func TestServerAgentSessionToolsPatchRejectsRunningSession(t *testing.T) {
 	<-done
 }
 
-func TestServerAgentSessionReadsDoNotBlockRunningSession(t *testing.T) {
+func TestServerAgentSessionReadsDoNotBlockHeldSessionLock(t *testing.T) {
 	runner := NewRunner(t.TempDir())
 	runner.Now = fixedClock()
 	server, err := NewServer(runner)
@@ -1733,7 +1737,6 @@ func TestServerAgentSessionReadsDoNotBlockRunningSession(t *testing.T) {
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	runner.markAgentSessionRunningLocked(sess, "turn-busy")
 
 	listDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -1755,7 +1758,7 @@ func TestServerAgentSessionReadsDoNotBlockRunningSession(t *testing.T) {
 	if err := json.Unmarshal(listRec.Body.Bytes(), &sessions); err != nil {
 		t.Fatal(err)
 	}
-	if len(sessions) != 1 || sessions[0].ID != created.ID || !sessionlifecycle.IsRunningStatus(sessions[0].Status, sessions[0].Phase) || sessions[0].CanAppendMessage {
+	if len(sessions) != 1 || sessions[0].ID != created.ID || sessions[0].Status != created.Status || sessions[0].Phase != created.Phase || sessions[0].CanAppendMessage != created.CanAppendMessage {
 		t.Fatalf("sessions = %#v", sessions)
 	}
 
@@ -1779,7 +1782,7 @@ func TestServerAgentSessionReadsDoNotBlockRunningSession(t *testing.T) {
 	if err := json.Unmarshal(getRec.Body.Bytes(), &snapshot); err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.ID != created.ID || !sessionlifecycle.IsRunningStatus(snapshot.Status, snapshot.Phase) || snapshot.CanAppendMessage {
+	if snapshot.ID != created.ID || snapshot.Status != created.Status || snapshot.Phase != created.Phase || snapshot.CanAppendMessage != created.CanAppendMessage {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}
 }

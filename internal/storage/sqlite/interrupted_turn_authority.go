@@ -16,6 +16,7 @@ func (s *Store) RecoverInterruptedTurn(ctx context.Context, req sessiontree.Reco
 	threadID := strings.TrimSpace(req.ExpectedLease.ThreadID)
 	turnID := strings.TrimSpace(req.ExpectedLease.TurnID)
 	var result sessiontree.RecoverInterruptedTurnResult
+	var recoveredApprovalIDs []string
 	err := s.withImmediate(ctx, func(tx sqlRunner) error {
 		finished, found, err := loadSQLiteTurnFinish(ctx, tx, threadID, turnID)
 		if err != nil {
@@ -97,6 +98,9 @@ func (s *Store) RecoverInterruptedTurn(ctx context.Context, req sessiontree.Reco
 		if err != nil {
 			return err
 		}
+		if err := sessiontree.ValidateInterruptedTurnRecoveryEffectAttempts(attempts, threadID, turnID, admission.RunID); err != nil {
+			return err
+		}
 		effects, err := sessiontree.InterruptedTurnRecoveryEffects(attempts, "")
 		if err != nil {
 			return err
@@ -138,6 +142,11 @@ func (s *Store) RecoverInterruptedTurn(ctx context.Context, req sessiontree.Reco
 			return sessiontree.ErrStaleAuthority
 		}
 		now := authorityNow(req.Now, s.now)
+		approvalQueueProof, approvalIDs, err := cancelSQLiteInterruptedTurnApprovals(ctx, tx, active, admission.RunID, plan.OutcomeFingerprint, now)
+		if err != nil {
+			return err
+		}
+		recoveredApprovalIDs = approvalIDs
 		effectStates := make(map[string]sessiontree.EffectAttemptState, len(plan.Effects))
 		for _, effect := range plan.Effects {
 			effectStates[effect.ToolCallID] = effect.State
@@ -177,11 +186,18 @@ func (s *Store) RecoverInterruptedTurn(ctx context.Context, req sessiontree.Reco
 			parentID = failure.ID
 		}
 		metadata := map[string]string{
-			"recoverable": "true",
+			"recoverable":                                "true",
+			sessiontree.TurnFailureCodeMetadataKey:       plan.FailureCode,
 			sessiontree.InterruptedTurnRecoveryParentKey: strings.TrimSpace(req.ParentThreadID),
 		}
 		metadata[sessiontree.InterruptedTurnRecoveryKindKey] = sessiontree.InterruptedTurnRecoveryKind
 		metadata[sessiontree.InterruptedTurnRecoveryFingerprintKey] = plan.OutcomeFingerprint
+		if err := sessiontree.AddInterruptedTurnRecoverySourceFailureProof(metadata, plan.SourceFailure); err != nil {
+			return err
+		}
+		if err := sessiontree.AddInterruptedTurnApprovalQueueProof(metadata, approvalQueueProof); err != nil {
+			return err
+		}
 		terminal, err := insertTurnAuthorityEntry(ctx, tx, sessiontree.Entry{
 			ID: plan.TerminalEntryID, ThreadID: threadID, ParentID: parentID, Type: sessiontree.EntryTurnMarker,
 			TurnID: turnID, TurnStatus: plan.Status, Metadata: metadata, CreatedAt: now,
@@ -217,6 +233,9 @@ func (s *Store) RecoverInterruptedTurn(ctx context.Context, req sessiontree.Reco
 		result.Terminal = terminal
 		return nil
 	})
+	if err == nil && len(recoveredApprovalIDs) != 0 {
+		s.notifyApprovalDecisions(recoveredApprovalIDs...)
+	}
 	return result, err
 }
 
@@ -336,7 +355,11 @@ func validateSQLiteInterruptedTurnResolution(
 		}
 		return sqliteInterruptedTurnResolution{}, nil
 	case admission.Lease.Generation + 1:
-		result, err := validateSQLiteInterruptedTurnRecoveryReplay(ctx, tx, finished, admission.Lease, parentThreadID)
+		path, err := pathWithRunner(ctx, tx, expectedLease.ThreadID, meta.LeafID)
+		if err != nil {
+			return sqliteInterruptedTurnResolution{}, err
+		}
+		result, err := validateSQLiteInterruptedTurnRecoveryReplay(ctx, tx, finished, admission.Lease, parentThreadID, path)
 		if err != nil {
 			if errors.Is(err, sessiontree.ErrRequestConflict) {
 				return sqliteInterruptedTurnResolution{}, sessiontree.ErrAuthorityCorrupt
@@ -416,6 +439,7 @@ func validateSQLiteInterruptedTurnRecoveryReplay(
 	finished sqliteTurnFinishLedger,
 	expectedLease sessiontree.TurnLease,
 	parentThreadID string,
+	path []sessiontree.Entry,
 ) (sessiontree.RecoverInterruptedTurnResult, error) {
 	terminal, err := loadEntry(ctx, tx, expectedLease.ThreadID, finished.TerminalEntryID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -433,6 +457,30 @@ func validateSQLiteInterruptedTurnRecoveryReplay(
 	if terminal.Metadata[sessiontree.InterruptedTurnRecoveryParentKey] != strings.TrimSpace(parentThreadID) {
 		return sessiontree.RecoverInterruptedTurnResult{}, sessiontree.ErrInvalidThreadAuthority
 	}
+	sourceFailure, err := sessiontree.InterruptedTurnRecoverySourceFailureProofFromMetadata(terminal.Metadata)
+	if err != nil {
+		return sessiontree.RecoverInterruptedTurnResult{}, err
+	}
+	if sourceFailure != nil {
+		var entry sessiontree.Entry
+		found := false
+		for _, candidate := range path {
+			if candidate.ID == sourceFailure.EntryID {
+				entry = candidate
+				found = true
+				break
+			}
+		}
+		if !found {
+			return sessiontree.RecoverInterruptedTurnResult{}, sessiontree.ErrAuthorityCorrupt
+		}
+		if entry.Type != sessiontree.EntryRunFailure || entry.TurnID != expectedLease.TurnID ||
+			entry.ID != sourceFailure.EntryID || entry.RawHash != sourceFailure.RawHash || sessiontree.ValidateEntryIntegrity(entry) != nil ||
+			strings.TrimSpace(entry.Error) == "" {
+			return sessiontree.RecoverInterruptedTurnResult{}, sessiontree.ErrAuthorityCorrupt
+		}
+		sourceFailure.Message = entry.Error
+	}
 	failureMessage := ""
 	var failure *sessiontree.Entry
 	if finished.FailureEntryID != "" {
@@ -449,16 +497,30 @@ func validateSQLiteInterruptedTurnRecoveryReplay(
 		failureMessage = entry.Error
 		failure = &entry
 	}
+	if sourceFailure == nil && failureMessage == "" {
+		return sessiontree.RecoverInterruptedTurnResult{}, sessiontree.ErrAuthorityCorrupt
+	}
 	attempts, err := loadInterruptedTurnEffectAttempts(ctx, tx, expectedLease.ThreadID, expectedLease.TurnID)
 	if err != nil {
+		return sessiontree.RecoverInterruptedTurnResult{}, err
+	}
+	if err := sessiontree.ValidateInterruptedTurnRecoveryEffectAttempts(attempts, expectedLease.ThreadID, expectedLease.TurnID, finished.RunID); err != nil {
 		return sessiontree.RecoverInterruptedTurnResult{}, err
 	}
 	effects, err := sessiontree.InterruptedTurnRecoveryEffects(attempts, finished.OutcomeFingerprint)
 	if err != nil {
 		return sessiontree.RecoverInterruptedTurnResult{}, err
 	}
+	approvalQueueProof, err := sessiontree.InterruptedTurnApprovalQueueProofFromMetadata(terminal.Metadata)
+	if err != nil {
+		return sessiontree.RecoverInterruptedTurnResult{}, err
+	}
+	if err := validateSQLiteInterruptedTurnApprovals(ctx, tx, expectedLease, finished.RunID, finished.OutcomeFingerprint, terminal.CreatedAt, approvalQueueProof); err != nil {
+		return sessiontree.RecoverInterruptedTurnResult{}, err
+	}
 	fingerprint, err := sessiontree.InterruptedTurnRecoveryFingerprint(
-		expectedLease, parentThreadID, finished.RunID, terminal.TurnStatus, failureMessage, effects,
+		expectedLease, parentThreadID, finished.RunID, terminal.TurnStatus,
+		terminal.Metadata[sessiontree.TurnFailureCodeMetadataKey], failureMessage, sourceFailure, effects,
 	)
 	if err != nil {
 		return sessiontree.RecoverInterruptedTurnResult{}, err

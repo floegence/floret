@@ -100,6 +100,7 @@ func TestSQLiteArtifactAuthorityNegativeAndDeleteReadRace(t *testing.T) {
 	if _, err := store.Fork(ctx, sessiontree.ForkOptions{
 		SourceThreadID: "root", EntryID: pinnedLeafID, EntryIDPinned: true,
 		NewThreadID: "collision", ArtifactClosure: closure, Now: now,
+		RunIDMap: map[string]string{"artifact-run-root": "artifact-run-collision"},
 	}); !errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
 		t.Fatalf("artifact collision fork err=%v", err)
 	}
@@ -229,6 +230,7 @@ func TestSQLiteArtifactForkOperationRollbackReplayAndCorruption(t *testing.T) {
 		Root: storage.ForkOperationPlanNode{
 			NodeID: "root", SourceThreadID: "source", SourceEntryID: path[0].ID, SourceLeafEntryID: leafID,
 			DestinationThreadID: "off-path-destination", ArtifactClosure: artifact.CloneClosure(closure),
+			RunIDMap: map[string]string{"artifact-run-source": "artifact-run-off-path"},
 		},
 	}
 	offPathPlan.Root.ArtifactClosure.DestinationThreadID = "off-path-destination"
@@ -250,6 +252,7 @@ func TestSQLiteArtifactForkOperationRollbackReplayAndCorruption(t *testing.T) {
 		Root: storage.ForkOperationPlanNode{
 			NodeID: "root", SourceThreadID: "source", SourceEntryID: leafID, SourceLeafEntryID: leafID,
 			DestinationThreadID: "destination", ArtifactClosure: closure,
+			RunIDMap: map[string]string{"artifact-run-source": "artifact-run-destination"},
 		},
 	}
 	planJSON := mustMarshalSQLiteForkOperationPlan(t, plan)
@@ -329,6 +332,7 @@ func TestSQLiteSubAgentArtifactPublicationTriggerRollbackAndReplay(t *testing.T)
 			SourceThreadID: "parent", EntryID: leafID, EntryIDPinned: true, ExpectedSourceLeafID: leafID, NewThreadID: "child",
 			DestinationMeta: &sessiontree.ForkDestinationMeta{ParentThreadID: "parent", TaskName: "child", AgentPath: "child"},
 			ArtifactClosure: closure, Now: now,
+			RunIDMap: map[string]string{"artifact-run-parent": "artifact-run-child"},
 		},
 		ArtifactClosure: closure, Message: session.Message{Role: session.User, Content: "work"}, Now: now,
 	}

@@ -86,7 +86,20 @@ func (g ProviderTitleGenerator) GenerateTitle(ctx context.Context, req TitleRequ
 		return TitleResult{}, err
 	}
 	var text strings.Builder
-	for ev := range stream {
+	for {
+		var ev provider.StreamEvent
+		var ok bool
+		select {
+		case <-ctx.Done():
+			return TitleResult{}, ctx.Err()
+		case ev, ok = <-stream:
+		}
+		if err := ctx.Err(); err != nil {
+			return TitleResult{}, err
+		}
+		if !ok {
+			return g.titleResult(text.String())
+		}
 		switch ev.Type {
 		case provider.Delta:
 			text.WriteString(ev.Text)
@@ -109,7 +122,6 @@ func (g ProviderTitleGenerator) GenerateTitle(ctx context.Context, req TitleRequ
 			return TitleResult{}, fmt.Errorf("provider returned unknown %q event while generating thread title", ev.Type)
 		}
 	}
-	return g.titleResult(text.String())
 }
 
 func (g ProviderTitleGenerator) titleResult(raw string) (TitleResult, error) {

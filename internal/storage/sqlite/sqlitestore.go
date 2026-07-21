@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/floegence/floret/internal/provider/cache"
@@ -46,10 +47,13 @@ func WithAuthorityClock(now func() time.Time) Option {
 }
 
 type Store struct {
-	db          *sql.DB
-	path        string
-	leasePolicy sessiontree.LeasePolicy
-	now         func() time.Time
+	db               *sql.DB
+	path             string
+	writerAdmission  *WriterAdmission
+	leasePolicy      sessiontree.LeasePolicy
+	now              func() time.Time
+	approvalSignalMu sync.Mutex
+	approvalSignals  map[string]chan struct{}
 }
 
 type sqlRunner interface {
@@ -87,15 +91,21 @@ func Open(path string, opts ...Option) (*Store, error) {
 			return nil, err
 		}
 	}
+	writerAdmission, err := NewWriterAdmission(path)
+	if err != nil {
+		return nil, err
+	}
 	db, err := sql.Open(driverName, path)
 	if err != nil {
+		writerAdmission.Close()
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	store := &Store{db: db, path: path, leasePolicy: configured.leasePolicy, now: configured.now}
+	store := &Store{db: db, path: path, writerAdmission: writerAdmission, leasePolicy: configured.leasePolicy, now: configured.now, approvalSignals: map[string]chan struct{}{}}
 	if err := store.init(context.Background()); err != nil {
 		_ = db.Close()
+		writerAdmission.Close()
 		return nil, err
 	}
 	return store, nil
@@ -105,7 +115,15 @@ func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
 	}
-	return s.db.Close()
+	s.approvalSignalMu.Lock()
+	for approvalID, waiter := range s.approvalSignals {
+		close(waiter)
+		delete(s.approvalSignals, approvalID)
+	}
+	s.approvalSignalMu.Unlock()
+	err := s.db.Close()
+	s.writerAdmission.Close()
+	return err
 }
 
 func (s *Store) DBPath() string {
@@ -127,7 +145,7 @@ func (s *Store) putMetaValue(ctx context.Context, key, value string) error {
 func (s *Store) init(ctx context.Context) error {
 	for _, pragma := range []string{
 		"PRAGMA foreign_keys = ON",
-		"PRAGMA busy_timeout = 5000",
+		"PRAGMA busy_timeout = 0",
 	} {
 		if _, err := s.db.ExecContext(ctx, pragma); err != nil {
 			return err
@@ -148,6 +166,11 @@ func (s *Store) init(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
+	releaseWriter, err := s.writerAdmission.Reserve(ctx)
+	if err != nil {
+		return err
+	}
+	defer releaseWriter()
 	for _, pragma := range []string{
 		"PRAGMA journal_mode = WAL",
 		"PRAGMA synchronous = FULL",
@@ -173,6 +196,12 @@ func metaValue(ctx context.Context, q sqlRunner, key string) (string, error) {
 }
 
 func (s *Store) withImmediate(ctx context.Context, fn func(sqlRunner) error) error {
+	releaseWriter, err := s.writerAdmission.Reserve(ctx)
+	if err != nil {
+		return err
+	}
+	defer releaseWriter()
+
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return err
@@ -180,13 +209,16 @@ func (s *Store) withImmediate(ctx context.Context, fn func(sqlRunner) error) err
 	defer conn.Close()
 	for _, pragma := range []string{
 		"PRAGMA foreign_keys = ON",
-		"PRAGMA busy_timeout = 5000",
+		"PRAGMA busy_timeout = 0",
 	} {
 		if _, err := conn.ExecContext(ctx, pragma); err != nil {
 			return err
 		}
 	}
 	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		// A cancelled statement can race with a successful BEGIN at the driver
+		// boundary. Always reset the connection before returning it to the pool.
+		_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
 		return err
 	}
 	committed := false
@@ -464,7 +496,7 @@ func (s *Store) ListThreads(ctx context.Context, opts sessiontree.ListThreadsOpt
 	query := `SELECT
 			id, leaf_id, parent_thread_id, parent_turn_id, forked_from_thread_id, forked_from_entry_id, fork_operation_id, fork_operation_node_id,
 			task_name, task_description, agent_path, host_profile_ref, fork_mode, lifecycle, close_operation_id, archived,
-			title, title_status, title_source, title_updated_at, title_error,
+			title, title_status, title_source, title_updated_at, title_error, title_generation, title_token,
 			created_at, updated_at, last_viewed_at
 			FROM threads`
 	if len(where) > 0 {
@@ -504,6 +536,9 @@ func (s *Store) UpdateThread(ctx context.Context, meta sessiontree.ThreadMeta) e
 		if !sessiontree.SameThreadAuthority(current, meta) {
 			return fmt.Errorf("%w: thread %q authority is immutable", sessiontree.ErrInvalidThreadAuthority, meta.ID)
 		}
+		if !sessiontree.SameThreadTitleState(current, meta) {
+			return sessiontree.ErrRequestConflict
+		}
 		if err := rejectSQLiteThreadWriteLifecycle(current); err != nil {
 			return err
 		}
@@ -536,6 +571,9 @@ func (s *Store) DeleteThread(ctx context.Context, threadID string) error {
 			return sessiontree.ErrActiveTurn
 		}
 		if err := rejectClaimedThreadAuthorities(ctx, tx, threadID); err != nil {
+			return err
+		}
+		if err := deleteSQLiteApprovalAuthorityForThreads(ctx, tx, []string{threadID}, s.now().UTC()); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx, `DELETE FROM threads WHERE id = ?`, threadID)
@@ -575,6 +613,10 @@ func appendWithRunner(ctx context.Context, tx sqlRunner, entry sessiontree.Entry
 		return sessiontree.Entry{}, err
 	}
 	if entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnStarted {
+		runID := strings.TrimSpace(entry.Metadata["run_id"])
+		if runID == "" {
+			return sessiontree.Entry{}, fmt.Errorf("%w: started turn requires run identity", sessiontree.ErrInvalidThreadAuthority)
+		}
 		exists, err := turnStartedExists(ctx, tx, entry.ThreadID, entry.TurnID)
 		if err != nil {
 			return sessiontree.Entry{}, err
@@ -582,6 +624,8 @@ func appendWithRunner(ctx context.Context, tx sqlRunner, entry sessiontree.Entry
 		if exists {
 			return sessiontree.Entry{}, sessiontree.ErrRequestConflict
 		}
+		entry = cloneEntry(entry)
+		entry.Metadata["run_id"] = runID
 	}
 	if opts.ParentID != "" {
 		entry.ParentID = opts.ParentID
@@ -616,6 +660,10 @@ func appendWithRunner(ctx context.Context, tx sqlRunner, entry sessiontree.Entry
 	}
 	if entry.CreatedAt.IsZero() {
 		entry.CreatedAt = time.Now()
+	}
+	entry.PathDepth, err = resolveEntryPathDepth(ctx, tx, entry)
+	if err != nil {
+		return sessiontree.Entry{}, err
 	}
 	entry = sessiontree.PrepareEntry(entry)
 	ordinal, err := nextOrdinal(ctx, tx, entry.ThreadID)
@@ -724,6 +772,9 @@ func (s *Store) Path(ctx context.Context, threadID, leafID string) ([]sessiontre
 		if !ok {
 			return nil, sessiontree.ErrEntryNotFound
 		}
+		if err := sessiontree.ValidateEntryIntegrity(entry); err != nil {
+			return nil, err
+		}
 		rev = append(rev, cloneEntry(entry))
 		id = entry.ParentID
 	}
@@ -742,15 +793,23 @@ func (s *Store) PathPage(ctx context.Context, threadID, leafID, beforeEntryID st
 	if leafID == "" {
 		leafID = meta.LeafID
 	}
+	var expectedNewestOrdinal int64
 	if beforeEntryID != "" {
-		var parentID string
-		if err := s.db.QueryRowContext(ctx, `SELECT parent_id FROM entries WHERE thread_id = ? AND id = ?`, threadID, beforeEntryID).Scan(&parentID); err != nil {
+		cursor, err := loadEntry(ctx, s.db, threadID, beforeEntryID)
+		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return sessiontree.PathPage{}, sessiontree.ErrEntryNotFound
 			}
 			return sessiontree.PathPage{}, err
 		}
-		leafID = parentID
+		if cursor.ThreadID != threadID || cursor.PathDepth <= 0 {
+			return sessiontree.PathPage{}, sessiontree.ErrAuthorityCorrupt
+		}
+		if err := sessiontree.ValidateEntryIntegrity(cursor); err != nil {
+			return sessiontree.PathPage{}, err
+		}
+		leafID = cursor.ParentID
+		expectedNewestOrdinal = cursor.PathDepth - 1
 	}
 	if leafID == "" {
 		return sessiontree.PathPage{}, nil
@@ -790,6 +849,18 @@ SELECT ` + entryColumns + `, COUNT(*) OVER(), MAX(cycle) OVER() FROM path ORDER 
 			return sessiontree.PathPage{}, errors.New("sqlite store path page ordinal changed during query")
 		}
 		hasCycle = hasCycle || cycle != 0
+		if entry.ThreadID != threadID || entry.PathDepth <= 0 {
+			return sessiontree.PathPage{}, sessiontree.ErrAuthorityCorrupt
+		}
+		if err := sessiontree.ValidateEntryIntegrity(entry); err != nil {
+			return sessiontree.PathPage{}, err
+		}
+		if len(entries) > 0 {
+			newer := entries[len(entries)-1]
+			if newer.ParentID != entry.ID || newer.PathDepth != entry.PathDepth+1 {
+				return sessiontree.PathPage{}, sessiontree.ErrInvalidParent
+			}
+		}
 		entries = append(entries, entry)
 	}
 	if err := rows.Err(); err != nil {
@@ -800,6 +871,16 @@ SELECT ` + entryColumns + `, COUNT(*) OVER(), MAX(cycle) OVER() FROM path ORDER 
 	}
 	if len(entries) == 0 {
 		return sessiontree.PathPage{}, sessiontree.ErrEntryNotFound
+	}
+	if newestOrdinal != entries[0].PathDepth {
+		return sessiontree.PathPage{}, sessiontree.ErrInvalidParent
+	}
+	if expectedNewestOrdinal != 0 && newestOrdinal != expectedNewestOrdinal {
+		return sessiontree.PathPage{}, sessiontree.ErrInvalidParent
+	}
+	oldest := entries[len(entries)-1]
+	if newestOrdinal <= int64(len(entries)) && (oldest.ParentID != "" || oldest.PathDepth != 1) {
+		return sessiontree.PathPage{}, sessiontree.ErrInvalidParent
 	}
 	page := sessiontree.PathPage{NewestOrdinal: newestOrdinal}
 	if len(entries) > limit {
@@ -852,6 +933,7 @@ func (s *Store) Fork(ctx context.Context, opts sessiontree.ForkOptions) (session
 }
 
 func forkWithRunner(ctx context.Context, tx sqlRunner, opts sessiontree.ForkOptions) (sessiontree.ThreadMeta, error) {
+	opts = snapshotForkIdentityMaps(opts)
 	if opts.Position == "" {
 		opts.Position = sessiontree.ForkAt
 	}
@@ -919,6 +1001,9 @@ func forkWithRunner(ctx context.Context, tx sqlRunner, opts sessiontree.ForkOpti
 	if err != nil {
 		return sessiontree.ThreadMeta{}, err
 	}
+	if err := validateSQLiteForkRetryAdmissions(ctx, tx, opts.SourceThreadID, path); err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
 	closure := artifact.CloneClosure(opts.ArtifactClosure)
 	if artifact.IsZeroClosure(closure) && strings.TrimSpace(opts.OperationID) == "" {
 		closure, err = sqliteArtifactClosure(ctx, tx, opts.SourceThreadID, newID, path)
@@ -953,8 +1038,25 @@ func forkWithRunner(ctx context.Context, tx sqlRunner, opts sessiontree.ForkOpti
 		return sessiontree.ThreadMeta{}, err
 	}
 	oldToNew := map[string]string{"": ""}
+	retryTargetEntryIDs := make(map[string]struct{})
+	for _, entry := range path {
+		if entry.Type != sessiontree.EntryTurnMarker || entry.TurnStatus != sessiontree.TurnStarted {
+			continue
+		}
+		retrySource, err := sessiontree.CanonicalTurnRetrySourceForStartedEntry(entry)
+		if err != nil {
+			return sessiontree.ThreadMeta{}, err
+		}
+		if retrySource != nil {
+			retryTargetEntryIDs[retrySource.EntryID] = struct{}{}
+		}
+	}
 	startedTurnIDs := map[string]struct{}{}
-	startedRunIDs := map[string]struct{}{}
+	type forkedRetryAdmission struct {
+		sourceStarted sessiontree.Entry
+		destination   sessiontree.Entry
+	}
+	var retryAdmissions []forkedRetryAdmission
 	for _, entry := range path {
 		next := cloneEntry(entry)
 		nextID, err := nextEntryID(ctx, tx, newID)
@@ -969,31 +1071,68 @@ func forkWithRunner(ctx context.Context, tx sqlRunner, opts sessiontree.ForkOpti
 		next.CompactedThroughEntryID = oldToNew[entry.CompactedThroughEntryID]
 		next.KeptUserEntryIDs = rewriteEntryIDs(entry.KeptUserEntryIDs, oldToNew)
 		next.Metadata = rewriteForkMetadata(next.Metadata, oldToNew, opts.TurnIDMap, opts.RunIDMap)
+		expectedID := next.ID
+		expectedThreadID := next.ThreadID
+		expectedParentID := next.ParentID
+		expectedTurnID := next.TurnID
+		expectedRunID := next.Metadata["run_id"]
+		expectedRetrySourceTurnID := next.Metadata[sessiontree.RetrySourceTurnIDMetadataKey]
+		expectedRetrySourceEntryID := next.Metadata[sessiontree.RetrySourceEntryIDMetadataKey]
+		sourceStarted := entry.Type == sessiontree.EntryTurnMarker && entry.TurnStatus == sessiontree.TurnStarted
+		_, sourceTarget := retryTargetEntryIDs[entry.ID]
 		if opts.RewriteEntry != nil {
 			next, err = opts.RewriteEntry(next, sessiontree.ForkEntryIdentity{
 				SourceThreadID:      opts.SourceThreadID,
 				DestinationThreadID: newID,
-				TurnIDMap:           opts.TurnIDMap,
-				RunIDMap:            opts.RunIDMap,
+				TurnIDMap:           cloneStringMapSQLite(opts.TurnIDMap),
+				RunIDMap:            cloneStringMapSQLite(opts.RunIDMap),
 			})
 			if err != nil {
 				return sessiontree.ThreadMeta{}, err
 			}
 		}
-		if next.Type == sessiontree.EntryTurnMarker && next.TurnStatus == sessiontree.TurnStarted {
+		destinationStarted := next.Type == sessiontree.EntryTurnMarker && next.TurnStatus == sessiontree.TurnStarted
+		if sourceStarted != destinationStarted {
+			return sessiontree.ThreadMeta{}, sessiontree.ErrAuthorityCorrupt
+		}
+		if (sourceStarted || sourceTarget) &&
+			(next.ID != expectedID || next.ThreadID != expectedThreadID || next.ParentID != expectedParentID || next.TurnID != expectedTurnID) {
+			return sessiontree.ThreadMeta{}, sessiontree.ErrAuthorityCorrupt
+		}
+		if sourceTarget && (next.Type != entry.Type || next.TurnStatus != entry.TurnStatus ||
+			next.Metadata["run_id"] != expectedRunID ||
+			next.Metadata[sessiontree.RetrySourceTurnIDMetadataKey] != expectedRetrySourceTurnID ||
+			next.Metadata[sessiontree.RetrySourceEntryIDMetadataKey] != expectedRetrySourceEntryID) {
+			return sessiontree.ThreadMeta{}, sessiontree.ErrAuthorityCorrupt
+		}
+		if sourceStarted {
+			if next.Type != sessiontree.EntryTurnMarker || next.TurnStatus != sessiontree.TurnStarted {
+				return sessiontree.ThreadMeta{}, sessiontree.ErrAuthorityCorrupt
+			}
+			sourceRetry, err := sessiontree.CanonicalTurnRetrySourceForStartedEntry(entry)
+			if err != nil {
+				return sessiontree.ThreadMeta{}, err
+			}
+			destinationRetry, err := sessiontree.CanonicalTurnRetrySourceForStartedEntry(next)
+			if err != nil {
+				return sessiontree.ThreadMeta{}, err
+			}
+			if (sourceRetry == nil) != (destinationRetry == nil) {
+				return sessiontree.ThreadMeta{}, sessiontree.ErrAuthorityCorrupt
+			}
+			if sourceRetry != nil && (destinationRetry.EntryID != oldToNew[sourceRetry.EntryID] ||
+				destinationRetry.TurnID != rewriteForkID(sourceRetry.TurnID, opts.TurnIDMap)) {
+				return sessiontree.ThreadMeta{}, sessiontree.ErrAuthorityCorrupt
+			}
 			turnID := strings.TrimSpace(next.TurnID)
-			runID := strings.TrimSpace(next.Metadata["run_id"])
 			if turnID == "" {
 				return sessiontree.ThreadMeta{}, sessiontree.ErrAuthorityCorrupt
 			}
 			if _, duplicate := startedTurnIDs[turnID]; duplicate {
 				return sessiontree.ThreadMeta{}, sessiontree.ErrAuthorityCorrupt
 			}
-			if runID != "" {
-				if _, duplicate := startedRunIDs[runID]; duplicate {
-					return sessiontree.ThreadMeta{}, sessiontree.ErrAuthorityCorrupt
-				}
-				startedRunIDs[runID] = struct{}{}
+			if expectedRunID == "" || next.Metadata["run_id"] != expectedRunID {
+				return sessiontree.ThreadMeta{}, sessiontree.ErrAuthorityCorrupt
 			}
 			startedTurnIDs[turnID] = struct{}{}
 		}
@@ -1007,13 +1146,22 @@ func forkWithRunner(ctx context.Context, tx sqlRunner, opts sessiontree.ForkOpti
 			return sessiontree.ThreadMeta{}, err
 		}
 		oldToNew[entry.ID] = next.ID
+		if next.Type == sessiontree.EntryTurnMarker && next.TurnStatus == sessiontree.TurnStarted {
+			retrySource, err := sessiontree.CanonicalTurnRetrySourceForStartedEntry(next)
+			if err != nil {
+				return sessiontree.ThreadMeta{}, err
+			}
+			if retrySource != nil {
+				retryAdmissions = append(retryAdmissions, forkedRetryAdmission{sourceStarted: entry, destination: next})
+			}
+		}
 		meta.LeafID = next.ID
-	}
-	if err := copySQLiteArtifactClosure(ctx, tx, closure, oldToNew, now); err != nil {
-		return sessiontree.ThreadMeta{}, err
 	}
 	destinationPath, err := pathWithRunner(ctx, tx, newID, meta.LeafID)
 	if err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
+	if err := sessiontree.ValidateForkRetryAuthorityPath(destinationPath, newID); err != nil {
 		return sessiontree.ThreadMeta{}, err
 	}
 	boundaryID, err := nextEntryID(ctx, tx, newID)
@@ -1034,6 +1182,21 @@ func forkWithRunner(ctx context.Context, tx sqlRunner, opts sessiontree.ForkOpti
 		}
 		meta.LeafID = boundary.ID
 	}
+	finalPath, err := pathWithRunner(ctx, tx, newID, meta.LeafID)
+	if err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
+	if err := sessiontree.ValidateForkRetryAuthorityPath(finalPath, newID); err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
+	for _, item := range retryAdmissions {
+		if err := copySQLiteForkRetryAdmission(ctx, tx, opts.SourceThreadID, newID, item.sourceStarted, item.destination, oldToNew, now); err != nil {
+			return sessiontree.ThreadMeta{}, err
+		}
+	}
+	if err := copySQLiteArtifactClosure(ctx, tx, closure, oldToNew, now); err != nil {
+		return sessiontree.ThreadMeta{}, err
+	}
 	if err := updateThread(ctx, tx, meta); err != nil {
 		return sessiontree.ThreadMeta{}, err
 	}
@@ -1048,6 +1211,103 @@ func forkWithRunner(ctx context.Context, tx sqlRunner, opts sessiontree.ForkOpti
 		}
 	}
 	return meta, nil
+}
+
+func validateSQLiteForkRetryAdmissions(ctx context.Context, q sqlRunner, threadID string, path []sessiontree.Entry) error {
+	for _, entry := range path {
+		if entry.Type != sessiontree.EntryTurnMarker || entry.TurnStatus != sessiontree.TurnStarted {
+			continue
+		}
+		source, err := sessiontree.CanonicalTurnRetrySourceForStartedEntry(entry)
+		if err != nil {
+			return err
+		}
+		if source == nil {
+			continue
+		}
+		eligible, err := sqliteRetrySourceHasRetryEligibleDurableInput(
+			ctx, q, threadID, entry.TurnID, strings.TrimSpace(entry.Metadata["run_id"]), entry.ID, *source,
+		)
+		if err != nil {
+			return err
+		}
+		if !eligible {
+			return sessiontree.ErrAuthorityCorrupt
+		}
+	}
+	return nil
+}
+
+func copySQLiteForkRetryAdmission(ctx context.Context, tx sqlRunner, sourceThreadID, destinationThreadID string, sourceStarted, destinationStarted sessiontree.Entry, entryIDs map[string]string, now time.Time) error {
+	sourceAdmission, found, err := loadSQLiteTurnAdmission(ctx, tx, sourceThreadID, sourceStarted.TurnID)
+	if err != nil {
+		return err
+	}
+	sourceRetry, err := sessiontree.CanonicalTurnRetrySourceForStartedEntry(sourceStarted)
+	if err != nil {
+		return err
+	}
+	if sourceRetry == nil {
+		return sessiontree.ErrAuthorityCorrupt
+	}
+	destinationRetry, err := sessiontree.CanonicalTurnRetrySourceForStartedEntry(destinationStarted)
+	if err != nil {
+		return err
+	}
+	if destinationRetry == nil {
+		return sessiontree.ErrAuthorityCorrupt
+	}
+	mappedSourceEntryID := entryIDs[sourceRetry.EntryID]
+	if !found ||
+		sourceAdmission.ThreadID != sourceThreadID || sourceAdmission.TurnID != sourceStarted.TurnID ||
+		sourceAdmission.RunID != strings.TrimSpace(sourceStarted.Metadata["run_id"]) || sourceAdmission.TurnStartedID != sourceStarted.ID ||
+		sourceAdmission.UserMessageID != "" || sourceAdmission.BaseLeafID != sourceRetry.EntryID ||
+		mappedSourceEntryID == "" || destinationRetry.EntryID != mappedSourceEntryID {
+		return sessiontree.ErrAuthorityCorrupt
+	}
+	requestFingerprint, err := sessiontree.TurnAdmissionRequestFingerprint(sessiontree.AdmitTurnRequest{
+		ThreadID: destinationThreadID, TurnID: destinationStarted.TurnID, RunID: destinationStarted.Metadata["run_id"],
+		RetrySourceTurnID: destinationRetry.TurnID, RetrySourceEntryID: destinationRetry.EntryID,
+	})
+	if err != nil {
+		return err
+	}
+	ownerID := sourceAdmission.Lease.OwnerID
+	if strings.TrimSpace(ownerID) == "" {
+		ownerID = "fork-history"
+	}
+	generation := sourceAdmission.Lease.Generation
+	if generation <= 0 {
+		generation = 1
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO turn_admissions(
+		thread_id, turn_id, run_id, request_fingerprint, owner_id, generation, heartbeat,
+		acquired_at, renewed_at, expires_at, boundary_terminal_id, turn_started_id, user_message_id, base_leaf_id
+	) VALUES(?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, NULL, ?)`,
+		destinationThreadID, destinationStarted.TurnID, destinationStarted.Metadata["run_id"], requestFingerprint,
+		ownerID, generation, formatTime(now), formatTime(now), formatTime(now.Add(time.Minute)), destinationStarted.ID, destinationRetry.EntryID); err != nil {
+		return err
+	}
+	finish, finished, err := loadSQLiteTurnFinish(ctx, tx, sourceThreadID, sourceStarted.TurnID)
+	if err != nil {
+		return err
+	}
+	if !finished {
+		return nil
+	}
+	terminalEntryID := entryIDs[finish.TerminalEntryID]
+	if terminalEntryID == "" {
+		return sessiontree.ErrAuthorityCorrupt
+	}
+	failureEntryID := entryIDs[finish.FailureEntryID]
+	if finish.FailureEntryID != "" && failureEntryID == "" {
+		return sessiontree.ErrAuthorityCorrupt
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO turn_finishes(
+		thread_id, turn_id, run_id, generation, outcome_fingerprint, failure_entry_id, terminal_entry_id, finished_at
+	) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, destinationThreadID, destinationStarted.TurnID, destinationStarted.Metadata["run_id"],
+		generation, finish.OutcomeFingerprint, failureEntryID, terminalEntryID, formatTime(now))
+	return err
 }
 
 func (s *Store) ForkWithInitialEntry(ctx context.Context, opts sessiontree.ForkOptions, initial sessiontree.Entry) (sessiontree.ThreadMeta, sessiontree.Entry, error) {
@@ -1505,6 +1765,7 @@ func (s *Store) CommitForkOperation(ctx context.Context, req storage.ForkOperati
 		len(req.Result) == 0 || !json.Valid(req.Result) || req.FinishedAt.IsZero() {
 		return storage.ForkOperationRecord{}, false, errors.New("fork commit requires operation, fingerprint, complete nodes, result, and finish time")
 	}
+	nodes := snapshotForkNodes(req.Nodes)
 	var terminal storage.ForkOperationRecord
 	replayed := false
 	err := s.withImmediate(ctx, func(tx sqlRunner) error {
@@ -1522,7 +1783,7 @@ func (s *Store) CommitForkOperation(ctx context.Context, req storage.ForkOperati
 		if err != nil {
 			return err
 		}
-		if err := storage.ValidateForkOperationCommitNodes(plan, req.Nodes); err != nil {
+		if err := storage.ValidateForkOperationCommitNodes(plan, nodes); err != nil {
 			return err
 		}
 		if existing.State == storage.ForkOperationCompleted {
@@ -1538,10 +1799,10 @@ func (s *Store) CommitForkOperation(ctx context.Context, req storage.ForkOperati
 		if existing.State != storage.ForkOperationPrepared {
 			return storage.ErrForkOperationConflict
 		}
-		if err := validatePreparedForkCommit(ctx, tx, existing, req.Nodes); err != nil {
+		if err := validatePreparedForkCommit(ctx, tx, existing, nodes); err != nil {
 			return err
 		}
-		for _, node := range req.Nodes {
+		for _, node := range nodes {
 			if _, err := forkWithRunner(ctx, tx, node); err != nil {
 				return err
 			}
@@ -1567,6 +1828,20 @@ func (s *Store) CommitForkOperation(ctx context.Context, req storage.ForkOperati
 		return err
 	})
 	return terminal, replayed, err
+}
+
+func snapshotForkNodes(nodes []sessiontree.ForkOptions) []sessiontree.ForkOptions {
+	snapshot := make([]sessiontree.ForkOptions, len(nodes))
+	for index, node := range nodes {
+		snapshot[index] = snapshotForkIdentityMaps(node)
+	}
+	return snapshot
+}
+
+func snapshotForkIdentityMaps(opts sessiontree.ForkOptions) sessiontree.ForkOptions {
+	opts.TurnIDMap = cloneStringMapSQLite(opts.TurnIDMap)
+	opts.RunIDMap = cloneStringMapSQLite(opts.RunIDMap)
+	return opts
 }
 
 func validateSQLiteCompletedArtifactClosures(ctx context.Context, q sqlRunner, plan storage.ForkOperationPlan) error {
@@ -2118,13 +2393,13 @@ func insertThread(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta
 	_, err := tx.ExecContext(ctx, `INSERT INTO threads(
 		id, leaf_id, parent_thread_id, parent_turn_id, forked_from_thread_id, forked_from_entry_id, fork_operation_id, fork_operation_node_id,
 		task_name, task_description, agent_path, host_profile_ref, fork_mode, lifecycle, close_operation_id, archived,
-		title, title_status, title_source, title_updated_at, title_error,
+		title, title_status, title_source, title_updated_at, title_error, title_generation, title_token,
 		created_at, updated_at, last_viewed_at
-	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		meta.ID, meta.LeafID, meta.ParentThreadID, meta.ParentTurnID, meta.ForkedFromThreadID, meta.ForkedFromEntryID,
 		meta.ForkOperationID, meta.ForkOperationNodeID,
 		meta.TaskName, meta.TaskDescription, meta.AgentPath, meta.HostProfileRef, meta.ForkMode, storedThreadLifecycle(meta), meta.CloseOperationID, boolInt(meta.Archived),
-		meta.Title, string(meta.TitleStatus), string(meta.TitleSource), formatTime(meta.TitleUpdatedAt), meta.TitleError,
+		meta.Title, string(meta.TitleStatus), string(meta.TitleSource), formatTime(meta.TitleUpdatedAt), meta.TitleError, meta.TitleGeneration, meta.TitleToken,
 		formatTime(meta.CreatedAt), formatTime(meta.UpdatedAt), formatTime(meta.LastViewedAt))
 	return err
 }
@@ -2162,13 +2437,13 @@ func updateThread(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta
 	_, err := tx.ExecContext(ctx, `UPDATE threads SET
 		leaf_id = ?, parent_thread_id = ?, parent_turn_id = ?, forked_from_thread_id = ?, forked_from_entry_id = ?, fork_operation_id = ?, fork_operation_node_id = ?,
 		task_name = ?, task_description = ?, agent_path = ?, host_profile_ref = ?, fork_mode = ?, lifecycle = ?, close_operation_id = ?, archived = ?,
-		title = ?, title_status = ?, title_source = ?, title_updated_at = ?, title_error = ?,
+		title = ?, title_status = ?, title_source = ?, title_updated_at = ?, title_error = ?, title_generation = ?, title_token = ?,
 		created_at = ?, updated_at = ?, last_viewed_at = ?
 		WHERE id = ?`,
 		meta.LeafID, meta.ParentThreadID, meta.ParentTurnID, meta.ForkedFromThreadID, meta.ForkedFromEntryID,
 		meta.ForkOperationID, meta.ForkOperationNodeID,
 		meta.TaskName, meta.TaskDescription, meta.AgentPath, meta.HostProfileRef, meta.ForkMode, storedThreadLifecycle(meta), meta.CloseOperationID, boolInt(meta.Archived),
-		meta.Title, string(meta.TitleStatus), string(meta.TitleSource), formatTime(meta.TitleUpdatedAt), meta.TitleError,
+		meta.Title, string(meta.TitleStatus), string(meta.TitleSource), formatTime(meta.TitleUpdatedAt), meta.TitleError, meta.TitleGeneration, meta.TitleToken,
 		formatTime(meta.CreatedAt), formatTime(meta.UpdatedAt), formatTime(meta.LastViewedAt), meta.ID)
 	return err
 }
@@ -2177,7 +2452,7 @@ func loadThread(ctx context.Context, q sqlRunner, threadID string) (sessiontree.
 	meta, err := scanThreadMeta(q.QueryRowContext(ctx, `SELECT
 		id, leaf_id, parent_thread_id, parent_turn_id, forked_from_thread_id, forked_from_entry_id, fork_operation_id, fork_operation_node_id,
 		task_name, task_description, agent_path, host_profile_ref, fork_mode, lifecycle, close_operation_id, archived,
-		title, title_status, title_source, title_updated_at, title_error,
+		title, title_status, title_source, title_updated_at, title_error, title_generation, title_token,
 		created_at, updated_at, last_viewed_at
 		FROM threads WHERE id = ?`, threadID))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -2190,7 +2465,7 @@ func loadThreadAuthorityGraph(ctx context.Context, q sqlRunner) ([]sessiontree.T
 	rows, err := q.QueryContext(ctx, `SELECT
 		id, leaf_id, parent_thread_id, parent_turn_id, forked_from_thread_id, forked_from_entry_id, fork_operation_id, fork_operation_node_id,
 		task_name, task_description, agent_path, host_profile_ref, fork_mode, lifecycle, close_operation_id, archived,
-		title, title_status, title_source, title_updated_at, title_error,
+		title, title_status, title_source, title_updated_at, title_error, title_generation, title_token,
 		created_at, updated_at, last_viewed_at
 		FROM threads ORDER BY id`)
 	if err != nil {
@@ -2219,7 +2494,7 @@ func scanThreadMeta(scanner rowScanner) (sessiontree.ThreadMeta, error) {
 		&meta.ID, &meta.LeafID, &meta.ParentThreadID, &meta.ParentTurnID, &meta.ForkedFromThreadID, &meta.ForkedFromEntryID,
 		&meta.ForkOperationID, &meta.ForkOperationNodeID,
 		&meta.TaskName, &meta.TaskDescription, &meta.AgentPath, &meta.HostProfileRef, &meta.ForkMode, &lifecycle, &meta.CloseOperationID, &archived,
-		&meta.Title, &titleStatus, &titleSource, &titleUpdated, &meta.TitleError,
+		&meta.Title, &titleStatus, &titleSource, &titleUpdated, &meta.TitleError, &meta.TitleGeneration, &meta.TitleToken,
 		&created, &updated, &lastViewed,
 	)
 	if err != nil {
@@ -2240,6 +2515,11 @@ func scanThreadMeta(scanner rowScanner) (sessiontree.ThreadMeta, error) {
 }
 
 func insertEntry(ctx context.Context, tx sqlRunner, entry sessiontree.Entry, ordinal int64, preserveRaw bool) error {
+	pathDepth, err := resolveEntryPathDepth(ctx, tx, entry)
+	if err != nil {
+		return err
+	}
+	entry.PathDepth = pathDepth
 	if !preserveRaw {
 		entry = sessiontree.PrepareEntry(entry)
 	}
@@ -2264,7 +2544,7 @@ func insertEntry(ctx context.Context, tx sqlRunner, entry sessiontree.Entry, ord
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO entries(
-		thread_id, id, ordinal, parent_id, type, turn_id, created_at,
+			thread_id, id, ordinal, parent_id, path_depth, type, turn_id, created_at,
 		message_json, raw, raw_hash, raw_encoder_version,
 		turn_status, provider, model, compaction_id, previous_compaction_id,
 		compacted_through_entry_id, summary_schema_version, compaction_generation,
@@ -2272,8 +2552,8 @@ func insertEntry(ctx context.Context, tx sqlRunner, entry sessiontree.Entry, ord
 		compaction_reason, compaction_phase, tokens_before, tokens_after_estimate,
 		compaction_operation_id, compaction_request_id, compaction_source,
 		context_usage_before_json, context_usage_after_json, error, metadata_json
-	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		entry.ThreadID, entry.ID, ordinal, entry.ParentID, string(entry.Type), entry.TurnID, formatTime(entry.CreatedAt),
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		entry.ThreadID, entry.ID, ordinal, entry.ParentID, entry.PathDepth, string(entry.Type), entry.TurnID, formatTime(entry.CreatedAt),
 		string(messageJSON), entry.Raw, entry.RawHash, 1,
 		string(entry.TurnStatus), entry.Provider, entry.Model, entry.CompactionID, entry.PreviousCompactionID,
 		entry.CompactedThroughEntryID, entry.SummarySchemaVersion, entry.CompactionGeneration,
@@ -2282,6 +2562,27 @@ func insertEntry(ctx context.Context, tx sqlRunner, entry sessiontree.Entry, ord
 		entry.CompactionOperationID, entry.CompactionRequestID, entry.CompactionSource,
 		string(beforeJSON), string(afterJSON), entry.Error, string(metadataJSON))
 	return err
+}
+
+func resolveEntryPathDepth(ctx context.Context, q sqlRunner, entry sessiontree.Entry) (int64, error) {
+	expected := int64(1)
+	if entry.ParentID != "" {
+		var parentDepth int64
+		if err := q.QueryRowContext(ctx, `SELECT path_depth FROM entries WHERE thread_id = ? AND id = ?`,
+			entry.ThreadID, entry.ParentID).Scan(&parentDepth); errors.Is(err, sql.ErrNoRows) {
+			return 0, sessiontree.ErrInvalidParent
+		} else if err != nil {
+			return 0, err
+		}
+		if parentDepth <= 0 {
+			return 0, sessiontree.ErrAuthorityCorrupt
+		}
+		expected = parentDepth + 1
+	}
+	if entry.PathDepth != 0 && entry.PathDepth != expected {
+		return 0, sessiontree.ErrAuthorityCorrupt
+	}
+	return expected, nil
 }
 
 func insertSegment(ctx context.Context, tx sqlRunner, seg cache.Segment) error {
@@ -2365,7 +2666,7 @@ func scanEntry(rows rowScanner, extra ...any) (sessiontree.Entry, error) {
 	var typ, turnStatus, created, messageJSON, keptUserEntryIDsJSON, beforeJSON, afterJSON, metadataJSON string
 	var rawEncoder int
 	destinations := []any{
-		&entry.ThreadID, &entry.ID, &entry.ParentID, &typ, &entry.TurnID, &created,
+		&entry.ThreadID, &entry.ID, &entry.ParentID, &entry.PathDepth, &typ, &entry.TurnID, &created,
 		&messageJSON, &entry.Raw, &entry.RawHash, &rawEncoder,
 		&turnStatus, &entry.Provider, &entry.Model, &entry.CompactionID, &entry.PreviousCompactionID,
 		&entry.CompactedThroughEntryID, &entry.SummarySchemaVersion, &entry.CompactionGeneration,
@@ -2442,6 +2743,12 @@ func pathWithRunner(ctx context.Context, q sqlRunner, threadID, leafID string) (
 		entry, ok := byID[id]
 		if !ok {
 			return nil, sessiontree.ErrEntryNotFound
+		}
+		if entry.ThreadID != threadID {
+			return nil, sessiontree.ErrAuthorityCorrupt
+		}
+		if err := sessiontree.ValidateEntryIntegrity(entry); err != nil {
+			return nil, err
 		}
 		rev = append(rev, cloneEntry(entry))
 		id = entry.ParentID
@@ -2579,7 +2886,11 @@ func rewriteForkMetadata(metadata map[string]string, entryIDs map[string]string,
 			next = rewriteForkID(value, runIDs)
 		case "turn_id":
 			next = rewriteForkID(value, turnIDs)
+		case sessiontree.RetrySourceTurnIDMetadataKey:
+			next = rewriteForkID(value, turnIDs)
 		case "entry_id", "parent_entry_id", "input_entry_id", "subagent_input_id":
+			next = rewriteForkID(value, entryIDs)
+		case sessiontree.RetrySourceEntryIDMetadataKey:
 			next = rewriteForkID(value, entryIDs)
 		}
 		out[key] = next
@@ -2617,7 +2928,7 @@ func parseTime(value string) time.Time {
 	return t
 }
 
-const entryColumns = `thread_id, id, parent_id, type, turn_id, created_at,
+const entryColumns = `thread_id, id, parent_id, path_depth, type, turn_id, created_at,
 	message_json, raw, raw_hash, raw_encoder_version,
 	turn_status, provider, model, compaction_id, previous_compaction_id,
 	compacted_through_entry_id, summary_schema_version, compaction_generation,

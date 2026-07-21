@@ -214,6 +214,7 @@ func (r *MemoryRepo) rollbackSubAgentPublicationChildLocked(childThreadID string
 	delete(r.authorityClaims, childThreadID)
 	delete(r.subAgentInputs, childThreadID)
 	delete(r.subAgentInputSequence, childThreadID)
+	r.deleteApprovalAuthorityForThreadsLocked(map[string]struct{}{childThreadID: {}})
 	for key, record := range r.artifacts {
 		if record.ThreadID == childThreadID {
 			delete(r.artifacts, key)
@@ -284,6 +285,11 @@ func (r *MemoryRepo) AdmitSubAgentInput(ctx context.Context, req AdmitSubAgentIn
 	if strings.TrimSpace(req.ParentThreadID) == "" || strings.TrimSpace(req.ChildThreadID) == "" || strings.TrimSpace(req.TurnID) == "" || strings.TrimSpace(req.RunID) == "" || strings.TrimSpace(req.OwnerID) == "" {
 		return AdmitSubAgentInputResult{}, errors.New("subagent admission requires parent, child, turn, run, and owner identities")
 	}
+	req.ParentThreadID = strings.TrimSpace(req.ParentThreadID)
+	req.ChildThreadID = strings.TrimSpace(req.ChildThreadID)
+	req.TurnID = strings.TrimSpace(req.TurnID)
+	req.RunID = strings.TrimSpace(req.RunID)
+	req.OwnerID = strings.TrimSpace(req.OwnerID)
 	parent, ok := r.threads[req.ParentThreadID]
 	if !ok {
 		return AdmitSubAgentInputResult{}, ErrThreadNotFound
@@ -473,7 +479,7 @@ func validateSubAgentPublicationRequest(req PublishSubAgentRequest) error {
 		strings.TrimSpace(options.EntryID) == "" || !options.EntryIDPinned || strings.TrimSpace(options.ExpectedSourceLeafID) != strings.TrimSpace(options.EntryID) ||
 		(options.Position != "" && options.Position != ForkAt) ||
 		strings.TrimSpace(options.OperationID) != "" || strings.TrimSpace(options.OperationNodeID) != "" ||
-		len(options.TurnIDMap) != 0 || len(options.RunIDMap) != 0 || !subAgentDestinationMetaMatches(req.ChildMeta, options.DestinationMeta) {
+		!subAgentDestinationMetaMatches(req.ChildMeta, options.DestinationMeta) {
 		return ErrInvalidThreadAuthority
 	}
 	if err := artifact.ValidateClosure(req.ArtifactClosure); err != nil ||

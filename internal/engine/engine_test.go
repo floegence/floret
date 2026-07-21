@@ -69,6 +69,87 @@ func TestNewRequiresProvider(t *testing.T) {
 	}
 }
 
+func TestRunFailureOriginIsExplicit(t *testing.T) {
+	t.Run("provider", func(t *testing.T) {
+		providerErr := errors.New("provider unavailable")
+		p := harness.NewScriptedProvider()
+		p.Errs[1] = providerErr
+		e := newTestEngine(p, &event.Recorder{})
+
+		got := e.Run(context.Background(), "work")
+
+		if got.Status != engine.Failed || got.FailureOrigin != engine.FailureOriginProvider || !errors.Is(got.Err, providerErr) {
+			t.Fatalf("result = %#v, want provider failure", got)
+		}
+	})
+
+	t.Run("storage", func(t *testing.T) {
+		storeErr := errors.New("transcript unavailable")
+		e := newTestEngine(harness.NewScriptedProvider(), &event.Recorder{})
+		e.Store = transcriptErrorStore{err: storeErr}
+
+		got := e.Run(context.Background(), "work")
+
+		if got.Status != engine.Failed || got.FailureOrigin != engine.FailureOriginStorage || !errors.Is(got.Err, storeErr) {
+			t.Fatalf("result = %#v, want storage failure", got)
+		}
+	})
+
+	t.Run("contract", func(t *testing.T) {
+		contractErr := errors.New("invalid tool surface")
+		e := newTestEngine(harness.NewScriptedProvider(), &event.Recorder{})
+		e.Options.ToolSurfaceProvider = func(context.Context, engine.ToolSurfaceRequest) (engine.ToolSurface, error) {
+			return engine.ToolSurface{}, contractErr
+		}
+
+		got := e.Run(context.Background(), "work")
+
+		if got.Status != engine.Failed || got.FailureOrigin != engine.FailureOriginContract || !errors.Is(got.Err, contractErr) {
+			t.Fatalf("result = %#v, want contract failure", got)
+		}
+	})
+}
+
+func TestHostCallbackCancellationReturnsCancelled(t *testing.T) {
+	t.Run("initial tool surface", func(t *testing.T) {
+		e := newTestEngine(harness.NewScriptedProvider(), &event.Recorder{})
+		e.Options.ToolSurfaceProvider = func(context.Context, engine.ToolSurfaceRequest) (engine.ToolSurface, error) {
+			return engine.ToolSurface{}, context.Canceled
+		}
+		got := e.Run(context.Background(), "work")
+		if got.Status != engine.Cancelled || got.FailureOrigin != engine.FailureOriginCancelled || !errors.Is(got.Err, context.Canceled) {
+			t.Fatalf("result = %#v, want cancelled", got)
+		}
+	})
+
+	t.Run("refreshed tool surface", func(t *testing.T) {
+		calls := 0
+		e := newTestEngine(harness.NewScriptedProvider(), &event.Recorder{})
+		e.Options.ToolSurfaceProvider = func(context.Context, engine.ToolSurfaceRequest) (engine.ToolSurface, error) {
+			calls++
+			if calls == 1 {
+				return engine.ToolSurface{}, nil
+			}
+			return engine.ToolSurface{}, context.Canceled
+		}
+		got := e.Run(context.Background(), "work")
+		if got.Status != engine.Cancelled || got.FailureOrigin != engine.FailureOriginCancelled || !errors.Is(got.Err, context.Canceled) {
+			t.Fatalf("result = %#v, want cancelled", got)
+		}
+	})
+
+	t.Run("stop hook", func(t *testing.T) {
+		e := newTestEngine(harness.NewScriptedProvider(harness.Step(harness.Text("done"), harness.Done())), &event.Recorder{})
+		e.StopHook = func(context.Context, engine.StopHookContext) (engine.StopHookResult, error) {
+			return engine.StopHookResult{}, context.Canceled
+		}
+		got := e.Run(context.Background(), "work")
+		if got.Status != engine.Cancelled || got.FailureOrigin != engine.FailureOriginCancelled || !errors.Is(got.Err, context.Canceled) {
+			t.Fatalf("result = %#v, want cancelled", got)
+		}
+	})
+}
+
 func TestOptionsReturnsDeepCopyWithoutProviderToolDefinitions(t *testing.T) {
 	eng, err := engine.New(engine.Config{
 		Provider: harness.NewScriptedProvider(harness.Step(harness.Text("ok"), harness.Done())),
@@ -2782,7 +2863,7 @@ func TestEffectFinalizerFailureRewritesSuccessfulActivityAsError(t *testing.T) {
 	}
 
 	got := e.Run(context.Background(), "run")
-	if got.Status != engine.Failed || !errors.Is(got.Err, finalizationErr) {
+	if got.Status != engine.Failed || got.FailureOrigin != engine.FailureOriginToolDispatch || !errors.Is(got.Err, finalizationErr) {
 		t.Fatalf("result=%#v, want finalization failure", got)
 	}
 	for _, ev := range rec.Snapshot() {
@@ -3999,6 +4080,22 @@ func TestLocalCompactionManagerRequiresExplicitGenerator(t *testing.T) {
 type replaceCountingStore struct {
 	inner        *session.MemoryStore
 	replaceCalls int
+}
+
+type transcriptErrorStore struct {
+	err error
+}
+
+func (s transcriptErrorStore) AppendTranscript(string, ...session.Message) error {
+	return s.err
+}
+
+func (s transcriptErrorStore) Transcript(string) ([]session.Message, error) {
+	return nil, s.err
+}
+
+func (s transcriptErrorStore) ReplaceTranscript(string, []session.Message) error {
+	return s.err
 }
 
 func (s *replaceCountingStore) AppendTranscript(runID string, messages ...session.Message) error {

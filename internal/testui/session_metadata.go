@@ -2,12 +2,9 @@ package testui
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -22,8 +19,6 @@ const agentSessionMetadataVersion = 2
 type agentSessionMetadata struct {
 	Version        int                   `json:"version"`
 	ID             string                `json:"id"`
-	CreatedAt      time.Time             `json:"created_at"`
-	UpdatedAt      time.Time             `json:"updated_at"`
 	ProfileID      string                `json:"profile_id,omitempty"`
 	Profile        ProviderProfile       `json:"profile"`
 	AgentProfile   config.AgentProfile   `json:"agent_profile,omitempty"`
@@ -42,22 +37,6 @@ type agentSessionEngine struct {
 	WallTime                time.Duration `json:"wall_time,omitempty"`
 }
 
-func (r Runner) agentSessionDataRoot() string {
-	return filepath.Join(r.Root, ".floret-test-ui", "agent-sessions")
-}
-
-func (r Runner) agentSessionTreeRoot() string {
-	return filepath.Join(r.agentSessionDataRoot(), "tree")
-}
-
-func (r Runner) agentSessionMetadataRoot() string {
-	return filepath.Join(r.agentSessionDataRoot(), "metadata")
-}
-
-func (r Runner) agentSessionMetadataPath(sessionID string) string {
-	return filepath.Join(r.agentSessionMetadataRoot(), safeSessionFileName(sessionID)+".json")
-}
-
 func (r *Runner) saveAgentSessionMetadata(meta agentSessionMetadata) error {
 	if meta.ID == "" {
 		return errors.New("agent session metadata id is required")
@@ -65,52 +44,11 @@ func (r *Runner) saveAgentSessionMetadata(meta agentSessionMetadata) error {
 	meta.Version = agentSessionMetadataVersion
 	meta.Profile = stripProfileSecret(meta.Profile)
 	meta.Profile.APIKeySet = meta.APIKeyRequired
-	if meta.UpdatedAt.IsZero() {
-		meta.UpdatedAt = meta.CreatedAt
-	}
 	store, err := r.sessionStorage(context.Background())
 	if err != nil {
 		return err
 	}
-	return store.saveMetadata(context.Background(), meta, r.saveAgentSessionMetadataFile)
-}
-
-func (r Runner) saveAgentSessionMetadataFile(meta agentSessionMetadata) error {
-	if err := os.MkdirAll(r.agentSessionMetadataRoot(), 0o700); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return err
-	}
-	dir := r.agentSessionMetadataRoot()
-	f, err := os.CreateTemp(dir, safeSessionFileName(meta.ID)+".*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := f.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, r.agentSessionMetadataPath(meta.ID)); err != nil {
-		return err
-	}
-	cleanup = false
-	return nil
+	return store.saveMetadata(context.Background(), meta)
 }
 
 func (r *Runner) loadAgentSessionMetadata(sessionID string) (agentSessionMetadata, error) {
@@ -118,7 +56,7 @@ func (r *Runner) loadAgentSessionMetadata(sessionID string) (agentSessionMetadat
 	if err != nil {
 		return agentSessionMetadata{}, err
 	}
-	meta, err := store.loadMetadata(context.Background(), sessionID, r.loadAgentSessionMetadataFile)
+	meta, err := store.loadMetadata(context.Background(), sessionID)
 	if err != nil {
 		return agentSessionMetadata{}, err
 	}
@@ -132,14 +70,6 @@ func (r *Runner) loadAgentSessionMetadata(sessionID string) (agentSessionMetadat
 		}
 	}
 	return normalized, nil
-}
-
-func (r Runner) loadAgentSessionMetadataFile(sessionID string) (agentSessionMetadata, error) {
-	data, err := os.ReadFile(r.agentSessionMetadataPath(sessionID))
-	if err != nil {
-		return agentSessionMetadata{}, err
-	}
-	return decodeAgentSessionMetadata(data)
 }
 
 func decodeAgentSessionMetadata(data []byte) (agentSessionMetadata, error) {
@@ -158,7 +88,7 @@ func decodeAgentSessionMetadata(data []byte) (agentSessionMetadata, error) {
 	return meta, nil
 }
 
-func (r Runner) normalizeAgentSessionMetadata(sessionID string, meta agentSessionMetadata) (agentSessionMetadata, error) {
+func (r *Runner) normalizeAgentSessionMetadata(sessionID string, meta agentSessionMetadata) (agentSessionMetadata, error) {
 	if meta.ID == "" {
 		return agentSessionMetadata{}, errors.New("agent session metadata id is required")
 	}
@@ -198,7 +128,7 @@ func (r *Runner) listAgentSessionMetadata() ([]agentSessionMetadata, error) {
 	if err != nil {
 		return nil, err
 	}
-	raw, err := store.listMetadata(context.Background(), r.listAgentSessionMetadataFiles)
+	raw, err := store.listMetadata(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -210,35 +140,7 @@ func (r *Runner) listAgentSessionMetadata() ([]agentSessionMetadata, error) {
 		}
 		out = append(out, normalized)
 	}
-	slices.SortFunc(out, func(a, b agentSessionMetadata) int {
-		if a.UpdatedAt.Equal(b.UpdatedAt) {
-			return strings.Compare(b.ID, a.ID)
-		}
-		if a.UpdatedAt.After(b.UpdatedAt) {
-			return -1
-		}
-		return 1
-	})
-	return out, nil
-}
-
-func (r Runner) listAgentSessionMetadataFiles() ([]agentSessionMetadata, error) {
-	paths, err := filepath.Glob(filepath.Join(r.agentSessionMetadataRoot(), "*.json"))
-	if err != nil {
-		return nil, err
-	}
-	out := make([]agentSessionMetadata, 0, len(paths))
-	for _, path := range paths {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil, err
-		}
-		meta, err := decodeAgentSessionMetadata(data)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, meta)
-	}
+	slices.SortFunc(out, func(a, b agentSessionMetadata) int { return strings.Compare(a.ID, b.ID) })
 	return out, nil
 }
 
@@ -264,12 +166,10 @@ func searchSnapshotUnavailable(profile ProviderProfile, envFile string, selected
 	return resolved.UnavailableReasons
 }
 
-func (r Runner) metadataFromSession(sess *agentSession) agentSessionMetadata {
+func (r *Runner) hostConfigMetadataFromSession(sess *agentSession) agentSessionMetadata {
 	return agentSessionMetadata{
 		Version:        agentSessionMetadataVersion,
 		ID:             sess.id,
-		CreatedAt:      sess.createdAt,
-		UpdatedAt:      sess.updatedAt,
 		ProfileID:      sess.profile.ID,
 		Profile:        sess.profile,
 		AgentProfile:   sess.agentProfile,
@@ -287,7 +187,7 @@ func (r Runner) metadataFromSession(sess *agentSession) agentSessionMetadata {
 	}
 }
 
-func (r Runner) cfgFromSessionMetadata(meta agentSessionMetadata) (config.Config, ProviderProfile, error) {
+func (r *Runner) cfgFromSessionMetadata(meta agentSessionMetadata) (config.Config, ProviderProfile, error) {
 	profile := normalizeProfile(meta.Profile, 0)
 	profile.APIKey = ""
 	if saved, err := r.profileByID(meta.ProfileID); err == nil {
@@ -347,12 +247,4 @@ func promptConfigFromSessionMetadata(meta agentSessionMetadata) (config.Config, 
 		return config.Config{}, errors.New("agent session metadata prompt identity source is required")
 	}
 	return config.ResolvePrompt(cfg), nil
-}
-
-func safeSessionFileName(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "session"
-	}
-	return "id_" + base64.RawURLEncoding.EncodeToString([]byte(value))
 }

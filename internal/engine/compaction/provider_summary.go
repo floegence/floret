@@ -99,7 +99,24 @@ func (g ProviderSummaryGenerator) generateProviderSummaryAttempt(ctx context.Con
 		return providerSummaryAttempt{}, err
 	}
 	var text strings.Builder
-	for ev := range stream {
+	for {
+		var ev provider.StreamEvent
+		var ok bool
+		select {
+		case <-ctx.Done():
+			return providerSummaryAttempt{}, ctx.Err()
+		case ev, ok = <-stream:
+		}
+		if err := ctx.Err(); err != nil {
+			return providerSummaryAttempt{}, err
+		}
+		if !ok {
+			summary := strings.TrimSpace(text.String())
+			if summary == "" {
+				return providerSummaryAttempt{}, errors.New("provider returned empty compaction summary")
+			}
+			return providerSummaryAttempt{Summary: summary, PromptInputTokens: promptInputTokens, RequestBudgetTokens: promptInputTokens + outputCap}, nil
+		}
 		switch ev.Type {
 		case provider.Delta:
 			text.WriteString(ev.Text)
@@ -113,11 +130,6 @@ func (g ProviderSummaryGenerator) generateProviderSummaryAttempt(ctx context.Con
 			return providerSummaryAttempt{}, errors.New("provider returned empty compaction summary")
 		}
 	}
-	summary := strings.TrimSpace(text.String())
-	if summary == "" {
-		return providerSummaryAttempt{}, errors.New("provider returned empty compaction summary")
-	}
-	return providerSummaryAttempt{Summary: summary, PromptInputTokens: promptInputTokens, RequestBudgetTokens: promptInputTokens + outputCap}, nil
 }
 
 func retrySummaryCap(cap int64) int64 {

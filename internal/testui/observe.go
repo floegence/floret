@@ -153,7 +153,17 @@ func (p *observingProvider) Stream(ctx context.Context, req provider.Request) (<
 	out := make(chan provider.StreamEvent)
 	go func() {
 		defer close(out)
-		for ev := range stream {
+		for {
+			var ev provider.StreamEvent
+			var ok bool
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok = <-stream:
+				if !ok {
+					return
+				}
+			}
 			if observeConversation {
 				p.recordEvent(req.RunID, observedRequest.ThreadID, observedRequest.TurnID, req.Step, ev)
 			}
@@ -359,6 +369,8 @@ func observeMessages(messages []session.Message) []ObservedSessionMessage {
 		out = append(out, ObservedSessionMessage{
 			Role:                 string(msg.Role),
 			Content:              msg.Content,
+			Attachments:          append([]session.MessageAttachment(nil), msg.Attachments...),
+			References:           append([]session.MessageReference(nil), msg.References...),
 			Reasoning:            msg.Reasoning,
 			ToolCallID:           msg.ToolCallID,
 			ToolName:             msg.ToolName,

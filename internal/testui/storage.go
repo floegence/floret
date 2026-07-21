@@ -8,16 +8,16 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/floegence/floret/internal/storage/sqlite"
 	flruntime "github.com/floegence/floret/runtime"
 )
 
 const (
-	StorageModeSQLite = "sqlite"
-	StorageModeFile   = "file"
-	StorageModeMemory = "memory"
+	StorageModeSQLite      = "sqlite"
+	StorageModeFile        = "file"
+	StorageModeMemory      = "memory"
+	hostMetadataPathSuffix = ".host-metadata.db"
 
 	agentSessionMetadataNamespace = "testui.agent_session.v1"
 )
@@ -32,12 +32,68 @@ type storageStatus struct {
 // testUIStorage owns one public runtime Store and an independent host-metadata
 // backend. Canonical Agent lifecycle never flows through the metadata backend.
 type testUIStorage struct {
-	mode         string
-	path         string
-	runtimeStore *flruntime.Store
-	capabilities testUIRuntimeCapabilityBinders
-	metadataDB   *sql.DB
-	metadata     map[string]agentSessionMetadata
+	mode           string
+	path           string
+	metadataPath   string
+	runtimeStore   *flruntime.Store
+	capabilities   testUIRuntimeCapabilityBinders
+	metadataDB     *sql.DB
+	metadataWriter *sqlite.WriterAdmission
+	metadata       map[string]agentSessionMetadata
+}
+
+func (s *testUIStorage) withMetadataImmediate(ctx context.Context, fn func(*sql.Conn) error) error {
+	if s == nil || s.metadataDB == nil {
+		return errors.New("sqlite metadata storage is not configured")
+	}
+	return withMetadataImmediateDB(ctx, s.metadataDB, s.metadataWriter, fn)
+}
+
+func withMetadataImmediateDB(ctx context.Context, db *sql.DB, writer *sqlite.WriterAdmission, fn func(*sql.Conn) error) error {
+	return withMetadataWriterConn(ctx, db, writer, func(conn *sql.Conn) error {
+		return withMetadataImmediateConn(ctx, conn, fn)
+	})
+}
+
+func withMetadataWriterConn(ctx context.Context, db *sql.DB, writer *sqlite.WriterAdmission, fn func(*sql.Conn) error) error {
+	releaseWriter, err := writer.Reserve(ctx)
+	if err != nil {
+		return err
+	}
+	defer releaseWriter()
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	return fn(conn)
+}
+
+func withMetadataImmediateConn(ctx context.Context, conn *sql.Conn, fn func(*sql.Conn) error) error {
+	if conn == nil {
+		return errors.New("sqlite metadata connection is required")
+	}
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		// Cancellation can race with a successful BEGIN inside the driver.
+		// Reset the connection before returning it to the single-connection pool.
+		_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	if err := fn(conn); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(context.Background(), "COMMIT"); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 type testUIRuntimeCapabilityBinders struct {
@@ -64,15 +120,33 @@ func normalizeStorageMode(mode string) (string, error) {
 	}
 }
 
-func (r Runner) storageMode() (string, error) {
+func (r *Runner) storageMode() (string, error) {
 	return normalizeStorageMode(r.StorageMode)
 }
 
-func (r Runner) storagePath() string {
+func (r *Runner) storagePath() string {
 	if strings.TrimSpace(r.StoragePath) != "" {
 		return r.StoragePath
 	}
 	return sqlite.DefaultTestUIPath(r.Root)
+}
+
+func validateTestUIStoragePath(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return errors.New("test UI sqlite storage path is required")
+	}
+	if path == ":memory:" {
+		return errors.New("test UI sqlite storage path cannot use :memory:; use memory storage mode")
+	}
+	canonicalPath, err := sqlite.CanonicalDatabasePath(path)
+	if err != nil {
+		return err
+	}
+	if strings.HasSuffix(canonicalPath, hostMetadataPathSuffix) {
+		return errors.New("test UI sqlite storage path uses the reserved host-metadata path domain")
+	}
+	return nil
 }
 
 func (r *Runner) sessionStorage(ctx context.Context) (*testUIStorage, error) {
@@ -94,22 +168,40 @@ func (r *Runner) sessionStorage(ctx context.Context) (*testUIStorage, error) {
 		store.metadata = map[string]agentSessionMetadata{}
 	} else {
 		store.path = r.storagePath()
+		if err := validateTestUIStoragePath(store.path); err != nil {
+			return nil, err
+		}
 		store.runtimeStore, err = flruntime.OpenSQLiteStore(store.path)
 		if err != nil {
 			return nil, err
 		}
-		store.metadataDB, err = sql.Open("sqlite", store.path)
+		canonicalRuntimePath, err := sqlite.CanonicalDatabasePath(store.path)
 		if err != nil {
 			_ = store.runtimeStore.Close()
 			return nil, err
 		}
+		store.metadataPath = canonicalRuntimePath + hostMetadataPathSuffix
+		store.metadataWriter, err = sqlite.NewWriterAdmission(store.metadataPath)
+		if err != nil {
+			_ = store.runtimeStore.Close()
+			return nil, err
+		}
+		store.metadataDB, err = sql.Open("sqlite", store.metadataPath)
+		if err != nil {
+			_ = store.Close()
+			return nil, err
+		}
 		store.metadataDB.SetMaxOpenConns(1)
 		store.metadataDB.SetMaxIdleConns(1)
-		for _, pragma := range []string{"PRAGMA foreign_keys = ON", "PRAGMA busy_timeout = 5000"} {
+		for _, pragma := range []string{"PRAGMA foreign_keys = ON", "PRAGMA busy_timeout = 0"} {
 			if _, err := store.metadataDB.ExecContext(ctx, pragma); err != nil {
 				_ = store.Close()
 				return nil, err
 			}
+		}
+		if err := initializeHostMetadataDatabase(ctx, store.metadataDB, store.metadataWriter); err != nil {
+			_ = store.Close()
+			return nil, err
 		}
 	}
 	if err := store.configureCapabilities(); err != nil {
@@ -118,6 +210,147 @@ func (r *Runner) sessionStorage(ctx context.Context) (*testUIStorage, error) {
 	}
 	r.storage = store
 	return store, nil
+}
+
+func initializeHostMetadataDatabase(ctx context.Context, db *sql.DB, writer *sqlite.WriterAdmission) error {
+	if err := withMetadataImmediateDB(ctx, db, writer, func(conn *sql.Conn) error {
+		return ensureHostMetadataSchema(ctx, conn)
+	}); err != nil {
+		return err
+	}
+	return withMetadataWriterConn(ctx, db, writer, func(conn *sql.Conn) error {
+		for _, pragma := range []string{"PRAGMA journal_mode = WAL", "PRAGMA synchronous = FULL"} {
+			if _, err := conn.ExecContext(ctx, pragma); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+const createHostMetadataRecordsSQL = `CREATE TABLE metadata_records(
+	namespace TEXT NOT NULL,
+	id TEXT NOT NULL,
+	data_json TEXT NOT NULL,
+	PRIMARY KEY(namespace, id)
+)`
+
+func ensureHostMetadataSchema(ctx context.Context, conn *sql.Conn) error {
+	columns, err := hostMetadataTableColumns(ctx, conn)
+	if err != nil {
+		return err
+	}
+	switch strings.Join(columns, ",") {
+	case "":
+		_, err := conn.ExecContext(ctx, createHostMetadataRecordsSQL)
+		return err
+	case "namespace,id,data_json":
+		return nil
+	case "namespace,id,created_at,updated_at,data_json":
+		return migrateLegacyHostMetadataSchema(ctx, conn)
+	default:
+		return fmt.Errorf("unsupported test UI host metadata schema columns %q", strings.Join(columns, ","))
+	}
+}
+
+func hostMetadataTableColumns(ctx context.Context, conn *sql.Conn) ([]string, error) {
+	rows, err := conn.QueryContext(ctx, `PRAGMA table_info(metadata_records)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var columns []string
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return nil, err
+		}
+		columns = append(columns, name)
+	}
+	return columns, rows.Err()
+}
+
+type hostMetadataMigrationRecord struct {
+	namespace string
+	id        string
+	data      string
+}
+
+func migrateLegacyHostMetadataSchema(ctx context.Context, conn *sql.Conn) error {
+	rows, err := conn.QueryContext(ctx, `SELECT namespace, id, data_json FROM metadata_records ORDER BY namespace, id`)
+	if err != nil {
+		return err
+	}
+	var records []hostMetadataMigrationRecord
+	for rows.Next() {
+		var record hostMetadataMigrationRecord
+		if err := rows.Scan(&record.namespace, &record.id, &record.data); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		record.data, err = migrateLegacyHostMetadataRecord(record)
+		if err != nil {
+			_ = rows.Close()
+			return err
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, `CREATE TABLE metadata_records_next(
+		namespace TEXT NOT NULL,
+		id TEXT NOT NULL,
+		data_json TEXT NOT NULL,
+		PRIMARY KEY(namespace, id)
+	)`); err != nil {
+		return err
+	}
+	for _, record := range records {
+		if _, err := conn.ExecContext(ctx, `INSERT INTO metadata_records_next(namespace, id, data_json) VALUES(?, ?, ?)`, record.namespace, record.id, record.data); err != nil {
+			return err
+		}
+	}
+	if _, err := conn.ExecContext(ctx, `DROP TABLE metadata_records`); err != nil {
+		return err
+	}
+	_, err = conn.ExecContext(ctx, `ALTER TABLE metadata_records_next RENAME TO metadata_records`)
+	return err
+}
+
+func migrateLegacyHostMetadataRecord(record hostMetadataMigrationRecord) (string, error) {
+	if record.namespace != agentSessionMetadataNamespace {
+		return "", fmt.Errorf("unsupported host metadata namespace %q during schema migration", record.namespace)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(record.data), &raw); err != nil {
+		return "", fmt.Errorf("decode host metadata %q during schema migration: %w", record.id, err)
+	}
+	delete(raw, "created_at")
+	delete(raw, "updated_at")
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return "", err
+	}
+	meta, err := decodeAgentSessionMetadata(data)
+	if err != nil {
+		return "", fmt.Errorf("validate host metadata %q during schema migration: %w", record.id, err)
+	}
+	if meta.ID != record.id {
+		return "", fmt.Errorf("host metadata %q id does not match encoded id %q during schema migration", record.id, meta.ID)
+	}
+	clean, err := json.Marshal(meta)
+	if err != nil {
+		return "", err
+	}
+	return string(clean), nil
 }
 
 func (s *testUIStorage) configureCapabilities() error {
@@ -190,6 +423,10 @@ func (s *testUIStorage) Close() error {
 		errs = append(errs, s.metadataDB.Close())
 		s.metadataDB = nil
 	}
+	if s.metadataWriter != nil {
+		s.metadataWriter.Close()
+		s.metadataWriter = nil
+	}
 	return errors.Join(errs...)
 }
 
@@ -202,14 +439,10 @@ func (r *Runner) storageStatus(ctx context.Context) storageStatus {
 	if err != nil {
 		return storageStatus{Mode: mode, Path: r.storagePath(), Error: err.Error()}
 	}
-	status := storageStatus{Mode: store.mode, Path: store.path}
-	if store.metadataDB != nil {
-		_ = store.metadataDB.QueryRowContext(ctx, `SELECT schema_version FROM store_metadata WHERE singleton = 1`).Scan(&status.SchemaVersion)
-	}
-	return status
+	return storageStatus{Mode: store.mode, Path: store.path}
 }
 
-func (s *testUIStorage) saveMetadata(ctx context.Context, meta agentSessionMetadata, fileStore func(agentSessionMetadata) error) error {
+func (s *testUIStorage) saveMetadata(ctx context.Context, meta agentSessionMetadata) error {
 	if s.mode == StorageModeMemory {
 		s.metadata[meta.ID] = meta
 		return nil
@@ -218,14 +451,16 @@ func (s *testUIStorage) saveMetadata(ctx context.Context, meta agentSessionMetad
 	if err != nil {
 		return err
 	}
-	_, err = s.metadataDB.ExecContext(ctx, `INSERT INTO metadata_records(namespace, id, created_at, updated_at, data_json)
-		VALUES(?, ?, ?, ?, ?)
-		ON CONFLICT(namespace, id) DO UPDATE SET updated_at = excluded.updated_at, data_json = excluded.data_json`,
-		agentSessionMetadataNamespace, meta.ID, formatMetadataTime(meta.CreatedAt), formatMetadataTime(meta.UpdatedAt), string(data))
-	return err
+	return s.withMetadataImmediate(ctx, func(conn *sql.Conn) error {
+		_, err := conn.ExecContext(ctx, `INSERT INTO metadata_records(namespace, id, data_json)
+			VALUES(?, ?, ?)
+			ON CONFLICT(namespace, id) DO UPDATE SET data_json = excluded.data_json`,
+			agentSessionMetadataNamespace, meta.ID, string(data))
+		return err
+	})
 }
 
-func (s *testUIStorage) loadMetadata(ctx context.Context, id string, fileStore func(string) (agentSessionMetadata, error)) (agentSessionMetadata, error) {
+func (s *testUIStorage) loadMetadata(ctx context.Context, id string) (agentSessionMetadata, error) {
 	if s.mode == StorageModeMemory {
 		meta, ok := s.metadata[id]
 		if !ok {
@@ -244,7 +479,7 @@ func (s *testUIStorage) loadMetadata(ctx context.Context, id string, fileStore f
 	return decodeAgentSessionMetadata([]byte(data))
 }
 
-func (s *testUIStorage) listMetadata(ctx context.Context, fileStore func() ([]agentSessionMetadata, error)) ([]agentSessionMetadata, error) {
+func (s *testUIStorage) listMetadata(ctx context.Context) ([]agentSessionMetadata, error) {
 	if s.mode == StorageModeMemory {
 		out := make([]agentSessionMetadata, 0, len(s.metadata))
 		for _, meta := range s.metadata {
@@ -252,7 +487,7 @@ func (s *testUIStorage) listMetadata(ctx context.Context, fileStore func() ([]ag
 		}
 		return out, nil
 	}
-	rows, err := s.metadataDB.QueryContext(ctx, `SELECT data_json FROM metadata_records WHERE namespace = ? ORDER BY updated_at DESC, id DESC`, agentSessionMetadataNamespace)
+	rows, err := s.metadataDB.QueryContext(ctx, `SELECT data_json FROM metadata_records WHERE namespace = ? ORDER BY id`, agentSessionMetadataNamespace)
 	if err != nil {
 		return nil, err
 	}
@@ -277,8 +512,10 @@ func (s *testUIStorage) deleteMetadata(ctx context.Context, sessionID string) er
 		delete(s.metadata, sessionID)
 		return nil
 	}
-	_, err := s.metadataDB.ExecContext(ctx, `DELETE FROM metadata_records WHERE namespace = ? AND id = ?`, agentSessionMetadataNamespace, sessionID)
-	return err
+	return s.withMetadataImmediate(ctx, func(conn *sql.Conn) error {
+		_, err := conn.ExecContext(ctx, `DELETE FROM metadata_records WHERE namespace = ? AND id = ?`, agentSessionMetadataNamespace, sessionID)
+		return err
+	})
 }
 
 func (s *testUIStorage) deleteSession(ctx context.Context, sessionID string) ([]string, error) {
@@ -296,11 +533,4 @@ func (s *testUIStorage) deleteSession(ctx context.Context, sessionID string) ([]
 		return cleanupError(err)
 	}
 	return []string{sessionID}, nil
-}
-
-func formatMetadataTime(value time.Time) string {
-	if value.IsZero() {
-		return ""
-	}
-	return value.UTC().Format(time.RFC3339Nano)
 }

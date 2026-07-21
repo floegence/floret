@@ -444,6 +444,8 @@ func (h *AgentHarness) SpawnSubAgent(ctx context.Context, opts SpawnSubAgentOpti
 	}
 	var forkOptions *sessiontree.ForkOptions
 	var artifactClosure artifact.Closure
+	var forkTurnIDs map[string]string
+	var forkRunIDs map[string]string
 	if forkMode == SubAgentForkFullPath {
 		path, err := h.options.Repo.Path(ctx, parentID, parentMeta.LeafID)
 		if err != nil {
@@ -465,6 +467,7 @@ func (h *AgentHarness) SpawnSubAgent(ctx context.Context, opts SpawnSubAgentOpti
 		if err != nil {
 			return SubAgentSnapshot{}, err
 		}
+		forkTurnIDs, forkRunIDs = subAgentForkIdentityRewrite(publicationID, path)
 		forkOptions = &sessiontree.ForkOptions{
 			SourceThreadID:       parentID,
 			EntryID:              parentMeta.LeafID,
@@ -482,10 +485,14 @@ func (h *AgentHarness) SpawnSubAgent(ctx context.Context, opts SpawnSubAgentOpti
 				ForkMode:        childMeta.ForkMode,
 			},
 			ArtifactClosure: artifact.CloneClosure(artifactClosure),
+			TurnIDMap:       forkTurnIDs,
+			RunIDMap:        forkRunIDs,
 			RewriteEntry:    rewriteForkContextEntry,
 		}
 	}
-	fingerprint, err := subAgentPublicationFingerprint(publicationID, childMeta, forkMode, parentMeta.LeafID, artifactClosure.Fingerprint, message, opts.Labels)
+	fingerprint, err := subAgentPublicationFingerprint(
+		publicationID, childMeta, forkMode, parentMeta.LeafID, artifactClosure.Fingerprint, message, opts.Labels,
+	)
 	if err != nil {
 		return SubAgentSnapshot{}, err
 	}
@@ -1138,6 +1145,14 @@ func (h *AgentHarness) ReadLatestThreadDetailEvents(ctx context.Context, threadI
 			if candidateTurnID == "" || strings.TrimSpace(entry.Metadata["run_id"]) == "" {
 				return ThreadDetailEvents{}, errors.New("latest turn started marker has incomplete identity")
 			}
+			retrySource, err := sessiontree.CanonicalTurnRetrySourceForStartedEntry(entry)
+			if err != nil {
+				return ThreadDetailEvents{}, err
+			}
+			if retrySource != nil {
+				latestTurnID = candidateTurnID
+				break
+			}
 			for _, candidate := range selected {
 				if candidate.entry.Type == sessiontree.EntryUserMessage && strings.TrimSpace(candidate.entry.TurnID) == candidateTurnID {
 					latestTurnID = candidateTurnID
@@ -1210,6 +1225,13 @@ func (h *AgentHarness) latestThreadDetailEventsFromPath(path []sessiontree.Entry
 		return ThreadDetailEvents{GeneratedAt: h.now()}, nil
 	}
 	admitted := false
+	retrySource, err := sessiontree.CanonicalTurnRetrySourceForStartedEntry(path[latestStartedIndex])
+	if err != nil {
+		return ThreadDetailEvents{}, err
+	}
+	if retrySource != nil {
+		admitted = true
+	}
 	for _, entry := range path[latestStartedIndex+1:] {
 		if entry.Type == sessiontree.EntryUserMessage && strings.TrimSpace(entry.TurnID) == latestTurnID {
 			admitted = true
@@ -2141,9 +2163,10 @@ func (h *AgentHarness) startNextSubAgentTurn(ctrl *subagentController) {
 	}
 	lease := admission.Lease
 	if err := thread.bindActiveLease(lease); err != nil {
-		leaseCtx := sessiontree.ContextWithTurnLease(executionCtx, lease)
-		_, _ = thread.finishTurn(leaseCtx, runID, terminalTurnEntryID(ctrl.threadID, turnID, runID), sessiontree.TurnFailed,
-			map[string]string{"run_id": runID, "diagnostic": "local_owner_bind_error"}, err.Error(), nil)
+		result, finishErr := thread.finalizeTurnStartupFailure(executionCtx, lease, turnID, runID, "local_owner_bind_error", err)
+		if finishErr != nil && result.Status == "" {
+			h.reportBackgroundError(fmt.Errorf("finalize subagent startup failure: %w", finishErr))
+		}
 		thread.leaveTurn()
 		h.notifySubAgentUpdate()
 		return
@@ -2180,8 +2203,10 @@ func (h *AgentHarness) startNextSubAgentTurn(ctrl *subagentController) {
 		renewedCtx, stopRenewal, renewalStartErr := thread.startLeaseRenewal(leaseCtx, lease)
 		result, err := TurnResult{}, renewalStartErr
 		if renewalStartErr != nil {
-			_, _ = thread.finishTurn(leaseCtx, runID, terminalTurnEntryID(ctrl.threadID, turnID, runID), sessiontree.TurnFailed,
-				map[string]string{"run_id": runID, "diagnostic": "lease_renewal_start_error"}, renewalStartErr.Error(), nil)
+			result, err = thread.finalizeTurnStartupFailure(leaseCtx, lease, turnID, runID, "lease_renewal_start_error", renewalStartErr)
+			if err != nil && result.Status == "" {
+				h.reportBackgroundError(fmt.Errorf("finalize subagent startup failure: %w", err))
+			}
 		} else {
 			result, err = thread.runLeased(renewedCtx, admission.Input.Message.Content, RunOptions{
 				RunID:               runID,
@@ -2224,17 +2249,7 @@ func (h *AgentHarness) startNextSubAgentTurn(ctrl *subagentController) {
 }
 
 func (h *AgentHarness) beginSubAgentExecution() (context.Context, func(), error) {
-	if h != nil && h.options.BeginSubAgentExecution != nil {
-		ctx, finish, err := h.options.BeginSubAgentExecution()
-		if err != nil {
-			return nil, nil, err
-		}
-		if ctx == nil || finish == nil {
-			return nil, nil, errors.New("subagent execution lifetime authority returned an invalid handle")
-		}
-		return ctx, finish, nil
-	}
-	return nil, nil, errors.New("subagent execution lifetime authority is required")
+	return h.beginBackgroundExecution("subagent execution")
 }
 
 func (h *AgentHarness) subAgentRunContext(base context.Context) (context.Context, context.CancelFunc) {
@@ -2368,17 +2383,19 @@ func (h *AgentHarness) subAgentSnapshotFromMeta(ctx context.Context, meta sessio
 	if queued > 0 && !writeClosed && status != SubAgentStatusRunning {
 		status = SubAgentStatusRunning
 	}
-	read, err := thread.Read(ctx)
+	journal, err := thread.Journal(ctx)
 	if err != nil {
 		return SubAgentSnapshot{}, err
 	}
+	read := threadSnapshotFromJournal(journal)
 	if meta.IsClosed() {
 		status = SubAgentStatusClosed
 	} else if meta.IsClosing() {
 		status = SubAgentStatusClosing
 	} else if !writeClosed && queued == 0 && read.Status != "" {
 		readStatus := SubAgentStatus(read.Status)
-		if !liveRunning || runningTurnID != "" && read.LatestTurnID == runningTurnID && isSettledSubAgentStatus(readStatus) {
+		if !liveRunning || runningTurnID != "" && read.LatestTurnID == runningTurnID &&
+			isDurablySettledSubAgentStatus(readStatus, runningTurnID, journal.Path) {
 			liveRunning = false
 			status = readStatus
 		}
@@ -2415,13 +2432,22 @@ func isTerminalSubAgentStatus(status SubAgentStatus) bool {
 	}
 }
 
-func isSettledSubAgentStatus(status SubAgentStatus) bool {
+func isDurablySettledSubAgentStatus(status SubAgentStatus, turnID string, path []sessiontree.Entry) bool {
 	switch status {
-	case SubAgentStatusCompleted, SubAgentStatusWaiting, SubAgentStatusFailed, SubAgentStatusCancelled, SubAgentStatusInterrupted, SubAgentStatusClosed:
+	case SubAgentStatusCompleted, SubAgentStatusWaiting, SubAgentStatusFailed, SubAgentStatusCancelled, SubAgentStatusClosed:
 		return true
+	case SubAgentStatusInterrupted:
+		for index := len(path) - 1; index >= 0; index-- {
+			entry := path[index]
+			if entry.TurnID != turnID || entry.Type != sessiontree.EntryTurnMarker {
+				continue
+			}
+			return entry.TurnStatus == sessiontree.TurnAborted
+		}
 	default:
 		return false
 	}
+	return false
 }
 
 func latestSubAgentMessage(messages []ThreadMessage) string {
@@ -2585,7 +2611,9 @@ func (h *AgentHarness) nextSubAgentTurnID(_ context.Context, _ string) (string, 
 	return id, nil
 }
 
-func subAgentPublicationFingerprint(publicationID string, meta sessiontree.ThreadMeta, forkMode SubAgentForkMode, sourceLeafID, artifactClosureFingerprint string, message session.Message, labels engine.RunLabels) (string, error) {
+func subAgentPublicationFingerprint(publicationID string, meta sessiontree.ThreadMeta, forkMode SubAgentForkMode, sourceLeafID, artifactClosureFingerprint string,
+	message session.Message, labels engine.RunLabels,
+) (string, error) {
 	meta.CreatedAt = time.Time{}
 	meta.UpdatedAt = time.Time{}
 	payload := struct {
@@ -2603,6 +2631,31 @@ func subAgentPublicationFingerprint(publicationID string, meta sessiontree.Threa
 		Message:                    message, HostLabels: labels.Host, CorrelationLabels: labels.Correlation,
 	}
 	return hashSubAgentAuthorityPayload(payload)
+}
+
+func subAgentForkIdentityRewrite(publicationID string, path []sessiontree.Entry) (map[string]string, map[string]string) {
+	turnIDs := map[string]string{}
+	runIDs := map[string]string{}
+	for _, entry := range path {
+		turnID := strings.TrimSpace(entry.TurnID)
+		if turnID != "" {
+			if _, exists := turnIDs[turnID]; !exists {
+				turnIDs[turnID] = deterministicSubAgentForkIdentity("turn", publicationID, turnID)
+			}
+		}
+		runID := strings.TrimSpace(entry.Metadata["run_id"])
+		if runID != "" {
+			if _, exists := runIDs[runID]; !exists {
+				runIDs[runID] = deterministicSubAgentForkIdentity("run", publicationID, runID)
+			}
+		}
+	}
+	return turnIDs, runIDs
+}
+
+func deterministicSubAgentForkIdentity(kind, publicationID, sourceID string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(publicationID) + "\x00" + kind + "\x00" + strings.TrimSpace(sourceID)))
+	return kind + "-" + hex.EncodeToString(sum[:16])
 }
 
 func subAgentInputFingerprint(requestID, parentThreadID, childThreadID string, message session.Message, labels engine.RunLabels, interrupt bool) (string, error) {

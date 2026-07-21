@@ -2,8 +2,11 @@ package agentharness
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/floegence/floret/internal/provider"
@@ -14,6 +17,11 @@ type recordingTitleProvider struct {
 	requests []provider.Request
 }
 
+type neverClosingTitleProvider struct {
+	started chan struct{}
+	once    sync.Once
+}
+
 func (p *recordingTitleProvider) Stream(_ context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
 	p.requests = append(p.requests, req)
 	out := make(chan provider.StreamEvent, 2)
@@ -21,6 +29,39 @@ func (p *recordingTitleProvider) Stream(_ context.Context, req provider.Request)
 	out <- provider.StreamEvent{Type: provider.Done, Reason: "stop"}
 	close(out)
 	return out, nil
+}
+
+func (p *neverClosingTitleProvider) Stream(context.Context, provider.Request) (<-chan provider.StreamEvent, error) {
+	p.once.Do(func() { close(p.started) })
+	return make(chan provider.StreamEvent), nil
+}
+
+func TestProviderTitleGeneratorCancelsNeverClosingStream(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	provider := &neverClosingTitleProvider{started: make(chan struct{})}
+	generator := ProviderTitleGenerator{Provider: provider, ProviderName: "fake", Model: "fake-model"}
+	done := make(chan error, 1)
+	go func() {
+		_, err := generator.GenerateTitle(ctx, TitleRequest{
+			ThreadID: "thread", TurnID: "turn-1",
+			Messages: []session.Message{{Role: session.User, Content: "Summarize this conversation."}},
+		})
+		done <- err
+	}()
+	select {
+	case <-provider.started:
+	case <-time.After(time.Second):
+		t.Fatal("title provider did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != context.Canceled || !errors.Is(err, context.Canceled) {
+			t.Fatalf("GenerateTitle err = %v, want exact context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("GenerateTitle did not stop after context cancellation")
+	}
 }
 
 func TestProviderTitleGeneratorUsesShortNonReasoningRequest(t *testing.T) {

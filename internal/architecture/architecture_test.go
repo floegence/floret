@@ -396,7 +396,7 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 	exact("PendingToolRecoveryHost", reflect.TypeOf((*floretRuntime.PendingToolRecoveryHost)(nil)), "SettlePendingTool")
 	exact("InterruptedTurnRecoveryHost", reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHost)(nil)), "RecoverInterruptedTurn")
 	exact("TurnExecutionHost", reflect.TypeOf((*floretRuntime.TurnExecutionHost)(nil)),
-		"CompletePendingTool", "ListPendingApprovals", "RetryTurn", "RunTurn", "SettlePendingTool", "UpdateThreadAgentTodos")
+		"CompletePendingTool", "ReadApprovalQueue", "ResolveApproval", "RetryTurn", "RunTurn", "SettlePendingTool", "UpdateThreadAgentTodos")
 	exact("ThreadCompactionHost", reflect.TypeOf((*floretRuntime.ThreadCompactionHost)(nil)), "CompactThread")
 	exact("SubAgentHost", reflect.TypeOf((*floretRuntime.SubAgentHost)(nil)),
 		"CloseSubAgent", "PublishPendingToolCompletion", "SendSubAgentInput", "SettlePendingTool", "SpawnSubAgent", "WaitSubAgents")
@@ -1339,7 +1339,7 @@ func TestToolRegistryExposesOnlyAuthorityGatedDispatch(t *testing.T) {
 	for index := 0; index < registryType.NumMethod(); index++ {
 		got = append(got, registryType.Method(index).Name)
 	}
-	want := []string{"ActivityForCall", "Definition", "Definitions", "Dispatch", "ExposedDefinitions", "OutputPolicyFor", "Register"}
+	want := []string{"ActivityForCall", "Definition", "Definitions", "Dispatch", "DispatchBatch", "ExposedDefinitions", "OutputPolicyFor", "Register"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("tools.Registry exported method set = %#v, want %#v", got, want)
 	}
@@ -1347,7 +1347,7 @@ func TestToolRegistryExposesOnlyAuthorityGatedDispatch(t *testing.T) {
 	for _, want := range []string{
 		"if opts.EffectDispatcher == nil",
 		"ErrEffectDispatcherRequired",
-		"result = opts.EffectDispatcher(ctx, EffectDispatchRequest{",
+		"result = dispatcher(ctx, p.request, func() Result { return p.invoke(ctx) })",
 		"result.effectFinalizationRequired = true",
 	} {
 		if !strings.Contains(text, want) {

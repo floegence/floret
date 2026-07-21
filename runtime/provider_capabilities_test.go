@@ -351,8 +351,8 @@ func TestProviderCapabilitiesRejectAuthorityMismatch(t *testing.T) {
 			_, err := turn.CompletePendingTool(ctx, PendingToolCompletionRequest{Target: PendingToolSettlementTarget{ThreadID: "thread-b"}})
 			return err
 		}},
-		{name: "list approvals", call: func() error {
-			_, err := turn.ListPendingApprovals(ctx, ListPendingApprovalsRequest{ThreadID: "thread-b"})
+		{name: "read approval queue", call: func() error {
+			_, err := turn.ReadApprovalQueue(ctx, ReadApprovalQueueRequest{ThreadID: "thread-b"})
 			return err
 		}},
 		{name: "update todos", call: func() error {

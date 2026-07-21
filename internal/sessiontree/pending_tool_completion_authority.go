@@ -95,7 +95,7 @@ func (r *MemoryRepo) ReadPendingToolCompletion(_ context.Context, req AdmitPendi
 func (r *MemoryRepo) pendingToolCompletionReplayLocked(existing pendingToolCompletionLedger, req AdmitPendingToolCompletionRequest) (AdmitPendingToolCompletionResult, error) {
 	if existing.RequestFingerprint != strings.TrimSpace(req.RequestFingerprint) || existing.ThreadID != req.Target.ThreadID ||
 		existing.Target != req.Target || existing.SettlementFingerprint != strings.TrimSpace(req.SettlementFingerprint) ||
-		existing.ContinuationTurnID != req.ContinuationTurnID || existing.ContinuationRunID != req.ContinuationRunID {
+		existing.ContinuationTurnID != strings.TrimSpace(req.ContinuationTurnID) || existing.ContinuationRunID != strings.TrimSpace(req.ContinuationRunID) {
 		return AdmitPendingToolCompletionResult{}, ErrRequestConflict
 	}
 	settlement, settlementOK := findEntry(r.entries[existing.ThreadID], existing.SettlementEntryID)
@@ -124,6 +124,10 @@ func (r *MemoryRepo) AdmitPendingToolCompletion(_ context.Context, req AdmitPend
 	defer r.mu.Unlock()
 	requestID := strings.TrimSpace(req.CompletionRequestID)
 	fingerprint := strings.TrimSpace(req.RequestFingerprint)
+	settlementFingerprint := strings.TrimSpace(req.SettlementFingerprint)
+	turnID := strings.TrimSpace(req.ContinuationTurnID)
+	runID := strings.TrimSpace(req.ContinuationRunID)
+	ownerID := strings.TrimSpace(req.OwnerID)
 	if existing, ok := r.pendingToolCompletions[requestID]; ok {
 		return r.pendingToolCompletionReplayLocked(existing, req)
 	}
@@ -140,10 +144,10 @@ func (r *MemoryRepo) AdmitPendingToolCompletion(_ context.Context, req AdmitPend
 	if r.threadAuthorityClaimedLocked(meta.ID) || r.leases[meta.ID].Validate() == nil {
 		return AdmitPendingToolCompletionResult{}, ErrThreadAuthorityBusy
 	}
-	if _, exists := r.turnAdmissions[turnAdmissionKey(meta.ID, req.ContinuationTurnID)]; exists {
+	if _, exists := r.turnAdmissions[turnAdmissionKey(meta.ID, turnID)]; exists {
 		return AdmitPendingToolCompletionResult{}, ErrRequestConflict
 	}
-	if r.hasTurnStartedLocked(meta.ID, req.ContinuationTurnID) {
+	if r.hasTurnStartedLocked(meta.ID, turnID) {
 		return AdmitPendingToolCompletionResult{}, ErrRequestConflict
 	}
 	path, err := pathLocked(r.threads, r.entries, meta.ID, meta.LeafID)
@@ -172,7 +176,7 @@ func (r *MemoryRepo) AdmitPendingToolCompletion(_ context.Context, req AdmitPend
 		baseLeafID = settlement.ID
 	}
 	lease, err := r.acquireTurnLeaseLocked(TurnLease{
-		ThreadID: meta.ID, Purpose: TurnLeasePurposeTurn, TurnID: strings.TrimSpace(req.ContinuationTurnID), OwnerID: strings.TrimSpace(req.OwnerID),
+		ThreadID: meta.ID, Purpose: TurnLeasePurposeTurn, TurnID: turnID, OwnerID: ownerID,
 	})
 	if err != nil {
 		r.seq = seqBefore
@@ -180,14 +184,14 @@ func (r *MemoryRepo) AdmitPendingToolCompletion(_ context.Context, req AdmitPend
 	}
 	started := Entry{
 		ID: r.nextEntryID(meta.ID), ThreadID: meta.ID, ParentID: baseLeafID, Type: EntryTurnMarker,
-		TurnID: strings.TrimSpace(req.ContinuationTurnID), TurnStatus: TurnStarted, CreatedAt: now,
-		Metadata: map[string]string{"run_id": strings.TrimSpace(req.ContinuationRunID), "completion_request_id": requestID},
+		TurnID: turnID, TurnStatus: TurnStarted, CreatedAt: now,
+		Metadata: map[string]string{"run_id": runID, "completion_request_id": requestID},
 	}
 	started.Raw = rawForEntry(started)
 	started.RawHash = stableHash(started.Raw)
 	user := Entry{
 		ID: r.nextEntryID(meta.ID), ThreadID: meta.ID, ParentID: started.ID, Type: EntryUserMessage,
-		TurnID: strings.TrimSpace(req.ContinuationTurnID), CreatedAt: now, Message: session.CloneMessage(req.Input),
+		TurnID: turnID, CreatedAt: now, Message: session.CloneMessage(req.Input),
 		Metadata: map[string]string{"completion_request_id": requestID},
 	}
 	user.Raw = rawForEntry(user)
@@ -199,14 +203,14 @@ func (r *MemoryRepo) AdmitPendingToolCompletion(_ context.Context, req AdmitPend
 	meta.LeafID = user.ID
 	meta.UpdatedAt = now
 	r.threads[meta.ID] = meta
-	r.turnAdmissions[turnAdmissionKey(meta.ID, req.ContinuationTurnID)] = turnAdmissionLedger{
-		ThreadID: meta.ID, TurnID: req.ContinuationTurnID, RunID: req.ContinuationRunID, RequestFingerprint: fingerprint,
+	r.turnAdmissions[turnAdmissionKey(meta.ID, turnID)] = turnAdmissionLedger{
+		ThreadID: meta.ID, TurnID: turnID, RunID: runID, RequestFingerprint: fingerprint,
 		Lease: lease, TurnStartedID: started.ID, UserMessageID: user.ID, BaseLeafID: baseLeafID,
 	}
 	r.pendingToolCompletions[requestID] = pendingToolCompletionLedger{
 		CompletionRequestID: requestID, RequestFingerprint: fingerprint, ThreadID: meta.ID,
-		Target: req.Target, SettlementFingerprint: strings.TrimSpace(req.SettlementFingerprint),
-		ContinuationTurnID: req.ContinuationTurnID, ContinuationRunID: req.ContinuationRunID,
+		Target: req.Target, SettlementFingerprint: settlementFingerprint,
+		ContinuationTurnID: turnID, ContinuationRunID: runID,
 		SettlementEntryID: settlement.ID, TurnStartedID: started.ID, UserMessageID: user.ID, BaseLeafID: baseLeafID,
 	}
 	return AdmitPendingToolCompletionResult{

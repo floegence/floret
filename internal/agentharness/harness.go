@@ -2,6 +2,8 @@ package agentharness
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,6 +59,7 @@ const (
 	EventTurnAborted       HarnessEventType = "turn_aborted"
 	EventEntryAppended     HarnessEventType = "entry_appended"
 	EventRetryStarted      HarnessEventType = "retry_started"
+	EventTitlePending      HarnessEventType = "thread_title_pending"
 	EventTitleUpdated      HarnessEventType = "thread_title_updated"
 	EventTitleFailed       HarnessEventType = "thread_title_failed"
 	EventSubAgentSpawned   HarnessEventType = "subagent_spawned"
@@ -106,7 +109,10 @@ type Options struct {
 	TurnPolicy               TurnPolicy
 	LoopLimits               LoopLimits
 	SubAgentRunTimeout       time.Duration
-	BeginSubAgentExecution   func() (context.Context, func(), error)
+	AutomaticTitleTimeout    time.Duration
+	BeginBackgroundExecution func() (context.Context, func(), error)
+	ReportBackgroundError    func(error)
+	TurnExecutions           *TurnExecutionRegistry
 	NewID                    func(string) string
 	Now                      func() time.Time
 }
@@ -133,26 +139,25 @@ type LoopLimits struct {
 }
 
 type AgentHarness struct {
-	mu                        sync.Mutex
-	subagentSpawnMu           sync.Mutex
-	options                   Options
-	effectFinalizationTimeout time.Duration
-	threads                   map[string]*Thread
-	subagents                 map[string]*subagentController
-	subagentUpdates           chan struct{}
-	approvals                 map[string]map[string]PendingApproval
-	seq                       int64
+	mu                          sync.Mutex
+	subagentSpawnMu             sync.Mutex
+	options                     Options
+	effectFinalizationTimeout   time.Duration
+	effectOutcomeFingerprinter  func(tools.Result, session.Message, *artifact.FullOutput) (string, error)
+	effectFinalizerRegistration func(error)
+	threads                     map[string]*Thread
+	subagents                   map[string]*subagentController
+	subagentUpdates             chan struct{}
 }
 
 type ResumeOptions struct{}
 
 type ForkOptions struct {
-	SourceThreadID        string
-	EntryID               string
-	Position              sessiontree.ForkPosition
-	NewThreadID           string
-	OperationID           string
-	RewriteTurnIdentities bool
+	SourceThreadID string
+	EntryID        string
+	Position       sessiontree.ForkPosition
+	NewThreadID    string
+	OperationID    string
 }
 
 type ForkResult struct {
@@ -253,6 +258,7 @@ type ThreadSnapshot struct {
 	TitleSource      string          `json:"title_source,omitempty"`
 	TitleUpdatedAt   time.Time       `json:"title_updated_at,omitempty"`
 	TitleError       string          `json:"title_error,omitempty"`
+	TitleGeneration  int64           `json:"title_generation,omitempty"`
 	CreatedAt        time.Time       `json:"created_at"`
 	UpdatedAt        time.Time       `json:"updated_at"`
 	Phase            string          `json:"phase"`
@@ -274,6 +280,7 @@ type ThreadSummary struct {
 	TitleSource      string    `json:"title_source,omitempty"`
 	TitleUpdatedAt   time.Time `json:"title_updated_at,omitempty"`
 	TitleError       string    `json:"title_error,omitempty"`
+	TitleGeneration  int64     `json:"title_generation,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 	Phase            string    `json:"phase"`
@@ -313,6 +320,7 @@ type TurnResult struct {
 	Status             engine.Status
 	Output             string
 	Err                error
+	FailureCode        string
 	Diagnostics        map[string]string
 	Metrics            engine.RunMetrics
 	CompletionReason   engine.CompletionReason
@@ -321,7 +329,6 @@ type TurnResult struct {
 	RawFinishReason    string
 	FinishInferred     bool
 	ControlSignal      *engine.ControlSignal
-	PendingApprovals   []PendingApproval
 	CanonicalEvents    []SubAgentDetailEvent
 	Replayed           bool
 	AdmissionRunning   bool
@@ -364,46 +371,56 @@ func (h *AgentHarness) providerState(ctx context.Context, threadID, leafEntryID 
 	return provider.CloneState(&record.State), nil
 }
 
-type ListPendingApprovalsOptions struct {
+type ReadApprovalQueueOptions struct {
 	ThreadID string
 }
 
-type PendingApprovals struct {
-	ThreadID    string            `json:"thread_id"`
-	Approvals   []PendingApproval `json:"approvals"`
-	GeneratedAt time.Time         `json:"generated_at"`
+type ApprovalQueueSnapshot struct {
+	RootThreadID      string           `json:"root_thread_id"`
+	Generation        int64            `json:"generation"`
+	Revision          int64            `json:"revision"`
+	CurrentApprovalID string           `json:"current_approval_id,omitempty"`
+	Approvals         []ApprovalRecord `json:"approvals"`
+	GeneratedAt       time.Time        `json:"generated_at"`
 }
 
-type PendingApprovalResource struct {
+type ApprovalResource struct {
 	Kind  string `json:"kind,omitempty"`
 	Value string `json:"value,omitempty"`
 }
 
-type PendingApproval struct {
-	ApprovalID  string                    `json:"approval_id,omitempty"`
-	ToolCallID  string                    `json:"tool_call_id,omitempty"`
-	ToolName    string                    `json:"tool_name,omitempty"`
-	ToolKind    string                    `json:"tool_kind,omitempty"`
-	RunID       string                    `json:"run_id,omitempty"`
-	ThreadID    string                    `json:"thread_id,omitempty"`
-	TurnID      string                    `json:"turn_id,omitempty"`
-	Step        int                       `json:"step,omitempty"`
-	BatchIndex  int                       `json:"batch_index"`
-	BatchSize   int                       `json:"batch_size"`
-	State       string                    `json:"state,omitempty"`
-	Revision    int64                     `json:"revision,omitempty"`
-	Epoch       int64                     `json:"epoch,omitempty"`
-	RequestedAt time.Time                 `json:"requested_at,omitempty"`
-	ResolvedAt  time.Time                 `json:"resolved_at,omitempty"`
-	ArgsHash    string                    `json:"args_hash,omitempty"`
-	Resources   []PendingApprovalResource `json:"resources,omitempty"`
-	Effects     []string                  `json:"effects,omitempty"`
-	Labels      map[string]string         `json:"labels,omitempty"`
-	HostContext map[string]string         `json:"host_context,omitempty"`
-	ReadOnly    bool                      `json:"read_only,omitempty"`
-	Destructive bool                      `json:"destructive,omitempty"`
-	OpenWorld   bool                      `json:"open_world,omitempty"`
-	Reason      string                    `json:"reason,omitempty"`
+type ApprovalRecord struct {
+	ApprovalID             string             `json:"approval_id,omitempty"`
+	RootThreadID           string             `json:"root_thread_id,omitempty"`
+	ParentThreadID         string             `json:"parent_thread_id,omitempty"`
+	ToolCallID             string             `json:"tool_call_id,omitempty"`
+	EffectAttemptID        string             `json:"effect_attempt_id,omitempty"`
+	ToolName               string             `json:"tool_name,omitempty"`
+	ToolKind               string             `json:"tool_kind,omitempty"`
+	RunID                  string             `json:"run_id,omitempty"`
+	ThreadID               string             `json:"thread_id,omitempty"`
+	TurnID                 string             `json:"turn_id,omitempty"`
+	Step                   int                `json:"step,omitempty"`
+	BatchIndex             int                `json:"batch_index"`
+	BatchSize              int                `json:"batch_size"`
+	State                  string             `json:"state,omitempty"`
+	Revision               int64              `json:"revision,omitempty"`
+	QueueSequence          int64              `json:"queue_sequence,omitempty"`
+	DecisionID             string             `json:"decision_id,omitempty"`
+	RequestedAt            time.Time          `json:"requested_at,omitempty"`
+	UpdatedAt              time.Time          `json:"updated_at,omitempty"`
+	ResolvedAt             time.Time          `json:"resolved_at,omitempty"`
+	ArgsHash               string             `json:"args_hash,omitempty"`
+	RequestFingerprint     string             `json:"request_fingerprint,omitempty"`
+	AuthorizationProofHash string             `json:"authorization_proof_hash,omitempty"`
+	Resources              []ApprovalResource `json:"resources,omitempty"`
+	Effects                []string           `json:"effects,omitempty"`
+	Labels                 map[string]string  `json:"labels,omitempty"`
+	HostContext            map[string]string  `json:"host_context,omitempty"`
+	ReadOnly               bool               `json:"read_only,omitempty"`
+	Destructive            bool               `json:"destructive,omitempty"`
+	OpenWorld              bool               `json:"open_world,omitempty"`
+	Reason                 string             `json:"reason,omitempty"`
 }
 
 type Thread struct {
@@ -432,11 +449,11 @@ func New(options Options) *AgentHarness {
 		options.Now = time.Now
 	}
 	return &AgentHarness{
-		options:         options,
-		threads:         map[string]*Thread{},
-		subagents:       map[string]*subagentController{},
-		subagentUpdates: make(chan struct{}),
-		approvals:       map[string]map[string]PendingApproval{},
+		options:                    options,
+		effectOutcomeFingerprinter: effectOutcomeFingerprint,
+		threads:                    map[string]*Thread{},
+		subagents:                  map[string]*subagentController{},
+		subagentUpdates:            make(chan struct{}),
 	}
 }
 
@@ -763,10 +780,11 @@ func (h *AgentHarness) nextID(prefix string) string {
 	if h.options.NewID != nil {
 		return h.options.NewID(prefix)
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.seq++
-	return fmt.Sprintf("%s-%d", prefix, h.seq)
+	var entropy [16]byte
+	if _, err := rand.Read(entropy[:]); err != nil {
+		panic(fmt.Sprintf("generate agent harness identity: %v", err))
+	}
+	return strings.TrimSpace(prefix) + "-" + hex.EncodeToString(entropy[:])
 }
 
 func (h *AgentHarness) now() time.Time {
@@ -784,6 +802,8 @@ func (h *AgentHarness) emit(ev HarnessEvent) {
 	if h.options.Sink != nil {
 		var eventType event.Type
 		switch ev.Type {
+		case EventTitlePending:
+			eventType = event.ThreadTitlePending
 		case EventTitleUpdated:
 			eventType = event.ThreadTitleUpdated
 		case EventTitleFailed:
@@ -856,16 +876,14 @@ func (h *AgentHarness) threadEntryOrdinal(entry sessiontree.Entry) int64 {
 	if h == nil || h.options.Repo == nil || strings.TrimSpace(entry.ThreadID) == "" || strings.TrimSpace(entry.ID) == "" {
 		return 0
 	}
-	entries, err := h.options.Repo.Entries(context.Background(), entry.ThreadID)
+	stored, err := h.options.Repo.Entry(context.Background(), entry.ThreadID, entry.ID)
 	if err != nil {
 		return 0
 	}
-	for index, candidate := range entries {
-		if candidate.ID == entry.ID {
-			return int64(index + 1)
-		}
+	if stored.ID != entry.ID || stored.ThreadID != entry.ThreadID || stored.PathDepth <= 0 {
+		return 0
 	}
-	return 0
+	return stored.PathDepth
 }
 
 func (h *AgentHarness) activeTurnLease(ctx context.Context, threadID string) (sessiontree.TurnLease, bool, error) {
@@ -881,20 +899,11 @@ func (h *AgentHarness) admitTurn(ctx context.Context, req sessiontree.AdmitTurnR
 	if !ok {
 		return sessiontree.AdmitTurnResult{}, errors.New("session tree repo does not support atomic turn admission")
 	}
-	fingerprintPayload, err := json.Marshal(struct {
-		ThreadID    string          `json:"thread_id"`
-		TurnID      string          `json:"turn_id"`
-		RunID       string          `json:"run_id"`
-		Input       session.Message `json:"input"`
-		RetryLeafID string          `json:"retry_leaf_id,omitempty"`
-	}{
-		ThreadID: strings.TrimSpace(req.ThreadID), TurnID: strings.TrimSpace(req.TurnID), RunID: strings.TrimSpace(req.RunID),
-		Input: session.CloneMessage(req.Input), RetryLeafID: strings.TrimSpace(req.RetryLeafID),
-	})
+	fingerprint, err := sessiontree.TurnAdmissionRequestFingerprint(req)
 	if err != nil {
 		return sessiontree.AdmitTurnResult{}, err
 	}
-	req.RequestFingerprint = sessiontree.StableHash(string(fingerprintPayload))
+	req.RequestFingerprint = fingerprint
 	req.Now = h.now()
 	result, err := repo.AdmitTurn(ctx, req)
 	if errors.Is(err, sessiontree.ErrActiveTurn) || errors.Is(err, sessiontree.ErrThreadAuthorityBusy) {
@@ -998,6 +1007,7 @@ func threadSnapshotFromJournal(journal ThreadJournalSnapshot) ThreadSnapshot {
 		TitleSource:      string(journal.Meta.TitleSource),
 		TitleUpdatedAt:   journal.Meta.TitleUpdatedAt,
 		TitleError:       journal.Meta.TitleError,
+		TitleGeneration:  journal.Meta.TitleGeneration,
 		CreatedAt:        journal.Meta.CreatedAt,
 		UpdatedAt:        journal.Meta.UpdatedAt,
 		Phase:            lifecycle.Phase(),
@@ -1041,8 +1051,7 @@ func (h *AgentHarness) SetThreadTitle(ctx context.Context, id, rawTitle string) 
 		return ThreadSnapshot{}, errors.New("session tree repo does not support atomic thread title mutation")
 	}
 	result, err := authority.SetThreadTitle(ctx, sessiontree.SetThreadTitleRequest{
-		ThreadID: id, Mode: sessiontree.ThreadTitleMutationManual, Title: title,
-		Status: sessiontree.ThreadTitleReady, Source: sessiontree.ThreadTitleSourceHost, Now: h.now(),
+		ThreadID: id, Title: title, Now: h.now(),
 	})
 	if err != nil {
 		return ThreadSnapshot{}, err
@@ -1094,6 +1103,10 @@ func (t *Thread) Summary(ctx context.Context) (ThreadSummary, error) {
 	t.mu.Lock()
 	phase := t.phase
 	t.mu.Unlock()
+	phase, err = t.canonicalThreadPhase(ctx, phase)
+	if err != nil {
+		return ThreadSummary{}, err
+	}
 	lifecycle := sessionlifecycle.Derive(path, phase)
 	return ThreadSummary{
 		ID:               meta.ID,
@@ -1102,6 +1115,7 @@ func (t *Thread) Summary(ctx context.Context) (ThreadSummary, error) {
 		TitleSource:      string(meta.TitleSource),
 		TitleUpdatedAt:   meta.TitleUpdatedAt,
 		TitleError:       meta.TitleError,
+		TitleGeneration:  meta.TitleGeneration,
 		CreatedAt:        meta.CreatedAt,
 		UpdatedAt:        meta.UpdatedAt,
 		Phase:            lifecycle.Phase(),
@@ -1130,13 +1144,49 @@ func (t *Thread) Journal(ctx context.Context) (ThreadJournalSnapshot, error) {
 	t.mu.Lock()
 	phase := t.phase
 	t.mu.Unlock()
+	phase, err = t.canonicalThreadPhase(ctx, phase)
+	if err != nil {
+		return ThreadJournalSnapshot{}, err
+	}
+	contextMessages, err := sessiontree.BuildContextChecked(path, sessiontree.ContextOptions{})
+	if err != nil {
+		return ThreadJournalSnapshot{}, err
+	}
 	return ThreadJournalSnapshot{
 		Meta:    meta,
 		Path:    path,
 		Entries: entries,
-		Context: sessiontree.BuildContext(path, sessiontree.ContextOptions{}),
+		Context: contextMessages,
 		Phase:   phase,
 	}, nil
+}
+
+func (t *Thread) canonicalThreadPhase(ctx context.Context, localPhase string) (string, error) {
+	registry := t.harness.options.TurnExecutions
+	if registry == nil || !registry.validate() {
+		return localPhase, nil
+	}
+	inspector, ok := t.harness.options.Repo.(sessiontree.ThreadAuthorityInspectionRepo)
+	if !ok {
+		return localPhase, nil
+	}
+	snapshot, err := inspector.InspectThreadAuthority(ctx, t.id)
+	if err != nil {
+		return "", err
+	}
+	if snapshot.Lease != nil && snapshot.Lease.Purpose == sessiontree.TurnLeasePurposeTurn &&
+		snapshot.Lease.Fresh(t.harness.now().UTC()) && snapshot.ClaimOperationID == "" {
+		if local, ok := t.ownedActiveTurnLease(snapshot.Lease.TurnID); ok && sessiontree.SameTurnLease(local, *snapshot.Lease) {
+			return threadPhaseTurn, nil
+		}
+		if active, ok := registry.Active(t.id); ok && sessiontree.SameTurnLease(active, *snapshot.Lease) {
+			return threadPhaseTurn, nil
+		}
+	}
+	if localPhase == threadPhaseTurn {
+		return threadPhaseIdle, nil
+	}
+	return localPhase, nil
 }
 
 func threadMessages(path []sessiontree.Entry) []ThreadMessage {
@@ -1181,7 +1231,7 @@ func (t *Thread) Retry(ctx context.Context, opts RetryOptions) (TurnResult, erro
 	runID := t.harness.nextID("run")
 	admission, err := t.harness.admitTurn(ctx, sessiontree.AdmitTurnRequest{
 		ThreadID: t.id, TurnID: turnID, RunID: runID, OwnerID: t.harness.nextID("lease"),
-		RetryLeafID: target.Entry.ID,
+		RetrySourceTurnID: target.Entry.TurnID, RetrySourceEntryID: target.Entry.ID,
 	})
 	if err != nil {
 		return TurnResult{}, err
@@ -1189,18 +1239,12 @@ func (t *Thread) Retry(ctx context.Context, opts RetryOptions) (TurnResult, erro
 	t.harness.cacheThreadAfterCommit(t)
 	lease := admission.Lease
 	if err := t.bindActiveLease(lease); err != nil {
-		leaseCtx := sessiontree.ContextWithTurnLease(ctx, lease)
-		_, finishErr := t.finishTurn(leaseCtx, runID, terminalTurnEntryID(t.id, turnID, runID), sessiontree.TurnFailed,
-			map[string]string{"run_id": runID, "diagnostic": "local_owner_bind_error"}, err.Error(), nil)
-		if finishErr != nil {
-			return TurnResult{}, finishErr
-		}
-		return TurnResult{}, err
+		return t.finalizeTurnStartupFailure(ctx, lease, turnID, runID, "local_owner_bind_error", err)
 	}
 	ctx = sessiontree.ContextWithTurnLease(ctx, lease)
 	runCtx, stopRenewal, err := t.startLeaseRenewal(ctx, lease)
 	if err != nil {
-		return TurnResult{}, err
+		return t.finalizeTurnStartupFailure(ctx, lease, turnID, runID, "lease_renewal_start_error", err)
 	}
 	defer func() {
 		if current, ok := sessiontree.TurnLeaseFromContext(ctx); ok {
@@ -1307,19 +1351,12 @@ func (t *Thread) CompletePendingTool(ctx context.Context, completion PendingTool
 	}
 	lease := admitted.Admission.Lease
 	if err := t.bindActiveLease(lease); err != nil {
-		leaseCtx := sessiontree.ContextWithTurnLease(ctx, lease)
-		_, finishErr := t.finishTurn(leaseCtx, completion.ContinuationRunID,
-			terminalTurnEntryID(t.id, completion.ContinuationTurnID, completion.ContinuationRunID), sessiontree.TurnFailed,
-			map[string]string{"run_id": completion.ContinuationRunID, "diagnostic": "local_owner_bind_error"}, err.Error(), nil)
-		if finishErr != nil {
-			return TurnResult{}, finishErr
-		}
-		return TurnResult{}, err
+		return t.finalizeTurnStartupFailure(ctx, lease, completion.ContinuationTurnID, completion.ContinuationRunID, "local_owner_bind_error", err)
 	}
 	leaseCtx := sessiontree.ContextWithTurnLease(ctx, lease)
 	runCtx, stopRenewal, err := t.startLeaseRenewal(leaseCtx, lease)
 	if err != nil {
-		return TurnResult{}, err
+		return t.finalizeTurnStartupFailure(leaseCtx, lease, completion.ContinuationTurnID, completion.ContinuationRunID, "lease_renewal_start_error", err)
 	}
 	defer func() {
 		if current, ok := sessiontree.TurnLeaseFromContext(leaseCtx); ok {
@@ -1385,6 +1422,9 @@ func (t *Thread) turnAdmissionReplayResult(ctx context.Context, admission sessio
 	if admission.Terminal == nil {
 		return result, nil
 	}
+	if err := validateTurnTerminalOutcome(t.id, turnID, runID, admission.Terminal); err != nil {
+		return TurnResult{}, fmt.Errorf("%w: %v", sessiontree.ErrAuthorityCorrupt, err)
+	}
 	canonical, ok := t.harness.options.Repo.(sessiontree.CanonicalTurnRepo)
 	if !ok {
 		return TurnResult{}, errors.New("session tree repo does not support canonical turn reads")
@@ -1422,6 +1462,7 @@ func (t *Thread) turnAdmissionReplayResult(ctx context.Context, admission sessio
 		}
 		result.Err = errors.New(admission.Terminal.Failure.Error)
 	}
+	result.FailureCode = strings.TrimSpace(admission.Terminal.Terminal.Metadata[sessiontree.TurnFailureCodeMetadataKey])
 	return result, result.Err
 }
 
@@ -1812,7 +1853,11 @@ func (t *Thread) Compact(ctx context.Context, opts CompactOptions) (CompactResul
 		_ = stopRenewal()
 		return t.finishFailedCompaction(ctx, authority, begin.Operation, requestFingerprint, runID, "provider_state_load_error", err, engine.Failed, engine.RunMetrics{})
 	}
-	history := sessiontree.BuildContext(snap.Path, sessiontree.ContextOptions{})
+	history, err := sessiontree.BuildContextChecked(snap.Path, sessiontree.ContextOptions{})
+	if err != nil {
+		_ = stopRenewal()
+		return t.finishFailedCompaction(ctx, authority, begin.Operation, requestFingerprint, runID, "context_projection_error", err, engine.Failed, engine.RunMetrics{})
+	}
 	engineOptions := t.harness.engineOptions()
 	engineOptions.RunID = runID
 	engineOptions.ThreadID = t.id
@@ -1992,18 +2037,18 @@ func (t *Thread) finishFailedCompaction(ctx context.Context, authority sessiontr
 		Status: status, Err: cause, Metrics: metrics, Diagnostics: map[string]string{"diagnostic": code}}, cause
 }
 
-func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retryUser *sessiontree.Entry) (TurnResult, error) {
-	if strings.TrimSpace(input) == "" && len(opts.Attachments) == 0 && len(opts.References) == 0 && retryUser == nil {
+func (t *Thread) run(ctx context.Context, input string, opts RunOptions, retrySource *sessiontree.Entry) (TurnResult, error) {
+	if strings.TrimSpace(input) == "" && len(opts.Attachments) == 0 && len(opts.References) == 0 && retrySource == nil {
 		return TurnResult{}, errors.New("input is required")
 	}
 	if err := t.enterTurn(); err != nil {
 		return TurnResult{}, err
 	}
 	defer t.leaveTurn()
-	return t.runEntered(ctx, input, opts, retryUser)
+	return t.runEntered(ctx, input, opts, retrySource)
 }
 
-func (t *Thread) runEntered(ctx context.Context, input string, opts RunOptions, retryUser *sessiontree.Entry) (TurnResult, error) {
+func (t *Thread) runEntered(ctx context.Context, input string, opts RunOptions, retrySource *sessiontree.Entry) (TurnResult, error) {
 	turnID := opts.TurnID
 	if turnID == "" {
 		turnID = t.harness.nextID("turn")
@@ -2047,18 +2092,12 @@ func (t *Thread) runEntered(ctx context.Context, input string, opts RunOptions, 
 	t.harness.cacheThreadAfterCommit(t)
 	lease := admission.Lease
 	if err := t.bindActiveLease(lease); err != nil {
-		leaseCtx := sessiontree.ContextWithTurnLease(ctx, lease)
-		_, finishErr := t.finishTurn(leaseCtx, runID, terminalTurnEntryID(t.id, turnID, runID), sessiontree.TurnFailed,
-			map[string]string{"run_id": runID, "diagnostic": "local_owner_bind_error"}, err.Error(), nil)
-		if finishErr != nil {
-			return TurnResult{}, finishErr
-		}
-		return TurnResult{}, err
+		return t.finalizeTurnStartupFailure(ctx, lease, turnID, runID, "local_owner_bind_error", err)
 	}
 	ctx = sessiontree.ContextWithTurnLease(ctx, lease)
 	runCtx, stopRenewal, err := t.startLeaseRenewal(ctx, lease)
 	if err != nil {
-		return TurnResult{}, err
+		return t.finalizeTurnStartupFailure(ctx, lease, turnID, runID, "lease_renewal_start_error", err)
 	}
 	defer func() {
 		if current, ok := sessiontree.TurnLeaseFromContext(ctx); ok {
@@ -2069,18 +2108,29 @@ func (t *Thread) runEntered(ctx context.Context, input string, opts RunOptions, 
 	t.harness.emitEntryCommitted(admission.UserMessage, runID)
 	t.harness.emit(HarnessEvent{Type: EventTurnStarted, RunID: runID, ThreadID: t.id, TurnID: turnID})
 	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: admission.UserMessage.ID, ParentID: admission.UserMessage.ParentID})
+	automaticTitleExecution, titleErr := t.startAutomaticTitle(runCtx, turnID, runID, admission.UserMessage.ID, message)
+	if titleErr != nil {
+		persistCtx, cancelPersist := turnFinalizationContext(runCtx)
+		result, runErr := t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(titleErr), titleErr, "automatic_title_begin_error", engine.FailureOriginStorage)
+		cancelPersist()
+		if renewalErr := stopRenewal(); renewalErr != nil && runErr == nil {
+			return result, renewalErr
+		}
+		return result, runErr
+	}
 	opts.TurnID = turnID
 	opts.RunID = runID
 	opts.AdmissionCommitted = true
 	opts.AdmissionBaseLeafID = admission.BaseLeafID
-	result, runErr := t.runLeased(runCtx, input, opts, retryUser)
+	result, runErr := t.runLeased(runCtx, input, opts, retrySource)
 	if renewalErr := stopRenewal(); renewalErr != nil && runErr == nil {
-		return result, renewalErr
+		runErr = renewalErr
 	}
+	automaticTitleExecution.FinishMain(runErr != nil)
 	return result, runErr
 }
 
-func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, retryUser *sessiontree.Entry) (TurnResult, error) {
+func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, retrySource *sessiontree.Entry) (TurnResult, error) {
 	turnID := opts.TurnID
 	runID := strings.TrimSpace(opts.RunID)
 	if runID == "" {
@@ -2097,22 +2147,36 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	if err != nil {
 		persistCtx, cancelPersist := turnFinalizationContext(ctx)
 		defer cancelPersist()
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "thread_read_error")
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "thread_read_error", engine.FailureOriginStorage)
 	}
 	providerStateLeafID := strings.TrimSpace(opts.AdmissionBaseLeafID)
 	previousProviderState, err := t.harness.providerState(ctx, t.id, providerStateLeafID)
 	if err != nil {
 		persistCtx, cancelPersist := turnFinalizationContext(ctx)
 		defer cancelPersist()
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "provider_state_load_error")
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "provider_state_load_error", engine.FailureOriginStorage)
 	}
 	snap, err := t.Journal(ctx)
 	if err != nil {
 		persistCtx, cancelPersist := turnFinalizationContext(ctx)
 		defer cancelPersist()
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "snapshot_error")
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "snapshot_error", engine.FailureOriginStorage)
 	}
-	history := sessiontree.BuildContext(snap.Path, sessiontree.ContextOptions{})
+	historyPath := snap.Path
+	if retrySource != nil {
+		historyPath, err = t.harness.options.Repo.Path(ctx, t.id, retrySource.ID)
+		if err != nil {
+			persistCtx, cancelPersist := turnFinalizationContext(ctx)
+			defer cancelPersist()
+			return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "retry_source_path_error", engine.FailureOriginStorage)
+		}
+	}
+	history, err := sessiontree.BuildContextChecked(historyPath, sessiontree.ContextOptions{})
+	if err != nil {
+		persistCtx, cancelPersist := turnFinalizationContext(ctx)
+		defer cancelPersist()
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "context_projection_error", engine.FailureOriginStorage)
+	}
 	engineOptions := t.harness.engineOptions()
 	engineOptions.RunID = runID
 	engineOptions.ThreadID = t.id
@@ -2124,6 +2188,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	engineOptions.Labels = opts.Labels
 	engineOptions.ContextPolicy = contextpolicy.Normalize(engineOptions.ContextPolicy)
 	applyRunOptions(&engineOptions, opts)
+	engineOptions.EffectBatchPreflight = t.preflightEffectBatch
 	engineOptions.EffectDispatcher = t.effectDispatcher()
 	engineOptions.EffectResultFinalizer = t.finalizeEffectResult
 	engineOptions.ProviderRequestGate = t.enterProviderRequest
@@ -2131,7 +2196,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	if err := t.appendContextPolicyEvent(ctx, turnID, runID, engineOptions.ProviderName, engineOptions.Model, engineOptions.ContextPolicy); err != nil {
 		persistCtx, cancelPersist := turnFinalizationContext(ctx)
 		defer cancelPersist()
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "append_context_policy_error")
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "append_context_policy_error", engine.FailureOriginStorage)
 	}
 	eng, err := engine.New(engine.Config{
 		Provider:     t.harness.options.Provider,
@@ -2145,7 +2210,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	if err != nil {
 		persistCtx, cancelPersist := turnFinalizationContext(ctx)
 		defer cancelPersist()
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, err, "engine_config_error")
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, err, "engine_config_error", engine.FailureOriginContract)
 	}
 	downstream := t.harness.options.Sink
 	if opts.Sink != nil {
@@ -2165,25 +2230,34 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	})
 	persistCtx, cancelPersist := turnFinalizationContext(ctx)
 	defer cancelPersist()
+	resultFailureCode := ""
+	if result.Err != nil {
+		var classificationErr error
+		resultFailureCode, classificationErr = turnFailureCode(result.Status, result.Err, result.FailureOrigin)
+		if classificationErr != nil {
+			contractErr := fmt.Errorf("engine returned invalid failure classification: %w", classificationErr)
+			return t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, contractErr, "engine_failure_classification_error", engine.FailureOriginContract)
+		}
+	}
 	projection.ctx = persistCtx
 	if projection.err != nil {
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(projection.err), projection.err, "projection_error")
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(projection.err), projection.err, "projection_error", engine.FailureOriginStorage)
 	}
 	if err := projection.FlushForTurnStatus(result.Status, result.Err); err != nil {
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "projection_flush_error")
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "projection_flush_error", engine.FailureOriginStorage)
 	}
 	current, err := t.Journal(persistCtx)
 	if err != nil {
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "snapshot_error")
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "snapshot_error", engine.FailureOriginStorage)
 	}
 	if err := t.appendDelta(persistCtx, turnID, runID, history, result.Messages, current.Path); err != nil {
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "append_delta_error")
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "append_delta_error", engine.FailureOriginStorage)
 	}
 	status := markerForStatus(result.Status)
 	savePointMetadata := markerMetadata(runID, result)
 	savePointMetadata["reason"] = "run_result"
 	if entry, err := sessiontree.AppendTurnMarker(persistCtx, t.harness.options.Repo, t.id, turnID, sessiontree.TurnSavePoint, savePointMetadata); err != nil {
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "save_point_error")
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "save_point_error", engine.FailureOriginStorage)
 	} else {
 		t.harness.emitEntryCommitted(entry, runID)
 	}
@@ -2194,6 +2268,7 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	}
 	if result.Err != nil {
 		terminalMetadata["failure_reason"] = result.Err.Error()
+		terminalMetadata[sessiontree.TurnFailureCodeMetadataKey] = resultFailureCode
 	}
 	if result.Status == engine.Waiting {
 		terminalMetadata["interrupt_reason"] = "ask_user"
@@ -2207,13 +2282,8 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 	if result.Err != nil {
 		failureMessage = result.Err.Error()
 	}
-	if result.Err == nil && (result.Status == engine.Completed || result.Status == engine.Waiting) {
-		if err := t.ensureThreadTitle(persistCtx, turnID); err != nil {
-			t.harness.emit(HarnessEvent{Type: EventTitleFailed, ThreadID: t.id, TurnID: turnID, Message: err.Error()})
-		}
-	}
 	if _, err := t.finishTurn(persistCtx, runID, terminalEntryID, status, terminalMetadata, failureMessage, stateToSave); err != nil {
-		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "turn_finalization_error")
+		return t.finalizeFailedTurn(persistCtx, turnID, runID, statusForError(err), err, "turn_finalization_error", engine.FailureOriginStorage)
 	}
 	eventType := EventTurnCompleted
 	if result.Status == engine.Failed {
@@ -2223,7 +2293,9 @@ func (t *Thread) runLeased(ctx context.Context, input string, opts RunOptions, r
 		eventType = EventTurnAborted
 	}
 	t.harness.emit(HarnessEvent{Type: eventType, RunID: runID, ThreadID: t.id, TurnID: turnID, Status: string(result.Status), Message: result.Output})
-	return t.turnResultFromEngine(turnID, runID, result, nil), result.Err
+	turn := t.turnResultFromEngine(turnID, runID, result, nil)
+	turn.FailureCode = strings.TrimSpace(terminalMetadata[sessiontree.TurnFailureCodeMetadataKey])
+	return turn, result.Err
 }
 
 func (t *Thread) finishTurn(ctx context.Context, runID, terminalEntryID string, status sessiontree.TurnMarkerStatus, metadata map[string]string, failureMessage string, providerState *provider.State) (sessiontree.FinishTurnResult, error) {
@@ -2300,77 +2372,18 @@ func mergeTerminalMetadata(dst, src map[string]string) {
 	}
 }
 
-func (t *Thread) ensureThreadTitle(ctx context.Context, turnID string) error {
-	generator := t.harness.options.TitleGenerator
-	if generator == nil {
-		return nil
-	}
-	meta, err := t.harness.options.Repo.Thread(ctx, t.id)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(meta.Title) != "" {
-		return nil
-	}
-	path, err := t.harness.options.Repo.Path(ctx, t.id, meta.LeafID)
-	if err != nil {
-		return err
-	}
-	messages := sessiontree.BuildContext(path, sessiontree.ContextOptions{})
-	releaseProvider, gateErr := t.enterProviderRequest(ctx)
-	if gateErr != nil {
-		return gateErr
-	}
-	result, err := generator.GenerateTitle(ctx, TitleRequest{ThreadID: t.id, TurnID: turnID, Messages: session.CloneMessages(messages)})
-	releaseProvider()
-	now := t.harness.now()
-	authority, ok := t.harness.options.Repo.(sessiontree.ThreadTitleAuthorityRepo)
-	if !ok {
-		return errors.New("session tree repo does not support atomic thread title mutation")
-	}
-	if err != nil {
-		_, updateErr := authority.SetThreadTitle(ctx, sessiontree.SetThreadTitleRequest{
-			ThreadID: t.id, Mode: sessiontree.ThreadTitleMutationAutomatic,
-			Status: sessiontree.ThreadTitleFailed, Error: err.Error(), Now: now,
-		})
-		if updateErr != nil {
-			return updateErr
-		}
-		return err
-	}
-	title := normalizeThreadTitle(result.Title, defaultThreadTitleMaxRunes)
-	if title == "" {
-		err = errors.New("thread title is empty after normalization")
-		_, updateErr := authority.SetThreadTitle(ctx, sessiontree.SetThreadTitleRequest{
-			ThreadID: t.id, Mode: sessiontree.ThreadTitleMutationAutomatic,
-			Status: sessiontree.ThreadTitleFailed, Error: err.Error(), Now: now,
-		})
-		if updateErr != nil {
-			return updateErr
-		}
-		return err
-	}
-	if result.Source != "" && result.Source != sessiontree.ThreadTitleSourceProvider {
-		return errors.New("automatic thread title source must be provider")
-	}
-	updated, updateErr := authority.SetThreadTitle(ctx, sessiontree.SetThreadTitleRequest{
-		ThreadID: t.id, Mode: sessiontree.ThreadTitleMutationAutomatic, Title: title,
-		Status: sessiontree.ThreadTitleReady, Source: sessiontree.ThreadTitleSourceProvider, Now: now,
-	})
-	if updateErr != nil {
-		return updateErr
-	}
-	if updated.Changed {
-		t.harness.emit(HarnessEvent{Type: EventTitleUpdated, ThreadID: t.id, TurnID: turnID, Message: title, Metadata: map[string]string{"source": string(sessiontree.ThreadTitleSourceProvider)}})
-	}
-	return nil
-}
-
-func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, status engine.Status, err error, diagnostic string) (TurnResult, error) {
+func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, status engine.Status, err error, diagnostic string, origin engine.FailureOrigin) (TurnResult, error) {
 	if status == "" {
 		status = statusForError(err)
 	}
-	result := engine.Result{Status: status, Err: err}
+	failureCode, classificationErr := turnFailureCode(status, err, origin)
+	if classificationErr != nil {
+		err = fmt.Errorf("invalid turn failure classification: %w", classificationErr)
+		status = engine.Failed
+		origin = engine.FailureOriginContract
+		failureCode = sessiontree.TurnFailureEngineContract
+	}
+	result := engine.Result{Status: status, FailureOrigin: origin, Err: err}
 	meta, readErr := t.harness.options.Repo.Thread(ctx, t.id)
 	if readErr != nil {
 		return TurnResult{}, readErr
@@ -2389,6 +2402,7 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 	if diagnostic != "" {
 		metadata["diagnostic"] = diagnostic
 	}
+	metadata[sessiontree.TurnFailureCodeMetadataKey] = failureCode
 	failureMessage := ""
 	if err != nil {
 		failureMessage = err.Error()
@@ -2401,7 +2415,23 @@ func (t *Thread) finalizeFailedTurn(ctx context.Context, turnID, runID string, s
 		eventType = EventTurnAborted
 	}
 	t.harness.emit(HarnessEvent{Type: eventType, RunID: runID, ThreadID: t.id, TurnID: turnID, Status: string(status)})
-	return t.turnResultFromEngine(turnID, runID, result, map[string]string{"diagnostic": diagnostic}), err
+	turn := t.turnResultFromEngine(turnID, runID, result, map[string]string{"diagnostic": diagnostic})
+	turn.FailureCode = strings.TrimSpace(metadata[sessiontree.TurnFailureCodeMetadataKey])
+	return turn, err
+}
+
+func (t *Thread) finalizeTurnStartupFailure(ctx context.Context, lease sessiontree.TurnLease, turnID, runID, diagnostic string, cause error) (TurnResult, error) {
+	if cause == nil {
+		cause = errors.New("turn execution startup failed")
+	}
+	leaseCtx := sessiontree.ContextWithTurnLease(ctx, lease)
+	persistCtx, cancelPersist := turnFinalizationContext(leaseCtx)
+	defer cancelPersist()
+	result, err := t.finalizeFailedTurn(persistCtx, turnID, runID, engine.Failed, cause, diagnostic, engine.FailureOriginContract)
+	if err != nil && result.Status == "" {
+		return result, errors.Join(cause, err)
+	}
+	return result, err
 }
 
 func statusForError(err error) engine.Status {
@@ -2555,11 +2585,7 @@ func turnResultFromEngine(turnID string, runID string, result engine.Result, dia
 }
 
 func (t *Thread) turnResultFromEngine(turnID string, runID string, result engine.Result, diagnostics map[string]string) TurnResult {
-	out := turnResultFromEngine(turnID, runID, result, diagnostics)
-	if t != nil && t.harness != nil {
-		out.PendingApprovals = t.harness.snapshotPendingApprovals(t.id)
-	}
-	return out
+	return turnResultFromEngine(turnID, runID, result, diagnostics)
 }
 
 func cloneEngineControlSignal(in *engine.ControlSignal) *engine.ControlSignal {
@@ -2649,10 +2675,14 @@ func (t *Thread) checkIdle(ctx context.Context) error {
 
 func (t *Thread) leaveTurn() {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	lease := t.activeLease
 	t.active = false
 	t.activeLease = sessiontree.TurnLease{}
 	t.phase = threadPhaseIdle
+	t.mu.Unlock()
+	if registry := t.harness.options.TurnExecutions; registry != nil && registry.validate() && lease.Purpose == sessiontree.TurnLeasePurposeTurn && strings.TrimSpace(lease.OwnerID) != "" {
+		registry.Unregister(lease)
+	}
 }
 
 func (t *Thread) bindActiveLease(lease sessiontree.TurnLease) error {
@@ -2680,11 +2710,22 @@ func (t *Thread) bindActiveLease(lease sessiontree.TurnLease) error {
 		return ErrActiveTurn
 	}
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	if !t.active || strings.TrimSpace(t.activeLease.OwnerID) != "" {
+		t.mu.Unlock()
 		return ErrActiveTurn
 	}
 	t.activeLease = lease
+	t.mu.Unlock()
+	if registry := t.harness.options.TurnExecutions; registry != nil && registry.validate() && lease.Purpose == sessiontree.TurnLeasePurposeTurn {
+		if err := registry.Register(lease); err != nil {
+			t.mu.Lock()
+			if sameTurnLease(t.activeLease, lease) {
+				t.activeLease = sessiontree.TurnLease{}
+			}
+			t.mu.Unlock()
+			return err
+		}
+	}
 	return nil
 }
 
@@ -2693,24 +2734,40 @@ func (t *Thread) clearActiveLease(lease sessiontree.TurnLease) {
 		return
 	}
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	matched := sameTurnLease(t.activeLease, lease)
 	if sameTurnLease(t.activeLease, lease) {
 		t.activeLease = sessiontree.TurnLease{}
+	}
+	t.mu.Unlock()
+	if registry := t.harness.options.TurnExecutions; matched && registry != nil && registry.validate() && lease.Purpose == sessiontree.TurnLeasePurposeTurn {
+		registry.Unregister(lease)
 	}
 }
 
 func (t *Thread) replaceActiveLease(previous, renewed sessiontree.TurnLease) error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	if !t.active || !sameTurnLease(t.activeLease, previous) {
+		t.mu.Unlock()
 		return sessiontree.ErrStaleAuthority
 	}
 	if previous.ThreadID != renewed.ThreadID || previous.Purpose != renewed.Purpose ||
 		previous.OwnerID != renewed.OwnerID || previous.Generation != renewed.Generation ||
 		renewed.Heartbeat <= previous.Heartbeat {
+		t.mu.Unlock()
 		return sessiontree.ErrStaleAuthority
 	}
 	t.activeLease = renewed
+	t.mu.Unlock()
+	if registry := t.harness.options.TurnExecutions; registry != nil && registry.validate() && previous.Purpose == sessiontree.TurnLeasePurposeTurn {
+		if err := registry.Renew(previous, renewed); err != nil {
+			t.mu.Lock()
+			if sameTurnLease(t.activeLease, renewed) {
+				t.activeLease = previous
+			}
+			t.mu.Unlock()
+			return err
+		}
+	}
 	return nil
 }
 
@@ -2940,6 +2997,15 @@ func (t *Thread) appendMessageAt(ctx context.Context, turnID string, runID strin
 }
 
 func (t *Thread) appendApprovalEvent(ctx context.Context, turnID string, runID string, ev event.Event) error {
+	entry, err := t.harness.options.Repo.Append(ctx, approvalEventEntry(t.id, turnID, ev), sessiontree.AppendOptions{})
+	if err != nil {
+		return err
+	}
+	t.emitCommittedApprovalEvent(entry, runID, ev)
+	return nil
+}
+
+func approvalEventEntry(threadID, turnID string, ev event.Event) sessiontree.Entry {
 	metadata := map[string]string{
 		subAgentDetailKindKey:     subAgentApprovalEntryKind,
 		subAgentDetailTypeKey:     string(ev.Type),
@@ -2962,19 +3028,18 @@ func (t *Thread) appendApprovalEvent(ctx context.Context, turnID string, runID s
 			}
 		}
 	}
-	entry, err := t.harness.options.Repo.Append(ctx, sessiontree.Entry{
-		ThreadID: t.id,
+	return sessiontree.Entry{
+		ThreadID: threadID,
 		TurnID:   turnID,
 		Type:     sessiontree.EntryCustom,
 		Message:  session.Message{Activity: sessionActivityPresentation(sanitizeActivityPresentation(ev.Activity))},
 		Metadata: metadata,
-	}, sessiontree.AppendOptions{})
-	if err != nil {
-		return err
 	}
+}
+
+func (t *Thread) emitCommittedApprovalEvent(entry sessiontree.Entry, runID string, ev event.Event) {
 	t.harness.emitEntryCommitted(entry, runID)
-	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: turnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: string(ev.Type)})
-	return nil
+	t.harness.emit(HarnessEvent{Type: EventEntryAppended, RunID: runID, ThreadID: t.id, TurnID: entry.TurnID, EntryID: entry.ID, ParentID: entry.ParentID, Message: string(ev.Type)})
 }
 
 func (t *Thread) appendToolDispatchEvent(ctx context.Context, turnID string, runID string, ev event.Event) error {
@@ -3572,7 +3637,11 @@ func retryTarget(path []sessiontree.Entry) retryTargetResult {
 		for i := len(path) - 1; i >= 0; i-- {
 			if path[i].TurnID == failedTurnID && path[i].Type == sessiontree.EntryTurnMarker && path[i].TurnStatus == sessiontree.TurnSavePoint {
 				if i > 0 {
-					return retryTargetResult{Entry: path[i-1], Source: "save_point"}
+					candidate := path[i-1]
+					if _, eligible, err := sessiontree.RetrySourceHasRetryEligibleDurableInput(path, candidate.TurnID, candidate.ID); err == nil && eligible {
+						return retryTargetResult{Entry: candidate, Source: "save_point"}
+					}
+					return retryTargetResult{}
 				}
 			}
 		}
@@ -3581,7 +3650,10 @@ func retryTarget(path []sessiontree.Entry) retryTargetResult {
 		if path[i].Type != sessiontree.EntryUserMessage {
 			continue
 		}
-		return retryTargetResult{Entry: path[i], Source: "user"}
+		if _, eligible, err := sessiontree.RetrySourceHasRetryEligibleDurableInput(path, path[i].TurnID, path[i].ID); err == nil && eligible {
+			return retryTargetResult{Entry: path[i], Source: "user"}
+		}
+		return retryTargetResult{}
 	}
 	return retryTargetResult{}
 }
@@ -3621,14 +3693,12 @@ type turnProjection struct {
 }
 
 type pendingToolMessage struct {
-	message    session.Message
-	observedAt time.Time
+	message          session.Message
+	observedAt       time.Time
+	canonicalEntryID string
 }
 
 func (p *turnProjection) Emit(ev event.Event) {
-	if isApprovalEvent(ev.Type) {
-		p.thread.harness.updatePendingApproval(ev)
-	}
 	if p.downstream != nil {
 		p.downstream.Emit(event.SanitizeWithPolicy(ev, p.thread.harness.options.SinkPolicy))
 	}
@@ -3691,8 +3761,9 @@ func (p *turnProjection) Emit(ev event.Event) {
 			return
 		}
 		p.pendingResults = append(p.pendingResults, pendingToolMessage{
-			message:    session.Message{Role: session.Tool, Content: ev.Result, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolResult: toolResultViewFromEvent(ev), Activity: sessionActivityPresentation(sanitizeActivityPresentation(ev.Activity))},
-			observedAt: ev.Timestamp,
+			message:          session.Message{Role: session.Tool, Content: ev.Result, ToolCallID: ev.ToolID, ToolName: ev.ToolName, ToolResult: toolResultViewFromEvent(ev), Activity: sessionActivityPresentation(sanitizeActivityPresentation(ev.Activity))},
+			observedAt:       ev.Timestamp,
+			canonicalEntryID: ev.CanonicalEntryID,
 		})
 		if size := eventBatchSize(ev.Metadata); size > p.pendingBatchSize {
 			p.pendingBatchSize = size
@@ -3983,7 +4054,7 @@ func (p *turnProjection) flushPendingToolBatch(force bool) error {
 		if !ok {
 			break
 		}
-		committed, err := p.committedEffectResult(result.message)
+		committed, err := p.committedEffectResult(result.message, result.canonicalEntryID)
 		if err != nil {
 			return err
 		}
@@ -4037,26 +4108,28 @@ func (p *turnProjection) flushPendingToolBatch(force bool) error {
 	return nil
 }
 
-func (p *turnProjection) committedEffectResult(message session.Message) (bool, error) {
-	meta, err := p.thread.harness.options.Repo.Thread(p.ctx, p.thread.id)
-	if err != nil {
-		return false, err
+func (p *turnProjection) committedEffectResult(message session.Message, canonicalEntryID string) (bool, error) {
+	canonicalEntryID = strings.TrimSpace(canonicalEntryID)
+	if canonicalEntryID == "" {
+		return false, nil
 	}
-	path, err := p.thread.harness.options.Repo.Path(p.ctx, p.thread.id, meta.LeafID)
+	entry, err := p.thread.harness.options.Repo.Entry(p.ctx, p.thread.id, canonicalEntryID)
 	if err != nil {
-		return false, err
-	}
-	for index := len(path) - 1; index >= 0; index-- {
-		entry := path[index]
-		if entry.TurnID != p.turnID || entry.Type != sessiontree.EntryToolResult || entry.Message.ToolCallID != message.ToolCallID {
-			continue
-		}
-		if durableSignature(entry.Message) != durableSignature(message) {
+		if errors.Is(err, sessiontree.ErrEntryNotFound) || errors.Is(err, sessiontree.ErrThreadNotFound) {
 			return false, sessiontree.ErrAuthorityCorrupt
 		}
-		return true, nil
+		return false, err
 	}
-	return false, nil
+	if entry.ID != canonicalEntryID || entry.ThreadID != p.thread.id || entry.TurnID != p.turnID || entry.Type != sessiontree.EntryToolResult || entry.Message.ToolCallID != message.ToolCallID || entry.Message.ToolName != message.ToolName {
+		return false, sessiontree.ErrAuthorityCorrupt
+	}
+	if err := sessiontree.ValidateEntryIntegrity(entry); err != nil {
+		return false, err
+	}
+	if durableSignature(entry.Message) != durableSignature(message) {
+		return false, sessiontree.ErrAuthorityCorrupt
+	}
+	return true, nil
 }
 
 func eventBatchSize(metadata any) int {

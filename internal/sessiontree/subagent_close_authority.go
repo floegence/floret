@@ -195,6 +195,9 @@ func (r *MemoryRepo) PrepareSubAgentClose(_ context.Context, req PrepareSubAgent
 		if strings.TrimSpace(meta.CloseOperationID) != "" {
 			return PrepareSubAgentCloseResult{}, ErrAuthorityCorrupt
 		}
+		if meta.TitleStatus == ThreadTitlePending {
+			return PrepareSubAgentCloseResult{}, ErrThreadAuthorityBusy
+		}
 		if r.threadAuthorityClaimedLocked(threadID) {
 			return PrepareSubAgentCloseResult{}, ErrThreadAuthorityBusy
 		}

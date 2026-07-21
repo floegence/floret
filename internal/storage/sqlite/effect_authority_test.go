@@ -167,6 +167,8 @@ func TestFinishTurnCancelsPreparedAndRejectsDispatchingEffect(t *testing.T) {
 			}
 			finish := sessiontree.FinishTurnRequest{
 				Lease: lease, RunID: "run", TerminalEntryID: "terminal", Status: sessiontree.TurnFailed,
+				Metadata:           map[string]string{sessiontree.TurnFailureCodeMetadataKey: sessiontree.TurnFailureEffectOutcomeUnknown},
+				FailureMessage:     sessiontree.InterruptedTurnEffectOutcomeUnknownMessage,
 				OutcomeFingerprint: "turn-outcome", Now: now,
 			}
 			if _, err := repo.FinishTurn(context.Background(), finish); !errors.Is(err, sessiontree.ErrEffectOutcomeUnknown) {

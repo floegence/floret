@@ -9,6 +9,12 @@ func IsReferenceOnlyUserMessage(message Message) bool {
 	return message.Role == User && strings.TrimSpace(message.Content) == "" && len(message.Attachments) == 0 && len(message.References) > 0
 }
 
+// HasRetryEligibleDurableInput reports whether a canonical user message can be
+// replayed without depending on turn-scoped supplemental context.
+func HasRetryEligibleDurableInput(message Message) bool {
+	return message.Role == User && (strings.TrimSpace(message.Content) != "" || len(message.Attachments) > 0)
+}
+
 // ProjectProviderHistory removes durable reference data from the provider view.
 // The returned insertion index is relative to the projected non-system history.
 func ProjectProviderHistory(history []Message, supplementalAnchorEntryID string) ([]Message, int, error) {

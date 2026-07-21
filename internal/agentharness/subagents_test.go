@@ -355,6 +355,60 @@ func TestWaitSubAgentsRequiresAllTargetsToReachTerminalState(t *testing.T) {
 	}
 }
 
+func TestWaitSubAgentsDoesNotSettleUnfinishedLiveTurnAsInterrupted(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+	repo := sessiontree.NewMemoryRepo()
+	if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "parent", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CreateThread(ctx, sessiontree.ThreadMeta{
+		ID: "child", ParentThreadID: "parent", TaskName: "worker", AgentPath: "/root/worker",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendTurnMarker(ctx, repo, "child", "turn-live", sessiontree.TurnStarted, map[string]string{"run_id": "run-live"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessiontree.AppendMessage(ctx, repo, "child", "turn-live", session.Message{Role: session.User, Content: "work"}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newTestHarness(scriptharness.NewScriptedProvider(), repo, cache.NewMemoryStore())
+	thread := h.cacheThread("child")
+	ctrl := &subagentController{
+		parentThreadID: "parent", threadID: "child", path: "/root/worker", taskName: "worker",
+		thread: thread, running: true, turnID: "turn-live",
+	}
+	h.mu.Lock()
+	h.subagents[subAgentControllerKey("child")] = ctrl
+	h.mu.Unlock()
+
+	waited, err := h.WaitSubAgents(ctx, WaitSubAgentsOptions{
+		ParentThreadID: "parent", ChildThreadIDs: []string{"child"}, Timeout: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !waited.TimedOut || len(waited.Snapshots) != 1 || waited.Snapshots[0].Status != SubAgentStatusRunning {
+		t.Fatalf("unfinished live turn settled before its terminal marker: %#v", waited)
+	}
+
+	if _, err := sessiontree.AppendTurnMarker(ctx, repo, "child", "turn-live", sessiontree.TurnAborted, map[string]string{"recoverable": "true"}); err != nil {
+		t.Fatal(err)
+	}
+	waited, err = h.WaitSubAgents(ctx, WaitSubAgentsOptions{
+		ParentThreadID: "parent", ChildThreadIDs: []string{"child"}, Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waited.TimedOut || len(waited.Snapshots) != 1 || waited.Snapshots[0].Status != SubAgentStatusInterrupted {
+		t.Fatalf("canonical interrupted terminal did not settle wait: %#v", waited)
+	}
+}
+
 func TestCloseSubAgentCancelsChildAndRejectsFurtherInput(t *testing.T) {
 	ctx := context.Background()
 	provider := newBlockingProvider()
@@ -598,9 +652,54 @@ func TestReadSubAgentDetailProjectsToolAndApprovalEvents(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	waited, err := h.WaitSubAgents(ctx, WaitSubAgentsOptions{ParentThreadID: "parent", ChildThreadIDs: []string{"child"}, Timeout: 2 * time.Second})
-	if err != nil {
+	type waitOutcome struct {
+		result WaitSubAgentsResult
+		err    error
+	}
+	waitDone := make(chan waitOutcome, 1)
+	go func() {
+		result, err := h.WaitSubAgents(ctx, WaitSubAgentsOptions{ParentThreadID: "parent", ChildThreadIDs: []string{"child"}, Timeout: 2 * time.Second})
+		waitDone <- waitOutcome{result: result, err: err}
+	}()
+	var queue ApprovalQueueSnapshot
+	var err error
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		queue, err = h.ReadApprovalQueue(ctx, ReadApprovalQueueOptions{ThreadID: "parent"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(queue.Approvals) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			childQueue, childErr := h.ReadApprovalQueue(ctx, ReadApprovalQueueOptions{ThreadID: "child"})
+			childMeta, metaErr := h.options.Repo.Thread(ctx, "child")
+			t.Fatalf("timed out waiting for child approval: root=%#v child=%#v child_err=%v child_meta=%#v meta_err=%v", queue, childQueue, childErr, childMeta, metaErr)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	pending := queue.Approvals[0]
+	if _, err := h.ResolveApproval(ctx, ResolveApprovalOptions{
+		DecisionID: "decision-approve-child-write", ExpectedRootThreadID: queue.RootThreadID,
+		ExpectedGeneration: queue.Generation, ExpectedRevision: queue.Revision,
+		ExpectedCurrent: sessiontree.ApprovalIdentity{
+			ApprovalID: pending.ApprovalID, ThreadID: pending.ThreadID, TurnID: pending.TurnID,
+			RunID: pending.RunID, ToolCallID: pending.ToolCallID, EffectAttemptID: pending.EffectAttemptID,
+		},
+		ExpectedApprovalRevision: pending.Revision, Decision: sessiontree.ApprovalDecisionApprove,
+	}); err != nil {
 		t.Fatal(err)
+	}
+	var waited WaitSubAgentsResult
+	select {
+	case outcome := <-waitDone:
+		waited, err = outcome.result, outcome.err
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for rejected child turn")
 	}
 	if waited.TimedOut || len(waited.Snapshots) != 1 || waited.Snapshots[0].Status != SubAgentStatusFailed {
 		t.Fatalf("waited = %#v", waited)
@@ -640,6 +739,15 @@ func TestReadSubAgentDetailProjectsToolAndApprovalEvents(t *testing.T) {
 	}
 	if _, ok := approval.Approval.Metadata["resources"]; ok {
 		t.Fatalf("approval detail must not expose raw resources: %#v", approval.Approval.Metadata)
+	}
+	finalizedApprovals := 0
+	for _, item := range detail.Events {
+		if item.Kind == SubAgentDetailEventApproval && item.Approval != nil && item.Approval.State == "rejected" {
+			finalizedApprovals++
+		}
+	}
+	if finalizedApprovals != 1 {
+		t.Fatalf("post-decision rejection details=%d, want exactly one: %#v", finalizedApprovals, detail.Events)
 	}
 	result := firstSubAgentDetailEvent(detail.Events, SubAgentDetailEventToolResult)
 	if result.ToolResult == nil || !strings.Contains(result.ToolResult.Content, ErrEffectUnauthorized.Error()) || result.ToolResult.Status != string(observation.ActivityStatusError) {

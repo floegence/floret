@@ -36,6 +36,131 @@ import (
 	flruntime "github.com/floegence/floret/runtime"
 )
 
+type cancelRaceApprovalTurnHost struct {
+	queueStarted chan struct{}
+	queueExited  chan struct{}
+	startOnce    sync.Once
+	turnErr      error
+}
+
+func (h *cancelRaceApprovalTurnHost) RunTurn(ctx context.Context, req flruntime.RunTurnRequest) (flruntime.TurnResult, error) {
+	<-ctx.Done()
+	return flruntime.TurnResult{
+		ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, Status: flruntime.TurnStatusCancelled,
+	}, h.turnErr
+}
+
+func (h *cancelRaceApprovalTurnHost) ReadApprovalQueue(ctx context.Context, _ flruntime.ReadApprovalQueueRequest) (flruntime.ApprovalQueue, error) {
+	h.startOnce.Do(func() { close(h.queueStarted) })
+	<-ctx.Done()
+	close(h.queueExited)
+	return flruntime.ApprovalQueue{}, errors.New("sql: transaction has already been committed or rolled back")
+}
+
+func (*cancelRaceApprovalTurnHost) ResolveApproval(context.Context, flruntime.ResolveApprovalRequest) (flruntime.ResolveApprovalResult, error) {
+	return flruntime.ResolveApprovalResult{}, errors.New("resolve approval must not be called")
+}
+
+func TestRunTestUITurnReturnsCanonicalTurnOutcomeWhenApprovalPollingIsCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	host := &cancelRaceApprovalTurnHost{
+		queueStarted: make(chan struct{}),
+		queueExited:  make(chan struct{}),
+		turnErr:      errors.New("canonical turn cancelled"),
+	}
+	type outcome struct {
+		result flruntime.TurnResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := runTestUITurn(ctx, host, flruntime.RunTurnRequest{ThreadID: "thread", TurnID: "turn", RunID: "run"})
+		done <- outcome{result: result, err: err}
+	}()
+	select {
+	case <-host.queueStarted:
+	case <-time.After(time.Second):
+		t.Fatal("approval polling did not start")
+	}
+	cancel()
+	select {
+	case got := <-done:
+		if !errors.Is(got.err, host.turnErr) || strings.Contains(got.err.Error(), "approval queue") {
+			t.Fatalf("runTestUITurn error = %v, want canonical turn outcome", got.err)
+		}
+		if got.result.ThreadID != "thread" || got.result.TurnID != "turn" || got.result.RunID != "run" {
+			t.Fatalf("runTestUITurn result = %#v", got.result)
+		}
+		select {
+		case <-host.queueExited:
+		default:
+			t.Fatal("runTestUITurn returned before the approval poll exited")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runTestUITurn did not return after cancellation")
+	}
+}
+
+type completedTurnBlockedApprovalHost struct {
+	queueStarted chan struct{}
+	queueExited  chan struct{}
+	turnRelease  chan struct{}
+}
+
+func (h *completedTurnBlockedApprovalHost) RunTurn(_ context.Context, req flruntime.RunTurnRequest) (flruntime.TurnResult, error) {
+	<-h.turnRelease
+	return flruntime.TurnResult{
+		ThreadID: req.ThreadID, TurnID: req.TurnID, RunID: req.RunID, Status: flruntime.TurnStatusCompleted,
+	}, nil
+}
+
+func (h *completedTurnBlockedApprovalHost) ReadApprovalQueue(ctx context.Context, _ flruntime.ReadApprovalQueueRequest) (flruntime.ApprovalQueue, error) {
+	close(h.queueStarted)
+	defer close(h.queueExited)
+	<-ctx.Done()
+	return flruntime.ApprovalQueue{}, ctx.Err()
+}
+
+func (*completedTurnBlockedApprovalHost) ResolveApproval(context.Context, flruntime.ResolveApprovalRequest) (flruntime.ResolveApprovalResult, error) {
+	return flruntime.ResolveApprovalResult{}, errors.New("resolve approval must not be called")
+}
+
+func TestRunTestUITurnJoinsApprovalPollBeforeReturningCompletedTurn(t *testing.T) {
+	host := &completedTurnBlockedApprovalHost{
+		queueStarted: make(chan struct{}),
+		queueExited:  make(chan struct{}),
+		turnRelease:  make(chan struct{}),
+	}
+	type outcome struct {
+		result flruntime.TurnResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := runTestUITurn(context.Background(), host, flruntime.RunTurnRequest{ThreadID: "thread", TurnID: "turn", RunID: "run"})
+		done <- outcome{result: result, err: err}
+	}()
+	select {
+	case <-host.queueStarted:
+	case <-time.After(time.Second):
+		t.Fatal("approval polling did not start")
+	}
+	close(host.turnRelease)
+	select {
+	case got := <-done:
+		if got.err != nil || got.result.Status != flruntime.TurnStatusCompleted {
+			t.Fatalf("runTestUITurn result=%#v err=%v", got.result, got.err)
+		}
+		select {
+		case <-host.queueExited:
+		default:
+			t.Fatal("runTestUITurn returned before the approval poll exited")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runTestUITurn did not return after turn completion")
+	}
+}
+
 func TestRunnerParsesGoTestJSON(t *testing.T) {
 	root := t.TempDir()
 	runner := NewRunner(root)
@@ -1318,6 +1443,60 @@ func TestRunnerAgentSessionWaitsAndResumesWithAppendMessage(t *testing.T) {
 	}
 }
 
+func TestRunnerFollowUpTurnIDsRemainUniqueAfterConcurrentTitleAndApprovedToolBatch(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# Fixture\n\nStatus: green\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "notes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "notes", "status.txt"), []byte("Status: green\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	turnProvider := &recordingToolScenarioProvider{}
+	titleProvider := newBlockingTestProvider()
+	runner := NewRunner(root)
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) { return turnProvider, nil }
+	runner.TitleProviderFactory = func(config.Config) (provider.Provider, error) { return titleProvider, nil }
+	first := runner.CreateAgentSession(context.Background(), AgentRunRequest{
+		Profile: ProviderProfile{ID: "live", Name: "Live", Provider: config.ProviderFake, Model: "model"},
+		Message: "Use list, read, and grep before answering.", SystemPrompt: "Use every requested tool.",
+		SelectedTools: []string{"list", "read", "grep"}, ContextPolicy: scenarioContextPolicy(),
+	})
+	if first.Status != string(engine.Completed) {
+		t.Fatalf("first turn = %#v", first)
+	}
+	titleProvider.waitStarted(t)
+	prefix := testUIStoreIDPrefix("turn", first.SessionID)
+	if first.TurnID != prefix+"-1" {
+		t.Fatalf("first turn id = %q, want %q", first.TurnID, prefix+"-1")
+	}
+	second := runner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "Cite the exact paths."})
+	if second.Status != string(engine.Completed) || second.TurnID != prefix+"-2" || len(second.Session.Turns) != 2 {
+		t.Fatalf("follow-up turn = %#v", second)
+	}
+	if err := runner.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := NewRunner(root)
+	t.Cleanup(func() { _ = restarted.Close() })
+	restarted.Now = fixedClock()
+	restarted.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return harness.NewScriptedProvider(harness.Step(harness.Text("continued"), harness.Done())), nil
+	}
+	restarted.TitleProviderFactory = func(config.Config) (provider.Provider, error) {
+		return harness.NewScriptedProvider(harness.Step(harness.Text("Fixture status"), harness.Done())), nil
+	}
+	third := restarted.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "Continue after restart."})
+	if third.Status != string(engine.Completed) || third.TurnID != prefix+"-3" || len(third.Session.Turns) != 3 {
+		t.Fatalf("restarted follow-up turn = %#v", third)
+	}
+}
+
 func TestRunnerAgentSessionPersistsAndResumesAfterNewRunner(t *testing.T) {
 	root := t.TempDir()
 	firstProvider := harness.NewScriptedProvider(
@@ -1422,6 +1601,9 @@ func TestRunnerAgentSessionsKeepCreatedOrderAcrossMemoryAndDisk(t *testing.T) {
 	if second.Status != "completed" {
 		t.Fatalf("second = %#v", second)
 	}
+	if first.TurnID == second.TurnID {
+		t.Fatalf("store-global turn identities collided: first=%q second=%q", first.TurnID, second.TurnID)
+	}
 
 	listRunner := NewRunner(root)
 	listRunner.Now = fixedClock()
@@ -1439,6 +1621,9 @@ func TestRunnerAgentSessionsKeepCreatedOrderAcrossMemoryAndDisk(t *testing.T) {
 	updatedFirst := listRunner.RunAgentTurn(context.Background(), first.SessionID, AgentTurnRequest{Message: "continue first"})
 	if updatedFirst.Status != "completed" {
 		t.Fatalf("updated first = %#v", updatedFirst)
+	}
+	if updatedFirst.TurnID == first.TurnID || updatedFirst.TurnID == second.TurnID {
+		t.Fatalf("restarted store-global turn identity was reused: first=%q second=%q updated=%q", first.TurnID, second.TurnID, updatedFirst.TurnID)
 	}
 	sessions = mustAgentSessions(t, listRunner)
 	if len(sessions) != 2 || sessions[0].ID != second.SessionID || sessions[1].ID != first.SessionID {
@@ -1543,10 +1728,14 @@ func TestRunnerRejectsMalformedAgentSessionMetadata(t *testing.T) {
 	}
 }
 
-func TestDecodeAgentSessionMetadataRejectsRemovedTurnsField(t *testing.T) {
-	_, err := decodeAgentSessionMetadata([]byte(`{"version":2,"id":"session-a","turns":[]}`))
-	if err == nil || !strings.Contains(err.Error(), `unknown field "turns"`) {
-		t.Fatalf("err = %v, want removed turns field rejection", err)
+func TestDecodeAgentSessionMetadataRejectsCanonicalLifecycleFields(t *testing.T) {
+	for _, field := range []string{"created_at", "updated_at", "title", "status", "phase", "turns", "run_id", "turn_id"} {
+		t.Run(field, func(t *testing.T) {
+			_, err := decodeAgentSessionMetadata([]byte(fmt.Sprintf(`{"version":2,"id":"session-a",%q:null}`, field)))
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf(`unknown field %q`, field)) {
+				t.Fatalf("err = %v, want canonical lifecycle field rejection", err)
+			}
+		})
 	}
 }
 
@@ -1558,9 +1747,8 @@ func TestRunnerAgentSessionsRejectsCorruptMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
-	if _, err := store.metadataDB.ExecContext(ctx, `INSERT INTO metadata_records(namespace, id, created_at, updated_at, data_json) VALUES(?, ?, ?, ?, ?)`,
-		agentSessionMetadataNamespace, "broken", formatMetadataTime(now), formatMetadataTime(now), `{"version":2,"id":"broken","turns":[]}`); err != nil {
+	if _, err := store.metadataDB.ExecContext(ctx, `INSERT INTO metadata_records(namespace, id, data_json) VALUES(?, ?, ?)`,
+		agentSessionMetadataNamespace, "broken", `{"version":2,"id":"broken","turns":[]}`); err != nil {
 		t.Fatal(err)
 	}
 	if sessions, err := runner.AgentSessions(ctx); err == nil || sessions != nil || !strings.Contains(err.Error(), `unknown field "turns"`) {
@@ -1575,7 +1763,7 @@ func TestRunnerMetadataCorruptionIsNotReportedAsMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.metadataDB.Exec(`INSERT INTO metadata_records(namespace, id, created_at, updated_at, data_json) VALUES(?, ?, '', '', ?)`, agentSessionMetadataNamespace, "broken", `{"version":2,"id":"broken","turns":[]}`); err != nil {
+	if _, err := store.metadataDB.Exec(`INSERT INTO metadata_records(namespace, id, data_json) VALUES(?, ?, ?)`, agentSessionMetadataNamespace, "broken", `{"version":2,"id":"broken","turns":[]}`); err != nil {
 		t.Fatal(err)
 	}
 	_, err = runner.AgentSession(context.Background(), "broken")
@@ -1683,8 +1871,7 @@ func TestRunnerFileAgentSessionFailsAtCompositionBeforeProviderOrFiles(t *testin
 		t.Fatalf("provider factory calls = %d, want 0", providerCalls)
 	}
 	for _, path := range []string{
-		runner.agentSessionMetadataRoot(),
-		runner.agentSessionTreeRoot(),
+		filepath.Join(root, ".floret-test-ui"),
 		filepath.Join(root, ".floret-test-ui", "prompt-cache"),
 	} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -1715,8 +1902,8 @@ func TestRunnerDefaultSQLitePersistsListsRestoresAndDeletesSession(t *testing.T)
 	if _, err := os.Stat(sqlite.DefaultTestUIPath(root)); err != nil {
 		t.Fatalf("default sqlite db missing: %v", err)
 	}
-	if _, err := os.Stat(firstRunner.agentSessionMetadataPath(first.SessionID)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("default sqlite should not write JSON metadata file, err=%v", err)
+	if _, err := os.Stat(firstRunner.storage.metadataPath); err != nil {
+		t.Fatalf("host metadata sidecar missing: %v", err)
 	}
 
 	secondProvider := harness.NewScriptedProvider(harness.Step(harness.Text("done"), harness.Done()))
@@ -2027,7 +2214,7 @@ func TestRunnerRejectsAppendWhileSessionIsBusy(t *testing.T) {
 	}
 }
 
-func TestRunnerAgentSessionSnapshotsDoNotBlockOnRunningTurn(t *testing.T) {
+func TestRunnerAgentSessionSnapshotsDoNotBlockOnHeldSessionLock(t *testing.T) {
 	runner := NewRunner(t.TempDir())
 	runner.Now = fixedClock()
 
@@ -2046,7 +2233,6 @@ func TestRunnerAgentSessionSnapshotsDoNotBlockOnRunningTurn(t *testing.T) {
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	runner.markAgentSessionRunningLocked(sess, "turn-busy")
 
 	type listOutcome struct {
 		sessions []AgentSessionSnapshot
@@ -2067,11 +2253,11 @@ func TestRunnerAgentSessionSnapshotsDoNotBlockOnRunningTurn(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("AgentSessions blocked on running session")
 	}
-	if len(sessions) != 1 || sessions[0].ID != first.ID || !sessionlifecycle.IsRunningStatus(sessions[0].Status, sessions[0].Phase) || sessions[0].CanAppendMessage {
-		t.Fatalf("running sessions snapshot = %#v", sessions)
+	if len(sessions) != 1 || sessions[0].ID != first.ID || sessions[0].Status != first.Status || sessions[0].Phase != first.Phase || sessions[0].CanAppendMessage != first.CanAppendMessage {
+		t.Fatalf("canonical sessions snapshot = %#v", sessions)
 	}
-	if sessions[0].LatestTurnID != "turn-busy" {
-		t.Fatalf("latest turn id = %q, want turn-busy", sessions[0].LatestTurnID)
+	if sessions[0].LatestTurnID != first.LatestTurnID {
+		t.Fatalf("latest turn id = %q, want canonical %q", sessions[0].LatestTurnID, first.LatestTurnID)
 	}
 
 	getResult := make(chan AgentSessionSnapshot, 1)
@@ -2088,15 +2274,15 @@ func TestRunnerAgentSessionSnapshotsDoNotBlockOnRunningTurn(t *testing.T) {
 	case err := <-getErr:
 		t.Fatal(err)
 	case snapshot := <-getResult:
-		if snapshot.ID != first.ID || !sessionlifecycle.IsRunningStatus(snapshot.Status, snapshot.Phase) || snapshot.CanAppendMessage {
-			t.Fatalf("running session snapshot = %#v", snapshot)
+		if snapshot.ID != first.ID || snapshot.Status != first.Status || snapshot.Phase != first.Phase || snapshot.CanAppendMessage != first.CanAppendMessage {
+			t.Fatalf("canonical session snapshot = %#v", snapshot)
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("AgentSession blocked on running session")
 	}
 }
 
-func TestRunnerRunningSnapshotsFailWhenCanonicalReadFails(t *testing.T) {
+func TestRunnerBusySnapshotsFailWhenCanonicalReadFails(t *testing.T) {
 	ctx := context.Background()
 	runner := NewRunner(t.TempDir())
 	runner.Now = fixedClock()
@@ -2120,7 +2306,6 @@ func TestRunnerRunningSnapshotsFailWhenCanonicalReadFails(t *testing.T) {
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	runner.markAgentSessionRunningLocked(sess, "turn-running")
 	if err := store.runtimeStore.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -2133,6 +2318,27 @@ func TestRunnerRunningSnapshotsFailWhenCanonicalReadFails(t *testing.T) {
 	}
 	if snapshots, err := runner.AgentSessions(ctx); !errors.Is(err, flruntime.ErrStoreClosed) || snapshots != nil {
 		t.Fatalf("running snapshots=%#v err=%v, want nil ErrStoreClosed", snapshots, err)
+	}
+}
+
+func TestCheckedObservedContextProjectionRejectsCorruptRetrySource(t *testing.T) {
+	path := []sessiontree.Entry{
+		{
+			ID: "user", ThreadID: "thread", TurnID: "turn-original", Type: sessiontree.EntryUserMessage,
+			Message: session.Message{Role: session.User, Content: "question"},
+		},
+		{
+			ID: "retry", ThreadID: "thread", ParentID: "user", TurnID: "turn-retry",
+			Type: sessiontree.EntryTurnMarker, TurnStatus: sessiontree.TurnStarted,
+			Metadata: map[string]string{
+				"run_id": "run-retry", sessiontree.RetrySourceTurnIDMetadataKey: "turn-original",
+				sessiontree.RetrySourceEntryIDMetadataKey: "missing",
+			},
+		},
+	}
+	projection, err := checkedObservedContextProjection(path)
+	if !errors.Is(err, sessiontree.ErrAuthorityCorrupt) || !reflect.DeepEqual(projection, ObservedContextProjection{}) {
+		t.Fatalf("corrupt retry projection=%#v err=%v", projection, err)
 	}
 }
 
@@ -2171,11 +2377,12 @@ func TestRunnerRunningSnapshotUsesRealTurnID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sessionlifecycle.IsRunningStatus(snapshot.Status, snapshot.Phase) || snapshot.LatestTurnID != "turn-1" {
+	wantTurnID := testUIStoreIDPrefix("turn", first.ID) + "-1"
+	if !sessionlifecycle.IsRunningStatus(snapshot.Status, snapshot.Phase) || snapshot.LatestTurnID != wantTurnID {
 		t.Fatalf("running snapshot = %#v", snapshot)
 	}
 	if !slices.ContainsFunc(snapshot.PathEntries, func(entry ObservedSessionEntry) bool {
-		return entry.Type == sessiontree.EntryUserMessage && entry.TurnID == "turn-1"
+		return entry.Type == sessiontree.EntryUserMessage && entry.TurnID == wantTurnID
 	}) {
 		t.Fatalf("running snapshot did not expose persisted user message: %#v", snapshot.PathEntries)
 	}
@@ -2189,6 +2396,80 @@ func TestRunnerRunningSnapshotUsesRealTurnID(t *testing.T) {
 	}
 	cancel()
 	result := <-done
+	if result.Status != string(engine.Cancelled) {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestRunnerBusySnapshotUsesCanonicalRuntimeLifecycleWithoutOverride(t *testing.T) {
+	blocking := newBlockingTestProvider()
+	runner := NewRunner(t.TempDir())
+	runner.Now = fixedClock()
+	runner.ProviderFactory = func(config.Config) (provider.Provider, error) {
+		return blocking, nil
+	}
+	t.Cleanup(func() { _ = runner.Close() })
+
+	created, err := runner.CreateIdleAgentSession(context.Background(), AgentRunRequest{
+		Profile:      ProviderProfile{ID: "fake", Name: "Fake", Provider: config.ProviderFake, Model: "fake-model"},
+		SystemPrompt: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan AgentRunResponse, 1)
+	go func() {
+		done <- runner.RunAgentTurn(ctx, created.ID, AgentTurnRequest{Message: "hello"})
+	}()
+	blocking.waitStarted(t)
+
+	sess, ok := runner.Sessions.get(created.ID)
+	if !ok {
+		cancel()
+		<-done
+		t.Fatal("session not registered")
+	}
+	canonical, err := sess.read.ReadThread(context.Background(), flruntime.ThreadID(created.ID))
+	if err != nil {
+		cancel()
+		<-done
+		t.Fatal(err)
+	}
+	turnPage, err := sess.read.ListThreadTurns(context.Background(), flruntime.ListThreadTurnsRequest{
+		ThreadID: flruntime.ThreadID(created.ID),
+		Tail:     1,
+	})
+	if err != nil {
+		cancel()
+		<-done
+		t.Fatal(err)
+	}
+	snapshot, err := runner.AgentSession(context.Background(), created.ID)
+	if err != nil {
+		cancel()
+		<-done
+		t.Fatal(err)
+	}
+	cancel()
+	result := <-done
+	if snapshot.Status != string(canonical.Status) || snapshot.Phase != string(canonical.Phase) ||
+		snapshot.LatestTurnID != string(canonical.LatestTurnID) || !snapshot.CreatedAt.Equal(canonical.CreatedAt) ||
+		!snapshot.UpdatedAt.Equal(canonical.UpdatedAt) || snapshot.WaitingPrompt != canonical.WaitingPrompt ||
+		snapshot.Recoverable != canonical.Recoverable || snapshot.CanAppendMessage != canonical.CanAppendMessage {
+		t.Fatalf("busy snapshot overrode canonical lifecycle:\nsnapshot=%#v\ncanonical=%#v", snapshot, canonical)
+	}
+	if len(turnPage.Turns) != 1 || len(snapshot.Turns) != 1 {
+		t.Fatalf("busy canonical turns page=%#v snapshot=%#v", turnPage.Turns, snapshot.Turns)
+	}
+	canonicalTurn := turnPage.Turns[0]
+	snapshotTurn := snapshot.Turns[0]
+	if snapshotTurn.ID != string(canonicalTurn.TurnID) || snapshotTurn.Status != string(canonicalTurn.Status) ||
+		!snapshotTurn.StartedAt.Equal(canonicalTurn.StartedAt) || !snapshotTurn.FinishedAt.IsZero() {
+		t.Fatalf("busy turn did not use canonical turn page:\nsnapshot=%#v\ncanonical=%#v", snapshotTurn, canonicalTurn)
+	}
+
 	if result.Status != string(engine.Cancelled) {
 		t.Fatalf("result = %#v", result)
 	}

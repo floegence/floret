@@ -375,11 +375,12 @@ type ForkThreadResult struct {
 }
 
 type RecoverInterruptedTurnResult struct {
-	ThreadID ThreadID   `json:"thread_id"`
-	TurnID   TurnID     `json:"turn_id"`
-	RunID    RunID      `json:"run_id"`
-	Status   TurnStatus `json:"status"`
-	Replayed bool       `json:"replayed"`
+	ThreadID ThreadID           `json:"thread_id"`
+	TurnID   TurnID             `json:"turn_id"`
+	RunID    RunID              `json:"run_id"`
+	Status   TurnStatus         `json:"status"`
+	Failure  *ThreadTurnFailure `json:"failure,omitempty"`
+	Replayed bool               `json:"replayed"`
 }
 
 // TurnSupplementalContextItem is host-provided context that is visible only to
@@ -866,8 +867,59 @@ type ListThreadDetailEventsRequest struct {
 	IncludeRaw   bool
 }
 
-type ListPendingApprovalsRequest struct {
+type ReadApprovalQueueRequest struct {
 	ThreadID ThreadID
+}
+
+type ApprovalDecision string
+
+const (
+	ApprovalDecisionApprove ApprovalDecision = "approve"
+	ApprovalDecisionReject  ApprovalDecision = "reject"
+)
+
+type ApprovalIdentity struct {
+	ApprovalID      string   `json:"approval_id"`
+	ThreadID        ThreadID `json:"thread_id"`
+	TurnID          TurnID   `json:"turn_id"`
+	RunID           RunID    `json:"run_id"`
+	ToolCallID      string   `json:"tool_call_id"`
+	EffectAttemptID string   `json:"effect_attempt_id"`
+}
+
+func (i ApprovalIdentity) Validate() error {
+	if strings.TrimSpace(i.ApprovalID) == "" || strings.TrimSpace(string(i.ThreadID)) == "" ||
+		strings.TrimSpace(string(i.TurnID)) == "" || strings.TrimSpace(string(i.RunID)) == "" ||
+		strings.TrimSpace(i.ToolCallID) == "" || strings.TrimSpace(i.EffectAttemptID) == "" {
+		return errors.New("approval identity is incomplete")
+	}
+	return nil
+}
+
+type ResolveApprovalRequest struct {
+	DecisionID               string           `json:"decision_id"`
+	ExpectedRootThreadID     ThreadID         `json:"expected_root_thread_id"`
+	ExpectedGeneration       int64            `json:"expected_generation"`
+	ExpectedRevision         int64            `json:"expected_revision"`
+	ExpectedCurrent          ApprovalIdentity `json:"expected_current"`
+	ExpectedApprovalRevision int64            `json:"expected_approval_revision"`
+	Decision                 ApprovalDecision `json:"decision"`
+}
+
+func (r ResolveApprovalRequest) Validate() error {
+	if strings.TrimSpace(r.DecisionID) == "" || strings.TrimSpace(string(r.ExpectedRootThreadID)) == "" {
+		return errors.New("approval decision requires decision and root thread identities")
+	}
+	if r.ExpectedGeneration <= 0 || r.ExpectedRevision <= 0 || r.ExpectedApprovalRevision <= 0 {
+		return errors.New("approval decision authority versions must be positive")
+	}
+	if err := r.ExpectedCurrent.Validate(); err != nil {
+		return err
+	}
+	if r.ExpectedCurrent.ThreadID == "" || (r.Decision != ApprovalDecisionApprove && r.Decision != ApprovalDecisionReject) {
+		return errors.New("approval decision is invalid")
+	}
+	return nil
 }
 
 type SubAgentSnapshot struct {
@@ -961,26 +1013,118 @@ type ThreadDetailEvents struct {
 	GeneratedAt  time.Time           `json:"generated_at"`
 }
 
-type PendingApprovals struct {
-	ThreadID    ThreadID          `json:"thread_id"`
-	Approvals   []PendingApproval `json:"approvals"`
-	GeneratedAt time.Time         `json:"generated_at"`
+type ApprovalQueue struct {
+	RootThreadID      ThreadID         `json:"root_thread_id"`
+	Generation        int64            `json:"generation"`
+	Revision          int64            `json:"revision"`
+	CurrentApprovalID string           `json:"current_approval_id,omitempty"`
+	Items             []ApprovalRecord `json:"items"`
+	GeneratedAt       time.Time        `json:"generated_at"`
 }
 
-func (p PendingApprovals) Validate() error {
-	if strings.TrimSpace(string(p.ThreadID)) == "" {
-		return errors.New("pending approvals require thread id")
+func (q ApprovalQueue) Validate() error {
+	if strings.TrimSpace(string(q.RootThreadID)) == "" || q.Generation < 0 || q.Revision < 0 {
+		return errors.New("approval queue authority is invalid")
 	}
-	if p.GeneratedAt.IsZero() {
-		return errors.New("pending approvals require generated time")
+	if q.GeneratedAt.IsZero() {
+		return errors.New("approval queue requires generated time")
 	}
-	for index, approval := range p.Approvals {
+	for index, approval := range q.Items {
 		if err := approval.Validate(); err != nil {
-			return fmt.Errorf("pending approval %d: %w", index, err)
+			return fmt.Errorf("approval queue item %d: %w", index, err)
 		}
-		if approval.ThreadID != p.ThreadID {
-			return fmt.Errorf("pending approval %d thread identity mismatch", index)
+		if approval.RootThreadID != q.RootThreadID {
+			return fmt.Errorf("approval queue item %d root identity mismatch", index)
 		}
+		if approval.State != string(sessiontree.ApprovalRequested) && approval.State != string(sessiontree.ApprovalDecisionSubmitted) {
+			return fmt.Errorf("approval queue item %d is not queue-visible", index)
+		}
+	}
+	if len(q.Items) == 0 && q.CurrentApprovalID != "" {
+		return errors.New("empty approval queue has a current approval")
+	}
+	if len(q.Items) > 0 && q.CurrentApprovalID != q.Items[0].ApprovalID {
+		return errors.New("approval queue current item is not first")
+	}
+	return nil
+}
+
+type ApprovalDecisionReceipt struct {
+	DecisionID             string           `json:"decision_id"`
+	ApprovalID             string           `json:"approval_id"`
+	RootThreadID           ThreadID         `json:"root_thread_id"`
+	Decision               ApprovalDecision `json:"decision"`
+	State                  string           `json:"state"`
+	Reason                 string           `json:"reason,omitempty"`
+	AuthorizationProofHash string           `json:"authorization_proof_hash,omitempty"`
+	QueueGeneration        int64            `json:"queue_generation"`
+	QueueRevision          int64            `json:"queue_revision"`
+	ApprovalRevision       int64            `json:"approval_revision"`
+	SubmittedAt            time.Time        `json:"submitted_at"`
+	ResolvedAt             time.Time        `json:"resolved_at,omitempty"`
+}
+
+func (r ApprovalDecisionReceipt) Validate() error {
+	if strings.TrimSpace(r.DecisionID) == "" || strings.TrimSpace(r.ApprovalID) == "" || strings.TrimSpace(string(r.RootThreadID)) == "" {
+		return errors.New("approval decision receipt identity is incomplete")
+	}
+	if r.Decision != ApprovalDecisionApprove && r.Decision != ApprovalDecisionReject {
+		return errors.New("approval decision receipt decision is invalid")
+	}
+	if r.QueueGeneration <= 0 || r.QueueRevision <= 0 || r.ApprovalRevision <= 0 || r.SubmittedAt.IsZero() {
+		return errors.New("approval decision receipt authority is invalid")
+	}
+	terminal := !r.ResolvedAt.IsZero()
+	switch r.State {
+	case string(sessiontree.ApprovalDecisionSubmitted):
+		if r.Decision != ApprovalDecisionApprove || terminal || r.Reason != "" || r.AuthorizationProofHash != "" {
+			return errors.New("submitted approval receipt is invalid")
+		}
+	case string(sessiontree.ApprovalApproved):
+		if r.Decision != ApprovalDecisionApprove || !terminal || strings.TrimSpace(r.AuthorizationProofHash) == "" || r.Reason != "" {
+			return errors.New("approved approval receipt is invalid")
+		}
+	case string(sessiontree.ApprovalRejected):
+		if !terminal || strings.TrimSpace(r.Reason) == "" || r.AuthorizationProofHash != "" ||
+			(r.Decision == ApprovalDecisionReject && r.Reason != sessiontree.ApprovalReasonUserRejected) ||
+			(r.Decision == ApprovalDecisionApprove && r.Reason == sessiontree.ApprovalReasonUserRejected) {
+			return errors.New("rejected approval receipt is invalid")
+		}
+	case string(sessiontree.ApprovalFailed), string(sessiontree.ApprovalTimedOut), string(sessiontree.ApprovalCancelled):
+		if r.Decision != ApprovalDecisionApprove || !terminal || strings.TrimSpace(r.Reason) == "" || r.AuthorizationProofHash != "" {
+			return errors.New("terminal approval receipt is invalid")
+		}
+	default:
+		return fmt.Errorf("unsupported approval receipt state %q", r.State)
+	}
+	return nil
+}
+
+type ResolveApprovalResult struct {
+	Receipt  ApprovalDecisionReceipt `json:"receipt"`
+	Queue    ApprovalQueue           `json:"queue"`
+	Approval ApprovalRecord          `json:"approval"`
+	Replayed bool                    `json:"replayed,omitempty"`
+}
+
+func (r ResolveApprovalResult) Validate() error {
+	if err := r.Receipt.Validate(); err != nil {
+		return fmt.Errorf("approval decision receipt: %w", err)
+	}
+	if err := r.Queue.Validate(); err != nil {
+		return fmt.Errorf("approval queue: %w", err)
+	}
+	if err := r.Approval.Validate(); err != nil {
+		return fmt.Errorf("approval record: %w", err)
+	}
+	if r.Approval.ApprovalID != r.Receipt.ApprovalID || r.Approval.RootThreadID != r.Receipt.RootThreadID ||
+		r.Approval.DecisionID != r.Receipt.DecisionID || r.Approval.State != r.Receipt.State ||
+		r.Approval.Reason != r.Receipt.Reason || r.Approval.AuthorizationProofHash != r.Receipt.AuthorizationProofHash ||
+		r.Approval.Revision != r.Receipt.ApprovalRevision || !r.Approval.ResolvedAt.Equal(r.Receipt.ResolvedAt) {
+		return errors.New("approval result record and receipt disagree")
+	}
+	if r.Queue.RootThreadID != r.Approval.RootThreadID || r.Queue.Generation < r.Receipt.QueueGeneration || r.Queue.Revision < r.Receipt.QueueRevision {
+		return errors.New("approval result queue authority regressed")
 	}
 	return nil
 }
@@ -993,78 +1137,106 @@ type PendingToolSettlementResult struct {
 	ProjectionError        string                      `json:"projection_error,omitempty"`
 }
 
-type PendingApprovalResource struct {
+type ApprovalResource struct {
 	Kind  string `json:"kind,omitempty"`
 	Value string `json:"value,omitempty"`
 }
 
-func (r PendingApprovalResource) Validate() error {
+func (r ApprovalResource) Validate() error {
 	if strings.TrimSpace(r.Kind) == "" || strings.TrimSpace(r.Value) == "" {
-		return errors.New("pending approval resource requires kind and value")
+		return errors.New("approval resource requires kind and value")
 	}
 	return nil
 }
 
-type PendingApproval struct {
-	ApprovalID  string                    `json:"approval_id,omitempty"`
-	ToolCallID  string                    `json:"tool_call_id,omitempty"`
-	ToolName    string                    `json:"tool_name,omitempty"`
-	ToolKind    string                    `json:"tool_kind,omitempty"`
-	RunID       RunID                     `json:"run_id,omitempty"`
-	ThreadID    ThreadID                  `json:"thread_id,omitempty"`
-	TurnID      TurnID                    `json:"turn_id,omitempty"`
-	Step        int                       `json:"step,omitempty"`
-	BatchIndex  int                       `json:"batch_index"`
-	BatchSize   int                       `json:"batch_size"`
-	State       string                    `json:"state,omitempty"`
-	Revision    int64                     `json:"revision,omitempty"`
-	Epoch       int64                     `json:"epoch,omitempty"`
-	RequestedAt time.Time                 `json:"requested_at,omitempty"`
-	ResolvedAt  time.Time                 `json:"resolved_at,omitempty"`
-	ArgsHash    string                    `json:"args_hash,omitempty"`
-	Resources   []PendingApprovalResource `json:"resources,omitempty"`
-	Effects     []string                  `json:"effects,omitempty"`
-	Labels      map[string]string         `json:"labels,omitempty"`
-	HostContext map[string]string         `json:"host_context,omitempty"`
-	ReadOnly    bool                      `json:"read_only,omitempty"`
-	Destructive bool                      `json:"destructive,omitempty"`
-	OpenWorld   bool                      `json:"open_world,omitempty"`
-	Reason      string                    `json:"reason,omitempty"`
+type ApprovalRecord struct {
+	ApprovalID             string             `json:"approval_id,omitempty"`
+	RootThreadID           ThreadID           `json:"root_thread_id,omitempty"`
+	ParentThreadID         ThreadID           `json:"parent_thread_id,omitempty"`
+	ToolCallID             string             `json:"tool_call_id,omitempty"`
+	EffectAttemptID        string             `json:"effect_attempt_id,omitempty"`
+	ToolName               string             `json:"tool_name,omitempty"`
+	ToolKind               string             `json:"tool_kind,omitempty"`
+	RunID                  RunID              `json:"run_id,omitempty"`
+	ThreadID               ThreadID           `json:"thread_id,omitempty"`
+	TurnID                 TurnID             `json:"turn_id,omitempty"`
+	Step                   int                `json:"step,omitempty"`
+	BatchIndex             int                `json:"batch_index"`
+	BatchSize              int                `json:"batch_size"`
+	State                  string             `json:"state,omitempty"`
+	Revision               int64              `json:"revision,omitempty"`
+	QueueSequence          int64              `json:"queue_sequence,omitempty"`
+	DecisionID             string             `json:"decision_id,omitempty"`
+	RequestedAt            time.Time          `json:"requested_at,omitempty"`
+	UpdatedAt              time.Time          `json:"updated_at,omitempty"`
+	ResolvedAt             time.Time          `json:"resolved_at,omitempty"`
+	ArgsHash               string             `json:"args_hash,omitempty"`
+	RequestFingerprint     string             `json:"request_fingerprint,omitempty"`
+	AuthorizationProofHash string             `json:"authorization_proof_hash,omitempty"`
+	Resources              []ApprovalResource `json:"resources,omitempty"`
+	Effects                []string           `json:"effects,omitempty"`
+	Labels                 map[string]string  `json:"labels,omitempty"`
+	HostContext            map[string]string  `json:"host_context,omitempty"`
+	ReadOnly               bool               `json:"read_only,omitempty"`
+	Destructive            bool               `json:"destructive,omitempty"`
+	OpenWorld              bool               `json:"open_world,omitempty"`
+	Reason                 string             `json:"reason,omitempty"`
 }
 
-func (p PendingApproval) Validate() error {
-	if strings.TrimSpace(p.ApprovalID) == "" || strings.TrimSpace(p.ToolCallID) == "" {
-		return errors.New("pending approval requires approval and tool call identities")
+func (p ApprovalRecord) Validate() error {
+	if strings.TrimSpace(p.ApprovalID) == "" || strings.TrimSpace(p.EffectAttemptID) == "" || strings.TrimSpace(p.ToolCallID) == "" ||
+		strings.TrimSpace(string(p.RootThreadID)) == "" {
+		return errors.New("approval record requires approval and tool call identities")
 	}
 	if strings.TrimSpace(p.ToolName) == "" || strings.TrimSpace(p.ToolKind) == "" {
-		return errors.New("pending approval requires tool name and kind")
+		return errors.New("approval record requires tool name and kind")
 	}
 	if strings.TrimSpace(string(p.RunID)) == "" || strings.TrimSpace(string(p.ThreadID)) == "" || strings.TrimSpace(string(p.TurnID)) == "" {
-		return errors.New("pending approval requires run, thread, and turn identities")
+		return errors.New("approval record requires run, thread, and turn identities")
 	}
 	if p.Step <= 0 {
-		return errors.New("pending approval step must be positive")
+		return errors.New("approval record step must be positive")
 	}
 	if p.BatchSize <= 0 || p.BatchIndex < 0 || p.BatchIndex >= p.BatchSize {
-		return errors.New("pending approval batch position is invalid")
+		return errors.New("approval record batch position is invalid")
 	}
-	if p.State != "requested" || p.Revision <= 0 || p.Epoch <= 0 {
-		return errors.New("pending approval lifecycle state is invalid")
+	if p.Revision <= 0 || p.QueueSequence <= 0 {
+		return errors.New("approval record counters are invalid")
 	}
-	if p.RequestedAt.IsZero() || !p.ResolvedAt.IsZero() {
-		return errors.New("pending approval timestamps are invalid")
+	if p.RequestedAt.IsZero() || p.UpdatedAt.IsZero() || p.UpdatedAt.Before(p.RequestedAt) {
+		return errors.New("approval record timestamps are invalid")
 	}
-	if strings.TrimSpace(p.ArgsHash) == "" {
-		return errors.New("pending approval requires args hash")
+	switch p.State {
+	case string(sessiontree.ApprovalRequested):
+		if p.DecisionID != "" || p.Reason != "" || p.AuthorizationProofHash != "" || !p.ResolvedAt.IsZero() {
+			return errors.New("requested approval authority is invalid")
+		}
+	case string(sessiontree.ApprovalDecisionSubmitted):
+		if strings.TrimSpace(p.DecisionID) == "" || p.Reason != "" || p.AuthorizationProofHash != "" || !p.ResolvedAt.IsZero() {
+			return errors.New("submitted approval authority is invalid")
+		}
+	case string(sessiontree.ApprovalApproved):
+		if strings.TrimSpace(p.DecisionID) == "" || strings.TrimSpace(p.AuthorizationProofHash) == "" || p.Reason != "" || p.ResolvedAt.IsZero() {
+			return errors.New("approved approval authority is invalid")
+		}
+	case string(sessiontree.ApprovalRejected), string(sessiontree.ApprovalFailed), string(sessiontree.ApprovalTimedOut), string(sessiontree.ApprovalCancelled):
+		if strings.TrimSpace(p.DecisionID) == "" || strings.TrimSpace(p.Reason) == "" || p.AuthorizationProofHash != "" || p.ResolvedAt.IsZero() {
+			return errors.New("terminal approval authority is invalid")
+		}
+	default:
+		return fmt.Errorf("unsupported approval record state %q", p.State)
+	}
+	if strings.TrimSpace(p.ArgsHash) == "" || strings.TrimSpace(p.RequestFingerprint) == "" {
+		return errors.New("approval record requires argument and request fingerprints")
 	}
 	for index, resource := range p.Resources {
 		if err := resource.Validate(); err != nil {
-			return fmt.Errorf("pending approval resource %d: %w", index, err)
+			return fmt.Errorf("approval resource %d: %w", index, err)
 		}
 	}
 	for index, effect := range p.Effects {
 		if strings.TrimSpace(effect) == "" {
-			return fmt.Errorf("pending approval effect %d is empty", index)
+			return fmt.Errorf("approval effect %d is empty", index)
 		}
 	}
 	return nil
@@ -1224,6 +1396,7 @@ type ThreadSnapshot struct {
 	TitleSource      string       `json:"title_source,omitempty"`
 	TitleUpdatedAt   time.Time    `json:"title_updated_at,omitempty"`
 	TitleError       string       `json:"title_error,omitempty"`
+	TitleGeneration  int64        `json:"title_generation,omitempty"`
 	CreatedAt        time.Time    `json:"created_at"`
 	UpdatedAt        time.Time    `json:"updated_at"`
 	Phase            ThreadPhase  `json:"phase"`
@@ -1244,6 +1417,7 @@ type ThreadSummary struct {
 	TitleSource      string       `json:"title_source,omitempty"`
 	TitleUpdatedAt   time.Time    `json:"title_updated_at,omitempty"`
 	TitleError       string       `json:"title_error,omitempty"`
+	TitleGeneration  int64        `json:"title_generation,omitempty"`
 	CreatedAt        time.Time    `json:"created_at"`
 	UpdatedAt        time.Time    `json:"updated_at"`
 	Phase            ThreadPhase  `json:"phase"`
@@ -1261,7 +1435,7 @@ type TurnResult struct {
 	RunID                  RunID                          `json:"run_id"`
 	Status                 TurnStatus                     `json:"status"`
 	Output                 string                         `json:"output,omitempty"`
-	Error                  string                         `json:"error,omitempty"`
+	Failure                *ThreadTurnFailure             `json:"failure,omitempty"`
 	Diagnostics            map[string]string              `json:"diagnostics,omitempty"`
 	Metrics                RunMetrics                     `json:"metrics"`
 	CompletionReason       observation.CompletionReason   `json:"completion_reason,omitempty"`
@@ -1274,7 +1448,6 @@ type TurnResult struct {
 	ProjectionAvailability TurnProjectionAvailability     `json:"projection_availability"`
 	Projection             *ThreadTurnProjection          `json:"projection,omitempty"`
 	ProjectionError        string                         `json:"projection_error,omitempty"`
-	PendingApprovals       []PendingApproval              `json:"pending_approvals,omitempty"`
 	Replayed               bool                           `json:"replayed,omitempty"`
 }
 
@@ -1321,6 +1494,9 @@ func (r TurnResult) Validate() error {
 	}
 	if !r.Status.Valid() || (!r.Status.IsTerminal() && !(r.Replayed && r.Status == TurnStatusRunning)) {
 		return fmt.Errorf("turn result requires terminal status or a replayed running status, got %q", r.Status)
+	}
+	if err := validateThreadTurnFailureForStatus(r.Status, r.Failure); err != nil {
+		return err
 	}
 	if r.CompletionReason != "" && !r.CompletionReason.Valid() {
 		return fmt.Errorf("unsupported turn completion reason %q", r.CompletionReason)
@@ -1657,16 +1833,17 @@ const (
 type TurnStatus string
 
 const (
-	TurnStatusRunning   TurnStatus = "running"
-	TurnStatusCompleted TurnStatus = "completed"
-	TurnStatusWaiting   TurnStatus = "waiting"
-	TurnStatusFailed    TurnStatus = "failed"
-	TurnStatusCancelled TurnStatus = "cancelled"
+	TurnStatusRunning     TurnStatus = "running"
+	TurnStatusCompleted   TurnStatus = "completed"
+	TurnStatusWaiting     TurnStatus = "waiting"
+	TurnStatusFailed      TurnStatus = "failed"
+	TurnStatusCancelled   TurnStatus = "cancelled"
+	TurnStatusInterrupted TurnStatus = "interrupted"
 )
 
 func (s TurnStatus) Valid() bool {
 	switch s {
-	case TurnStatusRunning, TurnStatusCompleted, TurnStatusWaiting, TurnStatusFailed, TurnStatusCancelled:
+	case TurnStatusRunning, TurnStatusCompleted, TurnStatusWaiting, TurnStatusFailed, TurnStatusCancelled, TurnStatusInterrupted:
 		return true
 	default:
 		return false
@@ -1675,11 +1852,85 @@ func (s TurnStatus) Valid() bool {
 
 func (s TurnStatus) IsTerminal() bool {
 	switch s {
-	case TurnStatusCompleted, TurnStatusWaiting, TurnStatusFailed, TurnStatusCancelled:
+	case TurnStatusCompleted, TurnStatusWaiting, TurnStatusFailed, TurnStatusCancelled, TurnStatusInterrupted:
 		return true
 	default:
 		return false
 	}
+}
+
+type ThreadTurnFailureCode string
+
+const (
+	ThreadTurnFailureCancelled                ThreadTurnFailureCode = "cancelled"
+	ThreadTurnFailureInterrupted              ThreadTurnFailureCode = "interrupted"
+	ThreadTurnFailureProvider                 ThreadTurnFailureCode = "provider"
+	ThreadTurnFailureToolDispatch             ThreadTurnFailureCode = "tool_dispatch"
+	ThreadTurnFailureEffectOutcomeUnknown     ThreadTurnFailureCode = "effect_outcome_unknown"
+	ThreadTurnFailureAuthorizationUnavailable ThreadTurnFailureCode = "authorization_unavailable"
+	ThreadTurnFailureAuthorizationContract    ThreadTurnFailureCode = "authorization_contract"
+	ThreadTurnFailureStorage                  ThreadTurnFailureCode = "storage"
+	ThreadTurnFailureEngineContract           ThreadTurnFailureCode = "engine_contract"
+	ThreadTurnFailureLegacyUnclassified       ThreadTurnFailureCode = "legacy_unclassified"
+)
+
+func (c ThreadTurnFailureCode) Valid() bool {
+	switch c {
+	case ThreadTurnFailureCancelled,
+		ThreadTurnFailureInterrupted,
+		ThreadTurnFailureProvider,
+		ThreadTurnFailureToolDispatch,
+		ThreadTurnFailureEffectOutcomeUnknown,
+		ThreadTurnFailureAuthorizationUnavailable,
+		ThreadTurnFailureAuthorizationContract,
+		ThreadTurnFailureStorage,
+		ThreadTurnFailureEngineContract,
+		ThreadTurnFailureLegacyUnclassified:
+		return true
+	default:
+		return false
+	}
+}
+
+type ThreadTurnFailure struct {
+	Code    ThreadTurnFailureCode `json:"code"`
+	Message string                `json:"message"`
+}
+
+func (f ThreadTurnFailure) Validate() error {
+	if !f.Code.Valid() {
+		return fmt.Errorf("unsupported thread turn failure code %q", f.Code)
+	}
+	if strings.TrimSpace(f.Message) == "" {
+		return errors.New("thread turn failure requires a message")
+	}
+	return nil
+}
+
+func validateThreadTurnFailureForStatus(status TurnStatus, failure *ThreadTurnFailure) error {
+	requiresFailure := status == TurnStatusFailed || status == TurnStatusCancelled || status == TurnStatusInterrupted
+	if failure == nil {
+		if requiresFailure {
+			return fmt.Errorf("turn status %q requires a failure", status)
+		}
+		return nil
+	}
+	if !requiresFailure {
+		return fmt.Errorf("turn status %q must not include a failure", status)
+	}
+	if err := failure.Validate(); err != nil {
+		return err
+	}
+	if status == TurnStatusCancelled && failure.Code != ThreadTurnFailureCancelled {
+		return errors.New("cancelled turn requires cancelled failure code")
+	}
+	if status == TurnStatusInterrupted && failure.Code != ThreadTurnFailureInterrupted {
+		return errors.New("interrupted turn requires interrupted failure code")
+	}
+	if status == TurnStatusFailed && (failure.Code == ThreadTurnFailureCancelled || failure.Code == ThreadTurnFailureInterrupted) {
+		return errors.New("failed turn cannot use cancelled or interrupted failure code")
+	}
+	return nil
 }
 
 type Store struct {
@@ -1691,13 +1942,18 @@ type Store struct {
 	rootAuthority     sessiontree.RootAuthorityRepo
 	deleteCleanup     func(context.Context, []string) error
 	threadAuthorityMu sync.Mutex
+	turnExecutionMu   sync.Mutex
+	turnExecutions    map[string]sessiontree.TurnLease
 	bootstrapMu       sync.Mutex
 	bootstrapIssued   bool
+	titleRecoveryMu   sync.Mutex
+	titleRecoveryDone bool
 	close             func() error
 	lifetimeMu        sync.Mutex
 	lifetimeCond      *sync.Cond
 	lifetimeState     storeLifetimeState
 	activeOperations  int
+	backgroundErr     error
 	closeInProgress   bool
 	lifetimeCtx       context.Context
 	lifetimeCancel    context.CancelFunc
@@ -1789,8 +2045,9 @@ func (s *Store) Close() error {
 	s.lifetimeMu.Lock()
 	s.initLifetimeLocked()
 	if s.lifetimeState == storeLifetimeClosed {
+		err := s.backgroundErr
 		s.lifetimeMu.Unlock()
-		return nil
+		return err
 	}
 	if s.lifetimeState == storeLifetimeOpen {
 		s.lifetimeState = storeLifetimeClosing
@@ -1801,29 +2058,41 @@ func (s *Store) Close() error {
 	for s.closeInProgress {
 		s.lifetimeCond.Wait()
 		if s.lifetimeState == storeLifetimeClosed {
+			err := s.backgroundErr
 			s.lifetimeMu.Unlock()
-			return nil
+			return err
 		}
 	}
 	for s.activeOperations > 0 {
 		s.lifetimeCond.Wait()
 	}
+	backgroundErr := s.backgroundErr
 	s.closeInProgress = true
 	s.lifetimeMu.Unlock()
 
-	var err error
+	var closeErr error
 	if s.close != nil {
-		err = s.close()
+		closeErr = s.close()
 	}
+	err := errors.Join(backgroundErr, closeErr)
 
 	s.lifetimeMu.Lock()
 	s.closeInProgress = false
-	if err == nil {
+	if closeErr == nil {
 		s.lifetimeState = storeLifetimeClosed
 	}
 	s.lifetimeCond.Broadcast()
 	s.lifetimeMu.Unlock()
 	return err
+}
+
+func (s *Store) reportBackgroundError(err error) {
+	if s == nil || err == nil {
+		return
+	}
+	s.lifetimeMu.Lock()
+	s.backgroundErr = errors.Join(s.backgroundErr, err)
+	s.lifetimeMu.Unlock()
 }
 
 func (s *Store) validate() error {
@@ -1920,6 +2189,78 @@ func (s *Store) beginOperationContext(ctx context.Context) (context.Context, fun
 		})
 	}
 	return operationCtx, finish, nil
+}
+
+func (s *Store) recoverPendingAutomaticThreadTitles(harness *agentharness.AgentHarness) error {
+	if s == nil || harness == nil {
+		return errors.New("automatic title recovery requires store and harness")
+	}
+	s.titleRecoveryMu.Lock()
+	defer s.titleRecoveryMu.Unlock()
+	if s.titleRecoveryDone {
+		return nil
+	}
+	ctx, finish, err := s.beginOperationContext(context.Background())
+	if err != nil {
+		return err
+	}
+	defer finish()
+	if err := harness.RecoverPendingAutomaticThreadTitles(ctx); err != nil {
+		return err
+	}
+	s.titleRecoveryDone = true
+	return nil
+}
+
+func (s *Store) registerTurnExecution(lease sessiontree.TurnLease) error {
+	if err := lease.Validate(); err != nil || lease.Purpose != sessiontree.TurnLeasePurposeTurn {
+		return sessiontree.ErrStaleAuthority
+	}
+	s.turnExecutionMu.Lock()
+	defer s.turnExecutionMu.Unlock()
+	if s.turnExecutions == nil {
+		s.turnExecutions = make(map[string]sessiontree.TurnLease)
+	}
+	if current, ok := s.turnExecutions[lease.ThreadID]; ok && !sessiontree.SameTurnLease(current, lease) {
+		return sessiontree.ErrThreadAuthorityBusy
+	}
+	s.turnExecutions[lease.ThreadID] = lease
+	return nil
+}
+
+func (s *Store) renewTurnExecution(previous, renewed sessiontree.TurnLease) error {
+	s.turnExecutionMu.Lock()
+	defer s.turnExecutionMu.Unlock()
+	current, ok := s.turnExecutions[previous.ThreadID]
+	if !ok || !sessiontree.SameTurnLease(current, previous) ||
+		previous.ThreadID != renewed.ThreadID || previous.OwnerID != renewed.OwnerID ||
+		previous.Generation != renewed.Generation || renewed.Heartbeat <= previous.Heartbeat {
+		return sessiontree.ErrStaleAuthority
+	}
+	s.turnExecutions[renewed.ThreadID] = renewed
+	return nil
+}
+
+func (s *Store) unregisterTurnExecution(lease sessiontree.TurnLease) {
+	s.turnExecutionMu.Lock()
+	if current, ok := s.turnExecutions[lease.ThreadID]; ok && sessiontree.SameTurnLease(current, lease) {
+		delete(s.turnExecutions, lease.ThreadID)
+	}
+	s.turnExecutionMu.Unlock()
+}
+
+func (s *Store) activeTurnExecution(threadID string) (sessiontree.TurnLease, bool) {
+	s.turnExecutionMu.Lock()
+	defer s.turnExecutionMu.Unlock()
+	lease, ok := s.turnExecutions[strings.TrimSpace(threadID)]
+	return lease, ok
+}
+
+func (s *Store) turnExecutionRegistry() *agentharness.TurnExecutionRegistry {
+	return &agentharness.TurnExecutionRegistry{
+		Register: s.registerTurnExecution, Renew: s.renewTurnExecution,
+		Unregister: s.unregisterTurnExecution, Active: s.activeTurnExecution,
+	}
 }
 
 func (s *Store) beginLifetimeOperationContext() (context.Context, func(), error) {
@@ -2244,10 +2585,9 @@ func forkThread(ctx context.Context, harness *agentharness.AgentHarness, req For
 		return ForkThreadResult{}, errors.New("fork destination must differ from source")
 	}
 	result, err := harness.ForkThreadWithResult(ctx, agentharness.ForkOptions{
-		OperationID:           string(req.OperationID),
-		SourceThreadID:        string(req.SourceThreadID),
-		NewThreadID:           string(req.DestinationThreadID),
-		RewriteTurnIdentities: true,
+		OperationID:    string(req.OperationID),
+		SourceThreadID: string(req.SourceThreadID),
+		NewThreadID:    string(req.DestinationThreadID),
 	})
 	if err != nil {
 		return ForkThreadResult{}, runtimeHostError(err)
@@ -2461,18 +2801,46 @@ func threadAgentTodoState(in sessiontree.AgentTodoState) ThreadAgentTodoState {
 	return out
 }
 
-func (h *providerHost) ListPendingApprovals(ctx context.Context, req ListPendingApprovalsRequest) (PendingApprovals, error) {
-	return listPendingApprovals(ctx, h.harness, req)
+func (h *providerHost) ReadApprovalQueue(ctx context.Context, req ReadApprovalQueueRequest) (ApprovalQueue, error) {
+	return readApprovalQueue(ctx, h.harness, req)
 }
 
-func listPendingApprovals(ctx context.Context, harness *agentharness.AgentHarness, req ListPendingApprovalsRequest) (PendingApprovals, error) {
-	result, err := harness.ListPendingApprovals(ctx, agentharness.ListPendingApprovalsOptions{ThreadID: string(req.ThreadID)})
+func readApprovalQueue(ctx context.Context, harness *agentharness.AgentHarness, req ReadApprovalQueueRequest) (ApprovalQueue, error) {
+	result, err := harness.ReadApprovalQueue(ctx, agentharness.ReadApprovalQueueOptions{ThreadID: string(req.ThreadID)})
 	if err != nil {
-		return PendingApprovals{}, runtimeHostError(err)
+		return ApprovalQueue{}, runtimeHostError(err)
 	}
-	out := pendingApprovals(result)
+	out := approvalQueue(result)
 	if err := out.Validate(); err != nil {
-		return PendingApprovals{}, fmt.Errorf("validate pending approvals: %w", err)
+		return ApprovalQueue{}, fmt.Errorf("validate approval queue: %w", err)
+	}
+	return out, nil
+}
+
+func (h *providerHost) ResolveApproval(ctx context.Context, req ResolveApprovalRequest) (ResolveApprovalResult, error) {
+	if err := req.Validate(); err != nil {
+		return ResolveApprovalResult{}, err
+	}
+	result, err := h.harness.ResolveApproval(ctx, agentharness.ResolveApprovalOptions{
+		DecisionID: req.DecisionID, ExpectedRootThreadID: string(req.ExpectedRootThreadID),
+		ExpectedGeneration: req.ExpectedGeneration, ExpectedRevision: req.ExpectedRevision,
+		ExpectedCurrent: sessiontree.ApprovalIdentity{
+			ApprovalID: req.ExpectedCurrent.ApprovalID, ThreadID: string(req.ExpectedCurrent.ThreadID),
+			TurnID: string(req.ExpectedCurrent.TurnID), RunID: string(req.ExpectedCurrent.RunID),
+			ToolCallID: req.ExpectedCurrent.ToolCallID, EffectAttemptID: req.ExpectedCurrent.EffectAttemptID,
+		},
+		ExpectedApprovalRevision: req.ExpectedApprovalRevision,
+		Decision:                 sessiontree.ApprovalDecision(req.Decision),
+	})
+	if err != nil {
+		return ResolveApprovalResult{}, runtimeHostError(err)
+	}
+	out := ResolveApprovalResult{
+		Receipt: approvalDecisionReceipt(result.Receipt), Queue: approvalQueue(result.Queue),
+		Approval: approvalRecord(result.Approval), Replayed: result.Replayed,
+	}
+	if err := out.Validate(); err != nil {
+		return ResolveApprovalResult{}, fmt.Errorf("validate approval result: %w", err)
 	}
 	return out, nil
 }
@@ -2517,13 +2885,22 @@ func readTurnProjection(ctx context.Context, harness *agentharness.AgentHarness,
 	if !threadDetailEventsTurnStartedRunIDMatches(events, req.RunID) {
 		return ThreadTurnProjection{}, fmt.Errorf("%w: %s", ErrRunNotFound, req.RunID)
 	}
-	return ProjectThreadTurn(ProjectThreadTurnRequest{
+	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
 		ThreadID: req.ThreadID,
 		TurnID:   req.TurnID,
 		RunID:    req.RunID,
 		TraceID:  TraceID(req.RunID),
 		Events:   events,
-	}), nil
+	})
+	failure := canonicalTurnFailure(events)
+	projection.Status = canonicalTurnStatus(projection.Status, failure)
+	if err := validateThreadTurnFailureForStatus(projection.Status, failure); err != nil {
+		return ThreadTurnProjection{}, fmt.Errorf("%w: canonical turn failure state is invalid: %v", ErrAuthorityCorrupt, err)
+	}
+	if err := projection.Validate(); err != nil {
+		return ThreadTurnProjection{}, fmt.Errorf("%w: canonical turn projection is invalid: %v", ErrAuthorityCorrupt, err)
+	}
+	return projection, nil
 }
 
 func (h *providerHost) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, error) {
@@ -2552,6 +2929,12 @@ func (h *providerHost) RunTurn(ctx context.Context, req RunTurnRequest) (TurnRes
 	if err != nil {
 		return TurnResult{}, err
 	}
+	operationCtx, done, err := beginHostOperationContext(h.store, ctx)
+	if err != nil {
+		return TurnResult{}, err
+	}
+	defer done()
+	ctx = operationCtx
 	thread, err := h.harness.ResumeThread(ctx, string(req.ThreadID), agentharness.ResumeOptions{})
 	if err != nil {
 		return TurnResult{}, runtimeHostError(err)
@@ -2583,7 +2966,7 @@ func (h *providerHost) RunTurn(ctx context.Context, req RunTurnRequest) (TurnRes
 	out := turnResult(result, string(req.ThreadID), activityRecorder.Snapshot(), time.Now().UnixMilli())
 	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
 	defer cancelProjection()
-	h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out, result.CanonicalEvents)
+	_ = h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out, result.CanonicalEvents)
 	return out, runtimeHostError(runErr)
 }
 
@@ -2653,7 +3036,7 @@ func (h *providerHost) RetryTurn(ctx context.Context, req RetryTurnRequest) (Tur
 	out := turnResult(result, string(req.ThreadID), nil, time.Now().UnixMilli())
 	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
 	defer cancelProjection()
-	h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out, result.CanonicalEvents)
+	_ = h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out, result.CanonicalEvents)
 	return out, runtimeHostError(runErr)
 }
 
@@ -2790,7 +3173,7 @@ func (h *providerHost) CompletePendingTool(ctx context.Context, req PendingToolC
 	turn := turnResult(result, string(req.Target.ThreadID), nil, time.Now().UnixMilli())
 	projectionCtx, cancelProjection := runtimeTerminalProjectionContext(ctx)
 	defer cancelProjection()
-	h.attachThreadTurnProjection(projectionCtx, string(req.Target.ThreadID), &turn, result.CanonicalEvents)
+	_ = h.attachThreadTurnProjection(projectionCtx, string(req.Target.ThreadID), &turn, result.CanonicalEvents)
 	out.Status = turn.Status
 	out.Turn = &turn
 	return out, runtimeHostError(runErr)
@@ -3256,6 +3639,7 @@ func threadSnapshot(in agentharness.ThreadSnapshot) ThreadSnapshot {
 		TitleSource:      in.TitleSource,
 		TitleUpdatedAt:   in.TitleUpdatedAt,
 		TitleError:       in.TitleError,
+		TitleGeneration:  in.TitleGeneration,
 		CreatedAt:        in.CreatedAt,
 		UpdatedAt:        in.UpdatedAt,
 		Phase:            ThreadPhase(in.Phase),
@@ -3279,6 +3663,7 @@ func threadSummary(in agentharness.ThreadSummary) ThreadSummary {
 		TitleSource:      in.TitleSource,
 		TitleUpdatedAt:   in.TitleUpdatedAt,
 		TitleError:       in.TitleError,
+		TitleGeneration:  in.TitleGeneration,
 		CreatedAt:        in.CreatedAt,
 		UpdatedAt:        in.UpdatedAt,
 		Phase:            ThreadPhase(in.Phase),
@@ -3298,61 +3683,65 @@ func forkThreadResult(in agentharness.ForkResult) ForkThreadResult {
 	}
 }
 
-func pendingApprovals(in agentharness.PendingApprovals) PendingApprovals {
-	return PendingApprovals{
-		ThreadID:    ThreadID(in.ThreadID),
-		Approvals:   pendingApprovalList(in.Approvals),
-		GeneratedAt: in.GeneratedAt,
+func approvalQueue(in agentharness.ApprovalQueueSnapshot) ApprovalQueue {
+	return ApprovalQueue{
+		RootThreadID: ThreadID(in.RootThreadID), Generation: in.Generation, Revision: in.Revision,
+		CurrentApprovalID: in.CurrentApprovalID, Items: approvalRecordList(in.Approvals), GeneratedAt: in.GeneratedAt,
 	}
 }
 
-func pendingApprovalList(in []agentharness.PendingApproval) []PendingApproval {
+func approvalDecisionReceipt(in sessiontree.ApprovalDecisionReceipt) ApprovalDecisionReceipt {
+	return ApprovalDecisionReceipt{
+		DecisionID: in.DecisionID, ApprovalID: in.ApprovalID, RootThreadID: ThreadID(in.RootThreadID),
+		Decision: ApprovalDecision(in.Decision), State: string(in.State), Reason: in.Reason,
+		AuthorizationProofHash: in.AuthorizationProofHash, QueueGeneration: in.QueueGeneration,
+		QueueRevision: in.QueueRevision, ApprovalRevision: in.ApprovalRevision,
+		SubmittedAt: in.SubmittedAt, ResolvedAt: in.ResolvedAt,
+	}
+}
+
+func approvalRecordList(in []agentharness.ApprovalRecord) []ApprovalRecord {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make([]PendingApproval, 0, len(in))
+	out := make([]ApprovalRecord, 0, len(in))
 	for _, approval := range in {
-		out = append(out, pendingApproval(approval))
+		out = append(out, approvalRecord(approval))
 	}
 	return out
 }
 
-func pendingApproval(in agentharness.PendingApproval) PendingApproval {
-	return PendingApproval{
-		ApprovalID:  in.ApprovalID,
-		ToolCallID:  in.ToolCallID,
-		ToolName:    in.ToolName,
-		ToolKind:    in.ToolKind,
-		RunID:       RunID(in.RunID),
-		ThreadID:    ThreadID(in.ThreadID),
-		TurnID:      TurnID(in.TurnID),
-		Step:        in.Step,
-		BatchIndex:  in.BatchIndex,
-		BatchSize:   in.BatchSize,
-		State:       in.State,
-		Revision:    in.Revision,
-		Epoch:       in.Epoch,
-		RequestedAt: in.RequestedAt,
-		ResolvedAt:  in.ResolvedAt,
-		ArgsHash:    in.ArgsHash,
-		Resources:   pendingApprovalResources(in.Resources),
-		Effects:     append([]string(nil), in.Effects...),
-		Labels:      cloneStringMap(in.Labels),
-		HostContext: cloneStringMap(in.HostContext),
-		ReadOnly:    in.ReadOnly,
-		Destructive: in.Destructive,
-		OpenWorld:   in.OpenWorld,
-		Reason:      in.Reason,
+func approvalRecord(in agentharness.ApprovalRecord) ApprovalRecord {
+	return ApprovalRecord{
+		ApprovalID: in.ApprovalID, RootThreadID: ThreadID(in.RootThreadID), ParentThreadID: ThreadID(in.ParentThreadID),
+		ToolCallID: in.ToolCallID, EffectAttemptID: in.EffectAttemptID, ToolName: in.ToolName, ToolKind: in.ToolKind,
+		RunID: RunID(in.RunID), ThreadID: ThreadID(in.ThreadID), TurnID: TurnID(in.TurnID),
+		Step: in.Step, BatchIndex: in.BatchIndex, BatchSize: in.BatchSize,
+		State: in.State, Revision: in.Revision, QueueSequence: in.QueueSequence, DecisionID: in.DecisionID,
+		RequestedAt:            in.RequestedAt,
+		UpdatedAt:              in.UpdatedAt,
+		ResolvedAt:             in.ResolvedAt,
+		ArgsHash:               in.ArgsHash,
+		RequestFingerprint:     in.RequestFingerprint,
+		AuthorizationProofHash: in.AuthorizationProofHash,
+		Resources:              approvalResources(in.Resources),
+		Effects:                append([]string(nil), in.Effects...),
+		Labels:                 cloneStringMap(in.Labels),
+		HostContext:            cloneStringMap(in.HostContext),
+		ReadOnly:               in.ReadOnly,
+		Destructive:            in.Destructive,
+		OpenWorld:              in.OpenWorld,
+		Reason:                 in.Reason,
 	}
 }
 
-func pendingApprovalResources(in []agentharness.PendingApprovalResource) []PendingApprovalResource {
+func approvalResources(in []agentharness.ApprovalResource) []ApprovalResource {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make([]PendingApprovalResource, 0, len(in))
+	out := make([]ApprovalResource, 0, len(in))
 	for _, resource := range in {
-		out = append(out, PendingApprovalResource{Kind: resource.Kind, Value: resource.Value})
+		out = append(out, ApprovalResource{Kind: resource.Kind, Value: resource.Value})
 	}
 	return out
 }
@@ -3382,23 +3771,23 @@ func turnResult(in agentharness.TurnResult, threadID string, events []observatio
 			TurnID:   in.ID,
 			TraceID:  in.RunID,
 		}, events, nowUnixMS),
-		PendingApprovals: pendingApprovalList(in.PendingApprovals),
-		Replayed:         in.Replayed,
+		Replayed: in.Replayed,
 	}
 	if in.Err != nil {
-		out.Error = in.Err.Error()
+		out.Failure = &ThreadTurnFailure{
+			Code:    ThreadTurnFailureCode(strings.TrimSpace(in.FailureCode)),
+			Message: in.Err.Error(),
+		}
 	}
 	return out
 }
 
-func (h *providerHost) attachThreadTurnProjection(ctx context.Context, threadID string, result *TurnResult, canonicalEvents []agentharness.SubAgentDetailEvent) {
+func (h *providerHost) attachThreadTurnProjection(ctx context.Context, threadID string, result *TurnResult, canonicalEvents []agentharness.SubAgentDetailEvent) error {
 	if result == nil {
-		return
+		return errors.New("turn result is required")
 	}
 	if h == nil || strings.TrimSpace(threadID) == "" || strings.TrimSpace(string(result.TurnID)) == "" {
-		result.ProjectionAvailability = TurnProjectionAvailabilityUnavailable
-		result.ProjectionError = "turn projection identity is incomplete"
-		return
+		return markTurnProjectionUnavailable(result, errors.New("turn projection identity is incomplete"))
 	}
 	var events []ThreadDetailEvent
 	if len(canonicalEvents) > 0 {
@@ -3406,14 +3795,10 @@ func (h *providerHost) attachThreadTurnProjection(ctx context.Context, threadID 
 	} else {
 		detail, found, err := h.harness.ReadTurnDetailEvents(ctx, threadID, string(result.TurnID), string(result.RunID), true)
 		if err != nil {
-			result.ProjectionAvailability = TurnProjectionAvailabilityUnavailable
-			result.ProjectionError = runtimeHostError(err).Error()
-			return
+			return markTurnProjectionUnavailable(result, runtimeHostError(err))
 		}
 		if !found {
-			result.ProjectionAvailability = TurnProjectionAvailabilityUnavailable
-			result.ProjectionError = runtimeHostError(sessiontree.ErrAuthorityCorrupt).Error()
-			return
+			return markTurnProjectionUnavailable(result, runtimeHostError(sessiontree.ErrAuthorityCorrupt))
 		}
 		events = threadDetailEvents(detail.Events)
 	}
@@ -3424,9 +3809,32 @@ func (h *providerHost) attachThreadTurnProjection(ctx context.Context, threadID 
 		TraceID:  TraceID(result.RunID),
 		Events:   events,
 	})
+	failure := canonicalTurnFailure(events)
+	status := canonicalTurnStatus(projection.Status, failure)
+	if err := validateThreadTurnFailureForStatus(status, failure); err != nil {
+		return markTurnProjectionUnavailable(result, fmt.Errorf("%w: canonical turn failure state is invalid: %v", ErrAuthorityCorrupt, err))
+	}
+	projection.Status = status
+	if err := projection.Validate(); err != nil {
+		return markTurnProjectionUnavailable(result, fmt.Errorf("%w: canonical turn projection is invalid: %v", ErrAuthorityCorrupt, err))
+	}
 	result.ProjectionAvailability = TurnProjectionAvailabilityReady
 	result.Projection = &projection
 	result.ProjectionError = ""
+	result.Failure = failure
+	result.Status = status
+	return nil
+}
+
+func markTurnProjectionUnavailable(result *TurnResult, err error) error {
+	if err == nil {
+		err = errors.New("turn projection is unavailable")
+	}
+	result.ProjectionAvailability = TurnProjectionAvailabilityUnavailable
+	result.Projection = nil
+	result.ProjectionError = err.Error()
+	result.Failure = nil
+	return err
 }
 
 func runtimeTerminalProjectionContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -4114,29 +4522,35 @@ func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harness
 			Reasoning:    model.Reasoning,
 		}
 	}
-	return agentharness.New(agentharness.Options{
-		Provider:                p,
-		ProviderName:            cfg.Provider,
-		Model:                   cfg.Model,
-		SystemPrompt:            effectivePrompt,
-		Tools:                   registry,
-		PromptStore:             store.prompt,
-		Repo:                    store.repo,
-		ForkOperations:          store.forkOperations,
-		StateCompatibilityKey:   opts.StateCompatibilityKey,
-		Sink:                    opts.Sink,
-		SinkPolicy:              opts.SinkPolicy,
-		EffectAuthorizationGate: runtimeEffectAuthorizationGate(opts.EffectAuthorizationGate),
-		ToolSurfaceProvider:     opts.ToolSurfaceProvider,
-		TitleGenerator:          titleGenerator,
-		CompactionPrompt:        compaction.PromptOptions{},
-		Reasoning:               model.Reasoning,
-		TurnPolicy:              turnPolicy,
-		LoopLimits:              loopLimits,
-		SubAgentRunTimeout:      opts.SubAgentRunTimeout,
-		BeginSubAgentExecution:  store.beginLifetimeOperationContext,
-		NewID:                   opts.NewID,
-	}), nil
+	harness := agentharness.New(agentharness.Options{
+		Provider:                 p,
+		ProviderName:             cfg.Provider,
+		Model:                    cfg.Model,
+		SystemPrompt:             effectivePrompt,
+		Tools:                    registry,
+		PromptStore:              store.prompt,
+		Repo:                     store.repo,
+		ForkOperations:           store.forkOperations,
+		StateCompatibilityKey:    opts.StateCompatibilityKey,
+		Sink:                     opts.Sink,
+		SinkPolicy:               opts.SinkPolicy,
+		EffectAuthorizationGate:  runtimeEffectAuthorizationGate(opts.EffectAuthorizationGate),
+		ToolSurfaceProvider:      opts.ToolSurfaceProvider,
+		TitleGenerator:           titleGenerator,
+		CompactionPrompt:         compaction.PromptOptions{},
+		Reasoning:                model.Reasoning,
+		TurnPolicy:               turnPolicy,
+		LoopLimits:               loopLimits,
+		SubAgentRunTimeout:       opts.SubAgentRunTimeout,
+		BeginBackgroundExecution: store.beginLifetimeOperationContext,
+		ReportBackgroundError:    store.reportBackgroundError,
+		TurnExecutions:           store.turnExecutionRegistry(),
+		NewID:                    opts.NewID,
+	})
+	if err := store.recoverPendingAutomaticThreadTitles(harness); err != nil {
+		return nil, err
+	}
+	return harness, nil
 }
 
 func runtimeStateCompatibilityKey(cfg config.Config, opts providerHostOptions) string {

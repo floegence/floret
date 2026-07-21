@@ -227,11 +227,6 @@ func pathSafeActivityItem(item observation.ActivityItem) observation.ActivityIte
 	return item
 }
 
-func pathSafeWaitSubAgentsResult(result agentharness.WaitSubAgentsResult) agentharness.WaitSubAgentsResult {
-	result.Snapshots = pathSafeSubAgentSnapshots(result.Snapshots)
-	return result
-}
-
 func localInspectionAgentObservation(observation AgentObservation) AgentObservation {
 	observation.ProviderRequests = cloneSlice(observation.ProviderRequests)
 	for i := range observation.ProviderRequests {

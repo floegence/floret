@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,15 +13,61 @@ import (
 )
 
 const (
-	InterruptedTurnRecoveryKindKey               = "authority_kind"
-	InterruptedTurnRecoveryKind                  = "interrupted_turn_recovery"
-	InterruptedTurnRecoveryFingerprintKey        = "authority_fingerprint"
-	InterruptedTurnRecoveryParentKey             = "authority_parent_thread_id"
-	InterruptedTurnFailureMessage                = "turn interrupted during previous process"
-	InterruptedTurnEffectOutcomeUnknownMessage   = "effect outcome is unknown because the turn was interrupted after dispatch"
-	interruptedTurnRecoveryCancelledEffectPrefix = "turn-recovery-cancelled:"
-	interruptedTurnRecoveryUnknownEffectPrefix   = "turn-recovery-unknown:"
+	InterruptedTurnRecoveryKindKey                 = "authority_kind"
+	InterruptedTurnRecoveryKind                    = "interrupted_turn_recovery"
+	InterruptedTurnRecoveryFingerprintKey          = "authority_fingerprint"
+	InterruptedTurnRecoveryParentKey               = "authority_parent_thread_id"
+	InterruptedTurnRecoveryApprovalRootKey         = "authority_approval_root_thread_id"
+	InterruptedTurnRecoveryApprovalGenerationKey   = "authority_approval_queue_generation"
+	InterruptedTurnRecoveryApprovalRevisionKey     = "authority_approval_queue_revision"
+	InterruptedTurnRecoverySourceFailureEntryKey   = "authority_source_failure_entry_id"
+	InterruptedTurnRecoverySourceFailureRawHashKey = "authority_source_failure_raw_hash"
+	InterruptedTurnFailureMessage                  = "turn interrupted during previous process"
+	InterruptedTurnEffectOutcomeUnknownMessage     = "effect outcome is unknown because the turn was interrupted after dispatch"
+	BranchBoundaryTurnFailureMessage               = "turn interrupted by branch boundary"
+	interruptedTurnRecoveryCancelledEffectPrefix   = "turn-recovery-cancelled:"
+	interruptedTurnRecoveryUnknownEffectPrefix     = "turn-recovery-unknown:"
 )
+
+type InterruptedTurnApprovalQueueProof struct {
+	RootThreadID string
+	Generation   int64
+	Revision     int64
+}
+
+func AddInterruptedTurnApprovalQueueProof(metadata map[string]string, proof *InterruptedTurnApprovalQueueProof) error {
+	if proof == nil {
+		return nil
+	}
+	if strings.TrimSpace(proof.RootThreadID) == "" || proof.Generation <= 0 || proof.Revision <= 0 {
+		return ErrAuthorityCorrupt
+	}
+	metadata[InterruptedTurnRecoveryApprovalRootKey] = proof.RootThreadID
+	metadata[InterruptedTurnRecoveryApprovalGenerationKey] = strconv.FormatInt(proof.Generation, 10)
+	metadata[InterruptedTurnRecoveryApprovalRevisionKey] = strconv.FormatInt(proof.Revision, 10)
+	return nil
+}
+
+func InterruptedTurnApprovalQueueProofFromMetadata(metadata map[string]string) (*InterruptedTurnApprovalQueueProof, error) {
+	rootID := strings.TrimSpace(metadata[InterruptedTurnRecoveryApprovalRootKey])
+	generationRaw := strings.TrimSpace(metadata[InterruptedTurnRecoveryApprovalGenerationKey])
+	revisionRaw := strings.TrimSpace(metadata[InterruptedTurnRecoveryApprovalRevisionKey])
+	if rootID == "" && generationRaw == "" && revisionRaw == "" {
+		return nil, nil
+	}
+	if rootID == "" || generationRaw == "" || revisionRaw == "" {
+		return nil, ErrAuthorityCorrupt
+	}
+	generation, err := strconv.ParseInt(generationRaw, 10, 64)
+	if err != nil || generation <= 0 {
+		return nil, ErrAuthorityCorrupt
+	}
+	revision, err := strconv.ParseInt(revisionRaw, 10, 64)
+	if err != nil || revision <= 0 {
+		return nil, ErrAuthorityCorrupt
+	}
+	return &InterruptedTurnApprovalQueueProof{RootThreadID: rootID, Generation: generation, Revision: revision}, nil
+}
 
 type RecoverInterruptedTurnRequest struct {
 	ExpectedLease  TurnLease
@@ -42,10 +89,44 @@ type RecoverInterruptedTurnResult struct {
 type InterruptedTurnRecoveryPlan struct {
 	RunID              string
 	Status             TurnMarkerStatus
+	FailureCode        string
 	FailureMessage     string
+	SourceFailure      *InterruptedTurnRecoveryFailureProof
 	OutcomeFingerprint string
 	TerminalEntryID    string
 	Effects            []InterruptedTurnRecoveryEffect
+}
+
+type InterruptedTurnRecoveryFailureProof struct {
+	EntryID string `json:"entry_id"`
+	Message string `json:"message"`
+	RawHash string `json:"raw_hash"`
+}
+
+func AddInterruptedTurnRecoverySourceFailureProof(metadata map[string]string, proof *InterruptedTurnRecoveryFailureProof) error {
+	if proof == nil {
+		return nil
+	}
+	if err := validateInterruptedTurnRecoveryFailureProof(*proof); err != nil {
+		return err
+	}
+	metadata[InterruptedTurnRecoverySourceFailureEntryKey] = proof.EntryID
+	metadata[InterruptedTurnRecoverySourceFailureRawHashKey] = proof.RawHash
+	return nil
+}
+
+func InterruptedTurnRecoverySourceFailureProofFromMetadata(metadata map[string]string) (*InterruptedTurnRecoveryFailureProof, error) {
+	entryValue := metadata[InterruptedTurnRecoverySourceFailureEntryKey]
+	rawHashValue := metadata[InterruptedTurnRecoverySourceFailureRawHashKey]
+	if entryValue == "" && rawHashValue == "" {
+		return nil, nil
+	}
+	entryID := strings.TrimSpace(entryValue)
+	rawHash := strings.TrimSpace(rawHashValue)
+	if entryID == "" || rawHash == "" || entryValue != entryID || rawHashValue != rawHash {
+		return nil, ErrAuthorityCorrupt
+	}
+	return &InterruptedTurnRecoveryFailureProof{EntryID: entryID, RawHash: rawHash}, nil
 }
 
 type InterruptedTurnRecoveryEffect struct {
@@ -172,7 +253,10 @@ func DeriveInterruptedTurnRecoveryPlan(path []Entry, expectedLease TurnLease, pa
 	if runID == "" {
 		return InterruptedTurnRecoveryPlan{}, ErrAuthorityCorrupt
 	}
-	info := interruptedTurnRecoveryInfoForTurn(path, expectedLease.TurnID)
+	info, err := interruptedTurnRecoveryInfoForTurn(path, expectedLease.TurnID)
+	if err != nil {
+		return InterruptedTurnRecoveryPlan{}, err
+	}
 	if !info.Started || info.Terminal {
 		return InterruptedTurnRecoveryPlan{}, ErrAuthorityCorrupt
 	}
@@ -180,20 +264,41 @@ func DeriveInterruptedTurnRecoveryPlan(path []Entry, expectedLease TurnLease, pa
 	if err != nil {
 		return InterruptedTurnRecoveryPlan{}, err
 	}
-	status := interruptedTurnRecoveryTerminalStatus(info.RunFailureError)
+	status := TurnAborted
+	failureCode := TurnFailureInterrupted
 	failureMessage := InterruptedTurnFailureMessage
+	var sourceFailure *InterruptedTurnRecoveryFailureProof
+	if info.RunFailure {
+		failureCode = info.RunFailureCode
+		if failureCode == "" {
+			failureCode = TurnFailureLegacyUnclassified
+		}
+		if !ValidTurnFailureCode(failureCode) {
+			return InterruptedTurnRecoveryPlan{}, ErrAuthorityCorrupt
+		}
+		failureMessage = ""
+		sourceFailure, err = interruptedTurnRecoveryFailureProofForEntry(info.RunFailureEntry, expectedLease.TurnID)
+		if err != nil {
+			return InterruptedTurnRecoveryPlan{}, err
+		}
+		switch failureCode {
+		case TurnFailureCancelled, TurnFailureInterrupted:
+			status = TurnAborted
+		default:
+			status = TurnFailed
+		}
+	}
 	if hasUnknownOutcome {
 		status = TurnFailed
+		failureCode = TurnFailureEffectOutcomeUnknown
 		failureMessage = InterruptedTurnEffectOutcomeUnknownMessage
-	} else if info.RunFailure {
-		failureMessage = ""
 	}
-	fingerprint, err := InterruptedTurnRecoveryFingerprint(expectedLease, parentThreadID, runID, status, failureMessage, normalizedEffects)
+	fingerprint, err := InterruptedTurnRecoveryFingerprint(expectedLease, parentThreadID, runID, status, failureCode, failureMessage, sourceFailure, normalizedEffects)
 	if err != nil {
 		return InterruptedTurnRecoveryPlan{}, err
 	}
 	return InterruptedTurnRecoveryPlan{
-		RunID: runID, Status: status, FailureMessage: failureMessage,
+		RunID: runID, Status: status, FailureCode: failureCode, FailureMessage: failureMessage, SourceFailure: sourceFailure,
 		OutcomeFingerprint: fingerprint, TerminalEntryID: "recovery-terminal-" + fingerprint[:24], Effects: normalizedEffects,
 	}, nil
 }
@@ -203,29 +308,56 @@ func InterruptedTurnRecoveryFingerprint(
 	parentThreadID string,
 	runID string,
 	status TurnMarkerStatus,
+	failureCode string,
 	failureMessage string,
+	sourceFailure *InterruptedTurnRecoveryFailureProof,
 	effects []InterruptedTurnRecoveryEffect,
 ) (string, error) {
 	if err := expectedLease.Validate(); err != nil {
 		return "", err
+	}
+	failureCode = strings.TrimSpace(failureCode)
+	if !ValidTurnFailureCode(failureCode) {
+		return "", ErrAuthorityCorrupt
+	}
+	switch status {
+	case TurnAborted:
+		if failureCode != TurnFailureCancelled && failureCode != TurnFailureInterrupted {
+			return "", ErrAuthorityCorrupt
+		}
+	case TurnFailed:
+		if failureCode == TurnFailureCancelled || failureCode == TurnFailureInterrupted {
+			return "", ErrAuthorityCorrupt
+		}
+	default:
+		return "", ErrAuthorityCorrupt
+	}
+	if sourceFailure != nil {
+		if err := validateInterruptedTurnRecoveryFailureProof(*sourceFailure); err != nil {
+			return "", err
+		}
 	}
 	normalizedEffects, _, err := normalizeInterruptedTurnRecoveryEffects(effects)
 	if err != nil {
 		return "", err
 	}
 	payload, err := json.Marshal(struct {
-		ExpectedLease  TurnLease                       `json:"expected_lease"`
-		ParentThreadID string                          `json:"parent_thread_id,omitempty"`
-		RunID          string                          `json:"run_id"`
-		Status         TurnMarkerStatus                `json:"status"`
-		FailureMessage string                          `json:"failure_message,omitempty"`
-		Effects        []InterruptedTurnRecoveryEffect `json:"effects,omitempty"`
+		ExpectedLease  TurnLease                            `json:"expected_lease"`
+		ParentThreadID string                               `json:"parent_thread_id,omitempty"`
+		RunID          string                               `json:"run_id"`
+		Status         TurnMarkerStatus                     `json:"status"`
+		FailureCode    string                               `json:"failure_code"`
+		FailureMessage string                               `json:"failure_message,omitempty"`
+		SourceFailure  *InterruptedTurnRecoveryFailureProof `json:"source_failure,omitempty"`
+		Effects        []InterruptedTurnRecoveryEffect      `json:"effects,omitempty"`
 	}{
 		ExpectedLease:  expectedLease,
 		ParentThreadID: strings.TrimSpace(parentThreadID),
 		RunID:          strings.TrimSpace(runID),
 		Status:         status,
+		FailureCode:    failureCode,
 		FailureMessage: strings.TrimSpace(failureMessage),
+		SourceFailure:  sourceFailure,
 		Effects:        normalizedEffects,
 	})
 	if err != nil {
@@ -306,6 +438,23 @@ func InterruptedTurnRecoveryEffects(attempts []EffectAttempt, committedFingerpri
 	return normalized, err
 }
 
+func ValidateInterruptedTurnRecoveryEffectAttempts(attempts []EffectAttempt, threadID, turnID, runID string) error {
+	threadID = strings.TrimSpace(threadID)
+	turnID = strings.TrimSpace(turnID)
+	runID = strings.TrimSpace(runID)
+	if threadID == "" || turnID == "" || runID == "" {
+		return ErrAuthorityCorrupt
+	}
+	for _, attempt := range attempts {
+		if strings.TrimSpace(attempt.Invocation.ThreadID) != threadID ||
+			strings.TrimSpace(attempt.Invocation.TurnID) != turnID ||
+			strings.TrimSpace(attempt.Invocation.RunID) != runID {
+			return ErrAuthorityCorrupt
+		}
+	}
+	return nil
+}
+
 func InterruptedTurnRecoveryCancelledEffectFingerprint(recoveryFingerprint string) string {
 	return interruptedTurnRecoveryCancelledEffectPrefix + strings.TrimSpace(recoveryFingerprint)
 }
@@ -318,7 +467,8 @@ type interruptedTurnRecoveryInfo struct {
 	Started         bool
 	Terminal        bool
 	RunFailure      bool
-	RunFailureError string
+	RunFailureCode  string
+	RunFailureEntry Entry
 }
 
 func interruptedTurnRecoveryRunID(path []Entry, turnID string) string {
@@ -330,7 +480,7 @@ func interruptedTurnRecoveryRunID(path []Entry, turnID string) string {
 	return ""
 }
 
-func interruptedTurnRecoveryInfoForTurn(path []Entry, turnID string) interruptedTurnRecoveryInfo {
+func interruptedTurnRecoveryInfoForTurn(path []Entry, turnID string) (interruptedTurnRecoveryInfo, error) {
 	var info interruptedTurnRecoveryInfo
 	for _, entry := range path {
 		if entry.TurnID != turnID {
@@ -338,8 +488,15 @@ func interruptedTurnRecoveryInfoForTurn(path []Entry, turnID string) interrupted
 		}
 		switch entry.Type {
 		case EntryRunFailure:
+			if info.RunFailure {
+				return interruptedTurnRecoveryInfo{}, ErrAuthorityCorrupt
+			}
 			info.RunFailure = true
-			info.RunFailureError = entry.Error
+			info.RunFailureEntry = cloneEntry(entry)
+			info.RunFailureCode = strings.TrimSpace(entry.Metadata[TurnFailureCodeMetadataKey])
+			if info.RunFailureCode != "" && !ValidTurnFailureCode(info.RunFailureCode) {
+				return interruptedTurnRecoveryInfo{}, ErrAuthorityCorrupt
+			}
 		case EntryTurnMarker:
 			if entry.TurnStatus == TurnStarted {
 				info.Started = true
@@ -349,7 +506,30 @@ func interruptedTurnRecoveryInfoForTurn(path []Entry, turnID string) interrupted
 			}
 		}
 	}
-	return info
+	return info, nil
+}
+
+func interruptedTurnRecoveryFailureProofForEntry(entry Entry, turnID string) (*InterruptedTurnRecoveryFailureProof, error) {
+	if entry.Type != EntryRunFailure || entry.TurnID != strings.TrimSpace(turnID) || ValidateEntryIntegrity(entry) != nil {
+		return nil, ErrAuthorityCorrupt
+	}
+	proof := InterruptedTurnRecoveryFailureProof{
+		EntryID: entry.ID,
+		Message: entry.Error,
+		RawHash: entry.RawHash,
+	}
+	if err := validateInterruptedTurnRecoveryFailureProof(proof); err != nil {
+		return nil, err
+	}
+	return &proof, nil
+}
+
+func validateInterruptedTurnRecoveryFailureProof(proof InterruptedTurnRecoveryFailureProof) error {
+	if strings.TrimSpace(proof.EntryID) == "" || proof.EntryID != strings.TrimSpace(proof.EntryID) ||
+		strings.TrimSpace(proof.Message) == "" || strings.TrimSpace(proof.RawHash) == "" || proof.RawHash != strings.TrimSpace(proof.RawHash) {
+		return ErrAuthorityCorrupt
+	}
+	return nil
 }
 
 func terminalTurnMarker(status TurnMarkerStatus) bool {
@@ -359,18 +539,6 @@ func terminalTurnMarker(status TurnMarkerStatus) bool {
 	default:
 		return false
 	}
-}
-
-func interruptedTurnRecoveryTerminalStatus(message string) TurnMarkerStatus {
-	normalized := strings.ToLower(strings.TrimSpace(message))
-	if normalized == "" ||
-		strings.Contains(normalized, strings.ToLower(context.Canceled.Error())) ||
-		strings.Contains(normalized, strings.ToLower(context.DeadlineExceeded.Error())) ||
-		strings.Contains(normalized, "interrupted") ||
-		strings.Contains(normalized, "runtime restarted") {
-		return TurnAborted
-	}
-	return TurnFailed
 }
 
 func (r *MemoryRepo) RecoverInterruptedTurn(_ context.Context, req RecoverInterruptedTurnRequest) (RecoverInterruptedTurnResult, error) {
@@ -441,6 +609,9 @@ func (r *MemoryRepo) RecoverInterruptedTurn(_ context.Context, req RecoverInterr
 			turnAttempts = append(turnAttempts, attempt)
 		}
 	}
+	if err := ValidateInterruptedTurnRecoveryEffectAttempts(turnAttempts, threadID, turnID, admission.RunID); err != nil {
+		return RecoverInterruptedTurnResult{}, err
+	}
 	effects, err := InterruptedTurnRecoveryEffects(turnAttempts, "")
 	if err != nil {
 		return RecoverInterruptedTurnResult{}, err
@@ -473,6 +644,10 @@ func (r *MemoryRepo) RecoverInterruptedTurn(_ context.Context, req RecoverInterr
 		return RecoverInterruptedTurnResult{}, ErrAuthorityCorrupt
 	}
 	generation := active.Generation + 1
+	approvalQueueProof, err := r.cancelInterruptedTurnApprovalsLocked(active, admission.RunID, plan.OutcomeFingerprint, now)
+	if err != nil {
+		return RecoverInterruptedTurnResult{}, err
+	}
 	r.seq = nextSequence
 	r.leaseGeneration[threadID] = generation
 	delete(r.leases, threadID)
@@ -519,9 +694,19 @@ func (r *MemoryRepo) RecoverInterruptedTurn(_ context.Context, req RecoverInterr
 		result.Failure = &failure
 		parentID = failure.ID
 	}
-	metadata := map[string]string{"recoverable": "true", InterruptedTurnRecoveryParentKey: strings.TrimSpace(req.ParentThreadID)}
+	metadata := map[string]string{
+		"recoverable":                    "true",
+		TurnFailureCodeMetadataKey:       plan.FailureCode,
+		InterruptedTurnRecoveryParentKey: strings.TrimSpace(req.ParentThreadID),
+	}
 	metadata[InterruptedTurnRecoveryKindKey] = InterruptedTurnRecoveryKind
 	metadata[InterruptedTurnRecoveryFingerprintKey] = plan.OutcomeFingerprint
+	if err := AddInterruptedTurnRecoverySourceFailureProof(metadata, plan.SourceFailure); err != nil {
+		return RecoverInterruptedTurnResult{}, err
+	}
+	if err := AddInterruptedTurnApprovalQueueProof(metadata, approvalQueueProof); err != nil {
+		return RecoverInterruptedTurnResult{}, err
+	}
 	terminal := Entry{
 		ID: terminalEntryID, ThreadID: threadID, ParentID: parentID, Type: EntryTurnMarker,
 		TurnID: turnID, TurnStatus: plan.Status, Metadata: metadata, CreatedAt: now,
@@ -641,7 +826,7 @@ func (r *MemoryRepo) validateInterruptedTurnResolutionLocked(
 		}
 		return interruptedTurnResolution{}, nil
 	case admission.Lease.Generation + 1:
-		result, err := r.replayedInterruptedTurnLocked(finished, admission.Lease, parentThreadID)
+		result, err := r.replayedInterruptedTurnLocked(finished, admission.Lease, parentThreadID, path)
 		if err != nil {
 			if errors.Is(err, ErrRequestConflict) {
 				return interruptedTurnResolution{}, ErrAuthorityCorrupt
@@ -701,6 +886,7 @@ func (r *MemoryRepo) replayedInterruptedTurnLocked(
 	finished turnFinishLedger,
 	expectedLease TurnLease,
 	parentThreadID string,
+	path []Entry,
 ) (RecoverInterruptedTurnResult, error) {
 	if finished.Generation != expectedLease.Generation+1 {
 		return RecoverInterruptedTurnResult{}, ErrRequestConflict
@@ -715,6 +901,21 @@ func (r *MemoryRepo) replayedInterruptedTurnLocked(
 	if terminal.Metadata[InterruptedTurnRecoveryParentKey] != strings.TrimSpace(parentThreadID) {
 		return RecoverInterruptedTurnResult{}, ErrInvalidThreadAuthority
 	}
+	sourceFailure, err := InterruptedTurnRecoverySourceFailureProofFromMetadata(terminal.Metadata)
+	if err != nil {
+		return RecoverInterruptedTurnResult{}, err
+	}
+	if sourceFailure != nil {
+		entry, ok := findEntry(path, sourceFailure.EntryID)
+		if !ok {
+			return RecoverInterruptedTurnResult{}, ErrAuthorityCorrupt
+		}
+		currentProof, proofErr := interruptedTurnRecoveryFailureProofForEntry(entry, finished.TurnID)
+		if proofErr != nil || currentProof.EntryID != sourceFailure.EntryID || currentProof.RawHash != sourceFailure.RawHash {
+			return RecoverInterruptedTurnResult{}, ErrAuthorityCorrupt
+		}
+		sourceFailure = currentProof
+	}
 	failureMessage := ""
 	var failure *Entry
 	if finished.FailureEntryID != "" {
@@ -725,18 +926,32 @@ func (r *MemoryRepo) replayedInterruptedTurnLocked(
 		failureMessage = entry.Error
 		failure = &entry
 	}
+	if sourceFailure == nil && failureMessage == "" {
+		return RecoverInterruptedTurnResult{}, ErrAuthorityCorrupt
+	}
 	turnAttempts := make([]EffectAttempt, 0)
 	for _, attempt := range r.effectAttempts {
 		if attempt.Invocation.ThreadID == finished.ThreadID && attempt.Invocation.TurnID == finished.TurnID {
 			turnAttempts = append(turnAttempts, attempt)
 		}
 	}
+	if err := ValidateInterruptedTurnRecoveryEffectAttempts(turnAttempts, finished.ThreadID, finished.TurnID, finished.RunID); err != nil {
+		return RecoverInterruptedTurnResult{}, err
+	}
 	effects, err := InterruptedTurnRecoveryEffects(turnAttempts, finished.OutcomeFingerprint)
 	if err != nil {
 		return RecoverInterruptedTurnResult{}, err
 	}
+	approvalQueueProof, err := InterruptedTurnApprovalQueueProofFromMetadata(terminal.Metadata)
+	if err != nil {
+		return RecoverInterruptedTurnResult{}, err
+	}
+	if err := r.validateInterruptedTurnApprovalsLocked(expectedLease, finished.RunID, finished.OutcomeFingerprint, terminal.CreatedAt, approvalQueueProof); err != nil {
+		return RecoverInterruptedTurnResult{}, err
+	}
 	fingerprint, err := InterruptedTurnRecoveryFingerprint(
-		expectedLease, parentThreadID, finished.RunID, terminal.TurnStatus, failureMessage, effects,
+		expectedLease, parentThreadID, finished.RunID, terminal.TurnStatus,
+		terminal.Metadata[TurnFailureCodeMetadataKey], failureMessage, sourceFailure, effects,
 	)
 	if err != nil {
 		return RecoverInterruptedTurnResult{}, err
@@ -885,7 +1100,10 @@ func PrepareBranchBoundaryEntry(path []Entry, threadID, parentEntryID, entryID, 
 	entry := Entry{
 		ID: entryID, ThreadID: threadID, ParentID: strings.TrimSpace(parentEntryID), Type: EntryTurnMarker,
 		TurnID: unfinished[0], TurnStatus: TurnAborted, CreatedAt: now.UTC(),
-		Metadata: map[string]string{"authority_kind": "branch_boundary", "reason": reason},
+		Metadata: map[string]string{
+			"authority_kind": "branch_boundary", "reason": reason,
+			TurnFailureCodeMetadataKey: TurnFailureInterrupted, "failure_reason": BranchBoundaryTurnFailureMessage,
+		},
 	}
 	entry.Raw = rawForEntry(entry)
 	entry.RawHash = stableHash(entry.Raw)

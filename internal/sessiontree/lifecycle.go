@@ -418,6 +418,7 @@ func (r *MemoryRepo) DeleteRootTree(_ context.Context, rootThreadID string) (Del
 			delete(r.effectAttempts, attemptID)
 		}
 	}
+	r.deleteApprovalAuthorityForThreadsLocked(deletedSet)
 	for requestID, completion := range r.pendingToolCompletions {
 		if _, deleted := deletedSet[completion.ThreadID]; deleted {
 			delete(r.pendingToolCompletions, requestID)

@@ -339,19 +339,37 @@ func (h *TurnExecutionHost) CompletePendingTool(ctx context.Context, req Pending
 	return result, requestConflictError(err, "pending_tool_completion", req.CompletionRequestID)
 }
 
-func (h *TurnExecutionHost) ListPendingApprovals(ctx context.Context, req ListPendingApprovalsRequest) (PendingApprovals, error) {
+func (h *TurnExecutionHost) ReadApprovalQueue(ctx context.Context, req ReadApprovalQueueRequest) (ApprovalQueue, error) {
 	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
 	if err != nil {
-		return PendingApprovals{}, err
+		return ApprovalQueue{}, err
 	}
 	defer done()
 	if err := validateBoundThreadID(h.threadID, req.ThreadID, "turn execution host"); err != nil {
-		return PendingApprovals{}, err
+		return ApprovalQueue{}, err
 	}
 	if err := validateRootThreadAuthority(ctx, h.host.store, req.ThreadID); err != nil {
-		return PendingApprovals{}, err
+		return ApprovalQueue{}, err
 	}
-	return h.host.ListPendingApprovals(ctx, req)
+	return h.host.ReadApprovalQueue(ctx, req)
+}
+
+func (h *TurnExecutionHost) ResolveApproval(ctx context.Context, req ResolveApprovalRequest) (ResolveApprovalResult, error) {
+	if err := req.Validate(); err != nil {
+		return ResolveApprovalResult{}, err
+	}
+	ctx, done, err := beginHostOperationContext(h.host.store, ctx)
+	if err != nil {
+		return ResolveApprovalResult{}, err
+	}
+	defer done()
+	if err := validateBoundThreadID(h.threadID, req.ExpectedRootThreadID, "turn execution host"); err != nil {
+		return ResolveApprovalResult{}, err
+	}
+	if err := validateRootThreadAuthority(ctx, h.host.store, req.ExpectedRootThreadID); err != nil {
+		return ResolveApprovalResult{}, err
+	}
+	return h.host.ResolveApproval(ctx, req)
 }
 
 func (h *TurnExecutionHost) UpdateThreadAgentTodos(ctx context.Context, req UpdateThreadAgentTodosRequest) (ThreadAgentTodoState, error) {

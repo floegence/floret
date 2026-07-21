@@ -119,7 +119,17 @@ func (g testUIProviderGateway) StreamModel(ctx context.Context, req flruntime.Mo
 	out := make(chan flruntime.ModelEvent)
 	go func() {
 		defer close(out)
-		for ev := range stream {
+		for {
+			var ev provider.StreamEvent
+			var ok bool
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok = <-stream:
+				if !ok {
+					return
+				}
+			}
 			// Provider-native hosted tool lifecycle events have no public
 			// ModelEvent representation. The observing transport records them
 			// for the live Test UI, while the model gateway forwards only the
@@ -176,6 +186,21 @@ func sessionAttachmentsFromRuntime(in []flruntime.MessageAttachment) []session.M
 	out := make([]session.MessageAttachment, 0, len(in))
 	for _, attachment := range in {
 		out = append(out, session.MessageAttachment{ResourceRef: attachment.ResourceRef, Name: attachment.Name, MIMEType: attachment.MIMEType, SizeBytes: attachment.SizeBytes})
+	}
+	return out
+}
+
+func sessionReferencesFromRuntime(in []flruntime.MessageReference) []session.MessageReference {
+	out := make([]session.MessageReference, 0, len(in))
+	for _, reference := range in {
+		out = append(out, session.MessageReference{
+			ReferenceID: reference.ReferenceID,
+			Kind:        session.MessageReferenceKind(reference.Kind),
+			Label:       reference.Label,
+			Text:        reference.Text,
+			ResourceRef: reference.ResourceRef,
+			Truncated:   reference.Truncated,
+		})
 	}
 	return out
 }
@@ -302,7 +327,13 @@ func sessionEntryFromRuntimeDetail(detail flruntime.ThreadDetailEvent) sessiontr
 		entry.Type = runtimeDetailEntryType(detail.Kind)
 	}
 	if detail.Message != nil {
-		entry.Message = session.Message{Role: session.Role(detail.Message.Role), Content: detail.Message.Content, Reasoning: detail.Message.Reasoning, Attachments: sessionAttachmentsFromRuntime(detail.Message.Attachments)}
+		entry.Message = session.Message{
+			Role:        session.Role(detail.Message.Role),
+			Content:     detail.Message.Content,
+			Reasoning:   detail.Message.Reasoning,
+			Attachments: sessionAttachmentsFromRuntime(detail.Message.Attachments),
+			References:  sessionReferencesFromRuntime(detail.Message.References),
+		}
 	}
 	if detail.ToolCall != nil {
 		entry.Message.Role = session.Assistant
@@ -386,8 +417,8 @@ func observedEntryFromRuntimeDetail(detail flruntime.ThreadDetailEvent) Observed
 
 func harnessTurnResultFromRuntime(result flruntime.TurnResult, runErr error) agentharness.TurnResult {
 	err := runErr
-	if err == nil && strings.TrimSpace(result.Error) != "" {
-		err = errors.New(result.Error)
+	if err == nil && result.Failure != nil {
+		err = errors.New(result.Failure.Message)
 	}
 	return agentharness.TurnResult{
 		ID: string(result.TurnID), RunID: string(result.RunID), Status: engine.Status(result.Status), Output: result.Output, Err: err,
