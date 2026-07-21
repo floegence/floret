@@ -1,6 +1,28 @@
 # Floret OKF Update Log
 
 ## 2026-07-20
+* **Authority**: Added exact durable turn admission/replay and canonical turn
+  entry indexes with before/since cursors, retry-source identity, typed terminal
+  failures, and fail-closed interrupted recovery precedence.
+* **Messages**: Added ordered canonical user-message references for text, file,
+  directory, terminal, and process display facts while keeping validated
+  `SupplementalContext` current-turn-only and out of cache, ledgers,
+  compaction, continuation state, and later provider history.
+* **Approvals**: Made the aggregate root and descendant approval queue durable,
+  with one decisionable current item, exact decision replay, atomic
+  approval/effect/proof settlement, and deterministic promotion.
+* **Titles**: Started durable automatic-title generation immediately after
+  first user admission, concurrently with the main turn, with generation/token
+  CAS, manual-title precedence, and Store-owned cancellation/join/recovery.
+* **Effects**: Gave each ordered batch result a fresh finalization window,
+  continued later sibling finalizers after earlier errors, and converged every
+  post-dispatch persistence failure to a known terminal outcome or `unknown`
+  without handler replay.
+* **Storage**: Upgraded the authority schema to v16 with exact v14/v15
+  migrations, canonical path-depth indexing, raw-entry integrity checks, and
+  bounded turn-page reads across Memory, File, and SQLite backends. V15 failures
+  with no durable origin migrate to `legacy_unclassified` instead of using
+  error-text heuristics or rejecting otherwise valid predecessor data.
 * **API**: Made committed runtime events require their durable detail, validated
   canonical user admission identity and payload, and proved Memory and SQLite
   turn pages are synchronously readable before provider lifecycle begins.
@@ -12,6 +34,13 @@
   current authority snapshot, admission proof, finish ledger, and terminal
   entry; recovery takeover now rejects missing or drifted admission authority
   before generation, effect, or journal mutation.
+* **Storage**: Made SQLite writer admission context-cancellable and keyed by the
+  canonical physical path while keeping readers outside the writer queue;
+  uncoordinated cross-process writer conflicts now fail immediately without
+  busy-timeout polling or retry.
+* **Boundary**: Moved Test UI provider and local session metadata to a separate
+  WAL sidecar and removed runtime-database metadata import. The Test UI never
+  reads, maps, repairs, or repopulates host records from Floret-owned storage.
 
 ## 2026-07-19
 * **Boundary**: Bound each Test UI session to its exact turn and SubAgent

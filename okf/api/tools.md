@@ -30,6 +30,10 @@ synchronous authorized callback can cross the handler boundary. Missing effect
 authority fails before resource extraction or handler side effects.
 `ApprovalRequest`, `PermissionDecision`, and `Approver` are not `tools` package
 contracts; test-only authorization helpers live under `internal/testing`.
+After the handler crosses `dispatching`, Floret owns result convergence. It
+commits the captured success or failure once, or marks the attempt `unknown` if
+that exact result cannot be durably finalized. Cancellation and adapter return
+errors never authorize a second handler call.
 
 # Dispatch Observation
 
@@ -53,11 +57,16 @@ tool invocation.
 
 # Batch Execution
 
-The engine starts ordinary calls from one provider batch concurrently.
+The engine validates and prepares the complete ordinary-call batch before any
+handler may cross dispatch, then starts eligible calls concurrently.
 `DispatchOptions.BatchIndex` and `BatchSize` identify each call's original
-position for authorization and observation metadata; they do not gate dispatch.
-A dependent call belongs in a later model response after its prerequisite result
-is available.
+position for authorization and observation metadata. Handler results may arrive
+in completion order, while captured results are finalized and returned to the
+provider in original call order. A slow sibling therefore cannot consume a
+faster sibling's persistence deadline: each finalization context starts only
+when that sibling's finalizer is invoked, and every sibling finalizer is
+attempted even if an earlier finalizer fails. A dependent call belongs in a
+later model response after its prerequisite result is available.
 
 # Repeat And Progress Metadata
 

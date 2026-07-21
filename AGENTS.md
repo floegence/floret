@@ -222,6 +222,16 @@ security audit, routing, unadmitted commands, and transport diagnostics, but
 must not persist a second queryable Agent lifecycle or rebuild it from audit
 records.
 
+Canonical user messages may contain product-neutral ordered references to text,
+files, directories, terminals, and processes. Floret persists and projects their
+opaque identity and display snapshot without resolving host resources. Rich or
+sensitive host context for only the current model turn belongs in
+`SupplementalContext`; it must not become durable conversation history,
+provider continuation state, or a source for rebuilding canonical references.
+Downstream hosts may map canonical references into product presentation and
+resolve opaque resources under current authorization, but must not persist an
+admitted reference mapping or a second message record.
+
 General capabilities may move into Floret only when they are product-neutral
 agent-engine contracts. Product policy and UI semantics stay in the host. If a
 future design intentionally changes this boundary, update the relevant
@@ -311,6 +321,11 @@ invent near-synonyms when a concept below already fits.
 - Provider raw plans are provider-specific rendered fragments. If raw fragments are
   missing, malformed, or for the wrong adapter, fail explicitly instead of rebuilding
   them from higher-level request data.
+- `MessageReference` is an ordered, durable, user-visible fact on a canonical
+  user message. Its `ResourceRef` is opaque to Floret and is never authorization
+  evidence. `SupplementalContext` is validated ephemeral input for the current
+  provider turn only; the two contracts must not be derived from each other
+  after admission.
 
 ### Events, Observation, Artifacts, and Storage
 

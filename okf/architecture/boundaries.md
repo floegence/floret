@@ -22,11 +22,12 @@ Floret owns:
 * provider loop execution;
 * local tool dispatch;
 * permission, resource, and approval lifecycle;
-* product-neutral pending approval snapshots;
+* the product-neutral aggregate root/descendant approval queue;
 * runtime observation;
 * control signal contracts;
-* admitted user/assistant conversation, canonical turn pages, projections, and
-  typed Agent todo state;
+* admitted user/assistant conversation, ordered user references, canonical
+  titles and typed failures, canonical turn pages, projections, and typed Agent
+  todo state;
 * opaque model state lifecycle and persistence in Floret Store;
 * engine thread-tree lifecycle, including child-thread fork mode, stop/close,
   replayable fork operations, prompt cache retention, and engine-data deletion.
@@ -41,9 +42,10 @@ The host owns:
 
 Hosts provide provider credentials, provider profiles, and direct wire adapters,
 but they do not persist opaque continuation, context usage, compaction state,
-assistant/tool history, turn/run state, Agent todos, approval lifecycle, or
-another model-visible message projection. Those facts are read through
-`ReadThread`, `ListThreadTurns`, `ReadThreadAgentTodos`, `ReadThreadContext`,
+assistant/tool history, admitted references, canonical title/failure, turn/run
+state, Agent todos, approval lifecycle/queue, or another model-visible message
+projection. Those facts are read through `ReadThread`, `ListThreadTurns`,
+`ReadApprovalQueue`, `ReadThreadAgentTodos`, `ReadThreadContext`,
 `ReadTurnProjection`, and detail APIs. Product/UI DTO mapping may be transient
 or response-scoped, never a second durable engine source of truth.
 
@@ -62,10 +64,10 @@ unrelated capability. Provider-free binders validate exact canonical authority
 using `context.Context` before returning a handle; create instead binds an exact
 absent `ThreadID` plus durable `CreateIntentID`. The owner closes the Store once;
 close fences new operations and waits for active finalization.
-`OpenSQLiteStore` accepts exact v14 or transactionally upgrades only an exact
-empty v13 predecessor. Non-empty, older, ambiguous, unversioned, or
-fingerprint-mismatched databases return a typed error without a dual-read or
-repair path.
+`OpenSQLiteStore` accepts exact v16, transactionally upgrades exact v14/v15, or
+replaces only an exact empty v13 predecessor. Older, ambiguous, unversioned,
+invalid-authority, or fingerprint-mismatched databases return a typed error
+without a dual-read or repair path.
 
 Hosts may choose when product actions stop or delete work, but they should
 express those choices through Floret runtime APIs. Stop-style product actions
@@ -76,6 +78,13 @@ Floret-owned thread trees through
 of the resolved tree; the host remains responsible for deleting or retaining
 its separate product records. Floret root deletion never treats generic host
 metadata as canonical Agent state.
+
+The Test UI keeps its provider-profile and local session configuration in a
+separate WAL sidecar keyed by the canonical runtime database path. It never
+queries, imports, maps, or repairs host metadata from the Floret runtime
+database. SQLite Test UI mode rejects `:memory:`; explicitly ephemeral Test UI
+state uses memory mode instead of creating a disk sidecar for an in-memory
+runtime.
 
 Cross-store product fork coordination stays in the host. Floret owns only its
 operation-marked engine thread-tree plan and result. A host should persist its

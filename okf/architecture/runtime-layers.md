@@ -33,8 +33,9 @@ or any binder; it receives only the exact authority-bound factory or handle for
 its responsibility. `ThreadReadHost` is
 read-only and is the reload source for top-level thread, turn, context, and todo
 projections; parent-bound `SubAgentReadHost` owns child list/detail/activity
-reads. Pending approval reads remain on the bound `TurnExecutionHost`,
-whose active harness owns the current approval map.
+reads. Approval read/resolve remains on the bound `TurnExecutionHost`, while the
+Floret Store owns one durable aggregate root/descendant queue and exact decision
+CAS.
 Terminal execution facts and terminal display projection availability are
 separate results. If durable detail cannot be read after a turn terminates,
 the runtime preserves the engine result and reports projection status as
@@ -45,9 +46,10 @@ Provider options contain no Store, bootstrap, thread, parent, or runtime root.
 usable `HostBootstrap` is stored in a coordinator or run object. Binders and
 capability handles never close the Store, so shutdown closes it exactly once
 after active work ends. `Store.Close` first fences new operations, cancels
-Store-owned active execution, waits for terminal finalization and lease release,
-and only then closes the backend. Retained binders, factories, and handles
-return `ErrStoreClosed` after closing starts.
+Store-owned active execution and automatic-title workers, waits for terminal and
+title finalization plus lease release, and only then closes the backend.
+Retained binders, factories, and handles return `ErrStoreClosed` after closing
+starts.
 Runtime resolves a target thread plus its descendants before submitting one
 tree delete request to storage. Root creation, ordinary fork, SubAgent spawn,
 and root tree deletion share one Store-level authority mutation gate; deletion
@@ -79,11 +81,12 @@ provider-free `PendingToolRecoveryHost` bound directly to exactly one root or
 parent. It is not a general maintenance or read facade and must be owned by the
 one coordinator responsible for that pending work.
 
-The durable Floret journal, public turn pages and projections, pending approval
-snapshot, and typed Agent todo state are the canonical Agent source. Hosts may
-keep product audit and diagnostics, but must not persist a queryable copy of
-conversation content, turn/run lifecycle, todo state, approval lifecycle, tool
-status, arguments, results, or errors.
+The durable Floret journal, public turn pages and projections, canonical titles,
+typed failures, ordered user references, aggregate approval queue, and typed
+Agent todo state are the canonical Agent source. Hosts may keep product audit and
+diagnostics, but must not persist a queryable copy of conversation content,
+admitted references, title, turn/run lifecycle, todo state, approval lifecycle,
+tool status, arguments, results, or errors.
 
 `TurnExecutionHostOptions.ModelGateway` and
 `SubAgentHostOptions.ModelGateway` let a host route parent and child turns
@@ -92,8 +95,11 @@ construction, provider loop control, ledgers, tool dispatch, and runtime events.
 Title generation is host-owned by default, but title persistence is always
 Floret-owned. `SetThreadTitle` is the explicit host write contract.
 `ThreadTitleModeProvider` routes a dedicated Floret title request through the
-same transport; a nil internal title generator means disabled rather than an
-implicit provider fallback.
+same transport immediately after first canonical user admission, concurrently
+with the main turn. Its durable generation/token and `pending`/`ready`/`failed`
+status are Floret authority; a manual title wins a late provider result. A nil
+internal title generator means disabled rather than an implicit provider
+fallback.
 Their `ModelGatewayIdentity` fields supply the provider/model identity for that
 host-owned transport plus a required non-sensitive continuation compatibility
 key. Gateway-backed capabilities keep provider transport settings out of their
@@ -148,8 +154,9 @@ binds an existing canonical journal and never settles or rewrites it.
 proof plus exact root or parent-child authority. The storage kernel replaces
 that proof with a recovery mutation generation, rereads the active path in the
 same critical section or transaction, marks dispatching effects unknown,
-cancels prepared effects, appends the exact interrupted terminal outcome, and
-releases authority atomically. It never selects an unfinished turn without a
+cancels prepared effects, appends the exact typed terminal outcome, and releases
+authority atomically. An unknown effect outcome takes failure-code precedence
+over generic interruption. Recovery never selects an unfinished turn without a
 lease, scans another branch, moves the leaf, or infers recovery from host state.
 
 `Engine` is the prompt-first single-run executor. It owns provider loop control,
@@ -181,18 +188,31 @@ tools, permissions, and optional model transport; Floret owns provider-visible
 context assembly, trimming, summary generation, checkpoint installation,
 provider continuation state, prompt-cache ledgers, and lifecycle events.
 
-`RunTurnRequest.Input` is the durable user message contract. Its text and opaque
-attachment references enter the canonical journal together and remain attached
-through provider projection, detail reads, compaction retention, and forks.
-Resource bytes and resource lifecycle remain host-owned.
+`RunTurnRequest.Input` is the durable user message contract. Its text, opaque
+attachments, and ordered product-neutral `MessageReference` values enter the
+canonical journal together and remain attached through public events, turn
+pages, detail reads, reopen, and forks. References form a closed display union
+for text, files, directories, terminals, and processes; opaque file/directory
+resource identity remains host-owned and is never authorization evidence.
+References are not automatically inserted into provider history or compaction
+summaries. Resource bytes and resource lifecycle remain host-owned.
 
 `RunTurnRequest.SupplementalContext` is the host-facing current-turn context
 slot. AgentHarness forwards it to Engine as provider-request projection input,
-and Engine renders it into each provider request for that turn without appending
-it to the durable journal. The field is product-neutral: hosts decide which
-source facts are safe, redacted, and truncated before calling Floret, while
-Floret keeps `Input`, thread history ownership, runtime working directory,
-permissions, approvals, and opaque provider state unchanged.
+and Engine normalizes the bounded payload and renders it into each provider
+request for that turn without appending it to the durable journal. It never
+enters prompt-cache segments, raw plans, provider request/response ledgers,
+compaction summaries/checkpoints, later history, or opaque continuation state.
+The field is product-neutral: hosts decide which source facts are safe,
+redacted, and intentionally truncated before calling Floret, while Floret keeps
+`Input`, thread history ownership, runtime working directory, permissions, and
+approvals unchanged. A reference-only root turn requires renderable supplemental
+context for the current provider request; exact replay ignores supplemental
+changes because ephemeral context is not admission identity.
+A reference-only canonical turn is therefore not retry-eligible: Floret cannot
+reproduce its provider intent after discarding supplemental context. Resolving
+fresh host material must create a new turn. A reference turn that also has
+durable text or attachments remains eligible under the normal retry contract.
 
 Active manual compaction flows through `RunTurnRequest.ManualCompactions`. The
 host owns the user-facing command or policy that creates a request; `Engine`
@@ -249,12 +269,16 @@ Hosts that need lifecycle metadata plus the latest admitted turn use
 missing canonical journal only through `CreateThread`; transcript-free
 `ReadThread` and `ThreadSummary` projections never create or recover one, and
 the public runtime exposes no alternate start-or-create entry point.
-Conversation bootstrap and pagination use `ListThreadTurns`, whose before,
-after, and tail modes always
-return admitted canonical turn ordinals in ascending order. A marker-only turn
-remains outside the public turn list even if it is later cancelled or terminal;
-only a canonical user entry admits it. The page through ordinal continues to cover the full read
-boundary. Hosts that need to reload a single known turn may use
+Conversation bootstrap and pagination use `ListThreadTurns`: initial reads use
+bounded `Tail`, historical reads use the returned entry-identity
+`BeforeCursor`, and incremental reads use the returned non-empty
+`SinceCursor`. Every mode returns admitted canonical turns in ascending order;
+a stale cursor fails instead of falling back to a host-derived ordinal or full
+path scan. A marker-only turn remains outside the public turn list even if it is
+later cancelled or terminal; only a canonical user entry admits it. Retry turns
+carry exact source turn/entry identity without duplicating the user message. The
+page through ordinal continues to cover the full read boundary. Hosts that need
+to reload a single known turn may use
 `ReadTurnProjection` with explicit `ThreadID`, `TurnID`, and `RunID`. Floret
 rebuilds assistant text, verified control-signal payloads, and activity timelines
 from durable detail; hosts do not assemble a shadow transcript.

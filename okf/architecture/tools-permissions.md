@@ -63,23 +63,30 @@ approval, later siblings can remain visible as pending work without pretending
 that they have started execution. Tool results and pending external results
 continue to update the same tool item.
 
-Ordinary local calls emitted by the model in one batch start concurrently,
+Floret validates and durably prepares every ordinary local call in a model batch
+before any handler crosses dispatch. Eligible calls then start concurrently,
 including calls with different effects or approval requirements. Floret does
 not infer dependencies from tool names, arguments, resources, effects, or
 permissions. The model expresses a dependency by waiting for prerequisite
 results and emitting dependent calls in a later response. Observation events
 may therefore arrive in completion order while provider-visible tool results
-remain in the original model call order.
+remain in the original model call order. Each captured handler result receives a
+fresh finalization context when its ordered finalizer runs; a slow batch cannot
+expire a faster sibling's persistence window, and one finalization failure does
+not skip later sibling finalizers.
 
 # Tool Approval State
 
-Floret owns the generic approval lifecycle for local tool dispatch. Approval
-events update both the durable thread detail audit trail and a current pending
-approval snapshot that hosts can read through `runtime.ListPendingApprovals`.
-The snapshot carries product-neutral ids, tool names, effects, resources,
-labels, host context, state, timing, revision, batch index, and batch size
-metadata. Batch order helps hosts present multiple approvals stably; it never
-controls execution scheduling.
+Floret owns the generic approval lifecycle and the aggregate root/descendant
+approval queue for local tool dispatch. Approval events update the durable
+thread detail audit trail, while `runtime.ReadApprovalQueue` exposes queue
+generation, ordered items, and exactly one decisionable current item. The queue
+carries product-neutral ids, canonical root/child and turn/run identity, tool
+names, effects, resources, labels, host context, state, timing, revision, batch
+index, and batch size metadata. `ResolveApproval` requires the exact current
+generation, revision, approval identity, and stable decision ID. Batch order
+keeps presentation deterministic; it does not serialize unrelated handler
+execution after authorization.
 
 Hosts own the product authorization policy and user-facing approval experience.
 They should translate the generic snapshot into product copy and controls
@@ -98,6 +105,15 @@ denial because it is lifecycle history, not the current decision-needed state. A
 host should treat only `approval_state=requested` with `status=waiting` as an
 active pending approval. `approval_state=approved` may briefly pair with
 `status=pending` between approval resolution and tool dispatch.
+
+A submitted decision is durable before the host authorization gate runs. Exact
+response-loss replay does not call the gate twice. Finalization atomically
+settles the approval and effect, records the proof hash when approved, and
+promotes the next queue item. User rejection, policy denial, unavailable policy,
+invalid proof, pre-dispatch cancellation, and post-dispatch known/unknown
+outcomes each have one deterministic terminal mapping. A downstream host submits
+the decision and maps typed conflicts; it does not persist or promote its own
+approval queue.
 
 For polling tools, presentation-only arguments can be excluded from generic
 repeat identity through the validated tools annotation contract. This keeps

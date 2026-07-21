@@ -21,6 +21,14 @@ authority and produces a factory bound to that stable recovery target before
 coordinator delivery. The factory may refresh only heartbeat and expiry fields
 for the same turn owner and generation.
 
+The v0.20 amendment makes already-owned Agent facts explicit: exact turn
+admission/replay and public turn-page indexes, typed terminal failure, aggregate
+root/descendant approval authority, automatic-title generation authority, and
+durable user-message references. These remain Floret Store facts. A downstream
+host may hold unadmitted input and product policy, but it cannot persist a second
+title, turn/run lifecycle, approval queue, failure, retry mapping, or admitted
+message-reference record.
+
 # Boundary
 
 Floret owns admitted Agent state. A downstream host owns product settings,
@@ -370,7 +378,12 @@ handler.
 Crossing `prepared -> dispatching` is the per-invocation at-most-once boundary. A crash after
 that commit is never automatically retried, even if the handler may not have
 started. `InterruptedTurnRecoveryHost` converts `dispatching` to `unknown` and
-`prepared` to `cancelled` before finalizing the turn. `unknown` is not converted
+`prepared` to `cancelled` before finalizing the turn. When a pre-existing
+`EntryRunFailure` belongs to the interrupted turn, recovery binds its exact
+canonical entry ID, message, and raw hash into the recovery fingerprint and
+terminal proof. Replay rereads that entry from the current canonical ancestry
+and fails closed on identity, ancestry, message, raw, or hash drift. `unknown`
+is not converted
 into a pending target and is never used to infer a handler result. A later user
 or host action may acknowledge the uncertainty, but it cannot mutate the attempt
 into a known result or re-invoke the original handler.
@@ -380,15 +393,56 @@ handler result is canonically committed. The host gate can only return the exact
 `EffectDispatchResult` produced by the closure. Floret also retains that local
 result, so a missing, forged, or changed return value cannot cause effect retry.
 If the handler ran but canonical result persistence or adapter return failed,
-Floret returns `CommittedEffectError`; the attempt remains `dispatching` until
-pure persistence succeeds. The same local turn owner may retry only
-`FinishEffectDispatch` with the already captured handler result; it never retries
-the handler. If that result cannot be durably completed before turn shutdown,
-the owner uses `MarkEffectUnknown` under the exact fresh proof. A process crash
-leaves recovery to perform the same conservative transition.
+Floret returns a committed-dispatch error and converges the attempt without
+retrying the handler. Each ordered finalizer creates its own cancellation-
+detached bounded persistence context only when invoked. It first tries
+`FinishEffectDispatch` with the captured handler outcome; any outcome
+fingerprint, canonicalization, adapter-return, or finish persistence failure
+then uses a fresh context to call `MarkEffectUnknown` under the exact proof.
+Every sibling finalizer is attempted even when an earlier one fails. If both
+finish and mark-unknown persistence fail, the turn stays non-terminal and exact
+interrupted recovery performs the same conservative transition after takeover.
+No available-store path leaves a handler-dispatched effect permanently
+`dispatching`, and no failure path calls the handler twice.
 
 Policy downgrade waits for an in-flight authorized effect to return; a later
 effect observes the new policy.
+
+## Aggregate Approval Authority
+
+Approval authority is one durable queue per canonical root, covering that root
+and all of its canonical descendants. Queue order is assigned by Floret from
+canonical request facts; timestamps and host event order are not authority.
+Exactly one item is `Current`. Only that item may move from `requested` to
+`decision_submitted`, and `ResolveApproval` compares the exact root, approval,
+effect, turn/run, queue generation, item revision, and stable `DecisionID`.
+
+The durable approval states are exactly:
+
+| State | Meaning | Allowed next state |
+| --- | --- | --- |
+| `requested` | queued and not yet assigned a host decision | `decision_submitted`, `cancelled`, or `timed_out` |
+| `decision_submitted` | immutable decision ID and choice committed; host gate may run | one terminal state |
+| `approved` | valid proof committed and matching effect crossed dispatch | terminal |
+| `rejected` | user or current product policy denied before dispatch | terminal |
+| `failed` | authorization service or proof contract failed before dispatch | terminal |
+| `timed_out` | no decision arrived before the canonical deadline | terminal |
+| `cancelled` | turn cancellation won before dispatch | terminal |
+
+An exact response-loss replay returns the same submitted or terminal receipt and
+does not invoke the host gate again. Final approval settlement, effect state,
+authorization proof hash, and promotion of the next queue item are one authority
+transaction. If cancellation wins before that transaction, a late proof cannot
+approve or dispatch. If the proof transaction wins, later cancellation is
+post-dispatch and must preserve the known handler outcome or mark it unknown;
+it cannot rewrite a completed side effect as pre-dispatch cancellation.
+
+User rejection maps to approval/effect rejection with `user_rejected`; current
+policy denial maps to `policy_denied`; an unavailable gate maps to approval
+failure and effect rejection with `authorization_unavailable`; invalid proof
+maps to `authorization_contract`. These mappings are unique. A downstream host
+owns policy and UI, submits decisions, and maps conflicts, but it does not
+materialize, order, or promote an approval queue.
 
 Each local active `Thread` owns an in-process authority gate tied to its exact
 lease generation. Provider request start and tool dispatch enter that gate. Tool
@@ -553,7 +607,7 @@ Public capability types have no exported methods beyond this list:
 | `ThreadTitleHost` | `SetThreadTitle` |
 | `ThreadForkHost` | `ForkThread` |
 | `ThreadDeleteHost` | `DeleteThread` |
-| `TurnExecutionHost` | `RunTurn`, `RetryTurn`, `CompletePendingTool`, `SettlePendingTool`, `ListPendingApprovals`, `UpdateThreadAgentTodos` |
+| `TurnExecutionHost` | `RunTurn`, `RetryTurn`, `CompletePendingTool`, `SettlePendingTool`, `ReadApprovalQueue`, `ResolveApproval`, `UpdateThreadAgentTodos` |
 | `ThreadCompactionHost` | `CompactThread` |
 | `SubAgentHost` | `SpawnSubAgent`, `SendSubAgentInput`, `PublishPendingToolCompletion`, `WaitSubAgents`, `SettlePendingTool`, `CloseSubAgent` |
 | `SubAgentReadHost` | `ListSubAgents`, `ReadSubAgentDetail`, `ListSubAgentActivityTimeline`, `ReadArtifact` |
@@ -574,8 +628,14 @@ implements validation and commit in one critical section or transaction.
 | `CreateRoot` | reject claimed/tombstoned/wrong-shape identity; publish or replay one exact root plus create-intent fingerprint |
 | `AdmitTurn` | acquire a fresh turn generation and append turn-start plus canonical user input |
 | `AdmitRetry` | pin/move retry target, acquire turn generation, and append turn-start atomically |
+| `ListCanonicalTurns` | read exact started-turn entry indexes with entry-identity before/since cursors; reject stale path cursors without falling back to a scan |
 | `RenewLease` | compare exact fresh proof and advance heartbeat/expiry |
-| `AppendWithProof` | compare exact fresh proof before journal, provider-state, approval, todo, or automatic-title write |
+| `AppendWithProof` | compare exact fresh proof before journal, provider-state, or todo write |
+| `PrepareApprovalBatch` | validate the complete local-call batch, create/replay every effect and approval record, append requested audit entries, and update the aggregate root queue atomically before any handler dispatch |
+| `ResolveApproval` | compare exact current queue/item CAS and persist one immutable decision receipt before host-gate execution |
+| `CommitApprovalDispatch` | atomically validate the authorization proof and move the matching approval/effect into approved/dispatching authority |
+| `FinalizeApproval` | atomically settle approval and effect outcome, proof hash, audit entry, and next-item promotion |
+| `CancelApprovalBatch` | atomically cancel every still-pre-dispatch item for an exact turn and promote the aggregate queue |
 | `PrepareEffectAttempt` | Store-assign the single attempt for one canonical invocation, or replay/conflict its exact fingerprint |
 | `RejectEffectAttempt` | compare exact fresh turn proof and one `prepared` attempt, then persist one typed terminal rejection or replay/conflict it |
 | `BeginEffectDispatch` | final-check one-shot authorization, exact current fresh generation, lifecycle, and `prepared` state; transition to `dispatching` |
@@ -592,6 +652,8 @@ implements validation and commit in one critical section or transaction.
 | `CommitFork` | publish all destinations and thread-scoped artifact copies, store completed result, and release all claims |
 | `FailFork` | store deterministic pre-publication failure and release all claims |
 | `SetTitle` | enter and leave manual-title mutation authority within one transaction |
+| `BeginAutomaticThreadTitle` | claim one empty-title generation and immutable token after canonical user admission |
+| `CompleteAutomaticThreadTitle` / `FailAutomaticThreadTitle` | compare exact generation/token and settle one ready or failed automatic-title state; a manual title wins |
 | `SettlePendingToolRecovery` | enter and leave settlement mutation authority within one transaction |
 | `RecoverInterruptedTurn` | take over exact eligible lease, reread path, finalize exact turn, and release within one transaction |
 | `PublishSubAgent` | create one child, or fork-copy its pinned journal/artifact closure, and publish its first pending input atomically |
@@ -735,13 +797,31 @@ open + unclaimed + unleased
 ```
 
 Admission never creates a thread. Turn-start and canonical user input, including
-attachments, are one commit. Provider and tool effects start after admission.
-Retry target move is part of atomic admission. Missing retry target has zero
-side effects.
+attachments and ordered durable references, are one commit. Text, attachments,
+reference order/fields, exact `ThreadID`, `TurnID`, and `RunID` form immutable
+admission and replay authority. Provider and tool effects start after admission.
+Retry target selection is recorded as exact source turn/entry identity and is
+part of atomic admission; retry does not copy the source user message. Missing
+retry target has zero side effects.
+
+Host-provided `SupplementalContext` is normalized before a new admission but is
+not part of the durable fingerprint. It is visible only to the current provider
+execution, cannot enter cache, raw plan, ledger, summary, checkpoint, or opaque
+continuation state, and is ignored by exact running/terminal replay. A
+reference-only root admission requires renderable supplemental context for that
+current turn; entry points that cannot supply it reject reference-only input.
+That turn is not a retry target because no durable provider input can reproduce
+the ephemeral material. Retry target selection skips its direct user and
+save-point candidates before acquiring authority; public `CanRetry` is false.
+Freshly resolving the host resource is a new turn, not replay of the old one.
+Public reads return only canonical references from the journal and exact turn
+entry index. They never reconstruct references from supplemental context or a
+host store.
 
 Only the exact fresh turn proof may write the turn, provider state, approvals,
-todos, automatic title, or active settlement. Renewal failure fences the local
-owner before another irreversible dispatch.
+todos, or active settlement. Automatic title settlement uses its separate
+durable generation/token claim and Store-owned worker lifetime. Renewal failure
+fences the local turn owner before another irreversible dispatch.
 
 `FinishTurn` never changes canonical lifecycle from `closing` back to `open`.
 When the exact turn is being cancelled by a matching close operation, it writes
@@ -838,7 +918,15 @@ The durable compaction states are exactly:
 
 Manual title is provider-free. `SetTitle` checks idle, enters mutation authority,
 writes the title event/state, and leaves authority in one transaction. It has no
-durable half-state. Automatic title inside a turn uses the exact turn proof.
+durable half-state. In provider-title mode, canonical user admission immediately
+claims `TitleStatus=pending` with a monotonically increasing generation and
+immutable token, before main provider completion. The Store-owned title worker
+runs concurrently with the main turn and settles only that claim to `ready` or
+`failed`; a manual host title invalidates the pending claim and wins every late
+completion. Store close cancels and joins title workers before backend close.
+On reopen, an orphaned pending generation is deterministically failed rather
+than restarted with another provider call. Reference-only title prompts contain
+canonical labels only, never display text or opaque resource identity.
 
 ## Replayable Root Fork
 
@@ -901,6 +989,12 @@ The pre-takeover path is diagnostic only. Fresh and expired-fenced leases are
 busy. Terminal turn, mismatched unfinished turn, missing thread, invalid parent,
 or wrong purpose is explicit. Recovery never creates, scans host records,
 reconstructs a journal, or infers owner death from a failure marker.
+Recovery first changes every remaining `prepared` effect to `cancelled` and
+every `dispatching` effect to `unknown`. If any effect outcome is unknown, the
+canonical terminal failure is `effect_outcome_unknown`; only a turn with no
+unknown effect may settle as generic `interrupted`. The public typed failure,
+recoverability, and retry eligibility are Floret facts and cannot be rewritten
+by host startup presentation.
 Recovery of a closing target preserves the immutable `CloseOperationID`; it
 cannot reopen the subtree or finish close.
 
@@ -1185,41 +1279,56 @@ use one transaction with an early write lock. Lease policy is persisted and
 validated on open. Invalid authority combinations are constrained or explicitly
 rejected. Two independently opened Store instances observe one owner and result.
 
+Store instances in one process reserve a single writer slot keyed by the
+canonical physical database path before requesting the early SQLite write lock.
+That reservation is context-cancellable and is shared by initialization and
+normal mutations; read transactions do not enter it. SQLite busy waiting is
+disabled: a writer from another process or outside this admission contract
+returns the SQLite lock error immediately, without polling, retry, or a hidden
+timeout. A failed or cancelled admission publishes no transaction and the next
+writer can use the same connection normally. The process-local slot is only a
+liveness mechanism; durable authority and cross-process exclusion remain in the
+SQLite transaction.
+
 ### Schema Compatibility
 
-The authority-kernel schema remains version `14` until this unpublished design is
-implemented. Version `14` is accepted only with the exact frozen canonical
-fingerprint. A different version `14` fingerprint, including an earlier
-experimental fingerprint, is not a migration source and is rejected
-non-destructively. No version `15` is introduced to preserve an unpublished
-shape.
+The current authority-kernel schema is exact version `16`. It persists canonical
+turn-entry indexes, path depth, typed turn failure metadata, retry-source
+identity, automatic-title generation/token state, and aggregate approval
+authority. Exact version `14` migrates to v15 and then v16; exact version `15`
+migrates directly to v16. Both migrations validate the complete predecessor
+fingerprint and authority data before mutation and run under the Store's one
+early write transaction. Failure rolls the entire migration back.
 
-The only supported predecessor is the exact version `13` fingerprint, and it may
-migrate only when the Store is empty. Empty means every version `13` data table
-has zero rows; only schema metadata and SQLite-internal bookkeeping may exist.
-The Store acquires an early SQLite write lock and, in that same transaction,
-verifies emptiness before replacing any schema object. A non-empty version `13`
-Store is rejected non-destructively because it cannot supply `CreateIntentID`,
-request identities, authority generation and expiry, effect attempts, close
-identities, or other frozen authority proofs without guessing.
+The exact version `13` fingerprint remains supported only when the Store is
+empty. Empty means every version `13` data table has zero rows; only schema
+metadata and SQLite-internal bookkeeping may exist. Under the same early write
+lock, Floret verifies emptiness, replaces v13 with the exact v16 schema, and
+persists the configured lease policy. A non-empty v13 Store is rejected because
+its missing authority cannot be guessed.
 
-Under that same early-write-locked transaction, an empty version `13` Store is
-replaced by the exact version `14` schema and configured lease policy. The
-emptiness decision and replacement therefore have one linearization point.
-Failure leaves the version `13` schema and fingerprint unchanged. The migration
-never synthesizes identities, resets data, renames or backs up a database, or
-creates an alternate Store.
+The v14 migration constructs and validates exact canonical turn indexes without
+changing journal raw bytes. The v15 migration requires one valid journal root
+per thread, computes positive path depth without quadratic ancestry strings,
+validates started `(ThreadID, TurnID, RunID)` identities, converts retry source
+metadata to exact source turn/entry identity, normalizes typed terminal failure,
+and installs title and approval authority. Cross-thread reuse of a `RunID` is
+valid; only the exact thread/turn/run tuple is execution authority.
+Because v15 did not record failure origin, a valid status-matching explicit code
+is preserved, structured durable authority may prove a narrower code, and every
+other failure migrates to `legacy_unclassified`. Error text and diagnostic copy
+are never classification authority. A code-less legacy aborted marker is
+rewritten to failed/`legacy_unclassified` while retaining its old status as
+diagnostic metadata, because cancellation versus interruption cannot be proved.
+
 Versions older than `13`, unknown versions, missing metadata, and unknown
 fingerprints return `UnsupportedStoreSchemaError` with the observed version and
-fingerprint plus the exact accepted current and predecessor shapes.
-
-Opening an exact version `14` Store requires the configured lease policy to equal
-the persisted policy. A mismatch returns `StoreLeasePolicyMismatchError` before
-issuing capabilities or changing durable state. If concurrent openers attempt to
-migrate the same empty version `13` Store with different policies, the opener
-holding the migration transaction persists one policy; every loser rereads the
-resulting version `14` schema and either opens with that exact policy or returns
-the same mismatch error. It never overwrites the winner's policy.
+fingerprint plus the exact current/predecessor shapes. Opening v14, v15, or v16
+also requires the configured lease policy to equal the persisted policy. If
+concurrent openers race a migration with different policies, the transaction
+winner's policy remains authoritative and every loser either opens with that
+exact policy or returns `StoreLeasePolicyMismatchError`; no path overwrites the
+winner, synthesizes identity, backs up, or repairs the database.
 
 ## File
 
@@ -1251,16 +1360,19 @@ File rejection where unsupported.
 | Construction | missing root, child passed as root, missing parent, deleted identity, and wrong bound ID fail before skills/tools/events/registry/gateway/provider state |
 | Root create | same intent/different ThreadID, same created-root ThreadID/different intent, changed contract version, and wrong live shape conflict; matching deleted create replay and new intent against another tombstone return deleted; concurrent exact live replay publishes one root/result |
 | State shapes | every invalid lifecycle/claim/lease/input/fork combination is rejected by Memory, SQLite, verification, and migration |
-| Schema compatibility | one early-write-locked transaction checks empty exact v13 and migrates it to exact frozen v14; concurrent different lease policies produce one winner and typed mismatch losers; non-empty v13, older/unknown versions, missing metadata, and alternate v14 fingerprints are rejected without schema or data changes; no identity is synthesized |
+| Schema compatibility | one early-write-locked transaction migrates exact v14 through v15 to v16, exact v15 to v16, or empty exact v13 directly to v16; non-empty v13, older/unknown versions, missing metadata, invalid authority data, and alternate fingerprints roll back without schema or data changes; no identity is synthesized; concurrent different lease policies produce one winner and typed mismatch losers |
 | Lease liveness | renewal keeps long turn and approval wait fresh; failed renewal fences dispatch/write; expired-fenced cannot write or take over; only takeover-eligible exact proof can recover |
 | Generation | stale/released/wrong-owner/wrong-purpose/wrong-turn/replaced-generation proof cannot write, renew, finish, or release |
 | Recovery factory | bind validates live exact authority and returns `ErrInterruptedTurnNotFound` with no target for no lease; exact root and parent-child factories cannot select another identity or later turn; same-target heartbeat renewal makes the old handle stale and a refreshed handle busy/recoverable; lease disappearance or a valid higher generation resolves only after atomic admission/finish/terminal validation; generation/heartbeat rollback, missing or malformed resolution linkage, malformed replacement, or same-generation stable-field drift is corruption; concurrent tombstoning returns deleted; wrong root-child/parent-child relation, Store close, fresh/expired-fenced/stale attempts, and concurrent bind/NewHost/renew/release/replacement/recovery all have zero mutation unless exact takeover commits |
-| Admission | start plus user message are atomic; provider is not called on failure; retry move is atomic; finish plus release is atomic |
+| Admission | exact thread/turn/run start plus user text/attachments/references are atomic and fingerprinted; reference and supplemental field/count/payload/UTF-8 limits fail before journal/leaf/ledger mutation; reference-only requires current-turn supplemental only where that contract exists; supplemental is excluded from replay fingerprint and every durable/cache/ledger/compaction/continuation surface; provider is not called on failure or exact replay; retry source turn/entry is atomic without copied user input; finish plus release is atomic |
+| Canonical turn page | Memory/File/SQLite exact started-turn index; bounded tail/before/since reads; stale entry cursor fails without active-path fallback; retry source and typed failure survive reopen/fork; malformed index/raw/path depth fails closed; query count and plan do not grow with references or full journal size |
 | Active settlement | complete target identity; local proof equals durable proof; wrong turn or generation has zero append/provider/tool side effect |
 | Recovery settlement | fresh/expired-fenced lease blocks; identical concurrent settlement writes once; conflict is explicit; no durable mutation half-state |
 | Completion | root `CompletionRequestID` replay/conflict plus target settlement and continuation admission are atomic; child `InputRequestID` replay/conflict plus target settlement and pending input publication are atomic; target/continuation/input IDs are distinct; replay never starts a second provider owner |
-| Effect authorization | Store assigns one attempt per canonical invocation across concurrent/different-ID preparation; denied/unavailable authorization commits one exact `rejected` result without handler entry; failed rejection persistence leaves ordinary `prepared` so later replay rereads current policy; attempt lifecycle covers crash before/after dispatch boundary; final handler boundary rereads same fresh owner/generation while allowing newer heartbeat; one-shot rejects double/deferred calls; FinishTurn cancels prepared and blocks dispatching; receipt is Floret-sealed; policy revision changes append a new current decision; unknown is never auto-retried |
-| Interrupted recovery | public exact root/parent-child and TurnID/OwnerID/Generation factory; validated no-lease target returns `ErrInterruptedTurnNotFound` and is not created; same-target renewal refreshes without following a later turn; only canonically finished targets or valid higher-generation replacements resolve, while rollback, missing/drifted admission, malformed finish, or same-generation stable drift is corruption; fresh failure-marked and expired-fenced leases are preserved; stale/resolved targets have zero journal/effect/event/result mutation; takeover validates admission plus started path before mutation and rechecks path in transaction; dual SQLite yields one finalization |
+| Effect authorization | Store assigns one attempt per canonical invocation across concurrent/different-ID preparation; complete batch preflight precedes every handler; denied/unavailable authorization commits one exact `rejected` result without handler entry; failed rejection persistence leaves ordinary `prepared` so later replay rereads current policy; attempt lifecycle covers crash before/after dispatch boundary; final handler boundary rereads same fresh owner/generation while allowing newer heartbeat; one-shot rejects double/deferred calls; each ordered finalizer gets a fresh detached context, later finalizers still run after an earlier error, and finish/fingerprint/adapter failure marks unknown with a second context; FinishTurn cancels prepared and blocks dispatching; unknown is never auto-retried |
+| Approval queue | complete batch creates approval/effect/audit/queue authority atomically; root and descendants share deterministic sequence and one current item; exact generation/revision/current/DecisionID CAS; response-loss replay calls host gate once; decision, proof dispatch, terminal mapping, and promotion are atomic at their defined boundaries; late proof versus cancellation has one winner; restart orphan and gate/proof failures have unique approval/effect terminal mapping |
+| Automatic title | canonical admission begins one durable pending generation before main provider completion; title/main provider use causal barriers proving concurrency; manual title wins late settlement; provider failure, timeout, Store close, reopen, delete, and SubAgent close settle or fence the exact generation/token; worker cancellation and join race cleanly; reference-only prompt contains labels but no text/resource identity |
+| Interrupted recovery | public exact root/parent-child and TurnID/OwnerID/Generation factory; validated no-lease target returns `ErrInterruptedTurnNotFound` and is not created; same-target renewal refreshes without following a later turn; only canonically finished targets or valid higher-generation replacements resolve, while rollback, missing/drifted admission, malformed finish, or same-generation stable drift is corruption; fresh failure-marked and expired-fenced leases are preserved; stale/resolved targets have zero journal/effect/event/result mutation; takeover validates admission plus started path before mutation and rechecks path in transaction; prepared effects become cancelled, dispatching effects become unknown, unknown outcome takes typed failure precedence over interrupted, and dual SQLite yields one finalization |
 | Compaction | immutable pinned-path fingerprint; same RequestID replay only; renewal and expired takeover fence generations; exact terminal owner/outcome replay; changed outcome conflicts; different request cannot recover; one terminal result |
 | Fork | prepare pins complete plan/claims plus exact on-path artifact-reference closure; orphan/off-path artifacts excluded; duplicate refs must agree; source reference/payload metadata and hash changes reject; no destination visible while prepared; destination collision or commit failure rolls back every journal/artifact copy; failure publishes none and releases IDs for later root create, root fork, or SubAgent publication; failed-op provenance can never appear; completed all-live replay validates journal/artifact closure and returns stored result; completed all-tombstoned matching provenance returns `ErrThreadDeleted`; every completed mixture or missing/inconsistent authority is corruption, never recreation |
 | Delete | active descendant, claim, concurrent spawn, malformed graph, or never-existing root causes zero deletion; tombstone replay; deleted ID cannot recreate; publication/input idempotency ledgers survive for cross-parent request-ID nonreuse, while deleted parent host construction fails before SubAgent operations; cleanup error is committed |

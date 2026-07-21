@@ -59,11 +59,12 @@ host interface for every runtime operation.
   code invokes `ConfigureHostCapabilities`, retains only selected narrow
   binders at the composition root, distributes only exact bound factories or
   handles, and keeps Store lifetime ownership. Store close rejects new
-  operations, cancels Store-owned executions, waits for terminal finalization,
-  and then closes the backend. SQLite accepts the exact v14 schema or upgrades
-  only the exact empty v13 predecessor under one early write lock. Non-empty,
-  older, unknown, or fingerprint-mismatched stores are rejected without
-  mutation through `UnsupportedStoreSchemaError`.
+  operations, cancels Store-owned executions and automatic-title workers, waits
+  for terminal finalization, and then closes the backend. SQLite opens the exact
+  v16 schema, upgrades exact v14 stores through v15 to v16, upgrades exact v15
+  stores to v16, and upgrades only an exact empty v13 predecessor under one
+  early write lock. Older, unknown, corrupt, or fingerprint-mismatched stores
+  are rejected without mutation through `UnsupportedStoreSchemaError`.
 * `ThreadCreateHost.CreateThread` is the only top-level public operation that
   creates a missing canonical journal. Its binder fixes the exact `ThreadID`
   and `CreateIntentID` before the handle reaches the create coordinator.
@@ -87,15 +88,20 @@ host interface for every runtime operation.
   latest admitted `ThreadTurnSnapshot`, both projected from one active-path read.
   An unadmitted started marker does not fabricate a latest turn.
 * `ThreadReadHost.ListThreadTurns` returns canonical turn snapshots in ascending
-  journal ordinal order. Before, after,
-  and tail pagination are mutually exclusive. Started, waiting, or terminal
+  journal ordinal order. Initial `Tail`, historical `BeforeCursor`, and
+  incremental `SinceCursor` pagination are mutually exclusive. Cursors carry a
+  canonical entry identity rather than a host-derived ordinal; a cursor that is
+  no longer on the active path returns `ErrStaleThreadTurnCursor`. Started,
+  waiting, or terminal
   markers do not make a turn public by themselves; the turn enters the page only
   after its canonical user entry is committed. The corresponding public
   `thread_entry_committed` event is emitted only after this read returns the
   same running turn, so a host may synchronize presentation from the public
-  read capability before handling provider or assistant events. Each returned turn includes its explicit run identity,
-  canonical user entry and input, failure, verified control signals, complete
-  `ThreadTurnProjection`, and projection-through ordinal.
+  read capability before handling provider or assistant events. Each returned
+  turn includes its explicit run identity, canonical user entry, input,
+  attachments, ordered references, retry-source identity, typed failure,
+  verified control signals, complete `ThreadTurnProjection`, and
+  projection-through ordinal.
 * `ThreadReadHost.ReadThreadAgentTodos` reads Floret-owned typed Agent todo
   state. `TurnExecutionHost.UpdateThreadAgentTodos` updates that state with
   compare-and-swap versioning and must reference a real journal turn, run, and
@@ -103,10 +109,16 @@ host interface for every runtime operation.
   thread deletion removes the state.
 * `TurnExecutionHost.RunTurn` executes one hosted user-facing turn and rejects a
   request whose `ThreadID` differs from the handle binding.
-* `RunTurnRequest.Input` is `TurnInput{Text, Attachments}`. Text or at least one
-  attachment is required. Each `MessageAttachment` carries an opaque durable
+* `RunTurnRequest.Input` is `TurnInput{Text, Attachments, References}`. At least
+  one field must be present. Each `MessageAttachment` carries an opaque durable
   `ResourceRef`, name, MIME type, and non-negative size; Floret persists and
-  projects the reference but never resolves or reads the host resource.
+  projects the attachment but never resolves or reads the host resource.
+  `MessageReference` is an ordered, durable, user-visible closed union of
+  `text`, `file`, `directory`, `terminal`, and `process`. It carries a stable
+  message-local `ReferenceID`, label, optional display text, truncation fact,
+  and an opaque host resource identity for file/directory references. Floret
+  validates public limits before admission and never interprets the opaque
+  resource identity as authorization.
 * `RunTurnRequest.Limits.MaxInputTokens` caps cumulative provider input tokens
   across every model request in one run. `MaxTotalTokens` independently caps
   cumulative total tokens; provider/context output limits remain per request.
@@ -117,11 +129,16 @@ host interface for every runtime operation.
   compaction for an active hosted run. Floret polls it at provider-loop safe
   points, emits compaction lifecycle events, and continues the same run.
 * `RunTurnRequest.SupplementalContext` carries host-provided current-turn
-  context items. Floret renders them into provider requests for that turn only
-  without modifying `Input`, durable thread history, working directory,
-  permission state, tool approval state, or opaque provider continuation state.
-  Hosts own source policy, redaction, and truncation before passing those items
-  to Floret.
+  context items. Floret normalizes and validates the complete rendered payload
+  before a new admission, then renders it into provider requests for that turn
+  only without modifying `Input`, durable thread history, working directory,
+  permission state, tool approval state, cache/raw plans, request-response
+  ledgers, or opaque provider continuation state. A reference-only root input
+  requires renderable supplemental context for its current provider turn;
+  entry points without a supplemental-context contract reject reference-only
+  input. Exact replay is read-only and ignores changed or missing supplemental
+  context. Hosts own source policy, redaction, and intentional truncation before
+  passing those items to Floret.
 * `ThreadCompactionHost.CompactThread` runs a compaction-only maintenance
   operation for its bound idle thread through `CompactThreadRequest` without creating natural
   assistant output. `RequestID` and `Source` are required, and the result carries
@@ -163,12 +180,20 @@ host interface for every runtime operation.
 * `SetThreadTitle` is the only host title write contract. It stores a non-empty,
   single-line title of at most 200 Unicode characters as a canonical host title,
   is idempotent for the same value, and emits `thread_title_updated` when the
-  value changes.
+  value changes. In provider title mode, Floret begins a durable automatic-title
+  generation immediately after first user admission and runs it concurrently
+  with the main provider turn. `ThreadSnapshot.TitleStatus` exposes
+  `pending`, `ready`, or `failed`; a manual host title wins the generation race.
+  Reference-only title input uses only canonical labels, never reference text or
+  opaque resource identity.
 * `ProjectThreadTurn`, `ReadTurnProjection`, and `TurnResult.Projection` expose
   the product-neutral ordered assistant text, activity timeline, and
   control-signal segments for a hosted turn.
-* `ListPendingApprovals` returns the current product-neutral tool approvals
-  waiting for a host decision on a thread.
+* `ReadApprovalQueue` returns the one durable product-neutral approval queue for
+  a root and its canonical descendants. Only `Current` is decisionable;
+  `ResolveApproval` requires its exact generation, revision, approval identity,
+  and a stable `DecisionID`. The same decision replay is idempotent, while stale
+  or mismatched decisions return a conflict without calling the host gate.
 * `CompletePendingTool` requires the public completion `RunID` and uses it as
   the follow-up execution identity.
 * `SettlePendingTool` records a host-owned pending tool outcome as a
@@ -254,12 +279,14 @@ workspace metadata, pinned state, billing, and read watermarks belongs in the
 host database keyed by `runtime.ThreadID`.
 
 Floret Store data includes the admitted conversation journal, turn/run
-lifecycle, projections, verified control payloads, approvals, Agent todos,
-prompt-cache/provider ledgers, tool artifacts, context lifecycle, and opaque
-provider continuation. Hosts must not query Store tables, copy these facts into
-product storage, or persist a second conversation, run, todo, approval, or
-model-visible message projection. A host may map public snapshots to a response
-or in-memory UI DTO, but that mapping is not another durable engine fact source.
+lifecycle, canonical titles and typed failures, ordered user references,
+projections, verified control payloads, approvals, Agent todos, prompt-cache and
+provider ledgers, tool artifacts, context lifecycle, and opaque provider
+continuation. Hosts must not query Store tables, copy these facts into product
+storage, or persist a second conversation, run, title, reference, todo,
+approval, or model-visible message projection. A host may map public snapshots
+to a response or in-memory UI DTO, but that mapping is not another durable
+engine fact source.
 
 Subagents are parent-managed child threads, not a graph workflow framework and
 not host-owned pending tool work. Each child uses its own durable `ThreadID` and
@@ -280,6 +307,14 @@ Provider-visible user messages carry attachment resource references through
 `ModelMessage` so the host adapter can resolve them into provider-native image or
 file content. Opaque attachments are rejected before admission when no
 `ModelGateway` exists; they never degrade into filename text.
+Canonical `MessageReference` values are public conversation facts, not automatic
+provider-history content. The current turn receives any richer model material
+only through validated `SupplementalContext`. Floret strips references from
+provider history, cache input, raw plans, ledgers, summaries, checkpoints, and
+opaque continuation state. Downstream hosts render public references and resolve
+file/directory `ResourceRef` values only after rereading the exact canonical
+thread, turn, user entry, and reference under current product authorization; the
+display label or text is never access authority.
 
 Child `ThreadID` is the lifecycle target for spawn, send, wait, list, and close.
 Task names, task descriptions, and agent paths are reference metadata and may
@@ -362,6 +397,17 @@ observe revision progress without receiving an unadmitted turn. A live
 projection is accepted only for its exact
 `ThreadID`/`TurnID`/`RunID`; once the durable projection reaches the turn, a host
 removes its in-memory draft or resynchronizes instead of guessing an order.
+An initial reader uses bounded `Tail`, historical navigation uses only the
+returned `BeforeCursor`, and live polling uses only the returned non-empty
+`SinceCursor`. A retry turn carries `RetrySource{TurnID, EntryID}` and does not
+duplicate the original user message. Hosts must not synthesize cursor ordinals,
+copy retry input, or fall back to scanning the active path when an entry cursor
+is stale.
+A canonical user input containing only references is not retry-eligible because
+its provider material was ephemeral and cannot be reconstructed from durable
+authority. Its overview/page reports `CanRetry=false`, and `RetryTurn` returns
+`ErrNoRetryTarget` before lease or journal mutation. A host that resolves fresh
+resource context submits a new turn rather than relabeling it as a retry.
 `ReadTurnProjection` requires explicit `RunID` input instead of inferring it
 from stored rows, because `RunID` is execution identity and not the thread or
 turn storage identity. A missing thread is reported with `ErrThreadNotFound`; a
@@ -467,13 +513,26 @@ settlement. Downstream hosts should consume Floret projections and settlement re
 to replace their product UI for the turn instead of synthesizing final tool
 status from local audit records or live stream leftovers.
 
-Pending approval snapshots are the current-state companion to the durable
-approval audit trail. `ListPendingApprovals` can be called while a turn is active
-and returns approval ids, tool call ids, tool names, effects, resources, labels,
-host context, state, timing, revision, batch index, and batch size metadata from
-Floret's generic approval lifecycle. Hosts own product modes, approval copy, UI placement,
-authorization policy, and decision routing; Floret does not encode those
-product concepts in the snapshot.
+`ThreadTurnFailure{Code, Message}` is the canonical public failure contract.
+Stable codes distinguish cancellation, interruption, provider failure, tool
+dispatch failure, unknown effect outcome, authorization availability/contract,
+storage, and engine contract failures. `legacy_unclassified` is reserved for a
+predecessor terminal failure whose origin was not durably recorded; migration
+never guesses it from error text. Interrupted recovery first terminalizes every
+prepared or dispatching effect; any unknown effect outcome takes
+precedence over a generic interruption. Hosts preserve `interrupted`,
+`Recoverable`, and `CanRetry` as canonical facts and must not rewrite them to a
+locally inferred running or recovering lifecycle.
+
+The durable aggregate approval queue is the current-state companion to the
+approval audit trail. `ReadApprovalQueue` covers the root and its canonical
+descendants, orders ready items deterministically, and exposes exactly one
+current item with queue generation and item revision. `ResolveApproval` records
+the stable decision before invoking the host authorization gate and then
+atomically settles approval, effect, proof hash, and queue promotion. Hosts own
+product modes, approval copy, UI placement, authorization policy, and decision
+routing; they submit exact decisions and map typed conflicts, but do not keep a
+second approval queue.
 
 For provider continuations such as length truncation recovery, the detail stream
 records the durable live prefix and any final suffix in ordinal order. It does
