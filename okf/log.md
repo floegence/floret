@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-07-22
+* **Reads**: Exposed canonical approval-queue reads through the bound
+  `ThreadReadHost` capability so reconnect/bootstrap projections can reload
+  root and descendant pending approvals without an active turn host or a
+  second host-owned queue.
 * **Fix**: Canonicalized projected control-signal payloads into standard JSON
   value trees before transcript and journal persistence, preserving nested
   named struct and slice payloads across Memory and SQLite reads while rejecting

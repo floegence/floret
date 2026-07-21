@@ -30,12 +30,14 @@ read, pending settlement recovery, or exact interrupted-turn recovery handles.
 Binders remain inside the composition
 root. No coordinator or run receives a raw `runtime.Store`, the bootstrap token,
 or any binder; it receives only the exact authority-bound factory or handle for
-its responsibility. `ThreadReadHost` is
-read-only and is the reload source for top-level thread, turn, context, and todo
-projections; parent-bound `SubAgentReadHost` owns child list/detail/activity
-reads. Approval read/resolve remains on the bound `TurnExecutionHost`, while the
-Floret Store owns one durable aggregate root/descendant queue and exact decision
-CAS.
+its responsibility. `ThreadReadHost` is read-only and is the reload source for
+top-level thread, turn, context, todo, and approval-queue projections;
+parent-bound `SubAgentReadHost` owns child list/detail/activity reads. Approval
+resolve remains on the bound `TurnExecutionHost`, while the Floret Store owns
+one durable aggregate root/descendant queue and exact decision CAS. A
+`ThreadReadHost` approval read does not require an active turn owner, so
+reconnect/bootstrap code can reload the canonical queue through the public
+capability without a host-side copy.
 Terminal execution facts and terminal display projection availability are
 separate results. If durable detail cannot be read after a turn terminates,
 the runtime preserves the engine result and reports projection status as

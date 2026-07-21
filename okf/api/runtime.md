@@ -107,6 +107,11 @@ host interface for every runtime operation.
   compare-and-swap versioning and must reference a real journal turn, run, and
   tool call. Fork rewrites the stored turn/run authorship with the journal, and
   thread deletion removes the state.
+* `ThreadReadHost.ReadApprovalQueue` reads the same durable root-and-descendant
+  approval queue as `TurnExecutionHost.ReadApprovalQueue` without requiring an
+  active turn owner. The bound root identity is enforced, so reconnect and
+  bootstrap projections can reload pending approvals without opening Floret
+  storage or creating a host-side queue.
 * `TurnExecutionHost.RunTurn` executes one hosted user-facing turn and rejects a
   request whose `ThreadID` differs from the handle binding.
 * `RunTurnRequest.Input` is `TurnInput{Text, Attachments, References}`. At least

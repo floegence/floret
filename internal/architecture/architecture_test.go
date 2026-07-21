@@ -402,7 +402,7 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 		"CloseSubAgent", "PublishPendingToolCompletion", "SendSubAgentInput", "SettlePendingTool", "SpawnSubAgent", "WaitSubAgents")
 	exact("ThreadReadHost", reflect.TypeOf((*floretRuntime.ThreadReadHost)(nil)),
 		"ListThreadDetailEvents", "ListThreadTurns", "ReadLatestThreadTurn", "ReadThread",
-		"ReadArtifact", "ReadThreadAgentTodos", "ReadThreadContext", "ReadThreadOverview", "ReadTurnProjection")
+		"ReadApprovalQueue", "ReadArtifact", "ReadThreadAgentTodos", "ReadThreadContext", "ReadThreadOverview", "ReadTurnProjection")
 	exact("Store", reflect.TypeOf((*floretRuntime.Store)(nil)), "Close")
 	for name, typ := range map[string]reflect.Type{
 		"HostBootstrap":                      reflect.TypeOf(floretRuntime.HostBootstrap{}),

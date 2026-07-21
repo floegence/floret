@@ -542,7 +542,7 @@ exposes only `Close`.
 | --- | --- | --- | --- |
 | Store lifetime owner | `Store`, narrow binders | whole Store for trusted composition only | configure once, close |
 | Root create coordinator | `ThreadCreateHost` | one exact root ID plus durable `CreateIntentID` | create or replay that root intent only |
-| Root read owner | `ThreadReadHost` | one existing root | canonical reads and exact Floret artifact reads only |
+| Root read owner | `ThreadReadHost` | one existing root | canonical reads, the durable root-and-descendant approval queue, and exact Floret artifact reads only |
 | Title coordinator | `ThreadTitleHost` | one existing root | manual title only |
 | Fork coordinator | `ThreadForkHost` | one source root | prepare/commit/replay one explicit fork request |
 | Delete coordinator | `ThreadDeleteHost` | one existing or tombstoned root | delete or replay that root tree |
@@ -603,7 +603,7 @@ Public capability types have no exported methods beyond this list:
 | `SubAgentHostFactory` | `NewHost` |
 | `InterruptedTurnRecoveryHostFactory` | `NewHost` |
 | `ThreadCreateHost` | `CreateThread` |
-| `ThreadReadHost` | `ReadThread`, `ReadThreadOverview`, `ListThreadTurns`, `ReadLatestThreadTurn`, `ListThreadDetailEvents`, `ReadThreadContext`, `ReadThreadAgentTodos`, `ReadTurnProjection`, `ReadArtifact` |
+| `ThreadReadHost` | `ReadThread`, `ReadThreadOverview`, `ListThreadTurns`, `ReadLatestThreadTurn`, `ListThreadDetailEvents`, `ReadThreadContext`, `ReadThreadAgentTodos`, `ReadApprovalQueue`, `ReadTurnProjection`, `ReadArtifact` |
 | `ThreadTitleHost` | `SetThreadTitle` |
 | `ThreadForkHost` | `ForkThread` |
 | `ThreadDeleteHost` | `DeleteThread` |

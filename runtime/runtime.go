@@ -2805,6 +2805,18 @@ func (h *providerHost) ReadApprovalQueue(ctx context.Context, req ReadApprovalQu
 	return readApprovalQueue(ctx, h.harness, req)
 }
 
+func (h *ThreadReadHost) ReadApprovalQueue(ctx context.Context, req ReadApprovalQueueRequest) (ApprovalQueue, error) {
+	done, err := beginHostOperation(h.store)
+	if err != nil {
+		return ApprovalQueue{}, err
+	}
+	defer done()
+	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, req.ThreadID, "thread read host"); err != nil {
+		return ApprovalQueue{}, err
+	}
+	return readApprovalQueue(ctx, h.harness, req)
+}
+
 func readApprovalQueue(ctx context.Context, harness *agentharness.AgentHarness, req ReadApprovalQueueRequest) (ApprovalQueue, error) {
 	result, err := harness.ReadApprovalQueue(ctx, agentharness.ReadApprovalQueueOptions{ThreadID: string(req.ThreadID)})
 	if err != nil {
