@@ -1694,7 +1694,18 @@ func TestAskUserSignalReturnsWaitingWithoutExecutingTool(t *testing.T) {
 	}
 }
 
-func TestCustomControlSpecWaitingSignalCarriesOpaquePayload(t *testing.T) {
+type controlPayloadOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
+type controlPayloadQuestion struct {
+	Question string                 `json:"question"`
+	ID       string                 `json:"id"`
+	Options  []controlPayloadOption `json:"options"`
+}
+
+func TestCustomControlSpecWaitingSignalCanonicalizesJSONPayload(t *testing.T) {
 	rec := &event.Recorder{}
 	p := harness.NewScriptedProvider(
 		harness.Step(harness.Tool("ask-rich", "host_wait", `{"prompt_id":"p1","question":"Pick a file","secret":"token abc"}`), harness.DoneReason("tool_calls")),
@@ -1716,7 +1727,13 @@ func TestCustomControlSpecWaitingSignalCarriesOpaquePayload(t *testing.T) {
 				Name:        call.Name,
 				CallID:      call.ID,
 				OutputText:  "Pick a file",
-				Payload:     map[string]any{"prompt_id": "p1", "questions": []any{map[string]any{"id": "file", "mode": "write"}}},
+				Payload: map[string]any{
+					"prompt_id": "p1",
+					"questions": []controlPayloadQuestion{{
+						Question: "Which file?", ID: "file",
+						Options: []controlPayloadOption{{Label: "README.md", Description: "Project overview"}},
+					}},
+				},
 			}, true, nil
 		},
 	}
@@ -1732,6 +1749,22 @@ func TestCustomControlSpecWaitingSignalCarriesOpaquePayload(t *testing.T) {
 	if got.ControlSignal.ArgsHash == "" || got.ControlSignal.Payload["prompt_id"] != "p1" || got.ControlSignal.Labels["correlation.run"] != "r1" {
 		t.Fatalf("control signal payload/labels/hash missing: %#v", got.ControlSignal)
 	}
+	questions, ok := got.ControlSignal.Payload["questions"].([]any)
+	if !ok || len(questions) != 1 {
+		t.Fatalf("canonical questions = %#v, want []any with one item", got.ControlSignal.Payload["questions"])
+	}
+	question, ok := questions[0].(map[string]any)
+	if !ok || question["id"] != "file" || question["question"] != "Which file?" {
+		t.Fatalf("canonical question = %#v", questions[0])
+	}
+	options, ok := question["options"].([]any)
+	if !ok || len(options) != 1 {
+		t.Fatalf("canonical options = %#v", question["options"])
+	}
+	option, ok := options[0].(map[string]any)
+	if !ok || option["label"] != "README.md" || option["description"] != "Project overview" {
+		t.Fatalf("canonical option = %#v", options[0])
+	}
 	if hasEvent(rec.Events, event.ToolCall) {
 		t.Fatalf("control signal should not be emitted as ordinary tool call: %#v", rec.Events)
 	}
@@ -1743,6 +1776,31 @@ func TestCustomControlSpecWaitingSignalCarriesOpaquePayload(t *testing.T) {
 		return msg.Role == session.Assistant && msg.ToolName == "host_wait" && msg.ToolArgs != "" && !strings.Contains(msg.Content, "token abc")
 	}) {
 		t.Fatalf("raw control call should be audit-only session data, not provider-visible text: %#v", messages)
+	}
+}
+
+func TestCustomControlSpecRejectsNonJSONPayload(t *testing.T) {
+	p := harness.NewScriptedProvider(
+		harness.Step(harness.Tool("ask-invalid", "host_wait", `{}`), harness.DoneReason("tool_calls")),
+	)
+	e := newTestEngine(p, &event.Recorder{})
+	e.Options.ControlSpec = engine.ControlSpec{
+		Definitions: []provider.ToolDefinition{{
+			Name: "host_wait", Description: "Wait for external input.",
+			InputSchema: tools.StrictObject(map[string]any{}, nil), Strict: true,
+		}},
+		Project: func(call provider.ToolCall) (engine.ControlSignal, bool, error) {
+			return engine.ControlSignal{
+				Disposition: engine.ControlWaiting, Name: call.Name, CallID: call.ID,
+				Payload: map[string]any{"unsupported": make(chan int)},
+			}, true, nil
+		},
+	}
+
+	got := e.Run(context.Background(), "continue")
+
+	if got.Status != engine.Failed || got.Err == nil || !strings.Contains(got.Err.Error(), `control signal "host_wait" payload is not valid JSON`) {
+		t.Fatalf("result = %#v, want invalid JSON payload failure", got)
 	}
 }
 

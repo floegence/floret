@@ -178,7 +178,13 @@ events may arrive in completion order.
 For terminal control signals, `Engine` normalizes the visible completion output
 from the signal itself or from assistant text produced in the same provider
 step. A terminal control signal with neither source is a contract error, so the
-engine never fabricates a successful completion.
+engine never fabricates a successful completion. `Engine` also normalizes every
+projected control payload into a standard JSON value tree before transcript and
+journal persistence. This single boundary keeps Memory and SQLite representations
+identical for nested named structs and slices and rejects non-JSON values instead
+of storing an entry that cannot pass later integrity validation. Tool activity
+payloads continue to use the independent observation sanitizer and renderer
+payload validator.
 
 # Hosted Context Lifecycle
 

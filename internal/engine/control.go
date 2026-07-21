@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -160,6 +161,11 @@ func (s ControlSpec) project(call provider.ToolCall, ctx controlProjectionContex
 	if signal.ArgsHash == "" && strings.TrimSpace(call.Args) != "" {
 		signal.ArgsHash = providerStableHash(call.Args)
 	}
+	payload, err := canonicalControlPayload(signal.Payload)
+	if err != nil {
+		return ControlSignal{}, true, fmt.Errorf("control signal %q payload is not valid JSON: %w", signal.Name, err)
+	}
+	signal.Payload = payload
 	switch signal.Disposition {
 	case ControlContinue:
 		if strings.TrimSpace(signal.OutputText) == "" {
@@ -179,6 +185,21 @@ func (s ControlSpec) project(call provider.ToolCall, ctx controlProjectionContex
 	default:
 		return ControlSignal{}, true, fmt.Errorf("control signal %q returned invalid disposition %q", signal.Name, signal.Disposition)
 	}
+}
+
+func canonicalControlPayload(in map[string]any) (map[string]any, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	data, err := json.Marshal(in)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func providerStableHash(value string) string {

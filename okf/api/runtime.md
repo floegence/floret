@@ -627,9 +627,15 @@ signals interrupt the turn with their projected prompt. Terminal signals complet
 the turn with a human-visible output. A terminal signal may supply that output in
 the signal payload, or it may rely on assistant text produced earlier in the
 same provider step; if neither exists, the turn fails with a control-contract
-error instead of inventing a completion. Control signals are projected as control
-activity and control-signal display segments; they are not ordinary local tool
-execution records.
+error instead of inventing a completion. After a signal projector returns,
+Floret encodes and decodes its product-neutral payload once as a standard JSON
+value tree before it enters the transcript or durable journal. Named Go structs
+and slices therefore use their JSON representation consistently across Memory
+and SQLite, while channels, functions, cycles, and other non-JSON values fail
+the turn as contract errors. Activity payloads remain on their separate public
+presentation sanitizer and validator boundary. Control signals are projected as
+control activity and control-signal display segments; they are not ordinary
+local tool execution records.
 
 Reasoning selection is request intent, not provider wire data. Floret normalizes
 the public selection and provider adapters translate only values supported by the

@@ -7066,6 +7066,125 @@ func TestHostProjectionTreatsCoreControlSignalAsControl(t *testing.T) {
 	}
 }
 
+type durableJSONChoice struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
+type durableJSONQuestion struct {
+	Question string              `json:"question"`
+	Header   string              `json:"header"`
+	ID       string              `json:"id"`
+	Options  []durableJSONChoice `json:"options"`
+}
+
+func TestThreadReadsCanonicalizeDurableJSONPayloadsAcrossStores(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		open func(*testing.T) *Store
+	}{
+		{name: "memory", open: func(t *testing.T) *Store { return NewMemoryStore() }},
+		{name: "sqlite", open: func(t *testing.T) *Store {
+			store, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "floret.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			return store
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := tc.open(t)
+			gateway := runtimeModelGateway(func(ctx context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+				events := make(chan ModelEvent, 2)
+				events <- ModelEvent{Type: ModelEventToolCalls, ToolCalls: []tools.ToolCall{{
+					ID: "ask-1", Name: "host_wait", Args: `{}`,
+				}}}
+				events <- ModelEvent{Type: ModelEventDone, Reason: "tool_calls"}
+				close(events)
+				return events, nil
+			})
+			host, err := newTestHost(t, providerHostOptions{
+				Config:               runtimeGatewayConfig("test"),
+				ModelGateway:         gateway,
+				ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"),
+				Store:                store,
+				IDGenerator:          deterministicIDs(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+				t.Fatal(err)
+			}
+			result, err := host.RunTurn(ctx, RunTurnRequest{
+				RunID: "run", ThreadID: "thread", TurnID: "turn", Input: TurnInput{Text: "choose"},
+				Completion: TurnCompletionNaturalStop,
+				Signals: TurnSignalSpec{
+					Definitions: []tools.ToolDefinition{{
+						Name: "host_wait", Title: "Wait", Description: "Wait for user input.",
+						InputSchema: map[string]any{"type": "object", "additionalProperties": false}, Strict: true,
+					}},
+					Project: func(call tools.ToolCall) (TurnSignal, bool, error) {
+						questions := []durableJSONQuestion{{
+							Question: "Which branch?", Header: "Branch", ID: "branch",
+							Options: []durableJSONChoice{{Label: "main", Description: "Use the main branch"}},
+						}}
+						return TurnSignal{
+							Disposition: SignalWaiting, Name: call.Name, CallID: call.ID,
+							OutputText: "Which branch?", Payload: map[string]any{"questions": questions},
+						}, true, nil
+					},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Status != TurnStatusWaiting {
+				t.Fatalf("RunTurn status = %q, want waiting", result.Status)
+			}
+
+			page, err := host.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 1})
+			if err != nil {
+				t.Fatalf("ListThreadTurns: %v", err)
+			}
+			assertCanonicalDurableQuestions(t, page.Turns[0])
+			overview, err := host.ReadThreadOverview(ctx, "thread")
+			if err != nil {
+				t.Fatalf("ReadThreadOverview: %v", err)
+			}
+			if overview.LatestTurn == nil {
+				t.Fatal("ReadThreadOverview returned no latest turn")
+			}
+			assertCanonicalDurableQuestions(t, *overview.LatestTurn)
+		})
+	}
+}
+
+func assertCanonicalDurableQuestions(t *testing.T, turn ThreadTurnSnapshot) {
+	t.Helper()
+	if len(turn.ControlSignals) != 1 {
+		t.Fatalf("control signals = %#v, want one", turn.ControlSignals)
+	}
+	questions, ok := turn.ControlSignals[0].Payload["questions"].([]any)
+	if !ok || len(questions) != 1 {
+		t.Fatalf("canonical questions = %#v, want []any with one item", turn.ControlSignals[0].Payload["questions"])
+	}
+	question, ok := questions[0].(map[string]any)
+	if !ok || question["id"] != "branch" || question["question"] != "Which branch?" {
+		t.Fatalf("canonical question = %#v", questions[0])
+	}
+	options, ok := question["options"].([]any)
+	if !ok || len(options) != 1 {
+		t.Fatalf("canonical options = %#v", question["options"])
+	}
+	option, ok := options[0].(map[string]any)
+	if !ok || option["label"] != "main" || option["description"] != "Use the main branch" {
+		t.Fatalf("canonical option = %#v", options[0])
+	}
+}
+
 func TestListThreadTurnsPagesCanonicalTimeline(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {

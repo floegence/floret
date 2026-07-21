@@ -1,5 +1,11 @@
 # Floret OKF Update Log
 
+## 2026-07-22
+* **Fix**: Canonicalized projected control-signal payloads into standard JSON
+  value trees before transcript and journal persistence, preserving nested
+  named struct and slice payloads across Memory and SQLite reads while rejecting
+  non-JSON values before they can create corrupt authority state.
+
 ## 2026-07-20
 * **Authority**: Added exact durable turn admission/replay and canonical turn
   entry indexes with before/since cursors, retry-source identity, typed terminal
