@@ -15,6 +15,197 @@ import (
 	"github.com/floegence/floret/internal/sessiontree"
 )
 
+func TestModelGatewayAutomaticTitleUsesHostReasoningCapability(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	t.Cleanup(func() { _ = store.Close() })
+	requests := make(chan ModelRequest, 4)
+	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		requests <- req
+		if strings.HasSuffix(string(req.RunID), ":thread-title") {
+			return runtimeGatewayEvents("Generated title"), nil
+		}
+		return runtimeGatewayEvents("main turn completed"), nil
+	})
+	cfg := runtimeGatewayConfig("gateway system")
+	cfg.Reasoning = ReasoningSelection{Level: ReasoningLevelHigh}
+	reasoning := ReasoningCapability{
+		Kind:             "effort",
+		SupportedLevels:  []config.ReasoningLevel{config.ReasoningLevelHigh, config.ReasoningLevelMax},
+		DefaultLevel:     config.ReasoningLevelHigh,
+		DisableSupported: true,
+	}
+	host, err := newTestHost(t, providerHostOptions{
+		Config:                   cfg,
+		ModelGateway:             gateway,
+		ModelGatewayIdentity:     runtimeGatewayIdentity("deepseek-like-model"),
+		ModelGatewayCapabilities: ModelGatewayCapabilities{Reasoning: &reasoning},
+		Store:                    store,
+		ThreadTitleMode:          ThreadTitleModeProvider,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.RunTurn(ctx, RunTurnRequest{
+		RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: "hello"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var mainRequest, titleRequest ModelRequest
+	for range 2 {
+		select {
+		case req := <-requests:
+			if strings.HasSuffix(string(req.RunID), ":thread-title") {
+				titleRequest = req
+			} else {
+				mainRequest = req
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for model gateway requests")
+		}
+	}
+	if mainRequest.Reasoning.Level != ReasoningLevelHigh {
+		t.Fatalf("main reasoning = %#v, want high", mainRequest.Reasoning)
+	}
+	if titleRequest.MaxOutputTokens != 64 || titleRequest.Reasoning.Level != ReasoningLevelOff {
+		t.Fatalf("title request = %#v, want 64 tokens with reasoning off", titleRequest)
+	}
+}
+
+func TestSubAgentHostPropagatesGatewayReasoningSelection(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	t.Cleanup(func() { _ = store.Close() })
+	capabilities := mustTestCapabilities(t, store)
+	createRequest := testCreateThreadRequest("parent")
+	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := create.CreateThread(ctx, createRequest); err != nil {
+		t.Fatal(err)
+	}
+	requests := make(chan ModelRequest, 2)
+	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		requests <- req
+		return runtimeGatewayEvents("child completed"), nil
+	})
+	cfg := runtimeGatewayConfig("gateway system")
+	cfg.Reasoning = ReasoningSelection{Level: ReasoningLevelHigh}
+	reasoning := ReasoningCapability{
+		Kind: config.ReasoningKindEffort, SupportedLevels: []config.ReasoningLevel{config.ReasoningLevelHigh, config.ReasoningLevelMax},
+		DefaultLevel: config.ReasoningLevelHigh, DisableSupported: true,
+	}
+	factory, err := capabilities.subAgent.Bind("parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := factory.NewHost(ctx, SubAgentHostOptions{
+		Config: cfg, ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("deepseek-like-model"),
+		ModelGatewayCapabilities: ModelGatewayCapabilities{Reasoning: &reasoning},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+		PublicationID: "publication", ParentThreadID: "parent", ThreadID: "child", TaskName: "child", Message: "work", ForkMode: SubAgentForkNone,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"child"}, Timeout: time.Second}); err != nil || waited.TimedOut {
+		t.Fatalf("WaitSubAgents() = %#v, %v", waited, err)
+	}
+
+	var mainRequest ModelRequest
+	select {
+	case mainRequest = <-requests:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for subagent model gateway request")
+	}
+	if mainRequest.Reasoning.Level != ReasoningLevelHigh {
+		t.Fatalf("subagent main reasoning = %#v, want high", mainRequest.Reasoning)
+	}
+}
+
+func TestThreadCompactionUsesHostReasoningCapability(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	t.Cleanup(func() { _ = store.Close() })
+	capabilities := mustTestCapabilities(t, store)
+	createRequest := testCreateThreadRequest("thread")
+	create, err := capabilities.create.Bind(createRequest.ThreadID, createRequest.CreateIntentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := create.CreateThread(ctx, createRequest); err != nil {
+		t.Fatal(err)
+	}
+	requests := make(chan ModelRequest, 8)
+	gateway := runtimeModelGateway(func(_ context.Context, req ModelRequest) (<-chan ModelEvent, error) {
+		requests <- req
+		if req.TurnID == "" {
+			return runtimeGatewayEvents("compacted summary"), nil
+		}
+		return runtimeGatewayEvents("turn completed"), nil
+	})
+	cfg := runtimeCompactionTestConfig()
+	cfg.Reasoning = ReasoningSelection{Level: ReasoningLevelHigh}
+	reasoning := ReasoningCapability{
+		Kind: config.ReasoningKindEffort, SupportedLevels: []config.ReasoningLevel{config.ReasoningLevelHigh, config.ReasoningLevelMax},
+		DefaultLevel: config.ReasoningLevelHigh, DisableSupported: true,
+	}
+	gatewayCapabilities := ModelGatewayCapabilities{Reasoning: &reasoning}
+	turnFactory, err := capabilities.turn.Bind("thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := turnFactory.NewHost(ctx, TurnExecutionHostOptions{
+		Config: cfg, ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("deepseek-like-model"), ModelGatewayCapabilities: gatewayCapabilities,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := turn.RunTurn(ctx, RunTurnRequest{RunID: "run-1", ThreadID: "thread", TurnID: "turn-1", Input: TurnInput{Text: runtimeLargeCompactionInput()}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := turn.RunTurn(ctx, RunTurnRequest{RunID: "run-2", ThreadID: "thread", TurnID: "turn-2", Input: TurnInput{Text: "latest tail"}}); err != nil {
+		t.Fatal(err)
+	}
+	compactionFactory, err := capabilities.compaction.Bind("thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	compaction, err := compactionFactory.NewHost(ctx, ThreadCompactionHostOptions{
+		Config: cfg, ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("deepseek-like-model"), ModelGatewayCapabilities: gatewayCapabilities,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compaction.CompactThread(ctx, CompactThreadRequest{ThreadID: "thread", RequestID: "compact", Source: "test"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var compactionRequest ModelRequest
+	deadline := time.After(time.Second)
+	for compactionRequest.RunID == "" {
+		select {
+		case req := <-requests:
+			if req.TurnID == "" {
+				compactionRequest = req
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for compaction model gateway request")
+		}
+	}
+	if compactionRequest.Reasoning.Level != ReasoningLevelOff {
+		t.Fatalf("compaction reasoning = %#v, want off", compactionRequest.Reasoning)
+	}
+}
+
 func TestStoreCloseReturnsAutomaticTitleSettlementFailure(t *testing.T) {
 	ctx := context.Background()
 	completeErr := errors.New("injected runtime title completion failure")

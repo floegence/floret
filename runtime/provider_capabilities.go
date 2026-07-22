@@ -70,43 +70,73 @@ type SubAgentHostFactory struct {
 
 // TurnExecutionHostOptions configures one thread-bound turn capability.
 type TurnExecutionHostOptions struct {
-	Config                  config.Config
-	ModelGateway            ModelGateway
-	ModelGatewayIdentity    ModelGatewayIdentity
-	Tools                   *tools.Registry
-	EffectAuthorizationGate EffectAuthorizationGate
-	Sink                    EventSink
-	ToolSurfaceProvider     ToolSurfaceProvider
-	IDGenerator             func(string) string
-	LoopLimits              LoopLimits
-	Capabilities            CapabilityOptions
-	ThreadTitleMode         ThreadTitleMode
+	Config                   config.Config
+	ModelGateway             ModelGateway
+	ModelGatewayIdentity     ModelGatewayIdentity
+	ModelGatewayCapabilities ModelGatewayCapabilities
+	Tools                    *tools.Registry
+	EffectAuthorizationGate  EffectAuthorizationGate
+	Sink                     EventSink
+	ToolSurfaceProvider      ToolSurfaceProvider
+	IDGenerator              func(string) string
+	LoopLimits               LoopLimits
+	Capabilities             CapabilityOptions
+	ThreadTitleMode          ThreadTitleMode
 }
 
 // ThreadCompactionHostOptions configures one thread-bound compaction capability.
 type ThreadCompactionHostOptions struct {
-	Config               config.Config
-	ModelGateway         ModelGateway
-	ModelGatewayIdentity ModelGatewayIdentity
-	Sink                 EventSink
-	IDGenerator          func(string) string
-	LoopLimits           LoopLimits
+	Config                   config.Config
+	ModelGateway             ModelGateway
+	ModelGatewayIdentity     ModelGatewayIdentity
+	ModelGatewayCapabilities ModelGatewayCapabilities
+	Sink                     EventSink
+	IDGenerator              func(string) string
+	LoopLimits               LoopLimits
 }
 
 // SubAgentHostOptions configures one parent-bound interactive child capability.
 type SubAgentHostOptions struct {
-	Config                  config.Config
-	ModelGateway            ModelGateway
-	ModelGatewayIdentity    ModelGatewayIdentity
-	Tools                   *tools.Registry
-	EffectAuthorizationGate EffectAuthorizationGate
-	Sink                    EventSink
-	ToolSurfaceProvider     ToolSurfaceProvider
-	IDGenerator             func(string) string
-	LoopLimits              LoopLimits
-	SubAgentRunTimeout      time.Duration
-	Capabilities            CapabilityOptions
-	ThreadTitleMode         ThreadTitleMode
+	Config                   config.Config
+	ModelGateway             ModelGateway
+	ModelGatewayIdentity     ModelGatewayIdentity
+	ModelGatewayCapabilities ModelGatewayCapabilities
+	Tools                    *tools.Registry
+	EffectAuthorizationGate  EffectAuthorizationGate
+	Sink                     EventSink
+	ToolSurfaceProvider      ToolSurfaceProvider
+	IDGenerator              func(string) string
+	LoopLimits               LoopLimits
+	SubAgentRunTimeout       time.Duration
+	Capabilities             CapabilityOptions
+	ThreadTitleMode          ThreadTitleMode
+}
+
+// ModelGatewayCapabilities describes host-resolved behavior for a gateway model.
+// A nil Reasoning means the host did not resolve the capability; an explicit
+// Kind="none" value means the host resolved that reasoning is unsupported.
+type ModelGatewayCapabilities struct {
+	Reasoning *config.ReasoningCapability
+}
+
+func (c ModelGatewayCapabilities) validate(gateway ModelGateway) error {
+	if gateway == nil {
+		if c.Reasoning != nil {
+			return errors.New("native provider host must not provide model gateway capabilities")
+		}
+		return nil
+	}
+	if c.Reasoning == nil {
+		return errors.New("model gateway reasoning capability is required")
+	}
+	reasoning := c.Reasoning.Normalize()
+	if reasoning.IsZero() {
+		return errors.New("model gateway reasoning capability must be explicit; use kind none when unsupported")
+	}
+	if err := reasoning.Validate(); err != nil {
+		return fmt.Errorf("invalid model gateway reasoning capability: %w", err)
+	}
+	return nil
 }
 
 // NewTurnExecutionHostBinder constructs the turn execution issuer.
@@ -210,18 +240,19 @@ func (f *TurnExecutionHostFactory) NewHost(ctx context.Context, opts TurnExecuti
 		return nil, err
 	}
 	host, err := newProviderHost(providerHostOptions{
-		Config:                  opts.Config,
-		ModelGateway:            opts.ModelGateway,
-		ModelGatewayIdentity:    opts.ModelGatewayIdentity,
-		Store:                   f.store,
-		Tools:                   opts.Tools,
-		EffectAuthorizationGate: opts.EffectAuthorizationGate,
-		Sink:                    opts.Sink,
-		ToolSurfaceProvider:     opts.ToolSurfaceProvider,
-		IDGenerator:             opts.IDGenerator,
-		LoopLimits:              opts.LoopLimits,
-		Capabilities:            opts.Capabilities,
-		ThreadTitleMode:         opts.ThreadTitleMode,
+		Config:                   opts.Config,
+		ModelGateway:             opts.ModelGateway,
+		ModelGatewayIdentity:     opts.ModelGatewayIdentity,
+		ModelGatewayCapabilities: opts.ModelGatewayCapabilities,
+		Store:                    f.store,
+		Tools:                    opts.Tools,
+		EffectAuthorizationGate:  opts.EffectAuthorizationGate,
+		Sink:                     opts.Sink,
+		ToolSurfaceProvider:      opts.ToolSurfaceProvider,
+		IDGenerator:              opts.IDGenerator,
+		LoopLimits:               opts.LoopLimits,
+		Capabilities:             opts.Capabilities,
+		ThreadTitleMode:          opts.ThreadTitleMode,
 	})
 	if err != nil {
 		return nil, err
@@ -243,13 +274,14 @@ func (f *ThreadCompactionHostFactory) NewHost(ctx context.Context, opts ThreadCo
 		return nil, err
 	}
 	host, err := newProviderHost(providerHostOptions{
-		Config:               opts.Config,
-		ModelGateway:         opts.ModelGateway,
-		ModelGatewayIdentity: opts.ModelGatewayIdentity,
-		Store:                f.store,
-		Sink:                 opts.Sink,
-		IDGenerator:          opts.IDGenerator,
-		LoopLimits:           opts.LoopLimits,
+		Config:                   opts.Config,
+		ModelGateway:             opts.ModelGateway,
+		ModelGatewayIdentity:     opts.ModelGatewayIdentity,
+		ModelGatewayCapabilities: opts.ModelGatewayCapabilities,
+		Store:                    f.store,
+		Sink:                     opts.Sink,
+		IDGenerator:              opts.IDGenerator,
+		LoopLimits:               opts.LoopLimits,
 	})
 	if err != nil {
 		return nil, err
@@ -271,19 +303,20 @@ func (f *SubAgentHostFactory) NewHost(ctx context.Context, opts SubAgentHostOpti
 		return nil, err
 	}
 	host, err := newProviderHost(providerHostOptions{
-		Config:                  opts.Config,
-		ModelGateway:            opts.ModelGateway,
-		ModelGatewayIdentity:    opts.ModelGatewayIdentity,
-		Store:                   f.store,
-		Tools:                   opts.Tools,
-		EffectAuthorizationGate: opts.EffectAuthorizationGate,
-		Sink:                    opts.Sink,
-		ToolSurfaceProvider:     opts.ToolSurfaceProvider,
-		IDGenerator:             opts.IDGenerator,
-		LoopLimits:              opts.LoopLimits,
-		SubAgentRunTimeout:      opts.SubAgentRunTimeout,
-		Capabilities:            opts.Capabilities,
-		ThreadTitleMode:         opts.ThreadTitleMode,
+		Config:                   opts.Config,
+		ModelGateway:             opts.ModelGateway,
+		ModelGatewayIdentity:     opts.ModelGatewayIdentity,
+		ModelGatewayCapabilities: opts.ModelGatewayCapabilities,
+		Store:                    f.store,
+		Tools:                    opts.Tools,
+		EffectAuthorizationGate:  opts.EffectAuthorizationGate,
+		Sink:                     opts.Sink,
+		ToolSurfaceProvider:      opts.ToolSurfaceProvider,
+		IDGenerator:              opts.IDGenerator,
+		LoopLimits:               opts.LoopLimits,
+		SubAgentRunTimeout:       opts.SubAgentRunTimeout,
+		Capabilities:             opts.Capabilities,
+		ThreadTitleMode:          opts.ThreadTitleMode,
 	})
 	if err != nil {
 		return nil, err

@@ -518,10 +518,11 @@ func TestBoundRootCapabilitiesRejectCrossAuthorityBeforeSideEffects(t *testing.T
 		t.Fatal(err)
 	}
 	turn, err := turnFactory.NewHost(ctx, TurnExecutionHostOptions{
-		Config:               runtimeGatewayConfig("test"),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("test-model"),
-		Sink:                 events,
+		Config:                   runtimeGatewayConfig("test"),
+		ModelGateway:             gateway,
+		ModelGatewayIdentity:     runtimeGatewayIdentity("test-model"),
+		ModelGatewayCapabilities: runtimeGatewayCapabilities(),
+		Sink:                     events,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -531,10 +532,11 @@ func TestBoundRootCapabilitiesRejectCrossAuthorityBeforeSideEffects(t *testing.T
 		t.Fatal(err)
 	}
 	compaction, err := compactionFactory.NewHost(ctx, ThreadCompactionHostOptions{
-		Config:               runtimeCompactionTestConfig(),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: runtimeGatewayIdentity("test-model"),
-		Sink:                 events,
+		Config:                   runtimeCompactionTestConfig(),
+		ModelGateway:             gateway,
+		ModelGatewayIdentity:     runtimeGatewayIdentity("test-model"),
+		ModelGatewayCapabilities: runtimeGatewayCapabilities(),
+		Sink:                     events,
 	})
 	if err != nil {
 		t.Fatal(err)

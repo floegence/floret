@@ -59,6 +59,39 @@ func PublicReasoningSelection(selection provider.ReasoningSelection) config.Reas
 	}
 }
 
+func ReasoningCapability(capability config.ReasoningCapability) provider.ReasoningCapability {
+	capability = capability.Normalize()
+	levels := make([]provider.ReasoningLevel, 0, len(capability.SupportedLevels))
+	for _, level := range capability.SupportedLevels {
+		levels = append(levels, provider.ReasoningLevel(level))
+	}
+	return provider.ReasoningCapability{
+		Kind:                    capability.Kind,
+		SupportedLevels:         levels,
+		DefaultLevel:            provider.ReasoningLevel(capability.DefaultLevel),
+		DisableSupported:        capability.DisableSupported,
+		DefaultEnabled:          capability.DefaultEnabled,
+		Budget:                  provider.ReasoningBudget{MinTokens: capability.Budget.MinTokens, MaxTokens: capability.Budget.MaxTokens},
+		DynamicProviderMetadata: capability.DynamicModelValue,
+	}
+}
+
+func PublicReasoningCapability(capability provider.ReasoningCapability) config.ReasoningCapability {
+	levels := make([]config.ReasoningLevel, 0, len(capability.SupportedLevels))
+	for _, level := range capability.SupportedLevels {
+		levels = append(levels, config.ReasoningLevel(level))
+	}
+	return config.ReasoningCapability{
+		Kind:              capability.Kind,
+		SupportedLevels:   levels,
+		DefaultLevel:      config.ReasoningLevel(capability.DefaultLevel),
+		DisableSupported:  capability.DisableSupported,
+		DefaultEnabled:    capability.DefaultEnabled,
+		Budget:            config.ReasoningBudget{MinTokens: capability.Budget.MinTokens, MaxTokens: capability.Budget.MaxTokens},
+		DynamicModelValue: capability.DynamicProviderMetadata,
+	}.Normalize()
+}
+
 func RequestEstimate(estimate contextpolicy.RequestEstimate) config.RequestEstimate {
 	return config.RequestEstimate{
 		PrefixTokens:         estimate.PrefixTokens,

@@ -235,6 +235,15 @@ func newTestHost(t *testing.T, opts providerHostOptions) (*testProviderFacade, e
 	if opts.EffectAuthorizationGate == nil {
 		opts.EffectAuthorizationGate = allowRuntimeEffectGate{}
 	}
+	if opts.ModelGateway != nil && opts.ModelGatewayCapabilities.Reasoning == nil {
+		reasoning := ReasoningCapability{
+			Kind:             "effort",
+			SupportedLevels:  []config.ReasoningLevel{config.ReasoningLevelOff, config.ReasoningLevelMinimal, config.ReasoningLevelLow, config.ReasoningLevelHigh, config.ReasoningLevelMax},
+			DefaultLevel:     config.ReasoningLevelHigh,
+			DisableSupported: true,
+		}
+		opts.ModelGatewayCapabilities = ModelGatewayCapabilities{Reasoning: &reasoning}
+	}
 	host, err := newProviderHost(opts)
 	if err != nil {
 		return nil, err
@@ -4047,7 +4056,7 @@ func TestSubAgentHostRejectsRemoteActiveChildWithoutSideEffects(t *testing.T) {
 		t.Fatal(err)
 	}
 	remote, err := remoteFactory.NewHost(ctx, SubAgentHostOptions{
-		Config: runtimeGatewayConfig("test"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"), IDGenerator: deterministicIDs(),
+		Config: runtimeGatewayConfig("test"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("fake-model"), ModelGatewayCapabilities: runtimeGatewayCapabilities(), IDGenerator: deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -5795,12 +5804,13 @@ func TestTurnSettlementHostRejectsReplacedActiveLeaseGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner, err := factory.NewHost(ctx, TurnExecutionHostOptions{
-		Config:                  runtimeGatewayConfig("test"),
-		ModelGateway:            gateway,
-		ModelGatewayIdentity:    runtimeGatewayIdentity("fake-model"),
-		Tools:                   registry,
-		EffectAuthorizationGate: allowRuntimeEffectGate{approver: allowRuntimeTools},
-		IDGenerator:             deterministicIDs(),
+		Config:                   runtimeGatewayConfig("test"),
+		ModelGateway:             gateway,
+		ModelGatewayIdentity:     runtimeGatewayIdentity("fake-model"),
+		ModelGatewayCapabilities: runtimeGatewayCapabilities(),
+		Tools:                    registry,
+		EffectAuthorizationGate:  allowRuntimeEffectGate{approver: allowRuntimeTools},
+		IDGenerator:              deterministicIDs(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -7568,7 +7578,7 @@ func TestTurnExecutionHostUpdatesTodosOnlyInsideOwnedToolDispatch(t *testing.T) 
 				t.Fatal(err)
 			}
 			turnHost, err = factory.NewHost(ctx, TurnExecutionHostOptions{
-				Config: runtimeGatewayConfig("test"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("model-a"),
+				Config: runtimeGatewayConfig("test"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("model-a"), ModelGatewayCapabilities: runtimeGatewayCapabilities(),
 				Tools: registry, EffectAuthorizationGate: allowRuntimeEffectGate{}, IDGenerator: deterministicIDs(),
 			})
 			if err != nil {
@@ -7847,7 +7857,7 @@ func TestStoreCloseRejectsRetainedCapabilities(t *testing.T) {
 				return runtimeGatewayEvents("must not run"), nil
 			})
 			turn, err := factory.NewHost(ctx, TurnExecutionHostOptions{
-				Config: runtimeGatewayConfig("close"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("close"),
+				Config: runtimeGatewayConfig("close"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("close"), ModelGatewayCapabilities: runtimeGatewayCapabilities(),
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -7927,7 +7937,7 @@ func TestStoreCloseCancelsAndWaitsForActiveTurnFinalization(t *testing.T) {
 		t.Fatal(err)
 	}
 	turn, err := factory.NewHost(ctx, TurnExecutionHostOptions{
-		Config: runtimeGatewayConfig("close active"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("close-active"),
+		Config: runtimeGatewayConfig("close active"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("close-active"), ModelGatewayCapabilities: runtimeGatewayCapabilities(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -8006,7 +8016,7 @@ func TestStoreCloseCancelsAndWaitsForTimedOutSubAgentFinalization(t *testing.T) 
 		t.Fatal(err)
 	}
 	host, err := factory.NewHost(ctx, SubAgentHostOptions{
-		Config: runtimeGatewayConfig("close child"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("close-child"),
+		Config: runtimeGatewayConfig("close child"), ModelGateway: gateway, ModelGatewayIdentity: runtimeGatewayIdentity("close-child"), ModelGatewayCapabilities: runtimeGatewayCapabilities(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -8286,6 +8296,16 @@ func runtimeLargeCompactionInput() string {
 
 func runtimeGatewayIdentity(model string) ModelGatewayIdentity {
 	return ModelGatewayIdentity{Provider: "runtime-test-gateway", Model: strings.TrimSpace(model), StateCompatibilityKey: "runtime-test-gateway:" + strings.TrimSpace(model)}
+}
+
+func runtimeGatewayCapabilities() ModelGatewayCapabilities {
+	reasoning := ReasoningCapability{
+		Kind:             "effort",
+		SupportedLevels:  []config.ReasoningLevel{config.ReasoningLevelOff, config.ReasoningLevelMinimal, config.ReasoningLevelLow, config.ReasoningLevelHigh, config.ReasoningLevelMax},
+		DefaultLevel:     config.ReasoningLevelHigh,
+		DisableSupported: true,
+	}
+	return ModelGatewayCapabilities{Reasoning: &reasoning}
 }
 
 func runtimeEchoSchema() map[string]any {

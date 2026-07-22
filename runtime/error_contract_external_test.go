@@ -171,9 +171,10 @@ func TestPublicRuntimeErrorsSupportErrorsIsWithoutInternalImports(t *testing.T) 
 			t.Fatal(err)
 		}
 		host, err := factory.NewHost(ctx, floretruntime.TurnExecutionHostOptions{
-			Config:               publicGatewayConfig(),
-			ModelGateway:         gateway,
-			ModelGatewayIdentity: publicGatewayIdentity(),
+			Config:                   publicGatewayConfig(),
+			ModelGateway:             gateway,
+			ModelGatewayIdentity:     publicGatewayIdentity(),
+			ModelGatewayCapabilities: publicGatewayCapabilities(),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -319,11 +320,12 @@ func TestTerminalRunTurnReturnReleasesAuthorityForPendingToolRecovery(t *testing
 				t.Fatal(err)
 			}
 			host, err := factory.NewHost(ctx, floretruntime.TurnExecutionHostOptions{
-				Config:                  publicGatewayConfig(),
-				ModelGateway:            gateway,
-				ModelGatewayIdentity:    publicGatewayIdentity(),
-				Tools:                   registry,
-				EffectAuthorizationGate: effectGate,
+				Config:                   publicGatewayConfig(),
+				ModelGateway:             gateway,
+				ModelGatewayIdentity:     publicGatewayIdentity(),
+				ModelGatewayCapabilities: publicGatewayCapabilities(),
+				Tools:                    registry,
+				EffectAuthorizationGate:  effectGate,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -475,11 +477,12 @@ func newPublicPendingTurnHost(t *testing.T, binder *floretruntime.TurnExecutionH
 		t.Fatal(err)
 	}
 	host, err := factory.NewHost(context.Background(), floretruntime.TurnExecutionHostOptions{
-		Config:                  publicGatewayConfig(),
-		ModelGateway:            gateway,
-		ModelGatewayIdentity:    publicGatewayIdentity(),
-		Tools:                   registry,
-		EffectAuthorizationGate: effectGate,
+		Config:                   publicGatewayConfig(),
+		ModelGateway:             gateway,
+		ModelGatewayIdentity:     publicGatewayIdentity(),
+		ModelGatewayCapabilities: publicGatewayCapabilities(),
+		Tools:                    registry,
+		EffectAuthorizationGate:  effectGate,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -563,6 +566,16 @@ func publicGatewayIdentity() floretruntime.ModelGatewayIdentity {
 		Model:                 "fake-model",
 		StateCompatibilityKey: "public-error-test:fake-model",
 	}
+}
+
+func publicGatewayCapabilities() floretruntime.ModelGatewayCapabilities {
+	reasoning := config.ReasoningCapability{
+		Kind:             "effort",
+		SupportedLevels:  []config.ReasoningLevel{config.ReasoningLevelOff, config.ReasoningLevelMinimal, config.ReasoningLevelLow, config.ReasoningLevelHigh, config.ReasoningLevelMax},
+		DefaultLevel:     config.ReasoningLevelHigh,
+		DisableSupported: true,
+	}
+	return floretruntime.ModelGatewayCapabilities{Reasoning: &reasoning}
 }
 
 type publicToolGateway struct {

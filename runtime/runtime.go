@@ -325,19 +325,20 @@ func normalizeThreadTitleMode(mode ThreadTitleMode) (ThreadTitleMode, error) {
 }
 
 type providerHostOptions struct {
-	Config                  config.Config
-	ModelGateway            ModelGateway
-	ModelGatewayIdentity    ModelGatewayIdentity
-	Store                   *Store
-	Tools                   *tools.Registry
-	EffectAuthorizationGate EffectAuthorizationGate
-	Sink                    EventSink
-	ToolSurfaceProvider     ToolSurfaceProvider
-	IDGenerator             func(string) string
-	LoopLimits              LoopLimits
-	SubAgentRunTimeout      time.Duration
-	Capabilities            CapabilityOptions
-	ThreadTitleMode         ThreadTitleMode
+	Config                   config.Config
+	ModelGateway             ModelGateway
+	ModelGatewayIdentity     ModelGatewayIdentity
+	ModelGatewayCapabilities ModelGatewayCapabilities
+	Store                    *Store
+	Tools                    *tools.Registry
+	EffectAuthorizationGate  EffectAuthorizationGate
+	Sink                     EventSink
+	ToolSurfaceProvider      ToolSurfaceProvider
+	IDGenerator              func(string) string
+	LoopLimits               LoopLimits
+	SubAgentRunTimeout       time.Duration
+	Capabilities             CapabilityOptions
+	ThreadTitleMode          ThreadTitleMode
 }
 
 type LoopLimits struct {
@@ -2338,6 +2339,9 @@ func (s *Store) threadTreeIDs(ctx context.Context, threadID string) ([]string, e
 }
 
 func newProviderHost(opts providerHostOptions) (*providerHost, error) {
+	if err := opts.ModelGatewayCapabilities.validate(opts.ModelGateway); err != nil {
+		return nil, err
+	}
 	titleMode, err := normalizeThreadTitleMode(opts.ThreadTitleMode)
 	if err != nil {
 		return nil, err
@@ -2354,18 +2358,19 @@ func newProviderHost(opts providerHostOptions) (*providerHost, error) {
 		return nil, err
 	}
 	harness, err := newHarnessWithProvider(cfg, provider, harnessOptions{
-		Store:                   store,
-		Tools:                   opts.Tools,
-		EffectAuthorizationGate: opts.EffectAuthorizationGate,
-		Sink:                    newRuntimeEventSink(opts.Sink),
-		SinkPolicy:              runtimeHarnessSinkPolicy(),
-		ToolSurfaceProvider:     runtimeToolSurfaceProvider(opts.ToolSurfaceProvider),
-		NewID:                   opts.IDGenerator,
-		LoopLimits:              opts.LoopLimits,
-		SubAgentRunTimeout:      opts.SubAgentRunTimeout,
-		Capabilities:            opts.Capabilities,
-		ThreadTitleMode:         titleMode,
-		StateCompatibilityKey:   runtimeStateCompatibilityKey(cfg, opts),
+		Store:                    store,
+		Tools:                    opts.Tools,
+		EffectAuthorizationGate:  opts.EffectAuthorizationGate,
+		Sink:                     newRuntimeEventSink(opts.Sink),
+		SinkPolicy:               runtimeHarnessSinkPolicy(),
+		ToolSurfaceProvider:      runtimeToolSurfaceProvider(opts.ToolSurfaceProvider),
+		NewID:                    opts.IDGenerator,
+		LoopLimits:               opts.LoopLimits,
+		SubAgentRunTimeout:       opts.SubAgentRunTimeout,
+		Capabilities:             opts.Capabilities,
+		ThreadTitleMode:          titleMode,
+		ModelGatewayCapabilities: opts.ModelGatewayCapabilities,
+		StateCompatibilityKey:    runtimeStateCompatibilityKey(cfg, opts),
 	})
 	if err != nil {
 		return nil, err
@@ -4469,19 +4474,20 @@ func threadIDStrings(ids []ThreadID) []string {
 }
 
 type harnessOptions struct {
-	Store                   *Store
-	Tools                   *tools.Registry
-	EffectAuthorizationGate EffectAuthorizationGate
-	Sink                    event.Sink
-	SinkPolicy              event.SinkPolicy
-	Title                   agentharness.TitleGenerator
-	ThreadTitleMode         ThreadTitleMode
-	NewID                   func(string) string
-	LoopLimits              LoopLimits
-	SubAgentRunTimeout      time.Duration
-	Capabilities            CapabilityOptions
-	ToolSurfaceProvider     engine.ToolSurfaceProvider
-	StateCompatibilityKey   string
+	Store                    *Store
+	Tools                    *tools.Registry
+	EffectAuthorizationGate  EffectAuthorizationGate
+	Sink                     event.Sink
+	SinkPolicy               event.SinkPolicy
+	Title                    agentharness.TitleGenerator
+	ThreadTitleMode          ThreadTitleMode
+	ModelGatewayCapabilities ModelGatewayCapabilities
+	NewID                    func(string) string
+	LoopLimits               LoopLimits
+	SubAgentRunTimeout       time.Duration
+	Capabilities             CapabilityOptions
+	ToolSurfaceProvider      engine.ToolSurfaceProvider
+	StateCompatibilityKey    string
 }
 
 func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harnessOptions) (*agentharness.AgentHarness, error) {
@@ -4527,6 +4533,9 @@ func newHarnessWithProvider(cfg config.Config, p provider.Provider, opts harness
 		loopLimits.WallTime = opts.LoopLimits.WallTime
 	}
 	model, _ := catalog.FindModel(cfg.Provider, cfg.Model)
+	if opts.ModelGatewayCapabilities.Reasoning != nil {
+		model.Reasoning = configbridge.ReasoningCapability(*opts.ModelGatewayCapabilities.Reasoning)
+	}
 	titleGenerator := opts.Title
 	if titleGenerator == nil && opts.ThreadTitleMode == ThreadTitleModeProvider {
 		titleGenerator = agentharness.ProviderTitleGenerator{

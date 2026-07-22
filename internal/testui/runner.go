@@ -19,6 +19,7 @@ import (
 
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/internal/agentharness"
+	"github.com/floegence/floret/internal/configbridge"
 	"github.com/floegence/floret/internal/control"
 	"github.com/floegence/floret/internal/engine"
 	"github.com/floegence/floret/internal/event"
@@ -920,6 +921,7 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 	runtimeConfig := sess.cfg
 	gateway := &testUIProviderGateway{}
 	gatewayIdentity := testUIModelGatewayIdentity(runtimeConfig)
+	gatewayCapabilities := testUIModelGatewayCapabilities(runtimeConfig.Provider, runtimeConfig.Model)
 	hostConfig := runtimeConfig
 	hostConfig.Provider = ""
 	hostConfig.Model = ""
@@ -931,7 +933,7 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 		return currentToolSurface, nil
 	}
 	hostOptions := flruntime.TurnExecutionHostOptions{
-		Config: hostConfig, ModelGateway: gateway, ModelGatewayIdentity: gatewayIdentity,
+		Config: hostConfig, ModelGateway: gateway, ModelGatewayIdentity: gatewayIdentity, ModelGatewayCapabilities: gatewayCapabilities,
 		Tools: registry, EffectAuthorizationGate: testUIRuntimeEffectAuthorizationGate{}, Sink: rec,
 		ToolSurfaceProvider: toolSurface, IDGenerator: idGenerator,
 		LoopLimits: flruntime.LoopLimits{
@@ -945,7 +947,7 @@ func (sess *agentSession) prepareRuntime(ctx context.Context, r *Runner, selecte
 		return agentSessionRuntime{}, err
 	}
 	subagent, err := sess.subagentFactory.NewHost(ctx, flruntime.SubAgentHostOptions{
-		Config: hostConfig, ModelGateway: gateway, ModelGatewayIdentity: gatewayIdentity,
+		Config: hostConfig, ModelGateway: gateway, ModelGatewayIdentity: gatewayIdentity, ModelGatewayCapabilities: gatewayCapabilities,
 		Tools: registry, EffectAuthorizationGate: testUIRuntimeEffectAuthorizationGate{}, Sink: rec,
 		ToolSurfaceProvider: toolSurface, IDGenerator: idGenerator,
 		LoopLimits: hostOptions.LoopLimits, ThreadTitleMode: flruntime.ThreadTitleModeProvider,
@@ -3133,19 +3135,21 @@ func testuiCompactionHost(ctx context.Context, threadID flruntime.ThreadID, sink
 	}
 	config := testuiProjectedCompactionConfig(256000, 100, true)
 	turn, err := turnFactory.NewHost(ctx, flruntime.TurnExecutionHostOptions{
-		Config:               config,
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: testuiModelGatewayIdentity(),
-		Sink:                 sink,
+		Config:                   config,
+		ModelGateway:             gateway,
+		ModelGatewayIdentity:     testuiModelGatewayIdentity(),
+		ModelGatewayCapabilities: testuiNoReasoningGatewayCapabilities(),
+		Sink:                     sink,
 	})
 	if err != nil {
 		return nil, err
 	}
 	compaction, err := compactionFactory.NewHost(ctx, flruntime.ThreadCompactionHostOptions{
-		Config:               testuiProjectedCompactionConfig(256000, 100, true),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: testuiModelGatewayIdentity(),
-		Sink:                 sink,
+		Config:                   testuiProjectedCompactionConfig(256000, 100, true),
+		ModelGateway:             gateway,
+		ModelGatewayIdentity:     testuiModelGatewayIdentity(),
+		ModelGatewayCapabilities: testuiNoReasoningGatewayCapabilities(),
+		Sink:                     sink,
 	})
 	if err != nil {
 		return nil, err
@@ -3164,19 +3168,21 @@ func testuiCompactionNoopHost(ctx context.Context, threadID flruntime.ThreadID, 
 	}
 	config := testuiProjectedCompactionConfig(256000, 0, false)
 	turn, err := turnFactory.NewHost(ctx, flruntime.TurnExecutionHostOptions{
-		Config:               config,
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: testuiModelGatewayIdentity(),
-		Sink:                 sink,
+		Config:                   config,
+		ModelGateway:             gateway,
+		ModelGatewayIdentity:     testuiModelGatewayIdentity(),
+		ModelGatewayCapabilities: testuiNoReasoningGatewayCapabilities(),
+		Sink:                     sink,
 	})
 	if err != nil {
 		return nil, err
 	}
 	compaction, err := compactionFactory.NewHost(ctx, flruntime.ThreadCompactionHostOptions{
-		Config:               testuiProjectedCompactionConfig(256000, 0, false),
-		ModelGateway:         gateway,
-		ModelGatewayIdentity: testuiModelGatewayIdentity(),
-		Sink:                 sink,
+		Config:                   testuiProjectedCompactionConfig(256000, 0, false),
+		ModelGateway:             gateway,
+		ModelGatewayIdentity:     testuiModelGatewayIdentity(),
+		ModelGatewayCapabilities: testuiNoReasoningGatewayCapabilities(),
+		Sink:                     sink,
 	})
 	if err != nil {
 		return nil, err
@@ -3247,6 +3253,18 @@ func testuiTurnHost(ctx context.Context, store *flruntime.Store, threadID flrunt
 
 func testuiModelGatewayIdentity() flruntime.ModelGatewayIdentity {
 	return flruntime.ModelGatewayIdentity{Provider: "testui-gateway", Model: "testui-model", StateCompatibilityKey: "testui-gateway:testui-model"}
+}
+
+func testUIModelGatewayCapabilities(providerID, modelID string) flruntime.ModelGatewayCapabilities {
+	reasoning := config.ReasoningCapability{Kind: config.ReasoningKindNone}
+	if model, ok := catalog.FindModel(providerID, modelID); ok && model.Reasoning.Kind != "" {
+		reasoning = configbridge.PublicReasoningCapability(model.Reasoning)
+	}
+	return flruntime.ModelGatewayCapabilities{Reasoning: &reasoning}
+}
+
+func testuiNoReasoningGatewayCapabilities() flruntime.ModelGatewayCapabilities {
+	return testUIModelGatewayCapabilities(catalog.ProviderFake, "fake-model")
 }
 
 func testuiProjectedCompactionConfig(window int64, compactTarget int64, compactAggressively bool) config.Config {
@@ -3444,11 +3462,12 @@ func (r *Runner) runEvalDemo(ctx context.Context, resp RunResponse) RunResponse 
 				ContextWindowTokens: config.DefaultContextWindowTokens,
 			},
 		},
-		ModelGateway:            &testuiEvalModelGateway{},
-		ModelGatewayIdentity:    flruntime.ModelGatewayIdentity{Provider: "scripted", Model: "scripted-eval", StateCompatibilityKey: "scripted:eval-v1"},
-		Tools:                   registry,
-		EffectAuthorizationGate: testUIRuntimeEffectAuthorizationGate{},
-		Sink:                    sink,
+		ModelGateway:             &testuiEvalModelGateway{},
+		ModelGatewayIdentity:     flruntime.ModelGatewayIdentity{Provider: "scripted", Model: "scripted-eval", StateCompatibilityKey: "scripted:eval-v1"},
+		ModelGatewayCapabilities: testuiNoReasoningGatewayCapabilities(),
+		Tools:                    registry,
+		EffectAuthorizationGate:  testUIRuntimeEffectAuthorizationGate{},
+		Sink:                     sink,
 	})
 	if err != nil {
 		return r.failAgent(resp, err)

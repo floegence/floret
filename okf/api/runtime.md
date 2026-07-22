@@ -265,6 +265,11 @@ host interface for every runtime operation.
   response in the capability `Config`; pass the raw non-transport runtime
   config to the selected constructor and put transport identity only in its
   `ModelGatewayIdentity`.
+* `ModelGatewayCapabilities` carries host-resolved model behavior separately
+  from transport identity. For a `ModelGateway`, `Reasoning` is required:
+  `nil` is an unresolved capability and is rejected, while an explicit
+  `Kind="none"` means the host resolved that reasoning is unsupported. Native
+  providers leave this field unset and use their own catalog.
 * `ToolSurfaceProvider` lets a host refresh the provider-visible local tools,
   hosted tools, system prompt, and host context at provider-loop safe points
   without adding product-specific policy concepts to Floret.
@@ -313,6 +318,10 @@ scope. Provider/model identity comes from the selected capability's
 `ModelGatewayIdentity`; gateway-backed hosts pass raw non-transport config to
 the selected constructor and keep provider transport configuration out of its
 `Config`.
+The host must also pass `ModelGatewayCapabilities` through turn, compaction,
+and SubAgent host construction. Floret validates this capability before
+constructing a gateway host and uses it for title and compaction short-request
+reasoning; it never infers a capability from a dynamic provider instance ID.
 Provider-visible user messages carry attachment resource references through
 `ModelMessage` so the host adapter can resolve them into provider-native image or
 file content. Opaque attachments are rejected before admission when no
@@ -659,7 +668,11 @@ Reasoning selection is request intent, not provider wire data. Floret normalizes
 the public selection and provider adapters translate only values supported by the
 selected model capability. Hosts that own model transport through `ModelGateway`
 receive the effective selection and must render provider-specific payloads
-outside Floret.
+outside Floret. `ModelRequest.Reasoning` is request-level authority, including a
+zero selection; gateway adapters must not reinterpret zero as a fallback to a
+host configuration level. Automatic title and compaction short requests choose
+off, minimal, or low from the resolved capability without changing the main
+turn's reasoning selection.
 
 Dynamic tool surfaces are host-owned policy projection points. A host may set
 `TurnExecutionHostOptions.ToolSurfaceProvider` or

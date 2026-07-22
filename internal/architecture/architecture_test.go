@@ -459,12 +459,12 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 	}
 	exactFields("TurnExecutionHostOptions", reflect.TypeOf(floretRuntime.TurnExecutionHostOptions{}),
 		"Capabilities", "Config", "EffectAuthorizationGate", "IDGenerator", "LoopLimits", "ModelGateway",
-		"ModelGatewayIdentity", "Sink", "ThreadTitleMode", "ToolSurfaceProvider", "Tools")
+		"ModelGatewayCapabilities", "ModelGatewayIdentity", "Sink", "ThreadTitleMode", "ToolSurfaceProvider", "Tools")
 	exactFields("ThreadCompactionHostOptions", compactionOptions,
-		"Config", "IDGenerator", "LoopLimits", "ModelGateway", "ModelGatewayIdentity", "Sink")
+		"Config", "IDGenerator", "LoopLimits", "ModelGateway", "ModelGatewayCapabilities", "ModelGatewayIdentity", "Sink")
 	exactFields("SubAgentHostOptions", reflect.TypeOf(floretRuntime.SubAgentHostOptions{}),
 		"Capabilities", "Config", "EffectAuthorizationGate", "IDGenerator", "LoopLimits", "ModelGateway",
-		"ModelGatewayIdentity", "Sink", "SubAgentRunTimeout", "ThreadTitleMode",
+		"ModelGatewayCapabilities", "ModelGatewayIdentity", "Sink", "SubAgentRunTimeout", "ThreadTitleMode",
 		"ToolSurfaceProvider", "Tools")
 	exactFields("ArtifactRef", reflect.TypeOf(floretRuntime.ArtifactRef{}),
 		"ID", "Kind", "MIME", "SHA256", "SafeLabel", "SizeBytes")
