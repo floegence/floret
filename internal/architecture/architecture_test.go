@@ -18,7 +18,10 @@ import (
 	floretTools "github.com/floegence/floret/tools"
 )
 
-const modulePath = "github.com/floegence/floret"
+const (
+	modulePath        = "github.com/floegence/floret"
+	redevenModulePath = "github.com/floegence/redeven"
+)
 
 func TestMain(m *testing.M) {
 	root, err := findRepoRoot()
@@ -61,22 +64,55 @@ func TestPublicPackageAllowlist(t *testing.T) {
 		modulePath + "/tools":       true,
 		modulePath + "/observation": true,
 	}
+	testOnly := map[string]bool{
+		modulePath + "/florettest": true,
+	}
 	for _, line := range strings.Split(string(out), "\n") {
 		pkg := strings.TrimSpace(line)
 		if pkg == "" || strings.Contains(pkg, "/internal/") || strings.HasPrefix(pkg, modulePath+"/cmd/") {
 			continue
 		}
-		if !allowed[pkg] {
+		if !allowed[pkg] && !testOnly[pkg] {
 			t.Fatalf("unexpected public package %s", pkg)
+		}
+	}
+}
+
+func TestFloretTestIsTheOnlyTestOnlyPublicPackage(t *testing.T) {
+	imports := packageImports(t, "florettest", false, true)
+	allowedFloretImports := map[string]bool{
+		modulePath + "/config":      true,
+		modulePath + "/runtime":     true,
+		modulePath + "/tools":       true,
+		modulePath + "/observation": true,
+		modulePath + "/florettest":  true,
+	}
+	for imported := range imports {
+		if strings.HasPrefix(imported, modulePath+"/") {
+			if !allowedFloretImports[imported] {
+				t.Fatalf("florettest imports non-public Floret package %s", imported)
+			}
+			continue
+		}
+		first := strings.SplitN(imported, "/", 2)[0]
+		if strings.Contains(first, ".") {
+			t.Fatalf("florettest imports third-party package %s", imported)
+		}
+	}
+	for imported := range packageImports(t, ".", true, false) {
+		if imported == modulePath+"/florettest" || strings.HasPrefix(imported, modulePath+"/florettest/") {
+			t.Fatalf("Floret production code imports test-only package %s", imported)
 		}
 	}
 }
 
 func TestTopLevelPackageLayoutIsConstrained(t *testing.T) {
 	allowed := map[string]bool{
+		".github":     true,
 		".githooks":   true,
 		"cmd":         true,
 		"config":      true,
+		"florettest":  true,
 		"internal":    true,
 		"observation": true,
 		"okf":         true,
@@ -139,7 +175,17 @@ func TestImplementationPackagesAreInternalOnly(t *testing.T) {
 }
 
 func TestCommandPackagesRemainCommands(t *testing.T) {
-	for _, dir := range []string{filepath.Join("cmd", "floret-test-ui")} {
+	dirs := []string{filepath.Join("cmd", "floret-store"), filepath.Join("cmd", "floret-test-ui")}
+	examples, err := os.ReadDir(filepath.Join("cmd", "examples"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, example := range examples {
+		if example.IsDir() {
+			dirs = append(dirs, filepath.Join("cmd", "examples", example.Name()))
+		}
+	}
+	for _, dir := range dirs {
 		fset := token.NewFileSet()
 		for _, file := range goFilesInDir(t, dir, false) {
 			parsed, err := parser.ParseFile(fset, file, nil, parser.PackageClauseOnly)
@@ -149,6 +195,32 @@ func TestCommandPackagesRemainCommands(t *testing.T) {
 			if parsed.Name.Name != "main" {
 				t.Fatalf("%s must remain package main, got package %s", file, parsed.Name.Name)
 			}
+		}
+	}
+}
+
+func TestExamplesUseOnlyPublicFloretPackages(t *testing.T) {
+	allowed := map[string]bool{
+		modulePath + "/config":      true,
+		modulePath + "/runtime":     true,
+		modulePath + "/tools":       true,
+		modulePath + "/observation": true,
+	}
+	for imported := range packageImports(t, filepath.Join("cmd", "examples"), true, true) {
+		if strings.HasPrefix(imported, modulePath+"/") && !allowed[imported] {
+			t.Fatalf("examples must use only production public Floret packages; found %s", imported)
+		}
+	}
+}
+
+func TestFloretStoreCommandUsesOnlyPublicRuntime(t *testing.T) {
+	imports := packageImports(t, filepath.Join("cmd", "floret-store"), false, true)
+	if !imports[modulePath+"/runtime"] {
+		t.Fatal("floret-store must delegate maintenance to the public runtime package")
+	}
+	for imported := range imports {
+		if strings.HasPrefix(imported, modulePath+"/") && imported != modulePath+"/runtime" {
+			t.Fatalf("floret-store must not import non-runtime Floret package %s", imported)
 		}
 	}
 }
@@ -220,11 +292,11 @@ func TestPublicPackagesDoNotImportForbiddenImplementationPackages(t *testing.T) 
 	}
 }
 
-func TestReadmeOnlyDocumentsStableDownstreamAPI(t *testing.T) {
+func TestReadmeOnlyDocumentsDownstreamIntegrationSurface(t *testing.T) {
 	text := readTextFile(t, "README.md")
 	for _, want := range []string{"runtime.ConfigureHostCapabilities", "runtime.NewTurnExecutionHostBinder", "runtime.TurnExecutionHost", "runtime.NewThreadCompactionHostBinder", "runtime.NewSubAgentHostBinder", "runtime.CompactThreadRequest", "runtime.ModelGateway", "runtime.NewMemoryStore", "runtime.OpenSQLiteStore", "tools.Registry", "observation"} {
 		if !strings.Contains(text, want) {
-			t.Fatalf("README missing stable downstream API %q", want)
+			t.Fatalf("README downstream integration surface is missing API %q", want)
 		}
 	}
 	for _, forbidden := range publicDocsDenylist() {
@@ -988,7 +1060,7 @@ func TestReadmeKeepsPolishedPresentation(t *testing.T) {
 		`<a href="#-why-floret">Why Floret</a>`,
 		"## \U00002728 Why Floret",
 		"## \U0001F9ED At a glance",
-		"## \U0001F4E6 Stable downstream API",
+		"## \U0001F4E6 Downstream integration surface",
 		"| You need to... | Use... |",
 		"| Tool concern | Floret handles | Host handles |",
 		"Host UI/API",
@@ -1404,6 +1476,64 @@ func TestNoGoWorkFilesInRepository(t *testing.T) {
 			t.Fatalf("repository must not introduce %s", file)
 		}
 	}
+}
+
+func TestNoLocalModuleReplacementWiring(t *testing.T) {
+	for _, file := range walkAllFiles(t, ".") {
+		if filepath.Base(file) != "go.mod" {
+			continue
+		}
+		inReplaceBlock := false
+		for lineNumber, rawLine := range strings.Split(readTextFile(t, file), "\n") {
+			line := strings.TrimSpace(strings.SplitN(rawLine, "//", 2)[0])
+			switch {
+			case line == "replace (":
+				inReplaceBlock = true
+				continue
+			case inReplaceBlock && line == ")":
+				inReplaceBlock = false
+				continue
+			case strings.HasPrefix(line, "replace "):
+				line = strings.TrimSpace(strings.TrimPrefix(line, "replace "))
+			case !inReplaceBlock:
+				continue
+			}
+
+			arrow := strings.Index(line, "=>")
+			if arrow < 0 {
+				continue
+			}
+			target := strings.Fields(line[arrow+len("=>"):])
+			if len(target) > 0 && isLocalModulePath(target[0]) {
+				t.Fatalf("%s:%d must not wire a local module replacement %q", file, lineNumber+1, target[0])
+			}
+		}
+	}
+}
+
+func TestNoRedevenDependencyWiring(t *testing.T) {
+	for imported := range packageImports(t, ".", true, true) {
+		if imported == redevenModulePath || strings.HasPrefix(imported, redevenModulePath+"/") {
+			t.Fatalf("Floret must not import downstream Redeven package %s", imported)
+		}
+	}
+	for _, file := range walkAllFiles(t, ".") {
+		if filepath.Base(file) == "go.mod" && strings.Contains(readTextFile(t, file), redevenModulePath) {
+			t.Fatalf("%s must not declare downstream Redeven module dependency", file)
+		}
+	}
+}
+
+func isLocalModulePath(path string) bool {
+	return path == "." ||
+		path == ".." ||
+		strings.HasPrefix(path, "./") ||
+		strings.HasPrefix(path, "../") ||
+		strings.HasPrefix(path, `.\`) ||
+		strings.HasPrefix(path, `..\`) ||
+		strings.HasPrefix(path, "/") ||
+		strings.HasPrefix(path, `\\`) ||
+		regexp.MustCompile(`^[A-Za-z]:[\\/]`).MatchString(path)
 }
 
 func packageImports(t *testing.T, dir string, recursive, includeTests bool) map[string]bool {
