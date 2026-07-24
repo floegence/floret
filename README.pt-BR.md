@@ -109,7 +109,7 @@ result, err := turnHost.RunTurn(ctx, runtime.RunTurnRequest{
 })
 ```
 
-Há um exemplo completo e executável no [README em inglês](README.md#quick-start). Se seu produto controla o transporte do modelo, use uma configuração compatível com OpenAI ou forneça um `runtime.ModelGateway`. Para o Floret persistir seus próprios dados de runtime, use `runtime.OpenSQLiteStore(path)`; os dados de produto continuam no seu armazenamento, relacionados por `runtime.ThreadID`.
+Há um exemplo completo e executável no [README em inglês](README.md#quick-start). Se seu produto controla o transporte do modelo, use uma configuração compatível com OpenAI ou forneça um `runtime.ModelGateway`. Para o Floret persistir seus próprios dados de runtime, primeiro inspecione o Store com `runtime.InspectSQLiteStore`. Um Store no estado `missing` ou `empty` é aberto diretamente com esse estado exclusivo de inicialização; um Store no estado `current` deve ser verificado com `runtime.VerifySQLiteStore`. Stores atualizáveis devem ser migrados explicitamente com `runtime.MigrateSQLiteStore` no modo `apply` e verificados novamente depois. Para um Store no estado `current` ou migrado, passe para `runtime.OpenSQLiteStore(ctx, path, request)` o estado e o ID do schema observado da verificação final. `OpenSQLiteStore` não faz migração implícita de schema. Os dados de produto continuam no seu armazenamento, relacionados por `runtime.ThreadID`.
 
 ## Como levar para produção
 

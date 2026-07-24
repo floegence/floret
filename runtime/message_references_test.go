@@ -358,7 +358,7 @@ func TestHostReferenceOnlyTurnUsesCurrentSupplementalWithoutHistoryLeak(t *testi
 
 func TestHostReferenceOnlyTurnUsesSQLiteAdmissionAuthority(t *testing.T) {
 	ctx := context.Background()
-	store, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "reference-only.db"))
+	store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "reference-only.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -649,7 +649,7 @@ func TestHostReferenceOnlyFailureHasTypedNoRetryTarget(t *testing.T) {
 func TestHostMessageReferencesSurviveSQLiteReopenAndFork(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "floret.db")
-	store, err := OpenSQLiteStore(path)
+	store, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -684,7 +684,7 @@ func TestHostMessageReferencesSurviveSQLiteReopenAndFork(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened, err := OpenSQLiteStore(path)
+	reopened, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}

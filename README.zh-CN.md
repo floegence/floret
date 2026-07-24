@@ -117,7 +117,7 @@ result, err := turnHost.RunTurn(ctx, runtime.RunTurnRequest{
 })
 ```
 
-完整、可直接运行的示例请见 [英文 README](README.md#quick-start)。产品自行管理模型传输时，使用 OpenAI-compatible 配置或提供 `runtime.ModelGateway`。需要由 Floret 持久化其运行时数据时，使用 `runtime.OpenSQLiteStore(path)`；你的产品数据仍应保存在自己的存储中，并以 `runtime.ThreadID` 关联。
+完整、可直接运行的示例请见 [英文 README](README.md#quick-start)。产品自行管理模型传输时，使用 OpenAI-compatible 配置或提供 `runtime.ModelGateway`。需要由 Floret 持久化其运行时数据时，先调用 `runtime.InspectSQLiteStore`。对于状态为 `missing` 或 `empty` 的存储，直接使用该仅用于初始化的状态调用 `OpenSQLiteStore`；状态为 `current` 的存储必须执行 `runtime.VerifySQLiteStore`；可升级的存储必须显式以 `apply` 模式执行 `runtime.MigrateSQLiteStore`，并在迁移后重新验证。对于状态为 `current` 或迁移后的存储，将最终验证结果中的状态和实际观测到的 schema 标识传给 `runtime.OpenSQLiteStore(ctx, path, request)`；`OpenSQLiteStore` 不会隐式迁移 schema。你的产品数据仍应保存在自己的存储中，并以 `runtime.ThreadID` 关联。
 
 ## 生产环境的接入方式
 

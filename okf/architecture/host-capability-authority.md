@@ -1265,8 +1265,7 @@ Public callers branch through `errors.Is`/`errors.As`, never strings:
 | `ErrAuthorizationContract` | gate returned success without the closure result or changed/forged its opaque receipt; retry classification depends on whether the local closure crossed dispatch |
 | `ErrAuthorityCorrupt` | impossible durable shape, claim set, graph, or operation state; fatal and startup-blocking when discovered during verification |
 | `ErrUnsupportedStoreCapability` | backend cannot provide required semantic atomicity; composition failure |
-| `UnsupportedStoreSchemaError` via `errors.As` | Store version or fingerprint is not an exact supported schema or migration source; opening is non-destructive and no compatibility data is synthesized |
-| `StoreLeasePolicyMismatchError` via `errors.As` | configured lease policy differs from the persisted Store policy; opening is non-destructive and may be retried only with the exact persisted policy |
+| `SQLiteStoreMaintenanceError` with operation `open` via `errors.As` | inspected state, exact current schema, lease, contract, authority, or environment no longer permits open; opening is fail-closed and hosts re-inspect typed facts before deciding whether to retry |
 | `ErrStoreClosed` | Store is closing/closed; no new work may start |
 | `CommittedCleanupError` via `errors.As` | canonical delete/close committed; retry cleanup only, never repeat canonical mutation |
 | `CommittedEffectError` via `errors.As` | exact authorized handler was invoked; never retry the effect, only record/repair observation state |

@@ -204,8 +204,13 @@ func main() {
 
 Replace the fake configuration with an OpenAI-compatible gateway or a
 host-supplied `runtime.ModelGateway` when your product owns model transport.
-Use `runtime.OpenSQLiteStore(path)` when Floret should persist its own runtime
-data. Your product data stays in your own store, keyed by `runtime.ThreadID`.
+When Floret should persist its own runtime data, inspect the Store first.
+Missing or empty stores can be opened with that initialize-only state. Current
+stores must be verified. Upgradeable stores must go through an explicit
+`MigrateSQLiteStore` apply and then be verified again. Pass the final
+verification's state and observed schema to `runtime.OpenSQLiteStore(ctx, path,
+request)`; open never migrates implicitly. Your product data stays in your own
+store, keyed by `runtime.ThreadID`.
 The caller owns the runtime Store, may share it across runtime facades, and
 closes it once after all active work has stopped. Runtime facades never close an
 injected Store.
@@ -426,6 +431,13 @@ Everything under `internal/` is implementation detail. The package reference at
 [pkg.go.dev](https://pkg.go.dev/github.com/floegence/floret/runtime) is the API
 source of truth; [the OKF knowledge bundle](okf/index.md) explains the runtime's
 architecture and vocabulary for contributors.
+
+Every published release is checked from a blank temporary Go module with
+workspace discovery disabled, no local replacement, and a fresh module cache.
+The gate verifies the exact tag, module zip, and checksums before compiling and
+running the durable host, custom gateway, tool approval, startup recovery, and
+Store maintenance examples. Maintainers can run the same post-release check
+with `scripts/check_published_release_adoption.sh <exact-tag>`.
 
 ## License
 

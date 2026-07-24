@@ -171,17 +171,6 @@ func TestMaintenanceErrorExitCodesAndHumanOutputAreSanitized(t *testing.T) {
 	}
 }
 
-func TestUnsupportedSchemaErrorUsesUnsupportedExitCode(t *testing.T) {
-	api := rejectingAPI(t)
-	api.inspect = func(context.Context, string, ...floretruntime.SQLiteStoreOption) (floretruntime.SQLiteStoreInspection, error) {
-		return floretruntime.SQLiteStoreInspection{}, &floretruntime.UnsupportedStoreSchemaError{}
-	}
-	code := execute(context.Background(), []string{"inspect", "store.db"}, io.Discard, io.Discard, api, fixedOperationID)
-	if code != exitUnsupported {
-		t.Fatalf("exit code = %d, want %d", code, exitUnsupported)
-	}
-}
-
 func TestUsageRejectsDangerousOrAmbiguousCommands(t *testing.T) {
 	for _, args := range [][]string{
 		nil,
@@ -208,7 +197,9 @@ func TestUsageRejectsDangerousOrAmbiguousCommands(t *testing.T) {
 
 func TestPublicRuntimeMaintenanceSmoke(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "floret.db")
-	store, err := floretruntime.OpenSQLiteStore(path)
+	store, err := floretruntime.OpenSQLiteStore(context.Background(), path, floretruntime.SQLiteStoreOpenRequest{
+		ExpectedState: floretruntime.SQLiteStoreStateMissing,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

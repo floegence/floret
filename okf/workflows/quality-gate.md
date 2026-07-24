@@ -26,6 +26,31 @@ already available. CI runs these repository-wide tests, vet, focused race
 packages, public conformance helpers, examples, dependency-boundary checks, and
 the reachable vulnerability scan with `GOWORK=off`.
 
+# Published Release Adoption
+
+Repository CI proves that the source tree is internally consistent. After a tag
+is published and available through the configured Go module proxy and checksum
+database, run the external adoption gate:
+
+```bash
+./scripts/check_published_release_adoption.sh <exact-tag>
+```
+
+The script creates a blank temporary consumer module with `GOWORK=off`, a fresh
+module cache, and no `replace` directive or sibling path. It verifies the exact
+resolved module version, module zip, and module checksums through structured Go
+command output. It then runs a fixed public-API consumer test and the published
+durable host, custom gateway, tool approval, startup recovery, and Store
+maintenance examples. The `Published release adoption` workflow invokes the
+same script for a published GitHub release; the workflow does not maintain a
+second smoke implementation.
+
+Before a tag exists, validate the embedded consumer and verifier templates with:
+
+```bash
+./scripts/check_published_release_adoption.sh --check
+```
+
 For context compaction runtime, observation, or Test UI changes, also exercise
 the focused scenario target:
 

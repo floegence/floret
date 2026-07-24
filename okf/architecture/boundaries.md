@@ -68,8 +68,12 @@ unrelated capability. Provider-free binders validate exact canonical authority
 using `context.Context` before returning a handle; create instead binds an exact
 absent `ThreadID` plus durable `CreateIntentID`. The owner closes the Store once;
 close fences new operations and waits for active finalization.
-`OpenSQLiteStore` accepts exact v16 and uses one forward migrator for supported
-v3 through v15 stores. Exact v14/v15 migrate directly. Published historical v3
+`OpenSQLiteStore` accepts only a context-aware request bound to a prior
+missing/empty/current inspection and never migrates implicitly. It creates only
+after an in-transaction no-user-schema check, or opens exact v16 after
+in-transaction identity, lease, contract, and authority verification. Explicit
+maintenance apply is the one forward migrator for supported v3 through v15
+stores. Exact v14/v15 migrate directly. Published historical v3
 through v13 stores migrate only with quiescent execution authority; active or
 ambiguous authority is rejected atomically rather than assigned synthetic
 `ThreadID`, `TurnID`, or `RunID` values. Version 15 was an intermediate
@@ -78,7 +82,10 @@ Legacy artifacts additionally require one exact canonical tool-result binding
 and no obsolete product URL; otherwise migration preserves the source Store and
 fails instead of encoding downstream routing in Floret.
 Unknown, unversioned, invalid-contract, future, or fingerprint-mismatched
-databases return typed facts without a dual-read or host repair path. See the
+databases return typed facts without a dual-read or host repair path. Open
+failures use the typed maintenance error with operation `open`; the host
+re-inspects rather than inferring rollback from failed post-transaction WAL
+initialization. See the
 [`runtime` Store contract](../api/runtime.md) for the authoritative API and
 state vocabulary.
 

@@ -32,6 +32,14 @@ type Option func(*options)
 type options struct {
 	leasePolicy sessiontree.LeasePolicy
 	now         func() time.Time
+	openCheck   *OpenPrecondition
+}
+
+// OpenPrecondition binds a Store open to a previously observed maintenance
+// state. It is internal to Floret's public runtime adapter.
+type OpenPrecondition struct {
+	State    MaintenanceState
+	Observed storage.StoreSchemaIdentity
 }
 
 func WithLeasePolicy(policy sessiontree.LeasePolicy) Option {
@@ -43,6 +51,13 @@ func WithLeasePolicy(policy sessiontree.LeasePolicy) Option {
 func WithAuthorityClock(now func() time.Time) Option {
 	return func(opts *options) {
 		opts.now = now
+	}
+}
+
+func WithOpenPrecondition(precondition OpenPrecondition) Option {
+	return func(opts *options) {
+		copy := precondition
+		opts.openCheck = &copy
 	}
 }
 
@@ -71,6 +86,13 @@ func DefaultTestUIPath(root string) string {
 }
 
 func Open(path string, opts ...Option) (*Store, error) {
+	return OpenContext(context.Background(), path, opts...)
+}
+
+func OpenContext(ctx context.Context, path string, opts ...Option) (*Store, error) {
+	if ctx == nil {
+		return nil, maintenanceFailure(MaintenanceErrorInvalidRequest, false, false, errors.New("sqlite store open context is required"))
+	}
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("sqlite store path is required")
 	}
@@ -86,29 +108,74 @@ func Open(path string, opts ...Option) (*Store, error) {
 	if configured.now == nil {
 		return nil, errors.New("sqlite store authority clock is required")
 	}
-	if path != ":memory:" {
+	if err := validateOpenPrecondition(configured.openCheck); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if path != ":memory:" && (configured.openCheck == nil || configured.openCheck.State != MaintenanceStateCurrent) {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return nil, err
+		}
+	}
+	if configured.openCheck != nil && configured.openCheck.State == MaintenanceStateCurrent {
+		info, err := os.Stat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, maintenanceFailure(MaintenanceErrorStale, true, true, errors.New("sqlite store changed after inspection"))
+		}
+		if err != nil {
+			return nil, inspectedOpenFailure(err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, maintenanceFailure(MaintenanceErrorStale, true, true, errors.New("sqlite store changed after inspection"))
 		}
 	}
 	writerAdmission, err := NewWriterAdmission(path)
 	if err != nil {
 		return nil, err
 	}
-	db, err := sql.Open(driverName, path)
+	var db *sql.DB
+	if configured.openCheck != nil && configured.openCheck.State == MaintenanceStateCurrent {
+		db, err = openMaintenanceDB(path, "rw")
+	} else {
+		db, err = sql.Open(driverName, path)
+	}
 	if err != nil {
 		writerAdmission.Close()
+		if configured.openCheck != nil {
+			return nil, inspectedOpenFailure(err)
+		}
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	store := &Store{db: db, path: path, writerAdmission: writerAdmission, leasePolicy: configured.leasePolicy, now: configured.now, approvalSignals: map[string]chan struct{}{}}
-	if err := store.init(context.Background()); err != nil {
+	if err := store.init(ctx, configured.openCheck); err != nil {
 		_ = db.Close()
 		writerAdmission.Close()
+		if configured.openCheck != nil {
+			if configured.openCheck.State == MaintenanceStateCurrent {
+				if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
+					return nil, maintenanceFailure(MaintenanceErrorStale, true, true, errors.New("sqlite store changed after inspection"))
+				}
+			}
+			return nil, inspectedOpenFailure(err)
+		}
 		return nil, err
 	}
 	return store, nil
+}
+
+func inspectedOpenFailure(err error) error {
+	var maintenance *MaintenanceError
+	if errors.As(err, &maintenance) {
+		return err
+	}
+	reason := classifyMaintenanceError(err)
+	retryable := reason == MaintenanceErrorBusy
+	safeToRetry := retryable || reason == MaintenanceErrorCancelled
+	return maintenanceFailure(reason, retryable, safeToRetry, err)
 }
 
 func (s *Store) Close() error {
@@ -142,7 +209,7 @@ func (s *Store) putMetaValue(ctx context.Context, key, value string) error {
 	})
 }
 
-func (s *Store) init(ctx context.Context) error {
+func (s *Store) init(ctx context.Context, openCheck *OpenPrecondition) error {
 	for _, pragma := range []string{
 		"PRAGMA foreign_keys = ON",
 		"PRAGMA busy_timeout = 0",
@@ -152,7 +219,7 @@ func (s *Store) init(ctx context.Context) error {
 		}
 	}
 	if err := s.withImmediate(ctx, func(tx sqlRunner) error {
-		if err := ensureSchema(ctx, tx, s.leasePolicy); err != nil {
+		if err := s.initializeSchema(ctx, tx, openCheck); err != nil {
 			return err
 		}
 		threads, err := loadThreadAuthorityGraph(ctx, tx)
@@ -160,6 +227,9 @@ func (s *Store) init(ctx context.Context) error {
 			return err
 		}
 		if err := sessiontree.ValidateThreadAuthorityGraph(threads); err != nil {
+			if openCheck != nil {
+				return maintenanceFailure(MaintenanceErrorCorrupt, false, false, fmt.Errorf("validate sqlite store thread authority: %w", err))
+			}
 			return fmt.Errorf("validate sqlite store thread authority: %w", err)
 		}
 		return nil
@@ -180,6 +250,61 @@ func (s *Store) init(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func validateOpenPrecondition(precondition *OpenPrecondition) error {
+	if precondition == nil {
+		return nil
+	}
+	switch precondition.State {
+	case MaintenanceStateMissing, MaintenanceStateEmpty:
+		if precondition.Observed != (storage.StoreSchemaIdentity{}) {
+			return maintenanceFailure(MaintenanceErrorInvalidRequest, false, false, errors.New("empty sqlite store open precondition cannot include a schema identity"))
+		}
+	case MaintenanceStateCurrent:
+		if strings.TrimSpace(precondition.Observed.Version) == "" || strings.TrimSpace(precondition.Observed.Fingerprint) == "" {
+			return maintenanceFailure(MaintenanceErrorInvalidRequest, false, false, errors.New("current sqlite store open precondition requires an exact schema identity"))
+		}
+		if precondition.Observed != currentSchemaIdentity() {
+			return maintenanceFailure(MaintenanceErrorInvalidRequest, false, false, errors.New("current sqlite store open precondition must match this Floret reader"))
+		}
+	default:
+		return maintenanceFailure(MaintenanceErrorInvalidRequest, false, false, fmt.Errorf("unsupported sqlite store open precondition state %q", precondition.State))
+	}
+	return nil
+}
+
+func (s *Store) initializeSchema(ctx context.Context, tx sqlRunner, openCheck *OpenPrecondition) error {
+	if openCheck == nil {
+		return ensureSchema(ctx, tx, s.leasePolicy)
+	}
+	inspection, err := inspectRunner(ctx, tx, s.leasePolicy)
+	if err != nil {
+		return err
+	}
+	switch openCheck.State {
+	case MaintenanceStateMissing, MaintenanceStateEmpty:
+		if inspection.State != MaintenanceStateEmpty {
+			return maintenanceFailure(MaintenanceErrorStale, true, true, errors.New("sqlite store changed after inspection"))
+		}
+		return ensureSchema(ctx, tx, s.leasePolicy)
+	case MaintenanceStateCurrent:
+		if inspection.State == MaintenanceStateCorrupt {
+			return maintenanceFailure(MaintenanceErrorCorrupt, false, false, errors.New("sqlite store integrity changed after inspection"))
+		}
+		if inspection.State == MaintenanceStateDrifted {
+			return maintenanceFailure(MaintenanceErrorReason(inspection.Reason), false, false, errors.New("sqlite store contract changed after inspection"))
+		}
+		if inspection.State == MaintenanceStateCurrent && !inspection.LeasePolicyMatches {
+			return maintenanceFailure(MaintenanceErrorLeaseMismatch, false, false, errors.New("sqlite store lease policy changed after inspection"))
+		}
+		if inspection.State != MaintenanceStateCurrent || inspection.Observed != openCheck.Observed {
+			return maintenanceFailure(MaintenanceErrorStale, true, true, errors.New("sqlite store changed after inspection"))
+		}
+		return nil
+	default:
+		return maintenanceFailure(MaintenanceErrorInvalidRequest, false, false, fmt.Errorf("unsupported sqlite store open precondition state %q", openCheck.State))
+	}
 }
 
 func (s *Store) metaValue(ctx context.Context, key string) (string, error) {

@@ -15,7 +15,8 @@ issuance at the application's composition root.
 # Steps
 
 1. Open one `runtime.Store`; choose `NewMemoryStore` for deterministic tests or
-   `OpenSQLiteStore` for durable runtime facts.
+   inspect, explicitly migrate when needed, verify, and call
+   `OpenSQLiteStore` with the exact inspection-bound request for durable facts.
 2. Call `ConfigureHostCapabilities` once and retain only the binders needed by
    this application. Do not pass `HostBootstrap` beyond its callback.
 3. Bind creation to an absent `ThreadID` and `CreateIntentID`, create the

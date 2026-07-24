@@ -149,6 +149,48 @@ func validateTestUIStoragePath(path string) error {
 	return nil
 }
 
+func openTestUIRuntimeStore(ctx context.Context, path string) (*flruntime.Store, error) {
+	inspection, err := flruntime.InspectSQLiteStore(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if inspection.State == flruntime.SQLiteStoreStateMissing || inspection.State == flruntime.SQLiteStoreStateEmpty {
+		return flruntime.OpenSQLiteStore(ctx, path, flruntime.SQLiteStoreOpenRequest{ExpectedState: inspection.State})
+	}
+	if inspection.State == flruntime.SQLiteStoreStateUpgradeable {
+		result, err := flruntime.MigrateSQLiteStore(ctx, path, flruntime.SQLiteStoreMigrationRequest{
+			OperationID: "test-ui-runtime-store-startup",
+			Mode:        flruntime.SQLiteStoreMigrationApply,
+			ExpectedSchema: flruntime.StoreSchemaIdentity{
+				Version: inspection.Observed.Version, Fingerprint: inspection.Observed.Fingerprint,
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		if result.Status != flruntime.SQLiteStoreMaintenanceReady {
+			return nil, fmt.Errorf("test UI runtime Store migration status %q", result.Status)
+		}
+	}
+	verification, err := flruntime.VerifySQLiteStore(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if verification.Inspection.State != flruntime.SQLiteStoreStateCurrent ||
+		verification.Inspection.LeasePolicyState != flruntime.SQLiteStoreLeasePolicyMatches {
+		return nil, fmt.Errorf("test UI runtime Store verification state=%q lease=%q", verification.Inspection.State, verification.Inspection.LeasePolicyState)
+	}
+	for _, check := range verification.Checks {
+		if !check.Passed {
+			return nil, fmt.Errorf("test UI runtime Store verification check %q failed", check.Code)
+		}
+	}
+	return flruntime.OpenSQLiteStore(ctx, path, flruntime.SQLiteStoreOpenRequest{
+		ExpectedState:  verification.Inspection.State,
+		ExpectedSchema: verification.Inspection.Observed,
+	})
+}
+
 func (r *Runner) sessionStorage(ctx context.Context) (*testUIStorage, error) {
 	if r == nil {
 		return nil, errors.New("test UI runner is required")
@@ -171,7 +213,7 @@ func (r *Runner) sessionStorage(ctx context.Context) (*testUIStorage, error) {
 		if err := validateTestUIStoragePath(store.path); err != nil {
 			return nil, err
 		}
-		store.runtimeStore, err = flruntime.OpenSQLiteStore(store.path)
+		store.runtimeStore, err = openTestUIRuntimeStore(ctx, store.path)
 		if err != nil {
 			return nil, err
 		}

@@ -109,7 +109,7 @@ result, err := turnHost.RunTurn(ctx, runtime.RunTurnRequest{
 })
 ```
 
-そのまま実行できる完全な例は [英語 README](README.md#quick-start) にあります。モデルトランスポートを製品側で管理する場合は OpenAI-compatible 設定を使うか、`runtime.ModelGateway` を渡します。Floret に実行時データを永続化させる場合は `runtime.OpenSQLiteStore(path)` を使います。プロダクトデータは引き続き自分のストアに置き、`runtime.ThreadID` で関連付けます。
+そのまま実行できる完全な例は [英語 README](README.md#quick-start) にあります。モデルトランスポートを製品側で管理する場合は OpenAI-compatible 設定を使うか、`runtime.ModelGateway` を渡します。Floret のランタイムデータを永続化する場合は、まず `runtime.InspectSQLiteStore` を実行します。`missing` または `empty` 状態の Store は、その初期化専用状態を使って直接開きます。`current` 状態の Store は `runtime.VerifySQLiteStore` で検証し、アップグレード可能な Store は `runtime.MigrateSQLiteStore` を `apply` モードで明示的に実行してから再検証します。`current` または移行後の Store では、最終検証結果の状態と観測されたスキーマ ID を `runtime.OpenSQLiteStore(ctx, path, request)` に渡します。`OpenSQLiteStore` が暗黙にスキーマを移行することはありません。プロダクトデータは引き続き自分のストアに置き、`runtime.ThreadID` で関連付けます。
 
 ## 本番環境での組み込み方
 

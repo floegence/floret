@@ -40,7 +40,7 @@ func main() {
 }
 
 func run(ctx context.Context, databasePath string) error {
-	store, err := floretruntime.OpenSQLiteStore(databasePath)
+	store, err := openStore(ctx, databasePath)
 	if err != nil {
 		return err
 	}
@@ -104,7 +104,7 @@ func run(ctx context.Context, databasePath string) error {
 		return err
 	}
 
-	reopened, err := floretruntime.OpenSQLiteStore(databasePath)
+	reopened, err := openStore(ctx, databasePath)
 	if err != nil {
 		return err
 	}
@@ -131,4 +131,49 @@ func run(ctx context.Context, databasePath string) error {
 	fmt.Printf("thread=%s turn=%s status=%s output=%q segments=%d\n",
 		threadID, turnID, projection.Status, result.Output, len(projection.Segments))
 	return nil
+}
+
+func openStore(ctx context.Context, databasePath string) (*floretruntime.Store, error) {
+	inspection, err := floretruntime.InspectSQLiteStore(ctx, databasePath)
+	if err != nil {
+		return nil, err
+	}
+	if inspection.State == floretruntime.SQLiteStoreStateMissing || inspection.State == floretruntime.SQLiteStoreStateEmpty {
+		return floretruntime.OpenSQLiteStore(ctx, databasePath, floretruntime.SQLiteStoreOpenRequest{ExpectedState: inspection.State})
+	}
+	if inspection.State == floretruntime.SQLiteStoreStateUpgradeable {
+		const operationID = "minimal-durable-host-startup"
+		result, err := floretruntime.MigrateSQLiteStore(ctx, databasePath, floretruntime.SQLiteStoreMigrationRequest{
+			OperationID: operationID,
+			Mode:        floretruntime.SQLiteStoreMigrationApply,
+			ExpectedSchema: floretruntime.StoreSchemaIdentity{
+				Version: inspection.Observed.Version, Fingerprint: inspection.Observed.Fingerprint,
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		if result.OperationID != operationID || result.Status != floretruntime.SQLiteStoreMaintenanceReady ||
+			!result.Changed || !result.Committed || result.RolledBack {
+			return nil, fmt.Errorf("store migration outcome operation=%q status=%q changed=%t committed=%t rolled_back=%t",
+				result.OperationID, result.Status, result.Changed, result.Committed, result.RolledBack)
+		}
+	}
+	verification, err := floretruntime.VerifySQLiteStore(ctx, databasePath)
+	if err != nil {
+		return nil, err
+	}
+	if verification.Inspection.State != floretruntime.SQLiteStoreStateCurrent ||
+		verification.Inspection.LeasePolicyState != floretruntime.SQLiteStoreLeasePolicyMatches {
+		return nil, fmt.Errorf("store verification state=%q lease=%q", verification.Inspection.State, verification.Inspection.LeasePolicyState)
+	}
+	for _, check := range verification.Checks {
+		if !check.Passed {
+			return nil, fmt.Errorf("store verification check %q failed", check.Code)
+		}
+	}
+	return floretruntime.OpenSQLiteStore(ctx, databasePath, floretruntime.SQLiteStoreOpenRequest{
+		ExpectedState:  verification.Inspection.State,
+		ExpectedSchema: verification.Inspection.Observed,
+	})
 }

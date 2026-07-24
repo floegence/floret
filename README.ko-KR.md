@@ -109,7 +109,7 @@ result, err := turnHost.RunTurn(ctx, runtime.RunTurnRequest{
 })
 ```
 
-그대로 실행할 수 있는 전체 예제는 [영문 README](README.md#quick-start)에 있습니다. 모델 전송을 제품이 직접 소유한다면 OpenAI-compatible 설정을 사용하거나 `runtime.ModelGateway`를 제공합니다. Floret이 자체 런타임 데이터를 영속화해야 한다면 `runtime.OpenSQLiteStore(path)`를 사용합니다. 제품 데이터는 자체 저장소에 두고 `runtime.ThreadID`로 연결하세요.
+그대로 실행할 수 있는 전체 예제는 [영문 README](README.md#quick-start)에 있습니다. 모델 전송을 제품이 직접 소유한다면 OpenAI-compatible 설정을 사용하거나 `runtime.ModelGateway`를 제공합니다. Floret이 자체 런타임 데이터를 영속화해야 한다면 먼저 `runtime.InspectSQLiteStore`를 실행합니다. `missing` 또는 `empty` 상태의 저장소는 해당 초기화 전용 상태로 바로 엽니다. `current` 상태의 저장소는 `runtime.VerifySQLiteStore`로 검증합니다. 업그레이드 가능한 저장소는 `runtime.MigrateSQLiteStore`를 `apply` 모드로 명시적으로 실행한 뒤 다시 검증합니다. `current` 또는 마이그레이션된 저장소에서는 최종 검증 결과의 상태와 관찰된 스키마 ID를 `runtime.OpenSQLiteStore(ctx, path, request)`에 전달합니다. `OpenSQLiteStore`는 스키마를 암시적으로 마이그레이션하지 않습니다. 제품 데이터는 자체 저장소에 두고 `runtime.ThreadID`로 연결하세요.
 
 ## 프로덕션 연결 방식
 

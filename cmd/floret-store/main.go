@@ -276,10 +276,6 @@ func classifyError(err error) (int, string, string) {
 			return exitIO, "failed", "io_error"
 		}
 	}
-	var unsupported *floretruntime.UnsupportedStoreSchemaError
-	if errors.As(err, &unsupported) {
-		return exitUnsupported, "unsupported", "unsupported_schema"
-	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return exitCancelled, "cancelled", "cancelled"
 	}

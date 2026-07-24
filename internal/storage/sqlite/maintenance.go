@@ -69,6 +69,7 @@ const (
 	MaintenanceErrorIO             MaintenanceErrorReason = "io_error"
 	MaintenanceErrorCorrupt        MaintenanceErrorReason = "corrupt"
 	MaintenanceErrorStale          MaintenanceErrorReason = "inspection_stale"
+	MaintenanceErrorLeaseMismatch  MaintenanceErrorReason = "lease_policy_mismatch"
 )
 
 type MaintenanceError struct {

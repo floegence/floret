@@ -174,7 +174,8 @@ func legacySchemaVersionWithoutFingerprint(version string) bool {
 
 func hasUserSchema(ctx context.Context, q sqlRunner) (bool, error) {
 	var count int
-	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).Scan(&count); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master
+		WHERE type IN ('table', 'index', 'view', 'trigger') AND name NOT LIKE 'sqlite_%'`).Scan(&count); err != nil {
 		return false, err
 	}
 	return count > 0, nil

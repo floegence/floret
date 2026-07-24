@@ -275,7 +275,7 @@ func TestThreadCreateHostRejectsEmptyIDBeforeWriting(t *testing.T) {
 	}{
 		{name: "memory", store: func(*testing.T) *Store { return NewMemoryStore() }},
 		{name: "sqlite", store: func(t *testing.T) *Store {
-			store, err := OpenSQLiteStore(t.TempDir() + "/floret.db")
+			store, err := openSQLiteStoreForTest(t.TempDir() + "/floret.db")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -681,7 +681,7 @@ func TestRootDeleteDoesNotCascadeIntoIndependentFork(t *testing.T) {
 	}{
 		{name: "memory", store: func(*testing.T) *Store { return NewMemoryStore() }},
 		{name: "sqlite", store: func(t *testing.T) *Store {
-			store, err := OpenSQLiteStore(t.TempDir() + "/floret.db")
+			store, err := openSQLiteStoreForTest(t.TempDir() + "/floret.db")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -817,12 +817,12 @@ func TestRootDeleteSerializesConcurrentSubAgentSpawn(t *testing.T) {
 func TestSQLiteRootDeleteRechecksAuthorityTreeInsideStorageTransaction(t *testing.T) {
 	ctx := context.Background()
 	path := t.TempDir() + "/floret.db"
-	store, err := OpenSQLiteStore(path)
+	store, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	otherStore, err := OpenSQLiteStore(path)
+	otherStore, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}

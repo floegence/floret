@@ -135,6 +135,13 @@ type SQLiteStoreMigrationRequest struct {
 	Progress       func(SQLiteStoreMaintenanceProgress)
 }
 
+// SQLiteStoreOpenRequest binds a Store open to a maintenance inspection. Only
+// missing, empty, and current inspections are valid open preconditions.
+type SQLiteStoreOpenRequest struct {
+	ExpectedState  SQLiteStoreState    `json:"expected_state"`
+	ExpectedSchema StoreSchemaIdentity `json:"expected_schema"`
+}
+
 type SQLiteStoreMigrationResult struct {
 	OperationID string                       `json:"operation_id"`
 	Mode        SQLiteStoreMigrationMode     `json:"mode"`
@@ -156,6 +163,7 @@ const (
 	SQLiteStoreOperationInspect SQLiteStoreMaintenanceOperation = "inspect"
 	SQLiteStoreOperationVerify  SQLiteStoreMaintenanceOperation = "verify"
 	SQLiteStoreOperationMigrate SQLiteStoreMaintenanceOperation = "migrate"
+	SQLiteStoreOperationOpen    SQLiteStoreMaintenanceOperation = "open"
 )
 
 type SQLiteStoreReason string

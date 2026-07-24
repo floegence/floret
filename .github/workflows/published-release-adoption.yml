@@ -1,0 +1,35 @@
+name: Published release adoption
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: published-release-adoption-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  adoption:
+    name: Blank downstream module
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the published tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Verify published downstream adoption
+        env:
+          FLORET_RELEASE_TAG: ${{ github.event.release.tag_name }}
+          GOWORK: "off"
+        run: ./scripts/check_published_release_adoption.sh "$FLORET_RELEASE_TAG"

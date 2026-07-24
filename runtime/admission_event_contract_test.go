@@ -61,7 +61,7 @@ func TestCanonicalUserAdmissionIsReadableBeforeProviderEvents(t *testing.T) {
 	}{
 		{name: "memory", store: func(*testing.T) *Store { return NewMemoryStore() }},
 		{name: "sqlite", store: func(t *testing.T) *Store {
-			store, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "floret.db"))
+			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -16,7 +16,9 @@ func TestPopulateStoreFixtureUsesPublicInputs(t *testing.T) {
 	}{
 		{name: "memory", open: func(*testing.T) *runtime.Store { return runtime.NewMemoryStore() }},
 		{name: "sqlite", open: func(t *testing.T) *runtime.Store {
-			store, err := runtime.OpenSQLiteStore(filepath.Join(t.TempDir(), "fixture.db"))
+			store, err := runtime.OpenSQLiteStore(context.Background(), filepath.Join(t.TempDir(), "fixture.db"), runtime.SQLiteStoreOpenRequest{
+				ExpectedState: runtime.SQLiteStoreStateMissing,
+			})
 			if err != nil {
 				t.Fatal(err)
 			}

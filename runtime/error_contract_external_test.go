@@ -47,7 +47,8 @@ func configurePublicErrorCapabilities(t *testing.T, store *floretruntime.Store) 
 	return capabilities
 }
 
-func TestPublicOpenSQLiteStoreReportsTypedUnsupportedSchema(t *testing.T) {
+func TestPublicOpenSQLiteStoreRejectsUnrecognizedSchemaWithoutMutation(t *testing.T) {
+	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "unsupported.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -61,19 +62,20 @@ func TestPublicOpenSQLiteStoreReportsTypedUnsupportedSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = floretruntime.OpenSQLiteStore(path)
-	var unsupported *floretruntime.UnsupportedStoreSchemaError
-	if !errors.As(err, &unsupported) {
-		t.Fatalf("OpenSQLiteStore error = %v, want UnsupportedStoreSchemaError", err)
+	inspection, err := floretruntime.InspectSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if unsupported.Observed.Version != "" || unsupported.Observed.Fingerprint != "" {
-		t.Fatalf("observed unsupported schema = %#v, want absent Floret metadata", unsupported)
+	if inspection.State != floretruntime.SQLiteStoreStateUnsupportedOlder || inspection.Reason != floretruntime.SQLiteStoreReasonUnrecognized {
+		t.Fatalf("inspection = %#v", inspection)
 	}
-	if unsupported.Current.Version == "" || unsupported.Current.Fingerprint == "" {
-		t.Fatalf("current schema identity = %#v, want exact public identity", unsupported)
-	}
-	if len(unsupported.Migratable) < 3 || unsupported.Migratable[0].Identity.Version == "" {
-		t.Fatalf("migratable schema identities = %#v, want complete public migration inputs", unsupported.Migratable)
+	_, err = floretruntime.OpenSQLiteStore(ctx, path, floretruntime.SQLiteStoreOpenRequest{
+		ExpectedState: floretruntime.SQLiteStoreStateMissing,
+	})
+	var maintenance *floretruntime.SQLiteStoreMaintenanceError
+	if !errors.As(err, &maintenance) || maintenance.Operation != floretruntime.SQLiteStoreOperationOpen ||
+		maintenance.Reason != floretruntime.SQLiteStoreReasonInspectionStale {
+		t.Fatalf("OpenSQLiteStore error = %#v, err=%v", maintenance, err)
 	}
 }
 
@@ -279,7 +281,7 @@ func TestTerminalRunTurnReturnReleasesAuthorityForPendingToolRecovery(t *testing
 	}{
 		{name: "memory", open: func(*testing.T) *floretruntime.Store { return floretruntime.NewMemoryStore() }},
 		{name: "sqlite", open: func(t *testing.T) *floretruntime.Store {
-			store, err := floretruntime.OpenSQLiteStore(filepath.Join(t.TempDir(), "recovery-after-cancel.db"))
+			store, err := openPublicSQLiteStoreForTest(filepath.Join(t.TempDir(), "recovery-after-cancel.db"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -399,7 +401,7 @@ func TestTerminalRunTurnReturnReleasesAuthorityForPendingToolRecovery(t *testing
 func TestPublicOpenSQLiteStoreMapsInvalidAuthorityGraph(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "invalid-authority.db")
-	store, err := floretruntime.OpenSQLiteStore(path)
+	store, err := openPublicSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,13 +436,21 @@ func TestPublicOpenSQLiteStoreMapsInvalidAuthorityGraph(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened, err := floretruntime.OpenSQLiteStore(path)
+	inspection, err := floretruntime.InspectSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := floretruntime.OpenSQLiteStore(ctx, path, floretruntime.SQLiteStoreOpenRequest{
+		ExpectedState: inspection.State, ExpectedSchema: inspection.Observed,
+	})
 	if reopened != nil {
 		_ = reopened.Close()
 		t.Fatal("OpenSQLiteStore opened an invalid authority graph")
 	}
-	if !errors.Is(err, floretruntime.ErrThreadAuthorityInvariant) {
-		t.Fatalf("OpenSQLiteStore error = %v, want ErrThreadAuthorityInvariant", err)
+	var maintenance *floretruntime.SQLiteStoreMaintenanceError
+	if !errors.As(err, &maintenance) || maintenance.Operation != floretruntime.SQLiteStoreOperationOpen ||
+		maintenance.Reason != floretruntime.SQLiteStoreReasonCorrupt {
+		t.Fatalf("OpenSQLiteStore error = %#v, err=%v", maintenance, err)
 	}
 }
 

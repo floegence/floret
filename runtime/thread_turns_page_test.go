@@ -23,7 +23,7 @@ func TestDurableRetrySourceResetsNextProviderContextAcrossMemoryAndSQLite(t *tes
 			var err error
 			if backend == "sqlite" {
 				path = filepath.Join(t.TempDir(), "retry-context.db")
-				store, err = OpenSQLiteStore(path)
+				store, err = openSQLiteStoreForTest(path)
 			} else {
 				store = NewMemoryStore()
 			}
@@ -107,7 +107,7 @@ func TestDurableRetrySourceResetsNextProviderContextAcrossMemoryAndSQLite(t *tes
 				if err := store.Close(); err != nil {
 					t.Fatal(err)
 				}
-				store, err = OpenSQLiteStore(path)
+				store, err = openSQLiteStoreForTest(path)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -181,7 +181,7 @@ func TestRetryTurnIsCanonicalWithoutDuplicatingUserAcrossMemoryAndSQLiteReopen(t
 			var err error
 			if backend == "sqlite" {
 				path = filepath.Join(t.TempDir(), "retry-turn.db")
-				store, err = OpenSQLiteStore(path)
+				store, err = openSQLiteStoreForTest(path)
 			} else {
 				store = NewMemoryStore()
 			}
@@ -256,7 +256,7 @@ func TestRetryTurnIsCanonicalWithoutDuplicatingUserAcrossMemoryAndSQLiteReopen(t
 				if err := store.Close(); err != nil {
 					t.Fatal(err)
 				}
-				store, err = OpenSQLiteStore(path)
+				store, err = openSQLiteStoreForTest(path)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -365,7 +365,7 @@ func TestUnfinishedForkBranchBoundaryHasCanonicalFailureAcrossPublicReads(t *tes
 			var store *Store
 			var err error
 			if backend == "sqlite" {
-				store, err = OpenSQLiteStore(filepath.Join(t.TempDir(), "floret.db"))
+				store, err = openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 			} else {
 				store = NewMemoryStore()
 			}

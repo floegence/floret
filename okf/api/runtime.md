@@ -60,29 +60,37 @@ host interface for every runtime operation.
   canonical admission and finish ledgers. Recovery authority has no mixed or
   empty identity shape and cannot follow a later turn.
 * `NewMemoryStore` creates an in-memory runtime store for tests or ephemeral use.
-* `OpenSQLiteStore` creates Floret-managed durable runtime storage. Bootstrap
-  code invokes `ConfigureHostCapabilities`, retains only selected narrow
-  binders at the composition root, distributes only exact bound factories or
-  handles, and keeps Store lifetime ownership. Store close rejects new
-  operations, cancels Store-owned executions and automatic-title workers, waits
-  for terminal finalization, and then closes the backend. SQLite opens the exact
-  v16 schema and uses the same forward migrator as explicit maintenance for
-  supported v3 through v15 stores. Exact v14 and v15 stores migrate directly;
-  v3 through v13 require quiescent execution authority and reject active or
-  ambiguous authority rather than synthesizing missing execution identity.
+* `OpenSQLiteStore` creates or opens Floret-managed durable runtime storage from
+  a caller-provided `context.Context` and `SQLiteStoreOpenRequest`. The request
+  binds open to a prior `missing`, `empty`, or exact `current` inspection.
+  Missing and empty form one initialize-only precondition: inside the same
+  writer admission and immediate transaction, Floret requires that no user
+  table, index, view, or trigger exists before creating the current schema.
+  Current requires the exact schema identity for this reader, matching lease
+  policy, valid schema contract, and valid authority graph on the retained open
+  handle. Open never performs schema migration. Bootstrap code invokes
+  `ConfigureHostCapabilities`, retains only selected narrow binders at the
+  composition root, distributes only exact bound factories or handles, and
+  keeps Store lifetime ownership. Store close rejects new operations, cancels
+  Store-owned executions and automatic-title workers, waits for terminal
+  finalization, and then closes the backend. Supported v3 through v15 inputs
+  migrate only through explicit maintenance apply. Exact v14 and v15 stores
+  migrate directly; v3 through v13 require quiescent execution authority and
+  reject active or ambiguous authority rather than synthesizing missing
+  execution identity.
   Legacy artifacts migrate only when one canonical tool-result entry proves
   their complete identity and the obsolete product URL is empty. A non-empty
   legacy product URL rejects the migration atomically: Floret neither restores
   that host route nor removes it by rewriting canonical journal raw identity.
   Version 15 was an intermediate repository schema rather than a released tag,
   but remains an accepted migration source. Unknown, corrupt,
-  fingerprint-mismatched, or unsupported stores are rejected without mutation
-  through `UnsupportedStoreSchemaError`.
+  fingerprint-mismatched, unsupported, stale, lease-mismatched, busy, and I/O
+  outcomes fail closed through `SQLiteStoreMaintenanceError{Operation: open}`.
 * `WithSQLiteStoreLeasePolicy` is the public SQLite open and maintenance option.
-  `StoreLeasePolicy.Validate` rejects invalid timing before access. The
-  single-argument `OpenSQLiteStore(path)` keeps the Floret default; an explicit
-  policy is persisted atomically only when a Store is first created, and every
-  later open or maintenance operation must match it exactly.
+  `StoreLeasePolicy.Validate` rejects invalid timing before access. The default
+  applies when the option is omitted; an explicit policy is persisted
+  atomically only when a Store is first created, and every later open or
+  maintenance operation must match it exactly.
 * `InspectSQLiteStore` classifies a path without creating it, changing SQLite
   pragmas, acquiring writer admission, or running migration. Its typed
   `SQLiteStoreInspection` reports kind, state, observed/current/migratable
@@ -97,12 +105,15 @@ host interface for every runtime operation.
   state is neither corruption nor evidence that the current schema was verified.
 * `MigrateSQLiteStore` supports explicit plan and apply modes. Requests carry a
   stable `OperationID` and the exact expected observed schema so a stale plan
-  fails instead of migrating changed input. Apply uses the same migration path
-  as `OpenSQLiteStore` under exclusive writer admission. Results and monotonic
+  fails instead of migrating changed input. Apply is the only public schema
+  migration path and runs under exclusive writer admission. Results and monotonic
   progress expose typed phase/status/reason plus changed, committed,
   rolled-back, retryable, safe-to-retry, and safe-to-cancel facts.
   `SQLiteStoreMaintenanceError` classifies operation failures for
-  `errors.As`; hosts must not parse error strings or query SQLite tables.
+  `errors.As`; hosts must not parse error strings or query SQLite tables. After
+  apply, hosts verify again and pass that exact current identity to open. If
+  post-transaction WAL or journal-mode initialization fails, the host must
+  inspect again; an open error does not imply that schema creation rolled back.
 * `ThreadCreateHost.CreateThread` is the only top-level public operation that
   creates a missing canonical journal. Its binder fixes the exact `ThreadID`
   and `CreateIntentID` before the handle reaches the create coordinator.
@@ -289,8 +300,8 @@ host interface for every runtime operation.
   todo CAS update.
 * `ErrRequestConflict` plus `RequestConflictError` reports immutable request-ID
   reuse with changed input without exposing stored payloads. Store open errors
-  use `UnsupportedStoreSchemaError` and `StoreLeasePolicyMismatchError` for
-  typed, non-destructive compatibility handling.
+  use `SQLiteStoreMaintenanceError` with operation `open` for typed,
+  non-destructive compatibility handling.
 * `TurnResult.ProjectionAvailability` reports `ready` or `unavailable`
   independently from execution error. An unavailable projection preserves
   terminal engine facts and carries diagnostic text in `ProjectionError`.

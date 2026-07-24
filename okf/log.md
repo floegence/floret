@@ -1,6 +1,16 @@
 # Floret OKF Update Log
 
 ## 2026-07-24
+* **Published adoption**: Added one post-release gate that resolves an exact tag
+  from a blank downstream module, verifies module and checksum identity, and
+  runs public durable-host, gateway, approval, recovery, and Store maintenance
+  smoke coverage without workspace or local replacement wiring.
+* **Storage open**: Replaced context-free implicit-migration SQLite open with an
+  inspection-bound, context-aware request. Missing/empty creation now requires
+  no user table, index, view, or trigger inside the retained open transaction;
+  current open requires the exact reader identity, matching lease, valid
+  contract, and valid authority graph. All open failures are typed maintenance
+  outcomes and explicit apply is the only public migration path.
 * **Attachments**: Added bounded optional host-attested text statistics to
   canonical message attachments, deep-copying them through admission, journal,
   cache, retry, fork, SubAgent, and public projections while keeping attachment
@@ -177,9 +187,9 @@
   migration, persisted lease-policy equality, typed non-destructive schema
   errors, and explicit File-backend rejection where semantic mutation atomicity
   is unavailable.
-* **API**: Added typed `AuthorityBusyError`, `RequestConflictError`,
-  `UnsupportedStoreSchemaError`, and `StoreLeasePolicyMismatchError` so hosts
-  can branch without importing internals or parsing text.
+* **API**: Added typed `AuthorityBusyError`, `RequestConflictError`, and Store
+  maintenance facts so hosts can branch without importing internals or parsing
+  text.
 * **Lifecycle**: Added Store lifetime fencing: close rejects new work, cancels
   active execution, waits for terminal finalization, and makes every retained
   binder, factory, handle, and create capability return `ErrStoreClosed`.

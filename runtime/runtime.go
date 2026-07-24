@@ -200,51 +200,10 @@ type StoreSchemaMigrationSource struct {
 	Requirement StoreSchemaMigrationRequirement `json:"requirement"`
 }
 
-// UnsupportedStoreSchemaError reports an exact SQLite schema contract
-// mismatch without mutating or replacing the observed store.
-type UnsupportedStoreSchemaError struct {
-	Observed   StoreSchemaIdentity          `json:"observed"`
-	Current    StoreSchemaIdentity          `json:"current"`
-	Migratable []StoreSchemaMigrationSource `json:"migratable"`
-}
-
-func (e *UnsupportedStoreSchemaError) Error() string {
-	if e == nil {
-		return "unsupported floret store schema"
-	}
-	sources := make([]string, 0, len(e.Migratable))
-	for _, source := range e.Migratable {
-		sources = append(sources, fmt.Sprintf(
-			"version %q fingerprint %q requirement %q",
-			source.Identity.Version,
-			source.Identity.Fingerprint,
-			source.Requirement,
-		))
-	}
-	return fmt.Sprintf(
-		"unsupported floret store schema version %q fingerprint %q; current is version %q fingerprint %q; migratable sources are [%s]",
-		e.Observed.Version, e.Observed.Fingerprint, e.Current.Version, e.Current.Fingerprint, strings.Join(sources, ", "),
-	)
-}
-
 type StoreLeasePolicy struct {
 	TTL                time.Duration `json:"ttl"`
 	RenewInterval      time.Duration `json:"renew_interval"`
 	ClockSkewAllowance time.Duration `json:"clock_skew_allowance"`
-}
-
-// StoreLeasePolicyMismatchError reports that an opener requested a lease
-// policy different from the authority policy already persisted in the Store.
-type StoreLeasePolicyMismatchError struct {
-	Configured StoreLeasePolicy
-	Persisted  StoreLeasePolicy
-}
-
-func (e *StoreLeasePolicyMismatchError) Error() string {
-	if e == nil {
-		return "floret store lease policy mismatch"
-	}
-	return fmt.Sprintf("floret store lease policy mismatch: configured=%+v persisted=%+v", e.Configured, e.Persisted)
 }
 
 func (e *RequestConflictError) Error() string {
@@ -2007,41 +1966,30 @@ func NewMemoryStore() *Store {
 	return store
 }
 
-func OpenSQLiteStore(path string, options ...SQLiteStoreOption) (*Store, error) {
+// OpenSQLiteStore opens or creates a Store only when its live state still
+// matches a prior maintenance inspection. It never performs an implicit schema
+// migration.
+func OpenSQLiteStore(ctx context.Context, path string, request SQLiteStoreOpenRequest, options ...SQLiteStoreOption) (*Store, error) {
+	if ctx == nil {
+		return nil, newSQLiteStoreMaintenanceError(SQLiteStoreOperationOpen, SQLiteStoreReasonInvalidRequest, false, false, errors.New("sqlite store open context is required"))
+	}
+	if strings.TrimSpace(path) == "" || path == ":memory:" {
+		return nil, newSQLiteStoreMaintenanceError(SQLiteStoreOperationOpen, SQLiteStoreReasonInvalidRequest, false, false, errors.New("sqlite store open requires a file path"))
+	}
+	precondition := sqlite.OpenPrecondition{
+		State: sqlite.MaintenanceState(request.ExpectedState),
+		Observed: storage.StoreSchemaIdentity{
+			Version: request.ExpectedSchema.Version, Fingerprint: request.ExpectedSchema.Fingerprint,
+		},
+	}
 	configured, err := resolveSQLiteStoreOptions(options)
 	if err != nil {
-		return nil, err
+		return nil, newSQLiteStoreMaintenanceError(SQLiteStoreOperationOpen, SQLiteStoreReasonInvalidRequest, false, false, err)
 	}
-	sqliteStore, err := sqlite.Open(path, sqlite.WithLeasePolicy(configured.leasePolicy))
+	sqliteOptions := []sqlite.Option{sqlite.WithLeasePolicy(configured.leasePolicy), sqlite.WithOpenPrecondition(precondition)}
+	sqliteStore, err := sqlite.OpenContext(ctx, path, sqliteOptions...)
 	if err != nil {
-		var unsupported *storage.UnsupportedStoreSchemaError
-		if errors.As(err, &unsupported) {
-			return nil, &UnsupportedStoreSchemaError{
-				Observed:   StoreSchemaIdentity{Version: unsupported.Observed.Version, Fingerprint: unsupported.Observed.Fingerprint},
-				Current:    StoreSchemaIdentity{Version: unsupported.Current.Version, Fingerprint: unsupported.Current.Fingerprint},
-				Migratable: mapStoreSchemaMigrationSources(unsupported.Migratable),
-			}
-		}
-		var mismatch *storage.StoreLeasePolicyMismatchError
-		if errors.As(err, &mismatch) {
-			return nil, &StoreLeasePolicyMismatchError{
-				Configured: StoreLeasePolicy{
-					TTL: mismatch.Configured.TTL, RenewInterval: mismatch.Configured.RenewInterval,
-					ClockSkewAllowance: mismatch.Configured.ClockSkewAllowance,
-				},
-				Persisted: StoreLeasePolicy{
-					TTL: mismatch.Persisted.TTL, RenewInterval: mismatch.Persisted.RenewInterval,
-					ClockSkewAllowance: mismatch.Persisted.ClockSkewAllowance,
-				},
-			}
-		}
-		if errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
-			return nil, fmt.Errorf("%w: %w", ErrAuthorityCorrupt, err)
-		}
-		if errors.Is(err, sessiontree.ErrInvalidThreadAuthority) {
-			return nil, fmt.Errorf("%w: %w", ErrThreadAuthorityInvariant, err)
-		}
-		return nil, err
+		return nil, maintenanceError(SQLiteStoreOperationOpen, err)
 	}
 	store := &Store{
 		repo:           sqliteStore,

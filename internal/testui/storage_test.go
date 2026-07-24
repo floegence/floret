@@ -131,7 +131,7 @@ func TestSQLiteHostMetadataMigratesNonEmptyLegacySidecarExactlyOnce(t *testing.T
 	ctx := context.Background()
 	root := t.TempDir()
 	runtimePath := filepath.Join(root, "runtime.db")
-	runtimeStore, err := flruntime.OpenSQLiteStore(runtimePath)
+	runtimeStore, err := openTestUIRuntimeStore(ctx, runtimePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestSQLiteHostMetadataMigrationRejectsInvalidRecordAtomically(t *testing.T)
 	ctx := context.Background()
 	root := t.TempDir()
 	runtimePath := filepath.Join(root, "runtime.db")
-	runtimeStore, err := flruntime.OpenSQLiteStore(runtimePath)
+	runtimeStore, err := openTestUIRuntimeStore(ctx, runtimePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +368,7 @@ func TestSQLiteHostMetadataNeverReadsRuntimeMetadataRecords(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	runtimePath := filepath.Join(root, "legacy.db")
-	runtimeStore, err := flruntime.OpenSQLiteStore(runtimePath)
+	runtimeStore, err := openTestUIRuntimeStore(ctx, runtimePath)
 	if err != nil {
 		t.Fatal(err)
 	}

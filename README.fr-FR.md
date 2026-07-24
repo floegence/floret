@@ -109,7 +109,7 @@ result, err := turnHost.RunTurn(ctx, runtime.RunTurnRequest{
 })
 ```
 
-L'exemple complet et directement exécutable se trouve dans le [README anglais](README.md#quick-start). Si votre produit gère le transport du modèle, utilisez une configuration compatible OpenAI ou fournissez un `runtime.ModelGateway`. Pour laisser Floret persister ses propres données d'exécution, utilisez `runtime.OpenSQLiteStore(path)` ; les données produit restent dans votre stockage, reliées par `runtime.ThreadID`.
+L'exemple complet et directement exécutable se trouve dans le [README anglais](README.md#quick-start). Si votre produit gère le transport du modèle, utilisez une configuration compatible OpenAI ou fournissez un `runtime.ModelGateway`. Pour laisser Floret persister ses propres données d'exécution, inspectez d'abord le Store avec `runtime.InspectSQLiteStore`. Un Store à l'état `missing` ou `empty` s'ouvre directement avec cet état réservé à l'initialisation ; un Store à l'état `current` doit être vérifié avec `runtime.VerifySQLiteStore`. Un Store pouvant être mis à niveau doit être migré explicitement avec `runtime.MigrateSQLiteStore` en mode `apply`, puis vérifié de nouveau. Pour un Store à l'état `current` ou migré, transmettez à `runtime.OpenSQLiteStore(ctx, path, request)` l'état et l'identifiant du schéma observé issus de la vérification finale. `OpenSQLiteStore` n'effectue aucune migration implicite du schéma. Les données produit restent dans votre stockage, reliées par `runtime.ThreadID`.
 
 ## Intégration en production
 

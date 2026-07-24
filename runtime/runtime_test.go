@@ -1108,7 +1108,7 @@ func TestHostSetThreadTitleIsCanonicalAndIdempotent(t *testing.T) {
 func TestHostPersistsAndProjectsOpaqueMessageAttachments(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "floret.db")
-	store, err := OpenSQLiteStore(path)
+	store, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1173,7 +1173,7 @@ func TestHostPersistsAndProjectsOpaqueMessageAttachments(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened, err := OpenSQLiteStore(path)
+	reopened, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1741,7 +1741,7 @@ func TestHostReloadsProviderStateFromSQLiteStore(t *testing.T) {
 		}
 		return host
 	}
-	store, err := OpenSQLiteStore(path)
+	store, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1756,7 +1756,7 @@ func TestHostReloadsProviderStateFromSQLiteStore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store, err = OpenSQLiteStore(path)
+	store, err = openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3607,7 +3607,7 @@ func TestHostSQLiteStorePersistsSubAgentDetail(t *testing.T) {
 	ctx := context.Background()
 	longAnswer := "persisted child report " + strings.Repeat("stored evidence ", 80) + "https://example.test/reopened-full-output"
 	path := filepath.Join(t.TempDir(), "floret.db")
-	store, err := OpenSQLiteStore(path)
+	store, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3635,7 +3635,7 @@ func TestHostSQLiteStorePersistsSubAgentDetail(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopenedStore, err := OpenSQLiteStore(path)
+	reopenedStore, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3666,7 +3666,7 @@ func TestHostSQLiteStorePersistsSubAgentDetail(t *testing.T) {
 func TestThreadReadHostListsSubAgentsAfterHostRestart(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "floret.db")
-	store, err := OpenSQLiteStore(path)
+	store, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3707,7 +3707,7 @@ func TestThreadReadHostListsSubAgentsAfterHostRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopenedStore, err := OpenSQLiteStore(path)
+	reopenedStore, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3777,7 +3777,7 @@ func TestThreadReadHostListsSubAgentsAfterHostRestart(t *testing.T) {
 func TestHostSQLiteStorePersistsSubAgentDetailActivity(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "floret.db")
-	store, err := OpenSQLiteStore(path)
+	store, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3840,7 +3840,7 @@ func TestHostSQLiteStorePersistsSubAgentDetailActivity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopenedStore, err := OpenSQLiteStore(path)
+	reopenedStore, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4093,7 +4093,7 @@ func TestSubAgentHostRejectsRemoteActiveChildWithoutSideEffects(t *testing.T) {
 func TestHostSQLiteStorePersistsThreadBehindOpaqueStore(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "floret.db")
-	store, err := OpenSQLiteStore(path)
+	store, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4120,7 +4120,7 @@ func TestHostSQLiteStorePersistsThreadBehindOpaqueStore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened, err := OpenSQLiteStore(path)
+	reopened, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4163,7 +4163,7 @@ func TestHostRejectsZeroValueStore(t *testing.T) {
 
 func TestHostDeleteMissingThreadUsesConsistentStoreBoundary(t *testing.T) {
 	ctx := context.Background()
-	sqliteStore, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "floret.db"))
+	sqliteStore, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4745,7 +4745,7 @@ func TestThreadForkHostPreservesProjectionWithNewIdentity(t *testing.T) {
 func TestThreadForkHostPreservesSQLiteProjectionAfterReopen(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "floret.db")
-	store, err := OpenSQLiteStore(path)
+	store, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4772,7 +4772,7 @@ func TestThreadForkHostPreservesSQLiteProjectionAfterReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	forkStore, err := OpenSQLiteStore(path)
+	forkStore, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4796,7 +4796,7 @@ func TestThreadForkHostPreservesSQLiteProjectionAfterReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopenedStore, err := OpenSQLiteStore(path)
+	reopenedStore, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6615,7 +6615,7 @@ func TestHostCancellationAtomicallyCancelsApprovalBatchBeforeGate(t *testing.T) 
 
 func TestSQLiteHostCancellationAtomicallyCancelsApprovalBatchBeforeGate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "approval-cancellation.db")
-	store, err := OpenSQLiteStore(path)
+	store, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6623,7 +6623,7 @@ func TestSQLiteHostCancellationAtomicallyCancelsApprovalBatchBeforeGate(t *testi
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := OpenSQLiteStore(path)
+	reopened, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7097,7 +7097,7 @@ func TestThreadReadsCanonicalizeDurableJSONPayloadsAcrossStores(t *testing.T) {
 	}{
 		{name: "memory", open: func(t *testing.T) *Store { return NewMemoryStore() }},
 		{name: "sqlite", open: func(t *testing.T) *Store {
-			store, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "floret.db"))
+			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -7204,7 +7204,7 @@ func TestListThreadTurnsPagesCanonicalTimeline(t *testing.T) {
 	}{
 		{name: "memory", open: func(t *testing.T) *Store { return NewMemoryStore() }},
 		{name: "sqlite", open: func(t *testing.T) *Store {
-			store, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "floret.db"))
+			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -7348,7 +7348,7 @@ func TestListThreadTurnsReadsAtomicCanonicalAdmission(t *testing.T) {
 	}{
 		{name: "memory", open: func(t *testing.T) *Store { return NewMemoryStore() }},
 		{name: "sqlite", open: func(t *testing.T) *Store {
-			store, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "floret.db"))
+			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -7404,7 +7404,7 @@ func TestThreadAgentTodosCASForkDeleteAndReopen(t *testing.T) {
 		{name: "memory", run: func(t *testing.T, test func(*Store)) { test(NewMemoryStore()) }},
 		{name: "sqlite", run: func(t *testing.T, test func(*Store)) {
 			path := filepath.Join(t.TempDir(), "floret.db")
-			store, err := OpenSQLiteStore(path)
+			store, err := openSQLiteStoreForTest(path)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -7412,7 +7412,7 @@ func TestThreadAgentTodosCASForkDeleteAndReopen(t *testing.T) {
 			if err := store.Close(); err != nil {
 				t.Fatal(err)
 			}
-			reopened, err := OpenSQLiteStore(path)
+			reopened, err := openSQLiteStoreForTest(path)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -7523,7 +7523,7 @@ func TestTurnExecutionHostUpdatesTodosOnlyInsideOwnedToolDispatch(t *testing.T) 
 	}{
 		{name: "memory", store: func(*testing.T) *Store { return NewMemoryStore() }},
 		{name: "sqlite", store: func(t *testing.T) *Store {
-			store, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "floret.db"))
+			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -7825,7 +7825,7 @@ func TestStoreCloseRejectsRetainedCapabilities(t *testing.T) {
 	}{
 		{name: "memory", open: func(*testing.T) *Store { return NewMemoryStore() }},
 		{name: "sqlite", open: func(t *testing.T) *Store {
-			store, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "close.db"))
+			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "close.db"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -8076,7 +8076,7 @@ func TestClosedSubAgentRequestReplayReturnsPublicRequestConflict(t *testing.T) {
 	}{
 		{name: "memory", open: func(*testing.T) *Store { return NewMemoryStore() }},
 		{name: "sqlite", open: func(t *testing.T) *Store {
-			store, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "closed-input-replay.db"))
+			store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "closed-input-replay.db"))
 			if err != nil {
 				t.Fatal(err)
 			}

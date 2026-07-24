@@ -267,6 +267,188 @@ func TestSQLiteStoreMigrationRejectsStaleInspectionWithoutChanges(t *testing.T) 
 	}
 }
 
+func TestInspectedOpenRejectsLegacyStoreWithoutImplicitMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-v14.db")
+	createSchemaVersion14StoreForTest(t, path, nil)
+	before := sqliteFileSnapshot(t, path)
+
+	_, err := OpenContext(context.Background(), path,
+		WithLeasePolicy(sessiontree.DefaultLeasePolicy),
+		WithOpenPrecondition(OpenPrecondition{
+			State:    MaintenanceStateCurrent,
+			Observed: currentSchemaIdentity(),
+		}),
+	)
+	var maintenance *MaintenanceError
+	if !errors.As(err, &maintenance) || maintenance.Reason != MaintenanceErrorStale || !maintenance.SafeToRetry {
+		t.Fatalf("legacy inspected open error = %#v, err=%v", maintenance, err)
+	}
+	after := sqliteFileSnapshot(t, path)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("inspected open migrated legacy store\nbefore=%#v\nafter=%#v", before, after)
+	}
+	inspection, err := Inspect(context.Background(), path, sessiontree.DefaultLeasePolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection.State != MaintenanceStateUpgradeable || inspection.Observed.Version != schemaVersion14 {
+		t.Fatalf("legacy store changed after rejected open = %#v", inspection)
+	}
+}
+
+func TestInspectedOpenTreatsEveryUserSchemaObjectAsNonEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "view-only.db")
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE VIEW product_view AS SELECT 1 AS value`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before := sqliteFileSnapshot(t, path)
+	_, err = OpenContext(context.Background(), path, WithOpenPrecondition(OpenPrecondition{State: MaintenanceStateEmpty}))
+	var maintenance *MaintenanceError
+	if !errors.As(err, &maintenance) || maintenance.Reason != MaintenanceErrorStale {
+		t.Fatalf("view-only inspected open error = %#v, err=%v", maintenance, err)
+	}
+	if after := sqliteFileSnapshot(t, path); !reflect.DeepEqual(after, before) {
+		t.Fatalf("view-only inspected open changed store\nbefore=%#v\nafter=%#v", before, after)
+	}
+}
+
+func TestInspectedOpenCancelsWhileWaitingForWriterAdmission(t *testing.T) {
+	store, path := openSQLiteStoreForTest(t)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	blocker, err := NewWriterAdmission(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Close()
+	release, err := blocker.Reserve(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		opened, openErr := OpenContext(ctx, path, WithOpenPrecondition(OpenPrecondition{
+			State: MaintenanceStateCurrent, Observed: currentSchemaIdentity(),
+		}))
+		if opened != nil {
+			_ = opened.Close()
+		}
+		done <- openErr
+	}()
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("waiting inspected open error = %v, want context cancellation", err)
+	}
+}
+
+func TestInspectedOpenRejectsInvalidCurrentIdentityBeforeCreatingPath(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "missing")
+	path := filepath.Join(root, "store.db")
+	_, err := OpenContext(context.Background(), path, WithOpenPrecondition(OpenPrecondition{
+		State: MaintenanceStateCurrent,
+		Observed: storage.StoreSchemaIdentity{
+			Version: schemaVersion14, Fingerprint: schemaFingerprintVersion14,
+		},
+	}))
+	var maintenance *MaintenanceError
+	if !errors.As(err, &maintenance) || maintenance.Reason != MaintenanceErrorInvalidRequest {
+		t.Fatalf("invalid current identity error = %#v, err=%v", maintenance, err)
+	}
+	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invalid current identity created path: %v", err)
+	}
+}
+
+func TestInspectedOpenCurrentMissingPathCreatesNothing(t *testing.T) {
+	store, verifiedPath := openSQLiteStoreForTest(t)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	report, err := Verify(context.Background(), verifiedPath, sessiontree.DefaultLeasePolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Inspection.State != MaintenanceStateCurrent {
+		t.Fatalf("verification inspection = %#v", report.Inspection)
+	}
+
+	parent := filepath.Join(t.TempDir(), "missing", "nested")
+	path := filepath.Join(parent, "store.db")
+	opened, err := OpenContext(context.Background(), path, WithOpenPrecondition(OpenPrecondition{
+		State: report.Inspection.State, Observed: report.Inspection.Observed,
+	}))
+	if opened != nil {
+		_ = opened.Close()
+		t.Fatal("stale current open returned a Store")
+	}
+	var maintenance *MaintenanceError
+	if !errors.As(err, &maintenance) || maintenance.Reason != MaintenanceErrorStale {
+		t.Fatalf("missing current open error = %#v, err=%v", maintenance, err)
+	}
+	for _, candidate := range []string{parent, path, path + "-wal", path + "-shm", path + "-journal"} {
+		if _, statErr := os.Stat(candidate); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("missing current open created %q: %v", candidate, statErr)
+		}
+	}
+	inspection, inspectErr := Inspect(context.Background(), path, sessiontree.DefaultLeasePolicy)
+	if inspectErr != nil || inspection.State != MaintenanceStateMissing {
+		t.Fatalf("inspection after rejected current open = %#v, err=%v", inspection, inspectErr)
+	}
+	if _, statErr := os.Stat(parent); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("post-failure inspection created parent: %v", statErr)
+	}
+}
+
+func TestInspectedOpenCurrentEmptyPathChangesNothing(t *testing.T) {
+	store, verifiedPath := openSQLiteStoreForTest(t)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	report, err := Verify(context.Background(), verifiedPath, sessiontree.DefaultLeasePolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(t.TempDir(), "empty.db")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := sqliteFileSnapshot(t, path)
+	opened, err := OpenContext(context.Background(), path, WithOpenPrecondition(OpenPrecondition{
+		State: report.Inspection.State, Observed: report.Inspection.Observed,
+	}))
+	if opened != nil {
+		_ = opened.Close()
+		t.Fatal("stale current open returned a Store")
+	}
+	var maintenance *MaintenanceError
+	if !errors.As(err, &maintenance) || maintenance.Reason != MaintenanceErrorStale {
+		t.Fatalf("empty current open error = %#v, err=%v", maintenance, err)
+	}
+	if after := sqliteFileSnapshot(t, path); !reflect.DeepEqual(after, before) {
+		t.Fatalf("empty current open changed sqlite files\nbefore=%#v\nafter=%#v", before, after)
+	}
+	inspection, inspectErr := Inspect(context.Background(), path, sessiontree.DefaultLeasePolicy)
+	if inspectErr != nil || inspection.State != MaintenanceStateEmpty {
+		t.Fatalf("inspection after rejected current open = %#v, err=%v", inspection, inspectErr)
+	}
+	if after := sqliteFileSnapshot(t, path); !reflect.DeepEqual(after, before) {
+		t.Fatalf("post-failure inspection changed sqlite files\nbefore=%#v\nafter=%#v", before, after)
+	}
+}
+
 func TestVerifyCurrentSQLiteStoreChecksAuthority(t *testing.T) {
 	store, path := openSQLiteStoreForTest(t)
 	if err := store.Close(); err != nil {

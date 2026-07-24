@@ -28,9 +28,14 @@ error text and never mutates a Store during discovery.
 5. Apply with a stable `OperationID`, the same expected schema, and exclusive
    access. Render monotonic typed progress and allow cancellation only while
    `SafeToCancel` is true.
-6. Branch on `SQLiteStoreMaintenanceError`, result status, reason,
-   `Retryable`, `SafeToRetry`, `Committed`, and `RolledBack`. Verify again after
-   success before opening the runtime Store.
+6. Verify again after apply and call `OpenSQLiteStore` with the resulting
+   `current` state and exact observed schema. For `missing` or `empty`, open
+   with that initialize-only state and an empty expected schema; Floret creates
+   only if no user table, index, view, or trigger exists in the open transaction.
+7. Branch on `SQLiteStoreMaintenanceError`, result status, reason,
+   `Retryable`, `SafeToRetry`, `Committed`, and `RolledBack`. Re-inspect after
+   any open failure. In particular, a failure while initializing WAL or journal
+   settings after the schema transaction is not evidence of rollback.
 
 If inspection reports `busy`, keep the current data and controls visible, name
 the Store owner or activity when the product knows it, and offer a retry after

@@ -345,7 +345,7 @@ func TestAutomaticTitleRecoveryRetriesAfterPartialFailure(t *testing.T) {
 func TestProviderHostOpensAfterReopenedClosedChildTitle(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "closed-child-title.db")
-	store, err := OpenSQLiteStore(path)
+	store, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +385,7 @@ func TestProviderHostOpensAfterReopenedClosedChildTitle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened, err := OpenSQLiteStore(path)
+	reopened, err := openSQLiteStoreForTest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -450,7 +450,7 @@ func TestAutomaticTitleDeletionDoesNotReportBackgroundFailure(t *testing.T) {
 
 func TestCancelledRunTurnJoinsAutomaticTitleSettlementBeforeSQLiteRead(t *testing.T) {
 	ctx := context.Background()
-	store, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "cancelled-title.db"))
+	store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "cancelled-title.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -584,7 +584,7 @@ func TestModelGatewayProviderCancelsNeverClosingUpstreamStream(t *testing.T) {
 
 func TestCancelledRunTurnSettlesNeverClosingTitleAndModelStreams(t *testing.T) {
 	ctx := context.Background()
-	store, err := OpenSQLiteStore(filepath.Join(t.TempDir(), "never-closing-streams.db"))
+	store, err := openSQLiteStoreForTest(filepath.Join(t.TempDir(), "never-closing-streams.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
