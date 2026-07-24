@@ -149,7 +149,7 @@ go run ./cmd/floret-test-ui
 
 Die lokale Testkonsole dient Beitragenden zur Prüfung von Fake-Provider-Sitzungen, sanitisierten Ereignissen, Tool-Szenarien und gehosteten Unterthreads. Sie ist keine Downstream-Integrationsoberfläche.
 
-## Referenz
+## Downstream-Integrationsoberfläche
 
 Downstream-Anwendungen sollen ausschließlich diese öffentlichen Pakete importieren:
 

@@ -13,6 +13,13 @@ Events are the engine and harness fact stream. Important decisions, retries,
 compactions, approvals, provider requests, tool outcomes, and control signals
 must be observable through events or testable state.
 
+`runtime.Event` and `observation.Event` are transient, in-process observations.
+They may be delayed, duplicated, or lost and are not a durable persistence,
+wire-versioning, or replay protocol. JSON tags describe the current DTO shape;
+they do not authorize a host to store events and later rebuild Agent state.
+When a host transports live events over a network, it owns the transport
+envelope and still treats the enclosed event as an ephemeral update.
+
 # Sanitized Observation
 
 Public sinks and host-facing projections use sanitized events. Observation DTOs
@@ -27,6 +34,12 @@ Tool lifecycle facts remain canonical in the Floret journal and its public
 projections. Downstream product audit may describe who requested an operation
 or which policy applied, but it must not become a second tool-status query
 model.
+
+Long-lived UI state is reloaded from Floret's durable public read models, such
+as `ThreadTurnProjection`, versioned `ActivityTimeline`, thread/context/todo
+reads, and the root-scoped approval queue. A renderer may keep the latest valid
+projection in memory and merge newer matching live events, but reconnect, gaps,
+or validation failures require a canonical reload rather than event replay.
 
 # Main Projections
 

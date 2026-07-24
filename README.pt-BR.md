@@ -149,7 +149,7 @@ go run ./cmd/floret-test-ui
 
 O console de teste local é voltado a contribuidores que inspecionam sessões do Fake Provider, eventos saneados, cenários de ferramenta e subthreads hospedadas. Ele não é uma superfície de integração downstream.
 
-## Referência
+## Superfície de integração downstream
 
 Aplicações downstream devem importar apenas estes pacotes públicos:
 

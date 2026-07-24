@@ -17,6 +17,25 @@
   conservative upper bound for projected pressure with additive anchor-safe
   components, without labeling it an exact token count; attachment-free
   estimates are unchanged.
+* **Adoption**: Added task-focused guides for composition-root capability
+  issuance, host-owned model gateways, effect approval, SQLite Store
+  maintenance, exact interrupted-turn recovery, and durable projection
+  rendering, with runnable examples and `florettest` as the shortest paths.
+* **Storage**: Documented public SQLite lease-policy options, zero-write
+  inspection and verification, explicit plan/apply migration, typed
+  state/reason/progress outcomes, and continuous supported v3-v15 migration with
+  quiescent-authority rejection for ambiguous v3-v13 data. Legacy artifacts
+  migrate only with an exact canonical result binding and no obsolete product
+  URL; otherwise the source Store rolls back unchanged.
+* **Boundary**: Clarified that Floret owns product-neutral Agent lifecycle and
+  Store maintenance facts while hosts own transport, concrete effects, policy,
+  operator authorization, and polished localized UI presentation.
+* **Observation**: Declared `runtime.Event` and `observation.Event` transient and
+  lossy rather than persistent replay contracts; durable UI recovery reloads
+  Floret public snapshots and projections.
+* **Quality**: Expanded the documented gate to cover tests, vet, focused race
+  detection, public examples and conformance helpers, vulnerability scanning,
+  and `GOWORK=off` dependency isolation.
 * **Lifecycle**: Removed the obsolete single-thread delete primitive from the
   general internal repository contract and its Memory, File, and SQLite
   implementations. Canonical deletion now exists only as root-tree authority

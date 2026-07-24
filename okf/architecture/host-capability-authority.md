@@ -1324,40 +1324,25 @@ SQLite transaction.
 The current authority-kernel schema is exact version `16`. It persists canonical
 turn-entry indexes, path depth, typed turn failure metadata, retry-source
 identity, automatic-title generation/token state, and aggregate approval
-authority. Exact version `14` migrates to v15 and then v16; exact version `15`
-migrates directly to v16. Both migrations validate the complete predecessor
-fingerprint and authority data before mutation and run under the Store's one
-early write transaction. Failure rolls the entire migration back.
+authority. One forward migrator accepts supported v3 through v15 input. Exact
+v14/v15 migrate directly; v3 through v13 migrate only after proving quiescent
+execution authority, and reject active or ambiguous authority instead of
+synthesizing identity. Version 15 was an intermediate repository shape rather
+than a released tag but remains supported input. A legacy artifact is copied
+only when its run, turn, call, payload, and unique canonical tool-result entry
+agree and its removed product URL is empty. Non-empty legacy product URLs fail
+the transaction instead of restoring host routing or rewriting canonical raw
+entry identity.
 
-The exact version `13` fingerprint remains supported only when the Store is
-empty. Empty means every version `13` data table has zero rows; only schema
-metadata and SQLite-internal bookkeeping may exist. Under the same early write
-lock, Floret verifies emptiness, replaces v13 with the exact v16 schema, and
-persists the configured lease policy. A non-empty v13 Store is rejected because
-its missing authority cannot be guessed.
-
-The v14 migration constructs and validates exact canonical turn indexes without
-changing journal raw bytes. The v15 migration requires one valid journal root
-per thread, computes positive path depth without quadratic ancestry strings,
-validates started `(ThreadID, TurnID, RunID)` identities, converts retry source
-metadata to exact source turn/entry identity, normalizes typed terminal failure,
-and installs title and approval authority. Cross-thread reuse of a `RunID` is
-valid; only the exact thread/turn/run tuple is execution authority.
-Because v15 did not record failure origin, a valid status-matching explicit code
-is preserved, structured durable authority may prove a narrower code, and every
-other failure migrates to `legacy_unclassified`. Error text and diagnostic copy
-are never classification authority. A code-less legacy aborted marker is
-rewritten to failed/`legacy_unclassified` while retaining its old status as
-diagnostic metadata, because cancellation versus interruption cannot be proved.
-
-Versions older than `13`, unknown versions, missing metadata, and unknown
-fingerprints return `UnsupportedStoreSchemaError` with the observed version and
-fingerprint plus the exact current/predecessor shapes. Opening v14, v15, or v16
-also requires the configured lease policy to equal the persisted policy. If
-concurrent openers race a migration with different policies, the transaction
-winner's policy remains authoritative and every loser either opens with that
-exact policy or returns `StoreLeasePolicyMismatchError`; no path overwrites the
-winner, synthesizes identity, backs up, or repairs the database.
+Every migration validates its source contract before mutation, runs under the
+Store's one early write transaction, verifies the final schema, and rolls back
+on failure. Lease-policy equality remains authoritative across opens and
+maintenance. Concurrent operations produce one transaction winner; no path
+overwrites the winner, invents `ThreadID`/`TurnID`/`RunID`, creates a backup, or
+repairs tables heuristically. The public schema set, typed maintenance states,
+and operator workflow are defined in the
+[`runtime` Store contract](../api/runtime.md) and
+[Store maintenance workflow](../workflows/maintain-sqlite-store.md).
 
 ## File
 
@@ -1398,7 +1383,7 @@ File rejection where unsupported.
 | Construction | missing root, child passed as root, missing parent, deleted identity, and wrong bound ID fail before skills/tools/events/registry/gateway/provider state |
 | Root create | same intent/different ThreadID, same created-root ThreadID/different intent, changed contract version, and wrong live shape conflict; matching deleted create replay and new intent against another tombstone return deleted; concurrent exact live replay publishes one root/result |
 | State shapes | every invalid lifecycle/claim/lease/input/fork combination is rejected by Memory, SQLite, verification, and migration |
-| Schema compatibility | one early-write-locked transaction migrates exact v14 through v15 to v16, exact v15 to v16, or empty exact v13 directly to v16; non-empty v13, older/unknown versions, missing metadata, invalid authority data, and alternate fingerprints roll back without schema or data changes; no identity is synthesized; concurrent different lease policies produce one winner and typed mismatch losers |
+| Schema compatibility | one early-write-locked pipeline migrates supported v3-v15 input to v16; v3-v13 require quiescent authority; active/ambiguous authority, unknown/future versions, missing metadata, invalid contracts, and alternate fingerprints roll back without schema or data changes; no identity is synthesized; concurrent different lease policies produce one winner and typed mismatch losers |
 | Lease liveness | renewal keeps long turn and approval wait fresh; failed renewal fences dispatch/write; expired-fenced cannot write or take over; only takeover-eligible exact proof can recover |
 | Generation | stale/released/wrong-owner/wrong-purpose/wrong-turn/replaced-generation proof cannot write, renew, finish, or release |
 | Recovery factory | bind validates live exact authority and returns `ErrInterruptedTurnNotFound` with no target for no lease; exact root and parent-child factories cannot select another identity or later turn; same-target heartbeat renewal makes the old handle stale and a refreshed handle busy/recoverable; lease disappearance or a valid higher generation resolves only after atomic admission/finish/terminal validation; generation/heartbeat rollback, missing or malformed resolution linkage, malformed replacement, or same-generation stable-field drift is corruption; concurrent tombstoning returns deleted; wrong root-child/parent-child relation, Store close, fresh/expired-fenced/stale attempts, and concurrent bind/NewHost/renew/release/replacement/recovery all have zero mutation unless exact takeover commits |

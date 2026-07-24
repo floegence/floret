@@ -30,15 +30,19 @@ Floret owns:
   todo state;
 * opaque model state lifecycle and persistence in Floret Store;
 * engine thread-tree lifecycle, including child-thread fork mode, stop/close,
-  replayable fork operations, prompt cache retention, and engine-data deletion.
+  replayable fork operations, prompt cache retention, and engine-data deletion;
+* Floret Store inspection, schema verification, migration planning/application,
+  and product-neutral maintenance facts.
 
 The host owns:
 
 * product UI and user policy;
-* credentials and provider profile persistence;
+* credentials, provider routing, wire adapters, and provider profile persistence;
 * durable product metadata;
 * workspace-specific resource policy;
-* domain tools, approval UI, and product approval summaries.
+* concrete domain tool actions and their defense-in-depth authorization;
+* approval UI, localized copy, product approval summaries, and Store maintenance
+  presentation and operator authorization.
 
 Hosts provide provider credentials, provider profiles, and direct wire adapters,
 but they do not persist opaque continuation, context usage, compaction state,
@@ -64,10 +68,19 @@ unrelated capability. Provider-free binders validate exact canonical authority
 using `context.Context` before returning a handle; create instead binds an exact
 absent `ThreadID` plus durable `CreateIntentID`. The owner closes the Store once;
 close fences new operations and waits for active finalization.
-`OpenSQLiteStore` accepts exact v16, transactionally upgrades exact v14/v15, or
-replaces only an exact empty v13 predecessor. Older, ambiguous, unversioned,
-invalid-authority, or fingerprint-mismatched databases return a typed error
-without a dual-read or repair path.
+`OpenSQLiteStore` accepts exact v16 and uses one forward migrator for supported
+v3 through v15 stores. Exact v14/v15 migrate directly. Published historical v3
+through v13 stores migrate only with quiescent execution authority; active or
+ambiguous authority is rejected atomically rather than assigned synthetic
+`ThreadID`, `TurnID`, or `RunID` values. Version 15 was an intermediate
+repository schema rather than a released tag, but remains supported input.
+Legacy artifacts additionally require one exact canonical tool-result binding
+and no obsolete product URL; otherwise migration preserves the source Store and
+fails instead of encoding downstream routing in Floret.
+Unknown, unversioned, invalid-contract, future, or fingerprint-mismatched
+databases return typed facts without a dual-read or host repair path. See the
+[`runtime` Store contract](../api/runtime.md) for the authoritative API and
+state vocabulary.
 
 Hosts may choose when product actions stop or delete work, but they should
 express those choices through Floret runtime APIs. Stop-style product actions
@@ -95,5 +108,5 @@ targets after an uncertain outcome.
 # Key Source Files
 
 * [Repository Guide](/AGENTS.md)
-* [README Stable API](/README.md)
+* [README Integration Surface](/README.md)
 * [Architecture Tests](/internal/architecture/architecture_test.go)

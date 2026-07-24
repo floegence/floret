@@ -7,20 +7,31 @@ tags: [workflow, tests, quality]
 timestamp: 2026-06-20T00:00:00Z
 ---
 
-# Required Check
+# Required Checks
 
-Run before integration:
+Run before integration with workspace discovery disabled so repository checks
+cannot accidentally resolve an unpublished sibling module:
 
 ```bash
-go test ./...
+GOWORK=off go test ./...
+GOWORK=off go vet ./...
+GOWORK=off go test -race ./internal/engine ./internal/agentharness ./internal/sessiontree ./internal/storage/sqlite ./runtime ./tools
+GOWORK=off go test ./florettest ./cmd/examples/...
+for example in cmd/examples/*; do GOWORK=off go run "./${example}"; done
+GOWORK=off govulncheck ./...
 ```
+
+Install `govulncheck` from `golang.org/x/vuln/cmd/govulncheck` when it is not
+already available. CI runs these repository-wide tests, vet, focused race
+packages, public conformance helpers, examples, dependency-boundary checks, and
+the reachable vulnerability scan with `GOWORK=off`.
 
 For context compaction runtime, observation, or Test UI changes, also exercise
 the focused scenario target:
 
 ```bash
-go test ./runtime ./internal/testui
-go run ./cmd/floret-test-ui -addr 127.0.0.1:8765
+GOWORK=off go test ./runtime ./internal/testui
+GOWORK=off go run ./cmd/floret-test-ui -addr 127.0.0.1:8765
 # In the Test UI, run the "context compaction" check.
 ```
 

@@ -36,7 +36,7 @@
   <a href="#what-you-keep">What You Keep</a> ·
   <a href="#quick-start">Quick Start</a> ·
   <a href="#production-shape">Production Shape</a> ·
-  <a href="#-stable-downstream-api">Stable API</a>
+  <a href="#-downstream-integration-surface">Integration Surface</a>
 </p>
 
 ![Floret AI agent app runtime](okf/assets/readme/floret-agent-app-whiteboard.png)
@@ -117,7 +117,7 @@ the same product.
 
 ## Quick Start
 
-Install the stable downstream packages:
+Install the downstream packages:
 
 ```bash
 go get github.com/floegence/floret/config github.com/floegence/floret/runtime github.com/floegence/floret/tools github.com/floegence/floret/observation
@@ -209,6 +209,16 @@ data. Your product data stays in your own store, keyed by `runtime.ThreadID`.
 The caller owns the runtime Store, may share it across runtime facades, and
 closes it once after all active work has stopped. Runtime facades never close an
 injected Store.
+
+For a production-shaped integration, start with the runnable
+[minimal durable host](cmd/examples/minimal-durable-host), then use the focused
+[examples](cmd/examples) for a custom model gateway, effect approval, message
+references, SubAgents, startup recovery, and Store maintenance. Integration
+tests can use the public deterministic helpers in
+[`florettest`](florettest). Operators can inspect, verify, plan, and explicitly
+apply SQLite maintenance through the
+[Store maintenance example](cmd/examples/store-maintenance-host) or the
+[`floret-store` command](cmd/floret-store).
 
 Floret's journal is the only durable source for admitted user input, assistant
 output, turn/run lifecycle, control signals, approvals, projections, and Agent
@@ -401,7 +411,7 @@ The local test console is for contributors to inspect fake-provider sessions,
 sanitized events, tool scenarios, and hosted child threads. It is not a
 downstream integration surface.
 
-## 📦 Stable downstream API
+## 📦 Downstream integration surface
 
 Downstream applications should import only these public packages:
 

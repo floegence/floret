@@ -149,7 +149,7 @@ go run ./cmd/floret-test-ui
 
 La console de test locale est destinée aux contributeurs qui inspectent les sessions Fake Provider, événements assainis, scénarios d'outils et sous-threads hébergés. Ce n'est pas une surface d'intégration en aval.
 
-## Référence
+## Surface d'intégration en aval
 
 Les applications en aval ne doivent importer que ces packages publics :
 

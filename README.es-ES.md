@@ -149,7 +149,7 @@ go run ./cmd/floret-test-ui
 
 La consola de pruebas local es una herramienta para colaboradores que inspeccionan sesiones de Fake Provider, eventos saneados, escenarios de herramientas y subhilos alojados. No es una superficie de integración downstream.
 
-## Referencia
+## Superficie de integración downstream
 
 Las aplicaciones downstream solo deben importar estos paquetes públicos:
 

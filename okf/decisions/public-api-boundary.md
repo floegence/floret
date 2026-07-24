@@ -1,7 +1,7 @@
 ---
 type: Architecture Decision
 title: Public API Boundary
-description: Floret exposes only a compact set of stable downstream packages and keeps implementation contracts internal.
+description: Floret exposes only a compact set of supported downstream packages and keeps implementation contracts internal.
 resource: /README.md
 tags: [decision, public-api, boundary]
 timestamp: 2026-06-20T00:00:00Z

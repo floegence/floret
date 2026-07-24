@@ -18,7 +18,7 @@ core contracts or explaining the project to another system.
 
 # Public API
 
-* [Public API](api/) - Stable downstream packages and when to use them.
+* [Public API](api/) - Supported downstream packages and when to use them.
 
 # Workflows
 
