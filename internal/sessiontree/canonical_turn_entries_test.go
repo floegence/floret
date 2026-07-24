@@ -48,7 +48,7 @@ func TestMemoryCanonicalTurnEntriesTracksExactTurnAndCleansDelete(t *testing.T) 
 	if err := repo.ReleaseTurnLease(ctx, admitted.Lease); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.DeleteThread(ctx, "thread"); err != nil {
+	if _, err := repo.DeleteRootTree(ctx, "thread"); err != nil {
 		t.Fatal(err)
 	}
 	if _, exists := repo.turnEntryOrdinals["thread"]; exists {
@@ -130,7 +130,7 @@ func TestMemoryCanonicalTurnEntriesRejectsBrokenTurnParentChain(t *testing.T) {
 	}
 }
 
-func TestFileRepoCanonicalTurnEntriesSurviveReopenAndDeleteReuse(t *testing.T) {
+func TestFileRepoCanonicalTurnEntriesSurviveReopen(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	repo := NewFileRepo(root)
@@ -151,22 +151,6 @@ func TestFileRepoCanonicalTurnEntriesSurviveReopenAndDeleteReuse(t *testing.T) {
 	entries, found, err := reopened.CanonicalTurnEntries(ctx, "thread", "turn", "run")
 	if err != nil || !found || len(entries) != 2 || entries[0].ID != "started" || entries[1].Message.Content != "persisted" {
 		t.Fatalf("reopened canonical entries=%#v found=%v err=%v", entries, found, err)
-	}
-	if err := reopened.DeleteThread(ctx, "thread"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := reopened.CreateThread(ctx, ThreadMeta{ID: "thread"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := reopened.Append(ctx, Entry{
-		ThreadID: "thread", TurnID: "turn", Type: EntryTurnMarker, TurnStatus: TurnStarted,
-		Metadata: map[string]string{"run_id": "replacement-run"},
-	}, AppendOptions{ID: "replacement-started"}); err != nil {
-		t.Fatalf("append after delete reuse: %v", err)
-	}
-	entries, found, err = reopened.CanonicalTurnEntries(ctx, "thread", "turn", "replacement-run")
-	if err != nil || !found || len(entries) != 1 || entries[0].ID != "replacement-started" {
-		t.Fatalf("replacement canonical entries=%#v found=%v err=%v", entries, found, err)
 	}
 }
 

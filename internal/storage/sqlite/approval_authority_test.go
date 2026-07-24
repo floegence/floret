@@ -19,7 +19,6 @@ import (
 
 type approvalAuthorityTestRepo interface {
 	CreateThread(context.Context, sessiontree.ThreadMeta) (sessiontree.ThreadMeta, error)
-	DeleteThread(context.Context, string) error
 	AdmitTurn(context.Context, sessiontree.AdmitTurnRequest) (sessiontree.AdmitTurnResult, error)
 	Entries(context.Context, string) ([]sessiontree.Entry, error)
 	ActiveTurnLease(context.Context, string) (sessiontree.TurnLease, bool, error)
@@ -1827,47 +1826,6 @@ func TestApprovalAuthorityMatchesMemoryAndSQLite(t *testing.T) {
 	}
 }
 
-func TestApprovalChildDeleteMatchesMemoryAndSQLite(t *testing.T) {
-	now := time.Date(2026, 7, 21, 9, 45, 0, 0, time.UTC)
-	for name, makeRepo := range map[string]func(t *testing.T) approvalAuthorityTestRepo{
-		"memory": func(t *testing.T) approvalAuthorityTestRepo { return sessiontree.NewMemoryRepo() },
-		"sqlite": func(t *testing.T) approvalAuthorityTestRepo {
-			store, err := Open(filepath.Join(t.TempDir(), "approval-lifecycle.db"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = store.Close() })
-			return store
-		},
-	} {
-		t.Run(name+"/child-delete", func(t *testing.T) {
-			repo := makeRepo(t)
-			if _, err := repo.CreateThread(context.Background(), sessiontree.ThreadMeta{ID: "root", CreatedAt: now, UpdatedAt: now}); err != nil {
-				t.Fatal(err)
-			}
-			child := sessiontree.ThreadMeta{ID: "child", ParentThreadID: "root", ParentTurnID: "parent-turn", TaskName: "child", AgentPath: "root/child"}
-			lease := seedApprovalTurn(t, repo, now, child, "turn", "run")
-			prepared, err := repo.PrepareApprovalBatch(context.Background(), approvalPrepare(lease, "call", 0, 1, now))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := repo.ReleaseTurnLease(context.Background(), lease); err != nil {
-				t.Fatal(err)
-			}
-			if err := repo.DeleteThread(context.Background(), "child"); err != nil {
-				t.Fatal(err)
-			}
-			queue, err := repo.ReadApprovalQueue(context.Background(), "root")
-			if err != nil || queue.Generation != 1 || queue.Revision != 2 || queue.CurrentApprovalID != "" || len(queue.Items) != 0 {
-				t.Fatalf("child delete queue = %#v err=%v", queue, err)
-			}
-			if _, err := repo.Approval(context.Background(), prepared.Approvals[0].ApprovalID); !errors.Is(err, sessiontree.ErrApprovalNotFound) {
-				t.Fatalf("child delete approval err=%v", err)
-			}
-		})
-	}
-}
-
 func TestApprovalDispatchAndCancellationHaveSingleAtomicWinner(t *testing.T) {
 	now := time.Date(2026, 7, 21, 9, 50, 0, 0, time.UTC)
 	for name, makeRepo := range map[string]func(t *testing.T) approvalAuthorityTestRepo{
@@ -2088,7 +2046,7 @@ func TestSQLiteApprovalAuthorityPersistsAcrossReopen(t *testing.T) {
 	if err != nil || queue.Generation != 1 || queue.Revision != 1 || queue.CurrentApprovalID != approvalID || len(queue.Items) != 1 {
 		t.Fatalf("reopened queue = %#v err=%v", queue, err)
 	}
-	if err := reopened.DeleteThread(context.Background(), "source"); err != nil {
+	if _, err := reopened.DeleteRootTree(context.Background(), "source"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := reopened.ReadApprovalQueue(context.Background(), "source"); !errors.Is(err, sessiontree.ErrThreadNotFound) {

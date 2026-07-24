@@ -409,7 +409,6 @@ type Repo interface {
 	JournalRepo
 	CreateThread(context.Context, ThreadMeta) (ThreadMeta, error)
 	UpdateThread(context.Context, ThreadMeta) error
-	DeleteThread(context.Context, string) error
 	MoveLeaf(context.Context, string, string) error
 	Fork(context.Context, ForkOptions) (ThreadMeta, error)
 }
@@ -1129,35 +1128,6 @@ func (r *MemoryRepo) requireActiveTurnWriteAuthorityLocked(ctx context.Context, 
 	}
 	if !active.Fresh(r.now().UTC()) {
 		return ErrStaleAuthority
-	}
-	return nil
-}
-
-func (r *MemoryRepo) DeleteThread(_ context.Context, threadID string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, ok := r.threads[threadID]; !ok {
-		return ErrThreadNotFound
-	}
-	if _, ok := r.leases[threadID]; ok {
-		return ErrActiveTurn
-	}
-	if strings.TrimSpace(r.authorityClaims[threadID]) != "" {
-		return ErrThreadAuthorityBusy
-	}
-	delete(r.threads, threadID)
-	r.deleteIndexedEntriesLocked(threadID)
-	delete(r.leases, threadID)
-	delete(r.authorityClaims, threadID)
-	delete(r.todos, threadID)
-	delete(r.providerStates, threadID)
-	delete(r.subAgentInputs, threadID)
-	delete(r.subAgentInputSequence, threadID)
-	r.deleteApprovalAuthorityForThreadsLocked(map[string]struct{}{threadID: {}})
-	for key, record := range r.artifacts {
-		if record.ThreadID == threadID {
-			delete(r.artifacts, key)
-		}
 	}
 	return nil
 }
@@ -2493,21 +2463,6 @@ func (r *FileRepo) UpdateThread(ctx context.Context, meta ThreadMeta) error {
 		return err
 	}
 	return r.saveThread(meta)
-}
-
-func (r *FileRepo) DeleteThread(ctx context.Context, threadID string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if err := r.load(ctx); err != nil {
-		return err
-	}
-	if _, ok := r.mem.threads[threadID]; !ok {
-		return ErrThreadNotFound
-	}
-	delete(r.mem.threads, threadID)
-	r.mem.deleteIndexedEntriesLocked(threadID)
-	delete(r.mem.todos, threadID)
-	return os.RemoveAll(filepath.Join(r.root, safePath(threadID)))
 }
 
 func (r *FileRepo) Append(ctx context.Context, entry Entry, opts AppendOptions) (Entry, error) {

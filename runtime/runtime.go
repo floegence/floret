@@ -2309,35 +2309,6 @@ func (s *Store) deleteThreadData(ctx context.Context, threadID string) error {
 	return nil
 }
 
-func cleanRuntimeIDs(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	return out
-}
-
-func (s *Store) threadTreeIDs(ctx context.Context, threadID string) ([]string, error) {
-	threadID = strings.TrimSpace(threadID)
-	if threadID == "" {
-		return nil, errors.New("thread id is required")
-	}
-	threads, err := sessiontree.ListThreads(ctx, s.repo, sessiontree.ListThreadsOptions{IncludeArchived: true})
-	if err != nil {
-		return nil, err
-	}
-	return sessiontree.ThreadAuthorityTreeIDs(threads, threadID)
-}
-
 func newProviderHost(opts providerHostOptions) (*providerHost, error) {
 	if err := opts.ModelGatewayCapabilities.validate(opts.ModelGateway); err != nil {
 		return nil, err

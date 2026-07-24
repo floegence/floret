@@ -52,15 +52,20 @@ Store-owned active execution and automatic-title workers, waits for terminal and
 title finalization plus lease release, and only then closes the backend.
 Retained binders, factories, and handles return `ErrStoreClosed` after closing
 starts.
-Runtime resolves a target thread plus its descendants before submitting one
-tree delete request to storage. Root creation, ordinary fork, SubAgent spawn,
-and root tree deletion share one Store-level authority mutation gate; deletion
-holds it across root validation, descendant discovery, and physical deletion so
-concurrent spawn on that Store cannot leave an orphan child. The SQLite
-implementation accepts only the root identity, reloads and validates the full
-authority graph inside its immediate transaction, derives the current child
-tree, and then deletes thread rows, journal entries, active leases, Agent todo
-state, Floret authority records, artifacts, prompt scopes, and provider ledgers.
+Runtime submits one exact root identity through `ThreadDeleteHost` to the
+canonical `RootAuthorityRepo.DeleteRootTree` capability. Memory and SQLite are
+the only canonical lifecycle backends that implement this capability; the
+file-backed test journal exposes no delete method. The general internal `Repo`
+contract has no single-thread delete primitive. Root creation, ordinary fork,
+SubAgent spawn, and root tree deletion share one Store-level authority mutation
+gate; deletion holds it across root validation, descendant discovery, and
+physical deletion so concurrent spawn cannot leave an orphan child. The SQLite
+implementation reloads and validates the full authority graph inside its
+immediate transaction, derives the current child tree, and then deletes thread
+rows, journal entries, active leases, Agent todo state, Floret authority
+records, artifacts, prompt scopes, and provider ledgers. Exact tombstone replay
+is the only successful repeat-delete path; a missing root without its canonical
+tombstone returns `ErrThreadNotFound`.
 Host-owned generic metadata is outside canonical deletion and remains for its
 own coordinator to clean up. This closes the
 gap across multiple Store instances or processes. Every SQLite open validates

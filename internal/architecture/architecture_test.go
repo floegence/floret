@@ -333,16 +333,25 @@ func TestAgentHarnessProductionCannotAcquireLifecycleAuthority(t *testing.T) {
 	}
 }
 
-func TestStorageAuthorityHasNoAlternateTreeDeleteOrHostMetadataCleanup(t *testing.T) {
+func TestStorageAuthorityHasOnlyCanonicalRootTreeDelete(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join("internal", "sessiontree", "sessiontree.go"),
 		filepath.Join("internal", "storage", "storage.go"),
 		filepath.Join("internal", "storage", "sqlite", "sqlitestore.go"),
 	} {
 		text := readTextFile(t, path)
-		for _, forbidden := range []string{"DeleteThreadTreeData", "DeleteThreadTree("} {
+		for _, forbidden := range []string{
+			"DeleteThreadTreeData",
+			"DeleteThreadTree(",
+			"DeleteThread(context.Context, string) error",
+			"func (r *MemoryRepo) DeleteThread(",
+			"func (r *FileRepo) DeleteThread(",
+			"func (r *FileRepo) DeleteRootTree(",
+			"func (s *Store) DeleteThread(",
+			"DeleteThreadArtifacts",
+		} {
 			if strings.Contains(text, forbidden) {
-				t.Fatalf("%s retains alternate tree delete capability %q", path, forbidden)
+				t.Fatalf("%s retains non-canonical delete capability %q", path, forbidden)
 			}
 		}
 	}

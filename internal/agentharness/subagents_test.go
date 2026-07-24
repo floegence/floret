@@ -27,6 +27,18 @@ type canonicalTurnOnlyRepo struct {
 	*sessiontree.MemoryRepo
 }
 
+type missingThreadMemoryRepo struct {
+	*sessiontree.MemoryRepo
+	missingThreadID string
+}
+
+func (r *missingThreadMemoryRepo) Thread(ctx context.Context, threadID string) (sessiontree.ThreadMeta, error) {
+	if strings.TrimSpace(threadID) == strings.TrimSpace(r.missingThreadID) {
+		return sessiontree.ThreadMeta{}, sessiontree.ErrThreadNotFound
+	}
+	return r.MemoryRepo.Thread(ctx, threadID)
+}
+
 func (r canonicalTurnOnlyRepo) Entries(context.Context, string) ([]sessiontree.Entry, error) {
 	return nil, errors.New("full journal scan is forbidden")
 }
@@ -1687,11 +1699,7 @@ func TestSubAgentOperationsRequireCanonicalParentThread(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.DeleteThread(ctx, "parent"); err != nil {
-		t.Fatal(err)
-	}
-
-	h := newTestHarness(scriptharness.NewScriptedProvider(), repo, cache.NewMemoryStore())
+	h := newTestHarness(scriptharness.NewScriptedProvider(), &missingThreadMemoryRepo{MemoryRepo: repo, missingThreadID: "parent"}, cache.NewMemoryStore())
 	assertParentMissing := func(name string, err error) {
 		t.Helper()
 		if !errors.Is(err, sessiontree.ErrThreadNotFound) {

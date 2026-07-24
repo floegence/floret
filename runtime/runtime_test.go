@@ -4916,11 +4916,9 @@ func TestThreadForkHostValidatesCompletedTargets(t *testing.T) {
 		if _, err := maintenance.ForkThread(ctx, req); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.repo.DeleteThread(ctx, "fork"); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := maintenance.ForkThread(ctx, req); !errors.Is(err, ErrThreadNotFound) {
-			t.Fatalf("missing target error = %v", err)
+		store.repo = &missingThreadMemoryRepo{MemoryRepo: store.repo.(*sessiontree.MemoryRepo), missingThreadID: "fork"}
+		if _, err := maintenance.ForkThread(ctx, req); !errors.Is(err, ErrAuthorityCorrupt) {
+			t.Fatalf("missing target without tombstone error = %v, want ErrAuthorityCorrupt", err)
 		}
 	})
 	t.Run("marker mismatch", func(t *testing.T) {
@@ -8255,12 +8253,29 @@ func TestSubAgentReadsReportMissingCanonicalParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	publishTestSubAgentFixture(t, ctx, store, "publication-missing-parent-child", "parent", "child", "")
-	if err := store.repo.DeleteThread(ctx, "parent"); err != nil {
-		t.Fatal(err)
-	}
+	store.repo = &missingThreadMemoryRepo{MemoryRepo: store.repo.(*sessiontree.MemoryRepo), missingThreadID: "parent"}
 	if _, err := capabilities.subAgentRead.NewHost(ctx, "parent"); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("subagent read construction err = %v, want ErrThreadNotFound", err)
 	}
+}
+
+type missingThreadMemoryRepo struct {
+	*sessiontree.MemoryRepo
+	missingThreadID string
+}
+
+func (r *missingThreadMemoryRepo) Thread(ctx context.Context, threadID string) (sessiontree.ThreadMeta, error) {
+	if strings.TrimSpace(threadID) == strings.TrimSpace(r.missingThreadID) {
+		return sessiontree.ThreadMeta{}, sessiontree.ErrThreadNotFound
+	}
+	return r.MemoryRepo.Thread(ctx, threadID)
+}
+
+func (r *missingThreadMemoryRepo) InspectThreadAuthority(ctx context.Context, threadID string) (sessiontree.ThreadAuthoritySnapshot, error) {
+	if strings.TrimSpace(threadID) == strings.TrimSpace(r.missingThreadID) {
+		return sessiontree.ThreadAuthoritySnapshot{}, sessiontree.ErrThreadNotFound
+	}
+	return r.MemoryRepo.InspectThreadAuthority(ctx, threadID)
 }
 
 type runtimeEchoArgs struct {

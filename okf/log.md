@@ -1,5 +1,12 @@
 # Floret OKF Update Log
 
+## 2026-07-24
+* **Lifecycle**: Removed the obsolete single-thread delete primitive from the
+  general internal repository contract and its Memory, File, and SQLite
+  implementations. Canonical deletion now exists only as root-tree authority
+  on Memory and SQLite, with tombstone replay and fail-closed missing-root
+  semantics; the file-backed test journal exposes no deletion capability.
+
 ## 2026-07-22
 * **Effects**: Made the host authorization callback context-aware, propagated
   the selected execution scope to local handlers, and bounded it by canonical

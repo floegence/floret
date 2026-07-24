@@ -556,31 +556,6 @@ func (s *Store) UpdateThread(ctx context.Context, meta sessiontree.ThreadMeta) e
 	})
 }
 
-func (s *Store) DeleteThread(ctx context.Context, threadID string) error {
-	return s.withImmediate(ctx, func(tx sqlRunner) error {
-		var exists int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM threads WHERE id = ?`, threadID).Scan(&exists); err != nil {
-			return err
-		}
-		if exists == 0 {
-			return sessiontree.ErrThreadNotFound
-		}
-		if _, active, err := loadTurnLease(ctx, tx, threadID); err != nil {
-			return err
-		} else if active {
-			return sessiontree.ErrActiveTurn
-		}
-		if err := rejectClaimedThreadAuthorities(ctx, tx, threadID); err != nil {
-			return err
-		}
-		if err := deleteSQLiteApprovalAuthorityForThreads(ctx, tx, []string{threadID}, s.now().UTC()); err != nil {
-			return err
-		}
-		_, err := tx.ExecContext(ctx, `DELETE FROM threads WHERE id = ?`, threadID)
-		return err
-	})
-}
-
 func (s *Store) Append(ctx context.Context, entry sessiontree.Entry, opts sessiontree.AppendOptions) (sessiontree.Entry, error) {
 	var saved sessiontree.Entry
 	err := s.withImmediate(ctx, func(tx sqlRunner) error {
@@ -2376,17 +2351,6 @@ func validateSQLiteTurnLeaseMutation(ctx context.Context, threadID, turnID strin
 		return sessiontree.ErrActiveTurn
 	}
 	return nil
-}
-
-func (s *Store) DeleteThreadArtifacts(ctx context.Context, threadID string) error {
-	threadID = strings.TrimSpace(threadID)
-	if threadID == "" {
-		return errors.New("thread id is required")
-	}
-	return s.withImmediate(ctx, func(tx sqlRunner) error {
-		_, err := tx.ExecContext(ctx, `DELETE FROM tool_output_artifacts WHERE thread_id = ?`, threadID)
-		return err
-	})
 }
 
 func insertThread(ctx context.Context, tx sqlRunner, meta sessiontree.ThreadMeta) error {
