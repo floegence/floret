@@ -26,7 +26,12 @@
   state/reason/progress outcomes, and continuous supported v3-v15 migration with
   quiescent-authority rejection for ambiguous v3-v13 data. Legacy artifacts
   migrate only with an exact canonical result binding and no obsolete product
-  URL; otherwise the source Store rolls back unchanged.
+  URL; otherwise the source Store rolls back unchanged. Inspection and
+  verification now use byte-stable private DB-plus-sidecar snapshots, recover
+  stable live or crash-left WAL and rollback-journal facts only inside the copy
+  without touching source DB/WAL/SHM files, type source drift during capture as
+  busy, and keep apply's final verification inside the committing maintenance
+  transaction.
 * **Boundary**: Clarified that Floret owns product-neutral Agent lifecycle and
   Store maintenance facts while hosts own transport, concrete effects, policy,
   operator authorization, and polished localized UI presentation.

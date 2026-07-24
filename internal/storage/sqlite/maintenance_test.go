@@ -50,6 +50,96 @@ func TestInspectCurrentSQLiteStoreIsFileNeutral(t *testing.T) {
 	}
 }
 
+func TestInspectReadsUncheckpointedWALWithoutChangingStoreFiles(t *testing.T) {
+	store, path := openSQLiteStoreForTest(t)
+	defer store.Close()
+	if _, err := store.db.Exec(`PRAGMA wal_autocheckpoint = 0`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE schema_meta SET value = 'tampered-live-wal' WHERE key = 'schema_fingerprint'`); err != nil {
+		t.Fatal(err)
+	}
+	before := sqliteFileSnapshot(t, path)
+
+	inspection, err := Inspect(context.Background(), path, sessiontree.DefaultLeasePolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection.State != MaintenanceStateDrifted || inspection.Observed.Fingerprint != "tampered-live-wal" {
+		t.Fatalf("inspection ignored the latest WAL schema fact = %#v", inspection)
+	}
+	if after := sqliteFileSnapshot(t, path); !reflect.DeepEqual(after, before) {
+		t.Fatalf("inspection changed live sqlite files\nbefore=%#v\nafter=%#v", before, after)
+	}
+}
+
+func TestVerifyReadsUncheckpointedWALWithoutChangingStoreFiles(t *testing.T) {
+	ctx := context.Background()
+	store, path := openSQLiteStoreForTest(t)
+	defer store.Close()
+	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "root"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`PRAGMA wal_autocheckpoint = 0`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE threads SET parent_thread_id = 'missing' WHERE id = 'root'`); err != nil {
+		t.Fatal(err)
+	}
+	before := sqliteFileSnapshot(t, path)
+
+	report, err := Verify(ctx, path, sessiontree.DefaultLeasePolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Inspection.State != MaintenanceStateCurrent || len(report.Checks) != 2 || report.Checks[1].Passed || report.Checks[1].Code != "thread_authority" {
+		t.Fatalf("verification ignored the latest WAL authority fact = %#v", report)
+	}
+	if after := sqliteFileSnapshot(t, path); !reflect.DeepEqual(after, before) {
+		t.Fatalf("verification changed live sqlite files\nbefore=%#v\nafter=%#v", before, after)
+	}
+}
+
+func TestInspectExcludesUncommittedRollbackJournalWithoutChangingStoreFiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollback-journal.db")
+	createSchemaVersion14StoreForTest(t, path, nil)
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`PRAGMA journal_mode = DELETE`); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(context.Background(), `BEGIN IMMEDIATE`); err != nil {
+		t.Fatal(err)
+	}
+	defer conn.ExecContext(context.Background(), `ROLLBACK`)
+	if _, err := conn.ExecContext(context.Background(), `UPDATE schema_meta SET value = 'uncommitted' WHERE key = 'schema_fingerprint'`); err != nil {
+		t.Fatal(err)
+	}
+	before := sqliteFileSnapshot(t, path)
+
+	inspection, err := Inspect(context.Background(), path, sessiontree.DefaultLeasePolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection.State != MaintenanceStateUpgradeable || inspection.Observed.Fingerprint != schemaFingerprintVersion14 {
+		t.Fatalf("inspection admitted an uncommitted rollback-journal fact = %#v", inspection)
+	}
+	if after := sqliteFileSnapshot(t, path); !reflect.DeepEqual(after, before) {
+		t.Fatalf("inspection changed rollback-journal sqlite files\nbefore=%#v\nafter=%#v", before, after)
+	}
+}
+
 func TestInspectCorruptSQLiteStoreIsFileNeutral(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "corrupt.db")
 	if err := os.WriteFile(path, []byte("not a sqlite database"), 0o600); err != nil {
@@ -111,6 +201,52 @@ func TestPlanAndApplySQLiteStoreMigration(t *testing.T) {
 		t.Fatalf("migration result = %#v", result)
 	}
 	assertMaintenanceProgress(t, applyProgress)
+}
+
+func TestApplyPublishedSchemaMigrationInWALModeReturnsCommittedReady(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "published-v13-wal.db")
+	createPublishedLegacyStore(t, path, 13)
+	db, err := sql.Open(driverName, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var journalMode string
+	if err := db.QueryRow(`PRAGMA journal_mode = WAL`).Scan(&journalMode); err != nil {
+		t.Fatal(err)
+	}
+	if journalMode != "wal" {
+		t.Fatalf("journal mode = %q, want wal", journalMode)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	inspection, err := Inspect(ctx, path, sessiontree.DefaultLeasePolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection.State != MaintenanceStateUpgradeable || inspection.Observed.Version != schemaVersion13 {
+		t.Fatalf("inspection = %#v", inspection)
+	}
+	result, err := Migrate(ctx, path, MigrationRequest{
+		Mode:           MigrationModeApply,
+		ExpectedSchema: inspection.Observed,
+		LeasePolicy:    sessiontree.DefaultLeasePolicy,
+	})
+	if err != nil {
+		t.Fatalf("WAL migration failed after committed=%t: %v", result.Committed, err)
+	}
+	if result.Status != MaintenanceStatusReady || !result.Changed || !result.Committed || result.RolledBack || result.After.State != MaintenanceStateCurrent {
+		t.Fatalf("WAL migration result = %#v", result)
+	}
+	after, err := Inspect(ctx, path, sessiontree.DefaultLeasePolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != MaintenanceStateCurrent || !after.LeasePolicyMatches {
+		t.Fatalf("post-migration inspection = %#v", after)
+	}
 }
 
 func TestSQLiteStoreMigrationRejectsStaleInspectionWithoutChanges(t *testing.T) {

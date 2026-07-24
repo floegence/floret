@@ -1344,6 +1344,16 @@ and operator workflow are defined in the
 [`runtime` Store contract](../api/runtime.md) and
 [Store maintenance workflow](../workflows/maintain-sqlite-store.md).
 
+Read-only inspection and verification operate on a private stable DB-plus-sidecar
+snapshot, not directly on a possibly changing main database file. Snapshot
+capture compares each copied source file with a second complete digest. Stable
+live or crash-left WAL and rollback-journal facts are recovered and verified
+inside the private copy; source drift during capture is typed `busy`. Inspection
+therefore neither ignores newer WAL facts nor creates or mutates the source DB,
+WAL, or SHM. Apply verifies the final schema and authority graph inside its own
+early-write transaction, so a WAL produced by that transaction cannot turn a
+successful commit into a post-commit false failure.
+
 ## File
 
 File storage may advertise only capability families for which it provides the

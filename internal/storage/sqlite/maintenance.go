@@ -2,11 +2,14 @@ package sqlite
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -173,57 +176,85 @@ type maintenanceTransactionResult struct {
 }
 
 func Inspect(ctx context.Context, path string, requested sessiontree.LeasePolicy) (MaintenanceInspection, error) {
+	inspection, _, cleanup, err := inspectStableSnapshot(ctx, path, requested)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	return inspection, err
+}
+
+func inspectStableSnapshot(ctx context.Context, path string, requested sessiontree.LeasePolicy) (MaintenanceInspection, string, func(), error) {
 	if ctx == nil {
-		return MaintenanceInspection{}, maintenanceFailure(MaintenanceErrorInvalidRequest, false, false, errors.New("sqlite store inspection context is required"))
+		return MaintenanceInspection{}, "", nil, maintenanceFailure(MaintenanceErrorInvalidRequest, false, false, errors.New("sqlite store inspection context is required"))
 	}
 	if strings.TrimSpace(path) == "" || path == ":memory:" {
-		return MaintenanceInspection{}, maintenanceFailure(MaintenanceErrorInvalidRequest, false, false, errors.New("sqlite store inspection requires a file path"))
+		return MaintenanceInspection{}, "", nil, maintenanceFailure(MaintenanceErrorInvalidRequest, false, false, errors.New("sqlite store inspection requires a file path"))
 	}
 	if err := requested.Validate(); err != nil {
-		return MaintenanceInspection{}, maintenanceFailure(MaintenanceErrorInvalidRequest, false, false, fmt.Errorf("validate sqlite store inspection lease policy: %w", err))
+		return MaintenanceInspection{}, "", nil, maintenanceFailure(MaintenanceErrorInvalidRequest, false, false, fmt.Errorf("validate sqlite store inspection lease policy: %w", err))
 	}
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return MaintenanceInspection{
 			State: MaintenanceStateMissing, Current: currentSchemaIdentity(), Migratable: migratableSchemaSources(),
 			RequestedLeasePolicy: requested, Reason: "store_missing", SafeDetail: "store file does not exist",
-		}, nil
+		}, "", nil, nil
 	}
 	if err != nil {
-		return failedInspection(requested, err), nil
+		return failedInspection(requested, err), "", nil, nil
 	}
 	if !info.Mode().IsRegular() {
-		return MaintenanceInspection{}, maintenanceFailure(MaintenanceErrorInvalidRequest, false, false, errors.New("sqlite store path is not a regular file"))
+		return MaintenanceInspection{}, "", nil, maintenanceFailure(MaintenanceErrorInvalidRequest, false, false, errors.New("sqlite store path is not a regular file"))
 	}
 	canonical, err := CanonicalDatabasePath(path)
 	if err != nil {
-		return failedInspection(requested, err), nil
+		return failedInspection(requested, err), "", nil, nil
 	}
-	db, err := openMaintenanceDB(canonical, "ro")
+	snapshot, cleanup, busyDetail, err := captureStableDatabaseSnapshot(ctx, canonical)
 	if err != nil {
-		return failedInspection(requested, err), nil
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return MaintenanceInspection{}, "", nil, err
+		}
+		return failedInspection(requested, err), "", nil, nil
+	}
+	if busyDetail != "" {
+		return busyInspection(requested, busyDetail), "", nil, nil
+	}
+	db, err := openMaintenanceDB(snapshot, "rw")
+	if err != nil {
+		cleanup()
+		return failedInspection(requested, err), "", nil, nil
 	}
 	defer db.Close()
 	if _, err := db.ExecContext(ctx, "PRAGMA query_only = ON"); err != nil {
+		_ = db.Close()
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return MaintenanceInspection{}, err
+			cleanup()
+			return MaintenanceInspection{}, "", nil, err
 		}
-		return failedInspection(requested, err), nil
+		cleanup()
+		return failedInspection(requested, err), "", nil, nil
 	}
 	inspection, err := inspectRunner(ctx, db, requested)
 	if err != nil {
+		_ = db.Close()
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return MaintenanceInspection{}, err
+			cleanup()
+			return MaintenanceInspection{}, "", nil, err
 		}
-		return failedInspection(requested, err), nil
+		cleanup()
+		return failedInspection(requested, err), "", nil, nil
 	}
-	return inspection, nil
+	return inspection, snapshot, cleanup, nil
 }
 
 func Verify(ctx context.Context, path string, requested sessiontree.LeasePolicy) (MaintenanceVerification, error) {
-	inspection, err := Inspect(ctx, path, requested)
+	inspection, snapshot, cleanup, err := inspectStableSnapshot(ctx, path, requested)
 	if err != nil {
 		return MaintenanceVerification{}, err
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 	report := MaintenanceVerification{Inspection: inspection}
 	if inspection.State != MaintenanceStateCurrent && inspection.State != MaintenanceStateUpgradeable {
@@ -238,11 +269,7 @@ func Verify(ctx context.Context, path string, requested sessiontree.LeasePolicy)
 	if inspection.State != MaintenanceStateCurrent {
 		return report, nil
 	}
-	canonical, err := CanonicalDatabasePath(path)
-	if err != nil {
-		return MaintenanceVerification{}, err
-	}
-	db, err := openMaintenanceDB(canonical, "ro")
+	db, err := openMaintenanceDB(snapshot, "rw")
 	if err != nil {
 		return MaintenanceVerification{}, err
 	}
@@ -337,6 +364,7 @@ func Migrate(ctx context.Context, path string, request MigrationRequest) (result
 	}
 	defer db.Close()
 	store := &Store{db: db, path: canonical, writerAdmission: admission, leasePolicy: request.LeasePolicy}
+	var verifiedAfter MaintenanceInspection
 	emit(MaintenanceProgress{Phase: MaintenancePhaseMigrating, Status: MaintenanceStatusRunning, Step: 3, Total: 4, SafeToCancel: true})
 	transaction, err := store.withMaintenanceImmediate(ctx, func(tx sqlRunner) error {
 		observed, err := readSchemaIdentity(ctx, tx)
@@ -350,6 +378,13 @@ func Migrate(ctx context.Context, path string, request MigrationRequest) (result
 			return err
 		}
 		emit(MaintenanceProgress{Phase: MaintenancePhaseVerifying, Status: MaintenanceStatusRunning, Step: 4, Total: 4, SafeToCancel: false})
+		verifiedAfter, err = inspectRunner(ctx, tx, request.LeasePolicy)
+		if err != nil {
+			return err
+		}
+		if verifiedAfter.State != MaintenanceStateCurrent || !verifiedAfter.LeasePolicyMatches {
+			return maintenanceErrorForInspection(verifiedAfter)
+		}
 		threads, err := loadThreadAuthorityGraph(ctx, tx)
 		if err != nil {
 			return err
@@ -367,16 +402,8 @@ func Migrate(ctx context.Context, path string, request MigrationRequest) (result
 		return failedMigrationResult(request.Mode, result, transaction.RolledBack, err, emit)
 	}
 	result.Committed = transaction.Committed
-	after, err := Inspect(ctx, path, request.LeasePolicy)
-	if err != nil {
-		result.Changed = true
-		return failedMigrationResult(request.Mode, result, false, fmt.Errorf("inspect migrated sqlite store: %w", err), emit)
-	}
-	result.After = after
-	result.Changed = after.Observed != before.Observed
-	if after.State != MaintenanceStateCurrent || !after.LeasePolicyMatches {
-		return failedMigrationResult(request.Mode, result, false, maintenanceErrorForInspection(after), emit)
-	}
+	result.After = verifiedAfter
+	result.Changed = verifiedAfter.Observed != before.Observed
 	result.Status = MaintenanceStatusReady
 	result.SafeToRetry = true
 	emit(MaintenanceProgress{
@@ -643,8 +670,9 @@ func openMaintenanceDB(path, mode string) (*sql.DB, error) {
 	query := u.Query()
 	query.Set("mode", mode)
 	if mode == "ro" {
-		// Immutable read-only connections avoid creating WAL/SHM sidecars. The
-		// maintenance reader never uses this connection for a live migration.
+		// Immutable mode is reserved for callers that already own an immutable
+		// file. Maintenance inspection uses a private writable snapshot so SQLite
+		// can safely recover a copied WAL without touching the source files.
 		query.Set("immutable", "1")
 	}
 	u.RawQuery = query.Encode()
@@ -655,6 +683,109 @@ func openMaintenanceDB(path, mode string) (*sql.DB, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	return db, nil
+}
+
+type maintenanceFileDigest struct {
+	Exists bool
+	Size   int64
+	Hash   [sha256.Size]byte
+}
+
+func captureStableDatabaseSnapshot(ctx context.Context, path string) (snapshotPath string, cleanup func(), busyDetail string, resultErr error) {
+	root, err := os.MkdirTemp("", "floret-sqlite-maintenance-*")
+	if err != nil {
+		return "", nil, "", err
+	}
+	cleanupSnapshot := func() { _ = os.RemoveAll(root) }
+	cleanup = cleanupSnapshot
+	defer func() {
+		if resultErr != nil || busyDetail != "" {
+			cleanupSnapshot()
+			cleanup = nil
+			snapshotPath = ""
+		}
+	}()
+	snapshotPath = filepath.Join(root, "store.db")
+	sources := []string{path, path + "-wal", path + "-journal"}
+	copied := make([]maintenanceFileDigest, len(sources))
+	for index, source := range sources {
+		if err := ctx.Err(); err != nil {
+			return "", nil, "", err
+		}
+		destination := snapshotPath + strings.TrimPrefix(source, path)
+		copied[index], err = copyMaintenanceSnapshotFile(source, destination)
+		if err != nil {
+			return "", nil, "", err
+		}
+	}
+	for index, source := range sources {
+		if err := ctx.Err(); err != nil {
+			return "", nil, "", err
+		}
+		current, err := digestMaintenanceFile(source)
+		if err != nil {
+			return "", nil, "", err
+		}
+		if current != copied[index] {
+			return "", nil, "store changed while its inspection snapshot was captured", nil
+		}
+	}
+	return snapshotPath, cleanup, "", nil
+}
+
+func copyMaintenanceSnapshotFile(sourcePath, destinationPath string) (maintenanceFileDigest, error) {
+	source, err := os.Open(sourcePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return maintenanceFileDigest{}, nil
+	}
+	if err != nil {
+		return maintenanceFileDigest{}, err
+	}
+	defer source.Close()
+	destination, err := os.OpenFile(destinationPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return maintenanceFileDigest{}, err
+	}
+	hash := sha256.New()
+	size, copyErr := io.Copy(io.MultiWriter(destination, hash), source)
+	closeErr := destination.Close()
+	if copyErr != nil {
+		return maintenanceFileDigest{}, copyErr
+	}
+	if closeErr != nil {
+		return maintenanceFileDigest{}, closeErr
+	}
+	var digest [sha256.Size]byte
+	copy(digest[:], hash.Sum(nil))
+	return maintenanceFileDigest{Exists: true, Size: size, Hash: digest}, nil
+}
+
+func digestMaintenanceFile(path string) (maintenanceFileDigest, error) {
+	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return maintenanceFileDigest{}, nil
+	}
+	if err != nil {
+		return maintenanceFileDigest{}, err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	size, err := io.Copy(hash, file)
+	if err != nil {
+		return maintenanceFileDigest{}, err
+	}
+	var digest [sha256.Size]byte
+	copy(digest[:], hash.Sum(nil))
+	return maintenanceFileDigest{Exists: true, Size: size, Hash: digest}, nil
+}
+
+func busyInspection(requested sessiontree.LeasePolicy, safeDetail string) MaintenanceInspection {
+	return MaintenanceInspection{
+		State: MaintenanceStateBusy, Exists: true, Current: currentSchemaIdentity(),
+		Migratable: migratableSchemaSources(), RequestedLeasePolicy: requested,
+		Retryable: true, SafeToRetry: true, Reason: string(MaintenanceErrorBusy),
+		SafeDetail: safeDetail,
+	}
 }
 
 func failedInspection(requested sessiontree.LeasePolicy, err error) MaintenanceInspection {

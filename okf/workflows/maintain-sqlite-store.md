@@ -18,7 +18,8 @@ error text and never mutates a Store during discovery.
    an apply operation.
 2. Call `InspectSQLiteStore` and `VerifySQLiteStore` first. Render their typed
    state, reason, suggested actions, lease-policy state, and safe detail; both
-   operations are read-only.
+   operations are read-only and use a private stable snapshot without changing
+   the source DB, WAL, or SHM files.
 3. For an upgradeable Store, call `MigrateSQLiteStore` in plan mode with the
    exact observed schema as `ExpectedSchema`.
 4. Show the ordered steps and a clear consequence summary. Require a deliberate
@@ -30,6 +31,15 @@ error text and never mutates a Store during discovery.
 6. Branch on `SQLiteStoreMaintenanceError`, result status, reason,
    `Retryable`, `SafeToRetry`, `Committed`, and `RolledBack`. Verify again after
    success before opening the runtime Store.
+
+If inspection reports `busy`, keep the current data and controls visible, name
+the Store owner or activity when the product knows it, and offer a retry after
+that owner has stopped cleanly. This state means the DB or a sidecar changed
+while Floret captured its private snapshot. A stable live or crash-left WAL or
+rollback journal is read inside the private snapshot and does not create a
+permanent busy loop. Do not label `busy` as corrupt, current, or verified, and
+do not offer reset, force, repair, or direct checkpoint controls through the
+host UI.
 
 # Verify
 

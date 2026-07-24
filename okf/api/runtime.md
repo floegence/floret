@@ -89,6 +89,12 @@ host interface for every runtime operation.
   schema identities, lease-policy state, automatic-migration and exclusive
   access facts, safe retry facts, reason, and product-neutral actions.
   `VerifySQLiteStore` adds typed contract checks under the same read-only rule.
+  Both operations read a private stable DB-plus-sidecar snapshot and confirm that
+  the source bytes stayed stable while that snapshot was captured; they never
+  create or modify the source DB, WAL, or SHM files. Stable live or unrecovered
+  WAL and rollback-journal facts are recovered and verified only inside the
+  private copy. A source that changes during capture returns typed `busy`; that
+  state is neither corruption nor evidence that the current schema was verified.
 * `MigrateSQLiteStore` supports explicit plan and apply modes. Requests carry a
   stable `OperationID` and the exact expected observed schema so a stale plan
   fails instead of migrating changed input. Apply uses the same migration path
