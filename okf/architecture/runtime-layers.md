@@ -134,6 +134,26 @@ User messages may also carry opaque attachment resource references. Floret
 stores the association in the journal and prompt-cache snapshot while the
 `ModelGateway` host resolves the resource into provider-native content. A native
 provider host without that resolver rejects attachments before admission.
+Optional text statistics are immutable host-attested display facts; Floret
+validates, fingerprints, clones, persists, retries, forks, and projects them but
+never reads resource bytes or asserts content truth.
+
+Gateway attachment expansion crosses the context-budget boundary. An expanded
+gateway therefore uses the optional prepare contract to render the complete
+`ModelRequest` once, report a complete exact or conservative estimate and stable
+payload fingerprint, and return a linear in-memory handle. `Engine` owns that
+handle from preparation through one stream or discard, including compaction
+replacement, request-gate/storage failures, cancellation, overflow retry, and
+Store shutdown. Standalone manual compaction closes its validated but unstreamed
+handle after installing the compacted context. Only the fingerprint and estimate
+enter the existing request ledger; the handle never becomes durable state.
+Native providers and descriptor-only gateways retain direct streaming. Their attachment-bearing
+requests use a complete serialized-`ModelRequest` UTF-8-byte upper bound for
+projected pressure, reported as conservative generic-payload estimation rather
+than an exact or provider-rendered token count; attachment-free requests retain
+the legacy generic estimate. The byte bound is partitioned into additive
+fixed/prefix, message, and tool-definition components whose sum equals the full
+bound, so a compatible native-usage anchor observes later attachment growth.
 
 `AgentHarness` is the internal durable conversation layer. Its production
 options receive only `sessiontree.JournalRepo`, so normal runs cannot create,
@@ -221,6 +241,10 @@ for text, files, directories, terminals, and processes; opaque file/directory
 resource identity remains host-owned and is never authorization evidence.
 References are not automatically inserted into provider history or compaction
 summaries. Resource bytes and resource lifecycle remain host-owned.
+Attachment admission is bounded and atomic: invalid UTF-8, unstable or
+multiline descriptor fields, count/size/payload overflow, duplicate resource
+references, and inconsistent optional text statistics fail before journal or
+provider effects.
 
 `RunTurnRequest.SupplementalContext` is the host-facing current-turn context
 slot. AgentHarness forwards it to Engine as provider-request projection input,

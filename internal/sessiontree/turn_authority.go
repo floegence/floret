@@ -114,11 +114,18 @@ type turnFinishLedger struct {
 }
 
 func ValidateAdmitTurnRequest(req AdmitTurnRequest) error {
-	if strings.TrimSpace(req.ThreadID) == "" || strings.TrimSpace(req.TurnID) == "" || strings.TrimSpace(req.RunID) == "" || strings.TrimSpace(req.OwnerID) == "" {
-		return errors.New("turn admission requires thread, turn, run, and owner identities")
-	}
-	if strings.TrimSpace(req.RequestFingerprint) == "" {
-		return errors.New("turn admission request fingerprint is required")
+	return validateAdmitTurnRequest(req, session.ValidateMessageAttachments)
+}
+
+// ValidateAdmitTurnReplayRequest preserves the attachment shape accepted by
+// historical admissions while retaining every other request-shape check.
+func ValidateAdmitTurnReplayRequest(req AdmitTurnRequest) error {
+	return validateAdmitTurnRequest(req, session.ValidateStoredMessageAttachments)
+}
+
+func validateAdmitTurnRequest(req AdmitTurnRequest, validateAttachments func([]session.MessageAttachment) error) error {
+	if err := ValidateAdmitTurnRequestEnvelope(req); err != nil {
+		return err
 	}
 	retrySourceTurnID := strings.TrimSpace(req.RetrySourceTurnID)
 	retrySourceEntryID := strings.TrimSpace(req.RetrySourceEntryID)
@@ -132,6 +139,9 @@ func ValidateAdmitTurnRequest(req AdmitTurnRequest) error {
 		if strings.TrimSpace(req.Input.Content) == "" && len(req.Input.Attachments) == 0 && len(req.Input.References) == 0 {
 			return errors.New("turn admission requires text, attachments, or references")
 		}
+		if err := validateAttachments(req.Input.Attachments); err != nil {
+			return err
+		}
 		if err := session.ValidateMessageReferences(req.Input.References); err != nil {
 			return err
 		}
@@ -142,6 +152,18 @@ func ValidateAdmitTurnRequest(req AdmitTurnRequest) error {
 		if req.Input.Role != "" || strings.TrimSpace(req.Input.Content) != "" || len(req.Input.Attachments) != 0 || len(req.Input.References) != 0 {
 			return errors.New("retry admission cannot contain a replacement user message")
 		}
+	}
+	return nil
+}
+
+// ValidateAdmitTurnRequestEnvelope validates the authority fields required to
+// look up an existing admission before applying new-admission input limits.
+func ValidateAdmitTurnRequestEnvelope(req AdmitTurnRequest) error {
+	if strings.TrimSpace(req.ThreadID) == "" || strings.TrimSpace(req.TurnID) == "" || strings.TrimSpace(req.RunID) == "" || strings.TrimSpace(req.OwnerID) == "" {
+		return errors.New("turn admission requires thread, turn, run, and owner identities")
+	}
+	if strings.TrimSpace(req.RequestFingerprint) == "" {
+		return errors.New("turn admission request fingerprint is required")
 	}
 	return nil
 }
@@ -359,7 +381,7 @@ func (r *MemoryRepo) previewNextEntryIDsLocked(threadID string, count int) ([]st
 }
 
 func (r *MemoryRepo) AdmitTurn(_ context.Context, req AdmitTurnRequest) (AdmitTurnResult, error) {
-	if err := ValidateAdmitTurnRequest(req); err != nil {
+	if err := ValidateAdmitTurnRequestEnvelope(req); err != nil {
 		return AdmitTurnResult{}, err
 	}
 	req.ThreadID = strings.TrimSpace(req.ThreadID)
@@ -376,7 +398,13 @@ func (r *MemoryRepo) AdmitTurn(_ context.Context, req AdmitTurnRequest) (AdmitTu
 		if existing.RunID != strings.TrimSpace(req.RunID) || existing.RequestFingerprint != strings.TrimSpace(req.RequestFingerprint) {
 			return AdmitTurnResult{}, ErrRequestConflict
 		}
+		if err := ValidateAdmitTurnReplayRequest(req); err != nil {
+			return AdmitTurnResult{}, err
+		}
 		return r.replayTurnAdmissionLocked(existing)
+	}
+	if err := ValidateAdmitTurnRequest(req); err != nil {
+		return AdmitTurnResult{}, err
 	}
 	meta, ok := r.threads[strings.TrimSpace(req.ThreadID)]
 	if !ok {

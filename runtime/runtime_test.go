@@ -1137,7 +1137,10 @@ func TestHostPersistsAndProjectsOpaqueMessageAttachments(t *testing.T) {
 	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
-	attachment := MessageAttachment{ResourceRef: "upload:asset-1", Name: "diagram.png", MIMEType: "image/png", SizeBytes: 1234}
+	attachment := MessageAttachment{
+		ResourceRef: "upload:asset-1", Name: "notes.txt", MIMEType: "text/plain", SizeBytes: 1234,
+		TextStats: &MessageAttachmentTextStats{UnicodeCodePointCount: 1200, LogicalLineCount: 35},
+	}
 	if _, err := host.RunTurn(ctx, RunTurnRequest{
 		RunID: "run-1", ThreadID: "thread", TurnID: "turn-1",
 		Input: TurnInput{Attachments: []MessageAttachment{attachment}},

@@ -42,15 +42,33 @@ type subAgentPendingToolCompletionLedger struct {
 }
 
 func ValidatePublishSubAgentPendingToolCompletionRequest(req PublishSubAgentPendingToolCompletionRequest) error {
+	return validatePublishSubAgentPendingToolCompletionRequestAttachments(req, session.ValidateMessageAttachments)
+}
+
+func ValidatePublishSubAgentPendingToolCompletionReplayRequest(req PublishSubAgentPendingToolCompletionRequest) error {
+	return validatePublishSubAgentPendingToolCompletionRequestAttachments(req, session.ValidateStoredMessageAttachments)
+}
+
+func ValidatePublishSubAgentPendingToolCompletionEnvelope(req PublishSubAgentPendingToolCompletionRequest) error {
 	if strings.TrimSpace(req.InputRequestID) == "" || strings.TrimSpace(req.RequestFingerprint) == "" ||
 		strings.TrimSpace(req.SettlementFingerprint) == "" || strings.TrimSpace(req.ParentThreadID) == "" || strings.TrimSpace(req.ChildThreadID) == "" {
 		return errors.New("subagent pending tool completion requires input request, completion fingerprint, settlement fingerprint, parent, and child identities")
+	}
+	return nil
+}
+
+func validatePublishSubAgentPendingToolCompletionRequestAttachments(req PublishSubAgentPendingToolCompletionRequest, validateAttachments func([]session.MessageAttachment) error) error {
+	if err := ValidatePublishSubAgentPendingToolCompletionEnvelope(req); err != nil {
+		return err
 	}
 	if req.Target.ThreadID != strings.TrimSpace(req.ChildThreadID) {
 		return ErrInvalidThreadAuthority
 	}
 	if req.Message.Role != session.User || (strings.TrimSpace(req.Message.Content) == "" && len(req.Message.Attachments) == 0) {
 		return errors.New("subagent pending tool completion requires structured user input")
+	}
+	if err := validateAttachments(req.Message.Attachments); err != nil {
+		return err
 	}
 	if err := session.ValidateMessageReferences(req.Message.References); err != nil {
 		return err
@@ -61,7 +79,7 @@ func ValidatePublishSubAgentPendingToolCompletionRequest(req PublishSubAgentPend
 }
 
 func (r *MemoryRepo) PublishSubAgentPendingToolCompletion(_ context.Context, req PublishSubAgentPendingToolCompletionRequest) (PublishSubAgentPendingToolCompletionResult, error) {
-	if err := ValidatePublishSubAgentPendingToolCompletionRequest(req); err != nil {
+	if err := ValidatePublishSubAgentPendingToolCompletionEnvelope(req); err != nil {
 		return PublishSubAgentPendingToolCompletionResult{}, err
 	}
 	r.mu.Lock()
@@ -73,12 +91,18 @@ func (r *MemoryRepo) PublishSubAgentPendingToolCompletion(_ context.Context, req
 			existing.ParentThreadID != req.ParentThreadID || existing.ChildThreadID != req.ChildThreadID || existing.Target != req.Target {
 			return PublishSubAgentPendingToolCompletionResult{}, ErrSubAgentRequestConflict
 		}
+		if err := ValidatePublishSubAgentPendingToolCompletionReplayRequest(req); err != nil {
+			return PublishSubAgentPendingToolCompletionResult{}, err
+		}
 		settlement, settlementOK := findEntry(r.entries[existing.ChildThreadID], existing.SettlementEntryID)
 		input, inputOK := r.subAgentInputByIDLocked(existing.SubAgentInputID)
 		if !settlementOK || !inputOK {
 			return PublishSubAgentPendingToolCompletionResult{}, ErrAuthorityCorrupt
 		}
 		return PublishSubAgentPendingToolCompletionResult{Settlement: settlement, SettlementReplayed: true, Input: input, Replayed: true}, nil
+	}
+	if err := ValidatePublishSubAgentPendingToolCompletionRequest(req); err != nil {
+		return PublishSubAgentPendingToolCompletionResult{}, err
 	}
 	parent, ok := r.threads[req.ParentThreadID]
 	if !ok {

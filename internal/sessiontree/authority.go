@@ -140,7 +140,7 @@ func (r *MemoryRepo) PublishSubAgent(_ context.Context, req PublishSubAgentReque
 			!artifact.EqualClosure(existing.ArtifactClosure, req.ArtifactClosure) {
 			return PublishSubAgentResult{}, ErrRequestConflict
 		}
-		if err := validateSubAgentPublicationRequest(req); err != nil {
+		if err := ValidatePublishSubAgentReplayRequest(req); err != nil {
 			return PublishSubAgentResult{}, err
 		}
 		input, ok := r.subAgentInputByIDLocked(existing.SubAgentInputID)
@@ -223,11 +223,11 @@ func (r *MemoryRepo) rollbackSubAgentPublicationChildLocked(childThreadID string
 }
 
 func (r *MemoryRepo) PublishSubAgentInput(_ context.Context, req PublishSubAgentInputRequest) (SubAgentInputRecord, bool, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if err := ValidatePublishSubAgentInputRequest(req); err != nil {
+	if err := ValidatePublishSubAgentInputEnvelope(req); err != nil {
 		return SubAgentInputRecord{}, false, err
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	parent, ok := r.threads[req.ParentThreadID]
 	if !ok {
 		return SubAgentInputRecord{}, false, ErrThreadNotFound
@@ -239,11 +239,17 @@ func (r *MemoryRepo) PublishSubAgentInput(_ context.Context, req PublishSubAgent
 		if existing.ParentThreadID != req.ParentThreadID || existing.ChildThreadID != req.ChildThreadID || existing.RequestFingerprint != req.RequestFingerprint {
 			return SubAgentInputRecord{}, false, ErrSubAgentRequestConflict
 		}
+		if err := ValidatePublishSubAgentInputReplayRequest(req); err != nil {
+			return SubAgentInputRecord{}, false, err
+		}
 		input, ok := r.subAgentInputByIDLocked(existing.SubAgentInputID)
 		if !ok {
 			return SubAgentInputRecord{}, false, fmt.Errorf("subagent input request %q input is missing", req.InputRequestID)
 		}
 		return input, true, nil
+	}
+	if err := ValidatePublishSubAgentInputRequest(req); err != nil {
+		return SubAgentInputRecord{}, false, err
 	}
 	child, ok := r.threads[req.ChildThreadID]
 	if !ok {
@@ -443,6 +449,10 @@ func (r *MemoryRepo) subAgentInputByIDLocked(inputID string) (SubAgentInputRecor
 }
 
 func validateSubAgentPublicationRequest(req PublishSubAgentRequest) error {
+	return validateSubAgentPublicationRequestAttachments(req, session.ValidateMessageAttachments)
+}
+
+func validateSubAgentPublicationRequestAttachments(req PublishSubAgentRequest, validateAttachments func([]session.MessageAttachment) error) error {
 	if err := validateSubAgentPublicationIdentity(req); err != nil {
 		return err
 	}
@@ -463,6 +473,9 @@ func validateSubAgentPublicationRequest(req PublishSubAgentRequest) error {
 	}
 	if strings.TrimSpace(req.Message.Content) == "" && len(req.Message.Attachments) == 0 {
 		return errors.New("subagent publication requires a message")
+	}
+	if err := validateAttachments(req.Message.Attachments); err != nil {
+		return err
 	}
 	if err := session.ValidateMessageReferences(req.Message.References); err != nil {
 		return err
@@ -507,6 +520,10 @@ func ValidatePublishSubAgentIdentity(req PublishSubAgentRequest) error {
 // first-input identity before a backend starts the atomic publication.
 func ValidatePublishSubAgentRequest(req PublishSubAgentRequest) error {
 	return validateSubAgentPublicationRequest(req)
+}
+
+func ValidatePublishSubAgentReplayRequest(req PublishSubAgentRequest) error {
+	return validateSubAgentPublicationRequestAttachments(req, session.ValidateStoredMessageAttachments)
 }
 
 // PublishSubAgentChildMatches verifies the durable child authority produced by
@@ -554,11 +571,29 @@ func (r *MemoryRepo) validateSubAgentPublicationArtifactsLocked(closure artifact
 }
 
 func ValidatePublishSubAgentInputRequest(req PublishSubAgentInputRequest) error {
+	return validatePublishSubAgentInputRequestAttachments(req, session.ValidateMessageAttachments)
+}
+
+func ValidatePublishSubAgentInputReplayRequest(req PublishSubAgentInputRequest) error {
+	return validatePublishSubAgentInputRequestAttachments(req, session.ValidateStoredMessageAttachments)
+}
+
+func ValidatePublishSubAgentInputEnvelope(req PublishSubAgentInputRequest) error {
 	if strings.TrimSpace(req.InputRequestID) == "" || strings.TrimSpace(req.RequestFingerprint) == "" || strings.TrimSpace(req.ParentThreadID) == "" || strings.TrimSpace(req.ChildThreadID) == "" {
 		return errors.New("subagent input requires request, fingerprint, parent, and child identities")
 	}
+	return nil
+}
+
+func validatePublishSubAgentInputRequestAttachments(req PublishSubAgentInputRequest, validateAttachments func([]session.MessageAttachment) error) error {
+	if err := ValidatePublishSubAgentInputEnvelope(req); err != nil {
+		return err
+	}
 	if strings.TrimSpace(req.Message.Content) == "" && len(req.Message.Attachments) == 0 {
 		return errors.New("subagent input requires a message")
+	}
+	if err := validateAttachments(req.Message.Attachments); err != nil {
+		return err
 	}
 	if err := session.ValidateMessageReferences(req.Message.References); err != nil {
 		return err

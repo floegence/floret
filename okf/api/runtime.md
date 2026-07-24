@@ -121,8 +121,14 @@ host interface for every runtime operation.
   request whose `ThreadID` differs from the handle binding.
 * `RunTurnRequest.Input` is `TurnInput{Text, Attachments, References}`. At least
   one field must be present. Each `MessageAttachment` carries an opaque durable
-  `ResourceRef`, name, MIME type, and non-negative size; Floret persists and
-  projects the attachment but never resolves or reads the host resource.
+  `ResourceRef`, name, MIME type, non-negative size, and optional host-attested
+  `MessageAttachmentTextStats`. `nil` statistics mean unknown/non-text, while
+  `{0,0}` means known empty text. Floret persists and projects the attachment
+  but never resolves or reads the host resource. Public constants bound the
+  count, every string field, item and turn referenced bytes, and total
+  attachment descriptor JSON; UTF-8, trim stability, single-line fields,
+  duplicate resource references, and text-stat consistency fail before
+  admission.
   `MessageReference` is an ordered, durable, user-visible closed union of
   `text`, `file`, `directory`, `terminal`, and `process`. It carries a stable
   message-local `ReferenceID`, label, optional display text, truncation fact,
@@ -326,6 +332,24 @@ Provider-visible user messages carry attachment resource references through
 `ModelMessage` so the host adapter can resolve them into provider-native image or
 file content. Opaque attachments are rejected before admission when no
 `ModelGateway` exists; they never degrade into filename text.
+`ModelGatewayCapabilities.AttachmentPayload` remains descriptor-only by default.
+Descriptor-only transport remains direct. Requests without attachments retain
+the legacy generic estimate; requests with attachment descriptors use a
+complete serialized-`ModelRequest` UTF-8-byte upper bound for context pressure,
+reported as conservative generic-payload estimation rather than exact token
+usage. Its additive prefix, message, and tool components sum to the complete
+bound so compatible native-usage anchors retain attachment deltas.
+A gateway that selects `ModelGatewayAttachmentPayloadExpanded` must also
+implement `ModelGatewayRequestPreparer`. Its `PreparedModelRequest` is an
+in-memory linear handle for one exact request: it supplies a stable rendered
+payload fingerprint and a complete exact/conservative token estimate, is
+streamed at most once, and is closed on every consumed or discarded path.
+Floret uses the prepared estimate before context pressure, compaction, and
+`MaxInputTokens` enforcement; standalone `CompactContext` closes the validated
+handle without streaming it. The handle itself never enters journal, prompt
+cache, provider state, replay identity, or JSON; only its stable fingerprint is
+recorded in the existing provider payload-hash field. Preparation must not
+perform irreversible provider upload or other non-idempotent external work.
 Canonical `MessageReference` values are public conversation facts, not automatic
 provider-history content. The current turn receives any richer model material
 only through validated `SupplementalContext`. Floret strips references from

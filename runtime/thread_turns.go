@@ -547,7 +547,7 @@ func threadTurnStartedIdentity(events []ThreadDetailEvent) (RunID, int64, time.T
 func canonicalTurnUserInput(events []ThreadDetailEvent, turnID TurnID) (string, string, []MessageAttachment, []MessageReference) {
 	for _, event := range events {
 		if event.TurnID == turnID && event.Kind == ThreadDetailEventUserMessage && event.Message != nil {
-			return event.ID, event.Message.Content, append([]MessageAttachment(nil), event.Message.Attachments...), append([]MessageReference(nil), event.Message.References...)
+			return event.ID, event.Message.Content, cloneMessageAttachments(event.Message.Attachments), append([]MessageReference(nil), event.Message.References...)
 		}
 	}
 	return "", "", nil, nil

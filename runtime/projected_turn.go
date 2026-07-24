@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/floegence/floret/config"
@@ -81,6 +83,39 @@ type ModelGateway interface {
 	StreamModel(context.Context, ModelRequest) (<-chan ModelEvent, error)
 }
 
+// ModelGatewayRequestPreparer optionally renders one complete model request
+// before Floret applies context pressure and request limits.
+type ModelGatewayRequestPreparer interface {
+	PrepareModelRequest(context.Context, ModelRequest) (PreparedModelRequest, error)
+}
+
+// PreparedModelRequest is an immutable, single-use rendering of one exact
+// ModelRequest. StreamModel consumes it; Close discards or releases it and must
+// be idempotent. Prepared handles are in-memory only.
+type PreparedModelRequest interface {
+	StreamModel(context.Context) (<-chan ModelEvent, error)
+	TokenEstimate() ModelRequestTokenEstimate
+	RenderedPayloadFingerprint() string
+	Close() error
+}
+
+type ModelRequestTokenEstimateCoverage string
+
+const ModelRequestTokenEstimateCoverageComplete ModelRequestTokenEstimateCoverage = "complete_request"
+
+// ModelRequestTokenEstimate covers the complete rendered request, including
+// host-expanded attachment payloads.
+type ModelRequestTokenEstimate struct {
+	PrefixTokens         int64
+	MessageTokens        int64
+	ToolDefinitionTokens int64
+	EstimatedInputTokens int64
+	Source               string
+	Method               string
+	Confidence           string
+	Coverage             ModelRequestTokenEstimateCoverage
+}
+
 // ModelGatewayIdentity names the host-owned model transport used by a
 // ModelGateway-backed Host.
 type ModelGatewayIdentity struct {
@@ -143,6 +178,14 @@ type ModelMessage struct {
 }
 
 func (m ModelMessage) Validate() error {
+	return m.validateAttachments(session.ValidateMessageAttachments)
+}
+
+func (m ModelMessage) validateStored() error {
+	return m.validateAttachments(session.ValidateStoredMessageAttachments)
+}
+
+func (m ModelMessage) validateAttachments(validate func([]session.MessageAttachment) error) error {
 	if !m.Role.Valid() {
 		return fmt.Errorf("unsupported model message role %q", m.Role)
 	}
@@ -158,10 +201,8 @@ func (m ModelMessage) Validate() error {
 		if strings.TrimSpace(m.Text) == "" && len(m.Attachments) == 0 {
 			return errors.New("user model message requires text or attachments")
 		}
-		for index, attachment := range m.Attachments {
-			if err := attachment.Validate(); err != nil {
-				return fmt.Errorf("user model message attachment %d: %w", index, err)
-			}
+		if err := validate(sessionMessageAttachments(m.Attachments)); err != nil {
+			return fmt.Errorf("user model message attachments: %w", err)
 		}
 		if m.Reasoning != "" || len(m.ToolCalls) > 0 || m.ToolResult != nil {
 			return errors.New("user model message contains assistant or tool fields")
@@ -385,9 +426,13 @@ func engineManualCompactionRequest(manual ManualCompactionRequest) engine.Manual
 	}
 }
 
-func projectedModelProvider(cfg config.Config, gateway ModelGateway, identity ModelGatewayIdentity) (provider.Provider, error) {
+func projectedModelProvider(cfg config.Config, gateway ModelGateway, identity ModelGatewayIdentity, capabilities ModelGatewayCapabilities) (provider.Provider, error) {
 	if gateway != nil {
-		return modelGatewayProvider{gateway: gateway, identity: identity}, nil
+		direct := modelGatewayProvider{gateway: gateway, identity: identity}
+		if capabilities.AttachmentPayload == ModelGatewayAttachmentPayloadExpanded {
+			return preparedModelGatewayProvider{modelGatewayProvider: direct}, nil
+		}
+		return direct, nil
 	}
 	return adapters.NewProvider(cfg)
 }
@@ -460,19 +505,178 @@ type modelGatewayProvider struct {
 	identity ModelGatewayIdentity
 }
 
+type preparedModelGatewayProvider struct {
+	modelGatewayProvider
+}
+
+func (p preparedModelGatewayProvider) PrepareRequest(ctx context.Context, req provider.Request) (provider.PreparedRequest, error) {
+	if p.gateway == nil {
+		return nil, errors.New("model gateway is required")
+	}
+	modelReq, err := p.modelRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	preparer, ok := p.gateway.(ModelGatewayRequestPreparer)
+	if !ok {
+		return nil, errors.New("expanded model gateway requires prepared request support")
+	}
+	prepared, err := preparer.PrepareModelRequest(ctx, modelReq)
+	if err != nil {
+		return nil, err
+	}
+	if prepared == nil {
+		return nil, errors.New("model gateway returned a nil prepared request")
+	}
+	return newModelGatewayPreparedRequest(prepared), nil
+}
+
 func (p modelGatewayProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
 	if p.gateway == nil {
 		return nil, errors.New("model gateway is required")
 	}
-	providerMessages, err := provider.MessagesWithEphemeralUser(req.Messages, req.EphemeralUser)
+	modelReq, err := p.modelRequest(req)
 	if err != nil {
 		return nil, err
+	}
+	return streamModelGateway(ctx, func(ctx context.Context) (<-chan ModelEvent, error) {
+		return p.gateway.StreamModel(ctx, modelReq)
+	})
+}
+
+func (p modelGatewayProvider) EstimateTokens(_ context.Context, req provider.Request) (provider.TokenEstimate, error) {
+	if !providerRequestHasAttachmentDescriptors(req) {
+		return provider.GenericRequestEstimate(req)
+	}
+	modelReq, err := p.modelRequest(req)
+	if err != nil {
+		return provider.TokenEstimate{}, err
+	}
+	return descriptorModelRequestEstimate(modelReq)
+}
+
+func descriptorModelRequestEstimate(modelReq ModelRequest) (provider.TokenEstimate, error) {
+	fullBytes, err := serializedModelRequestBytes(modelReq)
+	if err != nil {
+		return provider.TokenEstimate{}, err
+	}
+	base := modelReq
+	base.Messages = []ModelMessage{}
+	base.Tools = []tools.ToolDefinition{}
+	base.HostedTools = []HostedToolDefinition{}
+	baseBytes, err := serializedModelRequestBytes(base)
+	if err != nil {
+		return provider.TokenEstimate{}, err
+	}
+
+	prefixLength := 0
+	for prefixLength < len(modelReq.Messages) && modelReq.Messages[prefixLength].Role == ModelMessageRoleSystem {
+		prefixLength++
+	}
+	prefixDelta, err := serializedModelRequestSectionDelta(base, func(req *ModelRequest) {
+		req.Messages = modelReq.Messages[:prefixLength]
+	})
+	if err != nil {
+		return provider.TokenEstimate{}, err
+	}
+	messageDelta, err := serializedModelRequestSectionDelta(base, func(req *ModelRequest) {
+		req.Messages = modelReq.Messages[prefixLength:]
+	})
+	if err != nil {
+		return provider.TokenEstimate{}, err
+	}
+	toolDelta, err := serializedModelRequestSectionDelta(base, func(req *ModelRequest) {
+		req.Tools = modelReq.Tools
+		req.HostedTools = modelReq.HostedTools
+	})
+	if err != nil {
+		return provider.TokenEstimate{}, err
+	}
+	prefixTokens, err := safeModelRequestEstimateSum(baseBytes, prefixDelta)
+	if err != nil {
+		return provider.TokenEstimate{}, err
+	}
+	componentTotal, err := safeModelRequestEstimateSum(prefixTokens, messageDelta, toolDelta)
+	if err != nil {
+		return provider.TokenEstimate{}, err
+	}
+	if componentTotal > fullBytes {
+		return provider.TokenEstimate{}, fmt.Errorf("descriptor-only model gateway estimate components %d exceed complete request bytes %d", componentTotal, fullBytes)
+	}
+	messageDelta, err = safeModelRequestEstimateSum(messageDelta, fullBytes-componentTotal)
+	if err != nil {
+		return provider.TokenEstimate{}, err
+	}
+	return provider.TokenEstimate{
+		PrefixTokens:         prefixTokens,
+		MessageTokens:        messageDelta,
+		ToolDefinitionTokens: toolDelta,
+		EstimatedInputTokens: fullBytes,
+		Source:               "model_gateway_request_json_utf8_byte_upper_bound",
+		Method:               provider.TokenEstimateGenericPayload,
+		Confidence:           provider.EstimateConservative,
+		Coverage:             provider.TokenEstimateCoverageComplete,
+	}, nil
+}
+
+func serializedModelRequestSectionDelta(base ModelRequest, add func(*ModelRequest)) (int64, error) {
+	baseBytes, err := serializedModelRequestBytes(base)
+	if err != nil {
+		return 0, err
+	}
+	variant := base
+	add(&variant)
+	variantBytes, err := serializedModelRequestBytes(variant)
+	if err != nil {
+		return 0, err
+	}
+	if variantBytes < baseBytes {
+		return 0, errors.New("descriptor-only model gateway estimate section reduced serialized request size")
+	}
+	return variantBytes - baseBytes, nil
+}
+
+func serializedModelRequestBytes(req ModelRequest) (int64, error) {
+	raw, err := json.Marshal(req)
+	if err != nil {
+		return 0, fmt.Errorf("encode descriptor-only model gateway request estimate: %w", err)
+	}
+	if uint64(len(raw)) > uint64(math.MaxInt64) {
+		return 0, errors.New("descriptor-only model gateway request estimate exceeds int64")
+	}
+	return int64(len(raw)), nil
+}
+
+func safeModelRequestEstimateSum(values ...int64) (int64, error) {
+	var total int64
+	for _, value := range values {
+		if value < 0 || value > math.MaxInt64-total {
+			return 0, errors.New("descriptor-only model gateway request estimate components overflow int64")
+		}
+		total += value
+	}
+	return total, nil
+}
+
+func providerRequestHasAttachmentDescriptors(req provider.Request) bool {
+	for _, message := range req.Messages {
+		if len(message.Attachments) > 0 {
+			return true
+		}
+	}
+	return req.EphemeralUser != nil && len(req.EphemeralUser.Message.Attachments) > 0
+}
+
+func (p modelGatewayProvider) modelRequest(req provider.Request) (ModelRequest, error) {
+	providerMessages, err := provider.MessagesWithEphemeralUser(req.Messages, req.EphemeralUser)
+	if err != nil {
+		return ModelRequest{}, err
 	}
 	messages, err := runtimeModelMessages(providerMessages)
 	if err != nil {
-		return nil, err
+		return ModelRequest{}, err
 	}
-	stream, err := p.gateway.StreamModel(ctx, ModelRequest{
+	return ModelRequest{
 		RunID:           RunID(req.RunID),
 		ThreadID:        ThreadID(req.ThreadID),
 		TurnID:          TurnID(req.TurnID),
@@ -488,7 +692,11 @@ func (p modelGatewayProvider) Stream(ctx context.Context, req provider.Request) 
 		Reasoning:       configbridge.PublicReasoningSelection(req.Reasoning),
 		PreviousState:   modelState(req.PreviousState),
 		Labels:          providerRequestLabels(req.Labels),
-	})
+	}, nil
+}
+
+func streamModelGateway(ctx context.Context, streamModel func(context.Context) (<-chan ModelEvent, error)) (<-chan provider.StreamEvent, error) {
+	stream, err := streamModel(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -516,6 +724,88 @@ func (p modelGatewayProvider) Stream(ctx context.Context, req provider.Request) 
 	return out, nil
 }
 
+type modelGatewayPreparedRequest struct {
+	mu           sync.Mutex
+	closeOnce    sync.Once
+	streamed     bool
+	closed       bool
+	closeErr     error
+	stream       func(context.Context) (<-chan ModelEvent, error)
+	close        func() error
+	estimate     provider.TokenEstimate
+	fingerprint  string
+	enforceLimit bool
+}
+
+func newModelGatewayPreparedRequest(prepared PreparedModelRequest) *modelGatewayPreparedRequest {
+	estimate := prepared.TokenEstimate()
+	return &modelGatewayPreparedRequest{
+		stream: prepared.StreamModel,
+		close:  prepared.Close,
+		estimate: provider.TokenEstimate{
+			PrefixTokens: estimate.PrefixTokens, MessageTokens: estimate.MessageTokens,
+			ToolDefinitionTokens: estimate.ToolDefinitionTokens, EstimatedInputTokens: estimate.EstimatedInputTokens,
+			Source: estimate.Source, Method: provider.TokenEstimateMethod(estimate.Method),
+			Confidence: provider.EstimateConfidence(estimate.Confidence), Coverage: provider.TokenEstimateCoverage(estimate.Coverage),
+		},
+		fingerprint:  strings.TrimSpace(prepared.RenderedPayloadFingerprint()),
+		enforceLimit: true,
+	}
+}
+
+func (p *modelGatewayPreparedRequest) Stream(ctx context.Context) (<-chan provider.StreamEvent, error) {
+	if p == nil {
+		return nil, errors.New("prepared model request is required")
+	}
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil, errors.New("prepared model request is closed")
+	}
+	if p.streamed {
+		p.mu.Unlock()
+		return nil, errors.New("prepared model request was already consumed")
+	}
+	p.streamed = true
+	stream := p.stream
+	p.mu.Unlock()
+	return streamModelGateway(ctx, stream)
+}
+
+func (p *modelGatewayPreparedRequest) TokenEstimate() provider.TokenEstimate {
+	if p == nil {
+		return provider.TokenEstimate{}
+	}
+	return p.estimate
+}
+
+func (p *modelGatewayPreparedRequest) PayloadFingerprint() string {
+	if p == nil {
+		return ""
+	}
+	return p.fingerprint
+}
+
+func (p *modelGatewayPreparedRequest) EnforceInputTokenLimit() bool {
+	return p != nil && p.enforceLimit
+}
+
+func (p *modelGatewayPreparedRequest) Close() error {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	p.closed = true
+	closePrepared := p.close
+	p.mu.Unlock()
+	p.closeOnce.Do(func() {
+		if closePrepared != nil {
+			p.closeErr = closePrepared()
+		}
+	})
+	return p.closeErr
+}
+
 func runtimeModelMessages(messages []session.Message) ([]ModelMessage, error) {
 	out := make([]ModelMessage, 0, len(messages))
 	for index := 0; index < len(messages); {
@@ -527,7 +817,7 @@ func runtimeModelMessages(messages []session.Message) ([]ModelMessage, error) {
 				Text:        msg.Content,
 				Attachments: runtimeMessageAttachments(msg.Attachments),
 			}
-			if err := projected.Validate(); err != nil {
+			if err := projected.validateStored(); err != nil {
 				return nil, fmt.Errorf("model message %d: %w", index, err)
 			}
 			out = append(out, projected)
@@ -582,12 +872,39 @@ func runtimeMessageAttachments(in []session.MessageAttachment) []MessageAttachme
 	}
 	out := make([]MessageAttachment, 0, len(in))
 	for _, attachment := range in {
+		var textStats *MessageAttachmentTextStats
+		if attachment.TextStats != nil {
+			textStats = &MessageAttachmentTextStats{
+				UnicodeCodePointCount: attachment.TextStats.UnicodeCodePointCount,
+				LogicalLineCount:      attachment.TextStats.LogicalLineCount,
+			}
+		}
 		out = append(out, MessageAttachment{
 			ResourceRef: attachment.ResourceRef,
 			Name:        attachment.Name,
 			MIMEType:    attachment.MIMEType,
 			SizeBytes:   attachment.SizeBytes,
+			TextStats:   textStats,
 		})
+	}
+	return out
+}
+
+func cloneMessageAttachment(attachment MessageAttachment) MessageAttachment {
+	if attachment.TextStats != nil {
+		stats := *attachment.TextStats
+		attachment.TextStats = &stats
+	}
+	return attachment
+}
+
+func cloneMessageAttachments(attachments []MessageAttachment) []MessageAttachment {
+	if attachments == nil {
+		return nil
+	}
+	out := make([]MessageAttachment, len(attachments))
+	for index, attachment := range attachments {
+		out[index] = cloneMessageAttachment(attachment)
 	}
 	return out
 }

@@ -369,7 +369,7 @@ func observeMessages(messages []session.Message) []ObservedSessionMessage {
 		out = append(out, ObservedSessionMessage{
 			Role:                 string(msg.Role),
 			Content:              msg.Content,
-			Attachments:          append([]session.MessageAttachment(nil), msg.Attachments...),
+			Attachments:          session.CloneMessageAttachments(msg.Attachments),
 			References:           append([]session.MessageReference(nil), msg.References...),
 			Reasoning:            msg.Reasoning,
 			ToolCallID:           msg.ToolCallID,

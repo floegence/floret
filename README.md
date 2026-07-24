@@ -312,7 +312,29 @@ and call `SetThreadTitle`; they must not store a second title copy.
 contain text, opaque `MessageAttachment` resource references, or both. Attachment
 resources remain host-owned and are resolved only by a host-supplied
 `ModelGateway`; Floret persists the message-to-resource association without
-reading the resource or storing file bytes.
+reading the resource or storing file bytes. An attachment may include optional
+host-attested `TextStats` with Unicode code-point and logical-line counts;
+Floret validates and preserves that immutable display snapshot but does not
+derive it from MIME type or content. Public hard limits bound attachment count,
+field size, referenced byte totals, and descriptor JSON before admission.
+
+A gateway that expands attachments into provider-native content declares
+`ModelGatewayAttachmentPayloadExpanded` and implements the optional
+`ModelGatewayRequestPreparer`. Preparation receives the complete `ModelRequest`
+and returns one immutable, single-use `PreparedModelRequest`, a stable rendered
+payload fingerprint, and a complete exact or conservative token estimate.
+Floret uses that estimate for context pressure and input-limit checks, streams
+the same prepared instance, and closes every prepared handle on compaction,
+request rejection, cancellation, startup failure, normal completion, or Store
+shutdown; standalone manual compaction closes its validated handle without
+streaming it. The handle is never journaled, cached, or persisted. Existing
+descriptor-only gateways keep the original direct `ModelGateway` contract and
+the legacy estimate for requests without attachments. When attachment
+descriptors are present, Floret conservatively counts at least one input token
+per UTF-8 byte of the complete serialized `ModelRequest`; this complete-request
+upper bound is partitioned into additive prefix, message, and tool components so
+native-usage anchors retain attachment deltas. It participates in context
+pressure but is not an exact token count.
 
 When a host needs a durable display projection, use `ThreadTurnProjection` and
 the public detail APIs. Do not read Floret's storage tables or rebuild

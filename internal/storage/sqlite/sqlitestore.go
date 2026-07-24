@@ -584,6 +584,9 @@ func appendWithRunner(ctx context.Context, tx sqlRunner, entry sessiontree.Entry
 	if err := validateSQLiteTurnLeaseMutation(ctx, entry.ThreadID, entry.TurnID, activeLease, now().UTC()); err != nil {
 		return sessiontree.Entry{}, err
 	}
+	if err := sessiontree.ValidateNewEntryMessageAttachments(entry); err != nil {
+		return sessiontree.Entry{}, err
+	}
 	if err := sessiontree.ValidateEntryMessageReferences(entry); err != nil {
 		return sessiontree.Entry{}, err
 	}

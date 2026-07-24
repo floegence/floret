@@ -401,10 +401,16 @@ type TurnSupplementalContextItem struct {
 // user message. ResourceRef is opaque to Floret and is resolved only by the
 // host's ModelGateway implementation.
 type MessageAttachment struct {
-	ResourceRef string `json:"resource_ref"`
-	Name        string `json:"name"`
-	MIMEType    string `json:"mime_type"`
-	SizeBytes   int64  `json:"size_bytes,omitempty"`
+	ResourceRef string                      `json:"resource_ref"`
+	Name        string                      `json:"name"`
+	MIMEType    string                      `json:"mime_type"`
+	SizeBytes   int64                       `json:"size_bytes,omitempty"`
+	TextStats   *MessageAttachmentTextStats `json:"text_stats,omitempty"`
+}
+
+type MessageAttachmentTextStats struct {
+	UnicodeCodePointCount int64 `json:"unicode_code_points"`
+	LogicalLineCount      int64 `json:"logical_lines"`
 }
 
 type MessageReferenceKind string
@@ -422,6 +428,13 @@ const (
 	MaxMessageReferenceTextRunes          = 12_000
 	MaxMessageReferenceResourceRefBytes   = 8_192
 	MaxMessageReferencesPayloadBytes      = 256 * 1024
+	MaxMessageAttachmentsPerTurn          = 32
+	MaxMessageAttachmentResourceRefBytes  = 16 * 1024
+	MaxMessageAttachmentNameRunes         = 1024
+	MaxMessageAttachmentMIMETypeBytes     = 512
+	MaxMessageAttachmentSizeBytes         = 64 * 1024 * 1024
+	MaxMessageAttachmentsTotalSizeBytes   = 256 * 1024 * 1024
+	MaxMessageAttachmentsPayloadBytes     = 512 * 1024
 	MaxTurnSupplementalContextItems       = 128
 	MaxTurnSupplementalContextKindRunes   = 128
 	MaxTurnSupplementalContextTitleRunes  = 256
@@ -550,19 +563,7 @@ func runtimeEffectAuthorizationError(err error) error {
 }
 
 func (a MessageAttachment) Validate() error {
-	if strings.TrimSpace(a.ResourceRef) == "" {
-		return errors.New("message attachment resource ref is required")
-	}
-	if strings.TrimSpace(a.Name) == "" {
-		return errors.New("message attachment name is required")
-	}
-	if strings.TrimSpace(a.MIMEType) == "" {
-		return errors.New("message attachment MIME type is required")
-	}
-	if a.SizeBytes < 0 {
-		return errors.New("message attachment size must be non-negative")
-	}
-	return nil
+	return sessionMessageAttachment(a).Validate()
 }
 
 type TurnInput struct {
@@ -575,16 +576,8 @@ func (i TurnInput) Validate() error {
 	if strings.TrimSpace(i.Text) == "" && len(i.Attachments) == 0 && len(i.References) == 0 {
 		return errors.New("turn input requires text, attachments, or references")
 	}
-	seen := make(map[string]struct{}, len(i.Attachments))
-	for index, attachment := range i.Attachments {
-		if err := attachment.Validate(); err != nil {
-			return fmt.Errorf("turn input attachment %d: %w", index, err)
-		}
-		ref := strings.TrimSpace(attachment.ResourceRef)
-		if _, ok := seen[ref]; ok {
-			return fmt.Errorf("turn input contains duplicate attachment resource ref %q", ref)
-		}
-		seen[ref] = struct{}{}
+	if err := session.ValidateMessageAttachments(sessionMessageAttachments(i.Attachments)); err != nil {
+		return fmt.Errorf("turn input: %w", err)
 	}
 	return validateMessageReferences(i.References)
 }
@@ -2365,7 +2358,7 @@ func resolveHostConfigAndProvider(opts providerHostOptions) (config.Config, prov
 		if err != nil {
 			return config.Config{}, nil, err
 		}
-		modelProvider, err := projectedModelProvider(cfg, opts.ModelGateway, identity)
+		modelProvider, err := projectedModelProvider(cfg, opts.ModelGateway, identity, opts.ModelGatewayCapabilities)
 		if err != nil {
 			return config.Config{}, nil, err
 		}
@@ -2375,7 +2368,7 @@ func resolveHostConfigAndProvider(opts providerHostOptions) (config.Config, prov
 	if err != nil {
 		return config.Config{}, nil, err
 	}
-	modelProvider, err := projectedModelProvider(cfg, nil, ModelGatewayIdentity{})
+	modelProvider, err := projectedModelProvider(cfg, nil, ModelGatewayIdentity{}, ModelGatewayCapabilities{})
 	if err != nil {
 		return config.Config{}, nil, err
 	}
@@ -2961,13 +2954,8 @@ func (h *providerHost) RunTurn(ctx context.Context, req RunTurnRequest) (TurnRes
 }
 
 func normalizeTurnInput(input TurnInput) (TurnInput, error) {
-	input.Attachments = append([]MessageAttachment(nil), input.Attachments...)
+	input.Attachments = cloneMessageAttachments(input.Attachments)
 	input.References = append([]MessageReference(nil), input.References...)
-	for index := range input.Attachments {
-		input.Attachments[index].ResourceRef = strings.TrimSpace(input.Attachments[index].ResourceRef)
-		input.Attachments[index].Name = strings.TrimSpace(input.Attachments[index].Name)
-		input.Attachments[index].MIMEType = strings.TrimSpace(input.Attachments[index].MIMEType)
-	}
 	if err := input.Validate(); err != nil {
 		return TurnInput{}, err
 	}
@@ -2980,14 +2968,26 @@ func sessionMessageAttachments(in []MessageAttachment) []session.MessageAttachme
 	}
 	out := make([]session.MessageAttachment, 0, len(in))
 	for _, attachment := range in {
-		out = append(out, session.MessageAttachment{
-			ResourceRef: attachment.ResourceRef,
-			Name:        attachment.Name,
-			MIMEType:    attachment.MIMEType,
-			SizeBytes:   attachment.SizeBytes,
-		})
+		out = append(out, sessionMessageAttachment(attachment))
 	}
 	return out
+}
+
+func sessionMessageAttachment(attachment MessageAttachment) session.MessageAttachment {
+	var textStats *session.MessageAttachmentTextStats
+	if attachment.TextStats != nil {
+		textStats = &session.MessageAttachmentTextStats{
+			UnicodeCodePointCount: attachment.TextStats.UnicodeCodePointCount,
+			LogicalLineCount:      attachment.TextStats.LogicalLineCount,
+		}
+	}
+	return session.MessageAttachment{
+		ResourceRef: attachment.ResourceRef,
+		Name:        attachment.Name,
+		MIMEType:    attachment.MIMEType,
+		SizeBytes:   attachment.SizeBytes,
+		TextStats:   textStats,
+	}
 }
 
 func sessionMessageReferences(in []MessageReference) []session.MessageReference {
@@ -4347,7 +4347,7 @@ func cloneThreadDetailMessage(in *ThreadDetailMessage) *ThreadDetailMessage {
 		Kind:        in.Kind,
 		Preview:     in.Preview,
 		Content:     in.Content,
-		Attachments: append([]MessageAttachment(nil), in.Attachments...),
+		Attachments: cloneMessageAttachments(in.Attachments),
 		References:  append([]MessageReference(nil), in.References...),
 		Reasoning:   in.Reasoning,
 		Activity:    cloneActivityPresentation(in.Activity),

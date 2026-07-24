@@ -41,6 +41,7 @@ type Request struct {
 	Reasoning        ReasoningSelection
 	PreviousState    *State
 	Labels           RequestLabels
+	Prepared         PreparedRequest `json:"-"`
 }
 
 // EphemeralUserMessage is inserted into one provider request in memory. Its
@@ -422,6 +423,28 @@ type Provider interface {
 	Stream(context.Context, Request) (<-chan StreamEvent, error)
 }
 
+// PreparedRequest is an in-memory, single-use rendering of one exact provider
+// request. Close discards an unconsumed request or releases a consumed request
+// and must be idempotent.
+type PreparedRequest interface {
+	Stream(context.Context) (<-chan StreamEvent, error)
+	TokenEstimate() TokenEstimate
+	PayloadFingerprint() string
+	Close() error
+}
+
+// PreparedInputTokenLimit marks prepared requests whose estimate is complete
+// enough to reject the request before provider transmission.
+type PreparedInputTokenLimit interface {
+	EnforceInputTokenLimit() bool
+}
+
+// RequestPreparer lets a provider render and estimate the exact request that
+// will be streamed. Native providers need not implement this interface.
+type RequestPreparer interface {
+	PrepareRequest(context.Context, Request) (PreparedRequest, error)
+}
+
 type CachePolicyNormalizer interface {
 	NormalizeCachePolicy(cache.CachePolicy) (cache.CachePolicy, error)
 }
@@ -460,7 +483,12 @@ type TokenEstimate struct {
 	Source               string
 	Method               TokenEstimateMethod
 	Confidence           EstimateConfidence
+	Coverage             TokenEstimateCoverage
 }
+
+type TokenEstimateCoverage string
+
+const TokenEstimateCoverageComplete TokenEstimateCoverage = "complete_request"
 
 // TokenEstimator lets an adapter estimate the fully rendered request before it
 // is sent. Implementations should report the calculation Method explicitly.

@@ -116,12 +116,20 @@ type SubAgentHostOptions struct {
 // A nil Reasoning means the host did not resolve the capability; an explicit
 // Kind="none" value means the host resolved that reasoning is unsupported.
 type ModelGatewayCapabilities struct {
-	Reasoning *config.ReasoningCapability
+	Reasoning         *config.ReasoningCapability
+	AttachmentPayload ModelGatewayAttachmentPayloadMode
 }
+
+type ModelGatewayAttachmentPayloadMode string
+
+const (
+	ModelGatewayAttachmentPayloadDescriptors ModelGatewayAttachmentPayloadMode = ""
+	ModelGatewayAttachmentPayloadExpanded    ModelGatewayAttachmentPayloadMode = "expanded"
+)
 
 func (c ModelGatewayCapabilities) validate(gateway ModelGateway) error {
 	if gateway == nil {
-		if c.Reasoning != nil {
+		if c.Reasoning != nil || c.AttachmentPayload != ModelGatewayAttachmentPayloadDescriptors {
 			return errors.New("native provider host must not provide model gateway capabilities")
 		}
 		return nil
@@ -135,6 +143,14 @@ func (c ModelGatewayCapabilities) validate(gateway ModelGateway) error {
 	}
 	if err := reasoning.Validate(); err != nil {
 		return fmt.Errorf("invalid model gateway reasoning capability: %w", err)
+	}
+	if c.AttachmentPayload != ModelGatewayAttachmentPayloadDescriptors && c.AttachmentPayload != ModelGatewayAttachmentPayloadExpanded {
+		return fmt.Errorf("unsupported model gateway attachment payload mode %q", c.AttachmentPayload)
+	}
+	if c.AttachmentPayload == ModelGatewayAttachmentPayloadExpanded {
+		if _, ok := gateway.(ModelGatewayRequestPreparer); !ok {
+			return errors.New("model gateway attachment expansion requires prepared request support")
+		}
 	}
 	return nil
 }

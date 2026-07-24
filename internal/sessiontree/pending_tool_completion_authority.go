@@ -60,16 +60,34 @@ func ValidatePendingToolCompletionPath(path []Entry) error {
 }
 
 func ValidateAdmitPendingToolCompletionRequest(req AdmitPendingToolCompletionRequest) error {
+	return validateAdmitPendingToolCompletionRequestAttachments(req, session.ValidateMessageAttachments)
+}
+
+func ValidateAdmitPendingToolCompletionReplayRequest(req AdmitPendingToolCompletionRequest) error {
+	return validateAdmitPendingToolCompletionRequestAttachments(req, session.ValidateStoredMessageAttachments)
+}
+
+func ValidateAdmitPendingToolCompletionEnvelope(req AdmitPendingToolCompletionRequest) error {
 	if strings.TrimSpace(req.CompletionRequestID) == "" || strings.TrimSpace(req.RequestFingerprint) == "" ||
 		strings.TrimSpace(req.SettlementFingerprint) == "" ||
 		strings.TrimSpace(req.ContinuationTurnID) == "" || strings.TrimSpace(req.ContinuationRunID) == "" || strings.TrimSpace(req.OwnerID) == "" {
 		return errors.New("pending tool completion requires request, completion fingerprint, settlement fingerprint, continuation turn, run, and owner identities")
+	}
+	return nil
+}
+
+func validateAdmitPendingToolCompletionRequestAttachments(req AdmitPendingToolCompletionRequest, validateAttachments func([]session.MessageAttachment) error) error {
+	if err := ValidateAdmitPendingToolCompletionEnvelope(req); err != nil {
+		return err
 	}
 	if strings.TrimSpace(req.Input.Content) == "" && len(req.Input.Attachments) == 0 {
 		return errors.New("pending tool completion requires structured continuation input")
 	}
 	if req.Input.Role != session.User {
 		return errors.New("pending tool completion continuation input must be a user message")
+	}
+	if err := validateAttachments(req.Input.Attachments); err != nil {
+		return err
 	}
 	if err := session.ValidateMessageReferences(req.Input.References); err != nil {
 		return err
@@ -79,7 +97,7 @@ func ValidateAdmitPendingToolCompletionRequest(req AdmitPendingToolCompletionReq
 }
 
 func (r *MemoryRepo) ReadPendingToolCompletion(_ context.Context, req AdmitPendingToolCompletionRequest) (AdmitPendingToolCompletionResult, bool, error) {
-	if err := ValidateAdmitPendingToolCompletionRequest(req); err != nil {
+	if err := ValidateAdmitPendingToolCompletionEnvelope(req); err != nil {
 		return AdmitPendingToolCompletionResult{}, false, err
 	}
 	r.mu.Lock()
@@ -97,6 +115,9 @@ func (r *MemoryRepo) pendingToolCompletionReplayLocked(existing pendingToolCompl
 		existing.Target != req.Target || existing.SettlementFingerprint != strings.TrimSpace(req.SettlementFingerprint) ||
 		existing.ContinuationTurnID != strings.TrimSpace(req.ContinuationTurnID) || existing.ContinuationRunID != strings.TrimSpace(req.ContinuationRunID) {
 		return AdmitPendingToolCompletionResult{}, ErrRequestConflict
+	}
+	if err := ValidateAdmitPendingToolCompletionReplayRequest(req); err != nil {
+		return AdmitPendingToolCompletionResult{}, err
 	}
 	settlement, settlementOK := findEntry(r.entries[existing.ThreadID], existing.SettlementEntryID)
 	admissionLedger, admissionOK := r.turnAdmissions[turnAdmissionKey(existing.ThreadID, existing.ContinuationTurnID)]
@@ -117,7 +138,7 @@ func (r *MemoryRepo) pendingToolCompletionReplayLocked(existing pendingToolCompl
 }
 
 func (r *MemoryRepo) AdmitPendingToolCompletion(_ context.Context, req AdmitPendingToolCompletionRequest) (AdmitPendingToolCompletionResult, error) {
-	if err := ValidateAdmitPendingToolCompletionRequest(req); err != nil {
+	if err := ValidateAdmitPendingToolCompletionEnvelope(req); err != nil {
 		return AdmitPendingToolCompletionResult{}, err
 	}
 	r.mu.Lock()
@@ -130,6 +151,9 @@ func (r *MemoryRepo) AdmitPendingToolCompletion(_ context.Context, req AdmitPend
 	ownerID := strings.TrimSpace(req.OwnerID)
 	if existing, ok := r.pendingToolCompletions[requestID]; ok {
 		return r.pendingToolCompletionReplayLocked(existing, req)
+	}
+	if err := ValidateAdmitPendingToolCompletionRequest(req); err != nil {
+		return AdmitPendingToolCompletionResult{}, err
 	}
 	meta, ok := r.threads[req.Target.ThreadID]
 	if !ok {

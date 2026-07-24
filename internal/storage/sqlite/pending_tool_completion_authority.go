@@ -26,7 +26,7 @@ type sqlitePendingToolCompletionLedger struct {
 }
 
 func (s *Store) ReadPendingToolCompletion(ctx context.Context, req sessiontree.AdmitPendingToolCompletionRequest) (sessiontree.AdmitPendingToolCompletionResult, bool, error) {
-	if err := sessiontree.ValidateAdmitPendingToolCompletionRequest(req); err != nil {
+	if err := sessiontree.ValidateAdmitPendingToolCompletionEnvelope(req); err != nil {
 		return sessiontree.AdmitPendingToolCompletionResult{}, false, err
 	}
 	var result sessiontree.AdmitPendingToolCompletionResult
@@ -44,7 +44,7 @@ func (s *Store) ReadPendingToolCompletion(ctx context.Context, req sessiontree.A
 }
 
 func (s *Store) AdmitPendingToolCompletion(ctx context.Context, req sessiontree.AdmitPendingToolCompletionRequest) (sessiontree.AdmitPendingToolCompletionResult, error) {
-	if err := sessiontree.ValidateAdmitPendingToolCompletionRequest(req); err != nil {
+	if err := sessiontree.ValidateAdmitPendingToolCompletionEnvelope(req); err != nil {
 		return sessiontree.AdmitPendingToolCompletionResult{}, err
 	}
 	requestID := strings.TrimSpace(req.CompletionRequestID)
@@ -61,6 +61,9 @@ func (s *Store) AdmitPendingToolCompletion(ctx context.Context, req sessiontree.
 		}
 		if found {
 			result, err = sqlitePendingToolCompletionReplay(ctx, tx, existing, req)
+			return err
+		}
+		if err := sessiontree.ValidateAdmitPendingToolCompletionRequest(req); err != nil {
 			return err
 		}
 
@@ -193,6 +196,9 @@ func sqlitePendingToolCompletionReplay(ctx context.Context, q sqlRunner, existin
 		existing.SettlementFingerprint != strings.TrimSpace(req.SettlementFingerprint) ||
 		existing.ContinuationTurnID != strings.TrimSpace(req.ContinuationTurnID) || existing.ContinuationRunID != strings.TrimSpace(req.ContinuationRunID) {
 		return sessiontree.AdmitPendingToolCompletionResult{}, sessiontree.ErrRequestConflict
+	}
+	if err := sessiontree.ValidateAdmitPendingToolCompletionReplayRequest(req); err != nil {
+		return sessiontree.AdmitPendingToolCompletionResult{}, err
 	}
 	settlement, err := loadRequiredAuthorityEntry(ctx, q, existing.Target.ThreadID, existing.SettlementEntryID)
 	if err != nil {

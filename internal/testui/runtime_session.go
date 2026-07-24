@@ -185,7 +185,14 @@ func providerMessagesFromRuntime(messages []flruntime.ModelMessage) []session.Me
 func sessionAttachmentsFromRuntime(in []flruntime.MessageAttachment) []session.MessageAttachment {
 	out := make([]session.MessageAttachment, 0, len(in))
 	for _, attachment := range in {
-		out = append(out, session.MessageAttachment{ResourceRef: attachment.ResourceRef, Name: attachment.Name, MIMEType: attachment.MIMEType, SizeBytes: attachment.SizeBytes})
+		var textStats *session.MessageAttachmentTextStats
+		if attachment.TextStats != nil {
+			textStats = &session.MessageAttachmentTextStats{
+				UnicodeCodePointCount: attachment.TextStats.UnicodeCodePointCount,
+				LogicalLineCount:      attachment.TextStats.LogicalLineCount,
+			}
+		}
+		out = append(out, session.MessageAttachment{ResourceRef: attachment.ResourceRef, Name: attachment.Name, MIMEType: attachment.MIMEType, SizeBytes: attachment.SizeBytes, TextStats: textStats})
 	}
 	return out
 }

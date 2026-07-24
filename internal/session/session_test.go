@@ -54,3 +54,18 @@ func TestCloneMessageDeepCopiesReferences(t *testing.T) {
 		t.Fatalf("CloneMessage aliased references: original=%#v cloned=%#v", original, cloned)
 	}
 }
+
+func TestCloneMessageDeepCopiesAttachmentTextStats(t *testing.T) {
+	original := Message{Attachments: []MessageAttachment{{
+		ResourceRef: "resource",
+		Name:        "notes.txt",
+		MIMEType:    "text/plain",
+		SizeBytes:   5,
+		TextStats:   &MessageAttachmentTextStats{UnicodeCodePointCount: 5, LogicalLineCount: 1},
+	}}}
+	cloned := CloneMessage(original)
+	cloned.Attachments[0].TextStats.UnicodeCodePointCount = 99
+	if original.Attachments[0].TextStats.UnicodeCodePointCount != 5 {
+		t.Fatalf("CloneMessage aliased attachment text stats: original=%#v cloned=%#v", original, cloned)
+	}
+}

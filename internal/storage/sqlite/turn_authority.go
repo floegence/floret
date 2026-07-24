@@ -37,7 +37,7 @@ type sqliteTurnFinishLedger struct {
 }
 
 func (s *Store) AdmitTurn(ctx context.Context, req sessiontree.AdmitTurnRequest) (sessiontree.AdmitTurnResult, error) {
-	if err := sessiontree.ValidateAdmitTurnRequest(req); err != nil {
+	if err := sessiontree.ValidateAdmitTurnRequestEnvelope(req); err != nil {
 		return sessiontree.AdmitTurnResult{}, err
 	}
 	threadID := strings.TrimSpace(req.ThreadID)
@@ -55,7 +55,13 @@ func (s *Store) AdmitTurn(ctx context.Context, req sessiontree.AdmitTurnRequest)
 			if existing.RunID != runID || existing.RequestFingerprint != fingerprint {
 				return sessiontree.ErrRequestConflict
 			}
+			if err := sessiontree.ValidateAdmitTurnReplayRequest(req); err != nil {
+				return err
+			}
 			result, err = loadSQLiteTurnAdmissionReplay(ctx, tx, existing)
+			return err
+		}
+		if err := sessiontree.ValidateAdmitTurnRequest(req); err != nil {
 			return err
 		}
 

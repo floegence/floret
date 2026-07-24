@@ -43,7 +43,7 @@ func (s *Store) PublishSubAgent(ctx context.Context, req sessiontree.PublishSubA
 			if !found {
 				return fmt.Errorf("subagent publication %q input is missing", req.PublicationID)
 			}
-			if err := sessiontree.ValidatePublishSubAgentRequest(req); err != nil {
+			if err := sessiontree.ValidatePublishSubAgentReplayRequest(req); err != nil {
 				return err
 			}
 			child, err := loadThread(ctx, tx, req.ChildMeta.ID)
@@ -115,7 +115,7 @@ func (s *Store) PublishSubAgent(ctx context.Context, req sessiontree.PublishSubA
 }
 
 func (s *Store) PublishSubAgentInput(ctx context.Context, req sessiontree.PublishSubAgentInputRequest) (sessiontree.SubAgentInputRecord, bool, error) {
-	if err := sessiontree.ValidatePublishSubAgentInputRequest(req); err != nil {
+	if err := sessiontree.ValidatePublishSubAgentInputEnvelope(req); err != nil {
 		return sessiontree.SubAgentInputRecord{}, false, err
 	}
 	var input sessiontree.SubAgentInputRecord
@@ -136,6 +136,9 @@ func (s *Store) PublishSubAgentInput(ctx context.Context, req sessiontree.Publis
 			if existing.parentThreadID != req.ParentThreadID || existing.childThreadID != req.ChildThreadID || existing.fingerprint != req.RequestFingerprint {
 				return sessiontree.ErrSubAgentRequestConflict
 			}
+			if err := sessiontree.ValidatePublishSubAgentInputReplayRequest(req); err != nil {
+				return err
+			}
 			input, found, err = loadSubAgentInput(ctx, tx, existing.inputID)
 			if err != nil {
 				return err
@@ -145,6 +148,9 @@ func (s *Store) PublishSubAgentInput(ctx context.Context, req sessiontree.Publis
 			}
 			replayed = true
 			return nil
+		}
+		if err := sessiontree.ValidatePublishSubAgentInputRequest(req); err != nil {
+			return err
 		}
 		child, err := loadThread(ctx, tx, req.ChildThreadID)
 		if err != nil {

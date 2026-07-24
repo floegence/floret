@@ -808,9 +808,30 @@ Admission never creates a thread. Turn-start and canonical user input, including
 attachments and ordered durable references, are one commit. Text, attachments,
 reference order/fields, exact `ThreadID`, `TurnID`, and `RunID` form immutable
 admission and replay authority. Provider and tool effects start after admission.
+New Memory and SQLite append writes apply the same strict attachment admission
+limits; durable reads and exact historical replay retain the schema-v16
+compatibility validator so accepted legacy descriptors are never reset or
+silently discarded. The replay boundary applies consistently to root turn
+admission, SubAgent publication and input, and root or SubAgent pending-tool
+completion; only a matched durable request fingerprint may use it, while every
+new authority request remains subject to current limits.
 Retry target selection is recorded as exact source turn/entry identity and is
 part of atomic admission; retry does not copy the source user message. Missing
 retry target has zero side effects.
+
+Attachment descriptors include only opaque host resource identity and bounded
+display facts. Optional text statistics are host-attested snapshots and are
+deep-copied into every authority, retry, fork, cache, and public projection.
+Floret never reads attachment bytes. If a `ModelGateway` expands those bytes,
+its prepared request is non-durable linear execution state: every successful
+prepare terminates exactly once through stream/release or discard, and any
+pre-stream authority, budget, compaction, storage, cancellation, or shutdown
+failure closes it before returning.
+Descriptor-only direct requests with attachments use the complete serialized
+`ModelRequest` byte length as a conservative generic-payload upper bound for
+projected pressure. Its additive components sum to that full bound so compatible
+native anchors preserve attachment growth; this estimate is explicitly not
+exact token usage.
 
 Host-provided `SupplementalContext` is normalized before a new admission but is
 not part of the durable fingerprint. It is visible only to the current provider
@@ -1381,7 +1402,7 @@ File rejection where unsupported.
 | Lease liveness | renewal keeps long turn and approval wait fresh; failed renewal fences dispatch/write; expired-fenced cannot write or take over; only takeover-eligible exact proof can recover |
 | Generation | stale/released/wrong-owner/wrong-purpose/wrong-turn/replaced-generation proof cannot write, renew, finish, or release |
 | Recovery factory | bind validates live exact authority and returns `ErrInterruptedTurnNotFound` with no target for no lease; exact root and parent-child factories cannot select another identity or later turn; same-target heartbeat renewal makes the old handle stale and a refreshed handle busy/recoverable; lease disappearance or a valid higher generation resolves only after atomic admission/finish/terminal validation; generation/heartbeat rollback, missing or malformed resolution linkage, malformed replacement, or same-generation stable-field drift is corruption; concurrent tombstoning returns deleted; wrong root-child/parent-child relation, Store close, fresh/expired-fenced/stale attempts, and concurrent bind/NewHost/renew/release/replacement/recovery all have zero mutation unless exact takeover commits |
-| Admission | exact thread/turn/run start plus user text/attachments/references are atomic and fingerprinted; reference and supplemental field/count/payload/UTF-8 limits fail before journal/leaf/ledger mutation; reference-only requires current-turn supplemental only where that contract exists; supplemental is excluded from replay fingerprint and every durable/cache/ledger/compaction/continuation surface; provider is not called on failure or exact replay; retry source turn/entry is atomic without copied user input; finish plus release is atomic |
+| Admission | exact thread/turn/run start plus user text/attachments/references are atomic and fingerprinted; attachment/reference/supplemental field/count/size/payload/UTF-8 limits fail before journal/leaf/ledger mutation; attachment text-stat pointers are deep-copied; expanded gateway preparation supplies complete conservative estimate plus stable fingerprint and every handle is streamed once or discarded/closed on all early exits; prepared handles never enter durable/cache/replay identity; reference-only requires current-turn supplemental only where that contract exists; supplemental is excluded from replay fingerprint and every durable/cache/ledger/compaction/continuation surface; provider is not called on failure or exact replay; retry source turn/entry is atomic without copied user input; finish plus release is atomic |
 | Canonical turn page | Memory/File/SQLite exact started-turn index; bounded tail/before/since reads; stale entry cursor fails without active-path fallback; retry source and typed failure survive reopen/fork; malformed index/raw/path depth fails closed; query count and plan do not grow with references or full journal size |
 | Active settlement | complete target identity; local proof equals durable proof; wrong turn or generation has zero append/provider/tool side effect |
 | Recovery settlement | fresh/expired-fenced lease blocks; identical concurrent settlement writes once; conflict is explicit; no durable mutation half-state |

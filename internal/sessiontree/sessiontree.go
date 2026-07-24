@@ -1412,6 +1412,9 @@ func (r *MemoryRepo) appendLocked(ctx context.Context, entry Entry, opts AppendO
 	if err := validateTurnLeaseMutation(ctx, entry.ThreadID, entry.TurnID, r.leases[entry.ThreadID], r.now().UTC()); err != nil {
 		return Entry{}, err
 	}
+	if err := ValidateNewEntryMessageAttachments(entry); err != nil {
+		return Entry{}, err
+	}
 	if err := ValidateEntryMessageReferences(entry); err != nil {
 		return Entry{}, err
 	}
@@ -3435,7 +3438,34 @@ func ValidateEntryMessageReferences(entry Entry) error {
 	return session.ValidateMessageReferences(entry.Message.References)
 }
 
+func ValidateEntryMessageAttachments(entry Entry) error {
+	if err := validateEntryMessageAttachmentPlacement(entry); err != nil {
+		return err
+	}
+	return session.ValidateStoredMessageAttachments(entry.Message.Attachments)
+}
+
+func ValidateNewEntryMessageAttachments(entry Entry) error {
+	if err := validateEntryMessageAttachmentPlacement(entry); err != nil {
+		return err
+	}
+	return session.ValidateMessageAttachments(entry.Message.Attachments)
+}
+
+func validateEntryMessageAttachmentPlacement(entry Entry) error {
+	if len(entry.Message.Attachments) == 0 {
+		return nil
+	}
+	if entry.Type != EntryUserMessage || entry.Message.Role != session.User {
+		return errors.New("message attachments are only valid on canonical user message entries")
+	}
+	return nil
+}
+
 func ValidateEntryIntegrity(entry Entry) error {
+	if err := ValidateEntryMessageAttachments(entry); err != nil {
+		return ErrAuthorityCorrupt
+	}
 	if err := ValidateEntryMessageReferences(entry); err != nil {
 		return ErrAuthorityCorrupt
 	}

@@ -1,6 +1,22 @@
 # Floret OKF Update Log
 
 ## 2026-07-24
+* **Attachments**: Added bounded optional host-attested text statistics to
+  canonical message attachments, deep-copying them through admission, journal,
+  cache, retry, fork, SubAgent, and public projections while keeping attachment
+  bytes and content truth host-owned. New admission and Append paths enforce
+  strict limits while stored schema-v16 journals and exact replay retain their
+  historical compatibility boundary.
+* **Model gateway**: Added an optional prepared-request contract for gateways
+  that expand attachment content. Complete rendered estimates now participate
+  in pre-request pressure and input limits, stable fingerprints use the existing
+  payload-hash ledger, and every linear in-memory handle is consumed or closed
+  across compaction, gate/storage failures, cancellation, overflow, and Store
+  shutdown paths, including standalone manual compaction. Descriptor-only
+  attachment requests now use a complete serialized-request UTF-8-byte
+  conservative upper bound for projected pressure with additive anchor-safe
+  components, without labeling it an exact token count; attachment-free
+  estimates are unchanged.
 * **Lifecycle**: Removed the obsolete single-thread delete primitive from the
   general internal repository contract and its Memory, File, and SQLite
   implementations. Canonical deletion now exists only as root-tree authority

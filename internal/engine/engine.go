@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -33,6 +34,7 @@ var (
 	ErrProviderFinishError        = errors.New("provider returned error finish reason")
 	ErrStopHookLoop               = errors.New("stop hook requested too many continuations")
 	ErrInvalidTokenEstimate       = errors.New("provider token estimate missing source or method")
+	ErrInputTokenBudgetExceeded   = errors.New("provider request exceeds input token budget")
 	ErrCompactedRequestOverBudget = errors.New("compacted provider request still exceeds context budget")
 	ErrFixedContextOverBudget     = errors.New("provider request fixed context overhead exceeds context budget")
 	ErrCompactionNoop             = errors.New("context compaction is not needed")
@@ -301,6 +303,7 @@ func failureOrigin(status Status, err error) FailureOrigin {
 		errors.Is(err, ErrDuplicateToolCallID),
 		errors.Is(err, ErrStopHookLoop),
 		errors.Is(err, ErrInvalidTokenEstimate),
+		errors.Is(err, ErrInputTokenBudgetExceeded),
 		errors.Is(err, ErrCompactedRequestOverBudget),
 		errors.Is(err, ErrFixedContextOverBudget):
 		return FailureOriginContract
@@ -1277,7 +1280,7 @@ func (e *Engine) compactContext(ctx context.Context, manual ManualCompactionRequ
 	}
 	usage := contextpolicy.EstimateMessageContext(systemPromptForOptions(e, opts), activeHistory, opts.ContextPolicy)
 	pressure := contextpolicy.PressureFromManual(usage, opts.ContextPolicy)
-	active, _, compacted, err := e.runCompaction(ctx, opts, step, activeHistory, tracker, 1, false, compaction.TriggerManual, compaction.ReasonManual, usage, nil, pressure, manual, ContextCompactDebugNextActionReturnCompactedContext)
+	active, req, compacted, err := e.runCompaction(ctx, opts, step, activeHistory, tracker, 1, false, compaction.TriggerManual, compaction.ReasonManual, usage, nil, pressure, manual, ContextCompactDebugNextActionReturnCompactedContext)
 	if err != nil {
 		if errors.Is(err, ErrCompactionNoop) {
 			return ContextCompactionResult{Status: Completed, Metrics: metrics, Messages: append([]session.Message(nil), activeHistory...), ProviderState: provider.CloneState(opts.PreviousProviderState)}
@@ -1288,6 +1291,9 @@ func (e *Engine) compactContext(ctx context.Context, manual ManualCompactionRequ
 		return ContextCompactionResult{Status: Failed, Err: err, Metrics: metrics, Messages: append([]session.Message(nil), activeHistory...), ProviderState: provider.CloneState(opts.PreviousProviderState)}
 	}
 	metrics.Compactions = 1
+	if err := closePreparedRequest(req); err != nil {
+		return ContextCompactionResult{Status: Failed, Err: err, Metrics: metrics, Messages: active, Compaction: compacted, ProviderState: provider.CloneState(opts.PreviousProviderState)}
+	}
 	return ContextCompactionResult{Status: Completed, Metrics: metrics, Messages: active, Compaction: compacted, ProviderState: provider.CloneState(opts.PreviousProviderState)}
 }
 
@@ -2139,22 +2145,6 @@ func (e *Engine) providerRequest(ctx context.Context, opts Options, step int, hi
 	if ephemeralUser != nil {
 		req.PreviousState = nil
 	}
-	estimate, err := e.estimateRequestTokens(ctx, req)
-	if err != nil {
-		return provider.Request{}, err
-	}
-	req.RequestEstimate = estimate
-	if ephemeralUser == nil {
-		req.RawPlan.RequestEstimate = estimate
-	}
-	if hasher, ok := e.provider.(provider.PayloadHasher); ok && ephemeralUser == nil {
-		payloadHash, err := hasher.PayloadHash(req)
-		if err != nil {
-			return provider.Request{}, withFailureOrigin(err, FailureOriginProvider)
-		}
-		req.RawPlan.PayloadHash = payloadHash
-	}
-	req.RawPlan.RequestShape = requestShapeHashes(req)
 	return req, nil
 }
 
@@ -2204,6 +2194,92 @@ func (e *Engine) estimateRequestTokens(ctx context.Context, req provider.Request
 		return contextpolicy.RequestEstimate{}, err
 	}
 	return providerEstimateToContextEstimate(estimate, req.ContextPolicy), nil
+}
+
+func (e *Engine) prepareProviderRequest(ctx context.Context, req provider.Request) (provider.Request, error) {
+	if preparer, ok := e.provider.(provider.RequestPreparer); ok {
+		prepared, err := preparer.PrepareRequest(ctx, req)
+		if err != nil {
+			return provider.Request{}, withFailureOrigin(err, FailureOriginProvider)
+		}
+		if prepared == nil {
+			return provider.Request{}, withFailureOrigin(errors.New("provider returned a nil prepared request"), FailureOriginProvider)
+		}
+		req.Prepared = prepared
+		estimate := prepared.TokenEstimate()
+		if err := validatePreparedTokenEstimate(estimate); err != nil {
+			return provider.Request{}, errors.Join(err, closePreparedRequest(req))
+		}
+		fingerprint := strings.TrimSpace(prepared.PayloadFingerprint())
+		if fingerprint == "" || len(fingerprint) > 512 || strings.ContainsAny(fingerprint, "\r\n\x00") {
+			err := errors.New("prepared provider request requires a bounded single-line payload fingerprint")
+			return provider.Request{}, errors.Join(err, closePreparedRequest(req))
+		}
+		req.RequestEstimate = providerEstimateToContextEstimate(estimate, req.ContextPolicy)
+		req.RawPlan.PayloadHash = fingerprint
+	} else {
+		estimate, err := e.estimateRequestTokens(ctx, req)
+		if err != nil {
+			return provider.Request{}, err
+		}
+		req.RequestEstimate = estimate
+		if hasher, ok := e.provider.(provider.PayloadHasher); ok && req.EphemeralUser == nil {
+			payloadHash, err := hasher.PayloadHash(req)
+			if err != nil {
+				return provider.Request{}, withFailureOrigin(err, FailureOriginProvider)
+			}
+			req.RawPlan.PayloadHash = payloadHash
+		}
+	}
+	if req.EphemeralUser == nil {
+		req.RawPlan.RequestEstimate = req.RequestEstimate
+	}
+	req.RawPlan.RequestShape = requestShapeHashes(req)
+	return req, nil
+}
+
+func validatePreparedTokenEstimate(estimate provider.TokenEstimate) error {
+	if err := validateProviderTokenEstimate(estimate); err != nil {
+		return err
+	}
+	if estimate.Coverage != provider.TokenEstimateCoverageComplete {
+		return fmt.Errorf("%w: prepared request estimate coverage=%q", ErrInvalidTokenEstimate, estimate.Coverage)
+	}
+	if estimate.Confidence != provider.EstimateExact && estimate.Confidence != provider.EstimateConservative {
+		return fmt.Errorf("%w: prepared request estimate confidence=%q", ErrInvalidTokenEstimate, estimate.Confidence)
+	}
+	if estimate.PrefixTokens < 0 || estimate.MessageTokens < 0 || estimate.ToolDefinitionTokens < 0 || estimate.EstimatedInputTokens < 0 {
+		return fmt.Errorf("%w: prepared request estimate contains negative tokens", ErrInvalidTokenEstimate)
+	}
+	components, ok := addNonnegativeTokenCounts(estimate.PrefixTokens, estimate.MessageTokens, estimate.ToolDefinitionTokens)
+	if !ok {
+		return fmt.Errorf("%w: prepared request token components overflow int64", ErrInvalidTokenEstimate)
+	}
+	if estimate.EstimatedInputTokens < components {
+		return fmt.Errorf("%w: prepared request total %d is below component total %d", ErrInvalidTokenEstimate, estimate.EstimatedInputTokens, components)
+	}
+	return nil
+}
+
+func addNonnegativeTokenCounts(values ...int64) (int64, bool) {
+	var total int64
+	for _, value := range values {
+		if value < 0 || value > math.MaxInt64-total {
+			return 0, false
+		}
+		total += value
+	}
+	return total, true
+}
+
+func closePreparedRequest(req provider.Request) error {
+	if req.Prepared == nil {
+		return nil
+	}
+	if err := req.Prepared.Close(); err != nil {
+		return withFailureOrigin(fmt.Errorf("close prepared provider request: %w", err), FailureOriginProvider)
+	}
+	return nil
 }
 
 func validateProviderTokenEstimate(estimate provider.TokenEstimate) error {
@@ -2300,6 +2376,9 @@ func (e *Engine) prepareOrdinaryRequest(ctx context.Context, opts Options, step 
 	if !req.ContextPressure.HardLimitExceeded {
 		return req, history, compacted, nil
 	}
+	if err := closePreparedRequest(req); err != nil {
+		return provider.Request{}, history, compacted, err
+	}
 
 	next, req, err := e.compactForPressure(ctx, opts, step, history, tracker, 1, false, compaction.TriggerPreRequest, compaction.ReasonThreshold, req.ContextPressure, metrics, failures)
 	if err != nil {
@@ -2331,6 +2410,21 @@ func (e *Engine) buildProjectedProviderRequest(ctx context.Context, opts Options
 	req.Attempt = attempt
 	req.OverflowRetried = overflowRetried
 	req.LogicalRequestID = fmt.Sprintf("%s:logical:%d", opts.RunID, step)
+	req, err = e.prepareProviderRequest(ctx, req)
+	if err != nil {
+		return provider.Request{}, err
+	}
+	enforceInputLimit, _ := req.Prepared.(provider.PreparedInputTokenLimit)
+	if enforceInputLimit != nil && enforceInputLimit.EnforceInputTokenLimit() && opts.MaxInputTokens > 0 && req.RequestEstimate.EstimatedInputTokens > opts.MaxInputTokens {
+		e.emit(opts, event.Event{
+			Type: event.BudgetExceeded, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID,
+			Step: step, Provider: opts.ProviderName, Model: opts.Model,
+			Message: fmt.Sprintf("estimated input tokens %d exceeded limit %d", req.RequestEstimate.EstimatedInputTokens, opts.MaxInputTokens),
+			Metrics: BudgetMetrics{Type: "input_tokens", Used: float64(req.RequestEstimate.EstimatedInputTokens), Limit: float64(opts.MaxInputTokens)},
+		})
+		err := fmt.Errorf("%w: estimated_input_tokens=%d limit=%d", ErrInputTokenBudgetExceeded, req.RequestEstimate.EstimatedInputTokens, opts.MaxInputTokens)
+		return provider.Request{}, errors.Join(withFailureOrigin(err, FailureOriginContract), closePreparedRequest(req))
+	}
 	providerHistory, _, _ := session.ProjectProviderHistory(history, "")
 	req.ContextPressure = tracker.Project(req, providerHistory)
 	if req.EphemeralUser == nil {
@@ -2359,7 +2453,15 @@ func (e *Engine) sendOrdinaryProviderRequest(ctx context.Context, opts Options, 
 	return retryReq, history, stepOutput, latency, true, err
 }
 
-func (e *Engine) sendProviderAttempt(ctx context.Context, opts Options, step int, req provider.Request, metrics *RunMetrics) (StepOutput, int64, bool, error) {
+func (e *Engine) sendProviderAttempt(ctx context.Context, opts Options, step int, req provider.Request, metrics *RunMetrics) (out StepOutput, latency int64, overflow bool, retErr error) {
+	if req.Prepared != nil {
+		defer func() {
+			if closeErr := closePreparedRequest(req); closeErr != nil {
+				retErr = errors.Join(retErr, closeErr)
+				overflow = false
+			}
+		}()
+	}
 	var releaseProviderStart func()
 	if opts.ProviderRequestGate != nil {
 		var err error
@@ -2389,16 +2491,22 @@ func (e *Engine) sendProviderAttempt(ctx context.Context, opts Options, step int
 	}
 	e.emit(opts, event.Event{Type: event.ProviderRequest, TraceID: opts.TraceID, RunID: opts.RunID, ThreadID: opts.ThreadID, Step: step, Provider: opts.ProviderName, Model: opts.Model, Message: fmt.Sprintf("%d messages, %d raw segments, %d local tools, %d hosted tools, prefix %s", messageCount, len(req.RawPlan.Segments), len(req.Tools), len(req.HostedTools), shortHash(req.RawPlan.PrefixHash)), Metadata: mergeAnyMetadata(providerRequestMetadata(req), toolSurfaceMetadata(opts))})
 	started := time.Now()
-	stream, err := e.provider.Stream(ctx, req)
+	var stream <-chan provider.StreamEvent
+	var err error
+	if req.Prepared != nil {
+		stream, err = req.Prepared.Stream(ctx)
+	} else {
+		stream, err = e.provider.Stream(ctx, req)
+	}
 	releaseProviderGate()
-	latency := time.Since(started).Milliseconds()
+	latency = time.Since(started).Milliseconds()
 	if errors.Is(err, provider.ErrContextOverflow) {
 		return StepOutput{}, latency, true, err
 	}
 	if err != nil {
 		return StepOutput{}, latency, false, withFailureOrigin(err, FailureOriginProvider)
 	}
-	out, err := e.consume(ctx, opts, step, stream)
+	out, err = e.consume(ctx, opts, step, stream)
 	latency = time.Since(started).Milliseconds()
 	if errors.Is(err, provider.ErrContextOverflow) {
 		return out, latency, true, err
@@ -2697,10 +2805,15 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 			break
 		}
 		e.emitCompactionDebug(opts, step, operationID, ContextCompactDebugStageRequestValidation, ContextCompactDebugStatusRetrying, trigger, reason, beforePressure, usage, lifecycle, compactionValidationDebugMetadata(compactAttempt, result, validation, policy.CompactedContextTargetTokens, nextPolicy.CompactedContextTargetTokens), nil, time.Time{})
+		if closeErr := closePreparedRequest(req); closeErr != nil {
+			err = closeErr
+			break
+		}
 		policy = nextPolicy
 		err = fmt.Errorf("%w: projected_input_tokens=%d request_safe_limit=%d", ErrCompactedRequestOverBudget, validation.ContextPressure.ProjectedInputTokens, validation.RequestSafeLimit)
 	}
 	if err != nil {
+		err = errors.Join(err, closePreparedRequest(req))
 		if failures != nil && !isContextCancellation(err) {
 			*failures++
 		}
@@ -2746,6 +2859,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		ActiveMessages: active,
 	})
 	if err != nil {
+		err = errors.Join(err, closePreparedRequest(req))
 		if failures != nil && !isContextCancellation(err) {
 			*failures++
 		}
@@ -2770,6 +2884,7 @@ func (e *Engine) runCompaction(ctx context.Context, opts Options, step int, hist
 		PreviousGeneration:   previous.Generation,
 		PreviousWindowID:     previous.WindowID,
 	}); err != nil {
+		err = errors.Join(err, closePreparedRequest(req))
 		e.emitCompactionFailed(opts, step, operationID, trigger, reason, beforePressure, usage, lifecycle, err)
 		return nil, provider.Request{}, compaction.Result{}, err
 	}

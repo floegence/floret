@@ -1206,7 +1206,7 @@ func newMessageSegment(input BuildInput, kind SegmentKind, msg session.Message, 
 	snap := MessageSnapshot{
 		Role:        string(msg.Role),
 		Content:     msg.Content,
-		Attachments: append([]session.MessageAttachment(nil), msg.Attachments...),
+		Attachments: session.CloneMessageAttachments(msg.Attachments),
 		Reasoning:   msg.Reasoning,
 		ToolCallID:  msg.ToolCallID,
 		ToolName:    msg.ToolName,
@@ -1331,7 +1331,7 @@ func (m MessageSnapshot) toSession() session.Message {
 	return session.Message{
 		Role:        session.Role(m.Role),
 		Content:     m.Content,
-		Attachments: append([]session.MessageAttachment(nil), m.Attachments...),
+		Attachments: session.CloneMessageAttachments(m.Attachments),
 		Reasoning:   m.Reasoning,
 		ToolCallID:  m.ToolCallID,
 		ToolName:    m.ToolName,

@@ -413,7 +413,7 @@ func (h *AgentHarness) SpawnSubAgent(ctx context.Context, opts SpawnSubAgentOpti
 	if childID == "" {
 		return SubAgentSnapshot{}, errors.New("subagent thread id is required")
 	}
-	message := session.Message{Role: session.User, Content: strings.TrimSpace(opts.Message), Attachments: append([]session.MessageAttachment(nil), opts.Attachments...), References: append([]session.MessageReference(nil), opts.References...)}
+	message := session.Message{Role: session.User, Content: strings.TrimSpace(opts.Message), Attachments: session.CloneMessageAttachments(opts.Attachments), References: append([]session.MessageReference(nil), opts.References...)}
 	if message.Content == "" && len(message.Attachments) == 0 {
 		return SubAgentSnapshot{}, errors.New("subagent message or attachments are required")
 	}
@@ -550,7 +550,7 @@ func (h *AgentHarness) SendSubAgentInput(ctx context.Context, opts SendSubAgentI
 	if err != nil {
 		return SubAgentSnapshot{}, err
 	}
-	message := session.Message{Role: session.User, Content: strings.TrimSpace(opts.Message), Attachments: append([]session.MessageAttachment(nil), opts.Attachments...), References: append([]session.MessageReference(nil), opts.References...)}
+	message := session.Message{Role: session.User, Content: strings.TrimSpace(opts.Message), Attachments: session.CloneMessageAttachments(opts.Attachments), References: append([]session.MessageReference(nil), opts.References...)}
 	if message.Content == "" && len(message.Attachments) == 0 {
 		return SubAgentSnapshot{}, errors.New("subagent message or attachments are required")
 	}
@@ -608,7 +608,7 @@ func (h *AgentHarness) PublishSubAgentPendingToolCompletion(ctx context.Context,
 	if strings.TrimSpace(opts.Target.ThreadID) != childID {
 		return SubAgentSnapshot{}, errors.New("subagent pending tool completion target thread identity mismatch")
 	}
-	message := session.Message{Role: session.User, Content: strings.TrimSpace(opts.Message), Attachments: append([]session.MessageAttachment(nil), opts.Attachments...), References: append([]session.MessageReference(nil), opts.References...)}
+	message := session.Message{Role: session.User, Content: strings.TrimSpace(opts.Message), Attachments: session.CloneMessageAttachments(opts.Attachments), References: append([]session.MessageReference(nil), opts.References...)}
 	if message.Content == "" && len(message.Attachments) == 0 {
 		return SubAgentSnapshot{}, errors.New("subagent pending tool completion requires message or attachments")
 	}
@@ -1843,7 +1843,7 @@ func subAgentDetailMessage(msg session.Message, includeRaw bool) *SubAgentDetail
 		Role:        string(msg.Role),
 		Kind:        string(msg.Kind),
 		Preview:     safeSubAgentDetailPreview(msg.Content, 500),
-		Attachments: append([]session.MessageAttachment(nil), msg.Attachments...),
+		Attachments: session.CloneMessageAttachments(msg.Attachments),
 		References:  append([]session.MessageReference(nil), msg.References...),
 		Activity:    activity,
 	}
@@ -2211,7 +2211,7 @@ func (h *AgentHarness) startNextSubAgentTurn(ctrl *subagentController) {
 			result, err = thread.runLeased(renewedCtx, admission.Input.Message.Content, RunOptions{
 				RunID:               runID,
 				TurnID:              turnID,
-				Attachments:         append([]session.MessageAttachment(nil), admission.Input.Message.Attachments...),
+				Attachments:         session.CloneMessageAttachments(admission.Input.Message.Attachments),
 				Labels:              labels,
 				AdmittedInputID:     admission.Input.SubAgentInputID,
 				AdmissionCommitted:  true,

@@ -72,10 +72,16 @@ type ControlSignalView struct {
 // with a user message. Floret persists and projects the opaque reference but
 // never resolves or reads the resource itself.
 type MessageAttachment struct {
-	ResourceRef string `json:"resource_ref"`
-	Name        string `json:"name"`
-	MIMEType    string `json:"mime_type"`
-	SizeBytes   int64  `json:"size_bytes,omitempty"`
+	ResourceRef string                      `json:"resource_ref"`
+	Name        string                      `json:"name"`
+	MIMEType    string                      `json:"mime_type"`
+	SizeBytes   int64                       `json:"size_bytes,omitempty"`
+	TextStats   *MessageAttachmentTextStats `json:"text_stats,omitempty"`
+}
+
+type MessageAttachmentTextStats struct {
+	UnicodeCodePointCount int64 `json:"unicode_code_points"`
+	LogicalLineCount      int64 `json:"logical_lines"`
 }
 
 type MessageReferenceKind string
@@ -168,7 +174,7 @@ func CloneMessages(messages []Message) []Message {
 }
 
 func CloneMessage(msg Message) Message {
-	msg.Attachments = append([]MessageAttachment(nil), msg.Attachments...)
+	msg.Attachments = CloneMessageAttachments(msg.Attachments)
 	msg.References = append([]MessageReference(nil), msg.References...)
 	if msg.ToolResult != nil {
 		view := *msg.ToolResult

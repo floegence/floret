@@ -1200,7 +1200,7 @@ func threadMessages(path []sessiontree.Entry) []ThreadMessage {
 			out = append(out, ThreadMessage{
 				Role:        entry.Message.Role,
 				Content:     entry.Message.Content,
-				Attachments: append([]session.MessageAttachment(nil), entry.Message.Attachments...),
+				Attachments: session.CloneMessageAttachments(entry.Message.Attachments),
 				References:  append([]session.MessageReference(nil), entry.Message.References...),
 				TurnID:      entry.TurnID,
 				CreatedAt:   entry.CreatedAt,
@@ -1375,7 +1375,7 @@ func (t *Thread) CompletePendingTool(ctx context.Context, completion PendingTool
 		TurnID: completion.ContinuationTurnID, EntryID: admitted.Admission.UserMessage.ID, ParentID: admitted.Admission.UserMessage.ParentID})
 	result, runErr := t.runLeased(runCtx, completion.Input.Content, RunOptions{
 		RunID: completion.ContinuationRunID, TurnID: completion.ContinuationTurnID, Labels: completion.Labels,
-		Attachments:        append([]session.MessageAttachment(nil), completion.Input.Attachments...),
+		Attachments:        session.CloneMessageAttachments(completion.Input.Attachments),
 		References:         append([]session.MessageReference(nil), completion.Input.References...),
 		AdmissionCommitted: true, AdmissionBaseLeafID: admitted.Admission.BaseLeafID,
 	}, nil)
@@ -2077,7 +2077,7 @@ func (t *Thread) runEntered(ctx context.Context, input string, opts RunOptions, 
 	}
 	message := session.Message{
 		Role: session.User, Content: input,
-		Attachments: append([]session.MessageAttachment(nil), opts.Attachments...),
+		Attachments: session.CloneMessageAttachments(opts.Attachments),
 		References:  append([]session.MessageReference(nil), opts.References...),
 	}
 	admission, err := t.harness.admitTurn(ctx, sessiontree.AdmitTurnRequest{

@@ -21,7 +21,7 @@ type sqliteSubAgentPendingToolCompletionLedger struct {
 }
 
 func (s *Store) PublishSubAgentPendingToolCompletion(ctx context.Context, req sessiontree.PublishSubAgentPendingToolCompletionRequest) (sessiontree.PublishSubAgentPendingToolCompletionResult, error) {
-	if err := sessiontree.ValidatePublishSubAgentPendingToolCompletionRequest(req); err != nil {
+	if err := sessiontree.ValidatePublishSubAgentPendingToolCompletionEnvelope(req); err != nil {
 		return sessiontree.PublishSubAgentPendingToolCompletionResult{}, err
 	}
 	requestID := strings.TrimSpace(req.InputRequestID)
@@ -40,6 +40,9 @@ func (s *Store) PublishSubAgentPendingToolCompletion(ctx context.Context, req se
 				existing.ParentThreadID != parentID || existing.ChildThreadID != childID || existing.Target != req.Target {
 				return sessiontree.ErrSubAgentRequestConflict
 			}
+			if err := sessiontree.ValidatePublishSubAgentPendingToolCompletionReplayRequest(req); err != nil {
+				return err
+			}
 			settlement, err := loadRequiredAuthorityEntry(ctx, tx, childID, existing.SettlementEntryID)
 			if err != nil {
 				return err
@@ -55,6 +58,9 @@ func (s *Store) PublishSubAgentPendingToolCompletion(ctx context.Context, req se
 				Settlement: settlement, SettlementReplayed: true, Input: input, Replayed: true,
 			}
 			return nil
+		}
+		if err := sessiontree.ValidatePublishSubAgentPendingToolCompletionRequest(req); err != nil {
+			return err
 		}
 
 		parent, err := loadThread(ctx, tx, parentID)
