@@ -25,6 +25,13 @@ fail() {
   exit 1
 }
 
+assert_workspace_disabled() {
+  case $(go env GOWORK) in
+    off | /dev/null) ;;
+    *) fail "GOWORK must resolve to off" ;;
+  esac
+}
+
 write_consumer_test() {
   local destination=$1
   cat >"${destination}" <<'EOF'
@@ -126,7 +133,9 @@ func TestPublishedDurableHostRestartAndStoreMaintenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(page.Turns) != 1 || page.Turns[0].TurnID != "published-turn" ||
-		page.Turns[0].Projection.Output != "published response" {
+		len(page.Turns[0].Projection.Segments) != 1 ||
+		page.Turns[0].Projection.Segments[0].Kind != runtime.ThreadTurnProjectionSegmentAssistantText ||
+		page.Turns[0].Projection.Segments[0].Text != "published response" {
 		t.Fatalf("restarted turn page = %#v", page)
 	}
 }
@@ -310,7 +319,13 @@ EOF
 }
 
 root=$(mktemp -d "${TMPDIR:-/tmp}/floret-published-adoption.XXXXXX")
-trap 'rm -rf -- "${root}"' EXIT
+cleanup_root() {
+  chmod -R u+w "${root}" 2>/dev/null || true
+  rm -rf -- "${root}"
+}
+trap cleanup_root EXIT
+export GOWORK=off
+assert_workspace_disabled
 mkdir -p "${root}/consumer" "${root}/verifier"
 write_consumer_test "${root}/consumer/adoption_test.go"
 write_verifier "${root}/verifier/main.go"
@@ -328,7 +343,6 @@ readonly tag=$1
 [[ ${tag} =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] || fail "tag must be an exact semantic version, got ${tag}"
 
 export GO111MODULE=on
-export GOWORK=off
 export GOFLAGS=
 export GOPATH="${root}/gopath"
 export GOMODCACHE="${root}/modcache"
@@ -338,7 +352,7 @@ export GONOPROXY=
 export GONOSUMDB=
 mkdir -p "${GOPATH}" "${GOMODCACHE}" "${GOCACHE}"
 
-[[ $(go env GOWORK) == "/dev/null" ]] || fail "GOWORK must resolve to off"
+assert_workspace_disabled
 readonly go_sum_db=$(go env GOSUMDB)
 [[ -n ${go_sum_db} && ${go_sum_db} != "off" ]] || fail "GOSUMDB must be enabled"
 readonly configured_proxy=$(go env GOPROXY)
@@ -353,6 +367,7 @@ export GOPROXY="${proxy_only}"
 pushd "${root}/consumer" >/dev/null
 go mod init example.com/floret-published-adoption-smoke
 go get "${module_path}@${tag}"
+go mod tidy
 export GOFLAGS="-mod=readonly"
 go list -m -json "${module_path}" >"${root}/module-list.json"
 go mod download -json "${module_path}@${tag}" >"${root}/module-download.json"
