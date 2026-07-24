@@ -168,43 +168,44 @@ func describeSchemaContractMismatch(actual, expected schemaContract) string {
 }
 
 func expectedSchemaContract(version string) (schemaContract, error) {
-	build := func(schema string) (schemaContract, error) {
-		db, err := sql.Open(driverName, ":memory:")
-		if err != nil {
-			return schemaContract{}, err
-		}
-		defer db.Close()
-		db.SetMaxOpenConns(1)
-		db.SetMaxIdleConns(1)
-		if _, err := db.Exec(schema); err != nil {
-			return schemaContract{}, fmt.Errorf("build canonical sqlite schema contract: %w", err)
-		}
-		return readSchemaContract(context.Background(), db)
-	}
 	switch version {
 	case schemaVersion13:
 		schema13ContractOnce.Do(func() {
-			schema13Contract, schema13ContractErr = build(schemaVersion13SQL)
+			schema13Contract, schema13ContractErr = buildSchemaContract(schemaVersion13SQL)
 		})
 		return cloneSchemaContract(schema13Contract), schema13ContractErr
 	case schemaVersion14:
 		schema14ContractOnce.Do(func() {
-			schema14Contract, schema14ContractErr = build(schemaVersion14SQL)
+			schema14Contract, schema14ContractErr = buildSchemaContract(schemaVersion14SQL)
 		})
 		return cloneSchemaContract(schema14Contract), schema14ContractErr
 	case schemaVersion15:
 		schema15ContractOnce.Do(func() {
-			schema15Contract, schema15ContractErr = build(schemaVersion15SQL)
+			schema15Contract, schema15ContractErr = buildSchemaContract(schemaVersion15SQL)
 		})
 		return cloneSchemaContract(schema15Contract), schema15ContractErr
 	case schemaVersion:
 		canonicalContractOnce.Do(func() {
-			canonicalContract, canonicalContractErr = build(schemaSQL)
+			canonicalContract, canonicalContractErr = buildSchemaContract(schemaSQL)
 		})
 		return cloneSchemaContract(canonicalContract), canonicalContractErr
 	default:
 		return schemaContract{}, fmt.Errorf("unsupported sqlite schema contract version %q", version)
 	}
+}
+
+func buildSchemaContract(schema string) (schemaContract, error) {
+	db, err := sql.Open(driverName, ":memory:")
+	if err != nil {
+		return schemaContract{}, err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if _, err := db.Exec(schema); err != nil {
+		return schemaContract{}, fmt.Errorf("build canonical sqlite schema contract: %w", err)
+	}
+	return readSchemaContract(context.Background(), db)
 }
 
 func readSchemaContract(ctx context.Context, q sqlRunner) (schemaContract, error) {

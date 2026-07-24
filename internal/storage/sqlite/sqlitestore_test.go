@@ -410,7 +410,7 @@ func TestSQLiteStoreConcurrentVersion13MigrationPersistsOneLeasePolicy(t *testin
 	}
 }
 
-func TestSQLiteStoreRejectsNonEmptySchemaVersion13WithoutChanges(t *testing.T) {
+func TestSQLiteStoreMigratesQuiescentSchemaVersion13ThreadWithoutJournal(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v13-non-empty.db")
 	createSchemaVersion13StoreForTest(t, path, func(db *sql.DB) {
 		if _, err := db.Exec(`INSERT INTO threads(id, created_at, updated_at) VALUES('thread', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
@@ -418,37 +418,21 @@ func TestSQLiteStoreRejectsNonEmptySchemaVersion13WithoutChanges(t *testing.T) {
 		}
 	})
 
-	_, err := Open(path)
-	var unsupported *storage.UnsupportedStoreSchemaError
-	if !errors.As(err, &unsupported) {
-		t.Fatalf("Open error = %v, want UnsupportedStoreSchemaError", err)
-	}
-
-	db, err := sql.Open(driverName, path)
+	store, err := Open(path)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Open migrated store: %v", err)
 	}
-	defer db.Close()
-	var version string
-	if err := db.QueryRow(`SELECT value FROM schema_meta WHERE key = 'schema_version'`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if version != schemaVersion13 {
-		t.Fatalf("schema version after rejection = %q, want %q", version, schemaVersion13)
+	defer store.Close()
+	version, err := store.SchemaVersion(context.Background())
+	if err != nil || version != schemaVersion {
+		t.Fatalf("migrated schema version=%q err=%v, want %q", version, err, schemaVersion)
 	}
 	var threadCount int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM threads`).Scan(&threadCount); err != nil {
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM threads`).Scan(&threadCount); err != nil {
 		t.Fatal(err)
 	}
 	if threadCount != 1 {
-		t.Fatalf("thread count after rejection = %d, want 1", threadCount)
-	}
-	var journalMode string
-	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&journalMode); err != nil {
-		t.Fatal(err)
-	}
-	if journalMode == "wal" {
-		t.Fatalf("rejected schema persisted journal_mode=%q", journalMode)
+		t.Fatalf("thread count after migration = %d, want 1", threadCount)
 	}
 }
 
@@ -487,7 +471,7 @@ func TestSQLiteStoreRejectsUnsupportedSchemaShapesWithoutChanges(t *testing.T) {
 			if !errors.As(err, &unsupported) {
 				t.Fatalf("Open error = %v, want UnsupportedStoreSchemaError", err)
 			}
-			if unsupported.ObservedVersion != tc.version || unsupported.ObservedFingerprint != tc.fingerprint {
+			if unsupported.Observed.Version != tc.version || unsupported.Observed.Fingerprint != tc.fingerprint {
 				t.Fatalf("unsupported schema error = %#v", unsupported)
 			}
 
@@ -569,7 +553,7 @@ func TestSQLiteStoreRejectsUnversionedExistingSchema(t *testing.T) {
 
 	_, err = Open(path)
 	var unsupported *storage.UnsupportedStoreSchemaError
-	if !errors.As(err, &unsupported) || unsupported.ObservedVersion != "" || unsupported.ObservedFingerprint != "" {
+	if !errors.As(err, &unsupported) || unsupported.Observed.Version != "" || unsupported.Observed.Fingerprint != "" {
 		t.Fatalf("unversioned schema open err = %v, want typed unsupported empty shape", err)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/floegence/floret/internal/provider/cache"
@@ -13,29 +14,51 @@ import (
 
 var ErrMetadataNotFound = errors.New("storage metadata not found")
 
+type StoreSchemaIdentity struct {
+	Version     string
+	Fingerprint string
+}
+
+type StoreSchemaMigrationRequirement string
+
+const (
+	StoreSchemaMigrationRequirementNone               StoreSchemaMigrationRequirement = "none"
+	StoreSchemaMigrationRequirementQuiescentAuthority StoreSchemaMigrationRequirement = "quiescent_authority"
+)
+
+type StoreSchemaMigrationSource struct {
+	Identity    StoreSchemaIdentity
+	Requirement StoreSchemaMigrationRequirement
+}
+
 // UnsupportedStoreSchemaError reports an exact schema contract mismatch. Store
 // open must return this error without modifying the observed database.
 type UnsupportedStoreSchemaError struct {
-	ObservedVersion        string
-	ObservedFingerprint    string
-	CurrentVersion         string
-	CurrentFingerprint     string
-	PredecessorVersion     string
-	PredecessorFingerprint string
+	Observed   StoreSchemaIdentity
+	Current    StoreSchemaIdentity
+	Migratable []StoreSchemaMigrationSource
 }
 
 func (e *UnsupportedStoreSchemaError) Error() string {
 	if e == nil {
 		return "unsupported store schema"
 	}
+	sources := make([]string, 0, len(e.Migratable))
+	for _, source := range e.Migratable {
+		sources = append(sources, fmt.Sprintf(
+			"version %q fingerprint %q requirement %q",
+			source.Identity.Version,
+			source.Identity.Fingerprint,
+			source.Requirement,
+		))
+	}
 	return fmt.Sprintf(
-		"unsupported store schema version %q fingerprint %q; accepted current is version %q fingerprint %q and empty predecessor is version %q fingerprint %q",
-		e.ObservedVersion,
-		e.ObservedFingerprint,
-		e.CurrentVersion,
-		e.CurrentFingerprint,
-		e.PredecessorVersion,
-		e.PredecessorFingerprint,
+		"unsupported store schema version %q fingerprint %q; current is version %q fingerprint %q; migratable sources are [%s]",
+		e.Observed.Version,
+		e.Observed.Fingerprint,
+		e.Current.Version,
+		e.Current.Fingerprint,
+		strings.Join(sources, ", "),
 	)
 }
 

@@ -66,11 +66,14 @@ func TestPublicOpenSQLiteStoreReportsTypedUnsupportedSchema(t *testing.T) {
 	if !errors.As(err, &unsupported) {
 		t.Fatalf("OpenSQLiteStore error = %v, want UnsupportedStoreSchemaError", err)
 	}
-	if unsupported.ObservedVersion != "" || unsupported.ObservedFingerprint != "" {
+	if unsupported.Observed.Version != "" || unsupported.Observed.Fingerprint != "" {
 		t.Fatalf("observed unsupported schema = %#v, want absent Floret metadata", unsupported)
 	}
-	if unsupported.CurrentVersion == "" || unsupported.CurrentFingerprint == "" {
+	if unsupported.Current.Version == "" || unsupported.Current.Fingerprint == "" {
 		t.Fatalf("current schema identity = %#v, want exact public identity", unsupported)
+	}
+	if len(unsupported.Migratable) < 3 || unsupported.Migratable[0].Identity.Version == "" {
+		t.Fatalf("migratable schema identities = %#v, want complete public migration inputs", unsupported.Migratable)
 	}
 }
 

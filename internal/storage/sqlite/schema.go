@@ -57,7 +57,8 @@ func ensureSchema(ctx context.Context, tx sqlRunner, leasePolicy sessiontree.Lea
 	if fingerprintErr != nil && !errors.Is(fingerprintErr, storage.ErrMetadataNotFound) {
 		return fingerprintErr
 	}
-	if err != nil || fingerprintErr != nil {
+	legacyWithoutFingerprint := fingerprintErr != nil && legacySchemaVersionWithoutFingerprint(current)
+	if err != nil || fingerprintErr != nil && !legacyWithoutFingerprint {
 		return unsupportedSchemaError(current, fingerprint)
 	}
 	switch current {
@@ -98,10 +99,43 @@ func ensureSchema(ctx context.Context, tx sqlRunner, leasePolicy sessiontree.Lea
 		if fingerprint != schemaFingerprintVersion13 {
 			return unsupportedSchemaError(current, fingerprint)
 		}
-		if err := migrateEmptySchemaVersion13(ctx, tx, leasePolicy); err != nil {
+		if err := migrateQuiescentSchemaVersion13(ctx, tx, leasePolicy); err != nil {
 			return err
 		}
-		return verifySchemaVersion(ctx, tx, schemaVersion)
+		if err := migrateSchemaVersion14(ctx, tx); err != nil {
+			return err
+		}
+		if err := migrateSchemaVersion15(ctx, tx); err != nil {
+			return err
+		}
+		if err := verifySchemaVersion(ctx, tx, schemaVersion); err != nil {
+			return err
+		}
+		return verifyLeasePolicy(ctx, tx, leasePolicy)
+	case "3", "4", "5", "6", "7", "8", "9", "10", schemaVersion11, schemaVersion12:
+		if current == schemaVersion11 && fingerprint != schemaFingerprintVersion11 ||
+			current == schemaVersion12 && fingerprint != schemaFingerprintVersion12 {
+			return unsupportedSchemaError(current, fingerprint)
+		}
+		if err := verifyLegacySchemaContract(ctx, tx, current); err != nil {
+			return fmt.Errorf("%w: %v", unsupportedSchemaError(current, fingerprint), err)
+		}
+		if err := migrateLegacySchemaToVersion13(ctx, tx, current); err != nil {
+			return err
+		}
+		if err := migrateQuiescentSchemaVersion13(ctx, tx, leasePolicy); err != nil {
+			return err
+		}
+		if err := migrateSchemaVersion14(ctx, tx); err != nil {
+			return err
+		}
+		if err := migrateSchemaVersion15(ctx, tx); err != nil {
+			return err
+		}
+		if err := verifySchemaVersion(ctx, tx, schemaVersion); err != nil {
+			return err
+		}
+		return verifyLeasePolicy(ctx, tx, leasePolicy)
 	default:
 		return unsupportedSchemaError(current, fingerprint)
 	}
@@ -109,12 +143,32 @@ func ensureSchema(ctx context.Context, tx sqlRunner, leasePolicy sessiontree.Lea
 
 func unsupportedSchemaError(version, fingerprint string) error {
 	return &storage.UnsupportedStoreSchemaError{
-		ObservedVersion:        version,
-		ObservedFingerprint:    fingerprint,
-		CurrentVersion:         schemaVersion,
-		CurrentFingerprint:     schemaFingerprintVersion16,
-		PredecessorVersion:     schemaVersion15,
-		PredecessorFingerprint: schemaFingerprintVersion15,
+		Observed: storage.StoreSchemaIdentity{Version: version, Fingerprint: fingerprint},
+		Current:  storage.StoreSchemaIdentity{Version: schemaVersion, Fingerprint: schemaFingerprintVersion16},
+		Migratable: []storage.StoreSchemaMigrationSource{
+			{Identity: storage.StoreSchemaIdentity{Version: schemaVersion15, Fingerprint: schemaFingerprintVersion15}, Requirement: storage.StoreSchemaMigrationRequirementNone},
+			{Identity: storage.StoreSchemaIdentity{Version: schemaVersion14, Fingerprint: schemaFingerprintVersion14}, Requirement: storage.StoreSchemaMigrationRequirementNone},
+			{Identity: storage.StoreSchemaIdentity{Version: schemaVersion13, Fingerprint: schemaFingerprintVersion13}, Requirement: storage.StoreSchemaMigrationRequirementQuiescentAuthority},
+			{Identity: storage.StoreSchemaIdentity{Version: schemaVersion12, Fingerprint: schemaFingerprintVersion12}, Requirement: storage.StoreSchemaMigrationRequirementQuiescentAuthority},
+			{Identity: storage.StoreSchemaIdentity{Version: schemaVersion11, Fingerprint: schemaFingerprintVersion11}, Requirement: storage.StoreSchemaMigrationRequirementQuiescentAuthority},
+			{Identity: storage.StoreSchemaIdentity{Version: "10"}, Requirement: storage.StoreSchemaMigrationRequirementQuiescentAuthority},
+			{Identity: storage.StoreSchemaIdentity{Version: "9"}, Requirement: storage.StoreSchemaMigrationRequirementQuiescentAuthority},
+			{Identity: storage.StoreSchemaIdentity{Version: "8"}, Requirement: storage.StoreSchemaMigrationRequirementQuiescentAuthority},
+			{Identity: storage.StoreSchemaIdentity{Version: "7"}, Requirement: storage.StoreSchemaMigrationRequirementQuiescentAuthority},
+			{Identity: storage.StoreSchemaIdentity{Version: "6"}, Requirement: storage.StoreSchemaMigrationRequirementQuiescentAuthority},
+			{Identity: storage.StoreSchemaIdentity{Version: "5"}, Requirement: storage.StoreSchemaMigrationRequirementQuiescentAuthority},
+			{Identity: storage.StoreSchemaIdentity{Version: "4"}, Requirement: storage.StoreSchemaMigrationRequirementQuiescentAuthority},
+			{Identity: storage.StoreSchemaIdentity{Version: "3"}, Requirement: storage.StoreSchemaMigrationRequirementQuiescentAuthority},
+		},
+	}
+}
+
+func legacySchemaVersionWithoutFingerprint(version string) bool {
+	switch version {
+	case "3", "4", "5", "6", "7", "8", "9", "10":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -846,7 +900,7 @@ var schemaVersion13SQL = strings.NewReplacer(
 	threadCloseOperationColumnSQL, "",
 	threadLeaseGenerationColumnSQL, "",
 	threadAuthorityChecksSQL, "",
-	"\tlast_viewed_at TEXT NOT NULL DEFAULT '',\n", "\tlast_viewed_at TEXT NOT NULL DEFAULT ''\n",
+	"\tlast_viewed_at TEXT NOT NULL DEFAULT '',\n", "\tstatus TEXT NOT NULL DEFAULT '',\n\tlast_viewed_at TEXT NOT NULL DEFAULT ''\n",
 	forkOperationsSQL, forkOperationsSQLVersion13,
 	activeTurnLeasesSQL, activeTurnLeasesSQLVersion13,
 ).Replace(schemaVersion14SQL)

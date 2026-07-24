@@ -478,20 +478,31 @@ func persistLeasePolicy(ctx context.Context, q sqlRunner, policy sessiontree.Lea
 }
 
 func verifyLeasePolicy(ctx context.Context, q sqlRunner, configured sessiontree.LeasePolicy) error {
+	persisted, err := readLeasePolicy(ctx, q)
+	if err != nil {
+		return err
+	}
+	if persisted != configured {
+		return &storage.StoreLeasePolicyMismatchError{Configured: configured, Persisted: persisted}
+	}
+	return nil
+}
+
+func readLeasePolicy(ctx context.Context, q sqlRunner) (sessiontree.LeasePolicy, error) {
 	var ttl, renew, skew int64
 	if err := q.QueryRowContext(ctx, `SELECT lease_ttl_ns, renew_interval_ns, clock_skew_allowance_ns
 		FROM authority_lease_policy WHERE singleton = 1`).Scan(&ttl, &renew, &skew); err != nil {
-		return fmt.Errorf("read sqlite store lease policy: %w", err)
+		return sessiontree.LeasePolicy{}, fmt.Errorf("read sqlite store lease policy: %w", err)
 	}
 	persisted := sessiontree.LeasePolicy{
 		TTL:                time.Duration(ttl),
 		RenewInterval:      time.Duration(renew),
 		ClockSkewAllowance: time.Duration(skew),
 	}
-	if persisted != configured {
-		return &storage.StoreLeasePolicyMismatchError{Configured: configured, Persisted: persisted}
+	if err := persisted.Validate(); err != nil {
+		return sessiontree.LeasePolicy{}, fmt.Errorf("validate persisted sqlite store lease policy: %w", err)
 	}
-	return nil
+	return persisted, nil
 }
 
 func nonEmptySchemaVersion13Tables(ctx context.Context, q sqlRunner) ([]string, error) {

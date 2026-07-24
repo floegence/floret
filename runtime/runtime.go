@@ -183,32 +183,54 @@ type RequestConflictError struct {
 	Err       error
 }
 
+type StoreSchemaIdentity struct {
+	Version     string `json:"version"`
+	Fingerprint string `json:"fingerprint"`
+}
+
+type StoreSchemaMigrationRequirement string
+
+const (
+	StoreSchemaMigrationRequirementNone               StoreSchemaMigrationRequirement = "none"
+	StoreSchemaMigrationRequirementQuiescentAuthority StoreSchemaMigrationRequirement = "quiescent_authority"
+)
+
+type StoreSchemaMigrationSource struct {
+	Identity    StoreSchemaIdentity             `json:"identity"`
+	Requirement StoreSchemaMigrationRequirement `json:"requirement"`
+}
+
 // UnsupportedStoreSchemaError reports an exact SQLite schema contract
 // mismatch without mutating or replacing the observed store.
 type UnsupportedStoreSchemaError struct {
-	ObservedVersion        string
-	ObservedFingerprint    string
-	CurrentVersion         string
-	CurrentFingerprint     string
-	PredecessorVersion     string
-	PredecessorFingerprint string
+	Observed   StoreSchemaIdentity          `json:"observed"`
+	Current    StoreSchemaIdentity          `json:"current"`
+	Migratable []StoreSchemaMigrationSource `json:"migratable"`
 }
 
 func (e *UnsupportedStoreSchemaError) Error() string {
 	if e == nil {
 		return "unsupported floret store schema"
 	}
+	sources := make([]string, 0, len(e.Migratable))
+	for _, source := range e.Migratable {
+		sources = append(sources, fmt.Sprintf(
+			"version %q fingerprint %q requirement %q",
+			source.Identity.Version,
+			source.Identity.Fingerprint,
+			source.Requirement,
+		))
+	}
 	return fmt.Sprintf(
-		"unsupported floret store schema version %q fingerprint %q; accepted current is version %q fingerprint %q and empty predecessor is version %q fingerprint %q",
-		e.ObservedVersion, e.ObservedFingerprint, e.CurrentVersion, e.CurrentFingerprint,
-		e.PredecessorVersion, e.PredecessorFingerprint,
+		"unsupported floret store schema version %q fingerprint %q; current is version %q fingerprint %q; migratable sources are [%s]",
+		e.Observed.Version, e.Observed.Fingerprint, e.Current.Version, e.Current.Fingerprint, strings.Join(sources, ", "),
 	)
 }
 
 type StoreLeasePolicy struct {
-	TTL                time.Duration
-	RenewInterval      time.Duration
-	ClockSkewAllowance time.Duration
+	TTL                time.Duration `json:"ttl"`
+	RenewInterval      time.Duration `json:"renew_interval"`
+	ClockSkewAllowance time.Duration `json:"clock_skew_allowance"`
 }
 
 // StoreLeasePolicyMismatchError reports that an opener requested a lease
@@ -537,7 +559,7 @@ func runtimeEffectAuthorizationGate(gate EffectAuthorizationGate) agentharness.E
 				PolicyRevision: proof.PolicyRevision, ApprovalID: proof.ApprovalID,
 				AuditReference: proof.AuditReference, AuditHash: proof.AuditHash, AuthorizedAt: proof.AuthorizedAt,
 			})
-			return EffectDispatchResult{result: internalResult}, runtimeEffectAuthorizationError(err)
+			return EffectDispatchResult{result: internalResult}, runtimeHostError(err)
 		})
 		return result.result, runtimeEffectAuthorizationError(err)
 	})
@@ -1985,15 +2007,19 @@ func NewMemoryStore() *Store {
 	return store
 }
 
-func OpenSQLiteStore(path string) (*Store, error) {
-	sqliteStore, err := sqlite.Open(path)
+func OpenSQLiteStore(path string, options ...SQLiteStoreOption) (*Store, error) {
+	configured, err := resolveSQLiteStoreOptions(options)
+	if err != nil {
+		return nil, err
+	}
+	sqliteStore, err := sqlite.Open(path, sqlite.WithLeasePolicy(configured.leasePolicy))
 	if err != nil {
 		var unsupported *storage.UnsupportedStoreSchemaError
 		if errors.As(err, &unsupported) {
 			return nil, &UnsupportedStoreSchemaError{
-				ObservedVersion: unsupported.ObservedVersion, ObservedFingerprint: unsupported.ObservedFingerprint,
-				CurrentVersion: unsupported.CurrentVersion, CurrentFingerprint: unsupported.CurrentFingerprint,
-				PredecessorVersion: unsupported.PredecessorVersion, PredecessorFingerprint: unsupported.PredecessorFingerprint,
+				Observed:   StoreSchemaIdentity{Version: unsupported.Observed.Version, Fingerprint: unsupported.Observed.Fingerprint},
+				Current:    StoreSchemaIdentity{Version: unsupported.Current.Version, Fingerprint: unsupported.Current.Fingerprint},
+				Migratable: mapStoreSchemaMigrationSources(unsupported.Migratable),
 			}
 		}
 		var mismatch *storage.StoreLeasePolicyMismatchError
