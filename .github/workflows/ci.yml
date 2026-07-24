@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOWORK: "off"
+
+jobs:
+  test:
+    name: Tests and architecture boundaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify dependency boundaries
+        run: >-
+          go test ./internal/architecture
+          -run 'TestNoGoWorkFilesInRepository|TestNoLocalModuleReplacementWiring|TestNoRedevenDependencyWiring'
+          -count=1
+
+      - name: Run repository tests and OKF conformance
+        run: go test ./...
+
+      - name: Run static analysis
+        run: go vet ./...
+
+      - name: Exercise public conformance helpers
+        run: go test ./florettest
+
+      - name: Compile and run downstream examples
+        shell: bash
+        run: |
+          go test ./cmd/examples/...
+          for example in cmd/examples/*; do
+            go run "./${example}"
+          done
+
+  race:
+    name: Focused race detection
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Exercise concurrent runtime and Store boundaries
+        run: >-
+          go test -race
+          ./internal/engine
+          ./internal/agentharness
+          ./internal/sessiontree
+          ./internal/storage/sqlite
+          ./runtime
+          ./tools
+
+  vulnerability:
+    name: Vulnerability scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Scan reachable dependencies
+        run: govulncheck ./...
