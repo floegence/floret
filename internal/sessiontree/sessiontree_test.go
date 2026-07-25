@@ -758,8 +758,13 @@ func TestBuildContextCheckedRejectsInvalidDurableRetrySource(t *testing.T) {
 }
 
 func TestBuildContextRetryProjectionRemainsLinearAtOneHundredThousandEntries(t *testing.T) {
-	shortPath := buildRetryContextFixture(1_000)
-	longPath := buildRetryContextFixture(100_000)
+	if raceDetectorEnabled {
+		t.Skip("allocation and scale checks run without the race detector")
+	}
+	const shortEntries = 1_000
+	const longEntries = 100_000
+	shortPath := buildRetryContextFixture(shortEntries)
+	longPath := buildRetryContextFixture(longEntries)
 	measure := func(path []Entry) float64 {
 		return testing.AllocsPerRun(5, func() {
 			messages, err := BuildContextChecked(path, ContextOptions{})
@@ -770,7 +775,8 @@ func TestBuildContextRetryProjectionRemainsLinearAtOneHundredThousandEntries(t *
 	}
 	shortAllocs := measure(shortPath)
 	longAllocs := measure(longPath)
-	if longAllocs > shortAllocs*15 {
+	maxLinearGrowth := float64(longEntries) / float64(shortEntries) * 1.20
+	if longAllocs > shortAllocs*maxLinearGrowth {
 		t.Fatalf("retry projection allocations grew superlinearly: 1k=%f 100k=%f", shortAllocs, longAllocs)
 	}
 	started := time.Now()

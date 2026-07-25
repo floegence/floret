@@ -18,13 +18,15 @@ import (
 )
 
 type effectBoundaryProbe struct {
-	rejectCalls  atomic.Int64
-	markCalls    atomic.Int64
-	finishCalls  atomic.Int64
-	state        atomic.Value
-	beginPanic   string
-	markObserved chan struct{}
-	markOnce     sync.Once
+	rejectCalls    atomic.Int64
+	markCalls      atomic.Int64
+	finishCalls    atomic.Int64
+	state          atomic.Value
+	beginPanic     string
+	rejectObserved chan struct{}
+	rejectOnce     sync.Once
+	markObserved   chan struct{}
+	markOnce       sync.Once
 }
 
 type effectBoundaryMemoryRepo struct {
@@ -76,7 +78,7 @@ func (r *approvalReplayBoundarySQLiteRepo) CommitApprovalDispatch(ctx context.Co
 func (r *effectBoundaryMemoryRepo) RejectEffectAttempt(ctx context.Context, req sessiontree.RejectEffectAttemptRequest) (sessiontree.EffectAttempt, error) {
 	r.probe.rejectCalls.Add(1)
 	attempt, err := r.MemoryRepo.RejectEffectAttempt(ctx, req)
-	r.probe.record(attempt, err)
+	r.probe.recordReject(attempt, err)
 	return attempt, err
 }
 
@@ -108,7 +110,7 @@ func (r *effectBoundaryMemoryRepo) MarkEffectUnknown(ctx context.Context, req se
 func (r *effectBoundarySQLiteRepo) RejectEffectAttempt(ctx context.Context, req sessiontree.RejectEffectAttemptRequest) (sessiontree.EffectAttempt, error) {
 	r.probe.rejectCalls.Add(1)
 	attempt, err := r.Store.RejectEffectAttempt(ctx, req)
-	r.probe.record(attempt, err)
+	r.probe.recordReject(attempt, err)
 	return attempt, err
 }
 
@@ -140,6 +142,13 @@ func (r *effectBoundarySQLiteRepo) MarkEffectUnknown(ctx context.Context, req se
 func (p *effectBoundaryProbe) record(attempt sessiontree.EffectAttempt, err error) {
 	if err == nil && attempt.State != "" {
 		p.state.Store(attempt.State)
+	}
+}
+
+func (p *effectBoundaryProbe) recordReject(attempt sessiontree.EffectAttempt, err error) {
+	p.record(attempt, err)
+	if err == nil && p.rejectObserved != nil {
+		p.rejectOnce.Do(func() { close(p.rejectObserved) })
 	}
 }
 
@@ -285,6 +294,8 @@ func TestAsyncEffectCallbackEarlyReturnConvergesAndExits(t *testing.T) {
 			probe := &effectBoundaryProbe{}
 			if test.dispatch {
 				probe.markObserved = make(chan struct{})
+			} else {
+				probe.rejectObserved = make(chan struct{})
 			}
 			repo := &effectBoundaryMemoryRepo{MemoryRepo: sessiontree.NewMemoryRepo(), probe: probe}
 			provider := harness.NewScriptedProvider(harness.Step(harness.Tool("call-1", "shell", `{"value":"x"}`), harness.DoneReason("tool_calls")))
@@ -335,6 +346,11 @@ func TestAsyncEffectCallbackEarlyReturnConvergesAndExits(t *testing.T) {
 				}
 				close(handlerRelease)
 			} else {
+				select {
+				case <-probe.rejectObserved:
+				case <-time.After(time.Second):
+					t.Fatal("early-return gate did not reject the undispatched effect")
+				}
 				close(callbackRelease)
 				close(handlerRelease)
 			}

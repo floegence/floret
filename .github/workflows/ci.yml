@@ -29,6 +29,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Install workspace tool dependencies
+        run: sudo apt-get update && sudo apt-get install --yes ripgrep
+
       - name: Verify dependency boundaries
         run: >-
           go test ./internal/architecture
@@ -90,7 +93,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: "1.26.5"
           cache: true
 
       - name: Install govulncheck

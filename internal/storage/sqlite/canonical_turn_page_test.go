@@ -952,9 +952,12 @@ func TestSQLiteVersion15MigrationRejectsBrokenEntryGraphAtomically(t *testing.T)
 }
 
 func TestSQLiteVersion15PathDepthMigrationScalesLinearly(t *testing.T) {
+	if raceDetectorEnabled {
+		t.Skip("migration scale checks run without the race detector")
+	}
 	shortDuration := migrateLargeSchemaVersion15Journal(t, 1_000)
 	longDuration := migrateLargeSchemaVersion15Journal(t, 100_000)
-	if !raceDetectorEnabled && longDuration > 20*time.Second {
+	if longDuration > 20*time.Second {
 		t.Fatalf("100k entry path depth migration took %s", longDuration)
 	}
 	baseline := shortDuration
@@ -1312,6 +1315,9 @@ func TestSQLiteCanonicalTurnAncestorQueryPlanIsBounded(t *testing.T) {
 }
 
 func TestSQLiteCanonicalTurnPageAllocationsDoNotScaleWithThreadLength(t *testing.T) {
+	if raceDetectorEnabled {
+		t.Skip("allocation and scale checks run without the race detector")
+	}
 	shortStore, shortSince := buildSQLiteCanonicalReferenceFixture(t, 1_000)
 	longStore, longSince := buildSQLiteCanonicalReferenceFixture(t, 100_000)
 	for _, mode := range []string{"tail", "before", "since"} {
@@ -1324,6 +1330,9 @@ func TestSQLiteCanonicalTurnPageAllocationsDoNotScaleWithThreadLength(t *testing
 }
 
 func TestSQLiteRetryEligibilityIsBoundedByExactSourceIdentity(t *testing.T) {
+	if raceDetectorEnabled {
+		t.Skip("allocation and scale checks run without the race detector")
+	}
 	shortStore := buildSQLiteDeepRetryFixture(t, 1_000, true)
 	longStore := buildSQLiteDeepRetryFixture(t, 100_000, true)
 	shortAllocs, shortQueries := sqliteDeepRetryPageCost(t, shortStore)
@@ -1337,6 +1346,9 @@ func TestSQLiteRetryEligibilityIsBoundedByExactSourceIdentity(t *testing.T) {
 }
 
 func TestSQLiteRetryEligibilityQueriesScaleLinearlyWithSourceChain(t *testing.T) {
+	if raceDetectorEnabled {
+		t.Skip("allocation and scale checks run without the race detector")
+	}
 	queries := make(map[int]int)
 	allocations := make(map[int]float64)
 	for _, chainLength := range []int{1, 8, 32} {
