@@ -37,7 +37,8 @@ fi
 export GOPROXY="file://${proxy_root},${upstream_proxy}"
 export GOPRIVATE=
 export GONOPROXY=
-export GONOSUMDB="${module_path}"
+export GONOSUMDB=
+export GOSUMDB=off
 export GOPATH="${root}/gopath"
 export GOMODCACHE="${root}/modcache"
 export GOCACHE="${root}/buildcache"
