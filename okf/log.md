@@ -1,5 +1,19 @@
 # Floret OKF Update Log
 
+## 2026-07-25
+* **SDK adoption**: Added safe SQLite startup, shared request validation,
+  sealed turn-execution presets, and versioned host-owned composition profiles
+  with deterministic fake-provider smoke tests and immutable candidate module
+  adoption checks.
+* **Recovery boundary**: Added complete typed canonical pending settlement
+  target reads for root and directly parent-bound SubAgent capabilities.
+  Production recovery now traverses the full descendant tree and reconciles
+  these targets before readiness instead of rebuilding authority from paginated
+  presentation events.
+* **Progressive disclosure**: Moved the README starter to generated local
+  create/read/run interfaces while retaining the existing narrow runtime
+  capability APIs as the complete advanced surface.
+
 ## 2026-07-24
 * **Published adoption**: Added one post-release gate that resolves an exact tag
   from a blank downstream module, verifies module and checksum identity, and

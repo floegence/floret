@@ -340,6 +340,17 @@ type CreateThreadRequest struct {
 	CreateIntentID CreateIntentID
 }
 
+// Validate checks the explicit identities required for a durable root create.
+func (r CreateThreadRequest) Validate() error {
+	if strings.TrimSpace(string(r.ThreadID)) == "" {
+		return errors.New("thread id is required")
+	}
+	if strings.TrimSpace(string(r.CreateIntentID)) == "" {
+		return errors.New("create intent id is required")
+	}
+	return nil
+}
+
 type SetThreadTitleRequest struct {
 	ThreadID ThreadID `json:"thread_id"`
 	Title    string   `json:"title"`
@@ -593,6 +604,14 @@ type RunTurnRequest struct {
 	ToolSurfaceProvider ToolSurfaceProvider
 }
 
+// Validate checks the provider-independent request contract before admission.
+// Host execution repeats this validation and additionally checks bound
+// authority and provider-specific capabilities.
+func (r RunTurnRequest) Validate() error {
+	_, err := validateRunTurnRequest(r)
+	return err
+}
+
 type RetryTurnRequest struct {
 	ThreadID ThreadID
 	Reason   string
@@ -740,6 +759,13 @@ type PendingToolSettlementTarget struct {
 	ToolName        string   `json:"tool_name"`
 	Handle          string   `json:"handle"`
 	EffectAttemptID string   `json:"effect_attempt_id,omitempty"`
+}
+
+// ListSubAgentPendingToolSettlementTargetsRequest identifies one direct child
+// whose canonical pending tool targets should be read.
+type ListSubAgentPendingToolSettlementTargetsRequest struct {
+	ParentThreadID ThreadID `json:"parent_thread_id"`
+	ChildThreadID  ThreadID `json:"child_thread_id"`
 }
 
 // PendingToolSettlementRequest records a host-owned pending tool outcome as a
@@ -2450,6 +2476,9 @@ func (h *ThreadCreateHost) CreateThread(ctx context.Context, req CreateThreadReq
 	}
 	req.ThreadID = h.threadID
 	req.CreateIntentID = h.createIntentID
+	if err := req.Validate(); err != nil {
+		return ThreadSummary{}, err
+	}
 	h.store.threadAuthorityMu.Lock()
 	defer h.store.threadAuthorityMu.Unlock()
 	created, err := h.store.rootAuthority.CreateRoot(ctx, sessiontree.CreateRootRequest{
@@ -2578,6 +2607,28 @@ func (h *ThreadReadHost) ListThreadDetailEvents(ctx context.Context, req ListThr
 		return ThreadDetailEvents{}, err
 	}
 	return listThreadDetailEvents(ctx, h.harness, req)
+}
+
+// ListPendingToolSettlementTargets returns all canonical active pending tool
+// targets for the bound root thread. The result is complete and unpaginated.
+func (h *ThreadReadHost) ListPendingToolSettlementTargets(ctx context.Context, threadID ThreadID) ([]PendingToolSettlementTarget, error) {
+	done, err := beginHostOperation(h.store)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, threadID, "thread read host"); err != nil {
+		return nil, err
+	}
+	return listPendingToolSettlementTargets(ctx, h.harness, threadID)
+}
+
+func listPendingToolSettlementTargets(ctx context.Context, harness *agentharness.AgentHarness, threadID ThreadID) ([]PendingToolSettlementTarget, error) {
+	targets, err := harness.ListPendingToolSettlementTargets(ctx, string(threadID))
+	if err != nil {
+		return nil, runtimeHostError(err)
+	}
+	return pendingToolSettlementTargets(targets), nil
 }
 
 func listThreadDetailEvents(ctx context.Context, harness *agentharness.AgentHarness, req ListThreadDetailEventsRequest) (ThreadDetailEvents, error) {
@@ -2861,30 +2912,14 @@ func readTurnProjection(ctx context.Context, harness *agentharness.AgentHarness,
 }
 
 func (h *providerHost) RunTurn(ctx context.Context, req RunTurnRequest) (TurnResult, error) {
-	if strings.TrimSpace(string(req.RunID)) == "" {
-		return TurnResult{}, errors.New("run id is required")
-	}
-	if strings.TrimSpace(string(req.ThreadID)) == "" {
-		return TurnResult{}, errors.New("thread id is required")
-	}
-	if strings.TrimSpace(string(req.TurnID)) == "" {
-		return TurnResult{}, errors.New("turn id is required")
-	}
-	input, err := normalizeTurnInput(req.Input)
+	validated, err := validateRunTurnRequest(req)
 	if err != nil {
 		return TurnResult{}, err
 	}
+	input := validated.input
 	supplementalContext := agentHarnessSupplementalContext(req.SupplementalContext)
 	if len(input.Attachments) > 0 && !h.supportsOpaqueAttachments {
 		return TurnResult{}, errors.New("opaque message attachments require a ModelGateway host")
-	}
-	completionPolicy, err := engineTurnCompletionPolicy(req.Completion)
-	if err != nil {
-		return TurnResult{}, err
-	}
-	signalSpec, err := engineTurnSignalSpec(req.Signals, completionPolicy)
-	if err != nil {
-		return TurnResult{}, err
 	}
 	operationCtx, done, err := beginHostOperationContext(h.store, ctx)
 	if err != nil {
@@ -2904,8 +2939,8 @@ func (h *providerHost) RunTurn(ctx context.Context, req RunTurnRequest) (TurnRes
 			Correlation: cloneStringMap(req.Labels.Correlation),
 			Host:        cloneStringMap(req.Labels.Host),
 		},
-		CompletionPolicy:         completionPolicy,
-		ControlSpec:              signalSpec,
+		CompletionPolicy:         validated.completionPolicy,
+		ControlSpec:              validated.signalSpec,
 		Reasoning:                projectedReasoningSelection(req.Reasoning, h.cfg.Reasoning),
 		MaxInputTokens:           req.Limits.MaxInputTokens,
 		MaxTotalTokens:           req.Limits.MaxTotalTokens,
@@ -2925,6 +2960,40 @@ func (h *providerHost) RunTurn(ctx context.Context, req RunTurnRequest) (TurnRes
 	defer cancelProjection()
 	_ = h.attachThreadTurnProjection(projectionCtx, string(req.ThreadID), &out, result.CanonicalEvents)
 	return out, runtimeHostError(runErr)
+}
+
+type validatedRunTurnRequest struct {
+	input            TurnInput
+	completionPolicy engine.CompletionPolicy
+	signalSpec       engine.ControlSpec
+}
+
+func validateRunTurnRequest(req RunTurnRequest) (validatedRunTurnRequest, error) {
+	if strings.TrimSpace(string(req.RunID)) == "" {
+		return validatedRunTurnRequest{}, errors.New("run id is required")
+	}
+	if strings.TrimSpace(string(req.ThreadID)) == "" {
+		return validatedRunTurnRequest{}, errors.New("thread id is required")
+	}
+	if strings.TrimSpace(string(req.TurnID)) == "" {
+		return validatedRunTurnRequest{}, errors.New("turn id is required")
+	}
+	input, err := normalizeTurnInput(req.Input)
+	if err != nil {
+		return validatedRunTurnRequest{}, err
+	}
+	completionPolicy, err := engineTurnCompletionPolicy(req.Completion)
+	if err != nil {
+		return validatedRunTurnRequest{}, err
+	}
+	signalSpec, err := engineTurnSignalSpec(req.Signals, completionPolicy)
+	if err != nil {
+		return validatedRunTurnRequest{}, err
+	}
+	return validatedRunTurnRequest{
+		input:            input,
+		completionPolicy: completionPolicy, signalSpec: signalSpec,
+	}, nil
 }
 
 func normalizeTurnInput(input TurnInput) (TurnInput, error) {
@@ -3509,6 +3578,41 @@ func (h *SubAgentReadHost) ReadSubAgentDetail(ctx context.Context, req ReadSubAg
 		return SubAgentDetail{}, err
 	}
 	return readSubAgentDetail(ctx, h.harness, req)
+}
+
+// ListPendingToolSettlementTargets returns all canonical active pending tool
+// targets for one direct child under the bound parent. The result is complete
+// and unpaginated.
+func (h *SubAgentReadHost) ListPendingToolSettlementTargets(ctx context.Context, req ListSubAgentPendingToolSettlementTargetsRequest) ([]PendingToolSettlementTarget, error) {
+	done, err := beginHostOperation(h.store)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	if err := validateBoundThreadID(h.parentThreadID, req.ParentThreadID, "subagent read host parent"); err != nil {
+		return nil, err
+	}
+	targets, err := h.harness.ListSubAgentPendingToolSettlementTargets(ctx, string(req.ParentThreadID), string(req.ChildThreadID))
+	if err != nil {
+		return nil, runtimeHostError(err)
+	}
+	return pendingToolSettlementTargets(targets), nil
+}
+
+func pendingToolSettlementTargets(in []sessiontree.PendingToolSettlementTarget) []PendingToolSettlementTarget {
+	out := make([]PendingToolSettlementTarget, 0, len(in))
+	for _, target := range in {
+		out = append(out, PendingToolSettlementTarget{
+			ThreadID:        ThreadID(target.ThreadID),
+			TurnID:          TurnID(target.TurnID),
+			RunID:           RunID(target.RunID),
+			ToolCallID:      target.ToolCallID,
+			ToolName:        target.ToolName,
+			Handle:          target.Handle,
+			EffectAttemptID: target.EffectAttemptID,
+		})
+	}
+	return out
 }
 
 func validateRootThreadAuthority(ctx context.Context, store *Store, threadID ThreadID) error {

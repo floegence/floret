@@ -14,6 +14,12 @@ error text and never mutates a Store during discovery.
 
 # Steps
 
+For ordinary application startup, call `StartSQLiteStore`. The zero-value
+policy refuses schema upgrades; choose `SQLiteMigrationApplyCompatible` only
+when the Store lifetime owner has deliberately supplied a stable migration
+operation ID. Use the lower-level flow below for operator-facing planning,
+confirmation, and progress UI.
+
 1. Stop Store users and retain exclusive ownership of the database path before
    an apply operation.
 2. Call `InspectSQLiteStore` and `VerifySQLiteStore` first. Render their typed
@@ -49,7 +55,9 @@ host UI.
 # Verify
 
 Run the [maintenance host example](/cmd/examples/store-maintenance-host) or the
-[`floret-store` command](/cmd/floret-store). Schema states, migration support,
+[`floret-store` command](/cmd/floret-store). Also exercise
+`StartSQLiteStore` against missing, current, upgradeable-refused, and compatible
+migration fixtures. Schema states, migration support,
 and typed contracts are authoritative in the [`runtime` API](../api/runtime.md).
 
 # Boundary

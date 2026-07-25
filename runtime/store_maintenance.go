@@ -199,6 +199,33 @@ type SQLiteStoreMaintenanceError struct {
 	Err         error
 }
 
+// SQLiteMigrationPolicy controls whether StartSQLiteStore may apply a
+// compatible schema migration. The zero value refuses migration.
+type SQLiteMigrationPolicy string
+
+const (
+	SQLiteMigrationRefuse          SQLiteMigrationPolicy = "refuse"
+	SQLiteMigrationApplyCompatible SQLiteMigrationPolicy = "apply_compatible"
+)
+
+// SQLiteStartupRequest configures one inspected and exact Store open. Existing
+// current or migrated stores are also verified before open; missing or empty
+// stores are initialized under the inspected precondition.
+type SQLiteStartupRequest struct {
+	MigrationPolicy      SQLiteMigrationPolicy
+	MigrationOperationID string
+	Progress             func(SQLiteStoreMaintenanceProgress)
+}
+
+// SQLiteStartupResult preserves the maintenance facts completed before a
+// Store was opened or startup failed. Store is non-nil only on success.
+type SQLiteStartupResult struct {
+	Store        *Store
+	Inspection   SQLiteStoreInspection
+	Verification SQLiteStoreVerification
+	Migration    *SQLiteStoreMigrationResult
+}
+
 func (e *SQLiteStoreMaintenanceError) Error() string {
 	if e == nil {
 		return "floret sqlite store maintenance failed"
@@ -239,6 +266,133 @@ func VerifySQLiteStore(ctx context.Context, path string, options ...SQLiteStoreO
 		checks[index] = SQLiteStoreVerificationCheck{Code: check.Code, Passed: check.Passed, SafeDetail: check.SafeDetail}
 	}
 	return SQLiteStoreVerification{Inspection: mapSQLiteStoreInspection(verification.Inspection), Checks: checks}, nil
+}
+
+// StartSQLiteStore runs the safe maintenance state machine and returns an
+// exact-open Store. It never migrates unless apply_compatible is explicit.
+func StartSQLiteStore(ctx context.Context, path string, request SQLiteStartupRequest, options ...SQLiteStoreOption) (SQLiteStartupResult, error) {
+	policy := request.MigrationPolicy
+	if policy == "" {
+		policy = SQLiteMigrationRefuse
+	}
+	if policy != SQLiteMigrationRefuse && policy != SQLiteMigrationApplyCompatible {
+		return SQLiteStartupResult{}, newSQLiteStoreMaintenanceError(
+			SQLiteStoreOperationOpen,
+			SQLiteStoreReasonInvalidRequest,
+			false,
+			false,
+			fmt.Errorf("unsupported sqlite migration policy %q", request.MigrationPolicy),
+		)
+	}
+	request.MigrationOperationID = strings.TrimSpace(request.MigrationOperationID)
+	if policy == SQLiteMigrationApplyCompatible && request.MigrationOperationID == "" {
+		return SQLiteStartupResult{}, newSQLiteStoreMaintenanceError(
+			SQLiteStoreOperationMigrate,
+			SQLiteStoreReasonInvalidRequest,
+			false,
+			false,
+			errors.New("sqlite startup migration operation id is required for apply_compatible"),
+		)
+	}
+	configured, err := resolveSQLiteStoreOptions(options)
+	if err != nil {
+		return SQLiteStartupResult{}, newSQLiteStoreMaintenanceError(SQLiteStoreOperationOpen, SQLiteStoreReasonInvalidRequest, false, false, err)
+	}
+	stableOptions := []SQLiteStoreOption{func(target *sqliteStoreOptions) { *target = configured }}
+
+	result := SQLiteStartupResult{}
+	inspection, err := InspectSQLiteStore(ctx, path, stableOptions...)
+	result.Inspection = inspection
+	if err != nil {
+		return result, err
+	}
+	if inspection.LeasePolicyState == SQLiteStoreLeasePolicyMismatch {
+		return result, newSQLiteStoreMaintenanceError(
+			SQLiteStoreOperationOpen,
+			SQLiteStoreReasonLeaseMismatch,
+			false,
+			false,
+			errors.New("sqlite store lease policy does not match the requested policy"),
+		)
+	}
+
+	switch inspection.State {
+	case SQLiteStoreStateMissing, SQLiteStoreStateEmpty:
+		store, openErr := OpenSQLiteStore(ctx, path, SQLiteStoreOpenRequest{ExpectedState: inspection.State}, stableOptions...)
+		if openErr != nil {
+			return result, openErr
+		}
+		result.Store = store
+		return result, nil
+	case SQLiteStoreStateCurrent:
+		// Continue to verification and exact open below.
+	case SQLiteStoreStateUpgradeable:
+		if policy == SQLiteMigrationRefuse {
+			return result, newSQLiteStoreMaintenanceError(
+				SQLiteStoreOperationOpen,
+				SQLiteStoreReasonMigrationAvailable,
+				false,
+				false,
+				errors.New("sqlite store requires an explicit compatible migration"),
+			)
+		}
+		migration, migrationErr := MigrateSQLiteStore(ctx, path, SQLiteStoreMigrationRequest{
+			OperationID:    request.MigrationOperationID,
+			Mode:           SQLiteStoreMigrationApply,
+			ExpectedSchema: inspection.Observed,
+			Progress:       request.Progress,
+		}, stableOptions...)
+		result.Migration = &migration
+		if migrationErr != nil {
+			return result, migrationErr
+		}
+	default:
+		reason := inspection.Reason
+		if reason == "" {
+			reason = sqliteStoreReasonForState(inspection.State)
+		}
+		return result, newSQLiteStoreMaintenanceError(
+			SQLiteStoreOperationOpen,
+			reason,
+			inspection.Retryable,
+			inspection.SafeToRetry,
+			fmt.Errorf("sqlite store state %q is not openable", inspection.State),
+		)
+	}
+
+	verification, verifyErr := VerifySQLiteStore(ctx, path, stableOptions...)
+	result.Verification = verification
+	if verifyErr != nil {
+		return result, verifyErr
+	}
+	store, openErr := OpenSQLiteStore(ctx, path, SQLiteStoreOpenRequest{
+		ExpectedState:  verification.Inspection.State,
+		ExpectedSchema: verification.Inspection.Observed,
+	}, stableOptions...)
+	if openErr != nil {
+		return result, openErr
+	}
+	result.Store = store
+	return result, nil
+}
+
+func sqliteStoreReasonForState(state SQLiteStoreState) SQLiteStoreReason {
+	switch state {
+	case SQLiteStoreStateUnsupportedOlder:
+		return SQLiteStoreReasonUnsupported
+	case SQLiteStoreStateFuture:
+		return SQLiteStoreReasonNewerReader
+	case SQLiteStoreStateDrifted:
+		return SQLiteStoreReasonFingerprint
+	case SQLiteStoreStateCorrupt:
+		return SQLiteStoreReasonCorrupt
+	case SQLiteStoreStateBusy:
+		return SQLiteStoreReasonBusy
+	case SQLiteStoreStatePermissionDenied:
+		return SQLiteStoreReasonPermission
+	default:
+		return SQLiteStoreReasonIO
+	}
 }
 
 func MigrateSQLiteStore(ctx context.Context, path string, request SQLiteStoreMigrationRequest, options ...SQLiteStoreOption) (SQLiteStoreMigrationResult, error) {

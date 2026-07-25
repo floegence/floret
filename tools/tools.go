@@ -208,8 +208,9 @@ func Define[T any](
 }
 
 type Registry struct {
-	mu    sync.RWMutex
-	tools map[string]Tool
+	mu     sync.RWMutex
+	tools  map[string]Tool
+	sealed bool
 }
 
 func NewRegistry(items ...Tool) *Registry {
@@ -235,7 +236,10 @@ func NewRegistryE(items ...Tool) (*Registry, error) {
 func (r *Registry) Register(t Tool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	def := t.Definition
+	if r.sealed {
+		return errors.New("tool registry is sealed")
+	}
+	def := cloneRegistryDefinition(t.Definition)
 	def.Name = strings.TrimSpace(def.Name)
 	if t.handler == nil {
 		return ErrInvalid
@@ -256,6 +260,32 @@ func (r *Registry) Register(t Tool) error {
 	}
 	r.tools[def.Name] = t
 	return nil
+}
+
+// Seal prevents further registration while preserving definition reads and
+// dispatch for the existing immutable tool snapshot. It is idempotent.
+func (r *Registry) Seal() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.sealed = true
+	r.mu.Unlock()
+}
+
+func cloneRegistryDefinition(def Definition) Definition {
+	if def.InputSchema != nil {
+		def.InputSchema = cloneSchema(def.InputSchema)
+	}
+	if def.OutputSchema != nil {
+		def.OutputSchema = cloneSchema(def.OutputSchema)
+	}
+	if def.Annotations != nil {
+		def.Annotations = cloneSchema(def.Annotations)
+	}
+	def.Effects = append([]Effect(nil), def.Effects...)
+	def.Permission.ResourceKinds = append([]string(nil), def.Permission.ResourceKinds...)
+	return def
 }
 
 func ValidateDefinition(def Definition) (Definition, error) {

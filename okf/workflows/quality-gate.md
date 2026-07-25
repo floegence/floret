@@ -39,11 +39,23 @@ database, run the external adoption gate:
 The script creates a blank temporary consumer module with `GOWORK=off`, a fresh
 module cache, and no `replace` directive or sibling path. It verifies the exact
 resolved module version, module zip, and module checksums through structured Go
-command output. It then runs a fixed public-API consumer test and the published
-durable host, custom gateway, tool approval, startup recovery, and Store
-maintenance examples. The `Published release adoption` workflow invokes the
-same script for a published GitHub release; the workflow does not maintain a
-second smoke implementation.
+command output. It then generates all five host profiles, runs their downstream
+smoke and profile-specific approval/recovery behavior tests, and runs the
+published durable host, custom gateway, tool approval, startup recovery, and
+Store maintenance examples. The `Published
+release adoption` workflow invokes the same script for a published GitHub
+release; the workflow does not maintain a second smoke implementation.
+
+Before committing a release candidate, run
+`scripts/check_candidate_release_adoption.sh` from a clean worktree. It packages
+committed `HEAD` into a local immutable module proxy and rejects workspace or
+replacement wiring. It intentionally refuses dirty trees so its result cannot
+be mistaken for validation of uncommitted source.
+
+This repository gate validates a blank downstream consumer, not Redeven.
+Redeven must pin the published tag and run its own notice, module-boundary, and
+focused integration checks in a dedicated Redeven feature worktree before that
+downstream upgrade is integrated.
 
 Before a tag exists, validate the embedded consumer and verifier templates with:
 

@@ -56,6 +56,23 @@ func TestRegisterRejectsInvalidTool(t *testing.T) {
 	}
 }
 
+func TestRegistrySealPreservesReadsAndDispatchButRejectsRegistration(t *testing.T) {
+	reg := NewRegistry(testTool("read", true, func(context.Context, Invocation[testArgs]) (Result, error) {
+		return Result{Text: "ok"}, nil
+	}))
+	reg.Seal()
+	reg.Seal()
+	if _, ok := reg.Definition("read"); !ok {
+		t.Fatal("sealed registry lost its definition")
+	}
+	if result := reg.Run(context.Background(), ToolCall{ID: "call", Name: "read", Args: `{"value":"x"}`}, nil); result.Text != "ok" {
+		t.Fatalf("sealed registry dispatch = %#v", result)
+	}
+	if err := reg.Register(testTool("later", true, nil)); err == nil || !strings.Contains(err.Error(), "sealed") {
+		t.Fatalf("sealed registry registration error = %v", err)
+	}
+}
+
 func TestRegistryRejectsEmptyToolArgsWithoutSubstitution(t *testing.T) {
 	called := false
 	reg := NewRegistry()

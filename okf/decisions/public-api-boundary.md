@@ -29,6 +29,15 @@ Runtime constructors return concrete capability pointers. Interface ownership
 stays with the caller, which declares the smallest capability set needed by
 each responsibility instead of inheriting a framework interface.
 
+Progressive disclosure is implemented through safe single-family constructors
+and host-owned generated composition, not a public `Client`, `App`, or aggregate
+runtime facade. `floret-host-init` keeps Store, bootstrap, and binder fields in
+one package-private composition owner, returns only local narrow interfaces or
+exact bound handles, and generates a deterministic fake-provider smoke test.
+Durable profiles accept Store options explicitly, refuse overwrite by default,
+and never create workspace, replacement, sibling, backup-file, or backup-branch
+wiring.
+
 The durable runtime capability surface is intentionally split at lifecycle boundaries.
 `ConfigureHostCapabilities` exposes `HostBootstrap` only during one callback,
 then seals it. The Store rejects a second configuration and rejects value-copy
@@ -53,6 +62,11 @@ request keeps its explicit identity and fails on a mismatch. This makes
 canonical Agent lifecycle ownership visible in method
 sets and authority identities instead of relying on a downstream caller to
 ignore methods on a shared Store or facade.
+
+Recovery discovery also stays a Floret fact. Public read capabilities expose
+complete typed canonical pending settlement targets for a root or one directly
+parent-bound child. Hosts and scaffolds must not infer that authority from
+paginated detail events, audit records, UI projections, or storage tables.
 
 `ParentThreadID` means SubAgent ownership only. Ordinary fork lineage is stored
 only in `ForkedFromThreadID`; child ownership metadata is written atomically

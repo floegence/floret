@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"reflect"
 	"slices"
 	"strings"
 )
@@ -163,6 +164,53 @@ func cloneAny(value any) any {
 		}
 		for i, item := range v {
 			out[i] = item
+		}
+		return out
+	default:
+		cloned := cloneCompositeValue(reflect.ValueOf(value))
+		if !cloned.IsValid() {
+			return nil
+		}
+		return cloned.Interface()
+	}
+}
+
+func cloneCompositeValue(value reflect.Value) reflect.Value {
+	if !value.IsValid() {
+		return value
+	}
+	switch value.Kind() {
+	case reflect.Interface:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		cloned := cloneCompositeValue(value.Elem())
+		out := reflect.New(value.Type()).Elem()
+		out.Set(cloned)
+		return out
+	case reflect.Map:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		out := reflect.MakeMapWithSize(value.Type(), value.Len())
+		iterator := value.MapRange()
+		for iterator.Next() {
+			out.SetMapIndex(cloneCompositeValue(iterator.Key()), cloneCompositeValue(iterator.Value()))
+		}
+		return out
+	case reflect.Slice:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		out := reflect.MakeSlice(value.Type(), value.Len(), value.Len())
+		for index := 0; index < value.Len(); index++ {
+			out.Index(index).Set(cloneCompositeValue(value.Index(index)))
+		}
+		return out
+	case reflect.Array:
+		out := reflect.New(value.Type()).Elem()
+		for index := 0; index < value.Len(); index++ {
+			out.Index(index).Set(cloneCompositeValue(value.Index(index)))
 		}
 		return out
 	default:

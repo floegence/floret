@@ -60,6 +60,13 @@ host interface for every runtime operation.
   canonical admission and finish ledgers. Recovery authority has no mixed or
   empty identity shape and cannot follow a later turn.
 * `NewMemoryStore` creates an in-memory runtime store for tests or ephemeral use.
+* `StartSQLiteStore` is the default durable startup path. It resolves Store
+  options once, inspects the source, initializes missing/empty storage safely,
+  verifies current storage, and performs an exact open. Its zero-value
+  migration policy refuses an upgrade without writing. Compatible automatic
+  migration requires `SQLiteMigrationApplyCompatible` plus a stable operation
+  ID, and partial inspection, migration, and verification facts remain in
+  `SQLiteStartupResult` when startup fails.
 * `OpenSQLiteStore` creates or opens Floret-managed durable runtime storage from
   a caller-provided `context.Context` and `SQLiteStoreOpenRequest`. The request
   binds open to a prior `missing`, `empty`, or exact `current` inspection.
@@ -91,6 +98,13 @@ host interface for every runtime operation.
   applies when the option is omitted; an explicit policy is persisted
   atomically only when a Store is first created, and every later open or
   maintenance operation must match it exactly.
+* `NewTurnExecutionOptions` provides safe defaults inside the turn-execution
+  capability family. Its opaque options reject zero values and duplicate categories;
+  `WithModelGateway` keeps gateway identity and capabilities atomic;
+  `WithReadOnlyTools` creates an immutable, statically proven read-only
+  Registry snapshot; and `WithEffectfulTools` requires an explicit
+  `EffectAuthorizationGate`. The original `TurnExecutionHostOptions` remains
+  the complete advanced contract.
 * `InspectSQLiteStore` classifies a path without creating it, changing SQLite
   pragmas, acquiring writer admission, or running migration. Its typed
   `SQLiteStoreInspection` reports kind, state, observed/current/migratable
@@ -161,6 +175,12 @@ host interface for every runtime operation.
   active turn owner. The bound root identity is enforced, so reconnect and
   bootstrap projections can reload pending approvals without opening Floret
   storage or creating a host-side queue.
+* `ThreadReadHost.ListPendingToolSettlementTargets` and the parent-bound
+  `SubAgentReadHost.ListPendingToolSettlementTargets` return complete typed
+  active pending-work authority from the canonical path. They are unpaginated
+  current-state reads and fail closed on malformed identity; hosts and generated
+  recovery code must not reconstruct settlement authority from detail-event
+  pages or generic metadata.
 * `TurnExecutionHost.RunTurn` executes one hosted user-facing turn and rejects a
   request whose `ThreadID` differs from the handle binding.
 * `RunTurnRequest.Input` is `TurnInput{Text, Attachments, References}`. At least

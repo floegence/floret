@@ -9,6 +9,13 @@ readonly smoke_examples=(
   "startup-recovery"
   "store-maintenance-host"
 )
+readonly scaffold_profiles=(
+  "memory"
+  "durable-basic"
+  "approval"
+  "production-recovery"
+  "subagent"
+)
 
 usage() {
   cat >&2 <<'EOF'
@@ -53,19 +60,16 @@ func TestPublishedModelGatewayContract(t *testing.T) {
 func TestPublishedDurableHostRestartAndStoreMaintenance(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "floret.db")
-	inspection, err := runtime.InspectSQLiteStore(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if inspection.State != runtime.SQLiteStoreStateMissing {
-		t.Fatalf("initial inspection state = %q", inspection.State)
-	}
-	store, err := runtime.OpenSQLiteStore(ctx, path, runtime.SQLiteStoreOpenRequest{
-		ExpectedState: inspection.State,
+	startup, err := runtime.StartSQLiteStore(ctx, path, runtime.SQLiteStartupRequest{
+		MigrationPolicy: runtime.SQLiteMigrationRefuse,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if startup.Inspection.State != runtime.SQLiteStoreStateMissing || startup.Store == nil {
+		t.Fatalf("initial startup = %#v", startup)
+	}
+	store := startup.Store
 	fixture, err := florettest.PopulateStoreFixture(ctx, store, florettest.StoreFixtureInput{
 		ThreadID:       "published-thread",
 		CreateIntentID: "published-create",
@@ -92,26 +96,20 @@ func TestPublishedDurableHostRestartAndStoreMaintenance(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	verification, err := runtime.VerifySQLiteStore(ctx, path)
+	reopenedStartup, err := runtime.StartSQLiteStore(ctx, path, runtime.SQLiteStartupRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if verification.Inspection.State != runtime.SQLiteStoreStateCurrent ||
-		verification.Inspection.LeasePolicyState != runtime.SQLiteStoreLeasePolicyMatches {
-		t.Fatalf("verification inspection = %#v", verification.Inspection)
+	if reopenedStartup.Store == nil || reopenedStartup.Verification.Inspection.State != runtime.SQLiteStoreStateCurrent ||
+		reopenedStartup.Verification.Inspection.LeasePolicyState != runtime.SQLiteStoreLeasePolicyMatches {
+		t.Fatalf("reopened startup = %#v", reopenedStartup)
 	}
-	for _, check := range verification.Checks {
+	for _, check := range reopenedStartup.Verification.Checks {
 		if !check.Passed {
 			t.Fatalf("verification check = %#v", check)
 		}
 	}
-	reopened, err := runtime.OpenSQLiteStore(ctx, path, runtime.SQLiteStoreOpenRequest{
-		ExpectedState:  verification.Inspection.State,
-		ExpectedSchema: verification.Inspection.Observed,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	reopened := reopenedStartup.Store
 	defer reopened.Close()
 
 	var readBinder *runtime.ThreadReadHostBinder
@@ -367,6 +365,13 @@ export GOPROXY="${proxy_only}"
 pushd "${root}/consumer" >/dev/null
 go mod init example.com/floret-published-adoption-smoke
 go get "${module_path}@${tag}"
+for profile in "${scaffold_profiles[@]}"; do
+  go run "${module_path}/cmd/floret-host-init@${tag}" \
+    --profile "${profile}" \
+    --package adoption \
+    --dir "${root}/consumer/generated/${profile}" \
+    --write
+done
 go mod tidy
 export GOFLAGS="-mod=readonly"
 go list -m -json "${module_path}" >"${root}/module-list.json"

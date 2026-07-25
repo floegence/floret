@@ -17,6 +17,9 @@ strict provider-visible schemas and typed handlers.
 * `tools.Define` builds a typed local tool.
 * `tools.NewRegistry` and `tools.NewRegistryE` collect tool definitions.
 * `Registry.Register` validates tool contracts.
+* `Registry.Seal` idempotently freezes registration while preserving reads and
+  dispatch. `runtime.WithReadOnlyTools` uses it after deep-copying and proving a
+  static read-only toolset, so later registration cannot expand that preset.
 * `Registry.Dispatch` is the engine-facing dispatch boundary and requires an
   `EffectDispatcher` supplied by Floret's durable thread runtime.
 * Schema helpers build strict tool input shapes.

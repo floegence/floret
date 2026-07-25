@@ -473,7 +473,7 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 	exact("ThreadForkHost", reflect.TypeOf((*floretRuntime.ThreadForkHost)(nil)), "ForkThread")
 	exact("ThreadDeleteHost", reflect.TypeOf((*floretRuntime.ThreadDeleteHost)(nil)), "DeleteThread")
 	exact("SubAgentReadHost", reflect.TypeOf((*floretRuntime.SubAgentReadHost)(nil)),
-		"ListSubAgentActivityTimeline", "ListSubAgents", "ReadArtifact", "ReadSubAgentDetail")
+		"ListPendingToolSettlementTargets", "ListSubAgentActivityTimeline", "ListSubAgents", "ReadArtifact", "ReadSubAgentDetail")
 	exact("PendingToolRecoveryHost", reflect.TypeOf((*floretRuntime.PendingToolRecoveryHost)(nil)), "SettlePendingTool")
 	exact("InterruptedTurnRecoveryHost", reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHost)(nil)), "RecoverInterruptedTurn")
 	exact("TurnExecutionHost", reflect.TypeOf((*floretRuntime.TurnExecutionHost)(nil)),
@@ -482,7 +482,7 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 	exact("SubAgentHost", reflect.TypeOf((*floretRuntime.SubAgentHost)(nil)),
 		"CloseSubAgent", "PublishPendingToolCompletion", "SendSubAgentInput", "SettlePendingTool", "SpawnSubAgent", "WaitSubAgents")
 	exact("ThreadReadHost", reflect.TypeOf((*floretRuntime.ThreadReadHost)(nil)),
-		"ListThreadDetailEvents", "ListThreadTurns", "ReadLatestThreadTurn", "ReadThread",
+		"ListPendingToolSettlementTargets", "ListThreadDetailEvents", "ListThreadTurns", "ReadLatestThreadTurn", "ReadThread",
 		"ReadApprovalQueue", "ReadArtifact", "ReadThreadAgentTodos", "ReadThreadContext", "ReadThreadOverview", "ReadTurnProjection")
 	exact("Store", reflect.TypeOf((*floretRuntime.Store)(nil)), "Close")
 	for name, typ := range map[string]reflect.Type{
@@ -1420,7 +1420,7 @@ func TestToolRegistryExposesOnlyAuthorityGatedDispatch(t *testing.T) {
 	for index := 0; index < registryType.NumMethod(); index++ {
 		got = append(got, registryType.Method(index).Name)
 	}
-	want := []string{"ActivityForCall", "Definition", "Definitions", "Dispatch", "DispatchBatch", "ExposedDefinitions", "OutputPolicyFor", "Register"}
+	want := []string{"ActivityForCall", "Definition", "Definitions", "Dispatch", "DispatchBatch", "ExposedDefinitions", "OutputPolicyFor", "Register", "Seal"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("tools.Registry exported method set = %#v, want %#v", got, want)
 	}

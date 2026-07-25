@@ -91,7 +91,7 @@ execution lifecycle to Floret.
 | Manage interactive child threads | `runtime.NewSubAgentHostBinder` |
 | Recover one exact interrupted turn | `runtime.NewInterruptedTurnRecoveryHostBinder` |
 | Reload canonical context state | `runtime.NewThreadReadHostBinder` |
-| Keep Floret runtime data in memory or SQLite | `runtime.NewMemoryStore` or `runtime.OpenSQLiteStore` |
+| Keep Floret runtime data in memory or SQLite | `runtime.NewMemoryStore` or `runtime.StartSQLiteStore` |
 | Keep model transport under product control | `runtime.ModelGateway` |
 | Define an agent's role and business instructions | `config.AgentProfile.SystemPrompt` or `config.Config.SystemPrompt` |
 | Change tools and instructions during a run | `runtime.ToolSurfaceProvider` |
@@ -123,97 +123,80 @@ Install the downstream packages:
 go get github.com/floegence/floret/config github.com/floegence/floret/runtime github.com/floegence/floret/tools github.com/floegence/floret/observation
 ```
 
-Start a durable thread with the deterministic fake provider:
+Generate the memory composition into your application. The command is a dry
+run by default, so the first invocation only shows the proposed source:
+
+```bash
+go run github.com/floegence/floret/cmd/floret-host-init@latest \
+  --profile memory --package main --dir .
+# Review the diff, then repeat with --write.
+```
+
+The generated files own Store lifetime and binder wiring. Application code
+keeps only explicit identities and the three narrow local capabilities.
+
+Under the hood it calls `runtime.ConfigureHostCapabilities` once and retains
+only the selected binders at this package-private composition root.
+Advanced hosts can use the resulting thread-bound `runtime.TurnExecutionHost`
+directly without adopting the generated local interface.
+
+The complete business path is 19 nonblank lines:
 
 ```go
-package main
+composition, err := openFloretComposition(ctx, cfg)
+if err != nil { return err }
+defer composition.close()
 
-import (
-	"context"
-	"fmt"
-	"log"
+threadID := runtime.ThreadID("thread-1")
+intentID := runtime.CreateIntentID("create-thread-1")
+creator, err := composition.bindThreadCreator(threadID, intentID)
+if err != nil { return err }
+thread, err := creator.CreateThread(ctx, runtime.CreateThreadRequest{
+	ThreadID: threadID, CreateIntentID: intentID,
+})
+if err != nil { return err }
 
-	"github.com/floegence/floret/config"
-	"github.com/floegence/floret/runtime"
-)
-
-func main() {
-	ctx := context.Background()
-
-	store := runtime.NewMemoryStore()
-	defer store.Close()
-	var createBinder *runtime.ThreadCreateHostBinder
-	var turnBinder *runtime.TurnExecutionHostBinder
-	err := runtime.ConfigureHostCapabilities(store, func(bootstrap *runtime.HostBootstrap) error {
-		var err error
-		createBinder, err = runtime.NewThreadCreateHostBinder(bootstrap)
-		if err != nil {
-			return err
-		}
-		turnBinder, err = runtime.NewTurnExecutionHostBinder(bootstrap)
-		return err
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-	createIntentID := runtime.CreateIntentID("create-thread-1")
-	threadCreator, err := createBinder.Bind("thread-1", createIntentID)
-	if err != nil {
-		log.Fatal(err)
-	}
-	turnFactory, err := turnBinder.Bind("thread-1")
-	if err != nil {
-		log.Fatal(err)
-	}
-	thread, err := threadCreator.CreateThread(ctx, runtime.CreateThreadRequest{
-		ThreadID: "thread-1", CreateIntentID: createIntentID,
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-	turnHost, err := turnFactory.NewHost(ctx, runtime.TurnExecutionHostOptions{
-		Config: config.Config{
-			Provider:     config.ProviderFake,
-			Model:        "fake-model",
-			FakeResponse: "Hello from Floret.",
-			AgentProfile: config.AgentProfile{
-				ID:           "support-agent",
-				Name:         "Support Agent",
-				SystemPrompt: "Answer clearly and briefly.",
-			},
-		},
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	result, err := turnHost.RunTurn(ctx, runtime.RunTurnRequest{
-		ThreadID: thread.ID,
-		TurnID:   "turn-1",
-		RunID:    "run-1",
-		Input: runtime.TurnInput{
-			Text: "Welcome a new customer in one sentence.",
-		},
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println(result.Output)
-}
+turns, err := composition.bindTurnHost(ctx, thread.ID)
+if err != nil { return err }
+result, runErr := turns.RunTurn(ctx, runtime.RunTurnRequest{
+	ThreadID: thread.ID, TurnID: "turn-1", RunID: "run-1",
+	Input: runtime.TurnInput{Text: "Welcome a new customer."},
+})
+if err := validateFloretTurnOutcome(result, runErr); err != nil { return err }
+fmt.Println(result.Output)
 ```
+
+Here `cfg` is an ordinary `config.Config`; use the deterministic fake provider
+in tests and choose your real provider configuration at the composition root.
+The complete runnable [minimal durable host](cmd/examples/minimal-durable-host)
+shows imports, shutdown error handling, and durable startup.
 
 Replace the fake configuration with an OpenAI-compatible gateway or a
 host-supplied `runtime.ModelGateway` when your product owns model transport.
-When Floret should persist its own runtime data, inspect the Store first.
-Missing or empty stores can be opened with that initialize-only state. Current
-stores must be verified. Upgradeable stores must go through an explicit
-`MigrateSQLiteStore` apply and then be verified again. Pass the final
-verification's state and observed schema to `runtime.OpenSQLiteStore(ctx, path,
-request)`; open never migrates implicitly. Your product data stays in your own
-store, keyed by `runtime.ThreadID`.
+When Floret should persist its own runtime data, use `StartSQLiteStore`. Its
+zero-value migration policy refuses an upgrade without writing. An application
+that deliberately preserves compatible automatic upgrades must choose
+`SQLiteMigrationApplyCompatible` and provide a stable
+`MigrationOperationID`; the result preserves completed inspection, migration,
+and verification facts even when startup fails. Your product data stays in
+your own store, keyed by `runtime.ThreadID`.
+Operator-facing maintenance code may still compose the lower-level
+`runtime.InspectSQLiteStore`, `runtime.VerifySQLiteStore`,
+`runtime.MigrateSQLiteStore`, and `runtime.OpenSQLiteStore` contracts directly.
 The caller owns the runtime Store, may share it across runtime facades, and
 closes it once after all active work has stopped. Runtime facades never close an
 injected Store.
+
+Profiles are `memory`, `durable-basic`, `approval`, `subagent`, and
+`production-recovery`. Generated composition, fake-provider smoke tests, and
+profile-specific approval/recovery behavior tests are host-owned,
+deterministic, and `gofmt`-formatted. Existing files are never
+overwritten. `durable-basic`
+blocks startup on interrupted work and does not claim automatic recovery;
+`production-recovery` recursively discovers the full SubAgent descendant tree,
+recovers exact root or immediate parent-child authority, and requires the host
+to reconcile every pending external effect before the startup barrier opens.
+The generator creates no backup, `go.work`, `replace`, or sibling wiring.
 
 For a production-shaped integration, start with the runnable
 [minimal durable host](cmd/examples/minimal-durable-host), then use the focused
@@ -435,9 +418,12 @@ architecture and vocabulary for contributors.
 Every published release is checked from a blank temporary Go module with
 workspace discovery disabled, no local replacement, and a fresh module cache.
 The gate verifies the exact tag, module zip, and checksums before compiling and
-running the durable host, custom gateway, tool approval, startup recovery, and
-Store maintenance examples. Maintainers can run the same post-release check
-with `scripts/check_published_release_adoption.sh <exact-tag>`.
+running all generated profile smoke tests plus the durable host, custom gateway,
+tool approval, startup recovery, and Store maintenance examples. Maintainers
+can run the same post-release check with
+`scripts/check_published_release_adoption.sh <exact-tag>`. Redeven pins and
+verifies that published version in its own dedicated downstream worktree; this
+blank-consumer gate does not mutate a sibling repository.
 
 ## License
 

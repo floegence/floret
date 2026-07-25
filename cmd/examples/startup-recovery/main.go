@@ -295,46 +295,9 @@ func runRecovery(ctx context.Context, databasePath string, launchInterruptedChil
 
 func openRecoveryStore(ctx context.Context, databasePath string) (*floretruntime.Store, error) {
 	storeOption := floretruntime.WithSQLiteStoreLeasePolicy(leasePolicy)
-	inspection, err := floretruntime.InspectSQLiteStore(ctx, databasePath, storeOption)
-	if err != nil {
-		return nil, err
-	}
-	if inspection.State == floretruntime.SQLiteStoreStateMissing || inspection.State == floretruntime.SQLiteStoreStateEmpty {
-		return floretruntime.OpenSQLiteStore(ctx, databasePath, floretruntime.SQLiteStoreOpenRequest{ExpectedState: inspection.State}, storeOption)
-	}
-	if inspection.State == floretruntime.SQLiteStoreStateUpgradeable {
-		const operationID = "startup-recovery-store-migration"
-		result, err := floretruntime.MigrateSQLiteStore(ctx, databasePath, floretruntime.SQLiteStoreMigrationRequest{
-			OperationID: operationID,
-			Mode:        floretruntime.SQLiteStoreMigrationApply,
-			ExpectedSchema: floretruntime.StoreSchemaIdentity{
-				Version: inspection.Observed.Version, Fingerprint: inspection.Observed.Fingerprint,
-			},
-		}, storeOption)
-		if err != nil {
-			return nil, err
-		}
-		if result.OperationID != operationID || result.Status != floretruntime.SQLiteStoreMaintenanceReady ||
-			!result.Changed || !result.Committed || result.RolledBack {
-			return nil, fmt.Errorf("store migration outcome operation=%q status=%q changed=%t committed=%t rolled_back=%t",
-				result.OperationID, result.Status, result.Changed, result.Committed, result.RolledBack)
-		}
-	}
-	verification, err := floretruntime.VerifySQLiteStore(ctx, databasePath, storeOption)
-	if err != nil {
-		return nil, err
-	}
-	if verification.Inspection.State != floretruntime.SQLiteStoreStateCurrent ||
-		verification.Inspection.LeasePolicyState != floretruntime.SQLiteStoreLeasePolicyMatches {
-		return nil, fmt.Errorf("store verification state=%q lease=%q", verification.Inspection.State, verification.Inspection.LeasePolicyState)
-	}
-	for _, check := range verification.Checks {
-		if !check.Passed {
-			return nil, fmt.Errorf("store verification check %q failed", check.Code)
-		}
-	}
-	return floretruntime.OpenSQLiteStore(ctx, databasePath, floretruntime.SQLiteStoreOpenRequest{
-		ExpectedState:  verification.Inspection.State,
-		ExpectedSchema: verification.Inspection.Observed,
+	startup, err := floretruntime.StartSQLiteStore(ctx, databasePath, floretruntime.SQLiteStartupRequest{
+		MigrationPolicy:      floretruntime.SQLiteMigrationApplyCompatible,
+		MigrationOperationID: "startup-recovery-store-migration",
 	}, storeOption)
+	return startup.Store, err
 }

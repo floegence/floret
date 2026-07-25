@@ -44,6 +44,9 @@ jobs:
       - name: Exercise public conformance helpers
         run: go test ./florettest
 
+      - name: Compile generated hosts from a proposed module zip
+        run: scripts/check_candidate_release_adoption.sh
+
       - name: Compile and run downstream examples
         shell: bash
         run: |

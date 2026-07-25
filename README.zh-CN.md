@@ -78,46 +78,40 @@ Floret 的边界刻意保持紧凑：它负责引擎机制，产品决策始终�
 
 ```bash
 go get github.com/floegence/floret/config github.com/floegence/floret/runtime github.com/floegence/floret/tools github.com/floegence/floret/observation
+
+go run github.com/floegence/floret/cmd/floret-host-init@latest \
+  --profile memory --package main --dir .
+# 首次只显示 dry-run diff；确认后增加 --write。
 ```
+
+生成文件负责 Store 生命周期与 binder wiring；业务代码只保留显式 identity 和三个窄能力。下面的完整业务路径是 19 行非空代码：
 
 ```go
-store := runtime.NewMemoryStore()
-defer store.Close()
-var createBinder *runtime.ThreadCreateHostBinder
-var turnBinder *runtime.TurnExecutionHostBinder
-err := runtime.ConfigureHostCapabilities(store, func(bootstrap *runtime.HostBootstrap) error {
-	var err error
-	createBinder, err = runtime.NewThreadCreateHostBinder(bootstrap)
-	if err != nil { return err }
-	turnBinder, err = runtime.NewTurnExecutionHostBinder(bootstrap)
-	return err
-})
-if err != nil { /* handle error */ }
+composition, err := openFloretComposition(ctx, cfg)
+if err != nil { return err }
+defer composition.close()
 
-createIntentID := runtime.CreateIntentID("create-thread-1")
-threadCreator, err := createBinder.Bind("thread-1", createIntentID)
-if err != nil { /* handle error */ }
-turnFactory, err := turnBinder.Bind("thread-1")
-if err != nil { /* handle error */ }
-thread, err := threadCreator.CreateThread(ctx, runtime.CreateThreadRequest{
-	ThreadID: "thread-1", CreateIntentID: createIntentID,
+threadID := runtime.ThreadID("thread-1")
+intentID := runtime.CreateIntentID("create-thread-1")
+creator, err := composition.bindThreadCreator(threadID, intentID)
+if err != nil { return err }
+thread, err := creator.CreateThread(ctx, runtime.CreateThreadRequest{
+	ThreadID: threadID, CreateIntentID: intentID,
 })
-if err != nil { /* handle error */ }
-turnHost, err := turnFactory.NewHost(ctx, runtime.TurnExecutionHostOptions{
-	Config: config.Config{
-		Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "Hello from Floret.",
-		AgentProfile: config.AgentProfile{ID: "support-agent", Name: "Support Agent"},
-	},
-})
-if err != nil { /* handle error */ }
+if err != nil { return err }
 
-result, err := turnHost.RunTurn(ctx, runtime.RunTurnRequest{
+turns, err := composition.bindTurnHost(ctx, thread.ID)
+if err != nil { return err }
+result, runErr := turns.RunTurn(ctx, runtime.RunTurnRequest{
 	ThreadID: thread.ID, TurnID: "turn-1", RunID: "run-1",
-	Input: runtime.TurnInput{Text: "Welcome a new customer in one sentence."},
+	Input: runtime.TurnInput{Text: "Welcome a new customer."},
 })
+if err := validateFloretTurnOutcome(result, runErr); err != nil { return err }
 ```
 
-完整、可直接运行的示例请见 [英文 README](README.md#quick-start)。产品自行管理模型传输时，使用 OpenAI-compatible 配置或提供 `runtime.ModelGateway`。需要由 Floret 持久化其运行时数据时，先调用 `runtime.InspectSQLiteStore`。对于状态为 `missing` 或 `empty` 的存储，直接使用该仅用于初始化的状态调用 `OpenSQLiteStore`；状态为 `current` 的存储必须执行 `runtime.VerifySQLiteStore`；可升级的存储必须显式以 `apply` 模式执行 `runtime.MigrateSQLiteStore`，并在迁移后重新验证。对于状态为 `current` 或迁移后的存储，将最终验证结果中的状态和实际观测到的 schema 标识传给 `runtime.OpenSQLiteStore(ctx, path, request)`；`OpenSQLiteStore` 不会隐式迁移 schema。你的产品数据仍应保存在自己的存储中，并以 `runtime.ThreadID` 关联。
+`cfg` 是普通的 `config.Config`。完整、可直接运行的示例请见 [英文 README](README.md#quick-start)。需要持久化 Floret 运行时事实时使用 `runtime.StartSQLiteStore`：默认拒绝旧 schema 的隐式迁移；只有显式选择 `SQLiteMigrationApplyCompatible` 并提供稳定 operation ID 才会升级。高级维护工具仍可直接组合 `runtime.InspectSQLiteStore`、`runtime.VerifySQLiteStore`、`runtime.MigrateSQLiteStore` 与 `runtime.OpenSQLiteStore`。你的产品数据继续保存在自己的存储中，并以 `runtime.ThreadID` 关联。
+
+可选 profile 包括 `durable-basic`、`approval`、`subagent` 和 `production-recovery`。每个 profile 同时生成 Fake Provider smoke test；相关高级 profile 还会生成真实 approval/recovery 行为测试。`durable-basic` 遇到 interrupted work 会以 typed error 阻断启动，`production-recovery` 会在开放流量前递归恢复完整 SubAgent 后代并协调所有 canonical pending effect。
 
 ## 生产环境的接入方式
 
