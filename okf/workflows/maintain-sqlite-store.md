@@ -15,10 +15,12 @@ error text and never mutates a Store during discovery.
 # Steps
 
 For ordinary application startup, call `StartSQLiteStore`. The zero-value
-policy refuses schema upgrades; choose `SQLiteMigrationApplyCompatible` only
-when the Store lifetime owner has deliberately supplied a stable migration
-operation ID. Use the lower-level flow below for operator-facing planning,
-confirmation, and progress UI.
+policy refuses schema upgrades; choose `SQLiteMigrationApplyCompatible` to
+preserve compatible automatic upgrades. Floret derives the migration
+correlation ID only when an upgrade is needed, reports all startup phases, and
+performs one bounded stale/busy re-inspection. Override the correlation ID only
+when the host needs its own diagnostics namespace. Use the lower-level flow
+below for operator-facing planning, confirmation, and progress UI.
 
 1. Stop Store users and retain exclusive ownership of the database path before
    an apply operation.

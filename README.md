@@ -176,10 +176,14 @@ host-supplied `runtime.ModelGateway` when your product owns model transport.
 When Floret should persist its own runtime data, use `StartSQLiteStore`. Its
 zero-value migration policy refuses an upgrade without writing. An application
 that deliberately preserves compatible automatic upgrades must choose
-`SQLiteMigrationApplyCompatible` and provide a stable
-`MigrationOperationID`; the result preserves completed inspection, migration,
-and verification facts even when startup fails. Your product data stays in
-your own store, keyed by `runtime.ThreadID`.
+`SQLiteMigrationApplyCompatible`; Floret derives a stable migration correlation
+ID only when an upgrade is actually needed. Advanced hosts may override that ID
+and observe typed inspecting, migrating, verifying, and opening progress. The
+result uses optional inspection, migration, and verification facts to show
+exactly which phases completed even when startup fails. The correlation ID is
+not an idempotency key; migration safety comes from the inspected schema,
+exclusive writer admission, and transaction boundary. Your product data stays
+in your own store, keyed by `runtime.ThreadID`.
 Operator-facing maintenance code may still compose the lower-level
 `runtime.InspectSQLiteStore`, `runtime.VerifySQLiteStore`,
 `runtime.MigrateSQLiteStore`, and `runtime.OpenSQLiteStore` contracts directly.

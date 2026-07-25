@@ -109,7 +109,7 @@ result, runErr := turns.RunTurn(ctx, runtime.RunTurnRequest{
 if err := validateFloretTurnOutcome(result, runErr); err != nil { return err }
 ```
 
-`cfg` 是普通的 `config.Config`。完整、可直接运行的示例请见 [英文 README](README.md#quick-start)。需要持久化 Floret 运行时事实时使用 `runtime.StartSQLiteStore`：默认拒绝旧 schema 的隐式迁移；只有显式选择 `SQLiteMigrationApplyCompatible` 并提供稳定 operation ID 才会升级。高级维护工具仍可直接组合 `runtime.InspectSQLiteStore`、`runtime.VerifySQLiteStore`、`runtime.MigrateSQLiteStore` 与 `runtime.OpenSQLiteStore`。你的产品数据继续保存在自己的存储中，并以 `runtime.ThreadID` 关联。
+`cfg` 是普通的 `config.Config`。完整、可直接运行的示例请见 [英文 README](README.md#quick-start)。需要持久化 Floret 运行时事实时使用 `runtime.StartSQLiteStore`：默认拒绝旧 schema 的隐式迁移；显式选择 `SQLiteMigrationApplyCompatible` 后，只有实际需要升级时 Floret 才会派生稳定的迁移关联 ID。高级宿主可覆盖该 ID，并按需观察 inspecting、migrating、verifying、opening 阶段；关联 ID 不是幂等键，迁移安全仍由精确 schema、独占写入准入和事务边界保证。高级维护工具仍可直接组合 `runtime.InspectSQLiteStore`、`runtime.VerifySQLiteStore`、`runtime.MigrateSQLiteStore` 与 `runtime.OpenSQLiteStore`。你的产品数据继续保存在自己的存储中，并以 `runtime.ThreadID` 关联。
 
 可选 profile 包括 `durable-basic`、`approval`、`subagent` 和 `production-recovery`。每个 profile 同时生成 Fake Provider smoke test；相关高级 profile 还会生成真实 approval/recovery 行为测试。`durable-basic` 遇到 interrupted work 会以 typed error 阻断启动，`production-recovery` 会在开放流量前递归恢复完整 SubAgent 后代并协调所有 canonical pending effect。
 

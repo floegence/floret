@@ -1,6 +1,10 @@
 # Floret OKF Update Log
 
 ## 2026-07-25
+* **Store startup**: Made compatible migration identity lazy and Floret-derived,
+  added typed inspecting/migrating/verifying/opening progress, explicit optional
+  completed-phase facts, and one bounded stale/busy re-inspection so ordinary
+  hosts do not rebuild the maintenance state machine.
 * **SDK adoption**: Added safe SQLite startup, shared request validation,
   sealed turn-execution presets, and versioned host-owned composition profiles
   with deterministic fake-provider smoke tests and immutable candidate module

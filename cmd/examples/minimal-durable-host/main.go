@@ -138,8 +138,7 @@ func run(ctx context.Context, databasePath string) error {
 
 func openStore(ctx context.Context, databasePath string) (*floretruntime.Store, error) {
 	startup, err := floretruntime.StartSQLiteStore(ctx, databasePath, floretruntime.SQLiteStartupRequest{
-		MigrationPolicy:      floretruntime.SQLiteMigrationApplyCompatible,
-		MigrationOperationID: "minimal-durable-host-startup",
+		MigrationPolicy: floretruntime.SQLiteMigrationApplyCompatible,
 	})
 	return startup.Store, err
 }

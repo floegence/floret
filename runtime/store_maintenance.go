@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -208,22 +210,65 @@ const (
 	SQLiteMigrationApplyCompatible SQLiteMigrationPolicy = "apply_compatible"
 )
 
+type SQLiteStartupPhase string
+
+const (
+	SQLiteStartupInspecting SQLiteStartupPhase = "inspecting"
+	SQLiteStartupMigrating  SQLiteStartupPhase = "migrating"
+	SQLiteStartupVerifying  SQLiteStartupPhase = "verifying"
+	SQLiteStartupOpening    SQLiteStartupPhase = "opening"
+)
+
+// SQLiteStartupProgress reports the current startup phase. Maintenance is set
+// only for detailed migration progress; ordinary hosts can observe Phase alone.
+type SQLiteStartupProgress struct {
+	Phase       SQLiteStartupPhase              `json:"phase"`
+	Maintenance *SQLiteStoreMaintenanceProgress `json:"maintenance,omitempty"`
+}
+
 // SQLiteStartupRequest configures one inspected and exact Store open. Existing
 // current or migrated stores are also verified before open; missing or empty
 // stores are initialized under the inspected precondition.
 type SQLiteStartupRequest struct {
-	MigrationPolicy      SQLiteMigrationPolicy
+	MigrationPolicy SQLiteMigrationPolicy
+	// MigrationOperationID is an optional correlation ID for an applied
+	// migration. StartSQLiteStore derives a stable ID when it is omitted.
 	MigrationOperationID string
-	Progress             func(SQLiteStoreMaintenanceProgress)
+	Progress             func(SQLiteStartupProgress)
 }
 
 // SQLiteStartupResult preserves the maintenance facts completed before a
 // Store was opened or startup failed. Store is non-nil only on success.
 type SQLiteStartupResult struct {
 	Store        *Store
-	Inspection   SQLiteStoreInspection
-	Verification SQLiteStoreVerification
+	Inspection   *SQLiteStoreInspection
+	Verification *SQLiteStoreVerification
 	Migration    *SQLiteStoreMigrationResult
+}
+
+type sqliteStoreStartupAPI interface {
+	Inspect(context.Context, string, ...SQLiteStoreOption) (SQLiteStoreInspection, error)
+	Verify(context.Context, string, ...SQLiteStoreOption) (SQLiteStoreVerification, error)
+	Migrate(context.Context, string, SQLiteStoreMigrationRequest, ...SQLiteStoreOption) (SQLiteStoreMigrationResult, error)
+	Open(context.Context, string, SQLiteStoreOpenRequest, ...SQLiteStoreOption) (*Store, error)
+}
+
+type publicSQLiteStoreStartupAPI struct{}
+
+func (publicSQLiteStoreStartupAPI) Inspect(ctx context.Context, path string, options ...SQLiteStoreOption) (SQLiteStoreInspection, error) {
+	return InspectSQLiteStore(ctx, path, options...)
+}
+
+func (publicSQLiteStoreStartupAPI) Verify(ctx context.Context, path string, options ...SQLiteStoreOption) (SQLiteStoreVerification, error) {
+	return VerifySQLiteStore(ctx, path, options...)
+}
+
+func (publicSQLiteStoreStartupAPI) Migrate(ctx context.Context, path string, request SQLiteStoreMigrationRequest, options ...SQLiteStoreOption) (SQLiteStoreMigrationResult, error) {
+	return MigrateSQLiteStore(ctx, path, request, options...)
+}
+
+func (publicSQLiteStoreStartupAPI) Open(ctx context.Context, path string, request SQLiteStoreOpenRequest, options ...SQLiteStoreOption) (*Store, error) {
+	return OpenSQLiteStore(ctx, path, request, options...)
 }
 
 func (e *SQLiteStoreMaintenanceError) Error() string {
@@ -285,29 +330,37 @@ func StartSQLiteStore(ctx context.Context, path string, request SQLiteStartupReq
 		)
 	}
 	request.MigrationOperationID = strings.TrimSpace(request.MigrationOperationID)
-	if policy == SQLiteMigrationApplyCompatible && request.MigrationOperationID == "" {
-		return SQLiteStartupResult{}, newSQLiteStoreMaintenanceError(
-			SQLiteStoreOperationMigrate,
-			SQLiteStoreReasonInvalidRequest,
-			false,
-			false,
-			errors.New("sqlite startup migration operation id is required for apply_compatible"),
-		)
-	}
 	configured, err := resolveSQLiteStoreOptions(options)
 	if err != nil {
 		return SQLiteStartupResult{}, newSQLiteStoreMaintenanceError(SQLiteStoreOperationOpen, SQLiteStoreReasonInvalidRequest, false, false, err)
 	}
 	stableOptions := []SQLiteStoreOption{func(target *sqliteStoreOptions) { *target = configured }}
+	return startSQLiteStoreWithAPI(ctx, path, request, policy, stableOptions, publicSQLiteStoreStartupAPI{})
+}
 
+func startSQLiteStoreWithAPI(ctx context.Context, path string, request SQLiteStartupRequest, policy SQLiteMigrationPolicy, options []SQLiteStoreOption, api sqliteStoreStartupAPI) (SQLiteStartupResult, error) {
 	result := SQLiteStartupResult{}
-	inspection, err := InspectSQLiteStore(ctx, path, stableOptions...)
-	result.Inspection = inspection
+	inspection, err := inspectSQLiteStoreForStartup(ctx, path, request.Progress, api, options...)
 	if err != nil {
 		return result, err
 	}
+	result.Inspection = &inspection
+	return startSQLiteStoreFromInspection(ctx, path, request, policy, options, api, inspection, &result, true)
+}
+
+func startSQLiteStoreFromInspection(
+	ctx context.Context,
+	path string,
+	request SQLiteStartupRequest,
+	policy SQLiteMigrationPolicy,
+	options []SQLiteStoreOption,
+	api sqliteStoreStartupAPI,
+	inspection SQLiteStoreInspection,
+	result *SQLiteStartupResult,
+	allowRecovery bool,
+) (SQLiteStartupResult, error) {
 	if inspection.LeasePolicyState == SQLiteStoreLeasePolicyMismatch {
-		return result, newSQLiteStoreMaintenanceError(
+		return *result, newSQLiteStoreMaintenanceError(
 			SQLiteStoreOperationOpen,
 			SQLiteStoreReasonLeaseMismatch,
 			false,
@@ -318,17 +371,17 @@ func StartSQLiteStore(ctx context.Context, path string, request SQLiteStartupReq
 
 	switch inspection.State {
 	case SQLiteStoreStateMissing, SQLiteStoreStateEmpty:
-		store, openErr := OpenSQLiteStore(ctx, path, SQLiteStoreOpenRequest{ExpectedState: inspection.State}, stableOptions...)
+		store, openErr := openSQLiteStoreForStartup(ctx, path, SQLiteStoreOpenRequest{ExpectedState: inspection.State}, request.Progress, api, options...)
 		if openErr != nil {
-			return result, openErr
+			return recoverSQLiteStoreStartup(ctx, path, request, policy, options, api, result, openErr, allowRecovery)
 		}
 		result.Store = store
-		return result, nil
+		return *result, nil
 	case SQLiteStoreStateCurrent:
 		// Continue to verification and exact open below.
 	case SQLiteStoreStateUpgradeable:
 		if policy == SQLiteMigrationRefuse {
-			return result, newSQLiteStoreMaintenanceError(
+			return *result, newSQLiteStoreMaintenanceError(
 				SQLiteStoreOperationOpen,
 				SQLiteStoreReasonMigrationAvailable,
 				false,
@@ -336,22 +389,35 @@ func StartSQLiteStore(ctx context.Context, path string, request SQLiteStartupReq
 				errors.New("sqlite store requires an explicit compatible migration"),
 			)
 		}
-		migration, migrationErr := MigrateSQLiteStore(ctx, path, SQLiteStoreMigrationRequest{
-			OperationID:    request.MigrationOperationID,
+		operationID, operationErr := sqliteStartupMigrationOperationID(path, request.MigrationOperationID, inspection)
+		if operationErr != nil {
+			return *result, newSQLiteStoreMaintenanceError(
+				SQLiteStoreOperationMigrate,
+				SQLiteStoreReasonInvalidRequest,
+				false,
+				false,
+				operationErr,
+			)
+		}
+		emitSQLiteStartupProgress(request.Progress, SQLiteStartupProgress{Phase: SQLiteStartupMigrating})
+		migration, migrationErr := api.Migrate(ctx, path, SQLiteStoreMigrationRequest{
+			OperationID:    operationID,
 			Mode:           SQLiteStoreMigrationApply,
 			ExpectedSchema: inspection.Observed,
-			Progress:       request.Progress,
-		}, stableOptions...)
+			Progress: func(progress SQLiteStoreMaintenanceProgress) {
+				emitSQLiteStartupProgress(request.Progress, SQLiteStartupProgress{Phase: SQLiteStartupMigrating, Maintenance: &progress})
+			},
+		}, options...)
 		result.Migration = &migration
 		if migrationErr != nil {
-			return result, migrationErr
+			return recoverSQLiteStoreStartup(ctx, path, request, policy, options, api, result, migrationErr, allowRecovery)
 		}
 	default:
 		reason := inspection.Reason
 		if reason == "" {
 			reason = sqliteStoreReasonForState(inspection.State)
 		}
-		return result, newSQLiteStoreMaintenanceError(
+		return *result, newSQLiteStoreMaintenanceError(
 			SQLiteStoreOperationOpen,
 			reason,
 			inspection.Retryable,
@@ -360,20 +426,155 @@ func StartSQLiteStore(ctx context.Context, path string, request SQLiteStartupReq
 		)
 	}
 
-	verification, verifyErr := VerifySQLiteStore(ctx, path, stableOptions...)
-	result.Verification = verification
+	verification, verifyErr := verifySQLiteStoreForStartup(ctx, path, request.Progress, api, options...)
 	if verifyErr != nil {
-		return result, verifyErr
+		return recoverSQLiteStoreStartup(ctx, path, request, policy, options, api, result, verifyErr, allowRecovery)
 	}
-	store, openErr := OpenSQLiteStore(ctx, path, SQLiteStoreOpenRequest{
+	result.Verification = &verification
+	if verificationErr := validateSQLiteStoreVerificationForStartup(verification); verificationErr != nil {
+		return recoverSQLiteStoreStartup(ctx, path, request, policy, options, api, result, verificationErr, allowRecovery)
+	}
+	store, openErr := openSQLiteStoreForStartup(ctx, path, SQLiteStoreOpenRequest{
 		ExpectedState:  verification.Inspection.State,
 		ExpectedSchema: verification.Inspection.Observed,
-	}, stableOptions...)
+	}, request.Progress, api, options...)
 	if openErr != nil {
-		return result, openErr
+		return recoverSQLiteStoreStartup(ctx, path, request, policy, options, api, result, openErr, allowRecovery)
 	}
 	result.Store = store
-	return result, nil
+	return *result, nil
+}
+
+func recoverSQLiteStoreStartup(
+	ctx context.Context,
+	path string,
+	request SQLiteStartupRequest,
+	policy SQLiteMigrationPolicy,
+	options []SQLiteStoreOption,
+	api sqliteStoreStartupAPI,
+	result *SQLiteStartupResult,
+	cause error,
+	allowRecovery bool,
+) (SQLiteStartupResult, error) {
+	if !allowRecovery || !sqliteStartupErrorAllowsReinspection(cause) {
+		return *result, cause
+	}
+	inspection, err := inspectSQLiteStoreForStartup(ctx, path, request.Progress, api, options...)
+	if err != nil {
+		return *result, err
+	}
+	result.Inspection = &inspection
+	if inspection.State != SQLiteStoreStateCurrent {
+		if inspection.State == SQLiteStoreStateUpgradeable && result.Migration != nil {
+			return *result, cause
+		}
+		reason := inspection.Reason
+		if reason == "" {
+			reason = sqliteStoreReasonForState(inspection.State)
+		}
+		return *result, newSQLiteStoreMaintenanceError(
+			SQLiteStoreOperationOpen,
+			reason,
+			inspection.Retryable,
+			inspection.SafeToRetry,
+			fmt.Errorf("sqlite store state %q is not a safe startup recovery target", inspection.State),
+		)
+	}
+	return startSQLiteStoreFromInspection(ctx, path, request, policy, options, api, inspection, result, false)
+}
+
+func inspectSQLiteStoreForStartup(ctx context.Context, path string, progress func(SQLiteStartupProgress), api sqliteStoreStartupAPI, options ...SQLiteStoreOption) (SQLiteStoreInspection, error) {
+	emitSQLiteStartupProgress(progress, SQLiteStartupProgress{Phase: SQLiteStartupInspecting})
+	return api.Inspect(ctx, path, options...)
+}
+
+func verifySQLiteStoreForStartup(ctx context.Context, path string, progress func(SQLiteStartupProgress), api sqliteStoreStartupAPI, options ...SQLiteStoreOption) (SQLiteStoreVerification, error) {
+	emitSQLiteStartupProgress(progress, SQLiteStartupProgress{Phase: SQLiteStartupVerifying})
+	return api.Verify(ctx, path, options...)
+}
+
+func openSQLiteStoreForStartup(ctx context.Context, path string, request SQLiteStoreOpenRequest, progress func(SQLiteStartupProgress), api sqliteStoreStartupAPI, options ...SQLiteStoreOption) (*Store, error) {
+	emitSQLiteStartupProgress(progress, SQLiteStartupProgress{Phase: SQLiteStartupOpening})
+	return api.Open(ctx, path, request, options...)
+}
+
+func validateSQLiteStoreVerificationForStartup(verification SQLiteStoreVerification) error {
+	inspection := verification.Inspection
+	if inspection.LeasePolicyState == SQLiteStoreLeasePolicyMismatch {
+		return newSQLiteStoreMaintenanceError(
+			SQLiteStoreOperationVerify,
+			SQLiteStoreReasonLeaseMismatch,
+			false,
+			false,
+			errors.New("sqlite store verification lease policy does not match the requested policy"),
+		)
+	}
+	if inspection.State != SQLiteStoreStateCurrent {
+		reason := inspection.Reason
+		if reason == "" {
+			reason = sqliteStoreReasonForState(inspection.State)
+		}
+		return newSQLiteStoreMaintenanceError(
+			SQLiteStoreOperationVerify,
+			reason,
+			inspection.Retryable,
+			inspection.SafeToRetry,
+			fmt.Errorf("sqlite store verification state %q is not current", inspection.State),
+		)
+	}
+	if len(verification.Checks) == 0 {
+		return newSQLiteStoreMaintenanceError(
+			SQLiteStoreOperationVerify,
+			SQLiteStoreReasonContract,
+			false,
+			false,
+			errors.New("sqlite store verification returned no checks"),
+		)
+	}
+	for _, check := range verification.Checks {
+		if strings.TrimSpace(check.Code) == "" || !check.Passed {
+			return newSQLiteStoreMaintenanceError(
+				SQLiteStoreOperationVerify,
+				SQLiteStoreReasonContract,
+				false,
+				false,
+				errors.New("sqlite store verification check failed"),
+			)
+		}
+	}
+	return nil
+}
+
+func emitSQLiteStartupProgress(progress func(SQLiteStartupProgress), update SQLiteStartupProgress) {
+	if progress != nil {
+		progress(update)
+	}
+}
+
+func sqliteStartupErrorAllowsReinspection(err error) bool {
+	var maintenance *SQLiteStoreMaintenanceError
+	if !errors.As(err, &maintenance) || !maintenance.SafeToRetry {
+		return false
+	}
+	return maintenance.Reason == SQLiteStoreReasonBusy || maintenance.Reason == SQLiteStoreReasonInspectionStale
+}
+
+func sqliteStartupMigrationOperationID(path, requested string, inspection SQLiteStoreInspection) (string, error) {
+	if requested = strings.TrimSpace(requested); requested != "" {
+		return requested, nil
+	}
+	canonical, err := sqlite.CanonicalDatabasePath(path)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256([]byte(strings.Join([]string{
+		canonical,
+		inspection.Observed.Version,
+		inspection.Observed.Fingerprint,
+		inspection.Current.Version,
+		inspection.Current.Fingerprint,
+	}, "\x00")))
+	return "sqlite-startup-" + hex.EncodeToString(digest[:16]), nil
 }
 
 func sqliteStoreReasonForState(state SQLiteStoreState) SQLiteStoreReason {

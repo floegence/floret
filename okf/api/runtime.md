@@ -64,9 +64,16 @@ host interface for every runtime operation.
   options once, inspects the source, initializes missing/empty storage safely,
   verifies current storage, and performs an exact open. Its zero-value
   migration policy refuses an upgrade without writing. Compatible automatic
-  migration requires `SQLiteMigrationApplyCompatible` plus a stable operation
-  ID, and partial inspection, migration, and verification facts remain in
-  `SQLiteStartupResult` when startup fails.
+  migration requires only `SQLiteMigrationApplyCompatible`; a stable
+  correlation ID is derived lazily when an upgrade is actually needed, and an
+  advanced host may override it. Startup reports typed inspecting, migrating,
+  verifying, and opening progress, including nested maintenance progress during
+  migration. Optional inspection, migration, and verification facts remain in
+  `SQLiteStartupResult` when startup fails. A stale or busy exact operation gets
+  one bounded re-inspection and may continue only from newly proven current
+  state. The operation ID correlates attempts but is not an idempotency key;
+  schema preconditions, writer admission, and the migration transaction provide
+  safety.
 * `OpenSQLiteStore` creates or opens Floret-managed durable runtime storage from
   a caller-provided `context.Context` and `SQLiteStoreOpenRequest`. The request
   binds open to a prior `missing`, `empty`, or exact `current` inspection.

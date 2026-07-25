@@ -296,8 +296,7 @@ func runRecovery(ctx context.Context, databasePath string, launchInterruptedChil
 func openRecoveryStore(ctx context.Context, databasePath string) (*floretruntime.Store, error) {
 	storeOption := floretruntime.WithSQLiteStoreLeasePolicy(leasePolicy)
 	startup, err := floretruntime.StartSQLiteStore(ctx, databasePath, floretruntime.SQLiteStartupRequest{
-		MigrationPolicy:      floretruntime.SQLiteMigrationApplyCompatible,
-		MigrationOperationID: "startup-recovery-store-migration",
+		MigrationPolicy: floretruntime.SQLiteMigrationApplyCompatible,
 	}, storeOption)
 	return startup.Store, err
 }
