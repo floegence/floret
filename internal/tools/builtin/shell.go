@@ -132,6 +132,7 @@ func (localCommandRunner) Run(ctx context.Context, req CommandRequest) (CommandR
 	defer cancel()
 	started := time.Now()
 	cmd := exec.CommandContext(runCtx, "sh", "-lc", req.Command)
+	configureCommandCancellation(cmd)
 	cmd.Dir = req.Workdir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
