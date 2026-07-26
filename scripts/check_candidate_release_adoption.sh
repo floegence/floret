@@ -105,7 +105,7 @@ func TestCandidateExactReadSurface(t *testing.T) {
 	}
 	reasoning := config.ReasoningCapability{Kind: config.ReasoningKindNone}
 	execHost, err := turnFactory.NewHost(ctx, runtime.TurnExecutionHostOptions{
-		Config: config.Config{SystemPrompt: "candidate"},
+		Config: config.Config{SystemPrompt: "candidate", ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}},
 		ModelGateway: florettest.NewScriptedModelGateway(florettest.ModelStep{Events: []runtime.ModelEvent{{Type: runtime.ModelEventDelta, Text: "ok"}, {Type: runtime.ModelEventDone, Reason: "stop"}}}),
 		ModelGatewayIdentity: runtime.ModelGatewayIdentity{Provider: "candidate", Model: "candidate", StateCompatibilityKey: "candidate:v1"},
 		ModelGatewayCapabilities: runtime.ModelGatewayCapabilities{Reasoning: &reasoning},
