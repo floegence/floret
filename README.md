@@ -231,7 +231,9 @@ SubAgent mission, follow-up SubAgent input, or pending-tool completion without
 parsing detail metadata or internal input identities. Detail events remain a
 separate diagnostic surface. Reads of pre-v0.30 SubAgent turns recover the same
 typed origin from Floret's durable input authority without rewriting journal
-entries or exposing compatibility logic to hosts.
+entries or exposing compatibility logic to hosts. Inherited legacy entries are
+resolved through immutable full-path fork lineage back to the original admitted
+input, rather than by matching message text.
 
 ## Production Shape
 

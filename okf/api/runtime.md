@@ -552,8 +552,11 @@ entry; ordinary admitted turns project `user`. Hosts use this typed fact instead
 of parsing internal SubAgent input IDs or detail-event metadata. For canonical
 SubAgent entries admitted before this marker existed, Floret resolves the exact
 durable input by its internal ID, verifies child, turn, run, and admitted-state
-authority, and derives the same typed origin from `request_kind`. The journal
-remains immutable and the internal ID is not projected publicly.
+authority, and derives the same typed origin from `request_kind`. An inherited
+legacy entry follows immutable full-path fork lineage and path position back to
+that original admission before validating the durable input; message text is
+never an origin heuristic. The journal remains immutable and the internal ID is
+not projected publicly.
 A canonical user input containing only references is not retry-eligible because
 its provider material was ephemeral and cannot be reconstructed from durable
 authority. Its overview/page reports `CanRetry=false`, and `RetryTurn` returns

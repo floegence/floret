@@ -1136,7 +1136,10 @@ input returns the internal no-work result with zero lease or journal mutation;
 Legacy canonical entries that contain the durable input ID but predate typed
 origin metadata are resolved inside `agentharness`: the exact input row must be
 admitted and match the entry's child, turn, and run identities before its
-`request_kind` is projected. A mismatch fails closed as corrupt authority.
+`request_kind` is projected. For inherited full-path entries, each immutable
+fork lineage hop must map the same path position, user message, and opaque input
+ID back to the original admitted child before those identities are checked. A
+mismatch fails closed as corrupt authority.
 Replay of the same child `TurnID`/`RunID` returns the input already admitted to
 that turn; reuse of those continuation identities for another input is a request
 conflict. Two processes cannot admit the same input. Active child settlement

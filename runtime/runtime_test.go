@@ -3491,6 +3491,197 @@ func TestFullPathSubAgentTurnReadsKeepInheritedUserOriginDistinctFromMission(t *
 	}
 }
 
+func TestLegacySubAgentOriginRecoveryFollowsDeepFullPathLineage(t *testing.T) {
+	for _, backend := range []string{"memory", "sqlite_reopen"} {
+		t.Run(backend, func(t *testing.T) {
+			ctx := context.Background()
+			path := filepath.Join(t.TempDir(), "floret.db")
+			var store *Store
+			var err error
+			if backend == "sqlite_reopen" {
+				store, err = openSQLiteStoreForTest(path)
+			} else {
+				store = NewMemoryStore()
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "root"}); err != nil {
+				t.Fatal(err)
+			}
+			publishTestSubAgentFixture(t, ctx, store, "legacy-a-publication", "root", "child-a", "")
+			completeTestSubAgentFixture(t, ctx, store, "root", "child-a")
+			aMeta, err := store.repo.Thread(ctx, "child-a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			aPath, err := store.repo.Path(ctx, "child-a", aMeta.LeafID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entryIDs := make([]string, len(aPath))
+			for index := range aPath {
+				entryIDs[index] = aPath[index].ID
+			}
+			closure, err := store.repo.(sessiontree.ArtifactAuthorityRepo).ArtifactClosure(ctx, sessiontree.ArtifactClosureRequest{
+				SourceThreadID: "child-a", DestinationThreadID: "child-b", EntryIDs: entryIDs,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC()
+			bMeta := sessiontree.ThreadMeta{
+				ID: "child-b", ParentThreadID: "child-a", TaskName: "child_b", AgentPath: "/root/child_a/child_b",
+				ForkMode: string(SubAgentForkFullPath), CreatedAt: now, UpdatedAt: now,
+			}
+			authority := store.repo.(sessiontree.SubAgentInputAuthorityRepo)
+			if _, err := authority.PublishSubAgent(ctx, sessiontree.PublishSubAgentRequest{
+				PublicationID: "legacy-b-publication", RequestFingerprint: "legacy-b-fingerprint",
+				ParentThreadID: "child-a", ChildMeta: bMeta,
+				ForkOptions: &sessiontree.ForkOptions{
+					SourceThreadID: "child-a", EntryID: aMeta.LeafID, EntryIDPinned: true,
+					ExpectedSourceLeafID: aMeta.LeafID, NewThreadID: "child-b", Now: now,
+					DestinationMeta: &sessiontree.ForkDestinationMeta{
+						ParentThreadID: "child-a", TaskName: "child_b", AgentPath: "/root/child_a/child_b", ForkMode: string(SubAgentForkFullPath),
+					},
+					ArtifactClosure: closure,
+					TurnIDMap:       map[string]string{"fixture-turn:child-a": "legacy-inherited-turn"},
+					RunIDMap:        map[string]string{"fixture-run:child-a": "legacy-inherited-run"},
+					RewriteEntry: func(entry sessiontree.Entry, _ sessiontree.ForkEntryIdentity) (sessiontree.Entry, error) {
+						entry.Metadata = cloneStringMap(entry.Metadata)
+						delete(entry.Metadata, sessiontree.SubAgentUserMessageOriginMetadataKey)
+						return entry, nil
+					},
+				},
+				ArtifactClosure: closure,
+				Message:         session.Message{Role: session.User, Content: "child b delegated mission"}, Now: now,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			completeTestSubAgentFixture(t, ctx, store, "child-a", "child-b")
+
+			if backend == "sqlite_reopen" {
+				if err := store.Close(); err != nil {
+					t.Fatal(err)
+				}
+				store, err = openSQLiteStoreForTest(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			legacyRepo := legacySubAgentUserOriginRepo{
+				Repo:      store.repo,
+				canonical: store.repo.(sessiontree.CanonicalTurnPageRepo),
+				inputs:    store.repo.(sessiontree.SubAgentInputReadRepo),
+			}
+			page, err := listThreadTurns(ctx, agentharness.New(agentharness.Options{Repo: legacyRepo}), ListThreadTurnsRequest{ThreadID: "child-b", Tail: 10})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(page.Turns) != 2 || page.Turns[0].TurnID != "legacy-inherited-turn" ||
+				page.Turns[0].UserMessageOrigin != ThreadUserMessageOriginDelegatedMission ||
+				page.Turns[1].UserMessageOrigin != ThreadUserMessageOriginDelegatedMission {
+				t.Fatalf("legacy deep full-path turns = %#v", page.Turns)
+			}
+		})
+	}
+}
+
+func TestLegacySubAgentOriginRecoveryAcrossNestedFullPath(t *testing.T) {
+	for _, backend := range []string{"memory", "sqlite_reopen"} {
+		t.Run(backend, func(t *testing.T) {
+			ctx := context.Background()
+			var store *Store
+			var sqlitePath string
+			if backend == "sqlite_reopen" {
+				sqlitePath = filepath.Join(t.TempDir(), "floret.db")
+				var err error
+				store, err = openSQLiteStoreForTest(sqlitePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				store = NewMemoryStore()
+			}
+
+			host, err := newTestHost(t, providerHostOptions{
+				Config: config.Config{
+					Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "test",
+				},
+				Store: store, IDGenerator: deterministicIDs(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+				PublicationID: "legacy-origin-a", ParentThreadID: "parent", ThreadID: "child-a",
+				TaskName: "first", Message: "legacy mission a", ForkMode: SubAgentForkNone,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{
+				ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"child-a"}, Timeout: 2 * time.Second,
+			}); err != nil || waited.TimedOut {
+				t.Fatalf("wait child-a = %#v, err=%v", waited, err)
+			}
+			if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+				PublicationID: "legacy-origin-b", ParentThreadID: "child-a", ThreadID: "child-b",
+				TaskName: "second", Message: "mission b", ForkMode: SubAgentForkFullPath,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{
+				ParentThreadID: "child-a", ChildThreadIDs: []ThreadID{"child-b"}, Timeout: 2 * time.Second,
+			}); err != nil || waited.TimedOut {
+				t.Fatalf("wait child-b = %#v, err=%v", waited, err)
+			}
+			if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+				PublicationID: "legacy-origin-c", ParentThreadID: "child-b", ThreadID: "child-c",
+				TaskName: "third", Message: "mission c", ForkMode: SubAgentForkFullPath,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{
+				ParentThreadID: "child-b", ChildThreadIDs: []ThreadID{"child-c"}, Timeout: 2 * time.Second,
+			}); err != nil || waited.TimedOut {
+				t.Fatalf("wait child-c = %#v, err=%v", waited, err)
+			}
+
+			if backend == "sqlite_reopen" {
+				if err := store.Close(); err != nil {
+					t.Fatal(err)
+				}
+				store, err = openSQLiteStoreForTest(sqlitePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			canonical := store.repo.(sessiontree.CanonicalTurnPageRepo)
+			inputs := store.repo.(sessiontree.SubAgentInputReadRepo)
+			legacyRepo := legacySubAgentUserOriginRepo{Repo: store.repo, canonical: canonical, inputs: inputs}
+			page, err := listThreadTurns(ctx, agentharness.New(agentharness.Options{Repo: legacyRepo}), ListThreadTurnsRequest{
+				ThreadID: "child-c", Tail: 10,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(page.Turns) != 3 || page.Turns[0].UserInput != "legacy mission a" ||
+				page.Turns[0].UserMessageOrigin != ThreadUserMessageOriginDelegatedMission ||
+				page.Turns[1].UserInput != "mission b" ||
+				page.Turns[1].UserMessageOrigin != ThreadUserMessageOriginDelegatedMission ||
+				page.Turns[2].UserInput != "mission c" ||
+				page.Turns[2].UserMessageOrigin != ThreadUserMessageOriginDelegatedMission {
+				t.Fatalf("legacy nested full-path typed turns = %#v", page.Turns)
+			}
+		})
+	}
+}
+
 func assertSubAgentTurnUserMessageOrigins(t *testing.T, store *Store) {
 	t.Helper()
 	ctx := context.Background()

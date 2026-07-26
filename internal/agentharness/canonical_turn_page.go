@@ -128,8 +128,15 @@ func (h *AgentHarness) restoreCanonicalSubAgentUserMessageOrigin(ctx context.Con
 	if err != nil {
 		return sessiontree.Entry{}, err
 	}
-	if !found || input.SubAgentInputID != inputID || input.State != sessiontree.SubAgentInputAdmitted ||
-		input.ChildThreadID != entry.ThreadID || input.AdmittedTurnID != entry.TurnID || input.AdmittedRunID != strings.TrimSpace(runID) {
+	if !found || input.SubAgentInputID != inputID || input.State != sessiontree.SubAgentInputAdmitted {
+		return sessiontree.Entry{}, sessiontree.ErrAuthorityCorrupt
+	}
+	authorityEntry, authorityRunID, err := h.resolveInheritedSubAgentInputAuthority(ctx, entry, runID, input)
+	if err != nil {
+		return sessiontree.Entry{}, err
+	}
+	if input.ChildThreadID != authorityEntry.ThreadID || input.AdmittedTurnID != authorityEntry.TurnID ||
+		input.AdmittedRunID != strings.TrimSpace(authorityRunID) {
 		return sessiontree.Entry{}, sessiontree.ErrAuthorityCorrupt
 	}
 	origin, err := sessiontree.SubAgentUserMessageOrigin(input.RequestKind)
@@ -139,6 +146,56 @@ func (h *AgentHarness) restoreCanonicalSubAgentUserMessageOrigin(ctx context.Con
 	entry.Metadata = cloneStringMap(entry.Metadata)
 	entry.Metadata[sessiontree.SubAgentUserMessageOriginMetadataKey] = origin
 	return entry, nil
+}
+
+func (h *AgentHarness) resolveInheritedSubAgentInputAuthority(ctx context.Context, entry sessiontree.Entry, runID string, input sessiontree.SubAgentInputRecord) (sessiontree.Entry, string, error) {
+	authorityEntry := entry
+	authorityRunID := strings.TrimSpace(runID)
+	visited := map[string]struct{}{}
+	for authorityEntry.ThreadID != input.ChildThreadID {
+		threadID := strings.TrimSpace(authorityEntry.ThreadID)
+		if threadID == "" {
+			return sessiontree.Entry{}, "", sessiontree.ErrAuthorityCorrupt
+		}
+		if _, duplicate := visited[threadID]; duplicate {
+			return sessiontree.Entry{}, "", sessiontree.ErrAuthorityCorrupt
+		}
+		visited[threadID] = struct{}{}
+
+		meta, err := h.options.Repo.Thread(ctx, threadID)
+		if err != nil {
+			return sessiontree.Entry{}, "", err
+		}
+		sourceThreadID := strings.TrimSpace(meta.ForkedFromThreadID)
+		sourceLeafID := strings.TrimSpace(meta.ForkedFromEntryID)
+		if meta.ID != threadID || strings.TrimSpace(meta.ParentThreadID) != sourceThreadID ||
+			strings.TrimSpace(meta.ForkMode) != string(SubAgentForkFullPath) || sourceThreadID == "" || sourceLeafID == "" {
+			return sessiontree.Entry{}, "", sessiontree.ErrAuthorityCorrupt
+		}
+		destinationPrefix, err := h.options.Repo.Path(ctx, threadID, authorityEntry.ID)
+		if err != nil {
+			return sessiontree.Entry{}, "", err
+		}
+		sourcePath, err := h.options.Repo.Path(ctx, sourceThreadID, sourceLeafID)
+		if err != nil {
+			return sessiontree.Entry{}, "", err
+		}
+		ordinal := len(destinationPrefix)
+		if ordinal == 0 || ordinal > len(sourcePath) {
+			return sessiontree.Entry{}, "", sessiontree.ErrAuthorityCorrupt
+		}
+		sourceEntry := sourcePath[ordinal-1]
+		if sourceEntry.Type != sessiontree.EntryUserMessage ||
+			strings.TrimSpace(sourceEntry.Metadata[sessiontree.SubAgentInputIDMetadataKey]) != input.SubAgentInputID ||
+			!messagesEqualForDelta(sourceEntry.Message, authorityEntry.Message) {
+			return sessiontree.Entry{}, "", sessiontree.ErrAuthorityCorrupt
+		}
+		authorityEntry = sourceEntry
+		authorityRunID = subAgentDetailActivityContext{
+			runIDs: subAgentDetailTurnRunIDs(sourcePath),
+		}.runIDForTurn(sourceEntry.TurnID)
+	}
+	return authorityEntry, authorityRunID, nil
 }
 
 func cloneCanonicalTurnRetrySource(source *sessiontree.CanonicalTurnRetrySource) *sessiontree.CanonicalTurnRetrySource {
