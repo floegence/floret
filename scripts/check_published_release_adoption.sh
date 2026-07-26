@@ -169,24 +169,50 @@ func TestPublishedMemoryExactReadAndNotFound(t *testing.T) {
 	ctx := context.Background()
 	store := runtime.NewMemoryStore()
 	defer store.Close()
-	if _, err := florettest.PopulateStoreFixture(ctx, store, florettest.StoreFixtureInput{
-		ThreadID: "memory-thread", CreateIntentID: "memory-create",
-		Turns: []florettest.StoreFixtureTurn{{
-			Request: runtime.RunTurnRequest{TurnID: "memory-turn", RunID: "memory-run", Input: runtime.TurnInput{Text: "memory"}},
-			ModelSteps: []florettest.ModelStep{{Events: []runtime.ModelEvent{{Type: runtime.ModelEventDelta, Text: "ok"}, {Type: runtime.ModelEventDone, Reason: "stop"}}}},
-		}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	var reader *runtime.ThreadReadHost
+	var createBinder *runtime.ThreadCreateHostBinder
+	var turnBinder *runtime.TurnExecutionHostBinder
+	var readBinder *runtime.ThreadReadHostBinder
 	if err := runtime.ConfigureHostCapabilities(store, func(bootstrap *runtime.HostBootstrap) error {
-		binder, err := runtime.NewThreadReadHostBinder(bootstrap)
+		var err error
+		createBinder, err = runtime.NewThreadCreateHostBinder(bootstrap)
 		if err != nil {
 			return err
 		}
-		reader, err = binder.NewHost(ctx, "memory-thread")
+		turnBinder, err = runtime.NewTurnExecutionHostBinder(bootstrap)
+		if err != nil {
+			return err
+		}
+		readBinder, err = runtime.NewThreadReadHostBinder(bootstrap)
 		return err
 	}); err != nil {
+		t.Fatal(err)
+	}
+	creator, err := createBinder.Bind("memory-thread", "memory-create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := creator.CreateThread(ctx, runtime.CreateThreadRequest{ThreadID: "memory-thread", CreateIntentID: "memory-create"}); err != nil {
+		t.Fatal(err)
+	}
+	turnFactory, err := turnBinder.Bind("memory-thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reasoning := config.ReasoningCapability{Kind: config.ReasoningKindNone}
+	execution, err := turnFactory.NewHost(ctx, runtime.TurnExecutionHostOptions{
+		Config: config.Config{SystemPrompt: "published memory", ContextPolicy: config.ContextPolicy{ContextWindowTokens: config.DefaultContextWindowTokens}},
+		ModelGateway: florettest.NewScriptedModelGateway(florettest.ModelStep{Events: []runtime.ModelEvent{{Type: runtime.ModelEventDelta, Text: "ok"}, {Type: runtime.ModelEventDone, Reason: "stop"}}}),
+		ModelGatewayIdentity: runtime.ModelGatewayIdentity{Provider: "published", Model: "memory", StateCompatibilityKey: "published:memory:v1"},
+		ModelGatewayCapabilities: runtime.ModelGatewayCapabilities{Reasoning: &reasoning},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execution.RunTurn(ctx, runtime.RunTurnRequest{ThreadID: "memory-thread", TurnID: "memory-turn", RunID: "memory-run", Input: runtime.TurnInput{Text: "memory"}}); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := readBinder.NewHost(ctx, "memory-thread")
+	if err != nil {
 		t.Fatal(err)
 	}
 	turn, err := reader.ReadThreadTurn(ctx, runtime.ReadThreadTurnRequest{ThreadID: "memory-thread", TurnID: "memory-turn"})
