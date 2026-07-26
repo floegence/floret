@@ -143,6 +143,21 @@ func TestSQLiteReadCanonicalTurnDistinguishesMarkerOnlyAndBrokenJournal(t *testi
 	}
 }
 
+func TestSQLiteReadCanonicalTurnReturnsNotFoundForEmptyThread(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), "floret.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "empty"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReadCanonicalTurn(ctx, "empty", "missing"); !errors.Is(err, sessiontree.ErrCanonicalTurnNotFound) || errors.Is(err, sessiontree.ErrAuthorityCorrupt) {
+		t.Fatalf("empty thread exact read err=%v, want ErrCanonicalTurnNotFound only", err)
+	}
+}
+
 func TestSQLiteReadCanonicalTurnRejectsNonLatestRetrySourceOutsideAncestorPath(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(filepath.Join(t.TempDir(), "floret.db"))

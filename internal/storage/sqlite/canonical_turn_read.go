@@ -29,6 +29,10 @@ func (s *Store) ReadCanonicalTurn(ctx context.Context, threadID, turnID string) 
 		if err != nil {
 			return err
 		}
+		turn, err := readSQLiteCanonicalTurnWithRunner(ctx, q, threadID, turnID, meta.LeafID)
+		if err != nil {
+			return err
+		}
 		leaf, err := loadEntry(ctx, q, threadID, meta.LeafID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return sessiontree.ErrAuthorityCorrupt
@@ -38,10 +42,6 @@ func (s *Store) ReadCanonicalTurn(ctx context.Context, threadID, turnID string) 
 		}
 		if err := sessiontree.ValidateEntryIntegrity(leaf); err != nil || leaf.PathDepth <= 0 {
 			return sessiontree.ErrAuthorityCorrupt
-		}
-		turn, err := readSQLiteCanonicalTurnWithRunner(ctx, q, threadID, turnID, meta.LeafID)
-		if err != nil {
-			return err
 		}
 		latestTurnID, err := loadSQLiteLatestCanonicalTurnID(ctx, q, threadID, meta.LeafID)
 		if err != nil {
@@ -90,7 +90,7 @@ func readSQLiteCanonicalTurnWithRunner(ctx context.Context, q sqlRunner, threadI
 		return sessiontree.CanonicalTurn{}, sessiontree.ErrAuthorityCorrupt
 	}
 	if strings.TrimSpace(leafID) == "" {
-		return sessiontree.CanonicalTurn{}, sessiontree.ErrCanonicalTurnNotFound
+		return sessiontree.CanonicalTurn{}, sessiontree.ErrAuthorityCorrupt
 	}
 	active, err := sqliteCanonicalEntryIsActiveAncestor(ctx, q, threadID, leafID, started.ID, started.PathDepth)
 	if err != nil {

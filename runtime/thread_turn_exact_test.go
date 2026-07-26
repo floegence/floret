@@ -59,6 +59,39 @@ func TestThreadReadHostReadThreadTurnEnforcesRootBinding(t *testing.T) {
 	}
 }
 
+func TestThreadReadHostReadThreadTurnReturnsNotFoundForEmptyThreadAcrossStores(t *testing.T) {
+	ctx := context.Background()
+	for _, backend := range []string{"memory", "sqlite"} {
+		t.Run(backend, func(t *testing.T) {
+			var store *Store
+			var err error
+			if backend == "sqlite" {
+				store, err = openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
+			} else {
+				store = NewMemoryStore()
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			maintenance, err := newTestMaintenanceHost(t, store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := maintenance.CreateThread(ctx, CreateThreadRequest{ThreadID: "empty"}); err != nil {
+				t.Fatal(err)
+			}
+			host, err := mustTestCapabilities(t, store).read.NewHost(ctx, "empty")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := host.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: "empty", TurnID: "missing"}); !errors.Is(err, ErrTurnNotFound) || errors.Is(err, ErrAuthorityCorrupt) {
+				t.Fatalf("empty thread exact read err=%v, want ErrTurnNotFound only", err)
+			}
+		})
+	}
+}
+
 func TestReadThreadTurnAppliesLiveInterruptedOverlayAcrossStores(t *testing.T) {
 	ctx := context.Background()
 	for _, backend := range []string{"memory", "sqlite_reopen"} {
