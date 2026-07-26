@@ -71,47 +71,53 @@ func TestCandidateExactReadSurface(t *testing.T) {
 	ctx := context.Background()
 	store := runtime.NewMemoryStore()
 	defer store.Close()
-	var reader *runtime.ThreadReadHost
+	var createBinder *runtime.ThreadCreateHostBinder
+	var turnBinder *runtime.TurnExecutionHostBinder
+	var readBinder *runtime.ThreadReadHostBinder
 	if err := runtime.ConfigureHostCapabilities(store, func(bootstrap *runtime.HostBootstrap) error {
-		create, err := runtime.NewThreadCreateHostBinder(bootstrap)
+		var err error
+		createBinder, err = runtime.NewThreadCreateHostBinder(bootstrap)
 		if err != nil {
 			return err
 		}
-		creator, err := create.Bind("candidate-thread", "candidate-create")
+		turnBinder, err = runtime.NewTurnExecutionHostBinder(bootstrap)
 		if err != nil {
 			return err
 		}
-		if _, err := creator.CreateThread(ctx, runtime.CreateThreadRequest{ThreadID: "candidate-thread", CreateIntentID: "candidate-create"}); err != nil {
-			return err
-		}
-		turnBinder, err := runtime.NewTurnExecutionHostBinder(bootstrap)
+		readBinder, err = runtime.NewThreadReadHostBinder(bootstrap)
 		if err != nil {
 			return err
 		}
-		turnFactory, err := turnBinder.Bind("candidate-thread")
-		if err != nil {
-			return err
-		}
-		reasoning := config.ReasoningCapability{Kind: config.ReasoningKindNone}
-		execHost, err := turnFactory.NewHost(ctx, runtime.TurnExecutionHostOptions{
-			Config: config.Config{SystemPrompt: "candidate"},
-			ModelGateway: florettest.NewScriptedModelGateway(florettest.ModelStep{Events: []runtime.ModelEvent{{Type: runtime.ModelEventDelta, Text: "ok"}, {Type: runtime.ModelEventDone, Reason: "stop"}}}),
-			ModelGatewayIdentity: runtime.ModelGatewayIdentity{Provider: "candidate", Model: "candidate", StateCompatibilityKey: "candidate:v1"},
-			ModelGatewayCapabilities: runtime.ModelGatewayCapabilities{Reasoning: &reasoning},
-		})
-		if err != nil {
-			return err
-		}
-		if _, err := execHost.RunTurn(ctx, runtime.RunTurnRequest{ThreadID: "candidate-thread", TurnID: "candidate-turn", RunID: "candidate-run", Input: runtime.TurnInput{Text: "candidate"}}); err != nil {
-			return err
-		}
-		binder, err := runtime.NewThreadReadHostBinder(bootstrap)
-		if err != nil {
-			return err
-		}
-		reader, err = binder.NewHost(ctx, "candidate-thread")
-		return err
+		return nil
 	}); err != nil {
+		t.Fatal(err)
+	}
+	creator, err := createBinder.Bind("candidate-thread", "candidate-create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := creator.CreateThread(ctx, runtime.CreateThreadRequest{ThreadID: "candidate-thread", CreateIntentID: "candidate-create"}); err != nil {
+		t.Fatal(err)
+	}
+	turnFactory, err := turnBinder.Bind("candidate-thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reasoning := config.ReasoningCapability{Kind: config.ReasoningKindNone}
+	execHost, err := turnFactory.NewHost(ctx, runtime.TurnExecutionHostOptions{
+		Config: config.Config{SystemPrompt: "candidate"},
+		ModelGateway: florettest.NewScriptedModelGateway(florettest.ModelStep{Events: []runtime.ModelEvent{{Type: runtime.ModelEventDelta, Text: "ok"}, {Type: runtime.ModelEventDone, Reason: "stop"}}}),
+		ModelGatewayIdentity: runtime.ModelGatewayIdentity{Provider: "candidate", Model: "candidate", StateCompatibilityKey: "candidate:v1"},
+		ModelGatewayCapabilities: runtime.ModelGatewayCapabilities{Reasoning: &reasoning},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execHost.RunTurn(ctx, runtime.RunTurnRequest{ThreadID: "candidate-thread", TurnID: "candidate-turn", RunID: "candidate-run", Input: runtime.TurnInput{Text: "candidate"}}); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := readBinder.NewHost(ctx, "candidate-thread")
+	if err != nil {
 		t.Fatal(err)
 	}
 	turn, err := reader.ReadThreadTurn(ctx, runtime.ReadThreadTurnRequest{ThreadID: "candidate-thread", TurnID: "candidate-turn"})
