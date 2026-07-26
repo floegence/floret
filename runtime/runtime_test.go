@@ -85,15 +85,55 @@ func (r legacySubAgentUserOriginRepo) ListCanonicalTurns(ctx context.Context, op
 	}
 	for turnIndex := range page.Turns {
 		for entryIndex := range page.Turns[turnIndex].Entries {
-			entry := &page.Turns[turnIndex].Entries[entryIndex].Entry
-			if entry.Type != sessiontree.EntryUserMessage || entry.Metadata[sessiontree.SubAgentInputIDMetadataKey] == "" {
-				continue
-			}
-			entry.Metadata = cloneStringMap(entry.Metadata)
-			delete(entry.Metadata, sessiontree.SubAgentUserMessageOriginMetadataKey)
+			stripLegacySubAgentUserOrigin(&page.Turns[turnIndex].Entries[entryIndex].Entry)
 		}
 	}
 	return page, nil
+}
+
+func (r legacySubAgentUserOriginRepo) Path(ctx context.Context, threadID, leafID string) ([]sessiontree.Entry, error) {
+	path, err := r.Repo.Path(ctx, threadID, leafID)
+	if err != nil {
+		return nil, err
+	}
+	stripLegacySubAgentUserOrigins(path)
+	return path, nil
+}
+
+func (r legacySubAgentUserOriginRepo) PathPage(ctx context.Context, threadID, leafID, beforeEntryID string, limit int) (sessiontree.PathPage, error) {
+	page, err := r.Repo.PathPage(ctx, threadID, leafID, beforeEntryID, limit)
+	if err != nil {
+		return sessiontree.PathPage{}, err
+	}
+	stripLegacySubAgentUserOrigins(page.Entries)
+	return page, nil
+}
+
+func (r legacySubAgentUserOriginRepo) CanonicalTurnEntries(ctx context.Context, threadID, turnID, runID string) ([]sessiontree.Entry, bool, error) {
+	repo, ok := r.Repo.(sessiontree.CanonicalTurnRepo)
+	if !ok {
+		return nil, false, errors.New("test repo does not support canonical turn reads")
+	}
+	entries, found, err := repo.CanonicalTurnEntries(ctx, threadID, turnID, runID)
+	if err != nil || !found {
+		return entries, found, err
+	}
+	stripLegacySubAgentUserOrigins(entries)
+	return entries, true, nil
+}
+
+func stripLegacySubAgentUserOrigins(entries []sessiontree.Entry) {
+	for index := range entries {
+		stripLegacySubAgentUserOrigin(&entries[index])
+	}
+}
+
+func stripLegacySubAgentUserOrigin(entry *sessiontree.Entry) {
+	if entry == nil || entry.Type != sessiontree.EntryUserMessage || entry.Metadata[sessiontree.SubAgentInputIDMetadataKey] == "" {
+		return
+	}
+	entry.Metadata = cloneStringMap(entry.Metadata)
+	delete(entry.Metadata, sessiontree.SubAgentUserMessageOriginMetadataKey)
 }
 
 func (r legacySubAgentUserOriginRepo) ReadSubAgentInput(ctx context.Context, inputID string) (sessiontree.SubAgentInputRecord, bool, error) {
