@@ -1348,24 +1348,15 @@ type ThreadDetailTurnMarker struct {
 }
 
 type ThreadDetailCompaction struct {
-	OperationID             string            `json:"operation_id,omitempty"`
-	RequestID               string            `json:"request_id,omitempty"`
-	Source                  string            `json:"source,omitempty"`
-	CompactionID            string            `json:"compaction_id,omitempty"`
-	PreviousCompactionID    string            `json:"previous_compaction_id,omitempty"`
-	CompactedThroughEntryID string            `json:"compacted_through_entry_id,omitempty"`
-	SummarySchemaVersion    string            `json:"summary_schema_version,omitempty"`
-	CompactionGeneration    int               `json:"compaction_generation,omitempty"`
-	CompactionWindowID      string            `json:"compaction_window_id,omitempty"`
-	FirstKeptEntryID        string            `json:"first_kept_entry_id,omitempty"`
-	KeptUserEntryIDs        []string          `json:"kept_user_entry_ids,omitempty"`
-	Summary                 string            `json:"summary,omitempty"`
-	Trigger                 string            `json:"trigger,omitempty"`
-	Reason                  string            `json:"reason,omitempty"`
-	Phase                   string            `json:"phase,omitempty"`
-	TokensBefore            int64             `json:"tokens_before,omitempty"`
-	TokensAfterEstimate     int64             `json:"tokens_after_estimate,omitempty"`
-	Metadata                map[string]string `json:"metadata,omitempty"`
+	OperationID         string            `json:"operation_id,omitempty"`
+	RequestID           string            `json:"request_id,omitempty"`
+	Source              string            `json:"source,omitempty"`
+	Trigger             string            `json:"trigger,omitempty"`
+	Reason              string            `json:"reason,omitempty"`
+	Phase               string            `json:"phase,omitempty"`
+	TokensBefore        int64             `json:"tokens_before,omitempty"`
+	TokensAfterEstimate int64             `json:"tokens_after_estimate,omitempty"`
+	Metadata            map[string]string `json:"metadata,omitempty"`
 }
 
 type ArtifactRef struct {
@@ -2646,7 +2637,7 @@ func listThreadDetailEvents(ctx context.Context, harness *agentharness.AgentHarn
 		return ThreadDetailEvents{}, runtimeHostError(err)
 	}
 	return ThreadDetailEvents{
-		Events:       threadDetailEvents(detail.Events),
+		Events:       publicThreadDetailEvents(detail.Events),
 		NextOrdinal:  detail.NextOrdinal,
 		HasMore:      detail.HasMore,
 		RetainedFrom: detail.RetainedFrom,
@@ -4235,7 +4226,7 @@ func threadDetailEvents(in []agentharness.SubAgentDetailEvent) []ThreadDetailEve
 }
 
 func subAgentThreadDetailEvents(in []agentharness.SubAgentDetailEvent) []ThreadDetailEvent {
-	out := threadDetailEvents(in)
+	out := publicThreadDetailEvents(in)
 	for index := range out {
 		out[index].ActivityTimeline = nil
 	}
@@ -4358,25 +4349,31 @@ func threadDetailCompaction(in *agentharness.SubAgentDetailCompaction) *ThreadDe
 		return nil
 	}
 	return &ThreadDetailCompaction{
-		OperationID:             in.OperationID,
-		RequestID:               in.RequestID,
-		Source:                  in.Source,
-		CompactionID:            in.CompactionID,
-		PreviousCompactionID:    in.PreviousCompactionID,
-		CompactedThroughEntryID: in.CompactedThroughEntryID,
-		SummarySchemaVersion:    in.SummarySchemaVersion,
-		CompactionGeneration:    in.CompactionGeneration,
-		CompactionWindowID:      in.CompactionWindowID,
-		FirstKeptEntryID:        in.FirstKeptEntryID,
-		KeptUserEntryIDs:        append([]string(nil), in.KeptUserEntryIDs...),
-		Summary:                 in.Summary,
-		Trigger:                 in.Trigger,
-		Reason:                  in.Reason,
-		Phase:                   in.Phase,
-		TokensBefore:            in.TokensBefore,
-		TokensAfterEstimate:     in.TokensAfterEstimate,
-		Metadata:                safeStringMetadata(in.Metadata),
+		OperationID:         in.OperationID,
+		RequestID:           in.RequestID,
+		Source:              in.Source,
+		Trigger:             in.Trigger,
+		Reason:              in.Reason,
+		Phase:               in.Phase,
+		TokensBefore:        in.TokensBefore,
+		TokensAfterEstimate: in.TokensAfterEstimate,
+		Metadata:            safeStringMetadata(in.Metadata),
 	}
+}
+
+func publicThreadDetailEvents(in []agentharness.SubAgentDetailEvent) []ThreadDetailEvent {
+	out := threadDetailEvents(in)
+	for index := range out {
+		if out[index].TurnMarker == nil {
+			continue
+		}
+		delete(out[index].TurnMarker.Metadata, sessiontree.RetrySourceTurnIDMetadataKey)
+		delete(out[index].TurnMarker.Metadata, sessiontree.RetrySourceEntryIDMetadataKey)
+		if len(out[index].TurnMarker.Metadata) == 0 {
+			out[index].TurnMarker.Metadata = nil
+		}
+	}
+	return out
 }
 
 func cloneThreadDetailEvents(in []ThreadDetailEvent) []ThreadDetailEvent {
@@ -4473,7 +4470,6 @@ func cloneThreadDetailCompaction(in *ThreadDetailCompaction) *ThreadDetailCompac
 		return nil
 	}
 	out := *in
-	out.KeptUserEntryIDs = append([]string(nil), in.KeptUserEntryIDs...)
 	out.Metadata = cloneStringMap(in.Metadata)
 	return &out
 }

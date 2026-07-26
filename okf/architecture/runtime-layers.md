@@ -302,7 +302,7 @@ the child transcript, tool outputs, or detail timeline.
 `ListSubAgentActivityTimeline` gives host UIs a parent-scoped activity summary
 derived from child snapshots without exposing the child transcript.
 `ReadSubAgentDetail` is the single public host API for parent-scoped, paginated
-inspection of the child journal. It lets a product UI show complete child
+diagnostic inspection of the child journal. It lets a product UI show complete child
 execution detail while keeping parent model context small. Its top-level
 activity timeline is rebuilt from retained child detail events on each read so
 later tool results and pending-tool settlements replace earlier running updates;
@@ -313,19 +313,27 @@ status, and public compaction operations. Fork mode and parent/child thread
 identity affect lookup and journal ownership only; they do not define context
 window size.
 
+Canonical child conversation history uses
+`SubAgentReadHost.ListThreadTurns`. The parent-bound host first proves that the
+target is a complete direct or deep descendant, then reuses the exact root
+`ThreadTurnsPage` projector and cursor contract. Detail rows remain for audit,
+tool activity, context, and diagnostics rather than becoming a second history
+reducer.
+
 Hosts that need lifecycle metadata plus the latest admitted turn use
 `ReadThreadOverview`, which projects both from one active path. Hosts create a
 missing canonical journal only through `CreateThread`; transcript-free
 `ReadThread` and `ThreadSummary` projections never create or recover one, and
 the public runtime exposes no alternate start-or-create entry point.
 Conversation bootstrap and pagination use `ListThreadTurns`: initial reads use
-bounded `Tail`, historical reads use the returned entry-identity
-`BeforeCursor`, and incremental reads use the returned non-empty
+bounded `Tail`, historical reads use the returned opaque, direction-bound
+`BeforeCursor`, and incremental reads use the returned non-empty opaque
 `SinceCursor`. Every mode returns admitted canonical turns in ascending order;
 a stale cursor fails instead of falling back to a host-derived ordinal or full
 path scan. A marker-only turn remains outside the public turn list even if it is
 later cancelled or terminal; only a canonical user entry admits it. Retry turns
-carry exact source turn/entry identity without duplicating the user message. The
+expose the source `TurnID` without duplicating the user message; the exact source
+entry remains internal authority. The
 page through ordinal continues to cover the full read boundary. Hosts that need
 to reload a single known turn may use
 `ReadTurnProjection` with explicit `ThreadID`, `TurnID`, and `RunID`. Floret

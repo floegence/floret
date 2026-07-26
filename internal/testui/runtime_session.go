@@ -375,15 +375,6 @@ func sessionEntryFromRuntimeDetail(detail flruntime.ThreadDetailEvent) sessiontr
 		entry.Metadata = cloneStringMap(detail.TurnMarker.Metadata)
 	}
 	if detail.Compaction != nil {
-		entry.CompactionID = detail.Compaction.CompactionID
-		entry.PreviousCompactionID = detail.Compaction.PreviousCompactionID
-		entry.CompactedThroughEntryID = detail.Compaction.CompactedThroughEntryID
-		entry.SummarySchemaVersion = detail.Compaction.SummarySchemaVersion
-		entry.CompactionGeneration = detail.Compaction.CompactionGeneration
-		entry.CompactionWindowID = detail.Compaction.CompactionWindowID
-		entry.FirstKeptEntryID = detail.Compaction.FirstKeptEntryID
-		entry.KeptUserEntryIDs = append([]string(nil), detail.Compaction.KeptUserEntryIDs...)
-		entry.Summary = detail.Compaction.Summary
 		entry.CompactionTrigger = detail.Compaction.Trigger
 		entry.CompactionReason = detail.Compaction.Reason
 		entry.CompactionPhase = detail.Compaction.Phase

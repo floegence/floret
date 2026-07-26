@@ -2,14 +2,18 @@ package runtime
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/floegence/floret/internal/agentharness"
 	"github.com/floegence/floret/internal/session"
 	"github.com/floegence/floret/internal/sessiontree"
 )
@@ -229,9 +233,9 @@ func TestRetryTurnIsCanonicalWithoutDuplicatingUserAcrossMemoryAndSQLiteReopen(t
 			if err != nil || retried.Status != TurnStatusCompleted || retried.Output != "retry answer" {
 				t.Fatalf("retried=%#v err=%v", retried, err)
 			}
-			retrySourceEntryID := assertRuntimeRetryTurnPage(t, ctx, maintenance, beforeRetry.SinceCursor, "")
+			assertRuntimeRetryTurnPage(t, ctx, maintenance, beforeRetry.SinceCursor)
 			overview, err := maintenance.ReadThreadOverview(ctx, "thread")
-			if err != nil || overview.LatestTurn == nil || overview.LatestTurn.RetrySource == nil || overview.LatestTurn.RetrySource.EntryID != retrySourceEntryID {
+			if err != nil || overview.LatestTurn == nil || overview.LatestTurn.RetrySource == nil || overview.LatestTurn.RetrySource.TurnID != "turn-original" {
 				t.Fatalf("retry overview=%#v err=%v", overview, err)
 			}
 			forkRequest := ForkThreadRequest{OperationID: "fork-retry", SourceThreadID: "thread", DestinationThreadID: "fork"}
@@ -241,7 +245,7 @@ func TestRetryTurnIsCanonicalWithoutDuplicatingUserAcrossMemoryAndSQLiteReopen(t
 			if replayed, err := maintenance.ForkThread(ctx, forkRequest); err != nil || replayed.Thread.ID != "fork" {
 				t.Fatalf("fork replay=%#v err=%v", replayed, err)
 			}
-			forkCursor := assertRuntimeForkedRetryTurnPage(t, ctx, maintenance, store, retrySourceEntryID)
+			forkCursor := assertRuntimeForkedRetryTurnPage(t, ctx, maintenance)
 			if next, err := host.RunTurn(ctx, RunTurnRequest{
 				ThreadID: "fork", TurnID: "fork-next", RunID: "fork-next-run", Input: TurnInput{Text: "continue after retry"},
 			}); err != nil || next.Status != TurnStatusCompleted {
@@ -265,7 +269,7 @@ func TestRetryTurnIsCanonicalWithoutDuplicatingUserAcrossMemoryAndSQLiteReopen(t
 				if err != nil {
 					t.Fatal(err)
 				}
-				assertRuntimeRetryTurnPage(t, ctx, maintenance, beforeRetry.SinceCursor, retrySourceEntryID)
+				assertRuntimeRetryTurnPage(t, ctx, maintenance, beforeRetry.SinceCursor)
 				forkPage, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "fork", Tail: 3})
 				if err != nil || len(forkPage.Turns) != 3 || forkPage.Turns[1].RetrySource == nil || forkPage.Turns[1].RetrySource.TurnID != forkPage.Turns[0].TurnID {
 					t.Fatalf("reopened fork retry page=%#v err=%v", forkPage, err)
@@ -275,27 +279,22 @@ func TestRetryTurnIsCanonicalWithoutDuplicatingUserAcrossMemoryAndSQLiteReopen(t
 	}
 }
 
-func assertRuntimeForkedRetryTurnPage(t *testing.T, ctx context.Context, maintenance *testMaintenanceFacade, store *Store, sourceRetryEntryID string) ThreadTurnsSinceCursor {
+func assertRuntimeForkedRetryTurnPage(t *testing.T, ctx context.Context, maintenance *testMaintenanceFacade) ThreadTurnCursor {
 	t.Helper()
 	page, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "fork", Tail: 2})
 	if err != nil || len(page.Turns) != 2 {
 		t.Fatalf("fork retry page=%#v err=%v", page, err)
 	}
 	original, retry := page.Turns[0], page.Turns[1]
-	if retry.RetrySource == nil || retry.RetrySource.TurnID != original.TurnID || retry.RetrySource.EntryID == "" ||
-		retry.RetrySource.EntryID == sourceRetryEntryID || retry.UserEntryID != "" {
+	if retry.RetrySource == nil || retry.RetrySource.TurnID != original.TurnID || retry.UserEntryID != "" {
 		t.Fatalf("fork retry relation original=%#v retry=%#v", original, retry)
 	}
-	source, err := store.repo.Entry(ctx, "fork", retry.RetrySource.EntryID)
-	if err != nil || TurnID(source.TurnID) != original.TurnID {
-		t.Fatalf("fork retry source entry=%#v err=%v", source, err)
-	}
 	latest, err := maintenance.ReadLatestThreadTurn(ctx, "fork")
-	if err != nil || latest.TurnID != retry.TurnID || latest.RetrySource == nil || latest.RetrySource.EntryID != retry.RetrySource.EntryID {
+	if err != nil || latest.TurnID != retry.TurnID || latest.RetrySource == nil || latest.RetrySource.TurnID != original.TurnID {
 		t.Fatalf("fork latest retry=%#v err=%v", latest, err)
 	}
 	overview, err := maintenance.ReadThreadOverview(ctx, "fork")
-	if err != nil || overview.LatestTurn == nil || overview.LatestTurn.RetrySource == nil || overview.LatestTurn.RetrySource.EntryID != retry.RetrySource.EntryID {
+	if err != nil || overview.LatestTurn == nil || overview.LatestTurn.RetrySource == nil || overview.LatestTurn.RetrySource.TurnID != original.TurnID {
 		t.Fatalf("fork retry overview=%#v err=%v", overview, err)
 	}
 	tail, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "fork", Tail: 1})
@@ -309,7 +308,7 @@ func assertRuntimeForkedRetryTurnPage(t *testing.T, ctx context.Context, mainten
 	return page.SinceCursor
 }
 
-func assertRuntimeRetryTurnPage(t *testing.T, ctx context.Context, maintenance *testMaintenanceFacade, sinceCursor ThreadTurnsSinceCursor, sourceEntryID string) string {
+func assertRuntimeRetryTurnPage(t *testing.T, ctx context.Context, maintenance *testMaintenanceFacade, sinceCursor ThreadTurnCursor) {
 	t.Helper()
 	page, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 2})
 	if err != nil || len(page.Turns) != 2 {
@@ -319,26 +318,19 @@ func assertRuntimeRetryTurnPage(t *testing.T, ctx context.Context, maintenance *
 	if original.TurnID != "turn-original" || original.Status != TurnStatusFailed || original.UserInput != "original question" || original.RetrySource != nil {
 		t.Fatalf("original turn=%#v", original)
 	}
-	if retry.RetrySource == nil || retry.RetrySource.TurnID != "turn-original" || retry.RetrySource.EntryID == "" ||
+	if retry.RetrySource == nil || retry.RetrySource.TurnID != "turn-original" ||
 		retry.UserEntryID != "" || retry.UserInput != "" || len(retry.UserAttachments) != 0 || len(retry.UserReferences) != 0 ||
 		retry.Status != TurnStatusCompleted || len(retry.Projection.Segments) != 1 || retry.Projection.Segments[0].Text != "retry answer" {
 		t.Fatalf("retry turn=%#v", retry)
 	}
-	if sourceEntryID == "" {
-		sourceEntryID = retry.RetrySource.EntryID
-	}
-	if sourceEntryID != "" && retry.RetrySource.EntryID != sourceEntryID {
-		t.Fatalf("retry source entry=%q, want %q", retry.RetrySource.EntryID, sourceEntryID)
-	}
 	incremental, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", SinceCursor: &sinceCursor, Limit: 1})
-	if err != nil || len(incremental.Turns) != 1 || incremental.Turns[0].TurnID != retry.TurnID || incremental.SinceCursor.EntryID != page.SinceCursor.EntryID {
+	if err != nil || len(incremental.Turns) != 1 || incremental.Turns[0].TurnID != retry.TurnID || incremental.SinceCursor != page.SinceCursor {
 		t.Fatalf("retry incremental page=%#v err=%v", incremental, err)
 	}
 	latest, err := maintenance.ReadLatestThreadTurn(ctx, "thread")
-	if err != nil || latest.TurnID != retry.TurnID || latest.RetrySource == nil || latest.RetrySource.EntryID != sourceEntryID {
+	if err != nil || latest.TurnID != retry.TurnID || latest.RetrySource == nil || latest.RetrySource.TurnID != original.TurnID {
 		t.Fatalf("retry latest=%#v err=%v", latest, err)
 	}
-	return retry.RetrySource.EntryID
 }
 
 func TestListThreadTurnsRejectsEmptySinceCursor(t *testing.T) {
@@ -350,12 +342,97 @@ func TestListThreadTurnsRejectsEmptySinceCursor(t *testing.T) {
 	if _, err := maintenance.CreateThread(context.Background(), CreateThreadRequest{ThreadID: "thread"}); err != nil {
 		t.Fatal(err)
 	}
+	empty := ThreadTurnCursor("")
 	_, err = maintenance.ListThreadTurns(context.Background(), ListThreadTurnsRequest{
-		ThreadID: "thread", SinceCursor: &ThreadTurnsSinceCursor{}, Limit: 1,
+		ThreadID: "thread", SinceCursor: &empty, Limit: 1,
 	})
-	if err == nil || !strings.Contains(err.Error(), "since cursor requires entry identity") {
+	if err == nil || !errors.Is(err, ErrInvalidThreadTurnCursor) {
 		t.Fatalf("empty since cursor err=%v", err)
 	}
+}
+
+func TestThreadTurnCursorIsOpaqueScopedAndTyped(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	t.Cleanup(func() { _ = store.Close() })
+	maintenance, err := newTestMaintenanceHost(t, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := maintenance.CreateThread(ctx, CreateThreadRequest{ThreadID: "thread"}); err != nil {
+		t.Fatal(err)
+	}
+	since, err := encodeThreadTurnCursor("thread", threadTurnCursorModeSince, "missing-entry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := encodeThreadTurnCursor("thread", threadTurnCursorModeBefore, "missing-entry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherThread, err := encodeThreadTurnCursor("other", threadTurnCursorModeSince, "missing-entry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongVersion := testThreadTurnCursor(t, threadTurnCursorPayload{
+		Version: threadTurnCursorVersion + 1, ThreadID: "thread", Mode: threadTurnCursorModeSince, EntryID: "missing-entry",
+	})
+	for name, req := range map[string]ListThreadTurnsRequest{
+		"malformed":     {ThreadID: "thread", SinceCursor: threadTurnCursorPointer("not-base64!"), Limit: 1},
+		"tampered":      {ThreadID: "thread", SinceCursor: threadTurnCursorPointer(string(since) + "x"), Limit: 1},
+		"wrong mode":    {ThreadID: "thread", SinceCursor: &before, Limit: 1},
+		"wrong thread":  {ThreadID: "thread", SinceCursor: &otherThread, Limit: 1},
+		"wrong version": {ThreadID: "thread", SinceCursor: &wrongVersion, Limit: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			page, err := maintenance.ListThreadTurns(ctx, req)
+			if !errors.Is(err, ErrInvalidThreadTurnCursor) || !reflect.DeepEqual(page, ThreadTurnsPage{}) {
+				t.Fatalf("page=%#v err=%v", page, err)
+			}
+		})
+	}
+	if page, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", SinceCursor: &since, Limit: 1}); !errors.Is(err, ErrStaleThreadTurnCursor) || !reflect.DeepEqual(page, ThreadTurnsPage{}) {
+		t.Fatalf("stale page=%#v err=%v", page, err)
+	}
+	raw, err := json.Marshal(ListThreadTurnsRequest{ThreadID: "thread", BeforeCursor: &before, Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "entry_id") || !strings.Contains(string(raw), `"before_cursor":"`) {
+		t.Fatalf("cursor JSON is not opaque: %s", raw)
+	}
+}
+
+func TestPublicThreadDetailEventsHideRetryAuthorityMetadata(t *testing.T) {
+	events := publicThreadDetailEvents([]agentharness.SubAgentDetailEvent{{
+		Kind: agentharness.SubAgentDetailEventTurnMarker,
+		TurnMarker: &agentharness.SubAgentDetailTurnMarker{Status: string(sessiontree.TurnStarted), Metadata: map[string]string{
+			"run_id": "run", sessiontree.RetrySourceTurnIDMetadataKey: "source-turn", sessiontree.RetrySourceEntryIDMetadataKey: "source-entry",
+		}},
+	}})
+	if len(events) != 1 || events[0].TurnMarker == nil || events[0].TurnMarker.Metadata["run_id"] != "run" {
+		t.Fatalf("events=%#v", events)
+	}
+	if _, found := events[0].TurnMarker.Metadata[sessiontree.RetrySourceTurnIDMetadataKey]; found {
+		t.Fatalf("retry source turn leaked: %#v", events[0])
+	}
+	if _, found := events[0].TurnMarker.Metadata[sessiontree.RetrySourceEntryIDMetadataKey]; found {
+		t.Fatalf("retry source entry leaked: %#v", events[0])
+	}
+}
+
+func threadTurnCursorPointer(raw string) *ThreadTurnCursor {
+	cursor := ThreadTurnCursor(raw)
+	return &cursor
+}
+
+func testThreadTurnCursor(t *testing.T, payload threadTurnCursorPayload) ThreadTurnCursor {
+	t.Helper()
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ThreadTurnCursor(base64.RawURLEncoding.EncodeToString(raw))
 }
 
 func TestUnfinishedForkBranchBoundaryHasCanonicalFailureAcrossPublicReads(t *testing.T) {

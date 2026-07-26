@@ -14,7 +14,8 @@ uses a thread-bound `TurnExecutionHost`, a thread-bound
 `ThreadCompactionHost`, or a parent-bound `SubAgentHost`. Provider-free
 lifecycle transitions use `ThreadCreateHost`, `ThreadTitleHost`,
 `ThreadForkHost`, `ThreadDeleteHost`, `ThreadReadHost`,
-`SubAgentReadHost`, `PendingToolRecoveryHost`, and
+`SubAgentReadHost`, the composition-only `ThreadInventoryHost`,
+`PendingToolRecoveryHost`, and
 `InterruptedTurnRecoveryHostFactory` / `InterruptedTurnRecoveryHost`. Active pending settlement stays on the exact
 `TurnExecutionHost` or `SubAgentHost` owner. Hosts provide product input, tools,
 permissions, and optional model transport; Floret owns
@@ -164,9 +165,11 @@ host interface for every runtime operation.
   An unadmitted started marker does not fabricate a latest turn.
 * `ThreadReadHost.ListThreadTurns` returns canonical turn snapshots in ascending
   journal ordinal order. Initial `Tail`, historical `BeforeCursor`, and
-  incremental `SinceCursor` pagination are mutually exclusive. Cursors carry a
-  canonical entry identity rather than a host-derived ordinal; a cursor that is
-  no longer on the active path returns `ErrStaleThreadTurnCursor`. Started,
+  incremental `SinceCursor` pagination are mutually exclusive. Each cursor is a
+  versioned opaque token bound to the exact thread and pagination mode. Malformed
+  or wrong-scope tokens return `ErrInvalidThreadTurnCursor`; a valid token whose
+  internal anchor is no longer on the active path returns
+  `ErrStaleThreadTurnCursor`. Started,
   waiting, or terminal
   markers do not make a turn public by themselves; the turn enters the page only
   after its canonical user entry is committed. The corresponding public
@@ -174,9 +177,15 @@ host interface for every runtime operation.
   same running turn, so a host may synchronize presentation from the public
   read capability before handling provider or assistant events. Each returned
   turn includes its explicit run identity, canonical user entry, input,
-  attachments, ordered references, retry-source identity, typed failure,
+  attachments, ordered references, retry-source `TurnID`, typed failure,
   verified control signals, complete `ThreadTurnProjection`, and
-  projection-through ordinal.
+  projection-through ordinal. `UserEntryID` is an opaque canonical presentation
+  anchor; it is not authorization, a cursor, or direct Store access.
+* `ThreadInventoryHost.ListRootThreads` is issued only from `HostBootstrap` to a
+  composition or maintenance owner. It returns bounded pages of existing,
+  non-archived canonical roots using validated `ThreadSummary` values and an
+  opaque inventory cursor. It contains no endpoint, user visibility, routing,
+  pin, permission, or product-order state and is not reachable from a run.
 * `ThreadReadHost.ReadThreadAgentTodos` reads Floret-owned typed Agent todo
   state. `TurnExecutionHost.UpdateThreadAgentTodos` updates that state with
   compare-and-swap versioning and must reference a real journal turn, run, and
@@ -265,6 +274,11 @@ host interface for every runtime operation.
   pressure/usage status, and public compaction lifecycle operations. Context
   window size comes from the resolved model capability and policy, not from
   parent thread, child thread, subagent, or fork mode.
+* `SubAgentReadHost.ListThreadTurns` reads the same `ThreadTurnsPage` and
+  `ThreadTurnSnapshot` contracts as a root read after proving the requested
+  thread is a complete direct or deep descendant of the bound parent. Normal
+  child conversation UI uses this typed model; `ReadSubAgentDetail` remains the
+  diagnostic, audit, context, and tool-activity surface.
 * `ListThreadDetailEvents` lets a host read the Floret-owned ordered execution
   transcript for a hosted thread without reading Floret storage internals.
 * `ReadLatestThreadTurn` returns the latest admitted turn from the active path
@@ -517,11 +531,12 @@ projection is accepted only for its exact
 `ThreadID`/`TurnID`/`RunID`; once the durable projection reaches the turn, a host
 removes its in-memory draft or resynchronizes instead of guessing an order.
 An initial reader uses bounded `Tail`, historical navigation uses only the
-returned `BeforeCursor`, and live polling uses only the returned non-empty
-`SinceCursor`. A retry turn carries `RetrySource{TurnID, EntryID}` and does not
-duplicate the original user message. Hosts must not synthesize cursor ordinals,
-copy retry input, or fall back to scanning the active path when an entry cursor
-is stale.
+returned opaque `BeforeCursor`, and live polling uses only the returned
+non-empty opaque `SinceCursor`. A retry turn carries only
+`RetrySource{TurnID}` and does not duplicate the original user message. Floret
+retains and validates the exact internal source entry. Hosts must not parse or
+synthesize cursors, copy retry input, or fall back to scanning the active path
+when a cursor is stale.
 A canonical user input containing only references is not retry-eligible because
 its provider material was ephemeral and cannot be reconstructed from durable
 authority. Its overview/page reports `CanRetry=false`, and `RetryTurn` returns

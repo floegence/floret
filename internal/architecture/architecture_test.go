@@ -481,6 +481,7 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 	exact("HostBootstrap", reflect.TypeOf((*floretRuntime.HostBootstrap)(nil)))
 	exact("ThreadCreateHostBinder", reflect.TypeOf((*floretRuntime.ThreadCreateHostBinder)(nil)), "Bind")
 	exact("ThreadReadHostBinder", reflect.TypeOf((*floretRuntime.ThreadReadHostBinder)(nil)), "NewHost")
+	exact("ThreadInventoryHost", reflect.TypeOf((*floretRuntime.ThreadInventoryHost)(nil)), "ListRootThreads")
 	exact("ThreadTitleHostBinder", reflect.TypeOf((*floretRuntime.ThreadTitleHostBinder)(nil)), "NewHost")
 	exact("ThreadForkHostBinder", reflect.TypeOf((*floretRuntime.ThreadForkHostBinder)(nil)), "NewHost")
 	exact("ThreadDeleteHostBinder", reflect.TypeOf((*floretRuntime.ThreadDeleteHostBinder)(nil)), "NewHost")
@@ -499,7 +500,7 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 	exact("ThreadForkHost", reflect.TypeOf((*floretRuntime.ThreadForkHost)(nil)), "ForkThread")
 	exact("ThreadDeleteHost", reflect.TypeOf((*floretRuntime.ThreadDeleteHost)(nil)), "DeleteThread")
 	exact("SubAgentReadHost", reflect.TypeOf((*floretRuntime.SubAgentReadHost)(nil)),
-		"ListPendingToolSettlementTargets", "ListSubAgentActivityTimeline", "ListSubAgents", "ReadArtifact", "ReadSubAgentDetail")
+		"ListPendingToolSettlementTargets", "ListSubAgentActivityTimeline", "ListSubAgents", "ListThreadTurns", "ReadArtifact", "ReadSubAgentDetail")
 	exact("PendingToolRecoveryHost", reflect.TypeOf((*floretRuntime.PendingToolRecoveryHost)(nil)), "SettlePendingTool")
 	exact("InterruptedTurnRecoveryHost", reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHost)(nil)), "RecoverInterruptedTurn")
 	exact("TurnExecutionHost", reflect.TypeOf((*floretRuntime.TurnExecutionHost)(nil)),
@@ -733,6 +734,7 @@ func TestRuntimeBootstrapAuthorityIsConfinedToCompositionConstructors(t *testing
 		"NewPendingToolRecoveryHostBinder":     true,
 		"NewSubAgentHostBinder":                true,
 		"NewSubAgentReadHostBinder":            true,
+		"NewThreadInventoryHost":               true,
 		"NewThreadCompactionHostBinder":        true,
 		"NewThreadCreateHostBinder":            true,
 		"NewThreadDeleteHostBinder":            true,
@@ -862,6 +864,7 @@ func TestRuntimeCapabilityConstructorsAndAggregatesStayExplicit(t *testing.T) {
 		"NewInterruptedTurnRecoveryHostBinder": true,
 		"NewSubAgentHostBinder":                true,
 		"NewSubAgentReadHostBinder":            true,
+		"NewThreadInventoryHost":               true,
 		"NewThreadCompactionHostBinder":        true,
 		"NewThreadCreateHostBinder":            true,
 		"NewThreadDeleteHostBinder":            true,
@@ -881,6 +884,7 @@ func TestRuntimeCapabilityConstructorsAndAggregatesStayExplicit(t *testing.T) {
 		"ListPendingApprovals":         "TurnExecutionHost",
 		"ListSubAgentActivityTimeline": "SubAgentReadHost",
 		"ListSubAgents":                "SubAgentReadHost",
+		"ListRootThreads":              "ThreadInventoryHost",
 		"ListThreadDetailEvents":       "ThreadReadHost",
 		"ListThreadTurns":              "ThreadReadHost",
 		"ReadLatestThreadTurn":         "ThreadReadHost",
@@ -902,7 +906,7 @@ func TestRuntimeCapabilityConstructorsAndAggregatesStayExplicit(t *testing.T) {
 		"HostBootstrap": true, "PendingToolRecoveryHost": true, "PendingToolRecoveryHostBinder": true,
 		"InterruptedTurnRecoveryHost": true, "InterruptedTurnRecoveryHostBinder": true,
 		"InterruptedTurnRecoveryHostFactory": true,
-		"ThreadCreateHostBinder":             true, "ThreadReadHostBinder": true, "ThreadTitleHostBinder": true,
+		"ThreadCreateHostBinder":             true, "ThreadReadHostBinder": true, "ThreadInventoryHost": true, "ThreadTitleHostBinder": true,
 		"ThreadForkHostBinder": true, "ThreadDeleteHostBinder": true,
 		"SubAgentHost": true, "SubAgentHostBinder": true, "SubAgentHostFactory": true,
 		"SubAgentReadHost": true, "SubAgentReadHostBinder": true,
@@ -971,7 +975,7 @@ func TestRuntimeCapabilityConstructorsAndAggregatesStayExplicit(t *testing.T) {
 						}
 						return true
 					})
-					if ast.IsExported(receiver) && receiver != owner {
+					if ast.IsExported(receiver) && receiver != owner && !(typed.Name.Name == "ListThreadTurns" && receiver == "SubAgentReadHost") {
 						t.Fatalf("runtime authority method %s receiver = %s, want %s", typed.Name.Name, receiver, owner)
 					}
 				}
@@ -1074,6 +1078,52 @@ func TestObservationPublicAPIDoesNotExposeCompactionInternals(t *testing.T) {
 	} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("observation public API exposes compaction internal %q", forbidden)
+		}
+	}
+}
+
+func TestRuntimeThreadDetailCompactionExposesOnlySanitizedLifecycle(t *testing.T) {
+	typ := reflect.TypeOf(floretRuntime.ThreadDetailCompaction{})
+	want := []string{
+		"OperationID", "RequestID", "Source", "Trigger", "Reason", "Phase",
+		"TokensBefore", "TokensAfterEstimate", "Metadata",
+	}
+	got := make([]string, 0, typ.NumField())
+	for index := 0; index < typ.NumField(); index++ {
+		got = append(got, typ.Field(index).Name)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("runtime ThreadDetailCompaction fields=%v, want %v", got, want)
+	}
+}
+
+func TestRuntimeTurnReadModelsKeepJournalNavigationOpaque(t *testing.T) {
+	retryType := reflect.TypeOf(floretRuntime.ThreadTurnRetrySource{})
+	if retryType.NumField() != 1 || retryType.Field(0).Name != "TurnID" {
+		t.Fatalf("runtime retry source fields are not turn-only: %v", retryType)
+	}
+	cursorType := reflect.TypeOf(floretRuntime.ThreadTurnCursor(""))
+	requestType := reflect.TypeOf(floretRuntime.ListThreadTurnsRequest{})
+	pageType := reflect.TypeOf(floretRuntime.ThreadTurnsPage{})
+	for _, field := range []struct {
+		typ  reflect.Type
+		name string
+		want reflect.Type
+	}{
+		{requestType, "BeforeCursor", reflect.PointerTo(cursorType)},
+		{requestType, "SinceCursor", reflect.PointerTo(cursorType)},
+		{pageType, "BeforeCursor", reflect.PointerTo(cursorType)},
+		{pageType, "SinceCursor", cursorType},
+	} {
+		got, ok := field.typ.FieldByName(field.name)
+		if !ok || got.Type != field.want {
+			t.Fatalf("%s.%s type=%v found=%v, want %v", field.typ.Name(), field.name, got.Type, ok, field.want)
+		}
+	}
+	source := readTextFile(t, filepath.Join("runtime", "thread_turns.go"))
+	for _, forbidden := range []string{"ThreadTurnsBeforeCursor", "ThreadTurnsSinceCursor"} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("runtime turn reads expose removed cursor contract %q", forbidden)
 		}
 	}
 }

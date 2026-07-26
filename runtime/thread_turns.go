@@ -1,9 +1,13 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -80,32 +84,31 @@ const (
 	maxThreadTurnsLimit     = 200
 )
 
-var ErrStaleThreadTurnCursor = errors.New("floret thread turn cursor is stale")
+var (
+	ErrInvalidThreadTurnCursor = errors.New("floret thread turn cursor is invalid")
+	ErrStaleThreadTurnCursor   = errors.New("floret thread turn cursor is stale")
+)
 
-type ThreadTurnsBeforeCursor struct {
-	EntryID string `json:"entry_id"`
-}
-
-type ThreadTurnsSinceCursor struct {
-	EntryID string `json:"entry_id,omitempty"`
-}
+// ThreadTurnCursor is an opaque position in one thread's canonical turn path.
+// Hosts may persist and compare the token, but must not parse or modify it.
+type ThreadTurnCursor string
 
 type ListThreadTurnsRequest struct {
-	ThreadID     ThreadID                 `json:"thread_id"`
-	BeforeCursor *ThreadTurnsBeforeCursor `json:"before_cursor,omitempty"`
-	SinceCursor  *ThreadTurnsSinceCursor  `json:"since_cursor,omitempty"`
-	Tail         int                      `json:"tail,omitempty"`
-	Limit        int                      `json:"limit,omitempty"`
+	ThreadID     ThreadID          `json:"thread_id"`
+	BeforeCursor *ThreadTurnCursor `json:"before_cursor,omitempty"`
+	SinceCursor  *ThreadTurnCursor `json:"since_cursor,omitempty"`
+	Tail         int               `json:"tail,omitempty"`
+	Limit        int               `json:"limit,omitempty"`
 }
 
 type ThreadTurnsPage struct {
-	ThreadID       ThreadID                 `json:"thread_id"`
-	Turns          []ThreadTurnSnapshot     `json:"turns"`
-	BeforeCursor   *ThreadTurnsBeforeCursor `json:"before_cursor,omitempty"`
-	SinceCursor    ThreadTurnsSinceCursor   `json:"since_cursor"`
-	HasMore        bool                     `json:"has_more,omitempty"`
-	ThroughOrdinal int64                    `json:"through_ordinal"`
-	GeneratedAt    time.Time                `json:"generated_at"`
+	ThreadID       ThreadID             `json:"thread_id"`
+	Turns          []ThreadTurnSnapshot `json:"turns"`
+	BeforeCursor   *ThreadTurnCursor    `json:"before_cursor,omitempty"`
+	SinceCursor    ThreadTurnCursor     `json:"since_cursor"`
+	HasMore        bool                 `json:"has_more,omitempty"`
+	ThroughOrdinal int64                `json:"through_ordinal"`
+	GeneratedAt    time.Time            `json:"generated_at"`
 }
 
 type ThreadOverview struct {
@@ -114,11 +117,13 @@ type ThreadOverview struct {
 }
 
 type ThreadTurnSnapshot struct {
-	TurnID          TurnID                 `json:"turn_id"`
-	RunID           RunID                  `json:"run_id"`
-	Ordinal         int64                  `json:"ordinal"`
-	StartedAt       time.Time              `json:"started_at"`
-	UpdatedAt       time.Time              `json:"updated_at"`
+	TurnID    TurnID    `json:"turn_id"`
+	RunID     RunID     `json:"run_id"`
+	Ordinal   int64     `json:"ordinal"`
+	StartedAt time.Time `json:"started_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	// UserEntryID is the opaque identity of the admitted canonical user Entry.
+	// It is a presentation anchor, not authorization or a storage access handle.
 	UserEntryID     string                 `json:"user_entry_id,omitempty"`
 	UserInput       string                 `json:"user_input,omitempty"`
 	UserAttachments []MessageAttachment    `json:"user_attachments,omitempty"`
@@ -134,8 +139,23 @@ type ThreadTurnSnapshot struct {
 }
 
 type ThreadTurnRetrySource struct {
-	TurnID  TurnID `json:"turn_id"`
-	EntryID string `json:"entry_id"`
+	// TurnID is the canonical source turn. Its internal journal anchor remains
+	// private to Floret.
+	TurnID TurnID `json:"turn_id"`
+}
+
+const threadTurnCursorVersion = 1
+
+const (
+	threadTurnCursorModeBefore = "before"
+	threadTurnCursorModeSince  = "since"
+)
+
+type threadTurnCursorPayload struct {
+	Version  int    `json:"version"`
+	ThreadID string `json:"thread_id"`
+	Mode     string `json:"mode"`
+	EntryID  string `json:"entry_id"`
 }
 
 type ThreadControlSignal struct {
@@ -159,6 +179,26 @@ func (h *ThreadReadHost) ListThreadTurns(ctx context.Context, req ListThreadTurn
 	defer done()
 	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, req.ThreadID, "thread read host"); err != nil {
 		return ThreadTurnsPage{}, err
+	}
+	return listThreadTurns(ctx, h.harness, req)
+}
+
+// ListThreadTurns returns canonical typed turns for one complete descendant of
+// the parent bound to this read host.
+func (h *SubAgentReadHost) ListThreadTurns(ctx context.Context, req ListThreadTurnsRequest) (ThreadTurnsPage, error) {
+	if h == nil {
+		return ThreadTurnsPage{}, errors.New("subagent read host is required")
+	}
+	done, err := beginHostOperation(h.store)
+	if err != nil {
+		return ThreadTurnsPage{}, err
+	}
+	defer done()
+	if h.harness == nil || strings.TrimSpace(string(h.parentThreadID)) == "" {
+		return ThreadTurnsPage{}, errors.New("subagent read host is invalid")
+	}
+	if err := h.harness.ValidateSubAgentDescendantAuthority(ctx, string(h.parentThreadID), string(req.ThreadID)); err != nil {
+		return ThreadTurnsPage{}, runtimeHostError(err)
 	}
 	return listThreadTurns(ctx, h.harness, req)
 }
@@ -268,15 +308,9 @@ func listThreadTurns(ctx context.Context, harness *agentharness.AgentHarness, re
 	modes := 0
 	if req.BeforeCursor != nil {
 		modes++
-		if strings.TrimSpace(req.BeforeCursor.EntryID) == "" {
-			return ThreadTurnsPage{}, errors.New("thread turn before cursor requires entry identity")
-		}
 	}
 	if req.SinceCursor != nil {
 		modes++
-		if strings.TrimSpace(req.SinceCursor.EntryID) == "" {
-			return ThreadTurnsPage{}, errors.New("thread turn since cursor requires entry identity")
-		}
 	}
 	if req.Tail > 0 {
 		modes++
@@ -308,11 +342,19 @@ func listThreadTurns(ctx context.Context, harness *agentharness.AgentHarness, re
 	}
 	var beforeCursor *sessiontree.CanonicalTurnBeforeCursor
 	if req.BeforeCursor != nil {
-		beforeCursor = &sessiontree.CanonicalTurnBeforeCursor{EntryID: strings.TrimSpace(req.BeforeCursor.EntryID)}
+		payload, err := decodeThreadTurnCursor(*req.BeforeCursor, req.ThreadID, threadTurnCursorModeBefore)
+		if err != nil {
+			return ThreadTurnsPage{}, err
+		}
+		beforeCursor = &sessiontree.CanonicalTurnBeforeCursor{EntryID: payload.EntryID}
 	}
 	var sinceCursor *sessiontree.CanonicalTurnSinceCursor
 	if req.SinceCursor != nil {
-		sinceCursor = &sessiontree.CanonicalTurnSinceCursor{EntryID: strings.TrimSpace(req.SinceCursor.EntryID)}
+		payload, err := decodeThreadTurnCursor(*req.SinceCursor, req.ThreadID, threadTurnCursorModeSince)
+		if err != nil {
+			return ThreadTurnsPage{}, err
+		}
+		sinceCursor = &sessiontree.CanonicalTurnSinceCursor{EntryID: payload.EntryID}
 	}
 	detailPage, err := harness.ListCanonicalTurnDetailEvents(ctx, sessiontree.ListCanonicalTurnsOptions{
 		ThreadID: string(req.ThreadID), BeforeCursor: beforeCursor, SinceCursor: sinceCursor, Tail: tail, Limit: canonicalLimit,
@@ -343,15 +385,71 @@ func listThreadTurns(ctx context.Context, harness *agentharness.AgentHarness, re
 	page := ThreadTurnsPage{
 		ThreadID:       req.ThreadID,
 		Turns:          turns,
-		SinceCursor:    ThreadTurnsSinceCursor{EntryID: detailPage.SinceCursor.EntryID},
 		HasMore:        detailPage.HasMore,
 		ThroughOrdinal: detailPage.ThroughOrdinal,
 		GeneratedAt:    detailPage.GeneratedAt,
 	}
+	if strings.TrimSpace(detailPage.SinceCursor.EntryID) != "" {
+		encoded, err := encodeThreadTurnCursor(req.ThreadID, threadTurnCursorModeSince, detailPage.SinceCursor.EntryID)
+		if err != nil {
+			return ThreadTurnsPage{}, err
+		}
+		page.SinceCursor = encoded
+	}
 	if detailPage.BeforeCursor != nil {
-		page.BeforeCursor = &ThreadTurnsBeforeCursor{EntryID: detailPage.BeforeCursor.EntryID}
+		encoded, err := encodeThreadTurnCursor(req.ThreadID, threadTurnCursorModeBefore, detailPage.BeforeCursor.EntryID)
+		if err != nil {
+			return ThreadTurnsPage{}, err
+		}
+		page.BeforeCursor = &encoded
 	}
 	return page, nil
+}
+
+func encodeThreadTurnCursor(threadID ThreadID, mode, entryID string) (ThreadTurnCursor, error) {
+	payload := threadTurnCursorPayload{
+		Version:  threadTurnCursorVersion,
+		ThreadID: strings.TrimSpace(string(threadID)),
+		Mode:     mode,
+		EntryID:  strings.TrimSpace(entryID),
+	}
+	if payload.ThreadID == "" || payload.ThreadID != string(threadID) ||
+		(mode != threadTurnCursorModeBefore && mode != threadTurnCursorModeSince) || payload.EntryID == "" || payload.EntryID != entryID {
+		return "", fmt.Errorf("%w: cursor payload is incomplete", ErrAuthorityCorrupt)
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("%w: encode thread turn cursor: %v", ErrAuthorityCorrupt, err)
+	}
+	return ThreadTurnCursor(base64.RawURLEncoding.EncodeToString(raw)), nil
+}
+
+func decodeThreadTurnCursor(cursor ThreadTurnCursor, threadID ThreadID, mode string) (threadTurnCursorPayload, error) {
+	rawCursor := string(cursor)
+	if strings.TrimSpace(rawCursor) == "" || rawCursor != strings.TrimSpace(rawCursor) {
+		return threadTurnCursorPayload{}, fmt.Errorf("%w: cursor token is required", ErrInvalidThreadTurnCursor)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(rawCursor)
+	if err != nil {
+		return threadTurnCursorPayload{}, fmt.Errorf("%w: malformed token", ErrInvalidThreadTurnCursor)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var payload threadTurnCursorPayload
+	if err := decoder.Decode(&payload); err != nil {
+		return threadTurnCursorPayload{}, fmt.Errorf("%w: malformed payload", ErrInvalidThreadTurnCursor)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return threadTurnCursorPayload{}, fmt.Errorf("%w: trailing payload", ErrInvalidThreadTurnCursor)
+	}
+	expectedThreadID := strings.TrimSpace(string(threadID))
+	if expectedThreadID == "" || expectedThreadID != string(threadID) || payload.Version != threadTurnCursorVersion ||
+		payload.ThreadID != expectedThreadID || payload.Mode != mode ||
+		(mode != threadTurnCursorModeBefore && mode != threadTurnCursorModeSince) ||
+		strings.TrimSpace(payload.EntryID) == "" || payload.EntryID != strings.TrimSpace(payload.EntryID) {
+		return threadTurnCursorPayload{}, fmt.Errorf("%w: cursor scope does not match request", ErrInvalidThreadTurnCursor)
+	}
+	return payload, nil
 }
 
 func projectCanonicalThreadTurnSnapshot(threadID ThreadID, detail agentharness.CanonicalTurnDetail) (ThreadTurnSnapshot, error) {
@@ -363,18 +461,18 @@ func projectCanonicalThreadTurnSnapshot(threadID ThreadID, detail agentharness.C
 		return ThreadTurnSnapshot{}, fmt.Errorf("%w: canonical turn %q has an invalid started identity", ErrAuthorityCorrupt, detail.TurnID)
 	}
 	userEntryID, userInput, userAttachments, userReferences := canonicalTurnUserInput(events, turnID)
-	retrySource, err := threadTurnRetrySource(events, turnID)
+	retryAuthority, err := readThreadTurnRetryAuthority(events, turnID)
 	if err != nil {
 		return ThreadTurnSnapshot{}, err
 	}
-	detailRetrySource := runtimeCanonicalTurnRetrySource(detail.RetrySource)
-	if !sameThreadTurnRetrySource(retrySource, detailRetrySource) {
+	detailRetryAuthority := runtimeCanonicalTurnRetryAuthority(detail.RetrySource)
+	if !sameThreadTurnRetryAuthority(retryAuthority, detailRetryAuthority) {
 		return ThreadTurnSnapshot{}, fmt.Errorf("%w: canonical turn %q retry source is inconsistent", ErrAuthorityCorrupt, turnID)
 	}
-	if retrySource == nil && strings.TrimSpace(userEntryID) == "" {
+	if retryAuthority == nil && strings.TrimSpace(userEntryID) == "" {
 		return ThreadTurnSnapshot{}, fmt.Errorf("%w: canonical turn %q has no user admission", ErrAuthorityCorrupt, turnID)
 	}
-	if retrySource != nil && strings.TrimSpace(userEntryID) != "" {
+	if retryAuthority != nil && strings.TrimSpace(userEntryID) != "" {
 		return ThreadTurnSnapshot{}, fmt.Errorf("%w: retry turn %q duplicated its source user admission", ErrAuthorityCorrupt, turnID)
 	}
 	projection := ProjectThreadTurn(ProjectThreadTurnRequest{
@@ -397,7 +495,7 @@ func projectCanonicalThreadTurnSnapshot(threadID ThreadID, detail agentharness.C
 		UserInput:       userInput,
 		UserAttachments: userAttachments,
 		UserReferences:  userReferences,
-		RetrySource:     retrySource,
+		RetrySource:     publicThreadTurnRetrySource(retryAuthority),
 		Status:          projection.Status,
 		Failure:         canonicalTurnFailure(events),
 		Projection:      projection,
@@ -454,14 +552,14 @@ func projectThreadTurnSnapshots(threadID ThreadID, events []ThreadDetailEvent) (
 			return nil, 0, fmt.Errorf("turn %q has an invalid started marker", turnID)
 		}
 		userEntryID, userInput, userAttachments, userReferences := canonicalTurnUserInput(events, turnID)
-		retrySource, err := threadTurnRetrySource(turnEvents, turnID)
+		retryAuthority, err := readThreadTurnRetryAuthority(turnEvents, turnID)
 		if err != nil {
 			return nil, 0, err
 		}
-		if retrySource == nil && strings.TrimSpace(userEntryID) == "" {
+		if retryAuthority == nil && strings.TrimSpace(userEntryID) == "" {
 			return nil, 0, fmt.Errorf("%w: canonical turn %q has no user admission", ErrAuthorityCorrupt, turnID)
 		}
-		if retrySource != nil && strings.TrimSpace(userEntryID) != "" {
+		if retryAuthority != nil && strings.TrimSpace(userEntryID) != "" {
 			return nil, 0, fmt.Errorf("%w: retry turn %q duplicated its source user admission", ErrAuthorityCorrupt, turnID)
 		}
 		projection := ProjectThreadTurn(ProjectThreadTurnRequest{
@@ -484,7 +582,7 @@ func projectThreadTurnSnapshots(threadID ThreadID, events []ThreadDetailEvent) (
 			UserInput:       userInput,
 			UserAttachments: userAttachments,
 			UserReferences:  userReferences,
-			RetrySource:     retrySource,
+			RetrySource:     publicThreadTurnRetrySource(retryAuthority),
 			Status:          projection.Status,
 			Failure:         canonicalTurnFailure(turnEvents),
 			Projection:      projection,
@@ -500,7 +598,12 @@ func projectThreadTurnSnapshots(threadID ThreadID, events []ThreadDetailEvent) (
 	return turns, through, nil
 }
 
-func threadTurnRetrySource(events []ThreadDetailEvent, turnID TurnID) (*ThreadTurnRetrySource, error) {
+type threadTurnRetryAuthority struct {
+	TurnID  TurnID
+	EntryID string
+}
+
+func readThreadTurnRetryAuthority(events []ThreadDetailEvent, turnID TurnID) (*threadTurnRetryAuthority, error) {
 	for _, event := range events {
 		if event.TurnID != turnID || event.TurnMarker == nil || event.TurnMarker.Status != string(sessiontree.TurnStarted) {
 			continue
@@ -515,23 +618,30 @@ func threadTurnRetrySource(events []ThreadDetailEvent, turnID TurnID) (*ThreadTu
 		if sourceTurnID == "" || sourceEntryID == "" || rawTurnID != sourceTurnID || rawEntryID != sourceEntryID || TurnID(sourceTurnID) == turnID {
 			return nil, fmt.Errorf("%w: canonical turn %q has an invalid retry source", ErrAuthorityCorrupt, turnID)
 		}
-		return &ThreadTurnRetrySource{TurnID: TurnID(sourceTurnID), EntryID: sourceEntryID}, nil
+		return &threadTurnRetryAuthority{TurnID: TurnID(sourceTurnID), EntryID: sourceEntryID}, nil
 	}
 	return nil, fmt.Errorf("%w: canonical turn %q has no started marker", ErrAuthorityCorrupt, turnID)
 }
 
-func runtimeCanonicalTurnRetrySource(source *sessiontree.CanonicalTurnRetrySource) *ThreadTurnRetrySource {
+func runtimeCanonicalTurnRetryAuthority(source *sessiontree.CanonicalTurnRetrySource) *threadTurnRetryAuthority {
 	if source == nil {
 		return nil
 	}
-	return &ThreadTurnRetrySource{TurnID: TurnID(source.TurnID), EntryID: source.EntryID}
+	return &threadTurnRetryAuthority{TurnID: TurnID(source.TurnID), EntryID: source.EntryID}
 }
 
-func sameThreadTurnRetrySource(first, second *ThreadTurnRetrySource) bool {
+func sameThreadTurnRetryAuthority(first, second *threadTurnRetryAuthority) bool {
 	if first == nil || second == nil {
 		return first == nil && second == nil
 	}
 	return first.TurnID == second.TurnID && first.EntryID == second.EntryID
+}
+
+func publicThreadTurnRetrySource(source *threadTurnRetryAuthority) *ThreadTurnRetrySource {
+	if source == nil {
+		return nil
+	}
+	return &ThreadTurnRetrySource{TurnID: source.TurnID}
 }
 
 func canonicalTurnStatus(status TurnStatus, failure *ThreadTurnFailure) TurnStatus {

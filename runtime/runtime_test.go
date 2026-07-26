@@ -51,6 +51,7 @@ type testMaintenanceFacade struct {
 
 type testCapabilitySet struct {
 	create       *ThreadCreateHostBinder
+	inventory    *ThreadInventoryHost
 	read         *ThreadReadHostBinder
 	title        *ThreadTitleHostBinder
 	fork         *ThreadForkHostBinder
@@ -82,6 +83,9 @@ func mustTestCapabilities(t *testing.T, store *Store) *testCapabilitySet {
 			return err
 		}
 		if set.read, err = NewThreadReadHostBinder(bootstrap); err != nil {
+			return err
+		}
+		if set.inventory, err = NewThreadInventoryHost(bootstrap); err != nil {
 			return err
 		}
 		if set.title, err = NewThreadTitleHostBinder(bootstrap); err != nil {
@@ -7799,6 +7803,7 @@ func TestThreadCapabilityHostsRequireBootstrapAuthority(t *testing.T) {
 	}{
 		{name: "create", call: func() error { _, err := NewThreadCreateHostBinder(nil); return err }},
 		{name: "read", call: func() error { _, err := NewThreadReadHostBinder(nil); return err }},
+		{name: "inventory", call: func() error { _, err := NewThreadInventoryHost(nil); return err }},
 		{name: "title", call: func() error { _, err := NewThreadTitleHostBinder(nil); return err }},
 		{name: "fork", call: func() error { _, err := NewThreadForkHostBinder(nil); return err }},
 		{name: "delete", call: func() error { _, err := NewThreadDeleteHostBinder(nil); return err }},

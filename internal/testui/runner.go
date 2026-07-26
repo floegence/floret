@@ -2204,12 +2204,12 @@ func readAllTestUIThreadTurns(ctx context.Context, read *flruntime.ThreadReadHos
 		return nil, err
 	}
 	turns := append([]flruntime.ThreadTurnSnapshot(nil), page.Turns...)
-	previousCursor := ""
+	var previousCursor flruntime.ThreadTurnCursor
 	for page.HasMore {
-		if page.BeforeCursor == nil || strings.TrimSpace(page.BeforeCursor.EntryID) == "" || page.BeforeCursor.EntryID == previousCursor {
+		if page.BeforeCursor == nil || strings.TrimSpace(string(*page.BeforeCursor)) == "" || *page.BeforeCursor == previousCursor {
 			return nil, fmt.Errorf("thread turn pagination did not advance before cursor %q", previousCursor)
 		}
-		previousCursor = page.BeforeCursor.EntryID
+		previousCursor = *page.BeforeCursor
 		page, err = read.ListThreadTurns(ctx, flruntime.ListThreadTurnsRequest{
 			ThreadID:     flruntime.ThreadID(threadID),
 			BeforeCursor: page.BeforeCursor,

@@ -28,6 +28,10 @@ results; downstream hosts must not import internal storage contracts.
 Runtime constructors return concrete capability pointers. Interface ownership
 stays with the caller, which declares the smallest capability set needed by
 each responsibility instead of inheriting a framework interface.
+Public query cursors are opaque tokens scoped to their domain and mode. A host
+may retain and return them, but storage anchors, retry entry authority, and
+compaction window topology remain internal. Canonical `UserEntryID` is retained
+only as an opaque presentation anchor and never grants Store access.
 
 Progressive disclosure is implemented through safe single-family constructors
 and host-owned generated composition, not a public `Client`, `App`, or aggregate
@@ -62,6 +66,13 @@ request keeps its explicit identity and fails on a mismatch. This makes
 canonical Agent lifecycle ownership visible in method
 sets and authority identities instead of relying on a downstream caller to
 ignore methods on a shared Store or facade.
+
+The one store-wide read exception is `ThreadInventoryHost`, constructed and
+retained only by the composition owner. It exposes bounded canonical root
+discovery for startup recovery and reconciliation, never product visibility or
+run authority. Parent-bound `SubAgentReadHost.ListThreadTurns` uses the same
+typed read model as roots after complete descendant validation; detail events
+remain a separate diagnostic and audit surface.
 
 Recovery discovery also stays a Floret fact. Public read capabilities expose
 complete typed canonical pending settlement targets for a root or one directly

@@ -2516,20 +2516,21 @@ func TestRunnerAgentSessionCompactionIsVisibleInActiveContextAndRawSegments(t *t
 	if result.Metrics.Compactions != 1 || result.Session.Compactions != 1 {
 		t.Fatalf("compaction metrics result=%#v session=%#v", result.Metrics, result.Session)
 	}
-	if !slices.ContainsFunc(result.Observation.ActiveContext, func(msg ObservedSessionMessage) bool {
-		return msg.Kind == "compaction_summary" && msg.CompactionID != ""
-	}) {
-		t.Fatalf("active context missing structured compaction summary: %#v", result.Observation.ActiveContext)
-	}
 	var compactionEntry ObservedSessionEntry
 	if !slices.ContainsFunc(result.Observation.PathEntries, func(entry ObservedSessionEntry) bool {
-		if entry.Type == "compaction" && entry.CompactionID != "" && entry.CompactionGeneration > 0 && len(entry.KeptUserEntryIDs) > 0 {
+		if entry.Type == "compaction" {
 			compactionEntry = entry
 			return true
 		}
 		return false
 	}) {
-		t.Fatalf("path entries missing compaction metadata: %#v", result.Observation.PathEntries)
+		t.Fatalf("path entries missing sanitized compaction lifecycle: %#v", result.Observation.PathEntries)
+	}
+	if compactionEntry.CompactionID != "" || compactionEntry.PreviousCompactionID != "" ||
+		compactionEntry.CompactedThroughEntryID != "" || compactionEntry.SummarySchemaVersion != "" ||
+		compactionEntry.CompactionGeneration != 0 || compactionEntry.CompactionWindowID != "" ||
+		compactionEntry.FirstKeptEntryID != "" || len(compactionEntry.KeptUserEntryIDs) != 0 || compactionEntry.Summary != "" {
+		t.Fatalf("public detail exposed internal compaction projection state: %#v", compactionEntry)
 	}
 	if len(result.Observation.ProviderRequests) == 0 || !slices.ContainsFunc(result.Observation.ProviderRequests, func(request ObservedProviderRequest) bool {
 		return slices.ContainsFunc(request.Messages, func(message ObservedSessionMessage) bool {

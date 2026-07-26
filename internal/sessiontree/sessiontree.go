@@ -428,6 +428,7 @@ type ThreadListRepo interface {
 
 type ListThreadsOptions struct {
 	IncludeArchived bool
+	RootOnly        bool
 	Limit           int
 	AfterCreatedAt  time.Time
 	AfterID         string
@@ -470,6 +471,9 @@ func ApplyThreadListOptions(threads []ThreadMeta, opts ListThreadsOptions) []Thr
 	out := threads[:0]
 	for _, meta := range threads {
 		if meta.Archived && !opts.IncludeArchived {
+			continue
+		}
+		if opts.RootOnly && strings.TrimSpace(meta.ParentThreadID) != "" {
 			continue
 		}
 		if !threadAfterListCursor(meta, opts) {

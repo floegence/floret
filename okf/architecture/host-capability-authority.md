@@ -29,6 +29,13 @@ host may hold unadmitted input and product policy, but it cannot persist a secon
 title, turn/run lifecycle, approval queue, failure, retry mapping, or admitted
 message-reference record.
 
+The v0.29 amendment closes the read/discovery boundary without adding a durable
+state transition. Public turn cursors are opaque thread/mode-bound tokens,
+retry projection exposes only source `TurnID`, parent-bound child reads reuse
+the typed root turn model, and a composition-only `ThreadInventoryHost` lists
+canonical roots for recovery discovery. The inventory host cannot enter a run
+and carries no product visibility or routing authority.
+
 # Boundary
 
 Floret owns admitted Agent state. A downstream host owns product settings,
@@ -597,6 +604,7 @@ Public capability types have no exported methods beyond this list:
 | `HostBootstrap` | none |
 | `ThreadCreateHostBinder` | `Bind` |
 | `ThreadReadHostBinder` | `NewHost` |
+| `ThreadInventoryHost` | `ListRootThreads` |
 | `ThreadTitleHostBinder` | `NewHost` |
 | `ThreadForkHostBinder` | `NewHost` |
 | `ThreadDeleteHostBinder` | `NewHost` |
@@ -618,13 +626,18 @@ Public capability types have no exported methods beyond this list:
 | `TurnExecutionHost` | `RunTurn`, `RetryTurn`, `CompletePendingTool`, `SettlePendingTool`, `ReadApprovalQueue`, `ResolveApproval`, `UpdateThreadAgentTodos` |
 | `ThreadCompactionHost` | `CompactThread` |
 | `SubAgentHost` | `SpawnSubAgent`, `SendSubAgentInput`, `PublishPendingToolCompletion`, `WaitSubAgents`, `SettlePendingTool`, `CloseSubAgent` |
-| `SubAgentReadHost` | `ListSubAgents`, `ReadSubAgentDetail`, `ListSubAgentActivityTimeline`, `ReadArtifact` |
+| `SubAgentReadHost` | `ListSubAgents`, `ListThreadTurns`, `ReadSubAgentDetail`, `ListSubAgentActivityTimeline`, `ReadArtifact` |
 | `PendingToolRecoveryHost` | `SettlePendingTool` |
 | `InterruptedTurnRecoveryHost` | `RecoverInterruptedTurn` |
 | `EffectAuthorizationGate` | `Dispatch` |
 
 No aggregate capability bundle, conversion method, raw Store accessor, generic
 thread host, unbound create handle, or method alias is public.
+
+`ThreadInventoryHost` is the only store-wide discovery capability. It is issued
+directly during composition, lists only canonical non-archived roots, and never
+enters a normal run or carries product visibility and routing policy. Its page
+cursor is opaque to hosts. Root filtering occurs before the bounded page limit.
 
 # Storage Authority Kernel
 

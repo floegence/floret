@@ -2006,6 +2006,14 @@ func (h *AgentHarness) ValidateSubAgentAuthority(ctx context.Context, parentThre
 	return err
 }
 
+func (h *AgentHarness) ValidateSubAgentDescendantAuthority(ctx context.Context, parentThreadID, childThreadID string) error {
+	if h == nil {
+		return errors.New("agent harness is nil")
+	}
+	_, err := h.resolveSubAgentDescendantMeta(ctx, parentThreadID, childThreadID)
+	return err
+}
+
 func (h *AgentHarness) CloseSubAgent(ctx context.Context, opts CloseSubAgentOptions) (SubAgentSnapshot, error) {
 	meta, err := h.resolveSubAgentMeta(ctx, opts.ParentThreadID, opts.ChildThreadID)
 	if err != nil {

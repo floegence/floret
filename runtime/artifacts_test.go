@@ -80,6 +80,8 @@ func TestSubAgentReadRebindsClosedParentsAndReadsAnyDescendant(t *testing.T) {
 	}
 	publishTestSubAgentFixture(t, ctx, store, "publish-child", "parent", "child", "")
 	publishTestSubAgentFixture(t, ctx, store, "publish-grandchild", "child", "grandchild", "")
+	completeTestSubAgentFixture(t, ctx, store, "parent", "child")
+	completeTestSubAgentFixture(t, ctx, store, "child", "grandchild")
 
 	rootRead, err := capabilities.subAgentRead.NewHost(ctx, "parent")
 	if err != nil {
@@ -87,6 +89,17 @@ func TestSubAgentReadRebindsClosedParentsAndReadsAnyDescendant(t *testing.T) {
 	}
 	if detail, err := rootRead.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "grandchild"}); err != nil || detail.Snapshot.ThreadID != "grandchild" {
 		t.Fatalf("open descendant detail=%#v err=%v", detail, err)
+	}
+	for _, threadID := range []ThreadID{"child", "grandchild"} {
+		page, err := rootRead.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: threadID, Tail: 1})
+		if err != nil || len(page.Turns) != 1 || page.Turns[0].TurnID != TurnID("fixture-turn:"+string(threadID)) {
+			t.Fatalf("typed descendant turns thread=%q page=%#v err=%v", threadID, page, err)
+		}
+	}
+	for _, threadID := range []ThreadID{"parent", "missing"} {
+		if page, err := rootRead.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: threadID, Tail: 1}); !errors.Is(err, ErrSubAgentNotFound) || !reflect.DeepEqual(page, ThreadTurnsPage{}) {
+			t.Fatalf("invalid descendant turns thread=%q page=%#v err=%v", threadID, page, err)
+		}
 	}
 
 	closeRepo := store.repo.(sessiontree.SubAgentCloseAuthorityRepo)
@@ -113,5 +126,8 @@ func TestSubAgentReadRebindsClosedParentsAndReadsAnyDescendant(t *testing.T) {
 	}
 	if detail, err := rootRead.ReadSubAgentDetail(ctx, ReadSubAgentDetailRequest{ParentThreadID: "parent", ChildThreadID: "grandchild"}); err != nil || detail.Snapshot.ThreadID != "grandchild" {
 		t.Fatalf("closed deep descendant detail=%#v err=%v", detail, err)
+	}
+	if page, err := rootRead.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "grandchild", Tail: 1}); err != nil || len(page.Turns) != 1 {
+		t.Fatalf("closed deep descendant turns=%#v err=%v", page, err)
 	}
 }

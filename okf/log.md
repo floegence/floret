@@ -1,6 +1,15 @@
 # Floret OKF Update Log
 
 ## 2026-07-26
+* **Breaking read boundary**: Replaced public entry-shaped turn cursors with
+  versioned opaque thread/mode-bound tokens and reduced public retry source to
+  `TurnID`; exact entry anchors remain validated inside the journal authority.
+* **Canonical discovery**: Added a composition-only paginated root-thread
+  inventory over validated `ThreadSummary` values and added parent-bound typed
+  turn pages for direct and deep SubAgent descendants.
+* **Detail boundary**: Removed compaction window, generation, entry-anchor, and
+  raw summary internals from public detail events while retaining sanitized
+  lifecycle facts. Canonical `UserEntryID` remains an opaque presentation anchor.
 * **Public read validation**: Added finite thread-title status and source
   vocabulary plus public thread snapshot and summary validation. The v0 fields
   remain strings for downstream source compatibility while unknown or

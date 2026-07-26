@@ -220,6 +220,13 @@ methods for `write_todos` state. A host may keep product metadata and commands
 that Floret has not admitted yet, but it must not copy these Agent facts into a
 second conversation or run database.
 
+Turn-page cursors are opaque, thread- and direction-bound tokens. Hosts return
+them unchanged and never interpret journal positions. A composition owner may
+retain `ThreadInventoryHost` to discover canonical root threads for startup
+reconciliation; product visibility, routing, pinning, and ordering remain in the
+host. Parent-bound `SubAgentReadHost.ListThreadTurns` uses the same typed turn
+page as root history, while detail events remain a separate diagnostic surface.
+
 ## Production Shape
 
 ### Let prompts carry product intent
