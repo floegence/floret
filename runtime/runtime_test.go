@@ -548,6 +548,14 @@ func (f *testMaintenanceFacade) ReadLatestThreadTurn(ctx context.Context, thread
 	return host.ReadLatestThreadTurn(ctx, threadID)
 }
 
+func (f *testMaintenanceFacade) ReadThreadTurn(ctx context.Context, req ReadThreadTurnRequest) (ThreadTurnSnapshot, error) {
+	host, err := f.readHost(ctx, req.ThreadID)
+	if err != nil {
+		return ThreadTurnSnapshot{}, err
+	}
+	return host.ReadThreadTurn(ctx, req)
+}
+
 func (f *testMaintenanceFacade) ReadThreadContext(ctx context.Context, threadID ThreadID) (ThreadContextSnapshot, error) {
 	host, err := f.readHost(ctx, threadID)
 	if err != nil {
@@ -7871,6 +7879,9 @@ func TestListThreadTurnsPagesCanonicalTimeline(t *testing.T) {
 			if all.Turns[2].Status != TurnStatusFailed || all.Turns[2].Failure == nil ||
 				all.Turns[2].Failure.Code != ThreadTurnFailureProvider || all.Turns[2].Failure.Message != "canonical failure" {
 				t.Fatalf("failed turn = %#v", all.Turns[2])
+			}
+			for _, listed := range all.Turns {
+				assertExactThreadTurnMatchesListed(t, ctx, maintenance, "thread", listed)
 			}
 			tail, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", Tail: 2})
 			if err != nil || len(tail.Turns) != 2 || tail.Turns[0].TurnID != "turn-3" || tail.Turns[1].TurnID != "turn-4" || !tail.HasMore {

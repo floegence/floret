@@ -54,6 +54,55 @@ for profile in memory durable-basic approval production-recovery subagent; do
     --dir "${root}/consumer/generated/${profile}" \
     --write
 done
+cat >exact_read_surface_test.go <<'EOF'
+package adoption_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/floegence/floret/florettest"
+	"github.com/floegence/floret/runtime"
+)
+
+func TestCandidateExactReadSurface(t *testing.T) {
+	ctx := context.Background()
+	store := runtime.NewMemoryStore()
+	defer store.Close()
+	if _, err := florettest.PopulateStoreFixture(ctx, store, florettest.StoreFixtureInput{
+		ThreadID: "candidate-thread", CreateIntentID: "candidate-create",
+		Turns: []florettest.StoreFixtureTurn{{
+			Request: runtime.RunTurnRequest{TurnID: "candidate-turn", RunID: "candidate-run", Input: runtime.TurnInput{Text: "candidate"}},
+			ModelSteps: []florettest.ModelStep{{Events: []runtime.ModelEvent{{Type: runtime.ModelEventDelta, Text: "ok"}, {Type: runtime.ModelEventDone, Reason: "stop"}}}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var reader *runtime.ThreadReadHost
+	if err := runtime.ConfigureHostCapabilities(store, func(bootstrap *runtime.HostBootstrap) error {
+		binder, err := runtime.NewThreadReadHostBinder(bootstrap)
+		if err != nil {
+			return err
+		}
+		reader, err = binder.NewHost(ctx, "candidate-thread")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	turn, err := reader.ReadThreadTurn(ctx, runtime.ReadThreadTurnRequest{ThreadID: "candidate-thread", TurnID: "candidate-turn"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := turn.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.ReadThreadTurn(ctx, runtime.ReadThreadTurnRequest{ThreadID: "candidate-thread", TurnID: "missing"}); !errors.Is(err, runtime.ErrTurnNotFound) {
+		t.Fatalf("unknown exact turn error = %v", err)
+	}
+}
+EOF
+EOF
 go mod tidy
 GOFLAGS=-mod=readonly go test ./...
 if grep -Eq '(^|[[:space:]])replace([[:space:]]|$)' go.mod; then

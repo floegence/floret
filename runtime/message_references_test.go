@@ -388,6 +388,14 @@ func TestHostReferenceOnlyTurnUsesSQLiteAdmissionAuthority(t *testing.T) {
 	if err != nil || len(page.Turns) != 1 || !reflect.DeepEqual(page.Turns[0].UserReferences, want) {
 		t.Fatalf("sqlite reference-only page=%#v err=%v", page, err)
 	}
+	maintenance, err := newTestMaintenanceHost(t, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exact, err := maintenance.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: "thread", TurnID: "turn"})
+	if err != nil || !reflect.DeepEqual(exact.UserReferences, want) {
+		t.Fatalf("sqlite reference-only exact=%#v err=%v", exact, err)
+	}
 }
 
 func TestHostRejectsReferenceOnlyInvalidSupplementalBeforeAdmission(t *testing.T) {

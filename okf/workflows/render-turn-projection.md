@@ -28,6 +28,9 @@ to Floret's canonical state after reconnect, dropped events, or process restart.
 5. On reconnect, gaps, validation failure, or unavailable terminal projection,
    reload the durable public snapshots/projections from Floret. Do not replay a
    stored event stream or rebuild activity from product audit records.
+6. Use `ReadThreadTurn` for a known canonical `TurnID`; use `ListThreadTurns`
+   for bootstrap and history pagination. Validate returned snapshots before
+   mapping them into host presentation state.
 
 # Verify
 

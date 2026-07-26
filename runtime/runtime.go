@@ -2394,6 +2394,8 @@ func runtimeHostError(err error) error {
 		return &RequestConflictError{Operation: "authority", Err: err}
 	case errors.Is(err, sessiontree.ErrAuthorityCorrupt):
 		return fmt.Errorf("%w: %w", ErrAuthorityCorrupt, err)
+	case errors.Is(err, sessiontree.ErrCanonicalTurnNotFound):
+		return fmt.Errorf("%w: %w", ErrTurnNotFound, err)
 	case errors.Is(err, sessiontree.ErrEffectOutcomeUnknown):
 		return fmt.Errorf("%w: %w", ErrEffectOutcomeUnknown, err)
 	case errors.Is(err, agentharness.ErrEffectUnauthorized):

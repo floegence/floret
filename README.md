@@ -214,7 +214,8 @@ apply SQLite maintenance through the
 
 Floret's journal is the only durable source for admitted user input, assistant
 output, turn/run lifecycle, control signals, approvals, projections, and Agent
-todos. Use `ListThreadTurns` for ordered bootstrap and pagination, `ReadThread`
+todos. Use `ListThreadTurns` for ordered bootstrap and pagination,
+`ReadThreadTurn` when a canonical `TurnID` is already known, `ReadThread`
 for transcript-free thread lifecycle metadata, and the typed Agent todo CAS
 methods for `write_todos` state. A host may keep product metadata and commands
 that Floret has not admitted yet, but it must not copy these Agent facts into a
@@ -224,8 +225,9 @@ Turn-page cursors are opaque, thread- and direction-bound tokens. Hosts return
 them unchanged and never interpret journal positions. A composition owner may
 retain `ThreadInventoryHost` to discover canonical root threads for startup
 reconciliation; product visibility, routing, pinning, and ordering remain in the
-host. Parent-bound `SubAgentReadHost.ListThreadTurns` uses the same typed turn
-page as root history. Each admitted user entry carries a typed
+host. Parent-bound `SubAgentReadHost.ListThreadTurns` and `ReadThreadTurn` use
+the same typed turn contracts as root reads after descendant authority is
+proved. Each admitted user entry carries a typed
 `ThreadUserMessageOrigin`, so hosts can distinguish a user message, delegated
 SubAgent mission, follow-up SubAgent input, or pending-tool completion without
 parsing detail metadata or internal input identities. Detail events remain a

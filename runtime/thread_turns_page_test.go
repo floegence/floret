@@ -274,6 +274,9 @@ func TestRetryTurnIsCanonicalWithoutDuplicatingUserAcrossMemoryAndSQLiteReopen(t
 				if err != nil || len(forkPage.Turns) != 3 || forkPage.Turns[1].RetrySource == nil || forkPage.Turns[1].RetrySource.TurnID != forkPage.Turns[0].TurnID {
 					t.Fatalf("reopened fork retry page=%#v err=%v", forkPage, err)
 				}
+				for _, listed := range forkPage.Turns {
+					assertExactThreadTurnMatchesListed(t, ctx, maintenance, "fork", listed)
+				}
 			}
 		})
 	}
@@ -288,6 +291,18 @@ func assertRuntimeForkedRetryTurnPage(t *testing.T, ctx context.Context, mainten
 	original, retry := page.Turns[0], page.Turns[1]
 	if retry.RetrySource == nil || retry.RetrySource.TurnID != original.TurnID || retry.UserEntryID != "" {
 		t.Fatalf("fork retry relation original=%#v retry=%#v", original, retry)
+	}
+	for _, listed := range page.Turns {
+		assertExactThreadTurnMatchesListed(t, ctx, maintenance, "fork", listed)
+	}
+	if original.TurnID == "turn-original" {
+		t.Fatalf("fork did not rewrite original turn identity: %#v", original)
+	}
+	if _, err := maintenance.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: "fork", TurnID: "turn-original"}); !errors.Is(err, ErrTurnNotFound) {
+		t.Fatalf("fork accepted source turn identity err=%v", err)
+	}
+	if _, err := maintenance.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: "thread", TurnID: original.TurnID}); !errors.Is(err, ErrTurnNotFound) {
+		t.Fatalf("source accepted mapped fork turn identity err=%v", err)
 	}
 	latest, err := maintenance.ReadLatestThreadTurn(ctx, "fork")
 	if err != nil || latest.TurnID != retry.TurnID || latest.RetrySource == nil || latest.RetrySource.TurnID != original.TurnID {
@@ -323,6 +338,9 @@ func assertRuntimeRetryTurnPage(t *testing.T, ctx context.Context, maintenance *
 		retry.Status != TurnStatusCompleted || len(retry.Projection.Segments) != 1 || retry.Projection.Segments[0].Text != "retry answer" {
 		t.Fatalf("retry turn=%#v", retry)
 	}
+	for _, listed := range page.Turns {
+		assertExactThreadTurnMatchesListed(t, ctx, maintenance, "thread", listed)
+	}
 	incremental, err := maintenance.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "thread", SinceCursor: &sinceCursor, Limit: 1})
 	if err != nil || len(incremental.Turns) != 1 || incremental.Turns[0].TurnID != retry.TurnID || incremental.SinceCursor != page.SinceCursor {
 		t.Fatalf("retry incremental page=%#v err=%v", incremental, err)
@@ -330,6 +348,19 @@ func assertRuntimeRetryTurnPage(t *testing.T, ctx context.Context, maintenance *
 	latest, err := maintenance.ReadLatestThreadTurn(ctx, "thread")
 	if err != nil || latest.TurnID != retry.TurnID || latest.RetrySource == nil || latest.RetrySource.TurnID != original.TurnID {
 		t.Fatalf("retry latest=%#v err=%v", latest, err)
+	}
+}
+
+func assertExactThreadTurnMatchesListed(t *testing.T, ctx context.Context, maintenance *testMaintenanceFacade, threadID ThreadID, listed ThreadTurnSnapshot) {
+	t.Helper()
+	exact, err := maintenance.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: threadID, TurnID: listed.TurnID})
+	if err != nil {
+		t.Fatalf("ReadThreadTurn(%q, %q): %v", threadID, listed.TurnID, err)
+	}
+	listed.Projection.ProjectedAt = time.Time{}
+	exact.Projection.ProjectedAt = time.Time{}
+	if !reflect.DeepEqual(exact, listed) {
+		t.Fatalf("exact/list turn mismatch for %q/%q\nexact=%#v\nlisted=%#v", threadID, listed.TurnID, exact, listed)
 	}
 }
 
@@ -528,6 +559,9 @@ func TestUnfinishedForkBranchBoundaryHasCanonicalFailureAcrossPublicReads(t *tes
 			}
 			turn := page.Turns[0]
 			assertFailure("ListThreadTurns", turn, nil)
+			exact, err := maintenance.ReadThreadTurn(ctx, ReadThreadTurnRequest{ThreadID: "fork", TurnID: turn.TurnID})
+			assertFailure("ReadThreadTurn", exact, err)
+			assertExactThreadTurnMatchesListed(t, ctx, maintenance, "fork", turn)
 			latest, err := maintenance.ReadLatestThreadTurn(ctx, "fork")
 			assertFailure("ReadLatestThreadTurn", latest, err)
 			overview, err := maintenance.ReadThreadOverview(ctx, "fork")

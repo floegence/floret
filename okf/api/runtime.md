@@ -186,6 +186,18 @@ host interface for every runtime operation.
   `pending_tool_completion`. It is a presentation fact, not an authorization
   proof or storage locator. Retry turns do not duplicate a user entry and
   therefore carry no origin.
+* `ThreadReadHost.ReadThreadTurn` accepts an explicit `ThreadID` and `TurnID`
+  and returns that admitted turn only while its started marker remains on the
+  current active path. `RunID` is derived from canonical authority; marker-only,
+  unadmitted, unknown, and abandoned-branch turns return `ErrTurnNotFound`.
+  Authority corruption and unavailable persistence remain distinct errors. The
+  returned `ThreadTurnSnapshot` has the same stable fields and latest-turn
+  lifecycle overlay as `ListThreadTurns` without requiring a history scan.
+* `ThreadTurnSnapshot.Validate`, `ThreadTurnsPage.Validate`, and
+  `ThreadOverview.Validate` check the self-contained public read shape. Runtime
+  read methods invoke them before returning success. These methods do not prove
+  thread binding or active-path membership; the bound host and internal
+  authority checks provide that contextual proof.
 * `ThreadInventoryHost.ListRootThreads` is issued only from `HostBootstrap` to a
   composition or maintenance owner. It returns bounded pages of existing
   canonical roots, including archived roots, using validated `ThreadSummary` values and an
@@ -279,9 +291,10 @@ host interface for every runtime operation.
   pressure/usage status, and public compaction lifecycle operations. Context
   window size comes from the resolved model capability and policy, not from
   parent thread, child thread, subagent, or fork mode.
-* `SubAgentReadHost.ListThreadTurns` reads the same `ThreadTurnsPage` and
-  `ThreadTurnSnapshot` contracts as a root read after proving the requested
-  thread is a complete direct or deep descendant of the bound parent. Normal
+* `SubAgentReadHost.ListThreadTurns` and `ReadThreadTurn` read the same
+  `ThreadTurnsPage` and `ThreadTurnSnapshot` contracts as root reads after
+  proving the requested thread is a complete direct or deep descendant of the
+  bound parent. Normal
   child conversation UI uses this typed model, including the exact
   `delegated_mission` entry identity supplied by Floret. Hosts must not infer
   message provenance from prompt text, event position, raw-omission flags, or
@@ -545,6 +558,10 @@ non-empty opaque `SinceCursor`. A retry turn carries only
 retains and validates the exact internal source entry. Hosts must not parse or
 synthesize cursors, copy retry input, or fall back to scanning the active path
 when a cursor is stale.
+When the host already has a canonical `TurnID`, it uses `ReadThreadTurn`
+instead of walking paginated history. Exact reads still consult only Floret's
+active-path admission authority and return the same snapshot contract; they do
+not turn a product command, audit record, or detail event into a canonical turn.
 Canonical user-entry provenance is projected through the closed
 `ThreadUserMessageOrigin` vocabulary. Floret writes SubAgent mission, follow-up,
 and pending-completion origin in the same atomic admission as the canonical

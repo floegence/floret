@@ -31,6 +31,15 @@ type CanonicalTurnDetailsPage struct {
 	GeneratedAt       time.Time
 }
 
+type CanonicalTurnDetailRead struct {
+	Turn              CanonicalTurnDetail
+	ThroughOrdinal    int64
+	LatestTurnID      string
+	LatestStatus      string
+	LatestRecoverable bool
+	LatestCanRetry    bool
+}
+
 func (h *AgentHarness) ListCanonicalTurnDetailEvents(ctx context.Context, opts sessiontree.ListCanonicalTurnsOptions, includeRaw bool) (CanonicalTurnDetailsPage, error) {
 	if h == nil || h.options.Repo == nil {
 		return CanonicalTurnDetailsPage{}, errors.New("agent harness is not initialized")
@@ -54,27 +63,9 @@ func (h *AgentHarness) ListCanonicalTurnDetailEvents(ctx context.Context, opts s
 	}
 	var latestEntries []sessiontree.Entry
 	for _, turn := range canonical.Turns {
-		entries := make([]sessiontree.Entry, 0, len(turn.Entries))
-		for _, item := range turn.Entries {
-			entry, err := h.restoreCanonicalSubAgentUserMessageOrigin(ctx, item.Entry, turn.RunID)
-			if err != nil {
-				return CanonicalTurnDetailsPage{}, err
-			}
-			entries = append(entries, entry)
-		}
-		activityContext := subAgentDetailActivityContext{
-			resultCallIDs: subAgentDetailResultCallIDs(entries),
-			runIDs:        subAgentDetailTurnRunIDs(entries),
-		}
-		detail := CanonicalTurnDetail{
-			TurnID: turn.TurnID, RunID: turn.RunID, StartedOrdinal: turn.StartedOrdinal,
-			RetrySource: cloneCanonicalTurnRetrySource(turn.RetrySource),
-		}
-		for index, item := range turn.Entries {
-			event, visible := h.subAgentDetailEvent(entries[index], item.Ordinal, includeRaw, activityContext)
-			if visible {
-				detail.Events = append(detail.Events, event)
-			}
+		detail, entries, err := h.canonicalTurnDetail(ctx, turn, includeRaw)
+		if err != nil {
+			return CanonicalTurnDetailsPage{}, err
 		}
 		if turn.TurnID == canonical.LatestTurnID {
 			latestEntries = entries
@@ -103,6 +94,78 @@ func (h *AgentHarness) ListCanonicalTurnDetailEvents(ctx context.Context, opts s
 	page.LatestRecoverable = lifecycle.Recoverable()
 	page.LatestCanRetry = canonical.HasRetryTarget
 	return page, nil
+}
+
+func (h *AgentHarness) ReadCanonicalTurnDetailEvents(ctx context.Context, threadID, turnID string, includeRaw bool) (CanonicalTurnDetailRead, error) {
+	if h == nil || h.options.Repo == nil {
+		return CanonicalTurnDetailRead{}, errors.New("agent harness is not initialized")
+	}
+	repo, ok := h.options.Repo.(sessiontree.CanonicalTurnReadRepo)
+	if !ok {
+		return CanonicalTurnDetailRead{}, errors.New("session tree repo does not support exact canonical turn reads")
+	}
+	threadID = strings.TrimSpace(threadID)
+	read, err := repo.ReadCanonicalTurn(ctx, threadID, strings.TrimSpace(turnID))
+	if err != nil {
+		return CanonicalTurnDetailRead{}, err
+	}
+	detail, _, err := h.canonicalTurnDetail(ctx, read.Turn, includeRaw)
+	if err != nil {
+		return CanonicalTurnDetailRead{}, err
+	}
+	latestEntries := make([]sessiontree.Entry, 0, len(read.LatestTurn.Entries))
+	for _, item := range read.LatestTurn.Entries {
+		latestEntries = append(latestEntries, item.Entry)
+	}
+	if len(latestEntries) == 0 || read.LatestTurn.TurnID == "" {
+		return CanonicalTurnDetailRead{}, sessiontree.ErrAuthorityCorrupt
+	}
+	phase := sessionlifecycle.PhaseIdle
+	if !canonicalTurnEntriesHaveTerminal(latestEntries) {
+		thread := h.cacheThread(threadID)
+		thread.mu.Lock()
+		localPhase := thread.phase
+		thread.mu.Unlock()
+		phase, err = thread.canonicalThreadPhase(ctx, localPhase)
+		if err != nil {
+			return CanonicalTurnDetailRead{}, err
+		}
+	}
+	lifecycle := sessionlifecycle.Derive(latestEntries, phase)
+	if lifecycle.LatestTurnID() != read.LatestTurn.TurnID {
+		return CanonicalTurnDetailRead{}, sessiontree.ErrAuthorityCorrupt
+	}
+	return CanonicalTurnDetailRead{
+		Turn: detail, ThroughOrdinal: read.ThroughOrdinal,
+		LatestTurnID: read.LatestTurn.TurnID, LatestStatus: lifecycle.Status(),
+		LatestRecoverable: lifecycle.Recoverable(), LatestCanRetry: read.HasRetryTarget,
+	}, nil
+}
+
+func (h *AgentHarness) canonicalTurnDetail(ctx context.Context, turn sessiontree.CanonicalTurn, includeRaw bool) (CanonicalTurnDetail, []sessiontree.Entry, error) {
+	entries := make([]sessiontree.Entry, 0, len(turn.Entries))
+	for _, item := range turn.Entries {
+		entry, err := h.restoreCanonicalSubAgentUserMessageOrigin(ctx, item.Entry, turn.RunID)
+		if err != nil {
+			return CanonicalTurnDetail{}, nil, err
+		}
+		entries = append(entries, entry)
+	}
+	activityContext := subAgentDetailActivityContext{
+		resultCallIDs: subAgentDetailResultCallIDs(entries),
+		runIDs:        subAgentDetailTurnRunIDs(entries),
+	}
+	detail := CanonicalTurnDetail{
+		TurnID: turn.TurnID, RunID: turn.RunID, StartedOrdinal: turn.StartedOrdinal,
+		RetrySource: cloneCanonicalTurnRetrySource(turn.RetrySource),
+	}
+	for index, item := range turn.Entries {
+		event, visible := h.subAgentDetailEvent(entries[index], item.Ordinal, includeRaw, activityContext)
+		if visible {
+			detail.Events = append(detail.Events, event)
+		}
+	}
+	return detail, entries, nil
 }
 
 func (h *AgentHarness) restoreCanonicalSubAgentUserMessageOrigin(ctx context.Context, entry sessiontree.Entry, runID string) (sessiontree.Entry, error) {

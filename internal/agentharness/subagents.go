@@ -2521,7 +2521,7 @@ func (h *AgentHarness) resolveSubAgentMeta(ctx context.Context, parentThreadID, 
 	}
 	meta, err := h.options.Repo.Thread(ctx, target)
 	if err != nil {
-		if errors.Is(err, sessiontree.ErrThreadNotFound) {
+		if errors.Is(err, sessiontree.ErrThreadNotFound) || errors.Is(err, sessiontree.ErrThreadDeleted) {
 			return sessiontree.ThreadMeta{}, ErrSubAgentNotFound
 		}
 		return sessiontree.ThreadMeta{}, err
@@ -2553,7 +2553,7 @@ func (h *AgentHarness) resolveSubAgentDescendantMeta(ctx context.Context, parent
 	}
 	meta, err := h.options.Repo.Thread(ctx, target)
 	if err != nil {
-		if errors.Is(err, sessiontree.ErrThreadNotFound) {
+		if errors.Is(err, sessiontree.ErrThreadNotFound) || errors.Is(err, sessiontree.ErrThreadDeleted) {
 			return sessiontree.ThreadMeta{}, ErrSubAgentNotFound
 		}
 		return sessiontree.ThreadMeta{}, err
@@ -2576,7 +2576,7 @@ func (h *AgentHarness) resolveSubAgentDescendantMeta(ctx context.Context, parent
 		}
 		seen[ancestorID] = struct{}{}
 		meta, err = h.options.Repo.Thread(ctx, ancestorID)
-		if errors.Is(err, sessiontree.ErrThreadNotFound) {
+		if errors.Is(err, sessiontree.ErrThreadNotFound) || errors.Is(err, sessiontree.ErrThreadDeleted) {
 			return sessiontree.ThreadMeta{}, sessiontree.ErrAuthorityCorrupt
 		}
 		if err != nil {

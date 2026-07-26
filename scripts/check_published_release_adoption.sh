@@ -46,6 +46,7 @@ package adoption_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -130,11 +131,71 @@ func TestPublishedDurableHostRestartAndStoreMaintenance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := page.Validate(); err != nil {
+		t.Fatalf("turn page validation: %v", err)
+	}
 	if len(page.Turns) != 1 || page.Turns[0].TurnID != "published-turn" ||
 		len(page.Turns[0].Projection.Segments) != 1 ||
 		page.Turns[0].Projection.Segments[0].Kind != runtime.ThreadTurnProjectionSegmentAssistantText ||
 		page.Turns[0].Projection.Segments[0].Text != "published response" {
 		t.Fatalf("restarted turn page = %#v", page)
+	}
+	exact, err := reader.ReadThreadTurn(ctx, runtime.ReadThreadTurnRequest{
+		ThreadID: "published-thread", TurnID: "published-turn",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := exact.Validate(); err != nil {
+		t.Fatalf("exact turn validation: %v", err)
+	}
+	overview, err := reader.ReadThreadOverview(ctx, "published-thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := overview.Validate(); err != nil {
+		t.Fatalf("overview validation: %v", err)
+	}
+	if exact.TurnID != page.Turns[0].TurnID || exact.RunID != page.Turns[0].RunID ||
+		exact.UserInput != page.Turns[0].UserInput || exact.Status != page.Turns[0].Status ||
+		exact.ThroughOrdinal != page.Turns[0].ThroughOrdinal {
+		t.Fatalf("exact/list mismatch: exact=%#v listed=%#v", exact, page.Turns[0])
+	}
+}
+
+func TestPublishedMemoryExactReadAndNotFound(t *testing.T) {
+	ctx := context.Background()
+	store := runtime.NewMemoryStore()
+	defer store.Close()
+	if _, err := florettest.PopulateStoreFixture(ctx, store, florettest.StoreFixtureInput{
+		ThreadID: "memory-thread", CreateIntentID: "memory-create",
+		Turns: []florettest.StoreFixtureTurn{{
+			Request: runtime.RunTurnRequest{TurnID: "memory-turn", RunID: "memory-run", Input: runtime.TurnInput{Text: "memory"}},
+			ModelSteps: []florettest.ModelStep{{Events: []runtime.ModelEvent{{Type: runtime.ModelEventDelta, Text: "ok"}, {Type: runtime.ModelEventDone, Reason: "stop"}}}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var reader *runtime.ThreadReadHost
+	if err := runtime.ConfigureHostCapabilities(store, func(bootstrap *runtime.HostBootstrap) error {
+		binder, err := runtime.NewThreadReadHostBinder(bootstrap)
+		if err != nil {
+			return err
+		}
+		reader, err = binder.NewHost(ctx, "memory-thread")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	turn, err := reader.ReadThreadTurn(ctx, runtime.ReadThreadTurnRequest{ThreadID: "memory-thread", TurnID: "memory-turn"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := turn.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.ReadThreadTurn(ctx, runtime.ReadThreadTurnRequest{ThreadID: "memory-thread", TurnID: "missing"}); !errors.Is(err, runtime.ErrTurnNotFound) {
+		t.Fatalf("missing memory turn error = %v", err)
 	}
 }
 EOF

@@ -74,8 +74,10 @@ The one store-wide read exception is `ThreadInventoryHost`, constructed and
 retained only by the composition owner. It exposes bounded canonical root
 discovery for startup recovery and reconciliation, never product visibility or
 run authority. Parent-bound `SubAgentReadHost.ListThreadTurns` uses the same
-typed read model as roots after complete descendant validation; detail events
-remain a separate diagnostic and audit surface.
+typed read model as roots after complete descendant validation. Known-turn
+membership and reload paths use the same parent-bound
+`SubAgentReadHost.ReadThreadTurn` exact read; detail events remain a separate
+diagnostic and audit surface.
 
 Recovery discovery also stays a Floret fact. Public read capabilities expose
 complete typed canonical pending settlement targets for a root or one directly

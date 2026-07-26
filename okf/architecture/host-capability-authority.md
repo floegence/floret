@@ -625,14 +625,14 @@ Public capability types have no exported methods beyond this list:
 | `SubAgentHostFactory` | `NewHost` |
 | `InterruptedTurnRecoveryHostFactory` | `NewHost` |
 | `ThreadCreateHost` | `CreateThread` |
-| `ThreadReadHost` | `ReadThread`, `ReadThreadOverview`, `ListThreadTurns`, `ReadLatestThreadTurn`, `ListThreadDetailEvents`, `ReadThreadContext`, `ReadThreadAgentTodos`, `ReadApprovalQueue`, `ReadTurnProjection`, `ReadArtifact` |
+| `ThreadReadHost` | `ReadThread`, `ReadThreadOverview`, `ListThreadTurns`, `ReadThreadTurn`, `ReadLatestThreadTurn`, `ListThreadDetailEvents`, `ReadThreadContext`, `ReadThreadAgentTodos`, `ReadApprovalQueue`, `ReadTurnProjection`, `ReadArtifact` |
 | `ThreadTitleHost` | `SetThreadTitle` |
 | `ThreadForkHost` | `ForkThread` |
 | `ThreadDeleteHost` | `DeleteThread` |
 | `TurnExecutionHost` | `RunTurn`, `RetryTurn`, `CompletePendingTool`, `SettlePendingTool`, `ReadApprovalQueue`, `ResolveApproval`, `UpdateThreadAgentTodos` |
 | `ThreadCompactionHost` | `CompactThread` |
 | `SubAgentHost` | `SpawnSubAgent`, `SendSubAgentInput`, `PublishPendingToolCompletion`, `WaitSubAgents`, `SettlePendingTool`, `CloseSubAgent` |
-| `SubAgentReadHost` | `ListSubAgents`, `ListThreadTurns`, `ReadSubAgentDetail`, `ListSubAgentActivityTimeline`, `ReadArtifact` |
+| `SubAgentReadHost` | `ListSubAgents`, `ListThreadTurns`, `ReadThreadTurn`, `ReadSubAgentDetail`, `ListSubAgentActivityTimeline`, `ReadArtifact` |
 | `PendingToolRecoveryHost` | `SettlePendingTool` |
 | `InterruptedTurnRecoveryHost` | `RecoverInterruptedTurn` |
 | `EffectAuthorizationGate` | `Dispatch` |

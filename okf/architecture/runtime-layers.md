@@ -314,7 +314,8 @@ identity affect lookup and journal ownership only; they do not define context
 window size.
 
 Canonical child conversation history uses
-`SubAgentReadHost.ListThreadTurns`. The parent-bound host first proves that the
+`SubAgentReadHost.ListThreadTurns`; known-turn lookups use
+`SubAgentReadHost.ReadThreadTurn`. The parent-bound host first proves that the
 target is a complete direct or deep descendant, then reuses the exact root
 `ThreadTurnsPage` projector and cursor contract. Detail rows remain for audit,
 tool activity, context, and diagnostics rather than becoming a second history

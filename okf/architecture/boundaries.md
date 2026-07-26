@@ -50,8 +50,9 @@ assistant/tool history, admitted references, canonical title/failure, turn/run
 state, Agent todos, approval lifecycle/queue, or another model-visible message
 projection. Those facts are read through `ReadThread`, `ListThreadTurns`,
 `ReadApprovalQueue`, `ReadThreadAgentTodos`, `ReadThreadContext`,
-`ReadTurnProjection`, and detail APIs. Product/UI DTO mapping may be transient
-or response-scoped, never a second durable engine source of truth.
+`ReadTurnProjection`, `ReadThreadTurn`, and detail APIs. Product/UI DTO mapping
+may be transient or response-scoped, never a second durable engine source of
+truth.
 
 # Maintenance Notes
 

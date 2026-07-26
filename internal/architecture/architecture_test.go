@@ -200,6 +200,24 @@ func TestImplementationPackagesAreInternalOnly(t *testing.T) {
 	}
 }
 
+func TestCanonicalExactReadDoesNotDelegateToPageReaders(t *testing.T) {
+	for _, file := range []string{
+		filepath.Join("internal", "sessiontree", "canonical_turn_read.go"),
+		filepath.Join("internal", "storage", "sqlite", "canonical_turn_read.go"),
+	} {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		contents := string(data)
+		for _, forbidden := range []string{"listCanonicalTurnsBackwardLocked", "listSQLiteCanonicalTurnsWithRunner"} {
+			if strings.Contains(contents, forbidden) {
+				t.Fatalf("%s exact reader must not call page reader %s", file, forbidden)
+			}
+		}
+	}
+}
+
 func TestCommandPackagesRemainCommands(t *testing.T) {
 	dirs := []string{filepath.Join("cmd", "floret-store"), filepath.Join("cmd", "floret-test-ui")}
 	examples, err := os.ReadDir(filepath.Join("cmd", "examples"))
@@ -500,7 +518,7 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 	exact("ThreadForkHost", reflect.TypeOf((*floretRuntime.ThreadForkHost)(nil)), "ForkThread")
 	exact("ThreadDeleteHost", reflect.TypeOf((*floretRuntime.ThreadDeleteHost)(nil)), "DeleteThread")
 	exact("SubAgentReadHost", reflect.TypeOf((*floretRuntime.SubAgentReadHost)(nil)),
-		"ListPendingToolSettlementTargets", "ListSubAgentActivityTimeline", "ListSubAgents", "ListThreadTurns", "ReadArtifact", "ReadSubAgentDetail")
+		"ListPendingToolSettlementTargets", "ListSubAgentActivityTimeline", "ListSubAgents", "ListThreadTurns", "ReadArtifact", "ReadSubAgentDetail", "ReadThreadTurn")
 	exact("PendingToolRecoveryHost", reflect.TypeOf((*floretRuntime.PendingToolRecoveryHost)(nil)), "SettlePendingTool")
 	exact("InterruptedTurnRecoveryHost", reflect.TypeOf((*floretRuntime.InterruptedTurnRecoveryHost)(nil)), "RecoverInterruptedTurn")
 	exact("TurnExecutionHost", reflect.TypeOf((*floretRuntime.TurnExecutionHost)(nil)),
@@ -510,7 +528,7 @@ func TestRuntimeCapabilityMethodSetsAreNarrow(t *testing.T) {
 		"CloseSubAgent", "PublishPendingToolCompletion", "SendSubAgentInput", "SettlePendingTool", "SpawnSubAgent", "WaitSubAgents")
 	exact("ThreadReadHost", reflect.TypeOf((*floretRuntime.ThreadReadHost)(nil)),
 		"ListPendingToolSettlementTargets", "ListThreadDetailEvents", "ListThreadTurns", "ReadLatestThreadTurn", "ReadThread",
-		"ReadApprovalQueue", "ReadArtifact", "ReadThreadAgentTodos", "ReadThreadContext", "ReadThreadOverview", "ReadTurnProjection")
+		"ReadApprovalQueue", "ReadArtifact", "ReadThreadAgentTodos", "ReadThreadContext", "ReadThreadOverview", "ReadThreadTurn", "ReadTurnProjection")
 	exact("Store", reflect.TypeOf((*floretRuntime.Store)(nil)), "Close")
 	for name, typ := range map[string]reflect.Type{
 		"HostBootstrap":                      reflect.TypeOf(floretRuntime.HostBootstrap{}),
@@ -893,6 +911,7 @@ func TestRuntimeCapabilityConstructorsAndAggregatesStayExplicit(t *testing.T) {
 		"ReadThreadAgentTodos":         "ThreadReadHost",
 		"ReadThreadContext":            "ThreadReadHost",
 		"ReadThreadOverview":           "ThreadReadHost",
+		"ReadThreadTurn":               "ThreadReadHost",
 		"ReadTurnProjection":           "ThreadReadHost",
 		"RetryTurn":                    "TurnExecutionHost",
 		"RunTurn":                      "TurnExecutionHost",
@@ -975,7 +994,8 @@ func TestRuntimeCapabilityConstructorsAndAggregatesStayExplicit(t *testing.T) {
 						}
 						return true
 					})
-					if ast.IsExported(receiver) && receiver != owner && !(typed.Name.Name == "ListThreadTurns" && receiver == "SubAgentReadHost") {
+					if ast.IsExported(receiver) && receiver != owner &&
+						!((typed.Name.Name == "ListThreadTurns" || typed.Name.Name == "ReadThreadTurn") && receiver == "SubAgentReadHost") {
 						t.Fatalf("runtime authority method %s receiver = %s, want %s", typed.Name.Name, receiver, owner)
 					}
 				}

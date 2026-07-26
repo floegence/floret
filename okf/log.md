@@ -1,6 +1,9 @@
 # Floret OKF Update Log
 
 ## 2026-07-26
+* **Exact canonical turn reads**: Added root-bound and parent-scoped
+  `ReadThreadTurn` over active-path admission authority, consistent Memory and
+  SQLite behavior, public read DTO validation, and downstream adoption gates.
 * **Typed message provenance**: Added canonical `ThreadUserMessageOrigin` to
   public turn snapshots, atomically classified SubAgent mission, follow-up, and
   pending-completion admissions, recovered pre-marker origins from exact durable

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/floegence/floret/internal/agentharness"
+	"github.com/floegence/floret/internal/session"
 	"github.com/floegence/floret/internal/sessiontree"
 )
 
@@ -101,6 +102,13 @@ type ListThreadTurnsRequest struct {
 	Limit        int               `json:"limit,omitempty"`
 }
 
+// ReadThreadTurnRequest identifies one canonical turn on a thread's current
+// active path. It is a Go host contract, not a wire schema.
+type ReadThreadTurnRequest struct {
+	ThreadID ThreadID
+	TurnID   TurnID
+}
+
 type ThreadTurnsPage struct {
 	ThreadID       ThreadID             `json:"thread_id"`
 	Turns          []ThreadTurnSnapshot `json:"turns"`
@@ -155,6 +163,162 @@ type ThreadTurnRetrySource struct {
 	// TurnID is the canonical source turn. Its internal journal anchor remains
 	// private to Floret.
 	TurnID TurnID `json:"turn_id"`
+}
+
+// Validate checks the self-contained public turn snapshot shape. Durable path
+// and admission authority are validated before this DTO is projected.
+func (s ThreadTurnSnapshot) Validate() error {
+	if strings.TrimSpace(string(s.TurnID)) == "" || string(s.TurnID) != strings.TrimSpace(string(s.TurnID)) ||
+		strings.TrimSpace(string(s.RunID)) == "" || string(s.RunID) != strings.TrimSpace(string(s.RunID)) {
+		return errors.New("thread turn snapshot identity is incomplete or not trim-stable")
+	}
+	if s.Ordinal <= 0 || s.ThroughOrdinal < s.Ordinal {
+		return errors.New("thread turn snapshot ordinals are invalid")
+	}
+	if s.StartedAt.IsZero() || s.UpdatedAt.IsZero() || s.UpdatedAt.Before(s.StartedAt) ||
+		s.StartedAt != s.StartedAt.UTC() || s.UpdatedAt != s.UpdatedAt.UTC() {
+		return errors.New("thread turn snapshot timestamps are invalid")
+	}
+	if !s.Status.Valid() {
+		return fmt.Errorf("unsupported thread turn status %q", s.Status)
+	}
+	if err := validateThreadTurnFailureForStatus(s.Status, s.Failure); err != nil {
+		return err
+	}
+	if err := s.Projection.Validate(); err != nil {
+		return fmt.Errorf("thread turn projection: %w", err)
+	}
+	if s.Projection.ProjectedAt.IsZero() || s.Projection.ProjectedAt != s.Projection.ProjectedAt.UTC() {
+		return errors.New("thread turn projection requires a UTC projection time")
+	}
+	if s.Projection.TurnID != s.TurnID || s.Projection.RunID != s.RunID || s.Projection.ThroughOrdinal != s.ThroughOrdinal {
+		return errors.New("thread turn snapshot projection identity or ordinal is inconsistent")
+	}
+	if err := validateThreadTurnSnapshotStatus(s); err != nil {
+		return err
+	}
+	if s.Recoverable && s.Status != TurnStatusInterrupted {
+		return errors.New("thread turn recoverability conflicts with status")
+	}
+	if s.RetrySource == nil {
+		if strings.TrimSpace(s.UserEntryID) == "" || s.UserEntryID != strings.TrimSpace(s.UserEntryID) {
+			return errors.New("normal thread turn requires a trim-stable user entry identity")
+		}
+		if !s.UserMessageOrigin.valid() {
+			return fmt.Errorf("unsupported thread user message origin %q", s.UserMessageOrigin)
+		}
+		if strings.TrimSpace(s.UserInput) == "" && len(s.UserAttachments) == 0 && len(s.UserReferences) == 0 {
+			return errors.New("normal thread turn requires canonical user input")
+		}
+	} else {
+		if strings.TrimSpace(string(s.RetrySource.TurnID)) == "" || string(s.RetrySource.TurnID) != strings.TrimSpace(string(s.RetrySource.TurnID)) ||
+			s.RetrySource.TurnID == s.TurnID {
+			return errors.New("retry turn source identity is invalid")
+		}
+		if s.UserEntryID != "" || s.UserMessageOrigin != "" || s.UserInput != "" ||
+			len(s.UserAttachments) != 0 || len(s.UserReferences) != 0 {
+			return errors.New("retry turn must not duplicate canonical user facts")
+		}
+	}
+	if err := session.ValidateStoredMessageAttachments(sessionMessageAttachments(s.UserAttachments)); err != nil {
+		return fmt.Errorf("stored thread turn attachments: %w", err)
+	}
+	if err := validateMessageReferences(s.UserReferences); err != nil {
+		return fmt.Errorf("stored thread turn references: %w", err)
+	}
+	for index, signal := range s.ControlSignals {
+		if strings.TrimSpace(signal.Name) == "" || signal.Name != strings.TrimSpace(signal.Name) ||
+			strings.TrimSpace(signal.CallID) == "" || signal.CallID != strings.TrimSpace(signal.CallID) ||
+			strings.TrimSpace(signal.ArgsHash) == "" || signal.ArgsHash != strings.TrimSpace(signal.ArgsHash) {
+			return fmt.Errorf("thread control signal %d has incomplete identity", index)
+		}
+		switch signal.Disposition {
+		case string(SignalContinue), string(SignalWaiting), string(SignalTerminal):
+		default:
+			return fmt.Errorf("thread control signal %d has unsupported disposition %q", index, signal.Disposition)
+		}
+	}
+	return nil
+}
+
+func (o ThreadUserMessageOrigin) valid() bool {
+	switch o {
+	case ThreadUserMessageOriginUser, ThreadUserMessageOriginDelegatedMission,
+		ThreadUserMessageOriginSubAgentInput, ThreadUserMessageOriginPendingToolCompletion:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateThreadTurnSnapshotStatus(snapshot ThreadTurnSnapshot) error {
+	if snapshot.Status == snapshot.Projection.Status {
+		return nil
+	}
+	if snapshot.Status == TurnStatusInterrupted && snapshot.Failure != nil && snapshot.Failure.Code == ThreadTurnFailureInterrupted &&
+		(snapshot.Projection.Status == TurnStatusRunning || snapshot.Projection.Status == TurnStatusCancelled) {
+		return nil
+	}
+	return fmt.Errorf("thread turn status %q conflicts with projection status %q", snapshot.Status, snapshot.Projection.Status)
+}
+
+// Validate checks one public turn page without consulting persisted state.
+func (p ThreadTurnsPage) Validate() error {
+	if strings.TrimSpace(string(p.ThreadID)) == "" || string(p.ThreadID) != strings.TrimSpace(string(p.ThreadID)) {
+		return errors.New("thread turn page requires a trim-stable thread identity")
+	}
+	if p.ThroughOrdinal < 0 || p.GeneratedAt.IsZero() || p.GeneratedAt != p.GeneratedAt.UTC() {
+		return errors.New("thread turn page boundary or generation time is invalid")
+	}
+	if p.HasMore && len(p.Turns) == 0 {
+		return errors.New("thread turn page cannot continue without returned turns")
+	}
+	if p.BeforeCursor != nil && !p.HasMore {
+		return errors.New("thread turn page before cursor requires more history")
+	}
+	if p.BeforeCursor != nil && (strings.TrimSpace(string(*p.BeforeCursor)) == "" || string(*p.BeforeCursor) != strings.TrimSpace(string(*p.BeforeCursor))) {
+		return errors.New("thread turn page before cursor is invalid")
+	}
+	if p.SinceCursor != "" && (strings.TrimSpace(string(p.SinceCursor)) == "" || string(p.SinceCursor) != strings.TrimSpace(string(p.SinceCursor))) {
+		return errors.New("thread turn page since cursor is invalid")
+	}
+	var previous int64
+	seen := make(map[TurnID]struct{}, len(p.Turns))
+	for index, turn := range p.Turns {
+		if err := turn.Validate(); err != nil {
+			return fmt.Errorf("thread turn page item %d: %w", index, err)
+		}
+		if turn.Projection.ThreadID != p.ThreadID || turn.Ordinal <= previous || turn.ThroughOrdinal > p.ThroughOrdinal {
+			return fmt.Errorf("thread turn page item %d has inconsistent identity or ordinal", index)
+		}
+		if _, duplicate := seen[turn.TurnID]; duplicate {
+			return fmt.Errorf("thread turn page contains duplicate turn %q", turn.TurnID)
+		}
+		seen[turn.TurnID] = struct{}{}
+		previous = turn.Ordinal
+	}
+	return nil
+}
+
+// Validate checks the self-contained public overview shape.
+func (o ThreadOverview) Validate() error {
+	if err := o.Thread.Validate(); err != nil {
+		return fmt.Errorf("thread overview snapshot: %w", err)
+	}
+	if o.LatestTurn == nil {
+		if o.Thread.LatestTurnID != "" || o.Thread.LatestRunID != "" {
+			return errors.New("thread overview is missing its latest turn")
+		}
+		return nil
+	}
+	if err := o.LatestTurn.Validate(); err != nil {
+		return fmt.Errorf("thread overview latest turn: %w", err)
+	}
+	if o.LatestTurn.Projection.ThreadID != o.Thread.ID || o.LatestTurn.TurnID != o.Thread.LatestTurnID ||
+		o.LatestTurn.RunID != o.Thread.LatestRunID || o.LatestTurn.ThroughOrdinal > o.Thread.ThroughOrdinal {
+		return errors.New("thread overview latest turn is inconsistent with its thread snapshot")
+	}
+	return nil
 }
 
 const threadTurnCursorVersion = 1
@@ -214,6 +378,73 @@ func (h *SubAgentReadHost) ListThreadTurns(ctx context.Context, req ListThreadTu
 		return ThreadTurnsPage{}, runtimeHostError(err)
 	}
 	return listThreadTurns(ctx, h.harness, req)
+}
+
+// ReadThreadTurn returns one canonical turn bound to this root read host.
+func (h *ThreadReadHost) ReadThreadTurn(ctx context.Context, req ReadThreadTurnRequest) (ThreadTurnSnapshot, error) {
+	done, err := beginHostOperation(h.store)
+	if err != nil {
+		return ThreadTurnSnapshot{}, err
+	}
+	defer done()
+	if err := validateBoundRootThreadAuthority(ctx, h.store, h.threadID, req.ThreadID, "thread read host"); err != nil {
+		return ThreadTurnSnapshot{}, err
+	}
+	return readThreadTurn(ctx, h.harness, req)
+}
+
+// ReadThreadTurn returns one canonical turn for a complete descendant of the
+// parent bound to this read host.
+func (h *SubAgentReadHost) ReadThreadTurn(ctx context.Context, req ReadThreadTurnRequest) (ThreadTurnSnapshot, error) {
+	if h == nil {
+		return ThreadTurnSnapshot{}, errors.New("subagent read host is required")
+	}
+	done, err := beginHostOperation(h.store)
+	if err != nil {
+		return ThreadTurnSnapshot{}, err
+	}
+	defer done()
+	if h.harness == nil || strings.TrimSpace(string(h.parentThreadID)) == "" {
+		return ThreadTurnSnapshot{}, errors.New("subagent read host is invalid")
+	}
+	if err := h.harness.ValidateSubAgentDescendantAuthority(ctx, string(h.parentThreadID), string(req.ThreadID)); err != nil {
+		return ThreadTurnSnapshot{}, runtimeHostError(err)
+	}
+	return readThreadTurn(ctx, h.harness, req)
+}
+
+func readThreadTurn(ctx context.Context, harness *agentharness.AgentHarness, req ReadThreadTurnRequest) (ThreadTurnSnapshot, error) {
+	if strings.TrimSpace(string(req.ThreadID)) == "" {
+		return ThreadTurnSnapshot{}, errors.New("thread id is required")
+	}
+	if strings.TrimSpace(string(req.TurnID)) == "" {
+		return ThreadTurnSnapshot{}, errors.New("turn id is required")
+	}
+	read, err := harness.ReadCanonicalTurnDetailEvents(ctx, string(req.ThreadID), string(req.TurnID), true)
+	if err != nil {
+		return ThreadTurnSnapshot{}, runtimeHostError(err)
+	}
+	detail := read.Turn
+	if detail.TurnID != string(req.TurnID) {
+		return ThreadTurnSnapshot{}, fmt.Errorf("%w: exact canonical turn identity changed", ErrAuthorityCorrupt)
+	}
+	turn, err := projectCanonicalThreadTurnSnapshot(req.ThreadID, detail)
+	if err != nil {
+		return ThreadTurnSnapshot{}, err
+	}
+	if turn.ThroughOrdinal > read.ThroughOrdinal {
+		return ThreadTurnSnapshot{}, fmt.Errorf("%w: exact canonical turn boundary is inconsistent", ErrAuthorityCorrupt)
+	}
+	if turn.TurnID == TurnID(read.LatestTurnID) {
+		applyLatestThreadLifecycle(&turn, ThreadSnapshot{
+			LatestTurnID: TurnID(read.LatestTurnID), Status: ThreadStatus(read.LatestStatus),
+			Recoverable: read.LatestRecoverable, CanRetry: read.LatestCanRetry,
+		})
+	}
+	if err := turn.Validate(); err != nil {
+		return ThreadTurnSnapshot{}, fmt.Errorf("%w: invalid public turn snapshot: %v", ErrAuthorityCorrupt, err)
+	}
+	return turn, nil
 }
 
 func (h *providerHost) ReadLatestThreadTurn(ctx context.Context, threadID ThreadID) (ThreadTurnSnapshot, error) {
@@ -277,6 +508,9 @@ func readThreadOverview(ctx context.Context, harness *agentharness.AgentHarness,
 		}
 		result.LatestTurn = &latest
 	}
+	if err := result.Validate(); err != nil {
+		return ThreadOverview{}, fmt.Errorf("%w: invalid public thread overview: %v", ErrAuthorityCorrupt, err)
+	}
 	return result, nil
 }
 
@@ -307,7 +541,13 @@ func readLatestThreadTurn(ctx context.Context, harness *agentharness.AgentHarnes
 		return ThreadTurnSnapshot{}, fmt.Errorf("%w: invalid public thread snapshot: %v", ErrAuthorityCorrupt, err)
 	}
 	latest := turns[0]
+	if latest.TurnID != publicThread.LatestTurnID || latest.RunID != publicThread.LatestRunID || latest.ThroughOrdinal > publicThread.ThroughOrdinal {
+		return ThreadTurnSnapshot{}, fmt.Errorf("%w: latest canonical turn is inconsistent with its thread snapshot", ErrAuthorityCorrupt)
+	}
 	applyLatestThreadLifecycle(&latest, publicThread)
+	if err := latest.Validate(); err != nil {
+		return ThreadTurnSnapshot{}, fmt.Errorf("%w: invalid public turn snapshot: %v", ErrAuthorityCorrupt, err)
+	}
 	return latest, nil
 }
 
@@ -400,7 +640,7 @@ func listThreadTurns(ctx context.Context, harness *agentharness.AgentHarness, re
 		Turns:          turns,
 		HasMore:        detailPage.HasMore,
 		ThroughOrdinal: detailPage.ThroughOrdinal,
-		GeneratedAt:    detailPage.GeneratedAt,
+		GeneratedAt:    detailPage.GeneratedAt.UTC(),
 	}
 	if strings.TrimSpace(detailPage.SinceCursor.EntryID) != "" {
 		encoded, err := encodeThreadTurnCursor(req.ThreadID, threadTurnCursorModeSince, detailPage.SinceCursor.EntryID)
@@ -415,6 +655,9 @@ func listThreadTurns(ctx context.Context, harness *agentharness.AgentHarness, re
 			return ThreadTurnsPage{}, err
 		}
 		page.BeforeCursor = &encoded
+	}
+	if err := page.Validate(); err != nil {
+		return ThreadTurnsPage{}, fmt.Errorf("%w: invalid public turn page: %v", ErrAuthorityCorrupt, err)
 	}
 	return page, nil
 }
@@ -499,14 +742,14 @@ func projectCanonicalThreadTurnSnapshot(threadID ThreadID, detail agentharness.C
 		Events:   events,
 	})
 	if err := projection.Validate(); err != nil {
-		return ThreadTurnSnapshot{}, fmt.Errorf("project turn %q: %w", turnID, err)
+		return ThreadTurnSnapshot{}, fmt.Errorf("%w: project turn %q: %v", ErrAuthorityCorrupt, turnID, err)
 	}
 	turn := ThreadTurnSnapshot{
 		TurnID:            turnID,
 		RunID:             runID,
 		Ordinal:           ordinal,
-		StartedAt:         startedAt,
-		UpdatedAt:         events[len(events)-1].CreatedAt,
+		StartedAt:         startedAt.UTC(),
+		UpdatedAt:         events[len(events)-1].CreatedAt.UTC(),
 		UserEntryID:       userEntryID,
 		UserMessageOrigin: userMessageOrigin,
 		UserInput:         userInput,
@@ -566,7 +809,7 @@ func projectThreadTurnSnapshots(threadID ThreadID, events []ThreadDetailEvent) (
 		turnEvents := byTurn[turnID]
 		runID, ordinal, startedAt := threadTurnStartedIdentity(turnEvents)
 		if strings.TrimSpace(string(runID)) == "" || ordinal <= 0 || startedAt.IsZero() {
-			return nil, 0, fmt.Errorf("turn %q has an invalid started marker", turnID)
+			return nil, 0, fmt.Errorf("%w: turn %q has an invalid started marker", ErrAuthorityCorrupt, turnID)
 		}
 		userEntryID, userMessageOrigin, userInput, userAttachments, userReferences, err := canonicalTurnUserInput(events, turnID)
 		if err != nil {
@@ -590,14 +833,14 @@ func projectThreadTurnSnapshots(threadID ThreadID, events []ThreadDetailEvent) (
 			Events:   turnEvents,
 		})
 		if err := projection.Validate(); err != nil {
-			return nil, 0, fmt.Errorf("project turn %q: %w", turnID, err)
+			return nil, 0, fmt.Errorf("%w: project turn %q: %v", ErrAuthorityCorrupt, turnID, err)
 		}
 		turn := ThreadTurnSnapshot{
 			TurnID:            turnID,
 			RunID:             runID,
 			Ordinal:           ordinal,
-			StartedAt:         startedAt,
-			UpdatedAt:         turnEvents[len(turnEvents)-1].CreatedAt,
+			StartedAt:         startedAt.UTC(),
+			UpdatedAt:         turnEvents[len(turnEvents)-1].CreatedAt.UTC(),
 			UserEntryID:       userEntryID,
 			UserMessageOrigin: userMessageOrigin,
 			UserInput:         userInput,
