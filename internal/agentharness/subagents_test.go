@@ -1508,6 +1508,9 @@ func TestAdmitSubAgentInputWritesCanonicalUserMessage(t *testing.T) {
 	if admitted.UserMessage.Metadata[subAgentAdmittedInputIDKey] != published.Input.SubAgentInputID {
 		t.Fatalf("canonical user message metadata = %#v", admitted.UserMessage.Metadata)
 	}
+	if admitted.UserMessage.Metadata[sessiontree.SubAgentUserMessageOriginMetadataKey] != sessiontree.SubAgentUserMessageOriginDelegatedMission {
+		t.Fatalf("canonical user message origin = %#v", admitted.UserMessage.Metadata)
+	}
 	inputs, err := repo.ListSubAgentInputs(ctx, "child", sessiontree.SubAgentInputAdmitted)
 	if err != nil {
 		t.Fatal(err)

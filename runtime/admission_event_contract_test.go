@@ -123,7 +123,8 @@ func TestCanonicalUserAdmissionIsReadableBeforeProviderEvents(t *testing.T) {
 				t.Fatalf("turn page at admission = %#v", page)
 			}
 			turn := page.Turns[0]
-			if turn.TurnID != "turn-1" || turn.RunID != "run-1" || turn.UserEntryID == "" || turn.UserInput != "hello" ||
+			if turn.TurnID != "turn-1" || turn.RunID != "run-1" || turn.UserEntryID == "" ||
+				turn.UserMessageOrigin != ThreadUserMessageOriginUser || turn.UserInput != "hello" ||
 				!reflect.DeepEqual(turn.UserAttachments, []MessageAttachment{attachment}) || !reflect.DeepEqual(turn.UserReferences, references) || turn.Status != TurnStatusRunning {
 				t.Fatalf("canonical running turn at admission = %#v", turn)
 			}

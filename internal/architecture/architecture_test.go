@@ -1109,6 +1109,22 @@ func TestRuntimeTurnReadModelsKeepJournalNavigationOpaque(t *testing.T) {
 	cursorType := reflect.TypeOf(floretRuntime.ThreadTurnCursor(""))
 	requestType := reflect.TypeOf(floretRuntime.ListThreadTurnsRequest{})
 	pageType := reflect.TypeOf(floretRuntime.ThreadTurnsPage{})
+	turnType := reflect.TypeOf(floretRuntime.ThreadTurnSnapshot{})
+	originType := reflect.TypeOf(floretRuntime.ThreadUserMessageOrigin(""))
+	originField, ok := turnType.FieldByName("UserMessageOrigin")
+	if !ok || originField.Type != originType || originField.Tag.Get("json") != "user_message_origin,omitempty" {
+		t.Fatalf("runtime ThreadTurnSnapshot.UserMessageOrigin=%v found=%v tag=%q, want typed optional origin", originField.Type, ok, originField.Tag.Get("json"))
+	}
+	for _, origin := range []floretRuntime.ThreadUserMessageOrigin{
+		floretRuntime.ThreadUserMessageOriginUser,
+		floretRuntime.ThreadUserMessageOriginDelegatedMission,
+		floretRuntime.ThreadUserMessageOriginSubAgentInput,
+		floretRuntime.ThreadUserMessageOriginPendingToolCompletion,
+	} {
+		if strings.TrimSpace(string(origin)) == "" {
+			t.Fatal("runtime user message origin vocabulary contains an empty value")
+		}
+	}
 	for _, field := range []struct {
 		typ  reflect.Type
 		name string

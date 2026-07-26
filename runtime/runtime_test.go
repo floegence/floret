@@ -64,6 +64,42 @@ type testCapabilitySet struct {
 	interrupted  *InterruptedTurnRecoveryHostBinder
 }
 
+// legacySubAgentUserOriginRepo presents the v0.29 canonical journal shape:
+// subagent user entries retain their durable input ID but have no typed origin.
+type legacySubAgentUserOriginRepo struct {
+	sessiontree.Repo
+	canonical sessiontree.CanonicalTurnPageRepo
+	inputs    sessiontree.SubAgentInputReadRepo
+}
+
+type subAgentInputReadFunc func(context.Context, string) (sessiontree.SubAgentInputRecord, bool, error)
+
+func (f subAgentInputReadFunc) ReadSubAgentInput(ctx context.Context, inputID string) (sessiontree.SubAgentInputRecord, bool, error) {
+	return f(ctx, inputID)
+}
+
+func (r legacySubAgentUserOriginRepo) ListCanonicalTurns(ctx context.Context, opts sessiontree.ListCanonicalTurnsOptions) (sessiontree.CanonicalTurnsPage, error) {
+	page, err := r.canonical.ListCanonicalTurns(ctx, opts)
+	if err != nil {
+		return sessiontree.CanonicalTurnsPage{}, err
+	}
+	for turnIndex := range page.Turns {
+		for entryIndex := range page.Turns[turnIndex].Entries {
+			entry := &page.Turns[turnIndex].Entries[entryIndex].Entry
+			if entry.Type != sessiontree.EntryUserMessage || entry.Metadata[sessiontree.SubAgentInputIDMetadataKey] == "" {
+				continue
+			}
+			entry.Metadata = cloneStringMap(entry.Metadata)
+			delete(entry.Metadata, sessiontree.SubAgentUserMessageOriginMetadataKey)
+		}
+	}
+	return page, nil
+}
+
+func (r legacySubAgentUserOriginRepo) ReadSubAgentInput(ctx context.Context, inputID string) (sessiontree.SubAgentInputRecord, bool, error) {
+	return r.inputs.ReadSubAgentInput(ctx, inputID)
+}
+
 var testCapabilities = struct {
 	sync.Mutex
 	byStore map[*Store]*testCapabilitySet
@@ -3262,6 +3298,290 @@ func TestHostManagesSubAgentLifecycle(t *testing.T) {
 	}
 	if closed.Status != SubAgentStatusClosed || closed.CanSendInput || closed.CanClose {
 		t.Fatalf("closed = %#v", closed)
+	}
+}
+
+func TestSubAgentTurnReadsExposeTypedUserMessageOrigin(t *testing.T) {
+	for _, backend := range []string{"memory", "sqlite"} {
+		t.Run(backend, func(t *testing.T) {
+			var store *Store
+			var err error
+			if backend == "sqlite" {
+				store, err = openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
+			} else {
+				store = NewMemoryStore()
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			assertSubAgentTurnUserMessageOrigins(t, store)
+		})
+	}
+}
+
+func TestSubAgentTurnReadsRecoverTypedOriginFromV029DurableInput(t *testing.T) {
+	for _, backend := range []string{"memory", "sqlite_reopen"} {
+		t.Run(backend, func(t *testing.T) {
+			ctx := context.Background()
+			var store *Store
+			if backend == "sqlite_reopen" {
+				path := filepath.Join(t.TempDir(), "floret.db")
+				var err error
+				store, err = openSQLiteStoreForTest(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "parent"}); err != nil {
+					t.Fatal(err)
+				}
+				publishTestSubAgentFixture(t, ctx, store, "legacy-publication", "parent", "child", "")
+				completeTestSubAgentFixture(t, ctx, store, "parent", "child")
+				if err := store.Close(); err != nil {
+					t.Fatal(err)
+				}
+				store, err = openSQLiteStoreForTest(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				store = NewMemoryStore()
+				if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "parent"}); err != nil {
+					t.Fatal(err)
+				}
+				publishTestSubAgentFixture(t, ctx, store, "legacy-publication", "parent", "child", "")
+				completeTestSubAgentFixture(t, ctx, store, "parent", "child")
+			}
+			t.Cleanup(func() { _ = store.Close() })
+
+			canonical, ok := store.repo.(sessiontree.CanonicalTurnPageRepo)
+			if !ok {
+				t.Fatal("test store does not support canonical turn pages")
+			}
+			inputs, ok := store.repo.(sessiontree.SubAgentInputReadRepo)
+			if !ok {
+				t.Fatal("test store does not support durable subagent inputs")
+			}
+			legacyRepo := legacySubAgentUserOriginRepo{Repo: store.repo, canonical: canonical, inputs: inputs}
+			harness := agentharness.New(agentharness.Options{Repo: legacyRepo})
+			page, err := listThreadTurns(ctx, harness, ListThreadTurnsRequest{ThreadID: "child", Tail: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(page.Turns) != 1 || page.Turns[0].UserInput != "fixture input" ||
+				page.Turns[0].UserMessageOrigin != ThreadUserMessageOriginDelegatedMission {
+				t.Fatalf("legacy typed child turn = %#v", page.Turns)
+			}
+			latest, err := readLatestThreadTurn(ctx, harness, "child")
+			if err != nil || latest.UserMessageOrigin != ThreadUserMessageOriginDelegatedMission || latest.UserEntryID != page.Turns[0].UserEntryID {
+				t.Fatalf("legacy latest child turn = %#v, err=%v", latest, err)
+			}
+			overview, err := readThreadOverview(ctx, harness, "child")
+			if err != nil || overview.LatestTurn == nil || overview.LatestTurn.UserMessageOrigin != ThreadUserMessageOriginDelegatedMission ||
+				overview.LatestTurn.UserEntryID != page.Turns[0].UserEntryID {
+				t.Fatalf("legacy child overview = %#v, err=%v", overview, err)
+			}
+		})
+	}
+}
+
+func TestLegacySubAgentOriginRecoveryRejectsMismatchedDurableAuthority(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.repo.CreateThread(ctx, sessiontree.ThreadMeta{ID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	published := publishTestSubAgentFixture(t, ctx, store, "legacy-publication", "parent", "child", "")
+	completeTestSubAgentFixture(t, ctx, store, "parent", "child")
+	canonical := store.repo.(sessiontree.CanonicalTurnPageRepo)
+	inputReader := store.repo.(sessiontree.SubAgentInputReadRepo)
+	valid, found, err := inputReader.ReadSubAgentInput(ctx, published.Input.SubAgentInputID)
+	if err != nil || !found {
+		t.Fatalf("read valid durable input found=%v err=%v", found, err)
+	}
+
+	for _, test := range []struct {
+		name   string
+		found  bool
+		mutate func(*sessiontree.SubAgentInputRecord)
+	}{
+		{name: "missing row"},
+		{name: "pending state", found: true, mutate: func(input *sessiontree.SubAgentInputRecord) { input.State = sessiontree.SubAgentInputPending }},
+		{name: "wrong child", found: true, mutate: func(input *sessiontree.SubAgentInputRecord) { input.ChildThreadID = "other" }},
+		{name: "wrong turn", found: true, mutate: func(input *sessiontree.SubAgentInputRecord) { input.AdmittedTurnID = "other" }},
+		{name: "wrong run", found: true, mutate: func(input *sessiontree.SubAgentInputRecord) { input.AdmittedRunID = "other" }},
+		{name: "unknown kind", found: true, mutate: func(input *sessiontree.SubAgentInputRecord) { input.RequestKind = "unknown" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			legacyRepo := legacySubAgentUserOriginRepo{
+				Repo: store.repo, canonical: canonical,
+				inputs: subAgentInputReadFunc(func(context.Context, string) (sessiontree.SubAgentInputRecord, bool, error) {
+					input := valid
+					if test.mutate != nil {
+						test.mutate(&input)
+					}
+					return input, test.found, nil
+				}),
+			}
+			_, err := listThreadTurns(ctx, agentharness.New(agentharness.Options{Repo: legacyRepo}), ListThreadTurnsRequest{ThreadID: "child", Tail: 1})
+			if !errors.Is(err, ErrAuthorityCorrupt) {
+				t.Fatalf("ListThreadTurns error=%v, want ErrAuthorityCorrupt", err)
+			}
+		})
+	}
+}
+
+func TestFullPathSubAgentTurnReadsKeepInheritedUserOriginDistinctFromMission(t *testing.T) {
+	for _, backend := range []string{"memory", "sqlite"} {
+		t.Run(backend, func(t *testing.T) {
+			var store *Store
+			var err error
+			if backend == "sqlite" {
+				store, err = openSQLiteStoreForTest(filepath.Join(t.TempDir(), "floret.db"))
+			} else {
+				store = NewMemoryStore()
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+
+			ctx := context.Background()
+			host, err := newTestHost(t, providerHostOptions{
+				Config: config.Config{
+					Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "test",
+				},
+				Store: store, IDGenerator: deterministicIDs(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := host.RunTurn(ctx, RunTurnRequest{
+				ThreadID: "parent", TurnID: "parent-turn", RunID: "parent-run", Input: TurnInput{Text: "visible parent request"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+				PublicationID: "full-path-origin", ParentThreadID: "parent", ThreadID: "child", TaskName: "review",
+				Message: "internal delegated mission", ForkMode: SubAgentForkFullPath,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{
+				ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"child"}, Timeout: 2 * time.Second,
+			}); err != nil || waited.TimedOut {
+				t.Fatalf("wait = %#v, err=%v", waited, err)
+			}
+
+			page, err := newTestSubAgentReadHost(t, store, "parent").ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "child", Tail: 10})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(page.Turns) != 2 || page.Turns[0].UserInput != "visible parent request" ||
+				page.Turns[0].UserMessageOrigin != ThreadUserMessageOriginUser ||
+				page.Turns[1].UserInput != "internal delegated mission" ||
+				page.Turns[1].UserMessageOrigin != ThreadUserMessageOriginDelegatedMission {
+				t.Fatalf("full-path typed turns = %#v", page.Turns)
+			}
+		})
+	}
+}
+
+func assertSubAgentTurnUserMessageOrigins(t *testing.T, store *Store) {
+	t.Helper()
+	ctx := context.Background()
+	host, err := newTestHost(t, providerHostOptions{
+		Config: config.Config{
+			Provider:     config.ProviderFake,
+			Model:        "fake-model",
+			FakeResponse: "child done",
+			SystemPrompt: "test",
+		},
+		Store:       store,
+		IDGenerator: deterministicIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.CreateThread(ctx, CreateThreadRequest{ThreadID: "parent"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.SpawnSubAgent(ctx, SpawnSubAgentRequest{
+		PublicationID:  "publication-child-message-origin",
+		ParentThreadID: "parent",
+		ThreadID:       "child",
+		TaskName:       "Review origin",
+		Message:        "internal delegated mission",
+		ForkMode:       SubAgentForkNone,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{
+		ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"child"}, Timeout: 2 * time.Second,
+	}); err != nil || waited.TimedOut {
+		t.Fatalf("initial wait = %#v, err=%v", waited, err)
+	}
+	if _, err := host.SendSubAgentInput(ctx, SendSubAgentInputRequest{
+		InputRequestID: "input-child-message-origin",
+		ParentThreadID: "parent",
+		ChildThreadID:  "child",
+		Message:        "visible follow-up",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{
+		ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"child"}, Timeout: 2 * time.Second,
+	}); err != nil || waited.TimedOut {
+		t.Fatalf("follow-up wait = %#v, err=%v", waited, err)
+	}
+	seedRuntimePendingToolCompletionTargetOnRepo(t, store.repo, "child")
+	if _, err := host.providerHost.PublishSubAgentPendingToolCompletion(ctx, PublishSubAgentPendingToolCompletionRequest{
+		InputRequestID: "completion-child-message-origin",
+		ParentThreadID: "parent",
+		ChildThreadID:  "child",
+		Target: PendingToolSettlementTarget{
+			ThreadID: "child", TurnID: "turn-pending", RunID: "run-pending",
+			ToolCallID: "exec-1", ToolName: "terminal.exec", Handle: "terminal:job:123",
+		},
+		Status:  PendingToolCompletionCompleted,
+		Summary: "completed",
+		Output:  "ok",
+		Input:   TurnInput{Text: "continue after pending tool"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if waited, err := host.WaitSubAgents(ctx, WaitSubAgentsRequest{
+		ParentThreadID: "parent", ChildThreadIDs: []ThreadID{"child"}, Timeout: 2 * time.Second,
+	}); err != nil || waited.TimedOut {
+		t.Fatalf("pending completion wait = %#v, err=%v", waited, err)
+	}
+
+	read := newTestSubAgentReadHost(t, store, "parent")
+	page, err := read.ListThreadTurns(ctx, ListThreadTurnsRequest{ThreadID: "child", Tail: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Turns) != 4 {
+		t.Fatalf("typed child turns = %#v", page.Turns)
+	}
+	if page.Turns[0].UserInput != "internal delegated mission" || page.Turns[0].UserEntryID == "" ||
+		page.Turns[0].UserMessageOrigin != ThreadUserMessageOriginDelegatedMission {
+		t.Fatalf("delegated mission turn = %#v", page.Turns[0])
+	}
+	if page.Turns[1].UserInput != "visible follow-up" || page.Turns[1].UserEntryID == "" ||
+		page.Turns[1].UserMessageOrigin != ThreadUserMessageOriginSubAgentInput {
+		t.Fatalf("follow-up turn = %#v", page.Turns[1])
+	}
+	if page.Turns[2].UserInput != "start background work" || page.Turns[2].UserMessageOrigin != ThreadUserMessageOriginUser {
+		t.Fatalf("pending tool source turn = %#v", page.Turns[2])
+	}
+	if page.Turns[3].UserInput != "continue after pending tool" || page.Turns[3].UserEntryID == "" ||
+		page.Turns[3].UserMessageOrigin != ThreadUserMessageOriginPendingToolCompletion {
+		t.Fatalf("pending tool completion turn = %#v", page.Turns[3])
 	}
 }
 

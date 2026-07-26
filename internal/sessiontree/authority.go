@@ -36,6 +36,27 @@ const (
 	SubAgentRequestPendingToolCompletion SubAgentRequestKind = "pending_tool_completion"
 )
 
+const (
+	SubAgentInputIDMetadataKey                     = "subagent_input_id"
+	SubAgentUserMessageOriginMetadataKey           = "subagent_user_message_origin"
+	SubAgentUserMessageOriginDelegatedMission      = "delegated_mission"
+	SubAgentUserMessageOriginInput                 = "subagent_input"
+	SubAgentUserMessageOriginPendingToolCompletion = "pending_tool_completion"
+)
+
+func SubAgentUserMessageOrigin(kind SubAgentRequestKind) (string, error) {
+	switch kind {
+	case SubAgentRequestPublication:
+		return SubAgentUserMessageOriginDelegatedMission, nil
+	case SubAgentRequestInput:
+		return SubAgentUserMessageOriginInput, nil
+	case SubAgentRequestPendingToolCompletion:
+		return SubAgentUserMessageOriginPendingToolCompletion, nil
+	default:
+		return "", fmt.Errorf("unsupported subagent request kind %q", kind)
+	}
+}
+
 type SubAgentInputRecord struct {
 	SubAgentInputID    string
 	ParentThreadID     string
@@ -103,7 +124,12 @@ type AdmitSubAgentInputResult struct {
 	Replayed    bool
 }
 
+type SubAgentInputReadRepo interface {
+	ReadSubAgentInput(context.Context, string) (SubAgentInputRecord, bool, error)
+}
+
 type SubAgentInputAuthorityRepo interface {
+	SubAgentInputReadRepo
 	PublishSubAgent(context.Context, PublishSubAgentRequest) (PublishSubAgentResult, error)
 	PublishSubAgentInput(context.Context, PublishSubAgentInputRequest) (SubAgentInputRecord, bool, error)
 	PublishSubAgentPendingToolCompletion(context.Context, PublishSubAgentPendingToolCompletionRequest) (PublishSubAgentPendingToolCompletionResult, error)
@@ -341,11 +367,15 @@ func (r *MemoryRepo) AdmitSubAgentInput(ctx context.Context, req AdmitSubAgentIn
 	if inputIndex < 0 {
 		return AdmitSubAgentInputResult{}, ErrSubAgentInputNotFound
 	}
+	input := r.subAgentInputs[req.ChildThreadID][inputIndex]
+	userMessageOrigin, err := SubAgentUserMessageOrigin(input.RequestKind)
+	if err != nil {
+		return AdmitSubAgentInputResult{}, err
+	}
 	lease, err := r.acquireTurnLeaseLocked(TurnLease{ThreadID: req.ChildThreadID, TurnID: req.TurnID, OwnerID: req.OwnerID, Purpose: TurnLeasePurposeTurn})
 	if err != nil {
 		return AdmitSubAgentInputResult{}, err
 	}
-	input := r.subAgentInputs[req.ChildThreadID][inputIndex]
 	_ = ctx
 	now := nonZeroAuthorityTime(req.Now, r.now)
 	started := Entry{
@@ -361,8 +391,11 @@ func (r *MemoryRepo) AdmitSubAgentInput(ctx context.Context, req AdmitSubAgentIn
 		ThreadID: req.ChildThreadID,
 		TurnID:   req.TurnID,
 		Type:     EntryUserMessage,
-		Metadata: map[string]string{"subagent_input_id": input.SubAgentInputID},
-		Message:  session.CloneMessage(input.Message),
+		Metadata: map[string]string{
+			SubAgentInputIDMetadataKey:           input.SubAgentInputID,
+			SubAgentUserMessageOriginMetadataKey: userMessageOrigin,
+		},
+		Message: session.CloneMessage(input.Message),
 	}
 	user.ParentID = started.ID
 	user.CreatedAt = now
@@ -402,6 +435,17 @@ func (r *MemoryRepo) ListSubAgentInputs(_ context.Context, childThreadID string,
 		return strings.Compare(left.SubAgentInputID, right.SubAgentInputID)
 	})
 	return out, nil
+}
+
+func (r *MemoryRepo) ReadSubAgentInput(_ context.Context, inputID string) (SubAgentInputRecord, bool, error) {
+	inputID = strings.TrimSpace(inputID)
+	if inputID == "" {
+		return SubAgentInputRecord{}, false, errors.New("subagent input id is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	input, found := r.subAgentInputByIDLocked(inputID)
+	return input, found, nil
 }
 
 func (r *MemoryRepo) acquireTurnLeaseLocked(request TurnLease) (TurnLease, error) {

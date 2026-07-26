@@ -421,6 +421,45 @@ func TestPublicThreadDetailEventsHideRetryAuthorityMetadata(t *testing.T) {
 	}
 }
 
+func TestPublicThreadDetailEventsHideSubAgentInputAuthorityMetadata(t *testing.T) {
+	events := publicThreadDetailEvents([]agentharness.SubAgentDetailEvent{{
+		Kind: agentharness.SubAgentDetailEventUserMessage,
+		Metadata: map[string]string{
+			"safe_fact":                                      "kept",
+			sessiontree.SubAgentInputIDMetadataKey:           "input-1",
+			sessiontree.SubAgentUserMessageOriginMetadataKey: sessiontree.SubAgentUserMessageOriginDelegatedMission,
+		},
+	}})
+	if len(events) != 1 || events[0].Metadata["safe_fact"] != "kept" {
+		t.Fatalf("events=%#v", events)
+	}
+	for _, key := range []string{sessiontree.SubAgentInputIDMetadataKey, sessiontree.SubAgentUserMessageOriginMetadataKey} {
+		if _, found := events[0].Metadata[key]; found {
+			t.Fatalf("subagent input authority %q leaked: %#v", key, events[0])
+		}
+	}
+}
+
+func TestThreadTurnProjectionRejectsInvalidUserMessageOrigin(t *testing.T) {
+	now := time.Now().UTC()
+	_, _, err := projectThreadTurnSnapshots("thread", []ThreadDetailEvent{
+		{
+			ID: "started", Ordinal: 1, ThreadID: "thread", TurnID: "turn", RunID: "run",
+			Kind: ThreadDetailEventTurnMarker, CreatedAt: now,
+			TurnMarker: &ThreadDetailTurnMarker{Status: string(sessiontree.TurnStarted), Metadata: map[string]string{"run_id": "run"}},
+		},
+		{
+			ID: "user", Ordinal: 2, ThreadID: "thread", TurnID: "turn", RunID: "run",
+			Kind: ThreadDetailEventUserMessage, CreatedAt: now,
+			Message:  &ThreadDetailMessage{Role: "user", Content: "hello"},
+			Metadata: map[string]string{sessiontree.SubAgentUserMessageOriginMetadataKey: "unknown"},
+		},
+	})
+	if !errors.Is(err, ErrAuthorityCorrupt) {
+		t.Fatalf("projectThreadTurnSnapshots error=%v, want ErrAuthorityCorrupt", err)
+	}
+}
+
 func threadTurnCursorPointer(raw string) *ThreadTurnCursor {
 	cursor := ThreadTurnCursor(raw)
 	return &cursor

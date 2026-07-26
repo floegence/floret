@@ -54,7 +54,7 @@ const (
 )
 
 const (
-	subAgentAdmittedInputIDKey = "subagent_input_id"
+	subAgentAdmittedInputIDKey = sessiontree.SubAgentInputIDMetadataKey
 
 	subAgentApprovalEntryKind = "subagent_approval"
 	subAgentDetailKindKey     = "kind"
@@ -1071,19 +1071,23 @@ func (h *AgentHarness) ListThreadDetailEvents(ctx context.Context, opts ListThre
 	}, nil
 }
 
-func (h *AgentHarness) detailEventsForCanonicalEntries(entries []sessiontree.Entry, includeRaw bool) []SubAgentDetailEvent {
+func (h *AgentHarness) detailEventsForCanonicalEntries(ctx context.Context, entries []sessiontree.Entry, includeRaw bool) ([]SubAgentDetailEvent, error) {
 	activityContext := subAgentDetailActivityContext{
 		resultCallIDs: subAgentDetailResultCallIDs(entries),
 		runIDs:        subAgentDetailTurnRunIDs(entries),
 	}
 	events := make([]SubAgentDetailEvent, 0, len(entries))
 	for index, entry := range entries {
+		entry, err := h.restoreCanonicalSubAgentUserMessageOrigin(ctx, entry, activityContext.runIDForTurn(entry.TurnID))
+		if err != nil {
+			return nil, err
+		}
 		event, ok := h.subAgentDetailEvent(entry, int64(index+1), includeRaw, activityContext)
 		if ok {
 			events = append(events, event)
 		}
 	}
-	return events
+	return events, nil
 }
 
 func (h *AgentHarness) ReadTurnDetailEvents(ctx context.Context, threadID, turnID, runID string, includeRaw bool) (ThreadDetailEvents, bool, error) {
@@ -1104,7 +1108,10 @@ func (h *AgentHarness) ReadTurnDetailEvents(ctx context.Context, threadID, turnI
 	if !found {
 		return ThreadDetailEvents{}, false, nil
 	}
-	events := h.detailEventsForCanonicalEntries(entries, includeRaw)
+	events, err := h.detailEventsForCanonicalEntries(ctx, entries, includeRaw)
+	if err != nil {
+		return ThreadDetailEvents{}, false, err
+	}
 	return ThreadDetailEvents{Events: events, NextOrdinal: int64(len(events)), RetainedFrom: 1, GeneratedAt: h.now()}, true, nil
 }
 
@@ -1189,7 +1196,11 @@ func (h *AgentHarness) ReadLatestThreadDetailEvents(ctx context.Context, threadI
 	events := make([]SubAgentDetailEvent, 0, len(entries))
 	var nextOrdinal int64
 	for _, item := range selected {
-		event, ok := h.subAgentDetailEvent(item.entry, item.ordinal, includeRaw, activityContext)
+		entry, err := h.restoreCanonicalSubAgentUserMessageOrigin(ctx, item.entry, activityContext.runIDForTurn(item.entry.TurnID))
+		if err != nil {
+			return ThreadDetailEvents{}, err
+		}
+		event, ok := h.subAgentDetailEvent(entry, item.ordinal, includeRaw, activityContext)
 		if !ok {
 			continue
 		}
@@ -1206,7 +1217,7 @@ func (h *AgentHarness) ReadLatestThreadDetailEvents(ctx context.Context, threadI
 	}, nil
 }
 
-func (h *AgentHarness) latestThreadDetailEventsFromPath(path []sessiontree.Entry, includeRaw bool) (ThreadDetailEvents, error) {
+func (h *AgentHarness) latestThreadDetailEventsFromPath(ctx context.Context, path []sessiontree.Entry, includeRaw bool) (ThreadDetailEvents, error) {
 	latestStartedIndex := -1
 	latestTurnID := ""
 	for index := len(path) - 1; index >= 0; index-- {
@@ -1250,6 +1261,10 @@ func (h *AgentHarness) latestThreadDetailEventsFromPath(path []sessiontree.Entry
 	var nextOrdinal int64
 	for offset, entry := range entries {
 		ordinal := int64(latestStartedIndex + offset + 1)
+		entry, err := h.restoreCanonicalSubAgentUserMessageOrigin(ctx, entry, activityContext.runIDForTurn(entry.TurnID))
+		if err != nil {
+			return ThreadDetailEvents{}, err
+		}
 		event, ok := h.subAgentDetailEvent(entry, ordinal, includeRaw, activityContext)
 		if !ok {
 			continue

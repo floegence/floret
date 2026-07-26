@@ -36,6 +36,12 @@ the typed root turn model, and a composition-only `ThreadInventoryHost` lists
 canonical roots for recovery discovery. The inventory host cannot enter a run
 and carries no product visibility or routing authority.
 
+The v0.30 amendment makes canonical user-message provenance explicit on typed
+turn snapshots. Floret atomically records whether a user entry is ordinary user
+input, a delegated SubAgent mission, a later SubAgent input, or a pending-tool
+completion. Hosts may apply presentation policy to that finite fact without
+parsing prompt text, journal position, detail metadata, or internal input IDs.
+
 # Boundary
 
 Floret owns admitted Agent state. A downstream host owns product settings,
@@ -1122,9 +1128,15 @@ child as parent.
 the child authority transaction, the Store selects the pending input with the
 lowest durable sequence, using `SubAgentInputID` only as a deterministic tie
 breaker, then acquires the child turn generation, appends turn-start and the
-canonical user message carrying that exact ID, and marks it admitted. No pending
+canonical user message carrying that exact ID and typed request origin, and
+marks it admitted. Public turn reads project only the closed origin vocabulary;
+the internal input ID and origin metadata are removed from detail events. No pending
 input returns the internal no-work result with zero lease or journal mutation;
 `WaitSubAgents` does not expose it as a public lifecycle error.
+Legacy canonical entries that contain the durable input ID but predate typed
+origin metadata are resolved inside `agentharness`: the exact input row must be
+admitted and match the entry's child, turn, and run identities before its
+`request_kind` is projected. A mismatch fails closed as corrupt authority.
 Replay of the same child `TurnID`/`RunID` returns the input already admitted to
 that turn; reuse of those continuation identities for another input is a request
 conflict. Two processes cannot admit the same input. Active child settlement

@@ -116,6 +116,18 @@ type ThreadOverview struct {
 	LatestTurn *ThreadTurnSnapshot `json:"latest_turn,omitempty"`
 }
 
+// ThreadUserMessageOrigin identifies how Floret admitted one canonical user
+// message. Hosts may use it for presentation, but it is not authorization or a
+// storage locator.
+type ThreadUserMessageOrigin string
+
+const (
+	ThreadUserMessageOriginUser                  ThreadUserMessageOrigin = "user"
+	ThreadUserMessageOriginDelegatedMission      ThreadUserMessageOrigin = "delegated_mission"
+	ThreadUserMessageOriginSubAgentInput         ThreadUserMessageOrigin = "subagent_input"
+	ThreadUserMessageOriginPendingToolCompletion ThreadUserMessageOrigin = "pending_tool_completion"
+)
+
 type ThreadTurnSnapshot struct {
 	TurnID    TurnID    `json:"turn_id"`
 	RunID     RunID     `json:"run_id"`
@@ -124,18 +136,19 @@ type ThreadTurnSnapshot struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	// UserEntryID is the opaque identity of the admitted canonical user Entry.
 	// It is a presentation anchor, not authorization or a storage access handle.
-	UserEntryID     string                 `json:"user_entry_id,omitempty"`
-	UserInput       string                 `json:"user_input,omitempty"`
-	UserAttachments []MessageAttachment    `json:"user_attachments,omitempty"`
-	UserReferences  []MessageReference     `json:"user_references,omitempty"`
-	RetrySource     *ThreadTurnRetrySource `json:"retry_source,omitempty"`
-	Status          TurnStatus             `json:"status"`
-	Failure         *ThreadTurnFailure     `json:"failure,omitempty"`
-	Recoverable     bool                   `json:"recoverable"`
-	CanRetry        bool                   `json:"can_retry"`
-	Projection      ThreadTurnProjection   `json:"projection"`
-	ControlSignals  []ThreadControlSignal  `json:"control_signals,omitempty"`
-	ThroughOrdinal  int64                  `json:"through_ordinal"`
+	UserEntryID       string                  `json:"user_entry_id,omitempty"`
+	UserMessageOrigin ThreadUserMessageOrigin `json:"user_message_origin,omitempty"`
+	UserInput         string                  `json:"user_input,omitempty"`
+	UserAttachments   []MessageAttachment     `json:"user_attachments,omitempty"`
+	UserReferences    []MessageReference      `json:"user_references,omitempty"`
+	RetrySource       *ThreadTurnRetrySource  `json:"retry_source,omitempty"`
+	Status            TurnStatus              `json:"status"`
+	Failure           *ThreadTurnFailure      `json:"failure,omitempty"`
+	Recoverable       bool                    `json:"recoverable"`
+	CanRetry          bool                    `json:"can_retry"`
+	Projection        ThreadTurnProjection    `json:"projection"`
+	ControlSignals    []ThreadControlSignal   `json:"control_signals,omitempty"`
+	ThroughOrdinal    int64                   `json:"through_ordinal"`
 }
 
 type ThreadTurnRetrySource struct {
@@ -460,7 +473,10 @@ func projectCanonicalThreadTurnSnapshot(threadID ThreadID, detail agentharness.C
 	if turnID == "" || runID == "" || startedRunID != runID || ordinal != detail.StartedOrdinal || ordinal <= 0 || startedAt.IsZero() {
 		return ThreadTurnSnapshot{}, fmt.Errorf("%w: canonical turn %q has an invalid started identity", ErrAuthorityCorrupt, detail.TurnID)
 	}
-	userEntryID, userInput, userAttachments, userReferences := canonicalTurnUserInput(events, turnID)
+	userEntryID, userMessageOrigin, userInput, userAttachments, userReferences, err := canonicalTurnUserInput(events, turnID)
+	if err != nil {
+		return ThreadTurnSnapshot{}, err
+	}
 	retryAuthority, err := readThreadTurnRetryAuthority(events, turnID)
 	if err != nil {
 		return ThreadTurnSnapshot{}, err
@@ -486,21 +502,22 @@ func projectCanonicalThreadTurnSnapshot(threadID ThreadID, detail agentharness.C
 		return ThreadTurnSnapshot{}, fmt.Errorf("project turn %q: %w", turnID, err)
 	}
 	turn := ThreadTurnSnapshot{
-		TurnID:          turnID,
-		RunID:           runID,
-		Ordinal:         ordinal,
-		StartedAt:       startedAt,
-		UpdatedAt:       events[len(events)-1].CreatedAt,
-		UserEntryID:     userEntryID,
-		UserInput:       userInput,
-		UserAttachments: userAttachments,
-		UserReferences:  userReferences,
-		RetrySource:     publicThreadTurnRetrySource(retryAuthority),
-		Status:          projection.Status,
-		Failure:         canonicalTurnFailure(events),
-		Projection:      projection,
-		ControlSignals:  threadTurnControlSignals(events),
-		ThroughOrdinal:  projection.ThroughOrdinal,
+		TurnID:            turnID,
+		RunID:             runID,
+		Ordinal:           ordinal,
+		StartedAt:         startedAt,
+		UpdatedAt:         events[len(events)-1].CreatedAt,
+		UserEntryID:       userEntryID,
+		UserMessageOrigin: userMessageOrigin,
+		UserInput:         userInput,
+		UserAttachments:   userAttachments,
+		UserReferences:    userReferences,
+		RetrySource:       publicThreadTurnRetrySource(retryAuthority),
+		Status:            projection.Status,
+		Failure:           canonicalTurnFailure(events),
+		Projection:        projection,
+		ControlSignals:    threadTurnControlSignals(events),
+		ThroughOrdinal:    projection.ThroughOrdinal,
 	}
 	turn.Status = canonicalTurnStatus(turn.Status, turn.Failure)
 	if err := validateThreadTurnFailureForStatus(turn.Status, turn.Failure); err != nil {
@@ -551,7 +568,10 @@ func projectThreadTurnSnapshots(threadID ThreadID, events []ThreadDetailEvent) (
 		if strings.TrimSpace(string(runID)) == "" || ordinal <= 0 || startedAt.IsZero() {
 			return nil, 0, fmt.Errorf("turn %q has an invalid started marker", turnID)
 		}
-		userEntryID, userInput, userAttachments, userReferences := canonicalTurnUserInput(events, turnID)
+		userEntryID, userMessageOrigin, userInput, userAttachments, userReferences, err := canonicalTurnUserInput(events, turnID)
+		if err != nil {
+			return nil, 0, err
+		}
 		retryAuthority, err := readThreadTurnRetryAuthority(turnEvents, turnID)
 		if err != nil {
 			return nil, 0, err
@@ -573,21 +593,22 @@ func projectThreadTurnSnapshots(threadID ThreadID, events []ThreadDetailEvent) (
 			return nil, 0, fmt.Errorf("project turn %q: %w", turnID, err)
 		}
 		turn := ThreadTurnSnapshot{
-			TurnID:          turnID,
-			RunID:           runID,
-			Ordinal:         ordinal,
-			StartedAt:       startedAt,
-			UpdatedAt:       turnEvents[len(turnEvents)-1].CreatedAt,
-			UserEntryID:     userEntryID,
-			UserInput:       userInput,
-			UserAttachments: userAttachments,
-			UserReferences:  userReferences,
-			RetrySource:     publicThreadTurnRetrySource(retryAuthority),
-			Status:          projection.Status,
-			Failure:         canonicalTurnFailure(turnEvents),
-			Projection:      projection,
-			ControlSignals:  threadTurnControlSignals(turnEvents),
-			ThroughOrdinal:  projection.ThroughOrdinal,
+			TurnID:            turnID,
+			RunID:             runID,
+			Ordinal:           ordinal,
+			StartedAt:         startedAt,
+			UpdatedAt:         turnEvents[len(turnEvents)-1].CreatedAt,
+			UserEntryID:       userEntryID,
+			UserMessageOrigin: userMessageOrigin,
+			UserInput:         userInput,
+			UserAttachments:   userAttachments,
+			UserReferences:    userReferences,
+			RetrySource:       publicThreadTurnRetrySource(retryAuthority),
+			Status:            projection.Status,
+			Failure:           canonicalTurnFailure(turnEvents),
+			Projection:        projection,
+			ControlSignals:    threadTurnControlSignals(turnEvents),
+			ThroughOrdinal:    projection.ThroughOrdinal,
 		}
 		turn.Status = canonicalTurnStatus(turn.Status, turn.Failure)
 		if err := validateThreadTurnFailureForStatus(turn.Status, turn.Failure); err != nil {
@@ -661,13 +682,37 @@ func threadTurnStartedIdentity(events []ThreadDetailEvent) (RunID, int64, time.T
 	return "", 0, time.Time{}
 }
 
-func canonicalTurnUserInput(events []ThreadDetailEvent, turnID TurnID) (string, string, []MessageAttachment, []MessageReference) {
+func canonicalTurnUserInput(events []ThreadDetailEvent, turnID TurnID) (string, ThreadUserMessageOrigin, string, []MessageAttachment, []MessageReference, error) {
 	for _, event := range events {
 		if event.TurnID == turnID && event.Kind == ThreadDetailEventUserMessage && event.Message != nil {
-			return event.ID, event.Message.Content, cloneMessageAttachments(event.Message.Attachments), append([]MessageReference(nil), event.Message.References...)
+			origin, err := threadUserMessageOrigin(event.Metadata)
+			if err != nil {
+				return "", "", "", nil, nil, fmt.Errorf("%w: canonical turn %q has invalid user message origin: %v", ErrAuthorityCorrupt, turnID, err)
+			}
+			return event.ID, origin, event.Message.Content, cloneMessageAttachments(event.Message.Attachments), append([]MessageReference(nil), event.Message.References...), nil
 		}
 	}
-	return "", "", nil, nil
+	return "", "", "", nil, nil, nil
+}
+
+func threadUserMessageOrigin(metadata map[string]string) (ThreadUserMessageOrigin, error) {
+	raw, ok := metadata[sessiontree.SubAgentUserMessageOriginMetadataKey]
+	if !ok {
+		return ThreadUserMessageOriginUser, nil
+	}
+	if raw == "" || raw != strings.TrimSpace(raw) {
+		return "", errors.New("origin is empty or not normalized")
+	}
+	switch raw {
+	case sessiontree.SubAgentUserMessageOriginDelegatedMission:
+		return ThreadUserMessageOriginDelegatedMission, nil
+	case sessiontree.SubAgentUserMessageOriginInput:
+		return ThreadUserMessageOriginSubAgentInput, nil
+	case sessiontree.SubAgentUserMessageOriginPendingToolCompletion:
+		return ThreadUserMessageOriginPendingToolCompletion, nil
+	default:
+		return "", fmt.Errorf("unsupported origin %q", raw)
+	}
 }
 
 func canonicalTurnFailure(events []ThreadDetailEvent) *ThreadTurnFailure {

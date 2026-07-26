@@ -56,7 +56,11 @@ func (h *AgentHarness) ListCanonicalTurnDetailEvents(ctx context.Context, opts s
 	for _, turn := range canonical.Turns {
 		entries := make([]sessiontree.Entry, 0, len(turn.Entries))
 		for _, item := range turn.Entries {
-			entries = append(entries, item.Entry)
+			entry, err := h.restoreCanonicalSubAgentUserMessageOrigin(ctx, item.Entry, turn.RunID)
+			if err != nil {
+				return CanonicalTurnDetailsPage{}, err
+			}
+			entries = append(entries, entry)
 		}
 		activityContext := subAgentDetailActivityContext{
 			resultCallIDs: subAgentDetailResultCallIDs(entries),
@@ -66,8 +70,8 @@ func (h *AgentHarness) ListCanonicalTurnDetailEvents(ctx context.Context, opts s
 			TurnID: turn.TurnID, RunID: turn.RunID, StartedOrdinal: turn.StartedOrdinal,
 			RetrySource: cloneCanonicalTurnRetrySource(turn.RetrySource),
 		}
-		for _, item := range turn.Entries {
-			event, visible := h.subAgentDetailEvent(item.Entry, item.Ordinal, includeRaw, activityContext)
+		for index, item := range turn.Entries {
+			event, visible := h.subAgentDetailEvent(entries[index], item.Ordinal, includeRaw, activityContext)
 			if visible {
 				detail.Events = append(detail.Events, event)
 			}
@@ -99,6 +103,42 @@ func (h *AgentHarness) ListCanonicalTurnDetailEvents(ctx context.Context, opts s
 	page.LatestRecoverable = lifecycle.Recoverable()
 	page.LatestCanRetry = canonical.HasRetryTarget
 	return page, nil
+}
+
+func (h *AgentHarness) restoreCanonicalSubAgentUserMessageOrigin(ctx context.Context, entry sessiontree.Entry, runID string) (sessiontree.Entry, error) {
+	if entry.Type != sessiontree.EntryUserMessage {
+		return entry, nil
+	}
+	if _, present := entry.Metadata[sessiontree.SubAgentUserMessageOriginMetadataKey]; present {
+		return entry, nil
+	}
+	rawInputID, present := entry.Metadata[sessiontree.SubAgentInputIDMetadataKey]
+	if !present {
+		return entry, nil
+	}
+	inputID := strings.TrimSpace(rawInputID)
+	if inputID == "" || inputID != rawInputID {
+		return sessiontree.Entry{}, sessiontree.ErrAuthorityCorrupt
+	}
+	reader, ok := h.options.Repo.(sessiontree.SubAgentInputReadRepo)
+	if !ok {
+		return sessiontree.Entry{}, errors.New("session tree repo does not support subagent input reads")
+	}
+	input, found, err := reader.ReadSubAgentInput(ctx, inputID)
+	if err != nil {
+		return sessiontree.Entry{}, err
+	}
+	if !found || input.SubAgentInputID != inputID || input.State != sessiontree.SubAgentInputAdmitted ||
+		input.ChildThreadID != entry.ThreadID || input.AdmittedTurnID != entry.TurnID || input.AdmittedRunID != strings.TrimSpace(runID) {
+		return sessiontree.Entry{}, sessiontree.ErrAuthorityCorrupt
+	}
+	origin, err := sessiontree.SubAgentUserMessageOrigin(input.RequestKind)
+	if err != nil {
+		return sessiontree.Entry{}, sessiontree.ErrAuthorityCorrupt
+	}
+	entry.Metadata = cloneStringMap(entry.Metadata)
+	entry.Metadata[sessiontree.SubAgentUserMessageOriginMetadataKey] = origin
+	return entry, nil
 }
 
 func cloneCanonicalTurnRetrySource(source *sessiontree.CanonicalTurnRetrySource) *sessiontree.CanonicalTurnRetrySource {

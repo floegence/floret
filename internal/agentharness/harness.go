@@ -1074,7 +1074,7 @@ func (h *AgentHarness) ReadThreadOverview(ctx context.Context, id string) (Threa
 	if err != nil {
 		return ThreadOverview{}, err
 	}
-	latest, err := h.latestThreadDetailEventsFromPath(journal.Path, true)
+	latest, err := h.latestThreadDetailEventsFromPath(ctx, journal.Path, true)
 	if err != nil {
 		return ThreadOverview{}, err
 	}
@@ -1436,7 +1436,10 @@ func (t *Thread) turnAdmissionReplayResult(ctx context.Context, admission sessio
 	if !found {
 		return TurnResult{}, sessiontree.ErrAuthorityCorrupt
 	}
-	result.CanonicalEvents = t.harness.detailEventsForCanonicalEntries(entries, true)
+	result.CanonicalEvents, err = t.harness.detailEventsForCanonicalEntries(ctx, entries, true)
+	if err != nil {
+		return TurnResult{}, err
+	}
 	var output strings.Builder
 	for _, entry := range entries {
 		if entry.Type == sessiontree.EntryAssistantMessage && strings.TrimSpace(entry.Message.Content) != "" {

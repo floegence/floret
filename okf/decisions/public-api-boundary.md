@@ -31,7 +31,10 @@ each responsibility instead of inheriting a framework interface.
 Public query cursors are opaque tokens scoped to their domain and mode. A host
 may retain and return them, but storage anchors, retry entry authority, and
 compaction window topology remain internal. Canonical `UserEntryID` is retained
-only as an opaque presentation anchor and never grants Store access.
+only as an opaque presentation anchor and never grants Store access. Canonical
+user-message provenance is a closed `ThreadUserMessageOrigin` value on typed
+turn snapshots; hosts never parse SubAgent input IDs or detail metadata to
+reconstruct it.
 
 Progressive disclosure is implemented through safe single-family constructors
 and host-owned generated composition, not a public `Client`, `App`, or aggregate

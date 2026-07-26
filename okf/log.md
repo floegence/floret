@@ -1,6 +1,11 @@
 # Floret OKF Update Log
 
 ## 2026-07-26
+* **Typed message provenance**: Added canonical `ThreadUserMessageOrigin` to
+  public turn snapshots, atomically classified SubAgent mission, follow-up, and
+  pending-completion admissions, recovered pre-marker origins from exact durable
+  input authority, and removed internal input authority metadata from public
+  detail events.
 * **Breaking read boundary**: Replaced public entry-shaped turn cursors with
   versioned opaque thread/mode-bound tokens and reduced public retry source to
   `TurnID`; exact entry anchors remain validated inside the journal authority.

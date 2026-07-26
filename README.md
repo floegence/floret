@@ -225,7 +225,13 @@ them unchanged and never interpret journal positions. A composition owner may
 retain `ThreadInventoryHost` to discover canonical root threads for startup
 reconciliation; product visibility, routing, pinning, and ordering remain in the
 host. Parent-bound `SubAgentReadHost.ListThreadTurns` uses the same typed turn
-page as root history, while detail events remain a separate diagnostic surface.
+page as root history. Each admitted user entry carries a typed
+`ThreadUserMessageOrigin`, so hosts can distinguish a user message, delegated
+SubAgent mission, follow-up SubAgent input, or pending-tool completion without
+parsing detail metadata or internal input identities. Detail events remain a
+separate diagnostic surface. Reads of pre-v0.30 SubAgent turns recover the same
+typed origin from Floret's durable input authority without rewriting journal
+entries or exposing compatibility logic to hosts.
 
 ## Production Shape
 

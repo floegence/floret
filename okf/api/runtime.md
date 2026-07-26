@@ -181,6 +181,11 @@ host interface for every runtime operation.
   verified control signals, complete `ThreadTurnProjection`, and
   projection-through ordinal. `UserEntryID` is an opaque canonical presentation
   anchor; it is not authorization, a cursor, or direct Store access.
+  `UserMessageOrigin` is the finite typed provenance of that admitted entry:
+  `user`, `delegated_mission`, `subagent_input`, or
+  `pending_tool_completion`. It is a presentation fact, not an authorization
+  proof or storage locator. Retry turns do not duplicate a user entry and
+  therefore carry no origin.
 * `ThreadInventoryHost.ListRootThreads` is issued only from `HostBootstrap` to a
   composition or maintenance owner. It returns bounded pages of existing
   canonical roots, including archived roots, using validated `ThreadSummary` values and an
@@ -277,8 +282,11 @@ host interface for every runtime operation.
 * `SubAgentReadHost.ListThreadTurns` reads the same `ThreadTurnsPage` and
   `ThreadTurnSnapshot` contracts as a root read after proving the requested
   thread is a complete direct or deep descendant of the bound parent. Normal
-  child conversation UI uses this typed model; `ReadSubAgentDetail` remains the
-  diagnostic, audit, context, and tool-activity surface.
+  child conversation UI uses this typed model, including the exact
+  `delegated_mission` entry identity supplied by Floret. Hosts must not infer
+  message provenance from prompt text, event position, raw-omission flags, or
+  detail metadata. `ReadSubAgentDetail` remains the diagnostic, audit, context,
+  and tool-activity surface.
 * `ListThreadDetailEvents` lets a host read the Floret-owned ordered execution
   transcript for a hosted thread without reading Floret storage internals.
 * `ReadLatestThreadTurn` returns the latest admitted turn from the active path
@@ -537,6 +545,15 @@ non-empty opaque `SinceCursor`. A retry turn carries only
 retains and validates the exact internal source entry. Hosts must not parse or
 synthesize cursors, copy retry input, or fall back to scanning the active path
 when a cursor is stale.
+Canonical user-entry provenance is projected through the closed
+`ThreadUserMessageOrigin` vocabulary. Floret writes SubAgent mission, follow-up,
+and pending-completion origin in the same atomic admission as the canonical
+entry; ordinary admitted turns project `user`. Hosts use this typed fact instead
+of parsing internal SubAgent input IDs or detail-event metadata. For canonical
+SubAgent entries admitted before this marker existed, Floret resolves the exact
+durable input by its internal ID, verifies child, turn, run, and admitted-state
+authority, and derives the same typed origin from `request_kind`. The journal
+remains immutable and the internal ID is not projected publicly.
 A canonical user input containing only references is not retry-eligible because
 its provider material was ephemeral and cannot be reconstructed from durable
 authority. Its overview/page reports `CanRetry=false`, and `RetryTurn` returns

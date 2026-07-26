@@ -4364,6 +4364,11 @@ func threadDetailCompaction(in *agentharness.SubAgentDetailCompaction) *ThreadDe
 func publicThreadDetailEvents(in []agentharness.SubAgentDetailEvent) []ThreadDetailEvent {
 	out := threadDetailEvents(in)
 	for index := range out {
+		delete(out[index].Metadata, sessiontree.SubAgentInputIDMetadataKey)
+		delete(out[index].Metadata, sessiontree.SubAgentUserMessageOriginMetadataKey)
+		if len(out[index].Metadata) == 0 {
+			out[index].Metadata = nil
+		}
 		if out[index].Compaction != nil {
 			out[index].Metadata = safeStringMetadata(out[index].Metadata)
 		}

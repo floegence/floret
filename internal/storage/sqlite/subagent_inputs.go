@@ -248,6 +248,10 @@ func (s *Store) AdmitSubAgentInput(ctx context.Context, req sessiontree.AdmitSub
 		if !found {
 			return sessiontree.ErrSubAgentInputNotFound
 		}
+		userMessageOrigin, err := sessiontree.SubAgentUserMessageOrigin(input.RequestKind)
+		if err != nil {
+			return err
+		}
 		lease, err := s.acquireTurnLeaseWithRunner(ctx, tx, sessiontree.TurnLease{
 			ThreadID: req.ChildThreadID, TurnID: req.TurnID, OwnerID: req.OwnerID, Purpose: sessiontree.TurnLeasePurposeTurn,
 		})
@@ -264,7 +268,11 @@ func (s *Store) AdmitSubAgentInput(ctx context.Context, req sessiontree.AdmitSub
 		}
 		user, err := appendWithRunner(leaseCtx, tx, sessiontree.Entry{
 			ThreadID: req.ChildThreadID, TurnID: req.TurnID, Type: sessiontree.EntryUserMessage,
-			Metadata: map[string]string{"subagent_input_id": input.SubAgentInputID}, Message: session.CloneMessage(input.Message),
+			Metadata: map[string]string{
+				sessiontree.SubAgentInputIDMetadataKey:           input.SubAgentInputID,
+				sessiontree.SubAgentUserMessageOriginMetadataKey: userMessageOrigin,
+			},
+			Message: session.CloneMessage(input.Message),
 		}, sessiontree.AppendOptions{Now: now}, s.now)
 		if err != nil {
 			return err
@@ -329,6 +337,14 @@ func (s *Store) ListSubAgentInputs(ctx context.Context, childThreadID string, st
 		out = append(out, input)
 	}
 	return out, nil
+}
+
+func (s *Store) ReadSubAgentInput(ctx context.Context, inputID string) (sessiontree.SubAgentInputRecord, bool, error) {
+	inputID = strings.TrimSpace(inputID)
+	if inputID == "" {
+		return sessiontree.SubAgentInputRecord{}, false, errors.New("subagent input id is required")
+	}
+	return loadSubAgentInput(ctx, s.db, inputID)
 }
 
 type sqliteSubAgentRequestLedger struct {
