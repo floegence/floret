@@ -208,6 +208,48 @@ func TestSQLiteReadCanonicalTurnRejectsNonLatestRetrySourceOutsideAncestorPath(t
 	}
 }
 
+func TestSQLiteReadCanonicalTurnRejectsCorruptActiveLeafPath(t *testing.T) {
+	ctx := context.Background()
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, *Store)
+	}{
+		{name: "missing leaf", mutate: func(t *testing.T, store *Store) {
+			if _, err := store.db.ExecContext(ctx, `UPDATE threads SET leaf_id = 'missing-leaf' WHERE id = 'thread'`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "broken parent chain", mutate: func(t *testing.T, store *Store) {
+			if _, err := store.db.ExecContext(ctx, `UPDATE entries SET parent_id = 'missing-parent' WHERE thread_id = 'thread' AND id = 'terminal'`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store, err := Open(filepath.Join(t.TempDir(), "floret.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			if _, err := store.CreateThread(ctx, sessiontree.ThreadMeta{ID: "thread"}); err != nil {
+				t.Fatal(err)
+			}
+			admitted, err := store.AdmitTurn(ctx, sessiontree.AdmitTurnRequest{ThreadID: "thread", TurnID: "turn", RunID: "run", OwnerID: "owner", RequestFingerprint: "request", Input: session.Message{Role: session.User, Content: "input"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.FinishTurn(ctx, sessiontree.FinishTurnRequest{Lease: admitted.Lease, RunID: "run", TerminalEntryID: "terminal", Status: sessiontree.TurnCompleted, OutcomeFingerprint: "outcome"}); err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(t, store)
+			_, err = store.ReadCanonicalTurn(ctx, "thread", "turn")
+			if !errors.Is(err, sessiontree.ErrAuthorityCorrupt) || errors.Is(err, sessiontree.ErrCanonicalTurnNotFound) {
+				t.Fatalf("corrupt active leaf path err=%v, want ErrAuthorityCorrupt only", err)
+			}
+		})
+	}
+}
+
 func assertSQLiteCanonicalTurnRead(t *testing.T, store *Store, turnID, runID, retryTurnID string) {
 	t.Helper()
 	read, err := store.ReadCanonicalTurn(context.Background(), "thread", turnID)

@@ -255,6 +255,48 @@ func TestMemoryReadCanonicalTurnRejectsNonLatestRetrySourceOutsideAncestorPath(t
 	}
 }
 
+func TestMemoryReadCanonicalTurnRejectsCorruptActiveLeafPath(t *testing.T) {
+	ctx := context.Background()
+	for _, test := range []struct {
+		name   string
+		mutate func(*MemoryRepo, Entry)
+	}{
+		{name: "missing leaf", mutate: func(repo *MemoryRepo, _ Entry) {
+			meta := repo.threads["thread"]
+			meta.LeafID = "missing-leaf"
+			repo.threads["thread"] = meta
+		}},
+		{name: "broken parent chain", mutate: func(repo *MemoryRepo, terminal Entry) {
+			for index := range repo.entries["thread"] {
+				if repo.entries["thread"][index].ID == terminal.ID {
+					repo.entries["thread"][index].ParentID = "missing-parent"
+					break
+				}
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo := NewMemoryRepo()
+			if _, err := repo.CreateThread(ctx, ThreadMeta{ID: "thread"}); err != nil {
+				t.Fatal(err)
+			}
+			admitted, err := repo.AdmitTurn(ctx, AdmitTurnRequest{ThreadID: "thread", TurnID: "turn", RunID: "run", OwnerID: "owner", RequestFingerprint: "request", Input: session.Message{Role: session.User, Content: "input"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			finished, err := repo.FinishTurn(ctx, FinishTurnRequest{Lease: admitted.Lease, RunID: "run", TerminalEntryID: "terminal", Status: TurnCompleted, OutcomeFingerprint: "outcome"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(repo, finished.Terminal)
+			_, err = repo.ReadCanonicalTurn(ctx, "thread", "turn")
+			if !errors.Is(err, ErrAuthorityCorrupt) || errors.Is(err, ErrCanonicalTurnNotFound) {
+				t.Fatalf("corrupt active leaf path err=%v, want ErrAuthorityCorrupt only", err)
+			}
+		})
+	}
+}
+
 func assertCanonicalTurnRead(t *testing.T, repo CanonicalTurnReadRepo, turnID, runID string, retrySource *CanonicalTurnRetrySource) CanonicalTurnRead {
 	t.Helper()
 	read, err := repo.ReadCanonicalTurn(context.Background(), "thread", turnID)
