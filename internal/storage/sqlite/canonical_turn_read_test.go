@@ -214,6 +214,11 @@ func TestSQLiteReadCanonicalTurnRejectsCorruptActiveLeafPath(t *testing.T) {
 		name   string
 		mutate func(*testing.T, *Store)
 	}{
+		{name: "empty leaf", mutate: func(t *testing.T, store *Store) {
+			if _, err := store.db.ExecContext(ctx, `UPDATE threads SET leaf_id = '' WHERE id = 'thread'`); err != nil {
+				t.Fatal(err)
+			}
+		}},
 		{name: "missing leaf", mutate: func(t *testing.T, store *Store) {
 			if _, err := store.db.ExecContext(ctx, `UPDATE threads SET leaf_id = 'missing-leaf' WHERE id = 'thread'`); err != nil {
 				t.Fatal(err)

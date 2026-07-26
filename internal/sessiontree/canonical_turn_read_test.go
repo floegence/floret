@@ -261,6 +261,11 @@ func TestMemoryReadCanonicalTurnRejectsCorruptActiveLeafPath(t *testing.T) {
 		name   string
 		mutate func(*MemoryRepo, Entry)
 	}{
+		{name: "empty leaf", mutate: func(repo *MemoryRepo, _ Entry) {
+			meta := repo.threads["thread"]
+			meta.LeafID = ""
+			repo.threads["thread"] = meta
+		}},
 		{name: "missing leaf", mutate: func(repo *MemoryRepo, _ Entry) {
 			meta := repo.threads["thread"]
 			meta.LeafID = "missing-leaf"

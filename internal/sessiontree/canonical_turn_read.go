@@ -197,7 +197,7 @@ func (r *MemoryRepo) readCanonicalTurnLocked(threadID, turnID, leafID string) (C
 		return CanonicalTurn{}, ErrAuthorityCorrupt
 	}
 	if leafID == "" {
-		return CanonicalTurn{}, ErrCanonicalTurnNotFound
+		return CanonicalTurn{}, ErrAuthorityCorrupt
 	}
 	active, err := r.canonicalTurnActiveAncestorLocked(threadID, leafID, started.ID)
 	if err != nil {
