@@ -102,7 +102,6 @@ func TestCandidateExactReadSurface(t *testing.T) {
 	}
 }
 EOF
-EOF
 go mod tidy
 GOFLAGS=-mod=readonly go test ./...
 if grep -Eq '(^|[[:space:]])replace([[:space:]]|$)' go.mod; then
