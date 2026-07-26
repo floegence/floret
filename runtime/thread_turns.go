@@ -204,6 +204,9 @@ func readThreadOverview(ctx context.Context, harness *agentharness.AgentHarness,
 		return ThreadOverview{}, runtimeHostError(err)
 	}
 	thread := threadSnapshot(overview.Thread)
+	if err := thread.Validate(); err != nil {
+		return ThreadOverview{}, fmt.Errorf("%w: invalid public thread snapshot: %v", ErrAuthorityCorrupt, err)
+	}
 	events := threadDetailEvents(overview.LatestTurn.Events)
 	turns, _, err := projectThreadTurnSnapshots(threadID, events)
 	if err != nil {
@@ -246,8 +249,12 @@ func readLatestThreadTurn(ctx context.Context, harness *agentharness.AgentHarnes
 	if err != nil {
 		return ThreadTurnSnapshot{}, runtimeHostError(err)
 	}
+	publicThread := threadSnapshot(thread)
+	if err := publicThread.Validate(); err != nil {
+		return ThreadTurnSnapshot{}, fmt.Errorf("%w: invalid public thread snapshot: %v", ErrAuthorityCorrupt, err)
+	}
 	latest := turns[0]
-	applyLatestThreadLifecycle(&latest, threadSnapshot(thread))
+	applyLatestThreadLifecycle(&latest, publicThread)
 	return latest, nil
 }
 

@@ -3,6 +3,7 @@ package sessiontree
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -29,6 +30,53 @@ func TestThreadTitleAuthorityValidatesTypedOperations(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if err := check(); err == nil {
 				t.Fatal("validation succeeded")
+			}
+		})
+	}
+}
+
+func TestValidateThreadTitleProjectionStateMatrix(t *testing.T) {
+	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	valid := []ThreadTitleProjection{
+		{},
+		{Status: ThreadTitlePending, UpdatedAt: now, Generation: 1},
+		{Title: "Host title", Status: ThreadTitleReady, Source: ThreadTitleSourceHost, UpdatedAt: now, Generation: 1},
+		{Title: "Provider title", Status: ThreadTitleReady, Source: ThreadTitleSourceProvider, UpdatedAt: now, Generation: 2},
+		{Status: ThreadTitleFailed, UpdatedAt: now, Error: "provider failure", Generation: 2},
+	}
+	for index, projection := range valid {
+		if err := ValidateThreadTitleProjection(projection); err != nil {
+			t.Fatalf("valid projection %d: %v", index, err)
+		}
+	}
+	invalid := map[string]ThreadTitleProjection{
+		"unknown status":        {Status: "unknown"},
+		"pending title":         {Title: "title", Status: ThreadTitlePending, UpdatedAt: now, Generation: 1},
+		"ready missing source":  {Title: "title", Status: ThreadTitleReady, UpdatedAt: now, Generation: 1},
+		"ready multiline":       {Title: "first\nsecond", Status: ThreadTitleReady, Source: ThreadTitleSourceHost, UpdatedAt: now, Generation: 1},
+		"ready overlong":        {Title: strings.Repeat("x", MaxThreadTitleRunes+1), Status: ThreadTitleReady, Source: ThreadTitleSourceHost, UpdatedAt: now, Generation: 1},
+		"failed missing error":  {Status: ThreadTitleFailed, UpdatedAt: now, Generation: 1},
+		"failed unstable error": {Status: ThreadTitleFailed, UpdatedAt: now, Error: " failure", Generation: 1},
+	}
+	for name, projection := range invalid {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateThreadTitleProjection(projection); err == nil {
+				t.Fatal("invalid title projection was accepted")
+			}
+		})
+	}
+}
+
+func TestValidateCanonicalThreadTitle(t *testing.T) {
+	if err := ValidateCanonicalThreadTitle("Canonical title"); err != nil {
+		t.Fatal(err)
+	}
+	for name, title := range map[string]string{
+		"empty": "", "unstable": " title", "multiline": "first\nsecond", "overlong": strings.Repeat("x", MaxThreadTitleRunes+1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateCanonicalThreadTitle(title); err == nil {
+				t.Fatal("invalid canonical title was accepted")
 			}
 		})
 	}

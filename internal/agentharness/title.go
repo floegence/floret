@@ -15,7 +15,6 @@ import (
 
 const (
 	defaultThreadTitleMaxRunes        = 16
-	maxHostThreadTitleRunes           = 200
 	defaultThreadTitleMaxOutputTokens = 64
 	threadTitlePromptMaxMessages      = 8
 	threadTitlePromptMaxContentRunes  = 600
@@ -26,11 +25,8 @@ func normalizeHostThreadTitle(raw string) (string, error) {
 	if title == "" {
 		return "", errors.New("thread title is required")
 	}
-	if strings.ContainsAny(title, "\r\n") {
-		return "", errors.New("thread title must be a single line")
-	}
-	if utf8.RuneCountInString(title) > maxHostThreadTitleRunes {
-		return "", fmt.Errorf("thread title must not exceed %d Unicode characters", maxHostThreadTitleRunes)
+	if err := sessiontree.ValidateCanonicalThreadTitle(title); err != nil {
+		return "", err
 	}
 	return title, nil
 }

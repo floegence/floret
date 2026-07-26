@@ -7,7 +7,21 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
+
+// MaxThreadTitleRunes is the canonical title admission and projection limit.
+const MaxThreadTitleRunes = 200
+
+// ThreadTitleProjection is the observable subset of canonical title authority.
+type ThreadTitleProjection struct {
+	Title      string
+	Status     ThreadTitleStatus
+	Source     ThreadTitleSource
+	UpdatedAt  time.Time
+	Error      string
+	Generation int64
+}
 
 type SetThreadTitleRequest struct {
 	ThreadID string
@@ -80,26 +94,76 @@ func ValidateFailAutomaticThreadTitleRequest(req FailAutomaticThreadTitleRequest
 	return nil
 }
 
+// ValidateCanonicalThreadTitle validates committed title text independently
+// from its authority state.
+func ValidateCanonicalThreadTitle(title string) error {
+	if title == "" || title != strings.TrimSpace(title) {
+		return errors.New("thread title must be non-empty and trim-stable")
+	}
+	if strings.ContainsAny(title, "\r\n") {
+		return errors.New("thread title must be single-line")
+	}
+	if utf8.RuneCountInString(title) > MaxThreadTitleRunes {
+		return errors.New("thread title exceeds canonical length limit")
+	}
+	return nil
+}
+
+// ValidateThreadTitleProjection validates the observable canonical title state
+// shared by durable authority and public runtime projections.
+func ValidateThreadTitleProjection(projection ThreadTitleProjection) error {
+	trimmedTitle := strings.TrimSpace(projection.Title)
+	trimmedError := strings.TrimSpace(projection.Error)
+	if trimmedTitle != projection.Title || trimmedError != projection.Error {
+		return errors.New("thread title values must be trim-stable")
+	}
+	switch projection.Status {
+	case "":
+		if projection.Title != "" || projection.Source != "" || !projection.UpdatedAt.IsZero() || projection.Error != "" || projection.Generation != 0 {
+			return errors.New("unset thread title has conflicting state")
+		}
+	case ThreadTitlePending:
+		if projection.Title != "" || projection.Source != "" || projection.UpdatedAt.IsZero() || projection.Error != "" || projection.Generation <= 0 {
+			return errors.New("pending thread title state is incomplete")
+		}
+	case ThreadTitleReady:
+		if projection.Title == "" || (projection.Source != ThreadTitleSourceHost && projection.Source != ThreadTitleSourceProvider) || projection.UpdatedAt.IsZero() || projection.Error != "" || projection.Generation <= 0 {
+			return errors.New("ready thread title state is incomplete")
+		}
+		if err := ValidateCanonicalThreadTitle(projection.Title); err != nil {
+			return err
+		}
+	case ThreadTitleFailed:
+		if projection.Title != "" || projection.Source != "" || projection.UpdatedAt.IsZero() || projection.Error == "" || projection.Generation <= 0 {
+			return errors.New("failed thread title state is incomplete")
+		}
+	default:
+		return errors.New("unsupported thread title status")
+	}
+	return nil
+}
+
 func ValidateThreadTitleState(meta ThreadMeta) error {
-	title := strings.TrimSpace(meta.Title)
 	token := strings.TrimSpace(meta.TitleToken)
-	titleError := strings.TrimSpace(meta.TitleError)
-	if title != meta.Title || token != meta.TitleToken || titleError != meta.TitleError {
+	if token != meta.TitleToken {
+		return ErrAuthorityCorrupt
+	}
+	if err := ValidateThreadTitleProjection(ThreadTitleProjection{
+		Title: meta.Title, Status: meta.TitleStatus, Source: meta.TitleSource,
+		UpdatedAt: meta.TitleUpdatedAt, Error: meta.TitleError, Generation: meta.TitleGeneration,
+	}); err != nil {
 		return ErrAuthorityCorrupt
 	}
 	switch meta.TitleStatus {
 	case "":
-		if title != "" || meta.TitleSource != "" || !meta.TitleUpdatedAt.IsZero() || titleError != "" || meta.TitleGeneration != 0 || token != "" {
+		if token != "" {
 			return ErrAuthorityCorrupt
 		}
 	case ThreadTitlePending:
-		if title != "" || meta.TitleSource != "" || meta.TitleUpdatedAt.IsZero() || titleError != "" || meta.TitleGeneration <= 0 || token == "" {
+		if token == "" {
 			return ErrAuthorityCorrupt
 		}
 	case ThreadTitleReady:
-		if title == "" || meta.TitleUpdatedAt.IsZero() || titleError != "" || meta.TitleGeneration <= 0 {
-			return ErrAuthorityCorrupt
-		}
 		switch meta.TitleSource {
 		case ThreadTitleSourceHost:
 			if token != "" {
@@ -109,15 +173,11 @@ func ValidateThreadTitleState(meta ThreadMeta) error {
 			if token == "" {
 				return ErrAuthorityCorrupt
 			}
-		default:
-			return ErrAuthorityCorrupt
 		}
 	case ThreadTitleFailed:
-		if title != "" || meta.TitleSource != "" || meta.TitleUpdatedAt.IsZero() || titleError == "" || meta.TitleGeneration <= 0 || token == "" {
+		if token == "" {
 			return ErrAuthorityCorrupt
 		}
-	default:
-		return ErrAuthorityCorrupt
 	}
 	return nil
 }

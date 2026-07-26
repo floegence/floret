@@ -1,5 +1,11 @@
 # Floret OKF Update Log
 
+## 2026-07-26
+* **Public read validation**: Added finite thread-title status and source
+  vocabulary plus public thread snapshot and summary validation. The v0 fields
+  remain strings for downstream source compatibility while unknown or
+  contradictory values now fail an explicit host-boundary contract.
+
 ## 2026-07-25
 * **Store startup**: Made compatible migration identity lazy and Floret-derived,
   added typed inspecting/migrating/verifying/opening progress, explicit optional

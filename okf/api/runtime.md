@@ -144,6 +144,11 @@ host interface for every runtime operation.
 * `ThreadReadHost.ReadThread` returns a transcript-free `ThreadSnapshot`,
   including canonical status, latest turn and run identity, and the journal
   `ThroughOrdinal`. The snapshot intentionally has no message shortcut.
+  `ThreadSnapshot.Validate` and `ThreadSummary.Validate` reject unknown or
+  contradictory lifecycle, capability, identity, time, and title state before
+  a host renders or caches the value. Public `ThreadTitleStatus` and
+  `ThreadTitleSource` define the finite title vocabulary while the existing
+  string fields remain source-compatible during the v0 migration window.
 * `ThreadReadHost.ReadArtifact` reads the immutable content for one
   `ArtifactID` owned by its exact bound root thread. `SubAgentReadHost.ReadArtifact`
   performs the same read for any complete descendant of its bound parent. Each

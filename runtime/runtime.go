@@ -2495,19 +2495,19 @@ func (h *ThreadCreateHost) CreateThread(ctx context.Context, req CreateThreadReq
 		return ThreadSummary{}, runtimeHostError(err)
 	}
 	if !created.Replayed {
-		return ThreadSummary{
+		return validateThreadSummaryResult(ThreadSummary{
 			ID: ThreadID(created.Thread.ID), Title: created.Thread.Title,
 			TitleStatus: string(created.Thread.TitleStatus), TitleSource: string(created.Thread.TitleSource),
 			TitleUpdatedAt: created.Thread.TitleUpdatedAt, TitleError: created.Thread.TitleError,
 			CreatedAt: created.Thread.CreatedAt, UpdatedAt: created.Thread.UpdatedAt,
 			Phase: ThreadPhaseIdle, Status: ThreadStatusIdle, CanAppendMessage: true,
-		}, nil
+		})
 	}
 	summary, err := thread.Summary(ctx)
 	if err != nil {
 		return ThreadSummary{}, runtimeHostError(err)
 	}
-	return threadSummary(summary), nil
+	return validateThreadSummaryResult(threadSummary(summary))
 }
 
 func (h *ThreadTitleHost) SetThreadTitle(ctx context.Context, req SetThreadTitleRequest) (ThreadSnapshot, error) {
@@ -2527,7 +2527,7 @@ func setThreadTitle(ctx context.Context, harness *agentharness.AgentHarness, req
 	if err != nil {
 		return ThreadSnapshot{}, runtimeHostError(err)
 	}
-	return threadSnapshot(snapshot), nil
+	return validateThreadSnapshotResult(threadSnapshot(snapshot))
 }
 
 func (h *ThreadForkHost) ForkThread(ctx context.Context, req ForkThreadRequest) (ForkThreadResult, error) {
@@ -2566,7 +2566,11 @@ func forkThread(ctx context.Context, harness *agentharness.AgentHarness, req For
 	if err != nil {
 		return ForkThreadResult{}, runtimeHostError(err)
 	}
-	return forkThreadResult(result), nil
+	out := forkThreadResult(result)
+	if _, err := validateThreadSummaryResult(out.Thread); err != nil {
+		return ForkThreadResult{}, err
+	}
+	return out, nil
 }
 
 func (h *providerHost) ReadThread(ctx context.Context, threadID ThreadID) (ThreadSnapshot, error) {
@@ -2590,7 +2594,7 @@ func readThreadByID(ctx context.Context, harness *agentharness.AgentHarness, thr
 	if err != nil {
 		return ThreadSnapshot{}, runtimeHostError(err)
 	}
-	return threadSnapshot(snapshot), nil
+	return validateThreadSnapshotResult(threadSnapshot(snapshot))
 }
 
 func (h *providerHost) ListThreadDetailEvents(ctx context.Context, req ListThreadDetailEventsRequest) (ThreadDetailEvents, error) {
@@ -3689,14 +3693,6 @@ func pendingToolSettlementStatus(status PendingToolSettlementStatus) agentharnes
 	default:
 		return agentharness.PendingToolSettlementStatus(status)
 	}
-}
-
-func readThread(ctx context.Context, thread *agentharness.Thread) (ThreadSnapshot, error) {
-	snapshot, err := thread.Read(ctx)
-	if err != nil {
-		return ThreadSnapshot{}, err
-	}
-	return threadSnapshot(snapshot), nil
 }
 
 func threadSnapshot(in agentharness.ThreadSnapshot) ThreadSnapshot {

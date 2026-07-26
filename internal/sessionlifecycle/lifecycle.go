@@ -1,6 +1,10 @@
 package sessionlifecycle
 
 import (
+	"errors"
+	"fmt"
+	"strings"
+
 	"github.com/floegence/floret/internal/control"
 	"github.com/floegence/floret/internal/engine"
 	"github.com/floegence/floret/internal/provider"
@@ -65,6 +69,39 @@ func (l Lifecycle) CanAppendMessage() bool {
 
 func (l Lifecycle) IsRunning() bool {
 	return isRunning(l.status, l.phase)
+}
+
+// ValidateProjection validates the public lifecycle facts emitted from Derive
+// without reconstructing journal state or retry eligibility.
+func ValidateProjection(rawStatus, rawPhase, latestTurnID, waitingPrompt string, recoverable, canAppendMessage bool) error {
+	currentStatus, ok := strictStatus(rawStatus)
+	if !ok {
+		return fmt.Errorf("unsupported thread status %q", rawStatus)
+	}
+	currentPhase, ok := strictPhase(rawPhase)
+	if !ok {
+		return fmt.Errorf("unsupported thread phase %q", rawPhase)
+	}
+	if currentStatus == statusRunning && currentPhase != phaseTurn {
+		return errors.New("running thread status requires active turn phase")
+	}
+	if currentStatus == statusIdle && latestTurnID != "" {
+		return errors.New("idle thread must not identify a latest turn")
+	}
+	if currentStatus != statusIdle && strings.TrimSpace(latestTurnID) == "" {
+		return errors.New("non-idle thread requires latest turn id")
+	}
+	if recoverable != (currentStatus == statusInterrupted) {
+		return errors.New("thread recoverability conflicts with status")
+	}
+	wantAppend := currentStatus == statusIdle || currentStatus == statusCompleted || currentStatus == statusWaiting
+	if canAppendMessage != wantAppend {
+		return errors.New("thread append capability conflicts with status")
+	}
+	if currentStatus != statusWaiting && waitingPrompt != "" {
+		return errors.New("thread waiting prompt requires waiting status")
+	}
+	return nil
 }
 
 func Running(latestTurnID string) Lifecycle {
@@ -159,6 +196,17 @@ func normalizePhase(raw string) phase {
 	return phaseIdle
 }
 
+func strictPhase(raw string) (phase, bool) {
+	switch raw {
+	case string(phaseIdle):
+		return phaseIdle, true
+	case string(phaseTurn):
+		return phaseTurn, true
+	default:
+		return "", false
+	}
+}
+
 func normalizeStatus(raw string) status {
 	switch raw {
 	case string(statusRunning):
@@ -175,6 +223,27 @@ func normalizeStatus(raw string) status {
 		return statusInterrupted
 	default:
 		return statusIdle
+	}
+}
+
+func strictStatus(raw string) (status, bool) {
+	switch raw {
+	case string(statusIdle):
+		return statusIdle, true
+	case string(statusRunning):
+		return statusRunning, true
+	case string(statusCompleted):
+		return statusCompleted, true
+	case string(statusWaiting):
+		return statusWaiting, true
+	case string(statusFailed):
+		return statusFailed, true
+	case string(statusCancelled):
+		return statusCancelled, true
+	case string(statusInterrupted):
+		return statusInterrupted, true
+	default:
+		return "", false
 	}
 }
 

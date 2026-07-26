@@ -109,6 +109,41 @@ func TestDeriveLifecycleTable(t *testing.T) {
 				t.Fatalf("Derive() = status=%q phase=%q latest=%q recoverable=%v appendable=%v waiting=%q",
 					got.Status(), got.Phase(), got.LatestTurnID(), got.Recoverable(), got.CanAppendMessage(), got.WaitingPrompt())
 			}
+			if err := ValidateProjection(got.Status(), got.Phase(), got.LatestTurnID(), got.WaitingPrompt(), got.Recoverable(), got.CanAppendMessage()); err != nil {
+				t.Fatalf("ValidateProjection(Derive()) = %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateProjectionRejectsContradictoryLifecycleFacts(t *testing.T) {
+	for name, validate := range map[string]func() error{
+		"unknown status": func() error {
+			return ValidateProjection("unknown", PhaseIdle, "", "", false, true)
+		},
+		"unknown phase": func() error {
+			return ValidateProjection("idle", "unknown", "", "", false, true)
+		},
+		"running idle phase": func() error {
+			return ValidateProjection("running", PhaseIdle, "turn-1", "", false, false)
+		},
+		"missing latest turn": func() error {
+			return ValidateProjection("completed", PhaseIdle, "", "", false, true)
+		},
+		"unexpected recovery": func() error {
+			return ValidateProjection("failed", PhaseIdle, "turn-1", "", true, false)
+		},
+		"unexpected append": func() error {
+			return ValidateProjection("failed", PhaseIdle, "turn-1", "", false, true)
+		},
+		"unexpected prompt": func() error {
+			return ValidateProjection("completed", PhaseIdle, "turn-1", "prompt", false, true)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validate(); err == nil {
+				t.Fatal("contradictory lifecycle projection was accepted")
+			}
 		})
 	}
 }

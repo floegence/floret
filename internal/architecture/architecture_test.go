@@ -78,6 +78,32 @@ func TestPublicPackageAllowlist(t *testing.T) {
 	}
 }
 
+func TestProductionPublicPackagesHavePackageDocumentation(t *testing.T) {
+	for _, dir := range []string{"config", "runtime", "tools", "observation"} {
+		fset := token.NewFileSet()
+		packages, err := parser.ParseDir(fset, dir, func(info os.FileInfo) bool {
+			return !strings.HasSuffix(info.Name(), "_test.go")
+		}, parser.ParseComments)
+		if err != nil {
+			t.Fatalf("parse public package %s: %v", dir, err)
+		}
+		pkg := packages[dir]
+		if pkg == nil {
+			t.Fatalf("public package %s is missing", dir)
+		}
+		hasPackageComment := false
+		for _, file := range pkg.Files {
+			if file.Doc != nil && strings.HasPrefix(strings.TrimSpace(file.Doc.Text()), "Package "+dir) {
+				hasPackageComment = true
+				break
+			}
+		}
+		if !hasPackageComment {
+			t.Fatalf("public package %s requires a Package %s comment", dir, dir)
+		}
+	}
+}
+
 func TestFloretTestIsTheOnlyTestOnlyPublicPackage(t *testing.T) {
 	imports := packageImports(t, "florettest", false, true)
 	allowedFloretImports := map[string]bool{

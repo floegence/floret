@@ -309,6 +309,11 @@ when Floret
 should issue the dedicated provider request automatically. Products that choose
 titles themselves keep the default `runtime.ThreadTitleModeHostOwned` behavior
 and call `SetThreadTitle`; they must not store a second title copy.
+Hosts should validate read models with `ThreadSnapshot.Validate` or
+`ThreadSummary.Validate` before rendering or caching them. The public
+`ThreadTitleStatus` and `ThreadTitleSource` types define the accepted finite
+title vocabulary; unknown or contradictory title state fails validation rather
+than acquiring a normal UI meaning.
 
 `RunTurnRequest.Input` is a structured `runtime.TurnInput`. A user turn may
 contain text, opaque `MessageAttachment` resource references, or both. Attachment
