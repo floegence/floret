@@ -20,10 +20,11 @@ func (h *AgentHarness) ListRootThreadSummaries(ctx context.Context, opts ListRoo
 		return nil, errors.New("agent harness is nil")
 	}
 	metas, err := sessiontree.ListThreads(ctx, h.options.Repo, sessiontree.ListThreadsOptions{
-		RootOnly:       true,
-		Limit:          opts.Limit,
-		AfterCreatedAt: opts.AfterCreatedAt,
-		AfterID:        strings.TrimSpace(opts.AfterID),
+		IncludeArchived: true,
+		RootOnly:        true,
+		Limit:           opts.Limit,
+		AfterCreatedAt:  opts.AfterCreatedAt,
+		AfterID:         strings.TrimSpace(opts.AfterID),
 	})
 	if err != nil {
 		return nil, err

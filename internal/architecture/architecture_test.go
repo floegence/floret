@@ -1095,6 +1095,10 @@ func TestRuntimeThreadDetailCompactionExposesOnlySanitizedLifecycle(t *testing.T
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("runtime ThreadDetailCompaction fields=%v, want %v", got, want)
 	}
+	source := readTextFile(t, filepath.Join("runtime", "runtime.go"))
+	if !strings.Contains(source, "out[index].Metadata = safeStringMetadata(out[index].Metadata)") {
+		t.Fatal("runtime compaction detail must sanitize top-level metadata at the public projection boundary")
+	}
 }
 
 func TestRuntimeTurnReadModelsKeepJournalNavigationOpaque(t *testing.T) {

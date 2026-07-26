@@ -3581,29 +3581,36 @@ func TestHostReadsSubAgentDetailRawMessageContentContract(t *testing.T) {
 }
 
 func TestSubAgentDetailCompactionSanitizesInternalMetadata(t *testing.T) {
-	out := threadDetailCompaction(&agentharness.SubAgentDetailCompaction{
-		Trigger: "manual",
-		Reason:  "manual",
-		Phase:   "complete",
-		Metadata: map[string]string{
-			"compaction_id":              "compact-1",
-			"compaction_generation":      "3",
-			"compaction_window_id":       "window-3",
-			"compacted_through_entry_id": "entry-7",
-			"summary_schema_version":     "v1",
-			"safe_fact":                  "kept",
-		},
-	})
-	if out == nil {
+	metadata := map[string]string{
+		"compaction_id":                "compact-1",
+		"compaction_generation":        "3",
+		"compaction_window_id":         "window-3",
+		"compacted_through_entry_id":   "entry-7",
+		"summary_schema_version":       "v1",
+		"provider_response_ledger_key": "ledger-1",
+		"safe_fact":                    "kept",
+	}
+	events := publicThreadDetailEvents([]agentharness.SubAgentDetailEvent{{
+		Kind:     agentharness.SubAgentDetailEventCompaction,
+		Metadata: metadata,
+		Compaction: &agentharness.SubAgentDetailCompaction{
+			Trigger:  "manual",
+			Reason:   "manual",
+			Phase:    "complete",
+			Metadata: metadata,
+		}}})
+	if len(events) != 1 || events[0].Compaction == nil {
 		t.Fatal("compaction detail was nil")
 	}
-	for _, key := range []string{"compaction_id", "compaction_generation", "compaction_window_id", "compacted_through_entry_id", "summary_schema_version"} {
-		if _, ok := out.Metadata[key]; ok {
-			t.Fatalf("metadata leaked %s: %#v", key, out.Metadata)
+	for _, projected := range []map[string]string{events[0].Metadata, events[0].Compaction.Metadata} {
+		for _, key := range []string{"compaction_id", "compaction_generation", "compaction_window_id", "compacted_through_entry_id", "summary_schema_version", "provider_response_ledger_key"} {
+			if _, ok := projected[key]; ok {
+				t.Fatalf("metadata leaked %s: %#v", key, projected)
+			}
 		}
-	}
-	if out.Metadata["safe_fact"] != "kept" {
-		t.Fatalf("safe metadata not preserved: %#v", out.Metadata)
+		if projected["safe_fact"] != "kept" {
+			t.Fatalf("safe metadata not preserved: %#v", projected)
+		}
 	}
 }
 

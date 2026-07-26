@@ -39,6 +39,14 @@ func TestThreadInventoryListsOnlyCanonicalRootsAcrossStores(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			archived, err := store.repo.Thread(ctx, "root-b")
+			if err != nil {
+				t.Fatal(err)
+			}
+			archived.Archived = true
+			if err := store.repo.UpdateThread(ctx, archived); err != nil {
+				t.Fatal(err)
+			}
 			publishTestSubAgentFixture(t, ctx, store, "publish-inventory-child", "root-c", "child-newer-than-roots", "")
 
 			assertRootInventoryPages(t, ctx, capabilities.inventory)

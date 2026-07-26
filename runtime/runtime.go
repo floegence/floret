@@ -4364,6 +4364,9 @@ func threadDetailCompaction(in *agentharness.SubAgentDetailCompaction) *ThreadDe
 func publicThreadDetailEvents(in []agentharness.SubAgentDetailEvent) []ThreadDetailEvent {
 	out := threadDetailEvents(in)
 	for index := range out {
+		if out[index].Compaction != nil {
+			out[index].Metadata = safeStringMetadata(out[index].Metadata)
+		}
 		if out[index].TurnMarker == nil {
 			continue
 		}

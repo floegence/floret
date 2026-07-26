@@ -635,7 +635,7 @@ No aggregate capability bundle, conversion method, raw Store accessor, generic
 thread host, unbound create handle, or method alias is public.
 
 `ThreadInventoryHost` is the only store-wide discovery capability. It is issued
-directly during composition, lists only canonical non-archived roots, and never
+directly during composition, lists canonical roots including archived roots, and never
 enters a normal run or carries product visibility and routing policy. Its page
 cursor is opaque to hosts. Root filtering occurs before the bounded page limit.
 

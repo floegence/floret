@@ -182,8 +182,8 @@ host interface for every runtime operation.
   projection-through ordinal. `UserEntryID` is an opaque canonical presentation
   anchor; it is not authorization, a cursor, or direct Store access.
 * `ThreadInventoryHost.ListRootThreads` is issued only from `HostBootstrap` to a
-  composition or maintenance owner. It returns bounded pages of existing,
-  non-archived canonical roots using validated `ThreadSummary` values and an
+  composition or maintenance owner. It returns bounded pages of existing
+  canonical roots, including archived roots, using validated `ThreadSummary` values and an
   opaque inventory cursor. It contains no endpoint, user visibility, routing,
   pin, permission, or product-order state and is not reachable from a run.
 * `ThreadReadHost.ReadThreadAgentTodos` reads Floret-owned typed Agent todo
