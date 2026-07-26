@@ -61,6 +61,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/floegence/floret/config"
 	"github.com/floegence/floret/florettest"
@@ -74,6 +75,8 @@ func TestCandidateExactReadSurface(t *testing.T) {
 	var createBinder *runtime.ThreadCreateHostBinder
 	var turnBinder *runtime.TurnExecutionHostBinder
 	var readBinder *runtime.ThreadReadHostBinder
+	var subAgentBinder *runtime.SubAgentHostBinder
+	var subAgentReadBinder *runtime.SubAgentReadHostBinder
 	if err := runtime.ConfigureHostCapabilities(store, func(bootstrap *runtime.HostBootstrap) error {
 		var err error
 		createBinder, err = runtime.NewThreadCreateHostBinder(bootstrap)
@@ -85,6 +88,14 @@ func TestCandidateExactReadSurface(t *testing.T) {
 			return err
 		}
 		readBinder, err = runtime.NewThreadReadHostBinder(bootstrap)
+		if err != nil {
+			return err
+		}
+		subAgentBinder, err = runtime.NewSubAgentHostBinder(bootstrap)
+		if err != nil {
+			return err
+		}
+		subAgentReadBinder, err = runtime.NewSubAgentReadHostBinder(bootstrap)
 		if err != nil {
 			return err
 		}
@@ -129,6 +140,70 @@ func TestCandidateExactReadSurface(t *testing.T) {
 	}
 	if _, err := reader.ReadThreadTurn(ctx, runtime.ReadThreadTurnRequest{ThreadID: "candidate-thread", TurnID: "missing"}); !errors.Is(err, runtime.ErrTurnNotFound) {
 		t.Fatalf("unknown exact turn error = %v", err)
+	}
+	subAgentOptions := runtime.SubAgentHostOptions{Config: config.Config{Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "done", SystemPrompt: "candidate child"}, SubAgentRunTimeout: 2 * time.Second}
+	rootFactory, err := subAgentBinder.Bind("candidate-thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootSubAgents, err := rootFactory.NewHost(ctx, subAgentOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := rootSubAgents.SpawnSubAgent(ctx, runtime.SpawnSubAgentRequest{PublicationID: "publish-child", ParentThreadID: "candidate-thread", ParentTurnID: "candidate-turn", ThreadID: "candidate-child", TaskName: "child", Message: "child", ForkMode: runtime.SubAgentForkNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waited, err := rootSubAgents.WaitSubAgents(ctx, runtime.WaitSubAgentsRequest{ParentThreadID: "candidate-thread", ChildThreadIDs: []runtime.ThreadID{child.ThreadID}, Timeout: 2 * time.Second})
+	if err != nil || waited.TimedOut || len(waited.Snapshots) != 1 || waited.Snapshots[0].LatestTurnID == "" {
+		t.Fatalf("child wait = %#v, err = %v", waited, err)
+	}
+	child = waited.Snapshots[0]
+	sibling, err := rootSubAgents.SpawnSubAgent(ctx, runtime.SpawnSubAgentRequest{PublicationID: "publish-sibling", ParentThreadID: "candidate-thread", ParentTurnID: "candidate-turn", ThreadID: "candidate-sibling", TaskName: "sibling", Message: "sibling", ForkMode: runtime.SubAgentForkNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waited, err = rootSubAgents.WaitSubAgents(ctx, runtime.WaitSubAgentsRequest{ParentThreadID: "candidate-thread", ChildThreadIDs: []runtime.ThreadID{sibling.ThreadID}, Timeout: 2 * time.Second}); err != nil || waited.TimedOut {
+		t.Fatalf("sibling wait = %#v, err = %v", waited, err)
+	}
+	childFactory, err := subAgentBinder.Bind(child.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childSubAgents, err := childFactory.NewHost(ctx, subAgentOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grandchild, err := childSubAgents.SpawnSubAgent(ctx, runtime.SpawnSubAgentRequest{PublicationID: "publish-grandchild", ParentThreadID: child.ThreadID, ParentTurnID: child.LatestTurnID, ThreadID: "candidate-grandchild", TaskName: "grandchild", Message: "grandchild", ForkMode: runtime.SubAgentForkNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waited, err = childSubAgents.WaitSubAgents(ctx, runtime.WaitSubAgentsRequest{ParentThreadID: child.ThreadID, ChildThreadIDs: []runtime.ThreadID{grandchild.ThreadID}, Timeout: 2 * time.Second})
+	if err != nil || waited.TimedOut || len(waited.Snapshots) != 1 || waited.Snapshots[0].LatestTurnID == "" {
+		t.Fatalf("grandchild wait = %#v, err = %v", waited, err)
+	}
+	grandchild = waited.Snapshots[0]
+	rootChildReader, err := subAgentReadBinder.NewHost(ctx, "candidate-thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []struct{ threadID runtime.ThreadID; turnID runtime.TurnID }{{child.ThreadID, child.LatestTurnID}, {grandchild.ThreadID, grandchild.LatestTurnID}} {
+		exact, err := rootChildReader.ReadThreadTurn(ctx, runtime.ReadThreadTurnRequest{ThreadID: target.threadID, TurnID: target.turnID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := exact.Validate(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	childReader, err := subAgentReadBinder.NewHost(ctx, child.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []runtime.ThreadID{"candidate-thread", child.ThreadID, sibling.ThreadID} {
+		if _, err := childReader.ReadThreadTurn(ctx, runtime.ReadThreadTurnRequest{ThreadID: target, TurnID: child.LatestTurnID}); !errors.Is(err, runtime.ErrSubAgentNotFound) {
+			t.Fatalf("unauthorized target %q error = %v", target, err)
+		}
 	}
 }
 EOF
