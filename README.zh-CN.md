@@ -77,9 +77,9 @@ Floret 的边界刻意保持紧凑：它负责引擎机制，产品决策始终�
 安装面向下游应用的稳定包：
 
 ```bash
-go get github.com/floegence/floret/config github.com/floegence/floret/runtime github.com/floegence/floret/tools github.com/floegence/floret/observation
+go get github.com/floegence/floret@v1.0.0
 
-go run github.com/floegence/floret/cmd/floret-host-init@latest \
+go run github.com/floegence/floret/cmd/floret-host-init@v1.0.0 \
   --profile memory --package main --dir .
 # 首次只显示 dry-run diff；确认后增加 --write。
 ```

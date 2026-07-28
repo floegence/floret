@@ -23,6 +23,8 @@ summaries without parsing assistant text or depending on implementation types.
 * `CompactionDebugEventsFromEvents` extracts safe compaction diagnostic facts.
 
 Public event kinds and finite lifecycle fields are typed contracts.
+`FinishReason`, `CompletionReason`, and `ContinuationReason` are also owned by
+this package and are used directly in runtime DTOs without runtime aliases.
 `EventType`, context phase/display status, compaction phase/status, and
 compaction debug stage/status expose `Valid`; their containing DTOs expose
 `Validate`. Unknown values and inconsistent compaction phase/status pairs are

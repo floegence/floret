@@ -10,7 +10,8 @@ timestamp: 2026-06-20T00:00:00Z
 # Decision
 
 Production downstream projects integrate through `config`, `runtime`, `tools`,
-and `observation`. Implementation packages remain under `internal/`.
+and `observation`. `florettest` is test-only. Implementation packages remain
+under `internal/`.
 
 # Reason
 
@@ -23,6 +24,11 @@ those details downstream contracts.
 New host-facing capabilities need public API, tests, README guidance, and OKF
 updates. Contributor-facing documentation may explain internals, but downstream
 examples must use public packages.
+The committed `go/types` v1 baseline records exported symbols, signatures,
+fields, methods, constant values, and the package set. Every compatible
+addition requires an explicit baseline and documentation update; incompatible
+changes wait for v2. After `v1.0.0` is published, fixed-version `apidiff`
+compares that module with `HEAD` in addition to the local baseline test.
 Durable cross-store coordination uses explicit public operation identities and
 results; downstream hosts must not import internal storage contracts.
 Runtime constructors return concrete capability pointers. Interface ownership
@@ -69,6 +75,13 @@ request keeps its explicit identity and fails on a mismatch. This makes
 canonical Agent lifecycle ownership visible in method
 sets and authority identities instead of relying on a downstream caller to
 ignore methods on a shared Store or facade.
+
+Provider-backed Host options are opaque validated values. Each family has its
+own constructor and scoped options, and no family can derive its configuration
+or authority from another opaque value. Generated compositions retain
+independently constructed Turn and SubAgent values from the same explicit
+host-owned inputs. ID generators are correlation/test injection only and never
+derive durable execution identities.
 
 The one store-wide read exception is `ThreadInventoryHost`, constructed and
 retained only by the composition owner. It exposes bounded canonical root

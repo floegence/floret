@@ -24,10 +24,14 @@ issuance at the application's composition root.
    this application. Do not pass `HostBootstrap` beyond its callback.
 4. Bind creation to an absent `ThreadID` and `CreateIntentID`, create the
    thread, then bind turn and read capabilities to that exact thread.
-5. Give coordinators only the generated local interface, bound factory, or
+5. Construct provider-backed options with the exact scoped constructor. Build
+   Turn, compaction, and SubAgent option values independently; do not derive
+   one capability family from another opaque value.
+6. Give coordinators only the generated local interface, bound factory, or
    handle for their task. Keep the Store and unbound binders private to the
    composition root.
-6. Close the Store once, after application work has stopped.
+7. Validate public root DTOs again at process or transport boundaries, then
+   close the Store once application work has stopped.
 
 `durable-basic` proves catalog provenance and blocks with a local typed recovery
 error when interrupted work exists; it is not automatic production recovery.

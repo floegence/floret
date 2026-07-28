@@ -69,7 +69,7 @@ Floret дает эту runtime-основу, не присваивая себе 
 Установите стабильные пакеты для downstream-приложений:
 
 ```bash
-go get github.com/floegence/floret/config github.com/floegence/floret/runtime github.com/floegence/floret/tools github.com/floegence/floret/observation
+go get github.com/floegence/floret@v1.0.0
 ```
 
 ```go
@@ -95,12 +95,12 @@ thread, err := threadCreator.CreateThread(ctx, runtime.CreateThreadRequest{
 	ThreadID: "thread-1", CreateIntentID: createIntentID,
 })
 if err != nil { /* handle error */ }
-turnHost, err := turnFactory.NewHost(ctx, runtime.TurnExecutionHostOptions{
-	Config: config.Config{
+turnOptions, err := runtime.NewTurnExecutionHostOptions(config.Config{
 		Provider: config.ProviderFake, Model: "fake-model", FakeResponse: "Hello from Floret.",
 		AgentProfile: config.AgentProfile{ID: "support-agent", Name: "Support Agent"},
-	},
 })
+if err != nil { /* handle error */ }
+turnHost, err := turnFactory.NewHost(ctx, turnOptions)
 if err != nil { /* handle error */ }
 
 result, err := turnHost.RunTurn(ctx, runtime.RunTurnRequest{

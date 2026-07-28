@@ -147,6 +147,25 @@ Rules:
   - `fix(provider): disable reasoning for title summaries`
   - `docs(repo): document commit message format`
 
+### v1 Semantic Versioning
+
+- `v1.0.0` freezes the exported contracts in `config`, `runtime`, `tools`,
+  `observation`, and the test-only `florettest` package.
+- Within v1, do not delete or rename exported symbols, narrow previously
+  accepted valid inputs, change established JSON field names or values, or
+  change documented `errors.Is` / `errors.As` classifications.
+- Deprecations must remain available for at least one complete minor release
+  series. Removal is allowed only in the next major version.
+- Compatible additions still require an explicit public API decision, focused
+  tests, the generated API baseline update, README and OKF review, and a
+  changelog entry. Do not treat a green compatibility tool as design approval.
+- Security emergency changes must document their compatibility and migration
+  impact explicitly. Do not preserve or replace unsafe behavior through a
+  silent fallback, substitute path, or unsupported transitional shape.
+- Run `scripts/check_v1_api_compatibility.sh` for every public API change. Once
+  `v1.0.0` exists, it compares the published module baseline with `HEAD` using
+  the fixed `apidiff` tool version in that script.
+
 ### Conflict Resolution Principles
 
 - Resolve conflicts only in the feature worktree.

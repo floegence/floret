@@ -16,14 +16,18 @@ Use this workflow when changing exported contracts in `config`, `runtime`,
 
 1. Confirm the capability is product-neutral and belongs in Floret.
 2. Keep implementation details behind the public facade.
-3. Update package tests and architecture boundary tests.
-4. Update README public API guidance when downstream usage changes.
-5. Update this OKF bundle when the change affects integration guidance or
+3. Run `scripts/check_v1_api_compatibility.sh` and update the generated v1 API
+   baseline only after the compatibility and design review is explicit.
+4. Update package tests and architecture boundary tests.
+5. Update README public API guidance and `CHANGELOG.md` when downstream usage changes.
+6. Update this OKF bundle when the change affects integration guidance or
    project knowledge.
-6. Run the repository quality gate.
+7. Run the repository quality gate.
 
 # Guardrails
 
 Do not expose implementation packages as downstream contracts. Do not add a
 new public package without updating the public package allowlist and
-documentation.
+documentation. A compatible addition is still a governed API change. Do not
+delete, rename, narrow accepted inputs, change JSON values, or reclassify
+documented errors within v1.

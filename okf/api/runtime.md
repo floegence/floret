@@ -34,6 +34,21 @@ host interface for every runtime operation.
 
 # Main Entry Points
 
+# Error Contract
+
+Hosts must classify runtime failures with Go's wrapped-error contracts rather
+than matching error text. Missing durable objects use the stable sentinels
+`ErrThreadNotFound`, `ErrThreadDeleted`, `ErrTurnNotFound`,
+`ErrInterruptedTurnNotFound`, `ErrRunNotFound`, `ErrArtifactNotFound`,
+`ErrSubAgentNotFound`, and the pending-tool not-found sentinels through
+`errors.Is`. Request reuse, authority contention, invalid public projections,
+and SQLite maintenance failures retain their typed context and are inspected
+with `errors.As` as `RequestConflictError`, `AuthorityBusyError`,
+`ContractError`, and `SQLiteStoreMaintenanceError`, respectively; these types
+also unwrap their stable sentinel where applicable. Corrupt, ambiguous,
+future, or contract-invalid state is never rewritten as a not-found result, and
+hosts must not rebuild it from audit records or detail-event scans.
+
 * `ConfigureHostCapabilities` opens the Store's only bootstrap callback and
   seals its `HostBootstrap` before returning. The Store rejects reconfiguration
   and value copies, so no reusable cross-family issuer or bootstrap survives
@@ -106,13 +121,14 @@ host interface for every runtime operation.
   applies when the option is omitted; an explicit policy is persisted
   atomically only when a Store is first created, and every later open or
   maintenance operation must match it exactly.
-* `NewTurnExecutionOptions` provides safe defaults inside the turn-execution
-  capability family. Its opaque options reject zero values and duplicate categories;
-  `WithModelGateway` keeps gateway identity and capabilities atomic;
-  `WithReadOnlyTools` creates an immutable, statically proven read-only
-  Registry snapshot; and `WithEffectfulTools` requires an explicit
-  `EffectAuthorizationGate`. The original `TurnExecutionHostOptions` remains
-  the complete advanced contract.
+* `NewTurnExecutionHostOptions`, `NewThreadCompactionHostOptions`, and
+  `NewSubAgentHostOptions` are the only constructors for provider-backed Host
+  options. Their opaque results reject zero values, cross-family use, duplicate
+  categories, nil configured collaborators, invalid provider capability or
+  identity, invalid config, limits, title mode, and timeout. Scoped
+  `WithTurn...`, `WithThreadCompaction...`, and `WithSubAgent...` options keep
+  each capability family explicit. Factories revalidate both the value and
+  current Store authority before returning a Host.
 * `InspectSQLiteStore` classifies a path without creating it, changing SQLite
   pragmas, acquiring writer admission, or running migration. Its typed
   `SQLiteStoreInspection` reports kind, state, observed/current/migratable
@@ -148,8 +164,9 @@ host interface for every runtime operation.
   `ThreadSnapshot.Validate` and `ThreadSummary.Validate` reject unknown or
   contradictory lifecycle, capability, identity, time, and title state before
   a host renders or caches the value. Public `ThreadTitleStatus` and
-  `ThreadTitleSource` define the finite title vocabulary while the existing
-  string fields remain source-compatible during the v0 migration window.
+  `ThreadTitleSource` define the finite title vocabulary, and the summary and
+  snapshot fields use those types directly while preserving their JSON names
+  and values.
 * `ThreadReadHost.ReadArtifact` reads the immutable content for one
   `ArtifactID` owned by its exact bound root thread. `SubAgentReadHost.ReadArtifact`
   performs the same read for any complete descendant of its bound parent. Each
@@ -390,9 +407,11 @@ host interface for every runtime operation.
 * `ToolSurfaceProvider` lets a host refresh the provider-visible local tools,
   hosted tools, system prompt, and host context at provider-loop safe points
   without adding product-specific policy concepts to Floret.
-* `ReasoningSelection` carries provider-neutral reasoning intent for a run.
-  `RunTurnRequest` carries it as turn intent, and `ModelRequest` forwards the
-  effective selection to host-owned model gateways.
+* `config.ReasoningSelection` carries provider-neutral reasoning intent for a
+  run. `RunTurnRequest` carries it as turn intent, and `ModelRequest` forwards
+  the effective selection to host-owned model gateways. Runtime does not
+  re-export reasoning types. Finish, completion, and continuation reasons are
+  the authoritative `observation` types and are not re-exported by runtime.
 * `ModelEventToolCallStart`, `ModelEventToolCallDelta`, and
   `ModelEventToolCallEnd` expose model tool-call streaming as provider-neutral
   public runtime events. They identify the call being generated without carrying
@@ -425,9 +444,9 @@ not host-owned pending tool work. Each child uses its own durable `ThreadID` and
 prompt scope; host products own agent profiles, permission policy, UI, and
 orchestration prompts.
 
-When `TurnExecutionHostOptions.ModelGateway` or
-`SubAgentHostOptions.ModelGateway` is set, hosted parent and child turns use
-the supplied model transport. Title selection remains host-owned unless the host
+When scoped Turn or SubAgent options configure a `ModelGateway`, hosted parent
+and child turns use the supplied model transport. Title selection remains
+host-owned unless the host
 explicitly selects `ThreadTitleModeProvider`; only that mode sends title requests
 through the same gateway, while both modes persist through Floret. The gateway is invoked with the concrete runtime
 identity for each request, so a child turn uses the child `ThreadID` and prompt

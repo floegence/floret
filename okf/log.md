@@ -1,5 +1,21 @@
 # Floret OKF Update Log
 
+## 2026-07-29
+* **v1 public contract**: Removed runtime reasoning and lifecycle-reason
+  aliases, made thread title status/source fields typed without changing JSON,
+  and preserved schema-v16 plus v3-v15 migration semantics.
+* **Provider Host construction**: Replaced public option struct literals with
+  opaque Turn, compaction, and SubAgent constructor values plus family-scoped
+  options. Factories revalidate config and current authority.
+* **Boundary validation**: Added self-contained validation for Agent todo,
+  SubAgent, detail-page, activity, and Store maintenance root DTOs and mapped
+  corrupt production results to stable typed error families.
+* **API governance**: Added the generated `go/types` v1 surface baseline,
+  fixed-version `apidiff`, SemVer rules, and packaged generated-host adoption
+  coverage.
+* **Adoption**: Updated all five scaffold profiles, public examples, localized
+  README snippets, and package/OKF guidance for the v1 constructor surface.
+
 ## 2026-07-26
 * **Exact canonical turn reads**: Added root-bound and parent-scoped
   `ReadThreadTurn` over active-path admission authority, consistent Memory and
@@ -19,9 +35,8 @@
   raw summary internals from public detail events while retaining sanitized
   lifecycle facts. Canonical `UserEntryID` remains an opaque presentation anchor.
 * **Public read validation**: Added finite thread-title status and source
-  vocabulary plus public thread snapshot and summary validation. The v0 fields
-  remain strings for downstream source compatibility while unknown or
-  contradictory values now fail an explicit host-boundary contract.
+  vocabulary plus public thread snapshot and summary validation. Unknown or
+  contradictory values fail an explicit host-boundary contract.
 
 ## 2026-07-25
 * **Store startup**: Made compatible migration identity lazy and Floret-derived,

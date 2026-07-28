@@ -120,14 +120,14 @@ the same product.
 Install the downstream packages:
 
 ```bash
-go get github.com/floegence/floret/config github.com/floegence/floret/runtime github.com/floegence/floret/tools github.com/floegence/floret/observation
+go get github.com/floegence/floret@v1.0.0
 ```
 
 Generate the memory composition into your application. The command is a dry
 run by default, so the first invocation only shows the proposed source:
 
 ```bash
-go run github.com/floegence/floret/cmd/floret-host-init@latest \
+go run github.com/floegence/floret/cmd/floret-host-init@v1.0.0 \
   --profile memory --package main --dir .
 # Review the diff, then repeat with --write.
 ```
@@ -139,6 +139,16 @@ Under the hood it calls `runtime.ConfigureHostCapabilities` once and retains
 only the selected binders at this package-private composition root.
 Advanced hosts can use the resulting thread-bound `runtime.TurnExecutionHost`
 directly without adopting the generated local interface.
+
+Generated compositions build Turn and SubAgent options independently from the
+same host-owned inputs. Manual integrations must do the same through
+`NewTurnExecutionHostOptions`, `NewThreadCompactionHostOptions`, and
+`NewSubAgentHostOptions`; the returned values are opaque and cannot be copied
+across capability families. Each `Factory.NewHost` revalidates the option value
+and current Store authority. `WithTurnIDGenerator`,
+`WithThreadCompactionIDGenerator`, and `WithSubAgentIDGenerator` exist for
+deterministic tests or host correlation only and never derive `ThreadID`,
+`TurnID`, `RunID`, or `PromptScopeID`.
 
 The complete business path is 19 nonblank lines:
 

@@ -31,7 +31,9 @@ to read environment-backed defaults.
 `Config.Reasoning` is the default reasoning request intent for Floret-managed
 runs. It carries a provider-neutral level and optional budget tokens. Provider
 adapters validate that intent against the selected model capability before
-rendering provider-specific request fields.
+rendering provider-specific request fields. `ReasoningLevel`,
+`ReasoningSelection`, `ReasoningBudget`, and `ReasoningCapability` are owned by
+this package; runtime uses them directly and does not provide aliases.
 
 # Context Policy
 
